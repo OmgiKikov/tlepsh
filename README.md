@@ -3,7 +3,7 @@
 Внутренняя платформа для разработки, наблюдения и улучшения project-specific AI agents.
 
 ```
-Builder (Pi + frontier model)          ← улучшает
+Builder (Pi + target model)            ← улучшает
    ↓ failure bundle → патч harness-файлов
 Target Harness (Pi + target model)     ← исполняет
    ↓ задачи
@@ -44,24 +44,70 @@ npm test                       # 39 тестов: юнит + интеграци�
 Vendored Pi живёт в `vendor/pi-mono` (pinned SHA `5cd6a2a5`, версия 0.84.3):
 свой git-клон, своя сборка (`npm run vendor:build`), подключение через
 tarball'ы (`npm run vendor:pack` → `file:vendor/tarballs/*.tgz`). Ноль патчей
-в core; SHA-точный provenance пишется в каждый run.
+в core; SHA-точный provenance пишется в каждый run. В git репозитория
+`vendor/pi-mono` — gitlink на этот SHA (обновление vendora = отдельная
+процедура: обновить клон, пересобрать, перепаковать, обновить gitlink,
+прогнать все target-скважины как upgrade-gate).
 
 ## Использование
 
+Просто поболтать с платформой — companion-агент сам водит по циклу (init →
+validate → run → failures → builder → candidate → promote), запускает команды
+и показывает результат; полный трейс диалога пишется в `runs/chat_*/`:
+
 ```bash
-node dist/cli.js validate --target targets/ombudsman
-node dist/cli.js run --target targets/ombudsman --label baseline
-node dist/cli.js failures <evalRunId> --target targets/ombudsman
-node dist/cli.js builder --target targets/ombudsman --bundle <bundle.md>
-node dist/cli.js candidate --target targets/ombudsman --branch candidate-x
+node dist/cli.js          # или: ahde chat
+> собери агента для классификации тикетов
+> прогони baseline
+> что с фейлами? собери bundle и запусти builder
+> promote 0.2.0          # human gate — companion спросит подтверждение
+```
+
+Ручной режим (то же самое, но глаголами):
+
+Собрать своего агента с нуля (target = git-репозиторий: манифест, инструкция,
+скиллы, инструменты, датасет):
+
+```bash
+node dist/cli.js init my-agent                 # скелет из рабочего шаблона
+# → отредактируй my-agent/manifest.yaml (id, model, apiKeyEnv),
+#   AGENTS.md, skills/, evals/*.jsonl — бенчмарк = jsonl с graders
+node dist/cli.js validate --target my-agent    # 0 токенов: чек манифеста и suite
+node dist/cli.js run --target my-agent --label baseline --repetitions 5
+```
+
+Дальше — цикл улучшения:
+
+```bash
+node dist/cli.js failures <evalRunId> --target my-agent      # bundle для билдера
+node dist/cli.js builder --target my-agent --bundle <bundle.md>
+node dist/cli.js candidate --target my-agent --branch candidate-x
 node dist/cli.js compare <baselineEvalRun> <candidateEvalRun>
-node dist/cli.js promote --target targets/ombudsman --eval-run <id> --to 0.2.0
+node dist/cli.js promote --target my-agent --eval-run <id> --to 0.2.0
 node dist/cli.js reject --eval-run <id> --reason "..."
 ```
 
-Подключение реальной модели: `targets/<t>/manifest.yaml` → `baseUrl` на
-внутренний gateway (OpenAI-совместимый), ключ через `apiKeyEnv`. Для builder'а —
-`builders/default/manifest.yaml` на frontier-модель. Всё остальное без изменений.
+Текущий эксперимент через OpenRouter разделяет роли: target =
+`qwen/qwen3.5-9b` (cheap/weak), builder = `z-ai/glm-5.3` (frontier).
+Ключ задаётся через `apiKeyEnv`. Для внутреннего продакшена замените `baseUrl`
+в обоих manifest-файлах на корпоративный OpenAI-совместимый gateway.
+
+Канонический baseline после bounded final-answer recovery
+(`qwen/qwen3.5-9b`, 5 задач × 2 repetitions, reasoning=low): **6/10
+all-pass**, `$0.0129`, 3 recovery turns, 0 runtime errors. Recovery включается
+один раз только после tool-loop с пустым final text и выполняется с отключёнными
+tools. Minimal activation-trigger candidate был отклонён: 6/10 → 5/10 с
+регрессиями на трёх задачах.
+
+Eval-методология (после трёх отвергнутых prompt-кандидатов): task_004
+оценивается judge-градером (frontier-модель по rubric; verdict+reason пишется
+в run.json, полный обмен с judge'ом — запрос и сырой ответ — в
+`runs/<run_id>/judge/<graderIndex>.json`, до парсинга, так что даже
+unparseable-вердикт оставляет след; infra-ошибка judge'а валит eval run, а не
+засчитывает fail), датасет разделён на development/holdout
+(`--dataset evals/holdout.jsonl`), baseline пишется с `--repetitions 5`
+(2 повторения давали слишком высокий шум). Judge-модель задаётся в
+`evalSuite.judge` манифеста target'а.
 
 ## Архитектура (один пакет, именованные модули)
 
@@ -71,10 +117,10 @@ node dist/cli.js reject --eval-run <id> --reason "..."
 | `src/manifest.ts` | strict-zod TargetManifest + dataset/graders → ResolvedTarget с хэшами |
 | `src/trace.ts` | ЕДИНСТВЕННЫЙ парсер session.jsonl: toolCalls/usage/renderMarkdown |
 | `src/runner.ts` | ЕДИНСТВЕННЫЙ SDK-execution importer: изолированная Pi-сессия на каждый run (паттерн pi-harness.ts), watchdog, crash-tolerant run.json |
-| `src/eval.ts` | декларативные graders (tool_called / output_contains / output_matches), eval_run индекс, baseline reuse |
+| `src/eval.ts` | декларативные graders (tool_called / output_contains / output_matches / judge), eval_run индекс, baseline reuse |
 | `src/compare.ts` | provenanceKey guard + per-task таблица лифтов |
 | `src/bundle.ts` | failure bundle compiler — единственный интерфейс Builder'а |
-| `src/builder.ts` | Builder-as-Target: frontier-манифест, bundle → git-ветка с diff (контракт проверяется) |
+| `src/builder.ts` | Builder-as-Target: модель берётся из target (или из builder manifest при явном override), bundle → git-ветка с diff (контракт проверяется) |
 | `src/loop.ts` | кандидатный флоу (validate → smoke → suite → compare), promote (git tag + scope-гейт) / reject + evolution log |
 | `src/mock-model.ts` | scriptable OpenAI-совместимый сервер: stateless-роутинг по контексту (скилл-патч меняет поведение) |
 
@@ -98,6 +144,8 @@ targets/        target-репозитории (ombudsman — рабочий пр
 builders/       манифесты builder-агентов
 vendor/         pi-mono (pinned SHA) + tarballs
 docs/           evolution.jsonl — append-only журнал promote/reject
+                (демо-прогоны пишут во временный лог, здесь — только реальные
+                 promote/reject; файл в git пуст до первого реального promote)
 runs/           артефакты прогонов (gitignored)
 tests/          юнит + интеграционные (mock-модель, ноль токенов)
 scripts/demo.mjs полный цикл одной командой
@@ -105,7 +153,8 @@ scripts/demo.mjs полный цикл одной командой
 
 ## Out of scope (сознательно)
 
-Training/RL (stage 2: Agent Lightning), judge-градеры (Phase 2.5), DeepEval,
+Training/RL (stage 2: Agent Lightning), judge-кэш (при повторных
+прогонах одинаковых ответов), DeepEval,
 MCP, Docker-изоляция, web UI, multi-user, второй target-runtime, автономный
 promote, собственный observability backend. Каждая вырезанная деталь имеет
 именованный re-entry point в PLAN.md.

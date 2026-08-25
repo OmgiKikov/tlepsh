@@ -1,13 +1,20 @@
 id: default
 model:
-  provider: frontier-internal
-  id: gpt-frontier
+  provider: openrouter
+  id: z-ai/glm-5.3
   api: openai-completions
-  # Демо: локальный mock-сервер (npm run demo). Прод: внутренний gateway frontier-модели.
-  baseUrl: http://127.0.0.1:9901/v1
-  apiKeyEnv: BUILDER_MODEL_KEY
-  thinkingLevel: "off"
+  baseUrl: https://openrouter.ai/api/v1
+  apiKeyEnv: OPENROUTER_API_KEY
+  thinkingLevel: "high"
   timeoutMs: 600000
+  spec:
+    reasoning: true
+    contextWindow: 1048576
+    maxTokens: 131072
+    cost: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 0 }
+    compat:
+      supportsDeveloperRole: false
+      thinkingFormat: openrouter
 instructions:
   agentsMd: AGENTS.md
 skills: []

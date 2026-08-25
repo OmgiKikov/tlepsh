@@ -20,11 +20,16 @@ Baseline vs Candidate → promote (git tag) / reject (evolution log)
 
 Принцип: **Builder != Target**, Builder — внешний оптимизатор. Никакого self-improving loop. Human gate на promote.
 
+Текущая реальная конфигурация эксперимента: target = `qwen/qwen3.5-9b`
+(OpenRouter, reasoning low), builder = `z-ai/glm-5.3` (OpenRouter, reasoning
+high). После bounded final-answer recovery канонический baseline (2 repetitions):
+6/10, $0.0129, 3 recovery turns, 0 runtime errors.
+
 ## Review synthesis — что изменилось против v1
 
 1. **5 пакетов → 1 пакет** (`ahde`) с модульной структурой папок (термо-нюкл + архитектурное). Пакетные границы = папки; split при появлении второго потребителя.
 2. **builder-bridge RPC → Builder это Target** (архитектурное ревью): builder = manifest с frontier-моделью, его task input — failure bundle. Даёт builder-trace бесплатно через тот же runner. Никакого своего RPC.
-3. **Оценщик без таксономии** (термо-нюкл): graders — декларативные типы в target suite (`tool_called`, `output_contains`, `output_matches`), исполняются платформой. Judge — Phase 2.5 (через vendored vitest-evals judges), human — человек читает bundle, не тип в коде. DeepEval — вычеркнут.
+3. **Оценщик без таксономии** (термо-нюкл): graders — декларативные типы в target suite (`tool_called`, `output_contains`, `output_matches`, `judge`), исполняются платформой. Judge (Phase 2.5, реализовано): один plain-fetch к `evalSuite.judge` модели по rubric, verdict+reason в run.json; infra-ошибка = abort eval run. Human — человек читает bundle, не тип в коде. DeepEval — вычеркнут.
 4. **provenanceKey — одна функция** (все три): compare guard = равенство ключа, а не разбросанные проверки полей. Оси: pi_version+pi_sha, provider, model id, params, thinking_level, suite_hash (dataset + graders), dataset_hash. git_sha target'а НЕ входит в ключ (baseline и candidate обязаны отличаться только им).
 5. **RunRecord** (eng-review поля + термо-нюкл single-writer): provenance + lifecycle + metrics. Метрики пишутся ровно один раз при финализации из `getSessionStats()`. `trace.ts` — единственный парсер session.jsonl. Оценки живут в run.json; eval_run.json — тонкий производный индекс.
 6. **Промоут = git annotated tag** в target repo (message содержит JSON: eval_run_id, baseline, candidate_sha, summary) + append-only `docs/evolution.jsonl`. registry.json вычеркнут.
@@ -141,7 +146,7 @@ ahde reject --eval-run <id> --reason "..."
 
 ## Out of scope (MVP)
 
-training/RL, web UI, multi-user, marketplace, второй target-runtime, MCP, judge graders (Phase 2.5), DeepEval, Docker, параллельный runner, autonomous promote, own observability backend, Confident AI.
+training/RL, web UI, multi-user, marketplace, второй target-runtime, MCP, DeepEval, Docker, параллельный runner, autonomous promote, own observability backend, Confident AI. Judge-trace реализован как sidecar `runs/<run_id>/judge/<n>.json` (запрос+сырой ответ до парсинга); judge-as-run через runner — если вердиктам понадобятся собственные provenance/cost. Development/holdout split = `--dataset` override + `evals/holdout.jsonl`; 5 repetitions = `--repetitions 5`.
 
 ## Review provenance
 
