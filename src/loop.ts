@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { compareEvalRuns, type CompareResult } from "./compare.js";
 import { findReusableBaseline, loadEvalRun, runSuite, type EvalRunRecord } from "./eval.js";
-import { loadTarget } from "./manifest.js";
+import { loadTarget, type ResolvedTask } from "./manifest.js";
 
 /**
  * The improvement loop: candidate flow with meta-harness-style gates
@@ -32,6 +32,16 @@ export interface CandidateFlowOptions {
 	/** Reuse an existing baseline eval run instead of running one (must match provenance). */
 	baselineEvalRunId?: string;
 	repetitions?: number;
+	/** Dataset override (development/holdout split). */
+	dataset?: string;
+}
+
+/** Prefer a cheap, tool-free task as the infrastructure smoke check. */
+export function selectSmokeTaskId(tasks: ResolvedTask[]): string | undefined {
+	return (
+		tasks.find((task) => task.effectiveGraders.every((grader) => grader.type !== "tool_called" && grader.type !== "judge"))
+			?.id ?? tasks[0]?.id
+	);
 }
 
 /**
@@ -48,11 +58,11 @@ export async function runCandidateFlow(options: CandidateFlowOptions): Promise<C
 		git(targetDir, "checkout", options.branch);
 	}
 	const validateStart = Date.now();
-	const target = loadTarget(targetDir); // throws with a precise message on bad manifests
+	const target = loadTarget(targetDir, options.dataset ? { dataset: options.dataset } : undefined); // throws with a precise message on bad manifests
 	const validateMs = Date.now() - validateStart;
 
 	// Gate 2: smoke — one task, no token waste on a broken candidate.
-	const smokeTaskId = target.tasks[0]?.id;
+	const smokeTaskId = selectSmokeTaskId(target.tasks);
 	if (!smokeTaskId) throw new Error("suite has no tasks");
 	const smoke = await runSuite(target, {
 		runsRoot: options.runsRoot,
@@ -83,7 +93,7 @@ export async function runCandidateFlow(options: CandidateFlowOptions): Promise<C
 	}
 	if (!baseline) {
 		git(targetDir, "checkout", "-");
-		const baselineTarget = loadTarget(targetDir);
+		const baselineTarget = loadTarget(targetDir, options.dataset ? { dataset: options.dataset } : undefined);
 		baseline = await runSuite(baselineTarget, {
 			runsRoot: options.runsRoot,
 			label: "baseline",
@@ -158,6 +168,9 @@ export function promote(options: {
 	const baseline = loadEvalRun(options.runsRoot, evalRun.baselineEvalRunId);
 	const compare = compareEvalRuns(options.runsRoot, baseline.evalRunId, evalRun.evalRunId);
 	if (compare.error) throw new Error(compare.error);
+	if (!/^[0-9a-f]{40}$/.test(baseline.target.gitSha) || !/^[0-9a-f]{40}$/.test(evalRun.target.gitSha)) {
+		throw new Error("promote requires committed, clean baseline and candidate harness versions");
+	}
 
 	// Scope gate: the candidate diff must not touch the eval suite.
 	const changed = git(targetDir, "diff", "--name-only", `${baseline.target.gitSha}..${evalRun.target.gitSha}`);

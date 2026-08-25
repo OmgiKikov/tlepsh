@@ -1,9 +1,11 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadTarget } from "../src/manifest.js";
 import { runSuite } from "../src/eval.js";
 import { startMockModel, type MockModelHandle } from "../src/mock-model.js";
+import { FINAL_ANSWER_RECOVERY_PROMPT } from "../src/runner.js";
+import { openTrace } from "../src/trace.js";
 import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 
 /**
@@ -148,5 +150,282 @@ description: Проверка ограничений ДБО для любых о
 		expect(candidateRun).toBeDefined();
 		const calls = traceToolCalls(openTrace(join(runsRoot, candidateRun.runId)));
 		expect(calls.some((c) => c.name === "bash" && JSON.stringify(c.arguments).includes("check_dbo"))).toBe(true);
+	}, 180_000);
+});
+
+describe("judge grader", () => {
+	function judgeFixtureFiles(mockUrl: string): Record<string, string> {
+		return {
+			"manifest.yaml": `id: judge-target
+model:
+  provider: qwen-mock
+  id: mock
+  api: openai-completions
+  baseUrl: ${mockUrl}
+  apiKeyEnv: MOCK_MODEL_KEY
+  thinkingLevel: "off"
+  timeoutMs: 60000
+instructions:
+  agentsMd: AGENTS.md
+skills: []
+evalSuite:
+  id: judge-suite
+  dataset: evals/development.jsonl
+  graders: evals/graders.yaml
+  judge:
+    provider: judge-mock
+    id: judge-model
+    api: openai-completions
+    baseUrl: ${mockUrl}
+    apiKeyEnv: MOCK_MODEL_KEY
+    thinkingLevel: "off"
+    timeoutMs: 60000
+`,
+			"evals/development.jsonl": [
+				JSON.stringify({
+					id: "ask_pass",
+					input: "Вопрос про комиссию по своей карте",
+					graders: [{ type: "judge", rubric: "ответ по существу комиссии" }],
+				}),
+				JSON.stringify({
+					id: "ask_fail",
+					input: "Вопрос про тарифы",
+					graders: [{ type: "judge", rubric: "ответ по существу тарифов" }],
+				}),
+			].join("\n"),
+			"evals/graders.yaml": "defaults: []\n",
+		};
+	}
+
+	it("a failed rubric is a fail (not an error); verdicts are recorded in run.json", async () => {
+		// Judge requests carry the task input in the user message, so the
+		// stateless mock routes a different verdict per task.
+		const judgeMock = await startMockModel([
+			{
+				match: ({ system, firstUser }) => system.includes("грейдер") && firstUser.includes("тарифы"),
+				steps: [{ text: '{"passed": false, "reason": "нет существа дела"}' }],
+			},
+			{
+				match: ({ system }) => system.includes("грейдер"),
+				steps: [{ text: '{"passed": true, "reason": "классификация и суть верны"}' }],
+			},
+			{
+				match: ({ firstUser }) => firstUser.includes("тарифы"),
+				steps: [{ text: "Тарифы зависят от пакета услуг." }],
+			},
+			{
+				match: ({ firstUser }) => firstUser.includes("комиссию"),
+				steps: [{ text: "Комиссия за перевод между своими счетами не взимается." }],
+			},
+		]);
+		const dir = makeTargetFixture(baseFixtureFiles(judgeFixtureFiles(judgeMock.url)));
+		const judgeRuns = join(dir, "..", `judge-runs-${Date.now()}`);
+		try {
+			const result = await runSuite(loadTarget(dir), { runsRoot: judgeRuns, label: "solo", repetitions: 1 });
+			expect(result.summary.pass).toBe(1);
+			expect(result.summary.fail).toBe(1);
+			expect(result.summary.error).toBe(0);
+			const runs = result.runIds.map((id) => JSON.parse(readFileSync(join(judgeRuns, id, "run.json"), "utf8")));
+			const judged = Object.fromEntries(
+				runs.map((r) => [r.taskId, r.evalResults.graders.find((g: { type: string }) => g.type === "judge")]),
+			);
+			expect(judged.ask_pass?.passed).toBe(true);
+			expect(judged.ask_pass?.reason).toBe("классификация и суть верны");
+			expect(judged.ask_fail?.passed).toBe(false);
+			expect(judged.ask_fail?.reason).toBe("нет существа дела");
+			// Judge trace sidecar: exact request + raw response on disk.
+			for (const run of runs) {
+				const trace = JSON.parse(readFileSync(join(judgeRuns, run.runId, "judge", "0.json"), "utf8"));
+				expect(trace.request.body.messages[0].content).toContain("грейдер");
+				expect(trace.request.body.messages[1].content).toContain(run.taskId === "ask_pass" ? "комиссию" : "тарифы");
+				expect(trace.response.status).toBe(200);
+				expect(trace.response.text).toContain("passed");
+			}
+		} finally {
+			cleanup(dir);
+			cleanup(judgeRuns);
+			await judgeMock.close();
+		}
+	}, 180_000);
+
+	it("unparseable judge output aborts the eval run (infra error, not a grade)", async () => {
+		const judgeMock = await startMockModel([
+			{
+				match: ({ system }) => system.includes("грейдер"),
+				steps: [{ text: "Не могу оценить ответ." }],
+			},
+			{
+				match: ({ firstUser }) => firstUser.includes("тарифы"),
+				steps: [{ text: "Тарифы зависят от пакета услуг." }],
+			},
+			{
+				match: ({ firstUser }) => firstUser.includes("комиссию"),
+				steps: [{ text: "Комиссия за перевод между своими счетами не взимается." }],
+			},
+		]);
+		const dir = makeTargetFixture(baseFixtureFiles(judgeFixtureFiles(judgeMock.url)));
+		const judgeRuns = join(dir, "..", `judge-err-runs-${Date.now()}`);
+		try {
+			await expect(
+				runSuite(loadTarget(dir), { runsRoot: judgeRuns, label: "solo", repetitions: 1 }),
+			).rejects.toThrow(/judge/);
+			// Evidence survives the abort: the unparseable exchange is on disk.
+			const runDir = readdirSync(judgeRuns).find((entry) => entry.startsWith("run_"));
+			const trace = JSON.parse(readFileSync(join(judgeRuns, runDir ?? "", "judge", "0.json"), "utf8"));
+			expect(trace.response.text).toContain("Не могу оценить ответ.");
+		} finally {
+			cleanup(dir);
+			cleanup(judgeRuns);
+			await judgeMock.close();
+		}
+	}, 180_000);
+});
+
+describe("target workspace isolation", () => {
+	it("does not let target tools mutate the source harness repo", async () => {
+		const isolatedMock = await startMockModel([
+			{
+				steps: [
+					{ toolCall: { name: "bash", arguments: { command: "chmod +x bin/check_dbo" } } },
+					{ text: "done" },
+				],
+			},
+		]);
+		const dir = makeTargetFixture(
+			baseFixtureFiles({
+				"manifest.yaml": `id: isolation-target
+model:
+  provider: qwen-mock
+  id: mock
+  api: openai-completions
+  baseUrl: ${isolatedMock.url}
+  apiKeyEnv: MOCK_MODEL_KEY
+  thinkingLevel: "off"
+  timeoutMs: 60000
+instructions:
+  agentsMd: AGENTS.md
+skills: [skills/check-dbo]
+evalSuite:
+  id: isolation-suite
+  dataset: evals/development.jsonl
+  graders: evals/graders.yaml
+`,
+				"evals/development.jsonl": `${JSON.stringify({
+					id: "mutate",
+					input: "Test workspace isolation",
+					graders: [{ type: "output_contains", text: "done" }],
+				})}\n`,
+			}),
+		);
+		const isolatedRuns = join(dir, "..", `isolation-runs-${Date.now()}`);
+		const sourceScript = join(dir, "bin/check_dbo");
+		const modeBefore = statSync(sourceScript).mode;
+		try {
+			const result = await runSuite(loadTarget(dir), { runsRoot: isolatedRuns, label: "solo", repetitions: 1 });
+			expect(result.summary.error).toBe(0);
+			expect(statSync(sourceScript).mode).toBe(modeBefore);
+		} finally {
+			cleanup(dir);
+			cleanup(isolatedRuns);
+			await isolatedMock.close();
+		}
+	}, 180_000);
+});
+
+describe("run completion contract", () => {
+	it("records a run error when the model stops without final assistant text", async () => {
+		const emptyMock = await startMockModel([{ steps: [{ text: "" }] }]);
+		const dir = makeTargetFixture(
+			baseFixtureFiles({
+				"manifest.yaml": `id: empty-output-target
+model:
+  provider: qwen-mock
+  id: mock
+  api: openai-completions
+  baseUrl: ${emptyMock.url}
+  apiKeyEnv: MOCK_MODEL_KEY
+  thinkingLevel: "off"
+  timeoutMs: 60000
+instructions:
+  agentsMd: AGENTS.md
+skills: []
+evalSuite:
+  id: empty-output-suite
+  dataset: evals/development.jsonl
+  graders: evals/graders.yaml
+`,
+				"evals/development.jsonl": `${JSON.stringify({
+					id: "empty",
+					input: "Return nothing",
+					graders: [{ type: "output_contains", text: "expected" }],
+				})}\n`,
+			}),
+		);
+		const emptyRuns = join(dir, "..", `empty-runs-${Date.now()}`);
+		try {
+			const result = await runSuite(loadTarget(dir), { runsRoot: emptyRuns, label: "solo", repetitions: 1 });
+			expect(result.summary.error).toBe(1);
+			const record = JSON.parse(readFileSync(join(emptyRuns, result.runIds[0] ?? "", "run.json"), "utf8"));
+			expect(record.error).toContain("no assistant text");
+		} finally {
+			cleanup(dir);
+			cleanup(emptyRuns);
+			await emptyMock.close();
+		}
+	}, 180_000);
+
+	it("recovers once after a tool loop with empty final text, with tools disabled", async () => {
+		const recoveryMock = await startMockModel([
+			{
+				match: ({ lastUser, toolCount }) => lastUser.includes("Сформируй итоговый ответ") && toolCount === 0,
+				steps: [{ text: "unused" }, { text: "Recovered final answer" }],
+			},
+			{
+				steps: [
+					{ toolCall: { name: "bash", arguments: { command: "echo tool-result" } } },
+					{ text: "" },
+				],
+			},
+		]);
+		const dir = makeTargetFixture(
+			baseFixtureFiles({
+				"manifest.yaml": `id: recovery-target
+model:
+  provider: qwen-mock
+  id: mock
+  api: openai-completions
+  baseUrl: ${recoveryMock.url}
+  apiKeyEnv: MOCK_MODEL_KEY
+  thinkingLevel: "off"
+  timeoutMs: 60000
+instructions:
+  agentsMd: AGENTS.md
+skills: []
+evalSuite:
+  id: recovery-suite
+  dataset: evals/development.jsonl
+  graders: evals/graders.yaml
+`,
+				"evals/development.jsonl": `${JSON.stringify({
+					id: "recover",
+					input: "Use a tool, then answer",
+					graders: [{ type: "output_contains", text: "Recovered final answer" }],
+				})}\n`,
+			}),
+		);
+		const recoveryRuns = join(dir, "..", `recovery-runs-${Date.now()}`);
+		try {
+			const result = await runSuite(loadTarget(dir), { runsRoot: recoveryRuns, label: "solo", repetitions: 1 });
+			expect(result.summary.pass).toBe(1);
+			const runId = result.runIds[0] ?? "";
+			const record = JSON.parse(readFileSync(join(recoveryRuns, runId, "run.json"), "utf8"));
+			expect(record.metrics.recoveryAttempts).toBe(1);
+			const messages = openTrace(join(recoveryRuns, runId));
+			expect(messages.some((message) => message.role === "user" && message.text === FINAL_ANSWER_RECOVERY_PROMPT)).toBe(true);
+		} finally {
+			cleanup(dir);
+			cleanup(recoveryRuns);
+			await recoveryMock.close();
+		}
 	}, 180_000);
 });

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -49,8 +49,12 @@ function copyTemplate(srcDir: string, destDir: string, baseUrl: string): void {
 	mkdirSync(destDir, { recursive: true });
 	execFileSync("cp", ["-R", `${srcDir}/.`, destDir]);
 	const manifestPath = join(destDir, "manifest.yaml");
-	const manifest = readFileSync(manifestPath, "utf8").replace(/baseUrl: .*/, `baseUrl: ${baseUrl}`);
-	require("node:fs").writeFileSync(manifestPath, manifest);
+	// Test isolation: подменяем endpoint и имя ключа — прогон не зависит
+	// от реального OPENROUTER_API_KEY из .env.
+	const manifest = readFileSync(manifestPath, "utf8")
+		.replace(/baseUrl: .*/g, `baseUrl: ${baseUrl}`)
+		.replace(/apiKeyEnv: .*/g, "apiKeyEnv: AHDE_TEST_KEY");
+	writeFileSync(manifestPath, manifest);
 	execFileSync("git", ["-C", destDir, "init", "-q"]);
 	execFileSync("git", ["-C", destDir, "add", "."]);
 	execFileSync("git", ["-C", destDir, "-c", "user.name=demo", "-c", "user.email=demo@demo", "commit", "-qm", "initial"]);
@@ -58,6 +62,11 @@ function copyTemplate(srcDir: string, destDir: string, baseUrl: string): void {
 
 beforeAll(async () => {
 	mock = await startMockModel([
+		{
+			// Judge grader for task_004: verdict on the (correct) canned answer.
+			match: ({ system }) => system.includes("грейдер"),
+			steps: [{ text: '{"passed": true, "reason": "классификация и ответ по существу верны"}' }],
+		},
 		{
 			// Builder: reads the bundle, patches the skill on a branch, reports.
 			match: ({ firstUser }) => firstUser.includes("инженер"),
@@ -104,8 +113,7 @@ beforeAll(async () => {
 	evolutionLog = join(root, "evolution.jsonl");
 	copyTemplate(join(REPO_ROOT, "targets", "ombudsman"), targetDir, mock.url);
 	copyTemplate(join(REPO_ROOT, "builders", "default"), builderDir, mock.url);
-	process.env.OMBUDSMAN_MODEL_KEY = "demo";
-	process.env.BUILDER_MODEL_KEY = "demo";
+	process.env.AHDE_TEST_KEY = "test";
 	process.env.AHDE_EVOLUTION_LOG = evolutionLog;
 });
 

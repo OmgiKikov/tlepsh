@@ -32,6 +32,11 @@ bin/check_dbo --client <id>
 
 const mock = await startMockModel([
 	{
+		// Judge grader (task_004): вердикт по rubric.
+		match: ({ system }) => system.includes("грейдер"),
+		steps: [{ text: '{"passed": true, "reason": "классификация и ответ по существу верны"}' }],
+	},
+	{
 		match: ({ firstUser }) => firstUser.includes("инженер"),
 		steps: [
 			{ toolCall: { name: "read", arguments: { path: "__BUNDLE__" } } },
@@ -62,6 +67,7 @@ const mock = await startMockModel([
 ]);
 
 const root = mkdtempSync(join(process.env.TMPDIR ?? "/tmp", "ahde-demo-"));
+process.env.AHDE_EVOLUTION_LOG = join(root, "evolution.jsonl"); // demo не трогает repo-лог
 const targetDir = join(root, "ombudsman");
 const builderDir = join(root, "builder");
 const runsRoot = join(root, "runs");
@@ -70,16 +76,19 @@ cpSync(join(REPO, "builders", "default"), builderDir, { recursive: true });
 for (const dir of [targetDir, builderDir]) {
 	execFileSync("git", ["-C", dir, "init", "-q"]);
 	const manifestPath = join(dir, "manifest.yaml");
-	const manifest = readFileSync(manifestPath, "utf8").replace(/baseUrl: .*/, `baseUrl: ${mock.url}`);
+	// Demo isolation: подменяем и endpoint, и имя ключа — прогон не зависит
+	// от реального OPENROUTER_API_KEY и не трогает .env пользователя.
+	const manifest = readFileSync(manifestPath, "utf8")
+		.replace(/baseUrl: .*/g, `baseUrl: ${mock.url}`)
+		.replace(/apiKeyEnv: .*/g, "apiKeyEnv: AHDE_DEMO_KEY");
 	writeFileSync(manifestPath, manifest);
 	execFileSync("git", ["-C", dir, "add", "-A"]);
 	execFileSync("git", ["-C", dir, "-c", "user.name=demo", "-c", "user.email=demo@demo", "commit", "-qm", "demo"]);
 }
-process.env.OMBUDSMAN_MODEL_KEY = "demo";
-process.env.BUILDER_MODEL_KEY = "demo";
+process.env.AHDE_DEMO_KEY = "demo";
 
 try {
-	step("1. TARGET: ombudsman (Pi + qwen3.5-27b + узкий skill description — заложенный failure)");
+	step("1. TARGET: ombudsman (model from its manifest + узкий skill description — заложенный failure)");
 	const target = loadTarget(targetDir);
 	console.log(`    ${target.tasks.length} задач, suite ${target.suiteHash.slice(7, 19)}…, harness ${target.gitSha.slice(0, 8)}`);
 
@@ -92,7 +101,7 @@ try {
 	console.log(`    ${bundlePath}`);
 	console.log(`    (failed tasks: ${baseline.summary.fail}, в bundle: трейсы, grader-причины, AGENTS.md, SKILL.md)`);
 
-	step("4. IMPROVE: Builder (Pi + frontier) читает bundle и патчит harness на ветке");
+	step("4. IMPROVE: Builder работает на том же model runtime, что и target, читает bundle и патчит harness на ветке");
 	const builder = await runBuilder(builderDir, target, bundlePath, { runsRoot, branch: "candidate-demo" });
 	console.log(`    builder run ${builder.builderRunId} → ветка ${builder.branch} (${builder.commitSha.slice(0, 8)})`);
 	for (const file of builder.changedFiles) console.log(`    изменён: ${file}`);

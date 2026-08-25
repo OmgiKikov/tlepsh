@@ -1,6 +1,6 @@
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { graderName, type ResolvedTarget, type ResolvedTask } from "./manifest.js";
+import { graderName, type ResolvedTarget, type ResolvedTask, type TargetManifest } from "./manifest.js";
 import {
 	provenanceAxes,
 	provenanceKey,
@@ -61,8 +61,93 @@ function gradeOutputMatches(spec: { pattern: string }, output: string | undefine
 	};
 }
 
+// ---------- Judge grader ----------
+// Judge calls leave a sidecar trace (exact request + raw response) in
+// runs/<run_id>/judge/<graderIndex>.json — written BEFORE parsing, so even an
+// unparseable verdict keeps its evidence. ponytail: sidecar file, not a
+// judge-as-run through runner.ts; upgrade if judge verdicts ever need their
+// own provenance/cost accounting.
+
+const JUDGE_SYSTEM =
+	'Ты — грейдер. Оцени ответ агента на обращение по критерию. ' +
+	'Ответь строго одной строкой JSON без markdown: {"passed": true|false, "reason": "краткое обоснование"}';
+
+function parseVerdict(text: string): { passed: boolean; reason: string } {
+	const stripped = text.replace(/```(?:json)?/g, "").trim();
+	const start = stripped.indexOf("{");
+	const end = stripped.lastIndexOf("}");
+	const raw = start >= 0 && end > start ? stripped.slice(start, end + 1) : stripped;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		throw new Error(`judge returned unparseable verdict: ${text.slice(0, 120)}`);
+	}
+	const verdict = parsed as { passed?: unknown; reason?: unknown };
+	if (typeof verdict.passed !== "boolean" || typeof verdict.reason !== "string") {
+		throw new Error(`judge verdict missing passed/reason: ${text.slice(0, 120)}`);
+	}
+	return { passed: verdict.passed, reason: verdict.reason };
+}
+
+function contentToString(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (Array.isArray(content)) {
+		return content
+			.map((part) => (typeof part === "object" && part !== null && "text" in part ? String((part as { text: unknown }).text) : ""))
+			.join("");
+	}
+	return "";
+}
+
+async function gradeJudge(
+	spec: { rubric: string },
+	judge: TargetManifest["model"],
+	task: { input: string },
+	output: string,
+	tracePath: string,
+): Promise<GraderResult> {
+	const key = process.env[judge.apiKeyEnv];
+	if (judge.baseUrl.includes("openrouter.ai") && !key) {
+		throw new Error(`missing ${judge.apiKeyEnv} for judge endpoint ${judge.baseUrl}`);
+	}
+	const url = `${judge.baseUrl.replace(/\/+$/, "")}/chat/completions`;
+	const requestBody = {
+		model: judge.id,
+		messages: [
+			{ role: "system", content: JUDGE_SYSTEM },
+			{ role: "user", content: `Критерий: ${spec.rubric}\n\nОбращение: ${task.input}\n\nОтвет агента: ${output}` },
+		],
+		temperature: 0,
+		stream: false,
+		...(judge.thinkingLevel !== "off" ? { reasoning: { effort: judge.thinkingLevel } } : {}),
+	};
+	const response = await fetch(url, {
+		method: "POST",
+		headers: { "content-type": "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) },
+		body: JSON.stringify(requestBody),
+		signal: AbortSignal.timeout(judge.timeoutMs),
+	});
+	const rawText = await response.text();
+	// Evidence first: the exact exchange is on disk even if parsing/HTTP fails.
+	mkdirSync(join(tracePath, ".."), { recursive: true });
+	writeFileSync(tracePath, `${JSON.stringify({ request: { url, body: requestBody }, response: { status: response.status, text: rawText } }, null, "\t")}\n`);
+	if (!response.ok) {
+		throw new Error(`judge HTTP ${response.status}: ${rawText.slice(0, 120)}`);
+	}
+	const body = JSON.parse(rawText) as { choices?: { message?: { content?: unknown } }[] };
+	const text = contentToString(body.choices?.[0]?.message?.content);
+	const verdict = parseVerdict(text);
+	return { name: "", type: "judge", passed: verdict.passed, score: verdict.passed ? 1 : 0, reason: verdict.reason };
+}
+
 /** Grade one completed run against its task's effective graders. */
-export function gradeRun(task: ResolvedTask, record: RunRecord, runsRoot: string): GraderResult[] {
+export async function gradeRun(
+	task: ResolvedTask,
+	record: RunRecord,
+	runsRoot: string,
+	judge?: TargetManifest["model"],
+): Promise<GraderResult[]> {
 	const runDir = join(runsRoot, record.runId);
 	let output: string | undefined;
 	let toolCalls: ReturnType<typeof traceToolCalls> = [];
@@ -75,7 +160,8 @@ export function gradeRun(task: ResolvedTask, record: RunRecord, runsRoot: string
 			// missing/corrupt trace → all graders fail with parse error reason
 		}
 	}
-	return task.effectiveGraders.map((spec, index) => {
+	const results: GraderResult[] = [];
+	for (const [index, spec] of task.effectiveGraders.entries()) {
 		let result: GraderResult;
 		if (record.status !== "completed") {
 			result = {
@@ -89,11 +175,15 @@ export function gradeRun(task: ResolvedTask, record: RunRecord, runsRoot: string
 			result = gradeToolCalled(spec, toolCalls);
 		} else if (spec.type === "output_contains") {
 			result = gradeOutputContains(spec, output ?? "");
+		} else if (spec.type === "judge") {
+			if (!judge) throw new Error("judge grader without judge model config");
+			result = await gradeJudge(spec, judge, task, output ?? "", join(runDir, "judge", `${index}.json`));
 		} else {
 			result = gradeOutputMatches(spec, output ?? "");
 		}
-		return { ...result, name: graderName(spec, task, index) };
-	});
+		results.push({ ...result, name: graderName(spec, task, index) });
+	}
+	return results;
 }
 
 // ---------- Eval run aggregation ----------
@@ -171,7 +261,7 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 				error += 1;
 				continue;
 			}
-			const graders = gradeRun(task, record, options.runsRoot);
+			const graders = await gradeRun(task, record, options.runsRoot, target.manifest.evalSuite.judge);
 			const outcome = graders.every((g) => g.passed) ? "pass" : "fail";
 			record.evalResults = { graders, outcome };
 			// finalize run.json with eval results (second and final write)

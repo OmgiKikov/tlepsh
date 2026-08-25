@@ -32,7 +32,7 @@ export interface MockStep {
 
 export interface MockScript {
 	/** Router: inspect the system prompt and first user message of each request. */
-	match?: (body: { system: string; firstUser: string }) => boolean;
+	match?: (body: { system: string; firstUser: string; lastUser: string; toolCount: number }) => boolean;
 	steps: MockStep[];
 }
 
@@ -53,6 +53,8 @@ interface ChatRequest {
 	model?: string;
 	messages?: ChatMessage[];
 	system?: string | ChatMessage[];
+	tools?: unknown[];
+	stream?: boolean;
 }
 
 function contentText(content: unknown): string {
@@ -125,6 +127,7 @@ export function startMockModel(scripts: MockScript[], fallback?: MockScript): Pr
 			requestCount += 1;
 			const messages = body.messages ?? [];
 			const firstUser = messages.find((m) => m.role === "user");
+			const lastUser = [...messages].reverse().find((m) => m.role === "user");
 			const system =
 				typeof body.system === "string"
 					? body.system
@@ -134,7 +137,14 @@ export function startMockModel(scripts: MockScript[], fallback?: MockScript): Pr
 			const model = body.model ?? "mock-model";
 
 			const script =
-				scripts.find((s) => s.match?.({ system, firstUser: contentText(firstUser?.content) })) ?? defaultScript;
+				scripts.find((s) =>
+					s.match?.({
+						system,
+						firstUser: contentText(firstUser?.content),
+						lastUser: contentText(lastUser?.content),
+						toolCount: body.tools?.length ?? 0,
+					}),
+				) ?? defaultScript;
 			// Stateless step selection: how many tool results has the harness sent back so far.
 			const toolResults = messages.filter((m) => m.role === "tool").length;
 			const step = script.steps[toolResults];
@@ -147,12 +157,27 @@ export function startMockModel(scripts: MockScript[], fallback?: MockScript): Pr
 				);
 				return;
 			}
-			if (step.httpError) {
-				res.writeHead(step.httpError.status, { "content-type": "application/json" });
-				res.end(JSON.stringify({ error: { message: step.httpError.message } }));
-				return;
-			}
-			res.writeHead(200, {
+		if (step.httpError) {
+			res.writeHead(step.httpError.status, { "content-type": "application/json" });
+			res.end(JSON.stringify({ error: { message: step.httpError.message } }));
+			return;
+		}
+		if (body.stream === false) {
+			// Non-streaming client (judge grader): plain JSON completion.
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(
+				JSON.stringify({
+					id: "chatcmpl-mock",
+					object: "chat.completion",
+					created: Math.floor(Date.now() / 1000),
+					model,
+					choices: [{ index: 0, message: { role: "assistant", content: step.text ?? "" }, finish_reason: "stop" }],
+					usage: { prompt_tokens: 42, completion_tokens: 7, total_tokens: 49 },
+				}),
+			);
+			return;
+		}
+		res.writeHead(200, {
 				"content-type": "text/event-stream",
 				"cache-control": "no-cache",
 				connection: "keep-alive",
