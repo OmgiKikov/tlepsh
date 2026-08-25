@@ -1,0 +1,2 @@
+{"ts":"2026-08-25T10:47:02.154Z","targetId":"ombudsman","action":"promote","version":"0.2.0","evalRunId":"erun_mt8jiwmil6kjfd","baselineEvalRunId":"erun_mt8jiwdxi42no4","gitSha":"11991dd9edc3a340f8e864676fc8e8f2d31a5ed4","summary":{"pass":5,"total":5}}
+{"ts":"2026-08-25T10:47:25.843Z","targetId":"ombudsman","action":"promote","version":"0.2.0","evalRunId":"erun_mt8jjewgh3ga7w","baselineEvalRunId":"erun_mt8jjenwbb8lcg","gitSha":"eb70e527b7e3b29cb87d4eef76f9cfd972165b7b","summary":{"pass":5,"total":5}}

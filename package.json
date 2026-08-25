@@ -1,0 +1,38 @@
+{
+  "name": "ahde",
+  "version": "0.1.0",
+  "description": "Agent Harness Development Environment — build, run, trace, eval, improve project-specific agents",
+  "type": "module",
+  "bin": {
+    "ahde": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node -e \"require('fs').writeFileSync('dist/cli.js', '#!/usr/bin/env node\\n' + require('fs').readFileSync('dist/cli.js'))\" && chmod +x dist/cli.js",
+    "test": "vitest run",
+    "check": "tsc -p tsconfig.json --noEmit && vitest run",
+    "vendor:build": "cd vendor/pi-mono && npm ci --ignore-scripts && npm run hydrate:model-data && npm run build:offline",
+    "vendor:pack": "cd vendor/pi-mono/packages/telemetry && npm pack --pack-destination ../../../tarballs && cd ../ai && npm pack --pack-destination ../../../tarballs && cd ../agent && npm pack --pack-destination ../../../tarballs && cd ../protocol && npm pack --pack-destination ../../../tarballs && cd ../client && npm pack --pack-destination ../../../tarballs && cd ../tui && npm pack --pack-destination ../../../tarballs && cd ../coding-agent && npm pack --pack-destination ../../../tarballs",
+    "demo": "node scripts/demo.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "file:vendor/tarballs/earendil-works-pi-agent-core-0.84.3.tgz",
+    "@earendil-works/pi-ai": "file:vendor/tarballs/earendil-works-pi-ai-0.84.3.tgz",
+    "@earendil-works/pi-client": "file:vendor/tarballs/earendil-works-pi-client-0.84.3.tgz",
+    "@earendil-works/pi-coding-agent": "file:vendor/tarballs/earendil-works-pi-coding-agent-0.84.3.tgz",
+    "@earendil-works/pi-protocol": "file:vendor/tarballs/earendil-works-pi-protocol-0.84.3.tgz",
+    "@earendil-works/pi-telemetry": "file:vendor/tarballs/earendil-works-pi-telemetry-0.84.3.tgz",
+    "@earendil-works/pi-tui": "file:vendor/tarballs/earendil-works-pi-tui-0.84.3.tgz",
+    "yaml": "^2.8.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}
