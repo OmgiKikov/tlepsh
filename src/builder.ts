@@ -5,7 +5,7 @@ import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { hashFile } from "./provenance.js";
 import { runTask } from "./runner.js";
-import type { ResolvedTarget } from "./manifest.js";
+import { TargetManifest, type ResolvedTarget } from "./manifest.js";
 
 /**
  * Builder = a Target whose task input is a failure bundle. Runs through the
@@ -16,16 +16,12 @@ import type { ResolvedTarget } from "./manifest.js";
 
 export const BuilderManifest = z.strictObject({
 	id: z.string().min(1),
-	model: z.strictObject({
-		provider: z.string().min(1),
-		id: z.string().min(1),
-		api: z.string().min(1),
-		baseUrl: z.string().url(),
-		apiKeyEnv: z.string().min(1),
-		thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]),
-		timeoutMs: z.number().int().positive(),
-		params: z.record(z.string(), z.unknown()).default({}),
-	}),
+	/**
+	 * Frontier model for the builder. Optional: when omitted the builder
+	 * inherits the target's model (one-place config for experiments).
+	 * Production builders should declare an explicit frontier model.
+	 */
+	model: TargetManifest.shape.model.optional(),
 	instructions: z.strictObject({
 		agentsMd: z.string().min(1),
 	}),
@@ -70,11 +66,15 @@ export async function runBuilder(
 	bundlePath: string,
 	options: { runsRoot: string; branch?: string },
 ): Promise<BuilderResult> {
+	if (!/^[0-9a-f]{40}$/.test(target.gitSha)) {
+		throw new Error("builder requires a committed, clean target repo; commit or stash target changes first");
+	}
 	const manifestResult = BuilderManifest.safeParse(parseYaml(readFileSync(resolve(builderDir, "manifest.yaml"), "utf8")));
 	if (!manifestResult.success) {
 		throw new Error(`builder manifest.yaml: ${manifestResult.error.message}`);
 	}
 	const manifest = manifestResult.data;
+	const model = manifest.model ?? target.manifest.model;
 	readFileSync(resolve(builderDir, manifest.instructions.agentsMd)); // existence check
 	for (const skill of manifest.skills) readFileSync(resolve(builderDir, `${skill}/SKILL.md`));
 
@@ -87,12 +87,14 @@ export async function runBuilder(
 	const builderTarget: ResolvedTarget = {
 		dir: target.dir,
 		manifest: {
-			...manifest,
+			...target.manifest,
 			id: `builder:${manifest.id}`,
+			model,
 			instructions: { agentsMd: resolve(builderDir, manifest.instructions.agentsMd) },
 			skills: manifest.skills.map((s) => resolve(builderDir, s)),
 			evalSuite: { id: "builder-task", dataset: bundlePath, graders: bundlePath },
 		},
+
 		gitSha: target.gitSha,
 		runtime: target.runtime,
 		tasks: [],
@@ -100,13 +102,18 @@ export async function runBuilder(
 		suiteHash: bundleHash,
 	};
 
-	const record = await runTask(builderTarget, { id: `builder:${branch}`, input: builderTaskInput(bundlePath, branch), effectiveGraders: [] }, {
-		runsRoot: options.runsRoot,
-		label: "solo",
-		repetitionIndex: 0,
-		evalRunId: null,
-		candidateOf: null,
-	});
+	const record = await runTask(
+		builderTarget,
+		{ id: `builder:${branch}`, input: builderTaskInput(bundlePath, branch), effectiveGraders: [] },
+		{
+			runsRoot: options.runsRoot,
+			label: "solo",
+			repetitionIndex: 0,
+			evalRunId: null,
+			candidateOf: null,
+			workspaceMode: "direct",
+		},
+	);
 
 	if (record.status !== "completed") {
 		throw new Error(`builder run failed: ${record.error ?? record.status} (see runs/${record.runId})`);
