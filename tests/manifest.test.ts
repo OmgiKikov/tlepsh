@@ -1,6 +1,9 @@
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { graderName, loadTarget } from "../src/manifest.js";
-import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
+import { graderName, loadTarget, scaffoldTarget } from "../src/manifest.js";
+import { AGENTS_MD, baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 
 describe("loadTarget", () => {
 	it("resolves a valid target: manifest, tasks, hashes, runtime info", () => {
@@ -14,6 +17,8 @@ describe("loadTarget", () => {
 			expect(target.gitSha).toMatch(/^[0-9a-f]{40}$/);
 			expect(target.runtime.piVersion).toBe("0.84.3");
 			expect(target.runtime.piSha).toMatch(/^[0-9a-f]{40}$/);
+			expect(target.runtime.ahdeVersion).toBe("0.1.0");
+			expect(target.runtime.ahdeCodeHash).toMatch(/^sha256:[0-9a-f]{64}$/);
 			expect(target.datasetHash).toMatch(/^sha256:/);
 			expect(target.suiteHash).toMatch(/^sha256:/);
 		} finally {
@@ -87,6 +92,20 @@ describe("loadTarget", () => {
 		}
 	});
 
+	it("includes uncommitted target changes in git identity", () => {
+		const dir = makeTargetFixture(baseFixtureFiles());
+		try {
+			const clean = loadTarget(dir);
+			expect(clean.gitSha).toMatch(/^[0-9a-f]{40}$/);
+			writeFileSync(`${dir}/AGENTS.md`, `${AGENTS_MD}\nDirty change\n`);
+			const dirty = loadTarget(dir);
+			expect(dirty.gitSha).toMatch(/^[0-9a-f]{40}-dirty-[0-9a-f]{12}$/);
+			expect(dirty.gitSha).not.toBe(clean.gitSha);
+		} finally {
+			cleanup(dir);
+		}
+	});
+
 	it("suiteHash changes when grader defaults change, datasetHash does not", () => {
 		const dirA = makeTargetFixture(baseFixtureFiles());
 		const dirB = makeTargetFixture(
@@ -102,6 +121,67 @@ describe("loadTarget", () => {
 		} finally {
 			cleanup(dirA);
 			cleanup(dirB);
+		}
+	});
+	it("rejects judge graders when evalSuite.judge is not configured", () => {
+		const dir = makeTargetFixture(
+			baseFixtureFiles({
+				"evals/development.jsonl": `${JSON.stringify({
+					id: "task_001",
+					input: "x",
+					graders: [{ type: "judge", rubric: "ответ по существу" }],
+				})}\n`,
+			}),
+		);
+		try {
+			expect(() => loadTarget(dir)).toThrow(/judge/);
+		} finally {
+			cleanup(dir);
+		}
+	});
+
+	it("dataset override swaps tasks and changes datasetHash (dev/holdout split)", () => {
+		const dir = makeTargetFixture(
+			baseFixtureFiles({
+				"evals/holdout.jsonl": `${JSON.stringify({ id: "task_holdout", input: "holdout input", graders: [{ type: "output_contains", text: "ok" }] })}\n`,
+			}),
+		);
+		try {
+			const dev = loadTarget(dir);
+			const holdout = loadTarget(dir, { dataset: "evals/holdout.jsonl" });
+			expect(holdout.tasks.map((t) => t.id)).toEqual(["task_holdout"]);
+			expect(holdout.manifest.evalSuite.dataset).toBe("evals/holdout.jsonl");
+			expect(holdout.datasetHash).not.toBe(dev.datasetHash);
+			expect(holdout.suiteHash).not.toBe(dev.suiteHash);
+		} finally {
+			cleanup(dir);
+		}
+	});
+});
+
+describe("scaffoldTarget", () => {
+	it("copies the template into a fresh valid target (init → validate passes immediately)", () => {
+		const template = makeTargetFixture(baseFixtureFiles());
+		const dest = join(tmpdir(), `ahde-init-${Date.now()}`);
+		try {
+			scaffoldTarget(template, dest);
+			const target = loadTarget(dest);
+			expect(target.manifest.id).toBe("test-target");
+			expect(target.gitSha).toMatch(/^[0-9a-f]{40}$/);
+		} finally {
+			cleanup(template);
+			cleanup(dest);
+		}
+	});
+
+	it("refuses an existing destination", () => {
+		const template = makeTargetFixture(baseFixtureFiles());
+		const dest = makeTargetFixture(baseFixtureFiles());
+		try {
+			expect(() => scaffoldTarget(template, dest)).toThrow(/already exists/);
+		} finally {
+			cleanup(template);
+			cleanup(dest);
 		}
 	});
 });

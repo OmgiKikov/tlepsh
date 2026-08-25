@@ -21,7 +21,7 @@ function record(overrides: Partial<RunRecord> = {}): RunRecord {
 		startedAt: "2026-08-25T10:00:00Z",
 		finishedAt: "2026-08-25T10:00:05Z",
 		target: { id: "ombudsman", gitSha: "aaa111" },
-		runtime: { piVersion: "0.84.3", piSha: "sha-abc" },
+		runtime: { piVersion: "0.84.3", piSha: "sha-abc", ahdeVersion: "0.1.0", ahdeCodeHash: "sha256:code-a" },
 		model: { provider: "qwen-internal", id: "qwen3.5-27b", thinkingLevel: "off", params: {} },
 		eval: { suiteId: "s", suiteHash: "sha256:1", dataset: "development", datasetHash: "sha256:2" },
 		trace: { path: "session.jsonl", sessionId: null, sha256: null },
@@ -31,6 +31,7 @@ function record(overrides: Partial<RunRecord> = {}): RunRecord {
 			latencyMs: 0,
 			toolCalls: 0,
 			toolErrors: 0,
+			recoveryAttempts: 0,
 		},
 		evalResults: null,
 		parent: null,
@@ -74,8 +75,19 @@ describe("provenanceKey", () => {
 
 describe("axisDifferences (table-driven: each axis must be caught)", () => {
 	const cases: Array<{ axis: string; mutate: () => RunRecord }> = [
-		{ axis: "runtime.piVersion", mutate: () => record({ runtime: { piVersion: "0.85.0", piSha: "sha-abc" } }) },
-		{ axis: "runtime.piSha", mutate: () => record({ runtime: { piVersion: "0.84.3", piSha: "sha-xyz" } }) },
+		{
+			axis: "runtime.piVersion",
+			mutate: () => record({ runtime: { ...record().runtime, piVersion: "0.85.0" } }),
+		},
+		{ axis: "runtime.piSha", mutate: () => record({ runtime: { ...record().runtime, piSha: "sha-xyz" } }) },
+		{
+			axis: "runtime.ahdeVersion",
+			mutate: () => record({ runtime: { ...record().runtime, ahdeVersion: "0.2.0" } }),
+		},
+		{
+			axis: "runtime.ahdeCodeHash",
+			mutate: () => record({ runtime: { ...record().runtime, ahdeCodeHash: "sha256:code-b" } }),
+		},
 		{ axis: "model.provider", mutate: () => record({ model: { ...record().model, provider: "other" } }) },
 		{ axis: "model.id", mutate: () => record({ model: { ...record().model, id: "qwen-99b" } }) },
 		{
@@ -106,7 +118,7 @@ describe("axisDifferences (table-driven: each axis must be caught)", () => {
 
 	it("reports multiple differing axes", () => {
 		const other = record({
-			runtime: { piVersion: "0.85.0", piSha: "sha-xyz" },
+			runtime: { ...record().runtime, piVersion: "0.85.0", piSha: "sha-xyz" },
 			model: { ...record().model, id: "other" },
 		});
 		expect(axisDifferences(provenanceAxes(record()), provenanceAxes(other)).sort()).toEqual(["model.id", "runtime.piSha", "runtime.piVersion"]);

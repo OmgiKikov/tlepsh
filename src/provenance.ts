@@ -52,6 +52,7 @@ export interface RunMetrics {
 	latencyMs: number;
 	toolCalls: number;
 	toolErrors: number;
+	recoveryAttempts: number;
 }
 
 export interface RunRecord {
@@ -65,7 +66,7 @@ export interface RunRecord {
 	startedAt: string;
 	finishedAt: string | null;
 	target: { id: string; gitSha: string };
-	runtime: { piVersion: string; piSha: string };
+	runtime: { piVersion: string; piSha: string; ahdeVersion: string; ahdeCodeHash: string };
 	model: { provider: string; id: string; thinkingLevel: string; params: Record<string, unknown> };
 	eval: { suiteId: string; suiteHash: string; dataset: string; datasetHash: string };
 	trace: { path: string; sessionId: string | null; sha256: string | null };
@@ -81,6 +82,8 @@ export interface RunRecord {
 export interface ProvenanceAxes {
 	piVersion: string;
 	piSha: string;
+	ahdeVersion: string;
+	ahdeCodeHash: string;
 	provider: string;
 	modelId: string;
 	thinkingLevel: string;
@@ -90,13 +93,15 @@ export interface ProvenanceAxes {
 }
 
 export function provenanceAxes(record: {
-	runtime: { piVersion: string; piSha: string };
+	runtime: { piVersion: string; piSha: string; ahdeVersion: string; ahdeCodeHash: string };
 	model: { provider: string; id: string; thinkingLevel: string; params: Record<string, unknown> };
 	eval: { suiteHash: string; datasetHash: string };
 }): ProvenanceAxes {
 	return {
 		piVersion: record.runtime.piVersion,
 		piSha: record.runtime.piSha,
+		ahdeVersion: record.runtime.ahdeVersion,
+		ahdeCodeHash: record.runtime.ahdeCodeHash,
 		provider: record.model.provider,
 		modelId: record.model.id,
 		thinkingLevel: record.model.thinkingLevel,
@@ -113,6 +118,8 @@ export function provenanceKey(record: Parameters<typeof provenanceAxes>[0]): str
 const AXIS_LABELS: Record<keyof ProvenanceAxes, string> = {
 	piVersion: "runtime.piVersion",
 	piSha: "runtime.piSha",
+	ahdeVersion: "runtime.ahdeVersion",
+	ahdeCodeHash: "runtime.ahdeCodeHash",
 	provider: "model.provider",
 	modelId: "model.id",
 	thinkingLevel: "model.thinkingLevel",
