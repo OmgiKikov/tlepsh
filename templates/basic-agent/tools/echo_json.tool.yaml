@@ -1,0 +1,22 @@
+schemaVersion: 1
+name: echo_json
+description: Return the provided message as a small JSON object.
+parameters:
+  type: object
+  properties:
+    message:
+      type: string
+      description: Message to return.
+      minLength: 1
+      maxLength: 4096
+  required: [message]
+  additionalProperties: false
+command:
+  argv: [bin/echo_json]
+timeoutMs: 5000
+maxOutputBytes: 8192
+output: json
+permissions:
+  environment: []
+  network: deny
+  filesystem: read-only

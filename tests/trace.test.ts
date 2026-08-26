@@ -1,5 +1,17 @@
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { lastAssistantText, parseSessionJsonl, renderTraceMarkdown, traceToolCalls, traceToolErrors } from "../src/trace.js";
+import {
+	lastAssistantText,
+	openTrace,
+	parseSessionJsonl,
+	parseSessionJsonlLenient,
+	renderTraceMarkdown,
+	traceToolCalls,
+	traceToolErrors,
+} from "../src/trace.js";
 
 const SESSION = [
 	'{"type":"session","version":3,"id":"uuid-1","timestamp":"2026-08-25T10:00:00.000Z","cwd":"/tmp/t"}',
@@ -34,6 +46,16 @@ describe("trace parser", () => {
 		expect(lastAssistantText(messages)).toContain("Ограничений нет");
 	});
 
+	it("does not reuse earlier assistant text when the final assistant message is empty", () => {
+		const parsed = parseSessionJsonl(
+			[
+				'{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"partial"}]}}',
+				'{"type":"message","message":{"role":"assistant","content":[{"type":"thinking","thinking":"no final answer"}]}}',
+			].join("\n"),
+		);
+		expect(lastAssistantText(parsed)).toBeUndefined();
+	});
+
 	it("renders message-only markdown", () => {
 		const markdown = renderTraceMarkdown(messages);
 		expect(markdown).toContain("Проверь договор 42");
@@ -45,5 +67,82 @@ describe("trace parser", () => {
 		expect(markdown).not.toContain("надо проверить");
 		// bookkeeping entries are not rendered
 		expect(markdown).not.toContain("compaction");
+	});
+
+	it("rejects malformed JSON with its exact line instead of returning partial evidence", () => {
+		const content = [
+			'{"type":"message","message":{"role":"user","content":"valid","timestamp":1}}',
+			'{"type":"message","message":',
+		].join("\n");
+
+		expect(() => parseSessionJsonl(content)).toThrow(/trace line 2: invalid JSON/);
+		expect(parseSessionJsonlLenient(content)).toHaveLength(1);
+	});
+
+	it("rejects invalid message shapes with line-specific errors", () => {
+		const content = [
+			'{"type":"session","version":3}',
+			'{"type":"message","message":{"role":"toolResult","content":"result"}}',
+		].join("\n");
+
+		expect(() => parseSessionJsonl(content)).toThrow(
+			/trace line 2: toolResult requires string toolCallId and toolName/,
+		);
+	});
+
+	it("openTrace accepts a valid trace when its expected SHA matches", () => {
+		const runDir = mkdtempSync(join(tmpdir(), "ahde-trace-"));
+		try {
+			writeFileSync(join(runDir, "session.jsonl"), SESSION);
+			const expectedSha = `sha256:${createHash("sha256").update(SESSION).digest("hex")}`;
+
+			expect(openTrace(runDir, "session.jsonl", expectedSha)).toHaveLength(5);
+		} finally {
+			rmSync(runDir, { recursive: true, force: true });
+		}
+	});
+
+	it("openTrace rejects a trace whose SHA does not match", () => {
+		const runDir = mkdtempSync(join(tmpdir(), "ahde-trace-"));
+		try {
+			writeFileSync(join(runDir, "session.jsonl"), SESSION);
+
+			expect(() => openTrace(runDir, "session.jsonl", `sha256:${"0".repeat(64)}`)).toThrow(
+				/trace SHA mismatch/,
+			);
+		} finally {
+			rmSync(runDir, { recursive: true, force: true });
+		}
+	});
+
+	it("openTrace rejects traversal and symlinked evidence", () => {
+		const runDir = mkdtempSync(join(tmpdir(), "ahde-trace-"));
+		const outsideDir = mkdtempSync(join(tmpdir(), "ahde-trace-outside-"));
+		try {
+			writeFileSync(join(outsideDir, "session.jsonl"), SESSION);
+			expect(() => openTrace(runDir, "../session.jsonl")).toThrow(/path separators and traversal are forbidden/);
+			symlinkSync(join(outsideDir, "session.jsonl"), join(runDir, "session.jsonl"));
+			expect(() => openTrace(runDir)).toThrow(/regular non-symlink file/);
+		} finally {
+			rmSync(runDir, { recursive: true, force: true });
+			rmSync(outsideDir, { recursive: true, force: true });
+		}
+	});
+
+	it("openTrace never exposes a valid prefix when a later line is corrupt", () => {
+		const runDir = mkdtempSync(join(tmpdir(), "ahde-trace-"));
+		try {
+			writeFileSync(
+				join(runDir, "session.jsonl"),
+				[
+					'{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"would pass"}],"timestamp":1}}',
+					'{"type":"message","message":{"role":"assistant","content":[{"type":"text"}]}}',
+				].join("\n"),
+			);
+
+			expect(() => openTrace(runDir)).toThrow(/trace line 2: message\.content\[0\]\.text must be string/);
+		} finally {
+			rmSync(runDir, { recursive: true, force: true });
+		}
 	});
 });

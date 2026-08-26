@@ -1,5 +1,7 @@
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { safeArtifactSegment } from "./storage/paths.js";
 
 /**
  * The ONLY module allowed to parse Pi session JSONL. Every consumer of trace
@@ -40,6 +42,76 @@ interface SessionEntry {
 	};
 }
 
+export class TraceParseError extends Error {
+	readonly line: number;
+
+	constructor(line: number, message: string) {
+		super(`trace line ${line}: ${message}`);
+		this.name = "TraceParseError";
+		this.line = line;
+	}
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function assertOptionalType(
+	value: unknown,
+	type: "string" | "number" | "boolean",
+	field: string,
+): void {
+	if (value !== undefined && typeof value !== type) {
+		throw new Error(`${field} must be ${type}`);
+	}
+}
+
+function assertContent(content: unknown): void {
+	if (typeof content === "string") return;
+	if (!Array.isArray(content)) throw new Error("message.content must be a string or array");
+
+	for (const [index, part] of content.entries()) {
+		if (!isRecord(part) || typeof part.type !== "string") {
+			throw new Error(`message.content[${index}] must be an object with a string type`);
+		}
+		if (part.type === "text" && typeof part.text !== "string") {
+			throw new Error(`message.content[${index}].text must be string`);
+		}
+		if (part.type === "thinking" && typeof part.thinking !== "string") {
+			throw new Error(`message.content[${index}].thinking must be string`);
+		}
+		if (part.type === "toolCall") {
+			if (typeof part.id !== "string" || typeof part.name !== "string" || !isRecord(part.arguments)) {
+				throw new Error(`message.content[${index}] toolCall requires string id/name and object arguments`);
+			}
+		}
+	}
+}
+
+function validateEntry(value: unknown): SessionEntry {
+	if (!isRecord(value) || typeof value.type !== "string") {
+		throw new Error("entry must be an object with a string type");
+	}
+	if (value.type !== "message") return value as unknown as SessionEntry;
+	if (!isRecord(value.message)) throw new Error("message entry requires a message object");
+
+	const message = value.message;
+	if (message.role !== "user" && message.role !== "assistant" && message.role !== "toolResult") {
+		throw new Error(`unsupported message.role ${JSON.stringify(message.role)}`);
+	}
+	assertContent(message.content);
+	assertOptionalType(message.timestamp, "number", "message.timestamp");
+
+	if (message.role === "toolResult") {
+		if (typeof message.toolCallId !== "string" || typeof message.toolName !== "string") {
+			throw new Error("toolResult requires string toolCallId and toolName");
+		}
+		assertOptionalType(message.isError, "boolean", "message.isError");
+	}
+
+	return value as unknown as SessionEntry;
+}
+
 function blockText(content: unknown): string {
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
@@ -68,15 +140,31 @@ function blockToolCalls(content: unknown): TraceToolCall[] | undefined {
 	return calls.map((call) => ({ id: call.id, name: call.name, arguments: call.arguments }));
 }
 
-export function parseSessionJsonl(content: string): TraceMessage[] {
+function parseSessionJsonlInternal(content: string, strict: boolean): TraceMessage[] {
 	const messages: TraceMessage[] = [];
-	for (const line of content.split("\n")) {
+	for (const [lineIndex, line] of content.split("\n").entries()) {
 		const trimmed = line.trim();
 		if (!trimmed) continue;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(trimmed) as unknown;
+		} catch (error) {
+			if (strict) {
+				throw new TraceParseError(
+					lineIndex + 1,
+					`invalid JSON (${error instanceof Error ? error.message : String(error)})`,
+				);
+			}
+			continue;
+		}
+
 		let entry: SessionEntry;
 		try {
-			entry = JSON.parse(trimmed) as SessionEntry;
-		} catch {
+			entry = validateEntry(parsed);
+		} catch (error) {
+			if (strict) {
+				throw new TraceParseError(lineIndex + 1, error instanceof Error ? error.message : String(error));
+			}
 			continue;
 		}
 		if (entry.type !== "message" || !entry.message) continue;
@@ -108,8 +196,38 @@ export function parseSessionJsonl(content: string): TraceMessage[] {
 	return messages;
 }
 
-export function openTrace(runDir: string, tracePath = "session.jsonl"): TraceMessage[] {
-	return parseSessionJsonl(readFileSync(join(runDir, tracePath), "utf8"));
+/** Strict evidence parser: malformed lines invalidate the whole trace. */
+export function parseSessionJsonl(content: string): TraceMessage[] {
+	return parseSessionJsonlInternal(content, true);
+}
+
+/** Best-effort parser for recovery/display only. Never use it for grading. */
+export function parseSessionJsonlLenient(content: string): TraceMessage[] {
+	return parseSessionJsonlInternal(content, false);
+}
+
+export function openTrace(
+	runDir: string,
+	tracePath = "session.jsonl",
+	expectedSha256?: string,
+): TraceMessage[] {
+	const safeTracePath = safeArtifactSegment(tracePath, "trace path");
+	if (safeTracePath !== "session.jsonl") {
+		throw new Error(`unsupported trace path ${JSON.stringify(tracePath)}; expected \"session.jsonl\"`);
+	}
+	const traceFile = join(runDir, safeTracePath);
+	const entry = lstatSync(traceFile);
+	if (!entry.isFile() || entry.isSymbolicLink()) {
+		throw new Error(`trace must be a regular non-symlink file: ${traceFile}`);
+	}
+	const content = readFileSync(traceFile, "utf8");
+	if (expectedSha256 !== undefined) {
+		const actualSha256 = `sha256:${createHash("sha256").update(content).digest("hex")}`;
+		if (actualSha256 !== expectedSha256) {
+			throw new Error(`trace SHA mismatch: expected ${expectedSha256}, got ${actualSha256}`);
+		}
+	}
+	return parseSessionJsonl(content);
 }
 
 export function traceToolCalls(messages: TraceMessage[]): TraceToolCall[] {
@@ -124,11 +242,11 @@ export function traceToolErrors(messages: TraceMessage[]): number {
 	return messages.filter((m) => m.role === "toolResult" && m.toolResult?.isError).length;
 }
 
-/** Final assistant text of the conversation (the agent's answer). */
+/** Text of the final assistant message. Earlier partial text is never an answer. */
 export function lastAssistantText(messages: TraceMessage[]): string | undefined {
 	for (let i = messages.length - 1; i >= 0; i -= 1) {
 		const message = messages[i];
-		if (message?.role === "assistant" && message.text.trim().length > 0) return message.text;
+		if (message?.role === "assistant") return message.text.trim().length > 0 ? message.text : undefined;
 	}
 	return undefined;
 }

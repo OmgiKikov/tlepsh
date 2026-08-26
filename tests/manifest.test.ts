@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
@@ -157,6 +157,20 @@ describe("loadTarget", () => {
 			cleanup(dir);
 		}
 	});
+
+	it("rejects manifest and dataset-override paths that escape the target repository", () => {
+		const dir = makeTargetFixture(baseFixtureFiles());
+		const outside = join(dir, "..", `ahde-outside-${Date.now()}.jsonl`);
+		writeFileSync(outside, `${JSON.stringify({ id: "secret", input: "secret", graders: [] })}\n`);
+		try {
+			expect(() => loadTarget(dir, { dataset: `../${outside.split("/").pop()}` })).toThrow(
+				/target path escapes repository/,
+			);
+		} finally {
+			cleanup(dir);
+			rmSync(outside, { force: true });
+		}
+	});
 });
 
 describe("scaffoldTarget", () => {
@@ -168,6 +182,33 @@ describe("scaffoldTarget", () => {
 			const target = loadTarget(dest);
 			expect(target.manifest.id).toBe("test-target");
 			expect(target.gitSha).toMatch(/^[0-9a-f]{40}$/);
+		} finally {
+			cleanup(template);
+			cleanup(dest);
+		}
+	});
+
+	it("ignores AHDE-local state and secrets while preserving custom template ignores", () => {
+		const template = makeTargetFixture(baseFixtureFiles({ ".gitignore": "/custom-cache/\n" }));
+		const dest = join(tmpdir(), `ahde-init-local-state-${Date.now()}`);
+		try {
+			scaffoldTarget(template, dest);
+			const cleanSha = loadTarget(dest).gitSha;
+			expect(readFileSync(join(dest, ".gitignore"), "utf8")).toBe(
+				"/custom-cache/\n\n# AHDE local state, run evidence, and secrets\n" +
+					"/.ahde/\n/runs/\n/.env\n/.env.*\n!/.env.example\n",
+			);
+
+			mkdirSync(join(dest, ".ahde", "projects", "test-target"), { recursive: true });
+			mkdirSync(join(dest, "runs", "eval-1"), { recursive: true });
+			writeFileSync(join(dest, ".ahde", "projects", "test-target", "state.json"), "{}\n");
+			writeFileSync(join(dest, "runs", "eval-1", "eval_run.json"), "{}\n");
+			writeFileSync(join(dest, ".env"), "TEST_MODEL_KEY=secret\n");
+			writeFileSync(join(dest, ".env.local"), "TEST_MODEL_KEY=local-secret\n");
+			expect(loadTarget(dest).gitSha).toBe(cleanSha);
+
+			writeFileSync(join(dest, ".env.example"), "TEST_MODEL_KEY=replace-me\n");
+			expect(loadTarget(dest).gitSha).toMatch(/^[0-9a-f]{40}-dirty-[0-9a-f]{12}$/);
 		} finally {
 			cleanup(template);
 			cleanup(dest);
@@ -188,7 +229,9 @@ describe("scaffoldTarget", () => {
 
 describe("graderName", () => {
 	it("uses explicit name when present", () => {
-		expect(graderName({ type: "output_contains", text: "x", name: "my-check" }, { id: "t" }, 0)).toBe("my-check");
+		expect(
+			graderName({ type: "output_contains", text: "x", caseSensitive: false, name: "my-check" }, { id: "t" }, 0),
+		).toBe("my-check");
 	});
 
 	it("builds a descriptive default name", () => {

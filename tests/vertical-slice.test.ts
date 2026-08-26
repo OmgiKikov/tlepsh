@@ -1,204 +1,386 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { join, resolve } from "node:path";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+	applyBuilderProposal,
+	runApprovedSpecBuilderProposal,
+	runBuilderProposal,
+} from "../src/application/builder-proposal.js";
+import { runAppliedBuilderCandidate } from "../src/application/builder-candidate.js";
+import {
+	loadCandidateRecord,
+	promoteReviewedCandidate,
+	reviewCandidate,
+} from "../src/application/candidate-review.js";
 import { compileFailureBundle } from "../src/bundle.js";
-import { runBuilder } from "../src/builder.js";
-import { runSuite } from "../src/eval.js";
-import { runCandidateFlow, promote } from "../src/loop.js";
+import {
+	BuilderRunRecordSchema,
+	type BuilderAdapter,
+	type BuilderCapabilities,
+	type BuilderRequest,
+} from "../src/builders/adapters.js";
+import { createCorpus } from "../src/corpus.js";
+import { diagnoseEvalRun } from "../src/diagnosis.js";
+import { candidateStatus } from "../src/domain/candidate.js";
+import { EvalRunRecordSchema, runSuite } from "../src/eval.js";
 import { loadTarget } from "../src/manifest.js";
 import { startMockModel, type MockModelHandle } from "../src/mock-model.js";
+import { buildEvalReport } from "../src/report.js";
+import { saveSpecSnapshot } from "../src/spec.js";
+import { writeJsonArtifact } from "../src/storage/artifacts.js";
 
 /**
- * THE VERTICAL SLICE — the full improvement cycle with zero real tokens:
+ * Product acceptance slice with no paid model calls:
  *
- *   baseline (2/5) → failure bundle → builder patches skill on a branch
- *   → candidate flow (validate/smoke/suite/compare) → 5/5 → promote (git tag)
- *
- * The mock target model is scripted, but context-routed: with the narrow
- * skill description it never calls check_dbo; with the widened one it does.
- * The skill patch therefore flows through the real pipeline (git → eval →
- * compare → promote) — exactly the platform's thesis.
+ * baseline → diagnosis/bundle → typed Builder proposal → explicit human apply
+ * → exact Candidate Experiment → external sealed holdout → human review
+ * → tag the exact evaluated commit → inspectable report.
  */
 
 const REPO_ROOT = resolve(import.meta.dirname, "..");
-const CANDIDATE_BRANCH = "candidate-demo-1";
+function createMonotonicTestClock(startAt: string): {
+	install: () => void;
+	now: () => string;
+	restore: () => void;
+} {
+	let currentMs = Date.parse(startAt);
+	return {
+		install() {
+			vi.useFakeTimers({ toFake: ["Date"] });
+			vi.setSystemTime(currentMs);
+		},
+		now() {
+			currentMs += 1;
+			vi.setSystemTime(currentMs);
+			return new Date(currentMs).toISOString();
+		},
+		restore() {
+			vi.useRealTimers();
+		},
+	};
+}
 
-let mock: MockModelHandle;
+const CLOCK = createMonotonicTestClock("2026-01-01T00:00:00.000Z");
+const OLD_INSTRUCTIONS = "# Demo agent\n\nReturn the word pending.\n";
+const DEVELOPMENT = [
+	{ id: "dev-1", input: "Answer case one.", graders: [{ type: "output_contains" as const, text: "READY" }] },
+	{ id: "dev-2", input: "Answer case two.", graders: [{ type: "output_contains" as const, text: "READY" }] },
+];
+const CAPABILITIES: BuilderCapabilities = {
+	eventStream: true,
+	structuredOutput: true,
+	usage: false,
+	cost: false,
+	sessionId: false,
+	cancellation: true,
+	isolation: "tool-free-executor",
+};
+
+let root: string;
 let targetDir: string;
-let builderDir: string;
 let runsRoot: string;
-let evolutionLog: string;
+let stateRoot: string;
+let mock: MockModelHandle;
 
-const WIDE_SKILL = `---
-name: check-dbo
-description: Проверка ограничений ДБО для любых обращений, где упоминаются договоры или списания.
----
+function git(args: string[]): string {
+	return execFileSync("git", ["-C", targetDir, ...args], { encoding: "utf8" }).trim();
+}
 
-Для проверки ограничений ДБО запусти:
+function sha256(value: string): string {
+	return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
 
-\`\`\`bash
-bin/check_dbo --client <id>
-\`\`\`
-
-и укажи найденные ограничения в ответе.
-`;
-
-function copyTemplate(srcDir: string, destDir: string, baseUrl: string): void {
-	mkdirSync(destDir, { recursive: true });
-	execFileSync("cp", ["-R", `${srcDir}/.`, destDir]);
-	const manifestPath = join(destDir, "manifest.yaml");
-	// Test isolation: подменяем endpoint и имя ключа — прогон не зависит
-	// от реального OPENROUTER_API_KEY из .env.
-	const manifest = readFileSync(manifestPath, "utf8")
-		.replace(/baseUrl: .*/g, `baseUrl: ${baseUrl}`)
-		.replace(/apiKeyEnv: .*/g, "apiKeyEnv: AHDE_TEST_KEY");
-	writeFileSync(manifestPath, manifest);
-	execFileSync("git", ["-C", destDir, "init", "-q"]);
-	execFileSync("git", ["-C", destDir, "add", "."]);
-	execFileSync("git", ["-C", destDir, "-c", "user.name=demo", "-c", "user.email=demo@demo", "commit", "-qm", "initial"]);
+function proposalAdapter(baseSha: string): BuilderAdapter {
+	const proposal = {
+		schemaVersion: 1 as const,
+		decision: "propose" as const,
+		baseTargetSha: baseSha,
+		summary: "Make the answer contract explicit.",
+		diagnoses: [{
+			failureIds: ["dev-1", "dev-2"],
+			evidence: ["diagnosis:answer-quality"],
+			rootCause: "The harness asks for the wrong final token.",
+		}],
+		changes: [{
+			path: "AGENTS.md",
+			baseSha256: sha256(OLD_INSTRUCTIONS),
+			unifiedDiff: [
+				"diff --git a/AGENTS.md b/AGENTS.md",
+				"--- a/AGENTS.md",
+				"+++ b/AGENTS.md",
+				"@@ -1,3 +1,3 @@",
+				" # Demo agent",
+				" ",
+				"-Return the word pending.",
+				"+Return the exact uppercase word READY.",
+			].join("\n"),
+			rationale: "Align the harness with the reviewed answer contract.",
+			evidenceRefs: ["diagnosis:answer-quality"],
+		}],
+		risks: ["The contract is intentionally narrow for this fixture."],
+		validationPlan: ["Run the matched development and sealed corpora."],
+	};
+	return {
+		backend: "fixture-builder",
+		capabilities: CAPABILITIES,
+		async probe() {
+			return {
+				backend: "fixture-builder",
+				available: true,
+				version: "fixture-builder 1.0.0",
+				capabilities: CAPABILITIES,
+				error: null,
+			};
+		},
+		async run(request: BuilderRequest) {
+			const startedAt = CLOCK.now();
+			const finishedAt = CLOCK.now();
+			return BuilderRunRecordSchema.parse({
+				schemaVersion: 1,
+				runId: request.runId,
+				backend: "fixture-builder",
+				backendVersion: "fixture-builder 1.0.0",
+				capabilities: CAPABILITIES,
+				baseTargetSha: request.baseTargetSha,
+				startedAt,
+				finishedAt,
+				status: "completed",
+				proposal,
+				model: null,
+				sessionId: null,
+				usage: null,
+				costUsd: null,
+				traceLevel: "full",
+				rawEvents: ['{"type":"diagnosis"}', '{"type":"final"}'],
+				error: null,
+			});
+		},
+	};
 }
 
 beforeAll(async () => {
+	CLOCK.install();
 	mock = await startMockModel([
 		{
-			// Judge grader for task_004: verdict on the (correct) canned answer.
-			match: ({ system }) => system.includes("грейдер"),
-			steps: [{ text: '{"passed": true, "reason": "классификация и ответ по существу верны"}' }],
+			match: ({ system }) => system.includes("Return the exact uppercase word READY."),
+			steps: [{ text: "READY" }],
 		},
-		{
-			// Builder: reads the bundle, patches the skill on a branch, reports.
-			match: ({ firstUser }) => firstUser.includes("инженер"),
-			steps: [
-				{ toolCall: { name: "read", arguments: { path: "__BUNDLE_PATH__" } } },
-				{
-					toolCall: {
-						name: "bash",
-						arguments: {
-							command: `git checkout -b ${CANDIDATE_BRANCH} && cat > skills/check-dbo/SKILL.md <<'SKILL_EOF'\n${WIDE_SKILL}SKILL_EOF\ngit add -A && git commit -qm "improve: widen check-dbo skill description"`,
-						},
-					},
-				},
-				{ text: "Проанализировал failure bundle: в 3 failed runs агент не вызывал check_dbo — описание скилла слишком узкое. Расширил description, чтобы скилл срабатывал для любых обращений с договорами." },
-			],
-		},
-		{
-			match: ({ firstUser }) => firstUser.includes("классифицируй"),
-			steps: [{ text: "Категория обращения: жалоба." }],
-		},
-		{
-			match: ({ firstUser }) => firstUser.includes("вопрос"),
-			steps: [{ text: "Тип обращения: вопрос. Комиссия за перевод между своими счетами не взимается." }],
-		},
-		{
-			// Narrow skill: answers directly, never calls check_dbo.
-			match: ({ system, firstUser }) => !system.includes("для любых обращений") && firstUser.includes("договор"),
-			steps: [{ text: "Договор действующий. Ограничений не найдено." }],
-		},
-		{
-			// Widened skill: follows it, calls check_dbo through bash.
-			match: ({ system, firstUser }) => system.includes("для любых обращений") && firstUser.includes("договор"),
-			steps: [
-				{ toolCall: { name: "bash", arguments: { command: "bin/check_dbo --client 42" } } },
-				{ text: "Договор действующий. Ограничения ДБО: не найдены." },
-			],
-		},
+		{ match: () => true, steps: [{ text: "pending" }] },
 	]);
-
-	const root = join(tmpdir(), `ahde-slice-${Date.now()}`);
-	targetDir = join(root, "ombudsman");
-	builderDir = join(root, "builder");
+	root = mkdtempSync(join(tmpdir(), "ahde-acceptance-"));
+	targetDir = join(root, "target");
 	runsRoot = join(root, "runs");
-	evolutionLog = join(root, "evolution.jsonl");
-	copyTemplate(join(REPO_ROOT, "targets", "ombudsman"), targetDir, mock.url);
-	copyTemplate(join(REPO_ROOT, "builders", "default"), builderDir, mock.url);
-	process.env.AHDE_TEST_KEY = "test";
-	process.env.AHDE_EVOLUTION_LOG = evolutionLog;
+	stateRoot = join(root, "state");
+	cpSync(join(REPO_ROOT, "templates", "basic-agent"), targetDir, { recursive: true });
+	writeFileSync(join(targetDir, "AGENTS.md"), OLD_INSTRUCTIONS);
+	writeFileSync(
+		join(targetDir, "evals", "development.jsonl"),
+		`${DEVELOPMENT.map((task) => JSON.stringify(task)).join("\n")}\n`,
+	);
+	const manifestPath = join(targetDir, "manifest.yaml");
+	writeFileSync(
+		manifestPath,
+		readFileSync(manifestPath, "utf8")
+			.replace("baseUrl: http://127.0.0.1:1234/v1", `baseUrl: ${mock.url}`)
+			.replace("apiKeyEnv: AHDE_MODEL_API_KEY", "apiKeyEnv: AHDE_ACCEPTANCE_KEY"),
+	);
+	git(["init", "-b", "main"]);
+	git(["config", "user.name", "AHDE fixture"]);
+	git(["config", "user.email", "fixture@ahde.local"]);
+	git(["add", "."]);
+	git(["commit", "-m", "baseline"]);
+	process.env.AHDE_ACCEPTANCE_KEY = "fixture";
 });
 
-afterAll(() => {
-	rmSync(join(targetDir, ".."), { recursive: true, force: true });
-	void mock.close();
-	delete process.env.AHDE_EVOLUTION_LOG;
+afterAll(async () => {
+	delete process.env.AHDE_ACCEPTANCE_KEY;
+	await mock.close();
+	rmSync(root, { recursive: true, force: true });
+	CLOCK.restore();
 });
 
-describe("vertical slice: full improvement cycle", () => {
-	it("baseline → bundle → builder patch → candidate → compare → promote", async () => {
-		// 1. Baseline: 3 of 5 tasks fail (no check_dbo calls).
-		const target = loadTarget(targetDir);
-		const baseline = await runSuite(target, { runsRoot, label: "baseline", repetitions: 1 });
-		expect(baseline.summary.pass).toBe(2);
-		expect(baseline.summary.fail).toBe(3);
-		expect(baseline.summary.error).toBe(0);
-
-		// 2. Failure bundle: self-contained markdown for the builder.
-		const bundlePath = compileFailureBundle(target, baseline, runsRoot);
-		const bundle = readFileSync(bundlePath, "utf8");
-		expect(bundle).toContain("Failure Bundle — ombudsman");
-		expect(bundle).toContain("Allowed change scope");
-		expect(bundle).toContain("never called bash");
-		expect(bundle).toContain("skills/check-dbo/SKILL.md");
-		expect(bundle).toContain("### Execution trace");
-		expect((bundle.match(/## Failed task/g) ?? []).length).toBe(3);
-
-		// 3. Builder patches the target repo on a branch (own run = evidence).
-		const builder = await runBuilder(builderDir, target, bundlePath, {
-			runsRoot,
-			branch: CANDIDATE_BRANCH,
+describe("vertical slice: evidence-backed improvement", () => {
+	it("keeps the checkout intact and promotes only the exact reviewed holdout-tested candidate", async () => {
+		const spec = saveSpecSnapshot({
+			stateRoot,
+			projectId: "acceptance-project",
+			status: "approved",
+			spec: {
+				schemaVersion: 1,
+				title: "Demo answer agent",
+				purpose: "Return a deterministic reviewed answer.",
+				users: ["acceptance reviewer"],
+				jobs: ["answer the fixture request"],
+				inputs: ["one text request"],
+				allowedActions: ["return text"],
+				successCriteria: ["answer contains READY"],
+				constraints: ["no network"],
+				openQuestions: [],
+			},
 		});
-		expect(builder.changedFiles).toContain("skills/check-dbo/SKILL.md");
-		expect(existsSync(join(runsRoot, builder.builderRunId, "session.jsonl"))).toBe(true);
-		const builderSkill = readFileSync(join(targetDir, "skills/check-dbo/SKILL.md"), "utf8");
-		expect(builderSkill).toContain("для любых обращений");
+		const baseSha = git(["rev-parse", "HEAD"]);
+		const baseline = await runSuite(loadTarget(targetDir), {
+			runsRoot,
+			label: "baseline",
+			repetitions: 1,
+		});
+		expect(baseline.summary).toMatchObject({ pass: 0, fail: 2, error: 0 });
+		const diagnosis = diagnoseEvalRun(runsRoot, baseline.evalRunId);
+		expect(diagnosis.summary.failedTasks).toBe(2);
+		const bundlePath = compileFailureBundle(loadTarget(targetDir), baseline, runsRoot);
+		expect(readFileSync(bundlePath, "utf8")).not.toContain(targetDir);
 
-		// 4. Candidate flow: validate → smoke → suite → baseline reuse → compare.
-		const flow = await runCandidateFlow({ runsRoot, targetDir, branch: CANDIDATE_BRANCH });
-		expect(flow.baseline?.evalRunId).toBe(baseline.evalRunId); // reused, not re-run
-		expect(flow.candidate.summary.pass).toBe(5);
-		expect(flow.candidate.summary.fail).toBe(0);
-		expect(flow.compare.error).toBeNull();
-		const improved = flow.compare.rows.filter((r) => r.delta > 0);
-		const regressed = flow.compare.rows.filter((r) => r.delta < 0);
-		expect(improved.length).toBe(3);
-		expect(regressed.length).toBe(0);
+		writeFileSync(join(targetDir, "user-note.txt"), "uncommitted user work\n");
+		const checkoutBefore = {
+			head: git(["rev-parse", "HEAD"]),
+			branch: git(["branch", "--show-current"]),
+			status: git(["status", "--porcelain=v1", "-uall"]),
+		};
+		const baselineIndexPath = join(runsRoot, baseline.evalRunId, "eval_run.json");
+		writeJsonArtifact(baselineIndexPath, EvalRunRecordSchema, {
+			...baseline,
+			runArtifacts: undefined,
+		});
+		try {
+			await expect(runApprovedSpecBuilderProposal({
+				adapter: proposalAdapter(baseSha),
+				targetDir,
+				allowedPaths: ["AGENTS.md", "skills/**", "bin/**", "tools/**"],
+				approvedSpec: { stateRoot, projectId: "acceptance-project", specId: spec.id },
+				sourceEvalRunId: baseline.evalRunId,
+				runsRoot,
+				timeoutMs: 5_000,
+				runId: "builder-legacy-source",
+			})).rejects.toThrow(/must hash-anchor every member run/);
+		} finally {
+			writeJsonArtifact(baselineIndexPath, EvalRunRecordSchema, baseline);
+		}
+		const unverified = await runBuilderProposal({
+			adapter: proposalAdapter(baseSha),
+			baseTargetSha: baseSha,
+			allowedPaths: ["AGENTS.md", "skills/**", "bin/**", "tools/**"],
+			approvedSpec: { stateRoot, projectId: "acceptance-project", specId: spec.id },
+			failureBundle: readFileSync(bundlePath, "utf8"),
+			evidence: { evalRunId: baseline.evalRunId, diagnosisId: diagnosis.diagnosisId },
+			runsRoot,
+			timeoutMs: 5_000,
+			runId: "builder-unverified",
+		});
+		applyBuilderProposal({
+			repoDir: targetDir,
+			runsRoot,
+			runId: unverified.record.runId,
+			requestedBranch: "candidate/unverified",
+			actor: { kind: "human", id: "fixture-reviewer" },
+			reason: "Exercise the non-promotable low-level boundary.",
+		}, { now: CLOCK.now });
+		await expect(runAppliedBuilderCandidate({
+			repositoryDir: targetDir,
+			runsRoot,
+			builderRunId: unverified.record.runId,
+			repetitions: 1,
+			projectId: "acceptance-project",
+			approvedSpec: { stateRoot, specId: spec.id },
+			actorId: "fixture-reviewer",
+		})).rejects.toThrow(/requires a canonical Builder run/);
 
-		// 5. Promote: git tag + evolution log, human-gated command.
-		const promotion = promote({
+		const builder = await runApprovedSpecBuilderProposal({
+			adapter: proposalAdapter(baseSha),
 			targetDir,
-			evalRunId: flow.candidate.evalRunId,
-			version: "0.2.0",
+			allowedPaths: ["AGENTS.md", "skills/**", "bin/**", "tools/**"],
+			approvedSpec: { stateRoot, projectId: "acceptance-project", specId: spec.id },
+			sourceEvalRunId: baseline.evalRunId,
 			runsRoot,
+			timeoutMs: 5_000,
+			runId: "builder-acceptance",
 		});
-		expect(promotion.tag).toBe("v0.2.0");
-		const tags = execFileSync("git", ["-C", targetDir, "tag", "--list"], { encoding: "utf8" });
-		expect(tags).toContain("v0.2.0");
-		const tagMessage = execFileSync("git", ["-C", targetDir, "tag", "-l", "--format=%(contents)", "v0.2.0"], {
-			encoding: "utf8",
+		expect(readFileSync(join(targetDir, "AGENTS.md"), "utf8")).toBe(OLD_INSTRUCTIONS);
+
+		const applied = applyBuilderProposal({
+			repoDir: targetDir,
+			runsRoot,
+			runId: builder.record.runId,
+			requestedBranch: "candidate/acceptance",
+			actor: { kind: "human", id: "fixture-reviewer" },
+			reason: "The proposal matches the diagnosed failure and allowed scope.",
+		}, { now: CLOCK.now });
+		expect(git(["show", `${applied.receipt.candidateSha}:AGENTS.md`])).toContain("uppercase word READY");
+		expect({
+			head: git(["rev-parse", "HEAD"]),
+			branch: git(["branch", "--show-current"]),
+			status: git(["status", "--porcelain=v1", "-uall"]),
+		}).toEqual(checkoutBefore);
+		await expect(runAppliedBuilderCandidate({
+			repositoryDir: targetDir,
+			runsRoot,
+			builderRunId: builder.record.runId,
+			repetitions: 1,
+			projectId: "acceptance-project",
+			approvedSpec: { stateRoot, specId: spec.id },
+			actorId: "not-the-applying-human",
+		})).rejects.toThrow(/does not match apply-receipt human fixture-reviewer/);
+
+		const holdout = createCorpus({
+			stateRoot,
+			projectId: "acceptance-project",
+			name: "Promotion gate",
+			visibility: "sealed",
+			tasks: [{
+				id: "holdout-1",
+				input: "PRIVATE HOLDOUT INPUT",
+				graders: [{ type: "output_contains", text: "READY" }],
+			}],
 		});
-		expect(tagMessage).toContain(flow.candidate.evalRunId);
-		expect(existsSync(evolutionLog)).toBe(true);
-		const logLine = readFileSync(evolutionLog, "utf8").trim();
-		expect(JSON.parse(logLine)).toMatchObject({ action: "promote", version: "0.2.0" });
-	}, 300_000);
+		const experiment = await runAppliedBuilderCandidate({
+			repositoryDir: targetDir,
+			runsRoot,
+			builderRunId: builder.record.runId,
+			repetitions: 1,
+			candidateId: "candidate-acceptance",
+			projectId: "acceptance-project",
+			approvedSpec: { stateRoot, specId: spec.id },
+			actorId: "fixture-reviewer",
+			sealedCorpus: { stateRoot, projectId: "acceptance-project", corpusId: holdout.id },
+		});
+		expect(experiment.baseline.evalRunId).toBe(baseline.evalRunId);
+		expect(experiment.baselineReused).toBe(true);
+		expect(experiment.candidate.summary).toMatchObject({ pass: 2, fail: 0, error: 0 });
+		expect(experiment.sealedHoldout?.candidate.summary).toMatchObject({ pass: 1, fail: 0, error: 0 });
+		expect(experiment.compare.summary.delta).toBe(1);
+		expect(candidateStatus(experiment.record)).toBe("evaluated");
+		expect(experiment.record.specId).toBe(spec.id);
+		expect(readFileSync(experiment.candidateRecordPath, "utf8")).not.toContain("PRIVATE HOLDOUT INPUT");
 
-	it("promote refuses scope violations (evals/ changes)", async () => {
-		// Reuse the promoted state: create a candidate that touches evals/.
-		execFileSync("git", ["-C", targetDir, "checkout", "-q", "-b", "evil-candidate"]);
-		execFileSync("bash", ["-c", `cd ${targetDir} && echo '' >> evals/development.jsonl && git add -A && git -c user.name=e -c user.email=e@e commit -qm "touch evals"`]);
-		const target = loadTarget(targetDir);
-		const evilRun = await runSuite(target, { runsRoot, label: "candidate", repetitions: 1 });
-		// link the original baseline via provenance match
-		const { loadEvalRun, listEvalRuns } = await import("../src/eval.js");
-		const evilRecord = loadEvalRun(runsRoot, evilRun.evalRunId);
-		const baseline = listEvalRuns(runsRoot).find(
-			(r) => r.label === "baseline" && r.provenanceKey === evilRecord.provenanceKey,
-		);
-		evilRecord.baselineEvalRunId = baseline?.evalRunId ?? null;
-		require("node:fs").writeFileSync(join(runsRoot, evilRun.evalRunId, "eval_run.json"), JSON.stringify(evilRecord, null, "\t"));
-
-		expect(() =>
-			promote({ targetDir, evalRunId: evilRun.evalRunId, version: "0.3.0", runsRoot }),
-		).toThrow(/scope violation.*evals/);
+		diagnoseEvalRun(runsRoot, experiment.candidate.evalRunId);
+		const reportPath = buildEvalReport(runsRoot, experiment.candidate.evalRunId);
+		expect(readFileSync(reportPath, "utf8")).toContain("Trace inspector");
+		reviewCandidate({
+			runsRoot,
+			candidateId: experiment.record.candidateId,
+			recommendation: "promote",
+			reason: "Development improved and sealed holdout has no regression.",
+			actorId: "fixture-reviewer",
+			now: CLOCK.now,
+		});
+		const promoted = promoteReviewedCandidate({
+			repositoryDir: targetDir,
+			runsRoot,
+			candidateId: experiment.record.candidateId,
+			version: "0.2.0",
+			reason: "Human approved the exact evidence-backed revision.",
+			actorId: "fixture-reviewer",
+			now: CLOCK.now,
+		});
+		expect(promoted.candidateSha).toBe(applied.receipt.candidateSha);
+		expect(git(["rev-list", "-n", "1", "v0.2.0"])).toBe(applied.receipt.candidateSha);
+		expect(candidateStatus(loadCandidateRecord(runsRoot, experiment.record.candidateId))).toBe("promoted");
+		expect({
+			head: git(["rev-parse", "HEAD"]),
+			branch: git(["branch", "--show-current"]),
+			status: git(["status", "--porcelain=v1", "-uall"]),
+		}).toEqual(checkoutBefore);
 	}, 120_000);
 });

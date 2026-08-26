@@ -1,162 +1,312 @@
-# AHDE — Agent Harness Development Environment
+# AHDE — build, evaluate, and improve Pi agent harnesses
 
-Внутренняя платформа для разработки, наблюдения и улучшения project-specific AI agents.
+AHDE turns a rough agent idea into a reviewed, testable harness without
+training model weights:
 
-```
-Builder (Pi + target model)            ← улучшает
-   ↓ failure bundle → патч harness-файлов
-Target Harness (Pi + target model)     ← исполняет
-   ↓ задачи
-Run → Trace (session.jsonl) → Eval     ← доказательства
-   ↓ failures
-Baseline vs Candidate → promote/reject ← git tag + evolution log
+```text
+intent -> Spec -> Target harness + eval corpus -> runs + diagnosis
+       -> proposal -> candidate experiment -> human promote or reject
 ```
 
-Главный принцип: **Builder != Target**. Builder — внешний оптимизатор, который
-читает traces чужого harness'а и патчит его файлы. Никакого self-improving loop.
+Bare `ahde` opens a real, long-lived **Builder Pi**. You describe the agent in
+ordinary language; Builder Pi structures the Spec, helps assemble evaluation
+cases, runs and diagnoses the agent, and proposes bounded changes to its
+instructions, skills, and tools.
 
-## Цикл (доказан тестами и `npm run demo`)
+The agent being built is a different **Target Pi**. It runs in fresh sessions
+with only the Target resources and capabilities declared by its harness.
 
+```text
+$ ahde
+   |
+   v
+Builder Pi (conversation + packaged Builder skills)
+   |
+   | trusted, typed AHDE tools
+   v
+AHDE core (immutable artifacts, provenance, evals, human gates)
+   |
+   | fresh session + isolated workspace per task
+   v
+Target Pi (the harness under test)
 ```
-BUILD TARGET → RUN TARGET → TRACE → EVAL → IMPROVE TARGET → VERIFY → PROMOTE
-```
 
-Демо полного цикла с mock-моделью (ноль токенов, реальные Pi-сессии):
+There is no RL, fine-tuning, or autonomous self-promotion. AHDE improves
+versioned context and capabilities, not model weights.
+
+## Start locally
+
+AHDE requires Node.js 22.19 or newer.
 
 ```bash
+npm ci --ignore-scripts
+npm run build
+node dist/cli.js init my-agent
+cd my-agent
+../dist/cli.js
+```
+
+When AHDE is installed globally or linked, the last command is simply:
+
+```bash
+ahde
+```
+
+A typical Builder conversation looks like:
+
+```text
+> Хочу собрать агента для ...
+Builder: Давай уточним пользователей, задачи и ограничения…
+Builder: Spec готов. Утвердить?
+
+> Запусти тесты
+Builder: 34/40 passed. Нашёл 3 системных failure mode.
+Builder: Open verified development traces: http://127.0.0.1:...
+
+> Исправь первую проблему
+Builder: Подготовил Proposal для AGENTS.md и skills/search.
+Builder: Показываю точный diff для подтверждения.
+```
+
+Builder Pi has no generic shell, edit, or write tool. It can act only through
+the packaged AHDE tools, which expose bounded views and call the deterministic
+application core.
+
+## What gets built
+
+`ahde init` creates a working Target Pi harness and its initial Git revision:
+
+```text
+manifest.yaml
+AGENTS.md
+skills/<skill>/SKILL.md
+tools/<tool>.tool.yaml
+bin/<tool>
+evals/development.jsonl
+evals/graders.yaml
+.gitignore
+```
+
+The built-in template includes `echo_json`, a complete declarative Target tool.
+A tool descriptor defines:
+
+- a name, description, and strict JSON Schema for parameters;
+- a static argv array with no shell interpolation;
+- JSON input on stdin and bounded JSON or text output on stdout;
+- timeout and maximum output size;
+- explicit environment, network, and filesystem permissions.
+
+Descriptors and executable bytes are hashed into `toolsetHash`. At execution,
+AHDE reloads and verifies that identity, scrubs the environment, applies the
+declared policy, records tool spans, and fails closed when a required sandbox
+cannot be established. Arbitrary Target JavaScript or TypeScript is never
+imported into the AHDE process.
+
+The scaffold intentionally starts with a placeholder model. On the first
+Builder session, describe the exact Target model you want. Builder Pi shows the
+complete non-secret `manifest.yaml` diff and the host makes a one-time bootstrap
+commit after confirmation. The credential value is never accepted by a Builder
+tool: set only the API key named by the confirmed `model.apiKeyEnv` through the
+trusted host environment. You can then validate without making a model call:
+
+```bash
+ahde validate --target .
+```
+
+## The canonical loop
+
+Builder Pi uses four packaged workflow skills:
+
+- `design-agent` turns rough intent into a typed Spec draft;
+- `design-evals` builds a reviewable development basket;
+- `run-diagnose` evaluates Target Pi and groups failure modes;
+- `improve-harness` prepares and verifies a bounded candidate change.
+
+The durable loop is:
+
+```text
+Spec draft --human approve--> approved Spec
+development cases --human publish--> development Corpus
+Target runs --> deterministic Diagnosis --> read-only evidence link
+typed Proposal --human apply--> candidate commit
+matched development + sealed evaluation --> human review
+review --human decision--> promoted immutable revision or rejection
+```
+
+Approve, publish, apply, review, promote, and reject are host-owned decisions.
+Their tool schemas do not accept model-supplied `actor`, `approved`, or
+`confirmed` fields. In interactive TUI mode AHDE reloads the subject, displays
+the exact hash or diff, asks the operator, revalidates it, and writes a durable
+receipt. Consequential calls fail closed outside an interactive TUI.
+
+## Evidence Explorer
+
+After an evaluation, Builder Pi can return a localhost link to the exact
+diagnosis and traces. You can also start the explorer explicitly:
+
+```bash
+ahde diagnose <eval-run-id>
+ahde evidence
+```
+
+The server binds to `127.0.0.1` and accepts only `GET` and `HEAD`. It renders
+already-created canonical evidence; HTTP requests cannot run an eval, create a
+diagnosis, apply a proposal, or make a decision. JSON artifacts and protected
+traces on disk remain the source of truth.
+
+Sealed holdout cases, graders, expected outputs, identifiers, and traces are
+never shown to Builder Pi or the Evidence Explorer. The evaluator gives Target
+Pi one sealed case at a time, and only bounded gate results cross that boundary.
+
+## Scriptable commands remain available
+
+The conversational Builder is the primary UX. Explicit commands remain a
+compatibility and automation surface over the same application services:
+
+```bash
+# inspect and evaluate
+ahde validate --target .
+ahde run --target . --label baseline --repetitions 3
+ahde list
+ahde diagnose <eval-run-id>
+ahde compare <baseline-eval-id> <candidate-eval-id>
+ahde report <eval-run-id>
+
+# manage versioned evaluation data
+ahde corpus draft --target . --project my-agent \
+  --spec <approved-spec-id> --tasks 12
+ahde corpus publish --project my-agent --draft <draft-id> \
+  --name "reviewed development basket" --visibility development
+ahde corpus import --project my-agent --name "promotion holdout" \
+  --visibility sealed --file ./private-holdout.jsonl
+
+# optional one-shot Builder adapter compatibility
+ahde builder capabilities --target .
+ahde builder propose --target . --project my-agent \
+  --spec <approved-spec-id> --eval-run <eval-run-id> --backend pi
+ahde builder apply --target . --run <builder-run-id> \
+  --branch candidate/<builder-run-id> --reason "Reviewed exact diff"
+
+# exact candidate experiment and terminal human decision
+ahde candidate --target . --builder-run <builder-run-id> \
+  --project my-agent --development-corpus <development-corpus-id> \
+  --holdout-corpus <sealed-corpus-id> --repetitions 3
+ahde review --candidate <candidate-id> --recommend promote \
+  --reason "Development improved and sealed gate passed"
+ahde promote --target . --candidate <candidate-id> --to 0.2.0 \
+  --reason "Ship the exact reviewed revision"
+```
+
+Pi, Codex, and Claude one-shot proposal adapters normalize only the typed
+proposal contract. They are optional compatibility paths; they do not replace
+the primary Builder Pi trust domain and AHDE does not pretend their internal
+traces are identical.
+
+## Evidence and promotion invariants
+
+Each run records the exact Target Git revision, model and Pi runtime,
+instructions, skills, toolset, dataset and suite hashes, effective environment,
+sandbox result, traces, metrics, and graders. Infrastructure errors are
+inconclusive, never silently converted into behavioral failures.
+
+Candidate Experiment:
+
+1. resolves immutable baseline and candidate SHAs;
+2. rejects lineage and file-scope violations before model calls;
+3. creates detached worktrees without switching the user's checkout;
+4. runs matched task/repetition designs;
+5. verifies execution and grading fingerprints;
+6. computes paired task deltas and deterministic uncertainty;
+7. persists one canonical `CandidateRecord`.
+
+Only `AGENTS.md`, `skills/**`, `tools/**`, `bin/**`, and the `skills`/`tools`
+declaration lists in `manifest.yaml` may change in a Builder proposal. Target
+id, model, execution policy, instructions, eval suite, and `evals/**` remain
+fixed. Promotion requires an applied proposal with a durable receipt,
+comparable development evidence, evaluator-owned sealed evidence, honest
+workspace confinement, an explicit human promote review, and the exact
+candidate revision. A manual experiment or unconfined run cannot be promoted.
+
+## Storage and trust boundaries
+
+```text
+<target>/
+  manifest.yaml, AGENTS.md, skills/**, tools/**, bin/**, evals/**
+
+<state-root>/projects/<project-id>/
+  specs/**, corpus-drafts/**, corpora/**, approval receipts
+
+<state-root>/builder-pi/
+  config/**, sessions/**
+
+<runs-root>/
+  <run-id>/{run.json,session.jsonl,judge/**}
+  <eval-run-id>/{eval_run.json,diagnosis.json,report.html,...}
+  builders/<builder-run-id>/**
+  candidates/<candidate-id>/candidate.json
+```
+
+Builder and Target are separate Pi invocations with different system prompts,
+skills, tools, session/config roots, workspaces, and credentials. Builder may
+inspect only bounded public harness files through AHDE tools. Target never sees
+Builder state or evaluator-owned sealed storage. AHDE resolves exactly the
+confirmed Target credential in the host and injects only that value into an
+in-memory provider store; Target Pi cannot resolve arbitrary ambient secrets.
+Every task in one EvalRun is copied from the same hash-checked source snapshot,
+and that exact workspace hash is persisted in both `eval_run.json` and every
+member `run.json`. A dirty or concurrently changing checkout therefore cannot
+silently masquerade as the committed Git SHA or be reused as another baseline.
+
+Durable artifacts are strict, schema-versioned, size-bounded, atomically
+written, and validated again on read. Immutable evidence uses exclusive
+publication. Sealed means workflow-hidden and evaluator-owned; it is not a
+claim of encryption against the local machine owner.
+
+## Verify the shipped product
+
+```bash
+npm run check
 npm run demo
-# 1. Target: ombudsman, 5 задач, заложенный failure (узкий skill description)
-# 2. Baseline: 2/5 all-pass
-# 3. Failure bundle: markdown с трейсами, причинами, harness-файлами
-# 4. Builder читает bundle → патчит skills/check-dbo/SKILL.md на ветке
-# 5. Candidate: validate → smoke → suite → compare → 5/5, 3 improved, 0 regressed
-# 6. Promote: git tag v0.2.0 + запись в evolution log
+npm run verify:package
 ```
 
-## Установка
+`npm run demo` exercises the production-shaped improvement loop with a local
+scripted OpenAI-compatible model, so it uses no paid tokens.
 
-```bash
-npm install --ignore-scripts   # ставит vendored pi из vendor/tarballs/
-npm run build                  # dist/cli.js
-npm test                       # 39 тестов: юнит + интеграционные (mock-модель)
-```
+`npm run verify:package` tests the artifact an npm user actually receives. It
+packs AHDE under size/file budgets, installs the tarball into an empty consumer,
+scaffolds and validates a Target, starts the isolated Builder host, executes the
+template's declarative `echo_json` tool through the OS sandbox, and exercises
+the read-only Evidence Explorer over a real loopback HTTP socket. The separate
+natural-language acceptance test drives a real Builder Pi model/tool session
+through Spec, eval, Proposal, sealed verification, review, and promotion. The
+package gate also rejects stale Studio, companion, or superseded Workbench files.
 
-Vendored Pi живёт в `vendor/pi-mono` (pinned SHA `5cd6a2a5`, версия 0.84.3):
-свой git-клон, своя сборка (`npm run vendor:build`), подключение через
-tarball'ы (`npm run vendor:pack` → `file:vendor/tarballs/*.tgz`). Ноль патчей
-в core; SHA-точный provenance пишется в каждый run. В git репозитория
-`vendor/pi-mono` — gitlink на этот SHA (обновление vendora = отдельная
-процедура: обновить клон, пересобрать, перепаковать, обновить gitlink,
-прогнать все target-скважины как upgrade-gate).
+## Architecture
 
-## Использование
-
-Просто поболтать с платформой — companion-агент сам водит по циклу (init →
-validate → run → failures → builder → candidate → promote), запускает команды
-и показывает результат; полный трейс диалога пишется в `runs/chat_*/`:
-
-```bash
-node dist/cli.js          # или: ahde chat
-> собери агента для классификации тикетов
-> прогони baseline
-> что с фейлами? собери bundle и запусти builder
-> promote 0.2.0          # human gate — companion спросит подтверждение
-```
-
-Ручной режим (то же самое, но глаголами):
-
-Собрать своего агента с нуля (target = git-репозиторий: манифест, инструкция,
-скиллы, инструменты, датасет):
-
-```bash
-node dist/cli.js init my-agent                 # скелет из рабочего шаблона
-# → отредактируй my-agent/manifest.yaml (id, model, apiKeyEnv),
-#   AGENTS.md, skills/, evals/*.jsonl — бенчмарк = jsonl с graders
-node dist/cli.js validate --target my-agent    # 0 токенов: чек манифеста и suite
-node dist/cli.js run --target my-agent --label baseline --repetitions 5
-```
-
-Дальше — цикл улучшения:
-
-```bash
-node dist/cli.js failures <evalRunId> --target my-agent      # bundle для билдера
-node dist/cli.js builder --target my-agent --bundle <bundle.md>
-node dist/cli.js candidate --target my-agent --branch candidate-x
-node dist/cli.js compare <baselineEvalRun> <candidateEvalRun>
-node dist/cli.js promote --target my-agent --eval-run <id> --to 0.2.0
-node dist/cli.js reject --eval-run <id> --reason "..."
-```
-
-Текущий эксперимент через OpenRouter разделяет роли: target =
-`qwen/qwen3.5-9b` (cheap/weak), builder = `z-ai/glm-5.3` (frontier).
-Ключ задаётся через `apiKeyEnv`. Для внутреннего продакшена замените `baseUrl`
-в обоих manifest-файлах на корпоративный OpenAI-совместимый gateway.
-
-Канонический baseline после bounded final-answer recovery
-(`qwen/qwen3.5-9b`, 5 задач × 2 repetitions, reasoning=low): **6/10
-all-pass**, `$0.0129`, 3 recovery turns, 0 runtime errors. Recovery включается
-один раз только после tool-loop с пустым final text и выполняется с отключёнными
-tools. Minimal activation-trigger candidate был отклонён: 6/10 → 5/10 с
-регрессиями на трёх задачах.
-
-Eval-методология (после трёх отвергнутых prompt-кандидатов): task_004
-оценивается judge-градером (frontier-модель по rubric; verdict+reason пишется
-в run.json, полный обмен с judge'ом — запрос и сырой ответ — в
-`runs/<run_id>/judge/<graderIndex>.json`, до парсинга, так что даже
-unparseable-вердикт оставляет след; infra-ошибка judge'а валит eval run, а не
-засчитывает fail), датасет разделён на development/holdout
-(`--dataset evals/holdout.jsonl`), baseline пишется с `--repetitions 5`
-(2 повторения давали слишком высокий шум). Judge-модель задаётся в
-`evalSuite.judge` манифеста target'а.
-
-## Архитектура (один пакет, именованные модули)
-
-| Модуль | Ответственность |
+| Module | Owns |
 |---|---|
-| `src/provenance.ts` | RunRecord, canonical-JSON хэши, `provenanceKey`/`axisDifferences` — version-axis guard одной функцией |
-| `src/manifest.ts` | strict-zod TargetManifest + dataset/graders → ResolvedTarget с хэшами |
-| `src/trace.ts` | ЕДИНСТВЕННЫЙ парсер session.jsonl: toolCalls/usage/renderMarkdown |
-| `src/runner.ts` | ЕДИНСТВЕННЫЙ SDK-execution importer: изолированная Pi-сессия на каждый run (паттерн pi-harness.ts), watchdog, crash-tolerant run.json |
-| `src/eval.ts` | декларативные graders (tool_called / output_contains / output_matches / judge), eval_run индекс, baseline reuse |
-| `src/compare.ts` | provenanceKey guard + per-task таблица лифтов |
-| `src/bundle.ts` | failure bundle compiler — единственный интерфейс Builder'а |
-| `src/builder.ts` | Builder-as-Target: модель берётся из target (или из builder manifest при явном override), bundle → git-ветка с diff (контракт проверяется) |
-| `src/loop.ts` | кандидатный флоу (validate → smoke → suite → compare), promote (git tag + scope-гейт) / reject + evolution log |
-| `src/mock-model.ts` | scriptable OpenAI-совместимый сервер: stateless-роутинг по контексту (скилл-патч меняет поведение) |
+| `src/builder/runtime.ts` | isolated long-lived Builder Pi host |
+| `src/builder/extension.ts` | narrow trusted AHDE tools and TUI gates |
+| `src/builder/project-context.ts` | bounded public Target/evidence views |
+| `src/application/**` | deterministic Spec/Corpus/Proposal/Candidate use cases |
+| `src/target/runtime.ts` | the single Target Pi construction seam |
+| `src/target/tool-manifest.ts` | declarative tool validation and identity |
+| `src/target/tool-broker.ts` | confined subprocess execution |
+| `src/runner.ts`, `src/eval.ts`, `src/trace.ts` | isolated execution and evidence |
+| `src/diagnosis.ts`, `src/evidence/server.ts` | diagnosis and read-only projection |
+| `src/application/candidate-experiment.ts` | exact matched candidate evaluation |
+| `src/application/candidate-review.ts` | review, rejection, and promotion authority |
 
-Ключевые контракты:
+See [CONTEXT.md](CONTEXT.md) for domain language and invariants and
+[docs/V1_1_WORKBENCH_PLAN.md](docs/V1_1_WORKBENCH_PLAN.md) for the reviewed
+two-Pi implementation plan.
 
-- **Trace = verbatim Pi session.jsonl** + run.json-обёртка с provenance
-  (runId, taskId, gitSha, piSha, model, suiteHash, datasetHash, метрики из `getSessionStats()` — single writer).
-- **Сравнимость** = равенство `provenanceKey` по осям pi/model/thinkingLevel/params/suite/dataset.
-  gitSha target'а в ключ НЕ входит — baseline и candidate обязаны отличаться только им.
-- **Suite отделён от harness**: suiteHash покрывает dataset + graders; promote
-  дополнительно отказывает, если кандидат тронул `evals/**`.
-- **Builder изолирован**: свой manifest, свой authPath, свой run dir; его контракт —
-  «bundle на входе → git-ветка с непустым diff на выходе» — проверяется кодом.
-- **Human gate**: promote — отдельная команда; автономного продвижения нет.
+## Deliberately out of scope
 
-## Расположение
-
-```
-src/            платформа (один пакет ~1500 LOC)
-targets/        target-репозитории (ombudsman — рабочий пример; каждый — свой git)
-builders/       манифесты builder-агентов
-vendor/         pi-mono (pinned SHA) + tarballs
-docs/           evolution.jsonl — append-only журнал promote/reject
-                (демо-прогоны пишут во временный лог, здесь — только реальные
-                 promote/reject; файл в git пуст до первого реального promote)
-runs/           артефакты прогонов (gitignored)
-tests/          юнит + интеграционные (mock-модель, ноль токенов)
-scripts/demo.mjs полный цикл одной командой
-```
-
-## Out of scope (сознательно)
-
-Training/RL (stage 2: Agent Lightning), judge-кэш (при повторных
-прогонах одинаковых ответов), DeepEval,
-MCP, Docker-изоляция, web UI, multi-user, второй target-runtime, автономный
-promote, собственный observability backend. Каждая вырезанная деталь имеет
-именованный re-entry point в PLAN.md.
-
-План и история решений (включая тройной architecture review): `PLAN.md`.
+- RL, fine-tuning, reward models, or model-weight changes.
+- Autonomous apply, promotion, merge, deployment, or self-modification.
+- A mutable browser control plane, hosted tracing, teams, auth, or billing.
+- Arbitrary Target code imported into the AHDE process.
+- Multi-runtime execution, distributed runners, Kubernetes, or OTLP plumbing.
+- Windows support in the initial local-first release.

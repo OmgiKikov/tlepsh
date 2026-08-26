@@ -1,0 +1,22 @@
+id: my-agent
+model:
+  provider: openai-compatible
+  id: replace-with-model-id
+  api: openai-completions
+  baseUrl: http://127.0.0.1:1234/v1
+  apiKeyEnv: AHDE_MODEL_API_KEY
+  thinkingLevel: "off"
+  timeoutMs: 300000
+execution:
+  tools: [read, bash]
+  environmentAllowlist: []
+  network: deny
+  sandbox: best-effort
+instructions:
+  agentsMd: AGENTS.md
+skills: []
+tools: [tools/echo_json.tool.yaml]
+evalSuite:
+  id: my-agent-development
+  dataset: evals/development.jsonl
+  graders: evals/graders.yaml

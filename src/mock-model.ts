@@ -33,7 +33,22 @@ export interface MockStep {
 export interface MockScript {
 	/** Router: inspect the system prompt and first user message of each request. */
 	match?: (body: { system: string; firstUser: string; lastUser: string; toolCount: number }) => boolean;
+	/**
+	 * Optional deterministic request resolver for agentic acceptance tests whose
+	 * next tool arguments depend on prior tool results. When present it replaces
+	 * static `steps` lookup, while the complete conversation remains the source
+	 * of truth (the server itself still keeps no session state).
+	 */
+	resolve?: (body: MockRequestContext) => MockStep;
 	steps: MockStep[];
+}
+
+export interface MockRequestContext {
+	system: string;
+	firstUser: string;
+	lastUser: string;
+	toolCount: number;
+	toolResults: string[];
 }
 
 export interface MockModelHandle {
@@ -136,23 +151,24 @@ export function startMockModel(scripts: MockScript[], fallback?: MockScript): Pr
 						: contentText(messages.find((m) => m.role === "system")?.content);
 			const model = body.model ?? "mock-model";
 
+			const contextBase = {
+				system,
+				firstUser: contentText(firstUser?.content),
+				lastUser: contentText(lastUser?.content),
+				toolCount: body.tools?.length ?? 0,
+			};
 			const script =
 				scripts.find((s) =>
-					s.match?.({
-						system,
-						firstUser: contentText(firstUser?.content),
-						lastUser: contentText(lastUser?.content),
-						toolCount: body.tools?.length ?? 0,
-					}),
+					s.match?.(contextBase),
 				) ?? defaultScript;
 			// Stateless step selection: how many tool results has the harness sent back so far.
-			const toolResults = messages.filter((m) => m.role === "tool").length;
-			const step = script.steps[toolResults];
+			const toolResults = messages.filter((m) => m.role === "tool").map((message) => contentText(message.content));
+			const step = script.resolve?.({ ...contextBase, toolResults }) ?? script.steps[toolResults.length];
 			if (!step) {
 				res.writeHead(500, { "content-type": "application/json" });
 				res.end(
 					JSON.stringify({
-						error: { message: `mock script exhausted at step ${toolResults} (${script.steps.length} steps)` },
+						error: { message: `mock script exhausted at step ${toolResults.length} (${script.steps.length} steps)` },
 					}),
 				);
 				return;

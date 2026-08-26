@@ -1,0 +1,745 @@
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { createCandidate, transitionCandidate } from "../src/domain/candidate.js";
+import {
+	candidateRecordPath,
+	decideCandidatePromotion,
+	decideCandidateRejection,
+	loadCandidateRecord,
+	promoteReviewedCandidate,
+	reviewCandidate,
+} from "../src/application/candidate-review.js";
+import { CandidateRecordSchema, candidateStatus } from "../src/domain/candidate.js";
+import { EvalRunRecordSchema, loadEvalRun, writeEvalRun, type EvalRunRecord } from "../src/eval.js";
+import { compareEvalRuns } from "../src/compare.js";
+import {
+	DEVELOPMENT_GATE_POLICY_ID,
+	SEALED_GATE_POLICY_ID,
+	comparisonGateEvidence,
+} from "../src/application/candidate-experiment.js";
+import { DiagnosisRecordSchema, diagnoseEvalRun } from "../src/diagnosis.js";
+import { SpecSnapshotSchema, loadApprovedSpec, saveSpecSnapshot } from "../src/spec.js";
+import {
+	ApprovedSpecBuilderInputSchema,
+	BuilderApplyReceiptSchema,
+	PersistedBuilderRunSchema,
+} from "../src/application/builder-proposal.js";
+import { CandidateProposalSchema } from "../src/builders/adapters.js";
+import {
+	RunRecordSchema,
+	canonicalJson,
+	executionFingerprint,
+	hashValue,
+	provenanceAxes,
+	type ExecutionFingerprint,
+	type RunRecord,
+} from "../src/provenance.js";
+import { readJsonArtifact, writeJsonArtifact, writeTextArtifact } from "../src/storage/artifacts.js";
+import { baseFixtureFiles } from "./fixtures.js";
+
+const roots: string[] = [];
+const baselineSha = "a".repeat(40);
+const candidateSha = "b".repeat(40);
+const at = "2026-08-26T10:00:00.000Z";
+const piSha = "c".repeat(40);
+const artifactHash = `sha256:${"d".repeat(64)}`;
+
+function fileRef(path: string): { path: string; sha256: string } {
+	return {
+		path,
+		sha256: `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`,
+	};
+}
+
+function textHash(value: string): string {
+	return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function writePair(
+	runsRoot: string,
+	targetId: string,
+	baselineRevision: string,
+	candidateRevision: string,
+	baselineEvalRunId: string,
+	candidateEvalRunId: string,
+	dataset: string,
+	execution: ExecutionFingerprint,
+): void {
+	const runtime = { piVersion: "0.84.3", piSha, ahdeVersion: "0.1.0", ahdeCodeHash: artifactHash };
+	const model = {
+		provider: "fixture",
+		id: "fixture-model",
+		api: "openai-completions",
+		baseUrl: "http://127.0.0.1/v1",
+		apiKeyEnv: "FIXTURE_KEY",
+		thinkingLevel: "off",
+		params: {},
+		spec: {},
+	};
+	const suiteHash = hashValue({ dataset, suite: true });
+	const datasetHash = hashValue({ dataset });
+	const workspaceHash = (gitSha: string): string => hashValue({ targetId, gitSha, workspace: true });
+	const provenance = provenanceAxes({
+		runtime,
+		model,
+		judge: null,
+		execution,
+		eval: { suiteHash, datasetHash },
+	});
+	const writeRun = (runId: string, evalRunId: string, label: "baseline" | "candidate", gitSha: string): string => {
+		const record: RunRecord = {
+			schemaVersion: 1,
+			runId,
+			taskId: `${dataset}-task`,
+			repetitionIndex: 0,
+			label,
+			status: "completed",
+			error: null,
+			startedAt: at,
+			finishedAt: at,
+			target: {
+				id: targetId,
+				gitSha,
+				toolsetHash: `sha256:${"a".repeat(64)}`,
+				workspaceHash: workspaceHash(gitSha),
+			},
+			runtime,
+			model,
+			execution,
+			eval: { suiteId: `${dataset}-suite`, suiteHash, dataset, datasetHash },
+			trace: { path: "session.jsonl", sessionId: null, sha256: null },
+			metrics: {
+				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				costUsd: 0,
+				latencyMs: 0,
+				toolCalls: 0,
+				toolErrors: 0,
+				recoveryAttempts: 0,
+			},
+			evalResults: {
+				graders: [{ name: "fixture", type: "output_contains", passed: true, score: 1, reason: "pass" }],
+				outcome: "pass",
+			},
+			parent: { evalRunId, candidateOf: label === "candidate" ? baselineRevision : null },
+		};
+		writeJsonArtifact(join(runsRoot, runId, "run.json"), RunRecordSchema, record);
+		return hashValue(record);
+	};
+	const baseRunId = `${baselineEvalRunId}-run`;
+	const candidateRunId = `${candidateEvalRunId}-run`;
+	const baseRunHash = writeRun(baseRunId, baselineEvalRunId, "baseline", baselineRevision);
+	const candidateRunHash = writeRun(candidateRunId, candidateEvalRunId, "candidate", candidateRevision);
+	const evalRecord = (
+		evalRunId: string,
+		label: "baseline" | "candidate",
+		gitSha: string,
+		runId: string,
+		runHash: string,
+		baselineId: string | null,
+	): EvalRunRecord => ({
+		schemaVersion: 1,
+		evalRunId,
+		target: {
+			id: targetId,
+			gitSha,
+			toolsetHash: `sha256:${"a".repeat(64)}`,
+			workspaceHash: workspaceHash(gitSha),
+		},
+		label,
+		baselineEvalRunId: baselineId,
+		provenance,
+		provenanceKey: hashValue(provenance),
+		suiteId: `${dataset}-suite`,
+		suiteHash,
+		dataset,
+		datasetHash,
+		repetitions: 1,
+		runIds: [runId],
+		runArtifacts: [{ runId, sha256: runHash }],
+		startedAt: at,
+		finishedAt: at,
+		summary: { total: 1, pass: 1, fail: 0, error: 0, allPassRate: 1 },
+	});
+	writeEvalRun(runsRoot, evalRecord(baselineEvalRunId, "baseline", baselineRevision, baseRunId, baseRunHash, null));
+	writeEvalRun(runsRoot, evalRecord(candidateEvalRunId, "candidate", candidateRevision, candidateRunId, candidateRunHash, baselineEvalRunId));
+}
+
+function fixture(
+	withHoldout: boolean,
+	overrides: {
+		baselineSha?: string;
+		candidateSha?: string;
+		targetId?: string;
+		execution?: ExecutionFingerprint;
+	} = {},
+	withSource = true,
+): { runsRoot: string; candidateId: string } {
+	const runsRoot = mkdtempSync(join(tmpdir(), "ahde-review-"));
+	const stateRoot = mkdtempSync(join(tmpdir(), "ahde-review-state-"));
+	roots.push(runsRoot, stateRoot);
+	const candidateId = "candidate-1";
+	const fixtureBaselineSha = overrides.baselineSha ?? baselineSha;
+	const fixtureCandidateSha = overrides.candidateSha ?? candidateSha;
+	const targetId = overrides.targetId ?? "target";
+	const execution = overrides.execution ?? executionFingerprint("isolated", {
+		tools: ["read"],
+		environment: ["HOME", "LANG", "PATH", "TMPDIR"],
+		sandbox: "none",
+		network: "deny",
+		filesystem: "workspace-confined-v1",
+	});
+	writePair(runsRoot, targetId, fixtureBaselineSha, fixtureCandidateSha, "eval-base", "eval-candidate", "development", execution);
+	if (withHoldout) {
+		writePair(runsRoot, targetId, fixtureBaselineSha, fixtureCandidateSha, "holdout-base", "holdout-candidate", "sealed-holdout", execution);
+	}
+
+	const diagnosis = diagnoseEvalRun(runsRoot, "eval-base", () => at);
+	const sourceEval = loadEvalRun(runsRoot, "eval-base");
+	const sourceEvalPath = join(runsRoot, "eval-base", "eval_run.json");
+	const diagnosisPath = join(runsRoot, "eval-base", "diagnosis.json");
+	const sourceAttestation = withSource
+		? {
+			evalRunId: sourceEval.evalRunId,
+			diagnosisId: diagnosis.diagnosisId,
+			targetId: sourceEval.target.id,
+			targetGitSha: sourceEval.target.gitSha,
+			evalRunSha256: fileRef(sourceEvalPath).sha256,
+			diagnosisSha256: fileRef(diagnosisPath).sha256,
+			dataset: sourceEval.dataset,
+			datasetHash: sourceEval.datasetHash,
+			suiteHash: sourceEval.suiteHash,
+			developmentCorpus: null,
+		}
+		: null;
+	const spec = saveSpecSnapshot({
+		stateRoot,
+		projectId: "project",
+		status: "approved",
+		now: () => at,
+		spec: {
+			schemaVersion: 1,
+			title: "Promotion fixture",
+			purpose: "Exercise reconstructable candidate provenance.",
+			users: ["reviewer"],
+			jobs: ["review exact evidence"],
+			inputs: ["candidate artifacts"],
+			allowedActions: ["promote exact SHA"],
+			successCriteria: ["all hashes remain exact"],
+			constraints: ["no unreviewed mutation"],
+			openQuestions: [],
+		},
+	});
+	const builderRunId = "builder-review-fixture";
+	const builderDir = join(runsRoot, "builders", builderRunId);
+	const approvedSpec = loadApprovedSpec({
+		stateRoot,
+		projectId: "project",
+		specId: spec.id,
+	});
+	const failureBundle = withSource ? "fixture failure bundle" : null;
+	const builderInput = `${canonicalJson(ApprovedSpecBuilderInputSchema.parse({
+		schemaVersion: 1,
+		approvedSpec: {
+			reference: approvedSpec.reference,
+			spec: approvedSpec.snapshot.spec,
+		},
+		evaluationEvidence: failureBundle === null
+			? null
+			: {
+				source: { evalRunId: "eval-base", diagnosisId: diagnosis.diagnosisId },
+				sourceAttestation,
+				failureBundle,
+			},
+	}))}\n`;
+	const proposal = CandidateProposalSchema.parse({
+		schemaVersion: 1,
+		decision: "propose",
+		baseTargetSha: fixtureBaselineSha,
+		summary: "Apply the reviewed harness change.",
+		diagnoses: withSource
+			? [{
+				failureIds: ["development-task"],
+				evidence: [diagnosis.diagnosisId],
+				rootCause: "The baseline harness needs the reviewed change.",
+			}]
+			: [],
+		changes: [{
+			path: "AGENTS.md",
+			baseSha256: artifactHash,
+			unifiedDiff: [
+				"diff --git a/AGENTS.md b/AGENTS.md",
+				"--- a/AGENTS.md",
+				"+++ b/AGENTS.md",
+				"@@ -1 +1 @@",
+				"-baseline harness",
+				"+candidate harness",
+			].join("\n"),
+			rationale: "Exact reviewed scope.",
+			evidenceRefs: withSource ? [diagnosis.diagnosisId] : [],
+		}],
+		risks: ["Fixture only."],
+		validationPlan: ["Run development and sealed comparisons."],
+	});
+	const proposalPath = join(builderDir, "proposal.json");
+	const builderInputPath = join(builderDir, "builder_input.txt");
+	const eventsPath = join(builderDir, "events.jsonl");
+	writeTextArtifact(builderInputPath, builderInput);
+	writeJsonArtifact(proposalPath, CandidateProposalSchema, proposal);
+	writeTextArtifact(eventsPath, "");
+	const builderInputRef = fileRef(builderInputPath);
+	const proposalRef = fileRef(proposalPath);
+	const eventsRef = fileRef(eventsPath);
+	const capabilities = {
+		eventStream: true,
+		structuredOutput: true,
+		usage: false,
+		cost: false,
+		sessionId: false,
+		cancellation: true,
+		isolation: "tool-free-executor" as const,
+	};
+	const builderRunPath = join(builderDir, "builder_run.json");
+	writeJsonArtifact(builderRunPath, PersistedBuilderRunSchema, PersistedBuilderRunSchema.parse({
+		schemaVersion: 1,
+		runId: builderRunId,
+		request: {
+			baseTargetSha: fixtureBaselineSha,
+			allowedPaths: ["AGENTS.md"],
+			approvedSpec: approvedSpec.reference,
+			source: withSource
+				? { evalRunId: "eval-base", diagnosisId: diagnosis.diagnosisId }
+				: null,
+			provenanceMode: "canonical",
+			sourceAttestation,
+			failureBundleSha256: failureBundle === null ? null : textHash(failureBundle),
+			failureBundleBytes: failureBundle === null ? 0 : Buffer.byteLength(failureBundle, "utf8"),
+			builderInputSha256: builderInputRef.sha256,
+			builderInputBytes: Buffer.byteLength(builderInput, "utf8"),
+			timeoutMs: 1_000,
+		},
+		probe: {
+			backend: "fixture-builder",
+			available: true,
+			version: "fixture 1.0.0",
+			capabilities,
+			error: null,
+		},
+		result: {
+			schemaVersion: 1,
+			runId: builderRunId,
+			backend: "fixture-builder",
+			backendVersion: "fixture 1.0.0",
+			capabilities,
+			baseTargetSha: fixtureBaselineSha,
+			startedAt: at,
+			finishedAt: at,
+			status: "completed",
+			proposal,
+			model: null,
+			sessionId: null,
+			usage: null,
+			costUsd: null,
+			traceLevel: "full",
+			rawEvents: [],
+			error: null,
+		},
+		artifacts: {
+			input: {
+				path: "builder_input.txt",
+				sha256: builderInputRef.sha256,
+				bytes: Buffer.byteLength(builderInput, "utf8"),
+			},
+			events: { path: "events.jsonl", sha256: eventsRef.sha256, bytes: 0 },
+			proposal: { path: "proposal.json", sha256: proposalRef.sha256, bytes: readFileSync(proposalPath).length },
+		},
+	}));
+	const receiptPath = join(builderDir, "apply_receipt.json");
+	const receipt = BuilderApplyReceiptSchema.parse({
+		schemaVersion: 1,
+		runId: builderRunId,
+		proposalSha256: proposalRef.sha256,
+		baseTargetSha: fixtureBaselineSha,
+		candidateSha: fixtureCandidateSha,
+		branch: "candidate",
+		paths: ["AGENTS.md"],
+		actor: { kind: "human", id: "user" },
+		appliedAt: at,
+		reason: "Reviewed fixture apply.",
+	});
+	writeJsonArtifact(receiptPath, BuilderApplyReceiptSchema, receipt);
+	const specPath = join(stateRoot, "projects", "project", "specs", `${spec.id}.json`);
+	let record = createCandidate({
+		candidateId,
+		projectId: "project",
+		targetId,
+		specId: spec.id,
+		proposalId: builderRunId,
+		diagnosisId: withSource ? diagnosis.diagnosisId : null,
+		origin: {
+			kind: "applied-builder",
+			builderRunId,
+			builderRun: fileRef(builderRunPath),
+			builderInput: builderInputRef,
+			proposal: proposalRef,
+			applyReceipt: fileRef(receiptPath),
+			application: {
+				actor: receipt.actor,
+				reason: receipt.reason,
+				appliedAt: receipt.appliedAt,
+				baseTargetSha: receipt.baseTargetSha,
+				candidateSha: receipt.candidateSha,
+				proposalSha256: receipt.proposalSha256,
+			},
+			source: withSource
+				? {
+					evalRunId: "eval-base",
+					evalRun: fileRef(sourceEvalPath),
+					diagnosisId: diagnosis.diagnosisId,
+					diagnosis: fileRef(diagnosisPath),
+					dataset: sourceEval.dataset,
+					datasetHash: sourceEval.datasetHash,
+					suiteHash: sourceEval.suiteHash,
+					developmentCorpus: null,
+				}
+				: null,
+			approvedSpec: {
+				specId: spec.id,
+				projectId: spec.projectId,
+				specContentHash: approvedSpec.reference.specContentHash,
+				snapshotHash: approvedSpec.reference.snapshotHash,
+				artifact: fileRef(specPath),
+			},
+		},
+		mode: "candidate",
+		baseline: { ref: "main", sha: fixtureBaselineSha },
+		eventId: "proposed",
+		at,
+		actor: { kind: "human", id: "user" },
+	});
+	record = transitionCandidate(record, {
+		type: "built",
+		eventId: "built",
+		at,
+		actor: { kind: "human", id: "user" },
+		candidate: { ref: "candidate", sha: fixtureCandidateSha },
+	});
+	record = transitionCandidate(record, {
+		type: "validated",
+		eventId: "validated",
+		at,
+		actor: { kind: "system", id: "experiment" },
+		lineage: {
+			baseline: { ref: "main", sha: fixtureBaselineSha },
+			candidate: { ref: "candidate", sha: fixtureCandidateSha },
+			relation: "descendant",
+		},
+		scope: {
+			policyId: "scope-v1",
+			baselineSha: fixtureBaselineSha,
+			candidateSha: fixtureCandidateSha,
+			passed: true,
+			changedFiles: ["AGENTS.md"],
+			violations: [],
+		},
+	});
+	const pair = {
+		baseline: { evalRunId: "eval-base", harness: { ref: "main", sha: fixtureBaselineSha } },
+		candidate: { evalRunId: "eval-candidate", harness: { ref: "candidate", sha: fixtureCandidateSha } },
+		comparison: comparisonGateEvidence(
+			compareEvalRuns(runsRoot, "eval-base", "eval-candidate", { mode: "candidate" }),
+			DEVELOPMENT_GATE_POLICY_ID,
+		),
+	};
+	record = transitionCandidate(record, {
+		type: "evaluated",
+		eventId: "evaluated",
+		at,
+		actor: { kind: "system", id: "experiment" },
+		evaluation: {
+			experimentId: candidateId,
+			designHash: `sha256:${"c".repeat(64)}`,
+			mode: "candidate",
+			development: pair,
+			...(withHoldout
+				? {
+					sealedHoldout: {
+						corpus: {
+							id: "holdout",
+							hash: loadEvalRun(runsRoot, "holdout-base").datasetHash,
+						},
+						baseline: { ...pair.baseline, evalRunId: "holdout-base" },
+						candidate: { ...pair.candidate, evalRunId: "holdout-candidate" },
+						comparison: comparisonGateEvidence(
+							compareEvalRuns(runsRoot, "holdout-base", "holdout-candidate", { mode: "candidate" }),
+							SEALED_GATE_POLICY_ID,
+							{
+								corpusId: "holdout",
+								corpusHash: loadEvalRun(runsRoot, "holdout-base").datasetHash,
+							},
+						),
+					},
+				}
+				: {}),
+			infrastructureErrors: 0,
+		},
+	});
+	writeJsonArtifact(candidateRecordPath(runsRoot, candidateId), CandidateRecordSchema, CandidateRecordSchema.parse(record));
+	return { runsRoot, candidateId };
+}
+
+function git(dir: string, ...args: string[]): string {
+	return execFileSync("git", ["-C", dir, ...args], {
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "pipe"],
+	}).trim();
+}
+
+function repository(): { dir: string; baselineSha: string; candidateSha: string } {
+	const dir = mkdtempSync(join(tmpdir(), "ahde-promotion-repo-"));
+	roots.push(dir);
+	git(dir, "init", "-q");
+	git(dir, "config", "user.name", "AHDE Test");
+	git(dir, "config", "user.email", "test@example.invalid");
+	for (const file of baseFixtureFiles()) {
+		const path = join(dir, file.path);
+		mkdirSync(join(path, ".."), { recursive: true });
+		writeFileSync(path, file.content);
+	}
+	git(dir, "add", ".");
+	git(dir, "commit", "-qm", "baseline");
+	const baseline = git(dir, "rev-parse", "HEAD");
+	writeFileSync(join(dir, "AGENTS.md"), "candidate harness\n");
+	git(dir, "add", "AGENTS.md");
+	git(dir, "commit", "-qm", "candidate");
+	return { dir, baselineSha: baseline, candidateSha: git(dir, "rev-parse", "HEAD") };
+}
+
+afterEach(() => {
+	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+describe("candidate human review", () => {
+	it("persists review and rejection as separate human decisions", () => {
+		const value = fixture(false);
+		reviewCandidate({ ...value, recommendation: "reject", reason: "regression", now: () => at });
+		decideCandidateRejection({ ...value, reason: "do not ship", now: () => at });
+		expect(loadCandidateRecord(value.runsRoot, value.candidateId).events.at(-1)?.type).toBe("rejected");
+	});
+
+	it("refuses promotion without sealed holdout evidence", () => {
+		const value = fixture(false);
+		reviewCandidate({ ...value, recommendation: "promote", reason: "looks good", now: () => at });
+		expect(() =>
+			decideCandidatePromotion({ ...value, tag: "v1.0.0", reason: "ship", now: () => at }),
+		).toThrow(/promotion requires sealed-holdout evidence/);
+	});
+
+	it("refuses promotion when process-capable tools ran without an enforceable sandbox", () => {
+		const value = fixture(true, {
+			execution: executionFingerprint("isolated", {
+				tools: ["read", "bash"],
+				environment: ["HOME", "LANG", "PATH", "TMPDIR"],
+				sandbox: "none",
+				network: "allow",
+				filesystem: "isolated-copy-unconfined-v1",
+			}),
+		});
+		reviewCandidate({ ...value, recommendation: "promote", reason: "looks good", now: () => at });
+		expect(() =>
+			decideCandidatePromotion({ ...value, tag: "v1.0.0", reason: "ship", now: () => at }),
+		).toThrow(/non-promotable execution confinement/);
+	});
+
+	it("refuses legacy promotion evidence without an exact Target workspace hash", () => {
+		const value = fixture(true, {}, false);
+		const baseline = loadEvalRun(value.runsRoot, "eval-base");
+		const baselineRunPath = join(value.runsRoot, "eval-base-run", "run.json");
+		const baselineRun = readJsonArtifact(baselineRunPath, RunRecordSchema);
+		const { workspaceHash: _legacyRunWorkspaceHash, ...legacyRunTarget } = baselineRun.target;
+		const legacyRun = { ...baselineRun, target: legacyRunTarget };
+		writeJsonArtifact(baselineRunPath, RunRecordSchema, legacyRun);
+		const { workspaceHash: _legacyWorkspaceHash, ...legacyTarget } = baseline.target;
+		writeJsonArtifact(
+			join(value.runsRoot, "eval-base", "eval_run.json"),
+			EvalRunRecordSchema,
+			{
+				...baseline,
+				target: legacyTarget,
+				runArtifacts: [{ runId: baselineRun.runId, sha256: hashValue(legacyRun) }],
+			},
+		);
+		reviewCandidate({ ...value, recommendation: "promote", reason: "looks good", now: () => at });
+		expect(() =>
+			decideCandidatePromotion({ ...value, tag: "v1.0.0", reason: "ship", now: () => at }),
+		).toThrow(/lacks a hash-anchored Target workspace/);
+	});
+
+	it("records promotion only after promote review and holdout evidence", () => {
+		const value = fixture(true);
+		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+		decideCandidatePromotion({ ...value, tag: "v1.0.0", reason: "ship", now: () => at });
+		expect(loadCandidateRecord(value.runsRoot, value.candidateId).events.at(-1)?.type).toBe("promoted");
+	});
+
+	it("promotes a reconstructable Spec-only Builder candidate without inventing diagnosis provenance", () => {
+		const value = fixture(true, {}, false);
+		const before = loadCandidateRecord(value.runsRoot, value.candidateId);
+		expect(before.diagnosisId).toBeNull();
+		expect(before.origin.kind === "applied-builder" ? before.origin.source : "manual").toBeNull();
+		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+		decideCandidatePromotion({ ...value, tag: "v1.0.0", reason: "ship", now: () => at });
+		expect(loadCandidateRecord(value.runsRoot, value.candidateId).events.at(-1)?.type).toBe("promoted");
+	});
+
+	it("refuses production promotion for an explicit manual origin", () => {
+		const value = fixture(true);
+		const record = loadCandidateRecord(value.runsRoot, value.candidateId);
+		const manualRecord = CandidateRecordSchema.parse({
+			...record,
+			origin: { kind: "manual", reason: "legacy imported candidate" },
+		});
+		writeJsonArtifact(
+			candidateRecordPath(value.runsRoot, value.candidateId),
+			CandidateRecordSchema,
+			manualRecord,
+		);
+		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+		expect(() =>
+			decideCandidatePromotion({ ...value, tag: "v1.0.0", reason: "ship", now: () => at }),
+		).toThrow(/production promotion requires reconstructable applied-Builder provenance/);
+	});
+
+	it("tags only the exact reviewed candidate and preserves the user's dirty checkout", () => {
+		const repo = repository();
+		const value = fixture(true, { ...repo, targetId: "test-target" });
+		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+		writeFileSync(join(repo.dir, "user-notes.txt"), "keep me\n");
+		const branch = git(repo.dir, "branch", "--show-current");
+		const head = git(repo.dir, "rev-parse", "HEAD");
+
+		const result = promoteReviewedCandidate({
+			repositoryDir: repo.dir,
+			...value,
+			version: "1.2.3",
+			reason: "sealed holdout is clean",
+			now: () => at,
+		});
+
+		expect(result.tag).toBe("v1.2.3");
+		expect(git(repo.dir, "rev-list", "-n", "1", "v1.2.3")).toBe(repo.candidateSha);
+		expect(git(repo.dir, "branch", "--show-current")).toBe(branch);
+		expect(git(repo.dir, "rev-parse", "HEAD")).toBe(head);
+		expect(git(repo.dir, "status", "--short")).toContain("user-notes.txt");
+		expect(candidateStatus(result.record)).toBe("promoted");
+	});
+
+	it("does not create a tag when the aggregate lacks sealed holdout evidence", () => {
+		const repo = repository();
+		const value = fixture(false, { ...repo, targetId: "test-target" });
+		reviewCandidate({ ...value, recommendation: "promote", reason: "looks good", now: () => at });
+		expect(() =>
+			promoteReviewedCandidate({
+				repositoryDir: repo.dir,
+				...value,
+				version: "2.0.0",
+				reason: "ship",
+				now: () => at,
+			}),
+		).toThrow(/promotion requires sealed-holdout evidence/);
+		expect(git(repo.dir, "tag", "--list", "v2.0.0")).toBe("");
+	});
+
+	it("re-reads persisted evidence and refuses a tag when it no longer matches the reviewed candidate", () => {
+		const repo = repository();
+		const value = fixture(true, { ...repo, targetId: "test-target" });
+		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+		const holdout = loadEvalRun(value.runsRoot, "holdout-candidate");
+		writeJsonArtifact(
+			join(value.runsRoot, "holdout-candidate", "eval_run.json"),
+			EvalRunRecordSchema,
+			{ ...holdout, target: { ...holdout.target, gitSha: "e".repeat(40) } },
+		);
+
+		expect(() =>
+			promoteReviewedCandidate({
+				repositoryDir: repo.dir,
+				...value,
+				version: "2.1.0",
+				reason: "ship",
+				now: () => at,
+			}),
+		).toThrow(/(?:eval artifacts do not match CandidateRecord harness revisions|evidence mismatch)/);
+		expect(git(repo.dir, "tag", "--list", "v2.1.0")).toBe("");
+	});
+
+	it("refuses a tag after the human apply receipt is tampered", () => {
+		const repo = repository();
+		const value = fixture(true, { ...repo, targetId: "test-target" });
+		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+		const record = loadCandidateRecord(value.runsRoot, value.candidateId);
+		if (record.origin.kind !== "applied-builder") throw new Error("expected applied Builder origin");
+		const receipt = readJsonArtifact(record.origin.applyReceipt.path, BuilderApplyReceiptSchema);
+		writeJsonArtifact(record.origin.applyReceipt.path, BuilderApplyReceiptSchema, {
+			...receipt,
+			actor: { kind: "human", id: "different-human" },
+		});
+
+		expect(() => promoteReviewedCandidate({
+			repositoryDir: repo.dir,
+			...value,
+			version: "2.2.0",
+			reason: "ship",
+			now: () => at,
+		})).toThrow(/Builder apply receipt hash mismatch/);
+		expect(git(repo.dir, "tag", "--list", "v2.2.0")).toBe("");
+	});
+
+	it("refuses a tag after the approved Spec snapshot is tampered", () => {
+		const repo = repository();
+		const value = fixture(true, { ...repo, targetId: "test-target" });
+		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+		const record = loadCandidateRecord(value.runsRoot, value.candidateId);
+		if (record.origin.kind !== "applied-builder") throw new Error("expected applied Builder origin");
+		const spec = readJsonArtifact(record.origin.approvedSpec.artifact.path, SpecSnapshotSchema);
+		writeJsonArtifact(record.origin.approvedSpec.artifact.path, SpecSnapshotSchema, {
+			...spec,
+			createdAt: "2026-08-26T10:00:01.000Z",
+		});
+
+		expect(() => promoteReviewedCandidate({
+			repositoryDir: repo.dir,
+			...value,
+			version: "2.3.0",
+			reason: "ship",
+			now: () => at,
+		})).toThrow(/approved Spec hash mismatch/);
+		expect(git(repo.dir, "tag", "--list", "v2.3.0")).toBe("");
+	});
+
+	it("refuses a tag after the source diagnosis is tampered", () => {
+		const repo = repository();
+		const value = fixture(true, { ...repo, targetId: "test-target" });
+		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+		const record = loadCandidateRecord(value.runsRoot, value.candidateId);
+		if (record.origin.kind !== "applied-builder") throw new Error("expected applied Builder origin");
+		if (!record.origin.source) throw new Error("expected Builder source evidence");
+		const diagnosis = readJsonArtifact(record.origin.source.diagnosis.path, DiagnosisRecordSchema);
+		writeJsonArtifact(record.origin.source.diagnosis.path, DiagnosisRecordSchema, {
+			...diagnosis,
+			createdAt: "2026-08-26T10:00:01.000Z",
+		});
+
+		expect(() => promoteReviewedCandidate({
+			repositoryDir: repo.dir,
+			...value,
+			version: "2.4.0",
+			reason: "ship",
+			now: () => at,
+		})).toThrow(/Builder diagnosis hash mismatch/);
+		expect(git(repo.dir, "tag", "--list", "v2.4.0")).toBe("");
+	});
+});

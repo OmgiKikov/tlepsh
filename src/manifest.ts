@@ -1,10 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, readFileSync, readdirSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { cpSync, existsSync, lstatSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { hashValue } from "./provenance.js";
+import { loadTargetTools, type ResolvedTargetTool } from "./target/tool-manifest.js";
 
 // ---------- Grader specs (declarative, target-owned) ----------
 
@@ -88,6 +89,18 @@ export const ModelSpec = z.strictObject({
 });
 export type ModelSpec = z.infer<typeof ModelSpec>;
 
+export const ExecutionPolicyBlock = z.strictObject({
+	tools: z.array(z.enum(["read", "bash", "edit", "write"])).min(1).default(["read", "bash"]),
+	environmentAllowlist: z
+		.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/))
+		.default([]),
+	network: z.enum(["deny", "allow"]).default("deny"),
+	sandbox: z.enum(["required", "best-effort", "off"]).default("best-effort"),
+});
+export type ExecutionPolicyBlock = z.infer<typeof ExecutionPolicyBlock>;
+
+const RESERVED_MODEL_PARAMS = new Set(["model", "messages", "stream", "tools"]);
+
 export const ModelBlock = z.strictObject({
 	provider: z.string().min(1),
 	id: z.string().min(1),
@@ -99,6 +112,16 @@ export const ModelBlock = z.strictObject({
 	params: z.record(z.string(), z.unknown()).default({}),
 	/** Full model definition passthrough for the generated models.json. */
 	spec: ModelSpec.default(ModelSpec.parse({})),
+}).superRefine((model, context) => {
+	for (const key of Object.keys(model.params)) {
+		if (RESERVED_MODEL_PARAMS.has(key)) {
+			context.addIssue({
+				code: "custom",
+				path: ["params", key],
+				message: `model.params cannot override reserved request field "${key}"`,
+			});
+		}
+	}
 });
 
 export const TargetManifest = z.strictObject({
@@ -106,10 +129,13 @@ export const TargetManifest = z.strictObject({
 		.string()
 		.regex(/^[a-z0-9][a-z0-9-]*$/, "target id: lowercase kebab-case"),
 	model: ModelBlock,
+	execution: ExecutionPolicyBlock.default(ExecutionPolicyBlock.parse({})),
 	instructions: z.strictObject({
 		agentsMd: z.string().min(1),
 	}),
 	skills: z.array(z.string().min(1)).default([]),
+	/** Explicit target-owned subprocess descriptors. Ambient discovery is disabled. */
+	tools: z.array(z.string().min(1)).default([]),
 	evalSuite: z.strictObject({
 		id: z.string().min(1),
 		dataset: z.string().min(1),
@@ -133,9 +159,18 @@ export interface ResolvedTarget {
 	/** Absolute path to the target repo root. */
 	dir: string;
 	manifest: TargetManifest;
+	/**
+	 * Evaluation inputs that must never be copied into an agent workspace.
+	 * Includes both the manifest dataset and any explicit dataset override.
+	 */
+	evaluationFiles: string[];
 	/** git HEAD sha of the target repo. */
 	gitSha: string;
 	runtime: RuntimeInfo;
+	/** Validated declarative tools, sorted by tool name. */
+	tools: ResolvedTargetTool[];
+	/** Content hash of normalized descriptors and executable bytes. */
+	toolsetHash: string;
 	/** Parsed dataset tasks in file order. */
 	tasks: ResolvedTask[];
 	/** Hash of the raw parsed dataset (task ids, inputs, per-task graders). */
@@ -145,6 +180,47 @@ export interface ResolvedTarget {
 }
 
 const HARNESS_ROOT = resolve(fileURLToPath(import.meta.url), "../..");
+const LOCAL_ARTIFACT_GITIGNORE =
+	"# AHDE local state, run evidence, and secrets\n/.ahde/\n/runs/\n/.env\n/.env.*\n!/.env.example\n";
+
+function sourceFiles(root: string, directory = root): { name: string; content: string }[] {
+	const files: { name: string; content: string }[] = [];
+	for (const entry of readdirSync(directory, { withFileTypes: true })) {
+		const absolute = join(directory, entry.name);
+		if (entry.isDirectory()) {
+			files.push(...sourceFiles(root, absolute));
+		} else if (entry.isFile() && (entry.name.endsWith(".ts") || entry.name.endsWith(".js"))) {
+			files.push({ name: relative(root, absolute), content: readFileSync(absolute, "utf8") });
+		}
+	}
+	return files.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function packageJsonFor(packageName: string): Record<string, unknown> {
+	let cursor = HARNESS_ROOT;
+	for (;;) {
+		const candidate = join(cursor, "node_modules", ...packageName.split("/"), "package.json");
+		if (existsSync(candidate)) {
+			const parsed = JSON.parse(readFileSync(candidate, "utf8")) as Record<string, unknown>;
+			if (parsed.name === packageName) return parsed;
+		}
+		const parent = dirname(cursor);
+		if (parent === cursor) throw new Error(`cannot locate package.json for ${packageName}`);
+		cursor = parent;
+	}
+}
+
+function addLocalArtifactIgnores(targetDir: string): void {
+	const path = join(targetDir, ".gitignore");
+	let existing = "";
+	if (existsSync(path)) {
+		if (!lstatSync(path).isFile()) throw new Error("template .gitignore must be a regular file");
+		existing = readFileSync(path, "utf8");
+		if (existing.endsWith(LOCAL_ARTIFACT_GITIGNORE)) return;
+	}
+	const separator = existing.length === 0 ? "" : existing.endsWith("\n") ? "\n" : "\n\n";
+	writeFileSync(path, `${existing}${separator}${LOCAL_ARTIFACT_GITIGNORE}`);
+}
 
 /** Scaffold a new target from a working template (copy + fresh git init). */
 export function scaffoldTarget(templateDir: string, destDir: string): string {
@@ -155,6 +231,7 @@ export function scaffoldTarget(templateDir: string, destDir: string): string {
 		recursive: true,
 		filter: (p) => !relative(source, p).split(sep).includes(".git"),
 	});
+	addLocalArtifactIgnores(resolve(destDir));
 	execFileSync("git", ["-C", destDir, "init", "-q"]);
 	execFileSync("git", ["-C", destDir, "add", "."]);
 	execFileSync("git", ["-C", destDir, "-c", "user.name=ahde", "-c", "user.email=ahde@local", "commit", "-qm", "scaffold from template"]);
@@ -162,18 +239,17 @@ export function scaffoldTarget(templateDir: string, destDir: string): string {
 }
 
 export function runtimeInfo(): RuntimeInfo {
-	const piPkg = JSON.parse(
-		readFileSync(join(HARNESS_ROOT, "node_modules", "@earendil-works", "pi-coding-agent", "package.json"), "utf8"),
-	) as { version: string };
-	const ahdePkg = JSON.parse(readFileSync(join(HARNESS_ROOT, "package.json"), "utf8")) as { version: string };
-	const piSha = execFileSync("git", ["-C", join(HARNESS_ROOT, "vendor", "pi-mono"), "rev-parse", "HEAD"], {
-		encoding: "utf8",
-	}).trim();
-	const sourceDir = join(HARNESS_ROOT, "src");
-	const sources = readdirSync(sourceDir)
-		.filter((name) => name.endsWith(".ts"))
-		.sort()
-		.map((name) => ({ name, content: readFileSync(join(sourceDir, name), "utf8") }));
+	const piPkg = packageJsonFor("@earendil-works/pi-coding-agent") as { version: string; gitHead?: string };
+	const ahdePkg = JSON.parse(readFileSync(join(HARNESS_ROOT, "package.json"), "utf8")) as {
+		version: string;
+		ahde?: { piSha?: string };
+	};
+	const piSha = ahdePkg.ahde?.piSha ?? piPkg.gitHead;
+	if (!piSha || !/^[0-9a-f]{40}$/.test(piSha)) {
+		throw new Error("package metadata is missing ahde.piSha; the runtime cannot prove its Pi revision");
+	}
+	const sourceDir = existsSync(join(HARNESS_ROOT, "src")) ? join(HARNESS_ROOT, "src") : join(HARNESS_ROOT, "dist");
+	const sources = sourceFiles(sourceDir);
 	return {
 		piVersion: piPkg.version,
 		piSha,
@@ -201,8 +277,24 @@ function gitSha(dir: string): string {
 	return `${head}-dirty-${dirtyHash}`;
 }
 
+function targetFilePath(dir: string, rel: string): string {
+	if (isAbsolute(rel) || rel.includes("\0")) throw new Error(`target path must be relative: ${rel}`);
+	const root = realpathSync(resolve(dir));
+	const lexicalPath = resolve(root, rel);
+	const lexicalRelative = relative(root, lexicalPath);
+	if (!lexicalRelative || lexicalRelative === ".." || lexicalRelative.startsWith(`..${sep}`) || isAbsolute(lexicalRelative)) {
+		throw new Error(`target path escapes repository: ${rel}`);
+	}
+	const realPath = realpathSync(lexicalPath);
+	const realRelative = relative(root, realPath);
+	if (realRelative === ".." || realRelative.startsWith(`..${sep}`) || isAbsolute(realRelative)) {
+		throw new Error(`target path escapes repository through a symlink: ${rel}`);
+	}
+	return realPath;
+}
+
 function readRelative(dir: string, rel: string): string {
-	return readFileSync(resolve(dir, rel), "utf8");
+	return readFileSync(targetFilePath(dir, rel), "utf8");
 }
 
 function loadDataset(dir: string, rel: string): Task[] {
@@ -226,6 +318,16 @@ function loadDataset(dir: string, rel: string): Task[] {
 	if (tasks.length === 0) throw new Error(`dataset ${rel}: no tasks`);
 	const ids = new Set(tasks.map((t) => t.id));
 	if (ids.size !== tasks.length) throw new Error(`dataset ${rel}: duplicate task ids`);
+	for (const task of tasks) {
+		for (const grader of task.graders ?? []) {
+			if (grader.type !== "output_matches") continue;
+			try {
+				new RegExp(grader.pattern);
+			} catch (error) {
+				throw new Error(`dataset ${rel} task ${task.id}: invalid output_matches regex (${(error as Error).message})`);
+			}
+		}
+	}
 	return tasks;
 }
 
@@ -241,6 +343,7 @@ export function loadTarget(dir: string, override?: { dataset?: string }): Resolv
 		throw new Error(`manifest.yaml: ${manifestResult.error.message}`);
 	}
 	const manifest = manifestResult.data;
+	const manifestDataset = manifest.evalSuite.dataset;
 	if (override?.dataset) manifest.evalSuite.dataset = override.dataset;
 
 	for (const rel of [manifest.instructions.agentsMd, ...manifest.skills.map((s) => `${s}/SKILL.md`), manifest.evalSuite.dataset, manifest.evalSuite.graders]) {
@@ -256,6 +359,7 @@ export function loadTarget(dir: string, override?: { dataset?: string }): Resolv
 		throw new Error(`${manifest.evalSuite.graders}: ${gradersResult.error.message}`);
 	}
 	const defaults = gradersResult.data.defaults;
+	const targetTools = loadTargetTools(dir, manifest.tools, manifest.execution);
 
 	const resolved: ResolvedTask[] = tasks.map((task) => {
 		const graders = task.graders ?? defaults;
@@ -264,6 +368,16 @@ export function loadTarget(dir: string, override?: { dataset?: string }): Resolv
 		}
 		return { ...task, effectiveGraders: graders };
 	});
+	for (const task of resolved) {
+		for (const grader of task.effectiveGraders) {
+			if (grader.type !== "output_matches") continue;
+			try {
+				new RegExp(grader.pattern);
+			} catch (error) {
+				throw new Error(`task ${task.id}: invalid output_matches regex (${(error as Error).message})`);
+			}
+		}
+	}
 
 	if (resolved.some((t) => t.effectiveGraders.some((g) => g.type === "judge")) && !manifest.evalSuite.judge) {
 		throw new Error("dataset uses judge graders but evalSuite.judge model is not configured");
@@ -273,13 +387,17 @@ export function loadTarget(dir: string, override?: { dataset?: string }): Resolv
 	const suiteHash = hashValue({
 		dataset: tasks.map(({ id, input, graders }) => ({ id, input, graders: graders ?? null })),
 		defaults,
+		judge: manifest.evalSuite.judge ?? null,
 	});
 
 	return {
 		dir: resolve(dir),
 		manifest,
+		evaluationFiles: [...new Set([manifestDataset, manifest.evalSuite.dataset, manifest.evalSuite.graders])],
 		gitSha: gitSha(dir),
 		runtime: runtimeInfo(),
+		tools: targetTools.tools,
+		toolsetHash: targetTools.toolsetHash,
 		tasks: resolved,
 		datasetHash,
 		suiteHash,

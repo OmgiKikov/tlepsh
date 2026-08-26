@@ -6,6 +6,7 @@ import {
 	hashValue,
 	provenanceAxes,
 	provenanceKey,
+	RunRecordSchema,
 	type RunRecord,
 } from "../src/provenance.js";
 
@@ -16,13 +17,36 @@ function record(overrides: Partial<RunRecord> = {}): RunRecord {
 		taskId: "task_001",
 		repetitionIndex: 0,
 		label: "baseline",
-		status: "pass",
+		status: "completed",
 		error: null,
 		startedAt: "2026-08-25T10:00:00Z",
 		finishedAt: "2026-08-25T10:00:05Z",
 		target: { id: "ombudsman", gitSha: "aaa111" },
 		runtime: { piVersion: "0.84.3", piSha: "sha-abc", ahdeVersion: "0.1.0", ahdeCodeHash: "sha256:code-a" },
-		model: { provider: "qwen-internal", id: "qwen3.5-27b", thinkingLevel: "off", params: {} },
+		model: {
+			provider: "qwen-internal",
+			id: "qwen3.5-27b",
+			api: "openai-completions",
+			baseUrl: "http://mock/v1",
+			apiKeyEnv: "TEST_KEY",
+			thinkingLevel: "off",
+			params: {},
+			spec: {},
+		},
+		execution: {
+			workspace: "isolated-copy-v1",
+			tools: ["read", "bash", "edit", "write"],
+			environment: ["process-env"],
+			sandbox: "none",
+			network: "allow",
+			filesystem: "workspace-confined-v1",
+			resources: {
+				contextFiles: "disabled",
+				extensions: "disabled",
+				promptTemplates: "disabled",
+				skills: "manifest-only",
+			},
+		},
 		eval: { suiteId: "s", suiteHash: "sha256:1", dataset: "development", datasetHash: "sha256:2" },
 		trace: { path: "session.jsonl", sessionId: null, sha256: null },
 		metrics: {
@@ -68,7 +92,7 @@ describe("provenanceKey", () => {
 	});
 
 	it("ignores run-level data like metrics and status", () => {
-		const other = record({ status: "fail", metrics: { ...record().metrics, toolCalls: 99 } });
+		const other = record({ status: "error", metrics: { ...record().metrics, toolCalls: 99 } });
 		expect(axisDifferences(provenanceAxes(record()), provenanceAxes(other))).toEqual([]);
 	});
 });
@@ -90,6 +114,9 @@ describe("axisDifferences (table-driven: each axis must be caught)", () => {
 		},
 		{ axis: "model.provider", mutate: () => record({ model: { ...record().model, provider: "other" } }) },
 		{ axis: "model.id", mutate: () => record({ model: { ...record().model, id: "qwen-99b" } }) },
+		{ axis: "model.api", mutate: () => record({ model: { ...record().model, api: "openai-responses" } }) },
+		{ axis: "model.baseUrl", mutate: () => record({ model: { ...record().model, baseUrl: "http://other/v1" } }) },
+		{ axis: "model.spec", mutate: () => record({ model: { ...record().model, spec: { maxTokens: 10 } } }) },
 		{
 			axis: "model.thinkingLevel",
 			mutate: () => record({ model: { ...record().model, thinkingLevel: "low" } }),
@@ -97,6 +124,10 @@ describe("axisDifferences (table-driven: each axis must be caught)", () => {
 		{
 			axis: "model.params",
 			mutate: () => record({ model: { ...record().model, params: { temperature: 0.2 } } }),
+		},
+		{
+			axis: "execution",
+			mutate: () => record({ execution: { ...record().execution, tools: ["read"] } }),
 		},
 		{
 			axis: "eval.suiteHash",
@@ -116,6 +147,15 @@ describe("axisDifferences (table-driven: each axis must be caught)", () => {
 		});
 	}
 
+	it("catches changed judge configuration", () => {
+		const base = provenanceAxes(record());
+		const changed = provenanceAxes({
+			...record(),
+			judge: { ...record().model, id: "judge-v2" },
+		});
+		expect(axisDifferences(base, changed)).toEqual(["eval.judge"]);
+	});
+
 	it("reports multiple differing axes", () => {
 		const other = record({
 			runtime: { ...record().runtime, piVersion: "0.85.0", piSha: "sha-xyz" },
@@ -130,5 +170,33 @@ describe("hashValue", () => {
 		const h = hashValue({ a: 1 });
 		expect(h).toMatch(/^sha256:[0-9a-f]{64}$/);
 		expect(h).toBe(hashValue({ a: 1 }));
+	});
+});
+
+describe("RunRecordSchema artifact paths", () => {
+	function persistedRecord(): RunRecord {
+		const value = record({
+			target: { id: "ombudsman", gitSha: "a".repeat(40) },
+			runtime: {
+				...record().runtime,
+				piSha: "b".repeat(40),
+				ahdeCodeHash: `sha256:${"c".repeat(64)}`,
+			},
+			eval: {
+				...record().eval,
+				suiteHash: `sha256:${"d".repeat(64)}`,
+				datasetHash: `sha256:${"e".repeat(64)}`,
+			},
+		});
+		return RunRecordSchema.parse(value);
+	}
+
+	it("rejects traversal in the run id and fixed trace path", () => {
+		const base = persistedRecord();
+		expect(() => RunRecordSchema.parse({ ...base, runId: "../../outside" })).toThrow();
+		expect(() => RunRecordSchema.parse({
+			...base,
+			trace: { ...base.trace, path: "../session.jsonl" },
+		})).toThrow();
 	});
 });

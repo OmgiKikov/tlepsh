@@ -1,0 +1,1 @@
+{"id":"example-001","input":"Reply with the exact word ready.","graders":[{"type":"output_contains","text":"ready"}]}
