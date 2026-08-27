@@ -1,5 +1,10 @@
 # AHDE V1.1 — Two-Pi Builder Architecture
 
+> Historical plan. V1.2 keeps the two-Pi trust decision but supersedes the
+> planned removal of Workbench with a deep host-owned `view`/`submit`/`decide`
+> module. See [V1_2_BUILDER_WORKBENCH.md](V1_2_BUILDER_WORKBENCH.md) for the
+> implemented architecture.
+
 This plan synthesizes the independent `plan-eng-review`,
 `improve-codebase-architecture`, and
 `thermo-nuclear-code-quality-review` passes.

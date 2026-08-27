@@ -46,6 +46,7 @@ import {
 	type EvidenceExplorerAddress,
 } from "./evidence/server.js";
 import { launchBuilderPi } from "./builder/runtime.js";
+import { runInteractiveTarget } from "./target/interactive.js";
 
 const envReport = loadDotEnv();
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -69,6 +70,7 @@ const USAGE = `ahde — Agent Harness Development Environment
 Usage:
   ahde [--target <dir>] [--project <id>]      # real Builder Pi with trusted AHDE tools
   ahde builder-pi [--target <dir>] [--project <id>]
+  ahde target --target <dir> [--message <text>] # interactive Target Pi, isolated from Builder/evals
   ahde evidence [--port N]                    # read-only local eval/trace explorer
   ahde init <dir> [--template <target-dir>]
   ahde run --target <dir> [--task <id>] [--repetitions N] [--label baseline|solo] [--dataset <rel>]
@@ -210,6 +212,14 @@ async function evidence(): Promise<void> {
 	});
 }
 
+async function targetPi(): Promise<void> {
+	const targetDir = resolve(requireArg("target"));
+	const target = loadTarget(targetDir);
+	await runInteractiveTarget(target, {
+		...(arg("message") ? { initialMessage: arg("message") } : {}),
+	});
+}
+
 async function main(): Promise<void> {
 	const command = process.argv[2];
 	if (command === "help" || command === "--help" || command === "-h") {
@@ -223,6 +233,10 @@ async function main(): Promise<void> {
 	switch (command) {
 		case "builder-pi": {
 			await builderPi();
+			break;
+		}
+		case "target": {
+			await targetPi();
 			break;
 		}
 		case "init": {

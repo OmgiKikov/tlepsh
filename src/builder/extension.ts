@@ -31,6 +31,11 @@ import {
 	recordBuilderAuthoredProposal,
 	saveBuilderSpecDraft,
 } from "../application/builder-authoring.js";
+import {
+	createBuilderCorpusDraft,
+	reviseBuilderCorpusDraft,
+} from "../application/builder-corpus-draft.js";
+import { compileHarnessAuthoringProposal } from "../application/harness-authoring.js";
 import { runAppliedBuilderCandidate } from "../application/builder-candidate.js";
 import {
 	configureTargetBootstrap,
@@ -78,6 +83,11 @@ import {
 	type BuilderProjectContext,
 } from "./project-context.js";
 import { parse as parseYaml } from "yaml";
+import {
+	createBuilderWorkbench,
+	createBuilderWorkbenchTools,
+} from "./workbench-adapter.js";
+import { registerAhdeBuilderCommands } from "./commands.js";
 
 const MAX_LIST_ITEMS = 30;
 const MAX_EXACT_DIFF_BYTES = 64 * 1024;
@@ -105,6 +115,9 @@ export interface BuilderExtensionDependencies {
 	describeCorpusPublication: typeof describeDevelopmentCorpusPublication;
 	publishDevelopmentCorpus: typeof publishBuilderDevelopmentCorpus;
 	loadCorpusPublicationReceipt: typeof loadDevelopmentCorpusPublicationReceipt;
+	createCorpusDraft: typeof createBuilderCorpusDraft;
+	reviseCorpusDraft: typeof reviseBuilderCorpusDraft;
+	compileHarnessProposal: typeof compileHarnessAuthoringProposal;
 	listEvals: typeof listEvalRuns;
 	loadEval: typeof loadEvalRun;
 	loadTarget: typeof loadTarget;
@@ -146,6 +159,9 @@ const DEFAULT_DEPENDENCIES: BuilderExtensionDependencies = {
 	describeCorpusPublication: describeDevelopmentCorpusPublication,
 	publishDevelopmentCorpus: publishBuilderDevelopmentCorpus,
 	loadCorpusPublicationReceipt: loadDevelopmentCorpusPublicationReceipt,
+	createCorpusDraft: createBuilderCorpusDraft,
+	reviseCorpusDraft: reviseBuilderCorpusDraft,
+	compileHarnessProposal: compileHarnessAuthoringProposal,
 	listEvals: listEvalRuns,
 	loadEval: loadEvalRun,
 	loadTarget,
@@ -170,6 +186,9 @@ const DEFAULT_DEPENDENCIES: BuilderExtensionDependencies = {
 };
 
 export const AHDE_BUILDER_TOOL_NAMES = [
+	"ahde_workbench_view",
+	"ahde_workbench_submit",
+	"ahde_workbench_decide",
 	"ahde_project_status",
 	"ahde_target_scaffold",
 	"ahde_target_configure_model",
@@ -197,6 +216,7 @@ export const AHDE_BUILDER_TOOL_NAMES = [
 ] as const;
 
 export const CONSEQUENTIAL_BUILDER_TOOL_NAMES = [
+	"ahde_workbench_decide",
 	"ahde_target_scaffold",
 	"ahde_target_configure_model",
 	"ahde_spec_approve",
@@ -870,10 +890,16 @@ function materializeScaffold(
 	}
 }
 
-function toolRegistry(options: BuilderExtensionOptions): RegisteredAhdeTool[] {
+function toolRegistry(
+	options: BuilderExtensionOptions,
+	providedWorkbenchTools?: readonly RegisteredAhdeTool[],
+): RegisteredAhdeTool[] {
 	const dependencies = { ...DEFAULT_DEPENDENCIES, ...options.dependencies };
+	const workbenchTools = providedWorkbenchTools
+		?? createBuilderWorkbenchTools(createBuilderWorkbench(options, dependencies), dependencies.actorId);
 	const projectId = () => resolveBuilderProjectId(options);
 	return [
+		...workbenchTools,
 		defineTool({
 			name: "ahde_project_status",
 			label: "AHDE project status",
@@ -1604,12 +1630,15 @@ function toolRegistry(options: BuilderExtensionOptions): RegisteredAhdeTool[] {
 
 /** The sole trusted extension factory loaded into Builder Pi. */
 export function createAhdeBuilderExtension(options: BuilderExtensionOptions): ExtensionFactory {
+	const dependencies = { ...DEFAULT_DEPENDENCIES, ...options.dependencies };
+	const workbench = createBuilderWorkbench(options, dependencies);
+	const workbenchTools = createBuilderWorkbenchTools(workbench, dependencies.actorId);
 	const tools = toolRegistry({
 		...options,
 		projectDir: options.projectDir,
 		stateRoot: options.stateRoot,
 		runsRoot: options.runsRoot,
-	});
+	}, workbenchTools);
 	const allowedTools = new Set(tools.map((tool) => tool.name));
 	return (pi: ExtensionAPI) => {
 		pi.on("user_bash", () => ({
@@ -1624,6 +1653,7 @@ export function createAhdeBuilderExtension(options: BuilderExtensionOptions): Ex
 			? undefined
 			: { block: true, reason: `AHDE Builder tool is not allowed: ${event.toolName}`, terminate: true });
 		for (const tool of tools) pi.registerTool(tool);
+		registerAhdeBuilderCommands(pi, { workbench, actorId: dependencies.actorId });
 	};
 }
 

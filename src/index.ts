@@ -1,15 +1,18 @@
 export * from "./application/candidate-experiment.js";
 export * from "./application/candidate-review.js";
 export * from "./application/builder-authoring.js";
+export * from "./application/builder-corpus-draft.js";
 export * from "./application/builder-discard.js";
 export * from "./application/builder-proposal.js";
 export * from "./application/builder-candidate.js";
 export * from "./application/corpus-target.js";
 export * from "./application/corpus-draft.js";
+export * from "./application/harness-authoring.js";
 export * from "./application/target-bootstrap.js";
 export * from "./builders/adapters.js";
 export * from "./builders/pi-executor.js";
 export * from "./builder/extension.js";
+export * from "./builder/commands.js";
 export * from "./builder/project-context.js";
 export * from "./builder/runtime.js";
 export * from "./bundle.js";
@@ -28,6 +31,11 @@ export * from "./runner.js";
 export * from "./storage/artifacts.js";
 export * from "./spec.js";
 export * from "./target/runtime.js";
+export {
+	runInteractiveTarget,
+	type RunInteractiveTargetOptions,
+} from "./target/interactive.js";
 export * from "./target/tool-broker.js";
 export * from "./target/tool-manifest.js";
 export * from "./trace.js";
+export * from "./workbench/index.js";

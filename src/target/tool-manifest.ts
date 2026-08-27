@@ -250,17 +250,20 @@ export function resolveStrictTargetFile(rootDir: string, path: string, label: st
 	return canonical;
 }
 
-function parseToolDescriptor(rootDir: string, descriptorPath: string, policy: TargetToolPolicyEnvelope): ResolvedTargetTool {
+/**
+ * Validate a parsed target-tool descriptor without consulting the filesystem.
+ * Authoring code uses this at the trust boundary before it compiles descriptor
+ * content into a proposal; runtime loading adds executable existence/mode
+ * checks below.
+ */
+export function validateTargetToolDescriptor(
+	value: unknown,
+	descriptorPath: string,
+	policy: TargetToolPolicyEnvelope,
+): TargetToolDescriptor {
 	const pathMatch = TOOL_DESCRIPTOR_PATH.exec(descriptorPath);
 	if (!pathMatch) throw new Error(`tool descriptor path must match tools/<name>.tool.yaml: ${descriptorPath}`);
-	const descriptorFile = resolveStrictTargetFile(rootDir, descriptorPath, "tool descriptor");
-	let parsedYaml: unknown;
-	try {
-		parsedYaml = parseYaml(readFileSync(descriptorFile, "utf8"));
-	} catch (error) {
-		throw new Error(`${descriptorPath}: invalid YAML (${(error as Error).message})`);
-	}
-	const parsed = RawToolDescriptor.safeParse(parsedYaml);
+	const parsed = RawToolDescriptor.safeParse(value);
 	if (!parsed.success) throw new Error(`${descriptorPath}: ${parsed.error.message}`);
 	const descriptor = parsed.data as TargetToolDescriptor;
 	if (descriptor.name !== pathMatch[1] || basename(descriptorPath) !== `${descriptor.name}.tool.yaml`) {
@@ -291,6 +294,20 @@ function parseToolDescriptor(rootDir: string, descriptorPath: string, policy: Ta
 	if (!executablePath?.startsWith("bin/")) {
 		throw new Error(`${descriptorPath}: command argv[0] must be a target-relative bin/ path`);
 	}
+	return descriptor;
+}
+
+function parseToolDescriptor(rootDir: string, descriptorPath: string, policy: TargetToolPolicyEnvelope): ResolvedTargetTool {
+	const descriptorFile = resolveStrictTargetFile(rootDir, descriptorPath, "tool descriptor");
+	let parsedYaml: unknown;
+	try {
+		parsedYaml = parseYaml(readFileSync(descriptorFile, "utf8"));
+	} catch (error) {
+		throw new Error(`${descriptorPath}: invalid YAML (${(error as Error).message})`);
+	}
+	const descriptor = validateTargetToolDescriptor(parsedYaml, descriptorPath, policy);
+	const executablePath = descriptor.command.argv[0];
+	if (!executablePath) throw new Error(`${descriptorPath}: command argv must not be empty`);
 	const executable = resolveStrictTargetFile(rootDir, executablePath, `tool ${descriptor.name} executable`);
 	try {
 		accessSync(executable, constants.X_OK);

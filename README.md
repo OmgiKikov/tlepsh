@@ -68,9 +68,34 @@ Builder: Подготовил Proposal для AGENTS.md и skills/search.
 Builder: Показываю точный diff для подтверждения.
 ```
 
+The same loop has compact Pi commands:
+
+```text
+/status                 current stage and legal next actions
+/run [repetitions]      run the selected development eval or candidate check
+/traces                 diagnosis and read-only localhost trace link
+/review                 exact Spec, corpus, proposal, or candidate under review
+/apply <branch>         human-gated application of the exact proposal
+/discard                discard a proposal or abandon an interrupted candidate
+/target                 exact Target summary and standalone launch command
+```
+
 Builder Pi has no generic shell, edit, or write tool. It can act only through
 the packaged AHDE tools, which expose bounded views and call the deterministic
 application core.
+
+The model-facing control surface is intentionally only three deep operations:
+
+- `ahde_workbench_view` reads the restart-safe stage and bounded evidence;
+- `ahde_workbench_submit` authors drafts, revisions, semantic Harness intents,
+  or an explicit selection without granting authority;
+- `ahde_workbench_decide` requests one stage-legal transition through the
+  trusted human gate.
+
+The Workbench derives state from validated immutable artifacts and receipts.
+Its small atomic `focus.json` only resolves an explicit selection; it cannot
+manufacture an approval, corpus lineage, proposal decision, or candidate
+outcome.
 
 ## What gets built
 
@@ -113,6 +138,21 @@ trusted host environment. You can then validate without making a model call:
 ahde validate --target .
 ```
 
+To talk to the built agent itself, launch a separate disposable Runtime Pi:
+
+```bash
+ahde target --target .
+ahde target --target . --message "Start with this task"
+```
+
+This is not Builder Pi in another mode. AHDE starts it in a dedicated child
+process with a hash-checked workspace snapshot, manifest-declared skills and
+tools, an in-memory session, and a private credential store. Its Node loader
+starts without inherited environment; selected credential, runtime allowlist,
+and fixed display/locale values arrive only over post-startup IPC. Interactive
+shell escapes and ambient session/import switching are disabled. Nothing from
+this conversation becomes canonical eval evidence.
+
 ## The canonical loop
 
 Builder Pi uses four packaged workflow skills:
@@ -126,9 +166,9 @@ The durable loop is:
 
 ```text
 Spec draft --human approve--> approved Spec
-development cases --human publish--> development Corpus
+Spec-bound corpus revisions --human publish--> development Corpus + lineage
 Target runs --> deterministic Diagnosis --> read-only evidence link
-typed Proposal --human apply--> candidate commit
+semantic Harness intents --> compiled exact Proposal --human apply--> candidate commit
 matched development + sealed evaluation --> human review
 review --human decision--> promoted immutable revision or rejection
 ```
@@ -138,6 +178,13 @@ Their tool schemas do not accept model-supplied `actor`, `approved`, or
 `confirmed` fields. In interactive TUI mode AHDE reloads the subject, displays
 the exact hash or diff, asks the operator, revalidates it, and writes a durable
 receipt. Consequential calls fail closed outside an interactive TUI.
+
+Corpus revisions are immutable and content-addressed. Publishing records both
+the canonical Corpus receipt and an exact Workbench lineage binding approved
+Spec, reviewed draft, and development dataset hash. A compatible EvalRun must
+additionally match the current Target revision and suite hash. Structured
+Harness authoring accepts semantic instruction/skill/tool intents; only the host
+compiler chooses repository paths, file modes, hashes, and unified diffs.
 
 ## Evidence Explorer
 
@@ -234,7 +281,8 @@ candidate revision. A manual experiment or unconfined run cannot be promoted.
   manifest.yaml, AGENTS.md, skills/**, tools/**, bin/**, evals/**
 
 <state-root>/projects/<project-id>/
-  specs/**, corpus-drafts/**, corpora/**, approval receipts
+  specs/**, builder-corpus-drafts/**, corpora/**, approval receipts
+  workbench/{focus.json,corpus-publications/**,candidate-abandonments/**}
 
 <state-root>/builder-pi/
   config/**, sessions/**
@@ -280,17 +328,21 @@ template's declarative `echo_json` tool through the OS sandbox, and exercises
 the read-only Evidence Explorer over a real loopback HTTP socket. The separate
 natural-language acceptance test drives a real Builder Pi model/tool session
 through Spec, eval, Proposal, sealed verification, review, and promotion. The
-package gate also rejects stale Studio, companion, or superseded Workbench files.
+package gate also rejects stale Studio, companion, and retired Workbench-TUI
+files.
 
 ## Architecture
 
 | Module | Owns |
 |---|---|
 | `src/builder/runtime.ts` | isolated long-lived Builder Pi host |
-| `src/builder/extension.ts` | narrow trusted AHDE tools and TUI gates |
+| `src/builder/extension.ts` | Workbench tools, compatibility tools, and TUI gates |
+| `src/builder/commands.ts` | Pi-like workflow and decision shortcuts |
 | `src/builder/project-context.ts` | bounded public Target/evidence views |
 | `src/application/**` | deterministic Spec/Corpus/Proposal/Candidate use cases |
+| `src/workbench/**` | restart-safe orchestration, state derivation, and legal transitions |
 | `src/target/runtime.ts` | the single Target Pi construction seam |
+| `src/target/interactive.ts` | dedicated disposable interactive Runtime Pi process |
 | `src/target/tool-manifest.ts` | declarative tool validation and identity |
 | `src/target/tool-broker.ts` | confined subprocess execution |
 | `src/runner.ts`, `src/eval.ts`, `src/trace.ts` | isolated execution and evidence |
@@ -298,9 +350,11 @@ package gate also rejects stale Studio, companion, or superseded Workbench files
 | `src/application/candidate-experiment.ts` | exact matched candidate evaluation |
 | `src/application/candidate-review.ts` | review, rejection, and promotion authority |
 
-See [CONTEXT.md](CONTEXT.md) for domain language and invariants and
-[docs/V1_1_WORKBENCH_PLAN.md](docs/V1_1_WORKBENCH_PLAN.md) for the reviewed
-two-Pi implementation plan.
+See [CONTEXT.md](CONTEXT.md) for domain language and invariants,
+[docs/V1_2_BUILDER_WORKBENCH.md](docs/V1_2_BUILDER_WORKBENCH.md) for the
+implemented Builder Workbench, and
+[docs/V1_1_WORKBENCH_PLAN.md](docs/V1_1_WORKBENCH_PLAN.md) for the historical
+two-Pi plan it supersedes.
 
 ## Deliberately out of scope
 

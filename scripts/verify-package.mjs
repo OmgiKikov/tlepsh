@@ -46,6 +46,8 @@ try {
 		"builders/ahde/skills/design-evals/SKILL.md",
 		"builders/ahde/skills/run-diagnose/SKILL.md",
 		"builders/ahde/skills/improve-harness/SKILL.md",
+		"dist/workbench/workbench.js",
+		"dist/target/process-entry.js",
 	]) {
 		if (!packedPaths.has(required)) throw new Error(`packed Builder asset is missing: ${required}`);
 	}
@@ -58,7 +60,7 @@ try {
 	);
 	if (forbiddenPackedPaths.length > 0) {
 		throw new Error(
-			`packed artifact contains removed Studio/companion/Workbench files: ${forbiddenPackedPaths.slice(0, 20).join(", ")}`,
+			`packed artifact contains removed Studio/companion/Workbench-TUI files: ${forbiddenPackedPaths.slice(0, 20).join(", ")}`,
 		);
 	}
 	const tarball = join(packDir, filename);
@@ -88,12 +90,14 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import {
-  AHDE_BUILDER_TOOL_NAMES,
+	AHDE_BUILDER_COMMAND_NAMES,
+	AHDE_BUILDER_TOOL_NAMES,
   applyBuilderProposal,
   approveBuilderSpecDraft,
   candidateStatus,
   createCorpus,
   createEvidenceExplorer,
+	createAhdeWorkbench,
   createTargetToolRuntime,
   describeDevelopmentCorpusPublication,
   describeSpecDraftApproval,
@@ -107,18 +111,21 @@ import {
   resolveBuilderAssets,
   reviewCandidate,
   runAppliedBuilderCandidate,
+	runInteractiveTarget,
   runSuite,
   saveBuilderSpecDraft,
   targetWithDevelopmentCorpus,
 } from "ahde";
 
 for (const [name, value] of Object.entries({
-  AHDE_BUILDER_TOOL_NAMES,
+	AHDE_BUILDER_COMMAND_NAMES,
+	AHDE_BUILDER_TOOL_NAMES,
   applyBuilderProposal,
   approveBuilderSpecDraft,
   candidateStatus,
   createCorpus,
   createEvidenceExplorer,
+	createAhdeWorkbench,
   createTargetToolRuntime,
   describeDevelopmentCorpusPublication,
   describeSpecDraftApproval,
@@ -132,12 +139,15 @@ for (const [name, value] of Object.entries({
   resolveBuilderAssets,
   reviewCandidate,
   runAppliedBuilderCandidate,
+	runInteractiveTarget,
   runSuite,
   saveBuilderSpecDraft,
   targetWithDevelopmentCorpus,
 })) {
   if (name === "AHDE_BUILDER_TOOL_NAMES") {
     if (!Array.isArray(value) || value.length < 20) throw new Error("Builder tool allowlist was not exported");
+  } else if (name === "AHDE_BUILDER_COMMAND_NAMES") {
+    if (!Array.isArray(value) || value.length !== 7) throw new Error("Builder command surface was not exported");
   } else if (typeof value !== "function") {
     throw new Error(\`public API \${name} is not a function\`);
   }
@@ -238,15 +248,22 @@ await launchBuilderPi({
       throw new Error("Builder Pi did not receive exactly one trusted AHDE extension");
     }
     const registeredTools = [];
+    const registeredCommands = [];
     const handlers = new Map();
     await factories[0].factory({
       on(event, handler) { handlers.set(event, handler); },
       registerTool(tool) { registeredTools.push(tool); },
+      registerCommand(name, command) { registeredCommands.push({ name, command }); },
     });
     const expectedNames = [...AHDE_BUILDER_TOOL_NAMES].sort();
     const actualNames = registeredTools.map((tool) => tool.name).sort();
     if (JSON.stringify(actualNames) !== JSON.stringify(expectedNames)) {
       throw new Error(\`Builder extension registered an unexpected tool surface: \${actualNames.join(", ")}\`);
+    }
+    const expectedCommands = [...AHDE_BUILDER_COMMAND_NAMES].sort();
+    const actualCommands = registeredCommands.map(({ name }) => name).sort();
+    if (JSON.stringify(actualCommands) !== JSON.stringify(expectedCommands)) {
+      throw new Error(\`Builder extension registered an unexpected command surface: \${actualCommands.join(", ")}\`);
     }
     const guard = handlers.get("tool_call");
     const bashGuard = handlers.get("user_bash");

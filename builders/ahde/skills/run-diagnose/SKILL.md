@@ -5,19 +5,21 @@ description: Inspect evaluation results, generate deterministic diagnosis, and c
 
 # Run and diagnose
 
-1. For a new measurement, call `ahde_eval_run_development` with the exact
-   published development corpus (or the manifest suite) and repetition count.
-   The host confirms the cost/evaluation subject before execution.
-2. Use `ahde_eval_list` to select existing immutable evidence; never invent a
-   run id.
-3. Use `ahde_eval_get` for the score, provenance, dataset hash, and execution
-   status. Infrastructure errors make the result inconclusive.
-4. Use `ahde_eval_diagnose` to derive failure families from verified run
-   records. Do not infer a harness flaw from a single anecdote when repeated
-   evidence exists.
+1. Inspect `ahde_workbench_view`; run only when its legal actions contain
+   `run`. Use `/run [repetitions]` or request `run-current` through
+   `ahde_workbench_decide`. The host confirms the exact cost and subject.
+2. Workbench binds the approved Spec, reviewed development corpus, exact Target
+   revision, dataset hash, and suite hash. Select among ambiguous artifacts
+   explicitly with `ahde_workbench_submit`; never invent an id.
+3. Use `/traces` or `ahde_workbench_view` with `aspect: traces` for score,
+   provenance, deterministic diagnosis, and the read-only evidence link.
+   Infrastructure errors make the result inconclusive and do not advance the
+   Workbench stage.
+4. Do not infer a harness flaw from a single anecdote when repeated evidence
+   exists.
 5. Report pass/total, error count, largest failure families, confidence, and
    the next decision the evidence supports.
-6. Use `ahde_evidence_link` when the operator wants to inspect traces. Keep
-   large raw traces out of chat.
+6. Keep large raw traces out of chat; offer the loopback Evidence Explorer link
+   returned by the traces view.
 
 Never use sealed holdout evidence to author a remediation proposal.

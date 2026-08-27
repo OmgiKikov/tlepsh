@@ -34,7 +34,7 @@ parameters:
   additionalProperties: false
 command:
   argv: [bin/echo_json]
-timeoutMs: 1000
+timeoutMs: 5000
 maxOutputBytes: 8192
 output: json
 permissions:
@@ -299,7 +299,7 @@ describe("Target tool broker and Pi registration", () => {
 			},
 			{
 				name: "timeout",
-				descriptor: VALID_DESCRIPTOR.replace("timeoutMs: 1000", "timeoutMs: 25"),
+				descriptor: VALID_DESCRIPTOR.replace("timeoutMs: 5000", "timeoutMs: 25"),
 				executable: "#!/bin/sh\nwhile :; do :; done\n",
 				error: /timed out after 25ms/,
 			},

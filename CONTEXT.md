@@ -10,8 +10,14 @@ the harness under development runs in a different Target Pi invocation.
 - **Project** — the user-owned directory containing the agent specification and harness.
 - **Spec** — the reviewed product contract for the agent: users, jobs, inputs, allowed actions, success criteria, and constraints.
 - **Harness** — instructions, skills, and declared tools that shape the Target without changing its model weights.
-- **Target** — a fresh Pi agent invocation being evaluated. It receives one task input and only the capabilities declared by its Harness.
+- **Target** — a fresh Pi agent invocation being evaluated, or one disposable
+  interactive Runtime Pi launched from the same resolved Harness. It receives
+  only the capabilities declared by its Harness.
 - **Builder** — a long-lived Pi agent that converses with the operator and invokes trusted, typed AHDE tools to design and improve a Harness. A Builder is never the Target it edits.
+- **Workbench** — the deep host-owned orchestration module behind Builder Pi.
+  Its `view`, `submit`, and `decide` operations derive the legal stage from
+  validated immutable artifacts and receipts; mutable focus is selection only,
+  never authority.
 - **Corpus Draft** — private, immutable, agent-synthesized cases derived from one exact approved Spec. It is not runnable until a human explicitly publishes reviewed tasks.
 - **Corpus** — versioned evaluation cases and graders. Development cases may be shown to the Builder; sealed holdout cases may not.
 - **Harness Snapshot** — an immutable Git revision plus the exact Harness fingerprint used by a run.
@@ -20,7 +26,12 @@ the harness under development runs in a different Target Pi invocation.
 - **Run** — one Target execution for one case and repetition.
 - **Eval Run** — a set of Runs evaluated under one Experiment Design.
 - **Diagnosis** — structured failure families and evidence links derived from an Eval Run. Markdown and HTML are renderings, not the source of truth.
-- **Proposal** — a Builder-authored, typed set of Harness file replacements tied to an exact approved Spec, baseline snapshot, and optional development Eval/Diagnosis evidence.
+- **Harness Authoring Intent** — a semantic instruction/skill/tool change
+  request. The host compiler, not Builder Pi, derives paths, modes, hashes,
+  manifest declarations, and exact diffs from a clean Target snapshot.
+- **Proposal** — the immutable exact Harness file replacement set compiled from
+  Harness Authoring Intents and tied to an approved Spec, baseline snapshot,
+  and optional development Eval/Diagnosis evidence.
 - **Candidate** — a committed Harness Snapshot created from a human-applied Proposal and linked to the exact approved Spec used by its Builder.
 - **Candidate Experiment** — the deep module that validates lineage and scope, evaluates exact baseline/candidate revisions, compares them, and records a human decision.
 - **Promotion** — a human-approved immutable decision that tags the exact evaluated candidate revision. It is not autonomous deployment.
@@ -33,7 +44,7 @@ two modes of one session.
 
 | Boundary | Builder Pi | Target Pi |
 |---|---|---|
-| Lifetime | Long-lived operator conversation | Fresh session per evaluated task |
+| Lifetime | Long-lived operator conversation | Fresh session per evaluated task or one disposable interactive child |
 | System instructions | Packaged `builders/ahde/AGENTS.md` | Target-owned `AGENTS.md` |
 | Skills | Packaged AHDE Builder skills only | Manifest-declared Target skills only |
 | Tools | Trusted typed AHDE extension only | Policy-approved built-ins and declarative subprocess tools |
@@ -82,3 +93,30 @@ cannot perform state transitions.
     Changes to the live Target cannot be attributed only to an unchanged Git SHA.
 19. Apply and Discard are durable, mutually exclusive terminal decisions for one
     exact Builder Proposal.
+20. Workbench may advance only from receipt-backed, revalidated artifacts in
+    the exact selected lineage. A Spec approval cannot authorize another Spec's
+    corpus, and a development corpus cannot be reused across Spec or Target
+    identities merely because mutable focus points at it.
+21. Corpus publication records an immutable Workbench lineage binding the exact
+    approved Spec, reviewed corpus draft, canonical publication receipt,
+    and development dataset hash. Publication is restart-safe across a crash
+    between the canonical receipt and lineage record. Eval compatibility then
+    additionally requires the current Target revision and suite hash, so the
+    same reviewed corpus can measure a later exact Target without re-publication.
+22. Every consequential Workbench decision is legal only in its derived stage.
+    `/run` cannot skip Spec or corpus review, and inconclusive execution cannot
+    advance the workflow.
+23. Interactive Target Pi runs in a dedicated child over a hash-checked
+    workspace snapshot with frozen Harness resources and an in-memory session.
+    The Node loader starts without inherited environment; credential,
+    allowlisted runtime values, and fixed display/locale values arrive only over
+    post-startup IPC. Shell escapes, undeclared tools, and ambient resume/import
+    switching are denied.
+24. An interrupted candidate is neither failed nor retryable by omission. A
+    human must write an exact immutable abandonment receipt before Workbench
+    may start a replacement verification attempt.
+25. Candidate authority is transitive and exact. An applied candidate is usable
+    only while its Builder run, Builder input, Proposal, Apply receipt, approved
+    Spec, and optional Eval/diagnosis source artifacts rehash to the admitted
+    receipt-backed lineage. Candidate records from another project are not part
+    of the current Workbench inventory.

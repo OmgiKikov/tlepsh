@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Check } from "typebox/value";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	AHDE_BUILDER_TOOL_NAMES,
@@ -9,6 +10,15 @@ import {
 	createAhdeBuilderExtension,
 	createAhdeBuilderTools,
 } from "../src/builder/extension.js";
+import { AHDE_BUILDER_COMMAND_NAMES } from "../src/builder/commands.js";
+import {
+	WorkbenchDecisionParameters,
+	WorkbenchSubmitParameters,
+} from "../src/builder/workbench-transport.js";
+import {
+	WorkbenchDecisionInputSchema,
+	WorkbenchSubmitInputSchema,
+} from "../src/workbench/types.js";
 import { saveSpecSnapshot, type AgentSpec } from "../src/spec.js";
 import type { PersistedBuilderRun } from "../src/application/builder-proposal.js";
 import { hashValue } from "../src/provenance.js";
@@ -58,6 +68,62 @@ function textDetails(result: Awaited<ReturnType<ToolDefinition["execute"]>>): un
 }
 
 describe("Builder Pi extension registry", () => {
+	it("keeps Workbench transport bounds aligned with canonical application schemas", () => {
+		const corpusDraft = {
+			kind: "corpus-draft",
+			name: "routing cases",
+			tasks: [{
+				input: "Route this support request",
+				graders: [{ type: "output_contains", text: "billing" }],
+			}],
+			coverageNotes: ["Covers the billing route"],
+			revisionSummary: "Initial bounded corpus",
+		};
+		const corpusRevision = {
+			kind: "corpus-revision",
+			operations: Array.from({ length: 200 }, () => ({ type: "rename", name: "bounded" })),
+			revisionSummary: "Maximum bounded operation count",
+		};
+		const structuredProposal = {
+			kind: "structured-proposal",
+			summary: "Maximum bounded intent count",
+			intents: Array.from({ length: 32 }, () => ({
+				type: "instructions.replace",
+				content: "Bounded instructions",
+			})),
+			validationPlan: ["Run the development eval"],
+		};
+		for (const accepted of [
+			corpusDraft,
+			{ ...corpusDraft, coverageNotes: ["x".repeat(1_000)] },
+			corpusRevision,
+			structuredProposal,
+		]) {
+			expect(Check(WorkbenchSubmitParameters, accepted)).toBe(true);
+			expect(WorkbenchSubmitInputSchema.safeParse(accepted).success).toBe(true);
+		}
+
+		for (const invalid of [
+			{
+				...corpusDraft,
+				coverageNotes: ["x".repeat(1_001)],
+			},
+			{
+				...corpusDraft,
+				tasks: [{ input: "Route this", graders: [{ type: "opaque_grader" }] }],
+			},
+			{ ...corpusRevision, operations: [...corpusRevision.operations, { type: "rename", name: "one-too-many" }] },
+			{ ...structuredProposal, intents: [...structuredProposal.intents, { type: "instructions.replace", content: "One too many" }] },
+		]) {
+			expect(Check(WorkbenchSubmitParameters, invalid)).toBe(false);
+			expect(WorkbenchSubmitInputSchema.safeParse(invalid).success).toBe(false);
+		}
+
+		const blankDecision = { kind: "run-current", repetitions: 1, reason: "   " };
+		expect(Check(WorkbenchDecisionParameters, blankDecision)).toBe(false);
+		expect(WorkbenchDecisionInputSchema.safeParse(blankDecision).success).toBe(false);
+	});
+
 	it("registers only narrow AHDE tools and keeps authority out of dangerous schemas", () => {
 		const projectDir = root("ahde-builder-project-");
 		const tools = createAhdeBuilderTools({
@@ -72,21 +138,30 @@ describe("Builder Pi extension registry", () => {
 		for (const name of CONSEQUENTIAL_BUILDER_TOOL_NAMES) {
 			const tool = tools.find((candidate) => candidate.name === name);
 			expect(tool).toBeDefined();
-			const properties = (tool!.parameters as { properties?: Record<string, unknown> }).properties ?? {};
-			expect(Object.keys(properties)).not.toEqual(expect.arrayContaining([
-				"actor",
-				"actorId",
-				"approved",
-				"confirmed",
-				"approvalToken",
-			]));
-			expect((tool!.parameters as { additionalProperties?: boolean }).additionalProperties).toBe(false);
+			const parameterSchema = tool!.parameters as {
+				properties?: Record<string, unknown>;
+				additionalProperties?: boolean;
+				anyOf?: { properties?: Record<string, unknown>; additionalProperties?: boolean }[];
+			};
+			const alternatives = parameterSchema.anyOf ?? [parameterSchema];
+			for (const alternative of alternatives) {
+				const properties = alternative.properties ?? {};
+				expect(Object.keys(properties)).not.toEqual(expect.arrayContaining([
+					"actor",
+					"actorId",
+					"approved",
+					"confirmed",
+					"approvalToken",
+				]));
+				expect(alternative.additionalProperties).toBe(false);
+			}
 		}
 	});
 
 	it("registers the same bounded registry through the real Pi extension factory", async () => {
 		const projectDir = root("ahde-builder-project-");
 		const registered: ToolDefinition[] = [];
+		const commands: string[] = [];
 		const handlers = new Map<string, (...args: never[]) => unknown>();
 		const extension = createAhdeBuilderExtension({
 			projectDir,
@@ -96,9 +171,11 @@ describe("Builder Pi extension registry", () => {
 		});
 		await extension({
 			registerTool: (tool: ToolDefinition) => registered.push(tool),
+			registerCommand: (name: string) => commands.push(name),
 			on: (event: string, handler: (...args: never[]) => unknown) => handlers.set(event, handler),
 		} as never);
 		expect(registered.map((tool) => tool.name)).toEqual(AHDE_BUILDER_TOOL_NAMES);
+		expect(commands).toEqual(AHDE_BUILDER_COMMAND_NAMES);
 		expect(handlers.get("user_bash")?.()).toMatchObject({
 			result: { exitCode: 126, output: expect.stringContaining("disables interactive shell") },
 		});
