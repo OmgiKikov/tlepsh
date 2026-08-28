@@ -1,9 +1,11 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { RunEvent, RunEventListener } from "../run-events.js";
+import { sanitizeTerminalText } from "../trace.js";
 
 const UI_KEY = "ahde-run-progress";
 const HEADER = "AHDE · provisional development trace";
-const MAX_WIDGET_LINES = 40;
+// Pi renders at most ten entries from a string-array widget.
+const MAX_WIDGET_LINES = 10;
 const MAX_WIDGET_BYTES = 32 * 1024;
 const MAX_LINE_BYTES = 8 * 1024;
 const ASSISTANT_PREFIX = "assistant · ";
@@ -21,24 +23,6 @@ export interface RunProgressPresenterOptions {
 
 function byteLength(value: string): number {
 	return Buffer.byteLength(value, "utf8");
-}
-
-/**
- * Run text is untrusted. Strip terminal control strings before they reach Pi's
- * renderer so a Target cannot spoof the TUI or write through OSC/APC channels.
- */
-function sanitizeTerminalText(value: string): string {
-	return value
-		.replace(/\u001B\][\s\S]*?(?:\u0007|\u001B\\)/g, "")
-		.replace(/[\u009D][\s\S]*?(?:\u0007|\u009C)/g, "")
-		.replace(/\u001B[PX^_][\s\S]*?\u001B\\/g, "")
-		.replace(/[\u0090\u0098\u009E\u009F][\s\S]*?\u009C/g, "")
-		.replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "")
-		.replace(/\u009B[0-?]*[ -/]*[@-~]/g, "")
-		.replace(/\u001B[ -/]*[0-~]/g, "")
-		.replace(/\r\n?/g, "\n")
-		.replace(/\t/g, "    ")
-		.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "");
 }
 
 function truncateEnd(value: string, maxBytes: number): string {

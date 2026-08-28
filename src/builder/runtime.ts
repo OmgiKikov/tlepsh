@@ -6,6 +6,21 @@ import { createAhdeBuilderExtension, type BuilderExtensionDependencies } from ".
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const BUILDER_SKILLS = ["design-agent", "design-evals", "run-diagnose", "improve-harness"] as const;
+export const AHDE_BUILDER_BUILTIN_COMMANDS = [
+	"login",
+	"logout",
+	"model",
+	"thinking",
+	"compact",
+	"new",
+	"resume",
+	"session",
+	"name",
+	"copy",
+	"hotkeys",
+	"quit",
+] as const;
+export const AHDE_BUILDER_PREFERRED_EXTENSION_COMMANDS = ["help", "status"] as const;
 
 export interface BuilderAssets {
 	root: string;
@@ -22,6 +37,8 @@ export interface LaunchBuilderPiOptions {
 	projectId?: string;
 	packageRoot?: string;
 	piArgs?: string[];
+	/** Host-controlled private session entry; caller Pi flags remain forbidden. */
+	sessionMode?: "new" | "resume";
 	dependencies?: Partial<BuilderExtensionDependencies>;
 	main?: (args: string[], options?: MainOptions) => Promise<void>;
 	extensionFactory?: ExtensionFactory;
@@ -106,6 +123,7 @@ export function buildBuilderPiArgs(input: {
 	assets: BuilderAssets;
 	sessionDir: string;
 	piArgs?: readonly string[];
+	sessionMode?: "new" | "resume";
 }): string[] {
 	return [
 		"--no-builtin-tools",
@@ -117,6 +135,7 @@ export function buildBuilderPiArgs(input: {
 		"--session-dir", input.sessionDir,
 		"--system-prompt", input.assets.systemPrompt,
 		...input.assets.skillPaths.flatMap((path) => ["--skill", path]),
+		...(input.sessionMode === "resume" ? ["--resume"] : []),
 		...validateBuilderPiArgs(input.piArgs ?? []),
 	];
 }
@@ -144,7 +163,12 @@ export async function launchBuilderPi(options: LaunchBuilderPiOptions = {}): Pro
 		templateDir: assets.targetTemplateDir,
 		dependencies: options.dependencies,
 	});
-	const args = buildBuilderPiArgs({ assets, sessionDir, piArgs: options.piArgs });
+	const args = buildBuilderPiArgs({
+		assets,
+		sessionDir,
+		piArgs: options.piArgs,
+		sessionMode: options.sessionMode ?? "new",
+	});
 	const runMain = options.main ?? piMain;
 
 	const previousCwd = process.cwd();
@@ -156,6 +180,10 @@ export async function launchBuilderPi(options: LaunchBuilderPiOptions = {}): Pro
 		process.env.PI_CODING_AGENT_SESSION_DIR = sessionDir;
 		await runMain(args, {
 			extensionFactories: [{ name: "ahde-builder", factory: extensionFactory }],
+			allowedBuiltinCommands: AHDE_BUILDER_BUILTIN_COMMANDS,
+			preferredExtensionCommands: AHDE_BUILDER_PREFERRED_EXTENSION_COMMANDS,
+			allowBash: false,
+			resumeHint: false,
 		});
 	} finally {
 		process.chdir(previousCwd);

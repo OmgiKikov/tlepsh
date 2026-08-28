@@ -22,12 +22,7 @@ Primary interface:
 - Use `ahde_workbench_decide` only for the exact human-gated transition named
   by the current Workbench stage. The host owns confirmation, actor identity,
   and sealed-corpus selection.
-- The older exact-purpose `ahde_*` tools are compatibility and bootstrap
-  surfaces. Use `ahde_target_scaffold` and `ahde_target_configure_model` only
-  when Workbench reports `target-setup`; otherwise stay inside the three-call
-  Workbench interface unless its view explicitly says a compatibility action
-  is required.
-- The TUI commands `/status`, `/run`, `/traces`, `/review`, `/apply`,
+- The TUI commands `/help`, `/doctor`, `/status`, `/run`, `/traces`, `/review`, `/apply`,
   `/discard`, and `/target` are human shortcuts over the same Workbench. Do not
   imitate their effects in prose.
 
@@ -37,8 +32,7 @@ Core rules:
   a time when important product facts are missing.
 - Treat Spec, corpus, eval, diagnosis, proposal, candidate, and promotion
   records as typed artifacts with immutable ids and hashes.
-- Read Target resources only through the bounded Workbench Target view or
-  `ahde_target_read` during bootstrap/compatibility work. Private `.ahde`
+- Read Target resources only through the bounded Workbench Target view. Private `.ahde`
   state, raw runs, credentials, `.git`, `.env`, and sealed corpus content are
   outside your authority.
 - Use development examples to improve the harness. Sealed holdout content is
@@ -56,19 +50,20 @@ Core rules:
 - Prefer the smallest evidence-backed harness change. Do not change model
   weights; AHDE is harness engineering, not reinforcement learning.
 - Match the operator's language and keep routine status summaries compact.
-- In an otherwise empty current directory, use `ahde_target_scaffold`, then
-  `ahde_target_configure_model`, before creating project artifacts. The first
-  initializes only that exact directory from the packaged template. The second
-  makes the one allowed bootstrap commit for the final Target id and complete
-  non-secret model definition.
+- In an otherwise empty current directory, request `scaffold-target`, then
+  `configure-target`, through `ahde_workbench_decide` before creating project
+  artifacts. The first initializes only that exact directory from the trusted
+  starter. The second makes the one allowed bootstrap commit for the final
+  Target id and complete non-secret model definition. These are normal
+  Workbench transitions, not a separate preset or compatibility workflow.
 - Never ask for, accept, or repeat a model credential value. Bootstrap accepts
   only the environment-variable name; the operator configures its value
   through the trusted host credential path outside this conversation.
 
 Typical loop:
 
-1. Call `ahde_workbench_view`. If it reports `target-setup`, use the two
-   bootstrap tools and return to Workbench.
+1. Call `ahde_workbench_view`. If it reports `target-setup`, request its exact
+   listed Workbench decision (`scaffold-target` or `configure-target`).
 2. Interview in natural language, submit a typed `spec-draft`, inspect
    `aspect: review`, and request `approve-spec` only when the operator asks.
 3. Submit a Spec-bound `corpus-draft`, or use `corpus-import` when the operator
@@ -82,9 +77,11 @@ Typical loop:
    case, revise the selected draft with `add-case-from-run`. Reference the exact
    EvalRun and Run, author a new task, and never use a passing, infrastructure,
    foreign, candidate, or sealed run.
-5. Submit a `structured-proposal` using semantic instruction/skill/tool
-   intents. Never supply raw repository paths, hashes, modes, or unified diffs;
-   the host compiler derives them from the clean Target snapshot.
+5. Submit a `structured-proposal` using semantic instruction, execution-policy,
+   skill, and tool intents. Capabilities such as network or environment access
+   are generic evidence-backed policy changes, never hidden presets. Never
+   supply raw repository paths, hashes, modes, or unified diffs; the host
+   compiler derives them from the clean Target snapshot.
 6. Inspect `/review`; let the operator choose exactly one durable outcome,
    `/apply <branch>` or `/discard`.
 7. Use `/run` to verify the applied candidate. The evaluator and human host

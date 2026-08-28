@@ -246,7 +246,16 @@ describe("compare table", () => {
 							toolErrors: 0,
 							recoveryAttempts: 0,
 						},
-						evalResults: { graders: [], outcome },
+						evalResults: {
+							graders: [{
+								name: "fixture",
+								type: "output_contains",
+								passed: outcome === "pass",
+								score: outcome === "pass" ? 1 : 0,
+								reason: outcome === "pass" ? "present" : "missing",
+							}],
+							outcome,
+						},
 						parent: null,
 					}),
 				);
@@ -295,9 +304,19 @@ describe("compare table", () => {
 		});
 		const runPath = join(runsRoot, "run-erun_integrity_c-0", "run.json");
 		const run = JSON.parse(readFileSync(runPath, "utf8")) as RunRecord;
+		const outcome = run.evalResults?.outcome === "pass" ? "fail" : "pass";
 		writeFileSync(runPath, JSON.stringify({
 			...run,
-			evalResults: { graders: [], outcome: run.evalResults?.outcome === "pass" ? "fail" : "pass" },
+			evalResults: {
+				graders: outcome === "pass" ? [] : [{
+					name: "tampered",
+					type: "output_contains",
+					passed: false,
+					score: 0,
+					reason: "tampered outcome",
+				}],
+				outcome,
+			},
 		}));
 		expect(() => compareEvalRuns(runsRoot, "erun_integrity_a", "erun_integrity_c")).toThrow(/hash does not match/);
 	});

@@ -3,6 +3,8 @@ import type { WorkbenchDecisionInput, WorkbenchStage } from "./types.js";
 type DirectDecisionKind = Exclude<WorkbenchDecisionInput["kind"], "run-current">;
 
 const LEGAL_DECISION_STAGES = {
+	"scaffold-target": ["target-setup"],
+	"configure-target": ["target-setup"],
 	"approve-spec": ["spec-review"],
 	"publish-corpus": ["corpus-review"],
 	"run-eval": ["ready-to-evaluate", "improvement-authoring"],

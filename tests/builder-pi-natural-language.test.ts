@@ -13,7 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { expect, it } from "vitest";
-import { createAhdeBuilderTools } from "../src/builder/extension.js";
+import { createAhdeBuilderCompatibilityTools as createAhdeBuilderTools } from "../src/builder/extension.js";
 import { resolveBuilderAssets } from "../src/builder/runtime.js";
 import { createCorpus } from "../src/corpus.js";
 import type { TargetManifest } from "../src/manifest.js";

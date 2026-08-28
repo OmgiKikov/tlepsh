@@ -158,6 +158,8 @@ function evalRecord(
 		suiteHash: target.suiteHash,
 		dataset: targetEvalSurface(target).dataset,
 		datasetHash: target.datasetHash,
+		evidenceVisibility: options.evidenceVisibility ?? "development",
+		taskIds: target.tasks.map((task) => task.id),
 		repetitions: options.repetitions,
 		runIds: Array.from({ length: options.repetitions }, (_, index) => `${id}-run-${index}`),
 		startedAt: "2026-08-26T10:00:00.000Z",
@@ -194,6 +196,7 @@ function reusableRecord(
 		suiteHash: query.provenance.suiteHash,
 		dataset: "development",
 		datasetHash: query.provenance.datasetHash,
+		evidenceVisibility: query.evidenceVisibility,
 		repetitions,
 		runIds: Array.from({ length: repetitions }, (_, index) => `reused-run-${index}`),
 		startedAt: "2026-08-26T09:00:00.000Z",
@@ -779,10 +782,13 @@ permissions:
 		expect(runtime.reuseQueries).toHaveLength(2);
 		for (const call of runtime.suiteCalls.slice(0, 2)) {
 			expect(call.options.onRunEvent).toBe(onRunEvent);
+			expect(call.options.evidenceVisibility).toBe("development");
 		}
 		for (const call of runtime.suiteCalls.slice(2)) {
 			expect(call.options).not.toHaveProperty("onRunEvent");
+			expect(call.options.evidenceVisibility).toBe("sealed");
 		}
+		expect(runtime.reuseQueries.map((query) => query.evidenceVisibility)).toEqual(["development", "sealed"]);
 		expect(runtime.suiteCalls.slice(0, 2).every((call) => call.target.datasetHash !== corpus.metadata.hash)).toBe(true);
 		for (const call of runtime.suiteCalls.slice(2)) {
 			expect(call.target.datasetHash).toBe(corpus.metadata.hash);
@@ -881,6 +887,7 @@ permissions:
 				repetitions: 3,
 			});
 		}
+		expect(runtime.reuseQueries.map((query) => query.evidenceVisibility)).toEqual(["development", "sealed"]);
 		expect(runtime.reuseQueries[0]?.provenance.datasetHash).not.toBe(corpus.metadata.hash);
 		expect(runtime.reuseQueries[1]?.provenance.datasetHash).toBe(corpus.metadata.hash);
 		expect(runtime.reuseQueries[1]?.provenance.suiteHash).not.toBe(

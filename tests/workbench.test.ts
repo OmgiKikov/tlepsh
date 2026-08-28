@@ -1,5 +1,6 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCorpus, loadCorpus } from "../src/corpus.js";
 import {
@@ -11,6 +12,7 @@ import {
 } from "../src/application/builder-authoring.js";
 import { loadBuilderCorpusDraft } from "../src/application/builder-corpus-draft.js";
 import { compileHarnessAuthoringProposal } from "../src/application/harness-authoring.js";
+import { compileImprovementBrief } from "../src/application/improvement-brief.js";
 import { recordBuilderAuthoredProposal } from "../src/application/builder-authoring.js";
 import { applyBuilderProposal } from "../src/application/builder-proposal.js";
 import { CANDIDATE_SCOPE_POLICY } from "../src/application/candidate-experiment.js";
@@ -32,6 +34,10 @@ import {
 } from "../src/provenance.js";
 import { saveSpecSnapshot, type AgentSpec } from "../src/spec.js";
 import { writeJsonArtifact } from "../src/storage/artifacts.js";
+import {
+	createBuilderWorkbench,
+	type BuilderWorkbenchDependencies,
+} from "../src/builder/workbench-adapter.js";
 import {
 	WorkbenchDecisionDeclinedError,
 	WorkbenchDecisionInputSchema,
@@ -212,6 +218,78 @@ function writeDevelopmentEval(
 }
 
 describe("AHDE Workbench", () => {
+	it("creates and configures one generic Target through the same human-gated decision seam", async () => {
+		const projectDir = mkdtempSync(join(tmpdir(), "ahde-workbench-empty-"));
+		roots.push(projectDir);
+		const stateRoot = join(projectDir, ".ahde");
+		const workbench = createAhdeWorkbench({
+			projectDir,
+			stateRoot,
+			runsRoot: join(projectDir, "runs"),
+			projectId: "research-agent",
+			templateDir: resolve("templates/basic-agent"),
+			dependencies: { now: () => NOW },
+		});
+
+		expect(await workbench.view()).toMatchObject({
+			stage: "target-setup",
+			actions: ["scaffold-target"],
+			target: { status: "missing" },
+		});
+		const scaffoldGate = gate();
+		const scaffolded = await workbench.decide({
+			kind: "scaffold-target",
+			reason: "Create the reviewed generic starter",
+		}, scaffoldGate);
+		expect(scaffolded.view).toMatchObject({
+			stage: "target-setup",
+			actions: ["configure-target"],
+			target: { status: "bootstrap-required", id: "my-agent" },
+		});
+		expect(scaffoldGate.confirm).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "scaffold-target",
+				subject: expect.objectContaining({
+					operation: "initialize-current-directory",
+					templateFiles: expect.any(Array),
+				}),
+			}),
+			undefined,
+		);
+
+		const configureGate = gate();
+		const configured = await workbench.decide({
+			kind: "configure-target",
+			targetId: "research-agent",
+			model: {
+				provider: "openai",
+				id: "gpt-test",
+				api: "openai-responses",
+				baseUrl: "https://api.openai.com/v1",
+				apiKeyEnv: "OPENAI_API_KEY",
+				thinkingLevel: "medium",
+				timeoutMs: 300_000,
+				params: {},
+				spec: {
+					reasoning: true,
+					contextWindow: 131_072,
+					maxTokens: 16_384,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					compat: {},
+				},
+			},
+			reason: "Bind the reviewed identity and non-secret model metadata",
+		}, configureGate);
+		expect(configured.view).toMatchObject({
+			stage: "spec-design",
+			target: { status: "ready", id: "research-agent" },
+		});
+		expect(configured.result).toMatchObject({
+			targetId: "research-agent",
+			credentialEnv: "OPENAI_API_KEY",
+		});
+	});
+
 	it("keeps host execution listeners outside the model-facing decision schema", () => {
 		const parsed = WorkbenchDecisionInputSchema.safeParse({
 			kind: "run-current",
@@ -285,6 +363,45 @@ describe("AHDE Workbench", () => {
 
 		const afterSecondRestart = createAhdeWorkbench({ ...paths, projectId: "test-target" });
 		expect((await afterSecondRestart.view()).focus["development-corpus"]).toBe(corpusId);
+	});
+
+	it("forwards an injected improvement compiler into Builder Workbench /traces", async () => {
+		const paths = target();
+		const setup = createAhdeWorkbench({ ...paths, projectId: "test-target", dependencies: { now: () => NOW } });
+		await setup.submit({ kind: "spec-draft", spec: spec() });
+		await setup.decide({ kind: "approve-spec", reason: "Approve exact trace fixture" }, gate());
+		await setup.submit({
+			kind: "corpus-draft",
+			name: "Trace fixture",
+			tasks: [task()],
+			coverageNotes: [],
+			revisionSummary: "Trace fixture",
+		});
+		const published = await setup.decide({ kind: "publish-corpus", reason: "Publish trace fixture" }, gate());
+		const evaluation = writeDevelopmentEval(paths, String(published.result.corpusId), "erun_adapter_compiler");
+		const injectedHeadline = "Injected Builder Workbench compiler was used.";
+		const injectedCompiler: typeof compileImprovementBrief = vi.fn((runsRoot, diagnosis) => ({
+			...compileImprovementBrief(runsRoot, diagnosis),
+			headline: injectedHeadline,
+		}));
+		const workbench = createBuilderWorkbench(
+			{ ...paths, projectId: "test-target" },
+			{
+				diagnoseEval: diagnoseEvalRun,
+				compileImprovementBrief: injectedCompiler,
+				evidenceLink: () => null,
+			} as unknown as BuilderWorkbenchDependencies,
+		);
+
+		const traces = await workbench.view({ aspect: "traces" });
+
+		expect(injectedCompiler).toHaveBeenCalledOnce();
+		expect(injectedCompiler).toHaveBeenCalledWith(
+			paths.runsRoot,
+			expect.objectContaining({ evalRunId: evaluation.evalRunId }),
+		);
+		expect((traces.detail?.content as { improvementBrief: { headline: string } }).improvementBrief.headline)
+			.toBe(injectedHeadline);
 	});
 
 	it("imports, regrades, publishes, derives a regression from verified failure evidence, and restores it after restart", async () => {
@@ -384,6 +501,17 @@ describe("AHDE Workbench", () => {
 			reason: "Measure the exact imported basket",
 		}, gate(), { onRunEvent });
 		expect(measured.result).toMatchObject({ resolvedAs: "run-eval", evaluation: { evalRunId } });
+		const measuredBrief = measured.result.improvementBrief as {
+			headline: string;
+			briefId: string;
+			summary: { taskLocalFailureModeCount: number };
+		};
+		expect(measured.message).toBe(measuredBrief.headline);
+		expect(measuredBrief.summary.taskLocalFailureModeCount).toBeGreaterThan(0);
+		const tracesView = await measuring.view({ aspect: "traces" });
+		expect((tracesView.detail?.content as {
+			improvementBrief: { briefId: string };
+		}).improvementBrief.briefId).toBe(measuredBrief.briefId);
 		const regressionTask: { input: string; graders: GraderSpec[] } = {
 			input: "Does the refund window still apply after an account migration?",
 			graders: [{ type: "output_contains", text: "30 days", caseSensitive: false }],
@@ -640,9 +768,41 @@ describe("AHDE Workbench", () => {
 		});
 		const proposal = {
 			kind: "structured-proposal" as const,
-			summary: "Use exact lineage evidence",
+			summary: "Use exact lineage evidence to add generic research capability",
 			diagnoses: [],
-			intents: [{ type: "instructions.replace" as const, content: "# Exact evidence\n" }],
+			intents: [
+				{
+					type: "execution.configure" as const,
+					execution: {
+						tools: ["read" as const],
+						environmentAllowlist: ["RESEARCH_API_KEY"],
+						network: "allow" as const,
+						sandbox: "best-effort" as const,
+					},
+				},
+				{
+					type: "tool.upsert" as const,
+					name: "research_web",
+					descriptor: {
+						description: "Retrieve bounded public web evidence for one research query.",
+						parameters: {
+							type: "object",
+							properties: { query: { type: "string" } },
+							required: ["query"],
+							additionalProperties: false,
+						},
+						timeoutMs: 30_000,
+						maxOutputBytes: 64 * 1024,
+						output: "json" as const,
+						permissions: {
+							environment: ["RESEARCH_API_KEY"],
+							network: "allow" as const,
+							filesystem: "read-only" as const,
+						},
+					},
+					executable: "#!/usr/bin/env node\nprocess.stdout.write('[]\\n');\n",
+				},
+			],
 			risks: [],
 			validationPlan: ["Re-run the reviewed corpus"],
 		};

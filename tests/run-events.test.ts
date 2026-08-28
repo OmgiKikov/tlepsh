@@ -7,6 +7,7 @@ import {
 	emitRunGraded,
 	emitRunStarted,
 	observeRunSessionEvent,
+	projectRunEventIdentity,
 	projectRunEventText,
 	RUN_EVENT_MAX_ERROR_CHARS,
 	RUN_EVENT_MAX_IDENTIFIER_CHARS,
@@ -39,7 +40,33 @@ describe("run event projection", () => {
 		const bounded = projectRunEventText("x".repeat(RUN_EVENT_MAX_TEXT_CHARS + 7));
 		expect(bounded.text).toHaveLength(RUN_EVENT_MAX_TEXT_CHARS);
 		expect(bounded.truncated).toBe(true);
+
+		const ansiSplitSecret = projectRunEventText("sk-abcde\u001b[31mfghijklmno");
+		expect(ansiSplitSecret).toEqual({ text: "[REDACTED_API_KEY]", truncated: false });
 		expect(() => projectRunEventText("x", -1)).toThrow(/non-negative integer/);
+	});
+
+	it("projects credential-shaped and oversized event identities deterministically", () => {
+		const sensitive = {
+			...run,
+			evalRunId: "sk-evalidentitysecret1234567890",
+			runId: "sk-runidentitysecret1234567890",
+			taskId: `sk-taskidentitysecret1234567890-${"x".repeat(250)}`,
+		};
+		const first = projectRunEventIdentity(sensitive);
+		const second = projectRunEventIdentity(sensitive);
+		expect(first).toEqual(second);
+		expect(JSON.stringify(first)).not.toContain("identitysecret");
+		expect(first.taskId).toContain("[REDACTED_API_KEY]");
+		expect(first.taskId.length).toBeLessThanOrEqual(RUN_EVENT_MAX_IDENTIFIER_CHARS);
+
+		const emitted: RunEvent[] = [];
+		emitRunEvent((event) => emitted.push(event), {
+			type: "run_started",
+			at: new Date().toISOString(),
+			run: sensitive,
+		});
+		expect(emitted[0]?.run).toEqual(first);
 	});
 
 	it("emits only assistant text deltas and bounded tool projections", () => {

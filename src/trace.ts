@@ -3,6 +3,10 @@ import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { safeArtifactSegment } from "./storage/paths.js";
 
+/** Hard input bounds applied before a trace is accepted as canonical evidence. */
+export const MAX_TRACE_ARTIFACT_BYTES = 8 * 1024 * 1024;
+export const MAX_TRACE_RECORDS = 25_000;
+
 /**
  * The ONLY module allowed to parse Pi session JSONL. Every consumer of trace
  * content (graders, bundle renderer, compare) goes through here.
@@ -31,11 +35,31 @@ export interface TraceMessage {
 }
 
 /**
+ * Strip terminal control channels before text reaches either credential
+ * redaction or a human-facing terminal renderer. Keeping this canonical avoids
+ * a presentation layer rejoining a credential that was split with ANSI bytes
+ * only after the redactor had already inspected it.
+ */
+export function sanitizeTerminalText(value: string): string {
+	return value
+		.replace(/\u001B\][\s\S]*?(?:\u0007|\u001B\\)/g, "")
+		.replace(/[\u009D][\s\S]*?(?:\u0007|\u009C)/g, "")
+		.replace(/\u001B[PX^_][\s\S]*?\u001B\\/g, "")
+		.replace(/[\u0090\u0098\u009E\u009F][\s\S]*?\u009C/g, "")
+		.replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "")
+		.replace(/\u009B[0-?]*[ -/]*[@-~]/g, "")
+		.replace(/\u001B[ -/]*[0-~]/g, "")
+		.replace(/\r\n?/g, "\n")
+		.replace(/\t/g, "    ")
+		.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, "");
+}
+
+/**
  * Remove common credential shapes before trace content crosses into a
  * human-facing projection. Raw protected evidence remains unchanged on disk.
  */
 export function redactTraceText(text: string): string {
-	return text
+	return sanitizeTerminalText(text)
 		.replace(
 			/-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----[\s\S]*?-----END(?: [A-Z0-9]+)? PRIVATE KEY-----/g,
 			"[REDACTED_PRIVATE_KEY]",
@@ -165,7 +189,22 @@ function blockToolCalls(content: unknown): TraceToolCall[] | undefined {
 	return calls.map((call) => ({ id: call.id, name: call.name, arguments: call.arguments }));
 }
 
+function assertTraceContentBounds(content: string): void {
+	const bytes = Buffer.byteLength(content, "utf8");
+	if (bytes > MAX_TRACE_ARTIFACT_BYTES) {
+		throw new Error(`trace exceeds the ${MAX_TRACE_ARTIFACT_BYTES}-byte artifact limit`);
+	}
+	let physicalLines = content.length === 0 || content.endsWith("\n") ? 0 : 1;
+	for (let index = 0; index < content.length; index += 1) {
+		if (content.charCodeAt(index) === 10) physicalLines += 1;
+		if (physicalLines > MAX_TRACE_RECORDS) {
+			throw new Error(`trace exceeds the ${MAX_TRACE_RECORDS}-record artifact limit`);
+		}
+	}
+}
+
 function parseSessionJsonlInternal(content: string, strict: boolean): TraceMessage[] {
+	assertTraceContentBounds(content);
 	const messages: TraceMessage[] = [];
 	for (const [lineIndex, line] of content.split("\n").entries()) {
 		const trimmed = line.trim();
@@ -231,11 +270,11 @@ export function parseSessionJsonlLenient(content: string): TraceMessage[] {
 	return parseSessionJsonlInternal(content, false);
 }
 
-export function openTrace(
+export function readTraceArtifact(
 	runDir: string,
 	tracePath = "session.jsonl",
 	expectedSha256?: string,
-): TraceMessage[] {
+): string {
 	const safeTracePath = safeArtifactSegment(tracePath, "trace path");
 	if (safeTracePath !== "session.jsonl") {
 		throw new Error(`unsupported trace path ${JSON.stringify(tracePath)}; expected \"session.jsonl\"`);
@@ -245,14 +284,26 @@ export function openTrace(
 	if (!entry.isFile() || entry.isSymbolicLink()) {
 		throw new Error(`trace must be a regular non-symlink file: ${traceFile}`);
 	}
+	if (entry.size > MAX_TRACE_ARTIFACT_BYTES) {
+		throw new Error(`trace exceeds the ${MAX_TRACE_ARTIFACT_BYTES}-byte artifact limit`);
+	}
 	const content = readFileSync(traceFile, "utf8");
+	assertTraceContentBounds(content);
 	if (expectedSha256 !== undefined) {
 		const actualSha256 = `sha256:${createHash("sha256").update(content).digest("hex")}`;
 		if (actualSha256 !== expectedSha256) {
 			throw new Error(`trace SHA mismatch: expected ${expectedSha256}, got ${actualSha256}`);
 		}
 	}
-	return parseSessionJsonl(content);
+	return content;
+}
+
+export function openTrace(
+	runDir: string,
+	tracePath = "session.jsonl",
+	expectedSha256?: string,
+): TraceMessage[] {
+	return parseSessionJsonl(readTraceArtifact(runDir, tracePath, expectedSha256));
 }
 
 export function traceToolCalls(messages: TraceMessage[]): TraceToolCall[] {

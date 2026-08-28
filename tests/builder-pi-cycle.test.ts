@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createAhdeBuilderTools } from "../src/builder/extension.js";
+import { createAhdeBuilderCompatibilityTools as createAhdeBuilderTools } from "../src/builder/extension.js";
 
 const roots: string[] = [];
 
@@ -182,7 +182,17 @@ describe("Builder Pi canonical cycle", () => {
 			status: "actionable",
 			inputHash: `sha256:${"f".repeat(64)}`,
 			summary: { issueCount: 1 },
-			issues: [],
+			issues: [{
+				issueId: "issue-1",
+				taskId: "task-1",
+				category: "answer-quality",
+				severity: "major",
+				confidence: "medium",
+				summary: "semantic check failed",
+				rootCause: "judge reason contained sk-supersecret12345",
+				suggestions: ["Inspect the exact evidence"],
+				evidence: [{ runId: "run-1" }],
+			}],
 		};
 		const runSuite = vi.fn(async () => evalRun);
 		const tools = createAhdeBuilderTools({
@@ -195,6 +205,9 @@ describe("Builder Pi canonical cycle", () => {
 				listCorpora: (() => []) as never,
 				runSuite: runSuite as never,
 				diagnoseEval: (() => diagnosis) as never,
+				compileImprovementBrief: (() => ({
+					headline: "1/2 passed. Found one task-local failure mode.",
+				})) as never,
 			},
 		});
 		const run = tool(tools, "ahde_eval_run_development");
@@ -209,6 +222,8 @@ describe("Builder Pi canonical cycle", () => {
 			evaluation: { evalRunId: "erun_development" },
 			diagnosis: { diagnosisId: "diagnosis-1" },
 		});
+		expect(JSON.stringify(result)).not.toContain("sk-supersecret12345");
+		expect(JSON.stringify(result)).toContain("REDACTED_API_KEY");
 		expect(runSuite).toHaveBeenCalledWith(target, expect.objectContaining({ label: "solo", repetitions: 2 }));
 	});
 

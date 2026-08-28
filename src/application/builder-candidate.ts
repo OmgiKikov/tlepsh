@@ -29,6 +29,8 @@ export interface RunAppliedBuilderCandidateOptions {
 	actorId?: string;
 	/** Host-only live events for development evaluation; never used for sealed holdouts. */
 	onRunEvent?: RunEventListener;
+	/** Host-owned cancellation for the complete candidate experiment. */
+	signal?: AbortSignal;
 }
 
 const MAX_PROVENANCE_ARTIFACT_BYTES = 16 * 1024 * 1024;
@@ -243,5 +245,6 @@ export async function runAppliedBuilderCandidate(
 		origin,
 		sealedCorpus: options.sealedCorpus,
 		...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
+		...(options.signal ? { signal: options.signal } : {}),
 	});
 }

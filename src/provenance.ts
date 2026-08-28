@@ -38,13 +38,52 @@ export type RunStatus = z.infer<typeof RunStatusSchema>;
 export const EvalOutcomeSchema = z.enum(["pass", "fail"]);
 export type EvalOutcome = z.infer<typeof EvalOutcomeSchema>;
 
-export const GraderResultSchema = z.strictObject({
-	name: NonEmptyStringSchema,
-	type: NonEmptyStringSchema,
-	passed: z.boolean(),
-	score: z.number().finite(),
-	reason: z.string(),
-});
+export const GraderCheckCodeSchema = z.enum([
+	"required-tool",
+	"output-contains",
+	"output-matches",
+	"semantic-rubric",
+]);
+export type GraderCheckCode = z.infer<typeof GraderCheckCodeSchema>;
+
+export const GraderResultSchema = z
+	.strictObject({
+		name: NonEmptyStringSchema,
+		type: NonEmptyStringSchema,
+		passed: z.boolean(),
+		score: z.number().finite(),
+		reason: z.string(),
+		/** Stable identity of the normalized effective grader specification. */
+		specHash: HashSchema.optional(),
+		/** Typed systemic check category. Paired with specHash for new evidence. */
+		checkCode: GraderCheckCodeSchema.optional(),
+	})
+	.superRefine((result, context) => {
+		const hasSpecHash = result.specHash !== undefined;
+		const hasCheckCode = result.checkCode !== undefined;
+		if (hasSpecHash !== hasCheckCode) {
+			context.addIssue({
+				code: "custom",
+				path: [hasSpecHash ? "checkCode" : "specHash"],
+				message: "specHash and checkCode must be present together",
+			});
+			return;
+		}
+		if (!hasSpecHash) return;
+		const expectedType = {
+			"required-tool": "tool_called",
+			"output-contains": "output_contains",
+			"output-matches": "output_matches",
+			"semantic-rubric": "judge",
+		}[result.checkCode!];
+		if (result.type !== expectedType) {
+			context.addIssue({
+				code: "custom",
+				path: ["checkCode"],
+				message: `checkCode ${result.checkCode} does not match grader type ${result.type}`,
+			});
+		}
+	});
 export type GraderResult = z.infer<typeof GraderResultSchema>;
 
 export const TokenMetricsSchema = z.strictObject({
@@ -159,6 +198,16 @@ export const RunRecordSchema = z
 		}
 		if (record.status === "error" && !record.error) {
 			context.addIssue({ code: "custom", path: ["error"], message: "error run must explain the error" });
+		}
+		if (record.evalResults) {
+			const expectedOutcome = record.evalResults.graders.every((grader) => grader.passed) ? "pass" : "fail";
+			if (record.evalResults.outcome !== expectedOutcome) {
+				context.addIssue({
+					code: "custom",
+					path: ["evalResults", "outcome"],
+					message: "outcome must equal the conjunction of grader results",
+				});
+			}
 		}
 	});
 export type RunRecord = z.infer<typeof RunRecordSchema>;

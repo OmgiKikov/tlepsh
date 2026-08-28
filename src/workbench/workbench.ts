@@ -21,6 +21,14 @@ import {
 } from "../application/harness-authoring.js";
 import { runAppliedBuilderCandidate } from "../application/builder-candidate.js";
 import {
+	configureTargetBootstrap,
+	describeTargetBootstrap,
+} from "../application/target-bootstrap.js";
+import {
+	applyTargetScaffold,
+	describeTargetScaffold,
+} from "../application/target-scaffold.js";
+import {
 	describeBuilderProposalDiscard,
 	discardBuilderProposal,
 } from "../application/builder-discard.js";
@@ -35,6 +43,10 @@ import {
 	applyBuilderProposal,
 	loadBuilderApplyReceipt,
 } from "../application/builder-proposal.js";
+import {
+	compileImprovementBrief,
+	type ImprovementBrief,
+} from "../application/improvement-brief.js";
 import type { CandidateProposal } from "../builders/adapters.js";
 import {
 	listCorpora,
@@ -107,6 +119,7 @@ import {
 } from "./types.js";
 
 const MAX_REVIEW_BYTES = 5 * 1024 * 1024;
+const MAX_CONVERSATION_MODES = 3;
 
 export interface WorkbenchEvidenceLink {
 	url: string;
@@ -124,6 +137,10 @@ export interface CompileHarnessAuthoringInput {
 
 export interface AhdeWorkbenchDependencies {
 	now: () => string;
+	describeTargetScaffold: typeof describeTargetScaffold;
+	applyTargetScaffold: typeof applyTargetScaffold;
+	describeTargetBootstrap: typeof describeTargetBootstrap;
+	configureTargetBootstrap: typeof configureTargetBootstrap;
 	saveSpecDraft: typeof saveBuilderSpecDraft;
 	describeSpecApproval: typeof describeSpecDraftApproval;
 	approveSpecDraft: typeof approveBuilderSpecDraft;
@@ -136,6 +153,7 @@ export interface AhdeWorkbenchDependencies {
 	recordProposal: typeof recordBuilderAuthoredProposal;
 	runSuite: typeof runSuite;
 	diagnoseEval: typeof diagnoseEvalRun;
+	compileImprovementBrief: (runsRoot: string, diagnosis: ReturnType<typeof diagnoseEvalRun>) => ImprovementBrief;
 	evidenceLink: (record: EvalRunRecord) => WorkbenchEvidenceLink | null | Promise<WorkbenchEvidenceLink | null>;
 	applyProposal: typeof applyBuilderProposal;
 	describeProposalDiscard: typeof describeBuilderProposalDiscard;
@@ -147,11 +165,17 @@ export interface AhdeWorkbenchDependencies {
 }
 
 export interface AhdeWorkbenchOptions extends BuilderProjectContext {
+	/** Trusted packaged starter. Builder input can select no alternate template. */
+	templateDir?: string;
 	dependencies?: Partial<AhdeWorkbenchDependencies>;
 }
 
 const DEFAULT_DEPENDENCIES: AhdeWorkbenchDependencies = {
 	now: () => new Date().toISOString(),
+	describeTargetScaffold,
+	applyTargetScaffold,
+	describeTargetBootstrap,
+	configureTargetBootstrap,
 	saveSpecDraft: saveBuilderSpecDraft,
 	describeSpecApproval: describeSpecDraftApproval,
 	approveSpecDraft: approveBuilderSpecDraft,
@@ -164,6 +188,7 @@ const DEFAULT_DEPENDENCIES: AhdeWorkbenchDependencies = {
 	recordProposal: recordBuilderAuthoredProposal,
 	runSuite,
 	diagnoseEval: diagnoseEvalRun,
+	compileImprovementBrief,
 	evidenceLink: () => null,
 	applyProposal: applyBuilderProposal,
 	describeProposalDiscard: describeBuilderProposalDiscard,
@@ -207,11 +232,54 @@ function boundedEvidenceLink(link: WorkbenchEvidenceLink | null): WorkbenchEvide
 	return { url: parsed.toString(), ...(link.label ? { label: link.label.slice(0, 200) } : {}) };
 }
 
+/** Small model-facing diagnosis projection; full evidence remains in the verified report. */
+function conversationalImprovementBrief(brief: ImprovementBrief): Record<string, unknown> {
+	const modes = brief.modes.slice(0, MAX_CONVERSATION_MODES).map((mode) => ({
+		failureModeId: mode.failureModeId,
+		category: mode.category,
+		scope: mode.scope,
+		severity: mode.severity,
+		evidenceStrength: mode.evidenceStrength,
+		decision: mode.decision,
+		title: mode.title.slice(0, 500),
+		summary: mode.summary.slice(0, 1_000),
+		hypothesis: mode.hypothesis.slice(0, 1_000),
+		suggestions: mode.suggestions.slice(0, 2).map((item) => item.slice(0, 500)),
+		impact: mode.impact,
+		taskIds: mode.taskIds.slice(0, 5),
+		evidence: mode.evidence.slice(0, 3).map((item) => ({
+			runId: item.runId,
+			taskId: item.taskId,
+			traceAvailable: item.traceAvailable,
+			graderNames: item.graderNames.slice(0, 3),
+		})),
+		omittedEvidenceCount: mode.omittedEvidenceCount + Math.max(0, mode.evidence.length - 3),
+	}));
+	return {
+		schemaVersion: brief.schemaVersion,
+		algorithmId: brief.algorithmId,
+		briefId: brief.briefId,
+		evalRunId: brief.evalRunId,
+		diagnosisId: brief.diagnosisId,
+		status: brief.status,
+		proposalEligible: brief.proposalEligible,
+		headline: brief.headline.slice(0, 1_000),
+		summary: brief.summary,
+		modes,
+		conversationProjection: {
+			shownModes: modes.length,
+			omittedModes: Math.max(0, brief.modes.length - modes.length) + brief.summary.omittedFailureModeCount,
+			fullEvidence: "Use the returned loopback evidence link or /traces report drill-down.",
+		},
+	};
+}
+
 export class AhdeWorkbench {
 	readonly projectDir: string;
 	readonly stateRoot: string;
 	readonly runsRoot: string;
 	readonly projectId: string;
+	private readonly templateDir: string | undefined;
 	private readonly dependencies: AhdeWorkbenchDependencies;
 
 	constructor(options: AhdeWorkbenchOptions) {
@@ -219,6 +287,7 @@ export class AhdeWorkbench {
 		this.stateRoot = resolve(options.stateRoot);
 		this.runsRoot = resolve(options.runsRoot);
 		this.projectId = resolveBuilderProjectId(options);
+		this.templateDir = options.templateDir ? resolve(options.templateDir) : undefined;
 		this.dependencies = { ...DEFAULT_DEPENDENCIES, ...options.dependencies };
 	}
 
@@ -310,6 +379,7 @@ export class AhdeWorkbench {
 		if (aspect === "traces") {
 			const run = requireDevelopmentEval(inventory);
 			const diagnosis = this.dependencies.diagnoseEval(this.runsRoot, run.evalRunId);
+			const improvementBrief = this.dependencies.compileImprovementBrief(this.runsRoot, diagnosis);
 			const link = boundedEvidenceLink(await this.dependencies.evidenceLink(run));
 			return {
 				...view,
@@ -318,6 +388,7 @@ export class AhdeWorkbench {
 					content: {
 						evaluation: { evalRunId: run.evalRunId, summary: run.summary, repetitions: run.repetitions },
 						diagnosis: diagnosisSummary(diagnosis),
+						improvementBrief: conversationalImprovementBrief(improvementBrief),
 						evidence: link ? { available: true, ...link } : { available: false },
 					},
 				},
@@ -579,6 +650,79 @@ export class AhdeWorkbench {
 		}
 		assertWorkbenchDecisionStage(input.kind, stage);
 
+		if (input.kind === "scaffold-target") {
+			if (inventory.target) throw new WorkbenchStaleDecisionError(input.kind);
+			if (!this.templateDir) throw new Error("AHDE Builder is missing its trusted starter template");
+			const before = this.dependencies.describeTargetScaffold({
+				projectDir: this.projectDir,
+				templateDir: this.templateDir,
+			});
+			const actor = await this.confirm(input, gate, "Create exact Target harness", before, options.signal);
+			const current = this.decisionInventory(input.kind);
+			if (current.target) throw new WorkbenchStaleDecisionError(input.kind);
+			const after = this.dependencies.describeTargetScaffold({
+				projectDir: this.projectDir,
+				templateDir: this.templateDir,
+			});
+			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
+			const result = this.dependencies.applyTargetScaffold({
+				projectDir: this.projectDir,
+				stateRoot: this.stateRoot,
+				templateDir: this.templateDir,
+				expectedSubjectHash: hashValue(before),
+				actor: { kind: "human", id: actor },
+				reason: input.reason,
+			});
+			return {
+				kind: input.kind,
+				message: "Target harness created. Choose its identity and model next.",
+				result: {
+					targetId: result.target.manifest.id,
+					targetGitSha: result.target.gitSha,
+					receiptId: result.receipt.id,
+				},
+				view: await this.view(),
+			};
+		}
+
+		if (input.kind === "configure-target") {
+			if (!inventory.target) throw new WorkbenchStaleDecisionError(input.kind);
+			const describe = () => this.dependencies.describeTargetBootstrap({
+				targetDir: this.projectDir,
+				stateRoot: this.stateRoot,
+				runsRoot: this.runsRoot,
+				targetId: input.targetId,
+				model: input.model,
+			});
+			const before = describe();
+			const actor = await this.confirm(input, gate, "Configure exact Target identity and model", before, options.signal);
+			const current = this.decisionInventory(input.kind);
+			if (!current.target) throw new WorkbenchStaleDecisionError(input.kind);
+			const after = describe();
+			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
+			const result = this.dependencies.configureTargetBootstrap({
+				targetDir: this.projectDir,
+				stateRoot: this.stateRoot,
+				runsRoot: this.runsRoot,
+				targetId: input.targetId,
+				model: input.model,
+				expectedSubjectHash: before.subjectHash,
+				actor: { kind: "human", id: actor },
+				reason: input.reason,
+			});
+			return {
+				kind: input.kind,
+				message: "Target identity and model configured in a one-time reviewed commit.",
+				result: {
+					targetId: result.manifest.id,
+					targetGitSha: result.receipt.configuredTargetSha,
+					receiptId: result.receipt.id,
+					credentialEnv: result.manifest.model.apiKeyEnv,
+				},
+				view: await this.view(),
+			};
+		}
+
 		if (input.kind === "approve-spec") {
 			const draft = requireSpecDraft(inventory, input.draftSpecId);
 			const beforeDescription = this.dependencies.describeSpecApproval(this.stateRoot, this.projectId, draft.id);
@@ -711,12 +855,14 @@ export class AhdeWorkbench {
 				label: "solo",
 				repetitions: input.repetitions,
 				...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
+				...(options.signal ? { signal: options.signal } : {}),
 			});
 			abortIfRequested(options.signal);
 			const diagnosis = this.dependencies.diagnoseEval(this.runsRoot, record.evalRunId);
+			const improvementBrief = this.dependencies.compileImprovementBrief(this.runsRoot, diagnosis);
 			const link = boundedEvidenceLink(await this.dependencies.evidenceLink(record));
 			this.select("eval-run", record.evalRunId);
-			return { kind: input.kind, message: `${record.summary.pass}/${record.summary.total} passed; deterministic diagnosis is ready.`, result: { evaluation: { evalRunId: record.evalRunId, summary: record.summary, repetitions: record.repetitions }, diagnosis: diagnosisSummary(diagnosis), evidence: link ? { available: true, ...link } : { available: false } }, view: await this.view() };
+			return { kind: input.kind, message: improvementBrief.headline, result: { evaluation: { evalRunId: record.evalRunId, summary: record.summary, repetitions: record.repetitions }, diagnosis: diagnosisSummary(diagnosis), improvementBrief: conversationalImprovementBrief(improvementBrief), evidence: link ? { available: true, ...link } : { available: false } }, view: await this.view() };
 		}
 
 		if (input.kind === "apply-proposal") {
@@ -818,6 +964,7 @@ export class AhdeWorkbench {
 					sealedCorpus: after.sealedCorpus,
 					actorId: actor,
 					...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
+					...(options.signal ? { signal: options.signal } : {}),
 				});
 			} catch (error) {
 				// Exact evaluator diagnostics remain host-only because thrown messages can

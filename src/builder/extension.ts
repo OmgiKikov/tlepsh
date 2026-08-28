@@ -43,6 +43,10 @@ import {
 	describeTargetBootstrap,
 } from "../application/target-bootstrap.js";
 import {
+	applyTargetScaffold,
+	describeTargetScaffold,
+} from "../application/target-scaffold.js";
+import {
 	describeBuilderProposalDiscard,
 	discardBuilderProposal,
 } from "../application/builder-discard.js";
@@ -62,10 +66,21 @@ import {
 	type ApplyBuilderProposalResult,
 	type PersistedBuilderRun,
 } from "../application/builder-proposal.js";
+import {
+	compileImprovementBrief,
+	type ImprovementBrief,
+} from "../application/improvement-brief.js";
 import { CandidateProposalSchema, type CandidateProposal } from "../builders/adapters.js";
 import { listCorpora, loadCorpus, type CorpusMetadata, type CorpusRef } from "../corpus.js";
 import { diagnoseEvalRun, type DiagnosisRecord } from "../diagnosis.js";
-import { listEvalRuns, loadEvalRun, runSuite, type EvalRunRecord } from "../eval.js";
+import {
+	isSealedEvalRun,
+	listEvalRunIndexes,
+	loadEvalRun,
+	readEvalRunIndex,
+	runSuite,
+	type EvalRunRecord,
+} from "../eval.js";
 import { candidateStatus, type CandidateRecord } from "../domain/candidate.js";
 import { loadTarget, scaffoldTarget, TargetManifest, type ResolvedTarget } from "../manifest.js";
 import { canonicalJson, hashValue } from "../provenance.js";
@@ -75,6 +90,7 @@ import {
 	loadSpecSnapshot,
 	type AgentSpec,
 } from "../spec.js";
+import { redactTraceText } from "../trace.js";
 import {
 	buildProjectStatus,
 	readPublicTargetFile,
@@ -89,6 +105,7 @@ import {
 	createBuilderWorkbenchTools,
 } from "./workbench-adapter.js";
 import { registerAhdeBuilderCommands } from "./commands.js";
+import { installAhdeBuilderProductShell } from "./product-shell.js";
 import type { BeginBuilderLiveTrace } from "./run-observation.js";
 
 const MAX_LIST_ITEMS = 30;
@@ -121,11 +138,13 @@ export interface BuilderExtensionDependencies {
 	importCorpusDraft: typeof importBuilderCorpusDraft;
 	reviseCorpusDraft: typeof reviseBuilderCorpusDraft;
 	compileHarnessProposal: typeof compileHarnessAuthoringProposal;
-	listEvals: typeof listEvalRuns;
+	listEvalIndexes: typeof listEvalRunIndexes;
 	loadEval: typeof loadEvalRun;
+	readEvalIndex: typeof readEvalRunIndex;
 	loadTarget: typeof loadTarget;
 	runSuite: typeof runSuite;
 	diagnoseEval: typeof diagnoseEvalRun;
+	compileImprovementBrief: (runsRoot: string, diagnosis: DiagnosisRecord) => ImprovementBrief;
 	recordProposal: typeof recordBuilderAuthoredProposal;
 	loadProposal: typeof loadBuilderProposalRun;
 	loadApplyReceipt: typeof loadBuilderApplyReceipt;
@@ -143,6 +162,8 @@ export interface BuilderExtensionDependencies {
 	evidenceLink: (record: EvalRunRecord) => EvidenceLink | null | Promise<EvidenceLink | null>;
 	beginLiveTrace: BeginBuilderLiveTrace;
 	actorId: () => string;
+	describeTargetScaffold: typeof describeTargetScaffold;
+	applyTargetScaffold: typeof applyTargetScaffold;
 }
 
 export interface BuilderExtensionOptions extends BuilderProjectContext {
@@ -167,11 +188,13 @@ const DEFAULT_DEPENDENCIES: BuilderExtensionDependencies = {
 	importCorpusDraft: importBuilderCorpusDraft,
 	reviseCorpusDraft: reviseBuilderCorpusDraft,
 	compileHarnessProposal: compileHarnessAuthoringProposal,
-	listEvals: listEvalRuns,
+	listEvalIndexes: listEvalRunIndexes,
 	loadEval: loadEvalRun,
+	readEvalIndex: readEvalRunIndex,
 	loadTarget,
 	runSuite,
 	diagnoseEval: diagnoseEvalRun,
+	compileImprovementBrief,
 	recordProposal: recordBuilderAuthoredProposal,
 	loadProposal: loadBuilderProposalRun,
 	loadApplyReceipt: loadBuilderApplyReceipt,
@@ -189,12 +212,22 @@ const DEFAULT_DEPENDENCIES: BuilderExtensionDependencies = {
 	evidenceLink: () => null,
 	beginLiveTrace: async () => null,
 	actorId: () => `local:${userInfo().username || "operator"}`,
+	describeTargetScaffold,
+	applyTargetScaffold,
 };
 
 export const AHDE_BUILDER_TOOL_NAMES = [
 	"ahde_workbench_view",
 	"ahde_workbench_submit",
 	"ahde_workbench_decide",
+] as const;
+
+/**
+ * Transitional direct adapters kept for application-level regression tests.
+ * Builder Pi never registers this compatibility surface.
+ */
+export const AHDE_BUILDER_COMPATIBILITY_TOOL_NAMES = [
+	...AHDE_BUILDER_TOOL_NAMES,
 	"ahde_project_status",
 	"ahde_target_scaffold",
 	"ahde_target_configure_model",
@@ -223,17 +256,6 @@ export const AHDE_BUILDER_TOOL_NAMES = [
 
 export const CONSEQUENTIAL_BUILDER_TOOL_NAMES = [
 	"ahde_workbench_decide",
-	"ahde_target_scaffold",
-	"ahde_target_configure_model",
-	"ahde_spec_approve",
-	"ahde_corpus_publish_development",
-	"ahde_eval_run_development",
-	"ahde_proposal_discard",
-	"ahde_proposal_apply",
-	"ahde_candidate_verify",
-	"ahde_candidate_review",
-	"ahde_candidate_promote",
-	"ahde_candidate_reject",
 ] as const;
 
 function textResult(details: unknown): { content: { type: "text"; text: string }[]; details: unknown } {
@@ -461,6 +483,10 @@ function evalDetails(record: EvalRunRecord): Record<string, unknown> {
 	};
 }
 
+function diagnosisText(value: string, maxChars = 1_000): string {
+	return redactTraceText(value).slice(0, maxChars);
+}
+
 function diagnosisDetails(record: DiagnosisRecord): Record<string, unknown> {
 	return {
 		diagnosisId: record.diagnosisId,
@@ -471,14 +497,14 @@ function diagnosisDetails(record: DiagnosisRecord): Record<string, unknown> {
 		inputHash: record.inputHash,
 		summary: record.summary,
 		issues: record.issues.slice(0, MAX_LIST_ITEMS).map((issue) => ({
-			issueId: issue.issueId,
-			taskId: issue.taskId,
+			issueId: diagnosisText(issue.issueId, 500),
+			taskId: diagnosisText(issue.taskId, 500),
 			category: issue.category,
 			severity: issue.severity,
 			confidence: issue.confidence,
-			summary: issue.summary,
-			rootCause: issue.rootCause,
-			suggestions: issue.suggestions,
+			summary: diagnosisText(issue.summary),
+			rootCause: diagnosisText(issue.rootCause),
+			suggestions: issue.suggestions.slice(0, 4).map((suggestion) => diagnosisText(suggestion, 500)),
 			evidenceRunIds: issue.evidence.map((item) => item.runId).slice(0, 10),
 		})),
 		omittedIssues: Math.max(0, record.issues.length - MAX_LIST_ITEMS),
@@ -519,7 +545,7 @@ function sealedCorpusHashes(
 }
 
 function isSealedEval(record: EvalRunRecord, hashes: ReadonlySet<string>): boolean {
-	return record.dataset.startsWith("sealed-") || hashes.has(record.datasetHash);
+	return isSealedEvalRun(record, hashes);
 }
 
 function requireDevelopmentEval(
@@ -532,6 +558,31 @@ function requireDevelopmentEval(
 		throw new Error("sealed holdout evidence is not visible to Builder Pi");
 	}
 	return record;
+}
+
+function loadDevelopmentEval(
+	evalRunId: string,
+	dependencies: BuilderExtensionDependencies,
+	options: BuilderExtensionOptions,
+	projectId: string,
+): EvalRunRecord {
+	const hashes = sealedCorpusHashes(dependencies, options, projectId);
+	let preflight: EvalRunRecord;
+	try {
+		preflight = dependencies.readEvalIndex(options.runsRoot, evalRunId);
+	} catch {
+		throw new Error("evaluation metadata is unavailable; sealed identities remain hidden");
+	}
+	if (isSealedEval(preflight, hashes)) {
+		throw new Error("sealed holdout evidence is not visible to Builder Pi");
+	}
+	let verified: EvalRunRecord;
+	try {
+		verified = dependencies.loadEval(options.runsRoot, evalRunId);
+	} catch {
+		throw new Error("development evaluation evidence failed integrity checks");
+	}
+	return requireDevelopmentEval(verified, dependencies, options, projectId);
 }
 
 function developmentEvalInput(
@@ -577,9 +628,10 @@ function listDevelopmentEvals(
 	const sealedHashes = sealedCorpusHashes(dependencies, options, projectId);
 	const targetId = resolveBuilderTargetId(options);
 	try {
-		return dependencies.listEvals(options.runsRoot)
+		return dependencies.listEvalIndexes(options.runsRoot)
 			.filter((record) => targetId === null || record.target.id === targetId)
-			.filter((record) => !isSealedEval(record, sealedHashes));
+			.filter((record) => !isSealedEval(record, sealedHashes))
+			.map((record) => dependencies.loadEval(options.runsRoot, record.evalRunId));
 	} catch {
 		throw new Error("evaluation metadata is unavailable; sealed identities remain hidden");
 	}
@@ -1200,12 +1252,7 @@ function toolRegistry(
 			parameters: EvalRunIdParameters,
 			async execute(_id, params, signal) {
 				abortIfRequested(signal);
-				const record = requireDevelopmentEval(
-					dependencies.loadEval(options.runsRoot, params.evalRunId),
-					dependencies,
-					options,
-					projectId(),
-				);
+				const record = loadDevelopmentEval(params.evalRunId, dependencies, options, projectId());
 				return textResult(evalDetails(record));
 			},
 		}),
@@ -1258,10 +1305,12 @@ function toolRegistry(
 				);
 				abortIfRequested(signal);
 				const diagnosis = dependencies.diagnoseEval(options.runsRoot, record.evalRunId);
+				const improvementBrief = dependencies.compileImprovementBrief(options.runsRoot, diagnosis);
 				const link = boundedEvidenceLink(await dependencies.evidenceLink(record));
 				return textResult({
 					evaluation: evalDetails(record),
 					diagnosis: diagnosisDetails(diagnosis),
+					improvementBrief,
 					evidence: link ? { available: true, ...link } : { available: false },
 				});
 			},
@@ -1273,13 +1322,12 @@ function toolRegistry(
 			parameters: EvalRunIdParameters,
 			async execute(_id, params, signal) {
 				abortIfRequested(signal);
-				requireDevelopmentEval(
-					dependencies.loadEval(options.runsRoot, params.evalRunId),
-					dependencies,
-					options,
-					projectId(),
-				);
-				return textResult(diagnosisDetails(dependencies.diagnoseEval(options.runsRoot, params.evalRunId)));
+				loadDevelopmentEval(params.evalRunId, dependencies, options, projectId());
+				const diagnosis = dependencies.diagnoseEval(options.runsRoot, params.evalRunId);
+				return textResult({
+					...diagnosisDetails(diagnosis),
+					improvementBrief: dependencies.compileImprovementBrief(options.runsRoot, diagnosis),
+				});
 			},
 		}),
 		defineTool({
@@ -1289,12 +1337,7 @@ function toolRegistry(
 			parameters: EvalRunIdParameters,
 			async execute(_id, params, signal) {
 				abortIfRequested(signal);
-				const record = requireDevelopmentEval(
-					dependencies.loadEval(options.runsRoot, params.evalRunId),
-					dependencies,
-					options,
-					projectId(),
-				);
+				const record = loadDevelopmentEval(params.evalRunId, dependencies, options, projectId());
 				const link = boundedEvidenceLink(await dependencies.evidenceLink(record));
 				return textResult(link
 					? { available: true, ...link, evalRunId: record.evalRunId }
@@ -1323,12 +1366,7 @@ function toolRegistry(
 				);
 				const target = dependencies.loadTarget(options.projectDir);
 				if (params.sourceEvalRunId) {
-					requireDevelopmentEval(
-						dependencies.loadEval(options.runsRoot, params.sourceEvalRunId),
-						dependencies,
-						options,
-						currentProjectId,
-					);
+					loadDevelopmentEval(params.sourceEvalRunId, dependencies, options, currentProjectId);
 				}
 				const proposal: CandidateProposal = CandidateProposalSchema.parse({
 					schemaVersion: 1,
@@ -1643,12 +1681,7 @@ export function createAhdeBuilderExtension(options: BuilderExtensionOptions): Ex
 	const workbenchTools = createBuilderWorkbenchTools(workbench, dependencies.actorId, {
 		beginLiveTrace: dependencies.beginLiveTrace,
 	});
-	const tools = toolRegistry({
-		...options,
-		projectDir: options.projectDir,
-		stateRoot: options.stateRoot,
-		runsRoot: options.runsRoot,
-	}, workbenchTools);
+	const tools = workbenchTools;
 	const allowedTools = new Set(tools.map((tool) => tool.name));
 	return (pi: ExtensionAPI) => {
 		pi.on("user_bash", () => ({
@@ -1663,6 +1696,7 @@ export function createAhdeBuilderExtension(options: BuilderExtensionOptions): Ex
 			? undefined
 			: { block: true, reason: `AHDE Builder tool is not allowed: ${event.toolName}`, terminate: true });
 		for (const tool of tools) pi.registerTool(tool);
+		installAhdeBuilderProductShell(pi, workbench);
 		registerAhdeBuilderCommands(pi, {
 			workbench,
 			actorId: dependencies.actorId,
@@ -1673,5 +1707,15 @@ export function createAhdeBuilderExtension(options: BuilderExtensionOptions): Ex
 
 /** Exposed for registry-level tests and future dependency composition. */
 export function createAhdeBuilderTools(options: BuilderExtensionOptions): readonly RegisteredAhdeTool[] {
+	const dependencies = { ...DEFAULT_DEPENDENCIES, ...options.dependencies };
+	return createBuilderWorkbenchTools(
+		createBuilderWorkbench(options, dependencies),
+		dependencies.actorId,
+		{ beginLiveTrace: dependencies.beginLiveTrace },
+	);
+}
+
+/** @internal Direct legacy adapters; deliberately absent from the Pi registry. */
+export function createAhdeBuilderCompatibilityTools(options: BuilderExtensionOptions): readonly RegisteredAhdeTool[] {
 	return toolRegistry(options);
 }

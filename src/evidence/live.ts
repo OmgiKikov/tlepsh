@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import type { RunEvent, RunEventListener } from "../run-events.js";
+import { projectRunEventIdentity, type RunEvent, type RunEventListener } from "../run-events.js";
 
 const LIVE_TRACE_ID_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 const MAX_SESSIONS = 4;
@@ -154,7 +154,10 @@ export function createLiveTraceHub(): LiveTraceHub {
 				onRunEvent(event) {
 					if (record.finished) return;
 					try {
-						append(record, "run", JSON.stringify(event));
+						append(record, "run", JSON.stringify({
+							...event,
+							run: projectRunEventIdentity(event.run),
+						}));
 					} catch {
 						// Live observation cannot affect an evaluation.
 					}

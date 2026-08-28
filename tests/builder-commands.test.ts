@@ -157,11 +157,13 @@ function command(
 }
 
 describe("Builder Pi slash commands", () => {
-	it("registers exactly the seven commands in the stable public order", () => {
+	it("registers the AHDE help, readiness, and workflow commands in stable public order", () => {
 		const fixture = workbench();
 		const registered = register(fixture.value).registered;
 
 		expect(AHDE_BUILDER_COMMAND_NAMES).toEqual([
+			"help",
+			"doctor",
 			"status",
 			"run",
 			"traces",
@@ -171,7 +173,7 @@ describe("Builder Pi slash commands", () => {
 			"target",
 		]);
 		expect(registered.map(({ name }) => name)).toEqual(AHDE_BUILDER_COMMAND_NAMES);
-		expect(registered).toHaveLength(7);
+		expect(registered).toHaveLength(9);
 		expect(registered.every(({ options }) => options.description && options.handler)).toBe(true);
 	});
 
@@ -348,7 +350,7 @@ describe("Builder Pi slash commands", () => {
 		expect(fixture.decide).toHaveBeenCalledOnce();
 	});
 
-	it("keeps every live widget frame within 40 physical lines and 32 KiB", () => {
+	it("keeps every live widget frame within Pi's 10 visible lines and 32 KiB", () => {
 		const setStatus = vi.fn();
 		const setWidget = vi.fn();
 		const progress = createRunProgressPresenter({ setStatus, setWidget });
@@ -376,10 +378,13 @@ describe("Builder Pi slash commands", () => {
 			.filter((content): content is string[] => Array.isArray(content));
 		expect(frames.length).toBeGreaterThan(1);
 		for (const frame of frames) {
-			expect(frame.length).toBeLessThanOrEqual(40);
+			expect(frame.length).toBeLessThanOrEqual(10);
 			expect(frame.every((line) => !/[\r\n]/.test(line))).toBe(true);
 			expect(Buffer.byteLength(frame.join("\n"), "utf8")).toBeLessThanOrEqual(32 * 1024);
 		}
+		const finalFrame = frames.at(-1)?.join("\n") ?? "";
+		expect(finalFrame).toContain("tool → bash · 19:");
+		expect(finalFrame).not.toContain("tool → bash · 0:");
 		progress.dispose();
 	});
 

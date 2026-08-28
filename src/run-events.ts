@@ -1,6 +1,6 @@
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type { GraderResult, RunMetrics, RunRecord } from "./provenance.js";
-import { canonicalJson } from "./provenance.js";
+import { canonicalJson, hashValue } from "./provenance.js";
 import { redactTraceText } from "./trace.js";
 
 /** Maximum projected assistant/tool payload carried by one observational event. */
@@ -136,8 +136,25 @@ export function projectRunEventText(
 	};
 }
 
+function publicRunEventIdentifier(value: string): string {
+	const redacted = redactTraceText(value);
+	if (redacted === value && value.length <= RUN_EVENT_MAX_IDENTIFIER_CHARS) return value;
+	const suffix = `~${hashValue(value).slice("sha256:".length, "sha256:".length + 12)}`;
+	return `${redacted.slice(0, RUN_EVENT_MAX_IDENTIFIER_CHARS - suffix.length)}${suffix}`;
+}
+
+/** Stable bounded identity projection shared by terminal listeners and live web fan-out. */
+export function projectRunEventIdentity(run: RunEventIdentity): RunEventIdentity {
+	return {
+		...run,
+		evalRunId: run.evalRunId === null ? null : publicRunEventIdentifier(run.evalRunId),
+		runId: publicRunEventIdentifier(run.runId),
+		taskId: publicRunEventIdentifier(run.taskId),
+	};
+}
+
 function eventIdentity(run: RunEventIdentity): RunEventIdentity {
-	return { ...run };
+	return projectRunEventIdentity(run);
 }
 
 function eventAt(): string {
@@ -148,7 +165,8 @@ function eventAt(): string {
 export function emitRunEvent(listener: RunEventListener | undefined, event: RunEvent): void {
 	if (!listener) return;
 	try {
-		const returned = listener(event) as unknown;
+		const projected = { ...event, run: projectRunEventIdentity(event.run) } as RunEvent;
+		const returned = listener(projected) as unknown;
 		if (
 			typeof returned === "object" && returned !== null &&
 			"then" in returned && typeof (returned as { then?: unknown }).then === "function"

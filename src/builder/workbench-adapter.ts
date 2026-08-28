@@ -27,6 +27,10 @@ import {
 type RegisteredWorkbenchTool = ToolDefinition<TSchema, unknown>;
 
 export interface BuilderWorkbenchDependencies {
+	describeTargetScaffold: AhdeWorkbenchDependencies["describeTargetScaffold"];
+	applyTargetScaffold: AhdeWorkbenchDependencies["applyTargetScaffold"];
+	describeTargetBootstrap: AhdeWorkbenchDependencies["describeTargetBootstrap"];
+	configureTargetBootstrap: AhdeWorkbenchDependencies["configureTargetBootstrap"];
 	saveSpecDraft: AhdeWorkbenchDependencies["saveSpecDraft"];
 	describeSpecApproval: AhdeWorkbenchDependencies["describeSpecApproval"];
 	approveSpecDraft: AhdeWorkbenchDependencies["approveSpecDraft"];
@@ -39,6 +43,7 @@ export interface BuilderWorkbenchDependencies {
 	recordProposal: AhdeWorkbenchDependencies["recordProposal"];
 	runSuite: AhdeWorkbenchDependencies["runSuite"];
 	diagnoseEval: AhdeWorkbenchDependencies["diagnoseEval"];
+	compileImprovementBrief: AhdeWorkbenchDependencies["compileImprovementBrief"];
 	evidenceLink: AhdeWorkbenchDependencies["evidenceLink"];
 	applyProposal: AhdeWorkbenchDependencies["applyProposal"];
 	describeProposalDiscard: AhdeWorkbenchDependencies["describeProposalDiscard"];
@@ -65,10 +70,14 @@ function requireHostUI(ctx: ExtensionContext, operation: string): void {
 }
 
 export function createBuilderWorkbench(
-	options: BuilderProjectContext,
+	options: BuilderProjectContext & { templateDir?: string },
 	dependencies: BuilderWorkbenchDependencies,
 ): AhdeWorkbench {
 	const workbenchDependencies: Partial<AhdeWorkbenchDependencies> = {
+		describeTargetScaffold: dependencies.describeTargetScaffold,
+		applyTargetScaffold: dependencies.applyTargetScaffold,
+		describeTargetBootstrap: dependencies.describeTargetBootstrap,
+		configureTargetBootstrap: dependencies.configureTargetBootstrap,
 		saveSpecDraft: dependencies.saveSpecDraft,
 		describeSpecApproval: dependencies.describeSpecApproval,
 		approveSpecDraft: dependencies.approveSpecDraft,
@@ -81,6 +90,7 @@ export function createBuilderWorkbench(
 		recordProposal: dependencies.recordProposal,
 		runSuite: dependencies.runSuite,
 		diagnoseEval: dependencies.diagnoseEval,
+		compileImprovementBrief: dependencies.compileImprovementBrief,
 		evidenceLink: dependencies.evidenceLink,
 		applyProposal: dependencies.applyProposal,
 		describeProposalDiscard: dependencies.describeProposalDiscard,
@@ -95,6 +105,7 @@ export function createBuilderWorkbench(
 		stateRoot: options.stateRoot,
 		runsRoot: options.runsRoot,
 		projectId: options.projectId,
+		templateDir: options.templateDir,
 		dependencies: workbenchDependencies,
 	});
 }

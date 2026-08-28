@@ -1,0 +1,445 @@
+diff --git a/packages/coding-agent/src/main.ts b/packages/coding-agent/src/main.ts
+index 23b4d42..d95bfac 100644
+--- a/packages/coding-agent/src/main.ts
++++ b/packages/coding-agent/src/main.ts
+@@ -555,6 +555,14 @@ async function promptForMissingSessionCwd(
+ 
+ export interface MainOptions {
+ 	extensionFactories?: InlineExtension[];
++	/** Restrict interactive built-in slash commands before autocomplete and dispatch. Undefined preserves Pi defaults. */
++	allowedBuiltinCommands?: readonly string[];
++	/** Let named extension commands override colliding interactive built-ins. */
++	preferredExtensionCommands?: readonly string[];
++	/** Allow interactive `!` / `!!` bash input. Undefined preserves Pi defaults. */
++	allowBash?: boolean;
++	/** Override the interactive exit resume command, or suppress it with false. */
++	resumeHint?: string | false;
+ }
+ 
+ export async function main(args: string[], options?: MainOptions) {
+@@ -931,6 +939,10 @@ export async function main(args: string[], options?: MainOptions) {
+ 			startupDiagnostics,
+ 			modelFallbackMessage,
+ 			autoTrustOnReloadCwd,
++			allowedBuiltinCommands: options?.allowedBuiltinCommands,
++			preferredExtensionCommands: options?.preferredExtensionCommands,
++			allowBash: options?.allowBash,
++			resumeHint: options?.resumeHint,
+ 			initialMessage,
+ 			initialImages,
+ 			initialMessages: parsed.messages,
+diff --git a/packages/coding-agent/src/modes/interactive/interactive-mode.ts b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+index acf96ae..43e8d5f 100644
+--- a/packages/coding-agent/src/modes/interactive/interactive-mode.ts
++++ b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+@@ -266,6 +266,54 @@ export function formatResumeCommand(sessionManager: SessionManager): string | un
+ 	return args.join(" ");
+ }
+ 
++/** Resolve the host-owned resume hint while preserving Pi's default when no override is provided. */
++export function resolveResumeCommand(
++	sessionManager: SessionManager,
++	resumeHint?: string | false,
++): string | undefined {
++	if (resumeHint === false) return undefined;
++	if (typeof resumeHint === "string") return resumeHint;
++	return formatResumeCommand(sessionManager);
++}
++
++const BUILTIN_SLASH_COMMAND_NAMES = new Set(BUILTIN_SLASH_COMMANDS.map((command) => command.name));
++
++function slashCommandName(text: string): string | undefined {
++	if (!text.startsWith("/")) return undefined;
++	const separator = text.search(/\s/);
++	return text.slice(1, separator === -1 ? undefined : separator);
++}
++
++function builtinSlashCommandName(text: string): string | undefined {
++	const name = slashCommandName(text);
++	if (name === undefined) return undefined;
++	return BUILTIN_SLASH_COMMAND_NAMES.has(name) ? name : undefined;
++}
++
++/** True for non-built-ins and for built-ins admitted by the host policy. */
++export function isBuiltinSlashCommandAllowed(text: string, allowed?: readonly string[]): boolean {
++	const name = builtinSlashCommandName(text);
++	return name === undefined || allowed === undefined || allowed.includes(name);
++}
++
++/** Project the built-in autocomplete surface through the same host policy used at dispatch. */
++export function getAllowedBuiltinSlashCommands(
++	allowed?: readonly string[],
++	preferredExtensions: ReadonlySet<string> = new Set(),
++) {
++	return BUILTIN_SLASH_COMMANDS.filter(
++		(command) => !preferredExtensions.has(command.name) && (allowed === undefined || allowed.includes(command.name)),
++	);
++}
++
++function getPreferredExtensionCommandNames(
++	configured: readonly string[] | undefined,
++	extensionRunner: ExtensionRunner,
++): ReadonlySet<string> {
++	if (!configured || configured.length === 0) return new Set();
++	return new Set(configured.filter((name) => extensionRunner.getCommand(name)?.name === name));
++}
++
+ function hasDefaultModelProvider(providerId: string): providerId is keyof typeof defaultModelPerProvider {
+ 	return providerId in defaultModelPerProvider;
+ }
+@@ -341,6 +389,14 @@ export interface InteractiveModeOptions {
+ 	modelFallbackMessage?: string;
+ 	/** Cwd to trust after reload if it gained a .pi directory during this implicitly trusted session. */
+ 	autoTrustOnReloadCwd?: string;
++	/** Restrict built-in slash commands before autocomplete and dispatch. Undefined allows all built-ins. */
++	allowedBuiltinCommands?: readonly string[];
++	/** Let named extension commands override colliding built-ins before autocomplete and dispatch. */
++	preferredExtensionCommands?: readonly string[];
++	/** Allow interactive `!` / `!!` bash input. Undefined allows it. */
++	allowBash?: boolean;
++	/** Override the exit resume command, or suppress it with false. */
++	resumeHint?: string | false;
+ 	/** Initial message to send on startup (can include @file content) */
+ 	initialMessage?: string;
+ 	/** Images to attach to the initial message */
+@@ -659,9 +715,13 @@ export class InteractiveMode {
+ 
+ 	private getBuiltInCommandConflictDiagnostics(extensionRunner: ExtensionRunner): ResourceDiagnostic[] {
+ 		const builtinNames = new Set(BUILTIN_SLASH_COMMANDS.map((command) => command.name));
++		const preferredExtensions = getPreferredExtensionCommandNames(
++			this.options?.preferredExtensionCommands,
++			extensionRunner,
++		);
+ 		return extensionRunner
+ 			.getRegisteredCommands()
+-			.filter((command) => builtinNames.has(command.name))
++			.filter((command) => builtinNames.has(command.name) && !preferredExtensions.has(command.name))
+ 			.map((command) => ({
+ 				type: "warning" as const,
+ 				message:
+@@ -673,8 +733,17 @@ export class InteractiveMode {
+ 	}
+ 
+ 	private createBaseAutocompleteProvider(): AutocompleteProvider {
++		const extensionRunner = this.session.extensionRunner;
++		const registeredExtensionCommands = extensionRunner.getRegisteredCommands();
++		const preferredExtensions = getPreferredExtensionCommandNames(
++			this.options?.preferredExtensionCommands,
++			extensionRunner,
++		);
+ 		// Define commands for autocomplete
+-		const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.map((command) => ({
++		const slashCommands: SlashCommand[] = getAllowedBuiltinSlashCommands(
++			this.options?.allowedBuiltinCommands,
++			preferredExtensions,
++		).map((command) => ({
+ 			name: command.name,
+ 			description: command.description,
+ 			...(command.argumentHint && { argumentHint: command.argumentHint }),
+@@ -741,12 +810,11 @@ export class InteractiveMode {
+ 		}));
+ 
+ 		// Convert extension commands to SlashCommand format
+-		const builtinCommandNames = new Set(slashCommands.map((c) => c.name));
+-		const extensionCommands: SlashCommand[] = this.session.extensionRunner
+-			.getRegisteredCommands()
+-			.filter((cmd) => !builtinCommandNames.has(cmd.name))
++		const builtinCommandNames = BUILTIN_SLASH_COMMAND_NAMES;
++		const extensionCommands: SlashCommand[] = registeredExtensionCommands
++			.filter((cmd) => preferredExtensions.has(cmd.name) || !builtinCommandNames.has(cmd.name))
+ 			.map((cmd) => ({
+-				name: cmd.invocationName,
++				name: preferredExtensions.has(cmd.name) ? cmd.name : cmd.invocationName,
+ 				description: this.prefixAutocompleteDescription(cmd.description, cmd.sourceInfo),
+ 				getArgumentCompletions: cmd.getArgumentCompletions,
+ 			}));
+@@ -974,8 +1042,9 @@ export class InteractiveMode {
+ 				hint("app.thinking.toggle", "to expand thinking"),
+ 				hint("app.editor.external", "for external editor"),
+ 				rawKeyHint("/", "for commands"),
+-				rawKeyHint("!", "to run bash"),
+-				rawKeyHint("!!", "to run bash (no context)"),
++				...(this.options.allowBash === false
++					? []
++					: [rawKeyHint("!", "to run bash"), rawKeyHint("!!", "to run bash (no context)")]),
+ 				hint("app.message.followUp", "to queue follow-up"),
+ 				hint("app.message.dequeue", "to edit all queued messages"),
+ 				hint("app.clipboard.pasteImage", "to paste image (with text fallback)"),
+@@ -985,7 +1054,7 @@ export class InteractiveMode {
+ 				hint("app.interrupt", "interrupt"),
+ 				rawKeyHint(`${keyText("app.clear")}/${keyText("app.exit")}`, "clear/exit"),
+ 				rawKeyHint("/", "commands"),
+-				rawKeyHint("!", "bash"),
++				...(this.options.allowBash === false ? [] : [rawKeyHint("!", "bash")]),
+ 				hint("app.tools.expand", "more"),
+ 			].join(theme.fg("muted", " · "));
+ 			const compactOnboarding = theme.fg(
+@@ -2901,7 +2970,7 @@ export class InteractiveMode {
+ 
+ 		this.defaultEditor.onChange = (text: string) => {
+ 			const wasBashMode = this.isBashMode;
+-			this.isBashMode = text.trimStart().startsWith("!");
++			this.isBashMode = this.options.allowBash !== false && text.trimStart().startsWith("!");
+ 			if (wasBashMode !== this.isBashMode) {
+ 				this.updateEditorBorderColor();
+ 			}
+@@ -2963,6 +3032,36 @@ export class InteractiveMode {
+ 			text = text.trim();
+ 			if (!text) return;
+ 
++			const command = slashCommandName(text);
++			const preferredExtension =
++				command !== undefined &&
++				this.options?.preferredExtensionCommands?.includes(command) === true &&
++				this.isExtensionCommand(text);
++			if (preferredExtension) {
++				this.editor.addToHistory?.(text);
++				this.editor.setText("");
++				if (this.session.isStreaming) {
++					await this.session.prompt(text, { streamingBehavior: "steer" });
++					this.updatePendingMessagesDisplay();
++					this.ui.requestRender();
++				} else {
++					await this.session.prompt(text);
++				}
++				return;
++			}
++
++			if (!isBuiltinSlashCommandAllowed(text, this.options?.allowedBuiltinCommands)) {
++				const builtinCommand = builtinSlashCommandName(text);
++				this.editor.setText("");
++				this.showWarning(`/${builtinCommand} is disabled by this host.`);
++				return;
++			}
++			if (this.options?.allowBash === false && text.startsWith("!")) {
++				this.editor.setText("");
++				this.showWarning("Bash input is disabled by this host.");
++				return;
++			}
++
+ 			// Handle commands
+ 			if (text === "/settings") {
+ 				this.showSettingsSelector();
+@@ -3953,7 +4052,7 @@ export class InteractiveMode {
+ 		this.stop();
+ 		await this.runtimeHost.dispose();
+ 
+-		const resumeCommand = formatResumeCommand(this.sessionManager);
++		const resumeCommand = resolveResumeCommand(this.sessionManager, this.options.resumeHint);
+ 		if (resumeCommand) {
+ 			process.stdout.write(`${chalk.dim("To resume this session:")} ${resumeCommand}\n`);
+ 		}
+@@ -6328,8 +6427,7 @@ export class InteractiveMode {
+ | \`${dequeue}\` | Restore queued messages |
+ | \`${pasteImage}\` | Paste image or text from clipboard |
+ | \`/\` | Slash commands |
+-| \`!\` | Run bash command |
+-| \`!!\` | Run bash command (excluded from context) |
++${this.options.allowBash === false ? "" : "| `!` | Run bash command |\n| `!!` | Run bash command (excluded from context) |"}
+ `;
+ 
+ 		// Add extension-registered shortcuts
+diff --git a/packages/coding-agent/test/format-resume-command.test.ts b/packages/coding-agent/test/format-resume-command.test.ts
+index 86c4475..19416ba 100644
+--- a/packages/coding-agent/test/format-resume-command.test.ts
++++ b/packages/coding-agent/test/format-resume-command.test.ts
+@@ -4,7 +4,7 @@ import { join } from "node:path";
+ import { afterEach, describe, expect, it } from "vitest";
+ import { APP_NAME } from "../src/config.ts";
+ import type { SessionManager } from "../src/core/session-manager.ts";
+-import { formatResumeCommand } from "../src/modes/interactive/interactive-mode.ts";
++import { formatResumeCommand, resolveResumeCommand } from "../src/modes/interactive/interactive-mode.ts";
+ 
+ const tempDirs: string[] = [];
+ const originalStdoutIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+@@ -133,3 +133,21 @@ describe("formatResumeCommand", () => {
+ 		expect(formatResumeCommand(sessionManager)).toBeUndefined();
+ 	});
+ });
++
++describe("resolveResumeCommand", () => {
++	it("lets an embedding host replace Pi's resume command", () => {
++		setStdoutIsTTY(true);
++		const sessionFile = createTempFile();
++		const sessionManager = createSessionManager({ sessionFile, sessionId: "test-session" });
++
++		expect(resolveResumeCommand(sessionManager, "ahde --continue")).toBe("ahde --continue");
++	});
++
++	it("lets an embedding host suppress Pi's resume command", () => {
++		setStdoutIsTTY(true);
++		const sessionFile = createTempFile();
++		const sessionManager = createSessionManager({ sessionFile, sessionId: "test-session" });
++
++		expect(resolveResumeCommand(sessionManager, false)).toBeUndefined();
++	});
++});
+diff --git a/packages/coding-agent/test/interactive-mode-startup-input.test.ts b/packages/coding-agent/test/interactive-mode-startup-input.test.ts
+index 28a0f48..bfa0580 100644
+--- a/packages/coding-agent/test/interactive-mode-startup-input.test.ts
++++ b/packages/coding-agent/test/interactive-mode-startup-input.test.ts
+@@ -1,7 +1,16 @@
+ import { describe, expect, it, vi } from "vitest";
+-import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
++import {
++	getAllowedBuiltinSlashCommands,
++	InteractiveMode,
++	isBuiltinSlashCommandAllowed,
++} from "../src/modes/interactive/interactive-mode.ts";
+ 
+ type SubmitContext = {
++	options: {
++		allowedBuiltinCommands?: readonly string[];
++		preferredExtensionCommands?: readonly string[];
++		allowBash?: boolean;
++	};
+ 	defaultEditor: { onSubmit?: (text: string) => void };
+ 	editor: {
+ 		addToHistory?: (text: string) => void;
+@@ -14,6 +23,10 @@ type SubmitContext = {
+ 		prompt: (text: string, options?: unknown) => Promise<void>;
+ 	};
+ 	flushPendingBashComponents: () => void;
++	isExtensionCommand: (text: string) => boolean;
++	updatePendingMessagesDisplay: () => void;
++	ui: { requestRender: () => void };
++	showWarning: (message: string) => void;
+ 	onInputCallback?: (text: string) => void;
+ 	pendingUserInputs: string[];
+ };
+@@ -38,6 +51,7 @@ const interactiveModePrototype = InteractiveMode.prototype as unknown as Interac
+ 
+ function createSubmitContext(): SubmitContext {
+ 	return {
++		options: {},
+ 		defaultEditor: {},
+ 		editor: {
+ 			addToHistory: vi.fn(),
+@@ -50,6 +64,10 @@ function createSubmitContext(): SubmitContext {
+ 			prompt: vi.fn(async () => {}),
+ 		},
+ 		flushPendingBashComponents: vi.fn(),
++		isExtensionCommand: vi.fn(() => false),
++		updatePendingMessagesDisplay: vi.fn(),
++		ui: { requestRender: vi.fn() },
++		showWarning: vi.fn(),
+ 		pendingUserInputs: [],
+ 	};
+ }
+@@ -87,4 +105,63 @@ describe("InteractiveMode startup input", () => {
+ 		expect(context.onInputCallback).toBeUndefined();
+ 		expect(context.pendingUserInputs).toEqual([]);
+ 	});
++
++	it("blocks host-disabled built-ins before dispatch while preserving extension commands", async () => {
++		const context = createSubmitContext();
++		context.options.allowedBuiltinCommands = ["login"];
++		interactiveModePrototype.setupEditorSubmitHandler.call(context);
++
++		await context.defaultEditor.onSubmit?.("/share");
++
++		expect(context.showWarning).toHaveBeenCalledWith("/share is disabled by this host.");
++		expect(context.pendingUserInputs).toEqual([]);
++		expect(context.flushPendingBashComponents).not.toHaveBeenCalled();
++
++		await context.defaultEditor.onSubmit?.("/status");
++
++		expect(context.pendingUserInputs).toEqual(["/status"]);
++		expect(context.flushPendingBashComponents).toHaveBeenCalledTimes(1);
++	});
++
++	it("blocks human bash input before user_bash dispatch", async () => {
++		const context = createSubmitContext();
++		context.options.allowBash = false;
++		interactiveModePrototype.setupEditorSubmitHandler.call(context);
++
++		await context.defaultEditor.onSubmit?.("!pwd");
++
++		expect(context.showWarning).toHaveBeenCalledWith("Bash input is disabled by this host.");
++		expect(context.pendingUserInputs).toEqual([]);
++		expect(context.session.prompt).not.toHaveBeenCalled();
++		expect(context.flushPendingBashComponents).not.toHaveBeenCalled();
++	});
++
++	it("dispatches a host-preferred extension before a colliding built-in policy", async () => {
++		const context = createSubmitContext();
++		context.options.allowedBuiltinCommands = [];
++		context.options.preferredExtensionCommands = ["model"];
++		context.isExtensionCommand = vi.fn((text) => text === "/model");
++		interactiveModePrototype.setupEditorSubmitHandler.call(context);
++
++		await context.defaultEditor.onSubmit?.("/model");
++
++		expect(context.session.prompt).toHaveBeenCalledWith("/model");
++		expect(context.showWarning).not.toHaveBeenCalled();
++		expect(context.pendingUserInputs).toEqual([]);
++	});
++});
++
++describe("interactive host command policy", () => {
++	it("uses the same allowlist for dispatch and autocomplete", () => {
++		expect(isBuiltinSlashCommandAllowed("/login anthropic", ["login", "model"])).toBe(true);
++		expect(isBuiltinSlashCommandAllowed("/share", ["login", "model"])).toBe(false);
++		expect(isBuiltinSlashCommandAllowed("/status", ["login", "model"])).toBe(true);
++		expect(getAllowedBuiltinSlashCommands(["login", "model"]).map((command) => command.name)).toEqual([
++			"model",
++			"login",
++		]);
++		expect(
++			getAllowedBuiltinSlashCommands(undefined, new Set(["model"])).some((command) => command.name === "model"),
++		).toBe(false);
++	});
+ });
+diff --git a/packages/coding-agent/test/interactive-mode-status.test.ts b/packages/coding-agent/test/interactive-mode-status.test.ts
+index a4aaa48..6c53f31 100644
+--- a/packages/coding-agent/test/interactive-mode-status.test.ts
++++ b/packages/coding-agent/test/interactive-mode-status.test.ts
+@@ -401,6 +401,48 @@ describe("InteractiveMode.setupAutocompleteProvider", () => {
+ });
+ 
+ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
++	test("shows a host-preferred extension under the simple name instead of the colliding built-in", async () => {
++		const preferredCommand = {
++			name: "model",
++			invocationName: "model",
++			description: "AHDE model command",
++			sourceInfo: {} as SourceInfo,
++		};
++		const extensionRunner = {
++			getRegisteredCommands: () => [preferredCommand],
++			getCommand: (name: string) => (name === "model" ? preferredCommand : undefined),
++		};
++		const fakeThis = {
++			options: { allowedBuiltinCommands: [] as string[], preferredExtensionCommands: ["model"] },
++			session: {
++				scopedModels: [],
++				modelRuntime: { getAvailableSnapshot: () => [] },
++				promptTemplates: [],
++				extensionRunner,
++				resourceLoader: { getSkills: () => ({ skills: [] }) },
++			},
++			settingsManager: { getEnableSkillCommands: () => false },
++			skillCommands: new Map<string, string>(),
++			sessionManager: { getCwd: () => "/tmp" },
++			fdPath: null,
++			prefixAutocompleteDescription: (description: string | undefined) => description,
++		};
++		const createBaseAutocompleteProvider = (
++			InteractiveMode as unknown as {
++				prototype: { createBaseAutocompleteProvider(this: typeof fakeThis): AutocompleteProvider };
++			}
++		).prototype.createBaseAutocompleteProvider;
++
++		const provider = createBaseAutocompleteProvider.call(fakeThis);
++		const suggestions = await provider.getSuggestions(["/mo"], 0, 3, {
++			signal: new AbortController().signal,
++		});
++
++		expect(suggestions?.items).toEqual([
++			{ value: "model", label: "model", description: "AHDE model command" },
++		]);
++	});
++
+ 	test("matches model command arguments across provider/model order", async () => {
+ 		type TestModel = { id: string; provider: string; name: string };
+ 		type FakeInteractiveMode = {

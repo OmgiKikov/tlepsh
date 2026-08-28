@@ -5,6 +5,7 @@ import type { DiagnosisRecord } from "../diagnosis.js";
 import { candidateStatus, type CandidateRecord } from "../domain/candidate.js";
 import type { EvalRunRecord } from "../eval.js";
 import type { SpecSnapshot } from "../spec.js";
+import { redactTraceText } from "../trace.js";
 import { WorkbenchSelectionRequiredError } from "./errors.js";
 import type {
 	WorkbenchInventory,
@@ -12,6 +13,10 @@ import type {
 } from "./inventory.js";
 
 const MAX_DIFF_BYTES = 4 * 1024 * 1024;
+
+function diagnosisText(value: string, maxChars = 1_000): string {
+	return redactTraceText(value).slice(0, maxChars);
+}
 
 export function proposalReview(record: PersistedBuilderRun): {
 	runId: string;
@@ -51,14 +56,15 @@ export function diagnosisSummary(record: DiagnosisRecord): Record<string, unknow
 		status: record.status,
 		summary: record.summary,
 		issues: record.issues.slice(0, 30).map((issue) => ({
-			issueId: issue.issueId,
+			issueId: diagnosisText(issue.issueId, 500),
 			category: issue.category,
 			severity: issue.severity,
 			confidence: issue.confidence,
-			summary: issue.summary,
-			rootCause: issue.rootCause,
-			suggestions: issue.suggestions,
+			summary: diagnosisText(issue.summary),
+			rootCause: diagnosisText(issue.rootCause),
+			suggestions: issue.suggestions.slice(0, 4).map((suggestion) => diagnosisText(suggestion, 500)),
 		})),
+		omittedIssues: Math.max(0, record.issues.length - 30),
 	};
 }
 

@@ -2,7 +2,14 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { diagnosisPath } from "../diagnosis.js";
-import { listEvalRuns, loadEvalRun, type EvalRunRecord } from "../eval.js";
+import {
+	isSealedEvalRun,
+	listPublicEvalRunIndexesBounded,
+	loadEvalRun,
+	readEvalRunIndex,
+	type EvalRunRecord,
+	type PublicEvalRunIndexEntry,
+} from "../eval.js";
 import { collectEvalReportData, renderEvalReportHtml } from "../report.js";
 import { safeArtifactSegment } from "../storage/paths.js";
 import {
@@ -14,7 +21,8 @@ import {
 } from "./live.js";
 
 const LOOPBACK_HOST = "127.0.0.1";
-const MAX_ERROR_CHARS = 2_000;
+export const EVIDENCE_INDEX_MAX_RECORDS = 100;
+export const EVIDENCE_INDEX_MAX_BYTES = 128 * 1024;
 const MAX_PENDING_SSE_FRAMES = 384;
 const MAX_PENDING_SSE_BYTES = 1024 * 1024;
 
@@ -46,10 +54,6 @@ function escapeHtml(value: string): string {
 	})[character] ?? character);
 }
 
-function isSealed(record: Pick<EvalRunRecord, "dataset">): boolean {
-	return record.dataset.startsWith("sealed-");
-}
-
 function securityHeaders(response: ServerResponse): void {
 	response.setHeader("Cache-Control", "no-store");
 	response.setHeader("Content-Security-Policy", "default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
@@ -67,12 +71,49 @@ function send(response: ServerResponse, status: number, type: string, body: stri
 	response.end(headOnly ? undefined : body);
 }
 
-function renderIndex(records: EvalRunRecord[]): string {
-	const rows = records.map((record) => {
-		const rate = Math.round(record.summary.allPassRate * 100);
-		return `<a class="run" href="/evals/${encodeURIComponent(record.evalRunId)}"><span><strong>${escapeHtml(record.target.id)}</strong><small>${escapeHtml(record.evalRunId)} · ${escapeHtml(record.label)} · ${escapeHtml(record.startedAt)}</small></span><b>${rate}%</b></a>`;
-	}).join("");
-	return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AHDE Evidence</title><style>:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui;background:#090b10;color:#edf0f7}*{box-sizing:border-box}body{max-width:980px;margin:0 auto;padding:48px 24px}h1{font-size:42px;letter-spacing:-.04em;margin:0 0 8px}p{color:#929bae;margin:0 0 32px}.run{display:flex;justify-content:space-between;align-items:center;gap:24px;padding:18px;margin:10px 0;color:inherit;text-decoration:none;border:1px solid #252b38;border-radius:14px;background:#10131b}.run:hover{border-color:#6d7cff;background:#151a24}.run span{min-width:0}.run strong,.run small{display:block}.run small{margin-top:6px;color:#929bae;overflow:hidden;text-overflow:ellipsis}.run b{font-size:24px;color:#8d98ff}.empty{padding:30px;border:1px dashed #303746;border-radius:14px;color:#929bae}</style></head><body><h1>AHDE Evidence</h1><p>Verified development and candidate evaluations. Sealed holdout traces are never exposed here.</p>${rows || '<div class="empty">No development evidence yet. Run an evaluation from Builder Pi.</div>'}</body></html>`;
+function renderIndexRow(record: PublicEvalRunIndexEntry): {
+	html: string;
+	fieldsTruncated: boolean;
+	fieldsRedacted: boolean;
+} {
+	const rate = Math.round(record.allPassRate * 100);
+	return {
+		html: `<a class="run" href="/evals/${encodeURIComponent(record.evalRunId)}"><span><strong>${escapeHtml(record.targetId)}</strong><small>${escapeHtml(record.evalRunId)} · ${escapeHtml(record.label)} · ${escapeHtml(record.startedAt)}</small></span><b>${rate}%</b></a>`,
+		fieldsTruncated: record.fieldsTruncated,
+		fieldsRedacted: record.fieldsRedacted,
+	};
+}
+
+function renderIndexDocument(
+	rows: readonly { html: string; fieldsTruncated: boolean; fieldsRedacted: boolean }[],
+	omittedPublicCount: number,
+): string {
+	const truncated = omittedPublicCount > 0;
+	const fieldsTruncated = rows.some((row) => row.fieldsTruncated);
+	const fieldsRedacted = rows.some((row) => row.fieldsRedacted);
+	const status = truncated
+		? `Showing the newest ${rows.length} public evaluation indexes; ${omittedPublicCount} older public evaluation(s) omitted by the bounded index.`
+		: `Showing all ${rows.length} public evaluation index(es).`;
+	const clipping = fieldsTruncated ? " Long public identifier fields are clipped." : "";
+	const redaction = fieldsRedacted ? " Credential-shaped public identifiers are redacted." : "";
+	return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AHDE Evidence</title><style>:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui;background:#090b10;color:#edf0f7}*{box-sizing:border-box}body{max-width:980px;margin:0 auto;padding:48px 24px}h1{font-size:42px;letter-spacing:-.04em;margin:0 0 8px}p{color:#929bae;margin:0 0 32px}.run{display:flex;justify-content:space-between;align-items:center;gap:24px;padding:18px;margin:10px 0;color:inherit;text-decoration:none;border:1px solid #252b38;border-radius:14px;background:#10131b}.run:hover{border-color:#6d7cff;background:#151a24}.run span{min-width:0}.run strong,.run small{display:block}.run small{margin-top:6px;color:#929bae;overflow:hidden;text-overflow:ellipsis}.run b{font-size:24px;color:#8d98ff}.empty{padding:30px;border:1px dashed #303746;border-radius:14px;color:#929bae}</style></head><body><h1>AHDE Evidence</h1><p>Development and candidate evaluation indexes. Reports verify member evidence when opened. Sealed holdout traces are never exposed here.</p><p data-index-truncated="${truncated}" data-index-shown="${rows.length}" data-index-omitted-public="${omittedPublicCount}" data-index-fields-truncated="${fieldsTruncated}" data-index-fields-redacted="${fieldsRedacted}">${status}${clipping}${redaction}</p>${rows.map((row) => row.html).join("") || '<div class="empty">No development evidence yet. Run an evaluation from Builder Pi.</div>'}</body></html>`;
+}
+
+function renderIndex(records: PublicEvalRunIndexEntry[], omittedPublicCount = 0): string {
+	const projected = records.map(renderIndexRow);
+	const rows: { html: string; fieldsTruncated: boolean; fieldsRedacted: boolean }[] = [];
+	for (const row of projected) {
+		const candidate = [...rows, row];
+		const candidateOmitted = omittedPublicCount + projected.length - candidate.length;
+		if (Buffer.byteLength(renderIndexDocument(candidate, candidateOmitted)) > EVIDENCE_INDEX_MAX_BYTES) break;
+		rows.push(row);
+	}
+	const finalOmitted = omittedPublicCount + projected.length - rows.length;
+	const html = renderIndexDocument(rows, finalOmitted);
+	if (Buffer.byteLength(html) > EVIDENCE_INDEX_MAX_BYTES) {
+		throw new Error("evidence index shell exceeds its byte budget");
+	}
+	return html;
 }
 
 function parseEvalId(pathname: string, prefix: string): string | null {
@@ -317,8 +358,17 @@ export function createEvidenceExplorer(options: EvidenceExplorerOptions): Eviden
 				return;
 			}
 			if (url.pathname === "/") {
-				const records = listEvalRuns(runsRoot).filter((record) => !isSealed(record));
-				send(response, 200, "text/html; charset=utf-8", renderIndex(records), headOnly);
+				let records: PublicEvalRunIndexEntry[];
+				let omittedPublicCount = 0;
+				try {
+					const indexes = listPublicEvalRunIndexesBounded(runsRoot, EVIDENCE_INDEX_MAX_RECORDS);
+					omittedPublicCount = indexes.omittedPublicCount;
+					records = indexes.entries;
+				} catch {
+					send(response, 422, "text/plain; charset=utf-8", "Evidence metadata failed integrity checks.\n", headOnly);
+					return;
+				}
+				send(response, 200, "text/html; charset=utf-8", renderIndex(records, omittedPublicCount), headOnly);
 				return;
 			}
 
@@ -350,9 +400,21 @@ export function createEvidenceExplorer(options: EvidenceExplorerOptions): Eviden
 				return;
 			}
 
-			const record = loadEvalRun(runsRoot, evalRunId);
-			if (isSealed(record)) {
+			let preflight: EvalRunRecord;
+			try {
+				preflight = readEvalRunIndex(runsRoot, evalRunId);
+			} catch {
 				send(response, 404, "text/plain; charset=utf-8", "Not found\n", headOnly);
+				return;
+			}
+			if (isSealedEvalRun(preflight)) {
+				send(response, 404, "text/plain; charset=utf-8", "Not found\n", headOnly);
+				return;
+			}
+			try {
+				loadEvalRun(runsRoot, evalRunId);
+			} catch {
+				send(response, 422, "text/plain; charset=utf-8", "Evidence failed integrity checks.\n", headOnly);
 				return;
 			}
 			// HTTP remains a read-only projection. Diagnosis must have been produced
@@ -361,9 +423,15 @@ export function createEvidenceExplorer(options: EvidenceExplorerOptions): Eviden
 				send(response, 409, "text/plain; charset=utf-8", "Evidence is not diagnosed yet; run the AHDE diagnosis operation first.\n", headOnly);
 				return;
 			}
-			const data = collectEvalReportData(runsRoot, evalRunId, undefined, {
-				allowDiagnosisCreation: false,
-			});
+			let data: ReturnType<typeof collectEvalReportData>;
+			try {
+				data = collectEvalReportData(runsRoot, evalRunId, undefined, {
+					allowDiagnosisCreation: false,
+				});
+			} catch {
+				send(response, 422, "text/plain; charset=utf-8", "Evidence report failed integrity or visibility checks.\n", headOnly);
+				return;
+			}
 			if (apiId) {
 				const body = `${JSON.stringify(data)}\n`;
 				send(response, 200, "application/json; charset=utf-8", body, headOnly);
@@ -375,9 +443,8 @@ export function createEvidenceExplorer(options: EvidenceExplorerOptions): Eviden
 				if (!response.writableEnded) response.destroy();
 				return;
 			}
-			const message = (error instanceof Error ? error.message : String(error)).slice(0, MAX_ERROR_CHARS);
-			const missing = /ENOENT|cannot be inspected|no such file/i.test(message);
-			send(response, missing ? 404 : 422, "text/plain; charset=utf-8", `${message}\n`);
+			void error;
+			send(response, 422, "text/plain; charset=utf-8", "Evidence explorer request failed.\n");
 		});
 	};
 

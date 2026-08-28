@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { expect, it, vi } from "vitest";
-import { createAhdeBuilderTools } from "../src/builder/extension.js";
+import { createAhdeBuilderCompatibilityTools as createAhdeBuilderTools } from "../src/builder/extension.js";
 import { createCorpus } from "../src/corpus.js";
 import { startMockModel } from "../src/mock-model.js";
 

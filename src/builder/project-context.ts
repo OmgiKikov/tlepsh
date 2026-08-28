@@ -9,7 +9,12 @@ import {
 } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { listCorpora } from "../corpus.js";
-import { listEvalRuns, type EvalRunRecord } from "../eval.js";
+import {
+	isSealedEvalRun,
+	listEvalRunIndexes,
+	loadEvalRun,
+	type EvalRunRecord,
+} from "../eval.js";
 import { loadTarget } from "../manifest.js";
 import { listSpecSnapshots } from "../spec.js";
 
@@ -208,17 +213,18 @@ export function buildProjectStatus(context: BuilderProjectContext): Record<strin
 	}
 	let corpora: ReturnType<typeof listCorpora> = [];
 	try {
-		corpora = listCorpora({ stateRoot: context.stateRoot, projectId }).slice(0, MAX_STATUS_ITEMS);
+		corpora = listCorpora({ stateRoot: context.stateRoot, projectId });
 	} catch {
 		warnings.push("corpora: metadata unavailable; sealed identities remain hidden");
 	}
 	let evals: EvalSummary[] = [];
 	try {
 		const sealedCorpora = corpora.filter((corpus) => corpus.visibility === "sealed");
-		evals = listEvalRuns(context.runsRoot)
+		const sealedHashes = new Set(sealedCorpora.map((corpus) => corpus.hash));
+		evals = listEvalRunIndexes(context.runsRoot)
 			.filter((record) => targetId === null || record.target.id === targetId)
-			.filter((record) => !record.dataset.startsWith("sealed-"))
-			.filter((record) => !sealedCorpora.some((corpus) => corpus.hash === record.datasetHash))
+			.filter((record) => !isSealedEvalRun(record, sealedHashes))
+			.map((record) => loadEvalRun(context.runsRoot, record.evalRunId))
 			.slice(0, MAX_STATUS_ITEMS)
 			.map(summarizeEvalRun);
 	} catch {
@@ -233,6 +239,7 @@ export function buildProjectStatus(context: BuilderProjectContext): Record<strin
 		corpora: {
 			development: corpora
 				.filter((corpus) => corpus.visibility === "development")
+				.slice(0, MAX_STATUS_ITEMS)
 				.map(({ id, name, visibility, taskCount, hash, createdAt }) => ({
 					id,
 					name,

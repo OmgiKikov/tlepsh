@@ -2,15 +2,17 @@ import { dirname, join, resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
-import { describeEnvVar, loadDotEnv } from "./env.js";
+import { describeEnvVar, loadDotEnv, type EnvReport } from "./env.js";
 import { loadTarget, scaffoldTarget } from "./manifest.js";
-import { listEvalRuns, loadEvalRun, runSuite } from "./eval.js";
+import { listEvalRunIndexesLenient, loadEvalRun, runSuite } from "./eval.js";
 import { compareEvalRuns, renderCompareMarkdown } from "./compare.js";
 import { compileFailureBundle } from "./bundle.js";
 import { BuilderManifest } from "./builder.js";
 import { runCandidateExperiment } from "./application/candidate-experiment.js";
 import { runAppliedBuilderCandidate } from "./application/builder-candidate.js";
 import { diagnoseEvalRun } from "./diagnosis.js";
+import { compileImprovementBrief } from "./application/improvement-brief.js";
+import { redactTraceText } from "./trace.js";
 import { buildEvalReport } from "./report.js";
 import {
 	decideCandidateRejection,
@@ -49,14 +51,24 @@ import { launchBuilderPi } from "./builder/runtime.js";
 import { runInteractiveTarget } from "./target/interactive.js";
 import { resolveInteractiveTargetDirectory } from "./target/command.js";
 import type { RunEventListener } from "./run-events.js";
+import {
+	CliInvocationError,
+	parseCliInvocation,
+} from "./cli-invocation.js";
 
-const envReport = loadDotEnv();
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-for (const conflict of envReport.conflicts) {
-	console.error(
-		`warning: ${conflict.name} — shell env ${conflict.shellFingerprint} overrides ${conflict.file} ${conflict.fileFingerprint}; ` +
-			`runs will use the shell value (unset it to use ${conflict.file})`,
-	);
+let loadedEnvironment: EnvReport | undefined;
+
+function environmentReport(): EnvReport {
+	if (loadedEnvironment) return loadedEnvironment;
+	loadedEnvironment = loadDotEnv();
+	for (const conflict of loadedEnvironment.conflicts) {
+		console.error(
+			`warning: ${conflict.name} — shell env ${conflict.shellFingerprint} overrides ${conflict.file} ${conflict.fileFingerprint}; ` +
+				`runs will use the shell value (unset it to use ${conflict.file})`,
+		);
+	}
+	return loadedEnvironment;
 }
 
 function runsRoot(): string {
@@ -92,6 +104,7 @@ const USAGE = `ahde — Agent Harness Development Environment
 Usage:
   ahde [--target <dir>] [--project <id>]      # real Builder Pi with trusted AHDE tools
   ahde builder-pi [--target <dir>] [--project <id>]
+  ahde resume [--target <dir>] [--project <id>] # reopen the private Builder session selector
   ahde target [--target <dir>] [--message <text>] # interactive Target Pi; target defaults to cwd
   ahde evidence [--port N]                    # read-only local eval/trace explorer
   ahde init <dir> [--template <target-dir>]
@@ -115,6 +128,7 @@ Usage:
   ahde review --candidate <id> --recommend promote|reject --reason <text> [--actor <id>]
   ahde promote --target <dir> --candidate <id> --to <semver> --reason <text> [--actor <id>]
   ahde reject --candidate <id> --reason <text> [--actor <id>]
+  ahde --version
 
 Environment:
   AHDE_RUNS_DIR        run artifacts directory (default: ./runs)
@@ -177,7 +191,7 @@ function createBuilderAdapter(
  * Primary product entry point: a real Builder Pi instance. The web process is
  * created lazily and remains a read-only projection of already-diagnosed runs.
  */
-async function builderPi(): Promise<void> {
+async function builderPi(sessionMode: "new" | "resume" = "new"): Promise<void> {
 	const projectDir = resolve(arg("target") ?? process.cwd());
 	const builderStateRoot = process.env.AHDE_STATE_DIR
 		? resolve(process.env.AHDE_STATE_DIR)
@@ -235,6 +249,7 @@ async function builderPi(): Promise<void> {
 			stateRoot: builderStateRoot,
 			runsRoot: builderRunsRoot,
 			projectId: arg("project"),
+			sessionMode,
 			dependencies: {
 				beginLiveTrace: async () => {
 					const host = await ensureEvidenceHost();
@@ -296,18 +311,39 @@ async function targetPi(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-	const command = process.argv[2];
-	if (command === "help" || command === "--help" || command === "-h") {
+	let invocation: ReturnType<typeof parseCliInvocation>;
+	try {
+		invocation = parseCliInvocation(process.argv.slice(2));
+	} catch (error) {
+		if (!(error instanceof CliInvocationError)) throw error;
+		console.error(`usage error: ${error.message}\n`);
+		console.error(USAGE);
+		process.exitCode = 2;
+		return;
+	}
+	if (invocation.kind === "help") {
 		console.log(USAGE);
 		return;
 	}
-	if (command === undefined || command.startsWith("--")) {
+	if (invocation.kind === "version") {
+		const metadata = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")) as { version?: unknown };
+		if (typeof metadata.version !== "string") throw new Error("package metadata is missing a version");
+		console.log(`ahde ${metadata.version}`);
+		return;
+	}
+	environmentReport();
+	const command = invocation.command === "root" ? undefined : invocation.command;
+	if (command === undefined) {
 		await builderPi();
 		return;
 	}
 	switch (command) {
 		case "builder-pi": {
 			await builderPi();
+			break;
+		}
+		case "resume": {
+			await builderPi("resume");
 			break;
 		}
 		case "target": {
@@ -370,14 +406,18 @@ async function main(): Promise<void> {
 					`(${record.summary.fail} fail, ${record.summary.error} error)`,
 			);
 			for (const runId of record.runIds) console.log(`  run ${runId}`);
+			if (record.summary.error > 0) process.exitCode = 2;
+			else if (record.summary.fail > 0) process.exitCode = 1;
 			break;
 		}
 		case "validate": {
 			const dataset = arg("dataset");
 			const target = loadTarget(resolve(requireArg("target")), dataset ? { dataset } : undefined);
-			console.log(`target ${target.manifest.id} OK`);
+			const placeholders = target.manifest.id === "my-agent" || target.manifest.model.id === "replace-with-model-id";
+			const credentialConfigured = Boolean(process.env[target.manifest.model.apiKeyEnv]);
+			console.log(`target ${target.manifest.id}: structurally valid`);
 			console.log(`  model: ${target.manifest.model.provider}/${target.manifest.model.id} (thinking: ${target.manifest.model.thinkingLevel})`);
-			console.log(`  key ${target.manifest.model.apiKeyEnv}: ${describeEnvVar(target.manifest.model.apiKeyEnv, envReport)}`);
+			console.log(`  key ${target.manifest.model.apiKeyEnv}: ${describeEnvVar(target.manifest.model.apiKeyEnv, environmentReport())}`);
 			console.log(`  tasks: ${target.tasks.length} (${target.datasetHash.slice(7, 19)}…)`);
 			console.log(`  suite: ${target.manifest.evalSuite.id} (${target.suiteHash.slice(7, 19)}…)`);
 			console.log(`  skills: ${target.manifest.skills.join(", ") || "(none)"}`);
@@ -386,11 +426,24 @@ async function main(): Promise<void> {
 				: target.gitSha.slice(0, 8);
 			console.log(`  git: ${gitDisplay} | pi: ${target.runtime.piVersion}@${target.runtime.piSha.slice(0, 8)}`);
 			console.log(`  ahde: ${target.runtime.ahdeVersion}@${target.runtime.ahdeCodeHash.slice(7, 19)}…`);
+			if (placeholders) {
+				console.log("  readiness: ACTION REQUIRED — Target identity/model still contain starter placeholders");
+				process.exitCode = 2;
+			} else if (!credentialConfigured) {
+				console.log(`  readiness: ACTION REQUIRED — configure ${target.manifest.model.apiKeyEnv} outside chat`);
+				process.exitCode = 2;
+			} else {
+				console.log("  readiness: ready to run");
+			}
 			break;
 		}
 		case "list": {
 			const targetId = arg("target");
-			const runs = listEvalRuns(runsRoot()).filter((r) => !targetId || r.target.id === targetId);
+			const listed = listEvalRunIndexesLenient(runsRoot());
+			const runs = listed.records.filter((r) => !targetId || r.target.id === targetId);
+			if (listed.invalidCount > 0) {
+				console.error(`warning: skipped ${listed.invalidCount} invalid eval-run index(es)`);
+			}
 			if (runs.length === 0) {
 				console.log("no eval runs");
 				break;
@@ -534,12 +587,36 @@ You have no tools. You create a reviewable draft only and must not claim that yo
 				process.exit(1);
 			}
 			const diagnosis = diagnoseEvalRun(runsRoot(), evalRunId);
+			const brief = compileImprovementBrief(runsRoot(), diagnosis);
 			console.log(
 				`diagnosis ${diagnosis.diagnosisId}: ${diagnosis.status} — ` +
 					`${diagnosis.summary.issueCount} issue(s), ${diagnosis.summary.infrastructureErrors} infrastructure error(s)`,
 			);
-			for (const issue of diagnosis.issues) {
-				console.log(`  ${issue.severity.padEnd(8)} ${issue.taskId} · ${issue.category}: ${issue.rootCause}`);
+			console.log(brief.headline);
+			console.log(
+				brief.proposalEligible
+					? "proposal gate: eligible for exact human review"
+					: "proposal gate: blocked; mode suggestions are diagnostic guidance only",
+			);
+			for (const mode of brief.modes) {
+				const decision = !brief.proposalEligible && mode.decision === "propose-harness-change"
+					? `${mode.decision} (blocked by global gate)`
+					: mode.decision;
+				console.log(
+					`  ${mode.severity.padEnd(8)} ${mode.scope.padEnd(10)} ${mode.title} — ` +
+						`${mode.impact.affectedTasks}/${mode.impact.totalTasks} task(s), ${mode.evidenceStrength} evidence, ${decision}`,
+				);
+				console.log(`    hypothesis: ${mode.hypothesis}`);
+			}
+			if (brief.modes.length > 0 && diagnosis.issues.length > 0) console.log("Task-level drill-down:");
+			for (const issue of diagnosis.issues.slice(0, 30)) {
+				console.log(
+					`  ${issue.severity.padEnd(8)} ${redactTraceText(issue.taskId).slice(0, 500)} · ` +
+					`${issue.category}: ${redactTraceText(issue.rootCause).slice(0, 1_000)}`,
+				);
+			}
+			if (diagnosis.issues.length > 30) {
+				console.log(`  ... ${diagnosis.issues.length - 30} task-level issue(s) omitted; open the evidence report for bounded drill-down.`);
 			}
 			console.log(`evidence: ${resolve(runsRoot(), evalRunId, "diagnosis.json")}`);
 			if (diagnosis.status === "inconclusive") process.exitCode = 2;
@@ -762,7 +839,26 @@ You have no tools. You create a reviewable draft only and must not claim that yo
 	}
 }
 
+function cliFailure(error: unknown): { message: string; next?: string } {
+	const message = redactTraceText(error instanceof Error ? error.message : String(error)).slice(0, 4_000);
+	if (/replace-with-model-id|starter placeholder|built-in.*placeholder/i.test(message)) {
+		return { message, next: "Open `ahde` and finish the guided Target identity/model setup." };
+	}
+	if (/\b401\b|unauthori[sz]ed|authentication|invalid api key/i.test(message)) {
+		return { message, next: "Run `ahde`, then `/doctor`; authenticate the Builder with `/login` or configure the named Target env variable outside chat." };
+	}
+	if (/fetch failed|ECONNREFUSED|ENOTFOUND|network|socket/i.test(message)) {
+		return { message, next: "Check the configured model baseUrl and network reachability, then run `ahde validate --target <dir>`." };
+	}
+	if (/missing [A-Z][A-Z0-9_]+/.test(message)) {
+		return { message, next: "Configure the named environment variable outside chat; AHDE never accepts secret values in conversation." };
+	}
+	return { message };
+}
+
 main().catch((error: unknown) => {
-	console.error(`error: ${error instanceof Error ? error.message : String(error)}`);
-	process.exit(1);
+	const failure = cliFailure(error);
+	console.error(`error: ${failure.message}`);
+	if (failure.next) console.error(`next: ${failure.next}`);
+	process.exitCode = 1;
 });

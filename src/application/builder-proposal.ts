@@ -35,7 +35,7 @@ import {
 import { compileFailureBundle } from "../bundle.js";
 import { listCorpora } from "../corpus.js";
 import { diagnoseEvalRun } from "../diagnosis.js";
-import { loadVerifiedEvalRun } from "../eval.js";
+import { isSealedEvalRun, loadVerifiedEvalRun, readEvalRunIndex } from "../eval.js";
 import { loadTarget, TargetManifest, type TargetManifest as TargetManifestValue } from "../manifest.js";
 import { canonicalJson, hashValue } from "../provenance.js";
 import {
@@ -741,6 +741,20 @@ export async function runApprovedSpecBuilderProposal(
 		let evidence: { evalRunId: string; diagnosisId: string } | undefined;
 		let sourceAttestation: CanonicalBuilderSource | null = null;
 		if (sourceEvalRunId) {
+			const sealed = listCorpora({
+				stateRoot: options.approvedSpec.stateRoot,
+				projectId: options.approvedSpec.projectId,
+			}).filter((corpus) => corpus.visibility === "sealed");
+			const sealedHashes = new Set(sealed.map((corpus) => corpus.hash));
+			let preflight;
+			try {
+				preflight = readEvalRunIndex(options.runsRoot, sourceEvalRunId);
+			} catch {
+				throw new Error("canonical Builder source metadata failed integrity checks");
+			}
+			if (isSealedEvalRun(preflight, sealedHashes)) {
+				throw new Error("sealed holdout evidence cannot be used to steer a Builder proposal");
+			}
 			const verifiedEval = loadVerifiedEvalRun(options.runsRoot, sourceEvalRunId);
 			if (!verifiedEval.hasRunHashes) {
 				throw new Error("canonical Builder source eval must hash-anchor every member run");
@@ -749,14 +763,7 @@ export async function runApprovedSpecBuilderProposal(
 			if (evalRun.target.id !== target.manifest.id || evalRun.target.gitSha !== target.gitSha) {
 				throw new Error("canonical Builder source must belong to the reconstructed exact target revision");
 			}
-			const sealed = listCorpora({
-				stateRoot: options.approvedSpec.stateRoot,
-				projectId: options.approvedSpec.projectId,
-			}).filter((corpus) => corpus.visibility === "sealed");
-			if (
-				evalRun.dataset.startsWith("sealed-") ||
-				sealed.some((corpus) => corpus.hash === evalRun.datasetHash || `sealed-${corpus.id}` === evalRun.dataset)
-			) {
+			if (isSealedEvalRun(evalRun, sealedHashes)) {
 				throw new Error("sealed holdout evidence cannot be used to steer a Builder proposal");
 			}
 			const resolved = resolveDevelopmentTargetForEval({

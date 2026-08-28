@@ -149,6 +149,17 @@ export type WorkbenchSubmitInput = z.input<typeof WorkbenchSubmitInputSchema>;
 
 export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 	z.strictObject({
+		kind: z.literal("scaffold-target"),
+		reason: NonBlankSchema.max(4_000),
+	}),
+	z.strictObject({
+		kind: z.literal("configure-target"),
+		targetId: z.string().max(100).regex(/^[a-z0-9][a-z0-9-]*$/),
+		/** Complete non-secret model metadata; the application service rejects credential values. */
+		model: z.unknown(),
+		reason: NonBlankSchema.max(4_000),
+	}),
+	z.strictObject({
 		kind: z.literal("run-current"),
 		repetitions: z.number().int().min(1).max(10),
 		reason: NonBlankSchema.max(4_000),

@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	AHDE_BUILDER_BUILTIN_COMMANDS,
+	AHDE_BUILDER_PREFERRED_EXTENSION_COMMANDS,
 	buildBuilderPiArgs,
 	launchBuilderPi,
 	resolveBuilderAssets,
@@ -73,6 +75,21 @@ describe("Builder Pi runtime", () => {
 		]);
 	});
 
+	it("adds resume only through the host-controlled private session mode", () => {
+		const assets = resolveBuilderAssets();
+		const resumed = buildBuilderPiArgs({
+			assets,
+			sessionDir: "/private/sessions",
+			sessionMode: "resume",
+		});
+		expect(resumed).toContain("--resume");
+		expect(() => buildBuilderPiArgs({
+			assets,
+			sessionDir: "/private/sessions",
+			piArgs: ["--resume"],
+		})).toThrow(/controlled by AHDE/);
+	});
+
 	it("launches Pi main with isolated config/session roots and one inline trusted extension", async () => {
 		const projectDir = root("ahde-builder-launch-");
 		const stateRoot = join(projectDir, ".private-ahde");
@@ -103,10 +120,21 @@ describe("Builder Pi runtime", () => {
 		expect(existsSync(observed.agentDir as string)).toBe(true);
 		expect(existsSync(observed.sessionDir as string)).toBe(true);
 		expect(observed.args).toEqual(expect.arrayContaining(["--no-builtin-tools", "--no-extensions", "--no-skills"]));
-		const factories = (observed.options as { extensionFactories: { name: string; factory: unknown }[] }).extensionFactories;
+		const mainOptions = observed.options as {
+			extensionFactories: { name: string; factory: unknown }[];
+			allowedBuiltinCommands: readonly string[];
+			preferredExtensionCommands: readonly string[];
+			allowBash: boolean;
+			resumeHint: string | false;
+		};
+		const factories = mainOptions.extensionFactories;
 		expect(factories).toHaveLength(1);
 		expect(factories[0]).toMatchObject({ name: "ahde-builder" });
 		expect(typeof factories[0]?.factory).toBe("function");
+		expect(mainOptions.allowedBuiltinCommands).toEqual(AHDE_BUILDER_BUILTIN_COMMANDS);
+		expect(mainOptions.preferredExtensionCommands).toEqual(AHDE_BUILDER_PREFERRED_EXTENSION_COMMANDS);
+		expect(mainOptions.allowBash).toBe(false);
+		expect(mainOptions.resumeHint).toBe(false);
 
 		expect(process.cwd()).toBe(previousCwd);
 		expect(process.env.PI_CODING_AGENT_DIR).toBe(previousAgentDir);

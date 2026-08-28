@@ -121,6 +121,23 @@ const HarnessIntentParameters = Type.Union([
 		content: AuthoredText,
 	}, { additionalProperties: false }),
 	Type.Object({
+		type: Type.Literal("execution.configure"),
+		execution: Type.Object({
+			tools: Type.Array(Type.Union([
+				Type.Literal("read"),
+				Type.Literal("bash"),
+				Type.Literal("edit"),
+				Type.Literal("write"),
+			]), { minItems: 1, maxItems: 4, uniqueItems: true }),
+			environmentAllowlist: Type.Array(
+				Type.String({ pattern: "^[A-Za-z_][A-Za-z0-9_]*$" }),
+				{ maxItems: 32, uniqueItems: true },
+			),
+			network: Type.Union([Type.Literal("deny"), Type.Literal("allow")]),
+			sandbox: Type.Union([Type.Literal("required"), Type.Literal("best-effort"), Type.Literal("off")]),
+		}, { additionalProperties: false }),
+	}, { additionalProperties: false }),
+	Type.Object({
 		type: Type.Literal("skill.upsert"),
 		name: Type.String({ pattern: "^(?!.*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$" }),
 		description: Type.String({ minLength: 1, maxLength: 1_024, pattern: "^(?=.*\\S)[^\\u0000\\r\\n]+$" }),
@@ -231,6 +248,13 @@ export const WorkbenchSubmitParameters = Type.Union([
 const DecisionReason = NonBlank(4_000);
 
 export const WorkbenchDecisionParameters = Type.Union([
+	Type.Object({ kind: Type.Literal("scaffold-target"), reason: DecisionReason }, { additionalProperties: false }),
+	Type.Object({
+		kind: Type.Literal("configure-target"),
+		targetId: Type.String({ minLength: 1, maxLength: 100, pattern: "^[a-z0-9][a-z0-9-]*$" }),
+		model: Type.Unknown(),
+		reason: DecisionReason,
+	}, { additionalProperties: false }),
 	Type.Object({ kind: Type.Literal("run-current"), repetitions: Type.Integer({ minimum: 1, maximum: 10 }), reason: DecisionReason }, { additionalProperties: false }),
 	Type.Object({ kind: Type.Literal("approve-spec"), draftSpecId: Type.Optional(WorkbenchArtifactId), reason: DecisionReason }, { additionalProperties: false }),
 	Type.Object({ kind: Type.Literal("publish-corpus"), draftId: Type.Optional(WorkbenchArtifactId), name: Type.Optional(NonBlank(200)), reason: DecisionReason }, { additionalProperties: false }),

@@ -9,7 +9,13 @@ import {
 	validateCandidateProposal,
 	type CandidateProposal,
 } from "../builders/adapters.js";
-import { loadTarget, TargetManifest, type TargetManifest as TargetManifestValue } from "../manifest.js";
+import {
+	ExecutionPolicyBlock,
+	loadTarget,
+	TargetManifest,
+	type ExecutionPolicyBlock as ExecutionPolicy,
+	type TargetManifest as TargetManifestValue,
+} from "../manifest.js";
 import {
 	validateTargetToolDescriptor,
 	type TargetToolDescriptor,
@@ -84,6 +90,12 @@ const InstructionsReplaceIntentSchema = z.strictObject({
 	content: AuthoredTextSchema,
 });
 
+const ExecutionConfigureIntentSchema = z.strictObject({
+	type: z.literal("execution.configure"),
+	/** Complete policy replacement; the exact manifest diff remains human-reviewed. */
+	execution: ExecutionPolicyBlock,
+});
+
 const SkillUpsertIntentSchema = z.strictObject({
 	type: z.literal("skill.upsert"),
 	name: SkillNameSchema,
@@ -115,6 +127,7 @@ const ToolRemoveIntentSchema = z.strictObject({
 
 export const HarnessAuthoringIntentSchema = z.discriminatedUnion("type", [
 	InstructionsReplaceIntentSchema,
+	ExecutionConfigureIntentSchema,
 	SkillUpsertIntentSchema,
 	SkillRemoveIntentSchema,
 	ToolUpsertIntentSchema,
@@ -349,7 +362,7 @@ function assertCanonicalDeclarations(manifest: TargetManifestValue): void {
 function renderManifest(
 	baseText: string,
 	baseManifest: TargetManifestValue,
-	updates: { skills?: string[]; tools?: string[] },
+	updates: { skills?: string[]; tools?: string[]; execution?: ExecutionPolicy },
 ): string {
 	const document = parseDocument(baseText);
 	if (document.errors.length > 0) {
@@ -357,14 +370,21 @@ function renderManifest(
 	}
 	if (updates.skills) document.set("skills", updates.skills);
 	if (updates.tools) document.set("tools", updates.tools);
+	if (updates.execution) document.set("execution", updates.execution);
 	const rendered = String(document);
 	if (utf8Bytes(rendered) > MAX_MANIFEST_BYTES) throw new Error(`manifest.yaml exceeds ${MAX_MANIFEST_BYTES} bytes`);
 	const parsed = TargetManifest.safeParse(parseYaml(rendered));
 	if (!parsed.success) throw new Error(`compiled manifest.yaml is invalid: ${parsed.error.message}`);
-	for (const field of ["id", "model", "execution", "instructions", "evalSuite"] as const) {
+	for (const field of ["id", "model", "instructions", "evalSuite"] as const) {
 		if (canonicalJson(parsed.data[field]) !== canonicalJson(baseManifest[field])) {
 			throw new Error(`compiled manifest unexpectedly changed protected field ${field}`);
 		}
+	}
+	if (updates.execution && canonicalJson(parsed.data.execution) !== canonicalJson(updates.execution)) {
+		throw new Error("compiled manifest does not contain the exact requested execution policy");
+	}
+	if (!updates.execution && canonicalJson(parsed.data.execution) !== canonicalJson(baseManifest.execution)) {
+		throw new Error("compiled manifest unexpectedly changed protected field execution");
 	}
 	return rendered;
 }
@@ -397,10 +417,15 @@ export function compileHarnessAuthoringProposal(
 	const manifestText = decodeText(manifestBlob.content, "manifest.yaml");
 	let skills = [...manifest.skills];
 	let tools = [...manifest.tools];
+	const executionIntent = intents.find((intent): intent is Extract<HarnessAuthoringIntent, { type: "execution.configure" }> =>
+		intent.type === "execution.configure"
+	);
+	const execution = executionIntent?.execution ?? manifest.execution;
 	const planned = new Map<string, PlannedFile>();
 	const resources = new Set<string>();
 	let skillsChanged = false;
 	let toolsChanged = false;
+	let executionChanged = false;
 
 	const plan = (
 		path: string,
@@ -419,12 +444,20 @@ export function compileHarnessAuthoringProposal(
 	};
 
 	for (const intent of intents) {
-		const resource = intent.type === "instructions.replace" ? "instructions" : `${intent.type.split(".")[0]}:${intent.name}`;
+		const resource = intent.type === "instructions.replace"
+			? "instructions"
+			: intent.type === "execution.configure"
+				? "execution"
+				: `${intent.type.split(".")[0]}:${intent.name}`;
 		if (resources.has(resource)) throw new Error(`conflicting or duplicate authoring intents for ${resource}`);
 		resources.add(resource);
 
 		if (intent.type === "instructions.replace") {
 			plan("AGENTS.md", intent.content, "100644", "Replace the Target's primary instructions");
+			continue;
+		}
+		if (intent.type === "execution.configure") {
+			executionChanged = canonicalJson(intent.execution) !== canonicalJson(manifest.execution);
 			continue;
 		}
 		if (intent.type === "skill.upsert") {
@@ -454,7 +487,7 @@ export function compileHarnessAuthoringProposal(
 				throw new Error(`${executablePath} is also used by declared tool ${shared.descriptor.name}`);
 			}
 			const descriptor = targetToolDescriptor(intent);
-			validateTargetToolDescriptor(descriptor, descriptorPath, manifest.execution);
+			validateTargetToolDescriptor(descriptor, descriptorPath, execution);
 			if (!tools.includes(descriptorPath)) {
 				tools.push(descriptorPath);
 				toolsChanged = true;
@@ -484,12 +517,33 @@ export function compileHarnessAuthoringProposal(
 		plan(executablePath, null, null, `Remove the ${intent.name} Target tool executable`);
 	}
 
-	if (skillsChanged || toolsChanged) {
+	if (executionChanged) {
+		const removed = new Set(intents
+			.filter((intent): intent is Extract<HarnessAuthoringIntent, { type: "tool.remove" }> => intent.type === "tool.remove")
+			.map((intent) => intent.name));
+		const replaced = new Set(intents
+			.filter((intent): intent is Extract<HarnessAuthoringIntent, { type: "tool.upsert" }> => intent.type === "tool.upsert")
+			.map((intent) => intent.name));
+		for (const tool of target.tools) {
+			if (removed.has(tool.descriptor.name) || replaced.has(tool.descriptor.name)) continue;
+			validateTargetToolDescriptor(tool.descriptor, tool.descriptorPath, execution);
+		}
+	}
+
+	if (skillsChanged || toolsChanged || executionChanged) {
 		const nextManifest = renderManifest(manifestText, manifest, {
 			...(skillsChanged ? { skills } : {}),
 			...(toolsChanged ? { tools } : {}),
+			...(executionChanged ? { execution } : {}),
 		});
-		plan("manifest.yaml", nextManifest, "100644", "Update the Target's declared skill and tool resources");
+		plan(
+			"manifest.yaml",
+			nextManifest,
+			"100644",
+			executionChanged
+				? "Update the Target's reviewed execution policy and declared resources"
+				: "Update the Target's declared skill and tool resources",
+		);
 	}
 
 	const evidenceRefs = [...new Set(metadata.diagnoses.flatMap((diagnosis) => diagnosis.evidence))];

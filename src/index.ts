@@ -11,6 +11,7 @@ export * from "./application/builder-candidate.js";
 export * from "./application/corpus-target.js";
 export * from "./application/corpus-draft.js";
 export * from "./application/harness-authoring.js";
+export * from "./application/improvement-brief.js";
 export * from "./application/target-bootstrap.js";
 export * from "./builders/adapters.js";
 export * from "./builders/pi-executor.js";

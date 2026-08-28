@@ -259,6 +259,53 @@ describe("structured harness authoring", () => {
 		expect(proposal).toMatchObject({ decision: "no-change", changes: [] });
 	});
 
+	it("can earn a generic network capability through one exact execution-policy and tool proposal", () => {
+		const { repositoryDir } = initTarget();
+		const proposal = compileHarnessAuthoringProposal({
+			repositoryDir,
+			summary: "Add evidence-backed web research capability",
+			diagnoses: [{
+				failureIds: ["development:web-research"],
+				evidence: ["eval:missing-current-sources"],
+				rootCause: "The Target has no network research capability",
+			}],
+			validationPlan: ["Re-run the development research task and require cited sources"],
+			intents: [
+				{
+					type: "execution.configure",
+					execution: {
+						tools: ["read"],
+						environmentAllowlist: ["RESEARCH_API_KEY"],
+						network: "allow",
+						sandbox: "best-effort",
+					},
+				},
+				{
+					type: "tool.upsert",
+					name: "research_web",
+					descriptor: {
+						...descriptor(),
+						permissions: {
+							environment: ["RESEARCH_API_KEY"],
+							network: "allow",
+							filesystem: "read-only",
+						},
+					},
+					executable: "#!/usr/bin/env node\nprocess.stdout.write('[]\\n');\n",
+				},
+			],
+		});
+
+		expect(proposal.decision).toBe("propose");
+		const manifestChange = proposal.changes.find((change) => change.path === "manifest.yaml");
+		expect(manifestChange?.unifiedDiff).toContain("+  network: allow");
+		expect(manifestChange?.unifiedDiff).toContain("+    - RESEARCH_API_KEY");
+		expect(proposal.changes.map((change) => change.path)).toEqual(expect.arrayContaining([
+			"bin/research_web",
+			"tools/research_web.tool.yaml",
+		]));
+	});
+
 	it("rejects structural path injection, ambiguous intents, dirty bases, and policy escalation", () => {
 		expect(HarnessAuthoringIntentSchema.safeParse({
 			type: "skill.remove",

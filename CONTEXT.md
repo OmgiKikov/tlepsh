@@ -30,7 +30,11 @@ the harness under development runs in a different Target Pi invocation.
 - **Run** — one Target execution for one case and repetition.
 - **Eval Run** — a set of Runs evaluated under one Experiment Design.
 - **Diagnosis** — structured failure families and evidence links derived from an Eval Run. Markdown and HTML are renderings, not the source of truth.
-- **Harness Authoring Intent** — a semantic instruction/skill/tool change
+- **Improvement Brief** — a rebuildable, bounded projection that groups exact
+  typed grader observations into systemic or task-local failure modes. Its
+  explanations are hypotheses; the verified Eval Run and Diagnosis remain the
+  evidence authority.
+- **Harness Authoring Intent** — a semantic instruction/execution-policy/skill/tool change
   request. The host compiler, not Builder Pi, derives paths, modes, hashes,
   manifest declarations, and exact diffs from a clean Target snapshot.
 - **Proposal** — the immutable exact Harness file replacement set compiled from
@@ -72,14 +76,19 @@ live view is never evidence and cannot perform state transitions.
 3. Candidate and baseline revisions differ, except in explicit A/A calibration mode.
 4. Comparability excludes the changing Harness revision but includes every other effective execution and grading input.
 5. The Target sees one holdout input at a time, never the holdout corpus, graders, expected answers, or future cases.
-6. A Proposal cannot modify corpus/model/execution configuration and cannot be
-   applied without an explicit human command. It may update only `AGENTS.md`,
-   `skills/**`, `tools/**`, `bin/**`, and the manifest's `skills`/`tools`
-   declaration lists.
+6. A Proposal cannot modify corpus or model configuration and cannot be applied
+   without an explicit human command. It may update only `AGENTS.md`,
+   `skills/**`, `tools/**`, `bin/**`, and the manifest's declared resources.
+   A complete `execution.configure` intent may change the Target execution
+   policy only in the same exact reviewed Proposal; every resulting tool must
+   validate against that policy, and the Candidate must still pass matched
+   development and sealed verification before promotion.
 7. The user's current checkout is never switched by an experiment.
 8. Durable artifacts are schema-versioned, validated on read, and written atomically.
 9. Infrastructure failures are inconclusive evidence, not behavioral failures.
-10. Raw traces are protected evidence; reports use bounded, redacted normalized views.
+10. Raw traces are protected evidence and are rejected before read/parse when
+    their canonical byte or record bound is exceeded; reports use bounded,
+    redacted normalized views.
 11. Live RunEvents are provisional, in-process observations. TUI and web are
     bounded host-only projections of the same redacted event seam; no second
     journal or mutable trace reader exists. Listener, HTTP, SSE, UI, and viewer
@@ -143,3 +152,8 @@ live view is never evidence and cannot perform state transitions.
     the canonical case, persists bounded hashes and ids rather than trace
     output, and rejects duplicates, infrastructure failures, passing runs,
     foreign evidence, candidate evidence, and all sealed evidence.
+29. A systemic failure mode requires the same exact typed grader signature on
+    at least two distinct tasks. Broad categories, names, free-form reasons,
+    and semantic similarity are not sufficient evidence. Infrastructure makes
+    a brief proposal-ineligible, and sealed evidence never enters a
+    Builder-visible brief.

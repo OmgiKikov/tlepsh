@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -49,7 +49,10 @@ try {
 		"dist/application/builder-corpus-import-contract.js",
 		"dist/application/builder-corpus-import.js",
 		"dist/application/builder-regression-case.js",
+		"dist/application/target-scaffold.js",
+		"dist/builder/product-shell.js",
 		"dist/builder/run-observation.js",
+		"dist/cli-invocation.js",
 		"dist/evidence/live.js",
 		"dist/run-events.js",
 		"dist/target/command.js",
@@ -63,6 +66,9 @@ try {
 		path.includes("workbench-tui") ||
 		path === "builders/companion" ||
 		path.startsWith("builders/companion/") ||
+		(!path.startsWith("node_modules/") &&
+			!path.startsWith("vendor/") &&
+			/(^|\/)(?:presets?|target-presets?)(?:[.\/-]|$)/i.test(path)) ||
 		/(^|\/)studio(?:\.[^/]*)?$/.test(path),
 	);
 	if (forbiddenPackedPaths.length > 0) {
@@ -79,14 +85,28 @@ try {
 	);
 	run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", tarball], { cwd: consumerDir });
 	const cli = join(consumerDir, "node_modules", "ahde", "dist", "cli.js");
+	const help = run(process.execPath, [cli, "--help"], { cwd: consumerDir, capture: true });
+	const version = run(process.execPath, [cli, "--version"], { cwd: consumerDir, capture: true });
+	if (
+		!help.includes("Agent Harness Development Environment") ||
+		!help.includes("ahde resume") ||
+		!/^ahde \d+\.\d+\.\d+\s*$/.test(version)
+	) {
+		throw new Error("clean-install help/version smoke failed");
+	}
 	const target = join(consumerDir, "fresh-agent");
 	run(process.execPath, [cli, "init", target], { cwd: consumerDir });
-	const validation = run(process.execPath, [cli, "validate", "--target", target], {
+	const validation = spawnSync(process.execPath, [cli, "validate", "--target", target], {
 		cwd: consumerDir,
-		capture: true,
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "pipe"],
 	});
-	if (!validation.includes("target my-agent OK")) {
-		throw new Error(`clean-install validation did not succeed:\n${validation}`);
+	if (
+		validation.status !== 2 ||
+		!validation.stdout.includes("target my-agent: structurally valid") ||
+		!validation.stdout.includes("readiness: ACTION REQUIRED")
+	) {
+		throw new Error(`clean-install validation was not truthful:\n${validation.stdout}\n${validation.stderr}`);
 	}
 	const smokePath = join(consumerDir, "package-smoke.mjs");
 	writeFileSync(smokePath, `
@@ -128,6 +148,9 @@ import {
   targetWithDevelopmentCorpus,
 } from "ahde";
 
+const expectedToolNames = ["ahde_workbench_view", "ahde_workbench_submit", "ahde_workbench_decide"];
+const expectedCommandNames = ["help", "doctor", "status", "run", "traces", "review", "apply", "discard", "target"];
+
 for (const [name, value] of Object.entries({
 	AHDE_BUILDER_COMMAND_NAMES,
 	AHDE_BUILDER_TOOL_NAMES,
@@ -160,9 +183,13 @@ for (const [name, value] of Object.entries({
   targetWithDevelopmentCorpus,
 })) {
   if (name === "AHDE_BUILDER_TOOL_NAMES") {
-    if (!Array.isArray(value) || value.length < 20) throw new Error("Builder tool allowlist was not exported");
+    if (JSON.stringify(value) !== JSON.stringify(expectedToolNames)) {
+      throw new Error(\`Builder exported the wrong three-operation tool surface: \${JSON.stringify(value)}\`);
+    }
   } else if (name === "AHDE_BUILDER_COMMAND_NAMES") {
-    if (!Array.isArray(value) || value.length !== 7) throw new Error("Builder command surface was not exported");
+    if (JSON.stringify(value) !== JSON.stringify(expectedCommandNames)) {
+      throw new Error(\`Builder exported the wrong command surface: \${JSON.stringify(value)}\`);
+    }
   } else if (typeof value !== "function") {
     throw new Error(\`public API \${name} is not a function\`);
   }
@@ -231,6 +258,7 @@ await launchBuilderPi({
   piArgs: ["--thinking", "off"],
   main: async (args, options) => {
     builderMainCalled = true;
+    if (args.includes("--resume")) throw new Error("fresh Builder launch unexpectedly resumed a session");
     if (realpathSync(process.cwd()) !== realpathSync(targetDir)) {
       throw new Error("Builder Pi did not start in the Target directory");
     }
@@ -270,15 +298,54 @@ await launchBuilderPi({
       registerTool(tool) { registeredTools.push(tool); },
       registerCommand(name, command) { registeredCommands.push({ name, command }); },
     });
-    const expectedNames = [...AHDE_BUILDER_TOOL_NAMES].sort();
-    const actualNames = registeredTools.map((tool) => tool.name).sort();
-    if (JSON.stringify(actualNames) !== JSON.stringify(expectedNames)) {
+    const actualNames = registeredTools.map((tool) => tool.name);
+    if (JSON.stringify(actualNames) !== JSON.stringify(expectedToolNames)) {
       throw new Error(\`Builder extension registered an unexpected tool surface: \${actualNames.join(", ")}\`);
     }
-    const expectedCommands = [...AHDE_BUILDER_COMMAND_NAMES].sort();
-    const actualCommands = registeredCommands.map(({ name }) => name).sort();
-    if (JSON.stringify(actualCommands) !== JSON.stringify(expectedCommands)) {
+    const actualCommands = registeredCommands.map(({ name }) => name);
+    if (JSON.stringify(actualCommands) !== JSON.stringify(expectedCommandNames)) {
       throw new Error(\`Builder extension registered an unexpected command surface: \${actualCommands.join(", ")}\`);
+    }
+    const viewTool = registeredTools.find((tool) => tool.name === "ahde_workbench_view");
+    const decideTool = registeredTools.find((tool) => tool.name === "ahde_workbench_decide");
+    const viewResult = await viewTool?.execute("package-view", {}, undefined, undefined, undefined);
+    if (!viewResult || typeof viewResult.details?.stage !== "string") {
+      throw new Error("installed Workbench view handler did not return a stage");
+    }
+    let decideFailedClosed = false;
+    try {
+      await decideTool?.execute(
+        "package-decide",
+        { kind: "configure-target", targetId: "fresh-agent", model: { provider: "mock", id: "model", apiKeyEnv: "MOCK_API_KEY" }, reason: "package smoke" },
+        undefined,
+        undefined,
+        { hasUI: false, mode: "rpc" },
+      );
+    } catch (error) {
+      decideFailedClosed = /requires a local TUI host confirmation/.test(String(error));
+    }
+    if (!decideFailedClosed) throw new Error("installed Workbench decision handler did not fail closed outside TUI");
+
+    const notifications = [];
+    const commandContext = {
+      hasUI: true,
+      mode: "tui",
+      waitForIdle: async () => {},
+      model: null,
+      modelRegistry: { hasConfiguredAuth: () => false },
+      ui: { notify: (message, level) => notifications.push({ message, level }) },
+    };
+    for (const name of ["help", "doctor", "status"]) {
+      const command = registeredCommands.find((entry) => entry.name === name)?.command;
+      if (!command) throw new Error(\`installed /\${name} command is missing\`);
+      await command.handler("", commandContext);
+    }
+    if (
+      !notifications.some(({ message }) => message.includes("AHDE Builder") && message.includes("/help")) ||
+      !notifications.some(({ message }) => message.includes("AHDE Doctor")) ||
+      !notifications.some(({ message }) => message.includes("AHDE ·"))
+    ) {
+      throw new Error("installed AHDE help/doctor/status handlers did not produce branded output");
     }
     const guard = handlers.get("tool_call");
     const bashGuard = handlers.get("user_bash");
@@ -286,12 +353,22 @@ await launchBuilderPi({
       throw new Error("Builder extension did not install its shell/tool guards");
     }
     const blocked = await guard({ toolName: "bash" }, {});
-    const allowed = await guard({ toolName: "ahde_project_status" }, {});
+    const allowed = await guard({ toolName: "ahde_workbench_view" }, {});
     const shell = await bashGuard({}, {});
     if (blocked?.block !== true || blocked?.terminate !== true || allowed !== undefined) {
       throw new Error("Builder extension tool allowlist guard is not fail-closed");
     }
     if (shell?.result?.exitCode !== 126) throw new Error("Builder extension did not disable interactive shell execution");
+	if (options?.allowBash !== false || options?.resumeHint !== false) {
+	  throw new Error("Builder Pi host policy did not disable bash/resume leakage");
+	}
+	const expectedBuiltins = ["login", "logout", "model", "thinking", "compact", "new", "resume", "session", "name", "copy", "hotkeys", "quit"];
+	if (JSON.stringify(options?.allowedBuiltinCommands) !== JSON.stringify(expectedBuiltins)) {
+	  throw new Error("Builder Pi host policy did not restrict built-in commands");
+	}
+	if (JSON.stringify(options?.preferredExtensionCommands) !== JSON.stringify(["help", "status"])) {
+	  throw new Error("Builder Pi host policy did not prefer AHDE help/status commands");
+	}
   },
 });
 if (!builderMainCalled) throw new Error("launchBuilderPi did not invoke the Pi host");
@@ -299,6 +376,27 @@ if (process.cwd() !== originalCwd) throw new Error("launchBuilderPi did not rest
 if (process.env.PI_CODING_AGENT_DIR !== originalAgentDir) throw new Error("launchBuilderPi did not restore PI_CODING_AGENT_DIR");
 if (process.env.PI_CODING_AGENT_SESSION_DIR !== originalSessionDir) {
   throw new Error("launchBuilderPi did not restore PI_CODING_AGENT_SESSION_DIR");
+}
+
+let resumeMainCalled = false;
+await launchBuilderPi({
+  projectDir: targetDir,
+  stateRoot,
+  runsRoot,
+  projectId: target.manifest.id,
+  sessionMode: "resume",
+  main: async (args) => {
+    resumeMainCalled = true;
+    if (args.filter((argument) => argument === "--resume").length !== 1) {
+      throw new Error("host-owned Builder resume did not supply exactly one --resume flag");
+    }
+  },
+});
+if (!resumeMainCalled) throw new Error("host-owned Builder resume did not invoke the Pi host");
+if (process.cwd() !== originalCwd) throw new Error("resumed Builder Pi did not restore cwd");
+if (process.env.PI_CODING_AGENT_DIR !== originalAgentDir) throw new Error("resumed Builder Pi did not restore PI_CODING_AGENT_DIR");
+if (process.env.PI_CODING_AGENT_SESSION_DIR !== originalSessionDir) {
+  throw new Error("resumed Builder Pi did not restore PI_CODING_AGENT_SESSION_DIR");
 }
 
 // Exercise the installed read-only HTTP server on a real loopback socket.

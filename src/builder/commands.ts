@@ -17,6 +17,8 @@ import { createWorkbenchHumanGate } from "./workbench-gate.js";
 type CommandWorkbench = Pick<AhdeWorkbench, "view" | "decide">;
 
 export const AHDE_BUILDER_COMMAND_NAMES = [
+	"help",
+	"doctor",
 	"status",
 	"run",
 	"traces",
@@ -25,6 +27,24 @@ export const AHDE_BUILDER_COMMAND_NAMES = [
 	"discard",
 	"target",
 ] as const;
+
+const BUILDER_HELP = `AHDE Builder
+
+Talk normally: describe the agent you want, answer one useful question at a time,
+and AHDE will turn the conversation into reviewable Specs, evals, and harness changes.
+
+Commands:
+  /help                 this AHDE workflow and command reference
+  /status               current stage and next legal action
+  /doctor               model auth, Target readiness, and recovery guidance
+  /run [N] [reason]     run development evidence or candidate verification
+  /traces               bounded diagnosis and local evidence link
+  /review               exact artifact or diff awaiting review
+  /apply <branch> [...] apply the selected proposal after confirmation
+  /discard [reason]     discard a proposal or abandon an interrupted candidate
+  /target               Target identity and standalone launch command
+
+Consequential steps always show an exact subject and require host confirmation.`;
 
 function requireTui(ctx: ExtensionCommandContext, command: string): void {
 	if (!ctx.hasUI || ctx.mode !== "tui") {
@@ -80,6 +100,28 @@ function formatDecision(result: WorkbenchDecisionResult): string {
 	].join("\n");
 }
 
+function formatDoctor(ctx: ExtensionCommandContext, view: WorkbenchView): { message: string; ready: boolean } {
+	const model = ctx.model;
+	const authenticated = model ? ctx.modelRegistry.hasConfiguredAuth(model) : false;
+	const targetReady = view.target.status === "ready";
+	const lines = [
+		"AHDE Doctor",
+		`Builder model: ${model ? `${model.provider}/${model.id}` : "not selected"}`,
+		`Builder authentication: ${authenticated ? "ready" : "missing"}`,
+		`Target: ${view.target.id ?? view.target.status} (${view.target.status})`,
+		`Workflow: ${view.stage} — ${view.headline}`,
+	];
+	if (!model) lines.push("Recovery: choose a Builder model with /model.");
+	else if (!authenticated) lines.push("Recovery: authenticate with /login, or choose an authenticated model with /model.");
+	if (!targetReady) {
+		lines.push("Recovery: describe the agent you want; AHDE will guide the exact Target setup through the Workbench.");
+	}
+	if (view.blockers.length > 0) lines.push(`Current blocker: ${view.blockers.join(" ")}`);
+	const ready = Boolean(model && authenticated && targetReady && view.blockers.length === 0);
+	lines.push(`Verdict: ${ready ? "ready to build" : "action required"}`);
+	return { message: lines.join("\n"), ready };
+}
+
 function parseRun(args: string): { repetitions: number; reason: string } {
 	const trimmed = args.trim();
 	if (!trimmed) return { repetitions: 1, reason: "Requested interactively via /run" };
@@ -112,6 +154,23 @@ export function registerAhdeBuilderCommands(
 		beginLiveTrace?: BeginBuilderLiveTrace;
 	},
 ): void {
+	pi.registerCommand("help", {
+		description: "Show the AHDE Builder workflow and human shortcuts",
+		async handler(args, ctx) {
+			noArguments("help", args);
+			await prepare(ctx, "help");
+			ctx.ui.notify(BUILDER_HELP, "info");
+		},
+	});
+	pi.registerCommand("doctor", {
+		description: "Check Builder authentication, Target readiness, and recovery steps",
+		async handler(args, ctx) {
+			noArguments("doctor", args);
+			await prepare(ctx, "doctor");
+			const diagnosis = formatDoctor(ctx, await options.workbench.view());
+			ctx.ui.notify(diagnosis.message, diagnosis.ready ? "info" : "warning");
+		},
+	});
 	const viewCommand = (
 		name: "status" | "traces" | "review" | "target",
 		aspect: "summary" | "traces" | "review" | "target",

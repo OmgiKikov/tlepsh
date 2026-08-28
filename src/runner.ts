@@ -25,7 +25,7 @@ import {
 	type RunRecord,
 } from "./provenance.js";
 import { writeJsonArtifact } from "./storage/artifacts.js";
-import { traceToolErrors } from "./trace.js";
+import { readTraceArtifact, traceToolErrors } from "./trace.js";
 import {
 	buildExecutionPolicy,
 	type ExecutionPolicyResult,
@@ -64,6 +64,8 @@ export interface RunTaskOptions {
 	total?: number;
 	/** Optional synchronous, observational event listener. */
 	onRunEvent?: RunEventListener;
+	/** Host-owned cancellation for the entire parent decision. */
+	signal?: AbortSignal;
 	/**
 	 * Targets run in an isolated copy by default. Explicit diagnostic callers
 	 * may opt into direct mode, which provenance records as unconfined.
@@ -448,6 +450,7 @@ function prepareWorkspace(
  * the returned RunRecord carries status "error" with a message instead.
  */
 export async function runTask(target: ResolvedTarget, task: ResolvedTask, options: RunTaskOptions): Promise<RunRecord> {
+	if (options.signal?.aborted) throw options.signal.reason ?? new Error("run aborted");
 	const runId = newRunId();
 	const runDir = join(options.runsRoot, runId);
 	const runtimeDir = join(runDir, "runtime");
@@ -558,6 +561,7 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 	const startedMs = Date.now();
 	let session: AgentSession | undefined;
 	let unsubscribeSessionEvents: (() => void) | undefined;
+	let removeAbortListener: (() => void) | undefined;
 	let recoveryAttempts = 0;
 	try {
 		if (!policyResult || !targetToolRuntime) {
@@ -585,6 +589,12 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			apiKey: scopedApiKey ?? "unset",
 		});
 		session = created.session;
+		if (options.signal) {
+			const abortSession = () => { void session?.abort(); };
+			options.signal.addEventListener("abort", abortSession, { once: true });
+			removeAbortListener = () => options.signal?.removeEventListener("abort", abortSession);
+			if (options.signal.aborted) abortSession();
+		}
 		const sessionManager = created.sessionManager;
 		unsubscribeSessionEvents = session.subscribe(
 			(event) => observeRunSessionEvent(options.onRunEvent, eventRun, event),
@@ -600,6 +610,7 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 		let finalAssistant;
 		try {
 			await session.prompt(task.input);
+			if (options.signal?.aborted) throw options.signal.reason ?? new Error("run aborted");
 			if (timedOut) throw new Error(`run timed out after ${model.timeoutMs}ms`);
 
 			finalAssistant = [...session.messages].reverse().find((message) => message.role === "assistant");
@@ -613,6 +624,7 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 				} finally {
 					session.agent.state.tools = activeTools;
 				}
+				if (options.signal?.aborted) throw options.signal.reason ?? new Error("run aborted");
 				if (timedOut) throw new Error(`run timed out after ${model.timeoutMs}ms`);
 				finalAssistant = [...session.messages].reverse().find((message) => message.role === "assistant");
 			}
@@ -643,7 +655,7 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 		}
 
 		const stats = session.getSessionStats();
-			const sessionContent = readFileSync(join(runDir, "session.jsonl"), "utf8");
+			const sessionContent = readTraceArtifact(runDir);
 			const sessionError = extractSessionError(sessionContent);
 			if (sessionError) throw new Error(sessionError);
 			const toolErrors = traceToolErrors(
@@ -687,13 +699,14 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			if (sessionFile && sessionFile.endsWith(".jsonl")) {
 				if (!sessionFile.endsWith("session.jsonl")) renameSync(sessionFile, join(runDir, "session.jsonl"));
 				chmodSync(join(runDir, "session.jsonl"), 0o600);
-				const content = readFileSync(join(runDir, "session.jsonl"), "utf8");
+				const content = readTraceArtifact(runDir);
 				record.trace = { path: "session.jsonl", sessionId: null, sha256: hashFile(content) };
 			}
 		} catch {
 			// no trace survived
 		}
 	} finally {
+		removeAbortListener?.();
 		try {
 			unsubscribeSessionEvents?.();
 		} catch {

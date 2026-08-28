@@ -5,9 +5,12 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	lastAssistantText,
+	MAX_TRACE_ARTIFACT_BYTES,
+	MAX_TRACE_RECORDS,
 	openTrace,
 	parseSessionJsonl,
 	parseSessionJsonlLenient,
+	readTraceArtifact,
 	redactTraceText,
 	renderTraceMarkdown,
 	traceToolCalls,
@@ -51,6 +54,16 @@ describe("trace parser", () => {
 		expect(redactTraceText(
 			'api_key="secret-value-123" password=plain-secret Bearer token-value-123456 sk-live-secret123',
 		)).toBe('api_key="[REDACTED]" password=[REDACTED] Bearer [REDACTED_TOKEN] [REDACTED_API_KEY]');
+	});
+
+	it("strips terminal controls before redacting credentials split by ANSI bytes", () => {
+		const projected = redactTraceText(
+			"sk-abcde\u001b[31mfghijklmno Bearer token\u0000value1234567890",
+		);
+
+		expect(projected).toBe("[REDACTED_API_KEY] Bearer [REDACTED_TOKEN]");
+		expect(projected).not.toContain("\u001b");
+		expect(projected).not.toContain("\u0000");
 	});
 
 	it("redacts named tokens, provider prefixes, AWS keys, and private-key blocks", () => {
@@ -137,6 +150,29 @@ describe("trace parser", () => {
 
 			expect(() => openTrace(runDir, "session.jsonl", `sha256:${"0".repeat(64)}`)).toThrow(
 				/trace SHA mismatch/,
+			);
+		} finally {
+			rmSync(runDir, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects hash-valid oversized traces and excessive record counts before parsing", () => {
+		const runDir = mkdtempSync(join(tmpdir(), "ahde-trace-bounds-"));
+		try {
+			const oversized = Buffer.alloc(MAX_TRACE_ARTIFACT_BYTES + 1);
+			writeFileSync(join(runDir, "session.jsonl"), oversized);
+			const expectedSha = `sha256:${createHash("sha256").update(oversized).digest("hex")}`;
+			expect(() => openTrace(runDir, "session.jsonl", expectedSha)).toThrow(
+				new RegExp(`${MAX_TRACE_ARTIFACT_BYTES}-byte artifact limit`),
+			);
+
+		const excessiveRecords = "\n".repeat(MAX_TRACE_RECORDS + 1);
+		writeFileSync(join(runDir, "session.jsonl"), excessiveRecords);
+		expect(() => readTraceArtifact(runDir)).toThrow(
+			new RegExp(`${MAX_TRACE_RECORDS}-record artifact limit`),
+		);
+		expect(() => parseSessionJsonl(excessiveRecords)).toThrow(
+				new RegExp(`${MAX_TRACE_RECORDS}-record artifact limit`),
 			);
 		} finally {
 			rmSync(runDir, { recursive: true, force: true });

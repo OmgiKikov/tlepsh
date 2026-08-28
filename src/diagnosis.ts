@@ -1,7 +1,7 @@
 import { basename, dirname } from "node:path";
 import { existsSync } from "node:fs";
 import { z } from "zod";
-import { loadEvalRun, loadRun } from "./eval.js";
+import { loadVerifiedEvalRun } from "./eval.js";
 import { HashSchema, hashValue } from "./provenance.js";
 import { openTrace, traceToolCalls } from "./trace.js";
 import { readJsonArtifact, writeJsonArtifact } from "./storage/artifacts.js";
@@ -159,13 +159,11 @@ export function diagnosisPath(runsRoot: string, evalRunId: string): string {
 /** Build and persist a deterministic diagnosis from immutable run evidence. */
 export function diagnoseEvalRun(runsRoot: string, evalRunId: string, now = () => new Date().toISOString()): DiagnosisRecord {
 	resolveContainedArtifactPath(runsRoot, evalRunId, "eval_run.json");
-	const evalRun = loadEvalRun(runsRoot, evalRunId);
+	const verified = loadVerifiedEvalRun(runsRoot, evalRunId);
+	const evalRun = verified.record;
 	const aggregates = new Map<string, TaskAggregate>();
-	const sourceRuns: ReturnType<typeof loadRun>[] = [];
-	for (const runId of evalRun.runIds) {
-		resolveContainedArtifactPath(runsRoot, runId, "run.json");
-		const run = loadRun(runsRoot, runId);
-		sourceRuns.push(run);
+	const sourceRuns = verified.runs;
+	for (const run of sourceRuns) {
 		const aggregate = aggregates.get(run.taskId) ?? {
 			taskId: run.taskId,
 			pass: 0,

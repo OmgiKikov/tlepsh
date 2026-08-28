@@ -1,7 +1,7 @@
-import { chmodSync, mkdirSync, readdirSync } from "node:fs";
+import { chmodSync, mkdirSync, opendirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { graderName, type ResolvedTarget, type ResolvedTask, type TargetManifest } from "./manifest.js";
+import { GraderSpec, graderName, type ResolvedTarget, type ResolvedTask, type TargetManifest } from "./manifest.js";
 import {
 	HashSchema,
 	modelFingerprint,
@@ -14,6 +14,7 @@ import {
 	RunRecordSchema,
 	TargetRevisionSchema,
 	type GraderResult,
+	type GraderCheckCode,
 	type RunRecord,
 	type ProvenanceAxes,
 	type ExecutionFingerprint,
@@ -30,7 +31,7 @@ import {
 } from "./run-events.js";
 import { readJsonArtifact, writeJsonArtifact, writeTextArtifact } from "./storage/artifacts.js";
 import { resolveContainedArtifactPath } from "./storage/paths.js";
-import { lastAssistantText, openTrace, traceToolCalls } from "./trace.js";
+import { lastAssistantText, openTrace, redactTraceText, traceToolCalls } from "./trace.js";
 
 /** Grader implementations over (task, record, trace). Declarative specs live in the target suite. */
 
@@ -127,6 +128,7 @@ async function gradeJudge(
 	task: { input: string },
 	output: string,
 	tracePath: string,
+	signal?: AbortSignal,
 ): Promise<GraderResult> {
 	const key = process.env[judge.apiKeyEnv];
 	if (judge.baseUrl.includes("openrouter.ai") && !key) {
@@ -148,7 +150,9 @@ async function gradeJudge(
 		method: "POST",
 		headers: { "content-type": "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) },
 		body: JSON.stringify(requestBody),
-		signal: AbortSignal.timeout(judge.timeoutMs),
+		signal: signal
+			? AbortSignal.any([signal, AbortSignal.timeout(judge.timeoutMs)])
+			: AbortSignal.timeout(judge.timeoutMs),
 	});
 	const rawText = await response.text();
 	// Evidence first: the exact exchange is on disk even if parsing/HTTP fails.
@@ -170,11 +174,21 @@ async function gradeJudge(
 }
 
 /** Grade one completed run against its task's effective graders. */
+function graderCheckCode(type: GraderSpec["type"]): GraderCheckCode {
+	switch (type) {
+		case "tool_called": return "required-tool";
+		case "output_contains": return "output-contains";
+		case "output_matches": return "output-matches";
+		case "judge": return "semantic-rubric";
+	}
+}
+
 export async function gradeRun(
 	task: ResolvedTask,
 	record: RunRecord,
 	runsRoot: string,
 	judge?: TargetManifest["model"],
+	signal?: AbortSignal,
 ): Promise<GraderResult[]> {
 	const runDir = resolveContainedArtifactPath(runsRoot, ArtifactIdSchema.parse(record.runId));
 	let output: string | undefined;
@@ -186,26 +200,33 @@ export async function gradeRun(
 	}
 	const results: GraderResult[] = [];
 	for (const [index, spec] of task.effectiveGraders.entries()) {
+		if (signal?.aborted) throw signal.reason ?? new Error("grading aborted");
+		const normalizedSpec = GraderSpec.parse(spec);
 		let result: GraderResult;
 		if (record.status !== "completed") {
 			result = {
 				name: "",
-				type: spec.type,
+				type: normalizedSpec.type,
 				passed: false,
 				score: 0,
 				reason: `run did not complete (${record.status}${record.error ? `: ${record.error}` : ""})`,
 			};
-		} else if (spec.type === "tool_called") {
-			result = gradeToolCalled(spec, toolCalls);
-		} else if (spec.type === "output_contains") {
-			result = gradeOutputContains(spec, output ?? "");
-		} else if (spec.type === "judge") {
+		} else if (normalizedSpec.type === "tool_called") {
+			result = gradeToolCalled(normalizedSpec, toolCalls);
+		} else if (normalizedSpec.type === "output_contains") {
+			result = gradeOutputContains(normalizedSpec, output ?? "");
+		} else if (normalizedSpec.type === "judge") {
 			if (!judge) throw new Error("judge grader without judge model config");
-			result = await gradeJudge(spec, judge, task, output ?? "", join(runDir, "judge", `${index}.json`));
+			result = await gradeJudge(normalizedSpec, judge, task, output ?? "", join(runDir, "judge", `${index}.json`), signal);
 		} else {
-			result = gradeOutputMatches(spec, output ?? "");
+			result = gradeOutputMatches(normalizedSpec, output ?? "");
 		}
-		results.push({ ...result, name: graderName(spec, task, index) });
+		results.push({
+			...result,
+			name: graderName(normalizedSpec, task, index),
+			specHash: hashValue(normalizedSpec),
+			checkCode: graderCheckCode(normalizedSpec.type),
+		});
 	}
 	return results;
 }
@@ -240,6 +261,9 @@ const EvalRunArtifactSchema = z.strictObject({
 	sha256: HashSchema,
 });
 
+export const EvidenceVisibilitySchema = z.enum(["development", "sealed"]);
+export type EvidenceVisibility = z.infer<typeof EvidenceVisibilitySchema>;
+
 export const EvalRunRecordSchema = z.strictObject({
 	schemaVersion: z.literal(1),
 	evalRunId: ArtifactIdSchema,
@@ -260,6 +284,13 @@ export const EvalRunRecordSchema = z.strictObject({
 	suiteHash: HashSchema,
 	dataset: z.string().min(1),
 	datasetHash: HashSchema,
+	/** Explicit evidence boundary. Optional only for legacy eval indexes. */
+	evidenceVisibility: EvidenceVisibilitySchema.optional(),
+	/** Source task ids in their exact evaluation order. Optional for legacy indexes. */
+	taskIds: z
+		.array(z.string().min(1))
+		.refine((values) => new Set(values).size === values.length, "taskIds must be unique")
+		.optional(),
 	repetitions: z.number().int().positive(),
 	runIds: z
 		.array(ArtifactIdSchema)
@@ -279,6 +310,13 @@ export const EvalRunRecordSchema = z.strictObject({
 	if (record.datasetHash !== record.provenance.datasetHash) {
 		context.addIssue({ code: "custom", path: ["datasetHash"], message: "does not match provenance.datasetHash" });
 	}
+	if (record.evidenceVisibility === "development" && record.dataset.startsWith("sealed-")) {
+		context.addIssue({
+			code: "custom",
+			path: ["evidenceVisibility"],
+			message: "development visibility conflicts with a legacy sealed dataset name",
+		});
+	}
 	if (record.label === "candidate" && record.baselineEvalRunId === null) {
 		context.addIssue({ code: "custom", path: ["baselineEvalRunId"], message: "candidate eval requires a baseline eval reference" });
 	}
@@ -296,6 +334,17 @@ export const EvalRunRecordSchema = z.strictObject({
 	}
 });
 export type EvalRunRecord = z.infer<typeof EvalRunRecordSchema>;
+
+/** Explicit visibility for new evidence, with the legacy sealed dataset convention as a fallback. */
+export function isSealedEvalRun(
+	record: Pick<EvalRunRecord, "dataset" | "evidenceVisibility"> & { datasetHash?: string },
+	legacySealedDatasetHashes: ReadonlySet<string> = new Set(),
+): boolean {
+	return record.evidenceVisibility === "sealed" ||
+		record.dataset.startsWith("sealed-") ||
+		(record.evidenceVisibility === undefined && record.datasetHash !== undefined &&
+			legacySealedDatasetHashes.has(record.datasetHash));
+}
 
 export interface VerifiedEvalRun {
 	record: EvalRunRecord;
@@ -316,10 +365,14 @@ export interface RunSuiteOptions {
 	taskId?: string;
 	/** Baseline eval run id this candidate will be compared against. */
 	baselineEvalRunId?: string | null;
+	/** Evidence disclosure boundary. New suites persist development by default. */
+	evidenceVisibility?: EvidenceVisibility;
 	/** @internal Exact source hash captured for a baseline-reuse query. */
 	expectedWorkspaceHash?: string;
 	/** Optional synchronous, observational listener for all task executions. */
 	onRunEvent?: RunEventListener;
+	/** Host-owned cancellation propagated through Target and judge sessions. */
+	signal?: AbortSignal;
 }
 
 /**
@@ -327,6 +380,7 @@ export interface RunSuiteOptions {
  * Writes per-run run.json and one eval_run.json index.
  */
 export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions): Promise<EvalRunRecord> {
+	if (options.signal?.aborted) throw options.signal.reason ?? new Error("evaluation aborted");
 	if (!Number.isInteger(options.repetitions) || options.repetitions < 1) {
 		throw new Error(`repetitions must be a positive integer, got ${options.repetitions}`);
 	}
@@ -353,6 +407,7 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 	try {
 		for (const [taskIndex, task] of tasks.entries()) {
 			for (let repetition = 0; repetition < options.repetitions; repetition += 1) {
+				if (options.signal?.aborted) throw options.signal.reason ?? new Error("evaluation aborted");
 				const ordinal = taskIndex * options.repetitions + repetition + 1;
 				const record = await runTask(target, task, {
 					runsRoot: options.runsRoot,
@@ -364,7 +419,9 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 					ordinal,
 					total: executionTotal,
 					onRunEvent: options.onRunEvent,
+					signal: options.signal,
 				});
+				if (options.signal?.aborted) throw options.signal.reason ?? new Error("evaluation aborted");
 				const eventRun: RunEventIdentity = {
 					evalRunId,
 					runId: record.runId,
@@ -385,7 +442,7 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 				}
 				let graders: GraderResult[];
 				try {
-					graders = await gradeRun(task, record, options.runsRoot, target.manifest.evalSuite.judge);
+					graders = await gradeRun(task, record, options.runsRoot, target.manifest.evalSuite.judge, options.signal);
 				} catch (gradeError) {
 					record.status = "error";
 					record.error = `evaluation infrastructure: ${gradeError instanceof Error ? gradeError.message : String(gradeError)}`;
@@ -441,6 +498,8 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 		suiteHash: target.suiteHash,
 		dataset: target.manifest.evalSuite.dataset.replace(/\.jsonl$/, "").split("/").pop() ?? "dataset",
 		datasetHash: target.datasetHash,
+		evidenceVisibility: options.evidenceVisibility ?? "development",
+		taskIds: tasks.map((task) => task.id),
 		repetitions: options.repetitions,
 		runIds,
 		runArtifacts: runIds.map((runId) => ({
@@ -474,6 +533,169 @@ export function loadRun(runsRoot: string, runId: string): RunRecord {
 	);
 }
 
+/**
+ * Read only the bounded EvalRun index. This deliberately does not open member
+ * RunRecords so visibility can be checked before sealed evidence is touched.
+ */
+export function readEvalRunIndex(runsRoot: string, evalRunId: string): EvalRunRecord {
+	const parsedId = ArtifactIdSchema.parse(evalRunId);
+	const record = readJsonArtifact(
+		resolveContainedArtifactPath(runsRoot, parsedId, "eval_run.json"),
+		EvalRunRecordSchema,
+	);
+	if (record.evalRunId !== parsedId) {
+		throw new Error("eval run index identity does not match its artifact path");
+	}
+	return record;
+}
+
+/** Index-only inventory for visibility preflight. Member Runs remain unopened. */
+export function listEvalRunIndexes(runsRoot: string): EvalRunRecord[] {
+	let entries: string[];
+	try {
+		entries = readdirSync(runsRoot);
+	} catch {
+		return [];
+	}
+	const records: EvalRunRecord[] = [];
+	for (const entry of entries) {
+		if (!entry.startsWith("erun_")) continue;
+		records.push(readEvalRunIndex(runsRoot, entry));
+	}
+	return records.sort((a, b) =>
+		b.startedAt.localeCompare(a.startedAt) || b.evalRunId.localeCompare(a.evalRunId));
+}
+
+const MAX_BOUNDED_EVAL_INDEX_RESULTS = 1_000;
+
+export interface PublicEvalRunIndexEntry {
+	evalRunId: string;
+	targetId: string;
+	label: EvalRunRecord["label"];
+	startedAt: string;
+	allPassRate: number;
+	fieldsTruncated: boolean;
+	fieldsRedacted: boolean;
+}
+
+export interface BoundedPublicEvalRunIndexes {
+	entries: PublicEvalRunIndexEntry[];
+	/** True only when additional public records were omitted. Sealed records never affect this value. */
+	truncated: boolean;
+	/** Exact number of omitted public records. Sealed records never contribute to this count. */
+	omittedPublicCount: number;
+}
+
+function newestEvalIndexFirst(left: PublicEvalRunIndexEntry, right: PublicEvalRunIndexEntry): number {
+	return right.startedAt.localeCompare(left.startedAt) || right.evalRunId.localeCompare(left.evalRunId);
+}
+
+function publicIndexText(value: string, maxChars: number): {
+	text: string;
+	truncated: boolean;
+	redacted: boolean;
+} {
+	const redacted = redactTraceText(value);
+	if (redacted.length <= maxChars) {
+		return { text: redacted, truncated: false, redacted: redacted !== value };
+	}
+	return {
+		text: `${redacted.slice(0, maxChars - 1)}…`,
+		truncated: true,
+		redacted: redacted !== value,
+	};
+}
+
+function projectPublicEvalRunIndex(record: EvalRunRecord): PublicEvalRunIndexEntry {
+	const targetId = publicIndexText(record.target.id, 160);
+	const startedAt = publicIndexText(record.startedAt, 64);
+	return {
+		evalRunId: record.evalRunId,
+		targetId: targetId.text,
+		label: record.label,
+		startedAt: startedAt.text,
+		allPassRate: record.summary.allPassRate,
+		fieldsTruncated: targetId.truncated || startedAt.truncated,
+		fieldsRedacted: targetId.redacted || startedAt.redacted,
+	};
+}
+
+/**
+ * Index-only top-K inventory for public Evidence Explorer surfaces.
+ *
+ * The directory is streamed and only `limit` bounded display projections are
+ * retained in memory; full indexes are released after each projection. Every
+ * index is still schema-checked so the result is an exact newest-first top-K.
+ * Sealed indexes affect neither returned entries nor truncation metadata.
+ * Member RunRecords remain unopened until the caller has completed visibility
+ * preflight.
+ */
+export function listPublicEvalRunIndexesBounded(
+	runsRoot: string,
+	limit: number,
+): BoundedPublicEvalRunIndexes {
+	if (!Number.isInteger(limit) || limit < 1 || limit > MAX_BOUNDED_EVAL_INDEX_RESULTS) {
+		throw new Error(`eval index limit must be an integer between 1 and ${MAX_BOUNDED_EVAL_INDEX_RESULTS}`);
+	}
+	let directory;
+	try {
+		directory = opendirSync(runsRoot);
+	} catch {
+		return { entries: [], truncated: false, omittedPublicCount: 0 };
+	}
+	const entries: PublicEvalRunIndexEntry[] = [];
+	let publicCount = 0;
+	try {
+		let entry = directory.readSync();
+		while (entry !== null) {
+			if (entry.name.startsWith("erun_")) {
+				const record = readEvalRunIndex(runsRoot, entry.name);
+				if (!isSealedEvalRun(record)) {
+					publicCount += 1;
+					entries.push(projectPublicEvalRunIndex(record));
+					entries.sort(newestEvalIndexFirst);
+					if (entries.length > limit) entries.pop();
+				}
+			}
+			entry = directory.readSync();
+		}
+	} finally {
+		directory.closeSync();
+	}
+	const omittedPublicCount = publicCount - entries.length;
+	return {
+		entries,
+		truncated: omittedPublicCount > 0,
+		omittedPublicCount,
+	};
+}
+
+/** CLI-facing best-effort listing; invalid siblings never hide healthy indexes. */
+export function listEvalRunIndexesLenient(runsRoot: string): {
+	records: EvalRunRecord[];
+	invalidCount: number;
+} {
+	let entries: string[];
+	try {
+		entries = readdirSync(runsRoot);
+	} catch {
+		return { records: [], invalidCount: 0 };
+	}
+	const records: EvalRunRecord[] = [];
+	let invalidCount = 0;
+	for (const entry of entries) {
+		if (!entry.startsWith("erun_")) continue;
+		try {
+			records.push(readEvalRunIndex(runsRoot, entry));
+		} catch {
+			invalidCount += 1;
+		}
+	}
+	records.sort((left, right) =>
+		right.startedAt.localeCompare(left.startedAt) || right.evalRunId.localeCompare(left.evalRunId));
+	return { records, invalidCount };
+}
+
 function evidenceMismatch(evalRunId: string, message: string): never {
 	throw new Error(`eval run ${evalRunId} evidence mismatch: ${message}`);
 }
@@ -487,11 +709,7 @@ function sameJson(a: unknown, b: unknown): boolean {
  * The index is never trusted as an unchecked list of passing run IDs.
  */
 export function loadVerifiedEvalRun(runsRoot: string, evalRunId: string): VerifiedEvalRun {
-	const record = readJsonArtifact(
-		resolveContainedArtifactPath(runsRoot, ArtifactIdSchema.parse(evalRunId), "eval_run.json"),
-		EvalRunRecordSchema,
-	);
-	if (record.evalRunId !== evalRunId) evidenceMismatch(evalRunId, `index id is ${record.evalRunId}`);
+	const record = readEvalRunIndex(runsRoot, evalRunId);
 	const expectedHashes = new Map(record.runArtifacts?.map((artifact) => [artifact.runId, artifact.sha256]) ?? []);
 	const runs = record.runIds.map((runId) => {
 		const run = loadRun(runsRoot, runId);
@@ -556,6 +774,12 @@ export function loadVerifiedEvalRun(runsRoot: string, evalRunId: string): Verifi
 		repetitions.add(run.repetitionIndex);
 		byTask.set(run.taskId, repetitions);
 	}
+	if (record.taskIds) {
+		const observedTaskIds = [...byTask.keys()];
+		if (!sameJson(record.taskIds, observedTaskIds)) {
+			evidenceMismatch(evalRunId, "taskIds do not match the exact source task order");
+		}
+	}
 	const expectedRepetitions = Array.from({ length: record.repetitions }, (_, index) => index);
 	for (const [taskId, repetitions] of byTask) {
 		if (!sameJson([...repetitions].sort((a, b) => a - b), expectedRepetitions)) {
@@ -580,18 +804,7 @@ export function loadEvalRun(runsRoot: string, evalRunId: string): EvalRunRecord 
 }
 
 export function listEvalRuns(runsRoot: string): EvalRunRecord[] {
-	let entries: string[];
-	try {
-		entries = readdirSync(runsRoot);
-	} catch {
-		return [];
-	}
-	const records: EvalRunRecord[] = [];
-	for (const entry of entries) {
-		if (!entry.startsWith("erun_")) continue;
-		records.push(loadEvalRun(runsRoot, entry));
-	}
-	return records.sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
+	return listEvalRunIndexes(runsRoot).map((record) => loadEvalRun(runsRoot, record.evalRunId));
 }
 
 /**
@@ -607,6 +820,8 @@ export interface ReusableBaselineQuery {
 	/** Exact model-visible workspace identity for new artifacts. */
 	workspaceHash?: string;
 	provenance: ProvenanceAxes;
+	/** Required by new callers so sealed evidence cannot reuse a development index. */
+	evidenceVisibility?: EvidenceVisibility;
 	label?: "baseline" | "candidate" | "solo";
 	repetitions?: number;
 }
@@ -617,6 +832,7 @@ export function findReusableBaseline(runsRoot: string, query: ReusableBaselineQu
 		if (record.target.id !== query.targetId || record.target.gitSha !== query.targetGitSha) continue;
 		if (query.toolsetHash !== undefined && record.target.toolsetHash !== query.toolsetHash) continue;
 		if (query.workspaceHash !== undefined && record.target.workspaceHash !== query.workspaceHash) continue;
+		if (query.evidenceVisibility !== undefined && record.evidenceVisibility !== query.evidenceVisibility) continue;
 		if (record.provenanceKey === "") continue;
 		if (query.repetitions !== undefined && record.repetitions !== query.repetitions) continue;
 		if (axisDifferences(record.provenance, query.provenance).length === 0) return record;

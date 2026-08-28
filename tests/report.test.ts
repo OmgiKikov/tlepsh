@@ -16,6 +16,9 @@ import {
 import {
 	MAX_DETAIL_RUNS,
 	MAX_NORMALIZED_TRACE_CHARS,
+	MAX_NORMALIZED_TRACE_MESSAGES,
+	MAX_NORMALIZED_TOOL_CALLS,
+	MAX_REPORT_HTML_BYTES,
 	buildEvalReport,
 	collectEvalReportData,
 	renderEvalReportHtml,
@@ -25,24 +28,52 @@ import { writeJsonArtifact } from "../src/storage/artifacts.js";
 
 const roots: string[] = [];
 const gitSha = "a".repeat(40);
+const GRADER_METADATA_SECRET = "sk-gradersecret1234567890";
+const RUN_ERROR_SECRET = "Bearer reporterrorsecret1234567890";
+const TASK_ID_SECRET = "sk-taskidentitysecret1234567890";
 
 afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(): { runsRoot: string; evalRunId: string } {
+function fixture(options: { structuralFlood?: boolean } = {}): { runsRoot: string; evalRunId: string } {
 	const runsRoot = mkdtempSync(join(tmpdir(), "ahde-report-"));
 	roots.push(runsRoot);
 	const runId = "run-report";
 	const runDir = join(runsRoot, runId);
 	mkdirSync(runDir, { recursive: true });
-	const trace = [
+	const trace = options.structuralFlood
+		? Array.from({ length: 500 }, (_, messageIndex) => JSON.stringify({
+			type: "message",
+			message: {
+				role: "assistant",
+				content: Array.from({ length: 50 }, (_, callIndex) => ({
+					type: "toolCall",
+					id: `flood-${messageIndex}-${callIndex}`,
+					name: "x",
+					arguments: {},
+				})),
+			},
+		})).join("\n")
+		: [
 		JSON.stringify({ type: "message", message: { role: "user", content: "Bearer abcdefghijklmnop" } }),
 		JSON.stringify({
 			type: "message",
 			message: {
 				role: "assistant",
 				content: [{ type: "text", text: "sk-1234567890abcdef </script><script>alert(1)</script>" }],
+			},
+		}),
+		JSON.stringify({
+			type: "message",
+			message: {
+				role: "assistant",
+				content: Array.from({ length: 75 }, (_, index) => ({
+					type: "toolCall",
+					id: `call-${index}`,
+					name: `tool-${index.toString().padStart(2, "0")}`,
+					arguments: {},
+				})),
 			},
 		}),
 	].join("\n");
@@ -74,7 +105,7 @@ function fixture(): { runsRoot: string; evalRunId: string } {
 	const record: RunRecord = {
 		schemaVersion: 1,
 		runId,
-		taskId: "unsafe-task",
+		taskId: TASK_ID_SECRET,
 		repetitionIndex: 0,
 		label: "solo",
 		status: "completed",
@@ -97,11 +128,40 @@ function fixture(): { runsRoot: string; evalRunId: string } {
 		},
 		evalResults: {
 			outcome: "fail",
-			graders: [{ name: "answer", type: "output_contains", passed: false, score: 0, reason: "missing expected answer" }],
+			graders: [
+				{
+					name: 'answer"><svg onload=alert(3)>',
+					type: "output_contains",
+					passed: false,
+					score: 0,
+					reason: `${GRADER_METADATA_SECRET} missing expected answer`,
+				},
+				...Array.from({ length: 24 }, (_, index) => ({
+					name: `bounded-grader-${index}`,
+					type: "output_contains",
+					passed: false,
+					score: 0,
+					reason: `missing-${index}`,
+				})),
+			],
 		},
 		parent: { evalRunId: "erun-report", candidateOf: null },
 	};
 	writeJsonArtifact(join(runDir, "run.json"), RunRecordSchema, record);
+	const errorRunId = "run-report-error";
+	const errorRunDir = join(runsRoot, errorRunId);
+	mkdirSync(errorRunDir, { recursive: true });
+	writeFileSync(join(errorRunDir, "session.jsonl"), `${trace}\n`);
+	const errorRecord: RunRecord = {
+		...record,
+		runId: errorRunId,
+		taskId: "unsafe-error-task",
+		status: "error",
+		error: RUN_ERROR_SECRET,
+		trace: { path: "session.jsonl", sessionId: "error-session", sha256: hashFile(`${trace}\n`) },
+		evalResults: null,
+	};
+	writeJsonArtifact(join(errorRunDir, "run.json"), RunRecordSchema, errorRecord);
 
 	const evidence = { runtime, model, judge: null, execution, eval: evaluation };
 	const evalRun: EvalRunRecord = {
@@ -116,15 +176,64 @@ function fixture(): { runsRoot: string; evalRunId: string } {
 		suiteHash: evaluation.suiteHash,
 		dataset: evaluation.dataset,
 		datasetHash: evaluation.datasetHash,
+		evidenceVisibility: "development",
+		taskIds: [record.taskId, errorRecord.taskId],
 		repetitions: 1,
-		runIds: [runId],
-		runArtifacts: [{ runId, sha256: hashValue(record) }],
+		runIds: [runId, errorRunId],
+		runArtifacts: [
+			{ runId, sha256: hashValue(record) },
+			{ runId: errorRunId, sha256: hashValue(errorRecord) },
+		],
 		startedAt: record.startedAt,
 		finishedAt: record.finishedAt ?? "2026-08-26T10:00:01.000Z",
-		summary: { total: 1, pass: 0, fail: 1, error: 0, allPassRate: 0 },
+		summary: { total: 2, pass: 0, fail: 1, error: 1, allPassRate: 0 },
 	};
 	writeJsonArtifact(join(runsRoot, evalRun.evalRunId, "eval_run.json"), EvalRunRecordSchema, evalRun);
 	return { runsRoot, evalRunId: evalRun.evalRunId };
+}
+
+function sealedBaselineFixture(): { runsRoot: string; evalRunId: string; sealedEvalRunId: string } {
+	const value = fixture();
+	const baselineRevision = "b".repeat(40);
+	const candidateRuns = ["run-report", "run-report-error"].map((runId) => {
+		const path = join(value.runsRoot, runId, "run.json");
+		const run = RunRecordSchema.parse(JSON.parse(readFileSync(path, "utf8")));
+		const candidate = RunRecordSchema.parse({
+			...run,
+			label: "candidate",
+			parent: { evalRunId: value.evalRunId, candidateOf: baselineRevision },
+		});
+		writeJsonArtifact(path, RunRecordSchema, candidate);
+		return candidate;
+	});
+	const evalPath = join(value.runsRoot, value.evalRunId, "eval_run.json");
+	const source = EvalRunRecordSchema.parse(JSON.parse(readFileSync(evalPath, "utf8")));
+	const sealedEvalRunId = "erun_formal_sealed_baseline";
+	const candidate = EvalRunRecordSchema.parse({
+		...source,
+		label: "candidate",
+		baselineEvalRunId: sealedEvalRunId,
+		evidenceVisibility: "development",
+		runArtifacts: candidateRuns.map((run) => ({ runId: run.runId, sha256: hashValue(run) })),
+	});
+	writeJsonArtifact(evalPath, EvalRunRecordSchema, candidate);
+	writeJsonArtifact(
+		join(value.runsRoot, sealedEvalRunId, "eval_run.json"),
+		EvalRunRecordSchema,
+		{
+			...source,
+			evalRunId: sealedEvalRunId,
+			target: { ...source.target, gitSha: baselineRevision },
+			label: "baseline",
+			baselineEvalRunId: null,
+			evidenceVisibility: "sealed",
+			taskIds: ["task-super-secret-baseline"],
+			runIds: ["run-super-secret-baseline"],
+			runArtifacts: undefined,
+			summary: { total: 1, pass: 0, fail: 1, error: 0, allPassRate: 0 },
+		},
+	);
+	return { ...value, sealedEvalRunId };
 }
 
 const RAW_OMITTED_SENTINEL = "SEALED_RAW_HOLDOUT_DO_NOT_RENDER";
@@ -134,7 +243,6 @@ function oversizedFixture(): {
 	runsRoot: string;
 	evalRunId: string;
 	sourceRunIds: string[];
-	expectedIncludedRunIds: string[];
 	omittedRawTracePath: string;
 } {
 	const runsRoot = mkdtempSync(join(tmpdir(), "ahde-report-oversized-"));
@@ -163,13 +271,11 @@ function oversizedFixture(): {
 		dataset: "development",
 		datasetHash: `sha256:${"e".repeat(64)}`,
 	};
-	const runCount = MAX_DETAIL_RUNS + 5;
+	const runCount = MAX_DETAIL_RUNS + 2;
 	const sourceRunIds = Array.from({ length: runCount }, (_, index) => `run-oversized-${index.toString().padStart(2, "0")}`);
-	const outcomes = sourceRunIds.map((_, index): "pass" | "fail" | "error" => {
-		if (index === 1 || index === runCount - 1) return "fail";
-		if (index === runCount - 3) return "error";
-		return "pass";
-	});
+	const outcomes = sourceRunIds.map((_, index): "pass" | "fail" =>
+		index < MAX_DETAIL_RUNS - 1 || index === runCount - 1 ? "fail" : "pass"
+	);
 	const records: RunRecord[] = [];
 	let omittedRawTracePath = "";
 
@@ -178,7 +284,7 @@ function oversizedFixture(): {
 		mkdirSync(runDir, { recursive: true });
 		let traceMessages: string[];
 		if (index === 1) {
-			traceMessages = Array.from({ length: 20 }, (_, messageIndex) => JSON.stringify({
+			traceMessages = Array.from({ length: 13 }, (_, messageIndex) => JSON.stringify({
 				type: "message",
 				message: {
 					role: "assistant",
@@ -204,11 +310,11 @@ function oversizedFixture(): {
 		const record: RunRecord = {
 			schemaVersion: 1,
 			runId,
-			taskId: `task-${index.toString().padStart(2, "0")}`,
-			repetitionIndex: 0,
+			taskId: "task-bounded-projection",
+			repetitionIndex: index,
 			label: "solo",
-			status: outcome === "error" ? "error" : "completed",
-			error: outcome === "error" ? "synthetic infrastructure failure" : null,
+			status: "completed",
+			error: null,
 			startedAt: "2026-08-26T10:00:00.000Z",
 			finishedAt: "2026-08-26T10:00:01.000Z",
 			target: { id: "oversized-target", gitSha },
@@ -225,18 +331,24 @@ function oversizedFixture(): {
 				toolErrors: 0,
 				recoveryAttempts: 0,
 			},
-			evalResults: outcome === "error"
-				? null
-				: {
-					outcome,
-					graders: [{
+			evalResults: {
+				outcome,
+				graders: index === runCount - 1
+					? [{
+						name: "required-tool",
+						type: "tool_called",
+						passed: false,
+						score: 0,
+						reason: "never called search",
+					}]
+					: [{
 						name: "answer",
 						type: "output_contains",
 						passed: outcome === "pass",
 						score: outcome === "pass" ? 1 : 0,
 						reason: outcome === "pass" ? "present" : "missing expected answer",
 					}],
-				},
+			},
 			parent: { evalRunId, candidateOf: null },
 		};
 		writeJsonArtifact(join(runDir, "run.json"), RunRecordSchema, record);
@@ -246,7 +358,6 @@ function oversizedFixture(): {
 	const evidence = { runtime, model, judge: null, execution, eval: evaluation };
 	const pass = outcomes.filter((outcome) => outcome === "pass").length;
 	const fail = outcomes.filter((outcome) => outcome === "fail").length;
-	const error = outcomes.filter((outcome) => outcome === "error").length;
 	const evalRun: EvalRunRecord = {
 		schemaVersion: 1,
 		evalRunId,
@@ -259,19 +370,15 @@ function oversizedFixture(): {
 		suiteHash: evaluation.suiteHash,
 		dataset: evaluation.dataset,
 		datasetHash: evaluation.datasetHash,
-		repetitions: 1,
+		repetitions: runCount,
 		runIds: sourceRunIds,
 		runArtifacts: records.map((record) => ({ runId: record.runId, sha256: hashValue(record) })),
 		startedAt: "2026-08-26T10:00:00.000Z",
 		finishedAt: "2026-08-26T10:00:01.000Z",
-		summary: { total: runCount, pass, fail, error, allPassRate: pass / runCount },
+		summary: { total: runCount, pass, fail, error: 0, allPassRate: pass / runCount },
 	};
 	writeJsonArtifact(join(runsRoot, evalRunId, "eval_run.json"), EvalRunRecordSchema, evalRun);
-	const expectedIncludedRunIds = [
-		...sourceRunIds.filter((_, index) => outcomes[index] !== "pass"),
-		...sourceRunIds.filter((_, index) => outcomes[index] === "pass"),
-	].slice(0, MAX_DETAIL_RUNS);
-	return { runsRoot, evalRunId, sourceRunIds, expectedIncludedRunIds, omittedRawTracePath };
+	return { runsRoot, evalRunId, sourceRunIds, omittedRawTracePath };
 }
 
 function projectedTraceCharacters(data: ReturnType<typeof collectEvalReportData>): number {
@@ -284,28 +391,90 @@ function projectedTraceCharacters(data: ReturnType<typeof collectEvalReportData>
 }
 
 describe("static evidence report", () => {
+	it("rejects a development report linked to a formally sealed baseline before opening it", () => {
+		const value = sealedBaselineFixture();
+		let message = "";
+		try {
+			collectEvalReportData(value.runsRoot, value.evalRunId);
+		} catch (error) {
+			message = error instanceof Error ? error.message : String(error);
+		}
+		expect(message).toBe("cross-visibility baseline evidence is unavailable");
+		expect(message).not.toContain(value.sealedEvalRunId);
+		expect(message).not.toContain("super-secret");
+	});
+
 	it("strictly collects evidence while redacting credentials and bounding script embedding", () => {
 		const value = fixture();
 		const data = collectEvalReportData(value.runsRoot, value.evalRunId, () => "2026-08-26T11:00:00.000Z");
-		expect(data.projection).toMatchObject({
-			sourceRunCount: 1,
-			includedRunCount: 1,
-			includedRunIds: ["run-report"],
-			omittedRunCount: 0,
-			traceTruncated: false,
-			truncatedTraceRunIds: [],
-			limits: { detailRuns: MAX_DETAIL_RUNS, traceCharacters: MAX_NORMALIZED_TRACE_CHARS },
+		expect(data.improvementBrief).toMatchObject({
+			evalRunId: value.evalRunId,
+			status: "inconclusive",
 		});
-		const serialized = JSON.stringify(data.runs[0]?.trace);
-		expect(serialized).not.toContain("abcdefghijklmnop");
-		expect(serialized).not.toContain("sk-1234567890abcdef");
-		expect(serialized).toContain("REDACTED");
+		expect(data.improvementBrief.summary.failureModeCount).toBeGreaterThan(0);
+		expect(data.projection).toMatchObject({
+			selection: "mode-evidence-then-failures-errors-then-passes-source-order",
+			sourceRunCount: 2,
+			includedRunCount: 2,
+			omittedRunCount: 0,
+			traceTruncated: true,
+			limits: { detailRuns: MAX_DETAIL_RUNS, traceCharacters: MAX_NORMALIZED_TRACE_CHARS },
+			evalRun: {
+				runIds: { sourceCount: 2, includedCount: 2, omittedCount: 0 },
+			},
+			diagnosis: {
+				issues: { sourceCount: data.diagnosis.issues.length, includedCount: data.diagnosis.issues.length, omittedCount: 0 },
+			},
+			comparison: null,
+		});
+		expect(new Set(data.projection.truncatedTraceRunIds)).toEqual(new Set(["run-report", "run-report-error"]));
+		expect(new Set(data.projection.includedRunIds)).toEqual(new Set(["run-report", "run-report-error"]));
+		const toolMessage = data.runs[0]?.trace.find((message) => message.toolCalls.length > 0);
+		expect(toolMessage?.toolCalls).toHaveLength(50);
+		expect(toolMessage?.omittedToolCallCount).toBe(25);
+		const gradedRun = data.runs.find((run) => run.graderProjection.sourceCount > 0);
+		expect(gradedRun?.graders).toHaveLength(20);
+		expect(gradedRun?.graderProjection).toEqual({ sourceCount: 25, includedCount: 20, omittedCount: 5 });
+		expect(data.projection.diagnosis.toolNames.omittedCount).toBeGreaterThan(0);
+		const traceSerialized = JSON.stringify(data.runs[0]?.trace);
+		expect(traceSerialized).not.toContain("abcdefghijklmnop");
+		expect(traceSerialized).not.toContain("sk-1234567890abcdef");
+		expect(traceSerialized).toContain("REDACTED");
+		const projectedData = JSON.stringify(data);
+		expect(projectedData).not.toContain(GRADER_METADATA_SECRET);
+		expect(projectedData).not.toContain(RUN_ERROR_SECRET);
+		expect(projectedData).not.toContain(TASK_ID_SECRET);
+		expect(projectedData).toContain("REDACTED");
+		expect(data.evalRun).not.toHaveProperty("provenance");
+		expect(data.evalRun.taskIds?.[0]).toMatch(/^\[REDACTED_API_KEY\]~/);
+		const canonicalRun = readFileSync(join(value.runsRoot, "run-report", "run.json"), "utf8");
+		const canonicalErrorRun = readFileSync(join(value.runsRoot, "run-report-error", "run.json"), "utf8");
+		expect(canonicalRun).toContain(GRADER_METADATA_SECRET);
+		expect(canonicalErrorRun).toContain(RUN_ERROR_SECRET);
 
 		const html = renderEvalReportHtml(data);
 		expect(html).toContain("AHDE Evidence Report");
+		expect(html.indexOf("<h2>Failure modes</h2>")).toBeLessThan(html.indexOf("<h2>Task issue drill-down</h2>"));
+		expect(html).toContain("Evidence-backed hypothesis, not proof.");
+		expect(html).toContain("Projected evidence");
+		expect(html).toContain("graders:");
+		expect(html).toContain("tool call(s) omitted");
+		expect(html).toContain("grader(s) omitted");
+		expect(html).toContain("Proposal gate: blocked");
+		expect(html).toContain("window.location.hash.slice(1)");
+		expect(html).toContain("new URLSearchParams");
+		expect(html).toContain("function showRun(id,scroll=true,syncHash=true)");
+		expect(html).toContain("window.addEventListener('hashchange'");
+		expect(html).toContain("window.location.hash=next");
+		expect(html).toContain("if(scroll)q('#trace').scrollIntoView");
+		expect(html).toContain("showRun(DATA.runs[0].runId,false,false)");
 		expect(html).not.toContain("<img src=x onerror=alert(2)>");
 		expect(html).not.toContain("</script><script>alert(1)</script>");
+		expect(html).not.toContain("<svg onload=alert(3)>");
+		expect(html).not.toContain(GRADER_METADATA_SECRET);
+		expect(html).not.toContain(RUN_ERROR_SECRET);
 		expect(html).toContain("\\u003cimg src=x onerror=alert(2)>");
+		expect(html).toContain("\\u003csvg onload=alert(3)>");
 	});
 
 	it("projects oversized evidence failure-first with deterministic run and cumulative trace budgets", () => {
@@ -313,28 +482,68 @@ describe("static evidence report", () => {
 		const rawBefore = readFileSync(value.omittedRawTracePath, "utf8");
 		const now = () => "2026-08-26T11:00:00.000Z";
 		const first = collectEvalReportData(value.runsRoot, value.evalRunId, now);
-		const second = collectEvalReportData(value.runsRoot, value.evalRunId, now);
 
-		expect(first.evalRun.runIds).toEqual(value.sourceRunIds);
+		expect(first.evalRun.runIds).toEqual(value.sourceRunIds.slice(0, 50));
 		expect(first.evalRun.summary.total).toBe(value.sourceRunIds.length);
-		expect(first.diagnosis.summary.tasks).toBe(value.sourceRunIds.length);
-		expect(first.runs.map((run) => run.runId)).toEqual(value.expectedIncludedRunIds);
-		expect(second.runs.map((run) => run.runId)).toEqual(value.expectedIncludedRunIds);
-		expect(second.projection).toEqual(first.projection);
-		expect(first.runs.slice(0, 3).map((run) => run.outcome)).toEqual(["fail", "error", "fail"]);
+		expect(first.projection.evalRun.runIds).toEqual({
+			sourceCount: value.sourceRunIds.length,
+			includedCount: 50,
+			omittedCount: 2,
+		});
+		expect(first.diagnosis.summary.tasks).toBe(1);
+		const failureRepresentativeRunIds = [...new Set(first.improvementBrief.modes.flatMap((mode) => {
+			const representative = mode.evidence.find((evidence) => evidence.traceAvailable);
+			return representative ? [representative.runId] : [];
+		}))];
+		const failureRepresentativeRunIdSet = new Set(failureRepresentativeRunIds);
+		const counterRepresentativeRunIds = [...new Set(first.improvementBrief.modes.flatMap((mode) => {
+			if (mode.decision !== "stabilize-and-rerun") return [];
+			const representative = mode.counterEvidence.find((evidence) =>
+				evidence.traceAvailable && !failureRepresentativeRunIdSet.has(evidence.runId)
+			);
+			return representative ? [representative.runId] : [];
+		}))].slice(0, 5);
+		const representativeRunIds = [...failureRepresentativeRunIds, ...counterRepresentativeRunIds];
+		const representativeRunIdSet = new Set(representativeRunIds);
+		const rawOmittedRunId = value.sourceRunIds.at(-2)!;
+		const expectedIncludedRunIds = [
+			...representativeRunIds,
+			...value.sourceRunIds.filter((runId) =>
+				runId !== rawOmittedRunId && !representativeRunIdSet.has(runId)
+			),
+			...(representativeRunIdSet.has(rawOmittedRunId) ? [] : [rawOmittedRunId]),
+		].slice(0, MAX_DETAIL_RUNS);
+		expect(first.runs.map((run) => run.runId)).toEqual(expectedIncludedRunIds);
+		const beyondLegacyLimit = value.sourceRunIds.at(-1)!;
+		const farMode = first.improvementBrief.modes.find((mode) =>
+			mode.evidence.some((evidence) => evidence.runId === beyondLegacyLimit && evidence.traceAvailable)
+		);
+		expect(farMode).toBeDefined();
+		expect(first.runs.map((run) => run.runId)).toContain(beyondLegacyLimit);
+		for (const mode of first.improvementBrief.modes) {
+			const representative = mode.evidence.find((evidence) => evidence.traceAvailable);
+			if (!representative) continue;
+			const projected = first.runs.find((run) => run.runId === representative.runId);
+			expect(projected?.trace.length, mode.failureModeId).toBeGreaterThan(0);
+		}
+		expect(first.runs.filter((run) => run.outcome === "pass").map((run) => run.runId))
+			.toEqual(counterRepresentativeRunIds);
 		expect(first.projection).toMatchObject({
-			selection: "failures-errors-then-passes-source-order",
+			selection: "mode-evidence-then-failures-errors-then-passes-source-order",
 			sourceRunCount: value.sourceRunIds.length,
 			includedRunCount: MAX_DETAIL_RUNS,
-			includedRunIds: value.expectedIncludedRunIds,
-			omittedRunCount: 5,
+			omittedRunCount: 2,
 			traceCharactersIncluded: MAX_NORMALIZED_TRACE_CHARS,
 			traceTruncated: true,
 			limits: { detailRuns: MAX_DETAIL_RUNS, traceCharacters: MAX_NORMALIZED_TRACE_CHARS },
 		});
-		expect(first.projection.truncatedTraceRunIds).toHaveLength(MAX_DETAIL_RUNS);
+		expect(first.projection.truncatedTraceRunIds.length).toBeGreaterThan(0);
+		expect(first.projection.truncatedTraceRunIds.every((runId) =>
+			first.projection.includedRunIds.includes(runId)
+		)).toBe(true);
 		expect(projectedTraceCharacters(first)).toBe(first.projection.traceCharactersIncluded);
 		expect(projectedTraceCharacters(first)).toBeLessThanOrEqual(MAX_NORMALIZED_TRACE_CHARS);
+		expect(Buffer.byteLength(JSON.stringify(first), "utf8")).toBeLessThanOrEqual(3 * 1024 * 1024);
 
 		const serialized = JSON.stringify(first);
 		const html = renderEvalReportHtml(first);
@@ -342,11 +551,29 @@ describe("static evidence report", () => {
 		expect(serialized).toContain("REDACTED_API_KEY");
 		expect(serialized).not.toContain(RAW_OMITTED_SENTINEL);
 		expect(html).not.toContain(RAW_OMITTED_SENTINEL);
-		expect(html).toContain("5 runs omitted");
-		expect(html).toContain(`truncated for ${MAX_DETAIL_RUNS} included runs`);
+		expect(html).toContain("2 runs omitted");
+		expect(html).toContain(`truncated for ${first.projection.truncatedTraceRunIds.length} included runs`);
 		expect(html).toContain("250,000-character global budget");
 		expect(readFileSync(value.omittedRawTracePath, "utf8")).toBe(rawBefore);
 		expect(rawBefore).toContain(RAW_OMITTED_SENTINEL);
+	});
+
+	it("bounds mostly-empty trace structure before JSON and HTML serialization", () => {
+		const value = fixture({ structuralFlood: true });
+		const data = collectEvalReportData(value.runsRoot, value.evalRunId);
+		const includedToolCalls = data.runs.reduce((total, run) =>
+			total + run.trace.reduce((traceTotal, message) => traceTotal + message.toolCalls.length, 0), 0);
+
+		expect(data.projection.toolCallsIncluded).toBe(MAX_NORMALIZED_TOOL_CALLS);
+		expect(includedToolCalls).toBe(MAX_NORMALIZED_TOOL_CALLS);
+		expect(data.projection.traceMessagesIncluded).toBeLessThanOrEqual(MAX_NORMALIZED_TRACE_MESSAGES);
+		expect(data.projection.traceTruncated).toBe(true);
+		expect(data.runs.some((run) => run.trace.some((message) => message.omittedToolCallCount > 0))).toBe(true);
+		expect(Buffer.byteLength(JSON.stringify(data), "utf8")).toBeLessThanOrEqual(3 * 1024 * 1024);
+
+		const html = renderEvalReportHtml(data);
+		expect(Buffer.byteLength(html, "utf8")).toBeLessThanOrEqual(MAX_REPORT_HTML_BYTES);
+		expect(html).toContain("structural caps");
 	});
 
 	it("atomically publishes an owner-only, self-contained HTML file", () => {

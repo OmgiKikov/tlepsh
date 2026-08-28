@@ -41,9 +41,9 @@ AHDE requires Node.js 22.19 or newer.
 ```bash
 npm ci --ignore-scripts
 npm run build
-node dist/cli.js init my-agent
+mkdir my-agent
 cd my-agent
-../dist/cli.js
+../dist/cli.js                 # describe the agent; guided setup happens here
 ```
 
 When AHDE is installed globally or linked, the last command is simply:
@@ -73,6 +73,8 @@ Builder: Показываю точный diff для подтверждения.
 The same loop has compact Pi commands:
 
 ```text
+/help                   AHDE workflow and shortcuts
+/doctor                 Builder authentication and Target readiness
 /status                 current stage and legal next actions
 /run [repetitions]      run the selected development eval or candidate check
 /traces                 diagnosis and read-only localhost trace link
@@ -81,6 +83,10 @@ The same loop has compact Pi commands:
 /discard                discard a proposal or abandon an interrupted candidate
 /target                 exact Target summary and standalone launch command
 ```
+
+`ahde resume` reopens the private Builder session selector. The embedded Pi
+host cannot import, export, share, trust, or execute shell commands; those
+built-ins are removed before autocomplete and dispatch.
 
 Builder Pi has no generic shell, edit, or write tool. It can act only through
 the packaged AHDE tools, which expose bounded views and call the deterministic
@@ -109,7 +115,8 @@ outcome.
 
 ## What gets built
 
-`ahde init` creates a working Target Pi harness and its initial Git revision:
+Guided setup (or the scriptable `ahde init`) creates one generic Target Pi
+harness and its initial Git revision:
 
 ```text
 manifest.yaml
@@ -196,8 +203,13 @@ Corpus revisions are immutable and content-addressed. Publishing records both
 the canonical Corpus receipt and an exact Workbench lineage binding approved
 Spec, reviewed draft, and development dataset hash. A compatible EvalRun must
 additionally match the current Target revision and suite hash. Structured
-Harness authoring accepts semantic instruction/skill/tool intents; only the host
-compiler chooses repository paths, file modes, hashes, and unified diffs.
+Harness authoring accepts semantic instruction/execution-policy/skill/tool
+intents; only the host compiler chooses repository paths, file modes, hashes,
+and unified diffs. There are no product presets for agent types. A request such
+as “build a deep research agent” follows the ordinary Spec → eval → diagnosis
+→ Proposal path; when evidence shows that network research is required, AHDE
+proposes the exact policy, environment-variable names, descriptor, and
+executable for human review and candidate verification.
 
 Builder Pi can also import a bounded JSONL file from the project-local
 `imports/` inbox into a new editable draft. The inbox is git-ignored and never
@@ -223,6 +235,13 @@ diagnosis and traces. You can also start the explorer explicitly:
 ahde diagnose <eval-run-id>
 ahde evidence
 ```
+
+`/run`, `/traces`, the CLI, and this report all consume the same deterministic
+Improvement Brief. New evidence is grouped only by an exact grader-check
+fingerprint; a mode becomes systemic after it appears on at least two distinct
+tasks. The report keeps counter-evidence, labels explanations as hypotheses,
+and reserves a representative trace for each top mode. Infrastructure errors
+leave the brief inconclusive and ineligible to steer a proposal.
 
 The server binds to `127.0.0.1` and accepts only `GET` and `HEAD`. It renders
 already-created canonical evidence; HTTP requests cannot run an eval, create a
@@ -390,7 +409,8 @@ files.
 | `src/target/tool-broker.ts` | confined subprocess execution |
 | `src/run-events.ts`, `src/builder/run-progress.ts` | bounded development-only live observation and TUI projection |
 | `src/runner.ts`, `src/eval.ts`, `src/trace.ts` | isolated execution and evidence |
-| `src/diagnosis.ts`, `src/evidence/server.ts` | diagnosis and read-only projection |
+| `src/diagnosis.ts`, `src/application/improvement-brief.ts` | task evidence and exact-signature failure modes |
+| `src/report.ts`, `src/evidence/server.ts` | bounded read-only evidence projection |
 | `src/application/candidate-experiment.ts` | exact matched candidate evaluation |
 | `src/application/candidate-review.ts` | review, rejection, and promotion authority |
 
@@ -398,7 +418,9 @@ See [CONTEXT.md](CONTEXT.md) for domain language and invariants,
 [docs/V1_2_BUILDER_WORKBENCH.md](docs/V1_2_BUILDER_WORKBENCH.md) for the
 implemented Builder Workbench, and
 [docs/V1_3_RUN_EVENTS.md](docs/V1_3_RUN_EVENTS.md) for the live observation
-contract, and
+contract,
+[docs/V1_4_SYSTEMIC_DIAGNOSIS.md](docs/V1_4_SYSTEMIC_DIAGNOSIS.md) for the
+evidence-backed failure-mode contract, and
 [docs/V1_1_WORKBENCH_PLAN.md](docs/V1_1_WORKBENCH_PLAN.md) for the historical
 two-Pi plan it supersedes.
 

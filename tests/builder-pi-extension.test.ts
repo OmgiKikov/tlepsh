@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	AHDE_BUILDER_TOOL_NAMES,
 	CONSEQUENTIAL_BUILDER_TOOL_NAMES,
+	createAhdeBuilderCompatibilityTools,
 	createAhdeBuilderExtension,
 	createAhdeBuilderTools,
 } from "../src/builder/extension.js";
@@ -19,6 +20,8 @@ import {
 	WorkbenchDecisionInputSchema,
 	WorkbenchSubmitInputSchema,
 } from "../src/workbench/types.js";
+import { buildProjectStatus } from "../src/builder/project-context.js";
+import { createCorpus } from "../src/corpus.js";
 import { saveSpecSnapshot, type AgentSpec } from "../src/spec.js";
 import type { PersistedBuilderRun } from "../src/application/builder-proposal.js";
 import { hashValue } from "../src/provenance.js";
@@ -225,7 +228,11 @@ describe("Builder Pi extension registry", () => {
 			result: { exitCode: 126, output: expect.stringContaining("disables interactive shell") },
 		});
 		expect(handlers.get("tool_call")?.({ toolName: "bash" } as never)).toMatchObject({ block: true, terminate: true });
-		expect(handlers.get("tool_call")?.({ toolName: "ahde_project_status" } as never)).toBeUndefined();
+		expect(handlers.get("tool_call")?.({ toolName: "ahde_workbench_view" } as never)).toBeUndefined();
+		expect(handlers.get("tool_call")?.({ toolName: "ahde_project_status" } as never)).toMatchObject({
+			block: true,
+			terminate: true,
+		});
 	});
 
 	it("reads only bounded public Target resources", async () => {
@@ -236,7 +243,7 @@ describe("Builder Pi extension registry", () => {
 		writeFileSync(join(projectDir, "skills", "search", "SKILL.md"), "public skill\n");
 		writeFileSync(join(projectDir, ".ahde", "secret.txt"), "secret\n");
 		symlinkSync(join(projectDir, ".ahde", "secret.txt"), join(projectDir, "skills", "search", "leak.txt"));
-		const tools = createAhdeBuilderTools({
+		const tools = createAhdeBuilderCompatibilityTools({
 			projectDir,
 			stateRoot: join(projectDir, ".ahde"),
 			runsRoot: join(projectDir, "runs"),
@@ -254,7 +261,7 @@ describe("Builder Pi extension registry", () => {
 	it("saves immutable Spec drafts and fails closed when approval has no host UI", async () => {
 		const projectDir = root("ahde-builder-project-");
 		const stateRoot = join(projectDir, ".ahde");
-		const tools = createAhdeBuilderTools({
+		const tools = createAhdeBuilderCompatibilityTools({
 			projectDir,
 			stateRoot,
 			runsRoot: join(projectDir, "runs"),
@@ -329,7 +336,7 @@ describe("Builder Pi extension registry", () => {
 		} as unknown as PersistedBuilderRun;
 		const applyProposal = vi.fn(() => ({ receipt: { runId: "builder-demo" }, receiptPath: "/receipt" }) as never);
 		const loadProposal = vi.fn(() => proposal);
-		const tools = createAhdeBuilderTools({
+		const tools = createAhdeBuilderCompatibilityTools({
 			projectDir,
 			stateRoot: join(projectDir, ".ahde"),
 			runsRoot: join(projectDir, "runs"),
@@ -373,6 +380,7 @@ describe("Builder Pi extension registry", () => {
 			label: "baseline",
 			dataset: "development-corpus-public",
 			datasetHash: `sha256:${"d".repeat(64)}`,
+			evidenceVisibility: "development",
 			repetitions: 1,
 			startedAt: "2026-08-26T10:00:00.000Z",
 			finishedAt: "2026-08-26T10:01:00.000Z",
@@ -381,19 +389,26 @@ describe("Builder Pi extension registry", () => {
 		const sealed = {
 			...development,
 			evalRunId: "erun_sealed_secret",
-			dataset: "sealed-corpus-secret-id",
+			dataset: "ordinary-private-dataset",
 			datasetHash: `sha256:${"e".repeat(64)}`,
+			evidenceVisibility: "sealed",
 		};
 		const diagnoseEval = vi.fn();
 		const evidenceLink = vi.fn();
-		const tools = createAhdeBuilderTools({
+		const loadEval = vi.fn((_runsRoot: string, evalRunId: string) => {
+			if (evalRunId === development.evalRunId) return development;
+			throw new Error("task-super-secret must remain unopened");
+		});
+		const tools = createAhdeBuilderCompatibilityTools({
 			projectDir,
 			stateRoot: join(projectDir, ".ahde"),
 			runsRoot: join(projectDir, "runs"),
 			projectId: "demo",
 			dependencies: {
-				listEvals: (() => [development, sealed]) as never,
-				loadEval: (() => sealed) as never,
+				listEvalIndexes: (() => [development, sealed]) as never,
+				loadEval: loadEval as never,
+				readEvalIndex: ((_runsRoot: string, evalRunId: string) =>
+					evalRunId === sealed.evalRunId ? sealed : development) as never,
 				diagnoseEval,
 				evidenceLink,
 				listCorpora: (() => [{
@@ -401,7 +416,7 @@ describe("Builder Pi extension registry", () => {
 					name: "secret holdout",
 					visibility: "sealed",
 					taskCount: 99,
-					hash: sealed.datasetHash,
+					hash: `sha256:${"f".repeat(64)}`,
 					createdAt: "2026-08-26T09:00:00.000Z",
 					contentPath: "corpus.jsonl",
 					schemaVersion: 1,
@@ -421,6 +436,8 @@ describe("Builder Pi extension registry", () => {
 		}
 		expect(diagnoseEval).not.toHaveBeenCalled();
 		expect(evidenceLink).not.toHaveBeenCalled();
+		expect(loadEval).toHaveBeenCalledTimes(1);
+		expect(loadEval).toHaveBeenCalledWith(expect.any(String), development.evalRunId);
 
 		const corpora = tools.find((tool) => tool.name === "ahde_corpus_list")!;
 		const corpusResult = JSON.stringify(textDetails(await corpora.execute("corpora", {}, undefined, undefined, fakeContext(false))));
@@ -432,7 +449,7 @@ describe("Builder Pi extension registry", () => {
 
 	it("does not leak a sealed identity through metadata errors", async () => {
 		const projectDir = root("ahde-builder-project-");
-		const tools = createAhdeBuilderTools({
+		const tools = createAhdeBuilderCompatibilityTools({
 			projectDir,
 			stateRoot: join(projectDir, ".ahde"),
 			runsRoot: join(projectDir, "runs"),
@@ -454,6 +471,44 @@ describe("Builder Pi extension registry", () => {
 		}
 	});
 
+	it("counts every sealed corpus before bounding the public development inventory", () => {
+		const projectDir = root("ahde-builder-project-");
+		const stateRoot = join(projectDir, ".ahde");
+		const runsRoot = join(projectDir, "runs");
+		for (let index = 0; index < 35; index += 1) {
+			createCorpus({
+				stateRoot,
+				projectId: "demo",
+				name: `sealed-${index}`,
+				visibility: "sealed",
+				tasks: [{
+					id: `sealed-task-${index}`,
+					input: `private case ${index}`,
+					graders: [{ type: "output_contains", text: "private" }],
+				}],
+			});
+		}
+		createCorpus({
+			stateRoot,
+			projectId: "demo",
+			name: "development-visible",
+			visibility: "development",
+			tasks: [{
+				id: "development-task",
+				input: "public case",
+				graders: [{ type: "output_contains", text: "public" }],
+			}],
+		});
+
+		const status = buildProjectStatus({ projectDir, stateRoot, runsRoot, projectId: "demo" }) as {
+			corpora: { development: unknown[]; sealed: { count: number } };
+		};
+		expect(status.corpora.sealed.count).toBe(35);
+		expect(status.corpora.development).toHaveLength(1);
+		expect(JSON.stringify(status)).not.toContain("private case");
+		expect(JSON.stringify(status)).not.toContain("sealed-task-");
+	});
+
 	it("detects a stale immutable subject after the host approved it", async () => {
 		const projectDir = root("ahde-builder-project-");
 		const stateRoot = join(projectDir, ".ahde");
@@ -469,7 +524,7 @@ describe("Builder Pi extension registry", () => {
 			.mockReturnValueOnce(subject)
 			.mockReturnValueOnce({ ...subject, draftSnapshotHash: `sha256:${"f".repeat(64)}` });
 		const approveSpecDraft = vi.fn();
-		const tools = createAhdeBuilderTools({
+		const tools = createAhdeBuilderCompatibilityTools({
 			projectDir,
 			stateRoot,
 			runsRoot: join(projectDir, "runs"),

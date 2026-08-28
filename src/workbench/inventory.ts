@@ -24,7 +24,12 @@ import {
 	type CandidateArtifactRef,
 	type CandidateRecord,
 } from "../domain/candidate.js";
-import { listEvalRuns, type EvalRunRecord } from "../eval.js";
+import {
+	isSealedEvalRun,
+	listEvalRunIndexes,
+	loadEvalRun,
+	type EvalRunRecord,
+} from "../eval.js";
 import { loadTarget, type ResolvedTarget } from "../manifest.js";
 import { canonicalJson, hashFile, hashValue } from "../provenance.js";
 import {
@@ -586,8 +591,9 @@ export function loadWorkbenchInventory(options: {
 	const sealedHashes = new Set(corpora.filter((corpus) => corpus.visibility === "sealed").map((corpus) => corpus.hash));
 	let developmentEvals: EvalRunRecord[] = [];
 	try {
-		developmentEvals = listEvalRuns(options.runsRoot)
-			.filter((run) => !run.dataset.startsWith("sealed-") && !sealedHashes.has(run.datasetHash))
+		developmentEvals = listEvalRunIndexes(options.runsRoot)
+			.filter((run) => !isSealedEvalRun(run, sealedHashes))
+			.map((run) => loadEvalRun(options.runsRoot, run.evalRunId))
 			.filter((run) => target === null || run.target.id === target.manifest.id);
 	} catch {
 		integrityFailure(
@@ -701,12 +707,20 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 		};
 	}
 	const target = inventory.target;
-	if (!target || target.manifest.id === "my-agent" || target.manifest.model.id === "replace-with-model-id") {
+	if (!target) {
 		return {
 			stage: "target-setup",
-			headline: "Configure the Target harness and model before authoring evidence.",
-			actions: ["target"],
-			blockers: ["Target is missing or still contains template identity/model values."],
+			headline: "Create the Target harness before authoring evidence.",
+			actions: ["scaffold-target"],
+			blockers: ["Target harness is missing."],
+		};
+	}
+	if (target.manifest.id === "my-agent" || target.manifest.model.id === "replace-with-model-id") {
+		return {
+			stage: "target-setup",
+			headline: "Choose the Target identity and model before authoring evidence.",
+			actions: ["configure-target"],
+			blockers: ["Target still contains its one-time identity/model placeholders."],
 		};
 	}
 

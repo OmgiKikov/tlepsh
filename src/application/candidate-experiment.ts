@@ -82,6 +82,8 @@ export interface CandidateExperimentOptions {
 	sealedCorpus?: CorpusRef;
 	/** Host-only live events for the development pair. Sealed holdout runs never receive it. */
 	onRunEvent?: RunEventListener;
+	/** Host-owned cancellation propagated through development and sealed executions. */
+	signal?: AbortSignal;
 }
 
 export interface CandidateExperimentHoldoutResult {
@@ -223,6 +225,7 @@ function isExactReusableBaseline(record: EvalRunRecord, query: ReusableBaselineQ
 		record.target.gitSha === query.targetGitSha &&
 		(query.toolsetHash === undefined || record.target.toolsetHash === query.toolsetHash) &&
 		(query.workspaceHash === undefined || record.target.workspaceHash === query.workspaceHash) &&
+		(query.evidenceVisibility === undefined || record.evidenceVisibility === query.evidenceVisibility) &&
 		(query.repetitions === undefined || record.repetitions === query.repetitions) &&
 		axisDifferences(record.provenance, query.provenance).length === 0
 	);
@@ -338,7 +341,9 @@ async function runMatchedEvaluation(
 	baselineSha: string,
 	mode: ExperimentMode,
 	repetitions: number,
+	evidenceVisibility: "development" | "sealed",
 	onRunEvent?: RunEventListener,
+	signal?: AbortSignal,
 ): Promise<MatchedEvaluationResult> {
 	const baselineWorkspaceHash = computeTargetWorkspaceHash(baselineTarget, runsRoot);
 	const query: ReusableBaselineQuery = {
@@ -347,6 +352,7 @@ async function runMatchedEvaluation(
 		toolsetHash: baselineTarget.toolsetHash,
 		workspaceHash: baselineWorkspaceHash,
 		provenance: effectiveProvenance(baselineTarget),
+		evidenceVisibility,
 		label: "baseline",
 		repetitions,
 	};
@@ -358,8 +364,10 @@ async function runMatchedEvaluation(
 			runsRoot,
 			label: "baseline",
 			repetitions,
+			evidenceVisibility,
 			expectedWorkspaceHash: baselineWorkspaceHash,
 			...(onRunEvent ? { onRunEvent } : {}),
+			...(signal ? { signal } : {}),
 		});
 	}
 	const baselineProblem = infrastructureError(baseline);
@@ -369,9 +377,11 @@ async function runMatchedEvaluation(
 		runsRoot,
 		label: "candidate",
 		repetitions,
+		evidenceVisibility,
 		candidateOf: baselineSha,
 		baselineEvalRunId: baseline.evalRunId,
 		...(onRunEvent ? { onRunEvent } : {}),
+		...(signal ? { signal } : {}),
 	});
 	const candidateProblem = infrastructureError(candidate);
 	if (candidateProblem) throw new Error(candidateProblem);
@@ -561,7 +571,9 @@ export async function runCandidateExperiment(
 					worktrees.baseline.sha,
 					options.mode,
 					options.repetitions,
+					"development",
 					options.onRunEvent,
+					options.signal,
 				);
 
 				let sealedHoldout: CandidateExperimentHoldoutResult | null = null;
@@ -574,6 +586,9 @@ export async function runCandidateExperiment(
 						worktrees.baseline.sha,
 						options.mode,
 						options.repetitions,
+						"sealed",
+						undefined,
+						options.signal,
 					);
 					const regression = holdoutRegression(holdout.compare, options.mode);
 					if (regression) throw new Error(regression);
