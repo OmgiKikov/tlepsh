@@ -19,6 +19,7 @@ import {
 	compileHarnessAuthoringProposal,
 	type HarnessAuthoringIntent,
 } from "../application/harness-authoring.js";
+import { inspectTargetAuthoringContext } from "../application/target-authoring-context.js";
 import { runAppliedBuilderCandidate } from "../application/builder-candidate.js";
 import {
 	configureTargetBootstrap,
@@ -107,6 +108,7 @@ import { assertWorkbenchDecisionStage } from "./transition-policy.js";
 import {
 	WorkbenchDecisionInputSchema,
 	WorkbenchSubmitInputSchema,
+	WorkbenchViewQuerySchema,
 	type WorkbenchConfirmation,
 	type WorkbenchDecisionInput,
 	type WorkbenchDecisionExecutionOptions,
@@ -129,6 +131,7 @@ export interface WorkbenchEvidenceLink {
 
 export interface CompileHarnessAuthoringInput {
 	repositoryDir: string;
+	expectedBaseTargetSha: string;
 	intents: readonly HarnessAuthoringIntent[];
 	summary: string;
 	diagnoses: CandidateProposal["diagnoses"];
@@ -155,6 +158,7 @@ export interface AhdeWorkbenchDependencies {
 	runSuite: typeof runSuite;
 	diagnoseEval: typeof diagnoseEvalRun;
 	compileImprovementBrief: (runsRoot: string, diagnosis: ReturnType<typeof diagnoseEvalRun>) => ImprovementBrief;
+	inspectTargetAuthoringContext: typeof inspectTargetAuthoringContext;
 	evidenceLink: (record: EvalRunRecord) => WorkbenchEvidenceLink | null | Promise<WorkbenchEvidenceLink | null>;
 	applyProposal: typeof applyBuilderProposal;
 	describeProposalDiscard: typeof describeBuilderProposalDiscard;
@@ -190,6 +194,7 @@ const DEFAULT_DEPENDENCIES: AhdeWorkbenchDependencies = {
 	runSuite,
 	diagnoseEval: diagnoseEvalRun,
 	compileImprovementBrief,
+	inspectTargetAuthoringContext,
 	evidenceLink: () => null,
 	applyProposal: applyBuilderProposal,
 	describeProposalDiscard: describeBuilderProposalDiscard,
@@ -357,7 +362,8 @@ export class AhdeWorkbench {
 		return actorId(decision.actorId);
 	}
 
-	async view(query: WorkbenchViewQuery = {}): Promise<WorkbenchView> {
+	async view(queryValue: WorkbenchViewQuery = {}): Promise<WorkbenchView> {
+		const query = WorkbenchViewQuerySchema.parse(queryValue);
 		const inventory = this.inventory();
 		const view = deriveWorkbenchView(inventory);
 		const aspect = query.aspect ?? "summary";
@@ -368,15 +374,15 @@ export class AhdeWorkbench {
 				detail: {
 					aspect,
 					content: inventory.target
-						? {
-							id: inventory.target.manifest.id,
-							gitSha: inventory.target.gitSha,
-							model: { provider: inventory.target.manifest.model.provider, id: inventory.target.manifest.model.id },
-							skills: inventory.target.manifest.skills,
-							tools: inventory.target.manifest.tools,
-							launch: `ahde target --target ${JSON.stringify(this.projectDir)}`,
-						}
-						: { launch: `ahde init ${JSON.stringify(this.projectDir)}` },
+						? { ...this.dependencies.inspectTargetAuthoringContext({
+							repositoryDir: this.projectDir,
+							expectedTarget: {
+								id: inventory.target.manifest.id,
+								gitSha: inventory.target.gitSha,
+							},
+							...(query.resourcePath ? { resourcePath: query.resourcePath } : {}),
+						}) }
+						: { launch: "ahde init ." },
 				},
 			};
 		}
@@ -579,14 +585,29 @@ export class AhdeWorkbench {
 			...input.source,
 			failureModeIds: input.failureModeIds,
 		});
+		if (!inventory.target) throw new Error("structured proposal authoring requires one exact Target");
+		const authoringContext = this.dependencies.inspectTargetAuthoringContext({
+			repositoryDir: this.projectDir,
+			expectedTarget: {
+				id: inventory.target.manifest.id,
+				gitSha: inventory.target.gitSha,
+			},
+		});
+		if (canonicalJson(input.authoringContext) !== canonicalJson(authoringContext.claim)) {
+			throw new Error("Target authoring context is stale; refresh the Target overview and every replaced resource.");
+		}
 		const proposal = this.dependencies.compileHarnessProposal({
 			repositoryDir: this.projectDir,
+			expectedBaseTargetSha: authoringContext.target.gitSha,
 			intents: input.intents,
 			summary: input.summary,
 			diagnoses: selectedEvidence.diagnoses,
 			risks: input.risks,
 			validationPlan: input.validationPlan,
 		});
+		if (proposal.baseTargetSha !== authoringContext.target.gitSha) {
+			throw new Error("compiled proposal does not match the inspected Target authoring revision");
+		}
 		const result = await this.dependencies.recordProposal({
 			proposal,
 			targetDir: this.projectDir,
@@ -599,16 +620,24 @@ export class AhdeWorkbench {
 				...input.source,
 				failureModeIds: input.failureModeIds,
 			},
+			authoringContext: authoringContext.claim,
 			signal: options.signal,
 		});
+		if (result.record.result.status !== "completed") {
+			const failure = result.record.result.error;
+			throw new Error(
+				`structured proposal recording failed closed (${result.record.result.status})` +
+				(failure ? `: ${failure.code}: ${failure.message}` : ""),
+			);
+		}
 		if (result.record.result.proposal?.decision === "propose") {
 			this.select("proposal", result.record.runId);
-			return { kind: input.kind, message: "Selected failure modes compiled into an evidence-linked, exact reviewable proposal.", artifact: { runId: result.record.runId, proposalHash: result.record.artifacts.proposal?.sha256 ?? null, sourceEvalRunId: result.record.request.source?.evalRunId ?? null, improvementBriefId: selectedEvidence.basis.briefId, failureModeIds: selectedEvidence.basis.failureModes.map((mode) => mode.failureModeId), approvedSpecId: approved.id }, view: await this.view() };
+			return { kind: input.kind, message: "Selected failure modes compiled into an evidence-linked, exact reviewable proposal.", artifact: { runId: result.record.runId, proposalHash: result.record.artifacts.proposal?.sha256 ?? null, sourceEvalRunId: result.record.request.source?.evalRunId ?? null, improvementBriefId: selectedEvidence.basis.briefId, failureModeIds: selectedEvidence.basis.failureModes.map((mode) => mode.failureModeId), approvedSpecId: approved.id, authoringContextHash: authoringContext.contextHash }, view: await this.view() };
 		}
 		return {
 			kind: input.kind,
 			message: "Structured authoring produced a durable no-change result; there is no diff to review or apply.",
-			artifact: { runId: result.record.runId, proposalHash: null, decision: "no-change", sourceEvalRunId, improvementBriefId: selectedEvidence.basis.briefId, failureModeIds: selectedEvidence.basis.failureModes.map((mode) => mode.failureModeId), approvedSpecId: approved.id },
+			artifact: { runId: result.record.runId, proposalHash: null, decision: "no-change", sourceEvalRunId, improvementBriefId: selectedEvidence.basis.briefId, failureModeIds: selectedEvidence.basis.failureModes.map((mode) => mode.failureModeId), approvedSpecId: approved.id, authoringContextHash: authoringContext.contextHash },
 			view: await this.view(),
 		};
 	}

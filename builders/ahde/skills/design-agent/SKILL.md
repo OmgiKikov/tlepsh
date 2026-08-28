@@ -10,10 +10,11 @@ Target agent.
 
 1. Inspect `ahde_workbench_view` before assuming a Target or Spec exists. If
    it reports `target-setup` and the current directory is otherwise empty,
-   call `ahde_target_scaffold`.
+   request `scaffold-target` through `ahde_workbench_decide`.
    Then agree on a lowercase kebab-case Target id and complete non-secret model
-   definition and call `ahde_target_configure_model`. Never request the API key
-   value; only its host environment-variable name belongs in the model block.
+   definition and request `configure-target` through the same Workbench tool.
+   Never request the API key value; only its host environment-variable name
+   belongs in the model block.
 2. Establish, in order: users, jobs, inputs, allowed actions, observable
    success criteria, hard constraints, and genuinely unresolved questions.
 3. Ask one high-information question at a time. Record unknowns as unknown;

@@ -183,14 +183,26 @@ const ImprovementBriefSourceParameters = Type.Object({
 	briefId: Type.String({ pattern: "^brief-[0-9a-f]{24}$" }),
 }, { additionalProperties: false });
 
-export const WorkbenchViewParameters = Type.Object({
-	aspect: Type.Optional(Type.Union([
-		Type.Literal("summary"),
-		Type.Literal("traces"),
-		Type.Literal("review"),
-		Type.Literal("target"),
-	])),
+const TargetAuthoringContextClaimParameters = Type.Object({
+	algorithmId: Type.Literal("git-manifest-context-v1"),
+	targetId: Type.String({ minLength: 1, maxLength: 100, pattern: "^[a-z0-9][a-z0-9-]*$" }),
+	targetGitSha: Type.String({ pattern: "^[0-9a-f]{40}$" }),
+	contextHash: Type.String({ pattern: "^sha256:[0-9a-f]{64}$" }),
 }, { additionalProperties: false });
+
+export const WorkbenchViewParameters = Type.Union([
+	Type.Object({
+		aspect: Type.Optional(Type.Union([
+			Type.Literal("summary"),
+			Type.Literal("traces"),
+			Type.Literal("review"),
+		])),
+	}, { additionalProperties: false }),
+	Type.Object({
+		aspect: Type.Literal("target"),
+		resourcePath: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
+	}, { additionalProperties: false }),
+]);
 
 export const WorkbenchSubmitParameters = Type.Union([
 	Type.Object({
@@ -240,6 +252,7 @@ export const WorkbenchSubmitParameters = Type.Union([
 	}, { additionalProperties: false }),
 	Type.Object({
 		kind: Type.Literal("structured-proposal"),
+		authoringContext: TargetAuthoringContextClaimParameters,
 		approvedSpecId: Type.Optional(WorkbenchArtifactId),
 		source: ImprovementBriefSourceParameters,
 		failureModeIds: Type.Array(FailureModeIdParameters, {

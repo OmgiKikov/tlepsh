@@ -37,6 +37,10 @@ the harness under development runs in a different Target Pi invocation.
 - **Harness Authoring Intent** — a semantic instruction/execution-policy/skill/tool change
   request. The host compiler, not Builder Pi, derives paths, modes, hashes,
   manifest declarations, and exact diffs from a clean Target snapshot.
+- **Target Authoring Context** — a bounded safe projection of one exact clean
+  Target commit: sanitized model/execution metadata plus only its
+  manifest-declared instructions, skills, and tool descriptor/executable
+  resources. Builder reads it through Workbench, never through ambient files.
 - **Proposal** — the immutable exact Harness file replacement set compiled from
   Harness Authoring Intents and tied to an approved Spec, baseline snapshot,
   and optional development Eval/Diagnosis evidence.
@@ -157,3 +161,13 @@ live view is never evidence and cannot perform state transitions.
     and semantic similarity are not sufficient evidence. Infrastructure makes
     a brief proposal-ineligible, and sealed evidence never enters a
     Builder-visible brief.
+30. Harness authoring context is read only from the exact clean Git commit
+    selected by the host. It enumerates no ambient files and exposes only
+    canonical manifest-declared `AGENTS.md`, skill `SKILL.md`, and tool
+    descriptor/executable resources. Dirty or stale revisions, undeclared or
+    private paths, traversal, symlinks, unsafe modes, malformed UTF-8, and
+    oversized context fail closed before Proposal compilation. Git replacement
+    refs are ignored. Structured authoring must echo the host-minted context
+    claim; AHDE re-derives and persists it, pins compilation to its revision,
+    and applies the same inspectability limits to the proposed resulting
+    Harness so Builder cannot author itself out of context.

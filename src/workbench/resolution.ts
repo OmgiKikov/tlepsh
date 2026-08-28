@@ -26,6 +26,7 @@ export function proposalReview(record: PersistedBuilderRun): {
 	paths: string[];
 	risks: string[];
 	validationPlan: string[];
+	authoringContext: PersistedBuilderRun["request"]["authoringContext"];
 	evidenceBasis: {
 		algorithmId: string;
 		evalRunId: string;
@@ -54,6 +55,7 @@ export function proposalReview(record: PersistedBuilderRun): {
 		paths: record.result.proposal.changes.map((change) => change.path),
 		risks: record.result.proposal.risks,
 		validationPlan: record.result.proposal.validationPlan,
+		authoringContext: record.request.authoringContext ?? null,
 		evidenceBasis: record.request.proposalBasis
 			? {
 				algorithmId: record.request.proposalBasis.algorithmId,

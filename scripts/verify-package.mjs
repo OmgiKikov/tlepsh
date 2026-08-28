@@ -50,6 +50,7 @@ try {
 		"dist/application/builder-corpus-import.js",
 		"dist/application/builder-regression-case.js",
 		"dist/application/target-scaffold.js",
+		"dist/application/target-authoring-context.js",
 		"dist/builder/product-shell.js",
 		"dist/builder/run-observation.js",
 		"dist/cli-invocation.js",
@@ -131,7 +132,8 @@ import {
   describeSpecDraftApproval,
   diagnoseEvalRun,
 	deriveEvidenceLinkedProposalSelection,
-	importBuilderCorpusDraft,
+  importBuilderCorpusDraft,
+  inspectTargetAuthoringContext,
   launchBuilderPi,
 	loadBuilderCorpusImportReceipt,
   loadCorpus,
@@ -139,9 +141,11 @@ import {
   promoteReviewedCandidate,
   projectRunEventText,
   publishBuilderDevelopmentCorpus,
+	readPublicTargetFile,
   recordBuilderAuthoredProposal,
   resolveBuilderAssets,
 	resolveDevelopmentFailureOperations,
+	listPublicTargetFiles,
   reviewCandidate,
   runAppliedBuilderCandidate,
 	runInteractiveTarget,
@@ -169,6 +173,7 @@ for (const [name, value] of Object.entries({
   diagnoseEvalRun,
 	deriveEvidenceLinkedProposalSelection,
 	importBuilderCorpusDraft,
+	inspectTargetAuthoringContext,
   launchBuilderPi,
 	loadBuilderCorpusImportReceipt,
   loadCorpus,
@@ -176,9 +181,11 @@ for (const [name, value] of Object.entries({
   promoteReviewedCandidate,
   projectRunEventText,
   publishBuilderDevelopmentCorpus,
+	readPublicTargetFile,
   recordBuilderAuthoredProposal,
   resolveBuilderAssets,
 	resolveDevelopmentFailureOperations,
+	listPublicTargetFiles,
   reviewCandidate,
   runAppliedBuilderCandidate,
 	runInteractiveTarget,
@@ -316,6 +323,42 @@ await launchBuilderPi({
     if (!viewResult || typeof viewResult.details?.stage !== "string") {
       throw new Error("installed Workbench view handler did not return a stage");
     }
+    const targetOverview = await viewTool?.execute(
+      "package-target-overview",
+      { aspect: "target" },
+      undefined,
+      undefined,
+      undefined,
+    );
+    const targetContext = targetOverview?.details?.detail?.content;
+    if (
+      targetContext?.algorithmId !== "git-manifest-context-v1" ||
+	  targetContext?.claim?.contextHash !== targetContext?.contextHash ||
+      !targetContext.resources?.some((resource) => resource.path === "AGENTS.md") ||
+      !targetContext.resources?.some((resource) => resource.path === "tools/echo_json.tool.yaml")
+    ) throw new Error("installed Workbench omitted exact declared Target authoring context");
+    if (JSON.stringify(targetContext).includes(targetDir) || JSON.stringify(targetContext).includes("manifest.yaml")) {
+      throw new Error("installed Target overview leaked an absolute path or raw manifest");
+    }
+    const targetResource = await viewTool?.execute(
+      "package-target-resource",
+      { aspect: "target", resourcePath: "AGENTS.md" },
+      undefined,
+      undefined,
+      undefined,
+    );
+    if (
+      targetResource?.details?.detail?.content?.resource?.path !== "AGENTS.md" ||
+      !targetResource?.details?.detail?.content?.resource?.content?.includes("# My Agent")
+    ) throw new Error("installed Workbench did not return exact AGENTS.md content");
+	const compatibilityFiles = listPublicTargetFiles(targetDir);
+	if (!compatibilityFiles.some((resource) => resource.path === "AGENTS.md")) {
+	  throw new Error("installed package broke the deprecated declared-resource list export");
+	}
+	const compatibilityRead = readPublicTargetFile(targetDir, "AGENTS.md");
+	if (compatibilityRead.path !== "AGENTS.md" || !compatibilityRead.content.includes("# My Agent")) {
+	  throw new Error("installed package broke the deprecated exact-Git read export");
+	}
     let decideFailedClosed = false;
     try {
       await decideTool?.execute(

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -12,6 +13,7 @@ import {
 } from "../src/application/builder-authoring.js";
 import { loadBuilderCorpusDraft } from "../src/application/builder-corpus-draft.js";
 import { compileHarnessAuthoringProposal } from "../src/application/harness-authoring.js";
+import { inspectTargetAuthoringContext } from "../src/application/target-authoring-context.js";
 import { compileImprovementBrief } from "../src/application/improvement-brief.js";
 import { recordBuilderAuthoredProposal } from "../src/application/builder-authoring.js";
 import { applyBuilderProposal, loadBuilderProposalRun } from "../src/application/builder-proposal.js";
@@ -244,6 +246,14 @@ function proposalSelection(
 		},
 		failureModeIds: [mode.failureModeId],
 	};
+}
+
+function authoringContextClaim(paths: { projectDir: string }) {
+	const resolved = loadTarget(paths.projectDir);
+	return inspectTargetAuthoringContext({
+		repositoryDir: paths.projectDir,
+		expectedTarget: { id: resolved.manifest.id, gitSha: resolved.gitSha },
+	}).claim;
 }
 
 describe("AHDE Workbench", () => {
@@ -892,15 +902,24 @@ describe("AHDE Workbench", () => {
 		expect((await workbench.view()).stage).toBe("improvement-authoring");
 
 		const recordProposal = vi.fn(async () => ({
-			record: { runId: "builder-no-change", result: { proposal: { decision: "no-change" } } },
+			record: {
+				runId: "builder-no-change",
+				result: { status: "completed", proposal: { decision: "no-change" }, error: null },
+			},
 		}));
+		const inspectAuthoringContext = vi.fn(inspectTargetAuthoringContext);
 		const authoritative = createAhdeWorkbench({
 			...paths,
 			projectId: "test-target",
-			dependencies: { now: () => NOW, recordProposal: recordProposal as never },
+			dependencies: {
+				now: () => NOW,
+				recordProposal: recordProposal as never,
+				inspectTargetAuthoringContext: inspectAuthoringContext,
+			},
 		});
 		const proposal = {
 			kind: "structured-proposal" as const,
+			authoringContext: authoringContextClaim(paths),
 			...selectionA,
 			summary: "Use exact lineage evidence to add generic research capability",
 			intents: [
@@ -941,15 +960,104 @@ describe("AHDE Workbench", () => {
 		};
 		await expect(authoritative.submit(proposal)).rejects.toThrow(/development EvalRun/);
 		expect(recordProposal).not.toHaveBeenCalled();
+		await expect(authoritative.submit({
+			...proposal,
+			...selectionB,
+			authoringContext: { ...proposal.authoringContext, contextHash: `sha256:${"0".repeat(64)}` },
+		})).rejects.toThrow(/Target authoring context is stale/);
+		expect(recordProposal).not.toHaveBeenCalled();
 
 		await expect(authoritative.submit({ ...proposal, ...selectionB })).resolves.toMatchObject({
-			artifact: { decision: "no-change", approvedSpecId: approved.result.approvedSpecId },
+			artifact: {
+				decision: "no-change",
+				approvedSpecId: approved.result.approvedSpecId,
+				authoringContextHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+			},
+		});
+		expect(inspectAuthoringContext).toHaveBeenCalledTimes(2);
+		expect(inspectAuthoringContext).toHaveBeenCalledWith({
+			repositoryDir: paths.projectDir,
+			expectedTarget: { id: "test-target", gitSha: loadTarget(paths.projectDir).gitSha },
 		});
 		expect(recordProposal).toHaveBeenCalledWith(expect.objectContaining({
+			proposal: expect.objectContaining({ baseTargetSha: loadTarget(paths.projectDir).gitSha }),
+			authoringContext: authoringContextClaim(paths),
 			sourceEvalRunId: evalB.evalRunId,
 			proposalBasis: { ...selectionB.source, failureModeIds: selectionB.failureModeIds },
 			approvedSpec: expect.objectContaining({ specId: approved.result.approvedSpecId }),
 		}));
+
+		recordProposal.mockResolvedValueOnce({
+			record: {
+				runId: "builder-failed-closed",
+				result: {
+					status: "failed",
+					proposal: null,
+					error: { code: "base-mismatch", message: "Target changed before recording", retryable: true },
+				},
+			},
+		} as never);
+		await expect(authoritative.submit({ ...proposal, ...selectionB }))
+			.rejects.toThrow(/structured proposal recording failed closed \(failed\).*base-mismatch/);
+	});
+
+	it("pins compilation to the exact Target revision inspected for authoring", async () => {
+		const paths = target();
+		const setup = createAhdeWorkbench({ ...paths, projectId: "test-target", dependencies: { now: () => NOW } });
+		await setup.submit({ kind: "spec-draft", spec: spec("Pinned authoring revision") });
+		await setup.decide({ kind: "approve-spec", reason: "Approve the pinned revision fixture" }, gate());
+		await setup.submit({
+			kind: "corpus-draft",
+			name: "Pinned authoring corpus",
+			tasks: [task()],
+			coverageNotes: [],
+			revisionSummary: "Pinned revision fixture",
+		});
+		const published = await setup.decide({
+			kind: "publish-corpus",
+			reason: "Publish the pinned revision fixture",
+		}, gate());
+		const evaluation = writeDevelopmentEval(
+			paths,
+			String(published.result.corpusId),
+			"erun_pinned_authoring_revision",
+		);
+		const selection = proposalSelection(paths, evaluation.evalRunId);
+		const viewedContext = authoringContextClaim(paths);
+		const recordProposal = vi.fn();
+		const inspectThenAdvance = vi.fn((input: Parameters<typeof inspectTargetAuthoringContext>[0]) => {
+			const inspected = inspectTargetAuthoringContext(input);
+			writeFileSync(join(paths.projectDir, "AGENTS.md"), "# Concurrent clean revision\n", "utf8");
+			execFileSync("git", ["-C", paths.projectDir, "add", "AGENTS.md"]);
+			execFileSync("git", [
+				"-C", paths.projectDir,
+				"-c", "user.name=AHDE Test",
+				"-c", "user.email=ahde-test@example.invalid",
+				"commit", "-m", "concurrent target revision",
+			]);
+			return inspected;
+		});
+		const workbench = createAhdeWorkbench({
+			...paths,
+			projectId: "test-target",
+			dependencies: {
+				now: () => NOW,
+				inspectTargetAuthoringContext: inspectThenAdvance,
+				recordProposal: recordProposal as never,
+			},
+		});
+
+		await expect(workbench.submit({
+			kind: "structured-proposal",
+			authoringContext: viewedContext,
+			...selection,
+			summary: "Never silently compile against a newer clean revision",
+			intents: [{ type: "instructions.replace", content: "# Intended pinned change\n" }],
+			risks: [],
+			validationPlan: ["Re-run the exact development corpus"],
+		})).rejects.toThrow(/changed since the Target authoring context was inspected/);
+		expect(inspectThenAdvance).toHaveBeenCalledOnce();
+		expect(recordProposal).not.toHaveBeenCalled();
 	});
 
 	it("keeps historical proposal provenance valid when the live Target later changes", async () => {
@@ -969,6 +1077,7 @@ describe("AHDE Workbench", () => {
 		const selection = proposalSelection(paths, evaluation.evalRunId);
 		const authored = await workbench.submit({
 			kind: "structured-proposal",
+			authoringContext: authoringContextClaim(paths),
 			...selection,
 			summary: "Keep historical evidence historical",
 			intents: [{ type: "instructions.replace", content: "# Proposed historical change\n" }],
@@ -982,6 +1091,7 @@ describe("AHDE Workbench", () => {
 			briefId: selection.source.briefId,
 			failureModes: [{ failureModeId: selection.failureModeIds[0] }],
 		});
+		expect(persisted.request.authoringContext).toEqual(authoringContextClaim(paths));
 		expect(persisted.result.proposal?.diagnoses).toEqual([expect.objectContaining({
 			failureIds: selection.failureModeIds,
 			evidence: [`eval:${evaluation.evalRunId}/run:run-${evaluation.evalRunId}`],

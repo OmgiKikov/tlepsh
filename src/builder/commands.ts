@@ -42,7 +42,7 @@ Commands:
   /review               exact artifact or diff awaiting review
   /apply <branch> [...] apply the selected proposal after confirmation
   /discard [reason]     discard a proposal or abandon an interrupted candidate
-  /target               Target identity and standalone launch command
+  /target [resource]    exact Target overview or one declared harness resource
 
 Consequential steps always show an exact subject and require host confirmation.`;
 
@@ -172,8 +172,8 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 	const viewCommand = (
-		name: "status" | "traces" | "review" | "target",
-		aspect: "summary" | "traces" | "review" | "target",
+		name: "status" | "traces" | "review",
+		aspect: "summary" | "traces" | "review",
 		description: string,
 	): void => {
 		pi.registerCommand(name, {
@@ -267,5 +267,19 @@ export function registerAhdeBuilderCommands(
 			ctx.ui.notify(formatDecision(result), result.view.blockers.length > 0 ? "warning" : "info");
 		},
 	});
-	viewCommand("target", "target", "Show the exact Target harness and standalone interactive launch command");
+	pi.registerCommand("target", {
+		description: "Show exact committed Target authoring context: /target [declared-resource-path]",
+		async handler(args, ctx) {
+			await prepare(ctx, "target");
+			const resourcePath = args.trim();
+			if (/\s/.test(resourcePath)) {
+				throw new Error("/target accepts at most one declared repository-relative resource path");
+			}
+			const view = await options.workbench.view({
+				aspect: "target",
+				...(resourcePath ? { resourcePath } : {}),
+			});
+			ctx.ui.notify(formatView(view), view.blockers.length > 0 ? "warning" : "info");
+		},
+	});
 }

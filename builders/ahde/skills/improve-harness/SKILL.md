@@ -17,29 +17,38 @@ description: Review an evidence-backed typed proposal, inspect its exact diff, a
    submit a proposal for `stabilize-and-rerun`, `repair-evidence-path`, healthy,
    inconclusive, ineligible, omitted, or unresolved modes. Explain the
    evidence-supported rerun or repair action instead.
-3. Prefer changing focused Target context, skills, or declarative tools over
+3. Call `ahde_workbench_view` with `aspect: target` for the fresh exact-Git
+   authoring index. Then read every existing resource the proposal will fully
+   replace by calling the same view with one returned `resourcePath`:
+   `AGENTS.md` for instructions, an existing `SKILL.md` for a skill, and both
+   descriptor and executable for an existing tool. The overview is sufficient
+   context for an execution-policy replacement. Never use remembered content,
+   undeclared paths, or a resource from another revision. New skills/tools do
+   not yet have a resource to read. Retain the exact overview `claim` unchanged.
+4. Prefer changing focused Target context, skills, or declarative tools over
    adding broad orchestration or benchmark-specific phrases.
-4. Submit `kind: structured-proposal` through `ahde_workbench_submit` with the
-   exact `source` tuple and explicit `failureModeIds` selected above. Express
+5. Submit `kind: structured-proposal` through `ahde_workbench_submit` with the
+   exact `authoringContext: claim`, `source` tuple, and explicit
+   `failureModeIds` selected above. Express
    only semantic intents: replace instructions, upsert/remove a named skill,
    or upsert/remove a named declarative tool. Never author diagnoses, evidence
    references, repository paths, file modes, content hashes, or unified diffs;
    the host re-derives and validates canonical evidence from the verified brief
    and compiles the exact proposal from a clean Target snapshot.
-5. Inspect `ahde_workbench_view` with `aspect: review`. Check the evidence
+6. Inspect `ahde_workbench_view` with `aspect: review`. Check the evidence
    references, exact changed paths and diff, risks, and validation plan.
-6. Interpret “fix”, “исправь”, or similar natural language as “prepare the
+7. Interpret “fix”, “исправь”, or similar natural language as “prepare the
    immutable proposal and show review”, never as approval to apply. Explain the
    expected behavior change and most likely regression, then let the operator
    choose exactly one durable outcome: `/discard` or `/apply <branch>`. Both
    are host-confirmed and mutually exclusive.
-7. Treat Apply as a candidate, not a release. Use `/run` to perform the exact
+8. Treat Apply as a candidate, not a release. Use `/run` to perform the exact
    candidate experiment and inspect `/traces` and `/review`. Sealed evidence is
    evaluator-only and selected by the human host.
-8. Only after exact candidate review, request `promote-candidate` with a
+9. Only after exact candidate review, request `promote-candidate` with a
    semantic version or `reject-candidate` through `ahde_workbench_decide`.
    Each decision is independently confirmed by the trusted TUI host.
-9. If candidate verification was interrupted, show `/review` and let the
+10. If candidate verification was interrupted, show `/review` and let the
    operator use `/discard` to write an explicit abandonment receipt before a
    retry. Never reinterpret interruption as behavioral evidence.
 

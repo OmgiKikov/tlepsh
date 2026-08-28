@@ -81,7 +81,7 @@ The same loop has compact Pi commands:
 /review                 exact Spec, corpus, proposal, or candidate under review
 /apply <branch>         human-gated application of the exact proposal
 /discard                discard a proposal or abandon an interrupted candidate
-/target                 exact Target summary and standalone launch command
+/target [resource]      exact Target overview or one declared harness resource
 ```
 
 `ahde resume` reopens the private Builder session selector. The embedded Pi
@@ -107,6 +107,15 @@ The model-facing control surface is intentionally only three deep operations:
   or an explicit selection without granting authority;
 - `ahde_workbench_decide` requests one stage-legal transition through the
   trusted human gate.
+
+The same `ahde_workbench_view` now provides context-aware Harness authoring
+without becoming a filesystem tool. `aspect: target` returns a deterministic
+index of the exact committed `AGENTS.md`, declared skills, and declared tool
+descriptor/executable pairs. Supplying one returned `resourcePath` returns its
+complete UTF-8 Git blob and hash. The host owns Target id and revision; raw
+`manifest.yaml`, eval files, `.env`, `.git`, `.ahde`, runs, symlinks, ambient
+files, dirty worktrees, and stale revisions fail closed. Builder reads every
+existing resource it will replace before submitting semantic intents.
 
 The Workbench derives state from validated immutable artifacts and receipts.
 Actionable Proposals additionally require a project-owned admission receipt
@@ -400,10 +409,11 @@ scaffolds and validates a Target, starts the isolated Builder host, executes the
 template's declarative `echo_json` tool through the OS sandbox, and exercises
 both canonical reports and a capability-scoped live SSE feed over a real
 loopback HTTP socket. The separate
-natural-language acceptance test drives a real Builder Pi model/tool session
-through Spec, eval, Proposal, sealed verification, review, and promotion. The
-package gate also rejects stale Studio, companion, and retired Workbench-TUI
-files.
+natural-language acceptance tests drive a real Builder Pi through the complete
+Spec/eval/candidate lifecycle and, separately, through the production
+three-tool `traces → exact Target context → Proposal review` path without an
+implicit Apply. The package gate also rejects stale Studio, companion, and
+retired Workbench-TUI files.
 
 ## Architecture
 
@@ -412,7 +422,8 @@ files.
 | `src/builder/runtime.ts` | isolated long-lived Builder Pi host |
 | `src/builder/extension.ts` | Workbench tools, compatibility tools, and TUI gates |
 | `src/builder/commands.ts` | Pi-like workflow and decision shortcuts |
-| `src/builder/project-context.ts` | bounded public Target/evidence views |
+| `src/builder/project-context.ts` | bounded compatibility status projection |
+| `src/application/target-authoring-context.ts` | exact-Git declared Harness context and read policy |
 | `src/application/**` | deterministic Spec/Corpus/Proposal/Candidate use cases |
 | `src/workbench/**` | restart-safe orchestration, state derivation, and legal transitions |
 | `src/target/runtime.ts` | the single Target Pi construction seam |
@@ -432,7 +443,11 @@ implemented Builder Workbench, and
 [docs/V1_3_RUN_EVENTS.md](docs/V1_3_RUN_EVENTS.md) for the live observation
 contract,
 [docs/V1_4_SYSTEMIC_DIAGNOSIS.md](docs/V1_4_SYSTEMIC_DIAGNOSIS.md) for the
-evidence-backed failure-mode contract, and
+evidence-backed failure-mode contract,
+[docs/V1_5_EVIDENCE_LINKED_PROPOSALS.md](docs/V1_5_EVIDENCE_LINKED_PROPOSALS.md)
+for exact failure-to-proposal provenance,
+[docs/V1_6_CONTEXT_AWARE_AUTHORING.md](docs/V1_6_CONTEXT_AWARE_AUTHORING.md) for
+the declared exact-Git authoring context, and
 [docs/V1_1_WORKBENCH_PLAN.md](docs/V1_1_WORKBENCH_PLAN.md) for the historical
 two-Pi plan it supersedes.
 

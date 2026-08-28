@@ -58,6 +58,10 @@ import {
 	type ProposalBasisAttestation,
 	type ProposalBasisSelection,
 } from "./improvement-brief.js";
+import {
+	TargetAuthoringContextClaimSchema,
+	type TargetAuthoringContextClaim,
+} from "./target-authoring-context.js";
 import { withDetachedWorktree } from "../git/experiment-worktree.js";
 
 const GIT_SHA = /^[0-9a-f]{40}$/;
@@ -199,6 +203,8 @@ const BuilderRequestEvidenceSchema = z.strictObject({
 	sourceAttestation: CanonicalBuilderSourceSchema.nullable().default(null),
 	proposalBasis: ProposalBasisAttestationSchema.nullable().default(null),
 	proposalDiagnoses: z.array(EvidenceLinkedProposalDiagnosisSchema).min(1).max(8).nullable().default(null),
+	/** Optional only for records created before V1.6; new runs write claim or null explicitly. */
+	authoringContext: TargetAuthoringContextClaimSchema.nullable().optional(),
 	failureBundleSha256: Sha256Schema.nullable(),
 	failureBundleBytes: z.number().int().nonnegative(),
 	builderInputSha256: Sha256Schema,
@@ -241,6 +247,15 @@ const BuilderRequestEvidenceSchema = z.strictObject({
 	}
 	if ((request.proposalBasis === null) !== (request.proposalDiagnoses === null)) {
 		context.addIssue({ code: "custom", path: ["proposalDiagnoses"], message: "proposal basis and host-derived diagnoses must be present together" });
+	}
+	if (request.authoringContext && request.authoringContext.targetGitSha !== request.baseTargetSha) {
+		context.addIssue({ code: "custom", path: ["authoringContext", "targetGitSha"], message: "authoring context must bind the exact proposal base Target" });
+	}
+	if (request.authoringContext && request.sourceAttestation && (
+		request.authoringContext.targetId !== request.sourceAttestation.targetId ||
+		request.authoringContext.targetGitSha !== request.sourceAttestation.targetGitSha
+	)) {
+		context.addIssue({ code: "custom", path: ["authoringContext"], message: "authoring context must match canonical source Target provenance" });
 	}
 });
 
@@ -352,6 +367,8 @@ export interface RunBuilderProposalOptions {
 	approvedSpec?: ApprovedSpecInput;
 	/** Untrusted human guidance embedded in the typed approved-Spec Builder input. */
 	operatorGuidance?: string;
+	/** Host-verified Target view that the author used; persisted as proposal provenance. */
+	authoringContext?: TargetAuthoringContextClaim;
 	signal?: AbortSignal;
 	runId?: string;
 }
@@ -973,6 +990,7 @@ async function runBuilderProposalInternal(
 				sourceAttestation: provenance.sourceAttestation,
 				proposalBasis: provenance.proposalBasis,
 				proposalDiagnoses: provenance.proposalDiagnoses,
+				authoringContext: options.authoringContext ?? null,
 				failureBundleSha256: failureBundle === null ? null : sha256(failureBundle),
 				failureBundleBytes: failureBundle === null ? 0 : Buffer.byteLength(failureBundle, "utf8"),
 				builderInputSha256: sha256(builderInput),
@@ -1135,6 +1153,12 @@ export async function runApprovedSpecBuilderProposal(
 	): Promise<BuilderProposalRunResult> => {
 		const target = loadTarget(targetDir, options.dataset ? { dataset: options.dataset } : undefined);
 		const baseTargetSha = GitShaSchema.parse(target.gitSha);
+		if (options.authoringContext && (
+			options.authoringContext.targetId !== target.manifest.id ||
+			options.authoringContext.targetGitSha !== baseTargetSha
+		)) {
+			throw new Error("authoring context does not match the exact canonical Target revision");
+		}
 		let failureBundle: string | undefined;
 		let evidence: { evalRunId: string; diagnosisId: string } | undefined;
 		let sourceAttestation: CanonicalBuilderSource | null = null;

@@ -126,11 +126,55 @@ it("resolves 'fix the first problem' through fresh traces and review without app
 			},
 		},
 	} as const;
+	const targetOverview = {
+		...baseView,
+		stage: "improvement-authoring",
+		headline: "Inspect the exact Target before authoring.",
+		actions: ["traces", "submit structured-proposal"],
+		detail: {
+			aspect: "target",
+			content: {
+				algorithmId: "git-manifest-context-v1",
+				contextHash: `sha256:${"3".repeat(64)}`,
+				claim: {
+					algorithmId: "git-manifest-context-v1",
+					targetId: "demo",
+					targetGitSha: "a".repeat(40),
+					contextHash: `sha256:${"3".repeat(64)}`,
+				},
+				target: { id: "demo", gitSha: "a".repeat(40) },
+				resources: [{
+					kind: "instructions",
+					name: null,
+					path: "AGENTS.md",
+					mode: "100644",
+					bytes: 24,
+					sha256: `sha256:${"4".repeat(64)}`,
+				}],
+				launch: "ahde target",
+			},
+		},
+	} as const;
+	const targetResource = {
+		...targetOverview,
+		detail: {
+			...targetOverview.detail,
+			content: {
+				...targetOverview.detail.content,
+				resource: {
+					...targetOverview.detail.content.resources[0],
+					content: "# Existing instructions\n",
+				},
+			},
+		},
+	} as const;
 
 	const calls: string[] = [];
 	const view = vi.spyOn(AhdeWorkbench.prototype, "view").mockImplementation(async (query = {}) => {
-		calls.push(`view:${query.aspect ?? "summary"}`);
+		calls.push(`view:${query.aspect ?? "summary"}${query.resourcePath ? `:${query.resourcePath}` : ""}`);
 		if (query.aspect === "traces") return tracesView as never;
+		if (query.aspect === "target" && query.resourcePath === "AGENTS.md") return targetResource as never;
+		if (query.aspect === "target") return targetOverview as never;
 		if (query.aspect === "review") return reviewView as never;
 		throw new Error(`unexpected view aspect: ${query.aspect ?? "summary"}`);
 	});
@@ -180,8 +224,21 @@ it("resolves 'fix the first problem' through fresh traces and review without app
 	}).improvementBrief;
 	const first = brief.modes.find((mode) => mode.ordinal === 1);
 	if (!first) throw new Error("current trace projection has no first failure mode");
+	const target = await execute(viewTool, "view-target", { aspect: "target" });
+	const targetResources = (((target.detail as Record<string, unknown>).content as {
+		resources: { path: string }[];
+	}).resources);
+	expect(targetResources.map((resource) => resource.path)).toContain("AGENTS.md");
+	const instructionsView = await execute(viewTool, "view-target-agents", {
+		aspect: "target",
+		resourcePath: "AGENTS.md",
+	});
+	const currentInstructions = (((instructionsView.detail as Record<string, unknown>).content as {
+		resource: { content: string };
+	}).resource.content);
 	const proposalInput = {
 		kind: "structured-proposal",
+		authoringContext: targetOverview.detail.content.claim,
 		source: {
 			algorithmId: brief.algorithmId,
 			evalRunId: brief.evalRunId,
@@ -192,7 +249,7 @@ it("resolves 'fix the first problem' through fresh traces and review without app
 		summary: "Address the first verified failure mode with a focused instruction.",
 		intents: [{
 			type: "instructions.replace",
-			content: "Use the approved local evidence before answering.\n",
+			content: `${currentInstructions.trimEnd()}\n\nUse the approved local evidence before answering.\n`,
 		}],
 		risks: ["The instruction may be too strict for unrelated tasks."],
 		validationPlan: ["Re-run the reviewed development corpus."],
@@ -203,9 +260,11 @@ it("resolves 'fix the first problem' through fresh traces and review without app
 	expect(submit).toHaveBeenCalledWith(proposalInput, expect.objectContaining({ signal: undefined }));
 	expect(calls).toEqual([
 		"view:traces",
+		"view:target",
+		"view:target:AGENTS.md",
 		"submit:structured-proposal",
 		"view:review",
 	]);
-	expect(view).toHaveBeenCalledTimes(2);
+	expect(view).toHaveBeenCalledTimes(4);
 	expect(decide).not.toHaveBeenCalled();
 });

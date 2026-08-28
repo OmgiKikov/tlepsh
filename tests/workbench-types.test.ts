@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { WorkbenchSubmitInputSchema } from "../src/workbench/types.js";
+import { WorkbenchSubmitInputSchema, WorkbenchViewQuerySchema } from "../src/workbench/types.js";
+
+const authoringContext = {
+	algorithmId: "git-manifest-context-v1" as const,
+	targetId: "test-target",
+	targetGitSha: "a".repeat(40),
+	contextHash: `sha256:${"c".repeat(64)}`,
+};
 
 const spec = {
 	schemaVersion: 1 as const,
@@ -22,6 +29,15 @@ describe("Workbench canonical input contract", () => {
 		briefId: `brief-${"a".repeat(24)}`,
 	};
 	const failureModeId = `failure-mode-${"b".repeat(24)}`;
+
+	it("allows exact resource reads only through the Target view", () => {
+		expect(WorkbenchViewQuerySchema.parse({ aspect: "target", resourcePath: "AGENTS.md" })).toEqual({
+			aspect: "target",
+			resourcePath: "AGENTS.md",
+		});
+		expect(() => WorkbenchViewQuerySchema.parse({ aspect: "traces", resourcePath: "AGENTS.md" })).toThrow();
+		expect(() => WorkbenchViewQuerySchema.parse({ aspect: "target", resourcePath: "x".repeat(501) })).toThrow();
+	});
 
 	it("uses the canonical typed grader schema", () => {
 		expect(() => WorkbenchSubmitInputSchema.parse({
@@ -52,6 +68,7 @@ describe("Workbench canonical input contract", () => {
 
 		expect(() => WorkbenchSubmitInputSchema.parse({
 			kind: "structured-proposal",
+			authoringContext,
 			source: {
 				algorithmId: "exact-eval-signals-v1",
 				evalRunId: "erun-test",
@@ -72,6 +89,7 @@ describe("Workbench canonical input contract", () => {
 	it("accepts only exact failure-mode handles and rejects model-authored evidence", () => {
 		const exact = {
 			kind: "structured-proposal" as const,
+			authoringContext,
 			source: proposalSource,
 			failureModeIds: [failureModeId],
 			summary: "Address the selected failure mode",
@@ -79,6 +97,11 @@ describe("Workbench canonical input contract", () => {
 			validationPlan: ["Re-run the exact development eval"],
 		};
 		expect(WorkbenchSubmitInputSchema.parse(exact)).toMatchObject(exact);
+		expect(() => WorkbenchSubmitInputSchema.parse({ ...exact, authoringContext: undefined })).toThrow();
+		expect(() => WorkbenchSubmitInputSchema.parse({
+			...exact,
+			authoringContext: { ...authoringContext, contextHash: "sha256:not-a-hash" },
+		})).toThrow();
 		expect(() => WorkbenchSubmitInputSchema.parse({
 			...exact,
 			diagnoses: [{ failureIds: ["forged"], evidence: ["forged"], rootCause: "forged" }],

@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Check } from "typebox/value";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -15,16 +15,19 @@ import { AHDE_BUILDER_COMMAND_NAMES } from "../src/builder/commands.js";
 import {
 	WorkbenchDecisionParameters,
 	WorkbenchSubmitParameters,
+	WorkbenchViewParameters,
 } from "../src/builder/workbench-transport.js";
 import {
 	WorkbenchDecisionInputSchema,
 	WorkbenchSubmitInputSchema,
+	WorkbenchViewQuerySchema,
 } from "../src/workbench/types.js";
 import { buildProjectStatus } from "../src/builder/project-context.js";
 import { createCorpus } from "../src/corpus.js";
 import { saveSpecSnapshot, type AgentSpec } from "../src/spec.js";
 import type { PersistedBuilderRun } from "../src/application/builder-proposal.js";
 import { hashValue } from "../src/provenance.js";
+import { scaffoldTarget } from "../src/manifest.js";
 
 const roots: string[] = [];
 const spec: AgentSpec = {
@@ -129,6 +132,12 @@ describe("Builder Pi extension registry", () => {
 		};
 		const structuredProposal = {
 			kind: "structured-proposal",
+			authoringContext: {
+				algorithmId: "git-manifest-context-v1",
+				targetId: "test-target",
+				targetGitSha: "a".repeat(40),
+				contextHash: `sha256:${"c".repeat(64)}`,
+			},
 			source: {
 				algorithmId: "exact-eval-signals-v1",
 				evalRunId: "erun_verified",
@@ -179,6 +188,22 @@ describe("Builder Pi extension registry", () => {
 		const blankDecision = { kind: "run-current", repetitions: 1, reason: "   " };
 		expect(Check(WorkbenchDecisionParameters, blankDecision)).toBe(false);
 		expect(WorkbenchDecisionInputSchema.safeParse(blankDecision).success).toBe(false);
+
+		for (const targetView of [
+			{ aspect: "target" },
+			{ aspect: "target", resourcePath: "AGENTS.md" },
+		]) {
+			expect(Check(WorkbenchViewParameters, targetView)).toBe(true);
+			expect(WorkbenchViewQuerySchema.safeParse(targetView).success).toBe(true);
+		}
+		for (const invalidView of [
+			{ aspect: "traces", resourcePath: "AGENTS.md" },
+			{ resourcePath: "AGENTS.md" },
+			{ aspect: "target", resourcePath: "x".repeat(501) },
+		]) {
+			expect(Check(WorkbenchViewParameters, invalidView)).toBe(false);
+			expect(WorkbenchViewQuerySchema.safeParse(invalidView).success).toBe(false);
+		}
 	});
 
 	it("registers only narrow AHDE tools and keeps authority out of dangerous schemas", () => {
@@ -244,14 +269,12 @@ describe("Builder Pi extension registry", () => {
 		});
 	});
 
-	it("reads only bounded public Target resources", async () => {
-		const projectDir = root("ahde-builder-project-");
-		mkdirSync(join(projectDir, "skills", "search"), { recursive: true });
+	it("delegates compatibility reads to exact declared Target context", async () => {
+		const parent = root("ahde-builder-project-");
+		const projectDir = join(parent, "target");
+		scaffoldTarget(resolve("templates", "basic-agent"), projectDir);
 		mkdirSync(join(projectDir, ".ahde"), { recursive: true });
-		writeFileSync(join(projectDir, "AGENTS.md"), "public instructions\n");
-		writeFileSync(join(projectDir, "skills", "search", "SKILL.md"), "public skill\n");
 		writeFileSync(join(projectDir, ".ahde", "secret.txt"), "secret\n");
-		symlinkSync(join(projectDir, ".ahde", "secret.txt"), join(projectDir, "skills", "search", "leak.txt"));
 		const tools = createAhdeBuilderCompatibilityTools({
 			projectDir,
 			stateRoot: join(projectDir, ".ahde"),
@@ -260,11 +283,15 @@ describe("Builder Pi extension registry", () => {
 		});
 		const read = tools.find((tool) => tool.name === "ahde_target_read")!;
 		const visible = textDetails(await read.execute("call-1", { path: "AGENTS.md" }, undefined, undefined, fakeContext(false)));
-		expect(visible).toMatchObject({ path: "AGENTS.md", content: "public instructions\n", truncated: false });
+		expect(visible).toMatchObject({
+			kind: "instructions",
+			path: "AGENTS.md",
+			content: readFileSync(join(projectDir, "AGENTS.md"), "utf8"),
+		});
 		await expect(read.execute("call-2", { path: ".ahde/secret.txt" }, undefined, undefined, fakeContext(false)))
-			.rejects.toThrow(/forbidden path segment|may read only/);
-		await expect(read.execute("call-3", { path: "skills/search/leak.txt" }, undefined, undefined, fakeContext(false)))
-			.rejects.toThrow(/regular file|symlink/);
+			.rejects.toThrow(/declared Target authoring resource/);
+		await expect(read.execute("call-3", { path: "manifest.yaml" }, undefined, undefined, fakeContext(false)))
+			.rejects.toThrow(/declared Target authoring resource/);
 	});
 
 	it("saves immutable Spec drafts and fails closed when approval has no host UI", async () => {

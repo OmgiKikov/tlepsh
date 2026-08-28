@@ -6,6 +6,7 @@ import {
 import { BuilderCorpusImportSourcePathSchema } from "../application/builder-corpus-import-contract.js";
 import { BuilderWorkbenchCorpusRevisionOperationsSchema } from "../application/builder-regression-case.js";
 import { HarnessAuthoringIntentsSchema } from "../application/harness-authoring.js";
+import { TargetAuthoringContextClaimSchema } from "../application/target-authoring-context.js";
 import {
 	FailureModeIdSchema,
 	ProposalBasisSelectionSchema,
@@ -83,9 +84,19 @@ export interface WorkbenchView {
 	};
 }
 
-export interface WorkbenchViewQuery {
-	aspect?: "summary" | "traces" | "review" | "target";
-}
+export const WorkbenchViewQuerySchema = z.strictObject({
+	aspect: z.enum(["summary", "traces", "review", "target"]).optional(),
+	resourcePath: z.string().min(1).max(500).optional(),
+}).superRefine((query, context) => {
+	if (query.resourcePath !== undefined && query.aspect !== "target") {
+		context.addIssue({
+			code: "custom",
+			path: ["resourcePath"],
+			message: "resourcePath is valid only for the Target view",
+		});
+	}
+});
+export type WorkbenchViewQuery = z.infer<typeof WorkbenchViewQuerySchema>;
 
 const SelectInputSchema = z.strictObject({
 	kind: z.literal("select"),
@@ -127,6 +138,8 @@ const ReviseCorpusDraftInputSchema = z.strictObject({
 
 const StructuredProposalInputSchema = z.strictObject({
 	kind: z.literal("structured-proposal"),
+	/** Host-minted claim from the exact Target overview/resource view used to author these intents. */
+	authoringContext: TargetAuthoringContextClaimSchema,
 	approvedSpecId: ArtifactIdSchema.optional(),
 	source: ProposalBasisSelectionSchema.omit({ failureModeIds: true }),
 	failureModeIds: z.array(FailureModeIdSchema)

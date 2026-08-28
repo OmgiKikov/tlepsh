@@ -119,17 +119,21 @@ export function createBuilderWorkbenchTools(
 		defineTool({
 			name: "ahde_workbench_view",
 			label: "Inspect Builder Workbench",
-			description: "Inspect the current restart-safe workflow stage, legal actions, and optionally the exact review, trace, or Target detail.",
+			description: "Inspect the current restart-safe workflow stage, legal actions, exact review or traces, and the safe exact-Git Target authoring context. For aspect=target, omit resourcePath for the overview or pass one returned declared resource path for its complete content.",
 			parameters: WorkbenchViewParameters,
 			async execute(_id, params, signal) {
 				abortIfRequested(signal);
-				return textResult(await workbench.view({ aspect: params.aspect ?? "summary" }));
+				const resourcePath = "resourcePath" in params ? params.resourcePath : undefined;
+				return textResult(await workbench.view({
+					aspect: params.aspect ?? "summary",
+					...(resourcePath ? { resourcePath } : {}),
+				}));
 			},
 		}),
 		defineTool({
 			name: "ahde_workbench_submit",
 			label: "Author in Builder Workbench",
-			description: "Save a structured Spec, import or revise an editable Spec-bound corpus draft, bind a regression case to verified development failure evidence, or author semantic Harness intents against exact source and failureModeIds from the current traces view. Proposal diagnoses and evidence are host-derived; submission grants no consequential authority.",
+			description: "Save a structured Spec, import or revise an editable Spec-bound corpus draft, bind a regression case to verified development failure evidence, or author semantic Harness intents against the exact authoringContext claim plus source and failureModeIds from fresh views. Proposal diagnoses and evidence are host-derived; submission grants no consequential authority.",
 			parameters: WorkbenchSubmitParameters,
 			async execute(_id, params, signal) {
 				abortIfRequested(signal);

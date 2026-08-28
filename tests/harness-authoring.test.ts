@@ -127,6 +127,24 @@ function initTarget(resources = false): { repositoryDir: string; baseSha: string
 	return { repositoryDir, baseSha: git(repositoryDir, ["rev-parse", "HEAD"]) };
 }
 
+function declareSkills(repositoryDir: string, count: number, bytesPerSkill: number): string {
+	const names = Array.from({ length: count }, (_, index) => `bounded-skill-${String(index).padStart(2, "0")}`);
+	for (const name of names) {
+		const directory = join(repositoryDir, "skills", name);
+		mkdirSync(directory, { recursive: true });
+		const prefix = `---\nname: ${name}\ndescription: Bounded fixture.\n---\n\n# ${name}\n`;
+		if (prefix.length > bytesPerSkill) throw new Error("skill fixture byte budget is too small");
+		writeFileSync(join(directory, "SKILL.md"), prefix.padEnd(bytesPerSkill, "x"));
+	}
+	writeFileSync(
+		join(repositoryDir, "manifest.yaml"),
+		manifest(false).replace("skills: []", `skills: [${names.map((name) => `skills/${name}`).join(", ")}]`),
+	);
+	git(repositoryDir, ["add", "manifest.yaml", "skills"]);
+	git(repositoryDir, ["commit", "-m", `declare ${count} bounded skills`]);
+	return git(repositoryDir, ["rev-parse", "HEAD"]);
+}
+
 function descriptor() {
 	return {
 		description: "Look up a message.",
@@ -346,7 +364,41 @@ describe("structured harness authoring", () => {
 			summary: "Do not absorb unrelated files",
 			intents: [{ type: "instructions.replace", content: "new" }],
 		})).toThrow(/clean repository/);
+
+		const advanced = initTarget();
+		writeFileSync(join(advanced.repositoryDir, "AGENTS.md"), "# New clean revision\n");
+		git(advanced.repositoryDir, ["add", "AGENTS.md"]);
+		git(advanced.repositoryDir, ["commit", "-m", "advance target"]);
+		expect(() => compileHarnessAuthoringProposal({
+			repositoryDir: advanced.repositoryDir,
+			expectedBaseTargetSha: advanced.baseSha,
+			summary: "Do not compile against a revision the Builder never inspected",
+			intents: [{ type: "instructions.replace", content: "new" }],
+		})).toThrow(/changed since the Target authoring context was inspected/);
 	});
+
+	it("keeps compiler output closed under the exact Target context policy", () => {
+		const countBound = initTarget();
+		declareSkills(countBound.repositoryDir, 64, 128);
+		expect(() => compileHarnessAuthoringProposal({
+			repositoryDir: countBound.repositoryDir,
+			summary: "Do not create a Target the Builder can no longer inspect",
+			intents: [{
+				type: "skill.upsert",
+				name: "one-skill-too-many",
+				description: "Overflow the declared context count.",
+				body: "# Overflow\n",
+			}],
+		})).toThrow(/too many authoring resources/);
+
+		const aggregateBound = initTarget();
+		declareSkills(aggregateBound.repositoryDir, 15, 524_280);
+		expect(() => compileHarnessAuthoringProposal({
+			repositoryDir: aggregateBound.repositoryDir,
+			summary: "Do not overflow the inspectable aggregate",
+			intents: [{ type: "instructions.replace", content: "y".repeat(524_280) }],
+		})).toThrow(/aggregate byte limit/);
+	}, 30_000);
 
 	it("survives persistence and application through the existing proposal machinery", async () => {
 		const { repositoryDir, baseSha } = initTarget();

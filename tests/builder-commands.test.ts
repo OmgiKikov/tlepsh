@@ -185,15 +185,17 @@ describe("Builder Pi slash commands", () => {
 		for (const name of ["status", "traces", "review", "target"] as const) {
 			await command(commands, name).handler("", host.ctx);
 		}
+		await command(commands, "target").handler("AGENTS.md", host.ctx);
 
 		expect(fixture.view.mock.calls.map(([query]) => query)).toEqual([
 			{ aspect: "summary" },
 			{ aspect: "traces" },
 			{ aspect: "review" },
 			{ aspect: "target" },
+			{ aspect: "target", resourcePath: "AGENTS.md" },
 		]);
-		expect(host.waitForIdle).toHaveBeenCalledTimes(4);
-		expect(host.notify).toHaveBeenCalledTimes(4);
+		expect(host.waitForIdle).toHaveBeenCalledTimes(5);
+		expect(host.notify).toHaveBeenCalledTimes(5);
 		expect(host.notify).toHaveBeenLastCalledWith(
 			expect.stringContaining("AHDE · ready-to-evaluate"),
 			"info",
@@ -201,7 +203,9 @@ describe("Builder Pi slash commands", () => {
 
 		await expect(command(commands, "status").handler("unexpected", host.ctx))
 			.rejects.toThrow("/status does not accept arguments");
-		expect(fixture.view).toHaveBeenCalledTimes(4);
+		await expect(command(commands, "target").handler("two paths", host.ctx))
+			.rejects.toThrow("/target accepts at most one");
+		expect(fixture.view).toHaveBeenCalledTimes(5);
 	});
 
 	it("routes /run to run-current and parses repetitions plus a human-readable reason", async () => {

@@ -21,6 +21,12 @@ import {
 	type TargetToolDescriptor,
 } from "../target/tool-manifest.js";
 import { canonicalJson } from "../provenance.js";
+import {
+	assertTargetAuthoringSurfaceWithinLimits,
+	classifyTargetAuthoringResourcePath,
+	inspectTargetAuthoringContext,
+	type TargetAuthoringResource,
+} from "./target-authoring-context.js";
 
 const GIT_SHA = /^[0-9a-f]{40}$/;
 const SKILL_NAME = /^(?!.*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
@@ -150,6 +156,8 @@ export const HarnessAuthoringIntentsSchema = z
 
 export interface CompileHarnessAuthoringProposalOptions {
 	repositoryDir: string;
+	/** Optional caller-owned revision pin; compilation fails if clean HEAD differs. */
+	expectedBaseTargetSha?: string;
 	intents: readonly HarnessAuthoringIntent[];
 	summary: string;
 	diagnoses?: CandidateProposal["diagnoses"];
@@ -184,14 +192,17 @@ interface PlannedFile {
 }
 
 function gitText(repositoryDir: string, args: string[]): string {
-	return execFileSync("git", ["-C", repositoryDir, ...args], {
+	return execFileSync("git", ["--no-replace-objects", "-C", repositoryDir, ...args], {
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 		maxBuffer: GIT_MAX_BUFFER,
 	}).trim();
 }
 
-function repositoryHead(input: string): { repositoryDir: string; baseTargetSha: string } {
+function repositoryHead(
+	input: string,
+	expectedBaseTargetSha?: string,
+): { repositoryDir: string; baseTargetSha: string } {
 	const requested = resolve(input);
 	const entry = lstatSync(requested);
 	if (!entry.isDirectory() || entry.isSymbolicLink()) {
@@ -205,11 +216,17 @@ function repositoryHead(input: string): { repositoryDir: string; baseTargetSha: 
 	}
 	const baseTargetSha = gitText(repositoryDir, ["rev-parse", "HEAD"]);
 	if (!GIT_SHA.test(baseTargetSha)) throw new Error("repository HEAD is not an exact Git commit");
+	if (expectedBaseTargetSha !== undefined) {
+		if (!GIT_SHA.test(expectedBaseTargetSha)) throw new Error("expected base Target SHA is not an exact Git commit");
+		if (baseTargetSha !== expectedBaseTargetSha) {
+			throw new Error("clean repository HEAD changed since the Target authoring context was inspected");
+		}
+	}
 	return { repositoryDir, baseTargetSha };
 }
 
 function treeRecord(repositoryDir: string, revision: string, path: string): { mode: string; type: string; path: string } | null {
-	const output = execFileSync("git", ["-C", repositoryDir, "ls-tree", "-z", revision, "--", path], {
+	const output = execFileSync("git", ["--no-replace-objects", "-C", repositoryDir, "ls-tree", "-z", revision, "--", path], {
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 		maxBuffer: GIT_MAX_BUFFER,
@@ -248,7 +265,7 @@ function readBlob(repositoryDir: string, revision: string, path: string, maxByte
 	if (!Number.isSafeInteger(size) || size < 0 || size > maxBytes) {
 		throw new Error(`${path} exceeds the ${maxBytes}-byte authoring limit`);
 	}
-	const content = execFileSync("git", ["-C", repositoryDir, "show", `${revision}:${path}`], {
+	const content = execFileSync("git", ["--no-replace-objects", "-C", repositoryDir, "show", `${revision}:${path}`], {
 		stdio: ["ignore", "pipe", "pipe"],
 		maxBuffer: Math.max(maxBytes + 1, 1024),
 	});
@@ -404,11 +421,18 @@ export function compileHarnessAuthoringProposal(
 		validationPlan: options.validationPlan ?? [],
 	});
 	const intents = HarnessAuthoringIntentsSchema.parse(options.intents);
-	const { repositoryDir, baseTargetSha } = repositoryHead(options.repositoryDir);
+	const { repositoryDir, baseTargetSha } = repositoryHead(
+		options.repositoryDir,
+		options.expectedBaseTargetSha,
+	);
 	const target = loadTarget(repositoryDir);
 	if (target.gitSha !== baseTargetSha) throw new Error("resolved Target does not match the clean repository HEAD");
 	const manifest = TargetManifest.parse(target.manifest);
 	assertCanonicalDeclarations(manifest);
+	const baseAuthoringContext = inspectTargetAuthoringContext({
+		repositoryDir,
+		expectedTarget: { id: manifest.id, gitSha: baseTargetSha },
+	});
 
 	const manifestBlob = readBlob(repositoryDir, baseTargetSha, "manifest.yaml", MAX_MANIFEST_BYTES);
 	if (!manifestBlob || manifestBlob.mode !== "100644") {
@@ -545,6 +569,48 @@ export function compileHarnessAuthoringProposal(
 				: "Update the Target's declared skill and tool resources",
 		);
 	}
+
+	const resultingResources = new Map(
+		baseAuthoringContext.resources.map((resource) => [resource.path, resource] as const),
+	);
+	for (const file of planned.values()) {
+		if (file.path === "manifest.yaml") continue;
+		if (file.after === null) {
+			resultingResources.delete(file.path);
+			continue;
+		}
+		const identity = classifyTargetAuthoringResourcePath(file.path);
+		if (!identity || file.afterMode !== identity.mode) {
+			throw new Error(`compiled authoring resource is not canonical: ${file.path}`);
+		}
+		const bytes = Buffer.byteLength(file.after, "utf8");
+		resultingResources.set(file.path, {
+			kind: identity.kind,
+			name: identity.name,
+			path: file.path,
+			mode: identity.mode,
+			bytes,
+			sha256: sha256(file.after),
+		});
+	}
+	const resultingManifest = planned.get("manifest.yaml")?.after ?? manifestText;
+	if (resultingManifest === null) throw new Error("structured authoring cannot remove manifest.yaml");
+	const resultingTarget = {
+		...baseAuthoringContext.target,
+		execution: {
+			tools: [...execution.tools],
+			environmentAllowlist: [...execution.environmentAllowlist],
+			network: execution.network,
+			sandbox: execution.sandbox,
+		},
+	};
+	assertTargetAuthoringSurfaceWithinLimits({
+		manifestBytes: Buffer.byteLength(resultingManifest, "utf8"),
+		skillCount: skills.length,
+		toolCount: tools.length,
+		target: resultingTarget,
+		resources: [...resultingResources.values()] as TargetAuthoringResource[],
+	});
 
 	const evidenceRefs = [...new Set(metadata.diagnoses.flatMap((diagnosis) => diagnosis.evidence))];
 	const changes = [...planned.values()]

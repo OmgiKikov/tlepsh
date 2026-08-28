@@ -37,6 +37,7 @@ import {
 } from "../application/builder-corpus-draft.js";
 import { importBuilderCorpusDraft } from "../application/builder-corpus-import.js";
 import { compileHarnessAuthoringProposal } from "../application/harness-authoring.js";
+import { inspectTargetAuthoringContext } from "../application/target-authoring-context.js";
 import { runAppliedBuilderCandidate } from "../application/builder-candidate.js";
 import {
 	configureTargetBootstrap,
@@ -93,7 +94,6 @@ import {
 import { redactTraceText } from "../trace.js";
 import {
 	buildProjectStatus,
-	readPublicTargetFile,
 	resolveBuilderProjectId,
 	resolveBuilderTargetId,
 	summarizeEvalRun,
@@ -1082,11 +1082,18 @@ function toolRegistry(
 		defineTool({
 			name: "ahde_target_read",
 			label: "Read public Target resource",
-			description: "Read one bounded public Target harness file. Private state, runs, eval inputs, .git, and secrets are inaccessible.",
+			description: "Compatibility adapter for one exact committed, manifest-declared Target authoring resource.",
 			parameters: Type.Object({ path: Type.String({ minLength: 1, maxLength: 500 }) }, { additionalProperties: false }),
 			async execute(_id, params, signal) {
 				abortIfRequested(signal);
-				return textResult(readPublicTargetFile(options.projectDir, params.path));
+				const target = dependencies.loadTarget(options.projectDir);
+				const context = inspectTargetAuthoringContext({
+					repositoryDir: options.projectDir,
+					expectedTarget: { id: target.manifest.id, gitSha: target.gitSha },
+					resourcePath: params.path,
+				});
+				if (!context.resource) throw new Error("declared Target resource was not returned");
+				return textResult(context.resource);
 			},
 		}),
 		defineTool({

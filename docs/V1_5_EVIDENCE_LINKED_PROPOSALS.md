@@ -19,6 +19,8 @@ verified EvalRun + Diagnosis
 
 `structured-proposal` accepts:
 
+- the exact host-minted `authoringContext` claim from the fresh V1.6 Target
+  view;
 - the exact `{ algorithmId, evalRunId, diagnosisId, briefId }` returned by the
   current traces view;
 - one to eight unique `failureModeIds` from that same brief;
@@ -76,6 +78,7 @@ Explorer link.
 
 V1.5 makes “failure → proposal” exact and reviewable. It does not add semantic
 clustering, hosted traces, production traffic Signals, autonomous Apply, or
-autonomous promotion. The next useful product slice is a richer bounded Target
-authoring context and an end-to-end real three-tool Builder UX regression,
-followed by run comparison and systemic proposal quality scoring.
+autonomous promotion. The bounded exact-Git Target context and three-tool
+authoring UX described as the next product slice are implemented in
+[V1.6](V1_6_CONTEXT_AWARE_AUTHORING.md). Run comparison and systemic proposal
+quality scoring remain later work.

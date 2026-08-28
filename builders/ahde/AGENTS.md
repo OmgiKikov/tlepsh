@@ -32,9 +32,13 @@ Core rules:
   a time when important product facts are missing.
 - Treat Spec, corpus, eval, diagnosis, proposal, candidate, and promotion
   records as typed artifacts with immutable ids and hashes.
-- Read Target resources only through the bounded Workbench Target view. Private `.ahde`
-  state, raw runs, credentials, `.git`, `.env`, and sealed corpus content are
-  outside your authority.
+- Read Target resources only through `ahde_workbench_view` with
+  `aspect: target`. First omit `resourcePath` to receive the exact committed,
+  manifest-declared authoring index; then request one returned path for its
+  complete content. Private `.ahde` state, raw runs, eval files, credentials,
+  `.git`, `.env`, undeclared files, and sealed corpus content are outside your
+  authority. Never infer a resource from an ambient path or an earlier Target
+  revision.
 - Use development examples to improve the harness. Sealed holdout content is
   never model-visible and is used only by the evaluator at the promotion gate.
 - Treat the live run widget and capability-scoped browser view as provisional
@@ -93,20 +97,31 @@ Typical loop:
    calibration or another run; a `repair-evidence-path` mode calls for fixing
    the evidence path and another run. Inconclusive, ineligible, omitted, or
    out-of-range modes must not be guessed into a proposal.
-6. Submit a `structured-proposal` with that exact `source`, its explicit
-   `failureModeIds`, and semantic instruction, execution-policy, skill, and
-   tool intents. Capabilities such as network or environment access are generic
+6. Before authoring, inspect the fresh Target overview and every existing
+   resource the intended change will replace. Read `AGENTS.md` for
+   `instructions.replace`; read an existing skill's `SKILL.md` for
+   `skill.upsert`; read both an existing tool descriptor and executable for
+   `tool.upsert`; the overview itself is the current execution-policy context.
+   New skills and tools have no existing resource to read. If the Target is
+   dirty or changed since the evidence revision, stop and refresh/rerun instead
+   of guessing around the blocker. Preserve the overview's exact `claim`; it
+   binds the id, Git revision, and complete safe authoring projection you used.
+7. Submit a `structured-proposal` with that exact `source`, its explicit
+   `failureModeIds`, `authoringContext: claim`, and semantic instruction,
+   execution-policy, skill, and tool intents. Never synthesize or edit the
+   claim; a stale claim means refresh the overview and affected resources.
+   Capabilities such as network or environment access are generic
    evidence-backed policy changes, never hidden presets. Do not supply
    diagnoses, evidence claims, raw repository paths, hashes, file modes, or
    unified diffs; the host re-derives canonical evidence and compiles the
    bounded change from the verified brief and clean Target snapshot.
-7. “Fix” means prepare an immutable proposal for review, not apply it. Inspect
+8. “Fix” means prepare an immutable proposal for review, not apply it. Inspect
    `/review`, summarize the exact evidence, paths, diff, and risk, then let the
    operator choose exactly one durable outcome: `/apply <branch>` or
    `/discard`.
-8. Use `/run` to verify the applied candidate. The evaluator and human host
+9. Use `/run` to verify the applied candidate. The evaluator and human host
    choose sealed evidence; its identity and content never enter your context.
-9. Request exact candidate review, then promotion or rejection through
+10. Request exact candidate review, then promotion or rejection through
    Workbench. An interrupted candidate must be explicitly abandoned by the
    human before another attempt; inconclusive evidence never advances state.
 

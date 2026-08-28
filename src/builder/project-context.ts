@@ -1,13 +1,5 @@
-import { createHash } from "node:crypto";
-import {
-	existsSync,
-	lstatSync,
-	readFileSync,
-	readdirSync,
-	realpathSync,
-	statSync,
-} from "node:fs";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, resolve } from "node:path";
+import { inspectTargetAuthoringContext, type TargetAuthoringResource } from "../application/target-authoring-context.js";
 import { listCorpora } from "../corpus.js";
 import {
 	isSealedEvalRun,
@@ -18,10 +10,8 @@ import {
 import { loadTarget } from "../manifest.js";
 import { listSpecSnapshots } from "../spec.js";
 
-const DEFAULT_READ_BYTES = 32 * 1024;
-const MAX_PUBLIC_FILE_BYTES = 1024 * 1024;
-const MAX_PUBLIC_FILES = 200;
 const MAX_STATUS_ITEMS = 30;
+const DEFAULT_COMPAT_READ_BYTES = 32 * 1024;
 
 export interface BuilderProjectContext {
 	projectDir: string;
@@ -30,114 +20,64 @@ export interface BuilderProjectContext {
 	projectId?: string;
 }
 
+/** @deprecated Use Workbench `view({ aspect: "target" })` resource metadata. */
 export interface PublicTargetFile {
 	path: string;
 	bytes: number;
 }
 
+/** @deprecated Use Workbench `view({ aspect: "target", resourcePath })`. */
 export interface PublicTargetRead extends PublicTargetFile {
 	sha256: string;
 	content: string;
 	truncated: boolean;
 }
 
-function errorMessage(error: unknown): string {
-	return (error instanceof Error ? error.message : String(error)).slice(0, 500);
+function exactAuthoringContext(projectDir: string, resourcePath?: string) {
+	const target = loadTarget(projectDir);
+	return inspectTargetAuthoringContext({
+		repositoryDir: projectDir,
+		expectedTarget: { id: target.manifest.id, gitSha: target.gitSha },
+		...(resourcePath ? { resourcePath } : {}),
+	});
 }
 
-function contained(root: string, candidate: string): boolean {
-	const path = relative(root, candidate);
-	return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
-}
-
-function normalizedPublicPath(input: string): string {
-	if (
-		input.length === 0 ||
-		input !== input.trim() ||
-		isAbsolute(input) ||
-		input.includes("\\") ||
-		input.includes("\0")
-	) {
-		throw new Error("target path must be a normalized repository-relative path");
-	}
-	const segments = input.split("/");
-	if (segments.some((segment) => segment.length === 0 || segment === "." || segment === ".." || segment.startsWith("."))) {
-		throw new Error("target path contains a forbidden path segment");
-	}
-	const exact = input === "AGENTS.md" || input === "manifest.yaml";
-	const scoped = segments.length > 1 && ["skills", "tools", "bin"].includes(segments[0] ?? "");
-	if (!exact && !scoped) {
-		throw new Error("Builder may read only AGENTS.md, manifest.yaml, skills/**, tools/**, or bin/**");
-	}
-	return input;
-}
-
-function publicFilePath(projectDir: string, input: string): string {
-	const root = resolve(projectDir);
-	if (!existsSync(root) || !lstatSync(root).isDirectory() || lstatSync(root).isSymbolicLink()) {
-		throw new Error(`target root must be a regular directory: ${root}`);
-	}
-	const path = resolve(root, normalizedPublicPath(input));
-	if (!contained(root, path)) throw new Error("target path escaped the target root");
-	if (!existsSync(path)) throw new Error(`public target file does not exist: ${input}`);
-	const entry = lstatSync(path);
-	if (!entry.isFile() || entry.isSymbolicLink()) throw new Error(`public target path is not a regular file: ${input}`);
-	const canonicalRoot = realpathSync(root);
-	const canonicalPath = realpathSync(path);
-	if (!contained(canonicalRoot, canonicalPath)) throw new Error("target path escaped through a symlink");
-	return canonicalPath;
-}
-
+/**
+ * @deprecated Compatibility adapter over the exact-Git declared-resource seam.
+ * Raw manifest, orphan, dirty, and private filesystem reads now fail closed.
+ */
 export function readPublicTargetFile(
 	projectDir: string,
 	path: string,
-	maxBytes = DEFAULT_READ_BYTES,
+	maxBytes = DEFAULT_COMPAT_READ_BYTES,
 ): PublicTargetRead {
-	if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > DEFAULT_READ_BYTES) {
-		throw new Error(`maxBytes must be between 1 and ${DEFAULT_READ_BYTES}`);
+	if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > DEFAULT_COMPAT_READ_BYTES) {
+		throw new Error(`maxBytes must be between 1 and ${DEFAULT_COMPAT_READ_BYTES}`);
 	}
-	const absolute = publicFilePath(projectDir, path);
-	const bytes = statSync(absolute).size;
-	if (bytes > MAX_PUBLIC_FILE_BYTES) {
-		throw new Error(`public target file exceeds the ${MAX_PUBLIC_FILE_BYTES}-byte inspection limit: ${path}`);
-	}
-	const raw = readFileSync(absolute);
+	const resource = exactAuthoringContext(projectDir, path).resource;
+	if (!resource) throw new Error("declared Target authoring resource was not returned");
+	const raw = Buffer.from(resource.content, "utf8");
 	const visible = raw.subarray(0, maxBytes);
 	return {
-		path: normalizedPublicPath(path),
-		bytes,
-		sha256: `sha256:${createHash("sha256").update(raw).digest("hex")}`,
+		path: resource.path,
+		bytes: resource.bytes,
+		sha256: resource.sha256,
 		content: visible.toString("utf8"),
 		truncated: raw.length > visible.length,
 	};
 }
 
-function walkPublicDirectory(root: string, relativeDir: string, output: PublicTargetFile[]): void {
-	if (output.length >= MAX_PUBLIC_FILES) return;
-	const absolute = join(root, relativeDir);
-	if (!existsSync(absolute)) return;
-	const directory = lstatSync(absolute);
-	if (!directory.isDirectory() || directory.isSymbolicLink()) return;
-	for (const entry of readdirSync(absolute, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-		if (output.length >= MAX_PUBLIC_FILES || entry.name.startsWith(".")) break;
-		const path = `${relativeDir}/${entry.name}`;
-		if (entry.isDirectory() && !entry.isSymbolicLink()) walkPublicDirectory(root, path, output);
-		else if (entry.isFile() && !entry.isSymbolicLink()) output.push({ path, bytes: statSync(join(root, path)).size });
+/** @deprecated Compatibility adapter returning only declared exact-Git resources. */
+export function listPublicTargetFiles(projectDir: string): PublicTargetFile[] {
+	try {
+		return exactAuthoringContext(projectDir).resources.map(({ path, bytes }) => ({ path, bytes }));
+	} catch {
+		return [];
 	}
 }
 
-export function listPublicTargetFiles(projectDir: string): PublicTargetFile[] {
-	const root = resolve(projectDir);
-	if (!existsSync(root) || !lstatSync(root).isDirectory() || lstatSync(root).isSymbolicLink()) return [];
-	const files: PublicTargetFile[] = [];
-	for (const path of ["AGENTS.md", "manifest.yaml"]) {
-		const absolute = join(root, path);
-		if (existsSync(absolute) && lstatSync(absolute).isFile() && !lstatSync(absolute).isSymbolicLink()) {
-			files.push({ path, bytes: statSync(absolute).size });
-		}
-	}
-	for (const directory of ["skills", "tools", "bin"]) walkPublicDirectory(root, directory, files);
-	return files.slice(0, MAX_PUBLIC_FILES);
+function errorMessage(error: unknown): string {
+	return (error instanceof Error ? error.message : String(error)).slice(0, 500);
 }
 
 export function resolveBuilderProjectId(context: BuilderProjectContext): string {
@@ -187,6 +127,7 @@ export function buildProjectStatus(context: BuilderProjectContext): Record<strin
 	const warnings: string[] = [];
 	let target: Record<string, unknown>;
 	let targetId: string | null = null;
+	let publicTargetFiles: TargetAuthoringResource[] = [];
 	try {
 		const resolved = loadTarget(context.projectDir);
 		targetId = resolved.manifest.id;
@@ -201,6 +142,14 @@ export function buildProjectStatus(context: BuilderProjectContext): Record<strin
 			developmentTaskCount: resolved.tasks.length,
 			...(bootstrapRequired ? { nextAction: "ahde_target_configure_model" } : {}),
 		};
+		try {
+			publicTargetFiles = inspectTargetAuthoringContext({
+				repositoryDir: context.projectDir,
+				expectedTarget: { id: resolved.manifest.id, gitSha: resolved.gitSha },
+			}).resources;
+		} catch (error) {
+			warnings.push(`target authoring context: ${errorMessage(error)}`);
+		}
 	} catch (error) {
 		target = { status: "not-ready", error: errorMessage(error) };
 	}
@@ -234,7 +183,7 @@ export function buildProjectStatus(context: BuilderProjectContext): Record<strin
 	return {
 		project: { id: projectId, directory: basename(resolve(context.projectDir)) },
 		target,
-		publicTargetFiles: listPublicTargetFiles(context.projectDir),
+		publicTargetFiles,
 		specs: specs.map(({ id, status, createdAt, sourceHash }) => ({ id, status, createdAt, sourceHash })),
 		corpora: {
 			development: corpora
