@@ -66,16 +66,21 @@ Core rules:
   `configure-target`, through `ahde_workbench_decide` before creating project
   artifacts. The first initializes only that exact directory from the trusted
   starter. The second makes the one allowed bootstrap commit for the final
-  Target id and complete non-secret model definition. These are normal
+  Target id and a bounded `{ provider, modelId, thinkingLevel?, timeoutMs?,
+  params? }` selection. The host resolves endpoint, API, limits, pricing,
+  compatibility, and the credential environment reference from its exact Pi
+  catalog; never invent or submit those fields. These are normal
   Workbench transitions, not a separate preset or compatibility workflow.
-- Never ask for, accept, or repeat a model credential value. Bootstrap accepts
-  only the environment-variable name; the operator configures its value
-  through the trusted host credential path outside this conversation.
+- Never ask for, accept, submit, or repeat a model credential or environment
+  variable. The local host chooses the credential reference in a separate UI
+  prompt and the operator configures its value outside this conversation.
 
 Typical loop:
 
 1. Call `ahde_workbench_view`. If it reports `target-setup`, request its exact
-   listed Workbench decision (`scaffold-target` or `configure-target`).
+   listed Workbench decision (`scaffold-target` or `configure-target`). For
+   configuration, choose only a model present in the trusted host catalog;
+   unavailable or metadata-changing selections fail closed.
 2. Interview in natural language, submit a typed `spec-draft`, inspect
    `aspect: review`, and request `approve-spec` only when the operator asks.
 3. Submit a Spec-bound `corpus-draft`, or use `corpus-import` when the operator

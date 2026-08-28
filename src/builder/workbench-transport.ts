@@ -269,12 +269,28 @@ export const WorkbenchSubmitParameters = Type.Union([
 
 const DecisionReason = NonBlank(4_000);
 
+const TargetModelSelectionParameters = Type.Object({
+	provider: Type.String({ minLength: 1, maxLength: 512, pattern: "^[^\\u0000-\\u001f\\u007f]+$" }),
+	modelId: Type.String({ minLength: 1, maxLength: 512, pattern: "^[^\\u0000-\\u001f\\u007f]+$" }),
+	thinkingLevel: Type.Optional(Type.Union([
+		Type.Literal("off"),
+		Type.Literal("minimal"),
+		Type.Literal("low"),
+		Type.Literal("medium"),
+		Type.Literal("high"),
+		Type.Literal("xhigh"),
+		Type.Literal("max"),
+	])),
+	timeoutMs: Type.Optional(Type.Integer({ minimum: 1_000, maximum: 3_600_000 })),
+	params: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+}, { additionalProperties: false });
+
 export const WorkbenchDecisionParameters = Type.Union([
 	Type.Object({ kind: Type.Literal("scaffold-target"), reason: DecisionReason }, { additionalProperties: false }),
 	Type.Object({
 		kind: Type.Literal("configure-target"),
 		targetId: Type.String({ minLength: 1, maxLength: 100, pattern: "^[a-z0-9][a-z0-9-]*$" }),
-		model: Type.Unknown(),
+		model: TargetModelSelectionParameters,
 		reason: DecisionReason,
 	}, { additionalProperties: false }),
 	Type.Object({ kind: Type.Literal("run-current"), repetitions: Type.Integer({ minimum: 1, maximum: 10 }), reason: DecisionReason }, { additionalProperties: false }),

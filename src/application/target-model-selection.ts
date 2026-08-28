@@ -26,21 +26,29 @@ const EnvironmentNameSchema = z.string()
 	.max(200)
 	.regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "must be an environment variable name");
 
-const SelectionSchema = z.strictObject({
+export const TargetModelSelectionSchema = z.strictObject({
 	provider: IdentitySchema,
 	modelId: IdentitySchema,
-	apiKeyEnv: EnvironmentNameSchema,
 	thinkingLevel: ThinkingLevel.optional(),
 	timeoutMs: z.number().int().min(1_000).max(MAX_TIMEOUT_MS).optional(),
 	params: z.record(z.string(), z.unknown()).optional(),
 });
 
-const CostSchema = z.object({
+const CostTierSchema = z.strictObject({
+	inputTokensAbove: z.number().int().nonnegative().max(100_000_000),
 	input: z.number().finite().nonnegative().max(1_000_000),
 	output: z.number().finite().nonnegative().max(1_000_000),
 	cacheRead: z.number().finite().nonnegative().max(1_000_000),
 	cacheWrite: z.number().finite().nonnegative().max(1_000_000),
-}).passthrough();
+});
+
+const CostSchema = z.strictObject({
+	input: z.number().finite().nonnegative().max(1_000_000),
+	output: z.number().finite().nonnegative().max(1_000_000),
+	cacheRead: z.number().finite().nonnegative().max(1_000_000),
+	cacheWrite: z.number().finite().nonnegative().max(1_000_000),
+	tiers: z.array(CostTierSchema).max(32).optional(),
+});
 
 const ThinkingLevelMapSchema = z.strictObject({
 	off: z.string().min(1).max(100).nullable().optional(),
@@ -93,7 +101,12 @@ interface MetadataBudget {
 }
 
 /** Builder-owned, non-secret choices. Execution metadata comes from the exact host model. */
-export type TargetModelSelection = z.infer<typeof SelectionSchema>;
+export type TargetModelSelection = z.infer<typeof TargetModelSelectionSchema>;
+
+export interface ResolveTargetModelSelectionOptions {
+	/** Host-owned credential reference. It is never accepted from Builder model input. */
+	apiKeyEnv: string;
+}
 
 function normalizedKey(key: string): string {
 	return key.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -261,23 +274,40 @@ function defaultThinkingLevel(levels: readonly ModelThinkingLevel[]): ModelThink
 export function resolveTargetModelSelection(
 	selectionInput: unknown,
 	resolvedModelInput: Model<Api>,
+	options: ResolveTargetModelSelectionOptions,
 ): TargetManifestValue["model"] {
 	const selectionData = normalizeMetadata(selectionInput, "selection", MAX_SELECTION_BYTES);
-	const selection: TargetModelSelection = SelectionSchema.parse(selectionData);
+	const selection: TargetModelSelection = TargetModelSelectionSchema.parse(selectionData);
 	const resolvedModel = dataRecord(resolvedModelInput, "resolved model");
 
 	const provider = hostIdentity(resolvedModel.provider, "resolved model provider");
 	const id = hostIdentity(resolvedModel.id, "resolved model id");
+	const apiKeyEnv = EnvironmentNameSchema.parse(options.apiKeyEnv);
 	if (selection.provider !== provider) throw new Error("selected provider does not match the host-resolved model");
 	if (selection.modelId !== id) throw new Error("selected modelId does not match the host-resolved model");
 
 	const api = hostIdentity(resolvedModel.api, "resolved model api");
 	const baseUrl = hostBaseUrl(resolvedModel.baseUrl);
 	const reasoning = z.boolean().parse(resolvedModel.reasoning);
+	const input = z.array(z.enum(["text", "image"])).min(1).max(2)
+		.refine((items) => new Set(items).size === items.length, "resolved model input modalities must be unique")
+		.parse(normalizeMetadata(resolvedModel.input, "resolved model input", MAX_SELECTION_BYTES));
 	const contextWindow = z.number().int().positive().max(100_000_000).parse(resolvedModel.contextWindow);
 	const maxTokens = z.number().int().positive().max(100_000_000).parse(resolvedModel.maxTokens);
 	const costData = normalizedRecord(resolvedModel.cost, "resolved model cost", MAX_SELECTION_BYTES);
 	const cost = CostSchema.parse(costData);
+	const tiers = cost.tiers
+		? [...cost.tiers].sort((left, right) => left.inputTokensAbove - right.inputTokensAbove)
+		: undefined;
+	if (tiers && new Set(tiers.map((tier) => tier.inputTokensAbove)).size !== tiers.length) {
+		throw new Error("resolved model cost tiers must have unique input thresholds");
+	}
+	if (resolvedModel.headers !== undefined) {
+		const headers = normalizedRecord(resolvedModel.headers, "resolved model headers", MAX_SELECTION_BYTES);
+		if (Object.keys(headers).length > 0) {
+			throw new Error("resolved model requires custom headers that the Target runtime cannot preserve safely");
+		}
+	}
 	const compat = resolvedModel.compat === undefined
 		? {}
 		: normalizedRecord(resolvedModel.compat, "resolved model compat", MAX_COMPAT_BYTES);
@@ -292,9 +322,17 @@ export function resolveTargetModelSelection(
 		throw new Error(`thinking level ${thinkingLevel} is not supported by the host-resolved model`);
 	}
 
-	const params = selection.params === undefined
+	const selectedParams = selection.params === undefined
 		? {}
 		: normalizedRecord(selection.params, "selection.params", MAX_SELECTION_BYTES);
+	const hostSamplingParams = resolvedModel.samplingParams === undefined
+		? {}
+		: normalizedRecord(resolvedModel.samplingParams, "resolved model samplingParams", MAX_SELECTION_BYTES);
+	const params = normalizedRecord(
+		{ ...hostSamplingParams, ...selectedParams },
+		"resolved model request params",
+		MAX_SELECTION_BYTES,
+	);
 	for (const key of Object.keys(params)) {
 		if (RESERVED_REQUEST_PARAMS.has(normalizedKey(key))) {
 			throw new Error(`selection.params cannot override reserved request field ${JSON.stringify(key)}`);
@@ -306,12 +344,14 @@ export function resolveTargetModelSelection(
 		id,
 		api,
 		baseUrl,
-		apiKeyEnv: selection.apiKeyEnv,
+		apiKeyEnv,
 		thinkingLevel,
 		timeoutMs: selection.timeoutMs ?? DEFAULT_TIMEOUT_MS,
 		params,
 		spec: {
 			reasoning,
+			input,
+			...(thinkingLevelMap ? { thinkingLevelMap } : {}),
 			contextWindow,
 			maxTokens,
 			cost: {
@@ -319,6 +359,7 @@ export function resolveTargetModelSelection(
 				output: cost.output,
 				cacheRead: cost.cacheRead,
 				cacheWrite: cost.cacheWrite,
+				...(tiers ? { tiers } : {}),
 			},
 			compat,
 		},

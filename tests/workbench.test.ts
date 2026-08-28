@@ -297,28 +297,35 @@ describe("AHDE Workbench", () => {
 		);
 
 		const configureGate = gate();
+		const resolvedTargetModel = {
+			provider: "openai",
+			id: "gpt-test",
+			api: "openai-responses",
+			baseUrl: "https://api.openai.com/v1",
+			apiKeyEnv: "OPENAI_API_KEY",
+			thinkingLevel: "medium" as const,
+			timeoutMs: 300_000,
+			params: {},
+			spec: {
+				reasoning: true,
+				contextWindow: 131_072,
+				maxTokens: 16_384,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				compat: {},
+			},
+		};
 		const configured = await workbench.decide({
 			kind: "configure-target",
 			targetId: "research-agent",
 			model: {
 				provider: "openai",
-				id: "gpt-test",
-				api: "openai-responses",
-				baseUrl: "https://api.openai.com/v1",
-				apiKeyEnv: "OPENAI_API_KEY",
+				modelId: "gpt-test",
 				thinkingLevel: "medium",
 				timeoutMs: 300_000,
 				params: {},
-				spec: {
-					reasoning: true,
-					contextWindow: 131_072,
-					maxTokens: 16_384,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-					compat: {},
-				},
 			},
 			reason: "Bind the reviewed identity and non-secret model metadata",
-		}, configureGate);
+		}, configureGate, { resolveTargetModel: () => resolvedTargetModel });
 		expect(configured.view).toMatchObject({
 			stage: "spec-design",
 			target: { status: "ready", id: "research-agent" },
@@ -326,6 +333,58 @@ describe("AHDE Workbench", () => {
 		expect(configured.result).toMatchObject({
 			targetId: "research-agent",
 			credentialEnv: "OPENAI_API_KEY",
+		});
+	});
+
+	it("fails closed when the trusted model catalog is unavailable or changes during confirmation", async () => {
+		const projectDir = mkdtempSync(join(tmpdir(), "ahde-workbench-model-drift-"));
+		roots.push(projectDir);
+		const stateRoot = join(projectDir, ".ahde");
+		const workbench = createAhdeWorkbench({
+			projectDir,
+			stateRoot,
+			runsRoot: join(projectDir, "runs"),
+			projectId: "drift-agent",
+			templateDir: resolve("templates/basic-agent"),
+			dependencies: { now: () => NOW },
+		});
+		await workbench.decide({ kind: "scaffold-target", reason: "Create a drift fixture" }, gate());
+		const selection = {
+			kind: "configure-target" as const,
+			targetId: "drift-agent",
+			model: { provider: "openai", modelId: "gpt-test" },
+			reason: "Detect catalog drift",
+		};
+		await expect(workbench.decide(selection, gate())).rejects.toThrow(/trusted host model catalog/);
+
+		const baseModel = {
+			provider: "openai",
+			id: "gpt-test",
+			api: "openai-responses",
+			baseUrl: "https://api.openai.com/v1",
+			apiKeyEnv: "OPENAI_API_KEY",
+			thinkingLevel: "medium" as const,
+			timeoutMs: 300_000,
+			params: {},
+			spec: {
+				reasoning: true,
+				contextWindow: 131_072,
+				maxTokens: 16_384,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				compat: {},
+			},
+		};
+		const resolveTargetModel = vi.fn()
+			.mockReturnValueOnce(baseModel)
+			.mockReturnValueOnce({ ...baseModel, baseUrl: "https://catalog-changed.invalid/v1" });
+		await expect(workbench.decide(selection, gate(), { resolveTargetModel }))
+			.rejects.toBeInstanceOf(WorkbenchStaleDecisionError);
+		expect(resolveTargetModel).toHaveBeenCalledTimes(2);
+		expect(execFileSync("git", ["-C", projectDir, "rev-list", "--count", "HEAD"], { encoding: "utf8" }).trim())
+			.toBe("1");
+		expect(loadTarget(projectDir).manifest).toMatchObject({
+			id: "my-agent",
+			model: { id: "replace-with-model-id" },
 		});
 	});
 
@@ -1112,7 +1171,7 @@ describe("AHDE Workbench", () => {
 					briefId: selection.source.briefId,
 					failureModes: [{ failureModeId: selection.failureModeIds[0] }],
 				},
-			});
+	});
 
 		const runDir = join(paths.runsRoot, "builders", proposalId);
 		const inputPath = join(runDir, "builder_input.txt");

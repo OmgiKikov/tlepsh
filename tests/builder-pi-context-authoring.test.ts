@@ -94,9 +94,15 @@ it("uses the real three-tool Builder Pi to inspect exact Target context and stop
 		await setup.decide({
 			kind: "configure-target",
 			targetId: "context-agent",
-			model: targetModel,
+			model: {
+				provider: targetModel.provider,
+				modelId: targetModel.id,
+				thinkingLevel: targetModel.thinkingLevel,
+				timeoutMs: targetModel.timeoutMs,
+				params: targetModel.params,
+			},
 			reason: "Bind the local deterministic Target model",
-		}, approvedGate());
+		}, approvedGate(), { resolveTargetModel: () => targetModel });
 		const drafted = await setup.submit({
 			kind: "spec-draft",
 			spec: {

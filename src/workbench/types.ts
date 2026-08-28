@@ -6,12 +6,17 @@ import {
 import { BuilderCorpusImportSourcePathSchema } from "../application/builder-corpus-import-contract.js";
 import { BuilderWorkbenchCorpusRevisionOperationsSchema } from "../application/builder-regression-case.js";
 import { HarnessAuthoringIntentsSchema } from "../application/harness-authoring.js";
+import {
+	TargetModelSelectionSchema,
+	type TargetModelSelection,
+} from "../application/target-model-selection.js";
 import { TargetAuthoringContextClaimSchema } from "../application/target-authoring-context.js";
 import {
 	FailureModeIdSchema,
 	ProposalBasisSelectionSchema,
 } from "../application/improvement-brief.js";
 import type { RunEventListener } from "../run-events.js";
+import type { TargetManifest } from "../manifest.js";
 import { AgentSpecSchema } from "../spec.js";
 
 const NonBlankSchema = z.string().min(1).refine((value) => value.trim().length > 0, "expected non-blank text");
@@ -171,8 +176,8 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 	z.strictObject({
 		kind: z.literal("configure-target"),
 		targetId: z.string().max(100).regex(/^[a-z0-9][a-z0-9-]*$/),
-		/** Complete non-secret model metadata; the application service rejects credential values. */
-		model: z.unknown(),
+		/** Builder-owned choices only; executable metadata is resolved by the trusted host. */
+		model: TargetModelSelectionSchema,
 		reason: NonBlankSchema.max(4_000),
 	}),
 	z.strictObject({
@@ -243,6 +248,8 @@ export type WorkbenchDecisionInput = z.infer<typeof WorkbenchDecisionInputSchema
 export interface WorkbenchDecisionExecutionOptions {
 	signal?: AbortSignal;
 	onRunEvent?: RunEventListener;
+	/** Resolve one bounded Builder selection through the current trusted host catalog. */
+	resolveTargetModel?: (selection: TargetModelSelection) => TargetManifest["model"];
 }
 
 export interface WorkbenchConfirmation {

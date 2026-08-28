@@ -3,6 +3,11 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 import type { compileHarnessAuthoringProposal } from "../application/harness-authoring.js";
 import {
+	resolveTargetModelSelection,
+	TargetModelSelectionSchema,
+	type TargetModelSelection,
+} from "../application/target-model-selection.js";
+import {
 	createAhdeWorkbench,
 	type AhdeWorkbench,
 	type AhdeWorkbenchDependencies,
@@ -67,6 +72,34 @@ function requireHostUI(ctx: ExtensionContext, operation: string): void {
 	if (!ctx.hasUI || ctx.mode !== "tui") {
 		throw new Error(`${operation} requires a local TUI host confirmation; RPC, print, and JSON execution fail closed`);
 	}
+}
+
+function credentialPlaceholder(provider: string): string {
+	const known: Record<string, string> = {
+		anthropic: "ANTHROPIC_API_KEY",
+		google: "GEMINI_API_KEY",
+		openai: "OPENAI_API_KEY",
+		openrouter: "OPENROUTER_API_KEY",
+	};
+	return known[provider] ?? `${provider.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`;
+}
+
+async function selectTargetCredentialEnvironment(
+	ctx: ExtensionContext,
+	selection: TargetModelSelection,
+): Promise<string> {
+	const suggested = credentialPlaceholder(selection.provider);
+	if (process.env[suggested]?.trim()) return suggested;
+	const selected = await ctx.ui.input(
+		"Target credential environment variable",
+		suggested,
+	);
+	if (selected === undefined) throw new Error("Target model configuration was cancelled by the operator");
+	const value = selected.trim();
+	if (!/^[A-Za-z_][A-Za-z0-9_]{0,199}$/.test(value)) {
+		throw new Error("Target credential must be one environment-variable name; never paste the credential value");
+	}
+	return value;
 }
 
 export function createBuilderWorkbench(
@@ -151,6 +184,12 @@ export function createBuilderWorkbenchTools(
 			async execute(_id, params, signal, _update, ctx) {
 				abortIfRequested(signal);
 				requireHostUI(ctx, "Workbench decision");
+				const targetModelSelection = params.kind === "configure-target"
+					? TargetModelSelectionSchema.parse(params.model)
+					: null;
+				const targetCredentialEnvironment = targetModelSelection
+					? await selectTargetCredentialEnvironment(ctx, targetModelSelection)
+					: null;
 				const showsRunProgress = params.kind === "run-current" ||
 					params.kind === "run-eval" ||
 					params.kind === "verify-candidate";
@@ -159,10 +198,25 @@ export function createBuilderWorkbenchTools(
 					: null;
 				let outcome: BuilderLiveTraceOutcome = "error";
 				try {
+					const resolveTargetModel = targetModelSelection && targetCredentialEnvironment
+						? (selection: TargetModelSelection) => {
+							const resolved = ctx.modelRegistry.find(selection.provider, selection.modelId);
+							if (!resolved) {
+								throw new Error(`Target model ${selection.provider}/${selection.modelId} is not available in the trusted host catalog`);
+							}
+							return resolveTargetModelSelection(selection, resolved, {
+								apiKeyEnv: targetCredentialEnvironment,
+							});
+						}
+						: undefined;
 					const result = await workbench.decide(
 						params as WorkbenchDecisionInput,
 						createWorkbenchHumanGate(ctx, actorId, (operation) => requireHostUI(ctx, operation)),
-						{ signal, ...(observation ? { onRunEvent: observation.onRunEvent } : {}) },
+						{
+							signal,
+							...(observation ? { onRunEvent: observation.onRunEvent } : {}),
+							...(resolveTargetModel ? { resolveTargetModel } : {}),
+						},
 					);
 					outcome = "completed";
 					return textResult(result);

@@ -730,12 +730,15 @@ export class AhdeWorkbench {
 
 		if (input.kind === "configure-target") {
 			if (!inventory.target) throw new WorkbenchStaleDecisionError(input.kind);
+			if (!options.resolveTargetModel) {
+				throw new Error("Target model selection requires the trusted host model catalog");
+			}
 			const describe = () => this.dependencies.describeTargetBootstrap({
 				targetDir: this.projectDir,
 				stateRoot: this.stateRoot,
 				runsRoot: this.runsRoot,
 				targetId: input.targetId,
-				model: input.model,
+				model: options.resolveTargetModel!(input.model),
 			});
 			const before = describe();
 			const actor = await this.confirm(input, gate, "Configure exact Target identity and model", before, options.signal);
@@ -748,7 +751,7 @@ export class AhdeWorkbench {
 				stateRoot: this.stateRoot,
 				runsRoot: this.runsRoot,
 				targetId: input.targetId,
-				model: input.model,
+				model: after.next.model,
 				expectedSubjectHash: before.subjectHash,
 				actor: { kind: "human", id: actor },
 				reason: input.reason,

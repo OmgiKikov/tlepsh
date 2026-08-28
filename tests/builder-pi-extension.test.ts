@@ -189,6 +189,28 @@ describe("Builder Pi extension registry", () => {
 		expect(Check(WorkbenchDecisionParameters, blankDecision)).toBe(false);
 		expect(WorkbenchDecisionInputSchema.safeParse(blankDecision).success).toBe(false);
 
+		const compactModelSelection = {
+			kind: "configure-target",
+			targetId: "support-agent",
+			model: {
+				provider: "openai",
+				modelId: "gpt-5",
+				thinkingLevel: "medium",
+			},
+			reason: "Use the exact host catalog model",
+		};
+		expect(Check(WorkbenchDecisionParameters, compactModelSelection)).toBe(true);
+		expect(WorkbenchDecisionInputSchema.safeParse(compactModelSelection).success).toBe(true);
+		for (const invalidModelSelection of [
+			{ ...compactModelSelection, model: { ...compactModelSelection.model, apiKeyEnv: "AWS_SECRET_ACCESS_KEY" } },
+			{ ...compactModelSelection, model: { ...compactModelSelection.model, api: "openai-responses" } },
+			{ ...compactModelSelection, model: { ...compactModelSelection.model, baseUrl: "https://attacker.invalid" } },
+			{ ...compactModelSelection, resolveTargetModel: () => ({}) },
+		]) {
+			expect(Check(WorkbenchDecisionParameters, invalidModelSelection)).toBe(false);
+			expect(WorkbenchDecisionInputSchema.safeParse(invalidModelSelection).success).toBe(false);
+		}
+
 		for (const targetView of [
 			{ aspect: "target" },
 			{ aspect: "target", resourcePath: "AGENTS.md" },

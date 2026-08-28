@@ -73,8 +73,30 @@ export const ThinkingLevel = z.enum([
 	"max",
 ]);
 
+const ModelThinkingLevelMap = z.strictObject({
+	off: z.string().min(1).max(100).nullable().optional(),
+	minimal: z.string().min(1).max(100).nullable().optional(),
+	low: z.string().min(1).max(100).nullable().optional(),
+	medium: z.string().min(1).max(100).nullable().optional(),
+	high: z.string().min(1).max(100).nullable().optional(),
+	xhigh: z.string().min(1).max(100).nullable().optional(),
+	max: z.string().min(1).max(100).nullable().optional(),
+});
+
+const ModelCostTier = z.strictObject({
+	inputTokensAbove: z.number().int().nonnegative(),
+	input: z.number().nonnegative(),
+	output: z.number().nonnegative(),
+	cacheRead: z.number().nonnegative(),
+	cacheWrite: z.number().nonnegative(),
+});
+
 export const ModelSpec = z.strictObject({
 	reasoning: z.boolean().default(false),
+	input: z.array(z.enum(["text", "image"])).min(1).max(2)
+		.refine((items) => new Set(items).size === items.length, "model input modalities must be unique")
+		.optional(),
+	thinkingLevelMap: ModelThinkingLevelMap.optional(),
 	contextWindow: z.number().int().positive().default(131072),
 	maxTokens: z.number().int().positive().default(8192),
 	cost: z
@@ -83,6 +105,7 @@ export const ModelSpec = z.strictObject({
 			output: z.number().default(0),
 			cacheRead: z.number().default(0),
 			cacheWrite: z.number().default(0),
+			tiers: z.array(ModelCostTier).max(32).optional(),
 		})
 		.default({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }),
 	compat: z.record(z.string(), z.unknown()).default({}),
