@@ -10,6 +10,10 @@ import { fileURLToPath } from "node:url";
 import { applyBuilderProposal, runApprovedSpecBuilderProposal } from "../dist/application/builder-proposal.js";
 import { runAppliedBuilderCandidate } from "../dist/application/builder-candidate.js";
 import { promoteReviewedCandidate, reviewCandidate } from "../dist/application/candidate-review.js";
+import {
+	compileImprovementBrief,
+	deriveEvidenceLinkedProposalSelection,
+} from "../dist/application/improvement-brief.js";
 import { BuilderRunRecordSchema } from "../dist/builders/adapters.js";
 import { createCorpus } from "../dist/corpus.js";
 import { diagnoseEvalRun } from "../dist/diagnosis.js";
@@ -91,8 +95,20 @@ try {
 	const baselineTarget = loadTarget(targetDir);
 	const baseline = await runSuite(baselineTarget, { runsRoot, label: "baseline", repetitions: 1 });
 	const diagnosis = diagnoseEvalRun(runsRoot, baseline.evalRunId);
+	const brief = compileImprovementBrief(runsRoot, diagnosis);
+	const proposalBasis = {
+		algorithmId: brief.algorithmId,
+		evalRunId: brief.evalRunId,
+		diagnosisId: brief.diagnosisId,
+		briefId: brief.briefId,
+		failureModeIds: brief.modes
+			.filter((mode) => mode.decision === "propose-harness-change")
+			.map((mode) => mode.failureModeId),
+	};
+	const selectedEvidence = deriveEvidenceLinkedProposalSelection(brief, proposalBasis);
+	const evidenceRefs = [...new Set(selectedEvidence.diagnoses.flatMap((item) => item.evidence))];
 	console.log(`baseline ${baseline.evalRunId}: ${baseline.summary.pass}/${baseline.summary.total} passed`);
-	console.log(`diagnosis ${diagnosis.diagnosisId}: ${diagnosis.summary.issueCount} issue(s)`);
+	console.log(`diagnosis ${diagnosis.diagnosisId}: ${brief.summary.failureModeCount} failure mode(s)`);
 
 	step("2. Builder proposal (repository is still untouched)");
 	const proposal = {
@@ -100,7 +116,7 @@ try {
 		decision: "propose",
 		baseTargetSha: baseSha,
 		summary: "Correct the final-answer contract.",
-		diagnoses: [{ failureIds: ["dev-1", "dev-2"], evidence: [diagnosis.diagnosisId], rootCause: "The harness requests the wrong token." }],
+		diagnoses: selectedEvidence.diagnoses,
 		changes: [{
 			path: "AGENTS.md",
 			baseSha256: hash(oldInstructions),
@@ -115,7 +131,7 @@ try {
 				"+Return the exact uppercase word READY.",
 			].join("\n"),
 			rationale: "Match the reviewed output contract.",
-			evidenceRefs: [diagnosis.diagnosisId],
+			evidenceRefs,
 		}],
 		risks: ["Narrow demo contract"],
 		validationPlan: ["Matched development and sealed evaluations"],
@@ -154,6 +170,7 @@ try {
 		targetDir,
 		allowedPaths: ["AGENTS.md", "skills/**", "bin/**", "tools/**"],
 		sourceEvalRunId: baseline.evalRunId,
+		proposalBasis,
 		runsRoot,
 		timeoutMs: 5_000,
 		runId: "builder-demo",
