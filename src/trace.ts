@@ -30,6 +30,31 @@ export interface TraceMessage {
 	timestamp?: number;
 }
 
+/**
+ * Remove common credential shapes before trace content crosses into a
+ * human-facing projection. Raw protected evidence remains unchanged on disk.
+ */
+export function redactTraceText(text: string): string {
+	return text
+		.replace(
+			/-----BEGIN(?: [A-Z0-9]+)? PRIVATE KEY-----[\s\S]*?-----END(?: [A-Z0-9]+)? PRIVATE KEY-----/g,
+			"[REDACTED_PRIVATE_KEY]",
+		)
+		.replace(
+			/((?:api[_-]?key|access[_-]?token|auth[_-]?token|github[_-]?token|aws[_-]?(?:access[_-]?key[_-]?id|secret[_-]?access[_-]?key)|private[_-]?key|secret|password|token|[a-z0-9]+(?:[_-][a-z0-9]+)*[_-](?:key|token|secret|password))["']?\s*[:=]\s*["'])[^\r\n"']+(["'])/gi,
+			"$1[REDACTED]$2",
+		)
+		.replace(
+			/((?:api[_-]?key|access[_-]?token|auth[_-]?token|github[_-]?token|aws[_-]?(?:access[_-]?key[_-]?id|secret[_-]?access[_-]?key)|private[_-]?key|secret|password|token|[a-z0-9]+(?:[_-][a-z0-9]+)*[_-](?:key|token|secret|password))["']?\s*[:=]\s*)(?!["'])[^,\s;}\]]+/gi,
+			"$1[REDACTED]",
+		)
+		.replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GITHUB_TOKEN]")
+		.replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, "[REDACTED_GITHUB_TOKEN]")
+		.replace(/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, "[REDACTED_AWS_ACCESS_KEY]")
+		.replace(/\b(sk-[A-Za-z0-9_-]{10,})\b/g, "[REDACTED_API_KEY]")
+		.replace(/\b(Bearer\s+)[A-Za-z0-9._~+\/-]{10,}/gi, "$1[REDACTED_TOKEN]");
+}
+
 interface SessionEntry {
 	type: string;
 	message?: {

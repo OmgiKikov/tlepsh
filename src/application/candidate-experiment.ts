@@ -40,6 +40,7 @@ import { resolveContainedArtifactPath } from "../storage/paths.js";
 import { buildExecutionPolicy } from "../execution-policy.js";
 import { createTargetToolRuntime, targetFilesystemConfinement } from "../target/runtime.js";
 import { computeTargetWorkspaceHash } from "../runner.js";
+import type { RunEventListener } from "../run-events.js";
 import {
 	targetEvalSurface,
 	targetWithDevelopmentCorpus,
@@ -79,6 +80,8 @@ export interface CandidateExperimentOptions {
 		suiteHash: string;
 	};
 	sealedCorpus?: CorpusRef;
+	/** Host-only live events for the development pair. Sealed holdout runs never receive it. */
+	onRunEvent?: RunEventListener;
 }
 
 export interface CandidateExperimentHoldoutResult {
@@ -335,6 +338,7 @@ async function runMatchedEvaluation(
 	baselineSha: string,
 	mode: ExperimentMode,
 	repetitions: number,
+	onRunEvent?: RunEventListener,
 ): Promise<MatchedEvaluationResult> {
 	const baselineWorkspaceHash = computeTargetWorkspaceHash(baselineTarget, runsRoot);
 	const query: ReusableBaselineQuery = {
@@ -355,6 +359,7 @@ async function runMatchedEvaluation(
 			label: "baseline",
 			repetitions,
 			expectedWorkspaceHash: baselineWorkspaceHash,
+			...(onRunEvent ? { onRunEvent } : {}),
 		});
 	}
 	const baselineProblem = infrastructureError(baseline);
@@ -366,6 +371,7 @@ async function runMatchedEvaluation(
 		repetitions,
 		candidateOf: baselineSha,
 		baselineEvalRunId: baseline.evalRunId,
+		...(onRunEvent ? { onRunEvent } : {}),
 	});
 	const candidateProblem = infrastructureError(candidate);
 	if (candidateProblem) throw new Error(candidateProblem);
@@ -555,6 +561,7 @@ export async function runCandidateExperiment(
 					worktrees.baseline.sha,
 					options.mode,
 					options.repetitions,
+					options.onRunEvent,
 				);
 
 				let sealedHoldout: CandidateExperimentHoldoutResult | null = null;

@@ -6,6 +6,7 @@ import {
 import { BuilderCorpusImportSourcePathSchema } from "../application/builder-corpus-import-contract.js";
 import { BuilderWorkbenchCorpusRevisionOperationsSchema } from "../application/builder-regression-case.js";
 import { HarnessAuthoringIntentsSchema } from "../application/harness-authoring.js";
+import type { RunEventListener } from "../run-events.js";
 import { AgentSpecSchema } from "../spec.js";
 
 const NonBlankSchema = z.string().min(1).refine((value) => value.trim().length > 0, "expected non-blank text");
@@ -210,6 +211,12 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 	}),
 ]);
 export type WorkbenchDecisionInput = z.infer<typeof WorkbenchDecisionInputSchema>;
+
+/** Host-owned execution hooks. These are deliberately outside the model-facing decision schema. */
+export interface WorkbenchDecisionExecutionOptions {
+	signal?: AbortSignal;
+	onRunEvent?: RunEventListener;
+}
 
 export interface WorkbenchConfirmation {
 	kind: WorkbenchDecisionInput["kind"];

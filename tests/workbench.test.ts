@@ -34,6 +34,7 @@ import { saveSpecSnapshot, type AgentSpec } from "../src/spec.js";
 import { writeJsonArtifact } from "../src/storage/artifacts.js";
 import {
 	WorkbenchDecisionDeclinedError,
+	WorkbenchDecisionInputSchema,
 	WorkbenchSelectionRequiredError,
 	WorkbenchStaleDecisionError,
 	createAhdeWorkbench,
@@ -211,6 +212,16 @@ function writeDevelopmentEval(
 }
 
 describe("AHDE Workbench", () => {
+	it("keeps host execution listeners outside the model-facing decision schema", () => {
+		const parsed = WorkbenchDecisionInputSchema.safeParse({
+			kind: "run-current",
+			repetitions: 1,
+			reason: "Exercise the host-only boundary",
+			onRunEvent: () => {},
+		});
+		expect(parsed.success).toBe(false);
+	});
+
 	it("survives restart and drives Spec → editable Corpus Draft → exact publication", async () => {
 		const paths = target();
 		const first = createAhdeWorkbench({ ...paths, projectId: "test-target", dependencies: { now: () => NOW } });
@@ -355,19 +366,23 @@ describe("AHDE Workbench", () => {
 		const published = await first.decide({ kind: "publish-corpus", reason: "Publish the reviewed imported basket" }, gate());
 		const corpusId = String(published.result.corpusId);
 		const evalRunId = "erun_v121_closure";
+		const onRunEvent = vi.fn();
 		const measuring = createAhdeWorkbench({
 			...paths,
 			projectId: "test-target",
 			dependencies: {
 				now: () => NOW,
-				runSuite: async () => writeDevelopmentEval(paths, corpusId, evalRunId),
+				runSuite: async (_target, options) => {
+					expect(options.onRunEvent).toBe(onRunEvent);
+					return writeDevelopmentEval(paths, corpusId, evalRunId);
+				},
 			},
 		});
 		const measured = await measuring.decide({
 			kind: "run-current",
 			repetitions: 1,
 			reason: "Measure the exact imported basket",
-		}, gate());
+		}, gate(), { onRunEvent });
 		expect(measured.result).toMatchObject({ resolvedAs: "run-eval", evaluation: { evalRunId } });
 		const regressionTask: { input: string; graders: GraderSpec[] } = {
 			input: "Does the refund window still apply after an account migration?",

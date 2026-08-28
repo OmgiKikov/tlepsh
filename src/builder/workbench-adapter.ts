@@ -18,6 +18,7 @@ import {
 	WorkbenchSubmitParameters,
 	WorkbenchViewParameters,
 } from "./workbench-transport.js";
+import { createRunProgressPresenter } from "./run-progress.js";
 
 type RegisteredWorkbenchTool = ToolDefinition<TSchema, unknown>;
 
@@ -130,11 +131,19 @@ export function createBuilderWorkbenchTools(
 			async execute(_id, params, signal, _update, ctx) {
 				abortIfRequested(signal);
 				requireHostUI(ctx, "Workbench decision");
-				return textResult(await workbench.decide(
-					params as WorkbenchDecisionInput,
-					createWorkbenchHumanGate(ctx, actorId, (operation) => requireHostUI(ctx, operation)),
-					{ signal },
-				));
+				const showsRunProgress = params.kind === "run-current" ||
+					params.kind === "run-eval" ||
+					params.kind === "verify-candidate";
+				const progress = showsRunProgress ? createRunProgressPresenter(ctx.ui) : null;
+				try {
+					return textResult(await workbench.decide(
+						params as WorkbenchDecisionInput,
+						createWorkbenchHumanGate(ctx, actorId, (operation) => requireHostUI(ctx, operation)),
+						{ signal, ...(progress ? { onRunEvent: progress.onRunEvent } : {}) },
+					));
+				} finally {
+					progress?.dispose();
+				}
 			},
 		}),
 	];

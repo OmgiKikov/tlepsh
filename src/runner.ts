@@ -31,6 +31,13 @@ import {
 	type ExecutionPolicyResult,
 } from "./execution-policy.js";
 import {
+	emitExecutionFinished,
+	emitRunStarted,
+	observeRunSessionEvent,
+	type RunEventIdentity,
+	type RunEventListener,
+} from "./run-events.js";
+import {
 	createTargetAgentSession,
 	createTargetToolRuntime,
 	targetFilesystemConfinement,
@@ -51,6 +58,12 @@ export interface RunTaskOptions {
 	evalRunId: string | null;
 	/** Target git sha this candidate improves (null for baseline/solo). */
 	candidateOf: string | null;
+	/** One-based position within the parent suite's tasks × repetitions. */
+	ordinal?: number;
+	/** Total executions within the parent suite's tasks × repetitions. */
+	total?: number;
+	/** Optional synchronous, observational event listener. */
+	onRunEvent?: RunEventListener;
 	/**
 	 * Targets run in an isolated copy by default. Explicit diagnostic callers
 	 * may opt into direct mode, which provenance records as unconfined.
@@ -532,9 +545,19 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 
 	// Crash-tolerant: provenance is on disk before any model call.
 	writeRunRecord(runDir, record);
+	const eventRun: RunEventIdentity = {
+		evalRunId: options.evalRunId,
+		runId,
+		taskId: task.id,
+		repetitionIndex: options.repetitionIndex,
+		ordinal: options.ordinal ?? 1,
+		total: options.total ?? 1,
+	};
+	emitRunStarted(options.onRunEvent, eventRun);
 
 	const startedMs = Date.now();
 	let session: AgentSession | undefined;
+	let unsubscribeSessionEvents: (() => void) | undefined;
 	let recoveryAttempts = 0;
 	try {
 		if (!policyResult || !targetToolRuntime) {
@@ -563,6 +586,9 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 		});
 		session = created.session;
 		const sessionManager = created.sessionManager;
+		unsubscribeSessionEvents = session.subscribe(
+			(event) => observeRunSessionEvent(options.onRunEvent, eventRun, event),
+		);
 
 		// Watchdog: prompt() has no deadline of its own.
 		let timedOut = false;
@@ -669,6 +695,11 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 		}
 	} finally {
 		try {
+			unsubscribeSessionEvents?.();
+		} catch {
+			// Listener teardown during error paths is best-effort.
+		}
+		try {
 			session?.dispose();
 		} catch {
 			// dispose during error paths is best-effort
@@ -676,5 +707,6 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 	}
 
 	writeRunRecord(runDir, record);
+	emitExecutionFinished(options.onRunEvent, eventRun, record);
 	return record;
 }

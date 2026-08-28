@@ -7,6 +7,7 @@ import type {
 	WorkbenchDecisionResult,
 	WorkbenchView,
 } from "../workbench/types.js";
+import { createRunProgressPresenter } from "./run-progress.js";
 import { createWorkbenchHumanGate } from "./workbench-gate.js";
 
 type CommandWorkbench = Pick<AhdeWorkbench, "view" | "decide">;
@@ -125,11 +126,18 @@ export function registerAhdeBuilderCommands(
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "run");
 			const parsed = parseRun(args);
-			const result = await options.workbench.decide(
-				{ kind: "run-current", repetitions: parsed.repetitions, reason: parsed.reason },
-				commandGate(ctx, options.actorId),
-				{ signal },
-			);
+			const progress = createRunProgressPresenter(ctx.ui);
+			const result = await (async () => {
+				try {
+					return await options.workbench.decide(
+						{ kind: "run-current", repetitions: parsed.repetitions, reason: parsed.reason },
+						commandGate(ctx, options.actorId),
+						{ signal, onRunEvent: progress.onRunEvent },
+					);
+				} finally {
+					progress.dispose();
+				}
+			})();
 			ctx.ui.notify(formatDecision(result), result.view.blockers.length > 0 ? "warning" : "info");
 		},
 	});

@@ -48,6 +48,7 @@ import {
 import { launchBuilderPi } from "./builder/runtime.js";
 import { runInteractiveTarget } from "./target/interactive.js";
 import { resolveInteractiveTargetDirectory } from "./target/command.js";
+import type { RunEventListener } from "./run-events.js";
 
 const envReport = loadDotEnv();
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -64,6 +65,26 @@ function runsRoot(): string {
 
 function stateRoot(): string {
 	return process.env.AHDE_STATE_DIR ? resolve(process.env.AHDE_STATE_DIR) : resolve(process.cwd(), ".ahde");
+}
+
+function cliRunProgress(): RunEventListener {
+	let pass = 0;
+	let fail = 0;
+	let error = 0;
+	return (event) => {
+		if (event.type === "run_started") {
+			process.stderr.write(`AHDE run ${event.run.ordinal}/${event.run.total} · running\n`);
+			return;
+		}
+		if (event.type !== "run_graded") return;
+		if (event.outcome === "pass") pass += 1;
+		else if (event.outcome === "fail") fail += 1;
+		else error += 1;
+		process.stderr.write(
+			`AHDE run ${event.run.ordinal}/${event.run.total} · ${event.outcome} ` +
+				`(${pass} pass, ${fail} fail, ${error} error)\n`,
+		);
+	};
 }
 
 const USAGE = `ahde — Agent Harness Development Environment
@@ -284,7 +305,13 @@ async function main(): Promise<void> {
 				throw new Error(`--label must be baseline or solo, got ${requestedLabel}`);
 			}
 			const label = requestedLabel;
-			const record = await runSuite(target, { runsRoot: runsRoot(), label, repetitions, taskId });
+			const record = await runSuite(target, {
+				runsRoot: runsRoot(),
+				label,
+				repetitions,
+				taskId,
+				onRunEvent: cliRunProgress(),
+			});
 			console.log(
 				`eval run ${record.evalRunId}: ${record.summary.pass}/${record.summary.total} all-pass ` +
 					`(${record.summary.fail} fail, ${record.summary.error} error)`,

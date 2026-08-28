@@ -60,6 +60,7 @@ Builder: Давай уточним пользователей, задачи и �
 Builder: Spec готов. Утвердить?
 
 > Запусти тесты
+Builder UI: AHDE run 7/40 · tool search ✓
 Builder: 34/40 passed. Нашёл 3 системных failure mode.
 Builder: Open verified development traces: http://127.0.0.1:...
 
@@ -83,6 +84,14 @@ The same loop has compact Pi commands:
 Builder Pi has no generic shell, edit, or write tool. It can act only through
 the packaged AHDE tools, which expose bounded views and call the deterministic
 application core.
+
+While `/run` or a natural-language Workbench decision is executing, Builder Pi
+shows one bounded provisional widget with run position, assistant messages,
+and tool spans. The stream is credential-redacted, development-only, and
+host-UI-only: it never becomes Builder model context or promotion evidence.
+The widget always clears on completion, cancellation, or failure. Direct
+`ahde run` callers receive compact run counters on stderr while the existing
+final stdout remains stable.
 
 The model-facing control surface is intentionally only three deep operations:
 
@@ -218,6 +227,11 @@ The server binds to `127.0.0.1` and accepts only `GET` and `HEAD`. It renders
 already-created canonical evidence; HTTP requests cannot run an eval, create a
 diagnosis, apply a proposal, or make a decision. JSON artifacts and protected
 traces on disk remain the source of truth.
+
+Live `RunEvent` observations deliberately stay in process. AHDE does not write
+a second event journal, tail mutable run directories through HTTP, or expose
+sealed holdout progress. After completion, `/traces` links to the existing
+hash-verified report built from canonical `session.jsonl` and `run.json`.
 
 Sealed holdout cases, graders, expected outputs, identifiers, and traces are
 never shown to Builder Pi or the Evidence Explorer. The evaluator gives Target
@@ -364,6 +378,7 @@ files.
 | `src/target/interactive.ts` | dedicated disposable interactive Runtime Pi process |
 | `src/target/tool-manifest.ts` | declarative tool validation and identity |
 | `src/target/tool-broker.ts` | confined subprocess execution |
+| `src/run-events.ts`, `src/builder/run-progress.ts` | bounded development-only live observation and TUI projection |
 | `src/runner.ts`, `src/eval.ts`, `src/trace.ts` | isolated execution and evidence |
 | `src/diagnosis.ts`, `src/evidence/server.ts` | diagnosis and read-only projection |
 | `src/application/candidate-experiment.ts` | exact matched candidate evaluation |
@@ -372,6 +387,8 @@ files.
 See [CONTEXT.md](CONTEXT.md) for domain language and invariants,
 [docs/V1_2_BUILDER_WORKBENCH.md](docs/V1_2_BUILDER_WORKBENCH.md) for the
 implemented Builder Workbench, and
+[docs/V1_3_RUN_EVENTS.md](docs/V1_3_RUN_EVENTS.md) for the live observation
+contract, and
 [docs/V1_1_WORKBENCH_PLAN.md](docs/V1_1_WORKBENCH_PLAN.md) for the historical
 two-Pi plan it supersedes.
 

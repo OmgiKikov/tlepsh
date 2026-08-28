@@ -78,59 +78,62 @@ cannot perform state transitions.
 8. Durable artifacts are schema-versioned, validated on read, and written atomically.
 9. Infrastructure failures are inconclusive evidence, not behavioral failures.
 10. Raw traces are protected evidence; reports use bounded, redacted normalized views.
-11. A canonical Builder-seeded Candidate must link the immutable typed Builder input, run, proposal, human apply receipt, and approved Spec; source Eval/Diagnosis is linked exactly when supplied.
-12. A Builder never sees sealed corpus content, and a Corpus Draft never becomes development or sealed evidence without an explicit human publication action.
-13. Promotion re-reads and hashes the complete durable chain; a manual-origin Candidate is experimental evidence only and cannot be promoted.
-14. A Builder-seeded Candidate re-tests the exact development surface that produced its source Eval: dataset label, dataset hash, and suite hash must match. Published development corpus identity/hash is persisted in Candidate evidence and re-verified at promotion; sealed content is never exposed by that provenance.
-15. Consequential Builder tools never accept model-supplied authority. The host
+11. Live RunEvents are provisional, in-process observations. Listener failure
+    cannot change execution, grading, durable evidence, or Workbench state;
+    sealed holdout runs never attach a Builder-visible listener.
+12. A canonical Builder-seeded Candidate must link the immutable typed Builder input, run, proposal, human apply receipt, and approved Spec; source Eval/Diagnosis is linked exactly when supplied.
+13. A Builder never sees sealed corpus content, and a Corpus Draft never becomes development or sealed evidence without an explicit human publication action.
+14. Promotion re-reads and hashes the complete durable chain; a manual-origin Candidate is experimental evidence only and cannot be promoted.
+15. A Builder-seeded Candidate re-tests the exact development surface that produced its source Eval: dataset label, dataset hash, and suite hash must match. Published development corpus identity/hash is persisted in Candidate evidence and re-verified at promotion; sealed content is never exposed by that provenance.
+16. Consequential Builder tools never accept model-supplied authority. The host
     confirms an exact immutable subject in TUI mode, revalidates it, and records
     a one-operation receipt; non-interactive calls fail closed.
-16. Declarative Target tool descriptors and executable bytes are part of Target
+17. Declarative Target tool descriptors and executable bytes are part of Target
     identity. Missing confinement is recorded honestly and is never promotable.
-17. Initial Target id/model configuration is a one-time host-confirmed bootstrap
+18. Initial Target id/model configuration is a one-time host-confirmed bootstrap
     commit over an exact clean scaffold. Builder receives only the credential
     variable name; the host injects the selected value into a memory-only Target
     credential store.
-18. Every Run in one Eval Run is materialized from the same hash-checked source
+19. Every Run in one Eval Run is materialized from the same hash-checked source
     snapshot. Its exact workspace hash is persisted in the EvalRun and member
     Runs, participates in baseline reuse, and is mandatory promotion evidence.
     Changes to the live Target cannot be attributed only to an unchanged Git SHA.
-19. Apply and Discard are durable, mutually exclusive terminal decisions for one
+20. Apply and Discard are durable, mutually exclusive terminal decisions for one
     exact Builder Proposal.
-20. Workbench may advance only from receipt-backed, revalidated artifacts in
+21. Workbench may advance only from receipt-backed, revalidated artifacts in
     the exact selected lineage. A Spec approval cannot authorize another Spec's
     corpus, and a development corpus cannot be reused across Spec or Target
     identities merely because mutable focus points at it.
-21. Corpus publication records an immutable Workbench lineage binding the exact
+22. Corpus publication records an immutable Workbench lineage binding the exact
     approved Spec, reviewed corpus draft, canonical publication receipt,
     and development dataset hash. Publication is restart-safe across a crash
     between the canonical receipt and lineage record. Eval compatibility then
     additionally requires the current Target revision and suite hash, so the
     same reviewed corpus can measure a later exact Target without re-publication.
-22. Every consequential Workbench decision is legal only in its derived stage.
+23. Every consequential Workbench decision is legal only in its derived stage.
     `/run` cannot skip Spec or corpus review, and inconclusive execution cannot
     advance the workflow.
-23. Interactive Target Pi runs in a dedicated child over a hash-checked
+24. Interactive Target Pi runs in a dedicated child over a hash-checked
     workspace snapshot with frozen Harness resources and an in-memory session.
     The Node loader starts without inherited environment; credential,
     allowlisted runtime values, and fixed display/locale values arrive only over
     post-startup IPC. Shell escapes, undeclared tools, and ambient resume/import
     switching are denied.
-24. An interrupted candidate is neither failed nor retryable by omission. A
+25. An interrupted candidate is neither failed nor retryable by omission. A
     human must write an exact immutable abandonment receipt before Workbench
     may start a replacement verification attempt.
-25. Candidate authority is transitive and exact. An applied candidate is usable
+26. Candidate authority is transitive and exact. An applied candidate is usable
     only while its Builder run, Builder input, Proposal, Apply receipt, approved
     Spec, and optional Eval/diagnosis source artifacts rehash to the admitted
     receipt-backed lineage. Candidate records from another project are not part
     of the current Workbench inventory.
-26. Builder corpus imports are confined to regular, non-symlink JSONL files in
+27. Builder corpus imports are confined to regular, non-symlink JSONL files in
     the project-local `imports/` inbox, which is excluded from Git and every
     Target/evaluation workspace snapshot. They are
     size/count bounded, read from one stable inode, normalized into newly
     derived Spec-bound task ids, and linked to an immutable source-hash receipt
     that is authority-checked across the entire imported draft lineage.
-27. A trace-derived regression case may cite only a hash-indexed, completed
+28. A trace-derived regression case may cite only a hash-indexed, completed
     behavioral failure from the currently compatible development
     Target/corpus/EvalRun surface. AHDE verifies the source trace input against
     the canonical case, persists bounded hashes and ids rather than trace

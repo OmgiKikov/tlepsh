@@ -751,6 +751,7 @@ permissions:
 		);
 		const runtime = fakeRuntime();
 		const candidateId = "candidate-sealed-pairs";
+		const onRunEvent = () => {};
 
 		const result = await runCandidateExperiment(
 			{
@@ -763,6 +764,7 @@ permissions:
 				candidateId,
 				projectId: "project-1",
 				sealedCorpus: corpus.ref,
+				onRunEvent,
 			},
 			runtime.dependencies,
 		);
@@ -775,6 +777,12 @@ permissions:
 		]);
 		expect(runtime.compareModes).toEqual(["candidate", "candidate"]);
 		expect(runtime.reuseQueries).toHaveLength(2);
+		for (const call of runtime.suiteCalls.slice(0, 2)) {
+			expect(call.options.onRunEvent).toBe(onRunEvent);
+		}
+		for (const call of runtime.suiteCalls.slice(2)) {
+			expect(call.options).not.toHaveProperty("onRunEvent");
+		}
 		expect(runtime.suiteCalls.slice(0, 2).every((call) => call.target.datasetHash !== corpus.metadata.hash)).toBe(true);
 		for (const call of runtime.suiteCalls.slice(2)) {
 			expect(call.target.datasetHash).toBe(corpus.metadata.hash);

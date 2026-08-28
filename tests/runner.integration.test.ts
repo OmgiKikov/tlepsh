@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadTarget } from "../src/manifest.js";
 import { runSuite } from "../src/eval.js";
 import { startMockModel, type MockModelHandle } from "../src/mock-model.js";
+import type { RunEvent } from "../src/run-events.js";
 import { FINAL_ANSWER_RECOVERY_PROMPT } from "../src/runner.js";
 import { openTrace } from "../src/trace.js";
 import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
@@ -79,12 +80,58 @@ describe("runSuite with real Pi harness + mock model", () => {
 		const target = loadTarget(targetDir);
 		expect(target.manifest.model.baseUrl).toContain("127.0.0.1");
 
-		const evalRun = await runSuite(target, { runsRoot, label: "baseline", repetitions: 1 });
+		const events: RunEvent[] = [];
+		const durableStatuses: Array<{ event: RunEvent["type"]; status: string; graded: boolean }> = [];
+		const evalRun = await runSuite(target, {
+			runsRoot,
+			label: "baseline",
+			repetitions: 1,
+			onRunEvent: (event) => {
+				events.push(event);
+				if (event.type === "run_started" || event.type === "execution_finished" || event.type === "run_graded") {
+					const durable = JSON.parse(readFileSync(join(runsRoot, event.run.runId, "run.json"), "utf8"));
+					durableStatuses.push({
+						event: event.type,
+						status: durable.status,
+						graded: durable.evalResults !== null,
+					});
+				}
+				// A presentation callback cannot turn a successful execution into an error.
+				if (event.type === "assistant_delta") throw new Error("observer failure");
+			},
+		});
 		expect(evalRun.summary.total).toBe(2);
 		// weak script: task_001 fails (no check_dbo call), task_002 passes
 		expect(evalRun.summary.pass).toBe(1);
 		expect(evalRun.summary.fail).toBe(1);
 		expect(evalRun.provenanceKey).toMatch(/^sha256:/);
+		expect(events.filter((event) => event.type === "run_started").map((event) => event.run)).toEqual([
+			expect.objectContaining({ ordinal: 1, total: 2, repetitionIndex: 0 }),
+			expect.objectContaining({ ordinal: 2, total: 2, repetitionIndex: 0 }),
+		]);
+		for (const runId of evalRun.runIds) {
+			expect(events.filter((event) => event.run.runId === runId).map((event) => event.type)).toEqual([
+				"run_started",
+				"assistant_delta",
+				"execution_finished",
+				"run_graded",
+			]);
+		}
+		expect(durableStatuses.filter((observed) => observed.event === "run_started"))
+			.toEqual([
+				{ event: "run_started", status: "running", graded: false },
+				{ event: "run_started", status: "running", graded: false },
+			]);
+		expect(durableStatuses.filter((observed) => observed.event === "execution_finished"))
+			.toEqual([
+				{ event: "execution_finished", status: "completed", graded: false },
+				{ event: "execution_finished", status: "completed", graded: false },
+			]);
+		expect(durableStatuses.filter((observed) => observed.event === "run_graded"))
+			.toEqual([
+				{ event: "run_graded", status: "completed", graded: true },
+				{ event: "run_graded", status: "completed", graded: true },
+			]);
 
 		const runId = evalRun.runIds[0];
 		if (!runId) throw new Error("evaluation produced no run id");
@@ -139,15 +186,25 @@ description: Проверка ограничений ДБО для любых о
 		execFileSync("git", ["-C", targetDir, "-c", "user.name=test", "-c", "user.email=t@t", "commit", "-qm", "widen skill"]);
 
 		// Candidate: same suite, same model, only the harness file changed.
+		const candidateEvents: RunEvent[] = [];
 		const candidate = await runSuite(loadTarget(targetDir), {
 			runsRoot,
 			label: "candidate",
 			candidateOf: baseline.target.gitSha,
 			baselineEvalRunId: baseline.evalRunId,
 			repetitions: 1,
+			onRunEvent: (event) => candidateEvents.push(event),
 		});
 		expect(candidate.summary.pass).toBe(2);
 		expect(candidate.target.gitSha).not.toBe(baseline.target.gitSha);
+		const toolStarted = candidateEvents.find((event) => event.type === "tool_started");
+		const toolFinished = candidateEvents.find((event) => event.type === "tool_finished");
+		expect(toolStarted).toMatchObject({ type: "tool_started", toolName: "bash", truncated: false });
+		expect(toolFinished).toMatchObject({ type: "tool_finished", toolName: "bash", isError: expect.any(Boolean) });
+		if (toolStarted?.type === "tool_started") expect(toolStarted.arguments).toContain("bin/check_dbo --all");
+		if (toolStarted && toolFinished) {
+			expect(candidateEvents.indexOf(toolStarted)).toBeLessThan(candidateEvents.indexOf(toolFinished));
+		}
 
 		// Comparable: everything except the target git sha matches.
 		const { comparable, provenanceAxes } = await import("../src/provenance.js");
@@ -281,12 +338,34 @@ evalSuite:
 		const dir = makeTargetFixture(baseFixtureFiles(judgeFixtureFiles(judgeMock.url)));
 		const judgeRuns = join(dir, "..", `judge-err-runs-${Date.now()}`);
 		try {
+			const judgeErrorEvents: RunEvent[] = [];
+			const runGradedDurability: string[] = [];
 			const evaluation = await runSuite(loadTarget(dir), {
 				runsRoot: judgeRuns,
 				label: "solo",
 				repetitions: 1,
+				onRunEvent: (event) => {
+					judgeErrorEvents.push(event);
+					if (event.type === "run_graded") {
+						const durable = JSON.parse(readFileSync(join(judgeRuns, event.run.runId, "run.json"), "utf8"));
+						runGradedDurability.push(durable.status);
+					}
+				},
 			});
 			expect(evaluation.summary).toMatchObject({ pass: 0, fail: 0, error: 2, total: 2 });
+			expect(judgeErrorEvents.filter((event) => event.type === "execution_finished"))
+				.toHaveLength(2);
+			expect(judgeErrorEvents.filter((event) => event.type === "execution_finished"))
+				.toEqual(expect.arrayContaining([
+					expect.objectContaining({ status: "completed" }),
+					expect.objectContaining({ status: "completed" }),
+				]));
+			expect(judgeErrorEvents.filter((event) => event.type === "run_graded"))
+				.toEqual(expect.arrayContaining([
+					expect.objectContaining({ outcome: "error" }),
+					expect.objectContaining({ outcome: "error" }),
+				]));
+			expect(runGradedDurability).toEqual(["error", "error"]);
 			// Evidence survives the infrastructure failure: the unparseable
 			// exchange and an explicit run error are both on disk.
 			const runDir = readdirSync(judgeRuns).find((entry) => entry.startsWith("run_"));
@@ -553,10 +632,28 @@ evalSuite:
 		);
 		const emptyRuns = join(dir, "..", `empty-runs-${Date.now()}`);
 		try {
-			const result = await runSuite(loadTarget(dir), { runsRoot: emptyRuns, label: "solo", repetitions: 1 });
+			const errorEvents: RunEvent[] = [];
+			const durableErrorStates: string[] = [];
+			const result = await runSuite(loadTarget(dir), {
+				runsRoot: emptyRuns,
+				label: "solo",
+				repetitions: 1,
+				onRunEvent: (event) => {
+					errorEvents.push(event);
+					if (event.type === "execution_finished" || event.type === "run_graded") {
+						const durable = JSON.parse(readFileSync(join(emptyRuns, event.run.runId, "run.json"), "utf8"));
+						durableErrorStates.push(`${event.type}:${durable.status}`);
+					}
+				},
+			});
 			expect(result.summary.error).toBe(1);
 			const record = JSON.parse(readFileSync(join(emptyRuns, result.runIds[0] ?? "", "run.json"), "utf8"));
 			expect(record.error).toContain("no assistant text");
+			expect(errorEvents.find((event) => event.type === "execution_finished"))
+				.toMatchObject({ type: "execution_finished", status: "error" });
+			expect(errorEvents.find((event) => event.type === "run_graded"))
+				.toMatchObject({ type: "run_graded", outcome: "error", passedGraders: 0, totalGraders: 1 });
+			expect(durableErrorStates).toEqual(["execution_finished:error", "run_graded:error"]);
 		} finally {
 			cleanup(dir);
 			cleanup(emptyRuns);

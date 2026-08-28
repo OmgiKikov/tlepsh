@@ -4,7 +4,7 @@ import { compareEvalRuns } from "./compare.js";
 import { diagnoseEvalRun, loadDiagnosis, type DiagnosisRecord } from "./diagnosis.js";
 import { loadEvalRun, loadRun, type EvalRunRecord } from "./eval.js";
 import type { RunRecord } from "./provenance.js";
-import { openTrace, type TraceMessage } from "./trace.js";
+import { openTrace, redactTraceText, type TraceMessage } from "./trace.js";
 import { writeTextArtifact } from "./storage/artifacts.js";
 import { resolveContainedArtifactPath } from "./storage/paths.js";
 
@@ -94,16 +94,6 @@ export interface EvalReportData {
 	redactionNotice: string;
 }
 
-function redact(text: string): string {
-	return text
-		.replace(/\b(sk-[A-Za-z0-9_-]{10,})\b/g, "[REDACTED_API_KEY]")
-		.replace(/\b(Bearer\s+)[A-Za-z0-9._~+\/-]{10,}/gi, "$1[REDACTED_TOKEN]")
-		.replace(
-			/((?:api[_-]?key|access[_-]?token|secret|password)["']?\s*[:=]\s*["'])[^"]+(["'])/gi,
-			"$1[REDACTED]$2",
-		);
-}
-
 interface TraceCharacterBudget {
 	remaining: number;
 	included: number;
@@ -116,7 +106,7 @@ interface ProjectedTraceText {
 }
 
 function projectTraceText(text: string, budget: TraceCharacterBudget): ProjectedTraceText {
-	const redacted = redact(text);
+	const redacted = redactTraceText(text);
 	const messageBounded = redacted.slice(0, MAX_MESSAGE_CHARS);
 	const includedLength = Math.min(messageBounded.length, budget.remaining);
 	const projected = messageBounded.slice(0, includedLength);

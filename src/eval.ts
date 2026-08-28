@@ -23,6 +23,11 @@ import {
 	materializeTargetWorkspaceSnapshot,
 	runTask,
 } from "./runner.js";
+import {
+	emitRunGraded,
+	type RunEventIdentity,
+	type RunEventListener,
+} from "./run-events.js";
 import { readJsonArtifact, writeJsonArtifact, writeTextArtifact } from "./storage/artifacts.js";
 import { resolveContainedArtifactPath } from "./storage/paths.js";
 import { lastAssistantText, openTrace, traceToolCalls } from "./trace.js";
@@ -313,6 +318,8 @@ export interface RunSuiteOptions {
 	baselineEvalRunId?: string | null;
 	/** @internal Exact source hash captured for a baseline-reuse query. */
 	expectedWorkspaceHash?: string;
+	/** Optional synchronous, observational listener for all task executions. */
+	onRunEvent?: RunEventListener;
 }
 
 /**
@@ -342,9 +349,11 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 		disposeTargetWorkspaceSnapshot(workspaceSnapshot);
 		throw new Error("Target workspace changed after the baseline reuse query");
 	}
+	const executionTotal = tasks.length * options.repetitions;
 	try {
-		for (const task of tasks) {
+		for (const [taskIndex, task] of tasks.entries()) {
 			for (let repetition = 0; repetition < options.repetitions; repetition += 1) {
+				const ordinal = taskIndex * options.repetitions + repetition + 1;
 				const record = await runTask(target, task, {
 					runsRoot: options.runsRoot,
 					label: options.label,
@@ -352,7 +361,18 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 					evalRunId,
 					candidateOf: options.candidateOf ?? null,
 					workspaceSnapshot,
+					ordinal,
+					total: executionTotal,
+					onRunEvent: options.onRunEvent,
 				});
+				const eventRun: RunEventIdentity = {
+					evalRunId,
+					runId: record.runId,
+					taskId: record.taskId,
+					repetitionIndex: record.repetitionIndex,
+					ordinal,
+					total: executionTotal,
+				};
 				runIds.push(record.runId);
 				if (!effectiveExecution) effectiveExecution = record.execution;
 				else if (canonicalJson(effectiveExecution) !== canonicalJson(record.execution)) {
@@ -360,6 +380,7 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 				}
 				if (record.status === "error") {
 					error += 1;
+					emitRunGraded(options.onRunEvent, eventRun, "error", [], task.effectiveGraders.length);
 					continue;
 				}
 				let graders: GraderResult[];
@@ -374,6 +395,7 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 						record,
 					);
 					error += 1;
+					emitRunGraded(options.onRunEvent, eventRun, "error", [], task.effectiveGraders.length);
 					continue;
 				}
 				const outcome = graders.every((g) => g.passed) ? "pass" : "fail";
@@ -384,6 +406,7 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 					RunRecordSchema,
 					record,
 				);
+				emitRunGraded(options.onRunEvent, eventRun, outcome, graders);
 				if (outcome === "pass") pass += 1;
 				else fail += 1;
 			}

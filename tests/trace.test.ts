@@ -8,6 +8,7 @@ import {
 	openTrace,
 	parseSessionJsonl,
 	parseSessionJsonlLenient,
+	redactTraceText,
 	renderTraceMarkdown,
 	traceToolCalls,
 	traceToolErrors,
@@ -44,6 +45,33 @@ describe("trace parser", () => {
 
 	it("finds the last assistant text", () => {
 		expect(lastAssistantText(messages)).toContain("Ограничений нет");
+	});
+
+	it("redacts common credential shapes without changing protected trace artifacts", () => {
+		expect(redactTraceText(
+			'api_key="secret-value-123" password=plain-secret Bearer token-value-123456 sk-live-secret123',
+		)).toBe('api_key="[REDACTED]" password=[REDACTED] Bearer [REDACTED_TOKEN] [REDACTED_API_KEY]');
+	});
+
+	it("redacts named tokens, provider prefixes, AWS keys, and private-key blocks", () => {
+		const projected = redactTraceText([
+			"GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz1234567890",
+			"AUTH_TOKEN=auth-secret-value",
+			"standalone ghp_abcdefghijklmnopqrstuvwxyz1234567890",
+			"AWS_ACCESS_KEY_ID=AKIA1234567890ABCDEF",
+			"-----BEGIN RSA PRIVATE KEY-----",
+			"PRIVATE_KEY_CANARY",
+			"-----END RSA PRIVATE KEY-----",
+		].join("\n"));
+
+		expect(projected).not.toContain("abcdefghijklmnopqrstuvwxyz1234567890");
+		expect(projected).not.toContain("auth-secret-value");
+		expect(projected).not.toContain("AKIA1234567890ABCDEF");
+		expect(projected).not.toContain("PRIVATE_KEY_CANARY");
+		expect(projected).toContain("GITHUB_TOKEN=[REDACTED]");
+		expect(projected).toContain("AUTH_TOKEN=[REDACTED]");
+		expect(projected).toContain("AWS_ACCESS_KEY_ID=[REDACTED]");
+		expect(projected).toContain("[REDACTED_PRIVATE_KEY]");
 	});
 
 	it("does not reuse earlier assistant text when the final assistant message is empty", () => {

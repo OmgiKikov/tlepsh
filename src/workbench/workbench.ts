@@ -96,6 +96,7 @@ import {
 	WorkbenchSubmitInputSchema,
 	type WorkbenchConfirmation,
 	type WorkbenchDecisionInput,
+	type WorkbenchDecisionExecutionOptions,
 	type WorkbenchDecisionResult,
 	type WorkbenchHumanGate,
 	type WorkbenchSelectionKind,
@@ -530,7 +531,7 @@ export class AhdeWorkbench {
 	async decide(
 		inputValue: WorkbenchDecisionInput,
 		gate: WorkbenchHumanGate,
-		options: { signal?: AbortSignal } = {},
+		options: WorkbenchDecisionExecutionOptions = {},
 	): Promise<WorkbenchDecisionResult> {
 		const input = WorkbenchDecisionInputSchema.parse(inputValue);
 		abortIfRequested(options.signal);
@@ -705,7 +706,12 @@ export class AhdeWorkbench {
 			await this.confirm(input, gate, "Run exact development evaluation", before.subject, options.signal);
 			const after = build();
 			if (!exactSame(before.subject, after.subject)) throw new WorkbenchStaleDecisionError(input.kind);
-			const record = await this.dependencies.runSuite(after.target, { runsRoot: this.runsRoot, label: "solo", repetitions: input.repetitions });
+			const record = await this.dependencies.runSuite(after.target, {
+				runsRoot: this.runsRoot,
+				label: "solo",
+				repetitions: input.repetitions,
+				...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
+			});
 			abortIfRequested(options.signal);
 			const diagnosis = this.dependencies.diagnoseEval(this.runsRoot, record.evalRunId);
 			const link = boundedEvidenceLink(await this.dependencies.evidenceLink(record));
@@ -801,7 +807,18 @@ export class AhdeWorkbench {
 			if (!exactSame(before.subject, after.subject)) throw new WorkbenchStaleDecisionError(input.kind);
 			let result: Awaited<ReturnType<typeof runAppliedBuilderCandidate>>;
 			try {
-				result = await this.dependencies.runAppliedCandidate({ repositoryDir: this.projectDir, runsRoot: this.runsRoot, builderRunId: proposal.record.runId, projectId: this.projectId, approvedSpec: { stateRoot: this.stateRoot, specId: after.approvedSpecId }, repetitions: input.repetitions, ...(after.developmentCorpus ? { developmentCorpus: after.developmentCorpus } : {}), sealedCorpus: after.sealedCorpus, actorId: actor });
+				result = await this.dependencies.runAppliedCandidate({
+					repositoryDir: this.projectDir,
+					runsRoot: this.runsRoot,
+					builderRunId: proposal.record.runId,
+					projectId: this.projectId,
+					approvedSpec: { stateRoot: this.stateRoot, specId: after.approvedSpecId },
+					repetitions: input.repetitions,
+					...(after.developmentCorpus ? { developmentCorpus: after.developmentCorpus } : {}),
+					sealedCorpus: after.sealedCorpus,
+					actorId: actor,
+					...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
+				});
 			} catch (error) {
 				// Exact evaluator diagnostics remain host-only because thrown messages can
 				// otherwise become Builder model context through a failed tool result.

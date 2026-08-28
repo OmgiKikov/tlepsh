@@ -8,6 +8,8 @@ import {
 	AHDE_BUILDER_COMMAND_NAMES,
 	registerAhdeBuilderCommands,
 } from "../src/builder/commands.js";
+import { createRunProgressPresenter } from "../src/builder/run-progress.js";
+import type { RunEvent, RunEventIdentity } from "../src/run-events.js";
 import type {
 	WorkbenchConfirmation,
 	WorkbenchDecisionInput,
@@ -83,24 +85,51 @@ function context(options: {
 	confirm: ReturnType<typeof vi.fn>;
 	select: ReturnType<typeof vi.fn>;
 	notify: ReturnType<typeof vi.fn>;
+	setStatus: ReturnType<typeof vi.fn>;
+	setWidget: ReturnType<typeof vi.fn>;
 } {
 	const waitForIdle = vi.fn(options.waitForIdle ?? (async () => undefined));
 	const confirm = vi.fn(options.confirm ?? (async () => false));
 	const select = vi.fn(options.select ?? (async () => undefined));
 	const notify = vi.fn();
+	const setStatus = vi.fn();
+	const setWidget = vi.fn();
 	return {
 		ctx: {
 			hasUI: options.hasUI ?? true,
 			mode: options.mode ?? "tui",
 			signal: options.signal,
 			waitForIdle,
-			ui: { confirm, select, notify },
+			ui: { confirm, select, notify, setStatus, setWidget },
 		} as unknown as ExtensionCommandContext,
 		waitForIdle,
 		confirm,
 		select,
 		notify,
+		setStatus,
+		setWidget,
 	};
+}
+
+const runIdentity: RunEventIdentity = {
+	evalRunId: "eval-development",
+	runId: "run-development-1",
+	taskId: "task-routing",
+	repetitionIndex: 0,
+	ordinal: 1,
+	total: 1,
+};
+
+type RunEventInput<Event> = Event extends RunEvent
+	? Omit<Event, "at" | "run">
+	: never;
+
+function runEvent(event: RunEventInput<RunEvent>): RunEvent {
+	return {
+		...event,
+		at: "2026-08-28T10:00:00.000Z",
+		run: runIdentity,
+	} as RunEvent;
 }
 
 function workbench(options: {
@@ -184,7 +213,7 @@ describe("Builder Pi slash commands", () => {
 			1,
 			{ kind: "run-current", repetitions: 3, reason: "investigate routing" },
 			expect.objectContaining({ confirm: expect.any(Function), selectSealed: expect.any(Function) }),
-			{ signal: controller.signal },
+			{ signal: controller.signal, onRunEvent: expect.any(Function) },
 		);
 		expect(fixture.decide).toHaveBeenNthCalledWith(
 			2,
@@ -194,7 +223,7 @@ describe("Builder Pi slash commands", () => {
 				reason: "Requested interactively via /run",
 			},
 			expect.any(Object),
-			{ signal: controller.signal },
+			{ signal: controller.signal, onRunEvent: expect.any(Function) },
 		);
 		expect(host.notify).toHaveBeenCalledWith(
 			expect.stringContaining("run-current completed"),
@@ -204,6 +233,144 @@ describe("Builder Pi slash commands", () => {
 		await expect(command(commands, "run").handler("11 too many", host.ctx))
 			.rejects.toThrow("/run repetitions must be an integer between 1 and 10");
 		expect(fixture.decide).toHaveBeenCalledTimes(2);
+	});
+
+	it("shows one provisional live widget without replacing the final decision output", async () => {
+		const fixture = workbench({
+			decide: async (input, _gate, options) => {
+				const emit = options?.onRunEvent;
+				expect(emit).toEqual(expect.any(Function));
+				emit?.(runEvent({ type: "run_started" }));
+				emit?.(runEvent({ type: "assistant_delta", delta: "Inspecting ", truncated: false }));
+				emit?.(runEvent({ type: "assistant_delta", delta: "the route.", truncated: false }));
+				emit?.(runEvent({
+					type: "tool_started",
+					toolCallId: "tool-1",
+					toolName: "bash",
+					arguments: "{\"command\":\"pwd\"}",
+					truncated: false,
+				}));
+				emit?.(runEvent({
+					type: "tool_finished",
+					toolCallId: "tool-1",
+					toolName: "bash",
+					isError: false,
+					output: "/tmp/ahde-demo",
+					truncated: false,
+				}));
+				return decision(input.kind, { retained: "final decision payload" });
+			},
+		});
+		const { commands } = register(fixture.value);
+		const host = context();
+
+		await command(commands, "run").handler("", host.ctx);
+
+		const visibleWidgets = host.setWidget.mock.calls
+			.map(([, content]) => content)
+			.filter((content): content is string[] => Array.isArray(content));
+		const visible = visibleWidgets.at(-1) ?? [];
+		expect(visible.join("\n")).toContain("provisional development trace");
+		expect(visible.join("\n")).toContain("assistant · Inspecting the route.");
+		expect(visible.join("\n")).toContain("tool → bash · {\"command\":\"pwd\"}");
+		expect(visible.join("\n")).toContain("tool ✓ bash · /tmp/ahde-demo");
+		expect(new Set(host.setStatus.mock.calls.map(([key]) => key))).toEqual(new Set(["ahde-run-progress"]));
+		expect(new Set(host.setWidget.mock.calls.map(([key]) => key))).toEqual(new Set(["ahde-run-progress"]));
+		expect(host.setStatus).toHaveBeenLastCalledWith("ahde-run-progress", undefined);
+		expect(host.setWidget).toHaveBeenLastCalledWith("ahde-run-progress", undefined);
+		expect(host.notify).toHaveBeenCalledTimes(1);
+		expect(host.notify).toHaveBeenCalledWith(
+			expect.stringMatching(/run-current completed[\s\S]*"retained": "final decision payload"/),
+			"info",
+		);
+	});
+
+	it("keeps every live widget frame within 40 physical lines and 32 KiB", () => {
+		const setStatus = vi.fn();
+		const setWidget = vi.fn();
+		const progress = createRunProgressPresenter({ setStatus, setWidget });
+
+		progress.onRunEvent(runEvent({ type: "run_started" }));
+		for (let index = 0; index < 80; index += 1) {
+			progress.onRunEvent(runEvent({
+				type: "assistant_delta",
+				delta: `line-${index}\n`,
+				truncated: false,
+			}));
+		}
+		for (let index = 0; index < 20; index += 1) {
+			progress.onRunEvent(runEvent({
+				type: "tool_started",
+				toolCallId: `tool-${index}`,
+				toolName: "bash",
+				arguments: `${index}:${"x".repeat(4_096)}`,
+				truncated: false,
+			}));
+		}
+
+		const frames = setWidget.mock.calls
+			.map(([, content]) => content)
+			.filter((content): content is string[] => Array.isArray(content));
+		expect(frames.length).toBeGreaterThan(1);
+		for (const frame of frames) {
+			expect(frame.length).toBeLessThanOrEqual(40);
+			expect(frame.every((line) => !/[\r\n]/.test(line))).toBe(true);
+			expect(Buffer.byteLength(frame.join("\n"), "utf8")).toBeLessThanOrEqual(32 * 1024);
+		}
+		progress.dispose();
+	});
+
+	it("strips terminal control channels from untrusted live text", () => {
+		const setStatus = vi.fn();
+		const setWidget = vi.fn();
+		const progress = createRunProgressPresenter({ setStatus, setWidget });
+
+		progress.onRunEvent(runEvent({
+			type: "assistant_delta",
+			delta: "before\u001b]52;c;CLIPBOARD_CANARY\u0007after",
+			truncated: false,
+		}));
+		progress.onRunEvent(runEvent({
+			type: "tool_started",
+			toolCallId: "tool-control",
+			toolName: "safe\u001b[31m-name",
+			arguments: "left\u001b_APC_CANARY\u001b\\right",
+			truncated: false,
+		}));
+
+		const rendered = JSON.stringify({
+			statuses: setStatus.mock.calls,
+			widgets: setWidget.mock.calls,
+		});
+		expect(rendered).not.toContain("\u001b");
+		expect(rendered).not.toContain("CLIPBOARD_CANARY");
+		expect(rendered).not.toContain("APC_CANARY");
+		expect(rendered).toContain("beforeafter");
+		expect(rendered).toContain("safe-name");
+		expect(rendered).toContain("leftright");
+		progress.dispose();
+	});
+
+	it.each([
+		{ label: "error", message: "runner failed", abort: false },
+		{ label: "abort", message: "run cancelled", abort: true },
+	])("cleans live UI after a run $label", async ({ message, abort }) => {
+		const controller = new AbortController();
+		const fixture = workbench({
+			decide: async (_input, _gate, options) => {
+				options?.onRunEvent?.(runEvent({ type: "run_started" }));
+				const failure = new Error(message);
+				if (abort) controller.abort(failure);
+				throw failure;
+			},
+		});
+		const { commands } = register(fixture.value);
+		const host = context({ signal: controller.signal });
+
+		await expect(command(commands, "run").handler("", host.ctx)).rejects.toThrow(message);
+		expect(host.setStatus).toHaveBeenLastCalledWith("ahde-run-progress", undefined);
+		expect(host.setWidget).toHaveBeenLastCalledWith("ahde-run-progress", undefined);
+		expect(host.notify).not.toHaveBeenCalled();
 	});
 
 	it("parses /apply and /discard without requiring artifact ids from the user", async () => {

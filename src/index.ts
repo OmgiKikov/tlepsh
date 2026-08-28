@@ -30,6 +30,7 @@ export * from "./git/experiment-worktree.js";
 export * from "./manifest.js";
 export * from "./provenance.js";
 export * from "./report.js";
+export * from "./run-events.js";
 export * from "./runner.js";
 export * from "./storage/artifacts.js";
 export * from "./spec.js";

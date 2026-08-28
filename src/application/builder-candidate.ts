@@ -5,6 +5,7 @@ import { loadCorpus, type CorpusRef } from "../corpus.js";
 import { loadDiagnosis } from "../diagnosis.js";
 import { CandidateOriginSchema, type CandidateArtifactRef } from "../domain/candidate.js";
 import { loadVerifiedEvalRun } from "../eval.js";
+import type { RunEventListener } from "../run-events.js";
 import { loadApprovedSpec } from "../spec.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import type { CandidateExperimentResult } from "./candidate-experiment.js";
@@ -26,6 +27,8 @@ export interface RunAppliedBuilderCandidateOptions {
 	sealedCorpus?: CorpusRef;
 	candidateId?: string;
 	actorId?: string;
+	/** Host-only live events for development evaluation; never used for sealed holdouts. */
+	onRunEvent?: RunEventListener;
 }
 
 const MAX_PROVENANCE_ARTIFACT_BYTES = 16 * 1024 * 1024;
@@ -239,5 +242,6 @@ export async function runAppliedBuilderCandidate(
 		actorId: receipt.actor.id,
 		origin,
 		sealedCorpus: options.sealedCorpus,
+		...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
 	});
 }
