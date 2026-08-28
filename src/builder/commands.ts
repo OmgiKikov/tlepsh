@@ -7,7 +7,11 @@ import type {
 	WorkbenchDecisionResult,
 	WorkbenchView,
 } from "../workbench/types.js";
-import { createRunProgressPresenter } from "./run-progress.js";
+import {
+	beginBuilderRunObservation,
+	type BeginBuilderLiveTrace,
+	type BuilderLiveTraceOutcome,
+} from "./run-observation.js";
 import { createWorkbenchHumanGate } from "./workbench-gate.js";
 
 type CommandWorkbench = Pick<AhdeWorkbench, "view" | "decide">;
@@ -102,7 +106,11 @@ function parseApply(args: string): { branch: string; reason: string } {
 
 export function registerAhdeBuilderCommands(
 	pi: ExtensionAPI,
-	options: { workbench: CommandWorkbench; actorId: () => string },
+	options: {
+		workbench: CommandWorkbench;
+		actorId: () => string;
+		beginLiveTrace?: BeginBuilderLiveTrace;
+	},
 ): void {
 	const viewCommand = (
 		name: "status" | "traces" | "review" | "target",
@@ -126,19 +134,43 @@ export function registerAhdeBuilderCommands(
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "run");
 			const parsed = parseRun(args);
-			const progress = createRunProgressPresenter(ctx.ui);
-			const result = await (async () => {
-				try {
-					return await options.workbench.decide(
-						{ kind: "run-current", repetitions: parsed.repetitions, reason: parsed.reason },
-						commandGate(ctx, options.actorId),
-						{ signal, onRunEvent: progress.onRunEvent },
-					);
-				} finally {
-					progress.dispose();
+			const observation = await beginBuilderRunObservation(ctx.ui, options.beginLiveTrace);
+			let outcome: BuilderLiveTraceOutcome = "error";
+			let result: WorkbenchDecisionResult;
+			try {
+				result = await (async () => {
+					try {
+						const decided = await options.workbench.decide(
+							{ kind: "run-current", repetitions: parsed.repetitions, reason: parsed.reason },
+							commandGate(ctx, options.actorId),
+							{ signal, onRunEvent: observation.onRunEvent },
+						);
+						outcome = "completed";
+						return decided;
+					} catch (error) {
+						if (signal?.aborted) outcome = "aborted";
+						throw error;
+					} finally {
+						observation.finish(outcome);
+					}
+				})();
+			} catch (error) {
+				if (observation.liveTraceUrl) {
+					try {
+						ctx.ui.notify(
+							`Live trace retained for 15 minutes: ${observation.liveTraceUrl}`,
+							"info",
+						);
+					} catch {
+						// Preserve the original run error when host notification fails.
+					}
 				}
-			})();
-			ctx.ui.notify(formatDecision(result), result.view.blockers.length > 0 ? "warning" : "info");
+				throw error;
+			}
+			const finalMessage = observation.liveTraceUrl
+				? `${formatDecision(result)}\n\nLive trace retained for 15 minutes: ${observation.liveTraceUrl}`
+				: formatDecision(result);
+			ctx.ui.notify(finalMessage, result.view.blockers.length > 0 ? "warning" : "info");
 		},
 	});
 	viewCommand("traces", "traces", "Show the selected development diagnosis and read-only trace link");

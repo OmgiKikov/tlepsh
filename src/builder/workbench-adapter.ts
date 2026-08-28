@@ -18,7 +18,11 @@ import {
 	WorkbenchSubmitParameters,
 	WorkbenchViewParameters,
 } from "./workbench-transport.js";
-import { createRunProgressPresenter } from "./run-progress.js";
+import {
+	beginBuilderRunObservation,
+	type BeginBuilderLiveTrace,
+	type BuilderLiveTraceOutcome,
+} from "./run-observation.js";
 
 type RegisteredWorkbenchTool = ToolDefinition<TSchema, unknown>;
 
@@ -98,6 +102,7 @@ export function createBuilderWorkbench(
 export function createBuilderWorkbenchTools(
 	workbench: AhdeWorkbench,
 	actorId: () => string,
+	options: { beginLiveTrace?: BeginBuilderLiveTrace } = {},
 ): readonly RegisteredWorkbenchTool[] {
 	return [
 		defineTool({
@@ -134,15 +139,33 @@ export function createBuilderWorkbenchTools(
 				const showsRunProgress = params.kind === "run-current" ||
 					params.kind === "run-eval" ||
 					params.kind === "verify-candidate";
-				const progress = showsRunProgress ? createRunProgressPresenter(ctx.ui) : null;
+				const observation = showsRunProgress
+					? await beginBuilderRunObservation(ctx.ui, options.beginLiveTrace)
+					: null;
+				let outcome: BuilderLiveTraceOutcome = "error";
 				try {
-					return textResult(await workbench.decide(
+					const result = await workbench.decide(
 						params as WorkbenchDecisionInput,
 						createWorkbenchHumanGate(ctx, actorId, (operation) => requireHostUI(ctx, operation)),
-						{ signal, ...(progress ? { onRunEvent: progress.onRunEvent } : {}) },
-					));
+						{ signal, ...(observation ? { onRunEvent: observation.onRunEvent } : {}) },
+					);
+					outcome = "completed";
+					return textResult(result);
+				} catch (error) {
+					if (signal?.aborted) outcome = "aborted";
+					throw error;
 				} finally {
-					progress?.dispose();
+					observation?.finish(outcome);
+					if (observation?.liveTraceUrl) {
+						try {
+							ctx.ui.notify(
+								`Live trace retained for 15 minutes: ${observation.liveTraceUrl}`,
+								"info",
+							);
+						} catch {
+							// Host notification is observational and cannot change the decision.
+						}
+					}
 				}
 			},
 		}),

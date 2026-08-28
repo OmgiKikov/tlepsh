@@ -189,6 +189,45 @@ async function builderPi(): Promise<void> {
 		explorer: null as EvidenceExplorer | null,
 		address: null as EvidenceExplorerAddress | null,
 	};
+	let evidenceHostPromise: Promise<{
+		explorer: EvidenceExplorer;
+		address: EvidenceExplorerAddress;
+	}> | null = null;
+	const ensureEvidenceHost = async (): Promise<{
+		explorer: EvidenceExplorer;
+		address: EvidenceExplorerAddress;
+	}> => {
+		if (evidence.explorer && evidence.address) {
+			return { explorer: evidence.explorer, address: evidence.address };
+		}
+		if (!evidenceHostPromise) {
+			const explorer = evidence.explorer ?? createEvidenceExplorer({ runsRoot: builderRunsRoot });
+			evidence.explorer = explorer;
+			evidenceHostPromise = explorer.listen(Number(arg("port") ?? "0"))
+				.then((address) => {
+					evidence.address = address;
+					return { explorer, address };
+				})
+				.catch(async (error: unknown) => {
+					if (evidence.explorer === explorer) {
+						evidence.explorer = null;
+						evidence.address = null;
+					}
+					try {
+						await explorer.close();
+					} catch {
+						// A failed observational host must not mask the original bind error.
+					}
+					throw error;
+				});
+		}
+		const pending = evidenceHostPromise;
+		try {
+			return await pending;
+		} finally {
+			if (evidenceHostPromise === pending) evidenceHostPromise = null;
+		}
+	};
 
 	try {
 		await launchBuilderPi({
@@ -197,23 +236,37 @@ async function builderPi(): Promise<void> {
 			runsRoot: builderRunsRoot,
 			projectId: arg("project"),
 			dependencies: {
+				beginLiveTrace: async () => {
+					const host = await ensureEvidenceHost();
+					const liveTrace = host.explorer.startLiveTrace();
+					return {
+						url: host.address.urlForLiveTrace(liveTrace.id),
+						onRunEvent: liveTrace.onRunEvent,
+						finish: liveTrace.finish,
+					};
+				},
 				evidenceLink: async (record) => {
 					// The HTTP adapter never mutates canonical state. Diagnosis is
 					// created here, in the trusted application path, before linking.
 					diagnoseEvalRun(builderRunsRoot, record.evalRunId);
-					if (!evidence.explorer) evidence.explorer = createEvidenceExplorer({ runsRoot: builderRunsRoot });
-					if (!evidence.address) {
-						evidence.address = await evidence.explorer.listen(Number(arg("port") ?? "0"));
+					try {
+						const host = await ensureEvidenceHost();
+						return {
+							url: host.address.urlForEval(record.evalRunId),
+							label: "Open verified development traces",
+						};
+					} catch {
+						return null;
 					}
-					return {
-						url: evidence.address.urlForEval(record.evalRunId),
-						label: "Open verified development traces",
-					};
 				},
 			},
 		});
 	} finally {
-		await evidence.explorer?.close();
+		try {
+			await evidence.explorer?.close();
+		} catch {
+			// Evidence HTTP is observational and cannot mask Builder shutdown.
+		}
 	}
 }
 

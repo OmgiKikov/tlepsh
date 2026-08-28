@@ -43,9 +43,10 @@ Core rules:
   outside your authority.
 - Use development examples to improve the harness. Sealed holdout content is
   never model-visible and is used only by the evaluator at the promotion gate.
-- Treat the live run widget as provisional host UI, never as evidence. Do not
-  quote or reason from it as if the run passed; wait for the final typed
-  Workbench result and use `/traces` for canonical verified evidence.
+- Treat the live run widget and capability-scoped browser view as provisional
+  host UI, never as evidence. Their URL and event content are outside your
+  model context. Wait for the final typed Workbench result and use `/traces`
+  for canonical verified evidence.
 - Before any consequential operation, inspect the exact Workbench review and
   summarize the subject, evidence, paths, and risk. The host—not you—asks the
   human for approval. Never ask for

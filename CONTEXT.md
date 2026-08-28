@@ -59,8 +59,10 @@ two modes of one session.
 | Promotion authority | Host-owned explicit decision | None |
 
 The web Evidence Explorer is outside both model trust domains. It is a
-loopback-only, read-only projection of already-created canonical evidence and
-cannot perform state transitions.
+loopback-only, read-only projection of already-created canonical evidence. In
+the long-lived Builder process it can additionally project bounded,
+restart-ephemeral development RunEvents behind a random capability URL. That
+live view is never evidence and cannot perform state transitions.
 
 ## Non-negotiable invariants
 
@@ -78,9 +80,11 @@ cannot perform state transitions.
 8. Durable artifacts are schema-versioned, validated on read, and written atomically.
 9. Infrastructure failures are inconclusive evidence, not behavioral failures.
 10. Raw traces are protected evidence; reports use bounded, redacted normalized views.
-11. Live RunEvents are provisional, in-process observations. Listener failure
-    cannot change execution, grading, durable evidence, or Workbench state;
-    sealed holdout runs never attach a Builder-visible listener.
+11. Live RunEvents are provisional, in-process observations. TUI and web are
+    bounded host-only projections of the same redacted event seam; no second
+    journal or mutable trace reader exists. Listener, HTTP, SSE, UI, and viewer
+    failure cannot change execution, grading, durable evidence, or Workbench
+    state; sealed holdout runs never attach a Builder-visible listener.
 12. A canonical Builder-seeded Candidate must link the immutable typed Builder input, run, proposal, human apply receipt, and approved Spec; source Eval/Diagnosis is linked exactly when supplied.
 13. A Builder never sees sealed corpus content, and a Corpus Draft never becomes development or sealed evidence without an explicit human publication action.
 14. Promotion re-reads and hashes the complete durable chain; a manual-origin Candidate is experimental evidence only and cannot be promoted.

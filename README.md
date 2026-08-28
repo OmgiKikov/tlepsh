@@ -61,6 +61,7 @@ Builder: Spec готов. Утвердить?
 
 > Запусти тесты
 Builder UI: AHDE run 7/40 · tool search ✓
+Builder UI: open live trace · http://127.0.0.1:.../live/...
 Builder: 34/40 passed. Нашёл 3 системных failure mode.
 Builder: Open verified development traces: http://127.0.0.1:...
 
@@ -225,13 +226,21 @@ ahde evidence
 
 The server binds to `127.0.0.1` and accepts only `GET` and `HEAD`. It renders
 already-created canonical evidence; HTTP requests cannot run an eval, create a
-diagnosis, apply a proposal, or make a decision. JSON artifacts and protected
-traces on disk remain the source of truth.
+diagnosis, apply a proposal, or make a decision. During a run started inside
+the long-lived Builder, the same host also serves a random capability URL with
+a bounded, redacted, memory-only SSE view. That URL is shown only in host UI,
+is never listed, expires after 15 minutes, and disappears on restart.
+The Builder repeats the capability URL after completion or failure so the
+retained view remains reachable after its live widget is cleared.
 
 Live `RunEvent` observations deliberately stay in process. AHDE does not write
 a second event journal, tail mutable run directories through HTTP, or expose
-sealed holdout progress. After completion, `/traces` links to the existing
-hash-verified report built from canonical `session.jsonl` and `run.json`.
+sealed holdout progress. Browser text is inserted with `textContent`; Host,
+Origin, CSP, same-origin resource policy, memory, frame, viewer, and TTL bounds
+are enforced. The live page labels EvalRun ids as provisional rather than
+linking to evidence before diagnosis exists. After completion, `/traces` links
+to the existing hash-verified report built from canonical `session.jsonl` and
+`run.json`.
 
 Sealed holdout cases, graders, expected outputs, identifiers, and traces are
 never shown to Builder Pi or the Evidence Explorer. The evaluator gives Target
@@ -358,7 +367,8 @@ scripted OpenAI-compatible model, so it uses no paid tokens.
 packs AHDE under size/file budgets, installs the tarball into an empty consumer,
 scaffolds and validates a Target, starts the isolated Builder host, executes the
 template's declarative `echo_json` tool through the OS sandbox, and exercises
-the read-only Evidence Explorer over a real loopback HTTP socket. The separate
+both canonical reports and a capability-scoped live SSE feed over a real
+loopback HTTP socket. The separate
 natural-language acceptance test drives a real Builder Pi model/tool session
 through Spec, eval, Proposal, sealed verification, review, and promotion. The
 package gate also rejects stale Studio, companion, and retired Workbench-TUI

@@ -25,6 +25,9 @@ describe("Workbench natural-language run progress", () => {
 		{ kind: "run-eval", repetitions: 1, reason: "Run selected evaluation" },
 		{ kind: "verify-candidate", repetitions: 1, reason: "Verify selected candidate" },
 	] as const)("renders $kind live Target text only in host UI and never in the Builder tool result", async (input) => {
+		const liveUrl = `http://127.0.0.1:43123/live/${"b".repeat(32)}`;
+		const liveEvent = vi.fn();
+		const finish = vi.fn();
 		const decide = vi.fn(async (_input, _gate, execution) => {
 			execution?.onRunEvent?.(progressEvent);
 			return {
@@ -34,13 +37,20 @@ describe("Workbench natural-language run progress", () => {
 			};
 		});
 		const workbench = { decide } as unknown as AhdeWorkbench;
-		const tool = createBuilderWorkbenchTools(workbench, () => "local:test")
+		const tool = createBuilderWorkbenchTools(workbench, () => "local:test", {
+			beginLiveTrace: async () => ({
+				url: liveUrl,
+				onRunEvent: liveEvent,
+				finish,
+			}),
+		})
 			.find((candidate) => candidate.name === "ahde_workbench_decide");
 		if (!tool) throw new Error("missing ahde_workbench_decide");
 
 		const confirm = vi.fn(async () => true);
 		const setStatus = vi.fn();
 		const setWidget = vi.fn();
+		const notify = vi.fn();
 		const onUpdate = vi.fn();
 		const context = {
 			hasUI: true,
@@ -48,7 +58,7 @@ describe("Workbench natural-language run progress", () => {
 			ui: {
 				confirm,
 				select: vi.fn(async () => undefined),
-				notify: vi.fn(),
+				notify,
 				setStatus,
 				setWidget,
 			},
@@ -68,9 +78,16 @@ describe("Workbench natural-language run progress", () => {
 			expect.objectContaining({ onRunEvent: expect.any(Function) }),
 		);
 		expect(JSON.stringify(result)).not.toContain("development-live-canary");
+		expect(JSON.stringify(result)).not.toContain(liveUrl);
 		expect(onUpdate).not.toHaveBeenCalled();
+		expect(liveEvent).toHaveBeenCalledWith(progressEvent);
+		expect(finish).toHaveBeenCalledWith("completed");
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining(liveUrl), "info");
 		expect(setWidget.mock.calls.some(([, content]) => (
 			Array.isArray(content) && content.join("\n").includes("development-live-canary")
+		))).toBe(true);
+		expect(setWidget.mock.calls.some(([, content]) => (
+			Array.isArray(content) && content.join("\n").includes(liveUrl)
 		))).toBe(true);
 		expect(setStatus).toHaveBeenLastCalledWith("ahde-run-progress", undefined);
 		expect(setWidget).toHaveBeenLastCalledWith("ahde-run-progress", undefined);

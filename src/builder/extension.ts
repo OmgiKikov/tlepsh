@@ -89,6 +89,7 @@ import {
 	createBuilderWorkbenchTools,
 } from "./workbench-adapter.js";
 import { registerAhdeBuilderCommands } from "./commands.js";
+import type { BeginBuilderLiveTrace } from "./run-observation.js";
 
 const MAX_LIST_ITEMS = 30;
 const MAX_EXACT_DIFF_BYTES = 64 * 1024;
@@ -140,6 +141,7 @@ export interface BuilderExtensionDependencies {
 	describeTargetBootstrap: typeof describeTargetBootstrap;
 	configureTargetBootstrap: typeof configureTargetBootstrap;
 	evidenceLink: (record: EvalRunRecord) => EvidenceLink | null | Promise<EvidenceLink | null>;
+	beginLiveTrace: BeginBuilderLiveTrace;
 	actorId: () => string;
 }
 
@@ -185,6 +187,7 @@ const DEFAULT_DEPENDENCIES: BuilderExtensionDependencies = {
 	describeTargetBootstrap,
 	configureTargetBootstrap,
 	evidenceLink: () => null,
+	beginLiveTrace: async () => null,
 	actorId: () => `local:${userInfo().username || "operator"}`,
 };
 
@@ -899,7 +902,9 @@ function toolRegistry(
 ): RegisteredAhdeTool[] {
 	const dependencies = { ...DEFAULT_DEPENDENCIES, ...options.dependencies };
 	const workbenchTools = providedWorkbenchTools
-		?? createBuilderWorkbenchTools(createBuilderWorkbench(options, dependencies), dependencies.actorId);
+		?? createBuilderWorkbenchTools(createBuilderWorkbench(options, dependencies), dependencies.actorId, {
+			beginLiveTrace: dependencies.beginLiveTrace,
+		});
 	const projectId = () => resolveBuilderProjectId(options);
 	return [
 		...workbenchTools,
@@ -1635,7 +1640,9 @@ function toolRegistry(
 export function createAhdeBuilderExtension(options: BuilderExtensionOptions): ExtensionFactory {
 	const dependencies = { ...DEFAULT_DEPENDENCIES, ...options.dependencies };
 	const workbench = createBuilderWorkbench(options, dependencies);
-	const workbenchTools = createBuilderWorkbenchTools(workbench, dependencies.actorId);
+	const workbenchTools = createBuilderWorkbenchTools(workbench, dependencies.actorId, {
+		beginLiveTrace: dependencies.beginLiveTrace,
+	});
 	const tools = toolRegistry({
 		...options,
 		projectDir: options.projectDir,
@@ -1656,7 +1663,11 @@ export function createAhdeBuilderExtension(options: BuilderExtensionOptions): Ex
 			? undefined
 			: { block: true, reason: `AHDE Builder tool is not allowed: ${event.toolName}`, terminate: true });
 		for (const tool of tools) pi.registerTool(tool);
-		registerAhdeBuilderCommands(pi, { workbench, actorId: dependencies.actorId });
+		registerAhdeBuilderCommands(pi, {
+			workbench,
+			actorId: dependencies.actorId,
+			beginLiveTrace: dependencies.beginLiveTrace,
+		});
 	};
 }
 

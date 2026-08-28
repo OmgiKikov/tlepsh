@@ -19,7 +19,8 @@ import type {
 } from "../src/workbench/types.js";
 
 type CommandOptions = Omit<RegisteredCommand, "name" | "sourceInfo">;
-type CommandWorkbench = Parameters<typeof registerAhdeBuilderCommands>[1]["workbench"];
+type RegisterOptions = Parameters<typeof registerAhdeBuilderCommands>[1];
+type CommandWorkbench = RegisterOptions["workbench"];
 
 const baseView: WorkbenchView = {
 	schemaVersion: 1,
@@ -54,6 +55,7 @@ function decision(
 function register(
 	workbench: CommandWorkbench,
 	actorId = vi.fn(() => "local:test-operator"),
+	beginLiveTrace?: RegisterOptions["beginLiveTrace"],
 ): {
 	registered: Array<{ name: string; options: CommandOptions }>;
 	commands: Map<string, CommandOptions>;
@@ -64,7 +66,7 @@ function register(
 		registerCommand(name: string, options: CommandOptions) {
 			registered.push({ name, options });
 		},
-	} as unknown as ExtensionAPI, { workbench, actorId });
+	} as unknown as ExtensionAPI, { workbench, actorId, ...(beginLiveTrace ? { beginLiveTrace } : {}) });
 	return {
 		registered,
 		commands: new Map(registered.map(({ name, options }) => [name, options])),
@@ -285,6 +287,67 @@ describe("Builder Pi slash commands", () => {
 		);
 	});
 
+	it("fans /run into one retained web trace without exposing its URL in final output", async () => {
+		const liveEvent = vi.fn();
+		const finish = vi.fn();
+		const liveUrl = `http://127.0.0.1:43123/live/${"a".repeat(32)}`;
+		const fixture = workbench({
+			decide: async (input, _gate, options) => {
+				options?.onRunEvent?.(runEvent({ type: "assistant_delta", delta: "WEB_FANOUT_CANARY", truncated: false }));
+				return decision(input.kind, { retained: "canonical result only" });
+			},
+		});
+		const { commands } = register(fixture.value, undefined, async () => ({
+			url: liveUrl,
+			onRunEvent: liveEvent,
+			finish,
+		}));
+		const host = context();
+
+		await command(commands, "run").handler("", host.ctx);
+
+		expect(liveEvent).toHaveBeenCalledWith(expect.objectContaining({
+			type: "assistant_delta",
+			delta: "WEB_FANOUT_CANARY",
+		}));
+		expect(finish).toHaveBeenCalledOnce();
+		expect(finish).toHaveBeenCalledWith("completed");
+		const visible = host.setWidget.mock.calls
+			.map(([, content]) => content)
+			.filter((content): content is string[] => Array.isArray(content));
+		expect(visible.some((frame) => frame.join("\n").includes(liveUrl))).toBe(true);
+		expect(JSON.stringify(host.notify.mock.calls)).toContain(liveUrl);
+		expect(JSON.stringify(host.notify.mock.calls)).not.toContain("WEB_FANOUT_CANARY");
+	});
+
+	it("keeps /run operational when the live web host cannot start", async () => {
+		const fixture = workbench();
+		const { commands } = register(fixture.value, undefined, async () => {
+			throw new Error("port unavailable");
+		});
+		const host = context();
+
+		await expect(command(commands, "run").handler("", host.ctx)).resolves.toBeUndefined();
+		expect(fixture.decide).toHaveBeenCalledOnce();
+		expect(host.notify).toHaveBeenCalledWith(expect.stringContaining("run-current completed"), "info");
+	});
+
+	it("rejects a non-loopback live URL without exposing or blocking the run", async () => {
+		const finish = vi.fn();
+		const fixture = workbench();
+		const { commands } = register(fixture.value, undefined, async () => ({
+			url: `https://attacker.invalid/live/${"d".repeat(32)}`,
+			onRunEvent: vi.fn(),
+			finish,
+		}));
+		const host = context();
+
+		await command(commands, "run").handler("", host.ctx);
+		expect(finish).toHaveBeenCalledWith("aborted");
+		expect(JSON.stringify(host.setWidget.mock.calls)).not.toContain("attacker.invalid");
+		expect(fixture.decide).toHaveBeenCalledOnce();
+	});
+
 	it("keeps every live widget frame within 40 physical lines and 32 KiB", () => {
 		const setStatus = vi.fn();
 		const setWidget = vi.fn();
@@ -356,6 +419,7 @@ describe("Builder Pi slash commands", () => {
 		{ label: "abort", message: "run cancelled", abort: true },
 	])("cleans live UI after a run $label", async ({ message, abort }) => {
 		const controller = new AbortController();
+		const finish = vi.fn();
 		const fixture = workbench({
 			decide: async (_input, _gate, options) => {
 				options?.onRunEvent?.(runEvent({ type: "run_started" }));
@@ -364,13 +428,22 @@ describe("Builder Pi slash commands", () => {
 				throw failure;
 			},
 		});
-		const { commands } = register(fixture.value);
+		const { commands } = register(fixture.value, undefined, async () => ({
+			url: `http://127.0.0.1:43123/live/${"c".repeat(32)}`,
+			onRunEvent: vi.fn(),
+			finish,
+		}));
 		const host = context({ signal: controller.signal });
 
 		await expect(command(commands, "run").handler("", host.ctx)).rejects.toThrow(message);
 		expect(host.setStatus).toHaveBeenLastCalledWith("ahde-run-progress", undefined);
 		expect(host.setWidget).toHaveBeenLastCalledWith("ahde-run-progress", undefined);
-		expect(host.notify).not.toHaveBeenCalled();
+		expect(host.notify).toHaveBeenCalledWith(
+			expect.stringContaining("Live trace retained for 15 minutes: http://127.0.0.1:43123/live/"),
+			"info",
+		);
+		expect(JSON.stringify(host.notify.mock.calls)).not.toContain(message);
+		expect(finish).toHaveBeenCalledWith(abort ? "aborted" : "error");
 	});
 
 	it("parses /apply and /discard without requiring artifact ids from the user", async () => {

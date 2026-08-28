@@ -5,7 +5,6 @@ const UI_KEY = "ahde-run-progress";
 const HEADER = "AHDE · provisional development trace";
 const MAX_WIDGET_LINES = 40;
 const MAX_WIDGET_BYTES = 32 * 1024;
-const MAX_TRACE_LINES = MAX_WIDGET_LINES - 1;
 const MAX_LINE_BYTES = 8 * 1024;
 const ASSISTANT_PREFIX = "assistant · ";
 
@@ -14,6 +13,10 @@ type RunProgressUi = Pick<ExtensionUIContext, "setStatus" | "setWidget">;
 export interface RunProgressPresenter {
 	onRunEvent: RunEventListener;
 	dispose(): void;
+}
+
+export interface RunProgressPresenterOptions {
+	liveTraceUrl?: string;
 }
 
 function byteLength(value: string): number {
@@ -91,22 +94,30 @@ function safely(action: () => void): void {
 	}
 }
 
-export function createRunProgressPresenter(ui: RunProgressUi): RunProgressPresenter {
+export function createRunProgressPresenter(
+	ui: RunProgressUi,
+	options: RunProgressPresenterOptions = {},
+): RunProgressPresenter {
+	const frameHeader = [
+		HEADER,
+		...(options.liveTraceUrl ? [`open live trace · ${sanitizeTerminalText(options.liveTraceUrl)}`] : []),
+	];
+	const maxTraceLines = MAX_WIDGET_LINES - frameHeader.length;
 	const traceLines: string[] = [];
 	let assistantOpen = false;
 	let currentStatus: string | undefined;
 	let disposed = false;
 
 	const trim = (): void => {
-		while (traceLines.length > MAX_TRACE_LINES) traceLines.shift();
-		while (traceLines.length > 1 && widgetBytes([HEADER, ...traceLines]) > MAX_WIDGET_BYTES) {
+		while (traceLines.length > maxTraceLines) traceLines.shift();
+		while (traceLines.length > 1 && widgetBytes([...frameHeader, ...traceLines]) > MAX_WIDGET_BYTES) {
 			traceLines.shift();
 		}
 	};
 
 	const render = (): void => {
 		trim();
-		safely(() => ui.setWidget(UI_KEY, [HEADER, ...traceLines], { placement: "aboveEditor" }));
+		safely(() => ui.setWidget(UI_KEY, [...frameHeader, ...traceLines], { placement: "aboveEditor" }));
 	};
 
 	const setStatus = (status: string): void => {

@@ -49,6 +49,8 @@ try {
 		"dist/application/builder-corpus-import-contract.js",
 		"dist/application/builder-corpus-import.js",
 		"dist/application/builder-regression-case.js",
+		"dist/builder/run-observation.js",
+		"dist/evidence/live.js",
 		"dist/run-events.js",
 		"dist/target/command.js",
 		"dist/workbench/workbench.js",
@@ -317,6 +319,44 @@ try {
   }
   if (!index.headers.get("content-security-policy")?.includes("default-src 'none'") || index.headers.get("cache-control") !== "no-store") {
     throw new Error("Evidence Explorer omitted required read-only security headers");
+  }
+  const live = explorer.startLiveTrace();
+  const liveUrl = address.urlForLiveTrace(live.id);
+  const livePage = await fetch(liveUrl, { signal: AbortSignal.timeout(5_000) });
+  const liveHtml = await livePage.text();
+  if (
+    livePage.status !== 200 ||
+    !liveHtml.includes("AHDE Live Trace") ||
+    !livePage.headers.get("content-security-policy")?.includes("connect-src 'self'") ||
+    livePage.headers.get("cross-origin-resource-policy") !== "same-origin"
+  ) {
+    throw new Error("Evidence Explorer did not serve the protected live trace shell");
+  }
+  const liveStream = await fetch(address.url + "/api/live/" + live.id + "/events", {
+    signal: AbortSignal.timeout(5_000),
+  });
+  live.onRunEvent({
+    type: "assistant_delta",
+    at: new Date().toISOString(),
+    run: {
+      evalRunId: "erun_package_live",
+      runId: "run_package_live",
+      taskId: "task-package-live",
+      repetitionIndex: 0,
+      ordinal: 1,
+      total: 1,
+    },
+    delta: "PACKAGE_LIVE_CANARY",
+    truncated: false,
+  });
+  live.finish("completed");
+  const liveBody = await liveStream.text();
+  if (
+    liveStream.status !== 200 ||
+    !liveBody.includes("PACKAGE_LIVE_CANARY") ||
+    !liveBody.includes('"status":"completed"')
+  ) {
+    throw new Error("Evidence Explorer live SSE did not stream and retain bounded RunEvents");
   }
   const mutation = await fetch(address.url, {
     method: "POST",
@@ -676,7 +716,7 @@ try {
 		readFileSync(join(consumerDir, "node_modules", "ahde", "package.json"), "utf8"),
 	);
 	console.log(
-		`verified ${installedManifest.name}@${installedManifest.version}: pack → clean install → init → validate → Builder startup + sandboxed Target tool + loopback Evidence HTTP + canonical candidate promotion`,
+		`verified ${installedManifest.name}@${installedManifest.version}: pack → clean install → init → validate → Builder startup + sandboxed Target tool + loopback live/final Evidence HTTP + canonical candidate promotion`,
 	);
 } finally {
 	rmSync(workRoot, { recursive: true, force: true });
