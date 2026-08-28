@@ -8,6 +8,7 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workRoot = mkdtempSync(join(tmpdir(), "ahde-package-check-"));
 const packDir = join(workRoot, "pack");
 const consumerDir = join(workRoot, "consumer");
+const globalPrefix = join(workRoot, "global-prefix");
 
 function run(executable, args, options = {}) {
 	return execFileSync(executable, args, {
@@ -79,6 +80,23 @@ try {
 	}
 	const tarball = join(packDir, filename);
 	if (!existsSync(tarball)) throw new Error(`package tarball is missing: ${tarball}`);
+
+	// `ahde` is primarily a CLI. A project-local consumer can pass while the
+	// advertised global install is broken because npm treats bundled `file:`
+	// dependencies differently at a global prefix. Exercise the actual binary.
+	mkdirSync(globalPrefix, { recursive: true });
+	run(
+		"npm",
+		["install", "--global", "--prefix", globalPrefix, "--ignore-scripts", "--no-audit", "--no-fund", tarball],
+		{ cwd: workRoot },
+	);
+	const globalCli = join(globalPrefix, "bin", process.platform === "win32" ? "ahde.cmd" : "ahde");
+	if (!existsSync(globalCli)) throw new Error("global install did not expose the ahde executable");
+	const globalVersion = run(globalCli, ["--version"], { cwd: workRoot, capture: true });
+	const globalHelp = run(globalCli, ["--help"], { cwd: workRoot, capture: true });
+	if (!/^ahde \d+\.\d+\.\d+\s*$/.test(globalVersion) || !globalHelp.includes("Agent Harness Development Environment")) {
+		throw new Error("global-install help/version smoke failed");
+	}
 
 	writeFileSync(
 		join(consumerDir, "package.json"),
