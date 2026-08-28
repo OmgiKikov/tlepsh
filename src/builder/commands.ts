@@ -102,23 +102,23 @@ function formatDecision(result: WorkbenchDecisionResult): string {
 
 function formatDoctor(ctx: ExtensionCommandContext, view: WorkbenchView): { message: string; ready: boolean } {
 	const model = ctx.model;
-	const authenticated = model ? ctx.modelRegistry.hasConfiguredAuth(model) : false;
+	const credentialPresent = model ? ctx.modelRegistry.hasConfiguredAuth(model) : false;
 	const targetReady = view.target.status === "ready";
 	const lines = [
 		"AHDE Doctor",
 		`Builder model: ${model ? `${model.provider}/${model.id}` : "not selected"}`,
-		`Builder authentication: ${authenticated ? "ready" : "missing"}`,
+		`Builder credential: ${credentialPresent ? "present (provider access unverified)" : "missing"}`,
 		`Target: ${view.target.id ?? view.target.status} (${view.target.status})`,
 		`Workflow: ${view.stage} — ${view.headline}`,
 	];
 	if (!model) lines.push("Recovery: choose a Builder model with /model.");
-	else if (!authenticated) lines.push("Recovery: authenticate with /login, or choose an authenticated model with /model.");
+	else if (!credentialPresent) lines.push("Recovery: authenticate with /login, or choose a model with a configured credential via /model.");
 	if (!targetReady) {
 		lines.push("Recovery: describe the agent you want; AHDE will guide the exact Target setup through the Workbench.");
 	}
 	if (view.blockers.length > 0) lines.push(`Current blocker: ${view.blockers.join(" ")}`);
-	const ready = Boolean(model && authenticated && targetReady && view.blockers.length === 0);
-	lines.push(`Verdict: ${ready ? "ready to build" : "action required"}`);
+	const ready = Boolean(model && credentialPresent && targetReady && view.blockers.length === 0);
+	lines.push(`Verdict: ${ready ? "locally ready; provider access will be verified on first request" : "action required"}`);
 	return { message: lines.join("\n"), ready };
 }
 

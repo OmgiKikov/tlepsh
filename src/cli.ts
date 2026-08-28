@@ -51,6 +51,10 @@ import {
 import { launchBuilderPi } from "./builder/runtime.js";
 import { runInteractiveTarget } from "./target/interactive.js";
 import { resolveInteractiveTargetDirectory } from "./target/command.js";
+import {
+	assertTargetReadyToRun,
+	inspectTargetReadiness,
+} from "./target/readiness.js";
 import type { RunEventListener } from "./run-events.js";
 import {
 	CliInvocationError,
@@ -193,6 +197,9 @@ function createBuilderAdapter(
  * created lazily and remains a read-only projection of already-diagnosed runs.
  */
 async function builderPi(sessionMode: "new" | "resume" = "new"): Promise<void> {
+	if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+		throw new Error("AHDE Builder requires an interactive terminal (TTY).");
+	}
 	const projectDir = resolve(arg("target") ?? process.cwd());
 	const builderStateRoot = process.env.AHDE_STATE_DIR
 		? resolve(process.env.AHDE_STATE_DIR)
@@ -306,6 +313,7 @@ async function evidence(): Promise<void> {
 async function targetPi(): Promise<void> {
 	const targetDir = resolveInteractiveTargetDirectory(arg("target"));
 	const target = loadTarget(targetDir);
+	assertTargetReadyToRun(target);
 	await runInteractiveTarget(target, {
 		...(arg("message") ? { initialMessage: arg("message") } : {}),
 	});
@@ -385,6 +393,7 @@ async function main(): Promise<void> {
 					loadCorpus({ stateRoot: stateRoot(), projectId: requireArg("project"), corpusId }),
 				)
 				: baseTarget;
+			assertTargetReadyToRun(target);
 			const taskId = arg("task");
 			const repetitions = Number(arg("repetitions") ?? "1");
 			const requestedLabel = arg("label") ?? "solo";
@@ -414,8 +423,7 @@ async function main(): Promise<void> {
 		case "validate": {
 			const dataset = arg("dataset");
 			const target = loadTarget(resolve(requireArg("target")), dataset ? { dataset } : undefined);
-			const placeholders = target.manifest.id === "my-agent" || target.manifest.model.id === "replace-with-model-id";
-			const credentialConfigured = Boolean(process.env[target.manifest.model.apiKeyEnv]);
+			const readiness = inspectTargetReadiness(target);
 			console.log(`target ${target.manifest.id}: structurally valid`);
 			console.log(`  model: ${target.manifest.model.provider}/${target.manifest.model.id} (thinking: ${target.manifest.model.thinkingLevel})`);
 			console.log(`  key ${target.manifest.model.apiKeyEnv}: ${describeEnvVar(target.manifest.model.apiKeyEnv, environmentReport())}`);
@@ -427,14 +435,14 @@ async function main(): Promise<void> {
 				: target.gitSha.slice(0, 8);
 			console.log(`  git: ${gitDisplay} | pi: ${target.runtime.piVersion}@${target.runtime.piSha.slice(0, 8)}`);
 			console.log(`  ahde: ${target.runtime.ahdeVersion}@${target.runtime.ahdeCodeHash.slice(7, 19)}…`);
-			if (placeholders) {
+			if (readiness.bootstrapRequired) {
 				console.log("  readiness: ACTION REQUIRED — Target identity/model still contain starter placeholders");
 				process.exitCode = 2;
-			} else if (!credentialConfigured) {
+			} else if (readiness.credential.status === "missing") {
 				console.log(`  readiness: ACTION REQUIRED — configure ${target.manifest.model.apiKeyEnv} outside chat`);
 				process.exitCode = 2;
 			} else {
-				console.log("  readiness: ready to run");
+				console.log("  readiness: ready to run (credential present; provider access unverified)");
 			}
 			break;
 		}
@@ -856,11 +864,17 @@ You have no tools. You create a reviewable draft only and must not claim that yo
 
 function cliFailure(error: unknown): { message: string; next?: string } {
 	const message = redactTraceText(error instanceof Error ? error.message : String(error)).slice(0, 4_000);
+	if (/requires an interactive terminal|requires TTY stdin and stdout/i.test(message)) {
+		return {
+			message: "This command needs an interactive terminal (TTY).",
+			next: "Run it directly in a terminal. For automation, use the non-interactive `ahde run`, `ahde validate`, or library API.",
+		};
+	}
 	if (/replace-with-model-id|starter placeholder|built-in.*placeholder/i.test(message)) {
-		return { message, next: "Open `ahde` and finish the guided Target identity/model setup." };
+		return { message: "Target setup is incomplete.", next: "Open `ahde` and finish the guided Target identity/model setup." };
 	}
 	if (/\b401\b|unauthori[sz]ed|authentication|invalid api key/i.test(message)) {
-		return { message, next: "Run `ahde`, then `/doctor`; authenticate the Builder with `/login` or configure the named Target env variable outside chat." };
+		return { message: "The model provider rejected the configured credential.", next: "Run `ahde`, then `/doctor`; authenticate the Builder with `/login` or configure the named Target env variable outside chat." };
 	}
 	if (/fetch failed|ECONNREFUSED|ENOTFOUND|network|socket/i.test(message)) {
 		return { message, next: "Check the configured model baseUrl and network reachability, then run `ahde validate --target <dir>`." };

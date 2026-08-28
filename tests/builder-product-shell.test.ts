@@ -49,7 +49,7 @@ describe("AHDE Builder product shell", () => {
 		expect(setTitle).toHaveBeenCalledWith("AHDE Builder");
 		expect(setWorkingMessage).toHaveBeenCalledWith("AHDE Builder is working…");
 		expect(setStatus).toHaveBeenCalledWith("ahde", "AHDE · target-setup");
-		expect(setStatus).toHaveBeenCalledWith("ahde-auth", "auth required · /doctor");
+		expect(setStatus).toHaveBeenCalledWith("ahde-auth", "credential required · /doctor");
 		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Tell me what agent you want"), "info");
 
 		const factory = setHeader.mock.calls[0]?.[0] as ((tui: unknown, theme: Theme) => { render(): string[] });
@@ -61,5 +61,30 @@ describe("AHDE Builder product shell", () => {
 		expect(rendered).toContain("AHDE Builder");
 		expect(rendered).toContain("Describe what you want to build");
 		expect(rendered).not.toMatch(/Pi coding agent|run bash|!!/i);
+	});
+
+	it("replaces raw provider failures with one stable recovery message", async () => {
+		const handlers = new Map<string, (...args: never[]) => unknown>();
+		installAhdeBuilderProductShell({
+			on: (event: string, handler: (...args: never[]) => unknown) => handlers.set(event, handler),
+		} as unknown as ExtensionAPI, { view: vi.fn(async () => view) } as never);
+
+		const result = await handlers.get("message_end")?.({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				content: [],
+				api: "openai-responses",
+				provider: "openai",
+				model: "gpt-test",
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+				stopReason: "error",
+				errorMessage: "401 Invalid bearer token SECRET_PROVIDER_JSON",
+				timestamp: 1,
+			},
+		} as never, {} as never) as { message: { errorMessage?: string } };
+
+		expect(result.message.errorMessage).toContain("authentication was rejected");
+		expect(result.message.errorMessage).not.toContain("SECRET_PROVIDER_JSON");
 	});
 });

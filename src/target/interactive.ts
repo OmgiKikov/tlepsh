@@ -493,6 +493,9 @@ export async function runInteractiveTarget(
 	target: ResolvedTarget,
 	options: RunInteractiveTargetOptions = {},
 ): Promise<void> {
+	if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+		throw new Error("Interactive Target Pi requires TTY stdin and stdout");
+	}
 	const workspace = materializeTargetWorkspaceSnapshot(target, tmpdir());
 	const launch = interactiveTargetProcessLaunch(target, workspace, options);
 	const entry = fileURLToPath(new URL("./process-entry.js", import.meta.url));
