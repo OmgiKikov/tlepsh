@@ -19,6 +19,10 @@ the harness under development runs in a different Target Pi invocation.
   validated immutable artifacts and receipts; mutable focus is selection only,
   never authority.
 - **Corpus Draft** — private, immutable, agent-synthesized cases derived from one exact approved Spec. It is not runnable until a human explicitly publishes reviewed tasks.
+- **Corpus Import Receipt** — immutable provenance binding one bounded,
+  project-local JSONL source hash to the exact Spec-bound draft created from
+  it. Input task ids are never trusted; AHDE derives new ids from the approved
+  Spec and normalized task content.
 - **Corpus** — versioned evaluation cases and graders. Development cases may be shown to the Builder; sealed holdout cases may not.
 - **Harness Snapshot** — an immutable Git revision plus the exact Harness fingerprint used by a run.
 - **Corpus Snapshot** — an immutable set of cases and grader configuration identified by content hash.
@@ -120,3 +124,15 @@ cannot perform state transitions.
     Spec, and optional Eval/diagnosis source artifacts rehash to the admitted
     receipt-backed lineage. Candidate records from another project are not part
     of the current Workbench inventory.
+26. Builder corpus imports are confined to regular, non-symlink JSONL files in
+    the project-local `imports/` inbox, which is excluded from Git and every
+    Target/evaluation workspace snapshot. They are
+    size/count bounded, read from one stable inode, normalized into newly
+    derived Spec-bound task ids, and linked to an immutable source-hash receipt
+    that is authority-checked across the entire imported draft lineage.
+27. A trace-derived regression case may cite only a hash-indexed, completed
+    behavioral failure from the currently compatible development
+    Target/corpus/EvalRun surface. AHDE verifies the source trace input against
+    the canonical case, persists bounded hashes and ids rather than trace
+    output, and rejects duplicates, infrastructure failures, passing runs,
+    foreign evidence, candidate evidence, and all sealed evidence.

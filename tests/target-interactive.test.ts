@@ -149,6 +149,7 @@ describe("interactive Target Pi", () => {
 			"skills/only-target/scripts/check.sh": "#!/bin/sh\necho SNAPSHOT_SCRIPT\n",
 			"skills/only-target/assets/template.txt": "ASSET_ONLY\n",
 			"public.txt": "source-public\n",
+			"src/imports/helper.txt": "NESTED_IMPORT_MODULE_VISIBLE\n",
 			".gitignore": ".env\n.ahde/\nruns/\n",
 		}));
 		cleanupPaths.push(targetDir);
@@ -158,6 +159,8 @@ describe("interactive Target Pi", () => {
 		writeFileSync(join(targetDir, ".ahde", "builder.json"), "BUILDER_PRIVATE_SENTINEL\n");
 		mkdirSync(join(targetDir, "runs", "candidates"), { recursive: true });
 		writeFileSync(join(targetDir, "runs", "candidates", "promotion.json"), "PROMOTION_SENTINEL\n");
+		mkdirSync(join(targetDir, "imports"), { recursive: true });
+		writeFileSync(join(targetDir, "imports", "builder.jsonl"), "BUILDER_IMPORT_SENTINEL\n");
 
 		const ambientAgentDir = mkdtempSync(join(tmpdir(), "ahde-ambient-agent-"));
 		cleanupPaths.push(ambientAgentDir);
@@ -255,8 +258,10 @@ describe("interactive Target Pi", () => {
 
 				expect(existsSync(join(workspaceDir, "manifest.yaml"))).toBe(true);
 				expect(existsSync(join(workspaceDir, "public.txt"))).toBe(true);
+				expect(readFileSync(join(workspaceDir, "src", "imports", "helper.txt"), "utf8"))
+					.toBe("NESTED_IMPORT_MODULE_VISIBLE\n");
 				expect(existsSync(join(workspaceDir, "visible-draft.txt"))).toBe(true);
-				for (const privatePath of [".git", ".env", ".ahde", "runs", "evals"]) {
+				for (const privatePath of [".git", ".env", ".ahde", "runs", "evals", "imports"]) {
 					expect(existsSync(join(workspaceDir, privatePath))).toBe(false);
 				}
 				writeFileSync(join(workspaceDir, "public.txt"), "interactive-only mutation\n");

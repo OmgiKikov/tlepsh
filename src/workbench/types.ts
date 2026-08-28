@@ -1,9 +1,10 @@
 import { z } from "zod";
 import {
 	BuilderCorpusDraftCoverageNotesSchema,
-	BuilderCorpusDraftRevisionOperationsSchema,
 	BuilderCorpusDraftTasksInputSchema,
 } from "../application/builder-corpus-draft.js";
+import { BuilderCorpusImportSourcePathSchema } from "../application/builder-corpus-import-contract.js";
+import { BuilderWorkbenchCorpusRevisionOperationsSchema } from "../application/builder-regression-case.js";
 import { HarnessAuthoringIntentsSchema } from "../application/harness-authoring.js";
 import { AgentSpecSchema } from "../spec.js";
 
@@ -102,11 +103,20 @@ const CreateCorpusDraftInputSchema = z.strictObject({
 	revisionSummary: NonBlankSchema.max(4_000),
 });
 
+const ImportCorpusDraftInputSchema = z.strictObject({
+	kind: z.literal("corpus-import"),
+	approvedSpecId: ArtifactIdSchema.optional(),
+	sourcePath: BuilderCorpusImportSourcePathSchema,
+	name: NonBlankSchema.max(200),
+	coverageNotes: BuilderCorpusDraftCoverageNotesSchema.default([]),
+	revisionSummary: NonBlankSchema.max(4_000),
+});
+
 const ReviseCorpusDraftInputSchema = z.strictObject({
 	kind: z.literal("corpus-revision"),
 	approvedSpecId: ArtifactIdSchema.optional(),
 	parentDraftId: ArtifactIdSchema.optional(),
-	operations: BuilderCorpusDraftRevisionOperationsSchema,
+	operations: BuilderWorkbenchCorpusRevisionOperationsSchema,
 	revisionSummary: NonBlankSchema.max(4_000),
 });
 
@@ -129,6 +139,7 @@ export const WorkbenchSubmitInputSchema = z.discriminatedUnion("kind", [
 	SelectInputSchema,
 	SaveSpecDraftInputSchema,
 	CreateCorpusDraftInputSchema,
+	ImportCorpusDraftInputSchema,
 	ReviseCorpusDraftInputSchema,
 	StructuredProposalInputSchema,
 ]);

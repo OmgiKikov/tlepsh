@@ -28,6 +28,7 @@ export interface BuilderWorkbenchDependencies {
 	describeCorpusPublication: AhdeWorkbenchDependencies["describeCorpusPublication"];
 	publishDevelopmentCorpus: AhdeWorkbenchDependencies["publishDevelopmentCorpus"];
 	createCorpusDraft: AhdeWorkbenchDependencies["createCorpusDraft"];
+	importCorpusDraft: AhdeWorkbenchDependencies["importCorpusDraft"];
 	reviseCorpusDraft: AhdeWorkbenchDependencies["reviseCorpusDraft"];
 	compileHarnessProposal: typeof compileHarnessAuthoringProposal;
 	recordProposal: AhdeWorkbenchDependencies["recordProposal"];
@@ -69,6 +70,7 @@ export function createBuilderWorkbench(
 		describeCorpusPublication: dependencies.describeCorpusPublication,
 		publishDevelopmentCorpus: dependencies.publishDevelopmentCorpus,
 		createCorpusDraft: dependencies.createCorpusDraft,
+		importCorpusDraft: dependencies.importCorpusDraft,
 		reviseCorpusDraft: dependencies.reviseCorpusDraft,
 		compileHarnessProposal: dependencies.compileHarnessProposal,
 		recordProposal: dependencies.recordProposal,
@@ -110,7 +112,7 @@ export function createBuilderWorkbenchTools(
 		defineTool({
 			name: "ahde_workbench_submit",
 			label: "Author in Builder Workbench",
-			description: "Save a structured Spec, editable Spec-bound corpus draft/revision, semantic harness proposal, or exact artifact selection without granting consequential authority.",
+			description: "Save a structured Spec, import or revise an editable Spec-bound corpus draft, bind a new regression case to verified development failure evidence, author a semantic harness proposal, or select an exact artifact without granting consequential authority.",
 			parameters: WorkbenchSubmitParameters,
 			async execute(_id, params, signal) {
 				abortIfRequested(signal);

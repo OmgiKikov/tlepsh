@@ -3,13 +3,17 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { CorpusTaskSchema, type CorpusTask } from "../corpus.js";
 import { GraderSpec } from "../manifest.js";
-import { canonicalJson, hashValue } from "../provenance.js";
+import { canonicalJson, HashSchema, hashValue } from "../provenance.js";
 import {
 	ApprovedSpecReferenceSchema,
 	loadApprovedSpec,
 	type ApprovedSpecReference,
 } from "../spec.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
+import {
+	BuilderCorpusImportSourceSchema,
+	type BuilderCorpusImportSource,
+} from "./builder-corpus-import-contract.js";
 
 const MAX_DRAFT_TASKS = 100;
 const MAX_TASK_BYTES = 64 * 1024;
@@ -32,6 +36,7 @@ const NonBlankSchema = z
 	.min(1)
 	.refine((value) => value.trim().length > 0, "expected non-blank text");
 const DraftNameSchema = z.string().trim().min(1).max(200);
+const GraderIndexSchema = z.number().int().min(0).max(15);
 export const BuilderCorpusDraftCoverageNotesSchema = z.array(NonBlankSchema.max(1_000)).max(100);
 const RevisionSummarySchema = NonBlankSchema.max(4_000);
 
@@ -77,6 +82,27 @@ export const BuilderCorpusDraftRevisionOperationSchema = z.discriminatedUnion("t
 		taskId: TaskIdSchema,
 	}),
 	z.strictObject({
+		type: z.literal("set-graders"),
+		taskId: TaskIdSchema,
+		graders: z.array(GraderSpec).min(1).max(16),
+	}),
+	z.strictObject({
+		type: z.literal("grader.add"),
+		taskId: TaskIdSchema,
+		grader: GraderSpec,
+	}),
+	z.strictObject({
+		type: z.literal("grader.update"),
+		taskId: TaskIdSchema,
+		graderIndex: GraderIndexSchema,
+		grader: GraderSpec,
+	}),
+	z.strictObject({
+		type: z.literal("grader.remove"),
+		taskId: TaskIdSchema,
+		graderIndex: GraderIndexSchema,
+	}),
+	z.strictObject({
 		type: z.literal("rename"),
 		name: DraftNameSchema,
 	}),
@@ -86,6 +112,32 @@ export const BuilderCorpusDraftRevisionOperationSchema = z.discriminatedUnion("t
 	}),
 ]);
 export type BuilderCorpusDraftRevisionOperation = z.infer<typeof BuilderCorpusDraftRevisionOperationSchema>;
+
+export const BuilderCorpusDraftTaskProvenanceSchema = z.strictObject({
+	kind: z.literal("development-failure"),
+	taskId: TaskIdSchema,
+	source: z.strictObject({
+		corpusId: z.string().regex(/^corpus-[0-9a-f]{64}$/),
+		corpusHash: HashSchema,
+		evalRunId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/),
+		evalRunHash: HashSchema,
+		runId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/),
+		runHash: HashSchema,
+		tracePath: z.literal("session.jsonl"),
+		traceSha256: HashSchema,
+		sourceTaskId: z.string().min(1).max(500),
+		sourceTaskHash: HashSchema,
+	}),
+});
+export type BuilderCorpusDraftTaskProvenance = z.infer<typeof BuilderCorpusDraftTaskProvenanceSchema>;
+
+export const BuilderCorpusDraftVerifiedProvenanceBindingSchema = z.strictObject({
+	operationIndex: z.number().int().min(0).max(MAX_REVISION_OPERATIONS - 1),
+	provenance: BuilderCorpusDraftTaskProvenanceSchema,
+});
+export type BuilderCorpusDraftVerifiedProvenanceBinding = z.infer<
+	typeof BuilderCorpusDraftVerifiedProvenanceBindingSchema
+>;
 
 export const BuilderCorpusDraftRevisionOperationsSchema = z
 	.array(BuilderCorpusDraftRevisionOperationSchema)
@@ -108,12 +160,14 @@ interface BuilderCorpusDraftIdentity {
 	parentDraftId: string | null;
 	name: string;
 	tasks: CorpusTask[];
+	importSource?: BuilderCorpusImportSource;
+	taskProvenance?: BuilderCorpusDraftTaskProvenance[];
 	coverageNotes: string[];
 	revisionSummary: string;
 	source: "builder-pi";
 }
 
-function taskId(approvedSpec: ApprovedSpecReference, task: BuilderCorpusDraftTaskInput): string {
+export function builderCorpusDraftTaskId(approvedSpec: ApprovedSpecReference, task: BuilderCorpusDraftTaskInput): string {
 	const identity = hashValue({ schemaVersion: 2, approvedSpec, task });
 	return `task-${identity.slice("sha256:".length)}`;
 }
@@ -124,7 +178,7 @@ function normalizeTasks(
 ): CorpusTask[] {
 	const inputs = BuilderCorpusDraftTasksInputSchema.parse(tasksInput);
 	const tasks = inputs.map((task) => CorpusTaskSchema.parse({
-		id: taskId(approvedSpec, task),
+		id: builderCorpusDraftTaskId(approvedSpec, task),
 		...task,
 	}));
 	const seen = new Set<string>();
@@ -148,6 +202,8 @@ export const BuilderCorpusDraftSchema = z.strictObject({
 	parentDraftId: DraftIdSchema.nullable(),
 	name: DraftNameSchema,
 	tasks: z.array(BuilderCorpusDraftStoredTaskSchema).min(1).max(MAX_DRAFT_TASKS),
+	importSource: BuilderCorpusImportSourceSchema.optional(),
+	taskProvenance: z.array(BuilderCorpusDraftTaskProvenanceSchema).max(MAX_DRAFT_TASKS).optional(),
 	coverageNotes: BuilderCorpusDraftCoverageNotesSchema,
 	revisionSummary: RevisionSummarySchema,
 	source: z.literal("builder-pi"),
@@ -164,7 +220,7 @@ export const BuilderCorpusDraftSchema = z.strictObject({
 	const taskIds = new Set<string>();
 	for (const [index, task] of draft.tasks.entries()) {
 		const { id: _id, ...input } = task;
-		const expected = taskId(draft.approvedSpec, input);
+		const expected = builderCorpusDraftTaskId(draft.approvedSpec, input);
 		if (task.id !== expected) {
 			context.addIssue({
 				code: "custom",
@@ -181,6 +237,24 @@ export const BuilderCorpusDraftSchema = z.strictObject({
 		}
 		taskIds.add(task.id);
 	}
+	const provenanceTaskIds = new Set<string>();
+	for (const [index, provenance] of (draft.taskProvenance ?? []).entries()) {
+		if (!taskIds.has(provenance.taskId)) {
+			context.addIssue({
+				code: "custom",
+				path: ["taskProvenance", index, "taskId"],
+				message: "task provenance must reference a task in this draft",
+			});
+		}
+		if (provenanceTaskIds.has(provenance.taskId)) {
+			context.addIssue({
+				code: "custom",
+				path: ["taskProvenance", index, "taskId"],
+				message: "each task may have only one development-failure provenance record",
+			});
+		}
+		provenanceTaskIds.add(provenance.taskId);
+	}
 
 	const identity: BuilderCorpusDraftIdentity = {
 		schemaVersion: draft.schemaVersion,
@@ -190,6 +264,8 @@ export const BuilderCorpusDraftSchema = z.strictObject({
 		parentDraftId: draft.parentDraftId,
 		name: draft.name,
 		tasks: draft.tasks,
+		...(draft.importSource !== undefined ? { importSource: draft.importSource } : {}),
+		...(draft.taskProvenance !== undefined ? { taskProvenance: draft.taskProvenance } : {}),
 		coverageNotes: draft.coverageNotes,
 		revisionSummary: draft.revisionSummary,
 		source: draft.source,
@@ -212,6 +288,8 @@ export interface CreateBuilderCorpusDraftOptions {
 	name: string;
 	tasks: readonly unknown[];
 	coverageNotes?: readonly string[];
+	/** Trusted host-derived import provenance; model-facing draft schemas cannot populate it. */
+	verifiedImportSource?: unknown;
 	revisionSummary: string;
 }
 
@@ -220,6 +298,8 @@ export interface ReviseBuilderCorpusDraftOptions {
 	approvedSpec: ApprovedSpecReference;
 	parentDraftId: string;
 	operations: readonly unknown[];
+	/** Trusted host-derived, operation-bound provenance; model-facing schemas cannot populate it. */
+	verifiedTaskProvenance?: readonly unknown[];
 	revisionSummary: string;
 }
 
@@ -301,6 +381,8 @@ function identityOf(draft: BuilderCorpusDraft): BuilderCorpusDraftIdentity {
 		parentDraftId: draft.parentDraftId,
 		name: draft.name,
 		tasks: draft.tasks,
+		...(draft.importSource !== undefined ? { importSource: draft.importSource } : {}),
+		...(draft.taskProvenance !== undefined ? { taskProvenance: draft.taskProvenance } : {}),
 		coverageNotes: draft.coverageNotes,
 		revisionSummary: draft.revisionSummary,
 		source: draft.source,
@@ -352,6 +434,9 @@ export function createBuilderCorpusDraft(
 		parentDraftId: null,
 		name: DraftNameSchema.parse(options.name),
 		tasks: normalizeTasks(approvedSpec, options.tasks),
+		...(options.verifiedImportSource !== undefined
+			? { importSource: BuilderCorpusImportSourceSchema.parse(options.verifiedImportSource) }
+			: {}),
 		coverageNotes: BuilderCorpusDraftCoverageNotesSchema.parse(options.coverageNotes ?? []),
 		revisionSummary: RevisionSummarySchema.parse(options.revisionSummary),
 		source: "builder-pi",
@@ -385,24 +470,103 @@ export function reviseBuilderCorpusDraft(
 	let name = parent.name;
 	let coverageNotes = [...parent.coverageNotes];
 	const tasks = parent.tasks.map((task) => ({ ...task, graders: task.graders.map((grader) => ({ ...grader })) }));
-	for (const operation of operations) {
+	const knownTaskProvenance = new Map(
+		(parent.taskProvenance ?? []).map((provenance) => [provenance.taskId, provenance] as const),
+	);
+	const taskProvenance = new Map(knownTaskProvenance);
+	const replaceGraders = (taskId: string, graders: readonly unknown[], operation: string): void => {
+		const index = taskIndex(tasks, taskId, operation);
+		const previous = tasks[index]!;
+		const normalized = normalizeTasks(approvedSpec, [{ input: previous.input, graders }])[0];
+		if (!normalized) throw new Error(`${operation} did not produce a task`);
+		const provenance = taskProvenance.get(taskId);
+		if (provenance) {
+			taskProvenance.delete(taskId);
+			const remapped = { ...provenance, taskId: normalized.id };
+			taskProvenance.set(normalized.id, remapped);
+			knownTaskProvenance.set(normalized.id, remapped);
+		}
+		tasks[index] = normalized;
+	};
+	const exactGraderIndex = (taskId: string, graderIndex: number, operation: string): {
+		task: CorpusTask;
+		index: number;
+	} => {
+		const task = tasks[taskIndex(tasks, taskId, operation)]!;
+		if (graderIndex >= task.graders.length) {
+			throw new Error(`${operation} references unknown grader index ${graderIndex} on task ${taskId}`);
+		}
+		return { task, index: graderIndex };
+	};
+	const pendingVerifiedProvenance = new Map<number, BuilderCorpusDraftTaskProvenance>();
+	for (const binding of z.array(BuilderCorpusDraftVerifiedProvenanceBindingSchema).max(MAX_DRAFT_TASKS)
+		.parse(options.verifiedTaskProvenance ?? [])) {
+		if (pendingVerifiedProvenance.has(binding.operationIndex)) {
+			throw new Error(`revision operation ${binding.operationIndex} has duplicate verified development-failure provenance`);
+		}
+		pendingVerifiedProvenance.set(binding.operationIndex, binding.provenance);
+	}
+	for (const [operationIndex, operation] of operations.entries()) {
+		const verifiedProvenance = pendingVerifiedProvenance.get(operationIndex);
+		if (verifiedProvenance && operation.type !== "add") {
+			throw new Error(`verified development-failure provenance must bind an add operation, not ${operation.type}`);
+		}
 		switch (operation.type) {
 			case "add": {
 				const normalized = normalizeTasks(approvedSpec, [operation.task])[0];
 				if (!normalized) throw new Error("add operation did not produce a task");
 				tasks.push(normalized);
+				if (verifiedProvenance) {
+					if (verifiedProvenance.taskId !== normalized.id) {
+						throw new Error(`verified development-failure provenance does not match task added by operation ${operationIndex}`);
+					}
+					if (taskProvenance.has(normalized.id)) {
+						throw new Error(`task ${normalized.id} already has development-failure provenance`);
+					}
+					taskProvenance.set(normalized.id, verifiedProvenance);
+					knownTaskProvenance.set(normalized.id, verifiedProvenance);
+					pendingVerifiedProvenance.delete(operationIndex);
+				}
 				break;
 			}
 			case "replace": {
 				const index = taskIndex(tasks, operation.taskId, "replace");
 				const normalized = normalizeTasks(approvedSpec, [operation.task])[0];
 				if (!normalized) throw new Error("replace operation did not produce a task");
+				taskProvenance.delete(operation.taskId);
 				tasks[index] = normalized;
 				break;
 			}
 			case "remove":
+				taskProvenance.delete(operation.taskId);
 				tasks.splice(taskIndex(tasks, operation.taskId, "remove"), 1);
 				break;
+			case "set-graders":
+				replaceGraders(operation.taskId, operation.graders, "set-graders");
+				break;
+			case "grader.add": {
+				const task = tasks[taskIndex(tasks, operation.taskId, "grader.add")]!;
+				replaceGraders(operation.taskId, [...task.graders, operation.grader], "grader.add");
+				break;
+			}
+			case "grader.update": {
+				const { task, index } = exactGraderIndex(operation.taskId, operation.graderIndex, "grader.update");
+				replaceGraders(
+					operation.taskId,
+					task.graders.map((grader, graderIndex) => graderIndex === index ? operation.grader : grader),
+					"grader.update",
+				);
+				break;
+			}
+			case "grader.remove": {
+				const { task, index } = exactGraderIndex(operation.taskId, operation.graderIndex, "grader.remove");
+				replaceGraders(
+					operation.taskId,
+					task.graders.filter((_grader, graderIndex) => graderIndex !== index),
+					"grader.remove",
+				);
+				break;
+			}
 			case "rename":
 				name = operation.name;
 				break;
@@ -410,6 +574,17 @@ export function reviseBuilderCorpusDraft(
 				coverageNotes = [...operation.coverageNotes];
 				break;
 		}
+	}
+	if (pendingVerifiedProvenance.size > 0) {
+		throw new Error(
+			`verified development-failure provenance was not consumed by operation(s): ${[
+				...pendingVerifiedProvenance.keys(),
+			].join(", ")}`,
+		);
+	}
+	const finalTaskIds = new Set(tasks.map((task) => task.id));
+	for (const [taskId, provenance] of knownTaskProvenance) {
+		if (finalTaskIds.has(taskId) && !taskProvenance.has(taskId)) taskProvenance.set(taskId, provenance);
 	}
 
 	const identity: BuilderCorpusDraftIdentity = {
@@ -423,6 +598,8 @@ export function reviseBuilderCorpusDraft(
 			approvedSpec,
 			tasks.map(({ id: _id, ...task }) => task),
 		),
+		...(parent.importSource !== undefined ? { importSource: parent.importSource } : {}),
+		...(taskProvenance.size > 0 ? { taskProvenance: [...taskProvenance.values()] } : {}),
 		coverageNotes,
 		revisionSummary: RevisionSummarySchema.parse(options.revisionSummary),
 		source: "builder-pi",

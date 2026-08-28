@@ -407,6 +407,8 @@ evalSuite:
 				"config/graders.yaml": "defaults: []\n",
 				"evals/sealed.jsonl": '{"id":"sealed","input":"HOLDOUT_CANARY"}\n',
 				".ahde/projects/snapshot/corpora/sealed/corpus.jsonl": "SEALED_CORPUS_CANARY\n",
+				"imports/builder-examples.jsonl": "BUILDER_IMPORT_CANARY\n",
+				"src/imports/helper.ts": "export const visibleImportHelper = true;\n",
 				".env": "MODEL_SECRET=env-canary\n",
 				".env.local": "MODEL_SECRET=local-env-canary\n",
 				".env.example": "MODEL_SECRET=replace-me\n",
@@ -431,6 +433,9 @@ evalSuite:
 			expect(existsSync(join(workspace, ".env.local"))).toBe(false);
 			expect(existsSync(join(workspace, ".ahde"))).toBe(false);
 			expect(existsSync(join(workspace, "evals"))).toBe(false);
+			expect(existsSync(join(workspace, "imports"))).toBe(false);
+			expect(readFileSync(join(workspace, "src", "imports", "helper.ts"), "utf8"))
+				.toBe("export const visibleImportHelper = true;\n");
 			expect(existsSync(join(workspace, "benchmarks", "development.jsonl"))).toBe(false);
 			expect(existsSync(join(workspace, "config", "graders.yaml"))).toBe(false);
 			expect(existsSync(join(workspace, "runs"))).toBe(false);

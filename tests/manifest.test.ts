@@ -195,13 +195,15 @@ describe("scaffoldTarget", () => {
 			scaffoldTarget(template, dest);
 			const cleanSha = loadTarget(dest).gitSha;
 			expect(readFileSync(join(dest, ".gitignore"), "utf8")).toBe(
-				"/custom-cache/\n\n# AHDE local state, run evidence, and secrets\n" +
-					"/.ahde/\n/runs/\n/.env\n/.env.*\n!/.env.example\n",
+				"/custom-cache/\n\n# AHDE local state, Builder imports, run evidence, and secrets\n" +
+					"/.ahde/\n/imports/\n/runs/\n/.env\n/.env.*\n!/.env.example\n",
 			);
 
 			mkdirSync(join(dest, ".ahde", "projects", "test-target"), { recursive: true });
+			mkdirSync(join(dest, "imports"), { recursive: true });
 			mkdirSync(join(dest, "runs", "eval-1"), { recursive: true });
 			writeFileSync(join(dest, ".ahde", "projects", "test-target", "state.json"), "{}\n");
+			writeFileSync(join(dest, "imports", "examples.jsonl"), "PRIVATE_BUILDER_EXAMPLE\n");
 			writeFileSync(join(dest, "runs", "eval-1", "eval_run.json"), "{}\n");
 			writeFileSync(join(dest, ".env"), "TEST_MODEL_KEY=secret\n");
 			writeFileSync(join(dest, ".env.local"), "TEST_MODEL_KEY=local-secret\n");

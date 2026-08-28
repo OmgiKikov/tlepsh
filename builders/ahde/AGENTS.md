@@ -15,8 +15,10 @@ Primary interface:
 - Use `ahde_workbench_view` to read the restart-safe stage, legal next actions,
   exact review subject, traces, or Target launch instructions.
 - Use `ahde_workbench_submit` for non-consequential authoring: Spec drafts,
-  Spec-bound corpus drafts/revisions, semantic Harness intents, and explicit
-  artifact selection.
+  Spec-bound corpus drafts/imports/revisions, semantic Harness intents, and
+  explicit artifact selection. A JSONL import must come from the private
+  project-local `imports/` inbox and use `kind: corpus-import`; never try to
+  read the file through another tool.
 - Use `ahde_workbench_decide` only for the exact human-gated transition named
   by the current Workbench stage. The host owns confirmation, actor identity,
   and sealed-corpus selection.
@@ -65,10 +67,17 @@ Typical loop:
    bootstrap tools and return to Workbench.
 2. Interview in natural language, submit a typed `spec-draft`, inspect
    `aspect: review`, and request `approve-spec` only when the operator asks.
-3. Submit a Spec-bound `corpus-draft`; revise it with semantic operations until
-   exact review is acceptable, then request `publish-corpus`.
+3. Submit a Spec-bound `corpus-draft`, or use `corpus-import` when the operator
+   names a JSONL file in the `imports/` inbox. Revise it with semantic operations until
+   exact review is acceptable, then request `publish-corpus`. Use `set-graders`
+   to replace scoring without rewriting task input, or use
+   `grader.add`/`grader.update`/`grader.remove` for one grader at a time.
 4. Use `/run` or request `run-current`. Report only conclusive development
-   evidence and offer `/traces` or the returned loopback link.
+   evidence and offer `/traces` or the returned loopback link. When a verified
+   failed development run motivates a genuinely new neighboring regression
+   case, revise the selected draft with `add-case-from-run`. Reference the exact
+   EvalRun and Run, author a new task, and never use a passing, infrastructure,
+   foreign, candidate, or sealed run.
 5. Submit a `structured-proposal` using semantic instruction/skill/tool
    intents. Never supply raw repository paths, hashes, modes, or unified diffs;
    the host compiler derives them from the clean Target snapshot.

@@ -18,7 +18,8 @@ import { targetWithDevelopmentCorpus } from "../src/application/corpus-target.js
 import { createCandidate } from "../src/domain/candidate.js";
 import { diagnoseEvalRun } from "../src/diagnosis.js";
 import { writeEvalRun, type EvalRunRecord } from "../src/eval.js";
-import { loadTarget } from "../src/manifest.js";
+import { loadTarget, type GraderSpec } from "../src/manifest.js";
+import { computeTargetWorkspaceHash } from "../src/runner.js";
 import {
 	RunRecordSchema,
 	executionFingerprint,
@@ -91,6 +92,9 @@ function writeDevelopmentEval(
 	paths: { projectDir: string; stateRoot: string; runsRoot: string },
 	corpusId: string,
 	evalRunId: string,
+	outcome: "pass" | "fail" = "fail",
+	toolsetHashOverride?: string,
+	workspaceHashOverride?: string,
 ): EvalRunRecord {
 	const resolved = targetWithDevelopmentCorpus(
 		loadTarget(paths.projectDir),
@@ -113,6 +117,8 @@ function writeDevelopmentEval(
 		spec: {},
 	});
 	const execution = executionFingerprint("isolated");
+	mkdirSync(paths.runsRoot, { recursive: true });
+	const workspaceHash = workspaceHashOverride ?? computeTargetWorkspaceHash(resolved, paths.runsRoot);
 	const evaluation = {
 		suiteId: resolved.manifest.evalSuite.id,
 		suiteHash: resolved.suiteHash,
@@ -120,6 +126,16 @@ function writeDevelopmentEval(
 		datasetHash: resolved.datasetHash,
 	};
 	const runId = `run-${evalRunId}`;
+	const traceContent = [
+		JSON.stringify({
+			type: "message",
+			message: { role: "user", content: resolved.tasks[0]!.input, timestamp: 1 },
+		}),
+		JSON.stringify({
+			type: "message",
+			message: { role: "assistant", content: "fixture failure", timestamp: 2 },
+		}),
+	].join("\n") + "\n";
 	const run: RunRecord = {
 		schemaVersion: 1,
 		runId,
@@ -130,12 +146,17 @@ function writeDevelopmentEval(
 		error: null,
 		startedAt: NOW,
 		finishedAt: NOW,
-		target: { id: resolved.manifest.id, gitSha: resolved.gitSha, toolsetHash: resolved.toolsetHash },
+		target: {
+			id: resolved.manifest.id,
+			gitSha: resolved.gitSha,
+			toolsetHash: toolsetHashOverride ?? resolved.toolsetHash,
+			workspaceHash,
+		},
 		runtime,
 		model,
 		execution,
 		eval: evaluation,
-		trace: { path: "session.jsonl", sessionId: null, sha256: hashFile("") },
+		trace: { path: "session.jsonl", sessionId: null, sha256: hashFile(traceContent) },
 		metrics: {
 			tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 			costUsd: 0,
@@ -145,13 +166,19 @@ function writeDevelopmentEval(
 			recoveryAttempts: 0,
 		},
 		evalResults: {
-			outcome: "fail",
-			graders: [{ name: "fixture", type: "output_contains", passed: false, score: 0, reason: "fixture failure" }],
+			outcome,
+			graders: [{
+				name: "fixture",
+				type: "output_contains",
+				passed: outcome === "pass",
+				score: outcome === "pass" ? 1 : 0,
+				reason: outcome === "pass" ? "fixture pass" : "fixture failure",
+			}],
 		},
 		parent: { evalRunId, candidateOf: null },
 	};
 	mkdirSync(join(paths.runsRoot, runId), { recursive: true });
-	writeFileSync(join(paths.runsRoot, runId, "session.jsonl"), "", "utf8");
+	writeFileSync(join(paths.runsRoot, runId, "session.jsonl"), traceContent, "utf8");
 	writeJsonArtifact(join(paths.runsRoot, runId, "run.json"), RunRecordSchema, run);
 	const evidence = { runtime, model, judge: null, execution, eval: evaluation };
 	const record: EvalRunRecord = {
@@ -171,7 +198,13 @@ function writeDevelopmentEval(
 		runArtifacts: [{ runId, sha256: hashValue(run) }],
 		startedAt: NOW,
 		finishedAt: NOW,
-		summary: { total: 1, pass: 0, fail: 1, error: 0, allPassRate: 0 },
+		summary: {
+			total: 1,
+			pass: outcome === "pass" ? 1 : 0,
+			fail: outcome === "fail" ? 1 : 0,
+			error: 0,
+			allPassRate: outcome === "pass" ? 1 : 0,
+		},
 	};
 	writeEvalRun(paths.runsRoot, record);
 	return record;
@@ -241,6 +274,208 @@ describe("AHDE Workbench", () => {
 
 		const afterSecondRestart = createAhdeWorkbench({ ...paths, projectId: "test-target" });
 		expect((await afterSecondRestart.view()).focus["development-corpus"]).toBe(corpusId);
+	});
+
+	it("imports, regrades, publishes, derives a regression from verified failure evidence, and restores it after restart", async () => {
+		const paths = target();
+		const first = createAhdeWorkbench({ ...paths, projectId: "test-target", dependencies: { now: () => NOW } });
+		await first.submit({ kind: "spec-draft", spec: spec(), sourceText: "Build from reviewed examples" });
+		await first.decide({ kind: "approve-spec", reason: "Approve the exact imported-example contract" }, gate());
+
+		mkdirSync(join(paths.projectDir, "imports"));
+		writeFileSync(join(paths.projectDir, "imports", "examples.jsonl"), `${[
+			{
+				id: "operator-refund-example",
+				input: "What is the refund window?",
+				graders: [{ type: "output_contains", text: "30 days" }],
+			},
+			{
+				id: "operator-absence-example",
+				input: "What should happen when no policy exists?",
+				graders: [{ type: "output_contains", text: "unknown" }],
+			},
+		].map((task) => JSON.stringify(task)).join("\n")}\n`, "utf8");
+		const imported = await first.submit({
+			kind: "corpus-import",
+			sourcePath: "imports/examples.jsonl",
+			name: "Imported policy basket",
+			coverageNotes: ["Operator-provided example"],
+			revisionSummary: "Import reviewed project-local JSONL",
+		});
+		expect(imported.artifact).toMatchObject({
+			taskCount: 2,
+			importReceipt: {
+				id: expect.stringMatching(/^corpus-import-/),
+				source: { path: "imports/examples.jsonl", taskCount: 2 },
+			},
+		});
+		const importReceiptId = String((imported.artifact?.importReceipt as { id?: unknown } | undefined)?.id);
+		const importedDraftId = String(imported.artifact?.id);
+		const importedTask = loadBuilderCorpusDraft(paths.stateRoot, "test-target", importedDraftId).tasks[0]!;
+
+		const graderAdded = await first.submit({
+			kind: "corpus-revision",
+			parentDraftId: importedDraftId,
+			operations: [{
+				type: "grader.add",
+				taskId: importedTask.id,
+				grader: { type: "output_matches", pattern: "30\\s+days" },
+			}],
+			revisionSummary: "Add a precise imported grader",
+		});
+		const addedDraft = loadBuilderCorpusDraft(paths.stateRoot, "test-target", String(graderAdded.artifact?.id));
+		const addedTask = addedDraft.tasks.find((task) => task.input === importedTask.input)!;
+		const graderUpdated = await first.submit({
+			kind: "corpus-revision",
+			parentDraftId: addedDraft.id,
+			operations: [{
+				type: "grader.update",
+				taskId: addedTask.id,
+				graderIndex: 1,
+				grader: { type: "output_matches", pattern: "30\\s+calendar\\s+days" },
+			}],
+			revisionSummary: "Update only the new grader",
+		});
+		const updatedDraft = loadBuilderCorpusDraft(paths.stateRoot, "test-target", String(graderUpdated.artifact?.id));
+		const updatedTask = updatedDraft.tasks.find((task) => task.input === importedTask.input)!;
+		const regraded = await first.submit({
+			kind: "corpus-revision",
+			parentDraftId: updatedDraft.id,
+			operations: [{ type: "grader.remove", taskId: updatedTask.id, graderIndex: 0 }],
+			revisionSummary: "Remove the obsolete broad grader",
+		});
+		const regradedDraftId = String(regraded.artifact?.id);
+		const regradedDraft = loadBuilderCorpusDraft(paths.stateRoot, "test-target", regradedDraftId);
+		const regradedTask = regradedDraft.tasks.find((task) => task.input === importedTask.input)!;
+		expect(regradedTask.input).toBe(importedTask.input);
+		expect(regradedTask.id).not.toBe(importedTask.id);
+		expect(regradedTask.graders).toEqual([{ type: "output_matches", pattern: "30\\s+calendar\\s+days" }]);
+		expect(regradedDraft.importSource).toMatchObject({ path: "imports/examples.jsonl", taskCount: 2 });
+
+		const published = await first.decide({ kind: "publish-corpus", reason: "Publish the reviewed imported basket" }, gate());
+		const corpusId = String(published.result.corpusId);
+		const evalRunId = "erun_v121_closure";
+		const measuring = createAhdeWorkbench({
+			...paths,
+			projectId: "test-target",
+			dependencies: {
+				now: () => NOW,
+				runSuite: async () => writeDevelopmentEval(paths, corpusId, evalRunId),
+			},
+		});
+		const measured = await measuring.decide({
+			kind: "run-current",
+			repetitions: 1,
+			reason: "Measure the exact imported basket",
+		}, gate());
+		expect(measured.result).toMatchObject({ resolvedAs: "run-eval", evaluation: { evalRunId } });
+		const regressionTask: { input: string; graders: GraderSpec[] } = {
+			input: "Does the refund window still apply after an account migration?",
+			graders: [{ type: "output_contains", text: "30 days", caseSensitive: false }],
+		};
+		const revision = (sourceEvalRunId: string, runId: string, derivedTask = regressionTask) => ({
+			kind: "corpus-revision" as const,
+			parentDraftId: regradedDraftId,
+			operations: [{
+				type: "add-case-from-run" as const,
+				evalRunId: sourceEvalRunId,
+				runId,
+				task: derivedTask,
+			}],
+			revisionSummary: "Add a neighboring regression from the verified failure",
+		});
+
+		await expect(measuring.submit(revision(
+			evalRunId,
+			`run-${evalRunId}`,
+			{ input: regradedTask.input, graders: regradedTask.graders },
+		))).rejects.toThrow(/derived case, not an exact duplicate/);
+		const otherDevelopmentTask = loadCorpus({
+			stateRoot: paths.stateRoot,
+			projectId: "test-target",
+			corpusId,
+		}).tasks.find((task) => task.input === "What should happen when no policy exists?")!;
+		await expect(measuring.submit(revision(
+			evalRunId,
+			`run-${evalRunId}`,
+			{ input: otherDevelopmentTask.input, graders: otherDevelopmentTask.graders },
+		))).rejects.toThrow(/exact duplicate of development task/);
+		await expect(measuring.submit(revision("erun_foreign", "run_foreign")))
+			.rejects.toThrow(/not compatible verified development evidence/);
+		const wrongToolsetEvalRunId = "erun_v121_wrong_toolset";
+		writeDevelopmentEval(
+			paths,
+			corpusId,
+			wrongToolsetEvalRunId,
+			"fail",
+			`sha256:${"9".repeat(64)}`,
+		);
+		await expect(measuring.submit(revision(wrongToolsetEvalRunId, `run-${wrongToolsetEvalRunId}`)))
+			.rejects.toThrow(/not compatible verified development evidence/);
+		const wrongWorkspaceEvalRunId = "erun_v121_wrong_workspace";
+		writeDevelopmentEval(
+			paths,
+			corpusId,
+			wrongWorkspaceEvalRunId,
+			"fail",
+			undefined,
+			`sha256:${"8".repeat(64)}`,
+		);
+		await expect(measuring.submit(revision(wrongWorkspaceEvalRunId, `run-${wrongWorkspaceEvalRunId}`)))
+			.rejects.toThrow(/not compatible verified development evidence/);
+
+		const passingEvalRunId = "erun_v121_passing";
+		writeDevelopmentEval(paths, corpusId, passingEvalRunId, "pass");
+		await expect(measuring.submit(revision(passingEvalRunId, `run-${passingEvalRunId}`)))
+			.rejects.toThrow(/completed behavioral failure/);
+
+		const tracePath = join(paths.runsRoot, `run-${evalRunId}`, "session.jsonl");
+		const exactTrace = readFileSync(tracePath, "utf8");
+		writeFileSync(tracePath, `${exactTrace} `, "utf8");
+		await expect(measuring.submit(revision(evalRunId, `run-${evalRunId}`)))
+			.rejects.toThrow(/trace SHA mismatch/);
+		writeFileSync(tracePath, exactTrace, "utf8");
+
+		const derived = await measuring.submit(revision(evalRunId, `run-${evalRunId}`));
+		expect(derived.view.stage).toBe("corpus-review");
+
+		const restarted = createAhdeWorkbench({ ...paths, projectId: "test-target" });
+		const restored = await restarted.view({ aspect: "review" });
+		expect(restored).toMatchObject({
+			stage: "corpus-review",
+			detail: {
+				content: {
+					kind: "corpus-draft",
+					id: derived.artifact?.id,
+					importSource: { path: "imports/examples.jsonl", taskCount: 2 },
+					tasks: [
+						{ input: "What is the refund window?" },
+						{ input: "What should happen when no policy exists?" },
+						{ input: "Does the refund window still apply after an account migration?" },
+					],
+					taskProvenance: [{
+						kind: "development-failure",
+						source: { evalRunId, runId: `run-${evalRunId}`, tracePath: "session.jsonl" },
+					}],
+				},
+			},
+		});
+
+		const receiptPath = join(
+			paths.stateRoot,
+			"projects",
+			"test-target",
+			"builder-corpus-imports",
+			`${importReceiptId}.json`,
+		);
+		const receipt = JSON.parse(readFileSync(receiptPath, "utf8")) as Record<string, unknown>;
+		writeFileSync(receiptPath, `${JSON.stringify({
+			...receipt,
+			draftHash: `sha256:${"0".repeat(64)}`,
+		})}\n`, "utf8");
+		const blocked = await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view();
+		expect(blocked.stage).toBe("selection-required");
+		expect(blocked.blockers.join("\n")).toMatch(/import provenance/);
 	});
 
 	it("never guesses between multiple compatible lineages", async () => {

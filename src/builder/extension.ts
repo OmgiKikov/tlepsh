@@ -35,6 +35,7 @@ import {
 	createBuilderCorpusDraft,
 	reviseBuilderCorpusDraft,
 } from "../application/builder-corpus-draft.js";
+import { importBuilderCorpusDraft } from "../application/builder-corpus-import.js";
 import { compileHarnessAuthoringProposal } from "../application/harness-authoring.js";
 import { runAppliedBuilderCandidate } from "../application/builder-candidate.js";
 import {
@@ -116,6 +117,7 @@ export interface BuilderExtensionDependencies {
 	publishDevelopmentCorpus: typeof publishBuilderDevelopmentCorpus;
 	loadCorpusPublicationReceipt: typeof loadDevelopmentCorpusPublicationReceipt;
 	createCorpusDraft: typeof createBuilderCorpusDraft;
+	importCorpusDraft: typeof importBuilderCorpusDraft;
 	reviseCorpusDraft: typeof reviseBuilderCorpusDraft;
 	compileHarnessProposal: typeof compileHarnessAuthoringProposal;
 	listEvals: typeof listEvalRuns;
@@ -160,6 +162,7 @@ const DEFAULT_DEPENDENCIES: BuilderExtensionDependencies = {
 	publishDevelopmentCorpus: publishBuilderDevelopmentCorpus,
 	loadCorpusPublicationReceipt: loadDevelopmentCorpusPublicationReceipt,
 	createCorpusDraft: createBuilderCorpusDraft,
+	importCorpusDraft: importBuilderCorpusDraft,
 	reviseCorpusDraft: reviseBuilderCorpusDraft,
 	compileHarnessProposal: compileHarnessAuthoringProposal,
 	listEvals: listEvalRuns,

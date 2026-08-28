@@ -63,4 +63,43 @@ describe("Workbench canonical input contract", () => {
 			spec: { ...spec, unexpected: true },
 		})).toThrow();
 	});
+
+	it("accepts bounded import, grader, and evidence-derived corpus authoring inputs", () => {
+		expect(WorkbenchSubmitInputSchema.parse({
+			kind: "corpus-import",
+			sourcePath: "imports/reviewed-examples.jsonl",
+			name: "Imported examples",
+			coverageNotes: [],
+			revisionSummary: "Import exact operator examples",
+		})).toMatchObject({ kind: "corpus-import" });
+		expect(() => WorkbenchSubmitInputSchema.parse({
+			kind: "corpus-import",
+			sourcePath: "evals/sealed.jsonl",
+			name: "Unsafe",
+			revisionSummary: "Must fail",
+		})).toThrow();
+
+		const taskId = `task-${"a".repeat(64)}`;
+		expect(WorkbenchSubmitInputSchema.parse({
+			kind: "corpus-revision",
+			operations: [
+				{ type: "set-graders", taskId, graders: [{ type: "output_matches", pattern: "answer" }] },
+				{ type: "grader.add", taskId, grader: { type: "output_contains", text: "citation" } },
+				{
+					type: "grader.update",
+					taskId,
+					graderIndex: 0,
+					grader: { type: "output_contains", text: "verified answer" },
+				},
+				{ type: "grader.remove", taskId, graderIndex: 1 },
+				{
+					type: "add-case-from-run",
+					evalRunId: "erun_verified",
+					runId: "run_verified",
+					task: { input: "A neighboring regression case", graders: [{ type: "output_contains", text: "answer" }] },
+				},
+			],
+			revisionSummary: "Strengthen the reviewed basket",
+		})).toMatchObject({ kind: "corpus-revision" });
+	});
 });

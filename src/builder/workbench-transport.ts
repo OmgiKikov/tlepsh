@@ -64,6 +64,33 @@ const WorkbenchCorpusOperationParameters = Type.Union([
 	Type.Object({ type: Type.Literal("add"), task: WorkbenchCorpusTaskParameters }, { additionalProperties: false }),
 	Type.Object({ type: Type.Literal("replace"), taskId: WorkbenchTaskId, task: WorkbenchCorpusTaskParameters }, { additionalProperties: false }),
 	Type.Object({ type: Type.Literal("remove"), taskId: WorkbenchTaskId }, { additionalProperties: false }),
+	Type.Object({
+		type: Type.Literal("set-graders"),
+		taskId: WorkbenchTaskId,
+		graders: Type.Array(WorkbenchGraderParameters, { minItems: 1, maxItems: 16 }),
+	}, { additionalProperties: false }),
+	Type.Object({
+		type: Type.Literal("grader.add"),
+		taskId: WorkbenchTaskId,
+		grader: WorkbenchGraderParameters,
+	}, { additionalProperties: false }),
+	Type.Object({
+		type: Type.Literal("grader.update"),
+		taskId: WorkbenchTaskId,
+		graderIndex: Type.Integer({ minimum: 0, maximum: 15 }),
+		grader: WorkbenchGraderParameters,
+	}, { additionalProperties: false }),
+	Type.Object({
+		type: Type.Literal("grader.remove"),
+		taskId: WorkbenchTaskId,
+		graderIndex: Type.Integer({ minimum: 0, maximum: 15 }),
+	}, { additionalProperties: false }),
+	Type.Object({
+		type: Type.Literal("add-case-from-run"),
+		evalRunId: WorkbenchArtifactId,
+		runId: WorkbenchArtifactId,
+		task: WorkbenchCorpusTaskParameters,
+	}, { additionalProperties: false }),
 	Type.Object({ type: Type.Literal("rename"), name: NonBlank(200) }, { additionalProperties: false }),
 	Type.Object({
 		type: Type.Literal("set-notes"),
@@ -167,6 +194,18 @@ export const WorkbenchSubmitParameters = Type.Union([
 		approvedSpecId: Type.Optional(WorkbenchArtifactId),
 		name: NonBlank(200),
 		tasks: Type.Array(WorkbenchCorpusTaskParameters, { minItems: 1, maxItems: 100 }),
+		coverageNotes: Type.Optional(Type.Array(NonBlank(1_000), { maxItems: 100 })),
+		revisionSummary: NonBlank(4_000),
+	}, { additionalProperties: false }),
+	Type.Object({
+		kind: Type.Literal("corpus-import"),
+		approvedSpecId: Type.Optional(WorkbenchArtifactId),
+		sourcePath: Type.String({
+			minLength: 1,
+			maxLength: 4_096,
+			pattern: "^imports\\/(?!\\.)(?!\\s)(?!.*\\s$)(?!.*[\\\\\\u0000\\r\\n])(?!.*//)(?!.*\\/\\.)[^/][^\\u0000\\r\\n]*\\.jsonl$",
+		}),
+		name: NonBlank(200),
 		coverageNotes: Type.Optional(Type.Array(NonBlank(1_000), { maxItems: 100 })),
 		revisionSummary: NonBlank(4_000),
 	}, { additionalProperties: false }),

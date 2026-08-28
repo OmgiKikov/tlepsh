@@ -141,11 +141,14 @@ ahde validate --target .
 To talk to the built agent itself, launch a separate disposable Runtime Pi:
 
 ```bash
-ahde target --target .
-ahde target --target . --message "Start with this task"
+ahde target
+ahde target --message "Start with this task"
+# Or select a different Target explicitly:
+ahde target --target ../another-agent
 ```
 
-This is not Builder Pi in another mode. AHDE starts it in a dedicated child
+Without `--target`, AHDE uses the current directory. This is not Builder Pi in
+another mode. AHDE starts it in a dedicated child
 process with a hash-checked workspace snapshot, manifest-declared skills and
 tools, an in-memory session, and a private credential store. Its Node loader
 starts without inherited environment; selected credential, runtime allowlist,
@@ -185,6 +188,21 @@ Spec, reviewed draft, and development dataset hash. A compatible EvalRun must
 additionally match the current Target revision and suite hash. Structured
 Harness authoring accepts semantic instruction/skill/tool intents; only the host
 compiler chooses repository paths, file modes, hashes, and unified diffs.
+
+Builder Pi can also import a bounded JSONL file from the project-local
+`imports/` inbox into a new editable draft. The inbox is git-ignored and never
+copied into Target Pi or evaluation workspaces. AHDE rejects all paths outside
+that inbox, symlinks, traversal, private state/run paths,
+unstable reads, oversized files, and malformed tasks; caller-owned task ids are
+discarded and an immutable source path/hash receipt is recorded and revalidated
+after restart. Graders can be edited independently with `grader.add`,
+`grader.update`, and `grader.remove` (or replaced as a bounded set with
+`set-graders`). After a development failure, Builder
+can use `add-case-from-run` to author a genuinely new neighboring regression
+case. AHDE accepts only exact hash-indexed failed development evidence from the
+current Spec/Target/corpus lineage and persists bounded ids and hashes, never
+the trace answer. Passing, infrastructure, foreign, candidate, duplicate, and
+sealed sources fail closed.
 
 ## Evidence Explorer
 
@@ -281,7 +299,8 @@ candidate revision. A manual experiment or unconfined run cannot be promoted.
   manifest.yaml, AGENTS.md, skills/**, tools/**, bin/**, evals/**
 
 <state-root>/projects/<project-id>/
-  specs/**, builder-corpus-drafts/**, corpora/**, approval receipts
+  specs/**, builder-corpus-drafts/**, builder-corpus-imports/**, corpora/**
+  approval receipts
   workbench/{focus.json,corpus-publications/**,candidate-abandonments/**}
 
 <state-root>/builder-pi/

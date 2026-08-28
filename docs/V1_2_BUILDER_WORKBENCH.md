@@ -22,9 +22,10 @@ Bare `ahde` opens Builder Pi. The operator can use free text and seven shortcuts
 /status  /run  /traces  /review  /apply  /discard  /target
 ```
 
-`ahde target --target .` opens the resolved Target Harness in a separate,
-disposable Pi process. It is useful for trying the agent by hand; its session is
-not evaluation or promotion evidence.
+`ahde target` opens the Target Harness in the current directory in a separate,
+disposable Pi process; `--target <dir>` selects another Target explicitly. It is
+useful for trying the agent by hand, but its session is not evaluation or
+promotion evidence.
 
 The trusted Builder extension exposes three primary model-facing operations:
 
@@ -63,10 +64,18 @@ closed.
 
 ## Authoring without raw repository authority
 
-Builder Pi can create immutable Spec drafts and Spec-bound corpus drafts. Corpus
-revisions are semantic operations (`add`, `replace`, `remove`, `rename`, and
-`set-notes`) and keep an immutable parent lineage. Human publication creates the
-canonical development Corpus plus a Workbench lineage record binding:
+Builder Pi can create immutable Spec drafts and Spec-bound corpus drafts. It can
+also import a bounded JSONL file from the private project-local `imports/` inbox
+as a new editable draft. That inbox is git-ignored and excluded from all Target
+Pi and evaluation workspace snapshots. Import rejects every other path,
+traversal, symlinks, private AHDE/run roots, unstable reads, and
+malformed or oversized content; source task ids are discarded and an immutable
+relative-path/hash receipt binds the exact imported bytes to the resulting draft
+and is revalidated after restart. Corpus revisions are semantic operations
+(`add`, `replace`, `remove`, `set-graders`, `grader.add`, `grader.update`,
+`grader.remove`, `rename`, and `set-notes`) and keep an immutable parent lineage.
+Human publication creates the canonical development Corpus plus a Workbench
+lineage record binding:
 
 - exact approved Spec and approval receipt;
 - exact reviewed corpus draft;
@@ -98,6 +107,15 @@ neither its identifier nor its contents.
 
 `/traces` returns bounded diagnosis plus a loopback Evidence Explorer link.
 The web surface is GET/HEAD-only and cannot create runs, proposals, or decisions.
+
+`add-case-from-run` turns one exact failed development Run into provenance for
+a new Builder-authored neighboring regression case. The host reloads the
+hash-indexed EvalRun and Run, verifies current Spec/Target/corpus compatibility,
+requires a completed behavioral failure, rehashes the trace, and checks its
+first user input against the canonical source task. The new draft stores only
+bounded corpus/eval/run/trace/task ids and hashes. Exact duplicates, passing or
+infrastructure runs, foreign/candidate evidence, trace tampering, and all sealed
+evidence are rejected.
 
 Publication and candidate recovery are explicit:
 
@@ -135,6 +153,7 @@ evidence, or promotion state.
 ```text
 <state-root>/projects/<project-id>/
   builder-corpus-drafts/<draft-id>.json
+  builder-corpus-imports/<import-id>.json
   workbench/focus.json
   workbench/corpus-publications/<corpus-id>.json
   workbench/candidate-abandonments/<candidate-id>.json
@@ -148,6 +167,7 @@ decision authority.
 
 The release gate covers the full Spec-to-Corpus-to-Eval-to-Proposal-to-Candidate
 lineage, restart recovery, stale decisions, ambiguous selection, sealed-count
-redaction, focus tamper, structured authoring, Builder commands, interactive
-Target isolation, package contents, the production-shaped demo, and the full
-test/typecheck suite.
+redaction, focus tamper, structured authoring, JSONL import provenance,
+first-class grader edits, failed-trace regression derivation, Builder commands,
+interactive Target isolation, package contents, the production-shaped demo,
+and the full test/typecheck suite.

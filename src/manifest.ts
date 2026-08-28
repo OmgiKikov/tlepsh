@@ -181,7 +181,7 @@ export interface ResolvedTarget {
 
 const HARNESS_ROOT = resolve(fileURLToPath(import.meta.url), "../..");
 const LOCAL_ARTIFACT_GITIGNORE =
-	"# AHDE local state, run evidence, and secrets\n/.ahde/\n/runs/\n/.env\n/.env.*\n!/.env.example\n";
+	"# AHDE local state, Builder imports, run evidence, and secrets\n/.ahde/\n/imports/\n/runs/\n/.env\n/.env.*\n!/.env.example\n";
 
 function sourceFiles(root: string, directory = root): { name: string; content: string }[] {
 	const files: { name: string; content: string }[] = [];

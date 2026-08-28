@@ -46,6 +46,10 @@ try {
 		"builders/ahde/skills/design-evals/SKILL.md",
 		"builders/ahde/skills/run-diagnose/SKILL.md",
 		"builders/ahde/skills/improve-harness/SKILL.md",
+		"dist/application/builder-corpus-import-contract.js",
+		"dist/application/builder-corpus-import.js",
+		"dist/application/builder-regression-case.js",
+		"dist/target/command.js",
 		"dist/workbench/workbench.js",
 		"dist/target/process-entry.js",
 	]) {
@@ -102,13 +106,16 @@ import {
   describeDevelopmentCorpusPublication,
   describeSpecDraftApproval,
   diagnoseEvalRun,
+	importBuilderCorpusDraft,
   launchBuilderPi,
+	loadBuilderCorpusImportReceipt,
   loadCorpus,
   loadTarget,
   promoteReviewedCandidate,
   publishBuilderDevelopmentCorpus,
   recordBuilderAuthoredProposal,
   resolveBuilderAssets,
+	resolveDevelopmentFailureOperations,
   reviewCandidate,
   runAppliedBuilderCandidate,
 	runInteractiveTarget,
@@ -130,13 +137,16 @@ for (const [name, value] of Object.entries({
   describeDevelopmentCorpusPublication,
   describeSpecDraftApproval,
   diagnoseEvalRun,
+	importBuilderCorpusDraft,
   launchBuilderPi,
+	loadBuilderCorpusImportReceipt,
   loadCorpus,
   loadTarget,
   promoteReviewedCandidate,
   publishBuilderDevelopmentCorpus,
   recordBuilderAuthoredProposal,
   resolveBuilderAssets,
+	resolveDevelopmentFailureOperations,
   reviewCandidate,
   runAppliedBuilderCandidate,
 	runInteractiveTarget,
@@ -468,6 +478,29 @@ try {
     actor,
     reason: "Approve exact package acceptance contract.",
   });
+
+  const importInbox = join(targetDir, "imports");
+  mkdirSync(importInbox, { recursive: true });
+  writeFileSync(join(importInbox, "package-examples.jsonl"), JSON.stringify({
+    id: "caller-owned-id",
+    input: "Answer an imported package request.",
+    graders: [{ type: "output_contains", text: "READY" }],
+  }) + NL);
+  const importedDraft = importBuilderCorpusDraft({
+    stateRoot,
+    projectDir: targetDir,
+    runsRoot,
+    approvedSpec: approval.receipt.approvedSpec,
+    sourcePath: "imports/package-examples.jsonl",
+    name: "Installed package import",
+    revisionSummary: "Exercise the packaged private import inbox.",
+  });
+  if (
+    importedDraft.draft.tasks.length !== 1 ||
+    importedDraft.draft.tasks[0]?.id === "caller-owned-id" ||
+    importedDraft.draft.importSource?.path !== "imports/package-examples.jsonl" ||
+    loadBuilderCorpusImportReceipt(stateRoot, projectId, importedDraft.receipt.id).id !== importedDraft.receipt.id
+  ) throw new Error("installed-package corpus import did not preserve exact trusted provenance");
 
   const developmentTasks = [{
     id: "package-dev-1",

@@ -188,6 +188,7 @@ function isPrivateWorkspacePath(
 ): boolean {
 	const normalized = normalizedRepositoryPath(path);
 	const parts = normalized.split("/");
+	if (parts[0] === "imports") return true;
 	if (parts.some((part) => WORKSPACE_PRIVATE_COMPONENTS.has(part))) return true;
 	if (parts.some((part) => part === ".env" || (part.startsWith(".env.") && part !== ".env.example"))) {
 		return true;

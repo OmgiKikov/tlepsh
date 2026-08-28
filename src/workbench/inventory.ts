@@ -4,6 +4,7 @@ import {
 	listBuilderCorpusDrafts,
 	type BuilderCorpusDraft,
 } from "../application/builder-corpus-draft.js";
+import { loadBuilderCorpusImportReceiptForDraft } from "../application/builder-corpus-import.js";
 import { builderDiscardReceiptPath } from "../application/builder-discard.js";
 import {
 	loadBuilderApplyReceipt,
@@ -423,6 +424,30 @@ export function loadWorkbenchInventory(options: {
 		corpusDrafts = listBuilderCorpusDrafts(options.stateRoot, options.projectId);
 	} catch (error) {
 		integrityFailure(warnings, integrityBlockers, `corpus drafts: ${errorMessage(error)}`);
+	}
+	const corpusDraftById = new Map(corpusDrafts.map((draft) => [draft.id, draft] as const));
+	for (const draft of corpusDrafts.filter((candidate) => candidate.importSource !== undefined)) {
+		try {
+			let root = draft;
+			const visited = new Set<string>();
+			while (root.parentDraftId !== null) {
+				if (visited.has(root.id)) throw new Error("import draft parent lineage contains a cycle");
+				visited.add(root.id);
+				const parent = corpusDraftById.get(root.parentDraftId);
+				if (!parent) throw new Error(`import draft parent ${root.parentDraftId} is missing`);
+				if (canonicalJson(parent.importSource) !== canonicalJson(draft.importSource)) {
+					throw new Error("import source changed within the immutable draft lineage");
+				}
+				root = parent;
+			}
+			loadBuilderCorpusImportReceiptForDraft(options.stateRoot, root);
+		} catch (error) {
+			integrityFailure(
+				warnings,
+				integrityBlockers,
+				`corpus draft ${draft.id} import provenance: ${errorMessage(error)}`,
+			);
+		}
 	}
 	let corpora: CorpusMetadata[] = [];
 	try {

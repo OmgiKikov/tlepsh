@@ -84,6 +84,46 @@ describe("Builder Pi extension registry", () => {
 			operations: Array.from({ length: 200 }, () => ({ type: "rename", name: "bounded" })),
 			revisionSummary: "Maximum bounded operation count",
 		};
+		const corpusImport = {
+			kind: "corpus-import",
+			sourcePath: "imports/reviewed-examples.jsonl",
+			name: "Imported examples",
+			coverageNotes: ["Operator-provided cases"],
+			revisionSummary: "Import exact project-local JSONL",
+		};
+		const corpusEvidenceRevision = {
+			kind: "corpus-revision",
+			operations: [
+				{
+					type: "set-graders",
+					taskId: `task-${"a".repeat(64)}`,
+					graders: [{ type: "output_matches", pattern: "billing" }],
+				},
+				{
+					type: "grader.add",
+					taskId: `task-${"b".repeat(64)}`,
+					grader: { type: "output_contains", text: "account" },
+				},
+				{
+					type: "grader.update",
+					taskId: `task-${"c".repeat(64)}`,
+					graderIndex: 0,
+					grader: { type: "output_contains", text: "verified account" },
+				},
+				{
+					type: "grader.remove",
+					taskId: `task-${"d".repeat(64)}`,
+					graderIndex: 0,
+				},
+				{
+					type: "add-case-from-run",
+					evalRunId: "erun_verified",
+					runId: "run_verified",
+					task: { input: "Neighboring failure", graders: [{ type: "output_contains", text: "billing" }] },
+				},
+			],
+			revisionSummary: "Bind a regression and tighten grading",
+		};
 		const structuredProposal = {
 			kind: "structured-proposal",
 			summary: "Maximum bounded intent count",
@@ -96,7 +136,9 @@ describe("Builder Pi extension registry", () => {
 		for (const accepted of [
 			corpusDraft,
 			{ ...corpusDraft, coverageNotes: ["x".repeat(1_000)] },
+			corpusImport,
 			corpusRevision,
+			corpusEvidenceRevision,
 			structuredProposal,
 		]) {
 			expect(Check(WorkbenchSubmitParameters, accepted)).toBe(true);
@@ -112,6 +154,9 @@ describe("Builder Pi extension registry", () => {
 				...corpusDraft,
 				tasks: [{ input: "Route this", graders: [{ type: "opaque_grader" }] }],
 			},
+			{ ...corpusImport, sourcePath: "../private.jsonl" },
+			{ ...corpusImport, sourcePath: "evals/sealed.jsonl" },
+			{ ...corpusImport, sourcePath: "imports/.hidden.jsonl" },
 			{ ...corpusRevision, operations: [...corpusRevision.operations, { type: "rename", name: "one-too-many" }] },
 			{ ...structuredProposal, intents: [...structuredProposal.intents, { type: "instructions.replace", content: "One too many" }] },
 		]) {

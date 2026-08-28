@@ -13,6 +13,8 @@ import {
 	createBuilderCorpusDraft,
 	reviseBuilderCorpusDraft,
 } from "../application/builder-corpus-draft.js";
+import { importBuilderCorpusDraft } from "../application/builder-corpus-import.js";
+import { resolveDevelopmentFailureOperations } from "../application/builder-regression-case.js";
 import {
 	compileHarnessAuthoringProposal,
 	type HarnessAuthoringIntent,
@@ -127,6 +129,7 @@ export interface AhdeWorkbenchDependencies {
 	describeCorpusPublication: typeof describeDevelopmentCorpusPublication;
 	publishDevelopmentCorpus: typeof publishBuilderDevelopmentCorpus;
 	createCorpusDraft: typeof createBuilderCorpusDraft;
+	importCorpusDraft: typeof importBuilderCorpusDraft;
 	reviseCorpusDraft: typeof reviseBuilderCorpusDraft;
 	compileHarnessProposal: (input: CompileHarnessAuthoringInput) => CandidateProposal;
 	recordProposal: typeof recordBuilderAuthoredProposal;
@@ -154,6 +157,7 @@ const DEFAULT_DEPENDENCIES: AhdeWorkbenchDependencies = {
 	describeCorpusPublication: describeDevelopmentCorpusPublication,
 	publishDevelopmentCorpus: publishBuilderDevelopmentCorpus,
 	createCorpusDraft: createBuilderCorpusDraft,
+	importCorpusDraft: importBuilderCorpusDraft,
 	reviseCorpusDraft: reviseBuilderCorpusDraft,
 	compileHarnessProposal: compileHarnessAuthoringProposal,
 	recordProposal: recordBuilderAuthoredProposal,
@@ -328,7 +332,7 @@ export class AhdeWorkbench {
 			case "corpus-review": {
 				const approved = requireApprovedSpec(inventory);
 				const draft = requireCorpusDraft(inventory, undefined, approved.id, true);
-				content = { kind: "corpus-draft", id: draft.id, draftHash: hashValue(draft), approvedSpec: draft.approvedSpec, name: draft.name, coverageNotes: draft.coverageNotes, tasks: draft.tasks };
+				content = { kind: "corpus-draft", id: draft.id, draftHash: hashValue(draft), approvedSpec: draft.approvedSpec, name: draft.name, coverageNotes: draft.coverageNotes, importSource: draft.importSource ?? null, tasks: draft.tasks, taskProvenance: draft.taskProvenance ?? [] };
 				break;
 			}
 			case "proposal-review":
@@ -411,16 +415,68 @@ export class AhdeWorkbench {
 			this.select("corpus-draft", result.draft.id);
 			return { kind: input.kind, message: "Corpus draft saved. Revise freely or publish it through the human gate.", artifact: { id: result.draft.id, draftHash: hashValue(result.draft), taskCount: result.draft.tasks.length, approvedSpecId: result.draft.approvedSpec.specId }, view: await this.view() };
 		}
+		if (input.kind === "corpus-import") {
+			const inventory = this.inventory();
+			const approved = requireApprovedSpec(inventory, input.approvedSpecId);
+			const exact = loadApprovedSpec({ stateRoot: this.stateRoot, projectId: this.projectId, specId: approved.id });
+			const result = this.dependencies.importCorpusDraft({
+				stateRoot: this.stateRoot,
+				projectDir: this.projectDir,
+				runsRoot: this.runsRoot,
+				approvedSpec: exact.reference,
+				sourcePath: input.sourcePath,
+				name: input.name,
+				coverageNotes: input.coverageNotes,
+				revisionSummary: input.revisionSummary,
+			}, { now: this.dependencies.now });
+			this.select("corpus-draft", result.draft.id);
+			return {
+				kind: input.kind,
+				message: "Project-local JSONL imported into an immutable, editable Spec-bound corpus draft.",
+				artifact: {
+					id: result.draft.id,
+					draftHash: hashValue(result.draft),
+					taskCount: result.draft.tasks.length,
+					approvedSpecId: result.draft.approvedSpec.specId,
+					importReceipt: {
+						id: result.receipt.id,
+						source: result.receipt.source,
+					},
+				},
+				view: await this.view(),
+			};
+		}
 		if (input.kind === "corpus-revision") {
 			const inventory = this.inventory();
 			const approved = requireApprovedSpec(inventory, input.approvedSpecId);
 			const exact = loadApprovedSpec({ stateRoot: this.stateRoot, projectId: this.projectId, specId: approved.id });
 			const parent = requireCorpusDraft(inventory, input.parentDraftId, approved.id);
+			let operations: readonly unknown[] = input.operations;
+			let verifiedTaskProvenance: readonly unknown[] = [];
+			if (input.operations.some((operation) => operation.type === "add-case-from-run")) {
+				const development = requireDevelopmentCorpus(inventory, undefined, approved.id);
+				if (!inventory.target) throw new Error("add-case-from-run requires a resolved Target");
+				const resolved = resolveDevelopmentFailureOperations({
+					runsRoot: this.runsRoot,
+					approvedSpec: exact.reference,
+					target: inventory.target,
+					developmentCorpus: loadCorpus({
+						stateRoot: this.stateRoot,
+						projectId: this.projectId,
+						corpusId: development.id,
+					}),
+					compatibleEvalRuns: compatibleDevelopmentEvals(inventory, approved.id, development.id),
+					operations: input.operations,
+				});
+				operations = resolved.operations;
+				verifiedTaskProvenance = resolved.verifiedTaskProvenance;
+			}
 			const result = this.dependencies.reviseCorpusDraft({
 				stateRoot: this.stateRoot,
 				approvedSpec: exact.reference,
 				parentDraftId: parent.id,
-				operations: input.operations,
+				operations,
+				verifiedTaskProvenance,
 				revisionSummary: input.revisionSummary,
 			}, { now: this.dependencies.now });
 			this.select("corpus-draft", result.draft.id);

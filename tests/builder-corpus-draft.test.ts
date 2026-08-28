@@ -12,6 +12,8 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	BuilderCorpusDraftSchema,
+	BuilderCorpusDraftTaskInputSchema,
+	builderCorpusDraftTaskId,
 	createBuilderCorpusDraft,
 	listBuilderCorpusDrafts,
 	loadBuilderCorpusDraft,
@@ -169,6 +171,176 @@ describe("Builder Corpus Draft V2", () => {
 			revisionSummary: "Rename for publication",
 		}, { now: () => "2026-08-26T18:00:00.000Z" });
 		expect(metadataOnly.draft.tasks.map(({ id }) => id)).toEqual(revised.draft.tasks.map(({ id }) => id));
+	});
+
+	it("edits graders without replacing the task input and preserves verified failure provenance", () => {
+		const stateRoot = root();
+		const approvedSpec = approved(stateRoot);
+		const initial = createBuilderCorpusDraft({
+			stateRoot,
+			approvedSpec,
+			name: "Policy cases",
+			tasks: [task("Question A", "A")],
+			revisionSummary: "Initial draft",
+		});
+		const regressionTask = BuilderCorpusDraftTaskInputSchema.parse(
+			task("Question A after the observed failure", "A with citation"),
+		);
+		const regressionTaskId = builderCorpusDraftTaskId(approvedSpec, regressionTask);
+		const evidenced = reviseBuilderCorpusDraft({
+			stateRoot,
+			approvedSpec,
+			parentDraftId: initial.draft.id,
+			operations: [{ type: "add", task: regressionTask }],
+			verifiedTaskProvenance: [{
+				operationIndex: 0,
+				provenance: {
+					kind: "development-failure",
+					taskId: regressionTaskId,
+					source: {
+						corpusId: `corpus-${"2".repeat(64)}`,
+						corpusHash: `sha256:${"3".repeat(64)}`,
+						evalRunId: "erun_source",
+						evalRunHash: `sha256:${"4".repeat(64)}`,
+						runId: "run_source",
+						runHash: `sha256:${"5".repeat(64)}`,
+						tracePath: "session.jsonl",
+						traceSha256: `sha256:${"6".repeat(64)}`,
+						sourceTaskId: initial.draft.tasks[0]!.id,
+						sourceTaskHash: `sha256:${"7".repeat(64)}`,
+					},
+				},
+			}],
+			revisionSummary: "Add evidenced regression",
+		});
+		const storedRegression = evidenced.draft.tasks.find((candidate) => candidate.input === regressionTask.input)!;
+		expect(storedRegression.id).toBe(regressionTaskId);
+		expect(evidenced.draft.taskProvenance).toEqual([
+			expect.objectContaining({ taskId: regressionTaskId, kind: "development-failure" }),
+		]);
+
+		const regraded = reviseBuilderCorpusDraft({
+			stateRoot,
+			approvedSpec,
+			parentDraftId: evidenced.draft.id,
+			operations: [{
+				type: "set-graders",
+				taskId: regressionTaskId,
+				graders: [{ type: "output_matches", pattern: "citation:[^\\n]+" }],
+			}],
+			revisionSummary: "Tighten the regression grader",
+		});
+		const updated = regraded.draft.tasks.find((candidate) => candidate.input === regressionTask.input)!;
+		expect(updated.input).toBe(regressionTask.input);
+		expect(updated.id).not.toBe(regressionTaskId);
+		expect(updated.graders).toEqual([{ type: "output_matches", pattern: "citation:[^\\n]+" }]);
+		expect(regraded.draft.taskProvenance).toEqual([
+			expect.objectContaining({ taskId: updated.id, kind: "development-failure" }),
+		]);
+		const graderAdded = reviseBuilderCorpusDraft({
+			stateRoot,
+			approvedSpec,
+			parentDraftId: regraded.draft.id,
+			operations: [{
+				type: "grader.add",
+				taskId: updated.id,
+				grader: { type: "output_contains", text: "policy" },
+			}],
+			revisionSummary: "Add an independent regression grader",
+		});
+		const addedTask = graderAdded.draft.tasks.find((candidate) => candidate.input === regressionTask.input)!;
+		expect(addedTask.graders).toHaveLength(2);
+		const graderUpdated = reviseBuilderCorpusDraft({
+			stateRoot,
+			approvedSpec,
+			parentDraftId: graderAdded.draft.id,
+			operations: [{
+				type: "grader.update",
+				taskId: addedTask.id,
+				graderIndex: 1,
+				grader: { type: "output_contains", text: "verified policy", caseSensitive: true },
+			}],
+			revisionSummary: "Update one grader without replacing the array",
+		});
+		const graderUpdatedTask = graderUpdated.draft.tasks.find((candidate) => candidate.input === regressionTask.input)!;
+		expect(graderUpdatedTask.graders[1]).toEqual({
+			type: "output_contains",
+			text: "verified policy",
+			caseSensitive: true,
+		});
+		const graderRemoved = reviseBuilderCorpusDraft({
+			stateRoot,
+			approvedSpec,
+			parentDraftId: graderUpdated.draft.id,
+			operations: [{
+				type: "grader.remove",
+				taskId: graderUpdatedTask.id,
+				graderIndex: 0,
+			}],
+			revisionSummary: "Remove one grader without replacing the task",
+		});
+		const graderRemovedTask = graderRemoved.draft.tasks.find((candidate) => candidate.input === regressionTask.input)!;
+		expect(graderRemovedTask.graders).toEqual([{
+			type: "output_contains",
+			text: "verified policy",
+			caseSensitive: true,
+		}]);
+		expect(graderRemoved.draft.taskProvenance).toEqual([
+			expect.objectContaining({ taskId: graderRemovedTask.id, kind: "development-failure" }),
+		]);
+
+		const provenance = evidenced.draft.taskProvenance![0]!;
+		const rebuilt = reviseBuilderCorpusDraft({
+			stateRoot,
+			approvedSpec,
+			parentDraftId: evidenced.draft.id,
+			operations: [
+				{ type: "remove", taskId: regressionTaskId },
+				{ type: "add", task: regressionTask },
+			],
+			revisionSummary: "Rebuild the evidenced task in operation order",
+		});
+		expect(rebuilt.draft.taskProvenance).toEqual([provenance]);
+
+		const operationBound = reviseBuilderCorpusDraft({
+			stateRoot,
+			approvedSpec,
+			parentDraftId: initial.draft.id,
+			operations: [
+				{ type: "add", task: regressionTask },
+				{
+					type: "set-graders",
+					taskId: regressionTaskId,
+					graders: [{ type: "output_contains", text: "ordinary variant" }],
+				},
+				{ type: "add", task: regressionTask },
+			],
+			verifiedTaskProvenance: [{ operationIndex: 2, provenance }],
+			revisionSummary: "Bind evidence only to its exact add operation",
+		});
+		expect(operationBound.draft.taskProvenance).toEqual([provenance]);
+		expect(operationBound.draft.tasks.find((candidate) => candidate.id === regressionTaskId)).toBeDefined();
+
+		const replacedIdentically = reviseBuilderCorpusDraft({
+			stateRoot,
+			approvedSpec,
+			parentDraftId: initial.draft.id,
+			operations: [
+				{ type: "add", task: regressionTask },
+				{ type: "replace", taskId: regressionTaskId, task: regressionTask },
+			],
+			verifiedTaskProvenance: [{ operationIndex: 0, provenance }],
+			revisionSummary: "Retain evidence when identical content survives",
+		});
+		expect(replacedIdentically.draft.taskProvenance).toEqual([provenance]);
+		expect(() => reviseBuilderCorpusDraft({
+			stateRoot,
+			approvedSpec,
+			parentDraftId: initial.draft.id,
+			operations: [{ type: "rename", name: "No matching regression" }],
+			verifiedTaskProvenance: [{ operationIndex: 0, provenance }],
+			revisionSummary: "Reject unattached host provenance",
+		})).toThrow(/must bind an add operation/);
 	});
 
 	it("binds creation and every revision to the exact stored approved Spec", () => {

@@ -19,8 +19,13 @@ bar.
 5. Keep development and sealed holdout corpora distinct. Never request or
    reveal sealed examples.
 6. Submit the initial basket with `ahde_workbench_submit` using
-   `kind: corpus-draft`. Refine it with `kind: corpus-revision` semantic
-   add/replace/remove/rename/set-notes operations; every revision is immutable.
+   `kind: corpus-draft`. If the operator provides a JSONL file in the private
+   project-local `imports/` inbox, use `kind: corpus-import`; AHDE validates it,
+   keeps the inbox outside Target/eval workspaces, discards caller-owned task ids,
+   derives Spec-bound ids, and records an immutable source hash receipt. Refine
+   the result with `kind: corpus-revision` semantic
+   add/replace/remove/set-graders/grader.add/grader.update/grader.remove/rename/
+   set-notes operations; every revision is immutable.
 7. Inspect `ahde_workbench_view` with `aspect: review`, show the exact bounded
    task set, then request `ahde_workbench_decide` with
    `kind: publish-corpus`. The host confirmation publishes an immutable
@@ -28,3 +33,9 @@ bar.
    authoring sealed content.
 8. Use repeated runs for nondeterministic behavior and call out insufficient
    sample size or flaky results.
+9. To turn an observed failure into coverage, use `add-case-from-run` only with
+   an exact failed development EvalRun/Run returned by Workbench. Author a new
+   neighboring task rather than duplicating the source case. AHDE verifies the
+   run, trace hash, source input, Target/corpus lineage, and persists only
+   bounded provenance; passing, inconclusive, foreign, candidate, and sealed
+   evidence are rejected.
