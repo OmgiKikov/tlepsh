@@ -34,6 +34,7 @@ import { PiSdkBuilderExecutor } from "./builders/pi-executor.js";
 import {
 	applyBuilderProposal,
 	loadBuilderProposalRun,
+	resolveCanonicalProposalBasis,
 	runApprovedSpecBuilderProposal,
 } from "./application/builder-proposal.js";
 import { CANDIDATE_SCOPE_POLICY } from "./application/candidate-experiment.js";
@@ -121,7 +122,7 @@ Usage:
   ahde diagnose <evalRunId>
   ahde report <evalRunId> [--out <path>]
   ahde builder capabilities --target <dir> [--builder <dir>]
-  ahde builder propose --target <dir> --project <id> --spec <approved-id> --backend pi|codex|claude [--eval-run <development-id>] [--dataset <rel>] [--builder <dir>]
+  ahde builder propose --target <dir> --project <id> --spec <approved-id> --backend pi|codex|claude [--eval-run <development-id> --failure-mode <id[,id...]>] [--dataset <rel>] [--builder <dir>]
   ahde builder apply --target <dir> --run <id> --branch <name> --reason <text> [--actor <id>]
   ahde candidate --target <dir> --builder-run <id> [--spec <id>] [--repetitions N] [--dataset <rel> | --development-corpus <id>] [--holdout-corpus <id>] [--project <id>]
   ahde candidate --target <dir> --branch <ref> --base <ref> --proposal <id> --diagnosis <id> [--spec <id>] [--dataset <rel> | --development-corpus <id>] [--project <id>]
@@ -665,12 +666,26 @@ You have no tools. You create a reviewable draft only and must not claim that yo
 				const projectId = arg("project") ?? target.manifest.id;
 				const specId = requireArg("spec");
 				const evalRunId = arg("eval-run");
+				let proposalBasis;
+				if (evalRunId) {
+					const failureModeIds = requireArg("failure-mode")
+						.split(",")
+						.map((value) => value.trim())
+						.filter(Boolean);
+					proposalBasis = resolveCanonicalProposalBasis({
+						runsRoot: runsRoot(),
+						approvedSpec: { stateRoot: stateRoot(), projectId, specId },
+						sourceEvalRunId: evalRunId,
+						failureModeIds,
+					});
+				}
 				const result = await runApprovedSpecBuilderProposal({
 					adapter: createBuilderAdapter(backend, target, arg("builder")),
 					approvedSpec: { stateRoot: stateRoot(), projectId, specId },
 					targetDir: target.dir,
 					dataset: builderDataset,
 					sourceEvalRunId: evalRunId,
+					...(proposalBasis ? { proposalBasis } : {}),
 					allowedPaths: [...CANDIDATE_SCOPE_POLICY.allowed],
 					runsRoot: runsRoot(),
 					timeoutMs: Number(arg("timeout-ms") ?? "600000"),

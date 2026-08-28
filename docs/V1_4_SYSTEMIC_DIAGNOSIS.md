@@ -72,9 +72,11 @@ Canonical authority remains the immutable EvalRun, Runs, traces, Diagnosis,
 Proposal, Candidate, and human receipts. URLs remain local presentation only
 and never enter hashes or proposal provenance.
 
-## Deliberate next boundary
+## Next boundary delivered
 
-V1.4 finds and explains bounded failure modes. A later slice can make proposal
-authoring select existing `failureModeId` values so the host derives proposal
-diagnoses and evidence references. Semantic clustering, traffic-scale Signals,
-hosted tracing, and autonomous harness mutation remain outside this milestone.
+V1.4 finds and explains bounded failure modes. V1.5 now makes proposal
+authoring select existing `failureModeId` values and derives diagnoses and
+evidence references inside the host. See
+[`V1_5_EVIDENCE_LINKED_PROPOSALS.md`](V1_5_EVIDENCE_LINKED_PROPOSALS.md).
+Semantic clustering, traffic-scale Signals, hosted tracing, and autonomous
+harness mutation remain outside these milestones.

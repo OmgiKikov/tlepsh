@@ -129,6 +129,13 @@ describe("Builder Pi extension registry", () => {
 		};
 		const structuredProposal = {
 			kind: "structured-proposal",
+			source: {
+				algorithmId: "exact-eval-signals-v1",
+				evalRunId: "erun_verified",
+				diagnosisId: "diagnosis-verified",
+				briefId: `brief-${"a".repeat(24)}`,
+			},
+			failureModeIds: [`failure-mode-${"b".repeat(24)}`],
 			summary: "Maximum bounded intent count",
 			intents: Array.from({ length: 32 }, () => ({
 				type: "instructions.replace",
@@ -162,6 +169,8 @@ describe("Builder Pi extension registry", () => {
 			{ ...corpusImport, sourcePath: "imports/.hidden.jsonl" },
 			{ ...corpusRevision, operations: [...corpusRevision.operations, { type: "rename", name: "one-too-many" }] },
 			{ ...structuredProposal, intents: [...structuredProposal.intents, { type: "instructions.replace", content: "One too many" }] },
+			{ ...structuredProposal, failureModeIds: [...structuredProposal.failureModeIds, structuredProposal.failureModeIds[0]] },
+			{ ...structuredProposal, diagnoses: [{ failureIds: ["forged"], evidence: ["forged"], rootCause: "forged" }] },
 		]) {
 			expect(Check(WorkbenchSubmitParameters, invalid)).toBe(false);
 			expect(WorkbenchSubmitInputSchema.safeParse(invalid).success).toBe(false);

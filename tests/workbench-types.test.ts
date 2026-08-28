@@ -15,6 +15,14 @@ const spec = {
 };
 
 describe("Workbench canonical input contract", () => {
+	const proposalSource = {
+		algorithmId: "exact-eval-signals-v1" as const,
+		evalRunId: "erun-test",
+		diagnosisId: "diagnosis-test",
+		briefId: `brief-${"a".repeat(24)}`,
+	};
+	const failureModeId = `failure-mode-${"b".repeat(24)}`;
+
 	it("uses the canonical typed grader schema", () => {
 		expect(() => WorkbenchSubmitInputSchema.parse({
 			kind: "corpus-draft",
@@ -44,14 +52,44 @@ describe("Workbench canonical input contract", () => {
 
 		expect(() => WorkbenchSubmitInputSchema.parse({
 			kind: "structured-proposal",
+			source: {
+				algorithmId: "exact-eval-signals-v1",
+				evalRunId: "erun-test",
+				diagnosisId: "diagnosis-test",
+				briefId: `brief-${"a".repeat(24)}`,
+			},
+			failureModeIds: [`failure-mode-${"b".repeat(24)}`],
 			summary: "Too many intents",
-			diagnoses: [],
 			intents: Array.from({ length: 33 }, () => ({
 				type: "instructions.replace",
 				content: "# Instructions\n",
 			})),
 			risks: [],
 			validationPlan: ["Run development eval"],
+		})).toThrow();
+	});
+
+	it("accepts only exact failure-mode handles and rejects model-authored evidence", () => {
+		const exact = {
+			kind: "structured-proposal" as const,
+			source: proposalSource,
+			failureModeIds: [failureModeId],
+			summary: "Address the selected failure mode",
+			intents: [{ type: "instructions.replace" as const, content: "# Exact instructions\n" }],
+			validationPlan: ["Re-run the exact development eval"],
+		};
+		expect(WorkbenchSubmitInputSchema.parse(exact)).toMatchObject(exact);
+		expect(() => WorkbenchSubmitInputSchema.parse({
+			...exact,
+			diagnoses: [{ failureIds: ["forged"], evidence: ["forged"], rootCause: "forged" }],
+		})).toThrow();
+		expect(() => WorkbenchSubmitInputSchema.parse({
+			...exact,
+			failureModeIds: [failureModeId, failureModeId],
+		})).toThrow();
+		expect(() => WorkbenchSubmitInputSchema.parse({
+			...exact,
+			source: { ...proposalSource, briefId: `brief-${"z".repeat(24)}` },
 		})).toThrow();
 	});
 

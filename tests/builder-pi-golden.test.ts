@@ -7,6 +7,11 @@ import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding
 import { expect, it, vi } from "vitest";
 import { createAhdeBuilderCompatibilityTools as createAhdeBuilderTools } from "../src/builder/extension.js";
 import { createCorpus } from "../src/corpus.js";
+import { diagnoseEvalRun } from "../src/diagnosis.js";
+import {
+	compileImprovementBrief,
+	deriveEvidenceLinkedProposalSelection,
+} from "../src/application/improvement-brief.js";
 import { startMockModel } from "../src/mock-model.js";
 
 function action(tools: readonly ToolDefinition[], name: string): ToolDefinition {
@@ -130,25 +135,34 @@ it("drives the complete canonical Builder tool loop without revealing sealed con
 		});
 		const evaluation = baseline.evaluation as { evalRunId: string; summary: { fail: number; error: number } };
 		expect(evaluation.summary).toMatchObject({ fail: 1, error: 0 });
+		const brief = compileImprovementBrief(runsRoot, diagnoseEvalRun(runsRoot, evaluation.evalRunId));
+		const failureMode = brief.modes.find((mode) => mode.decision === "propose-harness-change");
+		if (!failureMode) throw new Error("golden fixture has no proposal-eligible failure mode");
+		const proposalBasis = {
+			algorithmId: brief.algorithmId,
+			evalRunId: brief.evalRunId,
+			diagnosisId: brief.diagnosisId,
+			briefId: brief.briefId,
+			failureModeIds: [failureMode.failureModeId],
+		};
+		const selected = deriveEvidenceLinkedProposalSelection(brief, proposalBasis);
+		const evidenceRefs = [...new Set(selected.diagnoses.flatMap((item) => item.evidence))];
 
 		const before = readFileSync(join(projectDir, "AGENTS.md"), "utf8");
 		const after = `${before.trimEnd()}\n\nReturn the exact uppercase word READY.\n`;
 		const proposal = await invoke(tools, "ahde_proposal_create", {
 			specDraftId: draftId,
 			sourceEvalRunId: evaluation.evalRunId,
+			proposalBasis,
 			decision: "propose",
 			summary: "Make the answer contract explicit.",
-			diagnoses: [{
-				failureIds: ["dev-1"],
-				evidence: [evaluation.evalRunId],
-				rootCause: "The Target instructions do not require READY.",
-			}],
+			diagnoses: selected.diagnoses,
 			changes: [{
 				path: "AGENTS.md",
 				baseSha256: sha256(before),
 				unifiedDiff: wholeFileDiff("AGENTS.md", before, after),
 				rationale: "Align the harness with the approved observable contract.",
-				evidenceRefs: [evaluation.evalRunId],
+				evidenceRefs,
 			}],
 			risks: ["The output contract is intentionally narrow."],
 			validationPlan: ["Run matched development and sealed evidence."],

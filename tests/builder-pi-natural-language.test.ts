@@ -16,6 +16,11 @@ import { expect, it } from "vitest";
 import { createAhdeBuilderCompatibilityTools as createAhdeBuilderTools } from "../src/builder/extension.js";
 import { resolveBuilderAssets } from "../src/builder/runtime.js";
 import { createCorpus } from "../src/corpus.js";
+import { diagnoseEvalRun } from "../src/diagnosis.js";
+import {
+	compileImprovementBrief,
+	deriveEvidenceLinkedProposalSelection,
+} from "../src/application/improvement-brief.js";
 import type { TargetManifest } from "../src/manifest.js";
 import { startMockModel, type MockRequestContext, type MockStep } from "../src/mock-model.js";
 import { generateModelsJson } from "../src/runner.js";
@@ -154,22 +159,31 @@ it("turns free input into a complete promoted candidate through a real Builder P
 					});
 				case 6: {
 					const evalRunId = parseToolResult(context, 5).evaluation.evalRunId;
+					const brief = compileImprovementBrief(runsRoot, diagnoseEvalRun(runsRoot, evalRunId));
+					const failureMode = brief.modes.find((mode) => mode.decision === "propose-harness-change");
+					if (!failureMode) throw new Error("natural-language fixture has no proposal-eligible failure mode");
+					const proposalBasis = {
+						algorithmId: brief.algorithmId,
+						evalRunId: brief.evalRunId,
+						diagnosisId: brief.diagnosisId,
+						briefId: brief.briefId,
+						failureModeIds: [failureMode.failureModeId],
+					};
+					const selected = deriveEvidenceLinkedProposalSelection(brief, proposalBasis);
+					const evidenceRefs = [...new Set(selected.diagnoses.flatMap((item) => item.evidence))];
 					return call(step, "ahde_proposal_create", {
 						specDraftId: parseToolResult(context, 2).id,
 						sourceEvalRunId: evalRunId,
+						proposalBasis,
 						decision: "propose",
 						summary: "Make the approved answer contract explicit.",
-						diagnoses: [{
-							failureIds: ["dev-natural-1"],
-							evidence: [evalRunId],
-							rootCause: "The Target instructions do not require READY.",
-						}],
+						diagnoses: selected.diagnoses,
 						changes: [{
 							path: "AGENTS.md",
 							baseSha256: sha256(before),
 							unifiedDiff: wholeFileDiff("AGENTS.md", before, after),
 							rationale: "Align the harness with the approved observable contract.",
-							evidenceRefs: [evalRunId],
+							evidenceRefs,
 						}],
 						risks: ["The output contract is intentionally narrow."],
 						validationPlan: ["Run matched development and evaluator-only evidence."],

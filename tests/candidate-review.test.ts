@@ -523,6 +523,37 @@ afterEach(() => {
 });
 
 describe("candidate human review", () => {
+	it("rejects stale review and rejection hashes before appending an event", () => {
+		const value = fixture(false);
+		const evaluated = loadCandidateRecord(value.runsRoot, value.candidateId);
+		const staleHash = `sha256:${"0".repeat(64)}`;
+
+		expect(() => reviewCandidate({
+			...value,
+			expectedCandidateHash: staleHash,
+			recommendation: "reject",
+			reason: "stale review",
+			now: () => at,
+		})).toThrow(/candidate changed after confirmation; review is stale/);
+		expect(loadCandidateRecord(value.runsRoot, value.candidateId)).toEqual(evaluated);
+
+		reviewCandidate({
+			...value,
+			expectedCandidateHash: hashValue(evaluated),
+			recommendation: "reject",
+			reason: "current review",
+			now: () => at,
+		});
+		const reviewed = loadCandidateRecord(value.runsRoot, value.candidateId);
+		expect(() => decideCandidateRejection({
+			...value,
+			expectedCandidateHash: staleHash,
+			reason: "stale rejection",
+			now: () => at,
+		})).toThrow(/candidate changed after confirmation; rejection is stale/);
+		expect(loadCandidateRecord(value.runsRoot, value.candidateId)).toEqual(reviewed);
+	});
+
 	it("persists review and rejection as separate human decisions", () => {
 		const value = fixture(false);
 		reviewCandidate({ ...value, recommendation: "reject", reason: "regression", now: () => at });
@@ -635,6 +666,24 @@ describe("candidate human review", () => {
 		expect(git(repo.dir, "rev-parse", "HEAD")).toBe(head);
 		expect(git(repo.dir, "status", "--short")).toContain("user-notes.txt");
 		expect(candidateStatus(result.record)).toBe("promoted");
+	});
+
+	it("rejects a stale promotion hash before creating a tag or promotion event", () => {
+		const repo = repository();
+		const value = fixture(true, { ...repo, targetId: "test-target" });
+		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+		const reviewed = loadCandidateRecord(value.runsRoot, value.candidateId);
+
+		expect(() => promoteReviewedCandidate({
+			repositoryDir: repo.dir,
+			...value,
+			expectedCandidateHash: `sha256:${"0".repeat(64)}`,
+			version: "1.2.4",
+			reason: "stale promotion",
+			now: () => at,
+		})).toThrow(/candidate changed after confirmation; promotion is stale/);
+		expect(git(repo.dir, "tag", "--list", "v1.2.4")).toBe("");
+		expect(loadCandidateRecord(value.runsRoot, value.candidateId)).toEqual(reviewed);
 	});
 
 	it("does not create a tag when the aggregate lacks sealed holdout evidence", () => {

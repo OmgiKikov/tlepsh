@@ -7,18 +7,24 @@ import { CandidateOriginSchema, type CandidateArtifactRef } from "../domain/cand
 import { loadVerifiedEvalRun } from "../eval.js";
 import type { RunEventListener } from "../run-events.js";
 import { loadApprovedSpec } from "../spec.js";
+import { hashValue } from "../provenance.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import type { CandidateExperimentResult } from "./candidate-experiment.js";
 import { runCandidateExperiment } from "./candidate-experiment.js";
 import {
 	loadBuilderApplyReceipt,
-	loadBuilderProposalRun,
+	loadBuilderProposalRunEnvelope,
+	verifyBuilderProposalRunEvidence,
 } from "./builder-proposal.js";
 
 export interface RunAppliedBuilderCandidateOptions {
 	repositoryDir: string;
 	runsRoot: string;
 	builderRunId: string;
+	/** Exact Builder record confirmed by the host before evaluation. */
+	expectedBuilderRunHash?: string;
+	/** Exact apply receipt confirmed by the host before evaluation. */
+	expectedApplyReceiptHash?: string;
 	projectId: string;
 	approvedSpec?: { stateRoot: string; specId: string };
 	repetitions: number;
@@ -68,14 +74,30 @@ export async function runAppliedBuilderCandidate(
 		options.builderRunId,
 		name,
 	);
+	const builderRun = loadBuilderProposalRunEnvelope(options.runsRoot, options.builderRunId);
+	if (
+		options.expectedBuilderRunHash !== undefined &&
+		hashValue(builderRun) !== options.expectedBuilderRunHash
+	) {
+		throw new Error("Builder proposal changed after confirmation; candidate verification is stale");
+	}
+	verifyBuilderProposalRunEvidence(options.runsRoot, builderRun);
+	const receipt = loadBuilderApplyReceipt(options.runsRoot, options.builderRunId);
+	if (
+		options.expectedApplyReceiptHash !== undefined &&
+		hashValue(receipt) !== options.expectedApplyReceiptHash
+	) {
+		throw new Error("Builder apply receipt changed after confirmation; candidate verification is stale");
+	}
 	const builderRunArtifact = artifactRef(builderArtifact("builder_run.json"));
 	const builderInputArtifact = artifactRef(builderArtifact("builder_input.txt"));
 	const proposalArtifact = artifactRef(builderArtifact("proposal.json"));
 	const receiptArtifact = artifactRef(builderArtifact("apply_receipt.json"));
-	const builderRun = loadBuilderProposalRun(options.runsRoot, options.builderRunId);
-	const receipt = loadBuilderApplyReceipt(options.runsRoot, options.builderRunId);
 	if (builderRun.request.provenanceMode !== "canonical") {
 		throw new Error("applied Builder candidate requires a canonical Builder run; caller-supplied bundles are non-promotable");
+	}
+	if (builderRun.request.source !== null && builderRun.request.proposalBasis === null) {
+		throw new Error("legacy source-backed proposals without an attested failure-mode basis are non-promotable");
 	}
 	if (builderRun.result.status !== "completed" || !builderRun.artifacts.proposal) {
 		throw new Error(`builder run ${options.builderRunId} has no completed proposal`);

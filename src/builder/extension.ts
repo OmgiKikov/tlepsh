@@ -381,6 +381,17 @@ const ProposalChangeParameters = Type.Object({
 const AuthoredProposalParameters = Type.Object({
 	specDraftId: Type.String({ minLength: 1, maxLength: 200 }),
 	sourceEvalRunId: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+	proposalBasis: Type.Optional(Type.Object({
+		algorithmId: Type.Literal("exact-eval-signals-v1"),
+		evalRunId: Type.String({ minLength: 1, maxLength: 200 }),
+		diagnosisId: Type.String({ minLength: 1, maxLength: 200 }),
+		briefId: Type.String({ pattern: "^brief-[0-9a-f]{24}$" }),
+		failureModeIds: Type.Array(Type.String({ pattern: "^failure-mode-[0-9a-f]{24}$" }), {
+			minItems: 1,
+			maxItems: 8,
+			uniqueItems: true,
+		}),
+	}, { additionalProperties: false })),
 	decision: Type.Union([Type.Literal("propose"), Type.Literal("no-change")]),
 	summary: Type.String({ minLength: 1, maxLength: 8_000 }),
 	diagnoses: Type.Array(ProposalDiagnosisParameters, { maxItems: 100 }),
@@ -1390,6 +1401,7 @@ function toolRegistry(
 					runsRoot: options.runsRoot,
 					timeoutMs: 30_000,
 					...(params.sourceEvalRunId ? { sourceEvalRunId: params.sourceEvalRunId } : {}),
+					...(params.proposalBasis ? { proposalBasis: params.proposalBasis } : {}),
 					signal,
 				});
 				return textResult({

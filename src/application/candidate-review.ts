@@ -34,6 +34,8 @@ import { resolveContainedArtifactPath } from "../storage/paths.js";
 export interface ReviewCandidateOptions {
 	runsRoot: string;
 	candidateId: string;
+	/** Exact Candidate aggregate reviewed by a host confirmation, when one exists. */
+	expectedCandidateHash?: string;
 	recommendation: "promote" | "reject";
 	reason: string;
 	actorId?: string;
@@ -43,6 +45,8 @@ export interface ReviewCandidateOptions {
 export interface DecideCandidateOptions {
 	runsRoot: string;
 	candidateId: string;
+	/** Exact Candidate aggregate reviewed by a host confirmation, when one exists. */
+	expectedCandidateHash?: string;
 	reason: string;
 	actorId?: string;
 	tag?: string;
@@ -53,6 +57,8 @@ export interface PromoteReviewedCandidateOptions {
 	repositoryDir: string;
 	runsRoot: string;
 	candidateId: string;
+	/** Exact Candidate aggregate reviewed by a host confirmation, when one exists. */
+	expectedCandidateHash?: string;
 	version: string;
 	reason: string;
 	actorId?: string;
@@ -73,6 +79,16 @@ export function loadCandidateRecord(runsRoot: string, candidateId: string): Cand
 	return readJsonArtifact(candidateRecordPath(runsRoot, candidateId), CandidateRecordSchema);
 }
 
+function assertExpectedCandidateHash(
+	record: CandidateRecord,
+	expectedCandidateHash: string | undefined,
+	operation: string,
+): void {
+	if (expectedCandidateHash !== undefined && hashValue(record) !== expectedCandidateHash) {
+		throw new Error(`candidate changed after confirmation; ${operation} is stale`);
+	}
+}
+
 function evaluatedExperimentId(record: CandidateRecord): string {
 	const evaluated = record.events.find((event) => event.type === "evaluated");
 	if (!evaluated || evaluated.type !== "evaluated") {
@@ -90,6 +106,7 @@ function persist(record: CandidateRecord, runsRoot: string): CandidateRecord {
 /** Append an explicit human review. Review never promotes or rejects by itself. */
 export function reviewCandidate(options: ReviewCandidateOptions): CandidateRecord {
 	const record = loadCandidateRecord(options.runsRoot, options.candidateId);
+	assertExpectedCandidateHash(record, options.expectedCandidateHash, "review");
 	if (candidateStatus(record) !== "evaluated") {
 		throw new Error(`candidate ${record.candidateId} must be evaluated before review`);
 	}
@@ -112,6 +129,7 @@ export function reviewCandidate(options: ReviewCandidateOptions): CandidateRecor
 /** Append the human rejection decision after review. */
 export function decideCandidateRejection(options: DecideCandidateOptions): CandidateRecord {
 	const record = loadCandidateRecord(options.runsRoot, options.candidateId);
+	assertExpectedCandidateHash(record, options.expectedCandidateHash, "rejection");
 	if (candidateStatus(record) !== "reviewed") {
 		throw new Error(`candidate ${record.candidateId} must be reviewed before rejection`);
 	}
@@ -134,6 +152,7 @@ export function decideCandidateRejection(options: DecideCandidateOptions): Candi
  */
 export function decideCandidatePromotion(options: DecideCandidateOptions & { tag: string }): CandidateRecord {
 	const record = loadCandidateRecord(options.runsRoot, options.candidateId);
+	assertExpectedCandidateHash(record, options.expectedCandidateHash, "promotion decision");
 	if (candidateStatus(record) !== "reviewed") {
 		throw new Error(`candidate ${record.candidateId} must be reviewed before promotion`);
 	}
@@ -519,6 +538,7 @@ export function promoteReviewedCandidate(
 	if (!options.reason.trim()) throw new Error("promotion reason must not be blank");
 	const repositoryDir = resolve(options.repositoryDir);
 	const record = loadCandidateRecord(options.runsRoot, options.candidateId);
+	assertExpectedCandidateHash(record, options.expectedCandidateHash, "promotion");
 	if (candidateStatus(record) !== "reviewed") {
 		throw new Error(`candidate ${record.candidateId} must be reviewed before promotion`);
 	}

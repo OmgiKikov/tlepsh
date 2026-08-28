@@ -40,8 +40,10 @@ const EvidenceSchema = z.strictObject({
 	graderNames: z.array(z.string().min(1).max(MAX_GRADER_NAME_CHARS)).max(MAX_GRADER_NAMES),
 });
 
-const FailureModeSchema = z.strictObject({
-	failureModeId: z.string().regex(/^failure-mode-[0-9a-f]{24}$/),
+export const FailureModeIdSchema = z.string().regex(/^failure-mode-[0-9a-f]{24}$/);
+
+export const FailureModeSchema = z.strictObject({
+	failureModeId: FailureModeIdSchema,
 	signature: z.strictObject({
 		kind: z.enum(["grader-check", "outcome-instability", "infrastructure-error"]),
 		checkCode: GraderCheckCodeSchema.nullable(),
@@ -116,6 +118,10 @@ export const ImprovementBriefSchema = z.strictObject({
 	}),
 	modes: z.array(FailureModeSchema).max(MAX_FAILURE_MODES),
 }).superRefine((brief, context) => {
+	const failureModeIds = brief.modes.map((mode) => mode.failureModeId);
+	if (new Set(failureModeIds).size !== failureModeIds.length) {
+		context.addIssue({ code: "custom", path: ["modes"], message: "failure mode ids must be unique" });
+	}
 	if (brief.status === "inconclusive" && brief.proposalEligible) {
 		context.addIssue({ code: "custom", path: ["proposalEligible"], message: "inconclusive evidence cannot seed a proposal" });
 	}
@@ -139,9 +145,52 @@ export const ImprovementBriefSchema = z.strictObject({
 	}
 });
 export type ImprovementBrief = z.infer<typeof ImprovementBriefSchema>;
+export type FailureMode = z.infer<typeof FailureModeSchema>;
+
+const MAX_PROPOSAL_FAILURE_MODES = 8;
+
+export const ProposalBasisSelectionSchema = z.strictObject({
+	algorithmId: z.literal(IMPROVEMENT_BRIEF_ALGORITHM_ID),
+	evalRunId: z.string().min(1).max(MAX_ARTIFACT_ID_CHARS),
+	diagnosisId: z.string().min(1).max(MAX_ARTIFACT_ID_CHARS),
+	briefId: z.string().regex(/^brief-[0-9a-f]{24}$/),
+	failureModeIds: z.array(FailureModeIdSchema)
+		.min(1)
+		.max(MAX_PROPOSAL_FAILURE_MODES)
+		.refine((ids) => new Set(ids).size === ids.length, "failure mode ids must be unique"),
+});
+export type ProposalBasisSelection = z.infer<typeof ProposalBasisSelectionSchema>;
+
+export const ProposalBasisAttestationSchema = z.strictObject({
+	schemaVersion: z.literal(1),
+	algorithmId: z.literal(IMPROVEMENT_BRIEF_ALGORITHM_ID),
+	evalRunId: z.string().min(1).max(MAX_ARTIFACT_ID_CHARS),
+	diagnosisId: z.string().min(1).max(MAX_ARTIFACT_ID_CHARS),
+	briefId: z.string().regex(/^brief-[0-9a-f]{24}$/),
+	briefSha256: HashSchema,
+	failureModes: z.array(z.strictObject({
+		failureModeId: FailureModeIdSchema,
+		modeSha256: HashSchema,
+	})).min(1).max(MAX_PROPOSAL_FAILURE_MODES)
+		.refine(
+			(modes) => new Set(modes.map((mode) => mode.failureModeId)).size === modes.length,
+			"attested failure mode ids must be unique",
+		),
+});
+export type ProposalBasisAttestation = z.infer<typeof ProposalBasisAttestationSchema>;
+
+export interface EvidenceLinkedProposalDiagnosis {
+	failureIds: string[];
+	evidence: string[];
+	rootCause: string;
+}
+
+export interface EvidenceLinkedProposalSelection {
+	basis: ProposalBasisAttestation;
+	diagnoses: EvidenceLinkedProposalDiagnosis[];
+}
 
 type BriefEvidence = z.infer<typeof EvidenceSchema>;
-type FailureMode = z.infer<typeof FailureModeSchema>;
 type FailureModeCategory = FailureMode["category"];
 type FailureModeDecision = FailureMode["decision"];
 
@@ -557,6 +606,62 @@ function headlineFor(
 	}
 	if (status === "healthy") return `${passed}/${total} passed. No diagnosed behavioral failure modes were found.`;
 	return `${passed}/${total} passed. Found ${failureModeCount} diagnosed failure mode(s); ${systemicFailureModeCount} repeat across tasks.`;
+}
+
+/**
+ * Resolve model-selected failure-mode handles inside one exact canonical brief.
+ * The returned diagnoses are entirely host-derived; callers can select modes
+ * but cannot author failure identity, evidence references, or causal claims.
+ */
+export function deriveEvidenceLinkedProposalSelection(
+	briefValue: ImprovementBrief,
+	selectionValue: ProposalBasisSelection,
+): EvidenceLinkedProposalSelection {
+	const brief = ImprovementBriefSchema.parse(briefValue);
+	const selection = ProposalBasisSelectionSchema.parse(selectionValue);
+	if (
+		selection.algorithmId !== brief.algorithmId ||
+		selection.evalRunId !== brief.evalRunId ||
+		selection.diagnosisId !== brief.diagnosisId ||
+		selection.briefId !== brief.briefId
+	) {
+		throw new Error("proposal basis does not match the exact improvement brief");
+	}
+	if (brief.status !== "actionable" || !brief.proposalEligible) {
+		throw new Error("improvement evidence is not eligible for a harness proposal");
+	}
+
+	const requested = new Set(selection.failureModeIds);
+	const selected = brief.modes.filter((mode) => requested.has(mode.failureModeId));
+	if (selected.length !== requested.size) {
+		throw new Error("one or more selected failure modes are absent from the exact improvement brief");
+	}
+	for (const mode of selected) {
+		if (mode.decision !== "propose-harness-change") {
+			throw new Error(`failure mode ${mode.failureModeId} is not eligible for a harness proposal`);
+		}
+	}
+
+	const diagnoses = selected.map((mode): EvidenceLinkedProposalDiagnosis => ({
+		failureIds: [mode.failureModeId],
+		evidence: mode.evidence.map((item) => `eval:${brief.evalRunId}/run:${item.runId}`),
+		rootCause: `Host-derived hypothesis (not proven): ${mode.hypothesis}`,
+	}));
+	return {
+		basis: ProposalBasisAttestationSchema.parse({
+			schemaVersion: 1,
+			algorithmId: brief.algorithmId,
+			evalRunId: brief.evalRunId,
+			diagnosisId: brief.diagnosisId,
+			briefId: brief.briefId,
+			briefSha256: hashValue(brief),
+			failureModes: selected.map((mode) => ({
+				failureModeId: mode.failureModeId,
+				modeSha256: hashValue(mode),
+			})),
+		}),
+		diagnoses,
+	};
 }
 
 /**

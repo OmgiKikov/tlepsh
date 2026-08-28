@@ -129,7 +129,7 @@ export function createBuilderWorkbenchTools(
 		defineTool({
 			name: "ahde_workbench_submit",
 			label: "Author in Builder Workbench",
-			description: "Save a structured Spec, import or revise an editable Spec-bound corpus draft, bind a new regression case to verified development failure evidence, author a semantic harness proposal, or select an exact artifact without granting consequential authority.",
+			description: "Save a structured Spec, import or revise an editable Spec-bound corpus draft, bind a regression case to verified development failure evidence, or author semantic Harness intents against exact source and failureModeIds from the current traces view. Proposal diagnoses and evidence are host-derived; submission grants no consequential authority.",
 			parameters: WorkbenchSubmitParameters,
 			async execute(_id, params, signal) {
 				abortIfRequested(signal);

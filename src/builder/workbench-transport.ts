@@ -172,10 +172,15 @@ const HarnessIntentParameters = Type.Union([
 	}, { additionalProperties: false }),
 ]);
 
-const ProposalDiagnosisParameters = Type.Object({
-	failureIds: Type.Array(NonBlank(500), { minItems: 1, maxItems: 100 }),
-	evidence: Type.Array(NonBlank(500), { minItems: 1, maxItems: 100 }),
-	rootCause: NonBlank(8_000),
+const FailureModeIdParameters = Type.String({
+	pattern: "^failure-mode-[0-9a-f]{24}$",
+});
+
+const ImprovementBriefSourceParameters = Type.Object({
+	algorithmId: Type.Literal("exact-eval-signals-v1"),
+	evalRunId: WorkbenchArtifactId,
+	diagnosisId: WorkbenchArtifactId,
+	briefId: Type.String({ pattern: "^brief-[0-9a-f]{24}$" }),
 }, { additionalProperties: false });
 
 export const WorkbenchViewParameters = Type.Object({
@@ -236,9 +241,13 @@ export const WorkbenchSubmitParameters = Type.Union([
 	Type.Object({
 		kind: Type.Literal("structured-proposal"),
 		approvedSpecId: Type.Optional(WorkbenchArtifactId),
-		sourceEvalRunId: Type.Optional(WorkbenchArtifactId),
+		source: ImprovementBriefSourceParameters,
+		failureModeIds: Type.Array(FailureModeIdParameters, {
+			minItems: 1,
+			maxItems: 8,
+			uniqueItems: true,
+		}),
 		summary: NonBlank(4_000),
-		diagnoses: Type.Optional(Type.Array(ProposalDiagnosisParameters, { maxItems: 100 })),
 		intents: Type.Array(HarnessIntentParameters, { minItems: 1, maxItems: 32 }),
 		risks: Type.Optional(Type.Array(NonBlank(4_000), { maxItems: 100 })),
 		validationPlan: Type.Array(NonBlank(4_000), { minItems: 1, maxItems: 100 }),

@@ -6,8 +6,11 @@ import { diagnoseEvalRun, type DiagnosisRecord } from "../src/diagnosis.js";
 import { EvalRunRecordSchema, type EvalRunRecord } from "../src/eval.js";
 import {
 	IMPROVEMENT_BRIEF_ALGORITHM_ID,
+	FailureModeIdSchema,
 	ImprovementBriefSchema,
+	ProposalBasisSelectionSchema,
 	compileImprovementBrief,
+	deriveEvidenceLinkedProposalSelection,
 } from "../src/application/improvement-brief.js";
 import {
 	RunRecordSchema,
@@ -464,5 +467,180 @@ describe("deterministic improvement brief", () => {
 		expect(first.summary.omittedFailureModeCount).toBe(30 - first.modes.length);
 		expect(Buffer.byteLength(canonicalJson(first), "utf8")).toBeLessThanOrEqual(256 * 1024);
 		expect(ImprovementBriefSchema.parse(first)).toEqual(first);
+	});
+});
+
+describe("proposal basis selection", () => {
+	function proposalFixture(): ReturnType<typeof fixture> & {
+		brief: ReturnType<typeof compileImprovementBrief>;
+	} {
+		const firstSpecHash = hashValue({ type: "output_contains", text: "first" });
+		const secondSpecHash = hashValue({ type: "tool_called", tool: "search" });
+		const value = fixture({
+			repetitions: 1,
+			evidenceVisibility: "development",
+			runs: [
+				{
+					taskId: "task-a",
+					repetitionIndex: 0,
+					trace: true,
+					graders: [
+						exactGrader({ passed: false, specHash: firstSpecHash, name: "first" }),
+						exactGrader({
+							passed: false,
+							specHash: secondSpecHash,
+							checkCode: "required-tool",
+							type: "tool_called",
+							name: "second",
+						}),
+					],
+				},
+				{
+					taskId: "task-b",
+					repetitionIndex: 0,
+					trace: true,
+					graders: [
+						exactGrader({ passed: false, specHash: firstSpecHash, name: "first" }),
+						exactGrader({
+							passed: false,
+							specHash: secondSpecHash,
+							checkCode: "required-tool",
+							type: "tool_called",
+							name: "second",
+						}),
+					],
+				},
+			],
+		});
+		return { ...value, brief: compileImprovementBrief(value.runsRoot, value.diagnosis) };
+	}
+
+	function basisTuple(brief: ReturnType<typeof compileImprovementBrief>) {
+		return {
+			algorithmId: brief.algorithmId,
+			evalRunId: brief.evalRunId,
+			diagnosisId: brief.diagnosisId,
+			briefId: brief.briefId,
+			failureModeIds: brief.modes.map((mode) => mode.failureModeId),
+		};
+	}
+
+	it("canonicalizes selected modes and derives all proposal evidence and basis hashes", () => {
+		const { brief } = proposalFixture();
+		expect(brief.modes).toHaveLength(2);
+		expect(brief.modes.every((mode) => mode.decision === "propose-harness-change")).toBe(true);
+
+		const selection = deriveEvidenceLinkedProposalSelection(brief, {
+			...basisTuple(brief),
+			failureModeIds: brief.modes.map((mode) => mode.failureModeId).reverse(),
+		});
+
+		expect(selection.basis).toEqual({
+			schemaVersion: 1,
+			algorithmId: brief.algorithmId,
+			evalRunId: brief.evalRunId,
+			diagnosisId: brief.diagnosisId,
+			briefId: brief.briefId,
+			briefSha256: hashValue(brief),
+			failureModes: brief.modes.map((mode) => ({
+				failureModeId: mode.failureModeId,
+				modeSha256: hashValue(mode),
+			})),
+		});
+		expect(selection.diagnoses).toEqual(brief.modes.map((mode) => ({
+			failureIds: [mode.failureModeId],
+			evidence: mode.evidence.map((item) => `eval:${brief.evalRunId}/run:${item.runId}`),
+			rootCause: `Host-derived hypothesis (not proven): ${mode.hypothesis}`,
+		})));
+	});
+
+	it("rejects duplicate, unknown, and stale proposal selections", () => {
+		const { brief } = proposalFixture();
+		const tuple = basisTuple(brief);
+		const selectedId = brief.modes[0]!.failureModeId;
+
+		expect(() => deriveEvidenceLinkedProposalSelection(brief, {
+			...tuple,
+			failureModeIds: [selectedId, selectedId],
+		})).toThrow(/failure mode ids must be unique/);
+
+		const unknownId = `failure-mode-${"f".repeat(24)}`;
+		expect(brief.modes.some((mode) => mode.failureModeId === unknownId)).toBe(false);
+		expect(() => deriveEvidenceLinkedProposalSelection(brief, {
+			...tuple,
+			failureModeIds: [unknownId],
+		})).toThrow("one or more selected failure modes are absent from the exact improvement brief");
+
+		for (const stale of [
+			{ ...tuple, evalRunId: "erun-stale", failureModeIds: [selectedId] },
+			{ ...tuple, diagnosisId: "diagnosis-stale", failureModeIds: [selectedId] },
+			{ ...tuple, briefId: `brief-${"f".repeat(24)}`, failureModeIds: [selectedId] },
+		]) {
+			expect(() => deriveEvidenceLinkedProposalSelection(brief, stale))
+				.toThrow("proposal basis does not match the exact improvement brief");
+		}
+	});
+
+	it("rejects a selected mode whose host decision is not propose-harness-change", () => {
+		const stableHash = hashValue({ type: "output_contains", text: "stable" });
+		const mixedHash = hashValue({ type: "output_matches", pattern: "mixed" });
+		const value = fixture({
+			repetitions: 2,
+			evidenceVisibility: "development",
+			runs: [
+				{
+					taskId: "task",
+					repetitionIndex: 0,
+					graders: [
+						exactGrader({ passed: false, specHash: stableHash }),
+						exactGrader({
+							passed: false,
+							specHash: mixedHash,
+							checkCode: "output-matches",
+							type: "output_matches",
+						}),
+					],
+				},
+				{
+					taskId: "task",
+					repetitionIndex: 1,
+					graders: [
+						exactGrader({ passed: false, specHash: stableHash }),
+						exactGrader({
+							passed: true,
+							specHash: mixedHash,
+							checkCode: "output-matches",
+							type: "output_matches",
+						}),
+					],
+				},
+			],
+		});
+		const brief = compileImprovementBrief(value.runsRoot, value.diagnosis);
+		expect(brief.proposalEligible).toBe(true);
+		const nonProposalMode = brief.modes.find((mode) => mode.decision === "stabilize-and-rerun")!;
+
+		expect(() => deriveEvidenceLinkedProposalSelection(brief, {
+			...basisTuple(brief),
+			failureModeIds: [nonProposalMode.failureModeId],
+		})).toThrow(`failure mode ${nonProposalMode.failureModeId} is not eligible for a harness proposal`);
+	});
+
+	it("requires unique failure-mode identities in both selection and brief schemas", () => {
+		const { brief } = proposalFixture();
+		const id = brief.modes[0]!.failureModeId;
+		expect(FailureModeIdSchema.parse(id)).toBe(id);
+		expect(() => ProposalBasisSelectionSchema.parse({
+			...basisTuple(brief),
+			failureModeIds: [id, id],
+		})).toThrow(/failure mode ids must be unique/);
+
+		expect(() => ImprovementBriefSchema.parse({
+			...brief,
+			modes: [
+				brief.modes[0],
+				{ ...brief.modes[1]!, failureModeId: id },
+			],
+		})).toThrow(/failure mode ids must be unique/);
 	});
 });

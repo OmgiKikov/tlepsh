@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -31,6 +32,7 @@ import {
 	loadBuilderApplyReceipt,
 	loadBuilderProposalRun,
 	PersistedBuilderRunSchema,
+	resolveCanonicalProposalBasis,
 	runApprovedSpecBuilderProposal,
 	runBuilderProposal,
 } from "../src/application/builder-proposal.js";
@@ -311,6 +313,8 @@ describe("runBuilderProposal", () => {
 		expect(input.evaluationEvidence).toEqual({
 			source: { evalRunId: "erun-spec", diagnosisId: "diagnosis-spec" },
 			sourceAttestation: null,
+			proposalBasis: null,
+			proposalDiagnoses: null,
 			failureBundle: "# Failed case\ntrace: exact",
 		});
 		expect(result.record.request).toMatchObject({
@@ -502,6 +506,13 @@ describe("runBuilderProposal", () => {
 			allowedPaths: ALLOWED_PATHS,
 			approvedSpec: { stateRoot, projectId: "support", specId: snapshot.id },
 			sourceEvalRunId: evalRun.evalRunId,
+			proposalBasis: {
+				algorithmId: "exact-eval-signals-v1",
+				evalRunId: evalRun.evalRunId,
+				diagnosisId: "diagnosis-inconclusive-placeholder",
+				briefId: `brief-${"a".repeat(24)}`,
+				failureModeIds: [`failure-mode-${"b".repeat(24)}`],
+			},
 			runsRoot,
 			timeoutMs: 2_000,
 			runId: "builder-inconclusive-source",
@@ -509,6 +520,94 @@ describe("runBuilderProposal", () => {
 		expect(adapterProbe).not.toHaveBeenCalled();
 		expect(adapterRun).not.toHaveBeenCalled();
 		expect(existsSync(join(runsRoot, "builders"))).toBe(false);
+	});
+
+	it("rejects a canonical source without proposal basis before loading source or creating Builder state", async () => {
+		const { repositoryDir } = initTargetRepository();
+		const runsRoot = root("ahde-builder-runs-");
+		const stateRoot = root("ahde-builder-spec-state-");
+		const snapshot = saveSpecSnapshot({
+			stateRoot,
+			projectId: "support",
+			status: "approved",
+			spec: agentSpec(),
+			now: () => NOW,
+		});
+		const adapterProbe = vi.fn(async () => probe());
+
+		await expect(runApprovedSpecBuilderProposal({
+			adapter: {
+				backend: "fake-builder",
+				capabilities: CAPABILITIES,
+				probe: adapterProbe,
+				run: vi.fn(),
+			},
+			targetDir: repositoryDir,
+			allowedPaths: ALLOWED_PATHS,
+			approvedSpec: { stateRoot, projectId: "support", specId: snapshot.id },
+			sourceEvalRunId: "erun-source-that-must-not-be-opened",
+			runsRoot,
+			timeoutMs: 2_000,
+			runId: "builder-missing-basis-early",
+		})).rejects.toThrow(/requires an exact improvement-brief and failure-mode selection/);
+		expect(adapterProbe).not.toHaveBeenCalled();
+		expect(existsSync(join(runsRoot, "builders"))).toBe(false);
+	});
+
+	it("rejects sealed source metadata before opening a corrupt member run", async () => {
+		const { repositoryDir } = initTargetRepository();
+		const runsRoot = root("ahde-builder-runs-");
+		const stateRoot = root("ahde-builder-spec-state-");
+		const snapshot = saveSpecSnapshot({
+			stateRoot,
+			projectId: "support",
+			status: "approved",
+			spec: agentSpec(),
+			now: () => NOW,
+		});
+		const evalRun = await runSuite(loadTarget(repositoryDir), {
+			runsRoot,
+			label: "baseline",
+			repetitions: 1,
+		});
+		const evalPath = join(runsRoot, evalRun.evalRunId, "eval_run.json");
+		chmodSync(evalPath, 0o600);
+		writeFileSync(evalPath, `${JSON.stringify({ ...evalRun, evidenceVisibility: "sealed" }, null, "\t")}\n`);
+		const memberPath = join(runsRoot, evalRun.runIds[0]!, "run.json");
+		chmodSync(memberPath, 0o600);
+		writeFileSync(memberPath, "corrupt member that must never be opened\n");
+		const adapterProbe = vi.fn(async () => probe());
+		expect(() => resolveCanonicalProposalBasis({
+			runsRoot,
+			approvedSpec: { stateRoot, projectId: "support", specId: snapshot.id },
+			sourceEvalRunId: evalRun.evalRunId,
+			failureModeIds: [`failure-mode-${"d".repeat(24)}`],
+		})).toThrow(/sealed holdout evidence cannot be used/);
+		expect(existsSync(join(runsRoot, evalRun.evalRunId, "diagnosis.json"))).toBe(false);
+
+		await expect(runApprovedSpecBuilderProposal({
+			adapter: {
+				backend: "fake-builder",
+				capabilities: CAPABILITIES,
+				probe: adapterProbe,
+				run: vi.fn(),
+			},
+			targetDir: repositoryDir,
+			allowedPaths: ALLOWED_PATHS,
+			approvedSpec: { stateRoot, projectId: "support", specId: snapshot.id },
+			sourceEvalRunId: evalRun.evalRunId,
+			proposalBasis: {
+				algorithmId: "exact-eval-signals-v1",
+				evalRunId: evalRun.evalRunId,
+				diagnosisId: "diagnosis-sealed-placeholder",
+				briefId: `brief-${"c".repeat(24)}`,
+				failureModeIds: [`failure-mode-${"d".repeat(24)}`],
+			},
+			runsRoot,
+			timeoutMs: 2_000,
+			runId: "builder-sealed-source",
+		})).rejects.toThrow(/sealed holdout evidence cannot be used/);
+		expect(adapterProbe).not.toHaveBeenCalled();
 	});
 
 	it("supports a Spec-first proposal without synthetic eval evidence", async () => {
@@ -774,6 +873,25 @@ describe("runBuilderProposal", () => {
 });
 
 describe("applyBuilderProposal", () => {
+	it("rejects a stale host-confirmed Builder hash before creating a branch or receipt", async () => {
+		const { repositoryDir, baseSha } = initRepository();
+		const persisted = await persistProposal({ repositoryDir, baseSha, runId: "builder-apply-stale-confirmation" });
+		const runsRoot = dirname(dirname(persisted.runDir));
+		const branch = "candidate/builder-apply-stale-confirmation";
+
+		expect(() => applyBuilderProposal({
+			repoDir: repositoryDir,
+			runsRoot,
+			runId: persisted.record.runId,
+			expectedBuilderRunHash: `sha256:${"0".repeat(64)}`,
+			requestedBranch: branch,
+			actor: { kind: "human", id: "reviewer" },
+			reason: "The reviewed Builder record must remain exact",
+		})).toThrow(/changed after confirmation; application is stale/);
+		expect(gitStatus(repositoryDir, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`])).toBe(1);
+		expect(existsSync(join(persisted.runDir, "apply_receipt.json"))).toBe(false);
+	});
+
 	it("applies in a detached worktree, creates the exact branch and immutable receipt, and preserves a dirty checkout", async () => {
 		const { repositoryDir, baseSha } = initRepository();
 		const persisted = await persistProposal({ repositoryDir, baseSha, runId: "builder-apply-success" });

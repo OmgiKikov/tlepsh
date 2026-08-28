@@ -7,8 +7,10 @@ import {
 import { loadBuilderCorpusImportReceiptForDraft } from "../application/builder-corpus-import.js";
 import { builderDiscardReceiptPath } from "../application/builder-discard.js";
 import {
+	listBuilderProposalAdmissions,
 	loadBuilderApplyReceipt,
-	loadBuilderProposalRun,
+	loadBuilderProposalRunEnvelope,
+	verifyBuilderProposalRunEvidence,
 	type PersistedBuilderRun,
 } from "../application/builder-proposal.js";
 import {
@@ -161,6 +163,7 @@ function verifyCandidateArtifact(
 }
 
 function listProposals(
+	stateRoot: string,
 	runsRoot: string,
 	projectId: string,
 	approvedSpecs: Map<string, ApprovedSpecReference>,
@@ -169,19 +172,32 @@ function listProposals(
 	warnings: string[],
 	blockers: string[],
 ): WorkbenchProposalInventory[] {
-	const root = join(resolve(runsRoot), "builders");
 	const proposals: WorkbenchProposalInventory[] = [];
-	for (const runId of safeDirectoryNames(root, warnings, blockers, "proposals")) {
+	let admissions;
+	try {
+		admissions = listBuilderProposalAdmissions(stateRoot, projectId);
+	} catch (error) {
+		integrityFailure(warnings, blockers, `proposal admissions: ${errorMessage(error)}`);
+		return [];
+	}
+	for (const admission of admissions) {
+		const runId = admission.runId;
 		try {
-			const record = loadBuilderProposalRun(runsRoot, runId);
+			const record = loadBuilderProposalRunEnvelope(runsRoot, runId);
 			if (record.runId !== runId) throw new Error("proposal directory does not match its run id");
+			if (
+				hashValue(record) !== admission.builderRunSha256 ||
+				canonicalJson(record.request.approvedSpec) !== canonicalJson(admission.approvedSpec) ||
+				record.artifacts.proposal?.sha256 !== admission.proposalSha256
+			) throw new Error("proposal no longer matches its project-owned admission");
+			verifyBuilderProposalRunEvidence(runsRoot, record);
 			if (
 				record.result.status !== "completed" ||
 				record.result.proposal?.decision !== "propose" ||
 				record.result.proposal.changes.length === 0
 			) continue;
 			const approvedSpec = record.request.approvedSpec;
-			if (approvedSpec?.projectId !== projectId) continue;
+			if (approvedSpec?.projectId !== projectId) throw new Error("proposal project ownership changed after preflight");
 			if (canonicalJson(approvedSpecs.get(approvedSpec.specId)) !== canonicalJson(approvedSpec)) {
 				throw new Error("proposal approved Spec reference has no exact valid human approval receipt");
 			}
@@ -604,6 +620,7 @@ export function loadWorkbenchInventory(options: {
 	}
 	const focus = loadWorkbenchFocus(options.stateRoot, options.projectId, options.now);
 	const proposals = listProposals(
+		options.stateRoot,
 		options.runsRoot,
 		options.projectId,
 		verifiedApprovedSpecReferences,

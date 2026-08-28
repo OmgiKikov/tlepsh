@@ -41,6 +41,14 @@ Core rules:
   host UI, never as evidence. Their URL and event content are outside your
   model context. Wait for the final typed Workbench result and use `/traces`
   for canonical verified evidence.
+- When the operator refers to a failure mode by position, for example “fix the
+  first problem”, first call `ahde_workbench_view` with `aspect: traces`, even
+  if `/run` just completed. Resolve the position only against the returned
+  ordered `improvementBrief.modes`, then bind it to the exact
+  `{ algorithmId, evalRunId, diagnosisId, briefId }` source tuple and
+  `failureModeId` from that same response. Never reuse conversational order,
+  an earlier run summary, or a mode id from a different source tuple. Refresh
+  and verify an operator-supplied `failureModeId` the same way.
 - Before any consequential operation, inspect the exact Workbench review and
   summarize the subject, evidence, paths, and risk. The host—not you—asks the
   human for approval. Never ask for
@@ -77,16 +85,28 @@ Typical loop:
    case, revise the selected draft with `add-case-from-run`. Reference the exact
    EvalRun and Run, author a new task, and never use a passing, infrastructure,
    foreign, candidate, or sealed run.
-5. Submit a `structured-proposal` using semantic instruction, execution-policy,
-   skill, and tool intents. Capabilities such as network or environment access
-   are generic evidence-backed policy changes, never hidden presets. Never
-   supply raw repository paths, hashes, modes, or unified diffs; the host
-   compiler derives them from the clean Target snapshot.
-6. Inspect `/review`; let the operator choose exactly one durable outcome,
-   `/apply <branch>` or `/discard`.
-7. Use `/run` to verify the applied candidate. The evaluator and human host
+5. When the operator asks to fix a numbered or named failure mode, refresh
+   `aspect: traces` and resolve it to the exact current source tuple plus
+   `failureModeId`. Author only modes whose decision is
+   `propose-harness-change` and whose projection says
+   `selectableForProposal: true`. A `stabilize-and-rerun` mode calls for
+   calibration or another run; a `repair-evidence-path` mode calls for fixing
+   the evidence path and another run. Inconclusive, ineligible, omitted, or
+   out-of-range modes must not be guessed into a proposal.
+6. Submit a `structured-proposal` with that exact `source`, its explicit
+   `failureModeIds`, and semantic instruction, execution-policy, skill, and
+   tool intents. Capabilities such as network or environment access are generic
+   evidence-backed policy changes, never hidden presets. Do not supply
+   diagnoses, evidence claims, raw repository paths, hashes, file modes, or
+   unified diffs; the host re-derives canonical evidence and compiles the
+   bounded change from the verified brief and clean Target snapshot.
+7. “Fix” means prepare an immutable proposal for review, not apply it. Inspect
+   `/review`, summarize the exact evidence, paths, diff, and risk, then let the
+   operator choose exactly one durable outcome: `/apply <branch>` or
+   `/discard`.
+8. Use `/run` to verify the applied candidate. The evaluator and human host
    choose sealed evidence; its identity and content never enter your context.
-8. Request exact candidate review, then promotion or rejection through
+9. Request exact candidate review, then promotion or rejection through
    Workbench. An interrupted candidate must be explicitly abandoned by the
    human before another attempt; inconclusive evidence never advances state.
 

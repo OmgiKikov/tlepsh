@@ -45,6 +45,7 @@ import {
 } from "../application/builder-proposal.js";
 import {
 	compileImprovementBrief,
+	deriveEvidenceLinkedProposalSelection,
 	type ImprovementBrief,
 } from "../application/improvement-brief.js";
 import type { CandidateProposal } from "../builders/adapters.js";
@@ -234,13 +235,15 @@ function boundedEvidenceLink(link: WorkbenchEvidenceLink | null): WorkbenchEvide
 
 /** Small model-facing diagnosis projection; full evidence remains in the verified report. */
 function conversationalImprovementBrief(brief: ImprovementBrief): Record<string, unknown> {
-	const modes = brief.modes.slice(0, MAX_CONVERSATION_MODES).map((mode) => ({
+	const modes = brief.modes.slice(0, MAX_CONVERSATION_MODES).map((mode, index) => ({
+		ordinal: index + 1,
 		failureModeId: mode.failureModeId,
 		category: mode.category,
 		scope: mode.scope,
 		severity: mode.severity,
 		evidenceStrength: mode.evidenceStrength,
 		decision: mode.decision,
+		selectableForProposal: brief.proposalEligible && mode.decision === "propose-harness-change",
 		title: mode.title.slice(0, 500),
 		summary: mode.summary.slice(0, 1_000),
 		hypothesis: mode.hypothesis.slice(0, 1_000),
@@ -268,6 +271,7 @@ function conversationalImprovementBrief(brief: ImprovementBrief): Record<string,
 		modes,
 		conversationProjection: {
 			shownModes: modes.length,
+			addressableModes: brief.modes.length,
 			omittedModes: Math.max(0, brief.modes.length - modes.length) + brief.summary.omittedFailureModeCount,
 			fullEvidence: "Use the returned loopback evidence link or /traces report drill-down.",
 		},
@@ -564,19 +568,25 @@ export class AhdeWorkbench {
 		if (inventory.validFocus["development-corpus"]?.id && inventory.validFocus["development-corpus"]!.id !== corpus.id) {
 			throw new Error("focused development corpus is not in the selected approved Spec lineage");
 		}
+		const sourceEvalRunId = requireDevelopmentEval(
+			inventory,
+			input.source.evalRunId,
+			compatibleDevelopmentEvals(inventory, approved.id, corpus.id),
+		).evalRunId;
+		const diagnosis = this.dependencies.diagnoseEval(this.runsRoot, sourceEvalRunId);
+		const improvementBrief = this.dependencies.compileImprovementBrief(this.runsRoot, diagnosis);
+		const selectedEvidence = deriveEvidenceLinkedProposalSelection(improvementBrief, {
+			...input.source,
+			failureModeIds: input.failureModeIds,
+		});
 		const proposal = this.dependencies.compileHarnessProposal({
 			repositoryDir: this.projectDir,
 			intents: input.intents,
 			summary: input.summary,
-			diagnoses: input.diagnoses,
+			diagnoses: selectedEvidence.diagnoses,
 			risks: input.risks,
 			validationPlan: input.validationPlan,
 		});
-		const sourceEvalRunId = requireDevelopmentEval(
-			inventory,
-			input.sourceEvalRunId ?? inventory.validFocus["eval-run"]?.id,
-			compatibleDevelopmentEvals(inventory, approved.id, corpus.id),
-		).evalRunId;
 		const result = await this.dependencies.recordProposal({
 			proposal,
 			targetDir: this.projectDir,
@@ -585,16 +595,20 @@ export class AhdeWorkbench {
 			runsRoot: this.runsRoot,
 			timeoutMs: 30_000,
 			sourceEvalRunId,
+			proposalBasis: {
+				...input.source,
+				failureModeIds: input.failureModeIds,
+			},
 			signal: options.signal,
 		});
 		if (result.record.result.proposal?.decision === "propose") {
 			this.select("proposal", result.record.runId);
-			return { kind: input.kind, message: "Structured harness intents compiled into an exact reviewable proposal.", artifact: { runId: result.record.runId, proposalHash: result.record.artifacts.proposal?.sha256 ?? null, sourceEvalRunId: result.record.request.source?.evalRunId ?? null, approvedSpecId: approved.id }, view: await this.view() };
+			return { kind: input.kind, message: "Selected failure modes compiled into an evidence-linked, exact reviewable proposal.", artifact: { runId: result.record.runId, proposalHash: result.record.artifacts.proposal?.sha256 ?? null, sourceEvalRunId: result.record.request.source?.evalRunId ?? null, improvementBriefId: selectedEvidence.basis.briefId, failureModeIds: selectedEvidence.basis.failureModes.map((mode) => mode.failureModeId), approvedSpecId: approved.id }, view: await this.view() };
 		}
 		return {
 			kind: input.kind,
 			message: "Structured authoring produced a durable no-change result; there is no diff to review or apply.",
-			artifact: { runId: result.record.runId, proposalHash: null, decision: "no-change", approvedSpecId: approved.id },
+			artifact: { runId: result.record.runId, proposalHash: null, decision: "no-change", sourceEvalRunId, improvementBriefId: selectedEvidence.basis.briefId, failureModeIds: selectedEvidence.basis.failureModes.map((mode) => mode.failureModeId), approvedSpecId: approved.id },
 			view: await this.view(),
 		};
 	}
@@ -867,13 +881,13 @@ export class AhdeWorkbench {
 
 		if (input.kind === "apply-proposal") {
 			const proposal = requireProposal(inventory, "open", input.runId);
-			const before = { operation: "apply-proposal", branch: input.branch, ...proposalReview(proposal.record) };
+			const before = { operation: "apply-proposal", branch: input.branch, builderRunHash: hashValue(proposal.record), ...proposalReview(proposal.record) };
 			const actor = await this.confirm(input, gate, "Apply exact Builder proposal", before, options.signal);
 			const current = this.decisionInventory(input.kind);
 			const afterProposal = requireProposal(current, "open", proposal.record.runId);
-			const after = { operation: "apply-proposal", branch: input.branch, ...proposalReview(afterProposal.record) };
+			const after = { operation: "apply-proposal", branch: input.branch, builderRunHash: hashValue(afterProposal.record), ...proposalReview(afterProposal.record) };
 			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
-			const result = this.dependencies.applyProposal({ repoDir: this.projectDir, runsRoot: this.runsRoot, runId: proposal.record.runId, requestedBranch: input.branch, actor: { kind: "human", id: actor }, reason: input.reason });
+			const result = this.dependencies.applyProposal({ repoDir: this.projectDir, runsRoot: this.runsRoot, runId: proposal.record.runId, expectedBuilderRunHash: after.builderRunHash, requestedBranch: input.branch, actor: { kind: "human", id: actor }, reason: input.reason });
 			this.select("proposal", proposal.record.runId);
 			return { kind: input.kind, message: "Proposal applied to an exact candidate branch; verification is now required.", result: { runId: result.receipt.runId, branch: result.receipt.branch, candidateSha: result.receipt.candidateSha, proposalHash: result.receipt.proposalSha256 }, view: await this.view() };
 		}
@@ -957,6 +971,8 @@ export class AhdeWorkbench {
 					repositoryDir: this.projectDir,
 					runsRoot: this.runsRoot,
 					builderRunId: proposal.record.runId,
+					expectedBuilderRunHash: after.subject.builderRunHash,
+					expectedApplyReceiptHash: after.subject.applyReceiptHash,
 					projectId: this.projectId,
 					approvedSpec: { stateRoot: this.stateRoot, specId: after.approvedSpecId },
 					repetitions: input.repetitions,
@@ -983,7 +999,7 @@ export class AhdeWorkbench {
 			const current = this.decisionInventory(input.kind);
 			const after = requireCandidate(current, ["evaluated"], candidate.candidateId);
 			if (hashValue(after) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
-			const reviewed = this.dependencies.reviewCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, recommendation: input.recommendation, reason: input.reason, actorId: actor, now: this.dependencies.now });
+			const reviewed = this.dependencies.reviewCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, recommendation: input.recommendation, reason: input.reason, actorId: actor, now: this.dependencies.now });
 			this.select("candidate", reviewed.candidateId);
 			return { kind: input.kind, message: "Human candidate review recorded.", result: candidateSummary(reviewed), view: await this.view() };
 		}
@@ -994,7 +1010,7 @@ export class AhdeWorkbench {
 			const actor = await this.confirm(input, gate, "Promote exact candidate", before, options.signal);
 			const current = this.decisionInventory(input.kind);
 			if (hashValue(requireCandidate(current, ["reviewed"], candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
-			const promoted = this.dependencies.promoteCandidate({ repositoryDir: this.projectDir, runsRoot: this.runsRoot, candidateId: candidate.candidateId, version: input.version, reason: input.reason, actorId: actor, now: this.dependencies.now });
+			const promoted = this.dependencies.promoteCandidate({ repositoryDir: this.projectDir, runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, version: input.version, reason: input.reason, actorId: actor, now: this.dependencies.now });
 			this.select("candidate", promoted.record.candidateId);
 			return { kind: input.kind, message: `Candidate promoted as ${promoted.tag}.`, result: { candidate: candidateSummary(promoted.record), tag: promoted.tag, candidateSha: promoted.candidateSha }, view: await this.view() };
 		}
@@ -1004,7 +1020,7 @@ export class AhdeWorkbench {
 		const actor = await this.confirm(input, gate, "Reject exact candidate", before, options.signal);
 		const current = this.decisionInventory(input.kind);
 		if (hashValue(requireCandidate(current, ["reviewed"], candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
-		const rejected = this.dependencies.rejectCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, reason: input.reason, actorId: actor, now: this.dependencies.now });
+		const rejected = this.dependencies.rejectCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, reason: input.reason, actorId: actor, now: this.dependencies.now });
 		this.select("candidate", rejected.candidateId);
 		return { kind: input.kind, message: "Candidate rejected durably.", result: candidateSummary(rejected), view: await this.view() };
 	}

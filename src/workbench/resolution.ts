@@ -26,6 +26,15 @@ export function proposalReview(record: PersistedBuilderRun): {
 	paths: string[];
 	risks: string[];
 	validationPlan: string[];
+	evidenceBasis: {
+		algorithmId: string;
+		evalRunId: string;
+		diagnosisId: string;
+		briefId: string;
+		briefSha256: string;
+		failureModes: { failureModeId: string; modeSha256: string }[];
+		runRefs: string[];
+	} | null;
 	exactDiff: string;
 } {
 	if (
@@ -45,6 +54,17 @@ export function proposalReview(record: PersistedBuilderRun): {
 		paths: record.result.proposal.changes.map((change) => change.path),
 		risks: record.result.proposal.risks,
 		validationPlan: record.result.proposal.validationPlan,
+		evidenceBasis: record.request.proposalBasis
+			? {
+				algorithmId: record.request.proposalBasis.algorithmId,
+				evalRunId: record.request.proposalBasis.evalRunId,
+				diagnosisId: record.request.proposalBasis.diagnosisId,
+				briefId: record.request.proposalBasis.briefId,
+				briefSha256: record.request.proposalBasis.briefSha256,
+				failureModes: record.request.proposalBasis.failureModes,
+				runRefs: [...new Set(record.result.proposal.diagnoses.flatMap((diagnosis) => diagnosis.evidence))],
+			}
+			: null,
 		exactDiff,
 	};
 }

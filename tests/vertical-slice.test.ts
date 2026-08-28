@@ -1,11 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
 	applyBuilderProposal,
+	loadBuilderApplyReceipt,
+	loadBuilderProposalRun,
 	runApprovedSpecBuilderProposal,
 	runBuilderProposal,
 } from "../src/application/builder-proposal.js";
@@ -24,6 +26,11 @@ import {
 } from "../src/builders/adapters.js";
 import { createCorpus } from "../src/corpus.js";
 import { diagnoseEvalRun } from "../src/diagnosis.js";
+import {
+	compileImprovementBrief,
+	deriveEvidenceLinkedProposalSelection,
+	type EvidenceLinkedProposalDiagnosis,
+} from "../src/application/improvement-brief.js";
 import { candidateStatus } from "../src/domain/candidate.js";
 import { EvalRunRecordSchema, runSuite } from "../src/eval.js";
 import { loadTarget } from "../src/manifest.js";
@@ -31,6 +38,7 @@ import { startMockModel, type MockModelHandle } from "../src/mock-model.js";
 import { buildEvalReport } from "../src/report.js";
 import { saveSpecSnapshot } from "../src/spec.js";
 import { writeJsonArtifact } from "../src/storage/artifacts.js";
+import { hashValue } from "../src/provenance.js";
 
 /**
  * Product acceptance slice with no paid model calls:
@@ -93,17 +101,23 @@ function sha256(value: string): string {
 	return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
-function proposalAdapter(baseSha: string): BuilderAdapter {
+
+function proposalAdapter(
+	baseSha: string,
+	evidence?: { diagnoses: EvidenceLinkedProposalDiagnosis[]; evidenceRefs: string[] },
+): BuilderAdapter {
+	const diagnoses = evidence?.diagnoses ?? [{
+		failureIds: ["dev-1", "dev-2"],
+		evidence: ["diagnosis:answer-quality"],
+		rootCause: "The harness asks for the wrong final token.",
+	}];
+	const evidenceRefs = evidence?.evidenceRefs ?? ["diagnosis:answer-quality"];
 	const proposal = {
 		schemaVersion: 1 as const,
 		decision: "propose" as const,
 		baseTargetSha: baseSha,
 		summary: "Make the answer contract explicit.",
-		diagnoses: [{
-			failureIds: ["dev-1", "dev-2"],
-			evidence: ["diagnosis:answer-quality"],
-			rootCause: "The harness asks for the wrong final token.",
-		}],
+		diagnoses,
 		changes: [{
 			path: "AGENTS.md",
 			baseSha256: sha256(OLD_INSTRUCTIONS),
@@ -118,7 +132,7 @@ function proposalAdapter(baseSha: string): BuilderAdapter {
 				"+Return the exact uppercase word READY.",
 			].join("\n"),
 			rationale: "Align the harness with the reviewed answer contract.",
-			evidenceRefs: ["diagnosis:answer-quality"],
+			evidenceRefs,
 		}],
 		risks: ["The contract is intentionally narrow for this fixture."],
 		validationPlan: ["Run the matched development and sealed corpora."],
@@ -230,6 +244,21 @@ describe("vertical slice: evidence-backed improvement", () => {
 		expect(baseline.summary).toMatchObject({ pass: 0, fail: 2, error: 0 });
 		const diagnosis = diagnoseEvalRun(runsRoot, baseline.evalRunId);
 		expect(diagnosis.summary.failedTasks).toBe(2);
+		const brief = compileImprovementBrief(runsRoot, diagnosis);
+		const failureMode = brief.modes.find((mode) => mode.decision === "propose-harness-change");
+		if (!failureMode) throw new Error("acceptance fixture has no proposal-eligible failure mode");
+		const proposalBasis = {
+			algorithmId: brief.algorithmId,
+			evalRunId: brief.evalRunId,
+			diagnosisId: brief.diagnosisId,
+			briefId: brief.briefId,
+			failureModeIds: [failureMode.failureModeId],
+		};
+		const selected = deriveEvidenceLinkedProposalSelection(brief, proposalBasis);
+		const selectedEvidence = {
+			diagnoses: selected.diagnoses,
+			evidenceRefs: [...new Set(selected.diagnoses.flatMap((item) => item.evidence))],
+		};
 		const bundlePath = compileFailureBundle(loadTarget(targetDir), baseline, runsRoot);
 		expect(readFileSync(bundlePath, "utf8")).not.toContain(targetDir);
 
@@ -251,6 +280,7 @@ describe("vertical slice: evidence-backed improvement", () => {
 				allowedPaths: ["AGENTS.md", "skills/**", "bin/**", "tools/**"],
 				approvedSpec: { stateRoot, projectId: "acceptance-project", specId: spec.id },
 				sourceEvalRunId: baseline.evalRunId,
+				proposalBasis,
 				runsRoot,
 				timeoutMs: 5_000,
 				runId: "builder-legacy-source",
@@ -287,12 +317,35 @@ describe("vertical slice: evidence-backed improvement", () => {
 			actorId: "fixture-reviewer",
 		})).rejects.toThrow(/requires a canonical Builder run/);
 
-		const builder = await runApprovedSpecBuilderProposal({
+		await expect(runApprovedSpecBuilderProposal({
 			adapter: proposalAdapter(baseSha),
 			targetDir,
 			allowedPaths: ["AGENTS.md", "skills/**", "bin/**", "tools/**"],
 			approvedSpec: { stateRoot, projectId: "acceptance-project", specId: spec.id },
 			sourceEvalRunId: baseline.evalRunId,
+			runsRoot,
+			timeoutMs: 5_000,
+			runId: "builder-missing-proposal-basis",
+		})).rejects.toThrow(/requires an exact improvement-brief and failure-mode selection/);
+		await expect(runApprovedSpecBuilderProposal({
+			adapter: proposalAdapter(baseSha),
+			targetDir,
+			allowedPaths: ["AGENTS.md", "skills/**", "bin/**", "tools/**"],
+			approvedSpec: { stateRoot, projectId: "acceptance-project", specId: spec.id },
+			sourceEvalRunId: baseline.evalRunId,
+			proposalBasis,
+			runsRoot,
+			timeoutMs: 5_000,
+			runId: "builder-forged-proposal-evidence",
+		})).rejects.toThrow(/proposal diagnoses do not match the host-derived failure-mode evidence/);
+
+		const builder = await runApprovedSpecBuilderProposal({
+			adapter: proposalAdapter(baseSha, selectedEvidence),
+			targetDir,
+			allowedPaths: ["AGENTS.md", "skills/**", "bin/**", "tools/**"],
+			approvedSpec: { stateRoot, projectId: "acceptance-project", specId: spec.id },
+			sourceEvalRunId: baseline.evalRunId,
+			proposalBasis,
 			runsRoot,
 			timeoutMs: 5_000,
 			runId: "builder-acceptance",
@@ -307,6 +360,8 @@ describe("vertical slice: evidence-backed improvement", () => {
 			actor: { kind: "human", id: "fixture-reviewer" },
 			reason: "The proposal matches the diagnosed failure and allowed scope.",
 		}, { now: CLOCK.now });
+		const exactBuilderRunHash = hashValue(loadBuilderProposalRun(runsRoot, builder.record.runId));
+		const exactApplyReceiptHash = hashValue(loadBuilderApplyReceipt(runsRoot, builder.record.runId));
 		expect(git(["show", `${applied.receipt.candidateSha}:AGENTS.md`])).toContain("uppercase word READY");
 		expect({
 			head: git(["rev-parse", "HEAD"]),
@@ -322,6 +377,32 @@ describe("vertical slice: evidence-backed improvement", () => {
 			approvedSpec: { stateRoot, specId: spec.id },
 			actorId: "not-the-applying-human",
 		})).rejects.toThrow(/does not match apply-receipt human fixture-reviewer/);
+		const modelRequestsBeforeStaleConfirmation = mock.requests();
+		await expect(runAppliedBuilderCandidate({
+			repositoryDir: targetDir,
+			runsRoot,
+			builderRunId: builder.record.runId,
+			expectedBuilderRunHash: `sha256:${"0".repeat(64)}`,
+			expectedApplyReceiptHash: exactApplyReceiptHash,
+			repetitions: 1,
+			candidateId: "candidate-stale-builder-confirmation",
+			projectId: "acceptance-project",
+			approvedSpec: { stateRoot, specId: spec.id },
+		})).rejects.toThrow(/Builder proposal changed after confirmation/);
+		expect(existsSync(join(runsRoot, "candidates", "candidate-stale-builder-confirmation", "candidate.json"))).toBe(false);
+		await expect(runAppliedBuilderCandidate({
+			repositoryDir: targetDir,
+			runsRoot,
+			builderRunId: builder.record.runId,
+			expectedBuilderRunHash: exactBuilderRunHash,
+			expectedApplyReceiptHash: `sha256:${"0".repeat(64)}`,
+			repetitions: 1,
+			candidateId: "candidate-stale-receipt-confirmation",
+			projectId: "acceptance-project",
+			approvedSpec: { stateRoot, specId: spec.id },
+		})).rejects.toThrow(/Builder apply receipt changed after confirmation/);
+		expect(existsSync(join(runsRoot, "candidates", "candidate-stale-receipt-confirmation", "candidate.json"))).toBe(false);
+		expect(mock.requests()).toBe(modelRequestsBeforeStaleConfirmation);
 
 		const holdout = createCorpus({
 			stateRoot,
@@ -338,6 +419,8 @@ describe("vertical slice: evidence-backed improvement", () => {
 			repositoryDir: targetDir,
 			runsRoot,
 			builderRunId: builder.record.runId,
+			expectedBuilderRunHash: exactBuilderRunHash,
+			expectedApplyReceiptHash: exactApplyReceiptHash,
 			repetitions: 1,
 			candidateId: "candidate-acceptance",
 			projectId: "acceptance-project",

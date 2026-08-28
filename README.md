@@ -109,9 +109,11 @@ The model-facing control surface is intentionally only three deep operations:
   trusted human gate.
 
 The Workbench derives state from validated immutable artifacts and receipts.
-Its small atomic `focus.json` only resolves an explicit selection; it cannot
-manufacture an approval, corpus lineage, proposal decision, or candidate
-outcome.
+Actionable Proposals additionally require a project-owned admission receipt
+binding the exact approved Spec, Builder record, and Proposal hash before any
+referenced evidence is opened. Its small atomic `focus.json` only resolves an
+explicit selection; it cannot manufacture an approval, corpus lineage,
+proposal decision, or candidate outcome.
 
 ## What gets built
 
@@ -210,6 +212,16 @@ as “build a deep research agent” follows the ordinary Spec → eval → diag
 → Proposal path; when evidence shows that network research is required, AHDE
 proposes the exact policy, environment-variable names, descriptor, and
 executable for human review and candidate verification.
+
+After a failed development evaluation, Builder selects only stable
+`failureModeId` handles from the current deterministic Improvement Brief. The
+model cannot submit diagnoses, evidence references, or root-cause claims. AHDE
+recompiles the exact EvalRun/Diagnosis/Brief tuple, derives bounded run
+references and explicitly labels the mode explanation as a hypothesis, then
+persists full Brief and mode hashes with the Proposal. Restart, review, and
+Apply revalidate that basis. Thus “исправь первую проблему” means “refresh the
+traces, resolve ordinal 1, and prepare an exact diff for review”; it never
+silently means Apply.
 
 Builder Pi can also import a bounded JSONL file from the project-local
 `imports/` inbox into a new editable draft. The inbox is git-ignored and never

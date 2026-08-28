@@ -6,6 +6,10 @@ import {
 import { BuilderCorpusImportSourcePathSchema } from "../application/builder-corpus-import-contract.js";
 import { BuilderWorkbenchCorpusRevisionOperationsSchema } from "../application/builder-regression-case.js";
 import { HarnessAuthoringIntentsSchema } from "../application/harness-authoring.js";
+import {
+	FailureModeIdSchema,
+	ProposalBasisSelectionSchema,
+} from "../application/improvement-brief.js";
 import type { RunEventListener } from "../run-events.js";
 import { AgentSpecSchema } from "../spec.js";
 
@@ -124,13 +128,12 @@ const ReviseCorpusDraftInputSchema = z.strictObject({
 const StructuredProposalInputSchema = z.strictObject({
 	kind: z.literal("structured-proposal"),
 	approvedSpecId: ArtifactIdSchema.optional(),
-	sourceEvalRunId: ArtifactIdSchema.optional(),
+	source: ProposalBasisSelectionSchema.omit({ failureModeIds: true }),
+	failureModeIds: z.array(FailureModeIdSchema)
+		.min(1)
+		.max(8)
+		.refine((ids) => new Set(ids).size === ids.length, "failure mode ids must be unique"),
 	summary: NonBlankSchema.max(4_000),
-	diagnoses: z.array(z.strictObject({
-		failureIds: z.array(NonBlankSchema.max(500)).min(1).max(100),
-		evidence: z.array(NonBlankSchema.max(500)).min(1).max(100),
-		rootCause: NonBlankSchema.max(8_000),
-	})).max(100).default([]),
 	intents: HarnessAuthoringIntentsSchema,
 	risks: z.array(NonBlankSchema.max(4_000)).max(100).default([]),
 	validationPlan: z.array(NonBlankSchema.max(4_000)).min(1).max(100),

@@ -122,6 +122,7 @@ import {
   applyBuilderProposal,
   approveBuilderSpecDraft,
   candidateStatus,
+  compileImprovementBrief,
   createCorpus,
   createEvidenceExplorer,
 	createAhdeWorkbench,
@@ -129,6 +130,7 @@ import {
   describeDevelopmentCorpusPublication,
   describeSpecDraftApproval,
   diagnoseEvalRun,
+	deriveEvidenceLinkedProposalSelection,
 	importBuilderCorpusDraft,
   launchBuilderPi,
 	loadBuilderCorpusImportReceipt,
@@ -157,6 +159,7 @@ for (const [name, value] of Object.entries({
   applyBuilderProposal,
   approveBuilderSpecDraft,
   candidateStatus,
+  compileImprovementBrief,
   createCorpus,
   createEvidenceExplorer,
 	createAhdeWorkbench,
@@ -164,6 +167,7 @@ for (const [name, value] of Object.entries({
   describeDevelopmentCorpusPublication,
   describeSpecDraftApproval,
   diagnoseEvalRun,
+	deriveEvidenceLinkedProposalSelection,
 	importBuilderCorpusDraft,
   launchBuilderPi,
 	loadBuilderCorpusImportReceipt,
@@ -676,6 +680,18 @@ try {
   if (diagnosis.status === "inconclusive" || diagnosis.summary.issueCount < 1) {
     throw new Error("installed-package baseline diagnosis did not identify the failure");
   }
+  const improvementBrief = compileImprovementBrief(runsRoot, diagnosis);
+  const selectedMode = improvementBrief.modes.find((mode) => mode.decision === "propose-harness-change");
+  if (!selectedMode) throw new Error("installed-package baseline has no proposal-eligible failure mode");
+  const proposalBasis = {
+    algorithmId: improvementBrief.algorithmId,
+    evalRunId: improvementBrief.evalRunId,
+    diagnosisId: improvementBrief.diagnosisId,
+    briefId: improvementBrief.briefId,
+    failureModeIds: [selectedMode.failureModeId],
+  };
+  const selectedEvidence = deriveEvidenceLinkedProposalSelection(improvementBrief, proposalBasis);
+  const evidenceRefs = [...new Set(selectedEvidence.diagnoses.flatMap((item) => item.evidence))];
 
   const before = readFileSync(join(targetDir, "AGENTS.md"), "utf8");
   const after = before.trimEnd() + NL + NL + "Return the exact uppercase word READY." + NL;
@@ -695,17 +711,13 @@ try {
     decision: "propose",
     baseTargetSha: developmentTarget.gitSha,
     summary: "Make the approved answer contract explicit.",
-    diagnoses: [{
-      failureIds: ["package-dev-1"],
-      evidence: [diagnosis.diagnosisId],
-      rootCause: "The baseline harness requests the wrong final token.",
-    }],
+    diagnoses: selectedEvidence.diagnoses,
     changes: [{
       path: "AGENTS.md",
       baseSha256: sha256(before),
       unifiedDiff: exactDiff,
       rationale: "Align the harness with the approved observable contract.",
-      evidenceRefs: [diagnosis.diagnosisId],
+      evidenceRefs,
     }],
     risks: ["The package fixture intentionally uses a narrow answer contract."],
     validationPlan: ["Run matched development and evaluator-only sealed evidence."],
@@ -716,6 +728,7 @@ try {
     targetDir,
     allowedPaths: ["AGENTS.md", "skills/**", "tools/**", "bin/**"],
     sourceEvalRunId: sourceBaseline.evalRunId,
+    proposalBasis,
     runsRoot,
     timeoutMs: 30_000,
     runId: "builder-package-lifecycle",

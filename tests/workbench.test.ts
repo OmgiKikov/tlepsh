@@ -14,7 +14,7 @@ import { loadBuilderCorpusDraft } from "../src/application/builder-corpus-draft.
 import { compileHarnessAuthoringProposal } from "../src/application/harness-authoring.js";
 import { compileImprovementBrief } from "../src/application/improvement-brief.js";
 import { recordBuilderAuthoredProposal } from "../src/application/builder-authoring.js";
-import { applyBuilderProposal } from "../src/application/builder-proposal.js";
+import { applyBuilderProposal, loadBuilderProposalRun } from "../src/application/builder-proposal.js";
 import { CANDIDATE_SCOPE_POLICY } from "../src/application/candidate-experiment.js";
 import { targetWithDevelopmentCorpus } from "../src/application/corpus-target.js";
 import { createCandidate } from "../src/domain/candidate.js";
@@ -180,6 +180,8 @@ function writeDevelopmentEval(
 				passed: outcome === "pass",
 				score: outcome === "pass" ? 1 : 0,
 				reason: outcome === "pass" ? "fixture pass" : "fixture failure",
+				specHash: hashValue(resolved.tasks[0]!.effectiveGraders[0]!),
+				checkCode: "output-contains",
 			}],
 		},
 		parent: { evalRunId, candidateOf: null },
@@ -215,6 +217,33 @@ function writeDevelopmentEval(
 	};
 	writeEvalRun(paths.runsRoot, record);
 	return record;
+}
+
+function proposalSelection(
+	paths: { runsRoot: string },
+	evalRunId: string,
+): {
+	source: {
+		algorithmId: "exact-eval-signals-v1";
+		evalRunId: string;
+		diagnosisId: string;
+		briefId: string;
+	};
+	failureModeIds: string[];
+} {
+	const diagnosis = diagnoseEvalRun(paths.runsRoot, evalRunId);
+	const brief = compileImprovementBrief(paths.runsRoot, diagnosis);
+	const mode = brief.modes.find((candidate) => candidate.decision === "propose-harness-change");
+	if (!mode) throw new Error("fixture has no proposal-eligible failure mode");
+	return {
+		source: {
+			algorithmId: brief.algorithmId,
+			evalRunId: brief.evalRunId,
+			diagnosisId: brief.diagnosisId,
+			briefId: brief.briefId,
+		},
+		failureModeIds: [mode.failureModeId],
+	};
 }
 
 describe("AHDE Workbench", () => {
@@ -298,6 +327,108 @@ describe("AHDE Workbench", () => {
 			onRunEvent: () => {},
 		});
 		expect(parsed.success).toBe(false);
+	});
+
+	it("uses project-owned admissions: foreign corruption is ignored while local ownership tamper blocks", async () => {
+		const paths = target();
+		const localWorkbench = createAhdeWorkbench({ ...paths, projectId: "test-target", dependencies: { now: () => NOW } });
+		await localWorkbench.submit({ kind: "spec-draft", spec: spec() });
+		const localApproval = await localWorkbench.decide({ kind: "approve-spec", reason: "Local authority" }, gate());
+		const proposal = compileHarnessAuthoringProposal({
+			repositoryDir: paths.projectDir,
+			intents: [{ type: "instructions.replace", content: "# Admission test\n" }],
+			summary: "Exercise project-owned proposal authority",
+			diagnoses: [],
+			risks: [],
+			validationPlan: ["Inspect authority"],
+		});
+		const local = await recordBuilderAuthoredProposal({
+			proposal,
+			targetDir: paths.projectDir,
+			allowedPaths: [...CANDIDATE_SCOPE_POLICY.allowed],
+			approvedSpec: {
+				stateRoot: paths.stateRoot,
+				projectId: "test-target",
+				specId: String(localApproval.result.approvedSpecId),
+			},
+			runsRoot: paths.runsRoot,
+			timeoutMs: 30_000,
+		});
+		const foreignSpec = saveSpecSnapshot({
+			stateRoot: paths.stateRoot,
+			projectId: "another-project",
+			status: "approved",
+			spec: spec("Foreign proposal"),
+			now: () => NOW,
+		});
+		const foreign = await recordBuilderAuthoredProposal({
+			proposal,
+			targetDir: paths.projectDir,
+			allowedPaths: [...CANDIDATE_SCOPE_POLICY.allowed],
+			approvedSpec: { stateRoot: paths.stateRoot, projectId: "another-project", specId: foreignSpec.id },
+			runsRoot: paths.runsRoot,
+			timeoutMs: 30_000,
+		});
+		writeFileSync(foreign.builderRunPath, "corrupt foreign evidence\n", "utf8");
+		const foreignEvalRunId = "erun-foreign-private-source";
+		mkdirSync(join(paths.runsRoot, foreignEvalRunId), { recursive: true });
+		writeFileSync(join(paths.runsRoot, foreignEvalRunId, "eval_run.json"), "foreign source trap\n", "utf8");
+		const localRecord = JSON.parse(readFileSync(local.builderRunPath, "utf8")) as {
+			request: {
+				approvedSpec: { projectId: string };
+				baseTargetSha: string;
+				source: unknown;
+				sourceAttestation: unknown;
+				proposalBasis: unknown;
+				proposalDiagnoses: unknown;
+				failureBundleSha256: string | null;
+				failureBundleBytes: number;
+			};
+		};
+		localRecord.request.approvedSpec.projectId = "another-project";
+		localRecord.request.source = {
+			evalRunId: foreignEvalRunId,
+			diagnosisId: "diagnosis-foreign-private-source",
+		};
+		localRecord.request.sourceAttestation = {
+			evalRunId: foreignEvalRunId,
+			diagnosisId: "diagnosis-foreign-private-source",
+			targetId: "test-target",
+			targetGitSha: localRecord.request.baseTargetSha,
+			evalRunSha256: `sha256:${"1".repeat(64)}`,
+			diagnosisSha256: `sha256:${"2".repeat(64)}`,
+			dataset: "foreign-private",
+			datasetHash: `sha256:${"3".repeat(64)}`,
+			suiteHash: `sha256:${"4".repeat(64)}`,
+			developmentCorpus: null,
+		};
+		localRecord.request.proposalBasis = {
+			schemaVersion: 1,
+			algorithmId: "exact-eval-signals-v1",
+			evalRunId: foreignEvalRunId,
+			diagnosisId: "diagnosis-foreign-private-source",
+			briefId: `brief-${"5".repeat(24)}`,
+			briefSha256: `sha256:${"6".repeat(64)}`,
+			failureModes: [{
+				failureModeId: `failure-mode-${"7".repeat(24)}`,
+				modeSha256: `sha256:${"8".repeat(64)}`,
+			}],
+		};
+		localRecord.request.proposalDiagnoses = [{
+			failureIds: [`failure-mode-${"7".repeat(24)}`],
+			evidence: ["foreign evidence that must not be opened"],
+			rootCause: "forged foreign root cause",
+		}];
+		localRecord.request.failureBundleSha256 = `sha256:${"9".repeat(64)}`;
+		localRecord.request.failureBundleBytes = 1;
+		writeFileSync(local.builderRunPath, `${JSON.stringify(localRecord, null, "\t")}\n`, "utf8");
+
+		const view = await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view();
+		expect(view.blockers.join("\n")).not.toContain(foreign.record.runId);
+		expect(view.warnings.join("\n")).not.toContain(foreign.record.runId);
+		expect(view.blockers.join("\n")).toContain(local.record.runId);
+		expect(view.blockers.join("\n")).toContain("project-owned admission");
+		expect(view.blockers.join("\n")).not.toContain(foreignEvalRunId);
 	});
 
 	it("survives restart and drives Spec → editable Corpus Draft → exact publication", async () => {
@@ -755,6 +886,8 @@ describe("AHDE Workbench", () => {
 		}, gate());
 		const evalA = writeDevelopmentEval(paths, String(publishedA.result.corpusId), "erun_lineage_a");
 		const evalB = writeDevelopmentEval(paths, String(publishedB.result.corpusId), "erun_lineage_b");
+		const selectionA = proposalSelection(paths, evalA.evalRunId);
+		const selectionB = proposalSelection(paths, evalB.evalRunId);
 		await workbench.submit({ kind: "select", entity: "eval-run", id: evalA.evalRunId });
 		expect((await workbench.view()).stage).toBe("improvement-authoring");
 
@@ -768,8 +901,8 @@ describe("AHDE Workbench", () => {
 		});
 		const proposal = {
 			kind: "structured-proposal" as const,
+			...selectionA,
 			summary: "Use exact lineage evidence to add generic research capability",
-			diagnoses: [],
 			intents: [
 				{
 					type: "execution.configure" as const,
@@ -807,14 +940,14 @@ describe("AHDE Workbench", () => {
 			validationPlan: ["Re-run the reviewed corpus"],
 		};
 		await expect(authoritative.submit(proposal)).rejects.toThrow(/development EvalRun/);
-		await expect(authoritative.submit({ ...proposal, sourceEvalRunId: evalA.evalRunId })).rejects.toThrow(/development EvalRun/);
 		expect(recordProposal).not.toHaveBeenCalled();
 
-		await expect(authoritative.submit({ ...proposal, sourceEvalRunId: evalB.evalRunId })).resolves.toMatchObject({
+		await expect(authoritative.submit({ ...proposal, ...selectionB })).resolves.toMatchObject({
 			artifact: { decision: "no-change", approvedSpecId: approved.result.approvedSpecId },
 		});
 		expect(recordProposal).toHaveBeenCalledWith(expect.objectContaining({
 			sourceEvalRunId: evalB.evalRunId,
+			proposalBasis: { ...selectionB.source, failureModeIds: selectionB.failureModeIds },
 			approvedSpec: expect.objectContaining({ specId: approved.result.approvedSpecId }),
 		}));
 	});
@@ -833,17 +966,27 @@ describe("AHDE Workbench", () => {
 		});
 		const published = await workbench.decide({ kind: "publish-corpus", reason: "Publish historical source" }, gate());
 		const evaluation = writeDevelopmentEval(paths, String(published.result.corpusId), "erun_historical_source");
-		diagnoseEvalRun(paths.runsRoot, evaluation.evalRunId);
+		const selection = proposalSelection(paths, evaluation.evalRunId);
 		const authored = await workbench.submit({
 			kind: "structured-proposal",
-			sourceEvalRunId: evaluation.evalRunId,
+			...selection,
 			summary: "Keep historical evidence historical",
-			diagnoses: [],
 			intents: [{ type: "instructions.replace", content: "# Proposed historical change\n" }],
 			risks: [],
 			validationPlan: ["Re-run exact development evidence"],
 		});
 		const proposalId = String(authored.artifact?.runId);
+		const persisted = loadBuilderProposalRun(paths.runsRoot, proposalId);
+		expect(persisted.request.proposalBasis).toMatchObject({
+			evalRunId: evaluation.evalRunId,
+			briefId: selection.source.briefId,
+			failureModes: [{ failureModeId: selection.failureModeIds[0] }],
+		});
+		expect(persisted.result.proposal?.diagnoses).toEqual([expect.objectContaining({
+			failureIds: selection.failureModeIds,
+			evidence: [`eval:${evaluation.evalRunId}/run:run-${evaluation.evalRunId}`],
+			rootCause: expect.stringMatching(/^Host-derived hypothesis \(not proven\):/),
+		})]);
 
 		writeFileSync(join(paths.projectDir, "AGENTS.md"), "# A later live Target change\n", "utf8");
 		const view = await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view();
@@ -852,6 +995,54 @@ describe("AHDE Workbench", () => {
 		expect(view.selections).toEqual(expect.arrayContaining([
 			expect.objectContaining({ kind: "proposal", id: proposalId, status: "open" }),
 		]));
+		expect((await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view({ aspect: "review" })).detail?.content)
+			.toMatchObject({
+				evidenceBasis: {
+					evalRunId: evaluation.evalRunId,
+					briefId: selection.source.briefId,
+					failureModes: [{ failureModeId: selection.failureModeIds[0] }],
+				},
+			});
+
+		const runDir = join(paths.runsRoot, "builders", proposalId);
+		const inputPath = join(runDir, "builder_input.txt");
+		const runPath = join(runDir, "builder_run.json");
+		const forgedModeHash = `sha256:${"0".repeat(64)}`;
+		const forgedBasis = {
+			...persisted.request.proposalBasis!,
+			failureModes: persisted.request.proposalBasis!.failureModes.map((mode, index) =>
+				index === 0 ? { ...mode, modeSha256: forgedModeHash } : mode
+			),
+		};
+		const inputValue = JSON.parse(readFileSync(inputPath, "utf8")) as {
+			evaluationEvidence: { proposalBasis: unknown };
+		};
+		inputValue.evaluationEvidence.proposalBasis = forgedBasis;
+		const inputContent = `${JSON.stringify(inputValue)}\n`;
+		const forgedRecord = {
+			...persisted,
+			request: {
+				...persisted.request,
+				proposalBasis: forgedBasis,
+				builderInputSha256: hashFile(inputContent),
+				builderInputBytes: Buffer.byteLength(inputContent),
+			},
+			artifacts: {
+				...persisted.artifacts,
+				input: {
+					...persisted.artifacts.input,
+					sha256: hashFile(inputContent),
+					bytes: Buffer.byteLength(inputContent),
+				},
+			},
+		};
+		chmodSync(inputPath, 0o600);
+		chmodSync(runPath, 0o600);
+		writeFileSync(inputPath, inputContent, "utf8");
+		writeFileSync(runPath, `${JSON.stringify(forgedRecord, null, "\t")}\n`, "utf8");
+		expect(() => loadBuilderProposalRun(paths.runsRoot, proposalId)).toThrow(/basis no longer matches/);
+		const blocked = await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view();
+		expect(blocked.blockers.join("\n")).toContain(proposalId);
 	});
 
 	it("will not let /run skip an outstanding Spec review gate", async () => {

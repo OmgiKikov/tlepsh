@@ -8,6 +8,7 @@ import {
 	mkdtempSync,
 	openSync,
 	readFileSync,
+	readdirSync,
 	realpathSync,
 	renameSync,
 	rmSync,
@@ -34,7 +35,7 @@ import {
 } from "../builders/adapters.js";
 import { compileFailureBundle } from "../bundle.js";
 import { listCorpora } from "../corpus.js";
-import { diagnoseEvalRun } from "../diagnosis.js";
+import { DiagnosisRecordSchema, diagnoseEvalRun } from "../diagnosis.js";
 import { isSealedEvalRun, loadVerifiedEvalRun, readEvalRunIndex } from "../eval.js";
 import { loadTarget, TargetManifest, type TargetManifest as TargetManifestValue } from "../manifest.js";
 import { canonicalJson, hashValue } from "../provenance.js";
@@ -47,6 +48,16 @@ import {
 import { readJsonArtifact, writeJsonArtifact, writeTextArtifact } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import { resolveDevelopmentTargetForEval } from "./corpus-target.js";
+import {
+	ProposalBasisAttestationSchema,
+	ProposalBasisSelectionSchema,
+	compileImprovementBrief,
+	deriveEvidenceLinkedProposalSelection,
+	type EvidenceLinkedProposalDiagnosis,
+	type EvidenceLinkedProposalSelection,
+	type ProposalBasisAttestation,
+	type ProposalBasisSelection,
+} from "./improvement-brief.js";
 import { withDetachedWorktree } from "../git/experiment-worktree.js";
 
 const GIT_SHA = /^[0-9a-f]{40}$/;
@@ -58,6 +69,7 @@ const MAX_RUN_RECORD_BYTES = 16 * 1024 * 1024;
 const MAX_BUILDER_INPUT_BYTES = 16 * 1024 * 1024;
 const MAX_OPERATOR_GUIDANCE_BYTES = 16 * 1024;
 const TEMP_PREFIX = "ahde-builder-apply-";
+const MAX_PROPOSAL_ADMISSIONS = 10_000;
 
 const NonBlankSchema = z.string().min(1).refine((value) => value.trim().length > 0, "expected non-blank text");
 const OperatorGuidanceSchema = NonBlankSchema.refine(
@@ -67,7 +79,9 @@ const OperatorGuidanceSchema = NonBlankSchema.refine(
 const GitShaSchema = z.string().regex(GIT_SHA, "expected an exact 40-character Git SHA");
 const Sha256Schema = z.string().regex(SHA256, "expected sha256:<64 lowercase hex>");
 const RunIdSchema = z.string().regex(RUN_ID, "invalid builder run id");
+const ProjectIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
 const TimestampSchema = z.iso.datetime({ offset: true });
+const MAX_PROPOSAL_ADMISSION_BYTES = 64 * 1024;
 
 function isSafeRepositoryPath(value: string): boolean {
 	return value === value.trim() &&
@@ -94,6 +108,12 @@ const ArtifactRefSchema = z.strictObject({
 const SourceEvidenceSchema = z.strictObject({
 	evalRunId: RunIdSchema,
 	diagnosisId: RunIdSchema,
+});
+
+const EvidenceLinkedProposalDiagnosisSchema = z.strictObject({
+	failureIds: z.array(NonBlankSchema).min(1).max(8),
+	evidence: z.array(NonBlankSchema).min(1).max(100),
+	rootCause: NonBlankSchema,
 });
 
 export const CanonicalBuilderSourceSchema = z.strictObject({
@@ -125,6 +145,8 @@ export const ApprovedSpecBuilderInputSchema = z.strictObject({
 	evaluationEvidence: z.strictObject({
 		source: SourceEvidenceSchema.nullable(),
 		sourceAttestation: CanonicalBuilderSourceSchema.nullable().default(null),
+		proposalBasis: ProposalBasisAttestationSchema.nullable().default(null),
+		proposalDiagnoses: z.array(EvidenceLinkedProposalDiagnosisSchema).min(1).max(8).nullable().default(null),
 		failureBundle: NonBlankSchema,
 	}).nullable(),
 }).superRefine((input, context) => {
@@ -147,6 +169,24 @@ export const ApprovedSpecBuilderInputSchema = z.strictObject({
 			message: "canonical source attestation must match the embedded source ids",
 		});
 	}
+	if (evidence?.proposalBasis && (
+		evidence.sourceAttestation === null ||
+		evidence.proposalBasis.evalRunId !== evidence.sourceAttestation.evalRunId ||
+		evidence.proposalBasis.diagnosisId !== evidence.sourceAttestation.diagnosisId
+	)) {
+		context.addIssue({
+			code: "custom",
+			path: ["evaluationEvidence", "proposalBasis"],
+			message: "proposal basis must match the canonical source attestation",
+		});
+	}
+	if ((evidence?.proposalBasis === null) !== (evidence?.proposalDiagnoses === null)) {
+		context.addIssue({
+			code: "custom",
+			path: ["evaluationEvidence", "proposalDiagnoses"],
+			message: "proposal basis and host-derived diagnoses must be present together",
+		});
+	}
 });
 export type ApprovedSpecBuilderInput = z.infer<typeof ApprovedSpecBuilderInputSchema>;
 
@@ -157,6 +197,8 @@ const BuilderRequestEvidenceSchema = z.strictObject({
 	source: SourceEvidenceSchema.nullable(),
 	provenanceMode: z.enum(["canonical", "unverified"]).default("unverified"),
 	sourceAttestation: CanonicalBuilderSourceSchema.nullable().default(null),
+	proposalBasis: ProposalBasisAttestationSchema.nullable().default(null),
+	proposalDiagnoses: z.array(EvidenceLinkedProposalDiagnosisSchema).min(1).max(8).nullable().default(null),
 	failureBundleSha256: Sha256Schema.nullable(),
 	failureBundleBytes: z.number().int().nonnegative(),
 	builderInputSha256: Sha256Schema,
@@ -173,8 +215,8 @@ const BuilderRequestEvidenceSchema = z.strictObject({
 	if (request.source !== null && request.failureBundleSha256 === null) {
 		context.addIssue({ code: "custom", path: ["source"], message: "source ids require failure evidence" });
 	}
-	if (request.provenanceMode === "unverified" && request.sourceAttestation !== null) {
-		context.addIssue({ code: "custom", path: ["sourceAttestation"], message: "unverified runs cannot claim canonical source evidence" });
+	if (request.provenanceMode === "unverified" && (request.sourceAttestation !== null || request.proposalBasis !== null)) {
+		context.addIssue({ code: "custom", path: ["proposalBasis"], message: "unverified runs cannot claim canonical proposal evidence" });
 	}
 	if (request.provenanceMode === "canonical") {
 		if ((request.source === null) !== (request.sourceAttestation === null)) {
@@ -189,6 +231,16 @@ const BuilderRequestEvidenceSchema = z.strictObject({
 		request.source.diagnosisId !== request.sourceAttestation.diagnosisId
 	)) {
 		context.addIssue({ code: "custom", path: ["sourceAttestation"], message: "source attestation ids do not match request source" });
+	}
+	if (request.proposalBasis && (
+		request.sourceAttestation === null ||
+		request.proposalBasis.evalRunId !== request.sourceAttestation.evalRunId ||
+		request.proposalBasis.diagnosisId !== request.sourceAttestation.diagnosisId
+	)) {
+		context.addIssue({ code: "custom", path: ["proposalBasis"], message: "proposal basis does not match source attestation" });
+	}
+	if ((request.proposalBasis === null) !== (request.proposalDiagnoses === null)) {
+		context.addIssue({ code: "custom", path: ["proposalDiagnoses"], message: "proposal basis and host-derived diagnoses must be present together" });
 	}
 });
 
@@ -250,6 +302,28 @@ export const PersistedBuilderRunSchema = z.strictObject({
 });
 export type PersistedBuilderRun = z.infer<typeof PersistedBuilderRunSchema>;
 
+/**
+ * Project-owned authority admitting one shared Builder run into a Workbench.
+ * The shared run's mutable self-description is never used to decide ownership.
+ */
+export const BuilderProposalAdmissionSchema = z.strictObject({
+	schemaVersion: z.literal(1),
+	projectId: ProjectIdSchema,
+	runId: RunIdSchema,
+	approvedSpec: ApprovedSpecReferenceSchema,
+	builderRunSha256: Sha256Schema,
+	proposalSha256: Sha256Schema,
+}).superRefine((admission, context) => {
+	if (admission.approvedSpec.projectId !== admission.projectId) {
+		context.addIssue({
+			code: "custom",
+			path: ["approvedSpec", "projectId"],
+			message: "admission approved Spec belongs to a different project",
+		});
+	}
+});
+export type BuilderProposalAdmission = z.infer<typeof BuilderProposalAdmissionSchema>;
+
 const HumanActorSchema = z.strictObject({ kind: z.literal("human"), id: NonBlankSchema });
 
 export const BuilderApplyReceiptSchema = z.strictObject({
@@ -290,6 +364,52 @@ export interface BuilderProposalRunResult {
 	proposalPath: string | null;
 }
 
+/**
+ * Admit an actionable canonical proposal into exactly one project's Workbench.
+ * Replaying the exact receipt is crash-safe; conflicting authority is refused.
+ */
+export function admitBuilderProposalRun(
+	stateRoot: string,
+	projectIdInput: string,
+	result: BuilderProposalRunResult,
+): BuilderProposalAdmission | null {
+	const projectId = ProjectIdSchema.parse(projectIdInput);
+	const { record } = result;
+	if (
+		record.request.provenanceMode !== "canonical" ||
+		record.result.status !== "completed" ||
+		record.result.proposal?.decision !== "propose" ||
+		record.result.proposal.changes.length === 0
+	) return null;
+	const approvedSpec = record.request.approvedSpec;
+	const proposal = record.artifacts.proposal;
+	if (!approvedSpec || approvedSpec.projectId !== projectId || !proposal) {
+		throw new Error("canonical Builder proposal cannot be admitted without its exact project and proposal evidence");
+	}
+	const admission = BuilderProposalAdmissionSchema.parse({
+		schemaVersion: 1,
+		projectId,
+		runId: record.runId,
+		approvedSpec,
+		builderRunSha256: hashValue(record),
+		proposalSha256: proposal.sha256,
+	});
+	const path = proposalAdmissionPath(stateRoot, projectId, record.runId, true);
+	if (existsSync(path)) {
+		assertPrivateAdmissionFile(path);
+		const existing = readJsonArtifact(path, BuilderProposalAdmissionSchema, {
+			maxBytes: MAX_PROPOSAL_ADMISSION_BYTES,
+		});
+		if (canonicalJson(existing) !== canonicalJson(admission)) {
+			throw new Error(`Builder proposal ${record.runId} already has conflicting project authority`);
+		}
+		return existing;
+	}
+	writeJsonArtifact(path, BuilderProposalAdmissionSchema, admission, { immutable: true });
+	assertPrivateAdmissionFile(path);
+	return admission;
+}
+
 export interface BuilderProposalDependencies {
 	now: () => string;
 	newRunId: () => string;
@@ -298,6 +418,8 @@ export interface BuilderProposalDependencies {
 interface BuilderProvenanceContext {
 	mode: "canonical" | "unverified";
 	sourceAttestation: CanonicalBuilderSource | null;
+	proposalBasis: ProposalBasisAttestation | null;
+	proposalDiagnoses: EvidenceLinkedProposalDiagnosis[] | null;
 }
 
 const DEFAULT_RUN_DEPENDENCIES: BuilderProposalDependencies = {
@@ -307,6 +429,100 @@ const DEFAULT_RUN_DEPENDENCIES: BuilderProposalDependencies = {
 
 function sha256(content: string | Buffer): string {
 	return `sha256:${createHash("sha256").update(content).digest("hex")}`;
+}
+
+function isContained(root: string, candidate: string): boolean {
+	const path = relative(root, candidate);
+	return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
+}
+
+function proposalAdmissionRoot(
+	stateRoot: string,
+	projectIdInput: string,
+	create: boolean,
+): string | null {
+	const projectId = ProjectIdSchema.parse(projectIdInput);
+	const root = resolve(stateRoot);
+	if (!existsSync(root)) {
+		if (!create) return null;
+		mkdirSync(root, { recursive: true, mode: 0o700 });
+	}
+	const rootEntry = lstatSync(root);
+	if (!rootEntry.isDirectory() || rootEntry.isSymbolicLink()) {
+		throw new Error(`Builder proposal stateRoot must be a regular non-symlink directory: ${root}`);
+	}
+	const canonicalRoot = realpathSync(root);
+	let current = root;
+	for (const segment of ["projects", projectId, "workbench", "proposal-admissions"]) {
+		const next = join(current, segment);
+		if (!existsSync(next)) {
+			if (!create) return null;
+			mkdirSync(next, { mode: 0o700 });
+		}
+		const entry = lstatSync(next);
+		if (!entry.isDirectory() || entry.isSymbolicLink()) {
+			throw new Error(`Builder proposal state component must be a regular non-symlink directory: ${next}`);
+		}
+		if (!isContained(canonicalRoot, realpathSync(next))) {
+			throw new Error("Builder proposal state path escaped stateRoot");
+		}
+		current = next;
+	}
+	return current;
+}
+
+function assertPrivateAdmissionFile(path: string): void {
+	const entry = lstatSync(path);
+	if (!entry.isFile() || entry.isSymbolicLink() || entry.size > MAX_PROPOSAL_ADMISSION_BYTES) {
+		throw new Error(`Builder proposal admission must be a bounded regular non-symlink file: ${path}`);
+	}
+	const mode = statSync(path).mode & 0o777;
+	if (mode !== 0o600) {
+		throw new Error(`Builder proposal admission must have mode 0600, got 0${mode.toString(8)}`);
+	}
+}
+
+function proposalAdmissionPath(
+	stateRoot: string,
+	projectId: string,
+	runIdInput: string,
+	create: boolean,
+): string {
+	const runId = RunIdSchema.parse(runIdInput);
+	const root = proposalAdmissionRoot(stateRoot, projectId, create);
+	if (!root) throw new Error(`project ${projectId} has no Builder proposal admissions`);
+	return join(root, `${runId}.json`);
+}
+
+/** Enumerate only the current project's proposal authority, never the shared runsRoot. */
+export function listBuilderProposalAdmissions(
+	stateRoot: string,
+	projectIdInput: string,
+): BuilderProposalAdmission[] {
+	const projectId = ProjectIdSchema.parse(projectIdInput);
+	const root = proposalAdmissionRoot(stateRoot, projectId, false);
+	if (!root) return [];
+	const entries = readdirSync(root, { withFileTypes: true })
+		.filter((entry) => entry.name.endsWith(".json"))
+		.sort((left, right) => left.name.localeCompare(right.name));
+	if (entries.length > MAX_PROPOSAL_ADMISSIONS) {
+		throw new Error(`project ${projectId} exceeds ${MAX_PROPOSAL_ADMISSIONS} Builder proposal admissions`);
+	}
+	return entries.map((entry) => {
+		if (!entry.isFile() || entry.isSymbolicLink()) {
+			throw new Error(`Builder proposal admission entry is not a regular file: ${entry.name}`);
+		}
+		const runId = RunIdSchema.parse(entry.name.slice(0, -".json".length));
+		const path = join(root, entry.name);
+		assertPrivateAdmissionFile(path);
+		const admission = readJsonArtifact(path, BuilderProposalAdmissionSchema, {
+			maxBytes: MAX_PROPOSAL_ADMISSION_BYTES,
+		});
+		if (admission.projectId !== projectId || admission.runId !== runId) {
+			throw new Error("Builder proposal admission path does not match its exact identity");
+		}
+		return admission;
+	});
 }
 
 function verifyPersistedBuilderInput(record: PersistedBuilderRun, content: Buffer): void {
@@ -329,11 +545,92 @@ function verifyPersistedBuilderInput(record: PersistedBuilderRun, content: Buffe
 	if (canonicalJson(embeddedAttestation) !== canonicalJson(record.request.sourceAttestation)) {
 		throw new Error("Builder input source attestation does not match builder_run evidence");
 	}
+	const embeddedProposalBasis = input.evaluationEvidence?.proposalBasis ?? null;
+	if (canonicalJson(embeddedProposalBasis) !== canonicalJson(record.request.proposalBasis)) {
+		throw new Error("Builder input proposal basis does not match builder_run evidence");
+	}
+	const embeddedProposalDiagnoses = input.evaluationEvidence?.proposalDiagnoses ?? null;
+	if (canonicalJson(embeddedProposalDiagnoses) !== canonicalJson(record.request.proposalDiagnoses)) {
+		throw new Error("Builder input host-derived diagnoses do not match builder_run evidence");
+	}
 	const bundle = input.evaluationEvidence?.failureBundle ?? null;
 	const bundleHash = bundle === null ? null : sha256(bundle);
 	const bundleBytes = bundle === null ? 0 : Buffer.byteLength(bundle, "utf8");
 	if (bundleHash !== record.request.failureBundleSha256 || bundleBytes !== record.request.failureBundleBytes) {
 		throw new Error("Builder input failure evidence does not match builder_run evidence");
+	}
+}
+
+function rederiveAttestedProposalSelection(
+	runsRoot: string,
+	source: CanonicalBuilderSource,
+	basis: ProposalBasisAttestation,
+): EvidenceLinkedProposalSelection {
+	let preflight;
+	try {
+		preflight = readEvalRunIndex(runsRoot, basis.evalRunId);
+	} catch {
+		throw new Error("attested proposal source failed integrity checks");
+	}
+	if (isSealedEvalRun(preflight)) {
+		throw new Error("attested proposal source is unavailable");
+	}
+	const evalPath = resolveContainedArtifactPath(runsRoot, basis.evalRunId, "eval_run.json");
+	assertRegularBounded(evalPath, MAX_RUN_RECORD_BYTES, "source eval_run.json");
+	if (sha256(readFileSync(evalPath)) !== source.evalRunSha256) {
+		throw new Error("attested proposal EvalRun changed after authoring");
+	}
+	const diagnosisPath = resolveContainedArtifactPath(runsRoot, basis.evalRunId, "diagnosis.json");
+	assertRegularBounded(diagnosisPath, MAX_RUN_RECORD_BYTES, "source diagnosis.json");
+	const diagnosisBytes = readFileSync(diagnosisPath);
+	if (sha256(diagnosisBytes) !== source.diagnosisSha256) {
+		throw new Error("attested proposal diagnosis changed after authoring");
+	}
+	const diagnosis = readJsonArtifact(diagnosisPath, DiagnosisRecordSchema);
+	const selected = deriveEvidenceLinkedProposalSelection(
+		compileImprovementBrief(runsRoot, diagnosis),
+		ProposalBasisSelectionSchema.parse({
+			algorithmId: basis.algorithmId,
+			evalRunId: basis.evalRunId,
+			diagnosisId: basis.diagnosisId,
+			briefId: basis.briefId,
+			failureModeIds: basis.failureModes.map((mode) => mode.failureModeId),
+		}),
+	);
+	if (canonicalJson(selected.basis) !== canonicalJson(basis)) {
+		throw new Error("attested proposal basis no longer matches canonical evidence");
+	}
+	return selected;
+}
+
+function verifyPersistedProposalBasis(record: PersistedBuilderRun, runsRoot: string): void {
+	const basis = record.request.proposalBasis;
+	if (basis === null) return;
+	const source = record.request.sourceAttestation;
+	if (source === null) throw new Error("attested proposal basis is missing its canonical source");
+	const selected = rederiveAttestedProposalSelection(runsRoot, source, basis);
+	if (canonicalJson(record.request.proposalDiagnoses) !== canonicalJson(selected.diagnoses)) {
+		throw new Error("persisted host-derived diagnoses no longer match canonical evidence");
+	}
+	if (record.result.status === "completed" && record.result.proposal) {
+		assertProposalEvidenceBinding(record.result.proposal, selected.basis, selected.diagnoses);
+	}
+}
+
+function assertProposalEvidenceBinding(
+	proposal: CandidateProposal,
+	basis: ProposalBasisAttestation | null,
+	diagnoses: EvidenceLinkedProposalDiagnosis[] | null,
+): void {
+	if (basis === null || diagnoses === null) return;
+	if (canonicalJson(proposal.diagnoses) !== canonicalJson(diagnoses)) {
+		throw new Error("proposal diagnoses do not match the host-derived failure-mode evidence");
+	}
+	const evidenceRefs = [...new Set(diagnoses.flatMap((diagnosis) => diagnosis.evidence))];
+	for (const change of proposal.changes) {
+		if (canonicalJson(change.evidenceRefs) !== canonicalJson(evidenceRefs)) {
+			throw new Error("proposal change evidence refs do not match the host-derived failure-mode evidence");
+		}
 	}
 }
 
@@ -578,7 +875,13 @@ async function runBuilderProposalInternal(
 			operatorGuidance,
 			evaluationEvidence: failureBundle === null
 				? null
-				: { source, sourceAttestation: provenance.sourceAttestation, failureBundle },
+				: {
+					source,
+					sourceAttestation: provenance.sourceAttestation,
+					proposalBasis: provenance.proposalBasis,
+					proposalDiagnoses: provenance.proposalDiagnoses,
+					failureBundle,
+				},
 		});
 	const builderInput = typedInput === null ? failureBundle! : `${canonicalJson(typedInput)}\n`;
 	const builderInputBytes = Buffer.byteLength(builderInput, "utf8");
@@ -625,6 +928,22 @@ async function runBuilderProposalInternal(
 				error: builderError("timeout", "builder probe exhausted the end-to-end deadline", true),
 			})
 			: await invokeAdapter(normalizedOptions, runId, probe, capabilities, deps.now, remainingMs);
+		if (provenance.proposalBasis) {
+			if (!provenance.sourceAttestation || !provenance.proposalDiagnoses) {
+				throw new Error("attested proposal basis is missing its canonical host-derived evidence");
+			}
+			const current = rederiveAttestedProposalSelection(
+				options.runsRoot,
+				provenance.sourceAttestation,
+				provenance.proposalBasis,
+			);
+			if (canonicalJson(current.diagnoses) !== canonicalJson(provenance.proposalDiagnoses)) {
+				throw new Error("canonical proposal evidence changed during Builder execution");
+			}
+			if (result.status === "completed" && result.proposal) {
+				assertProposalEvidenceBinding(result.proposal, current.basis, current.diagnoses);
+			}
+		}
 		const rawEvents = result.rawEvents.join("\n");
 		const rawBytes = Buffer.byteLength(rawEvents, "utf8");
 		if (rawBytes > MAX_RAW_EVENT_BYTES) throw new Error("normalized adapter events exceed the evidence limit");
@@ -652,6 +971,8 @@ async function runBuilderProposalInternal(
 				source,
 				provenanceMode: provenance.mode,
 				sourceAttestation: provenance.sourceAttestation,
+				proposalBasis: provenance.proposalBasis,
+				proposalDiagnoses: provenance.proposalDiagnoses,
 				failureBundleSha256: failureBundle === null ? null : sha256(failureBundle),
 				failureBundleBytes: failureBundle === null ? 0 : Buffer.byteLength(failureBundle, "utf8"),
 				builderInputSha256: sha256(builderInput),
@@ -700,6 +1021,8 @@ export function runBuilderProposal(
 	return runBuilderProposalInternal(options, dependencies, {
 		mode: "unverified",
 		sourceAttestation: null,
+		proposalBasis: null,
+		proposalDiagnoses: null,
 	});
 }
 
@@ -711,7 +1034,61 @@ export type RunApprovedSpecBuilderProposalOptions = Omit<
 	targetDir: string;
 	dataset?: string;
 	sourceEvalRunId?: string;
+	/** Exact model-selected handles; the host recompiles and attests their canonical brief. */
+	proposalBasis?: ProposalBasisSelection;
 };
+
+function assertDevelopmentProposalSourceMetadata(
+	runsRoot: string,
+	approvedSpec: ApprovedSpecInput,
+	evalRunIdInput: string,
+): string {
+	const evalRunId = RunIdSchema.parse(evalRunIdInput);
+	const sealedHashes = new Set(listCorpora({
+		stateRoot: approvedSpec.stateRoot,
+		projectId: approvedSpec.projectId,
+	}).filter((corpus) => corpus.visibility === "sealed").map((corpus) => corpus.hash));
+	let preflight;
+	try {
+		preflight = readEvalRunIndex(runsRoot, evalRunId);
+	} catch {
+		throw new Error("canonical Builder source metadata failed integrity checks");
+	}
+	if (isSealedEvalRun(preflight, sealedHashes)) {
+		throw new Error("sealed holdout evidence cannot be used to steer a Builder proposal");
+	}
+	return evalRunId;
+}
+
+export interface ResolveCanonicalProposalBasisOptions {
+	runsRoot: string;
+	approvedSpec: ApprovedSpecInput;
+	sourceEvalRunId: string;
+	failureModeIds: string[];
+}
+
+/** CLI/host convenience which performs the sealed preflight before diagnosis. */
+export function resolveCanonicalProposalBasis(
+	options: ResolveCanonicalProposalBasisOptions,
+): ProposalBasisSelection {
+	loadApprovedSpec(options.approvedSpec);
+	const evalRunId = assertDevelopmentProposalSourceMetadata(
+		options.runsRoot,
+		options.approvedSpec,
+		options.sourceEvalRunId,
+	);
+	const diagnosis = diagnoseEvalRun(options.runsRoot, evalRunId);
+	const brief = compileImprovementBrief(options.runsRoot, diagnosis);
+	const selection = ProposalBasisSelectionSchema.parse({
+		algorithmId: brief.algorithmId,
+		evalRunId: brief.evalRunId,
+		diagnosisId: brief.diagnosisId,
+		briefId: brief.briefId,
+		failureModeIds: options.failureModeIds,
+	});
+	deriveEvidenceLinkedProposalSelection(brief, selection);
+	return selection;
+}
 
 /**
  * Canonical Spec-first entry point. It derives every evidence byte from the
@@ -727,7 +1104,28 @@ export async function runApprovedSpecBuilderProposal(
 			throw new Error(`canonical Builder options must not include caller-supplied ${forbidden}`);
 		}
 	}
-	const { targetDir: _targetDir, dataset: _dataset, sourceEvalRunId: _sourceEvalRunId, ...rest } = options;
+	const requestedBasis = options.proposalBasis
+		? ProposalBasisSelectionSchema.parse(options.proposalBasis)
+		: null;
+	if (options.sourceEvalRunId !== undefined && requestedBasis === null) {
+		throw new Error("canonical Builder source requires an exact improvement-brief and failure-mode selection");
+	}
+	if (options.sourceEvalRunId === undefined && requestedBasis !== null) {
+		throw new Error("proposal basis requires an exact canonical source EvalRun");
+	}
+	const sourceEvalRunId = options.sourceEvalRunId === undefined
+		? undefined
+		: RunIdSchema.parse(options.sourceEvalRunId);
+	if (requestedBasis && requestedBasis.evalRunId !== sourceEvalRunId) {
+		throw new Error("proposal basis must name the exact canonical source EvalRun");
+	}
+	const {
+		targetDir: _targetDir,
+		dataset: _dataset,
+		sourceEvalRunId: _sourceEvalRunId,
+		proposalBasis: _proposalBasis,
+		...rest
+	} = options;
 	void _targetDir;
 	void _dataset;
 	void _sourceEvalRunId;
@@ -740,6 +1138,8 @@ export async function runApprovedSpecBuilderProposal(
 		let failureBundle: string | undefined;
 		let evidence: { evalRunId: string; diagnosisId: string } | undefined;
 		let sourceAttestation: CanonicalBuilderSource | null = null;
+		let proposalBasis: ProposalBasisAttestation | null = null;
+		let proposalDiagnoses: EvidenceLinkedProposalDiagnosis[] | null = null;
 		if (sourceEvalRunId) {
 			const sealed = listCorpora({
 				stateRoot: options.approvedSpec.stateRoot,
@@ -779,6 +1179,14 @@ export async function runApprovedSpecBuilderProposal(
 					"resolve infrastructure errors and re-run the evaluation before proposing changes",
 				);
 			}
+			if (requestedBasis) {
+				const selected = deriveEvidenceLinkedProposalSelection(
+					compileImprovementBrief(options.runsRoot, diagnosis),
+					requestedBasis,
+				);
+				proposalBasis = selected.basis;
+				proposalDiagnoses = selected.diagnoses;
+			}
 			const bundlePath = compileFailureBundle(resolved.target, evalRun, options.runsRoot);
 			assertRegularBounded(bundlePath, MAX_BUILDER_INPUT_BYTES, "canonical failure bundle");
 			failureBundle = readFileSync(bundlePath, "utf8");
@@ -810,16 +1218,24 @@ export async function runApprovedSpecBuilderProposal(
 		}, dependencies, {
 			mode: "canonical",
 			sourceAttestation,
+			proposalBasis,
+			proposalDiagnoses,
 		});
 	};
 
-	if (!options.sourceEvalRunId) return runCanonical(options.targetDir);
-	const verifiedEval = loadVerifiedEvalRun(options.runsRoot, options.sourceEvalRunId);
+	let result: BuilderProposalRunResult;
+	if (!sourceEvalRunId) {
+		result = await runCanonical(options.targetDir);
+		admitBuilderProposalRun(options.approvedSpec.stateRoot, options.approvedSpec.projectId, result);
+		return result;
+	}
+	assertDevelopmentProposalSourceMetadata(options.runsRoot, options.approvedSpec, sourceEvalRunId);
+	const verifiedEval = loadVerifiedEvalRun(options.runsRoot, sourceEvalRunId);
 	if (!verifiedEval.hasRunHashes) {
 		throw new Error("canonical Builder source eval must hash-anchor every member run");
 	}
 	const evalRun = verifiedEval.record;
-	return withDetachedWorktree({
+	result = await withDetachedWorktree({
 		repositoryDir: options.targetDir,
 		ref: evalRun.target.gitSha,
 	}, async (worktree) => {
@@ -828,15 +1244,25 @@ export async function runApprovedSpecBuilderProposal(
 		}
 		return runCanonical(worktree.path, evalRun.evalRunId);
 	});
+	admitBuilderProposalRun(options.approvedSpec.stateRoot, options.approvedSpec.projectId, result);
+	return result;
 }
 
-export function loadBuilderProposalRun(runsRoot: string, runIdInput: string): PersistedBuilderRun {
+/** Read only the bounded Builder record envelope; do not follow any evidence references. */
+export function loadBuilderProposalRunEnvelope(runsRoot: string, runIdInput: string): PersistedBuilderRun {
 	const runId = RunIdSchema.parse(runIdInput);
 	const runDir = canonicalBuilderRunDirectory(runsRoot, runId);
 	const record = readJsonArtifact(
 		join(runDir, "builder_run.json"),
 		PersistedBuilderRunSchema,
 	);
+	if (record.runId !== runId) throw new Error("builder run directory does not match its record id");
+	return record;
+}
+
+/** Verify the self-contained input and then all canonical evidence reached by this exact record. */
+export function verifyBuilderProposalRunEvidence(runsRoot: string, record: PersistedBuilderRun): void {
+	const runDir = canonicalBuilderRunDirectory(runsRoot, record.runId);
 	const inputPath = join(runDir, record.artifacts.input.path);
 	assertRegularBounded(inputPath, MAX_BUILDER_INPUT_BYTES, "builder_input.txt");
 	const input = readFileSync(inputPath);
@@ -844,6 +1270,13 @@ export function loadBuilderProposalRun(runsRoot: string, runIdInput: string): Pe
 		throw new Error("builder input artifact hash/size does not match builder_run evidence");
 	}
 	verifyPersistedBuilderInput(record, input);
+	verifyPersistedProposalBasis(record, runsRoot);
+	return;
+}
+
+export function loadBuilderProposalRun(runsRoot: string, runIdInput: string): PersistedBuilderRun {
+	const record = loadBuilderProposalRunEnvelope(runsRoot, runIdInput);
+	verifyBuilderProposalRunEvidence(runsRoot, record);
 	return record;
 }
 
@@ -860,6 +1293,8 @@ export interface ApplyBuilderProposalOptions {
 	/** Trusted configured root containing builders/<runId> immutable evidence. */
 	runsRoot: string;
 	runId: string;
+	/** Exact Builder record reviewed by a host confirmation, when one exists. */
+	expectedBuilderRunHash?: string;
 	requestedBranch: string;
 	actor: { kind: "human"; id: string };
 	reason: string;
@@ -1135,6 +1570,12 @@ export function applyBuilderProposal(
 	assertRegularBounded(proposalPath, MAX_PROPOSAL_BYTES, "proposal.json");
 
 	const persisted = readJsonArtifact(builderRunPath, PersistedBuilderRunSchema);
+	if (
+		options.expectedBuilderRunHash !== undefined &&
+		hashValue(persisted) !== options.expectedBuilderRunHash
+	) {
+		throw new Error("builder proposal changed after confirmation; application is stale");
+	}
 	if (persisted.runId !== runId || persisted.result.status !== "completed" || !persisted.artifacts.proposal) {
 		throw new Error("builder run does not contain a completed proposal");
 	}
@@ -1145,6 +1586,14 @@ export function applyBuilderProposal(
 		throw new Error("builder input artifact hash/size does not match builder_run evidence");
 	}
 	verifyPersistedBuilderInput(persisted, inputBytes);
+	verifyPersistedProposalBasis(persisted, options.runsRoot);
+	if (
+		persisted.request.provenanceMode === "canonical" &&
+		persisted.request.source !== null &&
+		persisted.request.proposalBasis === null
+	) {
+		throw new Error("legacy source-backed proposals without an attested failure-mode basis are read-only");
+	}
 	const eventsPath = join(runDir, persisted.artifacts.events.path);
 	assertRegularBounded(eventsPath, MAX_RAW_EVENT_BYTES, "events.jsonl");
 	const eventBytes = readFileSync(eventsPath);
