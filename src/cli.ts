@@ -60,6 +60,7 @@ import {
 	CliInvocationError,
 	parseCliInvocation,
 } from "./cli-invocation.js";
+import { cliHelp } from "./cli-help.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 let loadedEnvironment: EnvReport | undefined;
@@ -104,40 +105,7 @@ function cliRunProgress(): RunEventListener {
 	};
 }
 
-const USAGE = `ahde — Agent Harness Development Environment
-
-Usage:
-  ahde [--target <dir>] [--project <id>]      # real Builder Pi with trusted AHDE tools
-  ahde builder-pi [--target <dir>] [--project <id>]
-  ahde resume [--target <dir>] [--project <id>] # reopen the private Builder session selector
-  ahde target [--target <dir>] [--message <text>] # interactive Target Pi; target defaults to cwd
-  ahde evidence [--port N]                    # read-only local eval/trace explorer
-  ahde init <dir> [--template <target-dir>]
-  ahde run --target <dir> [--task <id>] [--repetitions N] [--label baseline|solo] [--dataset <rel>]
-  ahde run --target <dir> --project <id> --corpus <development-id> [--task <id>] [--repetitions N] [--label baseline|solo]
-  ahde validate --target <dir> [--dataset <rel>]
-  ahde list [--target <id>]
-  ahde failures <evalRunId> --target <dir> [--project <id>] [--dataset <rel>] [--out <path>]
-  ahde corpus import --project <id> --name <name> --visibility development|sealed --file <jsonl>
-  ahde corpus draft --target <dir> --project <id> --spec <approved-id> --tasks N [--guidance <text>] [--builder <dir>]
-  ahde corpus publish --project <id> --draft <id> --name <name> --visibility development|sealed
-  ahde corpus list --project <id>
-  ahde compare <evalRunA> <evalRunB>
-  ahde diagnose <evalRunId>
-  ahde report <evalRunId> [--out <path>]
-  ahde builder capabilities --target <dir> [--builder <dir>]
-  ahde builder propose --target <dir> --project <id> --spec <approved-id> --backend pi|codex|claude [--eval-run <development-id> --failure-mode <id[,id...]>] [--dataset <rel>] [--builder <dir>]
-  ahde builder apply --target <dir> --run <id> --branch <name> --reason <text> [--actor <id>]
-  ahde candidate --target <dir> --builder-run <id> [--spec <id>] [--repetitions N] [--dataset <rel> | --development-corpus <id>] [--holdout-corpus <id>] [--project <id>]
-  ahde candidate --target <dir> --branch <ref> --base <ref> --proposal <id> --diagnosis <id> [--spec <id>] [--dataset <rel> | --development-corpus <id>] [--project <id>]
-  ahde review --candidate <id> --recommend promote|reject --reason <text> [--actor <id>]
-  ahde promote --target <dir> --candidate <id> --to <semver> --reason <text> [--actor <id>]
-  ahde reject --candidate <id> --reason <text> [--actor <id>]
-  ahde --version
-
-Environment:
-  AHDE_RUNS_DIR        run artifacts directory (default: ./runs)
-  AHDE_STATE_DIR       private specs/corpora state (default: ./.ahde)`;
+const USAGE = cliHelp([]);
 
 function arg(name: string): string | undefined {
 	const argv = process.argv.slice(2);
@@ -331,7 +299,7 @@ async function main(): Promise<void> {
 		return;
 	}
 	if (invocation.kind === "help") {
-		console.log(USAGE);
+		console.log(cliHelp(process.argv.slice(2)));
 		return;
 	}
 	if (invocation.kind === "version") {
