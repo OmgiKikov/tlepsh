@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { main as piMain, VERSION as PI_VERSION, type ExtensionFactory, type MainOptions } from "@earendil-works/pi-coding-agent";
 import { writeTextArtifact } from "../storage/artifacts.js";
@@ -169,10 +169,37 @@ export function resolveBuilderAssets(packageRoot = PACKAGE_ROOT): BuilderAssets 
 	return {
 		root,
 		systemPromptPath,
-		systemPrompt: readFileSync(systemPromptPath, "utf8"),
+		systemPrompt: composeBuilderSystemPrompt(readFileSync(systemPromptPath, "utf8"), skillPaths),
 		skillPaths,
 		targetTemplateDir,
 	};
+}
+
+/**
+ * Pi only lists skills in the system prompt when the model has a `read` tool
+ * to open them, and the Builder deliberately has none. The packaged workflow
+ * skills are therefore inlined here, so the model sees them without any file
+ * access; `--skill` stays registered for hosts that do expose reading.
+ */
+export function composeBuilderSystemPrompt(agentsMd: string, skillPaths: readonly string[]): string {
+	const sections = skillPaths.map((path) => {
+		const raw = readFileSync(path, "utf8");
+		const frontmatter = /^---\n([\s\S]*?)\n---\n?/.exec(raw);
+		const body = (frontmatter ? raw.slice(frontmatter[0].length) : raw).trim();
+		const name = /^name:\s*(.+)$/m.exec(frontmatter?.[1] ?? "")?.[1]?.trim() ?? basename(dirname(path));
+		const description = /^description:\s*(.+)$/m.exec(frontmatter?.[1] ?? "")?.[1]?.trim();
+		return [`## Skill: ${name}`, ...(description ? [`_${description}_`, ""] : [""]), body].join("\n");
+	});
+	if (sections.length === 0) return agentsMd.trimEnd();
+	return [
+		agentsMd.trimEnd(),
+		"",
+		"# Workflow skills",
+		"",
+		"These packaged skills are the detailed procedures behind the typical loop. Follow the one that matches the operator's request.",
+		"",
+		...sections.flatMap((section) => [section, ""]),
+	].join("\n").trimEnd();
 }
 
 const FORBIDDEN_FLAGS = new Set([

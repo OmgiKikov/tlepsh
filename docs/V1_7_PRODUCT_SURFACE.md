@@ -159,10 +159,36 @@ follow unchanged in substance, extended with adoption and continuation.
 33. Human-facing rendering is downstream of every decision: a renderer fault
     degrades to the Workbench message and never changes durable state.
 
+## What live models taught us
+
+Real Builder sessions through OpenRouter (GLM-5.3, Claude Sonnet 4.5) drove
+three changes that scripted tests could not have found:
+
+- **Models send nested JSON as strings.** Both models passed `spec`, `tasks`,
+  and `graders` as JSON *strings* at least once. `prepareWorkbenchArguments`
+  (Pi's `prepareArguments` hook) parses such strings wherever the schema
+  expects an object or array, picks the branch the model chose by its
+  discriminator, and reports problems the way a model can act on: unknown
+  properties with the allowed list and a "did you mean", missing required
+  fields, and unsupported `type`/`kind` values with every allowed variant and
+  its fields. The raw TypeBox union dump made one model loop fifteen times.
+- **Skills were invisible.** Pi lists skills in the system prompt only when
+  the model has a `read` tool, and the Builder deliberately has none, so the
+  four packaged workflow skills never reached the model. They are now inlined
+  into the system prompt (`composeBuilderSystemPrompt`), and the three tool
+  descriptions carry a compact contract: every `kind`, the task and grader
+  shapes, the intent shapes. This is also how Target tools get written — as
+  `tool.upsert` intents compiled and reviewed by the host — so the Builder
+  needs no `write` tool.
+- **Unrunnable graders must fail early.** A Python-style `(?is)` regex or a
+  `judge` grader on a Target without a judge model used to surface as a
+  lineage integrity failure after publication and block the Workbench.
+  Graders are validated against the current Target before any draft or
+  publication persists, and composition failures are compatibility warnings.
+
 ## Known gaps
 
-- Pi prints its own "No models available" warning above the AHDE onboarding
-  selector on a fresh install; silencing it needs a vendored Pi change.
-- Conversation quality depends on the Builder model following the persona;
-  the natural-language tests use a scripted model and verify the tool
-  contract, not tone.
+- Conversation quality still depends on the Builder model; tool-call
+  reliability varies by provider (GLM-5.3 via OpenRouter emitted empty
+  tool-call arguments after long reasoning). Prefer a model with robust tool
+  calling for the Builder.

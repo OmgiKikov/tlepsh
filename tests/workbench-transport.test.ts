@@ -57,9 +57,9 @@ describe("Workbench tool argument preparation", () => {
 
 	it("reports only the chosen branch's errors, in model-readable form", () => {
 		expect(() => prepareWorkbenchArguments(WorkbenchSubmitParameters, { kind: "spec-draft", spec: { title: "x" } }))
-			.toThrow(/^spec-draft is invalid — \/spec must have required properties .*Nested objects and arrays must be JSON values, not strings\.$/);
+			.toThrow(/^spec-draft is invalid — \/spec: missing required "purpose", "users", "jobs".*Nested objects and arrays must be JSON values, not strings\.$/);
 		expect(() => prepareWorkbenchArguments(WorkbenchSubmitParameters, { kind: "spec-draft", spec, extra: true }))
-			.toThrow(/spec-draft is invalid — \/ must not have additional properties/);
+			.toThrow(/spec-draft is invalid — \/: unknown property "extra" \(allowed: kind, spec, sourceText\)/);
 		expect(() => prepareWorkbenchArguments(WorkbenchSubmitParameters, { kind: "spec-brief", spec }))
 			.toThrow(/kind "spec-brief" is not supported; use one of: select, spec-draft, corpus-draft/);
 		expect(() => prepareWorkbenchArguments(WorkbenchDecisionParameters, { reason: "no kind" }))
@@ -79,6 +79,46 @@ describe("Workbench tool argument preparation", () => {
 		expect(prepareWorkbenchArguments(WorkbenchSubmitParameters, "not json")).toBe("not json");
 		expect(prepareWorkbenchArguments(WorkbenchSubmitParameters, 42)).toBe(42);
 		expect(() => prepareWorkbenchArguments(WorkbenchSubmitParameters, { kind: "spec-draft", spec: "{not json" }))
-			.toThrow(/spec-draft is invalid — \/spec must be object/);
+			.toThrow(/spec-draft is invalid — \/spec: must be an object \(received a string\)/);
+	});
+});
+
+describe("model-readable validation problems", () => {
+	it("names the allowed grader types and task fields when a model guesses", () => {
+		expect(() => prepareWorkbenchArguments(WorkbenchSubmitParameters, {
+			kind: "corpus-draft",
+			name: "Basket",
+			revisionSummary: "6 cases",
+			tasks: [{ id: "c1", input: "Digest for Notion", notes: "basic", graders: [{ type: "llm", prompt: "Check sections" }] }],
+		})).toThrow(
+			/\/tasks\/0: unknown property "id" \(allowed: input, graders\); \/tasks\/0: unknown property "notes" \(allowed: input, graders\); \/tasks\/0\/graders\/0: type "llm" is not supported; use one of: "tool_called" \{name\?, tool, argsContains\?\}, "output_contains" \{name\?, text, caseSensitive\?\}, "output_matches" \{name\?, pattern\}, "judge" \{name\?, rubric\}/,
+		);
+	});
+
+	it("suggests the field a model probably meant and lists what is missing", () => {
+		expect(() => prepareWorkbenchArguments(WorkbenchSubmitParameters, {
+			kind: "corpus-draft",
+			spec: "spec-1",
+			tasks: [{ input: "Digest", graders: [] }],
+		})).toThrow(/\/: missing required "name", "revisionSummary"; \/: unknown property "spec" — did you mean "approvedSpecId"\?; \/tasks\/0\/graders: must not have fewer than 1 items/);
+		expect(() => prepareWorkbenchArguments(WorkbenchDecisionParameters, { kind: "approve-spec" }))
+			.toThrow(/approve-spec is invalid — \/: missing required "reason"/);
+	});
+
+	it("explains nested revision operations and intents the same way", () => {
+		expect(() => prepareWorkbenchArguments(WorkbenchSubmitParameters, {
+			kind: "corpus-revision",
+			revisionSummary: "add",
+			operations: [{ op: "add", task: { input: "x", graders: [{ type: "output_contains", text: "x" }] } }],
+		})).toThrow(/\/operations\/0: type is missing; use one of: "add" \{task\}, "replace" \{taskId, task\}/);
+		expect(() => prepareWorkbenchArguments(WorkbenchSubmitParameters, {
+			kind: "structured-proposal",
+			authoringContext: { algorithmId: "git-manifest-context-v1", targetId: "agent", targetGitSha: "a".repeat(40), contextHash: `sha256:${"b".repeat(64)}` },
+			source: { algorithmId: "exact-eval-signals-v1", evalRunId: "erun", diagnosisId: "diag", briefId: `brief-${"c".repeat(24)}` },
+			failureModeIds: [`failure-mode-${"d".repeat(24)}`],
+			summary: "Add a tool",
+			intents: [{ type: "tool.create", name: "lookup" }],
+			validationPlan: ["rerun"],
+		})).toThrow(/\/intents\/0: type "tool.create" is not supported; use one of: "instructions.replace" \{content\}, "execution.configure" \{execution\}, "skill.upsert" \{name, description, body, disableModelInvocation\?\}, "skill.remove" \{name\}, "tool.upsert" \{name, descriptor, executable\}, "tool.remove" \{name\}/);
 	});
 });

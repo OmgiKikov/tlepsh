@@ -224,7 +224,14 @@ export function createBuilderWorkbenchTools(
 		defineTool({
 			name: "ahde_workbench_view",
 			label: "Inspect Builder Workbench",
-			description: "Inspect the current restart-safe workflow stage, legal actions, exact review or traces, and the safe exact-Git Target authoring context. For aspect=target, omit resourcePath for the overview or pass one returned declared resource path for its complete content.",
+			description: [
+				"Read the AHDE Workbench: the current stage, legal next actions, the exact subject under review, the diagnosis, or the committed Target.",
+				"Arguments: { aspect?: \"summary\" | \"review\" | \"traces\" | \"target\", resourcePath?: string }.",
+				"aspect omitted/summary = stage + counts; review = the exact Spec draft, eval basket, proposal diff, or candidate awaiting a decision;",
+				"traces = evaluation summary, failure modes (improvementBrief.modes with ordinal + failureModeId), evidence link;",
+				"target = the committed Target index (resources with path/kind) — pass one returned resourcePath to read that file's complete content.",
+				"Call this before relying on remembered state; operator slash commands change state between your turns.",
+			].join(" "),
 			parameters: WorkbenchViewParameters,
 			prepareArguments: (args) => prepareWorkbenchArguments(WorkbenchViewParameters, args, "aspect") as never,
 			async execute(_id, params, signal) {
@@ -241,7 +248,18 @@ export function createBuilderWorkbenchTools(
 		defineTool({
 			name: "ahde_workbench_submit",
 			label: "Author in Builder Workbench",
-			description: "Save a structured Spec, import or revise an editable Spec-bound corpus draft, bind a regression case to verified development failure evidence, or author semantic Harness intents against the exact authoringContext claim plus source and failureModeIds from fresh views. Proposal diagnoses and evidence are host-derived; submission grants no consequential authority.",
+			description: [
+				"Author non-consequential Workbench artifacts. Send nested objects/arrays as JSON values (not strings). Exactly one shape per kind:",
+				"• { kind: \"spec-draft\", spec: { title, purpose, users: string[], jobs: string[], inputs: string[], allowedActions: string[], successCriteria: string[], constraints: string[], openQuestions: string[] }, sourceText?: string }",
+				"• { kind: \"corpus-draft\", name, tasks: [{ input, graders: [grader, …] }], coverageNotes?: string[], revisionSummary, approvedSpecId? } — every task needs ≥1 grader; no other task fields (no id/notes/expected).",
+				"• { kind: \"corpus-revision\", parentDraftId?, operations: [{ type: \"add\", task } | { type: \"replace\", taskId, task } | { type: \"remove\", taskId } | { type: \"set-graders\", taskId, graders } | { type: \"grader.add\", taskId, grader } | { type: \"grader.update\", taskId, graderIndex, grader } | { type: \"grader.remove\", taskId, graderIndex } | { type: \"add-case-from-run\", evalRunId, runId, task } | { type: \"rename\", name } | { type: \"set-notes\", coverageNotes }], revisionSummary }",
+				"• { kind: \"corpus-import\", sourcePath: \"imports/<file>.jsonl\", name, revisionSummary, coverageNotes? }",
+				"• { kind: \"select\", entity: \"spec-draft\" | \"approved-spec\" | \"corpus-draft\" | \"development-corpus\" | \"eval-run\" | \"proposal\" | \"candidate\", id }",
+				"• { kind: \"structured-proposal\", authoringContext: <claim from aspect=target>, source: { algorithmId, evalRunId, diagnosisId, briefId } (from aspect=traces), failureModeIds: [failureModeId, …], summary, intents: [intent, …], risks?: string[], validationPlan: string[] }",
+				"grader = { type: \"output_contains\", text, caseSensitive? } | { type: \"output_matches\", pattern (JavaScript regex, no (?i) flags) } | { type: \"tool_called\", tool, argsContains? } | { type: \"judge\", rubric } (judge only when the Target manifest configures a judge model).",
+				"intent = { type: \"instructions.replace\", content } | { type: \"skill.upsert\", name, description, body, disableModelInvocation? } | { type: \"skill.remove\", name } | { type: \"tool.upsert\", name, descriptor: { description, parameters (JSON Schema), arguments?, timeoutMs, maxOutputBytes, output: \"json\" | \"text\", permissions: { environment: string[], network: \"deny\" | \"allow\", filesystem: \"read-only\" | \"workspace-write\" } }, executable (script text starting with #!) } | { type: \"tool.remove\", name } | { type: \"execution.configure\", execution: { tools: (\"read\" | \"bash\" | \"edit\" | \"write\")[], environmentAllowlist: string[], network, sandbox: \"required\" | \"best-effort\" | \"off\" } }.",
+				"This is how Target tools and skills get written: the host compiles the exact files and diff from these intents; the operator reviews and applies. Submission grants no consequential authority.",
+			].join("\n"),
 			parameters: WorkbenchSubmitParameters,
 			prepareArguments: (args) => prepareWorkbenchArguments(WorkbenchSubmitParameters, args) as never,
 			async execute(_id, params, signal) {
@@ -259,7 +277,15 @@ export function createBuilderWorkbenchTools(
 		defineTool({
 			name: "ahde_workbench_decide",
 			label: "Decide in Builder Workbench",
-			description: "Request one exact human-gated workflow transition. Actor identity and sealed holdout selection remain host-owned.",
+			description: [
+				"Request one human-gated workflow transition; the host shows the exact subject and asks the operator to confirm. Every kind requires a non-blank `reason`.",
+				"Kinds by stage: target-setup → { kind: \"scaffold-target\" } then { kind: \"configure-target\", targetId (kebab-case), model: { provider, modelId, thinkingLevel?, timeoutMs?, params? } };",
+				"spec-review → { kind: \"approve-spec\", draftSpecId? }; corpus-review → { kind: \"publish-corpus\", draftId?, name? };",
+				"ready-to-evaluate / improvement-authoring → { kind: \"run-current\", repetitions: 1..10 } (or run-eval); proposal-review → { kind: \"apply-proposal\", branch } | { kind: \"discard-proposal\" };",
+				"candidate-verification → { kind: \"run-current\", repetitions } (verify) | { kind: \"abandon-candidate\" } for an interrupted attempt; candidate-review → { kind: \"review-candidate\", recommendation: \"promote\" | \"reject\" };",
+				"release-decision → { kind: \"promote-candidate\", version: \"x.y.z\" } | { kind: \"reject-candidate\" }; candidate-adoption → { kind: \"adopt-candidate\" }; complete → { kind: \"continue-cycle\" }.",
+				"Actor identity and sealed-holdout selection stay host-owned; never add approved/confirmed/actor fields.",
+			].join("\n"),
 			parameters: WorkbenchDecisionParameters,
 			prepareArguments: (args) => prepareWorkbenchArguments(WorkbenchDecisionParameters, args) as never,
 			renderCall: (args, theme) => WORKBENCH_TOOL_RENDERERS.decide.renderCall(args, theme),

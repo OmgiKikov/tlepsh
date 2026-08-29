@@ -432,11 +432,123 @@ export function prepareWorkbenchArguments(
 		);
 	}
 	const normalized = normalize(branch, args);
-	const errors = [...Errors(branch as unknown as TSchema, normalized)];
-	if (errors.length > 0) {
-		const label = typeof chosen === "string" ? chosen : discriminator;
-		const detail = errors.slice(0, 8).map((error) => `${error.instancePath || "/"} ${error.message}`).join("; ");
-		throw new Error(`${label} is invalid — ${detail}. Nested objects and arrays must be JSON values, not strings.`);
+	if (![...Errors(branch as unknown as TSchema, normalized)].length) return normalized;
+	const label = typeof chosen === "string" ? chosen : discriminator;
+	const problems = explainWorkbenchArguments(branch as unknown as TSchema, normalized);
+	const detail = (problems.length > 0 ? problems : ["does not match the schema"]).slice(0, 8).join("; ");
+	throw new Error(`${label} is invalid — ${detail}. Nested objects and arrays must be JSON values, not strings.`);
+}
+
+// ---------------------------------------------------------------------------
+// Model-readable validation: walk the branch schema and explain each problem
+// with what *is* allowed, so a model can repair its call in one retry.
+
+interface Problem {
+	path: string;
+	message: string;
+}
+
+function schemaKeys(schema: LooseSchema): string[] {
+	return Object.keys(schema.properties ?? {});
+}
+
+function requiredKeys(schema: LooseSchema & { required?: string[] }): string[] {
+	return Array.isArray(schema.required) ? schema.required : [];
+}
+
+/** A key every branch declares with a literal value, e.g. `type` or `kind`. */
+function discriminatorOf(branches: LooseSchema[]): string | null {
+	const first = branches[0]?.properties ?? {};
+	for (const key of Object.keys(first)) {
+		if (branches.every((branch) => branch.properties?.[key]?.const !== undefined)) return key;
 	}
-	return normalized;
+	return null;
+}
+
+function describeBranch(branch: LooseSchema & { required?: string[] }, discriminator: string): string {
+	const required = new Set(requiredKeys(branch));
+	const fields = schemaKeys(branch)
+		.filter((key) => key !== discriminator)
+		.map((key) => (required.has(key) ? key : `${key}?`));
+	return `${JSON.stringify(branch.properties?.[discriminator]?.const)} {${fields.join(", ")}}`;
+}
+
+function similar(candidate: string, options: string[]): string | undefined {
+	const lower = candidate.toLowerCase();
+	return options.find((option) => {
+		const other = option.toLowerCase();
+		return other.includes(lower) || lower.includes(other) || other.replace(/id$/, "") === lower.replace(/id$/, "");
+	});
+}
+
+function explain(schema: LooseSchema & { required?: string[]; additionalProperties?: boolean }, value: unknown, path: string, problems: Problem[]): void {
+	if (Array.isArray(schema.anyOf)) {
+		const branches = schema.anyOf as (LooseSchema & { required?: string[] })[];
+		const discriminator = branches.every((branch) => branch.type === "object") ? discriminatorOf(branches) : null;
+		if (discriminator && isRecord(value)) {
+			const chosen = value[discriminator];
+			const branch = branches.find((item) => item.properties?.[discriminator]?.const === chosen);
+			if (branch) {
+				explain(branch, value, path, problems);
+			} else {
+				const noun = discriminator === "type" ? "type" : discriminator;
+				problems.push({
+					path,
+					message: `${noun} ${chosen === undefined ? "is missing" : `${JSON.stringify(chosen)} is not supported`}; use one of: ${branches.map((item) => describeBranch(item, discriminator)).join(", ")}`,
+				});
+			}
+			return;
+		}
+		// Unions of literals or scalars: TypeBox's own message is precise enough.
+		for (const error of Errors(schema as unknown as TSchema, value)) {
+			problems.push({ path: `${path}${error.instancePath}`, message: error.message });
+			break;
+		}
+		return;
+	}
+	if (schema.type === "object") {
+		if (!isRecord(value)) {
+			problems.push({ path, message: `must be an object${typeof value === "string" ? " (received a string)" : ""}` });
+			return;
+		}
+		const allowed = schemaKeys(schema);
+		const missing = requiredKeys(schema).filter((key) => value[key] === undefined);
+		if (missing.length > 0) problems.push({ path, message: `missing required ${missing.map((key) => JSON.stringify(key)).join(", ")}` });
+		if (schema.additionalProperties === false && allowed.length > 0) {
+			const unknown = Object.keys(value).filter((key) => !allowed.includes(key));
+			for (const key of unknown) {
+				const hint = similar(key, allowed.filter((candidate) => value[candidate] === undefined));
+				problems.push({ path, message: `unknown property ${JSON.stringify(key)}${hint ? ` — did you mean ${JSON.stringify(hint)}?` : ` (allowed: ${allowed.join(", ")})`}` });
+			}
+		}
+		for (const [key, property] of Object.entries(schema.properties ?? {})) {
+			if (value[key] === undefined) continue;
+			explain(property as LooseSchema, value[key], `${path}/${key}`, problems);
+		}
+		return;
+	}
+	if (schema.type === "array") {
+		if (!Array.isArray(value)) {
+			problems.push({ path, message: `must be an array${typeof value === "string" ? " (received a string)" : ""}` });
+			return;
+		}
+		const errors = [...Errors(schema as unknown as TSchema, value)].filter((error) => error.instancePath === "");
+		for (const error of errors) problems.push({ path, message: error.message });
+		value.forEach((item, index) => explain(schema.items as LooseSchema, item, `${path}/${index}`, problems));
+		return;
+	}
+	for (const error of Errors(schema as unknown as TSchema, value)) {
+		problems.push({ path: `${path}${error.instancePath}`, message: error.message });
+		break;
+	}
+}
+
+/** Branch-scoped, model-readable problems; empty when the value is valid. */
+export function explainWorkbenchArguments(branch: TSchema, value: unknown): string[] {
+	const problems: Problem[] = [];
+	explain(branch as unknown as LooseSchema, value, "", problems);
+	const seen = new Set<string>();
+	return problems
+		.map((problem) => `${problem.path || "/"}: ${problem.message}`)
+		.filter((line) => (seen.has(line) ? false : (seen.add(line), true)));
 }
