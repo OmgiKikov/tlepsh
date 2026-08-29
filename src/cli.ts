@@ -48,7 +48,7 @@ import {
 	type EvidenceExplorer,
 	type EvidenceExplorerAddress,
 } from "./evidence/server.js";
-import { launchBuilderPi } from "./builder/runtime.js";
+import { launchBuilderPi, type BuilderSessionMode } from "./builder/runtime.js";
 import { runInteractiveTarget } from "./target/interactive.js";
 import { resolveInteractiveTargetDirectory } from "./target/command.js";
 import {
@@ -164,7 +164,7 @@ function createBuilderAdapter(
  * Primary product entry point: a real Builder Pi instance. The web process is
  * created lazily and remains a read-only projection of already-diagnosed runs.
  */
-async function builderPi(sessionMode: "new" | "resume" = "new"): Promise<void> {
+async function builderPi(sessionMode: BuilderSessionMode = "new"): Promise<void> {
 	if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
 		throw new Error("AHDE Builder requires an interactive terminal (TTY).");
 	}
@@ -317,6 +317,10 @@ async function main(): Promise<void> {
 	switch (command) {
 		case "builder-pi": {
 			await builderPi();
+			break;
+		}
+		case "continue": {
+			await builderPi("continue");
 			break;
 		}
 		case "resume": {

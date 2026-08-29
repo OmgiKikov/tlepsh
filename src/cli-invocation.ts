@@ -9,6 +9,7 @@
 export const CLI_COMMANDS = [
 	"root",
 	"builder-pi",
+	"continue",
 	"resume",
 	"target",
 	"evidence",
@@ -61,6 +62,7 @@ const ROOT_FLAGS = ["target", "project", "port"] as const;
 const COMMAND_SPECS = {
 	root: { flags: ROOT_FLAGS, positionals: 0 },
 	"builder-pi": { flags: ROOT_FLAGS, positionals: 0 },
+	continue: { flags: ROOT_FLAGS, positionals: 0 },
 	resume: { flags: ROOT_FLAGS, positionals: 0 },
 	target: { flags: ["target", "message"], positionals: 0 },
 	evidence: { flags: ["port"], positionals: 0 },

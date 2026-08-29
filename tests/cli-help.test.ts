@@ -8,6 +8,7 @@ describe("CLI help", () => {
 		expect(help).toContain("ahde resume");
 		expect(help).toContain("Inside Builder Pi");
 		expect(help).toContain("Advanced automation commands");
+		expect(help).toContain("AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)");
 	});
 
 	it("renders focused help for top-level commands", () => {

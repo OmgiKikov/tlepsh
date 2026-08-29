@@ -5,7 +5,8 @@ evidence-backed workflow.
 
 Start:
   ahde [--target <dir>] [--project <id>]       open Builder Pi (Target defaults to cwd)
-  ahde resume [--target <dir>]                 resume a private Builder session
+  ahde continue [--target <dir>]               continue the most recent Builder session
+  ahde resume [--target <dir>]                 pick an earlier Builder session
   ahde target [--target <dir>]                 talk to the built Target Pi
   ahde init <dir>                              scaffold a Target for scripted setup
 
@@ -22,6 +23,7 @@ Use \`ahde <command> --help\` for focused help. Advanced automation commands:
   corpus  failures  compare  diagnose  report  builder  candidate  review  promote  reject
 
 Environment:
+  AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)
   AHDE_RUNS_DIR   run artifacts directory (default: ./runs)
   AHDE_STATE_DIR  private workflow state (default: ./.ahde)`;
 
@@ -30,6 +32,10 @@ const COMMAND_HELP: Readonly<Record<string, string>> = {
 
 Open a new Builder Pi session. This is the explicit form of bare \`ahde\`.
 The Builder has exactly three AHDE tools and no generic shell or file access.`,
+	continue: `Usage: ahde continue [--target <dir>] [--project <id>] [--port N]
+
+Reopen the most recent Builder conversation for this Target. Workflow state is
+durable either way; this only restores the conversation.`,
 	resume: `Usage: ahde resume [--target <dir>] [--project <id>] [--port N]
 
 Open AHDE's private Builder session selector for this Target.`,

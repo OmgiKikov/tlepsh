@@ -9,6 +9,11 @@ const workRoot = mkdtempSync(join(tmpdir(), "ahde-package-check-"));
 const packDir = join(workRoot, "pack");
 const consumerDir = join(workRoot, "consumer");
 const globalPrefix = join(workRoot, "global-prefix");
+// Builder credentials and Pi settings are user-level (AHDE_HOME, default
+// ~/.ahde). Pin them inside the scratch root so verification never touches
+// the developer's real home; every child process below inherits this.
+const builderHome = join(workRoot, "ahde-home");
+process.env.AHDE_HOME = builderHome;
 
 function run(executable, args, options = {}) {
 	return execFileSync(executable, args, {
@@ -37,8 +42,10 @@ try {
 	if (metadata.unpackedSize > 128 * 1024 * 1024) {
 		throw new Error(`package exceeds 128 MiB unpacked budget: ${metadata.unpackedSize} bytes`);
 	}
-	if (metadata.entryCount > 14_000) {
-		throw new Error(`package exceeds 14,000-entry budget: ${metadata.entryCount}`);
+	// V1.7 added the product-surface modules (render/**, transcript, onboarding,
+	// adoption, continuation, impact); the bundled Pi packages dominate the count.
+	if (metadata.entryCount > 15_000) {
+		throw new Error(`package exceeds 15,000-entry budget: ${metadata.entryCount}`);
 	}
 	const packedPaths = new Set(metadata.files.map((file) => file.path));
 	for (const required of [
@@ -173,7 +180,11 @@ import {
 } from "ahde";
 
 const expectedToolNames = ["ahde_workbench_view", "ahde_workbench_submit", "ahde_workbench_decide"];
-const expectedCommandNames = ["help", "doctor", "status", "run", "traces", "review", "apply", "discard", "target"];
+const expectedCommandNames = [
+	"help", "doctor", "status", "run", "traces", "review",
+	"approve", "publish", "apply", "discard", "promote", "reject", "adopt", "next",
+	"target",
+];
 
 for (const [name, value] of Object.entries({
 	AHDE_BUILDER_COMMAND_NAMES,
@@ -233,6 +244,10 @@ const targetDir = ${JSON.stringify(target)};
 const runsRoot = ${JSON.stringify(join(consumerDir, "runs"))};
 const toolScratch = ${JSON.stringify(join(consumerDir, "target-tool-scratch"))};
 const stateRoot = join(targetDir, ".ahde");
+const builderHome = ${JSON.stringify(builderHome)};
+if (process.env.AHDE_HOME !== builderHome) {
+  throw new Error("package verification must pin AHDE_HOME to the scratch home before launching the Builder");
+}
 mkdirSync(runsRoot, { recursive: true, mode: 0o700 });
 
 const target = loadTarget(targetDir);
@@ -311,8 +326,23 @@ await launchBuilderPi({
     if (JSON.stringify(suppliedSkills) !== JSON.stringify(assets.skillPaths)) {
       throw new Error("Builder Pi did not receive the exact four packaged skills");
     }
-    if (!existsSync(process.env.PI_CODING_AGENT_DIR ?? "") || !existsSync(process.env.PI_CODING_AGENT_SESSION_DIR ?? "")) {
+    const agentDir = process.env.PI_CODING_AGENT_DIR ?? "";
+    const sessionDir = process.env.PI_CODING_AGENT_SESSION_DIR ?? "";
+    if (!existsSync(agentDir) || !existsSync(sessionDir)) {
       throw new Error("Builder Pi private config/session roots were not materialized");
+    }
+    if (agentDir !== realpathSync(join(builderHome, "builder-pi", "config"))) {
+      throw new Error("Builder Pi config did not resolve to the user-level AHDE_HOME");
+    }
+    if (sessionDir !== realpathSync(join(stateRoot, "builder-pi", "sessions"))) {
+      throw new Error("Builder Pi sessions did not stay under the per-project state root");
+    }
+    if (existsSync(join(stateRoot, "builder-pi", "config"))) {
+      throw new Error("Builder Pi still materialized a per-project config directory");
+    }
+    const seededSettings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"));
+    if (seededSettings.quietStartup !== true) {
+      throw new Error("Builder Pi settings were not seeded for a quiet embedded startup");
     }
 
     const factories = options?.extensionFactories ?? [];
@@ -452,6 +482,9 @@ await launchBuilderPi({
   sessionMode: "resume",
   main: async (args) => {
     resumeMainCalled = true;
+    if (process.env.PI_CODING_AGENT_DIR !== realpathSync(join(builderHome, "builder-pi", "config"))) {
+      throw new Error("resumed Builder Pi did not reuse the user-level config home");
+    }
     if (args.filter((argument) => argument === "--resume").length !== 1) {
       throw new Error("host-owned Builder resume did not supply exactly one --resume flag");
     }

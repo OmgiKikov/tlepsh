@@ -1,11 +1,15 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { main as piMain, type ExtensionFactory, type MainOptions } from "@earendil-works/pi-coding-agent";
+import { main as piMain, VERSION as PI_VERSION, type ExtensionFactory, type MainOptions } from "@earendil-works/pi-coding-agent";
+import { writeTextArtifact } from "../storage/artifacts.js";
 import { createAhdeBuilderExtension, type BuilderExtensionDependencies } from "./extension.js";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const BUILDER_SKILLS = ["design-agent", "design-evals", "run-diagnose", "improve-harness"] as const;
+/** Per-project Builder files worth carrying into the user-level home. */
+const MIGRATED_BUILDER_CONFIG_FILES = ["auth.json", "models.json"] as const;
 export const AHDE_BUILDER_BUILTIN_COMMANDS = [
 	"login",
 	"logout",
@@ -22,6 +26,9 @@ export const AHDE_BUILDER_BUILTIN_COMMANDS = [
 ] as const;
 export const AHDE_BUILDER_PREFERRED_EXTENSION_COMMANDS = ["help", "status"] as const;
 
+/** new: fresh conversation · continue: the most recent one · resume: the private picker. */
+export type BuilderSessionMode = "new" | "continue" | "resume";
+
 export interface BuilderAssets {
 	root: string;
 	systemPromptPath: string;
@@ -35,10 +42,12 @@ export interface LaunchBuilderPiOptions {
 	stateRoot?: string;
 	runsRoot?: string;
 	projectId?: string;
+	/** User-level Builder credentials and Pi settings; see resolveBuilderHome. */
+	builderHome?: string;
 	packageRoot?: string;
 	piArgs?: string[];
 	/** Host-controlled private session entry; caller Pi flags remain forbidden. */
-	sessionMode?: "new" | "resume";
+	sessionMode?: BuilderSessionMode;
 	dependencies?: Partial<BuilderExtensionDependencies>;
 	main?: (args: string[], options?: MainOptions) => Promise<void>;
 	extensionFactory?: ExtensionFactory;
@@ -58,6 +67,84 @@ function ensurePrivateDirectory(path: string): string {
 		throw new Error(`Builder private path must be a regular non-symlink directory: ${absolute}`);
 	}
 	return realpathSync(absolute);
+}
+
+function pathExists(path: string): boolean {
+	return lstatSync(path, { throwIfNoEntry: false }) !== undefined;
+}
+
+function isRegularFile(path: string): boolean {
+	const entry = lstatSync(path, { throwIfNoEntry: false });
+	return entry !== undefined && entry.isFile() && !entry.isSymbolicLink();
+}
+
+/**
+ * Builder credentials and Pi settings live in one user-level home, like
+ * ~/.codex and ~/.claude, so a single /login serves every project. Builder
+ * sessions stay per project under the state root.
+ */
+export function resolveBuilderHome(explicit?: string): string {
+	if (explicit) return resolve(explicit);
+	const configured = process.env.AHDE_HOME;
+	if (configured && configured.trim() !== "") return resolve(configured, "builder-pi");
+	return join(homedir(), ".ahde", "builder-pi");
+}
+
+/**
+ * Carry per-project Builder credentials into the user-level home once. A
+ * user-level file is never replaced, so the first migrated project wins and
+ * later projects simply reuse it.
+ */
+function migrateLegacyBuilderConfig(legacyConfigDir: string, agentDir: string): void {
+	if (pathExists(join(agentDir, "auth.json")) || !isRegularFile(join(legacyConfigDir, "auth.json"))) return;
+	for (const name of MIGRATED_BUILDER_CONFIG_FILES) {
+		const source = join(legacyConfigDir, name);
+		const destination = join(agentDir, name);
+		if (!isRegularFile(source) || pathExists(destination)) continue;
+		try {
+			writeTextArtifact(destination, readFileSync(source, "utf8"), { immutable: true, mode: 0o600 });
+		} catch (error) {
+			// A concurrent launch published the same file first; the user-level copy wins.
+			if (pathExists(destination)) continue;
+			throw error;
+		}
+	}
+}
+
+/**
+ * Pi is an embedded engine here, so its own startup chatter stays out of the
+ * Builder. quietStartup drops the model-scope banner. lastChangelogVersion is
+ * pinned to the vendored Pi version: a missing key already shows nothing (Pi
+ * records it as a fresh install and reports that install to pi.dev), but after
+ * an AHDE upgrade Pi would render its own "What's New" for every entry newer
+ * than the recorded version. Other keys, including an explicit
+ * quietStartup: false, are preserved; an unparseable file is left alone.
+ */
+function seedBuilderSettings(agentDir: string): void {
+	const path = join(agentDir, "settings.json");
+	let settings: Record<string, unknown> = {};
+	if (pathExists(path)) {
+		if (!isRegularFile(path)) return;
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(readFileSync(path, "utf8"));
+		} catch {
+			return;
+		}
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return;
+		settings = parsed as Record<string, unknown>;
+	}
+	let changed = false;
+	if (!("quietStartup" in settings)) {
+		settings = { ...settings, quietStartup: true };
+		changed = true;
+	}
+	if (settings.lastChangelogVersion !== PI_VERSION) {
+		settings = { ...settings, lastChangelogVersion: PI_VERSION };
+		changed = true;
+	}
+	if (!changed) return;
+	writeTextArtifact(path, `${JSON.stringify(settings, null, "\t")}\n`, { mode: 0o600 });
 }
 
 export function resolveBuilderAssets(packageRoot = PACKAGE_ROOT): BuilderAssets {
@@ -123,7 +210,7 @@ export function buildBuilderPiArgs(input: {
 	assets: BuilderAssets;
 	sessionDir: string;
 	piArgs?: readonly string[];
-	sessionMode?: "new" | "resume";
+	sessionMode?: BuilderSessionMode;
 }): string[] {
 	return [
 		"--no-builtin-tools",
@@ -135,7 +222,7 @@ export function buildBuilderPiArgs(input: {
 		"--session-dir", input.sessionDir,
 		"--system-prompt", input.assets.systemPrompt,
 		...input.assets.skillPaths.flatMap((path) => ["--skill", path]),
-		...(input.sessionMode === "resume" ? ["--resume"] : []),
+		...(input.sessionMode === "resume" ? ["--resume"] : input.sessionMode === "continue" ? ["--continue"] : []),
 		...validateBuilderPiArgs(input.piArgs ?? []),
 	];
 }
@@ -152,8 +239,11 @@ export async function launchBuilderPi(options: LaunchBuilderPiOptions = {}): Pro
 	const stateRoot = ensurePrivateDirectory(options.stateRoot ?? join(projectDir, ".ahde"));
 	const runsRoot = resolve(options.runsRoot ?? join(projectDir, "runs"));
 	const privateRoot = ensurePrivateDirectory(join(stateRoot, "builder-pi"));
-	const agentDir = ensurePrivateDirectory(join(privateRoot, "config"));
 	const sessionDir = ensurePrivateDirectory(join(privateRoot, "sessions"));
+	const builderHome = ensurePrivateDirectory(resolveBuilderHome(options.builderHome));
+	const agentDir = ensurePrivateDirectory(join(builderHome, "config"));
+	migrateLegacyBuilderConfig(join(privateRoot, "config"), agentDir);
+	seedBuilderSettings(agentDir);
 	const assets = resolveBuilderAssets(options.packageRoot);
 	const extensionFactory = options.extensionFactory ?? createAhdeBuilderExtension({
 		projectDir,
