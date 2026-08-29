@@ -59,8 +59,14 @@ improved 80%. The real A/A pair dd68f00 30×2 (93% → 98%) is `inconclusive`
 and passes the sealed guardrail; 5c99d43 → dd68f00 on 30 tasks is `improved`.
 No epsilon enters the rule; calibration sizes repetitions and shows noise.
 
-Infrastructure errors keep invariant 9 semantics: an eval with `summary.error > 0`
-still stops the experiment at `validated`. Judge retries make that rare.
+Infrastructure errors keep invariant 9 semantics — they are never behavioral
+failures — but they no longer abort an experiment one at a time: up to 10% of
+an evaluation's runs (`INFRASTRUCTURE_ERROR_BUDGET`) may error; the affected
+tasks are excluded from the statistics and reported in `design.excludedTasks`,
+and the count is recorded on the evaluated candidate. Above the budget the
+surface is `inconclusive`/`underpowered` and the experiment stops at
+`validated`. The first live run showed why: one judge reply without a
+`reason` field out of 90 runs used to stop a whole A/A calibration.
 
 Durable form: `ComparisonGateEvidence` v3 = `{ schemaVersion: 3, algorithmId:
 "exact-comparison-gate-v3", policyId, surface, comparisonHash, evidenceHash,
@@ -74,6 +80,20 @@ JSON (existing pattern) and has no separate rule. A sealed `fail` or
 rendered, and promotion refuses. Workbench `verify-candidate` refuses to START
 when the selected sealed corpus has fewer than 15 tasks (message with the count)
 so no tokens are spent on an underpowered verification.
+
+## Status (2026-08-29, branch `evidence-gate`)
+
+| Stage | Landed | Notes |
+|---|---|---|
+| S1 unblock reuse / lenient indexes | d5533f4 | legacy indexes listed as `legacy · not comparable`, never reused |
+| S2 comparison gate v3 | d5533f4 | one module, v3 evidence, sealed fail recorded at evaluated, simulation + real fixtures |
+| S3 calibration, 3 repetitions, holdout disjointness | caef193 | `ahde calibrate`, decision `calibrate`, header noise line |
+| S4 worker pool, judge retries, evaluatorId, max-age | 7963574 | `--jobs` (default 4, 1 on loopback), `--baseline-max-age`, EvalRun schemaVersion 2 |
+| S7 legacy deletion + closed-loop Pi test | a02ae42 | src −2,884 LOC; extension.ts 1749 → 235; 17-step closed-loop test on the three tools |
+| Any data → benchmark (core) | cd4675e | parsers, mapping recipe, `expected`/`messages`/`metadata` case fields, host-held sealed slice |
+| Infrastructure error budget | 66c22f4 | ≤10% errored runs excluded, not fatal |
+| S6 product feel | in progress | onboarding resume, catalog, model projection, zod-generated schemas |
+| S5 first real promotion | in progress | see "Closed loop on a real Target" |
 
 ## Stages
 
