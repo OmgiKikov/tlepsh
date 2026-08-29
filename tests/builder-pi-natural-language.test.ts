@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { SEALED_VERIFICATION_REPETITIONS, sealedHoldoutTasks } from "./helpers/sealed-holdout.js";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -103,11 +104,7 @@ it("turns free input into a complete promoted candidate through a real Builder P
 		projectId: "natural-agent",
 		name: "Evaluator-only natural-language holdout",
 		visibility: "sealed",
-		tasks: [{
-			id: "sealed-natural-1",
-			input: "PRIVATE NATURAL LANGUAGE HOLDOUT",
-			graders: [{ type: "output_contains", text: "READY" }],
-		}],
+		tasks: sealedHoldoutTasks("PRIVATE NATURAL LANGUAGE HOLDOUT"),
 	});
 
 	const builderMock = await startMockModel([{
@@ -200,7 +197,7 @@ it("turns free input into a complete promoted candidate through a real Builder P
 				case 9:
 					return call(step, "ahde_candidate_verify", {
 						builderRunId: parseToolResult(context, 6).runId,
-						repetitions: 1,
+						repetitions: SEALED_VERIFICATION_REPETITIONS,
 						reason: "Run the exact development and sealed promotion gates",
 					});
 				case 10:

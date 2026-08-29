@@ -1,0 +1,345 @@
+{
+	"note": "Same-SHA A/A pair (ombudsman dd68f00, qwen/qwen3.5-9b, 30 tasks × 2 repetitions) recorded 2026-08-25: 59/60 vs 56/60.",
+	"baseline": {
+		"evalRunId": "erun_mt8txa2c0yvu4j",
+		"targetSha": "dd68f002",
+		"repetitions": 2
+	},
+	"candidate": {
+		"evalRunId": "erun_mt8tmoul7xj0v5",
+		"targetSha": "dd68f002",
+		"repetitions": 2
+	},
+	"tasks": [
+		{
+			"taskId": "task_001",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_002",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"fail"
+			]
+		},
+		{
+			"taskId": "task_003",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_004",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_005",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_006",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_007",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_008",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_009",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"fail",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_010",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_011",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_012",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_013",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_014",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_015",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_016",
+			"baseline": [
+				"fail",
+				"pass"
+			],
+			"candidate": [
+				"fail",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_017",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"fail",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_018",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_019",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_020",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_021",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_022",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_023",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_024",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_025",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_026",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_027",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_028",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_029",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		},
+		{
+			"taskId": "task_030",
+			"baseline": [
+				"pass",
+				"pass"
+			],
+			"candidate": [
+				"pass",
+				"pass"
+			]
+		}
+	]
+}

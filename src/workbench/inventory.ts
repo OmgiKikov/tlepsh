@@ -36,7 +36,7 @@ import {
 } from "../domain/candidate.js";
 import {
 	isSealedEvalRun,
-	listEvalRunIndexes,
+	listEvalRunIndexesLenient,
 	loadEvalRun,
 	type EvalRunRecord,
 } from "../eval.js";
@@ -638,7 +638,14 @@ export function loadWorkbenchInventory(options: {
 	const sealedHashes = new Set(corpora.filter((corpus) => corpus.visibility === "sealed").map((corpus) => corpus.hash));
 	let developmentEvals: EvalRunRecord[] = [];
 	try {
-		developmentEvals = listEvalRunIndexes(options.runsRoot)
+		const listed = listEvalRunIndexesLenient(options.runsRoot);
+		if (listed.invalid.length > 0) {
+			warnings.push(
+				`${listed.invalid.length} legacy eval run index${listed.invalid.length === 1 ? "" : "es"} ignored: ` +
+				"not comparable with the current evidence schema",
+			);
+		}
+		developmentEvals = listed.records
 			.filter((run) => !isSealedEvalRun(run, sealedHashes))
 			.map((run) => loadEvalRun(options.runsRoot, run.evalRunId))
 			.filter((run) => target === null || run.target.id === target.manifest.id);

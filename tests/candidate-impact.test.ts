@@ -14,8 +14,6 @@ import {
 	inspectCandidateImpact,
 } from "../src/application/candidate-impact.js";
 import {
-	DEVELOPMENT_GATE_POLICY_ID,
-	SEALED_GATE_POLICY_ID,
 	comparisonGateEvidence,
 } from "../src/application/candidate-experiment.js";
 import { candidateRecordPath } from "../src/application/candidate-review.js";
@@ -106,6 +104,8 @@ function writeEvaluation(options: {
 	datasetHash?: string;
 	suiteHash?: string;
 	visibility?: "development" | "sealed";
+	/** Task ids to materialize; every task repeats the same grader states. */
+	taskIds?: string[];
 }): EvalRunRecord {
 	const dataset = options.dataset ?? "development";
 	const datasetHash = options.datasetHash ?? hashValue({ dataset: "development" });
@@ -144,8 +144,11 @@ function writeEvaluation(options: {
 	const runIds: string[] = [];
 	const runArtifacts: { runId: string; sha256: string }[] = [];
 	let pass = 0;
-	for (const [repetitionIndex, state] of options.states.entries()) {
-		const runId = `${options.evalRunId}-run-${repetitionIndex}`;
+	const taskIds = options.taskIds ?? ["task-1"];
+	for (const [taskIndex, taskId] of taskIds.entries()) for (const [repetitionIndex, state] of options.states.entries()) {
+		const runId = taskIndex === 0
+			? `${options.evalRunId}-run-${repetitionIndex}`
+			: `${options.evalRunId}-${taskId}-run-${repetitionIndex}`;
 		const graders = [
 			grader("primary", state.primary, "output-contains", primarySpecHash, state.legacy ?? false),
 			grader("secondary", state.secondary, "output-contains", secondarySpecHash, state.legacy ?? false),
@@ -155,7 +158,7 @@ function writeEvaluation(options: {
 		const record: RunRecord = {
 			schemaVersion: 1,
 			runId,
-			taskId: "task-1",
+			taskId,
 			repetitionIndex,
 			label: options.label,
 			status: "completed",
@@ -209,18 +212,18 @@ function writeEvaluation(options: {
 		dataset,
 		datasetHash,
 		evidenceVisibility: options.visibility ?? "development",
-		taskIds: ["task-1"],
+		taskIds,
 		repetitions: options.states.length,
 		runIds,
 		runArtifacts,
 		startedAt: at,
 		finishedAt: at,
 		summary: {
-			total: options.states.length,
+			total: runIds.length,
 			pass,
-			fail: options.states.length - pass,
+			fail: runIds.length - pass,
 			error: 0,
-			allPassRate: pass / options.states.length,
+			allPassRate: pass / runIds.length,
 		},
 	};
 	writeEvalRun(options.runsRoot, record);
@@ -515,12 +518,13 @@ function fixture(options: FixtureOptions = {}) {
 	const development = {
 		baseline: { evalRunId: baseline.evalRunId, harness: { ref: "main", sha: baselineSha } },
 		candidate: { evalRunId: candidate.evalRunId, harness: { ref: "candidate", sha: candidateSha } },
-		comparison: comparisonGateEvidence(developmentCompare, DEVELOPMENT_GATE_POLICY_ID),
+		comparison: comparisonGateEvidence(developmentCompare),
 	};
 	let sealedHoldout;
 	if (options.withHoldout) {
 		const corpusId = "holdout";
 		const corpusHash = hashValue({ corpus: corpusId });
+		const sealedTaskIds = Array.from({ length: 15 }, (_, index) => `sealed-${index + 1}`);
 		const suiteHash = hashValue({ sealed: corpusId });
 		const dataset = corpusDatasetLabel("sealed", corpusId);
 		const holdoutBaseline = writeEvaluation({
@@ -534,6 +538,7 @@ function fixture(options: FixtureOptions = {}) {
 			datasetHash: corpusHash,
 			suiteHash,
 			visibility: "sealed",
+			taskIds: sealedTaskIds,
 		});
 		const holdoutCandidate = writeEvaluation({
 			runsRoot,
@@ -546,13 +551,14 @@ function fixture(options: FixtureOptions = {}) {
 			datasetHash: corpusHash,
 			suiteHash,
 			visibility: "sealed",
+			taskIds: sealedTaskIds,
 		});
-		const holdoutCompare = compareEvalRuns(runsRoot, holdoutBaseline.evalRunId, holdoutCandidate.evalRunId, { mode: "candidate" });
+		const holdoutCompare = compareEvalRuns(runsRoot, holdoutBaseline.evalRunId, holdoutCandidate.evalRunId, { mode: "candidate", surface: "sealed" });
 		sealedHoldout = {
 			corpus: { id: corpusId, hash: corpusHash },
 			baseline: { evalRunId: holdoutBaseline.evalRunId, harness: { ref: "main", sha: baselineSha } },
 			candidate: { evalRunId: holdoutCandidate.evalRunId, harness: { ref: "candidate", sha: candidateSha } },
-			comparison: comparisonGateEvidence(holdoutCompare, SEALED_GATE_POLICY_ID, { corpusId, corpusHash }),
+			comparison: comparisonGateEvidence(holdoutCompare, { corpusId, corpusHash }),
 		};
 	}
 	record = transitionCandidate(record, {
@@ -606,8 +612,8 @@ describe("CandidateImpact", () => {
 			candidate: { failedOccurrences: 0, totalOccurrences: 2, failureRateBps: 0 },
 		}]);
 		expect(first.development.comparison.verified).toBe(true);
-		expect(first.sealedHoldout).toEqual({ executed: true, gatePassed: true });
-		expect(Object.keys(first.sealedHoldout)).toEqual(["executed", "gatePassed"]);
+		expect(first.sealedHoldout).toEqual({ executed: true, gatePassed: true, verdict: "pass" });
+		expect(Object.keys(first.sealedHoldout)).toEqual(["executed", "gatePassed", "verdict"]);
 		expect(canonicalJson(first)).not.toContain("holdout-candidate");
 		const { subjectHash, ...subject } = first;
 		expect(subjectHash).toBe(hashValue(subject));

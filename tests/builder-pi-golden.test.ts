@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { SEALED_VERIFICATION_REPETITIONS, sealedHoldoutTasks } from "./helpers/sealed-holdout.js";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -182,15 +183,11 @@ it("drives the complete canonical Builder tool loop without revealing sealed con
 			projectId: "golden-agent",
 			name: "Evaluator-only golden holdout",
 			visibility: "sealed",
-			tasks: [{
-				id: "holdout-1",
-				input: sealedInput,
-				graders: [{ type: "output_contains", text: "READY" }],
-			}],
+			tasks: sealedHoldoutTasks(sealedInput),
 		});
 		const verified = await invoke(tools, "ahde_candidate_verify", {
 			builderRunId,
-			repetitions: 1,
+			repetitions: SEALED_VERIFICATION_REPETITIONS,
 			reason: "Run the exact promotion gate.",
 		});
 		const candidate = verified.candidate as { candidateId: string; status: string };

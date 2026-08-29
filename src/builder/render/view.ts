@@ -109,13 +109,38 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 	return lines;
 }
 
-function comparisonLines(summary: NonNullable<NonNullable<WorkbenchCandidateSummary["development"]>["comparison"]>, paint: Paint): string[] {
+function verdictTone(verdict: string, paint: Paint): (text: string) => string {
+	switch (verdict) {
+		case "improved":
+		case "pass":
+			return paint.success;
+		case "regressed":
+		case "fail":
+			return paint.error;
+		default:
+			return paint.warning;
+	}
+}
+
+function gateLine(gate: NonNullable<NonNullable<WorkbenchCandidateSummary["development"]>["gate"]>, paint: Paint): string {
+	const tone = verdictTone(gate.verdict, paint);
+	return `  ${paint.dim("Verdict")} ${tone(gate.verdict)} ${paint.dim("·")} ${points(gate.delta)} ${paint.dim(`(95% CI ${points(gate.confidence95.low)} … ${points(gate.confidence95.high)})`)} ${paint.dim(`· ${gate.tasks} × ${gate.repetitions}`)}` +
+		(gate.flags.collapsedTasks > 0 ? ` ${paint.error(`· ${pluralize(gate.flags.collapsedTasks, "task")} collapsed`)}` : "");
+}
+
+function comparisonLines(
+	summary: NonNullable<NonNullable<WorkbenchCandidateSummary["development"]>["comparison"]>,
+	gate: NonNullable<WorkbenchCandidateSummary["development"]>["gate"],
+	paint: Paint,
+): string[] {
 	const delta = summary.delta;
 	const tone = delta > 0 ? paint.success : delta < 0 ? paint.error : paint.muted;
-	return [
+	const lines = [
 		`${paint.dim("Development")} baseline ${percent(summary.baselinePassRate)} → candidate ${percent(summary.candidatePassRate)} ${tone(`(${points(delta)})`)} ${paint.dim(`on ${pluralize(summary.taskCount, "task")}`)}`,
-		`  ${paint.success(`↑ ${summary.improved} improved`)} ${paint.dim("·")} ${summary.regressed > 0 ? paint.error(`↓ ${summary.regressed} regressed`) : paint.muted("↓ 0 regressed")} ${paint.dim("·")} ${paint.muted(`= ${summary.unchanged} unchanged`)} ${paint.dim(`· 95% CI ${points(summary.confidence95.low)} … ${points(summary.confidence95.high)}`)}`,
+		`  ${paint.success(`↑ ${summary.improved} improved`)} ${paint.dim("·")} ${summary.regressed > 0 ? paint.warning(`↓ ${summary.regressed} lower`) : paint.muted("↓ 0 lower")} ${paint.dim("·")} ${paint.muted(`= ${summary.unchanged} unchanged`)} ${paint.dim(`· 95% CI ${points(summary.confidence95.low)} … ${points(summary.confidence95.high)}`)}`,
 	];
+	if (gate) lines.push(gateLine(gate, paint));
+	return lines;
 }
 
 export function renderCandidate(
@@ -134,12 +159,16 @@ export function renderCandidate(
 		`${section(title, paint)} ${paint.dim(candidate.candidateId)} ${paint.dim("·")} ${statusTone(candidate.status)}`,
 		`${paint.dim("Revision")} ${candidate.baseline.ref}@${shortSha(candidate.baseline.sha)} → ${candidate.candidate ? `${candidate.candidate.ref}@${shortSha(candidate.candidate.sha)}` : paint.muted("not built")}`,
 	];
-	if (candidate.development?.comparison) lines.push(...comparisonLines(candidate.development.comparison, paint));
+	if (candidate.development?.comparison) lines.push(...comparisonLines(candidate.development.comparison, candidate.development.gate, paint));
 	else if (candidate.development) lines.push(`${paint.dim("Development")} ${paint.muted("comparison not reconstructable")}`);
 	else lines.push(`${paint.dim("Development")} ${paint.muted("not evaluated yet")}`);
+	const sealedGate = candidate.sealedHoldout.gate;
 	lines.push(`${paint.dim("Sealed holdout")} ${candidate.sealedHoldout.executed
-		? (candidate.sealedHoldout.gatePassed ? paint.success("gate passed") : paint.error("gate failed"))
+		? (sealedGate
+			? `${verdictTone(sealedGate.verdict, paint)(sealedGate.verdict)} ${paint.dim("·")} ${points(sealedGate.delta)} ${paint.dim(`(95% CI ${points(sealedGate.confidence95.low)} … ${points(sealedGate.confidence95.high)}) · ${sealedGate.tasks} × ${sealedGate.repetitions}`)}`
+			: (candidate.sealedHoldout.gatePassed ? paint.success("gate passed") : paint.error("legacy evidence — not promotable")))
 		: paint.muted("not executed")}`);
+	if (sealedGate && sealedGate.verdict !== "pass") lines.push(`  ${paint.muted(oneLine(sealedGate.reasons[0] ?? "", 160))}`);
 	lines.push(...renderImpact(candidate.impact ?? null, paint));
 	if (candidate.review) {
 		const tone = candidate.review.recommendation === "promote" ? paint.success : paint.error;

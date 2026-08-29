@@ -3,7 +3,7 @@ import { inspectTargetAuthoringContext, type TargetAuthoringResource } from "../
 import { listCorpora } from "../corpus.js";
 import {
 	isSealedEvalRun,
-	listEvalRunIndexes,
+	listEvalRunIndexesLenient,
 	loadEvalRun,
 	type EvalRunRecord,
 } from "../eval.js";
@@ -170,7 +170,11 @@ export function buildProjectStatus(context: BuilderProjectContext): Record<strin
 	try {
 		const sealedCorpora = corpora.filter((corpus) => corpus.visibility === "sealed");
 		const sealedHashes = new Set(sealedCorpora.map((corpus) => corpus.hash));
-		evals = listEvalRunIndexes(context.runsRoot)
+		const listed = listEvalRunIndexesLenient(context.runsRoot);
+		if (listed.invalid.length > 0) {
+			warnings.push(`evals: ${listed.invalid.length} legacy eval run index(es) ignored; not comparable with the current evidence schema`);
+		}
+		evals = listed.records
 			.filter((record) => targetId === null || record.target.id === targetId)
 			.filter((record) => !isSealedEvalRun(record, sealedHashes))
 			.map((record) => loadEvalRun(context.runsRoot, record.evalRunId))

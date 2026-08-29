@@ -422,10 +422,7 @@ async function main(): Promise<void> {
 			const targetId = arg("target");
 			const listed = listEvalRunIndexesLenient(runsRoot());
 			const runs = listed.records.filter((r) => !targetId || r.target.id === targetId);
-			if (listed.invalidCount > 0) {
-				console.error(`warning: skipped ${listed.invalidCount} invalid eval-run index(es)`);
-			}
-			if (runs.length === 0) {
+			if (runs.length === 0 && listed.invalid.length === 0) {
 				console.log("no eval runs");
 				break;
 			}
@@ -435,6 +432,12 @@ async function main(): Promise<void> {
 						`${(run.summary.allPassRate * 100).toFixed(0).padStart(3)}% ` +
 						`(${run.summary.pass}/${run.summary.total})  ${run.startedAt}`,
 				);
+			}
+			for (const entry of listed.invalid) {
+				console.log(`${entry.evalRunId}  legacy · not comparable with the current evidence schema`);
+			}
+			if (listed.invalid.length > 0) {
+				console.error(`note: ${listed.invalid.length} legacy eval run index(es) predate the current provenance axes and are never reused as baselines`);
 			}
 			break;
 		}
@@ -555,7 +558,7 @@ You have no tools. You create a reviewable draft only and must not claim that yo
 				console.log(USAGE);
 				process.exit(1);
 			}
-			const result = compareEvalRuns(runsRoot(), a, b);
+			const result = compareEvalRuns(runsRoot(), a, b, { mode: "exploratory" });
 			console.log(renderCompareMarkdown(result));
 			if (result.error) process.exit(2);
 			break;

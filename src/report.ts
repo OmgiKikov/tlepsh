@@ -474,7 +474,7 @@ export function collectEvalReportData(
 			throw new Error("cross-visibility baseline evidence is unavailable");
 		}
 		try {
-			canonicalComparison = compareEvalRuns(runsRoot, baselineIndex.evalRunId, requestedIndex.evalRunId);
+			canonicalComparison = compareEvalRuns(runsRoot, baselineIndex.evalRunId, requestedIndex.evalRunId, { mode: "exploratory" });
 		} catch {
 			throw new Error("comparison evidence failed integrity checks");
 		}

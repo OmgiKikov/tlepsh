@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { GateSurface, GateVerdict } from "../domain/comparison-gate.js";
 import {
 	BuilderCorpusDraftCoverageNotesSchema,
 	BuilderCorpusDraftTasksInputSchema,
@@ -92,6 +93,19 @@ export interface WorkbenchProposalReview {
 	exactDiff: string;
 }
 
+/** Human-facing projection of one comparison-gate verdict. Never carries task ids. */
+export interface WorkbenchGateProjection {
+	verdict: GateVerdict;
+	surface: GateSurface;
+	delta: number;
+	confidence95: { low: number; high: number };
+	tasks: number;
+	repetitions: number;
+	excludedTasks: number;
+	flags: { regressedTasks: number; improvedTasks: number; collapsedTasks: number };
+	reasons: string[];
+}
+
 export interface WorkbenchCandidateSummary {
 	candidateId: string;
 	status: CandidateStatus;
@@ -105,8 +119,10 @@ export interface WorkbenchCandidateSummary {
 		baselineEvalRunId: string;
 		candidateEvalRunId: string;
 		comparison: ComparisonSummaryEvidence | null;
+		/** v3 gate verdict; null for legacy evidence. */
+		gate: WorkbenchGateProjection | null;
 	} | null;
-	sealedHoldout: { executed: boolean; gatePassed: boolean };
+	sealedHoldout: { executed: boolean; gatePassed: boolean; gate: WorkbenchGateProjection | null };
 	review: { experimentId: string; recommendation: "promote" | "reject"; reason: string } | null;
 	promotion: { tag: string; reason: string; at: string } | null;
 	rejection: { reason: string; at: string } | null;
@@ -480,7 +496,8 @@ export interface WorkbenchRunEvalResult {
 
 export interface WorkbenchVerifyCandidateResult {
 	candidate: WorkbenchCandidateSummary;
-	sealedHoldout: { executed: boolean; gatePassed: boolean };
+	development: { verdict: GateVerdict; delta: number; confidence95: { low: number; high: number } };
+	sealedHoldout: { executed: boolean; gatePassed: boolean; verdict: GateVerdict | null };
 }
 
 /** Typed payload of every consequential decision, keyed by its decision kind. */

@@ -116,8 +116,9 @@ function candidateSummary(overrides: Partial<WorkbenchCandidateSummary> = {}): W
 				regressed: 0,
 				unchanged: 1,
 			},
+			gate: null,
 		},
-		sealedHoldout: { executed: true, gatePassed: true },
+		sealedHoldout: { executed: true, gatePassed: true, gate: null },
 		review: null,
 		promotion: null,
 		rejection: null,
@@ -262,7 +263,7 @@ const interruptedDetail: WorkbenchReviewDetail = {
 		candidateId: "candidate-stopped",
 		status: "validated",
 		development: null,
-		sealedHoldout: { executed: false, gatePassed: false },
+		sealedHoldout: { executed: false, gatePassed: false, gate: null },
 	}),
 };
 const interruptedView = viewAt("candidate-verification", { detail: { aspect: "review", content: interruptedDetail } });
@@ -1255,7 +1256,8 @@ describe("Builder Pi slash commands", () => {
 			decide: async () => decision("run-current", {
 				resolvedAs: "verify-candidate",
 				candidate: candidateSummary(),
-				sealedHoldout: { executed: true, gatePassed: true },
+				development: { verdict: "improved", delta: 2 / 3, confidence95: { low: 0.1, high: 0.9 } },
+				sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" },
 			}, viewAt("candidate-review")),
 		});
 		const verification = register(verifying.value);

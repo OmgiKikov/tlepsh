@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { SEALED_VERIFICATION_REPETITIONS, sealedHoldoutTasks } from "./helpers/sealed-holdout.js";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -239,9 +240,9 @@ describe("vertical slice: evidence-backed improvement", () => {
 		const baseline = await runSuite(loadTarget(targetDir), {
 			runsRoot,
 			label: "baseline",
-			repetitions: 1,
+			repetitions: SEALED_VERIFICATION_REPETITIONS,
 		});
-		expect(baseline.summary).toMatchObject({ pass: 0, fail: 2, error: 0 });
+		expect(baseline.summary).toMatchObject({ pass: 0, fail: 2 * SEALED_VERIFICATION_REPETITIONS, error: 0 });
 		const diagnosis = diagnoseEvalRun(runsRoot, baseline.evalRunId);
 		expect(diagnosis.summary.failedTasks).toBe(2);
 		const brief = compileImprovementBrief(runsRoot, diagnosis);
@@ -409,11 +410,7 @@ describe("vertical slice: evidence-backed improvement", () => {
 			projectId: "acceptance-project",
 			name: "Promotion gate",
 			visibility: "sealed",
-			tasks: [{
-				id: "holdout-1",
-				input: "PRIVATE HOLDOUT INPUT",
-				graders: [{ type: "output_contains", text: "READY" }],
-			}],
+			tasks: sealedHoldoutTasks("PRIVATE HOLDOUT INPUT"),
 		});
 		const experiment = await runAppliedBuilderCandidate({
 			repositoryDir: targetDir,
@@ -421,7 +418,7 @@ describe("vertical slice: evidence-backed improvement", () => {
 			builderRunId: builder.record.runId,
 			expectedBuilderRunHash: exactBuilderRunHash,
 			expectedApplyReceiptHash: exactApplyReceiptHash,
-			repetitions: 1,
+			repetitions: SEALED_VERIFICATION_REPETITIONS,
 			candidateId: "candidate-acceptance",
 			projectId: "acceptance-project",
 			approvedSpec: { stateRoot, specId: spec.id },
@@ -430,9 +427,11 @@ describe("vertical slice: evidence-backed improvement", () => {
 		});
 		expect(experiment.baseline.evalRunId).toBe(baseline.evalRunId);
 		expect(experiment.baselineReused).toBe(true);
-		expect(experiment.candidate.summary).toMatchObject({ pass: 2, fail: 0, error: 0 });
-		expect(experiment.sealedHoldout?.candidate.summary).toMatchObject({ pass: 1, fail: 0, error: 0 });
+		expect(experiment.candidate.summary).toMatchObject({ pass: 2 * SEALED_VERIFICATION_REPETITIONS, fail: 0, error: 0 });
+		expect(experiment.sealedHoldout?.candidate.summary).toMatchObject({ pass: 15 * SEALED_VERIFICATION_REPETITIONS, fail: 0, error: 0 });
 		expect(experiment.compare.summary.delta).toBe(1);
+		expect(experiment.compare.gate.verdict).toBe("improved");
+		expect(experiment.sealedHoldout?.compare.gate.verdict).toBe("pass");
 		expect(candidateStatus(experiment.record)).toBe("evaluated");
 		expect(experiment.record.specId).toBe(spec.id);
 		expect(readFileSync(experiment.candidateRecordPath, "utf8")).not.toContain("PRIVATE HOLDOUT INPUT");

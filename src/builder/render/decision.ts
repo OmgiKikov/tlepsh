@@ -109,7 +109,7 @@ export function decisionHeadline(result: WorkbenchDecisionResult): string {
 				? `${result.result.evaluation.summary.pass}/${result.result.evaluation.summary.total} passed · ${result.result.improvementBrief.summary.failureModeCount} failure modes`
 				: `candidate ${result.result.candidate.status}`;
 		case "verify-candidate":
-			return `candidate ${result.result.candidate.status} · sealed gate ${result.result.sealedHoldout.gatePassed ? "passed" : "not passed"}`;
+			return `candidate ${result.result.candidate.status} · development ${result.result.development.verdict} · sealed ${result.result.sealedHoldout.verdict ?? "not run"}`;
 		default:
 			return oneLine(result.message, 120);
 	}

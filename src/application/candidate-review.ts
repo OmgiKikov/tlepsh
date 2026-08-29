@@ -9,12 +9,11 @@ import {
 	PersistedBuilderRunSchema,
 } from "./builder-proposal.js";
 import {
-	DEVELOPMENT_GATE_POLICY_ID,
-	SEALED_GATE_POLICY_ID,
 	comparisonGateEvidence,
 } from "./candidate-experiment.js";
 import { corpusDatasetLabel } from "./corpus-target.js";
 import { compareEvalRuns, type CompareResult } from "../compare.js";
+import { promotableVerdicts, type GateSurface } from "../domain/comparison-gate.js";
 import { CandidateProposalSchema } from "../builders/adapters.js";
 import { DiagnosisRecordSchema } from "../diagnosis.js";
 import {
@@ -216,6 +215,7 @@ function verifyEvaluationPair(
 		candidate: { evalRunId: string; harness: { sha: string } };
 	},
 	label: string,
+	surface: GateSurface,
 ): CompareResult {
 	const baseline = loadEvalRun(runsRoot, pair.baseline.evalRunId);
 	const candidate = loadEvalRun(runsRoot, pair.candidate.evalRunId);
@@ -256,6 +256,7 @@ function verifyEvaluationPair(
 	}
 	const comparison = compareEvalRuns(runsRoot, baseline.evalRunId, candidate.evalRunId, {
 		mode: record.mode,
+		surface,
 	});
 	if (comparison.status !== "comparable" || comparison.summary.taskCount < 1) {
 		throw new Error(comparison.error ?? `${label} contains no comparable task evidence`);
@@ -445,7 +446,7 @@ function verifyPromotionEvidence(record: CandidateRecord, runsRoot: string): voi
 	const sourceEval = verifyAppliedBuilderOrigin(record, runsRoot);
 	const evaluated = record.events.find((event) => event.type === "evaluated");
 	if (!evaluated || evaluated.type !== "evaluated") throw new Error("candidate has no evaluated evidence");
-	const development = verifyEvaluationPair(runsRoot, record, evaluated.evaluation.development, "development");
+	const development = verifyEvaluationPair(runsRoot, record, evaluated.evaluation.development, "development", "development");
 	if (sourceEval && (
 		development.a.dataset !== sourceEval.dataset ||
 		development.b.dataset !== sourceEval.dataset ||
@@ -484,12 +485,11 @@ function verifyPromotionEvidence(record: CandidateRecord, runsRoot: string): voi
 	}
 	const developmentEvidence = evaluated.evaluation.development.comparison;
 	if (!developmentEvidence) throw new Error("development comparison evidence is not reconstructable");
-	if (!("algorithmId" in developmentEvidence)) {
-		throw new Error("development comparison uses legacy v1 evidence and is not promotion-grade");
+	if (!("verdict" in developmentEvidence)) {
+		throw new Error("development comparison uses legacy gate evidence without a verdict and is not promotion-grade");
 	}
 	const expectedDevelopment = comparisonGateEvidence(
 		development,
-		DEVELOPMENT_GATE_POLICY_ID,
 		developmentCorpus
 			? { corpusId: developmentCorpus.id, corpusHash: developmentCorpus.hash }
 			: {},
@@ -500,7 +500,7 @@ function verifyPromotionEvidence(record: CandidateRecord, runsRoot: string): voi
 	const holdout = evaluated.evaluation.sealedHoldout;
 	if (!holdout) throw new Error("promotion requires sealed-holdout evidence");
 	if (!holdout.corpus) throw new Error("sealed holdout is missing exact corpus identity");
-	const comparison = verifyEvaluationPair(runsRoot, record, holdout, "sealed holdout");
+	const comparison = verifyEvaluationPair(runsRoot, record, holdout, "sealed holdout", "sealed");
 	if (
 		comparison.a.datasetHash !== holdout.corpus.hash ||
 		comparison.b.datasetHash !== holdout.corpus.hash ||
@@ -514,19 +514,20 @@ function verifyPromotionEvidence(record: CandidateRecord, runsRoot: string): voi
 	}
 	const holdoutEvidence = holdout.comparison;
 	if (!holdoutEvidence) throw new Error("sealed comparison evidence is not reconstructable");
-	if (!("algorithmId" in holdoutEvidence)) {
-		throw new Error("sealed comparison uses legacy v1 evidence and is not promotion-grade");
+	if (!("verdict" in holdoutEvidence)) {
+		throw new Error("sealed comparison uses legacy gate evidence without a verdict and is not promotion-grade");
 	}
-	const expectedHoldout = comparisonGateEvidence(comparison, SEALED_GATE_POLICY_ID, {
+	const expectedHoldout = comparisonGateEvidence(comparison, {
 		corpusId: holdout.corpus.id,
 		corpusHash: holdout.corpus.hash,
 	});
 	if (JSON.stringify(holdoutEvidence) !== JSON.stringify(expectedHoldout)) {
 		throw new Error("sealed comparison/gate evidence hash or summary mismatch");
 	}
-	const regressed = comparison.rows.filter((row) => row.delta < 0).map((row) => row.taskId);
-	if (regressed.length > 0 || comparison.summary.delta < 0) {
-		throw new Error(`sealed holdout regression in persisted evidence: ${regressed.join(", ") || comparison.summary.delta}`);
+	if (!promotableVerdicts(developmentEvidence.verdict, holdoutEvidence.verdict)) {
+		throw new Error(
+			`promotion refused by the comparison gate: development ${developmentEvidence.verdict}, sealed ${holdoutEvidence.verdict}`,
+		);
 	}
 }
 

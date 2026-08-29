@@ -1,4 +1,12 @@
 import { z } from "zod";
+import {
+	DEVELOPMENT_VERDICTS,
+	EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
+	SEALED_VERDICTS,
+	isDevelopmentVerdict,
+	isSealedVerdict,
+	promotableVerdicts,
+} from "./comparison-gate.js";
 
 const IdSchema = z.string().trim().min(1).max(200);
 const VerbatimIdSchema = z.string().min(1).max(200).refine((value) => value.trim().length > 0, "expected non-blank id");
@@ -141,11 +149,54 @@ export const ComparisonGateEvidenceV2Schema = z.strictObject({
 	summary: ComparisonSummaryEvidenceSchema,
 });
 
-/** V1 remains parseable for historical review, but is never promotion-grade. */
+const GateVerdictSchema = z.enum([...DEVELOPMENT_VERDICTS, ...SEALED_VERDICTS]);
+
+/**
+ * Promotion-grade gate evidence: the exact paired statistics plus the one
+ * verdict decided by the comparison gate for its surface. Only v3 evidence
+ * carries a verdict and only v3 can back a promotion.
+ */
+export const ComparisonGateEvidenceV3Schema = z.strictObject({
+	schemaVersion: z.literal(3),
+	algorithmId: z.literal(EXACT_COMPARISON_GATE_ALGORITHM_ID_V3),
+	policyId: z.enum(["development-ci-v3", "sealed-guardrail-v3"]),
+	surface: z.enum(["development", "sealed"]),
+	comparisonHash: FingerprintSchema,
+	evidenceHash: FingerprintSchema,
+	gateHash: FingerprintSchema,
+	summary: ComparisonSummaryEvidenceSchema,
+	design: z.strictObject({
+		tasks: z.number().int().nonnegative(),
+		repetitions: z.number().int().positive(),
+		excludedTasks: z.number().int().nonnegative(),
+	}),
+	verdict: GateVerdictSchema,
+	flags: z.strictObject({
+		regressedTasks: z.number().int().nonnegative(),
+		improvedTasks: z.number().int().nonnegative(),
+		collapsedTasks: z.number().int().nonnegative(),
+	}),
+	reasons: z.array(z.string().min(1).max(500)).max(8),
+}).superRefine((evidence, context) => {
+	const consistent = evidence.surface === "sealed"
+		? isSealedVerdict(evidence.verdict) && evidence.policyId === "sealed-guardrail-v3"
+		: isDevelopmentVerdict(evidence.verdict) && evidence.policyId === "development-ci-v3";
+	if (!consistent) {
+		context.addIssue({ code: "custom", path: ["verdict"], message: `verdict ${evidence.verdict} does not belong to the ${evidence.surface} gate` });
+	}
+});
+export type ComparisonGateEvidenceV3 = z.infer<typeof ComparisonGateEvidenceV3Schema>;
+
+/** V1/V2 remain parseable for historical review, but are never promotion-grade. */
 export const ComparisonGateEvidenceSchema = z.union([
+	ComparisonGateEvidenceV3Schema,
 	ComparisonGateEvidenceV2Schema,
 	ComparisonGateEvidenceV1Schema,
 ]);
+
+export function gateVerdictOf(evidence: z.infer<typeof ComparisonGateEvidenceSchema> | null | undefined): string | null {
+	return evidence && "verdict" in evidence ? evidence.verdict : null;
+}
 export type ComparisonGateEvidence = z.infer<typeof ComparisonGateEvidenceSchema>;
 
 const MatchedEvaluationSchema = z.strictObject({
@@ -449,6 +500,13 @@ export const CandidateRecordSchema = CandidateRecordBaseSchema.superRefine((reco
 			}
 			if (!evaluated.evaluation.sealedHoldout) {
 				addIssue(ctx, ["events", index, "decision"], "promotion requires sealed-holdout evidence");
+			}
+			const developmentVerdict = gateVerdictOf(evaluated.evaluation.development.comparison);
+			const sealedVerdict = gateVerdictOf(evaluated.evaluation.sealedHoldout?.comparison);
+			if (developmentVerdict === null || sealedVerdict === null) {
+				addIssue(ctx, ["events", index, "decision"], "promotion requires v3 comparison-gate evidence on both surfaces");
+			} else if (!promotableVerdicts(developmentVerdict as never, sealedVerdict as never)) {
+				addIssue(ctx, ["events", index, "decision"], `promotion requires a sealed pass and a development verdict other than regressed (got ${developmentVerdict} / ${sealedVerdict})`);
 			}
 			if (reviewed.review.recommendation !== "promote") {
 				addIssue(ctx, ["events", index, "decision"], "promotion requires a human promote recommendation");

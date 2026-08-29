@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { EXACT_COMPARISON_GATE_ALGORITHM_ID_V3, judgeComparison } from "../src/domain/comparison-gate.js";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,8 +8,6 @@ import {
 	CANDIDATE_SCOPE_POLICY,
 	CandidateDevelopmentSurfaceError,
 	CandidateExperimentError,
-	DEVELOPMENT_GATE_POLICY_ID,
-	SEALED_GATE_POLICY_ID,
 	comparisonGateEvidence,
 	runCandidateExperiment,
 	type CandidateExperimentDependencies,
@@ -21,7 +20,6 @@ import {
 } from "../src/application/corpus-target.js";
 import {
 	CandidateRecordSchema,
-	EXACT_COMPARISON_GATE_ALGORITHM_ID,
 	candidateStatus,
 } from "../src/domain/candidate.js";
 import {
@@ -338,46 +336,37 @@ function reusableRecord(
 	};
 }
 
+/**
+ * A faithful fake comparison: fifteen paired rows (enough for a sealed
+ * verdict) whose per-task delta is forced or derived from the fake pass
+ * rates, judged by the real comparison gate for the requested surface.
+ */
 function comparison(
 	a: EvalRunRecord,
 	b: EvalRunRecord,
 	status: CompareResult["status"],
 	forcedDelta?: number,
+	surface: "development" | "sealed" = "development",
 ): CompareResult {
 	const error = status === "comparable" ? null : `${status}: test comparison`;
 	const delta = forcedDelta ?? b.summary.allPassRate - a.summary.allPassRate;
-	const rows = forcedDelta === undefined
-		? []
-		: [{
-				taskId: "forced-task",
-				aPassRate: forcedDelta < 0 ? 1 : 0,
-				bPassRate: forcedDelta < 0 ? 1 + forcedDelta : forcedDelta,
-				delta: forcedDelta,
-				aStatus: "completed",
-				bStatus: "completed",
-				aPass: forcedDelta < 0 ? 1 : 0,
-				aTotal: 1,
-				bPass: forcedDelta < 0 ? 0 : 1,
-				bTotal: 1,
-			}];
-	return {
-		a,
-		b,
-		rows,
-		status,
-		issues: error ? [error] : [],
-		error,
-		summary: {
-			taskCount: rows.length,
-			baselinePassRate: a.summary.allPassRate,
-			candidatePassRate: b.summary.allPassRate,
-			delta,
-			confidence95: { low: 0, high: 0 },
-			improved: delta > 0 ? 1 : 0,
-			regressed: delta < 0 ? 1 : 0,
-			unchanged: delta === 0 ? rows.length : 0,
-		},
-	};
+	const repetitions = a.repetitions;
+	const aRate = delta < 0 ? 1 : delta > 0 ? 0 : a.summary.allPassRate;
+	const bRate = delta < 0 ? 1 + delta : delta > 0 ? delta : a.summary.allPassRate;
+	const rows = Array.from({ length: 15 }, (_, index) => ({
+		taskId: index === 0 ? "forced-task" : `task-${index + 1}`,
+		aPassRate: aRate,
+		bPassRate: bRate,
+		delta: bRate - aRate,
+		aStatus: "completed",
+		bStatus: "completed",
+		aPass: Math.round(aRate * repetitions),
+		aTotal: repetitions,
+		bPass: Math.round(bRate * repetitions),
+		bTotal: repetitions,
+	}));
+	const statistics = judgeComparison(rows, { surface, repetitions, seed: `${a.evalRunId}:${b.evalRunId}`, resamples: 200 });
+	return { a, b, rows, status, issues: error ? [error] : [], error, ...statistics };
 }
 
 function fakeRuntime(options: FakeRuntimeOptions = {}): FakeRuntime {
@@ -419,7 +408,7 @@ function fakeRuntime(options: FakeRuntimeOptions = {}): FakeRuntime {
 			return record;
 		},
 		compareEvalRuns: (_runsRoot, aId, bId, compareOptions) => {
-			compareModes.push(compareOptions?.mode ?? "candidate");
+			compareModes.push(compareOptions.mode);
 			const a = evaluations.get(aId);
 			const b = evaluations.get(bId);
 			if (!a || !b) throw new Error("fake comparison missing eval record");
@@ -428,6 +417,7 @@ function fakeRuntime(options: FakeRuntimeOptions = {}): FakeRuntime {
 				b,
 				options.compareStatus ?? "comparable",
 				options.comparisonDeltas?.[compareModes.length - 1],
+				compareOptions.surface ?? "development",
 			);
 		},
 	};
@@ -666,9 +656,10 @@ permissions:
 		if (finalEvent?.type === "evaluated") {
 			expect(finalEvent.evaluation.sealedHoldout).toBeUndefined();
 			expect(finalEvent.evaluation.development.comparison).toMatchObject({
-				schemaVersion: 2,
-				algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID,
-				policyId: DEVELOPMENT_GATE_POLICY_ID,
+				schemaVersion: 3,
+				algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
+				policyId: "development-ci-v3",
+				surface: "development",
 			});
 		}
 		// The reused index anchors its persisted final RunRecords, so it is promotion-grade evidence.
@@ -692,29 +683,27 @@ permissions:
 		assertCheckoutUnchanged(repository);
 	});
 
-	it("rejects a reusable baseline whose model-visible workspace hash differs", async () => {
+	it("fails closed when the reuse seam returns a baseline whose model-visible workspace hash differs", async () => {
 		const repository = createRepository({ path: "AGENTS.md", content: "candidate harness\n" });
 		const runtime = fakeRuntime({ reuseBaseline: true, reuseWorkspaceMismatch: true });
 
-		const result = await runCandidateExperiment(
-			{
-				repositoryDir: repository.dir,
-				runsRoot: repository.runsRoot,
-				baselineRef: repository.baselineSha,
-				candidateRef: repository.candidateSha,
-				mode: "candidate",
-				repetitions: 1,
-				candidateId: "candidate-stale-workspace-reuse",
-			},
-			runtime.dependencies,
-		);
+		await expect(
+			runCandidateExperiment(
+				{
+					repositoryDir: repository.dir,
+					runsRoot: repository.runsRoot,
+					baselineRef: repository.baselineSha,
+					candidateRef: repository.candidateSha,
+					mode: "candidate",
+					repetitions: 1,
+					candidateId: "candidate-stale-workspace-reuse",
+				},
+				runtime.dependencies,
+			),
+		).rejects.toThrow(/does not match its reuse query on workspace hash/);
 
-		expect(result.baselineReused).toBe(false);
 		expect(runtime.reuseQueries[0]?.workspaceHash).toMatch(/^sha256:[0-9a-f]{64}$/);
-		expect(runtime.suiteCalls.map((call) => call.options.label)).toEqual(["baseline", "candidate"]);
-		expect(runtime.suiteCalls[0]?.options.expectedWorkspaceHash).toBe(
-			runtime.reuseQueries[0]?.workspaceHash,
-		);
+		expect(runtime.suiteCalls).toHaveLength(0);
 		assertCheckoutUnchanged(repository);
 	});
 
@@ -791,7 +780,6 @@ permissions:
 		});
 		expect(evaluated.evaluation.development.comparison).toEqual(comparisonGateEvidence(
 			result.compare,
-			DEVELOPMENT_GATE_POLICY_ID,
 			{ corpusId: corpus.metadata.id, corpusHash: corpus.metadata.hash },
 		));
 		expect(result.designHash).toBe(hashValue({
@@ -963,9 +951,11 @@ permissions:
 					harness: { sha: repository.candidateSha },
 				},
 				comparison: {
-					schemaVersion: 2,
-					algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID,
-					policyId: SEALED_GATE_POLICY_ID,
+					schemaVersion: 3,
+					algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
+					policyId: "sealed-guardrail-v3",
+					surface: "sealed",
+					verdict: "pass",
 				},
 			});
 		}
@@ -1049,32 +1039,36 @@ permissions:
 		assertCheckoutUnchanged(repository);
 	});
 
-	it("fails closed on a per-task sealed regression and keeps durable state validated", async () => {
+	it("records a failed sealed guardrail as evaluated evidence that can never be promoted", async () => {
 		const repository = createRepository({ path: "AGENTS.md", content: "candidate harness\n" });
 		const corpus = corpusFixture("sealed");
 		const runtime = fakeRuntime({ comparisonDeltas: [0, -1] });
 		const candidateId = "candidate-holdout-regression";
 		const path = join(repository.runsRoot, "candidates", candidateId, "candidate.json");
 
-		await expect(
-			runCandidateExperiment(
-				{
-					repositoryDir: repository.dir,
-					runsRoot: repository.runsRoot,
-					baselineRef: repository.baselineSha,
-					candidateRef: repository.candidateSha,
-					mode: "candidate",
-					repetitions: 1,
-					candidateId,
-					sealedCorpus: corpus.ref,
-				},
-				runtime.dependencies,
-			),
-		).rejects.toThrow(/sealed holdout regressed task.*forced-task/);
+		const result = await runCandidateExperiment(
+			{
+				repositoryDir: repository.dir,
+				runsRoot: repository.runsRoot,
+				baselineRef: repository.baselineSha,
+				candidateRef: repository.candidateSha,
+				mode: "candidate",
+				repetitions: 2,
+				candidateId,
+				sealedCorpus: corpus.ref,
+			},
+			runtime.dependencies,
+		);
 
 		expect(runtime.suiteCalls).toHaveLength(4);
 		expect(runtime.compareModes).toEqual(["candidate", "candidate"]);
-		expect(candidateStatus(readJsonArtifact(path, CandidateRecordSchema))).toBe("validated");
+		expect(result.sealedHoldout?.compare.gate.verdict).toBe("fail");
+		expect(JSON.stringify(result.sealedHoldout?.compare.gate.reasons)).not.toContain("forced-task");
+		const record = readJsonArtifact(path, CandidateRecordSchema);
+		expect(candidateStatus(record)).toBe("evaluated");
+		const evaluated = record.events.at(-1);
+		if (evaluated?.type !== "evaluated") throw new Error("expected evaluated event");
+		expect(evaluated.evaluation.sealedHoldout?.comparison).toMatchObject({ schemaVersion: 3, verdict: "fail", surface: "sealed" });
 		assertCheckoutUnchanged(repository);
 	});
 
@@ -1213,14 +1207,15 @@ permissions:
 		const evaluated = result.record.events.at(-1);
 		if (evaluated?.type !== "evaluated") throw new Error("expected evaluated event");
 		const evidence = evaluated.evaluation.development.comparison;
-		if (!evidence || !("algorithmId" in evidence)) throw new Error("expected exact v2 comparison evidence");
+		if (!evidence || !("verdict" in evidence)) throw new Error("expected exact v3 comparison evidence");
 		expect(evidence).toMatchObject({
-			schemaVersion: 2,
-			algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID,
-			policyId: DEVELOPMENT_GATE_POLICY_ID,
+			schemaVersion: 3,
+			algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
+			policyId: "development-ci-v3",
+			surface: "development",
 		});
 		expect(evidence.evidenceHash).toMatch(/^sha256:[0-9a-f]{64}$/);
-		expect(evidence).toEqual(comparisonGateEvidence(result.compare, DEVELOPMENT_GATE_POLICY_ID));
+		expect(evidence).toEqual(comparisonGateEvidence(result.compare));
 
 		// Replacing one final RunArtifact hash changes the evidence and gate hashes without touching the row digest.
 		const candidateArtifacts = result.candidate.runArtifacts;
@@ -1234,9 +1229,8 @@ permissions:
 						index === 0 ? { ...artifact, sha256: hashValue({ tampered: artifact.runId }) } : artifact),
 				},
 			},
-			DEVELOPMENT_GATE_POLICY_ID,
 		);
-		if (!("algorithmId" in tampered)) throw new Error("expected exact v2 comparison evidence");
+		if (!("verdict" in tampered)) throw new Error("expected exact v3 comparison evidence");
 		expect(tampered.comparisonHash).toBe(evidence.comparisonHash);
 		expect(tampered.evidenceHash).not.toBe(evidence.evidenceHash);
 		expect(tampered.gateHash).not.toBe(evidence.gateHash);
@@ -1244,9 +1238,9 @@ permissions:
 		// Legacy v1 indexes without ordered final RunArtifact hashes are never promotion-grade evidence.
 		const { runArtifacts: _legacyBaselineArtifacts, ...legacyBaseline } = result.baseline;
 		const { runArtifacts: _legacyCandidateArtifacts, ...legacyCandidate } = result.candidate;
-		expect(() => comparisonGateEvidence({ ...result.compare, a: legacyBaseline }, DEVELOPMENT_GATE_POLICY_ID))
+		expect(() => comparisonGateEvidence({ ...result.compare, a: legacyBaseline }))
 			.toThrow(/exact comparison gate requires ordered final RunArtifact hashes/);
-		expect(() => comparisonGateEvidence({ ...result.compare, b: legacyCandidate }, DEVELOPMENT_GATE_POLICY_ID))
+		expect(() => comparisonGateEvidence({ ...result.compare, b: legacyCandidate }))
 			.toThrow(/exact comparison gate requires ordered final RunArtifact hashes/);
 		assertCheckoutUnchanged(repository);
 	});

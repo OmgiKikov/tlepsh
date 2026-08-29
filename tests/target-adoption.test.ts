@@ -35,21 +35,29 @@ function git(repositoryDir: string, ...args: string[]): string {
 	}).trim();
 }
 
-function comparison() {
+function comparison(surface: "development" | "sealed" = "development") {
 	return {
-		policyId: "test-gate-v1",
+		schemaVersion: 3 as const,
+		algorithmId: "exact-comparison-gate-v3" as const,
+		policyId: surface === "sealed" ? "sealed-guardrail-v3" as const : "development-ci-v3" as const,
+		surface,
 		comparisonHash: hash,
+		evidenceHash: hash,
 		gateHash: hash,
 		summary: {
-			taskCount: 1,
+			taskCount: 15,
 			baselinePassRate: 0,
 			candidatePassRate: 1,
 			delta: 1,
-			confidence95: { low: 0, high: 1 },
-			improved: 1,
+			confidence95: { low: 1, high: 1 },
+			improved: 15,
 			regressed: 0,
 			unchanged: 0,
 		},
+		design: { tasks: 15, repetitions: 2, excludedTasks: 0 },
+		verdict: surface === "sealed" ? "pass" as const : "improved" as const,
+		flags: { regressedTasks: 0, improvedTasks: 15, collapsedTasks: 0 },
+		reasons: ["fixture verdict"],
 	};
 }
 
@@ -145,7 +153,7 @@ function promotedRecord(
 					sealedHoldout: {
 						baseline: { evalRunId: "sealed-baseline", harness: { ref: "main", sha: baselineSha } },
 						candidate: { evalRunId: "sealed-candidate", harness: { ref: "candidate", sha: candidateSha } },
-						comparison: comparison(),
+						comparison: comparison("sealed"),
 						corpus: { id: "sealed-corpus", hash },
 					},
 					infrastructureErrors: 0,

@@ -670,30 +670,43 @@ export function listPublicEvalRunIndexesBounded(
 	};
 }
 
-/** CLI-facing best-effort listing; invalid siblings never hide healthy indexes. */
+export interface InvalidEvalRunIndex {
+	evalRunId: string;
+	/** Bounded validation reason; legacy indexes predate the current provenance axes. */
+	reason: string;
+}
+
+/**
+ * Best-effort index listing: invalid or legacy siblings never hide healthy
+ * indexes and never block a caller. Each invalid index is reported with its
+ * reason so humans can see "legacy · not comparable" instead of nothing.
+ */
 export function listEvalRunIndexesLenient(runsRoot: string): {
 	records: EvalRunRecord[];
+	invalid: InvalidEvalRunIndex[];
 	invalidCount: number;
 } {
 	let entries: string[];
 	try {
 		entries = readdirSync(runsRoot);
 	} catch {
-		return { records: [], invalidCount: 0 };
+		return { records: [], invalid: [], invalidCount: 0 };
 	}
 	const records: EvalRunRecord[] = [];
-	let invalidCount = 0;
+	const invalid: InvalidEvalRunIndex[] = [];
 	for (const entry of entries) {
 		if (!entry.startsWith("erun_")) continue;
 		try {
 			records.push(readEvalRunIndex(runsRoot, entry));
-		} catch {
-			invalidCount += 1;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			invalid.push({ evalRunId: entry, reason: message.replace(/\s+/g, " ").slice(0, 200) });
 		}
 	}
 	records.sort((left, right) =>
 		right.startedAt.localeCompare(left.startedAt) || right.evalRunId.localeCompare(left.evalRunId));
-	return { records, invalidCount };
+	invalid.sort((left, right) => left.evalRunId.localeCompare(right.evalRunId));
+	return { records, invalid, invalidCount: invalid.length };
 }
 
 function evidenceMismatch(evalRunId: string, message: string): never {
@@ -808,34 +821,47 @@ export function listEvalRuns(runsRoot: string): EvalRunRecord[] {
 }
 
 /**
- * Find the latest eval run whose provenance matches the given axes (baseline
- * reuse). Must match repetitions: a one-repetition baseline would make
- * every flaky task a fatal ±100pp "regression" in compare.
+ * The exact identity a reusable baseline must match. Every field is required:
+ * a partial query would let sealed evidence reuse a development index or a
+ * one-repetition baseline stand in for a three-repetition design.
  */
 export interface ReusableBaselineQuery {
 	targetId: string;
 	targetGitSha: string;
-	/** Exact tool identity for new artifacts; omitted by legacy callers only. */
-	toolsetHash?: string;
-	/** Exact model-visible workspace identity for new artifacts. */
-	workspaceHash?: string;
+	/** Exact tool identity. */
+	toolsetHash: string;
+	/** Exact model-visible workspace identity. */
+	workspaceHash: string;
 	provenance: ProvenanceAxes;
-	/** Required by new callers so sealed evidence cannot reuse a development index. */
-	evidenceVisibility?: EvidenceVisibility;
-	label?: "baseline" | "candidate" | "solo";
-	repetitions?: number;
+	evidenceVisibility: EvidenceVisibility;
+	label: "baseline" | "candidate" | "solo";
+	repetitions: number;
 }
 
+/**
+ * Find the newest eval run whose identity matches the query (baseline reuse).
+ * The scan reads indexes only and skips legacy, errored, or otherwise
+ * unusable siblings; only the chosen match is fully verified, so one bad
+ * index on disk can never abort a candidate verification.
+ */
 export function findReusableBaseline(runsRoot: string, query: ReusableBaselineQuery): EvalRunRecord | null {
-	for (const record of listEvalRuns(runsRoot)) {
-		if (record.label !== (query.label ?? "baseline")) continue;
+	for (const record of listEvalRunIndexesLenient(runsRoot).records) {
+		if (record.label !== query.label) continue;
 		if (record.target.id !== query.targetId || record.target.gitSha !== query.targetGitSha) continue;
-		if (query.toolsetHash !== undefined && record.target.toolsetHash !== query.toolsetHash) continue;
-		if (query.workspaceHash !== undefined && record.target.workspaceHash !== query.workspaceHash) continue;
-		if (query.evidenceVisibility !== undefined && record.evidenceVisibility !== query.evidenceVisibility) continue;
+		if (record.target.toolsetHash !== query.toolsetHash) continue;
+		if (record.target.workspaceHash !== query.workspaceHash) continue;
+		if (record.evidenceVisibility !== query.evidenceVisibility) continue;
 		if (record.provenanceKey === "") continue;
-		if (query.repetitions !== undefined && record.repetitions !== query.repetitions) continue;
-		if (axisDifferences(record.provenance, query.provenance).length === 0) return record;
+		if (record.repetitions !== query.repetitions) continue;
+		// Errored evidence is inconclusive and would only stop the experiment later.
+		if (record.summary.error > 0) continue;
+		if (axisDifferences(record.provenance, query.provenance).length !== 0) continue;
+		try {
+			return loadVerifiedEvalRun(runsRoot, record.evalRunId).record;
+		} catch {
+			// A match whose member runs no longer verify is not evidence; keep scanning.
+			continue;
+		}
 	}
 	return null;
 }

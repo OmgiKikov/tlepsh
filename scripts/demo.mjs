@@ -196,20 +196,25 @@ try {
 		projectId: "demo",
 		name: "Sealed promotion gate",
 		visibility: "sealed",
-		tasks: [{ id: "holdout-1", input: "PRIVATE HOLDOUT", graders: [{ type: "output_contains", text: "READY" }] }],
+		// The sealed guardrail needs at least 15 tasks × 2 repetitions for a verdict.
+		tasks: Array.from({ length: 15 }, (_, index) => ({
+			id: `holdout-${index + 1}`,
+			input: `PRIVATE HOLDOUT ${index + 1}`,
+			graders: [{ type: "output_contains", text: "READY" }],
+		})),
 	});
 	const experiment = await runAppliedBuilderCandidate({
 		repositoryDir: targetDir,
 		runsRoot,
 		builderRunId: builder.record.runId,
-		repetitions: 1,
+		repetitions: 2,
 		candidateId: "candidate-demo",
 		projectId: "demo",
 		approvedSpec: { stateRoot, specId: spec.id },
 		sealedCorpus: { stateRoot, projectId: "demo", corpusId: sealed.id },
 	});
-	console.log(`development delta: ${experiment.compare.summary.delta >= 0 ? "+" : ""}${experiment.compare.summary.delta}`);
-	console.log(`sealed: ${experiment.sealedHoldout.candidate.summary.pass}/${experiment.sealedHoldout.candidate.summary.total} passed`);
+	console.log(`development: ${experiment.compare.gate.verdict} (${experiment.compare.gate.reasons[0]})`);
+	console.log(`sealed: ${experiment.sealedHoldout.compare.gate.verdict} (${experiment.sealedHoldout.compare.gate.reasons[0]})`);
 
 	step("5. Human review, promotion, and report");
 	reviewCandidate({

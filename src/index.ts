@@ -27,6 +27,7 @@ export * from "./compare.js";
 export * from "./corpus.js";
 export * from "./diagnosis.js";
 export * from "./domain/candidate.js";
+export * from "./domain/comparison-gate.js";
 export * from "./eval.js";
 export * from "./evidence/server.js";
 export * from "./execution-policy.js";

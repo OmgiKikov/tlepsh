@@ -850,11 +850,12 @@ try {
     projectId,
     name: "Evaluator-only installed package holdout",
     visibility: "sealed",
-    tasks: [{
-      id: "package-holdout-1",
-      input: sealedInput,
+    // The sealed guardrail needs at least 15 tasks × 2 repetitions for a verdict.
+    tasks: Array.from({ length: 15 }, (_, index) => ({
+      id: `package-holdout-${index + 1}`,
+      input: `${sealedInput} ${index + 1}`,
       graders: [{ type: "output_contains", text: "READY" }],
-    }],
+    })),
   });
   const experiment = await runAppliedBuilderCandidate({
     repositoryDir: targetDir,
@@ -862,7 +863,7 @@ try {
     builderRunId: builder.record.runId,
     projectId,
     approvedSpec: { stateRoot, specId: approval.approved.id },
-    repetitions: 1,
+    repetitions: 2,
     developmentCorpus: developmentRef,
     sealedCorpus: { stateRoot, projectId, corpusId: sealed.id },
     candidateId: "candidate-package-lifecycle",
@@ -871,13 +872,15 @@ try {
   if (
     experiment.compare.status !== "comparable" ||
     experiment.baseline.summary.pass !== 0 ||
-    experiment.candidate.summary.pass !== 1 ||
+    experiment.candidate.summary.pass !== experiment.candidate.summary.total ||
     experiment.compare.summary.delta !== 1 ||
+    experiment.compare.gate.verdict !== "improved" ||
     !experiment.sealedHoldout ||
     experiment.sealedHoldout.compare.status !== "comparable" ||
     experiment.sealedHoldout.baseline.summary.pass !== 0 ||
-    experiment.sealedHoldout.candidate.summary.pass !== 1 ||
-    experiment.sealedHoldout.compare.summary.delta !== 1
+    experiment.sealedHoldout.candidate.summary.pass !== experiment.sealedHoldout.candidate.summary.total ||
+    experiment.sealedHoldout.compare.summary.delta !== 1 ||
+    experiment.sealedHoldout.compare.gate.verdict !== "pass"
   ) {
     throw new Error("installed-package matched development/sealed candidate gate did not produce fail-to-pass evidence");
   }

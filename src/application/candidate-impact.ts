@@ -3,12 +3,16 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpat
 import { resolve } from "node:path";
 import { z } from "zod";
 import { CandidateProposalSchema } from "../builders/adapters.js";
-import type { CompareResult } from "../compare.js";
+import { compareVerifiedEvalRuns, type CompareResult } from "../compare.js";
 import { DiagnosisCategorySchema, DiagnosisRecordSchema } from "../diagnosis.js";
 import {
-	CandidateRecordSchema, EXACT_COMPARISON_GATE_ALGORITHM_ID,
+	CandidateRecordSchema, EXACT_COMPARISON_GATE_ALGORITHM_ID, gateVerdictOf,
 	type CandidateArtifactRef, type CandidateRecord,
 } from "../domain/candidate.js";
+import {
+	DEVELOPMENT_VERDICTS, EXACT_COMPARISON_GATE_ALGORITHM_ID_V3, SEALED_VERDICTS,
+	type GateVerdict,
+} from "../domain/comparison-gate.js";
 import type { EvidenceVisibility, VerifiedEvalRun } from "../eval.js";
 import {
 	GraderCheckCodeSchema, HashSchema, canonicalJson, hashValue,
@@ -18,14 +22,9 @@ import { SpecSnapshotSchema } from "../spec.js";
 import { readJsonArtifact } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import { BuilderApplyReceiptSchema, loadBuilderProposalRun } from "./builder-proposal.js";
-import {
-	DEVELOPMENT_GATE_POLICY_ID, SEALED_GATE_POLICY_ID, AA_SEALED_GATE_POLICY_ID,
-	comparisonGateEvidence,
-} from "./candidate-experiment.js";
+import { comparisonGateEvidence } from "./candidate-experiment.js";
 import { corpusDatasetLabel } from "./corpus-target.js";
-import {
-	compareExactEvalSnapshots, compareUtf8, exactSnapshotIdentity, loadExactEvalSnapshot,
-} from "./exact-eval-snapshot.js";
+import { compareUtf8, exactSnapshotIdentity, loadExactEvalSnapshot } from "./exact-eval-snapshot.js";
 import {
 	IMPROVEMENT_BRIEF_ALGORITHM_ID, FailureModeIdSchema,
 	compileImprovementBrief, publicTaskId,
@@ -204,12 +203,14 @@ const CandidateImpactBaseSchema = z.strictObject({
 			candidate: z.strictObject({ evalRunId: ArtifactIdSchema, harnessSha: GitShaSchema, evalRunHash: HashSchema }),
 		}),
 		comparison: z.strictObject({
-			algorithmId: z.literal(EXACT_COMPARISON_GATE_ALGORITHM_ID).nullable(),
+			algorithmId: z.enum([EXACT_COMPARISON_GATE_ALGORITHM_ID_V3, EXACT_COMPARISON_GATE_ALGORITHM_ID]).nullable(),
 			policyId: z.string().min(1).max(200),
 			comparisonHash: HashSchema,
 			evidenceHash: HashSchema.nullable(),
 			gateHash: HashSchema,
 			verified: z.boolean(),
+			/** v3 gate verdict; null for legacy evidence. */
+			verdict: z.enum([...DEVELOPMENT_VERDICTS, ...SEALED_VERDICTS]).nullable(),
 		}),
 		summary: ComparisonSummarySchema,
 	}),
@@ -231,6 +232,7 @@ const CandidateImpactBaseSchema = z.strictObject({
 	sealedHoldout: z.strictObject({
 		executed: z.boolean(),
 		gatePassed: z.boolean(),
+		verdict: z.enum([...DEVELOPMENT_VERDICTS, ...SEALED_VERDICTS]).nullable(),
 	}),
 	focus: FocusResultSchema,
 });
@@ -561,7 +563,7 @@ function verifyPair(
 	if (baseline.record.summary.error > 0 || candidate.record.summary.error > 0) {
 		issues.push(`${visibility} comparison contains infrastructure errors`);
 	}
-	const compare = compareExactEvalSnapshots(baseline, candidate, { mode: record.mode });
+	const compare = compareVerifiedEvalRuns(baseline, candidate, { mode: record.mode, surface: visibility });
 	if (compare.status === "invalid") throw new Error(compare.error ?? `${visibility} comparison is invalid`);
 	if (compare.status === "inconclusive") {
 		issues.push(`${visibility} comparison is inconclusive`);
@@ -570,10 +572,7 @@ function verifyPair(
 	if (!pair.comparison) throw new Error(`${visibility} comparison identity is missing`);
 	let gateVerified = false;
 	if (compare.status === "comparable") {
-		const policyId = visibility === "development"
-			? DEVELOPMENT_GATE_POLICY_ID
-			: record.mode === "candidate" ? SEALED_GATE_POLICY_ID : AA_SEALED_GATE_POLICY_ID;
-		const expected = comparisonGateEvidence(compare, policyId, context);
+		const expected = comparisonGateEvidence(compare, context);
 		if (canonicalJson(expected) !== canonicalJson(pair.comparison)) {
 			throw new Error(`${visibility} comparison identity no longer matches verified evidence`);
 		}
@@ -735,13 +734,17 @@ function verdictFor(
 	targeted: readonly TargetedModeImpact[],
 	newModes: readonly CandidateNewFailureMode[],
 	worsenedModes: readonly CandidateNewFailureMode[],
-	regressions: readonly CandidateTaskRegression[],
+	developmentVerdict: GateVerdict | null,
 	issues: readonly string[],
-	sealedGatePassed: boolean,
+	sealedVerdict: GateVerdict | null,
+	sealedExecuted: boolean,
 ): CandidateImpact["verdict"] {
 	if (issues.length > 0 || targeted.length === 0) return "inconclusive";
+	// Per-task flips are flags for humans; only the gate verdicts and the
+	// exact failure-mode signals decide the impact verdict.
 	if (
-		!sealedGatePassed || newModes.length > 0 || worsenedModes.length > 0 || regressions.length > 0 ||
+		developmentVerdict === "regressed" || (sealedExecuted && sealedVerdict === "fail") ||
+		newModes.length > 0 || worsenedModes.length > 0 ||
 		targeted.some((mode) => mode.outcome === "worsened")
 	) {
 		return "regressed";
@@ -981,7 +984,7 @@ export function inspectCandidateImpact(options: InspectCandidateImpactOptions): 
 				.map((run) => evidenceHandle(development.candidate.record.evalRunId, "candidate", { run, passed: false })),
 		}));
 
-	let sealedHoldout = { executed: false, gatePassed: false };
+	let sealedHoldout: { executed: boolean; gatePassed: boolean; verdict: GateVerdict | null } = { executed: false, gatePassed: false, verdict: null };
 	const holdout = evaluated.evaluation.sealedHoldout;
 	if (holdout) {
 		if (!holdout.corpus) throw new Error("sealed holdout is missing its exact corpus identity");
@@ -999,12 +1002,11 @@ export function inspectCandidateImpact(options: InspectCandidateImpactOptions): 
 				throw new Error("sealed EvalRun does not match its exact corpus identity");
 			}
 		}
-		const regression = record.mode === "candidate" && (
-			verified.compare.summary.delta < 0 || verified.compare.rows.some((row) => row.delta < 0)
-		);
+		const sealedVerdict = verified.gateVerified ? verified.compare.gate.verdict : null;
 		sealedHoldout = {
 			executed: true,
-			gatePassed: verified.gateVerified && !regression,
+			gatePassed: verified.gateVerified && sealedVerdict === "pass",
+			verdict: sealedVerdict,
 		};
 	}
 
@@ -1013,9 +1015,10 @@ export function inspectCandidateImpact(options: InspectCandidateImpactOptions): 
 		targeted,
 		newFailureModes,
 		worsenedFailureModes,
-		taskRegressions,
+		development.gateVerified ? development.compare.gate.verdict : null,
 		uniqueIssues,
-		!sealedHoldout.executed || sealedHoldout.gatePassed,
+		sealedHoldout.verdict,
+		sealedHoldout.executed,
 	);
 	if (verdict === "inconclusive" && uniqueIssues.length === 0) {
 		uniqueIssues.push("Candidate impact has no exact targeted failure-mode evidence");
@@ -1044,6 +1047,7 @@ export function inspectCandidateImpact(options: InspectCandidateImpactOptions): 
 				evidenceHash: "evidenceHash" in comparison ? comparison.evidenceHash : null,
 				gateHash: comparison.gateHash,
 				verified: development.gateVerified,
+				verdict: gateVerdictOf(comparison),
 			},
 			summary: comparisonSummary(development.compare),
 		},

@@ -22,6 +22,7 @@ import {
 } from "../application/harness-authoring.js";
 import { inspectTargetAuthoringContext } from "../application/target-authoring-context.js";
 import { runAppliedBuilderCandidate } from "../application/builder-candidate.js";
+import { SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
 import {
 	configureTargetBootstrap,
 	describeTargetBootstrap,
@@ -1111,6 +1112,15 @@ export class AhdeWorkbench {
 			if (!choice.approved) throw new WorkbenchDecisionDeclinedError(input.kind);
 			if (choice.selectedIndex === undefined || !sealed[choice.selectedIndex]) throw new Error("human gate returned an invalid sealed holdout selection");
 			const selected = sealed[choice.selectedIndex]!;
+			if (selected.taskCount < SEALED_GATE_POLICY.minTasks) {
+				throw new Error(
+					`The selected sealed holdout has ${selected.taskCount} task${selected.taskCount === 1 ? "" : "s"}; ` +
+					`a sealed verdict needs at least ${SEALED_GATE_POLICY.minTasks}. Add holdout cases before verifying.`,
+				);
+			}
+			if (input.repetitions < SEALED_GATE_POLICY.minRepetitions) {
+				throw new Error(`Candidate verification needs at least ${SEALED_GATE_POLICY.minRepetitions} repetitions for a sealed verdict.`);
+			}
 			const build = () => {
 				const current = this.decisionInventory(input.kind);
 				const partial = current.candidates.find((candidate) =>
@@ -1172,7 +1182,21 @@ export class AhdeWorkbench {
 				throw new Error("candidate verification failed after the sealed gate; sealed identities and contents remain hidden");
 			}
 			this.select("candidate", result.record.candidateId);
-			return { kind: input.kind, message: "Candidate verification completed on development and evaluator-only sealed evidence.", result: { candidate: candidateSummary(result.record), sealedHoldout: { executed: result.sealedHoldout !== null, gatePassed: result.sealedHoldout !== null } }, view: await this.view() };
+			const sealedVerdict = result.sealedHoldout?.compare.gate.verdict ?? null;
+			return {
+				kind: input.kind,
+				message: sealedVerdict === "pass"
+					? "Candidate verification completed: development compared and the sealed guardrail passed."
+					: sealedVerdict === null
+						? "Candidate verification completed on development evidence; no sealed holdout ran."
+						: `Candidate verification completed; the sealed guardrail verdict is ${sealedVerdict}, so this candidate cannot be promoted.`,
+				result: {
+					candidate: candidateSummary(result.record),
+					development: { verdict: result.compare.gate.verdict, delta: result.compare.summary.delta, confidence95: result.compare.summary.confidence95 },
+					sealedHoldout: { executed: result.sealedHoldout !== null, gatePassed: sealedVerdict === "pass", verdict: sealedVerdict },
+				},
+				view: await this.view(),
+			};
 		}
 
 		if (input.kind === "review-candidate") {
