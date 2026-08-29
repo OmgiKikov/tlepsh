@@ -162,7 +162,8 @@ describe("Builder Pi canonical cycle through the production Workbench tools", ()
 		}
 		const view = await invokeTool(projectTools, "ahde_workbench_view", {}, host.ctx);
 		expect(view.counts.sealedCorpora).toBe(3);
-		expect(view.selections).toEqual([]);
+		// The model-facing projection omits selections unless the view asks for them.
+		expect(view.selections).toBeUndefined();
 		const modelVisible = JSON.stringify(view);
 		for (const secret of ["evaluator-only-", "private case", "sealed-task-", "corpus-"]) {
 			expect(modelVisible).not.toContain(secret);
