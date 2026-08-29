@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import {
 	listBuilderCorpusDrafts,
@@ -163,7 +163,16 @@ function verifyCandidateArtifact(
 	expectedHash?: string,
 ): void {
 	const path = resolve(expectedPath);
-	if (resolve(artifact.path) !== path) throw new Error("candidate provenance points at an unexpected artifact path");
+	// Records may carry the canonical form of a symlinked root (macOS /var →
+	// /private/var); compare canonical paths, never spellings.
+	const canonical = (value: string): string => {
+		try {
+			return realpathSync(value);
+		} catch {
+			return resolve(value);
+		}
+	};
+	if (canonical(artifact.path) !== canonical(path)) throw new Error("candidate provenance points at an unexpected artifact path");
 	const entry = lstatSync(path);
 	if (!entry.isFile() || entry.isSymbolicLink() || entry.size > MAX_PROPOSAL_BYTES * 4) {
 		throw new Error("candidate provenance artifact is not a bounded regular file");

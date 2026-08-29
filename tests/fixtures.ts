@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -21,7 +21,9 @@ export function makeTargetFixture(files: FixtureFile[], useRealGit = true): stri
 		execFileSync("git", ["-C", dir, "add", "."]);
 		execFileSync("git", ["-C", dir, "-c", "user.name=test", "-c", "user.email=test@test", "commit", "-qm", "fixture"]);
 	}
-	return dir;
+	// The Workbench canonicalizes its roots (macOS /var → /private/var); hand
+	// tests the same spelling so path expectations stay exact.
+	return realpathSync(dir);
 }
 
 export function cleanup(dir: string): void {

@@ -1,5 +1,6 @@
+import { realpathSync } from "node:fs";
 import { userInfo } from "node:os";
-import { basename, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
 	approveBuilderSpecDraft,
 	describeDevelopmentCorpusPublication,
@@ -244,6 +245,22 @@ const DEFAULT_DEPENDENCIES: AhdeWorkbenchDependencies = {
 	}),
 };
 
+/**
+ * One spelling per path: the deepest existing ancestor is resolved through
+ * symlinks (macOS /var → /private/var, symlinked checkouts) so every artifact
+ * written under a root compares equal to the root the Workbench was opened with.
+ */
+export function canonicalPath(input: string): string {
+	const absolute = resolve(input);
+	try {
+		return realpathSync(absolute);
+	} catch {
+		const parent = dirname(absolute);
+		if (parent === absolute) return absolute;
+		return join(canonicalPath(parent), basename(absolute));
+	}
+}
+
 function abortIfRequested(signal?: AbortSignal): void {
 	if (signal?.aborted) throw signal.reason ?? new Error("operation aborted");
 }
@@ -342,9 +359,9 @@ export class AhdeWorkbench {
 	private readonly dependencies: AhdeWorkbenchDependencies;
 
 	constructor(options: AhdeWorkbenchOptions) {
-		this.projectDir = resolve(options.projectDir);
-		this.stateRoot = resolve(options.stateRoot);
-		this.runsRoot = resolve(options.runsRoot);
+		this.projectDir = canonicalPath(options.projectDir);
+		this.stateRoot = canonicalPath(options.stateRoot);
+		this.runsRoot = canonicalPath(options.runsRoot);
 		this.projectId = resolveBuilderProjectId(options);
 		this.templateDir = options.templateDir ? resolve(options.templateDir) : undefined;
 		this.dependencies = { ...DEFAULT_DEPENDENCIES, ...options.dependencies };
