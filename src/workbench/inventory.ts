@@ -20,6 +20,14 @@ import {
 import { loadBuilderDiscardReceipt } from "../application/builder-discard.js";
 import { loadCandidateRecord } from "../application/candidate-review.js";
 import { targetWithDevelopmentCorpus } from "../application/corpus-target.js";
+import {
+	loadTargetAdoptionReceiptIfPresent,
+	type TargetAdoptionReceipt,
+} from "../application/target-adoption.js";
+import {
+	loadCycleContinuationReceipt,
+	type CycleContinuationReceipt,
+} from "./cycle-continuation.js";
 import { listCorpora, loadCorpus, type CorpusMetadata } from "../corpus.js";
 import {
 	candidateStatus,
@@ -92,6 +100,10 @@ export interface WorkbenchInventory {
 	proposals: WorkbenchProposalInventory[];
 	candidates: CandidateRecord[];
 	abandonedCandidates: Map<string, CandidateAbandonmentReceipt>;
+	/** Promoted candidates whose exact revision became the active Target branch head. */
+	adoptedCandidates: Map<string, TargetAdoptionReceipt>;
+	/** Terminal candidates whose reviewed loop was explicitly closed by a human. */
+	continuedCandidates: Map<string, CycleContinuationReceipt>;
 	focus: WorkbenchFocus;
 	validFocus: Partial<Record<WorkbenchSelectionKind, WorkbenchFocusEntry>>;
 	warnings: string[];
@@ -664,6 +676,53 @@ export function loadWorkbenchInventory(options: {
 			);
 		}
 	}
+	const adoptedCandidates = new Map<string, TargetAdoptionReceipt>();
+	const continuedCandidates = new Map<string, CycleContinuationReceipt>();
+	for (const candidate of candidates.filter((item) => item.projectId === options.projectId)) {
+		const status = candidateStatus(candidate);
+		if (status !== "promoted" && status !== "rejected") continue;
+		const recordHash = hashValue(candidate);
+		if (status === "promoted") {
+			try {
+				const receipt = loadTargetAdoptionReceiptIfPresent(options.stateRoot, candidate.candidateId);
+				if (receipt) {
+					const subject = receipt.intent.subject.candidate;
+					if (
+						subject.candidateId !== candidate.candidateId ||
+						subject.targetId !== candidate.targetId ||
+						subject.candidateRecordHash !== recordHash
+					) throw new Error("adoption receipt does not bind the exact promoted candidate");
+					adoptedCandidates.set(candidate.candidateId, receipt);
+				}
+			} catch {
+				integrityFailure(
+					warnings,
+					integrityBlockers,
+					`candidate ${candidate.candidateId} has an invalid Target adoption receipt and remains blocked`,
+				);
+			}
+		}
+		try {
+			const receipt = loadCycleContinuationReceipt(options.stateRoot, options.projectId, candidate.candidateId);
+			if (receipt) {
+				const subject = receipt.subject;
+				if (
+					subject.projectId !== options.projectId ||
+					subject.candidate.candidateId !== candidate.candidateId ||
+					subject.candidate.recordHash !== recordHash ||
+					subject.candidate.status !== status ||
+					(status === "promoted") !== adoptedCandidates.has(candidate.candidateId)
+				) throw new Error("continuation receipt does not bind the exact terminal candidate");
+				continuedCandidates.set(candidate.candidateId, receipt);
+			}
+		} catch {
+			integrityFailure(
+				warnings,
+				integrityBlockers,
+				`candidate ${candidate.candidateId} has an invalid cycle continuation receipt and remains blocked`,
+			);
+		}
+	}
 	const base = {
 		projectDir: resolve(options.projectDir),
 		stateRoot: resolve(options.stateRoot),
@@ -681,6 +740,8 @@ export function loadWorkbenchInventory(options: {
 		proposals,
 		candidates,
 		abandonedCandidates,
+		adoptedCandidates,
+		continuedCandidates,
 		focus,
 		warnings,
 		integrityBlockers,
@@ -712,6 +773,15 @@ function selectedOrUniqueId<T>(
 	if (focusId && items.some((item) => id(item) === focusId)) return focusId;
 	if (items.length === 1) return id(items[0]!);
 	return items.length === 0 ? null : "ambiguous";
+}
+
+/** Promoted or rejected candidates of this project whose loop has not been closed by a human. */
+export function openTerminalCandidatesOf(inventory: WorkbenchInventory): CandidateRecord[] {
+	return inventory.candidates.filter((candidate) =>
+		candidate.projectId === inventory.projectId &&
+		["promoted", "rejected"].includes(candidateStatus(candidate)) &&
+		!inventory.continuedCandidates.has(candidate.candidateId)
+	);
 }
 
 function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headline: string; actions: string[]; blockers: string[] } {
@@ -774,14 +844,40 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 		if (status === "reviewed") return { stage: "release-decision", headline: "Make the final promotion or rejection decision.", actions: ["promote", "reject"], blockers: [] };
 		return { stage: "candidate-verification", headline: "Finish exact candidate verification.", actions: ["run", "traces"], blockers: [] };
 	}
-	const terminalCandidates = projectCandidates.filter((candidate) => ["promoted", "rejected"].includes(candidateStatus(candidate)));
-	const terminalChoice = inventory.validFocus.candidate?.id;
-	if (terminalChoice && terminalCandidates.some((candidate) => candidate.candidateId === terminalChoice)) {
-		const terminal = terminalCandidates.find((candidate) => candidate.candidateId === terminalChoice)!;
+	// A finished candidate holds the stage until a human closes its loop, no
+	// matter where mutable focus points: adoption and continuation are not
+	// skippable by selecting another artifact.
+	const openTerminalCandidates = openTerminalCandidatesOf(inventory);
+	const terminalChoice = selectedOrUniqueId(
+		openTerminalCandidates,
+		inventory.validFocus.candidate?.id,
+		(candidate) => candidate.candidateId,
+	);
+	if (terminalChoice === "ambiguous") {
+		return {
+			stage: "selection-required",
+			headline: "Choose which finished candidate to adopt or close before continuing.",
+			actions: ["select candidate"],
+			blockers: [`${openTerminalCandidates.length} finished candidates still need adoption or cycle closure.`],
+		};
+	}
+	if (terminalChoice) {
+		const terminal = openTerminalCandidates.find((candidate) => candidate.candidateId === terminalChoice)!;
+		const status = candidateStatus(terminal);
+		if (status === "promoted" && !inventory.adoptedCandidates.has(terminal.candidateId)) {
+			return {
+				stage: "candidate-adoption",
+				headline: "Make the promoted candidate the active Target by fast-forwarding the current branch.",
+				actions: ["adopt-candidate"],
+				blockers: [],
+			};
+		}
 		return {
 			stage: "complete",
-			headline: `Candidate ${candidateStatus(terminal)}; this reviewed improvement loop is complete.`,
-			actions: [],
+			headline: status === "promoted"
+				? "The promoted candidate is the active Target. Start the next improvement cycle."
+				: "The candidate was rejected and the Target stays at its baseline. Start the next improvement cycle.",
+			actions: ["continue-cycle"],
 			blockers: [],
 		};
 	}
@@ -858,7 +954,24 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 	return { stage: "improvement-authoring", headline: "Use the diagnosis to author a structured harness proposal.", actions: ["traces", "submit structured-proposal"], blockers: [] };
 }
 
-export function deriveWorkbenchView(inventory: WorkbenchInventory): WorkbenchView {
+function targetModelSummary(
+	inventory: WorkbenchInventory,
+	env: NodeJS.ProcessEnv,
+): WorkbenchView["target"]["model"] {
+	const model = inventory.target?.manifest.model;
+	if (!model) return null;
+	return {
+		provider: model.provider,
+		id: model.id,
+		apiKeyEnv: model.apiKeyEnv,
+		credentialPresent: Boolean(env[model.apiKeyEnv]?.trim()),
+	};
+}
+
+export function deriveWorkbenchView(
+	inventory: WorkbenchInventory,
+	env: NodeJS.ProcessEnv = process.env,
+): WorkbenchView {
 	const specs = inventory.specs.slice(0, MAX_VIEW_ITEMS);
 	const drafts = inventory.corpusDrafts.slice(0, MAX_VIEW_ITEMS);
 	const development = inventory.corpora.filter((corpus) => corpus.visibility === "development").slice(0, MAX_VIEW_ITEMS);
@@ -876,8 +989,9 @@ export function deriveWorkbenchView(inventory: WorkbenchInventory): WorkbenchVie
 				status: inventory.target.manifest.id === "my-agent" || inventory.target.manifest.model.id === "replace-with-model-id" ? "bootstrap-required" : "ready",
 				id: inventory.target.manifest.id,
 				gitSha: inventory.target.gitSha,
+				model: targetModelSummary(inventory, env),
 			}
-			: { status: "missing", id: null, gitSha: null },
+			: { status: "missing", id: null, gitSha: null, model: null },
 		focus: Object.fromEntries(Object.entries(inventory.validFocus).map(([kind, entry]) => [kind, entry?.id])),
 		selections: [
 			...specs.map((spec) => selection(
@@ -896,7 +1010,13 @@ export function deriveWorkbenchView(inventory: WorkbenchInventory): WorkbenchVie
 				candidate.candidateId,
 				candidate.proposalId,
 				inventory,
-				inventory.abandonedCandidates.has(candidate.candidateId) ? "abandoned" : candidateStatus(candidate),
+				inventory.abandonedCandidates.has(candidate.candidateId)
+					? "abandoned"
+					: inventory.continuedCandidates.has(candidate.candidateId)
+					? `${candidateStatus(candidate)} · cycle closed`
+					: inventory.adoptedCandidates.has(candidate.candidateId)
+					? "promoted · adopted"
+					: candidateStatus(candidate),
 			)),
 		],
 		actions: state.actions,

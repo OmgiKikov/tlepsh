@@ -11,6 +11,11 @@ import type {
 	WorkbenchInventory,
 	WorkbenchProposalInventory,
 } from "./inventory.js";
+import type {
+	WorkbenchCandidateSummary,
+	WorkbenchDiagnosisSummary,
+	WorkbenchProposalReview,
+} from "./types.js";
 
 const MAX_DIFF_BYTES = 4 * 1024 * 1024;
 
@@ -18,26 +23,7 @@ function diagnosisText(value: string, maxChars = 1_000): string {
 	return redactTraceText(value).slice(0, maxChars);
 }
 
-export function proposalReview(record: PersistedBuilderRun): {
-	runId: string;
-	proposalHash: string;
-	baseTargetSha: string;
-	summary: string;
-	paths: string[];
-	risks: string[];
-	validationPlan: string[];
-	authoringContext: PersistedBuilderRun["request"]["authoringContext"];
-	evidenceBasis: {
-		algorithmId: string;
-		evalRunId: string;
-		diagnosisId: string;
-		briefId: string;
-		briefSha256: string;
-		failureModes: { failureModeId: string; modeSha256: string }[];
-		runRefs: string[];
-	} | null;
-	exactDiff: string;
-} {
+export function proposalReview(record: PersistedBuilderRun): WorkbenchProposalReview {
 	if (
 		record.result.status !== "completed" ||
 		record.result.proposal?.decision !== "propose" ||
@@ -71,7 +57,7 @@ export function proposalReview(record: PersistedBuilderRun): {
 	};
 }
 
-export function diagnosisSummary(record: DiagnosisRecord): Record<string, unknown> {
+export function diagnosisSummary(record: DiagnosisRecord): WorkbenchDiagnosisSummary {
 	return {
 		diagnosisId: record.diagnosisId,
 		evalRunId: record.evalRunId,
@@ -90,10 +76,12 @@ export function diagnosisSummary(record: DiagnosisRecord): Record<string, unknow
 	};
 }
 
-export function candidateSummary(record: CandidateRecord): Record<string, unknown> {
+export function candidateSummary(record: CandidateRecord): WorkbenchCandidateSummary {
 	const evaluated = record.events.find((event) => event.type === "evaluated");
 	const reviewed = record.events.find((event) => event.type === "reviewed");
 	const built = record.events.find((event) => event.type === "built");
+	const promoted = record.events.find((event) => event.type === "promoted");
+	const rejected = record.events.find((event) => event.type === "rejected");
 	return {
 		candidateId: record.candidateId,
 		status: candidateStatus(record),
@@ -114,6 +102,12 @@ export function candidateSummary(record: CandidateRecord): Record<string, unknow
 			? { executed: evaluated.evaluation.sealedHoldout !== undefined, gatePassed: evaluated.evaluation.sealedHoldout !== undefined }
 			: { executed: false, gatePassed: false },
 		review: reviewed?.type === "reviewed" ? reviewed.review : null,
+		promotion: promoted?.type === "promoted"
+			? { tag: promoted.decision.tag, reason: promoted.decision.reason, at: promoted.at }
+			: null,
+		rejection: rejected?.type === "rejected"
+			? { reason: rejected.decision.reason, at: rejected.at }
+			: null,
 	};
 }
 

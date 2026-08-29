@@ -15,6 +15,8 @@ const LEGAL_DECISION_STAGES = {
 	"review-candidate": ["candidate-review"],
 	"promote-candidate": ["release-decision"],
 	"reject-candidate": ["release-decision"],
+	"adopt-candidate": ["candidate-adoption"],
+	"continue-cycle": ["complete"],
 } as const satisfies Record<DirectDecisionKind, readonly WorkbenchStage[]>;
 
 /** One exhaustive transition boundary for every consequential Workbench decision. */

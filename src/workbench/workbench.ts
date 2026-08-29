@@ -72,13 +72,23 @@ import {
 	resolveBuilderProjectId,
 	type BuilderProjectContext,
 } from "../builder/project-context.js";
+import { inspectCandidateImpact } from "../application/candidate-impact.js";
 import {
+	adoptTargetCandidate,
+	describeTargetAdoption,
+} from "../application/target-adoption.js";
+import {
+	clearWorkbenchFocus,
 	loadWorkbenchFocus,
 	saveWorkbenchFocus,
 	selectWorkbenchFocus,
 } from "./focus.js";
 import { recordWorkbenchCorpusPublication } from "./corpus-publication.js";
 import { recordCandidateAbandonment } from "./candidate-abandonment.js";
+import {
+	describeCycleContinuation,
+	recordCycleContinuation,
+} from "./cycle-continuation.js";
 import {
 	WorkbenchDecisionDeclinedError,
 	WorkbenchSelectionRequiredError,
@@ -87,6 +97,7 @@ import {
 import {
 	deriveWorkbenchView,
 	loadWorkbenchInventory,
+	openTerminalCandidatesOf,
 	workbenchArtifactValue,
 	type WorkbenchInventory,
 } from "./inventory.js";
@@ -109,17 +120,22 @@ import {
 	WorkbenchDecisionInputSchema,
 	WorkbenchSubmitInputSchema,
 	WorkbenchViewQuerySchema,
+	type WorkbenchCandidateImpactProjection,
 	type WorkbenchConfirmation,
 	type WorkbenchDecisionInput,
 	type WorkbenchDecisionExecutionOptions,
 	type WorkbenchDecisionResult,
 	type WorkbenchHumanGate,
+	type WorkbenchImprovementBriefProjection,
+	type WorkbenchReviewDetail,
 	type WorkbenchSelectionKind,
 	type WorkbenchSubmitInput,
+	type WorkbenchTargetDetail,
 	type WorkbenchTurn,
 	type WorkbenchView,
 	type WorkbenchViewQuery,
 } from "./types.js";
+import type { CandidateRecord } from "../domain/candidate.js";
 
 const MAX_REVIEW_BYTES = 5 * 1024 * 1024;
 const MAX_CONVERSATION_MODES = 3;
@@ -167,6 +183,17 @@ export interface AhdeWorkbenchDependencies {
 	reviewCandidate: typeof reviewCandidate;
 	promoteCandidate: typeof promoteReviewedCandidate;
 	rejectCandidate: typeof decideCandidateRejection;
+	describeTargetAdoption: typeof describeTargetAdoption;
+	adoptTargetCandidate: typeof adoptTargetCandidate;
+	describeCycleContinuation: typeof describeCycleContinuation;
+	recordCycleContinuation: typeof recordCycleContinuation;
+	/** Bounded, host-only candidate impact projection; failures degrade to an explicit reason. */
+	candidateImpact: (input: {
+		runsRoot: string;
+		stateRoot: string;
+		projectId: string;
+		candidate: CandidateRecord;
+	}) => WorkbenchCandidateImpactProjection;
 }
 
 export interface AhdeWorkbenchOptions extends BuilderProjectContext {
@@ -203,10 +230,33 @@ const DEFAULT_DEPENDENCIES: AhdeWorkbenchDependencies = {
 	reviewCandidate,
 	promoteCandidate: promoteReviewedCandidate,
 	rejectCandidate: decideCandidateRejection,
+	describeTargetAdoption,
+	adoptTargetCandidate,
+	describeCycleContinuation,
+	recordCycleContinuation,
+	candidateImpact: ({ runsRoot, candidate }) => ({
+		available: true,
+		impact: inspectCandidateImpact({
+			runsRoot,
+			candidateId: candidate.candidateId,
+			expectedCandidateHash: hashValue(candidate),
+		}),
+	}),
 };
 
 function abortIfRequested(signal?: AbortSignal): void {
 	if (signal?.aborted) throw signal.reason ?? new Error("operation aborted");
+}
+
+/** The finished candidate whose loop is still open; focus only breaks ties. */
+function requireOpenTerminalCandidate(inventory: WorkbenchInventory, explicitId?: string): CandidateRecord {
+	return resolveOne({
+		items: openTerminalCandidatesOf(inventory),
+		explicitId,
+		focusId: inventory.validFocus.candidate?.id,
+		id: (candidate) => candidate.candidateId,
+		label: "finished candidate",
+	});
 }
 
 function actorId(value: string | undefined): string {
@@ -239,7 +289,7 @@ function boundedEvidenceLink(link: WorkbenchEvidenceLink | null): WorkbenchEvide
 }
 
 /** Small model-facing diagnosis projection; full evidence remains in the verified report. */
-function conversationalImprovementBrief(brief: ImprovementBrief): Record<string, unknown> {
+function conversationalImprovementBrief(brief: ImprovementBrief): WorkbenchImprovementBriefProjection {
 	const modes = brief.modes.slice(0, MAX_CONVERSATION_MODES).map((mode, index) => ({
 		ordinal: index + 1,
 		failureModeId: mode.failureModeId,
@@ -322,6 +372,26 @@ export class AhdeWorkbench {
 		return inventory;
 	}
 
+	/** Impact is a review aid; an unavailable projection never blocks a human decision. */
+	private candidateImpact(candidate: CandidateRecord): WorkbenchCandidateImpactProjection {
+		if (!["evaluated", "reviewed", "promoted", "rejected"].includes(candidateStatus(candidate))) {
+			return { available: false, reason: "candidate has no matched evaluation evidence yet" };
+		}
+		try {
+			return this.dependencies.candidateImpact({
+				runsRoot: this.runsRoot,
+				stateRoot: this.stateRoot,
+				projectId: this.projectId,
+				candidate,
+			});
+		} catch (error) {
+			return {
+				available: false,
+				reason: (error instanceof Error ? error.message : String(error)).slice(0, 500),
+			};
+		}
+	}
+
 	private select(kind: WorkbenchSelectionKind, id: string): void {
 		const inventory = this.inventory();
 		const artifact = workbenchArtifactValue(inventory, kind, id);
@@ -369,22 +439,17 @@ export class AhdeWorkbench {
 		const aspect = query.aspect ?? "summary";
 		if (aspect === "summary") return view;
 		if (aspect === "target") {
-			return {
-				...view,
-				detail: {
-					aspect,
-					content: inventory.target
-						? { ...this.dependencies.inspectTargetAuthoringContext({
-							repositoryDir: this.projectDir,
-							expectedTarget: {
-								id: inventory.target.manifest.id,
-								gitSha: inventory.target.gitSha,
-							},
-							...(query.resourcePath ? { resourcePath: query.resourcePath } : {}),
-						}) }
-						: { launch: "ahde init ." },
-				},
-			};
+			const content: WorkbenchTargetDetail = inventory.target
+				? this.dependencies.inspectTargetAuthoringContext({
+					repositoryDir: this.projectDir,
+					expectedTarget: {
+						id: inventory.target.manifest.id,
+						gitSha: inventory.target.gitSha,
+					},
+					...(query.resourcePath ? { resourcePath: query.resourcePath } : {}),
+				})
+				: { launch: "ahde init ." };
+			return { ...view, detail: { aspect, content } };
 		}
 		if (aspect === "traces") {
 			const run = requireDevelopmentEval(inventory);
@@ -404,11 +469,29 @@ export class AhdeWorkbench {
 				},
 			};
 		}
-		let content: Record<string, unknown>;
+		let content: WorkbenchReviewDetail;
 		switch (view.stage) {
 			case "spec-review": {
 				const draft = requireSpecDraft(inventory);
 				content = { kind: "spec-draft", id: draft.id, snapshotHash: hashValue(draft), spec: draft.spec };
+				break;
+			}
+			case "candidate-adoption":
+			case "complete": {
+				const candidate = requireOpenTerminalCandidate(inventory);
+				const adoption = inventory.adoptedCandidates.get(candidate.candidateId) ?? null;
+				const continuation = inventory.continuedCandidates.get(candidate.candidateId) ?? null;
+				content = {
+					kind: "candidate",
+					...candidateSummary(candidate),
+					adoption: adoption
+						? { receiptId: adoption.receiptId, adoptedAt: adoption.adoptedAt, branch: adoption.intent.subject.branch.name }
+						: null,
+					continuation: continuation
+						? { receiptId: continuation.receiptId, continuedAt: continuation.continuedAt }
+						: null,
+					impact: this.candidateImpact(candidate),
+				};
 				break;
 			}
 			case "corpus-review": {
@@ -421,9 +504,17 @@ export class AhdeWorkbench {
 				content = { kind: "proposal", ...proposalReview(requireProposal(inventory, "open").record) };
 				break;
 			case "candidate-review":
-			case "release-decision":
-				content = { kind: "candidate", ...candidateSummary(requireCandidate(inventory, ["proposed", "built", "validated", "evaluated", "reviewed"])) };
+			case "release-decision": {
+				const candidate = requireCandidate(inventory, ["proposed", "built", "validated", "evaluated", "reviewed"]);
+				content = {
+					kind: "candidate",
+					...candidateSummary(candidate),
+					adoption: null,
+					continuation: null,
+					impact: this.candidateImpact(candidate),
+				};
 				break;
+			}
 			case "candidate-verification": {
 				const partial = inventory.candidates.filter((candidate) =>
 					candidate.projectId === this.projectId &&
@@ -642,6 +733,17 @@ export class AhdeWorkbench {
 		};
 	}
 
+	/** A literal decision kind yields its exact typed result; the union stays available for generic callers. */
+	decide<K extends WorkbenchDecisionInput["kind"]>(
+		inputValue: Extract<WorkbenchDecisionInput, { kind: K }>,
+		gate: WorkbenchHumanGate,
+		options?: WorkbenchDecisionExecutionOptions,
+	): Promise<Extract<WorkbenchDecisionResult, { kind: K }>>;
+	decide(
+		inputValue: WorkbenchDecisionInput,
+		gate: WorkbenchHumanGate,
+		options?: WorkbenchDecisionExecutionOptions,
+	): Promise<WorkbenchDecisionResult>;
 	async decide(
 		inputValue: WorkbenchDecisionInput,
 		gate: WorkbenchHumanGate,
@@ -684,12 +786,23 @@ export class AhdeWorkbench {
 			} else {
 				throw new Error(`/run is not legal during ${stage}; complete the current review gate first`);
 			}
-			return {
-				...resolved,
-				kind: "run-current",
-				message: resolved.message,
-				result: { resolvedAs: resolved.kind, ...resolved.result },
+			if (resolved.kind === "run-eval") {
+				return {
+					kind: "run-current",
+					message: resolved.message,
+					result: { resolvedAs: "run-eval", ...resolved.result },
+					view: resolved.view,
 				};
+			}
+			if (resolved.kind === "verify-candidate") {
+				return {
+					kind: "run-current",
+					message: resolved.message,
+					result: { resolvedAs: "verify-candidate", ...resolved.result },
+					view: resolved.view,
+				};
+			}
+			throw new Error(`run-current resolved to an unexpected decision ${String((resolved as { kind?: unknown }).kind)}`);
 		}
 		assertWorkbenchDecisionStage(input.kind, stage);
 
@@ -1044,17 +1157,125 @@ export class AhdeWorkbench {
 			if (hashValue(requireCandidate(current, ["reviewed"], candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
 			const promoted = this.dependencies.promoteCandidate({ repositoryDir: this.projectDir, runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, version: input.version, reason: input.reason, actorId: actor, now: this.dependencies.now });
 			this.select("candidate", promoted.record.candidateId);
-			return { kind: input.kind, message: `Candidate promoted as ${promoted.tag}.`, result: { candidate: candidateSummary(promoted.record), tag: promoted.tag, candidateSha: promoted.candidateSha }, view: await this.view() };
+			return { kind: input.kind, message: `Candidate promoted as ${promoted.tag}. Adopt it to make it the active Target.`, result: { candidate: candidateSummary(promoted.record), tag: promoted.tag, candidateSha: promoted.candidateSha }, view: await this.view() };
 		}
 
-		const candidate = requireCandidate(inventory, ["reviewed"], input.candidateId);
-		const before = { operation: "reject-candidate", candidateHash: hashValue(candidate), candidate: candidateSummary(candidate) };
-		const actor = await this.confirm(input, gate, "Reject exact candidate", before, options.signal);
-		const current = this.decisionInventory(input.kind);
-		if (hashValue(requireCandidate(current, ["reviewed"], candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
-		const rejected = this.dependencies.rejectCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, reason: input.reason, actorId: actor, now: this.dependencies.now });
-		this.select("candidate", rejected.candidateId);
-		return { kind: input.kind, message: "Candidate rejected durably.", result: candidateSummary(rejected), view: await this.view() };
+		if (input.kind === "reject-candidate") {
+			const candidate = requireCandidate(inventory, ["reviewed"], input.candidateId);
+			const before = { operation: "reject-candidate", candidateHash: hashValue(candidate), candidate: candidateSummary(candidate) };
+			const actor = await this.confirm(input, gate, "Reject exact candidate", before, options.signal);
+			const current = this.decisionInventory(input.kind);
+			if (hashValue(requireCandidate(current, ["reviewed"], candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
+			const rejected = this.dependencies.rejectCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, reason: input.reason, actorId: actor, now: this.dependencies.now });
+			this.select("candidate", rejected.candidateId);
+			return { kind: input.kind, message: "Candidate rejected durably. The Target stays at its baseline.", result: candidateSummary(rejected), view: await this.view() };
+		}
+
+		if (input.kind === "adopt-candidate") {
+			const candidate = requireOpenTerminalCandidate(inventory, input.candidateId);
+			if (candidateStatus(candidate) !== "promoted") throw new Error("only a promoted candidate can be adopted");
+			if (inventory.adoptedCandidates.has(candidate.candidateId)) throw new WorkbenchStaleDecisionError(input.kind);
+			const describe = () => this.dependencies.describeTargetAdoption({
+				repositoryDir: this.projectDir,
+				runsRoot: this.runsRoot,
+				candidateId: candidate.candidateId,
+			});
+			const before = describe();
+			const actor = await this.confirm(
+				input,
+				gate,
+				"Adopt promoted candidate as the active Target",
+				{ operation: "adopt-candidate", candidateHash: hashValue(candidate), candidate: candidateSummary(candidate), adoption: before },
+				options.signal,
+			);
+			const current = this.decisionInventory(input.kind);
+			if (current.adoptedCandidates.has(candidate.candidateId)) throw new WorkbenchStaleDecisionError(input.kind);
+			if (hashValue(requireOpenTerminalCandidate(current, candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
+			const after = describe();
+			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
+			const result = this.dependencies.adoptTargetCandidate({
+				repositoryDir: this.projectDir,
+				runsRoot: this.runsRoot,
+				stateRoot: this.stateRoot,
+				candidateId: candidate.candidateId,
+				expectedSubjectHash: after.subjectHash,
+				actor: { kind: "human", id: actor },
+				reason: input.reason,
+			}, { now: this.dependencies.now });
+			this.select("candidate", candidate.candidateId);
+			return {
+				kind: input.kind,
+				message: `Branch ${result.subject.branch.name} now points at the promoted candidate ${result.subject.promotion.tag}. Start the next cycle when ready.`,
+				result: {
+					candidate: candidateSummary(candidate),
+					disposition: result.disposition,
+					branch: result.subject.branch.name,
+					fromSha: result.receipt.previousHead,
+					toSha: result.receipt.adoptedHead,
+					tag: result.subject.promotion.tag,
+					receiptId: result.receipt.receiptId,
+				},
+				view: await this.view(),
+			};
+		}
+
+		if (input.kind === "continue-cycle") {
+			const candidate = requireOpenTerminalCandidate(inventory, input.candidateId);
+			if (inventory.continuedCandidates.has(candidate.candidateId)) throw new WorkbenchStaleDecisionError(input.kind);
+			if (!inventory.target) throw new Error("continuing the improvement cycle requires one exact Target");
+			const continuationOptions = {
+				repositoryDir: this.projectDir,
+				runsRoot: this.runsRoot,
+				stateRoot: this.stateRoot,
+				projectId: this.projectId,
+				targetId: inventory.target.manifest.id,
+				candidateId: candidate.candidateId,
+			};
+			const before = this.dependencies.describeCycleContinuation(continuationOptions);
+			const actor = await this.confirm(
+				input,
+				gate,
+				"Close this improvement cycle and continue",
+				{ operation: "continue-cycle", candidateHash: hashValue(candidate), candidate: candidateSummary(candidate), continuation: before },
+				options.signal,
+			);
+			const current = this.decisionInventory(input.kind);
+			if (current.continuedCandidates.has(candidate.candidateId)) throw new WorkbenchStaleDecisionError(input.kind);
+			if (hashValue(requireOpenTerminalCandidate(current, candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
+			const after = this.dependencies.describeCycleContinuation(continuationOptions);
+			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
+			const result = this.dependencies.recordCycleContinuation({
+				...continuationOptions,
+				expectedSubjectHash: after.subjectHash,
+				actor: { kind: "human", id: actor },
+				reason: input.reason,
+			}, { now: this.dependencies.now });
+			// Release the closed candidate from focus so the next stage derives from artifacts alone.
+			saveWorkbenchFocus(
+				this.stateRoot,
+				clearWorkbenchFocus(
+					loadWorkbenchFocus(this.stateRoot, this.projectId, this.dependencies.now),
+					"candidate",
+					this.dependencies.now,
+				),
+			);
+			const view = await this.view();
+			return {
+				kind: input.kind,
+				message: `Improvement cycle closed. The Workbench continues at ${view.stage}: ${view.headline}`,
+				result: {
+					candidate: candidateSummary(candidate),
+					disposition: result.disposition,
+					activeTargetSha: result.subject.activeTargetSha,
+					receiptId: result.receipt.receiptId,
+					nextStage: view.stage,
+				},
+				view,
+			};
+		}
+
+		const exhaustive: never = input;
+		throw new Error(`unsupported Workbench decision ${JSON.stringify(exhaustive)}`);
 	}
 }
 

@@ -10,6 +10,8 @@ import { fileURLToPath } from "node:url";
 import { applyBuilderProposal, runApprovedSpecBuilderProposal } from "../dist/application/builder-proposal.js";
 import { runAppliedBuilderCandidate } from "../dist/application/builder-candidate.js";
 import { promoteReviewedCandidate, reviewCandidate } from "../dist/application/candidate-review.js";
+import { adoptTargetCandidate, describeTargetAdoption } from "../dist/application/target-adoption.js";
+import { describeCycleContinuation, recordCycleContinuation } from "../dist/workbench/cycle-continuation.js";
 import {
 	compileImprovementBrief,
 	deriveEvidenceLinkedProposalSelection,
@@ -229,7 +231,42 @@ try {
 	const reportPath = buildEvalReport(runsRoot, experiment.candidate.evalRunId);
 	console.log(`tag ${promotion.tag} → ${promotion.candidateSha.slice(0, 12)}`);
 	console.log(`report: ${reportPath}`);
-	console.log(`\n\x1b[32mComplete: proposal → approval → evidence → sealed gate → human promotion.\x1b[0m`);
+
+	step("6. Adopt the promoted candidate and close the cycle");
+	const adoptionSubject = describeTargetAdoption({ repositoryDir: targetDir, runsRoot, candidateId: experiment.record.candidateId });
+	const adoption = adoptTargetCandidate({
+		repositoryDir: targetDir,
+		runsRoot,
+		stateRoot,
+		candidateId: experiment.record.candidateId,
+		expectedSubjectHash: adoptionSubject.subjectHash,
+		actor: { kind: "human", id: "demo-user" },
+		reason: "Make the promoted harness the active Target.",
+	});
+	const activeSha = git("rev-parse", "HEAD");
+	if (activeSha !== promotion.candidateSha) throw new Error(`adoption left HEAD at ${activeSha}, expected ${promotion.candidateSha}`);
+	console.log(`branch ${adoption.subject.branch.name}: ${baseSha.slice(0, 12)} → ${activeSha.slice(0, 12)} (${adoption.disposition})`);
+	const continuationSubject = describeCycleContinuation({
+		repositoryDir: targetDir,
+		runsRoot,
+		stateRoot,
+		projectId: "demo",
+		targetId: loadTarget(targetDir).manifest.id,
+		candidateId: experiment.record.candidateId,
+	});
+	const continuation = recordCycleContinuation({
+		repositoryDir: targetDir,
+		runsRoot,
+		stateRoot,
+		projectId: "demo",
+		targetId: loadTarget(targetDir).manifest.id,
+		candidateId: experiment.record.candidateId,
+		expectedSubjectHash: continuationSubject.subjectHash,
+		actor: { kind: "human", id: "demo-user" },
+		reason: "Start the next improvement cycle from the adopted Target.",
+	});
+	console.log(`cycle closed: ${continuation.disposition} · active Target ${continuation.subject.activeTargetSha.slice(0, 12)}`);
+	console.log(`\n\x1b[32mComplete: proposal → approval → evidence → sealed gate → human promotion → adoption → next cycle.\x1b[0m`);
 	console.log(`Evidence kept at: ${root}`);
 } finally {
 	delete process.env.AHDE_DEMO_KEY;

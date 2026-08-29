@@ -304,4 +304,6 @@ export const WorkbenchDecisionParameters = Type.Union([
 	Type.Object({ kind: Type.Literal("review-candidate"), candidateId: Type.Optional(WorkbenchArtifactId), recommendation: Type.Union([Type.Literal("promote"), Type.Literal("reject")]), reason: DecisionReason }, { additionalProperties: false }),
 	Type.Object({ kind: Type.Literal("promote-candidate"), candidateId: Type.Optional(WorkbenchArtifactId), version: Type.String({ pattern: "^[0-9]+\\.[0-9]+\\.[0-9]+$", maxLength: 50 }), reason: DecisionReason }, { additionalProperties: false }),
 	Type.Object({ kind: Type.Literal("reject-candidate"), candidateId: Type.Optional(WorkbenchArtifactId), reason: DecisionReason }, { additionalProperties: false }),
+	Type.Object({ kind: Type.Literal("adopt-candidate"), candidateId: Type.Optional(WorkbenchArtifactId), reason: DecisionReason }, { additionalProperties: false }),
+	Type.Object({ kind: Type.Literal("continue-cycle"), candidateId: Type.Optional(WorkbenchArtifactId), reason: DecisionReason }, { additionalProperties: false }),
 ]);

@@ -701,11 +701,8 @@ describe("AHDE Workbench", () => {
 			reason: "Measure the exact imported basket",
 		}, gate(), { onRunEvent });
 		expect(measured.result).toMatchObject({ resolvedAs: "run-eval", evaluation: { evalRunId } });
-		const measuredBrief = measured.result.improvementBrief as {
-			headline: string;
-			briefId: string;
-			summary: { taskLocalFailureModeCount: number };
-		};
+		if (measured.result.resolvedAs !== "run-eval") throw new Error("expected a development run");
+		const measuredBrief = measured.result.improvementBrief;
 		expect(measured.message).toBe(measuredBrief.headline);
 		expect(measuredBrief.summary.taskLocalFailureModeCount).toBeGreaterThan(0);
 		const tracesView = await measuring.view({ aspect: "traces" });

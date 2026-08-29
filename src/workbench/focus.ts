@@ -110,6 +110,18 @@ const CLEAR_DOWNSTREAM: Record<WorkbenchSelectionKind, readonly WorkbenchSelecti
 	candidate: [],
 };
 
+/** Drop one selection and everything downstream of it; other selections stay intact. */
+export function clearWorkbenchFocus(
+	focus: WorkbenchFocus,
+	kind: WorkbenchSelectionKind,
+	now: () => string = () => new Date().toISOString(),
+): WorkbenchFocus {
+	const selections = { ...focus.selections };
+	delete selections[kind];
+	for (const downstream of CLEAR_DOWNSTREAM[kind]) delete selections[downstream];
+	return WorkbenchFocusSchema.parse({ ...focus, selections, updatedAt: now() });
+}
+
 export function selectWorkbenchFocus(
 	focus: WorkbenchFocus,
 	kind: WorkbenchSelectionKind,

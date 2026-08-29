@@ -17,7 +17,17 @@ import {
 } from "../application/improvement-brief.js";
 import type { RunEventListener } from "../run-events.js";
 import type { TargetManifest } from "../manifest.js";
-import { AgentSpecSchema } from "../spec.js";
+import { AgentSpecSchema, type AgentSpec } from "../spec.js";
+import type { BuilderCorpusDraft } from "../application/builder-corpus-draft.js";
+import type { PersistedBuilderRun } from "../application/builder-proposal.js";
+import type { CandidateImpact } from "../application/candidate-impact.js";
+import type { TargetAdoptionReceipt } from "../application/target-adoption.js";
+import type { TargetAuthoringContext } from "../application/target-authoring-context.js";
+import type { ImprovementBrief } from "../application/improvement-brief.js";
+import type { DiagnosisRecord } from "../diagnosis.js";
+import type { CandidateStatus, ComparisonSummaryEvidence } from "../domain/candidate.js";
+import type { EvalRunSummary } from "../eval.js";
+import type { CycleContinuationReceipt } from "./cycle-continuation.js";
 
 const NonBlankSchema = z.string().min(1).refine((value) => value.trim().length > 0, "expected non-blank text");
 const ArtifactIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/);
@@ -45,10 +55,172 @@ export const WorkbenchStageSchema = z.enum([
 	"candidate-verification",
 	"candidate-review",
 	"release-decision",
+	"candidate-adoption",
 	"complete",
 	"selection-required",
 ]);
 export type WorkbenchStage = z.infer<typeof WorkbenchStageSchema>;
+
+/** Non-secret Target model identity plus host-side credential presence. */
+export interface WorkbenchTargetModelSummary {
+	provider: string;
+	id: string;
+	/** Environment variable name only; the value never enters a view. */
+	apiKeyEnv: string;
+	credentialPresent: boolean;
+}
+
+/** Exact reviewable projection of one Builder proposal run. */
+export interface WorkbenchProposalReview {
+	runId: string;
+	proposalHash: string;
+	baseTargetSha: string;
+	summary: string;
+	paths: string[];
+	risks: string[];
+	validationPlan: string[];
+	authoringContext: PersistedBuilderRun["request"]["authoringContext"];
+	evidenceBasis: {
+		algorithmId: string;
+		evalRunId: string;
+		diagnosisId: string;
+		briefId: string;
+		briefSha256: string;
+		failureModes: { failureModeId: string; modeSha256: string }[];
+		runRefs: string[];
+	} | null;
+	exactDiff: string;
+}
+
+export interface WorkbenchCandidateSummary {
+	candidateId: string;
+	status: CandidateStatus;
+	projectId: string;
+	targetId: string;
+	specId: string | null;
+	proposalId: string;
+	baseline: { ref: string; sha: string };
+	candidate: { ref: string; sha: string } | null;
+	development: {
+		baselineEvalRunId: string;
+		candidateEvalRunId: string;
+		comparison: ComparisonSummaryEvidence | null;
+	} | null;
+	sealedHoldout: { executed: boolean; gatePassed: boolean };
+	review: { experimentId: string; recommendation: "promote" | "reject"; reason: string } | null;
+	promotion: { tag: string; reason: string; at: string } | null;
+	rejection: { reason: string; at: string } | null;
+}
+
+export interface WorkbenchDiagnosisSummary {
+	diagnosisId: string;
+	evalRunId: string;
+	status: DiagnosisRecord["status"];
+	summary: DiagnosisRecord["summary"];
+	issues: {
+		issueId: string;
+		category: DiagnosisRecord["issues"][number]["category"];
+		severity: DiagnosisRecord["issues"][number]["severity"];
+		confidence: DiagnosisRecord["issues"][number]["confidence"];
+		summary: string;
+		rootCause: string;
+		suggestions: string[];
+	}[];
+	omittedIssues: number;
+}
+
+export interface WorkbenchFailureModeProjection {
+	ordinal: number;
+	failureModeId: string;
+	category: ImprovementBrief["modes"][number]["category"];
+	scope: ImprovementBrief["modes"][number]["scope"];
+	severity: ImprovementBrief["modes"][number]["severity"];
+	evidenceStrength: ImprovementBrief["modes"][number]["evidenceStrength"];
+	decision: ImprovementBrief["modes"][number]["decision"];
+	selectableForProposal: boolean;
+	title: string;
+	summary: string;
+	hypothesis: string;
+	suggestions: string[];
+	impact: ImprovementBrief["modes"][number]["impact"];
+	taskIds: string[];
+	evidence: { runId: string; taskId: string; traceAvailable: boolean; graderNames: string[] }[];
+	omittedEvidenceCount: number;
+}
+
+/** Small model-facing diagnosis projection; full evidence remains in the verified report. */
+export interface WorkbenchImprovementBriefProjection {
+	schemaVersion: ImprovementBrief["schemaVersion"];
+	algorithmId: ImprovementBrief["algorithmId"];
+	briefId: string;
+	evalRunId: string;
+	diagnosisId: string;
+	status: ImprovementBrief["status"];
+	proposalEligible: boolean;
+	headline: string;
+	summary: ImprovementBrief["summary"];
+	modes: WorkbenchFailureModeProjection[];
+	conversationProjection: {
+		shownModes: number;
+		addressableModes: number;
+		omittedModes: number;
+		fullEvidence: string;
+	};
+}
+
+export type WorkbenchEvidenceLinkProjection =
+	| { available: true; url: string; label?: string }
+	| { available: false };
+
+export interface WorkbenchEvaluationProjection {
+	evalRunId: string;
+	summary: EvalRunSummary;
+	repetitions: number;
+}
+
+/** Bounded candidate impact projection or the exact reason it is unavailable. */
+export type WorkbenchCandidateImpactProjection =
+	| { available: true; impact: CandidateImpact }
+	| { available: false; reason: string };
+
+export type WorkbenchReviewDetail =
+	| { kind: "spec-draft"; id: string; snapshotHash: string; spec: AgentSpec }
+	| {
+		kind: "corpus-draft";
+		id: string;
+		draftHash: string;
+		approvedSpec: BuilderCorpusDraft["approvedSpec"];
+		name: string;
+		coverageNotes: string[];
+		importSource: NonNullable<BuilderCorpusDraft["importSource"]> | null;
+		tasks: BuilderCorpusDraft["tasks"];
+		taskProvenance: NonNullable<BuilderCorpusDraft["taskProvenance"]>;
+	}
+	| ({ kind: "proposal" } & WorkbenchProposalReview)
+	| ({ kind: "applied-proposal" } & WorkbenchProposalReview & {
+		application: { branch: string; baseTargetSha: string; candidateSha: string; appliedAt: string };
+	})
+	| ({ kind: "candidate" } & WorkbenchCandidateSummary & {
+		adoption: { receiptId: string; adoptedAt: string; branch: string } | null;
+		continuation: { receiptId: string; continuedAt: string } | null;
+		impact: WorkbenchCandidateImpactProjection | null;
+	})
+	| ({ kind: "interrupted-candidate" } & WorkbenchCandidateSummary)
+	| { kind: "workflow"; stage: WorkbenchStage; headline: string };
+
+export interface WorkbenchTracesDetail {
+	evaluation: WorkbenchEvaluationProjection;
+	diagnosis: WorkbenchDiagnosisSummary;
+	improvementBrief: WorkbenchImprovementBriefProjection;
+	evidence: WorkbenchEvidenceLinkProjection;
+}
+
+export type WorkbenchTargetDetail = TargetAuthoringContext | { launch: "ahde init ." };
+
+export type WorkbenchDetail =
+	| { aspect: "review"; content: WorkbenchReviewDetail }
+	| { aspect: "traces"; content: WorkbenchTracesDetail }
+	| { aspect: "target"; content: WorkbenchTargetDetail };
 
 export interface WorkbenchSelectionSummary {
 	kind: WorkbenchSelectionKind;
@@ -67,16 +239,14 @@ export interface WorkbenchView {
 		status: "missing" | "bootstrap-required" | "ready";
 		id: string | null;
 		gitSha: string | null;
+		model: WorkbenchTargetModelSummary | null;
 	};
 	focus: Partial<Record<WorkbenchSelectionKind, string>>;
 	selections: WorkbenchSelectionSummary[];
 	actions: string[];
 	blockers: string[];
 	warnings: string[];
-	detail?: {
-		aspect: "traces" | "review" | "target";
-		content: Record<string, unknown>;
-	};
+	detail?: WorkbenchDetail;
 	counts: {
 		specDrafts: number;
 		approvedSpecs: number;
@@ -241,6 +411,16 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		candidateId: ArtifactIdSchema.optional(),
 		reason: NonBlankSchema.max(4_000),
 	}),
+	z.strictObject({
+		kind: z.literal("adopt-candidate"),
+		candidateId: ArtifactIdSchema.optional(),
+		reason: NonBlankSchema.max(4_000),
+	}),
+	z.strictObject({
+		kind: z.literal("continue-cycle"),
+		candidateId: ArtifactIdSchema.optional(),
+		reason: NonBlankSchema.max(4_000),
+	}),
 ]);
 export type WorkbenchDecisionInput = z.infer<typeof WorkbenchDecisionInputSchema>;
 
@@ -291,9 +471,71 @@ export interface WorkbenchTurn {
 	view: WorkbenchView;
 }
 
-export interface WorkbenchDecisionResult {
-	kind: WorkbenchDecisionInput["kind"];
-	message: string;
-	result: Record<string, unknown>;
-	view: WorkbenchView;
+export interface WorkbenchRunEvalResult {
+	evaluation: WorkbenchEvaluationProjection;
+	diagnosis: WorkbenchDiagnosisSummary;
+	improvementBrief: WorkbenchImprovementBriefProjection;
+	evidence: WorkbenchEvidenceLinkProjection;
 }
+
+export interface WorkbenchVerifyCandidateResult {
+	candidate: WorkbenchCandidateSummary;
+	sealedHoldout: { executed: boolean; gatePassed: boolean };
+}
+
+/** Typed payload of every consequential decision, keyed by its decision kind. */
+export interface WorkbenchDecisionResultMap {
+	"scaffold-target": { targetId: string; targetGitSha: string; receiptId: string };
+	"configure-target": { targetId: string; targetGitSha: string; receiptId: string; credentialEnv: string };
+	"approve-spec": { approvedSpecId: string; receiptId: string };
+	"publish-corpus": {
+		corpusId: string;
+		corpusHash: string;
+		taskCount: number;
+		publicationReceiptId: string;
+		lineageHash: string;
+	};
+	"run-eval": WorkbenchRunEvalResult;
+	"run-current":
+		| ({ resolvedAs: "run-eval" } & WorkbenchRunEvalResult)
+		| ({ resolvedAs: "verify-candidate" } & WorkbenchVerifyCandidateResult);
+	"apply-proposal": { runId: string; branch: string; candidateSha: string; proposalHash: string };
+	"discard-proposal": { runId: string; receiptHash: string };
+	"verify-candidate": WorkbenchVerifyCandidateResult;
+	"abandon-candidate": {
+		candidateId: string;
+		interruptedStatus: "proposed" | "built" | "validated";
+		receiptHash: string;
+	};
+	"review-candidate": WorkbenchCandidateSummary;
+	"promote-candidate": { candidate: WorkbenchCandidateSummary; tag: string; candidateSha: string };
+	"reject-candidate": WorkbenchCandidateSummary;
+	"adopt-candidate": {
+		candidate: WorkbenchCandidateSummary;
+		disposition: "adopted" | "recovered" | "already-adopted";
+		branch: string;
+		fromSha: string;
+		toSha: string;
+		tag: string;
+		receiptId: string;
+	};
+	"continue-cycle": {
+		candidate: WorkbenchCandidateSummary;
+		disposition: "recorded" | "already-recorded";
+		activeTargetSha: string;
+		receiptId: string;
+		nextStage: WorkbenchStage;
+	};
+}
+
+export type WorkbenchDecisionResult = {
+	[K in WorkbenchDecisionInput["kind"]]: {
+		kind: K;
+		message: string;
+		result: WorkbenchDecisionResultMap[K];
+		view: WorkbenchView;
+	};
+}[WorkbenchDecisionInput["kind"]];
+
+export type WorkbenchAdoptionReceiptSummary = Pick<TargetAdoptionReceipt, "receiptId" | "adoptedAt">;
+export type WorkbenchContinuationReceiptSummary = Pick<CycleContinuationReceipt, "receiptId" | "continuedAt">;

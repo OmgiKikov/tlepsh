@@ -1,5 +1,7 @@
 export * from "./application/candidate-experiment.js";
+export * from "./application/candidate-impact.js";
 export * from "./application/candidate-review.js";
+export * from "./application/target-adoption.js";
 export * from "./application/builder-authoring.js";
 export * from "./application/builder-corpus-draft.js";
 export * from "./application/builder-corpus-import-contract.js";

@@ -295,7 +295,8 @@ describe("Target Authoring Context", () => {
 		expect(JSON.stringify(overview.detail)).not.toContain(fixture.repositoryDir);
 
 		const resource = await workbench.view({ aspect: "target", resourcePath: "AGENTS.md" });
-		expect(resource.detail?.content.resource).toMatchObject({ path: "AGENTS.md", content: AGENTS });
+		expect(resource.detail?.aspect).toBe("target");
+		expect((resource.detail?.content as { resource?: unknown }).resource).toMatchObject({ path: "AGENTS.md", content: AGENTS });
 		await expect(workbench.view({ aspect: "summary", resourcePath: "AGENTS.md" })).rejects.toThrow(
 			/resourcePath is valid only for the Target view/,
 		);

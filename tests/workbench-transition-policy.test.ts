@@ -14,6 +14,8 @@ describe("Workbench transition policy", () => {
 			["review-candidate", ["candidate-review"]],
 			["promote-candidate", ["release-decision"]],
 			["reject-candidate", ["release-decision"]],
+			["adopt-candidate", ["candidate-adoption"]],
+			["continue-cycle", ["complete"]],
 		] as const) {
 			for (const stage of stages) expect(() => assertWorkbenchDecisionStage(kind, stage)).not.toThrow();
 		}
@@ -24,5 +26,9 @@ describe("Workbench transition policy", () => {
 			.toThrow(/apply-proposal is not legal during spec-review/);
 		expect(() => assertWorkbenchDecisionStage("promote-candidate", "candidate-verification"))
 			.toThrow(/promote-candidate is not legal during candidate-verification/);
+		expect(() => assertWorkbenchDecisionStage("adopt-candidate", "release-decision"))
+			.toThrow(/adopt-candidate is not legal during release-decision/);
+		expect(() => assertWorkbenchDecisionStage("continue-cycle", "candidate-adoption"))
+			.toThrow(/continue-cycle is not legal during candidate-adoption/);
 	});
 });

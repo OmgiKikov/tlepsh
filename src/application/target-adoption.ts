@@ -482,9 +482,16 @@ function adoptionPaths(stateRootInput: string, candidateId: string, create: bool
 		ensurePrivateDirectory(adoptions);
 		ensurePrivateDirectory(candidate);
 	} else {
+		// Reads never repair modes: inventory must not mutate state while looking.
 		for (const path of [adoptions, candidate]) {
 			if (!existsSync(path)) fail("TARGET_ADOPTION_ARTIFACT_INVALID", "Target adoption state does not exist.");
-			ensurePrivateDirectory(path);
+			const entry = lstatSync(path);
+			if (!entry.isDirectory() || entry.isSymbolicLink()) {
+				fail("TARGET_ADOPTION_ARTIFACT_INVALID", "Target adoption state must not traverse a symlink.");
+			}
+			if ((entry.mode & 0o777) !== 0o700) {
+				fail("TARGET_ADOPTION_ARTIFACT_INVALID", `Target adoption state must have mode 0700, got 0${(entry.mode & 0o777).toString(8)}.`);
+			}
 		}
 	}
 	return { intent: join(candidate, INTENT_FILENAME), receipt: join(candidate, RECEIPT_FILENAME) };
@@ -758,4 +765,19 @@ export function loadTargetAdoptionReceipt(stateRoot: string, candidateId: string
 		fail("TARGET_ADOPTION_ARTIFACT_INVALID", "Target adoption receipt does not exist.");
 	}
 	return loadReceipt(paths.receipt);
+}
+
+/**
+ * Absence means this Candidate was never adopted; an existing but invalid
+ * receipt still fails closed so inventory can block on it.
+ */
+export function loadTargetAdoptionReceiptIfPresent(
+	stateRoot: string,
+	candidateId: string,
+): TargetAdoptionReceipt | null {
+	const stateRoot_ = resolve(stateRoot);
+	const safeCandidateId = safeArtifactSegment(candidateId, "candidate id");
+	const receiptPath = join(stateRoot_, ADOPTIONS_DIRECTORY, safeCandidateId, RECEIPT_FILENAME);
+	if (!existsSync(stateRoot_) || !existsSync(receiptPath)) return null;
+	return loadTargetAdoptionReceipt(stateRoot_, candidateId);
 }
