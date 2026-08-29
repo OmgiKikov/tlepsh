@@ -1,4 +1,5 @@
-import { Type } from "typebox";
+import { Type, type TSchema } from "typebox";
+import { Errors } from "typebox/value";
 
 const NonBlank = (maxLength: number) => Type.String({
 	minLength: 1,
@@ -46,12 +47,17 @@ const WorkbenchGraderParameters = Type.Union([
 	Type.Object({
 		type: Type.Literal("output_matches"),
 		name: Type.Optional(Type.String()),
-		pattern: Type.String(),
+		pattern: Type.String({
+			description: "JavaScript RegExp source tested against the final answer. No inline flags such as (?i) or (?s); use character classes like [Цц] or [Aa] for case-insensitivity.",
+		}),
 	}, { additionalProperties: false }),
 	Type.Object({
 		type: Type.Literal("judge"),
 		name: Type.Optional(Type.String()),
-		rubric: Type.String({ minLength: 1 }),
+		rubric: Type.String({
+			minLength: 1,
+			description: "Rubric for a model judge. Only usable when the Target manifest configures evalSuite.judge; otherwise prefer output_contains, output_matches, or tool_called.",
+		}),
 	}, { additionalProperties: false }),
 ]);
 
@@ -307,3 +313,130 @@ export const WorkbenchDecisionParameters = Type.Union([
 	Type.Object({ kind: Type.Literal("adopt-candidate"), candidateId: Type.Optional(WorkbenchArtifactId), reason: DecisionReason }, { additionalProperties: false }),
 	Type.Object({ kind: Type.Literal("continue-cycle"), candidateId: Type.Optional(WorkbenchArtifactId), reason: DecisionReason }, { additionalProperties: false }),
 ]);
+
+/**
+ * Model-side compatibility shim, run by Pi before schema validation.
+ *
+ * Several models (notably through OpenRouter) send nested objects and arrays
+ * as JSON *strings*. Rejecting those with the raw union error dump made one
+ * live Builder loop five times on a single Spec draft. This shim parses such
+ * strings wherever the schema expects an object or array, then validates the
+ * discriminated branch the model chose and reports only that branch's errors.
+ * It grants no authority: the strict schema still validates the result.
+ */
+const JSON_LIKE = /^\s*[[{]/;
+
+type LooseSchema = {
+	type?: string;
+	anyOf?: LooseSchema[];
+	properties?: Record<string, LooseSchema>;
+	items?: LooseSchema;
+	patternProperties?: Record<string, LooseSchema>;
+	const?: unknown;
+};
+
+function expects(schema: LooseSchema | undefined): { object: boolean; array: boolean } {
+	if (!schema) return { object: false, array: false };
+	if (Array.isArray(schema.anyOf)) {
+		return schema.anyOf.reduce<{ object: boolean; array: boolean }>(
+			(acc, item) => {
+				const inner = expects(item);
+				return { object: acc.object || inner.object, array: acc.array || inner.array };
+			},
+			{ object: false, array: false },
+		);
+	}
+	return {
+		object: schema.type === "object" || schema.patternProperties !== undefined,
+		array: schema.type === "array",
+	};
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalize(schema: LooseSchema | undefined, input: unknown): unknown {
+	if (!schema) return input;
+	let value = input;
+	const shape = expects(schema);
+	if (typeof value === "string" && (shape.object || shape.array) && JSON_LIKE.test(value)) {
+		try {
+			const parsed: unknown = JSON.parse(value);
+			if ((shape.object && isRecord(parsed)) || (shape.array && Array.isArray(parsed))) value = parsed;
+		} catch {
+			return value;
+		}
+	}
+	if (Array.isArray(schema.anyOf)) {
+		const branch = schema.anyOf.find((item) => {
+			const inner = expects(item);
+			return (Array.isArray(value) && inner.array) || (isRecord(value) && inner.object);
+		});
+		return branch ? normalize(branch, value) : value;
+	}
+	if (schema.type === "array" && Array.isArray(value)) {
+		return value.map((item) => normalize(schema.items, item));
+	}
+	if (schema.type === "object" && isRecord(value)) {
+		const properties = schema.properties ?? {};
+		const out: Record<string, unknown> = {};
+		for (const [key, item] of Object.entries(value)) {
+			out[key] = key in properties ? normalize(properties[key], item) : item;
+		}
+		return out;
+	}
+	return value;
+}
+
+/**
+ * Prepare raw tool-call arguments for one Workbench tool. Throws a
+ * branch-specific, model-readable error when the chosen `kind` is unknown or
+ * its payload is still invalid after normalization.
+ */
+export function prepareWorkbenchArguments(
+	schema: TSchema,
+	argsInput: unknown,
+	discriminator = "kind",
+): unknown {
+	let args = argsInput;
+	if (typeof args === "string" && JSON_LIKE.test(args)) {
+		try {
+			args = JSON.parse(args);
+		} catch {
+			return argsInput;
+		}
+	}
+	if (!isRecord(args)) return argsInput;
+	const loose = schema as unknown as LooseSchema;
+	const branches = Array.isArray(loose.anyOf) ? loose.anyOf : [loose];
+	const constOf = (branch: LooseSchema): unknown => branch.properties?.[discriminator]?.const;
+	const literalsOf = (branch: LooseSchema): string[] => {
+		const property = branch.properties?.[discriminator];
+		if (!property) return [];
+		if (typeof property.const === "string") return [property.const];
+		return (property.anyOf ?? []).map((item) => item.const).filter((value): value is string => typeof value === "string");
+	};
+	const kinds = [...new Set(branches.flatMap(literalsOf))];
+	const chosen = args[discriminator];
+	// Exact literal first, then a branch whose (optional) discriminator lists the value,
+	// then a branch that leaves the discriminator open when none was given.
+	const branch = typeof chosen === "string"
+		? branches.find((item) => constOf(item) === chosen) ?? branches.find((item) => literalsOf(item).includes(chosen))
+		: branches.find((item) => constOf(item) === undefined);
+	if (!branch) {
+		throw new Error(
+			typeof chosen === "string"
+				? `${discriminator} "${chosen}" is not supported; use one of: ${kinds.join(", ")}`
+				: `${discriminator} is required; use one of: ${kinds.join(", ")}`,
+		);
+	}
+	const normalized = normalize(branch, args);
+	const errors = [...Errors(branch as unknown as TSchema, normalized)];
+	if (errors.length > 0) {
+		const label = typeof chosen === "string" ? chosen : discriminator;
+		const detail = errors.slice(0, 8).map((error) => `${error.instancePath || "/"} ${error.message}`).join("; ");
+		throw new Error(`${label} is invalid — ${detail}. Nested objects and arrays must be JSON values, not strings.`);
+	}
+	return normalized;
+}

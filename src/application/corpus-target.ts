@@ -5,7 +5,7 @@ import {
 	type LoadedCorpus,
 } from "../corpus.js";
 import type { EvalRunRecord } from "../eval.js";
-import type { GraderSpec, ResolvedTarget } from "../manifest.js";
+import type { GraderSpec, ResolvedTarget, TargetManifest } from "../manifest.js";
 import { hashValue } from "../provenance.js";
 
 function cloneGrader(grader: GraderSpec): GraderSpec {
@@ -177,4 +177,42 @@ export function resolveDevelopmentTargetForEval(options: {
 	const resolved = targetWithDevelopmentCorpus(target, corpus);
 	assertEvalSurfaceMatches(resolved, evalRun, "published development corpus");
 	return { target: resolved, corpus };
+}
+
+/**
+ * Reject graders the current Target could never run *before* a draft or a
+ * publication is persisted. Composition (`targetWithDevelopmentCorpus`) makes
+ * the same checks later; this earlier, model-readable failure keeps a bad
+ * regex or an unsupported judge grader from blocking a reviewed basket.
+ */
+export function assertGradersRunnable(
+	tasks: readonly { graders?: readonly GraderSpec[] }[],
+	manifest: Pick<TargetManifest, "evalSuite">,
+	label = "corpus draft",
+): void {
+	const problems: string[] = [];
+	tasks.forEach((task, taskIndex) => {
+		(task.graders ?? []).forEach((grader, graderIndex) => {
+			const where = `task ${taskIndex + 1} grader ${graderIndex + 1}`;
+			if (grader.type === "output_matches") {
+				try {
+					new RegExp(grader.pattern);
+				} catch (error) {
+					problems.push(
+						`${where}: output_matches pattern ${JSON.stringify(grader.pattern)} is not a valid JavaScript regular expression` +
+						` (${error instanceof Error ? error.message : String(error)}). Inline flags such as (?i) or (?s) are not supported;` +
+						" use character classes like [Цц] or a simpler pattern.",
+					);
+				}
+			} else if (grader.type === "judge" && !manifest.evalSuite.judge) {
+				problems.push(
+					`${where}: judge graders need a judge model configured in the Target manifest (evalSuite.judge), and this Target has none.` +
+					" Use output_contains, output_matches, or tool_called instead, or ask the operator to configure a judge model first.",
+				);
+			}
+		});
+	});
+	if (problems.length > 0) {
+		throw new Error(`${label} cannot run on the current Target:\n- ${problems.slice(0, 8).join("\n- ")}`);
+	}
 }

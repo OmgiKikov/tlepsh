@@ -106,6 +106,7 @@ import {
 	WorkbenchDecisionParameters,
 	WorkbenchSubmitParameters,
 	WorkbenchViewParameters,
+	prepareWorkbenchArguments,
 } from "./workbench-transport.js";
 import {
 	beginBuilderRunObservation,
@@ -225,6 +226,7 @@ export function createBuilderWorkbenchTools(
 			label: "Inspect Builder Workbench",
 			description: "Inspect the current restart-safe workflow stage, legal actions, exact review or traces, and the safe exact-Git Target authoring context. For aspect=target, omit resourcePath for the overview or pass one returned declared resource path for its complete content.",
 			parameters: WorkbenchViewParameters,
+			prepareArguments: (args) => prepareWorkbenchArguments(WorkbenchViewParameters, args, "aspect") as never,
 			async execute(_id, params, signal) {
 				abortIfRequested(signal);
 				const resourcePath = "resourcePath" in params ? params.resourcePath : undefined;
@@ -241,6 +243,7 @@ export function createBuilderWorkbenchTools(
 			label: "Author in Builder Workbench",
 			description: "Save a structured Spec, import or revise an editable Spec-bound corpus draft, bind a regression case to verified development failure evidence, or author semantic Harness intents against the exact authoringContext claim plus source and failureModeIds from fresh views. Proposal diagnoses and evidence are host-derived; submission grants no consequential authority.",
 			parameters: WorkbenchSubmitParameters,
+			prepareArguments: (args) => prepareWorkbenchArguments(WorkbenchSubmitParameters, args) as never,
 			async execute(_id, params, signal) {
 				abortIfRequested(signal);
 				const submission = params.kind === "spec-draft"
@@ -258,6 +261,7 @@ export function createBuilderWorkbenchTools(
 			label: "Decide in Builder Workbench",
 			description: "Request one exact human-gated workflow transition. Actor identity and sealed holdout selection remain host-owned.",
 			parameters: WorkbenchDecisionParameters,
+			prepareArguments: (args) => prepareWorkbenchArguments(WorkbenchDecisionParameters, args) as never,
 			renderCall: (args, theme) => WORKBENCH_TOOL_RENDERERS.decide.renderCall(args, theme),
 			renderResult: (result, renderOptions, theme) => WORKBENCH_TOOL_RENDERERS.decide.renderResult(result.details, renderOptions.expanded, theme),
 			async execute(_id, params, signal, _update, ctx) {

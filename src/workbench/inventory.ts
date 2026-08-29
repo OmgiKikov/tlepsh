@@ -601,18 +601,28 @@ export function loadWorkbenchInventory(options: {
 			if (loaded.metadata.hash !== corpus.hash || loaded.metadata.visibility !== "development") {
 				throw new Error("corpus content changed");
 			}
-			const exactTarget = target ? targetWithDevelopmentCorpus(target, loaded) : null;
+			// Lineage is intact from here on. Whether the basket can run on the
+			// current Target is a compatibility question, not an integrity one: an
+			// unrunnable grader must not lock the whole Workbench.
+			let exactTarget: ResolvedTarget | null = null;
+			if (target) {
+				try {
+					exactTarget = targetWithDevelopmentCorpus(target, loaded);
+				} catch (error) {
+					warnings.push(`development corpus ${corpus.id} cannot run on the current Target: ${errorMessage(error)}`);
+				}
+			}
 			developmentLineage.set(corpus.id, {
 				publication,
 				datasetHash: corpus.hash,
 				currentSuiteHash: exactTarget?.suiteHash ?? null,
 				currentTargetGitSha: exactTarget?.gitSha ?? null,
 			});
-		} catch {
+		} catch (error) {
 			integrityFailure(
 				warnings,
 				integrityBlockers,
-				`development corpus ${corpus.id} failed reviewed lineage integrity checks`,
+				`development corpus ${corpus.id} failed reviewed lineage integrity checks: ${errorMessage(error)}`,
 			);
 		}
 	}

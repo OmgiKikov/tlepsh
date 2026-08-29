@@ -15,7 +15,11 @@ bar.
 3. Prefer real or realistically synthesized task distributions. Start small,
    inspect traces, then cluster observed failure modes before expanding.
 4. Give each task explicit portable graders. Track goal metrics, regression
-   guardrails, and operational failures separately.
+   guardrails, and operational failures separately. `output_matches` patterns
+   are JavaScript regular expressions (no inline flags like `(?i)`; use
+   `[Цц]`-style classes); `judge` graders run only when the Target manifest
+   configures a judge model, so prefer `output_contains`, `output_matches`,
+   and `tool_called` unless the operator has set one up.
 5. Keep development and sealed holdout corpora distinct. Never request or
    reveal sealed examples.
 6. Submit the initial basket with `ahde_workbench_submit` using

@@ -39,7 +39,7 @@ import {
 	promoteReviewedCandidate,
 	reviewCandidate,
 } from "../application/candidate-review.js";
-import { targetWithDevelopmentCorpus } from "../application/corpus-target.js";
+import { assertGradersRunnable, targetWithDevelopmentCorpus } from "../application/corpus-target.js";
 import {
 	applyBuilderProposal,
 	loadBuilderApplyReceipt,
@@ -577,6 +577,7 @@ export class AhdeWorkbench {
 			const inventory = this.inventory();
 			const approved = requireApprovedSpec(inventory, input.approvedSpecId);
 			const exact = loadApprovedSpec({ stateRoot: this.stateRoot, projectId: this.projectId, specId: approved.id });
+			if (inventory.target) assertGradersRunnable(input.tasks, inventory.target.manifest);
 			const result = this.dependencies.createCorpusDraft({
 				stateRoot: this.stateRoot,
 				approvedSpec: exact.reference,
@@ -603,6 +604,15 @@ export class AhdeWorkbench {
 				revisionSummary: input.revisionSummary,
 			}, { now: this.dependencies.now });
 			this.select("corpus-draft", result.draft.id);
+			if (inventory.target) {
+				try {
+					assertGradersRunnable(result.draft.tasks, inventory.target.manifest, "imported corpus draft");
+				} catch (error) {
+					throw new Error(
+						`${error instanceof Error ? error.message : String(error)}\nThe import was saved as draft ${result.draft.id}; revise those graders with kind: corpus-revision before publishing.`,
+					);
+				}
+			}
 			return {
 				kind: input.kind,
 				message: "Project-local JSONL imported into an immutable, editable Spec-bound corpus draft.",
@@ -624,6 +634,16 @@ export class AhdeWorkbench {
 			const approved = requireApprovedSpec(inventory, input.approvedSpecId);
 			const exact = loadApprovedSpec({ stateRoot: this.stateRoot, projectId: this.projectId, specId: approved.id });
 			const parent = requireCorpusDraft(inventory, input.parentDraftId, approved.id);
+			if (inventory.target) {
+				// Validate every grader carried by the revision before an immutable draft is written.
+				const carried = input.operations.flatMap((operation) => {
+					if ("task" in operation && operation.task) return [{ graders: operation.task.graders }];
+					if ("graders" in operation && Array.isArray(operation.graders)) return [{ graders: operation.graders }];
+					if ("grader" in operation && operation.grader) return [{ graders: [operation.grader] }];
+					return [];
+				});
+				assertGradersRunnable(carried, inventory.target.manifest, "corpus revision");
+			}
 			let operations: readonly unknown[] = input.operations;
 			let verifiedTaskProvenance: readonly unknown[] = [];
 			if (input.operations.some((operation) => operation.type === "add-case-from-run")) {
@@ -947,6 +967,7 @@ export class AhdeWorkbench {
 		if (input.kind === "publish-corpus") {
 			const approved = requireApprovedSpec(inventory);
 			const draft = requireCorpusDraft(inventory, input.draftId, approved.id, true);
+			if (inventory.target) assertGradersRunnable(draft.tasks, inventory.target.manifest, `corpus draft ${draft.id}`);
 			const name = input.name ?? draft.name;
 			const publication = this.dependencies.describeCorpusPublication({ projectId: this.projectId, name, tasks: draft.tasks });
 			const before = { operation: "publish-development-corpus", draftId: draft.id, draftHash: hashValue(draft), approvedSpec: draft.approvedSpec, publication, tasks: draft.tasks };
