@@ -251,7 +251,8 @@ export function createBuilderWorkbenchTools(
 				const catalog = view.stage === "target-setup" && (query.aspect ?? "summary") === "summary"
 					? hostModelCatalog(ctx)
 					: null;
-				return textResult(view, { include: include ?? [], hostModelCatalog: catalog });
+				const models = catalog && catalog.models.length > 0 ? catalog : null;
+				return textResult(view, { include: include ?? [], hostModelCatalog: models });
 			},
 			renderCall: (args, theme) => WORKBENCH_TOOL_RENDERERS.view.renderCall(args, theme),
 			renderResult: (result, renderOptions, theme) => WORKBENCH_TOOL_RENDERERS.view.renderResult(result.details, renderOptions.expanded, theme),

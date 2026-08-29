@@ -13,9 +13,7 @@ import {
 } from "../src/builder/extension.js";
 import { AHDE_BUILDER_COMMAND_NAMES } from "../src/builder/commands.js";
 import {
-	WorkbenchDecisionParameters,
 	WorkbenchDecisionToolSchema,
-	WorkbenchSubmitParameters,
 	WorkbenchSubmitToolSchema,
 	WorkbenchViewToolSchema,
 } from "../src/builder/workbench-transport.js";
@@ -162,7 +160,7 @@ describe("Builder Pi extension registry", () => {
 			corpusEvidenceRevision,
 			structuredProposal,
 		]) {
-			expect(Check(WorkbenchSubmitParameters, accepted)).toBe(true);
+			expect(Check(WorkbenchSubmitToolSchema.parameters, accepted)).toBe(true);
 			expect(WorkbenchSubmitInputSchema.safeParse(accepted).success).toBe(true);
 		}
 
@@ -191,7 +189,7 @@ describe("Builder Pi extension registry", () => {
 		}
 
 		const blankDecision = { kind: "run-current", repetitions: 1, reason: "   " };
-		expect(Check(WorkbenchDecisionParameters, blankDecision)).toBe(false);
+		expect(Check(WorkbenchDecisionToolSchema.parameters, blankDecision)).toBe(false);
 		expect(WorkbenchDecisionInputSchema.safeParse(blankDecision).success).toBe(false);
 
 		const compactModelSelection = {
@@ -204,7 +202,7 @@ describe("Builder Pi extension registry", () => {
 			},
 			reason: "Use the exact host catalog model",
 		};
-		expect(Check(WorkbenchDecisionParameters, compactModelSelection)).toBe(true);
+		expect(Check(WorkbenchDecisionToolSchema.parameters, compactModelSelection)).toBe(true);
 		expect(WorkbenchDecisionInputSchema.safeParse(compactModelSelection).success).toBe(true);
 		for (const invalidModelSelection of [
 			{ ...compactModelSelection, model: { ...compactModelSelection.model, apiKeyEnv: "AWS_SECRET_ACCESS_KEY" } },
@@ -212,7 +210,7 @@ describe("Builder Pi extension registry", () => {
 			{ ...compactModelSelection, model: { ...compactModelSelection.model, baseUrl: "https://attacker.invalid" } },
 			{ ...compactModelSelection, resolveTargetModel: () => ({}) },
 		]) {
-			expect(Check(WorkbenchDecisionParameters, invalidModelSelection)).toBe(false);
+			expect(Check(WorkbenchDecisionToolSchema.parameters, invalidModelSelection)).toBe(false);
 			expect(WorkbenchDecisionInputSchema.safeParse(invalidModelSelection).success).toBe(false);
 			expect(() => WorkbenchDecisionToolSchema.prepare(invalidModelSelection)).toThrow();
 		}

@@ -419,7 +419,3 @@ function createToolSchema<TInput>(schema: z.ZodType<TInput>, discriminator: stri
 export const WorkbenchViewToolSchema = createToolSchema<WorkbenchViewQuery>(WorkbenchViewQuerySchema, "aspect");
 export const WorkbenchSubmitToolSchema = createToolSchema<z.output<typeof WorkbenchSubmitInputSchema>>(WorkbenchSubmitInputSchema, "kind");
 export const WorkbenchDecisionToolSchema = createToolSchema<WorkbenchDecisionInput>(WorkbenchDecisionInputSchema, "kind");
-
-export const WorkbenchViewParameters = WorkbenchViewToolSchema.parameters;
-export const WorkbenchSubmitParameters = WorkbenchSubmitToolSchema.parameters;
-export const WorkbenchDecisionParameters = WorkbenchDecisionToolSchema.parameters;
