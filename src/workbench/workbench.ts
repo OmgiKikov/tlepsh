@@ -102,6 +102,7 @@ import {
 import {
 	deriveWorkbenchView,
 	loadWorkbenchInventory,
+	withWorkbenchFocus,
 	openTerminalCandidatesOf,
 	workbenchArtifactValue,
 	type WorkbenchInventory,
@@ -163,6 +164,8 @@ export interface CompileHarnessAuthoringInput {
 
 export interface AhdeWorkbenchDependencies {
 	now: () => string;
+	/** The one read of durable project state; a test may serve it from memory. */
+	loadInventory: typeof loadWorkbenchInventory;
 	describeTargetScaffold: typeof describeTargetScaffold;
 	applyTargetScaffold: typeof applyTargetScaffold;
 	describeTargetBootstrap: typeof describeTargetBootstrap;
@@ -212,6 +215,7 @@ export interface AhdeWorkbenchOptions extends BuilderProjectContext {
 
 const DEFAULT_DEPENDENCIES: AhdeWorkbenchDependencies = {
 	now: () => new Date().toISOString(),
+	loadInventory: loadWorkbenchInventory,
 	describeTargetScaffold,
 	applyTargetScaffold,
 	describeTargetBootstrap,
@@ -376,7 +380,7 @@ export class AhdeWorkbench {
 	}
 
 	private inventory(): WorkbenchInventory {
-		return loadWorkbenchInventory({
+		return this.dependencies.loadInventory({
 			projectDir: this.projectDir,
 			stateRoot: this.stateRoot,
 			runsRoot: this.runsRoot,
@@ -417,7 +421,8 @@ export class AhdeWorkbench {
 		}
 	}
 
-	private select(kind: WorkbenchSelectionKind, id: string): void {
+	/** Selects one artifact and returns the state the caller's view should report. */
+	private select(kind: WorkbenchSelectionKind, id: string): WorkbenchInventory {
 		const inventory = this.inventory();
 		const artifact = workbenchArtifactValue(inventory, kind, id);
 		if (!artifact) {
@@ -433,6 +438,7 @@ export class AhdeWorkbench {
 			this.dependencies.now,
 		);
 		saveWorkbenchFocus(this.stateRoot, focus);
+		return withWorkbenchFocus(inventory, focus);
 	}
 
 	private async confirm(
@@ -458,8 +464,16 @@ export class AhdeWorkbench {
 	}
 
 	async view(queryValue: WorkbenchViewQuery = {}): Promise<WorkbenchView> {
+		return this.viewOf(this.inventory(), queryValue);
+	}
+
+	/**
+	 * Render a view from state that was already read. Every write path reads the
+	 * inventory once after its write and reports that exact state, instead of
+	 * paying for a second read of the same thing.
+	 */
+	private async viewOf(inventory: WorkbenchInventory, queryValue: WorkbenchViewQuery = {}): Promise<WorkbenchView> {
 		const query = WorkbenchViewQuerySchema.parse(queryValue);
-		const inventory = this.inventory();
 		const view = deriveWorkbenchView(inventory);
 		const aspect = query.aspect ?? "summary";
 		if (aspect === "summary") return view;
@@ -584,8 +598,8 @@ export class AhdeWorkbench {
 		const input = WorkbenchSubmitInputSchema.parse(inputValue);
 		abortIfRequested(options.signal);
 		if (input.kind === "select") {
-			this.select(input.entity, input.id);
-			return { kind: input.kind, message: `Selected ${input.entity} ${input.id}.`, artifact: { kind: input.entity, id: input.id }, view: await this.view() };
+			const settled = this.select(input.entity, input.id);
+			return { kind: input.kind, message: `Selected ${input.entity} ${input.id}.`, artifact: { kind: input.entity, id: input.id }, view: await this.viewOf(settled) };
 		}
 		if (input.kind === "spec-draft") {
 			const draft = this.dependencies.saveSpecDraft({
@@ -595,8 +609,8 @@ export class AhdeWorkbench {
 				...(input.sourceText !== undefined ? { sourceText: input.sourceText } : {}),
 				now: this.dependencies.now,
 			});
-			this.select("spec-draft", draft.id);
-			return { kind: input.kind, message: "Spec draft saved. Review it before approval.", artifact: { id: draft.id, snapshotHash: hashValue(draft), status: draft.status }, view: await this.view() };
+			const settled = this.select("spec-draft", draft.id);
+			return { kind: input.kind, message: "Spec draft saved. Review it before approval.", artifact: { id: draft.id, snapshotHash: hashValue(draft), status: draft.status }, view: await this.viewOf(settled) };
 		}
 		if (input.kind === "corpus-draft") {
 			const inventory = this.inventory();
@@ -611,8 +625,8 @@ export class AhdeWorkbench {
 				coverageNotes: input.coverageNotes,
 				revisionSummary: input.revisionSummary,
 			}, { now: this.dependencies.now });
-			this.select("corpus-draft", result.draft.id);
-			return { kind: input.kind, message: "Corpus draft saved. Revise freely or publish it through the human gate.", artifact: { id: result.draft.id, draftHash: hashValue(result.draft), taskCount: result.draft.tasks.length, approvedSpecId: result.draft.approvedSpec.specId }, view: await this.view() };
+			const settled = this.select("corpus-draft", result.draft.id);
+			return { kind: input.kind, message: "Corpus draft saved. Revise freely or publish it through the human gate.", artifact: { id: result.draft.id, draftHash: hashValue(result.draft), taskCount: result.draft.tasks.length, approvedSpecId: result.draft.approvedSpec.specId }, view: await this.viewOf(settled) };
 		}
 		if (input.kind === "corpus-import") {
 			const inventory = this.inventory();
@@ -628,7 +642,7 @@ export class AhdeWorkbench {
 				coverageNotes: input.coverageNotes,
 				revisionSummary: input.revisionSummary,
 			}, { now: this.dependencies.now });
-			this.select("corpus-draft", result.draft.id);
+			const settled = this.select("corpus-draft", result.draft.id);
 			if (inventory.target) {
 				try {
 					assertGradersRunnable(result.draft.tasks, inventory.target.manifest, "imported corpus draft");
@@ -651,7 +665,7 @@ export class AhdeWorkbench {
 						source: result.receipt.source,
 					},
 				},
-				view: await this.view(),
+				view: await this.viewOf(settled),
 			};
 		}
 		if (input.kind === "corpus-revision") {
@@ -697,8 +711,8 @@ export class AhdeWorkbench {
 				verifiedTaskProvenance,
 				revisionSummary: input.revisionSummary,
 			}, { now: this.dependencies.now });
-			this.select("corpus-draft", result.draft.id);
-			return { kind: input.kind, message: "New immutable corpus-draft revision saved.", artifact: { id: result.draft.id, parentDraftId: parent.id, draftHash: hashValue(result.draft), taskCount: result.draft.tasks.length }, view: await this.view() };
+			const settled = this.select("corpus-draft", result.draft.id);
+			return { kind: input.kind, message: "New immutable corpus-draft revision saved.", artifact: { id: result.draft.id, parentDraftId: parent.id, draftHash: hashValue(result.draft), taskCount: result.draft.tasks.length }, view: await this.viewOf(settled) };
 		}
 
 		const inventory = this.inventory();
@@ -767,8 +781,8 @@ export class AhdeWorkbench {
 			);
 		}
 		if (result.record.result.proposal?.decision === "propose") {
-			this.select("proposal", result.record.runId);
-			return { kind: input.kind, message: "Selected failure modes compiled into an evidence-linked, exact reviewable proposal.", artifact: { runId: result.record.runId, proposalHash: result.record.artifacts.proposal?.sha256 ?? null, sourceEvalRunId: result.record.request.source?.evalRunId ?? null, improvementBriefId: selectedEvidence.basis.briefId, failureModeIds: selectedEvidence.basis.failureModes.map((mode) => mode.failureModeId), approvedSpecId: approved.id, authoringContextHash: authoringContext.contextHash }, view: await this.view() };
+			const settled = this.select("proposal", result.record.runId);
+			return { kind: input.kind, message: "Selected failure modes compiled into an evidence-linked, exact reviewable proposal.", artifact: { runId: result.record.runId, proposalHash: result.record.artifacts.proposal?.sha256 ?? null, sourceEvalRunId: result.record.request.source?.evalRunId ?? null, improvementBriefId: selectedEvidence.basis.briefId, failureModeIds: selectedEvidence.basis.failureModes.map((mode) => mode.failureModeId), approvedSpecId: approved.id, authoringContextHash: authoringContext.contextHash }, view: await this.viewOf(settled) };
 		}
 		return {
 			kind: input.kind,
@@ -938,8 +952,8 @@ export class AhdeWorkbench {
 			const after = { ...afterDescription, spec: reloadedDraft.spec };
 			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
 			const result = this.dependencies.approveSpecDraft({ stateRoot: this.stateRoot, projectId: this.projectId, draftSpecId: draft.id, expectedDraftSnapshotHash: beforeDescription.draftSnapshotHash, actor: { kind: "human", id: actor }, reason: input.reason }, { now: this.dependencies.now });
-			this.select("approved-spec", result.approved.id);
-			return { kind: input.kind, message: "Spec approved as an exact immutable snapshot.", result: { approvedSpecId: result.approved.id, receiptId: result.receipt.id }, view: await this.view() };
+			const settled = this.select("approved-spec", result.approved.id);
+			return { kind: input.kind, message: "Spec approved as an exact immutable snapshot.", result: { approvedSpecId: result.approved.id, receiptId: result.receipt.id }, view: await this.viewOf(settled) };
 		}
 
 		if (input.kind === "abandon-candidate") {
@@ -978,14 +992,14 @@ export class AhdeWorkbench {
 				reason: input.reason,
 				now: this.dependencies.now,
 			});
-			if (candidate.origin.kind === "applied-builder") {
-				this.select("proposal", candidate.origin.builderRunId);
-			}
+			const settled = candidate.origin.kind === "applied-builder"
+				? this.select("proposal", candidate.origin.builderRunId)
+				: this.inventory();
 			return {
 				kind: input.kind,
 				message: "Interrupted candidate attempt abandoned durably; the exact applied proposal can be retried.",
 				result: { candidateId: candidate.candidateId, interruptedStatus: status, receiptHash: receipt.receiptHash },
-				view: await this.view(),
+				view: await this.viewOf(settled),
 			};
 		}
 
@@ -1026,8 +1040,8 @@ export class AhdeWorkbench {
 				})()
 				: this.dependencies.publishDevelopmentCorpus({ stateRoot: this.stateRoot, projectId: this.projectId, name, tasks: reloaded.tasks, expectedSubjectHash: publication.subjectHash, actor: { kind: "human", id: actor }, reason: input.reason }, { now: this.dependencies.now });
 			const lineage = recordWorkbenchCorpusPublication({ stateRoot: this.stateRoot, draft: reloaded, publication: result });
-			this.select("development-corpus", result.corpus.id);
-			return { kind: input.kind, message: "Development corpus published with exact Spec and draft lineage.", result: { corpusId: result.corpus.id, corpusHash: result.corpus.hash, taskCount: result.corpus.taskCount, publicationReceiptId: result.receipt.id, lineageHash: lineage.linkHash }, view: await this.view() };
+			const settled = this.select("development-corpus", result.corpus.id);
+			return { kind: input.kind, message: "Development corpus published with exact Spec and draft lineage.", result: { corpusId: result.corpus.id, corpusHash: result.corpus.hash, taskCount: result.corpus.taskCount, publicationReceiptId: result.receipt.id, lineageHash: lineage.linkHash }, view: await this.viewOf(settled) };
 		}
 
 		if (input.kind === "run-eval") {
@@ -1066,8 +1080,8 @@ export class AhdeWorkbench {
 			const diagnosis = this.dependencies.diagnoseEval(this.runsRoot, record.evalRunId);
 			const improvementBrief = this.dependencies.compileImprovementBrief(this.runsRoot, diagnosis);
 			const link = boundedEvidenceLink(await this.dependencies.evidenceLink(record));
-			this.select("eval-run", record.evalRunId);
-			return { kind: input.kind, message: improvementBrief.headline, result: { evaluation: { evalRunId: record.evalRunId, summary: record.summary, repetitions: record.repetitions }, diagnosis: diagnosisSummary(diagnosis), improvementBrief: conversationalImprovementBrief(improvementBrief), evidence: link ? { available: true, ...link } : { available: false } }, view: await this.view() };
+			const settled = this.select("eval-run", record.evalRunId);
+			return { kind: input.kind, message: improvementBrief.headline, result: { evaluation: { evalRunId: record.evalRunId, summary: record.summary, repetitions: record.repetitions }, diagnosis: diagnosisSummary(diagnosis), improvementBrief: conversationalImprovementBrief(improvementBrief), evidence: link ? { available: true, ...link } : { available: false } }, view: await this.viewOf(settled) };
 		}
 
 		if (input.kind === "calibrate") {
@@ -1152,8 +1166,8 @@ export class AhdeWorkbench {
 			const after = { operation: "apply-proposal", branch: input.branch, builderRunHash: hashValue(afterProposal.record), ...proposalReview(afterProposal.record) };
 			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
 			const result = this.dependencies.applyProposal({ repoDir: this.projectDir, runsRoot: this.runsRoot, runId: proposal.record.runId, expectedBuilderRunHash: after.builderRunHash, requestedBranch: input.branch, actor: { kind: "human", id: actor }, reason: input.reason });
-			this.select("proposal", proposal.record.runId);
-			return { kind: input.kind, message: "Proposal applied to an exact candidate branch; verification is now required.", result: { runId: result.receipt.runId, branch: result.receipt.branch, candidateSha: result.receipt.candidateSha, proposalHash: result.receipt.proposalSha256 }, view: await this.view() };
+			const settled = this.select("proposal", proposal.record.runId);
+			return { kind: input.kind, message: "Proposal applied to an exact candidate branch; verification is now required.", result: { runId: result.receipt.runId, branch: result.receipt.branch, candidateSha: result.receipt.candidateSha, proposalHash: result.receipt.proposalSha256 }, view: await this.viewOf(settled) };
 		}
 
 		if (input.kind === "discard-proposal") {
@@ -1261,7 +1275,7 @@ export class AhdeWorkbench {
 				console.error("AHDE host-only candidate verification failure:", error);
 				throw new Error("candidate verification failed after the sealed gate; sealed identities and contents remain hidden");
 			}
-			this.select("candidate", result.record.candidateId);
+			const settled = this.select("candidate", result.record.candidateId);
 			const sealedVerdict = result.sealedHoldout?.compare.gate.verdict ?? null;
 			return {
 				kind: input.kind,
@@ -1275,7 +1289,7 @@ export class AhdeWorkbench {
 					development: { verdict: result.compare.gate.verdict, delta: result.compare.summary.delta, confidence95: result.compare.summary.confidence95 },
 					sealedHoldout: { executed: result.sealedHoldout !== null, gatePassed: sealedVerdict === "pass", verdict: sealedVerdict },
 				},
-				view: await this.view(),
+				view: await this.viewOf(settled),
 			};
 		}
 
@@ -1287,8 +1301,8 @@ export class AhdeWorkbench {
 			const after = requireCandidate(current, ["evaluated"], candidate.candidateId);
 			if (hashValue(after) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
 			const reviewed = this.dependencies.reviewCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, recommendation: input.recommendation, reason: input.reason, actorId: actor, now: this.dependencies.now });
-			this.select("candidate", reviewed.candidateId);
-			return { kind: input.kind, message: "Human candidate review recorded.", result: candidateSummary(reviewed), view: await this.view() };
+			const settled = this.select("candidate", reviewed.candidateId);
+			return { kind: input.kind, message: "Human candidate review recorded.", result: candidateSummary(reviewed), view: await this.viewOf(settled) };
 		}
 
 		if (input.kind === "promote-candidate") {
@@ -1298,8 +1312,8 @@ export class AhdeWorkbench {
 			const current = this.decisionInventory(input.kind);
 			if (hashValue(requireCandidate(current, ["reviewed"], candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
 			const promoted = this.dependencies.promoteCandidate({ repositoryDir: this.projectDir, runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, version: input.version, reason: input.reason, actorId: actor, now: this.dependencies.now });
-			this.select("candidate", promoted.record.candidateId);
-			return { kind: input.kind, message: `Candidate promoted as ${promoted.tag}. Adopt it to make it the active Target.`, result: { candidate: candidateSummary(promoted.record), tag: promoted.tag, candidateSha: promoted.candidateSha }, view: await this.view() };
+			const settled = this.select("candidate", promoted.record.candidateId);
+			return { kind: input.kind, message: `Candidate promoted as ${promoted.tag}. Adopt it to make it the active Target.`, result: { candidate: candidateSummary(promoted.record), tag: promoted.tag, candidateSha: promoted.candidateSha }, view: await this.viewOf(settled) };
 		}
 
 		if (input.kind === "reject-candidate") {
@@ -1309,8 +1323,8 @@ export class AhdeWorkbench {
 			const current = this.decisionInventory(input.kind);
 			if (hashValue(requireCandidate(current, ["reviewed"], candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
 			const rejected = this.dependencies.rejectCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, reason: input.reason, actorId: actor, now: this.dependencies.now });
-			this.select("candidate", rejected.candidateId);
-			return { kind: input.kind, message: "Candidate rejected durably. The Target stays at its baseline.", result: candidateSummary(rejected), view: await this.view() };
+			const settled = this.select("candidate", rejected.candidateId);
+			return { kind: input.kind, message: "Candidate rejected durably. The Target stays at its baseline.", result: candidateSummary(rejected), view: await this.viewOf(settled) };
 		}
 
 		if (input.kind === "adopt-candidate") {
@@ -1344,7 +1358,7 @@ export class AhdeWorkbench {
 				actor: { kind: "human", id: actor },
 				reason: input.reason,
 			}, { now: this.dependencies.now });
-			this.select("candidate", candidate.candidateId);
+			const settled = this.select("candidate", candidate.candidateId);
 			return {
 				kind: input.kind,
 				message: `Branch ${result.subject.branch.name} now points at the promoted candidate ${result.subject.promotion.tag}. Start the next cycle when ready.`,
@@ -1357,7 +1371,7 @@ export class AhdeWorkbench {
 					tag: result.subject.promotion.tag,
 					receiptId: result.receipt.receiptId,
 				},
-				view: await this.view(),
+				view: await this.viewOf(settled),
 			};
 		}
 

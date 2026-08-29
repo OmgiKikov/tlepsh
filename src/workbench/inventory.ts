@@ -444,6 +444,16 @@ function validateFocus(inventory: Omit<WorkbenchInventory, "validFocus">): Parti
 	return valid;
 }
 
+/**
+ * The same inventory with a focus that was just written. `select` already read
+ * the state its view reports, so the trailing view never re-reads disk to learn
+ * about a selection this process made.
+ */
+export function withWorkbenchFocus(inventory: WorkbenchInventory, focus: WorkbenchFocus): WorkbenchInventory {
+	const next = { ...inventory, focus, warnings: [...inventory.warnings] };
+	return { ...next, validFocus: validateFocus(next) };
+}
+
 export function loadWorkbenchInventory(options: {
 	projectDir: string;
 	stateRoot: string;
