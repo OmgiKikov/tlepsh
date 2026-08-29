@@ -651,7 +651,7 @@ export function parseDialogueCell(value: string): { messages: DialogueMessage[] 
 	} catch {
 		return { reason: "the dialogue column is not valid JSON" };
 	}
-	const conversation = genericConversation(parsed) ?? conversationOf(parsed);
+	const conversation = conversationOf(parsed);
 	if (!conversation) return { reason: "the dialogue column carries no recognizable turns" };
 	return { messages: conversation.messages };
 }

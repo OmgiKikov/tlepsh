@@ -556,10 +556,7 @@ function datasetTaskId(
 	return `${prefix}-${identity.slice("sha256:".length)}`;
 }
 
-interface MappedRow {
-	task?: CorpusTask;
-	reason?: string;
-}
+type MappedRow = { task: CorpusTask } | { reason: string };
 
 function mapRow(
 	row: DatasetRow,
@@ -673,8 +670,8 @@ function compile(
 	for (const row of eligible) {
 		if (chosen && !chosen.has(row.index)) continue;
 		const mapped = mapRow(row, recipe, loaded.source.sha256, recipeSha256);
-		if (!mapped.task) {
-			if (skipped.length < MAX_COMPILE_SKIPPED) skipped.push({ row: row.index, reason: mapped.reason ?? "the row could not be mapped" });
+		if (!("task" in mapped)) {
+			if (skipped.length < MAX_COMPILE_SKIPPED) skipped.push({ row: row.index, reason: mapped.reason });
 			continue;
 		}
 		if (ids.has(mapped.task.id)) {
