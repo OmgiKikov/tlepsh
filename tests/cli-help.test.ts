@@ -8,6 +8,7 @@ describe("CLI help", () => {
 		expect(help).toContain("ahde resume");
 		expect(help).toContain("Inside Builder Pi");
 		expect(help).toContain("Advanced automation commands");
+		expect(help).toContain("ahde calibrate --target <dir>                measure run-to-run noise (A/A)");
 		expect(help).toContain("AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)");
 	});
 
@@ -15,6 +16,8 @@ describe("CLI help", () => {
 		expect(cliHelp(["run", "--help"])).toContain("Exit 0 = all pass");
 		expect(cliHelp(["init", "--help"])).toContain("first Git commit");
 		expect(cliHelp(["target", "--help"])).toContain("Requires a configured Target");
+		expect(cliHelp(["calibrate", "--help"])).toContain("measure run-to-run noise");
+		expect(cliHelp(["calibrate", "--help"])).toContain("never promotable");
 	});
 
 	it("renders focused help for nested automation actions", () => {

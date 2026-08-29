@@ -45,6 +45,7 @@ consequential step in the host UI.
 | description of the agent (Spec) | users, jobs, inputs, allowed actions, success criteria, constraints |
 | test cases / eval basket | the development corpus: inputs plus graders |
 | run | one evaluation of the agent on the basket |
+| calibrate / noise | an A/A run of the same revision against itself that measures how much the agent disagrees with itself; never evidence for promotion |
 | diagnosis, failure modes | the deterministic grouping of what failed and why (a hypothesis) |
 | proposed change / proposal | an exact, reviewable diff to instructions, skills, or tools |
 | candidate | the proposal applied on its own branch, verified against the baseline |
@@ -81,8 +82,8 @@ of the variable that holds it; the host handles credentials in its own UI.
   sealed-holdout selection. Consequential steps stay unapplied without a host
   confirmation UI.
 - The operator's shortcuts `/status`, `/review`, `/traces`, `/run`,
-  `/approve`, `/publish`, `/apply`, `/discard`, `/promote`, `/reject`,
-  `/adopt`, `/next`, `/target`, `/doctor` run the same Workbench. Do not
+  `/calibrate`, `/approve`, `/publish`, `/apply`, `/discard`, `/promote`,
+  `/reject`, `/adopt`, `/next`, `/target`, `/doctor` run the same Workbench. Do not
   imitate their effects in prose; suggest them when they are the next step.
 
 ## Rules that keep evidence honest
@@ -155,6 +156,12 @@ of the variable that holds it; the host handles credentials in its own UI.
    step the evidence supports. Offer the returned evidence link for traces.
    After a verified failed run, `add-case-from-run` may author a genuinely
    new neighboring regression case from that exact failure.
+   When the header says noise is not calibrated, offer calibration once for
+   this Target revision — one sentence, not a lecture — and request
+   `calibrate` if the operator agrees (`/calibrate` is their shortcut). It
+   runs the same revision twice and tells you how large a later difference
+   has to be before it means anything; it promotes nothing. Once the header
+   shows a calibration for the current revision, do not offer it again.
 5. When asked to fix a numbered or named failure mode, refresh
    `aspect: traces`, resolve the exact source tuple and `failureModeId`,
    read the Target resources you will replace, and submit a

@@ -303,6 +303,7 @@ export const WorkbenchDecisionParameters = Type.Union([
 	Type.Object({ kind: Type.Literal("approve-spec"), draftSpecId: Type.Optional(WorkbenchArtifactId), reason: DecisionReason }, { additionalProperties: false }),
 	Type.Object({ kind: Type.Literal("publish-corpus"), draftId: Type.Optional(WorkbenchArtifactId), name: Type.Optional(NonBlank(200)), reason: DecisionReason }, { additionalProperties: false }),
 	Type.Object({ kind: Type.Literal("run-eval"), developmentCorpusId: Type.Optional(WorkbenchArtifactId), repetitions: Type.Integer({ minimum: 1, maximum: 10 }), reason: DecisionReason }, { additionalProperties: false }),
+	Type.Object({ kind: Type.Literal("calibrate"), repetitions: Type.Integer({ minimum: 1, maximum: 10 }), reason: DecisionReason }, { additionalProperties: false }),
 	Type.Object({ kind: Type.Literal("apply-proposal"), runId: Type.Optional(WorkbenchArtifactId), branch: Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$" }), reason: DecisionReason }, { additionalProperties: false }),
 	Type.Object({ kind: Type.Literal("discard-proposal"), runId: Type.Optional(WorkbenchArtifactId), reason: DecisionReason }, { additionalProperties: false }),
 	Type.Object({ kind: Type.Literal("verify-candidate"), builderRunId: Type.Optional(WorkbenchArtifactId), repetitions: Type.Integer({ minimum: 1, maximum: 10 }), reason: DecisionReason }, { additionalProperties: false }),

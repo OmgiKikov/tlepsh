@@ -6,6 +6,7 @@ import type {
 	WorkbenchTracesDetail,
 	WorkbenchView,
 } from "../../workbench/types.js";
+import { formatFlipRate, formatNoiseBand } from "./calibration.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
 import {
 	bar,
@@ -54,12 +55,34 @@ function evidenceLine(view: WorkbenchView, paint: Paint): string {
 	])}`;
 }
 
+/** Stages where an uncalibrated Target is worth one nudge, not a blocker. */
+const CALIBRATION_STAGES = new Set<WorkbenchView["stage"]>(["ready-to-evaluate", "improvement-authoring"]);
+
+/**
+ * How much this Target disagrees with itself, in one line. Without a
+ * calibration of the current revision the line offers to measure it; it stays
+ * silent everywhere the operator has nothing to do about it.
+ */
+function calibrationLine(view: WorkbenchView, paint: Paint): string | null {
+	const calibration = view.calibration;
+	if (calibration) {
+		const verdict = oneLine(calibration.verdict, 20);
+		return `${paint.dim("Noise")} A/A ${calibration.verdict === "inconclusive" ? verdict : paint.warning(verdict)} ${paint.dim("·")} ` +
+			`${formatNoiseBand(calibration)} ${paint.dim("·")} flip ${formatFlipRate(calibration)} ${paint.dim("·")} ` +
+			`${calibration.recommendedRepetitions} reps recommended`;
+	}
+	if (!CALIBRATION_STAGES.has(view.stage)) return null;
+	return `${paint.dim("Noise")} ${paint.muted("not calibrated")} ${paint.dim("· say “calibrate” or /calibrate")}`;
+}
+
 /** Compact status block used by /status and as the fallback for every panel. */
 export function renderStatus(view: WorkbenchView, paint: Paint): string[] {
+	const noise = calibrationLine(view, paint);
 	const lines = [
 		`${paint.accent(paint.bold("AHDE"))} ${paint.dim("·")} ${paint.bold(stageLabel(view.stage))}`,
 		targetLine(view, paint),
 		evidenceLine(view, paint),
+		...(noise ? [noise] : []),
 		`${paint.dim("Next")} ${nextStep(view)}`,
 	];
 	if (view.blockers.length > 0) lines.push(`${paint.warning("Blocked")} ${view.blockers.map((item) => oneLine(item, 200)).join(" ")}`);
@@ -101,6 +124,8 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 	lines.push(targetLine(view, paint));
 	lines.push(`${paint.dim("Stage")} ${paint.bold(stageLabel(view.stage))} ${paint.dim("·")} ${paint.dim("Next")} ${nextStep(view)}`);
 	lines.push(`${evidenceLine(view, paint)} ${paint.dim("·")} ${paint.dim("Builder model")} ${builder}`);
+	const noise = calibrationLine(view, paint);
+	if (noise) lines.push(noise);
 	if (view.blockers.length > 0 && view.stage !== "target-setup") {
 		lines.push(`${paint.warning("Blocked")} ${oneLine(view.blockers.join(" "), 200)}`);
 	}

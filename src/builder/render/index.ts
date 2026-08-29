@@ -1,4 +1,5 @@
 export { plainPaint, themePaint, type Paint } from "./paint.js";
+export { formatFlipRate, formatNoiseBand, noiseBand, renderCalibration } from "./calibration.js";
 export { renderConfirmation } from "./confirmation.js";
 export { decisionHeadline, renderDecision, type RenderDecisionOptions } from "./decision.js";
 export { renderUnifiedDiff, diffStats } from "./diff.js";

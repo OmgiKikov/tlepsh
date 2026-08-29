@@ -49,6 +49,11 @@ import {
 	type EvidenceExplorerAddress,
 } from "./evidence/server.js";
 import { launchBuilderPi, type BuilderSessionMode } from "./builder/runtime.js";
+import { renderCalibration } from "./builder/render/calibration.js";
+import { plainPaint } from "./builder/render/paint.js";
+import { DEFAULT_REPETITIONS, calibrationProjection } from "./workbench/calibration.js";
+import { resolveCommitRef } from "./git/experiment-worktree.js";
+import { SEALED_GATE_POLICY } from "./domain/comparison-gate.js";
 import { runInteractiveTarget } from "./target/interactive.js";
 import { resolveInteractiveTargetDirectory } from "./target/command.js";
 import {
@@ -367,7 +372,7 @@ async function main(): Promise<void> {
 				: baseTarget;
 			assertTargetReadyToRun(target);
 			const taskId = arg("task");
-			const repetitions = Number(arg("repetitions") ?? "1");
+			const repetitions = Number(arg("repetitions") ?? String(DEFAULT_REPETITIONS));
 			const requestedLabel = arg("label") ?? "solo";
 			if (requestedLabel === "candidate") {
 				throw new Error("candidate runs require an exact matched baseline; use `ahde candidate` instead");
@@ -536,6 +541,13 @@ You have no tools. You create a reviewable draft only and must not claim that yo
 				console.log(
 					`${metadata.id}  ${metadata.visibility}  ${metadata.taskCount} tasks  ${metadata.hash}`,
 				);
+				if (visibility === "sealed" && metadata.taskCount < SEALED_GATE_POLICY.minTasks) {
+					console.error(
+						`warning: a sealed holdout of ${metadata.taskCount} case(s) can never produce a sealed verdict; ` +
+							`the guardrail needs at least ${SEALED_GATE_POLICY.minTasks} cases and ` +
+							`${SEALED_GATE_POLICY.minRepetitions} repetitions, and stays underpowered below that`,
+					);
+				}
 				break;
 			}
 			if (action === "list") {
@@ -732,7 +744,7 @@ You have no tools. You create a reviewable draft only and must not claim that yo
 					throw new Error(`candidate specification ${requestedSpec.id} is not approved`);
 				}
 				if (builderRun && !specId) throw new Error("applied Builder candidates require an approved Spec");
-				const repetitions = arg("repetitions") ? Number(arg("repetitions")) : 1;
+				const repetitions = arg("repetitions") ? Number(arg("repetitions")) : DEFAULT_REPETITIONS;
 				const sealedCorpus = holdoutCorpusId
 					? { stateRoot: stateRoot(), projectId, corpusId: holdoutCorpusId }
 					: undefined;
@@ -792,6 +804,40 @@ You have no tools. You create a reviewable draft only and must not claim that yo
 					`\nnext: ahde review --candidate ${result.record.candidateId} ` +
 					`--recommend promote|reject --reason <text>`,
 			);
+			break;
+		}
+		case "calibrate": {
+			const targetDir = resolve(requireArg("target"));
+			const corpusId = arg("corpus");
+			const projectId = arg("project") ?? loadTarget(targetDir).manifest.id;
+			const repetitions = arg("repetitions") ? Number(arg("repetitions")) : DEFAULT_REPETITIONS;
+			const developmentCorpus = corpusId
+				? { stateRoot: stateRoot(), projectId, corpusId }
+				: undefined;
+			const baseTarget = loadTarget(targetDir);
+			assertTargetReadyToRun(
+				developmentCorpus
+					? targetWithDevelopmentCorpus(baseTarget, loadCorpus(developmentCorpus))
+					: baseTarget,
+			);
+			// One revision, both arms: the A/A CandidateRecord is the receipt.
+			const head = resolveCommitRef(targetDir, "HEAD");
+			const result = await runCandidateExperiment({
+				repositoryDir: targetDir,
+				runsRoot: runsRoot(),
+				baselineRef: head,
+				candidateRef: head,
+				mode: "aa-calibration",
+				repetitions,
+				projectId,
+				origin: { kind: "manual", reason: "A/A calibration" },
+				...(developmentCorpus ? { developmentCorpus } : {}),
+				onRunEvent: cliRunProgress(),
+			});
+			const calibration = calibrationProjection(result.record);
+			if (!calibration) throw new Error("calibration produced no development verdict; nothing was measured");
+			for (const line of renderCalibration(calibration, plainPaint)) console.log(line);
+			console.log(`calibration record: ${result.record.candidateId}`);
 			break;
 		}
 		case "review": {

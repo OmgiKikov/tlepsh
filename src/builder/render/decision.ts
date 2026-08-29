@@ -1,4 +1,5 @@
 import type { WorkbenchDecisionResult, WorkbenchView } from "../../workbench/types.js";
+import { formatFlipRate, formatNoiseBand, renderCalibration } from "./calibration.js";
 import { oneLine, pluralize, section, shortHash, shortSha } from "./format.js";
 import type { Paint } from "./paint.js";
 import { nextStep, stageLabel } from "./stage.js";
@@ -55,6 +56,15 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 			];
 		case "run-eval":
 			return [...runLines(result.result, paint, options), nextLine(view, paint)];
+		case "calibrate": {
+			const lines = [
+				`${section("Noise calibrated", paint)} ${paint.dim(result.result.candidateId)}`,
+				...renderCalibration(result.result.calibration, paint),
+			];
+			if (options.liveTraceUrl) lines.push(`${paint.dim("Live trace")} ${paint.link(options.liveTraceUrl)} ${paint.dim("· retained for 15 minutes")}`);
+			lines.push(nextLine(view, paint));
+			return lines;
+		}
 		case "run-current":
 			return result.result.resolvedAs === "run-eval"
 				? [...runLines(result.result, paint, options), nextLine(view, paint)]
@@ -110,6 +120,11 @@ export function decisionHeadline(result: WorkbenchDecisionResult): string {
 				: `candidate ${result.result.candidate.status}`;
 		case "verify-candidate":
 			return `candidate ${result.result.candidate.status} · development ${result.result.development.verdict} · sealed ${result.result.sealedHoldout.verdict ?? "not run"}`;
+		case "calibrate": {
+			const calibration = result.result.calibration;
+			return `A/A ${calibration.verdict} · ${formatNoiseBand(calibration)} · flip ${formatFlipRate(calibration)} · ` +
+				`${calibration.recommendedRepetitions} reps recommended`;
+		}
 		default:
 			return oneLine(result.message, 120);
 	}

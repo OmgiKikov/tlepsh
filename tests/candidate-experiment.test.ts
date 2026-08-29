@@ -8,6 +8,7 @@ import {
 	CANDIDATE_SCOPE_POLICY,
 	CandidateDevelopmentSurfaceError,
 	CandidateExperimentError,
+	assertHoldoutDisjoint,
 	comparisonGateEvidence,
 	runCandidateExperiment,
 	type CandidateExperimentDependencies,
@@ -873,6 +874,61 @@ permissions:
 			assertCheckoutUnchanged(repository);
 		},
 	);
+
+	it("fails a sealed twin of a development task in preflight with counts only", async () => {
+		const repository = createRepository({ path: "AGENTS.md", content: "candidate harness\n" });
+		// The development basket already contains "Проверь договор 42 и ограничения ДБО."
+		const twin = "проверь договор №23 и ограничения ДБО!";
+		const corpus = corpusFixture("sealed", twin, "twinned holdout");
+		const runtime = fakeRuntime();
+		const candidateId = "candidate-holdout-twin";
+
+		const error = await runCandidateExperiment(
+			{
+				repositoryDir: repository.dir,
+				runsRoot: repository.runsRoot,
+				baselineRef: repository.baselineSha,
+				candidateRef: repository.candidateSha,
+				mode: "candidate",
+				repetitions: 2,
+				candidateId,
+				projectId: "project-1",
+				sealedCorpus: corpus.ref,
+			},
+			runtime.dependencies,
+		).then(() => null, (thrown: unknown) => thrown as Error);
+
+		expect(error?.message).toBe(
+			"sealed holdout shares 1 case(s) with the development set after normalization; refresh the holdout",
+		);
+		for (const secret of [twin, "договор", "sealed-task-1", "twinned holdout", corpus.metadata.id]) {
+			expect(error?.message).not.toContain(secret);
+		}
+		expect(runtime.reuseQueries).toHaveLength(0);
+		expect(runtime.suiteCalls).toHaveLength(0);
+		expect(existsSync(join(repository.runsRoot, "candidates", candidateId, "candidate.json"))).toBe(false);
+		assertCheckoutUnchanged(repository);
+	});
+
+	it("separates twins from genuinely different holdout cases", () => {
+		const development = [
+			{ input: "Проверь договор 42 и ограничения ДБО." },
+			{ input: "Сколько дней длится пробный период?" },
+		];
+		expect(() => assertHoldoutDisjoint(development, [{ input: "Какой SLA у поддержки в выходные?" }])).not.toThrow();
+		expect(() => assertHoldoutDisjoint(development, [{ input: "проверь договор №23 и ограничения ДБО!" }]))
+			.toThrow("sealed holdout shares 1 case(s) with the development set after normalization; refresh the holdout");
+		expect(() => assertHoldoutDisjoint(development, [
+			{ input: "  ПРОВЕРЬ  ДОГОВОР  №7,  и  ограничения — ДБО  " },
+			{ input: "сколько дней длится пробный период" },
+			{ input: "Совсем другой вопрос про возврат средств" },
+		])).toThrow("shares 2 case(s)");
+		// Digits are stripped, not turned into separators: a1b is one word.
+		expect(() => assertHoldoutDisjoint([{ input: "ab" }], [{ input: "a1b" }])).toThrow("shares 1 case(s)");
+		expect(() => assertHoldoutDisjoint([{ input: "a b" }], [{ input: "a1b" }])).not.toThrow();
+		// Inputs that normalize to nothing can never count as a shared case.
+		expect(() => assertHoldoutDisjoint([{ input: "42" }], [{ input: "!!!" }])).not.toThrow();
+	});
 
 	it("runs development then sealed matched pairs without leaking corpus content into metadata", async () => {
 		const repository = createRepository({ path: "AGENTS.md", content: "candidate harness\n" });
