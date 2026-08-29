@@ -701,15 +701,24 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 	};
 
 	// Bounded worker pool over the design. Each worker takes the next unclaimed
-	// position and lands its result in that position's slot.
+	// position and lands its result in that position's slot. The first failure
+	// stops the pool from claiming more work — a broken evaluation must not keep
+	// spending tokens — but never cancels what is already running.
 	let nextPlanned = 0;
+	let firstFailure: { reason: unknown } | undefined;
 	const worker = async (): Promise<void> => {
 		for (;;) {
+			if (firstFailure) return;
 			const index = nextPlanned;
 			nextPlanned += 1;
 			const planned = design[index];
 			if (!planned) return;
-			slots[planned.ordinal - 1] = await execute(planned);
+			try {
+				slots[planned.ordinal - 1] = await execute(planned);
+			} catch (error) {
+				firstFailure ??= { reason: error };
+				throw error;
+			}
 		}
 	};
 	// The snapshot is shared by every in-flight run, so it is disposed only once
@@ -718,8 +727,9 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 		Array.from({ length: Math.min(jobs, executionTotal) }, () => worker()),
 	);
 	disposeTargetWorkspaceSnapshot(workspaceSnapshot);
-	const failure = settled.find((result) => result.status === "rejected");
-	if (failure?.status === "rejected") throw failure.reason;
+	if (firstFailure) throw firstFailure.reason;
+	const rejected = settled.find((result) => result.status === "rejected");
+	if (rejected?.status === "rejected") throw rejected.reason;
 	if (options.signal?.aborted) throw options.signal.reason ?? new Error("evaluation aborted");
 
 	const completed = slots.map((slot, index) => {

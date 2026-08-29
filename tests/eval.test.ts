@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -11,6 +11,7 @@ import {
 	isLoopbackModelEndpoint,
 	isSealedEvalRun,
 	listEvalRunIndexes,
+	listEvalRunIndexesLenient,
 	listPublicEvalRunIndexesBounded,
 	loadRun,
 	loadVerifiedEvalRun,
@@ -530,6 +531,39 @@ describe("baseline reuse", () => {
 			},
 		};
 	}
+
+	it("a v1 index lists as legacy and is never reused", () => {
+		const fresh = writeReusableBaseline(new Date().toISOString());
+		// A pre-V1.8 index: schemaVersion 1 and the retired ahdeCodeHash axis.
+		const legacyDir = join(fresh.runsRoot, "erun_legacy_v1");
+		mkdirSync(legacyDir, { recursive: true, mode: 0o700 });
+		writeFileSync(join(legacyDir, "eval_run.json"), JSON.stringify({
+			schemaVersion: 1,
+			evalRunId: "erun_legacy_v1",
+			target: { id: "test-target", gitSha: "a".repeat(40) },
+			label: "baseline",
+			baselineEvalRunId: null,
+			provenance: { ahdeCodeHash: hash("c") },
+			provenanceKey: hash("f"),
+			suiteId: "test-suite",
+			suiteHash: hash("d"),
+			dataset: "development",
+			datasetHash: hash("e"),
+			repetitions: 1,
+			runIds: ["legacy-run"],
+			startedAt: "2020-01-01T00:00:00.000Z",
+			finishedAt: new Date().toISOString(),
+			summary: { total: 1, pass: 1, fail: 0, error: 0, allPassRate: 1 },
+		}));
+
+		const listed = listEvalRunIndexesLenient(fresh.runsRoot);
+		expect(listed.records.map((record) => record.evalRunId)).toEqual(["erun_reusable"]);
+		expect(listed.invalid).toEqual([
+			{ evalRunId: "erun_legacy_v1", reason: expect.stringContaining("legacy schemaVersion 1 (not comparable)") },
+		]);
+		// The fresh v2 baseline is still reusable; the legacy sibling is invisible.
+		expect(findReusableBaseline(fresh.runsRoot, fresh.query)?.evalRunId).toBe("erun_reusable");
+	});
 
 	it("a baseline older than max-age is not reused", () => {
 		const fresh = writeReusableBaseline(new Date(Date.now() - DAY_MS).toISOString());
