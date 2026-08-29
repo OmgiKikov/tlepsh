@@ -22,8 +22,9 @@ addressed by item 3 below, not by opening the holdout.
    live in multi-turn conversations, but a case is one message today. Two
    layers: (a) a case with `messages` — the conversation so far plus the
    last user turn — where graders judge the agent's next reply (cheap,
-   deterministic, the way chat models are evaluated; the runner seeds the
-   history before the final prompt); (b) a simulated user — a second model
+   deterministic, the way chat models are evaluated; Pi's
+   `SessionManager.appendMessage` / `agent.state.messages` seed the history
+   before the final prompt); (b) a simulated user — a second model
    with a goal and persona for N turns — with graders over the whole
    transcript (a tool called on any turn, a turn budget, a rubric over the
    dialogue). (a) first, ~1–2 days; (b) ~2–3 days. Feedback import (item 1)
@@ -137,3 +138,38 @@ product demands.
 
 Beyond this the list is speculation: ship V1.8, let people run the loop on
 their own tasks, and add what they hit.
+
+## Stand on Pi (checked against vendored pi-mono 0.84.3)
+
+Before writing any of the above from scratch, reuse what the vendored Pi
+already ships:
+
+- **`packages/evals` + `vitest-evals`** — `createPiCodingAgentHarness`
+  (isolated temp project/agent dirs, model per harness, `noTools`,
+  `transformSystemPrompt`, prompt/reload step sequences, native session JSONL
+  attached per run, `runs.jsonl` index) and `vitest-evals` judges
+  (`FactualityJudge` with an expected answer, `StructuredOutputJudge`,
+  `ToolCallJudge`, `createJudge`, fuzzy matchers) plus normalized traces
+  (`toolCalls`, `assistantMessages`, GenAI semantic attributes). AHDE keeps
+  its own runner for provenance/isolation, but the reference-answer graders
+  (roadmap 0b) and tool-call matchers should wrap these judges instead of a
+  bespoke judge prompt; comparative `evalHarnessTable` is the model-comparison
+  mode (13) almost for free.
+- **Session tree** — `SessionManager.appendMessage`, `branch`,
+  `createBranchedSession`, `agent.state.messages = …`: dialogue cases (0) are
+  "append the history, then `prompt(lastUserTurn)`", no runner surgery.
+  `/fork` and `/tree` could give the Builder conversation branching for
+  alternative proposals (8).
+- **`--mode rpc`, `-p`, `--mode json`, `AgentSession` SDK** — headless
+  Builder for CI (21), IDE/web clients, and the closed-loop tests.
+- **Gondolin / `examples/extensions/sandbox`** — route the Target's built-in
+  `bash`/`read`/`write` into a micro-VM; today only declarative tools are
+  sandboxed and the built-in `bash` runs on the host with a workspace cwd.
+- **`packages/server` + `session-backends`** — remote/team sessions over
+  CBOR; the base for a shared Builder later, not now.
+- **`examples/extensions/questionnaire`, `structured-output`
+  (`terminate: true`), `subagent`, `permission-gate`, `protected-paths`** —
+  the Builder's one-question interviews, a proper final-answer tool for the
+  Target instead of the recovery prompt, sub-agents, and gate patterns.
+- **`packages/telemetry`** — typed span/event schema for RunEvents if they
+  ever leave the process.
