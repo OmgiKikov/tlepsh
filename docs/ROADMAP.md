@@ -46,6 +46,18 @@ addressed by item 3 below, not by opening the holdout.
    cases: they become the Target's retrieval tool; cases are questions over
    them (own, from logs, or synthesized — host-side for sealed). This one
    mechanism subsumes JSONL import and feedback import. ~3–4 days.
+0c. **Tool workshop: the Builder writes and tries real tool code.** Today
+   a custom tool is one executable authored blind through a `tool.upsert`
+   intent. Instead: the Builder gets `write`/`edit`/`bash` inside a
+   temporary worktree of the harness, confined to `tools/**`, `bin/**` and a
+   new declared `data/**` scope, plus `try_tool` to run a tool on sample
+   inputs in the same sandbox. Multi-file tools, dependencies through a
+   declared `setup` step (lockfile hashed into `toolsetHash`), data files
+   and index builds become possible; the outcome is still an ordinary
+   Proposal — exact diff, human apply, verification, promotion. The user's
+   checkout is never touched and nothing applies itself. Pi's `sandbox`,
+   `subagent` and `protected-paths` examples are the building blocks.
+   This is what "build me a RAG agent" needs end to end. ~3–4 days.
 1. **Feedback becomes tests.** In `ahde target`, any answer is marked 👍/👎
    with one key; the Builder turns it into a case with a grader in a new
    corpus draft. `ahde feedback import <dialogs.jsonl>` clusters real
