@@ -68,7 +68,7 @@ const COMMAND_SPECS = {
 	evidence: { flags: ["port"], positionals: 0 },
 	init: { flags: ["template"], positionals: 1 },
 	run: {
-		flags: ["target", "task", "repetitions", "label", "dataset", "project", "corpus"],
+		flags: ["target", "task", "repetitions", "jobs", "label", "dataset", "project", "corpus"],
 		requiredFlags: ["target"],
 		positionals: 0,
 	},
@@ -88,6 +88,8 @@ const COMMAND_SPECS = {
 			"builder-run",
 			"spec",
 			"repetitions",
+			"jobs",
+			"baseline-max-age",
 			"dataset",
 			"development-corpus",
 			"holdout-corpus",
@@ -247,6 +249,9 @@ function validateSharedFlagValues(flags: Readonly<Record<string, string>>, conte
 	assertIntegerFlag(flags, "port", context, { minimum: 0, maximum: 65_535 });
 	assertIntegerFlag(flags, "tasks", context, { minimum: 1 });
 	assertIntegerFlag(flags, "repetitions", context, { minimum: 1 });
+	assertIntegerFlag(flags, "jobs", context, { minimum: 1, maximum: 64 });
+	// 0 days means "never reuse a baseline"; every run measures its own.
+	assertIntegerFlag(flags, "baseline-max-age", context, { minimum: 0, maximum: 3_650 });
 	assertIntegerFlag(flags, "timeout-ms", context, { minimum: 1 });
 }
 

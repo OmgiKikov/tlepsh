@@ -37,6 +37,10 @@ export interface RunAppliedBuilderCandidateOptions {
 	onRunEvent?: RunEventListener;
 	/** Host-owned cancellation for the complete candidate experiment. */
 	signal?: AbortSignal;
+	/** Concurrent executions inside each suite. Undefined keeps runSuite's default. */
+	jobs?: number;
+	/** How old a reusable baseline may be. Undefined keeps the seven-day default. */
+	baselineMaxAgeMs?: number;
 }
 
 const MAX_PROVENANCE_ARTIFACT_BYTES = 16 * 1024 * 1024;
@@ -268,5 +272,7 @@ export async function runAppliedBuilderCandidate(
 		sealedCorpus: options.sealedCorpus,
 		...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
 		...(options.signal ? { signal: options.signal } : {}),
+		...(options.jobs === undefined ? {} : { jobs: options.jobs }),
+		...(options.baselineMaxAgeMs === undefined ? {} : { baselineMaxAgeMs: options.baselineMaxAgeMs }),
 	});
 }

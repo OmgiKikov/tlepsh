@@ -1126,7 +1126,17 @@ export interface ReusableBaselineQuery {
 	evidenceVisibility: EvidenceVisibility;
 	label: "baseline" | "candidate" | "solo";
 	repetitions: number;
+	/**
+	 * How old a baseline may be and still stand in for a fresh one. Provider
+	 * behaviour drifts behind an unchanged model id, so age is the one axis the
+	 * fingerprint cannot see. Defaults to {@link DEFAULT_BASELINE_MAX_AGE_MS};
+	 * 0 disables reuse.
+	 */
+	maxAgeMs?: number;
 }
+
+/** Seven days: long enough to amortize a baseline, short enough to notice drift. */
+export const DEFAULT_BASELINE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 
 /**
  * Find the newest eval run whose identity matches the query (baseline reuse).
@@ -1135,8 +1145,13 @@ export interface ReusableBaselineQuery {
  * index on disk can never abort a candidate verification.
  */
 export function findReusableBaseline(runsRoot: string, query: ReusableBaselineQuery): EvalRunRecord | null {
+	const maxAgeMs = query.maxAgeMs ?? DEFAULT_BASELINE_MAX_AGE_MS;
+	const oldestUsableMs = Date.now() - maxAgeMs;
 	for (const record of listEvalRunIndexesLenient(runsRoot).records) {
 		if (record.label !== query.label) continue;
+		// An unreadable timestamp cannot prove freshness, so it is not fresh.
+		const finishedAtMs = Date.parse(record.finishedAt);
+		if (!Number.isFinite(finishedAtMs) || finishedAtMs < oldestUsableMs) continue;
 		if (record.target.id !== query.targetId || record.target.gitSha !== query.targetGitSha) continue;
 		if (record.target.toolsetHash !== query.toolsetHash) continue;
 		if (record.target.workspaceHash !== query.workspaceHash) continue;
