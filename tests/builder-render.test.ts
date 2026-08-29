@@ -1468,11 +1468,13 @@ describe("renderConfirmation", () => {
 			repetitions: 3,
 			executions: 72,
 		}), plainPaint);
-		expect(lines.slice(0, 3)).toEqual([
-			"Calibrate noise run this exact revision twice · 12 cases × 3 repetitions = 72 Target executions · nothing is promoted",
+		expect(lines.slice(0, 4)).toEqual([
+			"Calibrate noise run this exact revision twice · nothing is promoted",
+			"Cost 12 cases × 3 repetitions = 72 Target executions · each one calls the Target model",
 			"Target support-bot @ aaaaaaaaaa · basket corpus-1",
 			"A/A measures how much the agent disagrees with itself, so later deltas can be believed.",
 		]);
+		for (const line of lines) expect(line.length).toBeLessThanOrEqual(110);
 		ephemeralTail(lines);
 	});
 

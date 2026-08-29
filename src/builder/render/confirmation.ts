@@ -119,8 +119,9 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			const tasks = Number(corpus.taskCount ?? 0);
 			const repetitions = Number(subject.repetitions ?? 1);
 			return [
-				`${paint.dim("Calibrate noise")} run this exact revision twice ${paint.dim("·")} ${pluralize(tasks, "case")} × ${pluralize(repetitions, "repetition")} = ${paint.bold(`${2 * tasks * repetitions} Target executions`)} ${paint.dim("· nothing is promoted")}`,
-				`${paint.dim("Target")} ${text(target.id)} ${paint.dim(`@ ${shortSha(text(target.gitSha, 40))}`)} ${paint.dim("· basket")} ${text(corpus.id)}`,
+				`${paint.dim("Calibrate noise")} run this exact revision twice ${paint.dim("· nothing is promoted")}`,
+				`${paint.dim("Cost")} ${pluralize(tasks, "case")} × ${pluralize(repetitions, "repetition")} = ${paint.bold(`${2 * tasks * repetitions} Target executions`)} ${paint.dim("· each one calls the Target model")}`,
+				`${paint.dim("Target")} ${text(target.id, 60)} ${paint.dim(`@ ${shortSha(text(target.gitSha, 40))}`)} ${paint.dim("· basket")} ${text(corpus.id, 60)}`,
 				paint.muted("A/A measures how much the agent disagrees with itself, so later deltas can be believed."),
 			];
 		}

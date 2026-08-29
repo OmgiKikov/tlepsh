@@ -18,7 +18,7 @@ Inspect and run:
   ahde list [--target <id>]                    list eval runs
 
 Inside Builder Pi:
-  /help  /doctor  /status  /run  /traces  /review  /apply  /discard  /target
+  /help  /doctor  /status  /run  /calibrate  /traces  /review  /apply  /discard  /target
 
 Use \`ahde <command> --help\` for focused help. Advanced automation commands:
   corpus  failures  compare  diagnose  report  builder  candidate  calibrate  review  promote  reject

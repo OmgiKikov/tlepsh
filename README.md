@@ -76,7 +76,8 @@ The same loop has compact Pi commands:
 /status                 where you are and the next step
 /review                 the exact Spec, eval basket, diff, or candidate — with its actions
 /traces                 diagnosis, failure modes, and the evidence link
-/run [repetitions]      run the eval basket or verify the applied candidate
+/run [repetitions]      run the eval basket or verify the applied candidate (3 by default)
+/calibrate [reps]       measure run-to-run noise: the same revision against itself
 /approve  /publish      approve the Spec · publish the eval basket
 /apply <branch>         apply the reviewed proposal to a candidate branch
 /discard                discard a proposal or abandon an interrupted candidate
