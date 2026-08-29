@@ -171,6 +171,21 @@ export function installAhdeBuilderProductShell(
 		}
 	};
 
+	// Onboarding owns the host selectors while it runs; two overlapping runs would
+	// stack dialogs over the same two questions.
+	let onboarding = false;
+	const runOnboarding = async (ctx: ExtensionContext, view: WorkbenchView | null): Promise<void> => {
+		if (onboarding) return;
+		onboarding = true;
+		try {
+			await onboard(ctx, view);
+		} catch {
+			// Onboarding prompts are optional; the header already shows the state.
+		} finally {
+			onboarding = false;
+		}
+	};
+
 	pi.on("session_start", async (event, ctx) => {
 		if (ctx.mode !== "tui") return;
 		host = ctx;
@@ -192,11 +207,7 @@ export function installAhdeBuilderProductShell(
 			return;
 		}
 		if (event.reason === "startup" || event.reason === "new" || event.reason === "resume") {
-			try {
-				await onboard(ctx, state.view);
-			} catch {
-				// Onboarding prompts are optional; the header already shows the state.
-			}
+			await runOnboarding(ctx, state.view);
 		}
 	});
 
@@ -214,10 +225,18 @@ export function installAhdeBuilderProductShell(
 		};
 	});
 
-	pi.on("model_select", async (_event, ctx) => {
+	// Choosing a Builder model is the second half of the cold start: the first run
+	// stopped at "/login or /model" without ever asking the two setup questions.
+	// Picking a credentialed model resumes onboarding exactly where it stopped.
+	pi.on("model_select", async (event, ctx) => {
 		if (ctx.mode !== "tui") return;
 		host = ctx;
 		await refresh();
+		// "restore" is the session replaying its own model; session_start owns that path.
+		if (event.source === "restore") return;
+		if (state.error || !state.builderModel.credentialPresent) return;
+		if (state.view?.stage !== "target-setup") return;
+		await runOnboarding(ctx, state.view);
 	});
 
 	// Workbench state changes through tools during a turn; redraw when the model settles.
