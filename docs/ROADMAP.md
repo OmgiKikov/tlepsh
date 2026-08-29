@@ -29,6 +29,22 @@ addressed by item 3 below, not by opening the holdout.
    dialogue). (a) first, ~1–2 days; (b) ~2–3 days. Feedback import (item 1)
    must produce these dialogue cases, not single messages. Nobody writes
    JSONL by hand: the conversation is the interface, the file is storage.
+0b. **Any data → benchmark.** Today only JSONL in AHDE's own shape imports;
+   everything else is hand-converted. Instead: drop anything into
+   `imports/` (CSV/TSV, JSON of any shape, Markdown/TXT, chat exports, XLSX;
+   PDF later). The host shows the Builder a bounded preview (columns, types,
+   first rows); the Builder proposes a *mapping recipe* (which column is the
+   input, which the reference answer, which metadata; which graders), the
+   human adjusts it in words on a few sample rows, and the host applies the
+   recipe deterministically to every row and hashes it into the import
+   receipt. Reference answers become a first-class case field, enabling the
+   missing graders: judge-with-reference, lexical/embedding similarity, exact
+   match. The host reserves a random (or stratified) sealed slice BEFORE the
+   Builder sees the preview, so a sealed holdout comes for free and honestly.
+   Chat exports become dialogue cases (item 0). Document folders are not
+   cases: they become the Target's retrieval tool; cases are questions over
+   them (own, from logs, or synthesized — host-side for sealed). This one
+   mechanism subsumes JSONL import and feedback import. ~3–4 days.
 1. **Feedback becomes tests.** In `ahde target`, any answer is marked 👍/👎
    with one key; the Builder turns it into a case with a grader in a new
    corpus draft. `ahde feedback import <dialogs.jsonl>` clusters real
