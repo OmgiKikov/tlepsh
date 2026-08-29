@@ -88,3 +88,25 @@ After V1.8: 1, 2, 3 first (they close the loop from the "Evals are all you
 need" picture and remove the new friction); then 6, 7, 8 (they separate a tool
 that improves toy baskets from one that improves real tasks); the rest as the
 product demands.
+
+## Also worth doing
+
+19. **Cheap check before the expensive one.** Run a proposal on the failed
+    cases only (5 × 1) before a full verification; if nothing improves, skip
+    the 30×3 + 15×3 spend. The original plan's `smoke` gate, in the right
+    place. ~0.5 day.
+20. **Coverage map Spec × cases.** Which Spec jobs no case exercises; the
+    Builder proposes cases for the gaps. ~1 day.
+21. **Promotion as a pull request; evals in CI.** Candidate branch → PR with
+    the verdict as a comment; promote = merge. `ahde ci` runs the basket on
+    every PR to the harness repository so human edits pass the same gate.
+    ~2 days.
+22. **Ideal answer as grader.** For a failed case the Builder drafts the
+    answer it should have given; the human edits; it becomes the expected
+    output or rubric. The fastest route to good judge rubrics. ~1 day.
+23. **Bisect on drift.** When `ahde watch` catches a drop, binary-search over
+    harness versions and dates: "harness v0.4 broke it" vs "the provider
+    changed on Sept 12". ~1 day.
+
+Beyond this the list is speculation: ship V1.8, let people run the loop on
+their own tasks, and add what they hit.
