@@ -31,6 +31,22 @@ describe("Workbench tool argument preparation", () => {
 		expect(Check(WorkbenchSubmitParameters, prepared)).toBe(true);
 	});
 
+	it("coerces numeric and boolean strings where the schema expects them", () => {
+		const run = prepareWorkbenchArguments(WorkbenchDecisionParameters, { kind: "run-current", repetitions: "1", reason: "first run" }) as { repetitions: unknown };
+		expect(run.repetitions).toBe(1);
+		expect(Check(WorkbenchDecisionParameters, run)).toBe(true);
+		const draft = prepareWorkbenchArguments(WorkbenchSubmitParameters, {
+			kind: "corpus-draft",
+			name: "Basket",
+			revisionSummary: "Initial",
+			tasks: [{ input: "Digest", graders: [{ type: "output_contains", text: "Notion", caseSensitive: "false" }] }],
+		}) as { tasks: { graders: { caseSensitive: unknown }[] }[] };
+		expect(draft.tasks[0]?.graders[0]?.caseSensitive).toBe(false);
+		expect(Check(WorkbenchSubmitParameters, draft)).toBe(true);
+		expect(() => prepareWorkbenchArguments(WorkbenchDecisionParameters, { kind: "run-current", repetitions: "many", reason: "r" }))
+			.toThrow(/run-current is invalid — \/repetitions: must be integer/);
+	});
+
 	it("parses a whole argument object sent as one JSON string", () => {
 		const prepared = prepareWorkbenchArguments(WorkbenchSubmitParameters, JSON.stringify({ kind: "spec-draft", spec }));
 		expect(Check(WorkbenchSubmitParameters, prepared)).toBe(true);

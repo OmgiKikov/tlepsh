@@ -1,5 +1,5 @@
 import { Type, type TSchema } from "typebox";
-import { Errors } from "typebox/value";
+import { Convert, Errors } from "typebox/value";
 
 const NonBlank = (maxLength: number) => Type.String({
 	minLength: 1,
@@ -431,7 +431,9 @@ export function prepareWorkbenchArguments(
 				: `${discriminator} is required; use one of: ${kinds.join(", ")}`,
 		);
 	}
-	const normalized = normalize(branch, args);
+	// Scalars arrive as strings too ("1", "true"); Convert coerces them only
+	// where the schema expects a number or boolean, never the other way round.
+	const normalized = Convert(branch as unknown as TSchema, normalize(branch, args));
 	if (![...Errors(branch as unknown as TSchema, normalized)].length) return normalized;
 	const label = typeof chosen === "string" ? chosen : discriminator;
 	const problems = explainWorkbenchArguments(branch as unknown as TSchema, normalized);

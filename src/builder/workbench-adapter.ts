@@ -278,7 +278,7 @@ export function createBuilderWorkbenchTools(
 			name: "ahde_workbench_decide",
 			label: "Decide in Builder Workbench",
 			description: [
-				"Request one human-gated workflow transition; the host shows the exact subject and asks the operator to confirm. Every kind requires a non-blank `reason`.",
+				"Request one human-gated workflow transition. Call this yourself when the operator asks for the step in plain words (run, approve, publish, apply, promote, adopt, next): the host shows the exact subject and asks the operator to confirm in its own dialog before anything happens — never tell the operator to type a slash command instead. Every kind requires a non-blank `reason`.",
 				"Kinds by stage: target-setup → { kind: \"scaffold-target\" } then { kind: \"configure-target\", targetId (kebab-case), model: { provider, modelId, thinkingLevel?, timeoutMs?, params? } };",
 				"spec-review → { kind: \"approve-spec\", draftSpecId? }; corpus-review → { kind: \"publish-corpus\", draftId?, name? };",
 				"ready-to-evaluate / improvement-authoring → { kind: \"run-current\", repetitions: 1..10 } (or run-eval); proposal-review → { kind: \"apply-proposal\", branch } | { kind: \"discard-proposal\" };",

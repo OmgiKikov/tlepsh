@@ -6,8 +6,9 @@ description: Inspect evaluation results, generate deterministic diagnosis, and c
 # Run and diagnose
 
 1. Inspect `ahde_workbench_view`; run only when its legal actions contain
-   `run`. Use `/run [repetitions]` or request `run-current` through
-   `ahde_workbench_decide`. The host confirms the exact cost and subject.
+   `run`. When the operator asks to run, request `run-current` through
+   `ahde_workbench_decide` yourself (`/run [repetitions]` is their
+   shortcut). The host confirms the exact cost and subject in its own dialog.
 2. Workbench binds the approved Spec, reviewed development corpus, exact Target
    revision, dataset hash, and suite hash. Select among ambiguous artifacts
    explicitly with `ahde_workbench_submit`; never invent an id.

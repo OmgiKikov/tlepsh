@@ -39,12 +39,14 @@ description: Review an evidence-backed typed proposal, inspect its exact diff, a
    references, exact changed paths and diff, risks, and validation plan.
 7. Interpret “fix”, “исправь”, or similar natural language as “prepare the
    immutable proposal and show review”, never as approval to apply. Explain the
-   expected behavior change and most likely regression, then let the operator
-   choose exactly one durable outcome: `/discard` or `/apply <branch>`. Both
-   are host-confirmed and mutually exclusive.
-8. Treat Apply as a candidate, not a release. Use `/run` to perform the exact
-   candidate experiment and inspect `/traces` and `/review`. Sealed evidence is
-   evaluator-only and selected by the human host.
+   expected behavior change and most likely regression. When the operator then
+   says apply, request `apply-proposal` with branch `candidate/<proposal run
+   id>`; when they say discard, request `discard-proposal`. Both are
+   host-confirmed and mutually exclusive (`/apply`, `/discard` are shortcuts).
+8. Treat Apply as a candidate, not a release. When asked to verify, request
+   `run-current` to perform the exact candidate experiment, then inspect
+   `aspect: review` and `aspect: traces`. Sealed evidence is evaluator-only
+   and selected by the human host.
 9. Only after exact candidate review, request `promote-candidate` with a
    semantic version or `reject-candidate` through `ahde_workbench_decide`.
    Each decision is independently confirmed by the trusted TUI host.
