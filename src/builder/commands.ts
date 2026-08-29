@@ -80,6 +80,10 @@ Commands:
   /doctor               model auth, Target readiness, and recovery steps
   /help                 this reference
 
+Pi's own built-ins configure the Builder's model, not the agent's:
+  /login                connect a provider (OAuth or API key), once per machine
+  /model                pick a Builder model that already has a credential
+
 Every consequential step shows the exact subject and asks you to confirm.`;
 
 function requireTui(ctx: ExtensionCommandContext, command: string): void {
