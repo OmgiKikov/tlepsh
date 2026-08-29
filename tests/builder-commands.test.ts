@@ -479,11 +479,11 @@ type RunEventInput<Event> = Event extends RunEvent
 	? Omit<Event, "at" | "run">
 	: never;
 
-function runEvent(event: RunEventInput<RunEvent>): RunEvent {
+function runEvent(event: RunEventInput<RunEvent>, run: Partial<RunEventIdentity> = {}): RunEvent {
 	return {
 		...event,
 		at: "2026-08-28T10:00:00.000Z",
-		run: runIdentity,
+		run: { ...runIdentity, ...run },
 	} as RunEvent;
 }
 
@@ -701,7 +701,7 @@ describe("Builder Pi slash commands", () => {
 		expect(new Set(host.setWidget.mock.calls.map(([key]) => key))).toEqual(new Set(["ahde-run-progress"]));
 		expect(host.setStatus).toHaveBeenCalledWith(
 			"ahde-run-progress",
-			expect.stringMatching(/^AHDE run 1\/1 █{12} 100% · ✓1 ✗0 · task-routing · graded pass$/),
+			expect.stringMatching(/^AHDE run graded 1\/1 · running 0 █{12} 100% · ✓1 ✗0 · task-routing · graded pass$/),
 		);
 		expect(host.setStatus).toHaveBeenLastCalledWith("ahde-run-progress", undefined);
 		expect(host.setWidget).toHaveBeenLastCalledWith("ahde-run-progress", undefined);
@@ -787,6 +787,58 @@ describe("Builder Pi slash commands", () => {
 		expect(JSON.stringify(host.setWidget.mock.calls)).not.toContain("attacker.invalid");
 		expect(JSON.stringify(output.show.mock.calls)).not.toContain("attacker.invalid");
 		expect(fixture.decide).toHaveBeenCalledOnce();
+	});
+
+	it("reports graded and running counts while executions overlap", () => {
+		const setStatus = vi.fn();
+		const setWidget = vi.fn();
+		const progress = createRunProgressPresenter({ setStatus, setWidget });
+		const three = { total: 3 };
+		const statuses = (): string[] => setStatus.mock.calls.map(([, value]) => String(value));
+
+		progress.onRunEvent(runEvent({ type: "run_started" }, { ...three, runId: "run-a", ordinal: 1 }));
+		progress.onRunEvent(runEvent({ type: "run_started" }, { ...three, runId: "run-b", ordinal: 2 }));
+		progress.onRunEvent(runEvent({ type: "run_started" }, { ...three, runId: "run-c", ordinal: 3 }));
+		expect(statuses().at(-1)).toContain("AHDE run graded 0/3 · running 3");
+
+		// A pool finishes out of order; the counters follow completion, not ordinals.
+		progress.onRunEvent(runEvent(
+			{ type: "run_graded", outcome: "pass", passedGraders: 1, totalGraders: 1 },
+			{ ...three, runId: "run-b", ordinal: 2 },
+		));
+		expect(statuses().at(-1)).toContain("AHDE run graded 1/3 · running 2");
+		progress.onRunEvent(runEvent(
+			{ type: "run_graded", outcome: "fail", passedGraders: 0, totalGraders: 1 },
+			{ ...three, runId: "run-c", ordinal: 3 },
+		));
+		progress.onRunEvent(runEvent(
+			{ type: "run_graded", outcome: "error", passedGraders: 0, totalGraders: 1 },
+			{ ...three, runId: "run-a", ordinal: 1 },
+		));
+		expect(statuses().at(-1)).toContain("AHDE run graded 3/3 · running 0 ");
+		expect(statuses().at(-1)).toContain("✓1 ✗1 !1");
+		progress.dispose();
+	});
+
+	it("never splices interleaved assistant text from two runs into one line", () => {
+		const setStatus = vi.fn();
+		const setWidget = vi.fn();
+		const progress = createRunProgressPresenter({ setStatus, setWidget });
+
+		progress.onRunEvent(runEvent(
+			{ type: "assistant_delta", delta: "first-run-text", truncated: false },
+			{ runId: "run-a", ordinal: 1, total: 2 },
+		));
+		progress.onRunEvent(runEvent(
+			{ type: "assistant_delta", delta: "second-run-text", truncated: false },
+			{ runId: "run-b", ordinal: 2, total: 2 },
+		));
+
+		const frame = (setWidget.mock.calls.at(-1)?.[1] ?? []) as string[];
+		expect(frame).toContain("assistant · first-run-text");
+		expect(frame).toContain("assistant · second-run-text");
+		expect(frame.join("\n")).not.toContain("first-run-textsecond-run-text");
+		progress.dispose();
 	});
 
 	it("keeps every live widget frame within Pi's 10 visible lines and 32 KiB", () => {
