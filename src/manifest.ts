@@ -45,12 +45,71 @@ export type GraderSpec = z.infer<typeof GraderSpec>;
 
 // ---------- Task / dataset ----------
 
+/** A reference answer and every dialogue turn stay small enough to read whole. */
+export const MAX_TASK_TEXT_BYTES = 8 * 1024;
+export const MAX_TASK_MESSAGES = 40;
+export const MAX_TASK_METADATA_KEYS = 8;
+export const MAX_TASK_METADATA_KEY_CHARS = 64;
+export const MAX_TASK_METADATA_VALUE_CHARS = 500;
+
+function boundedTaskText(label: string) {
+	return z.string().min(1).superRefine((value, context) => {
+		const bytes = Buffer.byteLength(value, "utf8");
+		if (bytes > MAX_TASK_TEXT_BYTES) {
+			context.addIssue({ code: "custom", message: `${label} is ${bytes} bytes, over the ${MAX_TASK_TEXT_BYTES} byte bound` });
+		}
+	});
+}
+
+export const DialogueMessageSchema = z.strictObject({
+	role: z.enum(["user", "assistant"]),
+	content: boundedTaskText("message content"),
+});
+export type DialogueMessage = z.infer<typeof DialogueMessageSchema>;
+
+/** Bounded provenance carried over from an imported source row. */
+export const TaskMetadataSchema = z
+	.record(z.string().min(1).max(MAX_TASK_METADATA_KEY_CHARS), z.string().max(MAX_TASK_METADATA_VALUE_CHARS))
+	.superRefine((metadata, context) => {
+		const keys = Object.keys(metadata).length;
+		if (keys > MAX_TASK_METADATA_KEYS) {
+			context.addIssue({ code: "custom", message: `metadata carries ${keys} keys, over the ${MAX_TASK_METADATA_KEYS} key bound` });
+		}
+	});
+export type TaskMetadata = z.infer<typeof TaskMetadataSchema>;
+
 export const TaskSchema = z.strictObject({
 	id: z.string().min(1),
 	input: z.string().min(1),
+	/** Reference answer for graders that compare against one. */
+	expected: boundedTaskText("expected answer").optional(),
+	/**
+	 * Conversation so far, ending in the user turn `input` repeats. Consumers
+	 * that only read `input` therefore keep seeing the question that was asked.
+	 */
+	messages: z.array(DialogueMessageSchema).min(1).max(MAX_TASK_MESSAGES).optional(),
+	metadata: TaskMetadataSchema.optional(),
 	graders: z.array(GraderSpec).optional(),
 });
 export type Task = z.infer<typeof TaskSchema>;
+
+/**
+ * The dialogue invariant, as a function rather than a schema refinement:
+ * `CorpusTaskSchema` and the Builder draft schemas override `graders`, and Zod
+ * refuses to overwrite a key on an object schema that carries refinements.
+ * Every path that admits a task calls this instead.
+ */
+export function taskDialogueIssue(task: {
+	input: string;
+	messages?: readonly DialogueMessage[] | undefined;
+}): string | null {
+	if (!task.messages) return null;
+	const last = task.messages[task.messages.length - 1];
+	if (!last) return "messages must carry at least one turn";
+	if (last.role !== "user") return "the last message must be the user turn";
+	if (last.content !== task.input) return "the last user message must repeat input";
+	return null;
+}
 
 export const GradersFile = z.strictObject({
 	defaults: z.array(GraderSpec).default([]),
@@ -320,6 +379,22 @@ function readRelative(dir: string, rel: string): string {
 	return readFileSync(targetFilePath(dir, rel), "utf8");
 }
 
+/**
+ * The scored surface of one task. Optional fields are emitted as `undefined`
+ * when absent and canonical JSON drops them, so a dataset that uses none of
+ * them hashes exactly as it did before those fields existed.
+ */
+function datasetIdentity(task: Task): Record<string, unknown> {
+	return {
+		id: task.id,
+		input: task.input,
+		graders: task.graders ?? null,
+		expected: task.expected,
+		messages: task.messages,
+		metadata: task.metadata,
+	};
+}
+
 function loadDataset(dir: string, rel: string): Task[] {
 	const content = readRelative(dir, rel);
 	const tasks: Task[] = [];
@@ -335,6 +410,10 @@ function loadDataset(dir: string, rel: string): Task[] {
 		const result = TaskSchema.safeParse(parsed);
 		if (!result.success) {
 			throw new Error(`dataset ${rel} line ${i + 1}: ${result.error.message}`);
+		}
+		const dialogueIssue = taskDialogueIssue(result.data);
+		if (dialogueIssue) {
+			throw new Error(`dataset ${rel} line ${i + 1}: ${dialogueIssue}`);
 		}
 		tasks.push(result.data);
 	}
@@ -406,9 +485,9 @@ export function loadTarget(dir: string, override?: { dataset?: string }): Resolv
 		throw new Error("dataset uses judge graders but evalSuite.judge model is not configured");
 	}
 
-	const datasetHash = hashValue(tasks.map(({ id, input, graders }) => ({ id, input, graders: graders ?? null })));
+	const datasetHash = hashValue(tasks.map(datasetIdentity));
 	const suiteHash = hashValue({
-		dataset: tasks.map(({ id, input, graders }) => ({ id, input, graders: graders ?? null })),
+		dataset: tasks.map(datasetIdentity),
 		defaults,
 		judge: manifest.evalSuite.judge ?? null,
 	});
