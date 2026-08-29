@@ -30,8 +30,9 @@ bar.
    the result with `kind: corpus-revision` semantic
    add/replace/remove/set-graders/grader.add/grader.update/grader.remove/rename/
    set-notes operations; every revision is immutable.
-7. Inspect `ahde_workbench_view` with `aspect: review`, show the exact bounded
-   task set, then request `ahde_workbench_decide` with
+7. Inspect `ahde_workbench_view` with `aspect: review`; the host renders the
+   exact bounded task set, so add one line on what this basket does and does
+   not cover, then request `ahde_workbench_decide` with
    `kind: publish-corpus`. The host confirmation publishes an immutable
    development corpus and lineage receipt; there is no Builder surface for
    authoring sealed content.

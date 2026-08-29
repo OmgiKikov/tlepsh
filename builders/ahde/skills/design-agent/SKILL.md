@@ -28,8 +28,9 @@ Target agent.
 4. Reflect the narrowest useful agent back to the operator before saving.
 5. Save a typed immutable draft with `ahde_workbench_submit` using
    `kind: spec-draft`.
-6. Show the draft id and summarize material tradeoffs. Revise by saving a new
-   draft; immutable drafts are never edited in place.
+6. The host renders the saved draft next to your message, so do not read it
+   back: name the tradeoff that mattered most and what comes next. Revise by
+   saving a new draft; immutable drafts are never edited in place.
 7. Inspect `ahde_workbench_view` with `aspect: review`, then request
    `ahde_workbench_decide` with `kind: approve-spec` only after the operator
    asks to approve. The host confirmation is the authority boundary and
