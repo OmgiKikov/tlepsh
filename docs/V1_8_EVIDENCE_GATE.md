@@ -94,7 +94,7 @@ so no tokens are spent on an underpowered verification.
 | Infrastructure error budget | 66c22f4 | ≤10% errored runs excluded, not fatal |
 | S6 product feel | a6ac915 | onboarding resumes after `/login`, model catalog for `configure-target`, model-facing results −76%, tool schemas from zod (−34%), inventory read behind the seam, persona without panel narration |
 | Failure modes on noisy agents | 21b2f09 | a mode is proposable when it reproduces in ≥25% of runs; passes no longer veto (the live run had 29 modes and 0 proposable under the old rule) |
-| S5 first real promotion | in progress | see "Closed loop on a real Target" |
+| S5 first real promotion | live, 2026-08-30 | see "Closed loop on a real Target" |
 
 ## Stages
 
@@ -229,6 +229,44 @@ closed-loop test that drives `ahde_workbench_decide` through a real Pi loop with
 a scripted model (Spec → corpus → run → proposal → apply → verify → promote →
 adopt → next). Public re-exports in `src/index.ts` shrink accordingly (0.1.0).
 `docs/evolution.jsonl`, `builders/default/`, empty `dist N` directories removed.
+
+## Closed loop on a real Target (2026-08-30)
+
+Target `ombudsman` (qwen/qwen3.5-9b via OpenRouter, judge z-ai/glm-5.3), a
+clone at `5c99d43` (30 development cases), a 15-case sealed holdout imported by
+the host, 3 repetitions, 4 jobs, run by `scratchpad/ombudsman-loop.mjs` through
+the production application chain (approved Spec → baseline → A/A calibration →
+diagnosis → Builder-origin proposal replaying the dd68f00 harness change →
+apply → matched verification → review → promote → adopt → continue).
+
+| Step | Result |
+|---|---|
+| Baseline 30×3 | 36/90 = 40.0%, 0 errors |
+| A/A calibration (same SHA, twice) | 40.0% → 46.7%, CI −4.4 … +17.8 pp, 21/30 tasks flipped → `inconclusive`; second pair 40.0% → 42.2%, CI −8.9 … +13.3 pp → `inconclusive` |
+| Diagnosis | 29 failure modes, 6 systemic; 7 proposable after the reproduction floor (0 under the old "any pass vetoes" rule) |
+| Development verification 30×3 | 40.0% → 95.6%, **+55.6 pp, CI +45.6 … +65.6**, 28 improved / 0 regressed / 2 unchanged → `improved` |
+| Sealed verification 15×3 | 38.1% → 90.5%, **+52.4 pp, CI +38.1 … +66.7**, 13 improved / 0 regressed / 1 unchanged, 1 task excluded within the error budget → `pass` |
+| Promotion | `v0.2.0` → `59b50bb2a652`, adopted (branch fast-forwarded), cycle recorded |
+| Cost | 765 Target runs across all attempts, $0.42 of Target tokens; 4 runs (0.5%) hit infrastructure errors |
+
+Compare with the same harness change in August measured by the old gate: four
+"regressions" on 5 tasks × 2 repetitions and no promotion, ever. The A/A pairs
+above are the noise those rejections were made of.
+
+The live run also found four defects that scripted tests could not:
+
+1. A judge reply `{"passed": false}` without a `reason` was an infrastructure
+   error and, being one run out of ninety, stopped the whole A/A experiment.
+   Fix: the verdict parser accepts a missing reason.
+2. Any infrastructure error aborted an experiment. Fix: the error budget —
+   up to 10% of runs may error; their tasks are excluded from the statistics
+   and counted on the record; above the budget the surface is inconclusive.
+3. With repetitions, almost every real failure mode has some passes, and the
+   old rule vetoed a proposal on any pass: 29 modes, 0 proposable. Fix: a mode
+   is proposable when it reproduces in at least 25% of its runs.
+4. One excluded sealed task made a 15-task holdout "underpowered" (14 < 15) and
+   refused a +52 pp promotion. Fix: the minimum applies to the designed
+   holdout; the error budget already bounds exclusions.
 
 ## Non-goals (deferred with reason)
 Judge result cache (no regrade path); an `ungraded` grader state (five schemas
