@@ -42,6 +42,13 @@ describe("side-effect-free CLI invocation parsing", () => {
 		{ name: "evidence", argv: ["evidence", "--port", "4312"], command: "evidence", action: null },
 		{ name: "init", argv: ["init", "./agent", "--template", "./template"], command: "init", action: null },
 		{ name: "run", argv: ["run", "--target", "./agent", "--task", "current-sources", "--repetitions", "2", "--label", "baseline"], command: "run", action: null },
+		{ name: "run with a job bound", argv: ["run", "--target", "./agent", "--jobs", "4"], command: "run", action: null },
+		{
+			name: "candidate with concurrency and baseline age bounds",
+			argv: ["candidate", "--target", "./agent", "--builder-run", "b1", "--jobs", "2", "--baseline-max-age", "0"],
+			command: "candidate",
+			action: null,
+		},
 		{ name: "run corpus", argv: ["run", "--target", "./agent", "--project", "demo", "--corpus", "corpus-dev"], command: "run", action: null },
 		{ name: "validate", argv: ["validate", "--target", "./agent", "--dataset", "evals/dev.jsonl"], command: "validate", action: null },
 		{ name: "list", argv: ["list", "--target", "agent-id"], command: "list", action: null },
@@ -150,6 +157,12 @@ describe("side-effect-free CLI invocation parsing", () => {
 		[["review", "--candidate", "candidate-1", "--recommend", "maybe", "--reason", "x"], /--recommend .* promote, reject/],
 		[["evidence", "--port", "65536"], /--port .* between 0 and 65535/],
 		[["run", "--target", "./agent", "--repetitions", "0"], /--repetitions .* at least 1/],
+		[["run", "--target", "./agent", "--jobs", "0"], /--jobs .* between 1 and 64/],
+		[["run", "--target", "./agent", "--jobs", "65"], /--jobs .* between 1 and 64/],
+		[
+			["candidate", "--target", "./agent", "--builder-run", "b1", "--baseline-max-age", "2.5"],
+			/--baseline-max-age .* must be an integer/,
+		],
 		[["corpus", "draft", "--project", "demo", "--target", "./agent", "--spec", "spec-1", "--tasks", "2.5"], /--tasks .* must be an integer/],
 	] as const)("rejects invalid bounded flag values in %j", (argv, message) => {
 		expect(() => parseCliInvocation(argv)).toThrow(message);
