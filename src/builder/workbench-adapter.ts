@@ -12,19 +12,19 @@ import type {
 	WorkbenchDecisionResult,
 	WorkbenchTurn,
 	WorkbenchView,
+	WorkbenchViewInclude,
 } from "../workbench/types.js";
-import type { compileHarnessAuthoringProposal } from "../application/harness-authoring.js";
-import { TargetModelSelectionSchema } from "../application/target-model-selection.js";
-import { selectTargetCredentialEnvironment, targetModelResolver } from "./onboarding.js";
+import {
+	hostModelCatalog,
+	selectTargetCredentialEnvironment,
+	targetModelResolver,
+	type HostModelCatalog,
+} from "./onboarding.js";
 import {
 	createAhdeWorkbench,
 	type AhdeWorkbench,
 	type AhdeWorkbenchDependencies,
 } from "../workbench/workbench.js";
-import type {
-	WorkbenchDecisionInput,
-	WorkbenchSubmitInput,
-} from "../workbench/types.js";
 
 function isWorkbenchView(value: unknown): value is WorkbenchView {
 	return typeof value === "object" && value !== null &&
@@ -103,10 +103,9 @@ const WORKBENCH_TOOL_RENDERERS = {
 import type { BuilderProjectContext } from "./project-context.js";
 import { createWorkbenchHumanGate } from "./workbench-gate.js";
 import {
-	WorkbenchDecisionParameters,
-	WorkbenchSubmitParameters,
-	WorkbenchViewParameters,
-	prepareWorkbenchArguments,
+	WorkbenchDecisionToolSchema,
+	WorkbenchSubmitToolSchema,
+	WorkbenchViewToolSchema,
 } from "./workbench-transport.js";
 import {
 	beginBuilderRunObservation,
@@ -116,88 +115,96 @@ import {
 
 type RegisteredWorkbenchTool = ToolDefinition<TSchema, unknown>;
 
-export interface BuilderWorkbenchDependencies {
-	describeTargetScaffold: AhdeWorkbenchDependencies["describeTargetScaffold"];
-	applyTargetScaffold: AhdeWorkbenchDependencies["applyTargetScaffold"];
-	describeTargetBootstrap: AhdeWorkbenchDependencies["describeTargetBootstrap"];
-	configureTargetBootstrap: AhdeWorkbenchDependencies["configureTargetBootstrap"];
-	saveSpecDraft: AhdeWorkbenchDependencies["saveSpecDraft"];
-	describeSpecApproval: AhdeWorkbenchDependencies["describeSpecApproval"];
-	approveSpecDraft: AhdeWorkbenchDependencies["approveSpecDraft"];
-	describeCorpusPublication: AhdeWorkbenchDependencies["describeCorpusPublication"];
-	publishDevelopmentCorpus: AhdeWorkbenchDependencies["publishDevelopmentCorpus"];
-	createCorpusDraft: AhdeWorkbenchDependencies["createCorpusDraft"];
-	importCorpusDraft: AhdeWorkbenchDependencies["importCorpusDraft"];
-	reviseCorpusDraft: AhdeWorkbenchDependencies["reviseCorpusDraft"];
-	compileHarnessProposal: typeof compileHarnessAuthoringProposal;
-	recordProposal: AhdeWorkbenchDependencies["recordProposal"];
-	runSuite: AhdeWorkbenchDependencies["runSuite"];
-	diagnoseEval: AhdeWorkbenchDependencies["diagnoseEval"];
-	compileImprovementBrief: AhdeWorkbenchDependencies["compileImprovementBrief"];
-	evidenceLink: AhdeWorkbenchDependencies["evidenceLink"];
-	applyProposal: AhdeWorkbenchDependencies["applyProposal"];
-	describeProposalDiscard: AhdeWorkbenchDependencies["describeProposalDiscard"];
-	discardProposal: AhdeWorkbenchDependencies["discardProposal"];
-	runAppliedCandidate: AhdeWorkbenchDependencies["runAppliedCandidate"];
-	reviewCandidate: AhdeWorkbenchDependencies["reviewCandidate"];
-	promoteCandidate: AhdeWorkbenchDependencies["promoteCandidate"];
-	rejectCandidate: AhdeWorkbenchDependencies["rejectCandidate"];
-	actorId: () => string;
+/**
+ * The Workbench dependency bag as the Builder extension composes it, plus the
+ * host-owned actor identity the extension keeps for itself. Every Workbench
+ * dependency passes straight through; the previous field-by-field copy silently
+ * dropped the seven it had never been updated for.
+ */
+export type BuilderWorkbenchDependencies = Partial<AhdeWorkbenchDependencies> & { actorId: () => string };
+
+export function createBuilderWorkbench(
+	options: BuilderProjectContext & { templateDir?: string },
+	dependencies: BuilderWorkbenchDependencies,
+): AhdeWorkbench {
+	const { actorId: _hostActor, ...workbenchDependencies } = dependencies;
+	return createAhdeWorkbench({ ...options, dependencies: workbenchDependencies });
 }
 
 function abortIfRequested(signal?: AbortSignal): void {
 	if (signal?.aborted) throw signal.reason ?? new Error("operation aborted");
 }
 
-function textResult(details: unknown): { content: { type: "text"; text: string }[]; details: unknown } {
-	return { content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details };
+/** At most this many warnings reach the model; the header shows every one to the human. */
+const MODEL_WARNING_LIMIT = 3;
+/** Digest fields the persona is forbidden to quote and no tool call ever accepts back. */
+const DIGEST_KEY = /(?:hash|sha256)$/i;
+/** Claims the persona must echo verbatim to author its next call; never pruned. */
+const VERBATIM_KEYS = new Set(["authoringContext", "claim"]);
+
+export interface ModelProjectionOptions {
+	include?: readonly WorkbenchViewInclude[];
+	/** Attached to a summary view while `configure-target` is the legal next step. */
+	hostModelCatalog?: HostModelCatalog | null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function looksLikeWorkbenchView(value: Record<string, unknown>): boolean {
+	return value.schemaVersion === 1 &&
+		typeof value.stage === "string" &&
+		Array.isArray(value.selections) &&
+		isRecord(value.counts);
+}
+
+function projectWorkbenchView(view: Record<string, unknown>, options: ModelProjectionOptions): Record<string, unknown> {
+	const { selections, warnings, ...rest } = view as { selections: unknown[]; warnings: string[] } & Record<string, unknown>;
+	const kept = warnings.slice(0, MODEL_WARNING_LIMIT);
+	const wanted = options.include?.includes("selections") ?? false;
+	return {
+		...projectForModel(rest, options) as Record<string, unknown>,
+		warnings: kept,
+		...(warnings.length > kept.length ? { omittedWarnings: warnings.length - kept.length } : {}),
+		...(wanted
+			? { selections: projectForModel(selections, options) }
+			: selections.length > 0
+				? { selections: `${selections.length} selectable artifacts; call again with include: ["selections"]` }
+				: {}),
+		...(options.hostModelCatalog ? { hostModelCatalog: options.hostModelCatalog } : {}),
+	};
+}
+
+/**
+ * The one place that decides what the model sees. The human renderers read
+ * `details` and keep the whole view; the model gets the same object without the
+ * bulk it cannot act on (the selection list) and without digests it must never
+ * quote back. Ids, claims, and every workflow field survive untouched.
+ */
+export function projectForModel(value: unknown, options: ModelProjectionOptions = {}): unknown {
+	if (Array.isArray(value)) return value.map((item) => projectForModel(item, options));
+	if (!isRecord(value)) return value;
+	if (looksLikeWorkbenchView(value)) return projectWorkbenchView(value, options);
+	const projected: Record<string, unknown> = {};
+	for (const [key, item] of Object.entries(value)) {
+		if (DIGEST_KEY.test(key)) continue;
+		projected[key] = VERBATIM_KEYS.has(key) ? item : projectForModel(item, options);
+	}
+	return projected;
+}
+
+function textResult(
+	details: unknown,
+	options: ModelProjectionOptions = {},
+): { content: { type: "text"; text: string }[]; details: unknown } {
+	return { content: [{ type: "text", text: JSON.stringify(projectForModel(details, options), null, 2) }], details };
 }
 
 function requireHostUI(ctx: ExtensionContext, operation: string): void {
 	if (!ctx.hasUI || ctx.mode !== "tui") {
 		throw new Error(`${operation} requires a local TUI host confirmation; RPC, print, and JSON execution fail closed`);
 	}
-}
-
-export function createBuilderWorkbench(
-	options: BuilderProjectContext & { templateDir?: string },
-	dependencies: BuilderWorkbenchDependencies,
-): AhdeWorkbench {
-	const workbenchDependencies: Partial<AhdeWorkbenchDependencies> = {
-		describeTargetScaffold: dependencies.describeTargetScaffold,
-		applyTargetScaffold: dependencies.applyTargetScaffold,
-		describeTargetBootstrap: dependencies.describeTargetBootstrap,
-		configureTargetBootstrap: dependencies.configureTargetBootstrap,
-		saveSpecDraft: dependencies.saveSpecDraft,
-		describeSpecApproval: dependencies.describeSpecApproval,
-		approveSpecDraft: dependencies.approveSpecDraft,
-		describeCorpusPublication: dependencies.describeCorpusPublication,
-		publishDevelopmentCorpus: dependencies.publishDevelopmentCorpus,
-		createCorpusDraft: dependencies.createCorpusDraft,
-		importCorpusDraft: dependencies.importCorpusDraft,
-		reviseCorpusDraft: dependencies.reviseCorpusDraft,
-		compileHarnessProposal: dependencies.compileHarnessProposal,
-		recordProposal: dependencies.recordProposal,
-		runSuite: dependencies.runSuite,
-		diagnoseEval: dependencies.diagnoseEval,
-		compileImprovementBrief: dependencies.compileImprovementBrief,
-		evidenceLink: dependencies.evidenceLink,
-		applyProposal: dependencies.applyProposal,
-		describeProposalDiscard: dependencies.describeProposalDiscard,
-		discardProposal: dependencies.discardProposal,
-		runAppliedCandidate: dependencies.runAppliedCandidate,
-		reviewCandidate: dependencies.reviewCandidate,
-		promoteCandidate: dependencies.promoteCandidate,
-		rejectCandidate: dependencies.rejectCandidate,
-	};
-	return createAhdeWorkbench({
-		projectDir: options.projectDir,
-		stateRoot: options.stateRoot,
-		runsRoot: options.runsRoot,
-		projectId: options.projectId,
-		templateDir: options.templateDir,
-		dependencies: workbenchDependencies,
-	});
 }
 
 export interface BuilderWorkbenchToolOptions {
@@ -226,21 +233,25 @@ export function createBuilderWorkbenchTools(
 			label: "Inspect Builder Workbench",
 			description: [
 				"Read the AHDE Workbench: the current stage, legal next actions, the exact subject under review, the diagnosis, or the committed Target.",
-				"Arguments: { aspect?: \"summary\" | \"review\" | \"traces\" | \"target\", resourcePath?: string }.",
+				"Arguments: { aspect?: \"summary\" | \"review\" | \"traces\" | \"target\", resourcePath?: string, include?: [\"selections\"] }.",
 				"aspect omitted/summary = stage + counts; review = the exact Spec draft, eval basket, proposal diff, or candidate awaiting a decision;",
 				"traces = evaluation summary, failure modes (improvementBrief.modes with ordinal + failureModeId), evidence link;",
 				"target = the committed Target index (resources with path/kind) — pass one returned resourcePath to read that file's complete content.",
+				"include: [\"selections\"] adds the selectable-artifact ids that kind: select needs; omit it otherwise.",
 				"Call this before relying on remembered state; operator slash commands change state between your turns.",
 			].join(" "),
-			parameters: WorkbenchViewParameters,
-			prepareArguments: (args) => prepareWorkbenchArguments(WorkbenchViewParameters, args, "aspect") as never,
-			async execute(_id, params, signal) {
+			parameters: WorkbenchViewToolSchema.parameters,
+			prepareArguments: (args) => WorkbenchViewToolSchema.prepare(args),
+			async execute(_id, params, signal, _update, ctx) {
 				abortIfRequested(signal);
-				const resourcePath = "resourcePath" in params ? params.resourcePath : undefined;
-				return textResult(await workbench.view({
-					aspect: params.aspect ?? "summary",
-					...(resourcePath ? { resourcePath } : {}),
-				}));
+				const { include, ...query } = params;
+				const view = await workbench.view(query);
+				// configure-target is the only decision that needs a model id, and the
+				// trusted host catalog is the only place those ids exist.
+				const catalog = view.stage === "target-setup" && (query.aspect ?? "summary") === "summary"
+					? hostModelCatalog(ctx)
+					: null;
+				return textResult(view, { include: include ?? [], hostModelCatalog: catalog });
 			},
 			renderCall: (args, theme) => WORKBENCH_TOOL_RENDERERS.view.renderCall(args, theme),
 			renderResult: (result, renderOptions, theme) => WORKBENCH_TOOL_RENDERERS.view.renderResult(result.details, renderOptions.expanded, theme),
@@ -260,14 +271,11 @@ export function createBuilderWorkbenchTools(
 				"intent = { type: \"instructions.replace\", content } | { type: \"skill.upsert\", name, description, body, disableModelInvocation? } | { type: \"skill.remove\", name } | { type: \"tool.upsert\", name, descriptor: { description, parameters (JSON Schema), arguments?, timeoutMs, maxOutputBytes, output: \"json\" | \"text\", permissions: { environment: string[], network: \"deny\" | \"allow\", filesystem: \"read-only\" | \"workspace-write\" } }, executable (script text starting with #!) } | { type: \"tool.remove\", name } | { type: \"execution.configure\", execution: { tools: (\"read\" | \"bash\" | \"edit\" | \"write\")[], environmentAllowlist: string[], network, sandbox: \"required\" | \"best-effort\" | \"off\" } }.",
 				"This is how Target tools and skills get written: the host compiles the exact files and diff from these intents; the operator reviews and applies. Submission grants no consequential authority.",
 			].join("\n"),
-			parameters: WorkbenchSubmitParameters,
-			prepareArguments: (args) => prepareWorkbenchArguments(WorkbenchSubmitParameters, args) as never,
+			parameters: WorkbenchSubmitToolSchema.parameters,
+			prepareArguments: (args) => WorkbenchSubmitToolSchema.prepare(args),
 			async execute(_id, params, signal) {
 				abortIfRequested(signal);
-				const submission = params.kind === "spec-draft"
-					? { ...params, spec: { schemaVersion: 1 as const, ...params.spec } }
-					: params;
-				const turn = await workbench.submit(submission as WorkbenchSubmitInput, { signal });
+				const turn = await workbench.submit(params, { signal });
 				await changed();
 				return textResult(turn);
 			},
@@ -286,16 +294,14 @@ export function createBuilderWorkbenchTools(
 				"release-decision → { kind: \"promote-candidate\", version: \"x.y.z\" } | { kind: \"reject-candidate\" }; candidate-adoption → { kind: \"adopt-candidate\" }; complete → { kind: \"continue-cycle\" }.",
 				"Actor identity and sealed-holdout selection stay host-owned; never add approved/confirmed/actor fields.",
 			].join("\n"),
-			parameters: WorkbenchDecisionParameters,
-			prepareArguments: (args) => prepareWorkbenchArguments(WorkbenchDecisionParameters, args) as never,
+			parameters: WorkbenchDecisionToolSchema.parameters,
+			prepareArguments: (args) => WorkbenchDecisionToolSchema.prepare(args),
 			renderCall: (args, theme) => WORKBENCH_TOOL_RENDERERS.decide.renderCall(args, theme),
 			renderResult: (result, renderOptions, theme) => WORKBENCH_TOOL_RENDERERS.decide.renderResult(result.details, renderOptions.expanded, theme),
 			async execute(_id, params, signal, _update, ctx) {
 				abortIfRequested(signal);
 				requireHostUI(ctx, "Workbench decision");
-				const targetModelSelection = params.kind === "configure-target"
-					? TargetModelSelectionSchema.parse(params.model)
-					: null;
+				const targetModelSelection = params.kind === "configure-target" ? params.model : null;
 				const targetCredentialEnvironment = targetModelSelection
 					? await selectTargetCredentialEnvironment(ctx, targetModelSelection)
 					: null;
@@ -312,7 +318,7 @@ export function createBuilderWorkbenchTools(
 						? targetModelResolver(ctx, targetCredentialEnvironment)
 						: undefined;
 					const result = await workbench.decide(
-						params as WorkbenchDecisionInput,
+						params,
 						createWorkbenchHumanGate(ctx, actorId, (operation) => requireHostUI(ctx, operation)),
 						{
 							signal,

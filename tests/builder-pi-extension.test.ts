@@ -14,8 +14,10 @@ import {
 import { AHDE_BUILDER_COMMAND_NAMES } from "../src/builder/commands.js";
 import {
 	WorkbenchDecisionParameters,
+	WorkbenchDecisionToolSchema,
 	WorkbenchSubmitParameters,
-	WorkbenchViewParameters,
+	WorkbenchSubmitToolSchema,
+	WorkbenchViewToolSchema,
 } from "../src/builder/workbench-transport.js";
 import {
 	WorkbenchDecisionInputSchema,
@@ -181,8 +183,11 @@ describe("Builder Pi extension registry", () => {
 			{ ...structuredProposal, failureModeIds: [...structuredProposal.failureModeIds, structuredProposal.failureModeIds[0]] },
 			{ ...structuredProposal, diagnoses: [{ failureIds: ["forged"], evidence: ["forged"], rootCause: "forged" }] },
 		]) {
-			expect(Check(WorkbenchSubmitParameters, invalid)).toBe(false);
+			// The tool schema is generated from this zod schema, so the model-facing
+			// gate is the same one; a few bounds (path policy, id uniqueness) live in
+			// refinements JSON Schema cannot express and are rejected at prepare().
 			expect(WorkbenchSubmitInputSchema.safeParse(invalid).success).toBe(false);
+			expect(() => WorkbenchSubmitToolSchema.prepare(invalid)).toThrow();
 		}
 
 		const blankDecision = { kind: "run-current", repetitions: 1, reason: "   " };
@@ -209,13 +214,14 @@ describe("Builder Pi extension registry", () => {
 		]) {
 			expect(Check(WorkbenchDecisionParameters, invalidModelSelection)).toBe(false);
 			expect(WorkbenchDecisionInputSchema.safeParse(invalidModelSelection).success).toBe(false);
+			expect(() => WorkbenchDecisionToolSchema.prepare(invalidModelSelection)).toThrow();
 		}
 
 		for (const targetView of [
 			{ aspect: "target" },
 			{ aspect: "target", resourcePath: "AGENTS.md" },
 		]) {
-			expect(Check(WorkbenchViewParameters, targetView)).toBe(true);
+			expect(Check(WorkbenchViewToolSchema.parameters, targetView)).toBe(true);
 			expect(WorkbenchViewQuerySchema.safeParse(targetView).success).toBe(true);
 		}
 		for (const invalidView of [
@@ -223,8 +229,8 @@ describe("Builder Pi extension registry", () => {
 			{ resourcePath: "AGENTS.md" },
 			{ aspect: "target", resourcePath: "x".repeat(501) },
 		]) {
-			expect(Check(WorkbenchViewParameters, invalidView)).toBe(false);
 			expect(WorkbenchViewQuerySchema.safeParse(invalidView).success).toBe(false);
+			expect(() => WorkbenchViewToolSchema.prepare(invalidView)).toThrow();
 		}
 	});
 

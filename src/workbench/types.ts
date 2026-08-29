@@ -30,7 +30,9 @@ import type { CandidateStatus, ComparisonSummaryEvidence } from "../domain/candi
 import type { EvalRunSummary } from "../eval.js";
 import type { CycleContinuationReceipt } from "./cycle-continuation.js";
 
-const NonBlankSchema = z.string().min(1).refine((value) => value.trim().length > 0, "expected non-blank text");
+// A regex, not a refinement: the generated tool schema carries `pattern` so the
+// model sees the constraint instead of only being corrected by it.
+const NonBlankSchema = z.string().min(1).regex(/\S/, "expected non-blank text");
 const ArtifactIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/);
 
 export const WorkbenchSelectionKindSchema = z.enum([
@@ -302,9 +304,19 @@ export interface WorkbenchView {
 	};
 }
 
+/** Bulk parts of the view a caller must ask for; the model-facing projection drops them otherwise. */
+export const WorkbenchViewIncludeSchema = z.enum(["selections"]);
+export type WorkbenchViewInclude = z.infer<typeof WorkbenchViewIncludeSchema>;
+
 export const WorkbenchViewQuerySchema = z.strictObject({
 	aspect: z.enum(["summary", "traces", "review", "target"]).optional(),
 	resourcePath: z.string().min(1).max(500).optional(),
+	/**
+	 * Projection hint read by the model-facing transport, not by the Workbench:
+	 * `["selections"]` asks for the full selectable-artifact list, which every
+	 * human renderer always receives.
+	 */
+	include: z.array(WorkbenchViewIncludeSchema).max(1).optional(),
 }).superRefine((query, context) => {
 	if (query.resourcePath !== undefined && query.aspect !== "target") {
 		context.addIssue({
@@ -324,7 +336,8 @@ const SelectInputSchema = z.strictObject({
 
 const SaveSpecDraftInputSchema = z.strictObject({
 	kind: z.literal("spec-draft"),
-	spec: AgentSpecSchema,
+	/** The schema version is host-owned; a Builder never authors or restates it. */
+	spec: AgentSpecSchema.extend({ schemaVersion: z.literal(1).default(1) }),
 	sourceText: z.string().max(64 * 1024).optional(),
 });
 

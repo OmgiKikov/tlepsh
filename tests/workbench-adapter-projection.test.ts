@@ -1,0 +1,157 @@
+import { describe, expect, it } from "vitest";
+import { projectForModel } from "../src/builder/workbench-adapter.js";
+import type { WorkbenchSelectionSummary, WorkbenchView } from "../src/workbench/types.js";
+
+/** A loaded but ordinary project: 30 development evals, 5 candidates, 5 proposals. */
+function loadedView(): WorkbenchView {
+	const selections: WorkbenchSelectionSummary[] = [
+		...Array.from({ length: 30 }, (_, index) => ({
+			kind: "eval-run" as const,
+			id: `evalrun-2026-08-2${index % 10}-${"a".repeat(12)}${index}`,
+			label: `${20 + (index % 10)}/40 passed`,
+			status: "complete",
+			selected: index === 29,
+		})),
+		...Array.from({ length: 5 }, (_, index) => ({
+			kind: "candidate" as const,
+			id: `candidate-${"b".repeat(20)}${index}`,
+			label: `proposal-${"c".repeat(20)}${index}`,
+			status: "evaluated",
+			selected: false,
+		})),
+		...Array.from({ length: 5 }, (_, index) => ({
+			kind: "proposal" as const,
+			id: `builder-run-${"d".repeat(20)}${index}`,
+			label: "Tighten the routing instructions and add a lookup skill",
+			status: "open",
+			selected: index === 0,
+		})),
+	];
+	return {
+		schemaVersion: 1,
+		project: { id: "demo", directory: "competitor-research" },
+		stage: "proposal-review",
+		headline: "Review the exact proposal diff.",
+		target: {
+			status: "ready",
+			id: "competitor-research",
+			gitSha: "a".repeat(40),
+			model: { provider: "openai", id: "gpt-test", apiKeyEnv: "OPENAI_API_KEY", credentialPresent: true },
+		},
+		focus: { proposal: `builder-run-${"d".repeat(20)}0` },
+		selections,
+		actions: ["review", "apply-proposal", "discard-proposal"],
+		blockers: [],
+		warnings: Array.from({ length: 6 }, (_, index) => `focus eval-run legacy-${index} no longer resolves`),
+		calibration: null,
+		detail: {
+			aspect: "review",
+			content: {
+				kind: "proposal",
+				runId: `builder-run-${"d".repeat(20)}0`,
+				proposalHash: `sha256:${"e".repeat(64)}`,
+				baseTargetSha: "f".repeat(40),
+				summary: "Tighten routing instructions",
+				paths: ["AGENTS.md", "skills/search/SKILL.md"],
+				risks: ["May over-trigger the lookup skill"],
+				validationPlan: ["Re-run the development basket"],
+				authoringContext: {
+					algorithmId: "git-manifest-context-v1",
+					targetId: "competitor-research",
+					targetGitSha: "a".repeat(40),
+					contextHash: `sha256:${"1".repeat(64)}`,
+				} as never,
+				evidenceBasis: {
+					algorithmId: "exact-eval-signals-v1",
+					evalRunId: "evalrun-1",
+					diagnosisId: "diagnosis-1",
+					briefId: `brief-${"2".repeat(24)}`,
+					briefSha256: `sha256:${"3".repeat(64)}`,
+					failureModes: [{ failureModeId: `failure-mode-${"4".repeat(24)}`, modeSha256: `sha256:${"5".repeat(64)}` }],
+					runRefs: ["run-1", "run-2"],
+				},
+				exactDiff: "--- a/AGENTS.md\n+++ b/AGENTS.md\n@@\n-old\n+new\n",
+			},
+		},
+		counts: {
+			specDrafts: 2,
+			approvedSpecs: 1,
+			corpusDrafts: 3,
+			developmentCorpora: 1,
+			sealedCorpora: 1,
+			developmentEvals: 30,
+			openProposals: 5,
+			candidates: 5,
+			calibrations: 1,
+		},
+	};
+}
+
+const size = (value: unknown): number => JSON.stringify(value, null, 2).length;
+
+describe("model-facing projection", () => {
+	it("drops the selection list, the warning tail, and every digest field", () => {
+		const view = loadedView();
+		const projected = projectForModel(view) as Record<string, unknown> & {
+			warnings: string[];
+			detail: { content: Record<string, unknown> };
+		};
+
+		expect(projected.selections).toBe('40 selectable artifacts; call again with include: ["selections"]');
+		expect(projected.warnings).toHaveLength(3);
+		expect(projected.omittedWarnings).toBe(3);
+		expect(projected.stage).toBe("proposal-review");
+		expect(projected.actions).toEqual(view.actions);
+		expect(projected.counts).toEqual(view.counts);
+
+		const content = projected.detail.content;
+		expect(content.proposalHash).toBeUndefined();
+		expect(content.runId).toBe(view.selections[35]?.id);
+		// The persona has to echo these back to author its next call.
+		expect(content.authoringContext).toEqual({
+			algorithmId: "git-manifest-context-v1",
+			targetId: "competitor-research",
+			targetGitSha: "a".repeat(40),
+			contextHash: `sha256:${"1".repeat(64)}`,
+		});
+		const basis = content.evidenceBasis as Record<string, unknown>;
+		expect(basis.briefId).toBe(`brief-${"2".repeat(24)}`);
+		expect(basis.briefSha256).toBeUndefined();
+		expect(basis.failureModes).toEqual([{ failureModeId: `failure-mode-${"4".repeat(24)}` }]);
+		expect(JSON.stringify(projected)).not.toContain('"proposalHash"');
+	});
+
+	it("returns the selection list only when the view asked for it", () => {
+		const view = loadedView();
+		const projected = projectForModel(view, { include: ["selections"] }) as { selections: unknown[] };
+		expect(projected.selections).toHaveLength(40);
+	});
+
+	it("shrinks the serialized result the model reads", () => {
+		const view = loadedView();
+		const before = size(view);
+		const after = size(projectForModel(view));
+		const withSelections = size(projectForModel(view, { include: ["selections"] }));
+		console.log(`view result bytes: before=${before} after=${after} withSelections=${withSelections}`);
+		expect(after).toBeLessThan(before / 2);
+	});
+
+	it("never rewrites a decision result's ids", () => {
+		const decision = {
+			kind: "publish-corpus",
+			message: "Development corpus published",
+			result: {
+				corpusId: "corpus-1",
+				corpusHash: `sha256:${"a".repeat(64)}`,
+				taskCount: 12,
+				publicationReceiptId: "receipt-1",
+				lineageHash: `sha256:${"b".repeat(64)}`,
+			},
+		};
+		expect(projectForModel(decision)).toEqual({
+			kind: "publish-corpus",
+			message: "Development corpus published",
+			result: { corpusId: "corpus-1", taskCount: 12, publicationReceiptId: "receipt-1" },
+		});
+	});
+});
