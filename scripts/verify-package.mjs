@@ -603,7 +603,8 @@ const scriptedModel = createServer((request, response) => {
       return;
     }
     scriptedRequests += 1;
-    if (bytes > 1024 * 1024 || scriptedRequests > 16) {
+    // 1 source baseline + (1 dev + 15 sealed) tasks x 2 repetitions x 2 arms = 65.
+    if (bytes > 1024 * 1024 || scriptedRequests > 80) {
       response.writeHead(bytes > 1024 * 1024 ? 413 : 429, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: { message: "bounded package fixture limit exceeded" } }));
       return;
@@ -866,8 +867,8 @@ try {
     visibility: "sealed",
     // The sealed guardrail needs at least 15 tasks × 2 repetitions for a verdict.
     tasks: Array.from({ length: 15 }, (_, index) => ({
-      id: `package-holdout-${index + 1}`,
-      input: `${sealedInput} ${index + 1}`,
+      id: \`package-holdout-\${index + 1}\`,
+      input: \`\${sealedInput} \${index + 1}\`,
       graders: [{ type: "output_contains", text: "READY" }],
     })),
   });
@@ -925,7 +926,7 @@ try {
   ) {
     throw new Error("installed-package candidate promotion did not tag the exact reviewed commit");
   }
-  if (scriptedRequests < 3 || scriptedRequests > 16) {
+  if (scriptedRequests < 60 || scriptedRequests > 80) {
     throw new Error("scripted model request count was outside the bounded lifecycle expectation: " + scriptedRequests);
   }
 } finally {
