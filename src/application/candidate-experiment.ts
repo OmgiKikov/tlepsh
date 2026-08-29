@@ -8,6 +8,7 @@ import { loadCorpus, type CorpusRef, type LoadedCorpus } from "../corpus.js";
 import {
 	CandidateRecordSchema,
 	ComparisonGateEvidenceSchema,
+	EXACT_COMPARISON_GATE_ALGORITHM_ID,
 	candidateStatus,
 	createCandidate,
 	transitionCandidate,
@@ -294,6 +295,9 @@ export function comparisonGateEvidence(
 	if (compare.status !== "comparable") {
 		throw new Error(compare.error ?? `cannot evidence a ${compare.status} comparison`);
 	}
+	if (!compare.a.runArtifacts || !compare.b.runArtifacts) {
+		throw new Error("exact comparison gate requires ordered final RunArtifact hashes");
+	}
 	const summary = {
 		taskCount: compare.summary.taskCount,
 		baselinePassRate: compare.summary.baselinePassRate,
@@ -304,18 +308,46 @@ export function comparisonGateEvidence(
 		regressed: compare.summary.regressed,
 		unchanged: compare.summary.unchanged,
 	};
+	const rows = [...compare.rows].sort((left, right) =>
+		Buffer.compare(Buffer.from(left.taskId, "utf8"), Buffer.from(right.taskId, "utf8")));
 	const comparisonHash = hashValue({
-		schemaVersion: 1,
+		schemaVersion: 2,
+		algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID,
 		baselineEvalRunId: compare.a.evalRunId,
 		candidateEvalRunId: compare.b.evalRunId,
 		status: compare.status,
-		rows: compare.rows,
+		rows,
 		summary,
 	});
+	const evidenceHash = hashValue({
+		schemaVersion: 2,
+		algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID,
+		baseline: {
+			evalRunHash: hashValue(compare.a),
+			signalAnchor: "ordered-run-record-sha256-v1",
+			runArtifacts: compare.a.runArtifacts,
+		},
+		candidate: {
+			evalRunHash: hashValue(compare.b),
+			signalAnchor: "ordered-run-record-sha256-v1",
+			runArtifacts: compare.b.runArtifacts,
+		},
+	});
 	return ComparisonGateEvidenceSchema.parse({
+		schemaVersion: 2,
+		algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID,
 		policyId,
 		comparisonHash,
-		gateHash: hashValue({ schemaVersion: 1, policyId, comparisonHash, context, passed: true }),
+		evidenceHash,
+		gateHash: hashValue({
+			schemaVersion: 2,
+			algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID,
+			policyId,
+			comparisonHash,
+			evidenceHash,
+			context,
+			passed: true,
+		}),
 		summary,
 	});
 }

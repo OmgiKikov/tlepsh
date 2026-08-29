@@ -8,6 +8,7 @@ import {
 	CandidateDevelopmentSurfaceError,
 	CandidateExperimentError,
 	DEVELOPMENT_GATE_POLICY_ID,
+	SEALED_GATE_POLICY_ID,
 	comparisonGateEvidence,
 	runCandidateExperiment,
 	type CandidateExperimentDependencies,
@@ -18,21 +19,30 @@ import {
 	targetEvalSurface,
 	targetWithDevelopmentCorpus,
 } from "../src/application/corpus-target.js";
-import { CandidateRecordSchema, candidateStatus } from "../src/domain/candidate.js";
+import {
+	CandidateRecordSchema,
+	EXACT_COMPARISON_GATE_ALGORITHM_ID,
+	candidateStatus,
+} from "../src/domain/candidate.js";
 import {
 	type EvalRunRecord,
 	type ReusableBaselineQuery,
 	type RunSuiteOptions,
+	loadRun,
+	loadVerifiedEvalRun,
 	writeEvalRun,
 } from "../src/eval.js";
 import { loadTarget, type ResolvedTarget } from "../src/manifest.js";
 import {
+	RunRecordSchema,
 	executionFingerprint,
 	hashValue,
 	modelFingerprint,
 	provenanceAxes,
+	type GraderResult,
+	type RunRecord,
 } from "../src/provenance.js";
-import { readJsonArtifact } from "../src/storage/artifacts.js";
+import { readJsonArtifact, writeJsonArtifact } from "../src/storage/artifacts.js";
 import { baseFixtureFiles } from "./fixtures.js";
 
 interface RepositoryFixture {
@@ -133,6 +143,45 @@ function targetProvenance(target: ResolvedTarget) {
 	});
 }
 
+const RUN_STARTED_AT = "2026-08-26T10:00:00.000Z";
+const RUN_FINISHED_AT = "2026-08-26T10:00:30.000Z";
+const PASSING_GRADER: GraderResult = {
+	name: "fixture",
+	type: "output_contains",
+	passed: true,
+	score: 1,
+	reason: "fixture pass",
+};
+const EMPTY_TRACE: RunRecord["trace"] = { path: "session.jsonl", sessionId: null, sha256: null };
+const EMPTY_METRICS: RunRecord["metrics"] = {
+	tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	costUsd: 0,
+	latencyMs: 0,
+	toolCalls: 0,
+	toolErrors: 0,
+	recoveryAttempts: 0,
+};
+
+/**
+ * Persist final run.json records and anchor them exactly as production
+ * runSuite does: each RunArtifact hash is computed from the re-read persisted
+ * RunRecord, so loadVerifiedEvalRun can verify the index against disk.
+ */
+function persistRuns(
+	runsRoot: string,
+	runs: RunRecord[],
+): { runIds: string[]; runArtifacts: NonNullable<EvalRunRecord["runArtifacts"]> } {
+	const runIds: string[] = [];
+	const runArtifacts: NonNullable<EvalRunRecord["runArtifacts"]> = [];
+	for (const run of runs) {
+		writeJsonArtifact(join(runsRoot, run.runId, "run.json"), RunRecordSchema, run);
+		runIds.push(run.runId);
+		runArtifacts.push({ runId: run.runId, sha256: hashValue(loadRun(runsRoot, run.runId)) });
+	}
+	return { runIds, runArtifacts };
+}
+
+/** Fake runSuite output: tasks × repetitions final RunRecords plus the index that anchors them. */
 function evalRecord(
 	target: ResolvedTarget,
 	options: RunSuiteOptions,
@@ -140,65 +189,149 @@ function evalRecord(
 	errors = 0,
 ): EvalRunRecord {
 	const provenance = targetProvenance(target);
-	const pass = options.repetitions - errors;
-	return {
-		schemaVersion: 1,
-		evalRunId: id,
-		target: {
-			id: target.manifest.id,
-			gitSha: target.gitSha,
-			toolsetHash: target.toolsetHash,
-			workspaceHash: options.expectedWorkspaceHash ?? hashValue({ target: target.gitSha, id }),
-		},
-		label: options.label,
-		baselineEvalRunId: options.baselineEvalRunId ?? null,
-		provenance,
-		provenanceKey: hashValue(provenance),
+	const runTarget = {
+		id: target.manifest.id,
+		gitSha: target.gitSha,
+		toolsetHash: target.toolsetHash,
+		workspaceHash: options.expectedWorkspaceHash ?? hashValue({ target: target.gitSha, id }),
+	};
+	const evalSurface = {
 		suiteId: target.manifest.evalSuite.id,
 		suiteHash: target.suiteHash,
 		dataset: targetEvalSurface(target).dataset,
 		datasetHash: target.datasetHash,
+	};
+	const runs: RunRecord[] = [];
+	for (const [taskIndex, task] of target.tasks.entries()) {
+		for (let repetitionIndex = 0; repetitionIndex < options.repetitions; repetitionIndex += 1) {
+			const ordinal = taskIndex * options.repetitions + repetitionIndex;
+			const failed = ordinal < errors;
+			runs.push({
+				schemaVersion: 1,
+				runId: `${id}-run-${ordinal}`,
+				taskId: task.id,
+				repetitionIndex,
+				label: options.label,
+				status: failed ? "error" : "completed",
+				error: failed ? "fixture infrastructure failure" : null,
+				startedAt: RUN_STARTED_AT,
+				finishedAt: RUN_FINISHED_AT,
+				target: runTarget,
+				runtime: target.runtime,
+				model: modelFingerprint(target.manifest.model),
+				execution: executionFingerprint("isolated"),
+				eval: evalSurface,
+				trace: EMPTY_TRACE,
+				metrics: EMPTY_METRICS,
+				evalResults: failed ? null : { graders: [PASSING_GRADER], outcome: "pass" },
+				parent: { evalRunId: id, candidateOf: options.candidateOf ?? null },
+			});
+		}
+	}
+	const persisted = persistRuns(options.runsRoot, runs);
+	const total = runs.length;
+	const pass = total - errors;
+	return {
+		schemaVersion: 1,
+		evalRunId: id,
+		target: runTarget,
+		label: options.label,
+		baselineEvalRunId: options.baselineEvalRunId ?? null,
+		provenance,
+		provenanceKey: hashValue(provenance),
+		suiteId: evalSurface.suiteId,
+		suiteHash: evalSurface.suiteHash,
+		dataset: evalSurface.dataset,
+		datasetHash: evalSurface.datasetHash,
 		evidenceVisibility: options.evidenceVisibility ?? "development",
 		taskIds: target.tasks.map((task) => task.id),
 		repetitions: options.repetitions,
-		runIds: Array.from({ length: options.repetitions }, (_, index) => `${id}-run-${index}`),
-		startedAt: "2026-08-26T10:00:00.000Z",
+		runIds: persisted.runIds,
+		runArtifacts: persisted.runArtifacts,
+		startedAt: RUN_STARTED_AT,
 		finishedAt: "2026-08-26T10:01:00.000Z",
 		summary: {
-			total: options.repetitions,
+			total,
 			pass,
 			fail: 0,
 			error: errors,
-			allPassRate: pass / options.repetitions,
+			allPassRate: pass / total,
 		},
 	};
 }
 
+/** A previously persisted baseline that matches the reuse query exactly, with its final RunRecords on disk. */
 function reusableRecord(
+	runsRoot: string,
 	query: ReusableBaselineQuery,
 	id = "eval-reused-baseline",
 ): EvalRunRecord {
 	const repetitions = query.repetitions ?? 1;
+	const label = query.label ?? "baseline";
+	const axes = query.provenance;
+	const runTarget = {
+		id: query.targetId,
+		gitSha: query.targetGitSha,
+		toolsetHash: query.toolsetHash,
+		workspaceHash: query.workspaceHash,
+	};
+	const evalSurface = {
+		suiteId: "test-suite",
+		suiteHash: axes.suiteHash,
+		dataset: "development",
+		datasetHash: axes.datasetHash,
+	};
+	const runs = Array.from({ length: repetitions }, (_, repetitionIndex): RunRecord => ({
+		schemaVersion: 1,
+		runId: `${id}-run-${repetitionIndex}`,
+		taskId: "reused-task",
+		repetitionIndex,
+		label,
+		status: "completed",
+		error: null,
+		startedAt: "2026-08-26T09:00:00.000Z",
+		finishedAt: "2026-08-26T09:00:30.000Z",
+		target: runTarget,
+		runtime: {
+			piVersion: axes.piVersion,
+			piSha: axes.piSha,
+			ahdeVersion: axes.ahdeVersion,
+			ahdeCodeHash: axes.ahdeCodeHash,
+		},
+		model: {
+			provider: axes.provider,
+			id: axes.modelId,
+			api: axes.modelApi,
+			baseUrl: axes.modelBaseUrl,
+			apiKeyEnv: axes.modelApiKeyEnv,
+			thinkingLevel: axes.thinkingLevel,
+			params: axes.params,
+			spec: axes.modelSpec,
+		},
+		execution: axes.execution,
+		eval: evalSurface,
+		trace: EMPTY_TRACE,
+		metrics: EMPTY_METRICS,
+		evalResults: { graders: [PASSING_GRADER], outcome: "pass" },
+		parent: { evalRunId: id, candidateOf: null },
+	}));
+	const persisted = persistRuns(runsRoot, runs);
 	return {
 		schemaVersion: 1,
 		evalRunId: id,
-		target: {
-			id: query.targetId,
-			gitSha: query.targetGitSha,
-			toolsetHash: query.toolsetHash,
-			workspaceHash: query.workspaceHash,
-		},
-		label: query.label ?? "baseline",
+		target: runTarget,
+		label,
 		baselineEvalRunId: null,
 		provenance: query.provenance,
 		provenanceKey: hashValue(query.provenance),
-		suiteId: "test-suite",
-		suiteHash: query.provenance.suiteHash,
-		dataset: "development",
-		datasetHash: query.provenance.datasetHash,
+		suiteId: evalSurface.suiteId,
+		suiteHash: evalSurface.suiteHash,
+		dataset: evalSurface.dataset,
+		datasetHash: evalSurface.datasetHash,
 		evidenceVisibility: query.evidenceVisibility,
 		repetitions,
-		runIds: Array.from({ length: repetitions }, (_, index) => `reused-run-${index}`),
+		runIds: persisted.runIds,
+		runArtifacts: persisted.runArtifacts,
 		startedAt: "2026-08-26T09:00:00.000Z",
 		finishedAt: "2026-08-26T09:01:00.000Z",
 		summary: { total: repetitions, pass: repetitions, fail: 0, error: 0, allPassRate: 1 },
@@ -257,22 +390,19 @@ function fakeRuntime(options: FakeRuntimeOptions = {}): FakeRuntime {
 	let reuseSequence = 0;
 	const dependencies: Partial<CandidateExperimentDependencies> = {
 		now: () => "2026-08-26T10:00:00.000Z",
-		findReusableBaseline: (_runsRoot, query) => {
+		findReusableBaseline: (runsRoot, query) => {
 			reuseQueries.push(query);
 			if (!options.reuseBaseline) return null;
 			reuseSequence += 1;
-			const reusable = reusableRecord(
-				query,
+			const record = reusableRecord(
+				runsRoot,
+				options.reuseWorkspaceMismatch
+					? { ...query, workspaceHash: hashValue({ staleWorkspace: reuseSequence }) }
+					: query,
 				reuseSequence === 1 ? "eval-reused-baseline" : `eval-reused-baseline-${reuseSequence}`,
 			);
-			const record = options.reuseWorkspaceMismatch
-				? {
-					...reusable,
-					target: { ...reusable.target, workspaceHash: hashValue({ staleWorkspace: reuseSequence }) },
-				}
-				: reusable;
 			evaluations.set(record.evalRunId, record);
-			writeEvalRun(_runsRoot, record);
+			writeEvalRun(runsRoot, record);
 			return record;
 		},
 		runSuite: async (target, runOptions) => {
@@ -533,7 +663,18 @@ permissions:
 		expect(candidateStatus(result.record)).toBe("evaluated");
 		const finalEvent = result.record.events.at(-1);
 		expect(finalEvent?.type).toBe("evaluated");
-		if (finalEvent?.type === "evaluated") expect(finalEvent.evaluation.sealedHoldout).toBeUndefined();
+		if (finalEvent?.type === "evaluated") {
+			expect(finalEvent.evaluation.sealedHoldout).toBeUndefined();
+			expect(finalEvent.evaluation.development.comparison).toMatchObject({
+				schemaVersion: 2,
+				algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID,
+				policyId: DEVELOPMENT_GATE_POLICY_ID,
+			});
+		}
+		// The reused index anchors its persisted final RunRecords, so it is promotion-grade evidence.
+		for (const evalRunId of ["eval-reused-baseline", result.candidate.evalRunId]) {
+			expect(loadVerifiedEvalRun(repository.runsRoot, evalRunId).hasRunHashes).toBe(true);
+		}
 		const expectedDesignHash = hashValue({
 			schemaVersion: 1,
 			baseline: { ref: repository.baselineSha, sha: repository.baselineSha },
@@ -821,7 +962,15 @@ permissions:
 					evalRunId: holdout.candidate.evalRunId,
 					harness: { sha: repository.candidateSha },
 				},
+				comparison: {
+					schemaVersion: 2,
+					algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID,
+					policyId: SEALED_GATE_POLICY_ID,
+				},
 			});
+		}
+		for (const record of [result.baseline, result.candidate, holdout.baseline, holdout.candidate]) {
+			expect(loadVerifiedEvalRun(repository.runsRoot, record.evalRunId).hasRunHashes).toBe(true);
 		}
 		expect(result.designHash).toBe(hashValue({
 			schemaVersion: 1,
@@ -1030,6 +1179,75 @@ permissions:
 		expect(runtime.suiteCalls).toHaveLength(1);
 		expect(runtime.compareModes).toHaveLength(0);
 		expect(candidateStatus(readJsonArtifact(path, CandidateRecordSchema))).toBe("validated");
+		assertCheckoutUnchanged(repository);
+	});
+
+	it("binds exact comparison gate evidence to ordered final RunArtifact hashes and rejects legacy indexes", async () => {
+		const repository = createRepository({ path: "AGENTS.md", content: "candidate harness\n" });
+		const runtime = fakeRuntime();
+
+		const result = await runCandidateExperiment(
+			{
+				repositoryDir: repository.dir,
+				runsRoot: repository.runsRoot,
+				baselineRef: repository.baselineSha,
+				candidateRef: repository.candidateSha,
+				mode: "candidate",
+				repetitions: 2,
+				candidateId: "candidate-exact-gate",
+			},
+			runtime.dependencies,
+		);
+
+		// The persisted indexes anchor their final run.json records exactly as runSuite does.
+		for (const evalRun of [result.baseline, result.candidate]) {
+			const verified = loadVerifiedEvalRun(repository.runsRoot, evalRun.evalRunId);
+			expect(verified.hasRunHashes).toBe(true);
+			expect(verified.record.taskIds).toEqual(["task_001", "task_002"]);
+			expect(verified.runs).toHaveLength(2 * evalRun.repetitions);
+			expect(verified.record.runArtifacts).toEqual(
+				verified.runs.map((run) => ({ runId: run.runId, sha256: hashValue(run) })),
+			);
+		}
+
+		const evaluated = result.record.events.at(-1);
+		if (evaluated?.type !== "evaluated") throw new Error("expected evaluated event");
+		const evidence = evaluated.evaluation.development.comparison;
+		if (!evidence || !("algorithmId" in evidence)) throw new Error("expected exact v2 comparison evidence");
+		expect(evidence).toMatchObject({
+			schemaVersion: 2,
+			algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID,
+			policyId: DEVELOPMENT_GATE_POLICY_ID,
+		});
+		expect(evidence.evidenceHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+		expect(evidence).toEqual(comparisonGateEvidence(result.compare, DEVELOPMENT_GATE_POLICY_ID));
+
+		// Replacing one final RunArtifact hash changes the evidence and gate hashes without touching the row digest.
+		const candidateArtifacts = result.candidate.runArtifacts;
+		if (!candidateArtifacts) throw new Error("expected candidate run artifacts");
+		const tampered = comparisonGateEvidence(
+			{
+				...result.compare,
+				b: {
+					...result.candidate,
+					runArtifacts: candidateArtifacts.map((artifact, index) =>
+						index === 0 ? { ...artifact, sha256: hashValue({ tampered: artifact.runId }) } : artifact),
+				},
+			},
+			DEVELOPMENT_GATE_POLICY_ID,
+		);
+		if (!("algorithmId" in tampered)) throw new Error("expected exact v2 comparison evidence");
+		expect(tampered.comparisonHash).toBe(evidence.comparisonHash);
+		expect(tampered.evidenceHash).not.toBe(evidence.evidenceHash);
+		expect(tampered.gateHash).not.toBe(evidence.gateHash);
+
+		// Legacy v1 indexes without ordered final RunArtifact hashes are never promotion-grade evidence.
+		const { runArtifacts: _legacyBaselineArtifacts, ...legacyBaseline } = result.baseline;
+		const { runArtifacts: _legacyCandidateArtifacts, ...legacyCandidate } = result.candidate;
+		expect(() => comparisonGateEvidence({ ...result.compare, a: legacyBaseline }, DEVELOPMENT_GATE_POLICY_ID))
+			.toThrow(/exact comparison gate requires ordered final RunArtifact hashes/);
+		expect(() => comparisonGateEvidence({ ...result.compare, b: legacyCandidate }, DEVELOPMENT_GATE_POLICY_ID))
+			.toThrow(/exact comparison gate requires ordered final RunArtifact hashes/);
 		assertCheckoutUnchanged(repository);
 	});
 });

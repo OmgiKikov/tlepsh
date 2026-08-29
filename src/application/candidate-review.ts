@@ -484,6 +484,9 @@ function verifyPromotionEvidence(record: CandidateRecord, runsRoot: string): voi
 	}
 	const developmentEvidence = evaluated.evaluation.development.comparison;
 	if (!developmentEvidence) throw new Error("development comparison evidence is not reconstructable");
+	if (!("algorithmId" in developmentEvidence)) {
+		throw new Error("development comparison uses legacy v1 evidence and is not promotion-grade");
+	}
 	const expectedDevelopment = comparisonGateEvidence(
 		development,
 		DEVELOPMENT_GATE_POLICY_ID,
@@ -511,6 +514,9 @@ function verifyPromotionEvidence(record: CandidateRecord, runsRoot: string): voi
 	}
 	const holdoutEvidence = holdout.comparison;
 	if (!holdoutEvidence) throw new Error("sealed comparison evidence is not reconstructable");
+	if (!("algorithmId" in holdoutEvidence)) {
+		throw new Error("sealed comparison uses legacy v1 evidence and is not promotion-grade");
+	}
 	const expectedHoldout = comparisonGateEvidence(comparison, SEALED_GATE_POLICY_ID, {
 		corpusId: holdout.corpus.id,
 		corpusHash: holdout.corpus.hash,

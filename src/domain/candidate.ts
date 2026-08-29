@@ -120,12 +120,32 @@ export const ComparisonSummaryEvidenceSchema = z.strictObject({
 });
 export type ComparisonSummaryEvidence = z.infer<typeof ComparisonSummaryEvidenceSchema>;
 
-export const ComparisonGateEvidenceSchema = z.strictObject({
+/** Historical gate: row-level comparison only, without exact artifact anchoring. */
+export const ComparisonGateEvidenceV1Schema = z.strictObject({
 	policyId: IdSchema,
 	comparisonHash: FingerprintSchema,
 	gateHash: FingerprintSchema,
 	summary: ComparisonSummaryEvidenceSchema,
 });
+
+export const EXACT_COMPARISON_GATE_ALGORITHM_ID = "exact-comparison-gate-v2" as const;
+
+/** Promotion-grade gate binding the exact EvalRun indexes and ordered RunArtifact hashes. */
+export const ComparisonGateEvidenceV2Schema = z.strictObject({
+	schemaVersion: z.literal(2),
+	algorithmId: z.literal(EXACT_COMPARISON_GATE_ALGORITHM_ID),
+	policyId: IdSchema,
+	comparisonHash: FingerprintSchema,
+	evidenceHash: FingerprintSchema,
+	gateHash: FingerprintSchema,
+	summary: ComparisonSummaryEvidenceSchema,
+});
+
+/** V1 remains parseable for historical review, but is never promotion-grade. */
+export const ComparisonGateEvidenceSchema = z.union([
+	ComparisonGateEvidenceV2Schema,
+	ComparisonGateEvidenceV1Schema,
+]);
 export type ComparisonGateEvidence = z.infer<typeof ComparisonGateEvidenceSchema>;
 
 const MatchedEvaluationSchema = z.strictObject({
