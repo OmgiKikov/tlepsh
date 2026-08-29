@@ -93,6 +93,50 @@ describe("corpus storage", () => {
 		expect(loadCorpus(ref(stateRoot, metadata)).tasks).toHaveLength(1);
 	});
 
+	it("round-trips a reference answer, a dialogue history, and row metadata", () => {
+		const { stateRoot } = fixture();
+		const dialogue = {
+			id: "task-dialogue",
+			input: "And for gold customers?",
+			expected: "Gold customers keep 60 days.",
+			messages: [
+				{ role: "user" as const, content: "How long is the refund window?" },
+				{ role: "assistant" as const, content: "Thirty days." },
+				{ role: "user" as const, content: "And for gold customers?" },
+			],
+			metadata: { tier: "gold" },
+			graders: [{ type: "output_contains" as const, text: "60 days", caseSensitive: false }],
+		};
+		const metadata = createCorpus({
+			stateRoot,
+			projectId: "studio",
+			name: "Dialogue basket",
+			visibility: "development",
+			tasks: [dialogue],
+		});
+
+		expect(loadCorpus(ref(stateRoot, metadata)).tasks).toEqual([dialogue]);
+	});
+
+	it("rejects a dialogue whose last turn is not the user turn in input", () => {
+		const { stateRoot } = fixture();
+		const options = {
+			stateRoot,
+			projectId: "studio",
+			name: "Broken dialogue",
+			visibility: "development" as const,
+		};
+
+		expect(() => createCorpus({
+			...options,
+			tasks: [{ ...task("a"), messages: [{ role: "assistant", content: "input-a" }] }],
+		})).toThrow(/the last message must be the user turn/);
+		expect(() => createCorpus({
+			...options,
+			tasks: [{ ...task("a"), messages: [{ role: "user", content: "something else" }] }],
+		})).toThrow(/the last user message must repeat input/);
+	});
+
 	it("rejects malformed JSONL, invalid UTF-8, schema-invalid tasks, and missing explicit graders", () => {
 		const { root, stateRoot } = fixture();
 		const sourcePath = join(root, "source.jsonl");

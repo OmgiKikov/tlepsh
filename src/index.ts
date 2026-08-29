@@ -11,6 +11,7 @@ export * from "./application/builder-discard.js";
 export * from "./application/builder-proposal.js";
 export * from "./application/builder-candidate.js";
 export * from "./application/corpus-target.js";
+export * from "./application/dataset-ingest.js";
 export * from "./application/harness-authoring.js";
 export * from "./application/improvement-brief.js";
 export * from "./application/target-bootstrap.js";

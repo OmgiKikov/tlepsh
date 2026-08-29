@@ -140,6 +140,63 @@ describe("loadTarget", () => {
 		}
 	});
 
+	it("hashes a dataset without the optional case fields exactly as it always did", () => {
+		const dir = makeTargetFixture(baseFixtureFiles());
+		try {
+			const target = loadTarget(dir);
+			expect(target.datasetHash).toBe("sha256:66fb1c48a43a21da97f828c7194c8e3eb4d767753b038a204d4ed360eab8a8fc");
+			expect(target.suiteHash).toBe("sha256:1da953c85efa348d5b684d598d71b9c013c47912e221d8e2a80d424dd2188427");
+		} finally {
+			cleanup(dir);
+		}
+	});
+
+	it("loads reference answers, dialogue history and metadata, and scores them", () => {
+		const plain = JSON.stringify({ id: "task_001", input: "И для золотых клиентов?", graders: [{ type: "output_contains", text: "60" }] });
+		const rich = JSON.stringify({
+			id: "task_001",
+			input: "И для золотых клиентов?",
+			expected: "Для золотых клиентов — 60 дней.",
+			messages: [
+				{ role: "user", content: "Сколько длится возврат?" },
+				{ role: "assistant", content: "Тридцать дней." },
+				{ role: "user", content: "И для золотых клиентов?" },
+			],
+			metadata: { tier: "gold" },
+			graders: [{ type: "output_contains", text: "60" }],
+		});
+		const plainDir = makeTargetFixture(baseFixtureFiles({ "evals/development.jsonl": `${plain}\n` }));
+		const richDir = makeTargetFixture(baseFixtureFiles({ "evals/development.jsonl": `${rich}\n` }));
+		try {
+			const target = loadTarget(richDir);
+			expect(target.tasks[0]?.expected).toBe("Для золотых клиентов — 60 дней.");
+			expect(target.tasks[0]?.messages).toHaveLength(3);
+			expect(target.tasks[0]?.metadata).toEqual({ tier: "gold" });
+			expect(target.datasetHash).not.toBe(loadTarget(plainDir).datasetHash);
+		} finally {
+			cleanup(plainDir);
+			cleanup(richDir);
+		}
+	});
+
+	it("rejects a dialogue whose last turn is not the user turn in input", () => {
+		const dir = makeTargetFixture(
+			baseFixtureFiles({
+				"evals/development.jsonl": `${JSON.stringify({
+					id: "task_001",
+					input: "x",
+					messages: [{ role: "user", content: "x" }, { role: "assistant", content: "y" }],
+					graders: [{ type: "output_contains", text: "ok" }],
+				})}\n`,
+			}),
+		);
+		try {
+			expect(() => loadTarget(dir)).toThrow(/line 1: the last message must be the user turn/);
+		} finally {
+			cleanup(dir);
+		}
+	});
+
 	it("dataset override swaps tasks and changes datasetHash (dev/holdout split)", () => {
 		const dir = makeTargetFixture(
 			baseFixtureFiles({
