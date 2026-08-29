@@ -1,3 +1,22 @@
+import { AHDE_BUILDER_COMMAND_NAMES } from "./builder/commands.js";
+
+/** One command list: the slash commands Builder Pi actually registers, wrapped for the terminal. */
+function builderCommandLines(width = 72, indent = "  "): string {
+	const lines: string[] = [];
+	let current = "";
+	for (const name of AHDE_BUILDER_COMMAND_NAMES) {
+		const next = current ? `${current}  /${name}` : `/${name}`;
+		if (next.length + indent.length > width && current) {
+			lines.push(indent + current);
+			current = `/${name}`;
+			continue;
+		}
+		current = next;
+	}
+	if (current) lines.push(indent + current);
+	return lines.join("\n");
+}
+
 const CORE = `ahde — Agent Harness Development Environment
 
 Build, evaluate, and improve a project-specific Pi agent through one reviewed,
@@ -18,7 +37,8 @@ Inspect and run:
   ahde list [--target <id>]                    list eval runs
 
 Inside Builder Pi:
-  /help  /doctor  /status  /run  /calibrate  /traces  /review  /apply  /discard  /target
+${builderCommandLines()}
+  plus the Pi built-ins /login and /model for the Builder's own model
 
 Use \`ahde <command> --help\` for focused help. Advanced automation commands:
   corpus  failures  compare  diagnose  report  candidate  calibrate  review  promote  reject

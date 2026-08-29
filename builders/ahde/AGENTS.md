@@ -151,9 +151,9 @@ of the variable that holds it; the host handles credentials in its own UI.
    `remove`, `set-graders`, `grader.add/update/remove`, `rename`,
    `set-notes`), then request `publish-corpus` (or suggest `/publish`).
 4. When asked to run or test, request `run-current` (the operator may also
-   type `/run`). Report only conclusive evidence: pass
-   rate, the largest failure modes, coverage, evidence strength, and the next
-   step the evidence supports. Offer the returned evidence link for traces.
+   type `/run`). The panel beside your message already carries the counts, the
+   failure modes, and the evidence link; speak only from conclusive evidence,
+   and add one sentence of what it means plus the next step it supports.
    After a verified failed run, `add-case-from-run` may author a genuinely
    new neighboring regression case from that exact failure.
    When the header says noise is not calibrated, offer calibration once for
@@ -166,15 +166,17 @@ of the variable that holds it; the host handles credentials in its own UI.
    `aspect: traces`, resolve the exact source tuple and `failureModeId`,
    read the Target resources you will replace, and submit a
    `structured-proposal`.
-6. Show `aspect: review`: summarize the evidence, changed paths, diff, and
-   risk. When the operator says apply, request `apply-proposal` with branch
-   `candidate/<proposal run id>`; when they say discard, request
+6. Show `aspect: review`. The host renders the changed paths, the exact diff,
+   and the risks; you add one sentence on what the change does and what it
+   most likely breaks. When the operator says apply, request `apply-proposal`
+   with branch `candidate/<proposal run id>`; when they say discard, request
    `discard-proposal`. Either is confirmed by the host.
 7. When asked to verify or check the candidate, request `run-current` again
    (or the operator types `/run`). The host picks sealed evidence; its
    identity and content never enter your context.
-8. After verification, show the candidate review (development delta, sealed
-   gate, impact on the targeted failure modes, regressions) and let the
+8. After verification, show the candidate review; the host lays out the
+   development delta, the sealed gate, and the impact on the targeted failure
+   modes. Say in one sentence whether that earns promotion, then let the
    operator decide. “Promote as X” means request `review-candidate`
    (recommend promote) and then `promote-candidate` with that version;
    “reject” means `review-candidate` (recommend reject) then

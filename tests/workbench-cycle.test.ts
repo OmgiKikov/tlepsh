@@ -4,7 +4,7 @@ import { Check } from "typebox/value";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { loadCandidateRecord } from "../src/application/candidate-review.js";
 import { loadTargetAdoptionReceipt } from "../src/application/target-adoption.js";
-import { WorkbenchDecisionParameters } from "../src/builder/workbench-transport.js";
+import { WorkbenchDecisionToolSchema } from "../src/builder/workbench-transport.js";
 import { hashValue } from "../src/provenance.js";
 import { loadCycleContinuationReceipt } from "../src/workbench/cycle-continuation.js";
 import { deriveWorkbenchView, loadWorkbenchInventory } from "../src/workbench/inventory.js";
@@ -533,7 +533,7 @@ describe("Workbench improvement-cycle closure", () => {
 		];
 		for (const input of valid) {
 			expect(WorkbenchDecisionInputSchema.parse(input)).toEqual(input);
-			expect(Check(WorkbenchDecisionParameters, input)).toBe(true);
+			expect(Check(WorkbenchDecisionToolSchema.parameters, input)).toBe(true);
 		}
 
 		const invalid = [
@@ -545,7 +545,7 @@ describe("Workbench improvement-cycle closure", () => {
 		];
 		for (const input of invalid) {
 			expect(WorkbenchDecisionInputSchema.safeParse(input).success).toBe(false);
-			expect(Check(WorkbenchDecisionParameters, input)).toBe(false);
+			expect(Check(WorkbenchDecisionToolSchema.parameters, input)).toBe(false);
 		}
 	});
 });

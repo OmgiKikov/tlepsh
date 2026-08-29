@@ -12,9 +12,9 @@ import {
 } from "../src/builder/extension.js";
 import { AHDE_BUILDER_COMMAND_NAMES } from "../src/builder/commands.js";
 import {
-	WorkbenchDecisionParameters,
-	WorkbenchSubmitParameters,
-	WorkbenchViewParameters,
+	WorkbenchDecisionToolSchema,
+	WorkbenchSubmitToolSchema,
+	WorkbenchViewToolSchema,
 } from "../src/builder/workbench-transport.js";
 import {
 	WorkbenchDecisionInputSchema,
@@ -124,7 +124,7 @@ describe("Builder Pi extension registry", () => {
 			corpusEvidenceRevision,
 			structuredProposal,
 		]) {
-			expect(Check(WorkbenchSubmitParameters, accepted)).toBe(true);
+			expect(Check(WorkbenchSubmitToolSchema.parameters, accepted)).toBe(true);
 			expect(WorkbenchSubmitInputSchema.safeParse(accepted).success).toBe(true);
 		}
 
@@ -145,12 +145,15 @@ describe("Builder Pi extension registry", () => {
 			{ ...structuredProposal, failureModeIds: [...structuredProposal.failureModeIds, structuredProposal.failureModeIds[0]] },
 			{ ...structuredProposal, diagnoses: [{ failureIds: ["forged"], evidence: ["forged"], rootCause: "forged" }] },
 		]) {
-			expect(Check(WorkbenchSubmitParameters, invalid)).toBe(false);
+			// The tool schema is generated from this zod schema, so the model-facing
+			// gate is the same one; a few bounds (path policy, id uniqueness) live in
+			// refinements JSON Schema cannot express and are rejected at prepare().
 			expect(WorkbenchSubmitInputSchema.safeParse(invalid).success).toBe(false);
+			expect(() => WorkbenchSubmitToolSchema.prepare(invalid)).toThrow();
 		}
 
 		const blankDecision = { kind: "run-current", repetitions: 1, reason: "   " };
-		expect(Check(WorkbenchDecisionParameters, blankDecision)).toBe(false);
+		expect(Check(WorkbenchDecisionToolSchema.parameters, blankDecision)).toBe(false);
 		expect(WorkbenchDecisionInputSchema.safeParse(blankDecision).success).toBe(false);
 
 		const compactModelSelection = {
@@ -163,7 +166,7 @@ describe("Builder Pi extension registry", () => {
 			},
 			reason: "Use the exact host catalog model",
 		};
-		expect(Check(WorkbenchDecisionParameters, compactModelSelection)).toBe(true);
+		expect(Check(WorkbenchDecisionToolSchema.parameters, compactModelSelection)).toBe(true);
 		expect(WorkbenchDecisionInputSchema.safeParse(compactModelSelection).success).toBe(true);
 		for (const invalidModelSelection of [
 			{ ...compactModelSelection, model: { ...compactModelSelection.model, apiKeyEnv: "AWS_SECRET_ACCESS_KEY" } },
@@ -171,15 +174,16 @@ describe("Builder Pi extension registry", () => {
 			{ ...compactModelSelection, model: { ...compactModelSelection.model, baseUrl: "https://attacker.invalid" } },
 			{ ...compactModelSelection, resolveTargetModel: () => ({}) },
 		]) {
-			expect(Check(WorkbenchDecisionParameters, invalidModelSelection)).toBe(false);
+			expect(Check(WorkbenchDecisionToolSchema.parameters, invalidModelSelection)).toBe(false);
 			expect(WorkbenchDecisionInputSchema.safeParse(invalidModelSelection).success).toBe(false);
+			expect(() => WorkbenchDecisionToolSchema.prepare(invalidModelSelection)).toThrow();
 		}
 
 		for (const targetView of [
 			{ aspect: "target" },
 			{ aspect: "target", resourcePath: "AGENTS.md" },
 		]) {
-			expect(Check(WorkbenchViewParameters, targetView)).toBe(true);
+			expect(Check(WorkbenchViewToolSchema.parameters, targetView)).toBe(true);
 			expect(WorkbenchViewQuerySchema.safeParse(targetView).success).toBe(true);
 		}
 		for (const invalidView of [
@@ -187,8 +191,8 @@ describe("Builder Pi extension registry", () => {
 			{ resourcePath: "AGENTS.md" },
 			{ aspect: "target", resourcePath: "x".repeat(501) },
 		]) {
-			expect(Check(WorkbenchViewParameters, invalidView)).toBe(false);
 			expect(WorkbenchViewQuerySchema.safeParse(invalidView).success).toBe(false);
+			expect(() => WorkbenchViewToolSchema.prepare(invalidView)).toThrow();
 		}
 	});
 

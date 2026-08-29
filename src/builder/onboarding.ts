@@ -27,9 +27,71 @@ const KNOWN_CREDENTIAL_ENVIRONMENT: Record<string, string> = {
 };
 
 const MAX_MODEL_CHOICES = 9;
+/** The catalog is a correction aid, not a directory: enough to choose, small enough to read. */
+const MAX_CATALOG_ENTRIES = 40;
 
 export function credentialPlaceholder(provider: string): string {
 	return KNOWN_CREDENTIAL_ENVIRONMENT[provider] ?? `${provider.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`;
+}
+
+/** One host catalog entry: identity plus whether this machine can authenticate it. Never a credential value. */
+export interface HostModelCatalogEntry {
+	provider: string;
+	modelId: string;
+	credentialPresent: boolean;
+}
+
+export interface HostModelCatalog {
+	models: HostModelCatalogEntry[];
+	/** Entries beyond the bounded listing; the omitted ones are always uncredentialed. */
+	omittedModels: number;
+}
+
+type HostModel = ReturnType<ExtensionContext["modelRegistry"]["getAvailable"]>[number];
+
+function credentialPresent(ctx: Pick<ExtensionContext, "modelRegistry">, model: HostModel): boolean {
+	try {
+		return ctx.modelRegistry.hasConfiguredAuth(model);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * The trusted host catalog `configure-target` resolves against, in the order a
+ * chooser wants it: models this machine can actually authenticate first. Builder
+ * Pi has no other way to learn which ids exist, so it otherwise guesses.
+ */
+export function hostModelCatalog(ctx: Pick<ExtensionContext, "modelRegistry">): HostModelCatalog {
+	let available: HostModel[] = [];
+	try {
+		available = ctx.modelRegistry.getAvailable();
+	} catch {
+		available = [];
+	}
+	const entries: HostModelCatalogEntry[] = [];
+	const seen = new Set<string>();
+	for (const model of available) {
+		const key = `${model.provider}/${model.id}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		entries.push({ provider: model.provider, modelId: model.id, credentialPresent: credentialPresent(ctx, model) });
+	}
+	// Stable sort keeps the host's own ordering inside each group.
+	entries.sort((left, right) => Number(right.credentialPresent) - Number(left.credentialPresent));
+	return {
+		models: entries.slice(0, MAX_CATALOG_ENTRIES),
+		omittedModels: Math.max(0, entries.length - MAX_CATALOG_ENTRIES),
+	};
+}
+
+/** One line the model can copy a `{ provider, modelId }` out of. */
+export function describeHostModelCatalog(catalog: HostModelCatalog): string {
+	if (catalog.models.length === 0) return "the host catalog is empty; the operator must run /login first";
+	const listed = catalog.models
+		.map((entry) => `${entry.provider}/${entry.modelId}${entry.credentialPresent ? "" : " (no credential)"}`)
+		.join(", ");
+	return catalog.omittedModels > 0 ? `${listed}, and ${catalog.omittedModels} more` : listed;
 }
 
 /** Ask only for the variable name; the credential value never enters Builder Pi. */
@@ -59,7 +121,10 @@ export function targetModelResolver(
 	return (selection) => {
 		const resolved = ctx.modelRegistry.find(selection.provider, selection.modelId);
 		if (!resolved) {
-			throw new Error(`Target model ${selection.provider}/${selection.modelId} is not available in the trusted host catalog`);
+			throw new Error(
+				`Target model ${selection.provider}/${selection.modelId} is not available in the trusted host catalog. ` +
+				`Choose one of: ${describeHostModelCatalog(hostModelCatalog(ctx))}.`,
+			);
 		}
 		return resolveTargetModelSelection(selection, resolved, { apiKeyEnv });
 	};
@@ -102,23 +167,34 @@ function modelChoices(ctx: Pick<ExtensionContext, "model" | "modelRegistry">): M
 		choices.push({ label: `${key}${suffix}`, selection: { provider, modelId: id } });
 	};
 	if (ctx.model) push(ctx.model.provider, ctx.model.id, " (same as the Builder)");
-	let available: { provider: string; id: string }[] = [];
-	try {
-		available = ctx.modelRegistry.getAvailable().filter((model) => {
-			try {
-				return ctx.modelRegistry.hasConfiguredAuth(model);
-			} catch {
-				return false;
-			}
-		});
-	} catch {
-		available = [];
-	}
-	for (const model of available) {
+	for (const model of hostModelCatalog(ctx).models) {
 		if (choices.length >= MAX_MODEL_CHOICES) break;
-		push(model.provider, model.id, "");
+		if (!model.credentialPresent) continue;
+		push(model.provider, model.modelId, "");
 	}
 	return choices;
+}
+
+/**
+ * Setup failures are host-internal sentences; the operator gets the one fact
+ * that matters and a way forward instead of the raw message.
+ */
+export function calmSetupFailure(error: unknown): string {
+	const message = error instanceof Error ? error.message : String(error);
+	const found = /otherwise empty current directory; found (.+)$/.exec(message);
+	if (found) {
+		return `This folder is not empty (it already has ${oneLine(found[1] ?? "files", 40)}), so I cannot create the agent inside it. Open an empty folder and run \`ahde\` there, or scaffold one with \`ahde init <dir>\`.`;
+	}
+	if (/directory does not exist|must be a regular non-symlink directory/i.test(message)) {
+		return "This folder cannot hold an agent (it is missing or is not a regular directory). Run `ahde` from a normal, empty project folder.";
+	}
+	if (/not available in the trusted host catalog/i.test(message)) {
+		return oneLine(message, 300);
+	}
+	if (/cancelled by the operator/i.test(message)) {
+		return "Setup stopped. Tell me when you want to pick the agent's model.";
+	}
+	return `Setup did not finish: ${oneLine(message, 200)}`;
 }
 
 const CREATE_HERE = "Create the agent here";
@@ -188,10 +264,7 @@ export async function runFirstRunOnboarding(
 		return view;
 	} catch (error) {
 		if (error instanceof WorkbenchDecisionDeclinedError) return null;
-		ctx.ui.notify(
-			`Setup did not finish: ${oneLine(error instanceof Error ? error.message : String(error), 300)}. You can continue by describing the agent to the Builder.`,
-			"warning",
-		);
+		ctx.ui.notify(`${calmSetupFailure(error)} You can also just tell me what you want to build.`, "warning");
 		return null;
 	}
 }

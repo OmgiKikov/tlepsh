@@ -208,8 +208,16 @@ it("uses the real three-tool Builder Pi to inspect exact Target context and stop
 						}
 						case 4: {
 							const submitted = parseToolResult(context, 3);
-							if (!/^sha256:[0-9a-f]{64}$/.test(String(submitted.artifact.authoringContextHash))) {
-								throw new Error("proposal submission omitted its transient authoring context hash");
+							const authored = submitted.artifact as { runId?: unknown; improvementBriefId?: unknown; failureModeIds?: unknown };
+							if (typeof authored.runId !== "string" || typeof authored.improvementBriefId !== "string") {
+								throw new Error("proposal submission omitted the ids the next call needs");
+							}
+							if (!Array.isArray(authored.failureModeIds) || authored.failureModeIds.length !== 1) {
+								throw new Error("proposal submission omitted the failure modes it was authored from");
+							}
+							// The model-facing projection hands back ids, never digests.
+							if (JSON.stringify(submitted).includes("sha256:")) {
+								throw new Error("proposal submission leaked a digest into the model's result");
 							}
 							return call(step, "ahde_workbench_view", { aspect: "review" });
 						}
