@@ -46,16 +46,12 @@ describe("side-effect-free CLI invocation parsing", () => {
 		{ name: "validate", argv: ["validate", "--target", "./agent", "--dataset", "evals/dev.jsonl"], command: "validate", action: null },
 		{ name: "list", argv: ["list", "--target", "agent-id"], command: "list", action: null },
 		{ name: "failures", argv: ["failures", "erun-1", "--target", "./agent", "--out", "failure.json"], command: "failures", action: null },
-		{ name: "corpus draft", argv: ["corpus", "draft", "--project", "demo", "--target", "./agent", "--spec", "spec-1", "--tasks", "8"], command: "corpus", action: "draft" },
 		{ name: "corpus publish", argv: ["corpus", "publish", "--project", "demo", "--draft", "draft-1", "--name", "dev", "--visibility", "development"], command: "corpus", action: "publish" },
 		{ name: "corpus import", argv: ["corpus", "import", "--project", "demo", "--name", "holdout", "--visibility", "sealed", "--file", "tasks.jsonl"], command: "corpus", action: "import" },
 		{ name: "corpus list", argv: ["corpus", "--project", "demo", "list"], command: "corpus", action: "list" },
 		{ name: "compare", argv: ["compare", "erun-a", "erun-b"], command: "compare", action: null },
 		{ name: "diagnose", argv: ["diagnose", "erun-a"], command: "diagnose", action: null },
 		{ name: "report", argv: ["report", "erun-a", "--out", "report.html"], command: "report", action: null },
-		{ name: "builder capabilities", argv: ["builder", "capabilities", "--target", "./agent"], command: "builder", action: "capabilities" },
-		{ name: "builder propose", argv: ["builder", "propose", "--target", "./agent", "--spec", "spec-1", "--backend", "pi", "--timeout-ms", "600000"], command: "builder", action: "propose" },
-		{ name: "builder apply", argv: ["builder", "apply", "--target", "./agent", "--run", "builder-1", "--branch", "candidate/builder-1", "--reason", "reviewed"], command: "builder", action: "apply" },
 		{ name: "candidate builder run", argv: ["candidate", "--target", "./agent", "--builder-run", "builder-1", "--development-corpus", "corpus-dev"], command: "candidate", action: null },
 		{ name: "candidate refs", argv: ["candidate", "--target", "./agent", "--base", "main", "--branch", "candidate/x", "--proposal", "proposal-1", "--diagnosis", "diagnosis-1"], command: "candidate", action: null },
 		{ name: "review", argv: ["review", "--candidate", "candidate-1", "--recommend", "promote", "--reason", "passed"], command: "review", action: null },
@@ -92,8 +88,8 @@ describe("side-effect-free CLI invocation parsing", () => {
 
 	it.each([
 		[["wat"], /unknown command "wat"/],
+		[["builder", "propose", "--target", "./agent"], /unknown command "builder"/],
 		[["corpus", "delete", "--project", "demo"], /unknown action "delete" for corpus/],
-		[["builder", "explode", "--target", "./agent"], /unknown action "explode" for builder/],
 		[["run", "--target", "./agent", "--wat", "value"], /unknown flag --wat for run/],
 		[["corpus", "list", "--project", "demo", "--file", "tasks.jsonl"], /unknown flag --file for corpus list/],
 		[["builder-pi", "-x", "value"], /unknown flag -x for builder-pi/],
@@ -125,8 +121,7 @@ describe("side-effect-free CLI invocation parsing", () => {
 
 	it.each([
 		[["run"], /missing required flag --target for run/],
-		[["corpus", "draft", "--project", "demo"], /missing required flag --target for corpus draft/],
-		[["builder", "apply", "--target", "./agent"], /missing required flag --run for builder apply/],
+		[["corpus", "publish", "--project", "demo"], /missing required flag --draft for corpus publish/],
 		[["review", "--candidate", "candidate-1", "--recommend", "reject"], /missing required flag --reason for review/],
 		[["promote", "--target", "./agent", "--candidate", "candidate-1", "--to", "1.0.0"], /missing required flag --reason for promote/],
 	] as const)("rejects missing required flags in %j", (argv, message) => {
@@ -146,11 +141,9 @@ describe("side-effect-free CLI invocation parsing", () => {
 	it.each([
 		[["run", "--target", "./agent", "--label", "candidate"], /--label .* baseline, solo/],
 		[["corpus", "import", "--project", "demo", "--name", "x", "--visibility", "public", "--file", "x.jsonl"], /--visibility .* development, sealed/],
-		[["builder", "propose", "--target", "./agent", "--spec", "spec-1", "--backend", "other"], /--backend .* pi, codex, claude/],
 		[["review", "--candidate", "candidate-1", "--recommend", "maybe", "--reason", "x"], /--recommend .* promote, reject/],
 		[["evidence", "--port", "65536"], /--port .* between 0 and 65535/],
 		[["run", "--target", "./agent", "--repetitions", "0"], /--repetitions .* at least 1/],
-		[["corpus", "draft", "--project", "demo", "--target", "./agent", "--spec", "spec-1", "--tasks", "2.5"], /--tasks .* must be an integer/],
 	] as const)("rejects invalid bounded flag values in %j", (argv, message) => {
 		expect(() => parseCliInvocation(argv)).toThrow(message);
 	});

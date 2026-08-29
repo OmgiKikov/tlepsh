@@ -70,11 +70,25 @@ try {
 	]) {
 		if (!packedPaths.has(required)) throw new Error(`packed Builder asset is missing: ${required}`);
 	}
+	// V1.8 S7 deleted the one-shot CLI Builder adapters, the Pi SDK executor, the
+	// approved-Spec corpus-draft generator, the Builder manifest, and the default
+	// builder profile. A stale dist/ or a re-added module must fail the gate.
+	const removedLegacyPaths = new Set([
+		"builders/default/AGENTS.md",
+		"builders/default/manifest.yaml",
+		"dist/application/corpus-draft.js",
+		"dist/builder.js",
+		"dist/builders/pi-executor.js",
+		"docs/evolution.jsonl",
+	]);
 	const forbiddenPackedPaths = [...packedPaths].filter((path) =>
 		path.includes("builder-workbench") ||
 		path.includes("workbench-tui") ||
 		path === "builders/companion" ||
 		path.startsWith("builders/companion/") ||
+		path === "builders/default" ||
+		path.startsWith("builders/default/") ||
+		removedLegacyPaths.has(path) ||
 		(!path.startsWith("node_modules/") &&
 			!path.startsWith("vendor/") &&
 			/(^|\/)(?:presets?|target-presets?)(?:[.\/-]|$)/i.test(path)) ||
@@ -82,7 +96,7 @@ try {
 	);
 	if (forbiddenPackedPaths.length > 0) {
 		throw new Error(
-			`packed artifact contains removed Studio/companion/Workbench-TUI files: ${forbiddenPackedPaths.slice(0, 20).join(", ")}`,
+			`packed artifact contains removed Studio/companion/Workbench-TUI/legacy-adapter files: ${forbiddenPackedPaths.slice(0, 20).join(", ")}`,
 		);
 	}
 	const tarball = join(packDir, filename);

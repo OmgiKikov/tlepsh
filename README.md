@@ -330,19 +330,10 @@ ahde compare <baseline-eval-id> <candidate-eval-id>
 ahde report <eval-run-id>
 
 # manage versioned evaluation data
-ahde corpus draft --target . --project my-agent \
-  --spec <approved-spec-id> --tasks 12
-ahde corpus publish --project my-agent --draft <draft-id> \
+ahde corpus publish --project my-agent --draft <builder-corpus-draft-id> \
   --name "reviewed development basket" --visibility development
 ahde corpus import --project my-agent --name "promotion holdout" \
   --visibility sealed --file ./private-holdout.jsonl
-
-# optional one-shot Builder adapter compatibility
-ahde builder capabilities --target .
-ahde builder propose --target . --project my-agent \
-  --spec <approved-spec-id> --eval-run <eval-run-id> --backend pi
-ahde builder apply --target . --run <builder-run-id> \
-  --branch candidate/<builder-run-id> --reason "Reviewed exact diff"
 
 # exact candidate experiment and terminal human decision
 ahde candidate --target . --builder-run <builder-run-id> \
@@ -354,10 +345,10 @@ ahde promote --target . --candidate <candidate-id> --to 0.2.0 \
   --reason "Ship the exact reviewed revision"
 ```
 
-Pi, Codex, and Claude one-shot proposal adapters normalize only the typed
-proposal contract. They are optional compatibility paths; they do not replace
-the primary Builder Pi trust domain and AHDE does not pretend their internal
-traces are identical.
+Corpus drafts and proposals are authored in Builder Pi; the commands above only
+publish, evaluate, and decide over the artifacts it produced. The typed proposal
+contract in `src/builders/adapters.ts` stays the single trust boundary every
+proposal crosses, whoever authored it.
 
 ## Evidence and promotion invariants
 
@@ -446,20 +437,19 @@ loopback HTTP socket. The separate
 natural-language acceptance tests drive a real Builder Pi through the complete
 Spec/eval/candidate lifecycle and, separately, through the production
 three-tool `traces → exact Target context → Proposal review` path without an
-implicit Apply. The package gate also rejects stale Studio, companion, and
-retired Workbench-TUI files.
+implicit Apply. The package gate also rejects stale Studio, companion,
+retired Workbench-TUI, and deleted one-shot-adapter files.
 
 ## Architecture
 
 | Module | Owns |
 |---|---|
 | `src/builder/runtime.ts` | isolated long-lived Builder Pi host |
-| `src/builder/extension.ts` | Workbench tools, compatibility tools, and TUI gates |
+| `src/builder/extension.ts` | the three Workbench tools, their production dependencies, and Pi registration |
 | `src/builder/commands.ts` | slash commands, review actions, one-dialog promote/reject |
 | `src/builder/product-shell.ts`, `src/builder/onboarding.ts` | live header, first-run setup, readiness status |
 | `src/builder/render/**`, `src/builder/transcript.ts` | human renderers for every Workbench view, decision, and confirmation; persisted transcript blocks |
 | `src/application/target-adoption.ts`, `src/workbench/cycle-continuation.ts` | promoted-candidate fast-forward and cycle closure receipts |
-| `src/builder/project-context.ts` | bounded compatibility status projection |
 | `src/application/target-authoring-context.ts` | exact-Git declared Harness context and read policy |
 | `src/application/**` | deterministic Spec/Corpus/Proposal/Candidate use cases |
 | `src/workbench/**` | restart-safe orchestration, state derivation, and legal transitions |
@@ -473,6 +463,7 @@ retired Workbench-TUI files.
 | `src/report.ts`, `src/evidence/server.ts` | bounded read-only evidence projection |
 | `src/application/candidate-experiment.ts` | exact matched candidate evaluation |
 | `src/application/candidate-review.ts` | review, rejection, and promotion authority |
+| `src/builders/adapters.ts` | the typed proposal contract and its validation trust boundary |
 
 See [CONTEXT.md](CONTEXT.md) for domain language and invariants,
 [docs/V1_7_PRODUCT_SURFACE.md](docs/V1_7_PRODUCT_SURFACE.md) for the product

@@ -19,6 +19,12 @@ describe("CLI help", () => {
 
 	it("renders focused help for nested automation actions", () => {
 		expect(cliHelp(["corpus", "import", "--help"])).toContain("imports/ inbox");
-		expect(cliHelp(["builder", "apply", "--help"])).toContain("current checkout is unchanged");
+		expect(cliHelp(["corpus", "publish", "--help"])).toContain("Builder corpus draft");
+	});
+
+	it("no longer advertises the deleted one-shot adapter commands", () => {
+		const help = cliHelp(["--help"]);
+		expect(help).not.toContain("  builder  ");
+		expect(cliHelp(["corpus", "draft", "--help"])).toBe(help);
 	});
 });

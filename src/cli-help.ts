@@ -20,7 +20,7 @@ Inside Builder Pi:
   /help  /doctor  /status  /run  /traces  /review  /apply  /discard  /target
 
 Use \`ahde <command> --help\` for focused help. Advanced automation commands:
-  corpus  failures  compare  diagnose  report  builder  candidate  review  promote  reject
+  corpus  failures  compare  diagnose  report  candidate  review  promote  reject
 
 Environment:
   AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)
@@ -93,34 +93,23 @@ Tag the exact reviewed Candidate revision. This does not switch the active check
 	reject: `Usage: ahde reject --candidate <id> --reason <text> [--actor <id>]
 
 Record an immutable rejection for the exact reviewed Candidate.`,
-	"corpus draft": `Usage: ahde corpus draft --target <dir> --project <id> --spec <approved-id> --tasks N [--guidance <text>] [--builder <dir>]
-
-Generate a reviewable Spec-bound corpus draft. It is not runnable until published.`,
 	"corpus publish": `Usage: ahde corpus publish --project <id> --draft <id> --name <name> --visibility development|sealed
 
-Publish a reviewed draft. Prefer the Builder Workbench for receipt-backed lineage.`,
+Publish a reviewed Builder corpus draft. Prefer the Builder Workbench for
+receipt-backed lineage.`,
 	"corpus import": `Usage: ahde corpus import --project <id> --name <name> --visibility development|sealed --file <jsonl>
 
 Import bounded JSONL. Prefer Builder Pi's project-local imports/ inbox for an editable, Spec-bound draft.`,
 	"corpus list": `Usage: ahde corpus list --project <id>
 
 List corpus metadata. Sealed content is never printed.`,
-	"builder capabilities": `Usage: ahde builder capabilities --target <dir> [--builder <dir>]
-
-Probe optional scriptable proposal backends (Pi, Codex, Claude).`,
-	"builder propose": `Usage: ahde builder propose --target <dir> --project <id> --spec <approved-id> --backend pi|codex|claude [options]
-
-Create proposal evidence from an approved Spec. Prefer Builder Pi's structured authoring path.`,
-	"builder apply": `Usage: ahde builder apply --target <dir> --run <id> --branch <name> --reason <text> [--actor <id>]
-
-Apply one exact proposal to a candidate branch; the current checkout is unchanged.`,
 };
 
 /** Render root or command-specific help without reading project or environment state. */
 export function cliHelp(argv: readonly string[]): string {
 	const command = argv[0];
 	if (!command || command === "--help" || command === "-h" || command === "help") return CORE;
-	const nested = command === "corpus" || command === "builder"
+	const nested = command === "corpus"
 		? argv.find((token, index) => index > 0 && !token.startsWith("-"))
 		: undefined;
 	return COMMAND_HELP[nested ? `${command} ${nested}` : command] ?? CORE;
