@@ -165,6 +165,17 @@ describe("comparison gate — exact-comparison-gate-v3", () => {
 		expect(two.flags.collapsedTasks).toBe(0);
 	});
 
+	it("keeps a sealed verdict when one task of a 15-task holdout is excluded within the error budget", () => {
+		const rows = simulatedRows(prng(5), 15, 3, 0.4, 1);
+		rows[3] = { ...rows[3]!, aStatus: "error" };
+		const judged = judgeComparison(rows, { surface: "sealed", repetitions: 3, seed: "one-excluded" });
+		expect(judged.design).toEqual({ tasks: 14, repetitions: 3, excludedTasks: 1 });
+		expect(judged.gate.verdict).toBe("pass");
+		// Two exclusions out of 15 (13%) exceed the budget and make the surface underpowered.
+		rows[7] = { ...rows[7]!, bStatus: "error" };
+		expect(judgeComparison(rows, { surface: "sealed", repetitions: 3, seed: "two-excluded" }).gate.verdict).toBe("underpowered");
+	});
+
 	it("excludes tasks with infrastructure errors from the statistics and reports them", () => {
 		const rows = simulatedRows(prng(3), 16, 2, 0.5, 0.5);
 		rows[0] = { ...rows[0]!, bStatus: "error" };

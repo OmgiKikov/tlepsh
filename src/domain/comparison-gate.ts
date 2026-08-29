@@ -231,7 +231,9 @@ function decide(policy: GatePolicy, summary: CompareSummary, design: ComparisonD
 			: { ...base, verdict: "inconclusive", reasons: [overBudget] };
 	}
 	if (policy.surface === "sealed") {
-		if (design.tasks < policy.minTasks || design.repetitions < policy.minRepetitions) {
+		// The minimum applies to the designed holdout; the error budget above
+		// already bounds how many of its tasks may drop out of the statistics.
+		if (total < policy.minTasks || design.repetitions < policy.minRepetitions) {
 			return {
 				...base,
 				verdict: "underpowered",
