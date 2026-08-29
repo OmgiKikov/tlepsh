@@ -147,6 +147,26 @@ export const ModelBlock = z.strictObject({
 	}
 });
 
+/**
+ * The judge is a measuring instrument: eval.ts pins it to temperature 0 after
+ * the params spread. Declaring one here would be a promise the request cannot
+ * keep, so the manifest refuses it instead of silently ignoring it. The Target
+ * model is free to set its own temperature — that is a recorded axis.
+ */
+const RESERVED_JUDGE_PARAMS = new Set(["temperature"]);
+
+export const JudgeModelBlock = ModelBlock.superRefine((model, context) => {
+	for (const key of Object.keys(model.params)) {
+		if (RESERVED_JUDGE_PARAMS.has(key)) {
+			context.addIssue({
+				code: "custom",
+				path: ["params", key],
+				message: `evalSuite.judge.params cannot set "${key}": the judge is pinned to temperature 0 so grading is deterministic`,
+			});
+		}
+	}
+});
+
 export const TargetManifest = z.strictObject({
 	id: z
 		.string()
@@ -164,7 +184,7 @@ export const TargetManifest = z.strictObject({
 		dataset: z.string().min(1),
 		graders: z.string().min(1),
 		/** Judge model for judge graders; required when any task uses one. */
-		judge: ModelBlock.optional(),
+		judge: JudgeModelBlock.optional(),
 	}),
 });
 export type TargetManifest = z.infer<typeof TargetManifest>;

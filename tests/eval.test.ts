@@ -174,7 +174,7 @@ describe("typed grader evidence", () => {
 		};
 		const runsRoot = mkdtempSync(join(tmpdir(), "ahde-grade-test-"));
 		cleanupPaths.push(runsRoot);
-		const results = await gradeRun(task, baseRun({ status: "error", error: "boom", finishedAt: "2026-08-28T10:00:01.000Z", evalResults: null }), runsRoot);
+		const { graders: results } = await gradeRun(task, baseRun({ status: "error", error: "boom", finishedAt: "2026-08-28T10:00:01.000Z", evalResults: null }), runsRoot);
 
 		expect(results.map((result) => result.checkCode)).toEqual([
 			"required-tool",

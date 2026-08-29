@@ -95,6 +95,21 @@ export const TokenMetricsSchema = z.strictObject({
 });
 export type TokenMetrics = z.infer<typeof TokenMetricsSchema>;
 
+/**
+ * What grading this run cost at the judge endpoint. Absent on runs that never
+ * called a judge (every non-judge grader is local and free) and on evidence
+ * written before judge accounting existed.
+ */
+export const JudgeMetricsSchema = z.strictObject({
+	/** HTTP attempts, retries included — the number the provider bills against. */
+	calls: z.number().int().nonnegative(),
+	/** Prompt + completion tokens the endpoint reported; 0 when it reported none. */
+	tokens: z.number().int().nonnegative(),
+	/** Derived from the judge model's declared cost rates; 0 when none are declared. */
+	costUsd: z.number().nonnegative(),
+});
+export type JudgeMetrics = z.infer<typeof JudgeMetricsSchema>;
+
 export const RunMetricsSchema = z.strictObject({
 	tokens: TokenMetricsSchema,
 	costUsd: z.number().nonnegative(),
@@ -102,6 +117,7 @@ export const RunMetricsSchema = z.strictObject({
 	toolCalls: z.number().int().nonnegative(),
 	toolErrors: z.number().int().nonnegative(),
 	recoveryAttempts: z.number().int().nonnegative(),
+	judge: JudgeMetricsSchema.nullable().optional(),
 });
 export type RunMetrics = z.infer<typeof RunMetricsSchema>;
 
