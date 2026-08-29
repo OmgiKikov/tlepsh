@@ -158,6 +158,7 @@ describe("Builder Pi runtime", () => {
 			preferredExtensionCommands: readonly string[];
 			allowBash: boolean;
 			resumeHint: string | false;
+			modelFallbackHint: string | false;
 		};
 		const factories = mainOptions.extensionFactories;
 		expect(factories).toHaveLength(1);
@@ -167,6 +168,8 @@ describe("Builder Pi runtime", () => {
 		expect(mainOptions.preferredExtensionCommands).toEqual(AHDE_BUILDER_PREFERRED_EXTENSION_COMMANDS);
 		expect(mainOptions.allowBash).toBe(false);
 		expect(mainOptions.resumeHint).toBe(false);
+		// AHDE's onboarding selector replaces Pi's own "No models available" notice.
+		expect(mainOptions.modelFallbackHint).toBe(false);
 
 		expect(process.cwd()).toBe(previousCwd);
 		expect(process.env.PI_CODING_AGENT_DIR).toBe(previousAgentDir);

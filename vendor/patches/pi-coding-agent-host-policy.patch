@@ -1,8 +1,8 @@
 diff --git a/packages/coding-agent/src/main.ts b/packages/coding-agent/src/main.ts
-index 23b4d42..d95bfac 100644
+index 23b4d42..718be87 100644
 --- a/packages/coding-agent/src/main.ts
 +++ b/packages/coding-agent/src/main.ts
-@@ -555,6 +555,14 @@ async function promptForMissingSessionCwd(
+@@ -555,6 +555,16 @@ async function promptForMissingSessionCwd(
  
  export interface MainOptions {
  	extensionFactories?: InlineExtension[];
@@ -14,10 +14,12 @@ index 23b4d42..d95bfac 100644
 +	allowBash?: boolean;
 +	/** Override the interactive exit resume command, or suppress it with false. */
 +	resumeHint?: string | false;
++	/** Replace the missing-model startup warning with a host message, or suppress it with false. */
++	modelFallbackHint?: string | false;
  }
  
  export async function main(args: string[], options?: MainOptions) {
-@@ -931,6 +939,10 @@ export async function main(args: string[], options?: MainOptions) {
+@@ -931,6 +941,11 @@ export async function main(args: string[], options?: MainOptions) {
  			startupDiagnostics,
  			modelFallbackMessage,
  			autoTrustOnReloadCwd,
@@ -25,11 +27,12 @@ index 23b4d42..d95bfac 100644
 +			preferredExtensionCommands: options?.preferredExtensionCommands,
 +			allowBash: options?.allowBash,
 +			resumeHint: options?.resumeHint,
++			modelFallbackHint: options?.modelFallbackHint,
  			initialMessage,
  			initialImages,
  			initialMessages: parsed.messages,
 diff --git a/packages/coding-agent/src/modes/interactive/interactive-mode.ts b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
-index acf96ae..43e8d5f 100644
+index acf96ae..11adc94 100644
 --- a/packages/coding-agent/src/modes/interactive/interactive-mode.ts
 +++ b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
 @@ -266,6 +266,54 @@ export function formatResumeCommand(sessionManager: SessionManager): string | un
@@ -87,8 +90,12 @@ index acf96ae..43e8d5f 100644
  function hasDefaultModelProvider(providerId: string): providerId is keyof typeof defaultModelPerProvider {
  	return providerId in defaultModelPerProvider;
  }
-@@ -341,6 +389,14 @@ export interface InteractiveModeOptions {
+@@ -339,8 +387,18 @@ export interface InteractiveModeOptions {
+ 	startupDiagnostics?: AgentSessionRuntimeDiagnostic[];
+ 	/** Warning message if session model couldn't be restored */
  	modelFallbackMessage?: string;
++	/** Host replacement for that warning, or false to show nothing (the host presents its own onboarding). */
++	modelFallbackHint?: string | false;
  	/** Cwd to trust after reload if it gained a .pi directory during this implicitly trusted session. */
  	autoTrustOnReloadCwd?: string;
 +	/** Restrict built-in slash commands before autocomplete and dispatch. Undefined allows all built-ins. */
@@ -102,7 +109,7 @@ index acf96ae..43e8d5f 100644
  	/** Initial message to send on startup (can include @file content) */
  	initialMessage?: string;
  	/** Images to attach to the initial message */
-@@ -659,9 +715,13 @@ export class InteractiveMode {
+@@ -659,9 +717,13 @@ export class InteractiveMode {
  
  	private getBuiltInCommandConflictDiagnostics(extensionRunner: ExtensionRunner): ResourceDiagnostic[] {
  		const builtinNames = new Set(BUILTIN_SLASH_COMMANDS.map((command) => command.name));
@@ -117,7 +124,7 @@ index acf96ae..43e8d5f 100644
  			.map((command) => ({
  				type: "warning" as const,
  				message:
-@@ -673,8 +733,17 @@ export class InteractiveMode {
+@@ -673,8 +735,17 @@ export class InteractiveMode {
  	}
  
  	private createBaseAutocompleteProvider(): AutocompleteProvider {
@@ -136,7 +143,7 @@ index acf96ae..43e8d5f 100644
  			name: command.name,
  			description: command.description,
  			...(command.argumentHint && { argumentHint: command.argumentHint }),
-@@ -741,12 +810,11 @@ export class InteractiveMode {
+@@ -741,12 +812,11 @@ export class InteractiveMode {
  		}));
  
  		// Convert extension commands to SlashCommand format
@@ -153,7 +160,7 @@ index acf96ae..43e8d5f 100644
  				description: this.prefixAutocompleteDescription(cmd.description, cmd.sourceInfo),
  				getArgumentCompletions: cmd.getArgumentCompletions,
  			}));
-@@ -974,8 +1042,9 @@ export class InteractiveMode {
+@@ -974,8 +1044,9 @@ export class InteractiveMode {
  				hint("app.thinking.toggle", "to expand thinking"),
  				hint("app.editor.external", "for external editor"),
  				rawKeyHint("/", "for commands"),
@@ -165,7 +172,7 @@ index acf96ae..43e8d5f 100644
  				hint("app.message.followUp", "to queue follow-up"),
  				hint("app.message.dequeue", "to edit all queued messages"),
  				hint("app.clipboard.pasteImage", "to paste image (with text fallback)"),
-@@ -985,7 +1054,7 @@ export class InteractiveMode {
+@@ -985,7 +1056,7 @@ export class InteractiveMode {
  				hint("app.interrupt", "interrupt"),
  				rawKeyHint(`${keyText("app.clear")}/${keyText("app.exit")}`, "clear/exit"),
  				rawKeyHint("/", "commands"),
@@ -174,7 +181,20 @@ index acf96ae..43e8d5f 100644
  				hint("app.tools.expand", "more"),
  			].join(theme.fg("muted", " · "));
  			const compactOnboarding = theme.fg(
-@@ -2901,7 +2970,7 @@ export class InteractiveMode {
+@@ -1146,8 +1217,10 @@ export class InteractiveMode {
+ 			this.showError(`models.json error: ${modelsJsonError}`);
+ 		}
+ 
+-		if (modelFallbackMessage) {
+-			this.showWarning(modelFallbackMessage);
++		if (modelFallbackMessage && this.options.modelFallbackHint !== false) {
++			this.showWarning(
++				typeof this.options.modelFallbackHint === "string" ? this.options.modelFallbackHint : modelFallbackMessage,
++			);
+ 		}
+ 
+ 		void this.maybeWarnAboutAnthropicSubscriptionAuth();
+@@ -2901,7 +2974,7 @@ export class InteractiveMode {
  
  		this.defaultEditor.onChange = (text: string) => {
  			const wasBashMode = this.isBashMode;
@@ -183,7 +203,7 @@ index acf96ae..43e8d5f 100644
  			if (wasBashMode !== this.isBashMode) {
  				this.updateEditorBorderColor();
  			}
-@@ -2963,6 +3032,36 @@ export class InteractiveMode {
+@@ -2963,6 +3036,36 @@ export class InteractiveMode {
  			text = text.trim();
  			if (!text) return;
  
@@ -220,7 +240,7 @@ index acf96ae..43e8d5f 100644
  			// Handle commands
  			if (text === "/settings") {
  				this.showSettingsSelector();
-@@ -3953,7 +4052,7 @@ export class InteractiveMode {
+@@ -3953,7 +4056,7 @@ export class InteractiveMode {
  		this.stop();
  		await this.runtimeHost.dispose();
  
@@ -229,7 +249,7 @@ index acf96ae..43e8d5f 100644
  		if (resumeCommand) {
  			process.stdout.write(`${chalk.dim("To resume this session:")} ${resumeCommand}\n`);
  		}
-@@ -6328,8 +6427,7 @@ export class InteractiveMode {
+@@ -6328,8 +6431,7 @@ export class InteractiveMode {
  | \`${dequeue}\` | Restore queued messages |
  | \`${pasteImage}\` | Paste image or text from clipboard |
  | \`/\` | Slash commands |

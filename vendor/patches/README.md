@@ -12,5 +12,6 @@ To reproduce the tarball from the pinned Pi checkout:
     npm run vendor:pack
 
 The patch adds host-owned built-in command filtering, extension-command
-precedence, bash-input policy, and resume-hint control, together with upstream
+precedence, bash-input policy, resume-hint control, and a host override for
+the missing-model startup notice (`modelFallbackHint`), together with upstream
 tests for those seams.

@@ -274,6 +274,8 @@ export async function launchBuilderPi(options: LaunchBuilderPiOptions = {}): Pro
 			preferredExtensionCommands: AHDE_BUILDER_PREFERRED_EXTENSION_COMMANDS,
 			allowBash: false,
 			resumeHint: false,
+			// AHDE's own onboarding selector replaces Pi's "No models available" notice.
+			modelFallbackHint: false,
 		});
 	} finally {
 		process.chdir(previousCwd);
