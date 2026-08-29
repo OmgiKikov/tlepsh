@@ -258,7 +258,8 @@ describe("deterministic improvement brief", () => {
 		expect(mode?.counterEvidence.map((item) => item.taskId)).toEqual(["task-a", "task-b"]);
 		expect(mode?.title).toBe("Output contract check failed across tasks");
 		expect(first.headline).toContain("2/4 passed.");
-		expect(first.proposalEligible).toBe(false);
+		// A 50%-reproducing mode with retained counter-evidence is proposal-eligible.
+		expect(first.proposalEligible).toBe(true);
 	});
 
 	it("uses category-specific exact titles and proposes only repeatable checks without counterevidence", () => {
