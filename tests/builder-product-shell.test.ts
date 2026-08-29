@@ -17,6 +17,7 @@ function view(overrides: Partial<WorkbenchView> = {}): WorkbenchView {
 		actions: ["scaffold-target"],
 		blockers: ["Target harness is missing."],
 		warnings: [],
+		calibration: null,
 		counts: {
 			specDrafts: 0,
 			approvedSpecs: 0,
@@ -26,6 +27,7 @@ function view(overrides: Partial<WorkbenchView> = {}): WorkbenchView {
 			developmentEvals: 0,
 			openProposals: 0,
 			candidates: 0,
+			calibrations: 0,
 		},
 		...overrides,
 	};

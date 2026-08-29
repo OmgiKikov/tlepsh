@@ -25,6 +25,7 @@ import {
 	WorkbenchStaleDecisionError,
 } from "../src/workbench/errors.js";
 import type {
+	WorkbenchCalibrationProjection,
 	WorkbenchCandidateSummary,
 	WorkbenchConfirmation,
 	WorkbenchDecisionExecutionOptions,
@@ -77,6 +78,7 @@ const baseView: WorkbenchView = {
 	actions: ["run development eval"],
 	blockers: [],
 	warnings: [],
+	calibration: null,
 	counts: {
 		specDrafts: 1,
 		approvedSpecs: 1,
@@ -86,6 +88,7 @@ const baseView: WorkbenchView = {
 		developmentEvals: 0,
 		openProposals: 0,
 		candidates: 0,
+		calibrations: 0,
 	},
 };
 
@@ -225,6 +228,23 @@ function tracesDetail(): WorkbenchTracesDetail {
 	};
 }
 
+function calibration(overrides: Partial<WorkbenchCalibrationProjection> = {}): WorkbenchCalibrationProjection {
+	return {
+		candidateId: "calibration-1",
+		targetSha: SHA_A,
+		taskCount: 30,
+		repetitions: 3,
+		aaPassRate: 0.7,
+		delta: 0,
+		confidence95: { low: -0.06, high: 0.06 },
+		flipRate: 0.1,
+		recommendedRepetitions: 3,
+		verdict: "inconclusive",
+		at: "2026-08-28T10:05:00.000Z",
+		...overrides,
+	};
+}
+
 function proposalReview(): Extract<WorkbenchReviewDetail, { kind: "proposal" }> {
 	return {
 		kind: "proposal",
@@ -282,6 +302,11 @@ function defaultDecision(input: WorkbenchDecisionInput): WorkbenchDecisionResult
 	switch (input.kind) {
 		case "run-current":
 			return decision("run-current", { resolvedAs: "run-eval", ...tracesDetail() }, viewAt("improvement-authoring"));
+		case "calibrate":
+			return decision("calibrate", {
+				candidateId: "calibration-1",
+				calibration: calibration({ repetitions: input.repetitions }),
+			}, viewAt("ready-to-evaluate", { calibration: calibration({ repetitions: input.repetitions }) }));
 		case "approve-spec":
 			return decision("approve-spec", { approvedSpecId: "spec-1", receiptId: "receipt-approve" }, viewAt("corpus-design"));
 		case "publish-corpus":
@@ -543,6 +568,7 @@ describe("Builder Pi slash commands", () => {
 			"doctor",
 			"status",
 			"run",
+			"calibrate",
 			"traces",
 			"review",
 			"approve",
@@ -556,7 +582,7 @@ describe("Builder Pi slash commands", () => {
 			"target",
 		]);
 		expect(registered.map(({ name }) => name)).toEqual([...AHDE_BUILDER_COMMAND_NAMES]);
-		expect(registered).toHaveLength(15);
+		expect(registered).toHaveLength(16);
 		expect(registered.every(({ options }) => options.description && options.handler)).toBe(true);
 	});
 
@@ -640,7 +666,7 @@ describe("Builder Pi slash commands", () => {
 		);
 		expect(fixture.decide).toHaveBeenNthCalledWith(
 			2,
-			{ kind: "run-current", repetitions: 1, reason: "Requested interactively via /run" },
+			{ kind: "run-current", repetitions: 3, reason: "Requested interactively via /run" },
 			expect.any(Object),
 			{ signal: controller.signal, onRunEvent: expect.any(Function) },
 		);
@@ -648,6 +674,58 @@ describe("Builder Pi slash commands", () => {
 
 		await expect(command(commands, "run").handler("11 too many", host.ctx))
 			.rejects.toThrow("/run repetitions must be an integer between 1 and 10");
+		expect(fixture.decide).toHaveBeenCalledTimes(2);
+	});
+
+	it("/run defaults to 3 repetitions so one sample is never mistaken for evidence", async () => {
+		const fixture = workbench();
+		const { commands } = register(fixture.value);
+		const host = context();
+
+		await command(commands, "run").handler("", host.ctx);
+		await command(commands, "run").handler("recheck the routing fix", host.ctx);
+
+		for (const call of [1, 2] as const) {
+			expect(fixture.decide).toHaveBeenNthCalledWith(
+				call,
+				expect.objectContaining({ kind: "run-current", repetitions: 3 }),
+				expect.any(Object),
+				expect.any(Object),
+			);
+		}
+	});
+
+	it("/calibrate runs the calibrate decision and renders the noise, not JSON", async () => {
+		const fixture = workbench();
+		const { commands, output } = register(fixture.value);
+		const host = context();
+
+		await command(commands, "calibrate").handler("", host.ctx);
+		await command(commands, "calibrate").handler("5 before trusting small deltas", host.ctx);
+
+		expect(fixture.decide).toHaveBeenNthCalledWith(
+			1,
+			{ kind: "calibrate", repetitions: 3, reason: "Requested interactively via /calibrate" },
+			expect.objectContaining({ confirm: expect.any(Function), selectSealed: expect.any(Function) }),
+			{ signal: undefined, onRunEvent: expect.any(Function) },
+		);
+		expect(fixture.decide).toHaveBeenNthCalledWith(
+			2,
+			{ kind: "calibrate", repetitions: 5, reason: "before trusting small deltas" },
+			expect.any(Object),
+			{ signal: undefined, onRunEvent: expect.any(Function) },
+		);
+		expect(output.blocks.map((block) => [block.title, block.tone])).toEqual([
+			["Noise calibrated", "success"],
+			["Noise calibrated", "success"],
+		]);
+		const text = output.text();
+		expect(text).toContain("Noise calibration A/A inconclusive");
+		expect(text).toContain("Recommended 3 repetitions per run to keep noise under 10 points");
+		expect(text).not.toContain("{");
+
+		await expect(command(commands, "calibrate").handler("11 too many", host.ctx))
+			.rejects.toThrow("/calibrate repetitions must be an integer between 1 and 10");
 		expect(fixture.decide).toHaveBeenCalledTimes(2);
 	});
 
@@ -1264,7 +1342,7 @@ describe("Builder Pi slash commands", () => {
 		const verificationHost = context({ select: async () => "Verify the candidate now (/run)" });
 		await command(verification.commands, "review").handler("", verificationHost.ctx);
 		expect(verifying.decide).toHaveBeenCalledWith(
-			{ kind: "run-current", repetitions: 1, reason: "Verification from /review" },
+			{ kind: "run-current", repetitions: 3, reason: "Verification from /review" },
 			expect.any(Object),
 			{ signal: undefined, onRunEvent: expect.any(Function) },
 		);
@@ -1472,7 +1550,7 @@ describe("Builder Pi slash commands", () => {
 			name,
 			name === "apply" ? "candidate/fix" : name === "promote" ? "1.0.0" : "",
 		]);
-		expect(invocations).toHaveLength(15);
+		expect(invocations).toHaveLength(16);
 
 		for (const settings of [
 			{ hasUI: false, mode: "print" as const },

@@ -58,6 +58,8 @@ describe("side-effect-free CLI invocation parsing", () => {
 		{ name: "builder apply", argv: ["builder", "apply", "--target", "./agent", "--run", "builder-1", "--branch", "candidate/builder-1", "--reason", "reviewed"], command: "builder", action: "apply" },
 		{ name: "candidate builder run", argv: ["candidate", "--target", "./agent", "--builder-run", "builder-1", "--development-corpus", "corpus-dev"], command: "candidate", action: null },
 		{ name: "candidate refs", argv: ["candidate", "--target", "./agent", "--base", "main", "--branch", "candidate/x", "--proposal", "proposal-1", "--diagnosis", "diagnosis-1"], command: "candidate", action: null },
+		{ name: "calibrate", argv: ["calibrate", "--target", "./agent"], command: "calibrate", action: null },
+		{ name: "calibrate corpus", argv: ["calibrate", "--target", "./agent", "--repetitions", "3", "--project", "demo", "--corpus", "corpus-dev"], command: "calibrate", action: null },
 		{ name: "review", argv: ["review", "--candidate", "candidate-1", "--recommend", "promote", "--reason", "passed"], command: "review", action: null },
 		{ name: "promote", argv: ["promote", "--target", "./agent", "--candidate", "candidate-1", "--to", "1.2.3", "--reason", "approved"], command: "promote", action: null },
 		{ name: "reject", argv: ["reject", "--candidate", "candidate-1", "--reason", "regressed"], command: "reject", action: null },
@@ -125,6 +127,7 @@ describe("side-effect-free CLI invocation parsing", () => {
 
 	it.each([
 		[["run"], /missing required flag --target for run/],
+		[["calibrate"], /missing required flag --target for calibrate/],
 		[["corpus", "draft", "--project", "demo"], /missing required flag --target for corpus draft/],
 		[["builder", "apply", "--target", "./agent"], /missing required flag --run for builder apply/],
 		[["review", "--candidate", "candidate-1", "--recommend", "reject"], /missing required flag --reason for review/],
@@ -136,6 +139,7 @@ describe("side-effect-free CLI invocation parsing", () => {
 	it.each([
 		[["run", "--target", "./agent", "--dataset", "dev.jsonl", "--corpus", "corpus-dev", "--project", "demo"], /cannot combine --dataset with --corpus/],
 		[["run", "--target", "./agent", "--corpus", "corpus-dev"], /missing required flag --project for run with --corpus/],
+		[["calibrate", "--target", "./agent", "--corpus", "corpus-dev"], /missing required flag --project for calibrate with --corpus/],
 		[["candidate", "--target", "./agent", "--builder-run", "builder-1", "--dataset", "dev.jsonl", "--development-corpus", "corpus-dev"], /cannot combine --dataset with --development-corpus/],
 		[["candidate", "--target", "./agent", "--builder-run", "builder-1", "--branch", "candidate/x"], /--builder-run cannot combine with --branch/],
 		[["candidate", "--target", "./agent", "--base", "main"], /requires --builder-run or all of --base, --branch, --proposal, --diagnosis/],
@@ -150,6 +154,8 @@ describe("side-effect-free CLI invocation parsing", () => {
 		[["review", "--candidate", "candidate-1", "--recommend", "maybe", "--reason", "x"], /--recommend .* promote, reject/],
 		[["evidence", "--port", "65536"], /--port .* between 0 and 65535/],
 		[["run", "--target", "./agent", "--repetitions", "0"], /--repetitions .* at least 1/],
+		[["calibrate", "--target", "./agent", "--repetitions", "0"], /--repetitions .* at least 1/],
+		[["calibrate", "--target", "./agent", "--holdout-corpus", "sealed-1"], /unknown flag --holdout-corpus for calibrate/],
 		[["corpus", "draft", "--project", "demo", "--target", "./agent", "--spec", "spec-1", "--tasks", "2.5"], /--tasks .* must be an integer/],
 	] as const)("rejects invalid bounded flag values in %j", (argv, message) => {
 		expect(() => parseCliInvocation(argv)).toThrow(message);

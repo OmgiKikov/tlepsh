@@ -19,7 +19,8 @@ import { recordBuilderAuthoredProposal } from "../src/application/builder-author
 import { applyBuilderProposal, loadBuilderProposalRun } from "../src/application/builder-proposal.js";
 import { CANDIDATE_SCOPE_POLICY } from "../src/application/candidate-experiment.js";
 import { targetWithDevelopmentCorpus } from "../src/application/corpus-target.js";
-import { createCandidate } from "../src/domain/candidate.js";
+import { createCandidate, transitionCandidate, type CandidateRecord } from "../src/domain/candidate.js";
+import { EXACT_COMPARISON_GATE_ALGORITHM_ID_V3 } from "../src/domain/comparison-gate.js";
 import { diagnoseEvalRun } from "../src/diagnosis.js";
 import { writeEvalRun, type EvalRunRecord } from "../src/eval.js";
 import { loadTarget, type GraderSpec } from "../src/manifest.js";
@@ -254,6 +255,102 @@ function authoringContextClaim(paths: { projectDir: string }) {
 		repositoryDir: paths.projectDir,
 		expectedTarget: { id: resolved.manifest.id, gitSha: resolved.gitSha },
 	}).claim;
+}
+
+/**
+ * One A/A calibration record on disk. `evaluated: false` leaves it at the
+ * `validated` checkpoint an interrupted candidate would occupy, which is
+ * exactly the shape that must not become workflow.
+ */
+function writeCalibration(
+	paths: { projectDir: string; runsRoot: string },
+	candidateId: string,
+	options: { evaluated?: boolean; at?: string; sha?: string; taskCount?: number; baselinePassRate?: number } = {},
+): CandidateRecord {
+	const at = options.at ?? NOW;
+	const sha = options.sha ?? loadTarget(paths.projectDir).gitSha;
+	const revision = { ref: "refs/heads/master", sha };
+	const actor = { kind: "human" as const, id: "local:test-human" };
+	const system = { kind: "system" as const, id: "candidate-experiment" };
+	const taskCount = options.taskCount ?? 30;
+	let record = createCandidate({
+		candidateId,
+		projectId: "test-target",
+		targetId: loadTarget(paths.projectDir).manifest.id,
+		specId: null,
+		proposalId: "proposal-unspecified",
+		diagnosisId: null,
+		origin: { kind: "manual", reason: "A/A calibration" },
+		mode: "aa-calibration",
+		baseline: revision,
+		eventId: `${candidateId}:proposed`,
+		at,
+		actor,
+	});
+	record = transitionCandidate(record, { type: "built", eventId: `${candidateId}:built`, at, actor, candidate: revision });
+	record = transitionCandidate(record, {
+		type: "validated",
+		eventId: `${candidateId}:validated`,
+		at,
+		actor: system,
+		lineage: { baseline: revision, candidate: revision, relation: "same" },
+		scope: {
+			policyId: CANDIDATE_SCOPE_POLICY.id,
+			baselineSha: sha,
+			candidateSha: sha,
+			passed: true,
+			changedFiles: [],
+			violations: [],
+		},
+	});
+	if (options.evaluated !== false) {
+		const hash = `sha256:${"c".repeat(64)}`;
+		const improved = taskCount >= 3 ? 2 : 0;
+		const regressed = taskCount >= 3 ? 1 : 0;
+		record = transitionCandidate(record, {
+			type: "evaluated",
+			eventId: `${candidateId}:evaluated`,
+			at,
+			actor: system,
+			evaluation: {
+				experimentId: candidateId,
+				designHash: hash,
+				mode: "aa-calibration",
+				development: {
+					baseline: { evalRunId: `${candidateId}-a`, harness: revision },
+					candidate: { evalRunId: `${candidateId}-b`, harness: revision },
+					comparison: {
+						schemaVersion: 3,
+						algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
+						policyId: "development-ci-v3",
+						surface: "development",
+						comparisonHash: hash,
+						evidenceHash: hash,
+						gateHash: hash,
+						summary: {
+							taskCount,
+							baselinePassRate: options.baselinePassRate ?? 0.9,
+							candidatePassRate: options.baselinePassRate ?? 0.9,
+							delta: 0,
+							confidence95: { low: -0.06, high: 0.06 },
+							improved,
+							regressed,
+							unchanged: taskCount - improved - regressed,
+						},
+						design: { tasks: taskCount, repetitions: 3, excludedTasks: 0 },
+						verdict: "inconclusive",
+						flags: { regressedTasks: regressed, improvedTasks: improved, collapsedTasks: 0 },
+						reasons: ["95% CI spans zero"],
+					},
+				} as never,
+				infrastructureErrors: 0,
+			},
+		});
+	}
+	const dir = join(paths.runsRoot, "candidates", candidateId);
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, "candidate.json"), `${JSON.stringify(record)}\n`, "utf8");
+	return record;
 }
 
 describe("AHDE Workbench", () => {
@@ -1635,6 +1732,245 @@ describe("AHDE Workbench", () => {
 		expect(blockedSerialized).not.toContain(sealed.id);
 		expect(blockedSerialized).not.toContain("secret holdout name");
 		expect(blockedSerialized).not.toContain("secret prompt");
+	});
+
+	it("warns once a sealed holdout has judged too many candidates, without naming it", async () => {
+		const paths = target();
+		const exactTarget = loadTarget(paths.projectDir);
+		const sealed = createCorpus({
+			stateRoot: paths.stateRoot,
+			projectId: "test-target",
+			name: "overused holdout name",
+			visibility: "sealed",
+			tasks: [{ id: "sealed-case", ...task("sealed prompt", "sealed answer") }],
+		});
+		const hash = `sha256:${"c".repeat(64)}`;
+		const gateEvidence = (surface: "development" | "sealed") => ({
+			schemaVersion: 3,
+			algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
+			policyId: surface === "sealed" ? "sealed-guardrail-v3" : "development-ci-v3",
+			surface,
+			comparisonHash: hash,
+			evidenceHash: hash,
+			gateHash: hash,
+			summary: {
+				taskCount: 1,
+				baselinePassRate: 1,
+				candidatePassRate: 1,
+				delta: 0,
+				confidence95: { low: 0, high: 0 },
+				improved: 0,
+				regressed: 0,
+				unchanged: 1,
+			},
+			design: { tasks: 1, repetitions: 2, excludedTasks: 0 },
+			verdict: surface === "sealed" ? "pass" : "inconclusive",
+			flags: { regressedTasks: 0, improvedTasks: 0, collapsedTasks: 0 },
+			reasons: ["fixture"],
+		});
+		const actor = { kind: "human" as const, id: "local:test-human" };
+		const system = { kind: "system" as const, id: "candidate-experiment" };
+		const baseline = { ref: "refs/heads/master", sha: exactTarget.gitSha };
+		for (let index = 0; index < 6; index += 1) {
+			const candidateId = `candidate-sealed-${index}`;
+			const built = { ref: `refs/heads/candidate-${index}`, sha: `${index}`.repeat(40) };
+			let record = createCandidate({
+				candidateId,
+				projectId: "test-target",
+				targetId: exactTarget.manifest.id,
+				specId: null,
+				proposalId: "proposal-unspecified",
+				diagnosisId: null,
+				origin: { kind: "manual", reason: "sealed exposure fixture" },
+				mode: "candidate",
+				baseline,
+				eventId: `${candidateId}:proposed`,
+				at: NOW,
+				actor,
+			});
+			record = transitionCandidate(record, { type: "built", eventId: `${candidateId}:built`, at: NOW, actor, candidate: built });
+			record = transitionCandidate(record, {
+				type: "validated",
+				eventId: `${candidateId}:validated`,
+				at: NOW,
+				actor: system,
+				lineage: { baseline, candidate: built, relation: "descendant" },
+				scope: {
+					policyId: CANDIDATE_SCOPE_POLICY.id,
+					baselineSha: baseline.sha,
+					candidateSha: built.sha,
+					passed: true,
+					changedFiles: ["AGENTS.md"],
+					violations: [],
+				},
+			});
+			record = transitionCandidate(record, {
+				type: "evaluated",
+				eventId: `${candidateId}:evaluated`,
+				at: NOW,
+				actor: system,
+				evaluation: {
+					experimentId: candidateId,
+					designHash: hash,
+					mode: "candidate",
+					development: {
+						baseline: { evalRunId: `${candidateId}-dev-a`, harness: baseline },
+						candidate: { evalRunId: `${candidateId}-dev-b`, harness: built },
+						comparison: gateEvidence("development"),
+					},
+					sealedHoldout: {
+						corpus: { id: sealed.id, hash: sealed.hash },
+						baseline: { evalRunId: `${candidateId}-sealed-a`, harness: baseline },
+						candidate: { evalRunId: `${candidateId}-sealed-b`, harness: built },
+						comparison: gateEvidence("sealed"),
+					},
+					infrastructureErrors: 0,
+				} as never,
+			});
+			const dir = join(paths.runsRoot, "candidates", candidateId);
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(join(dir, "candidate.json"), `${JSON.stringify(record)}\n`, "utf8");
+		}
+
+		const view = await createAhdeWorkbench({ ...paths, projectId: "test-target", dependencies: { now: () => NOW } }).view();
+
+		expect(view.warnings).toEqual(expect.arrayContaining([
+			"A sealed holdout has been used in 6 candidate verifications; consider refreshing it",
+		]));
+		const serialized = JSON.stringify(view);
+		expect(serialized).not.toContain(sealed.id);
+		expect(serialized).not.toContain("overused holdout name");
+		expect(serialized).not.toContain("sealed prompt");
+	});
+
+	it("keeps calibration records out of stage derivation, selections, counts, and the interrupted check", async () => {
+		const paths = target();
+		const setup = createAhdeWorkbench({ ...paths, projectId: "test-target", dependencies: { now: () => NOW } });
+		await setup.submit({ kind: "spec-draft", spec: spec() });
+		await setup.decide({ kind: "approve-spec", reason: "Approve the calibration fixture Spec" }, gate());
+		await setup.submit({
+			kind: "corpus-draft",
+			name: "Calibration fixture",
+			tasks: [task()],
+			coverageNotes: [],
+			revisionSummary: "Calibration fixture",
+		});
+		await setup.decide({ kind: "publish-corpus", reason: "Publish the calibration fixture basket" }, gate());
+		expect((await setup.view()).stage).toBe("ready-to-evaluate");
+
+		// One finished A/A run plus one stopped at `validated`: a candidate in
+		// either state would take the stage over.
+		writeCalibration(paths, "calibration-older", { at: "2026-08-26T17:00:00.000Z", baselinePassRate: 0.5 });
+		writeCalibration(paths, "calibration-newest", { at: "2026-08-26T18:00:00.000Z" });
+		writeCalibration(paths, "calibration-interrupted", { evaluated: false, at: "2026-08-26T17:30:00.000Z" });
+
+		const view = await createAhdeWorkbench({ ...paths, projectId: "test-target", dependencies: { now: () => NOW } }).view();
+
+		expect(view.stage).toBe("ready-to-evaluate");
+		expect(view.blockers).toEqual([]);
+		expect(view.selections.some((item) => item.kind === "candidate")).toBe(false);
+		expect(view.counts.candidates).toBe(0);
+		expect(view.counts.calibrations).toBe(3);
+		expect(view.calibration).toMatchObject({
+			candidateId: "calibration-newest",
+			targetSha: loadTarget(paths.projectDir).gitSha,
+			taskCount: 30,
+			repetitions: 3,
+			aaPassRate: 0.9,
+			flipRate: 0.1,
+			recommendedRepetitions: 3,
+			verdict: "inconclusive",
+		});
+
+		// A calibration of another revision describes another harness.
+		const stale = target();
+		writeCalibration(stale, "calibration-stale", { sha: "d".repeat(40) });
+		expect((await createAhdeWorkbench({ ...stale, projectId: "test-target" }).view()).calibration).toBeNull();
+	});
+
+	it("runs calibration as A/A on the exact current revision through the human gate", async () => {
+		const paths = target();
+		const setup = createAhdeWorkbench({ ...paths, projectId: "test-target", dependencies: { now: () => NOW } });
+		await setup.submit({ kind: "spec-draft", spec: spec() });
+		await setup.decide({ kind: "approve-spec", reason: "Approve the calibration Spec" }, gate());
+		await setup.submit({
+			kind: "corpus-draft",
+			name: "Calibration basket",
+			tasks: [task(), task("How long is the trial?", "14 days")],
+			coverageNotes: [],
+			revisionSummary: "Calibration basket",
+		});
+		const published = await setup.decide({ kind: "publish-corpus", reason: "Publish the calibration basket" }, gate());
+		const corpusId = String(published.result.corpusId);
+		const exactTarget = loadTarget(paths.projectDir);
+
+		const onRunEvent = vi.fn();
+		const runCalibration = vi.fn(async (options: { candidateId?: string }) => ({
+			record: writeCalibration(paths, options.candidateId ?? "calibration-run", { taskCount: 2 }),
+		}));
+		const calibrationGate = gate();
+		const workbench = createAhdeWorkbench({
+			...paths,
+			projectId: "test-target",
+			dependencies: { now: () => NOW, runCalibration: runCalibration as never },
+		});
+
+		const decided = await workbench.decide(
+			{ kind: "calibrate", repetitions: 3, reason: "Measure noise before believing a delta" },
+			calibrationGate,
+			{ onRunEvent },
+		);
+
+		expect(calibrationGate.confirm).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "calibrate",
+				subject: {
+					operation: "calibrate-noise",
+					target: { id: exactTarget.manifest.id, gitSha: exactTarget.gitSha },
+					developmentCorpus: { id: corpusId, hash: expect.any(String), taskCount: 2 },
+					repetitions: 3,
+					executions: 12,
+				},
+			}),
+			undefined,
+		);
+		expect(runCalibration).toHaveBeenCalledWith(expect.objectContaining({
+			repositoryDir: paths.projectDir,
+			runsRoot: paths.runsRoot,
+			baselineRef: exactTarget.gitSha,
+			candidateRef: exactTarget.gitSha,
+			mode: "aa-calibration",
+			repetitions: 3,
+			projectId: "test-target",
+			origin: { kind: "manual", reason: "A/A calibration" },
+			developmentCorpus: { stateRoot: paths.stateRoot, projectId: "test-target", corpusId },
+			actorId: "local:test-human",
+			onRunEvent,
+		}));
+		expect(decided.result).toMatchObject({
+			candidateId: "calibration-run",
+			calibration: { verdict: "inconclusive", taskCount: 2, recommendedRepetitions: 5 },
+		});
+		expect(decided.message).toContain("A/A inconclusive");
+		// The A/A record is the receipt: it shows up as calibration, never as a candidate.
+		expect(decided.view.stage).toBe("ready-to-evaluate");
+		expect(decided.view.counts.candidates).toBe(0);
+		expect(decided.view.counts.calibrations).toBe(1);
+		expect(decided.view.calibration).toMatchObject({ candidateId: "calibration-run" });
+
+		const declined = createAhdeWorkbench({
+			...paths,
+			projectId: "test-target",
+			dependencies: { now: () => NOW, runCalibration: runCalibration as never },
+		});
+		await expect(declined.decide({ kind: "calibrate", repetitions: 3, reason: "Not now" }, gate(false)))
+			.rejects.toBeInstanceOf(WorkbenchDecisionDeclinedError);
+		expect(runCalibration).toHaveBeenCalledTimes(1);
+
+		// Legal only where the operator could act on the answer.
+		const early = createAhdeWorkbench({ ...target(), projectId: "test-target", dependencies: { now: () => NOW } });
+		await expect(early.decide({ kind: "calibrate", repetitions: 3, reason: "Too early" }, gate()))
+			.rejects.toThrow(/calibrate is not legal during spec-design/);
 	});
 
 	it("detects a tampered mutable focus checkpoint and refuses to treat it as authority", async () => {
