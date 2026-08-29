@@ -179,10 +179,7 @@ export const AHDE_BUILDER_TOOL_NAMES = [
 	"ahde_workbench_decide",
 ] as const;
 
-/**
- * Transitional direct adapters kept for application-level regression tests.
- * Builder Pi never registers this compatibility surface.
-
+/** The only tool that can change durable state, and only behind the human gate. */
 export const CONSEQUENTIAL_BUILDER_TOOL_NAMES = [
 	"ahde_workbench_decide",
 ] as const;

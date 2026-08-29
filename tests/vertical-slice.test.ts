@@ -18,13 +18,9 @@ import {
 	promoteReviewedCandidate,
 	reviewCandidate,
 } from "../src/application/candidate-review.js";
+import { createBuilderAuthoredProposalAdapter } from "../src/application/builder-authoring.js";
 import { compileFailureBundle } from "../src/bundle.js";
-import {
-	BuilderRunRecordSchema,
-	type BuilderAdapter,
-	type BuilderCapabilities,
-	type BuilderRequest,
-} from "../src/builders/adapters.js";
+import type { BuilderAdapter, CandidateProposal } from "../src/builders/adapters.js";
 import { createCorpus } from "../src/corpus.js";
 import { diagnoseEvalRun } from "../src/diagnosis.js";
 import {
@@ -78,16 +74,6 @@ const DEVELOPMENT = [
 	{ id: "dev-1", input: "Answer case one.", graders: [{ type: "output_contains" as const, text: "READY" }] },
 	{ id: "dev-2", input: "Answer case two.", graders: [{ type: "output_contains" as const, text: "READY" }] },
 ];
-const CAPABILITIES: BuilderCapabilities = {
-	eventStream: true,
-	structuredOutput: true,
-	usage: false,
-	cost: false,
-	sessionId: false,
-	cancellation: true,
-	isolation: "tool-free-executor",
-};
-
 let root: string;
 let targetDir: string;
 let runsRoot: string;
@@ -103,6 +89,11 @@ function sha256(value: string): string {
 }
 
 
+/**
+ * The one production proposal adapter: Builder Pi authors the exact proposal and
+ * the host records it. Every acceptance step below crosses the same trust seam
+ * the product ships, not a bespoke fixture backend.
+ */
 function proposalAdapter(
 	baseSha: string,
 	evidence?: { diagnoses: EvidenceLinkedProposalDiagnosis[]; evidenceRefs: string[] },
@@ -113,9 +104,9 @@ function proposalAdapter(
 		rootCause: "The harness asks for the wrong final token.",
 	}];
 	const evidenceRefs = evidence?.evidenceRefs ?? ["diagnosis:answer-quality"];
-	const proposal = {
-		schemaVersion: 1 as const,
-		decision: "propose" as const,
+	const proposal: CandidateProposal = {
+		schemaVersion: 1,
+		decision: "propose",
 		baseTargetSha: baseSha,
 		summary: "Make the answer contract explicit.",
 		diagnoses,
@@ -138,42 +129,7 @@ function proposalAdapter(
 		risks: ["The contract is intentionally narrow for this fixture."],
 		validationPlan: ["Run the matched development and sealed corpora."],
 	};
-	return {
-		backend: "fixture-builder",
-		capabilities: CAPABILITIES,
-		async probe() {
-			return {
-				backend: "fixture-builder",
-				available: true,
-				version: "fixture-builder 1.0.0",
-				capabilities: CAPABILITIES,
-				error: null,
-			};
-		},
-		async run(request: BuilderRequest) {
-			const startedAt = CLOCK.now();
-			const finishedAt = CLOCK.now();
-			return BuilderRunRecordSchema.parse({
-				schemaVersion: 1,
-				runId: request.runId,
-				backend: "fixture-builder",
-				backendVersion: "fixture-builder 1.0.0",
-				capabilities: CAPABILITIES,
-				baseTargetSha: request.baseTargetSha,
-				startedAt,
-				finishedAt,
-				status: "completed",
-				proposal,
-				model: null,
-				sessionId: null,
-				usage: null,
-				costUsd: null,
-				traceLevel: "full",
-				rawEvents: ['{"type":"diagnosis"}', '{"type":"final"}'],
-				error: null,
-			});
-		},
-	};
+	return createBuilderAuthoredProposalAdapter(proposal, { now: CLOCK.now });
 }
 
 beforeAll(async () => {
