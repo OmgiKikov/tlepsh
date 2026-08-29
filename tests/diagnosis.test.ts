@@ -102,7 +102,7 @@ function writeEval(runsRoot: string, runs: RunRecord[]): EvalRunRecord {
 	const evidence = { runtime, model, judge: null, execution, eval: evaluation };
 	const pass = runs.filter((run) => run.evalResults?.outcome === "pass").length;
 	const record: EvalRunRecord = {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		evalRunId: "erun-diagnosis",
 		target: { id: "target", gitSha },
 		label: "baseline",

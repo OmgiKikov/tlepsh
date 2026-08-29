@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+	AHDE_EVALUATOR_ID,
 	axisDifferences,
 	canonicalJson,
 	comparable,
 	hashValue,
 	provenanceAxes,
 	provenanceKey,
+	ProvenanceAxesSchema,
 	RunRecordSchema,
 	type RunRecord,
 } from "../src/provenance.js";
@@ -108,10 +110,6 @@ describe("axisDifferences (table-driven: each axis must be caught)", () => {
 			axis: "runtime.ahdeVersion",
 			mutate: () => record({ runtime: { ...record().runtime, ahdeVersion: "0.2.0" } }),
 		},
-		{
-			axis: "runtime.ahdeCodeHash",
-			mutate: () => record({ runtime: { ...record().runtime, ahdeCodeHash: "sha256:code-b" } }),
-		},
 		{ axis: "model.provider", mutate: () => record({ model: { ...record().model, provider: "other" } }) },
 		{ axis: "model.id", mutate: () => record({ model: { ...record().model, id: "qwen-99b" } }) },
 		{ axis: "model.api", mutate: () => record({ model: { ...record().model, api: "openai-responses" } }) },
@@ -146,6 +144,22 @@ describe("axisDifferences (table-driven: each axis must be caught)", () => {
 			expect(comparable(provenanceAxes(record()), provenanceAxes(mutate()))).toBe(false);
 		});
 	}
+
+	it("evaluatorId is an axis, ahdeCodeHash is not", () => {
+		const axes = provenanceAxes(record());
+		expect(axes.evaluatorId).toBe(AHDE_EVALUATOR_ID);
+		expect(Object.keys(axes)).toContain("evaluatorId");
+		expect(Object.keys(axes)).not.toContain("ahdeCodeHash");
+		expect(Object.keys(ProvenanceAxesSchema.shape)).toContain("evaluatorId");
+		expect(Object.keys(ProvenanceAxesSchema.shape)).not.toContain("ahdeCodeHash");
+
+		// An unrelated AHDE source edit no longer invalidates every baseline…
+		const rehashed = record({ runtime: { ...record().runtime, ahdeCodeHash: "sha256:code-b" } });
+		expect(axisDifferences(axes, provenanceAxes(rehashed))).toEqual([]);
+		// …while a deliberate evaluator bump makes older evidence incomparable.
+		expect(axisDifferences(axes, { ...axes, evaluatorId: "ahde-evaluator-v2" }))
+			.toEqual(["runtime.evaluatorId"]);
+	});
 
 	it("catches changed judge configuration", () => {
 		const base = provenanceAxes(record());

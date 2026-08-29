@@ -321,10 +321,14 @@ Pi one sealed case at a time, and only bounded gate results cross that boundary.
 The conversational Builder is the primary UX. Explicit commands remain a
 compatibility and automation surface over the same application services:
 
+`--jobs` bounds concurrent executions inside one evaluation (default 4, or 1
+against a loopback model endpoint); `--baseline-max-age <days>` bounds how old a
+reused baseline may be (default 7).
+
 ```bash
 # inspect and evaluate
 ahde validate --target .
-ahde run --target . --label baseline --repetitions 3
+ahde run --target . --label baseline --repetitions 3 --jobs 4
 ahde list
 ahde diagnose <eval-run-id>
 ahde compare <baseline-eval-id> <candidate-eval-id>
@@ -348,7 +352,8 @@ ahde builder apply --target . --run <builder-run-id> \
 # exact candidate experiment and terminal human decision
 ahde candidate --target . --builder-run <builder-run-id> \
   --project my-agent --development-corpus <development-corpus-id> \
-  --holdout-corpus <sealed-corpus-id> --repetitions 3
+  --holdout-corpus <sealed-corpus-id> --repetitions 3 \
+  --jobs 4 --baseline-max-age 7
 ahde review --candidate <candidate-id> --recommend promote \
   --reason "Development improved and sealed gate passed"
 ahde promote --target . --candidate <candidate-id> --to 0.2.0 \

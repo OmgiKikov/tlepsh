@@ -51,7 +51,7 @@ function writeCorruptFormalSealedIndex(runsRoot: string): EvalRunRecord {
 	};
 	const evidence = { runtime, model, judge: null, execution, eval: evaluation };
 	const record: EvalRunRecord = {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		evalRunId: "erun_formal_private",
 		target: { id: "private-target", gitSha: "a".repeat(40) },
 		label: "solo",
@@ -145,7 +145,7 @@ function writeDevelopmentCandidateWithSealedBaseline(runsRoot: string, targetId 
 	writeJsonArtifact(join(runsRoot, run.runId, "run.json"), RunRecordSchema, run);
 	const evidence = { runtime, model, judge: null, execution, eval: evaluation };
 	const candidate: EvalRunRecord = {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		evalRunId: candidateId,
 		target: run.target,
 		label: "candidate",

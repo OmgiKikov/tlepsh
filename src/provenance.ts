@@ -95,6 +95,21 @@ export const TokenMetricsSchema = z.strictObject({
 });
 export type TokenMetrics = z.infer<typeof TokenMetricsSchema>;
 
+/**
+ * What grading this run cost at the judge endpoint. Absent on runs that never
+ * called a judge (every non-judge grader is local and free) and on evidence
+ * written before judge accounting existed.
+ */
+export const JudgeMetricsSchema = z.strictObject({
+	/** HTTP attempts, retries included — the number the provider bills against. */
+	calls: z.number().int().nonnegative(),
+	/** Prompt + completion tokens the endpoint reported; 0 when it reported none. */
+	tokens: z.number().int().nonnegative(),
+	/** Derived from the judge model's declared cost rates; 0 when none are declared. */
+	costUsd: z.number().nonnegative(),
+});
+export type JudgeMetrics = z.infer<typeof JudgeMetricsSchema>;
+
 export const RunMetricsSchema = z.strictObject({
 	tokens: TokenMetricsSchema,
 	costUsd: z.number().nonnegative(),
@@ -102,6 +117,7 @@ export const RunMetricsSchema = z.strictObject({
 	toolCalls: z.number().int().nonnegative(),
 	toolErrors: z.number().int().nonnegative(),
 	recoveryAttempts: z.number().int().nonnegative(),
+	judge: JudgeMetricsSchema.nullable().optional(),
 });
 export type RunMetrics = z.infer<typeof RunMetricsSchema>;
 
@@ -262,6 +278,21 @@ export function executionFingerprint(
 }
 
 /**
+ * Identity of the evaluator semantics that decide a run's outcome: the runner,
+ * the eval loop, trace extraction and the judge protocol.
+ *
+ * BUMP THIS BY HAND (…-v2, -v3, …) whenever a change to `runner.ts`,
+ * `eval.ts`, `trace.ts` or the judge request/verdict protocol could move a
+ * pass/fail outcome for identical inputs. Evidence produced before the bump
+ * then becomes legacy (incomparable) instead of silently comparable.
+ *
+ * It replaces `ahdeCodeHash` as an axis on purpose: the source hash covers all
+ * 1.3 MB of AHDE, so a README-adjacent edit used to invalidate every baseline.
+ * The exact hash is still recorded in `runtime.ahdeCodeHash` of every record.
+ */
+export const AHDE_EVALUATOR_ID = "ahde-evaluator-v1";
+
+/**
  * The provenance axes compared between two runs. The target git SHA is
  * deliberately NOT an axis: baseline and candidate differ exactly there.
  */
@@ -269,7 +300,7 @@ export const ProvenanceAxesSchema = z.strictObject({
 	piVersion: NonEmptyStringSchema,
 	piSha: GitShaSchema,
 	ahdeVersion: NonEmptyStringSchema,
-	ahdeCodeHash: HashSchema,
+	evaluatorId: NonEmptyStringSchema,
 	provider: NonEmptyStringSchema,
 	modelId: NonEmptyStringSchema,
 	modelApi: NonEmptyStringSchema,
@@ -286,7 +317,7 @@ export const ProvenanceAxesSchema = z.strictObject({
 export type ProvenanceAxes = z.infer<typeof ProvenanceAxesSchema>;
 
 export function provenanceAxes(record: {
-	runtime: { piVersion: string; piSha: string; ahdeVersion: string; ahdeCodeHash: string };
+	runtime: { piVersion: string; piSha: string; ahdeVersion: string };
 	model: ModelFingerprint;
 	judge?: ModelFingerprint | null;
 	execution: ExecutionFingerprint;
@@ -296,7 +327,7 @@ export function provenanceAxes(record: {
 		piVersion: record.runtime.piVersion,
 		piSha: record.runtime.piSha,
 		ahdeVersion: record.runtime.ahdeVersion,
-		ahdeCodeHash: record.runtime.ahdeCodeHash,
+		evaluatorId: AHDE_EVALUATOR_ID,
 		provider: record.model.provider,
 		modelId: record.model.id,
 		modelApi: record.model.api,
@@ -320,7 +351,7 @@ const AXIS_LABELS: Record<keyof ProvenanceAxes, string> = {
 	piVersion: "runtime.piVersion",
 	piSha: "runtime.piSha",
 	ahdeVersion: "runtime.ahdeVersion",
-	ahdeCodeHash: "runtime.ahdeCodeHash",
+	evaluatorId: "runtime.evaluatorId",
 	provider: "model.provider",
 	modelId: "model.id",
 	modelApi: "model.api",

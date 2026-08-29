@@ -82,6 +82,10 @@ export interface CandidateExperimentOptions {
 	onRunEvent?: RunEventListener;
 	/** Host-owned cancellation propagated through development and sealed executions. */
 	signal?: AbortSignal;
+	/** Concurrent executions inside each suite. Undefined keeps runSuite's default. */
+	jobs?: number;
+	/** How old a reusable baseline may be. Undefined keeps the seven-day default. */
+	baselineMaxAgeMs?: number;
 }
 
 export interface CandidateExperimentHoldoutResult {
@@ -418,6 +422,16 @@ interface MatchedEvaluationResult {
 	baselineReused: boolean;
 }
 
+/** Everything the matched pair needs that is not the pair itself. */
+interface MatchedEvaluationExecution {
+	onRunEvent?: RunEventListener;
+	signal?: AbortSignal;
+	/** Concurrent executions per suite; undefined keeps runSuite's own default. */
+	jobs?: number;
+	/** Age limit on a reusable baseline; undefined keeps the seven-day default. */
+	baselineMaxAgeMs?: number;
+}
+
 async function runMatchedEvaluation(
 	dependencies: CandidateExperimentDependencies,
 	runsRoot: string,
@@ -427,9 +441,9 @@ async function runMatchedEvaluation(
 	mode: ExperimentMode,
 	repetitions: number,
 	evidenceVisibility: "development" | "sealed",
-	onRunEvent?: RunEventListener,
-	signal?: AbortSignal,
+	execution: MatchedEvaluationExecution = {},
 ): Promise<MatchedEvaluationResult> {
+	const { onRunEvent, signal, jobs, baselineMaxAgeMs } = execution;
 	const baselineWorkspaceHash = computeTargetWorkspaceHash(baselineTarget, runsRoot);
 	const query: ReusableBaselineQuery = {
 		targetId: baselineTarget.manifest.id,
@@ -440,6 +454,7 @@ async function runMatchedEvaluation(
 		evidenceVisibility,
 		label: "baseline",
 		repetitions,
+		...(baselineMaxAgeMs === undefined ? {} : { maxAgeMs: baselineMaxAgeMs }),
 	};
 	let baseline = dependencies.findReusableBaseline(runsRoot, query);
 	if (baseline) assertReusableBaselineIdentity(baseline, query);
@@ -453,6 +468,7 @@ async function runMatchedEvaluation(
 			expectedWorkspaceHash: baselineWorkspaceHash,
 			...(onRunEvent ? { onRunEvent } : {}),
 			...(signal ? { signal } : {}),
+			...(jobs === undefined ? {} : { jobs }),
 		});
 	}
 	const baselineProblem = infrastructureError(baseline);
@@ -467,6 +483,7 @@ async function runMatchedEvaluation(
 		baselineEvalRunId: baseline.evalRunId,
 		...(onRunEvent ? { onRunEvent } : {}),
 		...(signal ? { signal } : {}),
+		...(jobs === undefined ? {} : { jobs }),
 	});
 	const candidateProblem = infrastructureError(candidate);
 	if (candidateProblem) throw new Error(candidateProblem);
@@ -649,8 +666,12 @@ export async function runCandidateExperiment(
 					options.mode,
 					options.repetitions,
 					"development",
-					options.onRunEvent,
-					options.signal,
+					{
+						...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
+						...(options.signal ? { signal: options.signal } : {}),
+						...(options.jobs === undefined ? {} : { jobs: options.jobs }),
+						...(options.baselineMaxAgeMs === undefined ? {} : { baselineMaxAgeMs: options.baselineMaxAgeMs }),
+					},
 				);
 
 				let sealedHoldout: CandidateExperimentHoldoutResult | null = null;
@@ -664,8 +685,11 @@ export async function runCandidateExperiment(
 						options.mode,
 						options.repetitions,
 						"sealed",
-						undefined,
-						options.signal,
+						{
+							...(options.signal ? { signal: options.signal } : {}),
+							...(options.jobs === undefined ? {} : { jobs: options.jobs }),
+							...(options.baselineMaxAgeMs === undefined ? {} : { baselineMaxAgeMs: options.baselineMaxAgeMs }),
+						},
 					);
 					// The sealed verdict is recorded, never thrown: a fail or an
 					// underpowered gate is durable evidence the human reviews, and

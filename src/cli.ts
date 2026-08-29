@@ -387,6 +387,7 @@ async function main(): Promise<void> {
 				repetitions,
 				taskId,
 				onRunEvent: cliRunProgress(),
+				...(arg("jobs") ? { jobs: Number(arg("jobs")) } : {}),
 			});
 			console.log(
 				`eval run ${record.evalRunId}: ${record.summary.pass}/${record.summary.total} all-pass ` +
@@ -745,6 +746,11 @@ You have no tools. You create a reviewable draft only and must not claim that yo
 				}
 				if (builderRun && !specId) throw new Error("applied Builder candidates require an approved Spec");
 				const repetitions = arg("repetitions") ? Number(arg("repetitions")) : DEFAULT_REPETITIONS;
+				const jobs = arg("jobs") ? Number(arg("jobs")) : undefined;
+				const baselineMaxAgeDays = arg("baseline-max-age") ? Number(arg("baseline-max-age")) : undefined;
+				const baselineMaxAgeMs = baselineMaxAgeDays === undefined
+					? undefined
+					: baselineMaxAgeDays * 24 * 60 * 60 * 1_000;
 				const sealedCorpus = holdoutCorpusId
 					? { stateRoot: stateRoot(), projectId, corpusId: holdoutCorpusId }
 					: undefined;
@@ -764,6 +770,8 @@ You have no tools. You create a reviewable draft only and must not claim that yo
 						developmentCorpus,
 						actorId: arg("actor"),
 						sealedCorpus,
+						...(jobs === undefined ? {} : { jobs }),
+						...(baselineMaxAgeMs === undefined ? {} : { baselineMaxAgeMs }),
 					});
 				} else {
 					result = await runCandidateExperiment({
@@ -781,6 +789,8 @@ You have no tools. You create a reviewable draft only and must not claim that yo
 						diagnosisId: requireArg("diagnosis"),
 						actorId: arg("actor"),
 						sealedCorpus,
+						...(jobs === undefined ? {} : { jobs }),
+						...(baselineMaxAgeMs === undefined ? {} : { baselineMaxAgeMs }),
 					});
 				}
 				console.log(renderCompareMarkdown(result.compare));

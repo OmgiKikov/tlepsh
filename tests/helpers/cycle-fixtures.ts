@@ -247,7 +247,7 @@ export function writeDevelopmentEval(paths: FixturePaths, corpusId: string, eval
 	writeJsonArtifact(join(paths.runsRoot, runId, "run.json"), RunRecordSchema, run);
 	const evidence = { runtime, model, judge: null, execution, eval: evaluation };
 	const record: EvalRunRecord = {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		evalRunId,
 		target: run.target,
 		label: "solo",

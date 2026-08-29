@@ -164,7 +164,7 @@ export interface ReportRun {
 
 /** Deliberately small display DTO. Canonical provenance stays in eval_run.json. */
 export interface ReportEvalRun {
-	schemaVersion: 1;
+	schemaVersion: EvalRunRecord["schemaVersion"];
 	evalRunId: string;
 	target: { id: string; gitSha: string };
 	label: EvalRunRecord["label"];

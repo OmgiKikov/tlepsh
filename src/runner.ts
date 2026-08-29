@@ -91,8 +91,17 @@ export const FINAL_ANSWER_RECOVERY_PROMPT =
 	"Сформируй итоговый ответ пользователю сейчас, используя уже полученные результаты инструментов. " +
 	"Не вызывай инструменты. Выполни требования target harness к финальному ответу.";
 
+/**
+ * Concurrent runs routinely start inside the same millisecond, and two runs
+ * sharing an id would share a directory and destroy each other's evidence. The
+ * counter guarantees uniqueness within this process; the random suffix keeps
+ * ids unique across processes writing to the same runs root.
+ */
+let runSequence = 0;
+
 function newRunId(): string {
-	return `run_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+	runSequence += 1;
+	return `run_${Date.now().toString(36)}${runSequence.toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 
 export function generateModelsJson(model: TargetManifest["model"]): Record<string, unknown> {

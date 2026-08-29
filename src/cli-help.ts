@@ -53,8 +53,10 @@ Sealed holdout content and state-changing operations are never exposed.`,
 Create a generic Target harness and its first Git commit. Then run \`ahde\` in
 that directory to configure identity/model and continue the guided workflow.`,
 	run: `Usage:
-  ahde run --target <dir> [--task <id>] [--repetitions N] [--label baseline|solo] [--dataset <rel>]
+  ahde run --target <dir> [--task <id>] [--repetitions N] [--jobs N] [--label baseline|solo] [--dataset <rel>]
   ahde run --target <dir> --project <id> --corpus <development-id> [--task <id>] [--repetitions N]
+
+--jobs sets concurrent executions (default 4; 1 for a loopback model endpoint).
 
 Run development evidence only. AHDE checks Target setup and credential presence
 before creating run artifacts. Exit 0 = all pass, 1 = behavioral failures,
@@ -82,6 +84,9 @@ Build a static, bounded HTML evidence report for one development EvalRun.`,
 	candidate: `Usage:
   ahde candidate --target <dir> --builder-run <id> [--development-corpus <id>] [--holdout-corpus <id>] [--project <id>] [--repetitions N]
   ahde candidate --target <dir> --branch <ref> --base <ref> --proposal <id> --diagnosis <id> [options]
+
+--jobs sets concurrent executions (default 4; 1 for a loopback model endpoint).
+--baseline-max-age <days> bounds baseline reuse (default 7; 0 always re-runs).
 
 Run an exact matched baseline/candidate experiment. Prefer Builder Pi: its host
 gate selects sealed evidence without exposing the holdout identity to the model.`,

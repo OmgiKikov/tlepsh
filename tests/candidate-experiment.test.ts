@@ -231,7 +231,7 @@ function evalRecord(
 	const total = runs.length;
 	const pass = total - errors;
 	return {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		evalRunId: id,
 		target: runTarget,
 		label: options.label,
@@ -295,7 +295,7 @@ function reusableRecord(
 			piVersion: axes.piVersion,
 			piSha: axes.piSha,
 			ahdeVersion: axes.ahdeVersion,
-			ahdeCodeHash: axes.ahdeCodeHash,
+			ahdeCodeHash: `sha256:${"c".repeat(64)}`,
 		},
 		model: {
 			provider: axes.provider,
@@ -316,7 +316,7 @@ function reusableRecord(
 	}));
 	const persisted = persistRuns(runsRoot, runs);
 	return {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		evalRunId: id,
 		target: runTarget,
 		label,
