@@ -186,6 +186,19 @@ three changes that scripted tests could not have found:
   Graders are validated against the current Target before any draft or
   publication persists, and composition failures are compatibility warnings.
 
+### Closed loop, live
+
+With those fixes a real session (Builder: Claude Sonnet 4.5 via OpenRouter,
+Target: qwen/qwen3.5-9b) walked the entire loop from thirteen plain-language
+operator messages, every consequential step behind a host confirmation:
+Spec approved → 6-case basket published → run 0/6 with 6 failure modes →
+"fix the first problem" → exact proposal → applied on `candidate/<run>` →
+matched verification (development 0% → 67%, 4 improved, 0 regressed, sealed
+gate passed) → review + promotion `v0.1.0` behind one dialog → adoption
+(`master` fast-forwarded) → stage `complete`. The Workbench-facing bug
+that first blocked this path (path spelling under a symlinked root) is fixed
+and covered by a test.
+
 ## Known gaps
 
 - Conversation quality still depends on the Builder model; tool-call
