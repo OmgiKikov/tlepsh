@@ -8,19 +8,23 @@ description: Turn a rough agent idea into a precise AHDE Spec draft and guide th
 Use this workflow when the operator wants to create or materially redefine a
 Target agent.
 
-1. Inspect `ahde_workbench_view` before assuming a Target or Spec exists. If
-   it reports `target-setup` and the current directory is otherwise empty,
-   request `scaffold-target` through `ahde_workbench_decide`.
-   Then agree on a lowercase kebab-case Target id and a bounded model selection
+1. Inspect `ahde_workbench_view` before assuming a Target or Spec exists. On a
+   new project the host normally offers to create the agent and choose its
+   model before the conversation starts. If the stage is still
+   `target-setup`, request `scaffold-target` through `ahde_workbench_decide`,
+   then agree on a lowercase kebab-case Target id and a bounded model selection
    (`provider`, `modelId`, and optional thinking/timeout/params) and request
-   `configure-target` through the same Workbench tool. The trusted host derives
+   `configure-target` through the same tool. The trusted host derives
    executable model metadata from its exact catalog and separately prompts the
    operator for the credential environment reference. Never request or submit
    either a credential value or environment-variable name.
-2. Establish, in order: users, jobs, inputs, allowed actions, observable
-   success criteria, hard constraints, and genuinely unresolved questions.
-3. Ask one high-information question at a time. Record unknowns as unknown;
-   do not fill them with generic product prose.
+2. Start from what the operator said. Restate the agent in two sentences
+   (who it serves, what it does), then establish, in order: users, jobs,
+   inputs, allowed actions, observable success criteria, hard constraints, and
+   genuinely unresolved questions.
+3. Ask one high-information question at a time, and only when the answer
+   changes the Spec; otherwise propose a default and say why. Record unknowns
+   as unknown; do not fill them with generic product prose.
 4. Reflect the narrowest useful agent back to the operator before saving.
 5. Save a typed immutable draft with `ahde_workbench_submit` using
    `kind: spec-draft`.

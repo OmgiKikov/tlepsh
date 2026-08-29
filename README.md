@@ -73,20 +73,38 @@ Builder: Показываю точный diff для подтверждения.
 The same loop has compact Pi commands:
 
 ```text
-/help                   AHDE workflow and shortcuts
-/doctor                 Builder authentication and Target readiness
-/status                 current stage and legal next actions
-/run [repetitions]      run the selected development eval or candidate check
-/traces                 diagnosis and read-only localhost trace link
-/review                 exact Spec, corpus, proposal, or candidate under review
-/apply <branch>         human-gated application of the exact proposal
+/status                 where you are and the next step
+/review                 the exact Spec, eval basket, diff, or candidate — with its actions
+/traces                 diagnosis, failure modes, and the evidence link
+/run [repetitions]      run the eval basket or verify the applied candidate
+/approve  /publish      approve the Spec · publish the eval basket
+/apply <branch>         apply the reviewed proposal to a candidate branch
 /discard                discard a proposal or abandon an interrupted candidate
-/target [resource]      exact Target overview or one declared harness resource
+/promote <version>      promote the verified candidate (one confirmation)
+/reject                 reject the verified candidate
+/adopt                  fast-forward the current branch to the promoted candidate
+/next                   close the cycle and continue from the active Target
+/target [resource]      the exact committed Target or one declared resource
+/doctor  /help          readiness and recovery · this reference
 ```
 
-`ahde resume` reopens the private Builder session selector. The embedded Pi
-host cannot import, export, share, trust, or execute shell commands; those
-built-ins are removed before autocomplete and dispatch.
+Every command renders a human block in the transcript (persisted, never sent
+to the model) and offers the decisions that are legal right now. `ahde
+continue` reopens the most recent conversation; `ahde resume` opens the
+session picker; workflow state is durable either way. The embedded Pi host
+cannot import, export, share, trust, or execute shell commands; those
+built-ins are removed before autocomplete and dispatch. Builder credentials
+live once in `~/.ahde` (`AHDE_HOME`), so one login serves every project.
+
+A first run in an empty directory asks two things — create the agent here?
+which model should it use? — and then the header shows where you are:
+
+```text
+AHDE Builder · build, evaluate, and improve another agent through evidence
+Target competitor-research @ 3f2a9c1b · openai/gpt-5 ✓
+Stage Spec design · Next Describe the agent; the Builder drafts a Spec
+Evidence 0 eval runs · 0 open proposals · 0 candidates · Builder model openai/gpt-5 ✓
+```
 
 Builder Pi has no generic shell, edit, or write tool. It can act only through
 the packaged AHDE tools, which expose bounded views and call the deterministic
@@ -202,7 +220,18 @@ Target runs --> deterministic Diagnosis --> read-only evidence link
 semantic Harness intents --> compiled exact Proposal --human apply--> candidate commit
 matched development + sealed evaluation --> human review
 review --human decision--> promoted immutable revision or rejection
+promoted revision --human adopt--> active Target branch fast-forwarded
+terminal candidate --human continue--> next cycle from the active Target
 ```
+
+Promotion only tags the exact reviewed revision. `/adopt` (or the
+`adopt-candidate` decision) fast-forwards the operator's current branch from
+the candidate baseline to that revision, so the promoted harness becomes what
+`ahde target` runs and what the next cycle measures. `/next` records that the
+reviewed loop is closed and lets the Workbench derive the next stage from the
+active Target — usually another run after an adoption, or another proposal
+after a rejection. Both steps write receipts that bind the exact candidate
+record; a receipt that stops matching blocks the Workbench.
 
 Approve, publish, apply, review, promote, and reject are host-owned decisions.
 Their tool schemas do not accept model-supplied `actor`, `approved`, or
@@ -367,7 +396,10 @@ candidate revision. A manual experiment or unconfined run cannot be promoted.
   workbench/{focus.json,corpus-publications/**,candidate-abandonments/**}
 
 <state-root>/builder-pi/
-  config/**, sessions/**
+  sessions/**
+
+~/.ahde/builder-pi/config/**
+  auth.json, models.json, settings.json   (user-level; AHDE_HOME overrides ~/.ahde)
 
 <runs-root>/
   <run-id>/{run.json,session.jsonl,judge/**}
@@ -400,8 +432,10 @@ npm run demo
 npm run verify:package
 ```
 
-`npm run demo` exercises the production-shaped improvement loop with a local
-scripted OpenAI-compatible model, so it uses no paid tokens.
+`npm run demo` exercises the production-shaped improvement loop — baseline,
+proposal, apply, matched candidate experiment, promotion, adoption of the
+promoted revision, and the next cycle — with a local scripted OpenAI-compatible
+model, so it uses no paid tokens.
 
 `npm run verify:package` tests the artifact an npm user actually receives. It
 packs AHDE under size/file budgets, installs the tarball into an empty consumer,
@@ -421,7 +455,10 @@ retired Workbench-TUI files.
 |---|---|
 | `src/builder/runtime.ts` | isolated long-lived Builder Pi host |
 | `src/builder/extension.ts` | Workbench tools, compatibility tools, and TUI gates |
-| `src/builder/commands.ts` | Pi-like workflow and decision shortcuts |
+| `src/builder/commands.ts` | slash commands, review actions, one-dialog promote/reject |
+| `src/builder/product-shell.ts`, `src/builder/onboarding.ts` | live header, first-run setup, readiness status |
+| `src/builder/render/**`, `src/builder/transcript.ts` | human renderers for every Workbench view, decision, and confirmation; persisted transcript blocks |
+| `src/application/target-adoption.ts`, `src/workbench/cycle-continuation.ts` | promoted-candidate fast-forward and cycle closure receipts |
 | `src/builder/project-context.ts` | bounded compatibility status projection |
 | `src/application/target-authoring-context.ts` | exact-Git declared Harness context and read policy |
 | `src/application/**` | deterministic Spec/Corpus/Proposal/Candidate use cases |
@@ -438,6 +475,8 @@ retired Workbench-TUI files.
 | `src/application/candidate-review.ts` | review, rejection, and promotion authority |
 
 See [CONTEXT.md](CONTEXT.md) for domain language and invariants,
+[docs/V1_7_PRODUCT_SURFACE.md](docs/V1_7_PRODUCT_SURFACE.md) for the product
+surface (header, renderers, transcript blocks, adoption, next cycle),
 [docs/V1_2_BUILDER_WORKBENCH.md](docs/V1_2_BUILDER_WORKBENCH.md) for the
 implemented Builder Workbench, and
 [docs/V1_3_RUN_EVENTS.md](docs/V1_3_RUN_EVENTS.md) for the live observation

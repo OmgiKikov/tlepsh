@@ -47,6 +47,12 @@ the harness under development runs in a different Target Pi invocation.
 - **Candidate** — a committed Harness Snapshot created from a human-applied Proposal and linked to the exact approved Spec used by its Builder.
 - **Candidate Experiment** — the deep module that validates lineage and scope, evaluates exact baseline/candidate revisions, compares them, and records a human decision.
 - **Promotion** — a human-approved immutable decision that tags the exact evaluated candidate revision. It is not autonomous deployment.
+- **Adoption** — a separate human-confirmed fast-forward of the operator's
+  current branch from the candidate baseline to the promoted revision, backed
+  by an intent and a receipt. Only adoption changes the active Target.
+- **Cycle continuation** — the human decision that closes a reviewed loop
+  around one terminal (promoted-and-adopted or rejected) candidate and lets
+  the Workbench derive the next stage from the active Target.
 - **A/A calibration** — repeated evaluation of the same snapshot to measure noise. It can never be promotion evidence.
 
 ## Trust domains
@@ -60,7 +66,7 @@ two modes of one session.
 | System instructions | Packaged `builders/ahde/AGENTS.md` | Target-owned `AGENTS.md` |
 | Skills | Packaged AHDE Builder skills only | Manifest-declared Target skills only |
 | Tools | Trusted typed AHDE extension only | Policy-approved built-ins and declarative subprocess tools |
-| Config/session root | Private Builder state | Private per-run state |
+| Config/session root | User-level credentials and settings (`AHDE_HOME`, default `~/.ahde`); private per-project sessions | Private per-run state |
 | Repository authority | No generic edit/write; exact changes pass a host TUI gate | Confined task workspace only |
 | Private artifacts | Bounded views through AHDE core | No access |
 | Sealed holdout | Never model-visible | One evaluator-supplied case at a time |
@@ -171,3 +177,15 @@ live view is never evidence and cannot perform state transitions.
     claim; AHDE re-derives and persists it, pins compilation to its revision,
     and applies the same inspectability limits to the proposed resulting
     Harness so Builder cannot author itself out of context.
+31. Promotion never moves the active Target. Adoption is a separate
+    human-confirmed fast-forward of a clean worktree from the exact candidate
+    baseline to the exact promoted revision; its intent and receipt bind the
+    candidate record hash and are re-verified by inventory.
+32. A terminal candidate leaves Workbench focus only through an explicit
+    continuation receipt, and a promoted candidate requires its adoption
+    receipt first. The next stage is derived from artifacts, never from the
+    closed candidate.
+33. Human-facing rendering is downstream of every decision. Transcript
+    blocks are persisted host UI that the model never receives; a renderer
+    fault degrades to the Workbench message and can never change durable
+    state or skip a confirmation.

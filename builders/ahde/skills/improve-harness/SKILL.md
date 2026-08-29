@@ -48,7 +48,17 @@ description: Review an evidence-backed typed proposal, inspect its exact diff, a
 9. Only after exact candidate review, request `promote-candidate` with a
    semantic version or `reject-candidate` through `ahde_workbench_decide`.
    Each decision is independently confirmed by the trusted TUI host.
-10. If candidate verification was interrupted, show `/review` and let the
+10. Promotion only tags the reviewed revision. At `candidate-adoption`, offer
+   `adopt-candidate`: the host fast-forwards the operator's current branch to
+   the promoted candidate so it becomes the active Target for `ahde target`
+   and the next cycle. Never describe a promoted-but-unadopted candidate as
+   the active Target.
+11. At `complete` (promoted and adopted, or rejected), offer `continue-cycle`.
+   It records the closed loop and releases the candidate from focus; the
+   Workbench then derives the next stage from the active Target revision
+   (usually `ready-to-evaluate` after adoption, or `improvement-authoring`
+   after a rejection). Then continue the ordinary loop from step 1.
+12. If candidate verification was interrupted, show `/review` and let the
    operator use `/discard` to write an explicit abandonment receipt before a
    retry. Never reinterpret interruption as behavioral evidence.
 
