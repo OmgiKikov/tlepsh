@@ -261,7 +261,20 @@ export function scaffoldTarget(templateDir: string, destDir: string): string {
 	return resolve(destDir);
 }
 
+/**
+ * Hashing every AHDE source file costs ~1.3 MB of IO, and `loadTarget` runs on
+ * every inventory read and every task. AHDE's own source cannot change inside a
+ * running process, so the answer is computed once and shared.
+ */
+let memoizedRuntimeInfo: RuntimeInfo | undefined;
+
 export function runtimeInfo(): RuntimeInfo {
+	if (memoizedRuntimeInfo) return memoizedRuntimeInfo;
+	memoizedRuntimeInfo = computeRuntimeInfo();
+	return memoizedRuntimeInfo;
+}
+
+function computeRuntimeInfo(): RuntimeInfo {
 	const piPkg = packageJsonFor("@earendil-works/pi-coding-agent") as { version: string; gitHead?: string };
 	const ahdePkg = JSON.parse(readFileSync(join(HARNESS_ROOT, "package.json"), "utf8")) as {
 		version: string;

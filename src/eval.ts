@@ -264,8 +264,16 @@ const EvalRunArtifactSchema = z.strictObject({
 export const EvidenceVisibilitySchema = z.enum(["development", "sealed"]);
 export type EvidenceVisibility = z.infer<typeof EvidenceVisibilitySchema>;
 
+/**
+ * Bumped to 2 in V1.8: `provenance` lost `ahdeCodeHash` and gained
+ * `evaluatorId`, so a v1 index describes a different comparability contract.
+ * v1 records stay readable only as display-only legacy rows
+ * (`listEvalRunIndexesLenient`); they are never comparable or reusable.
+ */
+export const EVAL_RUN_SCHEMA_VERSION = 2;
+
 export const EvalRunRecordSchema = z.strictObject({
-	schemaVersion: z.literal(1),
+	schemaVersion: z.literal(EVAL_RUN_SCHEMA_VERSION),
 	evalRunId: ArtifactIdSchema,
 	target: z.strictObject({
 		id: z.string().min(1),
@@ -482,7 +490,7 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 		eval: { suiteHash: target.suiteHash, datasetHash: target.datasetHash },
 	};
 	const record: EvalRunRecord = {
-		schemaVersion: 1,
+		schemaVersion: EVAL_RUN_SCHEMA_VERSION,
 		evalRunId,
 		target: {
 			id: target.manifest.id,
@@ -677,6 +685,22 @@ export interface InvalidEvalRunIndex {
 }
 
 /**
+ * Bounded peek at an index that failed validation. A pre-V1.8 record is a fact
+ * of history, not a defect, and saying so beats a zod dump. Display only: the
+ * value is never used to accept, migrate, or compare the record.
+ */
+function indexSchemaVersion(runsRoot: string, evalRunId: string): number | null {
+	try {
+		return readJsonArtifact(
+			resolveContainedArtifactPath(runsRoot, ArtifactIdSchema.parse(evalRunId), "eval_run.json"),
+			z.object({ schemaVersion: z.number().int() }),
+		).schemaVersion;
+	} catch {
+		return null;
+	}
+}
+
+/**
  * Best-effort index listing: invalid or legacy siblings never hide healthy
  * indexes and never block a caller. Each invalid index is reported with its
  * reason so humans can see "legacy · not comparable" instead of nothing.
@@ -700,7 +724,14 @@ export function listEvalRunIndexesLenient(runsRoot: string): {
 			records.push(readEvalRunIndex(runsRoot, entry));
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			invalid.push({ evalRunId: entry, reason: message.replace(/\s+/g, " ").slice(0, 200) });
+			const version = indexSchemaVersion(runsRoot, entry);
+			const note = version !== null && version < EVAL_RUN_SCHEMA_VERSION
+				? `legacy schemaVersion ${version} (not comparable): `
+				: "";
+			invalid.push({
+				evalRunId: entry,
+				reason: `${note}${message.replace(/\s+/g, " ")}`.slice(0, 200),
+			});
 		}
 	}
 	records.sort((left, right) =>

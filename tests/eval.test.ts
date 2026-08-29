@@ -118,7 +118,7 @@ function writeEvalFixture(taskIds?: string[]): { runsRoot: string; record: EvalR
 		eval: first.eval,
 	});
 	const record: EvalRunRecord = {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		evalRunId: "erun-test",
 		target: first.target,
 		label: "baseline",

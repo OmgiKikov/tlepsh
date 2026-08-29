@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { afterAll, describe, expect, it } from "vitest";
 import { compareEvalRuns, renderCompareMarkdown } from "../src/compare.js";
 import type { EvalRunRecord } from "../src/eval.js";
-import { hashValue, type ProvenanceAxes, type RunRecord } from "../src/provenance.js";
+import { AHDE_EVALUATOR_ID, hashValue, type ProvenanceAxes, type RunRecord } from "../src/provenance.js";
 
 function hash(char: string): string {
 	return `sha256:${char.repeat(64)}`;
@@ -15,7 +15,7 @@ function axes(overrides: Partial<ProvenanceAxes> = {}): ProvenanceAxes {
 		piVersion: "0.84.3",
 		piSha: "a".repeat(40),
 		ahdeVersion: "0.1.0",
-		ahdeCodeHash: hash("a"),
+		evaluatorId: AHDE_EVALUATOR_ID,
 		provider: "qwen-internal",
 		modelId: "qwen3.5-27b",
 		modelApi: "openai-completions",
@@ -83,7 +83,7 @@ function makeEvalRun(
 				piVersion: provenance.piVersion,
 				piSha: provenance.piSha,
 				ahdeVersion: provenance.ahdeVersion,
-				ahdeCodeHash: provenance.ahdeCodeHash,
+				ahdeCodeHash: hash("a"),
 			},
 			model: {
 				provider: provenance.provider,
@@ -120,7 +120,7 @@ function makeEvalRun(
 	const fail = runs.filter((run) => run.evalResults?.outcome === "fail").length;
 	const error = runs.filter((run) => run.status === "error").length;
 	const record: EvalRunRecord = {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		evalRunId: id,
 		target: { id: options.targetId ?? "ombudsman", gitSha: options.gitSha ?? "a".repeat(40) },
 		label,

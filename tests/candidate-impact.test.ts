@@ -195,7 +195,7 @@ function writeEvaluation(options: {
 		runArtifacts.push({ runId, sha256: hashValue(record) });
 	}
 	const record: EvalRunRecord = {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		evalRunId: options.evalRunId,
 		target: {
 			id: targetId,
