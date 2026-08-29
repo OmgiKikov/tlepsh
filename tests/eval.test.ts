@@ -1,17 +1,27 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	DEFAULT_EVAL_JOBS,
 	EvalRunRecordSchema,
+	defaultEvalJobs,
+	findReusableBaseline,
 	gradeRun,
+	isLoopbackModelEndpoint,
 	isSealedEvalRun,
 	listEvalRunIndexes,
 	listPublicEvalRunIndexesBounded,
+	loadRun,
 	loadVerifiedEvalRun,
+	runSuite,
 	writeEvalRun,
 	type EvalRunRecord,
+	type ReusableBaselineQuery,
 } from "../src/eval.js";
+import { loadTarget } from "../src/manifest.js";
+import { startMockModel } from "../src/mock-model.js";
+import { baseFixtureFiles, makeTargetFixture } from "./fixtures.js";
 import { GraderSpec, type ResolvedTask } from "../src/manifest.js";
 import {
 	GraderResultSchema,
@@ -286,5 +296,256 @@ describe("typed eval evidence", () => {
 			dataset: "sealed-private",
 			evidenceVisibility: "development",
 		}).success).toBe(false);
+	});
+});
+
+describe("concurrent suite execution", () => {
+	const CONCURRENT_TIMEOUT_MS = 180_000;
+
+	function suiteFixture(mockUrl: string, tasks: readonly { id: string; input: string; answer: string }[]): string {
+		return makeTargetFixture(baseFixtureFiles({
+			"manifest.yaml": `id: concurrency-target
+model:
+  provider: qwen-mock
+  id: mock
+  api: openai-completions
+  baseUrl: ${mockUrl}
+  apiKeyEnv: MOCK_MODEL_KEY
+  thinkingLevel: "off"
+  timeoutMs: 60000
+instructions:
+  agentsMd: AGENTS.md
+skills: []
+evalSuite:
+  id: concurrency-suite
+  dataset: evals/development.jsonl
+  graders: evals/graders.yaml
+`,
+			"evals/development.jsonl": tasks
+				.map((task) => JSON.stringify({
+					id: task.id,
+					input: task.input,
+					graders: [{ type: "output_contains", text: task.answer }],
+				}))
+				.join("\n"),
+			"evals/graders.yaml": "defaults: []\n",
+		}));
+	}
+
+	it("concurrent suite persists runIds and runArtifacts in design order and verifies", async () => {
+		process.env.MOCK_MODEL_KEY = "test-key";
+		// The first task in the design is the slowest, so completion order is
+		// guaranteed to disagree with design order.
+		const mock = await startMockModel([
+			{ match: ({ firstUser }) => firstUser.includes("SLOW"), steps: [{ text: "answer-slow", delayMs: 600 }] },
+			{ match: () => true, steps: [{ text: "answer-fast" }] },
+		]);
+		const dir = suiteFixture(mock.url, [
+			{ id: "task_slow", input: "SLOW request", answer: "answer-slow" },
+			{ id: "task_fast_a", input: "quick request a", answer: "answer-fast" },
+			{ id: "task_fast_b", input: "quick request b", answer: "answer-fast" },
+		]);
+		const runsRoot = join(dir, "..", `concurrent-runs-${Date.now()}`);
+		cleanupPaths.push(dir, runsRoot);
+		try {
+			const graded: number[] = [];
+			const record = await runSuite(loadTarget(dir), {
+				runsRoot,
+				label: "baseline",
+				repetitions: 2,
+				jobs: 4,
+				onRunEvent: (event) => {
+					if (event.type === "run_graded") graded.push(event.run.ordinal);
+				},
+			});
+
+			expect(record.summary).toMatchObject({ total: 6, pass: 6, fail: 0, error: 0 });
+			expect(record.taskIds).toEqual(["task_slow", "task_fast_a", "task_fast_b"]);
+			// Design order, not completion order: ordinals 1-2 are the slow task's
+			// two repetitions and they graded last.
+			expect(graded).toHaveLength(6);
+			expect(graded.slice(-2).sort()).toEqual([1, 2]);
+			expect(record.runIds.map((runId) => loadRun(runsRoot, runId).taskId)).toEqual([
+				"task_slow", "task_slow", "task_fast_a", "task_fast_a", "task_fast_b", "task_fast_b",
+			]);
+			expect(record.runIds.map((runId) => loadRun(runsRoot, runId).repetitionIndex))
+				.toEqual([0, 1, 0, 1, 0, 1]);
+			expect(record.runArtifacts?.map((artifact) => artifact.runId)).toEqual(record.runIds);
+
+			const verified = loadVerifiedEvalRun(runsRoot, record.evalRunId);
+			expect(verified.runs.map((run) => run.runId)).toEqual(record.runIds);
+		} finally {
+			await mock.close();
+		}
+	}, CONCURRENT_TIMEOUT_MS);
+
+	it("abort waits for in-flight runs before snapshot disposal", async () => {
+		process.env.MOCK_MODEL_KEY = "test-key";
+		const mock = await startMockModel([{ steps: [{ text: "answer-fast", delayMs: 400 }] }]);
+		const dir = suiteFixture(mock.url, [
+			{ id: "task_1", input: "one", answer: "answer-fast" },
+			{ id: "task_2", input: "two", answer: "answer-fast" },
+			{ id: "task_3", input: "three", answer: "answer-fast" },
+			{ id: "task_4", input: "four", answer: "answer-fast" },
+		]);
+		const runsRoot = join(dir, "..", `abort-runs-${Date.now()}`);
+		cleanupPaths.push(dir, runsRoot);
+		try {
+			const controller = new AbortController();
+			const started: string[] = [];
+			const finished: string[] = [];
+			await expect(runSuite(loadTarget(dir), {
+				runsRoot,
+				label: "solo",
+				repetitions: 1,
+				jobs: 4,
+				signal: controller.signal,
+				onRunEvent: (event) => {
+					if (event.type === "run_started") {
+						started.push(event.run.runId);
+						controller.abort();
+					}
+					if (event.type === "execution_finished") finished.push(event.run.runId);
+				},
+			})).rejects.toThrow(/abort/i);
+
+			expect(started.length).toBeGreaterThan(0);
+			// Every execution that started also settled: the shared snapshot stayed
+			// alive until the last in-flight run was done with it.
+			expect(finished.sort()).toEqual([...started].sort());
+			for (const runId of started) {
+				const durable = JSON.parse(readFileSync(join(runsRoot, runId, "run.json"), "utf8")) as {
+					status: string;
+					finishedAt: string | null;
+					error: string | null;
+				};
+				expect(durable.status).not.toBe("running");
+				expect(durable.finishedAt).not.toBeNull();
+				expect(durable.error ?? "").not.toMatch(/snapshot/i);
+			}
+		} finally {
+			await mock.close();
+		}
+	}, CONCURRENT_TIMEOUT_MS);
+
+	it("loopback baseUrl defaults to one job", async () => {
+		expect(isLoopbackModelEndpoint("http://127.0.0.1:1234/v1")).toBe(true);
+		expect(isLoopbackModelEndpoint("http://localhost:8080/v1")).toBe(true);
+		expect(isLoopbackModelEndpoint("http://[::1]:1234/v1")).toBe(true);
+		expect(isLoopbackModelEndpoint("https://openrouter.ai/api/v1")).toBe(false);
+		expect(defaultEvalJobs({ baseUrl: "http://127.0.0.1:1234/v1" })).toBe(1);
+		expect(defaultEvalJobs({ baseUrl: "https://openrouter.ai/api/v1" })).toBe(DEFAULT_EVAL_JOBS);
+
+		process.env.MOCK_MODEL_KEY = "test-key";
+		const mock = await startMockModel([{ steps: [{ text: "answer-fast", delayMs: 60 }] }]);
+		const dir = suiteFixture(mock.url, [
+			{ id: "task_1", input: "one", answer: "answer-fast" },
+			{ id: "task_2", input: "two", answer: "answer-fast" },
+			{ id: "task_3", input: "three", answer: "answer-fast" },
+		]);
+		const runsRoot = join(dir, "..", `loopback-runs-${Date.now()}`);
+		cleanupPaths.push(dir, runsRoot);
+		try {
+			let inFlight = 0;
+			let peak = 0;
+			const record = await runSuite(loadTarget(dir), {
+				runsRoot,
+				label: "solo",
+				repetitions: 1,
+				onRunEvent: (event) => {
+					if (event.type === "run_started") {
+						inFlight += 1;
+						peak = Math.max(peak, inFlight);
+					}
+					if (event.type === "execution_finished") inFlight -= 1;
+				},
+			});
+			expect(record.summary).toMatchObject({ total: 3, pass: 3 });
+			// A local model server is the bottleneck; nothing overlaps it.
+			expect(peak).toBe(1);
+		} finally {
+			await mock.close();
+		}
+	}, CONCURRENT_TIMEOUT_MS);
+});
+
+describe("baseline reuse", () => {
+	const DAY_MS = 24 * 60 * 60 * 1_000;
+
+	function writeReusableBaseline(finishedAt: string): { runsRoot: string; query: ReusableBaselineQuery } {
+		const runsRoot = mkdtempSync(join(tmpdir(), "ahde-reuse-test-"));
+		cleanupPaths.push(runsRoot);
+		const target = {
+			id: "test-target",
+			gitSha: "a".repeat(40),
+			toolsetHash: hash("7"),
+			workspaceHash: hash("8"),
+		};
+		const parent = { evalRunId: "erun_reusable", candidateOf: null };
+		const runs = [
+			baseRun({ runId: "reuse-run-a", taskId: "task-a", target, parent }),
+			baseRun({ runId: "reuse-run-b", taskId: "task-b", target, parent }),
+		];
+		for (const run of runs) writeJsonArtifact(join(runsRoot, run.runId, "run.json"), RunRecordSchema, run);
+		const first = runs[0];
+		if (!first) throw new Error("reuse fixture requires at least one run");
+		const provenance = provenanceAxes({
+			runtime: first.runtime,
+			model: first.model,
+			judge: null,
+			execution: first.execution,
+			eval: first.eval,
+		});
+		writeEvalRun(runsRoot, {
+			schemaVersion: 2,
+			evalRunId: "erun_reusable",
+			target,
+			label: "baseline",
+			baselineEvalRunId: null,
+			provenance,
+			provenanceKey: hashValue(provenance),
+			suiteId: first.eval.suiteId,
+			suiteHash: first.eval.suiteHash,
+			dataset: first.eval.dataset,
+			datasetHash: first.eval.datasetHash,
+			evidenceVisibility: "development",
+			taskIds: ["task-a", "task-b"],
+			repetitions: 1,
+			runIds: runs.map((run) => run.runId),
+			startedAt: "2026-08-28T10:00:00.000Z",
+			finishedAt,
+			summary: { total: 2, pass: 2, fail: 0, error: 0, allPassRate: 1 },
+		});
+		return {
+			runsRoot,
+			query: {
+				targetId: target.id,
+				targetGitSha: target.gitSha,
+				toolsetHash: target.toolsetHash,
+				workspaceHash: target.workspaceHash,
+				provenance,
+				evidenceVisibility: "development",
+				label: "baseline",
+				repetitions: 1,
+			},
+		};
+	}
+
+	it("a baseline older than max-age is not reused", () => {
+		const fresh = writeReusableBaseline(new Date(Date.now() - DAY_MS).toISOString());
+		expect(findReusableBaseline(fresh.runsRoot, fresh.query)?.evalRunId).toBe("erun_reusable");
+
+		const stale = writeReusableBaseline(new Date(Date.now() - 8 * DAY_MS).toISOString());
+		expect(findReusableBaseline(stale.runsRoot, stale.query)).toBeNull();
+		// The limit is the caller's to widen…
+		expect(findReusableBaseline(stale.runsRoot, { ...stale.query, maxAgeMs: 30 * DAY_MS })?.evalRunId)
+			.toBe("erun_reusable");
+		// …or to close entirely, so every experiment measures its own baseline.
+		expect(findReusableBaseline(fresh.runsRoot, { ...fresh.query, maxAgeMs: 0 })).toBeNull();
+	});
+
+	it("an unreadable finishedAt cannot prove freshness", () => {
+		const broken = writeReusableBaseline("not-a-timestamp");
+		expect(findReusableBaseline(broken.runsRoot, broken.query)).toBeNull();
 	});
 });
