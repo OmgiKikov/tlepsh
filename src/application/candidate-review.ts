@@ -13,7 +13,7 @@ import {
 } from "./candidate-experiment.js";
 import { corpusDatasetLabel } from "./corpus-target.js";
 import { compareEvalRuns, type CompareResult } from "../compare.js";
-import { promotableVerdicts, type GateSurface } from "../domain/comparison-gate.js";
+import { promotableVerdicts, withinInfrastructureBudget, type GateSurface } from "../domain/comparison-gate.js";
 import { CandidateProposalSchema } from "../builders/adapters.js";
 import { DiagnosisRecordSchema } from "../diagnosis.js";
 import {
@@ -251,14 +251,21 @@ function verifyEvaluationPair(
 	if (candidate.baselineEvalRunId !== baseline.evalRunId) {
 		throw new Error(`${label} candidate eval is not linked to its recorded baseline`);
 	}
-	if (baseline.summary.error > 0 || candidate.summary.error > 0) {
-		throw new Error(`${label} contains infrastructure errors and is inconclusive`);
+	if (
+		!withinInfrastructureBudget(baseline.summary.error, baseline.summary.total) ||
+		!withinInfrastructureBudget(candidate.summary.error, candidate.summary.total)
+	) {
+		throw new Error(`${label} contains infrastructure errors over the budget and is inconclusive`);
 	}
 	const comparison = compareEvalRuns(runsRoot, baseline.evalRunId, candidate.evalRunId, {
 		mode: record.mode,
 		surface,
 	});
-	if (comparison.status !== "comparable" || comparison.summary.taskCount < 1) {
+	const usable = comparison.status === "comparable" || (
+		comparison.status === "inconclusive" &&
+		withinInfrastructureBudget(comparison.design.excludedTasks, comparison.design.tasks + comparison.design.excludedTasks)
+	);
+	if (!usable || comparison.summary.taskCount < 1) {
 		throw new Error(comparison.error ?? `${label} contains no comparable task evidence`);
 	}
 	return comparison;

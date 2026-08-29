@@ -10,7 +10,7 @@ import {
 	type CandidateArtifactRef, type CandidateRecord,
 } from "../domain/candidate.js";
 import {
-	DEVELOPMENT_VERDICTS, EXACT_COMPARISON_GATE_ALGORITHM_ID_V3, SEALED_VERDICTS,
+	DEVELOPMENT_VERDICTS, EXACT_COMPARISON_GATE_ALGORITHM_ID_V3, SEALED_VERDICTS, withinInfrastructureBudget,
 	type GateVerdict,
 } from "../domain/comparison-gate.js";
 import type { EvidenceVisibility, VerifiedEvalRun } from "../eval.js";
@@ -560,18 +560,25 @@ function verifyPair(
 	if (!baseline.record.target.workspaceHash || !candidate.record.target.workspaceHash) {
 		issues.push(`${visibility} evidence is missing exact Target workspace hashes`);
 	}
-	if (baseline.record.summary.error > 0 || candidate.record.summary.error > 0) {
-		issues.push(`${visibility} comparison contains infrastructure errors`);
+	if (
+		!withinInfrastructureBudget(baseline.record.summary.error, baseline.record.summary.total) ||
+		!withinInfrastructureBudget(candidate.record.summary.error, candidate.record.summary.total)
+	) {
+		issues.push(`${visibility} comparison contains infrastructure errors over the budget`);
 	}
 	const compare = compareVerifiedEvalRuns(baseline, candidate, { mode: record.mode, surface: visibility });
 	if (compare.status === "invalid") throw new Error(compare.error ?? `${visibility} comparison is invalid`);
-	if (compare.status === "inconclusive") {
+	const usable = compare.status === "comparable" || (
+		compare.status === "inconclusive" &&
+		withinInfrastructureBudget(compare.design.excludedTasks, compare.design.tasks + compare.design.excludedTasks)
+	);
+	if (!usable) {
 		issues.push(`${visibility} comparison is inconclusive`);
 	}
 	if (compare.summary.taskCount < 1) issues.push(`${visibility} comparison contains no task evidence`);
 	if (!pair.comparison) throw new Error(`${visibility} comparison identity is missing`);
 	let gateVerified = false;
-	if (compare.status === "comparable") {
+	if (usable) {
 		const expected = comparisonGateEvidence(compare, context);
 		if (canonicalJson(expected) !== canonicalJson(pair.comparison)) {
 			throw new Error(`${visibility} comparison identity no longer matches verified evidence`);

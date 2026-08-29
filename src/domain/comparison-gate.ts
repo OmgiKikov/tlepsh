@@ -21,6 +21,18 @@ export const EXACT_COMPARISON_GATE_ALGORITHM_ID_V3 = "exact-comparison-gate-v3" 
 
 export type GateSurface = "development" | "sealed";
 
+/**
+ * Share of runs or tasks an evaluation may lose to infrastructure errors
+ * (judge outages, provider 5xx, timeouts) and still count as evidence. Errored
+ * tasks are excluded from the statistics; above this share the surface is
+ * inconclusive/underpowered and a candidate experiment stops.
+ */
+export const INFRASTRUCTURE_ERROR_BUDGET = 0.1;
+
+export function withinInfrastructureBudget(errors: number, total: number): boolean {
+	return total <= 0 ? errors === 0 : errors / total <= INFRASTRUCTURE_ERROR_BUDGET;
+}
+
 export interface GatePolicy {
 	readonly id: "development-ci-v3" | "sealed-guardrail-v3";
 	readonly surface: GateSurface;
@@ -28,6 +40,8 @@ export interface GatePolicy {
 	readonly minTasks: number;
 	/** Fewer repetitions than this makes a sealed verdict `underpowered`. */
 	readonly minRepetitions: number;
+	/** Share of tasks that may be excluded for infrastructure errors. */
+	readonly maxExcludedShare: number;
 }
 
 export const DEVELOPMENT_GATE_POLICY: GatePolicy = {
@@ -35,6 +49,7 @@ export const DEVELOPMENT_GATE_POLICY: GatePolicy = {
 	surface: "development",
 	minTasks: 1,
 	minRepetitions: 1,
+	maxExcludedShare: INFRASTRUCTURE_ERROR_BUDGET,
 };
 
 export const SEALED_GATE_POLICY: GatePolicy = {
@@ -42,6 +57,7 @@ export const SEALED_GATE_POLICY: GatePolicy = {
 	surface: "sealed",
 	minTasks: 15,
 	minRepetitions: 2,
+	maxExcludedShare: INFRASTRUCTURE_ERROR_BUDGET,
 };
 
 export function gatePolicyFor(surface: GateSurface): GatePolicy {
@@ -207,6 +223,13 @@ function decide(policy: GatePolicy, summary: CompareSummary, design: ComparisonD
 		? [`${design.excludedTasks} task${design.excludedTasks === 1 ? "" : "s"} excluded for infrastructure errors`]
 		: [];
 	const base = { policyId: policy.id, surface: policy.surface };
+	const total = design.tasks + design.excludedTasks;
+	if (total > 0 && design.excludedTasks / total > policy.maxExcludedShare) {
+		const overBudget = `${design.excludedTasks} of ${total} tasks excluded for infrastructure errors exceeds the ${Math.round(policy.maxExcludedShare * 100)}% budget`;
+		return policy.surface === "sealed"
+			? { ...base, verdict: "underpowered", reasons: [overBudget] }
+			: { ...base, verdict: "inconclusive", reasons: [overBudget] };
+	}
 	if (policy.surface === "sealed") {
 		if (design.tasks < policy.minTasks || design.repetitions < policy.minRepetitions) {
 			return {

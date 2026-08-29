@@ -470,9 +470,9 @@ export const CandidateRecordSchema = CandidateRecordBaseSchema.superRefine((reco
 			if (event.evaluation.mode !== record.mode) {
 				addIssue(ctx, ["events", index, "evaluation", "mode"], "evaluation mode does not match candidate mode");
 			}
-			if (event.evaluation.infrastructureErrors !== 0) {
-				addIssue(ctx, ["events", index, "evaluation", "infrastructureErrors"], "infrastructure errors are inconclusive, not evaluated evidence");
-			}
+				// Infrastructure errors within the gate's budget are excluded from the
+				// statistics and recorded here; above the budget the experiment never
+				// reaches this event.
 			validateEvaluationPair(event.evaluation.development, record.baseline, built.candidate, ctx, ["events", index, "evaluation", "development"]);
 			if (record.origin.kind === "applied-builder" && !event.evaluation.development.comparison) {
 				addIssue(ctx, ["events", index, "evaluation", "development", "comparison"], "applied Builder candidates require durable comparison evidence");

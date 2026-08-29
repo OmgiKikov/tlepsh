@@ -109,10 +109,14 @@ function parseVerdict(text: string): { passed: boolean; reason: string } {
 		throw new Error(`judge returned unparseable verdict: ${text.slice(0, 120)}`);
 	}
 	const verdict = parsed as { passed?: unknown; reason?: unknown };
-	if (typeof verdict.passed !== "boolean" || typeof verdict.reason !== "string") {
-		throw new Error(`judge verdict missing passed/reason: ${text.slice(0, 120)}`);
+	if (typeof verdict.passed !== "boolean") {
+		throw new Error(`judge verdict missing boolean passed: ${text.slice(0, 120)}`);
 	}
-	return { passed: verdict.passed, reason: verdict.reason };
+	// A missing or non-string reason is a judge quirk, not an infrastructure failure.
+	const reason = typeof verdict.reason === "string" && verdict.reason.trim().length > 0
+		? verdict.reason
+		: "judge gave no reason";
+	return { passed: verdict.passed, reason };
 }
 
 function contentToString(content: unknown): string {

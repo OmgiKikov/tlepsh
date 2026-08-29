@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { compareEvalRuns, type CompareResult } from "../compare.js";
 import { loadCorpus, type CorpusRef, type LoadedCorpus } from "../corpus.js";
-import { EXACT_COMPARISON_GATE_ALGORITHM_ID_V3 } from "../domain/comparison-gate.js";
+import { EXACT_COMPARISON_GATE_ALGORITHM_ID_V3, INFRASTRUCTURE_ERROR_BUDGET, withinInfrastructureBudget } from "../domain/comparison-gate.js";
 import {
 	CandidateRecordSchema,
 	ComparisonGateEvidenceSchema,
@@ -335,7 +335,7 @@ export function comparisonGateEvidence(
 	compare: CompareResult,
 	context: Record<string, unknown> = {},
 ): ComparisonGateEvidence {
-	if (compare.status !== "comparable") {
+	if (!comparisonUsable(compare)) {
 		throw new Error(compare.error ?? `cannot evidence a ${compare.status} comparison`);
 	}
 	if (!compare.a.runArtifacts || !compare.b.runArtifacts) {
@@ -409,10 +409,23 @@ export function comparisonGateEvidence(
 	});
 }
 
+/**
+ * Infrastructure errors within the budget are excluded from the statistics
+ * by the gate; above it the evaluation is inconclusive and the experiment
+ * stops before spending more tokens.
+ */
 function infrastructureError(evalRun: EvalRunRecord): string | null {
-	return evalRun.summary.error > 0
-		? `${evalRun.label} eval ${evalRun.evalRunId} has ${evalRun.summary.error} infrastructure error(s)`
-		: null;
+	const { error, total } = evalRun.summary;
+	return withinInfrastructureBudget(error, total)
+		? null
+		: `${evalRun.label} eval ${evalRun.evalRunId} has ${error} infrastructure error(s) in ${total} runs, over the ${Math.round(INFRASTRUCTURE_ERROR_BUDGET * 100)}% budget`;
+}
+
+/** A comparison is usable evidence when it is comparable, or inconclusive only within the error budget. */
+export function comparisonUsable(compare: CompareResult): boolean {
+	if (compare.status === "comparable") return true;
+	if (compare.status !== "inconclusive") return false;
+	return withinInfrastructureBudget(compare.design.excludedTasks, compare.design.tasks + compare.design.excludedTasks);
 }
 
 interface MatchedEvaluationResult {
@@ -492,7 +505,7 @@ async function runMatchedEvaluation(
 		mode,
 		surface: evidenceVisibility,
 	});
-	if (compare.status !== "comparable") {
+	if (!comparisonUsable(compare)) {
 		throw new Error(compare.error ?? `${compare.status} candidate comparison`);
 	}
 
@@ -765,7 +778,8 @@ export async function runCandidateExperiment(
 								},
 							}
 							: {}),
-						infrastructureErrors: 0,
+						infrastructureErrors: development.baseline.summary.error + development.candidate.summary.error +
+							(sealedHoldout ? sealedHoldout.baseline.summary.error + sealedHoldout.candidate.summary.error : 0),
 					},
 				});
 				persistCandidate(candidateRecordPath, record);

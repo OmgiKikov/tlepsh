@@ -316,9 +316,9 @@ describe("Candidate lifecycle", () => {
 		const duplicateEvalRef = evaluation();
 		duplicateEvalRef.development.candidate.evalRunId = duplicateEvalRef.development.baseline.evalRunId;
 		expect(() => evaluated(validated(), duplicateEvalRef)).toThrow(/baseline and candidate must reference distinct eval runs/);
-		expect(() =>
-			evaluated(validated(), { ...evaluation(), infrastructureErrors: 1 }),
-		).toThrow(/infrastructure errors are inconclusive/);
+		// Infrastructure errors within the gate's budget are excluded from the
+		// statistics and recorded as a count; the record still reaches evaluated.
+		expect(candidateStatus(evaluated(validated(), { ...evaluation(), infrastructureErrors: 1 }))).toBe("evaluated");
 	});
 
 	it("requires explicit human actors for apply, review, and terminal decisions", () => {
