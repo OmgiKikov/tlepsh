@@ -18,6 +18,17 @@ addressed by item 3 below, not by opening the holdout.
 
 ## V1.9 — Feedback → Evals (closing the right half of the loop)
 
+0. **Cases are dialogues.** Chat agents (RAG assistants, research agents)
+   live in multi-turn conversations, but a case is one message today. Two
+   layers: (a) a case with `messages` — the conversation so far plus the
+   last user turn — where graders judge the agent's next reply (cheap,
+   deterministic, the way chat models are evaluated; the runner seeds the
+   history before the final prompt); (b) a simulated user — a second model
+   with a goal and persona for N turns — with graders over the whole
+   transcript (a tool called on any turn, a turn budget, a rubric over the
+   dialogue). (a) first, ~1–2 days; (b) ~2–3 days. Feedback import (item 1)
+   must produce these dialogue cases, not single messages. Nobody writes
+   JSONL by hand: the conversation is the interface, the file is storage.
 1. **Feedback becomes tests.** In `ahde target`, any answer is marked 👍/👎
    with one key; the Builder turns it into a case with a grader in a new
    corpus draft. `ahde feedback import <dialogs.jsonl>` clusters real
