@@ -85,6 +85,44 @@ describe("Workbench Target model selection adapter", () => {
 		expect(JSON.stringify(decide.mock.calls[0]?.[0])).not.toContain(CREDENTIAL_ENV);
 	});
 
+	it("hands the model the host catalog while the Target still has no model", async () => {
+		const view = vi.fn(async () => ({
+			schemaVersion: 1,
+			stage: "target-setup",
+			headline: "Create the Target harness.",
+			selections: [],
+			warnings: [],
+			actions: ["scaffold-target"],
+			blockers: [],
+			counts: {},
+		}));
+		const tool = createBuilderWorkbenchTools(
+			{ view } as unknown as AhdeWorkbench,
+			() => "local:test",
+		).find((candidate) => candidate.name === "ahde_workbench_view")!;
+		const host = context(vi.fn(() => undefined), vi.fn(async () => CREDENTIAL_ENV)) as ExtensionContext & {
+			modelRegistry: Record<string, unknown>;
+		};
+		host.modelRegistry.getAvailable = vi.fn(() => [
+			{ ...hostModel(), provider: "openai", id: "gpt-5" },
+			hostModel(),
+		]);
+		host.modelRegistry.hasConfiguredAuth = vi.fn((model: { provider: string }) => model.provider === "fixture-provider");
+
+		const result = await tool.execute("inspect", {}, undefined, undefined, host);
+		const first = result.content[0];
+		if (!first || first.type !== "text") throw new Error("expected a text tool result");
+		const projected = JSON.parse(first.text) as { hostModelCatalog?: { models: unknown[]; omittedModels: number } };
+		expect(projected.hostModelCatalog).toEqual({
+			models: [
+				{ provider: "fixture-provider", modelId: "fixture-model", credentialPresent: true },
+				{ provider: "openai", modelId: "gpt-5", credentialPresent: false },
+			],
+			omittedModels: 0,
+		});
+		expect(first.text).not.toContain(CREDENTIAL_ENV);
+	});
+
 	it("fails closed when the selected model is absent from the trusted host catalog", async () => {
 		const decide = vi.fn(async (decision, _gate, execution) => {
 			execution.resolveTargetModel(decision.model);
@@ -101,6 +139,6 @@ describe("Workbench Target model selection adapter", () => {
 			model: { provider: "fixture-provider", modelId: "missing-model" },
 			reason: "Reject an unavailable model",
 		}, undefined, undefined, context(vi.fn(() => undefined), vi.fn(async () => CREDENTIAL_ENV))))
-			.rejects.toThrow(/not available in the trusted host catalog/);
+			.rejects.toThrow(/fixture-provider\/missing-model is not available in the trusted host catalog\. Choose one of: /);
 	});
 });
