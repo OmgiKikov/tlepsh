@@ -300,28 +300,33 @@ export function registerAhdeBuilderCommands(
 		if (result) await showDecision(ctx, command, result, observation.liveTraceUrl);
 	};
 
-	const askBranch = async (ctx: ExtensionCommandContext, suggested: string): Promise<string | null> => {
-		const value = await ctx.ui.input("Candidate branch name", suggested);
-		if (value === undefined) return null;
-		return parseBranch(value.trim() || suggested);
-	};
-
 	const askVersion = async (ctx: ExtensionCommandContext): Promise<string | null> => {
 		const value = await ctx.ui.input("Version to tag (semver, e.g. 0.2.0)", "0.1.0");
 		if (value === undefined) return null;
 		return parseVersion(value.trim());
 	};
 
+	/**
+	 * Apply is one dialog: the exact diff was rendered by /review (and is
+	 * rendered again here when the operator jumps straight to /apply), the
+	 * branch defaults to candidate/<proposal>, and the confirmation stays short.
+	 */
 	const applyProposal = async (
 		ctx: ExtensionCommandContext,
 		signal: AbortSignal | undefined,
 		branch: string | null,
 		reason: string,
 		runId?: string,
+		options: { showReview?: boolean } = {},
 	): Promise<void> => {
-		const chosen = branch ?? await askBranch(ctx, runId ? `candidate/${runId}` : "candidate/next");
-		if (!chosen) return;
-		const result = await decide(ctx, "apply", { kind: "apply-proposal", branch: chosen, reason, ...(runId ? { runId } : {}) }, signal);
+		const review = await workbench.view({ aspect: "review" });
+		const detail = review.detail?.aspect === "review" ? review.detail.content : undefined;
+		const proposalRunId = runId ?? (detail?.kind === "proposal" ? detail.runId : undefined);
+		if (options.showReview !== false && detail?.kind === "proposal") {
+			presenter.show(ctx, { title: viewTitle(review), tone: "info", lines: renderReview(detail, markerPaint) });
+		}
+		const chosen = branch ?? `candidate/${proposalRunId ?? "next"}`;
+		const result = await decide(ctx, "apply", { kind: "apply-proposal", branch: chosen, reason, ...(proposalRunId ? { runId: proposalRunId } : {}) }, signal);
 		if (result) await showDecision(ctx, "apply", result);
 	};
 
@@ -470,7 +475,7 @@ export function registerAhdeBuilderCommands(
 			case "proposal-review": {
 				const choice = await choose("Proposal", ["Apply to a candidate branch", "Discard"]);
 				const runId = detail?.kind === "proposal" ? detail.runId : undefined;
-				if (choice === "Apply to a candidate branch") await applyProposal(ctx, signal, null, "Applied from /review", runId);
+				if (choice === "Apply to a candidate branch") await applyProposal(ctx, signal, null, "Applied from /review", runId, { showReview: false });
 				else if (choice === "Discard") await discardCurrent(ctx, signal, "Discarded from /review");
 				return;
 			}

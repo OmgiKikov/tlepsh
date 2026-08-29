@@ -895,7 +895,7 @@ describe("Builder Pi slash commands", () => {
 		expect(onWorkbenchChanged).not.toHaveBeenCalled();
 	});
 
-	it("routes /apply to apply-proposal and asks for the branch when it is omitted", async () => {
+	it("routes /apply to apply-proposal and names the branch itself when it is omitted", async () => {
 		const fixture = workbench();
 		const { commands, output, onWorkbenchChanged } = register(fixture.value);
 		const host = context();
@@ -919,32 +919,16 @@ describe("Builder Pi slash commands", () => {
 			.rejects.toThrow("branch must be one bounded Git branch name");
 		expect(fixture.decide).toHaveBeenCalledTimes(1);
 
-		const typed = context({ input: async () => "candidate/typed" });
-		await command(commands, "apply").handler("", typed.ctx);
-		expect(typed.input).toHaveBeenCalledWith("Candidate branch name", "candidate/next");
+		// Without a branch the proposal id names the candidate branch; nothing is asked.
+		const implicit = context();
+		await command(commands, "apply").handler("", implicit.ctx);
+		expect(implicit.input).not.toHaveBeenCalled();
 		expect(fixture.decide).toHaveBeenLastCalledWith(
-			{ kind: "apply-proposal", branch: "candidate/typed", reason: "Requested interactively via /apply" },
+			{ kind: "apply-proposal", branch: "candidate/next", reason: "Requested interactively via /apply" },
 			expect.any(Object),
 			{ signal: undefined },
 		);
-
-		const blank = context({ input: async () => "   " });
-		await command(commands, "apply").handler("", blank.ctx);
-		expect(fixture.decide).toHaveBeenLastCalledWith(
-			expect.objectContaining({ kind: "apply-proposal", branch: "candidate/next" }),
-			expect.any(Object),
-			{ signal: undefined },
-		);
-
-		const cancelled = context({ input: async () => undefined });
-		await command(commands, "apply").handler("", cancelled.ctx);
-		expect(fixture.decide).toHaveBeenCalledTimes(3);
-		expect(cancelled.notify).not.toHaveBeenCalled();
-
-		const malformed = context({ input: async () => "bad branch" });
-		await expect(command(commands, "apply").handler("", malformed.ctx))
-			.rejects.toThrow("branch must be one bounded Git branch name");
-		expect(fixture.decide).toHaveBeenCalledTimes(3);
+		expect(fixture.decide).toHaveBeenCalledTimes(2);
 	});
 
 	it("routes /discard to discard-proposal and abandons an interrupted candidate instead", async () => {
@@ -1173,14 +1157,15 @@ describe("Builder Pi slash commands", () => {
 		const proposalView = viewAt("proposal-review", { detail: { aspect: "review", content: proposalReview() } });
 		const fixture = workbench({ view: async () => proposalView });
 		const { commands, output } = register(fixture.value);
-		const host = context({ select: async () => "Apply to a candidate branch", input: async () => "candidate/fix" });
+		const host = context({ select: async () => "Apply to a candidate branch" });
 
 		await command(commands, "review").handler("", host.ctx);
 
 		expect(host.select).toHaveBeenCalledWith("Proposal", ["Apply to a candidate branch", "Discard", "Just looking"], { signal: undefined });
-		expect(host.input).toHaveBeenCalledWith("Candidate branch name", "candidate/builder-proposal-1");
+		// The branch is named after the proposal; the diff was just rendered, so nothing else is asked.
+		expect(host.input).not.toHaveBeenCalled();
 		expect(fixture.decide).toHaveBeenCalledWith(
-			{ kind: "apply-proposal", branch: "candidate/fix", reason: "Applied from /review", runId: "builder-proposal-1" },
+			{ kind: "apply-proposal", branch: "candidate/builder-proposal-1", reason: "Applied from /review", runId: "builder-proposal-1" },
 			expect.any(Object),
 			{ signal: undefined },
 		);
@@ -1210,11 +1195,6 @@ describe("Builder Pi slash commands", () => {
 			{ signal: undefined },
 		);
 		expect(discardingFixture.output.blocks.map((block) => block.title)).toEqual(["AHDE · Proposal review", "Proposal discarded"]);
-
-		const cancelledInput = context({ select: async () => "Apply to a candidate branch", input: async () => undefined });
-		const cancelledFixture = register(fixture.value);
-		await command(cancelledFixture.commands, "review").handler("", cancelledInput.ctx);
-		expect(fixture.decide).toHaveBeenCalledTimes(2);
 
 		const noSelector = context({ withoutSelect: true });
 		const noSelectorFixture = register(fixture.value);

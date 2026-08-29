@@ -1,5 +1,5 @@
 import type { WorkbenchCandidateSummary, WorkbenchConfirmation } from "../../workbench/types.js";
-import { renderUnifiedDiff } from "./diff.js";
+import { diffStats, renderUnifiedDiff } from "./diff.js";
 import { bullets, clean, numbered, oneLine, pluralize, shortHash, shortSha, wrap } from "./format.js";
 import type { Paint } from "./paint.js";
 import { renderCandidate } from "./view.js";
@@ -109,21 +109,21 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			const tasks = Number(subject.taskCount ?? 0);
 			const repetitions = Number(subject.repetitions ?? 1);
 			return [
-				`${paint.dim("Run")} ${pluralize(tasks, "case")} × ${pluralize(repetitions, "repetition")} = ${paint.bold(`${tasks * repetitions} Target executions`)}`,
+				`${paint.dim("Run")} ${pluralize(tasks, "case")} × ${pluralize(repetitions, "repetition")} = ${paint.bold(`${tasks * repetitions} Target executions`)} ${paint.dim("· each one calls the Target model")}`,
 				`${paint.dim("Target")} ${text(target.id)} ${paint.dim(`@ ${shortSha(text(target.gitSha, 40))}`)} ${paint.dim("· basket")} ${text(corpus.id)} ${paint.dim(`(${pluralize(Number(corpus.taskCount ?? tasks), "case")})`)}`,
-				paint.muted("Each execution calls the Target model; cost depends on the provider."),
 			];
 		}
-		case "apply-proposal":
+		case "apply-proposal": {
+			const diff = typeof subject.exactDiff === "string" ? subject.exactDiff : "";
+			const stats = diffStats(diff);
 			return [
 				`${paint.dim("Branch")} ${paint.bold(text(subject.branch, 80))} ${paint.dim("· base")} ${shortSha(text(subject.baseTargetSha, 40))}`,
 				...wrap(typeof subject.summary === "string" ? subject.summary : "", 92, "  "),
-				`${paint.dim("Changes")} ${strings(subject.paths).map((path) => oneLine(path, 60)).join(", ") || "—"}`,
+				`${paint.dim("Changes")} ${strings(subject.paths).map((path) => oneLine(path, 60)).join(", ") || "—"} ${paint.dim(`(${paint.added(`+${stats.added}`)} ${paint.removed(`-${stats.removed}`)} · full diff shown by /review)`)}`,
 				...(strings(subject.risks).length > 0 ? [paint.warning("Risks"), ...bullets(strings(subject.risks), paint, { limit: 5 })] : []),
-				paint.dim("Diff"),
-				...renderUnifiedDiff(typeof subject.exactDiff === "string" ? subject.exactDiff : "", paint, { maxLines: MAX_CONFIRM_DIFF_LINES }),
 				paint.muted("Your checkout stays where it is; the proposal is committed on the candidate branch."),
 			];
+		}
 		case "discard-proposal":
 			return [...describe(subject.subject ?? subject, paint), paint.muted("Discarding is durable; the same proposal cannot be applied later.")];
 		case "verify-candidate": {
@@ -169,12 +169,15 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 	}
 }
 
+/** Kinds whose subject is a computation, not an artifact: the hash adds nothing for a human. */
+const EPHEMERAL_SUBJECTS = new Set<WorkbenchConfirmation["kind"]>(["run-eval", "verify-candidate", "run-current"]);
+
 /** Human-readable confirmation body: what will happen, exact subject, reason, hash. */
 export function renderConfirmation(confirmation: WorkbenchConfirmation, paint: Paint): string[] {
 	return [
 		...subjectLines(confirmation, paint),
 		"",
 		`${paint.dim("Reason")} ${clean(oneLine(confirmation.reason, 300))}`,
-		`${paint.dim("Exact subject")} ${paint.dim(confirmation.subjectHash)}`,
+		...(EPHEMERAL_SUBJECTS.has(confirmation.kind) ? [] : [`${paint.dim("Exact subject")} ${paint.dim(confirmation.subjectHash)}`]),
 	];
 }

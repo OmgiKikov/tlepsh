@@ -1249,6 +1249,12 @@ describe("renderConfirmation", () => {
 		expect(lines[lines.length - 2]).toBe(`Reason ${reason}`);
 		expect(lines[lines.length - 1]).toBe(`Exact subject ${HASH}`);
 	}
+	/** Runs are computations, not artifacts: their confirmations end at the reason. */
+	function ephemeralTail(lines: string[], reason = "Reviewed the exact subject"): void {
+		expect(lines[lines.length - 2]).toBe("");
+		expect(lines[lines.length - 1]).toBe(`Reason ${reason}`);
+		expect(lines.join("\n")).not.toContain("Exact subject");
+	}
 
 	it("lists scaffold template files", () => {
 		const lines = renderConfirmation(makeConfirmation("scaffold-target", {
@@ -1353,17 +1359,16 @@ describe("renderConfirmation", () => {
 			repetitions: 3,
 			developmentCorpus: { id: "corpus-1", hash: HASH, taskCount: 12, lineageHash: HASH },
 		}), plainPaint);
-		expect(lines.slice(0, 3)).toEqual([
-			"Run 12 cases × 3 repetitions = 36 Target executions",
+		expect(lines.slice(0, 2)).toEqual([
+			"Run 12 cases × 3 repetitions = 36 Target executions · each one calls the Target model",
 			"Target support-bot @ aaaaaaaaaa · basket corpus-1 (12 cases)",
-			"Each execution calls the Target model; cost depends on the provider.",
 		]);
-		tail(lines);
+		ephemeralTail(lines);
 		const single = renderConfirmation(makeConfirmation("run-eval", { taskCount: 1, target: {}, developmentCorpus: {} }), plainPaint);
-		expect(single[0]).toBe("Run 1 case × 1 repetition = 1 Target executions");
+		expect(single[0]).toBe("Run 1 case × 1 repetition = 1 Target executions · each one calls the Target model");
 	});
 
-	it("shows the diff and risks for apply-proposal", () => {
+	it("summarises the change and risks for apply-proposal without repeating the diff", () => {
 		const proposal = makeProposal();
 		const lines = renderConfirmation(makeConfirmation("apply-proposal", {
 			operation: "apply-proposal",
@@ -1374,9 +1379,9 @@ describe("renderConfirmation", () => {
 		const text = lines.join("\n");
 		expect(lines[0]).toBe("<dim>Branch</dim> <bold>ahde/fix-lookup</bold> <dim>· base</dim> aaaaaaaaaa");
 		expect(lines[1]).toBe("  Tell the agent to call lookup before answering.");
-		expect(lines[2]).toBe("<dim>Changes</dim> AGENTS.md");
-		expect(text).toContain("<warning>Risks</warning>\n  <dim>•</dim> May slow down simple replies\n<dim>Diff</dim>\n<dim>diff --git a/AGENTS.md b/AGENTS.md</dim>");
-		expect(text).toContain("<added>+Use the lookup tool first</added>\n<muted>Your checkout stays where it is; the proposal is committed on the candidate branch.</muted>");
+		expect(lines[2]).toBe("<dim>Changes</dim> AGENTS.md <dim>(<added>+2</added> <removed>-1</removed> · full diff shown by /review)</dim>");
+		expect(text).toContain("<warning>Risks</warning>\n  <dim>•</dim> May slow down simple replies\n<muted>Your checkout stays where it is; the proposal is committed on the candidate branch.</muted>");
+		expect(text).not.toContain("diff --git");
 		expect(lines[lines.length - 2]).toBe("<dim>Reason</dim> Reviewed the exact subject");
 		expect(lines[lines.length - 1]).toBe(`<dim>Exact subject</dim> <dim>${HASH}</dim>`);
 	});
@@ -1423,7 +1428,7 @@ describe("renderConfirmation", () => {
 		]);
 		expect(text).not.toContain("SEALED-IDENTITY");
 		expect(text).not.toContain("dddddddd");
-		tail(lines);
+		ephemeralTail(lines);
 		const noDevelopment = renderConfirmation(makeConfirmation("verify-candidate", { baseTargetSha: SHA_A, candidateSha: SHA_B, developmentCorpus: null, sealedHoldout: { taskCount: 1 } }), plainPaint);
 		expect(noDevelopment[0]).toBe("Matched experiment baseline aaaaaaaaaa vs candidate bbbbbbbbbb · 1 repetition");
 		expect(noDevelopment[1]).toBe("Development basket none");
@@ -1509,7 +1514,7 @@ describe("renderConfirmation", () => {
 			"    • two",
 			"",
 		]);
-		tail(unknown);
+		ephemeralTail(unknown);
 	});
 
 	it("always ends with the Reason and Exact subject lines", () => {
@@ -1518,8 +1523,13 @@ describe("renderConfirmation", () => {
 			"discard-proposal", "verify-candidate", "abandon-candidate", "review-candidate", "promote-candidate",
 			"reject-candidate", "adopt-candidate", "continue-cycle", "run-current",
 		];
+		const ephemeral = new Set<WorkbenchConfirmation["kind"]>(["run-eval", "verify-candidate", "run-current"]);
 		for (const kind of kinds) {
 			const lines = renderConfirmation(makeConfirmation(kind, {}, "Because the reviewer said so"), plainPaint);
+			if (ephemeral.has(kind)) {
+				ephemeralTail(lines, "Because the reviewer said so");
+				continue;
+			}
 			expect(lines[lines.length - 3], kind).toBe("");
 			expect(lines[lines.length - 2], kind).toBe("Reason Because the reviewer said so");
 			expect(lines[lines.length - 1], kind).toBe(`Exact subject ${HASH}`);
