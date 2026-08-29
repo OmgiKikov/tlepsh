@@ -92,7 +92,8 @@ so no tokens are spent on an underpowered verification.
 | S7 legacy deletion + closed-loop Pi test | a02ae42 | src −2,884 LOC; extension.ts 1749 → 235; 17-step closed-loop test on the three tools |
 | Any data → benchmark (core) | cd4675e | parsers, mapping recipe, `expected`/`messages`/`metadata` case fields, host-held sealed slice |
 | Infrastructure error budget | 66c22f4 | ≤10% errored runs excluded, not fatal |
-| S6 product feel | in progress | onboarding resume, catalog, model projection, zod-generated schemas |
+| S6 product feel | a6ac915 | onboarding resumes after `/login`, model catalog for `configure-target`, model-facing results −76%, tool schemas from zod (−34%), inventory read behind the seam, persona without panel narration |
+| Failure modes on noisy agents | 21b2f09 | a mode is proposable when it reproduces in ≥25% of runs; passes no longer veto (the live run had 29 modes and 0 proposable under the old rule) |
 | S5 first real promotion | in progress | see "Closed loop on a real Target" |
 
 ## Stages
