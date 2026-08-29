@@ -9,6 +9,8 @@ description: Inspect evaluation results, generate deterministic diagnosis, and c
    `run`. When the operator asks to run, request `run-current` through
    `ahde_workbench_decide` yourself (`/run [repetitions]` is their
    shortcut). The host confirms the exact cost and subject in its own dialog.
+   Repetitions default to 3, and a sealed verdict needs at least 15 cases ×
+   2 repetitions.
 2. Workbench binds the approved Spec, reviewed development corpus, exact Target
    revision, dataset hash, and suite hash. Select among ambiguous artifacts
    explicitly with `ahde_workbench_submit`; never invent an id.
