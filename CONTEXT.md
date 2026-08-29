@@ -53,7 +53,19 @@ the harness under development runs in a different Target Pi invocation.
 - **Cycle continuation** — the human decision that closes a reviewed loop
   around one terminal (promoted-and-adopted or rejected) candidate and lets
   the Workbench derive the next stage from the active Target.
-- **A/A calibration** — repeated evaluation of the same snapshot to measure noise. It can never be promotion evidence.
+- **A/A calibration** — repeated evaluation of the same snapshot to measure
+  run-to-run noise. The A/A Candidate record is the calibration receipt; it
+  can never be promotion evidence.
+- **Comparison Verdict** — the single typed outcome of comparing a baseline and
+  a candidate Eval Run under one Gate Policy: paired per-task deltas, a seeded
+  bootstrap 95% interval, the design (tasks × repetitions, excluded tasks),
+  human flags, and one verdict. The only source of "passed".
+- **Gate Policy** — the named rule a Comparison Verdict is decided under.
+  `development-ci-v3`: improved iff the whole interval is above zero,
+  regressed iff it is entirely below zero, otherwise inconclusive.
+  `sealed-guardrail-v3`: underpowered below 15 tasks or 2 repetitions, fail
+  iff the whole interval is below zero, otherwise pass. Per-task drops are
+  flags for humans and never gate.
 
 ## Trust domains
 
@@ -189,3 +201,14 @@ live view is never evidence and cannot perform state transitions.
     blocks are persisted host UI that the model never receives; a renderer
     fault degrades to the Workbench message and can never change durable
     state or skip a confirmation.
+
+
+34. Promotion is decided by the Comparison Verdict, not by per-task flips: it
+    requires a sealed guardrail `pass` (≥15 tasks × ≥2 repetitions, 95% paired
+    bootstrap interval not entirely below zero) and a development verdict other
+    than `regressed`. A failed or underpowered sealed gate is recorded as
+    evaluated evidence and refused at promotion; it is never thrown away. A
+    verification never starts on a holdout smaller than the policy minimum.
+35. Noise is measured, never assumed: an A/A calibration of the same Target
+    revision is the receipt for run-to-run noise, informs the recommended
+    number of repetitions, and is never promotion evidence.

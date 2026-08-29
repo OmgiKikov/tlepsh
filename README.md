@@ -373,16 +373,24 @@ Candidate Experiment:
 3. creates detached worktrees without switching the user's checkout;
 4. runs matched task/repetition designs;
 5. verifies execution and grading fingerprints;
-6. computes paired task deltas and deterministic uncertainty;
-7. persists one canonical `CandidateRecord`.
+6. judges paired task deltas under one comparison gate: a seeded bootstrap
+   95% interval decides `improved · inconclusive · regressed` on the
+   development surface and `pass · fail · underpowered` on the sealed
+   guardrail (at least 15 tasks × 2 repetitions); per-task drops are flags
+   for the reviewer, never a verdict;
+7. persists one canonical `CandidateRecord` with the verdicts.
 
 Only `AGENTS.md`, `skills/**`, `tools/**`, `bin/**`, and the `skills`/`tools`
 declaration lists in `manifest.yaml` may change in a Builder proposal. Target
 id, model, execution policy, instructions, eval suite, and `evals/**` remain
 fixed. Promotion requires an applied proposal with a durable receipt,
-comparable development evidence, evaluator-owned sealed evidence, honest
-workspace confinement, an explicit human promote review, and the exact
-candidate revision. A manual experiment or unconfined run cannot be promoted.
+comparable development evidence whose verdict is not `regressed`,
+evaluator-owned sealed evidence with a guardrail `pass`, honest workspace
+confinement, an explicit human promote review, and the exact candidate
+revision. A failed or underpowered sealed gate is kept as evaluated evidence
+and refused at promotion; a manual experiment or unconfined run cannot be
+promoted. Legacy eval-run indexes that predate the current provenance axes
+are listed as `legacy · not comparable` and never reused as baselines.
 
 ## Storage and trust boundaries
 
