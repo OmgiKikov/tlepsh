@@ -263,8 +263,10 @@ it("resolves 'fix the first problem' through fresh traces and review without app
 		"view:target",
 		"view:target:AGENTS.md",
 		"submit:structured-proposal",
+		// The product shell re-reads the summary to refresh the header after authoring.
+		"view:summary",
 		"view:review",
 	]);
-	expect(view).toHaveBeenCalledTimes(4);
+	expect(view).toHaveBeenCalledTimes(5);
 	expect(decide).not.toHaveBeenCalled();
 });

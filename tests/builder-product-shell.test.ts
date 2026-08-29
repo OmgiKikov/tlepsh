@@ -1,74 +1,190 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
 import { installAhdeBuilderProductShell } from "../src/builder/product-shell.js";
+import { AHDE_TRANSCRIPT_ENTRY_TYPE } from "../src/builder/transcript.js";
 import type { WorkbenchView } from "../src/workbench/types.js";
 
-const view: WorkbenchView = {
-	schemaVersion: 1,
-	project: { id: "demo", directory: "demo" },
-	stage: "target-setup",
-	headline: "Create the Target harness.",
-	target: { status: "missing", id: null, gitSha: null },
-	focus: {},
-	selections: [],
-	actions: ["scaffold-target"],
-	blockers: ["Target harness is missing."],
-	warnings: [],
-	counts: {
-		specDrafts: 0,
-		approvedSpecs: 0,
-		corpusDrafts: 0,
-		developmentCorpora: 0,
-		sealedCorpora: 0,
-		developmentEvals: 0,
-		openProposals: 0,
-		candidates: 0,
-	},
-};
+function view(overrides: Partial<WorkbenchView> = {}): WorkbenchView {
+	return {
+		schemaVersion: 1,
+		project: { id: "demo", directory: "demo" },
+		stage: "target-setup",
+		headline: "Create the Target harness.",
+		target: { status: "missing", id: null, gitSha: null, model: null },
+		focus: {},
+		selections: [],
+		actions: ["scaffold-target"],
+		blockers: ["Target harness is missing."],
+		warnings: [],
+		counts: {
+			specDrafts: 0,
+			approvedSpecs: 0,
+			corpusDrafts: 0,
+			developmentCorpora: 0,
+			sealedCorpora: 0,
+			developmentEvals: 0,
+			openProposals: 0,
+			candidates: 0,
+		},
+		...overrides,
+	};
+}
+
+const theme = {
+	fg: (_color: string, text: string) => text,
+	bold: (text: string) => text,
+} as unknown as Theme;
+
+type Handler = (...args: never[]) => unknown;
+
+function install(workbenchView: () => Promise<WorkbenchView>): {
+	handlers: Map<string, Handler>;
+	registerEntryRenderer: ReturnType<typeof vi.fn>;
+	controller: ReturnType<typeof installAhdeBuilderProductShell>;
+} {
+	const handlers = new Map<string, Handler>();
+	const registerEntryRenderer = vi.fn();
+	const controller = installAhdeBuilderProductShell({
+		on: (event: string, handler: Handler) => handlers.set(event, handler),
+		registerEntryRenderer,
+	} as unknown as ExtensionAPI, { view: workbenchView });
+	return { handlers, registerEntryRenderer, controller };
+}
+
+function host(options: {
+	model?: { provider: string; id: string } | undefined;
+	credentialPresent?: boolean;
+	select?: (title: string, choices: string[]) => Promise<string | undefined>;
+} = {}): {
+	ctx: ExtensionContext;
+	ui: Record<string, ReturnType<typeof vi.fn>>;
+	requestRender: ReturnType<typeof vi.fn>;
+	renderHeader: (width?: number) => string[];
+} {
+	const requestRender = vi.fn();
+	let factory: ((tui: unknown, theme: Theme) => { render(width: number): string[] }) | undefined;
+	const ui = {
+		setTitle: vi.fn(),
+		setStatus: vi.fn(),
+		setWorkingMessage: vi.fn(),
+		notify: vi.fn(),
+		setEditorText: vi.fn(),
+		select: vi.fn(options.select ?? (async () => "Not now")),
+		setHeader: vi.fn((input: (tui: unknown, theme: Theme) => { render(width: number): string[] }) => {
+			factory = input;
+		}),
+	};
+	const ctx = {
+		mode: "tui",
+		model: "model" in options ? options.model : { provider: "openai", id: "gpt-test" },
+		modelRegistry: { hasConfiguredAuth: vi.fn(() => options.credentialPresent ?? true) },
+		ui,
+	} as unknown as ExtensionContext;
+	return {
+		ctx,
+		ui,
+		requestRender,
+		renderHeader: (width = 200) => {
+			if (!factory) throw new Error("header was not installed");
+			return factory({ requestRender }, theme).render(width);
+		},
+	};
+}
+
+async function start(handlers: Map<string, Handler>, ctx: ExtensionContext, reason = "startup"): Promise<void> {
+	await handlers.get("session_start")?.({ type: "session_start", reason } as never, ctx as never);
+}
 
 describe("AHDE Builder product shell", () => {
-	it("replaces Pi onboarding with AHDE identity, readiness, and conversational setup guidance", async () => {
-		const handlers = new Map<string, (...args: never[]) => unknown>();
-		installAhdeBuilderProductShell({
-			on: (event: string, handler: (...args: never[]) => unknown) => handlers.set(event, handler),
-		} as unknown as ExtensionAPI, { view: vi.fn(async () => view) } as never);
+	it("replaces Pi onboarding with AHDE identity, live state, and conversational guidance", async () => {
+		const { handlers, registerEntryRenderer } = install(async () => view());
+		const h = host({ credentialPresent: true });
+		await start(handlers, h.ctx);
 
-		const setTitle = vi.fn();
-		const setStatus = vi.fn();
-		const setHeader = vi.fn();
-		const setWorkingMessage = vi.fn();
-		const notify = vi.fn();
-		const context = {
-			mode: "tui",
-			model: { provider: "openai", id: "gpt-test" },
-			modelRegistry: { hasConfiguredAuth: vi.fn(() => false) },
-			ui: { setTitle, setStatus, setHeader, setWorkingMessage, notify },
-		} as unknown as ExtensionContext;
-		await handlers.get("session_start")?.({ type: "session_start", reason: "startup" } as never, context as never);
+		expect(registerEntryRenderer).toHaveBeenCalledWith(AHDE_TRANSCRIPT_ENTRY_TYPE, expect.any(Function));
+		expect(h.ui.setTitle).toHaveBeenCalledWith("AHDE Builder");
+		expect(h.ui.setWorkingMessage).toHaveBeenCalledWith("AHDE Builder is working…");
+		expect(h.ui.setStatus).toHaveBeenCalledWith("ahde", "AHDE · Target setup");
+		expect(h.ui.setStatus).toHaveBeenCalledWith("ahde-auth", undefined);
+		expect(h.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Tell me what you want to build"), "info");
+		expect(h.ui.select).not.toHaveBeenCalled();
 
-		expect(setTitle).toHaveBeenCalledWith("AHDE Builder");
-		expect(setWorkingMessage).toHaveBeenCalledWith("AHDE Builder is working…");
-		expect(setStatus).toHaveBeenCalledWith("ahde", "AHDE · target-setup");
-		expect(setStatus).toHaveBeenCalledWith("ahde-auth", "credential required · /doctor");
-		expect(notify).toHaveBeenCalledWith(expect.stringContaining("Tell me what agent you want"), "info");
-
-		const factory = setHeader.mock.calls[0]?.[0] as ((tui: unknown, theme: Theme) => { render(): string[] });
-		const theme = {
-			fg: (_color: string, text: string) => text,
-			bold: (text: string) => text,
-		} as unknown as Theme;
-		const rendered = factory({}, theme).render().join("\n");
+		const rendered = h.renderHeader().join("\n");
 		expect(rendered).toContain("AHDE Builder");
-		expect(rendered).toContain("Describe what you want to build");
-		expect(rendered).not.toMatch(/Pi coding agent|run bash|!!/i);
+		expect(rendered).toContain("Target setup");
+		expect(rendered).toContain("openai/gpt-test");
+		expect(rendered).toContain("Describe what you want");
+		expect(rendered).not.toMatch(/Pi coding agent|run bash|!!|schemaVersion|\{/i);
+		// Pi aborts the session on an over-wide custom line; the header must fit any viewport.
+		for (const line of h.renderHeader(40)) expect(visibleWidth(line)).toBeLessThanOrEqual(40);
+	});
+
+	it("leads a first run without a Builder credential straight to /login", async () => {
+		const { handlers } = install(async () => view());
+		const h = host({
+			credentialPresent: false,
+			select: async () => "Log in to a provider (OAuth or API key)",
+		});
+		await start(handlers, h.ctx);
+
+		expect(h.ui.select).toHaveBeenCalledWith(
+			expect.stringContaining("needs a model"),
+			expect.arrayContaining([expect.stringContaining("Log in")]),
+		);
+		expect(h.ui.setEditorText).toHaveBeenCalledWith("/login");
+		expect(h.ui.setStatus).toHaveBeenCalledWith("ahde-auth", "Builder model not connected · /login");
+		expect(h.renderHeader().join("\n")).toContain("not connected — /login");
+	});
+
+	it("keeps the header live after Workbench state changes", async () => {
+		let current = view();
+		const { handlers, controller } = install(async () => current);
+		const h = host({ credentialPresent: true });
+		await start(handlers, h.ctx);
+		expect(h.renderHeader().join("\n")).toContain("Target setup");
+
+		current = view({
+			stage: "spec-review",
+			headline: "Review and approve an exact Spec draft.",
+			target: {
+				status: "ready",
+				id: "support-agent",
+				gitSha: "a".repeat(40),
+				model: { provider: "openai", id: "gpt-target", apiKeyEnv: "OPENAI_API_KEY", credentialPresent: false },
+			},
+			actions: ["review", "approve-spec"],
+			blockers: [],
+			counts: { ...view().counts, specDrafts: 1 },
+		});
+		await handlers.get("agent_end")?.({ type: "agent_end" } as never, h.ctx as never);
+
+		const rendered = h.renderHeader().join("\n");
+		expect(rendered).toContain("Spec review");
+		expect(rendered).toContain("support-agent");
+		expect(rendered).toContain("OPENAI_API_KEY missing");
+		expect(rendered).toContain("/review");
+		expect(h.requestRender).toHaveBeenCalled();
+		expect(h.ui.setStatus).toHaveBeenLastCalledWith("ahde-auth", undefined);
+
+		await controller.refresh();
+		expect(h.ui.setStatus).toHaveBeenCalledWith("ahde", "AHDE · Spec review");
+	});
+
+	it("reports an unreadable project instead of crashing the session", async () => {
+		const { handlers } = install(async () => {
+			throw new Error("state root is a symlink");
+		});
+		const h = host({ credentialPresent: true });
+		await start(handlers, h.ctx);
+
+		expect(h.ui.setStatus).toHaveBeenCalledWith("ahde", "AHDE · blocked");
+		expect(h.ui.notify).toHaveBeenCalledWith(expect.stringContaining("state root is a symlink"), "error");
+		expect(h.renderHeader().join("\n")).toContain("Project state unavailable");
 	});
 
 	it("replaces raw provider failures with one stable recovery message", async () => {
-		const handlers = new Map<string, (...args: never[]) => unknown>();
-		installAhdeBuilderProductShell({
-			on: (event: string, handler: (...args: never[]) => unknown) => handlers.set(event, handler),
-		} as unknown as ExtensionAPI, { view: vi.fn(async () => view) } as never);
-
+		const { handlers } = install(async () => view());
 		const result = await handlers.get("message_end")?.({
 			type: "message_end",
 			message: {

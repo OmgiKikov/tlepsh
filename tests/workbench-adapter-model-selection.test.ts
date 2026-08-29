@@ -70,7 +70,7 @@ describe("Workbench Target model selection adapter", () => {
 		}, undefined, undefined, context(find, input));
 
 		expect(input).toHaveBeenCalledWith(
-			"Target credential environment variable",
+			expect.stringContaining("Environment variable holding the"),
 			"FIXTURE_PROVIDER_API_KEY",
 		);
 		expect(find).toHaveBeenCalledWith("fixture-provider", "fixture-model");

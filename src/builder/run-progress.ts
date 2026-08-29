@@ -134,45 +134,63 @@ export function createRunProgressPresenter(
 		render();
 	};
 
+	const counts = { pass: 0, fail: 0, error: 0, graded: 0 };
+	let progress: { ordinal: number; total: number; taskId: string } | null = null;
+	const progressBar = (done: number, total: number, width = 12): string => {
+		const ratio = total > 0 ? Math.min(1, Math.max(0, done / total)) : 0;
+		const filled = Math.round(ratio * width);
+		return `${"█".repeat(filled)}${"░".repeat(width - filled)} ${Math.round(ratio * 100)}%`;
+	};
+	const tally = (): string => `✓${counts.pass} ✗${counts.fail}${counts.error > 0 ? ` !${counts.error}` : ""}`;
+	const progressLine = (): string => {
+		if (!progress) return "AHDE run · starting";
+		return `AHDE run ${progress.ordinal}/${progress.total} ${progressBar(counts.graded, progress.total)} · ${tally()} · ${progress.taskId}`;
+	};
+	const status = (activity: string): void => {
+		setStatus(`${progressLine()} · ${activity}`);
+	};
 	const position = (event: RunEvent): string => `${event.run.ordinal}/${event.run.total}`;
 	const onRunEvent: RunEventListener = (event) => {
 		if (disposed) return;
 		const run = position(event);
+		progress = { ordinal: event.run.ordinal, total: event.run.total, taskId: event.run.taskId };
 		switch (event.type) {
 			case "run_started":
-				setStatus(`AHDE run ${run} · started`);
-				appendBlock("run · ", `started ${run}`);
+				status("started");
+				appendBlock("run · ", `started ${run} · ${event.run.taskId}`);
 				break;
 			case "assistant_delta":
-				setStatus(`AHDE run ${run} · assistant`);
+				status("assistant");
 				appendAssistant(event.delta, event.truncated);
 				break;
 			case "tool_started":
-				setStatus(`AHDE run ${run} · tool ${event.toolName}`);
+				status(`tool ${event.toolName}`);
 				appendBlock(
 					`tool → ${event.toolName} · `,
 					`${event.arguments}${event.truncated ? " …[truncated]" : ""}`,
 				);
 				break;
 			case "tool_finished":
-				setStatus(`AHDE run ${run} · tool ${event.toolName} ${event.isError ? "failed" : "done"}`);
+				status(`tool ${event.toolName} ${event.isError ? "failed" : "done"}`);
 				appendBlock(
 					`tool ${event.isError ? "✗" : "✓"} ${event.toolName} · `,
 					`${event.output}${event.truncated ? " …[truncated]" : ""}`,
 				);
 				break;
 			case "execution_finished":
-				setStatus(`AHDE run ${run} · ${event.status}`);
+				status(event.status);
 				appendBlock(
 					"run · ",
 					`${event.status}${event.error ? ` · ${event.error}` : ""}`,
 				);
 				break;
 			case "run_graded":
-				setStatus(`AHDE run ${run} · graded ${event.outcome}`);
+				counts.graded += 1;
+				counts[event.outcome] += 1;
+				status(`graded ${event.outcome}`);
 				appendBlock(
-					"grade · ",
-					`${event.outcome} · ${event.passedGraders}/${event.totalGraders} graders`,
+					`grade ${event.outcome === "pass" ? "✓" : event.outcome === "fail" ? "✗" : "!"} · `,
+					`${event.outcome} · ${event.passedGraders}/${event.totalGraders} graders · ${tally()} so far`,
 				);
 				break;
 		}

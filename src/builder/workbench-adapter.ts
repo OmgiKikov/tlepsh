@@ -1,12 +1,21 @@
-import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { defineTool } from "@earendil-works/pi-coding-agent";
+import { Text, type Component } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
+import { decisionHeadline, renderDecision } from "./render/decision.js";
+import { oneLine } from "./render/format.js";
+import { themePaint } from "./render/paint.js";
+import { nextStep, stageLabel } from "./render/stage.js";
+import { renderView, viewTitle } from "./render/view.js";
+import { markerPaint, type TranscriptPresenter } from "./transcript.js";
+import type {
+	WorkbenchDecisionResult,
+	WorkbenchTurn,
+	WorkbenchView,
+} from "../workbench/types.js";
 import type { compileHarnessAuthoringProposal } from "../application/harness-authoring.js";
-import {
-	resolveTargetModelSelection,
-	TargetModelSelectionSchema,
-	type TargetModelSelection,
-} from "../application/target-model-selection.js";
+import { TargetModelSelectionSchema } from "../application/target-model-selection.js";
+import { selectTargetCredentialEnvironment, targetModelResolver } from "./onboarding.js";
 import {
 	createAhdeWorkbench,
 	type AhdeWorkbench,
@@ -16,6 +25,81 @@ import type {
 	WorkbenchDecisionInput,
 	WorkbenchSubmitInput,
 } from "../workbench/types.js";
+
+function isWorkbenchView(value: unknown): value is WorkbenchView {
+	return typeof value === "object" && value !== null &&
+		(value as { schemaVersion?: unknown }).schemaVersion === 1 &&
+		typeof (value as { stage?: unknown }).stage === "string" &&
+		typeof (value as { headline?: unknown }).headline === "string" &&
+		typeof (value as { counts?: unknown }).counts === "object";
+}
+
+function isWorkbenchTurn(value: unknown): value is WorkbenchTurn {
+	return typeof value === "object" && value !== null &&
+		typeof (value as { kind?: unknown }).kind === "string" &&
+		typeof (value as { message?: unknown }).message === "string" &&
+		isWorkbenchView((value as { view?: unknown }).view);
+}
+
+function isWorkbenchDecision(value: unknown): value is WorkbenchDecisionResult {
+	return isWorkbenchTurn(value) && typeof (value as { result?: unknown }).result === "object";
+}
+
+function card(lines: readonly string[]): Component {
+	return new Text(lines.join("\n"), 0, 0);
+}
+
+/** Compact, theme-aware transcript cards for the three Workbench tools. */
+const WORKBENCH_TOOL_RENDERERS = {
+	view: {
+		renderCall(args: { aspect?: string; resourcePath?: string }, theme: Theme): Component {
+			const paint = themePaint(theme);
+			const detail = args.resourcePath ? ` ${oneLine(args.resourcePath, 60)}` : "";
+			return card([`${paint.accent("AHDE")} ${paint.dim("inspect")} ${args.aspect ?? "summary"}${detail}`]);
+		},
+		renderResult(details: unknown, expanded: boolean, theme: Theme): Component {
+			const paint = themePaint(theme);
+			if (!isWorkbenchView(details)) return card([paint.muted("Workbench view")]);
+			if (!expanded) {
+				return card([`${paint.bold(viewTitle(details))} ${paint.dim("·")} ${nextStep(details)}`]);
+			}
+			return card(renderView(details, paint, { maxDiffLines: 120, maxTasks: 12 }));
+		},
+	},
+	submit: {
+		renderCall(args: { kind?: string }, theme: Theme): Component {
+			const paint = themePaint(theme);
+			return card([`${paint.accent("AHDE")} ${paint.dim("author")} ${args.kind ?? "submission"}`]);
+		},
+		renderResult(details: unknown, expanded: boolean, theme: Theme): Component {
+			const paint = themePaint(theme);
+			if (!isWorkbenchTurn(details)) return card([paint.muted("Workbench submission")]);
+			const lines = [`${paint.success("✓")} ${oneLine(details.message, 160)} ${paint.dim(`· now ${stageLabel(details.view.stage)}`)}`];
+			if (expanded && details.artifact) {
+				for (const [key, value] of Object.entries(details.artifact)) {
+					if (value === null || value === undefined) continue;
+					lines.push(`  ${paint.dim(key)} ${oneLine(typeof value === "string" ? value : JSON.stringify(value), 120)}`);
+				}
+				lines.push(`  ${paint.dim("Next")} ${nextStep(details.view)}`);
+			}
+			return card(lines);
+		},
+	},
+	decide: {
+		renderCall(args: { kind?: string; reason?: string }, theme: Theme): Component {
+			const paint = themePaint(theme);
+			return card([`${paint.accent("AHDE")} ${paint.dim("decide")} ${paint.bold(args.kind ?? "decision")}${args.reason ? ` ${paint.dim(`— ${oneLine(args.reason, 100)}`)}` : ""}`]);
+		},
+		renderResult(details: unknown, expanded: boolean, theme: Theme): Component {
+			const paint = themePaint(theme);
+			if (!isWorkbenchDecision(details)) return card([paint.muted("Workbench decision")]);
+			if (!expanded) {
+				return card([`${paint.success("✓")} ${decisionHeadline(details)} ${paint.dim(`· now ${stageLabel(details.view.stage)}`)}`]);
+			}
+			return card(renderDecision(details, paint));
+		},
+	},
+} as const;
 import type { BuilderProjectContext } from "./project-context.js";
 import { createWorkbenchHumanGate } from "./workbench-gate.js";
 import {
@@ -74,34 +158,6 @@ function requireHostUI(ctx: ExtensionContext, operation: string): void {
 	}
 }
 
-function credentialPlaceholder(provider: string): string {
-	const known: Record<string, string> = {
-		anthropic: "ANTHROPIC_API_KEY",
-		google: "GEMINI_API_KEY",
-		openai: "OPENAI_API_KEY",
-		openrouter: "OPENROUTER_API_KEY",
-	};
-	return known[provider] ?? `${provider.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`;
-}
-
-async function selectTargetCredentialEnvironment(
-	ctx: ExtensionContext,
-	selection: TargetModelSelection,
-): Promise<string> {
-	const suggested = credentialPlaceholder(selection.provider);
-	if (process.env[suggested]?.trim()) return suggested;
-	const selected = await ctx.ui.input(
-		"Target credential environment variable",
-		suggested,
-	);
-	if (selected === undefined) throw new Error("Target model configuration was cancelled by the operator");
-	const value = selected.trim();
-	if (!/^[A-Za-z_][A-Za-z0-9_]{0,199}$/.test(value)) {
-		throw new Error("Target credential must be one environment-variable name; never paste the credential value");
-	}
-	return value;
-}
-
 export function createBuilderWorkbench(
 	options: BuilderProjectContext & { templateDir?: string },
 	dependencies: BuilderWorkbenchDependencies,
@@ -143,11 +199,26 @@ export function createBuilderWorkbench(
 	});
 }
 
+export interface BuilderWorkbenchToolOptions {
+	beginLiveTrace?: BeginBuilderLiveTrace;
+	/** Shows the human rendering of model-driven decisions in the transcript. */
+	presenter?: TranscriptPresenter;
+	/** Invoked after a decision changed Workbench state (header refresh). */
+	onWorkbenchChanged?: () => void | Promise<void>;
+}
+
 export function createBuilderWorkbenchTools(
 	workbench: AhdeWorkbench,
 	actorId: () => string,
-	options: { beginLiveTrace?: BeginBuilderLiveTrace } = {},
+	options: BuilderWorkbenchToolOptions = {},
 ): readonly RegisteredWorkbenchTool[] {
+	const changed = async (): Promise<void> => {
+		try {
+			await options.onWorkbenchChanged?.();
+		} catch {
+			// Header refresh is cosmetic.
+		}
+	};
 	return [
 		defineTool({
 			name: "ahde_workbench_view",
@@ -162,6 +233,8 @@ export function createBuilderWorkbenchTools(
 					...(resourcePath ? { resourcePath } : {}),
 				}));
 			},
+			renderCall: (args, theme) => WORKBENCH_TOOL_RENDERERS.view.renderCall(args, theme),
+			renderResult: (result, renderOptions, theme) => WORKBENCH_TOOL_RENDERERS.view.renderResult(result.details, renderOptions.expanded, theme),
 		}),
 		defineTool({
 			name: "ahde_workbench_submit",
@@ -173,14 +246,20 @@ export function createBuilderWorkbenchTools(
 				const submission = params.kind === "spec-draft"
 					? { ...params, spec: { schemaVersion: 1 as const, ...params.spec } }
 					: params;
-				return textResult(await workbench.submit(submission as WorkbenchSubmitInput, { signal }));
+				const turn = await workbench.submit(submission as WorkbenchSubmitInput, { signal });
+				await changed();
+				return textResult(turn);
 			},
+			renderCall: (args, theme) => WORKBENCH_TOOL_RENDERERS.submit.renderCall(args, theme),
+			renderResult: (result, renderOptions, theme) => WORKBENCH_TOOL_RENDERERS.submit.renderResult(result.details, renderOptions.expanded, theme),
 		}),
 		defineTool({
 			name: "ahde_workbench_decide",
 			label: "Decide in Builder Workbench",
 			description: "Request one exact human-gated workflow transition. Actor identity and sealed holdout selection remain host-owned.",
 			parameters: WorkbenchDecisionParameters,
+			renderCall: (args, theme) => WORKBENCH_TOOL_RENDERERS.decide.renderCall(args, theme),
+			renderResult: (result, renderOptions, theme) => WORKBENCH_TOOL_RENDERERS.decide.renderResult(result.details, renderOptions.expanded, theme),
 			async execute(_id, params, signal, _update, ctx) {
 				abortIfRequested(signal);
 				requireHostUI(ctx, "Workbench decision");
@@ -199,15 +278,7 @@ export function createBuilderWorkbenchTools(
 				let outcome: BuilderLiveTraceOutcome = "error";
 				try {
 					const resolveTargetModel = targetModelSelection && targetCredentialEnvironment
-						? (selection: TargetModelSelection) => {
-							const resolved = ctx.modelRegistry.find(selection.provider, selection.modelId);
-							if (!resolved) {
-								throw new Error(`Target model ${selection.provider}/${selection.modelId} is not available in the trusted host catalog`);
-							}
-							return resolveTargetModelSelection(selection, resolved, {
-								apiKeyEnv: targetCredentialEnvironment,
-							});
-						}
+						? targetModelResolver(ctx, targetCredentialEnvironment)
 						: undefined;
 					const result = await workbench.decide(
 						params as WorkbenchDecisionInput,
@@ -219,6 +290,18 @@ export function createBuilderWorkbenchTools(
 						},
 					);
 					outcome = "completed";
+					if (options.presenter) {
+						try {
+							options.presenter.show(ctx, {
+								title: `${decisionHeadline(result)}`,
+								tone: "success",
+								lines: renderDecision(result, markerPaint, { liveTraceUrl: observation?.liveTraceUrl ?? null }),
+							});
+						} catch {
+							// Human presentation never changes the decision result.
+						}
+					}
+					await changed();
 					return textResult(result);
 				} catch (error) {
 					if (signal?.aborted) outcome = "aborted";

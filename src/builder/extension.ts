@@ -107,6 +107,7 @@ import {
 import { registerAhdeBuilderCommands } from "./commands.js";
 import { installAhdeBuilderProductShell } from "./product-shell.js";
 import type { BeginBuilderLiveTrace } from "./run-observation.js";
+import { createTranscriptPresenter } from "./transcript.js";
 
 const MAX_LIST_ITEMS = 30;
 const MAX_EXACT_DIFF_BYTES = 64 * 1024;
@@ -1697,11 +1698,7 @@ function toolRegistry(
 export function createAhdeBuilderExtension(options: BuilderExtensionOptions): ExtensionFactory {
 	const dependencies = { ...DEFAULT_DEPENDENCIES, ...options.dependencies };
 	const workbench = createBuilderWorkbench(options, dependencies);
-	const workbenchTools = createBuilderWorkbenchTools(workbench, dependencies.actorId, {
-		beginLiveTrace: dependencies.beginLiveTrace,
-	});
-	const tools = workbenchTools;
-	const allowedTools = new Set(tools.map((tool) => tool.name));
+	const allowedTools = new Set<string>(AHDE_BUILDER_TOOL_NAMES);
 	return (pi: ExtensionAPI) => {
 		pi.on("user_bash", () => ({
 			result: {
@@ -1714,12 +1711,24 @@ export function createAhdeBuilderExtension(options: BuilderExtensionOptions): Ex
 		pi.on("tool_call", (event) => allowedTools.has(event.toolName)
 			? undefined
 			: { block: true, reason: `AHDE Builder tool is not allowed: ${event.toolName}`, terminate: true });
+		const presenter = createTranscriptPresenter(pi);
+		const shell = installAhdeBuilderProductShell(pi, workbench, { actorId: dependencies.actorId, presenter });
+		const onWorkbenchChanged = () => shell.refresh();
+		const tools = createBuilderWorkbenchTools(workbench, dependencies.actorId, {
+			beginLiveTrace: dependencies.beginLiveTrace,
+			presenter,
+			onWorkbenchChanged,
+		});
 		for (const tool of tools) pi.registerTool(tool);
-		installAhdeBuilderProductShell(pi, workbench);
 		registerAhdeBuilderCommands(pi, {
 			workbench,
 			actorId: dependencies.actorId,
 			beginLiveTrace: dependencies.beginLiveTrace,
+			presenter,
+			onWorkbenchChanged,
+			sendUserMessage: typeof pi.sendUserMessage === "function"
+				? (text) => pi.sendUserMessage(text)
+				: undefined,
 		});
 	};
 }

@@ -1,19 +1,16 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { canonicalJson } from "../provenance.js";
 import type {
 	WorkbenchConfirmation,
 	WorkbenchHumanGate,
 } from "../workbench/types.js";
+import { renderConfirmation } from "./render/confirmation.js";
+import { plainPaint } from "./render/paint.js";
 
 export type WorkbenchInteractiveGuard = (operation: string) => void;
 
+/** Human-readable confirmation body: what happens, the exact subject, the reason, and its hash. */
 export function formatWorkbenchConfirmation(confirmation: WorkbenchConfirmation): string {
-	return [
-		`Reason: ${confirmation.reason}`,
-		`Exact subject hash: ${confirmation.subjectHash}`,
-		"",
-		canonicalJson(confirmation.subject),
-	].join("\n");
+	return renderConfirmation(confirmation, plainPaint).join("\n");
 }
 
 /**
@@ -44,6 +41,9 @@ export function createWorkbenchHumanGate(
 		},
 		async selectSealed(request, signal) {
 			requireInteractive(sealedSelectionOperation);
+			// One evaluator-owned holdout needs no picker; the following confirmation
+			// still shows its size before anything runs.
+			if (request.options.length === 1) return { approved: true, actorId: approvedActor(), selectedIndex: 0 };
 			const choices = request.options.map(
 				(option, index) => `${index + 1}. ${option.label} · ${option.taskCount} tasks`,
 			);
