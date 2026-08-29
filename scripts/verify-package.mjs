@@ -70,11 +70,25 @@ try {
 	]) {
 		if (!packedPaths.has(required)) throw new Error(`packed Builder asset is missing: ${required}`);
 	}
+	// V1.8 S7 deleted the one-shot CLI Builder adapters, the Pi SDK executor, the
+	// approved-Spec corpus-draft generator, the Builder manifest, and the default
+	// builder profile. A stale dist/ or a re-added module must fail the gate.
+	const removedLegacyPaths = new Set([
+		"builders/default/AGENTS.md",
+		"builders/default/manifest.yaml",
+		"dist/application/corpus-draft.js",
+		"dist/builder.js",
+		"dist/builders/pi-executor.js",
+		"docs/evolution.jsonl",
+	]);
 	const forbiddenPackedPaths = [...packedPaths].filter((path) =>
 		path.includes("builder-workbench") ||
 		path.includes("workbench-tui") ||
 		path === "builders/companion" ||
 		path.startsWith("builders/companion/") ||
+		path === "builders/default" ||
+		path.startsWith("builders/default/") ||
+		removedLegacyPaths.has(path) ||
 		(!path.startsWith("node_modules/") &&
 			!path.startsWith("vendor/") &&
 			/(^|\/)(?:presets?|target-presets?)(?:[.\/-]|$)/i.test(path)) ||
@@ -82,7 +96,7 @@ try {
 	);
 	if (forbiddenPackedPaths.length > 0) {
 		throw new Error(
-			`packed artifact contains removed Studio/companion/Workbench-TUI files: ${forbiddenPackedPaths.slice(0, 20).join(", ")}`,
+			`packed artifact contains removed Studio/companion/Workbench-TUI/legacy-adapter files: ${forbiddenPackedPaths.slice(0, 20).join(", ")}`,
 		);
 	}
 	const tarball = join(packDir, filename);
@@ -589,7 +603,8 @@ const scriptedModel = createServer((request, response) => {
       return;
     }
     scriptedRequests += 1;
-    if (bytes > 1024 * 1024 || scriptedRequests > 16) {
+    // 1 source baseline + (1 dev + 15 sealed) tasks x 2 repetitions x 2 arms = 65.
+    if (bytes > 1024 * 1024 || scriptedRequests > 80) {
       response.writeHead(bytes > 1024 * 1024 ? 413 : 429, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: { message: "bounded package fixture limit exceeded" } }));
       return;
@@ -852,8 +867,8 @@ try {
     visibility: "sealed",
     // The sealed guardrail needs at least 15 tasks × 2 repetitions for a verdict.
     tasks: Array.from({ length: 15 }, (_, index) => ({
-      id: `package-holdout-${index + 1}`,
-      input: `${sealedInput} ${index + 1}`,
+      id: \`package-holdout-\${index + 1}\`,
+      input: \`\${sealedInput} \${index + 1}\`,
       graders: [{ type: "output_contains", text: "READY" }],
     })),
   });
@@ -911,7 +926,7 @@ try {
   ) {
     throw new Error("installed-package candidate promotion did not tag the exact reviewed commit");
   }
-  if (scriptedRequests < 3 || scriptedRequests > 16) {
+  if (scriptedRequests < 60 || scriptedRequests > 80) {
     throw new Error("scripted model request count was outside the bounded lifecycle expectation: " + scriptedRequests);
   }
 } finally {
