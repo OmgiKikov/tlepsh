@@ -16,6 +16,8 @@ import {
 import { redactTraceText } from "../trace.js";
 
 export const IMPROVEMENT_BRIEF_ALGORITHM_ID = "exact-eval-signals-v1" as const;
+/** Failure share (basis points) below which a mode is noise to stabilize, not a harness defect to fix. */
+export const PROPOSAL_REPRODUCTION_FLOOR_BPS = 2_500;
 
 const MAX_FAILURE_MODES = 30;
 const MAX_TASK_IDS = 100;
@@ -467,9 +469,16 @@ function finalizeMode(mode: ModeAccumulator, totalTasks: number): FailureMode {
 	const selectedEvidence = selectRepresentatives(failures, MAX_EVIDENCE);
 	const selectedCounterEvidence = selectRepresentatives(passes, MAX_COUNTER_EVIDENCE);
 	const words = modeWords(mode, scope);
+	// A mode is a proposal target when it reproduces often enough that a
+	// harness change can plausibly move it. Counter-evidence (passes of the same
+	// exact signature) is kept and shown as the reproduction rate; it no longer
+	// vetoes the mode, because on a noisy agent with repetitions almost every
+	// real weakness passes sometimes. Below the floor the honest advice is more
+	// repetitions or calibration, not a harness change.
+	const reproductionBps = occurrenceTotal === 0 ? 0 : Math.floor(failedOccurrences * 10_000 / occurrenceTotal);
 	const decision: FailureModeDecision = mode.signature.kind === "infrastructure-error"
 		? "repair-evidence-path"
-		: mode.signature.kind === "outcome-instability" || mode.legacy || passedOccurrences > 0
+		: mode.signature.kind === "outcome-instability" || mode.legacy || reproductionBps < PROPOSAL_REPRODUCTION_FLOOR_BPS
 			? "stabilize-and-rerun"
 			: "propose-harness-change";
 	return FailureModeSchema.parse({

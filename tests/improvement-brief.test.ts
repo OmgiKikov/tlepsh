@@ -237,7 +237,9 @@ describe("deterministic improvement brief", () => {
 			scope: "systemic",
 			severity: "major",
 			evidenceStrength: "medium",
-			decision: "stabilize-and-rerun",
+			// Two failures and two passes reproduce 50% of the time: a real weakness
+			// with counter-evidence retained, not noise to stabilize.
+			decision: "propose-harness-change",
 			impact: {
 				affectedTasks: 2,
 				totalTasks: 2,
@@ -585,36 +587,23 @@ describe("proposal basis selection", () => {
 		const stableHash = hashValue({ type: "output_contains", text: "stable" });
 		const mixedHash = hashValue({ type: "output_matches", pattern: "mixed" });
 		const value = fixture({
-			repetitions: 2,
+			repetitions: 5,
 			evidenceVisibility: "development",
-			runs: [
-				{
-					taskId: "task",
-					repetitionIndex: 0,
-					graders: [
-						exactGrader({ passed: false, specHash: stableHash }),
-						exactGrader({
-							passed: false,
-							specHash: mixedHash,
-							checkCode: "output-matches",
-							type: "output_matches",
-						}),
-					],
-				},
-				{
-					taskId: "task",
-					repetitionIndex: 1,
-					graders: [
-						exactGrader({ passed: false, specHash: stableHash }),
-						exactGrader({
-							passed: true,
-							specHash: mixedHash,
-							checkCode: "output-matches",
-							type: "output_matches",
-						}),
-					],
-				},
-			],
+			runs: Array.from({ length: 5 }, (_, repetitionIndex) => ({
+				taskId: "task",
+				repetitionIndex,
+				graders: [
+					exactGrader({ passed: false, specHash: stableHash }),
+					// The mixed check fails once in five runs (20%): below the
+					// reproduction floor, so the host decision stays stabilize-and-rerun.
+					exactGrader({
+						passed: repetitionIndex !== 0,
+						specHash: mixedHash,
+						checkCode: "output-matches",
+						type: "output_matches",
+					}),
+				],
+			})),
 		});
 		const brief = compileImprovementBrief(value.runsRoot, value.diagnosis);
 		expect(brief.proposalEligible).toBe(true);
