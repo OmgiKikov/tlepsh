@@ -14,6 +14,15 @@ describe("one Builder command list", () => {
 		expect(slashNames(section)).toEqual([...AHDE_BUILDER_COMMAND_NAMES, "login", "model"]);
 	});
 
+	it("keeps the in-Builder /help reference equal to the registered commands", () => {
+		const source = readFileSync(new URL("../src/builder/commands.ts", import.meta.url), "utf8");
+		const reference = source.split("Commands:")[1]?.split("Every consequential step")[0] ?? "";
+		expect(reference).not.toBe("");
+		for (const name of AHDE_BUILDER_COMMAND_NAMES) expect(reference).toContain(`/${name}`);
+		expect(reference).toContain("/login");
+		expect(reference).toContain("/model");
+	});
+
 	it("keeps the README slash block equal to the registered commands", () => {
 		const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
 		const block = readme.split("The same loop has compact Pi commands:")[1]?.split("```")[1] ?? "";
