@@ -170,6 +170,45 @@ function validateScope(mode: ExperimentMode, files: string[]): void {
 	}
 }
 
+/**
+ * Fold a case input to its shape: lowercase, digits removed, every run of
+ * non-letters collapsed to one space. Two cases that differ only in a
+ * contract number, a date, or punctuation fold to the same key.
+ */
+function normalizedCaseKey(input: string): string {
+	return input
+		.toLowerCase()
+		.replace(/[0-9]+/gu, "")
+		.replace(/[^\p{L}]+/gu, " ")
+		.trim();
+}
+
+/**
+ * A sealed holdout only measures generalization while it stays disjoint from
+ * the set the harness was tuned on. Near-twins ("проверь договор №23" vs
+ * "проверь договор №42") leak just as badly as exact copies, so the check
+ * compares normalized shapes.
+ *
+ * The error reports counts only: sealed inputs and ids never reach a caller,
+ * a log line, or a Builder-visible message.
+ */
+export function assertHoldoutDisjoint(
+	developmentTasks: readonly { input: string }[],
+	sealedTasks: readonly { input: string }[],
+): void {
+	const development = new Set(
+		developmentTasks.map((task) => normalizedCaseKey(task.input)).filter((key) => key.length > 0),
+	);
+	const collisions = sealedTasks
+		.map((task) => normalizedCaseKey(task.input))
+		.filter((key) => key.length > 0 && development.has(key)).length;
+	if (collisions > 0) {
+		throw new Error(
+			`sealed holdout shares ${collisions} case(s) with the development set after normalization; refresh the holdout`,
+		);
+	}
+}
+
 function effectiveProvenance(target: ResolvedTarget): ProvenanceAxes {
 	const scratch = mkdtempSync(join(tmpdir(), "ahde-execution-probe-"));
 	try {
@@ -533,6 +572,9 @@ export async function runCandidateExperiment(
 			}
 			if (holdoutCandidateTarget) {
 				assertResolvedTarget(holdoutCandidateTarget, worktrees.candidate, "holdout candidate");
+			}
+			if (holdoutBaselineTarget) {
+				assertHoldoutDisjoint(baselineTarget.tasks, holdoutBaselineTarget.tasks);
 			}
 
 			const origin: CandidateOrigin = options.origin ?? {

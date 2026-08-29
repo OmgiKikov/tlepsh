@@ -106,6 +106,30 @@ export interface WorkbenchGateProjection {
 	reasons: string[];
 }
 
+/**
+ * Human-facing projection of one A/A calibration run: how much the Target
+ * moves against itself on the reviewed development basket. It is measurement,
+ * never evidence for promotion.
+ */
+export interface WorkbenchCalibrationProjection {
+	candidateId: string;
+	/** Exact Target revision both arms ran; calibration expires with it. */
+	targetSha: string;
+	taskCount: number;
+	repetitions: number;
+	/** Baseline arm pass rate; the A/A operating point p. */
+	aaPassRate: number;
+	delta: number;
+	confidence95: { low: number; high: number };
+	/** Share of cases that moved at all between two identical arms. */
+	flipRate: number;
+	/** Smallest k ∈ 1..5 whose expected noise band is at most 10 points. */
+	recommendedRepetitions: number;
+	/** Development verdict; `inconclusive` is the healthy A/A result. */
+	verdict: GateVerdict;
+	at: string;
+}
+
 export interface WorkbenchCandidateSummary {
 	candidateId: string;
 	status: CandidateStatus;
@@ -262,6 +286,8 @@ export interface WorkbenchView {
 	actions: string[];
 	blockers: string[];
 	warnings: string[];
+	/** Newest A/A calibration of the exact active Target revision, if any. */
+	calibration: WorkbenchCalibrationProjection | null;
 	detail?: WorkbenchDetail;
 	counts: {
 		specDrafts: number;
@@ -272,6 +298,7 @@ export interface WorkbenchView {
 		developmentEvals: number;
 		openProposals: number;
 		candidates: number;
+		calibrations: number;
 	};
 }
 
@@ -385,6 +412,11 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 	z.strictObject({
 		kind: z.literal("run-eval"),
 		developmentCorpusId: ArtifactIdSchema.optional(),
+		repetitions: z.number().int().min(1).max(10),
+		reason: NonBlankSchema.max(4_000),
+	}),
+	z.strictObject({
+		kind: z.literal("calibrate"),
 		repetitions: z.number().int().min(1).max(10),
 		reason: NonBlankSchema.max(4_000),
 	}),
@@ -513,6 +545,7 @@ export interface WorkbenchDecisionResultMap {
 		lineageHash: string;
 	};
 	"run-eval": WorkbenchRunEvalResult;
+	calibrate: { candidateId: string; calibration: WorkbenchCalibrationProjection };
 	"run-current":
 		| ({ resolvedAs: "run-eval" } & WorkbenchRunEvalResult)
 		| ({ resolvedAs: "verify-candidate" } & WorkbenchVerifyCandidateResult);

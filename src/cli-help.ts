@@ -13,6 +13,7 @@ Start:
 Inspect and run:
   ahde validate --target <dir>                 local readiness check; no model call
   ahde run --target <dir> [options]            run development evidence
+  ahde calibrate --target <dir>                measure run-to-run noise (A/A)
   ahde evidence [--port N]                     open the read-only trace explorer
   ahde list [--target <id>]                    list eval runs
 
@@ -20,7 +21,7 @@ Inside Builder Pi:
   /help  /doctor  /status  /run  /traces  /review  /apply  /discard  /target
 
 Use \`ahde <command> --help\` for focused help. Advanced automation commands:
-  corpus  failures  compare  diagnose  report  builder  candidate  review  promote  reject
+  corpus  failures  compare  diagnose  report  builder  candidate  calibrate  review  promote  reject
 
 Environment:
   AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)
@@ -84,6 +85,11 @@ Build a static, bounded HTML evidence report for one development EvalRun.`,
 
 Run an exact matched baseline/candidate experiment. Prefer Builder Pi: its host
 gate selects sealed evidence without exposing the holdout identity to the model.`,
+	calibrate: `Usage: ahde calibrate --target <dir> [--repetitions N] [--project <id>] [--corpus <development-id>]
+
+Run the current revision against itself (A/A) to measure run-to-run noise:
+how large a difference has to be before it means anything. The calibration
+record is ordinary candidate evidence in A/A mode and is never promotable.`,
 	review: `Usage: ahde review --candidate <id> --recommend promote|reject --reason <text> [--actor <id>]
 
 Record a human review over the exact evaluated Candidate evidence.`,

@@ -24,6 +24,7 @@ export const CLI_COMMANDS = [
 	"report",
 	"builder",
 	"candidate",
+	"calibrate",
 	"review",
 	"promote",
 	"reject",
@@ -98,6 +99,11 @@ const COMMAND_SPECS = {
 			"diagnosis",
 			"actor",
 		],
+		requiredFlags: ["target"],
+		positionals: 0,
+	},
+	calibrate: {
+		flags: ["target", "repetitions", "project", "corpus"],
 		requiredFlags: ["target"],
 		positionals: 0,
 	},
@@ -316,6 +322,9 @@ function validateCommandRelationships(command: CliCommand, flags: Readonly<Recor
 		if (flags.corpus !== undefined && flags.project === undefined) {
 			cliError("missing required flag --project for run with --corpus");
 		}
+	}
+	if (command === "calibrate" && flags.corpus !== undefined && flags.project === undefined) {
+		cliError("missing required flag --project for calibrate with --corpus");
 	}
 	if (command !== "candidate") return;
 	if (flags.dataset !== undefined && flags["development-corpus"] !== undefined) {

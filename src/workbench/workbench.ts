@@ -35,7 +35,10 @@ import {
 	describeBuilderProposalDiscard,
 	discardBuilderProposal,
 } from "../application/builder-discard.js";
-import { CANDIDATE_SCOPE_POLICY } from "../application/candidate-experiment.js";
+import {
+	CANDIDATE_SCOPE_POLICY,
+	runCandidateExperiment,
+} from "../application/candidate-experiment.js";
 import {
 	decideCandidateRejection,
 	promoteReviewedCandidate,
@@ -117,6 +120,7 @@ import {
 	requireSpecDraft,
 	resolveOne,
 } from "./resolution.js";
+import { calibrationProjection } from "./calibration.js";
 import { assertWorkbenchDecisionStage } from "./transition-policy.js";
 import {
 	WorkbenchDecisionInputSchema,
@@ -174,6 +178,8 @@ export interface AhdeWorkbenchDependencies {
 	compileHarnessProposal: (input: CompileHarnessAuthoringInput) => CandidateProposal;
 	recordProposal: typeof recordBuilderAuthoredProposal;
 	runSuite: typeof runSuite;
+	/** A/A calibration of one exact revision; never a promotion path. */
+	runCalibration: typeof runCandidateExperiment;
 	diagnoseEval: typeof diagnoseEvalRun;
 	compileImprovementBrief: (runsRoot: string, diagnosis: ReturnType<typeof diagnoseEvalRun>) => ImprovementBrief;
 	inspectTargetAuthoringContext: typeof inspectTargetAuthoringContext;
@@ -221,6 +227,7 @@ const DEFAULT_DEPENDENCIES: AhdeWorkbenchDependencies = {
 	compileHarnessProposal: compileHarnessAuthoringProposal,
 	recordProposal: recordBuilderAuthoredProposal,
 	runSuite,
+	runCalibration: runCandidateExperiment,
 	diagnoseEval: diagnoseEvalRun,
 	compileImprovementBrief,
 	inspectTargetAuthoringContext,
@@ -1061,6 +1068,79 @@ export class AhdeWorkbench {
 			const link = boundedEvidenceLink(await this.dependencies.evidenceLink(record));
 			this.select("eval-run", record.evalRunId);
 			return { kind: input.kind, message: improvementBrief.headline, result: { evaluation: { evalRunId: record.evalRunId, summary: record.summary, repetitions: record.repetitions }, diagnosis: diagnosisSummary(diagnosis), improvementBrief: conversationalImprovementBrief(improvementBrief), evidence: link ? { available: true, ...link } : { available: false } }, view: await this.view() };
+		}
+
+		if (input.kind === "calibrate") {
+			if (!inventory.target) throw new Error("Target is not ready");
+			const approved = requireApprovedSpec(inventory);
+			const corpus = requireDevelopmentCorpus(inventory, undefined, approved.id);
+			const build = (): {
+				subject: Record<string, unknown>;
+				targetGitSha: string;
+				approvedSpecId: string;
+				developmentCorpus: CorpusRef;
+			} => {
+				const current = this.decisionInventory(input.kind);
+				const currentApproved = requireApprovedSpec(current, approved.id);
+				const currentCorpus = requireDevelopmentCorpus(current, corpus.id, currentApproved.id);
+				const target = loadTarget(this.projectDir);
+				const receipt = loadDevelopmentCorpusPublicationReceipt(this.stateRoot, this.projectId, currentCorpus.id);
+				const lineage = current.developmentLineage.get(currentCorpus.id);
+				const loaded = loadCorpus({ stateRoot: this.stateRoot, projectId: this.projectId, corpusId: currentCorpus.id });
+				if (
+					!lineage ||
+					lineage.publication.approvedSpecId !== currentApproved.id ||
+					loaded.metadata.visibility !== "development" ||
+					loaded.metadata.hash !== receipt.corpus.hash
+				) throw new Error("development corpus does not match its reviewed Spec lineage");
+				return {
+					subject: {
+						operation: "calibrate-noise",
+						target: { id: target.manifest.id, gitSha: target.gitSha },
+						developmentCorpus: {
+							id: loaded.metadata.id,
+							hash: loaded.metadata.hash,
+							taskCount: loaded.metadata.taskCount,
+						},
+						repetitions: input.repetitions,
+						executions: 2 * loaded.metadata.taskCount * input.repetitions,
+					},
+					targetGitSha: target.gitSha,
+					approvedSpecId: currentApproved.id,
+					developmentCorpus: { stateRoot: this.stateRoot, projectId: this.projectId, corpusId: currentCorpus.id },
+				};
+			};
+			const before = build();
+			const actor = await this.confirm(input, gate, "Calibrate run-to-run noise", before.subject, options.signal);
+			const after = build();
+			if (!exactSame(before.subject, after.subject)) throw new WorkbenchStaleDecisionError(input.kind);
+			// Both arms are the same exact revision: the experiment measures the
+			// harness against itself and can never become promotion evidence.
+			const result = await this.dependencies.runCalibration({
+				repositoryDir: this.projectDir,
+				runsRoot: this.runsRoot,
+				baselineRef: after.targetGitSha,
+				candidateRef: after.targetGitSha,
+				mode: "aa-calibration",
+				repetitions: input.repetitions,
+				projectId: this.projectId,
+				specId: after.approvedSpecId,
+				origin: { kind: "manual", reason: "A/A calibration" },
+				developmentCorpus: after.developmentCorpus,
+				actorId: actor,
+				...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
+				...(options.signal ? { signal: options.signal } : {}),
+			});
+			abortIfRequested(options.signal);
+			const calibration = calibrationProjection(result.record);
+			if (!calibration) throw new Error("calibration produced no development verdict; nothing was measured");
+			return {
+				kind: input.kind,
+				message: `Noise measured on this revision: A/A ${calibration.verdict}; ` +
+					`${calibration.recommendedRepetitions} repetition${calibration.recommendedRepetitions === 1 ? "" : "s"} recommended.`,
+				result: { candidateId: result.record.candidateId, calibration },
+				view: await this.view(),
+			};
 		}
 
 		if (input.kind === "apply-proposal") {

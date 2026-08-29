@@ -281,7 +281,7 @@ export function createBuilderWorkbenchTools(
 				"Request one human-gated workflow transition. Call this yourself when the operator asks for the step in plain words (run, approve, publish, apply, promote, adopt, next): the host shows the exact subject and asks the operator to confirm in its own dialog before anything happens — never tell the operator to type a slash command instead. Every kind requires a non-blank `reason`.",
 				"Kinds by stage: target-setup → { kind: \"scaffold-target\" } then { kind: \"configure-target\", targetId (kebab-case), model: { provider, modelId, thinkingLevel?, timeoutMs?, params? } };",
 				"spec-review → { kind: \"approve-spec\", draftSpecId? }; corpus-review → { kind: \"publish-corpus\", draftId?, name? };",
-				"ready-to-evaluate / improvement-authoring → { kind: \"run-current\", repetitions: 1..10 } (or run-eval); proposal-review → { kind: \"apply-proposal\", branch } | { kind: \"discard-proposal\" };",
+				"ready-to-evaluate / improvement-authoring → { kind: \"run-current\", repetitions (3 recommended; sealed verdicts need ≥ 2) } (or run-eval), and { kind: \"calibrate\", repetitions } measures noise once per Target revision; proposal-review → { kind: \"apply-proposal\", branch } | { kind: \"discard-proposal\" };",
 				"candidate-verification → { kind: \"run-current\", repetitions } (verify) | { kind: \"abandon-candidate\" } for an interrupted attempt; candidate-review → { kind: \"review-candidate\", recommendation: \"promote\" | \"reject\" };",
 				"release-decision → { kind: \"promote-candidate\", version: \"x.y.z\" } | { kind: \"reject-candidate\" }; candidate-adoption → { kind: \"adopt-candidate\" }; complete → { kind: \"continue-cycle\" }.",
 				"Actor identity and sealed-holdout selection stay host-owned; never add approved/confirmed/actor fields.",
@@ -301,6 +301,7 @@ export function createBuilderWorkbenchTools(
 					: null;
 				const showsRunProgress = params.kind === "run-current" ||
 					params.kind === "run-eval" ||
+					params.kind === "calibrate" ||
 					params.kind === "verify-candidate";
 				const observation = showsRunProgress
 					? await beginBuilderRunObservation(ctx.ui, options.beginLiveTrace)
