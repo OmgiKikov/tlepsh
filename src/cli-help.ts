@@ -44,7 +44,8 @@ ${builderCommandLines()}
   plus the Pi built-ins /login and /model for the Builder's own model
 
 Use \`ahde <command> --help\` for focused help. Advanced automation commands:
-  corpus  failures  compare  diagnose  report  candidate  calibrate  review  promote  reject
+  corpus  failures  compare  diagnose  regrade  report  candidate  calibrate
+  review  promote  reject
 
 Environment:
   AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)
@@ -119,6 +120,23 @@ Compare two runs only when every execution/grading axis except Harness revision 
 	diagnose: `Usage: ahde diagnose <evalRunId>
 
 Derive deterministic failure modes and proposal eligibility from a development EvalRun.`,
+	regrade: `Usage: ahde regrade <evalRunId> --target <dir> [--graders <path>] [--label baseline|solo|regrade]
+                   [--jobs N] [--project <id>]
+
+Re-score the recorded traces of one eval run with graders, without calling the
+Target model again: each session.jsonl is hash-verified, copied into a new run,
+and graded through the same code path a live evaluation uses.
+
+Each case keeps the graders it carried when its trace was recorded — the dataset
+must hash-match the source eval — while the suite defaults that fill in for cases
+declaring none come from --graders, or from the Target's current
+evals/graders.yaml. The judge model comes from the current manifest, so a regrade
+still re-decides judge graders when only the judge changed.
+
+The result is an ordinary EvalRun with a new suiteHash computed from the graders
+actually used, so two runs regraded with the same graders compare to each other
+while a regrade whose graders changed is refused against its own source. Sealed
+evidence stays sealed and prints counts only.`,
 	report: `Usage: ahde report <evalRunId> [--out <path>]
 
 Build a static, bounded HTML evidence report for one development EvalRun.`,

@@ -3,8 +3,20 @@ import { readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describeEnvVar, loadDotEnv, type EnvReport } from "./env.js";
 import { loadTarget, scaffoldTarget } from "./manifest.js";
-import { listEvalRunIndexesLenient, loadEvalRun, runSuite } from "./eval.js";
+import {
+	listEvalRunIndexesLenient,
+	loadEvalRun,
+	readEvalRunIndex,
+	renderEvalRunListLine,
+	runSuite,
+} from "./eval.js";
 import { compareEvalRuns, renderCompareMarkdown } from "./compare.js";
+import {
+	isRegradeLabel,
+	readGraderDefaults,
+	regradeEvalRun,
+	renderRegradeSummary,
+} from "./regrade.js";
 import { compileFailureBundle } from "./bundle.js";
 import { runCandidateExperiment } from "./application/candidate-experiment.js";
 import { runAppliedBuilderCandidate } from "./application/builder-candidate.js";
@@ -30,6 +42,7 @@ import { loadBuilderProposalRun } from "./application/builder-proposal.js";
 import { readTryToolInput, tryTool } from "./application/tool-workshop.js";
 import {
 	resolveDevelopmentTargetForEval,
+	resolveScoredCasesForEval,
 	targetWithDevelopmentCorpus,
 } from "./application/corpus-target.js";
 import { listSpecSnapshots, loadSpecSnapshot } from "./spec.js";
@@ -448,11 +461,7 @@ async function main(): Promise<void> {
 				break;
 			}
 			for (const run of runs) {
-				console.log(
-					`${run.evalRunId}  ${run.label.padEnd(9)} ${run.target.id.padEnd(16)} ` +
-						`${(run.summary.allPassRate * 100).toFixed(0).padStart(3)}% ` +
-						`(${run.summary.pass}/${run.summary.total})  ${run.startedAt}`,
-				);
+				console.log(renderEvalRunListLine(run));
 			}
 			for (const entry of listed.invalid) {
 				console.log(`${entry.evalRunId}  legacy · not comparable with the current evidence schema`);
@@ -681,6 +690,42 @@ async function main(): Promise<void> {
 			}
 			console.log(`evidence: ${resolve(runsRoot(), evalRunId, "diagnosis.json")}`);
 			if (diagnosis.status === "inconclusive") process.exitCode = 2;
+			break;
+		}
+		case "regrade": {
+			const evalRunId = positional(0);
+			if (!evalRunId) {
+				console.error(
+					"usage: ahde regrade <evalRunId> --target <dir> [--graders <path>] [--label <label>] [--jobs N] [--project <id>]\n",
+				);
+				console.log(USAGE);
+				process.exit(1);
+			}
+			const requestedLabel = arg("label");
+			if (requestedLabel !== undefined && !isRegradeLabel(requestedLabel)) {
+				throw new Error(`--label must be baseline, solo, or regrade, got ${requestedLabel}`);
+			}
+			const gradersPath = arg("graders");
+			const target = loadTarget(resolve(requireArg("target")));
+			const sourceIndex = readEvalRunIndex(runsRoot(), evalRunId);
+			// The cases the recorded traces answered, wherever they live: the
+			// manifest dataset, or the published corpus that produced them.
+			const scoredTarget = resolveScoredCasesForEval({
+				target,
+				evalRun: sourceIndex,
+				stateRoot: stateRoot(),
+				projectId: arg("project") ?? target.manifest.id,
+			}).target;
+			const result = await regradeEvalRun({
+				runsRoot: runsRoot(),
+				evalRunId,
+				target: scoredTarget,
+				...(gradersPath ? { graderDefaults: readGraderDefaults(gradersPath) } : {}),
+				...(requestedLabel ? { label: requestedLabel } : {}),
+				...(arg("jobs") ? { jobs: Number(arg("jobs")) } : {}),
+			});
+			for (const line of renderRegradeSummary(result)) console.log(line);
+			if (result.record.summary.error > 0) process.exitCode = 2;
 			break;
 		}
 		case "report": {

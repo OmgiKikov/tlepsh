@@ -178,7 +178,12 @@ export const RunRecordSchema = z
 		runId: ArtifactIdSchema,
 		taskId: NonEmptyStringSchema,
 		repetitionIndex: z.number().int().nonnegative(),
-		label: z.enum(["baseline", "candidate", "solo"]),
+		/**
+		 * `regrade` is the one label no model call can produce: it marks a record
+		 * that re-scores an already-recorded trace, so it can never be mistaken for
+		 * a baseline, a candidate arm, or a reusable baseline.
+		 */
+		label: z.enum(["baseline", "candidate", "solo", "regrade"]),
 		status: RunStatusSchema,
 		error: z.string().nullable(),
 		startedAt: NonEmptyStringSchema,
@@ -217,6 +222,14 @@ export const RunRecordSchema = z
 		parent: z
 			.strictObject({ evalRunId: NonEmptyStringSchema, candidateOf: GitShaSchema.nullable() })
 			.nullable(),
+		/**
+		 * Set only by `ahde regrade`: the exact recorded execution whose copied
+		 * trace this record re-scores. Absent — and canonically dropped — on every
+		 * run that actually called a model, so existing evidence is unchanged.
+		 */
+		derivedFrom: z
+			.strictObject({ evalRunId: ArtifactIdSchema, runId: ArtifactIdSchema })
+			.optional(),
 	})
 	.superRefine((record, context) => {
 		if (record.status === "running") {
@@ -231,6 +244,12 @@ export const RunRecordSchema = z
 		}
 		if (record.status === "error" && !record.error) {
 			context.addIssue({ code: "custom", path: ["error"], message: "error run must explain the error" });
+		}
+		if (record.label === "regrade" && record.derivedFrom === undefined) {
+			context.addIssue({ code: "custom", path: ["derivedFrom"], message: "a regrade run must name the execution it re-scored" });
+		}
+		if (record.derivedFrom?.runId === record.runId) {
+			context.addIssue({ code: "custom", path: ["derivedFrom", "runId"], message: "a run cannot be derived from itself" });
 		}
 		if (record.evalResults) {
 			const expectedOutcome = record.evalResults.graders.every((grader) => grader.passed) ? "pass" : "fail";

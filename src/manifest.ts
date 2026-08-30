@@ -169,6 +169,48 @@ export interface ResolvedTask extends Task {
 	effectiveGraders: GraderSpec[];
 }
 
+/**
+ * Fill each case's effective graders and validate the resulting scoring
+ * surface. A case's own graders always win; the suite defaults only fill in for
+ * a case that declares none.
+ *
+ * `loadTarget` and `ahde regrade` both come through here, so a re-graded suite
+ * is admitted by exactly the rules a freshly run one is.
+ */
+export function resolveTaskGraders(
+	tasks: readonly Task[],
+	defaults: readonly GraderSpec[],
+	judgeConfigured: boolean,
+): ResolvedTask[] {
+	const resolved: ResolvedTask[] = tasks.map((task) => {
+		const graders: GraderSpec[] = task.graders ?? [...defaults];
+		if (graders.length === 0) {
+			throw new Error(`task ${task.id}: no graders (no per-task graders and suite defaults are empty)`);
+		}
+		return { ...task, effectiveGraders: graders };
+	});
+	for (const task of resolved) {
+		for (const grader of task.effectiveGraders) {
+			if (grader.type === "output_matches") {
+				try {
+					new RegExp(grader.pattern);
+				} catch (error) {
+					throw new Error(`task ${task.id}: invalid output_matches regex (${(error as Error).message})`);
+				}
+			}
+			if (graderNeedsExpected(grader) && !hasReferenceAnswer(task)) {
+				throw new Error(
+					`task ${task.id}: ${grader.type} grader compares the answer with the case's reference answer, but the case has no "expected"`,
+				);
+			}
+		}
+	}
+	if (resolved.some((t) => t.effectiveGraders.some((g) => g.type === "judge")) && !judgeConfigured) {
+		throw new Error("dataset uses judge graders but evalSuite.judge model is not configured");
+	}
+	return resolved;
+}
+
 // ---------- Target manifest ----------
 
 export const ThinkingLevel = z.enum([
@@ -377,6 +419,8 @@ export interface ResolvedTarget {
 	data: ResolvedTargetDataDirectory[];
 	/** Parsed dataset tasks in file order. */
 	tasks: ResolvedTask[];
+	/** Suite grader defaults, exactly as the manifest's graders file declares them. */
+	graderDefaults: GraderSpec[];
 	/** Hash of the raw parsed dataset (task ids, inputs, per-task graders). */
 	datasetHash: string;
 	/** Hash of the effective scoring config: dataset + suite grader defaults. */
@@ -530,6 +574,21 @@ function datasetIdentity(task: Task): Record<string, unknown> {
 	};
 }
 
+/**
+ * Identity of the effective scoring configuration: the exact cases, the suite
+ * grader defaults that fill in for cases without their own, and the judge model.
+ *
+ * `loadTarget` and `ahde regrade` both compute it here, so the suite hash of a
+ * re-graded eval is the same kind of fact as the suite hash of a run.
+ */
+export function suiteHashOf(
+	tasks: readonly Task[],
+	defaults: readonly GraderSpec[],
+	judge: TargetManifest["evalSuite"]["judge"] | null,
+): string {
+	return hashValue({ dataset: tasks.map(datasetIdentity), defaults, judge });
+}
+
 const MAX_DATA_ENTRY_SAMPLE = 32;
 
 /**
@@ -660,40 +719,10 @@ export function loadTarget(dir: string, override?: { dataset?: string }): Resolv
 	const dataBudget = { files: 0, bytes: 0, maxBytes: dataMaxBytes() };
 	const data = manifest.data.map((declaration) => measureDataDirectory(dir, declaration, dataBudget));
 
-	const resolved: ResolvedTask[] = tasks.map((task) => {
-		const graders = task.graders ?? defaults;
-		if (graders.length === 0) {
-			throw new Error(`task ${task.id}: no graders (no per-task graders and suite defaults are empty)`);
-		}
-		return { ...task, effectiveGraders: graders };
-	});
-	for (const task of resolved) {
-		for (const grader of task.effectiveGraders) {
-			if (grader.type === "output_matches") {
-				try {
-					new RegExp(grader.pattern);
-				} catch (error) {
-					throw new Error(`task ${task.id}: invalid output_matches regex (${(error as Error).message})`);
-				}
-			}
-			if (graderNeedsExpected(grader) && !hasReferenceAnswer(task)) {
-				throw new Error(
-					`task ${task.id}: ${grader.type} grader compares the answer with the case's reference answer, but the case has no "expected"`,
-				);
-			}
-		}
-	}
-
-	if (resolved.some((t) => t.effectiveGraders.some((g) => g.type === "judge")) && !manifest.evalSuite.judge) {
-		throw new Error("dataset uses judge graders but evalSuite.judge model is not configured");
-	}
+	const resolved = resolveTaskGraders(tasks, defaults, manifest.evalSuite.judge !== undefined);
 
 	const datasetHash = hashValue(tasks.map(datasetIdentity));
-	const suiteHash = hashValue({
-		dataset: tasks.map(datasetIdentity),
-		defaults,
-		judge: manifest.evalSuite.judge ?? null,
-	});
+	const suiteHash = suiteHashOf(tasks, defaults, manifest.evalSuite.judge ?? null);
 
 	return {
 		dir: resolve(dir),
@@ -705,6 +734,7 @@ export function loadTarget(dir: string, override?: { dataset?: string }): Resolv
 		toolsetHash: targetTools.toolsetHash,
 		data,
 		tasks: resolved,
+		graderDefaults: defaults,
 		datasetHash,
 		suiteHash,
 	};

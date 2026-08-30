@@ -368,6 +368,9 @@ ahde diagnose <eval-run-id>
 ahde compare <baseline-eval-id> <candidate-eval-id>
 ahde report <eval-run-id>
 
+# re-score recorded traces with graders — no new model calls
+ahde regrade <eval-run-id> --target . --graders ./strict-graders.yaml
+
 # 👍/👎 marks collected while talking to the Target
 ahde feedback list --target .
 ahde feedback clear --target .
@@ -394,6 +397,17 @@ ahde review --candidate <candidate-id> --recommend promote \
 ahde promote --target . --candidate <candidate-id> --to 0.2.0 \
   --reason "Ship the exact reviewed revision"
 ```
+
+`ahde regrade` re-scores the recorded traces of an existing eval run and never
+calls the Target model again: each case keeps the graders it carried when its
+trace was recorded — the dataset must hash-match the source eval — while the
+suite defaults that fill in for cases declaring none come from `--graders` or
+from the Target's current `evals/graders.yaml`, and the judge model comes from
+the current manifest. The result is an ordinary eval run whose `suiteHash` is
+recomputed from the graders actually used, so regrading a baseline and a
+candidate with the same graders makes them comparable to each other while a
+regrade whose graders changed is refused against its own source; sealed evidence
+stays sealed and prints counts only.
 
 Corpus drafts and proposals are authored in Builder Pi; the commands above only
 publish, evaluate, and decide over the artifacts it produced. The typed proposal

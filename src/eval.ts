@@ -700,9 +700,17 @@ export const EvalRunRecordSchema = z.strictObject({
 		/** Exact shared model-visible source snapshot. Legacy indexes may omit it. */
 		workspaceHash: HashSchema.optional(),
 	}),
-	label: z.enum(["baseline", "candidate", "solo"]),
+	/**
+	 * `regrade` marks an eval that re-scored recorded traces instead of calling
+	 * the Target model. It is deliberately outside every label a run can be
+	 * launched with, so a regrade is never reused as a baseline and never stands
+	 * in for a candidate arm.
+	 */
+	label: z.enum(["baseline", "candidate", "solo", "regrade"]),
 	/** For candidate runs: the baseline eval run it was compared against. */
 	baselineEvalRunId: ArtifactIdSchema.nullable(),
+	/** Set only by `ahde regrade`: the eval run whose recorded traces were re-scored. */
+	regradeOf: ArtifactIdSchema.optional(),
 	provenance: ProvenanceAxesSchema,
 	provenanceKey: HashSchema,
 	suiteId: z.string().min(1),
@@ -747,6 +755,12 @@ export const EvalRunRecordSchema = z.strictObject({
 	}
 	if (record.label !== "candidate" && record.baselineEvalRunId !== null) {
 		context.addIssue({ code: "custom", path: ["baselineEvalRunId"], message: `${record.label} eval cannot reference a baseline eval` });
+	}
+	if (record.label === "regrade" && record.regradeOf === undefined) {
+		context.addIssue({ code: "custom", path: ["regradeOf"], message: "a regrade eval must name the eval run it re-scored" });
+	}
+	if (record.regradeOf === record.evalRunId) {
+		context.addIssue({ code: "custom", path: ["regradeOf"], message: "an eval run cannot be a regrade of itself" });
 	}
 	if (record.runArtifacts) {
 		const artifactIds = record.runArtifacts.map((artifact) => artifact.runId);
@@ -845,21 +859,30 @@ interface CompletedRun {
 	outcome: "pass" | "fail" | "error";
 }
 
+export interface GradedRunOutcome extends CompletedRun {
+	/** Null exactly when grading itself failed and the run became an error. */
+	graded: GradedRun | null;
+}
+
 /**
- * Grade one completed execution and write its final run.json exactly once.
- * A grading failure is infrastructure, not a verdict: the run becomes an error
- * with its cause, and the same single write persists it.
+ * Grade one recorded execution against a task and write its final run.json
+ * exactly once. A grading failure is infrastructure, not a verdict: the run
+ * becomes an error with its cause, and the same single write persists it.
+ *
+ * This is the only place a RunRecord acquires an outcome. `runSuite` calls it
+ * for an execution it just performed and `ahde regrade` calls it for a trace it
+ * copied, so both paths score evidence through identical code.
  */
-async function gradeAndFinalize(
-	target: ResolvedTarget,
+export async function gradeRecordedRun(
 	task: ResolvedTask,
 	record: RunRecord,
-	options: RunSuiteOptions,
-	eventRun: RunEventIdentity,
-): Promise<CompletedRun> {
+	runsRoot: string,
+	judge?: TargetManifest["model"],
+	signal?: AbortSignal,
+): Promise<GradedRunOutcome> {
 	let graded: GradedRun | null = null;
 	try {
-		graded = await gradeRun(task, record, options.runsRoot, target.manifest.evalSuite.judge, options.signal);
+		graded = await gradeRun(task, record, runsRoot, judge, signal);
 	} catch (gradeError) {
 		record.status = "error";
 		record.error = `evaluation infrastructure: ${gradeError instanceof Error ? gradeError.message : String(gradeError)}`;
@@ -873,19 +896,82 @@ async function gradeAndFinalize(
 		if (graded.judge) record.metrics = { ...record.metrics, judge: graded.judge };
 	}
 	writeJsonArtifact(
-		resolveContainedArtifactPath(options.runsRoot, ArtifactIdSchema.parse(record.runId), "run.json"),
+		resolveContainedArtifactPath(runsRoot, ArtifactIdSchema.parse(record.runId), "run.json"),
 		RunRecordSchema,
 		record,
 	);
-	const outcome = record.evalResults?.outcome ?? "error";
+	return { record, outcome: record.evalResults?.outcome ?? "error", graded };
+}
+
+/** Grade a just-finished execution and announce its verdict on the event seam. */
+async function gradeAndFinalize(
+	target: ResolvedTarget,
+	task: ResolvedTask,
+	record: RunRecord,
+	options: RunSuiteOptions,
+	eventRun: RunEventIdentity,
+): Promise<CompletedRun> {
+	const finalized = await gradeRecordedRun(
+		task,
+		record,
+		options.runsRoot,
+		target.manifest.evalSuite.judge,
+		options.signal,
+	);
 	emitRunGraded(
 		options.onRunEvent,
 		eventRun,
-		outcome,
-		graded?.graders ?? [],
+		finalized.outcome,
+		finalized.graded?.graders ?? [],
 		task.effectiveGraders.length,
 	);
-	return { record, outcome };
+	return { record: finalized.record, outcome: finalized.outcome };
+}
+
+/**
+ * Bounded worker pool over a fixed design. Each worker takes the next unclaimed
+ * position and lands its result in that position's slot, so the returned array
+ * is always in design order regardless of completion order. The first failure
+ * stops the pool from claiming more work — a broken evaluation must not keep
+ * spending tokens — but never cancels what is already running.
+ */
+export async function runBoundedPool<TItem, TResult>(
+	items: readonly TItem[],
+	jobs: number,
+	run: (item: TItem, index: number) => Promise<TResult>,
+): Promise<TResult[]> {
+	if (!Number.isInteger(jobs) || jobs < 1) {
+		throw new Error(`jobs must be a positive integer, got ${jobs}`);
+	}
+	const slots: (TResult | undefined)[] = new Array<TResult | undefined>(items.length);
+	const claimed: boolean[] = new Array<boolean>(items.length).fill(false);
+	let next = 0;
+	let firstFailure: { reason: unknown } | undefined;
+	const worker = async (): Promise<void> => {
+		for (;;) {
+			if (firstFailure) return;
+			const index = next;
+			next += 1;
+			if (index >= items.length) return;
+			try {
+				slots[index] = await run(items[index]!, index);
+				claimed[index] = true;
+			} catch (error) {
+				firstFailure ??= { reason: error };
+				throw error;
+			}
+		}
+	};
+	const settled = await Promise.allSettled(
+		Array.from({ length: Math.min(jobs, items.length) }, () => worker()),
+	);
+	if (firstFailure) throw firstFailure.reason;
+	const rejected = settled.find((result) => result.status === "rejected");
+	if (rejected?.status === "rejected") throw rejected.reason;
+	return slots.map((slot, index) => {
+		if (!claimed[index]) throw new Error(`bounded pool lost the result for position ${index + 1}`);
+		return slot as TResult;
+	});
 }
 
 /**
@@ -917,7 +1003,6 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 		}
 	}
 	const executionTotal = design.length;
-	const slots: (CompletedRun | undefined)[] = new Array<CompletedRun | undefined>(executionTotal);
 
 	const workspaceSnapshot = materializeTargetWorkspaceSnapshot(
 		target,
@@ -958,42 +1043,16 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 		return gradeAndFinalize(target, planned.task, record, options, eventRun);
 	};
 
-	// Bounded worker pool over the design. Each worker takes the next unclaimed
-	// position and lands its result in that position's slot. The first failure
-	// stops the pool from claiming more work — a broken evaluation must not keep
-	// spending tokens — but never cancels what is already running.
-	let nextPlanned = 0;
-	let firstFailure: { reason: unknown } | undefined;
-	const worker = async (): Promise<void> => {
-		for (;;) {
-			if (firstFailure) return;
-			const index = nextPlanned;
-			nextPlanned += 1;
-			const planned = design[index];
-			if (!planned) return;
-			try {
-				slots[planned.ordinal - 1] = await execute(planned);
-			} catch (error) {
-				firstFailure ??= { reason: error };
-				throw error;
-			}
-		}
-	};
-	// The snapshot is shared by every in-flight run, so it is disposed only once
-	// they have all settled — an abort waits for its own executions to finish.
-	const settled = await Promise.allSettled(
-		Array.from({ length: Math.min(jobs, executionTotal) }, () => worker()),
-	);
-	disposeTargetWorkspaceSnapshot(workspaceSnapshot);
-	if (firstFailure) throw firstFailure.reason;
-	const rejected = settled.find((result) => result.status === "rejected");
-	if (rejected?.status === "rejected") throw rejected.reason;
+	let completed: CompletedRun[];
+	try {
+		completed = await runBoundedPool(design, jobs, (planned) => execute(planned));
+	} finally {
+		// The snapshot is shared by every in-flight run, so it is disposed only
+		// once they have all settled — an abort waits for its own executions.
+		disposeTargetWorkspaceSnapshot(workspaceSnapshot);
+	}
 	if (options.signal?.aborted) throw options.signal.reason ?? new Error("evaluation aborted");
 
-	const completed = slots.map((slot, index) => {
-		if (!slot) throw new Error(`evaluation lost the result for ordinal ${index + 1}`);
-		return slot;
-	});
 	const runIds = completed.map((slot) => slot.record.runId);
 	const pass = completed.filter((slot) => slot.outcome === "pass").length;
 	const fail = completed.filter((slot) => slot.outcome === "fail").length;
@@ -1059,6 +1118,18 @@ export function writeEvalRun(runsRoot: string, record: EvalRunRecord): void {
 	writeJsonArtifact(resolveContainedArtifactPath(runsRoot, record.evalRunId, "eval_run.json"), EvalRunRecordSchema, record, {
 		immutable: true,
 	});
+}
+
+/**
+ * One row of `ahde list`: identity, label, target, verdict, and — for derived
+ * evidence — the eval run it re-scored, because the timestamp on that row is
+ * the grading's, not the traces'.
+ */
+export function renderEvalRunListLine(record: EvalRunRecord): string {
+	return `${record.evalRunId}  ${record.label.padEnd(9)} ${record.target.id.padEnd(16)} ` +
+		`${(record.summary.allPassRate * 100).toFixed(0).padStart(3)}% ` +
+		`(${record.summary.pass}/${record.summary.total})  ${record.startedAt}` +
+		(record.regradeOf ? `  regrade of ${record.regradeOf}` : "");
 }
 
 export function loadRun(runsRoot: string, runId: string): RunRecord {
@@ -1301,6 +1372,15 @@ export function loadVerifiedEvalRun(runsRoot: string, evalRunId: string): Verifi
 			evidenceMismatch(evalRunId, `run ${runId} target does not match the eval target`);
 		}
 		if (run.label !== record.label) evidenceMismatch(evalRunId, `run ${runId} label does not match`);
+		// A regrade's members must each point at the exact execution they re-scored,
+		// and only a regrade's members may claim one.
+		if (record.regradeOf === undefined) {
+			if (run.derivedFrom !== undefined) {
+				evidenceMismatch(evalRunId, `run ${runId} claims a regrade source but this eval is not a regrade`);
+			}
+		} else if (run.derivedFrom?.evalRunId !== record.regradeOf) {
+			evidenceMismatch(evalRunId, `run ${runId} was not derived from the re-scored eval ${record.regradeOf}`);
+		}
 		if (run.eval.suiteId !== record.suiteId || run.eval.suiteHash !== record.suiteHash) {
 			evidenceMismatch(evalRunId, `run ${runId} suite does not match`);
 		}

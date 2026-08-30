@@ -38,6 +38,7 @@ describe("CLI help", () => {
 		expect(help).toContain("ahde resume");
 		expect(help).toContain("Inside Builder Pi");
 		expect(help).toContain("Advanced automation commands");
+		expect(help).toContain("compare  diagnose  regrade  report");
 		expect(help).toContain("ahde calibrate --target <dir>                measure run-to-run noise (A/A)");
 		expect(help).toContain("AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)");
 	});
@@ -48,6 +49,11 @@ describe("CLI help", () => {
 		expect(cliHelp(["target", "--help"])).toContain("Requires a configured Target");
 		expect(cliHelp(["calibrate", "--help"])).toContain("measure run-to-run noise");
 		expect(cliHelp(["calibrate", "--help"])).toContain("never promotable");
+		const regrade = cliHelp(["regrade", "--help"]);
+		expect(regrade).toContain("Usage: ahde regrade <evalRunId> --target <dir>");
+		expect(regrade).toContain("without calling the\nTarget model again");
+		expect(regrade).toContain("the graders it carried when its trace was recorded");
+		expect(regrade).toContain("Sealed\nevidence stays sealed and prints counts only");
 	});
 
 	it("renders focused help for nested automation actions", () => {
