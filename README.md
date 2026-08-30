@@ -293,6 +293,18 @@ Their tool schemas do not accept model-supplied `actor`, `approved`, or
 the exact hash or diff, asks the operator, revalidates it, and writes a durable
 receipt. Consequential calls fail closed outside an interactive TUI.
 
+The conversation reaches those decisions through two composites, so the whole
+cycle asks three questions: `start-testing` (approve the Spec draft, publish the
+reviewed basket, run), `apply-proposal` (the exact diff), and `ship` (review,
+promote, adopt, continue). A composite is orchestration, not new authority: it
+calls the same services in the same order, writes the same receipts, and stops
+at the first step that declines or fails. Discarding a proposal, rejecting a
+candidate, and abandoning an interrupted attempt are one short question each.
+Measurement — running the basket, verifying a candidate, calibrating noise —
+is routine: it runs without a dialog, may run headless, and asks once only when
+history estimates more than `AHDE_ROUTINE_COST_USD` (default 2) or
+`AHDE_ROUTINE_MINUTES` (default 10), or when nothing comparable has run yet.
+
 Corpus revisions are immutable and content-addressed. Publishing records both
 the canonical Corpus receipt and an exact Workbench lineage binding approved
 Spec, reviewed draft, and development dataset hash. A compatible EvalRun must
@@ -525,7 +537,8 @@ retired Workbench-TUI, and deleted one-shot-adapter files.
 |---|---|
 | `src/builder/runtime.ts` | isolated long-lived Builder Pi host |
 | `src/builder/extension.ts` | the three Workbench tools, their production dependencies, and Pi registration |
-| `src/builder/commands.ts` | slash commands, review actions, one-dialog promote/reject |
+| `src/builder/commands.ts` | slash commands (`/test`, `/fix`, `/ship` first), review actions, one-dialog promote/reject |
+| `src/workbench/transition-policy.ts` | legal stages, the consequential/one-question/routine gate policy, and the run cost guard |
 | `src/builder/product-shell.ts`, `src/builder/onboarding.ts` | live header, first-run setup, readiness status |
 | `src/builder/render/**`, `src/builder/transcript.ts` | human renderers for every Workbench view, decision, and confirmation; persisted transcript blocks |
 | `src/application/target-adoption.ts`, `src/workbench/cycle-continuation.ts` | promoted-candidate fast-forward and cycle closure receipts |

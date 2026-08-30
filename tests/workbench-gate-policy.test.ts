@@ -1,7 +1,10 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createPolicyAwareGate } from "../src/builder/workbench-adapter.js";
+import type { WorkbenchConfirmation } from "../src/workbench/types.js";
+import { createHostContext } from "./helpers/builder-tools.js";
 import { writeEvalRun, type EvalRunRecord } from "../src/eval.js";
 import {
 	RunRecordSchema,
@@ -182,6 +185,68 @@ describe("Workbench gate policy", () => {
 			.toThrow(/Do this first: review the diff, then say “apply” or “discard”\./);
 		expect(() => assertWorkbenchDecisionStage("run-eval", "spec-review"))
 			.toThrow(/Do this first: review the Spec draft, then say “tests”\./);
+	});
+});
+
+describe("host gate", () => {
+	function confirmation(
+		policy: "consequential" | "one-question" | "routine",
+		kind: "apply-proposal" | "discard-proposal" | "run-eval",
+	): WorkbenchConfirmation {
+		return {
+			kind,
+			title: `Confirm ${kind}`,
+			reason: "The operator asked for it",
+			subject: { operation: kind, branch: "candidate/fix" },
+			subjectHash: `sha256:${"a".repeat(64)}`,
+			policy,
+			question: `${kind}, yes or no?`,
+		};
+	}
+
+	it("renders a full dialog, one question, or nothing at all", async () => {
+		const host = createHostContext();
+		const guard = vi.fn();
+		const gate = createPolicyAwareGate(host.ctx, () => "local:gate-test", guard);
+
+		expect(await gate.confirm(confirmation("consequential", "apply-proposal")))
+			.toEqual({ approved: true, actorId: "local:gate-test" });
+		expect(await gate.confirm(confirmation("one-question", "discard-proposal")))
+			.toEqual({ approved: true, actorId: "local:gate-test" });
+		expect(await gate.confirm(confirmation("routine", "run-eval")))
+			.toEqual({ approved: true, actorId: "local:gate-test" });
+
+		// Two dialogs for three decisions, and the terminal one is one sentence.
+		expect(host.confirmations.map((entry) => entry.title))
+			.toEqual(["Confirm apply-proposal", "Confirm discard-proposal"]);
+		expect(host.confirmations[1]?.body).toBe("discard-proposal, yes or no?");
+		expect(host.confirmations[0]?.body).toContain("The operator asked for it");
+		expect(host.confirmations[0]?.body.length).toBeGreaterThan(host.confirmations[1]!.body.length);
+		expect(guard.mock.calls.flat()).toEqual(["apply-proposal", "discard-proposal"]);
+	});
+
+	it("lets routine work run headless and still fails everything else closed", async () => {
+		const host = createHostContext({ hasUI: false, mode: "print" });
+		const guard = vi.fn((operation: string) => {
+			throw new Error(`${operation} requires a local TUI host confirmation`);
+		});
+		const gate = createPolicyAwareGate(host.ctx, () => "local:gate-test", guard);
+
+		expect(await gate.confirm(confirmation("routine", "run-eval")))
+			.toEqual({ approved: true, actorId: "local:gate-test" });
+		expect(guard).not.toHaveBeenCalled();
+		await expect(gate.confirm(confirmation("one-question", "discard-proposal")))
+			.rejects.toThrow(/requires a local TUI host confirmation/);
+		await expect(gate.confirm(confirmation("consequential", "apply-proposal")))
+			.rejects.toThrow(/requires a local TUI host confirmation/);
+		expect(host.confirmations).toEqual([]);
+	});
+
+	it("carries a declined answer back without an actor identity", async () => {
+		const host = createHostContext({ confirm: false });
+		const gate = createPolicyAwareGate(host.ctx, () => "local:gate-test", vi.fn());
+		expect(await gate.confirm(confirmation("one-question", "discard-proposal"))).toEqual({ approved: false });
+		expect(await gate.confirm(confirmation("consequential", "apply-proposal"))).toEqual({ approved: false });
 	});
 });
 

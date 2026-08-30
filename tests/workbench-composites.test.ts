@@ -72,6 +72,25 @@ function tree(root: string, replace: readonly (readonly [string, string])[] = []
 	return files;
 }
 
+const FOCUS_FILE = join("projects", PROJECT_ID, "workbench", "focus.json");
+
+/** Every durable receipt: the state tree without the mutable focus selection. */
+function receipts(fixture: FixturePaths): Record<string, string> {
+	const files = tree(fixture.stateRoot, [[fixture.projectDir, "<project>"]]);
+	delete files[FOCUS_FILE];
+	return files;
+}
+
+/** What focus points at, without the hashes that bind it to one repository. */
+function focusIds(fixture: FixturePaths): Record<string, string> {
+	const focus = JSON.parse(readFileSync(join(fixture.stateRoot, FOCUS_FILE), "utf8")) as {
+		selections: Record<string, { id: string }>;
+	};
+	return Object.fromEntries(
+		Object.entries(focus.selections).map(([kind, selection]) => [kind, selection.id]),
+	);
+}
+
 function workbenchFor(
 	fixture: FixturePaths,
 	dependencies: Partial<AhdeWorkbenchDependencies> = {},
@@ -155,8 +174,11 @@ describe("start-testing composite", () => {
 
 			// Byte-identical durable state: the same approval receipt, the same
 			// corpus, the same publication receipt and the same Workbench lineage.
-			expect(tree(composite.stateRoot, [[composite.projectDir, "<project>"]]))
-				.toEqual(tree(separate.stateRoot, [[separate.projectDir, "<project>"]]));
+			// Focus is compared separately: it is selection, never authority, and
+			// it records the hash of an EvalRun that carries each fixture's own
+			// Git revision.
+			expect(receipts(composite)).toEqual(receipts(separate));
+			expect(focusIds(composite)).toEqual(focusIds(separate));
 			expect((await first.view()).stage).toBe((await second.view()).stage);
 		} finally {
 			cleanup(composite.projectDir);
@@ -218,8 +240,7 @@ describe("start-testing composite", () => {
 			await expect(second.decide({ kind: "publish-corpus", reason: REASON }, stepGate))
 				.rejects.toThrow(/publication is unavailable/);
 
-			expect(tree(composite.stateRoot, [[composite.projectDir, "<project>"]]))
-				.toEqual(tree(separate.stateRoot, [[separate.projectDir, "<project>"]]));
+			expect(receipts(composite)).toEqual(receipts(separate));
 			// The approval stands, the publication does not, and nothing ran.
 			expect((await first.view()).stage).toBe("corpus-review");
 			expect(listCorpora({ stateRoot: composite.stateRoot, projectId: PROJECT_ID })).toEqual([]);
