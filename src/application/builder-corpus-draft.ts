@@ -2,7 +2,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from "nod
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { CorpusTaskSchema, type CorpusTask } from "../corpus.js";
-import { GraderSpec } from "../manifest.js";
+import { GraderSpec, TaskSchema, taskDialogueIssue } from "../manifest.js";
 import { canonicalJson, HashSchema, hashValue } from "../provenance.js";
 import {
 	ApprovedSpecReferenceSchema,
@@ -40,11 +40,21 @@ const GraderIndexSchema = z.number().int().min(0).max(15);
 export const BuilderCorpusDraftCoverageNotesSchema = z.array(NonBlankSchema.max(1_000)).max(100);
 const RevisionSummarySchema = NonBlankSchema.max(4_000);
 
-/** Builder input deliberately omits task ids; the trusted host derives them. */
+/**
+ * Builder input deliberately omits task ids; the trusted host derives them.
+ * The three optional case fields reuse `manifest.ts` schemas verbatim, so a
+ * compiled dataset case and a hand-written one are bounded identically, and
+ * the dialogue invariant is checked on this path too.
+ */
 export const BuilderCorpusDraftTaskInputSchema = z.strictObject({
 	input: NonBlankSchema.max(32_000),
+	expected: TaskSchema.shape.expected,
+	messages: TaskSchema.shape.messages,
+	metadata: TaskSchema.shape.metadata,
 	graders: z.array(GraderSpec).min(1).max(16),
 }).superRefine((task, context) => {
+	const dialogue = taskDialogueIssue(task);
+	if (dialogue) context.addIssue({ code: "custom", path: ["messages"], message: dialogue });
 	if (Buffer.byteLength(canonicalJson(task), "utf8") > MAX_TASK_BYTES) {
 		context.addIssue({ code: "custom", message: `task exceeds ${MAX_TASK_BYTES} bytes` });
 	}
@@ -57,6 +67,8 @@ const BuilderCorpusDraftStoredTaskSchema = CorpusTaskSchema.extend({
 	graders: z.array(GraderSpec).min(1).max(16),
 }).superRefine((task, context) => {
 	const { id: _id, ...input } = task;
+	const dialogue = taskDialogueIssue(task);
+	if (dialogue) context.addIssue({ code: "custom", path: ["messages"], message: dialogue });
 	if (Buffer.byteLength(canonicalJson(input), "utf8") > MAX_TASK_BYTES) {
 		context.addIssue({ code: "custom", message: `task exceeds ${MAX_TASK_BYTES} bytes` });
 	}
@@ -476,8 +488,10 @@ export function reviseBuilderCorpusDraft(
 	const taskProvenance = new Map(knownTaskProvenance);
 	const replaceGraders = (taskId: string, graders: readonly unknown[], operation: string): void => {
 		const index = taskIndex(tasks, taskId, operation);
-		const previous = tasks[index]!;
-		const normalized = normalizeTasks(approvedSpec, [{ input: previous.input, graders }])[0];
+		// Everything but the graders survives a regrade, including a reference
+		// answer, a dialogue, and imported row metadata.
+		const { id: _previousId, graders: _previousGraders, ...carried } = tasks[index]!;
+		const normalized = normalizeTasks(approvedSpec, [{ ...carried, graders }])[0];
 		if (!normalized) throw new Error(`${operation} did not produce a task`);
 		const provenance = taskProvenance.get(taskId);
 		if (provenance) {

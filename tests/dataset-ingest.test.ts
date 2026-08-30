@@ -615,7 +615,7 @@ describe("ingest", () => {
 			format: "csv",
 			rowsSeen: 50,
 			developmentCount: 40,
-			sealed: { corpusId: result.sealedCorpus?.id ?? "", count: 10, seed: "exam-1" },
+			sealed: { corpusId: result.sealedCorpus?.id ?? "", count: 10, seed: "exam-1", reservedRows: 10 },
 			at: NOW,
 		});
 
