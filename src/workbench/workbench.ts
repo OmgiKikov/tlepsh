@@ -424,6 +424,7 @@ function datasetGrader(grader: WorkbenchDatasetCase["graders"][number]): Workben
 			};
 		case "exact":
 		case "similarity":
+		case "turn_budget":
 			return { ...grader, ...named };
 	}
 }

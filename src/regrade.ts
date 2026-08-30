@@ -220,8 +220,10 @@ export async function regradeEvalRun(options: RegradeOptions): Promise<RegradeRe
 		);
 	}
 	const defaults = options.graderDefaults ?? target.graderDefaults;
+	const simulatedUser = target.manifest.evalSuite.simulatedUser;
 	const tasks = new Map(
-		resolveTaskGraders(target.tasks, defaults, judge !== undefined).map((task) => [task.id, task]),
+		resolveTaskGraders(target.tasks, defaults, judge !== undefined, simulatedUser !== undefined)
+			.map((task) => [task.id, task]),
 	);
 	// One identity rule per resolved surface. A published corpus fixed its own
 	// suite hash, and that hash already covers everything a corpus regrade can
@@ -233,11 +235,15 @@ export async function regradeEvalRun(options: RegradeOptions): Promise<RegradeRe
 	// exactly the Target spend a regrade exists to avoid.
 	const suiteHash = target.suiteIdentity === "corpus"
 		? target.suiteHash
-		: suiteHashOf(target.tasks, defaults, judge ?? null);
+		: suiteHashOf(target.tasks, defaults, judge ?? null, simulatedUser ?? null);
 	const evidenceInput = {
 		runtime: first.runtime,
 		model: first.model,
 		judge: judge ? modelFingerprint(judge) : null,
+		// A regrade never replays a conversation — it re-scores the recorded one —
+		// but the user model that produced those turns is still part of what the
+		// evidence measured, so it stays on the axis.
+		simulatedUser: simulatedUser ? modelFingerprint(simulatedUser) : undefined,
 		execution: first.execution,
 		eval: { suiteHash, datasetHash: sourceRecord.datasetHash },
 	};

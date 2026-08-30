@@ -68,6 +68,24 @@ bar.
    first, publishes it out of your reach, and hands you back only a draft plus a
    count of how many cases were held out. A file that already has a sealed slice
    keeps it: later previews and imports of the same file replay that exact draw.
+8b. A case can carry a frozen dialogue or a live one, never both. `messages` is
+    the conversation as it happened: the host seeds every turn but the last and
+    grades the reply that follows — right when the operator already has the
+    transcript and knows what the next answer should have been. `simulatedUser`
+    is the opposite: `{ goal, persona?, maxTurns, stopWhen? }` on the case, the
+    case `input` as the opening message, and a second model writing every later
+    user turn from the goal and the conversation so far. Use it whenever the
+    quality being measured only appears over several turns — asking a clarifying
+    question instead of guessing, recovering from a vague answer, refusing
+    politely and still helping. It needs `evalSuite.simulatedUser` configured in
+    the Target manifest, exactly like a judge; a suite with such cases and no
+    user model refuses to load. Keep `maxTurns` small (3–6): the budget is part
+    of what you are measuring, and a `turn_budget: { max: N }` grader says so
+    outright. A `judge` grader on such a case reads the whole conversation
+    rather than the last reply, so write rubrics about the conversation ("does
+    not ask the same thing twice"). The user model never sees your graders, the
+    reference answer, or anything about the harness — so never encode the answer
+    in the goal; write what the person wants, not what the agent should say.
 9. Inspect `ahde_workbench_view` with `aspect: review`; the host renders the
    exact bounded task set, so add one line on what this basket does and does
    not cover, then request `ahde_workbench_decide` with

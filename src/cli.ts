@@ -7,8 +7,10 @@ import { loadTarget, scaffoldTarget } from "./manifest.js";
 import {
 	listEvalRunIndexesLenient,
 	loadEvalRun,
+	loadRun,
 	readEvalRunIndex,
 	renderEvalRunListLine,
+	renderRunTurns,
 	runSuite,
 } from "./eval.js";
 import { judgeAgreement } from "./domain/judge-agreement.js";
@@ -129,6 +131,20 @@ const USAGE = cliHelp([]);
 const MAX_RECIPE_FILE_BYTES = 512 * 1024;
 
 /** `--recipe` is either the JSON itself or `@<path>` to a small JSON file. */
+/**
+ * How many turns one case actually took, for the run list. Only simulated-user
+ * runs record a turn count, so every other line reads exactly as it always has.
+ * A run whose record cannot be read still gets its id printed: the turn count is
+ * a nicety and must never be the reason a completed run goes unreported.
+ */
+function describeRunTurns(runsRootDir: string, runId: string): string {
+	try {
+		return renderRunTurns(loadRun(runsRootDir, runId).metrics);
+	} catch {
+		return "";
+	}
+}
+
 function readRecipeFlag(value: string): unknown {
 	let text = value;
 	if (value.startsWith("@")) {
@@ -574,7 +590,13 @@ async function main(): Promise<void> {
 				`eval run ${record.evalRunId}: ${record.summary.pass}/${record.summary.total} all-pass ` +
 					`(${record.summary.fail} fail, ${record.summary.error} error)`,
 			);
-			for (const runId of record.runIds) console.log(`  run ${runId}`);
+			for (const runId of record.runIds) {
+				// How long the conversation ran is the first thing an operator wants
+				// from a simulated-user case, and the only thing a pass/fail hides.
+				// Silent on every other case, whose answer is one turn by definition.
+				const turns = describeRunTurns(runsRoot(), runId);
+				console.log(`  run ${runId}${turns}`);
+			}
 			if (record.summary.error > 0) process.exitCode = 2;
 			else if (record.summary.fail > 0) process.exitCode = 1;
 			break;

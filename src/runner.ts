@@ -25,7 +25,15 @@ import {
 	type RunRecord,
 } from "./provenance.js";
 import { writeJsonArtifact } from "./storage/artifacts.js";
-import { readTraceArtifact, traceToolErrors } from "./trace.js";
+import { readTraceArtifact, traceToolErrors, type TranscriptTurn } from "./trace.js";
+import { EvaluatorModelError, type EvaluatorModelMetrics } from "./evaluator-model.js";
+import { nextSimulatedUserTurn, simulatedUserStop, type SimulatedUserStop } from "./simulated-user.js";
+
+function addSpend(total: EvaluatorModelMetrics, spent: EvaluatorModelMetrics): void {
+	total.calls += spent.calls;
+	total.tokens += spent.tokens;
+	total.costUsd += spent.costUsd;
+}
 import {
 	buildExecutionPolicy,
 	type ExecutionPolicyResult,
@@ -596,11 +604,28 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 	let unsubscribeSessionEvents: (() => void) | undefined;
 	let removeAbortListener: (() => void) | undefined;
 	let recoveryAttempts = 0;
+	// A simulated conversation is ONE Run with ONE session.jsonl: every user turn
+	// is appended to the Target's own session exactly as a human's would be, so
+	// trace.ts stays the single parser and nothing downstream learns a format.
+	const simulated = task.simulatedUser;
+	const userModel = target.manifest.evalSuite.simulatedUser;
+	const maxTurns = simulated?.maxTurns ?? 1;
+	const transcript: TranscriptTurn[] = [];
+	const simulatedUserSpend = { calls: 0, tokens: 0, costUsd: 0 };
+	// Reaching the budget is the default ending; the user model can end it sooner.
+	let conversationStop: SimulatedUserStop = "max-turns";
+	let conversationTurns = 0;
 	try {
 		if (!policyResult || !targetToolRuntime) {
 			throw new Error(
 				`execution policy unavailable: ${policyError instanceof Error ? policyError.message : String(policyError)}`,
 			);
+		}
+		// loadTarget already fails closed on this; a hand-built ResolvedTask can
+		// still arrive here, and a silently one-turn "conversation" would be
+		// evidence about a dialogue that never happened.
+		if (simulated && !userModel) {
+			throw new Error("simulated-user case without evalSuite.simulatedUser model config");
 		}
 		// Per-run isolation: fresh models.json + credentials + services.
 		const modelsPath = join(runtimeDir, "models.json");
@@ -634,52 +659,100 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			(event) => observeRunSessionEvent(options.onRunEvent, eventRun, event),
 		);
 
-		// Watchdog: prompt() has no deadline of its own.
-		let timedOut = false;
-		const watchdog = setTimeout(() => {
-			timedOut = true;
-			void session?.abort();
-		}, model.timeoutMs);
+		/**
+		 * One agent turn: send a user message and return what the agent said back.
+		 * Each turn gets its own watchdog — `model.timeoutMs` bounds a reply, not a
+		 * whole conversation — and its own recovery attempt, because an empty reply
+		 * mid-dialogue is exactly as useless to the simulated user as a final one is
+		 * to a grader.
+		 */
+		const takeTurn = async (prompt: string): Promise<string> => {
+			const active = session;
+			if (!active) throw new Error("agent session is unavailable");
+			// Watchdog: prompt() has no deadline of its own.
+			let timedOut = false;
+			const watchdog = setTimeout(() => {
+				timedOut = true;
+				void active.abort();
+			}, model.timeoutMs);
 
-		let finalAssistant;
-		try {
-			await session.prompt(task.input);
-			if (options.signal?.aborted) throw options.signal.reason ?? new Error("run aborted");
-			if (timedOut) throw new Error(`run timed out after ${model.timeoutMs}ms`);
-
-			finalAssistant = [...session.messages].reverse().find((message) => message.role === "assistant");
-			const hasToolResults = session.messages.some((message) => message.role === "toolResult");
-			if (finalAssistant?.stopReason === "stop" && !session.getLastAssistantText()?.trim() && hasToolResults) {
-				recoveryAttempts = 1;
-				const activeTools = session.agent.state.tools;
-				session.agent.state.tools = [];
-				try {
-					await session.prompt(FINAL_ANSWER_RECOVERY_PROMPT);
-				} finally {
-					session.agent.state.tools = activeTools;
-				}
+			let finalAssistant;
+			try {
+				await active.prompt(prompt);
 				if (options.signal?.aborted) throw options.signal.reason ?? new Error("run aborted");
 				if (timedOut) throw new Error(`run timed out after ${model.timeoutMs}ms`);
-				finalAssistant = [...session.messages].reverse().find((message) => message.role === "assistant");
-			}
-		} finally {
-			clearTimeout(watchdog);
-		}
 
-		if (!finalAssistant) throw new Error("agent run completed without an assistant message");
-		if (finalAssistant.stopReason !== "stop") {
-			throw new Error(
-				finalAssistant.errorMessage ?? `agent run ended with unexpected stop reason: ${finalAssistant.stopReason}`,
-			);
+				finalAssistant = [...active.messages].reverse().find((message) => message.role === "assistant");
+				const hasToolResults = active.messages.some((message) => message.role === "toolResult");
+				if (finalAssistant?.stopReason === "stop" && !active.getLastAssistantText()?.trim() && hasToolResults) {
+					recoveryAttempts += 1;
+					const activeTools = active.agent.state.tools;
+					active.agent.state.tools = [];
+					try {
+						await active.prompt(FINAL_ANSWER_RECOVERY_PROMPT);
+					} finally {
+						active.agent.state.tools = activeTools;
+					}
+					if (options.signal?.aborted) throw options.signal.reason ?? new Error("run aborted");
+					if (timedOut) throw new Error(`run timed out after ${model.timeoutMs}ms`);
+					finalAssistant = [...active.messages].reverse().find((message) => message.role === "assistant");
+				}
+			} finally {
+				clearTimeout(watchdog);
+			}
+
+			if (!finalAssistant) throw new Error("agent run completed without an assistant message");
+			if (finalAssistant.stopReason !== "stop") {
+				throw new Error(
+					finalAssistant.errorMessage ?? `agent run ended with unexpected stop reason: ${finalAssistant.stopReason}`,
+				);
+			}
+			// The answer must be text in the final assistant message. Reusing text
+			// from an earlier pre-tool turn would turn an incomplete run into false
+			// evidence.
+			const turnText = finalAssistant.content
+				.filter((content): content is { type: "text"; text: string } => content.type === "text")
+				.map((content) => content.text)
+				.join("");
+			if (!turnText) throw new Error("agent run produced no assistant text");
+			return turnText;
+		};
+
+		let prompt = task.input;
+		for (let turn = 1; turn <= maxTurns; turn += 1) {
+			transcript.push({ role: "user", text: prompt });
+			const turnText = await takeTurn(prompt);
+			conversationTurns = turn;
+			transcript.push({ role: "assistant", text: turnText });
+			// The last turn needs no next question: asking for one would spend a
+			// user-model call on a message no agent will ever read.
+			if (!simulated || !userModel || turn === maxTurns) break;
+			// A user-model failure throws out of here into the catch below, where it
+			// becomes status "error" — infrastructure, never a behavioural failure
+			// (invariant 9). It says nothing about the agent. What it already spent
+			// is billed on the way past, because exhausted retries are real money.
+			let next;
+			try {
+				next = await nextSimulatedUserTurn({
+					spec: simulated,
+					model: userModel,
+					turns: transcript,
+					nextTurn: turn + 1,
+					runDir,
+					...(options.signal ? { signal: options.signal } : {}),
+				});
+			} catch (error) {
+				if (error instanceof EvaluatorModelError) addSpend(simulatedUserSpend, error.metrics);
+				throw error;
+			}
+			addSpend(simulatedUserSpend, next.metrics);
+			const stop = simulatedUserStop(simulated, next.reply);
+			if (stop) {
+				conversationStop = stop;
+				break;
+			}
+			prompt = next.reply.message;
 		}
-		// The answer must be text in the final assistant message. Reusing text
-		// from an earlier pre-tool turn would turn an incomplete run into false
-		// evidence.
-		const answerText = finalAssistant.content
-			.filter((content): content is { type: "text"; text: string } => content.type === "text")
-			.map((content) => content.text)
-			.join("");
-		if (!answerText) throw new Error("agent run produced no assistant text");
 
 		// Pin the session file to its canonical name inside the run dir.
 		const sessionFile = sessionManager.getSessionFile();
@@ -718,12 +791,27 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			toolErrors,
 			recoveryAttempts,
 			...(task.messages ? { seededTurns: seededTurns.length } : {}),
+			// Absent on every case without a simulated user, so their run.json
+			// stays byte-for-byte what it was before simulated users existed.
+			...(simulated
+				? {
+					simulatedUser: { ...simulatedUserSpend },
+					conversationTurns,
+					conversationStop,
+				}
+				: {}),
 		};
 	} catch (error) {
 		record.status = "error";
 		record.finishedAt = new Date().toISOString();
 		record.error = error instanceof Error ? error.message : String(error);
-		record.metrics = { ...record.metrics, latencyMs: Date.now() - startedMs, recoveryAttempts };
+		record.metrics = {
+			...record.metrics,
+			latencyMs: Date.now() - startedMs,
+			recoveryAttempts,
+			// Spend already incurred is spend, even on a run that then failed.
+			...(simulated ? { simulatedUser: { ...simulatedUserSpend } } : {}),
+		};
 		// Best effort: keep whatever trace survived.
 		try {
 			const files = execFileSync("find", [runDir, "-name", "*.jsonl", "-maxdepth", "1"], { encoding: "utf8" })

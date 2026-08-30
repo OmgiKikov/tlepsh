@@ -215,7 +215,16 @@ drawn first from (file sha256, seed, count, column) and published as a sealed
 corpus; the rest become one development corpus. Prints the receipt, both corpus
 ids, and the skipped-row counts — never a sealed row. A file that already has a
 sealed slice keeps it; repeat the same --sealed/--seed to ingest it again.
-Prefer Builder Pi: it shows sample cases and asks the operator to confirm.`,
+Prefer Builder Pi: it shows sample cases and asks the operator to confirm.
+
+A chat export can become cases the agent has to hold a conversation with rather
+than a frozen history it answers once: add
+{ "simulatedUser": { "goalColumn": "title", "personaColumn": "segment" } } beside
+an "input" mapping (on a chat export, { "column": "first_user" }). Every turn
+after the opening message is then written by the configured
+evalSuite.simulatedUser model. Optional "maxTurns" (1..12, default 6) and
+"stopWhen" bound the conversation. A recipe maps "dialogue" or "simulatedUser",
+never both.`,
 	"tool try": `Usage: ahde tool try --target <dir> --tool <name> --input <json|@path> [--branch <ref>]
 
 Run one declared Target tool on one JSON input inside a private scratch copy of

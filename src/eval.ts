@@ -34,15 +34,26 @@ import {
 	disposeTargetWorkspaceSnapshot,
 	materializeTargetWorkspaceSnapshot,
 	runTask,
+	FINAL_ANSWER_RECOVERY_PROMPT,
 } from "./runner.js";
 import {
 	emitRunGraded,
 	type RunEventIdentity,
 	type RunEventListener,
 } from "./run-events.js";
+import { callEvaluatorModel } from "./evaluator-model.js";
 import { readJsonArtifact, writeJsonArtifact, writeTextArtifact } from "./storage/artifacts.js";
 import { resolveContainedArtifactPath } from "./storage/paths.js";
-import { lastAssistantText, openTrace, redactTraceText, traceToolCalls } from "./trace.js";
+import {
+	agentTurnCount,
+	dialogueTurns,
+	lastAssistantText,
+	openTrace,
+	redactTraceText,
+	renderDialogueTranscript,
+	traceToolCalls,
+	type TraceMessage,
+} from "./trace.js";
 
 /** Grader implementations over (task, record, trace). Declarative specs live in the target suite. */
 
@@ -197,6 +208,22 @@ export function levenshteinRatio(
 	return { score: 1 - levenshteinDistance(left, right) / maxLength, bounded: false };
 }
 
+/**
+ * How many turns the agent needed. Deliberately trace-derived rather than
+ * metric-derived: the trace is the protected evidence, and a grader that read
+ * `metrics` would be scoring a number the runner wrote about itself.
+ */
+function gradeTurnBudget(spec: { max: number }, turns: number): GraderResult {
+	const passed = turns <= spec.max;
+	return {
+		name: "",
+		type: "turn_budget",
+		passed,
+		score: passed ? 1 : 0,
+		reason: `agent took ${turns} turn(s), ${passed ? "within" : "over"} the budget of ${spec.max}`,
+	};
+}
+
 function gradeSimilarity(
 	spec: { metric: SimilarityMetric; threshold: number },
 	expected: string | undefined,
@@ -273,16 +300,47 @@ function isReferenceChoice(value: unknown): value is ReferenceChoice {
 	return typeof value === "string" && Object.hasOwn(REFERENCE_CHOICE_SCORES, value);
 }
 
+/**
+ * What the judge is looking at. On an ordinary case it is one request and one
+ * answer, exactly as it has always been. On a simulated-user case it is the
+ * conversation: the goal the person came with, and every turn the agent took to
+ * get them there — because a rubric like "asks before assuming" cannot be
+ * decided from the last reply alone.
+ *
+ * The blocks are split rather than rendered as one, so the ordinary path emits
+ * byte-identical prompts to the ones that produced every existing verdict.
+ */
+interface JudgeSubject {
+	input: string;
+	output: string;
+	/** Rendered conversation, or null when the judge grades a single reply. */
+	transcript: string | null;
+	/** The simulated user's goal, when there was one. */
+	goal: string | null;
+}
+
+function judgeContextBlock(subject: JudgeSubject): string[] {
+	return subject.transcript !== null && subject.goal !== null
+		? ["<цель пользователя>", subject.goal, "</цель пользователя>"]
+		: ["<обращение>", subject.input, "</обращение>"];
+}
+
+function judgeAnswerBlock(subject: JudgeSubject): string[] {
+	return subject.transcript === null
+		? ["<ответ агента>", subject.output, "</ответ агента>"]
+		: ["<диалог агента с пользователем>", subject.transcript, "</диалог агента с пользователем>"];
+}
+
 /** Reference and rubric each get their own delimited block, verbatim. */
-function judgeReferencePrompt(rubric: string, input: string, expected: string, output: string): string {
+function judgeReferencePrompt(rubric: string, expected: string, subject: JudgeSubject): string {
 	return [
 		"<критерий>", rubric, "</критерий>",
 		"",
-		"<обращение>", input, "</обращение>",
+		...judgeContextBlock(subject),
 		"",
 		"<эталонный ответ>", expected, "</эталонный ответ>",
 		"",
-		"<ответ агента>", output, "</ответ агента>",
+		...judgeAnswerBlock(subject),
 		"",
 		"Выбери ровно один вариант:",
 		"A: ответ агента — полностью согласованное подмножество эталона.",
@@ -298,14 +356,13 @@ function judgeReferencePrompt(rubric: string, input: string, expected: string, o
 /** Reference and rubric each get their own delimited block, verbatim. */
 function judgeAssertionsPrompt(
 	spec: { rubric?: string | undefined; assertions: readonly string[] },
-	input: string,
-	output: string,
+	subject: JudgeSubject,
 ): string {
 	return [
 		...(spec.rubric ? ["<критерий>", spec.rubric, "</критерий>", ""] : []),
-		"<обращение>", input, "</обращение>",
+		...judgeContextBlock(subject),
 		"",
-		"<ответ агента>", output, "</ответ агента>",
+		...judgeAnswerBlock(subject),
 		"",
 		"<утверждения>",
 		...spec.assertions.map((assertion, index) => `${index + 1}. ${assertion}`),
@@ -399,91 +456,6 @@ function parseReferenceVerdict(text: string): JudgeVerdict {
 	};
 }
 
-function contentToString(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (Array.isArray(content)) {
-		return content
-			.map((part) => (typeof part === "object" && part !== null && "text" in part ? String((part as { text: unknown }).text) : ""))
-			.join("");
-	}
-	return "";
-}
-
-/** A judge endpoint is a network dependency, not an oracle: give it three tries. */
-const JUDGE_MAX_ATTEMPTS = 3;
-/** Backoff before attempt 2 and 3. Jittered so concurrent judges do not resonate. */
-const JUDGE_RETRY_DELAYS_MS = [1_000, 4_000] as const;
-
-/**
- * Rate limits, gateway hiccups and dropped connections are transport weather.
- * A 4xx that is not 429 is a contract error and a verdict that will not parse
- * is a model error: retrying either only burns tokens and hides the cause.
- */
-function retryableJudgeStatus(status: number): boolean {
-	return status === 429 || status >= 500;
-}
-
-function judgeRetryDelayMs(attempt: number): number {
-	const base = JUDGE_RETRY_DELAYS_MS[attempt - 1] ?? JUDGE_RETRY_DELAYS_MS[JUDGE_RETRY_DELAYS_MS.length - 1] ?? 1_000;
-	return Math.round(base * (0.75 + Math.random() * 0.5));
-}
-
-/** Sleep that yields to host cancellation instead of sitting on it for 4 seconds. */
-function judgeBackoff(attempt: number, signal?: AbortSignal): Promise<void> {
-	return new Promise<void>((resolve, reject) => {
-		const abort = (): void => {
-			clearTimeout(timer);
-			reject(signal?.reason ?? new Error("grading aborted"));
-		};
-		const timer = setTimeout(() => {
-			signal?.removeEventListener("abort", abort);
-			resolve();
-		}, judgeRetryDelayMs(attempt));
-		if (signal?.aborted) {
-			abort();
-			return;
-		}
-		signal?.addEventListener("abort", abort, { once: true });
-	});
-}
-
-interface JudgeUsage {
-	promptTokens: number;
-	completionTokens: number;
-	totalTokens: number;
-}
-
-function nonNegativeInteger(value: unknown): number {
-	return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
-}
-
-/** OpenAI-compatible `usage`. Absent or unusable usage is reported as no usage. */
-function parseJudgeUsage(body: unknown): JudgeUsage | null {
-	if (typeof body !== "object" || body === null) return null;
-	const usage = (body as { usage?: unknown }).usage;
-	if (typeof usage !== "object" || usage === null) return null;
-	const fields = usage as Record<string, unknown>;
-	const promptTokens = nonNegativeInteger(fields.prompt_tokens);
-	const completionTokens = nonNegativeInteger(fields.completion_tokens);
-	const reportedTotal = nonNegativeInteger(fields.total_tokens);
-	const totalTokens = reportedTotal > 0 ? reportedTotal : promptTokens + completionTokens;
-	if (totalTokens === 0) return null;
-	return { promptTokens, completionTokens, totalTokens };
-}
-
-/** Judge cost from the manifest's declared rates (USD per 1M tokens, Pi's convention). */
-function judgeCostUsd(cost: TargetManifest["model"]["spec"]["cost"], usage: JudgeUsage): number {
-	let rates: { input: number; output: number } = cost;
-	let matchedThreshold = -1;
-	for (const tier of cost.tiers ?? []) {
-		if (usage.promptTokens > tier.inputTokensAbove && tier.inputTokensAbove > matchedThreshold) {
-			rates = tier;
-			matchedThreshold = tier.inputTokensAbove;
-		}
-	}
-	return (rates.input * usage.promptTokens + rates.output * usage.completionTokens) / 1_000_000;
-}
-
 interface JudgeSidecar {
 	dir: string;
 	graderIndex: number;
@@ -500,24 +472,6 @@ function judgeSidecarStem(sidecar: JudgeSidecar): string {
 		? `${sidecar.graderIndex}`
 		: `${sidecar.graderIndex}.${sidecar.juror}`;
 }
-
-/** Evidence first: the exact exchange is on disk before anything is parsed. */
-function writeJudgeAttemptEvidence(
-	sidecar: JudgeSidecar,
-	attempt: number,
-	terminal: boolean,
-	exchange: unknown,
-): void {
-	mkdirSync(sidecar.dir, { recursive: true, mode: 0o700 });
-	chmodSync(sidecar.dir, 0o700);
-	const stem = judgeSidecarStem(sidecar);
-	const name = terminal ? `${stem}.json` : `${stem}.${attempt}.json`;
-	writeTextArtifact(join(sidecar.dir, name), `${JSON.stringify(exchange, null, "\t")}\n`, { mode: 0o600 });
-}
-
-type JudgeAttempt =
-	| { kind: "transport"; message: string }
-	| { kind: "http"; status: number; ok: boolean; text: string };
 
 type AssertionAnswer = "yes" | "no" | "unknown";
 
@@ -586,87 +540,23 @@ async function judgeOnce(
 	sidecar: JudgeSidecar,
 	signal?: AbortSignal,
 ): Promise<{ verdict: JudgeVerdict; metrics: JudgeMetrics }> {
-	const key = process.env[judge.apiKeyEnv];
-	if (judge.baseUrl.includes("openrouter.ai") && !key) {
-		throw new Error(`missing ${judge.apiKeyEnv} for judge endpoint ${judge.baseUrl}`);
-	}
-	const url = `${judge.baseUrl.replace(/\/+$/, "")}/chat/completions`;
-	const requestBody = {
-		model: judge.id,
-		messages: [
-			{ role: "system", content: protocol.system },
-			{ role: "user", content: protocol.user },
-		],
-		stream: false,
-		...judge.params,
-		...(judge.thinkingLevel !== "off" ? { reasoning: { effort: judge.thinkingLevel } } : {}),
-		// After the spread on purpose: a grader that samples is not a grader.
-		// manifest.ts rejects a judge params temperature; this makes overriding
-		// it structurally impossible even for evidence written by older code.
-		//
-		// A jury is the one exception, and it is the same argument from the other
-		// side: three identical greedy calls measure nothing, so a jury leaves the
-		// endpoint at its own default temperature and lets the disagreement show.
-		...(sidecar.juror === undefined ? { temperature: 0 } : {}),
-	};
-	let calls = 0;
-	let tokens = 0;
-	let costUsd = 0;
-
-	for (let attempt = 1; ; attempt += 1) {
-		if (signal?.aborted) throw signal.reason ?? new Error("grading aborted");
-		calls += 1;
-		let outcome: JudgeAttempt;
-		try {
-			const response = await fetch(url, {
-				method: "POST",
-				headers: { "content-type": "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) },
-				body: JSON.stringify(requestBody),
-				signal: signal
-					? AbortSignal.any([signal, AbortSignal.timeout(judge.timeoutMs)])
-					: AbortSignal.timeout(judge.timeoutMs),
-			});
-			outcome = { kind: "http", status: response.status, ok: response.ok, text: await response.text() };
-		} catch (error) {
-			outcome = { kind: "transport", message: error instanceof Error ? error.message : String(error) };
-		}
-		// Host cancellation is a decision, never weather: it is never retried.
-		const retry = signal?.aborted !== true &&
-			attempt < JUDGE_MAX_ATTEMPTS &&
-			(outcome.kind === "transport" || retryableJudgeStatus(outcome.status));
-		writeJudgeAttemptEvidence(sidecar, attempt, !retry, {
-			request: { url, body: requestBody },
-			response: outcome.kind === "http" ? { status: outcome.status, text: outcome.text } : null,
-			...(outcome.kind === "transport" ? { error: outcome.message } : {}),
-		});
-
-		if (outcome.kind === "transport") {
-			if (!retry) throw new Error(`judge request failed: ${outcome.message}`);
-			await judgeBackoff(attempt, signal);
-			continue;
-		}
-		if (!outcome.ok) {
-			if (!retry) throw new Error(`judge HTTP ${outcome.status}: ${outcome.text.slice(0, 120)}`);
-			await judgeBackoff(attempt, signal);
-			continue;
-		}
-
-		// Parse failures are never retried: the transport worked and a second
-		// identical request at temperature 0 has nothing new to say.
-		let body: { choices?: { message?: { content?: unknown } }[] };
-		try {
-			body = JSON.parse(outcome.text) as { choices?: { message?: { content?: unknown } }[] };
-		} catch {
-			throw new Error(`judge returned an unparseable response body: ${outcome.text.slice(0, 120)}`);
-		}
-		const usage = parseJudgeUsage(body);
-		if (usage) {
-			tokens += usage.totalTokens;
-			costUsd += judgeCostUsd(judge.spec.cost, usage);
-		}
-		const verdict = protocol.parse(contentToString(body.choices?.[0]?.message?.content));
-		return { verdict, metrics: { calls, tokens, costUsd } };
-	}
+	const called = await callEvaluatorModel({
+		label: "judge",
+		model: judge,
+		system: protocol.system,
+		user: protocol.user,
+		sidecar: { dir: sidecar.dir, stem: judgeSidecarStem(sidecar) },
+		// A grader that samples is not a grader. A jury is the one exception, and
+		// it is the same argument from the other side: three identical greedy
+		// calls measure nothing, so a jury leaves the endpoint at its own default
+		// temperature and lets the disagreement show.
+		pinTemperature: sidecar.juror === undefined,
+		abortMessage: "grading aborted",
+		...(signal ? { signal } : {}),
+	});
+	// Parse failures are never retried: the transport worked and a second
+	// identical request at temperature 0 has nothing new to say.
+	return { verdict: protocol.parse(called.text), metrics: called.metrics };
 }
 
 /** Strict majority. An even jury that splits has decided nothing, so it fails. */
@@ -797,6 +687,7 @@ function graderCheckCode(type: GraderSpec["type"]): GraderCheckCode {
 		case "judge": return "semantic-rubric";
 		case "exact": return "reference-exact";
 		case "similarity": return "reference-similarity";
+		case "turn_budget": return "turn-budget";
 	}
 }
 
@@ -816,11 +707,31 @@ export async function gradeRun(
 	const runDir = resolveContainedArtifactPath(runsRoot, ArtifactIdSchema.parse(record.runId));
 	let output: string | undefined;
 	let toolCalls: ReturnType<typeof traceToolCalls> = [];
+	let traceMessages: TraceMessage[] = [];
 	if (record.status === "completed" && record.trace.path) {
-		const messages = openTrace(runDir, record.trace.path, record.trace.sha256 ?? undefined);
-		output = lastAssistantText(messages);
-		toolCalls = traceToolCalls(messages);
+		traceMessages = openTrace(runDir, record.trace.path, record.trace.sha256 ?? undefined);
+		output = lastAssistantText(traceMessages);
+		// The trace is the whole conversation for a simulated-user case, so this
+		// already covers every turn: a tool called on turn 2 is a tool called.
+		toolCalls = traceToolCalls(traceMessages);
 	}
+	// Rendered once per run, not once per grader, and only where a conversation
+	// is what the case measures. Every other case grades exactly what it always
+	// graded — the last reply — so no existing verdict moves.
+	const subject: JudgeSubject = {
+		input: task.input,
+		output: output ?? "",
+		transcript: task.simulatedUser
+			? renderDialogueTranscript(
+				// The recovery prompt is the host asking for a final answer, not the
+				// person asking for anything. Showing it as a user turn would let a
+				// rubric about how the agent handled the user grade the harness.
+				dialogueTurns(traceMessages).filter((turn) =>
+					!(turn.role === "user" && turn.text === FINAL_ANSWER_RECOVERY_PROMPT)),
+			)
+			: null,
+		goal: task.simulatedUser?.goal ?? null,
+	};
 	const results: GraderResult[] = [];
 	const judgeSpend = { calls: 0, tokens: 0, costUsd: 0 };
 	let judgeCalled = false;
@@ -840,6 +751,8 @@ export async function gradeRun(
 			result = gradeToolCalled(normalizedSpec, toolCalls);
 		} else if (normalizedSpec.type === "output_contains") {
 			result = gradeOutputContains(normalizedSpec, output ?? "");
+		} else if (normalizedSpec.type === "turn_budget") {
+			result = gradeTurnBudget(normalizedSpec, agentTurnCount(traceMessages));
 		} else if (graderNeedsExpected(normalizedSpec) && !hasReferenceAnswer(task)) {
 			// Checked before any judge call: a case with no reference answer costs
 			// no tokens and never passes on the strength of an empty comparison.
@@ -856,11 +769,7 @@ export async function gradeRun(
 				assertions
 					? {
 						system: JUDGE_ASSERTIONS_SYSTEM,
-						user: judgeAssertionsPrompt(
-							{ rubric: normalizedSpec.rubric, assertions },
-							task.input,
-							output ?? "",
-						),
+						user: judgeAssertionsPrompt({ rubric: normalizedSpec.rubric, assertions }, subject),
 						// One juror folded alone is that juror's own verdict; the jury
 						// fold in gradeJudge then decides each assertion across jurors.
 						parse: (text) => foldJury(
@@ -872,13 +781,23 @@ export async function gradeRun(
 					: normalizedSpec.withReference
 					? {
 						system: JUDGE_REFERENCE_SYSTEM,
-						user: judgeReferencePrompt(normalizedSpec.rubric ?? "", task.input, task.expected ?? "", output ?? ""),
+						user: judgeReferencePrompt(normalizedSpec.rubric ?? "", task.expected ?? "", subject),
 						parse: parseReferenceVerdict,
 						jury,
 					}
 					: {
 						system: JUDGE_SYSTEM,
-						user: `Критерий: ${normalizedSpec.rubric}\n\nОбращение: ${task.input}\n\nОтвет агента: ${output ?? ""}`,
+						// The rubric-only prompt is frozen for single-reply cases: every
+						// existing judge verdict was produced by exactly this string.
+						user: subject.transcript === null
+							? `Критерий: ${normalizedSpec.rubric}\n\nОбращение: ${task.input}\n\nОтвет агента: ${output ?? ""}`
+							: [
+								"<критерий>", normalizedSpec.rubric ?? "", "</критерий>",
+								"",
+								...judgeContextBlock(subject),
+								"",
+								...judgeAnswerBlock(subject),
+							].join("\n"),
 						parse: parseVerdict,
 						jury,
 					},
@@ -1329,6 +1248,9 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 		runtime: target.runtime,
 		model: modelFingerprint(target.manifest.model),
 		judge: target.manifest.evalSuite.judge ? modelFingerprint(target.manifest.evalSuite.judge) : null,
+		simulatedUser: target.manifest.evalSuite.simulatedUser
+			? modelFingerprint(target.manifest.evalSuite.simulatedUser)
+			: undefined,
 		execution: effectiveExecution,
 		eval: { suiteHash: target.suiteHash, datasetHash: target.datasetHash },
 	};
@@ -1387,6 +1309,17 @@ export function renderEvalRunListLine(record: EvalRunRecord): string {
 		`${(record.summary.allPassRate * 100).toFixed(0).padStart(3)}% ` +
 		`(${record.summary.pass}/${record.summary.total})  ${record.startedAt}` +
 		(record.regradeOf ? `  regrade of ${record.regradeOf}` : "");
+}
+
+/**
+ * How long a conversation ran, for one line of `ahde run`. Empty for every case
+ * whose answer is one turn by construction, so the run list reads exactly as it
+ * always has unless a simulated user actually held a conversation.
+ */
+export function renderRunTurns(metrics: RunRecord["metrics"]): string {
+	if (metrics.conversationTurns === undefined) return "";
+	const stop = metrics.conversationStop ? ` (${metrics.conversationStop})` : "";
+	return `  ${metrics.conversationTurns} turn${metrics.conversationTurns === 1 ? "" : "s"}${stop}`;
 }
 
 export function loadRun(runsRoot: string, runId: string): RunRecord {
@@ -1657,6 +1590,10 @@ export function loadVerifiedEvalRun(runsRoot: string, evalRunId: string): Verifi
 			runtime: run.runtime,
 			model: run.model,
 			judge: record.provenance.judge,
+			// The evaluator models are suite configuration, not per-run facts: a
+			// RunRecord never carried the judge fingerprint and does not carry the
+			// user model's either, so both are taken from the index being verified.
+			simulatedUser: record.provenance.simulatedUser,
 			execution: run.execution,
 			eval: run.eval,
 		});

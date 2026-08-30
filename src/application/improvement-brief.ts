@@ -285,6 +285,7 @@ const GRADER_CHECK_CATEGORIES: Record<GraderCheckCode, FailureModeCategory> = {
 	"reference-exact": "output-contract",
 	"semantic-rubric": "answer-quality",
 	"reference-similarity": "answer-quality",
+	"turn-budget": "output-contract",
 };
 
 /** Title of an exact (non-legacy) grader failure mode. */
@@ -295,6 +296,7 @@ const GRADER_CHECK_TITLES: Record<GraderCheckCode, string> = {
 	"reference-exact": "Exact reference-answer check failed",
 	"semantic-rubric": "Semantic rubric check failed",
 	"reference-similarity": "Reference similarity check failed",
+	"turn-budget": "Turn budget check failed",
 };
 
 function categoryForGrader(grader: DiagnosticGraderResult): FailureModeCategory {
