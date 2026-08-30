@@ -107,7 +107,7 @@ describe("corpus grader validation against the current Target", () => {
 			],
 			manifest,
 			"basket",
-		)).toThrow(/task 1 grader 1: a exact grader compares[\s\S]*\n- task 2 grader 1: a similarity grader compares/);
+		)).toThrow(/task 1 grader 1: exact graders compare[\s\S]*\n- task 2 grader 1: similarity graders compare/);
 
 		expect(() => assertGradersRunnable(
 			[{ expected: "Ответ.", graders: [{ type: "exact", normalize: "lower" }] }],

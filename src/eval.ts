@@ -100,7 +100,7 @@ function gradeOutputMatches(spec: { pattern: string }, output: string | undefine
 // included) refuse to grade a case that carries no reference answer — a
 // vacuous pass would be evidence of nothing.
 
-export const MISSING_EXPECTED_REASON = "case has no expected answer";
+const MISSING_EXPECTED_REASON = "case has no expected answer";
 
 function missingExpected(type: GraderSpec["type"]): GraderResult {
 	return { name: "", type, passed: false, score: 0, reason: MISSING_EXPECTED_REASON };
@@ -256,7 +256,8 @@ type ReferenceChoice = keyof typeof REFERENCE_CHOICE_SCORES;
 const REFERENCE_FAILING_CHOICE: ReferenceChoice = "D";
 
 function isReferenceChoice(value: unknown): value is ReferenceChoice {
-	return typeof value === "string" && value in REFERENCE_CHOICE_SCORES;
+	// hasOwn, not `in`: an inherited key like "toString" is not a rubric choice.
+	return typeof value === "string" && Object.hasOwn(REFERENCE_CHOICE_SCORES, value);
 }
 
 /** Reference and rubric each get their own delimited block, verbatim. */

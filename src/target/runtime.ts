@@ -23,7 +23,7 @@ import {
 	type Skill,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { InMemoryCredentialStore, type Message } from "@earendil-works/pi-ai";
+import { InMemoryCredentialStore, type AssistantMessage, type Message } from "@earendil-works/pi-ai";
 import type { ExecutionPolicyResult } from "../execution-policy.js";
 import { EXECUTION_POLICY_SESSION_OPTIONS } from "../execution-policy.js";
 import type { DialogueMessage, ResolvedTarget } from "../manifest.js";
@@ -314,7 +314,8 @@ function seededSessionMessage(
 	return {
 		role: "assistant",
 		content: [{ type: "text", text: turn.content }],
-		api: model.api as Message extends { api: infer A } ? A : never,
+		// The manifest carries the api id as a string; Pi types it as a union.
+		api: model.api as AssistantMessage["api"],
 		provider: model.provider,
 		model: model.id,
 		usage: { ...SEEDED_TURN_USAGE, cost: { ...SEEDED_TURN_USAGE.cost } },

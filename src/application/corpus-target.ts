@@ -231,7 +231,7 @@ export function assertGradersRunnable(
 			}
 			if (graderNeedsExpected(grader) && !hasReferenceAnswer(task)) {
 				problems.push(
-					`${where}: a ${grader.type} grader compares the answer with the case's reference answer, and this case has no "expected".` +
+					`${where}: ${grader.type} graders compare the answer with the case's reference answer, and this case has no "expected".` +
 					" Give the case an expected answer, or use output_contains, output_matches, or tool_called instead.",
 				);
 			}
