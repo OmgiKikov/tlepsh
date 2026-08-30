@@ -242,8 +242,19 @@ export function createPolicyAwareGate(
 	actorId: () => string,
 	requireInteractive: (operation: string) => void,
 	sealedSelectionOperation?: string,
+	/**
+	 * Guard for the sealed-holdout picker. It is the requested decision that
+	 * decides whether picking a holdout may run headless (a routine verification
+	 * picks its own), while every confirmation below is guarded by its OWN
+	 * policy — a routine request can auto-chain into a consequential composite,
+	 * and that composite must still meet the local TUI.
+	 */
+	requireInteractiveForSealed: (operation: string) => void = requireInteractive,
 ): WorkbenchHumanGate {
 	const dialog = createWorkbenchHumanGate(ctx, actorId, requireInteractive, sealedSelectionOperation);
+	const sealedDialog = requireInteractiveForSealed === requireInteractive
+		? dialog
+		: createWorkbenchHumanGate(ctx, actorId, requireInteractiveForSealed, sealedSelectionOperation);
 	return {
 		async confirm(confirmation, signal) {
 			if (confirmation.policy === "routine") return { approved: true, actorId: actorId() };
@@ -254,7 +265,7 @@ export function createPolicyAwareGate(
 			}
 			return dialog.confirm(confirmation, signal);
 		},
-		selectSealed: (request, signal) => dialog.selectSealed(request, signal),
+		selectSealed: (request, signal) => sealedDialog.selectSealed(request, signal),
 	};
 }
 
@@ -324,7 +335,7 @@ export function createBuilderWorkbenchTools(
 				"recipe = { schemaVersion: 1, input?: { column } | { template: \"…{{column}}…\" }, expected?: { column }, dialogue?: { column }, metadata?: [column, …], filters?: [{ column, equals } | { column, matches }], sample?: { limit, seed, stratifyBy? }, graders: [grader, …], idPrefix? } — needs input or dialogue; grader text may use {{column}} and {{expected}}.",
 				"• { kind: \"select\", entity: \"spec-draft\" | \"approved-spec\" | \"corpus-draft\" | \"development-corpus\" | \"eval-run\" | \"proposal\" | \"candidate\", id }",
 				"• { kind: \"structured-proposal\", authoringContext: <claim from aspect=target>, source: { algorithmId, evalRunId, diagnosisId, briefId } (from aspect=traces), failureModeIds: [failureModeId, …], summary, intents: [intent, …], risks?: string[], validationPlan: string[] }",
-				"grader = { type: \"output_contains\", text, caseSensitive? } | { type: \"output_matches\", pattern (JavaScript regex, no (?i) flags) } | { type: \"tool_called\", tool, argsContains? } | { type: \"judge\", rubric, withReference? } | { type: \"exact\", normalize? } | { type: \"similarity\", metric: \"token-f1\" | \"levenshtein\", threshold } (judge only when the Target manifest configures a judge model; exact, similarity and judge withReference need the case's expected answer).",
+				"grader = { type: \"output_contains\", text, caseSensitive? } | { type: \"output_matches\", pattern (JavaScript regex, no (?i) flags) } | { type: \"tool_called\", tool, argsContains? } | { type: \"judge\", rubric? , assertions?: string[] (yes/no checks, one behaviour each; needs rubric or assertions), jury?: 1-5, withReference? } | { type: \"exact\", normalize? } | { type: \"similarity\", metric: \"token-f1\" | \"levenshtein\", threshold } (judge only when the Target manifest configures a judge model; exact, similarity and judge withReference need the case's expected answer).",
 				"intent = { type: \"instructions.replace\", content } | { type: \"skill.upsert\", name, description, body, disableModelInvocation? } | { type: \"skill.remove\", name } | { type: \"tool.upsert\", name, descriptor: { description, parameters (JSON Schema), arguments?, timeoutMs, maxOutputBytes, output: \"json\" | \"text\", permissions: { environment: string[], network: \"deny\" | \"allow\", filesystem: \"read-only\" | \"workspace-write\" } }, executable (script text starting with #!) } | { type: \"tool.remove\", name } | { type: \"execution.configure\", execution: { tools: (\"read\" | \"bash\" | \"edit\" | \"write\")[], environmentAllowlist: string[], network, sandbox: \"required\" | \"best-effort\" | \"off\" } }.",
 				"This is how Target tools and skills get written: the host compiles the exact files and diff from these intents; the operator reviews and applies. Submission grants no consequential authority.",
 			].join("\n"),
@@ -367,7 +378,14 @@ export function createBuilderWorkbenchTools(
 				// confirmation enforces that again at the moment of the decision.
 				const policy = workbenchGateClass(params.kind);
 				if (policy !== "routine") requireHostUI(ctx, "Workbench decision");
-				const guard = (operation: string): void => {
+				// Never close this over the REQUESTED kind: routine `run-current`
+				// auto-chains into the consequential `start-testing` composite, and a
+				// guard that already decided "routine" would let an RPC or print host
+				// approve a Spec with no human in front of it. `createPolicyAwareGate`
+				// re-decides per confirmation, so routine measurement still runs
+				// headless — only the sealed picker follows the requested kind.
+				const guard = (operation: string): void => requireHostUI(ctx, operation);
+				const sealedGuard = (operation: string): void => {
 					if (policy !== "routine") requireHostUI(ctx, operation);
 				};
 				const targetModelSelection = params.kind === "configure-target" ? params.model : null;
@@ -388,7 +406,7 @@ export function createBuilderWorkbenchTools(
 						: undefined;
 					const result = await workbench.decide(
 						params,
-						createPolicyAwareGate(ctx, actorId, guard),
+						createPolicyAwareGate(ctx, actorId, guard, undefined, sealedGuard),
 						{
 							signal,
 							...(observation ? { onRunEvent: observation.onRunEvent } : {}),

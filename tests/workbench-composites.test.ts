@@ -352,7 +352,7 @@ describe("ship composite", () => {
 					operation: "ship",
 					steps: ["adopt-candidate", "continue-cycle"],
 					candidateId: fixture.candidateId,
-					development: "improved · +100.0 points",
+					development: "improved · +100.0pp",
 					sealed: "pass · 15 × 2",
 					fastForward: `${fixture.branch} ${fixture.baselineSha.slice(0, 10)} → ${fixture.candidateSha.slice(0, 10)}`,
 					candidate: { candidateId: fixture.candidateId, status: "promoted" },

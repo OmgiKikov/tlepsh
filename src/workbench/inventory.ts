@@ -925,7 +925,9 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 			headline: status === "promoted"
 				? "The promoted candidate is the active Target. Start the next improvement cycle."
 				: "The candidate was rejected and the Target stays at its baseline. Start the next improvement cycle.",
-			actions: ["ship", "continue-cycle"],
+			// A rejected candidate has nothing left to ship; advertising it beside a
+			// headline that says so would tell the model two opposite things.
+			actions: status === "promoted" ? ["ship", "continue-cycle"] : ["continue-cycle"],
 			blockers: [],
 		};
 	}

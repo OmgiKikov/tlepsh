@@ -408,7 +408,7 @@ describe("Workbench improvement-cycle closure", () => {
 			const view = await fixture.workbench.view();
 			expect(view).toMatchObject({
 				stage: "complete",
-				actions: ["ship", "continue-cycle"],
+				actions: ["continue-cycle"],
 				blockers: [],
 				headline: expect.stringContaining("rejected"),
 				focus: { candidate: fixture.candidateId },

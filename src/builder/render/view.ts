@@ -259,7 +259,20 @@ function graderLabel(grader: { type: string } & Record<string, unknown>): string
 		case "tool_called": return `tool ${String(grader.tool ?? grader.name ?? "?")}${grader.argsContains ? ` ∋ “${oneLine(String(grader.argsContains), 30)}”` : ""}`;
 		case "output_contains": return `contains “${oneLine(String(grader.text ?? ""), 30)}”`;
 		case "output_matches": return `matches /${oneLine(String(grader.pattern ?? ""), 30)}/`;
-		case "judge": return `judge “${oneLine(String(grader.rubric ?? ""), 40)}”`;
+		case "judge": {
+			// A judge may now carry assertions instead of a rubric; showing an empty
+			// quote for the whole check is worse than showing the checks themselves.
+			const assertions = Array.isArray(grader.assertions) ? grader.assertions.map(String) : [];
+			const body = grader.rubric
+				? `“${oneLine(String(grader.rubric), 40)}”`
+				: assertions.length > 0
+					? `“${oneLine(assertions.join(" · "), 40)}”`
+					: "“”";
+			const jury = typeof grader.jury === "number" && grader.jury > 1 ? ` · jury ${grader.jury}` : "";
+			const checks = grader.rubric && assertions.length > 0 ? ` +${assertions.length} assertions` : "";
+			const reference = grader.withReference ? " · with reference" : "";
+			return `judge ${body}${checks}${jury}${reference}`;
+		}
 		default: return grader.type;
 	}
 }

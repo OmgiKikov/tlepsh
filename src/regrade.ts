@@ -69,7 +69,9 @@ import { formatPoints } from "./domain/comparison-gate.js";
  * regrade whose graders changed is refused against its own source.
  */
 
-const REGRADE_LABELS = ["baseline", "solo", "regrade"] as const;
+// `baseline` is deliberately absent: it is the one label the reuse scan looks
+// for, and derived evidence must never stand in for a measured baseline.
+const REGRADE_LABELS = ["solo", "regrade"] as const;
 export type RegradeLabel = typeof REGRADE_LABELS[number];
 
 export function isRegradeLabel(value: string): value is RegradeLabel {

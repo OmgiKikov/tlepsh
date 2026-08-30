@@ -37,7 +37,7 @@ import {
 } from "../application/harness-authoring.js";
 import { inspectTargetAuthoringContext } from "../application/target-authoring-context.js";
 import { runAppliedBuilderCandidate } from "../application/builder-candidate.js";
-import { SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
+import { formatPoints, SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
 import {
 	configureTargetBootstrap,
 	describeTargetBootstrap,
@@ -848,7 +848,12 @@ export class AhdeWorkbench {
 		if (plan.includes("promote-candidate") && !version) {
 			throw new Error("shipping tags an exact version; say for example “ship 0.2.0”");
 		}
-		const summary = candidateSummary(candidate);
+		// The judge-aware projection, not the plain summary: this subject is what
+		// the one consequential ship dialog renders, and an uncalibrated judge is
+		// exactly what the operator must see BEFORE approving — promotion can
+		// refuse on it. `candidateView` swallows its own errors, so a missing
+		// label store degrades to the plain summary instead of blocking a ship.
+		const summary = this.candidateView(candidate);
 		const candidateId = candidate.candidateId;
 		const sameCandidate = (subject: unknown): boolean =>
 			(subject as { candidate?: { candidateId?: unknown } }).candidate?.candidateId === candidateId;
@@ -869,7 +874,7 @@ export class AhdeWorkbench {
 			steps: plan,
 			candidateId,
 			development: summary.development?.gate
-				? `${summary.development.gate.verdict} · ${summary.development.gate.delta >= 0 ? "+" : ""}${(summary.development.gate.delta * 100).toFixed(1)} points`
+				? `${summary.development.gate.verdict} · ${formatPoints(summary.development.gate.scoreDelta)}`
 				: "no development verdict",
 			sealed: summary.sealedHoldout.gate
 				? `${summary.sealedHoldout.gate.verdict} · ${summary.sealedHoldout.gate.tasks} × ${summary.sealedHoldout.gate.repetitions}`
@@ -1979,14 +1984,21 @@ export class AhdeWorkbench {
 		}
 
 		if (input.kind === "reject-candidate") {
-			const candidate = requireCandidate(inventory, ["reviewed"], input.candidateId);
-			const before = { operation: "reject-candidate", candidateHash: hashValue(candidate), candidate: candidateSummary(candidate) };
+			// Rejecting is legal where the operator reads the evidence, not only one
+			// step later: at `candidate-review` the review is recorded first, after
+			// the same single question, so "reject" never bounces off a stage rule.
+			const candidate = requireCandidate(inventory, ["evaluated", "reviewed"], input.candidateId);
+			const needsReview = candidateStatus(candidate) === "evaluated";
+			const before = { operation: "reject-candidate", candidateHash: hashValue(candidate), candidate: this.candidateView(candidate) };
 			const actor = await this.confirm(input, gate, "Reject exact candidate", before, options.signal, {
 				question: "Reject this candidate? The agent stays at its baseline.",
 			});
 			const current = this.decisionInventory(input.kind);
-			if (hashValue(requireCandidate(current, ["reviewed"], candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
-			const rejected = this.dependencies.rejectCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, reason: input.reason, actorId: actor, now: this.dependencies.now });
+			if (hashValue(requireCandidate(current, ["evaluated", "reviewed"], candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
+			const reviewedRecord = needsReview
+				? this.dependencies.reviewCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, recommendation: "reject", reason: input.reason, actorId: actor, now: this.dependencies.now })
+				: candidate;
+			const rejected = this.dependencies.rejectCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: hashValue(reviewedRecord), reason: input.reason, actorId: actor, now: this.dependencies.now });
 			const settled = this.select("candidate", rejected.candidateId);
 			return { kind: input.kind, message: "Candidate rejected durably. The Target stays at its baseline.", result: candidateSummary(rejected), view: await this.viewOf(settled) };
 		}

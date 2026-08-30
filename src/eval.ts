@@ -1754,6 +1754,11 @@ export function findReusableBaseline(runsRoot: string, query: ReusableBaselineQu
 	const oldestUsableMs = Date.now() - maxAgeMs;
 	for (const record of listEvalRunIndexesLenient(runsRoot).records) {
 		if (record.label !== query.label) continue;
+		// Derived evidence is not a fresh measurement. A regrade copies the source
+		// traces and stamps today's timestamps, so reusing one would let a re-grade
+		// resurrect a baseline the freshness guard had retired and pair a fresh
+		// candidate against months-old Target behaviour.
+		if (record.regradeOf !== undefined) continue;
 		// An unreadable timestamp cannot prove freshness, so it is not fresh.
 		const finishedAtMs = Date.parse(record.finishedAt);
 		if (!Number.isFinite(finishedAtMs) || finishedAtMs < oldestUsableMs) continue;

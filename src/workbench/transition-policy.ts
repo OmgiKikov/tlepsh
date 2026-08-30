@@ -1,4 +1,4 @@
-import { isSealedEvalRun, listEvalRunIndexes, loadRun } from "../eval.js";
+import { isSealedEvalRun, listEvalRunIndexesLenient, loadRun } from "../eval.js";
 import type { WorkbenchDecisionInput, WorkbenchStage } from "./types.js";
 
 type DirectDecisionKind = Exclude<WorkbenchDecisionInput["kind"], "run-current">;
@@ -21,7 +21,9 @@ const LEGAL_DECISION_STAGES = {
 	"abandon-candidate": ["candidate-verification"],
 	"review-candidate": ["candidate-review"],
 	"promote-candidate": ["release-decision"],
-	"reject-candidate": ["release-decision"],
+	// The persona tells the model to reject right where the evidence is read, and
+	// `/reject` already works there; `decide` records the review first.
+	"reject-candidate": ["candidate-review", "release-decision"],
 	"adopt-candidate": ["candidate-adoption"],
 	"continue-cycle": ["complete"],
 	// The composite that closes a verified candidate: review, promote, adopt,
@@ -153,9 +155,12 @@ export interface EstimateRunCostInput {
  */
 export function estimateRunCost(input: EstimateRunCostInput): WorkbenchRunEstimate {
 	const executions = Math.max(0, Math.trunc(input.executions));
-	let indexes: ReturnType<typeof listEvalRunIndexes>;
+	// Lenient, like the baseline reuse scan: one pre-V1.8 index on disk is a
+	// "legacy · not comparable" row, not a reason to stop estimating and ask the
+	// operator to confirm every routine measurement forever.
+	let indexes: ReturnType<typeof listEvalRunIndexesLenient>["records"];
 	try {
-		indexes = listEvalRunIndexes(input.runsRoot);
+		indexes = listEvalRunIndexesLenient(input.runsRoot).records;
 	} catch {
 		return { executions, sampledRuns: 0, costUsd: null, minutes: null };
 	}
