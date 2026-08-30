@@ -15,7 +15,9 @@ import {
 	type BuilderCorpusImportSource,
 } from "./builder-corpus-import-contract.js";
 
-const MAX_DRAFT_TASKS = 100;
+/** A draft stays small enough for a human to read every case before publishing. */
+export const MAX_BUILDER_CORPUS_DRAFT_TASKS = 100;
+const MAX_DRAFT_TASKS = MAX_BUILDER_CORPUS_DRAFT_TASKS;
 const MAX_TASK_BYTES = 64 * 1024;
 const MAX_DRAFT_CONTENT_BYTES = 2 * 1024 * 1024;
 const MAX_DRAFT_ARTIFACT_BYTES = MAX_DRAFT_CONTENT_BYTES + 64 * 1024;

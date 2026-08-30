@@ -1,5 +1,7 @@
 import type {
 	WorkbenchCandidateSummary,
+	WorkbenchDatasetCase,
+	WorkbenchDatasetDetail,
 	WorkbenchImprovementBriefProjection,
 	WorkbenchReviewDetail,
 	WorkbenchTargetDetail,
@@ -388,6 +390,41 @@ export function renderTarget(content: WorkbenchTargetDetail, paint: Paint): stri
 	return lines;
 }
 
+/** One inbox file as the host reads it: shape first, then the rows it will map. */
+export function renderDataset(content: WorkbenchDatasetDetail, paint: Paint): string[] {
+	const preview = content.preview;
+	const lines = [
+		`${section("Dataset", paint)} ${paint.bold(oneLine(content.sourcePath, 70))} ${paint.dim("·")} ${oneLine(preview.format, 20)} ${paint.dim(`· ${bytes(preview.bytes)}`)}`,
+		`${paint.dim("Rows")} ${pluralize(preview.rowCount, "row")} ${paint.dim("·")} ${pluralize(preview.columns.length, "column")}` +
+			(preview.holdout
+				? ` ${paint.dim("·")} ${paint.warning(`${preview.holdout.reserved} reserved for the sealed exam`)}`
+				: ` ${paint.dim("· nothing sealed yet")}`),
+		paint.dim("Columns"),
+	];
+	for (const column of preview.columns) {
+		const samples = column.samples.map((sample) => oneLine(sample, 28)).join(paint.dim(" · "));
+		lines.push(`  ${paint.bold(oneLine(column.name, 28).padEnd(28))} ${column.inferredType.padEnd(10)} ${samples || paint.muted("—")}`);
+	}
+	lines.push(paint.dim("Propose a recipe; the host compiles sample cases before anything is imported."));
+	return lines;
+}
+
+/** The cases one proposed recipe produces, so a human argues with cases, not JSON. */
+export function renderDatasetCases(cases: readonly WorkbenchDatasetCase[], paint: Paint): string[] {
+	const lines: string[] = [];
+	cases.forEach((sample, index) => {
+		lines.push(`  ${paint.dim(`${String(index + 1).padStart(2)}.`)} ${oneLine(sample.input, 92)}`);
+		if (sample.expected !== null) lines.push(`      ${paint.dim("expected:")} ${oneLine(sample.expected, 88)}`);
+		if (sample.messages) lines.push(`      ${paint.dim("dialogue:")} ${pluralize(sample.messages.length, "turn")} ${paint.dim(`ending in “${oneLine(sample.messages[sample.messages.length - 1]?.content ?? "", 50)}”`)}`);
+		if (sample.metadata) {
+			const pairs = Object.entries(sample.metadata).slice(0, 4).map(([key, value]) => `${oneLine(key, 20)}=${oneLine(value, 24)}`);
+			lines.push(`      ${paint.dim("metadata:")} ${pairs.join(paint.dim(" · "))}`);
+		}
+		lines.push(`      ${paint.dim("graders:")} ${sample.graders.map(graderLabel).join(paint.dim(" · "))}`);
+	});
+	return lines;
+}
+
 /** Status plus whichever exact detail the view carries. */
 export function renderView(view: WorkbenchView, paint: Paint, options: RenderReviewOptions = {}): string[] {
 	const status = renderStatus(view, paint);
@@ -396,6 +433,8 @@ export function renderView(view: WorkbenchView, paint: Paint, options: RenderRev
 		? renderReview(view.detail.content, paint, options)
 		: view.detail.aspect === "traces"
 		? renderTraces(view.detail.content, paint)
+		: view.detail.aspect === "dataset"
+		? renderDataset(view.detail.content, paint)
 		: renderTarget(view.detail.content, paint);
 	return [...status, "", ...detail];
 }
@@ -405,6 +444,7 @@ export function viewTitle(view: WorkbenchView): string {
 	if (!view.detail) return `AHDE · ${stageLabel(view.stage)}`;
 	if (view.detail.aspect === "traces") return "AHDE · Diagnosis";
 	if (view.detail.aspect === "target") return "AHDE · Target";
+	if (view.detail.aspect === "dataset") return "AHDE · Dataset";
 	switch (view.detail.content.kind) {
 		case "spec-draft": return "AHDE · Spec review";
 		case "corpus-draft": return "AHDE · Eval basket review";

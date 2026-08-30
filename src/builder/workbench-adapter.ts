@@ -3,12 +3,13 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import { decisionHeadline, renderDecision } from "./render/decision.js";
-import { oneLine } from "./render/format.js";
+import { oneLine, pluralize } from "./render/format.js";
 import { themePaint } from "./render/paint.js";
 import { nextStep, stageLabel } from "./render/stage.js";
-import { renderView, viewTitle } from "./render/view.js";
+import { renderDatasetCases, renderView, viewTitle } from "./render/view.js";
 import { markerPaint, type TranscriptPresenter } from "./transcript.js";
 import type {
+	WorkbenchDatasetRecipeArtifact,
 	WorkbenchDecisionResult,
 	WorkbenchTurn,
 	WorkbenchView,
@@ -75,6 +76,23 @@ const WORKBENCH_TOOL_RENDERERS = {
 			const paint = themePaint(theme);
 			if (!isWorkbenchTurn(details)) return card([paint.muted("Workbench submission")]);
 			const lines = [`${paint.success("✓")} ${oneLine(details.message, 160)} ${paint.dim(`· now ${stageLabel(details.view.stage)}`)}`];
+			// A recipe is argued about in cases, so its card shows cases, not fields.
+			const recipe = details.kind === "dataset-recipe" && details.artifact
+				? details.artifact as unknown as WorkbenchDatasetRecipeArtifact
+				: null;
+			if (recipe) {
+				const shown = expanded ? recipe.sampleCases : recipe.sampleCases.slice(0, 2);
+				lines.push(
+					`  ${paint.dim("From")} ${oneLine(recipe.sourcePath, 70)} ${paint.dim("·")} ${pluralize(recipe.developmentCount, "case")}` +
+						`${recipe.skippedRows > 0 ? paint.dim(` · ${pluralize(recipe.skippedRows, "row")} skipped`) : ""}` +
+						`${recipe.sealedReserved > 0 ? paint.dim(` · ${recipe.sealedReserved} already sealed`) : ""}`,
+					...renderDatasetCases(shown, paint),
+				);
+				if (recipe.sampleCases.length > shown.length) {
+					lines.push(`  ${paint.dim(`… +${recipe.sampleCases.length - shown.length} more sample cases`)}`);
+				}
+				return card(lines);
+			}
 			if (expanded && details.artifact) {
 				for (const [key, value] of Object.entries(details.artifact)) {
 					if (value === null || value === undefined) continue;
@@ -233,10 +251,13 @@ export function createBuilderWorkbenchTools(
 			label: "Inspect Builder Workbench",
 			description: [
 				"Read the AHDE Workbench: the current stage, legal next actions, the exact subject under review, the diagnosis, or the committed Target.",
-				"Arguments: { aspect?: \"summary\" | \"review\" | \"traces\" | \"target\", resourcePath?: string, include?: [\"selections\"] }.",
+				"Arguments: { aspect?: \"summary\" | \"review\" | \"traces\" | \"target\" | \"dataset\", resourcePath?: string, include?: [\"selections\"] }.",
 				"aspect omitted/summary = stage + counts; review = the exact Spec draft, eval basket, proposal diff, or candidate awaiting a decision;",
 				"traces = evaluation summary, failure modes (improvementBrief.modes with ordinal + failureModeId), evidence link;",
-				"target = the committed Target index (resources with path/kind) — pass one returned resourcePath to read that file's complete content.",
+				"target = the committed Target index (resources with path/kind) — pass one returned resourcePath to read that file's complete content;",
+				"dataset = a bounded preview of one operator-provided file in the imports/ inbox — pass resourcePath: \"imports/<file>\" (csv, tsv, json, jsonl, md, txt);",
+				"it returns the format, the columns with inferred types and three sample values each, the row count, and how many rows a sealed slice already reserved.",
+				"You never read imports/ yourself, and rows held out for the sealed exam are removed before the preview is computed.",
 				"include: [\"selections\"] adds the selectable-artifact ids that kind: select needs; omit it otherwise.",
 				"Call this before relying on remembered state; operator slash commands change state between your turns.",
 			].join(" "),
@@ -266,6 +287,8 @@ export function createBuilderWorkbenchTools(
 				"• { kind: \"corpus-draft\", name, tasks: [{ input, graders: [grader, …] }], coverageNotes?: string[], revisionSummary, approvedSpecId? } — every task needs ≥1 grader; no other task fields (no id/notes/expected).",
 				"• { kind: \"corpus-revision\", parentDraftId?, operations: [{ type: \"add\", task } | { type: \"replace\", taskId, task } | { type: \"remove\", taskId } | { type: \"set-graders\", taskId, graders } | { type: \"grader.add\", taskId, grader } | { type: \"grader.update\", taskId, graderIndex, grader } | { type: \"grader.remove\", taskId, graderIndex } | { type: \"add-case-from-run\", evalRunId, runId, task } | { type: \"rename\", name } | { type: \"set-notes\", coverageNotes }], revisionSummary }",
 				"• { kind: \"corpus-import\", sourcePath: \"imports/<file>.jsonl\", name, revisionSummary, coverageNotes? }",
+				"• { kind: \"dataset-recipe\", sourcePath: \"imports/<file>\", recipe, name, revisionSummary, approvedSpecId? } — how to read any other data file (csv/tsv/json/jsonl/markdown/text/chat export) as cases. Write the recipe from aspect: \"dataset\" alone; the host re-validates it against the real columns and answers with the first compiled sample cases plus a submissionId. Nothing is imported until the operator confirms { kind: \"import-dataset\" }.",
+				"recipe = { schemaVersion: 1, input?: { column } | { template: \"…{{column}}…\" }, expected?: { column }, dialogue?: { column }, metadata?: [column, …], filters?: [{ column, equals } | { column, matches }], sample?: { limit, seed, stratifyBy? }, graders: [grader, …], idPrefix? } — needs input or dialogue; grader text may use {{column}} and {{expected}}.",
 				"• { kind: \"select\", entity: \"spec-draft\" | \"approved-spec\" | \"corpus-draft\" | \"development-corpus\" | \"eval-run\" | \"proposal\" | \"candidate\", id }",
 				"• { kind: \"structured-proposal\", authoringContext: <claim from aspect=target>, source: { algorithmId, evalRunId, diagnosisId, briefId } (from aspect=traces), failureModeIds: [failureModeId, …], summary, intents: [intent, …], risks?: string[], validationPlan: string[] }",
 				"grader = { type: \"output_contains\", text, caseSensitive? } | { type: \"output_matches\", pattern (JavaScript regex, no (?i) flags) } | { type: \"tool_called\", tool, argsContains? } | { type: \"judge\", rubric } (judge only when the Target manifest configures a judge model).",
@@ -290,6 +313,7 @@ export function createBuilderWorkbenchTools(
 				"Request one human-gated workflow transition. Call this yourself when the operator asks for the step in plain words (run, approve, publish, apply, promote, adopt, next): the host shows the exact subject and asks the operator to confirm in its own dialog before anything happens — never tell the operator to type a slash command instead. Every kind requires a non-blank `reason`.",
 				"Kinds by stage: target-setup → { kind: \"scaffold-target\" } then { kind: \"configure-target\", targetId (kebab-case), model: { provider, modelId, thinkingLevel?, timeoutMs?, params? } };",
 				"spec-review → { kind: \"approve-spec\", draftSpecId? }; corpus-review → { kind: \"publish-corpus\", draftId?, name? };",
+				"corpus-design / corpus-review → { kind: \"import-dataset\", submissionId? (from a dataset-recipe submission; the newest one otherwise), sealed: { count, seed, stratifyBy? } | null } — the operator confirms the mapping on the sample cases; the host reserves the sealed slice first, compiles the rest into a new draft, and tells you only how many cases were held out.",
 				"ready-to-evaluate / improvement-authoring → { kind: \"run-current\", repetitions (3 recommended; sealed verdicts need ≥ 2) } (or run-eval), and { kind: \"calibrate\", repetitions } measures noise once per Target revision; proposal-review → { kind: \"apply-proposal\", branch } | { kind: \"discard-proposal\" };",
 				"candidate-verification → { kind: \"run-current\", repetitions } (verify) | { kind: \"abandon-candidate\" } for an interrupted attempt; candidate-review → { kind: \"review-candidate\", recommendation: \"promote\" | \"reject\" };",
 				"release-decision → { kind: \"promote-candidate\", version: \"x.y.z\" } | { kind: \"reject-candidate\" }; candidate-adoption → { kind: \"adopt-candidate\" }; complete → { kind: \"continue-cycle\" }.",

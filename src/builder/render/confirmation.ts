@@ -1,8 +1,12 @@
-import type { WorkbenchCandidateSummary, WorkbenchConfirmation } from "../../workbench/types.js";
+import type {
+	WorkbenchCandidateSummary,
+	WorkbenchConfirmation,
+	WorkbenchDatasetCase,
+} from "../../workbench/types.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
 import { bullets, clean, numbered, oneLine, pluralize, shortHash, shortSha, wrap } from "./format.js";
 import type { Paint } from "./paint.js";
-import { renderCandidate } from "./view.js";
+import { renderCandidate, renderDatasetCases } from "./view.js";
 
 const MAX_CONFIRM_DIFF_LINES = 200;
 
@@ -102,6 +106,32 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 				...numbered(tasks.map((task) => text(bag(task).input ?? task, 96)), paint, { limit: 10 }),
 				paint.muted("Publishing makes these cases the development evidence for this Spec lineage."),
 			];
+		}
+		case "import-dataset": {
+			const sealed = subject.sealed === null || subject.sealed === undefined ? null : bag(subject.sealed);
+			const recipe = bag(subject.recipe);
+			const input = bag(recipe.input);
+			const mapping = [
+				`input ${input.column ? `← ${text(input.column, 40)}` : input.template ? `← template ${text(input.template, 60)}` : recipe.dialogue ? "← last user turn" : "—"}`,
+				...(recipe.expected ? [`expected ← ${text(bag(recipe.expected).column, 40)}`] : []),
+				...(recipe.dialogue ? [`dialogue ← ${text(bag(recipe.dialogue).column, 40)}`] : []),
+				...(strings(recipe.metadata).length > 0 ? [`metadata ← ${strings(recipe.metadata).map((item) => oneLine(item, 24)).join(", ")}`] : []),
+			];
+			const cases = Array.isArray(subject.sampleCases) ? subject.sampleCases : [];
+			const lines = [
+				`${paint.dim("File")} ${paint.bold(text(subject.sourcePath, 80))} ${paint.dim("· basket")} ${text(subject.name, 60)}`,
+				`${paint.dim("Mapping")} ${mapping.join(paint.dim(" · "))}`,
+				`${paint.dim("Cases")} ${paint.bold(pluralize(Number(subject.developmentCount ?? cases.length), "development case"))}` +
+					`${Number(subject.skippedRows ?? 0) > 0 ? ` ${paint.dim("·")} ${pluralize(Number(subject.skippedRows), "row")} skipped` : ""}`,
+				sealed
+					? `${paint.dim("Sealed")} ${paint.bold(pluralize(Number(sealed.count ?? 0), "row"))} drawn with seed ${paint.bold(text(sealed.seed, 40))}${sealed.stratifyBy ? paint.dim(` · stratified by ${text(sealed.stratifyBy, 30)}`) : ""}`
+					: `${paint.dim("Sealed")} ${paint.warning("none")} ${paint.dim("· without a holdout there is no exam for this file")}`,
+			];
+			if (cases.length > 0) {
+				lines.push(paint.dim("Sample cases"), ...renderDatasetCases(cases as WorkbenchDatasetCase[], paint));
+			}
+			lines.push(paint.muted("Sealed rows are compiled first and never enter a development case or your context."));
+			return lines;
 		}
 		case "run-eval": {
 			const target = bag(subject.target);
