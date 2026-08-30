@@ -5,6 +5,7 @@ import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding
 import { Check } from "typebox/value";
 import { afterEach, expect, it, vi } from "vitest";
 import {
+	AHDE_BUILDER_REGISTERED_TOOL_NAMES,
 	AHDE_BUILDER_TOOL_NAMES,
 	createAhdeBuilderExtension,
 } from "../src/builder/extension.js";
@@ -210,7 +211,7 @@ it("resolves 'fix the first problem' through fresh traces and review without app
 		registerCommand: vi.fn(),
 		on: vi.fn(),
 	} as never);
-	expect(registered.map((tool) => tool.name)).toEqual(AHDE_BUILDER_TOOL_NAMES);
+	expect(registered.map((tool) => tool.name)).toEqual([...AHDE_BUILDER_REGISTERED_TOOL_NAMES]);
 
 	const viewTool = registered.find((tool) => tool.name === "ahde_workbench_view")!;
 	const submitTool = registered.find((tool) => tool.name === "ahde_workbench_submit")!;

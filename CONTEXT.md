@@ -34,16 +34,27 @@ the harness under development runs in a different Target Pi invocation.
   typed grader observations into systemic or task-local failure modes. Its
   explanations are hypotheses; the verified Eval Run and Diagnosis remain the
   evidence authority.
+- **Workshop** — the Builder's bound writable surface: a detached worktree of
+  one exact clean Target commit, scoped to `AGENTS.md`, `skills/**`,
+  `tools/**`, `bin/**`, `data/**`, with read, write, an argv-only sandboxed
+  shell, and `try_tool` over its own Harness copy. It changes nothing durable,
+  writes no evidence, never touches the operator's checkout, and dies with the
+  one proposal it compiles. Closing it derives the Proposal from `git diff`;
+  the Harness Authoring Intents below remain the second path.
 - **Harness Authoring Intent** — a semantic instruction/execution-policy/skill/tool change
   request. The host compiler, not Builder Pi, derives paths, modes, hashes,
-  manifest declarations, and exact diffs from a clean Target snapshot.
+  manifest declarations, and exact diffs from a clean Target snapshot. It is
+  the fallback path for single-file edits and the only way to change the
+  Target's execution policy; a workshop diff can change only resources.
 - **Target Authoring Context** — a bounded safe projection of one exact clean
   Target commit: sanitized model/execution metadata plus only its
   manifest-declared instructions, skills, and tool descriptor/executable
   resources. Builder reads it through Workbench, never through ambient files.
-- **Proposal** — the immutable exact Harness file replacement set compiled from
-  Harness Authoring Intents and tied to an approved Spec, baseline snapshot,
-  and optional development Eval/Diagnosis evidence.
+- **Proposal** — the immutable exact Harness file replacement set compiled
+  either from a closed Workshop's worktree diff or from Harness Authoring
+  Intents, and tied to an approved Spec, baseline snapshot, and optional
+  development Eval/Diagnosis evidence. Both paths produce the same artifact and
+  pass the same scope assertion, admission receipt, and human apply gate.
 - **Candidate** — a committed Harness Snapshot created from a human-applied Proposal and linked to the exact approved Spec used by its Builder.
 - **Candidate Experiment** — the deep module that validates lineage and scope, evaluates exact baseline/candidate revisions, compares them, and records a human decision.
 - **Promotion** — a human-approved immutable decision that tags the exact evaluated candidate revision. It is not autonomous deployment.
@@ -113,7 +124,7 @@ two modes of one session.
 | Skills | Packaged AHDE Builder skills only | Manifest-declared Target skills only |
 | Tools | Trusted typed AHDE extension only | Policy-approved built-ins and declarative subprocess tools |
 | Config/session root | User-level credentials and settings (`AHDE_HOME`, default `~/.ahde`); private per-project sessions | Private per-run state |
-| Repository authority | No generic edit/write; exact changes pass a host TUI gate | Confined task workspace only |
+| Repository authority | No generic edit/write outside a bound workshop worktree (`AGENTS.md`, `skills/**`, `tools/**`, `bin/**`, `data/**`, never the operator's checkout); exact changes still pass a host TUI gate | Confined task workspace only |
 | Private artifacts | Bounded views through AHDE core | No access |
 | Sealed holdout | Never model-visible | One evaluator-supplied case at a time |
 | Promotion authority | Host-owned explicit decision | None |
@@ -128,6 +139,17 @@ live view is never evidence and cannot perform state transitions.
 
 1. Builder and Target are different Pi invocations with different prompts,
    skills, tools, sessions, config roots, workspaces, and credentials.
+   Builder Pi has no generic edit/write **outside a bound workshop worktree**:
+   its only writable surface is one open Workshop over a detached copy of an
+   exact clean Target commit, confined to `AGENTS.md`, `skills/**`, `tools/**`,
+   `bin/**`, `data/**`. `manifest.yaml` is host-owned inside it (the host
+   derives the declared skill/tool/data lists from the files that exist), and
+   `evals/**`, `imports/**`, `runs/`, `.git`, `.env`, `.ahde`, traversal, and
+   symlinks all fail closed on the resolved real path with the offending path
+   named. The workshop's shell is argv-only inside the same OS sandbox a
+   declared Target tool runs in, with bounded output and a bounded timeout. The
+   four workshop tools exist only while a workshop is open; the workshop is
+   bound to one proposal attempt and dies with it, leaving no worktree behind.
 2. Evidence always points at immutable snapshots; renderers never reread the current checkout.
 3. Candidate and baseline revisions differ, except in explicit A/A calibration mode.
 4. Comparability excludes the changing Harness revision but includes every other effective execution and grading input.
@@ -230,7 +252,11 @@ live view is never evidence and cannot perform state transitions.
     refs are ignored. Structured authoring must echo the host-minted context
     claim; AHDE re-derives and persists it, pins compilation to its revision,
     and applies the same inspectability limits to the proposed resulting
-    Harness so Builder cannot author itself out of context.
+    Harness so Builder cannot author itself out of context. A Workshop holds
+    that claim host-side rather than asking for it back: it is minted when the
+    workshop opens, re-derived and required to be identical when it closes, the
+    diff is refused if the checkout moved or is dirty, and the same
+    inspectability limits are applied to the Harness the diff would create.
 31. Promotion never moves the active Target. Adoption is a separate
     human-confirmed fast-forward of a clean worktree from the exact candidate
     baseline to the exact promoted revision; its intent and receipt bind the
