@@ -74,10 +74,11 @@ the Target child never writes outside its own throwaway workspace.`,
 Count the 👍/👎 marks in imports/feedback.jsonl and show the most recent five
 by their first user turn. Full transcripts stay in the file.
 
-That file is an ordinary dataset inbox entry: the preview/recipe flow reads it
-as a chat export and a recipe with { "dialogue": { "column": "messages" } }
-compiles each mark into a dialogue case, with verdict and note kept as
-metadata columns for graders written later.`,
+That file is an ordinary dataset inbox entry. It previews as JSONL with a
+messages column beside verdict, note, at, and target.*, and a recipe with
+{ "dialogue": { "column": "messages" } } compiles each mark into a dialogue
+case — keep verdict and note as metadata columns so a rubric or reference
+answer written later can use what was wrong.`,
 	"feedback clear": `Usage: ahde feedback clear [--target <dir>]
 
 Move imports/feedback.jsonl aside to imports/feedback.<timestamp>.jsonl.
