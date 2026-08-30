@@ -435,6 +435,39 @@ const StructuredProposalInputSchema = z.strictObject({
 	validationPlan: z.array(NonBlankSchema.max(4_000)).min(1).max(100),
 });
 
+/**
+ * Open the one writable surface Builder Pi ever gets: a detached worktree of
+ * the exact clean Target commit, scoped to the Harness. It changes nothing
+ * durable, so it is a submission, not a decision.
+ */
+const OpenWorkshopInputSchema = z.strictObject({
+	kind: z.literal("workshop-open"),
+	approvedSpecId: ArtifactIdSchema.optional(),
+});
+
+/**
+ * Close the workshop by compiling its worktree diff into the ordinary immutable
+ * proposal. Same evidence binding as `structured-proposal`; the intents are
+ * replaced by the files the Builder actually wrote and ran.
+ */
+const CloseWorkshopInputSchema = z.strictObject({
+	kind: z.literal("workshop-close"),
+	approvedSpecId: ArtifactIdSchema.optional(),
+	source: ProposalBasisSelectionSchema.omit({ failureModeIds: true }),
+	failureModeIds: z.array(FailureModeIdSchema)
+		.min(1)
+		.max(8)
+		.refine((ids) => new Set(ids).size === ids.length, "failure mode ids must be unique"),
+	summary: NonBlankSchema.max(4_000),
+	risks: z.array(NonBlankSchema.max(4_000)).max(100).default([]),
+	validationPlan: z.array(NonBlankSchema.max(4_000)).min(1).max(100),
+});
+
+/** Throw the workshop away unread. Nothing it wrote ever existed. */
+const DiscardWorkshopInputSchema = z.strictObject({
+	kind: z.literal("workshop-discard"),
+});
+
 export const WorkbenchSubmitInputSchema = z.discriminatedUnion("kind", [
 	SelectInputSchema,
 	SaveSpecDraftInputSchema,
@@ -443,7 +476,62 @@ export const WorkbenchSubmitInputSchema = z.discriminatedUnion("kind", [
 	DatasetRecipeInputSchema,
 	ReviseCorpusDraftInputSchema,
 	StructuredProposalInputSchema,
+	OpenWorkshopInputSchema,
+	CloseWorkshopInputSchema,
+	DiscardWorkshopInputSchema,
 ]);
+
+// ---------------------------------------------------------------------------
+// The four tools that exist only while a workshop is open. Their authority is
+// the open workshop itself: no repository, no revision, no absolute path, and
+// no scope ever arrives from the model.
+
+const WorkshopPathSchema = z.string().min(1).max(200);
+
+export const WorkshopReadInputSchema = z.strictObject({
+	path: WorkshopPathSchema,
+});
+export type WorkshopReadInput = z.infer<typeof WorkshopReadInputSchema>;
+
+export const WorkshopWriteInputSchema = z.strictObject({
+	path: WorkshopPathSchema,
+	/** Whole-file form. */
+	content: z.string().max(512 * 1024).optional(),
+	/** Exact-replacement form: `oldText` must occur exactly once in the file. */
+	oldText: z.string().min(1).max(512 * 1024).optional(),
+	newText: z.string().max(512 * 1024).optional(),
+	/** Removal form. */
+	remove: z.literal(true).optional(),
+	mode: z.enum(["100644", "100755"]).optional(),
+}).superRefine((value, context) => {
+	const forms = [
+		value.content !== undefined,
+		value.oldText !== undefined || value.newText !== undefined,
+		value.remove === true,
+	].filter(Boolean).length;
+	if (forms !== 1) {
+		context.addIssue({ code: "custom", message: "use exactly one of content, oldText+newText, or remove" });
+	}
+	if ((value.oldText === undefined) !== (value.newText === undefined)) {
+		context.addIssue({ code: "custom", message: "an exact replacement needs both oldText and newText" });
+	}
+});
+export type WorkshopWriteInput = z.infer<typeof WorkshopWriteInputSchema>;
+
+export const WorkshopBashInputSchema = z.strictObject({
+	/** argv[0] is a bare PATH command or an absolute path; there is no shell. */
+	argv: z.array(z.string().min(1).max(4096)).min(1).max(64),
+	cwd: WorkshopPathSchema.optional(),
+	timeoutMs: z.number().int().min(1).max(600_000).optional(),
+});
+export type WorkshopBashInput = z.infer<typeof WorkshopBashInputSchema>;
+
+export const WorkshopTryInputSchema = z.strictObject({
+	tool: z.string().min(1).max(64),
+	/** JSON arguments, validated against the tool's own declared schema. */
+	input: z.unknown(),
+});
+export type WorkshopTryInput = z.infer<typeof WorkshopTryInputSchema>;
 /** Caller input; downstream defaults are materialized by parse inside Workbench. */
 export type WorkbenchSubmitInput = z.input<typeof WorkbenchSubmitInputSchema>;
 

@@ -7,8 +7,16 @@ import {
 	WorkbenchDecisionInputSchema,
 	WorkbenchSubmitInputSchema,
 	WorkbenchViewQuerySchema,
+	WorkshopBashInputSchema,
+	WorkshopReadInputSchema,
+	WorkshopTryInputSchema,
+	WorkshopWriteInputSchema,
 	type WorkbenchDecisionInput,
 	type WorkbenchViewQuery,
+	type WorkshopBashInput,
+	type WorkshopReadInput,
+	type WorkshopTryInput,
+	type WorkshopWriteInput,
 } from "../workbench/types.js";
 
 /**
@@ -419,3 +427,9 @@ function createToolSchema<TInput>(schema: z.ZodType<TInput>, discriminator: stri
 export const WorkbenchViewToolSchema = createToolSchema<WorkbenchViewQuery>(WorkbenchViewQuerySchema, "aspect");
 export const WorkbenchSubmitToolSchema = createToolSchema<z.output<typeof WorkbenchSubmitInputSchema>>(WorkbenchSubmitInputSchema, "kind");
 export const WorkbenchDecisionToolSchema = createToolSchema<WorkbenchDecisionInput>(WorkbenchDecisionInputSchema, "kind");
+
+/** The four tools that exist only while a workshop is open. */
+export const WorkshopReadToolSchema = createToolSchema<WorkshopReadInput>(WorkshopReadInputSchema, "path");
+export const WorkshopWriteToolSchema = createToolSchema<WorkshopWriteInput>(WorkshopWriteInputSchema, "path");
+export const WorkshopBashToolSchema = createToolSchema<WorkshopBashInput>(WorkshopBashInputSchema, "argv");
+export const WorkshopTryToolSchema = createToolSchema<WorkshopTryInput>(WorkshopTryInputSchema, "tool");
