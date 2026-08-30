@@ -7,8 +7,11 @@ import {
 	EvalRunRecordSchema,
 	defaultEvalJobs,
 	findReusableBaseline,
+	answerTokens,
 	gradeRun,
 	isLoopbackModelEndpoint,
+	levenshteinRatio,
+	tokenF1,
 	isSealedEvalRun,
 	listEvalRunIndexes,
 	listEvalRunIndexesLenient,
@@ -27,8 +30,10 @@ import { GraderSpec, type ResolvedTask } from "../src/manifest.js";
 import {
 	GraderResultSchema,
 	RunRecordSchema,
+	hashFile,
 	hashValue,
 	provenanceAxes,
+	type GraderResult,
 	type RunRecord,
 } from "../src/provenance.js";
 import { writeJsonArtifact } from "../src/storage/artifacts.js";
@@ -196,6 +201,136 @@ describe("typed grader evidence", () => {
 		expect(results.map((result) => result.specHash)).toEqual(
 			rawSpecs.map((spec) => hashValue(GraderSpec.parse(spec))),
 		);
+	});
+});
+
+describe("reference-answer graders", () => {
+	/** Grade one answer through the real trace path, exactly as a run is graded. */
+	async function grade(
+		graders: unknown[],
+		answer: string,
+		expected?: string,
+	): Promise<GraderResult[]> {
+		const runsRoot = mkdtempSync(join(tmpdir(), "ahde-reference-test-"));
+		cleanupPaths.push(runsRoot);
+		const trace = `${[
+			{ type: "message", message: { role: "user", content: [{ type: "text", text: "question" }] } },
+			{ type: "message", message: { role: "assistant", content: [{ type: "text", text: answer }] } },
+		].map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+		mkdirSync(join(runsRoot, "run-a"), { recursive: true });
+		writeFileSync(join(runsRoot, "run-a", "session.jsonl"), trace);
+		const task = {
+			id: "task-a",
+			input: "question",
+			...(expected === undefined ? {} : { expected }),
+			effectiveGraders: graders as ResolvedTask["effectiveGraders"],
+		} as ResolvedTask;
+		const record = baseRun({ trace: { path: "session.jsonl", sessionId: null, sha256: hashFile(trace) } });
+		return (await gradeRun(task, record, runsRoot)).graders;
+	}
+
+	it("exact match normalizes both sides the way the spec asks", async () => {
+		const table: Array<{ normalize?: string; answer: string; expected: string; passed: boolean }> = [
+			// Default `lower`: trim, case-fold, collapse internal whitespace.
+			{ answer: "  Для золотых —  60   дней. ", expected: "для золотых — 60 дней.", passed: true },
+			{ answer: "Для золотых — 61 день.", expected: "Для золотых — 60 дней.", passed: false },
+			{ normalize: "trim", answer: " Да ", expected: "Да", passed: true },
+			{ normalize: "trim", answer: "да", expected: "Да", passed: false },
+			{ normalize: "trim", answer: "Да  и  нет", expected: "Да и нет", passed: false },
+			{ normalize: "none", answer: "Да", expected: "Да", passed: true },
+			{ normalize: "none", answer: "Да ", expected: "Да", passed: false },
+		];
+		for (const row of table) {
+			const [result] = await grade(
+				[{ type: "exact", ...(row.normalize ? { normalize: row.normalize } : {}) }],
+				row.answer,
+				row.expected,
+			);
+			expect({ ...row, actual: result?.passed }).toEqual({ ...row, actual: row.passed });
+			expect(result?.checkCode).toBe("reference-exact");
+			expect(result?.score).toBe(row.passed ? 1 : 0);
+		}
+	});
+
+	it("similarity scores against its threshold and names the metric in the reason", async () => {
+		const [tokenPass] = await grade(
+			[{ type: "similarity", metric: "token-f1", threshold: 0.8 }],
+			"Возврат занимает тридцать дней",
+			"возврат занимает 30 дней",
+		);
+		expect(tokenPass?.passed).toBe(false);
+		expect(tokenPass?.reason).toMatch(/^token-f1 = 0\.75, below threshold 0\.8$/);
+		expect(tokenPass?.checkCode).toBe("reference-similarity");
+
+		const [tokenLoose] = await grade(
+			[{ type: "similarity", metric: "token-f1", threshold: 0.7 }],
+			"Возврат занимает тридцать дней",
+			"возврат занимает 30 дней",
+		);
+		expect(tokenLoose?.passed).toBe(true);
+
+		// A long answer against a short reference is refused on the length bound
+		// alone, without filling the distance matrix.
+		const [bounded] = await grade(
+			[{ type: "similarity", metric: "levenshtein", threshold: 0.9 }],
+			`да. ${"и ещё много слов. ".repeat(200)}`,
+			"да.",
+		);
+		expect(bounded?.passed).toBe(false);
+		expect(bounded?.reason).toContain("length-difference bound");
+
+		const [close] = await grade(
+			[{ type: "similarity", metric: "levenshtein", threshold: 0.9 }],
+			"Комиссия не взимается",
+			"комиссия не взимаются",
+		);
+		expect(close?.passed).toBe(true);
+		expect(close?.reason).toMatch(/^levenshtein = 0\.95\d*, at or above threshold 0\.9$/);
+	});
+
+	it("token-F1 and the levenshtein ratio are unicode-exact", () => {
+		expect(answerTokens("Привет, мир! 42 — ok")).toEqual(["привет", "мир", "42", "ok"]);
+
+		// Order-insensitive, case-folded, multiset overlap.
+		expect(tokenF1("Кот сидит на окне", "на окне сидит кот")).toBe(1);
+		expect(tokenF1("а б в", "а б в г")).toBeCloseTo(6 / 7, 10);
+		expect(tokenF1("а а б", "а б")).toBeCloseTo(0.8, 10);
+		expect(tokenF1("", "")).toBe(1);
+		expect(tokenF1("что-то", "")).toBe(0);
+		expect(tokenF1("кот", "пёс")).toBe(0);
+
+		// Code points, not UTF-16 units: one changed emoji out of two is half.
+		expect(levenshteinRatio("🙂🙂", "🙂🙃").score).toBe(0.5);
+		expect(levenshteinRatio("кот", "код").score).toBeCloseTo(2 / 3, 10);
+		expect(levenshteinRatio("", "").score).toBe(1);
+		expect(levenshteinRatio("ёлка", "елка").score).toBe(0.75);
+		expect(levenshteinRatio("да", "да")).toEqual({ score: 1, bounded: false });
+		// The bound is only ever returned when it already fails the threshold.
+		const wayOff = levenshteinRatio("a".repeat(10), "a".repeat(1000), 0.5);
+		expect(wayOff.bounded).toBe(true);
+		expect(wayOff.score).toBeCloseTo(0.01, 10);
+		expect(levenshteinRatio("a".repeat(10), "a".repeat(1000), 0.001).bounded).toBe(false);
+	});
+
+	it("every reference grader fails loudly on a case with no expected answer", async () => {
+		const results = await grade(
+			[
+				{ type: "exact" },
+				{ type: "similarity", metric: "token-f1", threshold: 0.5 },
+				{ type: "judge", rubric: "фактическая верность", withReference: true },
+				{ type: "output_contains", text: "" },
+			],
+			"любой ответ",
+		);
+		expect(results.slice(0, 3).map((result) => [result.type, result.passed, result.reason])).toEqual([
+			["exact", false, "case has no expected answer"],
+			["similarity", false, "case has no expected answer"],
+			["judge", false, "case has no expected answer"],
+		]);
+		expect(results.slice(0, 3).every((result) => result.score === 0)).toBe(true);
+		// No judge model was configured and none was needed: the missing reference
+		// is decided before any request would be built.
+		expect(results[3]?.passed).toBe(true);
 	});
 });
 

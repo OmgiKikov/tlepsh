@@ -97,4 +97,22 @@ describe("corpus grader validation against the current Target", () => {
 			"basket",
 		)).toThrow(/basket cannot run on the current Target:\n- task 2 grader 1: output_matches[\s\S]*\n- task 2 grader 2: judge graders need a judge model/);
 	});
+
+	it("refuses a reference grader on a case with no expected answer, and accepts one with it", () => {
+		const manifest = { evalSuite: { id: "s", dataset: "d", graders: "g" } } as never;
+		expect(() => assertGradersRunnable(
+			[
+				{ graders: [{ type: "exact", normalize: "lower" }] },
+				{ expected: "  ", graders: [{ type: "similarity", metric: "token-f1", threshold: 0.8 }] },
+			],
+			manifest,
+			"basket",
+		)).toThrow(/task 1 grader 1: a exact grader compares[\s\S]*\n- task 2 grader 1: a similarity grader compares/);
+
+		expect(() => assertGradersRunnable(
+			[{ expected: "Ответ.", graders: [{ type: "exact", normalize: "lower" }] }],
+			manifest,
+			"basket",
+		)).not.toThrow();
+	});
 });
