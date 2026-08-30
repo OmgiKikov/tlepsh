@@ -13,6 +13,8 @@ import {
 	readEvalRunIndex,
 	type EvalRunRecord,
 } from "./eval.js";
+import { loadJudgeCalibration, type JudgeCalibration } from "./application/judge-labels.js";
+import { formatJudgeAgreement } from "./domain/judge-agreement.js";
 import { canonicalJson, hashValue, type RunRecord } from "./provenance.js";
 import { openTrace, redactTraceText, type TraceMessage } from "./trace.js";
 import { writeTextArtifact } from "./storage/artifacts.js";
@@ -192,6 +194,22 @@ export type ReportComparison = Omit<CompareResult, "a" | "b" | "rows" | "issues"
 	issues: string[];
 };
 
+/**
+ * How far the judge behind one grader spec has been checked against a human.
+ * One row per judge grader spec that actually graded this run; `line` is the
+ * exact text every screen shows, so the report, the CLI and the Builder cannot
+ * word the same fact differently.
+ */
+export interface ReportJudgeCalibration {
+	graderSpecHash: string;
+	graderNames: string[];
+	calibrated: boolean;
+	agreement: number;
+	kappa: number | null;
+	labels: number;
+	line: string;
+}
+
 export interface EvalReportData {
 	generatedAt: string;
 	evalRun: ReportEvalRun;
@@ -199,6 +217,8 @@ export interface EvalReportData {
 	improvementBrief: ImprovementBrief;
 	comparison: ReportComparison | null;
 	runs: ReportRun[];
+	/** Empty when no judge grader ran; one row per judge grader spec otherwise. */
+	judgeCalibration: ReportJudgeCalibration[];
 	projection: EvalReportProjection;
 	redactionNotice: string;
 }
@@ -446,11 +466,51 @@ function projectComparison(
 	};
 }
 
+/**
+ * Judge graders that graded these runs, each with the agreement its project's
+ * human labels support. Without a label store the rows still appear, saying
+ * plainly that nobody has checked the judge yet.
+ */
+export function judgeCalibrationRows(
+	runs: readonly RunRecord[],
+	calibration: JudgeCalibration | null,
+): ReportJudgeCalibration[] {
+	const names = new Map<string, Set<string>>();
+	for (const run of runs) {
+		for (const grader of run.evalResults?.graders ?? []) {
+			if (grader.checkCode !== "semantic-rubric" || !grader.specHash) continue;
+			const bucket = names.get(grader.specHash) ?? new Set<string>();
+			bucket.add(reportMetadataText(grader.name, MAX_GRADER_NAME_CHARS));
+			names.set(grader.specHash, bucket);
+		}
+	}
+	return [...names.entries()]
+		.sort(([left], [right]) => left.localeCompare(right))
+		.map(([graderSpecHash, graderNames]) => {
+			const stats = calibration?.byGraderSpecHash.get(graderSpecHash);
+			return {
+				graderSpecHash,
+				graderNames: [...graderNames].sort().slice(0, MAX_DIAGNOSIS_NAMES),
+				calibrated: stats !== undefined && stats.n > 0,
+				agreement: stats?.agreement ?? 0,
+				kappa: stats?.kappa ?? null,
+				labels: stats?.n ?? 0,
+				line: stats && stats.n > 0
+					? `judge agreement ${formatJudgeAgreement(stats)}`
+					: "judge not calibrated",
+			};
+		});
+}
+
 export function collectEvalReportData(
 	runsRoot: string,
 	evalRunId: string,
 	now = () => new Date().toISOString(),
-	options: { allowDiagnosisCreation?: boolean } = {},
+	options: {
+		allowDiagnosisCreation?: boolean;
+		/** Where this project's human judge labels live, when there are any. */
+		labels?: { stateRoot: string; projectId: string };
+	} = {},
 ): EvalReportData {
 	resolveContainedArtifactPath(runsRoot, evalRunId, "eval_run.json");
 	const requestedIndex = readEvalRunIndex(runsRoot, evalRunId);
@@ -640,6 +700,16 @@ export function collectEvalReportData(
 			}
 			: null,
 	});
+	// A missing or unreadable label store is not a report failure: the screen
+	// then says the judge is not calibrated, which is exactly true.
+	let calibration: JudgeCalibration | null = null;
+	if (options.labels) {
+		try {
+			calibration = loadJudgeCalibration(options.labels.stateRoot, options.labels.projectId);
+		} catch {
+			calibration = null;
+		}
+	}
 	const data: EvalReportData = {
 		generatedAt: now(),
 		evalRun: projectedEvalRun,
@@ -647,6 +717,7 @@ export function collectEvalReportData(
 		improvementBrief,
 		comparison,
 		runs,
+		judgeCalibration: judgeCalibrationRows(verified.runs, calibration),
 		projection,
 		redactionNotice:
 			"This report contains normalized, size-bounded, credential-redacted traces, run errors, grader metadata, and diagnosis text. Protected canonical artifacts remain unchanged on disk.",
@@ -728,7 +799,7 @@ export function renderEvalReportHtml(data: EvalReportData): string {
 	<section><div class="section-title"><h2>Failure modes</h2><span class="badge" id="failure-mode-status"></span></div><p class="brief-headline" id="brief-headline"></p><p class="notice" id="proposal-gate"></p><div class="issues" id="failure-modes"></div></section>
 <section><div class="section-title"><h2>Task issue drill-down</h2><span class="badge" id="diagnosis-status"></span></div><div class="issues" id="issues"></div></section>
 <section id="comparison-section" hidden><div class="section-title"><h2>Matched comparison</h2></div><div class="table-wrap"><table><thead><tr><th>Task</th><th>Baseline</th><th>Candidate</th><th>Delta</th></tr></thead><tbody id="comparison"></tbody></table></div></section>
-<section><div class="section-title"><h2>Run evidence</h2></div><p class="notice" id="projection-notice">${htmlText(projectionNotice(data.projection))}</p><div class="table-wrap"><table><thead><tr><th>Task</th><th>Rep</th><th>Outcome</th><th>Latency</th><th>Tools</th><th>Tokens</th></tr></thead><tbody id="runs"></tbody></table></div></section>
+<section><div class="section-title"><h2>Run evidence</h2></div><p class="notice" id="judge-calibration" hidden></p><p class="notice" id="projection-notice">${htmlText(projectionNotice(data.projection))}</p><div class="table-wrap"><table><thead><tr><th>Task</th><th>Rep</th><th>Outcome</th><th>Latency</th><th>Tools</th><th>Tokens</th></tr></thead><tbody id="runs"></tbody></table></div></section>
 <section><div class="section-title"><h2>Trace inspector</h2><span class="badge" id="trace-id">Select a run</span></div><div class="trace" id="trace"><div class="trace-empty">Choose a run to inspect its normalized trace.</div></div></section>
 <p class="notice" id="notice"></p>
 </main></div>
@@ -749,6 +820,7 @@ const modeCards=b.modes.map(m=>{
 });
 q('#failure-modes').innerHTML=modeCards.length?modeCards.join(''):'<article class="issue"><h3>No actionable failure modes</h3><p>The verified diagnosis does not support a harness change.</p></article>';
 q('#issues').innerHTML=d.issues.length?d.issues.map(i=>'<article class="issue"><div class="issue-head"><div><h3>'+esc(i.taskId)+' · '+esc(i.category)+'</h3><span class="pill '+esc(i.severity)+'">'+esc(i.confidence)+' confidence</span></div><span class="pill '+esc(i.severity)+'">'+esc(i.severity)+'</span></div><p>'+esc(i.rootCause)+'</p><ul>'+i.suggestions.map(s=>'<li>'+esc(s)+'</li>').join('')+'</ul></article>').join(''):'<article class="issue"><h3>No actionable failures</h3><p>All recorded tasks completed and passed.</p></article>';
+if(DATA.judgeCalibration.length){q('#judge-calibration').hidden=false;q('#judge-calibration').textContent=DATA.judgeCalibration.map(c=>c.line+' — '+c.graderNames.join(', ')).join(' · ')}
 const runRows=DATA.runs.map(r=>'<tr data-run="'+esc(r.runId)+'"><td>'+esc(r.taskId)+'</td><td>'+r.repetitionIndex+'</td><td class="outcome '+esc(r.outcome)+'">'+esc(r.outcome)+'</td><td>'+r.metrics.latencyMs+' ms</td><td>'+r.metrics.toolCalls+(r.metrics.toolErrors?' / '+r.metrics.toolErrors+' errors':'')+'</td><td>'+r.metrics.tokens+'</td></tr>').join('');q('#runs').innerHTML=runRows;
 q('#run-nav').innerHTML=DATA.runs.map(r=>'<button class="run-link" data-run="'+esc(r.runId)+'"><span class="dot '+(r.outcome==='pass'?'pass':'')+'"></span>'+esc(r.taskId)+' · '+r.repetitionIndex+'</button>').join('');
 if(DATA.comparison&&DATA.comparison.status==='comparable'){q('#comparison-section').hidden=false;q('#comparison').innerHTML=DATA.comparison.rows.map(r=>'<tr><td>'+esc(r.taskId)+'</td><td>'+r.aPass+'/'+r.aTotal+'</td><td>'+r.bPass+'/'+r.bTotal+'</td><td class="'+(r.delta>0?'delta':'')+'">'+(r.delta>0?'+':'')+Math.round(r.delta*100)+' pp</td></tr>').join('')}
@@ -772,9 +844,10 @@ export function buildEvalReport(
 	runsRoot: string,
 	evalRunId: string,
 	outPath?: string,
-): string {
-	const data = collectEvalReportData(runsRoot, evalRunId);
+	labels?: { stateRoot: string; projectId: string },
+): { path: string; judgeCalibration: ReportJudgeCalibration[] } {
+	const data = collectEvalReportData(runsRoot, evalRunId, undefined, labels ? { labels } : {});
 	const outputPath = outPath === undefined ? reportPath(runsRoot, evalRunId) : resolve(outPath);
 	writeTextArtifact(outputPath, renderEvalReportHtml(data));
-	return outputPath;
+	return { path: outputPath, judgeCalibration: data.judgeCalibration };
 }

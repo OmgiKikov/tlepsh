@@ -24,6 +24,8 @@ export const CLI_COMMANDS = [
 	"compare",
 	"diagnose",
 	"report",
+	"label",
+	"judge-agreement",
 	"candidate",
 	"calibrate",
 	"review",
@@ -83,7 +85,13 @@ const COMMAND_SPECS = {
 	},
 	compare: { flags: [], positionals: 2 },
 	diagnose: { flags: [], positionals: 1 },
-	report: { flags: ["out"], positionals: 1 },
+	report: { flags: ["out", "project"], positionals: 1 },
+	label: {
+		flags: ["target", "project", "sample", "seed", "file"],
+		requiredFlags: ["target"],
+		positionals: 1,
+	},
+	"judge-agreement": { flags: ["target", "project"], requiredFlags: ["target"], positionals: 1 },
 	candidate: {
 		flags: [
 			"target",
@@ -258,6 +266,7 @@ function validateSharedFlagValues(flags: Readonly<Record<string, string>>, conte
 	assertIntegerFlag(flags, "port", context, { minimum: 0, maximum: 65_535 });
 	assertIntegerFlag(flags, "repetitions", context, { minimum: 1 });
 	assertIntegerFlag(flags, "sealed", context, { minimum: 1 });
+	assertIntegerFlag(flags, "sample", context, { minimum: 1 });
 	assertIntegerFlag(flags, "jobs", context, { minimum: 1, maximum: 64 });
 	// 0 days means "never reuse a baseline"; every run measures its own.
 	assertIntegerFlag(flags, "baseline-max-age", context, { minimum: 0, maximum: 3_650 });

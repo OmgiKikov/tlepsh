@@ -1,9 +1,20 @@
 import { dirname, join, resolve } from "node:path";
 import { readFileSync, statSync } from "node:fs";
+import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { describeEnvVar, loadDotEnv, type EnvReport } from "./env.js";
 import { loadTarget, scaffoldTarget } from "./manifest.js";
-import { listEvalRunIndexesLenient, loadEvalRun, runSuite } from "./eval.js";
+import { listEvalRunIndexesLenient, loadEvalRun, readEvalRunIndex, runSuite } from "./eval.js";
+import { judgeAgreement } from "./domain/judge-agreement.js";
+import {
+	collectJudgeLabelSubjects,
+	importJudgeLabels,
+	judgeLabelFilePath,
+	loadJudgeCalibration,
+	readProjectJudgeLabels,
+	runJudgeLabelSession,
+	type JudgeLabelSubject,
+} from "./application/judge-labels.js";
 import { compareEvalRuns, renderCompareMarkdown } from "./compare.js";
 import { compileFailureBundle } from "./bundle.js";
 import { runCandidateExperiment } from "./application/candidate-experiment.js";
@@ -305,6 +316,148 @@ async function targetPi(): Promise<void> {
 	await runInteractiveTarget(target, {
 		...(arg("message") ? { initialMessage: arg("message") } : {}),
 	});
+}
+
+/**
+ * Labels live under a project, and a report is asked for by eval run alone.
+ * The eval run's own Target id is the same default every other command uses.
+ */
+function reportProjectId(evalRunId: string): string {
+	const explicit = arg("project");
+	if (explicit) return explicit;
+	return readEvalRunIndex(runsRoot(), evalRunId).target.id;
+}
+
+/** Sealed corpus content hashes, so a legacy sealed eval run is refused too. */
+function sealedCorpusHashes(projectId: string): Set<string> {
+	try {
+		return new Set(
+			listCorpora({ stateRoot: stateRoot(), projectId })
+				.filter((corpus) => corpus.visibility === "sealed")
+				.map((corpus) => corpus.hash),
+		);
+	} catch {
+		return new Set();
+	}
+}
+
+function labelSubjectBlock(subject: JudgeLabelSubject, ordinal: number, total: number): string {
+	return [
+		"",
+		`── ${ordinal}/${total} · ${subject.taskId} · ${subject.graderName}`,
+		"task:",
+		subject.input || "(no recorded task input)",
+		"",
+		"answer:",
+		subject.answer || "(no final answer)",
+		"",
+	].join("\n");
+}
+
+/**
+ * Blind human labelling, then the judge's verdict. The order is the whole
+ * point: a human shown the judge's answer first is grading the judge's
+ * confidence, not the Target's answer.
+ */
+async function labelJudge(): Promise<void> {
+	const evalRunId = positional(0);
+	if (!evalRunId) {
+		console.error("usage: ahde label <evalRunId> --target <dir> [--project <id>] [--sample N] [--seed <text>] [--file <labels.jsonl>]\n");
+		console.log(USAGE);
+		process.exit(1);
+	}
+	const targetDir = resolve(requireArg("target"));
+	const projectId = arg("project") ?? loadTarget(targetDir).manifest.id;
+	const file = arg("file");
+	const context = {
+		runsRoot: runsRoot(),
+		stateRoot: stateRoot(),
+		projectId,
+		evalRunId,
+		sealedDatasetHashes: sealedCorpusHashes(projectId),
+	};
+	if (file) {
+		const rows = importJudgeLabels({ ...context, filePath: resolve(file) });
+		console.log(`imported ${rows.length} label(s) into ${judgeLabelFilePath(stateRoot(), projectId, evalRunId)}`);
+		printJudgeAgreement(projectId);
+		return;
+	}
+	if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+		throw new Error("ahde label needs an interactive terminal (TTY), or --file <labels.jsonl> to import answers");
+	}
+	const io = createInterface({ input: process.stdin, output: process.stdout });
+	try {
+		const session = await runJudgeLabelSession({
+			...context,
+			...(arg("sample") ? { sample: Number(arg("sample")) } : {}),
+			...(arg("seed") ? { seed: arg("seed")! } : {}),
+			prompt: {
+				ask: async (subject, ordinal, total) => {
+					process.stdout.write(labelSubjectBlock(subject, ordinal, total));
+					let answer = "";
+					while (!["pass", "fail", "skip", "p", "f", "s"].includes(answer)) {
+						answer = (await io.question("your verdict — pass / fail / skip: ")).trim().toLowerCase();
+					}
+					const decided = answer.startsWith("p") ? "pass" : answer.startsWith("f") ? "fail" : "skip";
+					if (decided === "skip") return { answer: decided };
+					const note = (await io.question("note (optional): ")).trim();
+					return { answer: decided, ...(note ? { note } : {}) };
+				},
+				reveal: (subject, answer) => {
+					const agreement = answer === "skip"
+						? "skipped"
+						: answer === subject.judge ? "agrees with you" : "DISAGREES with you";
+					process.stdout.write(`judge said ${subject.judge} · ${agreement}\n  ${subject.judgeReason}\n`);
+				},
+			},
+		});
+		console.log(`\n${session.labelled} label(s) written, ${session.skipped} skipped`);
+	} finally {
+		io.close();
+	}
+	printJudgeAgreement(projectId);
+}
+
+function printJudgeAgreement(projectId: string): void {
+	const report = judgeAgreement(readProjectJudgeLabels(stateRoot(), projectId));
+	if (report.pooled.n === 0) {
+		console.log("judge not calibrated — no labels yet for this project");
+		return;
+	}
+	console.log("grader spec           agreement   κ       n    false-pass  false-fail");
+	for (const grader of [...report.byGrader, { graderSpecHash: "pooled", ...report.pooled }]) {
+		console.log(
+			`${grader.graderSpecHash.replace("sha256:", "").slice(0, 20).padEnd(20)}  ` +
+				`${`${Math.round(grader.agreement * 100)}%`.padStart(8)}  ` +
+				`${(grader.kappa === null ? "n/a" : grader.kappa.toFixed(2)).padStart(6)}  ` +
+				`${String(grader.n).padStart(4)}  ${String(grader.falsePass).padStart(10)}  ${String(grader.falseFail).padStart(10)}`,
+		);
+	}
+}
+
+function judgeAgreementReport(): void {
+	const evalRunId = positional(0);
+	if (!evalRunId) {
+		console.error("usage: ahde judge-agreement <evalRunId> --target <dir> [--project <id>]\n");
+		console.log(USAGE);
+		process.exit(1);
+	}
+	const targetDir = resolve(requireArg("target"));
+	const projectId = arg("project") ?? loadTarget(targetDir).manifest.id;
+	const subjects = collectJudgeLabelSubjects({
+		runsRoot: runsRoot(),
+		evalRunId,
+		sealedDatasetHashes: sealedCorpusHashes(projectId),
+	});
+	const specs = new Set(subjects.map((subject) => subject.graderSpecHash));
+	console.log(`eval run ${evalRunId}: ${specs.size} judge grader spec(s) over ${subjects.length} judged check(s)`);
+	printJudgeAgreement(projectId);
+	const calibration = loadJudgeCalibration(stateRoot(), projectId);
+	for (const specHash of [...specs].sort()) {
+		if (!calibration.byGraderSpecHash.has(specHash)) {
+			console.log(`judge not calibrated — ${specHash.slice(0, 27)}… has no labels; run \`ahde label ${evalRunId}\``);
+		}
+	}
 }
 
 async function main(): Promise<void> {
@@ -686,16 +839,28 @@ async function main(): Promise<void> {
 		case "report": {
 			const evalRunId = positional(0);
 			if (!evalRunId) {
-				console.error("usage: ahde report <evalRunId> [--out <path>]\n");
+				console.error("usage: ahde report <evalRunId> [--out <path>] [--project <id>]\n");
 				console.log(USAGE);
 				process.exit(1);
 			}
-			const outputPath = buildEvalReport(
+			const report = buildEvalReport(
 				runsRoot(),
 				evalRunId,
 				arg("out") ? resolve(arg("out") as string) : undefined,
+				{ stateRoot: stateRoot(), projectId: reportProjectId(evalRunId) },
 			);
-			console.log(outputPath);
+			console.log(report.path);
+			for (const grader of report.judgeCalibration) {
+				console.log(`${grader.line}  ${grader.graderNames.join(", ")}`);
+			}
+			break;
+		}
+		case "label": {
+			await labelJudge();
+			break;
+		}
+		case "judge-agreement": {
+			judgeAgreementReport();
 			break;
 		}
 		case "candidate": {

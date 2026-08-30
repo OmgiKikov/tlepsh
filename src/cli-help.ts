@@ -38,13 +38,17 @@ Inspect and run:
   ahde feedback list [--target <dir>]          👍/👎 marks collected in ahde target
   ahde tool try --target <dir> --tool <name> --input <json|@path>
                                                run one declared tool in its sandbox
+  ahde label <evalRunId> --target <dir>        check the judge against your own eyes
+  ahde judge-agreement <evalRunId> --target <dir>
+                                               how far that judge is calibrated
 
 Inside Builder Pi:
 ${builderCommandLines()}
   plus the Pi built-ins /login and /model for the Builder's own model
 
 Use \`ahde <command> --help\` for focused help. Advanced automation commands:
-  corpus  failures  compare  diagnose  report  candidate  calibrate  review  promote  reject
+  corpus  failures  compare  diagnose  report  label  judge-agreement  candidate
+  calibrate  review  promote  reject
 
 Environment:
   AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)
@@ -119,9 +123,33 @@ Compare two runs only when every execution/grading axis except Harness revision 
 	diagnose: `Usage: ahde diagnose <evalRunId>
 
 Derive deterministic failure modes and proposal eligibility from a development EvalRun.`,
-	report: `Usage: ahde report <evalRunId> [--out <path>]
+	report: `Usage: ahde report <evalRunId> [--out <path>] [--project <id>]
 
-Build a static, bounded HTML evidence report for one development EvalRun.`,
+Build a static, bounded HTML evidence report for one development EvalRun.
+Judge graders carry one line each: \`judge agreement 84% · κ 0.62 · n=50\` from
+this project's labels, or \`judge not calibrated\` when nobody has checked yet.`,
+	label: `Usage:
+  ahde label <evalRunId> --target <dir> [--project <id>] [--sample N] [--seed <text>]
+  ahde label <evalRunId> --target <dir> --file <labels.jsonl>
+
+Grade the judge. For a deterministic seeded sample of judge-graded development
+runs it shows the task and the Target's final answer — bounded and
+credential-redacted — asks you for pass / fail / skip and an optional note, and
+only then reveals what the judge said. Answers append to
+<state-root>/projects/<id>/labels/<evalRunId>.jsonl.
+
+Without a TTY, --file imports the same rows from JSONL: one object per line with
+runId, taskId, graderIndex, graderSpecHash, human, and optional note. Every row
+is checked against the recorded evidence before it is stored.
+
+Sealed holdout evidence is never labelled: reading it is exactly what a holdout
+forbids.`,
+	"judge-agreement": `Usage: ahde judge-agreement <evalRunId> --target <dir> [--project <id>]
+
+Compare this project's human labels with the judge that graded them: agreement
+rate, Cohen's κ, and how often the judge waves a failure through or invents one.
+Per judge grader spec, plus the pooled total. κ is n/a when the labels are all
+one verdict — chance alone explains such a table and there is nothing to correct.`,
 	candidate: `Usage:
   ahde candidate --target <dir> --builder-run <id> [--development-corpus <id>] [--holdout-corpus <id>] [--project <id>] [--repetitions N]
   ahde candidate --target <dir> --branch <ref> --base <ref> --proposal <id> --diagnosis <id> [options]
