@@ -34,7 +34,10 @@ import {
 	type TargetInteractiveModeFactory,
 } from "../src/target/interactive.js";
 import { loadTargetResourceBundle } from "../src/target/runtime.js";
-import { TARGET_FEEDBACK_SHORTCUTS } from "../src/target/feedback-extension.js";
+import {
+	TARGET_FEEDBACK_COMMAND_NAMES,
+	TARGET_FEEDBACK_SHORTCUTS,
+} from "../src/target/feedback-extension.js";
 import {
 	readTargetFeedback,
 	TARGET_FEEDBACK_PATH,
@@ -645,7 +648,7 @@ describe("marking a Target reply", () => {
 					const feedback = extensions.find((extension) => extension.commands.has("good"));
 					expect(feedback).toBeDefined();
 					expect(feedback).toMatchObject({ hidden: true });
-					expect([...feedback!.commands.keys()].sort()).toEqual(["bad", "good"]);
+					expect([...feedback!.commands.keys()].sort()).toEqual([...TARGET_FEEDBACK_COMMAND_NAMES].sort());
 					// Pi's own defaults own ctrl+g and ctrl+b; these two are free.
 					expect([...feedback!.shortcuts.keys()].sort()).toEqual(
 						[TARGET_FEEDBACK_SHORTCUTS.bad, TARGET_FEEDBACK_SHORTCUTS.good].sort(),
