@@ -26,7 +26,12 @@ gates". The audit of 2026-08-29 found the evidence gate statistically broken:
   20–40 min. Judge calls have no retry; one 429 turns a completed run into an
   infrastructure error and aborts the experiment.
 
-## The rule — `exact-comparison-gate-v3`
+## The rule — `exact-comparison-gate-v4`
+
+Everything below describes v3, the shape the milestone shipped. v4 keeps every
+line of it and changes exactly one input: the paired quantity. See
+"v4: partial credit" after the rule block.
+
 
 One pure module, `src/domain/comparison-gate.ts`, is the only place a
 pass/fail decision is made. Inputs are the paired per-task rows already produced
@@ -73,13 +78,63 @@ Durable form: `ComparisonGateEvidence` v3 = `{ schemaVersion: 3, algorithmId:
 gateHash, summary (taskCount, rates, delta, confidence95, improved/regressed/
 unchanged), design { tasks, repetitions, excludedTasks }, verdict, flags }`.
 v1/v2 stay parseable and are never promotion-grade (existing pattern).
-Promotion requires v3 on both surfaces with `sealed.verdict = pass` and
-`development.verdict ≠ regressed`; `candidate-review` recomputes v3 and compares
+Promotion requires the current version on both surfaces with
+`sealed.verdict = pass` and
+`development.verdict ≠ regressed`; `candidate-review` recomputes it and compares
 JSON (existing pattern) and has no separate rule. A sealed `fail` or
 `underpowered` no longer throws: the record reaches `evaluated`, the verdict is
 rendered, and promotion refuses. Workbench `verify-candidate` refuses to START
 when the selected sealed corpus has fewer than 15 tasks (message with the count)
 so no tokens are spent on an underpowered verification.
+
+### v4: partial credit
+
+Binary grading throws away statistical power. A similarity grader knows the
+answer moved from 0.30 to 0.85; a judge-with-reference knows the answer went
+from *contradicts* to *nearly right*. Collapsing all of that to pass/fail
+before the statistics see it discards most of the signal and forces more
+repetitions to recover a decision. Anthropic's guidance on error bars for
+evals makes the same point: where a grader can produce a continuous score,
+use it — the paired variance drops and the same interval is reached with far
+fewer runs. It also removes a class of false regressions: an answer that slips
+from 0.61 to 0.59 against a 0.60 threshold reads as a total failure to a pass
+rate and as noise to a score.
+
+`exact-comparison-gate-v4` changes exactly one input and nothing else:
+
+```
+score_run  = mean(grader.score) over the run's graders, clamped to [0,1];
+             a run with no graders (or an error) keeps the binary handling:
+             1 when its outcome is `pass`, else 0
+score_i    = mean over the task's repetitions of score_run
+d_i        = candidateScore_i − baselineScore_i        (was candidateRate − baselineRate)
+[lo, hi]   = the same seeded paired bootstrap over d, same seed text, same resamples
+verdicts   = unchanged (development improved/regressed/inconclusive, sealed
+             pass/fail/underpowered, same minimums, same error budget)
+flags      = regressedTasks #(d_i < 0), improvedTasks #(d_i > 0),
+             collapsedTasks #(baselineScore_i = 1 ∧ candidateScore_i = 0 ∧ k ≥ 3)
+resources  = per arm: total costUsd, mean latencyMs per run, mean tokens per run;
+             costRatio / latencyRatio / tokenRatio = candidate ÷ baseline,
+             null when the baseline denominator is 0. Rendered beside every
+             verdict, recorded in the evidence, and never gating.
+```
+
+With binary graders `score == pass rate`, so every v3 verdict is reproduced:
+the Bernoulli simulation cells, the dd68f00 A/A pair (inconclusive + sealed
+pass) and the 5c99d43 → dd68f00 pair (improved) all keep their verdicts, and a
+test judges the same rows twice — once with the score forced to the pass rate —
+to prove the two agree. Pass rates stay computed and rendered next to the
+scores (`baselinePassRate`, `candidatePassRate`, `delta`), so a human always
+sees both numbers.
+
+Durable form: `ComparisonGateEvidence` v4 = v3 plus `summary.baselineScore /
+candidateScore / scoreDelta` and a strict `resources` block, with
+`schemaVersion: 4`, `algorithmId: "exact-comparison-gate-v4"` and policies
+`development-ci-v4` / `sealed-guardrail-v4`. v1/v2/v3 stay parseable and render
+their verdicts; only v4 is promotion-grade. The `promoted` event refinement
+requires v4 on both surfaces, `candidate-review` recomputes v4 and compares
+JSON, and a candidate carrying v3 evidence is refused with "re-verify the
+candidate to record exact-comparison-gate-v4 evidence".
 
 ## Status (2026-08-29, branch `evidence-gate`)
 
@@ -98,6 +153,7 @@ so no tokens are spent on an underpowered verification.
 | Any data → benchmark (Builder + CLI) | 988d400 | `aspect: dataset`, `dataset-recipe`, `import-dataset`, `ahde corpus inspect\|ingest`; sealed slice drawn by the host before the preview |
 | Reference graders + dialogue cases | 89310b6 | `exact`, `similarity` (token-F1 / levenshtein), `judge withReference` (A–E factuality design ported from vitest-evals); `messages` seeded via `SessionManager.appendMessage` |
 | Feedback becomes rows | 8a0e87f | `/good` `/bad` in `ahde target` over IPC → `imports/feedback.jsonl`; `ahde feedback list\|clear` |
+| Partial credit + resource flags | `exact-comparison-gate-v4` | the gate pairs mean grader scores; cost/latency/token ratios recorded and rendered, never gating |
 | Tool workshop core | 5e36337 | multi-file tools with a declared `setup`, `data/**` scope, `tool.upsert` files + `data.upsert`, `tryTool` / `ahde tool try`; Builder-facing surface in `docs/V1_9_TOOL_WORKSHOP.md` |
 
 ## Stages
@@ -282,8 +338,9 @@ calibration receipt files (derived instead); RL, web control plane, Windows.
 
 ## Invariant amendments (CONTEXT.md)
 - Promotion policy: "no per-task or aggregate sealed regression" becomes "sealed
-  guardrail verdict `pass` (95% paired-bootstrap CI not entirely below zero on
-  ≥15 tasks × ≥2 repetitions) and development verdict ≠ `regressed`".
+  guardrail verdict `pass` (95% paired-bootstrap CI over per-task mean grader
+  scores not entirely below zero on ≥15 tasks × ≥2 repetitions) and development
+  verdict ≠ `regressed`, on `exact-comparison-gate-v4` evidence".
 - New terms: Comparison Verdict, Gate Policy, Calibration (A/A record), Judge.
 - Comparability axis `ahdeCodeHash` is replaced by the hand-bumped `evaluatorId`.
 

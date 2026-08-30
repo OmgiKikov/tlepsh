@@ -1606,6 +1606,35 @@ describe("renderConfirmation", () => {
 		expect(review).toContain("<dim>Recommendation</dim> <bold>promote</bold>");
 		const promote = renderConfirmation(makeConfirmation("promote-candidate", { operation: "promote-candidate", candidateHash: HASH, candidate, version: "1.2.0", tag: "v1.2.0" }), tagPaint);
 		expect(promote).toContain("<dim>Tag</dim> <success>v1.2.0</success> <dim>· annotated tag on the exact candidate revision</dim>");
+		// What the promotion costs is on the confirmation the human approves.
+		const priced = renderConfirmation(makeConfirmation("promote-candidate", {
+			operation: "promote-candidate",
+			candidateHash: HASH,
+			candidate: makeCandidate({
+				status: "reviewed",
+				sealedHoldout: {
+					executed: true,
+					gatePassed: true,
+					gate: {
+						verdict: "pass",
+						surface: "sealed",
+						delta: 0.2,
+						baselineScore: 0.62,
+						candidateScore: 0.85,
+						scoreDelta: 0.23,
+						confidence95: { low: 0.05, high: 0.35 },
+						tasks: 15,
+						repetitions: 3,
+						excludedTasks: 0,
+						flags: { regressedTasks: 0, improvedTasks: 13, collapsedTasks: 0 },
+						resources: { costRatio: 1.4, latencyRatio: 0.9, tokenRatio: 1.125 },
+						reasons: ["no regression"],
+					},
+				},
+			}),
+			tag: "v1.2.0",
+		}), plainPaint);
+		expect(priced).toContain("Sealed holdout pass · +23 pts (95% CI +5 pts … +35 pts) · 15 × 3 · cost ×1.4 · latency ×0.9");
 		const reject = renderConfirmation(makeConfirmation("reject-candidate", { operation: "reject-candidate", candidateHash: HASH, candidate }), plainPaint);
 		expect(reject[0]).toBe("Candidate candidate-1 · reviewed");
 		expect(reject).toContain("Review promote — good");
