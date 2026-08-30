@@ -121,7 +121,10 @@ of the variable that holds it; the host handles credentials in its own UI.
 - A structured proposal carries the exact `source`, explicit
   `failureModeIds`, `authoringContext: claim`, and semantic intents only
   (`instructions.replace`, `execution.configure`, `skill.upsert/remove`,
-  `tool.upsert/remove`). Never supply diagnoses, evidence references, raw
+  `tool.upsert/remove`, `data.upsert/remove`). A `tool.upsert` carries either
+  one `executable` (the `bin/<name>` form) or `files` (the multi-file
+  `tools/<name>/` form, where `run` is the entry point and the descriptor may
+  declare a `setup` step and `lockfiles`). Never supply diagnoses, evidence references, raw
   paths, hashes, file modes, or unified diffs; the host compiles the exact
   change from a clean snapshot. Network or environment access is an ordinary
   evidence-backed policy change, never a hidden preset.

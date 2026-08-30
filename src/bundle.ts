@@ -74,8 +74,8 @@ export function compileFailureBundle(
 	lines.push("");
 	lines.push("## Allowed change scope", "");
 	lines.push(
-		`Improve the target harness ONLY: \`AGENTS.md\`, \`skills/**\`, \`bin/**\`, \`tools/**\`, ` +
-			"and the `manifest.yaml` `skills`/`tools` declaration lists. " +
+		`Improve the target harness ONLY: \`AGENTS.md\`, \`skills/**\`, \`bin/**\`, \`tools/**\`, \`data/**\`, ` +
+			"and the `manifest.yaml` `skills`/`tools`/`data` declaration lists. " +
 			"Do NOT touch `evals/**` or any manifest id, model, execution, instructions, or evalSuite setting. " +
 			"Return a typed proposal only; do not edit the repository, create branches, or run the target.",
 	);

@@ -100,7 +100,10 @@ live view is never evidence and cannot perform state transitions.
 5. The Target sees one holdout input at a time, never the holdout corpus, graders, expected answers, or future cases.
 6. A Proposal cannot modify corpus or model configuration and cannot be applied
    without an explicit human command. It may update only `AGENTS.md`,
-   `skills/**`, `tools/**`, `bin/**`, and the manifest's declared resources.
+   `skills/**`, `tools/**`, `bin/**`, `data/**`, and the manifest's declared
+   resources. Only declared `data/` directories reach a Target workspace; they
+   are bounded in total bytes and are shown to the Builder as shape, never
+   content.
    A complete `execution.configure` intent may change the Target execution
    policy only in the same exact reviewed Proposal; every resulting tool must
    validate against that policy, and the Candidate must still pass matched
@@ -124,7 +127,12 @@ live view is never evidence and cannot perform state transitions.
     confirms an exact immutable subject in TUI mode, revalidates it, and records
     a one-operation receipt; non-interactive calls fail closed.
 17. Declarative Target tool descriptors and executable bytes are part of Target
-    identity. Missing confinement is recorded honestly and is never promotable.
+    identity: for a multi-file tool that is every file in its directory, sorted
+    and mode-aware, plus its declared lockfile bytes. A declared setup step runs
+    once per prepared tool home, inside the same sandbox, writing only that
+    home; its output is derived state that no provenance hash sees, and its
+    failure is an infrastructure error. Missing confinement is recorded honestly
+    and is never promotable.
 18. Initial Target id/model configuration is a one-time host-confirmed bootstrap
     commit over an exact clean scaffold. Builder receives only the credential
     variable name; the host injects the selected value into a memory-only Target

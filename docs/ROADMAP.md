@@ -58,6 +58,10 @@ addressed by item 3 below, not by opening the holdout.
    checkout is never touched and nothing applies itself. Pi's `sandbox`,
    `subagent` and `protected-paths` examples are the building blocks.
    This is what "build me a RAG agent" needs end to end. ~3–4 days.
+   *Application core landed — see `V1_9_TOOL_WORKSHOP.md`: multi-file tools
+   with a declared setup step, `data/**` as a declared scope, the multi-file
+   and data intents, `tryTool` and `ahde tool try`. The Builder-facing
+   write/edit/bash workbench is the remaining wave.*
 1. **Feedback becomes tests.** In `ahde target`, any answer is marked 👍/👎
    with one key; the Builder turns it into a case with a grader in a new
    corpus draft. `ahde feedback import <dialogs.jsonl>` clusters real

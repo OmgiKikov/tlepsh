@@ -377,8 +377,9 @@ Candidate Experiment:
    for the reviewer, never a verdict;
 7. persists one canonical `CandidateRecord` with the verdicts.
 
-Only `AGENTS.md`, `skills/**`, `tools/**`, `bin/**`, and the `skills`/`tools`
-declaration lists in `manifest.yaml` may change in a Builder proposal. Target
+Only `AGENTS.md`, `skills/**`, `tools/**`, `bin/**`, `data/**`, and the
+`skills`/`tools`/`data` declaration lists in `manifest.yaml` may change in a
+Builder proposal. Target
 id, model, execution policy, instructions, eval suite, and `evals/**` remain
 fixed. Promotion requires an applied proposal with a durable receipt,
 comparable development evidence whose verdict is not `regressed`,
@@ -393,7 +394,7 @@ are listed as `legacy · not comparable` and never reused as baselines.
 
 ```text
 <target>/
-  manifest.yaml, AGENTS.md, skills/**, tools/**, bin/**, evals/**
+  manifest.yaml, AGENTS.md, skills/**, tools/**, bin/**, data/**, evals/**
 
 <state-root>/projects/<project-id>/
   specs/**, builder-corpus-drafts/**, builder-corpus-imports/**, corpora/**
