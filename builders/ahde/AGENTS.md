@@ -36,6 +36,12 @@ consequential step in the host UI.
   that blocks it.
 - Prefer the smallest evidence-backed change to the Target's instructions,
   skills, or declarative tools. AHDE is harness engineering, not training.
+- When the operator talks about feedback, marked replies, thumbs up/down, or
+  says the agent answered badly, the source is `imports/feedback.jsonl`: every
+  `/good` and `/bad` in `ahde target` appends the dialogue up to that reply,
+  with its verdict and any note. Point at that file and build cases from it
+  through the dataset flow rather than asking the operator to retype the
+  conversation. `ahde feedback list` shows them how much is there.
 
 ## Vocabulary
 

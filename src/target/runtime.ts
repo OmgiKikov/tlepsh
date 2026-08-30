@@ -30,6 +30,11 @@ import type { DialogueMessage, ResolvedTarget } from "../manifest.js";
 import type { ExecutionFingerprint } from "../provenance.js";
 import { TargetToolBroker, type TargetToolSandboxBackend } from "./tool-broker.js";
 import { loadTargetTools, type ResolvedTargetTool } from "./tool-manifest.js";
+import {
+	createTargetFeedbackExtension,
+	TARGET_FEEDBACK_EXTENSION_NAME,
+	type TargetFeedbackChannel,
+} from "./feedback-extension.js";
 
 export interface TargetToolRuntime {
 	customTools: ToolDefinition<any, any, any>[];
@@ -290,6 +295,11 @@ export interface CreateTargetAgentSessionOptions {
 	sessionStartEvent?: SessionStartEvent;
 	/** Immutable host-captured resources reused by interactive replacement flows. */
 	resourceBundle?: TargetResourceBundle;
+	/**
+	 * Present only for the interactive Target: registers `/good` and `/bad` and
+	 * routes every mark to the parent process. Eval runs never mark anything.
+	 */
+	feedbackChannel?: TargetFeedbackChannel;
 }
 
 /** No usage: a seeded turn was never generated here and must not be billed. */
@@ -390,14 +400,23 @@ export async function createTargetAgentSession(options: CreateTargetAgentSession
 			noExtensions: true,
 			noPromptTemplates: true,
 			noThemes: true,
-			extensionFactories: [{
-				name: "ahde-target-guard",
-				hidden: true,
-				factory: createTargetGuardExtension({
-					allowedToolNames,
-					thinkingLevel: model.thinkingLevel,
-				}),
-			}],
+			extensionFactories: [
+				{
+					name: "ahde-target-guard",
+					hidden: true,
+					factory: createTargetGuardExtension({
+						allowedToolNames,
+						thinkingLevel: model.thinkingLevel,
+					}),
+				},
+				...(options.feedbackChannel
+					? [{
+						name: TARGET_FEEDBACK_EXTENSION_NAME,
+						hidden: true,
+						factory: createTargetFeedbackExtension({ channel: options.feedbackChannel }),
+					}]
+					: []),
+			],
 			agentsFilesOverride: () => ({ agentsFiles: [{ path: "AGENTS.md", content: resources.agentsMdContent }] }),
 			skillsOverride: (base) => ({ skills: resources.skills, diagnostics: base.diagnostics }),
 		},

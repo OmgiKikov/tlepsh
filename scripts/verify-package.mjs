@@ -59,6 +59,8 @@ try {
 		"dist/application/builder-regression-case.js",
 		"dist/application/target-scaffold.js",
 		"dist/application/target-authoring-context.js",
+		"dist/application/target-feedback.js",
+		"dist/target/feedback-extension.js",
 		"dist/builder/product-shell.js",
 		"dist/builder/run-observation.js",
 		"dist/cli-invocation.js",

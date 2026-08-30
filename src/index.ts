@@ -16,6 +16,7 @@ export * from "./application/harness-authoring.js";
 export * from "./application/improvement-brief.js";
 export * from "./application/target-bootstrap.js";
 export * from "./application/target-authoring-context.js";
+export * from "./application/target-feedback.js";
 export * from "./builders/adapters.js";
 export * from "./builder/extension.js";
 export * from "./builder/commands.js";
@@ -39,6 +40,12 @@ export * from "./runner.js";
 export * from "./storage/artifacts.js";
 export * from "./spec.js";
 export * from "./target/runtime.js";
+export {
+	TARGET_FEEDBACK_SHORTCUTS,
+	TARGET_FEEDBACK_COMMAND_NAMES,
+	targetFeedbackDialogue,
+	type TargetFeedbackChannel,
+} from "./target/feedback-extension.js";
 export {
 	runInteractiveTarget,
 	type RunInteractiveTargetOptions,

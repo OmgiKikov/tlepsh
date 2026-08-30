@@ -203,6 +203,40 @@ and fixed display/locale values arrive only over post-startup IPC. Interactive
 shell escapes and ambient session/import switching are disabled. Nothing from
 this conversation becomes canonical eval evidence.
 
+### Feedback becomes tests
+
+Any reply in `ahde target` can be marked with `/good`, `/bad [note]`, or the
+`alt+g` / `alt+x` shortcuts (Pi's own defaults already own `ctrl+g` and
+`ctrl+b`). A mark appends one JSON row to `imports/feedback.jsonl`:
+
+```json
+{"messages":[{"role":"user","content":"…"},{"role":"assistant","content":"…"}],
+ "verdict":"bad","note":"did not call check_dbo","at":"2026-08-30T07:00:00.000Z",
+ "target":{"id":"my-agent","gitSha":"…"}}
+```
+
+The dialogue runs up to and including the marked reply, credential-redacted and
+bounded exactly like a dialogue case (≤ 40 turns, ≤ 8 KiB each). The Target
+child never opens that file: it sends the verdict, the note, and the turns to
+the host process over the same IPC channel that delivered its launch payload,
+and the host stamps the timestamp and Target identity. A host that is gone
+fails the mark closed rather than writing from the child.
+
+```bash
+ahde feedback list     # counts, plus the last five by their first user turn
+ahde feedback clear    # moves the file to imports/feedback.<timestamp>.jsonl
+```
+
+`imports/feedback.jsonl` is an ordinary entry in the git-ignored `imports/`
+inbox, so the dataset preview/recipe flow picks it up like any other dropped
+file: it previews as bounded JSONL with `messages`, `verdict`, `note`, `at`,
+and `target.*` columns, and a recipe with `{ "dialogue": { "column":
+"messages" } }` compiles each mark into a dialogue case. The compiler pops the
+marked assistant reply, so the case re-asks the question that produced it and
+graders judge the next answer; keep `verdict` and `note` as metadata columns so
+a rubric or reference answer written later can use what the operator said was
+wrong. The inbox never enters a Target or evaluation workspace.
+
 ## The canonical loop
 
 Builder Pi uses four packaged workflow skills:
@@ -334,6 +368,10 @@ ahde diagnose <eval-run-id>
 ahde compare <baseline-eval-id> <candidate-eval-id>
 ahde report <eval-run-id>
 
+# 👍/👎 marks collected while talking to the Target
+ahde feedback list --target .
+ahde feedback clear --target .
+
 # manage versioned evaluation data
 ahde corpus publish --project my-agent --draft <builder-corpus-draft-id> \
   --name "reviewed development basket" --visibility development
@@ -400,6 +438,7 @@ are listed as `legacy · not comparable` and never reused as baselines.
 ```text
 <target>/
   manifest.yaml, AGENTS.md, skills/**, tools/**, bin/**, evals/**
+  imports/**            git-ignored inbox; feedback.jsonl lands here
 
 <state-root>/projects/<project-id>/
   specs/**, builder-corpus-drafts/**, builder-corpus-imports/**, corpora/**

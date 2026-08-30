@@ -14,6 +14,13 @@ bar.
 2. Define the unit of evaluation and what remains fixed versus changeable.
 3. Prefer real or realistically synthesized task distributions. Start small,
    inspect traces, then cluster observed failure modes before expanding.
+   The most real distribution the operator already has is
+   `imports/feedback.jsonl`: each 👍/👎 they pressed in `ahde target` stored
+   the conversation up to the marked reply, its verdict, and any note. When
+   they mention feedback, marked replies, or an answer that was wrong, start
+   there through the dataset flow instead of imagining cases; a `bad` mark
+   usually becomes a judge rubric or an `expected` answer written afterwards,
+   and the note says what was wrong.
 4. Give each task explicit portable graders. Track goal metrics, regression
    guardrails, and operational failures separately. `output_matches` patterns
    are JavaScript regular expressions (no inline flags like `(?i)`; use

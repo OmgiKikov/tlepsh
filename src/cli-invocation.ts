@@ -19,6 +19,7 @@ export const CLI_COMMANDS = [
 	"list",
 	"failures",
 	"corpus",
+	"feedback",
 	"compare",
 	"diagnose",
 	"report",
@@ -30,7 +31,7 @@ export const CLI_COMMANDS = [
 ] as const;
 
 export type CliCommand = typeof CLI_COMMANDS[number];
-export type CliAction = "publish" | "import" | "list" | "inspect" | "ingest";
+export type CliAction = "publish" | "import" | "list" | "inspect" | "ingest" | "clear";
 
 export type CliEarlyExit =
 	| { kind: "help" }
@@ -123,7 +124,7 @@ const COMMAND_SPECS = {
 		requiredFlags: ["candidate", "reason"],
 		positionals: 0,
 	},
-} as const satisfies Record<Exclude<CliCommand, "corpus">, InvocationSpec>;
+} as const satisfies Record<Exclude<CliCommand, "corpus" | "feedback">, InvocationSpec>;
 
 const CORPUS_ACTION_SPECS = {
 	publish: {
@@ -153,7 +154,13 @@ const CORPUS_ACTION_SPECS = {
 	},
 } as const satisfies Record<CliAction, InvocationSpec>;
 
+const FEEDBACK_ACTION_SPECS = {
+	list: { flags: ["target"], positionals: 0 },
+	clear: { flags: ["target"], positionals: 0 },
+} as const satisfies Record<"list" | "clear", InvocationSpec>;
+
 const CORPUS_ACTIONS = Object.keys(CORPUS_ACTION_SPECS) as Array<keyof typeof CORPUS_ACTION_SPECS>;
+const FEEDBACK_ACTIONS = Object.keys(FEEDBACK_ACTION_SPECS) as Array<keyof typeof FEEDBACK_ACTION_SPECS>;
 const COMMAND_NAMES = new Set<string>(CLI_COMMANDS.filter((command) => command !== "root"));
 
 function cliError(message: string): never {
@@ -284,23 +291,23 @@ function unionFlags(specs: Readonly<Record<string, InvocationSpec>>): string[] {
 }
 
 function parseActionCommand(
-	command: "corpus",
+	command: "corpus" | "feedback",
 	tokens: readonly string[],
 ): ParsedCliInvocation {
-	const specs = CORPUS_ACTION_SPECS;
-	const actions = CORPUS_ACTIONS;
+	const specs: Readonly<Record<string, InvocationSpec>> =
+		command === "corpus" ? CORPUS_ACTION_SPECS : FEEDBACK_ACTION_SPECS;
+	const actions: readonly string[] = command === "corpus" ? CORPUS_ACTIONS : FEEDBACK_ACTIONS;
 	const parsed = tokenize(tokens, unionFlags(specs), command);
 	const actionToken = parsed.positionals.shift();
 	if (actionToken === undefined) cliError(`missing action for ${command}; expected ${actions.join(", ")}`);
-	if (!actions.includes(actionToken as never)) {
+	const spec = actions.includes(actionToken) ? specs[actionToken] : undefined;
+	if (!spec) {
 		cliError(`unknown action ${JSON.stringify(actionToken)} for ${command}; expected ${actions.join(", ")}`);
 	}
-	const action = actionToken as keyof typeof specs;
-	const spec = specs[action];
-	const context = `${command} ${action}`;
+	const context = `${command} ${actionToken}`;
 	assertInvocationSpec(parsed, spec, context);
 	validateActionRelationships(context, parsed.flags);
-	return freezeInvocation(command, action as CliAction, parsed);
+	return freezeInvocation(command, actionToken as CliAction, parsed);
 }
 
 /** A sealed slice is a draw, not a count: it needs its seed to be reproducible. */
@@ -360,7 +367,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
 		tokens = argv.slice(1);
 	}
 
-	if (command === "corpus") {
+	if (command === "corpus" || command === "feedback") {
 		return parseActionCommand(command, tokens);
 	}
 	const spec = COMMAND_SPECS[command];

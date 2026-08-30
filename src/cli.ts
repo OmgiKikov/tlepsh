@@ -18,6 +18,7 @@ import {
 	reviewCandidate,
 } from "./application/candidate-review.js";
 import { createCorpus, importCorpus, listCorpora, loadCorpus, type CorpusVisibility } from "./corpus.js";
+import { runTargetFeedbackCommand } from "./application/target-feedback.js";
 import { loadBuilderCorpusDraft } from "./application/builder-corpus-draft.js";
 import {
 	datasetHoldoutInForce,
@@ -594,6 +595,14 @@ async function main(): Promise<void> {
 				break;
 			}
 			throw new Error("usage: ahde corpus publish|import|list|inspect|ingest --project <id> ...");
+		}
+		case "feedback": {
+			const lines = runTargetFeedbackCommand({
+				projectDir: resolveInteractiveTargetDirectory(arg("target")),
+				action: positional(0),
+			});
+			for (const line of lines) console.log(line);
+			break;
 		}
 		case "compare": {
 			const a = positional(0);

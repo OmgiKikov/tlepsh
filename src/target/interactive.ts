@@ -24,6 +24,7 @@ import {
 import { buildExecutionPolicy } from "../execution-policy.js";
 import type { ResolvedTarget } from "../manifest.js";
 import { canonicalJson, hashFile, hashValue } from "../provenance.js";
+import { redactTraceText } from "../trace.js";
 import {
 	disposeTargetWorkspaceSnapshot,
 	generateModelsJson,
@@ -35,6 +36,12 @@ import {
 	createTargetToolRuntime,
 	loadTargetResourceBundle,
 } from "./runtime.js";
+import type { TargetFeedbackChannel } from "./feedback-extension.js";
+import {
+	appendTargetFeedbackMark,
+	TargetFeedbackDraftSchema,
+	type TargetFeedbackDraft,
+} from "../application/target-feedback.js";
 
 const AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const SESSION_DIR_ENV = "PI_CODING_AGENT_SESSION_DIR";
@@ -79,6 +86,11 @@ export interface RunInteractiveTargetProcessOptions extends RunInteractiveTarget
 	tty?: TargetInteractiveTtyAdapter;
 	/** @internal Parent-materialized, content-addressed workspace used by the production child. */
 	workspaceSnapshot?: Pick<TargetWorkspaceSnapshot, "dir" | "sha256">;
+	/**
+	 * @internal Route for 👍/👎 marks. The child has no write authority outside
+	 * its disposable workspace, so every mark goes to the parent over IPC.
+	 */
+	feedbackChannel?: TargetFeedbackChannel;
 }
 
 /** Every resolved field that binds the parent-selected Target. */
@@ -103,6 +115,166 @@ export interface InteractiveTargetProcessLaunch {
 	workspaceSnapshot: Pick<TargetWorkspaceSnapshot, "dir" | "sha256">;
 	environment: NodeJS.ProcessEnv;
 	initialMessage?: string;
+}
+
+/**
+ * @internal The one message the child may send after launch.
+ *
+ * The launch payload flows parent → child once; this flows child → parent for
+ * every mark. The child sends only the verdict, the note, and the bounded
+ * dialogue: `at` and the Target identity are stamped by the parent, which is
+ * the process that actually knows which Target it resolved.
+ */
+export interface InteractiveTargetFeedbackRequest {
+	protocol: 1;
+	kind: "feedback-mark";
+	requestId: number;
+	draft: TargetFeedbackDraft;
+}
+
+/** @internal The parent's answer, so the child can show the running count. */
+export type InteractiveTargetFeedbackResponse = {
+	protocol: 1;
+	kind: "feedback-result";
+	requestId: number;
+} & ({ ok: true; path: string; total: number } | { ok: false; error: string });
+
+/** How long a mark waits for the parent before it fails closed. */
+export const INTERACTIVE_TARGET_FEEDBACK_TIMEOUT_MS = 10_000;
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * @internal Parent side: validate one child message and, when it is a mark,
+ * write it. Anything else is ignored — the child cannot ask the parent for
+ * arbitrary work, and it cannot choose the file it lands in.
+ */
+export function handleInteractiveTargetFeedbackRequest(options: {
+	projectDir: string;
+	target: { id: string; gitSha: string };
+	value: unknown;
+	now?: () => string;
+}): InteractiveTargetFeedbackResponse | null {
+	const value = options.value;
+	if (!isRecordValue(value) || value.protocol !== 1 || value.kind !== "feedback-mark") return null;
+	const requestId = typeof value.requestId === "number" && Number.isSafeInteger(value.requestId)
+		? value.requestId
+		: -1;
+	const base = { protocol: 1 as const, kind: "feedback-result" as const, requestId };
+	try {
+		const draft = TargetFeedbackDraftSchema.parse(value.draft);
+		const saved = appendTargetFeedbackMark(options.projectDir, {
+			messages: draft.messages,
+			verdict: draft.verdict,
+			...(draft.note !== undefined ? { note: draft.note } : {}),
+			at: (options.now ?? (() => new Date().toISOString()))(),
+			target: { id: options.target.id, gitSha: options.target.gitSha },
+		});
+		return { ...base, ok: true, path: saved.path, total: saved.total };
+	} catch (error) {
+		return {
+			...base,
+			ok: false,
+			error: redactTraceText(error instanceof Error ? error.message : String(error)).slice(0, 400),
+		};
+	}
+}
+
+/** @internal The IPC surface the child half of the channel needs, as a testable seam. */
+export interface InteractiveTargetIpcHost {
+	connected: boolean;
+	send(message: unknown): boolean;
+	on(event: "message", listener: (value: unknown) => void): void;
+	off(event: "message", listener: (value: unknown) => void): void;
+}
+
+/**
+ * @internal Adapt the child's own `process` to that seam. A process that was
+ * started without an IPC channel reports itself disconnected, so the extension
+ * refuses the mark instead of pretending it was stored.
+ */
+export function interactiveTargetProcessIpcHost(
+	child: Pick<NodeJS.Process, "connected" | "send" | "on" | "off">,
+): InteractiveTargetIpcHost {
+	return {
+		get connected() {
+			return child.connected === true && typeof child.send === "function";
+		},
+		send: (message) => (child.connected === true ? child.send?.(message) ?? false : false),
+		on: (event, listener) => {
+			child.on(event, listener);
+		},
+		off: (event, listener) => {
+			child.off(event, listener);
+		},
+	};
+}
+
+/**
+ * @internal Child side: one bounded request/response over the already-open IPC
+ * channel. A parent that has gone away fails the mark instead of falling back
+ * to a local write the child is not allowed to make.
+ */
+export function createInteractiveTargetFeedbackChannel(
+	host: InteractiveTargetIpcHost,
+	options: { timeoutMs?: number } = {},
+): TargetFeedbackChannel {
+	let nextRequestId = 1;
+	return {
+		mark(draft: TargetFeedbackDraft): Promise<{ path: string; total: number }> {
+			if (!host.connected) {
+				return Promise.reject(new Error("the AHDE host is gone; nothing was saved"));
+			}
+			const requestId = nextRequestId++;
+			return new Promise((resolvePromise, reject) => {
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				const listener = (value: unknown): void => {
+					if (
+						!isRecordValue(value) ||
+						value.protocol !== 1 ||
+						value.kind !== "feedback-result" ||
+						value.requestId !== requestId
+					) return;
+					settle();
+					if (value.ok === true && typeof value.path === "string" && typeof value.total === "number") {
+						resolvePromise({ path: value.path, total: value.total });
+						return;
+					}
+					reject(new Error(typeof value.error === "string" ? value.error : "the AHDE host refused the mark"));
+				};
+				const settle = (): void => {
+					if (timer) clearTimeout(timer);
+					host.off("message", listener);
+				};
+				host.on("message", listener);
+				timer = setTimeout(() => {
+					settle();
+					reject(new Error("the AHDE host did not confirm the mark"));
+				}, options.timeoutMs ?? INTERACTIVE_TARGET_FEEDBACK_TIMEOUT_MS);
+				timer.unref?.();
+				const request: InteractiveTargetFeedbackRequest = {
+					protocol: 1,
+					kind: "feedback-mark",
+					requestId,
+					draft,
+				};
+				let sent = false;
+				try {
+					sent = host.send(request);
+				} catch (error) {
+					settle();
+					reject(error instanceof Error ? error : new Error(String(error)));
+					return;
+				}
+				if (!sent) {
+					settle();
+					reject(new Error("the AHDE host is gone; nothing was saved"));
+				}
+			});
+		},
+	};
 }
 
 const processTty: TargetInteractiveTtyAdapter = {
@@ -370,6 +542,7 @@ export async function runInteractiveTargetProcess(
 				sessionManager,
 				sessionStartEvent,
 				resourceBundle,
+				...(options.feedbackChannel ? { feedbackChannel: options.feedbackChannel } : {}),
 			});
 		};
 
@@ -499,6 +672,10 @@ export async function runInteractiveTarget(
 	const workspace = materializeTargetWorkspaceSnapshot(target, tmpdir());
 	const launch = interactiveTargetProcessLaunch(target, workspace, options);
 	const entry = fileURLToPath(new URL("./process-entry.js", import.meta.url));
+	// Resolved once, by the parent, from the Target it actually selected: a mark
+	// can never redirect the write, and a checkout that moves mid-session cannot
+	// turn a mark into an uncaught exception here.
+	const projectDir = realpathSync(resolve(target.dir));
 	try {
 		await new Promise<void>((resolvePromise, reject) => {
 			const child = spawn(process.execPath, [entry], {
@@ -506,6 +683,20 @@ export async function runInteractiveTarget(
 				env: targetInteractiveBootstrapEnvironment(),
 			});
 			child.once("error", reject);
+			// The launch payload is one-shot; the channel then stays open in the
+			// other direction so 👍/👎 marks reach the only process with write
+			// authority over the Target checkout.
+			child.on("message", (value: unknown) => {
+				const response = handleInteractiveTargetFeedbackRequest({
+					projectDir,
+					target: { id: target.manifest.id, gitSha: target.gitSha },
+					value,
+				});
+				// The callback keeps a channel that closed between the mark and its
+				// answer from surfacing as an `error` event that would fail the
+				// whole session; the child times the mark out instead.
+				if (response && child.connected) child.send(response, () => undefined);
+			});
 			child.once("spawn", () => {
 				child.send(launch, (error) => {
 					if (!error) return;

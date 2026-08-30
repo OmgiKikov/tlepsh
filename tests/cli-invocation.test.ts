@@ -60,6 +60,9 @@ describe("side-effect-free CLI invocation parsing", () => {
 		{ name: "corpus inspect with the exam in force", argv: ["corpus", "inspect", "--project", "demo", "--file", "imports/tickets.csv", "--sealed", "40", "--seed", "exam-1"], command: "corpus", action: "inspect" },
 		{ name: "corpus ingest", argv: ["corpus", "ingest", "--project", "demo", "--file", "imports/tickets.csv", "--recipe", "@recipe.json", "--name", "tickets"], command: "corpus", action: "ingest" },
 		{ name: "corpus ingest with a stratified exam", argv: ["corpus", "ingest", "--project", "demo", "--file", "imports/tickets.csv", "--recipe", "{}", "--name", "tickets", "--sealed", "40", "--seed", "exam-1", "--stratify-by", "tier"], command: "corpus", action: "ingest" },
+		{ name: "feedback list", argv: ["feedback", "list"], command: "feedback", action: "list" },
+		{ name: "feedback list for a chosen Target", argv: ["feedback", "list", "--target", "./agent"], command: "feedback", action: "list" },
+		{ name: "feedback clear", argv: ["feedback", "--target", "./agent", "clear"], command: "feedback", action: "clear" },
 		{ name: "compare", argv: ["compare", "erun-a", "erun-b"], command: "compare", action: null },
 		{ name: "diagnose", argv: ["diagnose", "erun-a"], command: "diagnose", action: null },
 		{ name: "report", argv: ["report", "erun-a", "--out", "report.html"], command: "report", action: null },
@@ -103,6 +106,9 @@ describe("side-effect-free CLI invocation parsing", () => {
 		[["wat"], /unknown command "wat"/],
 		[["builder", "propose", "--target", "./agent"], /unknown command "builder"/],
 		[["corpus", "delete", "--project", "demo"], /unknown action "delete" for corpus/],
+		[["feedback"], /missing action for feedback; expected list, clear/],
+		[["feedback", "purge"], /unknown action "purge" for feedback; expected list, clear/],
+		[["feedback", "list", "--project", "demo"], /unknown flag --project for feedback/],
 		[["run", "--target", "./agent", "--wat", "value"], /unknown flag --wat for run/],
 		[["corpus", "list", "--project", "demo", "--file", "tasks.jsonl"], /unknown flag --file for corpus list/],
 		[["builder-pi", "-x", "value"], /unknown flag -x for builder-pi/],
@@ -128,6 +134,7 @@ describe("side-effect-free CLI invocation parsing", () => {
 		[["diagnose", "erun", "extra"], /diagnose accepts 1 positional argument; got 2/],
 		[["--target", "./agent", "stray"], /root accepts 0 positional arguments; got 1/],
 		[["corpus", "list", "extra", "--project", "demo"], /corpus list accepts 0 positional arguments; got 1/],
+		[["feedback", "clear", "extra"], /feedback clear accepts 0 positional arguments; got 1/],
 	] as const)("rejects missing or excess positionals in %j", (argv, message) => {
 		expect(() => parseCliInvocation(argv)).toThrow(message);
 	});
