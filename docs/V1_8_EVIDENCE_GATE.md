@@ -273,7 +273,8 @@ The live run also found four defects that scripted tests could not:
    holdout; the error budget already bounds exclusions.
 
 ## Non-goals (deferred with reason)
-Judge result cache (no regrade path); an `ungraded` grader state (five schemas
+Judge result cache (superseded: `ahde regrade` re-scores recorded traces without
+re-running the Target — see README "Scriptable commands"); an `ungraded` grader state (five schemas
 for a rare event); template `temperature: 0` (reasoning models reject it; params
 are already an axis); rubric-based failure-mode clustering (invariant 29);
 `ahde migrate-runs` (legacy indexes are non-comparable by construction);
