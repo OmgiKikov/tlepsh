@@ -95,6 +95,10 @@ so no tokens are spent on an underpowered verification.
 | S6 product feel | a6ac915 | onboarding resumes after `/login`, model catalog for `configure-target`, model-facing results −76%, tool schemas from zod (−34%), inventory read behind the seam, persona without panel narration |
 | Failure modes on noisy agents | 21b2f09 | a mode is proposable when it reproduces in ≥25% of runs; passes no longer veto (the live run had 29 modes and 0 proposable under the old rule) |
 | S5 first real promotion | live, 2026-08-30 | see "Closed loop on a real Target" |
+| Any data → benchmark (Builder + CLI) | 988d400 | `aspect: dataset`, `dataset-recipe`, `import-dataset`, `ahde corpus inspect\|ingest`; sealed slice drawn by the host before the preview |
+| Reference graders + dialogue cases | 89310b6 | `exact`, `similarity` (token-F1 / levenshtein), `judge withReference` (A–E factuality design ported from vitest-evals); `messages` seeded via `SessionManager.appendMessage` |
+| Feedback becomes rows | 8a0e87f | `/good` `/bad` in `ahde target` over IPC → `imports/feedback.jsonl`; `ahde feedback list\|clear` |
+| Tool workshop core | 5e36337 | multi-file tools with a declared `setup`, `data/**` scope, `tool.upsert` files + `data.upsert`, `tryTool` / `ahde tool try`; Builder-facing surface in `docs/V1_9_TOOL_WORKSHOP.md` |
 
 ## Stages
 

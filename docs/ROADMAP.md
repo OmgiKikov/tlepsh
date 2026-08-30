@@ -18,6 +18,12 @@ addressed by item 3 below, not by opening the holdout.
 
 ## V1.9 — Feedback → Evals (closing the right half of the loop)
 
+Status 2026-08-30 on branch `evidence-gate`: item 0 (dialogue cases, history
+prefix) landed; 0b landed end to end (core + Builder/CLI surfaces); 0c landed
+as the application core (`docs/V1_9_TOOL_WORKSHOP.md` specifies the Builder
+surface); item 1 landed as marks in `ahde target` + the dataset flow (the
+simulated user and `ahde feedback import` remain).
+
 0. **Cases are dialogues.** Chat agents (RAG assistants, research agents)
    live in multi-turn conversations, but a case is one message today. Two
    layers: (a) a case with `messages` — the conversation so far plus the
