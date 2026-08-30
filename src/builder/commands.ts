@@ -13,6 +13,7 @@ import type {
 	WorkbenchDecisionInput,
 	WorkbenchDecisionResult,
 	WorkbenchStartTestingResult,
+	WorkbenchVerifyCandidateResult,
 	WorkbenchView,
 } from "../workbench/types.js";
 import { oneLine, pluralize } from "./render/format.js";
@@ -210,6 +211,12 @@ function startTestingTitle(result: WorkbenchStartTestingResult): { title: string
 	return { title: "Run complete", tone: result.evaluation.evaluation.summary.error > 0 ? "warning" : "success" };
 }
 
+function verifyTitle(result: WorkbenchVerifyCandidateResult): { title: string; tone: TranscriptTone } {
+	return result.outcome === "stopped-by-screen"
+		? { title: "Cheap check found nothing", tone: "info" }
+		: { title: "Candidate verified", tone: "success" };
+}
+
 function decisionTitle(result: WorkbenchDecisionResult): { title: string; tone: TranscriptTone } {
 	switch (result.kind) {
 		case "run-eval": return { title: "Run complete", tone: result.result.evaluation.summary.error > 0 ? "warning" : "success" };
@@ -218,10 +225,15 @@ function decisionTitle(result: WorkbenchDecisionResult): { title: string; tone: 
 				return { title: "Run complete", tone: result.result.evaluation.summary.error > 0 ? "warning" : "success" };
 			}
 			if (result.result.resolvedAs === "start-testing") return startTestingTitle(result.result);
-			return { title: "Candidate verified", tone: "success" };
+			return verifyTitle(result.result);
 		case "start-testing": return startTestingTitle(result.result);
 		case "ship": return { title: "Shipped", tone: "success" };
-		case "verify-candidate": return { title: "Candidate verified", tone: "success" };
+		case "verify-candidate": return verifyTitle(result.result);
+		case "improve":
+			return {
+				title: "Improvement cycles complete",
+				tone: result.result.candidateId ? "success" : "info",
+			};
 		case "calibrate":
 			return {
 				title: "Noise calibrated",

@@ -90,6 +90,9 @@ describe("CLI help", () => {
 		expect(help).toContain("Advanced automation commands");
 		expect(help).toContain("compare  diagnose  regrade  report");
 		expect(help).toContain("ahde calibrate --target <dir>                measure run-to-run noise (A/A)");
+		expect(help).toContain("ahde check --target <dir> --candidate <id>   cheap screen: the failed cases, once");
+		expect(help).toContain("ahde improve --target <dir> --until 90% --max-cycles 5");
+		expect(help).toContain("candidate  calibrate  check  improve  review  promote  reject");
 		expect(help).toContain("AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)");
 	});
 
@@ -99,6 +102,18 @@ describe("CLI help", () => {
 		expect(cliHelp(["target", "--help"])).toContain("Requires a configured Target");
 		expect(cliHelp(["calibrate", "--help"])).toContain("measure run-to-run noise");
 		expect(cliHelp(["calibrate", "--help"])).toContain("never promotable");
+		const check = cliHelp(["check", "--help"]);
+		expect(check).toContain("Usage: ahde check --target <dir> --candidate <id>");
+		expect(check).toContain("ONLY\nthe cases its source eval recorded as failing");
+		expect(check).toContain("It is a screen, never evidence.");
+		expect(check).toContain("a promotion that\ncites one is refused");
+		expect(check).toContain("Exit 0 = promising, 1 = flat.");
+		const improve = cliHelp(["improve", "--help"]);
+		expect(improve).toContain("Usage: ahde improve --target <dir> --until <pass-rate> --max-cycles <n>");
+		expect(improve).toContain("cheap check -> full\ndevelopment verification");
+		expect(improve).toContain("`90%` or `0.9`");
+		expect(improve).toContain("the sealed guardrail and the promotion are always\nyours");
+		expect(improve).toContain("It never promotes, adopts, publishes a corpus or approves a Spec.");
 		const regrade = cliHelp(["regrade", "--help"]);
 		expect(regrade).toContain("Usage: ahde regrade <evalRunId> --target <dir>");
 		expect(regrade).toContain("without calling the\nTarget model again");

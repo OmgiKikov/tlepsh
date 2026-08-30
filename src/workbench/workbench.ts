@@ -64,6 +64,20 @@ import {
 	runCandidateExperiment,
 } from "../application/candidate-experiment.js";
 import {
+	runCheapCheck,
+	type CheapCheckResult,
+} from "../application/cheap-check.js";
+import { buildPromotionRegressionGuards } from "../application/regression-guards.js";
+import {
+	IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS,
+	improvementLoopGate,
+	plannedImprovementExecutions,
+	recordedBuilderProposalAuthor,
+	renderImprovementLoopTable,
+	runImprovementLoop,
+	type ImprovementProposalAuthor,
+} from "../application/improvement-loop.js";
+import {
 	decideCandidateRejection,
 	promoteReviewedCandidate,
 	reviewCandidate,
@@ -117,7 +131,10 @@ import {
 	saveWorkbenchFocus,
 	selectWorkbenchFocus,
 } from "./focus.js";
-import { recordWorkbenchCorpusPublication } from "./corpus-publication.js";
+import {
+	loadWorkbenchCorpusPublication,
+	recordWorkbenchCorpusPublication,
+} from "./corpus-publication.js";
 import { recordCandidateAbandonment } from "./candidate-abandonment.js";
 import {
 	describeCycleContinuation,
@@ -190,6 +207,8 @@ import {
 	type WorkbenchTurn,
 	type WorkbenchView,
 	type WorkbenchViewQuery,
+	type WorkbenchCheapCheckProjection,
+	type WorkbenchRegressionGuardsProjection,
 } from "./types.js";
 import type { CandidateRecord } from "../domain/candidate.js";
 
@@ -252,6 +271,16 @@ export interface AhdeWorkbenchDependencies {
 	describeProposalDiscard: typeof describeBuilderProposalDiscard;
 	discardProposal: typeof discardBuilderProposal;
 	runAppliedCandidate: typeof runAppliedBuilderCandidate;
+	/** The cheap screen that runs before a verification is paid for. */
+	runCheapCheck: typeof runCheapCheck;
+	/** Derived after the promotion receipt; a failure is a warning, never a block. */
+	buildPromotionGuards: typeof buildPromotionRegressionGuards;
+	runImprovementLoop: typeof runImprovementLoop;
+	/**
+	 * Where one autoloop cycle's proposal comes from. Undefined means the next
+	 * open Builder proposal already recorded against this cycle's evidence.
+	 */
+	authorImprovementProposal?: ImprovementProposalAuthor;
 	reviewCandidate: typeof reviewCandidate;
 	promoteCandidate: typeof promoteReviewedCandidate;
 	rejectCandidate: typeof decideCandidateRejection;
@@ -305,6 +334,9 @@ const DEFAULT_DEPENDENCIES: AhdeWorkbenchDependencies = {
 	describeProposalDiscard: describeBuilderProposalDiscard,
 	discardProposal: discardBuilderProposal,
 	runAppliedCandidate: runAppliedBuilderCandidate,
+	runCheapCheck,
+	buildPromotionGuards: buildPromotionRegressionGuards,
+	runImprovementLoop,
 	reviewCandidate,
 	promoteCandidate: promoteReviewedCandidate,
 	rejectCandidate: decideCandidateRejection,
@@ -700,6 +732,73 @@ export class AhdeWorkbench {
 		return actorId(decision.actorId);
 	}
 
+	/** The screen, as the operator reads it. It is never gate evidence. */
+	private screenProjection(screen: CheapCheckResult): WorkbenchCheapCheckProjection {
+		return {
+			verdict: screen.verdict,
+			tasks: screen.tasks.length,
+			improved: screen.improved,
+			unchanged: screen.unchanged,
+			regressed: screen.regressed,
+			inconclusive: screen.inconclusive,
+			withinErrorBudget: screen.withinErrorBudget,
+			screenEvalRunId: screen.screenEvalRunId,
+			sourceEvalRunId: screen.sourceEvalRunId,
+		};
+	}
+
+	/**
+	 * Pin the cases a promotion flipped. This runs *after* the promotion receipt
+	 * is durable, so it can neither block nor delay it: everything it can go
+	 * wrong with degrades to a warning the operator reads next to the tag.
+	 * Nothing here publishes — the draft waits for an explicit publication.
+	 */
+	private promotionGuards(record: CandidateRecord, tag: string): WorkbenchRegressionGuardsProjection {
+		const empty = { draftId: null, cases: 0, taskIds: [] as string[] };
+		try {
+			const evaluated = record.events.find((event) => event.type === "evaluated");
+			if (evaluated?.type !== "evaluated") throw new Error("candidate has no evaluated development arms");
+			const corpusIdentity = evaluated.evaluation.development.corpus;
+			if (!corpusIdentity) {
+				return { ...empty, warning: "the promotion was measured without a published development corpus, so there is no basket to pin guards into" };
+			}
+			const current = this.inventory();
+			if (!current.target) throw new Error("no resolved Target");
+			const specId = record.specId ??
+				(record.origin.kind === "applied-builder" ? record.origin.approvedSpec.specId : null);
+			if (!specId) throw new Error("the promoted candidate is not bound to an approved Spec");
+			const approved = loadApprovedSpec({
+				stateRoot: this.stateRoot,
+				projectId: this.projectId,
+				specId,
+			});
+			const lineage = loadWorkbenchCorpusPublication(this.stateRoot, this.projectId, corpusIdentity.id);
+			const corpus = loadCorpus({ stateRoot: this.stateRoot, projectId: this.projectId, corpusId: corpusIdentity.id });
+			if (corpus.metadata.hash !== corpusIdentity.hash) {
+				throw new Error("the published development corpus changed since the promotion evidence was recorded");
+			}
+			const built = this.dependencies.buildPromotionGuards({
+				runsRoot: this.runsRoot,
+				stateRoot: this.stateRoot,
+				candidate: record,
+				approvedSpec: approved.reference,
+				target: current.target,
+				developmentCorpus: corpus,
+				parentDraftId: lineage.draftId,
+				compatibleEvalRuns: compatibleDevelopmentEvals(current, approved.reference.specId, corpusIdentity.id),
+				promotionTag: tag,
+				now: this.dependencies.now,
+			});
+			if (!built) return { ...empty, warning: null };
+			return { draftId: built.draftId, cases: built.cases, taskIds: built.taskIds, warning: null };
+		} catch (error) {
+			return {
+				...empty,
+				warning: `regression guards were not built: ${error instanceof Error ? error.message : String(error)}`,
+			};
+		}
+	}
+
 	/** What one run of this many executions is expected to cost on this Target. */
 	private runEstimate(executions: number, target: WorkbenchInventory["target"]): WorkbenchRunEstimate {
 		return estimateRunCost({
@@ -921,6 +1020,7 @@ export class AhdeWorkbench {
 		let tag: string | null = null;
 		let adoption: { branch: string; fromSha: string; toSha: string } | null = null;
 		let continuation: { receiptId: string; nextStage: WorkbenchStage } | null = null;
+		let guards: WorkbenchRegressionGuardsProjection | null = null;
 		let view = await this.viewOf(inventory);
 		for (const step of plan) {
 			if (step === "review-candidate") {
@@ -932,6 +1032,7 @@ export class AhdeWorkbench {
 				const done = await this.decide({ kind: "promote-candidate", candidateId, version: version!, reason: input.reason }, scoped, options);
 				shipped = done.result.candidate;
 				tag = done.result.tag;
+				guards = done.result.guards;
 				steps.push({ kind: step, message: done.message });
 				view = done.view;
 			} else if (step === "adopt-candidate") {
@@ -951,9 +1052,11 @@ export class AhdeWorkbench {
 			kind: input.kind,
 			message: [
 				`Shipped${tag ? ` ${tag}` : ""}${adoption ? ` on ${adoption.branch}` : ""}.`,
+				...(guards?.cases ? [`${guards.cases} regression guard case(s) drafted as ${guards.draftId}; publish them to pin the fix.`] : []),
+				...(guards?.warning ? [guards.warning] : []),
 				...(continuation ? [`The next cycle starts at ${continuation.nextStage}.`] : []),
 			].join(" "),
-			result: { steps, candidate: shipped, tag, adoption, continuation },
+			result: { steps, candidate: shipped, tag, adoption, continuation, guards },
 			view,
 		};
 	}
@@ -2139,8 +2242,9 @@ export class AhdeWorkbench {
 					developmentCorpus = { stateRoot: this.stateRoot, projectId: this.projectId, corpusId: development.id };
 				}
 				return {
-					subject: { operation: "verify-applied-candidate", builderRunId: builderRun.runId, builderRunHash: hashValue(builderRun), applyReceiptHash: hashValue(applyReceipt), proposalHash: builderRun.artifacts.proposal?.sha256 ?? null, baseTargetSha: applyReceipt.baseTargetSha, candidateSha: applyReceipt.candidateSha, approvedSpec: builderRun.request.approvedSpec, developmentCorpus: development ?? null, sealedHoldout: { id: selected.id, hash: selected.hash, taskCount: selected.taskCount }, repetitions: input.repetitions },
+					subject: { operation: "verify-applied-candidate", builderRunId: builderRun.runId, builderRunHash: hashValue(builderRun), applyReceiptHash: hashValue(applyReceipt), proposalHash: builderRun.artifacts.proposal?.sha256 ?? null, baseTargetSha: applyReceipt.baseTargetSha, candidateSha: applyReceipt.candidateSha, approvedSpec: builderRun.request.approvedSpec, developmentCorpus: development ?? null, sealedHoldout: { id: selected.id, hash: selected.hash, taskCount: selected.taskCount }, repetitions: input.repetitions, screen: builderRun.request.source?.evalRunId ?? null, force: input.force === true },
 					approvedSpecId: builderRun.request.approvedSpec.specId,
+					sourceEvalRunId: builderRun.request.source?.evalRunId ?? null,
 					developmentCorpus,
 					sealedCorpus: { stateRoot: this.stateRoot, projectId: this.projectId, corpusId: selected.id } satisfies CorpusRef,
 				};
@@ -2151,12 +2255,62 @@ export class AhdeWorkbench {
 				.find((corpus) => corpus.id === before.subject.developmentCorpus?.id)?.taskCount ?? 0;
 			const executions = 2 * (developmentTasks + selected.taskCount) * input.repetitions;
 			const actor = await this.confirm(input, gate, "Verify exact applied candidate", before.subject, options.signal, {
-				question: `Verify the candidate against its baseline (${executions} Target executions)?`,
-				estimate: this.runEstimate(executions, inventory.target),
+				question: before.sourceEvalRunId
+					? `Screen the cases that already failed, then verify the candidate against its baseline (up to ${executions + developmentTasks} Target executions)?`
+					: `Verify the candidate against its baseline (${executions} Target executions)?`,
+				estimate: this.runEstimate(executions + (before.sourceEvalRunId ? developmentTasks : 0), inventory.target),
 			});
 			if (choice.actorId && actorId(choice.actorId) !== actor) throw new Error("sealed selection and confirmation came from different human actors");
 			const after = build();
 			if (!exactSame(before.subject, after.subject)) throw new WorkbenchStaleDecisionError(input.kind);
+
+			// The cheap check first. It runs the candidate on the cases that already
+			// failed, once, candidate arm only — a screen, never evidence: it enters
+			// no gate and can never reach promotion. A flat screen stops the spend
+			// unless the operator explicitly forced it; a screen whose own
+			// infrastructure errors blew the budget is inconclusive and stops
+			// nothing (invariant 9).
+			let screen: CheapCheckResult | null = null;
+			if (after.sourceEvalRunId) {
+				try {
+					screen = await this.dependencies.runCheapCheck({
+						repositoryDir: this.projectDir,
+						runsRoot: this.runsRoot,
+						candidateRef: after.subject.candidateSha,
+						baselineRef: after.subject.baseTargetSha,
+						sourceEvalRunId: after.sourceEvalRunId,
+						...(after.developmentCorpus ? { developmentCorpus: after.developmentCorpus } : {}),
+						...(options.signal ? { signal: options.signal } : {}),
+						...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
+						now: this.dependencies.now,
+					});
+				} catch (error) {
+					// A screen that cannot run is not a verdict. Say so and measure.
+					console.error("AHDE host-only cheap check failure:", error);
+					screen = null;
+				}
+			}
+			if (screen && screen.verdict === "flat" && screen.withinErrorBudget && input.force !== true) {
+				const projection = this.screenProjection(screen);
+				return {
+					kind: input.kind,
+					message:
+						`Cheap check found nothing: ${screen.tasks.length} previously failing case` +
+						`${screen.tasks.length === 1 ? "" : "s"} re-run once on the candidate, ` +
+						`${screen.improved} improved, ${screen.unchanged} unchanged, ${screen.regressed} regressed. ` +
+						`The ${executions}-execution verification was not spent. ` +
+						"Author another change, or verify anyway with force.",
+					result: {
+						outcome: "stopped-by-screen",
+						builderRunId: after.subject.builderRunId,
+						candidateSha: after.subject.candidateSha,
+						screen: projection,
+						spared: { executions },
+					},
+					view: await this.viewOf(this.inventory()),
+				};
+			}
+
 			let result: Awaited<ReturnType<typeof runAppliedBuilderCandidate>>;
 			try {
 				result = await this.dependencies.runAppliedCandidate({
@@ -2190,11 +2344,81 @@ export class AhdeWorkbench {
 						? "Candidate verification completed on development evidence; no sealed holdout ran."
 						: `Candidate verification completed; the sealed guardrail verdict is ${sealedVerdict}, so this candidate cannot be promoted.`,
 				result: {
+					outcome: "verified",
 					candidate: candidateSummary(result.record),
 					development: { verdict: result.compare.gate.verdict, delta: result.compare.summary.delta, confidence95: result.compare.summary.confidence95 },
 					sealedHoldout: { executed: result.sealedHoldout !== null, gatePassed: sealedVerdict === "pass", verdict: sealedVerdict },
+					screen: screen ? this.screenProjection(screen) : null,
 				},
 				view: await this.viewOf(settled),
+			};
+		}
+
+		if (input.kind === "improve") {
+			if (!inventory.target) throw new Error("`improve` needs one exact resolved Target");
+			const approved = requireApprovedSpec(inventory);
+			const corpus = requireDevelopmentCorpus(inventory, input.developmentCorpusId, approved.id);
+			const plannedExecutions = plannedImprovementExecutions({
+				developmentTasks: corpus.taskCount,
+				repetitions: input.repetitions,
+				maxCycles: input.maxCycles,
+			});
+			const target = `${Math.round(input.until * 100)}%`;
+			const subject = {
+				operation: "improve",
+				approvedSpecId: approved.id,
+				developmentCorpus: { id: corpus.id, hash: corpus.hash, taskCount: corpus.taskCount },
+				until: input.until,
+				maxCycles: input.maxCycles,
+				repetitions: input.repetitions,
+				plannedExecutions,
+				neverDecides: [...IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS],
+			};
+			const actor = await this.confirm(input, gate, `Improve until ${target}`, subject, options.signal, {
+				question:
+					`Run up to ${input.maxCycles} improvement cycle${input.maxCycles === 1 ? "" : "s"} ` +
+					`towards ${target} (at most ${plannedExecutions} Target executions)? ` +
+					"The loop never promotes, adopts, publishes or approves anything.",
+				estimate: this.runEstimate(plannedExecutions, inventory.target),
+			});
+			const loop = await this.dependencies.runImprovementLoop({
+				repositoryDir: this.projectDir,
+				runsRoot: this.runsRoot,
+				stateRoot: this.stateRoot,
+				projectId: this.projectId,
+				approvedSpecId: approved.id,
+				developmentCorpus: { stateRoot: this.stateRoot, projectId: this.projectId, corpusId: corpus.id },
+				until: input.until,
+				maxCycles: input.maxCycles,
+				repetitions: input.repetitions,
+				...(input.jobs === undefined ? {} : { jobs: input.jobs }),
+				author: this.dependencies.authorImprovementProposal ?? recordedBuilderProposalAuthor({
+					stateRoot: this.stateRoot,
+					runsRoot: this.runsRoot,
+					projectId: this.projectId,
+				}),
+				gate: improvementLoopGate(gate),
+				actorId: actor,
+				...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
+				...(options.signal ? { signal: options.signal } : {}),
+				now: this.dependencies.now,
+			});
+			const table = renderImprovementLoopTable(loop);
+			return {
+				kind: input.kind,
+				message:
+					`${loop.cycles.length} improvement cycle${loop.cycles.length === 1 ? "" : "s"} ran. ` +
+					`Stopped because ${loop.stopMessage}.`,
+				result: {
+					cycles: loop.cycles,
+					stopReason: loop.stopReason,
+					stopMessage: loop.stopMessage,
+					table,
+					candidateId: loop.candidateId,
+					finalPassRate: loop.finalPassRate,
+					executions: loop.executions,
+				},
+				view: await this.viewOf(this.inventory()),
 			};
 		}
 
@@ -2217,8 +2441,22 @@ export class AhdeWorkbench {
 			const current = this.decisionInventory(input.kind);
 			if (hashValue(requireCandidate(current, ["reviewed"], candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
 			const promoted = this.dependencies.promoteCandidate({ repositoryDir: this.projectDir, runsRoot: this.runsRoot, stateRoot: this.stateRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, version: input.version, reason: input.reason, actorId: actor, now: this.dependencies.now });
+			// The promotion is written. Pinning what it fixed comes after, and its
+			// failure is a warning: a bookkeeping step never un-ships a release.
+			const guards = this.promotionGuards(promoted.record, promoted.tag);
 			const settled = this.select("candidate", promoted.record.candidateId);
-			return { kind: input.kind, message: `Candidate promoted as ${promoted.tag}. Adopt it to make it the active Target.`, result: { candidate: candidateSummary(promoted.record), tag: promoted.tag, candidateSha: promoted.candidateSha }, view: await this.viewOf(settled) };
+			return {
+				kind: input.kind,
+				message: [
+					`Candidate promoted as ${promoted.tag}. Adopt it to make it the active Target.`,
+					...(guards.cases > 0
+						? [`${guards.cases} case(s) that flipped fail→pass are drafted as regression guards in ${guards.draftId}; publish that draft to pin them.`]
+						: []),
+					...(guards.warning ? [guards.warning] : []),
+				].join(" "),
+				result: { candidate: candidateSummary(promoted.record), tag: promoted.tag, candidateSha: promoted.candidateSha, guards },
+				view: await this.viewOf(settled),
+			};
 		}
 
 		if (input.kind === "reject-candidate") {

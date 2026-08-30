@@ -1277,14 +1277,14 @@ describe("renderDecision", () => {
 		expect(asEval[0]).toContain("Evaluation 6/10 passed");
 		expect(asEval).toContain("Live trace http://127.0.0.1:4310/live/abc · retained for 15 minutes");
 		expect(asEval[asEval.length - 1]).toBe(nextLine("improvement-authoring"));
-		const asVerify = renderDecision(decision("run-current", { resolvedAs: "verify-candidate", candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"), plainPaint);
+		const asVerify = renderDecision(decision("run-current", { resolvedAs: "verify-candidate", outcome: "verified" as const, screen: null, candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"), plainPaint);
 		expect(asVerify[0]).toBe("Candidate verified candidate-1 · evaluated");
 		expect(asVerify[asVerify.length - 1]).toBe(nextLine("candidate-review"));
 		expect(asVerify.join("\n")).not.toContain("Live trace");
 	});
 
 	it("renders verification, apply, discard, and abandon decisions", () => {
-		const verified = renderDecision(decision("verify-candidate", { candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"), plainPaint);
+		const verified = renderDecision(decision("verify-candidate", { outcome: "verified" as const, screen: null, candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"), plainPaint);
 		expect(verified[0]).toBe("Candidate verified candidate-1 · evaluated");
 		expect(verified).toContain("Sealed holdout gate passed");
 		expect(verified[verified.length - 1]).toBe(nextLine("candidate-review"));
@@ -1309,7 +1309,7 @@ describe("renderDecision", () => {
 		expect(reviewed[0]).toBe("Review recorded candidate-1 · reviewed");
 		expect(reviewed).toContain("Review promote — good");
 		expect(reviewed[reviewed.length - 1]).toBe(nextLine("release-decision"));
-		expect(renderDecision(decision("promote-candidate", { candidate: makeCandidate({ status: "promoted" }), tag: "v1.2.0", candidateSha: SHA_B }, "candidate-adoption"), tagPaint)).toEqual([
+		expect(renderDecision(decision("promote-candidate", { candidate: makeCandidate({ status: "promoted" }), tag: "v1.2.0", candidateSha: SHA_B, guards: { draftId: null, cases: 0, taskIds: [], warning: null } }, "candidate-adoption"), tagPaint)).toEqual([
 			"<heading>Candidate promoted</heading> <success>v1.2.0</success> <dim>· bbbbbbbbbb</dim>",
 			"<muted>The tag records the exact reviewed revision. The active Target is unchanged until you /adopt.</muted>",
 			`<dim>Next</dim> ${nextStep(makeView({ stage: "candidate-adoption" }))} <dim>(Adopt candidate)</dim>`,
@@ -1361,13 +1361,13 @@ describe("renderDecision", () => {
 			decision("publish-corpus", { corpusId: "c", corpusHash: HASH, taskCount: 1, publicationReceiptId: "r", lineageHash: HASH }, "ready-to-evaluate"),
 			decision("run-eval", makeTraces(), "improvement-authoring"),
 			decision("run-current", { resolvedAs: "run-eval", ...makeTraces() }, "improvement-authoring"),
-			decision("run-current", { resolvedAs: "verify-candidate", candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: false, gatePassed: false, verdict: null } }, "candidate-review"),
+			decision("run-current", { resolvedAs: "verify-candidate", outcome: "verified" as const, screen: null, candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: false, gatePassed: false, verdict: null } }, "candidate-review"),
 			decision("apply-proposal", { runId: "r", branch: "b", candidateSha: SHA_B, proposalHash: HASH }, "candidate-verification"),
 			decision("discard-proposal", { runId: "r", receiptHash: HASH }, "improvement-authoring"),
-			decision("verify-candidate", { candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: false, verdict: "fail" } }, "candidate-review"),
+			decision("verify-candidate", { outcome: "verified" as const, screen: null, candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: false, verdict: "fail" } }, "candidate-review"),
 			decision("abandon-candidate", { candidateId: "c", interruptedStatus: "proposed", receiptHash: HASH }, "candidate-verification"),
 			decision("review-candidate", makeCandidate(), "release-decision"),
-			decision("promote-candidate", { candidate: makeCandidate(), tag: "v1.0.0", candidateSha: SHA_B }, "candidate-adoption"),
+			decision("promote-candidate", { candidate: makeCandidate(), tag: "v1.0.0", candidateSha: SHA_B, guards: { draftId: null, cases: 0, taskIds: [], warning: null } }, "candidate-adoption"),
 			decision("reject-candidate", makeCandidate(), "complete"),
 			decision("adopt-candidate", { candidate: makeCandidate(), disposition: "already-adopted", branch: "main", fromSha: SHA_A, toSha: SHA_B, tag: "v1.0.0", receiptId: "r" }, "complete"),
 			decision("continue-cycle", { candidate: makeCandidate(), disposition: "already-recorded", activeTargetSha: SHA_B, receiptId: "r", nextStage: "improvement-authoring" }, "improvement-authoring"),
@@ -1402,9 +1402,9 @@ describe("decisionHeadline", () => {
 	it("summarises runs, verifications, and falls back to the one-line message", () => {
 		expect(decisionHeadline(decision("run-eval", makeTraces(), "improvement-authoring"))).toBe("6/10 passed · 1 failure modes");
 		expect(decisionHeadline(decision("run-current", { resolvedAs: "run-eval", ...makeTraces() }, "improvement-authoring"))).toBe("6/10 passed · 1 failure modes");
-		expect(decisionHeadline(decision("run-current", { resolvedAs: "verify-candidate", candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"))).toBe("candidate evaluated");
-		expect(decisionHeadline(decision("verify-candidate", { candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"))).toBe("candidate evaluated · development improved · sealed pass");
-		expect(decisionHeadline(decision("verify-candidate", { candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: false, gatePassed: false, verdict: null } }, "candidate-review"))).toBe("candidate evaluated · development improved · sealed not run");
+		expect(decisionHeadline(decision("run-current", { resolvedAs: "verify-candidate", outcome: "verified" as const, screen: null, candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"))).toBe("candidate evaluated");
+		expect(decisionHeadline(decision("verify-candidate", { outcome: "verified" as const, screen: null, candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"))).toBe("candidate evaluated · development improved · sealed pass");
+		expect(decisionHeadline(decision("verify-candidate", { outcome: "verified" as const, screen: null, candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: false, gatePassed: false, verdict: null } }, "candidate-review"))).toBe("candidate evaluated · development improved · sealed not run");
 		expect(decisionHeadline(decision("approve-spec", { approvedSpecId: "s", receiptId: "r" }, "corpus-design", `Spec approved${OSC}\n  as an exact\tsnapshot`))).toBe("Spec approved as an exact snapshot");
 		expect(decisionHeadline(decision("discard-proposal", { runId: "r", receiptHash: HASH }, "improvement-authoring", "x".repeat(200)))).toBe(`${"x".repeat(119)}…`);
 	});

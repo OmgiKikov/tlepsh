@@ -363,6 +363,7 @@ export function createBuilderWorkbenchTools(
 				"• { kind: \"apply-proposal\", runId?, branch } — the only moment a diff touches the repository; the host shows the exact diff.",
 				"• { kind: \"ship\", version: \"x.y.z\" } — “ship it”: records the promote review, tags the exact revision, fast-forwards the operator's branch, and closes the cycle, in one question. `version` is required while the promotion is still pending; at candidate-adoption/complete it is optional.",
 				"Also available: { kind: \"start-testing\", repetitions } explicitly; { kind: \"calibrate\", repetitions } measures noise once per Target revision (no question); { kind: \"discard-proposal\" } and { kind: \"reject-candidate\" } and { kind: \"abandon-candidate\" } are one short yes/no.",
+				"• { kind: \"improve\", until (0..1 pass rate), maxCycles, repetitions, jobs?, developmentCorpusId? } — the autoloop: run → diagnose → apply the next open proposal → cheap check on the cases that already failed → verify what looks promising, over and over. One question up front for the whole planned loop. It stops and hands back the moment the sealed guardrail or a release decision is what is left; it never promotes, adopts, publishes or approves.",
 				"The fine-grained decisions still exist for scripts and for recovery, each with its own dialog: target-setup → { kind: \"scaffold-target\" } then { kind: \"configure-target\", targetId (kebab-case), model: { provider, modelId, thinkingLevel?, timeoutMs?, params? } };",
 				"spec-review → { kind: \"approve-spec\", draftSpecId? }; corpus-review → { kind: \"publish-corpus\", draftId?, name? };",
 				"corpus-design / corpus-review → { kind: \"import-dataset\", submissionId? (from a dataset-recipe submission; the newest one otherwise), sealed: { count, seed, stratifyBy? } | null } — the operator confirms the mapping on the sample cases; the host reserves the sealed slice first, compiles the rest into a new draft, and tells you only how many cases were held out.",
@@ -379,8 +380,14 @@ export function createBuilderWorkbenchTools(
 				// Routine measurement may run headless; anything that can create
 				// durable authority still needs the local TUI, and the policy on each
 				// confirmation enforces that again at the moment of the decision.
+				//
+				// `improve` is the exception on the routine side: its cycles apply
+				// diffs on throwaway `candidate/auto-*` branches, and applying is the
+				// one moment a diff touches the repository. The operator's request is
+				// the permission for the loop, but that request has to come from a
+				// human in front of a terminal, not from an RPC or print host.
 				const policy = workbenchGateClass(params.kind);
-				if (policy !== "routine") requireHostUI(ctx, "Workbench decision");
+				if (policy !== "routine" || params.kind === "improve") requireHostUI(ctx, "Workbench decision");
 				// Never close this over the REQUESTED kind: routine `run-current`
 				// auto-chains into the consequential `start-testing` composite, and a
 				// guard that already decided "routine" would let an RPC or print host
@@ -398,6 +405,7 @@ export function createBuilderWorkbenchTools(
 				const showsRunProgress = params.kind === "run-current" ||
 					params.kind === "run-eval" ||
 					params.kind === "calibrate" ||
+					params.kind === "improve" ||
 					params.kind === "verify-candidate";
 				const observation = showsRunProgress
 					? await beginBuilderRunObservation(ctx.ui, options.beginLiveTrace)

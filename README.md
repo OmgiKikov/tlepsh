@@ -485,6 +485,12 @@ ahde corpus ingest --project my-agent --file imports/support-tickets.csv \
   --recipe @recipe.json --name "support basket" \
   --sealed 40 --seed exam-1 --stratify-by tier
 
+# the cheap check before the expensive one: the failed cases, once, one arm
+ahde check --target . --candidate <candidate-id>
+
+# improvement cycles inside the gates; promotion is never the loop's
+ahde improve --target . --until 90% --max-cycles 5 --jobs 4
+
 # exact candidate experiment and terminal human decision
 ahde candidate --target . --builder-run <builder-run-id> \
   --project my-agent --development-corpus <development-corpus-id> \
@@ -506,6 +512,26 @@ recomputed from the graders actually used, so regrading a baseline and a
 candidate with the same graders makes them comparable to each other while a
 regrade whose graders changed is refused against its own source; sealed evidence
 stays sealed and prints counts only.
+
+`ahde check` runs a candidate on only the cases its source eval recorded as
+failing, once, candidate arm only, instead of the full
+`(development + sealed cases) x repetitions x 2 arms`. It is a screen and never
+evidence: its eval run carries the `solo` label, which is never reused as a
+baseline and never stands in for a candidate arm, every screen is recorded under
+`runs/screens/`, no comparison gate ever sees one, and a promotion that cites one
+is refused. `verify-candidate` runs the screen first and stops on a flat verdict
+unless the operator forces the measurement anyway.
+
+`ahde improve` runs the same cycle over and over — run, diagnose, apply the next
+unapplied Builder proposal on `candidate/auto-<n>`, cheap check, verify what
+looks promising — under one routine cost question covering the whole planned
+loop. It stops and hands back when the target pass rate is reached, the cycle
+budget is spent, a development verdict is not `improved`, the cheap check is flat
+twice in a row, infrastructure errors go over the budget, or a verified candidate
+is ready. It never touches the sealed guardrail and never promotes, adopts,
+publishes a corpus or approves a Spec. A promotion additionally drafts the cases
+it flipped fail→pass as regression guards; the operator publishes that draft like
+any other.
 
 Corpus drafts and proposals are authored in Builder Pi; the commands above only
 publish, evaluate, and decide over the artifacts it produced. The typed proposal

@@ -77,7 +77,7 @@ Where AHDE stands against practice (verified 2026-08-30):
 | Judge | a rubric the Builder wrote; nobody checked it | assertion checklists, a jury of 3, `ahde label`, agreement shown next to every judge verdict | — | — |
 | Changing a rubric | rerun everything (135 runs) | `ahde regrade`: re-score recorded answers | — | — |
 | Score | binary pass/fail per run | mean grader score; cost and latency beside the interval | — | — |
-| Trying a fix | one proposal → full verification | — | cheap check on failed cases first; 2–3 candidates per cycle in a Pareto table | — |
+| Trying a fix | one proposal → full verification | — | `ahde check` screens the failed cases first; `ahde improve` runs the cycle; 2–3 candidates per cycle in a Pareto table | — |
 | Builder's hands | semantic intents compiled by the host | — | **done** — edits files in a bound worktree, runs the tool it wrote; the proposal is the diff | — |
 | Chat agents | seeded history, grade the next reply | — | simulated user with a goal and persona | — |
 | Target sandbox | best-effort sandbox-exec/bwrap for `bash` | — | — | Gondolin / Docker, `required` in the bank profile |
@@ -119,18 +119,36 @@ branch; the closed-loop Pi test passes with exactly three confirmations.
 
 ## Wave 2 — the loop that compounds
 
-5. **Cheap check before the expensive one** — a proposal runs on the failed
-   cases only (k × 1) before full verification; no signal → no 135-run spend
-   (old item 19).
+5. **Cheap check before the expensive one** — *landed*. `ahde check --target .
+   --candidate <id>`, and `verify-candidate` runs it first: the candidate on
+   only the cases the source eval recorded as failing, once, candidate arm
+   only, against those cases' recorded outcomes. `flat` (nothing previously
+   failing now passes) stops the verification until the operator forces it.
+   The screen is never evidence: its eval run carries `solo`, every screen is
+   recorded under `runs/screens/`, no comparison gate sees one, promotion
+   refuses a candidate that cites one, and `add-case-from-run` refuses one as a
+   source (old item 19).
 6. **Population** — 2–3 candidates per failure mode with different
    hypotheses, verified in the pool, a Pareto table (score × cost), the human
    promotes the best; the proposer reflects over the traces of all prior
    candidates (GEPA / Meta-Harness) (old item 8).
-7. **Autoloop inside the gates** — `ahde improve --until 90% --max-cycles 5`:
-   run → diagnose → propose(k) → apply on branches → cheap check → verify;
-   stops only at the ship decision (old item 2).
-8. **Promoted fixes become guards** — tasks a promotion flipped are pinned as
-   regression cases; this is what makes gains compound (old item 4).
+7. **Autoloop inside the gates** — *landed*. `ahde improve --target . --until
+   90% --max-cycles 5 [--jobs N] [--project id]` and a routine Workbench
+   `improve` decision under the same cost guard, estimated over the whole
+   planned loop: run → diagnose → top proposable failure mode → the next
+   unapplied Builder proposal → apply on `candidate/auto-<n>` → cheap check →
+   development verification when the screen is promising. It stops at the
+   target pass rate, the cycle budget, a verdict other than `improved`, two
+   flat screens in a row, an over-budget infrastructure error, or a verified
+   candidate — because the sealed guardrail and the promotion are the human's.
+   Authoring still needs Builder Pi: a headless authoring seam is wave 3 (#12)
+   (old item 2).
+8. **Promoted fixes become guards** — *landed*. A promotion derives the tasks
+   that flipped fail→pass between its two development arms into one corpus
+   draft revision, through the same exact-evidence rules the Builder's
+   `add-case-from-run` goes through. It runs after the promotion receipt, is
+   reported as `guards: { draftId, cases }`, degrades to a warning, and never
+   publishes: the operator publishes that draft like any other (old item 4).
 9. **Builder with hands** — *done.* `ahde_workshop_read` / `_write` / `_bash` /
    `_try` live inside one bound detached worktree confined to `AGENTS.md`,
    `skills/**`, `tools/**`, `bin/**`, `data/**`; the proposal is the worktree
