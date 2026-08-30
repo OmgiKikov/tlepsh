@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -80,6 +81,8 @@ import { redactTraceText } from "../trace.js";
 import { diagnoseEvalRun } from "../diagnosis.js";
 import { candidateStatus } from "../domain/candidate.js";
 import {
+	DEFAULT_EVAL_JOBS,
+	defaultEvalJobs,
 	loadEvalRun,
 	runSuite,
 	type EvalRunRecord,
@@ -139,13 +142,20 @@ import {
 	resolveOne,
 } from "./resolution.js";
 import { calibrationProjection } from "./calibration.js";
-import { assertWorkbenchDecisionStage } from "./transition-policy.js";
+import {
+	assertWorkbenchDecisionStage,
+	estimateRunCost,
+	routineCostGuard,
+	workbenchGateClass,
+	type WorkbenchRunEstimate,
+} from "./transition-policy.js";
 import {
 	WorkbenchDecisionInputSchema,
 	WorkbenchSubmitInputSchema,
 	WorkbenchViewQuerySchema,
 	type WorkbenchCandidateImpactProjection,
 	type WorkbenchCandidateSummary,
+	type WorkbenchCompositeStep,
 	type WorkbenchConfirmation,
 	type WorkbenchDatasetCase,
 	type WorkbenchDecisionInput,
@@ -155,7 +165,9 @@ import {
 	type WorkbenchImprovementBriefProjection,
 	type WorkbenchDatasetRecipeArtifact,
 	type WorkbenchReviewDetail,
+	type WorkbenchRunEvalResult,
 	type WorkbenchSelectionKind,
+	type WorkbenchStage,
 	type WorkbenchSubmitInput,
 	type WorkbenchTargetDetail,
 	type WorkbenchTurn,
@@ -319,6 +331,40 @@ function requireOpenTerminalCandidate(inventory: WorkbenchInventory, explicitId?
 		id: (candidate) => candidate.candidateId,
 		label: "finished candidate",
 	});
+}
+
+function shortSha(sha: string): string {
+	return sha ? sha.slice(0, 10) : "—";
+}
+
+/** Money the human recognises, or an honest “unknown”. */
+function formatEstimatedCost(estimate: WorkbenchRunEstimate | undefined): string {
+	if (!estimate || estimate.costUsd === null) return "unknown — nothing comparable has run yet";
+	if (estimate.costUsd < 0.01) return "under $0.01";
+	return `about $${estimate.costUsd.toFixed(2)} (from ${estimate.sampledRuns} earlier run${estimate.sampledRuns === 1 ? "" : "s"})`;
+}
+
+function formatEstimatedTime(estimate: WorkbenchRunEstimate | undefined): string {
+	if (!estimate || estimate.minutes === null) return "unknown — nothing comparable has run yet";
+	if (estimate.minutes < 1) return "under a minute";
+	return `about ${Math.ceil(estimate.minutes)} minute${Math.ceil(estimate.minutes) === 1 ? "" : "s"}`;
+}
+
+function capitalize(text: string): string {
+	return text.length === 0 ? text : `${text[0]!.toUpperCase()}${text.slice(1)}`;
+}
+
+/** The branch a fast-forward would move, read only to show it before deciding. */
+function currentBranchName(repositoryDir: string): string | null {
+	try {
+		const name = execFileSync("git", ["-C", repositoryDir, "symbolic-ref", "-q", "--short", "HEAD"], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim();
+		return name || null;
+	} catch {
+		return null;
+	}
 }
 
 function actorId(value: string | undefined): string {
@@ -583,26 +629,301 @@ export class AhdeWorkbench {
 		return newest;
 	}
 
+	/**
+	 * The one place a human is asked. The Workbench decides how much of their
+	 * attention the decision is worth and the host renders that: a full dialog,
+	 * one question, or nothing at all. A routine decision still passes through
+	 * here, so it still has exactly one human actor identity and can still be
+	 * declined; it simply does not interrupt.
+	 */
 	private async confirm(
 		input: WorkbenchDecisionInput,
 		gate: WorkbenchHumanGate,
 		title: string,
 		subject: unknown,
 		signal?: AbortSignal,
+		presentation: { question?: string; estimate?: WorkbenchRunEstimate } = {},
 	): Promise<string> {
 		abortIfRequested(signal);
 		const exact = boundedSubject(subject, input.kind);
+		let policy = workbenchGateClass(input.kind);
+		let question = presentation.question ?? `${title}?`;
+		// The guard is the only thing that can turn a routine decision back into a
+		// question: an unusually expensive or entirely unknown run.
+		if (policy === "routine" && presentation.estimate) {
+			const guard = routineCostGuard(presentation.estimate);
+			if (guard) {
+				policy = "one-question";
+				question = `${question} ${capitalize(guard)}. Continue?`;
+			}
+		}
 		const confirmation: WorkbenchConfirmation = {
 			kind: input.kind,
 			title,
 			reason: input.reason,
 			subject: exact,
 			subjectHash: hashValue(exact),
+			policy,
+			question,
+			...(presentation.estimate ? { estimate: presentation.estimate } : {}),
 		};
 		const decision = await gate.confirm(confirmation, signal);
 		abortIfRequested(signal);
 		if (!decision.approved) throw new WorkbenchDecisionDeclinedError(input.kind);
 		return actorId(decision.actorId);
+	}
+
+	/** What one run of this many executions is expected to cost on this Target. */
+	private runEstimate(executions: number, target: WorkbenchInventory["target"]): WorkbenchRunEstimate {
+		return estimateRunCost({
+			runsRoot: this.runsRoot,
+			targetId: target?.manifest.id ?? "",
+			executions,
+			jobs: target ? defaultEvalJobs(target.manifest.model) : DEFAULT_EVAL_JOBS,
+		});
+	}
+
+	/**
+	 * The gate a composite hands to its own steps. Each planned step is
+	 * pre-approved exactly once, and only when its exact subject is the one the
+	 * human already read in the composite dialog; anything else falls through to
+	 * the real human gate rather than being escalated silently.
+	 */
+	private compositeGate(
+		gate: WorkbenchHumanGate,
+		actor: string,
+		planned: ReadonlyMap<WorkbenchDecisionInput["kind"], (subject: unknown) => boolean>,
+	): WorkbenchHumanGate {
+		const used = new Set<WorkbenchDecisionInput["kind"]>();
+		return {
+			async confirm(confirmation, signal) {
+				const matches = planned.get(confirmation.kind);
+				if (matches && !used.has(confirmation.kind) && matches(confirmation.subject)) {
+					used.add(confirmation.kind);
+					return { approved: true, actorId: actor };
+				}
+				return gate.confirm(confirmation, signal);
+			},
+			selectSealed: (request, signal) => gate.selectSealed(request, signal),
+		};
+	}
+
+	/**
+	 * “Start testing”: the pending reviews plus the run, behind one dialog.
+	 *
+	 * It is orchestration, not authority. Every step is the same fine-grained
+	 * decision the CLI calls, through the same application service, in the same
+	 * order, writing the same receipts. A step that declines or fails ends the
+	 * composite there and leaves durable state exactly where that step left it.
+	 */
+	private async startTesting(
+		input: Extract<WorkbenchDecisionInput, { kind: "start-testing" }>,
+		gate: WorkbenchHumanGate,
+		options: WorkbenchDecisionExecutionOptions,
+		inventory: WorkbenchInventory,
+		stage: WorkbenchStage,
+	): Promise<Extract<WorkbenchDecisionResult, { kind: "start-testing" }>> {
+		const plan: WorkbenchCompositeStep["kind"][] = [];
+		const planned = new Map<WorkbenchDecisionInput["kind"], (subject: unknown) => boolean>();
+		const specDraft = stage === "spec-review" ? requireSpecDraft(inventory) : null;
+		const approved = specDraft ? null : requireApprovedSpec(inventory);
+		// A corpus draft is bound to an already-approved Spec, so the basket only
+		// exists once the approval does. Approving is therefore its own start.
+		const corpusDraft = approved ? requireCorpusDraft(inventory, undefined, approved.id, true) : null;
+		if (specDraft) {
+			plan.push("approve-spec");
+			planned.set("approve-spec", (subject) => (subject as { draftSpecId?: unknown }).draftSpecId === specDraft.id);
+		}
+		if (corpusDraft) {
+			plan.push("publish-corpus", "run-eval");
+			planned.set("publish-corpus", (subject) => (subject as { draftId?: unknown }).draftId === corpusDraft.id);
+			planned.set("run-eval", (subject) => {
+				const bag = subject as { operation?: unknown; repetitions?: unknown };
+				return bag.operation === "run-development-evaluation" && bag.repetitions === input.repetitions;
+			});
+		}
+		const caseCount = corpusDraft?.tasks.length ?? 0;
+		const executions = caseCount * input.repetitions;
+		const estimate = corpusDraft ? this.runEstimate(executions, inventory.target) : undefined;
+		const parts: string[] = [];
+		if (specDraft) parts.push("approve the Spec");
+		if (corpusDraft) parts.push("publish the eval basket", `run ${executions} Target execution${executions === 1 ? "" : "s"}`);
+		const title = `Start testing — ${parts.join(", ")}`;
+		const subject = {
+			operation: "start-testing",
+			steps: plan,
+			spec: specDraft
+				? `${specDraft.spec.title} — approve this draft`
+				: `${approved!.spec.title} — already approved`,
+			basket: corpusDraft
+				? `${corpusDraft.name} · ${caseCount} case${caseCount === 1 ? "" : "s"}`
+				: "not drafted yet",
+			run: corpusDraft
+				? `${caseCount} × ${input.repetitions} = ${executions} Target executions`
+				: "not yet",
+			estimatedCost: formatEstimatedCost(estimate),
+			estimatedTime: formatEstimatedTime(estimate),
+			exact: {
+				specDraftId: specDraft?.id ?? null,
+				specSnapshotHash: specDraft ? hashValue(specDraft) : null,
+				approvedSpecId: approved?.id ?? null,
+				corpusDraftId: corpusDraft?.id ?? null,
+				corpusDraftHash: corpusDraft ? hashValue(corpusDraft) : null,
+				repetitions: input.repetitions,
+			},
+		};
+		const actor = await this.confirm(input, gate, title, subject, options.signal, {
+			question: `${title}?`,
+			...(estimate ? { estimate } : {}),
+		});
+		const scoped = this.compositeGate(gate, actor, planned);
+		const steps: WorkbenchCompositeStep[] = [];
+		let approvedSpecId = approved?.id ?? null;
+		let developmentCorpus: { id: string; taskCount: number } | null = null;
+		let evaluation: WorkbenchRunEvalResult | null = null;
+		let view = await this.viewOf(inventory);
+		let message = "";
+		for (const step of plan) {
+			if (step === "approve-spec") {
+				const done = await this.decide({ kind: "approve-spec", draftSpecId: specDraft!.id, reason: input.reason }, scoped, options);
+				approvedSpecId = done.result.approvedSpecId;
+				steps.push({ kind: step, message: done.message });
+				view = done.view;
+			} else if (step === "publish-corpus") {
+				const done = await this.decide({ kind: "publish-corpus", draftId: corpusDraft!.id, reason: input.reason }, scoped, options);
+				developmentCorpus = { id: done.result.corpusId, taskCount: done.result.taskCount };
+				steps.push({ kind: step, message: done.message });
+				view = done.view;
+			} else {
+				const done = await this.decide({ kind: "run-eval", repetitions: input.repetitions, reason: input.reason }, scoped, options);
+				evaluation = done.result;
+				steps.push({ kind: step, message: done.message });
+				view = done.view;
+				message = done.message;
+			}
+		}
+		// The basket is bound to an approved Spec, so it can only be drafted after
+		// this approval; saying so is more useful than an error.
+		const pending = evaluation ? null : "the test cases are not drafted yet";
+		return {
+			kind: input.kind,
+			message: message ||
+				"Spec approved. Next: draft the test cases, then “tests” publishes them and runs.",
+			result: { steps, approvedSpecId, developmentCorpus, evaluation, pending },
+			view,
+		};
+	}
+
+	/**
+	 * “Ship it”: the release decisions that are left, behind one dialog — review,
+	 * promote, adopt, continue. Same services, same order, same receipts, and the
+	 * same stop-at-the-first-refusal behaviour as the four separate decisions.
+	 */
+	private async ship(
+		input: Extract<WorkbenchDecisionInput, { kind: "ship" }>,
+		gate: WorkbenchHumanGate,
+		options: WorkbenchDecisionExecutionOptions,
+		inventory: WorkbenchInventory,
+		stage: WorkbenchStage,
+	): Promise<Extract<WorkbenchDecisionResult, { kind: "ship" }>> {
+		const plan: WorkbenchCompositeStep["kind"][] = [];
+		let candidate: CandidateRecord;
+		if (stage === "candidate-review") {
+			candidate = requireCandidate(inventory, ["evaluated"], input.candidateId);
+			plan.push("review-candidate", "promote-candidate", "adopt-candidate", "continue-cycle");
+		} else if (stage === "release-decision") {
+			candidate = requireCandidate(inventory, ["reviewed"], input.candidateId);
+			plan.push("promote-candidate", "adopt-candidate", "continue-cycle");
+		} else {
+			candidate = requireOpenTerminalCandidate(inventory, input.candidateId);
+			if (candidateStatus(candidate) !== "promoted") {
+				throw new Error(
+					`candidate ${candidate.candidateId} was rejected; there is nothing to ship. Close the cycle instead.`,
+				);
+			}
+			if (stage === "candidate-adoption") plan.push("adopt-candidate");
+			plan.push("continue-cycle");
+		}
+		const version = input.version;
+		if (plan.includes("promote-candidate") && !version) {
+			throw new Error("shipping tags an exact version; say for example “ship 0.2.0”");
+		}
+		const summary = candidateSummary(candidate);
+		const candidateId = candidate.candidateId;
+		const sameCandidate = (subject: unknown): boolean =>
+			(subject as { candidate?: { candidateId?: unknown } }).candidate?.candidateId === candidateId;
+		const planned = new Map<WorkbenchDecisionInput["kind"], (subject: unknown) => boolean>();
+		if (plan.includes("review-candidate")) {
+			planned.set("review-candidate", (subject) =>
+				sameCandidate(subject) && (subject as { recommendation?: unknown }).recommendation === "promote");
+		}
+		if (plan.includes("promote-candidate")) {
+			planned.set("promote-candidate", (subject) =>
+				sameCandidate(subject) && (subject as { version?: unknown }).version === version);
+		}
+		if (plan.includes("adopt-candidate")) planned.set("adopt-candidate", sameCandidate);
+		planned.set("continue-cycle", sameCandidate);
+		const branch = plan.includes("adopt-candidate") ? currentBranchName(this.projectDir) : null;
+		const subject = {
+			operation: "ship",
+			steps: plan,
+			candidateId,
+			development: summary.development?.gate
+				? `${summary.development.gate.verdict} · ${summary.development.gate.delta >= 0 ? "+" : ""}${(summary.development.gate.delta * 100).toFixed(1)} points`
+				: "no development verdict",
+			sealed: summary.sealedHoldout.gate
+				? `${summary.sealedHoldout.gate.verdict} · ${summary.sealedHoldout.gate.tasks} × ${summary.sealedHoldout.gate.repetitions}`
+				: summary.sealedHoldout.executed ? "executed, no verdict" : "not run",
+			version: version ?? null,
+			tag: version ? `v${version}` : null,
+			fastForward: plan.includes("adopt-candidate")
+				? `${branch ?? "current branch"} ${shortSha(summary.baseline.sha)} → ${shortSha(summary.candidate?.sha ?? "")}`
+				: "already adopted",
+			candidate: summary,
+		};
+		const title = version ? `Ship candidate as v${version}` : "Ship this candidate";
+		const actor = await this.confirm(input, gate, title, subject, options.signal, { question: `${title}?` });
+		const scoped = this.compositeGate(gate, actor, planned);
+		const steps: WorkbenchCompositeStep[] = [];
+		let shipped = summary;
+		let tag: string | null = null;
+		let adoption: { branch: string; fromSha: string; toSha: string } | null = null;
+		let continuation: { receiptId: string; nextStage: WorkbenchStage } | null = null;
+		let view = await this.viewOf(inventory);
+		for (const step of plan) {
+			if (step === "review-candidate") {
+				const done = await this.decide({ kind: "review-candidate", candidateId, recommendation: "promote", reason: input.reason }, scoped, options);
+				shipped = done.result;
+				steps.push({ kind: step, message: done.message });
+				view = done.view;
+			} else if (step === "promote-candidate") {
+				const done = await this.decide({ kind: "promote-candidate", candidateId, version: version!, reason: input.reason }, scoped, options);
+				shipped = done.result.candidate;
+				tag = done.result.tag;
+				steps.push({ kind: step, message: done.message });
+				view = done.view;
+			} else if (step === "adopt-candidate") {
+				const done = await this.decide({ kind: "adopt-candidate", candidateId, reason: input.reason }, scoped, options);
+				adoption = { branch: done.result.branch, fromSha: done.result.fromSha, toSha: done.result.toSha };
+				tag ??= done.result.tag;
+				steps.push({ kind: step, message: done.message });
+				view = done.view;
+			} else {
+				const done = await this.decide({ kind: "continue-cycle", candidateId, reason: input.reason }, scoped, options);
+				continuation = { receiptId: done.result.receiptId, nextStage: done.result.nextStage };
+				steps.push({ kind: step, message: done.message });
+				view = done.view;
+			}
+		}
+		return {
+			kind: input.kind,
+			message: [
+				`Shipped${tag ? ` ${tag}` : ""}${adoption ? ` on ${adoption.branch}` : ""}.`,
+				...(continuation ? [`The next cycle starts at ${continuation.nextStage}.`] : []),
+			].join(" "),
+			result: { steps, candidate: shipped, tag, adoption, continuation },
+			view,
+		};
 	}
 
 	async view(queryValue: WorkbenchViewQuery = {}): Promise<WorkbenchView> {
@@ -1033,6 +1354,10 @@ export class AhdeWorkbench {
 			let resolved: WorkbenchDecisionResult;
 			if (stage === "ready-to-evaluate" || stage === "improvement-authoring") {
 				resolved = await this.decide({ kind: "run-eval", repetitions: input.repetitions, reason: input.reason }, gate, options);
+			} else if (stage === "spec-review" || stage === "corpus-review") {
+				// “Run the tests” with a review still pending is not an error: the
+				// composite does the pending reviews and the run behind one dialog.
+				resolved = await this.decide({ kind: "start-testing", repetitions: input.repetitions, reason: input.reason }, gate, options);
 			} else if (stage === "candidate-verification") {
 				const appliedWithoutCandidate = inventory.proposals.filter((proposal) =>
 					proposal.status === "applied" && !inventory.candidates.some((candidate) =>
@@ -1049,7 +1374,16 @@ export class AhdeWorkbench {
 				});
 				resolved = await this.decide({ kind: "verify-candidate", builderRunId: proposal.record.runId, repetitions: input.repetitions, reason: input.reason }, gate, options);
 			} else {
-				throw new Error(`/run is not legal during ${stage}; complete the current review gate first`);
+				assertWorkbenchDecisionStage("run-eval", stage);
+				throw new Error(`running is not possible during ${stage}`);
+			}
+			if (resolved.kind === "start-testing") {
+				return {
+					kind: "run-current",
+					message: resolved.message,
+					result: { resolvedAs: "start-testing", ...resolved.result },
+					view: resolved.view,
+				};
 			}
 			if (resolved.kind === "run-eval") {
 				return {
@@ -1070,6 +1404,11 @@ export class AhdeWorkbench {
 			throw new Error(`run-current resolved to an unexpected decision ${String((resolved as { kind?: unknown }).kind)}`);
 		}
 		assertWorkbenchDecisionStage(input.kind, stage);
+
+		// The two composites: one operator intent, one dialog, the same
+		// fine-grained decisions and receipts underneath.
+		if (input.kind === "start-testing") return await this.startTesting(input, gate, options, inventory, stage);
+		if (input.kind === "ship") return await this.ship(input, gate, options, inventory, stage);
 
 		if (input.kind === "scaffold-target") {
 			if (inventory.target) throw new WorkbenchStaleDecisionError(input.kind);
@@ -1184,7 +1523,9 @@ export class AhdeWorkbench {
 				candidateHash: hashValue(candidate),
 				candidate: candidateSummary(candidate),
 			};
-			const actor = await this.confirm(input, gate, "Abandon interrupted candidate attempt", before, options.signal);
+			const actor = await this.confirm(input, gate, "Abandon interrupted candidate attempt", before, options.signal, {
+				question: "Abandon this interrupted attempt? The applied proposal can be verified again.",
+			});
 			const current = this.decisionInventory(input.kind);
 			if (current.abandonedCandidates.has(candidate.candidateId)) throw new WorkbenchStaleDecisionError(input.kind);
 			const reloaded = requireCandidate(current, [status], candidate.candidateId);
@@ -1372,7 +1713,10 @@ export class AhdeWorkbench {
 				return { target, subject: { operation: "run-development-evaluation", projectId: this.projectId, approvedSpec: { id: currentApproved.id, snapshotHash: hashValue(currentApproved) }, target: { id: target.manifest.id, gitSha: target.gitSha, toolsetHash: target.toolsetHash }, dataset: target.manifest.evalSuite.dataset, datasetHash: target.datasetHash, suiteHash: target.suiteHash, taskCount: target.tasks.length, repetitions: input.repetitions, developmentCorpus: { id: loaded.metadata.id, hash: loaded.metadata.hash, taskCount: loaded.metadata.taskCount, lineageHash: lineage.publication.linkHash } } };
 			};
 			const before = build();
-			await this.confirm(input, gate, "Run exact development evaluation", before.subject, options.signal);
+			await this.confirm(input, gate, "Run exact development evaluation", before.subject, options.signal, {
+				question: `Run ${Number(before.subject.taskCount) * input.repetitions} Target executions on the reviewed basket?`,
+				estimate: this.runEstimate(Number(before.subject.taskCount) * input.repetitions, inventory.target),
+			});
 			const after = build();
 			if (!exactSame(before.subject, after.subject)) throw new WorkbenchStaleDecisionError(input.kind);
 			const record = await this.dependencies.runSuite(after.target, {
@@ -1431,7 +1775,10 @@ export class AhdeWorkbench {
 				};
 			};
 			const before = build();
-			const actor = await this.confirm(input, gate, "Calibrate run-to-run noise", before.subject, options.signal);
+			const actor = await this.confirm(input, gate, "Calibrate run-to-run noise", before.subject, options.signal, {
+				question: `Measure noise with ${Number(before.subject.executions)} Target executions?`,
+				estimate: this.runEstimate(Number(before.subject.executions), inventory.target),
+			});
 			const after = build();
 			if (!exactSame(before.subject, after.subject)) throw new WorkbenchStaleDecisionError(input.kind);
 			// Both arms are the same exact revision: the experiment measures the
@@ -1479,7 +1826,9 @@ export class AhdeWorkbench {
 		if (input.kind === "discard-proposal") {
 			const proposal = requireProposal(inventory, "open", input.runId);
 			const before = this.dependencies.describeProposalDiscard(this.runsRoot, proposal.record.runId);
-			const actor = await this.confirm(input, gate, "Discard exact Builder proposal", before, options.signal);
+			const actor = await this.confirm(input, gate, "Discard exact Builder proposal", before, options.signal, {
+				question: "Discard this proposal? It can never be applied later.",
+			});
 			const current = this.decisionInventory(input.kind);
 			requireProposal(current, "open", proposal.record.runId);
 			const after = this.dependencies.describeProposalDiscard(this.runsRoot, proposal.record.runId);
@@ -1554,7 +1903,14 @@ export class AhdeWorkbench {
 				};
 			};
 			const before = build();
-			const actor = await this.confirm(input, gate, "Verify exact applied candidate", before.subject, options.signal);
+			// Two arms over the development basket and the sealed holdout.
+			const developmentTasks = inventory.corpora
+				.find((corpus) => corpus.id === before.subject.developmentCorpus?.id)?.taskCount ?? 0;
+			const executions = 2 * (developmentTasks + selected.taskCount) * input.repetitions;
+			const actor = await this.confirm(input, gate, "Verify exact applied candidate", before.subject, options.signal, {
+				question: `Verify the candidate against its baseline (${executions} Target executions)?`,
+				estimate: this.runEstimate(executions, inventory.target),
+			});
 			if (choice.actorId && actorId(choice.actorId) !== actor) throw new Error("sealed selection and confirmation came from different human actors");
 			const after = build();
 			if (!exactSame(before.subject, after.subject)) throw new WorkbenchStaleDecisionError(input.kind);
@@ -1625,7 +1981,9 @@ export class AhdeWorkbench {
 		if (input.kind === "reject-candidate") {
 			const candidate = requireCandidate(inventory, ["reviewed"], input.candidateId);
 			const before = { operation: "reject-candidate", candidateHash: hashValue(candidate), candidate: candidateSummary(candidate) };
-			const actor = await this.confirm(input, gate, "Reject exact candidate", before, options.signal);
+			const actor = await this.confirm(input, gate, "Reject exact candidate", before, options.signal, {
+				question: "Reject this candidate? The agent stays at its baseline.",
+			});
 			const current = this.decisionInventory(input.kind);
 			if (hashValue(requireCandidate(current, ["reviewed"], candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
 			const rejected = this.dependencies.rejectCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, reason: input.reason, actorId: actor, now: this.dependencies.now });

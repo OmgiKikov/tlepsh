@@ -24,6 +24,7 @@ import {
 	WorkbenchSelectionRequiredError,
 	WorkbenchStaleDecisionError,
 } from "../src/workbench/errors.js";
+import { workbenchGateClass } from "../src/workbench/transition-policy.js";
 import type {
 	WorkbenchCalibrationProjection,
 	WorkbenchCandidateSummary,
@@ -363,6 +364,30 @@ function defaultDecision(input: WorkbenchDecisionInput): WorkbenchDecisionResult
 				receiptId: "receipt-next",
 				nextStage: "ready-to-evaluate",
 			}, viewAt("ready-to-evaluate"));
+		case "ship":
+			return decision("ship", {
+				steps: [
+					{ kind: "review-candidate", message: "Human candidate review recorded." },
+					{ kind: "promote-candidate", message: `Candidate promoted as v${input.version}.` },
+					{ kind: "adopt-candidate", message: "Branch main now points at the promoted candidate." },
+					{ kind: "continue-cycle", message: "Improvement cycle closed." },
+				],
+				candidate: candidateSummary({ status: "promoted", promotion: { tag: `v${input.version}`, reason: input.reason, at } }),
+				tag: `v${input.version}`,
+				adoption: { branch: "main", fromSha: SHA_A, toSha: SHA_B },
+				continuation: { receiptId: "receipt-next", nextStage: "ready-to-evaluate" },
+			}, viewAt("ready-to-evaluate"));
+		case "start-testing":
+			return decision("start-testing", {
+				steps: [
+					{ kind: "publish-corpus", message: "Development corpus published." },
+					{ kind: "run-eval", message: "3 of 3 cases passed." },
+				],
+				approvedSpecId: "spec-1",
+				developmentCorpus: { id: "corpus-1", taskCount: 3 },
+				evaluation: tracesDetail(),
+				pending: null,
+			}, viewAt("improvement-authoring"));
 		default:
 			throw new Error(`slash commands never issue ${input.kind}`);
 	}
@@ -542,6 +567,8 @@ function gatedWorkbench(
 				reason: input.reason,
 				subject: { candidate: { candidateId: options.candidateIdFor?.(input) ?? "cand-1" } },
 				subjectHash: hash("b"),
+				policy: workbenchGateClass(input.kind),
+				question: `Confirm ${input.kind}?`,
 			}, execution?.signal);
 			if (!approval.approved) throw new WorkbenchDecisionDeclinedError(input.kind);
 			return defaultDecision(input);
@@ -564,6 +591,10 @@ describe("Builder Pi slash commands", () => {
 		const registered = register(fixture.value).registered;
 
 		expect([...AHDE_BUILDER_COMMAND_NAMES]).toEqual([
+			// The three verbs the operator actually says, then the shortcuts.
+			"test",
+			"fix",
+			"ship",
 			"help",
 			"doctor",
 			"status",
@@ -582,7 +613,7 @@ describe("Builder Pi slash commands", () => {
 			"target",
 		]);
 		expect(registered.map(({ name }) => name)).toEqual([...AHDE_BUILDER_COMMAND_NAMES]);
-		expect(registered).toHaveLength(16);
+		expect(registered).toHaveLength(19);
 		expect(registered.every(({ options }) => options.description && options.handler)).toBe(true);
 	});
 
@@ -646,7 +677,13 @@ describe("Builder Pi slash commands", () => {
 		const text = output.text();
 		expect(text).toContain("Talk normally");
 		expect(text).toContain("/promote <version>");
-		expect(text).toContain("Every consequential step shows the exact subject and asks you to confirm.");
+		// The three verbs come first, and the gate policy is stated in the operator's words.
+		expect(text.indexOf("/test")).toBeGreaterThan(-1);
+		expect(text.indexOf("/test")).toBeLessThan(text.indexOf("/status"));
+		expect(text.indexOf("/fix")).toBeLessThan(text.indexOf("/status"));
+		expect(text.indexOf("/ship")).toBeLessThan(text.indexOf("/status"));
+		expect(text).toContain("Every consequential step shows the exact subject and asks you once: starting");
+		expect(text).toContain("Runs and checks just happen");
 	});
 
 	it("routes /run to run-current and parses repetitions plus a human-readable reason", async () => {
@@ -675,6 +712,107 @@ describe("Builder Pi slash commands", () => {
 		await expect(command(commands, "run").handler("11 too many", host.ctx))
 			.rejects.toThrow("/run repetitions must be an integer between 1 and 10");
 		expect(fixture.decide).toHaveBeenCalledTimes(2);
+	});
+
+	it("routes /test to the same decision as /run, so “test it” works wherever the operator stands", async () => {
+		const fixture = workbench();
+		const { commands, output } = register(fixture.value);
+		const host = context();
+
+		await command(commands, "test").handler("2 check the routing fix", host.ctx);
+
+		expect(fixture.decide).toHaveBeenCalledWith(
+			{ kind: "run-current", repetitions: 2, reason: "check the routing fix" },
+			expect.objectContaining({ confirm: expect.any(Function) }),
+			{ signal: undefined, onRunEvent: expect.any(Function) },
+		);
+		expect(output.blocks.map((block) => block.title)).toEqual(["Run complete"]);
+
+		// A pending review is not an error: the Workbench answers with the
+		// composite, and the command renders what it did.
+		const pending = workbench({
+			view: async () => viewAt("corpus-review"),
+			decide: async () => decision("run-current", {
+				resolvedAs: "start-testing",
+				steps: [
+					{ kind: "publish-corpus", message: "Development corpus published." },
+					{ kind: "run-eval", message: "2 of 3 cases passed." },
+				],
+				approvedSpecId: "spec-1",
+				developmentCorpus: { id: "corpus-1", taskCount: 3 },
+				evaluation: tracesDetail(),
+				pending: null,
+			}, viewAt("improvement-authoring")),
+		});
+		const composite = register(pending.value);
+		await command(composite.commands, "test").handler("", context().ctx);
+		expect(composite.output.blocks.map((block) => block.title)).toEqual(["Run complete"]);
+		expect(composite.output.text()).toContain("Tests published 3 cases");
+	});
+
+	it("routes /ship to the one composite decision and asks for the version once", async () => {
+		const fixture = gatedWorkbench("candidate-review");
+		const { commands, output } = register(fixture.value);
+		const host = context({ input: async () => "2.1.0", confirm: async () => true });
+
+		await command(commands, "ship").handler("", host.ctx);
+		expect(host.input).toHaveBeenCalledWith("Version to tag (semver, e.g. 0.2.0)", "0.1.0");
+		expect(fixture.decide.mock.calls.map(([input]) => input)).toEqual([
+			{ kind: "ship", version: "2.1.0", reason: "Requested interactively via /ship" },
+		]);
+		expect(host.confirm).toHaveBeenCalledTimes(1);
+		expect(output.blocks.map((block) => block.title)).toEqual(["Shipped"]);
+
+		// An explicit version skips the prompt; a bad one never reaches a decision.
+		const explicit = gatedWorkbench("release-decision");
+		const second = register(explicit.value);
+		const explicitHost = context({ confirm: async () => true });
+		await command(second.commands, "ship").handler("2.2.0 ship the reviewed fix", explicitHost.ctx);
+		expect(explicitHost.input).not.toHaveBeenCalled();
+		expect(explicit.decide.mock.calls.map(([input]) => input)).toEqual([
+			{ kind: "ship", version: "2.2.0", reason: "ship the reviewed fix" },
+		]);
+		await expect(command(second.commands, "ship").handler("v2", explicitHost.ctx))
+			.rejects.toThrow("version must be semver like 0.2.0");
+
+		// Nothing to ship yet: the command says where the operator actually is.
+		const early = workbench({ view: async () => viewAt("improvement-authoring") });
+		const third = register(early.value);
+		await expect(command(third.commands, "ship").handler("", context().ctx))
+			.rejects.toThrow(/\/ship is not available during Diagnosis/);
+		expect(early.decide).not.toHaveBeenCalled();
+	});
+
+	it("routes /fix to the model with the exact failure mode it resolved from a fresh brief", async () => {
+		const fixture = workbench({
+			view: async (query) => query?.aspect === "traces"
+				? viewAt("improvement-authoring", { detail: { aspect: "traces", content: tracesDetail() } })
+				: baseView,
+		});
+		const sendUserMessage = vi.fn();
+		const { commands, output } = register(fixture.value, { sendUserMessage });
+		const host = context();
+
+		await command(commands, "fix").handler("", host.ctx);
+		expect(fixture.view).toHaveBeenCalledWith({ aspect: "traces" });
+		expect(output.blocks.map((block) => block.title)).toEqual(["AHDE · Diagnosis"]);
+		expect(sendUserMessage).toHaveBeenCalledWith(
+			"Fix problem 1 (failure-mode-111111111111111111111111): Missing evidence lookup instruction. " +
+			"Prepare the proposal and show me the review.",
+		);
+
+		// An out-of-range ordinal is refused instead of guessed.
+		await expect(command(commands, "fix").handler("7", host.ctx))
+			.rejects.toThrow(/there is no problem 7 to fix/);
+		expect(sendUserMessage).toHaveBeenCalledTimes(1);
+
+		// Nothing measured yet: /fix explains where to start rather than failing.
+		const early = workbench();
+		const second = register(early.value, { sendUserMessage });
+		const earlyHost = context();
+		await command(second.commands, "fix").handler("", earlyHost.ctx);
+		expect(earlyHost.notify).toHaveBeenCalledWith(expect.stringContaining("Nothing to fix yet"), "info");
+		expect(sendUserMessage).toHaveBeenCalledTimes(1);
 	});
 
 	it("/run defaults to 3 repetitions so one sample is never mistaken for evidence", async () => {
@@ -1408,16 +1546,17 @@ describe("Builder Pi slash commands", () => {
 
 		const promoting = gatedWorkbench("candidate-review");
 		const promotion = register(promoting.value);
-		const promotionHost = context({ select: async () => "Promote…", input: async () => "1.0.0", confirm: async () => true });
+		const promotionHost = context({ select: async () => "Ship it…", input: async () => "1.0.0", confirm: async () => true });
 		await command(promotion.commands, "review").handler("", promotionHost.ctx);
-		expect(promotionHost.select).toHaveBeenCalledWith("Candidate", ["Promote…", "Reject", "Just looking"], { signal: undefined });
+		expect(promotionHost.select).toHaveBeenCalledWith("Candidate", ["Ship it…", "Reject", "Just looking"], { signal: undefined });
 		expect(promotionHost.input).toHaveBeenCalledWith("Version to tag (semver, e.g. 0.2.0)", "0.1.0");
+		// One composite decision, not four: review, promote, adopt and continue run
+		// underneath it and write the same four receipts.
 		expect(promoting.decide.mock.calls.map(([input]) => input)).toEqual([
-			{ kind: "review-candidate", recommendation: "promote", reason: "Promoted from /review" },
-			{ kind: "promote-candidate", version: "1.0.0", reason: "Promoted from /review" },
+			{ kind: "ship", version: "1.0.0", reason: "Shipped from /review" },
 		]);
 		expect(promotionHost.confirm).toHaveBeenCalledTimes(1);
-		expect(promotion.output.blocks.map((block) => block.title)).toEqual(["AHDE · Candidate review", "Candidate promoted"]);
+		expect(promotion.output.blocks.map((block) => block.title)).toEqual(["AHDE · Candidate review", "Shipped"]);
 
 		const rejecting = gatedWorkbench("release-decision");
 		const rejection = register(rejecting.value);
@@ -1602,7 +1741,7 @@ describe("Builder Pi slash commands", () => {
 			name,
 			name === "apply" ? "candidate/fix" : name === "promote" ? "1.0.0" : "",
 		]);
-		expect(invocations).toHaveLength(16);
+		expect(invocations).toHaveLength(19);
 
 		for (const settings of [
 			{ hasUI: false, mode: "print" as const },
@@ -1750,6 +1889,8 @@ describe("Builder Pi slash commands", () => {
 				exactDiff: "",
 			},
 			subjectHash: hash("b"),
+			policy: "consequential",
+			question: "Apply this exact diff?",
 		};
 		const controller = new AbortController();
 

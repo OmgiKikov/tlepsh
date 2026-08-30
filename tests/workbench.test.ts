@@ -1312,7 +1312,45 @@ describe("AHDE Workbench", () => {
 		expect(blocked.blockers.join("\n")).toContain(proposalId);
 	});
 
-	it("will not let /run skip an outstanding Spec review gate", async () => {
+	it("answers “run it” during Spec review with the start-testing gate instead of a run", async () => {
+		const paths = target();
+		const runSuite = vi.fn();
+		const workbench = createAhdeWorkbench({
+			...paths,
+			projectId: "test-target",
+			dependencies: { now: () => NOW, runSuite: runSuite as never },
+		});
+		await workbench.submit({ kind: "spec-draft", spec: spec() });
+
+		// Declining the one dialog leaves the Spec unapproved and runs nothing.
+		const declined = gate(false);
+		await expect(workbench.decide({ kind: "run-current", repetitions: 1, reason: "Not yet" }, declined))
+			.rejects.toBeInstanceOf(WorkbenchDecisionDeclinedError);
+		expect(declined.confirm).toHaveBeenCalledOnce();
+		expect(declined.confirm.mock.calls[0]?.[0].kind).toBe("start-testing");
+		expect((await workbench.view()).stage).toBe("spec-review");
+
+		const human = gate();
+		const started = await workbench.decide({ kind: "run-current", repetitions: 1, reason: "Start testing" }, human);
+		// One question, and no evaluation: the basket cannot exist before the
+		// approval it is bound to, so the composite stops there and says so.
+		expect(human.confirm).toHaveBeenCalledOnce();
+		expect(human.confirm.mock.calls[0]?.[0]).toMatchObject({
+			kind: "start-testing",
+			policy: "consequential",
+			subject: { operation: "start-testing", steps: ["approve-spec"] },
+		});
+		expect(started.result).toMatchObject({
+			resolvedAs: "start-testing",
+			steps: [{ kind: "approve-spec" }],
+			evaluation: null,
+			pending: "the test cases are not drafted yet",
+		});
+		expect(runSuite).not.toHaveBeenCalled();
+		expect(started.view.stage).toBe("corpus-design");
+	});
+
+	it("refuses run-eval outright wherever no basket can be running", async () => {
 		const paths = target();
 		const runSuite = vi.fn();
 		const workbench = createAhdeWorkbench({
@@ -1322,8 +1360,8 @@ describe("AHDE Workbench", () => {
 		});
 		await workbench.submit({ kind: "spec-draft", spec: spec() });
 		const human = gate();
-		await expect(workbench.decide({ kind: "run-current", repetitions: 1, reason: "Try to skip" }, human))
-			.rejects.toThrow(/not legal during spec-review/);
+		await expect(workbench.decide({ kind: "run-eval", repetitions: 1, reason: "Try to skip" }, human))
+			.rejects.toThrow(/run-eval is not legal during spec-review/);
 		expect(runSuite).not.toHaveBeenCalled();
 		expect(human.confirm).not.toHaveBeenCalled();
 	});

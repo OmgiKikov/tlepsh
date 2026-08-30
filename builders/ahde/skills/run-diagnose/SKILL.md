@@ -5,19 +5,20 @@ description: Inspect evaluation results, generate deterministic diagnosis, and c
 
 # Run and diagnose
 
-1. Inspect `ahde_workbench_view`; run only when its legal actions contain
-   `run`. When the operator asks to run, request `run-current` through
-   `ahde_workbench_decide` yourself (`/run [repetitions]` is their
-   shortcut). The host confirms the exact cost and subject in its own dialog.
-   Repetitions default to 3, and a sealed verdict needs at least 15 cases ×
-   2 repetitions.
+1. When the operator says test, run, check, проверь or запусти, request
+   `run-current` through `ahde_workbench_decide` yourself — do not send them to
+   a slash command and do not ask permission first. It resolves to whatever
+   “run it” means where they stand: with a description or tests still
+   unreviewed the host asks one question that approves and publishes them
+   before running; afterwards it simply runs, and only an unusually expensive
+   run asks again. Repetitions default to 3, and the private exam needs at
+   least 15 cases × 2 repetitions.
 2. Workbench binds the approved Spec, reviewed development corpus, exact Target
    revision, dataset hash, and suite hash. Select among ambiguous artifacts
    explicitly with `ahde_workbench_submit`; never invent an id.
-3. Use `/traces` or `ahde_workbench_view` with `aspect: traces` for score,
-   provenance, deterministic diagnosis, and the read-only evidence link.
-   Infrastructure errors make the result inconclusive and do not advance the
-   Workbench stage.
+3. Use `ahde_workbench_view` with `aspect: traces` for score, provenance,
+   deterministic diagnosis, and the read-only evidence link. Infrastructure
+   errors make the result inconclusive and change nothing.
 4. If the operator says “fix the first problem”, “the second mode”, or names a
    `failureModeId`, call `ahde_workbench_view` with `aspect: traces` again
    before selecting anything. Slash-command output, the live widget, and prior

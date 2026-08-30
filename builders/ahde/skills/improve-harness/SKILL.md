@@ -42,27 +42,26 @@ description: Review an evidence-backed typed proposal, inspect its exact diff, a
    immutable proposal and show review”, never as approval to apply. Explain the
    expected behavior change and most likely regression. When the operator then
    says apply, request `apply-proposal` with branch `candidate/<proposal run
-   id>`; when they say discard, request `discard-proposal`. Both are
-   host-confirmed and mutually exclusive (`/apply`, `/discard` are shortcuts).
-8. Treat Apply as a candidate, not a release. When asked to verify, request
-   `run-current` to perform the exact candidate experiment, then inspect
-   `aspect: review` and `aspect: traces`. Sealed evidence is evaluator-only
-   and selected by the human host.
-9. Only after exact candidate review, request `promote-candidate` with a
-   semantic version or `reject-candidate` through `ahde_workbench_decide`.
-   Each decision is independently confirmed by the trusted TUI host.
-10. Promotion only tags the reviewed revision. At `candidate-adoption`, offer
-   `adopt-candidate`: the host fast-forwards the operator's current branch to
-   the promoted candidate so it becomes the active Target for `ahde target`
-   and the next cycle. Never describe a promoted-but-unadopted candidate as
-   the active Target.
-11. At `complete` (promoted and adopted, or rejected), offer `continue-cycle`.
-   It records the closed loop and releases the candidate from focus; the
-   Workbench then derives the next stage from the active Target revision
-   (usually `ready-to-evaluate` after adoption, or `improvement-authoring`
-   after a rejection). Then continue the ordinary loop from step 1.
-12. If candidate verification was interrupted, show `/review` and let the
-   operator use `/discard` to write an explicit abandonment receipt before a
+   id>` — the host shows the exact diff and asks; when they say throw it away,
+   request `discard-proposal`, which is one short question. The two outcomes
+   are durable and mutually exclusive.
+8. An applied change is a candidate, not a release. When the operator says
+   check it, request `run-current`: it runs the exact matched experiment
+   without another question. Then inspect `aspect: review` and
+   `aspect: traces`. The private exam is evaluator-only and selected by the
+   host.
+9. When the operator says ship it, выкати, promote or release, request `ship`
+   with the semantic version. One host question records the promote review,
+   tags the exact checked revision, fast-forwards the operator's branch so the
+   change becomes the active agent for `ahde target`, and opens the next
+   round — four immutable receipts, one dialog. If any step refuses, it stops
+   there and says so; nothing after it happened.
+10. When the operator rejects instead, request `reject-candidate`: one short
+   question, and the agent stays at its baseline. Then `continue-cycle` closes
+   the round. Never describe a change that was tagged but not adopted as the
+   active agent.
+11. If a check was interrupted, show `aspect: review` and let the operator
+   abandon it explicitly (`abandon-candidate`, one short question) before a
    retry. Never reinterpret interruption as behavioral evidence.
 
 If evidence is inconclusive, the proposal is stale, or the diff is too large

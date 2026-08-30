@@ -1,4 +1,9 @@
-import type { WorkbenchDecisionResult, WorkbenchView } from "../../workbench/types.js";
+import type {
+	WorkbenchDecisionResult,
+	WorkbenchShipResult,
+	WorkbenchStartTestingResult,
+	WorkbenchView,
+} from "../../workbench/types.js";
 import { formatFlipRate, formatNoiseBand, renderCalibration } from "./calibration.js";
 import { oneLine, pluralize, section, shortHash, shortSha } from "./format.js";
 import type { Paint } from "./paint.js";
@@ -22,6 +27,49 @@ function runLines(result: Extract<WorkbenchDecisionResult, { kind: "run-eval" }>
 
 function verificationLines(result: Extract<WorkbenchDecisionResult, { kind: "verify-candidate" }>["result"], paint: Paint, view: WorkbenchView): string[] {
 	const lines = renderCandidate(result.candidate, paint, "Candidate verified");
+	lines.push(nextLine(view, paint));
+	return lines;
+}
+
+/**
+ * One composite reads as the work it did, not as the four decisions it is made
+ * of: what was approved and published, then the run itself.
+ */
+function startTestingLines(
+	result: WorkbenchStartTestingResult,
+	paint: Paint,
+	view: WorkbenchView,
+	options: RenderDecisionOptions,
+): string[] {
+	const lines: string[] = [];
+	for (const step of result.steps) {
+		if (step.kind === "approve-spec") {
+			lines.push(`${section("Spec approved", paint)} ${paint.dim(result.approvedSpecId ?? "")}`);
+		}
+		if (step.kind === "publish-corpus" && result.developmentCorpus) {
+			lines.push(`${section("Tests published", paint)} ${pluralize(result.developmentCorpus.taskCount, "case")} ${paint.dim(`· ${result.developmentCorpus.id}`)}`);
+		}
+	}
+	if (result.evaluation) lines.push(...runLines(result.evaluation, paint, options));
+	else if (result.pending) lines.push(paint.muted(`Still needed: ${result.pending}`));
+	lines.push(nextLine(view, paint));
+	return lines;
+}
+
+function shipLines(result: WorkbenchShipResult, paint: Paint, view: WorkbenchView): string[] {
+	const lines = [
+		`${section("Shipped", paint)} ${result.tag ? paint.success(result.tag) : paint.muted("already tagged")}` +
+			(result.adoption
+				? ` ${paint.dim("·")} ${paint.bold(result.adoption.branch)} ${shortSha(result.adoption.fromSha)} → ${paint.success(shortSha(result.adoption.toSha))}`
+				: ""),
+		...renderCandidate(result.candidate, paint, "Candidate"),
+	];
+	if (result.adoption) {
+		lines.push(paint.muted("The promoted harness is now the active Target for `ahde target` and the next cycle."));
+	}
+	if (result.continuation) {
+		lines.push(paint.muted(`Cycle closed · next: ${stageLabel(result.continuation.nextStage)}.`));
+	}
 	lines.push(nextLine(view, paint));
 	return lines;
 }
@@ -79,9 +127,13 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 			return lines;
 		}
 		case "run-current":
-			return result.result.resolvedAs === "run-eval"
-				? [...runLines(result.result, paint, options), nextLine(view, paint)]
-				: verificationLines(result.result, paint, view);
+			if (result.result.resolvedAs === "run-eval") return [...runLines(result.result, paint, options), nextLine(view, paint)];
+			if (result.result.resolvedAs === "start-testing") return startTestingLines(result.result, paint, view, options);
+			return verificationLines(result.result, paint, view);
+		case "start-testing":
+			return startTestingLines(result.result, paint, view, options);
+		case "ship":
+			return shipLines(result.result, paint, view);
 		case "verify-candidate":
 			return verificationLines(result.result, paint, view);
 		case "apply-proposal":
@@ -122,15 +174,30 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 	}
 }
 
+function startTestingHeadline(result: WorkbenchStartTestingResult): string {
+	if (result.evaluation) {
+		return `${result.evaluation.evaluation.summary.pass}/${result.evaluation.evaluation.summary.total} passed · ` +
+			`${result.evaluation.improvementBrief.summary.failureModeCount} failure modes`;
+	}
+	return result.steps.map((step) => step.kind.replace(/-/g, " ")).join(" · ") || "nothing to do";
+}
+
 /** One-line headline for status bars and collapsed tool cards. */
 export function decisionHeadline(result: WorkbenchDecisionResult): string {
 	switch (result.kind) {
 		case "run-eval":
 			return `${result.result.evaluation.summary.pass}/${result.result.evaluation.summary.total} passed · ${result.result.improvementBrief.summary.failureModeCount} failure modes`;
 		case "run-current":
-			return result.result.resolvedAs === "run-eval"
-				? `${result.result.evaluation.summary.pass}/${result.result.evaluation.summary.total} passed · ${result.result.improvementBrief.summary.failureModeCount} failure modes`
-				: `candidate ${result.result.candidate.status}`;
+			if (result.result.resolvedAs === "run-eval") {
+				return `${result.result.evaluation.summary.pass}/${result.result.evaluation.summary.total} passed · ${result.result.improvementBrief.summary.failureModeCount} failure modes`;
+			}
+			if (result.result.resolvedAs === "start-testing") return startTestingHeadline(result.result);
+			return `candidate ${result.result.candidate.status}`;
+		case "start-testing":
+			return startTestingHeadline(result.result);
+		case "ship":
+			return `${result.result.tag ?? "no new tag"}${result.result.adoption ? ` · ${result.result.adoption.branch} fast-forwarded` : ""}` +
+				`${result.result.continuation ? ` · next ${result.result.continuation.nextStage}` : ""}`;
 		case "verify-candidate":
 			return `candidate ${result.result.candidate.status} · development ${result.result.development.verdict} · sealed ${result.result.sealedHoldout.verdict ?? "not run"}`;
 		case "calibrate": {

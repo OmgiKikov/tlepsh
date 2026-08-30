@@ -31,6 +31,56 @@ describe("one Builder command list", () => {
 	});
 });
 
+describe("one Builder persona", () => {
+	const persona = readFileSync(new URL("../builders/ahde/AGENTS.md", import.meta.url), "utf8");
+
+	/** The `| say this | it means |` rows of the vocabulary table. */
+	function vocabulary(): { say: string; means: string }[] {
+		const table = persona.split("## Vocabulary")[1]?.split("\n## ")[0] ?? "";
+		return table
+			.split("\n")
+			.filter((line) => line.startsWith("|") && !line.startsWith("|---") && !line.includes("Say this"))
+			.map((line) => line.split("|").map((cell) => cell.trim()))
+			.map((cells) => ({ say: cells[1] ?? "", means: cells[2] ?? "" }));
+	}
+
+	it("names the operator's shortcuts and no command AHDE does not register", () => {
+		const listed = slashNames(persona.split("## Tools")[1]?.split("\n## ")[0] ?? "");
+		expect([...listed].sort()).toEqual([...AHDE_BUILDER_COMMAND_NAMES].sort());
+		// The three verbs are named first, exactly as /help orders them.
+		expect(listed.slice(0, 3)).toEqual(["test", "fix", "ship"]);
+	});
+
+	it("speaks the operator's words and keeps the jargon in the “it means” column", () => {
+		const rows = vocabulary();
+		expect(rows.length).toBeGreaterThan(8);
+		const say = rows.map((row) => row.say).join("\n");
+		for (const word of ["tests", "тесты", "a change", "правка", "check it", "проверка", "ship it", "выкати"]) {
+			expect(say).toContain(word);
+		}
+		// Nothing on the left may be machinery the operator never asked about.
+		for (const jargon of ["corpus", "Spec", "Proposal", "candidate", "promote", "adopt", "holdout", "stage", "receipt"]) {
+			expect(say).not.toContain(jargon);
+		}
+		const means = rows.map((row) => row.means).join("\n");
+		for (const jargon of ["Spec", "corpus", "Proposal", "candidate verification", "sealed holdout"]) {
+			expect(means).toContain(jargon);
+		}
+	});
+
+	it("promises exactly three questions and never hands work back as a command", () => {
+		const working = persona.split("## How to work with the operator")[1]?.split("\n## ")[0] ?? "";
+		expect(working).toContain("exactly three questions");
+		expect(working).toMatch(/\*\*start testing\*\*/);
+		expect(working).toMatch(/\*\*apply this change\*\*/);
+		expect(working).toMatch(/\*\*ship it\*\*/);
+		expect(working).toContain("Do the work.");
+		expect(working).toContain("Never answer “use /test” or “type /apply”");
+		// The stage machine is not the operator's vocabulary.
+		expect(working).toContain("Never\n  narrate stages");
+	});
+});
+
 describe("CLI help", () => {
 	it("keeps root help focused on the product journey", () => {
 		const help = cliHelp(["--help"]);
