@@ -234,7 +234,7 @@ adopt → next). Public re-exports in `src/index.ts` shrink accordingly (0.1.0).
 
 Target `ombudsman` (qwen/qwen3.5-9b via OpenRouter, judge z-ai/glm-5.3), a
 clone at `5c99d43` (30 development cases), a 15-case sealed holdout imported by
-the host, 3 repetitions, 4 jobs, run by `scratchpad/ombudsman-loop.mjs` through
+the host, 3 repetitions, 4 jobs, run by `scripts/real-loop.mjs` (holdout: `docs/examples/ombudsman-holdout.jsonl`) through
 the production application chain (approved Spec → baseline → A/A calibration →
 diagnosis → Builder-origin proposal replaying the dd68f00 harness change →
 apply → matched verification → review → promote → adopt → continue).
