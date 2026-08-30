@@ -5,7 +5,7 @@ import {
 	publicTaskId,
 	type ImprovementBrief,
 } from "./application/improvement-brief.js";
-import { compareEvalRuns, type CompareResult } from "./compare.js";
+import { compareEvalRuns, renderGateLine, type CompareResult } from "./compare.js";
 import { diagnoseEvalRun, loadDiagnosis, type DiagnosisRecord } from "./diagnosis.js";
 import {
 	isSealedEvalRun,
@@ -198,6 +198,8 @@ export interface EvalReportData {
 	diagnosis: ReportDiagnosis;
 	improvementBrief: ImprovementBrief;
 	comparison: ReportComparison | null;
+	/** The one-line verdict with its cost/latency fragment; empty without a pair. */
+	comparisonGateLine: string;
 	runs: ReportRun[];
 	projection: EvalReportProjection;
 	redactionNotice: string;
@@ -646,6 +648,7 @@ export function collectEvalReportData(
 		diagnosis,
 		improvementBrief,
 		comparison,
+		comparisonGateLine: comparison ? renderGateLine(comparison) : "",
 		runs,
 		projection,
 		redactionNotice:
@@ -727,7 +730,7 @@ export function renderEvalReportHtml(data: EvalReportData): string {
 <div class="grid" id="stats"></div>
 	<section><div class="section-title"><h2>Failure modes</h2><span class="badge" id="failure-mode-status"></span></div><p class="brief-headline" id="brief-headline"></p><p class="notice" id="proposal-gate"></p><div class="issues" id="failure-modes"></div></section>
 <section><div class="section-title"><h2>Task issue drill-down</h2><span class="badge" id="diagnosis-status"></span></div><div class="issues" id="issues"></div></section>
-<section id="comparison-section" hidden><div class="section-title"><h2>Matched comparison</h2></div><div class="table-wrap"><table><thead><tr><th>Task</th><th>Baseline</th><th>Candidate</th><th>Delta</th></tr></thead><tbody id="comparison"></tbody></table></div></section>
+<section id="comparison-section" hidden><div class="section-title"><h2>Matched comparison</h2><span class="badge" id="comparison-verdict"></span></div><p class="notice" id="comparison-gate"></p><div class="table-wrap"><table><thead><tr><th>Task</th><th>Baseline</th><th>Candidate</th><th>Score</th><th>Delta</th></tr></thead><tbody id="comparison"></tbody></table></div></section>
 <section><div class="section-title"><h2>Run evidence</h2></div><p class="notice" id="projection-notice">${htmlText(projectionNotice(data.projection))}</p><div class="table-wrap"><table><thead><tr><th>Task</th><th>Rep</th><th>Outcome</th><th>Latency</th><th>Tools</th><th>Tokens</th></tr></thead><tbody id="runs"></tbody></table></div></section>
 <section><div class="section-title"><h2>Trace inspector</h2><span class="badge" id="trace-id">Select a run</span></div><div class="trace" id="trace"><div class="trace-empty">Choose a run to inspect its normalized trace.</div></div></section>
 <p class="notice" id="notice"></p>
@@ -751,7 +754,7 @@ q('#failure-modes').innerHTML=modeCards.length?modeCards.join(''):'<article clas
 q('#issues').innerHTML=d.issues.length?d.issues.map(i=>'<article class="issue"><div class="issue-head"><div><h3>'+esc(i.taskId)+' · '+esc(i.category)+'</h3><span class="pill '+esc(i.severity)+'">'+esc(i.confidence)+' confidence</span></div><span class="pill '+esc(i.severity)+'">'+esc(i.severity)+'</span></div><p>'+esc(i.rootCause)+'</p><ul>'+i.suggestions.map(s=>'<li>'+esc(s)+'</li>').join('')+'</ul></article>').join(''):'<article class="issue"><h3>No actionable failures</h3><p>All recorded tasks completed and passed.</p></article>';
 const runRows=DATA.runs.map(r=>'<tr data-run="'+esc(r.runId)+'"><td>'+esc(r.taskId)+'</td><td>'+r.repetitionIndex+'</td><td class="outcome '+esc(r.outcome)+'">'+esc(r.outcome)+'</td><td>'+r.metrics.latencyMs+' ms</td><td>'+r.metrics.toolCalls+(r.metrics.toolErrors?' / '+r.metrics.toolErrors+' errors':'')+'</td><td>'+r.metrics.tokens+'</td></tr>').join('');q('#runs').innerHTML=runRows;
 q('#run-nav').innerHTML=DATA.runs.map(r=>'<button class="run-link" data-run="'+esc(r.runId)+'"><span class="dot '+(r.outcome==='pass'?'pass':'')+'"></span>'+esc(r.taskId)+' · '+r.repetitionIndex+'</button>').join('');
-if(DATA.comparison&&DATA.comparison.status==='comparable'){q('#comparison-section').hidden=false;q('#comparison').innerHTML=DATA.comparison.rows.map(r=>'<tr><td>'+esc(r.taskId)+'</td><td>'+r.aPass+'/'+r.aTotal+'</td><td>'+r.bPass+'/'+r.bTotal+'</td><td class="'+(r.delta>0?'delta':'')+'">'+(r.delta>0?'+':'')+Math.round(r.delta*100)+' pp</td></tr>').join('')}
+if(DATA.comparison&&DATA.comparison.status==='comparable'){const c=DATA.comparison;q('#comparison-section').hidden=false;q('#comparison-verdict').textContent=c.gate.surface+' '+c.gate.verdict;q('#comparison-gate').textContent=DATA.comparisonGateLine;q('#comparison').innerHTML=c.rows.map(r=>'<tr><td>'+esc(r.taskId)+'</td><td>'+r.aPass+'/'+r.aTotal+'</td><td>'+r.bPass+'/'+r.bTotal+'</td><td>'+Math.round(r.aScore*100)+'% → '+Math.round(r.bScore*100)+'%</td><td class="'+(r.scoreDelta>0?'delta':'')+'">'+(r.scoreDelta>0?'+':'')+Math.round(r.scoreDelta*100)+' pp</td></tr>').join('')}
 	function runIdFromHash(){try{return new URLSearchParams(window.location.hash.slice(1)).get('run')}catch{return null}}
 	function showRun(id,scroll=true,syncHash=true){if(typeof id!=='string')return false;const r=DATA.runs.find(x=>x.runId===id);if(!r)return false;document.querySelectorAll('[data-run]').forEach(n=>n.classList.toggle('active',n instanceof HTMLElement&&n.dataset.run===id));q('#trace-id').textContent=r.runId;const traceOmission=r.traceProjection&&r.traceProjection.omittedCount?'<div class="message"><div class="message-label">Projection</div><p class="sub">'+esc(r.traceProjection.omittedCount)+' trace message(s) omitted.</p></div>':(!r.traceProjection&&DATA.projection.truncatedTraceRunIds.includes(id)?'<div class="message"><div class="message-label">Projection</div><p class="sub">Trace omitted after a global projection budget was exhausted.</p></div>':'');const grader='<div class="message"><div class="message-label">Graders</div>'+r.graders.map(g=>'<div class="tool '+(g.passed?'':'error')+'"><strong>'+esc(g.passed?'PASS':'FAIL')+' · '+esc(g.name)+'</strong><pre>'+esc(g.reason)+'</pre></div>').join('')+(r.graderProjection.omittedCount?'<p class="sub">'+esc(r.graderProjection.omittedCount)+' grader(s) omitted.</p>':'')+'</div>';q('#trace').innerHTML=(r.error?'<div class="message"><div class="message-label">Run error</div><pre>'+esc(r.error)+'</pre></div>':'')+r.trace.map(m=>'<div class="message"><div class="message-label">'+esc(m.role)+'</div>'+(m.text?'<pre>'+esc(m.text)+'</pre>':'')+m.toolCalls.map(t=>'<div class="tool"><strong>call · '+esc(t.name)+'</strong><pre>'+esc(t.arguments)+'</pre></div>').join('')+(m.omittedToolCallCount?'<p class="sub">'+esc(m.omittedToolCallCount)+' tool call(s) omitted.</p>':'')+(m.toolResult?'<div class="tool '+(m.toolResult.isError?'error':'')+'"><strong>result · '+esc(m.toolResult.name)+'</strong><pre>'+esc(m.toolResult.text)+'</pre></div>':'')+'</div>').join('')+traceOmission+grader;if(syncHash){const params=new URLSearchParams(window.location.hash.slice(1));params.set('run',id);const next='#'+params.toString();if(window.location.hash!==next)window.location.hash=next}if(scroll)q('#trace').scrollIntoView({behavior:'smooth',block:'start'});return true}
 document.addEventListener('click',ev=>{const target=ev.target;const node=target instanceof Element?target.closest('[data-run]'):null;if(node instanceof HTMLElement)showRun(node.dataset.run)});

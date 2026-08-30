@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { EXACT_COMPARISON_GATE_ALGORITHM_ID_V3, judgeComparison } from "../src/domain/comparison-gate.js";
+import { EXACT_COMPARISON_GATE_ALGORITHM_ID_V4, judgeComparison } from "../src/domain/comparison-gate.js";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -359,6 +359,10 @@ function comparison(
 		aPassRate: aRate,
 		bPassRate: bRate,
 		delta: bRate - aRate,
+		// Binary graders: the mean score equals the pass rate.
+		aScore: aRate,
+		bScore: bRate,
+		scoreDelta: bRate - aRate,
 		aStatus: "completed",
 		bStatus: "completed",
 		aPass: Math.round(aRate * repetitions),
@@ -657,9 +661,9 @@ permissions:
 		if (finalEvent?.type === "evaluated") {
 			expect(finalEvent.evaluation.sealedHoldout).toBeUndefined();
 			expect(finalEvent.evaluation.development.comparison).toMatchObject({
-				schemaVersion: 3,
-				algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
-				policyId: "development-ci-v3",
+				schemaVersion: 4,
+				algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V4,
+				policyId: "development-ci-v4",
 				surface: "development",
 			});
 		}
@@ -1007,9 +1011,9 @@ permissions:
 					harness: { sha: repository.candidateSha },
 				},
 				comparison: {
-					schemaVersion: 3,
-					algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
-					policyId: "sealed-guardrail-v3",
+					schemaVersion: 4,
+					algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V4,
+					policyId: "sealed-guardrail-v4",
 					surface: "sealed",
 					verdict: "pass",
 				},
@@ -1124,7 +1128,7 @@ permissions:
 		expect(candidateStatus(record)).toBe("evaluated");
 		const evaluated = record.events.at(-1);
 		if (evaluated?.type !== "evaluated") throw new Error("expected evaluated event");
-		expect(evaluated.evaluation.sealedHoldout?.comparison).toMatchObject({ schemaVersion: 3, verdict: "fail", surface: "sealed" });
+		expect(evaluated.evaluation.sealedHoldout?.comparison).toMatchObject({ schemaVersion: 4, verdict: "fail", surface: "sealed" });
 		assertCheckoutUnchanged(repository);
 	});
 
@@ -1265,9 +1269,9 @@ permissions:
 		const evidence = evaluated.evaluation.development.comparison;
 		if (!evidence || !("verdict" in evidence)) throw new Error("expected exact v3 comparison evidence");
 		expect(evidence).toMatchObject({
-			schemaVersion: 3,
-			algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
-			policyId: "development-ci-v3",
+			schemaVersion: 4,
+			algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V4,
+			policyId: "development-ci-v4",
 			surface: "development",
 		});
 		expect(evidence.evidenceHash).toMatch(/^sha256:[0-9a-f]{64}$/);

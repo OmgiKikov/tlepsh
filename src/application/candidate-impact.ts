@@ -10,7 +10,8 @@ import {
 	type CandidateArtifactRef, type CandidateRecord,
 } from "../domain/candidate.js";
 import {
-	DEVELOPMENT_VERDICTS, EXACT_COMPARISON_GATE_ALGORITHM_ID_V3, SEALED_VERDICTS, withinInfrastructureBudget,
+	DEVELOPMENT_VERDICTS, EXACT_COMPARISON_GATE_ALGORITHM_ID_V3, EXACT_COMPARISON_GATE_ALGORITHM_ID_V4,
+	SEALED_VERDICTS, withinInfrastructureBudget,
 	type GateVerdict,
 } from "../domain/comparison-gate.js";
 import type { EvidenceVisibility, VerifiedEvalRun } from "../eval.js";
@@ -203,16 +204,26 @@ const CandidateImpactBaseSchema = z.strictObject({
 			candidate: z.strictObject({ evalRunId: ArtifactIdSchema, harnessSha: GitShaSchema, evalRunHash: HashSchema }),
 		}),
 		comparison: z.strictObject({
-			algorithmId: z.enum([EXACT_COMPARISON_GATE_ALGORITHM_ID_V3, EXACT_COMPARISON_GATE_ALGORITHM_ID]).nullable(),
+			algorithmId: z.enum([
+				EXACT_COMPARISON_GATE_ALGORITHM_ID_V4,
+				EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
+				EXACT_COMPARISON_GATE_ALGORITHM_ID,
+			]).nullable(),
 			policyId: z.string().min(1).max(200),
 			comparisonHash: HashSchema,
 			evidenceHash: HashSchema.nullable(),
 			gateHash: HashSchema,
 			verified: z.boolean(),
-			/** v3 gate verdict; null for legacy evidence. */
+			/** v3/v4 gate verdict; null for legacy evidence. */
 			verdict: z.enum([...DEVELOPMENT_VERDICTS, ...SEALED_VERDICTS]).nullable(),
 		}),
 		summary: ComparisonSummarySchema,
+		/** Candidate-over-baseline resource ratios. Rendered, never gating. */
+		resources: z.strictObject({
+			costRatio: z.number().nonnegative().nullable(),
+			latencyRatio: z.number().nonnegative().nullable(),
+			tokenRatio: z.number().nonnegative().nullable(),
+		}),
 	}),
 	proposalBasis: z.strictObject({
 		algorithmId: z.literal(IMPROVEMENT_BRIEF_ALGORITHM_ID),
@@ -1059,6 +1070,11 @@ export function inspectCandidateImpact(options: InspectCandidateImpactOptions): 
 				verdict: gateVerdictOf(comparison),
 			},
 			summary: comparisonSummary(development.compare),
+			resources: {
+				costRatio: development.compare.resources.costRatio,
+				latencyRatio: development.compare.resources.latencyRatio,
+				tokenRatio: development.compare.resources.tokenRatio,
+			},
 		},
 		proposalBasis: basis && brief
 			? {

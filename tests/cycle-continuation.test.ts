@@ -50,9 +50,9 @@ function git(repositoryDir: string, ...args: string[]): string {
 
 function comparison(surface: "development" | "sealed" = "development") {
 	return {
-		schemaVersion: 3 as const,
-		algorithmId: "exact-comparison-gate-v3" as const,
-		policyId: surface === "sealed" ? "sealed-guardrail-v3" as const : "development-ci-v3" as const,
+		schemaVersion: 4 as const,
+		algorithmId: "exact-comparison-gate-v4" as const,
+		policyId: surface === "sealed" ? "sealed-guardrail-v4" as const : "development-ci-v4" as const,
 		surface,
 		comparisonHash: hash,
 		evidenceHash: hash,
@@ -62,6 +62,9 @@ function comparison(surface: "development" | "sealed" = "development") {
 			baselinePassRate: 0,
 			candidatePassRate: 1,
 			delta: 1,
+			baselineScore: 0,
+			candidateScore: 1,
+			scoreDelta: 1,
 			confidence95: { low: 1, high: 1 },
 			improved: 15,
 			regressed: 0,
@@ -70,6 +73,7 @@ function comparison(surface: "development" | "sealed" = "development") {
 		design: { tasks: 15, repetitions: 2, excludedTasks: 0 },
 		verdict: surface === "sealed" ? "pass" as const : "improved" as const,
 		flags: { regressedTasks: 0, improvedTasks: 15, collapsedTasks: 0 },
+		resources: { baseline: { runs: 30, costUsd: 0.1, meanLatencyMs: 2000, meanTokens: 800 }, candidate: { runs: 30, costUsd: 0.14, meanLatencyMs: 1800, meanTokens: 900 }, costRatio: 1.4, latencyRatio: 0.9, tokenRatio: 1.125 },
 		reasons: ["fixture verdict"],
 	};
 }

@@ -105,12 +105,19 @@ export interface WorkbenchProposalReview {
 export interface WorkbenchGateProjection {
 	verdict: GateVerdict;
 	surface: GateSurface;
+	/** Pass-rate delta, shown next to the score the gate decided on. */
 	delta: number;
+	baselineScore: number;
+	candidateScore: number;
+	/** The mean paired score delta the interval brackets. */
+	scoreDelta: number;
 	confidence95: { low: number; high: number };
 	tasks: number;
 	repetitions: number;
 	excludedTasks: number;
 	flags: { regressedTasks: number; improvedTasks: number; collapsedTasks: number };
+	/** Cost/latency/token ratios of candidate over baseline. Rendered, never gating. */
+	resources: { costRatio: number | null; latencyRatio: number | null; tokenRatio: number | null };
 	reasons: string[];
 }
 
@@ -151,7 +158,7 @@ export interface WorkbenchCandidateSummary {
 		baselineEvalRunId: string;
 		candidateEvalRunId: string;
 		comparison: ComparisonSummaryEvidence | null;
-		/** v3 gate verdict; null for legacy evidence. */
+		/** v4 gate verdict; null for legacy (v1–v3) evidence. */
 		gate: WorkbenchGateProjection | null;
 	} | null;
 	sealedHoldout: { executed: boolean; gatePassed: boolean; gate: WorkbenchGateProjection | null };

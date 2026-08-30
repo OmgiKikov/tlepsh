@@ -20,7 +20,7 @@ import { applyBuilderProposal, loadBuilderProposalRun } from "../src/application
 import { CANDIDATE_SCOPE_POLICY } from "../src/application/candidate-experiment.js";
 import { targetWithDevelopmentCorpus } from "../src/application/corpus-target.js";
 import { createCandidate, transitionCandidate, type CandidateRecord } from "../src/domain/candidate.js";
-import { EXACT_COMPARISON_GATE_ALGORITHM_ID_V3 } from "../src/domain/comparison-gate.js";
+import { EXACT_COMPARISON_GATE_ALGORITHM_ID_V4 } from "../src/domain/comparison-gate.js";
 import { diagnoseEvalRun } from "../src/diagnosis.js";
 import { writeEvalRun, type EvalRunRecord } from "../src/eval.js";
 import { loadTarget, type GraderSpec } from "../src/manifest.js";
@@ -320,9 +320,9 @@ function writeCalibration(
 					baseline: { evalRunId: `${candidateId}-a`, harness: revision },
 					candidate: { evalRunId: `${candidateId}-b`, harness: revision },
 					comparison: {
-						schemaVersion: 3,
-						algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
-						policyId: "development-ci-v3",
+						schemaVersion: 4,
+						algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V4,
+						policyId: "development-ci-v4",
 						surface: "development",
 						comparisonHash: hash,
 						evidenceHash: hash,
@@ -332,6 +332,9 @@ function writeCalibration(
 							baselinePassRate: options.baselinePassRate ?? 0.9,
 							candidatePassRate: options.baselinePassRate ?? 0.9,
 							delta: 0,
+							baselineScore: options.baselinePassRate ?? 0.9,
+							candidateScore: options.baselinePassRate ?? 0.9,
+							scoreDelta: 0,
 							confidence95: { low: -0.06, high: 0.06 },
 							improved,
 							regressed,
@@ -340,6 +343,7 @@ function writeCalibration(
 						design: { tasks: taskCount, repetitions: 3, excludedTasks: 0 },
 						verdict: "inconclusive",
 						flags: { regressedTasks: regressed, improvedTasks: improved, collapsedTasks: 0 },
+						resources: { baseline: { runs: 30, costUsd: 0.1, meanLatencyMs: 2000, meanTokens: 800 }, candidate: { runs: 30, costUsd: 0.14, meanLatencyMs: 1800, meanTokens: 900 }, costRatio: 1.4, latencyRatio: 0.9, tokenRatio: 1.125 },
 						reasons: ["95% CI spans zero"],
 					},
 				} as never,
@@ -1746,9 +1750,9 @@ describe("AHDE Workbench", () => {
 		});
 		const hash = `sha256:${"c".repeat(64)}`;
 		const gateEvidence = (surface: "development" | "sealed") => ({
-			schemaVersion: 3,
-			algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
-			policyId: surface === "sealed" ? "sealed-guardrail-v3" : "development-ci-v3",
+			schemaVersion: 4,
+			algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V4,
+			policyId: surface === "sealed" ? "sealed-guardrail-v4" : "development-ci-v4",
 			surface,
 			comparisonHash: hash,
 			evidenceHash: hash,
@@ -1758,6 +1762,9 @@ describe("AHDE Workbench", () => {
 				baselinePassRate: 1,
 				candidatePassRate: 1,
 				delta: 0,
+				baselineScore: 1,
+				candidateScore: 1,
+				scoreDelta: 0,
 				confidence95: { low: 0, high: 0 },
 				improved: 0,
 				regressed: 0,
@@ -1766,6 +1773,7 @@ describe("AHDE Workbench", () => {
 			design: { tasks: 1, repetitions: 2, excludedTasks: 0 },
 			verdict: surface === "sealed" ? "pass" : "inconclusive",
 			flags: { regressedTasks: 0, improvedTasks: 0, collapsedTasks: 0 },
+			resources: { baseline: { runs: 30, costUsd: 0.1, meanLatencyMs: 2000, meanTokens: 800 }, candidate: { runs: 30, costUsd: 0.14, meanLatencyMs: 1800, meanTokens: 900 }, costRatio: 1.4, latencyRatio: 0.9, tokenRatio: 1.125 },
 			reasons: ["fixture"],
 		});
 		const actor = { kind: "human" as const, id: "local:test-human" };

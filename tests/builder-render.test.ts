@@ -460,6 +460,7 @@ function makeImpact(overrides: Partial<CandidateImpact> = {}): CandidateImpact {
 				regressed: 1,
 				unchanged: 6,
 			},
+			resources: { costRatio: 1.4, latencyRatio: 0.9, tokenRatio: 1.125 },
 		},
 		proposalBasis: {
 			algorithmId: "exact-eval-signals-v1",
@@ -1075,7 +1076,7 @@ describe("renderImpact", () => {
 			},
 		});
 		const lines = renderImpact({ available: true, impact }, tagPaint);
-		expect(lines[0]).toBe("<dim>Impact</dim> <warning>mixed</warning>");
+		expect(lines[0]).toBe("<dim>Impact</dim> <warning>mixed</warning> <dim>· cost ×1.4 · latency ×0.9 · tokens ×1.1</dim>");
 		expect(lines[1]).toBe("  <dim>Targeted 5 failure modes:</dim>");
 		expect(lines[2]).toBe("    <success>✓</success> <success>resolved</success> · tool-selection · baseline 4/4 failed → candidate 0/4 failed · 0/2 tasks still affected");
 		expect(lines[3]).toBe("    <success>↑</success> <success>improved</success> · output-contract · baseline 4/4 failed → candidate 1/4 failed · 1/2 tasks still affected");
@@ -1093,13 +1094,17 @@ describe("renderImpact", () => {
 			["regressed", "<error>regressed</error>"],
 		];
 		for (const [verdict, expected] of verdicts) {
-			expect(renderImpact({ available: true, impact: makeImpact({ verdict }) }, tagPaint)[0]).toBe(`<dim>Impact</dim> ${expected}`);
+			expect(renderImpact({ available: true, impact: makeImpact({ verdict }) }, tagPaint)[0])
+				.toBe(`<dim>Impact</dim> ${expected}${" <dim>· cost ×1.4 · latency ×0.9 · tokens ×1.1</dim>"}`);
 		}
 	});
 
 	it("explains a candidate without a diagnosis basis", () => {
 		const lines = renderImpact({ available: true, impact: makeImpact({ verdict: "no-change", proposalBasis: null }) }, plainPaint);
-		expect(lines).toEqual(["Impact no change", "  No targeted failure modes: this candidate was not authored from a diagnosis."]);
+		expect(lines).toEqual([
+			"Impact no change · cost ×1.4 · latency ×0.9 · tokens ×1.1",
+			"  No targeted failure modes: this candidate was not authored from a diagnosis.",
+		]);
 	});
 
 	it("lists new and worsened failure modes with omitted counts", () => {
@@ -1142,7 +1147,7 @@ describe("renderImpact", () => {
 			available: true,
 			impact: makeImpact({ verdict: "inconclusive", inconclusiveReasons: ["baseline run has no trace", "candidate basket differs"] }),
 		}, tagPaint);
-		expect(lines[0]).toBe("<dim>Impact</dim> <warning>inconclusive</warning>");
+		expect(lines[0]).toBe("<dim>Impact</dim> <warning>inconclusive</warning> <dim>· cost ×1.4 · latency ×0.9 · tokens ×1.1</dim>");
 		expect(lines.join("\n")).toContain("  <warning>Inconclusive because:</warning>\n    • baseline run has no trace\n    • candidate basket differs");
 	});
 });
