@@ -74,9 +74,13 @@ function categoryFor(aggregate: TaskAggregate): DiagnosisCategory[] {
 	if (aggregate.failedGraderTypes.has("tool_called")) categories.push("tool-selection");
 	if (
 		aggregate.failedGraderTypes.has("output_contains") ||
-		aggregate.failedGraderTypes.has("output_matches")
+		aggregate.failedGraderTypes.has("output_matches") ||
+		aggregate.failedGraderTypes.has("exact")
 	) categories.push("output-contract");
-	if (aggregate.failedGraderTypes.has("judge")) categories.push("answer-quality");
+	if (
+		aggregate.failedGraderTypes.has("judge") ||
+		aggregate.failedGraderTypes.has("similarity")
+	) categories.push("answer-quality");
 	return categories;
 }
 

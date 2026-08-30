@@ -512,6 +512,95 @@ ${options.judgeParams ?? ""}`,
 			await judgeMock.close();
 		}
 	}, 180_000);
+
+	const REFERENCE_TASKS = [
+		JSON.stringify({
+			id: "ref_pass",
+			input: "Вопрос про комиссию по своей карте",
+			expected: "Комиссия за переводы между своими счетами не взимается.",
+			graders: [{ type: "judge", rubric: "фактическая верность", withReference: true }],
+		}),
+		JSON.stringify({
+			id: "ref_fail",
+			input: "Вопрос про тарифы",
+			expected: "Тариф «Базовый» стоит 0 рублей.",
+			graders: [{ type: "judge", rubric: "фактическая верность", withReference: true }],
+		}),
+		JSON.stringify({
+			id: "rubric_only",
+			input: "Вопрос про сроки",
+			expected: "Возврат занимает тридцать дней.",
+			graders: [{ type: "judge", rubric: "ответ по существу сроков" }],
+		}),
+	].join("\n");
+
+	it("a withReference judge grades on the A–E rubric and never leaks the reference to a rubric-only judge", async () => {
+		const judgeMock = await startMockModel([
+			{
+				// The reference protocol asks for a choice, not a boolean.
+				match: ({ system, firstUser }) => system.includes("эталонным") && firstUser.includes("тарифы"),
+				steps: [{ text: '{"choice": "D", "reason": "названа другая цена"}' }],
+			},
+			{
+				match: ({ system }) => system.includes("эталонным"),
+				steps: [{ text: '{"choice": "A", "reason": "подмножество эталона"}' }],
+			},
+			{
+				match: ({ system }) => system.includes("грейдер"),
+				steps: [{ text: '{"passed": true, "reason": "по существу"}' }],
+			},
+			{ match: ({ firstUser }) => firstUser.includes("тарифы"), steps: [{ text: "Тариф «Базовый» стоит 300 рублей." }] },
+			{ match: ({ firstUser }) => firstUser.includes("сроки") || firstUser.includes("сроков"), steps: [{ text: "Тридцать дней." }] },
+			{ match: () => true, steps: [{ text: "Между своими счетами комиссии нет." }] },
+		]);
+		const dir = makeTargetFixture(baseFixtureFiles(judgeFixtureFiles(judgeMock.url, { tasks: REFERENCE_TASKS })));
+		const judgeRuns = join(dir, "..", `judge-reference-runs-${Date.now()}`);
+		try {
+			const result = await runSuite(loadTarget(dir), { runsRoot: judgeRuns, label: "solo", repetitions: 1 });
+			expect(result.summary).toMatchObject({ total: 3, pass: 2, fail: 1, error: 0 });
+
+			const runs = result.runIds.map((id) => JSON.parse(readFileSync(join(judgeRuns, id, "run.json"), "utf8")));
+			const byTask = Object.fromEntries(runs.map((run) => [run.taskId, run]));
+
+			// {A, B, C, E} pass, D fails, and the chosen branch is in the reason.
+			expect(byTask.ref_pass.evalResults.graders[0]).toMatchObject({
+				type: "judge",
+				passed: true,
+				score: 0.4,
+				reason: "A: подмножество эталона",
+				checkCode: "semantic-rubric",
+			});
+			expect(byTask.ref_fail.evalResults.graders[0]).toMatchObject({
+				passed: false,
+				score: 0,
+				reason: "D: названа другая цена",
+			});
+
+			// The reference and the rubric are delimited, and the sidecar records the choice.
+			const referencePrompt = JSON.parse(
+				readFileSync(join(judgeRuns, byTask.ref_pass.runId, "judge", "0.json"), "utf8"),
+			).request.body.messages[1].content;
+			expect(referencePrompt).toContain("<критерий>\nфактическая верность\n</критерий>");
+			expect(referencePrompt).toContain("<эталонный ответ>\nКомиссия за переводы между своими счетами не взимается.\n</эталонный ответ>");
+			expect(referencePrompt).toContain("<ответ агента>\nМежду своими счетами комиссии нет.\n</ответ агента>");
+			expect(JSON.parse(readFileSync(join(judgeRuns, byTask.ref_pass.runId, "judge", "0.verdict.json"), "utf8")))
+				.toEqual({ choice: "A", passed: true, score: 0.4 });
+
+			// A rubric-only judge never sees the case's reference answer.
+			const rubricOnly = JSON.parse(
+				readFileSync(join(judgeRuns, byTask.rubric_only.runId, "judge", "0.json"), "utf8"),
+			).request.body;
+			expect(rubricOnly.messages[1].content).not.toContain("Возврат занимает тридцать дней.");
+			expect(rubricOnly.messages[1].content).toBe(
+				"Критерий: ответ по существу сроков\n\nОбращение: Вопрос про сроки\n\nОтвет агента: Тридцать дней.",
+			);
+			expect(existsSync(join(judgeRuns, byTask.rubric_only.runId, "judge", "0.verdict.json"))).toBe(false);
+		} finally {
+			cleanup(dir);
+			cleanup(judgeRuns);
+			await judgeMock.close();
+		}
+	}, 180_000);
 });
 
 describe("target workspace isolation", () => {

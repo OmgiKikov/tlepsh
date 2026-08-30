@@ -43,8 +43,24 @@ export const GraderCheckCodeSchema = z.enum([
 	"output-contains",
 	"output-matches",
 	"semantic-rubric",
+	"reference-exact",
+	"reference-similarity",
 ]);
 export type GraderCheckCode = z.infer<typeof GraderCheckCodeSchema>;
+
+/**
+ * The grader type each check code can describe. A judge grader keeps one code
+ * whether or not it sees the reference answer: `specHash` already separates the
+ * two protocols, and a second code would split one rubric's failure mode in two.
+ */
+const CHECK_CODE_GRADER_TYPE: Record<GraderCheckCode, string> = {
+	"required-tool": "tool_called",
+	"output-contains": "output_contains",
+	"output-matches": "output_matches",
+	"semantic-rubric": "judge",
+	"reference-exact": "exact",
+	"reference-similarity": "similarity",
+};
 
 export const GraderResultSchema = z
 	.strictObject({
@@ -70,12 +86,7 @@ export const GraderResultSchema = z
 			return;
 		}
 		if (!hasSpecHash) return;
-		const expectedType = {
-			"required-tool": "tool_called",
-			"output-contains": "output_contains",
-			"output-matches": "output_matches",
-			"semantic-rubric": "judge",
-		}[result.checkCode!];
+		const expectedType = CHECK_CODE_GRADER_TYPE[result.checkCode!];
 		if (result.type !== expectedType) {
 			context.addIssue({
 				code: "custom",

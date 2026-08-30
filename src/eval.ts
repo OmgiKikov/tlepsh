@@ -1,7 +1,17 @@
 import { chmodSync, mkdirSync, opendirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { GraderSpec, graderName, type ResolvedTarget, type ResolvedTask, type TargetManifest } from "./manifest.js";
+import {
+	GraderSpec,
+	graderName,
+	graderNeedsExpected,
+	hasReferenceAnswer,
+	type ExactNormalize,
+	type ResolvedTarget,
+	type ResolvedTask,
+	type SimilarityMetric,
+	type TargetManifest,
+} from "./manifest.js";
 import {
 	HashSchema,
 	modelFingerprint,
@@ -84,6 +94,134 @@ function gradeOutputMatches(spec: { pattern: string }, output: string | undefine
 	};
 }
 
+// ---------- Reference-answer graders ----------
+// `exact` and `similarity` decide locally: no judge model, no network, and the
+// same verdict every time. All three reference graders (judge withReference
+// included) refuse to grade a case that carries no reference answer — a
+// vacuous pass would be evidence of nothing.
+
+export const MISSING_EXPECTED_REASON = "case has no expected answer";
+
+function missingExpected(type: GraderSpec["type"]): GraderResult {
+	return { name: "", type, passed: false, score: 0, reason: MISSING_EXPECTED_REASON };
+}
+
+/** `lower` is trim + lowercase + collapsed whitespace; `trim` only trims. */
+export function normalizeAnswer(text: string, mode: ExactNormalize): string {
+	if (mode === "none") return text;
+	const trimmed = text.trim();
+	if (mode === "trim") return trimmed;
+	return trimmed.toLowerCase().replace(/\s+/gu, " ");
+}
+
+function gradeExact(
+	spec: { normalize: ExactNormalize },
+	expected: string | undefined,
+	output: string,
+): GraderResult {
+	if (expected === undefined) return missingExpected("exact");
+	const passed = normalizeAnswer(output, spec.normalize) === normalizeAnswer(expected, spec.normalize);
+	return {
+		name: "",
+		type: "exact",
+		passed,
+		score: passed ? 1 : 0,
+		reason: passed
+			? `output equals the expected answer (normalize: ${spec.normalize})`
+			: `output differs from the expected answer (normalize: ${spec.normalize})`,
+	};
+}
+
+/** Unicode word tokens: runs of letters or digits, case-folded. */
+export function answerTokens(text: string): string[] {
+	return text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+}
+
+/** Multiset token F1, the standard span-answer overlap score. */
+export function tokenF1(a: string, b: string): number {
+	const left = answerTokens(a);
+	const right = answerTokens(b);
+	if (left.length === 0 && right.length === 0) return 1;
+	if (left.length === 0 || right.length === 0) return 0;
+	const remaining = new Map<string, number>();
+	for (const token of left) remaining.set(token, (remaining.get(token) ?? 0) + 1);
+	let overlap = 0;
+	for (const token of right) {
+		const available = remaining.get(token) ?? 0;
+		if (available > 0) {
+			remaining.set(token, available - 1);
+			overlap += 1;
+		}
+	}
+	if (overlap === 0) return 0;
+	const precision = overlap / left.length;
+	const recall = overlap / right.length;
+	return (2 * precision * recall) / (precision + recall);
+}
+
+/** Levenshtein distance over unicode code points, one rolling row of cells. */
+function levenshteinDistance(a: readonly string[], b: readonly string[]): number {
+	let previous = new Int32Array(b.length + 1);
+	let current = new Int32Array(b.length + 1);
+	for (let column = 0; column <= b.length; column += 1) previous[column] = column;
+	for (let row = 1; row <= a.length; row += 1) {
+		current[0] = row;
+		for (let column = 1; column <= b.length; column += 1) {
+			const substitution = previous[column - 1]! + (a[row - 1] === b[column - 1] ? 0 : 1);
+			current[column] = Math.min(previous[column]! + 1, current[column - 1]! + 1, substitution);
+		}
+		[previous, current] = [current, previous];
+	}
+	return previous[b.length]!;
+}
+
+/**
+ * `1 − distance / maxLength`, over unicode code points.
+ *
+ * The distance is never smaller than the length difference, so a length-only
+ * upper bound decides the common "the agent wrote an essay" case without
+ * filling an O(n·m) matrix. `bounded` says the score is that upper bound: it is
+ * only ever returned when the bound alone already fails the threshold.
+ */
+export function levenshteinRatio(
+	a: string,
+	b: string,
+	threshold = 0,
+): { score: number; bounded: boolean } {
+	const left = [...a];
+	const right = [...b];
+	const maxLength = Math.max(left.length, right.length);
+	if (maxLength === 0) return { score: 1, bounded: false };
+	const upperBound = 1 - Math.abs(left.length - right.length) / maxLength;
+	if (upperBound < threshold) return { score: upperBound, bounded: true };
+	return { score: 1 - levenshteinDistance(left, right) / maxLength, bounded: false };
+}
+
+function gradeSimilarity(
+	spec: { metric: SimilarityMetric; threshold: number },
+	expected: string | undefined,
+	output: string,
+): GraderResult {
+	if (expected === undefined) return missingExpected("similarity");
+	// Both metrics compare the canonical `lower` normalization, so trailing
+	// whitespace and casing never decide a fuzzy match.
+	const candidate = normalizeAnswer(output, "lower");
+	const reference = normalizeAnswer(expected, "lower");
+	const { score, bounded } = spec.metric === "token-f1"
+		? { score: tokenF1(candidate, reference), bounded: false }
+		: levenshteinRatio(candidate, reference, spec.threshold);
+	const passed = score >= spec.threshold;
+	const rounded = Math.round(score * 1000) / 1000;
+	return {
+		name: "",
+		type: "similarity",
+		passed,
+		score,
+		reason: `${spec.metric} ${bounded ? "≤" : "="} ${rounded}${bounded ? " (length-difference bound)" : ""}, ` +
+			`${passed ? "at or above" : "below"} threshold ${spec.threshold}`,
+	};
+}
+
 // ---------- Judge grader ----------
 // Judge calls leave one sidecar per attempt (exact request + raw response) in
 // runs/<run_id>/judge/<graderIndex>.<attempt>.json — written BEFORE parsing, so
@@ -97,7 +235,53 @@ const JUDGE_SYSTEM =
 	'Ты — грейдер. Оцени ответ агента на обращение по критерию. ' +
 	'Ответь строго одной строкой JSON без markdown: {"passed": true|false, "reason": "краткое обоснование"}';
 
-function parseVerdict(text: string): { passed: boolean; reason: string } {
+/**
+ * The rubric-only prompt is frozen on purpose. Rewording it would change
+ * verdicts for datasets that already have evidence, which is exactly what
+ * `AHDE_EVALUATOR_ID` exists to fence off. Reference judging is a new protocol
+ * on a new grader spec, so it gets the delimited prompt below instead.
+ */
+const JUDGE_REFERENCE_SYSTEM =
+	'Ты — грейдер. Сравни фактическое содержание ответа агента с эталонным ответом. ' +
+	'Игнорируй различия в стиле, грамматике, пунктуации и форматировании. ' +
+	'Ответь строго одной строкой JSON без markdown: {"choice": "A"|"B"|"C"|"D"|"E", "reason": "краткое обоснование"}';
+
+/**
+ * The A–E factuality rubric, ported from vitest-evals' `FactualityJudge`:
+ * only an outright disagreement with the reference is a failure, because a
+ * narrower, a broader and a differently worded answer are all still correct.
+ */
+const REFERENCE_CHOICE_SCORES = { A: 0.4, B: 0.6, C: 1, D: 0, E: 1 } as const;
+type ReferenceChoice = keyof typeof REFERENCE_CHOICE_SCORES;
+const REFERENCE_FAILING_CHOICE: ReferenceChoice = "D";
+
+function isReferenceChoice(value: unknown): value is ReferenceChoice {
+	return typeof value === "string" && value in REFERENCE_CHOICE_SCORES;
+}
+
+/** Reference and rubric each get their own delimited block, verbatim. */
+function judgeReferencePrompt(rubric: string, input: string, expected: string, output: string): string {
+	return [
+		"<критерий>", rubric, "</критерий>",
+		"",
+		"<обращение>", input, "</обращение>",
+		"",
+		"<эталонный ответ>", expected, "</эталонный ответ>",
+		"",
+		"<ответ агента>", output, "</ответ агента>",
+		"",
+		"Выбери ровно один вариант:",
+		"A: ответ агента — полностью согласованное подмножество эталона.",
+		"B: ответ агента — полностью согласованное надмножество эталона.",
+		"C: ответ агента содержит те же фактические сведения, что и эталон.",
+		"D: ответ агента противоречит эталону.",
+		"E: ответы отличаются только в деталях, не влияющих на фактическую сторону.",
+		"",
+		'Верни JSON ровно с этими полями: {"choice": "C", "reason": "краткое обоснование выбора"}',
+	].join("\n");
+}
+
+function judgeJsonObject(text: string): Record<string, unknown> {
 	const stripped = text.replace(/```(?:json)?/g, "").trim();
 	const start = stripped.indexOf("{");
 	const end = stripped.lastIndexOf("}");
@@ -108,15 +292,39 @@ function parseVerdict(text: string): { passed: boolean; reason: string } {
 	} catch {
 		throw new Error(`judge returned unparseable verdict: ${text.slice(0, 120)}`);
 	}
-	const verdict = parsed as { passed?: unknown; reason?: unknown };
+	return parsed as Record<string, unknown>;
+}
+
+/** A missing or non-string reason is a judge quirk, not an infrastructure failure. */
+function judgeReason(value: unknown): string {
+	return typeof value === "string" && value.trim().length > 0 ? value : "judge gave no reason";
+}
+
+function parseVerdict(text: string): JudgeVerdict {
+	const verdict = judgeJsonObject(text);
 	if (typeof verdict.passed !== "boolean") {
 		throw new Error(`judge verdict missing boolean passed: ${text.slice(0, 120)}`);
 	}
-	// A missing or non-string reason is a judge quirk, not an infrastructure failure.
-	const reason = typeof verdict.reason === "string" && verdict.reason.trim().length > 0
-		? verdict.reason
-		: "judge gave no reason";
-	return { passed: verdict.passed, reason };
+	return {
+		passed: verdict.passed,
+		score: verdict.passed ? 1 : 0,
+		reason: judgeReason(verdict.reason),
+	};
+}
+
+function parseReferenceVerdict(text: string): JudgeVerdict {
+	const verdict = judgeJsonObject(text);
+	if (!isReferenceChoice(verdict.choice)) {
+		throw new Error(`judge verdict missing an A–E choice: ${text.slice(0, 120)}`);
+	}
+	const choice = verdict.choice;
+	return {
+		passed: choice !== REFERENCE_FAILING_CHOICE,
+		score: REFERENCE_CHOICE_SCORES[choice],
+		// The choice leads the reason so the rubric branch is visible in run.json.
+		reason: `${choice}: ${judgeReason(verdict.reason)}`,
+		choice,
+	};
 }
 
 function contentToString(content: unknown): string {
@@ -226,11 +434,37 @@ type JudgeAttempt =
 	| { kind: "transport"; message: string }
 	| { kind: "http"; status: number; ok: boolean; text: string };
 
+interface JudgeVerdict {
+	passed: boolean;
+	score: number;
+	reason: string;
+	/** Present only for the A–E reference rubric. */
+	choice?: ReferenceChoice;
+}
+
+/** One judge protocol: what is asked, and how the answer becomes a verdict. */
+interface JudgeProtocol {
+	system: string;
+	user: string;
+	parse: (text: string) => JudgeVerdict;
+}
+
+/**
+ * The decided choice, next to the raw exchange rather than inside it: the
+ * exchange file stays exactly what went over the wire, written before anything
+ * is parsed, and the verdict file says how it was read.
+ */
+function writeJudgeVerdictEvidence(sidecar: JudgeSidecar, verdict: JudgeVerdict): void {
+	writeTextArtifact(
+		join(sidecar.dir, `${sidecar.graderIndex}.verdict.json`),
+		`${JSON.stringify({ choice: verdict.choice, passed: verdict.passed, score: verdict.score }, null, "\t")}\n`,
+		{ mode: 0o600 },
+	);
+}
+
 async function gradeJudge(
-	spec: { rubric: string },
+	protocol: JudgeProtocol,
 	judge: TargetManifest["model"],
-	task: { input: string },
-	output: string,
 	sidecar: JudgeSidecar,
 	signal?: AbortSignal,
 ): Promise<{ result: GraderResult; metrics: JudgeMetrics }> {
@@ -242,8 +476,8 @@ async function gradeJudge(
 	const requestBody = {
 		model: judge.id,
 		messages: [
-			{ role: "system", content: JUDGE_SYSTEM },
-			{ role: "user", content: `Критерий: ${spec.rubric}\n\nОбращение: ${task.input}\n\nОтвет агента: ${output}` },
+			{ role: "system", content: protocol.system },
+			{ role: "user", content: protocol.user },
 		],
 		stream: false,
 		...judge.params,
@@ -308,9 +542,10 @@ async function gradeJudge(
 			tokens += usage.totalTokens;
 			costUsd += judgeCostUsd(judge.spec.cost, usage);
 		}
-		const verdict = parseVerdict(contentToString(body.choices?.[0]?.message?.content));
+		const verdict = protocol.parse(contentToString(body.choices?.[0]?.message?.content));
+		if (verdict.choice) writeJudgeVerdictEvidence(sidecar, verdict);
 		return {
-			result: { name: "", type: "judge", passed: verdict.passed, score: verdict.passed ? 1 : 0, reason: verdict.reason },
+			result: { name: "", type: "judge", passed: verdict.passed, score: verdict.score, reason: verdict.reason },
 			metrics: { calls, tokens, costUsd },
 		};
 	}
@@ -323,6 +558,8 @@ function graderCheckCode(type: GraderSpec["type"]): GraderCheckCode {
 		case "output_contains": return "output-contains";
 		case "output_matches": return "output-matches";
 		case "judge": return "semantic-rubric";
+		case "exact": return "reference-exact";
+		case "similarity": return "reference-similarity";
 	}
 }
 
@@ -366,13 +603,29 @@ export async function gradeRun(
 			result = gradeToolCalled(normalizedSpec, toolCalls);
 		} else if (normalizedSpec.type === "output_contains") {
 			result = gradeOutputContains(normalizedSpec, output ?? "");
+		} else if (graderNeedsExpected(normalizedSpec) && !hasReferenceAnswer(task)) {
+			// Checked before any judge call: a case with no reference answer costs
+			// no tokens and never passes on the strength of an empty comparison.
+			result = missingExpected(normalizedSpec.type);
+		} else if (normalizedSpec.type === "exact") {
+			result = gradeExact(normalizedSpec, task.expected, output ?? "");
+		} else if (normalizedSpec.type === "similarity") {
+			result = gradeSimilarity(normalizedSpec, task.expected, output ?? "");
 		} else if (normalizedSpec.type === "judge") {
 			if (!judge) throw new Error("judge grader without judge model config");
 			const judged = await gradeJudge(
-				normalizedSpec,
+				normalizedSpec.withReference
+					? {
+						system: JUDGE_REFERENCE_SYSTEM,
+						user: judgeReferencePrompt(normalizedSpec.rubric, task.input, task.expected ?? "", output ?? ""),
+						parse: parseReferenceVerdict,
+					}
+					: {
+						system: JUDGE_SYSTEM,
+						user: `Критерий: ${normalizedSpec.rubric}\n\nОбращение: ${task.input}\n\nОтвет агента: ${output ?? ""}`,
+						parse: parseVerdict,
+					},
 				judge,
-				task,
-				output ?? "",
 				{ dir: join(runDir, "judge"), graderIndex: index },
 				signal,
 			);
