@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import {
 	existsSync,
@@ -26,6 +26,7 @@ import {
 	createInteractiveTargetFeedbackChannel,
 	handleInteractiveTargetFeedbackRequest,
 	interactiveTargetIdentity,
+	interactiveTargetProcessIpcHost,
 	interactiveTargetProcessLaunch,
 	runInteractiveTargetProcess,
 	targetInteractiveBootstrapEnvironment,
@@ -788,6 +789,96 @@ describe("marking a Target reply", () => {
 			}),
 			tty: { stdinIsTTY: () => true, stdoutIsTTY: () => true },
 		});
+	});
+
+	it("writes a mark that arrives on a real IPC channel after the launch payload", async () => {
+		const targetDir = feedbackTarget();
+		const target = loadTarget(targetDir);
+		const scriptDir = mkdtempSync(join(tmpdir(), "ahde-ipc-child-"));
+		cleanupPaths.push(scriptDir);
+		const script = join(scriptDir, "child.mjs");
+		// A child that speaks only the wire shape: no AHDE code, so what this
+		// proves is that the contract survives Node's own IPC serialization and
+		// that the channel is still open once the launch payload has been read.
+		writeFileSync(script, `
+process.once("message", () => {
+	// Mirrors process-entry.ts: the channel alone must not keep the child
+	// alive, so something else (there, Pi's TUI) has to hold the loop open.
+	process.channel?.unref();
+	const alive = setTimeout(() => process.disconnect(), 30_000);
+	process.once("message", (answer) => {
+		clearTimeout(alive);
+		process.send({ answer });
+		process.disconnect();
+	});
+	process.send({
+		protocol: 1,
+		kind: "feedback-mark",
+		requestId: 1,
+		draft: {
+			verdict: "bad",
+			note: "over a real channel",
+			messages: [
+				{ role: "user", content: "вопрос" },
+				{ role: "assistant", content: "ответ" },
+			],
+		},
+	});
+});
+`);
+
+		const answers: unknown[] = [];
+		await new Promise<void>((resolvePromise, reject) => {
+			const child = spawn(process.execPath, [script], { stdio: ["ignore", "ignore", "inherit", "ipc"] });
+			child.on("message", (value: unknown) => {
+				const response = handleInteractiveTargetFeedbackRequest({
+					projectDir: targetDir,
+					target: { id: target.manifest.id, gitSha: target.gitSha },
+					value,
+					now: () => "2026-08-30T07:30:00.000Z",
+				});
+				if (response) child.send(response, () => undefined);
+				else answers.push(value);
+			});
+			child.once("error", reject);
+			child.once("spawn", () => child.send({ protocol: 1, kind: "launch" }));
+			child.once("exit", (code) => (code === 0 ? resolvePromise() : reject(new Error(`child exited ${code}`))));
+		});
+
+		expect(answers).toEqual([{
+			answer: {
+				protocol: 1,
+				kind: "feedback-result",
+				requestId: 1,
+				ok: true,
+				path: TARGET_FEEDBACK_PATH,
+				total: 1,
+			},
+		}]);
+		const stored = readTargetFeedback(targetDir).marks[0] as TargetFeedbackMark;
+		expect(stored.note).toBe("over a real channel");
+		expect(stored.at).toBe("2026-08-30T07:30:00.000Z");
+	});
+
+	it("adapts the child's own process, and reports no channel as disconnected", () => {
+		const connected = interactiveTargetProcessIpcHost({
+			connected: true,
+			send: (() => true) as unknown as NodeJS.Process["send"],
+			on: (() => undefined) as unknown as NodeJS.Process["on"],
+			off: (() => undefined) as unknown as NodeJS.Process["off"],
+		});
+		expect(connected.connected).toBe(true);
+		expect(connected.send({})).toBe(true);
+
+		// A Node process started without `stdio: [..., "ipc"]` has no `send`.
+		const orphan = interactiveTargetProcessIpcHost({
+			connected: false,
+			send: undefined,
+			on: (() => undefined) as unknown as NodeJS.Process["on"],
+			off: (() => undefined) as unknown as NodeJS.Process["off"],
+		});
+		expect(orphan.connected).toBe(false);
+		expect(orphan.send({})).toBe(false);
 	});
 
 	it("ignores anything on the channel that is not a mark, and refuses a malformed one", () => {

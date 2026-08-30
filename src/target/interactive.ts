@@ -191,6 +191,28 @@ export interface InteractiveTargetIpcHost {
 }
 
 /**
+ * @internal Adapt the child's own `process` to that seam. A process that was
+ * started without an IPC channel reports itself disconnected, so the extension
+ * refuses the mark instead of pretending it was stored.
+ */
+export function interactiveTargetProcessIpcHost(
+	child: Pick<NodeJS.Process, "connected" | "send" | "on" | "off">,
+): InteractiveTargetIpcHost {
+	return {
+		get connected() {
+			return child.connected === true && typeof child.send === "function";
+		},
+		send: (message) => (child.connected === true ? child.send?.(message) ?? false : false),
+		on: (event, listener) => {
+			child.on(event, listener);
+		},
+		off: (event, listener) => {
+			child.off(event, listener);
+		},
+	};
+}
+
+/**
  * @internal Child side: one bounded request/response over the already-open IPC
  * channel. A parent that has gone away fails the mark instead of falling back
  * to a local write the child is not allowed to make.
@@ -650,6 +672,10 @@ export async function runInteractiveTarget(
 	const workspace = materializeTargetWorkspaceSnapshot(target, tmpdir());
 	const launch = interactiveTargetProcessLaunch(target, workspace, options);
 	const entry = fileURLToPath(new URL("./process-entry.js", import.meta.url));
+	// Resolved once, by the parent, from the Target it actually selected: a mark
+	// can never redirect the write, and a checkout that moves mid-session cannot
+	// turn a mark into an uncaught exception here.
+	const projectDir = realpathSync(resolve(target.dir));
 	try {
 		await new Promise<void>((resolvePromise, reject) => {
 			const child = spawn(process.execPath, [entry], {
@@ -662,11 +688,14 @@ export async function runInteractiveTarget(
 			// authority over the Target checkout.
 			child.on("message", (value: unknown) => {
 				const response = handleInteractiveTargetFeedbackRequest({
-					projectDir: realpathSync(resolve(target.dir)),
+					projectDir,
 					target: { id: target.manifest.id, gitSha: target.gitSha },
 					value,
 				});
-				if (response && child.connected) child.send(response);
+				// The callback keeps a channel that closed between the mark and its
+				// answer from surfacing as an `error` event that would fail the
+				// whole session; the child times the mark out instead.
+				if (response && child.connected) child.send(response, () => undefined);
 			});
 			child.once("spawn", () => {
 				child.send(launch, (error) => {
