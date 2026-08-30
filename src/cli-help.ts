@@ -35,6 +35,7 @@ Inspect and run:
   ahde calibrate --target <dir>                measure run-to-run noise (A/A)
   ahde evidence [--port N]                     open the read-only trace explorer
   ahde list [--target <id>]                    list eval runs
+  ahde feedback list [--target <dir>]          👍/👎 marks collected in ahde target
 
 Inside Builder Pi:
 ${builderCommandLines()}
@@ -63,7 +64,24 @@ Open AHDE's private Builder session selector for this Target.`,
 	target: `Usage: ahde target [--target <dir>] [--message <text>]
 
 Talk to the built Target Pi in a disposable isolated runtime. Target defaults
-to the current directory. Requires a configured Target, credential, and TTY.`,
+to the current directory. Requires a configured Target, credential, and TTY.
+
+Mark the reply you just read with /good, /bad [note], alt+g, or alt+x. Each
+mark appends one dialogue to imports/feedback.jsonl through the host process;
+the Target child never writes outside its own throwaway workspace.`,
+	"feedback list": `Usage: ahde feedback list [--target <dir>]
+
+Count the 👍/👎 marks in imports/feedback.jsonl and show the most recent five
+by their first user turn. Full transcripts stay in the file.
+
+That file is an ordinary dataset inbox entry: the preview/recipe flow reads it
+as a chat export and a recipe with { "dialogue": { "column": "messages" } }
+compiles each mark into a dialogue case, with verdict and note kept as
+metadata columns for graders written later.`,
+	"feedback clear": `Usage: ahde feedback clear [--target <dir>]
+
+Move imports/feedback.jsonl aside to imports/feedback.<timestamp>.jsonl.
+Nothing is deleted, and the archive is still importable.`,
 	evidence: `Usage: ahde evidence [--port N]
 
 Serve the read-only Evidence Explorer on loopback. Port 0 chooses a free port.
@@ -140,7 +158,7 @@ List corpus metadata. Sealed content is never printed.`,
 export function cliHelp(argv: readonly string[]): string {
 	const command = argv[0];
 	if (!command || command === "--help" || command === "-h" || command === "help") return CORE;
-	const nested = command === "corpus"
+	const nested = command === "corpus" || command === "feedback"
 		? argv.find((token, index) => index > 0 && !token.startsWith("-"))
 		: undefined;
 	return COMMAND_HELP[nested ? `${command} ${nested}` : command] ?? CORE;

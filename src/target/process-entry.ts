@@ -1,7 +1,9 @@
 import { loadTarget } from "../manifest.js";
 import {
 	assertInteractiveTargetIdentity,
+	createInteractiveTargetFeedbackChannel,
 	runInteractiveTargetProcess,
+	type InteractiveTargetIpcHost,
 	type InteractiveTargetProcessLaunch,
 } from "./interactive.js";
 
@@ -66,9 +68,28 @@ function receiveLaunch(): Promise<InteractiveTargetProcessLaunch> {
 	});
 }
 
+/**
+ * The launch payload arrives once and the channel then carries only 👍/👎
+ * marks in the other direction. It is unref'd so an idle channel never keeps
+ * this process alive on its own, and disconnecting the parent simply makes
+ * every later mark fail closed.
+ */
+const ipcHost: InteractiveTargetIpcHost = {
+	get connected() {
+		return process.connected === true;
+	},
+	send: (message) => process.send?.(message) ?? false,
+	on: (event, listener) => {
+		process.on(event, listener);
+	},
+	off: (event, listener) => {
+		process.off(event, listener);
+	},
+};
+
 assertLoaderSafeBootstrapEnvironment();
 const launch = await receiveLaunch();
-process.disconnect?.();
+process.channel?.unref();
 
 const target = loadTarget(launch.targetDir);
 assertInteractiveTargetIdentity(launch.targetIdentity, target);
@@ -76,4 +97,5 @@ await runInteractiveTargetProcess(target, {
 	...(launch.initialMessage !== undefined ? { initialMessage: launch.initialMessage } : {}),
 	environment: { ...launch.environment },
 	workspaceSnapshot: launch.workspaceSnapshot,
+	feedbackChannel: createInteractiveTargetFeedbackChannel(ipcHost),
 });
