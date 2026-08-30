@@ -603,6 +603,105 @@ ${options.judgeParams ?? ""}`,
 	}, 180_000);
 });
 
+describe("dialogue cases", () => {
+	const DIALOGUE_TASKS = [
+		JSON.stringify({
+			id: "dialog_001",
+			input: "И для золотых клиентов?",
+			expected: "Для золотых клиентов — 60 дней.",
+			messages: [
+				{ role: "user", content: "Сколько длится возврат?" },
+				{ role: "assistant", content: "Тридцать дней." },
+				{ role: "user", content: "И для золотых клиентов?" },
+			],
+			graders: [
+				{ type: "exact" },
+				// Only in the seeded assistant turn: grading the reply alone must fail it.
+				{ type: "output_contains", text: "Тридцать" },
+			],
+		}),
+		JSON.stringify({
+			id: "single_001",
+			input: "Сколько длится возврат?",
+			graders: [{ type: "output_contains", text: "дней" }],
+		}),
+	].join("\n");
+
+	it("seeds every turn but the last and grades only the reply that follows", async () => {
+		const seen: { role: string; text: string }[][] = [];
+		const dialogueMock = await startMockModel([
+			{
+				resolve: (body) => {
+					seen.push(body.messages);
+					return { text: body.lastUser.includes("золотых") ? "Для золотых клиентов — 60 дней." : "Тридцать дней." };
+				},
+				steps: [],
+			},
+		]);
+		const dir = makeTargetFixture(baseFixtureFiles({
+			"manifest.yaml": `id: dialogue-target
+model:
+  provider: qwen-mock
+  id: mock
+  api: openai-completions
+  baseUrl: ${dialogueMock.url}
+  apiKeyEnv: MOCK_MODEL_KEY
+  thinkingLevel: "off"
+  timeoutMs: 60000
+instructions:
+  agentsMd: AGENTS.md
+skills: []
+evalSuite:
+  id: dialogue-suite
+  dataset: evals/development.jsonl
+  graders: evals/graders.yaml
+`,
+			"evals/development.jsonl": `${DIALOGUE_TASKS}\n`,
+		}));
+		const dialogueRuns = join(dir, "..", `dialogue-runs-${Date.now()}`);
+		try {
+			const result = await runSuite(loadTarget(dir), { runsRoot: dialogueRuns, label: "solo", repetitions: 1 });
+			const runs = result.runIds.map((id) => JSON.parse(readFileSync(join(dialogueRuns, id, "run.json"), "utf8")));
+			const byTask = Object.fromEntries(runs.map((run) => [run.taskId, run]));
+
+			// The model actually saw the conversation, not just the last question.
+			const dialogueRequest = seen.find((messages) =>
+				messages.some((message) => message.text.includes("золотых")));
+			const conversation = (dialogueRequest ?? []).filter((message) => message.role !== "system");
+			expect(conversation.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
+			expect(conversation[0]?.text).toContain("Сколько длится возврат?");
+			expect(conversation[1]?.text).toBe("Тридцать дней.");
+			expect(conversation[2]?.text).toContain("И для золотых клиентов?");
+
+			// A single-message case still sends exactly one user turn.
+			const singleRequest = seen.find((messages) => messages === dialogueRequest ? false :
+				messages.some((message) => message.text.includes("Сколько длится возврат?")));
+			expect((singleRequest ?? []).filter((message) => message.role !== "system")).toHaveLength(1);
+
+			// Graded on the reply alone: the seeded turn's text is not the output.
+			expect(byTask.dialog_001.evalResults.graders.map((grader: { type: string; passed: boolean }) =>
+				[grader.type, grader.passed])).toEqual([["exact", true], ["output_contains", false]]);
+			expect(byTask.dialog_001.evalResults.graders[0].checkCode).toBe("reference-exact");
+
+			// The seeded turns are counted in metrics and present in the trace.
+			expect(byTask.dialog_001.metrics.seededTurns).toBe(2);
+			expect(Object.keys(byTask.single_001.metrics)).not.toContain("seededTurns");
+			const trace = openTrace(
+				join(dialogueRuns, byTask.dialog_001.runId),
+				"session.jsonl",
+				byTask.dialog_001.trace.sha256,
+			);
+			expect(trace.map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
+			expect(trace[1]?.text).toBe("Тридцать дней.");
+			expect(trace[3]?.text).toBe("Для золотых клиентов — 60 дней.");
+		} finally {
+			cleanup(dir);
+			cleanup(dialogueRuns);
+			await dialogueMock.close();
+		}
+	}, 180_000);
+});
+
 describe("target workspace isolation", () => {
 	it("uses one immutable source snapshot even if the live Target changes between tasks", async () => {
 		let liveTargetDir = "";

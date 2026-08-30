@@ -129,6 +129,12 @@ export const RunMetricsSchema = z.strictObject({
 	toolErrors: z.number().int().nonnegative(),
 	recoveryAttempts: z.number().int().nonnegative(),
 	judge: JudgeMetricsSchema.nullable().optional(),
+	/**
+	 * Dialogue turns seeded into the session before the graded prompt. Absent on
+	 * every single-message case, so their run.json stays byte-for-byte what it
+	 * was before dialogue cases existed.
+	 */
+	seededTurns: z.number().int().nonnegative().optional(),
 });
 export type RunMetrics = z.infer<typeof RunMetricsSchema>;
 
