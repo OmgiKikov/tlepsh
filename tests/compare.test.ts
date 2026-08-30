@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterAll, describe, expect, it } from "vitest";
-import { compareEvalRuns, renderCompareMarkdown } from "../src/compare.js";
+import { compareEvalRuns, renderCompareMarkdown, renderGateLine } from "../src/compare.js";
 import type { EvalRunRecord } from "../src/eval.js";
 import { AHDE_EVALUATOR_ID, hashValue, type ProvenanceAxes, type RunRecord } from "../src/provenance.js";
 
@@ -276,6 +276,104 @@ describe("compare table", () => {
 		expect(result.summary.delta).toBe(0.5);
 		expect(result.summary.confidence95.low).toBeLessThanOrEqual(result.summary.delta);
 		expect(result.summary.confidence95.high).toBeGreaterThanOrEqual(result.summary.delta);
+	});
+
+	it("pairs mean grader scores and reports cost and latency beside the verdict", () => {
+		// Both arms fail every threshold, so the pass rate cannot move; the
+		// similarity scores climb 0.30 → 0.85 and the gate sees the improvement.
+		const scores: Record<string, number> = { erun_score_a: 0.3, erun_score_b: 0.85 };
+		const costs: Record<string, number> = { erun_score_a: 0.01, erun_score_b: 0.014 };
+		const latencies: Record<string, number> = { erun_score_a: 2_000, erun_score_b: 1_800 };
+		for (const evalRunId of ["erun_score_a", "erun_score_b"] as const) {
+			const runIds: string[] = [];
+			for (let index = 1; index <= 16; index += 1) {
+				const taskId = `task_${String(index).padStart(3, "0")}`;
+				const runId = `run_${evalRunId}_${taskId}`;
+				runIds.push(runId);
+				mkdirSync(join(runsRoot, runId), { recursive: true });
+				writeFileSync(join(runsRoot, runId, "run.json"), JSON.stringify({
+					schemaVersion: 1,
+					runId,
+					taskId,
+					repetitionIndex: 0,
+					label: evalRunId === "erun_score_b" ? "candidate" : "baseline",
+					status: "completed",
+					error: null,
+					startedAt: "2026-08-25T10:00:00Z",
+					finishedAt: "2026-08-25T10:01:00Z",
+					target: { id: "ombudsman", gitSha: (evalRunId === "erun_score_b" ? "b" : "a").repeat(40) },
+					runtime: { piVersion: "0.84.3", piSha: "a".repeat(40), ahdeVersion: "0.1.0", ahdeCodeHash: hash("a") },
+					model: {
+						provider: "qwen-internal",
+						id: "qwen3.5-27b",
+						api: "openai-completions",
+						baseUrl: "http://mock/v1",
+						apiKeyEnv: "TEST_KEY",
+						thinkingLevel: "off",
+						params: {},
+						spec: {},
+					},
+					execution: axes().execution,
+					eval: { suiteId: "s", suiteHash: hash("b"), dataset: "development", datasetHash: hash("d") },
+					trace: { path: "session.jsonl", sessionId: null, sha256: null },
+					metrics: {
+						tokens: { input: 100, output: 100, cacheRead: 0, cacheWrite: 0, total: 200 },
+						costUsd: costs[evalRunId]!,
+						latencyMs: latencies[evalRunId]!,
+						toolCalls: 0,
+						toolErrors: 0,
+						recoveryAttempts: 0,
+					},
+					evalResults: {
+						graders: [{
+							name: "similarity",
+							type: "similarity",
+							passed: false,
+							score: scores[evalRunId]!,
+							reason: `token-f1 = ${scores[evalRunId]}, below threshold 0.9`,
+						}],
+						outcome: "fail",
+					},
+					parent: {
+						evalRunId,
+						candidateOf: evalRunId === "erun_score_b" ? "a".repeat(40) : null,
+					},
+				}));
+			}
+			makeEvalRun(runsRoot, evalRunId, axes(), runIds, {
+				label: evalRunId === "erun_score_b" ? "candidate" : "baseline",
+				gitSha: (evalRunId === "erun_score_b" ? "b" : "a").repeat(40),
+				baselineEvalRunId: "erun_score_a",
+			});
+		}
+		const result = compareEvalRuns(runsRoot, "erun_score_a", "erun_score_b", { mode: "candidate" });
+		expect(result.error).toBeNull();
+		expect(result.summary.delta).toBe(0);
+		expect(result.summary.baselinePassRate).toBe(0);
+		expect(result.summary.baselineScore).toBeCloseTo(0.3, 12);
+		expect(result.summary.candidateScore).toBeCloseTo(0.85, 12);
+		expect(result.summary.scoreDelta).toBeCloseTo(0.55, 12);
+		expect(result.gate.verdict).toBe("improved");
+		expect(result.resources).toEqual({
+			baseline: { runs: 16, costUsd: 0.16, meanLatencyMs: 2_000, meanTokens: 200 },
+			candidate: { runs: 16, costUsd: 0.224, meanLatencyMs: 1_800, meanTokens: 200 },
+			costRatio: 1.4,
+			latencyRatio: 0.9,
+			tokenRatio: 1,
+		});
+
+		const line = renderGateLine(result);
+		expect(line).toContain("development verdict: improved");
+		expect(line).toContain("+55.0pp");
+		expect(line).toContain("· cost ×1.4 · latency ×0.9");
+		expect(line.length).toBeLessThanOrEqual(110);
+
+		const markdown = renderCompareMarkdown(result);
+		expect(markdown).toContain("| task | baseline | candidate | score | delta |");
+		expect(markdown).toContain("| task_001 | 0% (0/1) | 0% (0/1) | 30% → 85% | +55pp |");
+		expect(markdown).toContain("- mean score: 30.0% → 85.0% (+55.0pp) · pass rate 0.0pp");
+		expect(markdown).toContain("- resources: cost ×1.4 · latency ×0.9 · tokens ×1.0");
+		expect(markdown).toContain("$0.1600");
 	});
 
 	it("rejects replayed run IDs and post-index outcome swaps", () => {

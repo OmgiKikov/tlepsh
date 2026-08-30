@@ -61,6 +61,7 @@ import {
 	type WorkbenchConfirmation,
 	type WorkbenchDecisionResult,
 	type WorkbenchFailureModeProjection,
+	type WorkbenchGateProjection,
 	type WorkbenchImprovementBriefProjection,
 	type WorkbenchReviewDetail,
 	type WorkbenchStage,
@@ -860,6 +861,49 @@ describe("renderReview", () => {
 		expect(lines[4]).toBe("<dim>Sealed holdout</dim> <success>gate passed</success>");
 		expect(lines[5]).toBe("<dim>Review</dim> <success>promote</success> <dim>—</dim> Clear improvement on the basket");
 		expect(lines).toHaveLength(6);
+	});
+
+	it("renders the score verdict with its cost and latency fragment inside the 110-column budget", () => {
+		const gate = (surface: "development" | "sealed"): WorkbenchGateProjection => ({
+			verdict: surface === "sealed" ? "pass" : "improved",
+			surface,
+			delta: 0.2,
+			baselineScore: 0.62,
+			candidateScore: 0.85,
+			scoreDelta: 0.23,
+			confidence95: { low: 0.05, high: 0.35 },
+			tasks: 30,
+			repetitions: 3,
+			excludedTasks: 0,
+			flags: { regressedTasks: 1, improvedTasks: 3, collapsedTasks: 0 },
+			resources: { costRatio: 1.4, latencyRatio: 0.9, tokenRatio: 1.125 },
+			reasons: ["95% CI +5.0pp … +35.0pp lies entirely above zero on 30 tasks × 3 repetitions"],
+		});
+		const candidate = makeCandidateReview({
+			development: {
+				baselineEvalRunId: "eval-base",
+				candidateEvalRunId: "eval-cand",
+				comparison: makeCandidate().development!.comparison,
+				gate: gate("development"),
+			},
+			sealedHoldout: { executed: true, gatePassed: true, gate: gate("sealed") },
+		});
+		const lines = renderReview(candidate, plainPaint);
+		expect(lines[2]).toBe("Development baseline 60% → candidate 80% (+20 pts) on 10 tasks · score 62% → 85%");
+		expect(lines[4]).toBe("  Verdict improved · +23 pts (95% CI +5 pts … +35 pts) · 30 × 3 · cost ×1.4 · latency ×0.9");
+		expect(lines[5]).toBe("Sealed holdout pass · +23 pts (95% CI +5 pts … +35 pts) · 30 × 3 · cost ×1.4 · latency ×0.9");
+		for (const line of lines) expect(line.length).toBeLessThanOrEqual(110);
+		// Nothing about a sealed task ever reaches the screen.
+		expect(lines.join("\n")).not.toContain("task-");
+		// An unmeasured pair simply drops the fragment.
+		const unmeasured = renderReview(makeCandidateReview({
+			sealedHoldout: {
+				executed: true,
+				gatePassed: true,
+				gate: { ...gate("sealed"), resources: { costRatio: null, latencyRatio: null, tokenRatio: null } },
+			},
+		}), plainPaint);
+		expect(unmeasured[4]).toBe("Sealed holdout pass · +23 pts (95% CI +5 pts … +35 pts) · 30 × 3");
 	});
 
 	it("renders promotion, adoption, and continuation lines, or the /adopt hint", () => {
