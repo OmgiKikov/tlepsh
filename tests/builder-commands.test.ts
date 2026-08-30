@@ -343,6 +343,7 @@ function defaultDecision(input: WorkbenchDecisionInput): WorkbenchDecisionResult
 				candidate: candidateSummary({ status: "promoted", promotion: { tag: `v${input.version}`, reason: input.reason, at } }),
 				tag: `v${input.version}`,
 				candidateSha: SHA_B,
+				guards: { draftId: null, cases: 0, taskIds: [], warning: null },
 			}, viewAt("candidate-adoption"));
 		case "reject-candidate":
 			return decision("reject-candidate", candidateSummary({ status: "rejected", rejection: { reason: input.reason, at } }), viewAt("complete"));
@@ -376,6 +377,7 @@ function defaultDecision(input: WorkbenchDecisionInput): WorkbenchDecisionResult
 				tag: `v${input.version}`,
 				adoption: { branch: "main", fromSha: SHA_A, toSha: SHA_B },
 				continuation: { receiptId: "receipt-next", nextStage: "ready-to-evaluate" },
+				guards: { draftId: null, cases: 0, taskIds: [], warning: null },
 			}, viewAt("ready-to-evaluate"));
 		case "start-testing":
 			return decision("start-testing", {
@@ -1523,6 +1525,8 @@ describe("Builder Pi slash commands", () => {
 			view: async () => viewAt("candidate-verification"),
 			decide: async () => decision("run-current", {
 				resolvedAs: "verify-candidate",
+				outcome: "verified" as const,
+				screen: null,
 				candidate: candidateSummary(),
 				development: { verdict: "improved", delta: 2 / 3, confidence95: { low: 0.1, high: 0.9 } },
 				sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" },

@@ -32,6 +32,9 @@ Start:
 Inspect and run:
   ahde validate --target <dir>                 local readiness check; no model call
   ahde run --target <dir> [options]            run development evidence
+  ahde check --target <dir> --candidate <id>   cheap screen: the failed cases, once
+  ahde improve --target <dir> --until 90% --max-cycles 5
+                                               run improvement cycles inside the gates
   ahde calibrate --target <dir>                measure run-to-run noise (A/A)
   ahde evidence [--port N]                     open the read-only trace explorer
   ahde list [--target <id>]                    list eval runs
@@ -48,7 +51,7 @@ ${builderCommandLines()}
 
 Use \`ahde <command> --help\` for focused help. Advanced automation commands:
   corpus  failures  compare  diagnose  regrade  report  label  judge-agreement
-  candidate  calibrate  review  promote  reject
+  candidate  calibrate  check  improve  review  promote  reject
 
 Environment:
   AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)
@@ -181,6 +184,38 @@ gate selects sealed evidence without exposing the holdout identity to the model.
 Run the current revision against itself (A/A) to measure run-to-run noise:
 how large a difference has to be before it means anything. The calibration
 record is ordinary candidate evidence in A/A mode and is never promotable.`,
+	check: `Usage: ahde check --target <dir> --candidate <id> [--project <id>] [--jobs N]
+
+The cheap check before the expensive one. Runs the candidate revision on ONLY
+the cases its source eval recorded as failing, once, candidate arm only, and
+compares with those cases' recorded outcomes.
+
+A verification costs (development + sealed cases) x repetitions x 2 arms; this
+costs one run per failed case. \`promising\` means at least one previously
+failing case now passes; \`flat\` means none does.
+
+It is a screen, never evidence. Its eval run carries the \`solo\` label, which is
+never reused as a baseline and never stands in for a candidate arm, it is
+recorded in runs/screens/, it enters no comparison gate, and a promotion that
+cites one is refused. Exit 0 = promising, 1 = flat.`,
+	improve: `Usage: ahde improve --target <dir> --until <pass-rate> --max-cycles <n> \\
+                    [--jobs N] [--project <id>] [--repetitions N] [--corpus <development-id>]
+
+Run improvement cycles inside the gates. One cycle is: run -> diagnose -> take
+the top proposable failure mode -> apply the next unapplied Builder proposal
+bound to that evidence on \`candidate/auto-<n>\` -> cheap check -> full
+development verification when the screen is promising.
+
+--until takes a pass rate written either way: \`90%\` or \`0.9\`.
+
+The loop stops and hands back when the target pass rate is reached, the cycle
+budget is spent, a development verdict is not \`improved\`, the cheap check is
+flat twice in a row, infrastructure errors go over the budget, or a verified
+candidate is ready — because the sealed guardrail and the promotion are always
+yours. It never promotes, adopts, publishes a corpus or approves a Spec.
+
+Authoring stays with Builder Pi: author the proposals in \`ahde\` first, then let
+the loop screen and verify them. Exit 0 = a verified candidate is waiting.`,
 	review: `Usage: ahde review --candidate <id> --recommend promote|reject --reason <text> [--actor <id>]
 
 Record a human review over the exact evaluated Candidate evidence.`,

@@ -11,6 +11,7 @@ import {
 import {
 	comparisonGateEvidence,
 } from "./candidate-experiment.js";
+import { screenEvalRunIds } from "./cheap-check.js";
 import { corpusDatasetLabel } from "./corpus-target.js";
 import { compareEvalRuns, type CompareResult } from "../compare.js";
 import { promotableVerdicts, withinInfrastructureBudget, type GateSurface } from "../domain/comparison-gate.js";
@@ -470,7 +471,38 @@ function verifyAppliedBuilderOrigin(record: CandidateRecord, runsRootInput: stri
 }
 
 /** Re-read referenced eval/run artifacts before any promotion side effect. */
+/**
+ * A cheap-check screen is a one-repetition, candidate-only run of the cases
+ * that already failed. It exists to save money, never to prove anything, so it
+ * can never reach a promotion — not as an arm, not as a source eval.
+ */
+function assertNoScreenEvidence(record: CandidateRecord, runsRoot: string): void {
+	const screens = screenEvalRunIds(runsRoot);
+	if (screens.size === 0) return;
+	const cited = new Set<string>();
+	const evaluated = record.events.find((event) => event.type === "evaluated");
+	if (evaluated?.type === "evaluated") {
+		const { development, sealedHoldout } = evaluated.evaluation;
+		cited.add(development.baseline.evalRunId);
+		cited.add(development.candidate.evalRunId);
+		if (sealedHoldout) {
+			cited.add(sealedHoldout.baseline.evalRunId);
+			cited.add(sealedHoldout.candidate.evalRunId);
+		}
+	}
+	if (record.origin.kind === "applied-builder" && record.origin.source) {
+		cited.add(record.origin.source.evalRunId);
+	}
+	const offending = [...cited].filter((evalRunId) => screens.has(evalRunId)).sort();
+	if (offending.length > 0) {
+		throw new Error(
+			`promotion refused: ${offending.join(", ")} is a cheap-check screen, which is never promotion evidence`,
+		);
+	}
+}
+
 function verifyPromotionEvidence(record: CandidateRecord, runsRoot: string): void {
+	assertNoScreenEvidence(record, runsRoot);
 	const sourceEval = verifyAppliedBuilderOrigin(record, runsRoot);
 	const evaluated = record.events.find((event) => event.type === "evaluated");
 	if (!evaluated || evaluated.type !== "evaluated") throw new Error("candidate has no evaluated evidence");

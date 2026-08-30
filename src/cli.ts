@@ -30,6 +30,16 @@ import {
 } from "./regrade.js";
 import { compileFailureBundle } from "./bundle.js";
 import { runCandidateExperiment } from "./application/candidate-experiment.js";
+import {
+	renderCheapCheckLine,
+	runCheapCheckForCandidate,
+} from "./application/cheap-check.js";
+import {
+	renderImprovementLoopTable,
+	runImprovementLoop,
+	type ImprovementProposalAuthor,
+} from "./application/improvement-loop.js";
+
 import { runAppliedBuilderCandidate } from "./application/builder-candidate.js";
 import { diagnoseEvalRun } from "./diagnosis.js";
 import { compileImprovementBrief } from "./application/improvement-brief.js";
@@ -49,7 +59,11 @@ import {
 	inspectDatasetFile,
 	type DatasetHoldoutSpec,
 } from "./application/dataset-ingest.js";
-import { loadBuilderProposalRun } from "./application/builder-proposal.js";
+import {
+	listBuilderProposalAdmissions,
+	loadBuilderApplyReceipt,
+	loadBuilderProposalRun,
+} from "./application/builder-proposal.js";
 import { readTryToolInput, tryTool } from "./application/tool-workshop.js";
 import {
 	resolveDevelopmentTargetForEval,
@@ -79,6 +93,7 @@ import type { RunEventListener } from "./run-events.js";
 import {
 	CliInvocationError,
 	parseCliInvocation,
+	parsePassRateFlag,
 } from "./cli-invocation.js";
 import { cliHelp } from "./cli-help.js";
 
@@ -1001,6 +1016,68 @@ async function main(): Promise<void> {
 			);
 			break;
 		}
+		case "check": {
+			const targetDir = resolve(requireArg("target"));
+			const candidateId = requireArg("candidate");
+			const screen = await runCheapCheckForCandidate({
+				repositoryDir: targetDir,
+				runsRoot: runsRoot(),
+				stateRoot: stateRoot(),
+				candidateId,
+				onRunEvent: cliRunProgress(),
+				...(arg("jobs") ? { jobs: Number(arg("jobs")) } : {}),
+			});
+			console.log(renderCheapCheckLine(screen));
+			for (const row of screen.rows) {
+				console.log(`  ${row.taskId}  ${row.screenOutcome.padEnd(5)} ${row.classification}`);
+			}
+			console.log(`screen eval run: ${screen.screenEvalRunId} (a screen — never a baseline, never evidence)`);
+			console.log(`screen record: ${screen.screenRecordPath}`);
+			if (screen.verdict === "flat") {
+				console.log(
+					"next: nothing improved. Author another change, or `ahde candidate --builder-run <id>` to verify anyway.",
+				);
+				process.exitCode = 1;
+			} else {
+				console.log(`next: ahde candidate --target ${targetDir} --builder-run <id> to verify it for real`);
+			}
+			break;
+		}
+		case "improve": {
+			const targetDir = resolve(requireArg("target"));
+			const until = parsePassRateFlag(requireArg("until"));
+			if (until === null) throw new Error("--until must be a pass rate such as 90% or 0.9");
+			const maxCycles = Number(requireArg("max-cycles"));
+			const projectId = arg("project") ?? loadTarget(targetDir).manifest.id;
+			const corpusId = arg("corpus");
+			const repetitions = arg("repetitions") ? Number(arg("repetitions")) : DEFAULT_REPETITIONS;
+			const approvedSpecId = soleApprovedSpecId(projectId);
+			const result = await runImprovementLoop({
+				repositoryDir: targetDir,
+				runsRoot: runsRoot(),
+				stateRoot: stateRoot(),
+				projectId,
+				approvedSpecId,
+				...(corpusId ? { developmentCorpus: { stateRoot: stateRoot(), projectId, corpusId } } : {}),
+				until,
+				maxCycles,
+				repetitions,
+				...(arg("jobs") ? { jobs: Number(arg("jobs")) } : {}),
+				author: recordedProposalAuthor(projectId),
+				onCycle: (line) => process.stderr.write(`${line}\n`),
+				onRunEvent: cliRunProgress(),
+			});
+			console.log(renderImprovementLoopTable(result));
+			if (result.candidateId) {
+				console.log(
+					`\nnext: ahde review --candidate ${result.candidateId} --recommend promote|reject --reason <text>`,
+				);
+			}
+			// A loop that stopped without a verified candidate has nothing to ship;
+			// that is a finding, not a crash.
+			if (!result.candidateId) process.exitCode = 1;
+			break;
+		}
 		case "calibrate": {
 			const targetDir = resolve(requireArg("target"));
 			const corpusId = arg("corpus");
@@ -1077,6 +1154,61 @@ async function main(): Promise<void> {
 			console.log(USAGE);
 			process.exit(1);
 	}
+}
+
+/**
+ * The one approved Spec this project's loop runs under. `ahde improve` is a
+ * script, so it refuses to guess between several.
+ */
+function soleApprovedSpecId(projectId: string): string {
+	const specs = listSpecSnapshots(stateRoot(), projectId)
+		.filter((snapshot) => snapshot.status === "approved");
+	if (specs.length === 1) return specs[0]!.id;
+	if (specs.length === 0) throw new Error(`project ${projectId} has no approved Spec; approve one in \`ahde\` first`);
+	throw new Error(
+		`project ${projectId} has ${specs.length} approved Specs; run the loop from \`ahde\` where one is selected`,
+	);
+}
+
+/**
+ * The CLI loop's proposal source: the next Builder proposal already recorded
+ * against this cycle's exact evidence and not yet applied or discarded.
+ *
+ * A host does not author harness text. Authoring stays with Builder Pi; the
+ * loop applies, screens and verifies what the Builder wrote. Wiring a headless
+ * Builder into this seam is what turns `ahde improve` into a hands-free loop.
+ */
+function recordedProposalAuthor(projectId: string): ImprovementProposalAuthor {
+	const used = new Set<string>();
+	return (request) => {
+		const admissions = listBuilderProposalAdmissions(stateRoot(), projectId);
+		for (const admission of admissions) {
+			if (used.has(admission.runId)) continue;
+			let record;
+			try {
+				record = loadBuilderProposalRun(runsRoot(), admission.runId);
+			} catch {
+				continue;
+			}
+			if (record.result.status !== "completed" || record.result.proposal?.decision !== "propose") continue;
+			if (record.request.baseTargetSha !== request.baseTargetSha) continue;
+			if (record.request.source?.evalRunId !== request.evalRunId) continue;
+			try {
+				loadBuilderApplyReceipt(runsRoot(), admission.runId);
+				continue; // already applied
+			} catch {
+				// not applied yet — this is the one
+			}
+			used.add(admission.runId);
+			return { kind: "recorded", builderRunId: admission.runId };
+		}
+		return {
+			kind: "no-change",
+			reason:
+				"no unapplied Builder proposal is bound to this evidence. Author one in `ahde` (say \u201cfix it\u201d) " +
+				"before asking the loop to screen and verify it.",
+		};
+	};
 }
 
 function cliFailure(error: unknown): { message: string; next?: string } {

@@ -34,6 +34,10 @@ import type { ImprovementBrief } from "../application/improvement-brief.js";
 import type { DiagnosisRecord } from "../diagnosis.js";
 import type { CandidateStatus, ComparisonSummaryEvidence } from "../domain/candidate.js";
 import type { EvalRunSummary } from "../eval.js";
+import type {
+	ImprovementLoopCycle,
+	ImprovementLoopStopReason,
+} from "../application/improvement-loop.js";
 import type { CycleContinuationReceipt } from "./cycle-continuation.js";
 import type { WorkbenchGateClass, WorkbenchRunEstimate } from "./transition-policy.js";
 
@@ -524,6 +528,12 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		kind: z.literal("verify-candidate"),
 		builderRunId: ArtifactIdSchema.optional(),
 		repetitions: z.number().int().min(1).max(10),
+		/**
+		 * Spend the full verification even when the cheap check found nothing.
+		 * The screen is a screen: it can be wrong, and an operator who has read
+		 * its numbers may still want the matched measurement.
+		 */
+		force: z.boolean().optional(),
 		reason: NonBlankSchema.max(4_000),
 	}),
 	z.strictObject({
@@ -569,6 +579,23 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		kind: z.literal("ship"),
 		candidateId: ArtifactIdSchema.optional(),
 		version: z.string().regex(/^[0-9]+\.[0-9]+\.[0-9]+$/).max(50).optional(),
+		reason: NonBlankSchema.max(4_000),
+	}),
+	/**
+	 * The autoloop: run -> diagnose -> propose -> apply -> cheap check -> verify,
+	 * up to `maxCycles` times or until `until` is reached. Routine measurement
+	 * under the same cost guard as every other run, with the estimate covering
+	 * the whole planned loop. It never promotes, adopts, publishes a corpus or
+	 * approves a Spec; those stay with the human.
+	 */
+	z.strictObject({
+		kind: z.literal("improve"),
+		/** Target development pass rate, 0..1. */
+		until: z.number().min(0).max(1),
+		maxCycles: z.number().int().min(1).max(10),
+		repetitions: z.number().int().min(1).max(10),
+		jobs: z.number().int().min(1).max(64).optional(),
+		developmentCorpusId: ArtifactIdSchema.optional(),
 		reason: NonBlankSchema.max(4_000),
 	}),
 ]);
@@ -661,15 +688,46 @@ export interface WorkbenchRunEvalResult {
 	evidence: WorkbenchEvidenceLinkProjection;
 }
 
-export interface WorkbenchVerifyCandidateResult {
-	candidate: WorkbenchCandidateSummary;
-	development: { verdict: GateVerdict; delta: number; confidence95: { low: number; high: number } };
-	sealedHoldout: { executed: boolean; gatePassed: boolean; verdict: GateVerdict | null };
+/**
+ * What the cheap check found before the expensive measurement started. It is a
+ * screen: one repetition, candidate arm only, over the cases that already
+ * failed. It never enters a gate and never becomes promotion evidence.
+ */
+export interface WorkbenchCheapCheckProjection {
+	verdict: "promising" | "flat";
+	tasks: number;
+	improved: number;
+	unchanged: number;
+	regressed: number;
+	inconclusive: number;
+	/** False when the screen's own infrastructure errors blew the budget. */
+	withinErrorBudget: boolean;
+	screenEvalRunId: string;
+	sourceEvalRunId: string;
 }
+
+export type WorkbenchVerifyCandidateResult =
+	| {
+		outcome: "verified";
+		candidate: WorkbenchCandidateSummary;
+		development: { verdict: GateVerdict; delta: number; confidence95: { low: number; high: number } };
+		sealedHoldout: { executed: boolean; gatePassed: boolean; verdict: GateVerdict | null };
+		/** The screen that let this verification start, when one ran. */
+		screen: WorkbenchCheapCheckProjection | null;
+	}
+	| {
+		/** The cheap check found nothing and no `force` was given: nothing was spent. */
+		outcome: "stopped-by-screen";
+		builderRunId: string;
+		candidateSha: string;
+		screen: WorkbenchCheapCheckProjection;
+		/** What the full verification would have cost. */
+		spared: { executions: number };
+	};
 
 /** One fine-grained decision a composite performed, in the order it ran. */
 export interface WorkbenchCompositeStep {
-	kind: Exclude<WorkbenchDecisionInput["kind"], "run-current" | "start-testing" | "ship">;
+	kind: Exclude<WorkbenchDecisionInput["kind"], "run-current" | "start-testing" | "ship" | "improve">;
 	message: string;
 }
 
@@ -683,6 +741,18 @@ export interface WorkbenchStartTestingResult {
 	pending: string | null;
 }
 
+/**
+ * The cases a promotion pinned as regression guards, as a draft the operator
+ * publishes like any other. Building them never blocks or delays the
+ * promotion: a failure degrades to `warning`.
+ */
+export interface WorkbenchRegressionGuardsProjection {
+	draftId: string | null;
+	cases: number;
+	taskIds: string[];
+	warning: string | null;
+}
+
 /** Review · promote · adopt · continue, as far as the candidate allows. */
 export interface WorkbenchShipResult {
 	steps: WorkbenchCompositeStep[];
@@ -690,6 +760,19 @@ export interface WorkbenchShipResult {
 	tag: string | null;
 	adoption: { branch: string; fromSha: string; toSha: string } | null;
 	continuation: { receiptId: string; nextStage: WorkbenchStage } | null;
+	/** Present exactly when this composite performed the promotion. */
+	guards: WorkbenchRegressionGuardsProjection | null;
+}
+
+/** What `ahde improve` did, cycle by cycle. */
+export interface WorkbenchImproveResult {
+	cycles: ImprovementLoopCycle[];
+	stopReason: ImprovementLoopStopReason;
+	stopMessage: string;
+	table: string;
+	candidateId: string | null;
+	finalPassRate: number;
+	executions: number;
 }
 
 /** Typed payload of every consequential decision, keyed by its decision kind. */
@@ -736,7 +819,13 @@ export interface WorkbenchDecisionResultMap {
 		receiptHash: string;
 	};
 	"review-candidate": WorkbenchCandidateSummary;
-	"promote-candidate": { candidate: WorkbenchCandidateSummary; tag: string; candidateSha: string };
+	"promote-candidate": {
+		candidate: WorkbenchCandidateSummary;
+		tag: string;
+		candidateSha: string;
+		/** Regression guards derived after the promotion receipt was written. */
+		guards: WorkbenchRegressionGuardsProjection;
+	};
 	"reject-candidate": WorkbenchCandidateSummary;
 	"adopt-candidate": {
 		candidate: WorkbenchCandidateSummary;
@@ -756,6 +845,7 @@ export interface WorkbenchDecisionResultMap {
 	};
 	"start-testing": WorkbenchStartTestingResult;
 	ship: WorkbenchShipResult;
+	improve: WorkbenchImproveResult;
 }
 
 export type WorkbenchDecisionResult = {

@@ -15,6 +15,9 @@ const LEGAL_DECISION_STAGES = {
 	"start-testing": ["spec-review", "corpus-review"],
 	"run-eval": ["ready-to-evaluate", "improvement-authoring"],
 	calibrate: ["ready-to-evaluate", "improvement-authoring"],
+	// The autoloop starts wherever a measurement can start, and hands back the
+	// moment a release decision is the only way forward.
+	improve: ["ready-to-evaluate", "improvement-authoring"],
 	"apply-proposal": ["proposal-review"],
 	"discard-proposal": ["proposal-review"],
 	"verify-candidate": ["candidate-verification"],
@@ -112,6 +115,9 @@ export const WORKBENCH_GATE_POLICY = {
 	"run-eval": "routine",
 	calibrate: "routine",
 	"verify-candidate": "routine",
+	// The autoloop is measurement too: many runs, one estimate covering the
+	// whole planned loop, and not one decision that creates release authority.
+	improve: "routine",
 } as const satisfies Record<WorkbenchDecisionInput["kind"], WorkbenchGateClass>;
 
 export function workbenchGateClass(kind: WorkbenchDecisionInput["kind"]): WorkbenchGateClass {
