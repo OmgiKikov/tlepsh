@@ -377,8 +377,14 @@ export function createBuilderWorkbenchTools(
 				// Routine measurement may run headless; anything that can create
 				// durable authority still needs the local TUI, and the policy on each
 				// confirmation enforces that again at the moment of the decision.
+				//
+				// `improve` is the exception on the routine side: its cycles apply
+				// diffs on throwaway `candidate/auto-*` branches, and applying is the
+				// one moment a diff touches the repository. The operator's request is
+				// the permission for the loop, but that request has to come from a
+				// human in front of a terminal, not from an RPC or print host.
 				const policy = workbenchGateClass(params.kind);
-				if (policy !== "routine") requireHostUI(ctx, "Workbench decision");
+				if (policy !== "routine" || params.kind === "improve") requireHostUI(ctx, "Workbench decision");
 				// Never close this over the REQUESTED kind: routine `run-current`
 				// auto-chains into the consequential `start-testing` composite, and a
 				// guard that already decided "routine" would let an RPC or print host

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { compileHarnessAuthoringProposal } from "../src/application/harness-authoring.js";
 import {
@@ -20,6 +21,7 @@ import {
 import { loadCandidateRecord } from "../src/application/candidate-review.js";
 import { candidateStatus } from "../src/domain/candidate.js";
 import { listCorpora } from "../src/corpus.js";
+import { createBuilderWorkbenchTools } from "../src/builder/workbench-adapter.js";
 import { createAhdeWorkbench } from "../src/workbench/index.js";
 import type { WorkbenchConfirmation, WorkbenchHumanGate } from "../src/workbench/types.js";
 import { SEALED_VERIFICATION_REPETITIONS } from "./helpers/sealed-holdout.js";
@@ -437,6 +439,65 @@ describe("the improve decision", () => {
 			await fixture.close();
 		}
 	}, 600_000);
+});
+
+describe("improve needs a human in front of a terminal", () => {
+	function decideTool() {
+		const decide = vi.fn(async () => ({
+			kind: "improve",
+			message: "done",
+			result: { cycles: [], stopReason: "max-cycles", stopMessage: "m", table: "t", candidateId: null, finalPassRate: 0, executions: 0 },
+			view: { stage: "ready-to-evaluate" },
+		}));
+		const tool = createBuilderWorkbenchTools(decide2workbench(decide), () => "local:test")
+			.find((candidate) => candidate.name === "ahde_workbench_decide");
+		if (!tool) throw new Error("missing ahde_workbench_decide");
+		return { tool, decide };
+	}
+
+	function decide2workbench(decide: unknown) {
+		return { decide } as unknown as Parameters<typeof createBuilderWorkbenchTools>[0];
+	}
+
+	const headless = { hasUI: false, mode: "rpc" } as unknown as ExtensionContext;
+	const tui = {
+		hasUI: true,
+		mode: "tui",
+		ui: {
+			confirm: vi.fn(async () => true),
+			select: vi.fn(async () => undefined),
+			notify: vi.fn(),
+			setStatus: vi.fn(),
+			setWidget: vi.fn(),
+		},
+	} as unknown as ExtensionContext;
+
+	const input = { kind: "improve", until: 0.9, maxCycles: 2, repetitions: 2, reason: "Improve this agent" } as const;
+
+	it("fails closed without the local TUI, even though it is routine measurement", async () => {
+		const { tool, decide } = decideTool();
+		await expect(tool.execute("call", input, undefined, vi.fn(), headless)).rejects.toThrow();
+		// The loop applies diffs; an RPC or print host is not a human saying yes.
+		expect(decide).not.toHaveBeenCalled();
+	});
+
+	it("runs from the terminal", async () => {
+		const { tool, decide } = decideTool();
+		await tool.execute("call", input, undefined, vi.fn(), tui);
+		expect(decide).toHaveBeenCalledTimes(1);
+	});
+
+	it("still lets plain measurement run headless", async () => {
+		const { tool, decide } = decideTool();
+		await tool.execute(
+			"call",
+			{ kind: "run-eval", repetitions: 1, reason: "Measure" } as const,
+			undefined,
+			vi.fn(),
+			headless,
+		);
+		expect(decide).toHaveBeenCalledTimes(1);
+	});
 });
 
 describe("the shipped proposal author", () => {
