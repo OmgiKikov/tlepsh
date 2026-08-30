@@ -17,6 +17,9 @@ describe("Workbench transition policy", () => {
 			["reject-candidate", ["release-decision"]],
 			["adopt-candidate", ["candidate-adoption"]],
 			["continue-cycle", ["complete"]],
+			// The composites are legal exactly where a step of them is pending.
+			["start-testing", ["spec-review", "corpus-review"]],
+			["ship", ["candidate-review", "release-decision", "candidate-adoption", "complete"]],
 		] as const) {
 			for (const stage of stages) expect(() => assertWorkbenchDecisionStage(kind, stage)).not.toThrow();
 		}
@@ -33,5 +36,16 @@ describe("Workbench transition policy", () => {
 			.toThrow(/continue-cycle is not legal during candidate-adoption/);
 		expect(() => assertWorkbenchDecisionStage("calibrate", "candidate-verification"))
 			.toThrow(/calibrate is not legal during candidate-verification/);
+		expect(() => assertWorkbenchDecisionStage("start-testing", "ready-to-evaluate"))
+			.toThrow(/start-testing is not legal during ready-to-evaluate/);
+		expect(() => assertWorkbenchDecisionStage("ship", "candidate-verification"))
+			.toThrow(/ship is not legal during candidate-verification/);
+	});
+
+	it("names the single unblocking action instead of the rule that blocked it", () => {
+		expect(() => assertWorkbenchDecisionStage("ship", "improvement-authoring"))
+			.toThrow(/Do this first: look at the failures, then say “fix it”\./);
+		expect(() => assertWorkbenchDecisionStage("apply-proposal", "corpus-design"))
+			.toThrow(/Do this first: ask the Builder for test cases\./);
 	});
 });

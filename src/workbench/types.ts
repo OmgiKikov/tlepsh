@@ -35,6 +35,7 @@ import type { DiagnosisRecord } from "../diagnosis.js";
 import type { CandidateStatus, ComparisonSummaryEvidence } from "../domain/candidate.js";
 import type { EvalRunSummary } from "../eval.js";
 import type { CycleContinuationReceipt } from "./cycle-continuation.js";
+import type { WorkbenchGateClass, WorkbenchRunEstimate } from "./transition-policy.js";
 
 // A regex, not a refinement: the generated tool schema carries `pattern` so the
 // model sees the constraint instead of only being corrected by it.
@@ -478,6 +479,18 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		repetitions: z.number().int().min(1).max(10),
 		reason: NonBlankSchema.max(4_000),
 	}),
+	/**
+	 * One operator intent — “start testing” — over the reviews that still stand
+	 * between the current drafts and a running evaluation. It is orchestration,
+	 * not new authority: it performs the same fine-grained decisions, in order,
+	 * through the same application services, and stops at the first one that
+	 * declines or fails.
+	 */
+	z.strictObject({
+		kind: z.literal("start-testing"),
+		repetitions: z.number().int().min(1).max(10),
+		reason: NonBlankSchema.max(4_000),
+	}),
 	z.strictObject({
 		kind: z.literal("calibrate"),
 		repetitions: z.number().int().min(1).max(10),
@@ -532,6 +545,19 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		candidateId: ArtifactIdSchema.optional(),
 		reason: NonBlankSchema.max(4_000),
 	}),
+	/**
+	 * One operator intent — “ship it” — over the release decisions that are left:
+	 * review (recommend promote), promote, adopt, continue. Orchestration only:
+	 * the same services, the same order, the same receipts, and a stop at the
+	 * first step that declines or fails. `version` is required exactly when the
+	 * plan still contains the promotion.
+	 */
+	z.strictObject({
+		kind: z.literal("ship"),
+		candidateId: ArtifactIdSchema.optional(),
+		version: z.string().regex(/^[0-9]+\.[0-9]+\.[0-9]+$/).max(50).optional(),
+		reason: NonBlankSchema.max(4_000),
+	}),
 ]);
 export type WorkbenchDecisionInput = z.infer<typeof WorkbenchDecisionInputSchema>;
 
@@ -549,6 +575,17 @@ export interface WorkbenchConfirmation {
 	reason: string;
 	subject: unknown;
 	subjectHash: string;
+	/**
+	 * How much of the human's attention this decision is worth. The Workbench
+	 * decides it; the host renders it. `consequential` is the full dialog,
+	 * `one-question` is `question` alone, and `routine` runs without a dialog —
+	 * unless the cost guard raised it, which arrives as `one-question` too.
+	 */
+	policy: WorkbenchGateClass;
+	/** The whole dialog for a `one-question` gate; a summary line otherwise. */
+	question: string;
+	/** What a run is expected to cost, when this decision starts one. */
+	estimate?: WorkbenchRunEstimate;
 }
 
 export interface WorkbenchHumanApproval {
@@ -617,6 +654,31 @@ export interface WorkbenchVerifyCandidateResult {
 	sealedHoldout: { executed: boolean; gatePassed: boolean; verdict: GateVerdict | null };
 }
 
+/** One fine-grained decision a composite performed, in the order it ran. */
+export interface WorkbenchCompositeStep {
+	kind: Exclude<WorkbenchDecisionInput["kind"], "run-current" | "start-testing" | "ship">;
+	message: string;
+}
+
+/** Approve · publish · run, as far as the reviewed drafts allow. */
+export interface WorkbenchStartTestingResult {
+	steps: WorkbenchCompositeStep[];
+	approvedSpecId: string | null;
+	developmentCorpus: { id: string; taskCount: number } | null;
+	evaluation: WorkbenchRunEvalResult | null;
+	/** What the operator has to do before a run is possible, or null. */
+	pending: string | null;
+}
+
+/** Review · promote · adopt · continue, as far as the candidate allows. */
+export interface WorkbenchShipResult {
+	steps: WorkbenchCompositeStep[];
+	candidate: WorkbenchCandidateSummary;
+	tag: string | null;
+	adoption: { branch: string; fromSha: string; toSha: string } | null;
+	continuation: { receiptId: string; nextStage: WorkbenchStage } | null;
+}
+
 /** Typed payload of every consequential decision, keyed by its decision kind. */
 export interface WorkbenchDecisionResultMap {
 	"scaffold-target": { targetId: string; targetGitSha: string; receiptId: string };
@@ -644,9 +706,14 @@ export interface WorkbenchDecisionResultMap {
 	};
 	"run-eval": WorkbenchRunEvalResult;
 	calibrate: { candidateId: string; calibration: WorkbenchCalibrationProjection };
+	/**
+	 * Whatever “run it” means where the operator stands. A pending review is not
+	 * an error: it resolves to the `start-testing` composite and its one dialog.
+	 */
 	"run-current":
 		| ({ resolvedAs: "run-eval" } & WorkbenchRunEvalResult)
-		| ({ resolvedAs: "verify-candidate" } & WorkbenchVerifyCandidateResult);
+		| ({ resolvedAs: "verify-candidate" } & WorkbenchVerifyCandidateResult)
+		| ({ resolvedAs: "start-testing" } & WorkbenchStartTestingResult);
 	"apply-proposal": { runId: string; branch: string; candidateSha: string; proposalHash: string };
 	"discard-proposal": { runId: string; receiptHash: string };
 	"verify-candidate": WorkbenchVerifyCandidateResult;
@@ -674,6 +741,8 @@ export interface WorkbenchDecisionResultMap {
 		receiptId: string;
 		nextStage: WorkbenchStage;
 	};
+	"start-testing": WorkbenchStartTestingResult;
+	ship: WorkbenchShipResult;
 }
 
 export type WorkbenchDecisionResult = {

@@ -32,6 +32,7 @@ import {
 import { renderImpact } from "../src/builder/render/impact.js";
 import { plainPaint, type Paint } from "../src/builder/render/paint.js";
 import { STAGE_LABELS, nextStep, stageLabel } from "../src/builder/render/stage.js";
+import { workbenchGateClass } from "../src/workbench/transition-policy.js";
 import {
 	renderHeader,
 	renderReview,
@@ -508,7 +509,15 @@ function makeConfirmation(
 	subject: unknown,
 	reason = "Reviewed the exact subject",
 ): WorkbenchConfirmation {
-	return { kind, title: `Confirm ${kind}`, reason, subject, subjectHash: HASH };
+	return {
+		kind,
+		title: `Confirm ${kind}`,
+		reason,
+		subject,
+		subjectHash: HASH,
+		policy: workbenchGateClass(kind),
+		question: `Confirm ${kind}?`,
+	};
 }
 
 function decision<K extends WorkbenchDecisionResult["kind"]>(

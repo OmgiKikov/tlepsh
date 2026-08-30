@@ -60,6 +60,23 @@ the harness under development runs in a different Target Pi invocation.
   a candidate Eval Run under one Gate Policy: paired per-task deltas, a seeded
   bootstrap 95% interval, the design (tasks × repetitions, excluded tasks),
   human flags, and one verdict. The only source of "passed".
+- **Workbench gate policy** — how much of the operator's attention one decision
+  is worth. Three consequential moments carry the whole cycle and each shows the
+  exact subject before anything happens: `start-testing` (approve the Spec
+  draft, publish the reviewed corpus draft, run), `apply-proposal` (the exact
+  diff), and `ship` (review, promote, adopt, continue). The composites are
+  orchestration, not new authority: they call the same application services in
+  the same order, write the same receipts, pre-approve only the exact
+  sub-subjects the operator already read, and stop at the first step that
+  declines or fails. Terminal throw-aways — discard a proposal, reject a
+  candidate, abandon an interrupted attempt — are one short question. Every
+  other decision is routine: measurement (`run-current`, `run-eval`,
+  `calibrate`, `verify-candidate`) executes without a dialog under a cost guard
+  that asks once when history estimates more than `AHDE_ROUTINE_COST_USD`
+  (default 2) or `AHDE_ROUTINE_MINUTES` (default 10), or when no comparable run
+  has finished and the cost is unknown. Estimates are read from existing run
+  artifacts and persist nothing. Consequential and one-question decisions still
+  fail closed outside an interactive TUI; routine decisions may run headless.
 - **Gate Policy** — the named rule a Comparison Verdict is decided under.
   `development-ci-v3`: improved iff the whole interval is above zero,
   regressed iff it is entirely below zero, otherwise inconclusive.

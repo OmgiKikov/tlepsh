@@ -12,6 +12,7 @@ import {
 import type {
 	WorkbenchDecisionInput,
 	WorkbenchDecisionResult,
+	WorkbenchStartTestingResult,
 	WorkbenchView,
 } from "../workbench/types.js";
 import { oneLine, pluralize } from "./render/format.js";
@@ -29,11 +30,17 @@ import {
 	type TranscriptPresenter,
 	type TranscriptTone,
 } from "./transcript.js";
-import { createWorkbenchHumanGate, formatWorkbenchConfirmation } from "./workbench-gate.js";
+import { formatWorkbenchConfirmation } from "./workbench-gate.js";
+import { createPolicyAwareGate } from "./workbench-adapter.js";
 
 type CommandWorkbench = Pick<AhdeWorkbench, "view" | "decide">;
 
 export const AHDE_BUILDER_COMMAND_NAMES = [
+	// The three verbs the operator actually says; everything below is a shortcut
+	// or an inspection, and several are aliases of these.
+	"test",
+	"fix",
+	"ship",
 	"help",
 	"doctor",
 	"status",
@@ -62,11 +69,23 @@ requirement.
 Workflow:  idea → Spec → eval basket → run → diagnosis → proposal → diff review
            → apply → candidate verification → promote/reject → adopt → next cycle
 
-Commands:
+Commands: three verbs do the work.
+  /test [N] [reason]    test the agent — approve, publish and run whatever is
+                        pending, or verify the candidate you just changed
+  /fix [n] [reason]     fix problem n (the first one by default): refresh the
+                        traces, prepare the change, and show you the diff
+  /ship [version]       ship the verified candidate: promote, adopt, next cycle
+
+Looking around:
   /status               where you are and the next step
   /review               the exact artifact awaiting your review, with actions
   /traces               diagnosis, failure modes, and the evidence link
-  /run [N] [reason]     run the development basket or verify the applied candidate
+  /target [resource]    the exact committed Target, or one declared resource
+  /doctor               model auth, Target readiness, and recovery steps
+  /help                 this reference
+
+One step at a time (the same decisions, taken separately):
+  /run [N] [reason]     alias of /test
   /calibrate [N]        measure run-to-run noise: the same revision against itself
   /approve [reason]     approve the reviewed Spec draft
   /publish [name]       publish the reviewed eval basket
@@ -76,15 +95,14 @@ Commands:
   /reject [reason]      reject the verified candidate
   /adopt [reason]       fast-forward the current branch to the promoted candidate
   /next [reason]        close this cycle and continue with the active Target
-  /target [resource]    the exact committed Target, or one declared resource
-  /doctor               model auth, Target readiness, and recovery steps
-  /help                 this reference
 
 Pi's own built-ins configure the Builder's model, not the agent's:
   /login                connect a provider (OAuth or API key), once per machine
   /model                pick a Builder model that already has a credential
 
-Every consequential step shows the exact subject and asks you to confirm.`;
+Every consequential step shows the exact subject and asks you once: starting
+the tests, applying a diff, and shipping. Runs and checks just happen — unless
+one would cost more than usual, and then you get a single yes/no.`;
 
 function requireTui(ctx: ExtensionCommandContext, command: string): void {
 	if (!ctx.hasUI || ctx.mode !== "tui") {
@@ -112,7 +130,7 @@ function reasonOrDefault(args: string, command: string): string {
 	return args.trim() || `Requested interactively via /${command}`;
 }
 
-function parseRepetitions(args: string, command: "run" | "calibrate"): { repetitions: number; reason: string } {
+function parseRepetitions(args: string, command: string): { repetitions: number; reason: string } {
 	const fallback = `Requested interactively via /${command}`;
 	const trimmed = args.trim();
 	if (!trimmed) return { repetitions: DEFAULT_REPETITIONS, reason: fallback };
@@ -140,6 +158,19 @@ function parseVersion(value: string): string {
 	return value;
 }
 
+/** `/fix [n] [note]`: the ordinal from `/traces`, or the first problem. */
+function parseOrdinal(args: string, command: string): { ordinal: number | null; note: string } {
+	const trimmed = args.trim();
+	if (!trimmed) return { ordinal: null, note: "" };
+	const tokens = trimmed.split(/\s+/);
+	if (!/^\d+$/.test(tokens[0] ?? "")) return { ordinal: null, note: trimmed };
+	const ordinal = Number(tokens.shift());
+	if (!Number.isInteger(ordinal) || ordinal < 1 || ordinal > 100) {
+		throw new Error(`/${command} takes the problem number shown by /traces`);
+	}
+	return { ordinal, note: tokens.join(" ") };
+}
+
 function parseApply(args: string): { branch: string | null; reason: string } {
 	const tokens = args.trim().split(/\s+/).filter(Boolean);
 	const branch = tokens.shift();
@@ -149,12 +180,12 @@ function parseApply(args: string): { branch: string | null; reason: string } {
 	};
 }
 
-function parsePromote(args: string): { version: string | null; reason: string } {
+function parsePromote(args: string, command = "promote"): { version: string | null; reason: string } {
 	const tokens = args.trim().split(/\s+/).filter(Boolean);
 	const version = tokens.shift();
 	return {
 		version: version ? parseVersion(version) : null,
-		reason: tokens.join(" ") || "Requested interactively via /promote",
+		reason: tokens.join(" ") || `Requested interactively via /${command}`,
 	};
 }
 
@@ -174,13 +205,22 @@ export function humanizeCommandError(error: unknown): { message: string; tone: T
 	return { message: oneLine(message, 600), tone: "error" };
 }
 
+function startTestingTitle(result: WorkbenchStartTestingResult): { title: string; tone: TranscriptTone } {
+	if (!result.evaluation) return { title: "Ready for the next step", tone: "info" };
+	return { title: "Run complete", tone: result.evaluation.evaluation.summary.error > 0 ? "warning" : "success" };
+}
+
 function decisionTitle(result: WorkbenchDecisionResult): { title: string; tone: TranscriptTone } {
 	switch (result.kind) {
 		case "run-eval": return { title: "Run complete", tone: result.result.evaluation.summary.error > 0 ? "warning" : "success" };
 		case "run-current":
-			return result.result.resolvedAs === "run-eval"
-				? { title: "Run complete", tone: result.result.evaluation.summary.error > 0 ? "warning" : "success" }
-				: { title: "Candidate verified", tone: "success" };
+			if (result.result.resolvedAs === "run-eval") {
+				return { title: "Run complete", tone: result.result.evaluation.summary.error > 0 ? "warning" : "success" };
+			}
+			if (result.result.resolvedAs === "start-testing") return startTestingTitle(result.result);
+			return { title: "Candidate verified", tone: "success" };
+		case "start-testing": return startTestingTitle(result.result);
+		case "ship": return { title: "Shipped", tone: "success" };
 		case "verify-candidate": return { title: "Candidate verified", tone: "success" };
 		case "calibrate":
 			return {
@@ -222,7 +262,7 @@ export function registerAhdeBuilderCommands(
 	const presenter = options.presenter ?? createTranscriptPresenter(pi);
 	const workbench = options.workbench;
 
-	const gate = (ctx: ExtensionCommandContext) => createWorkbenchHumanGate(
+	const gate = (ctx: ExtensionCommandContext) => createPolicyAwareGate(
 		ctx,
 		options.actorId,
 		(operation) => requireTui(ctx, operation),
@@ -378,7 +418,12 @@ export function registerAhdeBuilderCommands(
 				}
 				const approved = await ctx.ui.confirm(
 					intent.title,
-					[intent.summary, "", formatWorkbenchConfirmation(confirmation)].join("\n"),
+					[
+						intent.summary,
+						"",
+						// A terminal decision with nothing to study stays one question.
+						confirmation.policy === "one-question" ? confirmation.question : formatWorkbenchConfirmation(confirmation),
+					].join("\n"),
 					{ signal },
 				);
 				if (!approved) return { approved: false };
@@ -505,8 +550,8 @@ export function registerAhdeBuilderCommands(
 			}
 			case "candidate-review":
 			case "release-decision": {
-				const choice = await choose("Candidate", ["Promote…", "Reject"]);
-				if (choice === "Promote…") await promoteCurrent(ctx, signal, null, "Promoted from /review");
+				const choice = await choose("Candidate", ["Ship it…", "Reject"]);
+				if (choice === "Ship it…") await shipCurrent(ctx, signal, null, "Shipped from /review");
 				else if (choice === "Reject") await rejectCurrent(ctx, signal, "Rejected from /review");
 				return;
 			}
@@ -524,6 +569,93 @@ export function registerAhdeBuilderCommands(
 				return;
 		}
 	};
+
+	/**
+	 * “Ship it” is one dialog over the release decisions that are left. The exact
+	 * receipts are still four separate immutable records underneath.
+	 */
+	const shipCurrent = async (
+		ctx: ExtensionCommandContext,
+		signal: AbortSignal | undefined,
+		version: string | null,
+		reason: string,
+	): Promise<void> => {
+		const view = await workbench.view();
+		const shippable = ["candidate-review", "release-decision", "candidate-adoption", "complete"];
+		if (!shippable.includes(view.stage)) {
+			throw new Error(`/ship is not available during ${stageLabel(view.stage)}; ${nextStep(view)}`);
+		}
+		const needsVersion = view.stage === "candidate-review" || view.stage === "release-decision";
+		const chosen = version ?? (needsVersion ? await askVersion(ctx) : null);
+		if (needsVersion && !chosen) return;
+		const result = await decide(ctx, "ship", {
+			kind: "ship",
+			...(chosen ? { version: chosen } : {}),
+			reason,
+		}, signal);
+		if (result) await showDecision(ctx, "ship", result);
+	};
+
+	/**
+	 * “Fix problem n” is the model's work, not a decision: the command resolves
+	 * the ordinal against a fresh brief and asks the Builder for the proposal.
+	 */
+	const fixProblem = async (
+		ctx: ExtensionCommandContext,
+		ordinal: number | null,
+		note: string,
+	): Promise<void> => {
+		const view = await workbench.view({ aspect: "traces" });
+		if (view.detail?.aspect !== "traces") {
+			presenter.show(ctx, { title: viewTitle(view), tone: "warning", lines: renderStatus(view, markerPaint) });
+			ctx.ui.notify(`Nothing to fix yet — ${nextStep(view)}`, "info");
+			return;
+		}
+		presenter.show(ctx, { title: "AHDE · Diagnosis", tone: "info", lines: renderTraces(view.detail.content, markerPaint) });
+		const modes = view.detail.content.improvementBrief.modes.filter((mode) => mode.selectableForProposal);
+		if (modes.length === 0) {
+			ctx.ui.notify("No failure mode has enough evidence to change the harness yet. Run again, or add cases.", "info");
+			return;
+		}
+		const mode = ordinal === null ? modes[0]! : modes.find((candidate) => candidate.ordinal === ordinal);
+		if (!mode) {
+			throw new Error(`there is no problem ${ordinal} to fix; /traces lists ${pluralize(modes.length, "fixable problem")}`);
+		}
+		const request = `Fix problem ${mode.ordinal} (${mode.failureModeId}): ${oneLine(mode.title, 120)}. ` +
+			`Prepare the proposal and show me the review.`;
+		if (!options.sendUserMessage) {
+			ctx.ui.notify(`Ask the Builder: “fix problem ${mode.ordinal}”.`, "info");
+			return;
+		}
+		options.sendUserMessage(note ? `${request} ${note}` : request);
+	};
+
+	pi.registerCommand("test", {
+		description: "Test the agent: publish and run whatever is pending, or verify the applied candidate: /test [repetitions] [reason]",
+		async handler(args, ctx) {
+			const signal = await prepare(ctx, "test");
+			const parsed = parseRepetitions(args, "test");
+			await runObserved(ctx, "test", { kind: "run-current", repetitions: parsed.repetitions, reason: parsed.reason }, signal);
+		},
+	});
+
+	pi.registerCommand("fix", {
+		description: "Prepare the exact change for problem n from the current diagnosis: /fix [n] [reason]",
+		async handler(args, ctx) {
+			await prepare(ctx, "fix");
+			const parsed = parseOrdinal(args, "fix");
+			await fixProblem(ctx, parsed.ordinal, parsed.note);
+		},
+	});
+
+	pi.registerCommand("ship", {
+		description: "Ship the verified candidate — promote, adopt, next cycle: /ship [version] [reason]",
+		async handler(args, ctx) {
+			const signal = await prepare(ctx, "ship");
+			const parsed = parsePromote(args, "ship");
+			await shipCurrent(ctx, signal, parsed.version, parsed.reason);
+		},
+	});
 
 	pi.registerCommand("help", {
 		description: "Show the AHDE Builder workflow and shortcuts",

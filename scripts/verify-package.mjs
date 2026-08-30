@@ -197,6 +197,7 @@ import {
 
 const expectedToolNames = ["ahde_workbench_view", "ahde_workbench_submit", "ahde_workbench_decide"];
 const expectedCommandNames = [
+	"test", "fix", "ship",
 	"help", "doctor", "status", "run", "calibrate", "traces", "review",
 	"approve", "publish", "apply", "discard", "promote", "reject", "adopt", "next",
 	"target",

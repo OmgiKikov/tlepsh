@@ -52,41 +52,60 @@ When AHDE is installed globally or linked, the last command is simply:
 ahde
 ```
 
-A typical Builder conversation looks like:
+A typical Builder conversation looks like — three questions in a whole cycle:
 
 ```text
 > Хочу собрать агента для ...
 Builder: Давай уточним пользователей, задачи и ограничения…
-Builder: Spec готов. Утвердить?
+Builder: Вот описание агента. Начинаем тесты?
 
-> Запусти тесты
-Builder UI: AHDE run 7/40 · tool search ✓
-Builder UI: open live trace · http://127.0.0.1:.../live/...
-Builder: 34/40 passed. Нашёл 3 системных failure mode.
-Builder: Open verified development traces: http://127.0.0.1:...
+> Да, запусти тесты
+AHDE asks once: approve this Spec, publish 24 cases, run 72 executions
+                (~$0.40, about 4 min)?  [y/n]
+Builder UI: AHDE run 7/24 · tool search ✓
+Builder: 18/24 passed. Нашёл 3 системных failure mode.
 
 > Исправь первую проблему
-Builder: Подготовил Proposal для AGENTS.md и skills/search.
-Builder: Показываю точный diff для подтверждения.
+Builder: Подготовил правку для AGENTS.md и skills/search.
+AHDE asks once: apply this exact diff to candidate/…?  [y/n]
+Builder UI: проверяю кандидата против базовой версии… (без вопросов)
+Builder: Development improved, sealed gate passed.
+
+> Выкати
+AHDE asks once: ship as v0.2.0 — promote, fast-forward main, next cycle?  [y/n]
 ```
 
-The same loop has compact Pi commands:
+Everything between those three questions just happens: runs, checks,
+calibration, and the diagnosis. A run that history says would be unusually
+expensive (over `AHDE_ROUTINE_COST_USD`, default 2, or `AHDE_ROUTINE_MINUTES`,
+default 10) asks one extra yes/no first, and so do the two irreversible
+throw-aways (discard a proposal, reject a candidate).
+
+The same loop has compact Pi commands: three verbs do the work, and every
+older command is still there, one step at a time.
 
 ```text
-/status                 where you are and the next step
+/test [repetitions]     test the agent: approve and publish whatever is pending,
+                        run the basket, or verify the applied candidate
+/fix [n]                fix problem n: refresh the traces, prepare the exact
+                        change, show the diff
+/ship <version>         ship the verified candidate: promote, adopt, next cycle
+
+/status                 where you are and what to say next
 /review                 the exact Spec, eval basket, diff, or candidate — with its actions
 /traces                 diagnosis, failure modes, and the evidence link
-/run [repetitions]      run the eval basket or verify the applied candidate (3 by default)
+/target [resource]      the exact committed Target or one declared resource
+/doctor  /help          readiness and recovery · this reference
+
+/run [repetitions]      alias of /test
 /calibrate [reps]       measure run-to-run noise: the same revision against itself
-/approve  /publish      approve the Spec · publish the eval basket
+/approve  /publish      approve the Spec · publish the eval basket, one at a time
 /apply <branch>         apply the reviewed proposal to a candidate branch
 /discard                discard a proposal or abandon an interrupted candidate
-/promote <version>      promote the verified candidate (one confirmation)
+/promote <version>      promote the verified candidate without adopting it
 /reject                 reject the verified candidate
 /adopt                  fast-forward the current branch to the promoted candidate
 /next                   close the cycle and continue from the active Target
-/target [resource]      the exact committed Target or one declared resource
-/doctor  /help          readiness and recovery · this reference
 ```
 
 Every command renders a human block in the transcript (persisted, never sent
