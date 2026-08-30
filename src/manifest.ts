@@ -220,6 +220,26 @@ export const ModelSpec = z.strictObject({
 });
 export type ModelSpec = z.infer<typeof ModelSpec>;
 
+/** `data/<segment>[/<segment>…]`; lowercase, no traversal, no dotfiles. */
+const DATA_DECLARATION = /^data\/[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/;
+export const MAX_DATA_DIRECTORIES = 16;
+export const MAX_DATA_FILES = 20_000;
+/** Total declared data bytes copied into one workspace snapshot. */
+export const DEFAULT_DATA_MAX_BYTES = 64 * 1024 * 1024;
+
+/**
+ * The bound is a product decision, not a constant of nature: a retrieval agent
+ * with a bigger corpus raises it deliberately through the environment.
+ */
+export function dataMaxBytes(environment: NodeJS.ProcessEnv = process.env): number {
+	const raw = environment.AHDE_DATA_MAX_BYTES;
+	if (raw === undefined) return DEFAULT_DATA_MAX_BYTES;
+	if (!/^[1-9][0-9]{0,12}$/.test(raw)) {
+		throw new Error(`AHDE_DATA_MAX_BYTES must be a positive integer byte count; got ${JSON.stringify(raw)}`);
+	}
+	return Number(raw);
+}
+
 export const ExecutionPolicyBlock = z.strictObject({
 	tools: z.array(z.enum(["read", "bash", "edit", "write"])).min(1).default(["read", "bash"]),
 	environmentAllowlist: z
@@ -287,6 +307,27 @@ export const TargetManifest = z.strictObject({
 	skills: z.array(z.string().min(1)).default([]),
 	/** Explicit target-owned subprocess descriptors. Ambient discovery is disabled. */
 	tools: z.array(z.string().min(1)).default([]),
+	/**
+	 * Declared data directories under `data/`. Only these are copied into a
+	 * Target workspace snapshot and hashed into its workspace identity;
+	 * everything else under `data/` stays private to the operator's checkout.
+	 */
+	data: z
+		.array(z.string().min(1).max(200).regex(DATA_DECLARATION, "data declarations are directories under data/"))
+		.max(MAX_DATA_DIRECTORIES)
+		.default([])
+		.superRefine((declarations, context) => {
+			if (new Set(declarations).size !== declarations.length) {
+				context.addIssue({ code: "custom", message: "duplicate data directory declaration" });
+			}
+			for (const outer of declarations) {
+				for (const inner of declarations) {
+					if (outer !== inner && inner.startsWith(`${outer}/`)) {
+						context.addIssue({ code: "custom", message: `data declaration ${inner} is nested inside ${outer}` });
+					}
+				}
+			}
+		}),
 	evalSuite: z.strictObject({
 		id: z.string().min(1),
 		dataset: z.string().min(1),
@@ -306,6 +347,16 @@ export interface RuntimeInfo {
 	ahdeCodeHash: string;
 }
 
+/** Bounded shape of one declared data directory. Contents are never loaded. */
+export interface ResolvedTargetDataDirectory {
+	path: string;
+	files: number;
+	bytes: number;
+	/** Sorted, bounded sample of directory-relative file paths. */
+	entries: string[];
+	entriesTruncated: boolean;
+}
+
 export interface ResolvedTarget {
 	/** Absolute path to the target repo root. */
 	dir: string;
@@ -322,6 +373,8 @@ export interface ResolvedTarget {
 	tools: ResolvedTargetTool[];
 	/** Content hash of normalized descriptors and executable bytes. */
 	toolsetHash: string;
+	/** Declared data directories in manifest order, with shape only. */
+	data: ResolvedTargetDataDirectory[];
 	/** Parsed dataset tasks in file order. */
 	tasks: ResolvedTask[];
 	/** Hash of the raw parsed dataset (task ids, inputs, per-task graders). */
@@ -477,6 +530,66 @@ function datasetIdentity(task: Task): Record<string, unknown> {
 	};
 }
 
+const MAX_DATA_ENTRY_SAMPLE = 32;
+
+/**
+ * Measure one declared data directory without reading a byte of content.
+ * Symlinks, special files, and unsafe names fail closed so what a run copies is
+ * exactly what an operator can see in Git.
+ */
+function measureDataDirectory(
+	dir: string,
+	declaration: string,
+	budget: { files: number; bytes: number; maxBytes: number },
+): ResolvedTargetDataDirectory {
+	const root = realpathSync(resolve(dir));
+	const directory = targetFilePathDirectory(root, declaration);
+	const entries: string[] = [];
+	let files = 0;
+	let bytes = 0;
+	const walk = (absolute: string, prefix: string, depth: number): void => {
+		if (depth > 16) throw new Error(`data directory ${declaration} nests deeper than 16 levels`);
+		for (const entry of readdirSync(absolute, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+			const child = join(absolute, entry.name);
+			const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+			const stat = lstatSync(child);
+			if (stat.isSymbolicLink()) throw new Error(`data directory ${declaration} contains a symlink: ${relativePath}`);
+			if (stat.isDirectory()) {
+				walk(child, relativePath, depth + 1);
+				continue;
+			}
+			if (!stat.isFile()) throw new Error(`data directory ${declaration} contains a non-regular file: ${relativePath}`);
+			files += 1;
+			budget.files += 1;
+			bytes += stat.size;
+			budget.bytes += stat.size;
+			if (budget.files > MAX_DATA_FILES) throw new Error(`declared data exceeds ${MAX_DATA_FILES} files`);
+			if (budget.bytes > budget.maxBytes) {
+				throw new Error(`declared data exceeds the ${budget.maxBytes}-byte workspace budget`);
+			}
+			if (entries.length < MAX_DATA_ENTRY_SAMPLE) entries.push(relativePath);
+		}
+	};
+	walk(directory, "", 1);
+	return { path: declaration, files, bytes, entries, entriesTruncated: files > entries.length };
+}
+
+function targetFilePathDirectory(root: string, rel: string): string {
+	const lexical = resolve(root, rel);
+	const lexicalRelative = relative(root, lexical);
+	if (!lexicalRelative || lexicalRelative === ".." || lexicalRelative.startsWith(`..${sep}`) || isAbsolute(lexicalRelative)) {
+		throw new Error(`declared data directory escapes the repository: ${rel}`);
+	}
+	let cursor = root;
+	for (const part of lexicalRelative.split(sep)) {
+		cursor = join(cursor, part);
+		const stat = lstatSync(cursor);
+		if (stat.isSymbolicLink()) throw new Error(`declared data directory traverses a symlink: ${rel}`);
+		if (!stat.isDirectory()) throw new Error(`declared data path is not a directory: ${rel}`);
+	}
+	return cursor;
+}
+
 function loadDataset(dir: string, rel: string): Task[] {
 	const content = readRelative(dir, rel);
 	const tasks: Task[] = [];
@@ -544,6 +657,8 @@ export function loadTarget(dir: string, override?: { dataset?: string }): Resolv
 	}
 	const defaults = gradersResult.data.defaults;
 	const targetTools = loadTargetTools(dir, manifest.tools, manifest.execution);
+	const dataBudget = { files: 0, bytes: 0, maxBytes: dataMaxBytes() };
+	const data = manifest.data.map((declaration) => measureDataDirectory(dir, declaration, dataBudget));
 
 	const resolved: ResolvedTask[] = tasks.map((task) => {
 		const graders = task.graders ?? defaults;
@@ -588,6 +703,7 @@ export function loadTarget(dir: string, override?: { dataset?: string }): Resolv
 		runtime: runtimeInfo(),
 		tools: targetTools.tools,
 		toolsetHash: targetTools.toolsetHash,
+		data,
 		tasks: resolved,
 		datasetHash,
 		suiteHash,

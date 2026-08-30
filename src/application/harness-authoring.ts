@@ -17,6 +17,8 @@ import {
 	type TargetManifest as TargetManifestValue,
 } from "../manifest.js";
 import {
+	classifyTargetToolDescriptorPath,
+	MAX_TOOL_DIRECTORY_FILES,
 	validateTargetToolDescriptor,
 	type TargetToolDescriptor,
 } from "../target/tool-manifest.js";
@@ -25,6 +27,7 @@ import {
 	assertTargetAuthoringSurfaceWithinLimits,
 	classifyTargetAuthoringResourcePath,
 	inspectTargetAuthoringContext,
+	type TargetAuthoringDataDirectory,
 	type TargetAuthoringResource,
 } from "./target-authoring-context.js";
 
@@ -32,7 +35,8 @@ const GIT_SHA = /^[0-9a-f]{40}$/;
 const SKILL_NAME = /^(?!.*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 const SKILL_DECLARATION = /^skills\/((?!.*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)$/;
-const TOOL_DECLARATION = /^tools\/([a-z][a-z0-9_]{0,63})\.tool\.yaml$/;
+const TOOL_FILE_PATH = /^(?:[A-Za-z0-9._-]{1,64}\/){0,5}[A-Za-z0-9._-]{1,64}$/;
+const DATA_FILE_PATH = /^data\/[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)+$/;
 
 const MAX_INTENTS = 32;
 const MAX_AUTHORED_FILE_BYTES = 512 * 1024;
@@ -49,6 +53,7 @@ export const HARNESS_AUTHORING_ALLOWED_PATHS = [
 	"skills/**",
 	"bin/**",
 	"tools/**",
+	"data/**",
 ] as const;
 
 function utf8Bytes(value: string): number {
@@ -78,7 +83,7 @@ const CommandArgumentSchema = z.string()
 export const HarnessToolDescriptorInputSchema = z.strictObject({
 	description: boundedText(2_000, "tool description"),
 	parameters: z.record(z.string(), z.unknown()),
-	/** Arguments after the compiler-owned bin/<name> executable. */
+	/** Arguments after the compiler-owned executable. */
 	arguments: z.array(CommandArgumentSchema).max(31).optional(),
 	timeoutMs: z.number().int().min(1).max(120_000),
 	maxOutputBytes: z.number().int().min(1).max(1024 * 1024),
@@ -88,8 +93,52 @@ export const HarnessToolDescriptorInputSchema = z.strictObject({
 		network: z.enum(["deny", "allow"]),
 		filesystem: z.enum(["read-only", "workspace-write"]),
 	}),
+	/** Multi-file tools only: one dependency step per prepared tool home. */
+	setup: z.strictObject({
+		argv: z.array(CommandArgumentSchema).min(1).max(32),
+		timeoutMs: z.number().int().min(1).max(600_000),
+		network: z.enum(["deny", "allow"]),
+	}).optional(),
+	/** Multi-file tools only: files whose bytes are pinned into tool identity. */
+	lockfiles: z.array(z.string().min(1).max(200).regex(TOOL_FILE_PATH)).max(8).optional(),
 });
 export type HarnessToolDescriptorInput = z.infer<typeof HarnessToolDescriptorInputSchema>;
+
+/**
+ * Authored bytes always end up as an exact text diff a human reads, so
+ * `contentBase64` is an encoding convenience, never an escape into binary.
+ */
+const AuthoredBytesSchema = z.strictObject({
+	content: AuthoredTextSchema.optional(),
+	contentBase64: z.string().max(Math.ceil((MAX_AUTHORED_FILE_BYTES * 4) / 3) + 4).optional(),
+});
+
+function decodeAuthoredBytes(
+	input: { content?: string | undefined; contentBase64?: string | undefined },
+	label: string,
+): string {
+	if ((input.content === undefined) === (input.contentBase64 === undefined)) {
+		throw new Error(`${label} requires exactly one of content or contentBase64`);
+	}
+	if (input.content !== undefined) return input.content;
+	const raw = Buffer.from(input.contentBase64 as string, "base64");
+	if (raw.toString("base64").replace(/=+$/, "") !== (input.contentBase64 as string).replace(/=+$/, "")) {
+		throw new Error(`${label} contentBase64 is not canonical base64`);
+	}
+	const decoded = decodeText(raw, label);
+	if (utf8Bytes(decoded) > MAX_AUTHORED_FILE_BYTES) {
+		throw new Error(`${label} exceeds ${MAX_AUTHORED_FILE_BYTES} UTF-8 bytes`);
+	}
+	if (decoded.trim().length === 0) throw new Error(`${label} must be non-blank`);
+	return decoded;
+}
+
+const AuthoredToolFileSchema = AuthoredBytesSchema.extend({
+	/** Relative to `tools/<name>/`. */
+	path: z.string().min(1).max(200).regex(TOOL_FILE_PATH, "tool file paths are safe relative POSIX paths"),
+	mode: z.enum(["100644", "100755"]).optional(),
+});
+export type AuthoredToolFile = z.infer<typeof AuthoredToolFileSchema>;
 
 const InstructionsReplaceIntentSchema = z.strictObject({
 	type: z.literal("instructions.replace"),
@@ -115,20 +164,77 @@ const SkillRemoveIntentSchema = z.strictObject({
 	name: SkillNameSchema,
 });
 
+const ShebangSchema = AuthoredTextSchema.refine(
+	(value) => value.startsWith("#!") && value.indexOf("\n") > 2,
+	"tool executable must start with a non-empty shebang line",
+);
+
 const ToolUpsertIntentSchema = z.strictObject({
 	type: z.literal("tool.upsert"),
 	name: ToolNameSchema,
 	descriptor: HarnessToolDescriptorInputSchema,
-	/** UTF-8 executable source; the compiler always emits Git mode 100755. */
-	executable: AuthoredTextSchema.refine(
-		(value) => value.startsWith("#!") && value.indexOf("\n") > 2,
-		"tool executable must start with a non-empty shebang line",
-	),
+	/** Single-file form: UTF-8 source for bin/<name>, always Git mode 100755. */
+	executable: ShebangSchema.optional(),
+	/** Multi-file form: every file of tools/<name>/ except the compiler-owned tool.yaml. */
+	files: z.array(AuthoredToolFileSchema).min(1).max(MAX_TOOL_DIRECTORY_FILES - 1).optional(),
+}).superRefine((intent, context) => {
+	const single = intent.executable !== undefined;
+	const multiple = intent.files !== undefined;
+	if (single === multiple) {
+		context.addIssue({ code: "custom", message: "tool.upsert requires exactly one of executable or files" });
+		return;
+	}
+	if (single) {
+		if (intent.descriptor.setup) {
+			context.addIssue({ code: "custom", path: ["descriptor", "setup"], message: "setup requires the multi-file files form" });
+		}
+		if (intent.descriptor.lockfiles) {
+			context.addIssue({ code: "custom", path: ["descriptor", "lockfiles"], message: "lockfiles require the multi-file files form" });
+		}
+		return;
+	}
+	const files = intent.files as AuthoredToolFile[];
+	const paths = files.map((file) => file.path);
+	if (new Set(paths).size !== paths.length) {
+		context.addIssue({ code: "custom", path: ["files"], message: "duplicate tool file path" });
+	}
+	if (paths.includes("tool.yaml")) {
+		context.addIssue({ code: "custom", path: ["files"], message: "tool.yaml is compiled from descriptor and cannot be authored directly" });
+	}
+	const run = files.find((file) => file.path === "run");
+	if (!run) {
+		context.addIssue({ code: "custom", path: ["files"], message: "a multi-file tool must author its run entry" });
+		return;
+	}
+	if (run.mode !== undefined && run.mode !== "100755") {
+		context.addIssue({ code: "custom", path: ["files"], message: "run must be mode 100755" });
+	}
+	for (const lockfile of intent.descriptor.lockfiles ?? []) {
+		if (!paths.includes(lockfile)) {
+			context.addIssue({ code: "custom", path: ["descriptor", "lockfiles"], message: `declared lockfile is not authored: ${lockfile}` });
+		}
+	}
 });
 
 const ToolRemoveIntentSchema = z.strictObject({
 	type: z.literal("tool.remove"),
 	name: ToolNameSchema,
+});
+
+const DataFilePathSchema = z
+	.string()
+	.min(1)
+	.max(200)
+	.regex(DATA_FILE_PATH, "data paths name a file inside a data/<directory>");
+
+const DataUpsertIntentSchema = AuthoredBytesSchema.extend({
+	type: z.literal("data.upsert"),
+	path: DataFilePathSchema,
+});
+
+const DataRemoveIntentSchema = z.strictObject({
+	type: z.literal("data.remove"),
+	path: DataFilePathSchema,
 });
 
 export const HarnessAuthoringIntentSchema = z.discriminatedUnion("type", [
@@ -138,6 +244,8 @@ export const HarnessAuthoringIntentSchema = z.discriminatedUnion("type", [
 	SkillRemoveIntentSchema,
 	ToolUpsertIntentSchema,
 	ToolRemoveIntentSchema,
+	DataUpsertIntentSchema,
+	DataRemoveIntentSchema,
 ]);
 export type HarnessAuthoringIntent = z.infer<typeof HarnessAuthoringIntentSchema>;
 
@@ -239,6 +347,27 @@ function treeRecord(repositoryDir: string, revision: string, path: string): { mo
 		return { mode, type, path };
 	}
 	return null;
+}
+
+/** Every tracked blob under one directory at the exact base revision. */
+function treeBlobs(repositoryDir: string, revision: string, directory: string): { path: string; mode: string }[] {
+	const output = execFileSync(
+		"git",
+		["--no-replace-objects", "-C", repositoryDir, "ls-tree", "-r", "-z", revision, "--", `${directory}/`],
+		{ encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: GIT_MAX_BUFFER },
+	);
+	const blobs: { path: string; mode: string }[] = [];
+	for (const record of output.split("\0").filter(Boolean)) {
+		const tab = record.indexOf("\t");
+		if (tab < 0) throw new Error(`could not parse Git tree entry under ${directory}`);
+		const path = record.slice(tab + 1);
+		const [mode, type] = record.slice(0, tab).split(" ");
+		if (!mode || !type) throw new Error(`could not parse Git tree entry for ${path}`);
+		if (mode === "120000") throw new Error(`authored directory contains a symlink: ${path}`);
+		if (type !== "blob") throw new Error(`authored directory contains a non-file entry: ${path}`);
+		blobs.push({ path, mode });
+	}
+	return blobs.sort((left, right) => left.path.localeCompare(right.path));
 }
 
 function assertSafeTreeAncestors(repositoryDir: string, revision: string, path: string): void {
@@ -343,16 +472,19 @@ function skillText(intent: Extract<HarnessAuthoringIntent, { type: "skill.upsert
 function targetToolDescriptor(
 	intent: Extract<HarnessAuthoringIntent, { type: "tool.upsert" }>,
 ): TargetToolDescriptor {
+	const executablePath = intent.files ? `tools/${intent.name}/run` : `bin/${intent.name}`;
 	return {
 		schemaVersion: 1,
 		name: intent.name,
 		description: intent.descriptor.description,
 		parameters: intent.descriptor.parameters,
-		command: { argv: [`bin/${intent.name}`, ...(intent.descriptor.arguments ?? [])] },
+		command: { argv: [executablePath, ...(intent.descriptor.arguments ?? [])] },
 		timeoutMs: intent.descriptor.timeoutMs,
 		maxOutputBytes: intent.descriptor.maxOutputBytes,
 		output: intent.descriptor.output,
 		permissions: intent.descriptor.permissions,
+		...(intent.descriptor.setup ? { setup: intent.descriptor.setup } : {}),
+		...(intent.descriptor.lockfiles ? { lockfiles: [...intent.descriptor.lockfiles] } : {}),
 	};
 }
 
@@ -369,17 +501,17 @@ function assertCanonicalDeclarations(manifest: TargetManifestValue): void {
 	}
 	const toolNames = new Set<string>();
 	for (const declaration of manifest.tools) {
-		const name = TOOL_DECLARATION.exec(declaration)?.[1];
-		if (!name) throw new Error(`structured authoring requires canonical tool declarations: ${declaration}`);
-		if (toolNames.has(name)) throw new Error(`duplicate tool declaration: ${declaration}`);
-		toolNames.add(name);
+		const identity = classifyTargetToolDescriptorPath(declaration);
+		if (!identity) throw new Error(`structured authoring requires canonical tool declarations: ${declaration}`);
+		if (toolNames.has(identity.name)) throw new Error(`duplicate tool declaration: ${declaration}`);
+		toolNames.add(identity.name);
 	}
 }
 
 function renderManifest(
 	baseText: string,
 	baseManifest: TargetManifestValue,
-	updates: { skills?: string[]; tools?: string[]; execution?: ExecutionPolicy },
+	updates: { skills?: string[]; tools?: string[]; data?: string[]; execution?: ExecutionPolicy },
 ): string {
 	const document = parseDocument(baseText);
 	if (document.errors.length > 0) {
@@ -387,6 +519,10 @@ function renderManifest(
 	}
 	if (updates.skills) document.set("skills", updates.skills);
 	if (updates.tools) document.set("tools", updates.tools);
+	if (updates.data) {
+		if (updates.data.length === 0) document.delete("data");
+		else document.set("data", updates.data);
+	}
 	if (updates.execution) document.set("execution", updates.execution);
 	const rendered = String(document);
 	if (utf8Bytes(rendered) > MAX_MANIFEST_BYTES) throw new Error(`manifest.yaml exceeds ${MAX_MANIFEST_BYTES} bytes`);
@@ -441,6 +577,7 @@ export function compileHarnessAuthoringProposal(
 	const manifestText = decodeText(manifestBlob.content, "manifest.yaml");
 	let skills = [...manifest.skills];
 	let tools = [...manifest.tools];
+	let dataDirectories = [...manifest.data];
 	const executionIntent = intents.find((intent): intent is Extract<HarnessAuthoringIntent, { type: "execution.configure" }> =>
 		intent.type === "execution.configure"
 	);
@@ -449,6 +586,7 @@ export function compileHarnessAuthoringProposal(
 	const resources = new Set<string>();
 	let skillsChanged = false;
 	let toolsChanged = false;
+	let dataChanged = false;
 	let executionChanged = false;
 
 	const plan = (
@@ -472,7 +610,9 @@ export function compileHarnessAuthoringProposal(
 			? "instructions"
 			: intent.type === "execution.configure"
 				? "execution"
-				: `${intent.type.split(".")[0]}:${intent.name}`;
+				: intent.type === "data.upsert" || intent.type === "data.remove"
+					? `data:${intent.path}`
+					: `${intent.type.split(".")[0]}:${intent.name}`;
 		if (resources.has(resource)) throw new Error(`conflicting or duplicate authoring intents for ${resource}`);
 		resources.add(resource);
 
@@ -502,30 +642,86 @@ export function compileHarnessAuthoringProposal(
 			continue;
 		}
 		if (intent.type === "tool.upsert") {
-			const descriptorPath = `tools/${intent.name}.tool.yaml`;
-			const executablePath = `bin/${intent.name}`;
+			const existing = target.tools.find((tool) => tool.descriptor.name === intent.name);
+			const layout = intent.files ? "directory" : "single-file";
+			if (existing && existing.layout !== layout) {
+				throw new Error(
+					`tool ${intent.name} is declared as a ${existing.layout} tool; remove it before re-authoring it as ${layout}`,
+				);
+			}
+			const descriptorPath = layout === "directory"
+				? `tools/${intent.name}/tool.yaml`
+				: `tools/${intent.name}.tool.yaml`;
+			const descriptor = targetToolDescriptor(intent);
+			const executablePath = descriptor.command.argv[0] as string;
 			const shared = target.tools.find(
 				(tool) => tool.descriptor.name !== intent.name && tool.executablePath === executablePath,
 			);
 			if (shared) {
 				throw new Error(`${executablePath} is also used by declared tool ${shared.descriptor.name}`);
 			}
-			const descriptor = targetToolDescriptor(intent);
 			validateTargetToolDescriptor(descriptor, descriptorPath, execution);
 			if (!tools.includes(descriptorPath)) {
 				tools.push(descriptorPath);
 				toolsChanged = true;
 			}
 			plan(descriptorPath, stringifyYaml(descriptor), "100644", `Upsert the ${intent.name} Target tool descriptor`);
-			plan(executablePath, intent.executable, "100755", `Upsert the ${intent.name} Target tool executable`);
+			if (layout === "single-file") {
+				plan(executablePath, intent.executable as string, "100755", `Upsert the ${intent.name} Target tool executable`);
+				continue;
+			}
+			const directory = `tools/${intent.name}`;
+			const authored = new Set<string>([`${directory}/tool.yaml`]);
+			for (const file of intent.files as AuthoredToolFile[]) {
+				const path = `${directory}/${file.path}`;
+				authored.add(path);
+				plan(
+					path,
+					decodeAuthoredBytes(file, path),
+					file.mode ?? (file.path === "run" ? "100755" : "100644"),
+					`Upsert ${file.path} for the ${intent.name} Target tool`,
+				);
+			}
+			// An upsert replaces the whole directory: stale files from the previous
+			// version are removed in the same reviewed diff.
+			for (const stale of treeBlobs(repositoryDir, baseTargetSha, directory)) {
+				if (authored.has(stale.path)) continue;
+				plan(stale.path, null, null, `Remove the stale ${intent.name} tool file`);
+			}
 			continue;
 		}
 
-		const descriptorPath = `tools/${intent.name}.tool.yaml`;
-		if (!tools.includes(descriptorPath)) throw new Error(`cannot remove undeclared tool: ${intent.name}`);
+		if (intent.type === "data.upsert" || intent.type === "data.remove") {
+			const declaration = dataDirectories.find(
+				(candidate) => intent.path === candidate || intent.path.startsWith(`${candidate}/`),
+			);
+			if (intent.type === "data.remove") {
+				if (!declaration) throw new Error(`cannot remove a file outside a declared data directory: ${intent.path}`);
+				plan(intent.path, null, null, `Remove the ${intent.path} Target data file`);
+				continue;
+			}
+			if (!declaration) {
+				const segments = intent.path.split("/");
+				const implied = `data/${segments[1]}`;
+				if (segments.length < 3) throw new Error(`data.upsert path must name a file inside a data directory: ${intent.path}`);
+				dataDirectories.push(implied);
+				dataChanged = true;
+			}
+			plan(intent.path, decodeAuthoredBytes(intent, intent.path), "100644", `Upsert the ${intent.path} Target data file`);
+			continue;
+		}
+
 		const resolved = target.tools.find((tool) => tool.descriptor.name === intent.name);
-		if (!resolved || resolved.descriptorPath !== descriptorPath) {
-			throw new Error(`cannot resolve the declared tool being removed: ${intent.name}`);
+		if (!resolved) throw new Error(`cannot resolve the declared tool being removed: ${intent.name}`);
+		const descriptorPath = resolved.descriptorPath;
+		if (!tools.includes(descriptorPath)) throw new Error(`cannot remove undeclared tool: ${intent.name}`);
+		tools = tools.filter((candidate) => candidate !== descriptorPath);
+		toolsChanged = true;
+		if (resolved.layout === "directory") {
+			for (const file of treeBlobs(repositoryDir, baseTargetSha, `tools/${intent.name}`)) {
+				plan(file.path, null, null, `Remove the ${intent.name} Target tool directory`);
+			}
+			continue;
 		}
 		const executablePath = `bin/${intent.name}`;
 		if (resolved.executablePath !== executablePath) {
@@ -535,10 +731,22 @@ export function compileHarnessAuthoringProposal(
 			(tool) => tool.descriptor.name !== intent.name && tool.executablePath === executablePath,
 		);
 		if (shared) throw new Error(`${executablePath} is also used by declared tool ${shared.descriptor.name}`);
-		tools = tools.filter((candidate) => candidate !== descriptorPath);
-		toolsChanged = true;
 		plan(descriptorPath, null, null, `Remove the ${intent.name} Target tool descriptor`);
 		plan(executablePath, null, null, `Remove the ${intent.name} Target tool executable`);
+	}
+
+	// A declared data directory that lost its last file no longer exists in Git;
+	// dropping the declaration keeps the compiled manifest loadable.
+	for (const declaration of [...dataDirectories]) {
+		const remaining = new Set(treeBlobs(repositoryDir, baseTargetSha, declaration).map((file) => file.path));
+		for (const file of planned.values()) {
+			if (file.path !== declaration && !file.path.startsWith(`${declaration}/`)) continue;
+			if (file.after === null) remaining.delete(file.path);
+			else remaining.add(file.path);
+		}
+		if (remaining.size > 0) continue;
+		dataDirectories = dataDirectories.filter((candidate) => candidate !== declaration);
+		dataChanged = true;
 	}
 
 	if (executionChanged) {
@@ -554,10 +762,11 @@ export function compileHarnessAuthoringProposal(
 		}
 	}
 
-	if (skillsChanged || toolsChanged || executionChanged) {
+	if (skillsChanged || toolsChanged || dataChanged || executionChanged) {
 		const nextManifest = renderManifest(manifestText, manifest, {
 			...(skillsChanged ? { skills } : {}),
 			...(toolsChanged ? { tools } : {}),
+			...(dataChanged ? { data: dataDirectories } : {}),
 			...(executionChanged ? { execution } : {}),
 		});
 		plan(
@@ -566,21 +775,45 @@ export function compileHarnessAuthoringProposal(
 			"100644",
 			executionChanged
 				? "Update the Target's reviewed execution policy and declared resources"
-				: "Update the Target's declared skill and tool resources",
+				: "Update the Target's declared skill, tool, and data resources",
 		);
 	}
 
 	const resultingResources = new Map(
 		baseAuthoringContext.resources.map((resource) => [resource.path, resource] as const),
 	);
+	const resultingData = new Map<string, TargetAuthoringDataDirectory>(
+		baseAuthoringContext.data.map((directory) => [directory.path, { ...directory, entries: [...directory.entries] }]),
+	);
 	for (const file of planned.values()) {
 		if (file.path === "manifest.yaml") continue;
+		if (file.path.startsWith("data/")) {
+			const owner = [...resultingData.keys()].find((candidate) => file.path.startsWith(`${candidate}/`));
+			const directory = owner ? resultingData.get(owner) : undefined;
+			const bytes = file.after === null ? 0 : Buffer.byteLength(file.after, "utf8");
+			const beforeBytes = file.before?.content.byteLength ?? 0;
+			if (directory) {
+				directory.files += (file.after === null ? -1 : file.before ? 0 : 1);
+				directory.bytes += bytes - beforeBytes;
+			} else if (file.after !== null) {
+				const declaration = dataDirectories.find((candidate) => file.path.startsWith(`${candidate}/`));
+				if (!declaration) throw new Error(`compiled data file is outside every declared directory: ${file.path}`);
+				resultingData.set(declaration, {
+					path: declaration,
+					files: 1,
+					bytes,
+					entries: [file.path.slice(declaration.length + 1)],
+					entriesTruncated: false,
+				});
+			}
+			continue;
+		}
 		if (file.after === null) {
 			resultingResources.delete(file.path);
 			continue;
 		}
 		const identity = classifyTargetAuthoringResourcePath(file.path);
-		if (!identity || file.afterMode !== identity.mode) {
+		if (!identity || !file.afterMode || !identity.modes.includes(file.afterMode)) {
 			throw new Error(`compiled authoring resource is not canonical: ${file.path}`);
 		}
 		const bytes = Buffer.byteLength(file.after, "utf8");
@@ -588,10 +821,13 @@ export function compileHarnessAuthoringProposal(
 			kind: identity.kind,
 			name: identity.name,
 			path: file.path,
-			mode: identity.mode,
+			mode: file.afterMode,
 			bytes,
 			sha256: sha256(file.after),
 		});
+	}
+	for (const [path] of [...resultingData]) {
+		if (!dataDirectories.includes(path)) resultingData.delete(path);
 	}
 	const resultingManifest = planned.get("manifest.yaml")?.after ?? manifestText;
 	if (resultingManifest === null) throw new Error("structured authoring cannot remove manifest.yaml");
@@ -604,12 +840,24 @@ export function compileHarnessAuthoringProposal(
 			sandbox: execution.sandbox,
 		},
 	};
+	const resultingResourceList = [...resultingResources.values()] as TargetAuthoringResource[];
 	assertTargetAuthoringSurfaceWithinLimits({
 		manifestBytes: Buffer.byteLength(resultingManifest, "utf8"),
 		skillCount: skills.length,
-		toolCount: tools.length,
+		tools: tools.map((declaration) => {
+			const identity = classifyTargetToolDescriptorPath(declaration);
+			if (!identity) throw new Error(`compiled manifest declares a noncanonical tool: ${declaration}`);
+			return {
+				name: identity.name,
+				layout: identity.layout,
+				fileCount: identity.layout === "directory"
+					? resultingResourceList.filter((resource) => resource.path.startsWith(`tools/${identity.name}/`)).length
+					: 0,
+			};
+		}),
+		data: [...resultingData.values()],
 		target: resultingTarget,
-		resources: [...resultingResources.values()] as TargetAuthoringResource[],
+		resources: resultingResourceList,
 	});
 
 	const evidenceRefs = [...new Set(metadata.diagnoses.flatMap((diagnosis) => diagnosis.evidence))];

@@ -36,6 +36,8 @@ Inspect and run:
   ahde evidence [--port N]                     open the read-only trace explorer
   ahde list [--target <id>]                    list eval runs
   ahde feedback list [--target <dir>]          👍/👎 marks collected in ahde target
+  ahde tool try --target <dir> --tool <name> --input <json|@path>
+                                               run one declared tool in its sandbox
 
 Inside Builder Pi:
 ${builderCommandLines()}
@@ -169,13 +171,22 @@ corpus; the rest become one development corpus. Prints the receipt, both corpus
 ids, and the skipped-row counts — never a sealed row. A file that already has a
 sealed slice keeps it; repeat the same --sealed/--seed to ingest it again.
 Prefer Builder Pi: it shows sample cases and asks the operator to confirm.`,
+	"tool try": `Usage: ahde tool try --target <dir> --tool <name> --input <json|@path> [--branch <ref>]
+
+Run one declared Target tool on one JSON input inside a private scratch copy of
+the Harness: same descriptor, same OS sandbox, same declared setup step, same
+workspace projection a Target sees. --input takes inline JSON or @path to a JSON
+file; --branch tries an exact other revision instead of HEAD.
+
+Your checkout is never touched, no eval evidence is written, and output is
+bounded and redacted. Exit 0 = the tool exited 0, 1 = the tool failed.`,
 };
 
 /** Render root or command-specific help without reading project or environment state. */
 export function cliHelp(argv: readonly string[]): string {
 	const command = argv[0];
 	if (!command || command === "--help" || command === "-h" || command === "help") return CORE;
-	const nested = command === "corpus" || command === "feedback"
+	const nested = command === "corpus" || command === "feedback" || command === "tool"
 		? argv.find((token, index) => index > 0 && !token.startsWith("-"))
 		: undefined;
 	return COMMAND_HELP[nested ? `${command} ${nested}` : command] ?? CORE;

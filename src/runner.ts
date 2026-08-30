@@ -82,6 +82,12 @@ export interface TargetWorkspaceSnapshot {
 	readonly dir: string;
 	readonly sha256: string;
 	readonly targetIdentity: string;
+	/**
+	 * Private home shared by every run of this snapshot. Multi-file tools are
+	 * materialized there and their declared setup step runs once for the whole
+	 * EvalRun; nothing it produces re-enters the hashed workspace.
+	 */
+	readonly toolHomeDir: string;
 }
 
 const trustedWorkspaceSnapshots = new WeakSet<TargetWorkspaceSnapshot>();
@@ -210,10 +216,15 @@ function isPrivateWorkspacePath(
 	path: string,
 	evaluationFiles: ReadonlySet<string>,
 	nestedRunsRoot: string | null,
+	dataDirectories: readonly string[],
 ): boolean {
 	const normalized = normalizedRepositoryPath(path);
 	const parts = normalized.split("/");
 	if (parts[0] === "imports") return true;
+	// `data/` is a declared scope: undeclared data never reaches a Target.
+	if (parts[0] === "data" && !dataDirectories.some((declared) => normalized.startsWith(`${declared}/`))) {
+		return true;
+	}
 	if (parts.some((part) => WORKSPACE_PRIVATE_COMPONENTS.has(part))) return true;
 	if (parts.some((part) => part === ".env" || (part.startsWith(".env.") && part !== ".env.example"))) {
 		return true;
@@ -341,6 +352,7 @@ function copyGitVisibleWorkspace(target: ResolvedTarget, workspaceDir: string, r
 		throw new Error("runsRoot must not be the target repository root in isolated mode");
 	}
 	const evaluationFiles = new Set(target.evaluationFiles.map(normalizedRepositoryPath));
+	const dataDirectories = target.manifest.data.map(normalizedRepositoryPath);
 
 	const listed = execFileSync(
 		"git",
@@ -348,7 +360,7 @@ function copyGitVisibleWorkspace(target: ResolvedTarget, workspaceDir: string, r
 		{ encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
 	);
 	for (const path of listed.split("\0").filter(Boolean)) {
-		if (isPrivateWorkspacePath(path, evaluationFiles, nestedRunsRoot)) continue;
+		if (isPrivateWorkspacePath(path, evaluationFiles, nestedRunsRoot, dataDirectories)) continue;
 		const sourcePath = resolve(sourceDir, path);
 		const sourceRelative = containedRelativePath(sourceDir, sourcePath);
 		if (sourceRelative === null || sourceRelative === "") {
@@ -384,10 +396,13 @@ export function materializeTargetWorkspaceSnapshot(
 	try {
 		copyGitVisibleWorkspace(target, destination, runsRoot);
 		assertTargetSourceIdentity(target, loadTarget(target.dir), "during");
+		const toolHomeDir = join(temporaryRoot, "tool-home");
+		privateDirectory(toolHomeDir);
 		const snapshot = Object.freeze({
 			dir: realpathSync(destination),
 			sha256: workspaceTreeHash(destination),
 			targetIdentity: targetSnapshotIdentity(target),
+			toolHomeDir: realpathSync(toolHomeDir),
 		});
 		trustedWorkspaceSnapshots.add(snapshot);
 		workspaceSnapshotRoots.set(snapshot, temporaryRoot);
@@ -492,6 +507,10 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			target,
 			workspaceDir: executionCwd,
 			scratchDir,
+			// One prepared tool home per EvalRun snapshot: a declared setup step
+			// runs once for the whole suite, not once per task × repetition. A
+			// failure here is infrastructure — the record below records "error".
+			...(options.workspaceSnapshot ? { toolHomeRoot: options.workspaceSnapshot.toolHomeDir } : {}),
 		});
 	} catch (error) {
 		policyError = error;

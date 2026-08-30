@@ -136,7 +136,7 @@ describe("model-readable validation problems", () => {
 			summary: "Add a tool",
 			intents: [{ type: "tool.create", name: "lookup" }],
 			validationPlan: ["rerun"],
-		})).toThrow(/\/intents\/0: type "tool.create" is not supported; use one of: "instructions.replace" \{content\}, "execution.configure" \{execution\}, "skill.upsert" \{name, description, body, disableModelInvocation\?\}, "skill.remove" \{name\}, "tool.upsert" \{name, descriptor, executable\}, "tool.remove" \{name\}/);
+		})).toThrow(/\/intents\/0: type "tool.create" is not supported; use one of: "instructions.replace" \{content\}, "execution.configure" \{execution\}, "skill.upsert" \{name, description, body, disableModelInvocation\?\}, "skill.remove" \{name\}, "tool.upsert" \{name, descriptor, executable\?, files\?\}, "tool.remove" \{name\}, "data.upsert" \{content\?, contentBase64\?, path\}, "data.remove" \{path\}/);
 	});
 });
 

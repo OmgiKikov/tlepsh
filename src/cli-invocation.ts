@@ -20,6 +20,7 @@ export const CLI_COMMANDS = [
 	"failures",
 	"corpus",
 	"feedback",
+	"tool",
 	"compare",
 	"diagnose",
 	"report",
@@ -31,7 +32,7 @@ export const CLI_COMMANDS = [
 ] as const;
 
 export type CliCommand = typeof CLI_COMMANDS[number];
-export type CliAction = "publish" | "import" | "list" | "inspect" | "ingest" | "clear";
+export type CliAction = "publish" | "import" | "list" | "inspect" | "ingest" | "clear" | "try";
 
 export type CliEarlyExit =
 	| { kind: "help" }
@@ -124,7 +125,15 @@ const COMMAND_SPECS = {
 		requiredFlags: ["candidate", "reason"],
 		positionals: 0,
 	},
-} as const satisfies Record<Exclude<CliCommand, "corpus" | "feedback">, InvocationSpec>;
+} as const satisfies Record<Exclude<CliCommand, "corpus" | "feedback" | "tool">, InvocationSpec>;
+
+const TOOL_ACTION_SPECS = {
+	try: {
+		flags: ["target", "tool", "input", "branch"],
+		requiredFlags: ["target", "tool", "input"],
+		positionals: 0,
+	},
+} as const satisfies Record<"try", InvocationSpec>;
 
 const CORPUS_ACTION_SPECS = {
 	publish: {
@@ -159,8 +168,11 @@ const FEEDBACK_ACTION_SPECS = {
 	clear: { flags: ["target"], positionals: 0 },
 } as const satisfies Record<"list" | "clear", InvocationSpec>;
 
-const CORPUS_ACTIONS = Object.keys(CORPUS_ACTION_SPECS) as Array<keyof typeof CORPUS_ACTION_SPECS>;
-const FEEDBACK_ACTIONS = Object.keys(FEEDBACK_ACTION_SPECS) as Array<keyof typeof FEEDBACK_ACTION_SPECS>;
+const ACTION_COMMAND_SPECS: Readonly<Record<"corpus" | "feedback" | "tool", Readonly<Record<string, InvocationSpec>>>> = {
+	corpus: CORPUS_ACTION_SPECS,
+	feedback: FEEDBACK_ACTION_SPECS,
+	tool: TOOL_ACTION_SPECS,
+};
 const COMMAND_NAMES = new Set<string>(CLI_COMMANDS.filter((command) => command !== "root"));
 
 function cliError(message: string): never {
@@ -291,12 +303,11 @@ function unionFlags(specs: Readonly<Record<string, InvocationSpec>>): string[] {
 }
 
 function parseActionCommand(
-	command: "corpus" | "feedback",
+	command: "corpus" | "feedback" | "tool",
 	tokens: readonly string[],
 ): ParsedCliInvocation {
-	const specs: Readonly<Record<string, InvocationSpec>> =
-		command === "corpus" ? CORPUS_ACTION_SPECS : FEEDBACK_ACTION_SPECS;
-	const actions: readonly string[] = command === "corpus" ? CORPUS_ACTIONS : FEEDBACK_ACTIONS;
+	const specs = ACTION_COMMAND_SPECS[command];
+	const actions = Object.keys(specs);
 	const parsed = tokenize(tokens, unionFlags(specs), command);
 	const actionToken = parsed.positionals.shift();
 	if (actionToken === undefined) cliError(`missing action for ${command}; expected ${actions.join(", ")}`);
@@ -367,7 +378,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
 		tokens = argv.slice(1);
 	}
 
-	if (command === "corpus" || command === "feedback") {
+	if (command === "corpus" || command === "feedback" || command === "tool") {
 		return parseActionCommand(command, tokens);
 	}
 	const spec = COMMAND_SPECS[command];

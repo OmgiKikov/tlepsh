@@ -50,8 +50,8 @@ import {
 import { assertResourceOnlyManifestChange, parseStrictTargetManifest } from "./builder-proposal.js";
 
 export const CANDIDATE_SCOPE_POLICY = {
-	id: "candidate-harness-resources-v2",
-	allowed: ["AGENTS.md", "manifest.yaml", "skills/**", "bin/**", "tools/**"],
+	id: "candidate-harness-resources-v3",
+	allowed: ["AGENTS.md", "manifest.yaml", "skills/**", "bin/**", "tools/**", "data/**"],
 } as const;
 
 
@@ -158,7 +158,8 @@ function changedFiles(repositoryDir: string, baselineSha: string, candidateSha: 
 }
 
 function isAllowedCandidatePath(path: string): boolean {
-	return path === "AGENTS.md" || path === "manifest.yaml" || ["skills/", "bin/", "tools/"].some((prefix) => path.startsWith(prefix));
+	return path === "AGENTS.md" || path === "manifest.yaml" ||
+		["skills/", "bin/", "tools/", "data/"].some((prefix) => path.startsWith(prefix));
 }
 
 function validateScope(mode: ExperimentMode, files: string[]): void {

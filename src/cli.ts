@@ -27,6 +27,7 @@ import {
 	type DatasetHoldoutSpec,
 } from "./application/dataset-ingest.js";
 import { loadBuilderProposalRun } from "./application/builder-proposal.js";
+import { readTryToolInput, tryTool } from "./application/tool-workshop.js";
 import {
 	resolveDevelopmentTargetForEval,
 	targetWithDevelopmentCorpus,
@@ -602,6 +603,28 @@ async function main(): Promise<void> {
 				action: positional(0),
 			});
 			for (const line of lines) console.log(line);
+			break;
+		}
+		case "tool": {
+			if (positional(0) !== "try") throw new Error("usage: ahde tool try --target <dir> --tool <name> --input <json|@path>");
+			const branch = arg("branch");
+			const result = await tryTool({
+				repositoryDir: resolve(requireArg("target")),
+				tool: requireArg("tool"),
+				input: readTryToolInput(requireArg("input")),
+				...(branch ? { source: { kind: "branch" as const, ref: branch } } : {}),
+			});
+			console.log(
+				`tool ${result.tool} (${result.layout}) · ${result.target.id}@${result.target.gitSha.slice(0, 8)} · ` +
+					`sandbox ${result.sandbox} · exit ${result.exitCode ?? "killed"} · ${result.durationMs}ms` +
+					`${result.timedOut ? " · TIMED OUT" : ""}${result.truncated ? " · output truncated" : ""}`,
+			);
+			if (result.setup) {
+				console.log(`setup: exit ${result.setup.exitCode ?? "killed"} · ${result.setup.durationMs}ms · network ${result.setup.network}`);
+			}
+			if (result.stdout) console.log(`--- stdout ---\n${result.stdout}`);
+			if (result.stderr) console.log(`--- stderr ---\n${result.stderr}`);
+			if (result.exitCode !== 0) process.exitCode = 1;
 			break;
 		}
 		case "compare": {
