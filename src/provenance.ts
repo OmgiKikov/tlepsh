@@ -45,6 +45,7 @@ export const GraderCheckCodeSchema = z.enum([
 	"semantic-rubric",
 	"reference-exact",
 	"reference-similarity",
+	"turn-budget",
 ]);
 export type GraderCheckCode = z.infer<typeof GraderCheckCodeSchema>;
 
@@ -60,6 +61,7 @@ const CHECK_CODE_GRADER_TYPE: Record<GraderCheckCode, string> = {
 	"semantic-rubric": "judge",
 	"reference-exact": "exact",
 	"reference-similarity": "similarity",
+	"turn-budget": "turn_budget",
 };
 
 export const GraderResultSchema = z
@@ -147,6 +149,14 @@ export const JudgeMetricsSchema = z.strictObject({
 });
 export type JudgeMetrics = z.infer<typeof JudgeMetricsSchema>;
 
+/**
+ * What the simulated user cost this run, in the judge's units and for the same
+ * reason: a second model is billed against the same endpoint, and a run that
+ * hides half its spend cannot be compared on cost.
+ */
+export const SimulatedUserMetricsSchema = JudgeMetricsSchema;
+export type SimulatedUserMetrics = z.infer<typeof SimulatedUserMetricsSchema>;
+
 export const RunMetricsSchema = z.strictObject({
 	tokens: TokenMetricsSchema,
 	costUsd: z.number().nonnegative(),
@@ -155,12 +165,21 @@ export const RunMetricsSchema = z.strictObject({
 	toolErrors: z.number().int().nonnegative(),
 	recoveryAttempts: z.number().int().nonnegative(),
 	judge: JudgeMetricsSchema.nullable().optional(),
+	/** What the user model spent. Absent on every run without a simulated user. */
+	simulatedUser: SimulatedUserMetricsSchema.nullable().optional(),
 	/**
 	 * Dialogue turns seeded into the session before the graded prompt. Absent on
 	 * every single-message case, so their run.json stays byte-for-byte what it
 	 * was before dialogue cases existed.
 	 */
 	seededTurns: z.number().int().nonnegative().optional(),
+	/**
+	 * Agent turns the conversation actually took. Absent on every run without a
+	 * simulated user, where the answer is exactly one turn by construction.
+	 */
+	conversationTurns: z.number().int().positive().optional(),
+	/** Why the conversation ended. Absent on every run without a simulated user. */
+	conversationStop: z.enum(["max-turns", "sentinel", "stop-when"]).optional(),
 });
 export type RunMetrics = z.infer<typeof RunMetricsSchema>;
 
@@ -372,6 +391,13 @@ export const ProvenanceAxesSchema = z.strictObject({
 	params: JsonObjectSchema,
 	modelSpec: JsonObjectSchema,
 	judge: ModelFingerprintSchema.nullable(),
+	/**
+	 * The model that played the user, when the suite had one. Optional rather
+	 * than nullable on purpose: canonical JSON drops an absent key, so evidence
+	 * produced before simulated users existed keeps its exact provenance key and
+	 * stays comparable with evidence produced after.
+	 */
+	simulatedUser: ModelFingerprintSchema.optional(),
 	execution: ExecutionFingerprintSchema,
 	suiteHash: HashSchema,
 	datasetHash: HashSchema,
@@ -382,6 +408,7 @@ export function provenanceAxes(record: {
 	runtime: { piVersion: string; piSha: string; ahdeVersion: string };
 	model: ModelFingerprint;
 	judge?: ModelFingerprint | null;
+	simulatedUser?: ModelFingerprint | null | undefined;
 	execution: ExecutionFingerprint;
 	eval: { suiteHash: string; datasetHash: string };
 }): ProvenanceAxes {
@@ -399,6 +426,9 @@ export function provenanceAxes(record: {
 		params: record.model.params,
 		modelSpec: record.model.spec,
 		judge: record.judge ?? null,
+		// Emitted only when the suite has one, so the key stays absent — and the
+		// hash unchanged — for every suite that never plays a user.
+		...(record.simulatedUser ? { simulatedUser: record.simulatedUser } : {}),
 		execution: record.execution,
 		suiteHash: record.eval.suiteHash,
 		datasetHash: record.eval.datasetHash,
@@ -423,6 +453,7 @@ const AXIS_LABELS: Record<keyof ProvenanceAxes, string> = {
 	params: "model.params",
 	modelSpec: "model.spec",
 	judge: "eval.judge",
+	simulatedUser: "eval.simulatedUser",
 	execution: "execution",
 	suiteHash: "eval.suiteHash",
 	datasetHash: "eval.datasetHash",

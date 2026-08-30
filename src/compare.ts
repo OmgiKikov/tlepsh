@@ -83,13 +83,16 @@ function perTask(records: readonly RunRecord[]): Map<string, TaskAggregate> {
 
 /**
  * Cost, latency and token aggregate of one arm. Cost is what the arm actually
- * spent — the Target's tokens plus the judge calls that graded them — so a
+ * spent — the Target's tokens, the judge calls that graded them, and the user
+ * model that held up the other end of a simulated conversation — so a
  * judge-graded comparison on a free local Target still reports its real money,
  * and the ratio beside the verdict matches what the cost guard estimates.
  */
 function armResources(records: readonly RunRecord[]) {
 	return resourceTotals(records.map((record) => ({
-		costUsd: record.metrics.costUsd + (record.metrics.judge?.costUsd ?? 0),
+		costUsd: record.metrics.costUsd +
+			(record.metrics.judge?.costUsd ?? 0) +
+			(record.metrics.simulatedUser?.costUsd ?? 0),
 		latencyMs: record.metrics.latencyMs,
 		tokens: record.metrics.tokens.total,
 	})));

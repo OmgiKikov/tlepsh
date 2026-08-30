@@ -9,6 +9,13 @@ import { loadTargetTools, type ResolvedTargetTool } from "./target/tool-manifest
 
 // ---------- Grader specs (declarative, target-owned) ----------
 
+/**
+ * Hard ceiling on a simulated conversation. Twelve turns is already a long
+ * support dialogue; beyond it a case is measuring the user model, not the
+ * agent, and the bound also caps what one Run can spend.
+ */
+export const MAX_SIMULATED_USER_TURNS = 12;
+
 export const ToolCalledGrader = z.strictObject({
 	type: z.literal("tool_called"),
 	name: z.string().optional(),
@@ -110,6 +117,21 @@ export const SimilarityGrader = z.strictObject({
 	threshold: z.number().gt(0).lte(1),
 });
 
+/**
+ * How many turns the agent needed. A conversation that reaches the goal in two
+ * replies is a better agent than one that reaches it in nine, and neither the
+ * output nor a tool call can say so — only the shape of the transcript can.
+ *
+ * It counts the agent's OWN turns (assistant replies carrying text), so it is
+ * meaningful on a single-message case too, where the answer is exactly one turn.
+ */
+export const TurnBudgetGrader = z.strictObject({
+	type: z.literal("turn_budget"),
+	name: z.string().optional(),
+	/** Most agent turns that still passes. */
+	max: z.number().int().min(1).max(MAX_SIMULATED_USER_TURNS),
+});
+
 export const GraderSpec = z.discriminatedUnion("type", [
 	ToolCalledGrader,
 	OutputContainsGrader,
@@ -117,6 +139,7 @@ export const GraderSpec = z.discriminatedUnion("type", [
 	JudgeGrader,
 	ExactGrader,
 	SimilarityGrader,
+	TurnBudgetGrader,
 ]);
 export type GraderSpec = z.infer<typeof GraderSpec>;
 
@@ -170,6 +193,28 @@ export const TaskMetadataSchema = z
 	});
 export type TaskMetadata = z.infer<typeof TaskMetadataSchema>;
 
+/**
+ * A second model that plays the human across the conversation.
+ *
+ * `messages` freezes a past dialogue and grades the next reply; this instead
+ * lets the dialogue happen, which is the only way to measure an agent that has
+ * to ask a clarifying question, recover from a vague answer, or refuse politely
+ * over several turns. The user model receives exactly `goal`, `persona`,
+ * `stopWhen` and the transcript so far — never the graders, the reference
+ * answer, or anything about the Target's harness beyond its replies.
+ */
+export const SimulatedUserSpecSchema = z.strictObject({
+	/** What the person is trying to achieve, in their own terms. */
+	goal: boundedTaskText("simulated user goal"),
+	/** Who they are and how they write. Absent means a neutral user. */
+	persona: boundedTaskText("simulated user persona").optional(),
+	/** Agent turns the conversation may take before the host stops it. */
+	maxTurns: z.number().int().min(1).max(MAX_SIMULATED_USER_TURNS),
+	/** Plain-language condition; the user model reports when it holds. */
+	stopWhen: boundedTaskText("simulated user stop condition").optional(),
+});
+export type SimulatedUserSpec = z.infer<typeof SimulatedUserSpecSchema>;
+
 export const TaskSchema = z.strictObject({
 	id: z.string().min(1),
 	input: z.string().min(1),
@@ -180,6 +225,11 @@ export const TaskSchema = z.strictObject({
 	 * that only read `input` therefore keep seeing the question that was asked.
 	 */
 	messages: z.array(DialogueMessageSchema).min(1).max(MAX_TASK_MESSAGES).optional(),
+	/**
+	 * Play the conversation instead of replaying one. `input` stays the opening
+	 * user message; every later user turn comes from the user model.
+	 */
+	simulatedUser: SimulatedUserSpecSchema.optional(),
 	metadata: TaskMetadataSchema.optional(),
 	graders: z.array(GraderSpec).optional(),
 });
@@ -194,7 +244,14 @@ export type Task = z.infer<typeof TaskSchema>;
 export function taskDialogueIssue(task: {
 	input: string;
 	messages?: readonly DialogueMessage[] | undefined;
+	simulatedUser?: SimulatedUserSpec | undefined;
 }): string | null {
+	// A frozen history and a live user are two different measurements of the
+	// same turn. Carrying both would make it ambiguous which one produced the
+	// turns in the trace, so a case declares exactly one.
+	if (task.messages && task.simulatedUser) {
+		return "a case carries messages or simulatedUser, never both";
+	}
 	if (!task.messages) return null;
 	const last = task.messages[task.messages.length - 1];
 	if (!last) return "messages must carry at least one turn";
@@ -224,6 +281,7 @@ export function resolveTaskGraders(
 	tasks: readonly Task[],
 	defaults: readonly GraderSpec[],
 	judgeConfigured: boolean,
+	simulatedUserConfigured = false,
 ): ResolvedTask[] {
 	const resolved: ResolvedTask[] = tasks.map((task) => {
 		const graders: GraderSpec[] = task.graders ?? [...defaults];
@@ -250,6 +308,15 @@ export function resolveTaskGraders(
 	}
 	if (resolved.some((t) => t.effectiveGraders.some((g) => g.type === "judge")) && !judgeConfigured) {
 		throw new Error("dataset uses judge graders but evalSuite.judge model is not configured");
+	}
+	// Fail closed: a simulated-user case with no user model would silently
+	// degrade to a one-turn run and produce evidence about a conversation that
+	// never happened.
+	if (resolved.some((t) => t.simulatedUser) && !simulatedUserConfigured) {
+		const first = resolved.find((t) => t.simulatedUser);
+		throw new Error(
+			`task ${first?.id}: dataset uses simulated-user cases but evalSuite.simulatedUser model is not configured`,
+		);
 	}
 	return resolved;
 }
@@ -372,8 +439,29 @@ export const ModelBlock = ModelBlockShape.superRefine(reservedModelParams);
  * the params spread. Declaring one here would be a promise the request cannot
  * keep, so the manifest refuses it instead of silently ignoring it. The Target
  * model is free to set its own temperature — that is a recorded axis.
+ *
+ * The simulated user is the same kind of instrument for the same reason: it is
+ * part of what a case measures with, so it is pinned and refuses the override.
  */
 const RESERVED_JUDGE_PARAMS = new Set(["temperature"]);
+
+function reservedTemperatureParam(field: string) {
+	return (model: { params: Record<string, unknown> }, context: z.RefinementCtx): void => {
+		for (const key of Object.keys(model.params)) {
+			if (RESERVED_JUDGE_PARAMS.has(key)) {
+				context.addIssue({
+					code: "custom",
+					path: ["params", key],
+					message: `${field}.params cannot set "${key}": ${
+						field === "evalSuite.judge"
+							? "the judge is pinned to temperature 0 so grading is deterministic"
+							: "the simulated user is pinned to temperature 0 so a measured conversation is reproducible"
+					}`,
+				});
+			}
+		}
+	};
+}
 
 /**
  * Promotion policy for judge-graded evidence: how well this project's judge
@@ -392,17 +480,18 @@ export type JudgeCalibrationPolicy = z.infer<typeof JudgeCalibrationPolicy>;
 export const JudgeModelBlock = ModelBlockShape
 	.extend({ requireCalibration: JudgeCalibrationPolicy.optional() })
 	.superRefine(reservedModelParams)
-	.superRefine((model, context) => {
-		for (const key of Object.keys(model.params)) {
-			if (RESERVED_JUDGE_PARAMS.has(key)) {
-				context.addIssue({
-					code: "custom",
-					path: ["params", key],
-					message: `evalSuite.judge.params cannot set "${key}": the judge is pinned to temperature 0 so grading is deterministic`,
-				});
-			}
-		}
-	});
+	.superRefine(reservedTemperatureParam("evalSuite.judge"));
+
+/**
+ * The model that plays the user. Same shape and same credential handling as the
+ * judge — one variable name in the manifest, the value read from the host
+ * environment at call time and never written to any artifact — because it is
+ * the same kind of thing: an evaluation input the operator configures once, and
+ * a value no Builder tool ever sees.
+ */
+export const SimulatedUserModelBlock = ModelBlockShape
+	.superRefine(reservedModelParams)
+	.superRefine(reservedTemperatureParam("evalSuite.simulatedUser"));
 
 export const TargetManifest = z.strictObject({
 	id: z
@@ -443,6 +532,8 @@ export const TargetManifest = z.strictObject({
 		graders: z.string().min(1),
 		/** Judge model for judge graders; required when any task uses one. */
 		judge: JudgeModelBlock.optional(),
+		/** User model for simulated-user cases; required when any task uses one. */
+		simulatedUser: SimulatedUserModelBlock.optional(),
 	}),
 });
 export type TargetManifest = z.infer<typeof TargetManifest>;
@@ -645,6 +736,7 @@ function datasetIdentity(task: Task): Record<string, unknown> {
 		graders: task.graders ?? null,
 		expected: task.expected,
 		messages: task.messages,
+		simulatedUser: task.simulatedUser,
 		metadata: task.metadata,
 	};
 }
@@ -671,15 +763,29 @@ export function judgeMeasurementIdentity(
 	return judge ? { ...judge, requireCalibration: undefined } : null;
 }
 
+/**
+ * The user model as a measurement input. It is `undefined` — not `null` — when
+ * unconfigured on purpose: canonical JSON drops an absent key, so every suite
+ * written before simulated users existed keeps its exact hash, and comparing a
+ * baseline to a candidate stays a comparison of the same instrument.
+ */
+export function simulatedUserMeasurementIdentity(
+	simulatedUser: TargetManifest["evalSuite"]["simulatedUser"] | null | undefined,
+): Record<string, unknown> | undefined {
+	return simulatedUser ? { ...simulatedUser } : undefined;
+}
+
 export function suiteHashOf(
 	tasks: readonly Task[],
 	defaults: readonly GraderSpec[],
 	judge: TargetManifest["evalSuite"]["judge"] | null,
+	simulatedUser?: TargetManifest["evalSuite"]["simulatedUser"] | null,
 ): string {
 	return hashValue({
 		dataset: tasks.map(datasetIdentity),
 		defaults,
 		judge: judgeMeasurementIdentity(judge),
+		simulatedUser: simulatedUserMeasurementIdentity(simulatedUser),
 	});
 }
 
@@ -813,10 +919,20 @@ export function loadTarget(dir: string, override?: { dataset?: string }): Resolv
 	const dataBudget = { files: 0, bytes: 0, maxBytes: dataMaxBytes() };
 	const data = manifest.data.map((declaration) => measureDataDirectory(dir, declaration, dataBudget));
 
-	const resolved = resolveTaskGraders(tasks, defaults, manifest.evalSuite.judge !== undefined);
+	const resolved = resolveTaskGraders(
+		tasks,
+		defaults,
+		manifest.evalSuite.judge !== undefined,
+		manifest.evalSuite.simulatedUser !== undefined,
+	);
 
 	const datasetHash = hashValue(tasks.map(datasetIdentity));
-	const suiteHash = suiteHashOf(tasks, defaults, manifest.evalSuite.judge ?? null);
+	const suiteHash = suiteHashOf(
+		tasks,
+		defaults,
+		manifest.evalSuite.judge ?? null,
+		manifest.evalSuite.simulatedUser ?? null,
+	);
 
 	return {
 		dir: resolve(dir),
@@ -852,6 +968,8 @@ function graderDetail(spec: GraderSpec): string {
 			return spec.normalize;
 		case "similarity":
 			return `${spec.metric}>=${spec.threshold}`;
+		case "turn_budget":
+			return `<=${spec.max}turns`;
 	}
 }
 

@@ -12,6 +12,7 @@ import {
 } from "../corpus.js";
 import {
 	GraderSpec,
+	MAX_SIMULATED_USER_TURNS,
 	MAX_TASK_MESSAGES,
 	MAX_TASK_METADATA_KEY_CHARS,
 	MAX_TASK_METADATA_KEYS,
@@ -19,6 +20,7 @@ import {
 	MAX_TASK_TEXT_BYTES,
 	taskDialogueIssue,
 	type DialogueMessage,
+	type SimulatedUserSpec,
 } from "../manifest.js";
 import { canonicalJson, HashSchema, hashValue } from "../provenance.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
@@ -52,6 +54,12 @@ export const MAX_PREVIEW_COLUMN_SAMPLES = 3;
 export const MAX_COMPILE_SKIPPED = 100;
 export const MAX_CASE_INPUT_CHARS = 32_000;
 export const MAX_RECIPE_SAMPLE_LIMIT = 1_000;
+/**
+ * Turns a mapped simulated-user case gets when the recipe does not say. Six is
+ * a real support conversation — clarify, answer, follow up, close — without
+ * spending twelve model calls on every row of a large export.
+ */
+export const DEFAULT_RECIPE_SIMULATED_USER_TURNS = 6;
 
 const ProjectIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
 const CorpusIdSchema = z.string().regex(/^corpus-[0-9a-f]{64}$/);
@@ -130,6 +138,18 @@ export const DatasetMappingRecipeSchema = z.strictObject({
 	expected: z.strictObject({ column: ColumnNameSchema }).optional(),
 	/** A messages column; its last user turn becomes the case input. */
 	dialogue: z.strictObject({ column: ColumnNameSchema }).optional(),
+	/**
+	 * Turn a chat export into cases the agent has to hold a conversation with,
+	 * rather than a frozen history it answers once. `input` is still the opening
+	 * message (`first_user` on a chat export); the goal and persona come from
+	 * columns, and everything after the first turn is played by the user model.
+	 */
+	simulatedUser: z.strictObject({
+		goalColumn: ColumnNameSchema,
+		personaColumn: ColumnNameSchema.optional(),
+		maxTurns: z.number().int().min(1).max(MAX_SIMULATED_USER_TURNS).default(DEFAULT_RECIPE_SIMULATED_USER_TURNS),
+		stopWhen: z.string().min(1).max(MAX_TASK_TEXT_BYTES).optional(),
+	}).optional(),
 	metadata: z.array(ColumnNameSchema).min(1).max(MAX_TASK_METADATA_KEYS).optional(),
 	filters: z.array(DatasetFilterSchema).max(16).optional(),
 	sample: z.strictObject({
@@ -145,6 +165,22 @@ export const DatasetMappingRecipeSchema = z.strictObject({
 			code: "custom",
 			path: ["input"],
 			message: "a recipe needs an input mapping, a dialogue column, or both",
+		});
+	}
+	// A case carries a frozen history or a live user, never both, so a recipe
+	// that maps both would compile only rows the case schema then rejects.
+	if (recipe.simulatedUser && recipe.dialogue) {
+		context.addIssue({
+			code: "custom",
+			path: ["simulatedUser"],
+			message: "a recipe maps a dialogue column or a simulated user, never both",
+		});
+	}
+	if (recipe.simulatedUser && !recipe.input) {
+		context.addIssue({
+			code: "custom",
+			path: ["input"],
+			message: "a simulated-user recipe needs an input mapping: it is the opening user message",
 		});
 	}
 });
@@ -300,8 +336,10 @@ function substituteGrader(grader: GraderSpec, resolve: (name: string) => string)
 			};
 		case "exact":
 		case "similarity":
+		case "turn_budget":
 			// Reference graders carry no author text beyond their name; the answer
-			// they compare against is the case's own `expected` column.
+			// they compare against is the case's own `expected` column. A turn
+			// budget carries a number, which no column can substitute into.
 			return { ...grader, ...named };
 	}
 }
@@ -316,6 +354,10 @@ function recipeColumnIssues(recipe: DatasetMappingRecipe, columns: readonly stri
 	if (recipe.input && "column" in recipe.input) require(recipe.input.column);
 	if (recipe.expected) require(recipe.expected.column);
 	if (recipe.dialogue) require(recipe.dialogue.column);
+	if (recipe.simulatedUser) {
+		require(recipe.simulatedUser.goalColumn);
+		if (recipe.simulatedUser.personaColumn) require(recipe.simulatedUser.personaColumn);
+	}
 	for (const column of recipe.metadata ?? []) require(column);
 	for (const filter of recipe.filters ?? []) require(filter.column);
 	if (recipe.sample?.stratifyBy) require(recipe.sample.stratifyBy);
@@ -593,6 +635,29 @@ function mapRow(
 		return row.cells[name] ?? "";
 	};
 
+	let simulatedUser: SimulatedUserSpec | undefined;
+	if (recipe.simulatedUser) {
+		const goal = (row.cells[recipe.simulatedUser.goalColumn] ?? "").trim();
+		if (goal.length === 0) return { reason: "the simulated user has no goal" };
+		if (Buffer.byteLength(goal, "utf8") > MAX_TASK_TEXT_BYTES) {
+			return { reason: `the simulated user goal exceeds ${MAX_TASK_TEXT_BYTES} bytes` };
+		}
+		const persona = recipe.simulatedUser.personaColumn
+			? (row.cells[recipe.simulatedUser.personaColumn] ?? "").trim()
+			: "";
+		if (Buffer.byteLength(persona, "utf8") > MAX_TASK_TEXT_BYTES) {
+			return { reason: `the simulated user persona exceeds ${MAX_TASK_TEXT_BYTES} bytes` };
+		}
+		simulatedUser = {
+			goal,
+			// A blank persona cell is no persona, not an empty one: canonical JSON
+			// drops the key and the case hashes as the neutral user it is.
+			...(persona.length > 0 ? { persona } : {}),
+			maxTurns: recipe.simulatedUser.maxTurns,
+			...(recipe.simulatedUser.stopWhen ? { stopWhen: recipe.simulatedUser.stopWhen } : {}),
+		};
+	}
+
 	let messages: DialogueMessage[] | undefined;
 	if (recipe.dialogue) {
 		const parsed = parseDialogueCell(row.cells[recipe.dialogue.column] ?? "");
@@ -651,6 +716,7 @@ function mapRow(
 		input,
 		...(recipe.expected ? { expected: expectedValue } : {}),
 		...(messages ? { messages } : {}),
+		...(simulatedUser ? { simulatedUser } : {}),
 		...(metadata ? { metadata } : {}),
 		graders,
 	};

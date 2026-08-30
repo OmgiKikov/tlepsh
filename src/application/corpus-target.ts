@@ -10,6 +10,7 @@ import {
 	type GraderSpec,
 	hasReferenceAnswer,
 	judgeMeasurementIdentity,
+	simulatedUserMeasurementIdentity,
 	type ResolvedTarget,
 	type TargetManifest,
 } from "../manifest.js";
@@ -101,6 +102,7 @@ function targetWithCorpus(
 			// the runner seeds the turns and the graders compare with `expected`.
 			...(task.expected !== undefined ? { expected: task.expected } : {}),
 			...(task.messages !== undefined ? { messages: task.messages } : {}),
+			...(task.simulatedUser !== undefined ? { simulatedUser: task.simulatedUser } : {}),
 			...(task.metadata !== undefined ? { metadata: task.metadata } : {}),
 			graders,
 			effectiveGraders: graders.map(cloneGrader),
@@ -112,6 +114,14 @@ function targetWithCorpus(
 		!target.manifest.evalSuite.judge
 	) {
 		throw new Error(`${visibility} corpus ${corpus.metadata.id} uses judge graders but the target has no judge model`);
+	}
+	// The same fail-closed rule the manifest dataset gets: a published corpus can
+	// carry simulated-user cases, and running them without a user model would
+	// silently measure a one-turn conversation instead.
+	if (tasks.some((task) => task.simulatedUser) && !target.manifest.evalSuite.simulatedUser) {
+		throw new Error(
+			`${visibility} corpus ${corpus.metadata.id} uses simulated-user cases but the target has no simulatedUser model`,
+		);
 	}
 
 	return {
@@ -137,6 +147,10 @@ function targetWithCorpus(
 			// policy is not a grading input, so toggling `requireCalibration`
 			// leaves every published-corpus eval comparable.
 			judge: judgeMeasurementIdentity(target.manifest.evalSuite.judge),
+			// Undefined — and so canonically absent — for every suite without one,
+			// which keeps every published-corpus suite hash minted before simulated
+			// users existed exactly what it was.
+			simulatedUser: simulatedUserMeasurementIdentity(target.manifest.evalSuite.simulatedUser),
 		}),
 		suiteIdentity: "corpus",
 	};
