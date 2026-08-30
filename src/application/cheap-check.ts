@@ -25,7 +25,7 @@
  * produced the source eval (dataset label, dataset hash, suite hash).
  */
 
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { z } from "zod";
 import type { CorpusRef, LoadedCorpus } from "../corpus.js";
@@ -174,11 +174,11 @@ export class CheapCheckError extends Error {
 }
 
 function screensRoot(runsRoot: string): string {
-	return resolveContainedArtifactPath(resolve(runsRoot), "screens");
+	return join(resolve(runsRoot), "screens");
 }
 
 export function screenRecordPath(runsRoot: string, screenId: string): string {
-	return resolveContainedArtifactPath(screensRoot(runsRoot), `${ArtifactIdSchema.parse(screenId)}.json`);
+	return join(screensRoot(runsRoot), `${ArtifactIdSchema.parse(screenId)}.json`);
 }
 
 /**
@@ -200,7 +200,7 @@ export function screenEvalRunIds(runsRoot: string): Set<string> {
 	for (const entry of entries) {
 		if (!entry.endsWith(".json")) continue;
 		try {
-			const record = readJsonArtifact(resolveContainedArtifactPath(root, entry), CheapCheckScreenRecordSchema);
+			const record = readJsonArtifact(join(root, entry), CheapCheckScreenRecordSchema);
 			ids.add(record.evalRunId);
 		} catch {
 			// An unreadable screen marker cannot name its eval run; it also cannot
@@ -409,6 +409,7 @@ export async function runCheapCheck(
 				withinErrorBudget,
 				createdAt: now(),
 			});
+			mkdirSync(screensRoot(runsRoot), { recursive: true, mode: 0o700 });
 			const path = screenRecordPath(runsRoot, screenId);
 			writeJsonArtifact(path, CheapCheckScreenRecordSchema, record, { immutable: true });
 			return {
