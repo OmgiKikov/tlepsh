@@ -298,7 +298,7 @@ describe("Target Authoring Context", () => {
 		expect(resource.detail?.aspect).toBe("target");
 		expect((resource.detail?.content as { resource?: unknown }).resource).toMatchObject({ path: "AGENTS.md", content: AGENTS });
 		await expect(workbench.view({ aspect: "summary", resourcePath: "AGENTS.md" })).rejects.toThrow(
-			/resourcePath is valid only for the Target view/,
+			/resourcePath is valid only for the Target and dataset views/,
 		);
 	});
 });

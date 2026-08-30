@@ -394,7 +394,7 @@ export function renderTarget(content: WorkbenchTargetDetail, paint: Paint): stri
 export function renderDataset(content: WorkbenchDatasetDetail, paint: Paint): string[] {
 	const preview = content.preview;
 	const lines = [
-		`${section("Dataset", paint)} ${paint.bold(oneLine(content.sourcePath, 70))} ${paint.dim("·")} ${oneLine(preview.format, 20)} ${paint.dim(`· ${bytes(preview.bytes)}`)}`,
+		`${section("Dataset", paint)} ${paint.bold(oneLine(content.sourcePath, 56))} ${paint.dim("·")} ${oneLine(preview.format, 16)} ${paint.dim(`· ${bytes(preview.bytes)}`)}`,
 		`${paint.dim("Rows")} ${pluralize(preview.rowCount, "row")} ${paint.dim("·")} ${pluralize(preview.columns.length, "column")}` +
 			(preview.holdout
 				? ` ${paint.dim("·")} ${paint.warning(`${preview.holdout.reserved} reserved for the sealed exam`)}`
@@ -402,8 +402,8 @@ export function renderDataset(content: WorkbenchDatasetDetail, paint: Paint): st
 		paint.dim("Columns"),
 	];
 	for (const column of preview.columns) {
-		const samples = column.samples.map((sample) => oneLine(sample, 28)).join(paint.dim(" · "));
-		lines.push(`  ${paint.bold(oneLine(column.name, 28).padEnd(28))} ${column.inferredType.padEnd(10)} ${samples || paint.muted("—")}`);
+		const samples = oneLine(column.samples.map((sample) => oneLine(sample, 22)).join(" · "), 72);
+		lines.push(`  ${paint.bold(oneLine(column.name, 24).padEnd(24))} ${column.inferredType.padEnd(9)} ${samples || paint.muted("—")}`);
 	}
 	lines.push(paint.dim("Propose a recipe; the host compiles sample cases before anything is imported."));
 	return lines;
@@ -415,12 +415,15 @@ export function renderDatasetCases(cases: readonly WorkbenchDatasetCase[], paint
 	cases.forEach((sample, index) => {
 		lines.push(`  ${paint.dim(`${String(index + 1).padStart(2)}.`)} ${oneLine(sample.input, 92)}`);
 		if (sample.expected !== null) lines.push(`      ${paint.dim("expected:")} ${oneLine(sample.expected, 88)}`);
-		if (sample.messages) lines.push(`      ${paint.dim("dialogue:")} ${pluralize(sample.messages.length, "turn")} ${paint.dim(`ending in “${oneLine(sample.messages[sample.messages.length - 1]?.content ?? "", 50)}”`)}`);
+		if (sample.messages) {
+			const last = sample.messages[sample.messages.length - 1]?.content ?? "";
+			lines.push(`      ${paint.dim("dialogue:")} ${pluralize(sample.messages.length, "turn")} ${paint.dim(`ending in “${oneLine(last, 50)}”`)}`);
+		}
 		if (sample.metadata) {
 			const pairs = Object.entries(sample.metadata).slice(0, 4).map(([key, value]) => `${oneLine(key, 20)}=${oneLine(value, 24)}`);
-			lines.push(`      ${paint.dim("metadata:")} ${pairs.join(paint.dim(" · "))}`);
+			lines.push(`      ${paint.dim("metadata:")} ${oneLine(pairs.join(" · "), 88)}`);
 		}
-		lines.push(`      ${paint.dim("graders:")} ${sample.graders.map(graderLabel).join(paint.dim(" · "))}`);
+		lines.push(`      ${paint.dim("graders:")} ${oneLine(sample.graders.map(graderLabel).join(" · "), 89)}`);
 	});
 	return lines;
 }

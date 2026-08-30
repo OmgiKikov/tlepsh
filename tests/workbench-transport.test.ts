@@ -88,7 +88,7 @@ describe("Workbench tool argument preparation", () => {
 		expect(WorkbenchViewToolSchema.prepare({ aspect: "traces" })).toEqual({ aspect: "traces" });
 		expect(WorkbenchViewToolSchema.prepare({ include: ["selections"] })).toEqual({ include: ["selections"] });
 		expect(() => WorkbenchViewToolSchema.prepare({ aspect: "summary", resourcePath: "AGENTS.md" }))
-			.toThrow(/summary is invalid — \/resourcePath: resourcePath is valid only for the Target view/);
+			.toThrow(/summary is invalid — \/resourcePath: resourcePath is valid only for the Target and dataset views/);
 		expect(() => WorkbenchViewToolSchema.prepare({ include: ["diff"] })).toThrow(/aspect is invalid — \/include\/0:/);
 	});
 
@@ -108,7 +108,7 @@ describe("model-readable validation problems", () => {
 			revisionSummary: "6 cases",
 			tasks: [{ id: "c1", input: "Digest for Notion", notes: "basic", graders: [{ type: "llm", prompt: "Check sections" }] }],
 		})).toThrow(
-			/\/tasks\/0: unknown property "id" \(allowed: input, graders\); \/tasks\/0: unknown property "notes" \(allowed: input, graders\); \/tasks\/0\/graders\/0: type "llm" is not supported; use one of: "tool_called" \{name\?, tool, argsContains\?\}, "output_contains" \{name\?, text, caseSensitive\?\}, "output_matches" \{name\?, pattern\}, "judge" \{name\?, rubric\}/,
+			/\/tasks\/0: unknown property "id" \(allowed: input, expected, messages, metadata, graders\); \/tasks\/0: unknown property "notes" \(allowed: input, expected, messages, metadata, graders\); \/tasks\/0\/graders\/0: type "llm" is not supported; use one of: "tool_called" \{name\?, tool, argsContains\?\}, "output_contains" \{name\?, text, caseSensitive\?\}, "output_matches" \{name\?, pattern\}, "judge" \{name\?, rubric\}/,
 		);
 	});
 

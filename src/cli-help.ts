@@ -134,6 +134,22 @@ Import bounded JSONL. Prefer Builder Pi's project-local imports/ inbox for an ed
 	"corpus list": `Usage: ahde corpus list --project <id>
 
 List corpus metadata. Sealed content is never printed.`,
+	"corpus inspect": `Usage: ahde corpus inspect --project <id> --file imports/<file> [--sealed N --seed S]
+
+Preview one file in the project-local imports/ inbox: format, columns with
+inferred types and three sample values each, row count, and how many rows the
+sealed slice reserves. csv, tsv, json, jsonl, markdown tables, plain text, and
+chat exports. Rows held out for the sealed exam are excluded before anything is
+computed, and a sealed row is never printed.`,
+	"corpus ingest": `Usage: ahde corpus ingest --project <id> --file imports/<file> --recipe <json|@path> \\
+                   --name <name> [--sealed N --seed S [--stratify-by <column>]]
+
+Compile a dataset into eval cases through a mapping recipe. The sealed slice is
+drawn first from (file sha256, seed, count, column) and published as a sealed
+corpus; the rest become one development corpus. Prints the receipt, both corpus
+ids, and the skipped-row counts — never a sealed row. A file that already has a
+sealed slice keeps it; repeat the same --sealed/--seed to ingest it again.
+Prefer Builder Pi: it shows sample cases and asks the operator to confirm.`,
 };
 
 /** Render root or command-specific help without reading project or environment state. */

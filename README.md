@@ -340,6 +340,12 @@ ahde corpus publish --project my-agent --draft <builder-corpus-draft-id> \
 ahde corpus import --project my-agent --name "promotion holdout" \
   --visibility sealed --file ./private-holdout.jsonl
 
+# turn any data file in imports/ into eval cases
+ahde corpus inspect --project my-agent --file imports/support-tickets.csv
+ahde corpus ingest --project my-agent --file imports/support-tickets.csv \
+  --recipe @recipe.json --name "support basket" \
+  --sealed 40 --seed exam-1 --stratify-by tier
+
 # exact candidate experiment and terminal human decision
 ahde candidate --target . --builder-run <builder-run-id> \
   --project my-agent --development-corpus <development-corpus-id> \

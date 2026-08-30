@@ -119,12 +119,12 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			];
 			const cases = Array.isArray(subject.sampleCases) ? subject.sampleCases : [];
 			const lines = [
-				`${paint.dim("File")} ${paint.bold(text(subject.sourcePath, 80))} ${paint.dim("· basket")} ${text(subject.name, 60)}`,
-				`${paint.dim("Mapping")} ${mapping.join(paint.dim(" · "))}`,
+				`${paint.dim("File")} ${paint.bold(text(subject.sourcePath, 60))} ${paint.dim("· basket")} ${text(subject.name, 30)}`,
+				`${paint.dim("Mapping")} ${oneLine(mapping.join(" · "), 100)}`,
 				`${paint.dim("Cases")} ${paint.bold(pluralize(Number(subject.developmentCount ?? cases.length), "development case"))}` +
 					`${Number(subject.skippedRows ?? 0) > 0 ? ` ${paint.dim("·")} ${pluralize(Number(subject.skippedRows), "row")} skipped` : ""}`,
 				sealed
-					? `${paint.dim("Sealed")} ${paint.bold(pluralize(Number(sealed.count ?? 0), "row"))} drawn with seed ${paint.bold(text(sealed.seed, 40))}${sealed.stratifyBy ? paint.dim(` · stratified by ${text(sealed.stratifyBy, 30)}`) : ""}`
+					? `${paint.dim("Sealed")} ${paint.bold(pluralize(Number(sealed.count ?? 0), "row"))} drawn with seed ${paint.bold(text(sealed.seed, 24))}${sealed.stratifyBy ? paint.dim(` · stratified by ${text(sealed.stratifyBy, 20)}`) : ""}`
 					: `${paint.dim("Sealed")} ${paint.warning("none")} ${paint.dim("· without a holdout there is no exam for this file")}`,
 			];
 			if (cases.length > 0) {

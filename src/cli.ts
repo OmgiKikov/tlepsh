@@ -1,5 +1,5 @@
 import { dirname, join, resolve } from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describeEnvVar, loadDotEnv, type EnvReport } from "./env.js";
 import { loadTarget, scaffoldTarget } from "./manifest.js";
@@ -19,6 +19,12 @@ import {
 } from "./application/candidate-review.js";
 import { createCorpus, importCorpus, listCorpora, loadCorpus, type CorpusVisibility } from "./corpus.js";
 import { loadBuilderCorpusDraft } from "./application/builder-corpus-draft.js";
+import {
+	datasetHoldoutInForce,
+	ingestDataset,
+	inspectDatasetFile,
+	type DatasetHoldoutSpec,
+} from "./application/dataset-ingest.js";
 import { loadBuilderProposalRun } from "./application/builder-proposal.js";
 import {
 	resolveDevelopmentTargetForEval,
@@ -32,6 +38,7 @@ import {
 } from "./evidence/server.js";
 import { launchBuilderPi, type BuilderSessionMode } from "./builder/runtime.js";
 import { renderCalibration } from "./builder/render/calibration.js";
+import { renderDataset } from "./builder/render/view.js";
 import { plainPaint } from "./builder/render/paint.js";
 import { DEFAULT_REPETITIONS, calibrationProjection } from "./workbench/calibration.js";
 import { resolveCommitRef } from "./git/experiment-worktree.js";
@@ -93,6 +100,57 @@ function cliRunProgress(): RunEventListener {
 }
 
 const USAGE = cliHelp([]);
+const MAX_RECIPE_FILE_BYTES = 512 * 1024;
+
+/** `--recipe` is either the JSON itself or `@<path>` to a small JSON file. */
+function readRecipeFlag(value: string): unknown {
+	let text = value;
+	if (value.startsWith("@")) {
+		const path = resolve(value.slice(1));
+		const entry = statSync(path);
+		if (!entry.isFile()) throw new Error(`--recipe @${value.slice(1)} is not a regular file`);
+		if (entry.size > MAX_RECIPE_FILE_BYTES) {
+			throw new Error(`--recipe file exceeds ${MAX_RECIPE_FILE_BYTES} bytes`);
+		}
+		text = readFileSync(path, "utf8");
+	}
+	try {
+		return JSON.parse(text) as unknown;
+	} catch (error) {
+		throw new Error("--recipe must be a JSON object or @<path> to a JSON file", { cause: error });
+	}
+}
+
+/**
+ * The sealed slice for one inbox file. A file that already has one keeps it:
+ * drawing a second slice would put previously sealed rows into development.
+ */
+function datasetHoldout(projectId: string, sourcePath: string): DatasetHoldoutSpec | null {
+	const inForce = datasetHoldoutInForce(stateRoot(), projectId, sourcePath);
+	const count = arg("sealed");
+	const seed = arg("seed");
+	const requested = count && seed
+		? {
+			count: Number(count),
+			seed,
+			...(arg("stratify-by") ? { stratifyBy: arg("stratify-by")! } : {}),
+		} satisfies DatasetHoldoutSpec
+		: null;
+	if (inForce && requested && JSON.stringify(inForce) !== JSON.stringify(requested)) {
+		throw new Error(
+			`${sourcePath} already holds out ${inForce.count} row(s) with seed ${JSON.stringify(inForce.seed)}; ` +
+				"repeat that exact sealed slice or use another file",
+		);
+	}
+	return inForce ?? requested;
+}
+
+/** Skipped rows are reported as counts by reason; a row's contents never are. */
+function skippedByReason(skipped: readonly { reason: string }[]): [string, number][] {
+	const counts = new Map<string, number>();
+	for (const row of skipped) counts.set(row.reason, (counts.get(row.reason) ?? 0) + 1);
+	return [...counts.entries()].sort((left, right) => right[1] - left[1]);
+}
 
 function arg(name: string): string | undefined {
 	const argv = process.argv.slice(2);
@@ -473,6 +531,58 @@ async function main(): Promise<void> {
 				}
 				break;
 			}
+			if (action === "inspect") {
+				const sourcePath = requireArg("file");
+				const preview = inspectDatasetFile({
+					projectDir: process.cwd(),
+					sourcePath,
+					holdout: datasetHoldout(projectId, sourcePath),
+				});
+				console.log(renderDataset({ sourcePath, preview }, plainPaint).join("\n"));
+				break;
+			}
+			if (action === "ingest") {
+				const sourcePath = requireArg("file");
+				const result = ingestDataset({
+					projectDir: process.cwd(),
+					stateRoot: stateRoot(),
+					projectId,
+					sourcePath,
+					recipe: readRecipeFlag(requireArg("recipe")),
+					holdout: datasetHoldout(projectId, sourcePath),
+					developmentName: requireArg("name"),
+				});
+				// The development cases are published here so a scripted ingest ends
+				// with something runnable; the reviewed Builder flow drafts instead.
+				const development = createCorpus({
+					stateRoot: stateRoot(),
+					projectId,
+					name: result.developmentName,
+					visibility: "development",
+					tasks: result.tasks,
+				});
+				const receipt = result.receipt;
+				console.log(`source        ${receipt.sourcePath}  ${receipt.format}  ${receipt.sourceSha256}`);
+				console.log(`recipe        ${receipt.recipeSha256}`);
+				console.log(`rows          ${receipt.rowsSeen} seen  ${result.skipped.length} skipped`);
+				console.log(`development   ${development.id}  ${development.taskCount} tasks  ${development.hash}`);
+				console.log(
+					receipt.sealed
+						? `sealed        ${receipt.sealed.corpusId}  ${receipt.sealed.count} tasks  seed ${receipt.sealed.seed}`
+						: "sealed        none reserved",
+				);
+				console.log(`receipt       ${result.receiptPath}`);
+				for (const [reason, count] of skippedByReason(result.skipped)) {
+					console.error(`warning: ${count} row(s) skipped: ${reason}`);
+				}
+				if (receipt.sealed && receipt.sealed.count < SEALED_GATE_POLICY.minTasks) {
+					console.error(
+						`warning: a sealed holdout of ${receipt.sealed.count} case(s) can never produce a sealed verdict; ` +
+							`the guardrail needs at least ${SEALED_GATE_POLICY.minTasks} cases`,
+					);
+				}
+				break;
+			}
 			if (action === "list") {
 				const corpora = listCorpora({ stateRoot: stateRoot(), projectId });
 				if (corpora.length === 0) console.log("no corpora");
@@ -483,7 +593,7 @@ async function main(): Promise<void> {
 				}
 				break;
 			}
-			throw new Error("usage: ahde corpus publish|import|list --project <id> ...");
+			throw new Error("usage: ahde corpus publish|import|list|inspect|ingest --project <id> ...");
 		}
 		case "compare": {
 			const a = positional(0);
