@@ -25,6 +25,7 @@ import {
 } from "../domain/candidate.js";
 import { TargetManifest, type JudgeCalibrationPolicy } from "../manifest.js";
 import { judgeEvidenceCalibration } from "./judge-labels.js";
+import { judgeCalibrationRefusal } from "../domain/judge-agreement.js";
 import { loadEvalRun, loadVerifiedEvalRun, type EvalRunRecord } from "../eval.js";
 import { SpecSnapshotSchema } from "../spec.js";
 import { canonicalJson, hashValue } from "../provenance.js";
@@ -579,15 +580,14 @@ function assertJudgeCalibrated(
 		projectId: record.projectId,
 		evalRunIds: promotionEvalRunIds(record),
 	});
-	if (calibration.specHashes.length === 0) return;
-	const labels = calibration.stats?.n ?? 0;
-	const agreement = calibration.stats?.agreement ?? 0;
-	if (labels < policy.minLabels || agreement < policy.minAgreement) {
+	const refusal = judgeCalibrationRefusal(policy, {
+		judgeGraderSpecs: calibration.specHashes.length,
+		stats: calibration.stats,
+	});
+	if (refusal) {
 		throw new Error(
-			`promotion refused: this evidence is graded by ${calibration.specHashes.length} judge grader spec(s) ` +
-				`with ${labels} human label(s) at ${Math.round(agreement * 100)}% agreement; ` +
-				`the Target requires at least ${policy.minLabels} label(s) at ${Math.round(policy.minAgreement * 100)}%. ` +
-				`Run \`ahde label <evalRunId> --target <dir>\` and grade the judge before promoting.`,
+			`promotion refused: ${refusal}. ` +
+				"Run `ahde label <evalRunId> --target <dir>` and grade the judge before promoting.",
 		);
 	}
 }

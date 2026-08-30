@@ -116,6 +116,33 @@ export function judgeAgreement(rows: readonly JudgeAgreementInput[]): JudgeAgree
 	};
 }
 
+/** What a Target may demand of its judge before promoting evidence it graded. */
+export interface JudgeCalibrationRequirement {
+	minAgreement: number;
+	minLabels: number;
+}
+
+/**
+ * Why this promotion may not proceed, or null when it may.
+ *
+ * Separate from the promotion path that throws it so the rule can be read,
+ * tested, and quoted on a screen without a git repository in scope. Evidence
+ * that no judge graded is never blocked: the policy is about an instrument,
+ * and an instrument that was not used decided nothing.
+ */
+export function judgeCalibrationRefusal(
+	requirement: JudgeCalibrationRequirement | undefined,
+	evidence: { judgeGraderSpecs: number; stats: JudgeAgreementStats | null },
+): string | null {
+	if (!requirement || evidence.judgeGraderSpecs === 0) return null;
+	const labels = evidence.stats?.n ?? 0;
+	const agreement = evidence.stats?.agreement ?? 0;
+	if (labels >= requirement.minLabels && agreement >= requirement.minAgreement) return null;
+	return `this evidence is graded by ${evidence.judgeGraderSpecs} judge grader spec(s) ` +
+		`with ${labels} human label(s) at ${Math.round(agreement * 100)}% agreement; ` +
+		`the Target requires at least ${requirement.minLabels} label(s) at ${Math.round(requirement.minAgreement * 100)}%`;
+}
+
 /** `84% · κ 0.62 · n=50`, the one line every screen shows. */
 export function formatJudgeAgreement(stats: JudgeAgreementStats): string {
 	const kappa = stats.kappa === null ? "κ n/a" : `κ ${stats.kappa.toFixed(2)}`;

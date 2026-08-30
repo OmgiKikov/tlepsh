@@ -690,8 +690,9 @@ function assertionOutcome(index: number, jurors: readonly JudgeVerdict[]): {
 	return { verdict: { index, answer: decided, evidence: spokesman?.evidence ?? "judge gave no evidence" }, yes };
 }
 
-function juryNote(votes: number, jury: number): string {
-	return jury > 1 ? ` (${votes}/${jury})` : "";
+/** Vote counts for one assertion, named so `1/3` cannot be read as anything else. */
+function juryNote(yesVotes: number, jury: number): string {
+	return jury > 1 ? ` (${yesVotes}/${jury} yes)` : "";
 }
 
 /**
