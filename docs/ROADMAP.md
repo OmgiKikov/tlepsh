@@ -140,6 +140,19 @@ branch; the closed-loop Pi test passes with exactly three confirmations.
 11. **Host-side sealed generation** — an evaluator-model call whose output
     never enters the Builder's context; the human edits and seals (old item 3).
 
+11b. **The proposer remembers what was already tried.** Today the Builder sees
+    the current failure modes and nothing else: cycle 5 can re-propose what
+    cycle 2 already tried and lost. [Meta-Harness](https://arxiv.org/abs/2603.28052)
+    makes this the core of the method — its proposer reads the source, the
+    scores, and the traces of *every* prior candidate from a structured
+    directory, and that memory is what lets a search compound instead of
+    wandering. AHDE already stores exactly this (every proposal, its diff, its
+    verdict, its diagnosis, all content-addressed); nothing reads it back to
+    the Builder. Add one bounded view — what was tried, what it changed, what
+    it scored, why it was rejected — into the authoring context, and make the
+    population search (#6) draw from it. ~1 day, and it is the cheapest
+    quality win on this list.
+
 ## Wave 3 — platform integration
 
 12. **Headless mode** — the Workbench behind JSON-RPC/HTTP with an injected
