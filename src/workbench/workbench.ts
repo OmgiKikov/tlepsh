@@ -764,15 +764,13 @@ export class AhdeWorkbench {
 				message = done.message;
 			}
 		}
-		const pending = evaluation
-			? null
-			: corpusDraft
-				? "review the run"
-				: "the test cases are not drafted yet";
+		// The basket is bound to an approved Spec, so it can only be drafted after
+		// this approval; saying so is more useful than an error.
+		const pending = evaluation ? null : "the test cases are not drafted yet";
 		return {
 			kind: input.kind,
 			message: message ||
-				`Spec approved. Next: the Builder drafts the test cases, then “tests” publishes them and runs.`,
+				"Spec approved. Next: draft the test cases, then “tests” publishes them and runs.",
 			result: { steps, approvedSpecId, developmentCorpus, evaluation, pending },
 			view,
 		};
@@ -881,8 +879,10 @@ export class AhdeWorkbench {
 		}
 		return {
 			kind: input.kind,
-			message: `Shipped${tag ? ` ${tag}` : ""}${adoption ? ` on ${adoption.branch}` : ""}. ` +
-				`${continuation ? `The next cycle starts at ${continuation.nextStage}.` : ""}`.trim(),
+			message: [
+				`Shipped${tag ? ` ${tag}` : ""}${adoption ? ` on ${adoption.branch}` : ""}.`,
+				...(continuation ? [`The next cycle starts at ${continuation.nextStage}.`] : []),
+			].join(" "),
 			result: { steps, candidate: shipped, tag, adoption, continuation },
 			view,
 		};

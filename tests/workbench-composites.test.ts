@@ -9,7 +9,6 @@ import {
 	createAhdeWorkbench,
 	type AhdeWorkbench,
 	type AhdeWorkbenchDependencies,
-	type WorkbenchHumanGate,
 } from "../src/workbench/index.js";
 import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 import {
@@ -410,6 +409,3 @@ describe("ship composite", () => {
 		}
 	});
 });
-
-/** The gate type is re-exported for the composite tests above. */
-export type { WorkbenchHumanGate };

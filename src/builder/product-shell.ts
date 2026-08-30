@@ -229,10 +229,11 @@ export function installAhdeBuilderProductShell(
 		ctx.ui.setWorkingMessage("AHDE Builder is working…");
 		ctx.ui.setHeader((hostTui, theme) => {
 			tui = hostTui;
+			const paint = themePaint(theme);
 			return {
 				// Pi aborts the whole session on an over-wide custom line; every header
 				// line is measured with ANSI awareness and cut to the viewport.
-				render: (width: number) => withOperatorVerb(renderHeader(state, themePaint(theme)), state, themePaint(theme))
+				render: (width: number) => withOperatorVerb(renderHeader(state, paint), state, paint)
 					.map((line) => truncateToWidth(line, Math.max(1, width))),
 				invalidate() {},
 			};
