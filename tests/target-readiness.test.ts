@@ -30,6 +30,7 @@ function target(id = "docs-agent", modelId = "model-1"): Pick<ResolvedTarget, "m
 			instructions: { agentsMd: "AGENTS.md" },
 			skills: [],
 			tools: [],
+			data: [],
 			evalSuite: { id: "development", dataset: "evals/tasks.jsonl", graders: "evals/graders.yaml" },
 		},
 	};

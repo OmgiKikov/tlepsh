@@ -499,6 +499,7 @@ const targetContext: TargetAuthoringContext = {
 		{ kind: "tool-descriptor", name: "lookup", path: "tools/lookup.tool.yaml", mode: "100644", bytes: 512, sha256: HASH },
 		{ kind: "tool-executable", name: "lookup", path: "tools/lookup", mode: "100755", bytes: 1536, sha256: HASH },
 	],
+	data: [],
 	launch: "ahde target",
 };
 
