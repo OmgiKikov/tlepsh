@@ -140,6 +140,46 @@ export function loadJudgeCalibration(stateRoot: string, projectId: string): Judg
 	};
 }
 
+/** Judge grader specs that actually graded one eval run's runs. */
+export function judgeGraderSpecHashes(runsRoot: string, evalRunId: string): string[] {
+	const hashes = new Set<string>();
+	for (const run of loadVerifiedEvalRun(runsRoot, EvalRunIdSchema.parse(evalRunId)).runs) {
+		for (const grader of run.evalResults?.graders ?? []) {
+			if (grader.checkCode === "semantic-rubric" && grader.specHash) hashes.add(grader.specHash);
+		}
+	}
+	return [...hashes].sort();
+}
+
+export interface JudgeEvidenceCalibration {
+	/** Judge grader specs this evidence rests on. Empty means no judge graded it. */
+	specHashes: string[];
+	/** Agreement over the labels covering exactly those specs; null when none exist. */
+	stats: JudgeAgreementStats | null;
+}
+
+/**
+ * The one question every judge screen and the promotion gate ask: does this
+ * evidence lean on a judge, and how far has that judge been checked? Pooling
+ * only the labels for the specs that actually graded keeps an unrelated,
+ * well-labelled judge elsewhere in the project from vouching for this one.
+ */
+export function judgeEvidenceCalibration(options: {
+	runsRoot: string;
+	stateRoot: string;
+	projectId: string;
+	evalRunIds: readonly string[];
+}): JudgeEvidenceCalibration {
+	const specHashes = [...new Set(
+		options.evalRunIds.flatMap((evalRunId) => judgeGraderSpecHashes(options.runsRoot, evalRunId)),
+	)].sort();
+	if (specHashes.length === 0) return { specHashes, stats: null };
+	const wanted = new Set(specHashes);
+	const rows = readProjectJudgeLabels(options.stateRoot, options.projectId)
+		.filter((row) => wanted.has(row.graderSpecHash));
+	return { specHashes, stats: rows.length === 0 ? null : judgeAgreement(rows).pooled };
+}
+
 // ---------- Labelling subjects ----------
 
 /** One judge check a human is asked to grade blind. */

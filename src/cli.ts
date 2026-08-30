@@ -1013,6 +1013,7 @@ async function main(): Promise<void> {
 				reason: requireArg("reason"),
 				actorId: arg("actor"),
 				runsRoot: runsRoot(),
+				stateRoot: stateRoot(),
 			});
 			console.log(`promoted candidate ${result.record.candidateId}: tag ${result.tag} at ${result.candidateSha}`);
 			break;

@@ -23,7 +23,8 @@ import {
 	transitionCandidate,
 	type CandidateRecord,
 } from "../domain/candidate.js";
-import { TargetManifest } from "../manifest.js";
+import { TargetManifest, type JudgeCalibrationPolicy } from "../manifest.js";
+import { judgeEvidenceCalibration } from "./judge-labels.js";
 import { loadEvalRun, loadVerifiedEvalRun, type EvalRunRecord } from "../eval.js";
 import { SpecSnapshotSchema } from "../spec.js";
 import { canonicalJson, hashValue } from "../provenance.js";
@@ -61,6 +62,12 @@ export interface PromoteReviewedCandidateOptions {
 	version: string;
 	reason: string;
 	actorId?: string;
+	/**
+	 * Where this project's human judge labels live. Required only by a Target
+	 * whose manifest sets `evalSuite.judge.requireCalibration`: without it that
+	 * policy cannot be evaluated, and an unevaluable promotion policy refuses.
+	 */
+	stateRoot?: string;
 	now?: () => string;
 }
 
@@ -538,6 +545,53 @@ function verifyPromotionEvidence(record: CandidateRecord, runsRoot: string): voi
 	}
 }
 
+/** Every eval run this promotion rests on, development and sealed alike. */
+function promotionEvalRunIds(record: CandidateRecord): string[] {
+	const evaluated = record.events.find((event) => event.type === "evaluated");
+	if (evaluated?.type !== "evaluated") return [];
+	const holdout = evaluated.evaluation.sealedHoldout;
+	return [
+		evaluated.evaluation.development.candidate.evalRunId,
+		...(holdout ? [holdout.candidate.evalRunId] : []),
+	];
+}
+
+/**
+ * A judge nobody has checked is an opinion, and `requireCalibration` is a
+ * project saying it will not promote on one. The policy reads only grader spec
+ * hashes — never sealed content — and it refuses rather than guesses when the
+ * labels it would need cannot be reached at all.
+ */
+function assertJudgeCalibrated(
+	policy: JudgeCalibrationPolicy | undefined,
+	record: CandidateRecord,
+	options: { runsRoot: string; stateRoot?: string },
+): void {
+	if (!policy) return;
+	if (!options.stateRoot) {
+		throw new Error(
+			"promotion refused: evalSuite.judge.requireCalibration is set but this promotion has no label store to check it against",
+		);
+	}
+	const calibration = judgeEvidenceCalibration({
+		runsRoot: options.runsRoot,
+		stateRoot: options.stateRoot,
+		projectId: record.projectId,
+		evalRunIds: promotionEvalRunIds(record),
+	});
+	if (calibration.specHashes.length === 0) return;
+	const labels = calibration.stats?.n ?? 0;
+	const agreement = calibration.stats?.agreement ?? 0;
+	if (labels < policy.minLabels || agreement < policy.minAgreement) {
+		throw new Error(
+			`promotion refused: this evidence is graded by ${calibration.specHashes.length} judge grader spec(s) ` +
+				`with ${labels} human label(s) at ${Math.round(agreement * 100)}% agreement; ` +
+				`the Target requires at least ${policy.minLabels} label(s) at ${Math.round(policy.minAgreement * 100)}%. ` +
+				`Run \`ahde label <evalRunId> --target <dir>\` and grade the judge before promoting.`,
+		);
+	}
+}
+
 /**
  * Create an annotated Git tag for the exact reviewed candidate and append the
  * canonical promotion event. The aggregate is validated before Git is touched;
@@ -573,6 +627,10 @@ export function promoteReviewedCandidate(
 		);
 	}
 	verifyPromotionEvidence(record, options.runsRoot);
+	assertJudgeCalibrated(manifestResult.data.evalSuite.judge?.requireCalibration, record, {
+		runsRoot: options.runsRoot,
+		...(options.stateRoot ? { stateRoot: options.stateRoot } : {}),
+	});
 
 	const tag = `v${options.version}`;
 	const tagExists = spawnSync(
