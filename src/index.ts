@@ -16,6 +16,7 @@ export * from "./application/harness-authoring.js";
 export * from "./application/improvement-brief.js";
 export * from "./application/target-bootstrap.js";
 export * from "./application/target-authoring-context.js";
+export * from "./application/tool-workshop.js";
 export * from "./builders/adapters.js";
 export * from "./builder/extension.js";
 export * from "./builder/commands.js";
@@ -45,5 +46,6 @@ export {
 } from "./target/interactive.js";
 export * from "./target/tool-broker.js";
 export * from "./target/tool-manifest.js";
+export * from "./target/tool-setup.js";
 export * from "./trace.js";
 export * from "./workbench/index.js";

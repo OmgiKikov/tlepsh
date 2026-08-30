@@ -19,6 +19,7 @@ export const CLI_COMMANDS = [
 	"list",
 	"failures",
 	"corpus",
+	"tool",
 	"compare",
 	"diagnose",
 	"report",
@@ -30,7 +31,7 @@ export const CLI_COMMANDS = [
 ] as const;
 
 export type CliCommand = typeof CLI_COMMANDS[number];
-export type CliAction = "publish" | "import" | "list";
+export type CliAction = "publish" | "import" | "list" | "try";
 
 export type CliEarlyExit =
 	| { kind: "help" }
@@ -123,7 +124,15 @@ const COMMAND_SPECS = {
 		requiredFlags: ["candidate", "reason"],
 		positionals: 0,
 	},
-} as const satisfies Record<Exclude<CliCommand, "corpus">, InvocationSpec>;
+} as const satisfies Record<Exclude<CliCommand, "corpus" | "tool">, InvocationSpec>;
+
+const TOOL_ACTION_SPECS = {
+	try: {
+		flags: ["target", "tool", "input", "branch"],
+		requiredFlags: ["target", "tool", "input"],
+		positionals: 0,
+	},
+} as const satisfies Record<"try", InvocationSpec>;
 
 const CORPUS_ACTION_SPECS = {
 	publish: {
@@ -143,7 +152,10 @@ const CORPUS_ACTION_SPECS = {
 	},
 } as const satisfies Record<"publish" | "import" | "list", InvocationSpec>;
 
-const CORPUS_ACTIONS = Object.keys(CORPUS_ACTION_SPECS) as Array<keyof typeof CORPUS_ACTION_SPECS>;
+const ACTION_COMMAND_SPECS: Readonly<Record<"corpus" | "tool", Readonly<Record<string, InvocationSpec>>>> = {
+	corpus: CORPUS_ACTION_SPECS,
+	tool: TOOL_ACTION_SPECS,
+};
 const COMMAND_NAMES = new Set<string>(CLI_COMMANDS.filter((command) => command !== "root"));
 
 function cliError(message: string): never {
@@ -273,19 +285,20 @@ function unionFlags(specs: Readonly<Record<string, InvocationSpec>>): string[] {
 }
 
 function parseActionCommand(
-	command: "corpus",
+	command: "corpus" | "tool",
 	tokens: readonly string[],
 ): ParsedCliInvocation {
-	const specs = CORPUS_ACTION_SPECS;
-	const actions = CORPUS_ACTIONS;
+	const specs = ACTION_COMMAND_SPECS[command];
+	const actions = Object.keys(specs);
 	const parsed = tokenize(tokens, unionFlags(specs), command);
 	const actionToken = parsed.positionals.shift();
 	if (actionToken === undefined) cliError(`missing action for ${command}; expected ${actions.join(", ")}`);
 	if (!actions.includes(actionToken as never)) {
 		cliError(`unknown action ${JSON.stringify(actionToken)} for ${command}; expected ${actions.join(", ")}`);
 	}
-	const action = actionToken as keyof typeof specs;
+	const action = actionToken as string;
 	const spec = specs[action];
+	if (!spec) cliError(`unknown action ${JSON.stringify(action)} for ${command}`);
 	const context = `${command} ${action}`;
 	assertInvocationSpec(parsed, spec, context);
 	return freezeInvocation(command, action as CliAction, parsed);
@@ -336,7 +349,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
 		tokens = argv.slice(1);
 	}
 
-	if (command === "corpus") {
+	if (command === "corpus" || command === "tool") {
 		return parseActionCommand(command, tokens);
 	}
 	const spec = COMMAND_SPECS[command];
