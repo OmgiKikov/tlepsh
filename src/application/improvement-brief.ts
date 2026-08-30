@@ -16,6 +16,8 @@ import {
 import { redactTraceText } from "../trace.js";
 
 export const IMPROVEMENT_BRIEF_ALGORITHM_ID = "exact-eval-signals-v1" as const;
+/** Failure share (basis points) below which a mode is noise to stabilize, not a harness defect to fix. */
+export const PROPOSAL_REPRODUCTION_FLOOR_BPS = 2_500;
 
 const MAX_FAILURE_MODES = 30;
 const MAX_TASK_IDS = 100;
@@ -271,20 +273,38 @@ function mergeObservation(existing: Observation | undefined, incoming: Observati
 	};
 }
 
+/**
+ * What a failed check says about the harness. An exact match against a
+ * reference answer is a contract on the output; a similarity threshold and a
+ * rubric are both statements about how good the answer was.
+ */
+const GRADER_CHECK_CATEGORIES: Record<GraderCheckCode, FailureModeCategory> = {
+	"required-tool": "tool-selection",
+	"output-contains": "output-contract",
+	"output-matches": "output-contract",
+	"reference-exact": "output-contract",
+	"semantic-rubric": "answer-quality",
+	"reference-similarity": "answer-quality",
+};
+
+/** Title of an exact (non-legacy) grader failure mode. */
+const GRADER_CHECK_TITLES: Record<GraderCheckCode, string> = {
+	"required-tool": "Required tool check failed",
+	"output-contains": "Output contract check failed",
+	"output-matches": "Output contract check failed",
+	"reference-exact": "Exact reference-answer check failed",
+	"semantic-rubric": "Semantic rubric check failed",
+	"reference-similarity": "Reference similarity check failed",
+};
+
 function categoryForGrader(grader: DiagnosticGraderResult): FailureModeCategory {
-	switch (grader.checkCode) {
-		case "required-tool":
-			return "tool-selection";
-		case "output-contains":
-		case "output-matches":
-			return "output-contract";
-		case "semantic-rubric":
-			return "answer-quality";
-		default:
-			if (grader.type === "tool_called") return "tool-selection";
-			if (grader.type === "output_contains" || grader.type === "output_matches") return "output-contract";
-			return "answer-quality";
+	const known = grader.checkCode ? GRADER_CHECK_CATEGORIES[grader.checkCode] : undefined;
+	if (known) return known;
+	if (grader.type === "tool_called") return "tool-selection";
+	if (grader.type === "output_contains" || grader.type === "output_matches" || grader.type === "exact") {
+		return "output-contract";
 	}
+	return "answer-quality";
 }
 
 function graderModeDescriptor(
@@ -445,11 +465,13 @@ function modeWords(mode: ModeAccumulator, scope: FailureMode["scope"]): {
 			hypothesis: "A grader predicate failed, but the legacy result lacks an exact check code and spec fingerprint. Cross-task attribution would be unsafe.",
 		};
 	}
-	const exactTitle = mode.category === "tool-selection"
-		? "Required tool check failed"
-		: mode.category === "output-contract"
-			? "Output contract check failed"
-			: "Semantic rubric check failed";
+	const checkCode = mode.signature.kind === "grader-check" ? mode.signature.checkCode : null;
+	const exactTitle = (checkCode ? GRADER_CHECK_TITLES[checkCode] : undefined) ??
+		(mode.category === "tool-selection"
+			? "Required tool check failed"
+			: mode.category === "output-contract"
+				? "Output contract check failed"
+				: "Semantic rubric check failed");
 	return {
 		title: scope === "systemic" ? `${exactTitle} across tasks` : exactTitle,
 		hypothesis: "The same deterministic grader predicate was unsatisfied in the cited runs. This identifies the failed predicate, not why the harness missed it.",
@@ -467,9 +489,16 @@ function finalizeMode(mode: ModeAccumulator, totalTasks: number): FailureMode {
 	const selectedEvidence = selectRepresentatives(failures, MAX_EVIDENCE);
 	const selectedCounterEvidence = selectRepresentatives(passes, MAX_COUNTER_EVIDENCE);
 	const words = modeWords(mode, scope);
+	// A mode is a proposal target when it reproduces often enough that a
+	// harness change can plausibly move it. Counter-evidence (passes of the same
+	// exact signature) is kept and shown as the reproduction rate; it no longer
+	// vetoes the mode, because on a noisy agent with repetitions almost every
+	// real weakness passes sometimes. Below the floor the honest advice is more
+	// repetitions or calibration, not a harness change.
+	const reproductionBps = occurrenceTotal === 0 ? 0 : Math.floor(failedOccurrences * 10_000 / occurrenceTotal);
 	const decision: FailureModeDecision = mode.signature.kind === "infrastructure-error"
 		? "repair-evidence-path"
-		: mode.signature.kind === "outcome-instability" || mode.legacy || passedOccurrences > 0
+		: mode.signature.kind === "outcome-instability" || mode.legacy || reproductionBps < PROPOSAL_REPRODUCTION_FLOOR_BPS
 			? "stabilize-and-rerun"
 			: "propose-harness-change";
 	return FailureModeSchema.parse({

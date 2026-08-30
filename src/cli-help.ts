@@ -1,3 +1,22 @@
+import { AHDE_BUILDER_COMMAND_NAMES } from "./builder/commands.js";
+
+/** One command list: the slash commands Builder Pi actually registers, wrapped for the terminal. */
+function builderCommandLines(width = 72, indent = "  "): string {
+	const lines: string[] = [];
+	let current = "";
+	for (const name of AHDE_BUILDER_COMMAND_NAMES) {
+		const next = current ? `${current}  /${name}` : `/${name}`;
+		if (next.length + indent.length > width && current) {
+			lines.push(indent + current);
+			current = `/${name}`;
+			continue;
+		}
+		current = next;
+	}
+	if (current) lines.push(indent + current);
+	return lines.join("\n");
+}
+
 const CORE = `ahde — Agent Harness Development Environment
 
 Build, evaluate, and improve a project-specific Pi agent through one reviewed,
@@ -13,14 +32,19 @@ Start:
 Inspect and run:
   ahde validate --target <dir>                 local readiness check; no model call
   ahde run --target <dir> [options]            run development evidence
+  ahde calibrate --target <dir>                measure run-to-run noise (A/A)
   ahde evidence [--port N]                     open the read-only trace explorer
   ahde list [--target <id>]                    list eval runs
+  ahde feedback list [--target <dir>]          👍/👎 marks collected in ahde target
+  ahde tool try --target <dir> --tool <name> --input <json|@path>
+                                               run one declared tool in its sandbox
 
 Inside Builder Pi:
-  /help  /doctor  /status  /run  /traces  /review  /apply  /discard  /target
+${builderCommandLines()}
+  plus the Pi built-ins /login and /model for the Builder's own model
 
 Use \`ahde <command> --help\` for focused help. Advanced automation commands:
-  corpus  failures  compare  diagnose  report  builder  candidate  review  promote  reject
+  corpus  failures  compare  diagnose  report  candidate  calibrate  review  promote  reject
 
 Environment:
   AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)
@@ -42,7 +66,25 @@ Open AHDE's private Builder session selector for this Target.`,
 	target: `Usage: ahde target [--target <dir>] [--message <text>]
 
 Talk to the built Target Pi in a disposable isolated runtime. Target defaults
-to the current directory. Requires a configured Target, credential, and TTY.`,
+to the current directory. Requires a configured Target, credential, and TTY.
+
+Mark the reply you just read with /good, /bad [note], alt+g, or alt+x. Each
+mark appends one dialogue to imports/feedback.jsonl through the host process;
+the Target child never writes outside its own throwaway workspace.`,
+	"feedback list": `Usage: ahde feedback list [--target <dir>]
+
+Count the 👍/👎 marks in imports/feedback.jsonl and show the most recent five
+by their first user turn. Full transcripts stay in the file.
+
+That file is an ordinary dataset inbox entry. It previews as JSONL with a
+messages column beside verdict, note, at, and target.*, and a recipe with
+{ "dialogue": { "column": "messages" } } compiles each mark into a dialogue
+case — keep verdict and note as metadata columns so a rubric or reference
+answer written later can use what was wrong.`,
+	"feedback clear": `Usage: ahde feedback clear [--target <dir>]
+
+Move imports/feedback.jsonl aside to imports/feedback.<timestamp>.jsonl.
+Nothing is deleted, and the archive is still importable.`,
 	evidence: `Usage: ahde evidence [--port N]
 
 Serve the read-only Evidence Explorer on loopback. Port 0 chooses a free port.
@@ -52,8 +94,10 @@ Sealed holdout content and state-changing operations are never exposed.`,
 Create a generic Target harness and its first Git commit. Then run \`ahde\` in
 that directory to configure identity/model and continue the guided workflow.`,
 	run: `Usage:
-  ahde run --target <dir> [--task <id>] [--repetitions N] [--label baseline|solo] [--dataset <rel>]
+  ahde run --target <dir> [--task <id>] [--repetitions N] [--jobs N] [--label baseline|solo] [--dataset <rel>]
   ahde run --target <dir> --project <id> --corpus <development-id> [--task <id>] [--repetitions N]
+
+--jobs sets concurrent executions (default 4; 1 for a loopback model endpoint).
 
 Run development evidence only. AHDE checks Target setup and credential presence
 before creating run artifacts. Exit 0 = all pass, 1 = behavioral failures,
@@ -82,8 +126,16 @@ Build a static, bounded HTML evidence report for one development EvalRun.`,
   ahde candidate --target <dir> --builder-run <id> [--development-corpus <id>] [--holdout-corpus <id>] [--project <id>] [--repetitions N]
   ahde candidate --target <dir> --branch <ref> --base <ref> --proposal <id> --diagnosis <id> [options]
 
+--jobs sets concurrent executions (default 4; 1 for a loopback model endpoint).
+--baseline-max-age <days> bounds baseline reuse (default 7; 0 always re-runs).
+
 Run an exact matched baseline/candidate experiment. Prefer Builder Pi: its host
 gate selects sealed evidence without exposing the holdout identity to the model.`,
+	calibrate: `Usage: ahde calibrate --target <dir> [--repetitions N] [--project <id>] [--corpus <development-id>]
+
+Run the current revision against itself (A/A) to measure run-to-run noise:
+how large a difference has to be before it means anything. The calibration
+record is ordinary candidate evidence in A/A mode and is never promotable.`,
 	review: `Usage: ahde review --candidate <id> --recommend promote|reject --reason <text> [--actor <id>]
 
 Record a human review over the exact evaluated Candidate evidence.`,
@@ -93,34 +145,48 @@ Tag the exact reviewed Candidate revision. This does not switch the active check
 	reject: `Usage: ahde reject --candidate <id> --reason <text> [--actor <id>]
 
 Record an immutable rejection for the exact reviewed Candidate.`,
-	"corpus draft": `Usage: ahde corpus draft --target <dir> --project <id> --spec <approved-id> --tasks N [--guidance <text>] [--builder <dir>]
-
-Generate a reviewable Spec-bound corpus draft. It is not runnable until published.`,
 	"corpus publish": `Usage: ahde corpus publish --project <id> --draft <id> --name <name> --visibility development|sealed
 
-Publish a reviewed draft. Prefer the Builder Workbench for receipt-backed lineage.`,
+Publish a reviewed Builder corpus draft. Prefer the Builder Workbench for
+receipt-backed lineage.`,
 	"corpus import": `Usage: ahde corpus import --project <id> --name <name> --visibility development|sealed --file <jsonl>
 
 Import bounded JSONL. Prefer Builder Pi's project-local imports/ inbox for an editable, Spec-bound draft.`,
 	"corpus list": `Usage: ahde corpus list --project <id>
 
 List corpus metadata. Sealed content is never printed.`,
-	"builder capabilities": `Usage: ahde builder capabilities --target <dir> [--builder <dir>]
+	"corpus inspect": `Usage: ahde corpus inspect --project <id> --file imports/<file> [--sealed N --seed S]
 
-Probe optional scriptable proposal backends (Pi, Codex, Claude).`,
-	"builder propose": `Usage: ahde builder propose --target <dir> --project <id> --spec <approved-id> --backend pi|codex|claude [options]
+Preview one file in the project-local imports/ inbox: format, columns with
+inferred types and three sample values each, row count, and how many rows the
+sealed slice reserves. csv, tsv, json, jsonl, markdown tables, plain text, and
+chat exports. Rows held out for the sealed exam are excluded before anything is
+computed, and a sealed row is never printed.`,
+	"corpus ingest": `Usage: ahde corpus ingest --project <id> --file imports/<file> --recipe <json|@path> \\
+                   --name <name> [--sealed N --seed S [--stratify-by <column>]]
 
-Create proposal evidence from an approved Spec. Prefer Builder Pi's structured authoring path.`,
-	"builder apply": `Usage: ahde builder apply --target <dir> --run <id> --branch <name> --reason <text> [--actor <id>]
+Compile a dataset into eval cases through a mapping recipe. The sealed slice is
+drawn first from (file sha256, seed, count, column) and published as a sealed
+corpus; the rest become one development corpus. Prints the receipt, both corpus
+ids, and the skipped-row counts — never a sealed row. A file that already has a
+sealed slice keeps it; repeat the same --sealed/--seed to ingest it again.
+Prefer Builder Pi: it shows sample cases and asks the operator to confirm.`,
+	"tool try": `Usage: ahde tool try --target <dir> --tool <name> --input <json|@path> [--branch <ref>]
 
-Apply one exact proposal to a candidate branch; the current checkout is unchanged.`,
+Run one declared Target tool on one JSON input inside a private scratch copy of
+the Harness: same descriptor, same OS sandbox, same declared setup step, same
+workspace projection a Target sees. --input takes inline JSON or @path to a JSON
+file; --branch tries an exact other revision instead of HEAD.
+
+Your checkout is never touched, no eval evidence is written, and output is
+bounded and redacted. Exit 0 = the tool exited 0, 1 = the tool failed.`,
 };
 
 /** Render root or command-specific help without reading project or environment state. */
 export function cliHelp(argv: readonly string[]): string {
 	const command = argv[0];
 	if (!command || command === "--help" || command === "-h" || command === "help") return CORE;
-	const nested = command === "corpus" || command === "builder"
+	const nested = command === "corpus" || command === "feedback" || command === "tool"
 		? argv.find((token, index) => index > 0 && !token.startsWith("-"))
 		: undefined;
 	return COMMAND_HELP[nested ? `${command} ${nested}` : command] ?? CORE;

@@ -76,7 +76,8 @@ The same loop has compact Pi commands:
 /status                 where you are and the next step
 /review                 the exact Spec, eval basket, diff, or candidate — with its actions
 /traces                 diagnosis, failure modes, and the evidence link
-/run [repetitions]      run the eval basket or verify the applied candidate
+/run [repetitions]      run the eval basket or verify the applied candidate (3 by default)
+/calibrate [reps]       measure run-to-run noise: the same revision against itself
 /approve  /publish      approve the Spec · publish the eval basket
 /apply <branch>         apply the reviewed proposal to a candidate branch
 /discard                discard a proposal or abandon an interrupted candidate
@@ -202,6 +203,40 @@ and fixed display/locale values arrive only over post-startup IPC. Interactive
 shell escapes and ambient session/import switching are disabled. Nothing from
 this conversation becomes canonical eval evidence.
 
+### Feedback becomes tests
+
+Any reply in `ahde target` can be marked with `/good`, `/bad [note]`, or the
+`alt+g` / `alt+x` shortcuts (Pi's own defaults already own `ctrl+g` and
+`ctrl+b`). A mark appends one JSON row to `imports/feedback.jsonl`:
+
+```json
+{"messages":[{"role":"user","content":"…"},{"role":"assistant","content":"…"}],
+ "verdict":"bad","note":"did not call check_dbo","at":"2026-08-30T07:00:00.000Z",
+ "target":{"id":"my-agent","gitSha":"…"}}
+```
+
+The dialogue runs up to and including the marked reply, credential-redacted and
+bounded exactly like a dialogue case (≤ 40 turns, ≤ 8 KiB each). The Target
+child never opens that file: it sends the verdict, the note, and the turns to
+the host process over the same IPC channel that delivered its launch payload,
+and the host stamps the timestamp and Target identity. A host that is gone
+fails the mark closed rather than writing from the child.
+
+```bash
+ahde feedback list     # counts, plus the last five by their first user turn
+ahde feedback clear    # moves the file to imports/feedback.<timestamp>.jsonl
+```
+
+`imports/feedback.jsonl` is an ordinary entry in the git-ignored `imports/`
+inbox, so the dataset preview/recipe flow picks it up like any other dropped
+file: it previews as bounded JSONL with `messages`, `verdict`, `note`, `at`,
+and `target.*` columns, and a recipe with `{ "dialogue": { "column":
+"messages" } }` compiles each mark into a dialogue case. The compiler pops the
+marked assistant reply, so the case re-asks the question that produced it and
+graders judge the next answer; keep `verdict` and `note` as metadata columns so
+a rubric or reference answer written later can use what the operator said was
+wrong. The inbox never enters a Target or evaluation workspace.
+
 ## The canonical loop
 
 Builder Pi uses four packaged workflow skills:
@@ -320,44 +355,50 @@ Pi one sealed case at a time, and only bounded gate results cross that boundary.
 The conversational Builder is the primary UX. Explicit commands remain a
 compatibility and automation surface over the same application services:
 
+`--jobs` bounds concurrent executions inside one evaluation (default 4, or 1
+against a loopback model endpoint); `--baseline-max-age <days>` bounds how old a
+reused baseline may be (default 7).
+
 ```bash
 # inspect and evaluate
 ahde validate --target .
-ahde run --target . --label baseline --repetitions 3
+ahde run --target . --label baseline --repetitions 3 --jobs 4
 ahde list
 ahde diagnose <eval-run-id>
 ahde compare <baseline-eval-id> <candidate-eval-id>
 ahde report <eval-run-id>
 
+# 👍/👎 marks collected while talking to the Target
+ahde feedback list --target .
+ahde feedback clear --target .
+
 # manage versioned evaluation data
-ahde corpus draft --target . --project my-agent \
-  --spec <approved-spec-id> --tasks 12
-ahde corpus publish --project my-agent --draft <draft-id> \
+ahde corpus publish --project my-agent --draft <builder-corpus-draft-id> \
   --name "reviewed development basket" --visibility development
 ahde corpus import --project my-agent --name "promotion holdout" \
   --visibility sealed --file ./private-holdout.jsonl
 
-# optional one-shot Builder adapter compatibility
-ahde builder capabilities --target .
-ahde builder propose --target . --project my-agent \
-  --spec <approved-spec-id> --eval-run <eval-run-id> --backend pi
-ahde builder apply --target . --run <builder-run-id> \
-  --branch candidate/<builder-run-id> --reason "Reviewed exact diff"
+# turn any data file in imports/ into eval cases
+ahde corpus inspect --project my-agent --file imports/support-tickets.csv
+ahde corpus ingest --project my-agent --file imports/support-tickets.csv \
+  --recipe @recipe.json --name "support basket" \
+  --sealed 40 --seed exam-1 --stratify-by tier
 
 # exact candidate experiment and terminal human decision
 ahde candidate --target . --builder-run <builder-run-id> \
   --project my-agent --development-corpus <development-corpus-id> \
-  --holdout-corpus <sealed-corpus-id> --repetitions 3
+  --holdout-corpus <sealed-corpus-id> --repetitions 3 \
+  --jobs 4 --baseline-max-age 7
 ahde review --candidate <candidate-id> --recommend promote \
   --reason "Development improved and sealed gate passed"
 ahde promote --target . --candidate <candidate-id> --to 0.2.0 \
   --reason "Ship the exact reviewed revision"
 ```
 
-Pi, Codex, and Claude one-shot proposal adapters normalize only the typed
-proposal contract. They are optional compatibility paths; they do not replace
-the primary Builder Pi trust domain and AHDE does not pretend their internal
-traces are identical.
+Corpus drafts and proposals are authored in Builder Pi; the commands above only
+publish, evaluate, and decide over the artifacts it produced. The typed proposal
+contract in `src/builders/adapters.ts` stays the single trust boundary every
+proposal crosses, whoever authored it.
 
 ## Evidence and promotion invariants
 
@@ -373,22 +414,32 @@ Candidate Experiment:
 3. creates detached worktrees without switching the user's checkout;
 4. runs matched task/repetition designs;
 5. verifies execution and grading fingerprints;
-6. computes paired task deltas and deterministic uncertainty;
-7. persists one canonical `CandidateRecord`.
+6. judges paired task deltas under one comparison gate: a seeded bootstrap
+   95% interval decides `improved · inconclusive · regressed` on the
+   development surface and `pass · fail · underpowered` on the sealed
+   guardrail (at least 15 tasks × 2 repetitions); per-task drops are flags
+   for the reviewer, never a verdict;
+7. persists one canonical `CandidateRecord` with the verdicts.
 
-Only `AGENTS.md`, `skills/**`, `tools/**`, `bin/**`, and the `skills`/`tools`
-declaration lists in `manifest.yaml` may change in a Builder proposal. Target
+Only `AGENTS.md`, `skills/**`, `tools/**`, `bin/**`, `data/**`, and the
+`skills`/`tools`/`data` declaration lists in `manifest.yaml` may change in a
+Builder proposal. Target
 id, model, execution policy, instructions, eval suite, and `evals/**` remain
 fixed. Promotion requires an applied proposal with a durable receipt,
-comparable development evidence, evaluator-owned sealed evidence, honest
-workspace confinement, an explicit human promote review, and the exact
-candidate revision. A manual experiment or unconfined run cannot be promoted.
+comparable development evidence whose verdict is not `regressed`,
+evaluator-owned sealed evidence with a guardrail `pass`, honest workspace
+confinement, an explicit human promote review, and the exact candidate
+revision. A failed or underpowered sealed gate is kept as evaluated evidence
+and refused at promotion; a manual experiment or unconfined run cannot be
+promoted. Legacy eval-run indexes that predate the current provenance axes
+are listed as `legacy · not comparable` and never reused as baselines.
 
 ## Storage and trust boundaries
 
 ```text
 <target>/
-  manifest.yaml, AGENTS.md, skills/**, tools/**, bin/**, evals/**
+  manifest.yaml, AGENTS.md, skills/**, tools/**, bin/**, data/**, evals/**
+  imports/**            git-ignored inbox; feedback.jsonl lands here
 
 <state-root>/projects/<project-id>/
   specs/**, builder-corpus-drafts/**, builder-corpus-imports/**, corpora/**
@@ -446,20 +497,19 @@ loopback HTTP socket. The separate
 natural-language acceptance tests drive a real Builder Pi through the complete
 Spec/eval/candidate lifecycle and, separately, through the production
 three-tool `traces → exact Target context → Proposal review` path without an
-implicit Apply. The package gate also rejects stale Studio, companion, and
-retired Workbench-TUI files.
+implicit Apply. The package gate also rejects stale Studio, companion,
+retired Workbench-TUI, and deleted one-shot-adapter files.
 
 ## Architecture
 
 | Module | Owns |
 |---|---|
 | `src/builder/runtime.ts` | isolated long-lived Builder Pi host |
-| `src/builder/extension.ts` | Workbench tools, compatibility tools, and TUI gates |
+| `src/builder/extension.ts` | the three Workbench tools, their production dependencies, and Pi registration |
 | `src/builder/commands.ts` | slash commands, review actions, one-dialog promote/reject |
 | `src/builder/product-shell.ts`, `src/builder/onboarding.ts` | live header, first-run setup, readiness status |
 | `src/builder/render/**`, `src/builder/transcript.ts` | human renderers for every Workbench view, decision, and confirmation; persisted transcript blocks |
 | `src/application/target-adoption.ts`, `src/workbench/cycle-continuation.ts` | promoted-candidate fast-forward and cycle closure receipts |
-| `src/builder/project-context.ts` | bounded compatibility status projection |
 | `src/application/target-authoring-context.ts` | exact-Git declared Harness context and read policy |
 | `src/application/**` | deterministic Spec/Corpus/Proposal/Candidate use cases |
 | `src/workbench/**` | restart-safe orchestration, state derivation, and legal transitions |
@@ -473,6 +523,7 @@ retired Workbench-TUI files.
 | `src/report.ts`, `src/evidence/server.ts` | bounded read-only evidence projection |
 | `src/application/candidate-experiment.ts` | exact matched candidate evaluation |
 | `src/application/candidate-review.ts` | review, rejection, and promotion authority |
+| `src/builders/adapters.ts` | the typed proposal contract and its validation trust boundary |
 
 See [CONTEXT.md](CONTEXT.md) for domain language and invariants,
 [docs/V1_7_PRODUCT_SURFACE.md](docs/V1_7_PRODUCT_SURFACE.md) for the product

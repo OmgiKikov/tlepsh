@@ -17,6 +17,7 @@ function view(overrides: Partial<WorkbenchView> = {}): WorkbenchView {
 		actions: ["scaffold-target"],
 		blockers: ["Target harness is missing."],
 		warnings: [],
+		calibration: null,
 		counts: {
 			specDrafts: 0,
 			approvedSpecs: 0,
@@ -26,6 +27,7 @@ function view(overrides: Partial<WorkbenchView> = {}): WorkbenchView {
 			developmentEvals: 0,
 			openProposals: 0,
 			candidates: 0,
+			calibrations: 0,
 		},
 		...overrides,
 	};
@@ -38,17 +40,26 @@ const theme = {
 
 type Handler = (...args: never[]) => unknown;
 
-function install(workbenchView: () => Promise<WorkbenchView>): {
+function install(
+	workbenchView: () => Promise<WorkbenchView>,
+	decide?: (input: { kind: string }) => Promise<unknown>,
+): {
 	handlers: Map<string, Handler>;
 	registerEntryRenderer: ReturnType<typeof vi.fn>;
 	controller: ReturnType<typeof installAhdeBuilderProductShell>;
 } {
 	const handlers = new Map<string, Handler>();
 	const registerEntryRenderer = vi.fn();
-	const controller = installAhdeBuilderProductShell({
-		on: (event: string, handler: Handler) => handlers.set(event, handler),
-		registerEntryRenderer,
-	} as unknown as ExtensionAPI, { view: workbenchView });
+	const workbench = decide ? { view: workbenchView, decide } : { view: workbenchView };
+	const controller = installAhdeBuilderProductShell(
+		{
+			on: (event: string, handler: Handler) => handlers.set(event, handler),
+			registerEntryRenderer,
+			appendEntry: vi.fn(),
+		} as unknown as ExtensionAPI,
+		workbench as never,
+		decide ? { actorId: () => "local:test-operator" } : {},
+	);
 	return { handlers, registerEntryRenderer, controller };
 }
 
@@ -70,6 +81,7 @@ function host(options: {
 		setWorkingMessage: vi.fn(),
 		notify: vi.fn(),
 		setEditorText: vi.fn(),
+		input: vi.fn(async (_label: string, suggested: string) => suggested),
 		select: vi.fn(options.select ?? (async () => "Not now")),
 		setHeader: vi.fn((input: (tui: unknown, theme: Theme) => { render(width: number): string[] }) => {
 			factory = input;
@@ -78,7 +90,11 @@ function host(options: {
 	const ctx = {
 		mode: "tui",
 		model: "model" in options ? options.model : { provider: "openai", id: "gpt-test" },
-		modelRegistry: { hasConfiguredAuth: vi.fn(() => options.credentialPresent ?? true) },
+		modelRegistry: {
+			hasConfiguredAuth: vi.fn(() => options.credentialPresent ?? true),
+			getAvailable: vi.fn(() => [{ provider: "openai", id: "gpt-test" }, { provider: "anthropic", id: "claude-test" }]),
+			find: vi.fn(() => undefined),
+		},
 		ui,
 	} as unknown as ExtensionContext;
 	return {
@@ -181,6 +197,88 @@ describe("AHDE Builder product shell", () => {
 		expect(h.ui.setStatus).toHaveBeenCalledWith("ahde", "AHDE · blocked");
 		expect(h.ui.notify).toHaveBeenCalledWith(expect.stringContaining("state root is a symlink"), "error");
 		expect(h.renderHeader().join("\n")).toContain("Project state unavailable");
+	});
+
+	it("asks nothing about the agent until the Builder itself has a model", async () => {
+		const decide = vi.fn(async () => ({ view: view() }));
+		const { handlers } = install(async () => view(), decide);
+		const h = host({ credentialPresent: false, select: async () => "Log in to a provider (OAuth or API key)" });
+		await start(handlers, h.ctx);
+
+		expect(h.ui.setEditorText).toHaveBeenCalledWith("/login");
+		expect(decide).not.toHaveBeenCalled();
+		expect(h.ui.select).toHaveBeenCalledTimes(1);
+		expect(h.ui.select!.mock.calls[0]?.[0]).toContain("needs a model");
+	});
+
+	it("resumes the first-run setup when a Builder model is finally selected", async () => {
+		let current = view();
+		const decide = vi.fn(async (input: { kind: string }) => {
+			if (input.kind === "scaffold-target") {
+				current = view({ target: { status: "bootstrap-required", id: "my-agent", gitSha: "a".repeat(40), model: null } });
+				return { kind: input.kind, message: "ok", result: { targetId: "my-agent", targetGitSha: "a".repeat(40), receiptId: "receipt-1" }, view: current };
+			}
+			current = view({ stage: "spec-design", headline: "Describe the agent." });
+			return {
+				kind: input.kind,
+				message: "ok",
+				result: { targetId: "demo", targetGitSha: "b".repeat(40), receiptId: "receipt-2", credentialEnv: "OPENAI_API_KEY" },
+				view: current,
+			};
+		});
+		const { handlers } = install(async () => current, decide);
+		const h = host({
+			credentialPresent: false,
+			select: async (title: string) => {
+				if (title.includes("needs a model")) return "Not now";
+				if (title.includes("has no agent yet")) return "Create the agent here";
+				if (title.includes("Which model")) return "openai/gpt-test (same as the Builder)";
+				return undefined;
+			},
+		});
+		await start(handlers, h.ctx);
+		expect(decide).not.toHaveBeenCalled();
+
+		// The operator ran /login and picked a model: onboarding must pick up here.
+		h.ctx.modelRegistry.hasConfiguredAuth = vi.fn(() => true);
+		await handlers.get("model_select")?.({ type: "model_select", source: "set" } as never, h.ctx as never);
+
+		expect(decide.mock.calls.map((call) => call[0]?.kind)).toEqual(["scaffold-target", "configure-target"]);
+		expect(h.ui.select!.mock.calls.map((call) => call[0])).toEqual([
+			expect.stringContaining("needs a model"),
+			expect.stringContaining("has no agent yet"),
+			expect.stringContaining("Which model should the agent itself use?"),
+		]);
+		expect(h.ui.notify).toHaveBeenCalledWith(expect.stringContaining("describe what the agent should do"), "info");
+	});
+
+	it("does not re-ask on a restored model selection", async () => {
+		const decide = vi.fn(async () => ({ view: view() }));
+		const { handlers } = install(async () => view(), decide);
+		const h = host({ credentialPresent: true, select: async () => "Not now" });
+		await start(handlers, h.ctx);
+		const asked = h.ui.select!.mock.calls.length;
+
+		await handlers.get("model_select")?.({ type: "model_select", source: "restore" } as never, h.ctx as never);
+		expect(h.ui.select!.mock.calls.length).toBe(asked);
+	});
+
+	it("explains a non-empty folder in plain words instead of the internal error", async () => {
+		const decide = vi.fn(async () => {
+			throw new Error("target scaffold requires an otherwise empty current directory; found package.json");
+		});
+		const { handlers } = install(async () => view(), decide);
+		const h = host({
+			credentialPresent: true,
+			select: async (title: string) => (title.includes("has no agent yet") ? "Create the agent here" : "Not now"),
+		});
+		await start(handlers, h.ctx);
+
+		const warning = h.ui.notify!.mock.calls.find((call) => call[1] === "warning")?.[0] as string;
+		expect(warning).toContain("This folder is not empty");
+		expect(warning).toContain("package.json");
+		expect(warning).toContain("ahde init");
+		expect(warning).not.toContain("target scaffold requires");
 	});
 
 	it("replaces raw provider failures with one stable recovery message", async () => {

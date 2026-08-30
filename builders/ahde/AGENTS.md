@@ -36,6 +36,12 @@ consequential step in the host UI.
   that blocks it.
 - Prefer the smallest evidence-backed change to the Target's instructions,
   skills, or declarative tools. AHDE is harness engineering, not training.
+- When the operator talks about feedback, marked replies, thumbs up/down, or
+  says the agent answered badly, the source is `imports/feedback.jsonl`: every
+  `/good` and `/bad` in `ahde target` appends the dialogue up to that reply,
+  with its verdict and any note. Point at that file and build cases from it
+  through the dataset flow rather than asking the operator to retype the
+  conversation. `ahde feedback list` shows them how much is there.
 
 ## Vocabulary
 
@@ -44,7 +50,10 @@ consequential step in the host UI.
 | the agent / the Target | the agent being built and evaluated |
 | description of the agent (Spec) | users, jobs, inputs, allowed actions, success criteria, constraints |
 | test cases / eval basket | the development corpus: inputs plus graders |
+| the file / your data | one export the operator put in `imports/`; the host reads it, you read its preview |
+| the exam / held out | the rows the host reserves from that file as the sealed holdout |
 | run | one evaluation of the agent on the basket |
+| calibrate / noise | an A/A run of the same revision against itself that measures how much the agent disagrees with itself; never evidence for promotion |
 | diagnosis, failure modes | the deterministic grouping of what failed and why (a hypothesis) |
 | proposed change / proposal | an exact, reviewable diff to instructions, skills, or tools |
 | candidate | the proposal applied on its own branch, verified against the baseline |
@@ -68,21 +77,24 @@ of the variable that holds it; the host handles credentials in its own UI.
 
 - `ahde_workbench_view` — read the restart-safe stage, legal next actions,
   the exact subject under review (`aspect: review`), the diagnosis
-  (`aspect: traces`), or the committed Target (`aspect: target`, then one
-  returned `resourcePath` for its complete content). Call it before relying
-  on any state you remember; slash commands run by the operator change state
-  outside your turns and leave you a short note.
+  (`aspect: traces`), the committed Target (`aspect: target`, then one
+  returned `resourcePath` for its complete content), or a bounded preview of
+  one operator-provided data file (`aspect: dataset` with
+  `resourcePath: "imports/<file>"`). Call it before relying on any state you
+  remember; slash commands run by the operator change state outside your turns
+  and leave you a short note.
 - `ahde_workbench_submit` — non-consequential authoring: Spec drafts,
   Spec-bound test-case drafts, imports from the project-local `imports/`
-  inbox (`kind: corpus-import`), revisions, semantic Harness intents, and
-  explicit artifact selection. Submitting grants no authority.
+  inbox (`kind: corpus-import` for JSONL, `kind: dataset-recipe` for any other
+  data file), revisions, semantic Harness intents, and explicit artifact
+  selection. Submitting grants no authority.
 - `ahde_workbench_decide` — request exactly the human-gated transition the
   current stage allows. The host owns confirmation, actor identity, and
   sealed-holdout selection. Consequential steps stay unapplied without a host
   confirmation UI.
 - The operator's shortcuts `/status`, `/review`, `/traces`, `/run`,
-  `/approve`, `/publish`, `/apply`, `/discard`, `/promote`, `/reject`,
-  `/adopt`, `/next`, `/target`, `/doctor` run the same Workbench. Do not
+  `/calibrate`, `/approve`, `/publish`, `/apply`, `/discard`, `/promote`,
+  `/reject`, `/adopt`, `/next`, `/target`, `/doctor` run the same Workbench. Do not
   imitate their effects in prose; suggest them when they are the next step.
 
 ## Rules that keep evidence honest
@@ -120,7 +132,10 @@ of the variable that holds it; the host handles credentials in its own UI.
 - A structured proposal carries the exact `source`, explicit
   `failureModeIds`, `authoringContext: claim`, and semantic intents only
   (`instructions.replace`, `execution.configure`, `skill.upsert/remove`,
-  `tool.upsert/remove`). Never supply diagnoses, evidence references, raw
+  `tool.upsert/remove`, `data.upsert/remove`). A `tool.upsert` carries either
+  one `executable` (the `bin/<name>` form) or `files` (the multi-file
+  `tools/<name>/` form, where `run` is the entry point and the descriptor may
+  declare a `setup` step and `lockfiles`). Never supply diagnoses, evidence references, raw
   paths, hashes, file modes, or unified diffs; the host compiles the exact
   change from a clean snapshot. Network or environment access is an ordinary
   evidence-backed policy change, never a hidden preset.
@@ -149,25 +164,39 @@ of the variable that holds it; the host handles credentials in its own UI.
    in `imports/`), revise with semantic operations (`add`, `replace`,
    `remove`, `set-graders`, `grader.add/update/remove`, `rename`,
    `set-notes`), then request `publish-corpus` (or suggest `/publish`).
+   For any other data the operator drops in `imports/` — a spreadsheet export,
+   a JSON dump, a chat export — the order is fixed: read `aspect: dataset`,
+   propose a `dataset-recipe`, show the sample cases the host compiles back,
+   and only then request `import-dataset` with the sealed slice the operator
+   agreed to. The host reserves that slice before any development case exists;
+   you learn how many cases it took and nothing else about them.
 4. When asked to run or test, request `run-current` (the operator may also
-   type `/run`). Report only conclusive evidence: pass
-   rate, the largest failure modes, coverage, evidence strength, and the next
-   step the evidence supports. Offer the returned evidence link for traces.
+   type `/run`). The panel beside your message already carries the counts, the
+   failure modes, and the evidence link; speak only from conclusive evidence,
+   and add one sentence of what it means plus the next step it supports.
    After a verified failed run, `add-case-from-run` may author a genuinely
    new neighboring regression case from that exact failure.
+   When the header says noise is not calibrated, offer calibration once for
+   this Target revision — one sentence, not a lecture — and request
+   `calibrate` if the operator agrees (`/calibrate` is their shortcut). It
+   runs the same revision twice and tells you how large a later difference
+   has to be before it means anything; it promotes nothing. Once the header
+   shows a calibration for the current revision, do not offer it again.
 5. When asked to fix a numbered or named failure mode, refresh
    `aspect: traces`, resolve the exact source tuple and `failureModeId`,
    read the Target resources you will replace, and submit a
    `structured-proposal`.
-6. Show `aspect: review`: summarize the evidence, changed paths, diff, and
-   risk. When the operator says apply, request `apply-proposal` with branch
-   `candidate/<proposal run id>`; when they say discard, request
+6. Show `aspect: review`. The host renders the changed paths, the exact diff,
+   and the risks; you add one sentence on what the change does and what it
+   most likely breaks. When the operator says apply, request `apply-proposal`
+   with branch `candidate/<proposal run id>`; when they say discard, request
    `discard-proposal`. Either is confirmed by the host.
 7. When asked to verify or check the candidate, request `run-current` again
    (or the operator types `/run`). The host picks sealed evidence; its
    identity and content never enter your context.
-8. After verification, show the candidate review (development delta, sealed
-   gate, impact on the targeted failure modes, regressions) and let the
+8. After verification, show the candidate review; the host lays out the
+   development delta, the sealed gate, and the impact on the targeted failure
+   modes. Say in one sentence whether that earns promotion, then let the
    operator decide. “Promote as X” means request `review-candidate`
    (recommend promote) and then `promote-candidate` with that version;
    “reject” means `review-candidate` (recommend reject) then

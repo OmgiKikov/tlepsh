@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import {
 	existsSync,
@@ -23,13 +23,27 @@ import {
 import {
 	assertInteractiveTargetIdentity,
 	assertInteractiveTargetWorkspaceSnapshot,
+	createInteractiveTargetFeedbackChannel,
+	handleInteractiveTargetFeedbackRequest,
 	interactiveTargetIdentity,
+	interactiveTargetProcessIpcHost,
 	interactiveTargetProcessLaunch,
 	runInteractiveTargetProcess,
 	targetInteractiveBootstrapEnvironment,
+	type InteractiveTargetIpcHost,
 	type TargetInteractiveModeFactory,
 } from "../src/target/interactive.js";
 import { loadTargetResourceBundle } from "../src/target/runtime.js";
+import {
+	TARGET_FEEDBACK_COMMAND_NAMES,
+	TARGET_FEEDBACK_SHORTCUTS,
+} from "../src/target/feedback-extension.js";
+import {
+	readTargetFeedback,
+	TARGET_FEEDBACK_PATH,
+	type TargetFeedbackMark,
+} from "../src/application/target-feedback.js";
+import { MAX_TASK_MESSAGES, MAX_TASK_TEXT_BYTES } from "../src/manifest.js";
 import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 
 const cleanupPaths: string[] = [];
@@ -524,5 +538,387 @@ describe("interactive Target Pi", () => {
 			}),
 			tty: { stdinIsTTY: () => true, stdoutIsTTY: () => true },
 		});
+	});
+});
+
+interface Notification {
+	message: string;
+	type?: string;
+}
+
+/** A synthetic session entry in the exact shape Pi persists. */
+function messageEntry(
+	index: number,
+	role: "user" | "assistant" | "toolResult",
+	content: unknown,
+): unknown {
+	return {
+		type: "message",
+		id: `entry-${index}`,
+		parentId: index === 0 ? null : `entry-${index - 1}`,
+		timestamp: new Date(1_700_000_000_000 + index).toISOString(),
+		message: { role, content },
+	};
+}
+
+function commandContext(entries: readonly unknown[], notifications: Notification[]): any {
+	return {
+		ui: {
+			notify: (message: string, type?: string) => notifications.push({ message, type }),
+		},
+		sessionManager: { buildContextEntries: () => [...entries] },
+	};
+}
+
+/**
+ * Both halves of the real IPC contract, wired through structuredClone so the
+ * draft has to survive the same serialization the child's `process.send` does.
+ */
+function feedbackIpcPair(projectDir: string, target: { id: string; gitSha: string }, now: () => string) {
+	const listeners = new Set<(value: unknown) => void>();
+	const seen: unknown[] = [];
+	const host: InteractiveTargetIpcHost = {
+		connected: true,
+		send(message) {
+			const value = structuredClone(message);
+			seen.push(value);
+			const response = handleInteractiveTargetFeedbackRequest({ projectDir, target, value, now });
+			if (response) {
+				queueMicrotask(() => {
+					for (const listener of [...listeners]) listener(structuredClone(response));
+				});
+			}
+			return true;
+		},
+		on: (_event, listener) => {
+			listeners.add(listener);
+		},
+		off: (_event, listener) => {
+			listeners.delete(listener);
+		},
+	};
+	return { host, seen, listeners };
+}
+
+describe("marking a Target reply", () => {
+	function feedbackTarget(): string {
+		const targetDir = makeTargetFixture(baseFixtureFiles({
+			"manifest.yaml": targetManifest("http://127.0.0.1:1/v1"),
+			"skills/only-target/SKILL.md": "---\nname: only-target\ndescription: exact target skill\n---\n",
+			".gitignore": "/imports/\n",
+		}));
+		cleanupPaths.push(targetDir);
+		return targetDir;
+	}
+
+	it("registers /good, /bad and two free shortcuts, and appends a bounded redacted mark over IPC", async () => {
+		const targetDir = feedbackTarget();
+		const target = loadTarget(targetDir);
+		const { host, seen } = feedbackIpcPair(
+			targetDir,
+			{ id: target.manifest.id, gitSha: target.gitSha },
+			() => "2026-08-30T07:00:00.000Z",
+		);
+		const notifications: Notification[] = [];
+		let workspaceDir = "";
+
+		// A long conversation with a credential, an oversized reply, a tool
+		// result Pi keeps in the session, and a trailing user turn after the
+		// reply being marked.
+		const entries: unknown[] = [];
+		for (let index = 0; index < MAX_TASK_MESSAGES + 4; index += 1) {
+			entries.push(messageEntry(index, index % 2 === 0 ? "user" : "assistant", `turn ${index}`));
+		}
+		entries.push(messageEntry(100, "user", [{ type: "text", text: "покажи ключ: api_key: sk-abcdefghijklmnopqrstuvwxyz" }]));
+		entries.push(messageEntry(101, "toolResult", "tool output that is not a dialogue turn"));
+		entries.push(messageEntry(102, "assistant", [
+			{ type: "thinking", thinking: "private reasoning" },
+			{ type: "text", text: `я${"о".repeat(MAX_TASK_TEXT_BYTES)}` },
+		]));
+		entries.push(messageEntry(103, "user", "a turn typed after the reply being marked"));
+
+		await runInteractiveTargetProcess(target, {
+			environment: { PATH: process.env.PATH, INTERACTIVE_TARGET_KEY: "present" },
+			feedbackChannel: createInteractiveTargetFeedbackChannel(host),
+			modeFactory: (runtime) => ({
+				async run() {
+					workspaceDir = runtime.cwd;
+					const extensions = runtime.services.resourceLoader.getExtensions().extensions;
+					expect(extensions).toHaveLength(2);
+					const feedback = extensions.find((extension) => extension.commands.has("good"));
+					expect(feedback).toBeDefined();
+					expect(feedback).toMatchObject({ hidden: true });
+					expect([...feedback!.commands.keys()].sort()).toEqual([...TARGET_FEEDBACK_COMMAND_NAMES].sort());
+					// Pi's own defaults own ctrl+g and ctrl+b; these two are free.
+					expect([...feedback!.shortcuts.keys()].sort()).toEqual(
+						[TARGET_FEEDBACK_SHORTCUTS.bad, TARGET_FEEDBACK_SHORTCUTS.good].sort(),
+					);
+					for (const shortcut of feedback!.shortcuts.values()) {
+						expect(typeof shortcut.handler).toBe("function");
+					}
+
+					await feedback!.commands.get("bad")!.handler(
+						"  не  вызвал инструмент  ",
+						commandContext(entries, notifications),
+					);
+					// The child asked the parent; it never opened the inbox itself.
+					expect(existsSync(join(workspaceDir, "imports"))).toBe(false);
+				},
+			}),
+			tty: { stdinIsTTY: () => true, stdoutIsTTY: () => true },
+		});
+
+		expect(notifications).toEqual([{
+			message: `Marked as bad · saved to ${TARGET_FEEDBACK_PATH} (1 so far)`,
+			type: "info",
+		}]);
+		expect(seen).toHaveLength(1);
+		expect(seen[0]).toMatchObject({ protocol: 1, kind: "feedback-mark", requestId: 1 });
+		// The child sends only the verdict, the note and the turns.
+		expect(Object.keys((seen[0] as { draft: Record<string, unknown> }).draft).sort())
+			.toEqual(["messages", "note", "verdict"]);
+
+		const stored = readTargetFeedback(targetDir);
+		expect(stored.marks).toHaveLength(1);
+		const saved = stored.marks[0] as TargetFeedbackMark;
+		expect(saved.verdict).toBe("bad");
+		expect(saved.note).toBe("не вызвал инструмент");
+		expect(saved.at).toBe("2026-08-30T07:00:00.000Z");
+		expect(saved.target).toEqual({ id: target.manifest.id, gitSha: target.gitSha });
+		expect(saved.messages).toHaveLength(MAX_TASK_MESSAGES);
+		// The dialogue ends at the marked reply; the turn typed after it is gone.
+		expect(saved.messages[saved.messages.length - 1]?.role).toBe("assistant");
+		expect(JSON.stringify(saved)).not.toContain("a turn typed after the reply being marked");
+		expect(JSON.stringify(saved)).not.toContain("private reasoning");
+		expect(JSON.stringify(saved)).not.toContain("tool output that is not a dialogue turn");
+		expect(JSON.stringify(saved)).not.toContain("sk-abcdefghijklmnopqrstuvwxyz");
+		expect(saved.messages.some((message) => message.content.includes("api_key: [REDACTED]"))).toBe(true);
+		for (const message of saved.messages) {
+			expect(Buffer.byteLength(message.content, "utf8")).toBeLessThanOrEqual(MAX_TASK_TEXT_BYTES);
+		}
+		expect(existsSync(workspaceDir)).toBe(false);
+	});
+
+	it("fails closed when the parent is gone and writes nothing", async () => {
+		const targetDir = feedbackTarget();
+		const target = loadTarget(targetDir);
+		const gone: InteractiveTargetIpcHost = {
+			connected: false,
+			send: () => {
+				throw new Error("the child must not send on a closed channel");
+			},
+			on: () => undefined,
+			off: () => undefined,
+		};
+		const refusing: InteractiveTargetIpcHost = {
+			connected: true,
+			send: () => false,
+			on: () => undefined,
+			off: () => undefined,
+		};
+		const entries = [
+			messageEntry(0, "user", "вопрос"),
+			messageEntry(1, "assistant", "ответ"),
+		];
+		const notifications: Notification[] = [];
+
+		for (const host of [gone, refusing]) {
+			await runInteractiveTargetProcess(target, {
+				environment: { PATH: process.env.PATH, INTERACTIVE_TARGET_KEY: "present" },
+				feedbackChannel: createInteractiveTargetFeedbackChannel(host, { timeoutMs: 50 }),
+				modeFactory: (runtime) => ({
+					async run() {
+						const extension = runtime.services.resourceLoader.getExtensions().extensions
+							.find((candidate) => candidate.commands.has("good"));
+						await extension!.commands.get("good")!.handler("", commandContext(entries, notifications));
+					},
+				}),
+				tty: { stdinIsTTY: () => true, stdoutIsTTY: () => true },
+			});
+		}
+
+		expect(notifications).toHaveLength(2);
+		for (const notification of notifications) {
+			expect(notification.type).toBe("error");
+			expect(notification.message).toContain("Could not mark this reply as good");
+			expect(notification.message).toContain("the AHDE host is gone");
+		}
+		expect(readTargetFeedback(targetDir).exists).toBe(false);
+	});
+
+	it("says so instead of marking when the conversation has no assistant reply yet", async () => {
+		const targetDir = feedbackTarget();
+		const target = loadTarget(targetDir);
+		const { host, seen } = feedbackIpcPair(
+			targetDir,
+			{ id: target.manifest.id, gitSha: target.gitSha },
+			() => new Date().toISOString(),
+		);
+		const notifications: Notification[] = [];
+
+		await runInteractiveTargetProcess(target, {
+			environment: { PATH: process.env.PATH, INTERACTIVE_TARGET_KEY: "present" },
+			feedbackChannel: createInteractiveTargetFeedbackChannel(host),
+			modeFactory: (runtime) => ({
+				async run() {
+					const extension = runtime.services.resourceLoader.getExtensions().extensions
+						.find((candidate) => candidate.commands.has("good"));
+					await extension!.shortcuts.get(TARGET_FEEDBACK_SHORTCUTS.good)!.handler(
+						commandContext([messageEntry(0, "user", "первый вопрос")], notifications),
+					);
+				},
+			}),
+			tty: { stdinIsTTY: () => true, stdoutIsTTY: () => true },
+		});
+
+		expect(seen).toHaveLength(0);
+		expect(notifications[0]?.type).toBe("error");
+		expect(notifications[0]?.message).toContain("no assistant reply");
+		expect(readTargetFeedback(targetDir).exists).toBe(false);
+	});
+
+	it("keeps the feedback extension out of an eval session that has no channel", async () => {
+		const targetDir = feedbackTarget();
+		const target = loadTarget(targetDir);
+
+		await runInteractiveTargetProcess(target, {
+			environment: { PATH: process.env.PATH, INTERACTIVE_TARGET_KEY: "present" },
+			modeFactory: (runtime) => ({
+				async run() {
+					const extensions = runtime.services.resourceLoader.getExtensions().extensions;
+					expect(extensions).toHaveLength(1);
+					expect(extensions[0]?.commands.has("good")).toBe(false);
+				},
+			}),
+			tty: { stdinIsTTY: () => true, stdoutIsTTY: () => true },
+		});
+	});
+
+	it("writes a mark that arrives on a real IPC channel after the launch payload", async () => {
+		const targetDir = feedbackTarget();
+		const target = loadTarget(targetDir);
+		const scriptDir = mkdtempSync(join(tmpdir(), "ahde-ipc-child-"));
+		cleanupPaths.push(scriptDir);
+		const script = join(scriptDir, "child.mjs");
+		// A child that speaks only the wire shape: no AHDE code, so what this
+		// proves is that the contract survives Node's own IPC serialization and
+		// that the channel is still open once the launch payload has been read.
+		writeFileSync(script, `
+process.once("message", () => {
+	// Mirrors process-entry.ts: the channel alone must not keep the child
+	// alive, so something else (there, Pi's TUI) has to hold the loop open.
+	process.channel?.unref();
+	const alive = setTimeout(() => process.disconnect(), 30_000);
+	process.once("message", (answer) => {
+		clearTimeout(alive);
+		process.send({ answer });
+		process.disconnect();
+	});
+	process.send({
+		protocol: 1,
+		kind: "feedback-mark",
+		requestId: 1,
+		draft: {
+			verdict: "bad",
+			note: "over a real channel",
+			messages: [
+				{ role: "user", content: "вопрос" },
+				{ role: "assistant", content: "ответ" },
+			],
+		},
+	});
+});
+`);
+
+		const answers: unknown[] = [];
+		await new Promise<void>((resolvePromise, reject) => {
+			const child = spawn(process.execPath, [script], { stdio: ["ignore", "ignore", "inherit", "ipc"] });
+			child.on("message", (value: unknown) => {
+				const response = handleInteractiveTargetFeedbackRequest({
+					projectDir: targetDir,
+					target: { id: target.manifest.id, gitSha: target.gitSha },
+					value,
+					now: () => "2026-08-30T07:30:00.000Z",
+				});
+				if (response) child.send(response, () => undefined);
+				else answers.push(value);
+			});
+			child.once("error", reject);
+			child.once("spawn", () => child.send({ protocol: 1, kind: "launch" }));
+			child.once("exit", (code) => (code === 0 ? resolvePromise() : reject(new Error(`child exited ${code}`))));
+		});
+
+		expect(answers).toEqual([{
+			answer: {
+				protocol: 1,
+				kind: "feedback-result",
+				requestId: 1,
+				ok: true,
+				path: TARGET_FEEDBACK_PATH,
+				total: 1,
+			},
+		}]);
+		const stored = readTargetFeedback(targetDir).marks[0] as TargetFeedbackMark;
+		expect(stored.note).toBe("over a real channel");
+		expect(stored.at).toBe("2026-08-30T07:30:00.000Z");
+	});
+
+	it("adapts the child's own process, and reports no channel as disconnected", () => {
+		const connected = interactiveTargetProcessIpcHost({
+			connected: true,
+			send: (() => true) as unknown as NodeJS.Process["send"],
+			on: (() => undefined) as unknown as NodeJS.Process["on"],
+			off: (() => undefined) as unknown as NodeJS.Process["off"],
+		});
+		expect(connected.connected).toBe(true);
+		expect(connected.send({})).toBe(true);
+
+		// A Node process started without `stdio: [..., "ipc"]` has no `send`.
+		const orphan = interactiveTargetProcessIpcHost({
+			connected: false,
+			send: undefined,
+			on: (() => undefined) as unknown as NodeJS.Process["on"],
+			off: (() => undefined) as unknown as NodeJS.Process["off"],
+		});
+		expect(orphan.connected).toBe(false);
+		expect(orphan.send({})).toBe(false);
+	});
+
+	it("ignores anything on the channel that is not a mark, and refuses a malformed one", () => {
+		const targetDir = feedbackTarget();
+		const target = loadTarget(targetDir);
+		const parent = {
+			projectDir: targetDir,
+			target: { id: target.manifest.id, gitSha: target.gitSha },
+		};
+
+		for (const value of [null, "mark", { protocol: 2, kind: "feedback-mark" }, { kind: "shutdown" }]) {
+			expect(handleInteractiveTargetFeedbackRequest({ ...parent, value })).toBeNull();
+		}
+		const refused = handleInteractiveTargetFeedbackRequest({
+			...parent,
+			value: {
+				protocol: 1,
+				kind: "feedback-mark",
+				requestId: 7,
+				draft: { verdict: "maybe", messages: [{ role: "user", content: "x" }] },
+			},
+		});
+		expect(refused).toMatchObject({ requestId: 7, ok: false });
+		// An over-long dialogue is rejected by the host, not silently trimmed.
+		const oversized = handleInteractiveTargetFeedbackRequest({
+			...parent,
+			value: {
+				protocol: 1,
+				kind: "feedback-mark",
+				requestId: 8,
+				draft: {
+					verdict: "bad",
+					messages: Array.from({ length: MAX_TASK_MESSAGES + 1 }, () => ({ role: "user", content: "x" })),
+				},
+			},
+		});
+		expect(oversized).toMatchObject({ requestId: 8, ok: false });
+		expect(readTargetFeedback(targetDir).exists).toBe(false);
 	});
 });

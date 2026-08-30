@@ -86,6 +86,7 @@ describe("runSuite with real Pi harness + mock model", () => {
 			runsRoot,
 			label: "baseline",
 			repetitions: 1,
+			jobs: 2,
 			onRunEvent: (event) => {
 				events.push(event);
 				if (event.type === "run_started" || event.type === "execution_finished" || event.type === "run_graded") {
@@ -105,10 +106,15 @@ describe("runSuite with real Pi harness + mock model", () => {
 		expect(evalRun.summary.pass).toBe(1);
 		expect(evalRun.summary.fail).toBe(1);
 		expect(evalRun.provenanceKey).toMatch(/^sha256:/);
-		expect(events.filter((event) => event.type === "run_started").map((event) => event.run)).toEqual([
-			expect.objectContaining({ ordinal: 1, total: 2, repetitionIndex: 0 }),
-			expect.objectContaining({ ordinal: 2, total: 2, repetitionIndex: 0 }),
-		]);
+		// The pool interleaves executions, so global event order is not a
+		// contract. Identity is: every design position starts exactly once, with
+		// the exact ordinal and total it was planned with.
+		const starts = events.filter((event) => event.type === "run_started");
+		expect(starts.map((event) => event.run.ordinal).sort()).toEqual([1, 2]);
+		expect(starts.map((event) => event.run.total)).toEqual([2, 2]);
+		expect(starts.map((event) => event.run.repetitionIndex)).toEqual([0, 0]);
+		expect(new Set(starts.map((event) => event.run.runId)).size).toBe(2);
+		expect(new Set(evalRun.runIds)).toEqual(new Set(starts.map((event) => event.run.runId)));
 		for (const runId of evalRun.runIds) {
 			expect(events.filter((event) => event.run.runId === runId).map((event) => event.type)).toEqual([
 				"run_started",
@@ -222,7 +228,10 @@ description: Проверка ограничений ДБО для любых о
 });
 
 describe("judge grader", () => {
-	function judgeFixtureFiles(mockUrl: string): Record<string, string> {
+	function judgeFixtureFiles(
+		mockUrl: string,
+		options: { judgeParams?: string; tasks?: string } = {},
+	): Record<string, string> {
 		return {
 			"manifest.yaml": `id: judge-target
 model:
@@ -248,8 +257,8 @@ evalSuite:
     apiKeyEnv: MOCK_MODEL_KEY
     thinkingLevel: "off"
     timeoutMs: 60000
-`,
-			"evals/development.jsonl": [
+${options.judgeParams ?? ""}`,
+			"evals/development.jsonl": options.tasks ?? [
 				JSON.stringify({
 					id: "ask_pass",
 					input: "Вопрос про комиссию по своей карте",
@@ -320,6 +329,128 @@ evalSuite:
 		}
 	}, 180_000);
 
+	const ONE_JUDGE_TASK = `${JSON.stringify({
+		id: "ask_pass",
+		input: "Вопрос про комиссию по своей карте",
+		graders: [{ type: "judge", rubric: "ответ по существу комиссии" }],
+	})}\n`;
+
+	it("judge retries a 429 then grades with every attempt on disk", async () => {
+		let judgeCalls = 0;
+		const judgeMock = await startMockModel([
+			{
+				match: ({ system }) => system.includes("грейдер"),
+				resolve: () => {
+					judgeCalls += 1;
+					return judgeCalls === 1
+						? { httpError: { status: 429, message: "slow down" } }
+						: { text: '{"passed": true, "reason": "по существу"}' };
+				},
+				steps: [],
+			},
+			{ match: () => true, steps: [{ text: "Комиссия за перевод между своими счетами не взимается." }] },
+		]);
+		const dir = makeTargetFixture(baseFixtureFiles(judgeFixtureFiles(judgeMock.url, { tasks: ONE_JUDGE_TASK })));
+		const judgeRuns = join(dir, "..", `judge-retry-runs-${Date.now()}`);
+		try {
+			const result = await runSuite(loadTarget(dir), { runsRoot: judgeRuns, label: "solo", repetitions: 1 });
+
+			expect(result.summary).toMatchObject({ total: 1, pass: 1, fail: 0, error: 0 });
+			expect(judgeCalls).toBe(2);
+			const runId = result.runIds[0] ?? "";
+			const run = JSON.parse(readFileSync(join(judgeRuns, runId, "run.json"), "utf8"));
+			expect(run.evalResults.graders[0]).toMatchObject({ type: "judge", passed: true, reason: "по существу" });
+			// Grading cost is recorded, retries included.
+			expect(run.metrics.judge).toMatchObject({ calls: 2, tokens: 49, costUsd: 0 });
+
+			// Every attempt is on disk; the terminal one keeps the historical name.
+			const rateLimited = JSON.parse(readFileSync(join(judgeRuns, runId, "judge", "0.1.json"), "utf8"));
+			expect(rateLimited.response.status).toBe(429);
+			expect(rateLimited.request.body.temperature).toBe(0);
+			const graded = JSON.parse(readFileSync(join(judgeRuns, runId, "judge", "0.json"), "utf8"));
+			expect(graded.response.status).toBe(200);
+			expect(graded.response.text).toContain("по существу");
+			expect(existsSync(join(judgeRuns, runId, "judge", "0.2.json"))).toBe(false);
+		} finally {
+			cleanup(dir);
+			cleanup(judgeRuns);
+			await judgeMock.close();
+		}
+	}, 180_000);
+
+	it("exhausted retries stay an infrastructure error", async () => {
+		let judgeCalls = 0;
+		const judgeMock = await startMockModel([
+			{
+				match: ({ system }) => system.includes("грейдер"),
+				resolve: () => {
+					judgeCalls += 1;
+					return { httpError: { status: 429, message: "still rate limited" } };
+				},
+				steps: [],
+			},
+			{ match: () => true, steps: [{ text: "Комиссия за перевод между своими счетами не взимается." }] },
+		]);
+		const dir = makeTargetFixture(baseFixtureFiles(judgeFixtureFiles(judgeMock.url, { tasks: ONE_JUDGE_TASK })));
+		const judgeRuns = join(dir, "..", `judge-exhausted-runs-${Date.now()}`);
+		try {
+			const result = await runSuite(loadTarget(dir), { runsRoot: judgeRuns, label: "solo", repetitions: 1 });
+
+			expect(result.summary).toMatchObject({ total: 1, pass: 0, fail: 0, error: 1 });
+			expect(judgeCalls).toBe(3);
+			const runId = result.runIds[0] ?? "";
+			const run = JSON.parse(readFileSync(join(judgeRuns, runId, "run.json"), "utf8"));
+			expect(run.status).toBe("error");
+			expect(run.error).toMatch(/evaluation infrastructure: judge HTTP 429/);
+			expect(run.evalResults).toBeNull();
+			for (const name of ["0.1.json", "0.2.json", "0.json"]) {
+				const attempt = JSON.parse(readFileSync(join(judgeRuns, runId, "judge", name), "utf8"));
+				expect(attempt.response.status).toBe(429);
+			}
+		} finally {
+			cleanup(dir);
+			cleanup(judgeRuns);
+			await judgeMock.close();
+		}
+	}, 180_000);
+
+	it("judge params cannot override temperature", async () => {
+		const judgeMock = await startMockModel([
+			{
+				match: ({ system }) => system.includes("грейдер"),
+				steps: [{ text: '{"passed": true, "reason": "по существу"}' }],
+			},
+			{ match: () => true, steps: [{ text: "Комиссия за перевод между своими счетами не взимается." }] },
+		]);
+		const rejected = makeTargetFixture(baseFixtureFiles(judgeFixtureFiles(judgeMock.url, {
+			tasks: ONE_JUDGE_TASK,
+			judgeParams: "    params:\n      temperature: 0.9\n",
+		})));
+		const accepted = makeTargetFixture(baseFixtureFiles(judgeFixtureFiles(judgeMock.url, {
+			tasks: ONE_JUDGE_TASK,
+			judgeParams: "    params:\n      top_p: 0.3\n",
+		})));
+		const judgeRuns = join(accepted, "..", `judge-temperature-runs-${Date.now()}`);
+		try {
+			// The manifest refuses a promise the request cannot keep…
+			expect(() => loadTarget(rejected)).toThrow(/judge.params cannot set/);
+			expect(() => loadTarget(rejected)).toThrow(/pinned to temperature 0/);
+
+			// …and every other param still leaves the pinned temperature alone.
+			const result = await runSuite(loadTarget(accepted), { runsRoot: judgeRuns, label: "solo", repetitions: 1 });
+			expect(result.summary).toMatchObject({ total: 1, pass: 1 });
+			const runId = result.runIds[0] ?? "";
+			const sidecar = JSON.parse(readFileSync(join(judgeRuns, runId, "judge", "0.json"), "utf8"));
+			expect(sidecar.request.body.temperature).toBe(0);
+			expect(sidecar.request.body.top_p).toBe(0.3);
+		} finally {
+			cleanup(rejected);
+			cleanup(accepted);
+			cleanup(judgeRuns);
+			await judgeMock.close();
+		}
+	}, 180_000);
+
 	it("unparseable judge output is recorded as infrastructure error, not a grade", async () => {
 		const judgeMock = await startMockModel([
 			{
@@ -379,6 +510,194 @@ evalSuite:
 			cleanup(dir);
 			cleanup(judgeRuns);
 			await judgeMock.close();
+		}
+	}, 180_000);
+
+	const REFERENCE_TASKS = [
+		JSON.stringify({
+			id: "ref_pass",
+			input: "Вопрос про комиссию по своей карте",
+			expected: "Комиссия за переводы между своими счетами не взимается.",
+			graders: [{ type: "judge", rubric: "фактическая верность", withReference: true }],
+		}),
+		JSON.stringify({
+			id: "ref_fail",
+			input: "Вопрос про тарифы",
+			expected: "Тариф «Базовый» стоит 0 рублей.",
+			graders: [{ type: "judge", rubric: "фактическая верность", withReference: true }],
+		}),
+		JSON.stringify({
+			id: "rubric_only",
+			input: "Вопрос про сроки",
+			expected: "Возврат занимает тридцать дней.",
+			graders: [{ type: "judge", rubric: "ответ по существу сроков" }],
+		}),
+	].join("\n");
+
+	it("a withReference judge grades on the A–E rubric and never leaks the reference to a rubric-only judge", async () => {
+		const judgeMock = await startMockModel([
+			{
+				// The reference protocol asks for a choice, not a boolean.
+				match: ({ system, firstUser }) => system.includes("эталонным") && firstUser.includes("тарифы"),
+				steps: [{ text: '{"choice": "D", "reason": "названа другая цена"}' }],
+			},
+			{
+				match: ({ system }) => system.includes("эталонным"),
+				steps: [{ text: '{"choice": "A", "reason": "подмножество эталона"}' }],
+			},
+			{
+				match: ({ system }) => system.includes("грейдер"),
+				steps: [{ text: '{"passed": true, "reason": "по существу"}' }],
+			},
+			{ match: ({ firstUser }) => firstUser.includes("тарифы"), steps: [{ text: "Тариф «Базовый» стоит 300 рублей." }] },
+			{ match: ({ firstUser }) => firstUser.includes("сроки") || firstUser.includes("сроков"), steps: [{ text: "Тридцать дней." }] },
+			{ match: () => true, steps: [{ text: "Между своими счетами комиссии нет." }] },
+		]);
+		const dir = makeTargetFixture(baseFixtureFiles(judgeFixtureFiles(judgeMock.url, { tasks: REFERENCE_TASKS })));
+		const judgeRuns = join(dir, "..", `judge-reference-runs-${Date.now()}`);
+		try {
+			const result = await runSuite(loadTarget(dir), { runsRoot: judgeRuns, label: "solo", repetitions: 1 });
+			expect(result.summary).toMatchObject({ total: 3, pass: 2, fail: 1, error: 0 });
+
+			const runs = result.runIds.map((id) => JSON.parse(readFileSync(join(judgeRuns, id, "run.json"), "utf8")));
+			const byTask = Object.fromEntries(runs.map((run) => [run.taskId, run]));
+
+			// {A, B, C, E} pass, D fails, and the chosen branch is in the reason.
+			expect(byTask.ref_pass.evalResults.graders[0]).toMatchObject({
+				type: "judge",
+				passed: true,
+				score: 0.4,
+				reason: "A: подмножество эталона",
+				checkCode: "semantic-rubric",
+			});
+			expect(byTask.ref_fail.evalResults.graders[0]).toMatchObject({
+				passed: false,
+				score: 0,
+				reason: "D: названа другая цена",
+			});
+
+			// The reference and the rubric are delimited, and the sidecar records the choice.
+			const referencePrompt = JSON.parse(
+				readFileSync(join(judgeRuns, byTask.ref_pass.runId, "judge", "0.json"), "utf8"),
+			).request.body.messages[1].content;
+			expect(referencePrompt).toContain("<критерий>\nфактическая верность\n</критерий>");
+			expect(referencePrompt).toContain("<эталонный ответ>\nКомиссия за переводы между своими счетами не взимается.\n</эталонный ответ>");
+			expect(referencePrompt).toContain("<ответ агента>\nМежду своими счетами комиссии нет.\n</ответ агента>");
+			expect(JSON.parse(readFileSync(join(judgeRuns, byTask.ref_pass.runId, "judge", "0.verdict.json"), "utf8")))
+				.toEqual({ choice: "A", passed: true, score: 0.4 });
+
+			// A rubric-only judge never sees the case's reference answer.
+			const rubricOnly = JSON.parse(
+				readFileSync(join(judgeRuns, byTask.rubric_only.runId, "judge", "0.json"), "utf8"),
+			).request.body;
+			expect(rubricOnly.messages[1].content).not.toContain("Возврат занимает тридцать дней.");
+			expect(rubricOnly.messages[1].content).toBe(
+				"Критерий: ответ по существу сроков\n\nОбращение: Вопрос про сроки\n\nОтвет агента: Тридцать дней.",
+			);
+			expect(existsSync(join(judgeRuns, byTask.rubric_only.runId, "judge", "0.verdict.json"))).toBe(false);
+		} finally {
+			cleanup(dir);
+			cleanup(judgeRuns);
+			await judgeMock.close();
+		}
+	}, 180_000);
+});
+
+describe("dialogue cases", () => {
+	const DIALOGUE_TASKS = [
+		JSON.stringify({
+			id: "dialog_001",
+			input: "И для золотых клиентов?",
+			expected: "Для золотых клиентов — 60 дней.",
+			messages: [
+				{ role: "user", content: "Сколько длится возврат?" },
+				{ role: "assistant", content: "Тридцать дней." },
+				{ role: "user", content: "И для золотых клиентов?" },
+			],
+			graders: [
+				{ type: "exact" },
+				// Only in the seeded assistant turn: grading the reply alone must fail it.
+				{ type: "output_contains", text: "Тридцать" },
+			],
+		}),
+		JSON.stringify({
+			id: "single_001",
+			input: "Сколько длится возврат?",
+			graders: [{ type: "output_contains", text: "дней" }],
+		}),
+	].join("\n");
+
+	it("seeds every turn but the last and grades only the reply that follows", async () => {
+		const seen: { role: string; text: string }[][] = [];
+		const dialogueMock = await startMockModel([
+			{
+				resolve: (body) => {
+					seen.push(body.messages);
+					return { text: body.lastUser.includes("золотых") ? "Для золотых клиентов — 60 дней." : "Тридцать дней." };
+				},
+				steps: [],
+			},
+		]);
+		const dir = makeTargetFixture(baseFixtureFiles({
+			"manifest.yaml": `id: dialogue-target
+model:
+  provider: qwen-mock
+  id: mock
+  api: openai-completions
+  baseUrl: ${dialogueMock.url}
+  apiKeyEnv: MOCK_MODEL_KEY
+  thinkingLevel: "off"
+  timeoutMs: 60000
+instructions:
+  agentsMd: AGENTS.md
+skills: []
+evalSuite:
+  id: dialogue-suite
+  dataset: evals/development.jsonl
+  graders: evals/graders.yaml
+`,
+			"evals/development.jsonl": `${DIALOGUE_TASKS}\n`,
+		}));
+		const dialogueRuns = join(dir, "..", `dialogue-runs-${Date.now()}`);
+		try {
+			const result = await runSuite(loadTarget(dir), { runsRoot: dialogueRuns, label: "solo", repetitions: 1 });
+			const runs = result.runIds.map((id) => JSON.parse(readFileSync(join(dialogueRuns, id, "run.json"), "utf8")));
+			const byTask = Object.fromEntries(runs.map((run) => [run.taskId, run]));
+
+			// The model actually saw the conversation, not just the last question.
+			const dialogueRequest = seen.find((messages) =>
+				messages.some((message) => message.text.includes("золотых")));
+			const conversation = (dialogueRequest ?? []).filter((message) => message.role !== "system");
+			expect(conversation.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
+			expect(conversation[0]?.text).toContain("Сколько длится возврат?");
+			expect(conversation[1]?.text).toBe("Тридцать дней.");
+			expect(conversation[2]?.text).toContain("И для золотых клиентов?");
+
+			// A single-message case still sends exactly one user turn.
+			const singleRequest = seen.find((messages) => messages === dialogueRequest ? false :
+				messages.some((message) => message.text.includes("Сколько длится возврат?")));
+			expect((singleRequest ?? []).filter((message) => message.role !== "system")).toHaveLength(1);
+
+			// Graded on the reply alone: the seeded turn's text is not the output.
+			expect(byTask.dialog_001.evalResults.graders.map((grader: { type: string; passed: boolean }) =>
+				[grader.type, grader.passed])).toEqual([["exact", true], ["output_contains", false]]);
+			expect(byTask.dialog_001.evalResults.graders[0].checkCode).toBe("reference-exact");
+
+			// The seeded turns are counted in metrics and present in the trace.
+			expect(byTask.dialog_001.metrics.seededTurns).toBe(2);
+			expect(Object.keys(byTask.single_001.metrics)).not.toContain("seededTurns");
+			const trace = openTrace(
+				join(dialogueRuns, byTask.dialog_001.runId),
+				"session.jsonl",
+				byTask.dialog_001.trace.sha256,
+			);
+			expect(trace.map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
+			expect(trace[1]?.text).toBe("Тридцать дней.");
+			expect(trace[3]?.text).toBe("Для золотых клиентов — 60 дней.");
+		} finally {
+			cleanup(dir);
+			cleanup(dialogueRuns);
+			await dialogueMock.close();
 		}
 	}, 180_000);
 });

@@ -1,8 +1,12 @@
-import type { WorkbenchCandidateSummary, WorkbenchConfirmation } from "../../workbench/types.js";
+import type {
+	WorkbenchCandidateSummary,
+	WorkbenchConfirmation,
+	WorkbenchDatasetCase,
+} from "../../workbench/types.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
 import { bullets, clean, numbered, oneLine, pluralize, shortHash, shortSha, wrap } from "./format.js";
 import type { Paint } from "./paint.js";
-import { renderCandidate } from "./view.js";
+import { renderCandidate, renderDatasetCases } from "./view.js";
 
 const MAX_CONFIRM_DIFF_LINES = 200;
 
@@ -103,6 +107,32 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 				paint.muted("Publishing makes these cases the development evidence for this Spec lineage."),
 			];
 		}
+		case "import-dataset": {
+			const sealed = subject.sealed === null || subject.sealed === undefined ? null : bag(subject.sealed);
+			const recipe = bag(subject.recipe);
+			const input = bag(recipe.input);
+			const mapping = [
+				`input ${input.column ? `← ${text(input.column, 40)}` : input.template ? `← template ${text(input.template, 60)}` : recipe.dialogue ? "← last user turn" : "—"}`,
+				...(recipe.expected ? [`expected ← ${text(bag(recipe.expected).column, 40)}`] : []),
+				...(recipe.dialogue ? [`dialogue ← ${text(bag(recipe.dialogue).column, 40)}`] : []),
+				...(strings(recipe.metadata).length > 0 ? [`metadata ← ${strings(recipe.metadata).map((item) => oneLine(item, 24)).join(", ")}`] : []),
+			];
+			const cases = Array.isArray(subject.sampleCases) ? subject.sampleCases : [];
+			const lines = [
+				`${paint.dim("File")} ${paint.bold(text(subject.sourcePath, 60))} ${paint.dim("· basket")} ${text(subject.name, 30)}`,
+				`${paint.dim("Mapping")} ${oneLine(mapping.join(" · "), 100)}`,
+				`${paint.dim("Cases")} ${paint.bold(pluralize(Number(subject.developmentCount ?? cases.length), "development case"))}` +
+					`${Number(subject.skippedRows ?? 0) > 0 ? ` ${paint.dim("·")} ${pluralize(Number(subject.skippedRows), "row")} skipped` : ""}`,
+				sealed
+					? `${paint.dim("Sealed")} ${paint.bold(pluralize(Number(sealed.count ?? 0), "row"))} drawn with seed ${paint.bold(text(sealed.seed, 24))}${sealed.stratifyBy ? paint.dim(` · stratified by ${text(sealed.stratifyBy, 20)}`) : ""}`
+					: `${paint.dim("Sealed")} ${paint.warning("none")} ${paint.dim("· without a holdout there is no exam for this file")}`,
+			];
+			if (cases.length > 0) {
+				lines.push(paint.dim("Sample cases"), ...renderDatasetCases(cases as WorkbenchDatasetCase[], paint));
+			}
+			lines.push(paint.muted("Sealed rows are compiled first and never enter a development case or your context."));
+			return lines;
+		}
 		case "run-eval": {
 			const target = bag(subject.target);
 			const corpus = bag(subject.developmentCorpus);
@@ -111,6 +141,18 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			return [
 				`${paint.dim("Run")} ${pluralize(tasks, "case")} × ${pluralize(repetitions, "repetition")} = ${paint.bold(`${tasks * repetitions} Target executions`)} ${paint.dim("· each one calls the Target model")}`,
 				`${paint.dim("Target")} ${text(target.id)} ${paint.dim(`@ ${shortSha(text(target.gitSha, 40))}`)} ${paint.dim("· basket")} ${text(corpus.id)} ${paint.dim(`(${pluralize(Number(corpus.taskCount ?? tasks), "case")})`)}`,
+			];
+		}
+		case "calibrate": {
+			const corpus = bag(subject.developmentCorpus);
+			const target = bag(subject.target);
+			const tasks = Number(corpus.taskCount ?? 0);
+			const repetitions = Number(subject.repetitions ?? 1);
+			return [
+				`${paint.dim("Calibrate noise")} run this exact revision twice ${paint.dim("· nothing is promoted")}`,
+				`${paint.dim("Cost")} ${pluralize(tasks, "case")} × ${pluralize(repetitions, "repetition")} = ${paint.bold(`${2 * tasks * repetitions} Target executions`)} ${paint.dim("· each one calls the Target model")}`,
+				`${paint.dim("Target")} ${text(target.id, 60)} ${paint.dim(`@ ${shortSha(text(target.gitSha, 40))}`)} ${paint.dim("· basket")} ${text(corpus.id, 60)}`,
+				paint.muted("A/A measures how much the agent disagrees with itself, so later deltas can be believed."),
 			];
 		}
 		case "apply-proposal": {
@@ -170,7 +212,7 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 }
 
 /** Kinds whose subject is a computation, not an artifact: the hash adds nothing for a human. */
-const EPHEMERAL_SUBJECTS = new Set<WorkbenchConfirmation["kind"]>(["run-eval", "verify-candidate", "run-current"]);
+const EPHEMERAL_SUBJECTS = new Set<WorkbenchConfirmation["kind"]>(["run-eval", "verify-candidate", "run-current", "calibrate"]);
 
 /** Human-readable confirmation body: what will happen, exact subject, reason, hash. */
 export function renderConfirmation(confirmation: WorkbenchConfirmation, paint: Paint): string[] {

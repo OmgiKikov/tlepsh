@@ -28,6 +28,11 @@ export interface MockStep {
 	toolCall?: MockToolCall;
 	/** Respond with an HTTP error (simulates provider failure). */
 	httpError?: { status: number; message: string };
+	/**
+	 * Hold the response for this long before answering (simulates provider
+	 * latency). Concurrency tests need one slow task to overlap fast ones.
+	 */
+	delayMs?: number;
 }
 
 export interface MockScript {
@@ -49,6 +54,8 @@ export interface MockRequestContext {
 	lastUser: string;
 	toolCount: number;
 	toolResults: string[];
+	/** Every conversation message in request order, so a test can assert on seeded history. */
+	messages: { role: string; text: string }[];
 }
 
 export interface MockModelHandle {
@@ -163,7 +170,11 @@ export function startMockModel(scripts: MockScript[], fallback?: MockScript): Pr
 				) ?? defaultScript;
 			// Stateless step selection: how many tool results has the harness sent back so far.
 			const toolResults = messages.filter((m) => m.role === "tool").map((message) => contentText(message.content));
-			const step = script.resolve?.({ ...contextBase, toolResults }) ?? script.steps[toolResults.length];
+			const step = script.resolve?.({
+				...contextBase,
+				toolResults,
+				messages: messages.map((message) => ({ role: message.role, text: contentText(message.content) })),
+			}) ?? script.steps[toolResults.length];
 			if (!step) {
 				res.writeHead(500, { "content-type": "application/json" });
 				res.end(
@@ -173,32 +184,38 @@ export function startMockModel(scripts: MockScript[], fallback?: MockScript): Pr
 				);
 				return;
 			}
-		if (step.httpError) {
-			res.writeHead(step.httpError.status, { "content-type": "application/json" });
-			res.end(JSON.stringify({ error: { message: step.httpError.message } }));
-			return;
-		}
-		if (body.stream === false) {
-			// Non-streaming client (judge grader): plain JSON completion.
-			res.writeHead(200, { "content-type": "application/json" });
-			res.end(
-				JSON.stringify({
-					id: "chatcmpl-mock",
-					object: "chat.completion",
-					created: Math.floor(Date.now() / 1000),
-					model,
-					choices: [{ index: 0, message: { role: "assistant", content: step.text ?? "" }, finish_reason: "stop" }],
-					usage: { prompt_tokens: 42, completion_tokens: 7, total_tokens: 49 },
-				}),
-			);
-			return;
-		}
-		res.writeHead(200, {
-				"content-type": "text/event-stream",
-				"cache-control": "no-cache",
-				connection: "keep-alive",
-			});
-			res.end(stepToSse(model, step));
+			const respond = (): void => {
+			if (step.httpError) {
+				res.writeHead(step.httpError.status, { "content-type": "application/json" });
+				res.end(JSON.stringify({ error: { message: step.httpError.message } }));
+				return;
+			}
+			if (body.stream === false) {
+				// Non-streaming client (judge grader): plain JSON completion.
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end(
+					JSON.stringify({
+						id: "chatcmpl-mock",
+						object: "chat.completion",
+						created: Math.floor(Date.now() / 1000),
+						model,
+						choices: [{ index: 0, message: { role: "assistant", content: step.text ?? "" }, finish_reason: "stop" }],
+						usage: { prompt_tokens: 42, completion_tokens: 7, total_tokens: 49 },
+					}),
+				);
+				return;
+			}
+			res.writeHead(200, {
+					"content-type": "text/event-stream",
+					"cache-control": "no-cache",
+					connection: "keep-alive",
+				});
+				res.end(stepToSse(model, step));
+			};
+			// Latency is scriptable so concurrency tests can overlap a slow task
+			// with fast ones without depending on real model timing.
+			if (step.delayMs && step.delayMs > 0) setTimeout(respond, step.delayMs);
+			else respond();
 		});
 	});
 

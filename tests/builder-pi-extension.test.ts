@@ -1,21 +1,20 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { join } from "node:path";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Check } from "typebox/value";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	AHDE_BUILDER_TOOL_NAMES,
 	CONSEQUENTIAL_BUILDER_TOOL_NAMES,
-	createAhdeBuilderCompatibilityTools,
 	createAhdeBuilderExtension,
 	createAhdeBuilderTools,
 } from "../src/builder/extension.js";
 import { AHDE_BUILDER_COMMAND_NAMES } from "../src/builder/commands.js";
 import {
-	WorkbenchDecisionParameters,
-	WorkbenchSubmitParameters,
-	WorkbenchViewParameters,
+	WorkbenchDecisionToolSchema,
+	WorkbenchSubmitToolSchema,
+	WorkbenchViewToolSchema,
 } from "../src/builder/workbench-transport.js";
 import {
 	WorkbenchDecisionInputSchema,
@@ -24,24 +23,8 @@ import {
 } from "../src/workbench/types.js";
 import { buildProjectStatus } from "../src/builder/project-context.js";
 import { createCorpus } from "../src/corpus.js";
-import { saveSpecSnapshot, type AgentSpec } from "../src/spec.js";
-import type { PersistedBuilderRun } from "../src/application/builder-proposal.js";
-import { hashValue } from "../src/provenance.js";
-import { scaffoldTarget } from "../src/manifest.js";
 
 const roots: string[] = [];
-const spec: AgentSpec = {
-	schemaVersion: 1,
-	title: "Support triage",
-	purpose: "Classify support requests and prepare a bounded response.",
-	users: ["support operator"],
-	jobs: ["classify one request"],
-	inputs: ["request text"],
-	allowedActions: ["read the public policy"],
-	successCriteria: ["classification matches the explicit rubric"],
-	constraints: ["no network"],
-	openQuestions: [],
-};
 
 function root(prefix: string): string {
 	const path = mkdtempSync(join(tmpdir(), prefix));
@@ -53,25 +36,6 @@ afterEach(() => {
 	vi.restoreAllMocks();
 	for (const path of roots.splice(0)) rmSync(path, { recursive: true, force: true });
 });
-
-function fakeContext(
-	hasUI: boolean,
-	confirm = vi.fn(async () => false),
-	mode: ExtensionContext["mode"] = hasUI ? "tui" : "print",
-	select = vi.fn(async () => undefined),
-): ExtensionContext {
-	return {
-		hasUI,
-		mode,
-		ui: { confirm, select, notify: vi.fn() },
-	} as unknown as ExtensionContext;
-}
-
-function textDetails(result: Awaited<ReturnType<ToolDefinition["execute"]>>): unknown {
-	const first = result.content[0];
-	if (!first || first.type !== "text") throw new Error("expected text tool result");
-	return JSON.parse(first.text) as unknown;
-}
 
 describe("Builder Pi extension registry", () => {
 	it("keeps Workbench transport bounds aligned with canonical application schemas", () => {
@@ -96,6 +60,23 @@ describe("Builder Pi extension registry", () => {
 			name: "Imported examples",
 			coverageNotes: ["Operator-provided cases"],
 			revisionSummary: "Import exact project-local JSONL",
+		};
+		const datasetRecipe = {
+			kind: "dataset-recipe",
+			sourcePath: "imports/tickets.csv",
+			recipe: {
+				schemaVersion: 1,
+				input: { template: "{{question}} (tier {{tier}})" },
+				expected: { column: "answer" },
+				dialogue: { column: "history" },
+				metadata: ["tier"],
+				filters: [{ column: "tier", matches: "gold|standard" }],
+				sample: { limit: 60, seed: "thin-1", stratifyBy: "tier" },
+				graders: [{ type: "output_contains", text: "{{expected}}" }],
+				idPrefix: "ticket",
+			},
+			name: "Refund tickets",
+			revisionSummary: "Map the exported tickets into cases",
 		};
 		const corpusEvidenceRevision = {
 			kind: "corpus-revision",
@@ -155,12 +136,26 @@ describe("Builder Pi extension registry", () => {
 		for (const accepted of [
 			corpusDraft,
 			{ ...corpusDraft, coverageNotes: ["x".repeat(1_000)] },
+			{
+				...corpusDraft,
+				tasks: [{
+					input: "Route this support request",
+					expected: "billing",
+					messages: [
+						{ role: "assistant", content: "How can I help?" },
+						{ role: "user", content: "Route this support request" },
+					],
+					metadata: { tier: "gold" },
+					graders: [{ type: "output_contains", text: "billing" }],
+				}],
+			},
 			corpusImport,
+			datasetRecipe,
 			corpusRevision,
 			corpusEvidenceRevision,
 			structuredProposal,
 		]) {
-			expect(Check(WorkbenchSubmitParameters, accepted)).toBe(true);
+			expect(Check(WorkbenchSubmitToolSchema.parameters, accepted)).toBe(true);
 			expect(WorkbenchSubmitInputSchema.safeParse(accepted).success).toBe(true);
 		}
 
@@ -176,17 +171,37 @@ describe("Builder Pi extension registry", () => {
 			{ ...corpusImport, sourcePath: "../private.jsonl" },
 			{ ...corpusImport, sourcePath: "evals/sealed.jsonl" },
 			{ ...corpusImport, sourcePath: "imports/.hidden.jsonl" },
+			// A dialogue whose last turn does not repeat `input` would silently
+			// change the question every consumer that reads only `input` asks.
+			{
+				...corpusDraft,
+				tasks: [{
+					input: "Route this support request",
+					messages: [{ role: "user", content: "Something else entirely" }],
+					graders: [{ type: "output_contains", text: "billing" }],
+				}],
+			},
+			{ ...datasetRecipe, sourcePath: "../private.csv" },
+			{ ...datasetRecipe, sourcePath: "imports/sheet.xlsx" },
+			{ ...datasetRecipe, recipe: { ...datasetRecipe.recipe, graders: [] } },
+			{ ...datasetRecipe, recipe: { ...datasetRecipe.recipe, input: undefined, dialogue: undefined } },
+			{ ...datasetRecipe, recipe: { ...datasetRecipe.recipe, filters: [{ column: "tier" }] } },
+			{ ...datasetRecipe, recipe: { ...datasetRecipe.recipe, sample: { limit: 1_001, seed: "thin-1" } } },
+			{ ...datasetRecipe, corpusId: "corpus-forged" },
 			{ ...corpusRevision, operations: [...corpusRevision.operations, { type: "rename", name: "one-too-many" }] },
 			{ ...structuredProposal, intents: [...structuredProposal.intents, { type: "instructions.replace", content: "One too many" }] },
 			{ ...structuredProposal, failureModeIds: [...structuredProposal.failureModeIds, structuredProposal.failureModeIds[0]] },
 			{ ...structuredProposal, diagnoses: [{ failureIds: ["forged"], evidence: ["forged"], rootCause: "forged" }] },
 		]) {
-			expect(Check(WorkbenchSubmitParameters, invalid)).toBe(false);
+			// The tool schema is generated from this zod schema, so the model-facing
+			// gate is the same one; a few bounds (path policy, id uniqueness) live in
+			// refinements JSON Schema cannot express and are rejected at prepare().
 			expect(WorkbenchSubmitInputSchema.safeParse(invalid).success).toBe(false);
+			expect(() => WorkbenchSubmitToolSchema.prepare(invalid)).toThrow();
 		}
 
 		const blankDecision = { kind: "run-current", repetitions: 1, reason: "   " };
-		expect(Check(WorkbenchDecisionParameters, blankDecision)).toBe(false);
+		expect(Check(WorkbenchDecisionToolSchema.parameters, blankDecision)).toBe(false);
 		expect(WorkbenchDecisionInputSchema.safeParse(blankDecision).success).toBe(false);
 
 		const compactModelSelection = {
@@ -199,7 +214,7 @@ describe("Builder Pi extension registry", () => {
 			},
 			reason: "Use the exact host catalog model",
 		};
-		expect(Check(WorkbenchDecisionParameters, compactModelSelection)).toBe(true);
+		expect(Check(WorkbenchDecisionToolSchema.parameters, compactModelSelection)).toBe(true);
 		expect(WorkbenchDecisionInputSchema.safeParse(compactModelSelection).success).toBe(true);
 		for (const invalidModelSelection of [
 			{ ...compactModelSelection, model: { ...compactModelSelection.model, apiKeyEnv: "AWS_SECRET_ACCESS_KEY" } },
@@ -207,24 +222,45 @@ describe("Builder Pi extension registry", () => {
 			{ ...compactModelSelection, model: { ...compactModelSelection.model, baseUrl: "https://attacker.invalid" } },
 			{ ...compactModelSelection, resolveTargetModel: () => ({}) },
 		]) {
-			expect(Check(WorkbenchDecisionParameters, invalidModelSelection)).toBe(false);
+			expect(Check(WorkbenchDecisionToolSchema.parameters, invalidModelSelection)).toBe(false);
 			expect(WorkbenchDecisionInputSchema.safeParse(invalidModelSelection).success).toBe(false);
+			expect(() => WorkbenchDecisionToolSchema.prepare(invalidModelSelection)).toThrow();
+		}
+
+		const importDataset = {
+			kind: "import-dataset",
+			sealed: { count: 40, seed: "exam-1", stratifyBy: "tier" },
+			reason: "Import the exported tickets",
+		};
+		for (const accepted of [importDataset, { ...importDataset, sealed: null }]) {
+			expect(Check(WorkbenchDecisionToolSchema.parameters, accepted)).toBe(true);
+			expect(WorkbenchDecisionInputSchema.safeParse(accepted).success).toBe(true);
+		}
+		for (const invalid of [
+			{ ...importDataset, sealed: { count: 0, seed: "exam-1" } },
+			{ ...importDataset, sealed: { count: 40 } },
+			{ ...importDataset, sealedCorpusId: `corpus-${"a".repeat(64)}` },
+		]) {
+			expect(WorkbenchDecisionInputSchema.safeParse(invalid).success).toBe(false);
+			expect(() => WorkbenchDecisionToolSchema.prepare(invalid)).toThrow();
 		}
 
 		for (const targetView of [
 			{ aspect: "target" },
 			{ aspect: "target", resourcePath: "AGENTS.md" },
+			{ aspect: "dataset", resourcePath: "imports/tickets.csv" },
 		]) {
-			expect(Check(WorkbenchViewParameters, targetView)).toBe(true);
+			expect(Check(WorkbenchViewToolSchema.parameters, targetView)).toBe(true);
 			expect(WorkbenchViewQuerySchema.safeParse(targetView).success).toBe(true);
 		}
 		for (const invalidView of [
 			{ aspect: "traces", resourcePath: "AGENTS.md" },
 			{ resourcePath: "AGENTS.md" },
 			{ aspect: "target", resourcePath: "x".repeat(501) },
+			{ aspect: "dataset" },
 		]) {
-			expect(Check(WorkbenchViewParameters, invalidView)).toBe(false);
 			expect(WorkbenchViewQuerySchema.safeParse(invalidView).success).toBe(false);
+			expect(() => WorkbenchViewToolSchema.prepare(invalidView)).toThrow();
 		}
 	});
 
@@ -285,247 +321,12 @@ describe("Builder Pi extension registry", () => {
 		});
 		expect(handlers.get("tool_call")?.({ toolName: "bash" } as never)).toMatchObject({ block: true, terminate: true });
 		expect(handlers.get("tool_call")?.({ toolName: "ahde_workbench_view" } as never)).toBeUndefined();
-		expect(handlers.get("tool_call")?.({ toolName: "ahde_project_status" } as never)).toMatchObject({
-			block: true,
-			terminate: true,
-		});
-	});
-
-	it("delegates compatibility reads to exact declared Target context", async () => {
-		const parent = root("ahde-builder-project-");
-		const projectDir = join(parent, "target");
-		scaffoldTarget(resolve("templates", "basic-agent"), projectDir);
-		mkdirSync(join(projectDir, ".ahde"), { recursive: true });
-		writeFileSync(join(projectDir, ".ahde", "secret.txt"), "secret\n");
-		const tools = createAhdeBuilderCompatibilityTools({
-			projectDir,
-			stateRoot: join(projectDir, ".ahde"),
-			runsRoot: join(projectDir, "runs"),
-			projectId: "demo",
-		});
-		const read = tools.find((tool) => tool.name === "ahde_target_read")!;
-		const visible = textDetails(await read.execute("call-1", { path: "AGENTS.md" }, undefined, undefined, fakeContext(false)));
-		expect(visible).toMatchObject({
-			kind: "instructions",
-			path: "AGENTS.md",
-			content: readFileSync(join(projectDir, "AGENTS.md"), "utf8"),
-		});
-		await expect(read.execute("call-2", { path: ".ahde/secret.txt" }, undefined, undefined, fakeContext(false)))
-			.rejects.toThrow(/declared Target authoring resource/);
-		await expect(read.execute("call-3", { path: "manifest.yaml" }, undefined, undefined, fakeContext(false)))
-			.rejects.toThrow(/declared Target authoring resource/);
-	});
-
-	it("saves immutable Spec drafts and fails closed when approval has no host UI", async () => {
-		const projectDir = root("ahde-builder-project-");
-		const stateRoot = join(projectDir, ".ahde");
-		const tools = createAhdeBuilderCompatibilityTools({
-			projectDir,
-			stateRoot,
-			runsRoot: join(projectDir, "runs"),
-			projectId: "demo",
-		});
-		const save = tools.find((tool) => tool.name === "ahde_spec_save_draft")!;
-		const saved = textDetails(await save.execute("call-save", {
-			title: spec.title,
-			purpose: spec.purpose,
-			users: spec.users,
-			jobs: spec.jobs,
-			inputs: spec.inputs,
-			allowedActions: spec.allowedActions,
-			successCriteria: spec.successCriteria,
-			constraints: spec.constraints,
-			openQuestions: spec.openQuestions,
-		}, undefined, undefined, fakeContext(false))) as { id: string; status: string };
-		expect(saved.status).toBe("draft");
-
-		const approve = tools.find((tool) => tool.name === "ahde_spec_approve")!;
-		const confirm = vi.fn(async () => true);
-		await expect(approve.execute("call-approve", { specId: saved.id, reason: "Spec is ready" }, undefined, undefined, fakeContext(false, confirm)))
-			.rejects.toThrow(/local TUI host confirmation/);
-		expect(confirm).not.toHaveBeenCalled();
-		await expect(approve.execute("call-approve-rpc", { specId: saved.id, reason: "Spec is ready" }, undefined, undefined, fakeContext(true, confirm, "rpc")))
-			.rejects.toThrow(/RPC, print, and JSON execution fail closed/);
-		expect(confirm).not.toHaveBeenCalled();
-
-		const approvedResult = textDetails(await approve.execute(
-			"call-approve-2",
-			{ specId: saved.id, reason: "Spec is ready" },
-			undefined,
-			undefined,
-			fakeContext(true, confirm),
-		)) as {
-			approved: { status: string; id: string };
-			receipt: { actor: { id: string }; draft: { draftSnapshotHash: string } };
-		};
-		expect(approvedResult.approved.status).toBe("approved");
-		expect(approvedResult.approved.id).not.toBe(saved.id);
-		expect(approvedResult.receipt.actor.id).toMatch(/^local:/);
-		expect(approvedResult.receipt.draft.draftSnapshotHash).toMatch(/^sha256:/);
-		expect(confirm).toHaveBeenCalledWith(
-			"Approve immutable Spec",
-			expect.stringContaining(`Spec id: ${saved.id}`),
-		);
-	});
-
-	it("shows the exact proposal diff and derives the human actor only after confirmation", async () => {
-		const projectDir = root("ahde-builder-project-");
-		const proposal = {
-			runId: "builder-demo",
-			result: {
-				status: "completed",
-				proposal: {
-					decision: "propose",
-					baseTargetSha: "a".repeat(40),
-					summary: "Clarify routing",
-					diagnoses: [{ failureIds: ["failure-1"], evidence: ["erun-1"], rootCause: "Ambiguous route" }],
-					changes: [{
-						path: "AGENTS.md",
-						baseSha256: `sha256:${"b".repeat(64)}`,
-						unifiedDiff: "--- a/AGENTS.md\n+++ b/AGENTS.md\n@@ -1 +1 @@\n-old\n+new\n",
-						rationale: "Observed routing failure",
-						evidenceRefs: ["erun-1"],
-					}],
-					risks: ["Could over-route"],
-					validationPlan: ["Repeat development eval"],
-				},
-			},
-			artifacts: { proposal: { sha256: `sha256:${"c".repeat(64)}` } },
-		} as unknown as PersistedBuilderRun;
-		const applyProposal = vi.fn(() => ({ receipt: { runId: "builder-demo" }, receiptPath: "/receipt" }) as never);
-		const loadProposal = vi.fn(() => proposal);
-		const tools = createAhdeBuilderCompatibilityTools({
-			projectDir,
-			stateRoot: join(projectDir, ".ahde"),
-			runsRoot: join(projectDir, "runs"),
-			projectId: "demo",
-			dependencies: { loadProposal, applyProposal, actorId: () => "local:test-operator" },
-		});
-		const apply = tools.find((tool) => tool.name === "ahde_proposal_apply")!;
-		await expect(apply.execute(
-			"call-apply-closed",
-			{ runId: "builder-demo", branch: "candidate/demo", reason: "Test candidate" },
-			undefined,
-			undefined,
-			fakeContext(false),
-		)).rejects.toThrow(/local TUI host confirmation/);
-		expect(loadProposal).not.toHaveBeenCalled();
-
-		const confirm = vi.fn(async () => true);
-		await apply.execute(
-			"call-apply",
-			{ runId: "builder-demo", branch: "candidate/demo", reason: "Test candidate" },
-			undefined,
-			undefined,
-			fakeContext(true, confirm),
-		);
-		expect(confirm).toHaveBeenCalledWith(
-			"Apply exact Builder proposal",
-			expect.stringContaining("Exact diff:\n--- a/AGENTS.md"),
-		);
-		expect(applyProposal).toHaveBeenCalledWith(expect.objectContaining({
-			runId: "builder-demo",
-			requestedBranch: "candidate/demo",
-			actor: { kind: "human", id: "local:test-operator" },
-		}));
-	});
-
-	it("hides sealed corpus identity and rejects every sealed eval read path", async () => {
-		const projectDir = root("ahde-builder-project-");
-		const development = {
-			evalRunId: "erun_development",
-			target: { id: "demo", gitSha: "a".repeat(40) },
-			label: "baseline",
-			dataset: "development-corpus-public",
-			datasetHash: `sha256:${"d".repeat(64)}`,
-			evidenceVisibility: "development",
-			repetitions: 1,
-			startedAt: "2026-08-26T10:00:00.000Z",
-			finishedAt: "2026-08-26T10:01:00.000Z",
-			summary: { total: 1, pass: 1, fail: 0, error: 0, allPassRate: 1 },
-		};
-		const sealed = {
-			...development,
-			evalRunId: "erun_sealed_secret",
-			dataset: "ordinary-private-dataset",
-			datasetHash: `sha256:${"e".repeat(64)}`,
-			evidenceVisibility: "sealed",
-		};
-		const diagnoseEval = vi.fn();
-		const evidenceLink = vi.fn();
-		const loadEval = vi.fn((_runsRoot: string, evalRunId: string) => {
-			if (evalRunId === development.evalRunId) return development;
-			throw new Error("task-super-secret must remain unopened");
-		});
-		const tools = createAhdeBuilderCompatibilityTools({
-			projectDir,
-			stateRoot: join(projectDir, ".ahde"),
-			runsRoot: join(projectDir, "runs"),
-			projectId: "demo",
-			dependencies: {
-				listEvalIndexes: (() => [development, sealed]) as never,
-				loadEval: loadEval as never,
-				readEvalIndex: ((_runsRoot: string, evalRunId: string) =>
-					evalRunId === sealed.evalRunId ? sealed : development) as never,
-				diagnoseEval,
-				evidenceLink,
-				listCorpora: (() => [{
-					id: "corpus-secret-id",
-					name: "secret holdout",
-					visibility: "sealed",
-					taskCount: 99,
-					hash: `sha256:${"f".repeat(64)}`,
-					createdAt: "2026-08-26T09:00:00.000Z",
-					contentPath: "corpus.jsonl",
-					schemaVersion: 1,
-				}]) as never,
-			},
-		});
-		const list = tools.find((tool) => tool.name === "ahde_eval_list")!;
-		const listed = JSON.stringify(textDetails(await list.execute("list", {}, undefined, undefined, fakeContext(false))));
-		expect(listed).toContain("erun_development");
-		expect(listed).not.toContain("erun_sealed_secret");
-		expect(listed).not.toContain("secret-id");
-
-		for (const name of ["ahde_eval_get", "ahde_eval_diagnose", "ahde_evidence_link"]) {
-			const tool = tools.find((candidate) => candidate.name === name)!;
-			await expect(tool.execute("sealed", { evalRunId: sealed.evalRunId }, undefined, undefined, fakeContext(false)))
-				.rejects.toThrow(/sealed holdout evidence/);
-		}
-		expect(diagnoseEval).not.toHaveBeenCalled();
-		expect(evidenceLink).not.toHaveBeenCalled();
-		expect(loadEval).toHaveBeenCalledTimes(1);
-		expect(loadEval).toHaveBeenCalledWith(expect.any(String), development.evalRunId);
-
-		const corpora = tools.find((tool) => tool.name === "ahde_corpus_list")!;
-		const corpusResult = JSON.stringify(textDetails(await corpora.execute("corpora", {}, undefined, undefined, fakeContext(false))));
-		expect(corpusResult).toContain('"count":1');
-		expect(corpusResult).not.toContain("corpus-secret-id");
-		expect(corpusResult).not.toContain("secret holdout");
-		expect(corpusResult).not.toContain(sealed.datasetHash);
-	});
-
-	it("does not leak a sealed identity through metadata errors", async () => {
-		const projectDir = root("ahde-builder-project-");
-		const tools = createAhdeBuilderCompatibilityTools({
-			projectDir,
-			stateRoot: join(projectDir, ".ahde"),
-			runsRoot: join(projectDir, "runs"),
-			projectId: "demo",
-			dependencies: {
-				listCorpora: (() => { throw new Error("corpus-super-secret-id"); }) as never,
-			},
-		});
-		for (const name of ["ahde_corpus_list", "ahde_eval_list"]) {
-			const action = toolByName(tools, name);
-			let message = "";
-			try {
-				await action.execute("metadata", {}, undefined, undefined, fakeContext(false));
-			} catch (error) {
-				message = error instanceof Error ? error.message : String(error);
-			}
-			expect(message).toContain("sealed identities remain hidden");
-			expect(message).not.toContain("super-secret-id");
+		// The deleted compatibility surface is not merely unregistered: it is blocked.
+		for (const removed of ["ahde_project_status", "ahde_target_read", "ahde_proposal_apply", "ahde_candidate_promote"]) {
+			expect(handlers.get("tool_call")?.({ toolName: removed } as never)).toMatchObject({
+				block: true,
+				terminate: true,
+			});
 		}
 	});
 
@@ -566,47 +367,4 @@ describe("Builder Pi extension registry", () => {
 		expect(JSON.stringify(status)).not.toContain("private case");
 		expect(JSON.stringify(status)).not.toContain("sealed-task-");
 	});
-
-	it("detects a stale immutable subject after the host approved it", async () => {
-		const projectDir = root("ahde-builder-project-");
-		const stateRoot = join(projectDir, ".ahde");
-		const draft = saveSpecSnapshot({ stateRoot, projectId: "demo", spec, status: "draft" });
-		const subject = {
-			schemaVersion: 1,
-			projectId: "demo",
-			draftSpecId: draft.id,
-			draftSnapshotHash: hashValue(draft),
-			specContentHash: hashValue(draft.spec),
-		};
-		const describeSpecApproval = vi.fn()
-			.mockReturnValueOnce(subject)
-			.mockReturnValueOnce({ ...subject, draftSnapshotHash: `sha256:${"f".repeat(64)}` });
-		const approveSpecDraft = vi.fn();
-		const tools = createAhdeBuilderCompatibilityTools({
-			projectDir,
-			stateRoot,
-			runsRoot: join(projectDir, "runs"),
-			projectId: "demo",
-			dependencies: {
-				loadSpec: (() => draft) as never,
-				describeSpecApproval: describeSpecApproval as never,
-				approveSpecDraft: approveSpecDraft as never,
-			},
-		});
-		const approve = tools.find((tool) => tool.name === "ahde_spec_approve")!;
-		await expect(approve.execute(
-			"call-stale",
-			{ specId: draft.id, reason: "Approve" },
-			undefined,
-			undefined,
-			fakeContext(true, vi.fn(async () => true)),
-		)).rejects.toThrow(/stale/);
-		expect(approveSpecDraft).not.toHaveBeenCalled();
-	});
 });
-
-function toolByName(tools: readonly ToolDefinition[], name: string): ToolDefinition {
-	const found = tools.find((candidate) => candidate.name === name);
-	if (!found) throw new Error(`missing tool ${name}`);
-	return found;
-}

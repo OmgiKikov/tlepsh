@@ -58,6 +58,7 @@ it("resolves 'fix the first problem' through fresh traces and review without app
 		selections: [],
 		blockers: [],
 		warnings: [],
+		calibration: null,
 		counts: {
 			specDrafts: 0,
 			approvedSpecs: 1,
@@ -67,6 +68,7 @@ it("resolves 'fix the first problem' through fresh traces and review without app
 			developmentEvals: 1,
 			openProposals: 0,
 			candidates: 0,
+			calibrations: 0,
 		},
 	} as const;
 	const tracesView = {

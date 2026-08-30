@@ -19,18 +19,20 @@ export const CLI_COMMANDS = [
 	"list",
 	"failures",
 	"corpus",
+	"feedback",
+	"tool",
 	"compare",
 	"diagnose",
 	"report",
-	"builder",
 	"candidate",
+	"calibrate",
 	"review",
 	"promote",
 	"reject",
 ] as const;
 
 export type CliCommand = typeof CLI_COMMANDS[number];
-export type CliAction = "draft" | "publish" | "import" | "list" | "capabilities" | "propose" | "apply";
+export type CliAction = "publish" | "import" | "list" | "inspect" | "ingest" | "clear" | "try";
 
 export type CliEarlyExit =
 	| { kind: "help" }
@@ -68,7 +70,7 @@ const COMMAND_SPECS = {
 	evidence: { flags: ["port"], positionals: 0 },
 	init: { flags: ["template"], positionals: 1 },
 	run: {
-		flags: ["target", "task", "repetitions", "label", "dataset", "project", "corpus"],
+		flags: ["target", "task", "repetitions", "jobs", "label", "dataset", "project", "corpus"],
 		requiredFlags: ["target"],
 		positionals: 0,
 	},
@@ -88,6 +90,8 @@ const COMMAND_SPECS = {
 			"builder-run",
 			"spec",
 			"repetitions",
+			"jobs",
+			"baseline-max-age",
 			"dataset",
 			"development-corpus",
 			"holdout-corpus",
@@ -98,6 +102,11 @@ const COMMAND_SPECS = {
 			"diagnosis",
 			"actor",
 		],
+		requiredFlags: ["target"],
+		positionals: 0,
+	},
+	calibrate: {
+		flags: ["target", "repetitions", "project", "corpus"],
 		requiredFlags: ["target"],
 		positionals: 0,
 	},
@@ -116,14 +125,17 @@ const COMMAND_SPECS = {
 		requiredFlags: ["candidate", "reason"],
 		positionals: 0,
 	},
-} as const satisfies Record<Exclude<CliCommand, "corpus" | "builder">, InvocationSpec>;
+} as const satisfies Record<Exclude<CliCommand, "corpus" | "feedback" | "tool">, InvocationSpec>;
 
-const CORPUS_ACTION_SPECS = {
-	draft: {
-		flags: ["project", "target", "spec", "tasks", "guidance", "builder"],
-		requiredFlags: ["project", "target", "spec", "tasks"],
+const TOOL_ACTION_SPECS = {
+	try: {
+		flags: ["target", "tool", "input", "branch"],
+		requiredFlags: ["target", "tool", "input"],
 		positionals: 0,
 	},
+} as const satisfies Record<"try", InvocationSpec>;
+
+const CORPUS_ACTION_SPECS = {
 	publish: {
 		flags: ["project", "draft", "name", "visibility"],
 		requiredFlags: ["project", "draft", "name", "visibility"],
@@ -139,28 +151,28 @@ const CORPUS_ACTION_SPECS = {
 		requiredFlags: ["project"],
 		positionals: 0,
 	},
-} as const satisfies Record<"draft" | "publish" | "import" | "list", InvocationSpec>;
+	inspect: {
+		flags: ["project", "file", "sealed", "seed"],
+		requiredFlags: ["project", "file"],
+		positionals: 0,
+	},
+	ingest: {
+		flags: ["project", "file", "recipe", "name", "sealed", "seed", "stratify-by"],
+		requiredFlags: ["project", "file", "recipe", "name"],
+		positionals: 0,
+	},
+} as const satisfies Record<"publish" | "import" | "list" | "inspect" | "ingest", InvocationSpec>;
 
-const BUILDER_ACTION_SPECS = {
-	capabilities: {
-		flags: ["target", "builder"],
-		requiredFlags: ["target"],
-		positionals: 0,
-	},
-	propose: {
-		flags: ["target", "project", "spec", "backend", "eval-run", "dataset", "builder", "timeout-ms", "run-id"],
-		requiredFlags: ["target", "spec", "backend"],
-		positionals: 0,
-	},
-	apply: {
-		flags: ["target", "run", "branch", "reason", "actor"],
-		requiredFlags: ["target", "run", "branch", "reason"],
-		positionals: 0,
-	},
-} as const satisfies Record<"capabilities" | "propose" | "apply", InvocationSpec>;
+const FEEDBACK_ACTION_SPECS = {
+	list: { flags: ["target"], positionals: 0 },
+	clear: { flags: ["target"], positionals: 0 },
+} as const satisfies Record<"list" | "clear", InvocationSpec>;
 
-const CORPUS_ACTIONS = Object.keys(CORPUS_ACTION_SPECS) as Array<keyof typeof CORPUS_ACTION_SPECS>;
-const BUILDER_ACTIONS = Object.keys(BUILDER_ACTION_SPECS) as Array<keyof typeof BUILDER_ACTION_SPECS>;
+const ACTION_COMMAND_SPECS: Readonly<Record<"corpus" | "feedback" | "tool", Readonly<Record<string, InvocationSpec>>>> = {
+	corpus: CORPUS_ACTION_SPECS,
+	feedback: FEEDBACK_ACTION_SPECS,
+	tool: TOOL_ACTION_SPECS,
+};
 const COMMAND_NAMES = new Set<string>(CLI_COMMANDS.filter((command) => command !== "root"));
 
 function cliError(message: string): never {
@@ -242,12 +254,13 @@ function assertIntegerFlag(
 function validateSharedFlagValues(flags: Readonly<Record<string, string>>, context: string): void {
 	assertEnumFlag(flags, "label", ["baseline", "solo"], context);
 	assertEnumFlag(flags, "visibility", ["development", "sealed"], context);
-	assertEnumFlag(flags, "backend", ["pi", "codex", "claude"], context);
 	assertEnumFlag(flags, "recommend", ["promote", "reject"], context);
 	assertIntegerFlag(flags, "port", context, { minimum: 0, maximum: 65_535 });
-	assertIntegerFlag(flags, "tasks", context, { minimum: 1 });
 	assertIntegerFlag(flags, "repetitions", context, { minimum: 1 });
-	assertIntegerFlag(flags, "timeout-ms", context, { minimum: 1 });
+	assertIntegerFlag(flags, "sealed", context, { minimum: 1 });
+	assertIntegerFlag(flags, "jobs", context, { minimum: 1, maximum: 64 });
+	// 0 days means "never reuse a baseline"; every run measures its own.
+	assertIntegerFlag(flags, "baseline-max-age", context, { minimum: 0, maximum: 3_650 });
 }
 
 function assertInvocationSpec(
@@ -290,22 +303,34 @@ function unionFlags(specs: Readonly<Record<string, InvocationSpec>>): string[] {
 }
 
 function parseActionCommand(
-	command: "corpus" | "builder",
+	command: "corpus" | "feedback" | "tool",
 	tokens: readonly string[],
 ): ParsedCliInvocation {
-	const specs = command === "corpus" ? CORPUS_ACTION_SPECS : BUILDER_ACTION_SPECS;
-	const actions = command === "corpus" ? CORPUS_ACTIONS : BUILDER_ACTIONS;
+	const specs = ACTION_COMMAND_SPECS[command];
+	const actions = Object.keys(specs);
 	const parsed = tokenize(tokens, unionFlags(specs), command);
 	const actionToken = parsed.positionals.shift();
 	if (actionToken === undefined) cliError(`missing action for ${command}; expected ${actions.join(", ")}`);
-	if (!actions.includes(actionToken as never)) {
+	const spec = actions.includes(actionToken) ? specs[actionToken] : undefined;
+	if (!spec) {
 		cliError(`unknown action ${JSON.stringify(actionToken)} for ${command}; expected ${actions.join(", ")}`);
 	}
-	const action = actionToken as keyof typeof specs;
-	const spec = specs[action];
-	const context = `${command} ${action}`;
+	const context = `${command} ${actionToken}`;
 	assertInvocationSpec(parsed, spec, context);
-	return freezeInvocation(command, action as CliAction, parsed);
+	validateActionRelationships(context, parsed.flags);
+	return freezeInvocation(command, actionToken as CliAction, parsed);
+}
+
+/** A sealed slice is a draw, not a count: it needs its seed to be reproducible. */
+function validateActionRelationships(context: string, flags: Readonly<Record<string, string>>): void {
+	const sealed = flags.sealed !== undefined;
+	const seed = flags.seed !== undefined;
+	if (sealed !== seed) {
+		cliError(`${context} requires --sealed and --seed together; a sealed slice is reproduced from its seed`);
+	}
+	if (flags["stratify-by"] !== undefined && !sealed) {
+		cliError(`--stratify-by for ${context} only applies to a sealed slice; add --sealed N --seed S`);
+	}
 }
 
 function validateCommandRelationships(command: CliCommand, flags: Readonly<Record<string, string>>): void {
@@ -316,6 +341,9 @@ function validateCommandRelationships(command: CliCommand, flags: Readonly<Recor
 		if (flags.corpus !== undefined && flags.project === undefined) {
 			cliError("missing required flag --project for run with --corpus");
 		}
+	}
+	if (command === "calibrate" && flags.corpus !== undefined && flags.project === undefined) {
+		cliError("missing required flag --project for calibrate with --corpus");
 	}
 	if (command !== "candidate") return;
 	if (flags.dataset !== undefined && flags["development-corpus"] !== undefined) {
@@ -350,7 +378,7 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
 		tokens = argv.slice(1);
 	}
 
-	if (command === "corpus" || command === "builder") {
+	if (command === "corpus" || command === "feedback" || command === "tool") {
 		return parseActionCommand(command, tokens);
 	}
 	const spec = COMMAND_SPECS[command];

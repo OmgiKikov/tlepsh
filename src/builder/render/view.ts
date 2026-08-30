@@ -1,11 +1,14 @@
 import type {
 	WorkbenchCandidateSummary,
+	WorkbenchDatasetCase,
+	WorkbenchDatasetDetail,
 	WorkbenchImprovementBriefProjection,
 	WorkbenchReviewDetail,
 	WorkbenchTargetDetail,
 	WorkbenchTracesDetail,
 	WorkbenchView,
 } from "../../workbench/types.js";
+import { formatFlipRate, formatNoiseBand } from "./calibration.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
 import {
 	bar,
@@ -54,12 +57,34 @@ function evidenceLine(view: WorkbenchView, paint: Paint): string {
 	])}`;
 }
 
+/** Stages where an uncalibrated Target is worth one nudge, not a blocker. */
+const CALIBRATION_STAGES = new Set<WorkbenchView["stage"]>(["ready-to-evaluate", "improvement-authoring"]);
+
+/**
+ * How much this Target disagrees with itself, in one line. Without a
+ * calibration of the current revision the line offers to measure it; it stays
+ * silent everywhere the operator has nothing to do about it.
+ */
+function calibrationLine(view: WorkbenchView, paint: Paint): string | null {
+	const calibration = view.calibration;
+	if (calibration) {
+		const verdict = oneLine(calibration.verdict, 20);
+		return `${paint.dim("Noise")} A/A ${calibration.verdict === "inconclusive" ? verdict : paint.warning(verdict)} ${paint.dim("·")} ` +
+			`${formatNoiseBand(calibration)} ${paint.dim("·")} flip ${formatFlipRate(calibration)} ${paint.dim("·")} ` +
+			`${calibration.recommendedRepetitions} reps recommended`;
+	}
+	if (!CALIBRATION_STAGES.has(view.stage)) return null;
+	return `${paint.dim("Noise")} ${paint.muted("not calibrated")} ${paint.dim("· say “calibrate” or /calibrate")}`;
+}
+
 /** Compact status block used by /status and as the fallback for every panel. */
 export function renderStatus(view: WorkbenchView, paint: Paint): string[] {
+	const noise = calibrationLine(view, paint);
 	const lines = [
 		`${paint.accent(paint.bold("AHDE"))} ${paint.dim("·")} ${paint.bold(stageLabel(view.stage))}`,
 		targetLine(view, paint),
 		evidenceLine(view, paint),
+		...(noise ? [noise] : []),
 		`${paint.dim("Next")} ${nextStep(view)}`,
 	];
 	if (view.blockers.length > 0) lines.push(`${paint.warning("Blocked")} ${view.blockers.map((item) => oneLine(item, 200)).join(" ")}`);
@@ -101,6 +126,8 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 	lines.push(targetLine(view, paint));
 	lines.push(`${paint.dim("Stage")} ${paint.bold(stageLabel(view.stage))} ${paint.dim("·")} ${paint.dim("Next")} ${nextStep(view)}`);
 	lines.push(`${evidenceLine(view, paint)} ${paint.dim("·")} ${paint.dim("Builder model")} ${builder}`);
+	const noise = calibrationLine(view, paint);
+	if (noise) lines.push(noise);
 	if (view.blockers.length > 0 && view.stage !== "target-setup") {
 		lines.push(`${paint.warning("Blocked")} ${oneLine(view.blockers.join(" "), 200)}`);
 	}
@@ -109,13 +136,38 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 	return lines;
 }
 
-function comparisonLines(summary: NonNullable<NonNullable<WorkbenchCandidateSummary["development"]>["comparison"]>, paint: Paint): string[] {
+function verdictTone(verdict: string, paint: Paint): (text: string) => string {
+	switch (verdict) {
+		case "improved":
+		case "pass":
+			return paint.success;
+		case "regressed":
+		case "fail":
+			return paint.error;
+		default:
+			return paint.warning;
+	}
+}
+
+function gateLine(gate: NonNullable<NonNullable<WorkbenchCandidateSummary["development"]>["gate"]>, paint: Paint): string {
+	const tone = verdictTone(gate.verdict, paint);
+	return `  ${paint.dim("Verdict")} ${tone(gate.verdict)} ${paint.dim("·")} ${points(gate.delta)} ${paint.dim(`(95% CI ${points(gate.confidence95.low)} … ${points(gate.confidence95.high)})`)} ${paint.dim(`· ${gate.tasks} × ${gate.repetitions}`)}` +
+		(gate.flags.collapsedTasks > 0 ? ` ${paint.error(`· ${pluralize(gate.flags.collapsedTasks, "task")} collapsed`)}` : "");
+}
+
+function comparisonLines(
+	summary: NonNullable<NonNullable<WorkbenchCandidateSummary["development"]>["comparison"]>,
+	gate: NonNullable<WorkbenchCandidateSummary["development"]>["gate"],
+	paint: Paint,
+): string[] {
 	const delta = summary.delta;
 	const tone = delta > 0 ? paint.success : delta < 0 ? paint.error : paint.muted;
-	return [
+	const lines = [
 		`${paint.dim("Development")} baseline ${percent(summary.baselinePassRate)} → candidate ${percent(summary.candidatePassRate)} ${tone(`(${points(delta)})`)} ${paint.dim(`on ${pluralize(summary.taskCount, "task")}`)}`,
-		`  ${paint.success(`↑ ${summary.improved} improved`)} ${paint.dim("·")} ${summary.regressed > 0 ? paint.error(`↓ ${summary.regressed} regressed`) : paint.muted("↓ 0 regressed")} ${paint.dim("·")} ${paint.muted(`= ${summary.unchanged} unchanged`)} ${paint.dim(`· 95% CI ${points(summary.confidence95.low)} … ${points(summary.confidence95.high)}`)}`,
+		`  ${paint.success(`↑ ${summary.improved} improved`)} ${paint.dim("·")} ${summary.regressed > 0 ? paint.warning(`↓ ${summary.regressed} lower`) : paint.muted("↓ 0 lower")} ${paint.dim("·")} ${paint.muted(`= ${summary.unchanged} unchanged`)} ${paint.dim(`· 95% CI ${points(summary.confidence95.low)} … ${points(summary.confidence95.high)}`)}`,
 	];
+	if (gate) lines.push(gateLine(gate, paint));
+	return lines;
 }
 
 export function renderCandidate(
@@ -134,12 +186,16 @@ export function renderCandidate(
 		`${section(title, paint)} ${paint.dim(candidate.candidateId)} ${paint.dim("·")} ${statusTone(candidate.status)}`,
 		`${paint.dim("Revision")} ${candidate.baseline.ref}@${shortSha(candidate.baseline.sha)} → ${candidate.candidate ? `${candidate.candidate.ref}@${shortSha(candidate.candidate.sha)}` : paint.muted("not built")}`,
 	];
-	if (candidate.development?.comparison) lines.push(...comparisonLines(candidate.development.comparison, paint));
+	if (candidate.development?.comparison) lines.push(...comparisonLines(candidate.development.comparison, candidate.development.gate, paint));
 	else if (candidate.development) lines.push(`${paint.dim("Development")} ${paint.muted("comparison not reconstructable")}`);
 	else lines.push(`${paint.dim("Development")} ${paint.muted("not evaluated yet")}`);
+	const sealedGate = candidate.sealedHoldout.gate;
 	lines.push(`${paint.dim("Sealed holdout")} ${candidate.sealedHoldout.executed
-		? (candidate.sealedHoldout.gatePassed ? paint.success("gate passed") : paint.error("gate failed"))
+		? (sealedGate
+			? `${verdictTone(sealedGate.verdict, paint)(sealedGate.verdict)} ${paint.dim("·")} ${points(sealedGate.delta)} ${paint.dim(`(95% CI ${points(sealedGate.confidence95.low)} … ${points(sealedGate.confidence95.high)}) · ${sealedGate.tasks} × ${sealedGate.repetitions}`)}`
+			: (candidate.sealedHoldout.gatePassed ? paint.success("gate passed") : paint.error("legacy evidence — not promotable")))
 		: paint.muted("not executed")}`);
+	if (sealedGate && sealedGate.verdict !== "pass") lines.push(`  ${paint.muted(oneLine(sealedGate.reasons[0] ?? "", 160))}`);
 	lines.push(...renderImpact(candidate.impact ?? null, paint));
 	if (candidate.review) {
 		const tone = candidate.review.recommendation === "promote" ? paint.success : paint.error;
@@ -334,6 +390,44 @@ export function renderTarget(content: WorkbenchTargetDetail, paint: Paint): stri
 	return lines;
 }
 
+/** One inbox file as the host reads it: shape first, then the rows it will map. */
+export function renderDataset(content: WorkbenchDatasetDetail, paint: Paint): string[] {
+	const preview = content.preview;
+	const lines = [
+		`${section("Dataset", paint)} ${paint.bold(oneLine(content.sourcePath, 56))} ${paint.dim("·")} ${oneLine(preview.format, 16)} ${paint.dim(`· ${bytes(preview.bytes)}`)}`,
+		`${paint.dim("Rows")} ${pluralize(preview.rowCount, "row")} ${paint.dim("·")} ${pluralize(preview.columns.length, "column")}` +
+			(preview.holdout
+				? ` ${paint.dim("·")} ${paint.warning(`${preview.holdout.reserved} reserved for the sealed exam`)}`
+				: ` ${paint.dim("· nothing sealed yet")}`),
+		paint.dim("Columns"),
+	];
+	for (const column of preview.columns) {
+		const samples = oneLine(column.samples.map((sample) => oneLine(sample, 22)).join(" · "), 72);
+		lines.push(`  ${paint.bold(oneLine(column.name, 24).padEnd(24))} ${column.inferredType.padEnd(9)} ${samples || paint.muted("—")}`);
+	}
+	lines.push(paint.dim("Propose a recipe; the host compiles sample cases before anything is imported."));
+	return lines;
+}
+
+/** The cases one proposed recipe produces, so a human argues with cases, not JSON. */
+export function renderDatasetCases(cases: readonly WorkbenchDatasetCase[], paint: Paint): string[] {
+	const lines: string[] = [];
+	cases.forEach((sample, index) => {
+		lines.push(`  ${paint.dim(`${String(index + 1).padStart(2)}.`)} ${oneLine(sample.input, 92)}`);
+		if (sample.expected !== null) lines.push(`      ${paint.dim("expected:")} ${oneLine(sample.expected, 88)}`);
+		if (sample.messages) {
+			const last = sample.messages[sample.messages.length - 1]?.content ?? "";
+			lines.push(`      ${paint.dim("dialogue:")} ${pluralize(sample.messages.length, "turn")} ${paint.dim(`ending in “${oneLine(last, 50)}”`)}`);
+		}
+		if (sample.metadata) {
+			const pairs = Object.entries(sample.metadata).slice(0, 4).map(([key, value]) => `${oneLine(key, 20)}=${oneLine(value, 24)}`);
+			lines.push(`      ${paint.dim("metadata:")} ${oneLine(pairs.join(" · "), 88)}`);
+		}
+		lines.push(`      ${paint.dim("graders:")} ${oneLine(sample.graders.map(graderLabel).join(" · "), 89)}`);
+	});
+	return lines;
+}
+
 /** Status plus whichever exact detail the view carries. */
 export function renderView(view: WorkbenchView, paint: Paint, options: RenderReviewOptions = {}): string[] {
 	const status = renderStatus(view, paint);
@@ -342,6 +436,8 @@ export function renderView(view: WorkbenchView, paint: Paint, options: RenderRev
 		? renderReview(view.detail.content, paint, options)
 		: view.detail.aspect === "traces"
 		? renderTraces(view.detail.content, paint)
+		: view.detail.aspect === "dataset"
+		? renderDataset(view.detail.content, paint)
 		: renderTarget(view.detail.content, paint);
 	return [...status, "", ...detail];
 }
@@ -351,6 +447,7 @@ export function viewTitle(view: WorkbenchView): string {
 	if (!view.detail) return `AHDE · ${stageLabel(view.stage)}`;
 	if (view.detail.aspect === "traces") return "AHDE · Diagnosis";
 	if (view.detail.aspect === "target") return "AHDE · Target";
+	if (view.detail.aspect === "dataset") return "AHDE · Dataset";
 	switch (view.detail.content.kind) {
 		case "spec-draft": return "AHDE · Spec review";
 		case "corpus-draft": return "AHDE · Eval basket review";

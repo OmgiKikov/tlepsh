@@ -17,7 +17,7 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
-import { GraderSpec, TaskSchema } from "./manifest.js";
+import { GraderSpec, TaskSchema, taskDialogueIssue } from "./manifest.js";
 import { canonicalJson, hashValue } from "./provenance.js";
 import {
 	ArtifactError,
@@ -189,6 +189,10 @@ function parseTasks(values: readonly unknown[], source: string): CorpusTask[] {
 		const result = CorpusTaskSchema.safeParse(value);
 		if (!result.success) {
 			throw new CorpusError(`${source}: task ${index + 1} is invalid: ${result.error.message}`);
+		}
+		const dialogueIssue = taskDialogueIssue(result.data);
+		if (dialogueIssue) {
+			throw new CorpusError(`${source}: task ${index + 1} is invalid: ${dialogueIssue}`);
 		}
 		return result.data;
 	});

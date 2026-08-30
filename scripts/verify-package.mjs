@@ -59,6 +59,8 @@ try {
 		"dist/application/builder-regression-case.js",
 		"dist/application/target-scaffold.js",
 		"dist/application/target-authoring-context.js",
+		"dist/application/target-feedback.js",
+		"dist/target/feedback-extension.js",
 		"dist/builder/product-shell.js",
 		"dist/builder/run-observation.js",
 		"dist/cli-invocation.js",
@@ -70,11 +72,25 @@ try {
 	]) {
 		if (!packedPaths.has(required)) throw new Error(`packed Builder asset is missing: ${required}`);
 	}
+	// V1.8 S7 deleted the one-shot CLI Builder adapters, the Pi SDK executor, the
+	// approved-Spec corpus-draft generator, the Builder manifest, and the default
+	// builder profile. A stale dist/ or a re-added module must fail the gate.
+	const removedLegacyPaths = new Set([
+		"builders/default/AGENTS.md",
+		"builders/default/manifest.yaml",
+		"dist/application/corpus-draft.js",
+		"dist/builder.js",
+		"dist/builders/pi-executor.js",
+		"docs/evolution.jsonl",
+	]);
 	const forbiddenPackedPaths = [...packedPaths].filter((path) =>
 		path.includes("builder-workbench") ||
 		path.includes("workbench-tui") ||
 		path === "builders/companion" ||
 		path.startsWith("builders/companion/") ||
+		path === "builders/default" ||
+		path.startsWith("builders/default/") ||
+		removedLegacyPaths.has(path) ||
 		(!path.startsWith("node_modules/") &&
 			!path.startsWith("vendor/") &&
 			/(^|\/)(?:presets?|target-presets?)(?:[.\/-]|$)/i.test(path)) ||
@@ -82,7 +98,7 @@ try {
 	);
 	if (forbiddenPackedPaths.length > 0) {
 		throw new Error(
-			`packed artifact contains removed Studio/companion/Workbench-TUI files: ${forbiddenPackedPaths.slice(0, 20).join(", ")}`,
+			`packed artifact contains removed Studio/companion/Workbench-TUI/legacy-adapter files: ${forbiddenPackedPaths.slice(0, 20).join(", ")}`,
 		);
 	}
 	const tarball = join(packDir, filename);
@@ -181,7 +197,7 @@ import {
 
 const expectedToolNames = ["ahde_workbench_view", "ahde_workbench_submit", "ahde_workbench_decide"];
 const expectedCommandNames = [
-	"help", "doctor", "status", "run", "traces", "review",
+	"help", "doctor", "status", "run", "calibrate", "traces", "review",
 	"approve", "publish", "apply", "discard", "promote", "reject", "adopt", "next",
 	"target",
 ];
@@ -589,7 +605,8 @@ const scriptedModel = createServer((request, response) => {
       return;
     }
     scriptedRequests += 1;
-    if (bytes > 1024 * 1024 || scriptedRequests > 16) {
+    // 1 source baseline + (1 dev + 15 sealed) tasks x 2 repetitions x 2 arms = 65.
+    if (bytes > 1024 * 1024 || scriptedRequests > 80) {
       response.writeHead(bytes > 1024 * 1024 ? 413 : 429, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: { message: "bounded package fixture limit exceeded" } }));
       return;
@@ -850,11 +867,12 @@ try {
     projectId,
     name: "Evaluator-only installed package holdout",
     visibility: "sealed",
-    tasks: [{
-      id: "package-holdout-1",
-      input: sealedInput,
+    // The sealed guardrail needs at least 15 tasks × 2 repetitions for a verdict.
+    tasks: Array.from({ length: 15 }, (_, index) => ({
+      id: \`package-holdout-\${index + 1}\`,
+      input: \`\${sealedInput} \${index + 1}\`,
       graders: [{ type: "output_contains", text: "READY" }],
-    }],
+    })),
   });
   const experiment = await runAppliedBuilderCandidate({
     repositoryDir: targetDir,
@@ -862,7 +880,7 @@ try {
     builderRunId: builder.record.runId,
     projectId,
     approvedSpec: { stateRoot, specId: approval.approved.id },
-    repetitions: 1,
+    repetitions: 2,
     developmentCorpus: developmentRef,
     sealedCorpus: { stateRoot, projectId, corpusId: sealed.id },
     candidateId: "candidate-package-lifecycle",
@@ -871,13 +889,15 @@ try {
   if (
     experiment.compare.status !== "comparable" ||
     experiment.baseline.summary.pass !== 0 ||
-    experiment.candidate.summary.pass !== 1 ||
+    experiment.candidate.summary.pass !== experiment.candidate.summary.total ||
     experiment.compare.summary.delta !== 1 ||
+    experiment.compare.gate.verdict !== "improved" ||
     !experiment.sealedHoldout ||
     experiment.sealedHoldout.compare.status !== "comparable" ||
     experiment.sealedHoldout.baseline.summary.pass !== 0 ||
-    experiment.sealedHoldout.candidate.summary.pass !== 1 ||
-    experiment.sealedHoldout.compare.summary.delta !== 1
+    experiment.sealedHoldout.candidate.summary.pass !== experiment.sealedHoldout.candidate.summary.total ||
+    experiment.sealedHoldout.compare.summary.delta !== 1 ||
+    experiment.sealedHoldout.compare.gate.verdict !== "pass"
   ) {
     throw new Error("installed-package matched development/sealed candidate gate did not produce fail-to-pass evidence");
   }
@@ -908,7 +928,7 @@ try {
   ) {
     throw new Error("installed-package candidate promotion did not tag the exact reviewed commit");
   }
-  if (scriptedRequests < 3 || scriptedRequests > 16) {
+  if (scriptedRequests < 60 || scriptedRequests > 80) {
     throw new Error("scripted model request count was outside the bounded lifecycle expectation: " + scriptedRequests);
   }
 } finally {

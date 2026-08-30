@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { afterAll, describe, expect, it } from "vitest";
 import { compareEvalRuns, renderCompareMarkdown } from "../src/compare.js";
 import type { EvalRunRecord } from "../src/eval.js";
-import { hashValue, type ProvenanceAxes, type RunRecord } from "../src/provenance.js";
+import { AHDE_EVALUATOR_ID, hashValue, type ProvenanceAxes, type RunRecord } from "../src/provenance.js";
 
 function hash(char: string): string {
 	return `sha256:${char.repeat(64)}`;
@@ -15,7 +15,7 @@ function axes(overrides: Partial<ProvenanceAxes> = {}): ProvenanceAxes {
 		piVersion: "0.84.3",
 		piSha: "a".repeat(40),
 		ahdeVersion: "0.1.0",
-		ahdeCodeHash: hash("a"),
+		evaluatorId: AHDE_EVALUATOR_ID,
 		provider: "qwen-internal",
 		modelId: "qwen3.5-27b",
 		modelApi: "openai-completions",
@@ -83,7 +83,7 @@ function makeEvalRun(
 				piVersion: provenance.piVersion,
 				piSha: provenance.piSha,
 				ahdeVersion: provenance.ahdeVersion,
-				ahdeCodeHash: provenance.ahdeCodeHash,
+				ahdeCodeHash: hash("a"),
 			},
 			model: {
 				provider: provenance.provider,
@@ -120,7 +120,7 @@ function makeEvalRun(
 	const fail = runs.filter((run) => run.evalResults?.outcome === "fail").length;
 	const error = runs.filter((run) => run.status === "error").length;
 	const record: EvalRunRecord = {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		evalRunId: id,
 		target: { id: options.targetId ?? "ombudsman", gitSha: options.gitSha ?? "a".repeat(40) },
 		label,
@@ -151,7 +151,7 @@ describe("compare guard", () => {
 	it("refuses with the offending axis named when suiteHash differs", () => {
 		makeEvalRun(runsRoot, "erun_a", axes());
 		makeEvalRun(runsRoot, "erun_b", axes({ suiteHash: hash("c") }), [], { label: "candidate", gitSha: "b".repeat(40) });
-		const result = compareEvalRuns(runsRoot, "erun_a", "erun_b");
+		const result = compareEvalRuns(runsRoot, "erun_a", "erun_b", { mode: "candidate" });
 		expect(result.error).toContain("eval.suiteHash");
 		expect(renderCompareMarkdown(result)).toContain("Not comparable");
 	});
@@ -159,14 +159,14 @@ describe("compare guard", () => {
 	it("refuses when model params differ", () => {
 		makeEvalRun(runsRoot, "erun_c", axes());
 		makeEvalRun(runsRoot, "erun_d", axes({ params: { temperature: 0.2 } }), [], { label: "candidate", gitSha: "b".repeat(40) });
-		const result = compareEvalRuns(runsRoot, "erun_c", "erun_d");
+		const result = compareEvalRuns(runsRoot, "erun_c", "erun_d", { mode: "candidate" });
 		expect(result.error).toContain("model.params");
 	});
 
 	it("refuses when the runtime differs", () => {
 		makeEvalRun(runsRoot, "erun_e", axes());
 		makeEvalRun(runsRoot, "erun_f", axes({ piVersion: "0.85.0", piSha: "b".repeat(40) }), [], { label: "candidate", gitSha: "b".repeat(40) });
-		const result = compareEvalRuns(runsRoot, "erun_e", "erun_f");
+		const result = compareEvalRuns(runsRoot, "erun_e", "erun_f", { mode: "candidate" });
 		expect(result.error).toContain("runtime.piVersion");
 		expect(result.error).toContain("runtime.piSha");
 	});
@@ -174,7 +174,7 @@ describe("compare guard", () => {
 	it("refuses same-SHA candidate evidence but permits explicit A/A calibration", () => {
 		makeEvalRun(runsRoot, "erun_same_a", axes());
 		makeEvalRun(runsRoot, "erun_same_b", axes(), [], { label: "candidate" });
-		expect(compareEvalRuns(runsRoot, "erun_same_a", "erun_same_b").error).toContain("same revision");
+		expect(compareEvalRuns(runsRoot, "erun_same_a", "erun_same_b", { mode: "candidate" }).error).toContain("same revision");
 		expect(
 			compareEvalRuns(runsRoot, "erun_same_a", "erun_same_b", { mode: "aa-calibration" }).error,
 		).toBeNull();
@@ -188,7 +188,7 @@ describe("compare guard", () => {
 			repetitions: 3,
 			targetId: "other",
 		});
-		const result = compareEvalRuns(runsRoot, "erun_mismatch_a", "erun_mismatch_b");
+		const result = compareEvalRuns(runsRoot, "erun_mismatch_a", "erun_mismatch_b", { mode: "candidate" });
 		expect(result.error).toContain("different repetitions");
 		expect(result.error).toContain("different targets");
 	});
@@ -265,7 +265,7 @@ describe("compare table", () => {
 				gitSha: evalRunId === "erun_y" ? "b".repeat(40) : "a".repeat(40),
 			});
 		}
-		const result = compareEvalRuns(runsRoot, "erun_x", "erun_y");
+		const result = compareEvalRuns(runsRoot, "erun_x", "erun_y", { mode: "candidate" });
 		expect(result.error).toBeNull();
 		const row1 = result.rows.find((r) => r.taskId === "task_001");
 		const row2 = result.rows.find((r) => r.taskId === "task_002");
@@ -294,7 +294,7 @@ describe("compare table", () => {
 			runIds: [first, first],
 			runArtifacts: [index.runArtifacts?.[0], index.runArtifacts?.[0]],
 		}));
-		expect(() => compareEvalRuns(runsRoot, "erun_integrity_a", "erun_integrity_b")).toThrow(/runIds must be unique/);
+		expect(() => compareEvalRuns(runsRoot, "erun_integrity_a", "erun_integrity_b", { mode: "candidate" })).toThrow(/runIds must be unique/);
 
 		makeEvalRun(runsRoot, "erun_integrity_c", axes(), [], {
 			label: "candidate",
@@ -318,6 +318,6 @@ describe("compare table", () => {
 				outcome,
 			},
 		}));
-		expect(() => compareEvalRuns(runsRoot, "erun_integrity_a", "erun_integrity_c")).toThrow(/hash does not match/);
+		expect(() => compareEvalRuns(runsRoot, "erun_integrity_a", "erun_integrity_c", { mode: "candidate" })).toThrow(/hash does not match/);
 	});
 });

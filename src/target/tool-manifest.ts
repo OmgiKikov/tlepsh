@@ -1,5 +1,5 @@
-import { accessSync, constants, lstatSync, readFileSync, realpathSync } from "node:fs";
-import { basename, isAbsolute, relative, resolve, sep } from "node:path";
+import { accessSync, constants, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { canonicalJson, hashFile, hashValue } from "../provenance.js";
@@ -7,18 +7,38 @@ import { canonicalJson, hashFile, hashValue } from "../provenance.js";
 const TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const TOOL_DESCRIPTOR_PATH = /^tools\/([a-z][a-z0-9_]{0,63})\.tool\.yaml$/;
+/** Multi-file tools live in one directory whose descriptor is always tool.yaml. */
+const TOOL_DIRECTORY_DESCRIPTOR_PATH = /^tools\/([a-z][a-z0-9_]{0,63})\/tool\.yaml$/;
+const TOOL_DIRECTORY_FILE = /^[A-Za-z0-9._-]{1,64}$/;
 const RESERVED_TOOL_NAMES = new Set(["bash", "edit", "find", "grep", "ls", "read", "write"]);
 const DANGEROUS_PROPERTY_NAMES = new Set(["__proto__", "constructor", "prototype"]);
 const MAX_SCHEMA_DEPTH = 6;
 const MAX_SCHEMA_PROPERTIES = 64;
 
+/** A multi-file tool is a bounded, reviewable directory, not a package tree. */
+export const MAX_TOOL_DIRECTORY_FILES = 256;
+export const MAX_TOOL_DIRECTORY_BYTES = 8 * 1024 * 1024;
+export const MAX_TOOL_DIRECTORY_DEPTH = 6;
+
 export type TargetToolOutput = "json" | "text";
 export type TargetToolFilesystem = "read-only" | "workspace-write";
+export type TargetToolLayout = "single-file" | "directory";
 
 export interface TargetToolPermissions {
 	environment: string[];
 	network: "deny" | "allow";
 	filesystem: TargetToolFilesystem;
+}
+
+/**
+ * A dependency materialization step run once per prepared tool home, never per
+ * call. It executes in the same OS sandbox as the tool, writes only inside the
+ * tool's own prepared directory, and reaches the network only when it says so.
+ */
+export interface TargetToolSetup {
+	argv: string[];
+	timeoutMs: number;
+	network: "deny" | "allow";
 }
 
 export interface TargetToolDescriptor {
@@ -31,13 +51,31 @@ export interface TargetToolDescriptor {
 	maxOutputBytes: number;
 	output: TargetToolOutput;
 	permissions: TargetToolPermissions;
+	/** Directory tools only. */
+	setup?: TargetToolSetup;
+	/** Directory-relative lockfiles whose bytes are pinned into tool identity. */
+	lockfiles?: string[];
+}
+
+/** One regular file inside a multi-file tool directory. */
+export interface TargetToolFile {
+	/** Path relative to the tool directory, POSIX separators. */
+	path: string;
+	executable: boolean;
+	bytes: number;
+	sha256: string;
 }
 
 export interface ResolvedTargetTool {
 	descriptorPath: string;
+	layout: TargetToolLayout;
+	/** `tools/<name>` for directory tools; null for the single-file form. */
+	directoryPath: string | null;
 	executablePath: string;
 	descriptor: TargetToolDescriptor;
 	executableHash: string;
+	/** Every file in a directory tool, sorted by path. Empty for single-file tools. */
+	files: TargetToolFile[];
 	digest: string;
 }
 
@@ -46,6 +84,23 @@ export interface TargetToolPolicyEnvelope {
 	network: "deny" | "allow";
 	sandbox: "required" | "best-effort" | "off";
 }
+
+const ToolDirectoryRelativePathSchema = z
+	.string()
+	.min(1)
+	.max(200)
+	.refine(
+		(value) => value.split("/").every((part) => TOOL_DIRECTORY_FILE.test(part) && part !== "." && part !== ".."),
+		"tool directory paths are relative POSIX paths of safe name segments",
+	)
+	.refine((value) => value.split("/").length <= MAX_TOOL_DIRECTORY_DEPTH, "tool directory path is too deep");
+
+const RawToolSetup = z.strictObject({
+	/** argv[0] is a bare PATH command or an absolute executable; never a relative path. */
+	argv: z.array(z.string().min(1).max(4_096)).min(1).max(32),
+	timeoutMs: z.number().int().min(1).max(600_000),
+	network: z.enum(["deny", "allow"]),
+});
 
 const RawToolDescriptor = z.strictObject({
 	schemaVersion: z.literal(1),
@@ -63,6 +118,8 @@ const RawToolDescriptor = z.strictObject({
 		network: z.enum(["deny", "allow"]),
 		filesystem: z.enum(["read-only", "workspace-write"]),
 	}),
+	setup: RawToolSetup.optional(),
+	lockfiles: z.array(ToolDirectoryRelativePathSchema).max(8).optional(),
 });
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -250,6 +307,17 @@ export function resolveStrictTargetFile(rootDir: string, path: string, label: st
 	return canonical;
 }
 
+/** Which of the two on-disk shapes a declared descriptor path names. */
+export function classifyTargetToolDescriptorPath(
+	descriptorPath: string,
+): { layout: TargetToolLayout; name: string; directoryPath: string | null } | null {
+	const single = TOOL_DESCRIPTOR_PATH.exec(descriptorPath)?.[1];
+	if (single) return { layout: "single-file", name: single, directoryPath: null };
+	const directory = TOOL_DIRECTORY_DESCRIPTOR_PATH.exec(descriptorPath)?.[1];
+	if (directory) return { layout: "directory", name: directory, directoryPath: `tools/${directory}` };
+	return null;
+}
+
 /**
  * Validate a parsed target-tool descriptor without consulting the filesystem.
  * Authoring code uses this at the trust boundary before it compiles descriptor
@@ -261,12 +329,15 @@ export function validateTargetToolDescriptor(
 	descriptorPath: string,
 	policy: TargetToolPolicyEnvelope,
 ): TargetToolDescriptor {
-	const pathMatch = TOOL_DESCRIPTOR_PATH.exec(descriptorPath);
-	if (!pathMatch) throw new Error(`tool descriptor path must match tools/<name>.tool.yaml: ${descriptorPath}`);
+	const identity = classifyTargetToolDescriptorPath(descriptorPath);
+	if (!identity) {
+		throw new Error(`tool descriptor path must match tools/<name>.tool.yaml or tools/<name>/tool.yaml: ${descriptorPath}`);
+	}
 	const parsed = RawToolDescriptor.safeParse(value);
 	if (!parsed.success) throw new Error(`${descriptorPath}: ${parsed.error.message}`);
 	const descriptor = parsed.data as TargetToolDescriptor;
-	if (descriptor.name !== pathMatch[1] || basename(descriptorPath) !== `${descriptor.name}.tool.yaml`) {
+	const expectedBasename = identity.layout === "single-file" ? `${descriptor.name}.tool.yaml` : "tool.yaml";
+	if (descriptor.name !== identity.name || basename(descriptorPath) !== expectedBasename) {
 		throw new Error(`${descriptorPath}: descriptor name must match its filename`);
 	}
 	if (RESERVED_TOOL_NAMES.has(descriptor.name)) {
@@ -291,10 +362,81 @@ export function validateTargetToolDescriptor(
 	}
 
 	const executablePath = descriptor.command.argv[0];
-	if (!executablePath?.startsWith("bin/")) {
-		throw new Error(`${descriptorPath}: command argv[0] must be a target-relative bin/ path`);
+	if (identity.layout === "single-file") {
+		if (descriptor.setup) throw new Error(`${descriptorPath}: setup requires the tools/<name>/ directory form`);
+		if (descriptor.lockfiles) throw new Error(`${descriptorPath}: lockfiles require the tools/<name>/ directory form`);
+		if (!executablePath?.startsWith("bin/")) {
+			throw new Error(`${descriptorPath}: command argv[0] must be a target-relative bin/ path`);
+		}
+		return descriptor;
+	}
+
+	if (executablePath !== `${identity.directoryPath}/run`) {
+		throw new Error(`${descriptorPath}: command argv[0] must be ${identity.directoryPath}/run`);
+	}
+	if (descriptor.lockfiles && new Set(descriptor.lockfiles).size !== descriptor.lockfiles.length) {
+		throw new Error(`${descriptorPath}: duplicate lockfile declaration`);
+	}
+	for (const lockfile of descriptor.lockfiles ?? []) {
+		if (lockfile === "tool.yaml" || lockfile === "run") {
+			throw new Error(`${descriptorPath}: ${lockfile} is not a lockfile`);
+		}
+	}
+	if (descriptor.setup) {
+		const setupCommand = descriptor.setup.argv[0];
+		if (!setupCommand || (setupCommand.includes("/") && !setupCommand.startsWith("/"))) {
+			throw new Error(`${descriptorPath}: setup argv[0] must be a bare command name or an absolute path`);
+		}
+		if (policy.network === "deny" && descriptor.setup.network === "allow") {
+			throw new Error(`${descriptorPath}: setup network=allow exceeds the target execution policy`);
+		}
 	}
 	return descriptor;
+}
+
+/**
+ * Enumerate every regular file in a multi-file tool directory. Symlinks,
+ * special files, oversized trees, and unsafe names fail closed so a tool's
+ * identity is exactly the bytes and modes a reviewer saw.
+ */
+function listToolDirectoryFiles(rootDir: string, directoryPath: string, name: string): TargetToolFile[] {
+	const root = realpathSync(resolve(rootDir));
+	const directoryRoot = resolve(root, ...directoryPath.split("/"));
+	const files: TargetToolFile[] = [];
+	let totalBytes = 0;
+	const walk = (absolute: string, prefix: string, depth: number): void => {
+		if (depth > MAX_TOOL_DIRECTORY_DEPTH) throw new Error(`tool ${name}: directory nesting exceeds ${MAX_TOOL_DIRECTORY_DEPTH}`);
+		for (const entry of readdirSync(absolute, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+			if (!TOOL_DIRECTORY_FILE.test(entry.name) || entry.name === "." || entry.name === "..") {
+				throw new Error(`tool ${name}: unsafe directory entry name ${JSON.stringify(entry.name)}`);
+			}
+			const child = join(absolute, entry.name);
+			const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+			const stat = lstatSync(child);
+			if (stat.isSymbolicLink()) throw new Error(`tool ${name}: directory must not contain a symlink: ${relativePath}`);
+			if (stat.isDirectory()) {
+				walk(child, relativePath, depth + 1);
+				continue;
+			}
+			if (!stat.isFile()) throw new Error(`tool ${name}: directory must contain only regular files: ${relativePath}`);
+			if (files.length >= MAX_TOOL_DIRECTORY_FILES) {
+				throw new Error(`tool ${name}: directory exceeds ${MAX_TOOL_DIRECTORY_FILES} files`);
+			}
+			const content = readFileSync(child);
+			totalBytes += content.byteLength;
+			if (totalBytes > MAX_TOOL_DIRECTORY_BYTES) {
+				throw new Error(`tool ${name}: directory exceeds ${MAX_TOOL_DIRECTORY_BYTES} bytes`);
+			}
+			files.push({
+				path: relativePath,
+				executable: (stat.mode & 0o111) !== 0,
+				bytes: content.byteLength,
+				sha256: hashFile(content.toString("base64")),
+			});
+		}
+	};
+	walk(directoryRoot, "", 1);
+	return files.sort((a, b) => a.path.localeCompare(b.path));
 }
 
 function parseToolDescriptor(rootDir: string, descriptorPath: string, policy: TargetToolPolicyEnvelope): ResolvedTargetTool {
@@ -306,8 +448,22 @@ function parseToolDescriptor(rootDir: string, descriptorPath: string, policy: Ta
 		throw new Error(`${descriptorPath}: invalid YAML (${(error as Error).message})`);
 	}
 	const descriptor = validateTargetToolDescriptor(parsedYaml, descriptorPath, policy);
+	const identity = classifyTargetToolDescriptorPath(descriptorPath);
+	if (!identity) throw new Error(`${descriptorPath}: unsupported tool descriptor path`);
 	const executablePath = descriptor.command.argv[0];
 	if (!executablePath) throw new Error(`${descriptorPath}: command argv must not be empty`);
+	// A multi-file tool proves its own shape before anything is resolved, so a
+	// missing entry point reads as a contract violation rather than an ENOENT.
+	const files = identity.layout === "directory"
+		? listToolDirectoryFiles(rootDir, identity.directoryPath as string, descriptor.name)
+		: [];
+	if (identity.layout === "directory") {
+		const run = files.find((file) => file.path === "run");
+		if (!run || !run.executable) throw new Error(`${descriptorPath}: tools/${descriptor.name}/run must exist and be executable`);
+		if (!files.some((file) => file.path === "tool.yaml")) {
+			throw new Error(`${descriptorPath}: the descriptor must live inside the tool directory`);
+		}
+	}
 	const executable = resolveStrictTargetFile(rootDir, executablePath, `tool ${descriptor.name} executable`);
 	try {
 		accessSync(executable, constants.X_OK);
@@ -315,8 +471,41 @@ function parseToolDescriptor(rootDir: string, descriptorPath: string, policy: Ta
 		throw new Error(`${descriptorPath}: executable is not executable: ${executablePath}`);
 	}
 	const executableHash = hashFile(readFileSync(executable).toString("base64"));
-	const digest = hashValue({ descriptor, executable: { path: executablePath, hash: executableHash } });
-	return { descriptorPath, executablePath, descriptor, executableHash, digest };
+	if (identity.layout === "single-file") {
+		return {
+			descriptorPath,
+			layout: "single-file",
+			directoryPath: null,
+			executablePath,
+			descriptor,
+			executableHash,
+			files: [],
+			digest: hashValue({ descriptor, executable: { path: executablePath, hash: executableHash } }),
+		};
+	}
+
+	const directoryPath = identity.directoryPath as string;
+	const byPath = new Map(files.map((file) => [file.path, file] as const));
+	const lockfiles = (descriptor.lockfiles ?? []).map((path) => {
+		const file = byPath.get(path);
+		if (!file) throw new Error(`${descriptorPath}: declared lockfile is missing: ${path}`);
+		return { path, sha256: file.sha256 };
+	});
+	return {
+		descriptorPath,
+		layout: "directory",
+		directoryPath,
+		executablePath,
+		descriptor,
+		executableHash,
+		files,
+		digest: hashValue({
+			descriptor,
+			directory: directoryPath,
+			files: files.map((file) => ({ path: file.path, executable: file.executable, hash: file.sha256 })),
+			lockfiles,
+		}),
+	};
 }
 
 export function loadTargetTools(

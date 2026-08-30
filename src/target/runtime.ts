@@ -23,19 +23,29 @@ import {
 	type Skill,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { InMemoryCredentialStore, type AssistantMessage, type Message } from "@earendil-works/pi-ai";
 import type { ExecutionPolicyResult } from "../execution-policy.js";
 import { EXECUTION_POLICY_SESSION_OPTIONS } from "../execution-policy.js";
-import type { ResolvedTarget } from "../manifest.js";
+import type { DialogueMessage, ResolvedTarget } from "../manifest.js";
 import type { ExecutionFingerprint } from "../provenance.js";
-import { TargetToolBroker, type TargetToolSandboxBackend } from "./tool-broker.js";
+import { detectTargetToolSandbox, TargetToolBroker, type TargetToolSandboxBackend } from "./tool-broker.js";
+import { prepareToolHome, type ToolSetupOutcome } from "./tool-setup.js";
 import { loadTargetTools, type ResolvedTargetTool } from "./tool-manifest.js";
+import {
+	createTargetFeedbackExtension,
+	TARGET_FEEDBACK_EXTENSION_NAME,
+	type TargetFeedbackChannel,
+} from "./feedback-extension.js";
 
 export interface TargetToolRuntime {
 	customTools: ToolDefinition<any, any, any>[];
 	sandboxBackend: TargetToolSandboxBackend | null;
 	effectiveEnvironmentNames: string[];
 	toolNames: string[];
+	/** Prepared home for multi-file tools, or null when none are declared. */
+	toolHomeRoot: string | null;
+	/** One entry per multi-file tool; `ran` is false when it declares no setup. */
+	toolSetups: ToolSetupOutcome[];
 }
 
 /**
@@ -193,6 +203,12 @@ export interface CreateTargetToolRuntimeOptions {
 	workspaceDir: string;
 	scratchDir: string;
 	sourceEnvironment?: NodeJS.ProcessEnv;
+	/**
+	 * Shared prepared home for multi-file tools. One EvalRun passes its
+	 * snapshot-scoped root so every run reuses one setup; omitting it prepares a
+	 * private home under `scratchDir` for this run alone.
+	 */
+	toolHomeRoot?: string;
 }
 
 function assertWorkspaceToolIdentity(
@@ -236,7 +252,14 @@ function definition(tool: ResolvedTargetTool, broker: TargetToolBroker): ToolDef
 
 export function createTargetToolRuntime(options: CreateTargetToolRuntimeOptions): TargetToolRuntime {
 	if (options.target.tools.length === 0) {
-		return { customTools: [], sandboxBackend: null, effectiveEnvironmentNames: [], toolNames: [] };
+		return {
+			customTools: [],
+			sandboxBackend: null,
+			effectiveEnvironmentNames: [],
+			toolNames: [],
+			toolHomeRoot: null,
+			toolSetups: [],
+		};
 	}
 	const reloaded = loadTargetTools(
 		options.workspaceDir,
@@ -249,11 +272,29 @@ export function createTargetToolRuntime(options: CreateTargetToolRuntimeOptions)
 		options.target.toolsetHash,
 		reloaded.toolsetHash,
 	);
+	const needsToolHome = reloaded.tools.some((tool) => tool.layout === "directory");
+	// Detecting the backend once keeps preparation and execution on one decision.
+	const sandboxBackend = needsToolHome
+		? detectTargetToolSandbox(realpathSync(resolve(options.workspaceDir)), options.scratchDir)
+		: undefined;
+	const prepared = needsToolHome
+		? prepareToolHome({
+			workspaceDir: options.workspaceDir,
+			scratchDir: options.scratchDir,
+			tools: reloaded.tools,
+			toolHomeRoot: options.toolHomeRoot ?? join(options.scratchDir, "tool-workshop"),
+			policy: options.target.manifest.execution,
+			...(sandboxBackend ? { sandboxBackend } : {}),
+			...(options.sourceEnvironment ? { sourceEnvironment: options.sourceEnvironment } : {}),
+		})
+		: null;
 	const broker = new TargetToolBroker({
 		workspaceDir: options.workspaceDir,
 		scratchDir: options.scratchDir,
 		policy: options.target.manifest.execution,
 		sourceEnvironment: options.sourceEnvironment,
+		...(prepared ? { toolHomeRoot: prepared.root } : {}),
+		...(sandboxBackend ? { sandboxBackend } : {}),
 	});
 	const environmentNames = new Set<string>();
 	for (const tool of reloaded.tools) {
@@ -264,6 +305,8 @@ export function createTargetToolRuntime(options: CreateTargetToolRuntimeOptions)
 		sandboxBackend: broker.sandboxBackend,
 		effectiveEnvironmentNames: [...environmentNames].sort(),
 		toolNames: reloaded.tools.map((tool) => tool.descriptor.name),
+		toolHomeRoot: prepared?.root ?? null,
+		toolSetups: prepared?.setups ?? [],
 	};
 }
 
@@ -279,10 +322,80 @@ export interface CreateTargetAgentSessionOptions {
 	apiKey: string;
 	/** Runtime-owned manager used by Pi session replacement flows. */
 	sessionManager?: SessionManager;
+	/**
+	 * Conversation to seed before the first prompt (a dialogue case's earlier
+	 * turns). Appended to the session manager, which is exactly how Pi restores
+	 * a conversation, so the turns are both in the trace and in the model's
+	 * context for the graded prompt.
+	 */
+	seedMessages?: readonly DialogueMessage[];
 	/** Forwarded when AgentSessionRuntime replaces an interactive session. */
 	sessionStartEvent?: SessionStartEvent;
 	/** Immutable host-captured resources reused by interactive replacement flows. */
 	resourceBundle?: TargetResourceBundle;
+	/**
+	 * Present only for the interactive Target: registers `/good` and `/bad` and
+	 * routes every mark to the parent process. Eval runs never mark anything.
+	 */
+	feedbackChannel?: TargetFeedbackChannel;
+}
+
+/** No usage: a seeded turn was never generated here and must not be billed. */
+const SEEDED_TURN_USAGE = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 0,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+} as const;
+
+/** One prior dialogue turn as the Pi session message it stands in for. */
+function seededSessionMessage(
+	turn: DialogueMessage,
+	model: ResolvedTarget["manifest"]["model"],
+): Message {
+	const timestamp = Date.now();
+	if (turn.role === "user") {
+		return { role: "user", content: [{ type: "text", text: turn.content }], timestamp };
+	}
+	return {
+		role: "assistant",
+		content: [{ type: "text", text: turn.content }],
+		// The manifest carries the api id as a string; Pi types it as a union.
+		api: model.api as AssistantMessage["api"],
+		provider: model.provider,
+		model: model.id,
+		usage: { ...SEEDED_TURN_USAGE, cost: { ...SEEDED_TURN_USAGE.cost } },
+		stopReason: "stop",
+		timestamp,
+	};
+}
+
+function messageText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter((part): part is { type: "text"; text: string } =>
+			typeof part === "object" && part !== null && (part as { type?: unknown }).type === "text")
+		.map((part) => part.text)
+		.join("");
+}
+
+/** The restored conversation must end with exactly the turns that were seeded. */
+function assertSeededHistory(
+	restored: readonly { role: string; content?: unknown }[],
+	seeded: readonly DialogueMessage[],
+): void {
+	const tail = restored.slice(-seeded.length);
+	const matches = tail.length === seeded.length &&
+		seeded.every((turn, index) =>
+			tail[index]?.role === turn.role && messageText(tail[index]?.content) === turn.content);
+	if (!matches) {
+		throw new Error(
+			`Target session restored ${restored.length} message(s) that do not end with the ${seeded.length} seeded dialogue turn(s)`,
+		);
+	}
 }
 
 /**
@@ -325,19 +438,35 @@ export async function createTargetAgentSession(options: CreateTargetAgentSession
 			noExtensions: true,
 			noPromptTemplates: true,
 			noThemes: true,
-			extensionFactories: [{
-				name: "ahde-target-guard",
-				hidden: true,
-				factory: createTargetGuardExtension({
-					allowedToolNames,
-					thinkingLevel: model.thinkingLevel,
-				}),
-			}],
+			extensionFactories: [
+				{
+					name: "ahde-target-guard",
+					hidden: true,
+					factory: createTargetGuardExtension({
+						allowedToolNames,
+						thinkingLevel: model.thinkingLevel,
+					}),
+				},
+				...(options.feedbackChannel
+					? [{
+						name: TARGET_FEEDBACK_EXTENSION_NAME,
+						hidden: true,
+						factory: createTargetFeedbackExtension({ channel: options.feedbackChannel }),
+					}]
+					: []),
+			],
 			agentsFilesOverride: () => ({ agentsFiles: [{ path: "AGENTS.md", content: resources.agentsMdContent }] }),
 			skillsOverride: (base) => ({ skills: resources.skills, diagnostics: base.diagnostics }),
 		},
 	});
 	const sessionManager = options.sessionManager ?? SessionManager.create(options.cwd, options.runDir);
+	// Seeded before construction: Pi restores a session manager that already has
+	// messages into agent.state.messages, so the history reaches the model with
+	// no runner surgery and stays in session.jsonl as ordinary evidence.
+	const seedMessages = options.seedMessages ?? [];
+	for (const turn of seedMessages) {
+		sessionManager.appendMessage(seededSessionMessage(turn, model));
+	}
 	const created = await createAgentSessionFromServices({
 		services,
 		sessionManager,
@@ -352,6 +481,9 @@ export async function createTargetAgentSession(options: CreateTargetAgentSession
 		customTools: [...options.executionPolicy.customTools, ...options.targetTools.customTools],
 	});
 	const { session } = created;
+	// A silently unseeded dialogue would grade the last turn out of context and
+	// still look like an ordinary answer, so the restore is checked, never assumed.
+	if (seedMessages.length > 0) assertSeededHistory(session.agent.state.messages, seedMessages);
 	session.agent.onPayload = (payload) => ({ ...(payload as Record<string, unknown>), ...model.params });
 	return { ...created, sessionManager, services, diagnostics: services.diagnostics };
 }

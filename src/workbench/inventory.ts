@@ -36,7 +36,7 @@ import {
 } from "../domain/candidate.js";
 import {
 	isSealedEvalRun,
-	listEvalRunIndexes,
+	listEvalRunIndexesLenient,
 	loadEvalRun,
 	type EvalRunRecord,
 } from "../eval.js";
@@ -61,7 +61,9 @@ import {
 	loadCandidateAbandonment,
 	type CandidateAbandonmentReceipt,
 } from "./candidate-abandonment.js";
+import { calibrationProjection } from "./calibration.js";
 import type {
+	WorkbenchCalibrationProjection,
 	WorkbenchSelectionKind,
 	WorkbenchSelectionSummary,
 	WorkbenchStage,
@@ -99,6 +101,8 @@ export interface WorkbenchInventory {
 	developmentEvals: EvalRunRecord[];
 	proposals: WorkbenchProposalInventory[];
 	candidates: CandidateRecord[];
+	/** A/A calibration records of this project, newest first. Never workflow. */
+	calibrations: CandidateRecord[];
 	abandonedCandidates: Map<string, CandidateAbandonmentReceipt>;
 	/** Promoted candidates whose exact revision became the active Target branch head. */
 	adoptedCandidates: Map<string, TargetAdoptionReceipt>;
@@ -440,6 +444,16 @@ function validateFocus(inventory: Omit<WorkbenchInventory, "validFocus">): Parti
 	return valid;
 }
 
+/**
+ * The same inventory with a focus that was just written. `select` already read
+ * the state its view reports, so the trailing view never re-reads disk to learn
+ * about a selection this process made.
+ */
+export function withWorkbenchFocus(inventory: WorkbenchInventory, focus: WorkbenchFocus): WorkbenchInventory {
+	const next = { ...inventory, focus, warnings: [...inventory.warnings] };
+	return { ...next, validFocus: validateFocus(next) };
+}
+
 export function loadWorkbenchInventory(options: {
 	projectDir: string;
 	stateRoot: string;
@@ -638,7 +652,14 @@ export function loadWorkbenchInventory(options: {
 	const sealedHashes = new Set(corpora.filter((corpus) => corpus.visibility === "sealed").map((corpus) => corpus.hash));
 	let developmentEvals: EvalRunRecord[] = [];
 	try {
-		developmentEvals = listEvalRunIndexes(options.runsRoot)
+		const listed = listEvalRunIndexesLenient(options.runsRoot);
+		if (listed.invalid.length > 0) {
+			warnings.push(
+				`${listed.invalid.length} legacy eval run index${listed.invalid.length === 1 ? "" : "es"} ignored: ` +
+				"not comparable with the current evidence schema",
+			);
+		}
+		developmentEvals = listed.records
 			.filter((run) => !isSealedEvalRun(run, sealedHashes))
 			.map((run) => loadEvalRun(options.runsRoot, run.evalRunId))
 			.filter((run) => target === null || run.target.id === target.manifest.id);
@@ -660,12 +681,19 @@ export function loadWorkbenchInventory(options: {
 		warnings,
 		integrityBlockers,
 	);
+	// A/A calibration records are measurement, not workflow: they are split off
+	// before admission so they can never become a candidate to review, an
+	// interrupted attempt to abandon, or a selectable artifact.
+	const listedCandidates = listCandidates(options.runsRoot, warnings, integrityBlockers);
+	const calibrations = listedCandidates.filter((record) =>
+		record.mode === "aa-calibration" && record.projectId === options.projectId
+	);
 	const candidates = validateProjectCandidates({
 		stateRoot: options.stateRoot,
 		runsRoot: options.runsRoot,
 		projectId: options.projectId,
 		target,
-		candidates: listCandidates(options.runsRoot, warnings, integrityBlockers),
+		candidates: listedCandidates.filter((record) => record.mode !== "aa-calibration"),
 		approvedSpecs: verifiedApprovedSpecReferences,
 		proposals,
 		warnings,
@@ -758,6 +786,7 @@ export function loadWorkbenchInventory(options: {
 		developmentEvals,
 		proposals,
 		candidates,
+		calibrations,
 		abandonedCandidates,
 		adoptedCandidates,
 		continuedCandidates,
@@ -987,6 +1016,43 @@ function targetModelSummary(
 	};
 }
 
+/**
+ * Newest calibration of the exact revision the Target sits on. Calibration
+ * expires with the revision: an older A/A run describes another harness.
+ */
+function calibrationOf(inventory: WorkbenchInventory): WorkbenchCalibrationProjection | null {
+	const gitSha = inventory.target?.gitSha;
+	if (!gitSha) return null;
+	for (const record of inventory.calibrations) {
+		if (record.baseline.sha !== gitSha) continue;
+		const projection = calibrationProjection(record);
+		if (projection) return projection;
+	}
+	return null;
+}
+
+/**
+ * How often each sealed holdout has already judged a candidate. Repeated use
+ * erodes a holdout; the warning counts uses and never names the corpus.
+ */
+const MAX_SEALED_EXPOSURE = 5;
+
+function sealedExposureWarnings(inventory: WorkbenchInventory): string[] {
+	const uses = new Map<string, number>();
+	for (const candidate of inventory.candidates) {
+		if (candidate.projectId !== inventory.projectId) continue;
+		const evaluated = candidate.events.find((event) => event.type === "evaluated");
+		if (evaluated?.type !== "evaluated") continue;
+		const corpusId = evaluated.evaluation.sealedHoldout?.corpus?.id;
+		if (!corpusId) continue;
+		uses.set(corpusId, (uses.get(corpusId) ?? 0) + 1);
+	}
+	return [...uses.values()]
+		.filter((count) => count > MAX_SEALED_EXPOSURE)
+		.sort((left, right) => right - left)
+		.map((count) => `A sealed holdout has been used in ${count} candidate verifications; consider refreshing it`);
+}
+
 export function deriveWorkbenchView(
 	inventory: WorkbenchInventory,
 	env: NodeJS.ProcessEnv = process.env,
@@ -1040,7 +1106,8 @@ export function deriveWorkbenchView(
 		],
 		actions: state.actions,
 		blockers: state.blockers,
-		warnings: inventory.warnings,
+		warnings: [...inventory.warnings, ...sealedExposureWarnings(inventory)],
+		calibration: calibrationOf(inventory),
 		counts: {
 			specDrafts: inventory.specs.filter((spec) => spec.status === "draft").length,
 			approvedSpecs: inventory.verifiedApprovedSpecIds.size,
@@ -1050,6 +1117,7 @@ export function deriveWorkbenchView(
 			developmentEvals: inventory.developmentEvals.length,
 			openProposals: inventory.proposals.filter((proposal) => proposal.status === "open").length,
 			candidates: inventory.candidates.length,
+			calibrations: inventory.calibrations.length,
 		},
 	};
 }

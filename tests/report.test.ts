@@ -165,7 +165,7 @@ function fixture(options: { structuralFlood?: boolean } = {}): { runsRoot: strin
 
 	const evidence = { runtime, model, judge: null, execution, eval: evaluation };
 	const evalRun: EvalRunRecord = {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		evalRunId: "erun-report",
 		target: record.target,
 		label: "solo",
@@ -359,7 +359,7 @@ function oversizedFixture(): {
 	const pass = outcomes.filter((outcome) => outcome === "pass").length;
 	const fail = outcomes.filter((outcome) => outcome === "fail").length;
 	const evalRun: EvalRunRecord = {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		evalRunId,
 		target: { id: "oversized-target", gitSha },
 		label: "solo",

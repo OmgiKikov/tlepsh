@@ -1,8 +1,6 @@
-import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionServices,
@@ -13,34 +11,18 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { expect, it } from "vitest";
-import { createAhdeBuilderCompatibilityTools as createAhdeBuilderTools } from "../src/builder/extension.js";
-import { resolveBuilderAssets } from "../src/builder/runtime.js";
-import { createCorpus } from "../src/corpus.js";
-import { diagnoseEvalRun } from "../src/diagnosis.js";
 import {
-	compileImprovementBrief,
-	deriveEvidenceLinkedProposalSelection,
-} from "../src/application/improvement-brief.js";
-import type { TargetManifest } from "../src/manifest.js";
+	AHDE_BUILDER_TOOL_NAMES,
+	createAhdeBuilderExtension,
+} from "../src/builder/extension.js";
+import { resolveBuilderAssets } from "../src/builder/runtime.js";
 import { startMockModel, type MockRequestContext, type MockStep } from "../src/mock-model.js";
 import { generateModelsJson } from "../src/runner.js";
+import { createHostContext, hostCatalogModel, modelDefinition } from "./helpers/builder-tools.js";
 
-function sha256(value: string): string {
-	return `sha256:${createHash("sha256").update(value).digest("hex")}`;
-}
-
-function wholeFileDiff(path: string, before: string, after: string): string {
-	const oldLines = before.replace(/\n$/, "").split("\n");
-	const newLines = after.replace(/\n$/, "").split("\n");
-	return [
-		`diff --git a/${path} b/${path}`,
-		`--- a/${path}`,
-		`+++ b/${path}`,
-		`@@ -1,${oldLines.length} +1,${newLines.length} @@`,
-		...oldLines.map((line) => `-${line}`),
-		...newLines.map((line) => `+${line}`),
-	].join("\n");
-}
+const TARGET_PROVIDER = "natural-target";
+const TARGET_MODEL_ID = "natural-target-model";
+const TARGET_CREDENTIAL_ENV = "NATURAL_TARGET_API_KEY";
 
 function parseToolResult(context: MockRequestContext, index: number): Record<string, any> {
 	const value = context.toolResults[index];
@@ -49,197 +31,106 @@ function parseToolResult(context: MockRequestContext, index: number): Record<str
 }
 
 function call(step: number, name: string, args: Record<string, unknown>): MockStep {
-	return { toolCall: { id: `builder-call-${step}`, name, arguments: args } };
+	return { toolCall: { id: `natural-${step}`, name, arguments: args } };
 }
 
-function modelDefinition(
-	provider: string,
-	id: string,
-	baseUrl: string,
-	apiKeyEnv: string,
-): TargetManifest["model"] {
-	return {
-		provider,
-		id,
-		api: "openai-completions",
-		baseUrl,
-		apiKeyEnv,
-		thinkingLevel: "off",
-		timeoutMs: 60_000,
-		params: {},
-		spec: {
-			reasoning: false,
-			contextWindow: 131_072,
-			maxTokens: 4_096,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			compat: {},
-		},
-	};
-}
-
-it("turns free input into a complete promoted candidate through a real Builder Pi tool-call session", async () => {
-	const targetMock = await startMockModel([
-		{
-			match: ({ system }) => system.includes("Return the exact uppercase word READY."),
-			steps: [{ text: "READY" }],
-		},
-		{ match: () => true, steps: [{ text: "pending" }] },
-	]);
+/**
+ * Free-form operator input has to land on the three production tools and on
+ * nothing else: every consequential step is one `ahde_workbench_decide` call
+ * that the host gate confirmed, and the model never types a slash command.
+ */
+it("turns free operator input into gated Workbench decisions through a real Builder Pi session", async () => {
+	const targetMock = await startMockModel([{ match: () => true, steps: [{ text: "pending" }] }]);
 	const projectDir = mkdtempSync(join(tmpdir(), "ahde-builder-natural-language-"));
 	const stateRoot = join(projectDir, ".ahde");
 	const runsRoot = join(projectDir, "runs");
 	const assets = resolveBuilderAssets();
-	const before = readFileSync(join(assets.targetTemplateDir, "AGENTS.md"), "utf8");
-	const after = `${before.trimEnd()}\n\nReturn the exact uppercase word READY.\n`;
-	const targetModel = modelDefinition(
-		"target-scripted",
-		"target-model",
-		targetMock.url,
-		"AHDE_NATURAL_TARGET_KEY",
-	);
-
-	createCorpus({
-		stateRoot,
-		projectId: "natural-agent",
-		name: "Evaluator-only natural-language holdout",
-		visibility: "sealed",
-		tasks: [{
-			id: "sealed-natural-1",
-			input: "PRIVATE NATURAL LANGUAGE HOLDOUT",
-			graders: [{ type: "output_contains", text: "READY" }],
-		}],
-	});
-
-	const builderMock = await startMockModel([{
-		match: ({ firstUser }) => firstUser.includes("собери агента"),
-		steps: [],
-		resolve: (context) => {
-			const step = context.toolResults.length;
-			switch (step) {
-				case 0:
-					return call(step, "ahde_target_scaffold", { reason: "Initialize the requested agent" });
-				case 1:
-					return call(step, "ahde_target_configure_model", {
-						targetId: "natural-agent",
-						model: targetModel,
-						reason: "Use the operator-provided local model endpoint",
-					});
-				case 2:
-					return call(step, "ahde_spec_save_draft", {
-						title: "Natural-language golden agent",
-						purpose: "Return the reviewed deterministic answer.",
-						users: ["acceptance reviewer"],
-						jobs: ["answer one request"],
-						inputs: ["text request"],
-						allowedActions: ["return text"],
-						successCriteria: ["answer contains READY"],
-						constraints: ["no network"],
-						openQuestions: [],
-					});
-				case 3:
-					return call(step, "ahde_spec_approve", {
-						specId: parseToolResult(context, 2).id,
-						reason: "The structured Spec matches the user's request",
-					});
-				case 4:
-					return call(step, "ahde_corpus_publish_development", {
-						name: "Natural-language development",
-						tasks: [{
-							id: "dev-natural-1",
-							input: "Answer the reviewed request.",
-							graders: [{ type: "output_contains", text: "READY" }],
-						}],
-						reason: "Measure the approved observable contract",
-					});
-				case 5:
-					return call(step, "ahde_eval_run_development", {
-						developmentCorpusId: parseToolResult(context, 4).corpus.id,
-						repetitions: 1,
-						reason: "Measure the exact baseline",
-					});
-				case 6: {
-					const evalRunId = parseToolResult(context, 5).evaluation.evalRunId;
-					const brief = compileImprovementBrief(runsRoot, diagnoseEvalRun(runsRoot, evalRunId));
-					const failureMode = brief.modes.find((mode) => mode.decision === "propose-harness-change");
-					if (!failureMode) throw new Error("natural-language fixture has no proposal-eligible failure mode");
-					const proposalBasis = {
-						algorithmId: brief.algorithmId,
-						evalRunId: brief.evalRunId,
-						diagnosisId: brief.diagnosisId,
-						briefId: brief.briefId,
-						failureModeIds: [failureMode.failureModeId],
-					};
-					const selected = deriveEvidenceLinkedProposalSelection(brief, proposalBasis);
-					const evidenceRefs = [...new Set(selected.diagnoses.flatMap((item) => item.evidence))];
-					return call(step, "ahde_proposal_create", {
-						specDraftId: parseToolResult(context, 2).id,
-						sourceEvalRunId: evalRunId,
-						proposalBasis,
-						decision: "propose",
-						summary: "Make the approved answer contract explicit.",
-						diagnoses: selected.diagnoses,
-						changes: [{
-							path: "AGENTS.md",
-							baseSha256: sha256(before),
-							unifiedDiff: wholeFileDiff("AGENTS.md", before, after),
-							rationale: "Align the harness with the approved observable contract.",
-							evidenceRefs,
-						}],
-						risks: ["The output contract is intentionally narrow."],
-						validationPlan: ["Run matched development and evaluator-only evidence."],
-					});
-				}
-				case 7:
-					return call(step, "ahde_proposal_diff", { runId: parseToolResult(context, 6).runId });
-				case 8:
-					return call(step, "ahde_proposal_apply", {
-						runId: parseToolResult(context, 6).runId,
-						branch: "candidate/natural-language",
-						reason: "The reviewed exact diff addresses the measured failure",
-					});
-				case 9:
-					return call(step, "ahde_candidate_verify", {
-						builderRunId: parseToolResult(context, 6).runId,
-						repetitions: 1,
-						reason: "Run the exact development and sealed promotion gates",
-					});
-				case 10:
-					return call(step, "ahde_candidate_review", {
-						candidateId: parseToolResult(context, 9).candidate.candidateId,
-						recommendation: "promote",
-						reason: "Development improved and evaluator-only evidence passed",
-					});
-				case 11:
-					return call(step, "ahde_candidate_promote", {
-						candidateId: parseToolResult(context, 9).candidate.candidateId,
-						version: "0.1.0",
-						reason: "Ship the exact reviewed candidate",
-					});
-				case 12:
-					return { text: "Готово: Spec утверждена, failure mode исправлен, sealed gate пройден, v0.1.0 promoted." };
-				default:
-					throw new Error(`unexpected Builder step ${step}`);
-			}
-		},
-	}]);
-
-	process.env.AHDE_NATURAL_TARGET_KEY = "target-fixture";
+	process.env[TARGET_CREDENTIAL_ENV] = "target-fixture";
 	let session: Awaited<ReturnType<typeof createAgentSessionFromServices>>["session"] | undefined;
+	let builderMock: Awaited<ReturnType<typeof startMockModel>> | undefined;
 	try {
-		const confirmations: string[] = [];
-		const hostContext = {
-			hasUI: true,
-			mode: "tui",
-			ui: {
-				confirm: async (title: string) => {
-					confirmations.push(title);
-					return true;
+		builderMock = await startMockModel([
+			{
+				match: ({ firstUser, toolCount }) => firstUser.includes("собери агента") && toolCount === 3,
+				steps: [],
+				resolve: (context) => {
+					const step = context.toolResults.length;
+					switch (step) {
+						case 0:
+							return call(step, "ahde_workbench_view", {});
+						case 1:
+							return call(step, "ahde_workbench_decide", {
+								kind: "scaffold-target",
+								reason: "The operator asked for a new agent in this folder",
+							});
+						case 2:
+							return call(step, "ahde_workbench_decide", {
+								kind: "configure-target",
+								targetId: "natural-agent",
+								model: { provider: TARGET_PROVIDER, modelId: TARGET_MODEL_ID, thinkingLevel: "off" },
+								reason: "Bind the operator's local model endpoint",
+							});
+						case 3:
+							return call(step, "ahde_workbench_submit", {
+								kind: "spec-draft",
+								spec: {
+									title: "Natural-language answer agent",
+									purpose: "Return the reviewed deterministic answer.",
+									users: ["acceptance reviewer"],
+									jobs: ["answer one request"],
+									inputs: ["text request"],
+									allowedActions: ["return text"],
+									successCriteria: ["answer contains READY"],
+									constraints: ["no network"],
+									openQuestions: [],
+								},
+							});
+						case 4:
+							return call(step, "ahde_workbench_decide", {
+								kind: "approve-spec",
+								draftSpecId: String(parseToolResult(context, 3).artifact.id),
+								reason: "The structured Spec matches the operator's request",
+							});
+						case 5:
+							return call(step, "ahde_workbench_submit", {
+								kind: "corpus-draft",
+								name: "Natural-language development basket",
+								tasks: [
+									{ input: "Answer the first reviewed request.", graders: [{ type: "output_contains", text: "READY" }] },
+									{ input: "Answer the second reviewed request.", graders: [{ type: "output_contains", text: "READY" }] },
+								],
+								coverageNotes: ["Two cases expose the same missing instruction."],
+								revisionSummary: "Initial development basket",
+							});
+						case 6:
+							return call(step, "ahde_workbench_decide", {
+								kind: "publish-corpus",
+								draftId: String(parseToolResult(context, 5).artifact.id),
+								reason: "Publish the reviewed development basket",
+							});
+						case 7:
+							return call(step, "ahde_workbench_decide", {
+								kind: "run-eval",
+								repetitions: 1,
+								reason: "Measure the exact baseline the operator asked for",
+							});
+						case 8: {
+							const evaluated = parseToolResult(context, 7);
+							if (evaluated.view.stage !== "improvement-authoring") {
+								throw new Error(`baseline did not reach improvement authoring: ${evaluated.view.stage}`);
+							}
+							return { text: `Готово: агент создан, Spec утверждена, basket опубликован, база измерена — ${evaluated.result.evaluation.summary.fail} провалов.` };
+						}
+						default:
+							throw new Error(`unexpected natural-language Builder step ${step}`);
+					}
 				},
-				select: async () => undefined,
-				notify: () => undefined,
 			},
-		} as any;
-		const modelTools = createAhdeBuilderTools({
+			{ match: () => true, steps: [{ text: "BUILDER_NATURAL_LANGUAGE_CONTRACT_MISMATCH" }] },
+		]);
+
+		const registered: ToolDefinition[] = [];
+		const extension = createAhdeBuilderExtension({
 			projectDir,
 			stateRoot,
 			runsRoot,
@@ -247,11 +138,24 @@ it("turns free input into a complete promoted candidate through a real Builder P
 			templateDir: assets.targetTemplateDir,
 			dependencies: { actorId: () => "local:natural-language-operator" },
 		});
-		const toolCalls: string[] = [];
-		const trustedTools: ToolDefinition[] = modelTools.map((tool) => ({
+		await extension({
+			registerTool: (tool: ToolDefinition) => registered.push(tool),
+			registerCommand: () => undefined,
+			on: () => undefined,
+		} as never);
+		expect(registered.map((tool) => tool.name)).toEqual(AHDE_BUILDER_TOOL_NAMES);
+
+		const host = createHostContext({
+			catalog: (provider, modelId) =>
+				provider === TARGET_PROVIDER && modelId === TARGET_MODEL_ID
+					? hostCatalogModel(TARGET_PROVIDER, TARGET_MODEL_ID, targetMock.url)
+					: undefined,
+			credentialEnv: TARGET_CREDENTIAL_ENV,
+		});
+		const trustedTools: ToolDefinition[] = registered.map((tool) => ({
 			...tool,
-			async execute(id, params, signal, update) {
-				return tool.execute(id, params, signal, update, hostContext);
+			async execute(id, parameters, signal, update) {
+				return tool.execute(id, parameters, signal, update, host.ctx);
 			},
 		}));
 
@@ -295,45 +199,52 @@ it("turns free input into a complete promoted candidate through a real Builder P
 			noTools: "builtin",
 			customTools: trustedTools,
 		})).session;
+		const toolCalls: string[] = [];
 		session.subscribe((event) => {
 			if (event.type === "tool_execution_start") toolCalls.push(event.toolName);
 		});
 
 		await session.prompt(
-			"Хочу собрать агента, который детерминированно отвечает READY. " +
-			"Помоги структурировать Spec, собрать eval и довести улучшение до проверанного релиза.",
+			"Помоги собери агента, который детерминированно отвечает READY: " +
+			"структурируй Spec, собери eval-корзину и измерь базовую линию.",
 		);
 
-		expect(session.getLastAssistantText()).toContain("v0.1.0 promoted");
+		expect(session.getLastAssistantText()).toContain("база измерена");
 		expect(toolCalls).toEqual([
-			"ahde_target_scaffold",
-			"ahde_target_configure_model",
-			"ahde_spec_save_draft",
-			"ahde_spec_approve",
-			"ahde_corpus_publish_development",
-			"ahde_eval_run_development",
-			"ahde_proposal_create",
-			"ahde_proposal_diff",
-			"ahde_proposal_apply",
-			"ahde_candidate_verify",
-			"ahde_candidate_review",
-			"ahde_candidate_promote",
+			"ahde_workbench_view",
+			"ahde_workbench_decide",
+			"ahde_workbench_decide",
+			"ahde_workbench_submit",
+			"ahde_workbench_decide",
+			"ahde_workbench_submit",
+			"ahde_workbench_decide",
+			"ahde_workbench_decide",
 		]);
-		expect(confirmations).toHaveLength(9);
+		// Exactly the five decide calls reached the human gate; submissions did not.
+		expect(host.confirmations.map((entry) => entry.title)).toEqual([
+			"Create exact Target harness",
+			"Configure exact Target identity and model",
+			"Approve exact Spec draft",
+			"Publish exact development corpus",
+			"Run exact development evaluation",
+		]);
+
 		const tracePath = sessionManager.getSessionFile();
 		if (!tracePath) throw new Error("Builder Pi did not persist its session trace");
 		const trace = readFileSync(tracePath, "utf8");
-		for (const toolName of toolCalls) expect(trace).toContain(toolName);
-		const promotedSha = execFileSync(
-			"git",
-			["-C", projectDir, "rev-list", "-n", "1", "v0.1.0"],
-			{ encoding: "utf8" },
-		).trim();
-		expect(promotedSha).toMatch(/^[0-9a-f]{40}$/);
+		for (const toolName of AHDE_BUILDER_TOOL_NAMES) expect(trace).toContain(toolName);
+		for (const deleted of [
+			"ahde_project_status",
+			"ahde_spec_save_draft",
+			"ahde_corpus_publish_development",
+			"ahde_eval_run_development",
+		]) {
+			expect(trace).not.toContain(deleted);
+		}
 	} finally {
-		delete process.env.AHDE_NATURAL_TARGET_KEY;
+		delete process.env[TARGET_CREDENTIAL_ENV];
 		session?.dispose();
-		await builderMock.close();
+		await builderMock?.close();
 		await targetMock.close();
 		rmSync(projectDir, { recursive: true, force: true });
 	}

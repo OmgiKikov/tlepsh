@@ -17,8 +17,6 @@ import { CandidateRecordSchema, candidateStatus } from "../src/domain/candidate.
 import { EvalRunRecordSchema, loadEvalRun, writeEvalRun, type EvalRunRecord } from "../src/eval.js";
 import { compareEvalRuns } from "../src/compare.js";
 import {
-	DEVELOPMENT_GATE_POLICY_ID,
-	SEALED_GATE_POLICY_ID,
 	comparisonGateEvidence,
 } from "../src/application/candidate-experiment.js";
 import { DiagnosisRecordSchema, diagnoseEvalRun } from "../src/diagnosis.js";
@@ -68,6 +66,7 @@ function writePair(
 	candidateEvalRunId: string,
 	dataset: string,
 	execution: ExecutionFingerprint,
+	design: { tasks: number; repetitions: number } = { tasks: 1, repetitions: 1 },
 ): void {
 	const runtime = { piVersion: "0.84.3", piSha, ahdeVersion: "0.1.0", ahdeCodeHash: artifactHash };
 	const model = {
@@ -90,12 +89,19 @@ function writePair(
 		execution,
 		eval: { suiteHash, datasetHash },
 	});
-	const writeRun = (runId: string, evalRunId: string, label: "baseline" | "candidate", gitSha: string): string => {
+	const writeRun = (
+		runId: string,
+		evalRunId: string,
+		label: "baseline" | "candidate",
+		gitSha: string,
+		taskId = `${dataset}-task`,
+		repetitionIndex = 0,
+	): string => {
 		const record: RunRecord = {
 			schemaVersion: 1,
 			runId,
-			taskId: `${dataset}-task`,
-			repetitionIndex: 0,
+			taskId,
+			repetitionIndex,
 			label,
 			status: "completed",
 			error: null,
@@ -129,19 +135,27 @@ function writePair(
 		writeJsonArtifact(join(runsRoot, runId, "run.json"), RunRecordSchema, record);
 		return hashValue(record);
 	};
-	const baseRunId = `${baselineEvalRunId}-run`;
-	const candidateRunId = `${candidateEvalRunId}-run`;
-	const baseRunHash = writeRun(baseRunId, baselineEvalRunId, "baseline", baselineRevision);
-	const candidateRunHash = writeRun(candidateRunId, candidateEvalRunId, "candidate", candidateRevision);
+	const taskIds = Array.from({ length: design.tasks }, (_, index) => index === 0 ? `${dataset}-task` : `${dataset}-task-${index + 1}`);
+	const writeRuns = (evalRunId: string, label: "baseline" | "candidate", gitSha: string) => {
+		const artifacts: { runId: string; sha256: string }[] = [];
+		for (const [taskIndex, taskId] of taskIds.entries()) {
+			for (let repetition = 0; repetition < design.repetitions; repetition += 1) {
+				const runId = taskIndex === 0 && repetition === 0 ? `${evalRunId}-run` : `${evalRunId}-run-${taskIndex}-${repetition}`;
+				artifacts.push({ runId, sha256: writeRun(runId, evalRunId, label, gitSha, taskId, repetition) });
+			}
+		}
+		return artifacts;
+	};
+	const baseArtifacts = writeRuns(baselineEvalRunId, "baseline", baselineRevision);
+	const candidateArtifacts = writeRuns(candidateEvalRunId, "candidate", candidateRevision);
 	const evalRecord = (
 		evalRunId: string,
 		label: "baseline" | "candidate",
 		gitSha: string,
-		runId: string,
-		runHash: string,
+		artifacts: { runId: string; sha256: string }[],
 		baselineId: string | null,
 	): EvalRunRecord => ({
-		schemaVersion: 1,
+		schemaVersion: 2,
 		evalRunId,
 		target: {
 			id: targetId,
@@ -157,15 +171,15 @@ function writePair(
 		suiteHash,
 		dataset,
 		datasetHash,
-		repetitions: 1,
-		runIds: [runId],
-		runArtifacts: [{ runId, sha256: runHash }],
+		repetitions: design.repetitions,
+		runIds: artifacts.map((artifact) => artifact.runId),
+		runArtifacts: artifacts,
 		startedAt: at,
 		finishedAt: at,
-		summary: { total: 1, pass: 1, fail: 0, error: 0, allPassRate: 1 },
+		summary: { total: artifacts.length, pass: artifacts.length, fail: 0, error: 0, allPassRate: 1 },
 	});
-	writeEvalRun(runsRoot, evalRecord(baselineEvalRunId, "baseline", baselineRevision, baseRunId, baseRunHash, null));
-	writeEvalRun(runsRoot, evalRecord(candidateEvalRunId, "candidate", candidateRevision, candidateRunId, candidateRunHash, baselineEvalRunId));
+	writeEvalRun(runsRoot, evalRecord(baselineEvalRunId, "baseline", baselineRevision, baseArtifacts, null));
+	writeEvalRun(runsRoot, evalRecord(candidateEvalRunId, "candidate", candidateRevision, candidateArtifacts, baselineEvalRunId));
 }
 
 function fixture(
@@ -194,7 +208,7 @@ function fixture(
 	});
 	writePair(runsRoot, targetId, fixtureBaselineSha, fixtureCandidateSha, "eval-base", "eval-candidate", "development", execution);
 	if (withHoldout) {
-		writePair(runsRoot, targetId, fixtureBaselineSha, fixtureCandidateSha, "holdout-base", "holdout-candidate", "sealed-holdout", execution);
+		writePair(runsRoot, targetId, fixtureBaselineSha, fixtureCandidateSha, "holdout-base", "holdout-candidate", "sealed-holdout", execution, { tasks: 15, repetitions: 2 });
 	}
 
 	const diagnosis = diagnoseEvalRun(runsRoot, "eval-base", () => at);
@@ -451,7 +465,6 @@ function fixture(
 		candidate: { evalRunId: "eval-candidate", harness: { ref: "candidate", sha: fixtureCandidateSha } },
 		comparison: comparisonGateEvidence(
 			compareEvalRuns(runsRoot, "eval-base", "eval-candidate", { mode: "candidate" }),
-			DEVELOPMENT_GATE_POLICY_ID,
 		),
 	};
 	record = transitionCandidate(record, {
@@ -474,8 +487,7 @@ function fixture(
 						baseline: { ...pair.baseline, evalRunId: "holdout-base" },
 						candidate: { ...pair.candidate, evalRunId: "holdout-candidate" },
 						comparison: comparisonGateEvidence(
-							compareEvalRuns(runsRoot, "holdout-base", "holdout-candidate", { mode: "candidate" }),
-							SEALED_GATE_POLICY_ID,
+							compareEvalRuns(runsRoot, "holdout-base", "holdout-candidate", { mode: "candidate", surface: "sealed" }),
 							{
 								corpusId: "holdout",
 								corpusHash: loadEvalRun(runsRoot, "holdout-base").datasetHash,

@@ -88,7 +88,7 @@ export function createRunProgressPresenter(
 	];
 	const maxTraceLines = MAX_WIDGET_LINES - frameHeader.length;
 	const traceLines: string[] = [];
-	let assistantOpen = false;
+	let assistantOpen: string | null = null;
 	let currentStatus: string | undefined;
 	let disposed = false;
 
@@ -112,15 +112,17 @@ export function createRunProgressPresenter(
 	};
 
 	const appendBlock = (prefix: string, value: string): void => {
-		assistantOpen = false;
+		assistantOpen = null;
 		for (const line of splitLines(value)) traceLines.push(fitLine(prefix, line));
 		render();
 	};
 
-	const appendAssistant = (delta: string, truncated: boolean): void => {
+	// Concurrent runs interleave, so an open assistant line may only be
+	// continued by the run that opened it; anything else starts its own line.
+	const appendAssistant = (runId: string, delta: string, truncated: boolean): void => {
 		const chunks = splitLines(`${delta}${truncated ? " …[truncated]" : ""}`);
 		const first = chunks.shift() ?? "";
-		if (assistantOpen && traceLines.length > 0) {
+		if (assistantOpen === runId && traceLines.length > 0) {
 			const previous = traceLines.at(-1) ?? ASSISTANT_PREFIX;
 			const previousBody = previous.startsWith(ASSISTANT_PREFIX)
 				? previous.slice(ASSISTANT_PREFIX.length)
@@ -130,12 +132,15 @@ export function createRunProgressPresenter(
 			traceLines.push(fitLine(ASSISTANT_PREFIX, first, true));
 		}
 		for (const chunk of chunks) traceLines.push(fitLine(ASSISTANT_PREFIX, chunk, true));
-		assistantOpen = true;
+		assistantOpen = runId;
 		render();
 	};
 
 	const counts = { pass: 0, fail: 0, error: 0, graded: 0 };
-	let progress: { ordinal: number; total: number; taskId: string } | null = null;
+	// Executions overlap, so "where we are" is how many are graded and how many
+	// are still in flight — the ordinal of whichever run reported last is noise.
+	const running = new Set<string>();
+	let progress: { total: number; taskId: string } | null = null;
 	const progressBar = (done: number, total: number, width = 12): string => {
 		const ratio = total > 0 ? Math.min(1, Math.max(0, done / total)) : 0;
 		const filled = Math.round(ratio * width);
@@ -144,7 +149,8 @@ export function createRunProgressPresenter(
 	const tally = (): string => `✓${counts.pass} ✗${counts.fail}${counts.error > 0 ? ` !${counts.error}` : ""}`;
 	const progressLine = (): string => {
 		if (!progress) return "AHDE run · starting";
-		return `AHDE run ${progress.ordinal}/${progress.total} ${progressBar(counts.graded, progress.total)} · ${tally()} · ${progress.taskId}`;
+		return `AHDE run graded ${counts.graded}/${progress.total} · running ${running.size} ` +
+			`${progressBar(counts.graded, progress.total)} · ${tally()} · ${progress.taskId}`;
 	};
 	const status = (activity: string): void => {
 		setStatus(`${progressLine()} · ${activity}`);
@@ -153,15 +159,16 @@ export function createRunProgressPresenter(
 	const onRunEvent: RunEventListener = (event) => {
 		if (disposed) return;
 		const run = position(event);
-		progress = { ordinal: event.run.ordinal, total: event.run.total, taskId: event.run.taskId };
+		progress = { total: event.run.total, taskId: event.run.taskId };
 		switch (event.type) {
 			case "run_started":
+				running.add(event.run.runId);
 				status("started");
 				appendBlock("run · ", `started ${run} · ${event.run.taskId}`);
 				break;
 			case "assistant_delta":
 				status("assistant");
-				appendAssistant(event.delta, event.truncated);
+				appendAssistant(event.run.runId, event.delta, event.truncated);
 				break;
 			case "tool_started":
 				status(`tool ${event.toolName}`);
@@ -185,6 +192,7 @@ export function createRunProgressPresenter(
 				);
 				break;
 			case "run_graded":
+				running.delete(event.run.runId);
 				counts.graded += 1;
 				counts[event.outcome] += 1;
 				status(`graded ${event.outcome}`);

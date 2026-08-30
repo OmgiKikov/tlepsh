@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { compareEvalRuns, type CompareResult } from "../compare.js";
 import { loadCorpus, type CorpusRef, type LoadedCorpus } from "../corpus.js";
+import { EXACT_COMPARISON_GATE_ALGORITHM_ID_V3, INFRASTRUCTURE_ERROR_BUDGET, withinInfrastructureBudget } from "../domain/comparison-gate.js";
 import {
 	CandidateRecordSchema,
 	ComparisonGateEvidenceSchema,
-	EXACT_COMPARISON_GATE_ALGORITHM_ID,
 	candidateStatus,
 	createCandidate,
 	transitionCandidate,
@@ -50,13 +50,10 @@ import {
 import { assertResourceOnlyManifestChange, parseStrictTargetManifest } from "./builder-proposal.js";
 
 export const CANDIDATE_SCOPE_POLICY = {
-	id: "candidate-harness-resources-v2",
-	allowed: ["AGENTS.md", "manifest.yaml", "skills/**", "bin/**", "tools/**"],
+	id: "candidate-harness-resources-v3",
+	allowed: ["AGENTS.md", "manifest.yaml", "skills/**", "bin/**", "tools/**", "data/**"],
 } as const;
 
-export const DEVELOPMENT_GATE_POLICY_ID = "development-comparable-v1" as const;
-export const SEALED_GATE_POLICY_ID = "sealed-no-regression-v1" as const;
-export const AA_SEALED_GATE_POLICY_ID = "sealed-aa-recorded-v1" as const;
 
 export interface CandidateExperimentOptions {
 	repositoryDir: string;
@@ -85,6 +82,10 @@ export interface CandidateExperimentOptions {
 	onRunEvent?: RunEventListener;
 	/** Host-owned cancellation propagated through development and sealed executions. */
 	signal?: AbortSignal;
+	/** Concurrent executions inside each suite. Undefined keeps runSuite's default. */
+	jobs?: number;
+	/** How old a reusable baseline may be. Undefined keeps the seven-day default. */
+	baselineMaxAgeMs?: number;
 }
 
 export interface CandidateExperimentHoldoutResult {
@@ -157,7 +158,8 @@ function changedFiles(repositoryDir: string, baselineSha: string, candidateSha: 
 }
 
 function isAllowedCandidatePath(path: string): boolean {
-	return path === "AGENTS.md" || path === "manifest.yaml" || ["skills/", "bin/", "tools/"].some((prefix) => path.startsWith(prefix));
+	return path === "AGENTS.md" || path === "manifest.yaml" ||
+		["skills/", "bin/", "tools/", "data/"].some((prefix) => path.startsWith(prefix));
 }
 
 function validateScope(mode: ExperimentMode, files: string[]): void {
@@ -170,6 +172,45 @@ function validateScope(mode: ExperimentMode, files: string[]): void {
 	}
 	if (mode === "aa-calibration" && files.length !== 0) {
 		throw new Error("A/A calibration requires an empty diff");
+	}
+}
+
+/**
+ * Fold a case input to its shape: lowercase, digits removed, every run of
+ * non-letters collapsed to one space. Two cases that differ only in a
+ * contract number, a date, or punctuation fold to the same key.
+ */
+function normalizedCaseKey(input: string): string {
+	return input
+		.toLowerCase()
+		.replace(/[0-9]+/gu, "")
+		.replace(/[^\p{L}]+/gu, " ")
+		.trim();
+}
+
+/**
+ * A sealed holdout only measures generalization while it stays disjoint from
+ * the set the harness was tuned on. Near-twins ("проверь договор №23" vs
+ * "проверь договор №42") leak just as badly as exact copies, so the check
+ * compares normalized shapes.
+ *
+ * The error reports counts only: sealed inputs and ids never reach a caller,
+ * a log line, or a Builder-visible message.
+ */
+export function assertHoldoutDisjoint(
+	developmentTasks: readonly { input: string }[],
+	sealedTasks: readonly { input: string }[],
+): void {
+	const development = new Set(
+		developmentTasks.map((task) => normalizedCaseKey(task.input)).filter((key) => key.length > 0),
+	);
+	const collisions = sealedTasks
+		.map((task) => normalizedCaseKey(task.input))
+		.filter((key) => key.length > 0 && development.has(key)).length;
+	if (collisions > 0) {
+		throw new Error(
+			`sealed holdout shares ${collisions} case(s) with the development set after normalization; refresh the holdout`,
+		);
 	}
 }
 
@@ -219,17 +260,21 @@ function effectiveProvenance(target: ResolvedTarget): ProvenanceAxes {
 	}
 }
 
-function isExactReusableBaseline(record: EvalRunRecord, query: ReusableBaselineQuery): boolean {
-	return (
-		record.label === (query.label ?? "baseline") &&
-		record.target.id === query.targetId &&
-		record.target.gitSha === query.targetGitSha &&
-		(query.toolsetHash === undefined || record.target.toolsetHash === query.toolsetHash) &&
-		(query.workspaceHash === undefined || record.target.workspaceHash === query.workspaceHash) &&
-		(query.evidenceVisibility === undefined || record.evidenceVisibility === query.evidenceVisibility) &&
-		(query.repetitions === undefined || record.repetitions === query.repetitions) &&
-		axisDifferences(record.provenance, query.provenance).length === 0
-	);
+/** The reuse seam returns exactly what was asked for, or the experiment stops before spending tokens. */
+function assertReusableBaselineIdentity(record: EvalRunRecord, query: ReusableBaselineQuery): void {
+	const mismatch =
+		record.label !== query.label ? "label" :
+		record.target.id !== query.targetId ? "target id" :
+		record.target.gitSha !== query.targetGitSha ? "target revision" :
+		record.target.toolsetHash !== query.toolsetHash ? "toolset hash" :
+		record.target.workspaceHash !== query.workspaceHash ? "workspace hash" :
+		record.evidenceVisibility !== query.evidenceVisibility ? "evidence visibility" :
+		record.repetitions !== query.repetitions ? "repetitions" :
+		axisDifferences(record.provenance, query.provenance).length > 0 ? "provenance axes" :
+		null;
+	if (mismatch) {
+		throw new Error(`reusable baseline ${record.evalRunId} does not match its reuse query on ${mismatch}`);
+	}
 }
 
 function persistCandidate(path: string, record: CandidateRecord, immutable = false): void {
@@ -286,13 +331,12 @@ function assertExpectedDevelopmentSource(
 	}
 }
 
-/** Canonical durable digest of a matched comparison and the gate that accepted it. */
+/** Canonical durable digest of a matched comparison and the verdict the gate decided. */
 export function comparisonGateEvidence(
 	compare: CompareResult,
-	policyId: string,
 	context: Record<string, unknown> = {},
 ): ComparisonGateEvidence {
-	if (compare.status !== "comparable") {
+	if (!comparisonUsable(compare)) {
 		throw new Error(compare.error ?? `cannot evidence a ${compare.status} comparison`);
 	}
 	if (!compare.a.runArtifacts || !compare.b.runArtifacts) {
@@ -310,18 +354,26 @@ export function comparisonGateEvidence(
 	};
 	const rows = [...compare.rows].sort((left, right) =>
 		Buffer.compare(Buffer.from(left.taskId, "utf8"), Buffer.from(right.taskId, "utf8")));
+	const design = { ...compare.design };
+	const flags = { ...compare.flags };
+	const { policyId, surface, verdict, reasons } = compare.gate;
 	const comparisonHash = hashValue({
-		schemaVersion: 2,
-		algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID,
+		schemaVersion: 3,
+		algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
 		baselineEvalRunId: compare.a.evalRunId,
 		candidateEvalRunId: compare.b.evalRunId,
 		status: compare.status,
+		policyId,
+		surface,
 		rows,
 		summary,
+		design,
+		flags,
+		verdict,
 	});
 	const evidenceHash = hashValue({
-		schemaVersion: 2,
-		algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID,
+		schemaVersion: 3,
+		algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
 		baseline: {
 			evalRunHash: hashValue(compare.a),
 			signalAnchor: "ordered-run-record-sha256-v1",
@@ -334,28 +386,47 @@ export function comparisonGateEvidence(
 		},
 	});
 	return ComparisonGateEvidenceSchema.parse({
-		schemaVersion: 2,
-		algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID,
+		schemaVersion: 3,
+		algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
 		policyId,
+		surface,
 		comparisonHash,
 		evidenceHash,
 		gateHash: hashValue({
-			schemaVersion: 2,
-			algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID,
+			schemaVersion: 3,
+			algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
 			policyId,
+			surface,
 			comparisonHash,
 			evidenceHash,
 			context,
-			passed: true,
+			verdict,
 		}),
 		summary,
+		design,
+		verdict,
+		flags,
+		reasons: reasons.slice(0, 8),
 	});
 }
 
+/**
+ * Infrastructure errors within the budget are excluded from the statistics
+ * by the gate; above it the evaluation is inconclusive and the experiment
+ * stops before spending more tokens.
+ */
 function infrastructureError(evalRun: EvalRunRecord): string | null {
-	return evalRun.summary.error > 0
-		? `${evalRun.label} eval ${evalRun.evalRunId} has ${evalRun.summary.error} infrastructure error(s)`
-		: null;
+	const { error, total } = evalRun.summary;
+	return withinInfrastructureBudget(error, total)
+		? null
+		: `${evalRun.label} eval ${evalRun.evalRunId} has ${error} infrastructure error(s) in ${total} runs, over the ${Math.round(INFRASTRUCTURE_ERROR_BUDGET * 100)}% budget`;
+}
+
+/** A comparison is usable evidence when it is comparable, or inconclusive only within the error budget. */
+export function comparisonUsable(compare: CompareResult): boolean {
+	if (compare.status === "comparable") return true;
+	if (compare.status !== "inconclusive") return false;
+	return withinInfrastructureBudget(compare.design.excludedTasks, compare.design.tasks + compare.design.excludedTasks);
 }
 
 interface MatchedEvaluationResult {
@@ -363,6 +434,16 @@ interface MatchedEvaluationResult {
 	candidate: EvalRunRecord;
 	compare: CompareResult;
 	baselineReused: boolean;
+}
+
+/** Everything the matched pair needs that is not the pair itself. */
+interface MatchedEvaluationExecution {
+	onRunEvent?: RunEventListener;
+	signal?: AbortSignal;
+	/** Concurrent executions per suite; undefined keeps runSuite's own default. */
+	jobs?: number;
+	/** Age limit on a reusable baseline; undefined keeps the seven-day default. */
+	baselineMaxAgeMs?: number;
 }
 
 async function runMatchedEvaluation(
@@ -374,9 +455,9 @@ async function runMatchedEvaluation(
 	mode: ExperimentMode,
 	repetitions: number,
 	evidenceVisibility: "development" | "sealed",
-	onRunEvent?: RunEventListener,
-	signal?: AbortSignal,
+	execution: MatchedEvaluationExecution = {},
 ): Promise<MatchedEvaluationResult> {
+	const { onRunEvent, signal, jobs, baselineMaxAgeMs } = execution;
 	const baselineWorkspaceHash = computeTargetWorkspaceHash(baselineTarget, runsRoot);
 	const query: ReusableBaselineQuery = {
 		targetId: baselineTarget.manifest.id,
@@ -387,9 +468,10 @@ async function runMatchedEvaluation(
 		evidenceVisibility,
 		label: "baseline",
 		repetitions,
+		...(baselineMaxAgeMs === undefined ? {} : { maxAgeMs: baselineMaxAgeMs }),
 	};
 	let baseline = dependencies.findReusableBaseline(runsRoot, query);
-	if (baseline && !isExactReusableBaseline(baseline, query)) baseline = null;
+	if (baseline) assertReusableBaselineIdentity(baseline, query);
 	const baselineReused = baseline !== null;
 	if (!baseline) {
 		baseline = await dependencies.runSuite(baselineTarget, {
@@ -400,6 +482,7 @@ async function runMatchedEvaluation(
 			expectedWorkspaceHash: baselineWorkspaceHash,
 			...(onRunEvent ? { onRunEvent } : {}),
 			...(signal ? { signal } : {}),
+			...(jobs === undefined ? {} : { jobs }),
 		});
 	}
 	const baselineProblem = infrastructureError(baseline);
@@ -414,30 +497,20 @@ async function runMatchedEvaluation(
 		baselineEvalRunId: baseline.evalRunId,
 		...(onRunEvent ? { onRunEvent } : {}),
 		...(signal ? { signal } : {}),
+		...(jobs === undefined ? {} : { jobs }),
 	});
 	const candidateProblem = infrastructureError(candidate);
 	if (candidateProblem) throw new Error(candidateProblem);
 
 	const compare = dependencies.compareEvalRuns(runsRoot, baseline.evalRunId, candidate.evalRunId, {
 		mode,
+		surface: evidenceVisibility,
 	});
-	if (compare.status !== "comparable") {
+	if (!comparisonUsable(compare)) {
 		throw new Error(compare.error ?? `${compare.status} candidate comparison`);
 	}
 
 	return { baseline, candidate, compare, baselineReused };
-}
-
-function holdoutRegression(compare: CompareResult, mode: ExperimentMode): string | null {
-	if (mode !== "candidate") return null;
-	const regressedTasks = compare.rows.filter((row) => row.delta < 0).map((row) => row.taskId);
-	if (regressedTasks.length > 0) {
-		return `sealed holdout regressed task(s): ${regressedTasks.join(", ")}`;
-	}
-	if (compare.summary.delta < 0) {
-		return `sealed holdout aggregate delta is negative (${compare.summary.delta})`;
-	}
-	return null;
 }
 
 /**
@@ -531,6 +604,9 @@ export async function runCandidateExperiment(
 			if (holdoutCandidateTarget) {
 				assertResolvedTarget(holdoutCandidateTarget, worktrees.candidate, "holdout candidate");
 			}
+			if (holdoutBaselineTarget) {
+				assertHoldoutDisjoint(baselineTarget.tasks, holdoutBaselineTarget.tasks);
+			}
 
 			const origin: CandidateOrigin = options.origin ?? {
 				kind: "manual",
@@ -604,8 +680,12 @@ export async function runCandidateExperiment(
 					options.mode,
 					options.repetitions,
 					"development",
-					options.onRunEvent,
-					options.signal,
+					{
+						...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
+						...(options.signal ? { signal: options.signal } : {}),
+						...(options.jobs === undefined ? {} : { jobs: options.jobs }),
+						...(options.baselineMaxAgeMs === undefined ? {} : { baselineMaxAgeMs: options.baselineMaxAgeMs }),
+					},
 				);
 
 				let sealedHoldout: CandidateExperimentHoldoutResult | null = null;
@@ -619,11 +699,15 @@ export async function runCandidateExperiment(
 						options.mode,
 						options.repetitions,
 						"sealed",
-						undefined,
-						options.signal,
+						{
+							...(options.signal ? { signal: options.signal } : {}),
+							...(options.jobs === undefined ? {} : { jobs: options.jobs }),
+							...(options.baselineMaxAgeMs === undefined ? {} : { baselineMaxAgeMs: options.baselineMaxAgeMs }),
+						},
 					);
-					const regression = holdoutRegression(holdout.compare, options.mode);
-					if (regression) throw new Error(regression);
+					// The sealed verdict is recorded, never thrown: a fail or an
+					// underpowered gate is durable evidence the human reviews, and
+					// promotion refuses it from the persisted verdict.
 					sealedHoldout = {
 						corpusId: sealedCorpus.metadata.id,
 						corpusHash: sealedCorpus.metadata.hash,
@@ -659,7 +743,6 @@ export async function runCandidateExperiment(
 							},
 							comparison: comparisonGateEvidence(
 								development.compare,
-								DEVELOPMENT_GATE_POLICY_ID,
 								developmentCorpus
 									? {
 										corpusId: developmentCorpus.metadata.id,
@@ -691,13 +774,13 @@ export async function runCandidateExperiment(
 									},
 									comparison: comparisonGateEvidence(
 										sealedHoldout.compare,
-										options.mode === "candidate" ? SEALED_GATE_POLICY_ID : AA_SEALED_GATE_POLICY_ID,
 										{ corpusId: sealedHoldout.corpusId, corpusHash: sealedHoldout.corpusHash },
 									),
 								},
 							}
 							: {}),
-						infrastructureErrors: 0,
+						infrastructureErrors: development.baseline.summary.error + development.candidate.summary.error +
+							(sealedHoldout ? sealedHoldout.baseline.summary.error + sealedHoldout.candidate.summary.error : 0),
 					},
 				});
 				persistCandidate(candidateRecordPath, record);

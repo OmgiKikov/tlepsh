@@ -2,7 +2,7 @@ import type { PersistedBuilderRun } from "../application/builder-proposal.js";
 import type { BuilderCorpusDraft } from "../application/builder-corpus-draft.js";
 import type { CorpusMetadata } from "../corpus.js";
 import type { DiagnosisRecord } from "../diagnosis.js";
-import { candidateStatus, type CandidateRecord } from "../domain/candidate.js";
+import { candidateStatus, type CandidateRecord, gateVerdictOf, type ComparisonGateEvidence } from "../domain/candidate.js";
 import type { EvalRunRecord } from "../eval.js";
 import type { SpecSnapshot } from "../spec.js";
 import { redactTraceText } from "../trace.js";
@@ -14,8 +14,7 @@ import type {
 import type {
 	WorkbenchCandidateSummary,
 	WorkbenchDiagnosisSummary,
-	WorkbenchProposalReview,
-} from "./types.js";
+	WorkbenchProposalReview, WorkbenchGateProjection } from "./types.js";
 
 const MAX_DIFF_BYTES = 4 * 1024 * 1024;
 
@@ -96,11 +95,16 @@ export function candidateSummary(record: CandidateRecord): WorkbenchCandidateSum
 				baselineEvalRunId: evaluated.evaluation.development.baseline.evalRunId,
 				candidateEvalRunId: evaluated.evaluation.development.candidate.evalRunId,
 				comparison: evaluated.evaluation.development.comparison?.summary ?? null,
+				gate: gateProjection(evaluated.evaluation.development.comparison),
 			}
 			: null,
 		sealedHoldout: evaluated?.type === "evaluated"
-			? { executed: evaluated.evaluation.sealedHoldout !== undefined, gatePassed: evaluated.evaluation.sealedHoldout !== undefined }
-			: { executed: false, gatePassed: false },
+			? {
+				executed: evaluated.evaluation.sealedHoldout !== undefined,
+				gatePassed: gateVerdictOf(evaluated.evaluation.sealedHoldout?.comparison) === "pass",
+				gate: gateProjection(evaluated.evaluation.sealedHoldout?.comparison),
+			}
+			: { executed: false, gatePassed: false, gate: null },
 		review: reviewed?.type === "reviewed" ? reviewed.review : null,
 		promotion: promoted?.type === "promoted"
 			? { tag: promoted.decision.tag, reason: promoted.decision.reason, at: promoted.at }
@@ -108,6 +112,24 @@ export function candidateSummary(record: CandidateRecord): WorkbenchCandidateSum
 		rejection: rejected?.type === "rejected"
 			? { reason: rejected.decision.reason, at: rejected.at }
 			: null,
+	};
+}
+
+/** Verdict projection of v3 gate evidence; legacy evidence projects to null. */
+function gateProjection(
+	evidence: ComparisonGateEvidence | null | undefined,
+): WorkbenchGateProjection | null {
+	if (!evidence || !("verdict" in evidence)) return null;
+	return {
+		verdict: evidence.verdict,
+		surface: evidence.surface,
+		delta: evidence.summary.delta,
+		confidence95: { ...evidence.summary.confidence95 },
+		tasks: evidence.design.tasks,
+		repetitions: evidence.design.repetitions,
+		excludedTasks: evidence.design.excludedTasks,
+		flags: { ...evidence.flags },
+		reasons: [...evidence.reasons],
 	};
 }
 

@@ -72,7 +72,13 @@ function root(): string {
 function exactGrader(options: {
 	passed: boolean;
 	specHash: string;
-	checkCode?: "required-tool" | "output-contains" | "output-matches" | "semantic-rubric";
+	checkCode?:
+		| "required-tool"
+		| "output-contains"
+		| "output-matches"
+		| "semantic-rubric"
+		| "reference-exact"
+		| "reference-similarity";
 	name?: string;
 	type?: string;
 	reason?: string;
@@ -165,7 +171,7 @@ function fixture(options: FixtureOptions): {
 	const error = runs.filter((run) => run.status === "error").length;
 	const evidence = { runtime, model, judge: null, execution, eval: evaluation };
 	const evalRun: EvalRunRecord = {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		evalRunId,
 		target: { id: "target", gitSha },
 		label: "solo",
@@ -237,7 +243,9 @@ describe("deterministic improvement brief", () => {
 			scope: "systemic",
 			severity: "major",
 			evidenceStrength: "medium",
-			decision: "stabilize-and-rerun",
+			// Two failures and two passes reproduce 50% of the time: a real weakness
+			// with counter-evidence retained, not noise to stabilize.
+			decision: "propose-harness-change",
 			impact: {
 				affectedTasks: 2,
 				totalTasks: 2,
@@ -256,7 +264,8 @@ describe("deterministic improvement brief", () => {
 		expect(mode?.counterEvidence.map((item) => item.taskId)).toEqual(["task-a", "task-b"]);
 		expect(mode?.title).toBe("Output contract check failed across tasks");
 		expect(first.headline).toContain("2/4 passed.");
-		expect(first.proposalEligible).toBe(false);
+		// A 50%-reproducing mode with retained counter-evidence is proposal-eligible.
+		expect(first.proposalEligible).toBe(true);
 	});
 
 	it("uses category-specific exact titles and proposes only repeatable checks without counterevidence", () => {
@@ -283,6 +292,38 @@ describe("deterministic improvement brief", () => {
 		expect(brief.modes.every((mode) => mode.decision === "propose-harness-change")).toBe(true);
 		expect(brief.proposalEligible).toBe(true);
 		expect(brief.headline).toContain("0/1 passed.");
+	});
+
+	it("gives every check code its own title and category, reference graders included", () => {
+		const graders = [
+			exactGrader({
+				passed: false,
+				specHash: hashValue({ type: "exact", normalize: "lower" }),
+				checkCode: "reference-exact",
+				type: "exact",
+				name: "exact",
+			}),
+			exactGrader({
+				passed: false,
+				specHash: hashValue({ type: "similarity", metric: "token-f1", threshold: 0.8 }),
+				checkCode: "reference-similarity",
+				type: "similarity",
+				name: "similarity",
+			}),
+		];
+		const value = fixture({
+			repetitions: 1,
+			evidenceVisibility: "development",
+			runs: [{ taskId: "task", repetitionIndex: 0, graders }],
+		});
+
+		const brief = compileImprovementBrief(value.runsRoot, value.diagnosis);
+		expect(brief.modes.map((mode) => [mode.signature.checkCode, mode.title, mode.category]).sort())
+			.toEqual([
+				["reference-exact", "Exact reference-answer check failed", "output-contract"],
+				["reference-similarity", "Reference similarity check failed", "answer-quality"],
+			]);
+		expect(brief.modes.every((mode) => mode.decision === "propose-harness-change")).toBe(true);
 	});
 
 	it("keeps legacy and unknown infrastructure signals task-local and never calls pass-plus-error flaky", () => {
@@ -585,36 +626,23 @@ describe("proposal basis selection", () => {
 		const stableHash = hashValue({ type: "output_contains", text: "stable" });
 		const mixedHash = hashValue({ type: "output_matches", pattern: "mixed" });
 		const value = fixture({
-			repetitions: 2,
+			repetitions: 5,
 			evidenceVisibility: "development",
-			runs: [
-				{
-					taskId: "task",
-					repetitionIndex: 0,
-					graders: [
-						exactGrader({ passed: false, specHash: stableHash }),
-						exactGrader({
-							passed: false,
-							specHash: mixedHash,
-							checkCode: "output-matches",
-							type: "output_matches",
-						}),
-					],
-				},
-				{
-					taskId: "task",
-					repetitionIndex: 1,
-					graders: [
-						exactGrader({ passed: false, specHash: stableHash }),
-						exactGrader({
-							passed: true,
-							specHash: mixedHash,
-							checkCode: "output-matches",
-							type: "output_matches",
-						}),
-					],
-				},
-			],
+			runs: Array.from({ length: 5 }, (_, repetitionIndex) => ({
+				taskId: "task",
+				repetitionIndex,
+				graders: [
+					exactGrader({ passed: false, specHash: stableHash }),
+					// The mixed check fails once in five runs (20%): below the
+					// reproduction floor, so the host decision stays stabilize-and-rerun.
+					exactGrader({
+						passed: repetitionIndex !== 0,
+						specHash: mixedHash,
+						checkCode: "output-matches",
+						type: "output_matches",
+					}),
+				],
+			})),
 		});
 		const brief = compileImprovementBrief(value.runsRoot, value.diagnosis);
 		expect(brief.proposalEligible).toBe(true);

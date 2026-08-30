@@ -33,6 +33,38 @@ export const JudgeGrader = z.strictObject({
 	type: z.literal("judge"),
 	name: z.string().optional(),
 	rubric: z.string().min(1),
+	/**
+	 * Show the judge the case's reference answer and grade on the A–E factuality
+	 * rubric instead of the rubric alone.
+	 *
+	 * Optional and literally `true` rather than a defaulted boolean: canonical
+	 * JSON drops an absent field, so every judge grader written before reference
+	 * answers existed keeps its exact spec hash and suite hash. A `false` default
+	 * would silently rewrite both.
+	 */
+	withReference: z.literal(true).optional(),
+});
+
+/** How both sides are normalized before an exact comparison. */
+export const ExactNormalizeSchema = z.enum(["trim", "lower", "none"]);
+export type ExactNormalize = z.infer<typeof ExactNormalizeSchema>;
+
+export const ExactGrader = z.strictObject({
+	type: z.literal("exact"),
+	name: z.string().optional(),
+	/** `lower` (the default) is trim + lowercase + collapsed whitespace. */
+	normalize: ExactNormalizeSchema.default("lower"),
+});
+
+export const SimilarityMetricSchema = z.enum(["token-f1", "levenshtein"]);
+export type SimilarityMetric = z.infer<typeof SimilarityMetricSchema>;
+
+export const SimilarityGrader = z.strictObject({
+	type: z.literal("similarity"),
+	name: z.string().optional(),
+	metric: SimilarityMetricSchema,
+	/** Lowest score that still passes. 1 means "identical after normalization". */
+	threshold: z.number().gt(0).lte(1),
 });
 
 export const GraderSpec = z.discriminatedUnion("type", [
@@ -40,17 +72,93 @@ export const GraderSpec = z.discriminatedUnion("type", [
 	OutputContainsGrader,
 	OutputMatchesGrader,
 	JudgeGrader,
+	ExactGrader,
+	SimilarityGrader,
 ]);
 export type GraderSpec = z.infer<typeof GraderSpec>;
 
+/**
+ * Graders that decide their verdict by comparing the answer with the case's
+ * reference answer. On a case without one they fail loudly rather than pass
+ * vacuously, and every path that admits a dataset refuses the pairing outright.
+ */
+export function graderNeedsExpected(spec: GraderSpec): boolean {
+	return spec.type === "exact" || spec.type === "similarity" ||
+		(spec.type === "judge" && spec.withReference === true);
+}
+
+/** A reference answer that a grader can actually compare against. */
+export function hasReferenceAnswer(task: { expected?: string | undefined }): boolean {
+	return typeof task.expected === "string" && task.expected.trim().length > 0;
+}
+
 // ---------- Task / dataset ----------
+
+/** A reference answer and every dialogue turn stay small enough to read whole. */
+export const MAX_TASK_TEXT_BYTES = 8 * 1024;
+export const MAX_TASK_MESSAGES = 40;
+export const MAX_TASK_METADATA_KEYS = 8;
+export const MAX_TASK_METADATA_KEY_CHARS = 64;
+export const MAX_TASK_METADATA_VALUE_CHARS = 500;
+
+function boundedTaskText(label: string) {
+	return z.string().min(1).superRefine((value, context) => {
+		const bytes = Buffer.byteLength(value, "utf8");
+		if (bytes > MAX_TASK_TEXT_BYTES) {
+			context.addIssue({ code: "custom", message: `${label} is ${bytes} bytes, over the ${MAX_TASK_TEXT_BYTES} byte bound` });
+		}
+	});
+}
+
+export const DialogueMessageSchema = z.strictObject({
+	role: z.enum(["user", "assistant"]),
+	content: boundedTaskText("message content"),
+});
+export type DialogueMessage = z.infer<typeof DialogueMessageSchema>;
+
+/** Bounded provenance carried over from an imported source row. */
+export const TaskMetadataSchema = z
+	.record(z.string().min(1).max(MAX_TASK_METADATA_KEY_CHARS), z.string().max(MAX_TASK_METADATA_VALUE_CHARS))
+	.superRefine((metadata, context) => {
+		const keys = Object.keys(metadata).length;
+		if (keys > MAX_TASK_METADATA_KEYS) {
+			context.addIssue({ code: "custom", message: `metadata carries ${keys} keys, over the ${MAX_TASK_METADATA_KEYS} key bound` });
+		}
+	});
+export type TaskMetadata = z.infer<typeof TaskMetadataSchema>;
 
 export const TaskSchema = z.strictObject({
 	id: z.string().min(1),
 	input: z.string().min(1),
+	/** Reference answer for graders that compare against one. */
+	expected: boundedTaskText("expected answer").optional(),
+	/**
+	 * Conversation so far, ending in the user turn `input` repeats. Consumers
+	 * that only read `input` therefore keep seeing the question that was asked.
+	 */
+	messages: z.array(DialogueMessageSchema).min(1).max(MAX_TASK_MESSAGES).optional(),
+	metadata: TaskMetadataSchema.optional(),
 	graders: z.array(GraderSpec).optional(),
 });
 export type Task = z.infer<typeof TaskSchema>;
+
+/**
+ * The dialogue invariant, as a function rather than a schema refinement:
+ * `CorpusTaskSchema` and the Builder draft schemas override `graders`, and Zod
+ * refuses to overwrite a key on an object schema that carries refinements.
+ * Every path that admits a task calls this instead.
+ */
+export function taskDialogueIssue(task: {
+	input: string;
+	messages?: readonly DialogueMessage[] | undefined;
+}): string | null {
+	if (!task.messages) return null;
+	const last = task.messages[task.messages.length - 1];
+	if (!last) return "messages must carry at least one turn";
+	if (last.role !== "user") return "the last message must be the user turn";
+	if (last.content !== task.input) return "the last user message must repeat input";
+	return null;
+}
 
 export const GradersFile = z.strictObject({
 	defaults: z.array(GraderSpec).default([]),
@@ -112,6 +220,26 @@ export const ModelSpec = z.strictObject({
 });
 export type ModelSpec = z.infer<typeof ModelSpec>;
 
+/** `data/<segment>[/<segment>…]`; lowercase, no traversal, no dotfiles. */
+const DATA_DECLARATION = /^data\/[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/;
+export const MAX_DATA_DIRECTORIES = 16;
+export const MAX_DATA_FILES = 20_000;
+/** Total declared data bytes copied into one workspace snapshot. */
+export const DEFAULT_DATA_MAX_BYTES = 64 * 1024 * 1024;
+
+/**
+ * The bound is a product decision, not a constant of nature: a retrieval agent
+ * with a bigger corpus raises it deliberately through the environment.
+ */
+export function dataMaxBytes(environment: NodeJS.ProcessEnv = process.env): number {
+	const raw = environment.AHDE_DATA_MAX_BYTES;
+	if (raw === undefined) return DEFAULT_DATA_MAX_BYTES;
+	if (!/^[1-9][0-9]{0,12}$/.test(raw)) {
+		throw new Error(`AHDE_DATA_MAX_BYTES must be a positive integer byte count; got ${JSON.stringify(raw)}`);
+	}
+	return Number(raw);
+}
+
 export const ExecutionPolicyBlock = z.strictObject({
 	tools: z.array(z.enum(["read", "bash", "edit", "write"])).min(1).default(["read", "bash"]),
 	environmentAllowlist: z
@@ -147,6 +275,26 @@ export const ModelBlock = z.strictObject({
 	}
 });
 
+/**
+ * The judge is a measuring instrument: eval.ts pins it to temperature 0 after
+ * the params spread. Declaring one here would be a promise the request cannot
+ * keep, so the manifest refuses it instead of silently ignoring it. The Target
+ * model is free to set its own temperature — that is a recorded axis.
+ */
+const RESERVED_JUDGE_PARAMS = new Set(["temperature"]);
+
+export const JudgeModelBlock = ModelBlock.superRefine((model, context) => {
+	for (const key of Object.keys(model.params)) {
+		if (RESERVED_JUDGE_PARAMS.has(key)) {
+			context.addIssue({
+				code: "custom",
+				path: ["params", key],
+				message: `evalSuite.judge.params cannot set "${key}": the judge is pinned to temperature 0 so grading is deterministic`,
+			});
+		}
+	}
+});
+
 export const TargetManifest = z.strictObject({
 	id: z
 		.string()
@@ -159,12 +307,33 @@ export const TargetManifest = z.strictObject({
 	skills: z.array(z.string().min(1)).default([]),
 	/** Explicit target-owned subprocess descriptors. Ambient discovery is disabled. */
 	tools: z.array(z.string().min(1)).default([]),
+	/**
+	 * Declared data directories under `data/`. Only these are copied into a
+	 * Target workspace snapshot and hashed into its workspace identity;
+	 * everything else under `data/` stays private to the operator's checkout.
+	 */
+	data: z
+		.array(z.string().min(1).max(200).regex(DATA_DECLARATION, "data declarations are directories under data/"))
+		.max(MAX_DATA_DIRECTORIES)
+		.default([])
+		.superRefine((declarations, context) => {
+			if (new Set(declarations).size !== declarations.length) {
+				context.addIssue({ code: "custom", message: "duplicate data directory declaration" });
+			}
+			for (const outer of declarations) {
+				for (const inner of declarations) {
+					if (outer !== inner && inner.startsWith(`${outer}/`)) {
+						context.addIssue({ code: "custom", message: `data declaration ${inner} is nested inside ${outer}` });
+					}
+				}
+			}
+		}),
 	evalSuite: z.strictObject({
 		id: z.string().min(1),
 		dataset: z.string().min(1),
 		graders: z.string().min(1),
 		/** Judge model for judge graders; required when any task uses one. */
-		judge: ModelBlock.optional(),
+		judge: JudgeModelBlock.optional(),
 	}),
 });
 export type TargetManifest = z.infer<typeof TargetManifest>;
@@ -176,6 +345,16 @@ export interface RuntimeInfo {
 	piSha: string;
 	ahdeVersion: string;
 	ahdeCodeHash: string;
+}
+
+/** Bounded shape of one declared data directory. Contents are never loaded. */
+export interface ResolvedTargetDataDirectory {
+	path: string;
+	files: number;
+	bytes: number;
+	/** Sorted, bounded sample of directory-relative file paths. */
+	entries: string[];
+	entriesTruncated: boolean;
 }
 
 export interface ResolvedTarget {
@@ -194,6 +373,8 @@ export interface ResolvedTarget {
 	tools: ResolvedTargetTool[];
 	/** Content hash of normalized descriptors and executable bytes. */
 	toolsetHash: string;
+	/** Declared data directories in manifest order, with shape only. */
+	data: ResolvedTargetDataDirectory[];
 	/** Parsed dataset tasks in file order. */
 	tasks: ResolvedTask[];
 	/** Hash of the raw parsed dataset (task ids, inputs, per-task graders). */
@@ -261,7 +442,20 @@ export function scaffoldTarget(templateDir: string, destDir: string): string {
 	return resolve(destDir);
 }
 
+/**
+ * Hashing every AHDE source file costs ~1.3 MB of IO, and `loadTarget` runs on
+ * every inventory read and every task. AHDE's own source cannot change inside a
+ * running process, so the answer is computed once and shared.
+ */
+let memoizedRuntimeInfo: RuntimeInfo | undefined;
+
 export function runtimeInfo(): RuntimeInfo {
+	if (memoizedRuntimeInfo) return memoizedRuntimeInfo;
+	memoizedRuntimeInfo = computeRuntimeInfo();
+	return memoizedRuntimeInfo;
+}
+
+function computeRuntimeInfo(): RuntimeInfo {
 	const piPkg = packageJsonFor("@earendil-works/pi-coding-agent") as { version: string; gitHead?: string };
 	const ahdePkg = JSON.parse(readFileSync(join(HARNESS_ROOT, "package.json"), "utf8")) as {
 		version: string;
@@ -320,6 +514,82 @@ function readRelative(dir: string, rel: string): string {
 	return readFileSync(targetFilePath(dir, rel), "utf8");
 }
 
+/**
+ * The scored surface of one task. Optional fields are emitted as `undefined`
+ * when absent and canonical JSON drops them, so a dataset that uses none of
+ * them hashes exactly as it did before those fields existed.
+ */
+function datasetIdentity(task: Task): Record<string, unknown> {
+	return {
+		id: task.id,
+		input: task.input,
+		graders: task.graders ?? null,
+		expected: task.expected,
+		messages: task.messages,
+		metadata: task.metadata,
+	};
+}
+
+const MAX_DATA_ENTRY_SAMPLE = 32;
+
+/**
+ * Measure one declared data directory without reading a byte of content.
+ * Symlinks, special files, and unsafe names fail closed so what a run copies is
+ * exactly what an operator can see in Git.
+ */
+function measureDataDirectory(
+	dir: string,
+	declaration: string,
+	budget: { files: number; bytes: number; maxBytes: number },
+): ResolvedTargetDataDirectory {
+	const root = realpathSync(resolve(dir));
+	const directory = targetFilePathDirectory(root, declaration);
+	const entries: string[] = [];
+	let files = 0;
+	let bytes = 0;
+	const walk = (absolute: string, prefix: string, depth: number): void => {
+		if (depth > 16) throw new Error(`data directory ${declaration} nests deeper than 16 levels`);
+		for (const entry of readdirSync(absolute, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+			const child = join(absolute, entry.name);
+			const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+			const stat = lstatSync(child);
+			if (stat.isSymbolicLink()) throw new Error(`data directory ${declaration} contains a symlink: ${relativePath}`);
+			if (stat.isDirectory()) {
+				walk(child, relativePath, depth + 1);
+				continue;
+			}
+			if (!stat.isFile()) throw new Error(`data directory ${declaration} contains a non-regular file: ${relativePath}`);
+			files += 1;
+			budget.files += 1;
+			bytes += stat.size;
+			budget.bytes += stat.size;
+			if (budget.files > MAX_DATA_FILES) throw new Error(`declared data exceeds ${MAX_DATA_FILES} files`);
+			if (budget.bytes > budget.maxBytes) {
+				throw new Error(`declared data exceeds the ${budget.maxBytes}-byte workspace budget`);
+			}
+			if (entries.length < MAX_DATA_ENTRY_SAMPLE) entries.push(relativePath);
+		}
+	};
+	walk(directory, "", 1);
+	return { path: declaration, files, bytes, entries, entriesTruncated: files > entries.length };
+}
+
+function targetFilePathDirectory(root: string, rel: string): string {
+	const lexical = resolve(root, rel);
+	const lexicalRelative = relative(root, lexical);
+	if (!lexicalRelative || lexicalRelative === ".." || lexicalRelative.startsWith(`..${sep}`) || isAbsolute(lexicalRelative)) {
+		throw new Error(`declared data directory escapes the repository: ${rel}`);
+	}
+	let cursor = root;
+	for (const part of lexicalRelative.split(sep)) {
+		cursor = join(cursor, part);
+		const stat = lstatSync(cursor);
+		if (stat.isSymbolicLink()) throw new Error(`declared data directory traverses a symlink: ${rel}`);
+		if (!stat.isDirectory()) throw new Error(`declared data path is not a directory: ${rel}`);
+	}
+	return cursor;
+}
+
 function loadDataset(dir: string, rel: string): Task[] {
 	const content = readRelative(dir, rel);
 	const tasks: Task[] = [];
@@ -335,6 +605,10 @@ function loadDataset(dir: string, rel: string): Task[] {
 		const result = TaskSchema.safeParse(parsed);
 		if (!result.success) {
 			throw new Error(`dataset ${rel} line ${i + 1}: ${result.error.message}`);
+		}
+		const dialogueIssue = taskDialogueIssue(result.data);
+		if (dialogueIssue) {
+			throw new Error(`dataset ${rel} line ${i + 1}: ${dialogueIssue}`);
 		}
 		tasks.push(result.data);
 	}
@@ -383,6 +657,8 @@ export function loadTarget(dir: string, override?: { dataset?: string }): Resolv
 	}
 	const defaults = gradersResult.data.defaults;
 	const targetTools = loadTargetTools(dir, manifest.tools, manifest.execution);
+	const dataBudget = { files: 0, bytes: 0, maxBytes: dataMaxBytes() };
+	const data = manifest.data.map((declaration) => measureDataDirectory(dir, declaration, dataBudget));
 
 	const resolved: ResolvedTask[] = tasks.map((task) => {
 		const graders = task.graders ?? defaults;
@@ -393,11 +669,17 @@ export function loadTarget(dir: string, override?: { dataset?: string }): Resolv
 	});
 	for (const task of resolved) {
 		for (const grader of task.effectiveGraders) {
-			if (grader.type !== "output_matches") continue;
-			try {
-				new RegExp(grader.pattern);
-			} catch (error) {
-				throw new Error(`task ${task.id}: invalid output_matches regex (${(error as Error).message})`);
+			if (grader.type === "output_matches") {
+				try {
+					new RegExp(grader.pattern);
+				} catch (error) {
+					throw new Error(`task ${task.id}: invalid output_matches regex (${(error as Error).message})`);
+				}
+			}
+			if (graderNeedsExpected(grader) && !hasReferenceAnswer(task)) {
+				throw new Error(
+					`task ${task.id}: ${grader.type} grader compares the answer with the case's reference answer, but the case has no "expected"`,
+				);
 			}
 		}
 	}
@@ -406,9 +688,9 @@ export function loadTarget(dir: string, override?: { dataset?: string }): Resolv
 		throw new Error("dataset uses judge graders but evalSuite.judge model is not configured");
 	}
 
-	const datasetHash = hashValue(tasks.map(({ id, input, graders }) => ({ id, input, graders: graders ?? null })));
+	const datasetHash = hashValue(tasks.map(datasetIdentity));
 	const suiteHash = hashValue({
-		dataset: tasks.map(({ id, input, graders }) => ({ id, input, graders: graders ?? null })),
+		dataset: tasks.map(datasetIdentity),
 		defaults,
 		judge: manifest.evalSuite.judge ?? null,
 	});
@@ -421,22 +703,32 @@ export function loadTarget(dir: string, override?: { dataset?: string }): Resolv
 		runtime: runtimeInfo(),
 		tools: targetTools.tools,
 		toolsetHash: targetTools.toolsetHash,
+		data,
 		tasks: resolved,
 		datasetHash,
 		suiteHash,
 	};
 }
 
+function graderDetail(spec: GraderSpec): string {
+	switch (spec.type) {
+		case "tool_called":
+			return `${spec.tool}${spec.argsContains ? `(${spec.argsContains})` : ""}`;
+		case "output_contains":
+			return `"${spec.text.slice(0, 24)}"`;
+		case "judge":
+			return `"${spec.rubric.slice(0, 24)}"${spec.withReference ? "+reference" : ""}`;
+		case "output_matches":
+			return `/${spec.pattern.slice(0, 24)}/`;
+		case "exact":
+			return spec.normalize;
+		case "similarity":
+			return `${spec.metric}>=${spec.threshold}`;
+	}
+}
+
 /** Display name for a grader spec. */
 export function graderName(spec: GraderSpec, task: { id: string }, index: number): string {
 	if (spec.name) return spec.name;
-	const detail =
-		spec.type === "tool_called"
-			? `${spec.tool}${spec.argsContains ? `(${spec.argsContains})` : ""}`
-			: spec.type === "output_contains"
-				? `"${spec.text.slice(0, 24)}"`
-				: spec.type === "judge"
-					? `"${spec.rubric.slice(0, 24)}"`
-					: `/${spec.pattern.slice(0, 24)}/`;
-	return `${task.id}#${index}:${spec.type}:${detail}`;
+	return `${task.id}#${index}:${spec.type}:${graderDetail(spec)}`;
 }

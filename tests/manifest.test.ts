@@ -2,7 +2,8 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { graderName, loadTarget, scaffoldTarget } from "../src/manifest.js";
+import { GraderSpec, graderName, loadTarget, scaffoldTarget } from "../src/manifest.js";
+import { hashValue } from "../src/provenance.js";
 import { AGENTS_MD, baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 
 describe("loadTarget", () => {
@@ -135,6 +136,135 @@ describe("loadTarget", () => {
 		);
 		try {
 			expect(() => loadTarget(dir)).toThrow(/judge/);
+		} finally {
+			cleanup(dir);
+		}
+	});
+
+	it("hashes a dataset without the optional case fields exactly as it always did", () => {
+		const dir = makeTargetFixture(baseFixtureFiles());
+		try {
+			const target = loadTarget(dir);
+			expect(target.datasetHash).toBe("sha256:66fb1c48a43a21da97f828c7194c8e3eb4d767753b038a204d4ed360eab8a8fc");
+			expect(target.suiteHash).toBe("sha256:1da953c85efa348d5b684d598d71b9c013c47912e221d8e2a80d424dd2188427");
+		} finally {
+			cleanup(dir);
+		}
+	});
+
+	it("refuses a reference grader on a case that carries no expected answer", () => {
+		const reference = [
+			{ type: "exact" },
+			{ type: "similarity", metric: "token-f1", threshold: 0.8 },
+			{ type: "judge", rubric: "фактическая верность", withReference: true },
+		];
+		for (const grader of reference) {
+			const dir = makeTargetFixture(baseFixtureFiles({
+				"evals/development.jsonl": `${JSON.stringify({ id: "task_001", input: "x", graders: [grader] })}\n`,
+			}));
+			try {
+				expect(() => loadTarget(dir)).toThrow(/the case has no "expected"/);
+			} finally {
+				cleanup(dir);
+			}
+		}
+		// A suite default is the same pairing, one file further away.
+		const viaDefaults = makeTargetFixture(baseFixtureFiles({
+			"evals/development.jsonl": `${JSON.stringify({ id: "task_001", input: "x" })}\n`,
+			"evals/graders.yaml": "defaults:\n  - type: exact\n",
+		}));
+		try {
+			expect(() => loadTarget(viaDefaults)).toThrow(/exact grader compares the answer/);
+		} finally {
+			cleanup(viaDefaults);
+		}
+
+		const runnable = makeTargetFixture(baseFixtureFiles({
+			"evals/development.jsonl": `${JSON.stringify({
+				id: "task_001",
+				input: "x",
+				expected: "Ответ.",
+				graders: [{ type: "exact", normalize: "trim" }, { type: "similarity", metric: "levenshtein", threshold: 1 }],
+			})}\n`,
+		}));
+		try {
+			const target = loadTarget(runnable);
+			expect(target.tasks[0]?.effectiveGraders).toHaveLength(2);
+			expect(graderName(target.tasks[0]!.effectiveGraders[0]!, { id: "task_001" }, 0))
+				.toBe("task_001#0:exact:trim");
+			expect(graderName(target.tasks[0]!.effectiveGraders[1]!, { id: "task_001" }, 1))
+				.toBe("task_001#1:similarity:levenshtein>=1");
+		} finally {
+			cleanup(runnable);
+		}
+	});
+
+	it("bounds the new grader fields and leaves every existing grader shape byte-identical", () => {
+		expect(GraderSpec.safeParse({ type: "similarity", metric: "token-f1", threshold: 0 }).success).toBe(false);
+		expect(GraderSpec.safeParse({ type: "similarity", metric: "token-f1", threshold: 1.5 }).success).toBe(false);
+		expect(GraderSpec.safeParse({ type: "similarity", metric: "cosine", threshold: 0.5 }).success).toBe(false);
+		expect(GraderSpec.safeParse({ type: "similarity", metric: "levenshtein", threshold: 1 }).success).toBe(true);
+		expect(GraderSpec.safeParse({ type: "exact", normalize: "upper" }).success).toBe(false);
+		// `withReference` is an optional literal true, never a defaulted boolean.
+		expect(GraderSpec.safeParse({ type: "judge", rubric: "r", withReference: false }).success).toBe(false);
+
+		// The normalized spec of an existing grader gains no field, so the spec
+		// hashes inside old evidence and the suite hashes on disk cannot move.
+		const unchanged = [
+			{ type: "tool_called", tool: "bash", argsContains: "check" },
+			{ type: "output_contains", text: "жалоба", caseSensitive: false },
+			{ type: "output_matches", pattern: "ans.*" },
+			{ type: "judge", rubric: "ответ по существу" },
+		];
+		for (const spec of unchanged) {
+			expect(GraderSpec.parse(spec)).toEqual(spec);
+			expect(hashValue(GraderSpec.parse(spec))).toBe(hashValue(spec));
+		}
+		// A default only ever appears on the new specs.
+		expect(GraderSpec.parse({ type: "exact" })).toEqual({ type: "exact", normalize: "lower" });
+	});
+
+	it("loads reference answers, dialogue history and metadata, and scores them", () => {
+		const plain = JSON.stringify({ id: "task_001", input: "И для золотых клиентов?", graders: [{ type: "output_contains", text: "60" }] });
+		const rich = JSON.stringify({
+			id: "task_001",
+			input: "И для золотых клиентов?",
+			expected: "Для золотых клиентов — 60 дней.",
+			messages: [
+				{ role: "user", content: "Сколько длится возврат?" },
+				{ role: "assistant", content: "Тридцать дней." },
+				{ role: "user", content: "И для золотых клиентов?" },
+			],
+			metadata: { tier: "gold" },
+			graders: [{ type: "output_contains", text: "60" }],
+		});
+		const plainDir = makeTargetFixture(baseFixtureFiles({ "evals/development.jsonl": `${plain}\n` }));
+		const richDir = makeTargetFixture(baseFixtureFiles({ "evals/development.jsonl": `${rich}\n` }));
+		try {
+			const target = loadTarget(richDir);
+			expect(target.tasks[0]?.expected).toBe("Для золотых клиентов — 60 дней.");
+			expect(target.tasks[0]?.messages).toHaveLength(3);
+			expect(target.tasks[0]?.metadata).toEqual({ tier: "gold" });
+			expect(target.datasetHash).not.toBe(loadTarget(plainDir).datasetHash);
+		} finally {
+			cleanup(plainDir);
+			cleanup(richDir);
+		}
+	});
+
+	it("rejects a dialogue whose last turn is not the user turn in input", () => {
+		const dir = makeTargetFixture(
+			baseFixtureFiles({
+				"evals/development.jsonl": `${JSON.stringify({
+					id: "task_001",
+					input: "x",
+					messages: [{ role: "user", content: "x" }, { role: "assistant", content: "y" }],
+					graders: [{ type: "output_contains", text: "ok" }],
+				})}\n`,
+			}),
+		);
+		try {
+			expect(() => loadTarget(dir)).toThrow(/line 1: the last message must be the user turn/);
 		} finally {
 			cleanup(dir);
 		}

@@ -6,12 +6,17 @@ import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { TargetManifest } from "../manifest.js";
 import { canonicalJson, hashValue } from "../provenance.js";
-import { validateTargetToolDescriptor } from "../target/tool-manifest.js";
+import {
+	classifyTargetToolDescriptorPath,
+	MAX_TOOL_DIRECTORY_FILES,
+	validateTargetToolDescriptor,
+} from "../target/tool-manifest.js";
 
 const GIT_SHA = /^[0-9a-f]{40}$/;
 const TARGET_ID = /^[a-z0-9][a-z0-9-]*$/;
 const SKILL_DECLARATION = /^skills\/((?!.*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)$/;
-const TOOL_DECLARATION = /^tools\/([a-z][a-z0-9_]{0,63})\.tool\.yaml$/;
+const TOOL_DIRECTORY_FILE = /^tools\/([a-z][a-z0-9_]{0,63})\/((?:[A-Za-z0-9._-]{1,64}\/){0,5}[A-Za-z0-9._-]{1,64})$/;
+const DATA_DIRECTORY = /^data\/[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/;
 const SAFE_REQUEST_PATH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,499}$/;
 
 const MAX_GIT_OUTPUT_BYTES = 10 * 1024 * 1024;
@@ -29,7 +34,9 @@ const MAX_CONTEXT_BYTES = TARGET_AUTHORING_LIMITS.aggregateBytes;
 const MAX_CONTEXT_PROJECTION_BYTES = TARGET_AUTHORING_LIMITS.projectionBytes;
 const MAX_SKILLS = TARGET_AUTHORING_LIMITS.maxSkills;
 const MAX_TOOLS = TARGET_AUTHORING_LIMITS.maxTools;
-const MAX_RESOURCES = 1 + MAX_SKILLS + (MAX_TOOLS * 2);
+const MAX_RESOURCES = 1 + MAX_SKILLS + (MAX_TOOLS * MAX_TOOL_DIRECTORY_FILES);
+/** How many data file names one bounded listing may name. */
+const MAX_DATA_ENTRY_SAMPLE = 32;
 
 export type TargetAuthoringContextErrorCode =
 	| "TARGET_CONTEXT_INVALID"
@@ -55,7 +62,9 @@ export type TargetAuthoringResourceKind =
 	| "instructions"
 	| "skill"
 	| "tool-descriptor"
-	| "tool-executable";
+	| "tool-executable"
+	/** Any other file inside a multi-file `tools/<name>/` directory. */
+	| "tool-file";
 
 export interface TargetAuthoringResource {
 	kind: TargetAuthoringResourceKind;
@@ -64,6 +73,18 @@ export interface TargetAuthoringResource {
 	mode: "100644" | "100755";
 	bytes: number;
 	sha256: string;
+}
+
+/**
+ * Declared data is shape, never content: a Builder learns that `data/docs`
+ * holds 412 files and 3.1 MB, and a bounded sample of their names.
+ */
+export interface TargetAuthoringDataDirectory {
+	path: string;
+	files: number;
+	bytes: number;
+	entries: string[];
+	entriesTruncated: boolean;
 }
 
 export interface TargetAuthoringResourceRead extends TargetAuthoringResource {
@@ -109,6 +130,8 @@ export interface TargetAuthoringContext {
 		};
 	};
 	resources: TargetAuthoringResource[];
+	/** Declared `data/**` directories, by shape only. */
+	data: TargetAuthoringDataDirectory[];
 	resource?: TargetAuthoringResourceRead;
 	launch: "ahde target";
 }
@@ -124,10 +147,19 @@ interface ExactResource {
 	content: string;
 }
 
+/** One declared tool as the closure policy sees it: name, shape, file count. */
+export interface TargetAuthoringToolDeclaration {
+	name: string;
+	layout: "single-file" | "directory";
+	/** Files inside `tools/<name>/`, descriptor included. Zero for single-file tools. */
+	fileCount: number;
+}
+
 export interface TargetAuthoringSurfacePolicyInput {
 	manifestBytes: number;
 	skillCount: number;
-	toolCount: number;
+	tools: readonly TargetAuthoringToolDeclaration[];
+	data?: readonly TargetAuthoringDataDirectory[];
 	target: TargetAuthoringContext["target"];
 	resources: readonly TargetAuthoringResource[];
 }
@@ -210,6 +242,30 @@ function safeRequestedPath(path: string): string {
 		return contextError("TARGET_RESOURCE_DENIED", "Only a declared Target authoring resource may be inspected.");
 	}
 	return path;
+}
+
+/** Every blob under one declared directory, with Git-reported sizes. */
+function treeEntriesRecursive(
+	repositoryDir: string,
+	revision: string,
+	directory: string,
+): Array<{ mode: string; type: string; bytes: number; path: string }> {
+	const output = gitRaw(repositoryDir, ["ls-tree", "-r", "-l", "-z", revision, "--", `${directory}/`]).toString("utf8");
+	const entries: Array<{ mode: string; type: string; bytes: number; path: string }> = [];
+	for (const record of output.split("\0").filter(Boolean)) {
+		const tab = record.indexOf("\t");
+		if (tab < 0) contextError("TARGET_CONTEXT_INVALID", "Target Git tree metadata is invalid.");
+		const path = record.slice(tab + 1);
+		const fields = record.slice(0, tab).split(/\s+/);
+		const mode = fields[0];
+		const type = fields[1];
+		const size = Number(fields[3]);
+		if (!mode || !type || !Number.isSafeInteger(size) || size < 0) {
+			contextError("TARGET_CONTEXT_INVALID", "Target Git tree metadata is invalid.");
+		}
+		entries.push({ mode: mode as string, type: type as string, bytes: size, path });
+	}
+	return entries.sort((left, right) => left.path.localeCompare(right.path));
 }
 
 function treeEntry(repositoryDir: string, revision: string, path: string): GitTreeEntry | null {
@@ -314,16 +370,28 @@ function exactResource(
 export function classifyTargetAuthoringResourcePath(path: string): {
 	kind: TargetAuthoringResourceKind;
 	name: string | null;
-	mode: "100644" | "100755";
+	/** Every Git mode this canonical path may legally carry. */
+	modes: readonly ("100644" | "100755")[];
 } | null {
-	if (path === "AGENTS.md") return { kind: "instructions", name: null, mode: "100644" };
+	if (path === "AGENTS.md") return { kind: "instructions", name: null, modes: ["100644"] };
 	const skill = /^skills\/((?!.*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\/SKILL\.md$/.exec(path)?.[1];
-	if (skill) return { kind: "skill", name: skill, mode: "100644" };
-	const descriptor = TOOL_DECLARATION.exec(path)?.[1];
-	if (descriptor) return { kind: "tool-descriptor", name: descriptor, mode: "100644" };
+	if (skill) return { kind: "skill", name: skill, modes: ["100644"] };
+	const singleDescriptor = /^tools\/([a-z][a-z0-9_]{0,63})\.tool\.yaml$/.exec(path)?.[1];
+	if (singleDescriptor) return { kind: "tool-descriptor", name: singleDescriptor, modes: ["100644"] };
+	const directoryFile = TOOL_DIRECTORY_FILE.exec(path);
+	if (directoryFile?.[1] && directoryFile[2]) {
+		const name = directoryFile[1];
+		if (directoryFile[2] === "tool.yaml") return { kind: "tool-descriptor", name, modes: ["100644"] };
+		if (directoryFile[2] === "run") return { kind: "tool-executable", name, modes: ["100755"] };
+		return { kind: "tool-file", name, modes: ["100644", "100755"] };
+	}
 	const executable = /^bin\/([a-z][a-z0-9_]{0,63})$/.exec(path)?.[1];
-	if (executable) return { kind: "tool-executable", name: executable, mode: "100755" };
+	if (executable) return { kind: "tool-executable", name: executable, modes: ["100755"] };
 	return null;
+}
+
+function expectedToolResourceCount(tool: TargetAuthoringToolDeclaration): number {
+	return tool.layout === "single-file" ? 2 : tool.fileCount;
 }
 
 /**
@@ -338,20 +406,23 @@ export function assertTargetAuthoringSurfaceWithinLimits(
 	}
 	if (
 		!Number.isSafeInteger(input.skillCount) || input.skillCount < 0 || input.skillCount > MAX_SKILLS ||
-		!Number.isSafeInteger(input.toolCount) || input.toolCount < 0 || input.toolCount > MAX_TOOLS
+		input.tools.length > MAX_TOOLS
 	) {
 		contextError("TARGET_RESOURCE_TOO_LARGE", "Target declares too many authoring resources for one bounded context.");
 	}
-	const expectedResources = 1 + input.skillCount + (input.toolCount * 2);
+	const expectedResources = 1 + input.skillCount +
+		input.tools.reduce((total, tool) => total + expectedToolResourceCount(tool), 0);
 	if (input.resources.length !== expectedResources || input.resources.length > MAX_RESOURCES) {
 		contextError("TARGET_CONTEXT_INVALID", "Target authoring resources do not match its canonical declarations.");
 	}
+	const declaredToolNames = new Set(input.tools.map((tool) => tool.name));
 	const seen = new Set<string>();
 	for (const resource of input.resources) {
 		const identity = classifyTargetAuthoringResourcePath(resource.path);
 		if (
 			!identity || seen.has(resource.path) || identity.kind !== resource.kind ||
-			identity.name !== resource.name || identity.mode !== resource.mode
+			identity.name !== resource.name || !identity.modes.includes(resource.mode) ||
+			(resource.kind === "tool-file" && !declaredToolNames.has(resource.name ?? ""))
 		) {
 			contextError("TARGET_CONTEXT_INVALID", "Target contains a noncanonical or duplicate authoring resource.");
 		}
@@ -360,12 +431,18 @@ export function assertTargetAuthoringSurfaceWithinLimits(
 			contextError("TARGET_RESOURCE_TOO_LARGE", "A declared Target resource exceeds the authoring context limit.");
 		}
 	}
+	for (const directory of input.data ?? []) {
+		if (!DATA_DIRECTORY.test(directory.path) || !Number.isSafeInteger(directory.bytes) || directory.bytes < 0) {
+			contextError("TARGET_CONTEXT_INVALID", "Target declares a noncanonical data directory.");
+		}
+	}
 	const ordered = [...input.resources].sort((left, right) => left.path.localeCompare(right.path));
 	const aggregateBytes = input.manifestBytes + ordered.reduce((total, resource) => total + resource.bytes, 0);
 	if (aggregateBytes > MAX_CONTEXT_BYTES) {
 		contextError("TARGET_RESOURCE_TOO_LARGE", "Target authoring context exceeds the aggregate byte limit.");
 	}
-	if (Buffer.byteLength(canonicalJson({ target: input.target, resources: ordered }), "utf8") > MAX_CONTEXT_PROJECTION_BYTES) {
+	const projection = { target: input.target, resources: ordered, data: input.data ?? [] };
+	if (Buffer.byteLength(canonicalJson(projection), "utf8") > MAX_CONTEXT_PROJECTION_BYTES) {
 		contextError("TARGET_RESOURCE_TOO_LARGE", "Target authoring overview exceeds the model-context limit.");
 	}
 }
@@ -447,12 +524,13 @@ export function inspectTargetAuthoringContext(
 	}
 
 	const toolNames = new Set<string>();
+	const toolDeclarations: TargetAuthoringToolDeclaration[] = [];
 	for (const declaration of manifest.tools) {
-		const match = TOOL_DECLARATION.exec(declaration);
-		if (!match?.[1] || toolNames.has(match[1])) {
+		const identity = classifyTargetToolDescriptorPath(declaration);
+		if (!identity || toolNames.has(identity.name)) {
 			contextError("TARGET_CONTEXT_INVALID", "Target contains an unsafe or duplicate tool declaration.");
 		}
-		const name = match[1];
+		const name = identity.name;
 		toolNames.add(name);
 		const descriptorBlob = readBlob(
 			repositoryDir,
@@ -474,17 +552,74 @@ export function inspectTargetAuthoringContext(
 			return contextError("TARGET_CONTEXT_INVALID", "A declared Target tool descriptor is invalid.", error);
 		}
 		const executablePath = descriptor.command.argv[0];
-		if (executablePath !== `bin/${name}`) {
-			contextError("TARGET_CONTEXT_INVALID", "Target tool executables must use their canonical bin/<name> declaration.");
+		if (identity.layout === "single-file") {
+			if (executablePath !== `bin/${name}`) {
+				contextError("TARGET_CONTEXT_INVALID", "Target tool executables must use their canonical bin/<name> declaration.");
+			}
+			add(exactResource(descriptorBlob, "tool-descriptor", name, declaration));
+			add(exactResource(
+				readBlob(repositoryDir, request.expectedTarget.gitSha, executablePath, MAX_RESOURCE_BYTES, ["100755"]),
+				"tool-executable",
+				name,
+				executablePath,
+			));
+			toolDeclarations.push({ name, layout: "single-file", fileCount: 0 });
+			continue;
 		}
-		add(exactResource(descriptorBlob, "tool-descriptor", name, declaration));
-		add(exactResource(
-			readBlob(repositoryDir, request.expectedTarget.gitSha, executablePath, MAX_RESOURCE_BYTES, ["100755"]),
-			"tool-executable",
-			name,
-			executablePath,
-		));
+
+		const directory = identity.directoryPath as string;
+		if (executablePath !== `${directory}/run`) {
+			contextError("TARGET_CONTEXT_INVALID", "Multi-file Target tools must run their canonical tools/<name>/run entry.");
+		}
+		const listed = treeEntriesRecursive(repositoryDir, request.expectedTarget.gitSha, directory);
+		if (listed.length === 0 || listed.length > MAX_TOOL_DIRECTORY_FILES) {
+			contextError("TARGET_RESOURCE_TOO_LARGE", "A declared multi-file Target tool has no files or too many.");
+		}
+		for (const entry of listed) {
+			const child = classifyTargetAuthoringResourcePath(entry.path);
+			if (!child || child.name !== name) {
+				contextError("TARGET_CONTEXT_INVALID", "A multi-file Target tool contains a noncanonical path.");
+			}
+			add(exactResource(
+				readBlob(
+					repositoryDir,
+					request.expectedTarget.gitSha,
+					entry.path,
+					MAX_RESOURCE_BYTES,
+					child.modes as ("100644" | "100755")[],
+				),
+				child.kind,
+				name,
+				entry.path,
+			));
+		}
+		toolDeclarations.push({ name, layout: "directory", fileCount: listed.length });
 	}
+
+	const data: TargetAuthoringDataDirectory[] = manifest.data.map((declaration) => {
+		if (!DATA_DIRECTORY.test(declaration)) {
+			contextError("TARGET_CONTEXT_INVALID", "Target declares a noncanonical data directory.");
+		}
+		const listed = treeEntriesRecursive(repositoryDir, request.expectedTarget.gitSha, declaration);
+		let bytes = 0;
+		for (const entry of listed) {
+			if (entry.mode === "120000") {
+				contextError("TARGET_RESOURCE_SYMLINK", "A declared Target data directory contains a Git symlink.");
+			}
+			if (entry.type !== "blob") {
+				contextError("TARGET_CONTEXT_INVALID", "A declared Target data directory contains a non-file entry.");
+			}
+			bytes += entry.bytes;
+		}
+		const entries = listed.slice(0, MAX_DATA_ENTRY_SAMPLE).map((entry) => entry.path.slice(declaration.length + 1));
+		return {
+			path: declaration,
+			files: listed.length,
+			bytes,
+			entries,
+			entriesTruncated: listed.length > entries.length,
+		};
+	});
 
 	const ordered = [...resources.values()].sort((left, right) => left.summary.path.localeCompare(right.summary.path));
 	if (requestedPath && !resources.has(requestedPath)) {
@@ -510,7 +645,8 @@ export function inspectTargetAuthoringContext(
 	assertTargetAuthoringSurfaceWithinLimits({
 		manifestBytes: manifestBlob.bytes,
 		skillCount: manifest.skills.length,
-		toolCount: manifest.tools.length,
+		tools: toolDeclarations,
+		data,
 		target,
 		resources: summaries,
 	});
@@ -519,6 +655,9 @@ export function inspectTargetAuthoringContext(
 		target,
 		manifestSha256: manifestBlob.sha256,
 		resources: summaries,
+		// Canonical JSON drops an empty array's key only when it is undefined, so
+		// a Target that declares no data still hashes exactly as it did before.
+		data: data.length > 0 ? data : undefined,
 	});
 	const claim = TargetAuthoringContextClaimSchema.parse({
 		algorithmId: "git-manifest-context-v1",
@@ -536,6 +675,7 @@ export function inspectTargetAuthoringContext(
 		claim,
 		target,
 		resources: summaries,
+		data,
 		...(selected ? { resource: { ...selected.summary, content: selected.content } } : {}),
 		launch: "ahde target",
 	};

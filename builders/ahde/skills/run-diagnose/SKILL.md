@@ -9,6 +9,8 @@ description: Inspect evaluation results, generate deterministic diagnosis, and c
    `run`. When the operator asks to run, request `run-current` through
    `ahde_workbench_decide` yourself (`/run [repetitions]` is their
    shortcut). The host confirms the exact cost and subject in its own dialog.
+   Repetitions default to 3, and a sealed verdict needs at least 15 cases ×
+   2 repetitions.
 2. Workbench binds the approved Spec, reviewed development corpus, exact Target
    revision, dataset hash, and suite hash. Select among ambiguous artifacts
    explicitly with `ahde_workbench_submit`; never invent an id.
@@ -36,11 +38,12 @@ description: Inspect evaluation results, generate deterministic diagnosis, and c
    `repair-evidence-path`, report the evidence failure and recommend repairing
    it before rerunning. A healthy, inconclusive, proposal-ineligible, omitted,
    or unresolved mode does not authorize a proposal.
-7. Report pass/total, error count, largest failure modes, affected-task
-   coverage, evidence strength, counter-evidence, and the next decision the
-   evidence supports. Infrastructure errors make proposals ineligible until
-   the evidence path is repaired and re-run.
-8. Keep large raw traces out of chat; offer the loopback Evidence Explorer link
-   returned by the traces view.
+7. The panel already carries pass/total, the error count, and the ordered
+   failure modes; do not read them back. Add one sentence — how strong this
+   evidence is, or what counter-evidence you see — and the next decision it
+   supports. Infrastructure errors make proposals ineligible until the
+   evidence path is repaired and re-run.
+8. Keep large raw traces out of chat; the traces panel already prints the
+   loopback Evidence Explorer link, so point at it rather than reprinting it.
 
 Never use sealed holdout evidence to author a remediation proposal.

@@ -82,6 +82,12 @@ export interface TargetWorkspaceSnapshot {
 	readonly dir: string;
 	readonly sha256: string;
 	readonly targetIdentity: string;
+	/**
+	 * Private home shared by every run of this snapshot. Multi-file tools are
+	 * materialized there and their declared setup step runs once for the whole
+	 * EvalRun; nothing it produces re-enters the hashed workspace.
+	 */
+	readonly toolHomeDir: string;
 }
 
 const trustedWorkspaceSnapshots = new WeakSet<TargetWorkspaceSnapshot>();
@@ -91,8 +97,17 @@ export const FINAL_ANSWER_RECOVERY_PROMPT =
 	"Сформируй итоговый ответ пользователю сейчас, используя уже полученные результаты инструментов. " +
 	"Не вызывай инструменты. Выполни требования target harness к финальному ответу.";
 
+/**
+ * Concurrent runs routinely start inside the same millisecond, and two runs
+ * sharing an id would share a directory and destroy each other's evidence. The
+ * counter guarantees uniqueness within this process; the random suffix keeps
+ * ids unique across processes writing to the same runs root.
+ */
+let runSequence = 0;
+
 function newRunId(): string {
-	return `run_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+	runSequence += 1;
+	return `run_${Date.now().toString(36)}${runSequence.toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 
 export function generateModelsJson(model: TargetManifest["model"]): Record<string, unknown> {
@@ -201,10 +216,15 @@ function isPrivateWorkspacePath(
 	path: string,
 	evaluationFiles: ReadonlySet<string>,
 	nestedRunsRoot: string | null,
+	dataDirectories: readonly string[],
 ): boolean {
 	const normalized = normalizedRepositoryPath(path);
 	const parts = normalized.split("/");
 	if (parts[0] === "imports") return true;
+	// `data/` is a declared scope: undeclared data never reaches a Target.
+	if (parts[0] === "data" && !dataDirectories.some((declared) => normalized.startsWith(`${declared}/`))) {
+		return true;
+	}
 	if (parts.some((part) => WORKSPACE_PRIVATE_COMPONENTS.has(part))) return true;
 	if (parts.some((part) => part === ".env" || (part.startsWith(".env.") && part !== ".env.example"))) {
 		return true;
@@ -332,6 +352,7 @@ function copyGitVisibleWorkspace(target: ResolvedTarget, workspaceDir: string, r
 		throw new Error("runsRoot must not be the target repository root in isolated mode");
 	}
 	const evaluationFiles = new Set(target.evaluationFiles.map(normalizedRepositoryPath));
+	const dataDirectories = target.manifest.data.map(normalizedRepositoryPath);
 
 	const listed = execFileSync(
 		"git",
@@ -339,7 +360,7 @@ function copyGitVisibleWorkspace(target: ResolvedTarget, workspaceDir: string, r
 		{ encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
 	);
 	for (const path of listed.split("\0").filter(Boolean)) {
-		if (isPrivateWorkspacePath(path, evaluationFiles, nestedRunsRoot)) continue;
+		if (isPrivateWorkspacePath(path, evaluationFiles, nestedRunsRoot, dataDirectories)) continue;
 		const sourcePath = resolve(sourceDir, path);
 		const sourceRelative = containedRelativePath(sourceDir, sourcePath);
 		if (sourceRelative === null || sourceRelative === "") {
@@ -375,10 +396,13 @@ export function materializeTargetWorkspaceSnapshot(
 	try {
 		copyGitVisibleWorkspace(target, destination, runsRoot);
 		assertTargetSourceIdentity(target, loadTarget(target.dir), "during");
+		const toolHomeDir = join(temporaryRoot, "tool-home");
+		privateDirectory(toolHomeDir);
 		const snapshot = Object.freeze({
 			dir: realpathSync(destination),
 			sha256: workspaceTreeHash(destination),
 			targetIdentity: targetSnapshotIdentity(target),
+			toolHomeDir: realpathSync(toolHomeDir),
 		});
 		trustedWorkspaceSnapshots.add(snapshot);
 		workspaceSnapshotRoots.set(snapshot, temporaryRoot);
@@ -483,6 +507,10 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			target,
 			workspaceDir: executionCwd,
 			scratchDir,
+			// One prepared tool home per EvalRun snapshot: a declared setup step
+			// runs once for the whole suite, not once per task × repetition. A
+			// failure here is infrastructure — the record below records "error".
+			...(options.workspaceSnapshot ? { toolHomeRoot: options.workspaceSnapshot.toolHomeDir } : {}),
 		});
 	} catch (error) {
 		policyError = error;
@@ -501,6 +529,9 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 	});
 
 	const model = target.manifest.model;
+	// A dialogue case ends in the user turn `input` repeats, so the turns before
+	// it are the conversation to seed and the last one stays the graded prompt.
+	const seededTurns = task.messages ? task.messages.slice(0, -1) : [];
 	const record: RunRecord = {
 		schemaVersion: 1,
 		runId,
@@ -540,7 +571,7 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			datasetHash: target.datasetHash,
 		},
 		trace: { path: "session.jsonl", sessionId: null, sha256: null },
-		metrics: emptyMetrics(),
+		metrics: { ...emptyMetrics(), ...(task.messages ? { seededTurns: seededTurns.length } : {}) },
 		evalResults: null,
 		parent: options.evalRunId
 			? { evalRunId: options.evalRunId, candidateOf: options.candidateOf }
@@ -588,6 +619,7 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			// This is the only secret value Target Pi receives. The credential is
 			// memory-only and is never written to models.json/session evidence.
 			apiKey: scopedApiKey ?? "unset",
+			seedMessages: seededTurns,
 		});
 		session = created.session;
 		if (options.signal) {
@@ -684,6 +716,7 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			toolCalls: stats.toolCalls,
 			toolErrors,
 			recoveryAttempts,
+			...(task.messages ? { seededTurns: seededTurns.length } : {}),
 		};
 	} catch (error) {
 		record.status = "error";

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { SEALED_VERIFICATION_REPETITIONS, sealedHoldoutTasks } from "./helpers/sealed-holdout.js";
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,13 +18,9 @@ import {
 	promoteReviewedCandidate,
 	reviewCandidate,
 } from "../src/application/candidate-review.js";
+import { createBuilderAuthoredProposalAdapter } from "../src/application/builder-authoring.js";
 import { compileFailureBundle } from "../src/bundle.js";
-import {
-	BuilderRunRecordSchema,
-	type BuilderAdapter,
-	type BuilderCapabilities,
-	type BuilderRequest,
-} from "../src/builders/adapters.js";
+import type { BuilderAdapter, CandidateProposal } from "../src/builders/adapters.js";
 import { createCorpus } from "../src/corpus.js";
 import { diagnoseEvalRun } from "../src/diagnosis.js";
 import {
@@ -77,16 +74,6 @@ const DEVELOPMENT = [
 	{ id: "dev-1", input: "Answer case one.", graders: [{ type: "output_contains" as const, text: "READY" }] },
 	{ id: "dev-2", input: "Answer case two.", graders: [{ type: "output_contains" as const, text: "READY" }] },
 ];
-const CAPABILITIES: BuilderCapabilities = {
-	eventStream: true,
-	structuredOutput: true,
-	usage: false,
-	cost: false,
-	sessionId: false,
-	cancellation: true,
-	isolation: "tool-free-executor",
-};
-
 let root: string;
 let targetDir: string;
 let runsRoot: string;
@@ -102,6 +89,11 @@ function sha256(value: string): string {
 }
 
 
+/**
+ * The one production proposal adapter: Builder Pi authors the exact proposal and
+ * the host records it. Every acceptance step below crosses the same trust seam
+ * the product ships, not a bespoke fixture backend.
+ */
 function proposalAdapter(
 	baseSha: string,
 	evidence?: { diagnoses: EvidenceLinkedProposalDiagnosis[]; evidenceRefs: string[] },
@@ -112,9 +104,9 @@ function proposalAdapter(
 		rootCause: "The harness asks for the wrong final token.",
 	}];
 	const evidenceRefs = evidence?.evidenceRefs ?? ["diagnosis:answer-quality"];
-	const proposal = {
-		schemaVersion: 1 as const,
-		decision: "propose" as const,
+	const proposal: CandidateProposal = {
+		schemaVersion: 1,
+		decision: "propose",
 		baseTargetSha: baseSha,
 		summary: "Make the answer contract explicit.",
 		diagnoses,
@@ -137,42 +129,7 @@ function proposalAdapter(
 		risks: ["The contract is intentionally narrow for this fixture."],
 		validationPlan: ["Run the matched development and sealed corpora."],
 	};
-	return {
-		backend: "fixture-builder",
-		capabilities: CAPABILITIES,
-		async probe() {
-			return {
-				backend: "fixture-builder",
-				available: true,
-				version: "fixture-builder 1.0.0",
-				capabilities: CAPABILITIES,
-				error: null,
-			};
-		},
-		async run(request: BuilderRequest) {
-			const startedAt = CLOCK.now();
-			const finishedAt = CLOCK.now();
-			return BuilderRunRecordSchema.parse({
-				schemaVersion: 1,
-				runId: request.runId,
-				backend: "fixture-builder",
-				backendVersion: "fixture-builder 1.0.0",
-				capabilities: CAPABILITIES,
-				baseTargetSha: request.baseTargetSha,
-				startedAt,
-				finishedAt,
-				status: "completed",
-				proposal,
-				model: null,
-				sessionId: null,
-				usage: null,
-				costUsd: null,
-				traceLevel: "full",
-				rawEvents: ['{"type":"diagnosis"}', '{"type":"final"}'],
-				error: null,
-			});
-		},
-	};
+	return createBuilderAuthoredProposalAdapter(proposal, { now: CLOCK.now });
 }
 
 beforeAll(async () => {
@@ -239,9 +196,9 @@ describe("vertical slice: evidence-backed improvement", () => {
 		const baseline = await runSuite(loadTarget(targetDir), {
 			runsRoot,
 			label: "baseline",
-			repetitions: 1,
+			repetitions: SEALED_VERIFICATION_REPETITIONS,
 		});
-		expect(baseline.summary).toMatchObject({ pass: 0, fail: 2, error: 0 });
+		expect(baseline.summary).toMatchObject({ pass: 0, fail: 2 * SEALED_VERIFICATION_REPETITIONS, error: 0 });
 		const diagnosis = diagnoseEvalRun(runsRoot, baseline.evalRunId);
 		expect(diagnosis.summary.failedTasks).toBe(2);
 		const brief = compileImprovementBrief(runsRoot, diagnosis);
@@ -409,11 +366,7 @@ describe("vertical slice: evidence-backed improvement", () => {
 			projectId: "acceptance-project",
 			name: "Promotion gate",
 			visibility: "sealed",
-			tasks: [{
-				id: "holdout-1",
-				input: "PRIVATE HOLDOUT INPUT",
-				graders: [{ type: "output_contains", text: "READY" }],
-			}],
+			tasks: sealedHoldoutTasks("PRIVATE HOLDOUT INPUT"),
 		});
 		const experiment = await runAppliedBuilderCandidate({
 			repositoryDir: targetDir,
@@ -421,7 +374,7 @@ describe("vertical slice: evidence-backed improvement", () => {
 			builderRunId: builder.record.runId,
 			expectedBuilderRunHash: exactBuilderRunHash,
 			expectedApplyReceiptHash: exactApplyReceiptHash,
-			repetitions: 1,
+			repetitions: SEALED_VERIFICATION_REPETITIONS,
 			candidateId: "candidate-acceptance",
 			projectId: "acceptance-project",
 			approvedSpec: { stateRoot, specId: spec.id },
@@ -430,9 +383,11 @@ describe("vertical slice: evidence-backed improvement", () => {
 		});
 		expect(experiment.baseline.evalRunId).toBe(baseline.evalRunId);
 		expect(experiment.baselineReused).toBe(true);
-		expect(experiment.candidate.summary).toMatchObject({ pass: 2, fail: 0, error: 0 });
-		expect(experiment.sealedHoldout?.candidate.summary).toMatchObject({ pass: 1, fail: 0, error: 0 });
+		expect(experiment.candidate.summary).toMatchObject({ pass: 2 * SEALED_VERIFICATION_REPETITIONS, fail: 0, error: 0 });
+		expect(experiment.sealedHoldout?.candidate.summary).toMatchObject({ pass: 15 * SEALED_VERIFICATION_REPETITIONS, fail: 0, error: 0 });
 		expect(experiment.compare.summary.delta).toBe(1);
+		expect(experiment.compare.gate.verdict).toBe("improved");
+		expect(experiment.sealedHoldout?.compare.gate.verdict).toBe("pass");
 		expect(candidateStatus(experiment.record)).toBe("evaluated");
 		expect(experiment.record.specId).toBe(spec.id);
 		expect(readFileSync(experiment.candidateRecordPath, "utf8")).not.toContain("PRIVATE HOLDOUT INPUT");

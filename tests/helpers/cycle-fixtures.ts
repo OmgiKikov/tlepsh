@@ -135,21 +135,29 @@ function artifactRef(path: string): { path: string; sha256: string } {
 	return { path, sha256: hashFile(readFileSync(path, "utf8")) };
 }
 
-function comparison() {
+function comparison(surface: "development" | "sealed") {
 	return {
-		policyId: "cycle-fixture-gate-v1",
+		schemaVersion: 3 as const,
+		algorithmId: "exact-comparison-gate-v3" as const,
+		policyId: surface === "sealed" ? "sealed-guardrail-v3" as const : "development-ci-v3" as const,
+		surface,
 		comparisonHash: FIXTURE_HASH,
+		evidenceHash: FIXTURE_HASH,
 		gateHash: FIXTURE_HASH,
 		summary: {
-			taskCount: 1,
+			taskCount: 15,
 			baselinePassRate: 0,
 			candidatePassRate: 1,
 			delta: 1,
-			confidence95: { low: 0, high: 1 },
-			improved: 1,
+			confidence95: { low: 1, high: 1 },
+			improved: 15,
 			regressed: 0,
 			unchanged: 0,
 		},
+		design: { tasks: 15, repetitions: 2, excludedTasks: 0 },
+		verdict: surface === "sealed" ? "pass" as const : "improved" as const,
+		flags: { regressedTasks: 0, improvedTasks: 15, collapsedTasks: 0 },
+		reasons: ["fixture verdict"],
 	};
 }
 
@@ -239,7 +247,7 @@ export function writeDevelopmentEval(paths: FixturePaths, corpusId: string, eval
 	writeJsonArtifact(join(paths.runsRoot, runId, "run.json"), RunRecordSchema, run);
 	const evidence = { runtime, model, judge: null, execution, eval: evaluation };
 	const record: EvalRunRecord = {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		evalRunId,
 		target: run.target,
 		label: "solo",
@@ -356,13 +364,13 @@ function terminalCandidateRecord(input: {
 			development: {
 				baseline: { evalRunId: "erun_cycle_development_baseline", harness: baseline },
 				candidate: { evalRunId: "erun_cycle_development_candidate", harness: revision },
-				comparison: comparison(),
+				comparison: comparison("development"),
 				corpus: input.developmentCorpus,
 			},
 			sealedHoldout: {
 				baseline: { evalRunId: "erun_cycle_sealed_baseline", harness: baseline },
 				candidate: { evalRunId: "erun_cycle_sealed_candidate", harness: revision },
-				comparison: comparison(),
+				comparison: comparison("sealed"),
 				corpus: { id: "sealed-cycle-holdout", hash: FIXTURE_HASH },
 			},
 			infrastructureErrors: 0,

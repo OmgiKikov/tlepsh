@@ -53,7 +53,19 @@ the harness under development runs in a different Target Pi invocation.
 - **Cycle continuation** — the human decision that closes a reviewed loop
   around one terminal (promoted-and-adopted or rejected) candidate and lets
   the Workbench derive the next stage from the active Target.
-- **A/A calibration** — repeated evaluation of the same snapshot to measure noise. It can never be promotion evidence.
+- **A/A calibration** — repeated evaluation of the same snapshot to measure
+  run-to-run noise. The A/A Candidate record is the calibration receipt; it
+  can never be promotion evidence.
+- **Comparison Verdict** — the single typed outcome of comparing a baseline and
+  a candidate Eval Run under one Gate Policy: paired per-task deltas, a seeded
+  bootstrap 95% interval, the design (tasks × repetitions, excluded tasks),
+  human flags, and one verdict. The only source of "passed".
+- **Gate Policy** — the named rule a Comparison Verdict is decided under.
+  `development-ci-v3`: improved iff the whole interval is above zero,
+  regressed iff it is entirely below zero, otherwise inconclusive.
+  `sealed-guardrail-v3`: underpowered below 15 tasks or 2 repetitions, fail
+  iff the whole interval is below zero, otherwise pass. Per-task drops are
+  flags for humans and never gate.
 
 ## Trust domains
 
@@ -88,7 +100,10 @@ live view is never evidence and cannot perform state transitions.
 5. The Target sees one holdout input at a time, never the holdout corpus, graders, expected answers, or future cases.
 6. A Proposal cannot modify corpus or model configuration and cannot be applied
    without an explicit human command. It may update only `AGENTS.md`,
-   `skills/**`, `tools/**`, `bin/**`, and the manifest's declared resources.
+   `skills/**`, `tools/**`, `bin/**`, `data/**`, and the manifest's declared
+   resources. Only declared `data/` directories reach a Target workspace; they
+   are bounded in total bytes and are shown to the Builder as shape, never
+   content.
    A complete `execution.configure` intent may change the Target execution
    policy only in the same exact reviewed Proposal; every resulting tool must
    validate against that policy, and the Candidate must still pass matched
@@ -112,7 +127,12 @@ live view is never evidence and cannot perform state transitions.
     confirms an exact immutable subject in TUI mode, revalidates it, and records
     a one-operation receipt; non-interactive calls fail closed.
 17. Declarative Target tool descriptors and executable bytes are part of Target
-    identity. Missing confinement is recorded honestly and is never promotable.
+    identity: for a multi-file tool that is every file in its directory, sorted
+    and mode-aware, plus its declared lockfile bytes. A declared setup step runs
+    once per prepared tool home, inside the same sandbox, writing only that
+    home; its output is derived state that no provenance hash sees, and its
+    failure is an infrastructure error. Missing confinement is recorded honestly
+    and is never promotable.
 18. Initial Target id/model configuration is a one-time host-confirmed bootstrap
     commit over an exact clean scaffold. Builder receives only the credential
     variable name; the host injects the selected value into a memory-only Target
@@ -189,3 +209,14 @@ live view is never evidence and cannot perform state transitions.
     blocks are persisted host UI that the model never receives; a renderer
     fault degrades to the Workbench message and can never change durable
     state or skip a confirmation.
+
+
+34. Promotion is decided by the Comparison Verdict, not by per-task flips: it
+    requires a sealed guardrail `pass` (≥15 tasks × ≥2 repetitions, 95% paired
+    bootstrap interval not entirely below zero) and a development verdict other
+    than `regressed`. A failed or underpowered sealed gate is recorded as
+    evaluated evidence and refused at promotion; it is never thrown away. A
+    verification never starts on a holdout smaller than the policy minimum.
+35. Noise is measured, never assumed: an A/A calibration of the same Target
+    revision is the receipt for run-to-run noise, informs the recommended
+    number of repetitions, and is never promotion evidence.

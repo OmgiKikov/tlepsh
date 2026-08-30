@@ -5,7 +5,13 @@ import {
 	type LoadedCorpus,
 } from "../corpus.js";
 import type { EvalRunRecord } from "../eval.js";
-import type { GraderSpec, ResolvedTarget, TargetManifest } from "../manifest.js";
+import {
+	graderNeedsExpected,
+	hasReferenceAnswer,
+	type GraderSpec,
+	type ResolvedTarget,
+	type TargetManifest,
+} from "../manifest.js";
 import { hashValue } from "../provenance.js";
 
 function cloneGrader(grader: GraderSpec): GraderSpec {
@@ -80,9 +86,21 @@ function targetWithCorpus(
 				);
 			}
 		}
+		for (const grader of graders) {
+			if (graderNeedsExpected(grader) && !hasReferenceAnswer(task)) {
+				throw new Error(
+					`${visibility} corpus ${corpus.metadata.id} task ${task.id} pairs a ${grader.type} grader with a case that has no "expected" reference answer`,
+				);
+			}
+		}
 		return {
 			id: task.id,
 			input: task.input,
+			// Reference answers and dialogue history travel with the corpus case:
+			// the runner seeds the turns and the graders compare with `expected`.
+			...(task.expected !== undefined ? { expected: task.expected } : {}),
+			...(task.messages !== undefined ? { messages: task.messages } : {}),
+			...(task.metadata !== undefined ? { metadata: task.metadata } : {}),
 			graders,
 			effectiveGraders: graders.map(cloneGrader),
 		};
@@ -186,7 +204,7 @@ export function resolveDevelopmentTargetForEval(options: {
  * regex or an unsupported judge grader from blocking a reviewed basket.
  */
 export function assertGradersRunnable(
-	tasks: readonly { graders?: readonly GraderSpec[] }[],
+	tasks: readonly { expected?: string | undefined; graders?: readonly GraderSpec[] }[],
 	manifest: Pick<TargetManifest, "evalSuite">,
 	label = "corpus draft",
 ): void {
@@ -204,10 +222,17 @@ export function assertGradersRunnable(
 						" use character classes like [Цц] or a simpler pattern.",
 					);
 				}
-			} else if (grader.type === "judge" && !manifest.evalSuite.judge) {
+			}
+			if (grader.type === "judge" && !manifest.evalSuite.judge) {
 				problems.push(
 					`${where}: judge graders need a judge model configured in the Target manifest (evalSuite.judge), and this Target has none.` +
 					" Use output_contains, output_matches, or tool_called instead, or ask the operator to configure a judge model first.",
+				);
+			}
+			if (graderNeedsExpected(grader) && !hasReferenceAnswer(task)) {
+				problems.push(
+					`${where}: ${grader.type} graders compare the answer with the case's reference answer, and this case has no "expected".` +
+					" Give the case an expected answer, or use output_contains, output_matches, or tool_called instead.",
 				);
 			}
 		});

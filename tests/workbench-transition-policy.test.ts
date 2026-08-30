@@ -7,6 +7,7 @@ describe("Workbench transition policy", () => {
 			["approve-spec", ["spec-review"]],
 			["publish-corpus", ["corpus-review"]],
 			["run-eval", ["ready-to-evaluate", "improvement-authoring"]],
+			["calibrate", ["ready-to-evaluate", "improvement-authoring"]],
 			["apply-proposal", ["proposal-review"]],
 			["discard-proposal", ["proposal-review"]],
 			["verify-candidate", ["candidate-verification"]],
@@ -30,5 +31,7 @@ describe("Workbench transition policy", () => {
 			.toThrow(/adopt-candidate is not legal during release-decision/);
 		expect(() => assertWorkbenchDecisionStage("continue-cycle", "candidate-adoption"))
 			.toThrow(/continue-cycle is not legal during candidate-adoption/);
+		expect(() => assertWorkbenchDecisionStage("calibrate", "candidate-verification"))
+			.toThrow(/calibrate is not legal during candidate-verification/);
 	});
 });

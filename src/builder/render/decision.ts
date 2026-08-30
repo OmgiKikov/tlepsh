@@ -1,4 +1,5 @@
 import type { WorkbenchDecisionResult, WorkbenchView } from "../../workbench/types.js";
+import { formatFlipRate, formatNoiseBand, renderCalibration } from "./calibration.js";
 import { oneLine, pluralize, section, shortHash, shortSha } from "./format.js";
 import type { Paint } from "./paint.js";
 import { nextStep, stageLabel } from "./stage.js";
@@ -53,8 +54,30 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 				`${section("Development basket published", paint)} ${pluralize(result.result.taskCount, "case")} ${paint.dim(`· ${result.result.corpusId} · ${shortHash(result.result.corpusHash)}`)}`,
 				nextLine(view, paint),
 			];
+		case "import-dataset": {
+			const lines = [
+				`${section("Dataset imported", paint)} ${pluralize(result.result.taskCount, "case")} ${paint.dim(`from ${oneLine(result.result.sourcePath, 60)}`)}`,
+				result.result.sealedCount > 0
+					? `${paint.dim("Sealed")} ${paint.bold(pluralize(result.result.sealedCount, "case"))} held out ${paint.dim("· the exam; nobody develops against it")}`
+					: `${paint.dim("Sealed")} ${paint.warning("nothing held out")} ${paint.dim("· there is no exam for this file")}`,
+			];
+			if (result.result.skippedRows > 0) {
+				lines.push(`${paint.dim("Skipped")} ${pluralize(result.result.skippedRows, "row")} ${paint.dim("did not map to a case")}`);
+			}
+			lines.push(paint.muted("The cases landed in an editable draft; review them, then publish."), nextLine(view, paint));
+			return lines;
+		}
 		case "run-eval":
 			return [...runLines(result.result, paint, options), nextLine(view, paint)];
+		case "calibrate": {
+			const lines = [
+				`${section("Noise calibrated", paint)} ${paint.dim(result.result.candidateId)}`,
+				...renderCalibration(result.result.calibration, paint),
+			];
+			if (options.liveTraceUrl) lines.push(`${paint.dim("Live trace")} ${paint.link(options.liveTraceUrl)} ${paint.dim("· retained for 15 minutes")}`);
+			lines.push(nextLine(view, paint));
+			return lines;
+		}
 		case "run-current":
 			return result.result.resolvedAs === "run-eval"
 				? [...runLines(result.result, paint, options), nextLine(view, paint)]
@@ -109,7 +132,12 @@ export function decisionHeadline(result: WorkbenchDecisionResult): string {
 				? `${result.result.evaluation.summary.pass}/${result.result.evaluation.summary.total} passed · ${result.result.improvementBrief.summary.failureModeCount} failure modes`
 				: `candidate ${result.result.candidate.status}`;
 		case "verify-candidate":
-			return `candidate ${result.result.candidate.status} · sealed gate ${result.result.sealedHoldout.gatePassed ? "passed" : "not passed"}`;
+			return `candidate ${result.result.candidate.status} · development ${result.result.development.verdict} · sealed ${result.result.sealedHoldout.verdict ?? "not run"}`;
+		case "calibrate": {
+			const calibration = result.result.calibration;
+			return `A/A ${calibration.verdict} · ${formatNoiseBand(calibration)} · flip ${formatFlipRate(calibration)} · ` +
+				`${calibration.recommendedRepetitions} reps recommended`;
+		}
 		default:
 			return oneLine(result.message, 120);
 	}

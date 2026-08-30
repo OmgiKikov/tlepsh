@@ -164,7 +164,7 @@ export interface ReportRun {
 
 /** Deliberately small display DTO. Canonical provenance stays in eval_run.json. */
 export interface ReportEvalRun {
-	schemaVersion: 1;
+	schemaVersion: EvalRunRecord["schemaVersion"];
 	evalRunId: string;
 	target: { id: string; gitSha: string };
 	label: EvalRunRecord["label"];
@@ -474,7 +474,7 @@ export function collectEvalReportData(
 			throw new Error("cross-visibility baseline evidence is unavailable");
 		}
 		try {
-			canonicalComparison = compareEvalRuns(runsRoot, baselineIndex.evalRunId, requestedIndex.evalRunId);
+			canonicalComparison = compareEvalRuns(runsRoot, baselineIndex.evalRunId, requestedIndex.evalRunId, { mode: "exploratory" });
 		} catch {
 			throw new Error("comparison evidence failed integrity checks");
 		}

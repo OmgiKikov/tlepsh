@@ -8,6 +8,7 @@ import type {
 	TargetedModeImpact,
 } from "../src/application/candidate-impact.js";
 import type { TargetAuthoringContext } from "../src/application/target-authoring-context.js";
+import { renderCalibration } from "../src/builder/render/calibration.js";
 import { renderConfirmation } from "../src/builder/render/confirmation.js";
 import { decisionHeadline, renderDecision } from "../src/builder/render/decision.js";
 import { diffStats, renderUnifiedDiff } from "../src/builder/render/diff.js";
@@ -55,6 +56,7 @@ import {
 import type { AgentSpec } from "../src/spec.js";
 import {
 	WorkbenchStageSchema,
+	type WorkbenchCalibrationProjection,
 	type WorkbenchCandidateSummary,
 	type WorkbenchConfirmation,
 	type WorkbenchDecisionResult,
@@ -130,6 +132,7 @@ function makeView(overrides: Partial<WorkbenchView> = {}): WorkbenchView {
 		actions: [],
 		blockers: [],
 		warnings: [],
+		calibration: null,
 		counts: {
 			specDrafts: 0,
 			approvedSpecs: 1,
@@ -139,6 +142,7 @@ function makeView(overrides: Partial<WorkbenchView> = {}): WorkbenchView {
 			developmentEvals: 2,
 			openProposals: 1,
 			candidates: 3,
+			calibrations: 0,
 		},
 		...overrides,
 	};
@@ -167,8 +171,9 @@ function makeCandidate(overrides: Partial<WorkbenchCandidateSummary> = {}): Work
 				regressed: 1,
 				unchanged: 6,
 			},
+			gate: null,
 		},
-		sealedHoldout: { executed: true, gatePassed: true },
+		sealedHoldout: { executed: true, gatePassed: true, gate: null },
 		review: null,
 		promotion: null,
 		rejection: null,
@@ -443,6 +448,7 @@ function makeImpact(overrides: Partial<CandidateImpact> = {}): CandidateImpact {
 				evidenceHash: null,
 				gateHash: HASH,
 				verified: true,
+				verdict: null,
 			},
 			summary: {
 				taskCount: 10,
@@ -470,7 +476,7 @@ function makeImpact(overrides: Partial<CandidateImpact> = {}): CandidateImpact {
 		omittedWorsenedFailureModeCount: 0,
 		taskRegressions: [],
 		omittedTaskRegressionCount: 0,
-		sealedHoldout: { executed: true, gatePassed: true },
+		sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" },
 		focus: { kind: "summary" },
 		subjectHash: HASH,
 		...overrides,
@@ -493,6 +499,7 @@ const targetContext: TargetAuthoringContext = {
 		{ kind: "tool-descriptor", name: "lookup", path: "tools/lookup.tool.yaml", mode: "100644", bytes: 512, sha256: HASH },
 		{ kind: "tool-executable", name: "lookup", path: "tools/lookup", mode: "100755", bytes: 1536, sha256: HASH },
 	],
+	data: [],
 	launch: "ahde target",
 };
 
@@ -511,6 +518,23 @@ function decision<K extends WorkbenchDecisionResult["kind"]>(
 	message = `${kind} recorded`,
 ): WorkbenchDecisionResult {
 	return { kind, message, result, view: makeView({ stage }) } as unknown as WorkbenchDecisionResult;
+}
+
+function makeCalibration(overrides: Partial<WorkbenchCalibrationProjection> = {}): WorkbenchCalibrationProjection {
+	return {
+		candidateId: "calibration-1",
+		targetSha: SHA_A,
+		taskCount: 30,
+		repetitions: 3,
+		aaPassRate: 0.7,
+		delta: 0,
+		confidence95: { low: -0.06, high: 0.06 },
+		flipRate: 0.1,
+		recommendedRepetitions: 3,
+		verdict: "inconclusive",
+		at: AT,
+		...overrides,
+	};
 }
 
 const fakeTheme: Pick<Theme, "fg" | "bold"> = {
@@ -589,6 +613,7 @@ describe("renderStatus", () => {
 			"AHDE · Ready to run",
 			"Target support-bot @ aaaaaaaaaa · openai/gpt-5 ✓",
 			"Evidence 2 eval runs · 1 open proposal · 3 candidates",
+			"Noise not calibrated · say “calibrate” or /calibrate",
 			"Next /run to evaluate the Target",
 		]);
 		expect(lines.join("\n")).not.toContain("{");
@@ -624,6 +649,56 @@ describe("renderStatus", () => {
 	});
 });
 
+describe("calibration line", () => {
+	it("shows the measured noise on the current revision", () => {
+		const lines = renderStatus(makeView({ calibration: makeCalibration() }), plainPaint);
+		expect(lines[3]).toBe("Noise A/A inconclusive · ±6.0pp · flip 10% · 3 reps recommended");
+		expect(lines[3]!.length).toBeLessThanOrEqual(110);
+		const header = renderHeader(
+			{ view: makeView({ calibration: makeCalibration() }), builderModel: { label: "x", credentialPresent: true } },
+			plainPaint,
+		);
+		expect(header).toContain("Noise A/A inconclusive · ±6.0pp · flip 10% · 3 reps recommended");
+	});
+
+	it("warns when the harness disagrees with itself and keeps the paint", () => {
+		const lines = renderStatus(makeView({
+			calibration: makeCalibration({ verdict: "regressed", confidence95: { low: -0.2, high: -0.04 }, flipRate: 0.42, recommendedRepetitions: 5 }),
+		}), tagPaint);
+		expect(lines[3]).toBe("<dim>Noise</dim> A/A <warning>regressed</warning> <dim>·</dim> ±8.0pp <dim>·</dim> flip 42% <dim>·</dim> 5 reps recommended");
+	});
+
+	it("offers calibration only where the operator can act on it", () => {
+		for (const stage of ["ready-to-evaluate", "improvement-authoring"] as const) {
+			expect(renderStatus(makeView({ stage }), plainPaint)).toContain("Noise not calibrated · say “calibrate” or /calibrate");
+		}
+		for (const stage of ["target-setup", "spec-review", "candidate-review", "complete"] as const) {
+			expect(renderStatus(makeView({ stage }), plainPaint).join("\n")).not.toContain("Noise");
+		}
+	});
+});
+
+describe("renderCalibration", () => {
+	it("renders the A/A design, spread, and recommendation without JSON", () => {
+		const lines = renderCalibration(makeCalibration(), plainPaint);
+		expect(lines).toEqual([
+			"Noise calibration A/A inconclusive · revision aaaaaaaaaa",
+			"Design 30 cases × 3 repetitions · same revision on both arms · baseline 70%",
+			"Spread ±6.0pp (95% CI -6 pts … +6 pts) · flip 10%",
+			"Recommended 3 repetitions per run to keep noise under 10 points",
+			"A/A is measurement, never evidence: nothing is promoted by calibrating.",
+		]);
+		for (const line of lines) expect(line.length).toBeLessThanOrEqual(110);
+		expect(lines.join("\n")).not.toContain("{");
+	});
+
+	it("flags a self-inconsistent harness instead of reassuring the operator", () => {
+		const lines = renderCalibration(makeCalibration({ verdict: "improved", recommendedRepetitions: 5 }), plainPaint);
+		expect(lines[0]).toBe("Noise calibration A/A improved · revision aaaaaaaaaa");
+		expect(lines[lines.length - 1]).toContain("disagrees with itself");
+	});
+});
+
 describe("renderHeader", () => {
 	it("renders the connected builder with stage, next step, and evidence", () => {
 		const lines = renderHeader({ view: makeView(), builderModel: { label: "anthropic/claude-opus", credentialPresent: true } }, plainPaint);
@@ -632,7 +707,8 @@ describe("renderHeader", () => {
 		expect(lines[2]).toBe("Target support-bot @ aaaaaaaaaa · openai/gpt-5 ✓");
 		expect(lines[3]).toBe("Stage Ready to run · Next /run to evaluate the Target");
 		expect(lines[4]).toBe("Evidence 2 eval runs · 1 open proposal · 3 candidates · Builder model anthropic/claude-opus ✓");
-		expect(lines[5]).toBe("Describe what you want in plain language · /help for shortcuts");
+		expect(lines[5]).toBe("Noise not calibrated · say “calibrate” or /calibrate");
+		expect(lines[6]).toBe("Describe what you want in plain language · /help for shortcuts");
 		expect(lines[lines.length - 1]).toBe("");
 		expect(lines.join("\n")).not.toContain("{");
 	});
@@ -779,7 +855,7 @@ describe("renderReview", () => {
 		expect(lines[0]).toBe("<heading>Candidate</heading> <dim>candidate-1</dim> <dim>·</dim> <accent>evaluated</accent>");
 		expect(lines[1]).toBe("<dim>Revision</dim> main@aaaaaaaaaa → ahde/candidate-1@bbbbbbbbbb");
 		expect(lines[2]).toBe("<dim>Development</dim> baseline 60% → candidate 80% <success>(+20 pts)</success> <dim>on 10 tasks</dim>");
-		expect(lines[3]).toBe("  <success>↑ 3 improved</success> <dim>·</dim> <error>↓ 1 regressed</error> <dim>·</dim> <muted>= 6 unchanged</muted> <dim>· 95% CI +5 pts … +35 pts</dim>");
+		expect(lines[3]).toBe("  <success>↑ 3 improved</success> <dim>·</dim> <warning>↓ 1 lower</warning> <dim>·</dim> <muted>= 6 unchanged</muted> <dim>· 95% CI +5 pts … +35 pts</dim>");
 		expect(lines[4]).toBe("<dim>Sealed holdout</dim> <success>gate passed</success>");
 		expect(lines[5]).toBe("<dim>Review</dim> <success>promote</success> <dim>—</dim> Clear improvement on the basket");
 		expect(lines).toHaveLength(6);
@@ -807,11 +883,11 @@ describe("renderReview", () => {
 		const rejected = renderReview(makeCandidateReview({
 			status: "rejected",
 			rejection: { reason: "Regressed refunds", at: AT },
-			sealedHoldout: { executed: true, gatePassed: false },
+			sealedHoldout: { executed: true, gatePassed: false, gate: null },
 			review: { experimentId: "exp-1", recommendation: "reject", reason: "no" },
 		}), tagPaint).join("\n");
 		expect(rejected).toContain("<error>rejected</error>");
-		expect(rejected).toContain("<dim>Sealed holdout</dim> <error>gate failed</error>");
+		expect(rejected).toContain("<dim>Sealed holdout</dim> <error>legacy evidence — not promotable</error>");
 		expect(rejected).toContain("<dim>Review</dim> <error>reject</error>");
 		expect(rejected).toContain("<dim>Rejected</dim> <dim>2026-08-28 10:00:00Z</dim> <dim>—</dim> Regressed refunds");
 		expect(rejected).not.toContain("Adopted");
@@ -819,13 +895,13 @@ describe("renderReview", () => {
 			status: "proposed",
 			candidate: null,
 			development: null,
-			sealedHoldout: { executed: false, gatePassed: false },
+			sealedHoldout: { executed: false, gatePassed: false, gate: null },
 		}), plainPaint).join("\n");
 		expect(unbuilt).toContain("main@aaaaaaaaaa → not built");
 		expect(unbuilt).toContain("Development not evaluated yet");
 		expect(unbuilt).toContain("Sealed holdout not executed");
 		const unreconstructable = renderReview(makeCandidateReview({
-			development: { baselineEvalRunId: "a", candidateEvalRunId: "b", comparison: null },
+			development: { baselineEvalRunId: "a", candidateEvalRunId: "b", comparison: null, gate: null },
 		}), plainPaint).join("\n");
 		expect(unreconstructable).toContain("Development comparison not reconstructable");
 	});
@@ -839,7 +915,7 @@ describe("renderReview", () => {
 	it("warns about an interrupted candidate", () => {
 		const lines = renderReview({
 			kind: "interrupted-candidate",
-			...makeCandidate({ status: "built", development: null, sealedHoldout: { executed: false, gatePassed: false } }),
+			...makeCandidate({ status: "built", development: null, sealedHoldout: { executed: false, gatePassed: false, gate: null } }),
 		}, tagPaint);
 		expect(lines[0]).toBe("<heading>Interrupted candidate</heading> <dim>candidate-1</dim> <dim>·</dim> <accent>built</accent>");
 		expect(lines[lines.length - 1]).toBe("<warning>Verification stopped before evidence was complete. /discard abandons this attempt so the applied proposal can be retried.</warning>");
@@ -1123,14 +1199,14 @@ describe("renderDecision", () => {
 		expect(asEval[0]).toContain("Evaluation 6/10 passed");
 		expect(asEval).toContain("Live trace http://127.0.0.1:4310/live/abc · retained for 15 minutes");
 		expect(asEval[asEval.length - 1]).toBe(nextLine("improvement-authoring"));
-		const asVerify = renderDecision(decision("run-current", { resolvedAs: "verify-candidate", candidate: makeCandidate(), sealedHoldout: { executed: true, gatePassed: true } }, "candidate-review"), plainPaint);
+		const asVerify = renderDecision(decision("run-current", { resolvedAs: "verify-candidate", candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"), plainPaint);
 		expect(asVerify[0]).toBe("Candidate verified candidate-1 · evaluated");
 		expect(asVerify[asVerify.length - 1]).toBe(nextLine("candidate-review"));
 		expect(asVerify.join("\n")).not.toContain("Live trace");
 	});
 
 	it("renders verification, apply, discard, and abandon decisions", () => {
-		const verified = renderDecision(decision("verify-candidate", { candidate: makeCandidate(), sealedHoldout: { executed: true, gatePassed: true } }, "candidate-review"), plainPaint);
+		const verified = renderDecision(decision("verify-candidate", { candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"), plainPaint);
 		expect(verified[0]).toBe("Candidate verified candidate-1 · evaluated");
 		expect(verified).toContain("Sealed holdout gate passed");
 		expect(verified[verified.length - 1]).toBe(nextLine("candidate-review"));
@@ -1207,10 +1283,10 @@ describe("renderDecision", () => {
 			decision("publish-corpus", { corpusId: "c", corpusHash: HASH, taskCount: 1, publicationReceiptId: "r", lineageHash: HASH }, "ready-to-evaluate"),
 			decision("run-eval", makeTraces(), "improvement-authoring"),
 			decision("run-current", { resolvedAs: "run-eval", ...makeTraces() }, "improvement-authoring"),
-			decision("run-current", { resolvedAs: "verify-candidate", candidate: makeCandidate(), sealedHoldout: { executed: false, gatePassed: false } }, "candidate-review"),
+			decision("run-current", { resolvedAs: "verify-candidate", candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: false, gatePassed: false, verdict: null } }, "candidate-review"),
 			decision("apply-proposal", { runId: "r", branch: "b", candidateSha: SHA_B, proposalHash: HASH }, "candidate-verification"),
 			decision("discard-proposal", { runId: "r", receiptHash: HASH }, "improvement-authoring"),
-			decision("verify-candidate", { candidate: makeCandidate(), sealedHoldout: { executed: true, gatePassed: false } }, "candidate-review"),
+			decision("verify-candidate", { candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: false, verdict: "fail" } }, "candidate-review"),
 			decision("abandon-candidate", { candidateId: "c", interruptedStatus: "proposed", receiptHash: HASH }, "candidate-verification"),
 			decision("review-candidate", makeCandidate(), "release-decision"),
 			decision("promote-candidate", { candidate: makeCandidate(), tag: "v1.0.0", candidateSha: SHA_B }, "candidate-adoption"),
@@ -1227,13 +1303,30 @@ describe("renderDecision", () => {
 	});
 });
 
+describe("renderDecision · calibrate", () => {
+	it("renders the calibration panel and the next step", () => {
+		const result = decision("calibrate", { candidateId: "calibration-1", calibration: makeCalibration() }, "ready-to-evaluate");
+		const lines = renderDecision(result, plainPaint);
+		expect(lines[0]).toBe("Noise calibrated calibration-1");
+		expect(lines).toContain("Recommended 3 repetitions per run to keep noise under 10 points");
+		expect(lines[lines.length - 1]).toBe(`Next ${nextStep(makeView({ stage: "ready-to-evaluate" }))} (${stageLabel("ready-to-evaluate")})`);
+		const withTrace = renderDecision(result, plainPaint, { liveTraceUrl: "http://127.0.0.1:4312/live/abc" });
+		expect(withTrace.join("\n")).toContain("Live trace http://127.0.0.1:4312/live/abc");
+	});
+
+	it("summarises the calibration in one headline", () => {
+		expect(decisionHeadline(decision("calibrate", { candidateId: "calibration-1", calibration: makeCalibration() }, "ready-to-evaluate")))
+			.toBe("A/A inconclusive · ±6.0pp · flip 10% · 3 reps recommended");
+	});
+});
+
 describe("decisionHeadline", () => {
 	it("summarises runs, verifications, and falls back to the one-line message", () => {
 		expect(decisionHeadline(decision("run-eval", makeTraces(), "improvement-authoring"))).toBe("6/10 passed · 1 failure modes");
 		expect(decisionHeadline(decision("run-current", { resolvedAs: "run-eval", ...makeTraces() }, "improvement-authoring"))).toBe("6/10 passed · 1 failure modes");
-		expect(decisionHeadline(decision("run-current", { resolvedAs: "verify-candidate", candidate: makeCandidate(), sealedHoldout: { executed: true, gatePassed: true } }, "candidate-review"))).toBe("candidate evaluated");
-		expect(decisionHeadline(decision("verify-candidate", { candidate: makeCandidate(), sealedHoldout: { executed: true, gatePassed: true } }, "candidate-review"))).toBe("candidate evaluated · sealed gate passed");
-		expect(decisionHeadline(decision("verify-candidate", { candidate: makeCandidate(), sealedHoldout: { executed: false, gatePassed: false } }, "candidate-review"))).toBe("candidate evaluated · sealed gate not passed");
+		expect(decisionHeadline(decision("run-current", { resolvedAs: "verify-candidate", candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"))).toBe("candidate evaluated");
+		expect(decisionHeadline(decision("verify-candidate", { candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"))).toBe("candidate evaluated · development improved · sealed pass");
+		expect(decisionHeadline(decision("verify-candidate", { candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: false, gatePassed: false, verdict: null } }, "candidate-review"))).toBe("candidate evaluated · development improved · sealed not run");
 		expect(decisionHeadline(decision("approve-spec", { approvedSpecId: "s", receiptId: "r" }, "corpus-design", `Spec approved${OSC}\n  as an exact\tsnapshot`))).toBe("Spec approved as an exact snapshot");
 		expect(decisionHeadline(decision("discard-proposal", { runId: "r", receiptHash: HASH }, "improvement-authoring", "x".repeat(200)))).toBe(`${"x".repeat(119)}…`);
 	});
@@ -1366,6 +1459,24 @@ describe("renderConfirmation", () => {
 		ephemeralTail(lines);
 		const single = renderConfirmation(makeConfirmation("run-eval", { taskCount: 1, target: {}, developmentCorpus: {} }), plainPaint);
 		expect(single[0]).toBe("Run 1 case × 1 repetition = 1 Target executions · each one calls the Target model");
+	});
+
+	it("prices the A/A calibration and says nothing is promoted", () => {
+		const lines = renderConfirmation(makeConfirmation("calibrate", {
+			operation: "calibrate-noise",
+			target: { id: "support-bot", gitSha: SHA_A },
+			developmentCorpus: { id: "corpus-1", hash: HASH, taskCount: 12 },
+			repetitions: 3,
+			executions: 72,
+		}), plainPaint);
+		expect(lines.slice(0, 4)).toEqual([
+			"Calibrate noise run this exact revision twice · nothing is promoted",
+			"Cost 12 cases × 3 repetitions = 72 Target executions · each one calls the Target model",
+			"Target support-bot @ aaaaaaaaaa · basket corpus-1",
+			"A/A measures how much the agent disagrees with itself, so later deltas can be believed.",
+		]);
+		for (const line of lines) expect(line.length).toBeLessThanOrEqual(110);
+		ephemeralTail(lines);
 	});
 
 	it("summarises the change and risks for apply-proposal without repeating the diff", () => {
@@ -1918,9 +2029,9 @@ describe("renderView and viewTitle", () => {
 		const plain = renderView(makeView(), plainPaint);
 		expect(plain).toEqual(renderStatus(makeView(), plainPaint));
 		const withTraces = renderView(makeView({ detail: { aspect: "traces", content: makeTraces() } }), plainPaint);
-		expect(withTraces.slice(0, 4)).toEqual(renderStatus(makeView(), plainPaint));
-		expect(withTraces[4]).toBe("");
-		expect(withTraces[5]).toContain("Evaluation 6/10 passed");
+		expect(withTraces.slice(0, 5)).toEqual(renderStatus(makeView(), plainPaint));
+		expect(withTraces[5]).toBe("");
+		expect(withTraces[6]).toContain("Evaluation 6/10 passed");
 		const withReview = renderView(makeView({ detail: { aspect: "review", content: makeProposal() } }), plainPaint);
 		expect(withReview).toContain("Proposal run-1");
 		const withTarget = renderView(makeView({ detail: { aspect: "target", content: targetContext } }), plainPaint);

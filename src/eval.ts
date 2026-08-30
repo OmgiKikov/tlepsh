@@ -1,7 +1,17 @@
 import { chmodSync, mkdirSync, opendirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { GraderSpec, graderName, type ResolvedTarget, type ResolvedTask, type TargetManifest } from "./manifest.js";
+import {
+	GraderSpec,
+	graderName,
+	graderNeedsExpected,
+	hasReferenceAnswer,
+	type ExactNormalize,
+	type ResolvedTarget,
+	type ResolvedTask,
+	type SimilarityMetric,
+	type TargetManifest,
+} from "./manifest.js";
 import {
 	HashSchema,
 	modelFingerprint,
@@ -15,6 +25,7 @@ import {
 	TargetRevisionSchema,
 	type GraderResult,
 	type GraderCheckCode,
+	type JudgeMetrics,
 	type RunRecord,
 	type ProvenanceAxes,
 	type ExecutionFingerprint,
@@ -83,18 +94,195 @@ function gradeOutputMatches(spec: { pattern: string }, output: string | undefine
 	};
 }
 
+// ---------- Reference-answer graders ----------
+// `exact` and `similarity` decide locally: no judge model, no network, and the
+// same verdict every time. All three reference graders (judge withReference
+// included) refuse to grade a case that carries no reference answer — a
+// vacuous pass would be evidence of nothing.
+
+const MISSING_EXPECTED_REASON = "case has no expected answer";
+
+function missingExpected(type: GraderSpec["type"]): GraderResult {
+	return { name: "", type, passed: false, score: 0, reason: MISSING_EXPECTED_REASON };
+}
+
+/** `lower` is trim + lowercase + collapsed whitespace; `trim` only trims. */
+export function normalizeAnswer(text: string, mode: ExactNormalize): string {
+	if (mode === "none") return text;
+	const trimmed = text.trim();
+	if (mode === "trim") return trimmed;
+	return trimmed.toLowerCase().replace(/\s+/gu, " ");
+}
+
+function gradeExact(
+	spec: { normalize: ExactNormalize },
+	expected: string | undefined,
+	output: string,
+): GraderResult {
+	if (expected === undefined) return missingExpected("exact");
+	const passed = normalizeAnswer(output, spec.normalize) === normalizeAnswer(expected, spec.normalize);
+	return {
+		name: "",
+		type: "exact",
+		passed,
+		score: passed ? 1 : 0,
+		reason: passed
+			? `output equals the expected answer (normalize: ${spec.normalize})`
+			: `output differs from the expected answer (normalize: ${spec.normalize})`,
+	};
+}
+
+/** Unicode word tokens: runs of letters or digits, case-folded. */
+export function answerTokens(text: string): string[] {
+	return text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+}
+
+/** Multiset token F1, the standard span-answer overlap score. */
+export function tokenF1(a: string, b: string): number {
+	const left = answerTokens(a);
+	const right = answerTokens(b);
+	if (left.length === 0 && right.length === 0) return 1;
+	if (left.length === 0 || right.length === 0) return 0;
+	const remaining = new Map<string, number>();
+	for (const token of left) remaining.set(token, (remaining.get(token) ?? 0) + 1);
+	let overlap = 0;
+	for (const token of right) {
+		const available = remaining.get(token) ?? 0;
+		if (available > 0) {
+			remaining.set(token, available - 1);
+			overlap += 1;
+		}
+	}
+	if (overlap === 0) return 0;
+	const precision = overlap / left.length;
+	const recall = overlap / right.length;
+	return (2 * precision * recall) / (precision + recall);
+}
+
+/** Levenshtein distance over unicode code points, one rolling row of cells. */
+function levenshteinDistance(a: readonly string[], b: readonly string[]): number {
+	let previous = new Int32Array(b.length + 1);
+	let current = new Int32Array(b.length + 1);
+	for (let column = 0; column <= b.length; column += 1) previous[column] = column;
+	for (let row = 1; row <= a.length; row += 1) {
+		current[0] = row;
+		for (let column = 1; column <= b.length; column += 1) {
+			const substitution = previous[column - 1]! + (a[row - 1] === b[column - 1] ? 0 : 1);
+			current[column] = Math.min(previous[column]! + 1, current[column - 1]! + 1, substitution);
+		}
+		[previous, current] = [current, previous];
+	}
+	return previous[b.length]!;
+}
+
+/**
+ * `1 − distance / maxLength`, over unicode code points.
+ *
+ * The distance is never smaller than the length difference, so a length-only
+ * upper bound decides the common "the agent wrote an essay" case without
+ * filling an O(n·m) matrix. `bounded` says the score is that upper bound: it is
+ * only ever returned when the bound alone already fails the threshold.
+ */
+export function levenshteinRatio(
+	a: string,
+	b: string,
+	threshold = 0,
+): { score: number; bounded: boolean } {
+	const left = [...a];
+	const right = [...b];
+	const maxLength = Math.max(left.length, right.length);
+	if (maxLength === 0) return { score: 1, bounded: false };
+	const upperBound = 1 - Math.abs(left.length - right.length) / maxLength;
+	if (upperBound < threshold) return { score: upperBound, bounded: true };
+	return { score: 1 - levenshteinDistance(left, right) / maxLength, bounded: false };
+}
+
+function gradeSimilarity(
+	spec: { metric: SimilarityMetric; threshold: number },
+	expected: string | undefined,
+	output: string,
+): GraderResult {
+	if (expected === undefined) return missingExpected("similarity");
+	// Both metrics compare the canonical `lower` normalization, so trailing
+	// whitespace and casing never decide a fuzzy match.
+	const candidate = normalizeAnswer(output, "lower");
+	const reference = normalizeAnswer(expected, "lower");
+	const { score, bounded } = spec.metric === "token-f1"
+		? { score: tokenF1(candidate, reference), bounded: false }
+		: levenshteinRatio(candidate, reference, spec.threshold);
+	const passed = score >= spec.threshold;
+	const rounded = Math.round(score * 1000) / 1000;
+	return {
+		name: "",
+		type: "similarity",
+		passed,
+		score,
+		reason: `${spec.metric} ${bounded ? "≤" : "="} ${rounded}${bounded ? " (length-difference bound)" : ""}, ` +
+			`${passed ? "at or above" : "below"} threshold ${spec.threshold}`,
+	};
+}
+
 // ---------- Judge grader ----------
-// Judge calls leave a sidecar trace (exact request + raw response) in
-// runs/<run_id>/judge/<graderIndex>.json — written BEFORE parsing, so even an
-// unparseable verdict keeps its evidence. ponytail: sidecar file, not a
-// judge-as-run through runner.ts; upgrade if judge verdicts ever need their
-// own provenance/cost accounting.
+// Judge calls leave one sidecar per attempt (exact request + raw response) in
+// runs/<run_id>/judge/<graderIndex>.<attempt>.json — written BEFORE parsing, so
+// even an unparseable verdict keeps its evidence. The terminal attempt keeps
+// the historical runs/<run_id>/judge/<graderIndex>.json name, so every existing
+// reader still finds the exchange that decided the grade.
+// ponytail: sidecar file, not a judge-as-run through runner.ts; upgrade if
+// judge verdicts ever need their own provenance.
 
 const JUDGE_SYSTEM =
 	'Ты — грейдер. Оцени ответ агента на обращение по критерию. ' +
 	'Ответь строго одной строкой JSON без markdown: {"passed": true|false, "reason": "краткое обоснование"}';
 
-function parseVerdict(text: string): { passed: boolean; reason: string } {
+/**
+ * The rubric-only prompt is frozen on purpose. Rewording it would change
+ * verdicts for datasets that already have evidence, which is exactly what
+ * `AHDE_EVALUATOR_ID` exists to fence off. Reference judging is a new protocol
+ * on a new grader spec, so it gets the delimited prompt below instead.
+ */
+const JUDGE_REFERENCE_SYSTEM =
+	'Ты — грейдер. Сравни фактическое содержание ответа агента с эталонным ответом. ' +
+	'Игнорируй различия в стиле, грамматике, пунктуации и форматировании. ' +
+	'Ответь строго одной строкой JSON без markdown: {"choice": "A"|"B"|"C"|"D"|"E", "reason": "краткое обоснование"}';
+
+/**
+ * The A–E factuality rubric, ported from vitest-evals' `FactualityJudge`:
+ * only an outright disagreement with the reference is a failure, because a
+ * narrower, a broader and a differently worded answer are all still correct.
+ */
+const REFERENCE_CHOICE_SCORES = { A: 0.4, B: 0.6, C: 1, D: 0, E: 1 } as const;
+type ReferenceChoice = keyof typeof REFERENCE_CHOICE_SCORES;
+const REFERENCE_FAILING_CHOICE: ReferenceChoice = "D";
+
+function isReferenceChoice(value: unknown): value is ReferenceChoice {
+	// hasOwn, not `in`: an inherited key like "toString" is not a rubric choice.
+	return typeof value === "string" && Object.hasOwn(REFERENCE_CHOICE_SCORES, value);
+}
+
+/** Reference and rubric each get their own delimited block, verbatim. */
+function judgeReferencePrompt(rubric: string, input: string, expected: string, output: string): string {
+	return [
+		"<критерий>", rubric, "</критерий>",
+		"",
+		"<обращение>", input, "</обращение>",
+		"",
+		"<эталонный ответ>", expected, "</эталонный ответ>",
+		"",
+		"<ответ агента>", output, "</ответ агента>",
+		"",
+		"Выбери ровно один вариант:",
+		"A: ответ агента — полностью согласованное подмножество эталона.",
+		"B: ответ агента — полностью согласованное надмножество эталона.",
+		"C: ответ агента содержит те же фактические сведения, что и эталон.",
+		"D: ответ агента противоречит эталону.",
+		"E: ответы отличаются только в деталях, не влияющих на фактическую сторону.",
+		"",
+		'Верни JSON ровно с этими полями: {"choice": "C", "reason": "краткое обоснование выбора"}',
+	].join("\n");
+}
+
+function judgeJsonObject(text: string): Record<string, unknown> {
 	const stripped = text.replace(/```(?:json)?/g, "").trim();
 	const start = stripped.indexOf("{");
 	const end = stripped.lastIndexOf("}");
@@ -105,11 +293,39 @@ function parseVerdict(text: string): { passed: boolean; reason: string } {
 	} catch {
 		throw new Error(`judge returned unparseable verdict: ${text.slice(0, 120)}`);
 	}
-	const verdict = parsed as { passed?: unknown; reason?: unknown };
-	if (typeof verdict.passed !== "boolean" || typeof verdict.reason !== "string") {
-		throw new Error(`judge verdict missing passed/reason: ${text.slice(0, 120)}`);
+	return parsed as Record<string, unknown>;
+}
+
+/** A missing or non-string reason is a judge quirk, not an infrastructure failure. */
+function judgeReason(value: unknown): string {
+	return typeof value === "string" && value.trim().length > 0 ? value : "judge gave no reason";
+}
+
+function parseVerdict(text: string): JudgeVerdict {
+	const verdict = judgeJsonObject(text);
+	if (typeof verdict.passed !== "boolean") {
+		throw new Error(`judge verdict missing boolean passed: ${text.slice(0, 120)}`);
 	}
-	return { passed: verdict.passed, reason: verdict.reason };
+	return {
+		passed: verdict.passed,
+		score: verdict.passed ? 1 : 0,
+		reason: judgeReason(verdict.reason),
+	};
+}
+
+function parseReferenceVerdict(text: string): JudgeVerdict {
+	const verdict = judgeJsonObject(text);
+	if (!isReferenceChoice(verdict.choice)) {
+		throw new Error(`judge verdict missing an A–E choice: ${text.slice(0, 120)}`);
+	}
+	const choice = verdict.choice;
+	return {
+		passed: choice !== REFERENCE_FAILING_CHOICE,
+		score: REFERENCE_CHOICE_SCORES[choice],
+		// The choice leads the reason so the rubric branch is visible in run.json.
+		reason: `${choice}: ${judgeReason(verdict.reason)}`,
+		choice,
+	};
 }
 
 function contentToString(content: unknown): string {
@@ -122,14 +338,137 @@ function contentToString(content: unknown): string {
 	return "";
 }
 
+/** A judge endpoint is a network dependency, not an oracle: give it three tries. */
+const JUDGE_MAX_ATTEMPTS = 3;
+/** Backoff before attempt 2 and 3. Jittered so concurrent judges do not resonate. */
+const JUDGE_RETRY_DELAYS_MS = [1_000, 4_000] as const;
+
+/**
+ * Rate limits, gateway hiccups and dropped connections are transport weather.
+ * A 4xx that is not 429 is a contract error and a verdict that will not parse
+ * is a model error: retrying either only burns tokens and hides the cause.
+ */
+function retryableJudgeStatus(status: number): boolean {
+	return status === 429 || status >= 500;
+}
+
+function judgeRetryDelayMs(attempt: number): number {
+	const base = JUDGE_RETRY_DELAYS_MS[attempt - 1] ?? JUDGE_RETRY_DELAYS_MS[JUDGE_RETRY_DELAYS_MS.length - 1] ?? 1_000;
+	return Math.round(base * (0.75 + Math.random() * 0.5));
+}
+
+/** Sleep that yields to host cancellation instead of sitting on it for 4 seconds. */
+function judgeBackoff(attempt: number, signal?: AbortSignal): Promise<void> {
+	return new Promise<void>((resolve, reject) => {
+		const abort = (): void => {
+			clearTimeout(timer);
+			reject(signal?.reason ?? new Error("grading aborted"));
+		};
+		const timer = setTimeout(() => {
+			signal?.removeEventListener("abort", abort);
+			resolve();
+		}, judgeRetryDelayMs(attempt));
+		if (signal?.aborted) {
+			abort();
+			return;
+		}
+		signal?.addEventListener("abort", abort, { once: true });
+	});
+}
+
+interface JudgeUsage {
+	promptTokens: number;
+	completionTokens: number;
+	totalTokens: number;
+}
+
+function nonNegativeInteger(value: unknown): number {
+	return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
+}
+
+/** OpenAI-compatible `usage`. Absent or unusable usage is reported as no usage. */
+function parseJudgeUsage(body: unknown): JudgeUsage | null {
+	if (typeof body !== "object" || body === null) return null;
+	const usage = (body as { usage?: unknown }).usage;
+	if (typeof usage !== "object" || usage === null) return null;
+	const fields = usage as Record<string, unknown>;
+	const promptTokens = nonNegativeInteger(fields.prompt_tokens);
+	const completionTokens = nonNegativeInteger(fields.completion_tokens);
+	const reportedTotal = nonNegativeInteger(fields.total_tokens);
+	const totalTokens = reportedTotal > 0 ? reportedTotal : promptTokens + completionTokens;
+	if (totalTokens === 0) return null;
+	return { promptTokens, completionTokens, totalTokens };
+}
+
+/** Judge cost from the manifest's declared rates (USD per 1M tokens, Pi's convention). */
+function judgeCostUsd(cost: TargetManifest["model"]["spec"]["cost"], usage: JudgeUsage): number {
+	let rates: { input: number; output: number } = cost;
+	let matchedThreshold = -1;
+	for (const tier of cost.tiers ?? []) {
+		if (usage.promptTokens > tier.inputTokensAbove && tier.inputTokensAbove > matchedThreshold) {
+			rates = tier;
+			matchedThreshold = tier.inputTokensAbove;
+		}
+	}
+	return (rates.input * usage.promptTokens + rates.output * usage.completionTokens) / 1_000_000;
+}
+
+interface JudgeSidecar {
+	dir: string;
+	graderIndex: number;
+}
+
+/** Evidence first: the exact exchange is on disk before anything is parsed. */
+function writeJudgeAttemptEvidence(
+	sidecar: JudgeSidecar,
+	attempt: number,
+	terminal: boolean,
+	exchange: unknown,
+): void {
+	mkdirSync(sidecar.dir, { recursive: true, mode: 0o700 });
+	chmodSync(sidecar.dir, 0o700);
+	const name = terminal ? `${sidecar.graderIndex}.json` : `${sidecar.graderIndex}.${attempt}.json`;
+	writeTextArtifact(join(sidecar.dir, name), `${JSON.stringify(exchange, null, "\t")}\n`, { mode: 0o600 });
+}
+
+type JudgeAttempt =
+	| { kind: "transport"; message: string }
+	| { kind: "http"; status: number; ok: boolean; text: string };
+
+interface JudgeVerdict {
+	passed: boolean;
+	score: number;
+	reason: string;
+	/** Present only for the A–E reference rubric. */
+	choice?: ReferenceChoice;
+}
+
+/** One judge protocol: what is asked, and how the answer becomes a verdict. */
+interface JudgeProtocol {
+	system: string;
+	user: string;
+	parse: (text: string) => JudgeVerdict;
+}
+
+/**
+ * The decided choice, next to the raw exchange rather than inside it: the
+ * exchange file stays exactly what went over the wire, written before anything
+ * is parsed, and the verdict file says how it was read.
+ */
+function writeJudgeVerdictEvidence(sidecar: JudgeSidecar, verdict: JudgeVerdict): void {
+	writeTextArtifact(
+		join(sidecar.dir, `${sidecar.graderIndex}.verdict.json`),
+		`${JSON.stringify({ choice: verdict.choice, passed: verdict.passed, score: verdict.score }, null, "\t")}\n`,
+		{ mode: 0o600 },
+	);
+}
+
 async function gradeJudge(
-	spec: { rubric: string },
+	protocol: JudgeProtocol,
 	judge: TargetManifest["model"],
-	task: { input: string },
-	output: string,
-	tracePath: string,
+	sidecar: JudgeSidecar,
 	signal?: AbortSignal,
-): Promise<GraderResult> {
+): Promise<{ result: GraderResult; metrics: JudgeMetrics }> {
 	const key = process.env[judge.apiKeyEnv];
 	if (judge.baseUrl.includes("openrouter.ai") && !key) {
 		throw new Error(`missing ${judge.apiKeyEnv} for judge endpoint ${judge.baseUrl}`);
@@ -138,39 +477,79 @@ async function gradeJudge(
 	const requestBody = {
 		model: judge.id,
 		messages: [
-			{ role: "system", content: JUDGE_SYSTEM },
-			{ role: "user", content: `Критерий: ${spec.rubric}\n\nОбращение: ${task.input}\n\nОтвет агента: ${output}` },
+			{ role: "system", content: protocol.system },
+			{ role: "user", content: protocol.user },
 		],
-		temperature: 0,
 		stream: false,
 		...judge.params,
 		...(judge.thinkingLevel !== "off" ? { reasoning: { effort: judge.thinkingLevel } } : {}),
+		// After the spread on purpose: a grader that samples is not a grader.
+		// manifest.ts rejects a judge params temperature; this makes overriding
+		// it structurally impossible even for evidence written by older code.
+		temperature: 0,
 	};
-	const response = await fetch(url, {
-		method: "POST",
-		headers: { "content-type": "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) },
-		body: JSON.stringify(requestBody),
-		signal: signal
-			? AbortSignal.any([signal, AbortSignal.timeout(judge.timeoutMs)])
-			: AbortSignal.timeout(judge.timeoutMs),
-	});
-	const rawText = await response.text();
-	// Evidence first: the exact exchange is on disk even if parsing/HTTP fails.
-	const judgeDir = join(tracePath, "..");
-	mkdirSync(judgeDir, { recursive: true, mode: 0o700 });
-	chmodSync(judgeDir, 0o700);
-	writeTextArtifact(
-		tracePath,
-		`${JSON.stringify({ request: { url, body: requestBody }, response: { status: response.status, text: rawText } }, null, "\t")}\n`,
-		{ mode: 0o600 },
-	);
-	if (!response.ok) {
-		throw new Error(`judge HTTP ${response.status}: ${rawText.slice(0, 120)}`);
+	let calls = 0;
+	let tokens = 0;
+	let costUsd = 0;
+
+	for (let attempt = 1; ; attempt += 1) {
+		if (signal?.aborted) throw signal.reason ?? new Error("grading aborted");
+		calls += 1;
+		let outcome: JudgeAttempt;
+		try {
+			const response = await fetch(url, {
+				method: "POST",
+				headers: { "content-type": "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) },
+				body: JSON.stringify(requestBody),
+				signal: signal
+					? AbortSignal.any([signal, AbortSignal.timeout(judge.timeoutMs)])
+					: AbortSignal.timeout(judge.timeoutMs),
+			});
+			outcome = { kind: "http", status: response.status, ok: response.ok, text: await response.text() };
+		} catch (error) {
+			outcome = { kind: "transport", message: error instanceof Error ? error.message : String(error) };
+		}
+		// Host cancellation is a decision, never weather: it is never retried.
+		const retry = signal?.aborted !== true &&
+			attempt < JUDGE_MAX_ATTEMPTS &&
+			(outcome.kind === "transport" || retryableJudgeStatus(outcome.status));
+		writeJudgeAttemptEvidence(sidecar, attempt, !retry, {
+			request: { url, body: requestBody },
+			response: outcome.kind === "http" ? { status: outcome.status, text: outcome.text } : null,
+			...(outcome.kind === "transport" ? { error: outcome.message } : {}),
+		});
+
+		if (outcome.kind === "transport") {
+			if (!retry) throw new Error(`judge request failed: ${outcome.message}`);
+			await judgeBackoff(attempt, signal);
+			continue;
+		}
+		if (!outcome.ok) {
+			if (!retry) throw new Error(`judge HTTP ${outcome.status}: ${outcome.text.slice(0, 120)}`);
+			await judgeBackoff(attempt, signal);
+			continue;
+		}
+
+		// Parse failures are never retried: the transport worked and a second
+		// identical request at temperature 0 has nothing new to say.
+		let body: { choices?: { message?: { content?: unknown } }[] };
+		try {
+			body = JSON.parse(outcome.text) as { choices?: { message?: { content?: unknown } }[] };
+		} catch {
+			throw new Error(`judge returned an unparseable response body: ${outcome.text.slice(0, 120)}`);
+		}
+		const usage = parseJudgeUsage(body);
+		if (usage) {
+			tokens += usage.totalTokens;
+			costUsd += judgeCostUsd(judge.spec.cost, usage);
+		}
+		const verdict = protocol.parse(contentToString(body.choices?.[0]?.message?.content));
+		if (verdict.choice) writeJudgeVerdictEvidence(sidecar, verdict);
+		return {
+			result: { name: "", type: "judge", passed: verdict.passed, score: verdict.score, reason: verdict.reason },
+			metrics: { calls, tokens, costUsd },
+		};
 	}
-	const body = JSON.parse(rawText) as { choices?: { message?: { content?: unknown } }[] };
-	const text = contentToString(body.choices?.[0]?.message?.content);
-	const verdict = parseVerdict(text);
-	return { name: "", type: "judge", passed: verdict.passed, score: verdict.passed ? 1 : 0, reason: verdict.reason };
 }
 
 /** Grade one completed run against its task's effective graders. */
@@ -180,7 +559,15 @@ function graderCheckCode(type: GraderSpec["type"]): GraderCheckCode {
 		case "output_contains": return "output-contains";
 		case "output_matches": return "output-matches";
 		case "judge": return "semantic-rubric";
+		case "exact": return "reference-exact";
+		case "similarity": return "reference-similarity";
 	}
+}
+
+export interface GradedRun {
+	graders: GraderResult[];
+	/** Aggregate judge cost for this run; null when no judge grader ran. */
+	judge: JudgeMetrics | null;
 }
 
 export async function gradeRun(
@@ -189,7 +576,7 @@ export async function gradeRun(
 	runsRoot: string,
 	judge?: TargetManifest["model"],
 	signal?: AbortSignal,
-): Promise<GraderResult[]> {
+): Promise<GradedRun> {
 	const runDir = resolveContainedArtifactPath(runsRoot, ArtifactIdSchema.parse(record.runId));
 	let output: string | undefined;
 	let toolCalls: ReturnType<typeof traceToolCalls> = [];
@@ -199,6 +586,8 @@ export async function gradeRun(
 		toolCalls = traceToolCalls(messages);
 	}
 	const results: GraderResult[] = [];
+	const judgeSpend = { calls: 0, tokens: 0, costUsd: 0 };
+	let judgeCalled = false;
 	for (const [index, spec] of task.effectiveGraders.entries()) {
 		if (signal?.aborted) throw signal.reason ?? new Error("grading aborted");
 		const normalizedSpec = GraderSpec.parse(spec);
@@ -215,9 +604,37 @@ export async function gradeRun(
 			result = gradeToolCalled(normalizedSpec, toolCalls);
 		} else if (normalizedSpec.type === "output_contains") {
 			result = gradeOutputContains(normalizedSpec, output ?? "");
+		} else if (graderNeedsExpected(normalizedSpec) && !hasReferenceAnswer(task)) {
+			// Checked before any judge call: a case with no reference answer costs
+			// no tokens and never passes on the strength of an empty comparison.
+			result = missingExpected(normalizedSpec.type);
+		} else if (normalizedSpec.type === "exact") {
+			result = gradeExact(normalizedSpec, task.expected, output ?? "");
+		} else if (normalizedSpec.type === "similarity") {
+			result = gradeSimilarity(normalizedSpec, task.expected, output ?? "");
 		} else if (normalizedSpec.type === "judge") {
 			if (!judge) throw new Error("judge grader without judge model config");
-			result = await gradeJudge(normalizedSpec, judge, task, output ?? "", join(runDir, "judge", `${index}.json`), signal);
+			const judged = await gradeJudge(
+				normalizedSpec.withReference
+					? {
+						system: JUDGE_REFERENCE_SYSTEM,
+						user: judgeReferencePrompt(normalizedSpec.rubric, task.input, task.expected ?? "", output ?? ""),
+						parse: parseReferenceVerdict,
+					}
+					: {
+						system: JUDGE_SYSTEM,
+						user: `Критерий: ${normalizedSpec.rubric}\n\nОбращение: ${task.input}\n\nОтвет агента: ${output ?? ""}`,
+						parse: parseVerdict,
+					},
+				judge,
+				{ dir: join(runDir, "judge"), graderIndex: index },
+				signal,
+			);
+			result = judged.result;
+			judgeCalled = true;
+			judgeSpend.calls += judged.metrics.calls;
+			judgeSpend.tokens += judged.metrics.tokens;
+			judgeSpend.costUsd += judged.metrics.costUsd;
 		} else {
 			result = gradeOutputMatches(normalizedSpec, output ?? "");
 		}
@@ -228,7 +645,7 @@ export async function gradeRun(
 			checkCode: graderCheckCode(normalizedSpec.type),
 		});
 	}
-	return results;
+	return { graders: results, judge: judgeCalled ? judgeSpend : null };
 }
 
 // ---------- Eval run aggregation ----------
@@ -264,8 +681,16 @@ const EvalRunArtifactSchema = z.strictObject({
 export const EvidenceVisibilitySchema = z.enum(["development", "sealed"]);
 export type EvidenceVisibility = z.infer<typeof EvidenceVisibilitySchema>;
 
+/**
+ * Bumped to 2 in V1.8: `provenance` lost `ahdeCodeHash` and gained
+ * `evaluatorId`, so a v1 index describes a different comparability contract.
+ * v1 records stay readable only as display-only legacy rows
+ * (`listEvalRunIndexesLenient`); they are never comparable or reusable.
+ */
+export const EVAL_RUN_SCHEMA_VERSION = 2;
+
 export const EvalRunRecordSchema = z.strictObject({
-	schemaVersion: z.literal(1),
+	schemaVersion: z.literal(EVAL_RUN_SCHEMA_VERSION),
 	evalRunId: ArtifactIdSchema,
 	target: z.strictObject({
 		id: z.string().min(1),
@@ -373,6 +798,94 @@ export interface RunSuiteOptions {
 	onRunEvent?: RunEventListener;
 	/** Host-owned cancellation propagated through Target and judge sessions. */
 	signal?: AbortSignal;
+	/**
+	 * Concurrent executions. Defaults to {@link DEFAULT_EVAL_JOBS}, or 1 against
+	 * a loopback endpoint. Evidence is unaffected: every run keeps its own
+	 * directory, ordinal and design position regardless of completion order.
+	 */
+	jobs?: number;
+}
+
+/** Hosted providers absorb a small fan-out; this is the value `--jobs` defaults to. */
+export const DEFAULT_EVAL_JOBS = 4;
+
+/**
+ * A model server on this machine is the bottleneck itself: parallel prompts
+ * queue behind one GPU and only add contention and timeouts. Loopback targets
+ * therefore default to a single job.
+ */
+export function isLoopbackModelEndpoint(baseUrl: string): boolean {
+	let host: string;
+	try {
+		host = new URL(baseUrl).hostname.toLowerCase();
+	} catch {
+		return false;
+	}
+	const bare = host.replace(/^\[|\]$/g, "");
+	return bare === "localhost" || bare.endsWith(".localhost") ||
+		bare === "::1" || bare === "0.0.0.0" || bare === "::" ||
+		/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(bare) ||
+		bare === "::ffff:127.0.0.1";
+}
+
+export function defaultEvalJobs(model: { baseUrl: string }): number {
+	return isLoopbackModelEndpoint(model.baseUrl) ? 1 : DEFAULT_EVAL_JOBS;
+}
+
+/** One planned execution: its exact position in the design is fixed before anything runs. */
+interface PlannedRun {
+	/** One-based position within tasks × repetitions. */
+	ordinal: number;
+	task: ResolvedTask;
+	repetition: number;
+}
+
+interface CompletedRun {
+	record: RunRecord;
+	outcome: "pass" | "fail" | "error";
+}
+
+/**
+ * Grade one completed execution and write its final run.json exactly once.
+ * A grading failure is infrastructure, not a verdict: the run becomes an error
+ * with its cause, and the same single write persists it.
+ */
+async function gradeAndFinalize(
+	target: ResolvedTarget,
+	task: ResolvedTask,
+	record: RunRecord,
+	options: RunSuiteOptions,
+	eventRun: RunEventIdentity,
+): Promise<CompletedRun> {
+	let graded: GradedRun | null = null;
+	try {
+		graded = await gradeRun(task, record, options.runsRoot, target.manifest.evalSuite.judge, options.signal);
+	} catch (gradeError) {
+		record.status = "error";
+		record.error = `evaluation infrastructure: ${gradeError instanceof Error ? gradeError.message : String(gradeError)}`;
+		record.evalResults = null;
+	}
+	if (graded) {
+		record.evalResults = {
+			graders: graded.graders,
+			outcome: graded.graders.every((grader) => grader.passed) ? "pass" : "fail",
+		};
+		if (graded.judge) record.metrics = { ...record.metrics, judge: graded.judge };
+	}
+	writeJsonArtifact(
+		resolveContainedArtifactPath(options.runsRoot, ArtifactIdSchema.parse(record.runId), "run.json"),
+		RunRecordSchema,
+		record,
+	);
+	const outcome = record.evalResults?.outcome ?? "error";
+	emitRunGraded(
+		options.onRunEvent,
+		eventRun,
+		outcome,
+		graded?.graders ?? [],
+		task.effectiveGraders.length,
+	);
+	return { record, outcome };
 }
 
 /**
@@ -389,12 +902,23 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 	const tasks = options.taskId ? target.tasks.filter((t) => t.id === options.taskId) : target.tasks;
 	if (tasks.length === 0) throw new Error(`task not found: ${options.taskId}`);
 
+	const jobs = options.jobs ?? defaultEvalJobs(target.manifest.model);
+	if (!Number.isInteger(jobs) || jobs < 1) {
+		throw new Error(`jobs must be a positive integer, got ${jobs}`);
+	}
+
 	const startedAt = new Date().toISOString();
-	const runIds: string[] = [];
-	let pass = 0;
-	let fail = 0;
-	let error = 0;
-	let effectiveExecution: ExecutionFingerprint | undefined;
+	// The complete design exists before the first model call: every execution
+	// owns its ordinal, so persisted order is the design's, never completion's.
+	const design: PlannedRun[] = [];
+	for (const [taskIndex, task] of tasks.entries()) {
+		for (let repetition = 0; repetition < options.repetitions; repetition += 1) {
+			design.push({ ordinal: taskIndex * options.repetitions + repetition + 1, task, repetition });
+		}
+	}
+	const executionTotal = design.length;
+	const slots: (CompletedRun | undefined)[] = new Array<CompletedRun | undefined>(executionTotal);
+
 	const workspaceSnapshot = materializeTargetWorkspaceSnapshot(
 		target,
 		options.runsRoot,
@@ -403,77 +927,88 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 		disposeTargetWorkspaceSnapshot(workspaceSnapshot);
 		throw new Error("Target workspace changed after the baseline reuse query");
 	}
-	const executionTotal = tasks.length * options.repetitions;
-	try {
-		for (const [taskIndex, task] of tasks.entries()) {
-			for (let repetition = 0; repetition < options.repetitions; repetition += 1) {
-				if (options.signal?.aborted) throw options.signal.reason ?? new Error("evaluation aborted");
-				const ordinal = taskIndex * options.repetitions + repetition + 1;
-				const record = await runTask(target, task, {
-					runsRoot: options.runsRoot,
-					label: options.label,
-					repetitionIndex: repetition,
-					evalRunId,
-					candidateOf: options.candidateOf ?? null,
-					workspaceSnapshot,
-					ordinal,
-					total: executionTotal,
-					onRunEvent: options.onRunEvent,
-					signal: options.signal,
-				});
-				if (options.signal?.aborted) throw options.signal.reason ?? new Error("evaluation aborted");
-				const eventRun: RunEventIdentity = {
-					evalRunId,
-					runId: record.runId,
-					taskId: record.taskId,
-					repetitionIndex: record.repetitionIndex,
-					ordinal,
-					total: executionTotal,
-				};
-				runIds.push(record.runId);
-				if (!effectiveExecution) effectiveExecution = record.execution;
-				else if (canonicalJson(effectiveExecution) !== canonicalJson(record.execution)) {
-					throw new Error("execution policy changed within one eval run");
-				}
-				if (record.status === "error") {
-					error += 1;
-					emitRunGraded(options.onRunEvent, eventRun, "error", [], task.effectiveGraders.length);
-					continue;
-				}
-				let graders: GraderResult[];
-				try {
-					graders = await gradeRun(task, record, options.runsRoot, target.manifest.evalSuite.judge, options.signal);
-				} catch (gradeError) {
-					record.status = "error";
-					record.error = `evaluation infrastructure: ${gradeError instanceof Error ? gradeError.message : String(gradeError)}`;
-					writeJsonArtifact(
-						resolveContainedArtifactPath(options.runsRoot, ArtifactIdSchema.parse(record.runId), "run.json"),
-						RunRecordSchema,
-						record,
-					);
-					error += 1;
-					emitRunGraded(options.onRunEvent, eventRun, "error", [], task.effectiveGraders.length);
-					continue;
-				}
-				const outcome = graders.every((g) => g.passed) ? "pass" : "fail";
-				record.evalResults = { graders, outcome };
-				// finalize run.json with eval results (second and final write)
-				writeJsonArtifact(
-					resolveContainedArtifactPath(options.runsRoot, ArtifactIdSchema.parse(record.runId), "run.json"),
-					RunRecordSchema,
-					record,
-				);
-				emitRunGraded(options.onRunEvent, eventRun, outcome, graders);
-				if (outcome === "pass") pass += 1;
-				else fail += 1;
+
+	const execute = async (planned: PlannedRun): Promise<CompletedRun> => {
+		if (options.signal?.aborted) throw options.signal.reason ?? new Error("evaluation aborted");
+		const record = await runTask(target, planned.task, {
+			runsRoot: options.runsRoot,
+			label: options.label,
+			repetitionIndex: planned.repetition,
+			evalRunId,
+			candidateOf: options.candidateOf ?? null,
+			workspaceSnapshot,
+			ordinal: planned.ordinal,
+			total: executionTotal,
+			onRunEvent: options.onRunEvent,
+			signal: options.signal,
+		});
+		if (options.signal?.aborted) throw options.signal.reason ?? new Error("evaluation aborted");
+		const eventRun: RunEventIdentity = {
+			evalRunId,
+			runId: record.runId,
+			taskId: record.taskId,
+			repetitionIndex: record.repetitionIndex,
+			ordinal: planned.ordinal,
+			total: executionTotal,
+		};
+		if (record.status === "error") {
+			emitRunGraded(options.onRunEvent, eventRun, "error", [], planned.task.effectiveGraders.length);
+			return { record, outcome: "error" };
+		}
+		return gradeAndFinalize(target, planned.task, record, options, eventRun);
+	};
+
+	// Bounded worker pool over the design. Each worker takes the next unclaimed
+	// position and lands its result in that position's slot. The first failure
+	// stops the pool from claiming more work — a broken evaluation must not keep
+	// spending tokens — but never cancels what is already running.
+	let nextPlanned = 0;
+	let firstFailure: { reason: unknown } | undefined;
+	const worker = async (): Promise<void> => {
+		for (;;) {
+			if (firstFailure) return;
+			const index = nextPlanned;
+			nextPlanned += 1;
+			const planned = design[index];
+			if (!planned) return;
+			try {
+				slots[planned.ordinal - 1] = await execute(planned);
+			} catch (error) {
+				firstFailure ??= { reason: error };
+				throw error;
 			}
 		}
-	} finally {
-		disposeTargetWorkspaceSnapshot(workspaceSnapshot);
-	}
+	};
+	// The snapshot is shared by every in-flight run, so it is disposed only once
+	// they have all settled — an abort waits for its own executions to finish.
+	const settled = await Promise.allSettled(
+		Array.from({ length: Math.min(jobs, executionTotal) }, () => worker()),
+	);
+	disposeTargetWorkspaceSnapshot(workspaceSnapshot);
+	if (firstFailure) throw firstFailure.reason;
+	const rejected = settled.find((result) => result.status === "rejected");
+	if (rejected?.status === "rejected") throw rejected.reason;
+	if (options.signal?.aborted) throw options.signal.reason ?? new Error("evaluation aborted");
 
-	const total = runIds.length;
+	const completed = slots.map((slot, index) => {
+		if (!slot) throw new Error(`evaluation lost the result for ordinal ${index + 1}`);
+		return slot;
+	});
+	const runIds = completed.map((slot) => slot.record.runId);
+	const pass = completed.filter((slot) => slot.outcome === "pass").length;
+	const fail = completed.filter((slot) => slot.outcome === "fail").length;
+	const error = completed.filter((slot) => slot.outcome === "error").length;
+
+	// One eval run is one execution policy. Reduced after the pass rather than
+	// carried through it, because "first wins" has no meaning in a pool.
+	const effectiveExecution: ExecutionFingerprint | undefined = completed[0]?.record.execution;
 	if (!effectiveExecution) throw new Error("evaluation produced no execution fingerprint");
+	for (const slot of completed) {
+		if (canonicalJson(slot.record.execution) !== canonicalJson(effectiveExecution)) {
+			throw new Error("execution policy changed within one eval run");
+		}
+	}
+	const total = runIds.length;
 	const evidenceInput = {
 		runtime: target.runtime,
 		model: modelFingerprint(target.manifest.model),
@@ -482,7 +1017,7 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 		eval: { suiteHash: target.suiteHash, datasetHash: target.datasetHash },
 	};
 	const record: EvalRunRecord = {
-		schemaVersion: 1,
+		schemaVersion: EVAL_RUN_SCHEMA_VERSION,
 		evalRunId,
 		target: {
 			id: target.manifest.id,
@@ -670,30 +1205,66 @@ export function listPublicEvalRunIndexesBounded(
 	};
 }
 
-/** CLI-facing best-effort listing; invalid siblings never hide healthy indexes. */
+export interface InvalidEvalRunIndex {
+	evalRunId: string;
+	/** Bounded validation reason; legacy indexes predate the current provenance axes. */
+	reason: string;
+}
+
+/**
+ * Bounded peek at an index that failed validation. A pre-V1.8 record is a fact
+ * of history, not a defect, and saying so beats a zod dump. Display only: the
+ * value is never used to accept, migrate, or compare the record.
+ */
+function indexSchemaVersion(runsRoot: string, evalRunId: string): number | null {
+	try {
+		return readJsonArtifact(
+			resolveContainedArtifactPath(runsRoot, ArtifactIdSchema.parse(evalRunId), "eval_run.json"),
+			z.object({ schemaVersion: z.number().int() }),
+		).schemaVersion;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Best-effort index listing: invalid or legacy siblings never hide healthy
+ * indexes and never block a caller. Each invalid index is reported with its
+ * reason so humans can see "legacy · not comparable" instead of nothing.
+ */
 export function listEvalRunIndexesLenient(runsRoot: string): {
 	records: EvalRunRecord[];
+	invalid: InvalidEvalRunIndex[];
 	invalidCount: number;
 } {
 	let entries: string[];
 	try {
 		entries = readdirSync(runsRoot);
 	} catch {
-		return { records: [], invalidCount: 0 };
+		return { records: [], invalid: [], invalidCount: 0 };
 	}
 	const records: EvalRunRecord[] = [];
-	let invalidCount = 0;
+	const invalid: InvalidEvalRunIndex[] = [];
 	for (const entry of entries) {
 		if (!entry.startsWith("erun_")) continue;
 		try {
 			records.push(readEvalRunIndex(runsRoot, entry));
-		} catch {
-			invalidCount += 1;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			const version = indexSchemaVersion(runsRoot, entry);
+			const note = version !== null && version < EVAL_RUN_SCHEMA_VERSION
+				? `legacy schemaVersion ${version} (not comparable): `
+				: "";
+			invalid.push({
+				evalRunId: entry,
+				reason: `${note}${message.replace(/\s+/g, " ")}`.slice(0, 200),
+			});
 		}
 	}
 	records.sort((left, right) =>
 		right.startedAt.localeCompare(left.startedAt) || right.evalRunId.localeCompare(left.evalRunId));
-	return { records, invalidCount };
+	invalid.sort((left, right) => left.evalRunId.localeCompare(right.evalRunId));
+	return { records, invalid, invalidCount: invalid.length };
 }
 
 function evidenceMismatch(evalRunId: string, message: string): never {
@@ -808,34 +1379,62 @@ export function listEvalRuns(runsRoot: string): EvalRunRecord[] {
 }
 
 /**
- * Find the latest eval run whose provenance matches the given axes (baseline
- * reuse). Must match repetitions: a one-repetition baseline would make
- * every flaky task a fatal ±100pp "regression" in compare.
+ * The exact identity a reusable baseline must match. Every field is required:
+ * a partial query would let sealed evidence reuse a development index or a
+ * one-repetition baseline stand in for a three-repetition design.
  */
 export interface ReusableBaselineQuery {
 	targetId: string;
 	targetGitSha: string;
-	/** Exact tool identity for new artifacts; omitted by legacy callers only. */
-	toolsetHash?: string;
-	/** Exact model-visible workspace identity for new artifacts. */
-	workspaceHash?: string;
+	/** Exact tool identity. */
+	toolsetHash: string;
+	/** Exact model-visible workspace identity. */
+	workspaceHash: string;
 	provenance: ProvenanceAxes;
-	/** Required by new callers so sealed evidence cannot reuse a development index. */
-	evidenceVisibility?: EvidenceVisibility;
-	label?: "baseline" | "candidate" | "solo";
-	repetitions?: number;
+	evidenceVisibility: EvidenceVisibility;
+	label: "baseline" | "candidate" | "solo";
+	repetitions: number;
+	/**
+	 * How old a baseline may be and still stand in for a fresh one. Provider
+	 * behaviour drifts behind an unchanged model id, so age is the one axis the
+	 * fingerprint cannot see. Defaults to {@link DEFAULT_BASELINE_MAX_AGE_MS};
+	 * 0 disables reuse.
+	 */
+	maxAgeMs?: number;
 }
 
+/** Seven days: long enough to amortize a baseline, short enough to notice drift. */
+export const DEFAULT_BASELINE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
+
+/**
+ * Find the newest eval run whose identity matches the query (baseline reuse).
+ * The scan reads indexes only and skips legacy, errored, or otherwise
+ * unusable siblings; only the chosen match is fully verified, so one bad
+ * index on disk can never abort a candidate verification.
+ */
 export function findReusableBaseline(runsRoot: string, query: ReusableBaselineQuery): EvalRunRecord | null {
-	for (const record of listEvalRuns(runsRoot)) {
-		if (record.label !== (query.label ?? "baseline")) continue;
+	const maxAgeMs = query.maxAgeMs ?? DEFAULT_BASELINE_MAX_AGE_MS;
+	const oldestUsableMs = Date.now() - maxAgeMs;
+	for (const record of listEvalRunIndexesLenient(runsRoot).records) {
+		if (record.label !== query.label) continue;
+		// An unreadable timestamp cannot prove freshness, so it is not fresh.
+		const finishedAtMs = Date.parse(record.finishedAt);
+		if (!Number.isFinite(finishedAtMs) || finishedAtMs < oldestUsableMs) continue;
 		if (record.target.id !== query.targetId || record.target.gitSha !== query.targetGitSha) continue;
-		if (query.toolsetHash !== undefined && record.target.toolsetHash !== query.toolsetHash) continue;
-		if (query.workspaceHash !== undefined && record.target.workspaceHash !== query.workspaceHash) continue;
-		if (query.evidenceVisibility !== undefined && record.evidenceVisibility !== query.evidenceVisibility) continue;
+		if (record.target.toolsetHash !== query.toolsetHash) continue;
+		if (record.target.workspaceHash !== query.workspaceHash) continue;
+		if (record.evidenceVisibility !== query.evidenceVisibility) continue;
 		if (record.provenanceKey === "") continue;
-		if (query.repetitions !== undefined && record.repetitions !== query.repetitions) continue;
-		if (axisDifferences(record.provenance, query.provenance).length === 0) return record;
+		if (record.repetitions !== query.repetitions) continue;
+		// Errored evidence is inconclusive and would only stop the experiment later.
+		if (record.summary.error > 0) continue;
+		if (axisDifferences(record.provenance, query.provenance).length !== 0) continue;
+		try {
+			return loadVerifiedEvalRun(runsRoot, record.evalRunId).record;
+		} catch {
+			// A match whose member runs no longer verify is not evidence; keep scanning.
+			continue;
+		}
 	}
 	return null;
 }

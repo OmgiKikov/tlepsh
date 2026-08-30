@@ -3,6 +3,7 @@ import type {
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import type { AhdeWorkbench } from "../workbench/workbench.js";
+import { DEFAULT_REPETITIONS } from "../workbench/calibration.js";
 import {
 	WorkbenchDecisionDeclinedError,
 	WorkbenchSelectionRequiredError,
@@ -37,6 +38,7 @@ export const AHDE_BUILDER_COMMAND_NAMES = [
 	"doctor",
 	"status",
 	"run",
+	"calibrate",
 	"traces",
 	"review",
 	"approve",
@@ -65,6 +67,7 @@ Commands:
   /review               the exact artifact awaiting your review, with actions
   /traces               diagnosis, failure modes, and the evidence link
   /run [N] [reason]     run the development basket or verify the applied candidate
+  /calibrate [N]        measure run-to-run noise: the same revision against itself
   /approve [reason]     approve the reviewed Spec draft
   /publish [name]       publish the reviewed eval basket
   /apply <branch>       apply the reviewed proposal to a candidate branch
@@ -76,6 +79,10 @@ Commands:
   /target [resource]    the exact committed Target, or one declared resource
   /doctor               model auth, Target readiness, and recovery steps
   /help                 this reference
+
+Pi's own built-ins configure the Builder's model, not the agent's:
+  /login                connect a provider (OAuth or API key), once per machine
+  /model                pick a Builder model that already has a credential
 
 Every consequential step shows the exact subject and asks you to confirm.`;
 
@@ -105,18 +112,19 @@ function reasonOrDefault(args: string, command: string): string {
 	return args.trim() || `Requested interactively via /${command}`;
 }
 
-function parseRun(args: string): { repetitions: number; reason: string } {
+function parseRepetitions(args: string, command: "run" | "calibrate"): { repetitions: number; reason: string } {
+	const fallback = `Requested interactively via /${command}`;
 	const trimmed = args.trim();
-	if (!trimmed) return { repetitions: 1, reason: "Requested interactively via /run" };
+	if (!trimmed) return { repetitions: DEFAULT_REPETITIONS, reason: fallback };
 	const tokens = trimmed.split(/\s+/);
 	if (!/^\d+$/.test(tokens[0] ?? "")) {
-		return { repetitions: 1, reason: trimmed };
+		return { repetitions: DEFAULT_REPETITIONS, reason: trimmed };
 	}
 	const repetitions = Number(tokens.shift());
 	if (!Number.isInteger(repetitions) || repetitions < 1 || repetitions > 10) {
-		throw new Error("/run repetitions must be an integer between 1 and 10");
+		throw new Error(`/${command} repetitions must be an integer between 1 and 10`);
 	}
-	return { repetitions, reason: tokens.join(" ") || "Requested interactively via /run" };
+	return { repetitions, reason: tokens.join(" ") || fallback };
 }
 
 const BRANCH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
@@ -174,10 +182,16 @@ function decisionTitle(result: WorkbenchDecisionResult): { title: string; tone: 
 				? { title: "Run complete", tone: result.result.evaluation.summary.error > 0 ? "warning" : "success" }
 				: { title: "Candidate verified", tone: "success" };
 		case "verify-candidate": return { title: "Candidate verified", tone: "success" };
+		case "calibrate":
+			return {
+				title: "Noise calibrated",
+				tone: result.result.calibration.verdict === "inconclusive" ? "success" : "warning",
+			};
 		case "scaffold-target": return { title: "Target created", tone: "success" };
 		case "configure-target": return { title: "Target configured", tone: "success" };
 		case "approve-spec": return { title: "Spec approved", tone: "success" };
 		case "publish-corpus": return { title: "Eval basket published", tone: "success" };
+		case "import-dataset": return { title: "Dataset imported", tone: "success" };
 		case "apply-proposal": return { title: "Proposal applied", tone: "success" };
 		case "discard-proposal": return { title: "Proposal discarded", tone: "info" };
 		case "abandon-candidate": return { title: "Candidate attempt abandoned", tone: "info" };
@@ -485,7 +499,7 @@ export function registerAhdeBuilderCommands(
 					if (choice) await discardCurrent(ctx, signal, "Abandoned from /review");
 				} else {
 					const choice = await choose("Applied proposal", ["Verify the candidate now (/run)"]);
-					if (choice) await runObserved(ctx, "run", { kind: "run-current", repetitions: 1, reason: "Verification from /review" }, signal);
+					if (choice) await runObserved(ctx, "run", { kind: "run-current", repetitions: DEFAULT_REPETITIONS, reason: "Verification from /review" }, signal);
 				}
 				return;
 			}
@@ -569,8 +583,17 @@ export function registerAhdeBuilderCommands(
 		description: "Run the development basket or verify the applied candidate: /run [repetitions] [reason]",
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "run");
-			const parsed = parseRun(args);
+			const parsed = parseRepetitions(args, "run");
 			await runObserved(ctx, "run", { kind: "run-current", repetitions: parsed.repetitions, reason: parsed.reason }, signal);
+		},
+	});
+
+	pi.registerCommand("calibrate", {
+		description: "Measure run-to-run noise by running this exact revision against itself: /calibrate [repetitions] [reason]",
+		async handler(args, ctx) {
+			const signal = await prepare(ctx, "calibrate");
+			const parsed = parseRepetitions(args, "calibrate");
+			await runObserved(ctx, "calibrate", { kind: "calibrate", repetitions: parsed.repetitions, reason: parsed.reason }, signal);
 		},
 	});
 

@@ -35,8 +35,9 @@ description: Review an evidence-backed typed proposal, inspect its exact diff, a
    references, repository paths, file modes, content hashes, or unified diffs;
    the host re-derives and validates canonical evidence from the verified brief
    and compiles the exact proposal from a clean Target snapshot.
-6. Inspect `ahde_workbench_view` with `aspect: review`. Check the evidence
-   references, exact changed paths and diff, risks, and validation plan.
+6. Inspect `ahde_workbench_view` with `aspect: review`. The host renders the
+   evidence references, exact changed paths and diff, risks, and validation
+   plan beside your message; read them there and never retype them into chat.
 7. Interpret “fix”, “исправь”, or similar natural language as “prepare the
    immutable proposal and show review”, never as approval to apply. Explain the
    expected behavior change and most likely regression. When the operator then

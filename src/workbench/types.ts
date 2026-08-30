@@ -1,9 +1,16 @@
 import { z } from "zod";
+import type { GateSurface, GateVerdict } from "../domain/comparison-gate.js";
 import {
 	BuilderCorpusDraftCoverageNotesSchema,
 	BuilderCorpusDraftTasksInputSchema,
 } from "../application/builder-corpus-draft.js";
 import { BuilderCorpusImportSourcePathSchema } from "../application/builder-corpus-import-contract.js";
+import {
+	DatasetMappingRecipeSchema,
+	DatasetSeedSchema,
+	DatasetSourcePathSchema,
+	type DatasetPreview,
+} from "../application/dataset-ingest.js";
 import { BuilderWorkbenchCorpusRevisionOperationsSchema } from "../application/builder-regression-case.js";
 import { HarnessAuthoringIntentsSchema } from "../application/harness-authoring.js";
 import {
@@ -16,7 +23,7 @@ import {
 	ProposalBasisSelectionSchema,
 } from "../application/improvement-brief.js";
 import type { RunEventListener } from "../run-events.js";
-import type { TargetManifest } from "../manifest.js";
+import type { GraderSpec, TargetManifest } from "../manifest.js";
 import { AgentSpecSchema, type AgentSpec } from "../spec.js";
 import type { BuilderCorpusDraft } from "../application/builder-corpus-draft.js";
 import type { PersistedBuilderRun } from "../application/builder-proposal.js";
@@ -29,7 +36,9 @@ import type { CandidateStatus, ComparisonSummaryEvidence } from "../domain/candi
 import type { EvalRunSummary } from "../eval.js";
 import type { CycleContinuationReceipt } from "./cycle-continuation.js";
 
-const NonBlankSchema = z.string().min(1).refine((value) => value.trim().length > 0, "expected non-blank text");
+// A regex, not a refinement: the generated tool schema carries `pattern` so the
+// model sees the constraint instead of only being corrected by it.
+const NonBlankSchema = z.string().min(1).regex(/\S/, "expected non-blank text");
 const ArtifactIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/);
 
 export const WorkbenchSelectionKindSchema = z.enum([
@@ -92,6 +101,43 @@ export interface WorkbenchProposalReview {
 	exactDiff: string;
 }
 
+/** Human-facing projection of one comparison-gate verdict. Never carries task ids. */
+export interface WorkbenchGateProjection {
+	verdict: GateVerdict;
+	surface: GateSurface;
+	delta: number;
+	confidence95: { low: number; high: number };
+	tasks: number;
+	repetitions: number;
+	excludedTasks: number;
+	flags: { regressedTasks: number; improvedTasks: number; collapsedTasks: number };
+	reasons: string[];
+}
+
+/**
+ * Human-facing projection of one A/A calibration run: how much the Target
+ * moves against itself on the reviewed development basket. It is measurement,
+ * never evidence for promotion.
+ */
+export interface WorkbenchCalibrationProjection {
+	candidateId: string;
+	/** Exact Target revision both arms ran; calibration expires with it. */
+	targetSha: string;
+	taskCount: number;
+	repetitions: number;
+	/** Baseline arm pass rate; the A/A operating point p. */
+	aaPassRate: number;
+	delta: number;
+	confidence95: { low: number; high: number };
+	/** Share of cases that moved at all between two identical arms. */
+	flipRate: number;
+	/** Smallest k ∈ 1..5 whose expected noise band is at most 10 points. */
+	recommendedRepetitions: number;
+	/** Development verdict; `inconclusive` is the healthy A/A result. */
+	verdict: GateVerdict;
+	at: string;
+}
+
 export interface WorkbenchCandidateSummary {
 	candidateId: string;
 	status: CandidateStatus;
@@ -105,8 +151,10 @@ export interface WorkbenchCandidateSummary {
 		baselineEvalRunId: string;
 		candidateEvalRunId: string;
 		comparison: ComparisonSummaryEvidence | null;
+		/** v3 gate verdict; null for legacy evidence. */
+		gate: WorkbenchGateProjection | null;
 	} | null;
-	sealedHoldout: { executed: boolean; gatePassed: boolean };
+	sealedHoldout: { executed: boolean; gatePassed: boolean; gate: WorkbenchGateProjection | null };
 	review: { experimentId: string; recommendation: "promote" | "reject"; reason: string } | null;
 	promotion: { tag: string; reason: string; at: string } | null;
 	rejection: { reason: string; at: string } | null;
@@ -217,10 +265,21 @@ export interface WorkbenchTracesDetail {
 
 export type WorkbenchTargetDetail = TargetAuthoringContext | { launch: "ahde init ." };
 
+/**
+ * One inbox file as the host reads it. The preview is bounded and
+ * credential-redacted, and the rows a sealed slice already reserved are gone
+ * before it is computed, so nothing here describes the exam.
+ */
+export interface WorkbenchDatasetDetail {
+	sourcePath: string;
+	preview: DatasetPreview;
+}
+
 export type WorkbenchDetail =
 	| { aspect: "review"; content: WorkbenchReviewDetail }
 	| { aspect: "traces"; content: WorkbenchTracesDetail }
-	| { aspect: "target"; content: WorkbenchTargetDetail };
+	| { aspect: "target"; content: WorkbenchTargetDetail }
+	| { aspect: "dataset"; content: WorkbenchDatasetDetail };
 
 export interface WorkbenchSelectionSummary {
 	kind: WorkbenchSelectionKind;
@@ -246,6 +305,8 @@ export interface WorkbenchView {
 	actions: string[];
 	blockers: string[];
 	warnings: string[];
+	/** Newest A/A calibration of the exact active Target revision, if any. */
+	calibration: WorkbenchCalibrationProjection | null;
 	detail?: WorkbenchDetail;
 	counts: {
 		specDrafts: number;
@@ -256,18 +317,36 @@ export interface WorkbenchView {
 		developmentEvals: number;
 		openProposals: number;
 		candidates: number;
+		calibrations: number;
 	};
 }
 
+/** Bulk parts of the view a caller must ask for; the model-facing projection drops them otherwise. */
+export const WorkbenchViewIncludeSchema = z.enum(["selections"]);
+export type WorkbenchViewInclude = z.infer<typeof WorkbenchViewIncludeSchema>;
+
 export const WorkbenchViewQuerySchema = z.strictObject({
-	aspect: z.enum(["summary", "traces", "review", "target"]).optional(),
+	aspect: z.enum(["summary", "traces", "review", "target", "dataset"]).optional(),
 	resourcePath: z.string().min(1).max(500).optional(),
+	/**
+	 * Projection hint read by the model-facing transport, not by the Workbench:
+	 * `["selections"]` asks for the full selectable-artifact list, which every
+	 * human renderer always receives.
+	 */
+	include: z.array(WorkbenchViewIncludeSchema).max(1).optional(),
 }).superRefine((query, context) => {
-	if (query.resourcePath !== undefined && query.aspect !== "target") {
+	if (query.resourcePath !== undefined && query.aspect !== "target" && query.aspect !== "dataset") {
 		context.addIssue({
 			code: "custom",
 			path: ["resourcePath"],
-			message: "resourcePath is valid only for the Target view",
+			message: "resourcePath is valid only for the Target and dataset views",
+		});
+	}
+	if (query.aspect === "dataset" && query.resourcePath === undefined) {
+		context.addIssue({
+			code: "custom",
+			path: ["resourcePath"],
+			message: "the dataset view needs the imports/ path of the file to preview",
 		});
 	}
 });
@@ -281,7 +360,8 @@ const SelectInputSchema = z.strictObject({
 
 const SaveSpecDraftInputSchema = z.strictObject({
 	kind: z.literal("spec-draft"),
-	spec: AgentSpecSchema,
+	/** The schema version is host-owned; a Builder never authors or restates it. */
+	spec: AgentSpecSchema.extend({ schemaVersion: z.literal(1).default(1) }),
 	sourceText: z.string().max(64 * 1024).optional(),
 });
 
@@ -300,6 +380,20 @@ const ImportCorpusDraftInputSchema = z.strictObject({
 	sourcePath: BuilderCorpusImportSourcePathSchema,
 	name: NonBlankSchema.max(200),
 	coverageNotes: BuilderCorpusDraftCoverageNotesSchema.default([]),
+	revisionSummary: NonBlankSchema.max(4_000),
+});
+
+/**
+ * A proposed reading of one inbox file. The Builder writes it from the preview
+ * alone; the host re-validates it against the real columns and answers with the
+ * first cases it produces, so the human argues with cases, not with JSON.
+ */
+const DatasetRecipeInputSchema = z.strictObject({
+	kind: z.literal("dataset-recipe"),
+	approvedSpecId: ArtifactIdSchema.optional(),
+	sourcePath: DatasetSourcePathSchema,
+	recipe: DatasetMappingRecipeSchema,
+	name: NonBlankSchema.max(200),
 	revisionSummary: NonBlankSchema.max(4_000),
 });
 
@@ -332,6 +426,7 @@ export const WorkbenchSubmitInputSchema = z.discriminatedUnion("kind", [
 	SaveSpecDraftInputSchema,
 	CreateCorpusDraftInputSchema,
 	ImportCorpusDraftInputSchema,
+	DatasetRecipeInputSchema,
 	ReviseCorpusDraftInputSchema,
 	StructuredProposalInputSchema,
 ]);
@@ -367,8 +462,24 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		reason: NonBlankSchema.max(4_000),
 	}),
 	z.strictObject({
+		kind: z.literal("import-dataset"),
+		submissionId: ArtifactIdSchema.optional(),
+		/** The exam, drawn before anything development-facing is compiled. */
+		sealed: z.strictObject({
+			count: z.number().int().min(1),
+			seed: DatasetSeedSchema,
+			stratifyBy: z.string().min(1).max(200).optional(),
+		}).nullable(),
+		reason: NonBlankSchema.max(4_000),
+	}),
+	z.strictObject({
 		kind: z.literal("run-eval"),
 		developmentCorpusId: ArtifactIdSchema.optional(),
+		repetitions: z.number().int().min(1).max(10),
+		reason: NonBlankSchema.max(4_000),
+	}),
+	z.strictObject({
+		kind: z.literal("calibrate"),
 		repetitions: z.number().int().min(1).max(10),
 		reason: NonBlankSchema.max(4_000),
 	}),
@@ -464,6 +575,28 @@ export interface WorkbenchHumanGate {
 	): Promise<WorkbenchSealedChoice>;
 }
 
+/** One compiled case, bounded and credential-redacted, exactly as a human reads it. */
+export interface WorkbenchDatasetCase {
+	input: string;
+	expected: string | null;
+	messages: { role: "user" | "assistant"; content: string }[] | null;
+	metadata: Record<string, string> | null;
+	graders: GraderSpec[];
+}
+
+/** What a `dataset-recipe` submission hands back: cases, not JSON. */
+export interface WorkbenchDatasetRecipeArtifact {
+	submissionId: string;
+	sourcePath: string;
+	name: string;
+	/** Cases the recipe would produce on the rows the exam did not take. */
+	developmentCount: number;
+	skippedRows: number;
+	sealedReserved: number;
+	sampleCases: WorkbenchDatasetCase[];
+	[key: string]: unknown;
+}
+
 export interface WorkbenchTurn {
 	kind: WorkbenchSubmitInput["kind"];
 	message: string;
@@ -480,7 +613,8 @@ export interface WorkbenchRunEvalResult {
 
 export interface WorkbenchVerifyCandidateResult {
 	candidate: WorkbenchCandidateSummary;
-	sealedHoldout: { executed: boolean; gatePassed: boolean };
+	development: { verdict: GateVerdict; delta: number; confidence95: { low: number; high: number } };
+	sealedHoldout: { executed: boolean; gatePassed: boolean; verdict: GateVerdict | null };
 }
 
 /** Typed payload of every consequential decision, keyed by its decision kind. */
@@ -495,7 +629,21 @@ export interface WorkbenchDecisionResultMap {
 		publicationReceiptId: string;
 		lineageHash: string;
 	};
+	/**
+	 * A draft, plus how many cases the exam took. The sealed corpus id lives in
+	 * the ingest receipt and in no development-facing object.
+	 */
+	"import-dataset": {
+		draftId: string;
+		taskCount: number;
+		approvedSpecId: string;
+		sourcePath: string;
+		sealedCount: number;
+		skippedRows: number;
+		receiptId: string;
+	};
 	"run-eval": WorkbenchRunEvalResult;
+	calibrate: { candidateId: string; calibration: WorkbenchCalibrationProjection };
 	"run-current":
 		| ({ resolvedAs: "run-eval" } & WorkbenchRunEvalResult)
 		| ({ resolvedAs: "verify-candidate" } & WorkbenchVerifyCandidateResult);

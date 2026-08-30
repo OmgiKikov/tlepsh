@@ -136,19 +136,27 @@ function evaluation(sha = CANDIDATE_SHA, holdout = true) {
 			harness: { ref: "refs/heads/candidate-1", sha },
 		},
 		comparison: {
-			policyId: sealed ? "sealed-no-regression-v1" : "development-comparable-v1",
+			schemaVersion: 3,
+			algorithmId: "exact-comparison-gate-v3",
+			policyId: sealed ? "sealed-guardrail-v3" : "development-ci-v3",
+			surface: sealed ? "sealed" : "development",
 			comparisonHash: ARTIFACT_HASH,
+			evidenceHash: ARTIFACT_HASH,
 			gateHash: ARTIFACT_HASH,
 			summary: {
-				taskCount: 1,
+				taskCount: 15,
 				baselinePassRate: 0,
 				candidatePassRate: 1,
 				delta: 1,
 				confidence95: { low: 1, high: 1 },
-				improved: 1,
+				improved: 15,
 				regressed: 0,
 				unchanged: 0,
 			},
+			design: { tasks: 15, repetitions: 2, excludedTasks: 0 },
+			verdict: sealed ? "pass" : "improved",
+			flags: { regressedTasks: 0, improvedTasks: 15, collapsedTasks: 0 },
+			reasons: ["fixture verdict"],
 		},
 		...(sealed ? { corpus: { id: "sealed-corpus", hash: ARTIFACT_HASH } } : {}),
 	});
@@ -308,9 +316,9 @@ describe("Candidate lifecycle", () => {
 		const duplicateEvalRef = evaluation();
 		duplicateEvalRef.development.candidate.evalRunId = duplicateEvalRef.development.baseline.evalRunId;
 		expect(() => evaluated(validated(), duplicateEvalRef)).toThrow(/baseline and candidate must reference distinct eval runs/);
-		expect(() =>
-			evaluated(validated(), { ...evaluation(), infrastructureErrors: 1 }),
-		).toThrow(/infrastructure errors are inconclusive/);
+		// Infrastructure errors within the gate's budget are excluded from the
+		// statistics and recorded as a count; the record still reaches evaluated.
+		expect(candidateStatus(evaluated(validated(), { ...evaluation(), infrastructureErrors: 1 }))).toBe("evaluated");
 	});
 
 	it("requires explicit human actors for apply, review, and terminal decisions", () => {

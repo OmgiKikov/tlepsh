@@ -7,7 +7,10 @@ const LEGAL_DECISION_STAGES = {
 	"configure-target": ["target-setup"],
 	"approve-spec": ["spec-review"],
 	"publish-corpus": ["corpus-review"],
+	// A dataset may become the first basket or replace one already drafted.
+	"import-dataset": ["corpus-design", "corpus-review"],
 	"run-eval": ["ready-to-evaluate", "improvement-authoring"],
+	calibrate: ["ready-to-evaluate", "improvement-authoring"],
 	"apply-proposal": ["proposal-review"],
 	"discard-proposal": ["proposal-review"],
 	"verify-candidate": ["candidate-verification"],
