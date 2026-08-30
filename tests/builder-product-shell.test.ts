@@ -181,7 +181,7 @@ describe("AHDE Builder product shell", () => {
 		expect(rendered).toContain("OPENAI_API_KEY missing");
 		// The header names something the operator can say, never a stage name or
 		// a slash command they have to look up.
-		expect(rendered).toContain("Next say “ok” to approve it, or what to change");
+		expect(rendered).toContain("Next Say “ok” to approve it, or what to change");
 		expect(rendered).not.toContain("/review");
 		expect(h.requestRender).toHaveBeenCalled();
 		expect(h.ui.setStatus).toHaveBeenLastCalledWith("ahde-auth", undefined);

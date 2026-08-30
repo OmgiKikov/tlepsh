@@ -107,7 +107,7 @@ describe("Workbench improvement-cycle closure", () => {
 			const view = await fixture.workbench.view();
 			expect(view).toMatchObject({
 				stage: "candidate-adoption",
-				actions: ["adopt-candidate"],
+				actions: ["ship", "adopt-candidate"],
 				blockers: [],
 				focus: { candidate: fixture.candidateId },
 				target: { status: "ready", id: fixture.projectId, gitSha: fixture.baselineSha },
@@ -239,7 +239,7 @@ describe("Workbench improvement-cycle closure", () => {
 
 			expect(adopted.view).toMatchObject({
 				stage: "complete",
-				actions: ["continue-cycle"],
+				actions: ["ship", "continue-cycle"],
 				blockers: [],
 				focus: { candidate: fixture.candidateId },
 				target: { gitSha: fixture.candidateSha },
@@ -408,7 +408,7 @@ describe("Workbench improvement-cycle closure", () => {
 			const view = await fixture.workbench.view();
 			expect(view).toMatchObject({
 				stage: "complete",
-				actions: ["continue-cycle"],
+				actions: ["ship", "continue-cycle"],
 				blockers: [],
 				headline: expect.stringContaining("rejected"),
 				focus: { candidate: fixture.candidateId },

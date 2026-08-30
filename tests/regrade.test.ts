@@ -1,7 +1,14 @@
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { compareEvalRuns } from "../src/compare.js";
+import {
+	resolveDevelopmentTargetForEval,
+	targetEvalSurface,
+	targetWithDevelopmentCorpus,
+} from "../src/application/corpus-target.js";
+import { createCorpus, loadCorpus } from "../src/corpus.js";
 import {
 	loadRun,
 	loadVerifiedEvalRun,
@@ -422,5 +429,95 @@ describe("regrade and infrastructure errors", () => {
 			cleanup(runsRoot);
 			await mock.close();
 		}
+	}, SUITE_TIMEOUT_MS);
+});
+
+
+/**
+ * A regrade of a published corpus. Regression: the suite identity was recomputed
+ * with the manifest formula even when the resolved surface was a corpus, whose
+ * identity a published snapshot had already fixed. The regraded run then carried
+ * a suite hash nothing could rebuild: `resolveDevelopmentTargetForEval` threw,
+ * the Workbench never counted it as compatible evidence and rewound to
+ * `ready-to-evaluate` — asking the operator for exactly the Target-model spend a
+ * regrade exists to avoid — and a Builder-seeded candidate was refused at
+ * promotion (invariant 15).
+ */
+describe("regrade of a published corpus", () => {
+	let mock: MockModelHandle;
+	let targetDir: string;
+	let runsRoot: string;
+	let stateRoot: string;
+	let corpusId: string;
+	let source: EvalRunRecord;
+
+	const projectId = "regrade-corpus-project";
+
+	beforeAll(async () => {
+		process.env.MOCK_MODEL_KEY = "test-key";
+		mock = await startMockModel([{ match: () => true, steps: [{ text: "ответ ok" }] }]);
+		targetDir = defaultsFixture(mock.url);
+		runsRoot = join(targetDir, "..", `regrade-corpus-runs-${Date.now()}`);
+		stateRoot = mkdtempSync(`${tmpdir()}/ahde-regrade-corpus-`);
+		const metadata = createCorpus({
+			stateRoot,
+			projectId,
+			name: "reviewed development basket",
+			visibility: "development",
+			tasks: [
+				{ id: "corpus-1", input: "alpha request", graders: [{ type: "output_contains", text: "ответ" }] },
+				{ id: "corpus-2", input: "beta request", graders: [{ type: "output_contains", text: "ответ" }] },
+			],
+		});
+		corpusId = metadata.id;
+		source = await runSuite(corpusTarget(), { runsRoot, label: "baseline", repetitions: 1 });
+	}, SUITE_TIMEOUT_MS);
+
+	afterAll(async () => {
+		cleanup(targetDir);
+		cleanup(runsRoot);
+		cleanup(stateRoot);
+		await mock.close();
+	});
+
+	function corpusTarget() {
+		return targetWithDevelopmentCorpus(
+			loadTarget(targetDir),
+			loadCorpus({ stateRoot, projectId, corpusId }),
+		);
+	}
+
+	it("keeps the corpus suite identity, so the regrade stays compatible evidence", async () => {
+		const target = corpusTarget();
+		const requestsBefore = mock.requests();
+
+		const result = await regradeEvalRun({ runsRoot, evalRunId: source.evalRunId, target });
+
+		expect(mock.requests()).toBe(requestsBefore);
+		expect(target.suiteIdentity).toBe("corpus");
+		expect(result.record.suiteHash).toBe(target.suiteHash);
+		expect(result.record.suiteHash).toBe(source.suiteHash);
+		expect(result.record.dataset).toBe(source.dataset);
+		expect(result.record.datasetHash).toBe(source.datasetHash);
+
+		// The whole point: the new evidence resolves back to the same published
+		// surface a live evaluation would produce.
+		const resolved = resolveDevelopmentTargetForEval({
+			target: loadTarget(targetDir),
+			stateRoot,
+			projectId,
+			evalRun: result.record,
+		});
+		expect(resolved.corpus?.metadata.id).toBe(corpusId);
+		expect(targetEvalSurface(resolved.target)).toEqual(targetEvalSurface(target));
+	}, SUITE_TIMEOUT_MS);
+
+	it("refuses suite defaults for a corpus source instead of silently ignoring them", async () => {
+		await expect(regradeEvalRun({
+			runsRoot,
+			evalRunId: source.evalRunId,
+			target: corpusTarget(),
+			graderDefaults: [{ type: "output_contains", text: "never", caseSensitive: false }],
+		})).rejects.toThrow(/carry explicit graders/);
 	}, SUITE_TIMEOUT_MS);
 });

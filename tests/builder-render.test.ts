@@ -572,18 +572,18 @@ describe("stage labels and next steps", () => {
 	it("gives one actionable hint per stage", () => {
 		const expected: Record<WorkbenchStage, string> = {
 			"target-setup": "Describe the agent you want to build",
-			"spec-design": "Describe the agent; the Builder drafts a Spec",
-			"spec-review": "Review the Spec (/review), then /approve or ask for changes",
-			"corpus-design": "Ask the Builder to draft evaluation cases",
-			"corpus-review": "Review the cases (/review), then /publish",
-			"ready-to-evaluate": "/run to evaluate the Target",
-			"improvement-authoring": "/traces, then say “fix the first problem”",
-			"proposal-review": "/review the diff, then /apply <branch> or /discard",
-			"candidate-verification": "/run to verify the candidate against the baseline",
-			"candidate-review": "/review the evidence, then say “promote” or “reject”",
-			"release-decision": "/promote <version> or /reject",
-			"candidate-adoption": "/adopt to make the promoted candidate the active Target",
-			complete: "/next to start the next improvement cycle",
+			"spec-design": "Describe the agent you want",
+			"spec-review": "Say “ok” to approve it, or what to change",
+			"corpus-design": "Say “tests” and the Builder writes the cases",
+			"corpus-review": "Say “tests” to publish them and run",
+			"ready-to-evaluate": "Say “tests” to run them",
+			"improvement-authoring": "Say “fix the first problem”",
+			"proposal-review": "Say “apply” after reading the diff, or “discard”",
+			"candidate-verification": "Say “check” to verify the change",
+			"candidate-review": "Say “ship it” — or “reject”",
+			"release-decision": "Say “ship it 0.2.0” — or “reject”",
+			"candidate-adoption": "Say “ship it” to make it the active agent",
+			complete: "Say “next” to start the next cycle",
 			"selection-required": "Pick one of the two open proposals",
 		};
 		for (const stage of WorkbenchStageSchema.options) {
@@ -596,17 +596,17 @@ describe("stage labels and next steps", () => {
 		expect(nextStep(makeView({ stage: "selection-required", headline: "Choose a candidate" }))).toBe("Choose a candidate");
 	});
 
-	it("points an interrupted candidate at /review then /discard", () => {
+	it("points an interrupted candidate at reading it, then discarding it", () => {
 		const view = makeView({
 			stage: "candidate-verification",
 			detail: { aspect: "review", content: { kind: "interrupted-candidate", ...makeCandidate({ status: "built" }) } },
 		});
-		expect(nextStep(view)).toBe("/review the interrupted attempt, then /discard to abandon it before retrying");
+		expect(nextStep(view)).toBe("Read the interrupted attempt, then say “discard” to abandon it before retrying");
 		const healthy = makeView({
 			stage: "candidate-verification",
 			detail: { aspect: "review", content: makeCandidateReview() },
 		});
-		expect(nextStep(healthy)).toBe("/run to verify the candidate against the baseline");
+		expect(nextStep(healthy)).toBe("Say “check” to verify the change");
 	});
 
 	it("asks for a model when target setup is blocked on a placeholder", () => {
@@ -625,7 +625,7 @@ describe("renderStatus", () => {
 			"Target support-bot @ aaaaaaaaaa · openai/gpt-5 ✓",
 			"Evidence 2 eval runs · 1 open proposal · 3 candidates",
 			"Noise not calibrated · say “calibrate” or /calibrate",
-			"Next /run to evaluate the Target",
+			"Next Say “tests” to run them",
 		]);
 		expect(lines.join("\n")).not.toContain("{");
 	});
@@ -716,7 +716,7 @@ describe("renderHeader", () => {
 		expect(lines[0]).toBe("");
 		expect(lines[1]).toBe("AHDE Builder · build, evaluate, and improve another agent through evidence");
 		expect(lines[2]).toBe("Target support-bot @ aaaaaaaaaa · openai/gpt-5 ✓");
-		expect(lines[3]).toBe("Stage Ready to run · Next /run to evaluate the Target");
+		expect(lines[3]).toBe("Stage Ready to run · Next Say “tests” to run them");
 		expect(lines[4]).toBe("Evidence 2 eval runs · 1 open proposal · 3 candidates · Builder model anthropic/claude-opus ✓");
 		expect(lines[5]).toBe("Noise not calibrated · say “calibrate” or /calibrate");
 		expect(lines[6]).toBe("Describe what you want in plain language · /help for shortcuts");

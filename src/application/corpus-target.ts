@@ -7,8 +7,9 @@ import {
 import type { EvalRunRecord } from "../eval.js";
 import {
 	graderNeedsExpected,
-	hasReferenceAnswer,
 	type GraderSpec,
+	hasReferenceAnswer,
+	judgeMeasurementIdentity,
 	type ResolvedTarget,
 	type TargetManifest,
 } from "../manifest.js";
@@ -132,8 +133,12 @@ function targetWithCorpus(
 			schemaVersion: 1,
 			corpus: { id: corpus.metadata.id, hash: corpus.metadata.hash, visibility },
 			effectiveGraders: "explicit-per-task",
-			judge: target.manifest.evalSuite.judge ?? null,
+			// Same measurement-only view the manifest formula hashes: a promotion
+			// policy is not a grading input, so toggling `requireCalibration`
+			// leaves every published-corpus eval comparable.
+			judge: judgeMeasurementIdentity(target.manifest.evalSuite.judge),
 		}),
+		suiteIdentity: "corpus",
 	};
 }
 

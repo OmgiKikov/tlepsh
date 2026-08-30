@@ -488,6 +488,14 @@ export interface ResolvedTarget {
 	tasks: ResolvedTask[];
 	/** Suite grader defaults, exactly as the manifest's graders file declares them. */
 	graderDefaults: GraderSpec[];
+	/**
+	 * Which rule produced `suiteHash`. `manifest` means the formula in
+	 * `suiteHashOf` over this dataset, these defaults, and the judge; `corpus`
+	 * means a published snapshot fixed the identity and no caller may recompute
+	 * it — every corpus case carries explicit graders, so suite defaults cannot
+	 * change a verdict and must not change the hash.
+	 */
+	suiteIdentity: "manifest" | "corpus";
 	/** Hash of the raw parsed dataset (task ids, inputs, per-task graders). */
 	datasetHash: string;
 	/** Hash of the effective scoring config: dataset + suite grader defaults. */
@@ -648,19 +656,30 @@ function datasetIdentity(task: Task): Record<string, unknown> {
  * `loadTarget` and `ahde regrade` both compute it here, so the suite hash of a
  * re-graded eval is the same kind of fact as the suite hash of a run.
  */
+/**
+ * The judge as a *measurement* input: the model, its parameters, and the rubric
+ * machinery, with the promotion-only calibration policy removed. Canonical JSON
+ * drops the undefined key, so setting or lifting `requireCalibration` never
+ * moves an identity hash and never invalidates evidence produced by the
+ * identical judge. Every suite identity — the manifest formula below and the
+ * corpus formula in `application/corpus-target.ts` — hashes through here, so no
+ * second formula can drift away from this rule.
+ */
+export function judgeMeasurementIdentity(
+	judge: TargetManifest["evalSuite"]["judge"] | null | undefined,
+): Record<string, unknown> | null {
+	return judge ? { ...judge, requireCalibration: undefined } : null;
+}
+
 export function suiteHashOf(
 	tasks: readonly Task[],
 	defaults: readonly GraderSpec[],
 	judge: TargetManifest["evalSuite"]["judge"] | null,
 ): string {
-	// The calibration policy governs promotion, not measurement: canonical JSON
-	// drops the undefined, so setting or lifting it never invalidates evidence
-	// produced by the identical judge. Every caller (loadTarget, regrade) hashes
-	// through here so a regrade and a live run agree on the suite identity.
 	return hashValue({
 		dataset: tasks.map(datasetIdentity),
 		defaults,
-		judge: judge ? { ...judge, requireCalibration: undefined } : null,
+		judge: judgeMeasurementIdentity(judge),
 	});
 }
 
@@ -812,6 +831,7 @@ export function loadTarget(dir: string, override?: { dataset?: string }): Resolv
 		graderDefaults: defaults,
 		datasetHash,
 		suiteHash,
+		suiteIdentity: "manifest",
 	};
 }
 

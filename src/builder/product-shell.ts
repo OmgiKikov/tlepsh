@@ -33,37 +33,6 @@ export interface ProductShellOptions {
  * never the stage it derives from: “Next say “tests”” beats “Next corpus
  * review”. Blockers still win, so a blocked project keeps its recovery line.
  */
-const NEXT_VERBS: Partial<Record<WorkbenchStage, string>> = {
-	"spec-design": "describe the agent you want",
-	"spec-review": "say “ok” to approve it, or what to change",
-	"corpus-design": "say “tests” and the Builder writes the cases",
-	"corpus-review": "say “tests” to publish them and run",
-	"ready-to-evaluate": "say “tests” to run them",
-	"improvement-authoring": "say “fix the first problem”",
-	"proposal-review": "say “apply” after reading the diff, or “discard”",
-	"candidate-verification": "say “check” to verify the change",
-	"candidate-review": "say “ship it” — or “reject”",
-	"release-decision": "say “ship it 0.2.0” — or “reject”",
-	"candidate-adoption": "say “ship it” to make it the active agent",
-	complete: "say “next” to start the next cycle",
-};
-
-/**
- * Replace the header's stage-derived hint with the operator-facing verb. The
- * rest of the header (and every other renderer) is untouched.
- */
-function withOperatorVerb(lines: readonly string[], state: HeaderState, paint: ReturnType<typeof themePaint>): string[] {
-	const view = state.view;
-	if (!view || state.error) return [...lines];
-	const verb = view.blockers.length > 0 ? null : NEXT_VERBS[view.stage];
-	if (!verb) return [...lines];
-	const index = lines.findIndex((line) => line.includes("Next"));
-	if (index < 0) return [...lines];
-	const replaced = [...lines];
-	replaced[index] = `${paint.dim("Stage")} ${paint.bold(stageLabel(view.stage))} ${paint.dim("·")} ${paint.dim("Next")} ${verb}`;
-	return replaced;
-}
-
 function builderModelStatus(ctx: Pick<ExtensionContext, "model" | "modelRegistry">): HeaderState["builderModel"] {
 	// Pi substitutes an "unknown/unknown" placeholder when no provider is configured.
 	if (!ctx.model || ctx.model.provider === "unknown") return { label: null, credentialPresent: false };
@@ -203,7 +172,7 @@ export function installAhdeBuilderProductShell(
 				"info",
 			);
 		} else {
-			ctx.ui.notify(NEXT_VERBS[view.stage] ?? `${stageLabel(view.stage)} · ${nextStep(view)}`, "info");
+			ctx.ui.notify(nextStep(view), "info");
 		}
 	};
 
@@ -233,7 +202,7 @@ export function installAhdeBuilderProductShell(
 			return {
 				// Pi aborts the whole session on an over-wide custom line; every header
 				// line is measured with ANSI awareness and cut to the viewport.
-				render: (width: number) => withOperatorVerb(renderHeader(state, paint), state, paint)
+				render: (width: number) => renderHeader(state, paint)
 					.map((line) => truncateToWidth(line, Math.max(1, width))),
 				invalidate() {},
 			};

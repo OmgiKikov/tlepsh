@@ -210,11 +210,28 @@ export async function regradeEvalRun(options: RegradeOptions): Promise<RegradeRe
 
 	const label: RegradeLabel = options.label ?? "regrade";
 	const judge = target.manifest.evalSuite.judge;
+	if (target.suiteIdentity === "corpus" && options.graderDefaults !== undefined) {
+		throw new Error(
+			`eval run ${sourceRecord.evalRunId} scored the published corpus ${sourceRecord.dataset}, whose cases all ` +
+				"carry explicit graders: suite defaults cannot change a verdict there, so --graders is refused rather " +
+				"than silently ignored. Re-grade the manifest dataset, or publish a corpus with the graders you want.",
+		);
+	}
 	const defaults = options.graderDefaults ?? target.graderDefaults;
 	const tasks = new Map(
 		resolveTaskGraders(target.tasks, defaults, judge !== undefined).map((task) => [task.id, task]),
 	);
-	const suiteHash = suiteHashOf(target.tasks, defaults, judge ?? null);
+	// One identity rule per resolved surface. A published corpus fixed its own
+	// suite hash, and that hash already covers everything a corpus regrade can
+	// change (the corpus content and the judge as a measurement input), so the
+	// manifest formula must not run here: it would mint an identity no live
+	// evaluation can reproduce, and the regrade would drop out of every
+	// compatibility check (invariant 15) while still looking like ordinary
+	// evidence — the Workbench would rewind to `ready-to-evaluate` and ask for
+	// exactly the Target spend a regrade exists to avoid.
+	const suiteHash = target.suiteIdentity === "corpus"
+		? target.suiteHash
+		: suiteHashOf(target.tasks, defaults, judge ?? null);
 	const evidenceInput = {
 		runtime: first.runtime,
 		model: first.model,

@@ -8,3 +8,4 @@ runs/
 .env.local
 targets/
 .gstack/
+.claude/

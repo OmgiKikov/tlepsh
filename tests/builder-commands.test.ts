@@ -652,7 +652,7 @@ describe("Builder Pi slash commands", () => {
 		const text = output.text();
 		expect(text).toContain("AHDE · Ready to run");
 		expect(text).toContain("Target target-demo @ aaaaaaaaaa · anthropic/claude-sonnet-4 ✓");
-		expect(text).toContain("Next /run to evaluate the Target");
+		expect(text).toContain("Next Say “tests” to run them");
 		expect(text).toContain("Target not created yet");
 		expect(text).toContain("ahde init .");
 		expect(text).not.toContain("schemaVersion");
@@ -929,7 +929,7 @@ describe("Builder Pi slash commands", () => {
 		expect(text).toContain("Missing evidence lookup instruction");
 		expect(text).toContain("Unstable output");
 		expect(text).toContain(`Live trace ${LIVE_URL} · retained for 15 minutes`);
-		expect(text).toContain("Next /traces, then say");
+		expect(text).toContain("Next Say “fix the first problem”");
 		expect(text).not.toContain("schemaVersion");
 		expect(text).not.toContain("{");
 		expect(output.note).toHaveBeenCalledTimes(1);
@@ -1792,7 +1792,7 @@ describe("Builder Pi slash commands", () => {
 		expect(text).toContain("✓ Builder model anthropic/claude-sonnet-4 · credential present");
 		expect(text).toContain("✓ Target target-demo @ aaaaaaaaaa");
 		expect(text).toContain("✓ Target model anthropic/claude-sonnet-4 · ANTHROPIC_API_KEY is set");
-		expect(text).toContain("Stage Ready to run · /run to evaluate the Target");
+		expect(text).toContain("Stage Ready to run · Say “tests” to run them");
 		expect(text).toContain("✓ Ready: everything needed for /run is in place");
 		expect(text).not.toMatch(MARKERS);
 		expect(text).not.toMatch(/[{}]|schemaVersion/);
@@ -1842,7 +1842,7 @@ describe("Builder Pi slash commands", () => {
 		expect(type).toBe("info");
 		expect(message.split("\n")[0]).toBe("AHDE · Ready to run");
 		expect(message).toContain("Target target-demo @ aaaaaaaaaa · anthropic/claude-sonnet-4 ✓");
-		expect(message).toContain("Next /run to evaluate the Target");
+		expect(message).toContain("Next Say “tests” to run them");
 		expect(message).not.toMatch(MARKERS);
 		expect(message).not.toContain("schemaVersion");
 
