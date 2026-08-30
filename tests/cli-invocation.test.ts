@@ -65,6 +65,13 @@ describe("side-effect-free CLI invocation parsing", () => {
 		{ name: "feedback clear", argv: ["feedback", "--target", "./agent", "clear"], command: "feedback", action: "clear" },
 		{ name: "compare", argv: ["compare", "erun-a", "erun-b"], command: "compare", action: null },
 		{ name: "diagnose", argv: ["diagnose", "erun-a"], command: "diagnose", action: null },
+		{ name: "regrade", argv: ["regrade", "erun-a", "--target", "./agent"], command: "regrade", action: null },
+		{
+			name: "regrade with new graders and a job bound",
+			argv: ["regrade", "erun-a", "--target", "./agent", "--graders", "./strict.yaml", "--label", "regrade", "--jobs", "4", "--project", "demo"],
+			command: "regrade",
+			action: null,
+		},
 		{ name: "report", argv: ["report", "erun-a", "--out", "report.html"], command: "report", action: null },
 		{ name: "candidate builder run", argv: ["candidate", "--target", "./agent", "--builder-run", "builder-1", "--development-corpus", "corpus-dev"], command: "candidate", action: null },
 		{ name: "candidate refs", argv: ["candidate", "--target", "./agent", "--base", "main", "--branch", "candidate/x", "--proposal", "proposal-1", "--diagnosis", "diagnosis-1"], command: "candidate", action: null },
@@ -132,6 +139,8 @@ describe("side-effect-free CLI invocation parsing", () => {
 		[["compare", "only-one"], /compare requires 2 positional arguments; got 1/],
 		[["compare", "a", "b", "c"], /compare accepts 2 positional arguments; got 3/],
 		[["diagnose", "erun", "extra"], /diagnose accepts 1 positional argument; got 2/],
+		[["regrade", "--target", "./agent"], /regrade requires 1 positional argument; got 0/],
+		[["regrade", "erun-a", "erun-b", "--target", "./agent"], /regrade accepts 1 positional argument; got 2/],
 		[["--target", "./agent", "stray"], /root accepts 0 positional arguments; got 1/],
 		[["corpus", "list", "extra", "--project", "demo"], /corpus list accepts 0 positional arguments; got 1/],
 		[["feedback", "clear", "extra"], /feedback clear accepts 0 positional arguments; got 1/],
@@ -141,6 +150,7 @@ describe("side-effect-free CLI invocation parsing", () => {
 
 	it.each([
 		[["run"], /missing required flag --target for run/],
+		[["regrade", "erun-a"], /missing required flag --target for regrade/],
 		[["calibrate"], /missing required flag --target for calibrate/],
 		[["corpus", "publish", "--project", "demo"], /missing required flag --draft for corpus publish/],
 		[["corpus", "inspect", "--project", "demo"], /missing required flag --file for corpus inspect/],
@@ -167,6 +177,9 @@ describe("side-effect-free CLI invocation parsing", () => {
 
 	it.each([
 		[["run", "--target", "./agent", "--label", "candidate"], /--label .* baseline, solo/],
+		// Only the command that re-scores recorded traces may ask for `regrade`.
+		[["run", "--target", "./agent", "--label", "regrade"], /--label .* baseline, solo/],
+		[["regrade", "erun-a", "--target", "./agent", "--label", "candidate"], /--label .* baseline, solo, regrade/],
 		[["corpus", "import", "--project", "demo", "--name", "x", "--visibility", "public", "--file", "x.jsonl"], /--visibility .* development, sealed/],
 		[["review", "--candidate", "candidate-1", "--recommend", "maybe", "--reason", "x"], /--recommend .* promote, reject/],
 		[["evidence", "--port", "65536"], /--port .* between 0 and 65535/],
