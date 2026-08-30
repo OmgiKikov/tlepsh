@@ -272,6 +272,29 @@ export function renderTargetFeedbackList(summary: TargetFeedbackSummary): string
 	return lines;
 }
 
+/**
+ * The whole body of `ahde feedback <action>`: the CLI only prints these lines.
+ * Keeping it here means the command is testable without a built binary.
+ */
+export function runTargetFeedbackCommand(options: {
+	projectDir: string;
+	action: string | undefined;
+	now?: () => string;
+}): string[] {
+	if (options.action === "list") {
+		return renderTargetFeedbackList(readTargetFeedback(options.projectDir));
+	}
+	if (options.action === "clear") {
+		const cleared = options.now
+			? clearTargetFeedback(options.projectDir, options.now)
+			: clearTargetFeedback(options.projectDir);
+		return cleared
+			? [`moved ${cleared.from} → ${cleared.to} (${cleared.marks} marks)`]
+			: [`no ${TARGET_FEEDBACK_PATH} to clear`];
+	}
+	throw new Error("usage: ahde feedback list|clear [--target <dir>]");
+}
+
 function previewNote(note: string): string {
 	const text = note.replace(/\s+/g, " ").trim();
 	return text.length <= MAX_TARGET_FEEDBACK_PREVIEW_CHARS

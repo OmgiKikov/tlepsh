@@ -55,6 +55,17 @@ describe("CLI help", () => {
 		expect(cliHelp(["corpus", "publish", "--help"])).toContain("Builder corpus draft");
 	});
 
+	it("documents where a marked reply goes and how it becomes cases", () => {
+		expect(cliHelp(["--help"])).toContain("ahde feedback list");
+		expect(cliHelp(["target", "--help"])).toContain("imports/feedback.jsonl");
+		expect(cliHelp(["target", "--help"])).toContain("/bad [note]");
+		const list = cliHelp(["feedback", "list", "--help"]);
+		expect(list).toContain("imports/feedback.jsonl");
+		expect(list).toContain('"dialogue": { "column": "messages" }');
+		expect(list).toContain("Full transcripts stay in the file");
+		expect(cliHelp(["feedback", "clear", "--help"])).toContain("imports/feedback.<timestamp>.jsonl");
+	});
+
 	it("no longer advertises the deleted one-shot adapter commands", () => {
 		const help = cliHelp(["--help"]);
 		expect(help).not.toContain("  builder  ");

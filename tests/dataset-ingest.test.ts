@@ -15,6 +15,11 @@ import {
 	type DatasetMappingRecipe,
 } from "../src/application/dataset-ingest.js";
 import { createCorpus, loadCorpus } from "../src/corpus.js";
+import {
+	appendTargetFeedbackMark,
+	TARGET_FEEDBACK_PATH,
+	type TargetFeedbackMark,
+} from "../src/application/target-feedback.js";
 
 const NOW = "2026-08-29T09:00:00.000Z";
 const roots: string[] = [];
@@ -665,6 +670,106 @@ describe("ingest", () => {
 
 		expect(JSON.stringify(preview)).not.toMatch(/corpus-[0-9a-f]{64}/);
 		expect(preview.rowCount).toBe(25);
+	});
+});
+
+describe("the ahde target feedback inbox as a dataset", () => {
+	function markedProject(): string {
+		const dir = project();
+		for (const mark of [
+			{
+				messages: [
+					{ role: "user", content: "Проверь договор 42 и ограничения ДБО." },
+					{ role: "assistant", content: "Ограничений нет." },
+				],
+				verdict: "bad",
+				note: "не вызвал check_dbo",
+				at: "2026-08-30T07:00:00.000Z",
+				target: { id: "my-agent", gitSha: "abc123" },
+			},
+			{
+				messages: [
+					{ role: "user", content: "Кто утверждает возврат?" },
+					{ role: "assistant", content: "Менеджер." },
+					{ role: "user", content: "А если сумма больше лимита?" },
+					{ role: "assistant", content: "Тогда директор." },
+				],
+				verdict: "good",
+				at: "2026-08-30T07:05:00.000Z",
+				target: { id: "my-agent", gitSha: "abc123" },
+			},
+		]) {
+			appendTargetFeedbackMark(dir, mark as TargetFeedbackMark);
+		}
+		return dir;
+	}
+
+	it("previews as bounded JSONL with the verdict and note as their own columns", () => {
+		const preview = inspectDatasetFile({ projectDir: markedProject(), sourcePath: TARGET_FEEDBACK_PATH });
+
+		// A row that carries siblings beside its turns is a dataset row with a
+		// messages cell, not a bare chat export — which is exactly what makes
+		// `verdict` and `note` addressable columns.
+		expect(preview.format).toBe("jsonl");
+		expect(preview.columns.map((column) => column.name)).toEqual([
+			"messages",
+			"verdict",
+			"note",
+			"at",
+			"target.id",
+			"target.gitSha",
+		]);
+		expect(preview.columns.find((column) => column.name === "messages")?.inferredType).toBe("json");
+		expect(preview.rowCount).toBe(2);
+	});
+
+	it("compiles marked dialogues into dialogue cases that keep verdict and note as metadata", () => {
+		const dir = markedProject();
+
+		const compiled = compileDatasetCases({
+			projectDir: dir,
+			sourcePath: TARGET_FEEDBACK_PATH,
+			recipe: {
+				schemaVersion: 1,
+				dialogue: { column: "messages" },
+				metadata: ["verdict", "note"],
+				graders: [{ type: "output_contains", text: "договор" }],
+			},
+		});
+
+		expect(compiled.skipped).toEqual([]);
+		expect(compiled.tasks).toHaveLength(2);
+		const [bad, good] = compiled.tasks;
+		// The marked assistant reply is popped: a case re-asks the question that
+		// produced it, and the grader judges the next reply.
+		expect(bad?.input).toBe("Проверь договор 42 и ограничения ДБО.");
+		expect(bad?.messages).toEqual([{ role: "user", content: "Проверь договор 42 и ограничения ДБО." }]);
+		expect(bad?.metadata).toEqual({ verdict: "bad", note: "не вызвал check_dbo" });
+		expect(good?.input).toBe("А если сумма больше лимита?");
+		expect(good?.messages).toEqual([
+			{ role: "user", content: "Кто утверждает возврат?" },
+			{ role: "assistant", content: "Менеджер." },
+			{ role: "user", content: "А если сумма больше лимита?" },
+		]);
+		// A `good` mark carries no note; the column is simply absent.
+		expect(good?.metadata).toEqual({ verdict: "good" });
+	});
+
+	it("selects only the bad marks when a recipe filters on the verdict column", () => {
+		const compiled = compileDatasetCases({
+			projectDir: markedProject(),
+			sourcePath: TARGET_FEEDBACK_PATH,
+			recipe: {
+				schemaVersion: 1,
+				dialogue: { column: "messages" },
+				metadata: ["verdict", "note"],
+				filters: [{ column: "verdict", equals: "bad" }],
+				graders: [{ type: "judge", rubric: "The reply must check the contract before answering." }],
+			},
+		});
+
+		expect(compiled.tasks).toHaveLength(1);
+		expect(compiled.tasks[0]?.metadata?.verdict).toBe("bad");
 	});
 });
 

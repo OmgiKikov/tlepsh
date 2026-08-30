@@ -18,12 +18,7 @@ import {
 	reviewCandidate,
 } from "./application/candidate-review.js";
 import { createCorpus, importCorpus, listCorpora, loadCorpus, type CorpusVisibility } from "./corpus.js";
-import {
-	clearTargetFeedback,
-	readTargetFeedback,
-	renderTargetFeedbackList,
-	TARGET_FEEDBACK_PATH,
-} from "./application/target-feedback.js";
+import { runTargetFeedbackCommand } from "./application/target-feedback.js";
 import { loadBuilderCorpusDraft } from "./application/builder-corpus-draft.js";
 import { loadBuilderProposalRun } from "./application/builder-proposal.js";
 import {
@@ -492,22 +487,12 @@ async function main(): Promise<void> {
 			throw new Error("usage: ahde corpus publish|import|list --project <id> ...");
 		}
 		case "feedback": {
-			const projectDir = resolveInteractiveTargetDirectory(arg("target"));
-			const action = positional(0);
-			if (action === "list") {
-				for (const line of renderTargetFeedbackList(readTargetFeedback(projectDir))) console.log(line);
-				break;
-			}
-			if (action === "clear") {
-				const cleared = clearTargetFeedback(projectDir);
-				if (!cleared) {
-					console.log(`no ${TARGET_FEEDBACK_PATH} to clear`);
-					break;
-				}
-				console.log(`moved ${cleared.from} → ${cleared.to} (${cleared.marks} marks)`);
-				break;
-			}
-			throw new Error("usage: ahde feedback list|clear [--target <dir>]");
+			const lines = runTargetFeedbackCommand({
+				projectDir: resolveInteractiveTargetDirectory(arg("target")),
+				action: positional(0),
+			});
+			for (const line of lines) console.log(line);
+			break;
 		}
 		case "compare": {
 			const a = positional(0);
