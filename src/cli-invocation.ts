@@ -152,7 +152,7 @@ const CORPUS_ACTION_SPECS = {
 		requiredFlags: ["project", "file", "recipe", "name"],
 		positionals: 0,
 	},
-} as const satisfies Record<CliAction, InvocationSpec>;
+} as const satisfies Record<"publish" | "import" | "list" | "inspect" | "ingest", InvocationSpec>;
 
 const FEEDBACK_ACTION_SPECS = {
 	list: { flags: ["target"], positionals: 0 },
