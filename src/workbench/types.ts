@@ -5,6 +5,12 @@ import {
 	BuilderCorpusDraftTasksInputSchema,
 } from "../application/builder-corpus-draft.js";
 import { BuilderCorpusImportSourcePathSchema } from "../application/builder-corpus-import-contract.js";
+import {
+	DatasetMappingRecipeSchema,
+	DatasetSeedSchema,
+	DatasetSourcePathSchema,
+	type DatasetPreview,
+} from "../application/dataset-ingest.js";
 import { BuilderWorkbenchCorpusRevisionOperationsSchema } from "../application/builder-regression-case.js";
 import { HarnessAuthoringIntentsSchema } from "../application/harness-authoring.js";
 import {
@@ -17,7 +23,7 @@ import {
 	ProposalBasisSelectionSchema,
 } from "../application/improvement-brief.js";
 import type { RunEventListener } from "../run-events.js";
-import type { TargetManifest } from "../manifest.js";
+import type { GraderSpec, TargetManifest } from "../manifest.js";
 import { AgentSpecSchema, type AgentSpec } from "../spec.js";
 import type { BuilderCorpusDraft } from "../application/builder-corpus-draft.js";
 import type { PersistedBuilderRun } from "../application/builder-proposal.js";
@@ -259,10 +265,21 @@ export interface WorkbenchTracesDetail {
 
 export type WorkbenchTargetDetail = TargetAuthoringContext | { launch: "ahde init ." };
 
+/**
+ * One inbox file as the host reads it. The preview is bounded and
+ * credential-redacted, and the rows a sealed slice already reserved are gone
+ * before it is computed, so nothing here describes the exam.
+ */
+export interface WorkbenchDatasetDetail {
+	sourcePath: string;
+	preview: DatasetPreview;
+}
+
 export type WorkbenchDetail =
 	| { aspect: "review"; content: WorkbenchReviewDetail }
 	| { aspect: "traces"; content: WorkbenchTracesDetail }
-	| { aspect: "target"; content: WorkbenchTargetDetail };
+	| { aspect: "target"; content: WorkbenchTargetDetail }
+	| { aspect: "dataset"; content: WorkbenchDatasetDetail };
 
 export interface WorkbenchSelectionSummary {
 	kind: WorkbenchSelectionKind;
@@ -309,7 +326,7 @@ export const WorkbenchViewIncludeSchema = z.enum(["selections"]);
 export type WorkbenchViewInclude = z.infer<typeof WorkbenchViewIncludeSchema>;
 
 export const WorkbenchViewQuerySchema = z.strictObject({
-	aspect: z.enum(["summary", "traces", "review", "target"]).optional(),
+	aspect: z.enum(["summary", "traces", "review", "target", "dataset"]).optional(),
 	resourcePath: z.string().min(1).max(500).optional(),
 	/**
 	 * Projection hint read by the model-facing transport, not by the Workbench:
@@ -318,11 +335,18 @@ export const WorkbenchViewQuerySchema = z.strictObject({
 	 */
 	include: z.array(WorkbenchViewIncludeSchema).max(1).optional(),
 }).superRefine((query, context) => {
-	if (query.resourcePath !== undefined && query.aspect !== "target") {
+	if (query.resourcePath !== undefined && query.aspect !== "target" && query.aspect !== "dataset") {
 		context.addIssue({
 			code: "custom",
 			path: ["resourcePath"],
-			message: "resourcePath is valid only for the Target view",
+			message: "resourcePath is valid only for the Target and dataset views",
+		});
+	}
+	if (query.aspect === "dataset" && query.resourcePath === undefined) {
+		context.addIssue({
+			code: "custom",
+			path: ["resourcePath"],
+			message: "the dataset view needs the imports/ path of the file to preview",
 		});
 	}
 });
@@ -359,6 +383,20 @@ const ImportCorpusDraftInputSchema = z.strictObject({
 	revisionSummary: NonBlankSchema.max(4_000),
 });
 
+/**
+ * A proposed reading of one inbox file. The Builder writes it from the preview
+ * alone; the host re-validates it against the real columns and answers with the
+ * first cases it produces, so the human argues with cases, not with JSON.
+ */
+const DatasetRecipeInputSchema = z.strictObject({
+	kind: z.literal("dataset-recipe"),
+	approvedSpecId: ArtifactIdSchema.optional(),
+	sourcePath: DatasetSourcePathSchema,
+	recipe: DatasetMappingRecipeSchema,
+	name: NonBlankSchema.max(200),
+	revisionSummary: NonBlankSchema.max(4_000),
+});
+
 const ReviseCorpusDraftInputSchema = z.strictObject({
 	kind: z.literal("corpus-revision"),
 	approvedSpecId: ArtifactIdSchema.optional(),
@@ -388,6 +426,7 @@ export const WorkbenchSubmitInputSchema = z.discriminatedUnion("kind", [
 	SaveSpecDraftInputSchema,
 	CreateCorpusDraftInputSchema,
 	ImportCorpusDraftInputSchema,
+	DatasetRecipeInputSchema,
 	ReviseCorpusDraftInputSchema,
 	StructuredProposalInputSchema,
 ]);
@@ -420,6 +459,17 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		kind: z.literal("publish-corpus"),
 		draftId: ArtifactIdSchema.optional(),
 		name: NonBlankSchema.max(200).optional(),
+		reason: NonBlankSchema.max(4_000),
+	}),
+	z.strictObject({
+		kind: z.literal("import-dataset"),
+		submissionId: ArtifactIdSchema.optional(),
+		/** The exam, drawn before anything development-facing is compiled. */
+		sealed: z.strictObject({
+			count: z.number().int().min(1),
+			seed: DatasetSeedSchema,
+			stratifyBy: z.string().min(1).max(200).optional(),
+		}).nullable(),
 		reason: NonBlankSchema.max(4_000),
 	}),
 	z.strictObject({
@@ -525,6 +575,28 @@ export interface WorkbenchHumanGate {
 	): Promise<WorkbenchSealedChoice>;
 }
 
+/** One compiled case, bounded and credential-redacted, exactly as a human reads it. */
+export interface WorkbenchDatasetCase {
+	input: string;
+	expected: string | null;
+	messages: { role: "user" | "assistant"; content: string }[] | null;
+	metadata: Record<string, string> | null;
+	graders: GraderSpec[];
+}
+
+/** What a `dataset-recipe` submission hands back: cases, not JSON. */
+export interface WorkbenchDatasetRecipeArtifact {
+	submissionId: string;
+	sourcePath: string;
+	name: string;
+	/** Cases the recipe would produce on the rows the exam did not take. */
+	developmentCount: number;
+	skippedRows: number;
+	sealedReserved: number;
+	sampleCases: WorkbenchDatasetCase[];
+	[key: string]: unknown;
+}
+
 export interface WorkbenchTurn {
 	kind: WorkbenchSubmitInput["kind"];
 	message: string;
@@ -556,6 +628,19 @@ export interface WorkbenchDecisionResultMap {
 		taskCount: number;
 		publicationReceiptId: string;
 		lineageHash: string;
+	};
+	/**
+	 * A draft, plus how many cases the exam took. The sealed corpus id lives in
+	 * the ingest receipt and in no development-facing object.
+	 */
+	"import-dataset": {
+		draftId: string;
+		taskCount: number;
+		approvedSpecId: string;
+		sourcePath: string;
+		sealedCount: number;
+		skippedRows: number;
+		receiptId: string;
 	};
 	"run-eval": WorkbenchRunEvalResult;
 	calibrate: { candidateId: string; calibration: WorkbenchCalibrationProjection };

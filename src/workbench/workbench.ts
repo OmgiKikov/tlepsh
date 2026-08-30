@@ -13,8 +13,22 @@ import {
 import {
 	createBuilderCorpusDraft,
 	reviseBuilderCorpusDraft,
+	MAX_BUILDER_CORPUS_DRAFT_TASKS,
 } from "../application/builder-corpus-draft.js";
 import { importBuilderCorpusDraft } from "../application/builder-corpus-import.js";
+import {
+	compileDatasetCases,
+	datasetHoldoutInForce,
+	ingestDataset,
+	inspectDatasetFile,
+	type DatasetHoldoutSpec,
+} from "../application/dataset-ingest.js";
+import {
+	listDatasetRecipeSubmissions,
+	loadDatasetRecipeSubmission,
+	saveDatasetRecipeSubmission,
+	type DatasetRecipeSubmission,
+} from "../application/dataset-recipe.js";
 import { resolveDevelopmentFailureOperations } from "../application/builder-regression-case.js";
 import {
 	compileHarnessAuthoringProposal,
@@ -60,7 +74,9 @@ import {
 	loadCorpus,
 	type CorpusMetadata,
 	type CorpusRef,
+	type CorpusTask,
 } from "../corpus.js";
+import { redactTraceText } from "../trace.js";
 import { diagnoseEvalRun } from "../diagnosis.js";
 import { candidateStatus } from "../domain/candidate.js";
 import {
@@ -129,11 +145,13 @@ import {
 	WorkbenchViewQuerySchema,
 	type WorkbenchCandidateImpactProjection,
 	type WorkbenchConfirmation,
+	type WorkbenchDatasetCase,
 	type WorkbenchDecisionInput,
 	type WorkbenchDecisionExecutionOptions,
 	type WorkbenchDecisionResult,
 	type WorkbenchHumanGate,
 	type WorkbenchImprovementBriefProjection,
+	type WorkbenchDatasetRecipeArtifact,
 	type WorkbenchReviewDetail,
 	type WorkbenchSelectionKind,
 	type WorkbenchSubmitInput,
@@ -146,6 +164,10 @@ import type { CandidateRecord } from "../domain/candidate.js";
 
 const MAX_REVIEW_BYTES = 5 * 1024 * 1024;
 const MAX_CONVERSATION_MODES = 3;
+/** Enough compiled cases to argue about; never enough to be the dataset. */
+const MAX_DATASET_SAMPLE_CASES = 5;
+const MAX_DATASET_CASE_CHARS = 400;
+const MAX_DATASET_CASE_TURNS = 6;
 
 export interface WorkbenchEvidenceLink {
 	url: string;
@@ -178,6 +200,11 @@ export interface AhdeWorkbenchDependencies {
 	createCorpusDraft: typeof createBuilderCorpusDraft;
 	importCorpusDraft: typeof importBuilderCorpusDraft;
 	reviseCorpusDraft: typeof reviseBuilderCorpusDraft;
+	/** The host reads `imports/`; the Builder only ever reads what these return. */
+	inspectDataset: typeof inspectDatasetFile;
+	compileDatasetCases: typeof compileDatasetCases;
+	saveDatasetRecipe: typeof saveDatasetRecipeSubmission;
+	ingestDataset: typeof ingestDataset;
 	compileHarnessProposal: (input: CompileHarnessAuthoringInput) => CandidateProposal;
 	recordProposal: typeof recordBuilderAuthoredProposal;
 	runSuite: typeof runSuite;
@@ -228,6 +255,10 @@ const DEFAULT_DEPENDENCIES: AhdeWorkbenchDependencies = {
 	createCorpusDraft: createBuilderCorpusDraft,
 	importCorpusDraft: importBuilderCorpusDraft,
 	reviseCorpusDraft: reviseBuilderCorpusDraft,
+	inspectDataset: inspectDatasetFile,
+	compileDatasetCases,
+	saveDatasetRecipe: saveDatasetRecipeSubmission,
+	ingestDataset,
 	compileHarnessProposal: compileHarnessAuthoringProposal,
 	recordProposal: recordBuilderAuthoredProposal,
 	runSuite,
@@ -315,6 +346,51 @@ function boundedEvidenceLink(link: WorkbenchEvidenceLink | null): WorkbenchEvide
 		parsed.password !== ""
 	) throw new Error("evidence links must be unauthenticated loopback HTTP URLs");
 	return { url: parsed.toString(), ...(link.label ? { label: link.label.slice(0, 200) } : {}) };
+}
+
+function datasetText(value: string, max = MAX_DATASET_CASE_CHARS): string {
+	const redacted = redactTraceText(value);
+	return redacted.length <= max ? redacted : `${redacted.slice(0, max - 1)}…`;
+}
+
+function datasetGrader(grader: WorkbenchDatasetCase["graders"][number]): WorkbenchDatasetCase["graders"][number] {
+	const named = grader.name !== undefined ? { name: datasetText(grader.name, 120) } : {};
+	switch (grader.type) {
+		case "tool_called":
+			return {
+				...grader,
+				...named,
+				tool: datasetText(grader.tool, 120),
+				...(grader.argsContains !== undefined ? { argsContains: datasetText(grader.argsContains) } : {}),
+			};
+		case "output_contains":
+			return { ...grader, ...named, text: datasetText(grader.text) };
+		case "output_matches":
+			return { ...grader, ...named, pattern: datasetText(grader.pattern) };
+		case "judge":
+			return { ...grader, ...named, rubric: datasetText(grader.rubric) };
+	}
+}
+
+/**
+ * One compiled case as a human reads it: bounded, credential-redacted, and
+ * carrying no derived id, so a sample can never be mistaken for the corpus.
+ */
+function datasetCasePreview(task: CorpusTask): WorkbenchDatasetCase {
+	return {
+		input: datasetText(task.input),
+		expected: task.expected === undefined ? null : datasetText(task.expected),
+		messages: task.messages
+			? task.messages.slice(-MAX_DATASET_CASE_TURNS).map((message) => ({
+				role: message.role,
+				content: datasetText(message.content, 200),
+			}))
+			: null,
+		metadata: task.metadata
+			? Object.fromEntries(Object.entries(task.metadata).map(([key, value]) => [key, datasetText(value, 200)]))
+			: null,
+		graders: task.graders.map(datasetGrader),
+	};
 }
 
 /** Small model-facing diagnosis projection; full evidence remains in the verified report. */
@@ -441,6 +517,31 @@ export class AhdeWorkbench {
 		return withWorkbenchFocus(inventory, focus);
 	}
 
+	/**
+	 * The holdout already in force for one inbox file. Once an import has sealed
+	 * rows out of a file, every later read of that file replays the exact draw,
+	 * so the reserved rows never reappear in a preview or a compiled case.
+	 */
+	private datasetHoldout(sourcePath: string): DatasetHoldoutSpec | null {
+		return datasetHoldoutInForce(this.stateRoot, this.projectId, sourcePath);
+	}
+
+	/** The exact recipe under discussion: named, focused by recency, or ambiguous. */
+	private requireDatasetRecipe(approvedSpecId: string, submissionId?: string): DatasetRecipeSubmission {
+		if (submissionId) {
+			const submission = loadDatasetRecipeSubmission(this.stateRoot, this.projectId, submissionId);
+			if (submission.approvedSpec.specId !== approvedSpecId) {
+				throw new Error("that dataset recipe belongs to a different approved Spec lineage");
+			}
+			return submission;
+		}
+		const submissions = listDatasetRecipeSubmissions(this.stateRoot, this.projectId)
+			.filter((submission) => submission.approvedSpec.specId === approvedSpecId);
+		const newest = submissions[0];
+		if (!newest) throw new Error("submit a dataset-recipe and review its sample cases before importing");
+		return newest;
+	}
+
 	private async confirm(
 		input: WorkbenchDecisionInput,
 		gate: WorkbenchHumanGate,
@@ -489,6 +590,16 @@ export class AhdeWorkbench {
 				})
 				: { launch: "ahde init ." };
 			return { ...view, detail: { aspect, content } };
+		}
+		if (aspect === "dataset") {
+			const sourcePath = query.resourcePath!;
+			const holdout = this.datasetHoldout(sourcePath);
+			const preview = this.dependencies.inspectDataset({
+				projectDir: this.projectDir,
+				sourcePath,
+				holdout,
+			});
+			return { ...view, detail: { aspect, content: { sourcePath, preview } } };
 		}
 		if (aspect === "traces") {
 			const run = requireDevelopmentEval(inventory);
@@ -666,6 +777,60 @@ export class AhdeWorkbench {
 					},
 				},
 				view: await this.viewOf(settled),
+			};
+		}
+		if (input.kind === "dataset-recipe") {
+			const inventory = this.inventory();
+			const approved = requireApprovedSpec(inventory, input.approvedSpecId);
+			const exact = loadApprovedSpec({ stateRoot: this.stateRoot, projectId: this.projectId, specId: approved.id });
+			const holdout = this.datasetHoldout(input.sourcePath);
+			// The compile is the validation: it resolves every column and every
+			// {{placeholder}} before a single row is mapped.
+			const compiled = this.dependencies.compileDatasetCases({
+				projectDir: this.projectDir,
+				sourcePath: input.sourcePath,
+				recipe: input.recipe,
+				holdout,
+			});
+			if (compiled.tasks.length === 0) {
+				throw new Error(
+					`the recipe compiled no cases from ${input.sourcePath}; ` +
+					`${compiled.skipped.length > 0 ? `the first skipped row says: ${compiled.skipped[0]?.reason}` : "loosen the filters or map a different column"}`,
+				);
+			}
+			if (compiled.tasks.length > MAX_BUILDER_CORPUS_DRAFT_TASKS) {
+				throw new Error(
+					`the recipe compiled ${compiled.tasks.length} cases; a reviewable basket holds at most ` +
+					`${MAX_BUILDER_CORPUS_DRAFT_TASKS}. Add sample: { limit, seed } to the recipe to thin the development side.`,
+				);
+			}
+			if (inventory.target) assertGradersRunnable(compiled.tasks, inventory.target.manifest, "dataset recipe");
+			const saved = this.dependencies.saveDatasetRecipe({
+				stateRoot: this.stateRoot,
+				approvedSpec: exact.reference,
+				sourcePath: input.sourcePath,
+				sourceSha256: compiled.sourceSha256,
+				recipeSha256: compiled.recipeSha256,
+				recipe: input.recipe,
+				name: input.name,
+				revisionSummary: input.revisionSummary,
+				now: this.dependencies.now,
+			});
+			const artifact: WorkbenchDatasetRecipeArtifact = {
+				submissionId: saved.submission.id,
+				sourcePath: input.sourcePath,
+				name: saved.submission.name,
+				developmentCount: compiled.tasks.length,
+				skippedRows: compiled.skipped.length,
+				sealedReserved: holdout?.count ?? 0,
+				sampleCases: compiled.tasks.slice(0, MAX_DATASET_SAMPLE_CASES).map(datasetCasePreview),
+			};
+			return {
+				kind: input.kind,
+				message: `The recipe reads ${input.sourcePath} into ${compiled.tasks.length} case${compiled.tasks.length === 1 ? "" : "s"}. ` +
+					"Show the samples, then ask for the import decision.",
+				artifact,
+				view: await this.viewOf(inventory),
 			};
 		}
 		if (input.kind === "corpus-revision") {
@@ -1042,6 +1207,106 @@ export class AhdeWorkbench {
 			const lineage = recordWorkbenchCorpusPublication({ stateRoot: this.stateRoot, draft: reloaded, publication: result });
 			const settled = this.select("development-corpus", result.corpus.id);
 			return { kind: input.kind, message: "Development corpus published with exact Spec and draft lineage.", result: { corpusId: result.corpus.id, corpusHash: result.corpus.hash, taskCount: result.corpus.taskCount, publicationReceiptId: result.receipt.id, lineageHash: lineage.linkHash }, view: await this.viewOf(settled) };
+		}
+
+		if (input.kind === "import-dataset") {
+			const approved = requireApprovedSpec(inventory);
+			const submission = this.requireDatasetRecipe(approved.id, input.submissionId);
+			const inForce = this.datasetHoldout(submission.sourcePath);
+			const requested: DatasetHoldoutSpec | null = input.sealed
+				? {
+					count: input.sealed.count,
+					seed: input.sealed.seed,
+					...(input.sealed.stratifyBy !== undefined ? { stratifyBy: input.sealed.stratifyBy } : {}),
+				}
+				: null;
+			// A second draw over a file that already has one would put previously
+			// sealed rows into a development corpus, so the exam is drawn once.
+			if (inForce && !exactSame(inForce, requested)) {
+				throw new Error(
+					`${submission.sourcePath} already holds out ${inForce.count} row${inForce.count === 1 ? "" : "s"} ` +
+					`with seed ${JSON.stringify(inForce.seed)}; import it again with that exact sealed slice, or use another file.`,
+				);
+			}
+			const holdout = requested;
+			const build = (): { subject: Record<string, unknown>; developmentCount: number } => {
+				const compiled = this.dependencies.compileDatasetCases({
+					projectDir: this.projectDir,
+					sourcePath: submission.sourcePath,
+					recipe: submission.recipe,
+					holdout,
+				});
+				if (compiled.sourceSha256 !== submission.sourceSha256) {
+					throw new Error(`${submission.sourcePath} changed since the recipe was validated; submit the recipe again`);
+				}
+				if (compiled.tasks.length === 0) throw new Error("the recipe compiles no development cases");
+				if (compiled.tasks.length > MAX_BUILDER_CORPUS_DRAFT_TASKS) {
+					throw new Error(
+						`the recipe compiles ${compiled.tasks.length} cases; a reviewable basket holds at most ` +
+						`${MAX_BUILDER_CORPUS_DRAFT_TASKS}. Add sample: { limit, seed } to the recipe first.`,
+					);
+				}
+				return {
+					subject: {
+						operation: "import-dataset",
+						submissionId: submission.id,
+						approvedSpec: submission.approvedSpec,
+						sourcePath: submission.sourcePath,
+						name: submission.name,
+						recipe: submission.recipe,
+						developmentCount: compiled.tasks.length,
+						skippedRows: compiled.skipped.length,
+						sealed: holdout,
+						sampleCases: compiled.tasks.slice(0, MAX_DATASET_SAMPLE_CASES).map(datasetCasePreview),
+					},
+					developmentCount: compiled.tasks.length,
+				};
+			};
+			const before = build();
+			const actor = await this.confirm(input, gate, "Import an exact dataset as eval cases", before.subject, options.signal);
+			const current = this.decisionInventory(input.kind);
+			requireApprovedSpec(current, approved.id);
+			const after = build();
+			if (!exactSame(before.subject, after.subject)) throw new WorkbenchStaleDecisionError(input.kind);
+			// Fixed order: the sealed slice is compiled and published before any
+			// development case exists, so no reserved row can leak into the draft.
+			const ingested = this.dependencies.ingestDataset({
+				projectDir: this.projectDir,
+				stateRoot: this.stateRoot,
+				projectId: this.projectId,
+				sourcePath: submission.sourcePath,
+				recipe: submission.recipe,
+				holdout,
+				developmentName: submission.name,
+				now: this.dependencies.now,
+			});
+			const exact = loadApprovedSpec({ stateRoot: this.stateRoot, projectId: this.projectId, specId: approved.id });
+			const result = this.dependencies.createCorpusDraft({
+				stateRoot: this.stateRoot,
+				approvedSpec: exact.reference,
+				name: submission.name,
+				tasks: ingested.tasks.map(({ id: _derivedId, ...task }) => task),
+				coverageNotes: [],
+				revisionSummary: submission.revisionSummary,
+			}, { now: this.dependencies.now });
+			const settled = this.select("corpus-draft", result.draft.id);
+			const sealedCount = ingested.sealedCorpus?.taskCount ?? 0;
+			return {
+				kind: input.kind,
+				message: `Imported ${ingested.tasks.length} case${ingested.tasks.length === 1 ? "" : "s"} into an editable draft` +
+					`${sealedCount > 0 ? `; ${sealedCount} sealed case${sealedCount === 1 ? "" : "s"} held out` : ""}. ` +
+					"Review it, then publish.",
+				result: {
+					draftId: result.draft.id,
+					taskCount: result.draft.tasks.length,
+					approvedSpecId: result.draft.approvedSpec.specId,
+					sourcePath: ingested.receipt.sourcePath,
+					sealedCount,
+					skippedRows: ingested.skipped.length,
+					receiptId: ingested.receiptPath.split(/[\\/]/).at(-1)?.replace(/\.json$/, "") ?? "",
+				},
+				view: await this.viewOf(settled),
+			};
 		}
 
 		if (input.kind === "run-eval") {

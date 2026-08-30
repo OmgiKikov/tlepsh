@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import {
@@ -56,7 +56,9 @@ export const MAX_RECIPE_SAMPLE_LIMIT = 1_000;
 const ProjectIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
 const CorpusIdSchema = z.string().regex(/^corpus-[0-9a-f]{64}$/);
 const ReceiptShaSchema = z.string().regex(/^[0-9a-f]{64}$/);
-const SeedSchema = z.string().min(1).max(200);
+/** A seed is an opaque human-chosen label; it selects rows, it never keys them. */
+export const DatasetSeedSchema = z.string().min(1).max(200);
+const SeedSchema = DatasetSeedSchema;
 const ColumnNameSchema = z.string().min(1).max(200);
 const PLACEHOLDER_PATTERN = /\{\{([^{}]*)\}\}/g;
 const EXPECTED_PLACEHOLDER = "expected";
@@ -205,6 +207,16 @@ export const DatasetIngestReceiptSchema = z.strictObject({
 		corpusId: CorpusIdSchema,
 		count: z.number().int().positive(),
 		seed: SeedSchema,
+		/**
+		 * The exact draw, so the split stays recomputable from the receipt alone.
+		 * `count` is how many cases the sealed corpus holds; `reservedRows` is how
+		 * many rows the draw took, which is larger whenever a filter or a bad row
+		 * dropped one. A later preview must exclude every reserved row, not only
+		 * the ones that compiled, and a stratified draw reserves a different set
+		 * from an unstratified one.
+		 */
+		stratifyBy: ColumnNameSchema.optional(),
+		reservedRows: z.number().int().positive().optional(),
 	}).nullable(),
 	at: z.iso.datetime({ offset: true }),
 });
@@ -777,7 +789,13 @@ export function ingestDataset(options: IngestDatasetOptions): DatasetIngestResul
 		rowsSeen: development.rowsSeen,
 		developmentCount: development.tasks.length,
 		sealed: sealedCorpus && options.holdout
-			? { corpusId: sealedCorpus.id, count: sealedCorpus.taskCount, seed: options.holdout.seed }
+			? {
+				corpusId: sealedCorpus.id,
+				count: sealedCorpus.taskCount,
+				seed: options.holdout.seed,
+				...(options.holdout.stratifyBy !== undefined ? { stratifyBy: options.holdout.stratifyBy } : {}),
+				reservedRows: Math.trunc(options.holdout.count),
+			}
 			: null,
 		at: now(),
 	});
@@ -839,6 +857,44 @@ function writeReceipt(
 		return { receipt: existing, path };
 	}
 	return { receipt, path };
+}
+
+/** Every ingest receipt this project has written, newest first. */
+export function listDatasetIngestReceipts(stateRoot: string, projectIdInput: string): DatasetIngestReceipt[] {
+	const projectId = ProjectIdSchema.parse(projectIdInput);
+	const root = receiptsRoot(stateRoot, projectId, false);
+	if (!root) return [];
+	const receipts: DatasetIngestReceipt[] = [];
+	for (const entry of readdirSync(root, { withFileTypes: true })) {
+		if (!entry.isFile() || !/^[0-9a-f]{64}\.json$/.test(entry.name)) continue;
+		const receipt = readJsonArtifact(join(root, entry.name), DatasetIngestReceiptSchema);
+		if (receiptSha(receipt) !== entry.name.slice(0, 64)) {
+			throw new Error(`the dataset ingest receipt ${entry.name} does not match its content address`);
+		}
+		receipts.push(receipt);
+	}
+	return receipts.sort((left, right) => right.at.localeCompare(left.at));
+}
+
+/**
+ * The holdout already in force for one inbox file: the newest ingest that
+ * sealed rows out of it. Nothing development-facing may see those rows again,
+ * so every later preview of the same file replays this exact draw.
+ */
+export function datasetHoldoutInForce(
+	stateRoot: string,
+	projectId: string,
+	sourcePath: string,
+): DatasetHoldoutSpec | null {
+	for (const receipt of listDatasetIngestReceipts(stateRoot, projectId)) {
+		if (receipt.sourcePath !== sourcePath || !receipt.sealed) continue;
+		return {
+			count: receipt.sealed.reservedRows ?? receipt.sealed.count,
+			seed: receipt.sealed.seed,
+			...(receipt.sealed.stratifyBy !== undefined ? { stratifyBy: receipt.sealed.stratifyBy } : {}),
+		};
+	}
+	return null;
 }
 
 /** Reload one receipt, schema-validated and re-checked against its content address. */

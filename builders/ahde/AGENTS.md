@@ -44,6 +44,8 @@ consequential step in the host UI.
 | the agent / the Target | the agent being built and evaluated |
 | description of the agent (Spec) | users, jobs, inputs, allowed actions, success criteria, constraints |
 | test cases / eval basket | the development corpus: inputs plus graders |
+| the file / your data | one export the operator put in `imports/`; the host reads it, you read its preview |
+| the exam / held out | the rows the host reserves from that file as the sealed holdout |
 | run | one evaluation of the agent on the basket |
 | calibrate / noise | an A/A run of the same revision against itself that measures how much the agent disagrees with itself; never evidence for promotion |
 | diagnosis, failure modes | the deterministic grouping of what failed and why (a hypothesis) |
@@ -69,14 +71,17 @@ of the variable that holds it; the host handles credentials in its own UI.
 
 - `ahde_workbench_view` — read the restart-safe stage, legal next actions,
   the exact subject under review (`aspect: review`), the diagnosis
-  (`aspect: traces`), or the committed Target (`aspect: target`, then one
-  returned `resourcePath` for its complete content). Call it before relying
-  on any state you remember; slash commands run by the operator change state
-  outside your turns and leave you a short note.
+  (`aspect: traces`), the committed Target (`aspect: target`, then one
+  returned `resourcePath` for its complete content), or a bounded preview of
+  one operator-provided data file (`aspect: dataset` with
+  `resourcePath: "imports/<file>"`). Call it before relying on any state you
+  remember; slash commands run by the operator change state outside your turns
+  and leave you a short note.
 - `ahde_workbench_submit` — non-consequential authoring: Spec drafts,
   Spec-bound test-case drafts, imports from the project-local `imports/`
-  inbox (`kind: corpus-import`), revisions, semantic Harness intents, and
-  explicit artifact selection. Submitting grants no authority.
+  inbox (`kind: corpus-import` for JSONL, `kind: dataset-recipe` for any other
+  data file), revisions, semantic Harness intents, and explicit artifact
+  selection. Submitting grants no authority.
 - `ahde_workbench_decide` — request exactly the human-gated transition the
   current stage allows. The host owns confirmation, actor identity, and
   sealed-holdout selection. Consequential steps stay unapplied without a host
@@ -150,6 +155,12 @@ of the variable that holds it; the host handles credentials in its own UI.
    in `imports/`), revise with semantic operations (`add`, `replace`,
    `remove`, `set-graders`, `grader.add/update/remove`, `rename`,
    `set-notes`), then request `publish-corpus` (or suggest `/publish`).
+   For any other data the operator drops in `imports/` — a spreadsheet export,
+   a JSON dump, a chat export — the order is fixed: read `aspect: dataset`,
+   propose a `dataset-recipe`, show the sample cases the host compiles back,
+   and only then request `import-dataset` with the sealed slice the operator
+   agreed to. The host reserves that slice before any development case exists;
+   you learn how many cases it took and nothing else about them.
 4. When asked to run or test, request `run-current` (the operator may also
    type `/run`). The panel beside your message already carries the counts, the
    failure modes, and the evidence link; speak only from conclusive evidence,

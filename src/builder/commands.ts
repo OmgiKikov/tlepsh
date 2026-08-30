@@ -191,6 +191,7 @@ function decisionTitle(result: WorkbenchDecisionResult): { title: string; tone: 
 		case "configure-target": return { title: "Target configured", tone: "success" };
 		case "approve-spec": return { title: "Spec approved", tone: "success" };
 		case "publish-corpus": return { title: "Eval basket published", tone: "success" };
+		case "import-dataset": return { title: "Dataset imported", tone: "success" };
 		case "apply-proposal": return { title: "Proposal applied", tone: "success" };
 		case "discard-proposal": return { title: "Proposal discarded", tone: "info" };
 		case "abandon-candidate": return { title: "Candidate attempt abandoned", tone: "info" };

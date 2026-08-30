@@ -61,6 +61,23 @@ describe("Builder Pi extension registry", () => {
 			coverageNotes: ["Operator-provided cases"],
 			revisionSummary: "Import exact project-local JSONL",
 		};
+		const datasetRecipe = {
+			kind: "dataset-recipe",
+			sourcePath: "imports/tickets.csv",
+			recipe: {
+				schemaVersion: 1,
+				input: { template: "{{question}} (tier {{tier}})" },
+				expected: { column: "answer" },
+				dialogue: { column: "history" },
+				metadata: ["tier"],
+				filters: [{ column: "tier", matches: "gold|standard" }],
+				sample: { limit: 60, seed: "thin-1", stratifyBy: "tier" },
+				graders: [{ type: "output_contains", text: "{{expected}}" }],
+				idPrefix: "ticket",
+			},
+			name: "Refund tickets",
+			revisionSummary: "Map the exported tickets into cases",
+		};
 		const corpusEvidenceRevision = {
 			kind: "corpus-revision",
 			operations: [
@@ -119,7 +136,21 @@ describe("Builder Pi extension registry", () => {
 		for (const accepted of [
 			corpusDraft,
 			{ ...corpusDraft, coverageNotes: ["x".repeat(1_000)] },
+			{
+				...corpusDraft,
+				tasks: [{
+					input: "Route this support request",
+					expected: "billing",
+					messages: [
+						{ role: "assistant", content: "How can I help?" },
+						{ role: "user", content: "Route this support request" },
+					],
+					metadata: { tier: "gold" },
+					graders: [{ type: "output_contains", text: "billing" }],
+				}],
+			},
 			corpusImport,
+			datasetRecipe,
 			corpusRevision,
 			corpusEvidenceRevision,
 			structuredProposal,
@@ -140,6 +171,23 @@ describe("Builder Pi extension registry", () => {
 			{ ...corpusImport, sourcePath: "../private.jsonl" },
 			{ ...corpusImport, sourcePath: "evals/sealed.jsonl" },
 			{ ...corpusImport, sourcePath: "imports/.hidden.jsonl" },
+			// A dialogue whose last turn does not repeat `input` would silently
+			// change the question every consumer that reads only `input` asks.
+			{
+				...corpusDraft,
+				tasks: [{
+					input: "Route this support request",
+					messages: [{ role: "user", content: "Something else entirely" }],
+					graders: [{ type: "output_contains", text: "billing" }],
+				}],
+			},
+			{ ...datasetRecipe, sourcePath: "../private.csv" },
+			{ ...datasetRecipe, sourcePath: "imports/sheet.xlsx" },
+			{ ...datasetRecipe, recipe: { ...datasetRecipe.recipe, graders: [] } },
+			{ ...datasetRecipe, recipe: { ...datasetRecipe.recipe, input: undefined, dialogue: undefined } },
+			{ ...datasetRecipe, recipe: { ...datasetRecipe.recipe, filters: [{ column: "tier" }] } },
+			{ ...datasetRecipe, recipe: { ...datasetRecipe.recipe, sample: { limit: 1_001, seed: "thin-1" } } },
+			{ ...datasetRecipe, corpusId: "corpus-forged" },
 			{ ...corpusRevision, operations: [...corpusRevision.operations, { type: "rename", name: "one-too-many" }] },
 			{ ...structuredProposal, intents: [...structuredProposal.intents, { type: "instructions.replace", content: "One too many" }] },
 			{ ...structuredProposal, failureModeIds: [...structuredProposal.failureModeIds, structuredProposal.failureModeIds[0]] },
@@ -179,9 +227,28 @@ describe("Builder Pi extension registry", () => {
 			expect(() => WorkbenchDecisionToolSchema.prepare(invalidModelSelection)).toThrow();
 		}
 
+		const importDataset = {
+			kind: "import-dataset",
+			sealed: { count: 40, seed: "exam-1", stratifyBy: "tier" },
+			reason: "Import the exported tickets",
+		};
+		for (const accepted of [importDataset, { ...importDataset, sealed: null }]) {
+			expect(Check(WorkbenchDecisionToolSchema.parameters, accepted)).toBe(true);
+			expect(WorkbenchDecisionInputSchema.safeParse(accepted).success).toBe(true);
+		}
+		for (const invalid of [
+			{ ...importDataset, sealed: { count: 0, seed: "exam-1" } },
+			{ ...importDataset, sealed: { count: 40 } },
+			{ ...importDataset, sealedCorpusId: `corpus-${"a".repeat(64)}` },
+		]) {
+			expect(WorkbenchDecisionInputSchema.safeParse(invalid).success).toBe(false);
+			expect(() => WorkbenchDecisionToolSchema.prepare(invalid)).toThrow();
+		}
+
 		for (const targetView of [
 			{ aspect: "target" },
 			{ aspect: "target", resourcePath: "AGENTS.md" },
+			{ aspect: "dataset", resourcePath: "imports/tickets.csv" },
 		]) {
 			expect(Check(WorkbenchViewToolSchema.parameters, targetView)).toBe(true);
 			expect(WorkbenchViewQuerySchema.safeParse(targetView).success).toBe(true);
@@ -190,6 +257,7 @@ describe("Builder Pi extension registry", () => {
 			{ aspect: "traces", resourcePath: "AGENTS.md" },
 			{ resourcePath: "AGENTS.md" },
 			{ aspect: "target", resourcePath: "x".repeat(501) },
+			{ aspect: "dataset" },
 		]) {
 			expect(WorkbenchViewQuerySchema.safeParse(invalidView).success).toBe(false);
 			expect(() => WorkbenchViewToolSchema.prepare(invalidView)).toThrow();

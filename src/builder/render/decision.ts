@@ -54,6 +54,19 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 				`${section("Development basket published", paint)} ${pluralize(result.result.taskCount, "case")} ${paint.dim(`· ${result.result.corpusId} · ${shortHash(result.result.corpusHash)}`)}`,
 				nextLine(view, paint),
 			];
+		case "import-dataset": {
+			const lines = [
+				`${section("Dataset imported", paint)} ${pluralize(result.result.taskCount, "case")} ${paint.dim(`from ${oneLine(result.result.sourcePath, 60)}`)}`,
+				result.result.sealedCount > 0
+					? `${paint.dim("Sealed")} ${paint.bold(pluralize(result.result.sealedCount, "case"))} held out ${paint.dim("· the exam; nobody develops against it")}`
+					: `${paint.dim("Sealed")} ${paint.warning("nothing held out")} ${paint.dim("· there is no exam for this file")}`,
+			];
+			if (result.result.skippedRows > 0) {
+				lines.push(`${paint.dim("Skipped")} ${pluralize(result.result.skippedRows, "row")} ${paint.dim("did not map to a case")}`);
+			}
+			lines.push(paint.muted("The cases landed in an editable draft; review them, then publish."), nextLine(view, paint));
+			return lines;
+		}
 		case "run-eval":
 			return [...runLines(result.result, paint, options), nextLine(view, paint)];
 		case "calibrate": {

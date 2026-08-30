@@ -5,9 +5,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	compileDatasetCases,
 	compileSealedSlice,
+	datasetHoldoutInForce,
 	holdOutSealedSlice,
 	ingestDataset,
 	inspectDatasetFile,
+	listDatasetIngestReceipts,
 	loadDatasetIngestReceipt,
 	MAX_DATASET_SOURCE_BYTES,
 	MAX_PREVIEW_CELL_CHARS,
@@ -615,7 +617,7 @@ describe("ingest", () => {
 			format: "csv",
 			rowsSeen: 50,
 			developmentCount: 40,
-			sealed: { corpusId: result.sealedCorpus?.id ?? "", count: 10, seed: "exam-1" },
+			sealed: { corpusId: result.sealedCorpus?.id ?? "", count: 10, seed: "exam-1", reservedRows: 10 },
 			at: NOW,
 		});
 
@@ -665,6 +667,40 @@ describe("ingest", () => {
 
 		expect(JSON.stringify(preview)).not.toMatch(/corpus-[0-9a-f]{64}/);
 		expect(preview.rowCount).toBe(25);
+	});
+
+	it("replays the exact draw from the receipt, filtered rows and stratification included", () => {
+		const dir = project({ "imports/basket.csv": csvRows(30, (index) => index % 3 === 0 ? "bronze" : "gold") });
+		const stateRoot = join(dir, ".ahde");
+		const ingest = ingestDataset({
+			projectDir: dir,
+			stateRoot,
+			projectId: "policy",
+			// A filter drops rows from the sealed compile, so the sealed corpus is
+			// smaller than the draw; only the draw reproduces the same split.
+			recipe: recipe({ filters: [{ column: "tier", matches: "gold|silver" }] }),
+			sourcePath: "imports/basket.csv",
+			holdout: { count: 9, seed: "exam-1", stratifyBy: "tier" },
+			developmentName: "Refund basket",
+			now: () => NOW,
+		});
+		expect(ingest.receipt.sealed).toMatchObject({ reservedRows: 9, seed: "exam-1", stratifyBy: "tier" });
+		expect(ingest.receipt.sealed?.count).toBeLessThan(9);
+
+		const inForce = datasetHoldoutInForce(stateRoot, "policy", "imports/basket.csv");
+		expect(inForce).toEqual({ count: 9, seed: "exam-1", stratifyBy: "tier" });
+		expect(datasetHoldoutInForce(stateRoot, "policy", "imports/other.csv")).toBeNull();
+		expect(listDatasetIngestReceipts(stateRoot, "policy")).toHaveLength(1);
+
+		const sealedRows = new Set(compileSealedSlice({
+			projectDir: dir,
+			sourcePath: "imports/basket.csv",
+			recipe: recipe({ filters: [{ column: "tier", matches: "gold|silver" }] }),
+			holdout: inForce!,
+		}).tasks.map((task) => task.input));
+		const preview = inspectDatasetFile({ projectDir: dir, sourcePath: "imports/basket.csv", holdout: inForce });
+		expect(preview.rowCount).toBe(21);
+		for (const row of preview.sampleRows) expect(sealedRows.has(row.question ?? "")).toBe(false);
 	});
 });
 

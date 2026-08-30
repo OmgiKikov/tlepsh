@@ -30,7 +30,7 @@ export const CLI_COMMANDS = [
 ] as const;
 
 export type CliCommand = typeof CLI_COMMANDS[number];
-export type CliAction = "publish" | "import" | "list";
+export type CliAction = "publish" | "import" | "list" | "inspect" | "ingest";
 
 export type CliEarlyExit =
 	| { kind: "help" }
@@ -141,7 +141,17 @@ const CORPUS_ACTION_SPECS = {
 		requiredFlags: ["project"],
 		positionals: 0,
 	},
-} as const satisfies Record<"publish" | "import" | "list", InvocationSpec>;
+	inspect: {
+		flags: ["project", "file", "sealed", "seed"],
+		requiredFlags: ["project", "file"],
+		positionals: 0,
+	},
+	ingest: {
+		flags: ["project", "file", "recipe", "name", "sealed", "seed", "stratify-by"],
+		requiredFlags: ["project", "file", "recipe", "name"],
+		positionals: 0,
+	},
+} as const satisfies Record<CliAction, InvocationSpec>;
 
 const CORPUS_ACTIONS = Object.keys(CORPUS_ACTION_SPECS) as Array<keyof typeof CORPUS_ACTION_SPECS>;
 const COMMAND_NAMES = new Set<string>(CLI_COMMANDS.filter((command) => command !== "root"));
@@ -228,6 +238,7 @@ function validateSharedFlagValues(flags: Readonly<Record<string, string>>, conte
 	assertEnumFlag(flags, "recommend", ["promote", "reject"], context);
 	assertIntegerFlag(flags, "port", context, { minimum: 0, maximum: 65_535 });
 	assertIntegerFlag(flags, "repetitions", context, { minimum: 1 });
+	assertIntegerFlag(flags, "sealed", context, { minimum: 1 });
 	assertIntegerFlag(flags, "jobs", context, { minimum: 1, maximum: 64 });
 	// 0 days means "never reuse a baseline"; every run measures its own.
 	assertIntegerFlag(flags, "baseline-max-age", context, { minimum: 0, maximum: 3_650 });
@@ -288,7 +299,20 @@ function parseActionCommand(
 	const spec = specs[action];
 	const context = `${command} ${action}`;
 	assertInvocationSpec(parsed, spec, context);
+	validateActionRelationships(context, parsed.flags);
 	return freezeInvocation(command, action as CliAction, parsed);
+}
+
+/** A sealed slice is a draw, not a count: it needs its seed to be reproducible. */
+function validateActionRelationships(context: string, flags: Readonly<Record<string, string>>): void {
+	const sealed = flags.sealed !== undefined;
+	const seed = flags.seed !== undefined;
+	if (sealed !== seed) {
+		cliError(`${context} requires --sealed and --seed together; a sealed slice is reproduced from its seed`);
+	}
+	if (flags["stratify-by"] !== undefined && !sealed) {
+		cliError(`--stratify-by for ${context} only applies to a sealed slice; add --sealed N --seed S`);
+	}
 }
 
 function validateCommandRelationships(command: CliCommand, flags: Readonly<Record<string, string>>): void {

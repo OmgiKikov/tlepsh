@@ -53,6 +53,10 @@ describe("CLI help", () => {
 	it("renders focused help for nested automation actions", () => {
 		expect(cliHelp(["corpus", "import", "--help"])).toContain("imports/ inbox");
 		expect(cliHelp(["corpus", "publish", "--help"])).toContain("Builder corpus draft");
+		expect(cliHelp(["corpus", "inspect", "--help"])).toContain("--file imports/<file>");
+		expect(cliHelp(["corpus", "inspect", "--help"])).toContain("a sealed row is never printed");
+		expect(cliHelp(["corpus", "ingest", "--help"])).toContain("--recipe <json|@path>");
+		expect(cliHelp(["corpus", "ingest", "--help"])).toContain("never a sealed row");
 	});
 
 	it("no longer advertises the deleted one-shot adapter commands", () => {
