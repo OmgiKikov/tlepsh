@@ -368,7 +368,12 @@ function datasetGrader(grader: WorkbenchDatasetCase["graders"][number]): Workben
 		case "output_matches":
 			return { ...grader, ...named, pattern: datasetText(grader.pattern) };
 		case "judge":
-			return { ...grader, ...named, rubric: datasetText(grader.rubric) };
+			return {
+				...grader,
+				...named,
+				...(grader.rubric !== undefined ? { rubric: datasetText(grader.rubric) } : {}),
+				...(grader.assertions ? { assertions: grader.assertions.map((item) => datasetText(item)) } : {}),
+			};
 		case "exact":
 		case "similarity":
 			return { ...grader, ...named };

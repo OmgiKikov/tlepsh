@@ -236,6 +236,19 @@ const JUDGE_SYSTEM =
 	'Ответь строго одной строкой JSON без markdown: {"passed": true|false, "reason": "краткое обоснование"}';
 
 /**
+ * Assertion rubrics ask for one isolated yes/no per check, with "unknown" as an
+ * explicit third answer: a judge forced to guess between yes and no invents a
+ * verdict, and an invented verdict is exactly what a human label later has to
+ * correct. Unknown counts as a failure, so guessing buys the answer nothing.
+ */
+const JUDGE_ASSERTIONS_SYSTEM =
+	'Ты — грейдер. Проверь ответ агента по списку независимых утверждений. ' +
+	'Отвечай по каждому утверждению отдельно: "yes" — утверждение выполнено, "no" — нарушено, ' +
+	'"unknown" — ответа недостаточно, чтобы решить. Не догадывайся: "unknown" честнее выдумки. ' +
+	'Ответь строго одной строкой JSON без markdown: ' +
+	'{"verdicts": [{"index": 1, "answer": "yes"|"no"|"unknown", "evidence": "цитата или краткое обоснование"}]}';
+
+/**
  * The rubric-only prompt is frozen on purpose. Rewording it would change
  * verdicts for datasets that already have evidence, which is exactly what
  * `AHDE_EVALUATOR_ID` exists to fence off. Reference judging is a new protocol
@@ -282,6 +295,27 @@ function judgeReferencePrompt(rubric: string, input: string, expected: string, o
 	].join("\n");
 }
 
+/** Reference and rubric each get their own delimited block, verbatim. */
+function judgeAssertionsPrompt(
+	spec: { rubric?: string | undefined; assertions: readonly string[] },
+	input: string,
+	output: string,
+): string {
+	return [
+		...(spec.rubric ? ["<критерий>", spec.rubric, "</критерий>", ""] : []),
+		"<обращение>", input, "</обращение>",
+		"",
+		"<ответ агента>", output, "</ответ агента>",
+		"",
+		"<утверждения>",
+		...spec.assertions.map((assertion, index) => `${index + 1}. ${assertion}`),
+		"</утверждения>",
+		"",
+		`Оцени каждое утверждение независимо и верни ровно ${spec.assertions.length} verdict(s) в том же порядке:`,
+		'{"verdicts": [{"index": 1, "answer": "yes"|"no"|"unknown", "evidence": "краткое обоснование"}]}',
+	].join("\n");
+}
+
 function judgeJsonObject(text: string): Record<string, unknown> {
 	const stripped = text.replace(/```(?:json)?/g, "").trim();
 	const start = stripped.indexOf("{");
@@ -311,6 +345,43 @@ function parseVerdict(text: string): JudgeVerdict {
 		score: verdict.passed ? 1 : 0,
 		reason: judgeReason(verdict.reason),
 	};
+}
+
+/** Evidence is prose from a model: bounded and single-line before it is stored. */
+const MAX_ASSERTION_EVIDENCE_CHARS = 200;
+
+function assertionEvidence(value: unknown): string {
+	const text = typeof value === "string" ? value.replace(/\s+/gu, " ").trim() : "";
+	return text.length > 0 ? text.slice(0, MAX_ASSERTION_EVIDENCE_CHARS) : "judge gave no evidence";
+}
+
+function assertionAnswer(value: unknown): AssertionAnswer | null {
+	return value === "yes" || value === "no" || value === "unknown" ? value : null;
+}
+
+/**
+ * One entry per declared assertion, in declaration order. An assertion the
+ * judge skipped, duplicated, or answered with something else is `unknown`: an
+ * unanswered check has not been passed, and saying so beats inventing a verdict.
+ */
+function parseAssertionVerdicts(text: string, total: number): AssertionVerdict[] {
+	const body = judgeJsonObject(text);
+	if (!Array.isArray(body.verdicts)) {
+		throw new Error(`judge verdict missing a verdicts array: ${text.slice(0, 120)}`);
+	}
+	const byIndex = new Map<number, AssertionVerdict>();
+	for (const entry of body.verdicts) {
+		if (typeof entry !== "object" || entry === null) continue;
+		const record = entry as Record<string, unknown>;
+		const index = record.index;
+		const answer = assertionAnswer(record.answer);
+		if (answer === null || typeof index !== "number" || !Number.isInteger(index)) continue;
+		if (index < 1 || index > total || byIndex.has(index)) continue;
+		byIndex.set(index, { index, answer, evidence: assertionEvidence(record.evidence) });
+	}
+	return Array.from({ length: total }, (_unused, offset) =>
+		byIndex.get(offset + 1) ??
+			{ index: offset + 1, answer: "unknown" as const, evidence: "judge returned no verdict for this assertion" });
 }
 
 function parseReferenceVerdict(text: string): JudgeVerdict {
@@ -416,6 +487,18 @@ function judgeCostUsd(cost: TargetManifest["model"]["spec"]["cost"], usage: Judg
 interface JudgeSidecar {
 	dir: string;
 	graderIndex: number;
+	/**
+	 * 1-based juror, present only for a jury. A single judge keeps the historical
+	 * `<graderIndex>[.<attempt>].json` names, so every existing reader still finds
+	 * the exchange that decided the grade.
+	 */
+	juror?: number;
+}
+
+function judgeSidecarStem(sidecar: JudgeSidecar): string {
+	return sidecar.juror === undefined
+		? `${sidecar.graderIndex}`
+		: `${sidecar.graderIndex}.${sidecar.juror}`;
 }
 
 /** Evidence first: the exact exchange is on disk before anything is parsed. */
@@ -427,7 +510,8 @@ function writeJudgeAttemptEvidence(
 ): void {
 	mkdirSync(sidecar.dir, { recursive: true, mode: 0o700 });
 	chmodSync(sidecar.dir, 0o700);
-	const name = terminal ? `${sidecar.graderIndex}.json` : `${sidecar.graderIndex}.${attempt}.json`;
+	const stem = judgeSidecarStem(sidecar);
+	const name = terminal ? `${stem}.json` : `${stem}.${attempt}.json`;
 	writeTextArtifact(join(sidecar.dir, name), `${JSON.stringify(exchange, null, "\t")}\n`, { mode: 0o600 });
 }
 
@@ -435,12 +519,22 @@ type JudgeAttempt =
 	| { kind: "transport"; message: string }
 	| { kind: "http"; status: number; ok: boolean; text: string };
 
+type AssertionAnswer = "yes" | "no" | "unknown";
+
+interface AssertionVerdict {
+	index: number;
+	answer: AssertionAnswer;
+	evidence: string;
+}
+
 interface JudgeVerdict {
 	passed: boolean;
 	score: number;
 	reason: string;
 	/** Present only for the A–E reference rubric. */
 	choice?: ReferenceChoice;
+	/** Present only for an assertion rubric, one entry per declared assertion. */
+	assertions?: AssertionVerdict[];
 }
 
 /** One judge protocol: what is asked, and how the answer becomes a verdict. */
@@ -448,6 +542,8 @@ interface JudgeProtocol {
 	system: string;
 	user: string;
 	parse: (text: string) => JudgeVerdict;
+	/** Jurors whose majority decides. Absent or 1 is one judge call. */
+	jury?: number;
 }
 
 /**
@@ -455,20 +551,41 @@ interface JudgeProtocol {
  * exchange file stays exactly what went over the wire, written before anything
  * is parsed, and the verdict file says how it was read.
  */
-function writeJudgeVerdictEvidence(sidecar: JudgeSidecar, verdict: JudgeVerdict): void {
+function writeJudgeVerdictEvidence(
+	sidecar: JudgeSidecar,
+	verdict: JudgeVerdict,
+	jury: JudgeVerdict[],
+): void {
 	writeTextArtifact(
 		join(sidecar.dir, `${sidecar.graderIndex}.verdict.json`),
-		`${JSON.stringify({ choice: verdict.choice, passed: verdict.passed, score: verdict.score }, null, "\t")}\n`,
+		`${JSON.stringify({
+			choice: verdict.choice,
+			passed: verdict.passed,
+			score: verdict.score,
+			...(verdict.assertions ? { assertions: verdict.assertions } : {}),
+			...(jury.length > 1
+				? {
+					jury: jury.map((juror, offset) => ({
+						juror: offset + 1,
+						passed: juror.passed,
+						...(juror.choice ? { choice: juror.choice } : {}),
+						...(juror.assertions
+							? { answers: juror.assertions.map((assertion) => assertion.answer) }
+							: {}),
+					})),
+				}
+				: {}),
+		}, null, "\t")}\n`,
 		{ mode: 0o600 },
 	);
 }
 
-async function gradeJudge(
+async function judgeOnce(
 	protocol: JudgeProtocol,
 	judge: TargetManifest["model"],
 	sidecar: JudgeSidecar,
 	signal?: AbortSignal,
-): Promise<{ result: GraderResult; metrics: JudgeMetrics }> {
+): Promise<{ verdict: JudgeVerdict; metrics: JudgeMetrics }> {
 	const key = process.env[judge.apiKeyEnv];
 	if (judge.baseUrl.includes("openrouter.ai") && !key) {
 		throw new Error(`missing ${judge.apiKeyEnv} for judge endpoint ${judge.baseUrl}`);
@@ -486,7 +603,11 @@ async function gradeJudge(
 		// After the spread on purpose: a grader that samples is not a grader.
 		// manifest.ts rejects a judge params temperature; this makes overriding
 		// it structurally impossible even for evidence written by older code.
-		temperature: 0,
+		//
+		// A jury is the one exception, and it is the same argument from the other
+		// side: three identical greedy calls measure nothing, so a jury leaves the
+		// endpoint at its own default temperature and lets the disagreement show.
+		...(sidecar.juror === undefined ? { temperature: 0 } : {}),
 	};
 	let calls = 0;
 	let tokens = 0;
@@ -544,12 +665,126 @@ async function gradeJudge(
 			costUsd += judgeCostUsd(judge.spec.cost, usage);
 		}
 		const verdict = protocol.parse(contentToString(body.choices?.[0]?.message?.content));
-		if (verdict.choice) writeJudgeVerdictEvidence(sidecar, verdict);
+		return { verdict, metrics: { calls, tokens, costUsd } };
+	}
+}
+
+/** Strict majority. An even jury that splits has decided nothing, so it fails. */
+function majority(votes: number, jury: number): boolean {
+	return votes * 2 > jury;
+}
+
+function assertionOutcome(index: number, jurors: readonly JudgeVerdict[]): {
+	verdict: AssertionVerdict;
+	yes: number;
+} {
+	const answers = jurors.map((juror) =>
+		juror.assertions?.[index - 1] ?? { index, answer: "unknown" as const, evidence: "juror returned no verdict" });
+	const yes = answers.filter((answer) => answer.answer === "yes").length;
+	const decided: AssertionAnswer = majority(yes, jurors.length)
+		? "yes"
+		: answers.find((answer) => answer.answer !== "yes")?.answer ?? "no";
+	// Deterministic evidence: the first juror, in juror order, that voted the
+	// decided answer. Free-text evidence is display, never identity.
+	const spokesman = answers.find((answer) => answer.answer === decided) ?? answers[0];
+	return { verdict: { index, answer: decided, evidence: spokesman?.evidence ?? "judge gave no evidence" }, yes };
+}
+
+function juryNote(votes: number, jury: number): string {
+	return jury > 1 ? ` (${votes}/${jury})` : "";
+}
+
+/**
+ * Fold jurors into one verdict. Every rule here is deterministic given the
+ * jurors' answers: per assertion (or, for a prose rubric, per verdict) a strict
+ * majority decides, and the reason names the failed assertions by index with
+ * the vote counts, so the same disagreement always reads the same way.
+ */
+function foldJury(jurors: readonly JudgeVerdict[], assertionCount: number | null): JudgeVerdict {
+	const jury = jurors.length;
+	if (assertionCount === null) {
+		const passedVotes = jurors.filter((juror) => juror.passed).length;
+		const passed = majority(passedVotes, jury);
+		const spokesman = jurors.find((juror) => juror.passed === passed) ?? jurors[0]!;
+		const score = jurors.reduce((total, juror) => total + juror.score, 0) / jury;
 		return {
-			result: { name: "", type: "judge", passed: verdict.passed, score: verdict.score, reason: verdict.reason },
-			metrics: { calls, tokens, costUsd },
+			passed,
+			score,
+			reason: jury > 1
+				? `jury ${passedVotes}/${jury} passed · ${spokesman.reason}`
+				: spokesman.reason,
+			...(spokesman.choice ? { choice: spokesman.choice } : {}),
 		};
 	}
+	const decided = Array.from({ length: assertionCount }, (_unused, offset) =>
+		assertionOutcome(offset + 1, jurors));
+	const failed = decided.filter((entry) => entry.verdict.answer !== "yes");
+	const reason = failed.length === 0
+		? `${assertionCount}/${assertionCount} assertions passed${jury > 1 ? ` (jury ${jury})` : ""}`
+		: failed
+			.map((entry) =>
+				`assertion ${entry.verdict.index} ${entry.verdict.answer === "no" ? "failed" : "unknown"}` +
+				`${juryNote(entry.yes, jury)}: ${entry.verdict.evidence}`)
+			.join("; ");
+	return {
+		passed: failed.length === 0,
+		score: (assertionCount - failed.length) / assertionCount,
+		reason,
+		assertions: decided.map((entry) => entry.verdict),
+	};
+}
+
+/**
+ * Grade one judge check: one call, or a jury of independent calls whose
+ * majority decides. Every juror keeps its own retries and its own sidecar, and
+ * the reported metrics are the sum over all of them.
+ */
+async function gradeJudge(
+	protocol: JudgeProtocol,
+	judge: TargetManifest["model"],
+	sidecar: JudgeSidecar,
+	assertionCount: number | null,
+	signal?: AbortSignal,
+): Promise<{ result: GraderResult; metrics: JudgeMetrics }> {
+	const jury = protocol.jury ?? 1;
+	const jurors: JudgeVerdict[] = [];
+	const metrics: JudgeMetrics = { calls: 0, tokens: 0, costUsd: 0 };
+	for (let juror = 1; juror <= jury; juror += 1) {
+		const attempt = await judgeOnce(
+			protocol,
+			judge,
+			jury === 1 ? sidecar : { ...sidecar, juror },
+			signal,
+		);
+		jurors.push(attempt.verdict);
+		metrics.calls += attempt.metrics.calls;
+		metrics.tokens += attempt.metrics.tokens;
+		metrics.costUsd += attempt.metrics.costUsd;
+	}
+	const verdict = foldJury(jurors, assertionCount);
+	if (verdict.choice || verdict.assertions || jury > 1) {
+		writeJudgeVerdictEvidence(sidecar, verdict, jurors);
+	}
+	return {
+		result: {
+			name: "",
+			type: "judge",
+			passed: verdict.passed,
+			score: verdict.score,
+			reason: verdict.reason,
+			...(verdict.assertions
+				? {
+					assertions: {
+						total: verdict.assertions.length,
+						failed: verdict.assertions
+							.filter((assertion) => assertion.answer !== "yes")
+							.map((assertion) => assertion.index),
+					},
+				}
+				: {}),
+		},
+		metrics,
+	};
 }
 
 /** Grade one completed run against its task's effective graders. */
@@ -614,20 +849,41 @@ export async function gradeRun(
 			result = gradeSimilarity(normalizedSpec, task.expected, output ?? "");
 		} else if (normalizedSpec.type === "judge") {
 			if (!judge) throw new Error("judge grader without judge model config");
+			const assertions = normalizedSpec.assertions;
+			const jury = normalizedSpec.jury ?? 1;
 			const judged = await gradeJudge(
-				normalizedSpec.withReference
+				assertions
+					? {
+						system: JUDGE_ASSERTIONS_SYSTEM,
+						user: judgeAssertionsPrompt(
+							{ rubric: normalizedSpec.rubric, assertions },
+							task.input,
+							output ?? "",
+						),
+						// One juror folded alone is that juror's own verdict; the jury
+						// fold in gradeJudge then decides each assertion across jurors.
+						parse: (text) => foldJury(
+							[{ passed: false, score: 0, reason: "", assertions: parseAssertionVerdicts(text, assertions.length) }],
+							assertions.length,
+						),
+						jury,
+					}
+					: normalizedSpec.withReference
 					? {
 						system: JUDGE_REFERENCE_SYSTEM,
-						user: judgeReferencePrompt(normalizedSpec.rubric, task.input, task.expected ?? "", output ?? ""),
+						user: judgeReferencePrompt(normalizedSpec.rubric ?? "", task.input, task.expected ?? "", output ?? ""),
 						parse: parseReferenceVerdict,
+						jury,
 					}
 					: {
 						system: JUDGE_SYSTEM,
 						user: `Критерий: ${normalizedSpec.rubric}\n\nОбращение: ${task.input}\n\nОтвет агента: ${output ?? ""}`,
 						parse: parseVerdict,
+						jury,
 					},
 				judge,
 				{ dir: join(runDir, "judge"), graderIndex: index },
+				assertions ? assertions.length : null,
 				signal,
 			);
 			result = judged.result;

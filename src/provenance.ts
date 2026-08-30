@@ -73,8 +73,34 @@ export const GraderResultSchema = z
 		specHash: HashSchema.optional(),
 		/** Typed systemic check category. Paired with specHash for new evidence. */
 		checkCode: GraderCheckCodeSchema.optional(),
+		/**
+		 * Per-assertion outcome of an assertion rubric, by 1-based index. The
+		 * indexes are structure, the judge's evidence is prose: only these enter
+		 * a stable comparison, and only they belong in a persisted signal.
+		 */
+		assertions: z
+			.strictObject({
+				total: z.number().int().positive().max(64),
+				failed: z.array(z.number().int().positive().max(64)).max(64),
+			})
+			.optional(),
 	})
 	.superRefine((result, context) => {
+		if (result.assertions) {
+			const { total, failed } = result.assertions;
+			if (new Set(failed).size !== failed.length) {
+				context.addIssue({ code: "custom", path: ["assertions", "failed"], message: "must be unique" });
+			}
+			if (failed.some((index) => index > total)) {
+				context.addIssue({ code: "custom", path: ["assertions", "failed"], message: "index exceeds total" });
+			}
+			if (JSON.stringify(failed) !== JSON.stringify([...failed].sort((a, b) => a - b))) {
+				context.addIssue({ code: "custom", path: ["assertions", "failed"], message: "must be ascending" });
+			}
+			if (result.passed !== (failed.length === 0)) {
+				context.addIssue({ code: "custom", path: ["passed"], message: "must reflect the failed assertions" });
+			}
+		}
 		const hasSpecHash = result.specHash !== undefined;
 		const hasCheckCode = result.checkCode !== undefined;
 		if (hasSpecHash !== hasCheckCode) {
