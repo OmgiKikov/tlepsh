@@ -35,9 +35,9 @@ import {
 	runCheapCheckForCandidate,
 } from "./application/cheap-check.js";
 import {
+	recordedBuilderProposalAuthor,
 	renderImprovementLoopTable,
 	runImprovementLoop,
-	type ImprovementProposalAuthor,
 } from "./application/improvement-loop.js";
 
 import { runAppliedBuilderCandidate } from "./application/builder-candidate.js";
@@ -59,11 +59,7 @@ import {
 	inspectDatasetFile,
 	type DatasetHoldoutSpec,
 } from "./application/dataset-ingest.js";
-import {
-	listBuilderProposalAdmissions,
-	loadBuilderApplyReceipt,
-	loadBuilderProposalRun,
-} from "./application/builder-proposal.js";
+import { loadBuilderProposalRun } from "./application/builder-proposal.js";
 import { readTryToolInput, tryTool } from "./application/tool-workshop.js";
 import {
 	resolveDevelopmentTargetForEval,
@@ -1063,7 +1059,7 @@ async function main(): Promise<void> {
 				maxCycles,
 				repetitions,
 				...(arg("jobs") ? { jobs: Number(arg("jobs")) } : {}),
-				author: recordedProposalAuthor(projectId),
+				author: recordedBuilderProposalAuthor({ stateRoot: stateRoot(), runsRoot: runsRoot(), projectId }),
 				onCycle: (line) => process.stderr.write(`${line}\n`),
 				onRunEvent: cliRunProgress(),
 			});
@@ -1168,47 +1164,6 @@ function soleApprovedSpecId(projectId: string): string {
 	throw new Error(
 		`project ${projectId} has ${specs.length} approved Specs; run the loop from \`ahde\` where one is selected`,
 	);
-}
-
-/**
- * The CLI loop's proposal source: the next Builder proposal already recorded
- * against this cycle's exact evidence and not yet applied or discarded.
- *
- * A host does not author harness text. Authoring stays with Builder Pi; the
- * loop applies, screens and verifies what the Builder wrote. Wiring a headless
- * Builder into this seam is what turns `ahde improve` into a hands-free loop.
- */
-function recordedProposalAuthor(projectId: string): ImprovementProposalAuthor {
-	const used = new Set<string>();
-	return (request) => {
-		const admissions = listBuilderProposalAdmissions(stateRoot(), projectId);
-		for (const admission of admissions) {
-			if (used.has(admission.runId)) continue;
-			let record;
-			try {
-				record = loadBuilderProposalRun(runsRoot(), admission.runId);
-			} catch {
-				continue;
-			}
-			if (record.result.status !== "completed" || record.result.proposal?.decision !== "propose") continue;
-			if (record.request.baseTargetSha !== request.baseTargetSha) continue;
-			if (record.request.source?.evalRunId !== request.evalRunId) continue;
-			try {
-				loadBuilderApplyReceipt(runsRoot(), admission.runId);
-				continue; // already applied
-			} catch {
-				// not applied yet — this is the one
-			}
-			used.add(admission.runId);
-			return { kind: "recorded", builderRunId: admission.runId };
-		}
-		return {
-			kind: "no-change",
-			reason:
-				"no unapplied Builder proposal is bound to this evidence. Author one in `ahde` (say \u201cfix it\u201d) " +
-				"before asking the loop to screen and verify it.",
-		};
-	};
 }
 
 function cliFailure(error: unknown): { message: string; next?: string } {

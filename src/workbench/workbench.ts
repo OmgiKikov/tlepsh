@@ -63,6 +63,7 @@ import {
 	IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS,
 	improvementLoopGate,
 	plannedImprovementExecutions,
+	recordedBuilderProposalAuthor,
 	renderImprovementLoopTable,
 	runImprovementLoop,
 	type ImprovementProposalAuthor,
@@ -769,34 +770,6 @@ export class AhdeWorkbench {
 				warning: `regression guards were not built: ${error instanceof Error ? error.message : String(error)}`,
 			};
 		}
-	}
-
-	/**
-	 * The autoloop's default proposal source: the next open Builder proposal
-	 * already recorded against this cycle's exact evidence. It authors nothing
-	 * itself — a host has no business writing harness text.
-	 */
-	private recordedProposalAuthor(): ImprovementProposalAuthor {
-		const used = new Set<string>();
-		return (request) => {
-			const current = this.inventory();
-			const next = current.proposals.find((proposal) =>
-				proposal.status === "open" &&
-				!used.has(proposal.record.runId) &&
-				proposal.record.request.baseTargetSha === request.baseTargetSha &&
-				proposal.record.request.source?.evalRunId === request.evalRunId,
-			);
-			if (!next) {
-				return {
-					kind: "no-change",
-					reason:
-						"no open Builder proposal is bound to this evidence. Author one in `ahde` (say “fix it”) " +
-						"before asking the loop to screen and verify it.",
-				};
-			}
-			used.add(next.record.runId);
-			return { kind: "recorded", builderRunId: next.record.runId };
-		};
 	}
 
 	/** What one run of this many executions is expected to cost on this Target. */
@@ -2181,7 +2154,11 @@ export class AhdeWorkbench {
 				maxCycles: input.maxCycles,
 				repetitions: input.repetitions,
 				...(input.jobs === undefined ? {} : { jobs: input.jobs }),
-				author: this.dependencies.authorImprovementProposal ?? this.recordedProposalAuthor(),
+				author: this.dependencies.authorImprovementProposal ?? recordedBuilderProposalAuthor({
+					stateRoot: this.stateRoot,
+					runsRoot: this.runsRoot,
+					projectId: this.projectId,
+				}),
 				gate: improvementLoopGate(gate),
 				actorId: actor,
 				...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),

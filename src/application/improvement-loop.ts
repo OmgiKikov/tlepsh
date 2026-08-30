@@ -36,7 +36,13 @@ import type {
 } from "../workbench/types.js";
 import { recordBuilderAuthoredProposal } from "./builder-authoring.js";
 import { runAppliedBuilderCandidate } from "./builder-candidate.js";
-import { applyBuilderProposal } from "./builder-proposal.js";
+import {
+	applyBuilderProposal,
+	listBuilderProposalAdmissions,
+	loadBuilderApplyReceipt,
+	loadBuilderProposalRun,
+} from "./builder-proposal.js";
+import { assertBuilderProposalNotDiscarded } from "./builder-discard.js";
 import { CANDIDATE_SCOPE_POLICY } from "./candidate-experiment.js";
 import { runCheapCheck, type CheapCheckResult } from "./cheap-check.js";
 import { targetWithDevelopmentCorpus } from "./corpus-target.js";
@@ -637,6 +643,70 @@ export async function runImprovementLoop(
 		candidateId,
 		finalPassRate,
 		executions,
+	};
+}
+
+export interface RecordedProposalAuthorOptions {
+	stateRoot: string;
+	runsRoot: string;
+	projectId: string;
+}
+
+/**
+ * The shipped proposal source: the next Builder proposal already recorded
+ * against this cycle's exact evidence, neither applied nor discarded.
+ *
+ * A host does not author harness text. Authoring stays with Builder Pi; the
+ * loop applies, screens and verifies what the Builder wrote. Wiring a headless
+ * Builder into the {@link ImprovementProposalAuthor} seam is what turns this
+ * into a hands-free loop.
+ */
+export function recordedBuilderProposalAuthor(
+	options: RecordedProposalAuthorOptions,
+): ImprovementProposalAuthor {
+	const used = new Set<string>();
+	const stateRoot = resolve(options.stateRoot);
+	const runsRoot = resolve(options.runsRoot);
+	return (request) => {
+		let admissions: ReturnType<typeof listBuilderProposalAdmissions>;
+		try {
+			admissions = listBuilderProposalAdmissions(stateRoot, options.projectId);
+		} catch {
+			admissions = [];
+		}
+		for (const admission of admissions) {
+			if (used.has(admission.runId)) continue;
+			let record: ReturnType<typeof loadBuilderProposalRun>;
+			try {
+				record = loadBuilderProposalRun(runsRoot, admission.runId);
+			} catch {
+				continue;
+			}
+			if (record.result.status !== "completed" || record.result.proposal?.decision !== "propose") continue;
+			if (record.request.baseTargetSha !== request.baseTargetSha) continue;
+			if (record.request.source?.evalRunId !== request.evalRunId) continue;
+			// Apply and Discard are terminal and mutually exclusive (invariant 20):
+			// a proposal that already has either is not the loop's to try.
+			try {
+				assertBuilderProposalNotDiscarded(runsRoot, admission.runId);
+			} catch {
+				continue;
+			}
+			try {
+				loadBuilderApplyReceipt(runsRoot, admission.runId);
+				continue;
+			} catch {
+				// No apply receipt: this is the next one to try.
+			}
+			used.add(admission.runId);
+			return { kind: "recorded", builderRunId: admission.runId };
+		}
+		return {
+			kind: "no-change",
+			reason:
+				"no unapplied Builder proposal is bound to this evidence. Author one in `ahde` (say \u201cfix it\u201d) " +
+				"before asking the loop to screen and verify it.",
+		};
 	};
 }
 

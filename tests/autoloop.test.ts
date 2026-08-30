@@ -8,6 +8,7 @@ import {
 	improvementCycleLine,
 	improvementLoopGate,
 	plannedImprovementExecutions,
+	recordedBuilderProposalAuthor,
 	renderImprovementLoopTable,
 	runImprovementLoop,
 	topProposableFailureMode,
@@ -28,6 +29,7 @@ import {
 	improveFixture,
 	NO_OP_INSTRUCTION,
 	READY_INSTRUCTION,
+	recordFixtureProposal,
 	type ImproveFixture,
 } from "./helpers/improve-fixtures.js";
 
@@ -431,6 +433,50 @@ describe("the improve decision", () => {
 				developmentCorpusId: "corpus-that-does-not-exist",
 				reason: "Improve with a basket that is not there",
 			}, approvingGate())).rejects.toThrow();
+		} finally {
+			await fixture.close();
+		}
+	}, 600_000);
+});
+
+describe("the shipped proposal author", () => {
+	it("takes the next unapplied proposal bound to this evidence, once each", async () => {
+		const fixture = await improveFixture();
+		try {
+			const author = recordedBuilderProposalAuthor({
+				stateRoot: fixture.stateRoot,
+				runsRoot: fixture.runsRoot,
+				projectId: fixture.projectId,
+			});
+			const request = {
+				cycle: 1,
+				repositoryDir: fixture.projectDir,
+				runsRoot: fixture.runsRoot,
+				stateRoot: fixture.stateRoot,
+				projectId: fixture.projectId,
+				approvedSpecId: fixture.approvedSpecId,
+				baseTargetSha: fixture.baselineSha,
+				evalRunId: fixture.evalRunId,
+				diagnosisId: "diagnosis-x",
+				brief: {} as never,
+				failureMode: {} as never,
+				selection: {} as never,
+				failureBundlePath: "/dev/null",
+			};
+
+			// Nothing recorded yet: the loop is told what to do, not left guessing.
+			const empty = await author(request);
+			expect(empty).toMatchObject({ kind: "no-change" });
+			expect(empty.kind === "no-change" && empty.reason).toContain("Author one in `ahde`");
+
+			const recorded = await recordFixtureProposal(fixture, READY_INSTRUCTION);
+			const first = await author(request);
+			expect(first).toEqual({ kind: "recorded", builderRunId: recorded.runId });
+			// One proposal is one attempt: the next cycle does not re-apply it.
+			expect(await author({ ...request, cycle: 2 })).toMatchObject({ kind: "no-change" });
+
+			// A proposal bound to different evidence is not this cycle's.
+			expect(await author({ ...request, evalRunId: "erun_somewhere_else" })).toMatchObject({ kind: "no-change" });
 		} finally {
 			await fixture.close();
 		}

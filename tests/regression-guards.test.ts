@@ -7,6 +7,7 @@ import {
 } from "../src/application/candidate-review.js";
 import {
 	CheapCheckScreenRecordSchema,
+	runCheapCheckForCandidate,
 	screenRecordPath,
 } from "../src/application/cheap-check.js";
 import {
@@ -168,6 +169,20 @@ describe("promoted fixes become regression guards", () => {
 		expect(derived.metadata?.[PROMOTION_GUARD_METADATA_KIND]).toBe(PROMOTION_GUARD_KIND);
 		expect(JSON.stringify({ ...source, id: undefined })).not.toBe(JSON.stringify({ ...derived, id: undefined }));
 	});
+
+	it("screens the exact revision a Candidate record was built from", async () => {
+		// The path `ahde check --target . --candidate <id>` takes.
+		const screen = await runCheapCheckForCandidate({
+			repositoryDir: fixture.projectDir,
+			runsRoot: fixture.runsRoot,
+			stateRoot: fixture.stateRoot,
+			candidateId,
+		});
+		expect(screen.verdict).toBe("promising");
+		expect(screen.improved).toBe(2);
+		expect(screen.tasks).toHaveLength(2);
+		expect(screen.sourceEvalRunId).toBe(fixture.evalRunId);
+	}, 120_000);
 
 	it("refuses a promotion whose evidence is a cheap-check screen", () => {
 		const record = loadCandidateRecord(fixture.runsRoot, candidateId);
