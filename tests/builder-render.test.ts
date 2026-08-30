@@ -906,6 +906,26 @@ describe("renderReview", () => {
 		expect(unreconstructable).toContain("Development comparison not reconstructable");
 	});
 
+	it("says how far the judge behind this evidence has been checked, and only then", () => {
+		// No judge grader in the evidence: no line about an instrument it never used.
+		expect(renderReview(makeCandidateReview(), plainPaint).join("\n")).not.toContain("Judge");
+
+		const uncalibrated = renderReview(makeCandidateReview({ judgeAgreement: null }), plainPaint).join("\n");
+		expect(uncalibrated).toContain("Judge not calibrated · ahde label");
+
+		const calibrated = renderReview(
+			makeCandidateReview({ judgeAgreement: { agreement: 0.84, kappa: 0.62, labels: 50 } }),
+			plainPaint,
+		).join("\n");
+		expect(calibrated).toContain("Judge agreement 84% · κ 0.62 · n=50");
+
+		const noKappa = renderReview(
+			makeCandidateReview({ judgeAgreement: { agreement: 1, kappa: null, labels: 4 } }),
+			plainPaint,
+		).join("\n");
+		expect(noKappa).toContain("Judge agreement 100% · κ n/a · n=4");
+	});
+
 	it("includes the impact projection inside a candidate review", () => {
 		const text = renderReview(makeCandidateReview({}, { impact: { available: true, impact: makeImpact() } }), plainPaint).join("\n");
 		expect(text).toContain("Impact improved");

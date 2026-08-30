@@ -56,6 +56,18 @@ the harness under development runs in a different Target Pi invocation.
 - **A/A calibration** — repeated evaluation of the same snapshot to measure
   run-to-run noise. The A/A Candidate record is the calibration receipt; it
   can never be promotion evidence.
+- **Judge agreement** — how often a judge grader and a human reached the same
+  verdict on the same answer, with Cohen's κ correcting for the agreement two
+  indifferent raters would reach by chance. Humans supply the other side
+  through `ahde label`, which shows the task and the answer, takes a blind
+  pass/fail, and only then reveals the judge. Labels live under
+  `<state-root>/projects/<id>/labels/<evalRunId>.jsonl`, are notes about an
+  instrument rather than evidence about a Target — never a receipt, never a
+  provenance axis, never collected from sealed evidence — and every judge
+  screen reads `judge agreement 84% · κ 0.62 · n=50` or
+  `judge not calibrated` from them. A Target may set
+  `evalSuite.judge.requireCalibration` to refuse promoting evidence its judge
+  has not earned.
 - **Comparison Verdict** — the single typed outcome of comparing a baseline and
   a candidate Eval Run under one Gate Policy: paired per-task deltas, a seeded
   bootstrap 95% interval, the design (tasks × repetitions, excluded tasks),
