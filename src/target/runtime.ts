@@ -28,7 +28,8 @@ import type { ExecutionPolicyResult } from "../execution-policy.js";
 import { EXECUTION_POLICY_SESSION_OPTIONS } from "../execution-policy.js";
 import type { ResolvedTarget } from "../manifest.js";
 import type { ExecutionFingerprint } from "../provenance.js";
-import { TargetToolBroker, type TargetToolSandboxBackend } from "./tool-broker.js";
+import { detectTargetToolSandbox, TargetToolBroker, type TargetToolSandboxBackend } from "./tool-broker.js";
+import { prepareToolHome, type ToolSetupOutcome } from "./tool-setup.js";
 import { loadTargetTools, type ResolvedTargetTool } from "./tool-manifest.js";
 
 export interface TargetToolRuntime {
@@ -36,6 +37,10 @@ export interface TargetToolRuntime {
 	sandboxBackend: TargetToolSandboxBackend | null;
 	effectiveEnvironmentNames: string[];
 	toolNames: string[];
+	/** Prepared home for multi-file tools, or null when none are declared. */
+	toolHomeRoot: string | null;
+	/** One entry per multi-file tool; `ran` is false when it declares no setup. */
+	toolSetups: ToolSetupOutcome[];
 }
 
 /**
@@ -193,6 +198,12 @@ export interface CreateTargetToolRuntimeOptions {
 	workspaceDir: string;
 	scratchDir: string;
 	sourceEnvironment?: NodeJS.ProcessEnv;
+	/**
+	 * Shared prepared home for multi-file tools. One EvalRun passes its
+	 * snapshot-scoped root so every run reuses one setup; omitting it prepares a
+	 * private home under `scratchDir` for this run alone.
+	 */
+	toolHomeRoot?: string;
 }
 
 function assertWorkspaceToolIdentity(
@@ -236,7 +247,14 @@ function definition(tool: ResolvedTargetTool, broker: TargetToolBroker): ToolDef
 
 export function createTargetToolRuntime(options: CreateTargetToolRuntimeOptions): TargetToolRuntime {
 	if (options.target.tools.length === 0) {
-		return { customTools: [], sandboxBackend: null, effectiveEnvironmentNames: [], toolNames: [] };
+		return {
+			customTools: [],
+			sandboxBackend: null,
+			effectiveEnvironmentNames: [],
+			toolNames: [],
+			toolHomeRoot: null,
+			toolSetups: [],
+		};
 	}
 	const reloaded = loadTargetTools(
 		options.workspaceDir,
@@ -249,11 +267,29 @@ export function createTargetToolRuntime(options: CreateTargetToolRuntimeOptions)
 		options.target.toolsetHash,
 		reloaded.toolsetHash,
 	);
+	const needsToolHome = reloaded.tools.some((tool) => tool.layout === "directory");
+	// Detecting the backend once keeps preparation and execution on one decision.
+	const sandboxBackend = needsToolHome
+		? detectTargetToolSandbox(realpathSync(resolve(options.workspaceDir)), options.scratchDir)
+		: undefined;
+	const prepared = needsToolHome
+		? prepareToolHome({
+			workspaceDir: options.workspaceDir,
+			scratchDir: options.scratchDir,
+			tools: reloaded.tools,
+			toolHomeRoot: options.toolHomeRoot ?? join(options.scratchDir, "tool-workshop"),
+			policy: options.target.manifest.execution,
+			...(sandboxBackend ? { sandboxBackend } : {}),
+			...(options.sourceEnvironment ? { sourceEnvironment: options.sourceEnvironment } : {}),
+		})
+		: null;
 	const broker = new TargetToolBroker({
 		workspaceDir: options.workspaceDir,
 		scratchDir: options.scratchDir,
 		policy: options.target.manifest.execution,
 		sourceEnvironment: options.sourceEnvironment,
+		...(prepared ? { toolHomeRoot: prepared.root } : {}),
+		...(sandboxBackend ? { sandboxBackend } : {}),
 	});
 	const environmentNames = new Set<string>();
 	for (const tool of reloaded.tools) {
@@ -264,6 +300,8 @@ export function createTargetToolRuntime(options: CreateTargetToolRuntimeOptions)
 		sandboxBackend: broker.sandboxBackend,
 		effectiveEnvironmentNames: [...environmentNames].sort(),
 		toolNames: reloaded.tools.map((tool) => tool.descriptor.name),
+		toolHomeRoot: prepared?.root ?? null,
+		toolSetups: prepared?.setups ?? [],
 	};
 }
 

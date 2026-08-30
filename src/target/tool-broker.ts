@@ -16,6 +16,11 @@ export interface TargetToolBrokerOptions {
 	scratchDir: string;
 	policy: TargetToolPolicyEnvelope;
 	sourceEnvironment?: NodeJS.ProcessEnv;
+	/**
+	 * Prepared home for multi-file tools: `<root>/<tool name>/…`. Directory
+	 * tools execute from here, never from the model-writable workspace copy.
+	 */
+	toolHomeRoot?: string;
 	/** Production callers should omit this. Tests may inject a previously probed backend. */
 	sandboxBackend?: TargetToolSandboxBackend;
 }
@@ -26,6 +31,27 @@ export interface TargetToolBrokerResult {
 	exitCode: number;
 	toolDigest: string;
 }
+
+/** The exact, bounded outcome of one sandboxed process. */
+export interface TargetToolRawResult {
+	stdout: string;
+	stderr: string;
+	exitCode: number | null;
+	durationMs: number;
+	truncated: boolean;
+	stopped: "aborted" | "overflow" | "timeout" | null;
+}
+
+/** What one sandboxed process may reach. Nothing else is negotiable at runtime. */
+export interface TargetToolConfinement {
+	network: "deny" | "allow";
+	/** Extra absolute read roots (prepared tool home, data mounts). */
+	readRoots: readonly string[];
+	/** Absolute directories the process may write. Scratch is always writable. */
+	writeRoots: readonly string[];
+}
+
+export const AHDE_TOOL_HOME_ENVIRONMENT = "AHDE_TOOL_HOME";
 
 const FIXED_ENVIRONMENT = new Set(["HOME", "LANG", "PATH", "TMPDIR"]);
 
@@ -46,10 +72,10 @@ function sandboxString(value: string): string {
 	return JSON.stringify(value);
 }
 
-function macosProfile(
+export function macosProfile(
 	workspaceDir: string,
 	scratchDir: string,
-	tool: ResolvedTargetTool,
+	confinement: TargetToolConfinement,
 ): string {
 	const readRoots = [
 		"/System",
@@ -64,14 +90,13 @@ function macosProfile(
 		"/nix/store",
 		workspaceDir,
 		scratchDir,
+		...confinement.readRoots,
 	];
 	const reads = readRoots.map((path) => `(subpath ${sandboxString(path)})`).join(" ");
 	const writes = [
 		`(literal "/dev/null")`,
 		`(subpath ${sandboxString(scratchDir)})`,
-		...(tool.descriptor.permissions.filesystem === "workspace-write"
-			? [`(subpath ${sandboxString(workspaceDir)})`]
-			: []),
+		...confinement.writeRoots.map((path) => `(subpath ${sandboxString(path)})`),
 	].join(" ");
 	return [
 		"(version 1)",
@@ -84,8 +109,21 @@ function macosProfile(
 		"(allow file-read-metadata)",
 		`(allow file-read* (literal "/") ${reads})`,
 		`(allow file-write* ${writes})`,
-		tool.descriptor.permissions.network === "deny" ? "(deny network*)" : "(allow network*)",
+		confinement.network === "deny" ? "(deny network*)" : "(allow network*)",
 	].join(" ");
+}
+
+/** The confinement one declared tool call runs under. */
+export function toolConfinement(
+	tool: ResolvedTargetTool,
+	workspaceDir: string,
+	toolHomeRoot: string | undefined,
+): TargetToolConfinement {
+	return {
+		network: tool.descriptor.permissions.network,
+		readRoots: toolHomeRoot ? [toolHomeRoot] : [],
+		writeRoots: tool.descriptor.permissions.filesystem === "workspace-write" ? [workspaceDir] : [],
+	};
 }
 
 function existingSystemPaths(): string[] {
@@ -98,13 +136,14 @@ function existingSystemPaths(): string[] {
 	});
 }
 
-function bwrapArguments(
-	workspaceDir: string,
-	scratchDir: string,
-	environment: NodeJS.ProcessEnv,
-	tool: ResolvedTargetTool,
-	executable: string,
-): string[] {
+export function bwrapArguments(options: {
+	workspaceDir: string;
+	scratchDir: string;
+	environment: NodeJS.ProcessEnv;
+	confinement: TargetToolConfinement;
+	cwd: string;
+	argv: readonly string[];
+}): string[] {
 	const args = [
 		"--die-with-parent",
 		"--new-session",
@@ -114,46 +153,26 @@ function bwrapArguments(
 		"--unshare-uts",
 		"--unshare-cgroup",
 	];
-	if (tool.descriptor.permissions.network === "deny") args.push("--unshare-net");
+	if (options.confinement.network === "deny") args.push("--unshare-net");
 	args.push("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp");
 	for (const path of existingSystemPaths()) args.push("--ro-bind", path, path);
-	args.push(
-		tool.descriptor.permissions.filesystem === "workspace-write" ? "--bind" : "--ro-bind",
-		workspaceDir,
-		workspaceDir,
-		"--bind",
-		scratchDir,
-		scratchDir,
-		"--chdir",
-		workspaceDir,
-		"--clearenv",
-	);
-	for (const [name, value] of Object.entries(environment).sort(([a], [b]) => a.localeCompare(b))) {
+	args.push("--ro-bind", options.workspaceDir, options.workspaceDir);
+	for (const path of options.confinement.readRoots) args.push("--ro-bind", path, path);
+	args.push("--bind", options.scratchDir, options.scratchDir);
+	// Write roots come last so a writable subtree overrides its read-only parent.
+	for (const path of options.confinement.writeRoots) args.push("--bind", path, path);
+	args.push("--chdir", options.cwd, "--clearenv");
+	for (const [name, value] of Object.entries(options.environment).sort(([a], [b]) => a.localeCompare(b))) {
 		if (value !== undefined) args.push("--setenv", name, value);
 	}
-	args.push("--", executable, ...tool.descriptor.command.argv.slice(1));
+	args.push("--", ...options.argv);
 	return args;
 }
 
+const PROBE_CONFINEMENT: TargetToolConfinement = { network: "deny", readRoots: [], writeRoots: [] };
+
 function probeMacSandbox(binary: string, workspaceDir: string, scratchDir: string): boolean {
-	const probeTool: ResolvedTargetTool = {
-		descriptorPath: "tools/probe.tool.yaml",
-		executablePath: "bin/probe",
-		executableHash: "",
-		digest: "",
-		descriptor: {
-			schemaVersion: 1,
-			name: "probe",
-			description: "probe",
-			parameters: { type: "object", properties: {}, required: [], additionalProperties: false },
-			command: { argv: ["bin/probe"] },
-			timeoutMs: 1_000,
-			maxOutputBytes: 1,
-			output: "text",
-			permissions: { environment: [], network: "deny", filesystem: "read-only" },
-		},
-	};
-	const probe = spawnSync(binary, ["-p", macosProfile(workspaceDir, scratchDir, probeTool), "/usr/bin/true"], {
+	const probe = spawnSync(binary, ["-p", macosProfile(workspaceDir, scratchDir, PROBE_CONFINEMENT), "/usr/bin/true"], {
 		cwd: workspaceDir,
 		stdio: "ignore",
 		timeout: 3_000,
@@ -195,12 +214,20 @@ export function detectTargetToolSandbox(workspaceDir: string, scratchDir: string
 	throw new Error(`No usable sandbox backend for declarative Target tools on ${process.platform}; execution fails closed`);
 }
 
-function buildEnvironment(
-	tool: ResolvedTargetTool,
-	options: TargetToolBrokerOptions,
-): { environment: NodeJS.ProcessEnv; names: string[] } {
-	const home = join(options.scratchDir, "tool-home", tool.descriptor.name);
-	const temporary = join(options.scratchDir, "tool-tmp", tool.descriptor.name);
+/**
+ * The scrubbed environment one sandboxed Target process receives. `label`
+ * separates per-tool HOME/TMPDIR sandboxes (a tool call and its setup step
+ * must not share mutable state by accident).
+ */
+export function buildToolEnvironment(options: {
+	label: string;
+	scratchDir: string;
+	environmentAllowlist: readonly string[];
+	sourceEnvironment?: NodeJS.ProcessEnv;
+	toolHome?: string;
+}): { environment: NodeJS.ProcessEnv; names: string[] } {
+	const home = join(options.scratchDir, "tool-home", options.label);
+	const temporary = join(options.scratchDir, "tool-tmp", options.label);
 	mkdirSync(home, { recursive: true, mode: 0o700 });
 	mkdirSync(temporary, { recursive: true, mode: 0o700 });
 	const source = options.sourceEnvironment ?? process.env;
@@ -210,35 +237,50 @@ function buildEnvironment(
 		HOME: home,
 		TMPDIR: temporary,
 	};
-	for (const name of tool.descriptor.permissions.environment) {
-		if (FIXED_ENVIRONMENT.has(name)) continue;
+	if (options.toolHome) environment[AHDE_TOOL_HOME_ENVIRONMENT] = options.toolHome;
+	for (const name of options.environmentAllowlist) {
+		if (FIXED_ENVIRONMENT.has(name) || name === AHDE_TOOL_HOME_ENVIRONMENT) continue;
 		const value = source[name];
 		if (value !== undefined) environment[name] = value;
 	}
 	return { environment, names: Object.keys(environment).sort() };
 }
 
-function invocation(
-	backend: TargetToolSandboxBackend,
-	workspaceDir: string,
-	scratchDir: string,
-	environment: NodeJS.ProcessEnv,
+function buildEnvironment(
 	tool: ResolvedTargetTool,
-	executable: string,
-): { executable: string; args: string[] } {
-	if (backend === "sandbox-exec") {
+	options: TargetToolBrokerOptions,
+): { environment: NodeJS.ProcessEnv; names: string[] } {
+	return buildToolEnvironment({
+		label: tool.descriptor.name,
+		scratchDir: options.scratchDir,
+		environmentAllowlist: tool.descriptor.permissions.environment,
+		...(options.sourceEnvironment ? { sourceEnvironment: options.sourceEnvironment } : {}),
+		...(tool.layout === "directory" && options.toolHomeRoot
+			? { toolHome: join(options.toolHomeRoot, tool.descriptor.name) }
+			: {}),
+	});
+}
+
+/** Wrap one argv in the detected OS sandbox under an explicit confinement. */
+export function sandboxInvocation(options: {
+	backend: TargetToolSandboxBackend;
+	workspaceDir: string;
+	scratchDir: string;
+	environment: NodeJS.ProcessEnv;
+	confinement: TargetToolConfinement;
+	cwd: string;
+	argv: readonly string[];
+}): { executable: string; args: string[] } {
+	if (options.backend === "sandbox-exec") {
+		const [command, ...rest] = options.argv;
+		if (!command) throw new Error("sandboxed invocation requires a command");
 		return {
 			executable: "/usr/bin/sandbox-exec",
-			args: [
-				"-p",
-				macosProfile(workspaceDir, scratchDir, tool),
-				executable,
-				...tool.descriptor.command.argv.slice(1),
-			],
+			args: ["-p", macosProfile(options.workspaceDir, options.scratchDir, options.confinement), command, ...rest],
 		};
 	}
 	const binary = executableOnPath("bwrap", process.env.PATH ?? "") ?? "/usr/bin/bwrap";
-	return { executable: binary, args: bwrapArguments(workspaceDir, scratchDir, environment, tool, executable) };
+	return { executable: binary, args: bwrapArguments(options) };
 }
 
 function killProcessTree(pid: number | undefined): void {
@@ -263,12 +305,15 @@ function decodeUtf8(buffer: Buffer, label: string): string {
 
 export class TargetToolBroker {
 	readonly sandboxBackend: TargetToolSandboxBackend;
+	private readonly toolHomeRoot: string | undefined;
 
 	constructor(private readonly options: TargetToolBrokerOptions) {
 		this.options.workspaceDir = realWorkspace(options.workspaceDir);
 		this.options.scratchDir = resolve(options.scratchDir);
 		mkdirSync(this.options.scratchDir, { recursive: true, mode: 0o700 });
 		this.options.scratchDir = realpathSync(this.options.scratchDir);
+		this.toolHomeRoot = options.toolHomeRoot ? realWorkspace(options.toolHomeRoot) : undefined;
+		this.options.toolHomeRoot = this.toolHomeRoot;
 		this.sandboxBackend = options.sandboxBackend ?? detectTargetToolSandbox(this.options.workspaceDir, this.options.scratchDir);
 	}
 
@@ -276,11 +321,32 @@ export class TargetToolBroker {
 		return buildEnvironment(tool, this.options).names;
 	}
 
-	async execute(
+	/**
+	 * Resolve the exact bytes that will run. Directory tools execute from the
+	 * prepared tool home so a workspace-write tool cannot rewrite its own code
+	 * between resolution and the next call.
+	 */
+	private resolveExecutable(tool: ResolvedTargetTool): string {
+		const label = `tool ${tool.descriptor.name} executable`;
+		if (tool.layout === "single-file") {
+			return resolveStrictTargetFile(this.options.workspaceDir, tool.executablePath, label);
+		}
+		if (!this.toolHomeRoot) {
+			throw new Error(`Target tool ${tool.descriptor.name} requires a prepared tool home`);
+		}
+		return resolveStrictTargetFile(this.toolHomeRoot, `${tool.descriptor.name}/run`, label);
+	}
+
+	/**
+	 * Run one tool and return its bounded raw outcome. Non-zero exits, timeouts,
+	 * and overflow are data here, not exceptions: the workshop shows them to a
+	 * human and `execute` below turns them into the model-facing contract.
+	 */
+	async runRaw(
 		tool: ResolvedTargetTool,
 		argumentsValue: unknown,
 		signal?: AbortSignal,
-	): Promise<TargetToolBrokerResult> {
+	): Promise<TargetToolRawResult> {
 		if (signal?.aborted) throw new Error(`Target tool ${tool.descriptor.name} aborted`);
 		const args = validateTargetToolArguments(tool, argumentsValue);
 		let input: string;
@@ -292,11 +358,7 @@ export class TargetToolBroker {
 		if (Buffer.byteLength(input) > 1024 * 1024) {
 			throw new Error(`Target tool ${tool.descriptor.name} JSON input exceeds 1048576 bytes`);
 		}
-		const executable = resolveStrictTargetFile(
-			this.options.workspaceDir,
-			tool.executablePath,
-			`tool ${tool.descriptor.name} executable`,
-		);
+		const executable = this.resolveExecutable(tool);
 		try {
 			accessSync(executable, constants.X_OK);
 		} catch {
@@ -307,14 +369,16 @@ export class TargetToolBroker {
 			throw new Error(`Target tool ${tool.descriptor.name} executable changed after resolution`);
 		}
 		const { environment } = buildEnvironment(tool, this.options);
-		const command = invocation(
-			this.sandboxBackend,
-			this.options.workspaceDir,
-			this.options.scratchDir,
+		const command = sandboxInvocation({
+			backend: this.sandboxBackend,
+			workspaceDir: this.options.workspaceDir,
+			scratchDir: this.options.scratchDir,
 			environment,
-			tool,
-			executable,
-		);
+			confinement: toolConfinement(tool, this.options.workspaceDir, this.toolHomeRoot),
+			cwd: this.options.workspaceDir,
+			argv: [executable, ...tool.descriptor.command.argv.slice(1)],
+		});
+		const startedMs = Date.now();
 		const child = spawn(command.executable, command.args, {
 			cwd: this.options.workspaceDir,
 			detached: process.platform !== "win32",
@@ -359,32 +423,50 @@ export class TargetToolBroker {
 				child.once("close", resolveExit);
 			});
 			if (stopped === "aborted" || signal?.aborted) throw new Error(`Target tool ${tool.descriptor.name} aborted`);
-			if (stopped === "timeout") throw new Error(`Target tool ${tool.descriptor.name} timed out after ${tool.descriptor.timeoutMs}ms`);
-			if (stopped === "overflow") {
-				throw new Error(`Target tool ${tool.descriptor.name} exceeded ${tool.descriptor.maxOutputBytes} output bytes`);
-			}
 			if (stdinError) throw new Error(`Target tool ${tool.descriptor.name} could not read JSON input`, { cause: stdinError });
-			const stderrText = decodeUtf8(Buffer.concat(stderr), `Target tool ${tool.descriptor.name} stderr`).trim();
-			if (exitCode !== 0) {
-				throw new Error(
-					`Target tool ${tool.descriptor.name} exited with ${exitCode}${stderrText ? `: ${stderrText}` : ""}`,
-				);
-			}
-			const text = decodeUtf8(Buffer.concat(stdout), `Target tool ${tool.descriptor.name} stdout`).trimEnd();
-			if (tool.descriptor.output === "text") {
-				return { text, exitCode: 0, toolDigest: tool.digest };
-			}
-			let json: unknown;
-			try {
-				json = JSON.parse(text) as unknown;
-			} catch (error) {
-				throw new Error(`Target tool ${tool.descriptor.name} returned malformed JSON`, { cause: error });
-			}
-			return { text: JSON.stringify(json), json, exitCode: 0, toolDigest: tool.digest };
+			return {
+				stdout: decodeUtf8(Buffer.concat(stdout), `Target tool ${tool.descriptor.name} stdout`),
+				stderr: decodeUtf8(Buffer.concat(stderr), `Target tool ${tool.descriptor.name} stderr`),
+				exitCode,
+				durationMs: Date.now() - startedMs,
+				truncated: stopped === "overflow",
+				stopped: stopped ?? null,
+			};
 		} finally {
 			clearTimeout(timer);
 			signal?.removeEventListener("abort", abort);
 		}
+	}
+
+	async execute(
+		tool: ResolvedTargetTool,
+		argumentsValue: unknown,
+		signal?: AbortSignal,
+	): Promise<TargetToolBrokerResult> {
+		const raw = await this.runRaw(tool, argumentsValue, signal);
+		if (raw.stopped === "timeout") {
+			throw new Error(`Target tool ${tool.descriptor.name} timed out after ${tool.descriptor.timeoutMs}ms`);
+		}
+		if (raw.stopped === "overflow") {
+			throw new Error(`Target tool ${tool.descriptor.name} exceeded ${tool.descriptor.maxOutputBytes} output bytes`);
+		}
+		const stderrText = raw.stderr.trim();
+		if (raw.exitCode !== 0) {
+			throw new Error(
+				`Target tool ${tool.descriptor.name} exited with ${raw.exitCode}${stderrText ? `: ${stderrText}` : ""}`,
+			);
+		}
+		const text = raw.stdout.trimEnd();
+		if (tool.descriptor.output === "text") {
+			return { text, exitCode: 0, toolDigest: tool.digest };
+		}
+		let json: unknown;
+		try {
+			json = JSON.parse(text) as unknown;
+		} catch (error) {
+			throw new Error(`Target tool ${tool.descriptor.name} returned malformed JSON`, { cause: error });
+		}
+		return { text: JSON.stringify(json), json, exitCode: 0, toolDigest: tool.digest };
 	}
 }
 
