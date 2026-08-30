@@ -19,7 +19,9 @@ import { DiagnosisRecordSchema } from "../diagnosis.js";
 import {
 	CandidateRecordSchema,
 	type CandidateArtifactRef,
+	type ComparisonGateEvidence,
 	candidateStatus,
+	isPromotionGradeGateEvidence,
 	transitionCandidate,
 	type CandidateRecord,
 } from "../domain/candidate.js";
@@ -271,6 +273,17 @@ function verifyEvaluationPair(
 	return comparison;
 }
 
+/**
+ * Only `exact-comparison-gate-v4` evidence — paired mean grader scores — can
+ * back a promotion. Everything older stays readable and is named exactly, so
+ * the operator knows the candidate must be verified again rather than patched.
+ */
+function legacyEvidenceMessage(surface: GateSurface, evidence: ComparisonGateEvidence): string {
+	const version = "schemaVersion" in evidence ? `v${evidence.schemaVersion}` : "v1";
+	return `${surface} comparison uses legacy ${version} gate evidence and is not promotion-grade: ` +
+		"re-verify the candidate to record exact-comparison-gate-v4 evidence";
+}
+
 const MAX_PROVENANCE_ARTIFACT_BYTES = 16 * 1024 * 1024;
 
 function verifyArtifact(
@@ -492,8 +505,8 @@ function verifyPromotionEvidence(record: CandidateRecord, runsRoot: string): voi
 	}
 	const developmentEvidence = evaluated.evaluation.development.comparison;
 	if (!developmentEvidence) throw new Error("development comparison evidence is not reconstructable");
-	if (!("verdict" in developmentEvidence)) {
-		throw new Error("development comparison uses legacy gate evidence without a verdict and is not promotion-grade");
+	if (!isPromotionGradeGateEvidence(developmentEvidence)) {
+		throw new Error(legacyEvidenceMessage("development", developmentEvidence));
 	}
 	const expectedDevelopment = comparisonGateEvidence(
 		development,
@@ -521,8 +534,8 @@ function verifyPromotionEvidence(record: CandidateRecord, runsRoot: string): voi
 	}
 	const holdoutEvidence = holdout.comparison;
 	if (!holdoutEvidence) throw new Error("sealed comparison evidence is not reconstructable");
-	if (!("verdict" in holdoutEvidence)) {
-		throw new Error("sealed comparison uses legacy gate evidence without a verdict and is not promotion-grade");
+	if (!isPromotionGradeGateEvidence(holdoutEvidence)) {
+		throw new Error(legacyEvidenceMessage("sealed", holdoutEvidence));
 	}
 	const expectedHoldout = comparisonGateEvidence(comparison, {
 		corpusId: holdout.corpus.id,

@@ -2,7 +2,13 @@ import type { PersistedBuilderRun } from "../application/builder-proposal.js";
 import type { BuilderCorpusDraft } from "../application/builder-corpus-draft.js";
 import type { CorpusMetadata } from "../corpus.js";
 import type { DiagnosisRecord } from "../diagnosis.js";
-import { candidateStatus, type CandidateRecord, gateVerdictOf, type ComparisonGateEvidence } from "../domain/candidate.js";
+import {
+	candidateStatus,
+	type CandidateRecord,
+	isPromotionGradeGateEvidence,
+	promotionGradeVerdictOf,
+	type ComparisonGateEvidence,
+} from "../domain/candidate.js";
 import type { EvalRunRecord } from "../eval.js";
 import type { SpecSnapshot } from "../spec.js";
 import { redactTraceText } from "../trace.js";
@@ -101,7 +107,7 @@ export function candidateSummary(record: CandidateRecord): WorkbenchCandidateSum
 		sealedHoldout: evaluated?.type === "evaluated"
 			? {
 				executed: evaluated.evaluation.sealedHoldout !== undefined,
-				gatePassed: gateVerdictOf(evaluated.evaluation.sealedHoldout?.comparison) === "pass",
+				gatePassed: promotionGradeVerdictOf(evaluated.evaluation.sealedHoldout?.comparison) === "pass",
 				gate: gateProjection(evaluated.evaluation.sealedHoldout?.comparison),
 			}
 			: { executed: false, gatePassed: false, gate: null },
@@ -115,20 +121,28 @@ export function candidateSummary(record: CandidateRecord): WorkbenchCandidateSum
 	};
 }
 
-/** Verdict projection of v3 gate evidence; legacy evidence projects to null. */
+/** Verdict projection of v4 gate evidence; legacy (v1–v3) evidence projects to null. */
 function gateProjection(
 	evidence: ComparisonGateEvidence | null | undefined,
 ): WorkbenchGateProjection | null {
-	if (!evidence || !("verdict" in evidence)) return null;
+	if (!isPromotionGradeGateEvidence(evidence)) return null;
 	return {
 		verdict: evidence.verdict,
 		surface: evidence.surface,
 		delta: evidence.summary.delta,
+		baselineScore: evidence.summary.baselineScore,
+		candidateScore: evidence.summary.candidateScore,
+		scoreDelta: evidence.summary.scoreDelta,
 		confidence95: { ...evidence.summary.confidence95 },
 		tasks: evidence.design.tasks,
 		repetitions: evidence.design.repetitions,
 		excludedTasks: evidence.design.excludedTasks,
 		flags: { ...evidence.flags },
+		resources: {
+			costRatio: evidence.resources.costRatio,
+			latencyRatio: evidence.resources.latencyRatio,
+			tokenRatio: evidence.resources.tokenRatio,
+		},
 		reasons: [...evidence.reasons],
 	};
 }

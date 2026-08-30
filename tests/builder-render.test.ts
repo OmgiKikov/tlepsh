@@ -61,6 +61,7 @@ import {
 	type WorkbenchConfirmation,
 	type WorkbenchDecisionResult,
 	type WorkbenchFailureModeProjection,
+	type WorkbenchGateProjection,
 	type WorkbenchImprovementBriefProjection,
 	type WorkbenchReviewDetail,
 	type WorkbenchStage,
@@ -460,6 +461,7 @@ function makeImpact(overrides: Partial<CandidateImpact> = {}): CandidateImpact {
 				regressed: 1,
 				unchanged: 6,
 			},
+			resources: { costRatio: 1.4, latencyRatio: 0.9, tokenRatio: 1.125 },
 		},
 		proposalBasis: {
 			algorithmId: "exact-eval-signals-v1",
@@ -861,6 +863,49 @@ describe("renderReview", () => {
 		expect(lines).toHaveLength(6);
 	});
 
+	it("renders the score verdict with its cost and latency fragment inside the 110-column budget", () => {
+		const gate = (surface: "development" | "sealed"): WorkbenchGateProjection => ({
+			verdict: surface === "sealed" ? "pass" : "improved",
+			surface,
+			delta: 0.2,
+			baselineScore: 0.62,
+			candidateScore: 0.85,
+			scoreDelta: 0.23,
+			confidence95: { low: 0.05, high: 0.35 },
+			tasks: 30,
+			repetitions: 3,
+			excludedTasks: 0,
+			flags: { regressedTasks: 1, improvedTasks: 3, collapsedTasks: 0 },
+			resources: { costRatio: 1.4, latencyRatio: 0.9, tokenRatio: 1.125 },
+			reasons: ["95% CI +5.0pp … +35.0pp lies entirely above zero on 30 tasks × 3 repetitions"],
+		});
+		const candidate = makeCandidateReview({
+			development: {
+				baselineEvalRunId: "eval-base",
+				candidateEvalRunId: "eval-cand",
+				comparison: makeCandidate().development!.comparison,
+				gate: gate("development"),
+			},
+			sealedHoldout: { executed: true, gatePassed: true, gate: gate("sealed") },
+		});
+		const lines = renderReview(candidate, plainPaint);
+		expect(lines[2]).toBe("Development baseline 60% → candidate 80% (+20 pts) on 10 tasks · score 62% → 85%");
+		expect(lines[4]).toBe("  Verdict improved · +23 pts (95% CI +5 pts … +35 pts) · 30 × 3 · cost ×1.4 · latency ×0.9");
+		expect(lines[5]).toBe("Sealed holdout pass · +23 pts (95% CI +5 pts … +35 pts) · 30 × 3 · cost ×1.4 · latency ×0.9");
+		for (const line of lines) expect(line.length).toBeLessThanOrEqual(110);
+		// Nothing about a sealed task ever reaches the screen.
+		expect(lines.join("\n")).not.toContain("task-");
+		// An unmeasured pair simply drops the fragment.
+		const unmeasured = renderReview(makeCandidateReview({
+			sealedHoldout: {
+				executed: true,
+				gatePassed: true,
+				gate: { ...gate("sealed"), resources: { costRatio: null, latencyRatio: null, tokenRatio: null } },
+			},
+		}), plainPaint);
+		expect(unmeasured[4]).toBe("Sealed holdout pass · +23 pts (95% CI +5 pts … +35 pts) · 30 × 3");
+	});
+
 	it("renders promotion, adoption, and continuation lines, or the /adopt hint", () => {
 		const promoted = makeCandidateReview({
 			status: "promoted",
@@ -1075,7 +1120,7 @@ describe("renderImpact", () => {
 			},
 		});
 		const lines = renderImpact({ available: true, impact }, tagPaint);
-		expect(lines[0]).toBe("<dim>Impact</dim> <warning>mixed</warning>");
+		expect(lines[0]).toBe("<dim>Impact</dim> <warning>mixed</warning> <dim>· cost ×1.4 · latency ×0.9 · tokens ×1.1</dim>");
 		expect(lines[1]).toBe("  <dim>Targeted 5 failure modes:</dim>");
 		expect(lines[2]).toBe("    <success>✓</success> <success>resolved</success> · tool-selection · baseline 4/4 failed → candidate 0/4 failed · 0/2 tasks still affected");
 		expect(lines[3]).toBe("    <success>↑</success> <success>improved</success> · output-contract · baseline 4/4 failed → candidate 1/4 failed · 1/2 tasks still affected");
@@ -1093,13 +1138,17 @@ describe("renderImpact", () => {
 			["regressed", "<error>regressed</error>"],
 		];
 		for (const [verdict, expected] of verdicts) {
-			expect(renderImpact({ available: true, impact: makeImpact({ verdict }) }, tagPaint)[0]).toBe(`<dim>Impact</dim> ${expected}`);
+			expect(renderImpact({ available: true, impact: makeImpact({ verdict }) }, tagPaint)[0])
+				.toBe(`<dim>Impact</dim> ${expected}${" <dim>· cost ×1.4 · latency ×0.9 · tokens ×1.1</dim>"}`);
 		}
 	});
 
 	it("explains a candidate without a diagnosis basis", () => {
 		const lines = renderImpact({ available: true, impact: makeImpact({ verdict: "no-change", proposalBasis: null }) }, plainPaint);
-		expect(lines).toEqual(["Impact no change", "  No targeted failure modes: this candidate was not authored from a diagnosis."]);
+		expect(lines).toEqual([
+			"Impact no change · cost ×1.4 · latency ×0.9 · tokens ×1.1",
+			"  No targeted failure modes: this candidate was not authored from a diagnosis.",
+		]);
 	});
 
 	it("lists new and worsened failure modes with omitted counts", () => {
@@ -1142,7 +1191,7 @@ describe("renderImpact", () => {
 			available: true,
 			impact: makeImpact({ verdict: "inconclusive", inconclusiveReasons: ["baseline run has no trace", "candidate basket differs"] }),
 		}, tagPaint);
-		expect(lines[0]).toBe("<dim>Impact</dim> <warning>inconclusive</warning>");
+		expect(lines[0]).toBe("<dim>Impact</dim> <warning>inconclusive</warning> <dim>· cost ×1.4 · latency ×0.9 · tokens ×1.1</dim>");
 		expect(lines.join("\n")).toContain("  <warning>Inconclusive because:</warning>\n    • baseline run has no trace\n    • candidate basket differs");
 	});
 });
@@ -1557,6 +1606,35 @@ describe("renderConfirmation", () => {
 		expect(review).toContain("<dim>Recommendation</dim> <bold>promote</bold>");
 		const promote = renderConfirmation(makeConfirmation("promote-candidate", { operation: "promote-candidate", candidateHash: HASH, candidate, version: "1.2.0", tag: "v1.2.0" }), tagPaint);
 		expect(promote).toContain("<dim>Tag</dim> <success>v1.2.0</success> <dim>· annotated tag on the exact candidate revision</dim>");
+		// What the promotion costs is on the confirmation the human approves.
+		const priced = renderConfirmation(makeConfirmation("promote-candidate", {
+			operation: "promote-candidate",
+			candidateHash: HASH,
+			candidate: makeCandidate({
+				status: "reviewed",
+				sealedHoldout: {
+					executed: true,
+					gatePassed: true,
+					gate: {
+						verdict: "pass",
+						surface: "sealed",
+						delta: 0.2,
+						baselineScore: 0.62,
+						candidateScore: 0.85,
+						scoreDelta: 0.23,
+						confidence95: { low: 0.05, high: 0.35 },
+						tasks: 15,
+						repetitions: 3,
+						excludedTasks: 0,
+						flags: { regressedTasks: 0, improvedTasks: 13, collapsedTasks: 0 },
+						resources: { costRatio: 1.4, latencyRatio: 0.9, tokenRatio: 1.125 },
+						reasons: ["no regression"],
+					},
+				},
+			}),
+			tag: "v1.2.0",
+		}), plainPaint);
+		expect(priced).toContain("Sealed holdout pass · +23 pts (95% CI +5 pts … +35 pts) · 15 × 3 · cost ×1.4 · latency ×0.9");
 		const reject = renderConfirmation(makeConfirmation("reject-candidate", { operation: "reject-candidate", candidateHash: HASH, candidate }), plainPaint);
 		expect(reject[0]).toBe("Candidate candidate-1 · reviewed");
 		expect(reject).toContain("Review promote — good");

@@ -2,19 +2,26 @@ import { axisDifferences } from "./provenance.js";
 import { loadVerifiedEvalRun, type EvalRunRecord, type VerifiedEvalRun } from "./eval.js";
 import type { RunRecord } from "./provenance.js";
 import type { ExperimentMode } from "./domain/candidate.js";
+import { oneLine } from "./builder/render/format.js";
 import {
 	compareUtf8,
 	formatPoints,
+	formatResourceFragment,
 	judgeComparison,
+	resourceTotals,
 	type CompareRow,
 	type CompareSummary,
 	type ComparisonDesign,
 	type ComparisonFlags,
+	type ComparisonResources,
 	type GateDecision,
 	type GateSurface,
 } from "./domain/comparison-gate.js";
 
 export type { CompareRow, CompareSummary } from "./domain/comparison-gate.js";
+
+/** One-line renderings live in a 110-column budget shared with the TUI header. */
+const GATE_LINE_WIDTH = 110;
 
 export interface CompareResult {
 	a: EvalRunRecord;
@@ -26,6 +33,8 @@ export interface CompareResult {
 	summary: CompareSummary;
 	design: ComparisonDesign;
 	flags: ComparisonFlags;
+	/** Cost/latency/token ratios of the pair. Rendered beside the verdict, never gating. */
+	resources: ComparisonResources;
 	/** The one gate decision for the requested surface. */
 	gate: GateDecision;
 	error: string | null;
@@ -40,16 +49,45 @@ export interface CompareOptions {
 	resamples?: number;
 }
 
-function perTask(records: readonly RunRecord[]): Map<string, { pass: number; total: number; status: string }> {
-	const byTask = new Map<string, { pass: number; total: number; status: string }>();
+/**
+ * Partial credit for one run: the mean of its grader scores, clamped to [0,1].
+ * A run with no graders — an error, or evidence written before graders carried
+ * a score — keeps the binary handling so pass rate and score coincide.
+ */
+function runScore(record: RunRecord): number {
+	const graders = record.evalResults?.graders ?? [];
+	if (graders.length === 0) return record.evalResults?.outcome === "pass" ? 1 : 0;
+	const average = graders.reduce((sum, grader) => sum + grader.score, 0) / graders.length;
+	return Math.min(1, Math.max(0, average));
+}
+
+interface TaskAggregate {
+	pass: number;
+	score: number;
+	total: number;
+	status: string;
+}
+
+function perTask(records: readonly RunRecord[]): Map<string, TaskAggregate> {
+	const byTask = new Map<string, TaskAggregate>();
 	for (const record of records) {
-		const entry = byTask.get(record.taskId) ?? { pass: 0, total: 0, status: record.status };
+		const entry = byTask.get(record.taskId) ?? { pass: 0, score: 0, total: 0, status: record.status };
 		entry.total += 1;
 		if (record.evalResults?.outcome === "pass") entry.pass += 1;
+		entry.score += runScore(record);
 		if (record.status === "error") entry.status = "error";
 		byTask.set(record.taskId, entry);
 	}
 	return byTask;
+}
+
+/** Cost, latency and token aggregate of one arm, straight from the run metrics. */
+function armResources(records: readonly RunRecord[]) {
+	return resourceTotals(records.map((record) => ({
+		costUsd: record.metrics.costUsd,
+		latencyMs: record.metrics.latencyMs,
+		tokens: record.metrics.tokens.total,
+	})));
 }
 
 /**
@@ -100,11 +138,16 @@ export function compareVerifiedEvalRuns(
 		const be = bTasks.get(taskId);
 		const aRate = ae && ae.total > 0 ? ae.pass / ae.total : 0;
 		const bRate = be && be.total > 0 ? be.pass / be.total : 0;
+		const aScore = ae && ae.total > 0 ? ae.score / ae.total : 0;
+		const bScore = be && be.total > 0 ? be.score / be.total : 0;
 		return {
 			taskId,
 			aPassRate: aRate,
 			bPassRate: bRate,
 			delta: bRate - aRate,
+			aScore,
+			bScore,
+			scoreDelta: bScore - aScore,
 			aStatus: ae?.status ?? "missing",
 			bStatus: be?.status ?? "missing",
 			aPass: ae?.pass ?? 0,
@@ -131,6 +174,7 @@ export function compareVerifiedEvalRuns(
 		surface: options.surface ?? "development",
 		repetitions: a.repetitions,
 		seed: `${a.evalRunId}:${b.evalRunId}`,
+		resources: { baseline: armResources(aVerified.runs), candidate: armResources(bVerified.runs) },
 		...(options.resamples !== undefined ? { resamples: options.resamples } : {}),
 	});
 	const issues = [...invalid, ...infrastructure];
@@ -151,12 +195,21 @@ export function compareEvalRuns(
 	return compareVerifiedEvalRuns(loadVerifiedEvalRun(runsRoot, aId), loadVerifiedEvalRun(runsRoot, bId), options);
 }
 
-export function renderGateLine(result: Pick<CompareResult, "gate" | "summary" | "design">): string {
+export function renderGateLine(
+	result: Pick<CompareResult, "gate" | "summary" | "design"> & Partial<Pick<CompareResult, "resources">>,
+): string {
 	const { gate, summary, design } = result;
-	return `${gate.surface} verdict: ${gate.verdict} — ${formatPoints(summary.delta)} ` +
-		`(95% CI ${formatPoints(summary.confidence95.low)} … ${formatPoints(summary.confidence95.high)}) ` +
-		`on ${design.tasks} tasks × ${design.repetitions} repetitions` +
-		(design.excludedTasks > 0 ? `, ${design.excludedTasks} excluded` : "");
+	const fragment = formatResourceFragment(result.resources);
+	// The score delta is what the interval brackets and the gate decided on;
+	// the pass rate sits on its own line so this one keeps its 110-column budget.
+	return oneLine(
+		`${gate.surface} verdict: ${gate.verdict} — ${formatPoints(summary.scoreDelta)} ` +
+			`(95% CI ${formatPoints(summary.confidence95.low)} … ${formatPoints(summary.confidence95.high)}) ` +
+			`on ${design.tasks} × ${design.repetitions}` +
+			(fragment ? ` · ${fragment}` : "") +
+			(design.excludedTasks > 0 ? ` · ${design.excludedTasks} excluded` : ""),
+		GATE_LINE_WIDTH,
+	);
 }
 
 export function renderCompareMarkdown(result: CompareResult): string {
@@ -180,15 +233,28 @@ export function renderCompareMarkdown(result: CompareResult): string {
 	lines.push(
 		`- all-pass rate: ${(a.summary.allPassRate * 100).toFixed(0)}% (${a.summary.pass}/${a.summary.total}) → ${(b.summary.allPassRate * 100).toFixed(0)}% (${b.summary.pass}/${b.summary.total})`,
 	);
+	lines.push(
+		`- mean score: ${(result.summary.baselineScore * 100).toFixed(1)}% → ${(result.summary.candidateScore * 100).toFixed(1)}% ` +
+			`(${formatPoints(result.summary.scoreDelta)}) · pass rate ${formatPoints(result.summary.delta)}`,
+	);
+	const resourceFragment = formatResourceFragment(result.resources, { tokens: true });
+	if (resourceFragment) {
+		lines.push(
+			`- resources: ${resourceFragment} ` +
+				`(baseline $${result.resources.baseline.costUsd.toFixed(4)} · ${result.resources.baseline.meanLatencyMs.toFixed(0)}ms/run, ` +
+				`candidate $${result.resources.candidate.costUsd.toFixed(4)} · ${result.resources.candidate.meanLatencyMs.toFixed(0)}ms/run) — never gating`,
+		);
+	}
 	lines.push(`- ${renderGateLine(result)}`);
 	for (const reason of result.gate.reasons) lines.push(`  - ${reason}`);
 	lines.push("");
-	lines.push("| task | baseline | candidate | delta |", "|---|---|---|---|");
+	lines.push("| task | baseline | candidate | score | delta |", "|---|---|---|---|---|");
 	for (const row of rows) {
 		const fmt = (rate: number, status: string, pass: number, total: number) =>
 			status === "missing" ? "—" : `${(rate * 100).toFixed(0)}% (${pass}/${total})${status === "error" ? " ⚠️" : ""}`;
 		lines.push(
-			`| ${row.taskId} | ${fmt(row.aPassRate, row.aStatus, row.aPass, row.aTotal)} | ${fmt(row.bPassRate, row.bStatus, row.bPass, row.bTotal)} | ${row.delta >= 0 ? "+" : ""}${(row.delta * 100).toFixed(0)}pp |`,
+			`| ${row.taskId} | ${fmt(row.aPassRate, row.aStatus, row.aPass, row.aTotal)} | ${fmt(row.bPassRate, row.bStatus, row.bPass, row.bTotal)} ` +
+				`| ${(row.aScore * 100).toFixed(0)}% → ${(row.bScore * 100).toFixed(0)}% | ${row.scoreDelta >= 0 ? "+" : ""}${(row.scoreDelta * 100).toFixed(0)}pp |`,
 		);
 	}
 	const flags = result.flags;

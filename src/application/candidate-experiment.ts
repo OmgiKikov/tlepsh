@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { compareEvalRuns, type CompareResult } from "../compare.js";
 import { loadCorpus, type CorpusRef, type LoadedCorpus } from "../corpus.js";
-import { EXACT_COMPARISON_GATE_ALGORITHM_ID_V3, INFRASTRUCTURE_ERROR_BUDGET, withinInfrastructureBudget } from "../domain/comparison-gate.js";
+import { EXACT_COMPARISON_GATE_ALGORITHM_ID_V4, INFRASTRUCTURE_ERROR_BUDGET, withinInfrastructureBudget } from "../domain/comparison-gate.js";
 import {
 	CandidateRecordSchema,
 	ComparisonGateEvidenceSchema,
@@ -347,6 +347,9 @@ export function comparisonGateEvidence(
 		baselinePassRate: compare.summary.baselinePassRate,
 		candidatePassRate: compare.summary.candidatePassRate,
 		delta: compare.summary.delta,
+		baselineScore: compare.summary.baselineScore,
+		candidateScore: compare.summary.candidateScore,
+		scoreDelta: compare.summary.scoreDelta,
 		confidence95: { ...compare.summary.confidence95 },
 		improved: compare.summary.improved,
 		regressed: compare.summary.regressed,
@@ -356,10 +359,17 @@ export function comparisonGateEvidence(
 		Buffer.compare(Buffer.from(left.taskId, "utf8"), Buffer.from(right.taskId, "utf8")));
 	const design = { ...compare.design };
 	const flags = { ...compare.flags };
+	const resources = {
+		baseline: { ...compare.resources.baseline },
+		candidate: { ...compare.resources.candidate },
+		costRatio: compare.resources.costRatio,
+		latencyRatio: compare.resources.latencyRatio,
+		tokenRatio: compare.resources.tokenRatio,
+	};
 	const { policyId, surface, verdict, reasons } = compare.gate;
 	const comparisonHash = hashValue({
-		schemaVersion: 3,
-		algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
+		schemaVersion: 4,
+		algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V4,
 		baselineEvalRunId: compare.a.evalRunId,
 		candidateEvalRunId: compare.b.evalRunId,
 		status: compare.status,
@@ -369,11 +379,12 @@ export function comparisonGateEvidence(
 		summary,
 		design,
 		flags,
+		resources,
 		verdict,
 	});
 	const evidenceHash = hashValue({
-		schemaVersion: 3,
-		algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
+		schemaVersion: 4,
+		algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V4,
 		baseline: {
 			evalRunHash: hashValue(compare.a),
 			signalAnchor: "ordered-run-record-sha256-v1",
@@ -386,15 +397,15 @@ export function comparisonGateEvidence(
 		},
 	});
 	return ComparisonGateEvidenceSchema.parse({
-		schemaVersion: 3,
-		algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
+		schemaVersion: 4,
+		algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V4,
 		policyId,
 		surface,
 		comparisonHash,
 		evidenceHash,
 		gateHash: hashValue({
-			schemaVersion: 3,
-			algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
+			schemaVersion: 4,
+			algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V4,
 			policyId,
 			surface,
 			comparisonHash,
@@ -406,6 +417,7 @@ export function comparisonGateEvidence(
 		design,
 		verdict,
 		flags,
+		resources,
 		reasons: reasons.slice(0, 8),
 	});
 }

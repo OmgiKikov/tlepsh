@@ -3,11 +3,22 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	DEVELOPMENT_GATE_POLICY,
+	EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
+	EXACT_COMPARISON_GATE_ALGORITHM_ID_V4,
 	SEALED_GATE_POLICY,
+	formatResourceFragment,
 	judgeComparison,
 	promotableVerdicts,
+	resourceRatios,
+	resourceTotals,
 	type CompareRow,
 } from "../src/domain/comparison-gate.js";
+import {
+	ComparisonGateEvidenceSchema,
+	isPromotionGradeGateEvidence,
+	gateVerdictOf,
+	promotionGradeVerdictOf,
+} from "../src/domain/candidate.js";
 
 type Outcome = "pass" | "fail" | "error";
 
@@ -33,6 +44,10 @@ function rowsFromOutcomes(tasks: PairFixture["tasks"]): CompareRow[] {
 			aPassRate: aRate,
 			bPassRate: bRate,
 			delta: bRate - aRate,
+			// The real fixtures are binary-graded: score and pass rate coincide.
+			aScore: aRate,
+			bScore: bRate,
+			scoreDelta: bRate - aRate,
 			aStatus: task.baseline.includes("error") ? "error" : "completed",
 			bStatus: task.candidate.includes("error") ? "error" : "completed",
 			aPass,
@@ -41,6 +56,47 @@ function rowsFromOutcomes(tasks: PairFixture["tasks"]): CompareRow[] {
 			bTotal: task.candidate.length,
 		};
 	});
+}
+
+/**
+ * A row whose grader scores are given directly. `aPass`/`bPass` still describe
+ * the binary outcome, so a test can hold the pass rate fixed and move the score.
+ */
+function scoredRow(input: {
+	taskId: string;
+	k: number;
+	aPass: number;
+	bPass: number;
+	aScore: number;
+	bScore: number;
+}): CompareRow {
+	const aPassRate = input.aPass / input.k;
+	const bPassRate = input.bPass / input.k;
+	return {
+		taskId: input.taskId,
+		aPassRate,
+		bPassRate,
+		delta: bPassRate - aPassRate,
+		aScore: input.aScore,
+		bScore: input.bScore,
+		scoreDelta: input.bScore - input.aScore,
+		aStatus: "completed",
+		bStatus: "completed",
+		aPass: input.aPass,
+		aTotal: input.k,
+		bPass: input.bPass,
+		bTotal: input.k,
+	};
+}
+
+/** The same rows judged as v3 would have judged them: pass rate as the score. */
+function asPassRateRows(rows: readonly CompareRow[]): CompareRow[] {
+	return rows.map((row) => ({
+		...row,
+		aScore: row.aPassRate,
+		bScore: row.bPassRate,
+		scoreDelta: row.bPassRate - row.aPassRate,
+	}));
 }
 
 /** Small deterministic PRNG so the simulation is reproducible. */
@@ -70,6 +126,9 @@ function simulatedRows(random: () => number, tasks: number, k: number, baselineP
 			aPassRate: aPass / k,
 			bPassRate: bPass / k,
 			delta: bPass / k - aPass / k,
+			aScore: aPass / k,
+			bScore: bPass / k,
+			scoreDelta: bPass / k - aPass / k,
 			aStatus: "completed",
 			bStatus: "completed",
 			aPass,
@@ -105,7 +164,7 @@ function verdictRates(options: {
 	return counts;
 }
 
-describe("comparison gate — exact-comparison-gate-v3", () => {
+describe("comparison gate — exact-comparison-gate-v4", () => {
 	it("keeps the sealed false-fail rate under 10% for every Bernoulli null cell with k ≥ 2", () => {
 		const trials = 120;
 		let seed = 11;
@@ -149,6 +208,9 @@ describe("comparison gate — exact-comparison-gate-v3", () => {
 			aPassRate: index === 0 ? 1 : 0.5,
 			bPassRate: index === 0 ? 0 : 0.5,
 			delta: index === 0 ? -1 : 0,
+			aScore: index === 0 ? 1 : 0.5,
+			bScore: index === 0 ? 0 : 0.5,
+			scoreDelta: index === 0 ? -1 : 0,
 			aStatus: "completed",
 			bStatus: "completed",
 			aPass: index === 0 ? 3 : 1.5,
@@ -163,6 +225,13 @@ describe("comparison gate — exact-comparison-gate-v3", () => {
 		expect(three.gate.verdict).toBe("pass");
 		const two = judgeComparison(collapsedRows.map((row) => ({ ...row, aTotal: 2, bTotal: 2, aPass: row.aPass / 1.5, bPass: row.bPass / 1.5 })), { surface: "sealed", repetitions: 2, seed: "collapsed-2" });
 		expect(two.flags.collapsedTasks).toBe(0);
+		// Collapse is a score claim: partial credit on the candidate is not a collapse.
+		const partial = judgeComparison(
+			collapsedRows.map((row, index) => (index === 0 ? { ...row, bScore: 0.2, scoreDelta: -0.8 } : row)),
+			{ surface: "sealed", repetitions: 3, seed: "collapsed-partial" },
+		);
+		expect(partial.flags.collapsedTasks).toBe(0);
+		expect(partial.flags.regressedTasks).toBe(1);
 	});
 
 	it("keeps a sealed verdict when one task of a 15-task holdout is excluded within the error budget", () => {
@@ -213,5 +282,155 @@ describe("comparison gate — exact-comparison-gate-v3", () => {
 		expect(promotableVerdicts("improved", "fail")).toBe(false);
 		expect(promotableVerdicts("improved", "underpowered")).toBe(false);
 		expect(promotableVerdicts(null, "pass")).toBe(false);
+	});
+
+	it("reproduces the pass-rate verdict on every binary-graded row", () => {
+		// The v3 rule is the v4 rule restricted to scores in {0,1}: judging the
+		// same rows twice, once with the score forced to the pass rate, agrees.
+		const random = prng(4242);
+		for (const [tasks, k, p, q] of [[30, 3, 0.6, 0.8], [30, 2, 0.9, 0.9], [16, 3, 0.8, 0.5]] as const) {
+			const rows = simulatedRows(random, tasks, k, p, q);
+			for (const surface of ["development", "sealed"] as const) {
+				const scored = judgeComparison(rows, { surface, repetitions: k, seed: "parity", resamples: 400 });
+				const passRates = judgeComparison(asPassRateRows(rows), { surface, repetitions: k, seed: "parity", resamples: 400 });
+				expect(scored.gate.verdict).toBe(passRates.gate.verdict);
+				expect(scored.summary.scoreDelta).toBeCloseTo(scored.summary.delta, 12);
+				expect(scored.summary.baselineScore).toBeCloseTo(scored.summary.baselinePassRate, 12);
+			}
+		}
+	});
+
+	it("lets fractional scores decide a verdict the pass rates could not see", () => {
+		// Every run still fails its threshold, so the pass rate never moves; the
+		// grader scores climb 20% → 80% and the interval clears zero.
+		const rows = Array.from({ length: 20 }, (_, index) =>
+			scoredRow({ taskId: `task-${index + 1}`, k: 3, aPass: 0, bPass: 0, aScore: 0.2, bScore: 0.8 }));
+		const scored = judgeComparison(rows, { surface: "development", repetitions: 3, seed: "fractional" });
+		expect(scored.gate.verdict).toBe("improved");
+		expect(scored.summary.scoreDelta).toBeCloseTo(0.6, 12);
+		expect(scored.summary.delta).toBe(0);
+		expect(scored.flags.improvedTasks).toBe(20);
+		const blind = judgeComparison(asPassRateRows(rows), { surface: "development", repetitions: 3, seed: "fractional" });
+		expect(blind.gate.verdict).toBe("inconclusive");
+	});
+
+	it("lets fractional scores overturn a verdict the pass rates would call regressed", () => {
+		// Baseline scrapes past the threshold twice (0.60, 0.60); the candidate
+		// nails one repetition and just misses the other (1.00, 0.59). Half the
+		// passes are gone, yet the answer is measurably better.
+		const rows = Array.from({ length: 20 }, (_, index) =>
+			scoredRow({ taskId: `task-${index + 1}`, k: 2, aPass: 2, bPass: 1, aScore: 0.6, bScore: 0.795 }));
+		const scored = judgeComparison(rows, { surface: "development", repetitions: 2, seed: "overturn" });
+		expect(scored.gate.verdict).toBe("improved");
+		expect(scored.summary.delta).toBeCloseTo(-0.5, 12);
+		expect(scored.summary.scoreDelta).toBeCloseTo(0.195, 12);
+		expect(scored.flags.regressedTasks).toBe(0);
+		const blind = judgeComparison(asPassRateRows(rows), { surface: "development", repetitions: 2, seed: "overturn" });
+		expect(blind.gate.verdict).toBe("regressed");
+		// The sealed guardrail follows the score too: no fail on a real gain.
+		expect(judgeComparison(rows, { surface: "sealed", repetitions: 2, seed: "overturn" }).gate.verdict).toBe("pass");
+		expect(judgeComparison(asPassRateRows(rows), { surface: "sealed", repetitions: 2, seed: "overturn" }).gate.verdict).toBe("fail");
+	});
+
+	it("aggregates cost, latency and tokens into flags that never touch the verdict", () => {
+		const baseline = resourceTotals([
+			{ costUsd: 0.01, latencyMs: 1_000, tokens: 500 },
+			{ costUsd: 0.03, latencyMs: 3_000, tokens: 1_500 },
+		]);
+		const candidate = resourceTotals([
+			{ costUsd: 0.028, latencyMs: 900, tokens: 2_000 },
+			{ costUsd: 0.028, latencyMs: 900, tokens: 2_000 },
+		]);
+		expect(baseline).toEqual({ runs: 2, costUsd: 0.04, meanLatencyMs: 2_000, meanTokens: 1_000 });
+		const resources = resourceRatios(baseline, candidate);
+		expect(resources.costRatio).toBe(1.4);
+		expect(resources.latencyRatio).toBe(0.45);
+		expect(resources.tokenRatio).toBe(2);
+		expect(formatResourceFragment(resources)).toBe("cost ×1.4 · latency ×0.5");
+		expect(formatResourceFragment(resources, { tokens: true })).toBe("cost ×1.4 · latency ×0.5 · tokens ×2.0");
+		// A free baseline leaves no ratio to report rather than an infinity.
+		const free = resourceRatios(resourceTotals([{ costUsd: 0, latencyMs: 0, tokens: 0 }]), candidate);
+		expect(free).toMatchObject({ costRatio: null, latencyRatio: null, tokenRatio: null });
+		expect(formatResourceFragment(free)).toBe("");
+
+		const rows = simulatedRows(prng(9), 20, 3, 0.5, 0.9);
+		const withResources = judgeComparison(rows, { surface: "sealed", repetitions: 3, seed: "res", resources: { baseline, candidate } });
+		const without = judgeComparison(rows, { surface: "sealed", repetitions: 3, seed: "res" });
+		expect(withResources.gate).toEqual(without.gate);
+		expect(withResources.resources.costRatio).toBe(1.4);
+		expect(without.resources.costRatio).toBeNull();
+	});
+});
+
+describe("gate evidence versions", () => {
+	const v4 = {
+		schemaVersion: 4,
+		algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V4,
+		policyId: "sealed-guardrail-v4",
+		surface: "sealed",
+		comparisonHash: `sha256:${"a".repeat(64)}`,
+		evidenceHash: `sha256:${"b".repeat(64)}`,
+		gateHash: `sha256:${"c".repeat(64)}`,
+		summary: {
+			taskCount: 15,
+			baselinePassRate: 0.4,
+			candidatePassRate: 0.9,
+			delta: 0.5,
+			baselineScore: 0.45,
+			candidateScore: 0.92,
+			scoreDelta: 0.47,
+			confidence95: { low: 0.3, high: 0.6 },
+			improved: 13,
+			regressed: 0,
+			unchanged: 2,
+		},
+		design: { tasks: 15, repetitions: 3, excludedTasks: 0 },
+		verdict: "pass",
+		flags: { regressedTasks: 0, improvedTasks: 13, collapsedTasks: 0 },
+		resources: {
+			baseline: { runs: 45, costUsd: 0.4, meanLatencyMs: 2_000, meanTokens: 900 },
+			candidate: { runs: 45, costUsd: 0.56, meanLatencyMs: 1_800, meanTokens: 1_100 },
+			costRatio: 1.4,
+			latencyRatio: 0.9,
+			tokenRatio: 1.2222,
+		},
+		reasons: ["no regression on 15 tasks × 3 repetitions"],
+	};
+
+	it("round-trips v4 evidence and reports it as promotion-grade", () => {
+		const parsed = ComparisonGateEvidenceSchema.parse(v4);
+		expect(parsed).toEqual(v4);
+		expect(isPromotionGradeGateEvidence(parsed)).toBe(true);
+		expect(promotionGradeVerdictOf(parsed)).toBe("pass");
+		expect(gateVerdictOf(parsed)).toBe("pass");
+	});
+
+	it("still parses v3 evidence but refuses it at promotion", () => {
+		const { baselineScore, candidateScore, scoreDelta, ...summary } = v4.summary;
+		const { resources, ...rest } = v4;
+		const v3 = {
+			...rest,
+			schemaVersion: 3,
+			algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
+			policyId: "sealed-guardrail-v3",
+			summary,
+		};
+		const parsed = ComparisonGateEvidenceSchema.parse(v3);
+		expect(parsed).toEqual(v3);
+		// Readable, renderable, and never promotion-grade.
+		expect(gateVerdictOf(parsed)).toBe("pass");
+		expect(isPromotionGradeGateEvidence(parsed)).toBe(false);
+		expect(promotionGradeVerdictOf(parsed)).toBeNull();
+		expect(baselineScore + candidateScore + scoreDelta).toBeGreaterThan(0);
+		expect(resources.costRatio).toBe(1.4);
+	});
+
+	it("refuses v4 evidence whose policy or scores do not belong to its surface", () => {
+		expect(() => ComparisonGateEvidenceSchema.parse({ ...v4, policyId: "development-ci-v4" })).toThrow();
+		expect(() => ComparisonGateEvidenceSchema.parse({ ...v4, verdict: "improved" })).toThrow();
+		expect(() => ComparisonGateEvidenceSchema.parse({
+			...v4,
+			summary: { ...v4.summary, scoreDelta: 2 },
+		})).toThrow();
 	});
 });

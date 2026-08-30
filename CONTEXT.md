@@ -57,15 +57,20 @@ the harness under development runs in a different Target Pi invocation.
   run-to-run noise. The A/A Candidate record is the calibration receipt; it
   can never be promotion evidence.
 - **Comparison Verdict** — the single typed outcome of comparing a baseline and
-  a candidate Eval Run under one Gate Policy: paired per-task deltas, a seeded
-  bootstrap 95% interval, the design (tasks × repetitions, excluded tasks),
-  human flags, and one verdict. The only source of "passed".
+  a candidate Eval Run under one Gate Policy: paired per-task deltas of the
+  mean grader score, a seeded bootstrap 95% interval, the design (tasks ×
+  repetitions, excluded tasks), human flags, resource ratios, and one verdict.
+  The only source of "passed".
 - **Gate Policy** — the named rule a Comparison Verdict is decided under.
-  `development-ci-v3`: improved iff the whole interval is above zero,
+  `development-ci-v4`: improved iff the whole interval is above zero,
   regressed iff it is entirely below zero, otherwise inconclusive.
-  `sealed-guardrail-v3`: underpowered below 15 tasks or 2 repetitions, fail
-  iff the whole interval is below zero, otherwise pass. Per-task drops are
-  flags for humans and never gate.
+  `sealed-guardrail-v4`: underpowered below 15 tasks or 2 repetitions, fail
+  iff the whole interval is below zero, otherwise pass. The paired quantity is
+  the mean grader score per task, not the pass rate: a run scores the mean of
+  its graders' scores in [0,1], a graderless run keeps the binary value, and
+  with binary graders score and pass rate coincide. Pass rates stay computed
+  and rendered next to the scores. Per-task drops, collapses, and the cost,
+  latency and token ratios are flags for humans and never gate.
 
 ## Trust domains
 
@@ -212,11 +217,14 @@ live view is never evidence and cannot perform state transitions.
 
 
 34. Promotion is decided by the Comparison Verdict, not by per-task flips: it
-    requires a sealed guardrail `pass` (≥15 tasks × ≥2 repetitions, 95% paired
-    bootstrap interval not entirely below zero) and a development verdict other
-    than `regressed`. A failed or underpowered sealed gate is recorded as
-    evaluated evidence and refused at promotion; it is never thrown away. A
-    verification never starts on a holdout smaller than the policy minimum.
+    requires `exact-comparison-gate-v4` evidence on both surfaces, a sealed
+    guardrail `pass` (≥15 tasks × ≥2 repetitions, 95% paired bootstrap interval
+    over per-task mean grader scores not entirely below zero) and a development
+    verdict other than `regressed`. A failed or underpowered sealed gate is
+    recorded as evaluated evidence and refused at promotion; it is never thrown
+    away. A verification never starts on a holdout smaller than the policy
+    minimum. Older evidence (v1–v3) stays readable and renders its verdict, but
+    a promotion on it is refused until the candidate is verified again.
 35. Noise is measured, never assumed: an A/A calibration of the same Target
     revision is the receipt for run-to-run noise, informs the recommended
     number of repetitions, and is never promotion evidence.

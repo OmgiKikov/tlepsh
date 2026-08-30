@@ -13,7 +13,12 @@ import {
 	promoteReviewedCandidate,
 	reviewCandidate,
 } from "../src/application/candidate-review.js";
-import { CandidateRecordSchema, candidateStatus } from "../src/domain/candidate.js";
+import {
+	CandidateRecordSchema,
+	candidateStatus,
+	gateVerdictOf,
+	isPromotionGradeGateEvidence,
+} from "../src/domain/candidate.js";
 import { EvalRunRecordSchema, loadEvalRun, writeEvalRun, type EvalRunRecord } from "../src/eval.js";
 import { compareEvalRuns } from "../src/compare.js";
 import {
@@ -654,6 +659,50 @@ describe("candidate human review", () => {
 		expect(() =>
 			decideCandidatePromotion({ ...value, tag: "v1.0.0", reason: "ship", now: () => at }),
 		).toThrow(/production promotion requires reconstructable applied-Builder provenance/);
+	});
+
+	it("refuses promotion on legacy v3 pass-rate gate evidence and names what is missing", () => {
+		for (const surface of ["development", "sealedHoldout"] as const) {
+			const value = fixture(true);
+			const record = loadCandidateRecord(value.runsRoot, value.candidateId);
+			const evaluated = record.events.find((event) => event.type === "evaluated");
+			if (evaluated?.type !== "evaluated") throw new Error("expected an evaluated event");
+			const evidence = surface === "development"
+				? evaluated.evaluation.development.comparison
+				: evaluated.evaluation.sealedHoldout?.comparison;
+			if (!isPromotionGradeGateEvidence(evidence)) throw new Error("expected v4 gate evidence in the fixture");
+			// Exactly the shape v1.8 wrote: pass rates, no scores, no resources.
+			const { baselineScore: _b, candidateScore: _c, scoreDelta: _d, ...summary } = evidence.summary;
+			const { resources: _r, ...rest } = evidence;
+			const legacy = {
+				...rest,
+				schemaVersion: 3,
+				algorithmId: "exact-comparison-gate-v3",
+				policyId: surface === "development" ? "development-ci-v3" : "sealed-guardrail-v3",
+				summary,
+			};
+			const downgraded = CandidateRecordSchema.parse({
+				...record,
+				events: record.events.map((event) =>
+					event.type !== "evaluated"
+						? event
+						: {
+							...event,
+							evaluation: surface === "development"
+								? { ...event.evaluation, development: { ...event.evaluation.development, comparison: legacy } }
+								: {
+									...event.evaluation,
+									sealedHoldout: { ...event.evaluation.sealedHoldout!, comparison: legacy },
+								},
+						}),
+			});
+			// Legacy evidence still parses and still renders its verdict.
+			expect(gateVerdictOf(legacy as never)).toBe(evidence.verdict);
+			writeJsonArtifact(candidateRecordPath(value.runsRoot, value.candidateId), CandidateRecordSchema, downgraded);
+			reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+			expect(() => decideCandidatePromotion({ ...value, tag: "v1.0.0", reason: "ship", now: () => at }))
+				.toThrow(/legacy v3 gate evidence and is not promotion-grade: re-verify the candidate to record exact-comparison-gate-v4 evidence/);
+		}
 	});
 
 	it("tags only the exact reviewed candidate and preserves the user's dirty checkout", () => {
