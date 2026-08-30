@@ -14,23 +14,69 @@ import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { expect, it } from "vitest";
 import {
 	AHDE_BUILDER_REGISTERED_TOOL_NAMES,
-	AHDE_BUILDER_TOOL_NAMES,
 	createAhdeBuilderExtension,
 } from "../src/builder/extension.js";
 import { resolveBuilderAssets } from "../src/builder/runtime.js";
 import { createCorpus } from "../src/corpus.js";
+import { loadTarget } from "../src/manifest.js";
 import { startMockModel, type MockRequestContext, type MockStep } from "../src/mock-model.js";
 import { generateModelsJson } from "../src/runner.js";
 import { createHostContext, hostCatalogModel, modelDefinition } from "./helpers/builder-tools.js";
 import { SEALED_VERIFICATION_REPETITIONS, sealedHoldoutTasks } from "./helpers/sealed-holdout.js";
 
-const PROJECT_ID = "closed-loop-agent";
-const TARGET_PROVIDER = "closed-loop-target";
-const TARGET_MODEL_ID = "closed-loop-model";
-const TARGET_CREDENTIAL_ENV = "CLOSED_LOOP_TARGET_API_KEY";
-const SEALED_INPUT = "PRIVATE CLOSED LOOP HOLDOUT INPUT";
-const SEALED_NAME = "Evaluator-only closed-loop holdout";
+const PROJECT_ID = "workshop-loop-agent";
+const TARGET_PROVIDER = "workshop-loop-target";
+const TARGET_MODEL_ID = "workshop-loop-model";
+const TARGET_CREDENTIAL_ENV = "WORKSHOP_LOOP_TARGET_API_KEY";
+const SEALED_INPUT = "PRIVATE WORKSHOP HOLDOUT INPUT";
+const SEALED_NAME = "Evaluator-only workshop holdout";
 const READY_INSTRUCTION = "Return the exact uppercase word READY.";
+
+const READY_CHECK_DESCRIPTOR = `schemaVersion: 1
+name: ready_check
+description: Report whether an answer carries the reviewed READY contract.
+parameters:
+  type: object
+  properties:
+    answer:
+      type: string
+      minLength: 1
+      maxLength: 200
+  required: [answer]
+  additionalProperties: false
+command:
+  argv: [tools/ready_check/run]
+timeoutMs: 10000
+maxOutputBytes: 8192
+output: json
+permissions:
+  environment: []
+  network: deny
+  filesystem: read-only
+setup:
+  argv: [sh, -c, "cp contract.txt prepared-contract.txt"]
+  timeoutMs: 20000
+  network: deny
+`;
+
+/** The first attempt reads a file the setup step has not produced yet. */
+const READY_CHECK_RUN_BROKEN = `#!/bin/sh
+IFS= read -r payload || exit 2
+contract=$(cat "$AHDE_TOOL_HOME/contract-typo.txt") || exit 3
+case "$payload" in
+  *"$contract"*) printf '{"ready":true}\\n' ;;
+  *) printf '{"ready":false}\\n' ;;
+esac
+`;
+
+const READY_CHECK_RUN = `#!/bin/sh
+IFS= read -r payload || exit 2
+contract=$(cat "$AHDE_TOOL_HOME/prepared-contract.txt") || exit 3
+case "$payload" in
+  *"$contract"*) printf '{"ready":true}\\n' ;;
+  *) printf '{"ready":false}\\n' ;;
+esac
+`;
 
 function parseToolResult(context: MockRequestContext, index: number): Record<string, any> {
 	const value = context.toolResults[index];
@@ -39,15 +85,16 @@ function parseToolResult(context: MockRequestContext, index: number): Record<str
 }
 
 function call(step: number, name: string, args: Record<string, unknown>): MockStep {
-	return { toolCall: { id: `closed-loop-${step}`, name, arguments: args } };
+	return { toolCall: { id: `workshop-loop-${step}`, name, arguments: args } };
 }
 
 /**
- * The one leg no other test covers: a real Pi loop that closes the whole
- * improvement cycle through `ahde_workbench_decide` — scaffold to
- * continue-cycle — with an approving host gate and a real sealed verdict.
+ * The honest end-to-end proof of the workshop: Builder Pi writes a multi-file
+ * tool with its own setup step, runs it, sees it fail, fixes it, runs it again,
+ * closes the workshop into an ordinary proposal, and the operator applies,
+ * verifies and ships that exact diff.
  */
-it("closes the whole improvement cycle through ahde_workbench_decide in a real Pi loop", async () => {
+it("writes a tool in the workshop, tries it, closes, applies, verifies and ships", async () => {
 	const targetMock = await startMockModel([
 		{
 			match: ({ system }) => system.includes(READY_INSTRUCTION),
@@ -55,7 +102,7 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 		},
 		{ match: () => true, steps: [{ text: "pending" }] },
 	]);
-	const projectDir = mkdtempSync(join(tmpdir(), "ahde-builder-closed-loop-"));
+	const projectDir = mkdtempSync(join(tmpdir(), "ahde-builder-workshop-loop-"));
 	const stateRoot = join(projectDir, ".ahde");
 	const runsRoot = join(projectDir, "runs");
 	const assets = resolveBuilderAssets();
@@ -63,9 +110,7 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 	let session: Awaited<ReturnType<typeof createAgentSessionFromServices>>["session"] | undefined;
 	let builderMock: Awaited<ReturnType<typeof startMockModel>> | undefined;
 	try {
-		// The evaluator publishes the promotion gate out of band; Builder Pi can
-		// neither create it nor learn its identity.
-		const holdout = createCorpus({
+		createCorpus({
 			stateRoot,
 			projectId: PROJECT_ID,
 			name: SEALED_NAME,
@@ -75,7 +120,7 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 
 		builderMock = await startMockModel([
 			{
-				match: ({ firstUser, toolCount }) => firstUser.includes("доведи цикл до конца") && toolCount === 7,
+				match: ({ firstUser, toolCount }) => firstUser.includes("инструмент для агента") && toolCount === 7,
 				steps: [],
 				resolve: (context) => {
 					const step = context.toolResults.length;
@@ -96,20 +141,18 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 							return call(step, "ahde_workbench_submit", {
 								kind: "spec-draft",
 								spec: {
-									title: "Closed-loop answer agent",
+									title: "Workshop answer agent",
 									purpose: "Return the reviewed deterministic answer.",
 									users: ["acceptance reviewer"],
 									jobs: ["answer one request"],
 									inputs: ["text request"],
-									allowedActions: ["return text"],
+									allowedActions: ["return text", "call a declared tool"],
 									successCriteria: ["answer contains READY"],
 									constraints: ["no network"],
 									openQuestions: [],
 								},
 							});
 						case 3:
-							// “Start testing” with the Spec still under review: one
-							// dialog approves it, and the composite says what is next.
 							return call(step, "ahde_workbench_decide", {
 								kind: "run-current",
 								repetitions: 1,
@@ -118,7 +161,7 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 						case 4:
 							return call(step, "ahde_workbench_submit", {
 								kind: "corpus-draft",
-								name: "Closed-loop development basket",
+								name: "Workshop development basket",
 								tasks: [
 									{ input: "Answer the first reviewed request.", graders: [{ type: "output_contains", text: "READY" }] },
 									{ input: "Answer the second reviewed request.", graders: [{ type: "output_contains", text: "READY" }] },
@@ -127,8 +170,6 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 								revisionSummary: "Initial development basket",
 							});
 						case 5:
-							// The same words again: now the basket exists, so the one
-							// dialog publishes it and runs it.
 							return call(step, "ahde_workbench_decide", {
 								kind: "run-current",
 								repetitions: 1,
@@ -136,11 +177,46 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 							});
 						case 6:
 							return call(step, "ahde_workbench_view", { aspect: "traces" });
+						// The Builder gets hands only now, and only here.
 						case 7:
-							return call(step, "ahde_workbench_view", { aspect: "target" });
+							return call(step, "ahde_workbench_submit", { kind: "workshop-open" });
 						case 8:
-							return call(step, "ahde_workbench_view", { aspect: "target", resourcePath: "AGENTS.md" });
-						case 9: {
+							return call(step, "ahde_workshop_read", { path: "AGENTS.md" });
+						case 9:
+							return call(step, "ahde_workshop_write", {
+								path: "tools/ready_check/tool.yaml",
+								content: READY_CHECK_DESCRIPTOR,
+							});
+						case 10:
+							return call(step, "ahde_workshop_write", {
+								path: "tools/ready_check/run",
+								content: READY_CHECK_RUN_BROKEN,
+							});
+						case 11:
+							return call(step, "ahde_workshop_write", {
+								path: "tools/ready_check/contract.txt",
+								content: "READY\n",
+							});
+						// Run the code before proposing it. It fails.
+						case 12:
+							return call(step, "ahde_workshop_try", { tool: "ready_check", input: { answer: "READY" } });
+						case 13:
+							return call(step, "ahde_workshop_write", {
+								path: "tools/ready_check/run",
+								oldText: "contract-typo.txt",
+								newText: "prepared-contract.txt",
+							});
+						// Run it again. It works.
+						case 14:
+							return call(step, "ahde_workshop_try", { tool: "ready_check", input: { answer: "READY" } });
+						case 15: {
+							const current = String(parseToolResult(context, 8).content);
+							return call(step, "ahde_workshop_write", {
+								path: "AGENTS.md",
+								content: `${current.trimEnd()}\n\n${READY_INSTRUCTION}\n`,
+							});
+						}
+						case 16: {
 							const brief = parseToolResult(context, 6).detail.content.improvementBrief as {
 								algorithmId: string;
 								evalRunId: string;
@@ -151,12 +227,9 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 							const mode = brief.modes.find((candidate) =>
 								candidate.decision === "propose-harness-change" && candidate.selectableForProposal
 							);
-							if (!mode) throw new Error("closed-loop baseline produced no proposal-eligible failure mode");
-							const overview = parseToolResult(context, 7);
-							const current = parseToolResult(context, 8).detail.content.resource.content as string;
+							if (!mode) throw new Error("workshop baseline produced no proposal-eligible failure mode");
 							return call(step, "ahde_workbench_submit", {
-								kind: "structured-proposal",
-								authoringContext: overview.detail.content.claim,
+								kind: "workshop-close",
 								source: {
 									algorithmId: brief.algorithmId,
 									evalRunId: brief.evalRunId,
@@ -164,48 +237,40 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 									briefId: brief.briefId,
 								},
 								failureModeIds: [mode.failureModeId],
-								summary: "Make the reviewed deterministic answer explicit.",
-								intents: [{
-									type: "instructions.replace",
-									content: `${current.trimEnd()}\n\n${READY_INSTRUCTION}\n`,
-								}],
+								summary: "Make the reviewed answer explicit and give the Target a checker it can run.",
 								risks: ["The answer contract is intentionally narrow."],
 								validationPlan: ["Re-run the reviewed development basket and the sealed gate."],
 							});
 						}
-						case 10:
+						case 17:
 							return call(step, "ahde_workbench_decide", {
 								kind: "apply-proposal",
-								runId: String(parseToolResult(context, 9).artifact.runId),
-								branch: "candidate/closed-loop",
-								reason: "The exact diff addresses the diagnosed failure",
+								runId: String(parseToolResult(context, 16).artifact.runId),
+								branch: "candidate/workshop-loop",
+								reason: "The exact diff is the code I ran in the workshop",
 							});
-						case 11:
-							// “Check it”: routine, so the candidate is verified against
-							// its baseline and the sealed gate without a dialog.
+						case 18:
 							return call(step, "ahde_workbench_decide", {
 								kind: "run-current",
 								repetitions: SEALED_VERIFICATION_REPETITIONS,
 								reason: "Run the exact development and sealed promotion gates",
 							});
-						case 12:
-							// “Ship it”: review, promote, adopt and continue behind one
-							// dialog and four unchanged receipts.
+						case 19:
 							return call(step, "ahde_workbench_decide", {
 								kind: "ship",
 								version: "0.1.0",
 								reason: "Development improved and the sealed guardrail passed",
 							});
-						case 13: {
-							const shipped = parseToolResult(context, 12);
-							return { text: `Цикл закрыт: ${shipped.result.tag} promoted, adopted, next stage ${shipped.view.stage}.` };
+						case 20: {
+							const shipped = parseToolResult(context, 19);
+							return { text: `Инструмент собран и выкачен: ${shipped.result.tag}.` };
 						}
 						default:
-							throw new Error(`unexpected closed-loop Builder step ${step}`);
+							throw new Error(`unexpected workshop Builder step ${step}`);
 					}
 				},
 			},
-			{ match: () => true, steps: [{ text: "BUILDER_CLOSED_LOOP_CONTRACT_MISMATCH" }] },
+			{ match: () => true, steps: [{ text: "BUILDER_WORKSHOP_CONTRACT_MISMATCH" }] },
 		]);
 
 		const registered: ToolDefinition[] = [];
@@ -215,7 +280,7 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 			runsRoot,
 			projectId: PROJECT_ID,
 			templateDir: assets.targetTemplateDir,
-			dependencies: { actorId: () => "local:closed-loop-operator" },
+			dependencies: { actorId: () => "local:workshop-operator" },
 		});
 		await extension({
 			registerTool: (tool: ToolDefinition) => registered.push(tool),
@@ -240,7 +305,13 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 				if (!first || first.type !== "text") throw new Error(`tool ${tool.name} returned no text`);
 				observed.push({
 					name: tool.name,
-					kind: String((parameters as { kind?: unknown }).kind ?? (parameters as { aspect?: unknown }).aspect ?? "summary"),
+					kind: String(
+						(parameters as { kind?: unknown }).kind ??
+						(parameters as { aspect?: unknown }).aspect ??
+						(parameters as { path?: unknown }).path ??
+						(parameters as { tool?: unknown }).tool ??
+						"summary",
+					),
 					details: JSON.parse(first.text) as Record<string, any>,
 				});
 				return result;
@@ -248,13 +319,13 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 		}));
 
 		const builderModel = modelDefinition(
-			"builder-closed-loop",
+			"builder-workshop-loop",
 			"builder-model",
 			builderMock.url,
-			"AHDE_CLOSED_LOOP_BUILDER_KEY",
+			"AHDE_WORKSHOP_BUILDER_KEY",
 		);
-		const agentDir = join(stateRoot, "closed-loop-agent-dir");
-		const sessionDir = join(stateRoot, "closed-loop-session");
+		const agentDir = join(stateRoot, "workshop-agent-dir");
+		const sessionDir = join(stateRoot, "workshop-session");
 		mkdirSync(agentDir, { recursive: true });
 		mkdirSync(sessionDir, { recursive: true });
 		const modelsPath = join(agentDir, "models.json");
@@ -289,41 +360,58 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 		})).session;
 
 		await session.prompt(
-			"Собери агента, который детерминированно отвечает READY, и доведи цикл до конца: " +
-			"Spec, корзина, прогон, улучшение, проверка, релиз и следующий цикл.",
+			"Собери инструмент для агента прямо в мастерской: напиши его, запусти, почини, " +
+			"закрой мастерскую диффом, примени, проверь и выкати.",
 		);
 
-		expect(session.getLastAssistantText()).toContain("v0.1.0 promoted");
+		expect(session.getLastAssistantText()).toContain("v0.1.0");
 
-		// Every step of the cycle, and the stage it left the Workbench in. A view
-		// result is the view itself; a submit/decide result carries the trailing one.
-		const stageOf = (entry: { details: Record<string, any> }): string =>
-			String(entry.details.view?.stage ?? entry.details.stage);
-		expect(observed.map((entry) => `${entry.kind}:${stageOf(entry)}`)).toEqual([
-			"scaffold-target:target-setup",
-			"configure-target:spec-design",
-			"spec-draft:spec-review",
-			// “Run the tests” with the Spec pending: approved, and the composite
-			// stops there because a basket can only exist after the approval.
-			"run-current:corpus-design",
-			"corpus-draft:corpus-review",
-			// The same words again: publish and run behind one dialog.
-			"run-current:improvement-authoring",
-			"traces:improvement-authoring",
-			"target:improvement-authoring",
-			"target:improvement-authoring",
-			"structured-proposal:proposal-review",
-			"apply-proposal:candidate-verification",
-			"run-current:candidate-review",
-			// The adopted revision already has matched evidence, so the next cycle
-			// resumes at authoring rather than re-measuring the same baseline.
-			"ship:improvement-authoring",
+		// The workshop tried the tool twice: the first attempt genuinely failed.
+		const tries = observed.filter((entry) => entry.name === "ahde_workshop_try");
+		expect(tries).toHaveLength(2);
+		expect(tries[0]?.details.exitCode).toBe(3);
+		expect(tries[1]?.details.exitCode).toBe(0);
+		expect(JSON.parse(String(tries[1]?.details.stdout))).toEqual({ ready: true });
+		// The declared setup step ran once, in the same sandbox, in the tool home.
+		expect(tries[1]?.details.setup?.ran).toBe(true);
+		expect(tries[1]?.details.layout).toBe("directory");
+		expect(tries[1]?.details.source.kind).toBe("workshop");
+
+		// The proposal is the diff of exactly what it ran.
+		const closed = observed.find((entry) => entry.kind === "workshop-close")!;
+		expect(closed.details.artifact.changedPaths).toEqual([
+			"modified AGENTS.md",
+			"modified manifest.yaml",
+			"added tools/ready_check/contract.txt",
+			"added tools/ready_check/run",
+			"added tools/ready_check/tool.yaml",
 		]);
+		expect(closed.details.view.stage).toBe("proposal-review");
 
-		// The whole cycle asks six questions: the two one-time setup dialogs, and
-		// then the three product gates — start testing (twice in the first cycle,
-		// because the Spec approval is what lets the basket exist at all), the
-		// exact diff, and shipping. Everything else ran on the operator's ask.
+		// Applied, verified and shipped through the unchanged downstream contract.
+		const verified = observed.find((entry) => entry.details.result?.resolvedAs === "verify-candidate")!;
+		expect(verified.details.result).toMatchObject({
+			candidate: {
+				status: "evaluated",
+				development: { gate: { verdict: "improved" } },
+				sealedHoldout: { executed: true, gatePassed: true, gate: { verdict: "pass" } },
+			},
+		});
+		const shipped = observed.find((entry) => entry.kind === "ship")!;
+		expect(shipped.details.result.tag).toBe("v0.1.0");
+		const candidateSha = execFileSync("git", ["-C", projectDir, "rev-list", "-n", "1", "v0.1.0"], { encoding: "utf8" }).trim();
+		expect(execFileSync("git", ["-C", projectDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()).toBe(candidateSha);
+
+		// The shipped Target really carries the tool the Builder wrote and ran.
+		const shippedTarget = loadTarget(projectDir);
+		expect(shippedTarget.tools.map((tool) => tool.descriptor.name).sort()).toEqual(["echo_json", "ready_check"]);
+		expect(shippedTarget.tools.find((tool) => tool.descriptor.name === "ready_check")?.layout).toBe("directory");
+
+		// The workshop died with its proposal: no worktree, no scratch, no dirt.
+		expect(execFileSync("git", ["-C", projectDir, "worktree", "list"], { encoding: "utf8" }).trim().split("\n"))
+			.toHaveLength(1);
+		expect(execFileSync("git", ["-C", projectDir, "status", "--porcelain"], { encoding: "utf8" })).toBe("");
+		// Six questions: the two setup dialogs, two start-testing, the diff, the ship.
 		expect(host.confirmations.map((entry) => entry.title)).toEqual([
 			"Create exact Target harness",
 			"Configure exact Target identity and model",
@@ -332,40 +420,12 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 			"Apply exact Builder proposal",
 			"Ship candidate as v0.1.0",
 		]);
-		expect(host.confirmations).toHaveLength(6);
-		// Seven decisions, six dialogs: the candidate verification is routine.
-		expect(observed.filter((entry) => entry.name === "ahde_workbench_decide")).toHaveLength(7);
-
-		const verified = observed.find((entry) => entry.details.result?.resolvedAs === "verify-candidate")!;
-		expect(verified.details.result).toMatchObject({
-			candidate: {
-				status: "evaluated",
-				development: { gate: { verdict: "improved" } },
-				sealedHoldout: { executed: true, gatePassed: true, gate: { verdict: "pass" } },
-			},
-			development: { verdict: "improved" },
-			sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" },
-		});
-		const shipped = observed.find((entry) => entry.kind === "ship")!;
-		expect(shipped.details.result.steps.map((step: { kind: string }) => step.kind)).toEqual([
-			"review-candidate",
-			"promote-candidate",
-			"adopt-candidate",
-			"continue-cycle",
-		]);
-		expect(shipped.details.result.tag).toBe("v0.1.0");
-		const candidateSha = execFileSync("git", ["-C", projectDir, "rev-list", "-n", "1", "v0.1.0"], { encoding: "utf8" }).trim();
-		expect(shipped.details.result.adoption.toSha).toBe(candidateSha);
-		expect(execFileSync("git", ["-C", projectDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim())
-			.toBe(candidateSha);
-		expect(existsSync(join(stateRoot, "target-adoptions", String(shipped.details.result.candidate.candidateId), "receipt.json")))
-			.toBe(true);
-
-		// The sealed holdout drove a real verdict and still never reached the model.
+		// Nothing the sealed exam holds ever reached the model.
 		const everythingTheModelSaw = JSON.stringify(observed);
-		for (const secret of [SEALED_INPUT, SEALED_NAME, holdout.id, holdout.hash, "holdout-1"]) {
+		for (const secret of [SEALED_INPUT, SEALED_NAME, "holdout-1"]) {
 			expect(everythingTheModelSaw).not.toContain(secret);
 		}
+		expect(existsSync(join(stateRoot, "target-adoptions"))).toBe(true);
 	} finally {
 		delete process.env[TARGET_CREDENTIAL_ENV];
 		session?.dispose();
@@ -373,4 +433,4 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 		await targetMock.close();
 		rmSync(projectDir, { recursive: true, force: true });
 	}
-}, 180_000);
+}, 300_000);

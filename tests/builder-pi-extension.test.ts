@@ -5,6 +5,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Check } from "typebox/value";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	AHDE_BUILDER_REGISTERED_TOOL_NAMES,
 	AHDE_BUILDER_TOOL_NAMES,
 	CONSEQUENTIAL_BUILDER_TOOL_NAMES,
 	createAhdeBuilderExtension,
@@ -272,7 +273,7 @@ describe("Builder Pi extension registry", () => {
 			runsRoot: join(projectDir, "runs"),
 			projectId: "demo",
 		});
-		expect(tools.map((tool) => tool.name)).toEqual(AHDE_BUILDER_TOOL_NAMES);
+		expect(tools.map((tool) => tool.name)).toEqual([...AHDE_BUILDER_REGISTERED_TOOL_NAMES]);
 		expect(tools.map((tool) => tool.name)).not.toEqual(expect.arrayContaining(["bash", "edit", "write", "read"]));
 
 		for (const name of CONSEQUENTIAL_BUILDER_TOOL_NAMES) {
@@ -314,7 +315,7 @@ describe("Builder Pi extension registry", () => {
 			registerCommand: (name: string) => commands.push(name),
 			on: (event: string, handler: (...args: never[]) => unknown) => handlers.set(event, handler),
 		} as never);
-		expect(registered.map((tool) => tool.name)).toEqual(AHDE_BUILDER_TOOL_NAMES);
+		expect(registered.map((tool) => tool.name)).toEqual([...AHDE_BUILDER_REGISTERED_TOOL_NAMES]);
 		expect(commands).toEqual(AHDE_BUILDER_COMMAND_NAMES);
 		expect(handlers.get("user_bash")?.()).toMatchObject({
 			result: { exitCode: 126, output: expect.stringContaining("disables interactive shell") },

@@ -78,7 +78,7 @@ Where AHDE stands against practice (verified 2026-08-30):
 | Changing a rubric | rerun everything (135 runs) | `ahde regrade`: re-score recorded answers | — | — |
 | Score | binary pass/fail per run | mean grader score; cost and latency beside the interval | — | — |
 | Trying a fix | one proposal → full verification | — | cheap check on failed cases first; 2–3 candidates per cycle in a Pareto table | — |
-| Builder's hands | semantic intents compiled by the host | — | edits files in a worktree; the proposal is the diff | — |
+| Builder's hands | semantic intents compiled by the host | — | **done** — edits files in a bound worktree, runs the tool it wrote; the proposal is the diff | — |
 | Chat agents | seeded history, grade the next reply | — | simulated user with a goal and persona | — |
 | Target sandbox | best-effort sandbox-exec/bwrap for `bash` | — | — | Gondolin / Docker, `required` in the bank profile |
 | Docs | 27 KB README, 35 invariants | — | — | one-page README with a real transcript; ~15 invariants |
@@ -131,10 +131,13 @@ branch; the closed-loop Pi test passes with exactly three confirmations.
    stops only at the ship decision (old item 2).
 8. **Promoted fixes become guards** — tasks a promotion flipped are pinned as
    regression cases; this is what makes gains compound (old item 4).
-9. **Builder with hands** — write/edit/bash + `try_tool` in a worktree
-   confined to `AGENTS.md`, `skills/**`, `tools/**`, `bin/**`, `data/**`; the
-   proposal is the worktree diff; the intent compiler becomes optional and is
-   removed one release later (`docs/V1_9_TOOL_WORKSHOP.md`, old item 0c).
+9. **Builder with hands** — *done.* `ahde_workshop_read` / `_write` / `_bash` /
+   `_try` live inside one bound detached worktree confined to `AGENTS.md`,
+   `skills/**`, `tools/**`, `bin/**`, `data/**`; the proposal is the worktree
+   diff, compiled at `workshop-close` and admitted through the unchanged
+   receipt, apply, verify and promote chain. The intent compiler stays as the
+   fallback for single-file edits and remains the only path to
+   `execution.configure` (`docs/V1_9_TOOL_WORKSHOP.md`, old item 0c).
 10. **Simulated user** — a second model with a goal and persona for N turns;
     graders over the whole transcript (old item 0b).
 11. **Host-side sealed generation** — an evaluator-model call whose output

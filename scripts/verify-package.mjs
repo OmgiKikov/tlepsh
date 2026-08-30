@@ -60,6 +60,8 @@ try {
 		"dist/application/target-scaffold.js",
 		"dist/application/target-authoring-context.js",
 		"dist/application/target-feedback.js",
+		"dist/application/tool-workshop.js",
+		"dist/builder/workshop-tools.js",
 		"dist/target/feedback-extension.js",
 		"dist/builder/product-shell.js",
 		"dist/builder/run-observation.js",
@@ -160,7 +162,10 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import {
 	AHDE_BUILDER_COMMAND_NAMES,
+	AHDE_BUILDER_REGISTERED_TOOL_NAMES,
 	AHDE_BUILDER_TOOL_NAMES,
+	AHDE_WORKSHOP_TOOL_NAMES,
+	openBuilderWorkshop,
   applyBuilderProposal,
   approveBuilderSpecDraft,
   candidateStatus,
@@ -196,6 +201,14 @@ import {
 } from "ahde";
 
 const expectedToolNames = ["ahde_workbench_view", "ahde_workbench_submit", "ahde_workbench_decide"];
+// The workshop four are registered but legal only while a workshop is open.
+const expectedWorkshopToolNames = [
+	"ahde_workshop_read",
+	"ahde_workshop_write",
+	"ahde_workshop_bash",
+	"ahde_workshop_try",
+];
+const expectedRegisteredToolNames = [...expectedToolNames, ...expectedWorkshopToolNames];
 const expectedCommandNames = [
 	"test", "fix", "ship",
 	"help", "doctor", "status", "run", "calibrate", "traces", "review",
@@ -205,7 +218,10 @@ const expectedCommandNames = [
 
 for (const [name, value] of Object.entries({
 	AHDE_BUILDER_COMMAND_NAMES,
+	AHDE_BUILDER_REGISTERED_TOOL_NAMES,
 	AHDE_BUILDER_TOOL_NAMES,
+	AHDE_WORKSHOP_TOOL_NAMES,
+	openBuilderWorkshop,
   applyBuilderProposal,
   approveBuilderSpecDraft,
   candidateStatus,
@@ -242,6 +258,14 @@ for (const [name, value] of Object.entries({
   if (name === "AHDE_BUILDER_TOOL_NAMES") {
     if (JSON.stringify(value) !== JSON.stringify(expectedToolNames)) {
       throw new Error(\`Builder exported the wrong three-operation tool surface: \${JSON.stringify(value)}\`);
+    }
+  } else if (name === "AHDE_WORKSHOP_TOOL_NAMES") {
+    if (JSON.stringify(value) !== JSON.stringify(expectedWorkshopToolNames)) {
+      throw new Error(\`Builder exported the wrong workshop tool surface: \${JSON.stringify(value)}\`);
+    }
+  } else if (name === "AHDE_BUILDER_REGISTERED_TOOL_NAMES") {
+    if (JSON.stringify(value) !== JSON.stringify(expectedRegisteredToolNames)) {
+      throw new Error(\`Builder exported the wrong registered tool surface: \${JSON.stringify(value)}\`);
     }
   } else if (name === "AHDE_BUILDER_COMMAND_NAMES") {
     if (JSON.stringify(value) !== JSON.stringify(expectedCommandNames)) {
@@ -375,8 +399,27 @@ await launchBuilderPi({
       registerCommand(name, command) { registeredCommands.push({ name, command }); },
     });
     const actualNames = registeredTools.map((tool) => tool.name);
-    if (JSON.stringify(actualNames) !== JSON.stringify(expectedToolNames)) {
+    if (JSON.stringify(actualNames) !== JSON.stringify(expectedRegisteredToolNames)) {
       throw new Error(\`Builder extension registered an unexpected tool surface: \${actualNames.join(", ")}\`);
+    }
+    // The hands exist, and they are refused until a workshop binds them.
+    for (const workshopToolName of expectedWorkshopToolNames) {
+      const workshopTool = registeredTools.find((tool) => tool.name === workshopToolName);
+      let refused = false;
+      try {
+        await workshopTool?.execute("package-workshop", { path: "AGENTS.md", argv: ["true"], tool: "echo_json", input: {} }, undefined, undefined, undefined);
+      } catch (error) {
+        refused = /no workshop is open/.test(String(error?.message ?? error));
+      }
+      if (!refused) throw new Error(\`\${workshopToolName} did not fail closed without an open workshop\`);
+    }
+    const workshopGuard = handlers.get("tool_call");
+    const workshopBlocked = workshopGuard?.({ toolName: "ahde_workshop_write" });
+    if (workshopBlocked?.block !== true || !/workshop-open/.test(String(workshopBlocked.reason))) {
+      throw new Error("installed Builder did not gate the workshop tools behind an open workshop");
+    }
+    if (workshopGuard?.({ toolName: "write" })?.terminate !== true) {
+      throw new Error("installed Builder still allows a generic write tool");
     }
     const actualCommands = registeredCommands.map(({ name }) => name);
     if (JSON.stringify(actualCommands) !== JSON.stringify(expectedCommandNames)) {

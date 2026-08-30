@@ -12,6 +12,7 @@ import {
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { expect, it } from "vitest";
 import {
+	AHDE_BUILDER_REGISTERED_TOOL_NAMES,
 	AHDE_BUILDER_TOOL_NAMES,
 	createAhdeBuilderExtension,
 } from "../src/builder/extension.js";
@@ -152,7 +153,7 @@ it("uses the real three-tool Builder Pi to inspect exact Target context and stop
 					firstUser.includes("Исправь первую проблему") &&
 					system.includes("Before authoring, inspect the fresh Target overview") &&
 					system.includes("resourcePath") &&
-					toolCount === 3,
+					toolCount === 7,
 				steps: [],
 				resolve: (context) => {
 					const step = context.toolResults.length;
@@ -253,7 +254,7 @@ it("uses the real three-tool Builder Pi to inspect exact Target context and stop
 			registerCommand: () => undefined,
 			on: () => undefined,
 		} as never);
-		expect(registered.map((tool) => tool.name)).toEqual(AHDE_BUILDER_TOOL_NAMES);
+		expect(registered.map((tool) => tool.name)).toEqual([...AHDE_BUILDER_REGISTERED_TOOL_NAMES]);
 
 		const observedCalls: { name: string; parameters: Record<string, unknown> }[] = [];
 		const hostContext = {

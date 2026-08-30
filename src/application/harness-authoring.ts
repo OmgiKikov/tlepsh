@@ -438,7 +438,20 @@ function appendChangedLines(output: string[], prefix: "-" | "+", content: string
 	return split.lines.length;
 }
 
-function wholeFileDiff(file: PlannedFile): string {
+/** The whole-file replacement a reviewed change always carries. */
+export interface WholeFileChange {
+	path: string;
+	before: { mode: "100644" | "100755"; content: Buffer } | null;
+	after: string | null;
+	afterMode: "100644" | "100755" | null;
+}
+
+/**
+ * Exported for the workshop compiler: an intent-compiled change and a
+ * worktree-diffed change must be byte-identical artifacts, so both are rendered
+ * here.
+ */
+export function wholeFileDiff(file: WholeFileChange): string {
 	const beforeText = file.before ? decodeText(file.before.content, file.path) : "";
 	const afterText = file.after ?? "";
 	const beforeLines = splitDiffLines(beforeText).lines.length;
@@ -508,7 +521,12 @@ function assertCanonicalDeclarations(manifest: TargetManifestValue): void {
 	}
 }
 
-function renderManifest(
+/**
+ * Rewrite only the declared resource lists (and, for the intent path, the
+ * reviewed execution policy) of an exact manifest, keeping every other byte and
+ * comment. Exported so the workshop compiler derives declarations the same way.
+ */
+export function renderManifest(
 	baseText: string,
 	baseManifest: TargetManifestValue,
 	updates: { skills?: string[]; tools?: string[]; data?: string[]; execution?: ExecutionPolicy },

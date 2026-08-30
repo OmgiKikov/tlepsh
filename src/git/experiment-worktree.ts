@@ -241,6 +241,41 @@ export async function withDetachedWorktree<T>(
 	options: DetachedWorktreeOptions,
 	callback: (worktree: ExperimentWorktree) => Promise<T> | T,
 ): Promise<T> {
+	const worktree = openDetachedWorktree(options);
+	let operationError: unknown;
+	try {
+		return await callback({ ref: worktree.ref, sha: worktree.sha, path: worktree.path });
+	} catch (error) {
+		operationError = error;
+		throw error;
+	} finally {
+		try {
+			worktree.close();
+		} catch (cleanupError) {
+			const errors = cleanupError instanceof AggregateError ? [...cleanupError.errors] : [cleanupError];
+			throw new AggregateError(
+				operationError === undefined ? errors : [operationError, ...errors],
+				"failed to clean detached worktree",
+			);
+		}
+	}
+}
+
+/** One detached worktree that outlives a single call. `close` is idempotent. */
+export interface DetachedWorktreeHandle extends ExperimentWorktree {
+	/** Remove the worktree and its temporary root. Safe to call more than once. */
+	close(): void;
+	/** False once `close` has removed it. */
+	readonly open: boolean;
+}
+
+/**
+ * The same detached worktree `withDetachedWorktree` scopes to one callback, held
+ * open across several host operations — a Builder workshop lives for many tool
+ * calls and must still leave the operator's checkout and `git worktree list`
+ * exactly as it found them. The caller owns `close`.
+ */
+export function openDetachedWorktree(options: DetachedWorktreeOptions): DetachedWorktreeHandle {
 	const repositoryDir = validateRepositoryDir(options.repositoryDir);
 	validateRef(options.ref, "detached");
 	const sha = resolveCommitRef(repositoryDir, options.ref);
@@ -248,16 +283,11 @@ export async function withDetachedWorktree<T>(
 	assertSafeTemporaryRoot(temporaryRoot);
 	const path = join(temporaryRoot, "detached");
 	let added = false;
-	let operationError: unknown;
+	let closed = false;
 
-	try {
-		git(repositoryDir, ["worktree", "add", "--detach", path, sha]);
-		added = true;
-		return await callback({ ref: options.ref, sha, path });
-	} catch (error) {
-		operationError = error;
-		throw error;
-	} finally {
+	const close = (): void => {
+		if (closed) return;
+		closed = true;
 		const cleanupErrors: unknown[] = [];
 		cleanupWorktree(repositoryDir, temporaryRoot, path, added, cleanupErrors);
 		try {
@@ -271,12 +301,30 @@ export async function withDetachedWorktree<T>(
 		} catch (error) {
 			cleanupErrors.push(error);
 		}
-
 		if (cleanupErrors.length > 0) {
-			throw new AggregateError(
-				operationError === undefined ? cleanupErrors : [operationError, ...cleanupErrors],
-				"failed to clean detached worktree",
-			);
+			throw new AggregateError(cleanupErrors, "failed to clean detached worktree");
 		}
+	};
+
+	try {
+		git(repositoryDir, ["worktree", "add", "--detach", path, sha]);
+		added = true;
+	} catch (error) {
+		try {
+			close();
+		} catch (cleanupError) {
+			const errors = cleanupError instanceof AggregateError ? [...cleanupError.errors] : [cleanupError];
+			throw new AggregateError([error, ...errors], "failed to clean detached worktree");
+		}
+		throw error;
 	}
+	return {
+		ref: options.ref,
+		sha,
+		path,
+		close,
+		get open() {
+			return !closed;
+		},
+	};
 }
