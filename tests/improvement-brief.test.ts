@@ -72,7 +72,13 @@ function root(): string {
 function exactGrader(options: {
 	passed: boolean;
 	specHash: string;
-	checkCode?: "required-tool" | "output-contains" | "output-matches" | "semantic-rubric";
+	checkCode?:
+		| "required-tool"
+		| "output-contains"
+		| "output-matches"
+		| "semantic-rubric"
+		| "reference-exact"
+		| "reference-similarity";
 	name?: string;
 	type?: string;
 	reason?: string;
@@ -286,6 +292,38 @@ describe("deterministic improvement brief", () => {
 		expect(brief.modes.every((mode) => mode.decision === "propose-harness-change")).toBe(true);
 		expect(brief.proposalEligible).toBe(true);
 		expect(brief.headline).toContain("0/1 passed.");
+	});
+
+	it("gives every check code its own title and category, reference graders included", () => {
+		const graders = [
+			exactGrader({
+				passed: false,
+				specHash: hashValue({ type: "exact", normalize: "lower" }),
+				checkCode: "reference-exact",
+				type: "exact",
+				name: "exact",
+			}),
+			exactGrader({
+				passed: false,
+				specHash: hashValue({ type: "similarity", metric: "token-f1", threshold: 0.8 }),
+				checkCode: "reference-similarity",
+				type: "similarity",
+				name: "similarity",
+			}),
+		];
+		const value = fixture({
+			repetitions: 1,
+			evidenceVisibility: "development",
+			runs: [{ taskId: "task", repetitionIndex: 0, graders }],
+		});
+
+		const brief = compileImprovementBrief(value.runsRoot, value.diagnosis);
+		expect(brief.modes.map((mode) => [mode.signature.checkCode, mode.title, mode.category]).sort())
+			.toEqual([
+				["reference-exact", "Exact reference-answer check failed", "output-contract"],
+				["reference-similarity", "Reference similarity check failed", "answer-quality"],
+			]);
+		expect(brief.modes.every((mode) => mode.decision === "propose-harness-change")).toBe(true);
 	});
 
 	it("keeps legacy and unknown infrastructure signals task-local and never calls pass-plus-error flaky", () => {

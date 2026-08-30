@@ -351,8 +351,10 @@ function categoryFor(checkCode: GraderCheckCode): z.infer<typeof DiagnosisCatego
 	switch (checkCode) {
 		case "required-tool": return "tool-selection";
 		case "output-contains":
-		case "output-matches": return "output-contract";
-		case "semantic-rubric": return "answer-quality";
+		case "output-matches":
+		case "reference-exact": return "output-contract";
+		case "semantic-rubric":
+		case "reference-similarity": return "answer-quality";
 	}
 }
 

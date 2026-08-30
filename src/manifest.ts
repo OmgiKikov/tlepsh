@@ -33,6 +33,38 @@ export const JudgeGrader = z.strictObject({
 	type: z.literal("judge"),
 	name: z.string().optional(),
 	rubric: z.string().min(1),
+	/**
+	 * Show the judge the case's reference answer and grade on the A–E factuality
+	 * rubric instead of the rubric alone.
+	 *
+	 * Optional and literally `true` rather than a defaulted boolean: canonical
+	 * JSON drops an absent field, so every judge grader written before reference
+	 * answers existed keeps its exact spec hash and suite hash. A `false` default
+	 * would silently rewrite both.
+	 */
+	withReference: z.literal(true).optional(),
+});
+
+/** How both sides are normalized before an exact comparison. */
+export const ExactNormalizeSchema = z.enum(["trim", "lower", "none"]);
+export type ExactNormalize = z.infer<typeof ExactNormalizeSchema>;
+
+export const ExactGrader = z.strictObject({
+	type: z.literal("exact"),
+	name: z.string().optional(),
+	/** `lower` (the default) is trim + lowercase + collapsed whitespace. */
+	normalize: ExactNormalizeSchema.default("lower"),
+});
+
+export const SimilarityMetricSchema = z.enum(["token-f1", "levenshtein"]);
+export type SimilarityMetric = z.infer<typeof SimilarityMetricSchema>;
+
+export const SimilarityGrader = z.strictObject({
+	type: z.literal("similarity"),
+	name: z.string().optional(),
+	metric: SimilarityMetricSchema,
+	/** Lowest score that still passes. 1 means "identical after normalization". */
+	threshold: z.number().gt(0).lte(1),
 });
 
 export const GraderSpec = z.discriminatedUnion("type", [
@@ -40,8 +72,25 @@ export const GraderSpec = z.discriminatedUnion("type", [
 	OutputContainsGrader,
 	OutputMatchesGrader,
 	JudgeGrader,
+	ExactGrader,
+	SimilarityGrader,
 ]);
 export type GraderSpec = z.infer<typeof GraderSpec>;
+
+/**
+ * Graders that decide their verdict by comparing the answer with the case's
+ * reference answer. On a case without one they fail loudly rather than pass
+ * vacuously, and every path that admits a dataset refuses the pairing outright.
+ */
+export function graderNeedsExpected(spec: GraderSpec): boolean {
+	return spec.type === "exact" || spec.type === "similarity" ||
+		(spec.type === "judge" && spec.withReference === true);
+}
+
+/** A reference answer that a grader can actually compare against. */
+export function hasReferenceAnswer(task: { expected?: string | undefined }): boolean {
+	return typeof task.expected === "string" && task.expected.trim().length > 0;
+}
 
 // ---------- Task / dataset ----------
 
@@ -505,11 +554,17 @@ export function loadTarget(dir: string, override?: { dataset?: string }): Resolv
 	});
 	for (const task of resolved) {
 		for (const grader of task.effectiveGraders) {
-			if (grader.type !== "output_matches") continue;
-			try {
-				new RegExp(grader.pattern);
-			} catch (error) {
-				throw new Error(`task ${task.id}: invalid output_matches regex (${(error as Error).message})`);
+			if (grader.type === "output_matches") {
+				try {
+					new RegExp(grader.pattern);
+				} catch (error) {
+					throw new Error(`task ${task.id}: invalid output_matches regex (${(error as Error).message})`);
+				}
+			}
+			if (graderNeedsExpected(grader) && !hasReferenceAnswer(task)) {
+				throw new Error(
+					`task ${task.id}: ${grader.type} grader compares the answer with the case's reference answer, but the case has no "expected"`,
+				);
 			}
 		}
 	}
@@ -539,16 +594,25 @@ export function loadTarget(dir: string, override?: { dataset?: string }): Resolv
 	};
 }
 
+function graderDetail(spec: GraderSpec): string {
+	switch (spec.type) {
+		case "tool_called":
+			return `${spec.tool}${spec.argsContains ? `(${spec.argsContains})` : ""}`;
+		case "output_contains":
+			return `"${spec.text.slice(0, 24)}"`;
+		case "judge":
+			return `"${spec.rubric.slice(0, 24)}"${spec.withReference ? "+reference" : ""}`;
+		case "output_matches":
+			return `/${spec.pattern.slice(0, 24)}/`;
+		case "exact":
+			return spec.normalize;
+		case "similarity":
+			return `${spec.metric}>=${spec.threshold}`;
+	}
+}
+
 /** Display name for a grader spec. */
 export function graderName(spec: GraderSpec, task: { id: string }, index: number): string {
 	if (spec.name) return spec.name;
-	const detail =
-		spec.type === "tool_called"
-			? `${spec.tool}${spec.argsContains ? `(${spec.argsContains})` : ""}`
-			: spec.type === "output_contains"
-				? `"${spec.text.slice(0, 24)}"`
-				: spec.type === "judge"
-					? `"${spec.rubric.slice(0, 24)}"`
-					: `/${spec.pattern.slice(0, 24)}/`;
-	return `${task.id}#${index}:${spec.type}:${detail}`;
+	return `${task.id}#${index}:${spec.type}:${graderDetail(spec)}`;
 }

@@ -108,7 +108,7 @@ describe("model-readable validation problems", () => {
 			revisionSummary: "6 cases",
 			tasks: [{ id: "c1", input: "Digest for Notion", notes: "basic", graders: [{ type: "llm", prompt: "Check sections" }] }],
 		})).toThrow(
-			/\/tasks\/0: unknown property "id" \(allowed: input, expected, messages, metadata, graders\); \/tasks\/0: unknown property "notes" \(allowed: input, expected, messages, metadata, graders\); \/tasks\/0\/graders\/0: type "llm" is not supported; use one of: "tool_called" \{name\?, tool, argsContains\?\}, "output_contains" \{name\?, text, caseSensitive\?\}, "output_matches" \{name\?, pattern\}, "judge" \{name\?, rubric\}/,
+			/\/tasks\/0: unknown property "id" \(allowed: input, expected, messages, metadata, graders\); \/tasks\/0: unknown property "notes" \(allowed: input, expected, messages, metadata, graders\); \/tasks\/0\/graders\/0: type "llm" is not supported; use one of: "tool_called" \{name\?, tool, argsContains\?\}, "output_contains" \{name\?, text, caseSensitive\?\}, "output_matches" \{name\?, pattern\}, "judge" \{name\?, rubric, withReference\?\}, "exact" \{name\?, normalize\?\}, "similarity" \{name\?, metric, threshold\}/,
 		);
 	});
 

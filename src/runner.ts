@@ -510,6 +510,9 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 	});
 
 	const model = target.manifest.model;
+	// A dialogue case ends in the user turn `input` repeats, so the turns before
+	// it are the conversation to seed and the last one stays the graded prompt.
+	const seededTurns = task.messages ? task.messages.slice(0, -1) : [];
 	const record: RunRecord = {
 		schemaVersion: 1,
 		runId,
@@ -549,7 +552,7 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			datasetHash: target.datasetHash,
 		},
 		trace: { path: "session.jsonl", sessionId: null, sha256: null },
-		metrics: emptyMetrics(),
+		metrics: { ...emptyMetrics(), ...(task.messages ? { seededTurns: seededTurns.length } : {}) },
 		evalResults: null,
 		parent: options.evalRunId
 			? { evalRunId: options.evalRunId, candidateOf: options.candidateOf }
@@ -597,6 +600,7 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			// This is the only secret value Target Pi receives. The credential is
 			// memory-only and is never written to models.json/session evidence.
 			apiKey: scopedApiKey ?? "unset",
+			seedMessages: seededTurns,
 		});
 		session = created.session;
 		if (options.signal) {
@@ -693,6 +697,7 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			toolCalls: stats.toolCalls,
 			toolErrors,
 			recoveryAttempts,
+			...(task.messages ? { seededTurns: seededTurns.length } : {}),
 		};
 	} catch (error) {
 		record.status = "error";

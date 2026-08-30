@@ -54,6 +54,8 @@ export interface MockRequestContext {
 	lastUser: string;
 	toolCount: number;
 	toolResults: string[];
+	/** Every conversation message in request order, so a test can assert on seeded history. */
+	messages: { role: string; text: string }[];
 }
 
 export interface MockModelHandle {
@@ -168,7 +170,11 @@ export function startMockModel(scripts: MockScript[], fallback?: MockScript): Pr
 				) ?? defaultScript;
 			// Stateless step selection: how many tool results has the harness sent back so far.
 			const toolResults = messages.filter((m) => m.role === "tool").map((message) => contentText(message.content));
-			const step = script.resolve?.({ ...contextBase, toolResults }) ?? script.steps[toolResults.length];
+			const step = script.resolve?.({
+				...contextBase,
+				toolResults,
+				messages: messages.map((message) => ({ role: message.role, text: contentText(message.content) })),
+			}) ?? script.steps[toolResults.length];
 			if (!step) {
 				res.writeHead(500, { "content-type": "application/json" });
 				res.end(

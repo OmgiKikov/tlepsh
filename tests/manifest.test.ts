@@ -2,7 +2,8 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { graderName, loadTarget, scaffoldTarget } from "../src/manifest.js";
+import { GraderSpec, graderName, loadTarget, scaffoldTarget } from "../src/manifest.js";
+import { hashValue } from "../src/provenance.js";
 import { AGENTS_MD, baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 
 describe("loadTarget", () => {
@@ -149,6 +150,78 @@ describe("loadTarget", () => {
 		} finally {
 			cleanup(dir);
 		}
+	});
+
+	it("refuses a reference grader on a case that carries no expected answer", () => {
+		const reference = [
+			{ type: "exact" },
+			{ type: "similarity", metric: "token-f1", threshold: 0.8 },
+			{ type: "judge", rubric: "фактическая верность", withReference: true },
+		];
+		for (const grader of reference) {
+			const dir = makeTargetFixture(baseFixtureFiles({
+				"evals/development.jsonl": `${JSON.stringify({ id: "task_001", input: "x", graders: [grader] })}\n`,
+			}));
+			try {
+				expect(() => loadTarget(dir)).toThrow(/the case has no "expected"/);
+			} finally {
+				cleanup(dir);
+			}
+		}
+		// A suite default is the same pairing, one file further away.
+		const viaDefaults = makeTargetFixture(baseFixtureFiles({
+			"evals/development.jsonl": `${JSON.stringify({ id: "task_001", input: "x" })}\n`,
+			"evals/graders.yaml": "defaults:\n  - type: exact\n",
+		}));
+		try {
+			expect(() => loadTarget(viaDefaults)).toThrow(/exact grader compares the answer/);
+		} finally {
+			cleanup(viaDefaults);
+		}
+
+		const runnable = makeTargetFixture(baseFixtureFiles({
+			"evals/development.jsonl": `${JSON.stringify({
+				id: "task_001",
+				input: "x",
+				expected: "Ответ.",
+				graders: [{ type: "exact", normalize: "trim" }, { type: "similarity", metric: "levenshtein", threshold: 1 }],
+			})}\n`,
+		}));
+		try {
+			const target = loadTarget(runnable);
+			expect(target.tasks[0]?.effectiveGraders).toHaveLength(2);
+			expect(graderName(target.tasks[0]!.effectiveGraders[0]!, { id: "task_001" }, 0))
+				.toBe("task_001#0:exact:trim");
+			expect(graderName(target.tasks[0]!.effectiveGraders[1]!, { id: "task_001" }, 1))
+				.toBe("task_001#1:similarity:levenshtein>=1");
+		} finally {
+			cleanup(runnable);
+		}
+	});
+
+	it("bounds the new grader fields and leaves every existing grader shape byte-identical", () => {
+		expect(GraderSpec.safeParse({ type: "similarity", metric: "token-f1", threshold: 0 }).success).toBe(false);
+		expect(GraderSpec.safeParse({ type: "similarity", metric: "token-f1", threshold: 1.5 }).success).toBe(false);
+		expect(GraderSpec.safeParse({ type: "similarity", metric: "cosine", threshold: 0.5 }).success).toBe(false);
+		expect(GraderSpec.safeParse({ type: "similarity", metric: "levenshtein", threshold: 1 }).success).toBe(true);
+		expect(GraderSpec.safeParse({ type: "exact", normalize: "upper" }).success).toBe(false);
+		// `withReference` is an optional literal true, never a defaulted boolean.
+		expect(GraderSpec.safeParse({ type: "judge", rubric: "r", withReference: false }).success).toBe(false);
+
+		// The normalized spec of an existing grader gains no field, so the spec
+		// hashes inside old evidence and the suite hashes on disk cannot move.
+		const unchanged = [
+			{ type: "tool_called", tool: "bash", argsContains: "check" },
+			{ type: "output_contains", text: "жалоба", caseSensitive: false },
+			{ type: "output_matches", pattern: "ans.*" },
+			{ type: "judge", rubric: "ответ по существу" },
+		];
+		for (const spec of unchanged) {
+			expect(GraderSpec.parse(spec)).toEqual(spec);
+			expect(hashValue(GraderSpec.parse(spec))).toBe(hashValue(spec));
+		}
+		// A default only ever appears on the new specs.
+		expect(GraderSpec.parse({ type: "exact" })).toEqual({ type: "exact", normalize: "lower" });
 	});
 
 	it("loads reference answers, dialogue history and metadata, and scores them", () => {

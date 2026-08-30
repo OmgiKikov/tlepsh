@@ -512,6 +512,194 @@ ${options.judgeParams ?? ""}`,
 			await judgeMock.close();
 		}
 	}, 180_000);
+
+	const REFERENCE_TASKS = [
+		JSON.stringify({
+			id: "ref_pass",
+			input: "Вопрос про комиссию по своей карте",
+			expected: "Комиссия за переводы между своими счетами не взимается.",
+			graders: [{ type: "judge", rubric: "фактическая верность", withReference: true }],
+		}),
+		JSON.stringify({
+			id: "ref_fail",
+			input: "Вопрос про тарифы",
+			expected: "Тариф «Базовый» стоит 0 рублей.",
+			graders: [{ type: "judge", rubric: "фактическая верность", withReference: true }],
+		}),
+		JSON.stringify({
+			id: "rubric_only",
+			input: "Вопрос про сроки",
+			expected: "Возврат занимает тридцать дней.",
+			graders: [{ type: "judge", rubric: "ответ по существу сроков" }],
+		}),
+	].join("\n");
+
+	it("a withReference judge grades on the A–E rubric and never leaks the reference to a rubric-only judge", async () => {
+		const judgeMock = await startMockModel([
+			{
+				// The reference protocol asks for a choice, not a boolean.
+				match: ({ system, firstUser }) => system.includes("эталонным") && firstUser.includes("тарифы"),
+				steps: [{ text: '{"choice": "D", "reason": "названа другая цена"}' }],
+			},
+			{
+				match: ({ system }) => system.includes("эталонным"),
+				steps: [{ text: '{"choice": "A", "reason": "подмножество эталона"}' }],
+			},
+			{
+				match: ({ system }) => system.includes("грейдер"),
+				steps: [{ text: '{"passed": true, "reason": "по существу"}' }],
+			},
+			{ match: ({ firstUser }) => firstUser.includes("тарифы"), steps: [{ text: "Тариф «Базовый» стоит 300 рублей." }] },
+			{ match: ({ firstUser }) => firstUser.includes("сроки") || firstUser.includes("сроков"), steps: [{ text: "Тридцать дней." }] },
+			{ match: () => true, steps: [{ text: "Между своими счетами комиссии нет." }] },
+		]);
+		const dir = makeTargetFixture(baseFixtureFiles(judgeFixtureFiles(judgeMock.url, { tasks: REFERENCE_TASKS })));
+		const judgeRuns = join(dir, "..", `judge-reference-runs-${Date.now()}`);
+		try {
+			const result = await runSuite(loadTarget(dir), { runsRoot: judgeRuns, label: "solo", repetitions: 1 });
+			expect(result.summary).toMatchObject({ total: 3, pass: 2, fail: 1, error: 0 });
+
+			const runs = result.runIds.map((id) => JSON.parse(readFileSync(join(judgeRuns, id, "run.json"), "utf8")));
+			const byTask = Object.fromEntries(runs.map((run) => [run.taskId, run]));
+
+			// {A, B, C, E} pass, D fails, and the chosen branch is in the reason.
+			expect(byTask.ref_pass.evalResults.graders[0]).toMatchObject({
+				type: "judge",
+				passed: true,
+				score: 0.4,
+				reason: "A: подмножество эталона",
+				checkCode: "semantic-rubric",
+			});
+			expect(byTask.ref_fail.evalResults.graders[0]).toMatchObject({
+				passed: false,
+				score: 0,
+				reason: "D: названа другая цена",
+			});
+
+			// The reference and the rubric are delimited, and the sidecar records the choice.
+			const referencePrompt = JSON.parse(
+				readFileSync(join(judgeRuns, byTask.ref_pass.runId, "judge", "0.json"), "utf8"),
+			).request.body.messages[1].content;
+			expect(referencePrompt).toContain("<критерий>\nфактическая верность\n</критерий>");
+			expect(referencePrompt).toContain("<эталонный ответ>\nКомиссия за переводы между своими счетами не взимается.\n</эталонный ответ>");
+			expect(referencePrompt).toContain("<ответ агента>\nМежду своими счетами комиссии нет.\n</ответ агента>");
+			expect(JSON.parse(readFileSync(join(judgeRuns, byTask.ref_pass.runId, "judge", "0.verdict.json"), "utf8")))
+				.toEqual({ choice: "A", passed: true, score: 0.4 });
+
+			// A rubric-only judge never sees the case's reference answer.
+			const rubricOnly = JSON.parse(
+				readFileSync(join(judgeRuns, byTask.rubric_only.runId, "judge", "0.json"), "utf8"),
+			).request.body;
+			expect(rubricOnly.messages[1].content).not.toContain("Возврат занимает тридцать дней.");
+			expect(rubricOnly.messages[1].content).toBe(
+				"Критерий: ответ по существу сроков\n\nОбращение: Вопрос про сроки\n\nОтвет агента: Тридцать дней.",
+			);
+			expect(existsSync(join(judgeRuns, byTask.rubric_only.runId, "judge", "0.verdict.json"))).toBe(false);
+		} finally {
+			cleanup(dir);
+			cleanup(judgeRuns);
+			await judgeMock.close();
+		}
+	}, 180_000);
+});
+
+describe("dialogue cases", () => {
+	const DIALOGUE_TASKS = [
+		JSON.stringify({
+			id: "dialog_001",
+			input: "И для золотых клиентов?",
+			expected: "Для золотых клиентов — 60 дней.",
+			messages: [
+				{ role: "user", content: "Сколько длится возврат?" },
+				{ role: "assistant", content: "Тридцать дней." },
+				{ role: "user", content: "И для золотых клиентов?" },
+			],
+			graders: [
+				{ type: "exact" },
+				// Only in the seeded assistant turn: grading the reply alone must fail it.
+				{ type: "output_contains", text: "Тридцать" },
+			],
+		}),
+		JSON.stringify({
+			id: "single_001",
+			input: "Сколько длится возврат?",
+			graders: [{ type: "output_contains", text: "дней" }],
+		}),
+	].join("\n");
+
+	it("seeds every turn but the last and grades only the reply that follows", async () => {
+		const seen: { role: string; text: string }[][] = [];
+		const dialogueMock = await startMockModel([
+			{
+				resolve: (body) => {
+					seen.push(body.messages);
+					return { text: body.lastUser.includes("золотых") ? "Для золотых клиентов — 60 дней." : "Тридцать дней." };
+				},
+				steps: [],
+			},
+		]);
+		const dir = makeTargetFixture(baseFixtureFiles({
+			"manifest.yaml": `id: dialogue-target
+model:
+  provider: qwen-mock
+  id: mock
+  api: openai-completions
+  baseUrl: ${dialogueMock.url}
+  apiKeyEnv: MOCK_MODEL_KEY
+  thinkingLevel: "off"
+  timeoutMs: 60000
+instructions:
+  agentsMd: AGENTS.md
+skills: []
+evalSuite:
+  id: dialogue-suite
+  dataset: evals/development.jsonl
+  graders: evals/graders.yaml
+`,
+			"evals/development.jsonl": `${DIALOGUE_TASKS}\n`,
+		}));
+		const dialogueRuns = join(dir, "..", `dialogue-runs-${Date.now()}`);
+		try {
+			const result = await runSuite(loadTarget(dir), { runsRoot: dialogueRuns, label: "solo", repetitions: 1 });
+			const runs = result.runIds.map((id) => JSON.parse(readFileSync(join(dialogueRuns, id, "run.json"), "utf8")));
+			const byTask = Object.fromEntries(runs.map((run) => [run.taskId, run]));
+
+			// The model actually saw the conversation, not just the last question.
+			const dialogueRequest = seen.find((messages) =>
+				messages.some((message) => message.text.includes("золотых")));
+			const conversation = (dialogueRequest ?? []).filter((message) => message.role !== "system");
+			expect(conversation.map((message) => message.role)).toEqual(["user", "assistant", "user"]);
+			expect(conversation[0]?.text).toContain("Сколько длится возврат?");
+			expect(conversation[1]?.text).toBe("Тридцать дней.");
+			expect(conversation[2]?.text).toContain("И для золотых клиентов?");
+
+			// A single-message case still sends exactly one user turn.
+			const singleRequest = seen.find((messages) => messages === dialogueRequest ? false :
+				messages.some((message) => message.text.includes("Сколько длится возврат?")));
+			expect((singleRequest ?? []).filter((message) => message.role !== "system")).toHaveLength(1);
+
+			// Graded on the reply alone: the seeded turn's text is not the output.
+			expect(byTask.dialog_001.evalResults.graders.map((grader: { type: string; passed: boolean }) =>
+				[grader.type, grader.passed])).toEqual([["exact", true], ["output_contains", false]]);
+			expect(byTask.dialog_001.evalResults.graders[0].checkCode).toBe("reference-exact");
+
+			// The seeded turns are counted in metrics and present in the trace.
+			expect(byTask.dialog_001.metrics.seededTurns).toBe(2);
+			expect(Object.keys(byTask.single_001.metrics)).not.toContain("seededTurns");
+			const trace = openTrace(
+				join(dialogueRuns, byTask.dialog_001.runId),
+				"session.jsonl",
+				byTask.dialog_001.trace.sha256,
+			);
+			expect(trace.map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
+			expect(trace[1]?.text).toBe("Тридцать дней.");
+			expect(trace[3]?.text).toBe("Для золотых клиентов — 60 дней.");
+		} finally {
+			cleanup(dir);
+			cleanup(dialogueRuns);
+			await dialogueMock.close();
+		}
+	}, 180_000);
 });
 
 describe("target workspace isolation", () => {

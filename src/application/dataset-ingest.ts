@@ -292,6 +292,11 @@ function substituteGrader(grader: GraderSpec, resolve: (name: string) => string)
 			return { ...grader, ...named, pattern: substituted(grader.pattern) };
 		case "judge":
 			return { ...grader, ...named, rubric: substituted(grader.rubric) };
+		case "exact":
+		case "similarity":
+			// Reference graders carry no author text beyond their name; the answer
+			// they compare against is the case's own `expected` column.
+			return { ...grader, ...named };
 	}
 }
 

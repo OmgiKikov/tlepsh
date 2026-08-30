@@ -23,10 +23,10 @@ import {
 	type Skill,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { InMemoryCredentialStore, type AssistantMessage, type Message } from "@earendil-works/pi-ai";
 import type { ExecutionPolicyResult } from "../execution-policy.js";
 import { EXECUTION_POLICY_SESSION_OPTIONS } from "../execution-policy.js";
-import type { ResolvedTarget } from "../manifest.js";
+import type { DialogueMessage, ResolvedTarget } from "../manifest.js";
 import type { ExecutionFingerprint } from "../provenance.js";
 import { TargetToolBroker, type TargetToolSandboxBackend } from "./tool-broker.js";
 import { loadTargetTools, type ResolvedTargetTool } from "./tool-manifest.js";
@@ -279,10 +279,75 @@ export interface CreateTargetAgentSessionOptions {
 	apiKey: string;
 	/** Runtime-owned manager used by Pi session replacement flows. */
 	sessionManager?: SessionManager;
+	/**
+	 * Conversation to seed before the first prompt (a dialogue case's earlier
+	 * turns). Appended to the session manager, which is exactly how Pi restores
+	 * a conversation, so the turns are both in the trace and in the model's
+	 * context for the graded prompt.
+	 */
+	seedMessages?: readonly DialogueMessage[];
 	/** Forwarded when AgentSessionRuntime replaces an interactive session. */
 	sessionStartEvent?: SessionStartEvent;
 	/** Immutable host-captured resources reused by interactive replacement flows. */
 	resourceBundle?: TargetResourceBundle;
+}
+
+/** No usage: a seeded turn was never generated here and must not be billed. */
+const SEEDED_TURN_USAGE = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	totalTokens: 0,
+	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+} as const;
+
+/** One prior dialogue turn as the Pi session message it stands in for. */
+function seededSessionMessage(
+	turn: DialogueMessage,
+	model: ResolvedTarget["manifest"]["model"],
+): Message {
+	const timestamp = Date.now();
+	if (turn.role === "user") {
+		return { role: "user", content: [{ type: "text", text: turn.content }], timestamp };
+	}
+	return {
+		role: "assistant",
+		content: [{ type: "text", text: turn.content }],
+		// The manifest carries the api id as a string; Pi types it as a union.
+		api: model.api as AssistantMessage["api"],
+		provider: model.provider,
+		model: model.id,
+		usage: { ...SEEDED_TURN_USAGE, cost: { ...SEEDED_TURN_USAGE.cost } },
+		stopReason: "stop",
+		timestamp,
+	};
+}
+
+function messageText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter((part): part is { type: "text"; text: string } =>
+			typeof part === "object" && part !== null && (part as { type?: unknown }).type === "text")
+		.map((part) => part.text)
+		.join("");
+}
+
+/** The restored conversation must end with exactly the turns that were seeded. */
+function assertSeededHistory(
+	restored: readonly { role: string; content?: unknown }[],
+	seeded: readonly DialogueMessage[],
+): void {
+	const tail = restored.slice(-seeded.length);
+	const matches = tail.length === seeded.length &&
+		seeded.every((turn, index) =>
+			tail[index]?.role === turn.role && messageText(tail[index]?.content) === turn.content);
+	if (!matches) {
+		throw new Error(
+			`Target session restored ${restored.length} message(s) that do not end with the ${seeded.length} seeded dialogue turn(s)`,
+		);
+	}
 }
 
 /**
@@ -338,6 +403,13 @@ export async function createTargetAgentSession(options: CreateTargetAgentSession
 		},
 	});
 	const sessionManager = options.sessionManager ?? SessionManager.create(options.cwd, options.runDir);
+	// Seeded before construction: Pi restores a session manager that already has
+	// messages into agent.state.messages, so the history reaches the model with
+	// no runner surgery and stays in session.jsonl as ordinary evidence.
+	const seedMessages = options.seedMessages ?? [];
+	for (const turn of seedMessages) {
+		sessionManager.appendMessage(seededSessionMessage(turn, model));
+	}
 	const created = await createAgentSessionFromServices({
 		services,
 		sessionManager,
@@ -352,6 +424,9 @@ export async function createTargetAgentSession(options: CreateTargetAgentSession
 		customTools: [...options.executionPolicy.customTools, ...options.targetTools.customTools],
 	});
 	const { session } = created;
+	// A silently unseeded dialogue would grade the last turn out of context and
+	// still look like an ordinary answer, so the restore is checked, never assumed.
+	if (seedMessages.length > 0) assertSeededHistory(session.agent.state.messages, seedMessages);
 	session.agent.onPayload = (payload) => ({ ...(payload as Record<string, unknown>), ...model.params });
 	return { ...created, sessionManager, services, diagnostics: services.diagnostics };
 }
