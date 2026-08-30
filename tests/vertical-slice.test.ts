@@ -393,7 +393,7 @@ describe("vertical slice: evidence-backed improvement", () => {
 		expect(readFileSync(experiment.candidateRecordPath, "utf8")).not.toContain("PRIVATE HOLDOUT INPUT");
 
 		diagnoseEvalRun(runsRoot, experiment.candidate.evalRunId);
-		const reportPath = buildEvalReport(runsRoot, experiment.candidate.evalRunId);
+		const reportPath = buildEvalReport(runsRoot, experiment.candidate.evalRunId).path;
 		expect(readFileSync(reportPath, "utf8")).toContain("Trace inspector");
 		reviewCandidate({
 			runsRoot,

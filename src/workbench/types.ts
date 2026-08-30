@@ -162,6 +162,12 @@ export interface WorkbenchCandidateSummary {
 		gate: WorkbenchGateProjection | null;
 	} | null;
 	sealedHoldout: { executed: boolean; gatePassed: boolean; gate: WorkbenchGateProjection | null };
+	/**
+	 * How far the judge behind this evidence has been checked against a human.
+	 * Absent when the evidence leans on no judge grader; null when it does and
+	 * nobody has labelled that judge yet.
+	 */
+	judgeAgreement?: { agreement: number; kappa: number | null; labels: number } | null;
 	review: { experimentId: string; recommendation: "promote" | "reject"; reason: string } | null;
 	promotion: { tag: string; reason: string; at: string } | null;
 	rejection: { reason: string; at: string } | null;

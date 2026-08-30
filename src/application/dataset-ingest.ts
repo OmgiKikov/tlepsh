@@ -269,7 +269,8 @@ function graderTexts(grader: GraderSpec): string[] {
 			texts.push(grader.pattern);
 			break;
 		case "judge":
-			texts.push(grader.rubric);
+			if (grader.rubric !== undefined) texts.push(grader.rubric);
+			if (grader.assertions) texts.push(...grader.assertions);
 			break;
 	}
 	return texts;
@@ -291,7 +292,12 @@ function substituteGrader(grader: GraderSpec, resolve: (name: string) => string)
 		case "output_matches":
 			return { ...grader, ...named, pattern: substituted(grader.pattern) };
 		case "judge":
-			return { ...grader, ...named, rubric: substituted(grader.rubric) };
+			return {
+				...grader,
+				...named,
+				...(grader.rubric !== undefined ? { rubric: substituted(grader.rubric) } : {}),
+				...(grader.assertions ? { assertions: grader.assertions.map(substituted) } : {}),
+			};
 		case "exact":
 		case "similarity":
 			// Reference graders carry no author text beyond their name; the answer

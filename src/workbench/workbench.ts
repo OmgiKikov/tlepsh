@@ -94,6 +94,7 @@ import {
 	type BuilderProjectContext,
 } from "../builder/project-context.js";
 import { inspectCandidateImpact } from "../application/candidate-impact.js";
+import { judgeEvidenceCalibration } from "../application/judge-labels.js";
 import {
 	adoptTargetCandidate,
 	describeTargetAdoption,
@@ -144,6 +145,7 @@ import {
 	WorkbenchSubmitInputSchema,
 	WorkbenchViewQuerySchema,
 	type WorkbenchCandidateImpactProjection,
+	type WorkbenchCandidateSummary,
 	type WorkbenchConfirmation,
 	type WorkbenchDatasetCase,
 	type WorkbenchDecisionInput,
@@ -368,7 +370,12 @@ function datasetGrader(grader: WorkbenchDatasetCase["graders"][number]): Workben
 		case "output_matches":
 			return { ...grader, ...named, pattern: datasetText(grader.pattern) };
 		case "judge":
-			return { ...grader, ...named, rubric: datasetText(grader.rubric) };
+			return {
+				...grader,
+				...named,
+				...(grader.rubric !== undefined ? { rubric: datasetText(grader.rubric) } : {}),
+				...(grader.assertions ? { assertions: grader.assertions.map((item) => datasetText(item)) } : {}),
+			};
 		case "exact":
 		case "similarity":
 			return { ...grader, ...named };
@@ -478,6 +485,37 @@ export class AhdeWorkbench {
 			throw new WorkbenchStaleDecisionError(kind);
 		}
 		return inventory;
+	}
+
+	/**
+	 * One candidate as a human reads it, carrying how far the judge behind its
+	 * evidence has been checked. Like impact, this is a review aid: an
+	 * unreadable label store leaves the line off rather than blocking a decision.
+	 */
+	private candidateView(candidate: CandidateRecord): WorkbenchCandidateSummary {
+		const evaluated = candidate.events.find((event) => event.type === "evaluated");
+		if (evaluated?.type !== "evaluated") return candidateSummary(candidate);
+		try {
+			const calibration = judgeEvidenceCalibration({
+				runsRoot: this.runsRoot,
+				stateRoot: this.stateRoot,
+				projectId: this.projectId,
+				evalRunIds: [evaluated.evaluation.development.candidate.evalRunId],
+			});
+			if (calibration.specHashes.length === 0) return candidateSummary(candidate);
+			return candidateSummary(
+				candidate,
+				calibration.stats
+					? {
+						agreement: calibration.stats.agreement,
+						kappa: calibration.stats.kappa,
+						labels: calibration.stats.n,
+					}
+					: null,
+			);
+		} catch {
+			return candidateSummary(candidate);
+		}
 	}
 
 	/** Impact is a review aid; an unavailable projection never blocks a human decision. */
@@ -636,7 +674,7 @@ export class AhdeWorkbench {
 				const continuation = inventory.continuedCandidates.get(candidate.candidateId) ?? null;
 				content = {
 					kind: "candidate",
-					...candidateSummary(candidate),
+					...this.candidateView(candidate),
 					adoption: adoption
 						? { receiptId: adoption.receiptId, adoptedAt: adoption.adoptedAt, branch: adoption.intent.subject.branch.name }
 						: null,
@@ -661,7 +699,7 @@ export class AhdeWorkbench {
 				const candidate = requireCandidate(inventory, ["proposed", "built", "validated", "evaluated", "reviewed"]);
 				content = {
 					kind: "candidate",
-					...candidateSummary(candidate),
+					...this.candidateView(candidate),
 					adoption: null,
 					continuation: null,
 					impact: this.candidateImpact(candidate),
@@ -1563,7 +1601,7 @@ export class AhdeWorkbench {
 
 		if (input.kind === "review-candidate") {
 			const candidate = requireCandidate(inventory, ["evaluated"], input.candidateId);
-			const before = { operation: "review-candidate", candidateHash: hashValue(candidate), candidate: candidateSummary(candidate), recommendation: input.recommendation };
+			const before = { operation: "review-candidate", candidateHash: hashValue(candidate), candidate: this.candidateView(candidate), recommendation: input.recommendation };
 			const actor = await this.confirm(input, gate, "Record exact candidate review", before, options.signal);
 			const current = this.decisionInventory(input.kind);
 			const after = requireCandidate(current, ["evaluated"], candidate.candidateId);
@@ -1575,11 +1613,11 @@ export class AhdeWorkbench {
 
 		if (input.kind === "promote-candidate") {
 			const candidate = requireCandidate(inventory, ["reviewed"], input.candidateId);
-			const before = { operation: "promote-candidate", candidateHash: hashValue(candidate), candidate: candidateSummary(candidate), version: input.version, tag: `v${input.version}` };
+			const before = { operation: "promote-candidate", candidateHash: hashValue(candidate), candidate: this.candidateView(candidate), version: input.version, tag: `v${input.version}` };
 			const actor = await this.confirm(input, gate, "Promote exact candidate", before, options.signal);
 			const current = this.decisionInventory(input.kind);
 			if (hashValue(requireCandidate(current, ["reviewed"], candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
-			const promoted = this.dependencies.promoteCandidate({ repositoryDir: this.projectDir, runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, version: input.version, reason: input.reason, actorId: actor, now: this.dependencies.now });
+			const promoted = this.dependencies.promoteCandidate({ repositoryDir: this.projectDir, runsRoot: this.runsRoot, stateRoot: this.stateRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, version: input.version, reason: input.reason, actorId: actor, now: this.dependencies.now });
 			const settled = this.select("candidate", promoted.record.candidateId);
 			return { kind: input.kind, message: `Candidate promoted as ${promoted.tag}. Adopt it to make it the active Target.`, result: { candidate: candidateSummary(promoted.record), tag: promoted.tag, candidateSha: promoted.candidateSha }, view: await this.viewOf(settled) };
 		}

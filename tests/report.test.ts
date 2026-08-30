@@ -660,7 +660,7 @@ describe("static evidence report", () => {
 
 	it("atomically publishes an owner-only, self-contained HTML file", () => {
 		const value = fixture();
-		const output = buildEvalReport(value.runsRoot, value.evalRunId);
+		const output = buildEvalReport(value.runsRoot, value.evalRunId).path;
 		const html = readFileSync(output, "utf8");
 		expect(html).toContain("const DATA=");
 		expect(html).not.toMatch(/<script[^>]+src=/);

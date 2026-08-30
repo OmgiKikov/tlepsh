@@ -29,10 +29,33 @@ export const OutputMatchesGrader = z.strictObject({
 	pattern: z.string(),
 });
 
+/** One rubric may carry at most this many isolated yes/no assertions. */
+export const MAX_JUDGE_ASSERTIONS = 12;
+export const MAX_JUDGE_ASSERTION_CHARS = 500;
+/** Jurors per judge grader. Odd sizes decide; an even jury can only tie. */
+export const MAX_JUDGE_JURY = 5;
+
 export const JudgeGrader = z.strictObject({
 	type: z.literal("judge"),
 	name: z.string().optional(),
-	rubric: z.string().min(1),
+	/** Free-prose criterion. Optional only because `assertions` can carry it. */
+	rubric: z.string().min(1).optional(),
+	/**
+	 * Isolated yes/no checks, one behaviour each. The judge answers every one
+	 * with yes/no/unknown plus its evidence; unknown counts as no, and the
+	 * grader passes only when every assertion is yes.
+	 *
+	 * Optional rather than defaulted for the same reason as `withReference`:
+	 * canonical JSON drops an absent field, so every judge grader written
+	 * before assertions existed keeps its exact spec hash and suite hash.
+	 */
+	assertions: z
+		.array(z.string().min(1).max(MAX_JUDGE_ASSERTION_CHARS))
+		.min(1)
+		.max(MAX_JUDGE_ASSERTIONS)
+		.optional(),
+	/** Independent judge calls whose majority decides. Absent means one juror. */
+	jury: z.number().int().min(1).max(MAX_JUDGE_JURY).optional(),
 	/**
 	 * Show the judge the case's reference answer and grade on the A–E factuality
 	 * rubric instead of the rubric alone.
@@ -43,6 +66,26 @@ export const JudgeGrader = z.strictObject({
 	 * would silently rewrite both.
 	 */
 	withReference: z.literal(true).optional(),
+}).superRefine((spec, context) => {
+	if (spec.rubric === undefined && spec.assertions === undefined) {
+		context.addIssue({
+			code: "custom",
+			path: ["assertions"],
+			message: "a judge grader needs a rubric, assertions, or both",
+		});
+	}
+	if (spec.assertions && new Set(spec.assertions).size !== spec.assertions.length) {
+		context.addIssue({ code: "custom", path: ["assertions"], message: "assertions must be unique" });
+	}
+	// The A–E factuality rubric is one protocol with one answer; asking the same
+	// call for per-assertion verdicts would be two contracts in one response.
+	if (spec.assertions && spec.withReference) {
+		context.addIssue({
+			code: "custom",
+			path: ["withReference"],
+			message: "withReference grades on the A–E factuality rubric and cannot be combined with assertions",
+		});
+	}
 });
 
 /** How both sides are normalized before an exact comparison. */
@@ -294,7 +337,7 @@ export type ExecutionPolicyBlock = z.infer<typeof ExecutionPolicyBlock>;
 
 const RESERVED_MODEL_PARAMS = new Set(["model", "messages", "stream", "tools"]);
 
-export const ModelBlock = z.strictObject({
+const ModelBlockShape = z.strictObject({
 	provider: z.string().min(1),
 	id: z.string().min(1),
 	api: z.string().min(1),
@@ -305,7 +348,12 @@ export const ModelBlock = z.strictObject({
 	params: z.record(z.string(), z.unknown()).default({}),
 	/** Full model definition passthrough for the generated models.json. */
 	spec: ModelSpec.default(ModelSpec.parse({})),
-}).superRefine((model, context) => {
+});
+
+function reservedModelParams(
+	model: { params: Record<string, unknown> },
+	context: z.RefinementCtx,
+): void {
 	for (const key of Object.keys(model.params)) {
 		if (RESERVED_MODEL_PARAMS.has(key)) {
 			context.addIssue({
@@ -315,7 +363,9 @@ export const ModelBlock = z.strictObject({
 			});
 		}
 	}
-});
+}
+
+export const ModelBlock = ModelBlockShape.superRefine(reservedModelParams);
 
 /**
  * The judge is a measuring instrument: eval.ts pins it to temperature 0 after
@@ -325,17 +375,34 @@ export const ModelBlock = z.strictObject({
  */
 const RESERVED_JUDGE_PARAMS = new Set(["temperature"]);
 
-export const JudgeModelBlock = ModelBlock.superRefine((model, context) => {
-	for (const key of Object.keys(model.params)) {
-		if (RESERVED_JUDGE_PARAMS.has(key)) {
-			context.addIssue({
-				code: "custom",
-				path: ["params", key],
-				message: `evalSuite.judge.params cannot set "${key}": the judge is pinned to temperature 0 so grading is deterministic`,
-			});
-		}
-	}
+/**
+ * Promotion policy for judge-graded evidence: how well this project's judge
+ * must agree with its human labels (`ahde label`) before evidence that leans on
+ * it may be promoted. Absent by default — measuring agreement is worth doing
+ * long before it is worth blocking on.
+ */
+export const JudgeCalibrationPolicy = z.strictObject({
+	/** Lowest human/judge agreement rate that still promotes. */
+	minAgreement: z.number().min(0).max(1),
+	/** Fewest labels that make that rate mean anything. */
+	minLabels: z.number().int().positive().max(100_000),
 });
+export type JudgeCalibrationPolicy = z.infer<typeof JudgeCalibrationPolicy>;
+
+export const JudgeModelBlock = ModelBlockShape
+	.extend({ requireCalibration: JudgeCalibrationPolicy.optional() })
+	.superRefine(reservedModelParams)
+	.superRefine((model, context) => {
+		for (const key of Object.keys(model.params)) {
+			if (RESERVED_JUDGE_PARAMS.has(key)) {
+				context.addIssue({
+					code: "custom",
+					path: ["params", key],
+					message: `evalSuite.judge.params cannot set "${key}": the judge is pinned to temperature 0 so grading is deterministic`,
+				});
+			}
+		}
+	});
 
 export const TargetManifest = z.strictObject({
 	id: z
@@ -586,7 +653,15 @@ export function suiteHashOf(
 	defaults: readonly GraderSpec[],
 	judge: TargetManifest["evalSuite"]["judge"] | null,
 ): string {
-	return hashValue({ dataset: tasks.map(datasetIdentity), defaults, judge });
+	// The calibration policy governs promotion, not measurement: canonical JSON
+	// drops the undefined, so setting or lifting it never invalidates evidence
+	// produced by the identical judge. Every caller (loadTarget, regrade) hashes
+	// through here so a regrade and a live run agree on the suite identity.
+	return hashValue({
+		dataset: tasks.map(datasetIdentity),
+		defaults,
+		judge: judge ? { ...judge, requireCalibration: undefined } : null,
+	});
 }
 
 const MAX_DATA_ENTRY_SAMPLE = 32;
@@ -747,7 +822,10 @@ function graderDetail(spec: GraderSpec): string {
 		case "output_contains":
 			return `"${spec.text.slice(0, 24)}"`;
 		case "judge":
-			return `"${spec.rubric.slice(0, 24)}"${spec.withReference ? "+reference" : ""}`;
+			return `"${(spec.rubric ?? spec.assertions?.join(" · ") ?? "").slice(0, 24)}"` +
+				`${spec.assertions ? `+${spec.assertions.length}assertions` : ""}` +
+				`${spec.jury && spec.jury > 1 ? `+jury${spec.jury}` : ""}` +
+				`${spec.withReference ? "+reference" : ""}`;
 		case "output_matches":
 			return `/${spec.pattern.slice(0, 24)}/`;
 		case "exact":

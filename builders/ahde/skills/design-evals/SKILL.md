@@ -27,9 +27,20 @@ bar.
    `[Цц]`-style classes); `judge` graders run only when the Target manifest
    configures a judge model, so prefer `output_contains`, `output_matches`,
    and `tool_called` unless the operator has set one up.
-5. Keep development and sealed holdout corpora distinct. Never request or
+5. When a judge grader is right for a case, write `assertions` — concrete
+   yes/no checks, one behaviour each ("the answer states the refund window in
+   days") — rather than a paragraph of prose. The judge answers each one
+   separately and may answer `unknown` when the answer does not say; unknown
+   counts as a failure, so it costs nothing to let it be honest. Keep `rubric`
+   for shared context, and offer a `jury: 3` on a sealed set or wherever a
+   single verdict would decide a promotion: three independent judges, majority
+   decides, a tie fails. After the first judge-graded run, tell the operator to
+   run `ahde label <eval-run-id> --target .` — it shows them the answers blind
+   and reports how far their judge agrees with them. A rubric nobody has
+   checked against a human is a guess with a token cost.
+6. Keep development and sealed holdout corpora distinct. Never request or
    reveal sealed examples.
-6. Submit the initial basket with `ahde_workbench_submit` using
+7. Submit the initial basket with `ahde_workbench_submit` using
    `kind: corpus-draft`. If the operator provides a JSONL file in the private
    project-local `imports/` inbox, use `kind: corpus-import`; AHDE validates it,
    keeps the inbox outside Target/eval workspaces, discards caller-owned task ids,
@@ -37,7 +48,7 @@ bar.
    the result with `kind: corpus-revision` semantic
    add/replace/remove/set-graders/grader.add/grader.update/grader.remove/rename/
    set-notes operations; every revision is immutable.
-7. For any other data the operator drops in `imports/` — a CSV or TSV export, a
+8. For any other data the operator drops in `imports/` — a CSV or TSV export, a
    JSON or JSONL dump, a markdown table, a text file, a chat export — the flow
    is: file in `imports/` → preview → propose a recipe → the host shows sample
    cases → the human confirms → sealed slice is reserved by the host, never seen
@@ -57,15 +68,15 @@ bar.
    first, publishes it out of your reach, and hands you back only a draft plus a
    count of how many cases were held out. A file that already has a sealed slice
    keeps it: later previews and imports of the same file replay that exact draw.
-8. Inspect `ahde_workbench_view` with `aspect: review`; the host renders the
+9. Inspect `ahde_workbench_view` with `aspect: review`; the host renders the
    exact bounded task set, so add one line on what this basket does and does
    not cover, then request `ahde_workbench_decide` with
    `kind: publish-corpus`. The host confirmation publishes an immutable
    development corpus and lineage receipt; there is no Builder surface for
    authoring sealed content.
-9. Use repeated runs for nondeterministic behavior and call out insufficient
-   sample size or flaky results.
-10. To turn an observed failure into coverage, use `add-case-from-run` only with
+10. Use repeated runs for nondeterministic behavior and call out insufficient
+    sample size or flaky results.
+11. To turn an observed failure into coverage, use `add-case-from-run` only with
     an exact failed development EvalRun/Run returned by Workbench. Author a new
     neighboring task rather than duplicating the source case. AHDE verifies the
     run, trace hash, source input, Target/corpus lineage, and persists only

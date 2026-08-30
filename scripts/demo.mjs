@@ -233,7 +233,7 @@ try {
 		actorId: "demo-user",
 	});
 	diagnoseEvalRun(runsRoot, experiment.candidate.evalRunId);
-	const reportPath = buildEvalReport(runsRoot, experiment.candidate.evalRunId);
+	const reportPath = buildEvalReport(runsRoot, experiment.candidate.evalRunId).path;
 	console.log(`tag ${promotion.tag} → ${promotion.candidateSha.slice(0, 12)}`);
 	console.log(`report: ${reportPath}`);
 

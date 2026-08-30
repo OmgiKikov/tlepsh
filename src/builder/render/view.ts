@@ -182,6 +182,16 @@ function comparisonLines(
 	return lines;
 }
 
+/** One line about the instrument: how far this judge matches a human's eyes. */
+export function judgeAgreementLine(
+	calibration: NonNullable<WorkbenchCandidateSummary["judgeAgreement"]> | null,
+	paint: Paint,
+): string {
+	if (!calibration) return `${paint.dim("Judge")} ${paint.warning("not calibrated")} ${paint.dim("· ahde label")}`;
+	const kappa = calibration.kappa === null ? "κ n/a" : `κ ${calibration.kappa.toFixed(2)}`;
+	return `${paint.dim("Judge")} agreement ${percent(calibration.agreement)} ${paint.dim("·")} ${kappa} ${paint.dim(`· n=${calibration.labels}`)}`;
+}
+
 export function renderCandidate(
 	candidate: WorkbenchCandidateSummary & {
 		adoption?: { receiptId: string; adoptedAt: string; branch: string } | null;
@@ -208,6 +218,7 @@ export function renderCandidate(
 			: (candidate.sealedHoldout.gatePassed ? paint.success("gate passed") : paint.error("legacy evidence — not promotable")))
 		: paint.muted("not executed")}`);
 	if (sealedGate && sealedGate.verdict !== "pass") lines.push(`  ${paint.muted(oneLine(sealedGate.reasons[0] ?? "", 160))}`);
+	if (candidate.judgeAgreement !== undefined) lines.push(judgeAgreementLine(candidate.judgeAgreement, paint));
 	lines.push(...renderImpact(candidate.impact ?? null, paint));
 	if (candidate.review) {
 		const tone = candidate.review.recommendation === "promote" ? paint.success : paint.error;

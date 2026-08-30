@@ -81,7 +81,11 @@ export function diagnosisSummary(record: DiagnosisRecord): WorkbenchDiagnosisSum
 	};
 }
 
-export function candidateSummary(record: CandidateRecord): WorkbenchCandidateSummary {
+export function candidateSummary(
+	record: CandidateRecord,
+	/** Judge calibration for the evidence this candidate rests on, when it uses one. */
+	judgeAgreement?: WorkbenchCandidateSummary["judgeAgreement"],
+): WorkbenchCandidateSummary {
 	const evaluated = record.events.find((event) => event.type === "evaluated");
 	const reviewed = record.events.find((event) => event.type === "reviewed");
 	const built = record.events.find((event) => event.type === "built");
@@ -111,6 +115,7 @@ export function candidateSummary(record: CandidateRecord): WorkbenchCandidateSum
 				gate: gateProjection(evaluated.evaluation.sealedHoldout?.comparison),
 			}
 			: { executed: false, gatePassed: false, gate: null },
+		...(judgeAgreement === undefined ? {} : { judgeAgreement }),
 		review: reviewed?.type === "reviewed" ? reviewed.review : null,
 		promotion: promoted?.type === "promoted"
 			? { tag: promoted.decision.tag, reason: promoted.decision.reason, at: promoted.at }
