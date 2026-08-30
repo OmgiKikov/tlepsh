@@ -7,11 +7,12 @@ import {
 	collectJudgeLabelSubjects,
 	importJudgeLabels,
 	judgeEvidenceCalibration,
+	judgeFingerprintHashOf,
 	judgeLabelFilePath,
+	type JudgeLabelRow,
 	loadJudgeCalibration,
 	readProjectJudgeLabels,
 	runJudgeLabelSession,
-	type JudgeLabelRow,
 } from "../src/application/judge-labels.js";
 import { judgeCalibrationRefusal } from "../src/domain/judge-agreement.js";
 import { writeEvalRun, type EvalRunRecord } from "../src/eval.js";
@@ -20,6 +21,7 @@ import {
 	RunRecordSchema,
 	hashFile,
 	hashValue,
+	modelFingerprint,
 	provenanceAxes,
 	type RunRecord,
 } from "../src/provenance.js";
@@ -95,7 +97,18 @@ function evidence(options: { tasks?: number; sealed?: boolean } = {}): EvidenceF
 	const provenance = provenanceAxes({
 		runtime: first.runtime,
 		model: first.model,
-		judge: null,
+		// Judge-graded evidence always records the judge that graded it; the
+		// labels below certify that exact instrument, not the rubric alone.
+		judge: modelFingerprint({
+			provider: "test",
+			id: "test-judge",
+			api: "openai-completions",
+			baseUrl: "https://example.invalid/v1",
+			apiKeyEnv: "TEST_JUDGE_KEY",
+			thinkingLevel: "off",
+			params: {},
+			spec: {},
+		}),
 		execution: first.execution,
 		eval: first.eval,
 	});
@@ -275,6 +288,8 @@ describe("calibration on the screens", () => {
 				taskId: `task-${index % 2}`,
 				graderIndex: 1,
 				graderSpecHash: SPEC_A,
+				// A label certifies one rubric as answered by one judge.
+				judgeFingerprintHash: judgeFingerprintHashOf(value.runsRoot, value.evalRunId) ?? undefined,
 				human,
 				judge,
 				at,
@@ -315,6 +330,7 @@ describe("calibration on the screens", () => {
 			taskId: "task-0",
 			graderIndex: 1,
 			graderSpecHash: SPEC_B,
+			judgeFingerprintHash: judgeFingerprintHashOf(value.runsRoot, value.evalRunId) ?? undefined,
 			human: "pass",
 			judge: "pass",
 			at,
@@ -328,6 +344,43 @@ describe("calibration on the screens", () => {
 		});
 		expect(calibration.specHashes).toEqual([SPEC_A]);
 		expect(calibration.stats?.n).toBe(4);
+	});
+
+	/**
+	 * Regression: labels were keyed on the rubric alone. Swap the judge model and
+	 * the rubric hash does not move, so yesterday's labels vouched for a judge
+	 * nobody had ever read — exactly the number the promotion policy trusts.
+	 */
+	it("does not let labels for one judge certify a different judge", () => {
+		const value = evidence({ tasks: 2 });
+		label(value, "pass", "pass", 6);
+		const own = judgeEvidenceCalibration({
+			runsRoot: value.runsRoot,
+			stateRoot: value.stateRoot,
+			projectId: value.projectId,
+			evalRunIds: [value.evalRunId],
+		});
+		expect(own.stats?.n).toBe(6);
+
+		// The same rubric, answered by a judge nobody labelled.
+		appendJudgeLabels(value.stateRoot, value.projectId, value.evalRunId, [{
+			runId: "run-0",
+			taskId: "task-0",
+			graderIndex: 1,
+			graderSpecHash: SPEC_A,
+			judgeFingerprintHash: `sha256:${"f".repeat(64)}`,
+			human: "fail",
+			judge: "pass",
+			at,
+		}]);
+		const unchanged = judgeEvidenceCalibration({
+			runsRoot: value.runsRoot,
+			stateRoot: value.stateRoot,
+			projectId: value.projectId,
+			evalRunIds: [value.evalRunId],
+		});
+		expect(unchanged.stats?.n).toBe(6);
+		expect(unchanged.stats?.agreement).toBe(1);
 	});
 });
 

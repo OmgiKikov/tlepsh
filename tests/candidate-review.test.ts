@@ -36,6 +36,7 @@ import {
 	RunRecordSchema,
 	canonicalJson,
 	executionFingerprint,
+	modelFingerprint,
 	hashValue,
 	provenanceAxes,
 	type ExecutionFingerprint,
@@ -43,7 +44,7 @@ import {
 } from "../src/provenance.js";
 import { readJsonArtifact, writeJsonArtifact, writeTextArtifact } from "../src/storage/artifacts.js";
 import { baseFixtureFiles } from "./fixtures.js";
-import { appendJudgeLabels } from "../src/application/judge-labels.js";
+import { appendJudgeLabels, judgeFingerprintHashOf } from "../src/application/judge-labels.js";
 
 const roots: string[] = [];
 const baselineSha = "a".repeat(40);
@@ -124,7 +125,20 @@ function writePair(
 	const provenance = provenanceAxes({
 		runtime,
 		model,
-		judge: null,
+		// A judge-graded pair records the judge that graded it; labels certify that
+		// exact instrument, so the fixture must carry one when it grades by judge.
+		judge: judgeSpecHash
+			? modelFingerprint({
+				provider: "test",
+				id: "test-judge",
+				api: "openai-completions",
+				baseUrl: "https://example.invalid/v1",
+				apiKeyEnv: "TEST_JUDGE_KEY",
+				thinkingLevel: "off",
+				params: {},
+				spec: {},
+			})
+			: null,
 		execution,
 		eval: { suiteHash, datasetHash },
 	});
@@ -837,6 +851,7 @@ describe("candidate human review", () => {
 			taskId: `development-task-${index}`,
 			graderIndex: 1,
 			graderSpecHash: judgeSpec,
+			judgeFingerprintHash: judgeFingerprintHashOf(value.runsRoot, "eval-candidate") ?? undefined,
 			human: "pass" as const,
 			judge: "pass" as const,
 			at,
@@ -848,6 +863,7 @@ describe("candidate human review", () => {
 			taskId: "development-task-3",
 			graderIndex: 1,
 			graderSpecHash: judgeSpec,
+			judgeFingerprintHash: judgeFingerprintHashOf(value.runsRoot, "eval-candidate") ?? undefined,
 			human: "pass" as const,
 			judge: "pass" as const,
 			at,

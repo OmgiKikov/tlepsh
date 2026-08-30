@@ -43,6 +43,13 @@ export const JudgeLabelRowSchema = z.strictObject({
 	graderIndex: z.number().int().nonnegative().max(63),
 	/** Identity of the normalized grader spec, so a label survives a re-run. */
 	graderSpecHash: z.string().regex(HASH_PATTERN),
+	/**
+	 * Which judge this human actually checked. The rubric alone is not the
+	 * instrument: swap the judge model and the spec hash is unchanged, so labels
+	 * keyed on the spec alone would vouch for a judge nobody has ever read.
+	 * Absent on labels written before this was recorded — those certify nothing.
+	 */
+	judgeFingerprintHash: z.string().regex(HASH_PATTERN).optional(),
 	human: z.enum(["pass", "fail"]),
 	judge: z.enum(["pass", "fail"]),
 	note: z.string().min(1).max(MAX_LABEL_NOTE_CHARS).optional(),
@@ -141,6 +148,16 @@ export function loadJudgeCalibration(stateRoot: string, projectId: string): Judg
 }
 
 /** Judge grader specs that actually graded one eval run's runs. */
+/**
+ * Hash of the judge model an eval run was graded by, or null when it used none.
+ * This is the second half of a label's identity: the rubric says what was
+ * asked, this says who answered.
+ */
+export function judgeFingerprintHashOf(runsRoot: string, evalRunId: string): string | null {
+	const judge = loadVerifiedEvalRun(runsRoot, EvalRunIdSchema.parse(evalRunId)).record.provenance.judge;
+	return judge ? hashValue(judge) : null;
+}
+
 export function judgeGraderSpecHashes(runsRoot: string, evalRunId: string): string[] {
 	const hashes = new Set<string>();
 	for (const run of loadVerifiedEvalRun(runsRoot, EvalRunIdSchema.parse(evalRunId)).runs) {
@@ -175,8 +192,17 @@ export function judgeEvidenceCalibration(options: {
 	)].sort();
 	if (specHashes.length === 0) return { specHashes, stats: null };
 	const wanted = new Set(specHashes);
+	// A label certifies one rubric AS ANSWERED BY ONE JUDGE. Evidence graded by a
+	// judge nobody labelled is uncalibrated even when the rubric is old and
+	// well-labelled — that is the whole point of measuring the instrument.
+	const judges = new Set(
+		options.evalRunIds
+			.map((evalRunId) => judgeFingerprintHashOf(options.runsRoot, evalRunId))
+			.filter((hash): hash is string => hash !== null),
+	);
 	const rows = readProjectJudgeLabels(options.stateRoot, options.projectId)
-		.filter((row) => wanted.has(row.graderSpecHash));
+		.filter((row) => wanted.has(row.graderSpecHash))
+		.filter((row) => row.judgeFingerprintHash !== undefined && judges.has(row.judgeFingerprintHash));
 	return { specHashes, stats: rows.length === 0 ? null : judgeAgreement(rows).pooled };
 }
 
@@ -318,6 +344,7 @@ export function importJudgeLabels(options: ImportJudgeLabelsOptions): JudgeLabel
 		...(options.sealedDatasetHashes ? { sealedDatasetHashes: options.sealedDatasetHashes } : {}),
 	});
 	const byKey = new Map(subjects.map((subject) => [`${subject.runId} ${subject.graderIndex}`, subject]));
+	const judgeFingerprint = judgeFingerprintHashOf(options.runsRoot, options.evalRunId);
 	const parsed = readJsonlArtifact(resolve(options.filePath), JudgeLabelImportRowSchema, {
 		maxBytes: MAX_LABEL_FILE_BYTES,
 		maxRecords: MAX_LABEL_RECORDS,
@@ -348,6 +375,7 @@ export function importJudgeLabels(options: ImportJudgeLabelsOptions): JudgeLabel
 			taskId: row.taskId,
 			graderIndex: row.graderIndex,
 			graderSpecHash: row.graderSpecHash,
+			...(judgeFingerprint === null ? {} : { judgeFingerprintHash: judgeFingerprint }),
 			human: row.human,
 			judge: subject.judge,
 			...(row.note ? { note: row.note } : {}),
@@ -394,6 +422,7 @@ export async function runJudgeLabelSession(
 		...(options.sealedDatasetHashes ? { sealedDatasetHashes: options.sealedDatasetHashes } : {}),
 	});
 	const now = options.now ?? (() => new Date().toISOString());
+	const judgeFingerprint = judgeFingerprintHashOf(options.runsRoot, options.evalRunId);
 	const rows: JudgeLabelRow[] = [];
 	let skipped = 0;
 	for (const [offset, subject] of subjects.entries()) {
@@ -408,6 +437,7 @@ export async function runJudgeLabelSession(
 			taskId: subject.taskId,
 			graderIndex: subject.graderIndex,
 			graderSpecHash: subject.graderSpecHash,
+			...(judgeFingerprint === null ? {} : { judgeFingerprintHash: judgeFingerprint }),
 			human: answer.answer,
 			judge: subject.judge,
 			...(answer.note?.trim() ? { note: answer.note.trim().slice(0, MAX_LABEL_NOTE_CHARS) } : {}),
