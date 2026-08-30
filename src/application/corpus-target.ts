@@ -198,6 +198,57 @@ export function resolveDevelopmentTargetForEval(options: {
 }
 
 /**
+ * Reconstruct the exact case set an immutable eval scored, so its recorded
+ * traces can be re-graded.
+ *
+ * Unlike {@link resolveDevelopmentTargetForEval} this deliberately ignores the
+ * Target revision and the recorded suite hash: changing the graders is the whole
+ * point of a regrade, and editing `evals/graders.yaml` already makes the
+ * checkout dirty. Only the cases themselves — dataset label and dataset hash —
+ * must be the exact ones the recorded traces answered.
+ */
+export function resolveScoredCasesForEval(options: {
+	target: ResolvedTarget;
+	evalRun: Pick<EvalRunRecord, "target" | "dataset" | "datasetHash">;
+	stateRoot: string;
+	projectId: string;
+}): { target: ResolvedTarget; corpus: LoadedCorpus | null } {
+	const { target, evalRun } = options;
+	if (target.manifest.id !== evalRun.target.id) {
+		throw new Error(`evidence belongs to target ${evalRun.target.id}, not ${target.manifest.id}`);
+	}
+	const surface = targetEvalSurface(target);
+	if (surface.dataset === evalRun.dataset && surface.datasetHash === evalRun.datasetHash) {
+		return { target, corpus: null };
+	}
+	const matches = listCorpora({ stateRoot: options.stateRoot, projectId: options.projectId })
+		.filter((metadata) => (
+			metadata.visibility === "development" &&
+			corpusDatasetLabel("development", metadata.id) === evalRun.dataset &&
+			metadata.hash === evalRun.datasetHash
+		));
+	if (matches.length !== 1) {
+		throw new Error(
+			"cannot reconstruct the exact scored cases from the target manifest or a published corpus: " +
+				`${evalRun.dataset}/${evalRun.datasetHash}`,
+		);
+	}
+	const corpus = loadCorpus({
+		stateRoot: options.stateRoot,
+		projectId: options.projectId,
+		corpusId: matches[0]!.id,
+	});
+	const resolved = targetWithDevelopmentCorpus(target, corpus);
+	if (resolved.datasetHash !== evalRun.datasetHash) {
+		throw new Error(
+			`published development corpus ${corpus.metadata.id} does not carry the scored cases: ` +
+				`expected ${evalRun.datasetHash}, got ${resolved.datasetHash}`,
+		);
+	}
+	return { target: resolved, corpus };
+}
+
+/**
  * Reject graders the current Target could never run *before* a draft or a
  * publication is persisted. Composition (`targetWithDevelopmentCorpus`) makes
  * the same checks later; this earlier, model-readable failure keeps a bad

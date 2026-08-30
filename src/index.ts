@@ -35,6 +35,7 @@ export * from "./execution-policy.js";
 export * from "./git/experiment-worktree.js";
 export * from "./manifest.js";
 export * from "./provenance.js";
+export * from "./regrade.js";
 export * from "./report.js";
 export * from "./run-events.js";
 export * from "./runner.js";

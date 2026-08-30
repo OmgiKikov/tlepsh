@@ -23,6 +23,7 @@ export const CLI_COMMANDS = [
 	"tool",
 	"compare",
 	"diagnose",
+	"regrade",
 	"report",
 	"candidate",
 	"calibrate",
@@ -83,6 +84,11 @@ const COMMAND_SPECS = {
 	},
 	compare: { flags: [], positionals: 2 },
 	diagnose: { flags: [], positionals: 1 },
+	regrade: {
+		flags: ["target", "graders", "label", "jobs", "project"],
+		requiredFlags: ["target"],
+		positionals: 1,
+	},
 	report: { flags: ["out"], positionals: 1 },
 	candidate: {
 		flags: [
@@ -252,7 +258,9 @@ function assertIntegerFlag(
 }
 
 function validateSharedFlagValues(flags: Readonly<Record<string, string>>, context: string): void {
-	assertEnumFlag(flags, "label", ["baseline", "solo"], context);
+	// `regrade` is the one label no model call can produce, so only the command
+	// that re-scores recorded traces may ask for it.
+	assertEnumFlag(flags, "label", context === "regrade" ? ["baseline", "solo", "regrade"] : ["baseline", "solo"], context);
 	assertEnumFlag(flags, "visibility", ["development", "sealed"], context);
 	assertEnumFlag(flags, "recommend", ["promote", "reject"], context);
 	assertIntegerFlag(flags, "port", context, { minimum: 0, maximum: 65_535 });

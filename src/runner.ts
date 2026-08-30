@@ -105,7 +105,8 @@ export const FINAL_ANSWER_RECOVERY_PROMPT =
  */
 let runSequence = 0;
 
-function newRunId(): string {
+/** The one run-id minter. `ahde regrade` shares it so a derived run cannot collide. */
+export function newRunId(): string {
 	runSequence += 1;
 	return `run_${Date.now().toString(36)}${runSequence.toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
