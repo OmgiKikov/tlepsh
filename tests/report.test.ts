@@ -236,6 +236,69 @@ function sealedBaselineFixture(): { runsRoot: string; evalRunId: string; sealedE
 	return { ...value, sealedEvalRunId };
 }
 
+/**
+ * A comparable development pair whose graders score fractionally: both arms
+ * miss the threshold, so only the mean score moves. The candidate also costs
+ * more and answers faster, so the resource fragment has something to say.
+ */
+function comparedFixture(): { runsRoot: string; evalRunId: string; baselineEvalRunId: string } {
+	const value = fixture();
+	const baselineEvalRunId = "erun-report-baseline";
+	const candidatePath = join(value.runsRoot, "run-report", "run.json");
+	const source = RunRecordSchema.parse(JSON.parse(readFileSync(candidatePath, "utf8")));
+	const scored = (score: number) => ({
+		outcome: "fail" as const,
+		graders: [{ name: "similarity", type: "similarity", passed: false, score, reason: `token-f1 = ${score}` }],
+	});
+	const candidate = RunRecordSchema.parse({
+		...source,
+		label: "candidate",
+		parent: { evalRunId: value.evalRunId, candidateOf: "b".repeat(40) },
+		metrics: { ...source.metrics, costUsd: 0.014, latencyMs: 1_800, tokens: { input: 100, output: 100, cacheRead: 0, cacheWrite: 0, total: 200 } },
+		evalResults: scored(0.85),
+	});
+	writeJsonArtifact(candidatePath, RunRecordSchema, candidate);
+
+	const baselineRunId = "run-report-baseline";
+	const baselineDir = join(value.runsRoot, baselineRunId);
+	mkdirSync(baselineDir, { recursive: true });
+	writeFileSync(join(baselineDir, "session.jsonl"), readFileSync(join(value.runsRoot, "run-report", "session.jsonl"), "utf8"));
+	const baselineRun = RunRecordSchema.parse({
+		...candidate,
+		runId: baselineRunId,
+		label: "baseline",
+		target: { ...candidate.target, gitSha: "b".repeat(40) },
+		metrics: { ...candidate.metrics, costUsd: 0.01, latencyMs: 2_000 },
+		evalResults: scored(0.3),
+		parent: { evalRunId: baselineEvalRunId, candidateOf: null },
+	});
+	writeJsonArtifact(join(baselineDir, "run.json"), RunRecordSchema, baselineRun);
+
+	const evalPath = join(value.runsRoot, value.evalRunId, "eval_run.json");
+	const index = EvalRunRecordSchema.parse(JSON.parse(readFileSync(evalPath, "utf8")));
+	const oneTask = { total: 1, pass: 0, fail: 1, error: 0, allPassRate: 0 };
+	writeJsonArtifact(join(value.runsRoot, baselineEvalRunId, "eval_run.json"), EvalRunRecordSchema, {
+		...index,
+		evalRunId: baselineEvalRunId,
+		label: "baseline",
+		target: baselineRun.target,
+		taskIds: [baselineRun.taskId],
+		runIds: [baselineRunId],
+		runArtifacts: [{ runId: baselineRunId, sha256: hashValue(baselineRun) }],
+		summary: oneTask,
+	});
+	writeJsonArtifact(evalPath, EvalRunRecordSchema, {
+		...index,
+		label: "candidate",
+		baselineEvalRunId,
+		taskIds: [candidate.taskId],
+		runIds: [candidate.runId],
+		runArtifacts: [{ runId: candidate.runId, sha256: hashValue(candidate) }],
+		summary: oneTask,
+	});
+	return { ...value, baselineEvalRunId };
+}
+
 const RAW_OMITTED_SENTINEL = "SEALED_RAW_HOLDOUT_DO_NOT_RENDER";
 const INCLUDED_SECRET = "sk-oversizedsecret1234567890";
 
@@ -402,6 +465,25 @@ describe("static evidence report", () => {
 		expect(message).toBe("cross-visibility baseline evidence is unavailable");
 		expect(message).not.toContain(value.sealedEvalRunId);
 		expect(message).not.toContain("super-secret");
+	});
+
+	it("carries the score verdict and its cost/latency fragment into the HTML comparison", () => {
+		const value = comparedFixture();
+		const data = collectEvalReportData(value.runsRoot, value.evalRunId, () => "2026-08-26T11:00:00.000Z");
+		expect(data.comparison?.status).toBe("comparable");
+		expect(data.comparison?.summary.delta).toBe(0);
+		expect(data.comparison?.summary.scoreDelta).toBeCloseTo(0.55, 12);
+		expect(data.comparison?.rows[0]).toMatchObject({ aScore: 0.3, bScore: 0.85, scoreDelta: 0.55, delta: 0 });
+		expect(data.comparison?.resources).toMatchObject({ costRatio: 1.4, latencyRatio: 0.9, tokenRatio: 1 });
+		expect(data.comparisonGateLine).toContain("development verdict:");
+		expect(data.comparisonGateLine).toContain("· cost ×1.4 · latency ×0.9");
+		expect(data.comparisonGateLine.length).toBeLessThanOrEqual(110);
+
+		const html = renderEvalReportHtml(data);
+		expect(html).toContain("cost ×1.4 · latency ×0.9");
+		expect(html).toContain("<th>Score</th>");
+		expect(html).toContain("id=\"comparison-gate\"");
+		expect(html).toContain("q('#comparison-gate').textContent=DATA.comparisonGateLine");
 	});
 
 	it("strictly collects evidence while redacting credentials and bounding script embedding", () => {
@@ -578,7 +660,7 @@ describe("static evidence report", () => {
 
 	it("atomically publishes an owner-only, self-contained HTML file", () => {
 		const value = fixture();
-		const output = buildEvalReport(value.runsRoot, value.evalRunId);
+		const output = buildEvalReport(value.runsRoot, value.evalRunId).path;
 		const html = readFileSync(output, "utf8");
 		expect(html).toContain("const DATA=");
 		expect(html).not.toMatch(/<script[^>]+src=/);

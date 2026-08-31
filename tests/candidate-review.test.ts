@@ -13,7 +13,12 @@ import {
 	promoteReviewedCandidate,
 	reviewCandidate,
 } from "../src/application/candidate-review.js";
-import { CandidateRecordSchema, candidateStatus } from "../src/domain/candidate.js";
+import {
+	CandidateRecordSchema,
+	candidateStatus,
+	gateVerdictOf,
+	isPromotionGradeGateEvidence,
+} from "../src/domain/candidate.js";
 import { EvalRunRecordSchema, loadEvalRun, writeEvalRun, type EvalRunRecord } from "../src/eval.js";
 import { compareEvalRuns } from "../src/compare.js";
 import {
@@ -31,6 +36,7 @@ import {
 	RunRecordSchema,
 	canonicalJson,
 	executionFingerprint,
+	modelFingerprint,
 	hashValue,
 	provenanceAxes,
 	type ExecutionFingerprint,
@@ -38,6 +44,7 @@ import {
 } from "../src/provenance.js";
 import { readJsonArtifact, writeJsonArtifact, writeTextArtifact } from "../src/storage/artifacts.js";
 import { baseFixtureFiles } from "./fixtures.js";
+import { appendJudgeLabels, judgeFingerprintHashOf } from "../src/application/judge-labels.js";
 
 const roots: string[] = [];
 const baselineSha = "a".repeat(40);
@@ -45,6 +52,37 @@ const candidateSha = "b".repeat(40);
 const at = "2026-08-26T10:00:00.000Z";
 const piSha = "c".repeat(40);
 const artifactHash = `sha256:${"d".repeat(64)}`;
+const judgeSpec = `sha256:${"e".repeat(64)}`;
+
+/** The starter manifest plus a judge that this Target refuses to trust blind. */
+const calibratedManifest = `id: test-target
+model:
+  provider: qwen-internal
+  id: qwen3.5-27b
+  api: openai-completions
+  baseUrl: http://127.0.0.1:9901/v1
+  apiKeyEnv: TEST_MODEL_KEY
+  thinkingLevel: "off"
+  timeoutMs: 300000
+instructions:
+  agentsMd: AGENTS.md
+skills: [skills/check-dbo]
+evalSuite:
+  id: test-suite
+  dataset: evals/development.jsonl
+  graders: evals/graders.yaml
+  judge:
+    provider: qwen-internal
+    id: qwen3.5-judge
+    api: openai-completions
+    baseUrl: http://127.0.0.1:9901/v1
+    apiKeyEnv: TEST_JUDGE_KEY
+    thinkingLevel: "off"
+    timeoutMs: 300000
+    requireCalibration:
+      minAgreement: 0.8
+      minLabels: 4
+`;
 
 function fileRef(path: string): { path: string; sha256: string } {
 	return {
@@ -67,6 +105,8 @@ function writePair(
 	dataset: string,
 	execution: ExecutionFingerprint,
 	design: { tasks: number; repetitions: number } = { tasks: 1, repetitions: 1 },
+	/** When set, every run also carries a judge grader result with this spec. */
+	judgeSpecHash?: string,
 ): void {
 	const runtime = { piVersion: "0.84.3", piSha, ahdeVersion: "0.1.0", ahdeCodeHash: artifactHash };
 	const model = {
@@ -85,7 +125,20 @@ function writePair(
 	const provenance = provenanceAxes({
 		runtime,
 		model,
-		judge: null,
+		// A judge-graded pair records the judge that graded it; labels certify that
+		// exact instrument, so the fixture must carry one when it grades by judge.
+		judge: judgeSpecHash
+			? modelFingerprint({
+				provider: "test",
+				id: "test-judge",
+				api: "openai-completions",
+				baseUrl: "https://example.invalid/v1",
+				apiKeyEnv: "TEST_JUDGE_KEY",
+				thinkingLevel: "off",
+				params: {},
+				spec: {},
+			})
+			: null,
 		execution,
 		eval: { suiteHash, datasetHash },
 	});
@@ -127,7 +180,20 @@ function writePair(
 				recoveryAttempts: 0,
 			},
 			evalResults: {
-				graders: [{ name: "fixture", type: "output_contains", passed: true, score: 1, reason: "pass" }],
+				graders: [
+					{ name: "fixture", type: "output_contains", passed: true, score: 1, reason: "pass" },
+					...(judgeSpecHash
+						? [{
+							name: "fixture-judge",
+							type: "judge",
+							passed: true,
+							score: 1,
+							reason: "судья доволен",
+							specHash: judgeSpecHash,
+							checkCode: "semantic-rubric" as const,
+						}]
+						: []),
+				],
 				outcome: "pass",
 			},
 			parent: { evalRunId, candidateOf: label === "candidate" ? baselineRevision : null },
@@ -189,6 +255,7 @@ function fixture(
 		candidateSha?: string;
 		targetId?: string;
 		execution?: ExecutionFingerprint;
+		judgeSpecHash?: string;
 	} = {},
 	withSource = true,
 ): { runsRoot: string; candidateId: string } {
@@ -206,7 +273,7 @@ function fixture(
 		network: "deny",
 		filesystem: "workspace-confined-v1",
 	});
-	writePair(runsRoot, targetId, fixtureBaselineSha, fixtureCandidateSha, "eval-base", "eval-candidate", "development", execution);
+	writePair(runsRoot, targetId, fixtureBaselineSha, fixtureCandidateSha, "eval-base", "eval-candidate", "development", execution, { tasks: 1, repetitions: 1 }, overrides.judgeSpecHash);
 	if (withHoldout) {
 		writePair(runsRoot, targetId, fixtureBaselineSha, fixtureCandidateSha, "holdout-base", "holdout-candidate", "sealed-holdout", execution, { tasks: 15, repetitions: 2 });
 	}
@@ -510,13 +577,13 @@ function git(dir: string, ...args: string[]): string {
 	}).trim();
 }
 
-function repository(): { dir: string; baselineSha: string; candidateSha: string } {
+function repository(manifest?: string): { dir: string; baselineSha: string; candidateSha: string } {
 	const dir = mkdtempSync(join(tmpdir(), "ahde-promotion-repo-"));
 	roots.push(dir);
 	git(dir, "init", "-q");
 	git(dir, "config", "user.name", "AHDE Test");
 	git(dir, "config", "user.email", "test@example.invalid");
-	for (const file of baseFixtureFiles()) {
+	for (const file of baseFixtureFiles(manifest ? { "manifest.yaml": manifest } : {})) {
 		const path = join(dir, file.path);
 		mkdirSync(join(path, ".."), { recursive: true });
 		writeFileSync(path, file.content);
@@ -656,6 +723,50 @@ describe("candidate human review", () => {
 		).toThrow(/production promotion requires reconstructable applied-Builder provenance/);
 	});
 
+	it("refuses promotion on legacy v3 pass-rate gate evidence and names what is missing", () => {
+		for (const surface of ["development", "sealedHoldout"] as const) {
+			const value = fixture(true);
+			const record = loadCandidateRecord(value.runsRoot, value.candidateId);
+			const evaluated = record.events.find((event) => event.type === "evaluated");
+			if (evaluated?.type !== "evaluated") throw new Error("expected an evaluated event");
+			const evidence = surface === "development"
+				? evaluated.evaluation.development.comparison
+				: evaluated.evaluation.sealedHoldout?.comparison;
+			if (!isPromotionGradeGateEvidence(evidence)) throw new Error("expected v4 gate evidence in the fixture");
+			// Exactly the shape v1.8 wrote: pass rates, no scores, no resources.
+			const { baselineScore: _b, candidateScore: _c, scoreDelta: _d, ...summary } = evidence.summary;
+			const { resources: _r, ...rest } = evidence;
+			const legacy = {
+				...rest,
+				schemaVersion: 3,
+				algorithmId: "exact-comparison-gate-v3",
+				policyId: surface === "development" ? "development-ci-v3" : "sealed-guardrail-v3",
+				summary,
+			};
+			const downgraded = CandidateRecordSchema.parse({
+				...record,
+				events: record.events.map((event) =>
+					event.type !== "evaluated"
+						? event
+						: {
+							...event,
+							evaluation: surface === "development"
+								? { ...event.evaluation, development: { ...event.evaluation.development, comparison: legacy } }
+								: {
+									...event.evaluation,
+									sealedHoldout: { ...event.evaluation.sealedHoldout!, comparison: legacy },
+								},
+						}),
+			});
+			// Legacy evidence still parses and still renders its verdict.
+			expect(gateVerdictOf(legacy as never)).toBe(evidence.verdict);
+			writeJsonArtifact(candidateRecordPath(value.runsRoot, value.candidateId), CandidateRecordSchema, downgraded);
+			reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+			expect(() => decideCandidatePromotion({ ...value, tag: "v1.0.0", reason: "ship", now: () => at }))
+				.toThrow(/legacy v3 gate evidence and is not promotion-grade: re-verify the candidate to record exact-comparison-gate-v4 evidence/);
+		}
+	});
+
 	it("tags only the exact reviewed candidate and preserves the user's dirty checkout", () => {
 		const repo = repository();
 		const value = fixture(true, { ...repo, targetId: "test-target" });
@@ -696,6 +807,81 @@ describe("candidate human review", () => {
 		})).toThrow(/candidate changed after confirmation; promotion is stale/);
 		expect(git(repo.dir, "tag", "--list", "v1.2.4")).toBe("");
 		expect(loadCandidateRecord(value.runsRoot, value.candidateId)).toEqual(reviewed);
+	});
+
+	it("promotes judge-graded evidence with no calibration policy: the default never blocks", () => {
+		const repo = repository();
+		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec });
+		const stateRoot = mkdtempSync(join(tmpdir(), "ahde-promote-labels-"));
+		roots.push(stateRoot);
+		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+
+		const result = promoteReviewedCandidate({
+			repositoryDir: repo.dir,
+			...value,
+			stateRoot,
+			version: "3.0.0",
+			reason: "judge is unchecked, and this Target has not asked to care",
+			now: () => at,
+		});
+		expect(result.tag).toBe("v3.0.0");
+	});
+
+	it("refuses promotion on an unchecked judge when the Target requires calibration", () => {
+		const repo = repository(calibratedManifest);
+		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec });
+		const stateRoot = mkdtempSync(join(tmpdir(), "ahde-promote-labels-"));
+		roots.push(stateRoot);
+		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+
+		const promote = (version: string) => promoteReviewedCandidate({
+			repositoryDir: repo.dir,
+			...value,
+			stateRoot,
+			version,
+			reason: "ship it",
+			now: () => at,
+		});
+		expect(() => promote("3.1.0")).toThrow(/promotion refused: this evidence is graded by 1 judge grader spec\(s\) with 0 human label\(s\)/);
+		expect(git(repo.dir, "tag", "--list", "v3.1.0")).toBe("");
+
+		// Three agreeing labels are still one short of the declared minimum.
+		appendJudgeLabels(stateRoot, "project", "eval-candidate", [0, 1, 2].map((index) => ({
+			runId: "eval-candidate-run",
+			taskId: `development-task-${index}`,
+			graderIndex: 1,
+			graderSpecHash: judgeSpec,
+			judgeFingerprintHash: judgeFingerprintHashOf(value.runsRoot, "eval-candidate") ?? undefined,
+			human: "pass" as const,
+			judge: "pass" as const,
+			at,
+		})));
+		expect(() => promote("3.1.0")).toThrow(/with 3 human label\(s\) at 100% agreement/);
+
+		appendJudgeLabels(stateRoot, "project", "eval-candidate", [{
+			runId: "eval-candidate-run",
+			taskId: "development-task-3",
+			graderIndex: 1,
+			graderSpecHash: judgeSpec,
+			judgeFingerprintHash: judgeFingerprintHashOf(value.runsRoot, "eval-candidate") ?? undefined,
+			human: "pass" as const,
+			judge: "pass" as const,
+			at,
+		}]);
+		expect(promote("3.1.0").tag).toBe("v3.1.0");
+	});
+
+	it("refuses when the policy cannot be evaluated at all", () => {
+		const repo = repository(calibratedManifest);
+		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec });
+		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+		expect(() => promoteReviewedCandidate({
+			repositoryDir: repo.dir,
+			...value,
+			version: "3.2.0",
+			reason: "ship it",
+			now: () => at,
+		})).toThrow(/no label store to check it against/);
 	});
 
 	it("does not create a tag when the aggregate lacks sealed holdout evidence", () => {

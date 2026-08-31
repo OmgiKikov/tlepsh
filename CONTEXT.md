@@ -34,16 +34,27 @@ the harness under development runs in a different Target Pi invocation.
   typed grader observations into systemic or task-local failure modes. Its
   explanations are hypotheses; the verified Eval Run and Diagnosis remain the
   evidence authority.
+- **Workshop** — the Builder's bound writable surface: a detached worktree of
+  one exact clean Target commit, scoped to `AGENTS.md`, `skills/**`,
+  `tools/**`, `bin/**`, `data/**`, with read, write, an argv-only sandboxed
+  shell, and `try_tool` over its own Harness copy. It changes nothing durable,
+  writes no evidence, never touches the operator's checkout, and dies with the
+  one proposal it compiles. Closing it derives the Proposal from `git diff`;
+  the Harness Authoring Intents below remain the second path.
 - **Harness Authoring Intent** — a semantic instruction/execution-policy/skill/tool change
   request. The host compiler, not Builder Pi, derives paths, modes, hashes,
-  manifest declarations, and exact diffs from a clean Target snapshot.
+  manifest declarations, and exact diffs from a clean Target snapshot. It is
+  the fallback path for single-file edits and the only way to change the
+  Target's execution policy; a workshop diff can change only resources.
 - **Target Authoring Context** — a bounded safe projection of one exact clean
   Target commit: sanitized model/execution metadata plus only its
   manifest-declared instructions, skills, and tool descriptor/executable
   resources. Builder reads it through Workbench, never through ambient files.
-- **Proposal** — the immutable exact Harness file replacement set compiled from
-  Harness Authoring Intents and tied to an approved Spec, baseline snapshot,
-  and optional development Eval/Diagnosis evidence.
+- **Proposal** — the immutable exact Harness file replacement set compiled
+  either from a closed Workshop's worktree diff or from Harness Authoring
+  Intents, and tied to an approved Spec, baseline snapshot, and optional
+  development Eval/Diagnosis evidence. Both paths produce the same artifact and
+  pass the same scope assertion, admission receipt, and human apply gate.
 - **Candidate** — a committed Harness Snapshot created from a human-applied Proposal and linked to the exact approved Spec used by its Builder.
 - **Candidate Experiment** — the deep module that validates lineage and scope, evaluates exact baseline/candidate revisions, compares them, and records a human decision.
 - **Promotion** — a human-approved immutable decision that tags the exact evaluated candidate revision. It is not autonomous deployment.
@@ -56,16 +67,50 @@ the harness under development runs in a different Target Pi invocation.
 - **A/A calibration** — repeated evaluation of the same snapshot to measure
   run-to-run noise. The A/A Candidate record is the calibration receipt; it
   can never be promotion evidence.
+- **Judge agreement** — how often a judge grader and a human reached the same
+  verdict on the same answer, with Cohen's κ correcting for the agreement two
+  indifferent raters would reach by chance. Humans supply the other side
+  through `ahde label`, which shows the task and the answer, takes a blind
+  pass/fail, and only then reveals the judge. Labels live under
+  `<state-root>/projects/<id>/labels/<evalRunId>.jsonl`, are notes about an
+  instrument rather than evidence about a Target — never a receipt, never a
+  provenance axis, never collected from sealed evidence — and every judge
+  screen reads `judge agreement 84% · κ 0.62 · n=50` or
+  `judge not calibrated` from them. A Target may set
+  `evalSuite.judge.requireCalibration` to refuse promoting evidence its judge
+  has not earned.
 - **Comparison Verdict** — the single typed outcome of comparing a baseline and
-  a candidate Eval Run under one Gate Policy: paired per-task deltas, a seeded
-  bootstrap 95% interval, the design (tasks × repetitions, excluded tasks),
-  human flags, and one verdict. The only source of "passed".
+  a candidate Eval Run under one Gate Policy: paired per-task deltas of the
+  mean grader score, a seeded bootstrap 95% interval, the design (tasks ×
+  repetitions, excluded tasks), human flags, resource ratios, and one verdict.
+  The only source of "passed".
+- **Workbench gate policy** — how much of the operator's attention one decision
+  is worth. Three consequential moments carry the whole cycle and each shows the
+  exact subject before anything happens: `start-testing` (approve the Spec
+  draft, publish the reviewed corpus draft, run), `apply-proposal` (the exact
+  diff), and `ship` (review, promote, adopt, continue). The composites are
+  orchestration, not new authority: they call the same application services in
+  the same order, write the same receipts, pre-approve only the exact
+  sub-subjects the operator already read, and stop at the first step that
+  declines or fails. Terminal throw-aways — discard a proposal, reject a
+  candidate, abandon an interrupted attempt — are one short question. Every
+  other decision is routine: measurement (`run-current`, `run-eval`,
+  `calibrate`, `verify-candidate`) executes without a dialog under a cost guard
+  that asks once when history estimates more than `AHDE_ROUTINE_COST_USD`
+  (default 2) or `AHDE_ROUTINE_MINUTES` (default 10), or when no comparable run
+  has finished and the cost is unknown. Estimates are read from existing run
+  artifacts and persist nothing. Consequential and one-question decisions still
+  fail closed outside an interactive TUI; routine decisions may run headless.
 - **Gate Policy** — the named rule a Comparison Verdict is decided under.
-  `development-ci-v3`: improved iff the whole interval is above zero,
+  `development-ci-v4`: improved iff the whole interval is above zero,
   regressed iff it is entirely below zero, otherwise inconclusive.
-  `sealed-guardrail-v3`: underpowered below 15 tasks or 2 repetitions, fail
-  iff the whole interval is below zero, otherwise pass. Per-task drops are
-  flags for humans and never gate.
+  `sealed-guardrail-v4`: underpowered below 15 tasks or 2 repetitions, fail
+  iff the whole interval is below zero, otherwise pass. The paired quantity is
+  the mean grader score per task, not the pass rate: a run scores the mean of
+  its graders' scores in [0,1], a graderless run keeps the binary value, and
+  with binary graders score and pass rate coincide. Pass rates stay computed
+  and rendered next to the scores. Per-task drops, collapses, and the cost,
+  latency and token ratios are flags for humans and never gate.
 
 ## Trust domains
 
@@ -79,7 +124,7 @@ two modes of one session.
 | Skills | Packaged AHDE Builder skills only | Manifest-declared Target skills only |
 | Tools | Trusted typed AHDE extension only | Policy-approved built-ins and declarative subprocess tools |
 | Config/session root | User-level credentials and settings (`AHDE_HOME`, default `~/.ahde`); private per-project sessions | Private per-run state |
-| Repository authority | No generic edit/write; exact changes pass a host TUI gate | Confined task workspace only |
+| Repository authority | No generic edit/write outside a bound workshop worktree (`AGENTS.md`, `skills/**`, `tools/**`, `bin/**`, `data/**`, never the operator's checkout); exact changes still pass a host TUI gate | Confined task workspace only |
 | Private artifacts | Bounded views through AHDE core | No access |
 | Sealed holdout | Never model-visible | One evaluator-supplied case at a time |
 | Promotion authority | Host-owned explicit decision | None |
@@ -94,6 +139,17 @@ live view is never evidence and cannot perform state transitions.
 
 1. Builder and Target are different Pi invocations with different prompts,
    skills, tools, sessions, config roots, workspaces, and credentials.
+   Builder Pi has no generic edit/write **outside a bound workshop worktree**:
+   its only writable surface is one open Workshop over a detached copy of an
+   exact clean Target commit, confined to `AGENTS.md`, `skills/**`, `tools/**`,
+   `bin/**`, `data/**`. `manifest.yaml` is host-owned inside it (the host
+   derives the declared skill/tool/data lists from the files that exist), and
+   `evals/**`, `imports/**`, `runs/`, `.git`, `.env`, `.ahde`, traversal, and
+   symlinks all fail closed on the resolved real path with the offending path
+   named. The workshop's shell is argv-only inside the same OS sandbox a
+   declared Target tool runs in, with bounded output and a bounded timeout. The
+   four workshop tools exist only while a workshop is open; the workshop is
+   bound to one proposal attempt and dies with it, leaving no worktree behind.
 2. Evidence always points at immutable snapshots; renderers never reread the current checkout.
 3. Candidate and baseline revisions differ, except in explicit A/A calibration mode.
 4. Comparability excludes the changing Harness revision but includes every other effective execution and grading input.
@@ -196,7 +252,11 @@ live view is never evidence and cannot perform state transitions.
     refs are ignored. Structured authoring must echo the host-minted context
     claim; AHDE re-derives and persists it, pins compilation to its revision,
     and applies the same inspectability limits to the proposed resulting
-    Harness so Builder cannot author itself out of context.
+    Harness so Builder cannot author itself out of context. A Workshop holds
+    that claim host-side rather than asking for it back: it is minted when the
+    workshop opens, re-derived and required to be identical when it closes, the
+    diff is refused if the checkout moved or is dirty, and the same
+    inspectability limits are applied to the Harness the diff would create.
 31. Promotion never moves the active Target. Adoption is a separate
     human-confirmed fast-forward of a clean worktree from the exact candidate
     baseline to the exact promoted revision; its intent and receipt bind the
@@ -212,11 +272,14 @@ live view is never evidence and cannot perform state transitions.
 
 
 34. Promotion is decided by the Comparison Verdict, not by per-task flips: it
-    requires a sealed guardrail `pass` (≥15 tasks × ≥2 repetitions, 95% paired
-    bootstrap interval not entirely below zero) and a development verdict other
-    than `regressed`. A failed or underpowered sealed gate is recorded as
-    evaluated evidence and refused at promotion; it is never thrown away. A
-    verification never starts on a holdout smaller than the policy minimum.
+    requires `exact-comparison-gate-v4` evidence on both surfaces, a sealed
+    guardrail `pass` (≥15 tasks × ≥2 repetitions, 95% paired bootstrap interval
+    over per-task mean grader scores not entirely below zero) and a development
+    verdict other than `regressed`. A failed or underpowered sealed gate is
+    recorded as evaluated evidence and refused at promotion; it is never thrown
+    away. A verification never starts on a holdout smaller than the policy
+    minimum. Older evidence (v1–v3) stays readable and renders its verdict, but
+    a promotion on it is refused until the candidate is verified again.
 35. Noise is measured, never assumed: an A/A calibration of the same Target
     revision is the receipt for run-to-run noise, informs the recommended
     number of repetitions, and is never promotion evidence.

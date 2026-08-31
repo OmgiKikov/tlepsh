@@ -1,4 +1,12 @@
-import type { WorkbenchDecisionResult, WorkbenchView } from "../../workbench/types.js";
+import type {
+	WorkbenchCheapCheckProjection,
+	WorkbenchDecisionResult,
+	WorkbenchImproveResult,
+	WorkbenchShipResult,
+	WorkbenchStartTestingResult,
+	WorkbenchVerifyCandidateResult,
+	WorkbenchView,
+} from "../../workbench/types.js";
 import { formatFlipRate, formatNoiseBand, renderCalibration } from "./calibration.js";
 import { oneLine, pluralize, section, shortHash, shortSha } from "./format.js";
 import type { Paint } from "./paint.js";
@@ -20,8 +28,94 @@ function runLines(result: Extract<WorkbenchDecisionResult, { kind: "run-eval" }>
 	return lines;
 }
 
-function verificationLines(result: Extract<WorkbenchDecisionResult, { kind: "verify-candidate" }>["result"], paint: Paint, view: WorkbenchView): string[] {
-	const lines = renderCandidate(result.candidate, paint, "Candidate verified");
+/** The screen in one line: what it cost, what it found, what it is not. */
+function screenLine(screen: WorkbenchCheapCheckProjection, paint: Paint): string {
+	const detail = `${screen.improved} improved · ${screen.unchanged} unchanged · ${screen.regressed} regressed` +
+		(screen.inconclusive > 0 ? ` · ${screen.inconclusive} inconclusive` : "");
+	return `${paint.dim("Cheap check")} ${screen.verdict === "promising" ? paint.success("promising") : paint.muted("flat")} ` +
+		`${paint.dim(`· ${pluralize(screen.tasks, "previously failing case")} × 1 · ${detail}`)}` +
+		(screen.withinErrorBudget ? "" : ` ${paint.muted("· over the infrastructure error budget, so inconclusive")}`);
+}
+
+function verificationLines(result: WorkbenchVerifyCandidateResult, paint: Paint, view: WorkbenchView): string[] {
+	if (result.outcome === "stopped-by-screen") {
+		return [
+			screenLine(result.screen, paint),
+			paint.muted(
+				`Nothing was measured: the ${result.spared.executions}-execution verification was not spent. ` +
+				"A screen is not a verdict — author another change, or verify anyway with force.",
+			),
+			nextLine(view, paint),
+		];
+	}
+	const lines: string[] = [];
+	if (result.screen) lines.push(screenLine(result.screen, paint));
+	lines.push(...renderCandidate(result.candidate, paint, "Candidate verified"));
+	lines.push(nextLine(view, paint));
+	return lines;
+}
+
+function improveLines(result: WorkbenchImproveResult, paint: Paint, view: WorkbenchView): string[] {
+	const lines = [
+		`${section("Improvement cycles", paint)} ${pluralize(result.cycles.length, "cycle")} ` +
+			`${paint.dim(`· ${result.executions} Target executions · ${Math.round(result.finalPassRate * 100)}% pass rate`)}`,
+	];
+	for (const cycle of result.cycles) {
+		const screen = cycle.screen ? `screen ${cycle.screen.verdict} ${cycle.screen.improved}/${cycle.screen.tasks}` : "no screen";
+		const verification = cycle.verification
+			? `verify ${cycle.verification.verdict} ${cycle.verification.scoreDelta >= 0 ? "+" : ""}${(cycle.verification.scoreDelta * 100).toFixed(1)}pp`
+			: "no verification";
+		lines.push(paint.dim(
+			`  ${cycle.cycle}. ${cycle.pass}/${cycle.total} · ${screen} · ${verification} · ${cycle.note}`,
+		));
+	}
+	lines.push(paint.muted(`Stopped: ${result.stopMessage}.`));
+	if (result.candidateId) {
+		lines.push(paint.muted("Promotion is yours: say “ship it” to run the sealed guardrail and release."));
+	}
+	lines.push(nextLine(view, paint));
+	return lines;
+}
+
+/**
+ * One composite reads as the work it did, not as the four decisions it is made
+ * of: what was approved and published, then the run itself.
+ */
+function startTestingLines(
+	result: WorkbenchStartTestingResult,
+	paint: Paint,
+	view: WorkbenchView,
+	options: RenderDecisionOptions,
+): string[] {
+	const lines: string[] = [];
+	for (const step of result.steps) {
+		if (step.kind === "approve-spec") {
+			lines.push(`${section("Spec approved", paint)} ${paint.dim(result.approvedSpecId ?? "")}`);
+		}
+		if (step.kind === "publish-corpus" && result.developmentCorpus) {
+			lines.push(`${section("Tests published", paint)} ${pluralize(result.developmentCorpus.taskCount, "case")} ${paint.dim(`· ${result.developmentCorpus.id}`)}`);
+		}
+	}
+	if (result.evaluation) lines.push(...runLines(result.evaluation, paint, options));
+	else if (result.pending) lines.push(paint.muted(`Still needed: ${result.pending}`));
+	lines.push(nextLine(view, paint));
+	return lines;
+}
+
+function shipLines(result: WorkbenchShipResult, paint: Paint, view: WorkbenchView): string[] {
+	const lines = [
+		`${section("Shipped", paint)} ${result.tag ? paint.success(result.tag) : paint.muted("already tagged")}` +
+			(result.adoption
+				? ` ${paint.dim("·")} ${paint.bold(result.adoption.branch)} ${shortSha(result.adoption.fromSha)} → ${paint.success(shortSha(result.adoption.toSha))}`
+				: ""),
+		...renderCandidate(result.candidate, paint, "Candidate"),
+	];
+	if (result.adoption) {
+		lines.push(paint.muted("The promoted harness is now the active Target for `ahde target` and the next cycle."));
+	}
+	if (result.continuation) {
+		lines.push(paint.muted(`Cycle closed · next: ${stageLabel(result.continuation.nextStage)}.`));
+	}
 	lines.push(nextLine(view, paint));
 	return lines;
 }
@@ -79,11 +173,17 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 			return lines;
 		}
 		case "run-current":
-			return result.result.resolvedAs === "run-eval"
-				? [...runLines(result.result, paint, options), nextLine(view, paint)]
-				: verificationLines(result.result, paint, view);
+			if (result.result.resolvedAs === "run-eval") return [...runLines(result.result, paint, options), nextLine(view, paint)];
+			if (result.result.resolvedAs === "start-testing") return startTestingLines(result.result, paint, view, options);
+			return verificationLines(result.result, paint, view);
+		case "start-testing":
+			return startTestingLines(result.result, paint, view, options);
+		case "ship":
+			return shipLines(result.result, paint, view);
 		case "verify-candidate":
 			return verificationLines(result.result, paint, view);
+		case "improve":
+			return improveLines(result.result, paint, view);
 		case "apply-proposal":
 			return [
 				`${section("Proposal applied", paint)} branch ${paint.bold(result.result.branch)} ${paint.dim(`· candidate ${shortSha(result.result.candidateSha)} · proposal ${shortHash(result.result.proposalHash)}`)}`,
@@ -122,17 +222,44 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 	}
 }
 
+function startTestingHeadline(result: WorkbenchStartTestingResult): string {
+	if (result.evaluation) {
+		return `${result.evaluation.evaluation.summary.pass}/${result.evaluation.evaluation.summary.total} passed · ` +
+			`${result.evaluation.improvementBrief.summary.failureModeCount} failure modes`;
+	}
+	return result.steps.map((step) => step.kind.replace(/-/g, " ")).join(" · ") || "nothing to do";
+}
+
+function verifyHeadline(result: WorkbenchVerifyCandidateResult): string {
+	if (result.outcome === "stopped-by-screen") {
+		return `cheap check flat · ${result.screen.improved}/${result.screen.tasks} improved · verification not spent`;
+	}
+	return `candidate ${result.candidate.status} · development ${result.development.verdict} · ` +
+		`sealed ${result.sealedHoldout.verdict ?? "not run"}`;
+}
+
 /** One-line headline for status bars and collapsed tool cards. */
 export function decisionHeadline(result: WorkbenchDecisionResult): string {
 	switch (result.kind) {
 		case "run-eval":
 			return `${result.result.evaluation.summary.pass}/${result.result.evaluation.summary.total} passed · ${result.result.improvementBrief.summary.failureModeCount} failure modes`;
 		case "run-current":
-			return result.result.resolvedAs === "run-eval"
-				? `${result.result.evaluation.summary.pass}/${result.result.evaluation.summary.total} passed · ${result.result.improvementBrief.summary.failureModeCount} failure modes`
+			if (result.result.resolvedAs === "run-eval") {
+				return `${result.result.evaluation.summary.pass}/${result.result.evaluation.summary.total} passed · ${result.result.improvementBrief.summary.failureModeCount} failure modes`;
+			}
+			if (result.result.resolvedAs === "start-testing") return startTestingHeadline(result.result);
+			return result.result.outcome === "stopped-by-screen"
+				? "cheap check flat · verification not spent"
 				: `candidate ${result.result.candidate.status}`;
+		case "start-testing":
+			return startTestingHeadline(result.result);
+		case "ship":
+			return `${result.result.tag ?? "no new tag"}${result.result.adoption ? ` · ${result.result.adoption.branch} fast-forwarded` : ""}` +
+				`${result.result.continuation ? ` · next ${result.result.continuation.nextStage}` : ""}`;
 		case "verify-candidate":
-			return `candidate ${result.result.candidate.status} · development ${result.result.development.verdict} · sealed ${result.result.sealedHoldout.verdict ?? "not run"}`;
+			return verifyHeadline(result.result);
+		case "improve":
+			return `${result.result.cycles.length} cycle(s) · ${Math.round(result.result.finalPassRate * 100)}% · stopped: ${result.result.stopReason}`;
 		case "calibrate": {
 			const calibration = result.result.calibration;
 			return `A/A ${calibration.verdict} · ${formatNoiseBand(calibration)} · flip ${formatFlipRate(calibration)} · ` +

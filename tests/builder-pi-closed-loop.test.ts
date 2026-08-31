@@ -13,6 +13,7 @@ import {
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { expect, it } from "vitest";
 import {
+	AHDE_BUILDER_REGISTERED_TOOL_NAMES,
 	AHDE_BUILDER_TOOL_NAMES,
 	createAhdeBuilderExtension,
 } from "../src/builder/extension.js";
@@ -74,7 +75,7 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 
 		builderMock = await startMockModel([
 			{
-				match: ({ firstUser, toolCount }) => firstUser.includes("доведи цикл до конца") && toolCount === 3,
+				match: ({ firstUser, toolCount }) => firstUser.includes("доведи цикл до конца") && toolCount === 7,
 				steps: [],
 				resolve: (context) => {
 					const step = context.toolResults.length;
@@ -107,10 +108,12 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 								},
 							});
 						case 3:
+							// “Start testing” with the Spec still under review: one
+							// dialog approves it, and the composite says what is next.
 							return call(step, "ahde_workbench_decide", {
-								kind: "approve-spec",
-								draftSpecId: String(parseToolResult(context, 2).artifact.id),
-								reason: "Approve the exact deterministic contract",
+								kind: "run-current",
+								repetitions: 1,
+								reason: "Start testing this agent",
 							});
 						case 4:
 							return call(step, "ahde_workbench_submit", {
@@ -124,25 +127,21 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 								revisionSummary: "Initial development basket",
 							});
 						case 5:
+							// The same words again: now the basket exists, so the one
+							// dialog publishes it and runs it.
 							return call(step, "ahde_workbench_decide", {
-								kind: "publish-corpus",
-								draftId: String(parseToolResult(context, 4).artifact.id),
-								reason: "Publish the reviewed development basket",
+								kind: "run-current",
+								repetitions: 1,
+								reason: "Publish the reviewed basket and measure the baseline",
 							});
 						case 6:
-							return call(step, "ahde_workbench_decide", {
-								kind: "run-eval",
-								repetitions: 1,
-								reason: "Measure the exact baseline",
-							});
-						case 7:
 							return call(step, "ahde_workbench_view", { aspect: "traces" });
-						case 8:
+						case 7:
 							return call(step, "ahde_workbench_view", { aspect: "target" });
-						case 9:
+						case 8:
 							return call(step, "ahde_workbench_view", { aspect: "target", resourcePath: "AGENTS.md" });
-						case 10: {
-							const brief = parseToolResult(context, 7).detail.content.improvementBrief as {
+						case 9: {
+							const brief = parseToolResult(context, 6).detail.content.improvementBrief as {
 								algorithmId: string;
 								evalRunId: string;
 								diagnosisId: string;
@@ -153,8 +152,8 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 								candidate.decision === "propose-harness-change" && candidate.selectableForProposal
 							);
 							if (!mode) throw new Error("closed-loop baseline produced no proposal-eligible failure mode");
-							const overview = parseToolResult(context, 8);
-							const current = parseToolResult(context, 9).detail.content.resource.content as string;
+							const overview = parseToolResult(context, 7);
+							const current = parseToolResult(context, 8).detail.content.resource.content as string;
 							return call(step, "ahde_workbench_submit", {
 								kind: "structured-proposal",
 								authoringContext: overview.detail.content.claim,
@@ -174,48 +173,32 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 								validationPlan: ["Re-run the reviewed development basket and the sealed gate."],
 							});
 						}
-						case 11:
+						case 10:
 							return call(step, "ahde_workbench_decide", {
 								kind: "apply-proposal",
-								runId: String(parseToolResult(context, 10).artifact.runId),
+								runId: String(parseToolResult(context, 9).artifact.runId),
 								branch: "candidate/closed-loop",
 								reason: "The exact diff addresses the diagnosed failure",
 							});
-						case 12:
+						case 11:
+							// “Check it”: routine, so the candidate is verified against
+							// its baseline and the sealed gate without a dialog.
 							return call(step, "ahde_workbench_decide", {
-								kind: "verify-candidate",
+								kind: "run-current",
 								repetitions: SEALED_VERIFICATION_REPETITIONS,
 								reason: "Run the exact development and sealed promotion gates",
 							});
-						case 13: {
-							const verified = parseToolResult(context, 12);
+						case 12:
+							// “Ship it”: review, promote, adopt and continue behind one
+							// dialog and four unchanged receipts.
 							return call(step, "ahde_workbench_decide", {
-								kind: "review-candidate",
-								candidateId: String(verified.result.candidate.candidateId),
-								recommendation: "promote",
+								kind: "ship",
+								version: "0.1.0",
 								reason: "Development improved and the sealed guardrail passed",
 							});
-						}
-						case 14:
-							return call(step, "ahde_workbench_decide", {
-								kind: "promote-candidate",
-								candidateId: String(parseToolResult(context, 13).result.candidateId),
-								version: "0.1.0",
-								reason: "Ship the exact reviewed candidate",
-							});
-						case 15:
-							return call(step, "ahde_workbench_decide", {
-								kind: "adopt-candidate",
-								reason: "Make the promoted candidate the active Target",
-							});
-						case 16:
-							return call(step, "ahde_workbench_decide", {
-								kind: "continue-cycle",
-								reason: "Close this cycle and start the next one",
-							});
-						case 17: {
-							const closed = parseToolResult(context, 16);
-							return { text: `Цикл закрыт: ${parseToolResult(context, 14).result.tag} promoted, adopted, next stage ${closed.view.stage}.` };
+						case 13: {
+							const shipped = parseToolResult(context, 12);
+							return { text: `Цикл закрыт: ${shipped.result.tag} promoted, adopted, next stage ${shipped.view.stage}.` };
 						}
 						default:
 							throw new Error(`unexpected closed-loop Builder step ${step}`);
@@ -239,7 +222,7 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 			registerCommand: () => undefined,
 			on: () => undefined,
 		} as never);
-		expect(registered.map((tool) => tool.name)).toEqual(AHDE_BUILDER_TOOL_NAMES);
+		expect(registered.map((tool) => tool.name)).toEqual([...AHDE_BUILDER_REGISTERED_TOOL_NAMES]);
 
 		const host = createHostContext({
 			catalog: (provider, modelId) =>
@@ -320,44 +303,40 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 			"scaffold-target:target-setup",
 			"configure-target:spec-design",
 			"spec-draft:spec-review",
-			"approve-spec:corpus-design",
+			// “Run the tests” with the Spec pending: approved, and the composite
+			// stops there because a basket can only exist after the approval.
+			"run-current:corpus-design",
 			"corpus-draft:corpus-review",
-			"publish-corpus:ready-to-evaluate",
-			"run-eval:improvement-authoring",
+			// The same words again: publish and run behind one dialog.
+			"run-current:improvement-authoring",
 			"traces:improvement-authoring",
 			"target:improvement-authoring",
 			"target:improvement-authoring",
 			"structured-proposal:proposal-review",
 			"apply-proposal:candidate-verification",
-			"verify-candidate:candidate-review",
-			"review-candidate:release-decision",
-			"promote-candidate:candidate-adoption",
-			"adopt-candidate:complete",
+			"run-current:candidate-review",
 			// The adopted revision already has matched evidence, so the next cycle
 			// resumes at authoring rather than re-measuring the same baseline.
-			"continue-cycle:improvement-authoring",
+			"ship:improvement-authoring",
 		]);
 
-		// Nothing consequential happened without the host gate, and every gated
-		// step was one of the model's own decisions.
+		// The whole cycle asks six questions: the two one-time setup dialogs, and
+		// then the three product gates — start testing (twice in the first cycle,
+		// because the Spec approval is what lets the basket exist at all), the
+		// exact diff, and shipping. Everything else ran on the operator's ask.
 		expect(host.confirmations.map((entry) => entry.title)).toEqual([
 			"Create exact Target harness",
 			"Configure exact Target identity and model",
-			"Approve exact Spec draft",
-			"Publish exact development corpus",
-			"Run exact development evaluation",
+			"Start testing — approve the Spec",
+			"Start testing — publish the eval basket, run 2 Target executions",
 			"Apply exact Builder proposal",
-			"Verify exact applied candidate",
-			"Record exact candidate review",
-			"Promote exact candidate",
-			"Adopt promoted candidate as the active Target",
-			"Close this improvement cycle and continue",
+			"Ship candidate as v0.1.0",
 		]);
-		expect(observed.filter((entry) => entry.name === "ahde_workbench_decide")).toHaveLength(
-			host.confirmations.length,
-		);
+		expect(host.confirmations).toHaveLength(6);
+		// Seven decisions, six dialogs: the candidate verification is routine.
+		expect(observed.filter((entry) => entry.name === "ahde_workbench_decide")).toHaveLength(7);
 
-		const verified = observed.find((entry) => entry.kind === "verify-candidate")!;
+		const verified = observed.find((entry) => entry.details.result?.resolvedAs === "verify-candidate")!;
 		expect(verified.details.result).toMatchObject({
 			candidate: {
 				status: "evaluated",
@@ -367,15 +346,19 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 			development: { verdict: "improved" },
 			sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" },
 		});
-		const promoted = observed.find((entry) => entry.kind === "promote-candidate")!;
-		expect(promoted.details.result.tag).toBe("v0.1.0");
-		expect(execFileSync("git", ["-C", projectDir, "rev-list", "-n", "1", "v0.1.0"], { encoding: "utf8" }).trim())
-			.toBe(promoted.details.result.candidateSha);
-		const adopted = observed.find((entry) => entry.kind === "adopt-candidate")!;
-		expect(adopted.details.result.toSha).toBe(promoted.details.result.candidateSha);
+		const shipped = observed.find((entry) => entry.kind === "ship")!;
+		expect(shipped.details.result.steps.map((step: { kind: string }) => step.kind)).toEqual([
+			"review-candidate",
+			"promote-candidate",
+			"adopt-candidate",
+			"continue-cycle",
+		]);
+		expect(shipped.details.result.tag).toBe("v0.1.0");
+		const candidateSha = execFileSync("git", ["-C", projectDir, "rev-list", "-n", "1", "v0.1.0"], { encoding: "utf8" }).trim();
+		expect(shipped.details.result.adoption.toSha).toBe(candidateSha);
 		expect(execFileSync("git", ["-C", projectDir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim())
-			.toBe(promoted.details.result.candidateSha);
-		expect(existsSync(join(stateRoot, "target-adoptions", String(promoted.details.result.candidate.candidateId), "receipt.json")))
+			.toBe(candidateSha);
+		expect(existsSync(join(stateRoot, "target-adoptions", String(shipped.details.result.candidate.candidateId), "receipt.json")))
 			.toBe(true);
 
 		// The sealed holdout drove a real verdict and still never reached the model.

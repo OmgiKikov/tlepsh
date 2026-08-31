@@ -52,41 +52,60 @@ When AHDE is installed globally or linked, the last command is simply:
 ahde
 ```
 
-A typical Builder conversation looks like:
+A typical Builder conversation looks like — three questions in a whole cycle:
 
 ```text
 > Хочу собрать агента для ...
 Builder: Давай уточним пользователей, задачи и ограничения…
-Builder: Spec готов. Утвердить?
+Builder: Вот описание агента. Начинаем тесты?
 
-> Запусти тесты
-Builder UI: AHDE run 7/40 · tool search ✓
-Builder UI: open live trace · http://127.0.0.1:.../live/...
-Builder: 34/40 passed. Нашёл 3 системных failure mode.
-Builder: Open verified development traces: http://127.0.0.1:...
+> Да, запусти тесты
+AHDE asks once: approve this Spec, publish 24 cases, run 72 executions
+                (~$0.40, about 4 min)?  [y/n]
+Builder UI: AHDE run 7/24 · tool search ✓
+Builder: 18/24 passed. Нашёл 3 системных failure mode.
 
 > Исправь первую проблему
-Builder: Подготовил Proposal для AGENTS.md и skills/search.
-Builder: Показываю точный diff для подтверждения.
+Builder: Подготовил правку для AGENTS.md и skills/search.
+AHDE asks once: apply this exact diff to candidate/…?  [y/n]
+Builder UI: проверяю кандидата против базовой версии… (без вопросов)
+Builder: Development improved, sealed gate passed.
+
+> Выкати
+AHDE asks once: ship as v0.2.0 — promote, fast-forward main, next cycle?  [y/n]
 ```
 
-The same loop has compact Pi commands:
+Everything between those three questions just happens: runs, checks,
+calibration, and the diagnosis. A run that history says would be unusually
+expensive (over `AHDE_ROUTINE_COST_USD`, default 2, or `AHDE_ROUTINE_MINUTES`,
+default 10) asks one extra yes/no first, and so do the two irreversible
+throw-aways (discard a proposal, reject a candidate).
+
+The same loop has compact Pi commands: three verbs do the work, and every
+older command is still there, one step at a time.
 
 ```text
-/status                 where you are and the next step
+/test [repetitions]     test the agent: approve and publish whatever is pending,
+                        run the basket, or verify the applied candidate
+/fix [n]                fix problem n: refresh the traces, prepare the exact
+                        change, show the diff
+/ship <version>         ship the verified candidate: promote, adopt, next cycle
+
+/status                 where you are and what to say next
 /review                 the exact Spec, eval basket, diff, or candidate — with its actions
 /traces                 diagnosis, failure modes, and the evidence link
-/run [repetitions]      run the eval basket or verify the applied candidate (3 by default)
+/target [resource]      the exact committed Target or one declared resource
+/doctor  /help          readiness and recovery · this reference
+
+/run [repetitions]      alias of /test
 /calibrate [reps]       measure run-to-run noise: the same revision against itself
-/approve  /publish      approve the Spec · publish the eval basket
+/approve  /publish      approve the Spec · publish the eval basket, one at a time
 /apply <branch>         apply the reviewed proposal to a candidate branch
 /discard                discard a proposal or abandon an interrupted candidate
-/promote <version>      promote the verified candidate (one confirmation)
+/promote <version>      promote the verified candidate without adopting it
 /reject                 reject the verified candidate
 /adopt                  fast-forward the current branch to the promoted candidate
 /next                   close the cycle and continue from the active Target
-/target [resource]      the exact committed Target or one declared resource
-/doctor  /help          readiness and recovery · this reference
 ```
 
 Every command renders a human block in the transcript (persisted, never sent
@@ -274,6 +293,18 @@ Their tool schemas do not accept model-supplied `actor`, `approved`, or
 the exact hash or diff, asks the operator, revalidates it, and writes a durable
 receipt. Consequential calls fail closed outside an interactive TUI.
 
+The conversation reaches those decisions through two composites, so the whole
+cycle asks three questions: `start-testing` (approve the Spec draft, publish the
+reviewed basket, run), `apply-proposal` (the exact diff), and `ship` (review,
+promote, adopt, continue). A composite is orchestration, not new authority: it
+calls the same services in the same order, writes the same receipts, and stops
+at the first step that declines or fails. Discarding a proposal, rejecting a
+candidate, and abandoning an interrupted attempt are one short question each.
+Measurement — running the basket, verifying a candidate, calibrating noise —
+is routine: it runs without a dialog, may run headless, and asks once only when
+history estimates more than `AHDE_ROUTINE_COST_USD` (default 2) or
+`AHDE_ROUTINE_MINUTES` (default 10), or when nothing comparable has run yet.
+
 Corpus revisions are immutable and content-addressed. Publishing records both
 the canonical Corpus receipt and an exact Workbench lineage binding approved
 Spec, reviewed draft, and development dataset hash. A compatible EvalRun must
@@ -350,6 +381,69 @@ Sealed holdout cases, graders, expected outputs, identifiers, and traces are
 never shown to Builder Pi or the Evidence Explorer. The evaluator gives Target
 Pi one sealed case at a time, and only bounded gate results cross that boundary.
 
+## Judge graders, and checking the judge
+
+A `judge` grader can ask for prose or for a checklist. Prefer the checklist: a
+rubric split into isolated yes/no assertions is answered one behaviour at a
+time, and every failure names the check that failed instead of arguing with a
+paragraph.
+
+```yaml
+graders:
+  - type: judge
+    assertions:
+      - "the answer states the refund window in days"
+      - "the answer names where the customer files the claim"
+      - "the answer promises nothing the bank does not offer"
+    jury: 3          # optional: 3 independent judges, majority decides
+    rubric: "…"      # optional: shared context for all assertions
+```
+
+The judge answers `yes`, `no`, or `unknown` per assertion with its evidence.
+Unknown counts as no — an unanswered check has not been passed — the score is
+`yes / total`, and the grader passes only when every assertion is yes. The
+recorded reason names the failures by index: `assertion 2 failed: канал не
+назван; assertion 3 unknown: ответ слишком короткий`. Failure modes are still
+fingerprinted on the grader spec, never on the judge's wording.
+
+`jury: n` runs n independent judge calls and takes a strict majority per
+assertion; a tie has decided nothing and therefore fails, and the reason keeps
+the vote counts (`2/3`). Each juror keeps its own retries and its own sidecar
+(`judge/<grader>.<juror>[.<attempt>].json`), and the run's judge metrics sum all
+of them. A single judge stays pinned to temperature 0; a jury deliberately does
+not, because three identical greedy calls measure nothing.
+
+A judge nobody has checked is an opinion with a token cost. `ahde label` shows
+the task and the Target's final answer — bounded and credential-redacted —
+takes your blind pass/fail, and only then reveals what the judge said:
+
+```bash
+ahde label <eval-run-id> --target . --sample 30 --seed calibration-1
+ahde label <eval-run-id> --target . --file ./labels.jsonl   # non-interactive
+ahde judge-agreement <eval-run-id> --target .
+```
+
+Labels land in `<state-root>/projects/<id>/labels/<eval-run-id>.jsonl` as
+`{ runId, taskId, graderIndex, graderSpecHash, human, judge, note?, at }`. They
+are notes about an instrument, not evidence about a Target: no receipt, no
+provenance axis, and sealed evidence is never labelled. `ahde report`, the HTML
+report, the candidate review block, and the promote confirmation then all show
+one line — `judge agreement 84% · κ 0.62 · n=50`, or `judge not calibrated`.
+
+A Target that wants that line to be more than information can say so:
+
+```yaml
+evalSuite:
+  judge:
+    # …model fields…
+    requireCalibration: { minAgreement: 0.8, minLabels: 30 }
+```
+
+With it set, promoting evidence graded by an unchecked judge is refused with
+the exact numbers. Unset by default — measuring the instrument is worth doing
+long before it is worth blocking on — and evidence that no judge graded is
+never affected.
+
 ## Scriptable commands remain available
 
 The conversational Builder is the primary UX. Explicit commands remain a
@@ -368,6 +462,13 @@ ahde diagnose <eval-run-id>
 ahde compare <baseline-eval-id> <candidate-eval-id>
 ahde report <eval-run-id>
 
+# re-score recorded traces with graders — no new model calls
+ahde regrade <eval-run-id> --target . --graders ./strict-graders.yaml
+
+# check the judge against your own eyes
+ahde label <eval-run-id> --target . --sample 30 --seed calibration-1
+ahde judge-agreement <eval-run-id> --target .
+
 # 👍/👎 marks collected while talking to the Target
 ahde feedback list --target .
 ahde feedback clear --target .
@@ -384,6 +485,12 @@ ahde corpus ingest --project my-agent --file imports/support-tickets.csv \
   --recipe @recipe.json --name "support basket" \
   --sealed 40 --seed exam-1 --stratify-by tier
 
+# the cheap check before the expensive one: the failed cases, once, one arm
+ahde check --target . --candidate <candidate-id>
+
+# improvement cycles inside the gates; promotion is never the loop's
+ahde improve --target . --until 90% --max-cycles 5 --jobs 4
+
 # exact candidate experiment and terminal human decision
 ahde candidate --target . --builder-run <builder-run-id> \
   --project my-agent --development-corpus <development-corpus-id> \
@@ -394,6 +501,37 @@ ahde review --candidate <candidate-id> --recommend promote \
 ahde promote --target . --candidate <candidate-id> --to 0.2.0 \
   --reason "Ship the exact reviewed revision"
 ```
+
+`ahde regrade` re-scores the recorded traces of an existing eval run and never
+calls the Target model again: each case keeps the graders it carried when its
+trace was recorded — the dataset must hash-match the source eval — while the
+suite defaults that fill in for cases declaring none come from `--graders` or
+from the Target's current `evals/graders.yaml`, and the judge model comes from
+the current manifest. The result is an ordinary eval run whose `suiteHash` is
+recomputed from the graders actually used, so regrading a baseline and a
+candidate with the same graders makes them comparable to each other while a
+regrade whose graders changed is refused against its own source; sealed evidence
+stays sealed and prints counts only.
+
+`ahde check` runs a candidate on only the cases its source eval recorded as
+failing, once, candidate arm only, instead of the full
+`(development + sealed cases) x repetitions x 2 arms`. It is a screen and never
+evidence: its eval run carries the `solo` label, which is never reused as a
+baseline and never stands in for a candidate arm, every screen is recorded under
+`runs/screens/`, no comparison gate ever sees one, and a promotion that cites one
+is refused. `verify-candidate` runs the screen first and stops on a flat verdict
+unless the operator forces the measurement anyway.
+
+`ahde improve` runs the same cycle over and over — run, diagnose, apply the next
+unapplied Builder proposal on `candidate/auto-<n>`, cheap check, verify what
+looks promising — under one routine cost question covering the whole planned
+loop. It stops and hands back when the target pass rate is reached, the cycle
+budget is spent, a development verdict is not `improved`, the cheap check is flat
+twice in a row, infrastructure errors go over the budget, or a verified candidate
+is ready. It never touches the sealed guardrail and never promotes, adopts,
+publishes a corpus or approves a Spec. A promotion additionally drafts the cases
+it flipped fail→pass as regression guards; the operator publishes that draft like
+any other.
 
 Corpus drafts and proposals are authored in Builder Pi; the commands above only
 publish, evaluate, and decide over the artifacts it produced. The typed proposal
@@ -443,6 +581,7 @@ are listed as `legacy · not comparable` and never reused as baselines.
 
 <state-root>/projects/<project-id>/
   specs/**, builder-corpus-drafts/**, builder-corpus-imports/**, corpora/**
+  labels/<eval-run-id>.jsonl   human judge labels; notes, never a receipt
   approval receipts
   workbench/{focus.json,corpus-publications/**,candidate-abandonments/**}
 
@@ -506,7 +645,8 @@ retired Workbench-TUI, and deleted one-shot-adapter files.
 |---|---|
 | `src/builder/runtime.ts` | isolated long-lived Builder Pi host |
 | `src/builder/extension.ts` | the three Workbench tools, their production dependencies, and Pi registration |
-| `src/builder/commands.ts` | slash commands, review actions, one-dialog promote/reject |
+| `src/builder/commands.ts` | slash commands (`/test`, `/fix`, `/ship` first), review actions, one-dialog promote/reject |
+| `src/workbench/transition-policy.ts` | legal stages, the consequential/one-question/routine gate policy, and the run cost guard |
 | `src/builder/product-shell.ts`, `src/builder/onboarding.ts` | live header, first-run setup, readiness status |
 | `src/builder/render/**`, `src/builder/transcript.ts` | human renderers for every Workbench view, decision, and confirmation; persisted transcript blocks |
 | `src/application/target-adoption.ts`, `src/workbench/cycle-continuation.ts` | promoted-candidate fast-forward and cycle closure receipts |

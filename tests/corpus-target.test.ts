@@ -29,6 +29,94 @@ function source(target: ReturnType<typeof loadTarget>) {
 }
 
 describe("canonical development corpus target", () => {
+	/**
+	 * Regression: two suite-identity formulas existed — the manifest one in
+	 * `suiteHashOf` and this corpus one — and only the manifest side stripped the
+	 * promotion-only calibration policy. Turning `requireCalibration` on then
+	 * changed nothing about the dataset, the graders, or the judge model, yet
+	 * every published-corpus eval fell out of `compatibleDevelopmentEvals`: the
+	 * Workbench rewound to `ready-to-evaluate` and an in-flight candidate failed
+	 * promotion with "development eval artifacts do not match". Both formulas now
+	 * hash the same measurement-only view of the judge.
+	 */
+	it("keeps a published corpus comparable when the judge calibration policy is toggled", () => {
+		const judgeBlock = `  judge:
+    provider: qwen-internal
+    id: judge-model
+    api: openai-completions
+    baseUrl: http://127.0.0.1:9901/v1
+    apiKeyEnv: TEST_JUDGE_KEY
+    thinkingLevel: "off"
+    timeoutMs: 300000
+`;
+		const manifest = (calibration: string) => `id: test-target
+model:
+  provider: qwen-internal
+  id: qwen3.5-27b
+  api: openai-completions
+  baseUrl: http://127.0.0.1:9901/v1
+  apiKeyEnv: TEST_MODEL_KEY
+  thinkingLevel: "off"
+  timeoutMs: 300000
+instructions:
+  agentsMd: AGENTS.md
+skills: [skills/check-dbo]
+evalSuite:
+  id: test-suite
+  dataset: evals/development.jsonl
+  graders: evals/graders.yaml
+${judgeBlock}${calibration}`;
+		const plainDir = makeTargetFixture(baseFixtureFiles({ "manifest.yaml": manifest("") }));
+		const policyDir = makeTargetFixture(baseFixtureFiles({
+			"manifest.yaml": manifest("    requireCalibration:\n      minAgreement: 0.8\n      minLabels: 20\n"),
+		}));
+		const stateRoot = mkdtempSync(`${tmpdir()}/ahde-corpus-policy-`);
+		paths.push(plainDir, policyDir, stateRoot);
+
+		const plain = loadTarget(plainDir);
+		const withPolicy = loadTarget(policyDir);
+		expect(withPolicy.manifest.evalSuite.judge?.requireCalibration).toEqual({
+			minAgreement: 0.8,
+			minLabels: 20,
+		});
+		// The manifest surface was already policy-free; the corpus surface is the
+		// one this test pins.
+		expect(withPolicy.suiteHash).toBe(plain.suiteHash);
+
+		const metadata = createCorpus({
+			stateRoot,
+			projectId: "project-1",
+			name: "judged development set",
+			visibility: "development",
+			tasks: [{
+				id: "dev-judged",
+				input: "private task content",
+				graders: [{ type: "judge", rubric: "The answer is on topic." }],
+			}],
+		});
+		const corpus = loadCorpus({ stateRoot, projectId: "project-1", corpusId: metadata.id });
+		const before = targetWithDevelopmentCorpus(plain, corpus);
+		const after = targetWithDevelopmentCorpus(withPolicy, corpus);
+
+		expect(after.suiteHash).toBe(before.suiteHash);
+		expect(after.suiteIdentity).toBe("corpus");
+		// The measurement surface is what this pins. The Target revision is a
+		// separate axis and still guards a manifest edit on its own, so this
+		// resolve carries the policy Target's own identity: what must not happen
+		// is a *suite* mismatch on top of it.
+		const resolved = resolveDevelopmentTargetForEval({
+			target: withPolicy,
+			stateRoot,
+			projectId: "project-1",
+			evalRun: {
+				...source(before),
+				target: { id: withPolicy.manifest.id, gitSha: withPolicy.gitSha },
+			},
+		});
+		expect(resolved.corpus?.metadata.id).toBe(metadata.id);
+		expect(targetEvalSurface(resolved.target)).toEqual(targetEvalSurface(after));
+	});
+
 	it("keeps the manifest target only on an exact dataset/hash/suite match", () => {
 		const value = fixture();
 		const resolved = resolveDevelopmentTargetForEval({ ...value, evalRun: source(value.target) });

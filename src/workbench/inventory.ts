@@ -888,8 +888,8 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 				blockers: ["A human must explicitly abandon the interrupted attempt before retrying."],
 			};
 		}
-		if (status === "evaluated") return { stage: "candidate-review", headline: "Candidate evidence is ready for human review.", actions: ["review"], blockers: [] };
-		if (status === "reviewed") return { stage: "release-decision", headline: "Make the final promotion or rejection decision.", actions: ["promote", "reject"], blockers: [] };
+		if (status === "evaluated") return { stage: "candidate-review", headline: "Candidate evidence is ready for human review.", actions: ["review", "ship"], blockers: [] };
+		if (status === "reviewed") return { stage: "release-decision", headline: "Make the final promotion or rejection decision.", actions: ["ship", "promote", "reject"], blockers: [] };
 		return { stage: "candidate-verification", headline: "Finish exact candidate verification.", actions: ["run", "traces"], blockers: [] };
 	}
 	// A finished candidate holds the stage until a human closes its loop, no
@@ -916,7 +916,7 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 			return {
 				stage: "candidate-adoption",
 				headline: "Make the promoted candidate the active Target by fast-forwarding the current branch.",
-				actions: ["adopt-candidate"],
+				actions: ["ship", "adopt-candidate"],
 				blockers: [],
 			};
 		}
@@ -925,7 +925,9 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 			headline: status === "promoted"
 				? "The promoted candidate is the active Target. Start the next improvement cycle."
 				: "The candidate was rejected and the Target stays at its baseline. Start the next improvement cycle.",
-			actions: ["continue-cycle"],
+			// A rejected candidate has nothing left to ship; advertising it beside a
+			// headline that says so would tell the model two opposite things.
+			actions: status === "promoted" ? ["ship", "continue-cycle"] : ["continue-cycle"],
 			blockers: [],
 		};
 	}
@@ -962,7 +964,7 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 		if (draftChoice === "ambiguous") {
 			return { stage: "selection-required", headline: "Choose the Spec draft to review.", actions: ["select spec-draft"], blockers: [`${unapprovedDrafts.length} Spec drafts await review.`] };
 		}
-		return { stage: "spec-review", headline: "Review and approve an exact Spec draft.", actions: ["review", "approve-spec"], blockers: [] };
+		return { stage: "spec-review", headline: "Review and approve an exact Spec draft.", actions: ["review", "start-testing", "approve-spec"], blockers: [] };
 	}
 	if (approved.length === 0) {
 		return { stage: "spec-design", headline: "Describe the agent; Builder Pi will structure an editable Spec draft.", actions: ["submit spec-draft"], blockers: [] };

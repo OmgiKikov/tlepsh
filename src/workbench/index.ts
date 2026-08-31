@@ -1,4 +1,5 @@
 export * from "./calibration.js";
+export * from "./transition-policy.js";
 export * from "./errors.js";
 export * from "./types.js";
 export * from "./workbench.js";

@@ -11,6 +11,7 @@ import {
 import {
 	comparisonGateEvidence,
 } from "./candidate-experiment.js";
+import { screenEvalRunIds } from "./cheap-check.js";
 import { corpusDatasetLabel } from "./corpus-target.js";
 import { compareEvalRuns, type CompareResult } from "../compare.js";
 import { promotableVerdicts, withinInfrastructureBudget, type GateSurface } from "../domain/comparison-gate.js";
@@ -19,11 +20,15 @@ import { DiagnosisRecordSchema } from "../diagnosis.js";
 import {
 	CandidateRecordSchema,
 	type CandidateArtifactRef,
+	type ComparisonGateEvidence,
 	candidateStatus,
+	isPromotionGradeGateEvidence,
 	transitionCandidate,
 	type CandidateRecord,
 } from "../domain/candidate.js";
-import { TargetManifest } from "../manifest.js";
+import { TargetManifest, type JudgeCalibrationPolicy } from "../manifest.js";
+import { judgeEvidenceCalibration } from "./judge-labels.js";
+import { judgeCalibrationRefusal } from "../domain/judge-agreement.js";
 import { loadEvalRun, loadVerifiedEvalRun, type EvalRunRecord } from "../eval.js";
 import { SpecSnapshotSchema } from "../spec.js";
 import { canonicalJson, hashValue } from "../provenance.js";
@@ -61,6 +66,12 @@ export interface PromoteReviewedCandidateOptions {
 	version: string;
 	reason: string;
 	actorId?: string;
+	/**
+	 * Where this project's human judge labels live. Required only by a Target
+	 * whose manifest sets `evalSuite.judge.requireCalibration`: without it that
+	 * policy cannot be evaluated, and an unevaluable promotion policy refuses.
+	 */
+	stateRoot?: string;
 	now?: () => string;
 }
 
@@ -271,6 +282,17 @@ function verifyEvaluationPair(
 	return comparison;
 }
 
+/**
+ * Only `exact-comparison-gate-v4` evidence — paired mean grader scores — can
+ * back a promotion. Everything older stays readable and is named exactly, so
+ * the operator knows the candidate must be verified again rather than patched.
+ */
+function legacyEvidenceMessage(surface: GateSurface, evidence: ComparisonGateEvidence): string {
+	const version = "schemaVersion" in evidence ? `v${evidence.schemaVersion}` : "v1";
+	return `${surface} comparison uses legacy ${version} gate evidence and is not promotion-grade: ` +
+		"re-verify the candidate to record exact-comparison-gate-v4 evidence";
+}
+
 const MAX_PROVENANCE_ARTIFACT_BYTES = 16 * 1024 * 1024;
 
 function verifyArtifact(
@@ -449,7 +471,38 @@ function verifyAppliedBuilderOrigin(record: CandidateRecord, runsRootInput: stri
 }
 
 /** Re-read referenced eval/run artifacts before any promotion side effect. */
+/**
+ * A cheap-check screen is a one-repetition, candidate-only run of the cases
+ * that already failed. It exists to save money, never to prove anything, so it
+ * can never reach a promotion — not as an arm, not as a source eval.
+ */
+function assertNoScreenEvidence(record: CandidateRecord, runsRoot: string): void {
+	const screens = screenEvalRunIds(runsRoot);
+	if (screens.size === 0) return;
+	const cited = new Set<string>();
+	const evaluated = record.events.find((event) => event.type === "evaluated");
+	if (evaluated?.type === "evaluated") {
+		const { development, sealedHoldout } = evaluated.evaluation;
+		cited.add(development.baseline.evalRunId);
+		cited.add(development.candidate.evalRunId);
+		if (sealedHoldout) {
+			cited.add(sealedHoldout.baseline.evalRunId);
+			cited.add(sealedHoldout.candidate.evalRunId);
+		}
+	}
+	if (record.origin.kind === "applied-builder" && record.origin.source) {
+		cited.add(record.origin.source.evalRunId);
+	}
+	const offending = [...cited].filter((evalRunId) => screens.has(evalRunId)).sort();
+	if (offending.length > 0) {
+		throw new Error(
+			`promotion refused: ${offending.join(", ")} is a cheap-check screen, which is never promotion evidence`,
+		);
+	}
+}
+
 function verifyPromotionEvidence(record: CandidateRecord, runsRoot: string): void {
+	assertNoScreenEvidence(record, runsRoot);
 	const sourceEval = verifyAppliedBuilderOrigin(record, runsRoot);
 	const evaluated = record.events.find((event) => event.type === "evaluated");
 	if (!evaluated || evaluated.type !== "evaluated") throw new Error("candidate has no evaluated evidence");
@@ -492,8 +545,8 @@ function verifyPromotionEvidence(record: CandidateRecord, runsRoot: string): voi
 	}
 	const developmentEvidence = evaluated.evaluation.development.comparison;
 	if (!developmentEvidence) throw new Error("development comparison evidence is not reconstructable");
-	if (!("verdict" in developmentEvidence)) {
-		throw new Error("development comparison uses legacy gate evidence without a verdict and is not promotion-grade");
+	if (!isPromotionGradeGateEvidence(developmentEvidence)) {
+		throw new Error(legacyEvidenceMessage("development", developmentEvidence));
 	}
 	const expectedDevelopment = comparisonGateEvidence(
 		development,
@@ -521,8 +574,8 @@ function verifyPromotionEvidence(record: CandidateRecord, runsRoot: string): voi
 	}
 	const holdoutEvidence = holdout.comparison;
 	if (!holdoutEvidence) throw new Error("sealed comparison evidence is not reconstructable");
-	if (!("verdict" in holdoutEvidence)) {
-		throw new Error("sealed comparison uses legacy gate evidence without a verdict and is not promotion-grade");
+	if (!isPromotionGradeGateEvidence(holdoutEvidence)) {
+		throw new Error(legacyEvidenceMessage("sealed", holdoutEvidence));
 	}
 	const expectedHoldout = comparisonGateEvidence(comparison, {
 		corpusId: holdout.corpus.id,
@@ -534,6 +587,52 @@ function verifyPromotionEvidence(record: CandidateRecord, runsRoot: string): voi
 	if (!promotableVerdicts(developmentEvidence.verdict, holdoutEvidence.verdict)) {
 		throw new Error(
 			`promotion refused by the comparison gate: development ${developmentEvidence.verdict}, sealed ${holdoutEvidence.verdict}`,
+		);
+	}
+}
+
+/** Every eval run this promotion rests on, development and sealed alike. */
+function promotionEvalRunIds(record: CandidateRecord): string[] {
+	const evaluated = record.events.find((event) => event.type === "evaluated");
+	if (evaluated?.type !== "evaluated") return [];
+	const holdout = evaluated.evaluation.sealedHoldout;
+	return [
+		evaluated.evaluation.development.candidate.evalRunId,
+		...(holdout ? [holdout.candidate.evalRunId] : []),
+	];
+}
+
+/**
+ * A judge nobody has checked is an opinion, and `requireCalibration` is a
+ * project saying it will not promote on one. The policy reads only grader spec
+ * hashes — never sealed content — and it refuses rather than guesses when the
+ * labels it would need cannot be reached at all.
+ */
+function assertJudgeCalibrated(
+	policy: JudgeCalibrationPolicy | undefined,
+	record: CandidateRecord,
+	options: { runsRoot: string; stateRoot?: string },
+): void {
+	if (!policy) return;
+	if (!options.stateRoot) {
+		throw new Error(
+			"promotion refused: evalSuite.judge.requireCalibration is set but this promotion has no label store to check it against",
+		);
+	}
+	const calibration = judgeEvidenceCalibration({
+		runsRoot: options.runsRoot,
+		stateRoot: options.stateRoot,
+		projectId: record.projectId,
+		evalRunIds: promotionEvalRunIds(record),
+	});
+	const refusal = judgeCalibrationRefusal(policy, {
+		judgeGraderSpecs: calibration.specHashes.length,
+		stats: calibration.stats,
+	});
+	if (refusal) {
+		throw new Error(
+			`promotion refused: ${refusal}. ` +
+				"Run `ahde label <evalRunId> --target <dir>` and grade the judge before promoting.",
 		);
 	}
 }
@@ -573,6 +672,10 @@ export function promoteReviewedCandidate(
 		);
 	}
 	verifyPromotionEvidence(record, options.runsRoot);
+	assertJudgeCalibrated(manifestResult.data.evalSuite.judge?.requireCalibration, record, {
+		runsRoot: options.runsRoot,
+		...(options.stateRoot ? { stateRoot: options.stateRoot } : {}),
+	});
 
 	const tag = `v${options.version}`;
 	const tagExists = spawnSync(

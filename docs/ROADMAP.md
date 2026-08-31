@@ -1,197 +1,268 @@
-# AHDE Roadmap — after V1.8
+# AHDE Roadmap — V2: measure, then improve, then integrate
 
-V1.8 makes the measurement honest and fast (see `V1_8_EVIDENCE_GATE.md`). This
-document records what would make AHDE a "Claude Code for agents": a tool where
-you describe a task and the agent's harness measurably gets better at that
-task, cycle after cycle. Items are ordered by leverage for that goal.
+Status 2026-08-30. Branch `v2-measurement` (off master `9973bad`). This
+supersedes the "after V1.8" ordering; the old item numbers are mapped to waves
+in the appendix so earlier references still resolve.
 
-## Why the Builder never sees the sealed holdout
+AHDE is stage 2 of an internal platform: Pi is the runtime (stage 1); AHDE
+creates an agent's harness, evaluates it, and improves it through evidence.
+The order below is deliberate: every later item is validated by the first
+wave, and the platform needs stable seams, not a moving loop.
 
-The Builder optimizes the harness against the cases it can see; that is its
-job. If it could see the sealed cases too, "+23pp on sealed" would prove
-nothing — an instruction like "when contract №23 is mentioned, call
-check_dbo" passes the case without generalizing. The development basket is
-the textbook: the Builder sees all of it, with every failed trace. The sealed
-holdout is the exam, and an exam only measures anything when nobody studied
-it. The friction this creates (someone must write ≥15 sealed cases) is
-addressed by item 3 below, not by opening the holdout.
+## Why this order — what we checked (2026-08-30)
 
-## V1.9 — Feedback → Evals (closing the right half of the loop)
+In 2026 "harness engineering / harness optimization" became a field. The
+sources that shaped this roadmap:
 
-Status 2026-08-30 on branch `evidence-gate`: item 0 (dialogue cases, history
-prefix) landed; 0b landed end to end (core + Builder/CLI surfaces); 0c landed
-as the application core (`docs/V1_9_TOOL_WORKSHOP.md` specifies the Builder
-surface); item 1 landed as marks in `ahde target` + the dataset flow (the
-simulated user and `ahde feedback import` remain).
+- [Meta-Harness](https://arxiv.org/abs/2603.28052) (Mar 2026): an agentic
+  proposer that reads source, scores, and traces of *all* prior candidates.
+- [SkillOpt](https://arxiv.org/abs/2605.23904) (May 2026): bounded
+  add/delete/replace edits to skill documents, accepted only when they
+  strictly improve a held-out score; +19–25 pp on GPT-5.5 across chat, Codex
+  and Claude Code; beats GEPA and TextGrad. This is AHDE's proposal shape.
+- [Do Agent Optimizers Compound?](https://arxiv.org/abs/2607.14004)
+  (Jul 2026): on Terminal-Bench 2.0 gains compound only when regression
+  control is inside the optimization loop. This is AHDE's sealed guardrail.
+- [Better Harnesses, Smaller Models](https://arxiv.org/abs/2607.08938)
+  (Jul 2026): a small model with an adapted harness recovers 89.7% of a large
+  model's performance at 4% of the cost; adaptations are discovered from
+  failure trajectories. The ombudsman result (9B model, 40% → 96%) is this
+  experiment, not a toy.
+- [Harness-R1](https://arxiv.org/abs/2608.02276), [SBCO](https://arxiv.org/abs/2608.10157),
+  [Recursive Harness Self-Improvement](https://arxiv.org/abs/2607.15524),
+  [Adaptive Auto-Harness](https://arxiv.org/abs/2606.01770),
+  [GEPA](https://arxiv.org/abs/2507.19457) (ICLR 2026 oral; Pareto
+  population, 100–500 evaluations per optimization).
+- [Catching One in Five](https://arxiv.org/abs/2606.10315) (Jun 2026): a
+  production LLM judge caught 22% of confirmed problems — "a regression floor,
+  not a substitute for human review". [Time to REFLECT](https://arxiv.org/abs/2605.19196):
+  judges below 55% on failure detection.
+- [Nubank, KDD '26](https://arxiv.org/abs/2606.08867): evaluation-driven
+  support agents at 100M users; LLM judges with measured inter-rater
+  agreement; GEPA for consistency; "evaluation-pipeline quality directly
+  determines iteration velocity".
+- Anthropic: [error bars](https://www.anthropic.com/research/statistical-approach-to-model-evals)
+  (paired differences, resampling, power), [Demystifying evals](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)
+  (20–50 tasks from real failures; calibrate rubrics against humans; read
+  transcripts), [Infrastructure noise](https://www.anthropic.com/engineering/infrastructure-noise)
+  (infra errors swing scores by 6 pp; differences under 3 pp deserve
+  skepticism), [skill-creator evals](https://agentskills.io/skill-creation/evaluating-skills)
+  (with/without, blind A/B, LLM proposes the diff, human applies).
+- [OpenAI harness engineering](https://www.infoq.com/news/2026/02/openai-harness-engineering-codex/)
+  (Feb 2026); OpenAI Agent Builder + Evals are being shut down (Evals
+  read-only 2026-10-31, gone 2026-11-30): the hosted visual builder lost;
+  code-native, git-native loops survive.
+- [autoresearch](https://github.com/karpathy/autoresearch): the loop
+  (edit → bounded run → metric → keep/revert) is the product.
+- Pi 0.84.4 (2026-08-28) is plumbing-only relative to the vendored 0.84.3;
+  `packages/evals` exists but is undocumented and not a product. Nobody ships
+  the full AHDE combination (builder agent + author-hidden holdout +
+  paired-bootstrap/A-A gate + git-tag promotion).
 
-0. **Cases are dialogues.** Chat agents (RAG assistants, research agents)
-   live in multi-turn conversations, but a case is one message today. Two
-   layers: (a) a case with `messages` — the conversation so far plus the
-   last user turn — where graders judge the agent's next reply (cheap,
-   deterministic, the way chat models are evaluated; Pi's
-   `SessionManager.appendMessage` / `agent.state.messages` seed the history
-   before the final prompt); (b) a simulated user — a second model
-   with a goal and persona for N turns — with graders over the whole
-   transcript (a tool called on any turn, a turn budget, a rubric over the
-   dialogue). (a) first, ~1–2 days; (b) ~2–3 days. Feedback import (item 1)
-   must produce these dialogue cases, not single messages. Nobody writes
-   JSONL by hand: the conversation is the interface, the file is storage.
-0b. **Any data → benchmark.** Today only JSONL in AHDE's own shape imports;
-   everything else is hand-converted. Instead: drop anything into
-   `imports/` (CSV/TSV, JSON of any shape, Markdown/TXT, chat exports, XLSX;
-   PDF later). The host shows the Builder a bounded preview (columns, types,
-   first rows); the Builder proposes a *mapping recipe* (which column is the
-   input, which the reference answer, which metadata; which graders), the
-   human adjusts it in words on a few sample rows, and the host applies the
-   recipe deterministically to every row and hashes it into the import
-   receipt. Reference answers become a first-class case field, enabling the
-   missing graders: judge-with-reference, lexical/embedding similarity, exact
-   match. The host reserves a random (or stratified) sealed slice BEFORE the
-   Builder sees the preview, so a sealed holdout comes for free and honestly.
-   Chat exports become dialogue cases (item 0). Document folders are not
-   cases: they become the Target's retrieval tool; cases are questions over
-   them (own, from logs, or synthesized — host-side for sealed). This one
-   mechanism subsumes JSONL import and feedback import. ~3–4 days.
-0c. **Tool workshop: the Builder writes and tries real tool code.** Today
-   a custom tool is one executable authored blind through a `tool.upsert`
-   intent. Instead: the Builder gets `write`/`edit`/`bash` inside a
-   temporary worktree of the harness, confined to `tools/**`, `bin/**` and a
-   new declared `data/**` scope, plus `try_tool` to run a tool on sample
-   inputs in the same sandbox. Multi-file tools, dependencies through a
-   declared `setup` step (lockfile hashed into `toolsetHash`), data files
-   and index builds become possible; the outcome is still an ordinary
-   Proposal — exact diff, human apply, verification, promotion. The user's
-   checkout is never touched and nothing applies itself. Pi's `sandbox`,
-   `subagent` and `protected-paths` examples are the building blocks.
-   This is what "build me a RAG agent" needs end to end. ~3–4 days.
-   *Application core landed — see `V1_9_TOOL_WORKSHOP.md`: multi-file tools
-   with a declared setup step, `data/**` as a declared scope, the multi-file
-   and data intents, `tryTool` and `ahde tool try`. The Builder-facing
-   write/edit/bash workbench is the remaining wave.*
-1. **Feedback becomes tests.** In `ahde target`, any answer is marked 👍/👎
-   with one key; the Builder turns it into a case with a grader in a new
-   corpus draft. `ahde feedback import <dialogs.jsonl>` clusters real
-   dialogues into cases; the human publishes. Baskets should come from life,
-   not from imagination. ~2 days.
-2. **Autoloop inside the gates.** "Iterate until 90% or five cycles": the
-   Builder runs run → diagnose → propose → apply on a branch → verify by
-   itself and stops only at promotion or when the verdict is not `improved`.
-   The human approves the outcome, not every step. Requires V1.8 gates and
-   the worker pool. ~2 days.
-3. **Sealed holdout without pain.** Host-side generation of sealed cases by a
-   separate evaluator model call whose output never enters the Builder's
-   context; the human edits and seals. Removes the "write 15 cases by hand"
-   wall the guardrail creates. ~1 day.
-4. **Promoted fixes become guards.** On promotion, the tasks the candidate
-   flipped from fail to pass are pinned as regression guards (the existing
-   `add-case-from-run` made automatic), so solved problems stay solved. ~1 day.
-5. **Labeling in the Evidence Explorer.** 👍/👎 on traces in the browser feeds
-   both the feedback basket (1) and judge agreement (6). ~1 day.
+Where AHDE stands against practice (verified 2026-08-30):
 
-## Measurement quality (what makes real tasks measurable)
+| Ahead | Behind |
+|---|---|
+| paired per-task bootstrap with a three-way verdict + sealed guardrail (Inspect added a single-run `ci()` only in Aug 2026) | judge–human agreement (LangSmith Align, Ragas `judge_alignment`, Inspect `krippendorff_alpha`) |
+| A/A calibration — no other tool has it | simulated user (Harbor `--user-agent`, τ²-bench, DeepEval simulator) |
+| holdout hidden from the optimizer — nobody enforces it | multi-candidate search (GEPA, Meta-Harness, SkillOpt) |
+| infrastructure error budget, immutable provenance, git-tag promotion | partial credit, cost/latency in the verdict, regrade without rerun (Harbor `regrade`), semantic failure clustering, CI plumbing |
 
-6. **Judge reliability.** `ahde label`: a human labels 15–20 outputs; AHDE
-   reports judge–human agreement next to every judge-based verdict, plus
-   rubric templates the Builder uses. Without this a judge score is belief,
-   not a number. ~2 days.
-7. **Semantic failure modes for judge tasks.** Exact grader signatures can
-   never make a rubric failure "systemic". The Builder groups failures by
-   meaning, explicitly as hypotheses, used only to choose what to fix — never
-   as promotion evidence. ~1–2 days.
-8. **Search, not one guess.** For one failure mode the Builder proposes 2–3
-   different fixes; the pool verifies all; a table shows the verdicts; the
-   human promotes the best. Turns a cycle into a small harness search. ~2 days.
-9. **Partial credit in the gate.** Graders already carry a `score` in 0..1;
-   the comparison gate can pair mean scores instead of binary pass/fail and
-   gain power from the same runs. ~1 day.
-10. **Richer declarative graders.** Tool-argument checks (`argsMatches`),
-    tool-sequence checks (A before B), turn and latency budgets — fewer judge
-    calls, more exact signatures. ~1–2 days.
-11. **Cost and latency in the verdict.** "+5pp but 3× the cost and latency"
-    must be visible next to the interval; cost is in metrics today but not in
-    the decision. ~0.5 day.
-12. **A safety basket.** Templates for adversarial cases (prompt injection,
-    requests the agent must refuse) as a standard sealed component for
-    customer-facing agents. ~1 day.
+## Now vs. after — the operator's experience
 
-## Operations and feel
+| | Now (master 9973bad) | After wave 1 | After wave 2 | After wave 3 |
+|---|---|---|---|---|
+| Gates | 7 dialogs: approve, publish, apply, review, promote, adopt, next | 3: start testing · apply a change · ship | same | same, plus a web gate for the platform |
+| Verbs | 14 slash commands, stage names in the header | `/test` `/fix` `/ship`; header says the next verb | `ahde improve` runs cycles by itself | headless API |
+| Judge | a rubric the Builder wrote; nobody checked it | assertion checklists, a jury of 3, `ahde label`, agreement shown next to every judge verdict | — | — |
+| Changing a rubric | rerun everything (135 runs) | `ahde regrade`: re-score recorded answers | — | — |
+| Score | binary pass/fail per run | mean grader score; cost and latency beside the interval | — | — |
+| Trying a fix | one proposal → full verification | — | `ahde check` screens the failed cases first; `ahde improve` runs the cycle; 2–3 candidates per cycle in a Pareto table | — |
+| Builder's hands | semantic intents compiled by the host | — | **done** — edits files in a bound worktree, runs the tool it wrote; the proposal is the diff | — |
+| Chat agents | seeded history, grade the next reply | — | simulated user with a goal and persona | — |
+| Target sandbox | best-effort sandbox-exec/bwrap for `bash` | — | — | Gondolin / Docker, `required` in the bank profile |
+| Docs | 27 KB README, 35 invariants | — | — | one-page README with a real transcript; ~15 invariants |
 
-13. **Model comparison mode.** "Which model handles my task for the money" is
-    the first question users ask; provenance forbids that comparison by
-    design, so it needs an explicit exploratory report with no promotion. ~1 day.
-14. **`ahde watch`.** The basket on a schedule against the active Target;
-    calibration tells provider drift from noise. The "Monitor" step of the
-    factory loop. ~1 day.
-15. **Cost and time forecast before confirming.** "120 executions · ~$0.10 ·
-    ~3 min" from history and calibration in every run/verify dialog. ~0.5 day.
-16. **Agent growth chart.** `ahde log`: versions over time with pass rates,
-    resolved failure modes, and a human changelog per promotion — what changed
-    in behavior, not only in the diff. ~1 day.
-17. **Trace in the terminal.** `/trace task_014`: the failing dialogue inline,
-    bounded, no browser. ~0.5 day.
-18. **Import an existing agent.** Start from "here is my prompt and tools,
-    measure and improve it" instead of an empty directory. ~1 day.
+## Wave 1 — measurement you can trust (in progress)
 
-## Order
+Four lanes in worktrees off master, merged into `v2-measurement` after
+`npm run check`, `npm run demo`, `npm run verify:package` are green.
 
-After V1.8: 1, 2, 3 first (they close the loop from the "Evals are all you
-need" picture and remove the new friction); then 6, 7, 8 (they separate a tool
-that improves toy baskets from one that improves real tasks); the rest as the
-product demands.
+1. **regrade** — `ahde regrade <eval-run> --target . [--graders …]` re-scores
+   the recorded traces of an eval run with new graders; no Target calls; a
+   derived EvalRun with the same target/workspace/dataset axes and a new
+   suite hash (`derivedFrom` / `regradeOf`). Regrade a baseline and a
+   candidate with the same graders and they are comparable to each other.
+2. **gate v4** — the comparison gate pairs per-task mean grader scores
+   instead of pass rates (binary graders unchanged; fractional graders gain
+   power); `exact-comparison-gate-v4`; cost, latency and token ratios are
+   rendered beside every verdict, never gating.
+3. **judge quality** — `judge` graders accept `assertions` (yes/no/unknown
+   checklists; score = yes/total; stable failure-mode signatures per failed
+   assertion index) and `jury` (n independent judge calls, majority);
+   `ahde label <eval-run>` collects human pass/fail on a seeded sample without
+   showing the judge's verdict first; `ahde judge-agreement` reports n,
+   agreement rate and Cohen's κ per grader; reports and candidate reviews show
+   `judge agreement 84% · κ 0.62 · n=50` or `judge not calibrated`; optional
+   `evalSuite.judge.requireCalibration` refuses promotion on uncalibrated
+   judge evidence.
+4. **feel** — a gate policy: three consequential moments (`start-testing` =
+   approve Spec + publish tests + run in one dialog; `apply-proposal`; `ship`
+   = review + promote + adopt + continue in one dialog); routine decisions
+   (run, calibrate, verify, regrade) execute without a dialog under a cost
+   guard (ask once above `AHDE_ROUTINE_COST_USD` / `AHDE_ROUTINE_MINUTES`,
+   estimated from history); `/test` `/fix` `/ship`; the persona acts instead
+   of narrating stages; vocabulary in the operator's words.
 
-## Also worth doing
+Acceptance for the wave: all three verification commands green on the merged
+branch; the closed-loop Pi test passes with exactly three confirmations.
 
-19. **Cheap check before the expensive one.** Run a proposal on the failed
-    cases only (5 × 1) before a full verification; if nothing improves, skip
-    the 30×3 + 15×3 spend. The original plan's `smoke` gate, in the right
-    place. ~0.5 day.
-20. **Coverage map Spec × cases.** Which Spec jobs no case exercises; the
-    Builder proposes cases for the gaps. ~1 day.
-21. **Promotion as a pull request; evals in CI.** Candidate branch → PR with
-    the verdict as a comment; promote = merge. `ahde ci` runs the basket on
-    every PR to the harness repository so human edits pass the same gate.
-    ~2 days.
-22. **Ideal answer as grader.** For a failed case the Builder drafts the
-    answer it should have given; the human edits; it becomes the expected
-    output or rubric. The fastest route to good judge rubrics. ~1 day.
-23. **Bisect on drift.** When `ahde watch` catches a drop, binary-search over
-    harness versions and dates: "harness v0.4 broke it" vs "the provider
-    changed on Sept 12". ~1 day.
+## Wave 2 — the loop that compounds
 
-Beyond this the list is speculation: ship V1.8, let people run the loop on
-their own tasks, and add what they hit.
+5. **Cheap check before the expensive one** — *landed*. `ahde check --target .
+   --candidate <id>`, and `verify-candidate` runs it first: the candidate on
+   only the cases the source eval recorded as failing, once, candidate arm
+   only, against those cases' recorded outcomes. `flat` (nothing previously
+   failing now passes) stops the verification until the operator forces it.
+   The screen is never evidence: its eval run carries `solo`, every screen is
+   recorded under `runs/screens/`, no comparison gate sees one, promotion
+   refuses a candidate that cites one, and `add-case-from-run` refuses one as a
+   source (old item 19).
+6. **Population** — 2–3 candidates per failure mode with different
+   hypotheses, verified in the pool, a Pareto table (score × cost), the human
+   promotes the best; the proposer reflects over the traces of all prior
+   candidates (GEPA / Meta-Harness) (old item 8).
+7. **Autoloop inside the gates** — *landed*. `ahde improve --target . --until
+   90% --max-cycles 5 [--jobs N] [--project id]` and a routine Workbench
+   `improve` decision under the same cost guard, estimated over the whole
+   planned loop: run → diagnose → top proposable failure mode → the next
+   unapplied Builder proposal → apply on `candidate/auto-<n>` → cheap check →
+   development verification when the screen is promising. It stops at the
+   target pass rate, the cycle budget, a verdict other than `improved`, two
+   flat screens in a row, an over-budget infrastructure error, or a verified
+   candidate — because the sealed guardrail and the promotion are the human's.
+   Authoring still needs Builder Pi: a headless authoring seam is wave 3 (#12)
+   (old item 2).
+8. **Promoted fixes become guards** — *landed*. A promotion derives the tasks
+   that flipped fail→pass between its two development arms into one corpus
+   draft revision, through the same exact-evidence rules the Builder's
+   `add-case-from-run` goes through. It runs after the promotion receipt, is
+   reported as `guards: { draftId, cases }`, degrades to a warning, and never
+   publishes: the operator publishes that draft like any other (old item 4).
+9. **Builder with hands** — *done.* `ahde_workshop_read` / `_write` / `_bash` /
+   `_try` live inside one bound detached worktree confined to `AGENTS.md`,
+   `skills/**`, `tools/**`, `bin/**`, `data/**`; the proposal is the worktree
+   diff, compiled at `workshop-close` and admitted through the unchanged
+   receipt, apply, verify and promote chain. The intent compiler stays as the
+   fallback for single-file edits and remains the only path to
+   `execution.configure` (`docs/V1_9_TOOL_WORKSHOP.md`, old item 0c).
+10. **Simulated user** — a second model with a goal and persona for N turns;
+    graders over the whole transcript (old item 0b).
+11. **Host-side sealed generation** — an evaluator-model call whose output
+    never enters the Builder's context; the human edits and seals (old item 3).
 
-## Stand on Pi (checked against vendored pi-mono 0.84.3)
+11b. **The proposer remembers what was already tried.** Today the Builder sees
+    the current failure modes and nothing else: cycle 5 can re-propose what
+    cycle 2 already tried and lost. [Meta-Harness](https://arxiv.org/abs/2603.28052)
+    makes this the core of the method — its proposer reads the source, the
+    scores, and the traces of *every* prior candidate from a structured
+    directory, and that memory is what lets a search compound instead of
+    wandering. AHDE already stores exactly this (every proposal, its diff, its
+    verdict, its diagnosis, all content-addressed); nothing reads it back to
+    the Builder. Add one bounded view — what was tried, what it changed, what
+    it scored, why it was rejected — into the authoring context, and make the
+    population search (#6) draw from it. ~1 day, and it is the cheapest
+    quality win on this list.
 
-Before writing any of the above from scratch, reuse what the vendored Pi
-already ships:
+## Wave 3 — platform integration
 
-- **`packages/evals` + `vitest-evals`** — `createPiCodingAgentHarness`
-  (isolated temp project/agent dirs, model per harness, `noTools`,
-  `transformSystemPrompt`, prompt/reload step sequences, native session JSONL
-  attached per run, `runs.jsonl` index) and `vitest-evals` judges
-  (`FactualityJudge` with an expected answer, `StructuredOutputJudge`,
-  `ToolCallJudge`, `createJudge`, fuzzy matchers) plus normalized traces
-  (`toolCalls`, `assistantMessages`, GenAI semantic attributes). AHDE keeps
-  its own runner for provenance/isolation, but the reference-answer graders
-  (roadmap 0b) and tool-call matchers should wrap these judges instead of a
-  bespoke judge prompt; comparative `evalHarnessTable` is the model-comparison
-  mode (13) almost for free.
-- **Session tree** — `SessionManager.appendMessage`, `branch`,
-  `createBranchedSession`, `agent.state.messages = …`: dialogue cases (0) are
-  "append the history, then `prompt(lastUserTurn)`", no runner surgery.
-  `/fork` and `/tree` could give the Builder conversation branching for
-  alternative proposals (8).
-- **`--mode rpc`, `-p`, `--mode json`, `AgentSession` SDK** — headless
-  Builder for CI (21), IDE/web clients, and the closed-loop tests.
-- **Gondolin / `examples/extensions/sandbox`** — route the Target's built-in
-  `bash`/`read`/`write` into a micro-VM; today only declarative tools are
-  sandboxed and the built-in `bash` runs on the host with a workspace cwd.
-- **`packages/server` + `session-backends`** — remote/team sessions over
-  CBOR; the base for a shared Builder later, not now.
-- **`examples/extensions/questionnaire`, `structured-output`
-  (`terminate: true`), `subagent`, `permission-gate`, `protected-paths`** —
-  the Builder's one-question interviews, a proper final-answer tool for the
-  Target instead of the recovery prompt, sub-agents, and gate patterns.
-- **`packages/telemetry`** — typed span/event schema for RunEvents if they
-  ever leave the process.
+12. **Headless mode** — the Workbench behind JSON-RPC/HTTP with an injected
+    `WorkbenchHumanGate` (the platform's confirmation UI) instead of
+    "RPC fails closed"; per-project state/runs roots on a server; Builder via
+    Pi `--mode rpc`. The seams (`AhdeWorkbenchDependencies`, `gate.confirm`)
+    already exist; this is an implementation, not a refactor.
+13. **Gondolin / Docker for the Target's built-in `bash`**; `sandbox: required`
+    in the bank profile.
+14. **Ceremony cut** — receipts only at approve/publish/apply/promote/adopt;
+    inventory cached by mtime; README to one page with a real transcript;
+    CONTEXT invariants consolidated to about 15.
+15. **Growth chart** — `ahde log`: versions × pass rate × cost, resolved
+    failure modes, a human changelog per promotion (old item 16).
+16. **Model comparison mode** and **`ahde watch`** (old items 13, 14) as the
+    platform demands.
+
+## Owner-only items (nothing else depends on the code)
+
+- **Two or three real Targets.** 30–50 real cases each with what a correct
+  answer looks like, plus 15–20 sealed cases the Builder never sees. Any file
+  in `imports/` — CSV, JSON, chat export. Until then every wave is verified on
+  the ombudsman toy graders.
+- **Builder model.** `ahde` → `/login` → `/model` on a frontier model; the
+  Target stays cheap. `~/.ahde` currently has no default model and no
+  provider login.
+- **Merging `v2-measurement` into master.**
+
+## Definition of done for V2
+
+On two or three real agents: at least one promotion on judge-graded tasks
+with measured judge agreement above the threshold; a "change → verdict" cycle
+an order of magnitude cheaper than a full verification thanks to the cheap
+check and regrade; three consecutive cycles without a sealed regression and
+with compounding gains; the platform drives the loop headlessly with its own
+confirmation UI.
+
+## Non-goals (with reasons)
+
+- New artifact or receipt types (the audit chain is complete; add screens,
+  not schemas).
+- Features beyond this list before real Targets exist.
+- RL or weight updates (Agent Lightning's territory).
+- A web UI inside AHDE (the platform owns the UI).
+- Semantic failure clustering as *evidence* — hypotheses to choose what to
+  fix, never promotion evidence (invariant 29).
+- Windows.
+
+## Stand on Pi (checked against 0.84.4, 2026-08-28)
+
+Reuse before writing: `packages/evals` + `vitest-evals` (`createPiCodingAgentHarness`,
+`evalHarnessTable` baseline/candidate with repetitions, judges) for grader
+shapes and model comparison; the session tree (`appendMessage`, branching)
+for dialogue cases and alternative proposals; `--mode rpc` / `-p` / JSON for
+headless Builder and CI; Gondolin / Docker / OpenShell for Target isolation;
+`examples/extensions` (sandbox, subagent, permission-gate, protected-paths,
+questionnaire, structured-output) for the Builder's hands and gates.
+
+Earendil radar: Pi's core stays MIT with Fair Source and enterprise tiers;
+evals and server features are the natural paid lane. Track `packages/evals`
+and the `pi-review-loop` extension; keep AHDE's graders in a shape that can
+wrap Pi's judges; pin Pi upgrades (0.84.4 changes nothing AHDE depends on).
+
+## Appendix — where the V1.9 items went
+
+| Old | Item | Now |
+|---|---|---|
+| 0 | dialogue cases | landed (V1.9); simulated user → wave 2 (#10) |
+| 0b | any data → benchmark | landed (V1.9) |
+| 0c | tool workshop | core landed; Builder surface → wave 2 (#9) |
+| 1 | feedback becomes tests | landed (marks); `feedback import` folded into any-data |
+| 2 | autoloop | wave 2 (#7) |
+| 3 | sealed holdout without pain | wave 2 (#11) |
+| 4 | promoted fixes become guards | wave 2 (#8) |
+| 5 | labeling in the Evidence Explorer | wave 1 `ahde label` (CLI first); browser later |
+| 6 | judge reliability | wave 1 (#3) |
+| 7 | semantic failure modes | non-goal as evidence; hypotheses only |
+| 8 | search, not one guess | wave 2 (#6) |
+| 9 | partial credit | wave 1 (#2) |
+| 10 | richer declarative graders | after real Targets show which checks are missing |
+| 11 | cost and latency in the verdict | wave 1 (#2) |
+| 12 | safety basket | after real Targets |
+| 13, 14 | model comparison, `ahde watch` | wave 3 (#16) |
+| 15 | cost/time forecast before confirming | wave 1 (#4, cost guard) |
+| 16 | growth chart | wave 3 (#15) |
+| 17 | trace in the terminal | with `ahde label` (wave 1 shows the answer inline) |
+| 18 | import an existing agent | any-data + `ahde init` cover most of it; revisit |
+| 19 | cheap check | wave 2 (#5) |
+| 20 | coverage map | after real Targets |
+| 21 | promotion as a PR; evals in CI | wave 3, with headless mode |
+| 22 | ideal answer as grader | reference graders landed (V1.9); the Builder drafting the answer → with #9 |
+| 23 | bisect on drift | after `ahde watch` |

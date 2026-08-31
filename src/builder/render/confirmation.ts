@@ -66,6 +66,35 @@ function specLines(spec: unknown, paint: Paint): string[] {
 	];
 }
 
+/** Operator-facing name for one planned sub-decision of a composite. */
+function stepLabel(step: string): string {
+	switch (step) {
+		case "approve-spec": return "approve the Spec draft";
+		case "publish-corpus": return "publish the eval basket";
+		case "run-eval": return "run the basket against the Target";
+		case "review-candidate": return "record the review";
+		case "promote-candidate": return "tag the reviewed revision";
+		case "adopt-candidate": return "fast-forward this branch to it";
+		case "continue-cycle": return "close the cycle";
+		default: return step;
+	}
+}
+
+/**
+ * How far the judge behind this evidence has been checked against a human. The
+ * operator sees it BEFORE confirming a ship: promotion can refuse on it, and a
+ * number nobody has checked is the one thing a verdict cannot tell you.
+ */
+function judgeCalibrationLines(candidate: WorkbenchCandidateSummary, paint: Paint): string[] {
+	if (candidate.judgeAgreement === undefined) return [];
+	if (candidate.judgeAgreement === null) {
+		return [`${paint.dim("Judge")} ${paint.warning("not calibrated")} ${paint.dim("· ahde label checks it against your own eyes")}`];
+	}
+	const { agreement, kappa, labels } = candidate.judgeAgreement;
+	const kappaText = kappa === null ? "κ —" : `κ ${kappa.toFixed(2)}`;
+	return [`${paint.dim("Judge")} agreement ${Math.round(agreement * 100)}% ${paint.dim(`· ${kappaText} · n=${labels}`)}`];
+}
+
 function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string[] {
 	const subject = bag(confirmation.subject);
 	switch (confirmation.kind) {
@@ -91,6 +120,34 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			if (diff) lines.push(paint.dim("manifest.yaml diff"), ...renderUnifiedDiff(diff, paint, { maxLines: 80 }));
 			else lines.push(paint.warning("manifest.yaml diff is not available in this subject"));
 			return lines;
+		}
+		case "start-testing": {
+			const steps = strings(subject.steps);
+			return [
+				`${paint.dim("Spec")} ${text(subject.spec, 96)}`,
+				`${paint.dim("Basket")} ${text(subject.basket, 96)}`,
+				`${paint.dim("Run")} ${text(subject.run, 96)}`,
+				`${paint.dim("Estimate")} ${text(subject.estimatedCost, 40)} ${paint.dim("·")} ${text(subject.estimatedTime, 40)}`,
+				"",
+				paint.dim("This one confirmation covers:"),
+				...bullets(steps.map((step) => stepLabel(step)), paint),
+				paint.muted("Each step still writes its own durable record; the first one that fails stops the rest."),
+			];
+		}
+		case "ship": {
+			const steps = strings(subject.steps);
+			const candidate = subject.candidate;
+			return [
+				`${paint.dim("Development")} ${text(subject.development, 96)}`,
+				`${paint.dim("Sealed")} ${text(subject.sealed, 96)}`,
+				...(isCandidateSummary(candidate) ? judgeCalibrationLines(candidate, paint) : []),
+				`${paint.dim("Version")} ${subject.tag ? paint.bold(text(subject.tag, 40)) : paint.warning("already promoted")}`,
+				`${paint.dim("Branch")} ${text(subject.fastForward, 96)}`,
+				"",
+				paint.dim("This one confirmation covers:"),
+				...bullets(steps.map((step) => stepLabel(step)), paint),
+				...(isCandidateSummary(candidate) ? ["", ...renderCandidate(candidate, paint)] : []),
+			];
 		}
 		case "approve-spec":
 			return [

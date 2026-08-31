@@ -45,6 +45,7 @@ export const GraderCheckCodeSchema = z.enum([
 	"semantic-rubric",
 	"reference-exact",
 	"reference-similarity",
+	"turn-budget",
 ]);
 export type GraderCheckCode = z.infer<typeof GraderCheckCodeSchema>;
 
@@ -60,6 +61,7 @@ const CHECK_CODE_GRADER_TYPE: Record<GraderCheckCode, string> = {
 	"semantic-rubric": "judge",
 	"reference-exact": "exact",
 	"reference-similarity": "similarity",
+	"turn-budget": "turn_budget",
 };
 
 export const GraderResultSchema = z
@@ -73,8 +75,34 @@ export const GraderResultSchema = z
 		specHash: HashSchema.optional(),
 		/** Typed systemic check category. Paired with specHash for new evidence. */
 		checkCode: GraderCheckCodeSchema.optional(),
+		/**
+		 * Per-assertion outcome of an assertion rubric, by 1-based index. The
+		 * indexes are structure, the judge's evidence is prose: only these enter
+		 * a stable comparison, and only they belong in a persisted signal.
+		 */
+		assertions: z
+			.strictObject({
+				total: z.number().int().positive().max(64),
+				failed: z.array(z.number().int().positive().max(64)).max(64),
+			})
+			.optional(),
 	})
 	.superRefine((result, context) => {
+		if (result.assertions) {
+			const { total, failed } = result.assertions;
+			if (new Set(failed).size !== failed.length) {
+				context.addIssue({ code: "custom", path: ["assertions", "failed"], message: "must be unique" });
+			}
+			if (failed.some((index) => index > total)) {
+				context.addIssue({ code: "custom", path: ["assertions", "failed"], message: "index exceeds total" });
+			}
+			if (JSON.stringify(failed) !== JSON.stringify([...failed].sort((a, b) => a - b))) {
+				context.addIssue({ code: "custom", path: ["assertions", "failed"], message: "must be ascending" });
+			}
+			if (result.passed !== (failed.length === 0)) {
+				context.addIssue({ code: "custom", path: ["passed"], message: "must reflect the failed assertions" });
+			}
+		}
 		const hasSpecHash = result.specHash !== undefined;
 		const hasCheckCode = result.checkCode !== undefined;
 		if (hasSpecHash !== hasCheckCode) {
@@ -121,6 +149,14 @@ export const JudgeMetricsSchema = z.strictObject({
 });
 export type JudgeMetrics = z.infer<typeof JudgeMetricsSchema>;
 
+/**
+ * What the simulated user cost this run, in the judge's units and for the same
+ * reason: a second model is billed against the same endpoint, and a run that
+ * hides half its spend cannot be compared on cost.
+ */
+export const SimulatedUserMetricsSchema = JudgeMetricsSchema;
+export type SimulatedUserMetrics = z.infer<typeof SimulatedUserMetricsSchema>;
+
 export const RunMetricsSchema = z.strictObject({
 	tokens: TokenMetricsSchema,
 	costUsd: z.number().nonnegative(),
@@ -129,12 +165,21 @@ export const RunMetricsSchema = z.strictObject({
 	toolErrors: z.number().int().nonnegative(),
 	recoveryAttempts: z.number().int().nonnegative(),
 	judge: JudgeMetricsSchema.nullable().optional(),
+	/** What the user model spent. Absent on every run without a simulated user. */
+	simulatedUser: SimulatedUserMetricsSchema.nullable().optional(),
 	/**
 	 * Dialogue turns seeded into the session before the graded prompt. Absent on
 	 * every single-message case, so their run.json stays byte-for-byte what it
 	 * was before dialogue cases existed.
 	 */
 	seededTurns: z.number().int().nonnegative().optional(),
+	/**
+	 * Agent turns the conversation actually took. Absent on every run without a
+	 * simulated user, where the answer is exactly one turn by construction.
+	 */
+	conversationTurns: z.number().int().positive().optional(),
+	/** Why the conversation ended. Absent on every run without a simulated user. */
+	conversationStop: z.enum(["max-turns", "sentinel", "stop-when"]).optional(),
 });
 export type RunMetrics = z.infer<typeof RunMetricsSchema>;
 
@@ -178,7 +223,12 @@ export const RunRecordSchema = z
 		runId: ArtifactIdSchema,
 		taskId: NonEmptyStringSchema,
 		repetitionIndex: z.number().int().nonnegative(),
-		label: z.enum(["baseline", "candidate", "solo"]),
+		/**
+		 * `regrade` is the one label no model call can produce: it marks a record
+		 * that re-scores an already-recorded trace, so it can never be mistaken for
+		 * a baseline, a candidate arm, or a reusable baseline.
+		 */
+		label: z.enum(["baseline", "candidate", "solo", "regrade"]),
 		status: RunStatusSchema,
 		error: z.string().nullable(),
 		startedAt: NonEmptyStringSchema,
@@ -217,6 +267,14 @@ export const RunRecordSchema = z
 		parent: z
 			.strictObject({ evalRunId: NonEmptyStringSchema, candidateOf: GitShaSchema.nullable() })
 			.nullable(),
+		/**
+		 * Set only by `ahde regrade`: the exact recorded execution whose copied
+		 * trace this record re-scores. Absent — and canonically dropped — on every
+		 * run that actually called a model, so existing evidence is unchanged.
+		 */
+		derivedFrom: z
+			.strictObject({ evalRunId: ArtifactIdSchema, runId: ArtifactIdSchema })
+			.optional(),
 	})
 	.superRefine((record, context) => {
 		if (record.status === "running") {
@@ -231,6 +289,12 @@ export const RunRecordSchema = z
 		}
 		if (record.status === "error" && !record.error) {
 			context.addIssue({ code: "custom", path: ["error"], message: "error run must explain the error" });
+		}
+		if (record.label === "regrade" && record.derivedFrom === undefined) {
+			context.addIssue({ code: "custom", path: ["derivedFrom"], message: "a regrade run must name the execution it re-scored" });
+		}
+		if (record.derivedFrom?.runId === record.runId) {
+			context.addIssue({ code: "custom", path: ["derivedFrom", "runId"], message: "a run cannot be derived from itself" });
 		}
 		if (record.evalResults) {
 			const expectedOutcome = record.evalResults.graders.every((grader) => grader.passed) ? "pass" : "fail";
@@ -327,6 +391,13 @@ export const ProvenanceAxesSchema = z.strictObject({
 	params: JsonObjectSchema,
 	modelSpec: JsonObjectSchema,
 	judge: ModelFingerprintSchema.nullable(),
+	/**
+	 * The model that played the user, when the suite had one. Optional rather
+	 * than nullable on purpose: canonical JSON drops an absent key, so evidence
+	 * produced before simulated users existed keeps its exact provenance key and
+	 * stays comparable with evidence produced after.
+	 */
+	simulatedUser: ModelFingerprintSchema.optional(),
 	execution: ExecutionFingerprintSchema,
 	suiteHash: HashSchema,
 	datasetHash: HashSchema,
@@ -337,6 +408,7 @@ export function provenanceAxes(record: {
 	runtime: { piVersion: string; piSha: string; ahdeVersion: string };
 	model: ModelFingerprint;
 	judge?: ModelFingerprint | null;
+	simulatedUser?: ModelFingerprint | null | undefined;
 	execution: ExecutionFingerprint;
 	eval: { suiteHash: string; datasetHash: string };
 }): ProvenanceAxes {
@@ -354,6 +426,9 @@ export function provenanceAxes(record: {
 		params: record.model.params,
 		modelSpec: record.model.spec,
 		judge: record.judge ?? null,
+		// Emitted only when the suite has one, so the key stays absent — and the
+		// hash unchanged — for every suite that never plays a user.
+		...(record.simulatedUser ? { simulatedUser: record.simulatedUser } : {}),
 		execution: record.execution,
 		suiteHash: record.eval.suiteHash,
 		datasetHash: record.eval.datasetHash,
@@ -378,6 +453,7 @@ const AXIS_LABELS: Record<keyof ProvenanceAxes, string> = {
 	params: "model.params",
 	modelSpec: "model.spec",
 	judge: "eval.judge",
+	simulatedUser: "eval.simulatedUser",
 	execution: "execution",
 	suiteHash: "eval.suiteHash",
 	datasetHash: "eval.datasetHash",

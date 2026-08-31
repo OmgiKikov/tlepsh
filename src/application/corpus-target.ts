@@ -7,8 +7,10 @@ import {
 import type { EvalRunRecord } from "../eval.js";
 import {
 	graderNeedsExpected,
-	hasReferenceAnswer,
 	type GraderSpec,
+	hasReferenceAnswer,
+	judgeMeasurementIdentity,
+	simulatedUserMeasurementIdentity,
 	type ResolvedTarget,
 	type TargetManifest,
 } from "../manifest.js";
@@ -100,6 +102,7 @@ function targetWithCorpus(
 			// the runner seeds the turns and the graders compare with `expected`.
 			...(task.expected !== undefined ? { expected: task.expected } : {}),
 			...(task.messages !== undefined ? { messages: task.messages } : {}),
+			...(task.simulatedUser !== undefined ? { simulatedUser: task.simulatedUser } : {}),
 			...(task.metadata !== undefined ? { metadata: task.metadata } : {}),
 			graders,
 			effectiveGraders: graders.map(cloneGrader),
@@ -111,6 +114,14 @@ function targetWithCorpus(
 		!target.manifest.evalSuite.judge
 	) {
 		throw new Error(`${visibility} corpus ${corpus.metadata.id} uses judge graders but the target has no judge model`);
+	}
+	// The same fail-closed rule the manifest dataset gets: a published corpus can
+	// carry simulated-user cases, and running them without a user model would
+	// silently measure a one-turn conversation instead.
+	if (tasks.some((task) => task.simulatedUser) && !target.manifest.evalSuite.simulatedUser) {
+		throw new Error(
+			`${visibility} corpus ${corpus.metadata.id} uses simulated-user cases but the target has no simulatedUser model`,
+		);
 	}
 
 	return {
@@ -132,8 +143,16 @@ function targetWithCorpus(
 			schemaVersion: 1,
 			corpus: { id: corpus.metadata.id, hash: corpus.metadata.hash, visibility },
 			effectiveGraders: "explicit-per-task",
-			judge: target.manifest.evalSuite.judge ?? null,
+			// Same measurement-only view the manifest formula hashes: a promotion
+			// policy is not a grading input, so toggling `requireCalibration`
+			// leaves every published-corpus eval comparable.
+			judge: judgeMeasurementIdentity(target.manifest.evalSuite.judge),
+			// Undefined — and so canonically absent — for every suite without one,
+			// which keeps every published-corpus suite hash minted before simulated
+			// users existed exactly what it was.
+			simulatedUser: simulatedUserMeasurementIdentity(target.manifest.evalSuite.simulatedUser),
 		}),
+		suiteIdentity: "corpus",
 	};
 }
 
@@ -194,6 +213,57 @@ export function resolveDevelopmentTargetForEval(options: {
 	});
 	const resolved = targetWithDevelopmentCorpus(target, corpus);
 	assertEvalSurfaceMatches(resolved, evalRun, "published development corpus");
+	return { target: resolved, corpus };
+}
+
+/**
+ * Reconstruct the exact case set an immutable eval scored, so its recorded
+ * traces can be re-graded.
+ *
+ * Unlike {@link resolveDevelopmentTargetForEval} this deliberately ignores the
+ * Target revision and the recorded suite hash: changing the graders is the whole
+ * point of a regrade, and editing `evals/graders.yaml` already makes the
+ * checkout dirty. Only the cases themselves — dataset label and dataset hash —
+ * must be the exact ones the recorded traces answered.
+ */
+export function resolveScoredCasesForEval(options: {
+	target: ResolvedTarget;
+	evalRun: Pick<EvalRunRecord, "target" | "dataset" | "datasetHash">;
+	stateRoot: string;
+	projectId: string;
+}): { target: ResolvedTarget; corpus: LoadedCorpus | null } {
+	const { target, evalRun } = options;
+	if (target.manifest.id !== evalRun.target.id) {
+		throw new Error(`evidence belongs to target ${evalRun.target.id}, not ${target.manifest.id}`);
+	}
+	const surface = targetEvalSurface(target);
+	if (surface.dataset === evalRun.dataset && surface.datasetHash === evalRun.datasetHash) {
+		return { target, corpus: null };
+	}
+	const matches = listCorpora({ stateRoot: options.stateRoot, projectId: options.projectId })
+		.filter((metadata) => (
+			metadata.visibility === "development" &&
+			corpusDatasetLabel("development", metadata.id) === evalRun.dataset &&
+			metadata.hash === evalRun.datasetHash
+		));
+	if (matches.length !== 1) {
+		throw new Error(
+			"cannot reconstruct the exact scored cases from the target manifest or a published corpus: " +
+				`${evalRun.dataset}/${evalRun.datasetHash}`,
+		);
+	}
+	const corpus = loadCorpus({
+		stateRoot: options.stateRoot,
+		projectId: options.projectId,
+		corpusId: matches[0]!.id,
+	});
+	const resolved = targetWithDevelopmentCorpus(target, corpus);
+	if (resolved.datasetHash !== evalRun.datasetHash) {
+		throw new Error(
+			`published development corpus ${corpus.metadata.id} does not carry the scored cases: ` +
+				`expected ${evalRun.datasetHash}, got ${resolved.datasetHash}`,
+		);
+	}
 	return { target: resolved, corpus };
 }
 

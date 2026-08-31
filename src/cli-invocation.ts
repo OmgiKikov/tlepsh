@@ -23,9 +23,14 @@ export const CLI_COMMANDS = [
 	"tool",
 	"compare",
 	"diagnose",
+	"regrade",
 	"report",
+	"label",
+	"judge-agreement",
 	"candidate",
 	"calibrate",
+	"check",
+	"improve",
 	"review",
 	"promote",
 	"reject",
@@ -83,7 +88,18 @@ const COMMAND_SPECS = {
 	},
 	compare: { flags: [], positionals: 2 },
 	diagnose: { flags: [], positionals: 1 },
-	report: { flags: ["out"], positionals: 1 },
+	regrade: {
+		flags: ["target", "graders", "label", "jobs", "project"],
+		requiredFlags: ["target"],
+		positionals: 1,
+	},
+	report: { flags: ["out", "project"], positionals: 1 },
+	label: {
+		flags: ["target", "project", "sample", "seed", "file"],
+		requiredFlags: ["target"],
+		positionals: 1,
+	},
+	"judge-agreement": { flags: ["target", "project"], requiredFlags: ["target"], positionals: 1 },
 	candidate: {
 		flags: [
 			"target",
@@ -108,6 +124,18 @@ const COMMAND_SPECS = {
 	calibrate: {
 		flags: ["target", "repetitions", "project", "corpus"],
 		requiredFlags: ["target"],
+		positionals: 0,
+	},
+	// The cheap screen: the failed cases only, once, candidate arm only.
+	check: {
+		flags: ["target", "candidate", "project", "jobs"],
+		requiredFlags: ["target", "candidate"],
+		positionals: 0,
+	},
+	// The autoloop. `--until` is a pass rate, as `90%` or `0.9`.
+	improve: {
+		flags: ["target", "until", "max-cycles", "jobs", "project", "repetitions", "corpus"],
+		requiredFlags: ["target", "until", "max-cycles"],
 		positionals: 0,
 	},
 	review: {
@@ -252,15 +280,45 @@ function assertIntegerFlag(
 }
 
 function validateSharedFlagValues(flags: Readonly<Record<string, string>>, context: string): void {
-	assertEnumFlag(flags, "label", ["baseline", "solo"], context);
+	// `regrade` is the one label no model call can produce, so only the command
+	// that re-scores recorded traces may ask for it.
+	assertEnumFlag(flags, "label", context === "regrade" ? ["baseline", "solo", "regrade"] : ["baseline", "solo"], context);
 	assertEnumFlag(flags, "visibility", ["development", "sealed"], context);
 	assertEnumFlag(flags, "recommend", ["promote", "reject"], context);
 	assertIntegerFlag(flags, "port", context, { minimum: 0, maximum: 65_535 });
 	assertIntegerFlag(flags, "repetitions", context, { minimum: 1 });
 	assertIntegerFlag(flags, "sealed", context, { minimum: 1 });
+	assertIntegerFlag(flags, "sample", context, { minimum: 1 });
 	assertIntegerFlag(flags, "jobs", context, { minimum: 1, maximum: 64 });
+	assertIntegerFlag(flags, "max-cycles", context, { minimum: 1, maximum: 10 });
+	assertPassRateFlag(flags, "until", context);
 	// 0 days means "never reuse a baseline"; every run measures its own.
 	assertIntegerFlag(flags, "baseline-max-age", context, { minimum: 0, maximum: 3_650 });
+}
+
+/** A pass rate, written the way an operator says it: `90%`, `0.9`, or `90`. */
+export function parsePassRateFlag(value: string): number | null {
+	const text = value.trim();
+	const percent = text.endsWith("%");
+	const body = percent ? text.slice(0, -1).trim() : text;
+	if (!/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(body)) return null;
+	const raw = Number(body);
+	if (!Number.isFinite(raw)) return null;
+	// `0.9` is a rate; `90` and `90%` are percentages. `1` is 100%, not 1%.
+	const rate = percent || raw > 1 ? raw / 100 : raw;
+	return rate >= 0 && rate <= 1 ? rate : null;
+}
+
+function assertPassRateFlag(
+	flags: Readonly<Record<string, string>>,
+	name: string,
+	context: string,
+): void {
+	const value = flags[name];
+	if (value === undefined) return;
+	if (parsePassRateFlag(value) === null) {
+		cliError(`--${name} for ${context} must be a pass rate such as 90% or 0.9; got ${JSON.stringify(value)}`);
+	}
 }
 
 function assertInvocationSpec(
@@ -344,6 +402,9 @@ function validateCommandRelationships(command: CliCommand, flags: Readonly<Recor
 	}
 	if (command === "calibrate" && flags.corpus !== undefined && flags.project === undefined) {
 		cliError("missing required flag --project for calibrate with --corpus");
+	}
+	if (command === "improve" && flags.corpus !== undefined && flags.project === undefined) {
+		cliError("missing required flag --project for improve with --corpus");
 	}
 	if (command !== "candidate") return;
 	if (flags.dataset !== undefined && flags["development-corpus"] !== undefined) {

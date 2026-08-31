@@ -210,6 +210,9 @@ it("drives the complete canonical Workbench tool loop without revealing sealed c
 			.toBe(promoted.result.candidateSha);
 
 		// Every consequential step passed the host gate, and nothing else did.
+		// The fine-grained decisions this test drives one at a time each keep
+		// their own dialog; the two runs are routine, so only the first one —
+		// whose cost no earlier run can estimate — asks a single question.
 		expect(host.confirmations.map((entry) => entry.title)).toEqual([
 			"Create exact Target harness",
 			"Configure exact Target identity and model",
@@ -217,10 +220,17 @@ it("drives the complete canonical Workbench tool loop without revealing sealed c
 			"Publish exact development corpus",
 			"Run exact development evaluation",
 			"Apply exact Builder proposal",
-			"Verify exact applied candidate",
 			"Record exact candidate review",
 			"Promote exact candidate",
 		]);
+		const firstRun = host.confirmations.find((entry) => entry.title === "Run exact development evaluation");
+		expect(firstRun?.body).toBe(
+			"Run 2 Target executions on the reviewed basket? " +
+			"No comparable run has finished yet, so 2 Target executions cost an unknown amount. Continue?",
+		);
+		// The candidate verification ran on the operator's ask alone: by then the
+		// baseline evidence makes its cost knowable and it is under the guard.
+		expect(host.confirmations.some((entry) => entry.title === "Verify exact applied candidate")).toBe(false);
 
 		const everythingTheModelSaw = JSON.stringify(modelVisible);
 		for (const secret of [SEALED_INPUT, SEALED_NAME, holdout.id, holdout.hash, "holdout-1"]) {

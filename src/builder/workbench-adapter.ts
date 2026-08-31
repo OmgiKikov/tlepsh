@@ -11,10 +11,12 @@ import { markerPaint, type TranscriptPresenter } from "./transcript.js";
 import type {
 	WorkbenchDatasetRecipeArtifact,
 	WorkbenchDecisionResult,
+	WorkbenchHumanGate,
 	WorkbenchTurn,
 	WorkbenchView,
 	WorkbenchViewInclude,
 } from "../workbench/types.js";
+import { workbenchGateClass } from "../workbench/transition-policy.js";
 import {
 	hostModelCatalog,
 	selectTargetCredentialEnvironment,
@@ -225,6 +227,48 @@ function requireHostUI(ctx: ExtensionContext, operation: string): void {
 	}
 }
 
+/**
+ * The host obeys the gate policy the Workbench put on each confirmation:
+ *
+ * - `consequential` — the full dialog with the exact subject;
+ * - `one-question` — the single sentence, nothing else;
+ * - `routine` — no dialog at all. The operator asking for the work is the
+ *   permission, so this is also the only class that may run headless: a
+ *   platform integration can measure without a TUI, and everything that creates
+ *   durable authority still fails closed outside one.
+ */
+export function createPolicyAwareGate(
+	ctx: ExtensionContext,
+	actorId: () => string,
+	requireInteractive: (operation: string) => void,
+	sealedSelectionOperation?: string,
+	/**
+	 * Guard for the sealed-holdout picker. It is the requested decision that
+	 * decides whether picking a holdout may run headless (a routine verification
+	 * picks its own), while every confirmation below is guarded by its OWN
+	 * policy — a routine request can auto-chain into a consequential composite,
+	 * and that composite must still meet the local TUI.
+	 */
+	requireInteractiveForSealed: (operation: string) => void = requireInteractive,
+): WorkbenchHumanGate {
+	const dialog = createWorkbenchHumanGate(ctx, actorId, requireInteractive, sealedSelectionOperation);
+	const sealedDialog = requireInteractiveForSealed === requireInteractive
+		? dialog
+		: createWorkbenchHumanGate(ctx, actorId, requireInteractiveForSealed, sealedSelectionOperation);
+	return {
+		async confirm(confirmation, signal) {
+			if (confirmation.policy === "routine") return { approved: true, actorId: actorId() };
+			if (confirmation.policy === "one-question") {
+				requireInteractive(confirmation.kind);
+				const approved = await ctx.ui.confirm(confirmation.title, confirmation.question, { signal });
+				return approved ? { approved: true, actorId: actorId() } : { approved: false };
+			}
+			return dialog.confirm(confirmation, signal);
+		},
+		selectSealed: (request, signal) => sealedDialog.selectSealed(request, signal),
+	};
+}
+
 export interface BuilderWorkbenchToolOptions {
 	beginLiveTrace?: BeginBuilderLiveTrace;
 	/** Shows the human rendering of model-driven decisions in the transcript. */
@@ -290,10 +334,13 @@ export function createBuilderWorkbenchTools(
 				"• { kind: \"dataset-recipe\", sourcePath: \"imports/<file>\", recipe, name, revisionSummary, approvedSpecId? } — how to read any other data file (csv/tsv/json/jsonl/markdown/text/chat export) as cases. Write the recipe from aspect: \"dataset\" alone; the host re-validates it against the real columns and answers with the first compiled sample cases plus a submissionId. Nothing is imported until the operator confirms { kind: \"import-dataset\" }.",
 				"recipe = { schemaVersion: 1, input?: { column } | { template: \"…{{column}}…\" }, expected?: { column }, dialogue?: { column }, metadata?: [column, …], filters?: [{ column, equals } | { column, matches }], sample?: { limit, seed, stratifyBy? }, graders: [grader, …], idPrefix? } — needs input or dialogue; grader text may use {{column}} and {{expected}}.",
 				"• { kind: \"select\", entity: \"spec-draft\" | \"approved-spec\" | \"corpus-draft\" | \"development-corpus\" | \"eval-run\" | \"proposal\" | \"candidate\", id }",
-				"• { kind: \"structured-proposal\", authoringContext: <claim from aspect=target>, source: { algorithmId, evalRunId, diagnosisId, briefId } (from aspect=traces), failureModeIds: [failureModeId, …], summary, intents: [intent, …], risks?: string[], validationPlan: string[] }",
-				"grader = { type: \"output_contains\", text, caseSensitive? } | { type: \"output_matches\", pattern (JavaScript regex, no (?i) flags) } | { type: \"tool_called\", tool, argsContains? } | { type: \"judge\", rubric, withReference? } | { type: \"exact\", normalize? } | { type: \"similarity\", metric: \"token-f1\" | \"levenshtein\", threshold } (judge only when the Target manifest configures a judge model; exact, similarity and judge withReference need the case's expected answer).",
+				"• { kind: \"workshop-open\" } — open your only writable surface: a private copy of the exact clean Target revision, scoped to AGENTS.md, skills/**, tools/**, bin/**, data/**. While it is open you also have ahde_workshop_read / _write / _bash / _try; write the change, run it, fix it, run it again. It is not the operator's checkout and nothing in it is applied.",
+				"• { kind: \"workshop-close\", source: { algorithmId, evalRunId, diagnosisId, briefId } (from aspect=traces), failureModeIds: [failureModeId, …], summary, risks?: string[], validationPlan: string[] } — compile the workshop's diff into the exact reviewable proposal. The host derives every path, mode, hash and diff from what is on disk; a workshop that changed nothing or touched anything out of scope is refused by path.",
+				"• { kind: \"workshop-discard\" } — throw the open workshop away; nothing it wrote ever existed.",
+				"• { kind: \"structured-proposal\", authoringContext: <claim from aspect=target>, source: { algorithmId, evalRunId, diagnosisId, briefId } (from aspect=traces), failureModeIds: [failureModeId, …], summary, intents: [intent, …], risks?: string[], validationPlan: string[] } — the second path: cheaper for a single-file edit you have no reason to run, and the only way to change the Target's execution policy.",
+				"grader = { type: \"output_contains\", text, caseSensitive? } | { type: \"output_matches\", pattern (JavaScript regex, no (?i) flags) } | { type: \"tool_called\", tool, argsContains? } | { type: \"judge\", rubric? , assertions?: string[] (yes/no checks, one behaviour each; needs rubric or assertions), jury?: 1-5, withReference? } | { type: \"exact\", normalize? } | { type: \"similarity\", metric: \"token-f1\" | \"levenshtein\", threshold } (judge only when the Target manifest configures a judge model; exact, similarity and judge withReference need the case's expected answer).",
 				"intent = { type: \"instructions.replace\", content } | { type: \"skill.upsert\", name, description, body, disableModelInvocation? } | { type: \"skill.remove\", name } | { type: \"tool.upsert\", name, descriptor: { description, parameters (JSON Schema), arguments?, timeoutMs, maxOutputBytes, output: \"json\" | \"text\", permissions: { environment: string[], network: \"deny\" | \"allow\", filesystem: \"read-only\" | \"workspace-write\" } }, executable (script text starting with #!) } | { type: \"tool.remove\", name } | { type: \"execution.configure\", execution: { tools: (\"read\" | \"bash\" | \"edit\" | \"write\")[], environmentAllowlist: string[], network, sandbox: \"required\" | \"best-effort\" | \"off\" } }.",
-				"This is how Target tools and skills get written: the host compiles the exact files and diff from these intents; the operator reviews and applies. Submission grants no consequential authority.",
+				"This is how Target tools and skills get written: open a workshop, write and run them there, and close it — or, for a one-file edit, express intents and let the host compile them. Either way the operator reviews and applies the exact diff. Submission grants no consequential authority.",
 			].join("\n"),
 			parameters: WorkbenchSubmitToolSchema.parameters,
 			prepareArguments: (args) => WorkbenchSubmitToolSchema.prepare(args),
@@ -310,13 +357,18 @@ export function createBuilderWorkbenchTools(
 			name: "ahde_workbench_decide",
 			label: "Decide in Builder Workbench",
 			description: [
-				"Request one human-gated workflow transition. Call this yourself when the operator asks for the step in plain words (run, approve, publish, apply, promote, adopt, next): the host shows the exact subject and asks the operator to confirm in its own dialog before anything happens — never tell the operator to type a slash command instead. Every kind requires a non-blank `reason`.",
-				"Kinds by stage: target-setup → { kind: \"scaffold-target\" } then { kind: \"configure-target\", targetId (kebab-case), model: { provider, modelId, thinkingLevel?, timeoutMs?, params? } };",
+				"Do the work the operator asked for. Call this yourself when they say it in plain words (test, run, check, fix it, apply, ship, next) — never tell them to type a slash command instead. Every kind requires a non-blank `reason`.",
+				"Three kinds ask the operator a question; the rest just happen. Prefer these three:",
+				"• { kind: \"run-current\", repetitions (3 recommended; a sealed verdict needs ≥ 2) } — “test it”, wherever they are. At spec-review/corpus-review it becomes start-testing (approve + publish + run in one question); at ready-to-evaluate/improvement-authoring it runs the basket without asking; at candidate-verification it verifies the applied candidate without asking. An unusually expensive run asks once.",
+				"• { kind: \"apply-proposal\", runId?, branch } — the only moment a diff touches the repository; the host shows the exact diff.",
+				"• { kind: \"ship\", version: \"x.y.z\" } — “ship it”: records the promote review, tags the exact revision, fast-forwards the operator's branch, and closes the cycle, in one question. `version` is required while the promotion is still pending; at candidate-adoption/complete it is optional.",
+				"Also available: { kind: \"start-testing\", repetitions } explicitly; { kind: \"calibrate\", repetitions } measures noise once per Target revision (no question); { kind: \"discard-proposal\" } and { kind: \"reject-candidate\" } and { kind: \"abandon-candidate\" } are one short yes/no.",
+				"• { kind: \"improve\", until (0..1 pass rate), maxCycles, repetitions, jobs?, developmentCorpusId? } — the autoloop: run → diagnose → apply the next open proposal → cheap check on the cases that already failed → verify what looks promising, over and over. One question up front for the whole planned loop. It stops and hands back the moment the sealed guardrail or a release decision is what is left; it never promotes, adopts, publishes or approves.",
+				"The fine-grained decisions still exist for scripts and for recovery, each with its own dialog: target-setup → { kind: \"scaffold-target\" } then { kind: \"configure-target\", targetId (kebab-case), model: { provider, modelId, thinkingLevel?, timeoutMs?, params? } };",
 				"spec-review → { kind: \"approve-spec\", draftSpecId? }; corpus-review → { kind: \"publish-corpus\", draftId?, name? };",
 				"corpus-design / corpus-review → { kind: \"import-dataset\", submissionId? (from a dataset-recipe submission; the newest one otherwise), sealed: { count, seed, stratifyBy? } | null } — the operator confirms the mapping on the sample cases; the host reserves the sealed slice first, compiles the rest into a new draft, and tells you only how many cases were held out.",
-				"ready-to-evaluate / improvement-authoring → { kind: \"run-current\", repetitions (3 recommended; sealed verdicts need ≥ 2) } (or run-eval), and { kind: \"calibrate\", repetitions } measures noise once per Target revision; proposal-review → { kind: \"apply-proposal\", branch } | { kind: \"discard-proposal\" };",
-				"candidate-verification → { kind: \"run-current\", repetitions } (verify) | { kind: \"abandon-candidate\" } for an interrupted attempt; candidate-review → { kind: \"review-candidate\", recommendation: \"promote\" | \"reject\" };",
-				"release-decision → { kind: \"promote-candidate\", version: \"x.y.z\" } | { kind: \"reject-candidate\" }; candidate-adoption → { kind: \"adopt-candidate\" }; complete → { kind: \"continue-cycle\" }.",
+				"ready-to-evaluate / improvement-authoring → { kind: \"run-eval\", repetitions }; candidate-verification → { kind: \"verify-candidate\", repetitions }; candidate-review → { kind: \"review-candidate\", recommendation: \"promote\" | \"reject\" };",
+				"release-decision → { kind: \"promote-candidate\", version: \"x.y.z\" }; candidate-adoption → { kind: \"adopt-candidate\" }; complete → { kind: \"continue-cycle\" }.",
 				"Actor identity and sealed-holdout selection stay host-owned; never add approved/confirmed/actor fields.",
 			].join("\n"),
 			parameters: WorkbenchDecisionToolSchema.parameters,
@@ -325,7 +377,27 @@ export function createBuilderWorkbenchTools(
 			renderResult: (result, renderOptions, theme) => WORKBENCH_TOOL_RENDERERS.decide.renderResult(result.details, renderOptions.expanded, theme),
 			async execute(_id, params, signal, _update, ctx) {
 				abortIfRequested(signal);
-				requireHostUI(ctx, "Workbench decision");
+				// Routine measurement may run headless; anything that can create
+				// durable authority still needs the local TUI, and the policy on each
+				// confirmation enforces that again at the moment of the decision.
+				//
+				// `improve` is the exception on the routine side: its cycles apply
+				// diffs on throwaway `candidate/auto-*` branches, and applying is the
+				// one moment a diff touches the repository. The operator's request is
+				// the permission for the loop, but that request has to come from a
+				// human in front of a terminal, not from an RPC or print host.
+				const policy = workbenchGateClass(params.kind);
+				if (policy !== "routine" || params.kind === "improve") requireHostUI(ctx, "Workbench decision");
+				// Never close this over the REQUESTED kind: routine `run-current`
+				// auto-chains into the consequential `start-testing` composite, and a
+				// guard that already decided "routine" would let an RPC or print host
+				// approve a Spec with no human in front of it. `createPolicyAwareGate`
+				// re-decides per confirmation, so routine measurement still runs
+				// headless — only the sealed picker follows the requested kind.
+				const guard = (operation: string): void => requireHostUI(ctx, operation);
+				const sealedGuard = (operation: string): void => {
+					if (policy !== "routine") requireHostUI(ctx, operation);
+				};
 				const targetModelSelection = params.kind === "configure-target" ? params.model : null;
 				const targetCredentialEnvironment = targetModelSelection
 					? await selectTargetCredentialEnvironment(ctx, targetModelSelection)
@@ -333,6 +405,7 @@ export function createBuilderWorkbenchTools(
 				const showsRunProgress = params.kind === "run-current" ||
 					params.kind === "run-eval" ||
 					params.kind === "calibrate" ||
+					params.kind === "improve" ||
 					params.kind === "verify-candidate";
 				const observation = showsRunProgress
 					? await beginBuilderRunObservation(ctx.ui, options.beginLiveTrace)
@@ -344,7 +417,7 @@ export function createBuilderWorkbenchTools(
 						: undefined;
 					const result = await workbench.decide(
 						params,
-						createWorkbenchHumanGate(ctx, actorId, (operation) => requireHostUI(ctx, operation)),
+						createPolicyAwareGate(ctx, actorId, guard, undefined, sealedGuard),
 						{
 							signal,
 							...(observation ? { onRunEvent: observation.onRunEvent } : {}),

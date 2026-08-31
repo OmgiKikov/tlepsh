@@ -12,6 +12,7 @@ import {
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { expect, it } from "vitest";
 import {
+	AHDE_BUILDER_REGISTERED_TOOL_NAMES,
 	AHDE_BUILDER_TOOL_NAMES,
 	createAhdeBuilderExtension,
 } from "../src/builder/extension.js";
@@ -51,7 +52,7 @@ it("turns free operator input into gated Workbench decisions through a real Buil
 	try {
 		builderMock = await startMockModel([
 			{
-				match: ({ firstUser, toolCount }) => firstUser.includes("собери агента") && toolCount === 3,
+				match: ({ firstUser, toolCount }) => firstUser.includes("собери агента") && toolCount === 7,
 				steps: [],
 				resolve: (context) => {
 					const step = context.toolResults.length;
@@ -143,7 +144,7 @@ it("turns free operator input into gated Workbench decisions through a real Buil
 			registerCommand: () => undefined,
 			on: () => undefined,
 		} as never);
-		expect(registered.map((tool) => tool.name)).toEqual(AHDE_BUILDER_TOOL_NAMES);
+		expect(registered.map((tool) => tool.name)).toEqual([...AHDE_BUILDER_REGISTERED_TOOL_NAMES]);
 
 		const host = createHostContext({
 			catalog: (provider, modelId) =>

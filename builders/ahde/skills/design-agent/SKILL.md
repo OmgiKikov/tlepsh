@@ -10,8 +10,8 @@ Target agent.
 
 1. Inspect `ahde_workbench_view` before assuming a Target or Spec exists. On a
    new project the host normally offers to create the agent and choose its
-   model before the conversation starts. If the stage is still
-   `target-setup`, request `scaffold-target` through `ahde_workbench_decide`,
+   model before the conversation starts. If no agent exists yet,
+   request `scaffold-target` through `ahde_workbench_decide`,
    then agree on a lowercase kebab-case Target id and a bounded model selection
    (`provider`, `modelId`, and optional thinking/timeout/params) and request
    `configure-target` through the same tool. The trusted host derives
@@ -31,10 +31,12 @@ Target agent.
 6. The host renders the saved draft next to your message, so do not read it
    back: name the tradeoff that mattered most and what comes next. Revise by
    saving a new draft; immutable drafts are never edited in place.
-7. Inspect `ahde_workbench_view` with `aspect: review`, then request
-   `ahde_workbench_decide` with `kind: approve-spec` only after the operator
-   asks to approve. The host confirmation is the authority boundary and
-   creates the durable receipt used by every later corpus and proposal.
+7. Do not ask the operator to approve the description as a separate step. When
+   they agree with what you described — “да”, “ok”, “поехали”, “start testing”
+   — request `run-current`: the host asks one question that approves this exact
+   description and moves on to the tests. That confirmation is the authority
+   boundary and creates the durable receipt every later test basket and change
+   is bound to.
 
 A good Spec makes eval construction possible: each success criterion should
 be observable in an answer, a tool call, or a deterministic artifact.

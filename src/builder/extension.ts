@@ -71,6 +71,7 @@ import { registerAhdeBuilderCommands } from "./commands.js";
 import { installAhdeBuilderProductShell } from "./product-shell.js";
 import type { BeginBuilderLiveTrace } from "./run-observation.js";
 import { createTranscriptPresenter } from "./transcript.js";
+import { AHDE_WORKSHOP_TOOL_NAMES, createWorkshopTools } from "./workshop-tools.js";
 
 type RegisteredAhdeTool = ToolDefinition<TSchema, unknown>;
 
@@ -179,9 +180,17 @@ export const AHDE_BUILDER_TOOL_NAMES = [
 	"ahde_workbench_decide",
 ] as const;
 
+export { AHDE_WORKSHOP_TOOL_NAMES } from "./workshop-tools.js";
+
 /** The only tool that can change durable state, and only behind the human gate. */
 export const CONSEQUENTIAL_BUILDER_TOOL_NAMES = [
 	"ahde_workbench_decide",
+] as const;
+
+/** Every tool Builder Pi may ever call; the workshop four only while one is open. */
+export const AHDE_BUILDER_REGISTERED_TOOL_NAMES = [
+	...AHDE_BUILDER_TOOL_NAMES,
+	...AHDE_WORKSHOP_TOOL_NAMES,
 ] as const;
 
 /** The sole trusted extension factory loaded into Builder Pi. */
@@ -189,6 +198,7 @@ export function createAhdeBuilderExtension(options: BuilderExtensionOptions): Ex
 	const dependencies = { ...DEFAULT_DEPENDENCIES, ...options.dependencies };
 	const workbench = createBuilderWorkbench(options, dependencies);
 	const allowedTools = new Set<string>(AHDE_BUILDER_TOOL_NAMES);
+	const workshopTools = new Set<string>(AHDE_WORKSHOP_TOOL_NAMES);
 	return (pi: ExtensionAPI) => {
 		pi.on("user_bash", () => ({
 			result: {
@@ -198,18 +208,58 @@ export function createAhdeBuilderExtension(options: BuilderExtensionOptions): Ex
 				truncated: false,
 			},
 		}));
-		pi.on("tool_call", (event) => allowedTools.has(event.toolName)
-			? undefined
-			: { block: true, reason: `AHDE Builder tool is not allowed: ${event.toolName}`, terminate: true });
+		// Invariant 1: no generic edit/write outside a bound workshop worktree. The
+		// four workshop tools are legal exactly while one is open; a closed
+		// workshop is a recoverable mistake, an unknown tool is not.
+		pi.on("tool_call", (event) => {
+			if (allowedTools.has(event.toolName)) return undefined;
+			if (workshopTools.has(event.toolName)) {
+				return workbench.workshopOpen
+					? undefined
+					: {
+						block: true,
+						reason: `${event.toolName} exists only while a workshop is open; submit { kind: "workshop-open" } first`,
+					};
+			}
+			return { block: true, reason: `AHDE Builder tool is not allowed: ${event.toolName}`, terminate: true };
+		});
 		const presenter = createTranscriptPresenter(pi);
 		const shell = installAhdeBuilderProductShell(pi, workbench, { actorId: dependencies.actorId, presenter });
-		const onWorkbenchChanged = () => shell.refresh();
+		/**
+		 * The model only sees the hands it currently has. This is ergonomics; the
+		 * `tool_call` guard above is the boundary, and it never depends on it.
+		 */
+		const refreshWorkshopTools = (): void => {
+			try {
+				if (typeof pi.setActiveTools !== "function") return;
+				pi.setActiveTools(workbench.workshopOpen
+					? [...AHDE_BUILDER_REGISTERED_TOOL_NAMES]
+					: [...AHDE_BUILDER_TOOL_NAMES]);
+			} catch {
+				// Tool activation is cosmetic; the guard still refuses.
+			}
+		};
+		const onWorkbenchChanged = () => {
+			refreshWorkshopTools();
+			return shell.refresh();
+		};
 		const tools = createBuilderWorkbenchTools(workbench, dependencies.actorId, {
 			beginLiveTrace: dependencies.beginLiveTrace,
 			presenter,
 			onWorkbenchChanged,
 		});
 		for (const tool of tools) pi.registerTool(tool);
+		for (const tool of createWorkshopTools(workbench)) pi.registerTool(tool);
+		refreshWorkshopTools();
+		// A conversation that ends with an open workshop leaves no worktree behind.
+		pi.on("session_shutdown", () => {
+			try {
+				workbench.closeWorkshop();
+			} catch {
+				// Disposal is best-effort at shutdown; `git worktree prune` recovers.
+			}
+			return undefined;
+		});
 		registerAhdeBuilderCommands(pi, {
 			workbench,
 			actorId: dependencies.actorId,
@@ -226,10 +276,10 @@ export function createAhdeBuilderExtension(options: BuilderExtensionOptions): Ex
 /** Exposed for registry-level tests and future dependency composition. */
 export function createAhdeBuilderTools(options: BuilderExtensionOptions): readonly RegisteredAhdeTool[] {
 	const dependencies = { ...DEFAULT_DEPENDENCIES, ...options.dependencies };
-	return createBuilderWorkbenchTools(
-		createBuilderWorkbench(options, dependencies),
-		dependencies.actorId,
-		{ beginLiveTrace: dependencies.beginLiveTrace },
-	);
+	const workbench = createBuilderWorkbench(options, dependencies);
+	return [
+		...createBuilderWorkbenchTools(workbench, dependencies.actorId, { beginLiveTrace: dependencies.beginLiveTrace }),
+		...createWorkshopTools(workbench),
+	];
 }
 

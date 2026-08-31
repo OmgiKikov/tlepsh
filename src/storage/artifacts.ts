@@ -211,6 +211,56 @@ export function writeJsonArtifact<TCodec extends z.ZodType>(
 	writeTextArtifact(artifactPath, serializeJson(artifactPath, encoded), options);
 }
 
+/**
+ * Append validated records to a JSONL artifact.
+ *
+ * One `O_APPEND` write of one buffer: on POSIX the kernel places it at the end
+ * of the file as a unit, so two processes labelling the same eval run interleave
+ * whole rows and never half a line. The batch is encoded and serialized before
+ * the file is touched, so an invalid row appends nothing at all.
+ */
+export function appendJsonlArtifact<TCodec extends z.ZodType>(
+	path: string,
+	codec: TCodec,
+	values: readonly z.output<TCodec>[],
+	options: WriteTextArtifactOptions = {},
+): void {
+	const artifactPath = resolve(path);
+	if (values.length === 0) return;
+	const content = values
+		.map((value) => {
+			const encoded = encodeArtifact(artifactPath, codec, value);
+			const line = JSON.stringify(encoded);
+			if (line === undefined) {
+				throw new ArtifactError(artifactPath, "codec produced a value that JSON cannot represent");
+			}
+			if (line.includes("\n")) {
+				throw new ArtifactError(artifactPath, "JSONL record must serialize to one line");
+			}
+			return `${line}\n`;
+		})
+		.join("");
+	mkdirSync(dirname(artifactPath), { recursive: true });
+	let descriptor: number;
+	try {
+		descriptor = openSync(artifactPath, constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NOFOLLOW, options.mode ?? 0o600);
+	} catch (error) {
+		throw new ArtifactError(artifactPath, `append failed: ${errorMessage(error)}`, { cause: error });
+	}
+	try {
+		if (!fstatSync(descriptor).isFile()) {
+			throw new ArtifactError(artifactPath, "JSONL must be a regular non-symlink file");
+		}
+		writeFileSync(descriptor, content, "utf8");
+		fsyncSync(descriptor);
+	} catch (error) {
+		if (error instanceof ArtifactError) throw error;
+		throw new ArtifactError(artifactPath, `append failed: ${errorMessage(error)}`, { cause: error });
+	} finally {
+		closeSync(descriptor);
+	}
+}
+
 function decodeUtf8(artifactPath: string, bytes: Uint8Array, format: "JSON" | "JSONL"): string {
 	try {
 		return new TextDecoder("utf-8", { fatal: true }).decode(bytes);

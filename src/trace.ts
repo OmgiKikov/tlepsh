@@ -327,6 +327,75 @@ export function lastAssistantText(messages: TraceMessage[]): string | undefined 
 	return undefined;
 }
 
+// ---------- Dialogue transcript ----------
+// One bounded, credential-redacted rendering of a conversation, shared by the
+// two models that are allowed to read one: the simulated user, which needs the
+// turns so far to write the next one, and a judge grading a whole conversation
+// instead of a single reply. Tool calls and tool results are deliberately not
+// part of it — what a user sees is what the agent said.
+
+/** Turns kept in a rendered transcript; older ones are dropped, not truncated. */
+export const MAX_TRANSCRIPT_TURNS = 40;
+/** Characters kept per turn. */
+export const MAX_TRANSCRIPT_TURN_CHARS = 2_000;
+/** Characters kept in the whole rendering. */
+export const MAX_TRANSCRIPT_CHARS = 24_000;
+
+const TRANSCRIPT_ELISION = "…(ранние реплики опущены)";
+
+export interface TranscriptTurn {
+	role: "user" | "assistant";
+	text: string;
+}
+
+/**
+ * The spoken turns of a trace: user messages and the assistant replies that
+ * carry text. An assistant message that only emitted tool calls said nothing to
+ * the user, so it is not a turn.
+ */
+export function dialogueTurns(messages: readonly TraceMessage[]): TranscriptTurn[] {
+	const turns: TranscriptTurn[] = [];
+	for (const message of messages) {
+		if (message.role === "toolResult") continue;
+		const text = message.text.trim();
+		if (text.length === 0) continue;
+		turns.push({ role: message.role, text });
+	}
+	return turns;
+}
+
+/** How many turns the agent itself took. What `turn_budget` counts. */
+export function agentTurnCount(messages: readonly TraceMessage[]): number {
+	return dialogueTurns(messages).filter((turn) => turn.role === "assistant").length;
+}
+
+function transcriptLine(turn: TranscriptTurn): string {
+	const speaker = turn.role === "user" ? "Пользователь" : "Агент";
+	const text = redactTraceText(turn.text).trim();
+	const bounded = text.length <= MAX_TRANSCRIPT_TURN_CHARS
+		? text
+		: `${text.slice(0, MAX_TRANSCRIPT_TURN_CHARS - 1)}…`;
+	return `${speaker}: ${bounded}`;
+}
+
+/**
+ * Render a conversation for a model to read. Bounded from the front: the most
+ * recent turns are the ones that decide the next reply and the ones a grader
+ * reasons about, and an elision marker says plainly that something was dropped.
+ */
+export function renderDialogueTranscript(turns: readonly TranscriptTurn[]): string {
+	const kept = turns.slice(-MAX_TRANSCRIPT_TURNS);
+	let elided = kept.length < turns.length;
+	const lines = kept.map(transcriptLine);
+	let total = lines.reduce((sum, line) => sum + line.length + 1, 0);
+	while (lines.length > 1 && total > MAX_TRANSCRIPT_CHARS) {
+		total -= (lines.shift() ?? "").length + 1;
+		elided = true;
+	}
+	if (elided) lines.unshift(TRANSCRIPT_ELISION);
+	return lines.join("\n");
+}
+
 /**
  * Human/agent-readable render: message entries only (user text, assistant
  * text, toolCall name+args, toolResult text). Compaction, model changes and

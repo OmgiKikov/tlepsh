@@ -1,8 +1,10 @@
 # AHDE V1.9 — The tool workshop
 
-Roadmap item 0c. This document is two things: the record of the application
-core that landed on `eg/workshop`, and the contract the next wave implements
-when it gives Builder Pi a workbench instead of a typewriter.
+Roadmap item 0c, then wave 2 item 9. This document is two things: the record of
+the application core that landed on `eg/workshop`, and the contract the
+Builder-facing surface honours now that it has landed too. Both halves are
+implemented; the second half's section below records what shipped, not what is
+planned.
 
 ## Why
 
@@ -176,87 +178,112 @@ ahde tool try --target <dir> --tool <name> --input <json|@path> [--branch <ref>]
 
 Exit 0 when the tool exited 0, 1 when it did not.
 
-## The contract for the Builder-facing surface
+## What landed (the Builder-facing surface)
 
-The next wave adds the Workbench/extension surface. This is what it must honor.
+Wave 2 item 9. The Builder now writes code and runs it before anybody reviews
+it, and the proposal a human reads is the diff of exactly that code.
 
-### Scoped write/edit/bash inside a proposal worktree
+### The workshop
 
-The Builder gets generic file tools for the first time. They are safe only
-because of where they point:
+`openBuilderWorkshop` (`src/application/tool-workshop.ts`) opens one detached
+worktree of the exact clean Target commit the authoring context was minted from
+— `openDetachedWorktree` in `src/git/experiment-worktree.ts` holds it across
+calls and guarantees the cleanup that `withDetachedWorktree` already did for one
+call. The operator's checkout is never switched, never written, and never read
+for execution.
 
-1. **A private worktree, never the checkout.** The host creates a detached
-   worktree of the exact clean Target commit the authoring context was minted
-   from, and the tools' root is that path. `withDetachedWorktree` already does
-   the creation, lineage validation, and guaranteed cleanup.
-2. **Confined to `tools/**`, `bin/**`, `data/**`.** Enforced twice: the
-   `ExecutionPolicy` file tools already refuse paths outside their root
-   (`src/execution-policy.ts`), and a `tool_call` guard rejects `write`/`edit`
-   outside the three scopes before the call runs. Pi's `protected-paths.ts`
-   example is the exact shape of that guard —
-   `pi.on("tool_call", …) → { block: true, reason }` — inverted from a denylist
-   to an allowlist, because a denylist is not a scope.
-3. **`bash` inside the same OS sandbox as a tool.** The Builder's shell is
-   `sandbox-exec`/`bwrap` with the workshop confinement: read the worktree,
-   write only the three scopes plus scratch, network denied. Pi's
-   `examples/extensions/sandbox` shows the override seam
-   (replace the built-in `bash`, or mutate its input in `tool_call`);
-   `sandboxInvocation` in `src/target/tool-broker.ts` is the AHDE-side builder
-   for the profile, and `TargetToolConfinement` is the one place read roots,
-   write roots, and network are decided.
-4. **The worktree is not the proposal.** Nothing the Builder writes there
-   applies to anything. When it is done, the host *reads back* the worktree diff
-   and compiles it into `tool.upsert` / `data.upsert` intents — or the Builder
-   emits the intents directly and the worktree was only a scratchpad. Either
-   way the artifact that reaches a human is an ordinary immutable
-   `CandidateProposal`: exact paths, exact base SHAs, whole-file unified diffs,
-   a human apply gate, verification, promotion. Invariant 6 and invariant 20 are
-   untouched; the workshop changes how a proposal is *written*, never how it is
-   *applied*.
-5. **A long edit session is a subagent's job.** Pi's `examples/extensions/
-   subagent` spawns an isolated `pi` process per delegated task with its own
-   context window and JSON output. A tool-writing loop — write, `try_tool`,
-   read the error, fix, try again — belongs in one of those, so the operator's
-   Builder conversation receives the outcome, not fifty tool results.
-
-### `try_tool` as a Workbench operation
-
-`tryTool` is the application service; the Workbench operation is the gate around
-it. Rules it inherits from the existing seam:
-
-- The host supplies the subject. The model names a declared tool and a JSON
-  input; the host derives repository, revision, and source. No model-supplied
-  paths, no model-supplied refs (invariant 16).
-- The result is a bounded projection, not evidence. It is already redacted and
-  truncated; the Workbench must not persist it as an artifact, must not let it
-  reach a Comparison Verdict, and must not let a green try substitute for a run.
-  "The tool works" and "the harness is better" are different claims.
-- Sealed stays sealed. A try executes a tool on an operator-supplied or
-  Builder-authored input; it never receives holdout content (invariants 5, 13).
-- It is cheap and repeatable, so it needs no confirmation dialog — unlike apply,
-  run, verify, and promote, it changes nothing.
-
-### How results become an ordinary Proposal
+Scope, enforced on the **resolved real path** for every read, write, `cwd`, and
+sandbox write root:
 
 ```
-Builder writes in the worktree  →  try_tool (0..n times, no artifacts)
-                                →  structured-proposal submit (intents + context claim)
-                                →  compileHarnessAuthoringProposal (exact diffs, host-derived paths)
+AGENTS.md    skills/**    tools/**    bin/**    data/**
+```
+
+Everything else fails closed and names the offending path: `manifest.yaml`,
+`evals/**`, `imports/**`, `runs/`, `.git`, `.env`, `.ahde`, a `..` traversal, an
+absolute path, a symlink anywhere along the path, and a leaf that is not a
+regular file or directory. `manifest.yaml` is host-owned rather than forbidden:
+the host re-derives the declared `skills`, `tools`, and `data` lists from the
+files that exist after every write and every command, through the same
+`renderManifest` the intent compiler uses, so the workshop's Harness always
+loads and a hand-edited manifest can never survive into a proposal.
+
+### The four tools
+
+They are registered once and legal only while a workshop is open — the
+`tool_call` guard refuses them otherwise, and `setActiveTools` hides them so the
+model is not offered hands it does not have.
+
+- **`ahde_workshop_read`** — one file's exact complete text, mode, bytes and
+  hash, or one directory's bounded listing.
+- **`ahde_workshop_write`** — `{ path, content }`, or an exact
+  `{ path, oldText, newText }` replacement that must match exactly once, or
+  `{ path, remove: true }`. Modes are derived (`bin/<tool>` and
+  `tools/<tool>/run` are 100755), bytes are bounded, and CRLF/NUL/oversize/empty
+  all fail closed.
+- **`ahde_workshop_bash`** — argv only. There is no shell and no interpolation;
+  `argv[0]` is a bare PATH command or an absolute path. It runs through
+  `sandboxInvocation` in the same `sandbox-exec`/`bwrap` profile a declared tool
+  gets, with the Target's declared network and environment allowlist, the
+  worktree readable, only the Harness scope plus a private scratch writable,
+  bounded output and a bounded timeout. The sandbox itself is not optional here:
+  `execution.sandbox` describes the *Target's* shell and can never widen what
+  Builder Pi reaches, so a host with no usable backend refuses the command.
+- **`ahde_workshop_try`** — `tryTool` against the workshop's own copy, so a tool
+  written a second ago can be run a second later, setup step included. Still a
+  look, not a measurement: no artifact, no evidence, no eval run.
+
+### The proposal is the diff
+
+`workshop-close` compiles the proposal from `git status`/`git diff` of the
+worktree against its baseline commit:
+
+```
+workshop-open (submit)          →  detached worktree of the exact clean commit
+  read / write / bash / try     →  0..n times, no artifacts, no evidence
+workshop-close (submit)         →  git diff → CandidateProposal
+                                →  the same scope assertion (allowed paths +
+                                   assertResourceOnlyManifestChange + the
+                                   declared data/skills/tools lists)
+                                →  the same closure check on the resulting
+                                   Harness (invariant 30)
+                                →  recordBuilderAuthoredProposal → admission
+                                   receipt (approved Spec + Builder run +
+                                   proposal hash)
                                 →  human apply gate (unchanged)
-                                →  Candidate → development + sealed verification → promotion
+                                →  Candidate → development + sealed
+                                   verification → promotion
 ```
 
-The context claim (invariant 30) still pins compilation to the exact clean
-revision the Builder read, and the closure check still refuses a proposal that
-would produce a Harness the Builder cannot read back — which is why every file
-of a multi-file tool is an inspectable authoring resource, while a data
-directory is shape only.
+Nothing downstream changed. The compiled artifact is the same
+`CandidateProposal` the intent compiler emits — whole-file unified diffs from
+the same renderer, `git apply --check` against the exact base revision, the same
+`validateCandidateProposal` scope. A workshop that produced no change, produced
+a change outside the scope, or wrote a path Git ignores refuses at close time
+and names the exact paths. A workshop whose Target moved or whose checkout went
+dirty refuses too. Success disposes the worktree; a refusal leaves it open so
+the Builder can fix what it wrote, and `workshop-discard` throws it away.
+
+### The intent compiler stays
+
+`harness-authoring.ts` is unchanged in behaviour and remains the second path:
+the fallback for single-file edits, and the **only** way to change the Target's
+execution policy (`execution.configure`), because a workshop diff may change
+resources and resource declarations only.
 
 ## Left out on purpose
 
-- **No Builder UI.** No `write`/`edit`/`bash` tools, no `try_tool` Workbench
-  operation, no worktree-diff → intents compiler. That is the next wave; this
-  lane is the application core it calls.
+- **No subagent for the edit loop.** Pi's `examples/extensions/subagent` spawns
+  an isolated process per delegated task; a long write → try → fix loop belongs
+  in one of those so the operator's conversation receives the outcome rather
+  than fifty tool results. The workshop works without it; the loop is simply
+  noisier in the transcript than it needs to be.
+- **One workshop per Builder conversation.** No parallel workshops, no
+  workshop over a branch other than the current clean Target revision, and no
+  resuming a workshop after the process dies.
+- **A workshop diff cannot change the execution policy.** `execution.configure`
+  stays an intent, because the policy is a manifest field rather than a Harness
+  resource and `assertResourceOnlyManifestChange` refuses it by design.
 - **Setup output is not cached across snapshots.** Two EvalRuns of the same
   revision each run `npm ci` once. A content-addressed cache keyed by
   `toolsetHash` is an obvious follow-up and a poor thing to get wrong early.

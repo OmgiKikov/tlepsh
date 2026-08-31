@@ -34,7 +34,12 @@ import type { ImprovementBrief } from "../application/improvement-brief.js";
 import type { DiagnosisRecord } from "../diagnosis.js";
 import type { CandidateStatus, ComparisonSummaryEvidence } from "../domain/candidate.js";
 import type { EvalRunSummary } from "../eval.js";
+import type {
+	ImprovementLoopCycle,
+	ImprovementLoopStopReason,
+} from "../application/improvement-loop.js";
 import type { CycleContinuationReceipt } from "./cycle-continuation.js";
+import type { WorkbenchGateClass, WorkbenchRunEstimate } from "./transition-policy.js";
 
 // A regex, not a refinement: the generated tool schema carries `pattern` so the
 // model sees the constraint instead of only being corrected by it.
@@ -105,12 +110,19 @@ export interface WorkbenchProposalReview {
 export interface WorkbenchGateProjection {
 	verdict: GateVerdict;
 	surface: GateSurface;
+	/** Pass-rate delta, shown next to the score the gate decided on. */
 	delta: number;
+	baselineScore: number;
+	candidateScore: number;
+	/** The mean paired score delta the interval brackets. */
+	scoreDelta: number;
 	confidence95: { low: number; high: number };
 	tasks: number;
 	repetitions: number;
 	excludedTasks: number;
 	flags: { regressedTasks: number; improvedTasks: number; collapsedTasks: number };
+	/** Cost/latency/token ratios of candidate over baseline. Rendered, never gating. */
+	resources: { costRatio: number | null; latencyRatio: number | null; tokenRatio: number | null };
 	reasons: string[];
 }
 
@@ -151,10 +163,16 @@ export interface WorkbenchCandidateSummary {
 		baselineEvalRunId: string;
 		candidateEvalRunId: string;
 		comparison: ComparisonSummaryEvidence | null;
-		/** v3 gate verdict; null for legacy evidence. */
+		/** v4 gate verdict; null for legacy (v1–v3) evidence. */
 		gate: WorkbenchGateProjection | null;
 	} | null;
 	sealedHoldout: { executed: boolean; gatePassed: boolean; gate: WorkbenchGateProjection | null };
+	/**
+	 * How far the judge behind this evidence has been checked against a human.
+	 * Absent when the evidence leans on no judge grader; null when it does and
+	 * nobody has labelled that judge yet.
+	 */
+	judgeAgreement?: { agreement: number; kappa: number | null; labels: number } | null;
 	review: { experimentId: string; recommendation: "promote" | "reject"; reason: string } | null;
 	promotion: { tag: string; reason: string; at: string } | null;
 	rejection: { reason: string; at: string } | null;
@@ -421,6 +439,39 @@ const StructuredProposalInputSchema = z.strictObject({
 	validationPlan: z.array(NonBlankSchema.max(4_000)).min(1).max(100),
 });
 
+/**
+ * Open the one writable surface Builder Pi ever gets: a detached worktree of
+ * the exact clean Target commit, scoped to the Harness. It changes nothing
+ * durable, so it is a submission, not a decision.
+ */
+const OpenWorkshopInputSchema = z.strictObject({
+	kind: z.literal("workshop-open"),
+	approvedSpecId: ArtifactIdSchema.optional(),
+});
+
+/**
+ * Close the workshop by compiling its worktree diff into the ordinary immutable
+ * proposal. Same evidence binding as `structured-proposal`; the intents are
+ * replaced by the files the Builder actually wrote and ran.
+ */
+const CloseWorkshopInputSchema = z.strictObject({
+	kind: z.literal("workshop-close"),
+	approvedSpecId: ArtifactIdSchema.optional(),
+	source: ProposalBasisSelectionSchema.omit({ failureModeIds: true }),
+	failureModeIds: z.array(FailureModeIdSchema)
+		.min(1)
+		.max(8)
+		.refine((ids) => new Set(ids).size === ids.length, "failure mode ids must be unique"),
+	summary: NonBlankSchema.max(4_000),
+	risks: z.array(NonBlankSchema.max(4_000)).max(100).default([]),
+	validationPlan: z.array(NonBlankSchema.max(4_000)).min(1).max(100),
+});
+
+/** Throw the workshop away unread. Nothing it wrote ever existed. */
+const DiscardWorkshopInputSchema = z.strictObject({
+	kind: z.literal("workshop-discard"),
+});
+
 export const WorkbenchSubmitInputSchema = z.discriminatedUnion("kind", [
 	SelectInputSchema,
 	SaveSpecDraftInputSchema,
@@ -429,7 +480,62 @@ export const WorkbenchSubmitInputSchema = z.discriminatedUnion("kind", [
 	DatasetRecipeInputSchema,
 	ReviseCorpusDraftInputSchema,
 	StructuredProposalInputSchema,
+	OpenWorkshopInputSchema,
+	CloseWorkshopInputSchema,
+	DiscardWorkshopInputSchema,
 ]);
+
+// ---------------------------------------------------------------------------
+// The four tools that exist only while a workshop is open. Their authority is
+// the open workshop itself: no repository, no revision, no absolute path, and
+// no scope ever arrives from the model.
+
+const WorkshopPathSchema = z.string().min(1).max(200);
+
+export const WorkshopReadInputSchema = z.strictObject({
+	path: WorkshopPathSchema,
+});
+export type WorkshopReadInput = z.infer<typeof WorkshopReadInputSchema>;
+
+export const WorkshopWriteInputSchema = z.strictObject({
+	path: WorkshopPathSchema,
+	/** Whole-file form. */
+	content: z.string().max(512 * 1024).optional(),
+	/** Exact-replacement form: `oldText` must occur exactly once in the file. */
+	oldText: z.string().min(1).max(512 * 1024).optional(),
+	newText: z.string().max(512 * 1024).optional(),
+	/** Removal form. */
+	remove: z.literal(true).optional(),
+	mode: z.enum(["100644", "100755"]).optional(),
+}).superRefine((value, context) => {
+	const forms = [
+		value.content !== undefined,
+		value.oldText !== undefined || value.newText !== undefined,
+		value.remove === true,
+	].filter(Boolean).length;
+	if (forms !== 1) {
+		context.addIssue({ code: "custom", message: "use exactly one of content, oldText+newText, or remove" });
+	}
+	if ((value.oldText === undefined) !== (value.newText === undefined)) {
+		context.addIssue({ code: "custom", message: "an exact replacement needs both oldText and newText" });
+	}
+});
+export type WorkshopWriteInput = z.infer<typeof WorkshopWriteInputSchema>;
+
+export const WorkshopBashInputSchema = z.strictObject({
+	/** argv[0] is a bare PATH command or an absolute path; there is no shell. */
+	argv: z.array(z.string().min(1).max(4096)).min(1).max(64),
+	cwd: WorkshopPathSchema.optional(),
+	timeoutMs: z.number().int().min(1).max(600_000).optional(),
+});
+export type WorkshopBashInput = z.infer<typeof WorkshopBashInputSchema>;
+
+export const WorkshopTryInputSchema = z.strictObject({
+	tool: z.string().min(1).max(64),
+	/** JSON arguments, validated against the tool's own declared schema. */
+	input: z.unknown(),
+});
+export type WorkshopTryInput = z.infer<typeof WorkshopTryInputSchema>;
 /** Caller input; downstream defaults are materialized by parse inside Workbench. */
 export type WorkbenchSubmitInput = z.input<typeof WorkbenchSubmitInputSchema>;
 
@@ -478,6 +584,18 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		repetitions: z.number().int().min(1).max(10),
 		reason: NonBlankSchema.max(4_000),
 	}),
+	/**
+	 * One operator intent — “start testing” — over the reviews that still stand
+	 * between the current drafts and a running evaluation. It is orchestration,
+	 * not new authority: it performs the same fine-grained decisions, in order,
+	 * through the same application services, and stops at the first one that
+	 * declines or fails.
+	 */
+	z.strictObject({
+		kind: z.literal("start-testing"),
+		repetitions: z.number().int().min(1).max(10),
+		reason: NonBlankSchema.max(4_000),
+	}),
 	z.strictObject({
 		kind: z.literal("calibrate"),
 		repetitions: z.number().int().min(1).max(10),
@@ -498,6 +616,12 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		kind: z.literal("verify-candidate"),
 		builderRunId: ArtifactIdSchema.optional(),
 		repetitions: z.number().int().min(1).max(10),
+		/**
+		 * Spend the full verification even when the cheap check found nothing.
+		 * The screen is a screen: it can be wrong, and an operator who has read
+		 * its numbers may still want the matched measurement.
+		 */
+		force: z.boolean().optional(),
 		reason: NonBlankSchema.max(4_000),
 	}),
 	z.strictObject({
@@ -532,6 +656,36 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		candidateId: ArtifactIdSchema.optional(),
 		reason: NonBlankSchema.max(4_000),
 	}),
+	/**
+	 * One operator intent — “ship it” — over the release decisions that are left:
+	 * review (recommend promote), promote, adopt, continue. Orchestration only:
+	 * the same services, the same order, the same receipts, and a stop at the
+	 * first step that declines or fails. `version` is required exactly when the
+	 * plan still contains the promotion.
+	 */
+	z.strictObject({
+		kind: z.literal("ship"),
+		candidateId: ArtifactIdSchema.optional(),
+		version: z.string().regex(/^[0-9]+\.[0-9]+\.[0-9]+$/).max(50).optional(),
+		reason: NonBlankSchema.max(4_000),
+	}),
+	/**
+	 * The autoloop: run -> diagnose -> propose -> apply -> cheap check -> verify,
+	 * up to `maxCycles` times or until `until` is reached. Routine measurement
+	 * under the same cost guard as every other run, with the estimate covering
+	 * the whole planned loop. It never promotes, adopts, publishes a corpus or
+	 * approves a Spec; those stay with the human.
+	 */
+	z.strictObject({
+		kind: z.literal("improve"),
+		/** Target development pass rate, 0..1. */
+		until: z.number().min(0).max(1),
+		maxCycles: z.number().int().min(1).max(10),
+		repetitions: z.number().int().min(1).max(10),
+		jobs: z.number().int().min(1).max(64).optional(),
+		developmentCorpusId: ArtifactIdSchema.optional(),
+		reason: NonBlankSchema.max(4_000),
+	}),
 ]);
 export type WorkbenchDecisionInput = z.infer<typeof WorkbenchDecisionInputSchema>;
 
@@ -549,6 +703,17 @@ export interface WorkbenchConfirmation {
 	reason: string;
 	subject: unknown;
 	subjectHash: string;
+	/**
+	 * How much of the human's attention this decision is worth. The Workbench
+	 * decides it; the host renders it. `consequential` is the full dialog,
+	 * `one-question` is `question` alone, and `routine` runs without a dialog —
+	 * unless the cost guard raised it, which arrives as `one-question` too.
+	 */
+	policy: WorkbenchGateClass;
+	/** The whole dialog for a `one-question` gate; a summary line otherwise. */
+	question: string;
+	/** What a run is expected to cost, when this decision starts one. */
+	estimate?: WorkbenchRunEstimate;
 }
 
 export interface WorkbenchHumanApproval {
@@ -611,10 +776,91 @@ export interface WorkbenchRunEvalResult {
 	evidence: WorkbenchEvidenceLinkProjection;
 }
 
-export interface WorkbenchVerifyCandidateResult {
+/**
+ * What the cheap check found before the expensive measurement started. It is a
+ * screen: one repetition, candidate arm only, over the cases that already
+ * failed. It never enters a gate and never becomes promotion evidence.
+ */
+export interface WorkbenchCheapCheckProjection {
+	verdict: "promising" | "flat";
+	tasks: number;
+	improved: number;
+	unchanged: number;
+	regressed: number;
+	inconclusive: number;
+	/** False when the screen's own infrastructure errors blew the budget. */
+	withinErrorBudget: boolean;
+	screenEvalRunId: string;
+	sourceEvalRunId: string;
+}
+
+export type WorkbenchVerifyCandidateResult =
+	| {
+		outcome: "verified";
+		candidate: WorkbenchCandidateSummary;
+		development: { verdict: GateVerdict; delta: number; confidence95: { low: number; high: number } };
+		sealedHoldout: { executed: boolean; gatePassed: boolean; verdict: GateVerdict | null };
+		/** The screen that let this verification start, when one ran. */
+		screen: WorkbenchCheapCheckProjection | null;
+	}
+	| {
+		/** The cheap check found nothing and no `force` was given: nothing was spent. */
+		outcome: "stopped-by-screen";
+		builderRunId: string;
+		candidateSha: string;
+		screen: WorkbenchCheapCheckProjection;
+		/** What the full verification would have cost. */
+		spared: { executions: number };
+	};
+
+/** One fine-grained decision a composite performed, in the order it ran. */
+export interface WorkbenchCompositeStep {
+	kind: Exclude<WorkbenchDecisionInput["kind"], "run-current" | "start-testing" | "ship" | "improve">;
+	message: string;
+}
+
+/** Approve · publish · run, as far as the reviewed drafts allow. */
+export interface WorkbenchStartTestingResult {
+	steps: WorkbenchCompositeStep[];
+	approvedSpecId: string | null;
+	developmentCorpus: { id: string; taskCount: number } | null;
+	evaluation: WorkbenchRunEvalResult | null;
+	/** What the operator has to do before a run is possible, or null. */
+	pending: string | null;
+}
+
+/**
+ * The cases a promotion pinned as regression guards, as a draft the operator
+ * publishes like any other. Building them never blocks or delays the
+ * promotion: a failure degrades to `warning`.
+ */
+export interface WorkbenchRegressionGuardsProjection {
+	draftId: string | null;
+	cases: number;
+	taskIds: string[];
+	warning: string | null;
+}
+
+/** Review · promote · adopt · continue, as far as the candidate allows. */
+export interface WorkbenchShipResult {
+	steps: WorkbenchCompositeStep[];
 	candidate: WorkbenchCandidateSummary;
-	development: { verdict: GateVerdict; delta: number; confidence95: { low: number; high: number } };
-	sealedHoldout: { executed: boolean; gatePassed: boolean; verdict: GateVerdict | null };
+	tag: string | null;
+	adoption: { branch: string; fromSha: string; toSha: string } | null;
+	continuation: { receiptId: string; nextStage: WorkbenchStage } | null;
+	/** Present exactly when this composite performed the promotion. */
+	guards: WorkbenchRegressionGuardsProjection | null;
+}
+
+/** What `ahde improve` did, cycle by cycle. */
+export interface WorkbenchImproveResult {
+	cycles: ImprovementLoopCycle[];
+	stopReason: ImprovementLoopStopReason;
+	stopMessage: string;
+	table: string;
+	candidateId: string | null;
+	finalPassRate: number;
+	executions: number;
 }
 
 /** Typed payload of every consequential decision, keyed by its decision kind. */
@@ -644,9 +890,14 @@ export interface WorkbenchDecisionResultMap {
 	};
 	"run-eval": WorkbenchRunEvalResult;
 	calibrate: { candidateId: string; calibration: WorkbenchCalibrationProjection };
+	/**
+	 * Whatever “run it” means where the operator stands. A pending review is not
+	 * an error: it resolves to the `start-testing` composite and its one dialog.
+	 */
 	"run-current":
 		| ({ resolvedAs: "run-eval" } & WorkbenchRunEvalResult)
-		| ({ resolvedAs: "verify-candidate" } & WorkbenchVerifyCandidateResult);
+		| ({ resolvedAs: "verify-candidate" } & WorkbenchVerifyCandidateResult)
+		| ({ resolvedAs: "start-testing" } & WorkbenchStartTestingResult);
 	"apply-proposal": { runId: string; branch: string; candidateSha: string; proposalHash: string };
 	"discard-proposal": { runId: string; receiptHash: string };
 	"verify-candidate": WorkbenchVerifyCandidateResult;
@@ -656,7 +907,13 @@ export interface WorkbenchDecisionResultMap {
 		receiptHash: string;
 	};
 	"review-candidate": WorkbenchCandidateSummary;
-	"promote-candidate": { candidate: WorkbenchCandidateSummary; tag: string; candidateSha: string };
+	"promote-candidate": {
+		candidate: WorkbenchCandidateSummary;
+		tag: string;
+		candidateSha: string;
+		/** Regression guards derived after the promotion receipt was written. */
+		guards: WorkbenchRegressionGuardsProjection;
+	};
 	"reject-candidate": WorkbenchCandidateSummary;
 	"adopt-candidate": {
 		candidate: WorkbenchCandidateSummary;
@@ -674,6 +931,9 @@ export interface WorkbenchDecisionResultMap {
 		receiptId: string;
 		nextStage: WorkbenchStage;
 	};
+	"start-testing": WorkbenchStartTestingResult;
+	ship: WorkbenchShipResult;
+	improve: WorkbenchImproveResult;
 }
 
 export type WorkbenchDecisionResult = {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EXACT_COMPARISON_GATE_ALGORITHM_ID_V3 } from "../src/domain/comparison-gate.js";
+import { EXACT_COMPARISON_GATE_ALGORITHM_ID_V4 } from "../src/domain/comparison-gate.js";
 import {
 	createCandidate,
 	transitionCandidate,
@@ -34,9 +34,9 @@ function developmentEvidence(options: EvidenceOptions = {}) {
 	const improved = options.improved ?? 2;
 	const regressed = options.regressed ?? 1;
 	return {
-		schemaVersion: 3 as const,
-		algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V3,
-		policyId: "development-ci-v3" as const,
+		schemaVersion: 4 as const,
+		algorithmId: EXACT_COMPARISON_GATE_ALGORITHM_ID_V4,
+		policyId: "development-ci-v4" as const,
 		surface: "development" as const,
 		comparisonHash: HASH,
 		evidenceHash: HASH,
@@ -46,6 +46,9 @@ function developmentEvidence(options: EvidenceOptions = {}) {
 			baselinePassRate: options.baselinePassRate ?? 0.9,
 			candidatePassRate: options.baselinePassRate ?? 0.9,
 			delta: options.delta ?? 0,
+			baselineScore: options.baselinePassRate ?? 0.9,
+			candidateScore: options.baselinePassRate ?? 0.9,
+			scoreDelta: options.delta ?? 0,
 			confidence95: options.confidence95 ?? { low: -0.06, high: 0.06 },
 			improved,
 			regressed,
@@ -54,6 +57,7 @@ function developmentEvidence(options: EvidenceOptions = {}) {
 		design: { tasks: taskCount, repetitions: options.repetitions ?? 3, excludedTasks: 0 },
 		verdict: options.verdict ?? ("inconclusive" as const),
 		flags: { regressedTasks: regressed, improvedTasks: improved, collapsedTasks: 0 },
+		resources: { baseline: { runs: 30, costUsd: 0.1, meanLatencyMs: 2000, meanTokens: 800 }, candidate: { runs: 30, costUsd: 0.14, meanLatencyMs: 1800, meanTokens: 900 }, costRatio: 1.4, latencyRatio: 0.9, tokenRatio: 1.125 },
 		reasons: ["95% CI -6.0pp … +6.0pp spans zero on 30 tasks × 3 repetitions"],
 	};
 }

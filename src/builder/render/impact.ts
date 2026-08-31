@@ -1,4 +1,5 @@
 import type { CandidateImpact } from "../../application/candidate-impact.js";
+import { formatResourceFragment } from "../../domain/comparison-gate.js";
 import type { WorkbenchCandidateImpactProjection } from "../../workbench/types.js";
 import { oneLine, pluralize } from "./format.js";
 import type { Paint } from "./paint.js";
@@ -36,7 +37,11 @@ export function renderImpact(projection: WorkbenchCandidateImpactProjection | nu
 		return [`${paint.dim("Impact")} ${paint.muted(`unavailable — ${oneLine(projection.reason, 200)}`)}`];
 	}
 	const impact = projection.impact;
-	const lines: string[] = [`${paint.dim("Impact")} ${verdictText(impact.verdict, paint)}`];
+	const resources = formatResourceFragment(impact.development.resources, { tokens: true });
+	const lines: string[] = [
+		`${paint.dim("Impact")} ${verdictText(impact.verdict, paint)}` +
+			(resources ? ` ${paint.dim(`· ${resources}`)}` : ""),
+	];
 	if (impact.proposalBasis) {
 		const modes = impact.proposalBasis.targetedFailureModes;
 		lines.push(`  ${paint.dim(`Targeted ${pluralize(modes.length, "failure mode")}:`)}`);

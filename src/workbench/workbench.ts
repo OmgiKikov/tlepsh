@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -35,8 +36,17 @@ import {
 	type HarnessAuthoringIntent,
 } from "../application/harness-authoring.js";
 import { inspectTargetAuthoringContext } from "../application/target-authoring-context.js";
+import {
+	openBuilderWorkshop,
+	type BuilderWorkshop,
+	type TryToolResult,
+	type WorkshopBashResult,
+	type WorkshopReadResult,
+	type WorkshopStatus,
+	type WorkshopWriteResult,
+} from "../application/tool-workshop.js";
 import { runAppliedBuilderCandidate } from "../application/builder-candidate.js";
-import { SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
+import { formatPoints, SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
 import {
 	configureTargetBootstrap,
 	describeTargetBootstrap,
@@ -53,6 +63,20 @@ import {
 	CANDIDATE_SCOPE_POLICY,
 	runCandidateExperiment,
 } from "../application/candidate-experiment.js";
+import {
+	runCheapCheck,
+	type CheapCheckResult,
+} from "../application/cheap-check.js";
+import { buildPromotionRegressionGuards } from "../application/regression-guards.js";
+import {
+	IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS,
+	improvementLoopGate,
+	plannedImprovementExecutions,
+	recordedBuilderProposalAuthor,
+	renderImprovementLoopTable,
+	runImprovementLoop,
+	type ImprovementProposalAuthor,
+} from "../application/improvement-loop.js";
 import {
 	decideCandidateRejection,
 	promoteReviewedCandidate,
@@ -80,6 +104,8 @@ import { redactTraceText } from "../trace.js";
 import { diagnoseEvalRun } from "../diagnosis.js";
 import { candidateStatus } from "../domain/candidate.js";
 import {
+	DEFAULT_EVAL_JOBS,
+	defaultEvalJobs,
 	loadEvalRun,
 	runSuite,
 	type EvalRunRecord,
@@ -94,6 +120,7 @@ import {
 	type BuilderProjectContext,
 } from "../builder/project-context.js";
 import { inspectCandidateImpact } from "../application/candidate-impact.js";
+import { judgeEvidenceCalibration } from "../application/judge-labels.js";
 import {
 	adoptTargetCandidate,
 	describeTargetAdoption,
@@ -104,7 +131,10 @@ import {
 	saveWorkbenchFocus,
 	selectWorkbenchFocus,
 } from "./focus.js";
-import { recordWorkbenchCorpusPublication } from "./corpus-publication.js";
+import {
+	loadWorkbenchCorpusPublication,
+	recordWorkbenchCorpusPublication,
+} from "./corpus-publication.js";
 import { recordCandidateAbandonment } from "./candidate-abandonment.js";
 import {
 	describeCycleContinuation,
@@ -138,12 +168,28 @@ import {
 	resolveOne,
 } from "./resolution.js";
 import { calibrationProjection } from "./calibration.js";
-import { assertWorkbenchDecisionStage } from "./transition-policy.js";
+import {
+	assertWorkbenchDecisionStage,
+	estimateRunCost,
+	routineCostGuard,
+	workbenchGateClass,
+	type WorkbenchRunEstimate,
+} from "./transition-policy.js";
 import {
 	WorkbenchDecisionInputSchema,
 	WorkbenchSubmitInputSchema,
 	WorkbenchViewQuerySchema,
+	WorkshopBashInputSchema,
+	WorkshopReadInputSchema,
+	WorkshopTryInputSchema,
+	WorkshopWriteInputSchema,
+	type WorkshopBashInput,
+	type WorkshopReadInput,
+	type WorkshopTryInput,
+	type WorkshopWriteInput,
 	type WorkbenchCandidateImpactProjection,
+	type WorkbenchCandidateSummary,
+	type WorkbenchCompositeStep,
 	type WorkbenchConfirmation,
 	type WorkbenchDatasetCase,
 	type WorkbenchDecisionInput,
@@ -153,12 +199,16 @@ import {
 	type WorkbenchImprovementBriefProjection,
 	type WorkbenchDatasetRecipeArtifact,
 	type WorkbenchReviewDetail,
+	type WorkbenchRunEvalResult,
 	type WorkbenchSelectionKind,
+	type WorkbenchStage,
 	type WorkbenchSubmitInput,
 	type WorkbenchTargetDetail,
 	type WorkbenchTurn,
 	type WorkbenchView,
 	type WorkbenchViewQuery,
+	type WorkbenchCheapCheckProjection,
+	type WorkbenchRegressionGuardsProjection,
 } from "./types.js";
 import type { CandidateRecord } from "../domain/candidate.js";
 
@@ -173,6 +223,9 @@ export interface WorkbenchEvidenceLink {
 	url: string;
 	label?: string;
 }
+
+/** The exact options the one canonical proposal-recording service accepts. */
+type RecordProposalOptions = Parameters<typeof recordBuilderAuthoredProposal>[0];
 
 export interface CompileHarnessAuthoringInput {
 	repositoryDir: string;
@@ -218,6 +271,16 @@ export interface AhdeWorkbenchDependencies {
 	describeProposalDiscard: typeof describeBuilderProposalDiscard;
 	discardProposal: typeof discardBuilderProposal;
 	runAppliedCandidate: typeof runAppliedBuilderCandidate;
+	/** The cheap screen that runs before a verification is paid for. */
+	runCheapCheck: typeof runCheapCheck;
+	/** Derived after the promotion receipt; a failure is a warning, never a block. */
+	buildPromotionGuards: typeof buildPromotionRegressionGuards;
+	runImprovementLoop: typeof runImprovementLoop;
+	/**
+	 * Where one autoloop cycle's proposal comes from. Undefined means the next
+	 * open Builder proposal already recorded against this cycle's evidence.
+	 */
+	authorImprovementProposal?: ImprovementProposalAuthor;
 	reviewCandidate: typeof reviewCandidate;
 	promoteCandidate: typeof promoteReviewedCandidate;
 	rejectCandidate: typeof decideCandidateRejection;
@@ -271,6 +334,9 @@ const DEFAULT_DEPENDENCIES: AhdeWorkbenchDependencies = {
 	describeProposalDiscard: describeBuilderProposalDiscard,
 	discardProposal: discardBuilderProposal,
 	runAppliedCandidate: runAppliedBuilderCandidate,
+	runCheapCheck,
+	buildPromotionGuards: buildPromotionRegressionGuards,
+	runImprovementLoop,
 	reviewCandidate,
 	promoteCandidate: promoteReviewedCandidate,
 	rejectCandidate: decideCandidateRejection,
@@ -317,6 +383,44 @@ function requireOpenTerminalCandidate(inventory: WorkbenchInventory, explicitId?
 		id: (candidate) => candidate.candidateId,
 		label: "finished candidate",
 	});
+}
+
+function shortSha(sha: string): string {
+	return sha ? sha.slice(0, 10) : "—";
+}
+
+/** Money the human recognises, or an honest “unknown”. */
+function formatEstimatedCost(estimate: WorkbenchRunEstimate | undefined): string {
+	if (!estimate || estimate.costUsd === null) return "unknown — nothing comparable has run yet";
+	if (estimate.costUsd < 0.01) return "under $0.01";
+	return `about $${estimate.costUsd.toFixed(2)} (from ${estimate.sampledRuns} earlier run${estimate.sampledRuns === 1 ? "" : "s"})`;
+}
+
+function formatEstimatedTime(estimate: WorkbenchRunEstimate | undefined): string {
+	if (!estimate || estimate.minutes === null) return "unknown — nothing comparable has run yet";
+	if (estimate.minutes < 1) return "under a minute";
+	return `about ${Math.ceil(estimate.minutes)} minute${Math.ceil(estimate.minutes) === 1 ? "" : "s"}`;
+}
+
+function plural(count: number, noun: string): string {
+	return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function capitalize(text: string): string {
+	return text.length === 0 ? text : `${text[0]!.toUpperCase()}${text.slice(1)}`;
+}
+
+/** The branch a fast-forward would move, read only to show it before deciding. */
+function currentBranchName(repositoryDir: string): string | null {
+	try {
+		const name = execFileSync("git", ["-C", repositoryDir, "symbolic-ref", "-q", "--short", "HEAD"], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim();
+		return name || null;
+	} catch {
+		return null;
+	}
 }
 
 function actorId(value: string | undefined): string {
@@ -368,9 +472,15 @@ function datasetGrader(grader: WorkbenchDatasetCase["graders"][number]): Workben
 		case "output_matches":
 			return { ...grader, ...named, pattern: datasetText(grader.pattern) };
 		case "judge":
-			return { ...grader, ...named, rubric: datasetText(grader.rubric) };
+			return {
+				...grader,
+				...named,
+				...(grader.rubric !== undefined ? { rubric: datasetText(grader.rubric) } : {}),
+				...(grader.assertions ? { assertions: grader.assertions.map((item) => datasetText(item)) } : {}),
+			};
 		case "exact":
 		case "similarity":
+		case "turn_budget":
 			return { ...grader, ...named };
 	}
 }
@@ -448,6 +558,8 @@ export class AhdeWorkbench {
 	readonly projectId: string;
 	private readonly templateDir: string | undefined;
 	private readonly dependencies: AhdeWorkbenchDependencies;
+	/** At most one open workshop per Builder conversation; it dies with its proposal. */
+	private workshop: BuilderWorkshop | null = null;
 
 	constructor(options: AhdeWorkbenchOptions) {
 		this.projectDir = canonicalPath(options.projectDir);
@@ -478,6 +590,37 @@ export class AhdeWorkbench {
 			throw new WorkbenchStaleDecisionError(kind);
 		}
 		return inventory;
+	}
+
+	/**
+	 * One candidate as a human reads it, carrying how far the judge behind its
+	 * evidence has been checked. Like impact, this is a review aid: an
+	 * unreadable label store leaves the line off rather than blocking a decision.
+	 */
+	private candidateView(candidate: CandidateRecord): WorkbenchCandidateSummary {
+		const evaluated = candidate.events.find((event) => event.type === "evaluated");
+		if (evaluated?.type !== "evaluated") return candidateSummary(candidate);
+		try {
+			const calibration = judgeEvidenceCalibration({
+				runsRoot: this.runsRoot,
+				stateRoot: this.stateRoot,
+				projectId: this.projectId,
+				evalRunIds: [evaluated.evaluation.development.candidate.evalRunId],
+			});
+			if (calibration.specHashes.length === 0) return candidateSummary(candidate);
+			return candidateSummary(
+				candidate,
+				calibration.stats
+					? {
+						agreement: calibration.stats.agreement,
+						kappa: calibration.stats.kappa,
+						labels: calibration.stats.n,
+					}
+					: null,
+			);
+		} catch {
+			return candidateSummary(candidate);
+		}
 	}
 
 	/** Impact is a review aid; an unavailable projection never blocks a human decision. */
@@ -545,26 +688,561 @@ export class AhdeWorkbench {
 		return newest;
 	}
 
+	/**
+	 * The one place a human is asked. The Workbench decides how much of their
+	 * attention the decision is worth and the host renders that: a full dialog,
+	 * one question, or nothing at all. A routine decision still passes through
+	 * here, so it still has exactly one human actor identity and can still be
+	 * declined; it simply does not interrupt.
+	 */
 	private async confirm(
 		input: WorkbenchDecisionInput,
 		gate: WorkbenchHumanGate,
 		title: string,
 		subject: unknown,
 		signal?: AbortSignal,
+		presentation: { question?: string; estimate?: WorkbenchRunEstimate } = {},
 	): Promise<string> {
 		abortIfRequested(signal);
 		const exact = boundedSubject(subject, input.kind);
+		let policy = workbenchGateClass(input.kind);
+		let question = presentation.question ?? `${title}?`;
+		// The guard is the only thing that can turn a routine decision back into a
+		// question: an unusually expensive or entirely unknown run.
+		if (policy === "routine" && presentation.estimate) {
+			const guard = routineCostGuard(presentation.estimate);
+			if (guard) {
+				policy = "one-question";
+				question = `${question} ${capitalize(guard)}. Continue?`;
+			}
+		}
 		const confirmation: WorkbenchConfirmation = {
 			kind: input.kind,
 			title,
 			reason: input.reason,
 			subject: exact,
 			subjectHash: hashValue(exact),
+			policy,
+			question,
+			...(presentation.estimate ? { estimate: presentation.estimate } : {}),
 		};
 		const decision = await gate.confirm(confirmation, signal);
 		abortIfRequested(signal);
 		if (!decision.approved) throw new WorkbenchDecisionDeclinedError(input.kind);
 		return actorId(decision.actorId);
+	}
+
+	/** The screen, as the operator reads it. It is never gate evidence. */
+	private screenProjection(screen: CheapCheckResult): WorkbenchCheapCheckProjection {
+		return {
+			verdict: screen.verdict,
+			tasks: screen.tasks.length,
+			improved: screen.improved,
+			unchanged: screen.unchanged,
+			regressed: screen.regressed,
+			inconclusive: screen.inconclusive,
+			withinErrorBudget: screen.withinErrorBudget,
+			screenEvalRunId: screen.screenEvalRunId,
+			sourceEvalRunId: screen.sourceEvalRunId,
+		};
+	}
+
+	/**
+	 * Pin the cases a promotion flipped. This runs *after* the promotion receipt
+	 * is durable, so it can neither block nor delay it: everything it can go
+	 * wrong with degrades to a warning the operator reads next to the tag.
+	 * Nothing here publishes — the draft waits for an explicit publication.
+	 */
+	private promotionGuards(record: CandidateRecord, tag: string): WorkbenchRegressionGuardsProjection {
+		const empty = { draftId: null, cases: 0, taskIds: [] as string[] };
+		try {
+			const evaluated = record.events.find((event) => event.type === "evaluated");
+			if (evaluated?.type !== "evaluated") throw new Error("candidate has no evaluated development arms");
+			const corpusIdentity = evaluated.evaluation.development.corpus;
+			if (!corpusIdentity) {
+				return { ...empty, warning: "the promotion was measured without a published development corpus, so there is no basket to pin guards into" };
+			}
+			const current = this.inventory();
+			if (!current.target) throw new Error("no resolved Target");
+			const specId = record.specId ??
+				(record.origin.kind === "applied-builder" ? record.origin.approvedSpec.specId : null);
+			if (!specId) throw new Error("the promoted candidate is not bound to an approved Spec");
+			const approved = loadApprovedSpec({
+				stateRoot: this.stateRoot,
+				projectId: this.projectId,
+				specId,
+			});
+			const lineage = loadWorkbenchCorpusPublication(this.stateRoot, this.projectId, corpusIdentity.id);
+			const corpus = loadCorpus({ stateRoot: this.stateRoot, projectId: this.projectId, corpusId: corpusIdentity.id });
+			if (corpus.metadata.hash !== corpusIdentity.hash) {
+				throw new Error("the published development corpus changed since the promotion evidence was recorded");
+			}
+			const built = this.dependencies.buildPromotionGuards({
+				runsRoot: this.runsRoot,
+				stateRoot: this.stateRoot,
+				candidate: record,
+				approvedSpec: approved.reference,
+				target: current.target,
+				developmentCorpus: corpus,
+				parentDraftId: lineage.draftId,
+				compatibleEvalRuns: compatibleDevelopmentEvals(current, approved.reference.specId, corpusIdentity.id),
+				promotionTag: tag,
+				now: this.dependencies.now,
+			});
+			if (!built) return { ...empty, warning: null };
+			return { draftId: built.draftId, cases: built.cases, taskIds: built.taskIds, warning: null };
+		} catch (error) {
+			return {
+				...empty,
+				warning: `regression guards were not built: ${error instanceof Error ? error.message : String(error)}`,
+			};
+		}
+	}
+
+	/** What one run of this many executions is expected to cost on this Target. */
+	private runEstimate(executions: number, target: WorkbenchInventory["target"]): WorkbenchRunEstimate {
+		return estimateRunCost({
+			runsRoot: this.runsRoot,
+			targetId: target?.manifest.id ?? "",
+			executions,
+			jobs: target ? defaultEvalJobs(target.manifest.model) : DEFAULT_EVAL_JOBS,
+		});
+	}
+
+	/**
+	 * The gate a composite hands to its own steps. Each planned step is
+	 * pre-approved exactly once, and only when its exact subject is the one the
+	 * human already read in the composite dialog; anything else falls through to
+	 * the real human gate rather than being escalated silently.
+	 */
+	private compositeGate(
+		gate: WorkbenchHumanGate,
+		actor: string,
+		planned: ReadonlyMap<WorkbenchDecisionInput["kind"], (subject: unknown) => boolean>,
+	): WorkbenchHumanGate {
+		const used = new Set<WorkbenchDecisionInput["kind"]>();
+		return {
+			async confirm(confirmation, signal) {
+				const matches = planned.get(confirmation.kind);
+				if (matches && !used.has(confirmation.kind) && matches(confirmation.subject)) {
+					used.add(confirmation.kind);
+					return { approved: true, actorId: actor };
+				}
+				return gate.confirm(confirmation, signal);
+			},
+			selectSealed: (request, signal) => gate.selectSealed(request, signal),
+		};
+	}
+
+	/**
+	 * “Start testing”: the pending reviews plus the run, behind one dialog.
+	 *
+	 * It is orchestration, not authority. Every step is the same fine-grained
+	 * decision the CLI calls, through the same application service, in the same
+	 * order, writing the same receipts. A step that declines or fails ends the
+	 * composite there and leaves durable state exactly where that step left it.
+	 */
+	private async startTesting(
+		input: Extract<WorkbenchDecisionInput, { kind: "start-testing" }>,
+		gate: WorkbenchHumanGate,
+		options: WorkbenchDecisionExecutionOptions,
+		inventory: WorkbenchInventory,
+		stage: WorkbenchStage,
+	): Promise<Extract<WorkbenchDecisionResult, { kind: "start-testing" }>> {
+		const plan: WorkbenchCompositeStep["kind"][] = [];
+		const planned = new Map<WorkbenchDecisionInput["kind"], (subject: unknown) => boolean>();
+		const specDraft = stage === "spec-review" ? requireSpecDraft(inventory) : null;
+		const approved = specDraft ? null : requireApprovedSpec(inventory);
+		// A corpus draft is bound to an already-approved Spec, so the basket only
+		// exists once the approval does. Approving is therefore its own start.
+		const corpusDraft = approved ? requireCorpusDraft(inventory, undefined, approved.id, true) : null;
+		if (specDraft) {
+			plan.push("approve-spec");
+			planned.set("approve-spec", (subject) => (subject as { draftSpecId?: unknown }).draftSpecId === specDraft.id);
+		}
+		if (corpusDraft) {
+			plan.push("publish-corpus", "run-eval");
+			planned.set("publish-corpus", (subject) => (subject as { draftId?: unknown }).draftId === corpusDraft.id);
+			planned.set("run-eval", (subject) => {
+				const bag = subject as { operation?: unknown; repetitions?: unknown };
+				return bag.operation === "run-development-evaluation" && bag.repetitions === input.repetitions;
+			});
+		}
+		const caseCount = corpusDraft?.tasks.length ?? 0;
+		const executions = caseCount * input.repetitions;
+		const estimate = corpusDraft ? this.runEstimate(executions, inventory.target) : undefined;
+		const parts: string[] = [];
+		if (specDraft) parts.push("approve the Spec");
+		if (corpusDraft) parts.push("publish the eval basket", `run ${executions} Target execution${executions === 1 ? "" : "s"}`);
+		const title = `Start testing — ${parts.join(", ")}`;
+		const subject = {
+			operation: "start-testing",
+			steps: plan,
+			spec: specDraft
+				? `${specDraft.spec.title} — approve this draft`
+				: `${approved!.spec.title} — already approved`,
+			basket: corpusDraft
+				? `${corpusDraft.name} · ${caseCount} case${caseCount === 1 ? "" : "s"}`
+				: "not drafted yet",
+			run: corpusDraft
+				? `${caseCount} × ${input.repetitions} = ${executions} Target executions`
+				: "not yet",
+			estimatedCost: formatEstimatedCost(estimate),
+			estimatedTime: formatEstimatedTime(estimate),
+			exact: {
+				specDraftId: specDraft?.id ?? null,
+				specSnapshotHash: specDraft ? hashValue(specDraft) : null,
+				approvedSpecId: approved?.id ?? null,
+				corpusDraftId: corpusDraft?.id ?? null,
+				corpusDraftHash: corpusDraft ? hashValue(corpusDraft) : null,
+				repetitions: input.repetitions,
+			},
+		};
+		const actor = await this.confirm(input, gate, title, subject, options.signal, {
+			question: `${title}?`,
+			...(estimate ? { estimate } : {}),
+		});
+		const scoped = this.compositeGate(gate, actor, planned);
+		const steps: WorkbenchCompositeStep[] = [];
+		let approvedSpecId = approved?.id ?? null;
+		let developmentCorpus: { id: string; taskCount: number } | null = null;
+		let evaluation: WorkbenchRunEvalResult | null = null;
+		let view = await this.viewOf(inventory);
+		let message = "";
+		for (const step of plan) {
+			if (step === "approve-spec") {
+				const done = await this.decide({ kind: "approve-spec", draftSpecId: specDraft!.id, reason: input.reason }, scoped, options);
+				approvedSpecId = done.result.approvedSpecId;
+				steps.push({ kind: step, message: done.message });
+				view = done.view;
+			} else if (step === "publish-corpus") {
+				const done = await this.decide({ kind: "publish-corpus", draftId: corpusDraft!.id, reason: input.reason }, scoped, options);
+				developmentCorpus = { id: done.result.corpusId, taskCount: done.result.taskCount };
+				steps.push({ kind: step, message: done.message });
+				view = done.view;
+			} else {
+				const done = await this.decide({ kind: "run-eval", repetitions: input.repetitions, reason: input.reason }, scoped, options);
+				evaluation = done.result;
+				steps.push({ kind: step, message: done.message });
+				view = done.view;
+				message = done.message;
+			}
+		}
+		// The basket is bound to an approved Spec, so it can only be drafted after
+		// this approval; saying so is more useful than an error.
+		const pending = evaluation ? null : "the test cases are not drafted yet";
+		return {
+			kind: input.kind,
+			message: message ||
+				"Spec approved. Next: draft the test cases, then “tests” publishes them and runs.",
+			result: { steps, approvedSpecId, developmentCorpus, evaluation, pending },
+			view,
+		};
+	}
+
+	/**
+	 * “Ship it”: the release decisions that are left, behind one dialog — review,
+	 * promote, adopt, continue. Same services, same order, same receipts, and the
+	 * same stop-at-the-first-refusal behaviour as the four separate decisions.
+	 */
+	private async ship(
+		input: Extract<WorkbenchDecisionInput, { kind: "ship" }>,
+		gate: WorkbenchHumanGate,
+		options: WorkbenchDecisionExecutionOptions,
+		inventory: WorkbenchInventory,
+		stage: WorkbenchStage,
+	): Promise<Extract<WorkbenchDecisionResult, { kind: "ship" }>> {
+		const plan: WorkbenchCompositeStep["kind"][] = [];
+		let candidate: CandidateRecord;
+		if (stage === "candidate-review") {
+			candidate = requireCandidate(inventory, ["evaluated"], input.candidateId);
+			plan.push("review-candidate", "promote-candidate", "adopt-candidate", "continue-cycle");
+		} else if (stage === "release-decision") {
+			candidate = requireCandidate(inventory, ["reviewed"], input.candidateId);
+			plan.push("promote-candidate", "adopt-candidate", "continue-cycle");
+		} else {
+			candidate = requireOpenTerminalCandidate(inventory, input.candidateId);
+			if (candidateStatus(candidate) !== "promoted") {
+				throw new Error(
+					`candidate ${candidate.candidateId} was rejected; there is nothing to ship. Close the cycle instead.`,
+				);
+			}
+			if (stage === "candidate-adoption") plan.push("adopt-candidate");
+			plan.push("continue-cycle");
+		}
+		const version = input.version;
+		if (plan.includes("promote-candidate") && !version) {
+			throw new Error("shipping tags an exact version; say for example “ship 0.2.0”");
+		}
+		// The judge-aware projection, not the plain summary: this subject is what
+		// the one consequential ship dialog renders, and an uncalibrated judge is
+		// exactly what the operator must see BEFORE approving — promotion can
+		// refuse on it. `candidateView` swallows its own errors, so a missing
+		// label store degrades to the plain summary instead of blocking a ship.
+		const summary = this.candidateView(candidate);
+		const candidateId = candidate.candidateId;
+		const sameCandidate = (subject: unknown): boolean =>
+			(subject as { candidate?: { candidateId?: unknown } }).candidate?.candidateId === candidateId;
+		const planned = new Map<WorkbenchDecisionInput["kind"], (subject: unknown) => boolean>();
+		if (plan.includes("review-candidate")) {
+			planned.set("review-candidate", (subject) =>
+				sameCandidate(subject) && (subject as { recommendation?: unknown }).recommendation === "promote");
+		}
+		if (plan.includes("promote-candidate")) {
+			planned.set("promote-candidate", (subject) =>
+				sameCandidate(subject) && (subject as { version?: unknown }).version === version);
+		}
+		if (plan.includes("adopt-candidate")) planned.set("adopt-candidate", sameCandidate);
+		planned.set("continue-cycle", sameCandidate);
+		const branch = plan.includes("adopt-candidate") ? currentBranchName(this.projectDir) : null;
+		const subject = {
+			operation: "ship",
+			steps: plan,
+			candidateId,
+			development: summary.development?.gate
+				? `${summary.development.gate.verdict} · ${formatPoints(summary.development.gate.scoreDelta)}`
+				: "no development verdict",
+			sealed: summary.sealedHoldout.gate
+				? `${summary.sealedHoldout.gate.verdict} · ${summary.sealedHoldout.gate.tasks} × ${summary.sealedHoldout.gate.repetitions}`
+				: summary.sealedHoldout.executed ? "executed, no verdict" : "not run",
+			version: version ?? null,
+			tag: version ? `v${version}` : null,
+			fastForward: plan.includes("adopt-candidate")
+				? `${branch ?? "current branch"} ${shortSha(summary.baseline.sha)} → ${shortSha(summary.candidate?.sha ?? "")}`
+				: "already adopted",
+			candidate: summary,
+		};
+		const title = version ? `Ship candidate as v${version}` : "Ship this candidate";
+		const actor = await this.confirm(input, gate, title, subject, options.signal, { question: `${title}?` });
+		const scoped = this.compositeGate(gate, actor, planned);
+		const steps: WorkbenchCompositeStep[] = [];
+		let shipped = summary;
+		let tag: string | null = null;
+		let adoption: { branch: string; fromSha: string; toSha: string } | null = null;
+		let continuation: { receiptId: string; nextStage: WorkbenchStage } | null = null;
+		let guards: WorkbenchRegressionGuardsProjection | null = null;
+		let view = await this.viewOf(inventory);
+		for (const step of plan) {
+			if (step === "review-candidate") {
+				const done = await this.decide({ kind: "review-candidate", candidateId, recommendation: "promote", reason: input.reason }, scoped, options);
+				shipped = done.result;
+				steps.push({ kind: step, message: done.message });
+				view = done.view;
+			} else if (step === "promote-candidate") {
+				const done = await this.decide({ kind: "promote-candidate", candidateId, version: version!, reason: input.reason }, scoped, options);
+				shipped = done.result.candidate;
+				tag = done.result.tag;
+				guards = done.result.guards;
+				steps.push({ kind: step, message: done.message });
+				view = done.view;
+			} else if (step === "adopt-candidate") {
+				const done = await this.decide({ kind: "adopt-candidate", candidateId, reason: input.reason }, scoped, options);
+				adoption = { branch: done.result.branch, fromSha: done.result.fromSha, toSha: done.result.toSha };
+				tag ??= done.result.tag;
+				steps.push({ kind: step, message: done.message });
+				view = done.view;
+			} else {
+				const done = await this.decide({ kind: "continue-cycle", candidateId, reason: input.reason }, scoped, options);
+				continuation = { receiptId: done.result.receiptId, nextStage: done.result.nextStage };
+				steps.push({ kind: step, message: done.message });
+				view = done.view;
+			}
+		}
+		return {
+			kind: input.kind,
+			message: [
+				`Shipped${tag ? ` ${tag}` : ""}${adoption ? ` on ${adoption.branch}` : ""}.`,
+				...(guards?.cases ? [`${guards.cases} regression guard case(s) drafted as ${guards.draftId}; publish them to pin the fix.`] : []),
+				...(guards?.warning ? [guards.warning] : []),
+				...(continuation ? [`The next cycle starts at ${continuation.nextStage}.`] : []),
+			].join(" "),
+			result: { steps, candidate: shipped, tag, adoption, continuation, guards },
+			view,
+		};
+	}
+
+	/**
+	 * The evidence every Builder-authored proposal binds, resolved once: the
+	 * approved Spec, the compatible development EvalRun the failure modes came
+	 * from, the exact selected modes, and the host-minted authoring context of
+	 * the clean revision the change is written against.
+	 */
+	private proposalEvidence(
+		inventory: WorkbenchInventory,
+		input: {
+			approvedSpecId?: string | undefined;
+			source: Omit<Parameters<typeof deriveEvidenceLinkedProposalSelection>[1], "failureModeIds">;
+			failureModeIds: string[];
+		},
+	): {
+		approved: ReturnType<typeof requireApprovedSpec>;
+		sourceEvalRunId: string;
+		selectedEvidence: ReturnType<typeof deriveEvidenceLinkedProposalSelection>;
+		authoringContext: ReturnType<typeof inspectTargetAuthoringContext>;
+	} {
+		const approved = requireApprovedSpec(inventory, input.approvedSpecId);
+		const corpus = requireDevelopmentCorpus(inventory, undefined, approved.id);
+		if (inventory.validFocus["development-corpus"]?.id && inventory.validFocus["development-corpus"]!.id !== corpus.id) {
+			throw new Error("focused development corpus is not in the selected approved Spec lineage");
+		}
+		const sourceEvalRunId = requireDevelopmentEval(
+			inventory,
+			input.source.evalRunId,
+			compatibleDevelopmentEvals(inventory, approved.id, corpus.id),
+		).evalRunId;
+		const diagnosis = this.dependencies.diagnoseEval(this.runsRoot, sourceEvalRunId);
+		const improvementBrief = this.dependencies.compileImprovementBrief(this.runsRoot, diagnosis);
+		const selectedEvidence = deriveEvidenceLinkedProposalSelection(improvementBrief, {
+			...input.source,
+			failureModeIds: input.failureModeIds,
+		});
+		if (!inventory.target) throw new Error("structured proposal authoring requires one exact Target");
+		const authoringContext = this.dependencies.inspectTargetAuthoringContext({
+			repositoryDir: this.projectDir,
+			expectedTarget: {
+				id: inventory.target.manifest.id,
+				gitSha: inventory.target.gitSha,
+			},
+		});
+		return { approved, sourceEvalRunId, selectedEvidence, authoringContext };
+	}
+
+	/**
+	 * One exact compiled proposal — from intents or from a workshop diff — through
+	 * the one canonical recording service, so both paths produce the same
+	 * immutable run, the same admission receipt, and the same human apply gate.
+	 */
+	private async recordCompiledProposal(input: {
+		proposal: CandidateProposal;
+		approvedSpecId: string;
+		sourceEvalRunId: string;
+		proposalBasis: RecordProposalOptions["proposalBasis"];
+		authoringContext: RecordProposalOptions["authoringContext"];
+		label: string;
+		signal?: AbortSignal;
+	}): Promise<Awaited<ReturnType<AhdeWorkbenchDependencies["recordProposal"]>>> {
+		const result = await this.dependencies.recordProposal({
+			proposal: input.proposal,
+			targetDir: this.projectDir,
+			allowedPaths: [...CANDIDATE_SCOPE_POLICY.allowed],
+			approvedSpec: { stateRoot: this.stateRoot, projectId: this.projectId, specId: input.approvedSpecId },
+			runsRoot: this.runsRoot,
+			timeoutMs: 30_000,
+			sourceEvalRunId: input.sourceEvalRunId,
+			proposalBasis: input.proposalBasis,
+			authoringContext: input.authoringContext,
+			signal: input.signal,
+		});
+		if (result.record.result.status !== "completed") {
+			const failure = result.record.result.error;
+			throw new Error(
+				`${input.label} recording failed closed (${result.record.result.status})` +
+				(failure ? `: ${failure.code}: ${failure.message}` : ""),
+			);
+		}
+		return result;
+	}
+
+	// -- the Builder workshop ------------------------------------------------
+
+	/** The open workshop, or the exact reason there is none. */
+	private requireWorkshop(): BuilderWorkshop {
+		if (!this.workshop?.open) {
+			throw new Error("no workshop is open; submit { kind: \"workshop-open\" } before writing, running, or trying anything");
+		}
+		return this.workshop;
+	}
+
+	private disposeWorkshop(): void {
+		const workshop = this.workshop;
+		this.workshop = null;
+		workshop?.dispose();
+	}
+
+	private async openWorkshop(approvedSpecId?: string): Promise<WorkbenchTurn> {
+		const inventory = this.inventory();
+		if (deriveWorkbenchView(inventory).stage !== "improvement-authoring") {
+			throw new Error("a workshop opens only after a conclusive development evaluation");
+		}
+		if (!inventory.target) throw new Error("a workshop requires one exact Target");
+		if (this.workshop?.open) {
+			throw new Error(
+				`workshop ${this.workshop.workshopId} is already open; close it into a proposal or discard it first`,
+			);
+		}
+		requireApprovedSpec(inventory, approvedSpecId);
+		const authoringContext = this.dependencies.inspectTargetAuthoringContext({
+			repositoryDir: this.projectDir,
+			expectedTarget: { id: inventory.target.manifest.id, gitSha: inventory.target.gitSha },
+		});
+		const workshop = openBuilderWorkshop({
+			repositoryDir: this.projectDir,
+			expectedTarget: { id: authoringContext.target.id, gitSha: authoringContext.target.gitSha },
+			authoringContext: authoringContext.claim,
+			now: this.dependencies.now,
+		});
+		this.workshop = workshop;
+		return {
+			kind: "workshop-open",
+			message:
+				`Workshop ${workshop.workshopId} is open on ${authoringContext.target.id}@${shortSha(authoringContext.target.gitSha)}. ` +
+				"Read, write, run, and try the tool there; closing compiles the diff into a proposal the operator still has to apply.",
+			artifact: {
+				workshopId: workshop.workshopId,
+				target: { id: workshop.targetId, gitSha: workshop.baseTargetSha },
+				scope: [...workshop.status().scope],
+				resources: authoringContext.resources.map((resource) => resource.path),
+				data: authoringContext.data.map((directory) => `${directory.path} · ${plural(directory.files, "file")}`),
+			},
+			view: await this.viewOf(inventory),
+		};
+	}
+
+	/** What the open workshop is, and everything it has changed so far. */
+	workshopStatus(): WorkshopStatus {
+		return this.requireWorkshop().status();
+	}
+
+	workshopRead(input: WorkshopReadInput): WorkshopReadResult {
+		return this.requireWorkshop().read(WorkshopReadInputSchema.parse(input).path);
+	}
+
+	workshopWrite(input: WorkshopWriteInput): WorkshopWriteResult {
+		return this.requireWorkshop().write(WorkshopWriteInputSchema.parse(input));
+	}
+
+	async workshopBash(input: WorkshopBashInput, options: { signal?: AbortSignal } = {}): Promise<WorkshopBashResult> {
+		const workshop = this.requireWorkshop();
+		const parsed = WorkshopBashInputSchema.parse(input);
+		return workshop.bash({
+			argv: parsed.argv,
+			...(parsed.cwd !== undefined ? { cwd: parsed.cwd } : {}),
+			...(parsed.timeoutMs !== undefined ? { timeoutMs: parsed.timeoutMs } : {}),
+			...(options.signal ? { signal: options.signal } : {}),
+		});
+	}
+
+	async workshopTry(input: WorkshopTryInput, options: { signal?: AbortSignal } = {}): Promise<TryToolResult> {
+		const workshop = this.requireWorkshop();
+		const parsed = WorkshopTryInputSchema.parse(input);
+		return workshop.tryTool({
+			tool: parsed.tool,
+			input: parsed.input,
+			...(options.signal ? { signal: options.signal } : {}),
+		});
+	}
+
+	/** True while the four workshop tools are legal. Host-side gate, not model state. */
+	get workshopOpen(): boolean {
+		return this.workshop?.open === true;
+	}
+
+	/**
+	 * End of conversation, end of workshop. A Builder session that dies with an
+	 * open workshop leaves no worktree behind.
+	 */
+	closeWorkshop(): void {
+		this.disposeWorkshop();
 	}
 
 	async view(queryValue: WorkbenchViewQuery = {}): Promise<WorkbenchView> {
@@ -636,7 +1314,7 @@ export class AhdeWorkbench {
 				const continuation = inventory.continuedCandidates.get(candidate.candidateId) ?? null;
 				content = {
 					kind: "candidate",
-					...candidateSummary(candidate),
+					...this.candidateView(candidate),
 					adoption: adoption
 						? { receiptId: adoption.receiptId, adoptedAt: adoption.adoptedAt, branch: adoption.intent.subject.branch.name }
 						: null,
@@ -661,7 +1339,7 @@ export class AhdeWorkbench {
 				const candidate = requireCandidate(inventory, ["proposed", "built", "validated", "evaluated", "reviewed"]);
 				content = {
 					kind: "candidate",
-					...candidateSummary(candidate),
+					...this.candidateView(candidate),
 					adoption: null,
 					continuation: null,
 					impact: this.candidateImpact(candidate),
@@ -883,34 +1561,74 @@ export class AhdeWorkbench {
 			return { kind: input.kind, message: "New immutable corpus-draft revision saved.", artifact: { id: result.draft.id, parentDraftId: parent.id, draftHash: hashValue(result.draft), taskCount: result.draft.tasks.length }, view: await this.viewOf(settled) };
 		}
 
+		if (input.kind === "workshop-open") return await this.openWorkshop(input.approvedSpecId);
+		if (input.kind === "workshop-discard") {
+			const workshop = this.requireWorkshop();
+			const workshopId = workshop.workshopId;
+			const discarded = workshop.status().changes.length;
+			this.disposeWorkshop();
+			return {
+				kind: input.kind,
+				message: `Workshop ${workshopId} discarded with ${plural(discarded, "uncompiled change")}. Nothing it wrote ever existed.`,
+				artifact: { workshopId, discardedChanges: discarded },
+				view: await this.view(),
+			};
+		}
+
 		const inventory = this.inventory();
 		if (deriveWorkbenchView(inventory).stage !== "improvement-authoring") {
 			throw new Error("structured proposal authoring is only legal after a conclusive development evaluation");
 		}
-		const approved = requireApprovedSpec(inventory, input.approvedSpecId);
-		const corpus = requireDevelopmentCorpus(inventory, undefined, approved.id);
-		if (inventory.validFocus["development-corpus"]?.id && inventory.validFocus["development-corpus"]!.id !== corpus.id) {
-			throw new Error("focused development corpus is not in the selected approved Spec lineage");
+		const evidence = this.proposalEvidence(inventory, input);
+		const { approved, sourceEvalRunId, selectedEvidence, authoringContext } = evidence;
+
+		if (input.kind === "workshop-close") {
+			const workshop = this.requireWorkshop();
+			if (canonicalJson(workshop.claim) !== canonicalJson(authoringContext.claim)) {
+				throw new Error("the Target changed while the workshop was open; discard it and open a new one");
+			}
+			// The diff is the proposal: whatever is on disk, compiled exactly, with
+			// the same scope assertion and the same evidence binding as an intent.
+			const compiled = workshop.compile({
+				summary: input.summary,
+				diagnoses: selectedEvidence.diagnoses,
+				risks: input.risks,
+				validationPlan: input.validationPlan,
+			});
+			if (compiled.proposal.baseTargetSha !== authoringContext.target.gitSha) {
+				throw new Error("the workshop diff does not match the inspected Target authoring revision");
+			}
+			const recorded = await this.recordCompiledProposal({
+				proposal: compiled.proposal,
+				approvedSpecId: approved.id,
+				sourceEvalRunId,
+				proposalBasis: { ...input.source, failureModeIds: input.failureModeIds },
+				authoringContext: authoringContext.claim,
+				label: "workshop",
+				...(options.signal ? { signal: options.signal } : {}),
+			});
+			// The workshop is bound to this proposal run and dies with it.
+			const workshopId = workshop.workshopId;
+			this.disposeWorkshop();
+			const settled = this.select("proposal", recorded.record.runId);
+			return {
+				kind: input.kind,
+				message: `Workshop ${workshopId} closed: ${plural(compiled.changes.length, "changed file")} compiled into an exact reviewable proposal. Nothing is applied until the operator says so.`,
+				artifact: {
+					workshopId,
+					runId: recorded.record.runId,
+					proposalHash: recorded.record.artifacts.proposal?.sha256 ?? null,
+					changedPaths: compiled.changes.map((change) => `${change.status} ${change.path}`),
+					sourceEvalRunId,
+					improvementBriefId: selectedEvidence.basis.briefId,
+					failureModeIds: selectedEvidence.basis.failureModes.map((mode) => mode.failureModeId),
+					approvedSpecId: approved.id,
+					authoringContextHash: authoringContext.contextHash,
+				},
+				view: await this.viewOf(settled),
+			};
 		}
-		const sourceEvalRunId = requireDevelopmentEval(
-			inventory,
-			input.source.evalRunId,
-			compatibleDevelopmentEvals(inventory, approved.id, corpus.id),
-		).evalRunId;
-		const diagnosis = this.dependencies.diagnoseEval(this.runsRoot, sourceEvalRunId);
-		const improvementBrief = this.dependencies.compileImprovementBrief(this.runsRoot, diagnosis);
-		const selectedEvidence = deriveEvidenceLinkedProposalSelection(improvementBrief, {
-			...input.source,
-			failureModeIds: input.failureModeIds,
-		});
-		if (!inventory.target) throw new Error("structured proposal authoring requires one exact Target");
-		const authoringContext = this.dependencies.inspectTargetAuthoringContext({
-			repositoryDir: this.projectDir,
-			expectedTarget: {
-				id: inventory.target.manifest.id,
-				gitSha: inventory.target.gitSha,
-			},
-		});
+
 		if (canonicalJson(input.authoringContext) !== canonicalJson(authoringContext.claim)) {
 			throw new Error("Target authoring context is stale; refresh the Target overview and every replaced resource.");
 		}
@@ -926,28 +1644,15 @@ export class AhdeWorkbench {
 		if (proposal.baseTargetSha !== authoringContext.target.gitSha) {
 			throw new Error("compiled proposal does not match the inspected Target authoring revision");
 		}
-		const result = await this.dependencies.recordProposal({
+		const result = await this.recordCompiledProposal({
 			proposal,
-			targetDir: this.projectDir,
-			allowedPaths: [...CANDIDATE_SCOPE_POLICY.allowed],
-			approvedSpec: { stateRoot: this.stateRoot, projectId: this.projectId, specId: approved.id },
-			runsRoot: this.runsRoot,
-			timeoutMs: 30_000,
+			approvedSpecId: approved.id,
 			sourceEvalRunId,
-			proposalBasis: {
-				...input.source,
-				failureModeIds: input.failureModeIds,
-			},
+			proposalBasis: { ...input.source, failureModeIds: input.failureModeIds },
 			authoringContext: authoringContext.claim,
-			signal: options.signal,
+			label: "structured proposal",
+			...(options.signal ? { signal: options.signal } : {}),
 		});
-		if (result.record.result.status !== "completed") {
-			const failure = result.record.result.error;
-			throw new Error(
-				`structured proposal recording failed closed (${result.record.result.status})` +
-				(failure ? `: ${failure.code}: ${failure.message}` : ""),
-			);
-		}
 		if (result.record.result.proposal?.decision === "propose") {
 			const settled = this.select("proposal", result.record.runId);
 			return { kind: input.kind, message: "Selected failure modes compiled into an evidence-linked, exact reviewable proposal.", artifact: { runId: result.record.runId, proposalHash: result.record.artifacts.proposal?.sha256 ?? null, sourceEvalRunId: result.record.request.source?.evalRunId ?? null, improvementBriefId: selectedEvidence.basis.briefId, failureModeIds: selectedEvidence.basis.failureModes.map((mode) => mode.failureModeId), approvedSpecId: approved.id, authoringContextHash: authoringContext.contextHash }, view: await this.viewOf(settled) };
@@ -995,6 +1700,10 @@ export class AhdeWorkbench {
 			let resolved: WorkbenchDecisionResult;
 			if (stage === "ready-to-evaluate" || stage === "improvement-authoring") {
 				resolved = await this.decide({ kind: "run-eval", repetitions: input.repetitions, reason: input.reason }, gate, options);
+			} else if (stage === "spec-review" || stage === "corpus-review") {
+				// “Run the tests” with a review still pending is not an error: the
+				// composite does the pending reviews and the run behind one dialog.
+				resolved = await this.decide({ kind: "start-testing", repetitions: input.repetitions, reason: input.reason }, gate, options);
 			} else if (stage === "candidate-verification") {
 				const appliedWithoutCandidate = inventory.proposals.filter((proposal) =>
 					proposal.status === "applied" && !inventory.candidates.some((candidate) =>
@@ -1011,7 +1720,16 @@ export class AhdeWorkbench {
 				});
 				resolved = await this.decide({ kind: "verify-candidate", builderRunId: proposal.record.runId, repetitions: input.repetitions, reason: input.reason }, gate, options);
 			} else {
-				throw new Error(`/run is not legal during ${stage}; complete the current review gate first`);
+				assertWorkbenchDecisionStage("run-eval", stage);
+				throw new Error(`running is not possible during ${stage}`);
+			}
+			if (resolved.kind === "start-testing") {
+				return {
+					kind: "run-current",
+					message: resolved.message,
+					result: { resolvedAs: "start-testing", ...resolved.result },
+					view: resolved.view,
+				};
 			}
 			if (resolved.kind === "run-eval") {
 				return {
@@ -1032,6 +1750,11 @@ export class AhdeWorkbench {
 			throw new Error(`run-current resolved to an unexpected decision ${String((resolved as { kind?: unknown }).kind)}`);
 		}
 		assertWorkbenchDecisionStage(input.kind, stage);
+
+		// The two composites: one operator intent, one dialog, the same
+		// fine-grained decisions and receipts underneath.
+		if (input.kind === "start-testing") return await this.startTesting(input, gate, options, inventory, stage);
+		if (input.kind === "ship") return await this.ship(input, gate, options, inventory, stage);
 
 		if (input.kind === "scaffold-target") {
 			if (inventory.target) throw new WorkbenchStaleDecisionError(input.kind);
@@ -1146,7 +1869,9 @@ export class AhdeWorkbench {
 				candidateHash: hashValue(candidate),
 				candidate: candidateSummary(candidate),
 			};
-			const actor = await this.confirm(input, gate, "Abandon interrupted candidate attempt", before, options.signal);
+			const actor = await this.confirm(input, gate, "Abandon interrupted candidate attempt", before, options.signal, {
+				question: "Abandon this interrupted attempt? The applied proposal can be verified again.",
+			});
 			const current = this.decisionInventory(input.kind);
 			if (current.abandonedCandidates.has(candidate.candidateId)) throw new WorkbenchStaleDecisionError(input.kind);
 			const reloaded = requireCandidate(current, [status], candidate.candidateId);
@@ -1334,7 +2059,10 @@ export class AhdeWorkbench {
 				return { target, subject: { operation: "run-development-evaluation", projectId: this.projectId, approvedSpec: { id: currentApproved.id, snapshotHash: hashValue(currentApproved) }, target: { id: target.manifest.id, gitSha: target.gitSha, toolsetHash: target.toolsetHash }, dataset: target.manifest.evalSuite.dataset, datasetHash: target.datasetHash, suiteHash: target.suiteHash, taskCount: target.tasks.length, repetitions: input.repetitions, developmentCorpus: { id: loaded.metadata.id, hash: loaded.metadata.hash, taskCount: loaded.metadata.taskCount, lineageHash: lineage.publication.linkHash } } };
 			};
 			const before = build();
-			await this.confirm(input, gate, "Run exact development evaluation", before.subject, options.signal);
+			await this.confirm(input, gate, "Run exact development evaluation", before.subject, options.signal, {
+				question: `Run ${Number(before.subject.taskCount) * input.repetitions} Target executions on the reviewed basket?`,
+				estimate: this.runEstimate(Number(before.subject.taskCount) * input.repetitions, inventory.target),
+			});
 			const after = build();
 			if (!exactSame(before.subject, after.subject)) throw new WorkbenchStaleDecisionError(input.kind);
 			const record = await this.dependencies.runSuite(after.target, {
@@ -1393,7 +2121,10 @@ export class AhdeWorkbench {
 				};
 			};
 			const before = build();
-			const actor = await this.confirm(input, gate, "Calibrate run-to-run noise", before.subject, options.signal);
+			const actor = await this.confirm(input, gate, "Calibrate run-to-run noise", before.subject, options.signal, {
+				question: `Measure noise with ${Number(before.subject.executions)} Target executions?`,
+				estimate: this.runEstimate(Number(before.subject.executions), inventory.target),
+			});
 			const after = build();
 			if (!exactSame(before.subject, after.subject)) throw new WorkbenchStaleDecisionError(input.kind);
 			// Both arms are the same exact revision: the experiment measures the
@@ -1441,7 +2172,9 @@ export class AhdeWorkbench {
 		if (input.kind === "discard-proposal") {
 			const proposal = requireProposal(inventory, "open", input.runId);
 			const before = this.dependencies.describeProposalDiscard(this.runsRoot, proposal.record.runId);
-			const actor = await this.confirm(input, gate, "Discard exact Builder proposal", before, options.signal);
+			const actor = await this.confirm(input, gate, "Discard exact Builder proposal", before, options.signal, {
+				question: "Discard this proposal? It can never be applied later.",
+			});
 			const current = this.decisionInventory(input.kind);
 			requireProposal(current, "open", proposal.record.runId);
 			const after = this.dependencies.describeProposalDiscard(this.runsRoot, proposal.record.runId);
@@ -1509,17 +2242,75 @@ export class AhdeWorkbench {
 					developmentCorpus = { stateRoot: this.stateRoot, projectId: this.projectId, corpusId: development.id };
 				}
 				return {
-					subject: { operation: "verify-applied-candidate", builderRunId: builderRun.runId, builderRunHash: hashValue(builderRun), applyReceiptHash: hashValue(applyReceipt), proposalHash: builderRun.artifacts.proposal?.sha256 ?? null, baseTargetSha: applyReceipt.baseTargetSha, candidateSha: applyReceipt.candidateSha, approvedSpec: builderRun.request.approvedSpec, developmentCorpus: development ?? null, sealedHoldout: { id: selected.id, hash: selected.hash, taskCount: selected.taskCount }, repetitions: input.repetitions },
+					subject: { operation: "verify-applied-candidate", builderRunId: builderRun.runId, builderRunHash: hashValue(builderRun), applyReceiptHash: hashValue(applyReceipt), proposalHash: builderRun.artifacts.proposal?.sha256 ?? null, baseTargetSha: applyReceipt.baseTargetSha, candidateSha: applyReceipt.candidateSha, approvedSpec: builderRun.request.approvedSpec, developmentCorpus: development ?? null, sealedHoldout: { id: selected.id, hash: selected.hash, taskCount: selected.taskCount }, repetitions: input.repetitions, screen: builderRun.request.source?.evalRunId ?? null, force: input.force === true },
 					approvedSpecId: builderRun.request.approvedSpec.specId,
+					sourceEvalRunId: builderRun.request.source?.evalRunId ?? null,
 					developmentCorpus,
 					sealedCorpus: { stateRoot: this.stateRoot, projectId: this.projectId, corpusId: selected.id } satisfies CorpusRef,
 				};
 			};
 			const before = build();
-			const actor = await this.confirm(input, gate, "Verify exact applied candidate", before.subject, options.signal);
+			// Two arms over the development basket and the sealed holdout.
+			const developmentTasks = inventory.corpora
+				.find((corpus) => corpus.id === before.subject.developmentCorpus?.id)?.taskCount ?? 0;
+			const executions = 2 * (developmentTasks + selected.taskCount) * input.repetitions;
+			const actor = await this.confirm(input, gate, "Verify exact applied candidate", before.subject, options.signal, {
+				question: before.sourceEvalRunId
+					? `Screen the cases that already failed, then verify the candidate against its baseline (up to ${executions + developmentTasks} Target executions)?`
+					: `Verify the candidate against its baseline (${executions} Target executions)?`,
+				estimate: this.runEstimate(executions + (before.sourceEvalRunId ? developmentTasks : 0), inventory.target),
+			});
 			if (choice.actorId && actorId(choice.actorId) !== actor) throw new Error("sealed selection and confirmation came from different human actors");
 			const after = build();
 			if (!exactSame(before.subject, after.subject)) throw new WorkbenchStaleDecisionError(input.kind);
+
+			// The cheap check first. It runs the candidate on the cases that already
+			// failed, once, candidate arm only — a screen, never evidence: it enters
+			// no gate and can never reach promotion. A flat screen stops the spend
+			// unless the operator explicitly forced it; a screen whose own
+			// infrastructure errors blew the budget is inconclusive and stops
+			// nothing (invariant 9).
+			let screen: CheapCheckResult | null = null;
+			if (after.sourceEvalRunId) {
+				try {
+					screen = await this.dependencies.runCheapCheck({
+						repositoryDir: this.projectDir,
+						runsRoot: this.runsRoot,
+						candidateRef: after.subject.candidateSha,
+						baselineRef: after.subject.baseTargetSha,
+						sourceEvalRunId: after.sourceEvalRunId,
+						...(after.developmentCorpus ? { developmentCorpus: after.developmentCorpus } : {}),
+						...(options.signal ? { signal: options.signal } : {}),
+						...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
+						now: this.dependencies.now,
+					});
+				} catch (error) {
+					// A screen that cannot run is not a verdict. Say so and measure.
+					console.error("AHDE host-only cheap check failure:", error);
+					screen = null;
+				}
+			}
+			if (screen && screen.verdict === "flat" && screen.withinErrorBudget && input.force !== true) {
+				const projection = this.screenProjection(screen);
+				return {
+					kind: input.kind,
+					message:
+						`Cheap check found nothing: ${screen.tasks.length} previously failing case` +
+						`${screen.tasks.length === 1 ? "" : "s"} re-run once on the candidate, ` +
+						`${screen.improved} improved, ${screen.unchanged} unchanged, ${screen.regressed} regressed. ` +
+						`The ${executions}-execution verification was not spent. ` +
+						"Author another change, or verify anyway with force.",
+					result: {
+						outcome: "stopped-by-screen",
+						builderRunId: after.subject.builderRunId,
+						candidateSha: after.subject.candidateSha,
+						screen: projection,
+						spared: { executions },
+					},
+					view: await this.viewOf(this.inventory()),
+				};
+			}
+
 			let result: Awaited<ReturnType<typeof runAppliedBuilderCandidate>>;
 			try {
 				result = await this.dependencies.runAppliedCandidate({
@@ -1553,17 +2344,87 @@ export class AhdeWorkbench {
 						? "Candidate verification completed on development evidence; no sealed holdout ran."
 						: `Candidate verification completed; the sealed guardrail verdict is ${sealedVerdict}, so this candidate cannot be promoted.`,
 				result: {
+					outcome: "verified",
 					candidate: candidateSummary(result.record),
 					development: { verdict: result.compare.gate.verdict, delta: result.compare.summary.delta, confidence95: result.compare.summary.confidence95 },
 					sealedHoldout: { executed: result.sealedHoldout !== null, gatePassed: sealedVerdict === "pass", verdict: sealedVerdict },
+					screen: screen ? this.screenProjection(screen) : null,
 				},
 				view: await this.viewOf(settled),
 			};
 		}
 
+		if (input.kind === "improve") {
+			if (!inventory.target) throw new Error("`improve` needs one exact resolved Target");
+			const approved = requireApprovedSpec(inventory);
+			const corpus = requireDevelopmentCorpus(inventory, input.developmentCorpusId, approved.id);
+			const plannedExecutions = plannedImprovementExecutions({
+				developmentTasks: corpus.taskCount,
+				repetitions: input.repetitions,
+				maxCycles: input.maxCycles,
+			});
+			const target = `${Math.round(input.until * 100)}%`;
+			const subject = {
+				operation: "improve",
+				approvedSpecId: approved.id,
+				developmentCorpus: { id: corpus.id, hash: corpus.hash, taskCount: corpus.taskCount },
+				until: input.until,
+				maxCycles: input.maxCycles,
+				repetitions: input.repetitions,
+				plannedExecutions,
+				neverDecides: [...IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS],
+			};
+			const actor = await this.confirm(input, gate, `Improve until ${target}`, subject, options.signal, {
+				question:
+					`Run up to ${input.maxCycles} improvement cycle${input.maxCycles === 1 ? "" : "s"} ` +
+					`towards ${target} (at most ${plannedExecutions} Target executions)? ` +
+					"The loop never promotes, adopts, publishes or approves anything.",
+				estimate: this.runEstimate(plannedExecutions, inventory.target),
+			});
+			const loop = await this.dependencies.runImprovementLoop({
+				repositoryDir: this.projectDir,
+				runsRoot: this.runsRoot,
+				stateRoot: this.stateRoot,
+				projectId: this.projectId,
+				approvedSpecId: approved.id,
+				developmentCorpus: { stateRoot: this.stateRoot, projectId: this.projectId, corpusId: corpus.id },
+				until: input.until,
+				maxCycles: input.maxCycles,
+				repetitions: input.repetitions,
+				...(input.jobs === undefined ? {} : { jobs: input.jobs }),
+				author: this.dependencies.authorImprovementProposal ?? recordedBuilderProposalAuthor({
+					stateRoot: this.stateRoot,
+					runsRoot: this.runsRoot,
+					projectId: this.projectId,
+				}),
+				gate: improvementLoopGate(gate),
+				actorId: actor,
+				...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
+				...(options.signal ? { signal: options.signal } : {}),
+				now: this.dependencies.now,
+			});
+			const table = renderImprovementLoopTable(loop);
+			return {
+				kind: input.kind,
+				message:
+					`${loop.cycles.length} improvement cycle${loop.cycles.length === 1 ? "" : "s"} ran. ` +
+					`Stopped because ${loop.stopMessage}.`,
+				result: {
+					cycles: loop.cycles,
+					stopReason: loop.stopReason,
+					stopMessage: loop.stopMessage,
+					table,
+					candidateId: loop.candidateId,
+					finalPassRate: loop.finalPassRate,
+					executions: loop.executions,
+				},
+				view: await this.viewOf(this.inventory()),
+			};
+		}
+
 		if (input.kind === "review-candidate") {
 			const candidate = requireCandidate(inventory, ["evaluated"], input.candidateId);
-			const before = { operation: "review-candidate", candidateHash: hashValue(candidate), candidate: candidateSummary(candidate), recommendation: input.recommendation };
+			const before = { operation: "review-candidate", candidateHash: hashValue(candidate), candidate: this.candidateView(candidate), recommendation: input.recommendation };
 			const actor = await this.confirm(input, gate, "Record exact candidate review", before, options.signal);
 			const current = this.decisionInventory(input.kind);
 			const after = requireCandidate(current, ["evaluated"], candidate.candidateId);
@@ -1575,22 +2436,45 @@ export class AhdeWorkbench {
 
 		if (input.kind === "promote-candidate") {
 			const candidate = requireCandidate(inventory, ["reviewed"], input.candidateId);
-			const before = { operation: "promote-candidate", candidateHash: hashValue(candidate), candidate: candidateSummary(candidate), version: input.version, tag: `v${input.version}` };
+			const before = { operation: "promote-candidate", candidateHash: hashValue(candidate), candidate: this.candidateView(candidate), version: input.version, tag: `v${input.version}` };
 			const actor = await this.confirm(input, gate, "Promote exact candidate", before, options.signal);
 			const current = this.decisionInventory(input.kind);
 			if (hashValue(requireCandidate(current, ["reviewed"], candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
-			const promoted = this.dependencies.promoteCandidate({ repositoryDir: this.projectDir, runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, version: input.version, reason: input.reason, actorId: actor, now: this.dependencies.now });
+			const promoted = this.dependencies.promoteCandidate({ repositoryDir: this.projectDir, runsRoot: this.runsRoot, stateRoot: this.stateRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, version: input.version, reason: input.reason, actorId: actor, now: this.dependencies.now });
+			// The promotion is written. Pinning what it fixed comes after, and its
+			// failure is a warning: a bookkeeping step never un-ships a release.
+			const guards = this.promotionGuards(promoted.record, promoted.tag);
 			const settled = this.select("candidate", promoted.record.candidateId);
-			return { kind: input.kind, message: `Candidate promoted as ${promoted.tag}. Adopt it to make it the active Target.`, result: { candidate: candidateSummary(promoted.record), tag: promoted.tag, candidateSha: promoted.candidateSha }, view: await this.viewOf(settled) };
+			return {
+				kind: input.kind,
+				message: [
+					`Candidate promoted as ${promoted.tag}. Adopt it to make it the active Target.`,
+					...(guards.cases > 0
+						? [`${guards.cases} case(s) that flipped fail→pass are drafted as regression guards in ${guards.draftId}; publish that draft to pin them.`]
+						: []),
+					...(guards.warning ? [guards.warning] : []),
+				].join(" "),
+				result: { candidate: candidateSummary(promoted.record), tag: promoted.tag, candidateSha: promoted.candidateSha, guards },
+				view: await this.viewOf(settled),
+			};
 		}
 
 		if (input.kind === "reject-candidate") {
-			const candidate = requireCandidate(inventory, ["reviewed"], input.candidateId);
-			const before = { operation: "reject-candidate", candidateHash: hashValue(candidate), candidate: candidateSummary(candidate) };
-			const actor = await this.confirm(input, gate, "Reject exact candidate", before, options.signal);
+			// Rejecting is legal where the operator reads the evidence, not only one
+			// step later: at `candidate-review` the review is recorded first, after
+			// the same single question, so "reject" never bounces off a stage rule.
+			const candidate = requireCandidate(inventory, ["evaluated", "reviewed"], input.candidateId);
+			const needsReview = candidateStatus(candidate) === "evaluated";
+			const before = { operation: "reject-candidate", candidateHash: hashValue(candidate), candidate: this.candidateView(candidate) };
+			const actor = await this.confirm(input, gate, "Reject exact candidate", before, options.signal, {
+				question: "Reject this candidate? The agent stays at its baseline.",
+			});
 			const current = this.decisionInventory(input.kind);
-			if (hashValue(requireCandidate(current, ["reviewed"], candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
-			const rejected = this.dependencies.rejectCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, reason: input.reason, actorId: actor, now: this.dependencies.now });
+			if (hashValue(requireCandidate(current, ["evaluated", "reviewed"], candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
+			const reviewedRecord = needsReview
+				? this.dependencies.reviewCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, recommendation: "reject", reason: input.reason, actorId: actor, now: this.dependencies.now })
+				: candidate;
+			const rejected = this.dependencies.rejectCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: hashValue(reviewedRecord), reason: input.reason, actorId: actor, now: this.dependencies.now });
 			const settled = this.select("candidate", rejected.candidateId);
 			return { kind: input.kind, message: "Candidate rejected durably. The Target stays at its baseline.", result: candidateSummary(rejected), view: await this.viewOf(settled) };
 		}

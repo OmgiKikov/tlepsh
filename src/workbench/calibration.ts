@@ -38,8 +38,10 @@ export function recommendedRepetitions(passRate: number, taskCount: number): num
 
 /**
  * Pure projection of one calibration record. Returns null unless the record
- * is an A/A experiment that reached `evaluated` with v3 development gate
- * evidence — legacy or unfinished records carry no verdict to show.
+ * is an A/A experiment that reached `evaluated` with development gate evidence
+ * carrying a verdict (v3 or v4) — legacy v1/v2 or unfinished records have none
+ * to show. Calibration measures noise and never promotes, so it reads any
+ * verdict-bearing evidence rather than promotion-grade evidence only.
  */
 export function calibrationProjection(record: CandidateRecord): WorkbenchCalibrationProjection | null {
 	if (record.mode !== "aa-calibration") return null;

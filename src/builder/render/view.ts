@@ -2,12 +2,14 @@ import type {
 	WorkbenchCandidateSummary,
 	WorkbenchDatasetCase,
 	WorkbenchDatasetDetail,
+	WorkbenchGateProjection,
 	WorkbenchImprovementBriefProjection,
 	WorkbenchReviewDetail,
 	WorkbenchTargetDetail,
 	WorkbenchTracesDetail,
 	WorkbenchView,
 } from "../../workbench/types.js";
+import { formatResourceFragment } from "../../domain/comparison-gate.js";
 import { formatFlipRate, formatNoiseBand } from "./calibration.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
 import {
@@ -149,9 +151,16 @@ function verdictTone(verdict: string, paint: Paint): (text: string) => string {
 	}
 }
 
+/** `cost ×1.4 · latency ×0.9`, dimmed and prefixed, or nothing when unmeasured. */
+function resourceSuffix(gate: { resources: WorkbenchGateProjection["resources"] }, paint: Paint): string {
+	const fragment = formatResourceFragment(gate.resources);
+	return fragment ? ` ${paint.dim(`· ${fragment}`)}` : "";
+}
+
 function gateLine(gate: NonNullable<NonNullable<WorkbenchCandidateSummary["development"]>["gate"]>, paint: Paint): string {
 	const tone = verdictTone(gate.verdict, paint);
-	return `  ${paint.dim("Verdict")} ${tone(gate.verdict)} ${paint.dim("·")} ${points(gate.delta)} ${paint.dim(`(95% CI ${points(gate.confidence95.low)} … ${points(gate.confidence95.high)})`)} ${paint.dim(`· ${gate.tasks} × ${gate.repetitions}`)}` +
+	return `  ${paint.dim("Verdict")} ${tone(gate.verdict)} ${paint.dim("·")} ${points(gate.scoreDelta)} ${paint.dim(`(95% CI ${points(gate.confidence95.low)} … ${points(gate.confidence95.high)})`)} ${paint.dim(`· ${gate.tasks} × ${gate.repetitions}`)}` +
+		resourceSuffix(gate, paint) +
 		(gate.flags.collapsedTasks > 0 ? ` ${paint.error(`· ${pluralize(gate.flags.collapsedTasks, "task")} collapsed`)}` : "");
 }
 
@@ -162,12 +171,25 @@ function comparisonLines(
 ): string[] {
 	const delta = summary.delta;
 	const tone = delta > 0 ? paint.success : delta < 0 ? paint.error : paint.muted;
+	const score = gate
+		? ` ${paint.dim(`· score ${percent(gate.baselineScore)} → ${percent(gate.candidateScore)}`)}`
+		: "";
 	const lines = [
-		`${paint.dim("Development")} baseline ${percent(summary.baselinePassRate)} → candidate ${percent(summary.candidatePassRate)} ${tone(`(${points(delta)})`)} ${paint.dim(`on ${pluralize(summary.taskCount, "task")}`)}`,
+		`${paint.dim("Development")} baseline ${percent(summary.baselinePassRate)} → candidate ${percent(summary.candidatePassRate)} ${tone(`(${points(delta)})`)} ${paint.dim(`on ${pluralize(summary.taskCount, "task")}`)}${score}`,
 		`  ${paint.success(`↑ ${summary.improved} improved`)} ${paint.dim("·")} ${summary.regressed > 0 ? paint.warning(`↓ ${summary.regressed} lower`) : paint.muted("↓ 0 lower")} ${paint.dim("·")} ${paint.muted(`= ${summary.unchanged} unchanged`)} ${paint.dim(`· 95% CI ${points(summary.confidence95.low)} … ${points(summary.confidence95.high)}`)}`,
 	];
 	if (gate) lines.push(gateLine(gate, paint));
 	return lines;
+}
+
+/** One line about the instrument: how far this judge matches a human's eyes. */
+export function judgeAgreementLine(
+	calibration: NonNullable<WorkbenchCandidateSummary["judgeAgreement"]> | null,
+	paint: Paint,
+): string {
+	if (!calibration) return `${paint.dim("Judge")} ${paint.warning("not calibrated")} ${paint.dim("· ahde label")}`;
+	const kappa = calibration.kappa === null ? "κ n/a" : `κ ${calibration.kappa.toFixed(2)}`;
+	return `${paint.dim("Judge")} agreement ${percent(calibration.agreement)} ${paint.dim("·")} ${kappa} ${paint.dim(`· n=${calibration.labels}`)}`;
 }
 
 export function renderCandidate(
@@ -192,10 +214,11 @@ export function renderCandidate(
 	const sealedGate = candidate.sealedHoldout.gate;
 	lines.push(`${paint.dim("Sealed holdout")} ${candidate.sealedHoldout.executed
 		? (sealedGate
-			? `${verdictTone(sealedGate.verdict, paint)(sealedGate.verdict)} ${paint.dim("·")} ${points(sealedGate.delta)} ${paint.dim(`(95% CI ${points(sealedGate.confidence95.low)} … ${points(sealedGate.confidence95.high)}) · ${sealedGate.tasks} × ${sealedGate.repetitions}`)}`
+			? `${verdictTone(sealedGate.verdict, paint)(sealedGate.verdict)} ${paint.dim("·")} ${points(sealedGate.scoreDelta)} ${paint.dim(`(95% CI ${points(sealedGate.confidence95.low)} … ${points(sealedGate.confidence95.high)}) · ${sealedGate.tasks} × ${sealedGate.repetitions}`)}${resourceSuffix(sealedGate, paint)}`
 			: (candidate.sealedHoldout.gatePassed ? paint.success("gate passed") : paint.error("legacy evidence — not promotable")))
 		: paint.muted("not executed")}`);
 	if (sealedGate && sealedGate.verdict !== "pass") lines.push(`  ${paint.muted(oneLine(sealedGate.reasons[0] ?? "", 160))}`);
+	if (candidate.judgeAgreement !== undefined) lines.push(judgeAgreementLine(candidate.judgeAgreement, paint));
 	lines.push(...renderImpact(candidate.impact ?? null, paint));
 	if (candidate.review) {
 		const tone = candidate.review.recommendation === "promote" ? paint.success : paint.error;
@@ -236,7 +259,20 @@ function graderLabel(grader: { type: string } & Record<string, unknown>): string
 		case "tool_called": return `tool ${String(grader.tool ?? grader.name ?? "?")}${grader.argsContains ? ` ∋ “${oneLine(String(grader.argsContains), 30)}”` : ""}`;
 		case "output_contains": return `contains “${oneLine(String(grader.text ?? ""), 30)}”`;
 		case "output_matches": return `matches /${oneLine(String(grader.pattern ?? ""), 30)}/`;
-		case "judge": return `judge “${oneLine(String(grader.rubric ?? ""), 40)}”`;
+		case "judge": {
+			// A judge may now carry assertions instead of a rubric; showing an empty
+			// quote for the whole check is worse than showing the checks themselves.
+			const assertions = Array.isArray(grader.assertions) ? grader.assertions.map(String) : [];
+			const body = grader.rubric
+				? `“${oneLine(String(grader.rubric), 40)}”`
+				: assertions.length > 0
+					? `“${oneLine(assertions.join(" · "), 40)}”`
+					: "“”";
+			const jury = typeof grader.jury === "number" && grader.jury > 1 ? ` · jury ${grader.jury}` : "";
+			const checks = grader.rubric && assertions.length > 0 ? ` +${assertions.length} assertions` : "";
+			const reference = grader.withReference ? " · with reference" : "";
+			return `judge ${body}${checks}${jury}${reference}`;
+		}
 		default: return grader.type;
 	}
 }

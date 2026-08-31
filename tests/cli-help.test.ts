@@ -31,6 +31,56 @@ describe("one Builder command list", () => {
 	});
 });
 
+describe("one Builder persona", () => {
+	const persona = readFileSync(new URL("../builders/ahde/AGENTS.md", import.meta.url), "utf8");
+
+	/** The `| say this | it means |` rows of the vocabulary table. */
+	function vocabulary(): { say: string; means: string }[] {
+		const table = persona.split("## Vocabulary")[1]?.split("\n## ")[0] ?? "";
+		return table
+			.split("\n")
+			.filter((line) => line.startsWith("|") && !line.startsWith("|---") && !line.includes("Say this"))
+			.map((line) => line.split("|").map((cell) => cell.trim()))
+			.map((cells) => ({ say: cells[1] ?? "", means: cells[2] ?? "" }));
+	}
+
+	it("names the operator's shortcuts and no command AHDE does not register", () => {
+		const listed = slashNames(persona.split("## Tools")[1]?.split("\n## ")[0] ?? "");
+		expect([...listed].sort()).toEqual([...AHDE_BUILDER_COMMAND_NAMES].sort());
+		// The three verbs are named first, exactly as /help orders them.
+		expect(listed.slice(0, 3)).toEqual(["test", "fix", "ship"]);
+	});
+
+	it("speaks the operator's words and keeps the jargon in the “it means” column", () => {
+		const rows = vocabulary();
+		expect(rows.length).toBeGreaterThan(8);
+		const say = rows.map((row) => row.say).join("\n");
+		for (const word of ["tests", "тесты", "a change", "правка", "check it", "проверка", "ship it", "выкати"]) {
+			expect(say).toContain(word);
+		}
+		// Nothing on the left may be machinery the operator never asked about.
+		for (const jargon of ["corpus", "Spec", "Proposal", "candidate", "promote", "adopt", "holdout", "stage", "receipt"]) {
+			expect(say).not.toContain(jargon);
+		}
+		const means = rows.map((row) => row.means).join("\n");
+		for (const jargon of ["Spec", "corpus", "Proposal", "candidate verification", "sealed holdout"]) {
+			expect(means).toContain(jargon);
+		}
+	});
+
+	it("promises exactly three questions and never hands work back as a command", () => {
+		const working = persona.split("## How to work with the operator")[1]?.split("\n## ")[0] ?? "";
+		expect(working).toContain("exactly three questions");
+		expect(working).toMatch(/\*\*start testing\*\*/);
+		expect(working).toMatch(/\*\*apply this change\*\*/);
+		expect(working).toMatch(/\*\*ship it\*\*/);
+		expect(working).toContain("Do the work.");
+		expect(working).toContain("Never answer “use /test” or “type /apply”");
+		// The stage machine is not the operator's vocabulary.
+		expect(working).toContain("Never\n  narrate stages");
+	});
+});
+
 describe("CLI help", () => {
 	it("keeps root help focused on the product journey", () => {
 		const help = cliHelp(["--help"]);
@@ -38,7 +88,11 @@ describe("CLI help", () => {
 		expect(help).toContain("ahde resume");
 		expect(help).toContain("Inside Builder Pi");
 		expect(help).toContain("Advanced automation commands");
+		expect(help).toContain("compare  diagnose  regrade  report");
 		expect(help).toContain("ahde calibrate --target <dir>                measure run-to-run noise (A/A)");
+		expect(help).toContain("ahde check --target <dir> --candidate <id>   cheap screen: the failed cases, once");
+		expect(help).toContain("ahde improve --target <dir> --until 90% --max-cycles 5");
+		expect(help).toContain("candidate  calibrate  check  improve  review  promote  reject");
 		expect(help).toContain("AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)");
 	});
 
@@ -48,6 +102,23 @@ describe("CLI help", () => {
 		expect(cliHelp(["target", "--help"])).toContain("Requires a configured Target");
 		expect(cliHelp(["calibrate", "--help"])).toContain("measure run-to-run noise");
 		expect(cliHelp(["calibrate", "--help"])).toContain("never promotable");
+		const check = cliHelp(["check", "--help"]);
+		expect(check).toContain("Usage: ahde check --target <dir> --candidate <id>");
+		expect(check).toContain("ONLY\nthe cases its source eval recorded as failing");
+		expect(check).toContain("It is a screen, never evidence.");
+		expect(check).toContain("a promotion that\ncites one is refused");
+		expect(check).toContain("Exit 0 = promising, 1 = flat.");
+		const improve = cliHelp(["improve", "--help"]);
+		expect(improve).toContain("Usage: ahde improve --target <dir> --until <pass-rate> --max-cycles <n>");
+		expect(improve).toContain("cheap check -> full\ndevelopment verification");
+		expect(improve).toContain("`90%` or `0.9`");
+		expect(improve).toContain("the sealed guardrail and the promotion are always\nyours");
+		expect(improve).toContain("It never promotes, adopts, publishes a corpus or approves a Spec.");
+		const regrade = cliHelp(["regrade", "--help"]);
+		expect(regrade).toContain("Usage: ahde regrade <evalRunId> --target <dir>");
+		expect(regrade).toContain("without calling the\nTarget model again");
+		expect(regrade).toContain("the graders it carried when its trace was recorded");
+		expect(regrade).toContain("Sealed\nevidence stays sealed and prints counts only");
 	});
 
 	it("renders focused help for nested automation actions", () => {

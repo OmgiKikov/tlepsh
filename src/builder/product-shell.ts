@@ -4,7 +4,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, type TUI } from "@earendil-works/pi-tui";
 import type { AhdeWorkbench } from "../workbench/workbench.js";
-import type { WorkbenchView } from "../workbench/types.js";
+import type { WorkbenchStage, WorkbenchView } from "../workbench/types.js";
 import { themePaint } from "./render/paint.js";
 import { nextStep, stageLabel } from "./render/stage.js";
 import { renderHeader, type HeaderState } from "./render/view.js";
@@ -28,6 +28,11 @@ export interface ProductShellOptions {
 	presenter?: TranscriptPresenter;
 }
 
+/**
+ * What the operator can say next, in their words. The header names an action,
+ * never the stage it derives from: “Next say “tests”” beats “Next corpus
+ * review”. Blockers still win, so a blocked project keeps its recovery line.
+ */
 function builderModelStatus(ctx: Pick<ExtensionContext, "model" | "modelRegistry">): HeaderState["builderModel"] {
 	// Pi substitutes an "unknown/unknown" placeholder when no provider is configured.
 	if (!ctx.model || ctx.model.provider === "unknown") return { label: null, credentialPresent: false };
@@ -167,7 +172,7 @@ export function installAhdeBuilderProductShell(
 				"info",
 			);
 		} else {
-			ctx.ui.notify(`${stageLabel(view.stage)} · ${nextStep(view)}`, "info");
+			ctx.ui.notify(nextStep(view), "info");
 		}
 	};
 
@@ -193,10 +198,11 @@ export function installAhdeBuilderProductShell(
 		ctx.ui.setWorkingMessage("AHDE Builder is working…");
 		ctx.ui.setHeader((hostTui, theme) => {
 			tui = hostTui;
+			const paint = themePaint(theme);
 			return {
 				// Pi aborts the whole session on an over-wide custom line; every header
 				// line is measured with ANSI awareness and cut to the viewport.
-				render: (width: number) => renderHeader(state, themePaint(theme))
+				render: (width: number) => renderHeader(state, paint)
 					.map((line) => truncateToWidth(line, Math.max(1, width))),
 				invalidate() {},
 			};

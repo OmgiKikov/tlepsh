@@ -1,12 +1,47 @@
 import { dirname, join, resolve } from "node:path";
 import { readFileSync, statSync } from "node:fs";
+import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { describeEnvVar, loadDotEnv, type EnvReport } from "./env.js";
 import { loadTarget, scaffoldTarget } from "./manifest.js";
-import { listEvalRunIndexesLenient, loadEvalRun, runSuite } from "./eval.js";
+import {
+	listEvalRunIndexesLenient,
+	loadEvalRun,
+	loadRun,
+	readEvalRunIndex,
+	renderEvalRunListLine,
+	renderRunTurns,
+	runSuite,
+} from "./eval.js";
+import { judgeAgreement } from "./domain/judge-agreement.js";
+import {
+	collectJudgeLabelSubjects,
+	importJudgeLabels,
+	judgeLabelFilePath,
+	loadJudgeCalibration,
+	readProjectJudgeLabels,
+	runJudgeLabelSession,
+	type JudgeLabelSubject,
+} from "./application/judge-labels.js";
 import { compareEvalRuns, renderCompareMarkdown } from "./compare.js";
+import {
+	isRegradeLabel,
+	readGraderDefaults,
+	regradeEvalRun,
+	renderRegradeSummary,
+} from "./regrade.js";
 import { compileFailureBundle } from "./bundle.js";
 import { runCandidateExperiment } from "./application/candidate-experiment.js";
+import {
+	renderCheapCheckLine,
+	runCheapCheckForCandidate,
+} from "./application/cheap-check.js";
+import {
+	recordedBuilderProposalAuthor,
+	renderImprovementLoopTable,
+	runImprovementLoop,
+} from "./application/improvement-loop.js";
+
 import { runAppliedBuilderCandidate } from "./application/builder-candidate.js";
 import { diagnoseEvalRun } from "./diagnosis.js";
 import { compileImprovementBrief } from "./application/improvement-brief.js";
@@ -30,6 +65,7 @@ import { loadBuilderProposalRun } from "./application/builder-proposal.js";
 import { readTryToolInput, tryTool } from "./application/tool-workshop.js";
 import {
 	resolveDevelopmentTargetForEval,
+	resolveScoredCasesForEval,
 	targetWithDevelopmentCorpus,
 } from "./application/corpus-target.js";
 import { listSpecSnapshots, loadSpecSnapshot } from "./spec.js";
@@ -55,6 +91,7 @@ import type { RunEventListener } from "./run-events.js";
 import {
 	CliInvocationError,
 	parseCliInvocation,
+	parsePassRateFlag,
 } from "./cli-invocation.js";
 import { cliHelp } from "./cli-help.js";
 
@@ -105,6 +142,20 @@ const USAGE = cliHelp([]);
 const MAX_RECIPE_FILE_BYTES = 512 * 1024;
 
 /** `--recipe` is either the JSON itself or `@<path>` to a small JSON file. */
+/**
+ * How many turns one case actually took, for the run list. Only simulated-user
+ * runs record a turn count, so every other line reads exactly as it always has.
+ * A run whose record cannot be read still gets its id printed: the turn count is
+ * a nicety and must never be the reason a completed run goes unreported.
+ */
+function describeRunTurns(runsRootDir: string, runId: string): string {
+	try {
+		return renderRunTurns(loadRun(runsRootDir, runId).metrics);
+	} catch {
+		return "";
+	}
+}
+
 function readRecipeFlag(value: string): unknown {
 	let text = value;
 	if (value.startsWith("@")) {
@@ -307,6 +358,148 @@ async function targetPi(): Promise<void> {
 	});
 }
 
+/**
+ * Labels live under a project, and a report is asked for by eval run alone.
+ * The eval run's own Target id is the same default every other command uses.
+ */
+function reportProjectId(evalRunId: string): string {
+	const explicit = arg("project");
+	if (explicit) return explicit;
+	return readEvalRunIndex(runsRoot(), evalRunId).target.id;
+}
+
+/** Sealed corpus content hashes, so a legacy sealed eval run is refused too. */
+function sealedCorpusHashes(projectId: string): Set<string> {
+	try {
+		return new Set(
+			listCorpora({ stateRoot: stateRoot(), projectId })
+				.filter((corpus) => corpus.visibility === "sealed")
+				.map((corpus) => corpus.hash),
+		);
+	} catch {
+		return new Set();
+	}
+}
+
+function labelSubjectBlock(subject: JudgeLabelSubject, ordinal: number, total: number): string {
+	return [
+		"",
+		`── ${ordinal}/${total} · ${subject.taskId} · ${subject.graderName}`,
+		"task:",
+		subject.input || "(no recorded task input)",
+		"",
+		"answer:",
+		subject.answer || "(no final answer)",
+		"",
+	].join("\n");
+}
+
+/**
+ * Blind human labelling, then the judge's verdict. The order is the whole
+ * point: a human shown the judge's answer first is grading the judge's
+ * confidence, not the Target's answer.
+ */
+async function labelJudge(): Promise<void> {
+	const evalRunId = positional(0);
+	if (!evalRunId) {
+		console.error("usage: ahde label <evalRunId> --target <dir> [--project <id>] [--sample N] [--seed <text>] [--file <labels.jsonl>]\n");
+		console.log(USAGE);
+		process.exit(1);
+	}
+	const targetDir = resolve(requireArg("target"));
+	const projectId = arg("project") ?? loadTarget(targetDir).manifest.id;
+	const file = arg("file");
+	const context = {
+		runsRoot: runsRoot(),
+		stateRoot: stateRoot(),
+		projectId,
+		evalRunId,
+		sealedDatasetHashes: sealedCorpusHashes(projectId),
+	};
+	if (file) {
+		const rows = importJudgeLabels({ ...context, filePath: resolve(file) });
+		console.log(`imported ${rows.length} label(s) into ${judgeLabelFilePath(stateRoot(), projectId, evalRunId)}`);
+		printJudgeAgreement(projectId);
+		return;
+	}
+	if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+		throw new Error("ahde label needs an interactive terminal (TTY), or --file <labels.jsonl> to import answers");
+	}
+	const io = createInterface({ input: process.stdin, output: process.stdout });
+	try {
+		const session = await runJudgeLabelSession({
+			...context,
+			...(arg("sample") ? { sample: Number(arg("sample")) } : {}),
+			...(arg("seed") ? { seed: arg("seed")! } : {}),
+			prompt: {
+				ask: async (subject, ordinal, total) => {
+					process.stdout.write(labelSubjectBlock(subject, ordinal, total));
+					let answer = "";
+					while (!["pass", "fail", "skip", "p", "f", "s"].includes(answer)) {
+						answer = (await io.question("your verdict — pass / fail / skip: ")).trim().toLowerCase();
+					}
+					const decided = answer.startsWith("p") ? "pass" : answer.startsWith("f") ? "fail" : "skip";
+					if (decided === "skip") return { answer: decided };
+					const note = (await io.question("note (optional): ")).trim();
+					return { answer: decided, ...(note ? { note } : {}) };
+				},
+				reveal: (subject, answer) => {
+					const agreement = answer === "skip"
+						? "skipped"
+						: answer === subject.judge ? "agrees with you" : "DISAGREES with you";
+					process.stdout.write(`judge said ${subject.judge} · ${agreement}\n  ${subject.judgeReason}\n`);
+				},
+			},
+		});
+		console.log(`\n${session.labelled} label(s) written, ${session.skipped} skipped`);
+	} finally {
+		io.close();
+	}
+	printJudgeAgreement(projectId);
+}
+
+function printJudgeAgreement(projectId: string): void {
+	const report = judgeAgreement(readProjectJudgeLabels(stateRoot(), projectId));
+	if (report.pooled.n === 0) {
+		console.log("judge not calibrated — no labels yet for this project");
+		return;
+	}
+	console.log("grader spec           agreement   κ       n    false-pass  false-fail");
+	for (const grader of [...report.byGrader, { graderSpecHash: "pooled", ...report.pooled }]) {
+		console.log(
+			`${grader.graderSpecHash.replace("sha256:", "").slice(0, 20).padEnd(20)}  ` +
+				`${`${Math.round(grader.agreement * 100)}%`.padStart(8)}  ` +
+				`${(grader.kappa === null ? "n/a" : grader.kappa.toFixed(2)).padStart(6)}  ` +
+				`${String(grader.n).padStart(4)}  ${String(grader.falsePass).padStart(10)}  ${String(grader.falseFail).padStart(10)}`,
+		);
+	}
+}
+
+function judgeAgreementReport(): void {
+	const evalRunId = positional(0);
+	if (!evalRunId) {
+		console.error("usage: ahde judge-agreement <evalRunId> --target <dir> [--project <id>]\n");
+		console.log(USAGE);
+		process.exit(1);
+	}
+	const targetDir = resolve(requireArg("target"));
+	const projectId = arg("project") ?? loadTarget(targetDir).manifest.id;
+	const subjects = collectJudgeLabelSubjects({
+		runsRoot: runsRoot(),
+		evalRunId,
+		sealedDatasetHashes: sealedCorpusHashes(projectId),
+	});
+	const specs = new Set(subjects.map((subject) => subject.graderSpecHash));
+	console.log(`eval run ${evalRunId}: ${specs.size} judge grader spec(s) over ${subjects.length} judged check(s)`);
+	printJudgeAgreement(projectId);
+	const calibration = loadJudgeCalibration(stateRoot(), projectId);
+	for (const specHash of [...specs].sort()) {
+		if (!calibration.byGraderSpecHash.has(specHash)) {
+			console.log(`judge not calibrated — ${specHash.slice(0, 27)}… has no labels; run \`ahde label ${evalRunId}\``);
+		}
+	}
+}
+
 async function main(): Promise<void> {
 	let invocation: ReturnType<typeof parseCliInvocation>;
 	try {
@@ -408,7 +601,13 @@ async function main(): Promise<void> {
 				`eval run ${record.evalRunId}: ${record.summary.pass}/${record.summary.total} all-pass ` +
 					`(${record.summary.fail} fail, ${record.summary.error} error)`,
 			);
-			for (const runId of record.runIds) console.log(`  run ${runId}`);
+			for (const runId of record.runIds) {
+				// How long the conversation ran is the first thing an operator wants
+				// from a simulated-user case, and the only thing a pass/fail hides.
+				// Silent on every other case, whose answer is one turn by definition.
+				const turns = describeRunTurns(runsRoot(), runId);
+				console.log(`  run ${runId}${turns}`);
+			}
 			if (record.summary.error > 0) process.exitCode = 2;
 			else if (record.summary.fail > 0) process.exitCode = 1;
 			break;
@@ -448,11 +647,7 @@ async function main(): Promise<void> {
 				break;
 			}
 			for (const run of runs) {
-				console.log(
-					`${run.evalRunId}  ${run.label.padEnd(9)} ${run.target.id.padEnd(16)} ` +
-						`${(run.summary.allPassRate * 100).toFixed(0).padStart(3)}% ` +
-						`(${run.summary.pass}/${run.summary.total})  ${run.startedAt}`,
-				);
+				console.log(renderEvalRunListLine(run));
 			}
 			for (const entry of listed.invalid) {
 				console.log(`${entry.evalRunId}  legacy · not comparable with the current evidence schema`);
@@ -683,19 +878,67 @@ async function main(): Promise<void> {
 			if (diagnosis.status === "inconclusive") process.exitCode = 2;
 			break;
 		}
-		case "report": {
+		case "regrade": {
 			const evalRunId = positional(0);
 			if (!evalRunId) {
-				console.error("usage: ahde report <evalRunId> [--out <path>]\n");
+				console.error(
+					"usage: ahde regrade <evalRunId> --target <dir> [--graders <path>] [--label <label>] [--jobs N] [--project <id>]\n",
+				);
 				console.log(USAGE);
 				process.exit(1);
 			}
-			const outputPath = buildEvalReport(
+			const requestedLabel = arg("label");
+			if (requestedLabel !== undefined && !isRegradeLabel(requestedLabel)) {
+				throw new Error(`--label must be baseline, solo, or regrade, got ${requestedLabel}`);
+			}
+			const gradersPath = arg("graders");
+			const target = loadTarget(resolve(requireArg("target")));
+			const sourceIndex = readEvalRunIndex(runsRoot(), evalRunId);
+			// The cases the recorded traces answered, wherever they live: the
+			// manifest dataset, or the published corpus that produced them.
+			const scoredTarget = resolveScoredCasesForEval({
+				target,
+				evalRun: sourceIndex,
+				stateRoot: stateRoot(),
+				projectId: arg("project") ?? target.manifest.id,
+			}).target;
+			const result = await regradeEvalRun({
+				runsRoot: runsRoot(),
+				evalRunId,
+				target: scoredTarget,
+				...(gradersPath ? { graderDefaults: readGraderDefaults(gradersPath) } : {}),
+				...(requestedLabel ? { label: requestedLabel } : {}),
+				...(arg("jobs") ? { jobs: Number(arg("jobs")) } : {}),
+			});
+			for (const line of renderRegradeSummary(result)) console.log(line);
+			if (result.record.summary.error > 0) process.exitCode = 2;
+			break;
+		}
+		case "report": {
+			const evalRunId = positional(0);
+			if (!evalRunId) {
+				console.error("usage: ahde report <evalRunId> [--out <path>] [--project <id>]\n");
+				console.log(USAGE);
+				process.exit(1);
+			}
+			const report = buildEvalReport(
 				runsRoot(),
 				evalRunId,
 				arg("out") ? resolve(arg("out") as string) : undefined,
+				{ stateRoot: stateRoot(), projectId: reportProjectId(evalRunId) },
 			);
-			console.log(outputPath);
+			console.log(report.path);
+			for (const grader of report.judgeCalibration) {
+				console.log(`${grader.line}  ${grader.graderNames.join(", ")}`);
+			}
+			break;
+		}
+		case "label": {
+			await labelJudge();
+			break;
+		}
+		case "judge-agreement": {
+			judgeAgreementReport();
 			break;
 		}
 		case "candidate": {
@@ -791,6 +1034,68 @@ async function main(): Promise<void> {
 			);
 			break;
 		}
+		case "check": {
+			const targetDir = resolve(requireArg("target"));
+			const candidateId = requireArg("candidate");
+			const screen = await runCheapCheckForCandidate({
+				repositoryDir: targetDir,
+				runsRoot: runsRoot(),
+				stateRoot: stateRoot(),
+				candidateId,
+				onRunEvent: cliRunProgress(),
+				...(arg("jobs") ? { jobs: Number(arg("jobs")) } : {}),
+			});
+			console.log(renderCheapCheckLine(screen));
+			for (const row of screen.rows) {
+				console.log(`  ${row.taskId}  ${row.screenOutcome.padEnd(5)} ${row.classification}`);
+			}
+			console.log(`screen eval run: ${screen.screenEvalRunId} (a screen — never a baseline, never evidence)`);
+			console.log(`screen record: ${screen.screenRecordPath}`);
+			if (screen.verdict === "flat") {
+				console.log(
+					"next: nothing improved. Author another change, or `ahde candidate --builder-run <id>` to verify anyway.",
+				);
+				process.exitCode = 1;
+			} else {
+				console.log(`next: ahde candidate --target ${targetDir} --builder-run <id> to verify it for real`);
+			}
+			break;
+		}
+		case "improve": {
+			const targetDir = resolve(requireArg("target"));
+			const until = parsePassRateFlag(requireArg("until"));
+			if (until === null) throw new Error("--until must be a pass rate such as 90% or 0.9");
+			const maxCycles = Number(requireArg("max-cycles"));
+			const projectId = arg("project") ?? loadTarget(targetDir).manifest.id;
+			const corpusId = arg("corpus");
+			const repetitions = arg("repetitions") ? Number(arg("repetitions")) : DEFAULT_REPETITIONS;
+			const approvedSpecId = soleApprovedSpecId(projectId);
+			const result = await runImprovementLoop({
+				repositoryDir: targetDir,
+				runsRoot: runsRoot(),
+				stateRoot: stateRoot(),
+				projectId,
+				approvedSpecId,
+				...(corpusId ? { developmentCorpus: { stateRoot: stateRoot(), projectId, corpusId } } : {}),
+				until,
+				maxCycles,
+				repetitions,
+				...(arg("jobs") ? { jobs: Number(arg("jobs")) } : {}),
+				author: recordedBuilderProposalAuthor({ stateRoot: stateRoot(), runsRoot: runsRoot(), projectId }),
+				onCycle: (line) => process.stderr.write(`${line}\n`),
+				onRunEvent: cliRunProgress(),
+			});
+			console.log(renderImprovementLoopTable(result));
+			if (result.candidateId) {
+				console.log(
+					`\nnext: ahde review --candidate ${result.candidateId} --recommend promote|reject --reason <text>`,
+				);
+			}
+			// A loop that stopped without a verified candidate has nothing to ship;
+			// that is a finding, not a crash.
+			if (!result.candidateId) process.exitCode = 1;
+			break;
+		}
 		case "calibrate": {
 			const targetDir = resolve(requireArg("target"));
 			const corpusId = arg("corpus");
@@ -848,6 +1153,7 @@ async function main(): Promise<void> {
 				reason: requireArg("reason"),
 				actorId: arg("actor"),
 				runsRoot: runsRoot(),
+				stateRoot: stateRoot(),
 			});
 			console.log(`promoted candidate ${result.record.candidateId}: tag ${result.tag} at ${result.candidateSha}`);
 			break;
@@ -866,6 +1172,20 @@ async function main(): Promise<void> {
 			console.log(USAGE);
 			process.exit(1);
 	}
+}
+
+/**
+ * The one approved Spec this project's loop runs under. `ahde improve` is a
+ * script, so it refuses to guess between several.
+ */
+function soleApprovedSpecId(projectId: string): string {
+	const specs = listSpecSnapshots(stateRoot(), projectId)
+		.filter((snapshot) => snapshot.status === "approved");
+	if (specs.length === 1) return specs[0]!.id;
+	if (specs.length === 0) throw new Error(`project ${projectId} has no approved Spec; approve one in \`ahde\` first`);
+	throw new Error(
+		`project ${projectId} has ${specs.length} approved Specs; run the loop from \`ahde\` where one is selected`,
+	);
 }
 
 function cliFailure(error: unknown): { message: string; next?: string } {
