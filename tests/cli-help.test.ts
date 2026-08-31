@@ -113,7 +113,7 @@ describe("CLI help", () => {
 		expect(check).toContain("ONLY\nthe cases its source eval recorded as failing");
 		expect(check).toContain("It is a screen, never evidence.");
 		expect(check).toContain("promotion that cites one is refused");
-		expect(check).toContain("Exit 0 = promising, 1 = flat.");
+		expect(check).toContain("Exit 0 = promising, 1 = flat, 2 = the\nscreen could not run at all.");
 		const improve = cliHelp(["improve", "--help"]);
 		expect(improve).toContain("Usage: ahde improve --target <dir> --until <pass-rate> --max-cycles <n>");
 		expect(improve).toContain("cheap check -> full development verification");

@@ -288,7 +288,8 @@ failing case now passes; \`flat\` means none does.
 It is a screen, never evidence. Its EvalRun atomically carries \`purpose: screen\`;
 the runs/screens/ marker is a fail-closed second check. It is never reused,
 enters no promotion-grade comparison, cannot become a regression source, and a
-promotion that cites one is refused. Exit 0 = promising, 1 = flat.`,
+promotion that cites one is refused. Exit 0 = promising, 1 = flat, 2 = the
+screen could not run at all.`,
 	improve: `Usage: ahde improve --target <dir> --until <pass-rate> --max-cycles <n> \\
 		            [--candidates N] [--jobs N] [--project <id>]
                     [--repetitions N] [--corpus <development-id>]

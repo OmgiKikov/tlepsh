@@ -254,7 +254,7 @@ function requireArg(name: string): string {
 	if (!value) {
 		console.error(`missing --${name}\n`);
 		console.log(USAGE);
-		process.exit(1);
+		process.exit(2);
 	}
 	return value;
 }
@@ -540,7 +540,7 @@ async function labelJudge(): Promise<void> {
 	if (!evalRunId) {
 		console.error("usage: ahde label <evalRunId> --target <dir> [--project <id>] [--spec <approvedSpecId>] [--sample N] [--seed <text>] [--file <labels.jsonl>]\n");
 		console.log(USAGE);
-		process.exit(1);
+		process.exit(2);
 	}
 	const targetDir = resolve(requireArg("target"));
 	const target = loadTarget(targetDir);
@@ -665,7 +665,7 @@ function judgeAgreementReport(): void {
 	if (!evalRunId) {
 		console.error("usage: ahde judge-agreement <evalRunId> --target <dir> [--project <id>]\n");
 		console.log(USAGE);
-		process.exit(1);
+		process.exit(2);
 	}
 	const targetDir = resolve(requireArg("target"));
 	const projectId = arg("project") ?? loadTarget(targetDir).manifest.id;
@@ -797,7 +797,7 @@ async function main(): Promise<void> {
 			if (!dir) {
 				console.error("usage: ahde init <dir> [--template <target-dir>]\n");
 				console.log(USAGE);
-				process.exit(1);
+				process.exit(2);
 			}
 			const template = arg("template");
 			const templateDir = template
@@ -943,7 +943,7 @@ async function main(): Promise<void> {
 					"usage: ahde failures <evalRunId> --target <dir> [--project <id>] [--dataset <rel>] [--out <path>]\n",
 				);
 				console.log(USAGE);
-				process.exit(1);
+				process.exit(2);
 			}
 			const dataset = arg("dataset");
 			const target = loadTarget(
@@ -1107,7 +1107,7 @@ async function main(): Promise<void> {
 			if (!a || !b) {
 				console.error("usage: ahde compare <evalRunA> <evalRunB>\n");
 				console.log(USAGE);
-				process.exit(1);
+				process.exit(2);
 			}
 			const result = compareEvalRuns(runsRoot(), a, b, { mode: "exploratory" });
 			console.log(renderCompareMarkdown(result));
@@ -1119,7 +1119,7 @@ async function main(): Promise<void> {
 			if (!evalRunId) {
 				console.error("usage: ahde diagnose <evalRunId>\n");
 				console.log(USAGE);
-				process.exit(1);
+				process.exit(2);
 			}
 			const diagnosis = diagnoseEvalRun(runsRoot(), evalRunId);
 			const brief = compileImprovementBrief(runsRoot(), diagnosis);
@@ -1167,7 +1167,7 @@ async function main(): Promise<void> {
 					"usage: ahde regrade <evalRunId> --target <dir> [--graders <path>] [--label <label>] [--jobs N] [--project <id>]\n",
 				);
 				console.log(USAGE);
-				process.exit(1);
+				process.exit(2);
 			}
 			const requestedLabel = arg("label");
 			if (requestedLabel !== undefined && !isRegradeLabel(requestedLabel)) {
@@ -1201,7 +1201,7 @@ async function main(): Promise<void> {
 			if (!evalRunId) {
 				console.error("usage: ahde report <evalRunId> [--out <path>] [--project <id>]\n");
 				console.log(USAGE);
-				process.exit(1);
+				process.exit(2);
 			}
 			const report = buildEvalReport(
 				runsRoot(),
@@ -1719,7 +1719,7 @@ async function main(): Promise<void> {
 		}
 		default:
 			console.log(USAGE);
-			process.exit(1);
+			process.exit(2);
 	}
 }
 
@@ -1794,9 +1794,16 @@ function cliFailure(error: unknown): { message: string; next?: string } {
 	return { message };
 }
 
+/**
+ * Exit 1 is a behavioral verdict — a command ran, measured, and the answer was
+ * no. Every command that has one sets it inline. Anything that throws never got
+ * that far: a missing artifact, an unreadable record, a refused precondition, a
+ * provider that would not answer. Those are inconclusive, and inconclusive is
+ * exit 2, the same split `ahde run` documents.
+ */
 main().catch((error: unknown) => {
 	const failure = cliFailure(error);
 	console.error(`error: ${failure.message}`);
 	if (failure.next) console.error(`next: ${failure.next}`);
-	process.exitCode = 1;
+	process.exitCode = 2;
 });
