@@ -557,8 +557,12 @@ step 5's propose/apply bridge (the gap the skill honestly declares), and steps 7
 and 8's `ahde log` deliverable (a gap the skill does not declare — it presents
 `ahde log` as an existing command, twice). A fifth step, step 6, ran only in the
 reverse of the prescribed order. Counting individual prescribed commands rather
-than steps: of the 19 the skill names, 17 exist, 15 run, and **12 behave as the
-skill describes (63 %)**. The two shims here come to ~150 and ~70 lines and
+than steps: of the 19 this walkthrough exercised, 2 do not exist (`log`,
+`watch`), 3 more could not produce their documented result (`corpus publish`,
+`check` in the prescribed position, `improve`), and 2 behaved differently from
+their description (`review`'s missing gate, `diagnose`'s undifferentiated
+modes) — leaving **12 of 19 (63 %)** that did exactly what the skill says. The
+two shims here come to 160 and 75 lines and
 contain no domain logic whatsoever — every guard, hash, receipt, and renderer
 they call is already written and already tested inside `dist/`. That is the real
 finding: this is not a missing engine, it is a missing CLI surface over an engine
