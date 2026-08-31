@@ -283,3 +283,20 @@ live view is never evidence and cannot perform state transitions.
 35. Noise is measured, never assumed: an A/A calibration of the same Target
     revision is the receipt for run-to-run noise, informs the recommended
     number of repetitions, and is never promotion evidence.
+36. A proposal search compares, it never decides. It applies each hypothesis
+    on its own throwaway branch, screens it with the cheap check, and pays for
+    a matched development verification only where the screen found something.
+    It runs no sealed corpus, and its gate throws on every decision that
+    creates release authority. Its screens are ordinary cheap-check screens
+    and carry all four of that exclusion; its verification arms are ordinary
+    development evidence whose candidate arm is never reused as a baseline.
+    Which hypothesis wins is a human decision on the Pareto table, and that
+    one candidate then meets the unchanged sealed gate and promotion.
+37. The proposer reads what was already tried. Prior attempts are compiled
+    from immutable candidate records — what changed, which failure modes it
+    aimed at, what it scored, how it ended — bounded, newest first, with
+    sealed evidence contributing a verdict and a design size and nothing else.
+    That memory is never part of the authoring context hash or its claim, and
+    the autoloop refuses to re-propose a change whose changed-path set and
+    targeted failure mode match an attempt that already ended rejected or
+    not `improved`.

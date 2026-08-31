@@ -3,6 +3,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { compileHarnessAuthoringProposal } from "../src/application/harness-authoring.js";
 import {
+	IMPROVEMENT_CYCLE_SKIP_MESSAGES,
 	IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS,
 	IMPROVEMENT_LOOP_STOP_MESSAGES,
 	ImprovementLoopForbiddenDecisionError,
@@ -19,6 +20,8 @@ import {
 	type ImprovementProposalAuthor,
 } from "../src/application/improvement-loop.js";
 import { loadCandidateRecord } from "../src/application/candidate-review.js";
+import { compileImprovementBrief } from "../src/application/improvement-brief.js";
+import { diagnoseEvalRun } from "../src/diagnosis.js";
 import { candidateStatus } from "../src/domain/candidate.js";
 import { listCorpora } from "../src/corpus.js";
 import { createBuilderWorkbenchTools } from "../src/builder/workbench-adapter.js";
@@ -298,17 +301,201 @@ describe("autoloop — the stop conditions", () => {
 		}
 	}, 600_000);
 
-	it("refuses an out-of-range target or cycle budget before spending anything", async () => {
+	it("refuses an out-of-range target, cycle budget, or hypothesis count before spending anything", async () => {
 		const fixture = await improveFixture();
 		try {
 			await expect(runImprovementLoop(loopOptions(fixture, { until: 1.5 })))
 				.rejects.toThrow(/--until must be a pass rate between 0 and 1/);
 			await expect(runImprovementLoop(loopOptions(fixture, { maxCycles: 99 })))
 				.rejects.toThrow(/--max-cycles must be between 1 and 10/);
+			await expect(runImprovementLoop(loopOptions(fixture, { candidates: 9 })))
+				.rejects.toThrow(/--candidates must be between 1 and 4/);
 		} finally {
 			await fixture.close();
 		}
 	}, 600_000);
+});
+
+describe("the loop remembers what already lost", () => {
+	/** The one proposable failure mode the fixture's baseline run produces. */
+	function fixtureFailureModeId(fixture: ImproveFixture): string {
+		const diagnosis = diagnoseEvalRun(fixture.runsRoot, fixture.evalRunId);
+		const brief = compileImprovementBrief(fixture.runsRoot, diagnosis);
+		const mode = brief.modes.find((candidate) => candidate.decision === "propose-harness-change");
+		if (!mode) throw new Error("fixture produced no proposal-eligible failure mode");
+		return mode.failureModeId;
+	}
+
+	/** A memory containing exactly one attempt: this change, this mode, rejected. */
+	function rejectedHistory(failureModeId: string, changedPaths: string[]) {
+		return () => ({
+			attempts: [{
+				candidateId: "cand-earlier",
+				at: "2026-08-01T10:00:00.000Z",
+				baseline: "0".repeat(12),
+				candidate: "1".repeat(12),
+				mode: "candidate",
+				changedPaths,
+				failureModeIds: [failureModeId],
+				development: { verdict: "inconclusive", scoreDelta: 0, confidence95: null, tasks: 2, repetitions: 2 },
+				sealed: null,
+				outcome: "rejected" as const,
+				reason: "3× the cost for nothing",
+			}],
+			omitted: 0,
+			unreadable: 0,
+		});
+	}
+
+	it("refuses to re-run a rejected experiment and stops with the honest reason", async () => {
+		const fixture = await improveFixture();
+		try {
+			const failureModeId = fixtureFailureModeId(fixture);
+			const runCheapCheck = vi.fn(async () => {
+				throw new Error("a repeat must never reach the screen");
+			});
+			const applyProposal = vi.fn(() => {
+				throw new Error("a repeat must never be applied");
+			});
+			const result = await runImprovementLoop(
+				// The scripted author replaces AGENTS.md, which is exactly what the
+				// remembered attempt changed for exactly this failure mode.
+				loopOptions(fixture, { author: scriptedAuthor([READY_INSTRUCTION, READY_INSTRUCTION]) }),
+				{
+					compileExperimentHistory: rejectedHistory(failureModeId, ["AGENTS.md"]) as never,
+					runCheapCheck: runCheapCheck as unknown as ImprovementLoopDependencies["runCheapCheck"],
+					applyProposal: applyProposal as unknown as ImprovementLoopDependencies["applyProposal"],
+				},
+			);
+
+			expect(result.stopReason).toBe("experiments-exhausted");
+			expect(result.stopMessage).toBe(IMPROVEMENT_LOOP_STOP_MESSAGES["experiments-exhausted"]);
+			expect(result.candidateId).toBeNull();
+			expect(result.cycles).toHaveLength(1);
+			expect(result.cycles[0]!.skipped).toMatchObject({
+				reason: "repeat-of-a-losing-experiment",
+				failureModeId,
+				changedPaths: ["AGENTS.md"],
+			});
+			expect(result.cycles[0]!.branch).toBeNull();
+			// Nothing was applied, screened or verified: the answer already existed.
+			expect(applyProposal).not.toHaveBeenCalled();
+			expect(runCheapCheck).not.toHaveBeenCalled();
+			expect(branches(fixture.projectDir).filter((name) => name.startsWith("candidate/"))).toEqual([]);
+			const table = renderImprovementLoopTable(result);
+			expect(table).toContain("refused (repeat-of-a-losing-experiment)");
+			expect(table).toContain(IMPROVEMENT_CYCLE_SKIP_MESSAGES["repeat-of-a-losing-experiment"]);
+			expect(improvementCycleLine(result.cycles[0]!, 3))
+				.toContain(`refused — ${IMPROVEMENT_CYCLE_SKIP_MESSAGES["repeat-of-a-losing-experiment"]}`);
+		} finally {
+			await fixture.close();
+		}
+	}, 600_000);
+
+	it("lets a different change through for the same failure mode", async () => {
+		const fixture = await improveFixture();
+		try {
+			const failureModeId = fixtureFailureModeId(fixture);
+			// The memory says a skill edit lost; this cycle edits the instructions.
+			const result = await runImprovementLoop(
+				loopOptions(fixture, { author: scriptedAuthor([READY_INSTRUCTION]) }),
+				{ compileExperimentHistory: rejectedHistory(failureModeId, ["skills/other/SKILL.md"]) as never },
+			);
+
+			expect(result.cycles[0]!.skipped).toBeNull();
+			expect(result.cycles[0]!.branch).toBe("candidate/auto-1");
+			expect(result.stopReason).toBe("target-reached");
+		} finally {
+			await fixture.close();
+		}
+	}, 600_000);
+});
+
+/**
+ * One hypothesis per variant, so a cycle that asks for three different changes
+ * gets three different changes — and an author that runs out says so.
+ */
+function variantAuthor(instructions: readonly string[]): ImprovementProposalAuthor {
+	return (request) => {
+		const instruction = instructions[request.variant - 1];
+		if (!instruction) return { kind: "no-change", reason: "the script ran out of hypotheses" };
+		return {
+			kind: "propose",
+			proposal: compileHarnessAuthoringProposal({
+				repositoryDir: request.repositoryDir,
+				expectedBaseTargetSha: request.baseTargetSha,
+				intents: [{ type: "instructions.replace", content: `# Improve fixture\n\n${instruction}\n` }],
+				summary: `Cycle ${request.cycle}, hypothesis ${request.variant} of ${request.variants}.`,
+				diagnoses: request.selection.diagnoses,
+				risks: ["Instruction-only behaviour change"],
+				validationPlan: ["Re-run the reviewed development basket"],
+			}),
+		};
+	};
+}
+
+describe("--candidates turns a cycle into a search", () => {
+	it("authors several hypotheses for the top mode and hands back a table", async () => {
+		const fixture = await improveFixture();
+		try {
+			const gate = refusingGate();
+			const result = await runImprovementLoop(loopOptions(fixture, {
+				gate,
+				candidates: 2,
+				author: variantAuthor([READY_INSTRUCTION, NO_OP_INSTRUCTION]),
+			}));
+
+			expect(result.cycles).toHaveLength(1);
+			const search = result.cycles[0]!.search;
+			expect(search).not.toBeNull();
+			expect(search!.failureModeId).toBe(result.cycles[0]!.failureModeId);
+			expect(search!.rows.map((row) => row.branch)).toEqual([
+				"candidate/search-1-1",
+				"candidate/search-1-2",
+			]);
+			// One hypothesis fixes the cases, the other changes nothing the graders
+			// see: the screen keeps the second out of a paid verification.
+			expect(search!.rows[0]).toMatchObject({ status: "verified" });
+			expect(search!.rows[1]).toMatchObject({ status: "screened-out", skipReason: "flat-screen" });
+			expect(search!.frontier).toEqual([1]);
+
+			// The loop compares and stops; it never picks, promotes or adopts.
+			expect(result.stopReason).toBe("search-decision-required");
+			expect(result.stopMessage).toBe(IMPROVEMENT_LOOP_STOP_MESSAGES["search-decision-required"]);
+			expect(result.candidateId).toBeNull();
+			expect(gate.calls).toEqual([]);
+			expect(tags(fixture.projectDir)).toEqual([]);
+			expect(renderImprovementLoopTable(result)).toContain("Pick one: candidate 1.");
+			expect(improvementCycleLine(result.cycles[0]!, 3)).toContain("search 1/2 verified");
+		} finally {
+			await fixture.close();
+		}
+	}, 900_000);
+
+	it("stops honestly when fewer hypotheses come back than a search needs", async () => {
+		const fixture = await improveFixture();
+		try {
+			const result = await runImprovementLoop(loopOptions(fixture, {
+				candidates: 3,
+				author: variantAuthor([READY_INSTRUCTION]),
+			}));
+
+			expect(result.stopReason).toBe("no-change-proposed");
+			expect(result.cycles[0]!.skipped).toMatchObject({ reason: "too-few-hypotheses" });
+			expect(result.cycles[0]!.search).toBeNull();
+			expect(branches(fixture.projectDir).filter((name) => name.startsWith("candidate/"))).toEqual([]);
+		} finally {
+			await fixture.close();
+		}
+	}, 600_000);
+
+	it("prices a search cycle as one run plus a screen and both arms per hypothesis", () => {
+		expect(plannedImprovementExecutions({ developmentTasks: 10, repetitions: 3, maxCycles: 2, candidates: 3 }))
+			.toBe(2 * (30 + 3 * (10 + 60)));
+		// The default is today's behaviour, unchanged.
+		expect(plannedImprovementExecutions({ developmentTasks: 10, repetitions: 3, maxCycles: 2 }))
+			.toBe(plannedImprovementExecutions({ developmentTasks: 10, repetitions: 3, maxCycles: 2, candidates: 1 }));
+	});
 });
 
 describe("the loop's gate", () => {
@@ -415,6 +602,54 @@ describe("the improve decision", () => {
 			await fixture.close();
 		}
 	}, 600_000);
+
+	it("renders the Pareto table as a routine decision when it is asked for several changes", async () => {
+		const fixture = await improveFixture();
+		try {
+			const gate = refusingGate();
+			const workbench = createAhdeWorkbench({
+				projectDir: fixture.projectDir,
+				stateRoot: fixture.stateRoot,
+				runsRoot: fixture.runsRoot,
+				projectId: fixture.projectId,
+				dependencies: {
+					authorImprovementProposal: variantAuthor([READY_INSTRUCTION, NO_OP_INSTRUCTION]),
+				},
+			});
+
+			const decided = await workbench.decide({
+				kind: "improve",
+				until: 1,
+				maxCycles: 1,
+				repetitions: SEALED_VERIFICATION_REPETITIONS,
+				candidates: 2,
+				reason: "Try two different fixes for the top problem",
+			}, gate);
+
+			// One question, still routine, and the estimate covers both hypotheses.
+			expect(gate.calls).toHaveLength(1);
+			expect(gate.calls[0]!.policy).toBe("routine");
+			expect(gate.calls[0]!.estimate?.executions).toBe(plannedImprovementExecutions({
+				developmentTasks: 2,
+				repetitions: SEALED_VERIFICATION_REPETITIONS,
+				maxCycles: 1,
+				candidates: 2,
+			}));
+			expect(gate.calls[0]!.question).toContain("comparing 2 changes per cycle");
+
+			expect(decided.result.candidates).toBe(2);
+			expect(decided.result.stopReason).toBe("search-decision-required");
+			expect(decided.result.search?.rows).toHaveLength(2);
+			expect(decided.result.search?.frontier).toEqual([1]);
+			expect(decided.result.table).toContain("| # | branch | changed | screen | verdict |".slice(0, 20));
+			expect(decided.result.table).toContain("Pick one: candidate 1.");
+			// The decision compares and stops: nothing was promoted or adopted.
+			expect(decided.result.candidateId).toBeNull();
+			expect(tags(fixture.projectDir)).toEqual([]);
+		} finally {
+			await fixture.close();
+		}
+	}, 900_000);
 
 	it("is illegal where a release decision is what is pending", async () => {
 		const fixture = await improveFixture();

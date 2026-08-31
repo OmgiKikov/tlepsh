@@ -65,7 +65,7 @@ Where AHDE stands against practice (verified 2026-08-30):
 |---|---|
 | paired per-task bootstrap with a three-way verdict + sealed guardrail (Inspect added a single-run `ci()` only in Aug 2026) | judge–human agreement (LangSmith Align, Ragas `judge_alignment`, Inspect `krippendorff_alpha`) |
 | A/A calibration — no other tool has it | simulated user (Harbor `--user-agent`, τ²-bench, DeepEval simulator) |
-| holdout hidden from the optimizer — nobody enforces it | multi-candidate search (GEPA, Meta-Harness, SkillOpt) |
+| holdout hidden from the optimizer — nobody enforces it | ~~multi-candidate search (GEPA, Meta-Harness, SkillOpt)~~ — landed as `ahde search` / `improve --candidates N` |
 | infrastructure error budget, immutable provenance, git-tag promotion | partial credit, cost/latency in the verdict, regrade without rerun (Harbor `regrade`), semantic failure clustering, CI plumbing |
 
 ## Now vs. after — the operator's experience
@@ -77,7 +77,8 @@ Where AHDE stands against practice (verified 2026-08-30):
 | Judge | a rubric the Builder wrote; nobody checked it | assertion checklists, a jury of 3, `ahde label`, agreement shown next to every judge verdict | — | — |
 | Changing a rubric | rerun everything (135 runs) | `ahde regrade`: re-score recorded answers | — | — |
 | Score | binary pass/fail per run | mean grader score; cost and latency beside the interval | — | — |
-| Trying a fix | one proposal → full verification | — | `ahde check` screens the failed cases first; `ahde improve` runs the cycle; 2–3 candidates per cycle in a Pareto table | — |
+| Trying a fix | one proposal → full verification | — | `ahde check` screens the failed cases first; `ahde improve` runs the cycle; `ahde search` / `--candidates N` puts 2–4 candidates in a Pareto table | — |
+| Proposer memory | sees the current failures and nothing else | — | reads what was already tried and refuses to re-run a losing experiment | — |
 | Builder's hands | semantic intents compiled by the host | — | **done** — edits files in a bound worktree, runs the tool it wrote; the proposal is the diff | — |
 | Chat agents | seeded history, grade the next reply | — | simulated user with a goal and persona | — |
 | Target sandbox | best-effort sandbox-exec/bwrap for `bash` | — | — | Gondolin / Docker, `required` in the bank profile |
@@ -128,10 +129,21 @@ branch; the closed-loop Pi test passes with exactly three confirmations.
    recorded under `runs/screens/`, no comparison gate sees one, promotion
    refuses a candidate that cites one, and `add-case-from-run` refuses one as a
    source (old item 19).
-6. **Population** — 2–3 candidates per failure mode with different
-   hypotheses, verified in the pool, a Pareto table (score × cost), the human
-   promotes the best; the proposer reflects over the traces of all prior
-   candidates (GEPA / Meta-Harness) (old item 8).
+6. **Population** — *landed*. `ahde search --target . --candidates <id,id,id>`
+   and `ahde improve --candidates N` (1..4, default 1). One failure mode, 2–4
+   already-authored hypotheses, each applied on its own `candidate/search-<n>`
+   branch, each screened by the cheap check, and the full matched development
+   verification paid only where the screen found something. The result is a
+   Pareto table: verdict, score delta with its 95% interval, cost and latency
+   ratios, the screen's numbers, and which candidates are dominated (another
+   verified candidate at least as good on both score and cost and strictly
+   better on one; exact ties break by candidate order, so the frontier is never
+   empty). The whole search runs under one estimate and the existing `--jobs`
+   pool; a flat screen and an exhausted budget are typed skip reasons the table
+   names. Sealed verification is not part of the search: `proposalSearchGate`
+   throws on every consequential decision and on the sealed picker, and the
+   human picks one candidate that then meets the unchanged sealed gate and
+   promotion (old item 8).
 7. **Autoloop inside the gates** — *landed*. `ahde improve --target . --until
    90% --max-cycles 5 [--jobs N] [--project id]` and a routine Workbench
    `improve` decision under the same cost guard, estimated over the whole
@@ -161,18 +173,20 @@ branch; the closed-loop Pi test passes with exactly three confirmations.
 11. **Host-side sealed generation** — an evaluator-model call whose output
     never enters the Builder's context; the human edits and seals (old item 3).
 
-11b. **The proposer remembers what was already tried.** Today the Builder sees
-    the current failure modes and nothing else: cycle 5 can re-propose what
-    cycle 2 already tried and lost. [Meta-Harness](https://arxiv.org/abs/2603.28052)
-    makes this the core of the method — its proposer reads the source, the
-    scores, and the traces of *every* prior candidate from a structured
-    directory, and that memory is what lets a search compound instead of
-    wandering. AHDE already stores exactly this (every proposal, its diff, its
-    verdict, its diagnosis, all content-addressed); nothing reads it back to
-    the Builder. Add one bounded view — what was tried, what it changed, what
-    it scored, why it was rejected — into the authoring context, and make the
-    population search (#6) draw from it. ~1 day, and it is the cheapest
-    quality win on this list.
+11b. **The proposer remembers what was already tried** — *landed*.
+    [Meta-Harness](https://arxiv.org/abs/2603.28052) makes this the core of the
+    method: a proposer that reads the scores of *every* prior candidate is what
+    lets a search compound instead of wander. AHDE already stored it; nothing
+    read it back. Now three surfaces do. `ahde_workbench_view` with
+    `aspect: "history"` returns the bounded projection for the current Target
+    and project (no hashes, no receipts, no sealed content, and a host renderer
+    beside it). `aspect: "target"` — the authoring context the Builder reads
+    immediately before it proposes — carries the newest attempts as
+    `priorAttempts` plus `priorAttemptsOmitted`, inside its own byte budget and
+    deliberately outside `contextHash` and the claim. And the autoloop refuses
+    to re-propose a change whose changed-path set and targeted failure mode
+    match an attempt that already ended `rejected` or non-`improved`, stopping
+    with `experiments-exhausted` when every proposable mode is used up.
 
 ## Wave 3 — platform integration
 

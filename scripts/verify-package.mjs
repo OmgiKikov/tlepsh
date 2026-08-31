@@ -59,6 +59,8 @@ try {
 		"dist/application/builder-regression-case.js",
 		"dist/application/target-scaffold.js",
 		"dist/application/target-authoring-context.js",
+		"dist/application/experiment-history.js",
+		"dist/application/proposal-search.js",
 		"dist/application/target-feedback.js",
 		"dist/application/tool-workshop.js",
 		"dist/builder/workshop-tools.js",
