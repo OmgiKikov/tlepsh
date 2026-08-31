@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -923,6 +923,45 @@ describe("candidate human review", () => {
 		expect(git(repo.dir, "rev-parse", "HEAD")).toBe(head);
 		expect(git(repo.dir, "status", "--short")).toContain("user-notes.txt");
 		expect(candidateStatus(result.record)).toBe("promoted");
+	});
+
+	it("recovers an exact promotion after a crash between tag creation and Candidate receipt publication", () => {
+		const repo = repository();
+		const value = fixture(true, { ...repo, targetId: "test-target" });
+		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+		const options = {
+			repositoryDir: repo.dir,
+			...value,
+			version: "1.2.9",
+			reason: "recover exact promotion",
+			now: () => at,
+		};
+		let captured: unknown = null;
+		expect(() => promoteReviewedCandidate(options, {
+			writeIntent: (path, intent) => {
+				captured = intent;
+				writeFileSync(path, `${JSON.stringify(intent)}\n`, { mode: 0o600 });
+				throw new Error("simulated process death after promotion intent");
+			},
+		})).toThrow(/simulated process death/);
+		const staged = captured as {
+			tag: string;
+			candidateSha: string;
+			tagMessage: string;
+		};
+		git(
+			repo.dir,
+			"-c", "user.name=AHDE human gate",
+			"-c", "user.email=ahde@local",
+			"tag", "-a", staged.tag, "-m", staged.tagMessage, staged.candidateSha,
+		);
+		expect(candidateStatus(loadCandidateRecord(value.runsRoot, value.candidateId))).toBe("reviewed");
+
+		const recovered = promoteReviewedCandidate({ ...options, now: () => "2099-01-01T00:00:00.000Z" });
+		expect(candidateStatus(recovered.record)).toBe("promoted");
+		expect(recovered.tag).toBe(staged.tag);
+		expect(git(repo.dir, "rev-list", "-n", "1", staged.tag)).toBe(staged.candidateSha);
+		expect(existsSync(join(value.runsRoot, "candidates", value.candidateId, "promotion_intent.json"))).toBe(false);
 	});
 
 	it("rejects a stale promotion hash before creating a tag or promotion event", () => {

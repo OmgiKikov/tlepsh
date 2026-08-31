@@ -1,8 +1,9 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
+import { z } from "zod";
 import {
 	ApprovedSpecBuilderInputSchema,
 	BuilderApplyReceiptSchema,
@@ -86,6 +87,27 @@ export interface PromoteReviewedCandidateResult {
 	tag: string;
 	candidateSha: string;
 }
+
+const PromotionIntentSchema = z.strictObject({
+	schemaVersion: z.literal(1),
+	candidateBeforeSha256: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+	tag: z.string().regex(/^v\d+\.\d+\.\d+$/),
+	candidateSha: z.string().regex(/^[0-9a-f]{40}$/),
+	at: z.iso.datetime({ offset: true }),
+	actorId: z.string().min(1),
+	reason: z.string().min(1),
+	tagMessage: z.string().min(1),
+	promoted: CandidateRecordSchema,
+});
+type PromotionIntent = z.infer<typeof PromotionIntentSchema>;
+
+export interface PromoteReviewedCandidateDependencies {
+	writeIntent: (path: string, intent: PromotionIntent) => void;
+}
+
+const DEFAULT_PROMOTION_DEPENDENCIES: PromoteReviewedCandidateDependencies = {
+	writeIntent: (path, intent) => writeJsonArtifact(path, PromotionIntentSchema, intent, { immutable: true }),
+};
 
 export function candidateRecordPath(runsRoot: string, candidateId: string): string {
 	return resolveContainedArtifactPath(runsRoot, "candidates", candidateId, "candidate.json");
@@ -734,7 +756,9 @@ function assertJudgeCalibrated(
  */
 export function promoteReviewedCandidate(
 	options: PromoteReviewedCandidateOptions,
+	dependencies: Partial<PromoteReviewedCandidateDependencies> = {},
 ): PromoteReviewedCandidateResult {
+	const deps = { ...DEFAULT_PROMOTION_DEPENDENCIES, ...dependencies };
 	if (!/^\d+\.\d+\.\d+$/.test(options.version)) {
 		throw new Error(`invalid semver: ${options.version}`);
 	}
@@ -768,16 +792,25 @@ export function promoteReviewedCandidate(
 	});
 
 	const tag = `v${options.version}`;
+	const intentPath = resolveContainedArtifactPath(
+		options.runsRoot,
+		"candidates",
+		record.candidateId,
+		"promotion_intent.json",
+	);
+	const existingIntent = existsSync(intentPath)
+		? readJsonArtifact(intentPath, PromotionIntentSchema)
+		: null;
 	const tagExists = spawnSync(
 		"git",
 		["-C", repositoryDir, "show-ref", "--verify", "--quiet", `refs/tags/${tag}`],
 		{ stdio: "ignore" },
 	);
-	if (tagExists.status === 0) throw new Error(`tag ${tag} already exists`);
-	if (tagExists.status !== 1) throw new Error(`cannot verify whether tag ${tag} exists`);
+	if (tagExists.status === 0 && !existingIntent) throw new Error(`tag ${tag} already exists`);
+	if (tagExists.status !== 0 && tagExists.status !== 1) throw new Error(`cannot verify whether tag ${tag} exists`);
 
-	const at = (options.now ?? (() => new Date().toISOString()))();
 	const actorId = options.actorId ?? "local-user";
+	const at = existingIntent?.at ?? (options.now ?? (() => new Date().toISOString()))();
 	const promoted = CandidateRecordSchema.parse(
 		previewPromotion(record, { tag, reason: options.reason, actorId, at }),
 	);
@@ -787,24 +820,57 @@ export function promoteReviewedCandidate(
 		candidateSha: candidate.sha,
 		reason: options.reason,
 	});
-	git(repositoryDir, [
-		"-c",
-		"user.name=AHDE human gate",
-		"-c",
-		"user.email=ahde@local",
-		"tag",
-		"-a",
+	const intent = PromotionIntentSchema.parse({
+		schemaVersion: 1,
+		candidateBeforeSha256: hashValue(record),
 		tag,
-		"-m",
-		message,
-		candidate.sha,
-	]);
+		candidateSha: candidate.sha,
+		at,
+		actorId,
+		reason: options.reason,
+		tagMessage: message,
+		promoted,
+	});
+	if (existingIntent) {
+		if (canonicalJson(existingIntent) !== canonicalJson(intent)) {
+			throw new Error("promotion retry does not match its durable pre-tag intent");
+		}
+	} else {
+		deps.writeIntent(intentPath, intent);
+	}
+
+	if (tagExists.status === 0) {
+		const tagRef = `refs/tags/${tag}`;
+		if (
+			git(repositoryDir, ["cat-file", "-t", tagRef]) !== "tag" ||
+			git(repositoryDir, ["rev-parse", `${tagRef}^{commit}`]) !== candidate.sha ||
+			git(repositoryDir, ["for-each-ref", "--format=%(contents)", tagRef]) !== message
+		) throw new Error("durable promotion intent collides with a changed or unrelated tag");
+	} else {
+		git(repositoryDir, [
+			"-c",
+			"user.name=AHDE human gate",
+			"-c",
+			"user.email=ahde@local",
+			"tag",
+			"-a",
+			tag,
+			"-m",
+			message,
+			candidate.sha,
+		]);
+	}
 	try {
-		return { record: persist(promoted, options.runsRoot), tag, candidateSha: candidate.sha };
+		const result = { record: persist(promoted, options.runsRoot), tag, candidateSha: candidate.sha };
+		try { unlinkSync(intentPath); } catch { /* Tag and Candidate record are already consistent. */ }
+		return result;
 	} catch (error) {
 		// The tag did not exist before this call and was created only after every
 		// validation gate passed, so compensating deletion cannot remove user data.
-		spawnSync("git", ["-C", repositoryDir, "tag", "-d", tag], { stdio: "ignore" });
+		const rollback = spawnSync("git", ["-C", repositoryDir, "tag", "-d", tag], { stdio: "ignore" });
+		if (rollback.status === 0) {
+			try { unlinkSync(intentPath); } catch { /* Preserve the persistence failure. */ }
+		}
 		throw error;
 	}
 }
