@@ -464,30 +464,73 @@ const StructuredProposalInputSchema = z.strictObject({
 const OpenWorkshopInputSchema = z.strictObject({
 	kind: z.literal("workshop-open"),
 	approvedSpecId: ArtifactIdSchema.optional(),
+	/**
+	 * Re-attach to the workshop a previous Builder process left open. The host
+	 * verifies the recorded worktree and its snapshot hash and fails closed on a
+	 * mismatch; the id grants nothing on its own.
+	 */
+	workshopId: z.string().regex(/^workshop_[0-9a-f]{16}$/).optional(),
+	/** Reopen a closed proposal for revision: its exact diff seeds the worktree. */
+	fromProposalRunId: ArtifactIdSchema.optional(),
 });
 
 /**
  * Close the workshop by compiling its worktree diff into the ordinary immutable
- * proposal. Same evidence binding as `structured-proposal`; the intents are
- * replaced by the files the Builder actually wrote and ran.
+ * proposal. A diagnosis-backed workshop carries the same evidence binding as
+ * `structured-proposal`; a Spec-backed construction workshop carries none, and
+ * must not name any — its proposal is recorded with `source: null`.
  */
 const CloseWorkshopInputSchema = z.strictObject({
 	kind: z.literal("workshop-close"),
 	approvedSpecId: ArtifactIdSchema.optional(),
-	source: ProposalBasisSelectionSchema.omit({ failureModeIds: true }),
+	source: ProposalBasisSelectionSchema.omit({ failureModeIds: true }).optional(),
 	failureModeIds: z.array(FailureModeIdSchema)
 		.min(1)
 		.max(8)
-		.refine((ids) => new Set(ids).size === ids.length, "failure mode ids must be unique"),
+		.refine((ids) => new Set(ids).size === ids.length, "failure mode ids must be unique")
+		.optional(),
 	summary: NonBlankSchema.max(4_000),
 	risks: z.array(NonBlankSchema.max(4_000)).max(100).default([]),
 	validationPlan: z.array(NonBlankSchema.max(4_000)).min(1).max(100),
+}).superRefine((value, context) => {
+	if ((value.source === undefined) !== (value.failureModeIds === undefined)) {
+		context.addIssue({
+			code: "custom",
+			message: "an evidence-backed close needs both source and failureModeIds, or neither",
+		});
+	}
 });
 
 /** Throw the workshop away unread. Nothing it wrote ever existed. */
 const DiscardWorkshopInputSchema = z.strictObject({
 	kind: z.literal("workshop-discard"),
 });
+
+/**
+ * Where an open workshop lives between two Builder processes. This is selection
+ * state, like focus: it grants nothing, it is not a receipt, and re-attaching
+ * re-derives every fact and refuses on a snapshot-hash mismatch.
+ */
+export const PersistedWorkbenchWorkshopSchema = z.strictObject({
+	schemaVersion: z.literal(1),
+	workshopId: z.string().regex(/^workshop_[0-9a-f]{16}$/),
+	targetId: z.string().min(1).max(100),
+	baseTargetSha: z.string().regex(/^[0-9a-f]{40}$/),
+	basis: z.enum(["construction", "improvement"]),
+	approvedSpecId: ArtifactIdSchema,
+	fromProposalRunId: ArtifactIdSchema.nullable(),
+	worktreePath: z.string().min(1).max(4_096),
+	scratchRoot: z.string().min(1).max(4_096),
+	openedAt: z.iso.datetime({ offset: true }),
+	snapshotHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+	grants: z.array(z.strictObject({
+		tool: z.string().min(1).max(64),
+		wants: z.array(NonBlankSchema.max(200)).min(1).max(8),
+		grantedAt: z.iso.datetime({ offset: true }),
+		actorId: z.string().min(1).max(200),
+	})).max(32),
+});
+export type PersistedWorkbenchWorkshop = z.infer<typeof PersistedWorkbenchWorkshopSchema>;
 
 export const WorkbenchSubmitInputSchema = z.discriminatedUnion("kind", [
 	SelectInputSchema,
@@ -721,8 +764,16 @@ export interface WorkbenchDecisionExecutionOptions {
 	resolveTargetModel?: (selection: TargetModelSelection) => TargetManifest["model"];
 }
 
+/**
+ * Every question the host may put to the operator. `workshop-grant` is the one
+ * that is not a decision: it widens what pre-review authored code may reach for
+ * exactly one tool inside one open workshop, and like every other confirmation
+ * it is host-owned — a model can ask for it, never assert it.
+ */
+export type WorkbenchConfirmationKind = WorkbenchDecisionInput["kind"] | "workshop-grant";
+
 export interface WorkbenchConfirmation {
-	kind: WorkbenchDecisionInput["kind"];
+	kind: WorkbenchConfirmationKind;
 	title: string;
 	reason: string;
 	subject: unknown;

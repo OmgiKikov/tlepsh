@@ -5,7 +5,7 @@ import { hashValue } from "../provenance.js";
 import type { WorkbenchGateClass, WorkbenchRunEstimate } from "../workbench/transition-policy.js";
 import type {
 	WorkbenchConfirmation,
-	WorkbenchDecisionInput,
+	WorkbenchConfirmationKind,
 	WorkbenchHumanGate,
 } from "../workbench/types.js";
 
@@ -37,7 +37,7 @@ export function isServeConfirmationId(value: string): boolean {
 }
 
 /** Decision kinds plus the one host-owned choice that is not a decision. */
-export type ServeConfirmationKind = WorkbenchDecisionInput["kind"] | "select-sealed";
+export type ServeConfirmationKind = WorkbenchConfirmationKind | "select-sealed";
 
 export type ServeConfirmationSettlement =
 	| "approved"

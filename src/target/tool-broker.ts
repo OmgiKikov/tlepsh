@@ -270,17 +270,190 @@ export function sandboxInvocation(options: {
 	confinement: TargetToolConfinement;
 	cwd: string;
 	argv: readonly string[];
-}): { executable: string; args: string[] } {
+	/** Optional `ulimit` caps applied inside the sandbox; omitted leaves them at the host's. */
+	limits?: SandboxResourceLimits;
+}): { executable: string; args: string[]; limits: AppliedResourceLimits | null } {
+	const capped = options.limits ? applyResourceLimits(options.backend, options.argv, options.limits) : null;
+	const argv = capped ? capped.argv : options.argv;
 	if (options.backend === "sandbox-exec") {
-		const [command, ...rest] = options.argv;
+		const [command, ...rest] = argv;
 		if (!command) throw new Error("sandboxed invocation requires a command");
 		return {
 			executable: "/usr/bin/sandbox-exec",
 			args: ["-p", macosProfile(options.workspaceDir, options.scratchDir, options.confinement), command, ...rest],
+			limits: capped?.applied ?? null,
 		};
 	}
 	const binary = executableOnPath("bwrap", process.env.PATH ?? "") ?? "/usr/bin/bwrap";
-	return { executable: binary, args: bwrapArguments(options) };
+	return {
+		executable: binary,
+		args: bwrapArguments({
+			workspaceDir: options.workspaceDir,
+			scratchDir: options.scratchDir,
+			environment: options.environment,
+			confinement: options.confinement,
+			cwd: options.cwd,
+			argv,
+		}),
+		limits: capped?.applied ?? null,
+	};
+}
+
+// ---------------------------------------------------------------------------
+// The authoring profile: what pre-review, model-authored code runs under.
+//
+// A declared Target tool is code a human already reviewed and applied. Code the
+// Builder wrote thirty seconds ago is not, so it never inherits the Target's
+// environment allowlist, its network policy, or a view of the whole checkout.
+// This profile is the whole difference, and it is deliberately not negotiable
+// at runtime: there is no argument that widens it.
+
+/** Exactly the variables model-authored code receives. Nothing from any allowlist. */
+export const AUTHORING_ENVIRONMENT_NAMES = ["HOME", "LANG", "LC_ALL", "PATH", "TERM", "TMPDIR"] as const;
+
+/**
+ * The fixed minimal environment for pre-review authored code. `PATH` is the
+ * host's so a real toolchain resolves; every other value is a constant or a
+ * private scratch directory. No credential of any kind can reach it, because
+ * nothing is ever copied from the parent environment by name.
+ */
+export function buildAuthoringEnvironment(options: {
+	label: string;
+	scratchDir: string;
+	sourceEnvironment?: NodeJS.ProcessEnv;
+}): { environment: NodeJS.ProcessEnv; names: string[] } {
+	const home = join(options.scratchDir, "authoring-home", options.label);
+	const temporary = join(options.scratchDir, "authoring-tmp", options.label);
+	mkdirSync(home, { recursive: true, mode: 0o700 });
+	mkdirSync(temporary, { recursive: true, mode: 0o700 });
+	const source = options.sourceEnvironment ?? process.env;
+	const environment: NodeJS.ProcessEnv = {
+		HOME: home,
+		LANG: "C.UTF-8",
+		LC_ALL: "C.UTF-8",
+		PATH: source.PATH ?? "/usr/bin:/bin",
+		TERM: "dumb",
+		TMPDIR: temporary,
+	};
+	return { environment, names: Object.keys(environment).sort() };
+}
+
+/** `ulimit`-style caps one authored command runs under. */
+export interface SandboxResourceLimits {
+	/** `ulimit -t`: CPU seconds across the process tree. */
+	cpuSeconds: number;
+	/** `ulimit -f`: largest file the command may create, in bytes. */
+	fileSizeBytes: number;
+	/** `ulimit -n`: open file descriptors. */
+	openFiles: number;
+	/** `ulimit -u`: processes the user may hold; a fork bomb dies here. */
+	processes: number;
+}
+
+/** What the backend could actually enforce, and what it could not. */
+export interface AppliedResourceLimits {
+	limits: SandboxResourceLimits;
+	/** `ulimit` flags this host's `/bin/sh` accepted. */
+	applied: string[];
+	/** Flags it refused, named so a result can say so honestly. */
+	unenforced: string[];
+}
+
+/**
+ * The documented caps for the Builder workshop: 120 CPU-seconds, 256 MiB per
+ * file, 512 descriptors, 256 processes. They sit beside — not instead of — the
+ * wall-clock timeout and the output bound, which are enforced by the host.
+ */
+export const AUTHORING_RESOURCE_LIMITS: SandboxResourceLimits = {
+	cpuSeconds: 120,
+	fileSizeBytes: 256 * 1024 * 1024,
+	openFiles: 512,
+	processes: 256,
+};
+
+const RESOURCE_LIMIT_FLAGS = {
+	cpuSeconds: "t",
+	fileSizeBytes: "f",
+	openFiles: "n",
+	processes: "u",
+} as const satisfies Record<keyof SandboxResourceLimits, string>;
+
+/** POSIX `ulimit -f` counts 512-byte blocks; every other flag counts units. */
+function limitValue(name: keyof SandboxResourceLimits, limits: SandboxResourceLimits): number {
+	if (name === "fileSizeBytes") return Math.max(1, Math.floor(limits.fileSizeBytes / 512));
+	return limits[name];
+}
+
+let resourceLimitProbe: Set<string> | null = null;
+
+/**
+ * Which `ulimit` flags this host's `/bin/sh` honours. Probed once: a flag the
+ * shell rejects would otherwise abort the command it was meant to bound, and a
+ * silently skipped cap would be a lie in the tool result.
+ */
+function supportedResourceLimitFlags(): Set<string> {
+	if (resourceLimitProbe) return resourceLimitProbe;
+	const supported = new Set<string>();
+	for (const [name, flag] of Object.entries(RESOURCE_LIMIT_FLAGS)) {
+		const value = limitValue(name as keyof SandboxResourceLimits, AUTHORING_RESOURCE_LIMITS);
+		const probe = spawnSync("/bin/sh", ["-c", `ulimit -${flag} ${value}`], { stdio: "ignore", timeout: 3_000 });
+		if (probe.status === 0 && !probe.error) supported.add(flag);
+	}
+	resourceLimitProbe = supported;
+	return supported;
+}
+
+/** Test seam: forget the probe so a test can observe it on this host. */
+export function resetResourceLimitProbe(): void {
+	resourceLimitProbe = null;
+}
+
+/**
+ * Which caps a backend can honestly enforce.
+ *
+ * `RLIMIT_NPROC` (`ulimit -u`) counts every process of the *user*, not of the
+ * sandboxed tree. `bwrap` enters a fresh user namespace, so lowering it there
+ * bounds exactly this command and nothing else. `sandbox-exec` shares the
+ * operator's uid, so lowering it would count their editor and their shell too:
+ * the cap is reported unenforced rather than applied as a booby trap.
+ */
+function backendResourceLimitFlags(backend: TargetToolSandboxBackend): Set<string> {
+	if (backend === "bwrap") return new Set(Object.values(RESOURCE_LIMIT_FLAGS));
+	return new Set(["t", "f", "n"]);
+}
+
+/**
+ * Wrap argv in a `/bin/sh` preamble that lowers each supported rlimit before
+ * `exec`. Only flags this backend and this shell both accept are emitted, so
+ * the preamble either caps or is absent — it never fails the command it was
+ * supposed to bound, and it never silently claims a cap it did not apply.
+ */
+function applyResourceLimits(
+	backend: TargetToolSandboxBackend,
+	argv: readonly string[],
+	limits: SandboxResourceLimits,
+): { argv: string[]; applied: AppliedResourceLimits } {
+	const supported = supportedResourceLimitFlags();
+	const byBackend = backendResourceLimitFlags(backend);
+	const applied: string[] = [];
+	const unenforced: string[] = [];
+	const commands: string[] = [];
+	for (const [name, flag] of Object.entries(RESOURCE_LIMIT_FLAGS)) {
+		if (!supported.has(flag) || !byBackend.has(flag)) {
+			unenforced.push(flag);
+			continue;
+		}
+		applied.push(flag);
+		commands.push(`ulimit -${flag} ${limitValue(name as keyof SandboxResourceLimits, limits)}`);
+	}
+	const record: AppliedResourceLimits = { limits, applied, unenforced };
+	if (commands.length === 0) return { argv: [...argv], applied: record };
+	const [command, ...rest] = argv;
+	if (!command) throw new Error("resource-limited invocation requires a command");
+	return {
+		argv: ["/bin/sh", "-c", `${commands.join("; ")}; exec "$0" "$@"`, command, ...rest],
+		applied: record,
+	};
 }
 
 function killProcessTree(pid: number | undefined): void {

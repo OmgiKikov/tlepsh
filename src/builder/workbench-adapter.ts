@@ -292,6 +292,7 @@ export function createBuilderWorkbenchTools(
 	return [
 		defineTool({
 			name: "ahde_workbench_view",
+			executionMode: "sequential",
 			label: "Inspect Builder Workbench",
 			description: [
 				"Read the AHDE Workbench: the current stage, legal next actions, the exact subject under review, the diagnosis, the committed Target, or what was already tried.",
@@ -326,6 +327,7 @@ export function createBuilderWorkbenchTools(
 		}),
 		defineTool({
 			name: "ahde_workbench_submit",
+			executionMode: "sequential",
 			label: "Author in Builder Workbench",
 			description: [
 				"Author non-consequential Workbench artifacts. Send nested objects/arrays as JSON values (not strings). Exactly one shape per kind:",
@@ -336,8 +338,8 @@ export function createBuilderWorkbenchTools(
 				"• { kind: \"dataset-recipe\", sourcePath: \"imports/<file>\", recipe, name, revisionSummary, approvedSpecId? } — how to read any other data file (csv/tsv/json/jsonl/markdown/text/chat export) as cases. Write the recipe from aspect: \"dataset\" alone; the host re-validates it against the real columns and answers with the first compiled sample cases plus a submissionId. Nothing is imported until the operator confirms { kind: \"import-dataset\" }.",
 				"recipe = { schemaVersion: 1, input?: { column } | { template: \"…{{column}}…\" }, expected?: { column }, dialogue?: { column }, metadata?: [column, …], filters?: [{ column, equals } | { column, matches }], sample?: { limit, seed, stratifyBy? }, graders: [grader, …], idPrefix? } — needs input or dialogue; grader text may use {{column}} and {{expected}}.",
 				"• { kind: \"select\", entity: \"spec-draft\" | \"approved-spec\" | \"corpus-draft\" | \"development-corpus\" | \"eval-run\" | \"proposal\" | \"candidate\", id }",
-				"• { kind: \"workshop-open\" } — open your only writable surface: a private copy of the exact clean Target revision, scoped to AGENTS.md, skills/**, tools/**, bin/**, data/**. While it is open you also have ahde_workshop_read / _write / _bash / _try; write the change, run it, fix it, run it again. It is not the operator's checkout and nothing in it is applied.",
-				"• { kind: \"workshop-close\", source: { algorithmId, evalRunId, diagnosisId, briefId } (from aspect=traces), failureModeIds: [failureModeId, …], summary, risks?: string[], validationPlan: string[] } — compile the workshop's diff into the exact reviewable proposal. The host derives every path, mode, hash and diff from what is on disk; a workshop that changed nothing or touched anything out of scope is refused by path.",
+				"• { kind: \"workshop-open\", fromProposalRunId?, workshopId? } — open your only writable surface: a private copy of the exact clean Target revision, scoped to AGENTS.md, skills/**, tools/**, bin/**, data/**. While it is open you also have ahde_workshop_read / _write / _bash / _try; write the change, run it, fix it, run it again. Nothing inside it has a network, a Target credential, or any evals/, imports/, runs/, .git or .env to read. It opens two ways: right after the Spec is approved, to BUILD the first harness against that Spec (no evidence is cited, and the proposal records none); and after a conclusive evaluation, to IMPROVE it against the diagnosis. fromProposalRunId reopens a closed proposal seeded with its exact diff; workshopId re-attaches to a workshop a previous session left open.",
+				"• { kind: \"workshop-close\", summary, validationPlan: string[], risks?: string[], source?: { algorithmId, evalRunId, diagnosisId, briefId } (from aspect=traces), failureModeIds?: [failureModeId, …] } — compile the workshop's diff into the exact reviewable proposal. A construction workshop closes without source/failureModeIds; an improvement workshop needs both. The host derives every path, mode, hash and diff from one snapshot of what is on disk; a workshop that changed nothing, touched anything out of scope, or left a Git-ignored file inside the scope is refused by path.",
 				"• { kind: \"workshop-discard\" } — throw the open workshop away; nothing it wrote ever existed.",
 				"• { kind: \"structured-proposal\", authoringContext: <claim from aspect=target>, source: { algorithmId, evalRunId, diagnosisId, briefId } (from aspect=traces), failureModeIds: [failureModeId, …], summary, intents: [intent, …], risks?: string[], validationPlan: string[] } — the second path: cheaper for a single-file edit you have no reason to run, and the only way to change the Target's execution policy.",
 				"grader = { type: \"output_contains\", text, caseSensitive? } | { type: \"output_matches\", pattern (JavaScript regex, no (?i) flags) } | { type: \"tool_called\", tool, argsContains? } | { type: \"judge\", rubric? , assertions?: string[] (yes/no checks, one behaviour each; needs rubric or assertions), jury?: 1-5, withReference? } | { type: \"exact\", normalize? } | { type: \"similarity\", metric: \"token-f1\" | \"levenshtein\", threshold } (judge only when the Target manifest configures a judge model; exact, similarity and judge withReference need the case's expected answer).",
@@ -357,6 +359,7 @@ export function createBuilderWorkbenchTools(
 		}),
 		defineTool({
 			name: "ahde_workbench_decide",
+			executionMode: "sequential",
 			label: "Decide in Builder Workbench",
 			description: [
 				"Do the work the operator asked for. Call this yourself when they say it in plain words (test, run, check, fix it, apply, ship, next) — never tell them to type a slash command instead. Every kind requires a non-blank `reason`.",

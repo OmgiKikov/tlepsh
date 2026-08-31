@@ -14,7 +14,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import {
 	CandidateProposalSchema,
@@ -33,10 +33,12 @@ import {
 	materializeTargetWorkspaceSnapshot,
 } from "../runner.js";
 import {
-	buildToolEnvironment,
+	AUTHORING_RESOURCE_LIMITS,
+	buildAuthoringEnvironment,
 	sandboxInvocation,
 	TargetToolBroker,
 	detectTargetToolSandbox,
+	type AppliedResourceLimits,
 	type TargetToolConfinement,
 	type TargetToolSandboxBackend,
 } from "../target/tool-broker.js";
@@ -89,6 +91,12 @@ export interface TryToolResult {
 		ref: string | null;
 		/** Paths a draft proposal would change, for the reviewer's orientation. */
 		changedPaths: string[];
+		/**
+		 * The exact content identity of the Harness surface this ran against.
+		 * A workshop try re-checks it afterwards: the result always describes the
+		 * code that produced it. Null outside a workshop.
+		 */
+		snapshotHash?: string | null;
 	};
 	target: {
 		id: string;
@@ -286,9 +294,12 @@ async function runDeclaredToolInDirectory(options: {
 /** The only paths a workshop may read, create, change, or remove. */
 export const BUILDER_WORKSHOP_SCOPE = ["AGENTS.md", "skills/**", "tools/**", "bin/**", "data/**"] as const;
 const WORKSHOP_SCOPE_PREFIXES = ["skills/", "tools/", "bin/", "data/"] as const;
+const WORKSHOP_SCOPE_DIRECTORIES = ["skills", "tools", "bin", "data"] as const;
 const WORKSHOP_PATH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
 /** `manifest.yaml` is host-owned: the workshop derives its declarations. */
 const WORKSHOP_MANIFEST = "manifest.yaml";
+/** The whole surface a workshop's own code ever sees, host-rendered manifest included. */
+export const BUILDER_WORKSHOP_MOUNTED_PATHS = [...BUILDER_WORKSHOP_SCOPE, WORKSHOP_MANIFEST] as const;
 
 export const MAX_WORKSHOP_FILE_BYTES = TARGET_AUTHORING_LIMITS.resourceBytes;
 export const MAX_WORKSHOP_CHANGES = 256;
@@ -317,6 +328,25 @@ export class BuilderWorkshopEmptyError extends ToolWorkshopError {
 	constructor() {
 		super("the workshop produced no change; write something or discard it");
 		this.name = "BuilderWorkshopEmptyError";
+	}
+}
+
+/**
+ * A try that wants more than the authoring profile grants. It is never a flag
+ * the model may set: the host asks the operator one question and records the
+ * answer on the workshop, so the close and apply dialogs can show it.
+ */
+export class BuilderWorkshopGrantRequiredError extends ToolWorkshopError {
+	readonly tool: string;
+	readonly wants: readonly string[];
+	constructor(tool: string, wants: readonly string[]) {
+		super(
+			`the ${tool} tool wants ${wants.join(" and ")} to run here; ` +
+			"the operator has to allow that once before it may be tried",
+		);
+		this.name = "BuilderWorkshopGrantRequiredError";
+		this.tool = tool;
+		this.wants = [...wants];
 	}
 }
 
@@ -382,6 +412,72 @@ function resolveWorkshopPath(root: string, requested: string): string {
 
 function workshopSha256(content: Buffer | string): string {
 	return `sha256:${createHash("sha256").update(content).digest("hex")}`;
+}
+
+/** One file of the authorable projection, exactly as it is on disk. */
+interface WorkshopFileState {
+	path: string;
+	mode: "100644" | "100755";
+	content: Buffer;
+}
+
+/**
+ * Every regular file under one root of the projection, read once. Symlinks are
+ * collected rather than followed: the caller decides whether to refuse by name
+ * (a command produced one) or to skip (a listing walked past one).
+ */
+function collectWorkshopFiles(
+	base: string,
+	relativePath: string,
+	into: Map<string, WorkshopFileState>,
+	symlinks: string[],
+	depth = 0,
+): void {
+	if (depth > 24) throw new ToolWorkshopError(`${relativePath} nests deeper than a workshop allows`);
+	const absolute = join(base, relativePath);
+	let info;
+	try {
+		info = lstatSync(absolute);
+	} catch {
+		return;
+	}
+	if (info.isSymbolicLink()) {
+		symlinks.push(relativePath);
+		return;
+	}
+	if (info.isDirectory()) {
+		for (const entry of readdirSync(absolute, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+			collectWorkshopFiles(base, `${relativePath}/${entry.name}`, into, symlinks, depth + 1);
+		}
+		return;
+	}
+	if (!info.isFile()) {
+		symlinks.push(relativePath);
+		return;
+	}
+	into.set(relativePath, {
+		path: relativePath,
+		mode: (info.mode & 0o111) === 0 ? "100644" : "100755",
+		content: readFileSync(absolute),
+	});
+}
+
+/** Content identity of one whole authorable projection, path and mode included. */
+function workshopSnapshotHash(entries: ReadonlyMap<string, WorkshopFileState>): string {
+	const digest = createHash("sha256");
+	for (const path of [...entries.keys()].sort((left, right) => left.localeCompare(right))) {
+		const file = entries.get(path) as WorkshopFileState;
+		digest.update(`${path}\0${file.mode}\0${createHash("sha256").update(file.content).digest("hex")}\n`);
+	}
+	return `sha256:${digest.digest("hex")}`;
+}
+
+/** An honest sentence when the host could not enforce part of the cap set. */
+function resourceLimitNote(limits: AppliedResourceLimits | null): string | null {
+	if (!limits) return "this host applied no resource caps; only the wall-clock timeout and the output bound hold";
+	if (limits.unenforced.length === 0) return null;
+	return `this host could not enforce ulimit ${limits.unenforced.map((flag) => `-${flag}`).join(", ")}; ` +
+		"those caps are not applied here, and only the wall-clock timeout and the output bound hold in their place";
 }
 
 function workshopText(content: Buffer, path: string): string {
@@ -498,6 +594,14 @@ export interface WorkshopBashResult {
 	cwd: string;
 	sandbox: TargetToolSandboxBackend;
 	network: "deny" | "allow";
+	/** Exactly the variable names the command received; never a Target allowlist. */
+	environment: string[];
+	/** Everything the command could see, relative to the Harness root. */
+	mounted: readonly string[];
+	/** The caps the backend enforced, and the ones it could not. */
+	limits: AppliedResourceLimits | null;
+	/** Set when the backend enforced no cap at all, so the result says so. */
+	note: string | null;
 	exitCode: number | null;
 	durationMs: number;
 	stdout: string;
@@ -512,16 +616,47 @@ export interface WorkshopChange {
 	bytes: number | null;
 }
 
+/** What one workshop tool wants beyond the authoring profile, before it runs. */
+export interface WorkshopToolGrantRequirement {
+	tool: string;
+	/** The declared tool or its setup step asks to reach the network. */
+	network: boolean;
+	/** Environment variables the declared tool asks for — credentials, in practice. */
+	environment: readonly string[];
+	/** Human words for the one question the host asks. */
+	wants: readonly string[];
+}
+
+/** The operator's recorded answer to that one question. */
+export interface WorkshopGrant {
+	tool: string;
+	wants: readonly string[];
+	grantedAt: string;
+	actorId: string;
+}
+
 export interface WorkshopStatus {
 	workshopId: string;
 	target: { id: string; gitSha: string };
+	/** What the workshop is bound to: an approved Spec, or a diagnosis. */
+	basis: BuilderWorkshopBasis;
 	openedAt: string;
 	writes: number;
 	commands: number;
 	tries: number;
 	changes: WorkshopChange[];
 	scope: readonly string[];
+	/** Exact content identity of everything in scope, right now. */
+	snapshotHash: string;
+	grants: readonly WorkshopGrant[];
 }
+
+/**
+ * A workshop is bound either to an approved Spec (build the thing) or to a
+ * diagnosis of a conclusive evaluation (improve the thing). Both compile the
+ * same proposal; only the evidence the proposal carries differs.
+ */
+export type BuilderWorkshopBasis = "construction" | "improvement";
 
 export interface OpenBuilderWorkshopOptions {
 	repositoryDir: string;
@@ -529,7 +664,34 @@ export interface OpenBuilderWorkshopOptions {
 	expectedTarget: { id: string; gitSha: string };
 	/** The exact claim minted from the same clean revision this copies. */
 	authoringContext: TargetAuthoringContextClaim;
+	/** Spec-backed construction, or diagnosis-backed improvement. */
+	basis: BuilderWorkshopBasis;
+	/** The exact approved Spec this workshop is bound to. */
+	approvedSpecId: string;
+	/** Reopening a closed proposal: its exact whole-file diffs seed the worktree. */
+	seed?: { proposalRunId: string; patch: string } | undefined;
+	workshopId?: string;
 	now?: () => string;
+}
+
+/**
+ * Everything needed to find one open workshop again after the Builder process
+ * died. It is selection state — like focus — not a receipt: it grants nothing,
+ * and re-attaching fails closed when the worktree moved or its bytes changed.
+ */
+export interface BuilderWorkshopDescriptor {
+	schemaVersion: 1;
+	workshopId: string;
+	targetId: string;
+	baseTargetSha: string;
+	basis: BuilderWorkshopBasis;
+	approvedSpecId: string;
+	fromProposalRunId: string | null;
+	worktreePath: string;
+	scratchRoot: string;
+	openedAt: string;
+	snapshotHash: string;
+	grants: readonly WorkshopGrant[];
 }
 
 export interface CompiledWorkshopProposal {
@@ -553,11 +715,15 @@ export class BuilderWorkshop {
 	readonly path: string;
 	readonly openedAt: string;
 	readonly claim: TargetAuthoringContextClaim;
+	readonly basis: BuilderWorkshopBasis;
+	readonly approvedSpecId: string;
+	readonly fromProposalRunId: string | null;
 	private readonly worktree: DetachedWorktreeHandle;
 	private readonly scratchRoot: string;
 	private readonly baseManifestText: string;
 	private readonly baseManifest: TargetManifestValue;
 	private readonly written = new Set<string>();
+	private readonly grants: WorkshopGrant[] = [];
 	private writes = 0;
 	private commands = 0;
 	private tries = 0;
@@ -570,6 +736,10 @@ export class BuilderWorkshop {
 		scratchRoot: string;
 		targetId: string;
 		claim: TargetAuthoringContextClaim;
+		basis: BuilderWorkshopBasis;
+		approvedSpecId: string;
+		fromProposalRunId?: string | null;
+		grants?: readonly WorkshopGrant[];
 		openedAt: string;
 		baseManifestText: string;
 		baseManifest: TargetManifestValue;
@@ -583,8 +753,12 @@ export class BuilderWorkshop {
 		this.path = realpathSync(options.worktree.path);
 		this.openedAt = options.openedAt;
 		this.claim = options.claim;
+		this.basis = options.basis;
+		this.approvedSpecId = options.approvedSpecId;
+		this.fromProposalRunId = options.fromProposalRunId ?? null;
 		this.baseManifestText = options.baseManifestText;
 		this.baseManifest = options.baseManifest;
+		for (const grant of options.grants ?? []) this.grants.push({ ...grant, wants: [...grant.wants] });
 	}
 
 	get open(): boolean {
@@ -731,10 +905,16 @@ export class BuilderWorkshop {
 	// -- running -------------------------------------------------------------
 
 	/**
-	 * One argv, no shell interpolation, inside the same OS sandbox a declared
-	 * Target tool runs in: the worktree is readable, only the Harness scope and a
-	 * private scratch are writable, and the network follows the Target's declared
-	 * policy.
+	 * One argv, no shell interpolation, under the **authoring profile**: the
+	 * fixed minimal environment (no Target allowlist, no credential of any kind),
+	 * the network denied whatever `execution.network` says, `ulimit` caps, a
+	 * bounded timeout and bounded output — and, as its filesystem, a private
+	 * materialised copy of the authorable projection alone.
+	 *
+	 * The mount is the point. `evals/**`, `imports/**`, `runs/`, `.git`, `.env`
+	 * and `.ahde` are not forbidden by a path check the command could try to
+	 * outwit: they are absent. Git runs host-side, against the real worktree,
+	 * never inside this.
 	 *
 	 * The sandbox itself is not optional here. `execution.sandbox` describes the
 	 * Target's own shell and can never widen what Builder Pi may reach, so a host
@@ -763,31 +943,39 @@ export class BuilderWorkshop {
 		if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_WORKSHOP_TIMEOUT_MS) {
 			throw new ToolWorkshopError(`a workshop command runs for at most ${MAX_WORKSHOP_TIMEOUT_MS}ms`);
 		}
-		const cwd = request.cwd === undefined ? this.path : resolveWorkshopPath(this.path, request.cwd);
-		if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
-			throw new ToolWorkshopError(`the workshop has no directory ${String(request.cwd)}`);
+		const requestedCwd = request.cwd;
+		if (requestedCwd !== undefined) {
+			const inWorktree = resolveWorkshopPath(this.path, requestedCwd);
+			if (!existsSync(inWorktree) || !statSync(inWorktree).isDirectory()) {
+				throw new ToolWorkshopError(`the workshop has no directory ${String(requestedCwd)}`);
+			}
 		}
-		const scratchDir = join(this.scratchRoot, "bash");
-		mkdirSync(scratchDir, { recursive: true, mode: 0o700 });
-		const sandboxBackend = detectTargetToolSandbox(this.path, scratchDir);
-		const { environment } = buildToolEnvironment({
-			label: "workshop",
-			scratchDir,
-			environmentAllowlist: this.baseManifest.execution.environmentAllowlist,
-		});
+		mkdirSync(join(this.scratchRoot, "bash"), { recursive: true, mode: 0o700 });
+		const scratchDir = realpathSync(join(this.scratchRoot, "bash"));
+		// The command's whole world: the authorable projection, and nothing else.
+		const surface = this.materializeAuthoringSurface();
+		const cwd = requestedCwd === undefined ? surface : join(surface, requestedCwd);
+		if (!existsSync(cwd) || !statSync(cwd).isDirectory()) {
+			throw new ToolWorkshopError(`the workshop has no directory ${String(requestedCwd)}`);
+		}
+		const sandboxBackend = detectTargetToolSandbox(surface, scratchDir);
+		const { environment, names } = buildAuthoringEnvironment({ label: "workshop", scratchDir });
+		// Never `execution.network`: that policy governs reviewed Target code, and
+		// pre-review authored code does not inherit it.
 		const confinement: TargetToolConfinement = {
-			network: this.baseManifest.execution.network,
+			network: "deny",
 			readRoots: [],
-			writeRoots: this.writableRoots(),
+			writeRoots: this.surfaceWriteRoots(surface),
 		};
 		const invocation = sandboxInvocation({
 			backend: sandboxBackend,
-			workspaceDir: this.path,
+			workspaceDir: surface,
 			scratchDir,
 			environment,
 			confinement,
 			cwd,
 			argv,
+			limits: AUTHORING_RESOURCE_LIMITS,
 		});
 		this.commands += 1;
 		const started = Date.now();
@@ -838,13 +1026,20 @@ export class BuilderWorkshop {
 			if (stopped === "aborted") throw new ToolWorkshopError("the workshop command was aborted");
 			const outText = boundedOutput(Buffer.concat(stdout).toString("utf8"));
 			const errText = boundedOutput(Buffer.concat(stderr).toString("utf8"));
+			// Whatever the command wrote lands back in the worktree, scope-checked
+			// path by path; a symlink or an irregular file refuses the whole sync.
+			this.absorbAuthoringSurface(surface);
 			// A command that touched the Harness may have changed what is declared.
 			this.syncDeclarations();
 			return {
 				argv,
-				cwd: relative(this.path, cwd) || ".",
+				cwd: requestedCwd ?? ".",
 				sandbox: sandboxBackend,
 				network: confinement.network,
+				environment: names,
+				mounted: BUILDER_WORKSHOP_MOUNTED_PATHS,
+				limits: invocation.limits,
+				note: resourceLimitNote(invocation.limits),
 				exitCode,
 				durationMs: Date.now() - started,
 				stdout: outText.text,
@@ -855,37 +1050,187 @@ export class BuilderWorkshop {
 		} finally {
 			clearTimeout(timer);
 			request.signal?.removeEventListener("abort", abort);
+			rmSync(surface, { recursive: true, force: true });
 		}
 	}
 
-	/** Every part of the Harness scope the sandbox may write into. */
-	private writableRoots(): string[] {
-		const roots: string[] = [];
-		for (const prefix of WORKSHOP_SCOPE_PREFIXES) {
-			const directory = join(this.path, prefix.slice(0, -1));
-			mkdirSync(directory, { recursive: true, mode: 0o755 });
-			roots.push(directory);
+	// -- the mounted authoring surface ---------------------------------------
+
+	/**
+	 * A private copy of exactly the authorable projection — `AGENTS.md`, the four
+	 * scope directories, and the host-rendered `manifest.yaml` — and nothing
+	 * else. This is what the model's own code gets as its filesystem.
+	 */
+	private materializeAuthoringSurface(): string {
+		const surface = join(this.scratchRoot, "surface");
+		rmSync(surface, { recursive: true, force: true });
+		mkdirSync(surface, { recursive: true, mode: 0o700 });
+		const files = this.walkAuthoringScope();
+		if (files.symlinks.length > 0) {
+			throw new BuilderWorkshopScopeError(files.symlinks, "the workshop contains a symlink");
 		}
-		const instructions = join(this.path, "AGENTS.md");
+		for (const file of files.entries.values()) {
+			const destination = join(surface, file.path);
+			mkdirSync(dirname(destination), { recursive: true, mode: 0o755 });
+			writeFileSync(destination, file.content);
+			chmodSync(destination, file.mode === "100755" ? 0o755 : 0o644);
+		}
+		// The scope directories exist even when empty, so a command can write into
+		// them without first guessing that it has to create them.
+		for (const name of WORKSHOP_SCOPE_DIRECTORIES) {
+			mkdirSync(join(surface, name), { recursive: true, mode: 0o755 });
+		}
+		// The OS sandbox profiles name real paths; a `/var` → `/private/var`
+		// symlink between them would deny every read the command makes.
+		return realpathSync(surface);
+	}
+
+	/** Every directory of the mounted surface the sandbox may write into. */
+	private surfaceWriteRoots(surface: string): string[] {
+		const roots = WORKSHOP_SCOPE_DIRECTORIES.map((name) => join(surface, name));
+		const instructions = join(surface, "AGENTS.md");
 		if (existsSync(instructions) && lstatSync(instructions).isFile()) roots.push(instructions);
 		return roots;
 	}
 
-	/** Run one declared tool of THIS workshop's Harness, exactly as a Target would. */
+	/**
+	 * Fold what the command produced back into the real worktree. Everything is
+	 * validated first and written second: one symlink, one oversize file, or one
+	 * path outside the scope refuses the whole sync by name rather than leaving
+	 * the worktree half-updated.
+	 */
+	private absorbAuthoringSurface(surface: string): void {
+		const produced = new Map<string, WorkshopFileState>();
+		const symlinks: string[] = [];
+		const offending: string[] = [];
+		for (const root of [...WORKSHOP_SCOPE_DIRECTORIES, "AGENTS.md"]) {
+			collectWorkshopFiles(surface, root, produced, symlinks);
+		}
+		if (symlinks.length > 0) {
+			throw new BuilderWorkshopScopeError(symlinks, "a workshop command may not create a symlink");
+		}
+		for (const [path, file] of produced) {
+			if (!inWorkshopScope(path)) offending.push(path);
+			else if (file.content.byteLength > MAX_WORKSHOP_FILE_BYTES) offending.push(path);
+		}
+		if (offending.length > 0) {
+			throw new BuilderWorkshopScopeError(
+				offending,
+				`a workshop command writes only inside ${BUILDER_WORKSHOP_SCOPE.join(", ")}, at most ${MAX_WORKSHOP_FILE_BYTES} bytes per file`,
+			);
+		}
+		const before = this.walkAuthoringScope();
+		for (const [path, file] of produced) {
+			const current = before.entries.get(path);
+			if (current && current.mode === file.mode && current.content.equals(file.content)) continue;
+			const destination = join(this.path, path);
+			mkdirSync(dirname(destination), { recursive: true, mode: 0o755 });
+			writeFileSync(destination, file.content);
+			chmodSync(destination, file.mode === "100755" ? 0o755 : 0o644);
+		}
+		for (const path of before.entries.keys()) {
+			if (path === WORKSHOP_MANIFEST || produced.has(path)) continue;
+			rmSync(join(this.path, path), { force: true });
+		}
+	}
+
+	/** Every in-scope file of the worktree right now, plus the host-owned manifest. */
+	private walkAuthoringScope(): { entries: Map<string, WorkshopFileState>; symlinks: string[] } {
+		const entries = new Map<string, WorkshopFileState>();
+		const symlinks: string[] = [];
+		for (const root of [...WORKSHOP_SCOPE_DIRECTORIES, "AGENTS.md", WORKSHOP_MANIFEST]) {
+			collectWorkshopFiles(this.path, root, entries, symlinks);
+		}
+		return { entries, symlinks };
+	}
+
+	/**
+	 * The exact content identity of everything in scope. Two workshops with the
+	 * same hash hold byte-identical Harness surfaces; a restart that re-attaches
+	 * to a different hash is refused rather than trusted.
+	 */
+	snapshotHash(): string {
+		const { entries } = this.walkAuthoringScope();
+		return workshopSnapshotHash(entries);
+	}
+
+	// -- what a try may reach -------------------------------------------------
+
+	/**
+	 * What one declared tool of this workshop asks for beyond the authoring
+	 * profile. Null when the tool runs entirely inside it, which is the case a
+	 * Builder should be writing.
+	 */
+	describeToolGrant(toolName: string): WorkshopToolGrantRequirement | null {
+		this.assertOpen();
+		if (!TOOL_NAME.test(toolName)) throw new ToolWorkshopError(`invalid tool name: ${JSON.stringify(toolName)}`);
+		this.syncDeclarations();
+		const resolved = loadTarget(this.path).tools.find((tool) => tool.descriptor.name === toolName);
+		if (!resolved) return null;
+		const network = resolved.descriptor.permissions.network === "allow" ||
+			resolved.descriptor.setup?.network === "allow";
+		const environment = [...resolved.descriptor.permissions.environment];
+		if (!network && environment.length === 0) return null;
+		const wants: string[] = [];
+		if (network) wants.push("network access");
+		if (environment.length > 0) wants.push(`the ${environment.join(", ")} environment ${environment.length === 1 ? "variable" : "variables"}`);
+		return { tool: toolName, network, environment, wants };
+	}
+
+	/** Record the operator's one-question answer. Only a host ever calls this. */
+	grantToolAccess(grant: { tool: string; wants: readonly string[]; actorId: string; now: () => string }): WorkshopGrant {
+		this.assertOpen();
+		const recorded: WorkshopGrant = {
+			tool: grant.tool,
+			wants: [...grant.wants],
+			grantedAt: grant.now(),
+			actorId: grant.actorId,
+		};
+		this.grants.push(recorded);
+		return recorded;
+	}
+
+	private granted(requirement: WorkshopToolGrantRequirement): boolean {
+		return this.grants.some((grant) => grant.tool === requirement.tool);
+	}
+
+	/**
+	 * Run one declared tool of THIS workshop's Harness, exactly as a Target
+	 * would — but only inside the authoring profile. A tool whose descriptor or
+	 * setup step asks for the network or for a credential is refused until the
+	 * operator has allowed it once, and the try reports the exact snapshot it
+	 * ran against.
+	 */
 	async tryTool(options: { tool: string; input: unknown; signal?: AbortSignal }): Promise<TryToolResult> {
 		this.assertOpen();
 		if (!TOOL_NAME.test(options.tool)) {
 			throw new ToolWorkshopError(`invalid tool name: ${JSON.stringify(options.tool)}`);
 		}
 		this.syncDeclarations();
+		const requirement = this.describeToolGrant(options.tool);
+		if (requirement && !this.granted(requirement)) {
+			throw new BuilderWorkshopGrantRequiredError(requirement.tool, requirement.wants);
+		}
+		// Fix what is being tried before anything runs, so the result describes the
+		// exact bytes that produced it rather than whatever is on disk afterwards.
+		const before = this.walkAuthoringScope();
+		const snapshotHash = workshopSnapshotHash(before.entries);
+		const changedPaths = this.changesFrom(before.entries).map((change) => change.path);
 		this.tries += 1;
-		return runDeclaredToolInDirectory({
+		const result = await runDeclaredToolInDirectory({
 			directory: this.path,
 			tool: options.tool,
 			input: options.input,
-			source: { kind: "workshop", ref: null, changedPaths: this.changes().map((change) => change.path) },
+			source: { kind: "workshop", ref: null, changedPaths, snapshotHash },
 			...(options.signal ? { signal: options.signal } : {}),
 		});
+		const after = workshopSnapshotHash(this.walkAuthoringScope().entries);
+		if (after !== snapshotHash) {
+			throw new ToolWorkshopError(
+				"the workshop changed while the tool was running; the result would not describe the code that ran",
+			);
+		}
+		return result;
 	}
 
 	// -- declarations --------------------------------------------------------
@@ -995,34 +1340,119 @@ export class BuilderWorkshop {
 	/** Everything this workshop changed against its baseline commit. */
 	changes(): WorkshopChange[] {
 		this.assertOpen();
-		const raw = gitWorkshopRaw(this.path, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"]);
-		const paths = new Set<string>();
-		for (const record of raw.split("\0").filter((entry) => entry.length > 3)) paths.add(record.slice(3));
+		return this.changesFrom(this.walkAuthoringScope().entries);
+	}
+
+	/**
+	 * The diff of one exact snapshot against the baseline commit. It never reads
+	 * the disk again, so what a close compiles is what a close was handed.
+	 */
+	private changesFrom(entries: ReadonlyMap<string, WorkshopFileState>): WorkshopChange[] {
+		const paths = new Set<string>([...entries.keys(), ...this.baseScopePaths()]);
 		const changes: WorkshopChange[] = [];
 		for (const path of [...paths].sort((left, right) => left.localeCompare(right))) {
-			const absolute = join(this.path, path);
-			const present = existsSync(absolute) && lstatSync(absolute).isFile();
+			const present = entries.get(path);
 			const base = baseBlobAt(this.repositoryDir, this.baseTargetSha, path);
 			if (!present && !base) continue;
+			if (present && base && base.mode === present.mode && base.content.equals(present.content)) continue;
 			changes.push({
 				path,
 				status: !present ? "removed" : base ? "modified" : "added",
-				bytes: present ? statSync(absolute).size : null,
+				bytes: present ? present.content.byteLength : null,
 			});
 		}
 		return changes;
+	}
+
+	/** Every path the baseline commit holds inside the workshop's own scope. */
+	private baseScopePaths(): string[] {
+		const raw = gitWorkshopRaw(
+			this.repositoryDir,
+			["ls-tree", "-r", "-z", "--name-only", this.baseTargetSha],
+		);
+		return raw.split("\0")
+			.filter(Boolean)
+			.filter((path) => path === WORKSHOP_MANIFEST || inWorkshopScope(path));
+	}
+
+	/**
+	 * Paths inside the scope that Git ignores. A file the model created, ran, and
+	 * that would then vanish silently from the reviewed diff is exactly the case
+	 * to stop on, so `changes()` cannot see them and `compile()` refuses on them.
+	 */
+	ignoredInScope(): string[] {
+		this.assertOpen();
+		const ignored: string[] = [];
+		// `git status --ignored` collapses a wholly-ignored directory into one
+		// entry, which would name `tools/x/node_modules/` instead of the file the
+		// Builder actually created. `ls-files` enumerates them one by one.
+		const listed = gitWorkshopRaw(this.path, [
+			"ls-files",
+			"-z",
+			"--others",
+			"--ignored",
+			"--exclude-standard",
+		]);
+		for (const path of listed.split("\0").filter(Boolean)) {
+			if (inWorkshopScope(path)) ignored.push(path);
+		}
+		const status = gitWorkshopRaw(this.path, [
+			"status",
+			"--porcelain=v1",
+			"-z",
+			"--untracked-files=all",
+			"--no-renames",
+			"--ignored=matching",
+		]);
+		for (const record of status.split("\0").filter((entry) => entry.length > 3)) {
+			if (record.slice(0, 2) !== "!!") continue;
+			const path = record.slice(3);
+			// A collapsed directory still names something real; report its files.
+			if (path.endsWith("/")) {
+				const inside = new Map<string, WorkshopFileState>();
+				collectWorkshopFiles(this.path, path.slice(0, -1), inside, []);
+				for (const child of inside.keys()) {
+					if (inWorkshopScope(child)) ignored.push(child);
+				}
+				continue;
+			}
+			if (inWorkshopScope(path)) ignored.push(path);
+		}
+		return [...new Set(ignored)].sort((left, right) => left.localeCompare(right));
 	}
 
 	status(): WorkshopStatus {
 		return {
 			workshopId: this.workshopId,
 			target: { id: this.targetId, gitSha: this.baseTargetSha },
+			basis: this.basis,
 			openedAt: this.openedAt,
 			writes: this.writes,
 			commands: this.commands,
 			tries: this.tries,
 			changes: this.disposed ? [] : this.changes(),
 			scope: BUILDER_WORKSHOP_SCOPE,
+			snapshotHash: this.disposed ? "" : this.snapshotHash(),
+			grants: this.grants.map((grant) => ({ ...grant, wants: [...grant.wants] })),
+		};
+	}
+
+	/** Everything a restart needs to find this exact workshop again. */
+	describe(): BuilderWorkshopDescriptor {
+		this.assertOpen();
+		return {
+			schemaVersion: 1,
+			workshopId: this.workshopId,
+			targetId: this.targetId,
+			baseTargetSha: this.baseTargetSha,
+			basis: this.basis,
+			approvedSpecId: this.approvedSpecId,
+			fromProposalRunId: this.fromProposalRunId,
+			worktreePath: this.path,
+			scratchRoot: this.scratchRoot,
+			openedAt: this.openedAt,
+			snapshotHash: this.snapshotHash(),
+			grants: this.grants.map((grant) => ({ ...grant, wants: [...grant.wants] })),
 		};
 	}
 
@@ -1040,32 +1470,38 @@ export class BuilderWorkshop {
 		this.assertOpen();
 		this.assertBaselineUnmoved();
 		this.syncDeclarations();
-		const changes = this.changes();
-		const offending = changes
-			.map((change) => change.path)
-			.filter((path) => path !== WORKSHOP_MANIFEST && !inWorkshopScope(path));
+		// One read of the whole surface, before anything is derived from it. Every
+		// path, mode, byte and diff below comes from this exact snapshot, so there
+		// is no window in which a late write changes what the human reviews.
+		const snapshot = this.walkAuthoringScope();
+		if (snapshot.symlinks.length > 0) {
+			throw new BuilderWorkshopScopeError(snapshot.symlinks, "the workshop contains a symlink");
+		}
+		const changes = this.changesFrom(snapshot.entries);
+		// The snapshot only ever holds the scope, so anything Git sees moving
+		// outside it got there some other way. It still stops the close by name.
+		const offending = [
+			...changes.map((change) => change.path),
+			...this.dirtyOutsideScope(),
+		].filter((path) => path !== WORKSHOP_MANIFEST && !inWorkshopScope(path));
 		if (offending.length > 0) {
 			throw new BuilderWorkshopScopeError(
 				offending,
 				`a proposal may change only ${BUILDER_WORKSHOP_SCOPE.join(", ")} and the manifest's declared resource lists`,
 			);
 		}
+		// Nothing inside the scope may vanish from the diff behind a .gitignore —
+		// whether the model wrote it with a tool or a command produced it.
+		const ignored = new Set([...this.ignoredInScope(), ...this.swallowedWrites(snapshot.entries)]);
+		if (ignored.size > 0) {
+			throw new BuilderWorkshopScopeError(
+				[...ignored].sort((left, right) => left.localeCompare(right)),
+				"Git ignores these paths, so they can never reach a reviewed proposal",
+			);
+		}
 		if (changes.length === 0) throw new BuilderWorkshopEmptyError();
 		if (changes.length > MAX_WORKSHOP_CHANGES) {
 			throw new ToolWorkshopError(`a reviewable proposal carries at most ${MAX_WORKSHOP_CHANGES} changed files`);
-		}
-		// Nothing the Builder wrote may vanish from the diff behind a .gitignore.
-		const visible = new Set(changes.map((change) => change.path));
-		const swallowed = [...this.written].filter((path) => {
-			if (visible.has(path)) return false;
-			const absolute = join(this.path, path);
-			const present = existsSync(absolute) && lstatSync(absolute).isFile();
-			const base = baseBlobAt(this.repositoryDir, this.baseTargetSha, path);
-			if (!present) return base !== null;
-			return !base || !base.content.equals(readFileSync(absolute));
-		});
-		if (swallowed.length > 0) {
-			throw new BuilderWorkshopScopeError(swallowed, "Git ignores these paths, so they can never reach a reviewed proposal");
 		}
 
 		// The resulting Harness must load and must stay readable by its Builder.
@@ -1077,16 +1513,13 @@ export class BuilderWorkshop {
 
 		const evidenceRefs = [...new Set((metadata.diagnoses ?? []).flatMap((diagnosis) => diagnosis.evidence))];
 		const compiled = changes.map((change) => {
-			const absolute = join(this.path, change.path);
 			const base = baseBlobAt(this.repositoryDir, this.baseTargetSha, change.path);
-			const raw = change.status === "removed" ? null : readFileSync(absolute);
-			if (raw && raw.byteLength > MAX_WORKSHOP_FILE_BYTES) {
+			const file = snapshot.entries.get(change.path) ?? null;
+			if (file && file.content.byteLength > MAX_WORKSHOP_FILE_BYTES) {
 				throw new ToolWorkshopError(`${change.path} exceeds the ${MAX_WORKSHOP_FILE_BYTES}-byte proposal limit`);
 			}
-			const after = raw === null ? null : workshopText(raw, change.path);
-			const afterMode = raw === null
-				? null
-				: (lstatSync(absolute).mode & 0o111) === 0 ? "100644" as const : "100755" as const;
+			const after = file === null ? null : workshopText(file.content, change.path);
+			const afterMode = file === null ? null : file.mode;
 			return {
 				path: change.path,
 				baseSha256: workshopSha256(base?.content ?? Buffer.alloc(0)),
@@ -1103,7 +1536,9 @@ export class BuilderWorkshop {
 			summary: metadata.summary,
 			diagnoses: metadata.diagnoses ?? [],
 			changes: compiled,
-			risks: metadata.risks ?? [],
+			// A host-granted exception is part of the change's risk, so it travels
+			// with the artifact into every screen that renders the proposal.
+			risks: [...(metadata.risks ?? []), ...this.grants.map(grantRisk)],
 			validationPlan: metadata.validationPlan ?? [],
 		});
 		validateCandidateProposal(proposal, {
@@ -1113,6 +1548,38 @@ export class BuilderWorkshop {
 		const patch = `${proposal.changes.map((change) => change.unifiedDiff.trimEnd()).join("\n")}\n`;
 		gitWorkshop(this.repositoryDir, ["apply", "--check", "--index", "-"], patch);
 		return { proposal, changes, baseTargetSha: this.baseTargetSha };
+	}
+
+	/** Anything Git sees changed in the worktree that the Harness scope does not cover. */
+	private dirtyOutsideScope(): string[] {
+		const raw = gitWorkshopRaw(this.path, [
+			"status",
+			"--porcelain=v1",
+			"-z",
+			"--untracked-files=all",
+			"--no-renames",
+		]);
+		const paths = new Set<string>();
+		for (const record of raw.split("\0").filter((entry) => entry.length > 3)) {
+			const path = record.slice(3);
+			if (path !== WORKSHOP_MANIFEST && !inWorkshopScope(path)) paths.add(path);
+		}
+		return [...paths].sort((left, right) => left.localeCompare(right));
+	}
+
+	/**
+	 * Paths the Builder wrote whose bytes differ from the baseline yet produce no
+	 * change: only a `.gitignore` can do that, and it is fatal at close.
+	 */
+	private swallowedWrites(entries: ReadonlyMap<string, WorkshopFileState>): string[] {
+		const visible = new Set(this.changesFrom(entries).map((change) => change.path));
+		return [...this.written].filter((path) => {
+			if (visible.has(path)) return false;
+			const present = entries.get(path);
+			const base = baseBlobAt(this.repositoryDir, this.baseTargetSha, path);
+			if (!present) return base !== null;
+			return !base || !base.content.equals(present.content);
+		});
 	}
 
 	/** The workshop only ever compiles against the exact revision it copied. */
@@ -1205,6 +1672,12 @@ function canonicalList(value: readonly string[]): string {
 	return JSON.stringify([...value]);
 }
 
+/** The sentence a granted exception adds to the diff the operator applies. */
+function grantRisk(grant: WorkshopGrant): string {
+	return `The operator allowed ${grant.tool} ${grant.wants.join(" and ")} once inside the workshop ` +
+		`(${grant.actorId}, ${grant.grantedAt}); this proposal was tried with that exception in place.`;
+}
+
 function inWorkshopScope(path: string): boolean {
 	try {
 		assertWorkshopScope(path);
@@ -1236,6 +1709,9 @@ export function openBuilderWorkshop(options: OpenBuilderWorkshopOptions): Builde
 		if (worktree.sha !== options.expectedTarget.gitSha) {
 			throw new ToolWorkshopError("the workshop worktree did not resolve to the selected Target revision");
 		}
+		// Reopening a closed proposal: its exact reviewed diff is the starting
+		// point, applied host-side before the model ever sees the worktree.
+		if (options.seed) applyDraft(worktree.path, options.seed.patch);
 		const manifestText = workshopText(readFileSync(join(worktree.path, WORKSHOP_MANIFEST)), WORKSHOP_MANIFEST);
 		const manifest = TargetManifest.parse(parseYaml(manifestText));
 		if (manifest.id !== options.expectedTarget.id) {
@@ -1243,12 +1719,15 @@ export function openBuilderWorkshop(options: OpenBuilderWorkshopOptions): Builde
 		}
 		scratchRoot = mkdtempSync(join(tmpdir(), "ahde-workshop-"));
 		return new BuilderWorkshop({
-			workshopId: `workshop_${randomBytes(8).toString("hex")}`,
+			workshopId: options.workshopId ?? `workshop_${randomBytes(8).toString("hex")}`,
 			repositoryDir,
 			worktree,
 			scratchRoot,
 			targetId: manifest.id,
 			claim: options.authoringContext,
+			basis: options.basis,
+			approvedSpecId: options.approvedSpecId,
+			fromProposalRunId: options.seed?.proposalRunId ?? null,
 			openedAt: (options.now ?? (() => new Date().toISOString()))(),
 			baseManifestText: manifestText,
 			baseManifest: manifest,
@@ -1258,4 +1737,126 @@ export function openBuilderWorkshop(options: OpenBuilderWorkshopOptions): Builde
 		worktree.close();
 		throw error;
 	}
+}
+
+/**
+ * Re-attach to a workshop a dead Builder process left behind. Nothing here is
+ * trusted: the worktree must still be this repository's, still detached at the
+ * exact baseline commit, and still hold byte-identical bytes. A mismatch is a
+ * refusal, so a workshop can never come back subtly different from the one the
+ * previous session was working in.
+ */
+export function reattachBuilderWorkshop(options: {
+	repositoryDir: string;
+	expectedTarget: { id: string; gitSha: string };
+	authoringContext: TargetAuthoringContextClaim;
+	descriptor: BuilderWorkshopDescriptor;
+}): BuilderWorkshop {
+	const repositoryDir = realpathSync(resolve(options.repositoryDir));
+	const descriptor = options.descriptor;
+	if (descriptor.baseTargetSha !== options.expectedTarget.gitSha || descriptor.targetId !== options.expectedTarget.id) {
+		throw new ToolWorkshopError("the recorded workshop belongs to a different Target revision; discard it and open a new one");
+	}
+	if (
+		options.authoringContext.targetGitSha !== options.expectedTarget.gitSha ||
+		options.authoringContext.targetId !== options.expectedTarget.id
+	) {
+		throw new ToolWorkshopError("the authoring context claim does not describe the selected Target revision");
+	}
+	if (!existsSync(descriptor.worktreePath) || !existsSync(descriptor.scratchRoot)) {
+		throw new ToolWorkshopError("the recorded workshop worktree is gone; open a new one");
+	}
+	const worktree = reattachDetachedWorktree(repositoryDir, descriptor.worktreePath, descriptor.baseTargetSha);
+	try {
+		const manifestText = workshopText(readFileSync(join(worktree.path, WORKSHOP_MANIFEST)), WORKSHOP_MANIFEST);
+		const manifest = TargetManifest.parse(parseYaml(manifestText));
+		if (manifest.id !== options.expectedTarget.id) {
+			throw new ToolWorkshopError("the recorded workshop declares a different Target identity");
+		}
+		const baseManifestText = workshopText(
+			execFileSync("git", ["--no-replace-objects", "-C", repositoryDir, "show", `${descriptor.baseTargetSha}:${WORKSHOP_MANIFEST}`], {
+				stdio: ["ignore", "pipe", "pipe"],
+				maxBuffer: GIT_MAX_BUFFER,
+			}),
+			WORKSHOP_MANIFEST,
+		);
+		const workshop = new BuilderWorkshop({
+			workshopId: descriptor.workshopId,
+			repositoryDir,
+			worktree,
+			scratchRoot: descriptor.scratchRoot,
+			targetId: manifest.id,
+			claim: options.authoringContext,
+			basis: descriptor.basis,
+			approvedSpecId: descriptor.approvedSpecId,
+			fromProposalRunId: descriptor.fromProposalRunId,
+			grants: descriptor.grants,
+			openedAt: descriptor.openedAt,
+			baseManifestText,
+			baseManifest: TargetManifest.parse(parseYaml(baseManifestText)),
+		});
+		const current = workshop.snapshotHash();
+		if (current !== descriptor.snapshotHash) {
+			throw new ToolWorkshopError(
+				`the recorded workshop changed on disk (${descriptor.snapshotHash} → ${current}); discard it and open a new one`,
+			);
+		}
+		return workshop;
+	} catch (error) {
+		worktree.close();
+		throw error;
+	}
+}
+
+/**
+ * The same handle `openDetachedWorktree` hands out, for a worktree this process
+ * did not create. It re-validates every fact it needs and keeps the identical
+ * cleanup, including the temporary-root safety check, so a re-attached workshop
+ * still disposes without a trace.
+ */
+function reattachDetachedWorktree(repositoryDir: string, pathInput: string, sha: string): DetachedWorktreeHandle {
+	const path = realpathSync(resolve(pathInput));
+	const temporaryRoot = dirname(path);
+	if (basename(path) !== "detached" || !basename(temporaryRoot).startsWith("ahde-experiment-")) {
+		throw new ToolWorkshopError(`refusing to re-attach an unexpected workshop worktree: ${path}`);
+	}
+	const commonDir = realpathSync(gitWorkshop(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]));
+	if (commonDir !== realpathSync(join(repositoryDir, ".git"))) {
+		throw new ToolWorkshopError("the recorded workshop worktree does not belong to this repository");
+	}
+	if (gitWorkshop(path, ["rev-parse", "--verify", "HEAD^{commit}"]) !== sha) {
+		throw new ToolWorkshopError("the recorded workshop worktree is no longer at its baseline commit");
+	}
+	let closed = false;
+	return {
+		ref: sha,
+		sha,
+		path,
+		get open() {
+			return !closed;
+		},
+		close() {
+			if (closed) return;
+			closed = true;
+			const errors: unknown[] = [];
+			try {
+				execFileSync("git", ["-C", repositoryDir, "worktree", "remove", "--force", path], { stdio: "ignore" });
+			} catch (error) {
+				errors.push(error);
+			}
+			try {
+				execFileSync("git", ["-C", repositoryDir, "worktree", "prune"], { stdio: "ignore" });
+			} catch (error) {
+				errors.push(error);
+			}
+			try {
+				rmSync(temporaryRoot, { recursive: true, force: true });
+			} catch (error) {
+				errors.push(error);
+			}
+			if (errors.length > 0 && existsSync(path)) {
+				throw new AggregateError(errors, "failed to clean the re-attached workshop worktree");
+			}
+		},
+	};
 }

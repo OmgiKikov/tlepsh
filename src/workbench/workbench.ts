@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync, rmSync } from "node:fs";
 import { userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
 import {
 	approveBuilderSpecDraft,
 	describeDevelopmentCorpusPublication,
@@ -42,7 +43,9 @@ import {
 } from "../application/experiment-history.js";
 import {
 	openBuilderWorkshop,
+	reattachBuilderWorkshop,
 	type BuilderWorkshop,
+	type BuilderWorkshopBasis,
 	type TryToolResult,
 	type WorkshopBashResult,
 	type WorkshopReadResult,
@@ -134,6 +137,7 @@ import {
 	loadWorkbenchFocus,
 	saveWorkbenchFocus,
 	selectWorkbenchFocus,
+	workbenchStateDirectory,
 } from "./focus.js";
 import {
 	loadWorkbenchCorpusPublication,
@@ -174,12 +178,14 @@ import {
 import { calibrationProjection } from "./calibration.js";
 import {
 	assertWorkbenchDecisionStage,
+	assertWorkshopStage,
 	estimateRunCost,
 	routineCostGuard,
 	workbenchGateClass,
 	type WorkbenchRunEstimate,
 } from "./transition-policy.js";
 import {
+	PersistedWorkbenchWorkshopSchema,
 	WorkbenchDecisionInputSchema,
 	WorkbenchSubmitInputSchema,
 	WorkbenchViewQuerySchema,
@@ -214,6 +220,7 @@ import {
 	type WorkbenchViewQuery,
 	type WorkbenchCheapCheckProjection,
 	type WorkbenchRegressionGuardsProjection,
+	type PersistedWorkbenchWorkshop,
 } from "./types.js";
 import type { CandidateRecord } from "../domain/candidate.js";
 
@@ -857,6 +864,10 @@ export class AhdeWorkbench {
 		const used = new Set<WorkbenchDecisionInput["kind"]>();
 		return {
 			async confirm(confirmation, signal) {
+				// A composite pre-approves the exact decisions the human read. It
+				// never pre-approves a workshop grant: widening what pre-review code
+				// may reach is its own question, every time.
+				if (confirmation.kind === "workshop-grant") return gate.confirm(confirmation, signal);
 				const matches = planned.get(confirmation.kind);
 				if (matches && !used.has(confirmation.kind) && matches(confirmation.subject)) {
 					used.add(confirmation.kind);
@@ -1149,8 +1160,9 @@ export class AhdeWorkbench {
 	private async recordCompiledProposal(input: {
 		proposal: CandidateProposal;
 		approvedSpecId: string;
-		sourceEvalRunId: string;
-		proposalBasis: RecordProposalOptions["proposalBasis"];
+		/** Absent for a Spec-backed construction proposal: it cites no evaluation. */
+		sourceEvalRunId?: string;
+		proposalBasis?: RecordProposalOptions["proposalBasis"];
 		authoringContext: RecordProposalOptions["authoringContext"];
 		label: string;
 		signal?: AbortSignal;
@@ -1162,8 +1174,10 @@ export class AhdeWorkbench {
 			approvedSpec: { stateRoot: this.stateRoot, projectId: this.projectId, specId: input.approvedSpecId },
 			runsRoot: this.runsRoot,
 			timeoutMs: 30_000,
-			sourceEvalRunId: input.sourceEvalRunId,
-			proposalBasis: input.proposalBasis,
+			// A Spec-backed construction proposal cites nothing, so it passes
+			// neither: the canonical service then records `source: null`.
+			...(input.sourceEvalRunId === undefined ? {} : { sourceEvalRunId: input.sourceEvalRunId }),
+			...(input.proposalBasis === undefined ? {} : { proposalBasis: input.proposalBasis }),
 			authoringContext: input.authoringContext,
 			signal: input.signal,
 		});
@@ -1190,45 +1204,251 @@ export class AhdeWorkbench {
 	private disposeWorkshop(): void {
 		const workshop = this.workshop;
 		this.workshop = null;
+		this.forgetWorkshop();
 		workshop?.dispose();
 	}
 
-	private async openWorkshop(approvedSpecId?: string): Promise<WorkbenchTurn> {
-		const inventory = this.inventory();
-		if (deriveWorkbenchView(inventory).stage !== "improvement-authoring") {
-			throw new Error("a workshop opens only after a conclusive development evaluation");
+	/** Where an open workshop is remembered between two Builder processes. */
+	private workshopStatePath(create: boolean): string | null {
+		const directory = workbenchStateDirectory(this.stateRoot, this.projectId, create);
+		return directory ? join(directory, "workshop.json") : null;
+	}
+
+	private rememberWorkshop(workshop: BuilderWorkshop): void {
+		const path = this.workshopStatePath(true);
+		if (!path) return;
+		writeJsonArtifact(path, PersistedWorkbenchWorkshopSchema, workshop.describe() as PersistedWorkbenchWorkshop);
+	}
+
+	private forgetWorkshop(): void {
+		const path = this.workshopStatePath(false);
+		if (path && existsSync(path)) rmSync(path, { force: true });
+	}
+
+	private recordedWorkshop(): PersistedWorkbenchWorkshop | null {
+		const path = this.workshopStatePath(false);
+		if (!path || !existsSync(path)) return null;
+		try {
+			return readJsonArtifact(path, PersistedWorkbenchWorkshopSchema, { maxBytes: 128 * 1024 });
+		} catch {
+			// An unreadable note is not authority for anything; drop it and open new.
+			this.forgetWorkshop();
+			return null;
 		}
+	}
+
+	/**
+	 * Open the Builder's one writable surface.
+	 *
+	 * Two things can be built here and the stage says which: a Spec-backed
+	 * **construction** workshop, legal as soon as a Spec is approved, so nobody
+	 * has to run a knowingly-unbuilt agent to failure before they may build its
+	 * tools; and the diagnosis-backed **improvement** workshop, unchanged.
+	 * A `workshopId` re-attaches to a workshop a dead process left open, and
+	 * `fromProposalRunId` seeds a new one from a closed proposal's exact diff.
+	 */
+	private async openWorkshop(input: {
+		approvedSpecId?: string | undefined;
+		workshopId?: string | undefined;
+		fromProposalRunId?: string | undefined;
+	}): Promise<WorkbenchTurn> {
+		const inventory = this.inventory();
+		const basis: BuilderWorkshopBasis = assertWorkshopStage(deriveWorkbenchView(inventory).stage);
 		if (!inventory.target) throw new Error("a workshop requires one exact Target");
 		if (this.workshop?.open) {
 			throw new Error(
 				`workshop ${this.workshop.workshopId} is already open; close it into a proposal or discard it first`,
 			);
 		}
-		requireApprovedSpec(inventory, approvedSpecId);
+		const approved = requireApprovedSpec(inventory, input.approvedSpecId);
 		const authoringContext = this.dependencies.inspectTargetAuthoringContext({
 			repositoryDir: this.projectDir,
 			expectedTarget: { id: inventory.target.manifest.id, gitSha: inventory.target.gitSha },
 		});
-		const workshop = openBuilderWorkshop({
-			repositoryDir: this.projectDir,
-			expectedTarget: { id: authoringContext.target.id, gitSha: authoringContext.target.gitSha },
-			authoringContext: authoringContext.claim,
-			now: this.dependencies.now,
-		});
+		const recorded = this.recordedWorkshop();
+		let workshop: BuilderWorkshop;
+		let reattached = false;
+		if (input.workshopId !== undefined) {
+			if (!recorded || recorded.workshopId !== input.workshopId) {
+				throw new Error(`no workshop ${input.workshopId} is recorded for this project; open a new one`);
+			}
+			workshop = reattachBuilderWorkshop({
+				repositoryDir: this.projectDir,
+				expectedTarget: { id: authoringContext.target.id, gitSha: authoringContext.target.gitSha },
+				authoringContext: authoringContext.claim,
+				descriptor: { ...recorded, grants: recorded.grants },
+			});
+			reattached = true;
+		} else {
+			// A workshop nobody re-attached to is dead weight in `git worktree list`.
+			if (recorded) this.forgetWorkshop();
+			workshop = openBuilderWorkshop({
+				repositoryDir: this.projectDir,
+				expectedTarget: { id: authoringContext.target.id, gitSha: authoringContext.target.gitSha },
+				authoringContext: authoringContext.claim,
+				basis,
+				approvedSpecId: approved.id,
+				...(input.fromProposalRunId === undefined
+					? {}
+					: { seed: this.proposalSeed(inventory, input.fromProposalRunId, authoringContext.target.gitSha) }),
+				now: this.dependencies.now,
+			});
+		}
 		this.workshop = workshop;
+		this.rememberWorkshop(workshop);
+		const status = workshop.status();
 		return {
 			kind: "workshop-open",
 			message:
-				`Workshop ${workshop.workshopId} is open on ${authoringContext.target.id}@${shortSha(authoringContext.target.gitSha)}. ` +
+				`Workshop ${workshop.workshopId} is ${reattached ? "re-attached" : "open"} on ` +
+				`${authoringContext.target.id}@${shortSha(authoringContext.target.gitSha)} — ` +
+				(basis === "construction"
+					? "building the first Harness against the approved Spec. "
+					: "improving the Harness against the diagnosis you select at close. ") +
 				"Read, write, run, and try the tool there; closing compiles the diff into a proposal the operator still has to apply.",
 			artifact: {
 				workshopId: workshop.workshopId,
+				basis,
+				approvedSpecId: approved.id,
+				fromProposalRunId: workshop.fromProposalRunId,
+				reattached,
+				changedPaths: status.changes.map((change) => `${change.status} ${change.path}`),
 				target: { id: workshop.targetId, gitSha: workshop.baseTargetSha },
-				scope: [...workshop.status().scope],
+				scope: [...status.scope],
+				mounted:
+					"only AGENTS.md, skills/**, tools/**, bin/**, data/** and the host-rendered manifest.yaml exist inside; " +
+					"there is no network, no Target credential, and no evals/, imports/, runs/, .git or .env to read",
 				resources: authoringContext.resources.map((resource) => resource.path),
 				data: authoringContext.data.map((directory) => `${directory.path} · ${plural(directory.files, "file")}`),
 			},
 			view: await this.viewOf(inventory),
+		};
+	}
+
+	/**
+	 * Close the workshop by compiling the diff of what is actually on disk.
+	 *
+	 * A **construction** workshop is bound to the approved Spec: there is no
+	 * evaluation yet, so it names no failure modes and its proposal is recorded
+	 * with `source: null` — the same admission receipt, the same human apply
+	 * gate, the same baseline run afterwards. An **improvement** workshop is
+	 * bound to a diagnosis exactly as before, and must name it.
+	 */
+	private async closeWorkshopIntoProposal(
+		input: Extract<WorkbenchSubmitInput, { kind: "workshop-close" }> & {
+			risks: string[];
+			validationPlan: string[];
+		},
+		options: { signal?: AbortSignal },
+	): Promise<WorkbenchTurn> {
+		const workshop = this.requireWorkshop();
+		const inventory = this.inventory();
+		const construction = workshop.basis === "construction";
+		if (construction && input.source !== undefined) {
+			throw new Error(
+				"a construction workshop has no evaluation to cite; close it without source and failureModeIds",
+			);
+		}
+		if (!construction && input.source === undefined) {
+			throw new Error(
+				"an improvement workshop must name the exact source and failureModeIds it aims at (aspect: \"traces\")",
+			);
+		}
+		if (!construction && deriveWorkbenchView(inventory).stage !== "improvement-authoring") {
+			throw new Error("an evidence-backed workshop closes only after a conclusive development evaluation");
+		}
+		const evidence = construction
+			? null
+			: this.proposalEvidence(inventory, {
+				approvedSpecId: input.approvedSpecId,
+				source: input.source as NonNullable<typeof input.source>,
+				failureModeIds: [...(input.failureModeIds ?? [])],
+			});
+		const approved = evidence?.approved ?? requireApprovedSpec(inventory, input.approvedSpecId);
+		if (!inventory.target) throw new Error("a workshop requires one exact Target");
+		const authoringContext = evidence?.authoringContext ?? this.dependencies.inspectTargetAuthoringContext({
+			repositoryDir: this.projectDir,
+			expectedTarget: { id: inventory.target.manifest.id, gitSha: inventory.target.gitSha },
+		});
+		if (canonicalJson(workshop.claim) !== canonicalJson(authoringContext.claim)) {
+			throw new Error("the Target changed while the workshop was open; discard it and open a new one");
+		}
+		// The diff is the proposal: whatever is on disk, compiled exactly, from one
+		// snapshot taken before anything is derived from it.
+		const compiled = workshop.compile({
+			summary: input.summary,
+			...(evidence ? { diagnoses: evidence.selectedEvidence.diagnoses } : {}),
+			risks: input.risks,
+			validationPlan: input.validationPlan,
+		});
+		if (compiled.proposal.baseTargetSha !== authoringContext.target.gitSha) {
+			throw new Error("the workshop diff does not match the inspected Target authoring revision");
+		}
+		const grants = workshop.status().grants;
+		const recorded = await this.recordCompiledProposal({
+			proposal: compiled.proposal,
+			approvedSpecId: approved.id,
+			...(evidence ? { sourceEvalRunId: evidence.sourceEvalRunId } : {}),
+			proposalBasis: evidence
+				? { ...(input.source as NonNullable<typeof input.source>), failureModeIds: [...(input.failureModeIds ?? [])] }
+				: undefined,
+			authoringContext: authoringContext.claim,
+			label: "workshop",
+			...(options.signal ? { signal: options.signal } : {}),
+		});
+		// The workshop is bound to this proposal run and dies with it.
+		const workshopId = workshop.workshopId;
+		this.disposeWorkshop();
+		const settled = this.select("proposal", recorded.record.runId);
+		return {
+			kind: "workshop-close",
+			message: `Workshop ${workshopId} closed: ${plural(compiled.changes.length, "changed file")} compiled into an exact reviewable proposal` +
+				`${construction ? " from the approved Spec, with no evaluation evidence behind it" : ""}. ` +
+				"Nothing is applied until the operator says so.",
+			artifact: {
+				workshopId,
+				basis: workshop.basis,
+				runId: recorded.record.runId,
+				proposalHash: recorded.record.artifacts.proposal?.sha256 ?? null,
+				changedPaths: compiled.changes.map((change) => `${change.status} ${change.path}`),
+				sourceEvalRunId: evidence?.sourceEvalRunId ?? null,
+				improvementBriefId: evidence?.selectedEvidence.basis.briefId ?? null,
+				failureModeIds: evidence?.selectedEvidence.basis.failureModes.map((mode) => mode.failureModeId) ?? [],
+				approvedSpecId: approved.id,
+				// What the operator allowed the workshop to reach, carried into the
+				// dialog they apply this diff behind.
+				grants: grants.map((grant) => `${grant.tool}: ${grant.wants.join(" and ")} (${grant.actorId})`),
+				authoringContextHash: authoringContext.contextHash,
+			},
+			view: await this.viewOf(settled),
+		};
+	}
+
+	/**
+	 * The exact reviewed diff of an admitted proposal, as a patch that seeds a
+	 * revision. Only this project's own admitted proposals are reachable, and
+	 * only against the revision they were written for.
+	 */
+	private proposalSeed(
+		inventory: WorkbenchInventory,
+		runId: string,
+		expectedBaseTargetSha: string,
+	): { proposalRunId: string; patch: string } {
+		const entry = inventory.proposals.find((candidate) => candidate.record.runId === runId);
+		if (!entry) throw new Error(`no admitted proposal ${runId} exists in this project`);
+		const proposal = entry.record.result.proposal;
+		if (!proposal || proposal.decision !== "propose") {
+			throw new Error(`Builder run ${runId} carries no reviewable diff to reopen`);
+		}
+		if (proposal.baseTargetSha !== expectedBaseTargetSha) {
+			throw new Error(
+				`proposal ${runId} was written against ${shortSha(proposal.baseTargetSha)}, not the current ` +
+				`${shortSha(expectedBaseTargetSha)}; it cannot seed a workshop here`,
+			);
+		}
+		return {
+			proposalRunId: entry.record.runId,
+			patch: `${proposal.changes.map((change) => change.unifiedDiff.trimEnd()).join("\n")}\n`,
 		};
 	}
 
@@ -1242,28 +1462,87 @@ export class AhdeWorkbench {
 	}
 
 	workshopWrite(input: WorkshopWriteInput): WorkshopWriteResult {
-		return this.requireWorkshop().write(WorkshopWriteInputSchema.parse(input));
+		const workshop = this.requireWorkshop();
+		const result = workshop.write(WorkshopWriteInputSchema.parse(input));
+		this.rememberWorkshop(workshop);
+		return result;
 	}
 
 	async workshopBash(input: WorkshopBashInput, options: { signal?: AbortSignal } = {}): Promise<WorkshopBashResult> {
 		const workshop = this.requireWorkshop();
 		const parsed = WorkshopBashInputSchema.parse(input);
-		return workshop.bash({
+		const result = await workshop.bash({
 			argv: parsed.argv,
 			...(parsed.cwd !== undefined ? { cwd: parsed.cwd } : {}),
 			...(parsed.timeoutMs !== undefined ? { timeoutMs: parsed.timeoutMs } : {}),
 			...(options.signal ? { signal: options.signal } : {}),
 		});
+		this.rememberWorkshop(workshop);
+		return result;
 	}
 
-	async workshopTry(input: WorkshopTryInput, options: { signal?: AbortSignal } = {}): Promise<TryToolResult> {
+	/**
+	 * Try one declared tool of the open workshop.
+	 *
+	 * The authoring profile is the default and it has no network and no Target
+	 * credential. A tool whose descriptor — or whose declared `setup` step —
+	 * wants either is refused until the operator answers one question, and that
+	 * answer is recorded on the workshop and carried into the proposal the close
+	 * compiles. Without a gate there is nobody to ask, so it stays refused.
+	 */
+	async workshopTry(
+		input: WorkshopTryInput,
+		options: { signal?: AbortSignal; gate?: WorkbenchHumanGate } = {},
+	): Promise<TryToolResult> {
 		const workshop = this.requireWorkshop();
 		const parsed = WorkshopTryInputSchema.parse(input);
-		return workshop.tryTool({
+		const requirement = workshop.describeToolGrant(parsed.tool);
+		if (requirement && !workshop.status().grants.some((grant) => grant.tool === requirement.tool)) {
+			if (!options.gate) {
+				throw new Error(
+					`the ${requirement.tool} tool wants ${requirement.wants.join(" and ")}; ` +
+					"a workshop grants neither by default and there is no host here to allow it once",
+				);
+			}
+			const subject = {
+				workshopId: workshop.workshopId,
+				tool: requirement.tool,
+				network: requirement.network,
+				environment: requirement.environment,
+			};
+			const confirmation: WorkbenchConfirmation = {
+				kind: "workshop-grant",
+				title: `Allow ${requirement.tool} ${requirement.wants.join(" and ")} once`,
+				reason: `the ${requirement.tool} tool declares it and the workshop denies it by default`,
+				subject,
+				subjectHash: hashValue(subject),
+				policy: "one-question",
+				question: requirement.network
+					? `This tool wants network access to run its setup — allow once?`
+					: `This tool wants ${requirement.wants.join(" and ")} — allow once?`,
+			};
+			const decision = await options.gate.confirm(confirmation, options.signal);
+			abortIfRequested(options.signal);
+			if (!decision.approved) {
+				throw new Error(
+					`the operator did not allow ${requirement.tool} ${requirement.wants.join(" and ")}; ` +
+					"write a tool that needs neither, or ask again",
+				);
+			}
+			workshop.grantToolAccess({
+				tool: requirement.tool,
+				wants: requirement.wants,
+				actorId: actorId(decision.actorId),
+				now: this.dependencies.now,
+			});
+		}
+		const result = await workshop.tryTool({
 			tool: parsed.tool,
 			input: parsed.input,
 			...(options.signal ? { signal: options.signal } : {}),
 		});
+		this.rememberWorkshop(workshop);
+		return result;
 	}
 
 	/** True while the four workshop tools are legal. Host-side gate, not model state. */
@@ -1602,7 +1881,14 @@ export class AhdeWorkbench {
 			return { kind: input.kind, message: "New immutable corpus-draft revision saved.", artifact: { id: result.draft.id, parentDraftId: parent.id, draftHash: hashValue(result.draft), taskCount: result.draft.tasks.length }, view: await this.viewOf(settled) };
 		}
 
-		if (input.kind === "workshop-open") return await this.openWorkshop(input.approvedSpecId);
+		if (input.kind === "workshop-open") {
+			return await this.openWorkshop({
+				approvedSpecId: input.approvedSpecId,
+				workshopId: input.workshopId,
+				fromProposalRunId: input.fromProposalRunId,
+			});
+		}
+		if (input.kind === "workshop-close") return await this.closeWorkshopIntoProposal(input, options);
 		if (input.kind === "workshop-discard") {
 			const workshop = this.requireWorkshop();
 			const workshopId = workshop.workshopId;
@@ -1622,53 +1908,6 @@ export class AhdeWorkbench {
 		}
 		const evidence = this.proposalEvidence(inventory, input);
 		const { approved, sourceEvalRunId, selectedEvidence, authoringContext } = evidence;
-
-		if (input.kind === "workshop-close") {
-			const workshop = this.requireWorkshop();
-			if (canonicalJson(workshop.claim) !== canonicalJson(authoringContext.claim)) {
-				throw new Error("the Target changed while the workshop was open; discard it and open a new one");
-			}
-			// The diff is the proposal: whatever is on disk, compiled exactly, with
-			// the same scope assertion and the same evidence binding as an intent.
-			const compiled = workshop.compile({
-				summary: input.summary,
-				diagnoses: selectedEvidence.diagnoses,
-				risks: input.risks,
-				validationPlan: input.validationPlan,
-			});
-			if (compiled.proposal.baseTargetSha !== authoringContext.target.gitSha) {
-				throw new Error("the workshop diff does not match the inspected Target authoring revision");
-			}
-			const recorded = await this.recordCompiledProposal({
-				proposal: compiled.proposal,
-				approvedSpecId: approved.id,
-				sourceEvalRunId,
-				proposalBasis: { ...input.source, failureModeIds: input.failureModeIds },
-				authoringContext: authoringContext.claim,
-				label: "workshop",
-				...(options.signal ? { signal: options.signal } : {}),
-			});
-			// The workshop is bound to this proposal run and dies with it.
-			const workshopId = workshop.workshopId;
-			this.disposeWorkshop();
-			const settled = this.select("proposal", recorded.record.runId);
-			return {
-				kind: input.kind,
-				message: `Workshop ${workshopId} closed: ${plural(compiled.changes.length, "changed file")} compiled into an exact reviewable proposal. Nothing is applied until the operator says so.`,
-				artifact: {
-					workshopId,
-					runId: recorded.record.runId,
-					proposalHash: recorded.record.artifacts.proposal?.sha256 ?? null,
-					changedPaths: compiled.changes.map((change) => `${change.status} ${change.path}`),
-					sourceEvalRunId,
-					improvementBriefId: selectedEvidence.basis.briefId,
-					failureModeIds: selectedEvidence.basis.failureModes.map((mode) => mode.failureModeId),
-					approvedSpecId: approved.id,
-					authoringContextHash: authoringContext.contextHash,
-				},
-				view: await this.viewOf(settled),
-			};
-		}
 
 		if (canonicalJson(input.authoringContext) !== canonicalJson(authoringContext.claim)) {
 			throw new Error("Target authoring context is stale; refresh the Target overview and every replaced resource.");

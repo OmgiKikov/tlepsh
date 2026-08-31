@@ -76,7 +76,7 @@ function fixture(): string {
 	return dir;
 }
 
-function open(dir: string): BuilderWorkshop {
+function open(dir: string, overrides: Partial<Parameters<typeof openBuilderWorkshop>[0]> = {}): BuilderWorkshop {
 	const target = loadTarget(dir);
 	const context = inspectTargetAuthoringContext({
 		repositoryDir: dir,
@@ -86,6 +86,9 @@ function open(dir: string): BuilderWorkshop {
 		repositoryDir: dir,
 		expectedTarget: { id: context.target.id, gitSha: context.target.gitSha },
 		authoringContext: context.claim,
+		basis: "improvement",
+		approvedSpecId: "spec_workshop_fixture",
+		...overrides,
 	});
 }
 
@@ -548,9 +551,10 @@ describe("the workshop is bound to one attempt", () => {
 		await expect(workbench.workshopBash({ argv: ["true"] })).rejects.toThrow(/no workshop is open/);
 		await expect(workbench.workshopTry({ tool: "lookup", input: {} })).rejects.toThrow(/no workshop is open/);
 		await expect(workbench.submit({ kind: "workshop-discard" })).rejects.toThrow(/no workshop is open/);
-		// And a workshop only opens where a proposal is legal at all.
+		// And a workshop only opens where there is something to build or improve:
+		// an approved Spec, or a conclusive evaluation. Not before either exists.
 		await expect(workbench.submit({ kind: "workshop-open" }))
-			.rejects.toThrow(/opens only after a conclusive development evaluation/);
+			.rejects.toThrow(/a workshop opens at corpus-design, ready-to-evaluate, improvement-authoring, not during spec-design/);
 	});
 
 	it("dies with its disposal even when a command left files behind", async () => {

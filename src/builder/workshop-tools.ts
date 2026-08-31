@@ -1,10 +1,11 @@
-import type { Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { userInfo } from "node:os";
+import type { ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import { oneLine } from "./render/format.js";
 import { themePaint } from "./render/paint.js";
-import { projectForModel } from "./workbench-adapter.js";
+import { createPolicyAwareGate, projectForModel } from "./workbench-adapter.js";
 import {
 	WorkshopBashToolSchema,
 	WorkshopReadToolSchema,
@@ -55,10 +56,35 @@ function head(text: string | null, lines: number): string[] {
 	return shown;
 }
 
-export function createWorkshopTools(workbench: AhdeWorkbench): readonly RegisteredWorkshopTool[] {
+/**
+ * A workshop is one mutable surface. Two tool calls from the same assistant
+ * message must never interleave over it: a `write` racing a `close` would
+ * compile a diff nobody wrote, and a `bash` racing a `try` would report on
+ * bytes it did not run. Pi's per-tool flag is the whole fix.
+ */
+const SEQUENTIAL = "sequential" as const;
+
+export interface WorkshopToolOptions {
+	/** Host-owned identity for the one-question grant; never model-supplied. */
+	actorId?: () => string;
+}
+
+export function createWorkshopTools(
+	workbench: AhdeWorkbench,
+	options: WorkshopToolOptions = {},
+): readonly RegisteredWorkshopTool[] {
+	const actorId = options.actorId ?? (() => `local:${userInfo().username || "operator"}`);
+	/** The host's own gate, so a try that wants more can ask exactly one question. */
+	const gateFor = (ctx: ExtensionContext) =>
+		createPolicyAwareGate(ctx, actorId, (operation) => {
+			if (!ctx.hasUI || ctx.mode !== "tui") {
+				throw new Error(`${operation} requires a local TUI host confirmation; RPC, print, and JSON execution fail closed`);
+			}
+		});
 	return [
 		defineTool({
 			name: "ahde_workshop_read",
+			executionMode: SEQUENTIAL,
 			label: "Read in the workshop",
 			description: [
 				"Read one file, or list one directory, inside the open workshop.",
@@ -100,6 +126,7 @@ export function createWorkshopTools(workbench: AhdeWorkbench): readonly Register
 		}),
 		defineTool({
 			name: "ahde_workshop_write",
+			executionMode: SEQUENTIAL,
 			label: "Write in the workshop",
 			description: [
 				"Write one file inside the open workshop. This is the only writable surface you ever get.",
@@ -134,13 +161,17 @@ export function createWorkshopTools(workbench: AhdeWorkbench): readonly Register
 		}),
 		defineTool({
 			name: "ahde_workshop_bash",
+			executionMode: SEQUENTIAL,
 			label: "Run a command in the workshop",
 			description: [
-				"Run one command inside the open workshop, in the same OS sandbox a declared Target tool runs in.",
+				"Run one command inside the open workshop, in an OS sandbox with the authoring profile.",
 				"Arguments: { argv: string[], cwd?: string, timeoutMs?: number }.",
 				"argv is executed directly — there is no shell and no interpolation; argv[0] is a bare PATH command or an absolute path.",
-				`The worktree is readable, only ${SCOPE} and a private scratch are writable, and the network follows the Target's declared execution policy.`,
+				`Your command sees exactly ${SCOPE} plus the host-rendered manifest.yaml, materialised into a private directory:`,
+				"evals/**, imports/**, runs/, .git, .env and .ahde are not there at all, and neither is any Target credential.",
+				"There is no network, whatever the Target's execution policy says, and CPU, file size, open files and process count are capped.",
 				"Output is bounded and redacted; a non-zero exit comes back as data so you can read the failure and fix it.",
+				"Git is not available here — the diff is computed host-side when you close the workshop.",
 			].join(" "),
 			parameters: WorkshopBashToolSchema.parameters,
 			prepareArguments: (args) => WorkshopBashToolSchema.prepare(args),
@@ -176,19 +207,25 @@ export function createWorkshopTools(workbench: AhdeWorkbench): readonly Register
 		}),
 		defineTool({
 			name: "ahde_workshop_try",
+			executionMode: SEQUENTIAL,
 			label: "Try a tool in the workshop",
 			description: [
 				"Run one declared Target tool of the workshop's own Harness on one JSON input — including the tool you just wrote.",
 				"Arguments: { tool: string, input: <the tool's own JSON arguments> }.",
 				"It prepares the tool home, runs the declared setup step once, and executes the tool exactly as a Target would.",
+				"A tool whose descriptor or declared setup asks for the network or for an environment variable is refused here until the operator allows it once;",
+				"the host asks them, the answer is recorded on the workshop, and it travels into the diff they later apply. You cannot set that flag yourself.",
 				"This is a look, not a measurement: it writes no evidence, can never become promotion evidence, and never touches the operator's Target.",
 				"Write, try, read the error, fix, try again — then close the workshop into a proposal.",
 			].join(" "),
 			parameters: WorkshopTryToolSchema.parameters,
 			prepareArguments: (args) => WorkshopTryToolSchema.prepare(args),
-			async execute(_id, params, signal) {
+			async execute(_id, params, signal, _update, ctx) {
 				abortIfRequested(signal);
-				return textResult(await workbench.workshopTry(params, signal ? { signal } : {}));
+				return textResult(await workbench.workshopTry(params, {
+					gate: gateFor(ctx),
+					...(signal ? { signal } : {}),
+				}));
 			},
 			renderCall: (args: { tool?: string }, theme: Theme) => {
 				const paint = themePaint(theme);

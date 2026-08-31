@@ -74,6 +74,46 @@ export function workbenchDecisionStages(kind: DirectDecisionKind): readonly Work
 }
 
 // ---------------------------------------------------------------------------
+// Where a workshop is legal, and what it is bound to there.
+
+/**
+ * A workshop is opened for one of two reasons, and the stage says which:
+ *
+ * - **construction** — the Spec is approved and the agent has not been built
+ *   yet. The operator should not have to run a knowingly-unbuilt agent to
+ *   failure before they are allowed to build its tools, so a Spec-backed
+ *   workshop is legal the moment there is a Spec to build against.
+ * - **improvement** — a conclusive development evaluation exists and the
+ *   proposal is bound to its diagnosis, exactly as before.
+ */
+export const LEGAL_WORKSHOP_STAGES = {
+	construction: ["corpus-design", "ready-to-evaluate"],
+	improvement: ["improvement-authoring"],
+} as const satisfies Record<"construction" | "improvement", readonly WorkbenchStage[]>;
+
+export type WorkshopBasis = keyof typeof LEGAL_WORKSHOP_STAGES;
+
+/** Which kind of workshop this stage opens, or null when none is legal here. */
+export function workshopBasisForStage(stage: WorkbenchStage): WorkshopBasis | null {
+	for (const [basis, stages] of Object.entries(LEGAL_WORKSHOP_STAGES)) {
+		if ((stages as readonly WorkbenchStage[]).includes(stage)) return basis as WorkshopBasis;
+	}
+	return null;
+}
+
+/** The refusal a workshop gives where it is not legal, in the operator's words. */
+export function assertWorkshopStage(stage: WorkbenchStage): WorkshopBasis {
+	const basis = workshopBasisForStage(stage);
+	if (!basis) {
+		throw new Error(
+			`a workshop opens at ${[...LEGAL_WORKSHOP_STAGES.construction, ...LEGAL_WORKSHOP_STAGES.improvement].join(", ")}, not during ${stage}. ` +
+			`Do this first: ${UNBLOCKING_ACTION[stage]}.`,
+		);
+	}
+	return basis;
+}
+
+// ---------------------------------------------------------------------------
 // Gate policy: which decisions are worth interrupting a human for.
 
 /**
