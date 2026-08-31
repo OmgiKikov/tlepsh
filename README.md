@@ -105,7 +105,9 @@ older command is still there, one step at a time.
 /review                 the exact Spec, eval basket, diff, or candidate — with its actions
 /traces                 diagnosis, failure modes, and the evidence link
 /target [resource]      the exact committed Target or one declared resource
-/doctor  /help          readiness and recovery · this reference
+/doctor                 model, evaluator, run, and future ship readiness
+/holdout                privately import the operator-owned sealed JSONL exam
+/help                   this reference
 
 /run [repetitions]      alias of /test
 /calibrate [reps]       measure run-to-run noise: the same revision against itself
@@ -404,11 +406,15 @@ never shown to Builder Pi or the Evidence Explorer. The evaluator gives Target
 Pi one sealed case at a time, and only bounded gate results cross that boundary.
 
 Shipping requires a sufficiently large evaluator-owned sealed holdout. AHDE
-does not fabricate one: the operator either imports private cases out of band
-with `ahde corpus import --visibility sealed`, or asks the host to reserve a
-seeded slice from an operator-provided file during dataset ingest. Builder Pi
+does not fabricate one: in Builder TUI the operator can run `/holdout` and pick
+a private JSONL file through host UI; the same operation is available out of
+band with `ahde corpus import --visibility sealed`, or the host can reserve a
+seeded slice from an operator-provided file during dataset ingest. The header
+and `/doctor` flag a missing or underpowered exam as soon as the Spec is
+approved, before a candidate is applied. Builder Pi
 may help map that file, but it never sees the reserved rows and cannot author,
-edit, select, or infer the sealed examples. If no eligible holdout exists,
+edit, select, or infer the sealed examples; `/holdout` exposes neither its path
+nor its identity to the Builder transcript. If no eligible holdout exists,
 candidate verification stops before the run and names the operator action
 required.
 

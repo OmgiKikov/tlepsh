@@ -90,7 +90,7 @@ function evidenceLine(view: WorkbenchView, paint: Paint): string {
  */
 function shippingReadinessLine(view: WorkbenchView, paint: Paint): string | null {
 	const readiness = view.shippingReadiness;
-	if (!readiness || readiness.sealedHoldout === "ready") return null;
+	if (!readiness || view.counts.approvedSpecs === 0 || readiness.sealedHoldout === "ready") return null;
 	const state = readiness.sealedHoldout === "missing"
 		? "no sealed holdout"
 		: `sealed holdout has fewer than ${readiness.minimumTasks} cases`;

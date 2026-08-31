@@ -737,7 +737,7 @@ export function registerAhdeBuilderCommands(
 						? warn(`${label} ${evaluator.provider}/${evaluator.id} · export ${evaluator.apiKeyEnv} in the shell that runs ahde before /run`)
 						: p.muted(`· ${label} ${evaluator.provider}/${evaluator.id} · ${evaluator.apiKeyEnv} is missing, but this basket does not use it`));
 			}
-			const shipping = view.shippingReadiness;
+			const shipping = view.counts.approvedSpecs > 0 ? view.shippingReadiness : undefined;
 			if (shipping?.sealedHoldout === "ready") {
 				lines.push(ok("Ship gate has a sufficiently large evaluator-only sealed holdout"));
 			} else if (shipping) {
