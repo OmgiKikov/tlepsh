@@ -17,7 +17,7 @@ verified EvalRun + Diagnosis
 
 ## Model-facing contract
 
-`structured-proposal` accepts:
+For diagnosis-backed improvement, `structured-proposal` accepts:
 
 - the exact host-minted `authoringContext` claim from the fresh V1.6 Target
   view;
@@ -30,6 +30,13 @@ It does not accept `diagnoses`, `evidence`, `rootCause`, repository paths,
 hashes, file modes, or unified diffs. Unknown, duplicate, stale, omitted,
 infrastructure, unstable, legacy, healthy, and inconclusive selections fail
 closed. Selected modes are canonicalized in brief order.
+
+The same structured interface also has a construction form after Spec
+approval and before the first eval. It carries the exact `authoringContext`,
+approved Spec lineage, intents, risks, and validation plan, but deliberately
+omits both `source` and `failureModeIds`. The host records `source: null`, no
+proposal basis, and no diagnoses. Construction therefore reuses the exact
+review/Apply seam without pretending product intent is failure evidence.
 
 Natural-language ordinals are only UX sugar. For “fix the first problem”,
 Builder Pi refreshes `aspect: traces`, resolves `ordinal: 1` to the current

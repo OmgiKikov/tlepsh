@@ -27,6 +27,17 @@ import { applyBuilderProposal, runBuilderProposal } from "../src/application/bui
 
 const NOW = "2026-08-26T14:00:00.000Z";
 const roots: string[] = [];
+const CONTAINER_DIGEST = "c".repeat(64);
+const EXACT_CONTAINER_BLOCK = `  container:
+    # Keep this exact reviewed containment authority.
+    image: ahde/authoring@sha256:${CONTAINER_DIGEST}
+    platform: linux/amd64
+    runtime: docker
+    memoryMb: 768
+    cpus: 1.5
+    pidsLimit: 64
+    readOnlyRootfs: true
+`;
 const CAPABILITIES: BuilderCapabilities = {
 	eventStream: true,
 	structuredOutput: true,
@@ -322,6 +333,74 @@ describe("structured harness authoring", () => {
 			"bin/research_web",
 			"tools/research_web.tool.yaml",
 		]));
+	});
+
+	it("patches unrelated execution fields while preserving the container block byte-for-byte", () => {
+		const { repositoryDir } = initTarget();
+		const manifestPath = join(repositoryDir, "manifest.yaml");
+		const before = readFileSync(manifestPath, "utf8").replace(
+			"  sandbox: best-effort\n",
+			`  sandbox: required\n${EXACT_CONTAINER_BLOCK}`,
+		);
+		writeFileSync(manifestPath, before);
+		git(repositoryDir, ["add", "manifest.yaml"]);
+		git(repositoryDir, ["commit", "-m", "pin the execution container"]);
+
+		const proposal = compileHarnessAuthoringProposal({
+			repositoryDir,
+			summary: "Allow network access without touching reviewed containment",
+			validationPlan: ["Validate the exact manifest and container fingerprint"],
+			intents: [{
+				type: "execution.configure",
+				execution: { network: "allow" },
+			}],
+		});
+		const change = proposal.changes.find((candidate) => candidate.path === "manifest.yaml");
+		expect(change).toBeDefined();
+		execFileSync("git", ["-C", repositoryDir, "apply", "--whitespace=nowarn", "-"], {
+			input: `${change!.unifiedDiff.trimEnd()}\n`,
+		});
+		const after = readFileSync(manifestPath, "utf8");
+		expect(after).toContain(EXACT_CONTAINER_BLOCK);
+		expect(after.slice(after.indexOf("  container:\n"))).toBe(before.slice(before.indexOf("  container:\n")));
+		expect(parseYaml(after)).toMatchObject({
+			execution: {
+				network: "allow",
+				container: {
+					image: `ahde/authoring@sha256:${CONTAINER_DIGEST}`,
+					platform: "linux/amd64",
+					memoryMb: 768,
+				},
+			},
+		});
+	});
+
+	it("requires an explicit reviewed action to replace or remove containment", () => {
+		expect(HarnessAuthoringIntentSchema.safeParse({
+			type: "execution.configure",
+			execution: {},
+		}).success).toBe(false);
+		expect(HarnessAuthoringIntentSchema.safeParse({
+			type: "execution.configure",
+			execution: { container: null },
+		}).success).toBe(false);
+		expect(HarnessAuthoringIntentSchema.safeParse({
+			type: "execution.configure",
+			execution: { container: { action: "remove" } },
+		}).success).toBe(true);
+		expect(HarnessAuthoringIntentSchema.safeParse({
+			type: "execution.configure",
+			execution: {
+				container: {
+					action: "replace",
+					value: {
+						runtime: "docker",
+						image: `ahde/authoring@sha256:${CONTAINER_DIGEST}`,
+						platform: "linux/amd64",
+					},
+				},
+			},
+		}).success).toBe(true);
 	});
 
 	it("rejects structural path injection, ambiguous intents, dirty bases, and policy escalation", () => {

@@ -321,11 +321,19 @@ Harness authoring accepts semantic instruction/execution-policy/skill/tool
 intents; only the host compiler chooses repository paths, file modes, hashes,
 and unified diffs. There are no product presets for agent types. A request such
 as “build a deep research agent” follows the ordinary Spec → construction →
-eval → diagnosis → Proposal path. The first tools and skills can be built in a
-Spec-backed Workshop before any run; later evidence justifies further changes.
-AHDE still proposes exact policy, environment-variable names, descriptors, and
-executables for human review and candidate verification — it never grants
-capabilities merely because an agent category was named.
+eval → diagnosis → Proposal path. Once a Spec is approved, the Builder may
+construct the first Harness before any eval through the same exact Proposal →
+review → Apply seam. Live resources can be built and tried in a Spec-backed
+Workshop; semantic policy changes use the structured proposal path. That first
+construction records the Spec lineage and deliberately records no diagnosis or
+failure evidence; later improvements remain diagnosis-bound.
+`execution.configure` is a patch: omitted fields are preserved, and an existing
+`execution.container` is kept exactly unless the intent explicitly requests a
+reviewed `replace` or `remove`. The Target view exposes that complete non-secret
+pinned container policy so the Builder never has to guess current execution
+authority. AHDE still proposes exact policy, environment-variable names,
+descriptors, and executables for human review and candidate verification — it
+never grants capabilities merely because an agent category was named.
 
 After a failed development evaluation, Builder selects only stable
 `failureModeId` handles from the current deterministic Improvement Brief. The

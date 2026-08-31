@@ -47,7 +47,11 @@ import {
 	targetWithDevelopmentCorpus,
 	targetWithSealedCorpus,
 } from "./corpus-target.js";
-import { assertResourceOnlyManifestChange, parseStrictTargetManifest } from "./builder-proposal.js";
+import {
+	assertManifestChangePolicy,
+	parseStrictTargetManifest,
+	type ManifestChangePolicy,
+} from "./builder-proposal.js";
 
 export const CANDIDATE_SCOPE_POLICY = {
 	id: "candidate-harness-resources-v3",
@@ -70,6 +74,8 @@ export interface CandidateExperimentOptions {
 	diagnosisId?: string | null;
 	actorId?: string;
 	origin?: CandidateOrigin;
+	/** Immutable Builder-request authority; manual candidates stay resource-only. */
+	manifestChangePolicy?: ManifestChangePolicy;
 	developmentCorpus?: CorpusRef;
 	/** Exact source-eval surface that a Builder proposal was derived from. */
 	expectedDevelopmentSource?: {
@@ -596,7 +602,7 @@ export async function runCandidateExperiment(
 			const files = changedFiles(worktrees.repositoryDir, worktrees.baseline.sha, worktrees.candidate.sha);
 			validateScope(options.mode, files);
 			if (files.includes("manifest.yaml")) {
-				assertResourceOnlyManifestChange(
+				assertManifestChangePolicy(
 					parseStrictTargetManifest(
 						readFileSync(join(worktrees.baseline.path, "manifest.yaml")),
 						"baseline manifest.yaml",
@@ -605,6 +611,7 @@ export async function runCandidateExperiment(
 						readFileSync(join(worktrees.candidate.path, "manifest.yaml")),
 						"candidate manifest.yaml",
 					),
+					options.manifestChangePolicy ?? "resources-only",
 				);
 			}
 			const datasetOverride = options.dataset ? { dataset: options.dataset } : undefined;

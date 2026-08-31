@@ -4,7 +4,7 @@ import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import { TargetManifest } from "../manifest.js";
+import { TargetManifest, type ContainerBlock } from "../manifest.js";
 import { canonicalJson, hashValue } from "../provenance.js";
 // Type-only: the memory of what was already tried is compiled by the caller, so
 // this module stays a reader of Git and nothing else.
@@ -140,11 +140,13 @@ export interface TargetAuthoringContext {
 			id: string;
 			thinkingLevel: string;
 		};
+		/** Complete non-secret execution authority, including pinned containment. */
 		execution: {
 			tools: string[];
 			environmentAllowlist: string[];
 			network: "deny" | "allow";
 			sandbox: "required" | "best-effort" | "off";
+			container?: ContainerBlock;
 		};
 	};
 	resources: TargetAuthoringResource[];
@@ -699,6 +701,9 @@ export function inspectTargetAuthoringContext(
 			environmentAllowlist: [...manifest.execution.environmentAllowlist],
 			network: manifest.execution.network,
 			sandbox: manifest.execution.sandbox,
+			...(manifest.execution.container
+				? { container: { ...manifest.execution.container } }
+				: {}),
 		},
 	};
 	const summaries = ordered.map((item) => item.summary);

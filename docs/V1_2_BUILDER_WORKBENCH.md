@@ -82,15 +82,22 @@ lineage record binding:
 - canonical publication receipt;
 - canonical development dataset hash.
 
-The corpus remains reusable across Target revisions. Advancement to proposal
-authoring additionally requires a conclusive EvalRun whose Target revision,
+The corpus remains reusable across Target revisions. Evidence-backed
+improvement authoring requires a conclusive EvalRun whose Target revision,
 dataset hash, and suite hash match the currently selected Target + corpus.
+Construction authoring is deliberately earlier: once the Spec is approved, a
+structured proposal may build the first Harness with an exact Target claim and
+no `source` or `failureModeIds`. It goes through the same immutable proposal,
+review, Apply, candidate, and verification seam and records no invented
+diagnosis.
 
 Harness improvement uses semantic intents:
 
 - replace `AGENTS.md` instructions;
 - upsert or remove one named skill;
-- upsert or remove one named declarative tool.
+- upsert or remove one named declarative tool;
+- patch execution policy, preserving an omitted container and requiring an
+  explicit reviewed action to replace or remove one.
 
 The compiler owns paths, file modes, hashes, manifest declarations, descriptor
 validation, and unified diffs. It requires the exact clean baseline and emits an

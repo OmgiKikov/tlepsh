@@ -10,9 +10,11 @@ import {
 	type CandidateProposal,
 } from "../builders/adapters.js";
 import {
+	ContainerBlock,
 	ExecutionPolicyBlock,
 	loadTarget,
 	TargetManifest,
+	type ContainerBlock as ContainerPolicy,
 	type ExecutionPolicyBlock as ExecutionPolicy,
 	type TargetManifest as TargetManifestValue,
 } from "../manifest.js";
@@ -145,10 +147,39 @@ const InstructionsReplaceIntentSchema = z.strictObject({
 	content: AuthoredTextSchema,
 });
 
+const ContainerChangeSchema = z.discriminatedUnion("action", [
+	z.strictObject({
+		action: z.literal("replace"),
+		/** The complete non-secret container policy that will replace the current one. */
+		value: ContainerBlock,
+	}),
+	z.strictObject({ action: z.literal("remove") }),
+]);
+
+/**
+ * Patch the execution policy without making the Builder repeat authority it
+ * did not intend to change. In particular, an omitted `container` key means
+ * preserve the exact manifest node; replacement and removal are explicit.
+ */
+const ExecutionPolicyPatchSchema = z.strictObject({
+	tools: z.array(z.enum(["read", "bash", "edit", "write"])).min(1).optional(),
+	environmentAllowlist: z
+		.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/))
+		.optional(),
+	network: z.enum(["deny", "allow"]).optional(),
+	sandbox: z.enum(["required", "best-effort", "off"]).optional(),
+	container: ContainerChangeSchema.optional(),
+}).superRefine((patch, context) => {
+	if (Object.keys(patch).length === 0) {
+		context.addIssue({ code: "custom", message: "execution.configure must name at least one policy change" });
+	}
+});
+export type HarnessExecutionPolicyPatch = z.infer<typeof ExecutionPolicyPatchSchema>;
+
 const ExecutionConfigureIntentSchema = z.strictObject({
 	type: z.literal("execution.configure"),
-	/** Complete policy replacement; the exact manifest diff remains human-reviewed. */
-	execution: ExecutionPolicyBlock,
+	/** Patch semantics. Omitted fields, especially `container`, are preserved. */
+	execution: ExecutionPolicyPatchSchema,
 });
 
 const SkillUpsertIntentSchema = z.strictObject({
@@ -529,7 +560,12 @@ function assertCanonicalDeclarations(manifest: TargetManifestValue): void {
 export function renderManifest(
 	baseText: string,
 	baseManifest: TargetManifestValue,
-	updates: { skills?: string[]; tools?: string[]; data?: string[]; execution?: ExecutionPolicy },
+	updates: {
+		skills?: string[];
+		tools?: string[];
+		data?: string[];
+		execution?: { policy: ExecutionPolicy; patch: HarnessExecutionPolicyPatch };
+	},
 ): string {
 	const document = parseDocument(baseText);
 	if (document.errors.length > 0) {
@@ -541,7 +577,28 @@ export function renderManifest(
 		if (updates.data.length === 0) document.delete("data");
 		else document.set("data", updates.data);
 	}
-	if (updates.execution) document.set("execution", updates.execution);
+	if (updates.execution) {
+		const { policy, patch } = updates.execution;
+		// A legacy manifest may have relied on the top-level execution default. In
+		// that case there is no exact YAML subtree to preserve, so materialize the
+		// complete validated policy once. Otherwise mutate only the named leaves:
+		// YAML keeps the untouched container node (including comments, ordering and
+		// scalar spelling) byte-for-byte.
+		if (!document.has("execution")) {
+			document.set("execution", policy);
+		} else {
+			if (patch.tools !== undefined) document.setIn(["execution", "tools"], policy.tools);
+			if (patch.environmentAllowlist !== undefined) {
+				document.setIn(["execution", "environmentAllowlist"], policy.environmentAllowlist);
+			}
+			if (patch.network !== undefined) document.setIn(["execution", "network"], policy.network);
+			if (patch.sandbox !== undefined) document.setIn(["execution", "sandbox"], policy.sandbox);
+			if (patch.container?.action === "remove") document.deleteIn(["execution", "container"]);
+			if (patch.container?.action === "replace") {
+				document.setIn(["execution", "container"], policy.container);
+			}
+		}
+	}
 	const rendered = String(document);
 	if (utf8Bytes(rendered) > MAX_MANIFEST_BYTES) throw new Error(`manifest.yaml exceeds ${MAX_MANIFEST_BYTES} bytes`);
 	const parsed = TargetManifest.safeParse(parseYaml(rendered));
@@ -551,13 +608,37 @@ export function renderManifest(
 			throw new Error(`compiled manifest unexpectedly changed protected field ${field}`);
 		}
 	}
-	if (updates.execution && canonicalJson(parsed.data.execution) !== canonicalJson(updates.execution)) {
+	if (updates.execution && canonicalJson(parsed.data.execution) !== canonicalJson(updates.execution.policy)) {
 		throw new Error("compiled manifest does not contain the exact requested execution policy");
 	}
 	if (!updates.execution && canonicalJson(parsed.data.execution) !== canonicalJson(baseManifest.execution)) {
 		throw new Error("compiled manifest unexpectedly changed protected field execution");
 	}
 	return rendered;
+}
+
+function applyExecutionPolicyPatch(
+	base: ExecutionPolicy,
+	patch: HarnessExecutionPolicyPatch,
+): ExecutionPolicy {
+	const candidate: {
+		tools: ExecutionPolicy["tools"];
+		environmentAllowlist: string[];
+		network: ExecutionPolicy["network"];
+		sandbox: ExecutionPolicy["sandbox"];
+		container?: ContainerPolicy;
+	} = {
+		tools: patch.tools === undefined ? [...base.tools] : [...patch.tools],
+		environmentAllowlist: patch.environmentAllowlist === undefined
+			? [...base.environmentAllowlist]
+			: [...patch.environmentAllowlist],
+		network: patch.network ?? base.network,
+		sandbox: patch.sandbox ?? base.sandbox,
+		...(base.container ? { container: { ...base.container } } : {}),
+	};
+	if (patch.container?.action === "remove") delete candidate.container;
+	if (patch.container?.action === "replace") candidate.container = { ...patch.container.value };
+	return ExecutionPolicyBlock.parse(candidate);
 }
 
 /**
@@ -599,7 +680,9 @@ export function compileHarnessAuthoringProposal(
 	const executionIntent = intents.find((intent): intent is Extract<HarnessAuthoringIntent, { type: "execution.configure" }> =>
 		intent.type === "execution.configure"
 	);
-	const execution = executionIntent?.execution ?? manifest.execution;
+	const execution = executionIntent
+		? applyExecutionPolicyPatch(manifest.execution, executionIntent.execution)
+		: manifest.execution;
 	const planned = new Map<string, PlannedFile>();
 	const resources = new Set<string>();
 	let skillsChanged = false;
@@ -785,7 +868,9 @@ export function compileHarnessAuthoringProposal(
 			...(skillsChanged ? { skills } : {}),
 			...(toolsChanged ? { tools } : {}),
 			...(dataChanged ? { data: dataDirectories } : {}),
-			...(executionChanged ? { execution } : {}),
+			...(executionChanged && executionIntent
+				? { execution: { policy: execution, patch: executionIntent.execution } }
+				: {}),
 		});
 		plan(
 			"manifest.yaml",
@@ -856,6 +941,7 @@ export function compileHarnessAuthoringProposal(
 			environmentAllowlist: [...execution.environmentAllowlist],
 			network: execution.network,
 			sandbox: execution.sandbox,
+			...(execution.container ? { container: { ...execution.container } } : {}),
 		},
 	};
 	const resultingResourceList = [...resultingResources.values()] as TargetAuthoringResource[];

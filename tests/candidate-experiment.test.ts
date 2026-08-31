@@ -593,6 +593,45 @@ permissions:
 		assertCheckoutUnchanged(repository);
 	});
 
+	it("admits an execution-policy candidate only with immutable compiler authority", async () => {
+		const baselineManifest = baseFixtureFiles().find((file) => file.path === "manifest.yaml")?.content;
+		if (!baselineManifest) throw new Error("missing manifest fixture");
+		const repository = createRepository({
+			path: "manifest.yaml",
+			content: baselineManifest.replace(
+				"instructions:\n",
+				"execution:\n  tools: [read, bash]\n  environmentAllowlist: []\n  network: allow\n  sandbox: best-effort\ninstructions:\n",
+			),
+		});
+		const deniedRuntime = fakeRuntime();
+		await expect(runCandidateExperiment({
+			repositoryDir: repository.dir,
+			runsRoot: repository.runsRoot,
+			baselineRef: repository.baselineSha,
+			candidateRef: repository.candidateSha,
+			mode: "candidate",
+			repetitions: 1,
+			candidateId: "manual-execution-policy",
+		}, deniedRuntime.dependencies)).rejects.toThrow(/resources-only authority.*execution/);
+		expect(deniedRuntime.suiteCalls).toHaveLength(0);
+
+		const authorizedRuntime = fakeRuntime();
+		const result = await runCandidateExperiment({
+			repositoryDir: repository.dir,
+			runsRoot: repository.runsRoot,
+			baselineRef: repository.baselineSha,
+			candidateRef: repository.candidateSha,
+			mode: "candidate",
+			repetitions: 1,
+			candidateId: "compiled-execution-policy",
+			manifestChangePolicy: "execution-policy",
+		}, authorizedRuntime.dependencies);
+		expect(result.compare.status).toBe("comparable");
+		expect(authorizedRuntime.suiteCalls[0]?.target.manifest.execution.network).toBe("deny");
+		expect(authorizedRuntime.suiteCalls[1]?.target.manifest.execution.network).toBe("allow");
+		assertCheckoutUnchanged(repository);
+	});
+
 	it("validates target identity before any evaluator call", async () => {
 		const repository = createRepository({ path: "AGENTS.md", content: "candidate harness\n" });
 		const runtime = fakeRuntime();

@@ -272,6 +272,7 @@ export async function runAppliedBuilderCandidate(
 		diagnosisId: source?.diagnosisId ?? null,
 		actorId: receipt.actor.id,
 		origin,
+		manifestChangePolicy: builderRun.request.manifestChangePolicy,
 		sealedCorpus: options.sealedCorpus,
 		...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
 		...(options.signal ? { signal: options.signal } : {}),

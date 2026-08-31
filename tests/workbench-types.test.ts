@@ -114,6 +114,19 @@ describe("Workbench canonical input contract", () => {
 			...exact,
 			source: { ...proposalSource, briefId: `brief-${"z".repeat(24)}` },
 		})).toThrow();
+
+		const construction = {
+			kind: "structured-proposal" as const,
+			authoringContext,
+			summary: "Construct the approved Spec without inventing evidence",
+			intents: [{ type: "execution.configure" as const, execution: { network: "allow" as const } }],
+			validationPlan: ["Run the first development eval after apply"],
+		};
+		expect(WorkbenchSubmitInputSchema.parse(construction)).toMatchObject(construction);
+		expect(() => WorkbenchSubmitInputSchema.parse({ ...construction, source: proposalSource }))
+			.toThrow(/both source and failureModeIds, or neither/);
+		expect(() => WorkbenchSubmitInputSchema.parse({ ...construction, failureModeIds: [failureModeId] }))
+			.toThrow(/both source and failureModeIds, or neither/);
 	});
 
 	it("keeps the Spec boundary strict while accepting canonical data", () => {

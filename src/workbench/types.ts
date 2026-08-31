@@ -472,15 +472,24 @@ const StructuredProposalInputSchema = z.strictObject({
 	/** Host-minted claim from the exact Target overview/resource view used to author these intents. */
 	authoringContext: TargetAuthoringContextClaimSchema,
 	approvedSpecId: ArtifactIdSchema.optional(),
-	source: ProposalBasisSelectionSchema.omit({ failureModeIds: true }),
+	/** Omitted for Spec-backed construction; required for evidence-backed improvement. */
+	source: ProposalBasisSelectionSchema.omit({ failureModeIds: true }).optional(),
 	failureModeIds: z.array(FailureModeIdSchema)
 		.min(1)
 		.max(8)
-		.refine((ids) => new Set(ids).size === ids.length, "failure mode ids must be unique"),
+		.refine((ids) => new Set(ids).size === ids.length, "failure mode ids must be unique")
+		.optional(),
 	summary: NonBlankSchema.max(4_000),
 	intents: HarnessAuthoringIntentsSchema,
 	risks: z.array(NonBlankSchema.max(4_000)).max(100).default([]),
 	validationPlan: z.array(NonBlankSchema.max(4_000)).min(1).max(100),
+}).superRefine((value, context) => {
+	if ((value.source === undefined) !== (value.failureModeIds === undefined)) {
+		context.addIssue({
+			code: "custom",
+			message: "an evidence-backed structured proposal needs both source and failureModeIds, or neither",
+		});
+	}
 });
 
 /**

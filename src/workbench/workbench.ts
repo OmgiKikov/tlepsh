@@ -254,7 +254,8 @@ export interface CompileHarnessAuthoringInput {
 	expectedBaseTargetSha: string;
 	intents: readonly HarnessAuthoringIntent[];
 	summary: string;
-	diagnoses: CandidateProposal["diagnoses"];
+	/** Absent for construction: a Spec is intent, not invented failure evidence. */
+	diagnoses?: CandidateProposal["diagnoses"];
 	risks: string[];
 	validationPlan: string[];
 }
@@ -1209,6 +1210,8 @@ export class AhdeWorkbench {
 	private async recordCompiledProposal(input: {
 		proposal: CandidateProposal;
 		approvedSpecId: string;
+		/** Host compiler authority; workshops remain resource-only. */
+		manifestChangePolicy?: "resources-only" | "execution-policy";
 		/** Absent for a Spec-backed construction proposal: it cites no evaluation. */
 		sourceEvalRunId?: string;
 		proposalBasis?: RecordProposalOptions["proposalBasis"];
@@ -1220,6 +1223,9 @@ export class AhdeWorkbench {
 			proposal: input.proposal,
 			targetDir: this.projectDir,
 			allowedPaths: [...CANDIDATE_SCOPE_POLICY.allowed],
+			...(input.manifestChangePolicy === undefined
+				? {}
+				: { manifestChangePolicy: input.manifestChangePolicy }),
 			approvedSpec: { stateRoot: this.stateRoot, projectId: this.projectId, specId: input.approvedSpecId },
 			runsRoot: this.runsRoot,
 			timeoutMs: 30_000,
@@ -1975,11 +1981,31 @@ export class AhdeWorkbench {
 		}
 
 		const inventory = this.inventory();
-		if (deriveWorkbenchView(inventory).stage !== "improvement-authoring") {
-			throw new Error("structured proposal authoring is only legal after a conclusive development evaluation");
+		const basis = assertWorkshopStage(deriveWorkbenchView(inventory).stage);
+		const construction = basis === "construction";
+		if (construction && input.source !== undefined) {
+			throw new Error(
+				"a construction structured proposal is bound to the approved Spec; do not invent source or failureModeIds",
+			);
 		}
-		const evidence = this.proposalEvidence(inventory, input);
-		const { approved, sourceEvalRunId, selectedEvidence, authoringContext } = evidence;
+		if (!construction && input.source === undefined) {
+			throw new Error(
+				"an improvement structured proposal must name the exact source and failureModeIds it aims at (aspect: \"traces\")",
+			);
+		}
+		const evidence = construction
+			? null
+			: this.proposalEvidence(inventory, {
+				approvedSpecId: input.approvedSpecId,
+				source: input.source as NonNullable<typeof input.source>,
+				failureModeIds: [...(input.failureModeIds ?? [])],
+			});
+		const approved = evidence?.approved ?? requireApprovedSpec(inventory, input.approvedSpecId);
+		if (!inventory.target) throw new Error("structured proposal authoring requires one exact Target");
+		const authoringContext = evidence?.authoringContext ?? this.dependencies.inspectTargetAuthoringContext({
+			repositoryDir: this.projectDir,
+			expectedTarget: { id: inventory.target.manifest.id, gitSha: inventory.target.gitSha },
+		});
 
 		if (canonicalJson(input.authoringContext) !== canonicalJson(authoringContext.claim)) {
 			throw new Error("Target authoring context is stale; refresh the Target overview and every replaced resource.");
@@ -1989,7 +2015,7 @@ export class AhdeWorkbench {
 			expectedBaseTargetSha: authoringContext.target.gitSha,
 			intents: input.intents,
 			summary: input.summary,
-			diagnoses: selectedEvidence.diagnoses,
+			...(evidence ? { diagnoses: evidence.selectedEvidence.diagnoses } : {}),
 			risks: input.risks,
 			validationPlan: input.validationPlan,
 		});
@@ -1999,20 +2025,54 @@ export class AhdeWorkbench {
 		const result = await this.recordCompiledProposal({
 			proposal,
 			approvedSpecId: approved.id,
-			sourceEvalRunId,
-			proposalBasis: { ...input.source, failureModeIds: input.failureModeIds },
+			...(input.intents.some((intent) => intent.type === "execution.configure")
+				? { manifestChangePolicy: "execution-policy" as const }
+				: {}),
+			...(evidence ? { sourceEvalRunId: evidence.sourceEvalRunId } : {}),
+			proposalBasis: evidence
+				? {
+					...(input.source as NonNullable<typeof input.source>),
+					failureModeIds: [...(input.failureModeIds ?? [])],
+				}
+				: undefined,
 			authoringContext: authoringContext.claim,
 			label: "structured proposal",
 			...(options.signal ? { signal: options.signal } : {}),
 		});
 		if (result.record.result.proposal?.decision === "propose") {
 			const settled = this.select("proposal", result.record.runId);
-			return { kind: input.kind, message: "Selected failure modes compiled into an evidence-linked, exact reviewable proposal.", artifact: { runId: result.record.runId, proposalHash: result.record.artifacts.proposal?.sha256 ?? null, sourceEvalRunId: result.record.request.source?.evalRunId ?? null, improvementBriefId: selectedEvidence.basis.briefId, failureModeIds: selectedEvidence.basis.failureModes.map((mode) => mode.failureModeId), approvedSpecId: approved.id, authoringContextHash: authoringContext.contextHash }, view: await this.viewOf(settled) };
+			return {
+				kind: input.kind,
+				message: construction
+					? "The approved Spec compiled into an exact reviewable construction proposal, with no evaluation evidence invented."
+					: "Selected failure modes compiled into an evidence-linked, exact reviewable proposal.",
+				artifact: {
+					basis,
+					runId: result.record.runId,
+					proposalHash: result.record.artifacts.proposal?.sha256 ?? null,
+					sourceEvalRunId: result.record.request.source?.evalRunId ?? null,
+					improvementBriefId: evidence?.selectedEvidence.basis.briefId ?? null,
+					failureModeIds: evidence?.selectedEvidence.basis.failureModes.map((mode) => mode.failureModeId) ?? [],
+					approvedSpecId: approved.id,
+					authoringContextHash: authoringContext.contextHash,
+				},
+				view: await this.viewOf(settled),
+			};
 		}
 		return {
 			kind: input.kind,
 			message: "Structured authoring produced a durable no-change result; there is no diff to review or apply.",
-			artifact: { runId: result.record.runId, proposalHash: null, decision: "no-change", sourceEvalRunId, improvementBriefId: selectedEvidence.basis.briefId, failureModeIds: selectedEvidence.basis.failureModes.map((mode) => mode.failureModeId), approvedSpecId: approved.id, authoringContextHash: authoringContext.contextHash },
+			artifact: {
+				basis,
+				runId: result.record.runId,
+				proposalHash: null,
+				decision: "no-change",
+				sourceEvalRunId: evidence?.sourceEvalRunId ?? null,
+				improvementBriefId: evidence?.selectedEvidence.basis.briefId ?? null,
+				failureModeIds: evidence?.selectedEvidence.basis.failureModes.map((mode) => mode.failureModeId) ?? [],
+				approvedSpecId: approved.id,
+				authoringContextHash: authoringContext.contextHash,
+			},
 			view: await this.view(),
 		};
 	}

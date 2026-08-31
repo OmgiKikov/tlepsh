@@ -266,10 +266,13 @@ the Builder can fix what it wrote, and `workshop-discard` throws it away.
 
 ### The intent compiler stays
 
-`harness-authoring.ts` is unchanged in behaviour and remains the second path:
-the fallback for single-file edits, and the **only** way to change the Target's
+`harness-authoring.ts` remains the second path: the fallback for semantic edits
+that do not need a live try loop, and the **only** way to change the Target's
 execution policy (`execution.configure`), because a workshop diff may change
-resources and resource declarations only.
+resources and resource declarations only. It is legal for both Spec-backed
+construction and diagnosis-backed improvement. Its execution intent is a
+patch; omitting `container` preserves the exact reviewed YAML node, while
+replacement and removal are explicit actions in the diff.
 
 ## Left out on purpose
 

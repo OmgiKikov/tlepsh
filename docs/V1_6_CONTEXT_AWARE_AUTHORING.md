@@ -46,7 +46,8 @@ existing resource it will fully replace:
 - `AGENTS.md` for `instructions.replace`;
 - the declared `SKILL.md` for an existing `skill.upsert`;
 - both descriptor and executable for an existing `tool.upsert`;
-- the overview for `execution.configure`.
+- the overview for `execution.configure`, including the complete non-secret
+  pinned container policy.
 
 New skills and tools have no existing content to read. The model echoes the
 overview's exact `claim` as `authoringContext`; it cannot author any claim
@@ -66,11 +67,19 @@ bin/<name>
 ```
 
 Raw `manifest.yaml` is not exposed. Its safe model/execution projection is
-enough for typed policy authoring. Execution-environment allowlist names are
-visible because an exact policy replacement needs them, but their values never
-are; model `apiKeyEnv`, base URLs, model params, eval dataset and grader paths
-remain private. Orphan files under `skills/`, `tools/`, or `bin/` are not
-discovered by directory walking.
+enough for typed policy authoring. Execution-environment allowlist names and
+the complete `execution.container` block (pinned image, platform, runtime,
+limits, and read-only-root setting) are visible because they are non-secret
+execution authority; their values participate in the exact context hash.
+Environment variable values never are. Model `apiKeyEnv`, base URLs, model
+params, eval dataset and grader paths remain private. Orphan files under
+`skills/`, `tools/`, or `bin/` are not discovered by directory walking.
+
+`execution.configure` has patch semantics. Missing fields preserve the current
+policy. In particular, an omitted `container` preserves the exact YAML node,
+including its bytes and comments. Changing it requires
+`container: { action: "replace", value: ... }`; removing it requires the
+separately reviewable `container: { action: "remove" }`.
 
 The following are never readable through this interface:
 

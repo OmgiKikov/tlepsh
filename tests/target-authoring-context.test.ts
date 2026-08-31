@@ -19,6 +19,7 @@ import {
 import { createAhdeWorkbench } from "../src/workbench/workbench.js";
 
 const roots: string[] = [];
+const CONTAINER_DIGEST = "a".repeat(64);
 const AGENTS = "# Context Agent\n\nUse the declared search capability.\n";
 const SKILL = "---\nname: search\ndescription: Search approved local evidence.\n---\n\n# Search\n\nCall the declared tool.\n";
 const TOOL = `schemaVersion: 1
@@ -198,6 +199,42 @@ describe("Target Authoring Context", () => {
 			"manifest.yaml",
 			".env",
 		]) expect(serialized).not.toContain(privateValue);
+	});
+
+	it("projects and hashes the complete non-secret pinned container policy", () => {
+		const withContainer = manifest().replace(
+			"  sandbox: best-effort\n",
+			`  sandbox: required
+  container:
+    runtime: docker
+    image: ahde/context@sha256:${CONTAINER_DIGEST}
+    platform: linux/amd64
+    memoryMb: 1536
+    cpus: 1.25
+    pidsLimit: 96
+    readOnlyRootfs: true
+`,
+		);
+		const fixture = commitFixture({ manifest: withContainer });
+		const overview = inspect(fixture.repositoryDir, fixture.gitSha);
+		expect(overview.target.execution).toEqual({
+			tools: ["read"],
+			environmentAllowlist: ["SEARCH_INDEX"],
+			network: "deny",
+			sandbox: "required",
+			container: {
+				runtime: "docker",
+				image: `ahde/context@sha256:${CONTAINER_DIGEST}`,
+				platform: "linux/amd64",
+				memoryMb: 1536,
+				cpus: 1.25,
+				pidsLimit: 96,
+				readOnlyRootfs: true,
+			},
+		});
+
+		const changed = commitFixture({ manifest: withContainer.replace("memoryMb: 1536", "memoryMb: 2048") });
+		expect(inspect(changed.repositoryDir, changed.gitSha).contextHash).not.toBe(overview.contextHash);
 	});
 
 	it("denies private, undeclared, absolute, and traversal reads through one non-oracle error", () => {

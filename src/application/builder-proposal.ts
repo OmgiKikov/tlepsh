@@ -197,6 +197,11 @@ export type ApprovedSpecBuilderInput = z.infer<typeof ApprovedSpecBuilderInputSc
 const BuilderRequestEvidenceSchema = z.strictObject({
 	baseTargetSha: GitShaSchema,
 	allowedPaths: z.array(AllowedPathSchema).min(1).refine((paths) => new Set(paths).size === paths.length, "allowed paths must be unique"),
+	/**
+	 * Host-attested manifest authority. Legacy records default to the original
+	 * resource-only policy; only the structured execution compiler may opt in.
+	 */
+	manifestChangePolicy: z.enum(["resources-only", "execution-policy"]).default("resources-only"),
 	approvedSpec: ApprovedSpecReferenceSchema.nullable(),
 	source: SourceEvidenceSchema.nullable(),
 	provenanceMode: z.enum(["canonical", "unverified"]).default("unverified"),
@@ -392,6 +397,8 @@ export interface RunBuilderProposalOptions {
 	adapter: BuilderAdapter;
 	baseTargetSha: string;
 	allowedPaths: string[];
+	/** Host-owned authority persisted with the immutable Builder request. */
+	manifestChangePolicy?: "resources-only" | "execution-policy";
 	/** Optional only when an approved Spec is the primary Builder input. */
 	failureBundle?: string;
 	runsRoot: string;
@@ -893,6 +900,8 @@ async function runBuilderProposalInternal(
 	const baseTargetSha = GitShaSchema.parse(options.baseTargetSha);
 	const allowedPaths = z.array(AllowedPathSchema).min(1).parse(options.allowedPaths);
 	if (new Set(allowedPaths).size !== allowedPaths.length) throw new Error("allowedPaths must be unique");
+	const manifestChangePolicy = z.enum(["resources-only", "execution-policy"])
+		.parse(options.manifestChangePolicy ?? "resources-only");
 	if (!Number.isInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 2_147_483_647) {
 		throw new Error("timeoutMs must be a positive bounded integer");
 	}
@@ -1017,6 +1026,7 @@ async function runBuilderProposalInternal(
 			request: {
 				baseTargetSha,
 				allowedPaths,
+				manifestChangePolicy,
 				approvedSpec: loadedSpec?.reference ?? null,
 				source,
 				provenanceMode: provenance.mode,
@@ -1454,6 +1464,7 @@ function validateChangePath(path: string, allowedPaths: string[]): void {
 }
 
 const PROTECTED_MANIFEST_FIELDS = ["id", "model", "execution", "instructions", "evalSuite"] as const;
+export type ManifestChangePolicy = "resources-only" | "execution-policy";
 
 /**
  * Prove that a Target manifest change is resource-declaration-only. Both
@@ -1464,12 +1475,28 @@ export function assertResourceOnlyManifestChange(
 	base: TargetManifestValue,
 	candidate: TargetManifestValue,
 ): void {
-	const changed = PROTECTED_MANIFEST_FIELDS.filter(
+	assertManifestChangePolicy(base, candidate, "resources-only");
+}
+
+/**
+ * Re-validate the authority carried by the immutable Builder request. The
+ * execution-policy form still protects identity, model, instructions and eval
+ * surface; it merely admits a strict, schema-validated execution block.
+ */
+export function assertManifestChangePolicy(
+	base: TargetManifestValue,
+	candidate: TargetManifestValue,
+	policy: ManifestChangePolicy,
+): void {
+	const protectedFields = policy === "execution-policy"
+		? PROTECTED_MANIFEST_FIELDS.filter((field) => field !== "execution")
+		: [...PROTECTED_MANIFEST_FIELDS];
+	const changed = protectedFields.filter(
 		(field) => canonicalJson(base[field]) !== canonicalJson(candidate[field]),
 	);
 	if (changed.length > 0) {
 		throw new Error(
-			`manifest.yaml may change only resource declarations (skills/tools); protected field(s) changed: ${changed.join(", ")}`,
+			`manifest.yaml exceeds ${policy} authority; protected field(s) changed: ${changed.join(", ")}`,
 		);
 	}
 }
@@ -1490,13 +1517,14 @@ function validateAppliedTargetResources(
 	repositoryDir: string,
 	baseSha: string,
 	worktreePath: string,
+	manifestChangePolicy: ManifestChangePolicy,
 ): void {
 	const baseManifest = parseStrictTargetManifest(baseBlob(repositoryDir, baseSha, "manifest.yaml"), "base manifest.yaml");
 	const appliedManifest = parseStrictTargetManifest(
 		readFileSync(join(worktreePath, "manifest.yaml")),
 		"applied manifest.yaml",
 	);
-	assertResourceOnlyManifestChange(baseManifest, appliedManifest);
+	assertManifestChangePolicy(baseManifest, appliedManifest, manifestChangePolicy);
 	// This resolves every declared skill and tool and enforces descriptor,
 	// executable-mode, and execution-policy constraints before a commit exists.
 	loadTarget(worktreePath);
@@ -1729,7 +1757,12 @@ export function applyBuilderProposal(
 			}
 		}
 		if (appliedPaths.includes("manifest.yaml")) {
-			validateAppliedTargetResources(repositoryDir, baseSha, worktreePath);
+		validateAppliedTargetResources(
+			repositoryDir,
+			baseSha,
+			worktreePath,
+			persisted.request.manifestChangePolicy,
+		);
 		}
 
 		const appliedAt = TimestampSchema.parse(now());

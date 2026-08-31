@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileS
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { parse as parseYaml } from "yaml";
 import { createCorpus, loadCorpus } from "../src/corpus.js";
 import {
 	approveBuilderSpecDraft,
@@ -672,6 +673,116 @@ describe("AHDE Workbench", () => {
 
 		const afterSecondRestart = createAhdeWorkbench({ ...paths, projectId: "test-target" });
 		expect((await afterSecondRestart.view()).focus["development-corpus"]).toBe(corpusId);
+	});
+
+	it("builds a pinned network container from an approved Spec before the first eval", async () => {
+		const paths = target();
+		const workbench = createAhdeWorkbench({
+			...paths,
+			projectId: "test-target",
+			dependencies: { now: () => NOW },
+		});
+		const constructionSpec: AgentSpec = {
+			...spec("Public research assistant"),
+			allowedActions: ["Retrieve public web evidence"],
+			constraints: ["Run network tools only in the reviewed pinned container"],
+		};
+		await workbench.submit({ kind: "spec-draft", spec: constructionSpec });
+		const approved = await workbench.decide({
+			kind: "approve-spec",
+			reason: "The Spec requires bounded network construction",
+		}, gate());
+		expect(approved.view.stage).toBe("corpus-design");
+		// No measurement had to fail before the Builder was allowed to construct
+		// the execution policy the approved Spec calls for.
+		expect(existsSync(paths.runsRoot)).toBe(false);
+
+		const authoring = inspectTargetAuthoringContext({
+			repositoryDir: paths.projectDir,
+			expectedTarget: {
+				id: loadTarget(paths.projectDir).manifest.id,
+				gitSha: loadTarget(paths.projectDir).gitSha,
+			},
+		});
+		const digest = "d".repeat(64);
+		const submitted = await workbench.submit({
+			kind: "structured-proposal",
+			authoringContext: authoring.claim,
+			approvedSpecId: approved.result.approvedSpecId,
+			summary: "Construct the Spec-required pinned network runtime",
+			intents: [{
+				type: "execution.configure",
+				execution: {
+					network: "allow",
+					sandbox: "required",
+					container: {
+						action: "replace",
+						value: {
+							runtime: "docker",
+							image: `ahde/research@sha256:${digest}`,
+							platform: "linux/amd64",
+							memoryMb: 1024,
+							cpus: 1,
+							pidsLimit: 96,
+							readOnlyRootfs: true,
+						},
+					},
+				},
+			}],
+			risks: ["The pinned image must be available on the selected runtime"],
+			validationPlan: ["Run the reviewed development basket in the exact container"],
+		});
+		expect(submitted).toMatchObject({
+			artifact: {
+				basis: "construction",
+				sourceEvalRunId: null,
+				improvementBriefId: null,
+				failureModeIds: [],
+				approvedSpecId: approved.result.approvedSpecId,
+			},
+			view: { stage: "proposal-review" },
+		});
+		const runId = String(submitted.artifact?.runId);
+		const persisted = loadBuilderProposalRun(paths.runsRoot, runId);
+		expect(persisted.request.manifestChangePolicy).toBe("execution-policy");
+		expect(persisted.request.source).toBeNull();
+		expect(persisted.request.proposalBasis).toBeNull();
+		expect(persisted.request.proposalDiagnoses).toBeNull();
+		expect(persisted.result.proposal?.diagnoses).toEqual([]);
+
+		const review = await workbench.view({ aspect: "review" });
+		expect(review.detail?.content).toMatchObject({
+			kind: "proposal",
+			runId,
+			evidenceBasis: null,
+		});
+		expect(JSON.stringify(review.detail?.content)).toContain(`ahde/research@sha256:${digest}`);
+
+		const applied = await workbench.decide({
+			kind: "apply-proposal",
+			runId,
+			branch: "candidate/spec-container",
+			reason: "Apply the exact reviewed construction diff",
+		}, gate());
+		expect(applied.view.stage).toBe("candidate-verification");
+		const candidateManifest = parseYaml(execFileSync(
+			"git",
+			["-C", paths.projectDir, "show", "candidate/spec-container:manifest.yaml"],
+			{ encoding: "utf8" },
+		)) as { execution: Record<string, unknown> };
+		expect(candidateManifest.execution).toMatchObject({
+			network: "allow",
+			sandbox: "required",
+			container: {
+				runtime: "docker",
+				image: `ahde/research@sha256:${digest}`,
+				platform: "linux/amd64",
+				memoryMb: 1024,
+				cpus: 1,
+				pidsLimit: 96,
+				readOnlyRootfs: true,
+			},
+		});
 	});
 
 	it("forwards an injected improvement compiler into Builder Workbench /traces", async () => {
