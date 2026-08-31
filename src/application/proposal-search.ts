@@ -87,6 +87,9 @@ export class ProposalSearchError extends Error {
 	}
 }
 
+/** Brand proving one gate went through {@link proposalSearchGate}. */
+const SEARCH_GATE = Symbol.for("ahde.proposal-search.gate");
+
 /**
  * The gate the search hands to anything it calls. A forbidden decision is not
  * declined, it throws: a search that reaches one is a bug, not a request.
@@ -94,6 +97,7 @@ export class ProposalSearchError extends Error {
 export function proposalSearchGate(gate: WorkbenchHumanGate): WorkbenchHumanGate {
 	const forbidden = new Set<string>(PROPOSAL_SEARCH_FORBIDDEN_DECISIONS);
 	return {
+		[SEARCH_GATE]: true,
 		async confirm(confirmation, signal) {
 			if (forbidden.has(confirmation.kind)) {
 				throw new ProposalSearchForbiddenDecisionError(confirmation.kind);
@@ -105,7 +109,22 @@ export function proposalSearchGate(gate: WorkbenchHumanGate): WorkbenchHumanGate
 			// candidate and that one meets the unchanged sealed gate.
 			throw new ProposalSearchForbiddenDecisionError("sealed holdout selection");
 		},
-	};
+	} as WorkbenchHumanGate;
+}
+
+/**
+ * A caller that hands the search a gate which could still approve a promotion
+ * is a bug, and the search refuses before it spends anything. Nothing the
+ * search calls asks a human for anything today; this makes the day one of them
+ * starts a refusal instead of an approval.
+ */
+export function assertProposalSearchGate(gate: WorkbenchHumanGate | undefined): void {
+	if (gate && !(SEARCH_GATE in (gate as object))) {
+		throw new ProposalSearchError(
+			"a search may only be handed a gate wrapped by proposalSearchGate; " +
+			"an unwrapped gate could approve a promotion the search must never ask for",
+		);
+	}
 }
 
 /** Why one hypothesis did not reach a matched verification. Never a call-site string. */
@@ -237,9 +256,9 @@ export interface ProposalSearchOptions {
 	executionBudget?: number;
 	actorId?: string;
 	/**
-	 * Handed to nothing today; kept so a caller that already wrapped a gate can
-	 * pass it and get the same refusal surface the loop has. The search itself
-	 * asks for nothing.
+	 * The gate anything nested may use. It must already be wrapped by
+	 * {@link proposalSearchGate}; the search checks that before it spends
+	 * anything, and asks for nothing itself.
 	 */
 	gate?: WorkbenchHumanGate;
 	/** One line per candidate, host-rendered. */
@@ -439,6 +458,7 @@ export async function runProposalSearch(
 	if (!Number.isInteger(options.repetitions) || options.repetitions < 1) {
 		throw new ProposalSearchError(`repetitions must be a positive integer, got ${options.repetitions}`);
 	}
+	assertProposalSearchGate(options.gate);
 
 	const plans = proposalRunIds.map((proposalRunId) =>
 		planFor(dependencies, runsRoot, proposalRunId, options.failureModeId));
@@ -463,6 +483,14 @@ export async function runProposalSearch(
 		rows.push(row);
 		const record = (line: string): void => options.onCandidate?.(line, row);
 
+		// Once the estimate is spent, the remaining hypotheses are not applied and
+		// not screened: an estimate the operator answered one question about is a
+		// bound on the whole search, not on its verifications.
+		if (exhausted) {
+			row.skipReason = "execution-budget";
+			record(searchCandidateLine(row));
+			continue;
+		}
 		if ("skip" in entry) {
 			row.skipReason = entry.skip;
 			record(searchCandidateLine(row));

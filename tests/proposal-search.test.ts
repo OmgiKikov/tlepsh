@@ -8,6 +8,7 @@ import {
 	PROPOSAL_SEARCH_STOP_MESSAGES,
 	ProposalSearchError,
 	ProposalSearchForbiddenDecisionError,
+	assertProposalSearchGate,
 	plannedProposalSearchExecutions,
 	proposalSearchGate,
 	renderProposalSearchTable,
@@ -252,12 +253,13 @@ describe("what a search refuses to spend", () => {
 		try {
 			const first = await recordFixtureProposal(fixture, READY_INSTRUCTION);
 			const second = await recordFixtureProposal(fixture, `${READY_INSTRUCTION} Again.`);
+			const third = await recordFixtureProposal(fixture, `${READY_INSTRUCTION} Once more.`);
 			const runAppliedCandidate = vi.fn(async () =>
 				verificationResult({ candidateId: "cand-1", verdict: "improved", scoreDelta: 0.4, costRatio: 1 }));
 			const result = await runProposalSearch(
-				// Two screens (2 cases each) plus one verification (2 tasks × 2 reps
-				// × 2 arms) fits; the second verification does not.
-				searchOptions(fixture, [first.runId, second.runId], first.failureModeId, { executionBudget: 12 }),
+				// One screen (2 cases) plus one verification (2 tasks × 2 reps × 2
+				// arms) fits in 12; the second verification does not.
+				searchOptions(fixture, [first.runId, second.runId, third.runId], first.failureModeId, { executionBudget: 12 }),
 				{
 					runCheapCheck: (async () =>
 						screenResult("promising", 2, "screen")) as unknown as ProposalSearchDependencies["runCheapCheck"],
@@ -266,11 +268,21 @@ describe("what a search refuses to spend", () => {
 			);
 
 			expect(runAppliedCandidate).toHaveBeenCalledTimes(1);
+			// The second learned the budget was gone only after its own screen; the
+			// third is not applied or screened at all, because an estimate the
+			// operator answered one question about bounds the whole search.
 			expect(result.rows[1]).toMatchObject({ status: "skipped", skipReason: "execution-budget" });
+			expect(result.rows[2]).toMatchObject({ status: "skipped", skipReason: "execution-budget" });
+			expect(result.rows[2]?.branch).toBeNull();
+			expect(result.rows[2]?.screen).toBeNull();
+			expect(result.rows[2]?.executions).toBe(0);
 			expect(result.stopReason).toBe("execution-budget-exhausted");
-			expect(renderProposalSearchTable(result)).toContain(
-				`Candidate 2 did not reach a verdict: ${PROPOSAL_SEARCH_SKIP_MESSAGES["execution-budget"]}.`,
-			);
+			const table = renderProposalSearchTable(result);
+			for (const ordinal of [2, 3]) {
+				expect(table).toContain(
+					`Candidate ${ordinal} did not reach a verdict: ${PROPOSAL_SEARCH_SKIP_MESSAGES["execution-budget"]}.`,
+				);
+			}
 		} finally {
 			await fixture.close();
 		}
@@ -319,6 +331,27 @@ describe("a search creates no release authority", () => {
 			expect(PROPOSAL_SEARCH_FORBIDDEN_DECISIONS).toContain(kind);
 		}
 	});
+
+	it("refuses to start when it was handed a gate that could still approve one", async () => {
+		const fixture = await improveFixture();
+		try {
+			const first = await recordFixtureProposal(fixture, READY_INSTRUCTION);
+			const second = await recordFixtureProposal(fixture, NO_OP_INSTRUCTION);
+			const raw = approvingGate();
+
+			await expect(runProposalSearch(
+				searchOptions(fixture, [first.runId, second.runId], first.failureModeId, { gate: raw }),
+			)).rejects.toThrow(/only be handed a gate wrapped by proposalSearchGate/);
+			// Nothing was applied before the refusal.
+			expect(branches(fixture.projectDir).filter((name) => name.startsWith("candidate/"))).toEqual([]);
+			expect(raw.confirm).not.toHaveBeenCalled();
+			// The wrapped one is accepted — and still refuses every release decision.
+			expect(() => assertProposalSearchGate(proposalSearchGate(raw))).not.toThrow();
+			expect(() => assertProposalSearchGate(undefined)).not.toThrow();
+		} finally {
+			await fixture.close();
+		}
+	}, 600_000);
 
 	it("screens and verifies for real, promotes nothing, and runs no sealed corpus", async () => {
 		const fixture = await improveFixture();
