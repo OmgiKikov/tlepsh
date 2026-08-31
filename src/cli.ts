@@ -1361,6 +1361,8 @@ async function main(): Promise<void> {
 			const out = arg("out");
 			if (out) {
 				const path = resolve(out);
+				// --out is the page, always: the file is the thing handed over,
+				// and --json only changes what this terminal prints.
 				writeFileSync(path, renderVersionPassportMarkdown(passport), "utf8");
 				console.error(`passport written to ${path}`);
 			}

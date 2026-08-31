@@ -447,7 +447,9 @@ as already adopted rather than repeating it.`,
 
 The client-facing version passport: what was promised, beside what was
 measured, for one shipped candidate. Markdown on stdout, and to --out when you
-give one; --json prints the projection behind it instead.
+give one; --json prints the projection behind it instead. --out is always the
+page — the file is what gets handed over, and --json only changes what this
+terminal prints.
 
 The subject is the newest candidate record with a promotion. --candidate names
 one explicitly — including one that was verified but never promoted, which the
