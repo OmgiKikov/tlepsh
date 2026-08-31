@@ -123,6 +123,7 @@ describe("Builder Pi runtime", () => {
 		const builderHome = join(projectDir, "builder-home");
 		const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 		const previousSessionDir = process.env.PI_CODING_AGENT_SESSION_DIR;
+		const previousSkipVersionCheck = process.env.PI_SKIP_VERSION_CHECK;
 		const previousCwd = process.cwd();
 		const observed: Record<string, unknown> = {};
 		const main = vi.fn(async (args, options) => {
@@ -131,6 +132,7 @@ describe("Builder Pi runtime", () => {
 			observed.cwd = process.cwd();
 			observed.agentDir = process.env.PI_CODING_AGENT_DIR;
 			observed.sessionDir = process.env.PI_CODING_AGENT_SESSION_DIR;
+			observed.skipVersionCheck = process.env.PI_SKIP_VERSION_CHECK;
 		});
 
 		await launchBuilderPi({
@@ -146,6 +148,7 @@ describe("Builder Pi runtime", () => {
 		expect(observed.cwd).toBe(realpathSync(projectDir));
 		expect(observed.agentDir).toBe(realpathSync(resolve(builderHome, "config")));
 		expect(observed.sessionDir).toBe(realpathSync(resolve(stateRoot, "builder-pi", "sessions")));
+		expect(observed.skipVersionCheck).toBe("1");
 		expect(existsSync(observed.agentDir as string)).toBe(true);
 		expect(existsSync(observed.sessionDir as string)).toBe(true);
 		expect(existsSync(resolve(stateRoot, "builder-pi", "config"))).toBe(false);
@@ -174,6 +177,7 @@ describe("Builder Pi runtime", () => {
 		expect(process.cwd()).toBe(previousCwd);
 		expect(process.env.PI_CODING_AGENT_DIR).toBe(previousAgentDir);
 		expect(process.env.PI_CODING_AGENT_SESSION_DIR).toBe(previousSessionDir);
+		expect(process.env.PI_SKIP_VERSION_CHECK).toBe(previousSkipVersionCheck);
 	});
 
 	it("resolves the Builder home from an explicit path, AHDE_HOME, or the user home", async () => {

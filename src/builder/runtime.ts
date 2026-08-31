@@ -291,10 +291,15 @@ export async function launchBuilderPi(options: LaunchBuilderPiOptions = {}): Pro
 	const previousCwd = process.cwd();
 	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 	const previousSessionDir = process.env.PI_CODING_AGENT_SESSION_DIR;
+	const previousSkipVersionCheck = process.env.PI_SKIP_VERSION_CHECK;
 	try {
 		process.chdir(projectDir);
 		process.env.PI_CODING_AGENT_DIR = agentDir;
 		process.env.PI_CODING_AGENT_SESSION_DIR = sessionDir;
+		// Pi is the embedded runtime, not the installed product. Its self-update
+		// notice tells AHDE users to run a binary they did not install and could
+		// move the runtime away from AHDE's pinned version.
+		process.env.PI_SKIP_VERSION_CHECK = "1";
 		await runMain(args, {
 			extensionFactories: [{ name: "ahde-builder", factory: extensionFactory }],
 			allowedBuiltinCommands: AHDE_BUILDER_BUILTIN_COMMANDS,
@@ -310,5 +315,7 @@ export async function launchBuilderPi(options: LaunchBuilderPiOptions = {}): Pro
 		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 		if (previousSessionDir === undefined) delete process.env.PI_CODING_AGENT_SESSION_DIR;
 		else process.env.PI_CODING_AGENT_SESSION_DIR = previousSessionDir;
+		if (previousSkipVersionCheck === undefined) delete process.env.PI_SKIP_VERSION_CHECK;
+		else process.env.PI_SKIP_VERSION_CHECK = previousSkipVersionCheck;
 	}
 }

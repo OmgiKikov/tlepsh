@@ -29,7 +29,7 @@
   },
   "scripts": {
 		"build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node -e \"const fs=require('fs'); const p='dist/cli.js'; const s=fs.readFileSync(p,'utf8'); if(!s.startsWith('#!')) fs.writeFileSync(p,'#!/usr/bin/env node\\n'+s)\" && chmod +x dist/cli.js",
-		"prepack": "npm run build",
+		"prepack": "node scripts/prepare-pack.mjs && npm run build",
     "test": "vitest run",
     "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json && vitest run",
 		"verify:package": "node scripts/verify-package.mjs",

@@ -35,9 +35,19 @@ Target Pi (the harness under test)
 There is no RL, fine-tuning, or autonomous self-promotion. AHDE improves
 versioned context and capabilities, not model weights.
 
-## Start locally
+## Install and start
 
-AHDE requires Node.js 22.19 or newer.
+AHDE requires Node.js 22.19 or newer and Git. The npm package includes its
+pinned Pi runtime; you do not install or update Pi separately.
+
+```bash
+npm install --global ahde
+mkdir my-agent
+cd my-agent
+ahde                            # describe the agent; guided setup happens here
+```
+
+To run AHDE from a source checkout instead:
 
 ```bash
 npm ci --ignore-scripts
@@ -45,12 +55,6 @@ npm run build
 mkdir my-agent
 cd my-agent
 ../dist/cli.js                 # describe the agent; guided setup happens here
-```
-
-When AHDE is installed globally or linked, the last command is simply:
-
-```bash
-ahde
 ```
 
 A typical improvement cycle after initial setup looks like this. There are

@@ -1,6 +1,7 @@
 # AHDE Roadmap — V2: measure, then improve, then integrate
 
-Status 2026-08-30. Branch `v2-measurement` (off master `9973bad`). This
+Status 2026-08-31. Integration branch `codex/integrate-polish` (off master
+`83535d8`). This
 supersedes the "after V1.8" ordering; the old item numbers are mapped to waves
 in the appendix so earlier references still resolve.
 
@@ -64,13 +65,13 @@ Where AHDE stands against practice (verified 2026-08-30):
 | Ahead | Behind |
 |---|---|
 | paired per-task bootstrap with a three-way verdict + sealed guardrail (Inspect added a single-run `ci()` only in Aug 2026) | judge–human agreement (LangSmith Align, Ragas `judge_alignment`, Inspect `krippendorff_alpha`) |
-| A/A calibration — no other tool has it | simulated user (Harbor `--user-agent`, τ²-bench, DeepEval simulator) |
+| A/A calibration; bounded simulated-user dialogue cases with evaluator preflight | partial credit and semantic failure clustering |
 | holdout hidden from the optimizer — nobody enforces it | ~~multi-candidate search (GEPA, Meta-Harness, SkillOpt)~~ — landed as `ahde search` / `improve --candidates N` |
 | infrastructure error budget, immutable provenance, git-tag promotion | partial credit, cost/latency in the verdict, regrade without rerun (Harbor `regrade`), semantic failure clustering, CI plumbing |
 
 ## Now vs. after — the operator's experience
 
-| | Now (master 9973bad) | After wave 1 | After wave 2 | After wave 3 |
+| | Now (integration) | After wave 1 | After wave 2 | After wave 3 |
 |---|---|---|---|---|
 | Gates | 7 dialogs: approve, publish, apply, review, promote, adopt, next | 3: start testing · apply a change · ship | same | same, plus a web gate for the platform |
 | Verbs | 14 slash commands, stage names in the header | `/test` `/fix` `/ship`; header says the next verb | `ahde improve` runs cycles by itself | headless API |
@@ -80,14 +81,15 @@ Where AHDE stands against practice (verified 2026-08-30):
 | Trying a fix | one proposal → full verification | — | `ahde check` screens the failed cases first; `ahde improve` runs the cycle; `ahde search` / `--candidates N` puts 2–4 candidates in a Pareto table | — |
 | Proposer memory | sees the current failures and nothing else | — | reads what was already tried and refuses to re-run a losing experiment | — |
 | Builder's hands | semantic intents compiled by the host | — | **done** — edits files in a bound worktree, runs the tool it wrote; the proposal is the diff | — |
-| Chat agents | seeded history, grade the next reply | — | simulated user with a goal and persona | — |
+| Chat agents | seeded history or a simulated user with a bounded goal, persona and turn budget | — | — | — |
 | Target sandbox | best-effort sandbox-exec/bwrap for `bash` | — | — | **Docker landed** (`execution.container`, always pinned by digest); Gondolin behind the same interface |
 | Docs | 27 KB README, 35 invariants | — | — | one-page README with a real transcript; ~15 invariants |
 
 ## Wave 1 — measurement you can trust (in progress)
 
-Four lanes in worktrees off master, merged into `v2-measurement` after
-`npm run check`, `npm run demo`, `npm run verify:package` are green.
+The worktree lanes are merged into `codex/integrate-polish`; the branch is
+accepted only after `npm run check`, `npm run demo`, and
+`npm run verify:package` are green together.
 
 1. **regrade** — `ahde regrade <eval-run> --target . [--graders …]` re-scores
    the recorded traces of an eval run with new graders; no Target calls; a
@@ -176,8 +178,11 @@ branch; the closed-loop Pi test passes with exactly three confirmations.
    receipt, apply, verify and promote chain. The intent compiler stays as the
    fallback for single-file edits and remains the only path to
    `execution.configure` (`docs/V1_9_TOOL_WORKSHOP.md`, old item 0c).
-10. **Simulated user** — a second model with a goal and persona for N turns;
-    graders over the whole transcript (old item 0b).
+10. **Simulated user** — *landed*. A second, separately configured evaluator
+    model follows a bounded goal and optional persona/stop condition for N
+    turns; graders read the whole transcript. Readiness fails before spending
+    Target calls when a selected case needs that model but its configuration or
+    credential is missing (old item 0b).
 11. **Host-side sealed generation** — an evaluator-model call whose output
     never enters the Builder's context; the human edits and seals (old item 3).
 
@@ -218,29 +223,30 @@ branch; the closed-loop Pi test passes with exactly three confirmations.
     *Docker backend landed (`src/target/container-backend.ts`). Declaring
     `execution.container: { runtime, image, platform, memoryMb?, cpus?,
     pidsLimit?, readOnlyRootfs? }` selects it — there is no second switch that
-    could disagree with the block. The built-in `bash`, every declared tool and
-    every declared `setup` step then run as*
+    could disagree with the block. The built-in `bash` and each declared tool
+    or `setup` step then run as*
     `docker run --rm --name <host-minted> --platform <os/arch> --network none|bridge --user <non-root> --cap-drop ALL
     --security-opt no-new-privileges --read-only --tmpfs /tmp --memory --cpus
     --pids-limit -v <workspace>:/workspace:ro|rw -v <scratch>:/scratch:rw
-    -v <toolHome>:/tools:ro|rw -e … -w /workspace --entrypoint <argv0> <image>
+    -v <toolHome>:/tools:ro|rw --env-file <host-private-file> -w /workspace --entrypoint <argv0> <image>
     <argv…>`*, with an environment built from nothing —* `PATH` `HOME` `TMPDIR`
-    `LANG` `TERM` *plus the declared allowlist, one* `-e NAME=value` *at a time;
-    the host's environment is never inherited and no host path enters the
-    container's argv, cwd or environment. Every container image is pinned as
+    `LANG` `TERM` *plus the declared allowlist in a private mode-0600,
+    invocation-scoped env-file. Values never enter Docker's argv; the file is
+    removed after the invocation. The host's environment is never inherited
+    and no host path enters the container's argv, cwd or environment. Every container image is pinned as
     `name@sha256:…`, and its OCI platform is explicit; a mutable tag or
     host-native platform selection is refused because neither can identify
     comparable evidence. `sandbox: required` fails closed with the runtime's exact reason when no
-    runtime answers the bounded version/OS/architecture probe (once
-    per process, bounded); `best-effort` falls back to the host OS sandbox with
+    runtime answers the bounded server + daemon/context/kernel/cgroup identity
+    probe (cached only for that exact runtime environment); `best-effort` falls back to the host OS sandbox with
     a warning and a different fingerprint when the runtime is unavailable, so a
     fallback never masquerades as container evidence. `ahde validate` prints
     `sandbox: container (docker 27.1, server linux/arm64, target linux/arm64,
     image pinned)` or the fail-closed reason.
     Container start latency is part of the run's `latencyMs` — it is real.
-    Timeout, abort, and output overflow force-remove the exact named container
-    through the daemon before killing the attached CLI, so a bounded run cannot
-    leave an unbounded orphan behind.*
+    Timeout, abort, and output overflow first terminate and await the attached
+    runtime CLI, then force-remove the exact named container through the daemon
+    with bounded retries, so cleanup cannot race a still-running client.*
 
     ***A container backend changes the execution fingerprint and therefore
     starts a new comparability class: existing host baselines are not reusable
@@ -300,7 +306,7 @@ branch; the closed-loop Pi test passes with exactly three confirmations.
 - **Builder model.** `ahde` → `/login` → `/model` on a frontier model; the
   Target stays cheap. `~/.ahde` currently has no default model and no
   provider login.
-- **Merging `v2-measurement` into master.**
+- **Landing `codex/integrate-polish` on master.**
 
 ## Definition of done for V2
 
@@ -341,7 +347,7 @@ wrap Pi's judges; pin Pi upgrades (0.84.4 changes nothing AHDE depends on).
 
 | Old | Item | Now |
 |---|---|---|
-| 0 | dialogue cases | landed (V1.9); simulated user → wave 2 (#10) |
+| 0 | dialogue cases | landed (V1.9); bounded simulated user also landed (#10) |
 | 0b | any data → benchmark | landed (V1.9) |
 | 0c | tool workshop | core landed; Builder surface → wave 2 (#9) |
 | 1 | feedback becomes tests | landed (marks); `feedback import` folded into any-data |

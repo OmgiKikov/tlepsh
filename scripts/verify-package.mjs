@@ -405,9 +405,10 @@ if (targetTools.sandboxFingerprint !== targetTools.sandboxBackend) {
 const containerPolicy = {
   runtime: "docker",
   image: "registry.example.com/ahde/target@sha256:" + "c".repeat(64),
+  platform: "linux/amd64",
   readOnlyRootfs: true,
 };
-const containerArgs = dockerBackend.invocation({
+const containerInvocation = dockerBackend.invocation({
   policy: containerPolicy,
   mounts: { workspaceDir: targetDir, scratchDir: toolScratch },
   network: "deny",
@@ -415,20 +416,44 @@ const containerArgs = dockerBackend.invocation({
   cwd: targetDir,
   argv: ["/bin/sh", "-c", "true"],
   hostEnvironment: { PATH: "/usr/bin:/bin" },
-}).args;
+});
+const containerArgs = containerInvocation.args;
 for (const expected of ["--rm", "--network", "none", "--cap-drop", "ALL", "--read-only", "-w", "/workspace"]) {
   if (!containerArgs.includes(expected)) {
     throw new Error(\`installed container backend argv is missing \${expected}: \${containerArgs.join(" ")}\`);
   }
 }
-if (!containerArgs.includes("SMOKE_VALUE=visible")) {
-  throw new Error("installed container backend did not pass the declared allowlist value with -e");
+if (containerArgs.some((argument) => argument.includes("SMOKE_VALUE=visible"))) {
+	throw new Error("installed container backend exposed a declared environment value in Docker argv");
+}
+const environmentFlag = containerArgs.indexOf("--env-file");
+const environmentFile = environmentFlag >= 0 ? containerArgs[environmentFlag + 1] : undefined;
+if (!environmentFile || !readFileSync(environmentFile, "utf8").includes("SMOKE_VALUE=visible\\n")) {
+	throw new Error("installed container backend did not pass the declared allowlist through its private env-file");
 }
 const hostMentions = containerArgs.filter((argument) => argument.includes(targetDir) || argument.includes(toolScratch));
 if (hostMentions.some((argument) => !/:\\/(workspace|scratch|tools):(ro|rw)$/.test(argument))) {
   throw new Error(\`installed container backend leaked a host path outside a mount spec: \${hostMentions.join(" ")}\`);
 }
-if (containerSandboxFingerprint(containerPolicy) !== "container:docker@sha256:" + "c".repeat(64)) {
+containerInvocation.dispose?.();
+if (existsSync(environmentFile)) {
+	throw new Error("installed container backend did not remove its private env-file");
+}
+const runtimeIdentity = {
+	version: "27.1.0",
+	os: "linux",
+	arch: "amd64",
+	daemonId: "package-smoke-daemon",
+	kernelVersion: "6.10.0-package-smoke",
+	driver: "overlay2",
+	cgroupDriver: "cgroupfs",
+	cgroupVersion: "2",
+	securityOptionsHash: "d".repeat(64),
+	contextHash: "e".repeat(64),
+};
+if (!containerSandboxFingerprint(containerPolicy, runtimeIdentity).startsWith(
+	"container:docker@sha256:" + "c".repeat(64) + ":config:",
+)) {
   throw new Error("installed container backend computed the wrong sandbox fingerprint");
 }
 const missingRuntime = { runtime: "docker", available: false, reason: "docker executable not found on PATH" };
