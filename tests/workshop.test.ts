@@ -12,6 +12,8 @@ import {
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
+import { createServer } from "node:net";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -24,11 +26,16 @@ import {
 import { inspectTargetAuthoringContext } from "../src/application/target-authoring-context.js";
 import { CANDIDATE_SCOPE_POLICY } from "../src/application/candidate-experiment.js";
 import { recordBuilderAuthoredProposal } from "../src/application/builder-authoring.js";
-import { applyBuilderProposal, listBuilderProposalAdmissions } from "../src/application/builder-proposal.js";
+import {
+	applyBuilderProposal,
+	listBuilderProposalAdmissions,
+	loadBuilderProposalRun,
+} from "../src/application/builder-proposal.js";
 import { validateCandidateProposal } from "../src/builders/adapters.js";
 import { withDetachedWorktree } from "../src/git/experiment-worktree.js";
-import { createAhdeWorkbench } from "../src/workbench/workbench.js";
-import type { WorkbenchHumanGate } from "../src/workbench/types.js";
+import { createAhdeWorkbench, type AhdeWorkbench } from "../src/workbench/workbench.js";
+import type { WorkbenchConfirmation, WorkbenchHumanGate } from "../src/workbench/types.js";
+import { createAhdeBuilderTools } from "../src/builder/extension.js";
 import { loadTarget } from "../src/manifest.js";
 import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 
@@ -62,13 +69,24 @@ evalSuite:
   graders: evals/graders.yaml
 `;
 
-function fixture(): string {
+/**
+ * The permissive Target: it may read a credential and it may reach the network.
+ * Everything the workshop refuses below, it refuses despite this manifest.
+ */
+const PERMISSIVE_MANIFEST = MANIFEST
+	.replace("environmentAllowlist: []", "environmentAllowlist: [WORKSHOP_TARGET_SECRET]")
+	.replace("network: deny", "network: allow");
+
+function fixture(options: { manifest?: string; gitignore?: string } = {}): string {
 	const dir = makeTargetFixture(baseFixtureFiles({
-		"manifest.yaml": MANIFEST,
-		".gitignore": ".ahde/\nruns/\ndata/private/\n",
+		"manifest.yaml": options.manifest ?? MANIFEST,
+		".gitignore": options.gitignore ?? ".ahde/\nruns/\ndata/private/\n",
 		"AGENTS.md": "# Workshop Target\n\nAnswer briefly.\n",
+		".env": "OPERATOR_SECRET=do-not-read-me\n",
 	}).filter((file) => file.path !== "skills/check-dbo/SKILL.md" && file.path !== "bin/check_dbo"));
 	created.push(dir);
+	mkdirSync(join(dir, "imports"), { recursive: true });
+	writeFileSync(join(dir, "imports/tickets.jsonl"), "{\"input\":\"private\"}\n", "utf8");
 	execFileSync("git", ["-C", dir, "add", "-A"]);
 	execFileSync("git", [
 		"-C", dir, "-c", "user.name=test", "-c", "user.email=test@test", "commit", "--amend", "--no-edit", "-q",
@@ -248,8 +266,8 @@ describe("a workshop refuses every path outside the Harness scope", () => {
 				expect(() => workshop.write({ path, content: "x\n" }), `write ${path}`)
 					.toThrow(new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 			}
-			// The refusal is a refusal: nothing was created on the way to it.
-			expect(existsSync(join(workshop.path, ".env"))).toBe(false);
+			// The refusal is a refusal: nothing was created or rewritten on the way to it.
+			expect(readFileSync(join(workshop.path, ".env"), "utf8")).toBe("OPERATOR_SECRET=do-not-read-me\n");
 			expect(readFileSync(join(workshop.path, "evals/graders.yaml"), "utf8")).toBe("defaults: []\n");
 		} finally {
 			workshop.dispose();
@@ -353,6 +371,225 @@ describe("the workshop shell", () => {
 			workshop.dispose();
 		}
 	}, 120_000);
+});
+
+describe("the authoring profile", () => {
+	it("hands pre-review code no Target secret, whatever the manifest allows", async () => {
+		const dir = fixture({ manifest: PERMISSIVE_MANIFEST });
+		process.env.WORKSHOP_TARGET_SECRET = "target-secret-value";
+		process.env.WORKSHOP_UNDECLARED_TOKEN = "undeclared-secret-value";
+		const workshop = open(dir);
+		try {
+			let environment;
+			try {
+				environment = await workshop.bash({ argv: ["sh", "-c", "env"] });
+			} catch (error) {
+				if (sandboxUnavailable(error)) return;
+				throw error;
+			}
+			expect(environment.exitCode).toBe(0);
+			// The Target declares this one. The workshop still does not pass it.
+			expect(environment.stdout).not.toContain("target-secret-value");
+			expect(environment.stdout).not.toContain("WORKSHOP_TARGET_SECRET");
+			expect(environment.stdout).not.toContain("undeclared-secret-value");
+			// Exactly the fixed set, and nothing that could be a credential.
+			expect(environment.environment).toEqual(["HOME", "LANG", "LC_ALL", "PATH", "TERM", "TMPDIR"]);
+			const names = environment.stdout.split("\n")
+				.map((line) => line.slice(0, line.indexOf("=")))
+				.filter((name) => name.length > 0 && !["PWD", "SHLVL", "_", "OLDPWD"].includes(name))
+				.sort();
+			expect(names).toEqual(["HOME", "LANG", "LC_ALL", "PATH", "TERM", "TMPDIR"]);
+		} finally {
+			delete process.env.WORKSHOP_TARGET_SECRET;
+			delete process.env.WORKSHOP_UNDECLARED_TOKEN;
+			workshop.dispose();
+		}
+	}, 120_000);
+
+	it("denies the network even when the Target's execution policy allows it", async () => {
+		const dir = fixture({ manifest: PERMISSIVE_MANIFEST });
+		expect(loadTarget(dir).manifest.execution.network).toBe("allow");
+		const server = createServer((socket) => socket.end("reachable\n"));
+		await new Promise<void>((settle) => server.listen(0, "127.0.0.1", settle));
+		const port = (server.address() as AddressInfo).port;
+		const workshop = open(dir);
+		try {
+			let reach;
+			try {
+				reach = await workshop.bash({
+					argv: ["sh", "-c", `curl --max-time 5 -s http://127.0.0.1:${port}/ && echo REACHED`],
+					timeoutMs: 30_000,
+				});
+			} catch (error) {
+				if (sandboxUnavailable(error)) return;
+				throw error;
+			}
+			expect(reach.network).toBe("deny");
+			expect(reach.stdout).not.toContain("REACHED");
+			expect(reach.stdout).not.toContain("reachable");
+			expect(reach.exitCode).not.toBe(0);
+		} finally {
+			workshop.dispose();
+			await new Promise<void>((settle) => server.close(() => settle()));
+		}
+	}, 120_000);
+
+	it("mounts the authorable projection alone; the protected paths are not there to refuse", async () => {
+		const dir = fixture();
+		// They really do exist in the worktree the workshop was cut from.
+		const workshop = open(dir);
+		try {
+			expect(existsSync(join(workshop.path, "evals/graders.yaml"))).toBe(true);
+			expect(existsSync(join(workshop.path, ".env"))).toBe(true);
+			expect(existsSync(join(workshop.path, "imports/tickets.jsonl"))).toBe(true);
+			expect(existsSync(join(workshop.path, ".git"))).toBe(true);
+			let listing;
+			try {
+				listing = await workshop.bash({
+					argv: ["sh", "-c", "ls -A; for p in evals .env .git imports runs .ahde; do [ -e \"$p\" ] && echo \"PRESENT $p\"; done; exit 0"],
+				});
+			} catch (error) {
+				if (sandboxUnavailable(error)) return;
+				throw error;
+			}
+			expect(listing.exitCode).toBe(0);
+			expect(listing.stdout).not.toContain("PRESENT");
+			expect(listing.stdout.trim().split("\n").sort()).toEqual([
+				"AGENTS.md",
+				"bin",
+				"data",
+				"manifest.yaml",
+				"skills",
+				"tools",
+			]);
+			expect([...listing.mounted]).toEqual([
+				"AGENTS.md",
+				"skills/**",
+				"tools/**",
+				"bin/**",
+				"data/**",
+				"manifest.yaml",
+			]);
+			// Git is host-side. There is no repository in the mount to run it against.
+			const git = await workshop.bash({ argv: ["sh", "-c", "git rev-parse --show-toplevel 2>&1; exit 0"] });
+			expect(git.stdout).not.toContain(workshop.path);
+		} finally {
+			workshop.dispose();
+		}
+	}, 120_000);
+
+	it("applies the documented ulimit caps the backend can enforce, and says so when it cannot", async () => {
+		const dir = fixture();
+		const workshop = open(dir);
+		try {
+			let capped;
+			try {
+				capped = await workshop.bash({ argv: ["sh", "-c", "ulimit -t; ulimit -f; ulimit -n"] });
+			} catch (error) {
+				if (sandboxUnavailable(error)) return;
+				throw error;
+			}
+			expect(capped.exitCode).toBe(0);
+			const [cpu, fileBlocks, openFiles] = capped.stdout.trim().split("\n");
+			expect(cpu).toBe("120");
+			expect(fileBlocks).toBe(String((256 * 1024 * 1024) / 512));
+			expect(openFiles).toBe("512");
+			expect(capped.limits?.limits).toEqual({
+				cpuSeconds: 120,
+				fileSizeBytes: 256 * 1024 * 1024,
+				openFiles: 512,
+				processes: 256,
+			});
+			expect(capped.limits?.applied).toEqual(expect.arrayContaining(["t", "f", "n"]));
+			// `ulimit -u` counts the operator's own processes under sandbox-exec, so
+			// that backend reports it unenforced instead of applying a booby trap.
+			if (capped.sandbox === "bwrap") {
+				expect(capped.limits?.unenforced).toEqual([]);
+				expect(capped.note).toBeNull();
+			} else {
+				expect(capped.limits?.unenforced).toEqual(["u"]);
+				expect(capped.note).toMatch(/could not enforce ulimit -u/);
+			}
+		} finally {
+			workshop.dispose();
+		}
+	}, 120_000);
+});
+
+describe("a tool that wants more than the profile grants", () => {
+	const NETWORK_DESCRIPTOR = LOOKUP_DESCRIPTOR
+		.replace("setup:\n  argv: [sh, -c, \"cp lib.sh prepared.sh\"]\n  timeoutMs: 20000\n  network: deny\n",
+			"setup:\n  argv: [sh, -c, \"cp lib.sh prepared.sh\"]\n  timeoutMs: 20000\n  network: allow\n");
+
+	function workbenchOn(dir: string): AhdeWorkbench {
+		return createAhdeWorkbench({
+			projectDir: dir,
+			stateRoot: join(dir, ".ahde"),
+			runsRoot: join(dir, "runs"),
+			projectId: "workshop-target",
+		});
+	}
+
+	it("refuses the try by default and runs it once the host says yes", async () => {
+		const dir = fixture({ manifest: PERMISSIVE_MANIFEST });
+		const workbench = workbenchOn(dir);
+		const workshop = open(dir);
+		// The Workbench needs its own open workshop, so drive it through the
+		// application object the host actually calls.
+		(workbench as unknown as { workshop: BuilderWorkshop }).workshop = workshop;
+		try {
+			writeLookupTool(workshop);
+			workshop.write({ path: "tools/lookup/tool.yaml", content: NETWORK_DESCRIPTOR });
+			const requirement = workshop.describeToolGrant("lookup");
+			expect(requirement?.network).toBe(true);
+			expect(requirement?.wants).toEqual(["network access"]);
+
+			// No host, no exception: the profile simply refuses.
+			await expect(workbench.workshopTry({ tool: "lookup", input: { term: "refunds" } }))
+				.rejects.toThrow(/wants network access.*no host here to allow it once/s);
+
+			// A host that declines is still a refusal.
+			const declining: WorkbenchHumanGate = {
+				confirm: vi.fn(async () => ({ approved: false })),
+				selectSealed: vi.fn(async () => ({ approved: false })),
+			};
+			await expect(workbench.workshopTry({ tool: "lookup", input: { term: "refunds" } }, { gate: declining }))
+				.rejects.toThrow(/did not allow lookup network access/);
+
+			// One question, asked exactly once, in the operator's words.
+			const asked: WorkbenchConfirmation[] = [];
+			const allowing: WorkbenchHumanGate = {
+				confirm: vi.fn(async (confirmation: WorkbenchConfirmation) => {
+					asked.push(confirmation);
+					return { approved: true, actorId: "local:test-human" };
+				}),
+				selectSealed: vi.fn(async () => ({ approved: false })),
+			};
+			let tried;
+			try {
+				tried = await workbench.workshopTry({ tool: "lookup", input: { term: "refunds" } }, { gate: allowing });
+			} catch (error) {
+				if (sandboxUnavailable(error)) return;
+				throw error;
+			}
+			expect(tried.exitCode).toBe(0);
+			expect(asked).toHaveLength(1);
+			expect(asked[0]?.kind).toBe("workshop-grant");
+			expect(asked[0]?.policy).toBe("one-question");
+			expect(asked[0]?.question).toBe("This tool wants network access to run its setup — allow once?");
+
+			// Granted once means granted once: the second try does not ask again.
+			await workbench.workshopTry({ tool: "lookup", input: { term: "refunds" } }, { gate: allowing });
+			expect(asked).toHaveLength(1);
+
+			// And the exception travels into the diff the operator applies.
+			const compiled = workshop.compile({ summary: "A tool that fetches its dependency", validationPlan: ["Re-run the basket"] });
+			expect(compiled.proposal.risks.some((risk) => /operator allowed lookup network access once/.test(risk))).toBe(true);
+			expect(compiled.proposal.risks.some((risk) => risk.includes("local:test-human"))).toBe(true);
+		} finally {
+			workshop.dispose();
+		}
+	}, 180_000);
 });
 
 describe("try_tool closes the write → run → fix loop", () => {
@@ -572,4 +809,273 @@ describe("the workshop is bound to one attempt", () => {
 		expect(() => workshop.read("AGENTS.md")).toThrow(/is closed/);
 		rmSync(join(dir, "runs"), { recursive: true, force: true });
 	});
+});
+
+describe("the reviewed diff is the code that ran", () => {
+	it("refuses to close when a file inside the scope is one Git ignores", async () => {
+		const dir = fixture({ gitignore: ".ahde/\nruns/\nnode_modules/\n" });
+		const workshop = open(dir);
+		try {
+			writeLookupTool(workshop);
+			// A dependency directory the tool needs at runtime and Git will not
+			// carry. It would silently vanish from the reviewed proposal.
+			workshop.write({ path: "tools/lookup/node_modules/left-pad/index.js", content: "module.exports = 1;\n" });
+			expect(workshop.ignoredInScope()).toEqual(["tools/lookup/node_modules/left-pad/index.js"]);
+			try {
+				const tried = await workshop.tryTool({ tool: "lookup", input: { term: "refunds" } });
+				expect(tried.exitCode).toBe(0);
+				expect(tried.source.snapshotHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+			} catch (error) {
+				if (!sandboxUnavailable(error)) throw error;
+			}
+			expect(() => workshop.compile({ summary: "A tool with a dependency" }))
+				.toThrow(/tools\/lookup\/node_modules\/left-pad\/index\.js.*Git ignores/s);
+			// Removing it makes the close legal again, so the refusal is a fix, not a wall.
+			workshop.write({ path: "tools/lookup/node_modules/left-pad/index.js", remove: true });
+			expect(workshop.compile({ summary: "A tool with no dependency", validationPlan: ["Re-run"] }).changes.length)
+				.toBeGreaterThan(0);
+		} finally {
+			workshop.dispose();
+		}
+	}, 180_000);
+
+	it("catches an ignored file a command produced, not only one a write produced", async () => {
+		const dir = fixture({ gitignore: ".ahde/\nruns/\nbuild/\n" });
+		const workshop = open(dir);
+		try {
+			workshop.write({ path: "tools/lookup/tool.yaml", content: LOOKUP_DESCRIPTOR });
+			try {
+				const made = await workshop.bash({
+					argv: ["sh", "-c", "mkdir -p tools/lookup/build && printf 'artifact\\n' > tools/lookup/build/out"],
+				});
+				expect(made.exitCode).toBe(0);
+			} catch (error) {
+				if (sandboxUnavailable(error)) return;
+				throw error;
+			}
+			expect(readFileSync(join(workshop.path, "tools/lookup/build/out"), "utf8")).toBe("artifact\n");
+			expect(workshop.ignoredInScope()).toEqual(["tools/lookup/build/out"]);
+			expect(() => workshop.compile({ summary: "Built artifact" }))
+				.toThrow(/tools\/lookup\/build\/out.*Git ignores/s);
+		} finally {
+			workshop.dispose();
+		}
+	}, 180_000);
+
+	it("compiles the diff from one snapshot and reports the snapshot a try ran against", () => {
+		const dir = fixture();
+		const workshop = open(dir);
+		try {
+			const empty = workshop.snapshotHash();
+			workshop.write({ path: "AGENTS.md", content: "# Workshop Target\n\nAnswer READY.\n" });
+			const written = workshop.snapshotHash();
+			expect(written).not.toBe(empty);
+			// Writing the same bytes back is the same snapshot, byte for byte.
+			workshop.write({ path: "AGENTS.md", content: "# Workshop Target\n\nAnswer READY.\n" });
+			expect(workshop.snapshotHash()).toBe(written);
+			expect(workshop.status().snapshotHash).toBe(written);
+			const compiled = workshop.compile({ summary: "Make it explicit", validationPlan: ["Re-run"] });
+			// What was compiled is exactly what the snapshot held.
+			expect(compiled.changes.map((change) => change.path)).toEqual(["AGENTS.md"]);
+			expect(compiled.proposal.changes[0]?.unifiedDiff).toContain("Answer READY.");
+			expect(workshop.snapshotHash()).toBe(written);
+		} finally {
+			workshop.dispose();
+		}
+	});
+
+	it("marks every registered Builder tool sequential, so write and close cannot race", () => {
+		const dir = fixture();
+		const tools = createAhdeBuilderTools({
+			projectDir: dir,
+			stateRoot: join(dir, ".ahde"),
+			runsRoot: join(dir, "runs"),
+			projectId: "workshop-target",
+		});
+		expect(tools.map((tool) => tool.name)).toEqual([
+			"ahde_workbench_view",
+			"ahde_workbench_submit",
+			"ahde_workbench_decide",
+			"ahde_workshop_read",
+			"ahde_workshop_write",
+			"ahde_workshop_bash",
+			"ahde_workshop_try",
+		]);
+		for (const tool of tools) {
+			expect(tool.executionMode, tool.name).toBe("sequential");
+		}
+	});
+});
+
+describe("the construction workshop", () => {
+	const SPEC = {
+		schemaVersion: 1 as const,
+		title: "Workshop agent",
+		purpose: "Answer with the reviewed lookup.",
+		users: ["operator"],
+		jobs: ["answer one request"],
+		inputs: ["a request"],
+		allowedActions: ["call lookup"],
+		successCriteria: ["answer contains READY"],
+		constraints: ["no network"],
+		openQuestions: [] as string[],
+	};
+
+	function approvingGate(): WorkbenchHumanGate {
+		return {
+			confirm: vi.fn(async () => ({ approved: true, actorId: "local:test-human" })),
+			selectSealed: vi.fn(async () => ({ approved: false })),
+		};
+	}
+
+	/** A project whose Spec is approved and whose agent has not been built yet. */
+	async function specApproved(dir: string): Promise<{
+		workbench: AhdeWorkbench;
+		stateRoot: string;
+		runsRoot: string;
+		gate: WorkbenchHumanGate;
+		approvedSpecId: string;
+	}> {
+		const stateRoot = join(dir, ".ahde");
+		const runsRoot = join(dir, "runs");
+		mkdirSync(runsRoot, { recursive: true });
+		const gate = approvingGate();
+		const workbench = createAhdeWorkbench({ projectDir: dir, stateRoot, runsRoot, projectId: "workshop-target" });
+		await workbench.submit({ kind: "spec-draft", spec: SPEC });
+		const approved = await workbench.decide({ kind: "approve-spec", reason: "Approve so the agent can be built" }, gate);
+		return { workbench, stateRoot, runsRoot, gate, approvedSpecId: String(approved.result.approvedSpecId) };
+	}
+
+	it("opens on the approved Spec, before any evaluation has ever run", async () => {
+		const dir = fixture();
+		const { workbench } = await specApproved(dir);
+		try {
+			expect((await workbench.view()).stage).toBe("corpus-design");
+			const opened = await workbench.submit({ kind: "workshop-open" });
+			expect(opened.kind).toBe("workshop-open");
+			expect(opened.artifact?.basis).toBe("construction");
+			expect(workbench.workshopStatus().basis).toBe("construction");
+			// The four hands work here exactly as they do after a diagnosis.
+			workbench.workshopWrite({ path: "AGENTS.md", content: "# Workshop Target\n\nAnswer READY.\n" });
+			expect(workbench.workshopRead({ path: "AGENTS.md" }).content).toContain("READY");
+		} finally {
+			workbench.closeWorkshop();
+		}
+	}, 120_000);
+
+	it("closes into the ordinary proposal with no evidence behind it", async () => {
+		const dir = fixture();
+		const { workbench, stateRoot, runsRoot } = await specApproved(dir);
+		await workbench.submit({ kind: "workshop-open" });
+		workbench.workshopWrite({ path: "AGENTS.md", content: "# Workshop Target\n\nAnswer READY.\n" });
+		workbench.workshopWrite({ path: "tools/lookup/tool.yaml", content: LOOKUP_DESCRIPTOR });
+		workbench.workshopWrite({ path: "tools/lookup/run", content: LOOKUP_RUN });
+		workbench.workshopWrite({ path: "tools/lookup/lib.sh", content: "ANSWER=authored\n" });
+
+		// A construction close may not cite evidence that does not exist.
+		await expect(workbench.submit({
+			kind: "workshop-close",
+			summary: "Build the first harness",
+			source: {
+				algorithmId: "exact-eval-signals-v1",
+				evalRunId: "erun_0000000000000000",
+				diagnosisId: "diag_0000000000000000",
+				briefId: "brief-000000000000000000000000",
+			},
+			failureModeIds: ["failure-mode-000000000000000000000000"],
+			validationPlan: ["Run the first basket"],
+		})).rejects.toThrow(/construction workshop has no evaluation to cite/);
+
+		const closed = await workbench.submit({
+			kind: "workshop-close",
+			summary: "Build the first harness from the approved Spec",
+			risks: ["Nothing has been measured yet."],
+			validationPlan: ["Draft a basket and run it."],
+		});
+		expect(closed.artifact?.basis).toBe("construction");
+		expect(closed.artifact?.sourceEvalRunId).toBeNull();
+		expect(closed.artifact?.failureModeIds).toEqual([]);
+		expect(closed.view.stage).toBe("proposal-review");
+		const runId = String(closed.artifact?.runId);
+
+		// Recorded through the one canonical service, with no source evidence…
+		const record = loadBuilderProposalRun(runsRoot, runId);
+		expect(record.request.source).toBeNull();
+		expect(record.result.proposal?.decision).toBe("propose");
+		// …and admitted through the same receipt every other proposal passes.
+		const admission = listBuilderProposalAdmissions(stateRoot, "workshop-target")
+			.find((entry) => entry.runId === runId);
+		expect(admission).toBeDefined();
+		expect(admission?.proposalSha256).toBe(record.artifacts.proposal?.sha256);
+
+		// And the human apply gate is the unchanged one.
+		const applied = applyBuilderProposal({
+			repoDir: dir,
+			runsRoot,
+			runId,
+			requestedBranch: "candidate/construction",
+			actor: { kind: "human", id: "local:test-human" },
+			reason: "Build the agent the Spec describes",
+		});
+		expect(applied.receipt.paths).toEqual([
+			"AGENTS.md",
+			"manifest.yaml",
+			"tools/lookup/lib.sh",
+			"tools/lookup/run",
+			"tools/lookup/tool.yaml",
+		]);
+		expect(worktreeCount(dir)).toBe(1);
+	}, 180_000);
+
+	it("reopens a closed proposal into a new workshop seeded from its diff", async () => {
+		const dir = fixture();
+		const { workbench, gate } = await specApproved(dir);
+		await workbench.submit({ kind: "workshop-open" });
+		workbench.workshopWrite({ path: "AGENTS.md", content: "# Workshop Target\n\nFirst attempt.\n" });
+		const closed = await workbench.submit({
+			kind: "workshop-close",
+			summary: "First attempt at the harness",
+			validationPlan: ["Draft a basket"],
+		});
+		const runId = String(closed.artifact?.runId);
+		// The operator reads the diff and wants it changed rather than applied.
+		await workbench.decide({ kind: "discard-proposal", runId, reason: "Close, but the wording is wrong" }, gate);
+
+		const reopened = await workbench.submit({ kind: "workshop-open", fromProposalRunId: runId });
+		expect(reopened.artifact?.fromProposalRunId).toBe(runId);
+		// The workshop already holds exactly what that proposal changed.
+		expect(workbench.workshopRead({ path: "AGENTS.md" }).content).toBe("# Workshop Target\n\nFirst attempt.\n");
+		expect(reopened.artifact?.changedPaths).toEqual(["modified AGENTS.md"]);
+		workbench.closeWorkshop();
+	}, 180_000);
+
+	it("survives a Builder restart on a matching snapshot and fails closed on a mismatch", async () => {
+		const dir = fixture();
+		const { workbench, stateRoot, runsRoot } = await specApproved(dir);
+		const opened = await workbench.submit({ kind: "workshop-open" });
+		const workshopId = String(opened.artifact?.workshopId);
+		workbench.workshopWrite({ path: "AGENTS.md", content: "# Workshop Target\n\nHalf-written.\n" });
+		expect(workbench.workshopStatus().snapshotHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+
+		// The Builder process dies. Its worktree and its note under the project
+		// state outlive it; the in-memory workshop does not.
+		const restarted = createAhdeWorkbench({ projectDir: dir, stateRoot, runsRoot, projectId: "workshop-target" });
+		expect(restarted.workshopOpen).toBe(false);
+		const reattached = await restarted.submit({ kind: "workshop-open", workshopId });
+		expect(reattached.artifact?.reattached).toBe(true);
+		expect(reattached.artifact?.workshopId).toBe(workshopId);
+		expect(restarted.workshopRead({ path: "AGENTS.md" }).content).toBe("# Workshop Target\n\nHalf-written.\n");
+		const path = (restarted as unknown as { workshop: BuilderWorkshop }).workshop.path;
+
+		// A workshop nobody can vouch for byte-for-byte is not the one that was
+		// left open. Somebody edited the worktree behind the Workbench's back.
+		const second = createAhdeWorkbench({ projectDir: dir, stateRoot, runsRoot, projectId: "workshop-target" });
+		writeFileSync(join(path, "AGENTS.md"), "# Workshop Target\n\nTampered.\n", "utf8");
+		await expect(second.submit({ kind: "workshop-open", workshopId }))
+			.rejects.toThrow(/changed on disk .*discard it and open a new one/s);
+		// An id nobody recorded grants nothing either.
+		await expect(second.submit({ kind: "workshop-open", workshopId: "workshop_00000000000000ff" }))
+			.rejects.toThrow(/no workshop workshop_00000000000000ff is recorded/);
+		restarted.closeWorkshop();
+	}, 180_000);
 });
