@@ -86,6 +86,7 @@ import { plainPaint } from "./builder/render/paint.js";
 import { DEFAULT_REPETITIONS, calibrationProjection } from "./workbench/calibration.js";
 import { resolveCommitRef } from "./git/experiment-worktree.js";
 import { SEALED_GATE_POLICY } from "./domain/comparison-gate.js";
+import { describeSandboxReadiness } from "./target/container-backend.js";
 import { runInteractiveTarget } from "./target/interactive.js";
 import { resolveInteractiveTargetDirectory } from "./target/command.js";
 import {
@@ -687,12 +688,21 @@ async function main(): Promise<void> {
 			console.log(`  tasks: ${target.tasks.length} (${target.datasetHash.slice(7, 19)}…)`);
 			console.log(`  suite: ${target.manifest.evalSuite.id} (${target.suiteHash.slice(7, 19)}…)`);
 			console.log(`  skills: ${target.manifest.skills.join(", ") || "(none)"}`);
+			// What would actually confine a run on THIS host right now, not what
+			// the manifest hopes for. A container backend starts its own
+			// comparability class: baselines recorded on the host are not reusable
+			// against it, by design.
+			const sandboxReadiness = describeSandboxReadiness(target.manifest.execution);
+			console.log(`  ${sandboxReadiness.line}`);
 			const gitDisplay = target.gitSha.includes("-dirty-")
 				? `${target.gitSha.slice(0, 8)} (dirty ${target.gitSha.split("-dirty-")[1]})`
 				: target.gitSha.slice(0, 8);
 			console.log(`  git: ${gitDisplay} | pi: ${target.runtime.piVersion}@${target.runtime.piSha.slice(0, 8)}`);
 			console.log(`  ahde: ${target.runtime.ahdeVersion}@${target.runtime.ahdeCodeHash.slice(7, 19)}…`);
-			if (readiness.bootstrapRequired) {
+			if (sandboxReadiness.failClosed) {
+				console.log("  readiness: ACTION REQUIRED — the declared containment cannot be honoured on this host");
+				process.exitCode = 2;
+			} else if (readiness.bootstrapRequired) {
 				console.log("  readiness: ACTION REQUIRED — Target identity/model still contain starter placeholders");
 				process.exitCode = 2;
 			} else if (readiness.credential.status === "missing") {

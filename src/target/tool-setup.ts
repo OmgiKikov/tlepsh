@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { hashFile, hashValue } from "../provenance.js";
+import { resolveExecutionBackend } from "./container-backend.js";
 import {
 	buildToolEnvironment,
 	detectTargetToolSandbox,
@@ -136,7 +137,12 @@ function runSetup(
 		...(options.sourceEnvironment ? { sourceEnvironment: options.sourceEnvironment } : {}),
 		toolHome: toolDir,
 	});
-	const command = setupCommandPath(setup.argv[0] as string, environment.PATH ?? "/usr/bin:/bin");
+	// Under the container backend the setup command must resolve inside the
+	// image, so the host PATH is not consulted at all: resolving it here would
+	// bake a host path into the container's argv.
+	const command = options.backend === "container"
+		? (setup.argv[0] as string)
+		: setupCommandPath(setup.argv[0] as string, environment.PATH ?? "/usr/bin:/bin");
 	const invocation = sandboxInvocation({
 		backend: options.backend,
 		workspaceDir: options.workspaceDir,
@@ -151,11 +157,16 @@ function runSetup(
 		},
 		cwd: toolDir,
 		argv: [command, ...setup.argv.slice(1)],
+		...(options.policy.container ? { container: options.policy.container } : {}),
+		toolHomeRoot: options.toolHomeRoot,
+		// The one moment the prepared home is writable: a setup step populates
+		// the directory every later tool call then reads read-only.
+		toolHomeMode: "rw",
 	});
 	const startedMs = Date.now();
 	const result = spawnSync(invocation.executable, invocation.args, {
 		cwd: toolDir,
-		env: environment,
+		env: invocation.spawnEnvironment ?? environment,
 		stdio: ["ignore", "pipe", "pipe"],
 		timeout: setup.timeoutMs,
 		killSignal: "SIGKILL",
@@ -216,7 +227,11 @@ export function prepareToolHome(options: PrepareToolHomeOptions): PreparedToolHo
 		return { root, setups: [], prepared: true };
 	}
 
-	const backend = options.sandboxBackend ?? detectTargetToolSandbox(options.workspaceDir, options.scratchDir);
+	const backend = options.sandboxBackend
+		?? resolveExecutionBackend({
+			policy: options.policy,
+			osBackend: () => detectTargetToolSandbox(options.workspaceDir, options.scratchDir),
+		}).backend;
 	const setups: ToolSetupOutcome[] = [];
 	for (const tool of tools) {
 		const toolDir = join(root, tool.descriptor.name);

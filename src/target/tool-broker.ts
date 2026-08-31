@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { accessSync, constants, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import { hashFile } from "../provenance.js";
+import { containerBackendFor, type ContainerPolicy } from "./container-backend.js";
 import {
 	resolveStrictTargetFile,
 	type ResolvedTargetTool,
@@ -9,7 +10,7 @@ import {
 	validateTargetToolArguments,
 } from "./tool-manifest.js";
 
-export type TargetToolSandboxBackend = "sandbox-exec" | "bwrap";
+export type TargetToolSandboxBackend = "sandbox-exec" | "bwrap" | "container";
 
 export interface TargetToolBrokerOptions {
 	workspaceDir: string;
@@ -270,7 +271,30 @@ export function sandboxInvocation(options: {
 	confinement: TargetToolConfinement;
 	cwd: string;
 	argv: readonly string[];
-}): { executable: string; args: string[] } {
+	/** Required when `backend` is "container"; selects the container runtime and image. */
+	container?: ContainerPolicy;
+	/** Prepared multi-file tool home to mount at /tools, and whether that mount is writable. */
+	toolHomeRoot?: string;
+	toolHomeMode?: "ro" | "rw";
+	hostEnvironment?: NodeJS.ProcessEnv;
+}): { executable: string; args: string[]; spawnEnvironment?: NodeJS.ProcessEnv } {
+	if (options.backend === "container") {
+		if (!options.container) throw new Error("container backend requires an execution.container policy");
+		return containerBackendFor(options.container.runtime).invocation({
+			policy: options.container,
+			mounts: {
+				workspaceDir: options.workspaceDir,
+				scratchDir: options.scratchDir,
+				...(options.toolHomeRoot ? { toolHomeRoot: options.toolHomeRoot } : {}),
+				...(options.toolHomeMode ? { toolHomeMode: options.toolHomeMode } : {}),
+			},
+			network: options.confinement.network,
+			environment: options.environment,
+			cwd: options.cwd,
+			argv: options.argv,
+			...(options.hostEnvironment ? { hostEnvironment: options.hostEnvironment } : {}),
+		});
+	}
 	if (options.backend === "sandbox-exec") {
 		const [command, ...rest] = options.argv;
 		if (!command) throw new Error("sandboxed invocation requires a command");
@@ -377,12 +401,17 @@ export class TargetToolBroker {
 			confinement: toolConfinement(tool, this.options.workspaceDir, this.toolHomeRoot),
 			cwd: this.options.workspaceDir,
 			argv: [executable, ...tool.descriptor.command.argv.slice(1)],
+			...(this.options.policy.container ? { container: this.options.policy.container } : {}),
+			...(this.toolHomeRoot ? { toolHomeRoot: this.toolHomeRoot } : {}),
 		});
 		const startedMs = Date.now();
 		const child = spawn(command.executable, command.args, {
 			cwd: this.options.workspaceDir,
 			detached: process.platform !== "win32",
-			env: environment,
+			// The container runtime CLI is a host process and needs the host's own
+			// PATH and daemon variables; the container's environment travels in the
+			// `-e` flags inside `command.args`, never here.
+			env: command.spawnEnvironment ?? environment,
 			stdio: ["pipe", "pipe", "pipe"],
 			windowsHide: true,
 		});

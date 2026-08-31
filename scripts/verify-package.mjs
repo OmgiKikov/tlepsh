@@ -65,6 +65,7 @@ try {
 		"dist/application/tool-workshop.js",
 		"dist/builder/workshop-tools.js",
 		"dist/target/feedback-extension.js",
+		"dist/target/container-backend.js",
 		"dist/builder/product-shell.js",
 		"dist/builder/run-observation.js",
 		"dist/cli-invocation.js",
@@ -174,6 +175,9 @@ import {
 	parseCliInvocation,
 	openBuilderWorkshop,
 	createAhdeServeApi,
+	containerSandboxFingerprint,
+	dockerBackend,
+	resolveContainerSandbox,
   applyBuilderProposal,
   approveBuilderSpecDraft,
   candidateStatus,
@@ -361,6 +365,54 @@ const echoText = echoResult.content
 const echoPayload = JSON.parse(echoText);
 if (echoPayload.message !== "installed-package" || echoResult.details?.exitCode !== 0) {
   throw new Error(\`installed Target echo_json execution failed: \${echoText}\`);
+}
+if (targetTools.sandboxFingerprint !== targetTools.sandboxBackend) {
+  throw new Error(\`installed Target tool runtime reported an unexpected sandbox fingerprint: \${targetTools.sandboxFingerprint}\`);
+}
+
+// The container backend must be reachable from the installed package: build one
+// docker argv without any daemon, and prove the required/best-effort matrix.
+const containerPolicy = {
+  runtime: "docker",
+  image: "registry.example.com/ahde/target@sha256:" + "c".repeat(64),
+  workdir: "/workspace",
+  readOnlyRootfs: true,
+};
+const containerArgs = dockerBackend.invocation({
+  policy: containerPolicy,
+  mounts: { workspaceDir: targetDir, scratchDir: toolScratch },
+  network: "deny",
+  environment: { HOME: toolScratch, LANG: "C.UTF-8", SMOKE_VALUE: "visible" },
+  cwd: targetDir,
+  argv: ["/bin/sh", "-c", "true"],
+  hostEnvironment: { PATH: "/usr/bin:/bin" },
+}).args;
+for (const expected of ["--rm", "--network", "none", "--cap-drop", "ALL", "--read-only", "-w", "/workspace"]) {
+  if (!containerArgs.includes(expected)) {
+    throw new Error(\`installed container backend argv is missing \${expected}: \${containerArgs.join(" ")}\`);
+  }
+}
+if (!containerArgs.includes("SMOKE_VALUE=visible")) {
+  throw new Error("installed container backend did not pass the declared allowlist value with -e");
+}
+const hostMentions = containerArgs.filter((argument) => argument.includes(targetDir) || argument.includes(toolScratch));
+if (hostMentions.some((argument) => !/:\\/(workspace|scratch|tools):(ro|rw)$/.test(argument))) {
+  throw new Error(\`installed container backend leaked a host path outside a mount spec: \${hostMentions.join(" ")}\`);
+}
+if (containerSandboxFingerprint(containerPolicy) !== "container:docker@sha256:" + "c".repeat(64)) {
+  throw new Error("installed container backend computed the wrong sandbox fingerprint");
+}
+const missingRuntime = { runtime: "docker", available: false, reason: "docker executable not found on PATH" };
+let failedClosed = false;
+try {
+  resolveContainerSandbox({ policy: containerPolicy, sandbox: "required", detect: () => missingRuntime });
+} catch (error) {
+  failedClosed = /sandbox: required fails closed/.test(error.message);
+}
+if (!failedClosed) throw new Error("installed container backend did not fail closed under sandbox: required");
+const fallback = resolveContainerSandbox({ policy: containerPolicy, sandbox: "best-effort", detect: () => missingRuntime });
+if (fallback.mode !== "fallback" || fallback.fingerprint !== undefined || fallback.warnings.length !== 1) {
+  throw new Error("installed container backend did not fall back under sandbox: best-effort");
 }
 
 // Launch through the public Builder entry point, but replace only Pi's blocking
@@ -1069,7 +1121,7 @@ try {
 		readFileSync(join(consumerDir, "node_modules", "ahde", "package.json"), "utf8"),
 	);
 	console.log(
-		`verified ${installedManifest.name}@${installedManifest.version}: pack → clean install → init → validate → Builder startup + sandboxed Target tool + loopback live/final Evidence HTTP + token-gated serve API + canonical candidate promotion`,
+		`verified ${installedManifest.name}@${installedManifest.version}: pack → clean install → init → validate → Builder startup + sandboxed Target tool + container backend argv/matrix + loopback live/final Evidence HTTP + token-gated serve API + canonical candidate promotion`,
 	);
 } finally {
 	rmSync(workRoot, { recursive: true, force: true });

@@ -60,6 +60,23 @@ describe("execution policy", () => {
 		expect(EXECUTION_POLICY_SESSION_OPTIONS).toEqual({ noTools: "builtin" });
 	});
 
+	it("reports the OS backend as its own sandbox fingerprint when no container is declared", () => {
+		const built = fixture({
+			tools: ["read"],
+			environmentAllowlist: [],
+			network: "allow",
+			sandbox: "off",
+		});
+		try {
+			expect(built.result.sandboxBackend).toBe("none");
+			expect(built.result.sandboxFingerprint).toBe("none");
+			expect(built.result.sandboxFingerprint.startsWith("container:")).toBe(false);
+			expect(built.result.sandboxWarnings).toEqual([]);
+		} finally {
+			rmSync(built.root, { recursive: true, force: true });
+		}
+	});
+
 	it("scrubs ambient secrets and copies only explicitly allowlisted environment values", async () => {
 		const built = fixture(
 			{

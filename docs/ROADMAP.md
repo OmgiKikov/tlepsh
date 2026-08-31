@@ -81,7 +81,7 @@ Where AHDE stands against practice (verified 2026-08-30):
 | Proposer memory | sees the current failures and nothing else | — | reads what was already tried and refuses to re-run a losing experiment | — |
 | Builder's hands | semantic intents compiled by the host | — | **done** — edits files in a bound worktree, runs the tool it wrote; the proposal is the diff | — |
 | Chat agents | seeded history, grade the next reply | — | simulated user with a goal and persona | — |
-| Target sandbox | best-effort sandbox-exec/bwrap for `bash` | — | — | Gondolin / Docker, `required` in the bank profile |
+| Target sandbox | best-effort sandbox-exec/bwrap for `bash` | — | — | **Docker landed** (`execution.container`, pinned digest under `required`); Gondolin behind the same interface |
 | Docs | 27 KB README, 35 invariants | — | — | one-page README with a real transcript; ~15 invariants |
 
 ## Wave 1 — measurement you can trust (in progress)
@@ -207,6 +207,41 @@ branch; the closed-loop Pi test passes with exactly three confirmations.
     per-project roots for a multi-project server.*
 13. **Gondolin / Docker for the Target's built-in `bash`**; `sandbox: required`
     in the bank profile.
+    *Docker backend landed (`src/target/container-backend.ts`). Declaring
+    `execution.container: { runtime, image, workdir?, memoryMb?, cpus?,
+    pidsLimit?, readOnlyRootfs? }` selects it — there is no second switch that
+    could disagree with the block. The built-in `bash`, every declared tool and
+    every declared `setup` step then run as*
+    `docker run --rm --network none|bridge --user <non-root> --cap-drop ALL
+    --security-opt no-new-privileges --read-only --tmpfs /tmp --memory --cpus
+    --pids-limit -v <workspace>:/workspace:rw -v <scratch>:/scratch:rw
+    -v <toolHome>:/tools:ro|rw -e … -w /workspace --entrypoint <argv0> <image>
+    <argv…>`*, with an environment built from nothing —* `PATH` `HOME` `TMPDIR`
+    `LANG` `TERM` *plus the declared allowlist, one* `-e NAME=value` *at a time;
+    the host's environment is never inherited and no host path enters the
+    container's argv, cwd or environment. `sandbox: required` demands a pinned
+    `name@sha256:…` and fails closed with the runtime's exact reason when no
+    runtime answers `docker version --format {{.Server.Version}}` (probed once
+    per process, bounded); `best-effort` accepts a tag with a warning and falls
+    back to the host OS sandbox with a warning and a different fingerprint, so a
+    fallback never masquerades as container evidence. `ahde validate` prints
+    `sandbox: container (docker 27.1, image pinned)` or the fail-closed reason.
+    Container start latency is part of the run's `latencyMs` — it is real.*
+
+    ***A container backend changes the execution fingerprint and therefore
+    starts a new comparability class: existing baselines are not reusable
+    against it, by design.*** *The value is* `container:<runtime>@<image
+    digest>`*, e.g.* `container:docker@sha256:…`*. It is computed and exposed
+    today as* `ExecutionPolicyResult.sandboxFingerprint` *and*
+    `TargetToolRuntime.sandboxFingerprint`*, but it is NOT yet recorded in
+    provenance:* `ExecutionFingerprintSchema.sandbox` *in `src/provenance.ts` is
+    the closed enum* `z.enum(["sandbox-exec", "bwrap", "none", "unavailable"])`*,
+    not a free string. Until that enum admits a container value, a containerized
+    run records* `sandbox: "none"` *— pessimistic, never optimistic — and is
+    therefore classified* `isolated-copy-unconfined-v1` *and not promotable.
+    Remaining: the one-line provenance change, then Gondolin behind the same
+    `ContainerBackend` interface (the stub fails closed with "gondolin runtime
+    not available in this build"; nothing is vendored).*
 14. **Ceremony cut** — receipts only at approve/publish/apply/promote/adopt;
     inventory cached by mtime; README to one page with a real transcript;
     CONTEXT invariants consolidated to about 15.

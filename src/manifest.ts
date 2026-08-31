@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { hashValue } from "./provenance.js";
+import { CONTAINER_IMAGE_REFERENCE, isPinnedContainerImage } from "./target/container-backend.js";
 import { loadTargetTools, type ResolvedTargetTool } from "./target/tool-manifest.js";
 
 // ---------- Grader specs (declarative, target-owned) ----------
@@ -392,14 +393,67 @@ export function dataMaxBytes(environment: NodeJS.ProcessEnv = process.env): numb
 	return Number(raw);
 }
 
-export const ExecutionPolicyBlock = z.strictObject({
-	tools: z.array(z.enum(["read", "bash", "edit", "write"])).min(1).default(["read", "bash"]),
-	environmentAllowlist: z
-		.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/))
-		.default([]),
-	network: z.enum(["deny", "allow"]).default("deny"),
-	sandbox: z.enum(["required", "best-effort", "off"]).default("best-effort"),
+/**
+ * Container containment for the Target's built-in `bash`, its declared tools
+ * and their `setup` step. Declaring this block *is* the choice of the container
+ * backend — there is no second switch that could disagree with it. `runtime`
+ * names which container implementation confines the run.
+ *
+ * A container backend changes the execution fingerprint and therefore starts a
+ * new comparability class: evidence produced on the host is never reusable
+ * against evidence produced in a container, by design.
+ */
+export const ContainerBlock = z.strictObject({
+	runtime: z.enum(["docker", "gondolin"]).default("docker"),
+	/**
+	 * Pinned `name@sha256:…` under `sandbox: required`; a mutable tag is
+	 * accepted only under `best-effort`, and then only with a warning.
+	 */
+	image: z
+		.string()
+		.min(1)
+		.max(512)
+		.regex(CONTAINER_IMAGE_REFERENCE, "container image must be a plain reference, optionally pinned as name@sha256:<digest>"),
+	workdir: z
+		.string()
+		.regex(/^\/[A-Za-z0-9._\-/]*$/, "container workdir must be an absolute container path")
+		.default("/workspace"),
+	memoryMb: z.number().int().min(1).max(65_536).optional(),
+	cpus: z.number().min(0.1).max(64).optional(),
+	pidsLimit: z.number().int().min(1).max(4_096).optional(),
+	readOnlyRootfs: z.boolean().default(true),
 });
+export type ContainerBlock = z.infer<typeof ContainerBlock>;
+
+export const ExecutionPolicyBlock = z
+	.strictObject({
+		tools: z.array(z.enum(["read", "bash", "edit", "write"])).min(1).default(["read", "bash"]),
+		environmentAllowlist: z
+			.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/))
+			.default([]),
+		network: z.enum(["deny", "allow"]).default("deny"),
+		sandbox: z.enum(["required", "best-effort", "off"]).default("best-effort"),
+		container: ContainerBlock.optional(),
+	})
+	.superRefine((execution, context) => {
+		if (!execution.container) return;
+		if (execution.sandbox === "off") {
+			context.addIssue({
+				code: "custom",
+				path: ["container"],
+				message: "execution.container requires sandbox: required or best-effort; sandbox: off declares no containment",
+			});
+			return;
+		}
+		if (execution.sandbox === "required" && !isPinnedContainerImage(execution.container.image)) {
+			context.addIssue({
+				code: "custom",
+				path: ["container", "image"],
+				message:
+					`execution.container.image must be pinned to a digest (name@sha256:…) when sandbox: required; got ${execution.container.image}`,
+			});
+		}
+	});
 export type ExecutionPolicyBlock = z.infer<typeof ExecutionPolicyBlock>;
 
 const RESERVED_MODEL_PARAMS = new Set(["model", "messages", "stream", "tools"]);

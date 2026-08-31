@@ -13,15 +13,36 @@ import {
 	type ToolDefinition,
 	type WriteOperations,
 } from "@earendil-works/pi-coding-agent";
+import {
+	containerBackendFor,
+	resolveExecutionBackend,
+	type ContainerPolicy,
+	type ContainerRuntimeName,
+	type ContainerRuntimeStatus,
+} from "./target/container-backend.js";
 
 export type ExecutionTool = "read" | "bash" | "edit" | "write";
+/**
+ * The OS-level backends. `container` is deliberately not a member: this type
+ * flows into `ExecutionFingerprint["sandbox"]`, a closed enum in provenance.ts
+ * with no container value. The container identity travels beside it as
+ * `ExecutionPolicyResult.sandboxFingerprint`.
+ */
 export type SandboxBackend = "sandbox-exec" | "bwrap" | "none";
+/** What actually wrapped one invocation, including the container runtime. */
+export type ExecutionBackend = SandboxBackend | "container";
 
 export interface ExecutionPolicy {
 	tools: ExecutionTool[];
 	environmentAllowlist: string[];
 	network: "deny" | "allow";
 	sandbox: "required" | "best-effort" | "off";
+	/**
+	 * Declared `execution.container`. Its presence selects the container
+	 * backend for the built-in `bash`; under `best-effort` an unusable runtime
+	 * falls back to the OS sandbox with a recorded warning.
+	 */
+	container?: ContainerPolicy;
 }
 
 export interface ExecutionPolicyOptions {
@@ -36,11 +57,27 @@ export interface ExecutionPolicyOptions {
 	};
 	/** Environment from which explicitly allowlisted values are copied. Defaults to process.env. */
 	sourceEnvironment?: NodeJS.ProcessEnv;
+	/** Container-runtime detection seam. Production callers omit this. */
+	detectContainerRuntime?: (runtime: ContainerRuntimeName) => ContainerRuntimeStatus;
 }
 
 export interface ExecutionPolicyResult {
 	customTools: ToolDefinition<any, any, any>[];
+	/**
+	 * The OS backend that confined the run. A containerized run reports
+	 * `"none"` here — pessimistic, never optimistic — because the provenance
+	 * enum cannot yet express a container; read `sandboxFingerprint` for the
+	 * truth.
+	 */
 	sandboxBackend: SandboxBackend;
+	/**
+	 * The value the provenance `sandbox` axis must carry:
+	 * `container:docker@sha256:…` for a containerized run, otherwise the OS
+	 * backend's own name. A container backend starts a new comparability class.
+	 */
+	sandboxFingerprint: string;
+	/** Recorded, non-fatal findings: an unpinned image, a best-effort fallback. */
+	sandboxWarnings: string[];
 	effectiveEnvironmentNames: string[];
 }
 
@@ -308,7 +345,7 @@ function bwrapArguments(
 }
 
 function sandboxInvocation(
-	backend: SandboxBackend,
+	backend: ExecutionBackend,
 	binary: string | undefined,
 	profile: string,
 	workspaceDir: string,
@@ -316,7 +353,22 @@ function sandboxInvocation(
 	environment: NodeJS.ProcessEnv,
 	network: "deny" | "allow",
 	command: string,
-): { executable: string; args: string[] } {
+	container?: ContainerPolicy,
+	cwd?: string,
+): { executable: string; args: string[]; spawnEnvironment?: NodeJS.ProcessEnv } {
+	if (backend === "container") {
+		if (!container) throw new Error("container backend requires an execution.container policy");
+		return containerBackendFor(container.runtime).invocation({
+			policy: container,
+			mounts: { workspaceDir, scratchDir },
+			network,
+			environment,
+			// The model's shell always starts where the container mounts the
+			// workspace; the host spelling of that directory never reaches it.
+			cwd: cwd ?? workspaceDir,
+			argv: ["/bin/sh", "-c", command],
+		});
+	}
 	if (backend === "sandbox-exec" && binary) {
 		return { executable: binary, args: ["-p", profile, "/bin/sh", "-c", command] };
 	}
@@ -334,15 +386,48 @@ function detectSandbox(
 	workspaceDir: string,
 	scratchDir: string,
 	environment: NodeJS.ProcessEnv,
-): { backend: SandboxBackend; binary?: string; profile: string } {
+): { backend: ExecutionBackend; binary?: string; profile: string; fingerprint: string; warnings: string[] } {
 	const profile = macosProfile(workspaceDir, scratchDir, options.policy.network);
 	if (!options.policy.tools.includes("bash") || options.policy.sandbox === "off") {
 		if (options.policy.tools.includes("bash") && options.policy.network === "deny") {
 			throw new Error("network=deny requires sandbox=required or sandbox=best-effort");
 		}
-		return { backend: "none", profile };
+		return { backend: "none", profile, fingerprint: "none", warnings: [] };
 	}
 
+	// The container backend is decided before any OS probe: `required` fails
+	// closed here with the runtime's exact reason, and `best-effort` falls
+	// through to the OS sandbox with a recorded warning and a different
+	// fingerprint, so a fallback can never masquerade as container evidence.
+	// The OS probe spawns a process, so it runs at most once per policy.
+	let os: { backend: SandboxBackend; binary?: string } | undefined;
+	const choice = resolveExecutionBackend<SandboxBackend>({
+		policy: options.policy,
+		osBackend: () => {
+			os ??= detectOsSandbox(options, workspaceDir, scratchDir, environment, profile);
+			return os.backend;
+		},
+		...(options.detectContainerRuntime ? { detect: options.detectContainerRuntime } : {}),
+	});
+	if (choice.backend === "container") {
+		return { backend: "container", profile, fingerprint: choice.sandboxFingerprint, warnings: choice.warnings };
+	}
+	return {
+		backend: choice.backend,
+		...(os?.binary ? { binary: os.binary } : {}),
+		profile,
+		fingerprint: choice.sandboxFingerprint,
+		warnings: choice.warnings,
+	};
+}
+
+function detectOsSandbox(
+	options: ExecutionPolicyOptions,
+	workspaceDir: string,
+	scratchDir: string,
+	environment: NodeJS.ProcessEnv,
+	profile: string,
+): { backend: SandboxBackend; binary?: string } {
 	let backend: SandboxBackend = "none";
 	let binary: string | undefined;
 	if (process.platform === "darwin") {
@@ -382,7 +467,7 @@ function detectSandbox(
 	if (backend === "none" && options.policy.sandbox === "required") {
 		throw new Error(`No usable sandbox backend for ${process.platform}; required policy fails closed`);
 	}
-	return { backend, binary, profile };
+	return { backend, ...(binary ? { binary } : {}) };
 }
 
 function terminateProcess(pid: number | undefined): void {
@@ -398,13 +483,14 @@ function terminateProcess(pid: number | undefined): void {
 }
 
 function bashOperations(
-	backend: SandboxBackend,
+	backend: ExecutionBackend,
 	binary: string | undefined,
 	profile: string,
 	workspaceDir: string,
 	scratchDir: string,
 	environment: NodeJS.ProcessEnv,
 	network: "deny" | "allow",
+	container?: ContainerPolicy,
 ): BashOperations {
 	return {
 		exec: async (command, cwd, { onData, signal, timeout }) => {
@@ -422,11 +508,16 @@ function bashOperations(
 				environment,
 				network,
 				command,
+				container,
+				canonicalCwd,
 			);
 			const child = spawn(invocation.executable, invocation.args, {
 				cwd: canonicalCwd,
 				detached: process.platform !== "win32",
-				env: environment,
+				// The container runtime CLI is a host process: it needs the host's
+				// PATH and daemon variables. The container's own environment travels
+				// in `-e` flags inside `invocation.args`, never here.
+				env: invocation.spawnEnvironment ?? environment,
 				stdio: ["ignore", "pipe", "pipe"],
 				windowsHide: true,
 			});
@@ -490,6 +581,7 @@ export function buildExecutionPolicy(options: ExecutionPolicyOptions): Execution
 						scratchDir,
 						environment,
 						options.policy.network,
+						options.policy.container,
 					),
 				}),
 			);
@@ -498,7 +590,12 @@ export function buildExecutionPolicy(options: ExecutionPolicyOptions): Execution
 
 	return {
 		customTools,
-		sandboxBackend: sandbox.backend,
+		// A containerized run has no OS backend to name. `"none"` understates the
+		// confinement rather than overstating it; `sandboxFingerprint` carries
+		// the truth until the provenance enum can express a container.
+		sandboxBackend: sandbox.backend === "container" ? "none" : sandbox.backend,
+		sandboxFingerprint: sandbox.fingerprint,
+		sandboxWarnings: sandbox.warnings,
 		effectiveEnvironmentNames: Object.keys(environment).sort(),
 	};
 }
