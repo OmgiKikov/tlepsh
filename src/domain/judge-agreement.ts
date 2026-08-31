@@ -14,6 +14,17 @@ export interface JudgeAgreementInput {
 	graderSpecHash: string;
 	human: "pass" | "fail";
 	judge: "pass" | "fail";
+	/**
+	 * The checklist, when the label was collected assertion by assertion. Both
+	 * sides travel together; either both are present or neither is.
+	 *
+	 * A pooled verdict on a twelve-assertion rubric throws away eleven twelfths
+	 * of what the human actually said, and it hides WHICH check the judge gets
+	 * wrong. When they are present each assertion is one comparison, so a judge
+	 * that is right about eleven and wrong about one reads as 92%, not as 0%.
+	 */
+	assertions?: readonly ("yes" | "no" | "unknown")[] | undefined;
+	judgeAssertions?: readonly ("yes" | "no" | "unknown")[] | undefined;
 }
 
 /** The 2×2 table, the rates derived from it, and how much it rests on. */
@@ -82,7 +93,31 @@ function cohensKappa(table: {
 	return (observed - expected) / (1 - expected);
 }
 
-function statsFor(rows: readonly JudgeAgreementInput[]): JudgeAgreementStats {
+/**
+ * One comparison per assertion when the label carries a checklist, and one per
+ * label otherwise. "unknown" counts as a fail on both sides, exactly as the
+ * grader itself folds it: an assertion the judge could not decide is not one it
+ * decided correctly.
+ */
+function comparisons(rows: readonly JudgeAgreementInput[]): { human: "pass" | "fail"; judge: "pass" | "fail" }[] {
+	const pairs: { human: "pass" | "fail"; judge: "pass" | "fail" }[] = [];
+	for (const row of rows) {
+		if (row.assertions && row.judgeAssertions && row.assertions.length === row.judgeAssertions.length) {
+			for (const [index, human] of row.assertions.entries()) {
+				pairs.push({
+					human: human === "yes" ? "pass" : "fail",
+					judge: row.judgeAssertions[index] === "yes" ? "pass" : "fail",
+				});
+			}
+			continue;
+		}
+		pairs.push({ human: row.human, judge: row.judge });
+	}
+	return pairs;
+}
+
+function statsFor(inputs: readonly JudgeAgreementInput[]): JudgeAgreementStats {
+	const rows = comparisons(inputs);
 	if (rows.length === 0) return { ...EMPTY };
 	const truePass = rows.filter((row) => row.judge === "pass" && row.human === "pass").length;
 	const trueFail = rows.filter((row) => row.judge === "fail" && row.human === "fail").length;

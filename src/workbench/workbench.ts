@@ -56,6 +56,10 @@ import {
 	describeTargetBootstrap,
 } from "../application/target-bootstrap.js";
 import {
+	configureEvaluators,
+	describeEvaluatorConfiguration,
+} from "../application/configure-evaluators.js";
+import {
 	applyTargetScaffold,
 	describeTargetScaffold,
 } from "../application/target-scaffold.js";
@@ -250,6 +254,8 @@ export interface AhdeWorkbenchDependencies {
 	applyTargetScaffold: typeof applyTargetScaffold;
 	describeTargetBootstrap: typeof describeTargetBootstrap;
 	configureTargetBootstrap: typeof configureTargetBootstrap;
+	describeEvaluatorConfiguration: typeof describeEvaluatorConfiguration;
+	configureEvaluators: typeof configureEvaluators;
 	saveSpecDraft: typeof saveBuilderSpecDraft;
 	describeSpecApproval: typeof describeSpecDraftApproval;
 	approveSpecDraft: typeof approveBuilderSpecDraft;
@@ -317,6 +323,8 @@ const DEFAULT_DEPENDENCIES: AhdeWorkbenchDependencies = {
 	applyTargetScaffold,
 	describeTargetBootstrap,
 	configureTargetBootstrap,
+	describeEvaluatorConfiguration,
+	configureEvaluators,
 	saveSpecDraft: saveBuilderSpecDraft,
 	describeSpecApproval: describeSpecDraftApproval,
 	approveSpecDraft: approveBuilderSpecDraft,
@@ -1868,6 +1876,56 @@ export class AhdeWorkbench {
 					targetGitSha: result.receipt.configuredTargetSha,
 					receiptId: result.receipt.id,
 					credentialEnv: result.manifest.model.apiKeyEnv,
+				},
+				view: await this.view(),
+			};
+		}
+
+		if (input.kind === "configure-evaluators") {
+			if (!inventory.target) throw new WorkbenchStaleDecisionError(input.kind);
+			if (!options.resolveEvaluatorModel) {
+				throw new Error("Evaluator model selection requires the trusted host model catalog");
+			}
+			const resolve = options.resolveEvaluatorModel;
+			// Resolved once, before the dialog and again after it: the subject the
+			// human approved must still be the subject that gets committed.
+			const describe = () => this.dependencies.describeEvaluatorConfiguration({
+				targetDir: this.projectDir,
+				stateRoot: this.stateRoot,
+				...(input.judge ? { judge: resolve("judge", input.judge) } : {}),
+				...(input.simulatedUser ? { simulatedUser: resolve("simulatedUser", input.simulatedUser) } : {}),
+			});
+			const before = describe();
+			const actor = await this.confirm(input, gate, "Configure exact evaluator models", before, options.signal);
+			const current = this.decisionInventory(input.kind);
+			if (!current.target) throw new WorkbenchStaleDecisionError(input.kind);
+			const after = describe();
+			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
+			const result = this.dependencies.configureEvaluators({
+				targetDir: this.projectDir,
+				stateRoot: this.stateRoot,
+				...(input.judge ? { judge: after.next.judge } : {}),
+				...(input.simulatedUser ? { simulatedUser: after.next.simulatedUser } : {}),
+				expectedSubjectHash: before.subjectHash,
+				actor: { kind: "human", id: actor },
+				reason: input.reason,
+			});
+			const configured: { role: "judge" | "simulatedUser"; model: string; credentialEnv: string }[] = [];
+			if (input.judge && result.manifest.evalSuite.judge) {
+				const judge = result.manifest.evalSuite.judge;
+				configured.push({ role: "judge", model: `${judge.provider}/${judge.id}`, credentialEnv: judge.apiKeyEnv });
+			}
+			if (input.simulatedUser && result.manifest.evalSuite.simulatedUser) {
+				const user = result.manifest.evalSuite.simulatedUser;
+				configured.push({ role: "simulatedUser", model: `${user.provider}/${user.id}`, credentialEnv: user.apiKeyEnv });
+			}
+			return {
+				kind: input.kind,
+				message: "Evaluator models configured in a reviewed commit. Export their key variables before the next run.",
+				result: {
+					targetGitSha: result.receipt.configuredTargetSha,
+					receiptId: result.receipt.id,
+					configured,
 				},
 				view: await this.view(),
 			};

@@ -23,6 +23,7 @@ import {
 } from "./eval.js";
 import {
 	RunRecordSchema,
+	canonicalJson,
 	hashValue,
 	modelFingerprint,
 	provenanceAxes,
@@ -58,6 +59,9 @@ import { formatPoints } from "./domain/comparison-gate.js";
  *   come from the new graders file: `--graders <path>`, or the Target's current
  *   `evalSuite.graders` at its current checkout.
  * - The JUDGE MODEL comes from the Target's current manifest.
+ * - The SIMULATED USER never runs again. Its model must therefore still match
+ *   the source provenance exactly; otherwise the old conversation would be
+ *   attributed to a model that never produced it.
  *
  * So on a dataset where every case carries its own graders, a regrade with no
  * `--graders` is still meaningful: the judge model can have changed underneath
@@ -212,6 +216,16 @@ export async function regradeEvalRun(options: RegradeOptions): Promise<RegradeRe
 
 	const label: RegradeLabel = options.label ?? "regrade";
 	const judge = target.manifest.evalSuite.judge;
+	const simulatedUser = target.manifest.evalSuite.simulatedUser;
+	const sourceSimulatedUser = sourceRecord.provenance.simulatedUser;
+	const currentSimulatedUser = simulatedUser ? modelFingerprint(simulatedUser) : undefined;
+	if (canonicalJson(sourceSimulatedUser) !== canonicalJson(currentSimulatedUser)) {
+		throw new Error(
+			`regrade cannot change the simulated-user model that produced the recorded conversation: ` +
+				`source ${sourceSimulatedUser ? `${sourceSimulatedUser.provider}/${sourceSimulatedUser.id}` : "has none"}, ` +
+				`Target ${currentSimulatedUser ? `${currentSimulatedUser.provider}/${currentSimulatedUser.id}` : "has none"}`,
+		);
+	}
 	if (target.suiteIdentity === "corpus" && options.graderDefaults !== undefined) {
 		throw new Error(
 			`eval run ${sourceRecord.evalRunId} scored the published corpus ${sourceRecord.dataset}, whose cases all ` +
@@ -220,9 +234,8 @@ export async function regradeEvalRun(options: RegradeOptions): Promise<RegradeRe
 		);
 	}
 	const defaults = options.graderDefaults ?? target.graderDefaults;
-	const simulatedUser = target.manifest.evalSuite.simulatedUser;
 	const tasks = new Map(
-		resolveTaskGraders(target.tasks, defaults, judge !== undefined, simulatedUser !== undefined)
+		resolveTaskGraders(target.tasks, defaults, judge !== undefined, sourceSimulatedUser !== undefined)
 			.map((task) => [task.id, task]),
 	);
 	// One identity rule per resolved surface. A published corpus fixed its own
@@ -240,10 +253,11 @@ export async function regradeEvalRun(options: RegradeOptions): Promise<RegradeRe
 		runtime: first.runtime,
 		model: first.model,
 		judge: judge ? modelFingerprint(judge) : null,
-		// A regrade never replays a conversation — it re-scores the recorded one —
-		// but the user model that produced those turns is still part of what the
-		// evidence measured, so it stays on the axis.
-		simulatedUser: simulatedUser ? modelFingerprint(simulatedUser) : undefined,
+		// A regrade never replays a conversation — it re-scores the recorded one.
+		// The source axis is therefore the authority; the equality check above keeps
+		// the current manifest useful for rebuilding the suite hash without ever
+		// laundering an old dialogue through a new user model.
+		simulatedUser: sourceSimulatedUser,
 		execution: first.execution,
 		eval: { suiteHash, datasetHash: sourceRecord.datasetHash },
 	};

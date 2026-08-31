@@ -18,7 +18,9 @@ import type {
 } from "../workbench/types.js";
 import { workbenchGateClass } from "../workbench/transition-policy.js";
 import {
+	evaluatorModelResolver,
 	hostModelCatalog,
+	selectEvaluatorCredentialEnvironment,
 	selectTargetCredentialEnvironment,
 	targetModelResolver,
 	type HostModelCatalog,
@@ -313,9 +315,13 @@ export function createBuilderWorkbenchTools(
 				abortIfRequested(signal);
 				const { include, ...query } = params;
 				const view = await workbench.view(query);
-				// configure-target is the only decision that needs a model id, and the
-				// trusted host catalog is the only place those ids exist.
-				const catalog = view.stage === "target-setup" && (query.aspect ?? "summary") === "summary"
+				// configure-target and configure-evaluators are the decisions that need
+				// a model id, and the trusted host catalog is the only place those ids
+				// exist. It rides along while either is still the next thing to do.
+				const evaluatorSetupPending = view.target.status !== "missing" &&
+					(view.target.evaluators?.judge == null || view.target.evaluators.simulatedUser == null);
+				const catalog = (view.stage === "target-setup" || evaluatorSetupPending) &&
+						(query.aspect ?? "summary") === "summary"
 					? hostModelCatalog(ctx)
 					: null;
 				const models = catalog && catalog.models.length > 0 ? catalog : null;
@@ -330,17 +336,17 @@ export function createBuilderWorkbenchTools(
 			description: [
 				"Author non-consequential Workbench artifacts. Send nested objects/arrays as JSON values (not strings). Exactly one shape per kind:",
 				"• { kind: \"spec-draft\", spec: { title, purpose, users: string[], jobs: string[], inputs: string[], allowedActions: string[], successCriteria: string[], constraints: string[], openQuestions: string[] }, sourceText?: string }",
-				"• { kind: \"corpus-draft\", name, tasks: [{ input, graders: [grader, …] }], coverageNotes?: string[], revisionSummary, approvedSpecId? } — every task needs ≥1 grader; no other task fields (no id/notes/expected).",
+					"• { kind: \"corpus-draft\", name, tasks: [{ input, expected?, messages?, simulatedUser?: { goal, persona?, maxTurns, stopWhen? }, metadata?, graders: [grader, …] }], coverageNotes?: string[], revisionSummary, approvedSpecId? } — every task needs ≥1 grader; ids are host-derived; messages and simulatedUser are mutually exclusive.",
 				"• { kind: \"corpus-revision\", parentDraftId?, operations: [{ type: \"add\", task } | { type: \"replace\", taskId, task } | { type: \"remove\", taskId } | { type: \"set-graders\", taskId, graders } | { type: \"grader.add\", taskId, grader } | { type: \"grader.update\", taskId, graderIndex, grader } | { type: \"grader.remove\", taskId, graderIndex } | { type: \"add-case-from-run\", evalRunId, runId, task } | { type: \"rename\", name } | { type: \"set-notes\", coverageNotes }], revisionSummary }",
 				"• { kind: \"corpus-import\", sourcePath: \"imports/<file>.jsonl\", name, revisionSummary, coverageNotes? }",
 				"• { kind: \"dataset-recipe\", sourcePath: \"imports/<file>\", recipe, name, revisionSummary, approvedSpecId? } — how to read any other data file (csv/tsv/json/jsonl/markdown/text/chat export) as cases. Write the recipe from aspect: \"dataset\" alone; the host re-validates it against the real columns and answers with the first compiled sample cases plus a submissionId. Nothing is imported until the operator confirms { kind: \"import-dataset\" }.",
-				"recipe = { schemaVersion: 1, input?: { column } | { template: \"…{{column}}…\" }, expected?: { column }, dialogue?: { column }, metadata?: [column, …], filters?: [{ column, equals } | { column, matches }], sample?: { limit, seed, stratifyBy? }, graders: [grader, …], idPrefix? } — needs input or dialogue; grader text may use {{column}} and {{expected}}.",
+					"recipe = { schemaVersion: 1, input?: { column } | { template: \"…{{column}}…\" }, expected?: { column }, dialogue?: { column }, simulatedUser?: { goalColumn, personaColumn?, maxTurns?, stopWhen? }, metadata?: [column, …], filters?: [{ column, equals } | { column, matches }], sample?: { limit, seed, stratifyBy? }, graders: [grader, …], idPrefix? } — needs input or dialogue; a simulatedUser recipe needs input and cannot carry dialogue; grader text may use {{column}} and {{expected}}.",
 				"• { kind: \"select\", entity: \"spec-draft\" | \"approved-spec\" | \"corpus-draft\" | \"development-corpus\" | \"eval-run\" | \"proposal\" | \"candidate\", id }",
 				"• { kind: \"workshop-open\" } — open your only writable surface: a private copy of the exact clean Target revision, scoped to AGENTS.md, skills/**, tools/**, bin/**, data/**. While it is open you also have ahde_workshop_read / _write / _bash / _try; write the change, run it, fix it, run it again. It is not the operator's checkout and nothing in it is applied.",
 				"• { kind: \"workshop-close\", source: { algorithmId, evalRunId, diagnosisId, briefId } (from aspect=traces), failureModeIds: [failureModeId, …], summary, risks?: string[], validationPlan: string[] } — compile the workshop's diff into the exact reviewable proposal. The host derives every path, mode, hash and diff from what is on disk; a workshop that changed nothing or touched anything out of scope is refused by path.",
 				"• { kind: \"workshop-discard\" } — throw the open workshop away; nothing it wrote ever existed.",
 				"• { kind: \"structured-proposal\", authoringContext: <claim from aspect=target>, source: { algorithmId, evalRunId, diagnosisId, briefId } (from aspect=traces), failureModeIds: [failureModeId, …], summary, intents: [intent, …], risks?: string[], validationPlan: string[] } — the second path: cheaper for a single-file edit you have no reason to run, and the only way to change the Target's execution policy.",
-				"grader = { type: \"output_contains\", text, caseSensitive? } | { type: \"output_matches\", pattern (JavaScript regex, no (?i) flags) } | { type: \"tool_called\", tool, argsContains? } | { type: \"judge\", rubric? , assertions?: string[] (yes/no checks, one behaviour each; needs rubric or assertions), jury?: 1-5, withReference? } | { type: \"exact\", normalize? } | { type: \"similarity\", metric: \"token-f1\" | \"levenshtein\", threshold } (judge only when the Target manifest configures a judge model; exact, similarity and judge withReference need the case's expected answer).",
+					"grader = { type: \"output_contains\", text, caseSensitive? } | { type: \"output_matches\", pattern (JavaScript regex, no (?i) flags) } | { type: \"tool_called\", tool, argsContains? } | { type: \"judge\", rubric? , assertions?: string[] (yes/no checks, one behaviour each; needs rubric or assertions), jury?: 1-5, withReference? } | { type: \"exact\", normalize? } | { type: \"similarity\", metric: \"token-f1\" | \"levenshtein\", threshold } | { type: \"turn_budget\", max } (judge only when the Target configures a judge model; exact, similarity and judge withReference need expected; turn_budget measures assistant turns).",
 				"intent = { type: \"instructions.replace\", content } | { type: \"skill.upsert\", name, description, body, disableModelInvocation? } | { type: \"skill.remove\", name } | { type: \"tool.upsert\", name, descriptor: { description, parameters (JSON Schema), arguments?, timeoutMs, maxOutputBytes, output: \"json\" | \"text\", permissions: { environment: string[], network: \"deny\" | \"allow\", filesystem: \"read-only\" | \"workspace-write\" } }, executable (script text starting with #!) } | { type: \"tool.remove\", name } | { type: \"execution.configure\", execution: { tools: (\"read\" | \"bash\" | \"edit\" | \"write\")[], environmentAllowlist: string[], network, sandbox: \"required\" | \"best-effort\" | \"off\" } }.",
 				"This is how Target tools and skills get written: open a workshop, write and run them there, and close it — or, for a one-file edit, express intents and let the host compile them. Either way the operator reviews and applies the exact diff. Submission grants no consequential authority.",
 			].join("\n"),
@@ -367,6 +373,7 @@ export function createBuilderWorkbenchTools(
 				"Also available: { kind: \"start-testing\", repetitions } explicitly; { kind: \"calibrate\", repetitions } measures noise once per Target revision (no question); { kind: \"discard-proposal\" } and { kind: \"reject-candidate\" } and { kind: \"abandon-candidate\" } are one short yes/no.",
 				"• { kind: \"improve\", until (0..1 pass rate), maxCycles, repetitions, candidates?, jobs?, developmentCorpusId? } — the autoloop: run → diagnose → apply the next open proposal → cheap check on the cases that already failed → verify what looks promising, over and over. One question up front for the whole planned loop. It stops and hands back the moment the sealed guardrail or a release decision is what is left; it never promotes, adopts, publishes or approves.",
 				"  candidates: 2..4 turns each cycle into a search instead of one guess: it takes that many open proposals for the top failure mode, screens and verifies each on its own branch, and returns a Pareto table (score delta with its interval, cost and latency ratios, which candidates are dominated). It picks nothing — show the table and let the operator choose, then apply or ship the one they name. It also refuses to re-apply a change whose files and failure mode match an attempt that already lost.",
+				"• { kind: \"configure-evaluators\", judge?: { provider, modelId, thinkingLevel?, timeoutMs?, params? }, simulatedUser?: same, reason } — the two models a measurement uses BESIDES the agent: the judge that grades an answer and the model that plays the user. Request it before writing a basket that needs judge graders or simulated-user cases, and never write those blocks into manifest.yaml yourself. Pick from the same host catalog as configure-target; the host resolves the endpoint and pricing, asks the operator which environment variable holds the key, shows the exact manifest diff, and commits. The judge may not be the Target's own model.",
 				"The fine-grained decisions still exist for scripts and for recovery, each with its own dialog: target-setup → { kind: \"scaffold-target\" } then { kind: \"configure-target\", targetId (kebab-case), model: { provider, modelId, thinkingLevel?, timeoutMs?, params? } };",
 				"spec-review → { kind: \"approve-spec\", draftSpecId? }; corpus-review → { kind: \"publish-corpus\", draftId?, name? };",
 				"corpus-design / corpus-review → { kind: \"import-dataset\", submissionId? (from a dataset-recipe submission; the newest one otherwise), sealed: { count, seed, stratifyBy? } | null } — the operator confirms the mapping on the sample cases; the host reserves the sealed slice first, compiles the rest into a new draft, and tells you only how many cases were held out.",
@@ -405,6 +412,17 @@ export function createBuilderWorkbenchTools(
 				const targetCredentialEnvironment = targetModelSelection
 					? await selectTargetCredentialEnvironment(ctx, targetModelSelection)
 					: null;
+				// One host question per evaluator role, asked before the dialog and
+				// never answered by the model: the value stays in the operator's
+				// shell and only its NAME reaches the manifest.
+				const evaluatorCredentialEnvironment: Record<"judge" | "simulatedUser", string | undefined> = {
+					judge: params.kind === "configure-evaluators" && params.judge
+						? await selectEvaluatorCredentialEnvironment(ctx, "judge", params.judge)
+						: undefined,
+					simulatedUser: params.kind === "configure-evaluators" && params.simulatedUser
+						? await selectEvaluatorCredentialEnvironment(ctx, "simulatedUser", params.simulatedUser)
+						: undefined,
+				};
 				const showsRunProgress = params.kind === "run-current" ||
 					params.kind === "run-eval" ||
 					params.kind === "calibrate" ||
@@ -418,6 +436,9 @@ export function createBuilderWorkbenchTools(
 					const resolveTargetModel = targetModelSelection && targetCredentialEnvironment
 						? targetModelResolver(ctx, targetCredentialEnvironment)
 						: undefined;
+					const resolveEvaluatorModel = params.kind === "configure-evaluators"
+						? evaluatorModelResolver(ctx, evaluatorCredentialEnvironment)
+						: undefined;
 					const result = await workbench.decide(
 						params,
 						createPolicyAwareGate(ctx, actorId, guard, undefined, sealedGuard),
@@ -425,6 +446,7 @@ export function createBuilderWorkbenchTools(
 							signal,
 							...(observation ? { onRunEvent: observation.onRunEvent } : {}),
 							...(resolveTargetModel ? { resolveTargetModel } : {}),
+							...(resolveEvaluatorModel ? { resolveEvaluatorModel } : {}),
 						},
 					);
 					outcome = "completed";

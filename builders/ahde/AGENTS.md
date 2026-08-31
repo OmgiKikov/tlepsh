@@ -152,6 +152,15 @@ of the variable that holds it; the host handles credentials in its own UI.
   state, raw runs, eval files, credentials, `.git`, `.env`, undeclared files,
   and sealed content are outside your authority. Never infer a resource from a
   remembered path or an earlier Target revision.
+- A judge grader or a simulated-user case needs a second model, and the
+  Workbench view says whether the Target has one (`target.evaluators.judge`,
+  `target.evaluators.simulatedUser`; `null` means the manifest has no such
+  block). When a basket you are about to write needs one that is missing,
+  request `configure-evaluators` first with a provider and a model id from the
+  host catalog — one question, not a lecture — and never write those blocks
+  into `manifest.yaml` yourself. The operator names the environment variable
+  that holds the key; you never see, choose, or ask for a credential value, and
+  the judge may not be the Target's own model.
 - The live run widget and the browser trace link are provisional host UI, not
   evidence. Wait for the typed Workbench result; use `aspect: traces` for the
   verified diagnosis.

@@ -6,16 +6,22 @@ import {
 	appendJudgeLabels,
 	collectJudgeLabelSubjects,
 	importJudgeLabels,
+	isLegacyJudgeLabel,
 	judgeEvidenceCalibration,
 	judgeFingerprintHashOf,
 	judgeLabelFilePath,
 	type JudgeLabelRow,
+	type JudgeLabelSuite,
 	loadJudgeCalibration,
 	readProjectJudgeLabels,
 	runJudgeLabelSession,
 } from "../src/application/judge-labels.js";
-import { judgeCalibrationRefusal } from "../src/domain/judge-agreement.js";
-import { writeEvalRun, type EvalRunRecord } from "../src/eval.js";
+import { judgeAgreement, judgeCalibrationRefusal } from "../src/domain/judge-agreement.js";
+import { GraderSpec, loadTarget, type ResolvedTask } from "../src/manifest.js";
+import { startMockModel, type MockModelHandle } from "../src/mock-model.js";
+import { judgeSubjectFor, runSuite, writeEvalRun, type EvalRunRecord } from "../src/eval.js";
+import { openTrace } from "../src/trace.js";
+import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 import { collectEvalReportData, renderEvalReportHtml } from "../src/report.js";
 import {
 	RunRecordSchema,
@@ -30,7 +36,18 @@ import { baseRunRecord } from "./helpers/judge-fixtures.js";
 
 const roots: string[] = [];
 const at = "2026-08-30T10:00:00.000Z";
-const SPEC_A = `sha256:${"a1".repeat(32)}`;
+/**
+ * A real grader spec, not an invented hash: the label screen now checks that
+ * the spec it renders hashes to the identity the run recorded, so a fixture
+ * that lies about it gets the legacy screen instead of the judge's own.
+ */
+const RUBRIC_GRADER = { type: "judge" as const, rubric: "Ответ полный и вежливый" };
+const ASSERTIONS_GRADER = {
+	type: "judge" as const,
+	assertions: ["назван срок", "назван канал подачи", "нет лишних обещаний"],
+};
+const SPEC_A = hashValue(GraderSpec.parse(RUBRIC_GRADER));
+const SPEC_ASSERTIONS = hashValue(GraderSpec.parse(ASSERTIONS_GRADER));
 const SPEC_B = `sha256:${"b2".repeat(32)}`;
 
 afterEach(() => {
@@ -42,14 +59,20 @@ interface EvidenceFixture {
 	stateRoot: string;
 	evalRunId: string;
 	projectId: string;
+	/** The exact suite that graded this evidence, as `ahde label --target` passes it. */
+	suite: JudgeLabelSuite;
 }
 
 /**
  * One development eval run of `tasks` judge-graded cases. Every second case
  * fails its judge, so the fixture has both directions of disagreement to label.
  */
-function evidence(options: { tasks?: number; sealed?: boolean } = {}): EvidenceFixture {
+function evidence(
+	options: { tasks?: number; sealed?: boolean; assertions?: boolean } = {},
+): EvidenceFixture {
 	const tasks = options.tasks ?? 4;
+	const grader = options.assertions ? ASSERTIONS_GRADER : RUBRIC_GRADER;
+	const specHash = options.assertions ? SPEC_ASSERTIONS : SPEC_A;
 	const runsRoot = mkdtempSync(join(tmpdir(), "ahde-label-runs-"));
 	const stateRoot = mkdtempSync(join(tmpdir(), "ahde-label-state-"));
 	roots.push(runsRoot, stateRoot);
@@ -84,8 +107,11 @@ function evidence(options: { tasks?: number; sealed?: boolean } = {}): EvidenceF
 						passed,
 						score: passed ? 1 : 0,
 						reason: passed ? "судья доволен" : "судья недоволен",
-						specHash: SPEC_A,
+						specHash,
 						checkCode: "semantic-rubric",
+						// The judge's own per-assertion answers, which the checklist
+						// screen compares the human's ticks against.
+						...(options.assertions ? { assertions: { total: 3, failed: passed ? [] : [2] } } : {}),
 					},
 				],
 				outcome: passed ? "pass" : "fail",
@@ -141,7 +167,24 @@ function evidence(options: { tasks?: number; sealed?: boolean } = {}): EvidenceF
 		},
 	};
 	writeEvalRun(runsRoot, record);
-	return { runsRoot, stateRoot, evalRunId, projectId: "project" };
+	return {
+		runsRoot,
+		stateRoot,
+		evalRunId,
+		projectId: "project",
+		suite: {
+			datasetHash: record.datasetHash,
+			suiteHash: record.suiteHash,
+			tasks: runs.map((run, index) => ({
+				id: run.taskId,
+				input: `вопрос ${index}`,
+				effectiveGraders: [
+					GraderSpec.parse({ type: "output_contains", text: "ответ" }),
+					GraderSpec.parse(grader),
+				],
+			})),
+		},
+	};
 }
 
 function labelFile(dir: string, rows: readonly unknown[]): string {
@@ -153,7 +196,11 @@ function labelFile(dir: string, rows: readonly unknown[]): string {
 describe("label subjects", () => {
 	it("shows the task and the answer bounded and credential-redacted, never the judge first", () => {
 		const value = evidence({ tasks: 2 });
-		const subjects = collectJudgeLabelSubjects({ runsRoot: value.runsRoot, evalRunId: value.evalRunId });
+		const subjects = collectJudgeLabelSubjects({
+			runsRoot: value.runsRoot,
+			evalRunId: value.evalRunId,
+			suite: value.suite,
+		});
 		expect(subjects).toHaveLength(2);
 		expect(subjects[0]).toMatchObject({
 			runId: "run-0",
@@ -166,6 +213,56 @@ describe("label subjects", () => {
 		expect(subjects[0]?.answer).toContain("ответ 0");
 		expect(subjects[0]?.answer).not.toContain("sk-ant-api03");
 		expect(subjects[0]?.answer).toContain("[REDACTED");
+	});
+
+	/**
+	 * The rubric is the question the judge was asked. A human who never sees it
+	 * is answering a question of their own, and the agreement number that comes
+	 * out is about two different instruments.
+	 */
+	it("shows the question the judge was asked, and says so when it cannot", () => {
+		const value = evidence({ tasks: 2 });
+		const [withSuite] = collectJudgeLabelSubjects({
+			runsRoot: value.runsRoot,
+			evalRunId: value.evalRunId,
+			suite: value.suite,
+		});
+		expect(withSuite).toMatchObject({
+			subject: "judge-facing",
+			kind: "single-turn",
+			rubric: "Ответ полный и вежливый",
+			assertions: null,
+			reference: null,
+		});
+		expect(withSuite?.subjectHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+
+		// No suite in scope, or a suite that graded something else: the screen
+		// falls back and marks itself, rather than showing a rubric it guessed.
+		for (const suite of [undefined, { ...value.suite, suiteHash: `sha256:${"f".repeat(64)}` }]) {
+			const [fallback] = collectJudgeLabelSubjects({
+				runsRoot: value.runsRoot,
+				evalRunId: value.evalRunId,
+				...(suite ? { suite } : {}),
+			});
+			expect(fallback).toMatchObject({ subject: "legacy", subjectHash: null, rubric: null });
+		}
+	});
+
+	it("puts the assertion checklist in front of the human, with the judge's own answers", () => {
+		const value = evidence({ tasks: 2, assertions: true });
+		const subjects = collectJudgeLabelSubjects({
+			runsRoot: value.runsRoot,
+			evalRunId: value.evalRunId,
+			suite: value.suite,
+		});
+		expect(subjects[0]).toMatchObject({
+			subject: "judge-facing",
+			rubric: null,
+			assertions: ASSERTIONS_GRADER.assertions,
+			// run-0 passed every assertion; run-1 failed the second.
+			judgeAssertions: ["yes", "yes", "yes"],
+		});
+		expect(subjects[1]?.judgeAssertions).toEqual(["yes", "no", "yes"]);
 	});
 
 	it("draws the same sample for the same seed and a different one for another", () => {
@@ -277,6 +374,255 @@ describe("interactive labelling", () => {
 	});
 });
 
+/**
+ * The lane's whole point: what the human is shown is what the judge was shown.
+ * Not "similar to" — the same object, derived by the same function, provable
+ * against the exact request that is on disk beside the verdict.
+ */
+describe("subject parity with the judge", () => {
+	const servers: MockModelHandle[] = [];
+
+	afterEach(async () => {
+		for (const server of servers.splice(0)) await server.close();
+	});
+
+	const manifestYaml = (targetUrl: string, judgeUrl: string, userUrl: string): string =>
+		`id: parity-target
+model:
+  provider: qwen-mock
+  id: mock-target
+  api: openai-completions
+  baseUrl: ${targetUrl}
+  apiKeyEnv: MOCK_MODEL_KEY
+  thinkingLevel: "off"
+  timeoutMs: 60000
+instructions:
+  agentsMd: AGENTS.md
+skills: []
+evalSuite:
+  id: parity-suite
+  dataset: evals/development.jsonl
+  graders: evals/graders.yaml
+  judge:
+    provider: qwen-mock
+    id: mock-judge
+    api: openai-completions
+    baseUrl: ${judgeUrl}
+    apiKeyEnv: MOCK_MODEL_KEY
+    thinkingLevel: "off"
+    timeoutMs: 60000
+  simulatedUser:
+    provider: qwen-mock
+    id: mock-user
+    api: openai-completions
+    baseUrl: ${userUrl}
+    apiKeyEnv: MOCK_MODEL_KEY
+    thinkingLevel: "off"
+    timeoutMs: 60000
+`;
+
+	it("puts the same context, answer, rubric and reference in front of both", async () => {
+		process.env.MOCK_MODEL_KEY = "test-key";
+		const target = await startMockModel([{ steps: [], resolve: () => ({ text: "Возврат занимает тридцать дней." }) }]);
+		const judge = await startMockModel([{
+			steps: [],
+			// One mock, three judge protocols: it answers whichever one it was asked.
+			resolve: (body) => ({
+				text: body.firstUser.includes("<утверждения>")
+					? JSON.stringify({ verdicts: [1, 2].map((index) => ({ index, answer: "yes", evidence: "ок" })) })
+					: body.firstUser.includes("<эталонный ответ>")
+					? '{"choice": "C", "reason": "то же самое"}'
+					: '{"passed": true, "reason": "ок"}',
+			}),
+		}]);
+		const user = await startMockModel([
+			{ steps: [], resolve: () => ({ text: '{"done": true, "message": ""}' }) },
+		]);
+		servers.push(target, judge, user);
+		const dir = makeTargetFixture(baseFixtureFiles({
+			"manifest.yaml": manifestYaml(target.url, judge.url, user.url),
+			"evals/development.jsonl": `${[
+				{
+					id: "single",
+					input: "Сколько длится возврат?",
+					expected: "тридцать дней",
+					graders: [{ type: "judge", rubric: "агент называет срок", withReference: true }],
+				},
+				{
+					id: "frozen",
+					input: "А для золотых?",
+					messages: [
+						{ role: "user", content: "Сколько длится возврат?" },
+						{ role: "assistant", content: "Тридцать дней." },
+						{ role: "user", content: "А для золотых?" },
+					],
+					graders: [{ type: "judge", assertions: ["назван срок", "нет лишних обещаний"] }],
+				},
+				{
+					id: "simulated",
+					input: "Здравствуйте, вопрос по возврату.",
+					simulatedUser: { goal: "узнать срок возврата", maxTurns: 2 },
+					graders: [{ type: "judge", rubric: "агент довёл пользователя до ответа" }],
+				},
+			].map((task) => JSON.stringify(task)).join("\n")}\n`,
+		}));
+		const runsRoot = join(dir, "..", `label-parity-runs-${Date.now()}`);
+		roots.push(runsRoot);
+		try {
+			const resolved = loadTarget(dir);
+			const evalRun = await runSuite(resolved, { runsRoot, label: "solo", repetitions: 1 });
+			expect(evalRun.summary.error).toBe(0);
+
+			const subjects = collectJudgeLabelSubjects({
+				runsRoot,
+				evalRunId: evalRun.evalRunId,
+				suite: {
+					datasetHash: resolved.datasetHash,
+					suiteHash: resolved.suiteHash,
+					tasks: resolved.tasks,
+				},
+			});
+			expect(subjects).toHaveLength(3);
+			for (const subject of subjects) {
+				const task = resolved.tasks.find((candidate) => candidate.id === subject.taskId)!;
+				const spec = task.effectiveGraders[subject.graderIndex]!;
+				const run = evalRun.runIds
+					.map((runId) => JSON.parse(readFileSync(join(runsRoot, runId, "run.json"), "utf8")) as {
+						runId: string;
+						trace: { path: "session.jsonl"; sha256: string | null };
+					})
+					.find((candidate) => candidate.runId === subject.runId)!;
+
+				// 1. The label subject IS the judge subject, hash and visible
+				// bytes alike — including a bounded multi-turn transcript.
+				const exactSubject = judgeSubjectFor(
+					{
+						input: task.input,
+						messages: openTrace(join(runsRoot, run.runId), "session.jsonl", run.trace.sha256 ?? undefined),
+						simulatedUser: task.simulatedUser,
+						expected: task.expected,
+					},
+					spec as never,
+				);
+				expect(subject.subject).toBe("judge-facing");
+				expect(subject.subjectHash).toBe(hashValue(exactSubject));
+				expect(subject.input).toBe(exactSubject.context);
+				expect(subject.answer).toBe(exactSubject.answer);
+				expect(subject.rubric).toEqual(exactSubject.rubric);
+				expect(subject.assertions).toEqual(exactSubject.assertions);
+				expect(subject.reference).toEqual(exactSubject.reference);
+
+				// 2. And every part of it is literally inside the request the judge
+				//    was sent, which is on disk beside the verdict it produced.
+				const prompt = (JSON.parse(
+					readFileSync(join(runsRoot, run.runId, "judge", `${subject.graderIndex}.json`), "utf8"),
+				) as { request: { body: { messages: { content: string }[] } } }).request.body.messages[1]!.content;
+				expect(prompt).toContain(subject.input);
+				expect(prompt).toContain(subject.answer);
+				if (subject.rubric) expect(prompt).toContain(subject.rubric);
+				if (subject.reference) expect(prompt).toContain(subject.reference);
+				for (const assertion of subject.assertions ?? []) expect(prompt).toContain(assertion);
+				expect(prompt.includes("<диалог агента с пользователем>")).toBe(subject.kind === "dialogue");
+			}
+
+			const byTask = Object.fromEntries(subjects.map((subject) => [subject.taskId, subject]));
+			// The single-turn case: the request, the final answer, the reference.
+			expect(byTask.single).toMatchObject({
+				kind: "single-turn",
+				input: "Сколько длится возврат?",
+				answer: "Возврат занимает тридцать дней.",
+				reference: "тридцать дней",
+			});
+			// The frozen-history case: what the judge saw is the last user turn and
+			// the reply, plus the checklist it was asked.
+			expect(byTask.frozen).toMatchObject({
+				kind: "single-turn",
+				input: "А для золотых?",
+				assertions: ["назван срок", "нет лишних обещаний"],
+				reference: null,
+			});
+			// The simulated case: the goal, and the whole conversation.
+			expect(byTask.simulated).toMatchObject({ kind: "dialogue", input: "узнать срок возврата" });
+			expect(byTask.simulated?.answer).toContain("Пользователь: Здравствуйте, вопрос по возврату.");
+			expect(byTask.simulated?.answer).toContain("Агент: Возврат занимает тридцать дней.");
+		} finally {
+			cleanup(dir);
+		}
+	}, 180_000);
+});
+
+describe("assertion checklists", () => {
+	it("writes one tick per assertion and scores agreement assertion by assertion", async () => {
+		const value = evidence({ tasks: 2, assertions: true });
+		const session = await runJudgeLabelSession({
+			runsRoot: value.runsRoot,
+			stateRoot: value.stateRoot,
+			projectId: value.projectId,
+			evalRunId: value.evalRunId,
+			suite: value.suite,
+			now: () => at,
+			prompt: {
+				// The human agrees with the judge on run-0 and differs on exactly one
+				// assertion of run-1: 5 of 6 comparisons agree.
+				ask: (subject) => Promise.resolve(subject.runId === "run-0"
+					? { answer: "pass" as const, assertions: ["yes", "yes", "yes"] as const }
+					: { answer: "fail" as const, assertions: ["no", "no", "yes"] as const }),
+				reveal: () => {},
+			},
+		});
+		expect(session.labelled).toBe(2);
+		expect(session.rows[0]).toMatchObject({
+			subject: "judge-facing",
+			assertions: ["yes", "yes", "yes"],
+			judgeAssertions: ["yes", "yes", "yes"],
+			human: "pass",
+			judge: "pass",
+		});
+		expect(session.rows[1]).toMatchObject({
+			assertions: ["no", "no", "yes"],
+			judgeAssertions: ["yes", "no", "yes"],
+			human: "fail",
+			judge: "fail",
+		});
+		// Pooled, these two labels agree perfectly and say nothing. Per assertion
+		// they say the judge waves through exactly one check out of six.
+		const report = judgeAgreement(readProjectJudgeLabels(value.stateRoot, value.projectId));
+		expect(report.pooled.n).toBe(6);
+		expect(report.pooled.agreement).toBeCloseTo(5 / 6, 10);
+		expect(report.pooled.falsePass).toBe(1);
+	});
+
+	it("refuses an imported checklist that does not fit the grader it claims", () => {
+		const value = evidence({ tasks: 2, assertions: true });
+		const importWith = (rows: readonly unknown[]): JudgeLabelRow[] => importJudgeLabels({
+			runsRoot: value.runsRoot,
+			stateRoot: value.stateRoot,
+			projectId: value.projectId,
+			evalRunId: value.evalRunId,
+			suite: value.suite,
+			now: () => at,
+			filePath: labelFile(value.stateRoot, rows),
+		});
+		const base = {
+			runId: "run-0",
+			taskId: "task-0",
+			graderIndex: 1,
+			graderSpecHash: SPEC_ASSERTIONS,
+			human: "pass" as const,
+		};
+		expect(() => importWith([{ ...base, assertions: ["yes", "yes"] }]))
+			.toThrow(/expected 3 assertion answer\(s\), got 2/);
+		// The summary verdict must follow from the ticks it claims to summarize.
+		expect(() => importWith([{ ...base, assertions: ["yes", "no", "yes"] }]))
+			.toThrow(/must reflect the ticked assertions/);
+		const rows = importWith([{ ...base, assertions: ["yes", "yes", "yes"] }]);
+		expect(rows[0]?.assertions).toEqual(["yes", "yes", "yes"]);
+		expect(rows[0]?.judgeAssertions).toEqual(["yes", "yes", "yes"]);
+		// A file cannot claim its own subject identity: the host stamps it.
+		expect(rows[0]?.subject).toBe("judge-facing");
+	});
+});
+
 describe("calibration on the screens", () => {
 	function label(value: EvidenceFixture, human: "pass" | "fail", judge: "pass" | "fail", count: number): void {
 		appendJudgeLabels(
@@ -381,6 +727,46 @@ describe("calibration on the screens", () => {
 		});
 		expect(unchanged.stats?.n).toBe(6);
 		expect(unchanged.stats?.agreement).toBe(1);
+	});
+});
+
+describe("labels written under the old screen", () => {
+	it("stay readable, are counted separately, and are left out of the gate by default", () => {
+		const value = evidence({ tasks: 2 });
+		const judgeFingerprintHash = judgeFingerprintHashOf(value.runsRoot, value.evalRunId) ?? undefined;
+		const row = (index: number, judgeFacing: boolean) => ({
+			runId: `run-${index % 2}`,
+			taskId: `task-${index % 2}`,
+			graderIndex: 1,
+			graderSpecHash: SPEC_A,
+			judgeFingerprintHash,
+			...(judgeFacing ? { subject: "judge-facing" as const, subjectHash: `sha256:${"7".repeat(64)}` } : {}),
+			human: "pass" as const,
+			judge: "pass" as const,
+			at,
+		});
+		appendJudgeLabels(value.stateRoot, value.projectId, value.evalRunId, [
+			row(0, false),
+			row(1, false),
+			row(2, true),
+		]);
+		// All three are still on disk and still parse.
+		const stored = readProjectJudgeLabels(value.stateRoot, value.projectId);
+		expect(stored).toHaveLength(3);
+		expect(stored.filter(isLegacyJudgeLabel)).toHaveLength(2);
+
+		const query = {
+			runsRoot: value.runsRoot,
+			stateRoot: value.stateRoot,
+			projectId: value.projectId,
+			evalRunIds: [value.evalRunId],
+		};
+		// The screens keep showing every label the project has collected…
+		expect(judgeEvidenceCalibration(query).stats?.n).toBe(3);
+		expect(judgeEvidenceCalibration(query).legacyLabels).toBe(2);
+		// …and the gate counts only the ones that graded the judge's own subject.
+		expect(judgeEvidenceCalibration({ ...query, includeLegacyLabels: false }).stats?.n).toBe(1);
+		expect(judgeEvidenceCalibration({ ...query, includeLegacyLabels: false }).legacyLabels).toBe(2);
 	});
 });
 

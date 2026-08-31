@@ -1004,17 +1004,34 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 	return { stage: "improvement-authoring", headline: "Use the diagnosis to author a structured harness proposal.", actions: ["traces", "submit structured-proposal"], blockers: [] };
 }
 
-function targetModelSummary(
-	inventory: WorkbenchInventory,
+function modelSummary(
+	model: { provider: string; id: string; apiKeyEnv: string } | undefined,
 	env: NodeJS.ProcessEnv,
 ): WorkbenchView["target"]["model"] {
-	const model = inventory.target?.manifest.model;
 	if (!model) return null;
 	return {
 		provider: model.provider,
 		id: model.id,
 		apiKeyEnv: model.apiKeyEnv,
 		credentialPresent: Boolean(env[model.apiKeyEnv]?.trim()),
+	};
+}
+
+function targetModelSummary(
+	inventory: WorkbenchInventory,
+	env: NodeJS.ProcessEnv,
+): WorkbenchView["target"]["model"] {
+	return modelSummary(inventory.target?.manifest.model, env);
+}
+
+/** What the suite measures WITH: the judge, and the model that plays the user. */
+function evaluatorSummaries(
+	inventory: WorkbenchInventory,
+	env: NodeJS.ProcessEnv,
+): WorkbenchView["target"]["evaluators"] {
+	return {
+		judge: modelSummary(inventory.target?.manifest.evalSuite.judge, env),
+		simulatedUser: modelSummary(inventory.target?.manifest.evalSuite.simulatedUser, env),
 	};
 }
 
@@ -1077,8 +1094,15 @@ export function deriveWorkbenchView(
 				id: inventory.target.manifest.id,
 				gitSha: inventory.target.gitSha,
 				model: targetModelSummary(inventory, env),
+				evaluators: evaluatorSummaries(inventory, env),
 			}
-			: { status: "missing", id: null, gitSha: null, model: null },
+			: {
+				status: "missing",
+				id: null,
+				gitSha: null,
+				model: null,
+				evaluators: { judge: null, simulatedUser: null },
+			},
 		focus: Object.fromEntries(Object.entries(inventory.validFocus).map(([kind, entry]) => [kind, entry?.id])),
 		selections: [
 			...specs.map((spec) => selection(

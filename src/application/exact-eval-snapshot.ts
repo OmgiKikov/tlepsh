@@ -59,6 +59,11 @@ export function loadExactEvalSnapshot(
 			runtime: run.runtime,
 			model: run.model,
 			judge: record.provenance.judge,
+			// Both evaluator models are suite configuration, not per-run facts: a
+			// RunRecord carries neither fingerprint, so both are taken from the
+			// index being verified. Omitting the user model here made every
+			// simulated-user snapshot disagree with its own canonical EvalRun.
+			simulatedUser: record.provenance.simulatedUser,
 			execution: run.execution,
 			eval: run.eval,
 		});

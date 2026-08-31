@@ -157,7 +157,7 @@ describe("axisDifferences (table-driven: each axis must be caught)", () => {
 		const rehashed = record({ runtime: { ...record().runtime, ahdeCodeHash: "sha256:code-b" } });
 		expect(axisDifferences(axes, provenanceAxes(rehashed))).toEqual([]);
 		// …while a deliberate evaluator bump makes older evidence incomparable.
-		expect(axisDifferences(axes, { ...axes, evaluatorId: "ahde-evaluator-v2" }))
+		expect(axisDifferences(axes, { ...axes, evaluatorId: `${AHDE_EVALUATOR_ID}-next` }))
 			.toEqual(["runtime.evaluatorId"]);
 	});
 

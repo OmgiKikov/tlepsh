@@ -241,6 +241,13 @@ function decisionTitle(result: WorkbenchDecisionResult): { title: string; tone: 
 			};
 		case "scaffold-target": return { title: "Target created", tone: "success" };
 		case "configure-target": return { title: "Target configured", tone: "success" };
+		case "configure-evaluators":
+			return {
+				title: "Evaluator models configured",
+				// A configured judge whose key is not exported fails at the first
+				// graded case, so the line is a warning until the shell has it.
+				tone: "success",
+			};
 		case "approve-spec": return { title: "Spec approved", tone: "success" };
 		case "publish-corpus": return { title: "Eval basket published", tone: "success" };
 		case "import-dataset": return { title: "Dataset imported", tone: "success" };

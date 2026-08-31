@@ -59,7 +59,7 @@ async function gradeJury(grader: unknown, steps: readonly MockStep[]): Promise<J
 	const task = {
 		id: "task-a",
 		input: "вопрос",
-		effectiveGraders: [grader] as ResolvedTask["effectiveGraders"],
+		effectiveGraders: (Array.isArray(grader) ? grader : [grader]) as ResolvedTask["effectiveGraders"],
 	} as ResolvedTask;
 	const graded = await gradeRun(
 		task,
@@ -175,6 +175,31 @@ describe("judge juries", () => {
 			["yes", "yes"],
 			["yes", "no"],
 		]);
+	});
+
+	it("keeps every billed juror in the infrastructure error when a later verdict is malformed", async () => {
+		await expect(gradeJury(TWO_ASSERTIONS, [
+			verdicts(["yes", "yes"]),
+			{ text: "not a verdict" },
+		])).rejects.toMatchObject({
+			message: expect.stringContaining("judge returned unparseable verdict"),
+			// Both completions were billed at 49 tokens / 42 input tokens. The
+			// second one failed to parse, but cannot erase itself or juror one.
+			metrics: { calls: 2, tokens: 2 * 49, costUsd: 2 * 42 },
+		});
+	});
+
+	it("keeps completed judge graders in the spend when a later grader is malformed", async () => {
+		await expect(gradeJury([
+			{ type: "judge", rubric: "первый критерий" },
+			{ type: "judge", rubric: "второй критерий" },
+		], [
+			{ text: JSON.stringify({ passed: true, reason: "готово" }) },
+			{ text: "not a verdict" },
+		])).rejects.toMatchObject({
+			message: expect.stringContaining("judge returned unparseable verdict"),
+			metrics: { calls: 2, tokens: 2 * 49, costUsd: 2 * 42 },
+		});
 	});
 
 	it("lets a jury sample: three identical greedy calls would measure nothing", async () => {
