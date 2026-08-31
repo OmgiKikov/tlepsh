@@ -450,8 +450,11 @@ of them. A single judge stays pinned to temperature 0; a jury deliberately does
 not, because three identical greedy calls measure nothing.
 
 A judge nobody has checked is an opinion with a token cost. `ahde label` shows
-the task and the Target's final answer — bounded and credential-redacted —
-takes your blind pass/fail, and only then reveals what the judge said:
+you **exactly what the judge was shown** — the request, or the goal and the
+whole bounded conversation on a simulated-user case; the final answer; the
+rubric it was asked; the reference answer when the grader used one; and the
+assertion list as a checklist — takes your blind verdict, and only then reveals
+what the judge said:
 
 ```bash
 ahde label <eval-run-id> --target . --sample 30 --seed calibration-1
@@ -459,12 +462,24 @@ ahde label <eval-run-id> --target . --file ./labels.jsonl   # non-interactive
 ahde judge-agreement <eval-run-id> --target .
 ```
 
+One function, `judgeSubjectFor(run, grader)`, derives that object, and the judge
+prompt builders call it too — so the two cannot drift into grading different
+things. On an assertion rubric the screen asks yes / no / unknown per assertion
+and the label records both sides, so agreement is measured check by check: a
+judge that is wrong about one of twelve reads as 92%, not as a failed label.
+
 Labels land in `<state-root>/projects/<id>/labels/<eval-run-id>.jsonl` as
-`{ runId, taskId, graderIndex, graderSpecHash, human, judge, note?, at }`. They
-are notes about an instrument, not evidence about a Target: no receipt, no
-provenance axis, and sealed evidence is never labelled. `ahde report`, the HTML
-report, the candidate review block, and the promote confirmation then all show
-one line — `judge agreement 84% · κ 0.62 · n=50`, or `judge not calibrated`.
+`{ runId, taskId, graderIndex, graderSpecHash, subject?, subjectHash?,
+assertions?, judgeAssertions?, human, judge, note?, at }`. They are notes about
+an instrument, not evidence about a Target: no receipt, no provenance axis, and
+sealed evidence is never labelled. `ahde report`, the HTML report, the candidate
+review block, and the promote confirmation then all show one line — `judge
+agreement 84% · κ 0.62 · n=50`, or `judge not calibrated`.
+
+Labels written before the screen showed the judge's own subject stay valid and
+stay in the report, but they graded a different object, so they do not count
+toward `requireCalibration` unless the Target writes
+`allowLegacyLabels: true`.
 
 A Target that wants that line to be more than information can say so:
 
@@ -478,7 +493,27 @@ evalSuite:
 With it set, promoting evidence graded by an unchecked judge is refused with
 the exact numbers. Unset by default — measuring the instrument is worth doing
 long before it is worth blocking on — and evidence that no judge graded is
-never affected.
+never affected. Add `allowLegacyLabels: true` to count labels collected under
+the older screen as well.
+
+### Setting up the evaluator models without YAML
+
+The judge and the simulated user are chosen the same way the Target's own model
+is: the Builder asks for `configure-evaluators` with a provider and a model id
+from the host catalog, the host resolves the endpoint, limits and pricing, asks
+**you** which environment variable holds the key, shows the exact `manifest.yaml`
+diff, and commits on your confirmation. A credential value never enters the
+conversation, and the variable name is never chosen by a model. A judge equal to
+the Target's own model is refused: a model grading its own twin agrees with
+itself, and that is an echo, not calibration.
+
+`ahde validate` then reports both beside the Target model:
+
+```
+  key TARGET_MODEL_API_KEY: set
+  judge: configured · anthropic/claude-sonnet-4 · key TEST_JUDGE_KEY set
+  simulatedUser: not configured
+```
 
 ## Scriptable commands remain available
 

@@ -134,6 +134,9 @@ describe("Workbench gate policy", () => {
 			// One-time bootstrap of a real repository.
 			"scaffold-target": "consequential",
 			"configure-target": "consequential",
+			// The judge and the user model commit to manifest.yaml too, and they
+			// decide what every later measurement is measured with.
+			"configure-evaluators": "consequential",
 			// The three moments a normal cycle asks about.
 			"start-testing": "consequential",
 			"apply-proposal": "consequential",

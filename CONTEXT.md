@@ -67,18 +67,36 @@ the harness under development runs in a different Target Pi invocation.
 - **A/A calibration** — repeated evaluation of the same snapshot to measure
   run-to-run noise. The A/A Candidate record is the calibration receipt; it
   can never be promotion evidence.
+- **Judge subject** — the exact object one judge grader was given: what the
+  person wanted (the request, or the goal on a simulated-user case), what the
+  agent said (the final reply, or the whole bounded transcript), the rubric or
+  the assertion list it was asked, and the reference answer when the grader
+  used one. `judgeSubjectFor(run, grader)` in `eval.ts` is its only derivation:
+  the three judge prompt builders and the labelling screen both call it, so the
+  human and the judge cannot end up grading two different things.
 - **Judge agreement** — how often a judge grader and a human reached the same
   verdict on the same answer, with Cohen's κ correcting for the agreement two
   indifferent raters would reach by chance. Humans supply the other side
-  through `ahde label`, which shows the task and the answer, takes a blind
-  pass/fail, and only then reveals the judge. Labels live under
-  `<state-root>/projects/<id>/labels/<evalRunId>.jsonl`, are notes about an
-  instrument rather than evidence about a Target — never a receipt, never a
+  through `ahde label`, which shows the judge subject, takes a blind verdict —
+  or one yes/no/unknown per assertion, on an assertion rubric — and only then
+  reveals the judge. A label with per-assertion answers is scored assertion by
+  assertion; every other label is scored on its pooled verdict. Labels live
+  under `<state-root>/projects/<id>/labels/<evalRunId>.jsonl`, are notes about
+  an instrument rather than evidence about a Target — never a receipt, never a
   provenance axis, never collected from sealed evidence — and every judge
   screen reads `judge agreement 84% · κ 0.62 · n=50` or
   `judge not calibrated` from them. A Target may set
   `evalSuite.judge.requireCalibration` to refuse promoting evidence its judge
-  has not earned.
+  has not earned; labels written before the screen showed the judge's own
+  subject are excluded from that gate unless it says `allowLegacyLabels: true`.
+- **Evaluator setup** — the judge and the simulated user are chosen through the
+  consequential `configure-evaluators` decision, the same shape as
+  `configure-target`: a bounded selection resolved against the trusted host
+  catalog, a credential variable NAME asked through the host UI and never a
+  value, the exact non-secret `manifest.yaml` diff, one reviewed commit, and an
+  immutable receipt under `<state-root>/evaluators/`. A judge equal to the
+  Target's own model is refused. `ahde validate` reports both beside the Target
+  model (`judge: configured · key TEST_JUDGE_KEY set`).
 - **Comparison Verdict** — the single typed outcome of comparing a baseline and
   a candidate Eval Run under one Gate Policy: paired per-task deltas of the
   mean grader score, a seeded bootstrap 95% interval, the design (tasks ×
@@ -321,3 +339,23 @@ credential.
     the autoloop refuses to re-propose a change whose changed-path set and
     targeted failure mode match an attempt that already ended rejected or
     not `improved`.
+38. Every evaluator model is a provenance axis, everywhere. The judge and the
+    simulated user travel together on `provenanceAxes`, and every place that
+    rebuilds a run's axes from a Target — the canonical `runSuite` index, the
+    candidate experiment's reuse query, the snapshot verifier, and `regrade` —
+    emits both by the same rule: a fingerprint when the suite configures one,
+    an absent key (never `null`) when it does not, so provenance keys minted
+    before either existed are byte-identical.
+39. A human calibrating a judge grades the judge's own subject. One pure
+    derivation, `judgeSubjectFor(run, grader)`, produces what a judge was shown
+    and asked; the judge prompt builders and the labelling screen both consume
+    it. A label records which subject it graded, and one written under an older
+    screen is excluded from `requireCalibration` unless the Target declares
+    `allowLegacyLabels: true`.
+40. The evaluator models are configured through a host-confirmed reviewed
+    commit, never by hand-editing YAML and never by a model. `configure-target`
+    and `configure-evaluators` share one contract: a bounded selection resolved
+    against the trusted host catalog, a credential variable NAME asked through
+    the host UI and never a value, the exact non-secret `manifest.yaml` diff,
+    one commit touching only `manifest.yaml`, and an immutable receipt. A judge
+    equal to the Target's own model is refused.

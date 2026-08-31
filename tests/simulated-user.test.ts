@@ -8,6 +8,7 @@ import { effectiveProvenance, runCandidateExperiment } from "../src/application/
 import { compileDatasetCases } from "../src/application/dataset-ingest.js";
 import { loadExactEvalSnapshot } from "../src/application/exact-eval-snapshot.js";
 import { renderRunTurns, runSuite } from "../src/eval.js";
+import { regradeEvalRun } from "../src/regrade.js";
 import {
 	startMockModel,
 	type MockModelHandle,
@@ -274,7 +275,12 @@ describe("a conversation the host plays both sides of", () => {
 				const exchange = JSON.parse(payload) as {
 					request: { body: { messages: { role: string; content: string }[] } };
 				};
+				const system = exchange.request.body.messages[0]?.content ?? "";
 				const prompt = exchange.request.body.messages[1]?.content ?? "";
+				// The simulator is a general person, not a customer-support fixture:
+				// the case's own goal/persona decides the domain.
+				expect(system).toContain("роль человека");
+				expect(system).not.toContain("обращается к службе поддержки");
 				// It sees the goal and the conversation…
 				expect(prompt).toContain("узнать срок возврата для золотого клиента");
 				expect(prompt).toContain("Ответ 1: возврат занимает тридцать дней.");
@@ -294,6 +300,32 @@ describe("a conversation the host plays both sides of", () => {
 		} finally {
 			cleanup(dir);
 			cleanup(runsRoot);
+		}
+	}, 180_000);
+
+	it("treats an undeclared stopWhen as evaluator corruption, never as an empty Target turn", async () => {
+		const invalidUser = await startMockModel([{
+			steps: [{ text: JSON.stringify({ done: false, stopWhen: true, message: "" }) }],
+		}]);
+		const dir = makeTargetFixture(baseFixtureFiles({
+			"manifest.yaml": manifestYaml({ targetUrl: targetMock.url, userUrl: invalidUser.url }),
+			"evals/development.jsonl": datasetOf([SENTINEL_CASE]),
+		}));
+		const runsRoot = join(dir, "..", `simulated-user-invalid-stop-${Date.now()}`);
+		try {
+			const evalRun = await runSuite(loadTarget(dir), { runsRoot, label: "solo", repetitions: 1 });
+			expect(evalRun.summary).toMatchObject({ pass: 0, fail: 0, error: 1 });
+			const run = JSON.parse(readFileSync(join(runsRoot, evalRun.runIds[0]!, "run.json"), "utf8"));
+			expect(run.error).toContain("undeclared stopWhen");
+			expect(run.metrics.simulatedUser).toEqual({ calls: 1, tokens: 49, costUsd: 0 });
+			const trace = openTrace(join(runsRoot, run.runId), "session.jsonl", run.trace.sha256);
+			// Only the real opening message reached the Target. The invalid empty turn
+			// stayed evaluator infrastructure and never became behavioural evidence.
+			expect(trace.filter((message) => message.role === "user")).toHaveLength(1);
+		} finally {
+			cleanup(dir);
+			cleanup(runsRoot);
+			await invalidUser.close();
 		}
 	}, 180_000);
 
@@ -533,6 +565,39 @@ describe("the user model is a measurement input", () => {
 			cleanup(runsRoot);
 		}
 	}, 300_000);
+
+	it("regrades the recorded conversation only under the simulator that produced it", async () => {
+		const dir = makeTargetFixture(baseFixtureFiles({
+			"manifest.yaml": manifestYaml({ targetUrl: targetMock.url, userUrl: userMock.url }),
+			"evals/development.jsonl": datasetOf([SENTINEL_CASE]),
+		}));
+		const runsRoot = join(dir, "..", `simulated-user-regrade-${Date.now()}`);
+		try {
+			const source = await runSuite(loadTarget(dir), { runsRoot, label: "solo", repetitions: 1 });
+			const userCalls = userMock.requests();
+			const regraded = await regradeEvalRun({ runsRoot, evalRunId: source.evalRunId, target: loadTarget(dir) });
+			expect(userMock.requests()).toBe(userCalls);
+			expect(regraded.record.provenance.simulatedUser).toEqual(source.provenance.simulatedUser);
+
+			const manifestPath = join(dir, "manifest.yaml");
+			writeFileSync(
+				manifestPath,
+				readFileSync(manifestPath, "utf8").replace("id: mock-user", "id: mock-user-v2"),
+			);
+			const artifactsBefore = readdirSync(runsRoot).sort();
+			await expect(regradeEvalRun({
+				runsRoot,
+				evalRunId: source.evalRunId,
+				target: loadTarget(dir),
+			})).rejects.toThrow(/cannot change the simulated-user model.*mock-user-v2/);
+			// Refusal happens before copying traces or spending any evaluator tokens.
+			expect(readdirSync(runsRoot).sort()).toEqual(artifactsBefore);
+			expect(userMock.requests()).toBe(userCalls);
+		} finally {
+			cleanup(dir);
+			cleanup(runsRoot);
+		}
+	}, 180_000);
 
 	it("fails closed when a suite has simulated-user cases and no user model", () => {
 		const dir = makeTargetFixture(baseFixtureFiles({

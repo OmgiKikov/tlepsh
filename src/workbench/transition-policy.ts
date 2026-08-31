@@ -6,6 +6,18 @@ type DirectDecisionKind = Exclude<WorkbenchDecisionInput["kind"], "run-current">
 const LEGAL_DECISION_STAGES = {
 	"scaffold-target": ["target-setup"],
 	"configure-target": ["target-setup"],
+	// The judge and the user model are needed the moment a basket wants a
+	// judge grader or a simulated-user case — which is while the cases are
+	// being written, not at first-run setup — and they can be replaced later.
+	"configure-evaluators": [
+		"target-setup",
+		"spec-design",
+		"spec-review",
+		"corpus-design",
+		"corpus-review",
+		"ready-to-evaluate",
+		"improvement-authoring",
+	],
 	"approve-spec": ["spec-review"],
 	"publish-corpus": ["corpus-review"],
 	// A dataset may become the first basket or replace one already drafted.
@@ -92,6 +104,10 @@ export const WORKBENCH_GATE_POLICY = {
 	// Consequential: one-time bootstrap of a real repository.
 	"scaffold-target": "consequential",
 	"configure-target": "consequential",
+	// The same class as the Target's own model, for the same reason: it commits
+	// a reviewed change to manifest.yaml and it decides what the evidence is
+	// measured with.
+	"configure-evaluators": "consequential",
 	// Consequential composites and the exact diff — the three product gates.
 	"start-testing": "consequential",
 	"apply-proposal": "consequential",

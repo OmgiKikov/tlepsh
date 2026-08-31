@@ -154,7 +154,10 @@ to the reviewed Builder flow or \`ahde candidate\`.`,
 	validate: `Usage: ahde validate --target <dir> [--dataset <rel>]
 
 Validate Target structure, Git/runtime identity, dataset, tools, placeholders,
-and credential presence without contacting the model provider.`,
+and credential presence without contacting the model provider. Reports the two
+evaluator models beside the Target's own — \`judge: configured ·
+<provider>/<id> · key TEST_JUDGE_KEY set\` — because a configured judge with no
+key fails at the first graded case and nowhere earlier.`,
 	list: `Usage: ahde list [--target <id>]
 
 List valid local eval-run indexes. Invalid artifacts are skipped with a warning.`,
@@ -193,15 +196,23 @@ this project's labels, or \`judge not calibrated\` when nobody has checked yet.`
   ahde label <evalRunId> --target <dir> [--project <id>] [--sample N] [--seed <text>]
   ahde label <evalRunId> --target <dir> --file <labels.jsonl>
 
-Grade the judge. For a deterministic seeded sample of judge-graded development
-runs it shows the task and the Target's final answer — bounded and
-credential-redacted — asks you for pass / fail / skip and an optional note, and
-only then reveals what the judge said. Answers append to
+Grade the judge on the same object the judge graded. For a deterministic seeded
+sample of judge-graded development runs it shows exactly what the judge was
+shown — the request, or the goal and the whole conversation on a simulated-user
+case — plus the answer, the rubric it was asked, the reference answer when the
+grader used one, and the assertion list as a checklist. It takes your blind
+pass / fail / skip (or one yes / no / unknown per assertion) and an optional
+note, and only then reveals what the judge said. Answers append to
 <state-root>/projects/<id>/labels/<evalRunId>.jsonl.
 
 Without a TTY, --file imports the same rows from JSONL: one object per line with
-runId, taskId, graderIndex, graderSpecHash, human, and optional note. Every row
-is checked against the recorded evidence before it is stored.
+runId, taskId, graderIndex, graderSpecHash, human, optional assertions
+(yes/no/unknown per assertion), and optional note. Every row is checked against
+the recorded evidence before it is stored.
+
+Labels written before the screen showed the judge's own subject stay readable
+and stay in the agreement report, but they do not satisfy
+evalSuite.judge.requireCalibration unless it sets allowLegacyLabels: true.
 
 Sealed holdout evidence is never labelled: reading it is exactly what a holdout
 forbids.`,

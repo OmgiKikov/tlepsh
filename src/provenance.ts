@@ -371,7 +371,7 @@ export function executionFingerprint(
  * 1.3 MB of AHDE, so a README-adjacent edit used to invalidate every baseline.
  * The exact hash is still recorded in `runtime.ahdeCodeHash` of every record.
  */
-export const AHDE_EVALUATOR_ID = "ahde-evaluator-v1";
+export const AHDE_EVALUATOR_ID = "ahde-evaluator-v2";
 
 /**
  * The provenance axes compared between two runs. The target git SHA is

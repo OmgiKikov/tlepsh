@@ -218,7 +218,8 @@ function assertNoReceipt(stateRoot: string): void {
 	throw new Error("Target bootstrap receipt already exists; replay refused");
 }
 
-function sha256(content: string | Buffer): string {
+/** Content identity of one manifest revision. Shared with the evaluator flow. */
+export function sha256(content: string | Buffer): string {
 	return `sha256:${createHash("sha256").update(content).digest("hex")}`;
 }
 

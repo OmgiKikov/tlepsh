@@ -334,6 +334,17 @@ export interface WorkbenchView {
 		id: string | null;
 		gitSha: string | null;
 		model: WorkbenchTargetModelSummary | null;
+		/**
+		 * The two models a measurement uses besides the agent. A `null` role means
+		 * the manifest has no such block — the thing the Builder checks before it
+		 * writes a judge grader or a simulated-user case. Optional only so a view
+		 * serialized before evaluator setup existed still parses; every view this
+		 * Workbench builds carries it.
+		 */
+		evaluators?: {
+			judge: WorkbenchTargetModelSummary | null;
+			simulatedUser: WorkbenchTargetModelSummary | null;
+		};
 	};
 	focus: Partial<Record<WorkbenchSelectionKind, string>>;
 	selections: WorkbenchSelectionSummary[];
@@ -568,6 +579,21 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		model: TargetModelSelectionSchema,
 		reason: NonBlankSchema.max(4_000),
 	}),
+	/**
+	 * The other two models a measurement uses: the judge that grades the answer
+	 * and the model that plays the user. Same dialog shape as `configure-target`
+	 * — a bounded selection resolved by the trusted host catalog, a credential
+	 * named by the host UI and never valued, and the exact manifest diff.
+	 */
+	z.strictObject({
+		kind: z.literal("configure-evaluators"),
+		judge: TargetModelSelectionSchema.optional(),
+		simulatedUser: TargetModelSelectionSchema.optional(),
+		reason: NonBlankSchema.max(4_000),
+	}).refine(
+		(value) => value.judge !== undefined || value.simulatedUser !== undefined,
+		"configure-evaluators needs a judge, a simulatedUser, or both",
+	),
 	z.strictObject({
 		kind: z.literal("run-current"),
 		repetitions: z.number().int().min(1).max(10),
@@ -719,6 +745,16 @@ export interface WorkbenchDecisionExecutionOptions {
 	onRunEvent?: RunEventListener;
 	/** Resolve one bounded Builder selection through the current trusted host catalog. */
 	resolveTargetModel?: (selection: TargetModelSelection) => TargetManifest["model"];
+	/**
+	 * The same resolution for an evaluator model. Separate hook because the
+	 * credential variable is a separate answer: the operator may hold the judge
+	 * key under a different name from the Target's, and the host UI asks once
+	 * per role. Never a credential value, and never a name a model supplied.
+	 */
+	resolveEvaluatorModel?: (
+		role: "judge" | "simulatedUser",
+		selection: TargetModelSelection,
+	) => TargetManifest["model"];
 }
 
 export interface WorkbenchConfirmation {
@@ -904,6 +940,12 @@ export interface WorkbenchImproveResult {
 export interface WorkbenchDecisionResultMap {
 	"scaffold-target": { targetId: string; targetGitSha: string; receiptId: string };
 	"configure-target": { targetId: string; targetGitSha: string; receiptId: string; credentialEnv: string };
+	"configure-evaluators": {
+		targetGitSha: string;
+		receiptId: string;
+		/** One entry per block this decision actually wrote. */
+		configured: { role: "judge" | "simulatedUser"; model: string; credentialEnv: string }[];
+	};
 	"approve-spec": { approvedSpecId: string; receiptId: string };
 	"publish-corpus": {
 		corpusId: string;

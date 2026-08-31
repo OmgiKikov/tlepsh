@@ -14,6 +14,7 @@ import {
 	runSuite,
 } from "./eval.js";
 import { judgeAgreement } from "./domain/judge-agreement.js";
+import { evaluatorReadiness } from "./application/configure-evaluators.js";
 import {
 	collectJudgeLabelSubjects,
 	importJudgeLabels,
@@ -747,6 +748,11 @@ async function main(): Promise<void> {
 			console.log(`target ${target.manifest.id}: structurally valid`);
 			console.log(`  model: ${target.manifest.model.provider}/${target.manifest.model.id} (thinking: ${target.manifest.model.thinkingLevel})`);
 			console.log(`  key ${target.manifest.model.apiKeyEnv}: ${describeEnvVar(target.manifest.model.apiKeyEnv, environmentReport())}`);
+			// The other two models a measurement uses. A judge configured without
+			// its key fails at the first graded case and nowhere earlier, so it is
+			// said here, beside the Target's own model.
+			const evaluators = evaluatorReadiness(target.manifest);
+			for (const evaluator of evaluators) console.log(`  ${evaluator.line}`);
 			console.log(`  tasks: ${target.tasks.length} (${target.datasetHash.slice(7, 19)}…)`);
 			console.log(`  suite: ${target.manifest.evalSuite.id} (${target.suiteHash.slice(7, 19)}…)`);
 			console.log(`  skills: ${target.manifest.skills.join(", ") || "(none)"}`);
@@ -762,7 +768,20 @@ async function main(): Promise<void> {
 				console.log(`  readiness: ACTION REQUIRED — configure ${target.manifest.model.apiKeyEnv} outside chat`);
 				process.exitCode = 2;
 			} else {
-				console.log("  readiness: ready to run (credential present; provider access unverified)");
+				// A missing evaluator key is not a structural error — the suite may
+				// never call one — but it is exactly the surprise this line exists
+				// to prevent, so it is stated rather than hidden behind "ready".
+				const uncredentialed = evaluators.filter((entry) => entry.configured && !entry.credentialPresent);
+				if (uncredentialed.length > 0) {
+					console.log(
+						`  readiness: ACTION REQUIRED — configure ${
+							uncredentialed.map((entry) => entry.apiKeyEnv).join(", ")
+						} outside chat before any judged or simulated case runs`,
+					);
+					process.exitCode = 2;
+				} else {
+					console.log("  readiness: ready to run (credential present; provider access unverified)");
+				}
 			}
 			break;
 		}

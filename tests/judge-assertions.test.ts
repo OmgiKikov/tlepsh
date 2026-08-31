@@ -6,6 +6,7 @@ import { gradeRun, judgeSubjectFor } from "../src/eval.js";
 import { GraderSpec, ModelBlock, type ResolvedTask, type TargetManifest } from "../src/manifest.js";
 import { startMockModel, type MockModelHandle } from "../src/mock-model.js";
 import { GraderResultSchema, hashFile, hashValue, type GraderResult, type RunRecord } from "../src/provenance.js";
+import { MAX_TRANSCRIPT_TURN_CHARS } from "../src/trace.js";
 import { baseRunRecord } from "./helpers/judge-fixtures.js";
 
 const cleanupPaths: string[] = [];
@@ -347,6 +348,22 @@ describe("one judge subject, four frozen prompts", () => {
 			},
 			GraderSpec.parse(RUBRIC) as never,
 		)).toMatchObject({ kind: "dialogue", context: "узнать", answer: "Пользователь: а?\nАгент: да" });
+
+		// Bounding and credential redaction happen inside the shared derivation,
+		// before either the judge request or the human screen can see a copy.
+		const long = `token=sk-abcdefghijklmnopqrstuvwxyz ${"x".repeat(2_500)}`;
+		const bounded = judgeSubjectFor(
+			{
+				input: long,
+				messages: [message("user", long), message("assistant", long)],
+				expected: long,
+			},
+			GraderSpec.parse({ type: "judge", rubric: long, withReference: true }) as never,
+		);
+		for (const field of [bounded.context, bounded.answer, bounded.rubric, bounded.reference]) {
+			expect(field).not.toContain("sk-abcdefghijklmnopqrstuvwxyz");
+			expect(field?.length).toBeLessThanOrEqual(MAX_TRANSCRIPT_TURN_CHARS);
+		}
 	});
 });
 

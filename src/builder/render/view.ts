@@ -50,6 +50,28 @@ function targetLine(view: WorkbenchView, paint: Paint): string {
 	return `${paint.dim("Target")} ${paint.bold(oneLine(view.target.id ?? "—", 60))} ${paint.dim(`@ ${shortSha(view.target.gitSha)}`)} ${paint.dim("·")} ${modelText}`;
 }
 
+/**
+ * What this suite measures WITH, when it has been chosen. Silent on a Target
+ * that configures neither, because a basket of plain checks needs neither; a
+ * configured model whose key is not exported gets said out loud, because it
+ * fails at the first graded case and nowhere earlier.
+ */
+function evaluatorLine(view: WorkbenchView, paint: Paint): string | null {
+	const evaluators = view.target.evaluators;
+	if (!evaluators) return null;
+	const parts: string[] = [];
+	for (const [role, label] of [["judge", "judge"], ["simulatedUser", "user model"]] as const) {
+		const model = evaluators[role];
+		if (!model) continue;
+		parts.push(
+			`${paint.dim(label)} ${oneLine(`${model.provider}/${model.id}`, 40)} ${
+				model.credentialPresent ? paint.success("✓") : paint.warning(`(${oneLine(model.apiKeyEnv, 40)} missing)`)
+			}`,
+		);
+	}
+	return parts.length === 0 ? null : `${paint.dim("Evaluators")} ${parts.join(paint.dim(" · "))}`;
+}
+
 function evidenceLine(view: WorkbenchView, paint: Paint): string {
 	const counts = view.counts;
 	return `${paint.dim("Evidence")} ${joinNonEmpty([
@@ -83,9 +105,11 @@ function calibrationLine(view: WorkbenchView, paint: Paint): string | null {
 /** Compact status block used by /status and as the fallback for every panel. */
 export function renderStatus(view: WorkbenchView, paint: Paint): string[] {
 	const noise = calibrationLine(view, paint);
+	const evaluators = evaluatorLine(view, paint);
 	const lines = [
 		`${paint.accent(paint.bold("AHDE"))} ${paint.dim("·")} ${paint.bold(stageLabel(view.stage))}`,
 		targetLine(view, paint),
+		...(evaluators ? [evaluators] : []),
 		evidenceLine(view, paint),
 		...(noise ? [noise] : []),
 		`${paint.dim("Next")} ${nextStep(view)}`,

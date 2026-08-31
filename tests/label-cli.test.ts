@@ -493,9 +493,9 @@ evalSuite:
 					})
 					.find((candidate) => candidate.runId === subject.runId)!;
 
-				// 1. The label subject IS the judge subject, hash for hash.
-				expect(subject.subject).toBe("judge-facing");
-				expect(subject.subjectHash).toBe(hashValue(judgeSubjectFor(
+				// 1. The label subject IS the judge subject, hash and visible
+				// bytes alike — including a bounded multi-turn transcript.
+				const exactSubject = judgeSubjectFor(
 					{
 						input: task.input,
 						messages: openTrace(join(runsRoot, run.runId), "session.jsonl", run.trace.sha256 ?? undefined),
@@ -503,7 +503,14 @@ evalSuite:
 						expected: task.expected,
 					},
 					spec as never,
-				)));
+				);
+				expect(subject.subject).toBe("judge-facing");
+				expect(subject.subjectHash).toBe(hashValue(exactSubject));
+				expect(subject.input).toBe(exactSubject.context);
+				expect(subject.answer).toBe(exactSubject.answer);
+				expect(subject.rubric).toEqual(exactSubject.rubric);
+				expect(subject.assertions).toEqual(exactSubject.assertions);
+				expect(subject.reference).toEqual(exactSubject.reference);
 
 				// 2. And every part of it is literally inside the request the judge
 				//    was sent, which is on disk beside the verdict it produced.

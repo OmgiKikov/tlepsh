@@ -138,6 +138,21 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 				nextLine(view, paint),
 			];
 		}
+		case "configure-evaluators": {
+			const lines = [
+				`${section("Evaluator models configured", paint)} ${paint.dim(`@ ${shortSha(result.result.targetGitSha)}`)}`,
+			];
+			for (const entry of result.result.configured) {
+				const present = Boolean(process.env[entry.credentialEnv]?.trim());
+				lines.push(
+					`${paint.dim(entry.role === "judge" ? "Judge" : "Simulated user")} ${oneLine(entry.model, 60)} ` +
+						`${paint.dim("· credential env")} ${paint.bold(oneLine(entry.credentialEnv, 60))} ` +
+						`${present ? paint.success("present") : paint.warning(`missing — export ${oneLine(entry.credentialEnv, 60)} before running`)}`,
+				);
+			}
+			lines.push(nextLine(view, paint));
+			return lines;
+		}
 		case "approve-spec":
 			return [
 				`${section("Spec approved", paint)} ${paint.dim(result.result.approvedSpecId)}`,

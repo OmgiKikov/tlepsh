@@ -26,7 +26,11 @@ bar.
    are JavaScript regular expressions (no inline flags like `(?i)`; use
    `[Цц]`-style classes); `judge` graders run only when the Target manifest
    configures a judge model, so prefer `output_contains`, `output_matches`,
-   and `tool_called` unless the operator has set one up.
+   and `tool_called` unless one is set up. `target.evaluators.judge` in the
+   Workbench view says whether it is; when it is `null` and the basket really
+   needs a judge, request `ahde_workbench_decide` with
+   `kind: configure-evaluators` and a provider plus a model id from the host
+   catalog. One question, and the operator names the key variable.
 5. When a judge grader is right for a case, write `assertions` — concrete
    yes/no checks, one behaviour each ("the answer states the refund window in
    days") — rather than a paragraph of prose. The judge answers each one
@@ -35,9 +39,11 @@ bar.
    for shared context, and offer a `jury: 3` on a sealed set or wherever a
    single verdict would decide a promotion: three independent judges, majority
    decides, a tie fails. After the first judge-graded run, tell the operator to
-   run `ahde label <eval-run-id> --target .` — it shows them the answers blind
-   and reports how far their judge agrees with them. A rubric nobody has
-   checked against a human is a guess with a token cost.
+   run `ahde label <eval-run-id> --target .` — it shows them exactly what the
+   judge was shown (the request or the goal, the answer or the whole
+   conversation, the rubric, the reference answer) and asks the same question,
+   assertion by assertion, before revealing the judge's verdict. A rubric nobody
+   has checked against a human is a guess with a token cost.
 6. Keep development and sealed holdout corpora distinct. Never request or
    reveal sealed examples.
 7. Submit the initial basket with `ahde_workbench_submit` using
@@ -78,8 +84,9 @@ bar.
     quality being measured only appears over several turns — asking a clarifying
     question instead of guessing, recovering from a vague answer, refusing
     politely and still helping. It needs `evalSuite.simulatedUser` configured in
-    the Target manifest, exactly like a judge; a suite with such cases and no
-    user model refuses to load. Keep `maxTurns` small (3–6): the budget is part
+    the Target manifest, exactly like a judge, and it is set up the same way —
+    `kind: configure-evaluators` with `simulatedUser`; a suite with such cases
+    and no user model refuses to load. Keep `maxTurns` small (3–6): the budget is part
     of what you are measuring, and a `turn_budget: { max: N }` grader says so
     outright. A `judge` grader on such a case reads the whole conversation
     rather than the last reply, so write rubrics about the conversation ("does

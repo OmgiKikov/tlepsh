@@ -85,11 +85,55 @@ describe("Workbench Target model selection adapter", () => {
 		expect(JSON.stringify(decide.mock.calls[0]?.[0])).not.toContain(CREDENTIAL_ENV);
 	});
 
+	it("keeps evaluator credentials in the host UI and resolves both roles through the catalog", async () => {
+		const resolved: unknown[] = [];
+		const decide = vi.fn(async (decision, _gate, execution) => {
+			resolved.push(
+				execution.resolveEvaluatorModel("judge", decision.judge),
+				execution.resolveEvaluatorModel("simulatedUser", decision.simulatedUser),
+			);
+			return {
+				kind: "configure-evaluators",
+				message: "configured",
+				result: { configured: [] },
+				view: { blockers: [] },
+			};
+		});
+		const tool = createBuilderWorkbenchTools(
+			{ decide } as unknown as AhdeWorkbench,
+			() => "local:test",
+		).find((candidate) => candidate.name === "ahde_workbench_decide")!;
+		const find = vi.fn((_provider: string, id: string) => ({ ...hostModel(), id }));
+		const input = vi.fn()
+			.mockResolvedValueOnce("JUDGE_FIXTURE_API_KEY")
+			.mockResolvedValueOnce("USER_FIXTURE_API_KEY");
+
+		await tool.execute("configure-evaluators", {
+			kind: "configure-evaluators",
+			judge: { provider: "fixture-provider", modelId: "fixture-judge" },
+			simulatedUser: { provider: "fixture-provider", modelId: "fixture-user" },
+			reason: "The basket needs a judge and a simulated user",
+		}, undefined, undefined, context(find, input));
+
+		expect(input.mock.calls.map((call) => call[0])).toEqual([
+			expect.stringContaining("for the judge"),
+			expect.stringContaining("for the simulated user"),
+		]);
+		expect(resolved).toEqual([
+			expect.objectContaining({ id: "fixture-judge", apiKeyEnv: "JUDGE_FIXTURE_API_KEY" }),
+			expect.objectContaining({ id: "fixture-user", apiKeyEnv: "USER_FIXTURE_API_KEY" }),
+		]);
+		// The Builder-selected decision contains identities, never credential names
+		// or values. Those enter only through the trusted execution seam above.
+		expect(JSON.stringify(decide.mock.calls[0]?.[0])).not.toMatch(/JUDGE_FIXTURE|USER_FIXTURE/);
+	});
+
 	it("hands the model the host catalog while the Target still has no model", async () => {
 		const view = vi.fn(async () => ({
 			schemaVersion: 1,
 			stage: "target-setup",
 			headline: "Create the Target harness.",
+			target: { status: "missing", id: null, gitSha: null, model: null, evaluators: { judge: null, simulatedUser: null } },
 			selections: [],
 			warnings: [],
 			actions: ["scaffold-target"],

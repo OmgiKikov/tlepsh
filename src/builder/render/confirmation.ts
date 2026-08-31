@@ -121,6 +121,41 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			else lines.push(paint.warning("manifest.yaml diff is not available in this subject"));
 			return lines;
 		}
+		case "configure-evaluators": {
+			const next = bag(subject.next);
+			const previous = bag(subject.previous);
+			const targetModel = bag(subject.targetModel);
+			const lines = [
+				`${paint.dim("Target model")} ${text(targetModel.provider)}/${text(targetModel.id)} ${
+					paint.dim("· the judge may not be this model")
+				}`,
+			];
+			for (const role of ["judge", "simulatedUser"] as const) {
+				const label = role === "judge" ? "Judge" : "Simulated user";
+				const after = next[role];
+				if (!after) {
+					lines.push(`${paint.dim(label)} ${paint.muted("not configured")}`);
+					continue;
+				}
+				const model = bag(after);
+				const before = previous[role] ? bag(previous[role]) : null;
+				const change = before && `${text(before.provider)}/${text(before.id)}` !== `${text(model.provider)}/${text(model.id)}`
+					? ` ${paint.dim(`(was ${text(before.provider)}/${text(before.id)})`)}`
+					: "";
+				lines.push(
+					`${paint.dim(label)} ${text(model.provider)}/${text(model.id)}${change} ${
+						paint.dim(`· thinking ${text(model.thinkingLevel)} · timeout ${text(model.timeoutMs)} ms`)
+					}`,
+					`${paint.dim("  Credential env")} ${paint.bold(text(model.apiKeyEnv))} ${
+						paint.dim("(name only; set the value in your shell)")
+					}`,
+				);
+			}
+			const diff = typeof subject.unifiedDiff === "string" ? subject.unifiedDiff : null;
+			if (diff) lines.push(paint.dim("manifest.yaml diff"), ...renderUnifiedDiff(diff, paint, { maxLines: 80 }));
+			else lines.push(paint.warning("manifest.yaml diff is not available in this subject"));
+			return lines;
+		}
 		case "start-testing": {
 			const steps = strings(subject.steps);
 			return [

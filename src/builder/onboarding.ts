@@ -98,11 +98,13 @@ export function describeHostModelCatalog(catalog: HostModelCatalog): string {
 export async function selectTargetCredentialEnvironment(
 	ctx: Pick<ExtensionContext, "ui">,
 	selection: TargetModelSelection,
+	/** What the key is for, in the operator's words. */
+	subject = "the agent",
 ): Promise<string> {
 	const suggested = credentialPlaceholder(selection.provider);
 	if (process.env[suggested]?.trim()) return suggested;
 	const selected = await ctx.ui.input(
-		`Environment variable holding the ${selection.provider} key for the agent`,
+		`Environment variable holding the ${selection.provider} key for ${subject}`,
 		suggested,
 	);
 	if (selected === undefined) throw new Error("Target model configuration was cancelled by the operator");
@@ -111,6 +113,35 @@ export async function selectTargetCredentialEnvironment(
 		throw new Error("Target credential must be one environment-variable name; never paste the credential value");
 	}
 	return value;
+}
+
+/**
+ * The evaluator half of the same question, asked once per role. The name comes
+ * from the host UI and nowhere else: a model that could choose the variable
+ * could point the judge at a key the operator never meant to spend.
+ */
+export async function selectEvaluatorCredentialEnvironment(
+	ctx: Pick<ExtensionContext, "ui">,
+	role: "judge" | "simulatedUser",
+	selection: TargetModelSelection,
+): Promise<string> {
+	return await selectTargetCredentialEnvironment(
+		ctx,
+		selection,
+		role === "judge" ? "the judge" : "the simulated user",
+	);
+}
+
+/** Resolve one bounded evaluator selection against the trusted host catalog. */
+export function evaluatorModelResolver(
+	ctx: Pick<ExtensionContext, "modelRegistry">,
+	credentialEnvironment: Record<"judge" | "simulatedUser", string | undefined>,
+): (role: "judge" | "simulatedUser", selection: TargetModelSelection) => TargetManifest["model"] {
+	return (role, selection) => {
+		const apiKeyEnv = credentialEnvironment[role];
+		if (!apiKeyEnv) throw new Error(`the host did not name a credential variable for the ${role}`);
+		return targetModelResolver(ctx, apiKeyEnv)(selection);
+	};
 }
 
 /** Resolve one bounded selection against the trusted host catalog. */

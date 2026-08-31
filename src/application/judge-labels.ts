@@ -20,7 +20,7 @@ import {
 } from "../domain/judge-agreement.js";
 import { isSealedEvalRun, judgeSubjectFor, loadVerifiedEvalRun, readEvalRunIndex } from "../eval.js";
 import { GraderSpec, type ResolvedTask } from "../manifest.js";
-import { hashValue, type RunRecord } from "../provenance.js";
+import { AHDE_EVALUATOR_ID, hashValue, type RunRecord } from "../provenance.js";
 import { appendJsonlArtifact, readJsonlArtifact } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import { lastAssistantText, openTrace, redactTraceText } from "../trace.js";
@@ -390,10 +390,12 @@ export function collectJudgeLabelSubjects(
 	if (isSealedEvalRun(verified.record, options.sealedDatasetHashes)) {
 		throw new Error("sealed holdout evidence is never labelled: its content must stay unread");
 	}
-	// The suite is only usable when it is the one that graded this evidence.
-	// A drifted dataset would render a different rubric beside the same run,
-	// which is exactly the confusion the judge-facing subject exists to end.
+	// The suite is only usable when it is the one that graded this evidence under
+	// this exact evaluator protocol. A drifted dataset or an older subject
+	// derivation would render a different question beside the same run, which is
+	// exactly the confusion the judge-facing subject exists to end.
 	const suite = options.suite &&
+			verified.record.provenance.evaluatorId === AHDE_EVALUATOR_ID &&
 			options.suite.datasetHash === verified.record.datasetHash &&
 			options.suite.suiteHash === verified.record.suiteHash
 		? new Map(options.suite.tasks.map((task) => [task.id, task]))
@@ -442,14 +444,15 @@ export function collectJudgeLabelSubjects(
 						subject: "judge-facing" as const,
 						subjectHash: hashValue(judgeSubject),
 						kind: judgeSubject.kind,
-						input: boundedSubjectText(judgeSubject.context),
-						answer: boundedSubjectText(judgeSubject.answer),
-						rubric: judgeSubject.rubric === null ? null : boundedSubjectText(judgeSubject.rubric),
-						assertions: judgeSubject.assertions
-							? judgeSubject.assertions.map(boundedSubjectText)
-							: null,
+						// These are already the bounded/redacted strings the judge request
+						// consumed. Projecting them again would make the screen and the
+						// subject hash describe different objects on a long dialogue.
+						input: judgeSubject.context,
+						answer: judgeSubject.answer,
+						rubric: judgeSubject.rubric,
+						assertions: judgeSubject.assertions,
 						judgeAssertions,
-						reference: judgeSubject.reference === null ? null : boundedSubjectText(judgeSubject.reference),
+						reference: judgeSubject.reference,
 					}
 					: {
 						subject: "legacy" as const,

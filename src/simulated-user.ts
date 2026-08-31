@@ -22,8 +22,10 @@ import { renderDialogueTranscript, type TranscriptTurn } from "./trace.js";
  */
 
 const SIMULATED_USER_SYSTEM =
-	'Ты играешь роль пользователя, который обращается к службе поддержки. ' +
+	'Ты играешь роль человека, который разговаривает с агентом. ' +
+	'Кто ты, чего хочешь и в какой предметной области идёт разговор, задано ниже: не добавляй роль клиента службы поддержки или любую другую роль, которой там нет. ' +
 	'Ты НЕ ассистент и НЕ помогаешь собеседнику: у тебя есть своя цель, и ты её добиваешься. ' +
+	'Пиши на языке, который следует из цели, роли и уже начатого диалога. ' +
 	'Пиши так, как пишут живые люди — коротко, по одной реплике за раз, без списков и заголовков. ' +
 	'Никогда не раскрывай, что ты модель, и не рассуждай о правильности ответа. ' +
 	'Ответь строго одной строкой JSON без markdown: ' +
@@ -141,7 +143,15 @@ export async function nextSimulatedUserTurn(
 		...(options.signal ? { signal: options.signal } : {}),
 	});
 	try {
-		return { reply: parseSimulatedUserReply(called.text), metrics: called.metrics };
+		const reply = parseSimulatedUserReply(called.text);
+		// `stopWhen` is a host-declared condition, not a free-form escape hatch the
+		// model may invent. Without this check `{ stopWhen: true, message: "" }` on
+		// a case that declared no condition became an empty user turn and the Target
+		// was then measured against evaluator corruption.
+		if (reply.stopWhen && options.spec.stopWhen === undefined) {
+			throw new Error("simulated user claimed an undeclared stopWhen condition");
+		}
+		return { reply, metrics: called.metrics };
 	} catch (error) {
 		// The call happened and was billed; only the answer was unusable.
 		throw new EvaluatorModelError(error instanceof Error ? error.message : String(error), called.metrics);

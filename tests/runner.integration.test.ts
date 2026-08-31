@@ -506,6 +506,9 @@ ${options.judgeParams ?? ""}`,
 			expect(run.status).toBe("error");
 			expect(run.error).toMatch(/evaluation infrastructure: judge returned unparseable verdict/);
 			expect(run.evalResults).toBeNull();
+			// The completion was malformed, but it was still a billed model call.
+			// Parse failure must not launder that spend into a $0 infrastructure error.
+			expect(run.metrics.judge).toMatchObject({ calls: 1, tokens: 49, costUsd: 0 });
 		} finally {
 			cleanup(dir);
 			cleanup(judgeRuns);

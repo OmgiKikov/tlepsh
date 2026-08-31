@@ -54,6 +54,7 @@ import {
 	redactTraceText,
 	renderDialogueTranscript,
 	traceToolCalls,
+	MAX_TRANSCRIPT_TURN_CHARS,
 	type TraceMessage,
 } from "./trace.js";
 
@@ -353,6 +354,18 @@ export interface JudgeSubject {
 }
 
 /**
+ * One bounded/redacted field shared by the judge request and the human label
+ * screen. Keeping this inside the subject derivation is what makes parity real:
+ * neither consumer gets to truncate or sanitize a different copy later.
+ */
+function judgeSubjectField(value: string): string {
+	const redacted = redactTraceText(value);
+	return redacted.length <= MAX_TRANSCRIPT_TURN_CHARS
+		? redacted
+		: `${redacted.slice(0, MAX_TRANSCRIPT_TURN_CHARS - 1)}…`;
+}
+
+/**
  * What this grader put in front of this judge.
  *
  * Pure — trace messages in, subject out — and the ONLY derivation of it. The
@@ -367,7 +380,7 @@ export function judgeSubjectFor(run: JudgeRunView, grader: JudgeGraderSpec): Jud
 	const dialogue = run.simulatedUser !== undefined;
 	return {
 		kind: dialogue ? "dialogue" : "single-turn",
-		context: dialogue ? run.simulatedUser!.goal : run.input,
+		context: judgeSubjectField(dialogue ? run.simulatedUser!.goal : run.input),
 		answer: dialogue
 			? renderDialogueTranscript(
 				// The recovery prompt is the host asking for a final answer, not the
@@ -376,12 +389,12 @@ export function judgeSubjectFor(run: JudgeRunView, grader: JudgeGraderSpec): Jud
 				dialogueTurns(run.messages).filter((turn) =>
 					!(turn.role === "user" && turn.text === FINAL_ANSWER_RECOVERY_PROMPT)),
 			)
-			: lastAssistantText([...run.messages]) ?? "",
-		rubric: grader.rubric ?? null,
-		assertions: grader.assertions ?? null,
+			: judgeSubjectField(lastAssistantText([...run.messages]) ?? ""),
+		rubric: grader.rubric === undefined ? null : judgeSubjectField(grader.rubric),
+		assertions: grader.assertions?.map(judgeSubjectField) ?? null,
 		// Only the reference protocol shows the judge the reference answer; every
 		// other judge grader is blind to it even on a case that has one.
-		reference: grader.withReference === true ? run.expected ?? "" : null,
+		reference: grader.withReference === true ? judgeSubjectField(run.expected ?? "") : null,
 	};
 }
 
@@ -634,8 +647,17 @@ async function judgeOnce(
 		...(signal ? { signal } : {}),
 	});
 	// Parse failures are never retried: the transport worked and a second
-	// identical request at temperature 0 has nothing new to say.
-	return { verdict: protocol.parse(called.text), metrics: called.metrics };
+	// identical request at temperature 0 has nothing new to say. The request was
+	// nevertheless billed, so its metrics must travel with the infrastructure
+	// error exactly as they do for a transport or HTTP failure.
+	try {
+		return { verdict: protocol.parse(called.text), metrics: called.metrics };
+	} catch (error) {
+		throw new EvaluatorModelError(
+			error instanceof Error ? error.message : String(error),
+			called.metrics,
+		);
+	}
 }
 
 /** Strict majority. An even jury that splits has decided nothing, so it fails. */
@@ -720,12 +742,35 @@ async function gradeJudge(
 	const jurors: JudgeVerdict[] = [];
 	const metrics: JudgeMetrics = { calls: 0, tokens: 0, costUsd: 0 };
 	for (let juror = 1; juror <= jury; juror += 1) {
-		const attempt = await judgeOnce(
-			protocol,
-			judge,
-			jury === 1 ? sidecar : { ...sidecar, juror },
-			signal,
-		);
+		let attempt: Awaited<ReturnType<typeof judgeOnce>>;
+		try {
+			attempt = await judgeOnce(
+				protocol,
+				judge,
+				jury === 1 ? sidecar : { ...sidecar, juror },
+				signal,
+			);
+		} catch (error) {
+			// A later juror cannot erase what the earlier jurors cost. Include the
+			// failing call's own metrics when it has them, and wrap even a host abort
+			// once this jury has already made billable calls so gradeRecordedRun can
+			// persist the whole partial spend.
+			const failed = error instanceof EvaluatorModelError
+				? error.metrics
+				: { calls: 0, tokens: 0, costUsd: 0 };
+			const spent = {
+				calls: metrics.calls + failed.calls,
+				tokens: metrics.tokens + failed.tokens,
+				costUsd: metrics.costUsd + failed.costUsd,
+			};
+			if (spent.calls > 0) {
+				throw new EvaluatorModelError(
+					error instanceof Error ? error.message : String(error),
+					spent,
+				);
+			}
+			throw error;
+		}
 		jurors.push(attempt.verdict);
 		metrics.calls += attempt.metrics.calls;
 		metrics.tokens += attempt.metrics.tokens;
@@ -807,7 +852,16 @@ export async function gradeRun(
 	const judgeSpend = { calls: 0, tokens: 0, costUsd: 0 };
 	let judgeCalled = false;
 	for (const [index, spec] of task.effectiveGraders.entries()) {
-		if (signal?.aborted) throw signal.reason ?? new Error("grading aborted");
+		if (signal?.aborted) {
+			const error = signal.reason ?? new Error("grading aborted");
+			if (judgeSpend.calls > 0) {
+				throw new EvaluatorModelError(
+					error instanceof Error ? error.message : String(error),
+					judgeSpend,
+				);
+			}
+			throw error;
+		}
 		const normalizedSpec = GraderSpec.parse(spec);
 		let result: GraderResult;
 		if (record.status !== "completed") {
@@ -840,37 +894,58 @@ export async function gradeRun(
 			// label` calls the same function, so the human cannot end up grading a
 			// different object from the judge they are being compared against.
 			const subject = judgeSubjectFor(runView, normalizedSpec);
-			const judged = await gradeJudge(
-				assertions
-					? {
-						system: JUDGE_ASSERTIONS_SYSTEM,
-						user: judgeAssertionsPrompt(subject, assertions),
-						// One juror folded alone is that juror's own verdict; the jury
-						// fold in gradeJudge then decides each assertion across jurors.
-						parse: (text) => foldJury(
-							[{ passed: false, score: 0, reason: "", assertions: parseAssertionVerdicts(text, assertions.length) }],
-							assertions.length,
-						),
-						jury,
-					}
-					: normalizedSpec.withReference
-					? {
-						system: JUDGE_REFERENCE_SYSTEM,
-						user: judgeReferencePrompt(subject),
-						parse: parseReferenceVerdict,
-						jury,
-					}
-					: {
-						system: JUDGE_SYSTEM,
-						user: judgeRubricPrompt(subject),
-						parse: parseVerdict,
-						jury,
-					},
-				judge,
-				{ dir: join(runDir, "judge"), graderIndex: index },
-				assertions ? assertions.length : null,
-				signal,
-			);
+			let judged: Awaited<ReturnType<typeof gradeJudge>>;
+			try {
+				judged = await gradeJudge(
+					assertions
+						? {
+							system: JUDGE_ASSERTIONS_SYSTEM,
+							user: judgeAssertionsPrompt(subject, assertions),
+							// One juror folded alone is that juror's own verdict; the jury
+							// fold in gradeJudge then decides each assertion across jurors.
+							parse: (text) => foldJury(
+								[{ passed: false, score: 0, reason: "", assertions: parseAssertionVerdicts(text, assertions.length) }],
+								assertions.length,
+							),
+							jury,
+						}
+						: normalizedSpec.withReference
+						? {
+							system: JUDGE_REFERENCE_SYSTEM,
+							user: judgeReferencePrompt(subject),
+							parse: parseReferenceVerdict,
+							jury,
+						}
+						: {
+							system: JUDGE_SYSTEM,
+							user: judgeRubricPrompt(subject),
+							parse: parseVerdict,
+							jury,
+						},
+					judge,
+					{ dir: join(runDir, "judge"), graderIndex: index },
+					assertions ? assertions.length : null,
+					signal,
+				);
+			} catch (error) {
+				// A later grader cannot erase spend from an earlier successful one.
+				// gradeJudge already carries the failing grader's partial jury; add the
+				// completed graders here before gradeRecordedRun persists the error.
+				if (judgeSpend.calls > 0) {
+					const failed = error instanceof EvaluatorModelError
+						? error.metrics
+						: { calls: 0, tokens: 0, costUsd: 0 };
+					throw new EvaluatorModelError(
+						error instanceof Error ? error.message : String(error),
+						{
+							calls: judgeSpend.calls + failed.calls,
+							tokens: judgeSpend.tokens + failed.tokens,
+							costUsd: judgeSpend.costUsd + failed.costUsd,
+						},
+					);
+				}
+				throw error;
+			}
 			result = judged.result;
 			judgeCalled = true;
 			judgeSpend.calls += judged.metrics.calls;
