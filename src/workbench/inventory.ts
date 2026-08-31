@@ -661,6 +661,11 @@ export function loadWorkbenchInventory(options: {
 		}
 		developmentEvals = listed.records
 			.filter((run) => !isSealedEvalRun(run, sealedHashes))
+			// A cheap-check screen is a one-arm re-run of what already failed. It is
+			// never selectable evidence, never a reusable baseline and never the
+			// source a proposal or a regression case cites, and the record says so
+			// itself — so it never enters the inventory at all.
+			.filter((run) => run.purpose !== "screen")
 			.map((run) => loadEvalRun(options.runsRoot, run.evalRunId))
 			.filter((run) => target === null || run.target.id === target.manifest.id);
 	} catch {

@@ -221,7 +221,8 @@ function writePair(
 		artifacts: { runId: string; sha256: string }[],
 		baselineId: string | null,
 	): EvalRunRecord => ({
-		schemaVersion: 2,
+		schemaVersion: 3,
+		purpose: "evidence" as const,
 		evalRunId,
 		target: {
 			id: targetId,

@@ -9,7 +9,7 @@ import {
 	type BuilderCorpusDraftVerifiedProvenanceBinding,
 } from "./builder-corpus-draft.js";
 import { targetWithDevelopmentCorpus } from "./corpus-target.js";
-import { screenEvalRunIds } from "./cheap-check.js";
+import { screenExclusion, type ScreenExclusion } from "./cheap-check.js";
 import type { LoadedCorpus } from "../corpus.js";
 import { loadVerifiedEvalRun, type EvalRunRecord } from "../eval.js";
 import type { ResolvedTarget } from "../manifest.js";
@@ -108,7 +108,7 @@ export function resolveDevelopmentFailureOperations(
 	// A cheap-check screen is a one-repetition, candidate-revision run of the
 	// cases that already failed. It is a screen, not evidence, so it can never
 	// be the hash-indexed development failure a regression case cites.
-	let screens: Set<string> | undefined;
+	let screens: ScreenExclusion | undefined;
 
 	for (const operation of requested) {
 		if (operation.type !== "add-case-from-run") {
@@ -117,11 +117,16 @@ export function resolveDevelopmentFailureOperations(
 		}
 
 		currentWorkspaceHash ??= computeTargetWorkspaceHash(options.target, options.runsRoot);
-		screens ??= screenEvalRunIds(options.runsRoot);
-		if (screens.has(operation.evalRunId)) {
+		screens ??= screenExclusion(options.runsRoot);
+		if (screens.blocksEverything || screens.ids.has(operation.evalRunId)) {
 			evidenceError("source is a cheap-check screen, which is never evidence");
 		}
 		const allowedRecord = options.compatibleEvalRuns.find((record) => record.evalRunId === operation.evalRunId);
+		// The record says what it is: a screen written by a process that died
+		// before its marker is still a screen, and still refused here.
+		if (allowedRecord?.purpose === "screen") {
+			evidenceError("source is a cheap-check screen, which is never evidence");
+		}
 		if (!allowedRecord || !exactSourceSurface(options, allowedRecord, currentWorkspaceHash)) {
 			evidenceError("source is not compatible verified development evidence for this Workbench lineage");
 		}

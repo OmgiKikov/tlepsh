@@ -231,7 +231,8 @@ function evalRecord(
 	const total = runs.length;
 	const pass = total - errors;
 	return {
-		schemaVersion: 2,
+		schemaVersion: 3,
+		purpose: "evidence" as const,
 		evalRunId: id,
 		target: runTarget,
 		label: options.label,
@@ -316,7 +317,8 @@ function reusableRecord(
 	}));
 	const persisted = persistRuns(runsRoot, runs);
 	return {
-		schemaVersion: 2,
+		schemaVersion: 3,
+		purpose: "evidence" as const,
 		evalRunId: id,
 		target: runTarget,
 		label,

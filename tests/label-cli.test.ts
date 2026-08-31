@@ -114,7 +114,8 @@ function evidence(options: { tasks?: number; sealed?: boolean } = {}): EvidenceF
 	});
 	const pass = runs.filter((run) => run.evalResults?.outcome === "pass").length;
 	const record: EvalRunRecord = {
-		schemaVersion: 2,
+		schemaVersion: 3,
+		purpose: "evidence" as const,
 		evalRunId,
 		target: first.target,
 		label: "baseline",

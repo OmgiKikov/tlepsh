@@ -120,7 +120,8 @@ function makeEvalRun(
 	const fail = runs.filter((run) => run.evalResults?.outcome === "fail").length;
 	const error = runs.filter((run) => run.status === "error").length;
 	const record: EvalRunRecord = {
-		schemaVersion: 2,
+		schemaVersion: 3,
+		purpose: "evidence" as const,
 		evalRunId: id,
 		target: { id: options.targetId ?? "ombudsman", gitSha: options.gitSha ?? "a".repeat(40) },
 		label,

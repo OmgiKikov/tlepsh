@@ -134,7 +134,8 @@ function writeEvalFixture(taskIds?: string[]): { runsRoot: string; record: EvalR
 		eval: first.eval,
 	});
 	const record: EvalRunRecord = {
-		schemaVersion: 2,
+		schemaVersion: 3,
+		purpose: "evidence" as const,
 		evalRunId: "erun-test",
 		target: first.target,
 		label: "baseline",
@@ -633,7 +634,8 @@ describe("baseline reuse", () => {
 			eval: first.eval,
 		});
 		writeEvalRun(runsRoot, {
-			schemaVersion: 2,
+			schemaVersion: 3,
+			purpose: "evidence" as const,
 			evalRunId: "erun_reusable",
 			target,
 			label: "baseline",

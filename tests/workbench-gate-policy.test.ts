@@ -104,7 +104,8 @@ function runsRootWith(runs: readonly { costUsd: number; seconds: number }[], tar
 	});
 	const evidence = { runtime, model, judge: null, execution, eval: evaluation };
 	const index: EvalRunRecord = {
-		schemaVersion: 2,
+		schemaVersion: 3,
+		purpose: "evidence" as const,
 		evalRunId,
 		target: { id: targetId, gitSha: GIT_SHA },
 		label: "solo",

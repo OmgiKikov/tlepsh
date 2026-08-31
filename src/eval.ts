@@ -863,11 +863,27 @@ export type EvidenceVisibility = z.infer<typeof EvidenceVisibilitySchema>;
  * `evaluatorId`, so a v1 index describes a different comparability contract.
  * v1 records stay readable only as display-only legacy rows
  * (`listEvalRunIndexesLenient`); they are never comparable or reusable.
+ *
+ * Bumped to 3 in V2: `purpose` moved a screen's identity out of the
+ * `runs/screens/` sidecar and into the EvalRun itself, written atomically with
+ * the record. A v2 index predates that field and is read as `evidence` — which
+ * is exactly what every v2 record was, because the only writer of screens
+ * always paired them with a marker. `purpose` is deliberately OUTSIDE
+ * `provenance`, so every provenance key and `provenanceKey` hash is unchanged.
  */
-export const EVAL_RUN_SCHEMA_VERSION = 2;
+export const EVAL_RUN_SCHEMA_VERSION = 3;
 
-export const EvalRunRecordSchema = z.strictObject({
-	schemaVersion: z.literal(EVAL_RUN_SCHEMA_VERSION),
+/**
+ * What an EvalRun is for. `evidence` can be reused, compared, cited by a
+ * promotion and turned into a regression case; `screen` is a one-repetition,
+ * candidate-only re-run of what already failed and can be none of those. The
+ * distinction lives in the record, so a process killed between the EvalRun
+ * write and the marker write still leaves a screen that everything refuses.
+ */
+export const EvalRunPurposeSchema = z.enum(["evidence", "screen"]);
+export type EvalRunPurpose = z.infer<typeof EvalRunPurposeSchema>;
+
+const EvalRunRecordFields = {
 	evalRunId: ArtifactIdSchema,
 	target: z.strictObject({
 		id: z.string().min(1),
@@ -910,7 +926,13 @@ export const EvalRunRecordSchema = z.strictObject({
 	startedAt: z.string().min(1),
 	finishedAt: z.string().min(1),
 	summary: EvalRunSummarySchema,
-}).superRefine((record, context) => {
+} as const;
+
+type EvalRunRecordShape = z.infer<z.ZodObject<typeof EvalRunRecordFields>> & {
+	purpose: EvalRunPurpose;
+};
+
+function refineEvalRunRecord(record: EvalRunRecordShape, context: z.RefinementCtx): void {
 	if (record.provenanceKey !== hashValue(record.provenance)) {
 		context.addIssue({ code: "custom", path: ["provenanceKey"], message: "does not match provenance" });
 	}
@@ -948,8 +970,50 @@ export const EvalRunRecordSchema = z.strictObject({
 			context.addIssue({ code: "custom", path: ["runArtifacts"], message: "run artifacts must match runIds in order" });
 		}
 	}
-});
+	// A screen is a one-arm run; the only other label it can wear is `regrade`,
+	// because re-scoring a screen's recorded traces produces a screen.
+	if (record.purpose === "screen" && record.label !== "solo" && record.label !== "regrade") {
+		context.addIssue({ code: "custom", path: ["purpose"], message: "a screen is a one-arm `solo` run" });
+	}
+	if (record.purpose === "screen" && record.evidenceVisibility === "sealed") {
+		context.addIssue({ code: "custom", path: ["purpose"], message: "a screen never touches sealed evidence" });
+	}
+}
+
+export const EvalRunRecordSchema = z.strictObject({
+	schemaVersion: z.literal(EVAL_RUN_SCHEMA_VERSION),
+	/**
+	 * Why this run exists. Written atomically with the record, so a screen is
+	 * still a screen when the process dies before its `runs/screens/` marker.
+	 */
+	purpose: EvalRunPurposeSchema,
+	...EvalRunRecordFields,
+}).superRefine(refineEvalRunRecord);
 export type EvalRunRecord = z.infer<typeof EvalRunRecordSchema>;
+
+/**
+ * The pre-`purpose` shape. Everything a v2 index could be was evidence: the one
+ * writer of screens has always paired them with a marker, so reading v2 as
+ * `evidence` cannot launder a screen that the marker still names.
+ */
+const LegacyEvalRunRecordSchemaV2 = z.strictObject({
+	schemaVersion: z.literal(2),
+	...EvalRunRecordFields,
+}).superRefine((record, context) => refineEvalRunRecord({ ...record, purpose: "evidence" }, context));
+
+/**
+ * The reader every EvalRun index goes through: the current shape, or the
+ * pre-`purpose` shape upgraded to `evidence`. A v1 index still fails, because
+ * its provenance contract genuinely differs.
+ */
+export const EvalRunIndexSchema: z.ZodType<EvalRunRecord> = z.union([
+	EvalRunRecordSchema,
+	LegacyEvalRunRecordSchemaV2.transform((record): EvalRunRecord => ({
+		...record,
+		schemaVersion: EVAL_RUN_SCHEMA_VERSION,
+		purpose: "evidence",
+	})),
+]);
 
 /** Explicit visibility for new evidence, with the legacy sealed dataset convention as a fallback. */
 export function isSealedEvalRun(
@@ -983,6 +1047,11 @@ export interface RunSuiteOptions {
 	baselineEvalRunId?: string | null;
 	/** Evidence disclosure boundary. New suites persist development by default. */
 	evidenceVisibility?: EvidenceVisibility;
+	/**
+	 * What this run is for. Defaults to `evidence`; only the cheap check asks
+	 * for `screen`, and it is written into the EvalRun itself, not a sidecar.
+	 */
+	purpose?: EvalRunPurpose;
 	/** @internal Exact source hash captured for a baseline-reuse query. */
 	expectedWorkspaceHash?: string;
 	/** Optional synchronous, observational listener for all task executions. */
@@ -1264,6 +1333,7 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 	};
 	const record: EvalRunRecord = {
 		schemaVersion: EVAL_RUN_SCHEMA_VERSION,
+		purpose: options.purpose ?? "evidence",
 		evalRunId,
 		target: {
 			id: target.manifest.id,
@@ -1345,7 +1415,7 @@ export function readEvalRunIndex(runsRoot: string, evalRunId: string): EvalRunRe
 	const parsedId = ArtifactIdSchema.parse(evalRunId);
 	const record = readJsonArtifact(
 		resolveContainedArtifactPath(runsRoot, parsedId, "eval_run.json"),
-		EvalRunRecordSchema,
+		EvalRunIndexSchema,
 	);
 	if (record.evalRunId !== parsedId) {
 		throw new Error("eval run index identity does not match its artifact path");
@@ -1677,6 +1747,12 @@ export interface ReusableBaselineQuery {
 	label: "baseline" | "candidate" | "solo";
 	repetitions: number;
 	/**
+	 * What the reused run has to be. Only `evidence` is ever reusable; the field
+	 * exists so a caller can say so out loud, and so asking for a screen is a
+	 * refusal rather than a silent empty result.
+	 */
+	purpose?: EvalRunPurpose;
+	/**
 	 * How old a baseline may be and still stand in for a fresh one. Provider
 	 * behaviour drifts behind an unchanged model id, so age is the one axis the
 	 * fingerprint cannot see. Defaults to {@link DEFAULT_BASELINE_MAX_AGE_MS};
@@ -1695,10 +1771,16 @@ export const DEFAULT_BASELINE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
  * index on disk can never abort a candidate verification.
  */
 export function findReusableBaseline(runsRoot: string, query: ReusableBaselineQuery): EvalRunRecord | null {
+	if (query.purpose !== undefined && query.purpose !== "evidence") {
+		throw new Error("only an `evidence` eval run is ever reusable; a screen proves nothing");
+	}
 	const maxAgeMs = query.maxAgeMs ?? DEFAULT_BASELINE_MAX_AGE_MS;
 	const oldestUsableMs = Date.now() - maxAgeMs;
 	for (const record of listEvalRunIndexesLenient(runsRoot).records) {
 		if (record.label !== query.label) continue;
+		// A screen is a one-arm re-run of what already failed. The record says so
+		// itself now, so reuse refuses it without consulting any sidecar.
+		if (record.purpose !== "evidence") continue;
 		// Derived evidence is not a fresh measurement. A regrade copies the source
 		// traces and stamps today's timestamps, so reusing one would let a re-grade
 		// resurrect a baseline the freshness guard had retired and pair a fresh

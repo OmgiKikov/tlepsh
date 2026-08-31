@@ -11,7 +11,7 @@ import {
 import {
 	comparisonGateEvidence,
 } from "./candidate-experiment.js";
-import { screenEvalRunIds } from "./cheap-check.js";
+import { screenExclusion } from "./cheap-check.js";
 import { corpusDatasetLabel } from "./corpus-target.js";
 import { compareEvalRuns, type CompareResult } from "../compare.js";
 import { promotableVerdicts, withinInfrastructureBudget, type GateSurface } from "../domain/comparison-gate.js";
@@ -29,7 +29,7 @@ import {
 import { TargetManifest, type JudgeCalibrationPolicy } from "../manifest.js";
 import { judgeEvidenceCalibration } from "./judge-labels.js";
 import { judgeCalibrationRefusal } from "../domain/judge-agreement.js";
-import { loadEvalRun, loadVerifiedEvalRun, type EvalRunRecord } from "../eval.js";
+import { loadEvalRun, loadVerifiedEvalRun, readEvalRunIndex, type EvalRunRecord } from "../eval.js";
 import { SpecSnapshotSchema } from "../spec.js";
 import { canonicalJson, hashValue } from "../provenance.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
@@ -477,8 +477,7 @@ function verifyAppliedBuilderOrigin(record: CandidateRecord, runsRootInput: stri
  * can never reach a promotion — not as an arm, not as a source eval.
  */
 function assertNoScreenEvidence(record: CandidateRecord, runsRoot: string): void {
-	const screens = screenEvalRunIds(runsRoot);
-	if (screens.size === 0) return;
+	const exclusion = screenExclusion(runsRoot);
 	const cited = new Set<string>();
 	const evaluated = record.events.find((event) => event.type === "evaluated");
 	if (evaluated?.type === "evaluated") {
@@ -493,10 +492,23 @@ function assertNoScreenEvidence(record: CandidateRecord, runsRoot: string): void
 	if (record.origin.kind === "applied-builder" && record.origin.source) {
 		cited.add(record.origin.source.evalRunId);
 	}
-	const offending = [...cited].filter((evalRunId) => screens.has(evalRunId)).sort();
+	// The EvalRun's own `purpose` is the first answer, so a screen whose sidecar
+	// never got written is still refused. The sidecar is the second, and an
+	// unreadable one refuses everything it might name.
+	const offending = [...cited].filter((evalRunId) => {
+		if (exclusion.blocksEverything || exclusion.ids.has(evalRunId)) return true;
+		try {
+			return readEvalRunIndex(runsRoot, evalRunId).purpose === "screen";
+		} catch {
+			return false;
+		}
+	}).sort();
 	if (offending.length > 0) {
 		throw new Error(
-			`promotion refused: ${offending.join(", ")} is a cheap-check screen, which is never promotion evidence`,
+			`promotion refused: ${offending.join(", ")} is a cheap-check screen, which is never promotion evidence` +
+			(exclusion.unreadable.length > 0
+				? ` (${exclusion.unreadable.length} screen marker(s) could not be read, so nothing they might name is admitted)`
+				: ""),
 		);
 	}
 }

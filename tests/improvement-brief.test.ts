@@ -171,7 +171,8 @@ function fixture(options: FixtureOptions): {
 	const error = runs.filter((run) => run.status === "error").length;
 	const evidence = { runtime, model, judge: null, execution, eval: evaluation };
 	const evalRun: EvalRunRecord = {
-		schemaVersion: 2,
+		schemaVersion: 3,
+		purpose: "evidence" as const,
 		evalRunId,
 		target: { id: "target", gitSha },
 		label: "solo",
