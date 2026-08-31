@@ -68,8 +68,9 @@ it("drives the complete canonical Workbench tool loop without revealing sealed c
 		});
 		expect(configured.view).toMatchObject({
 			stage: "spec-design",
-			target: { status: "ready", model: { apiKeyEnv: CREDENTIAL_ENV, credentialPresent: true } },
+			target: { status: "ready", model: { credentialPresent: true } },
 		});
+		expect(JSON.stringify(configured)).not.toContain(CREDENTIAL_ENV);
 
 		const drafted = await call("ahde_workbench_submit", {
 			kind: "spec-draft",

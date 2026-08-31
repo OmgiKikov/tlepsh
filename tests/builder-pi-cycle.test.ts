@@ -100,12 +100,15 @@ describe("Builder Pi canonical cycle through the production Workbench tools", ()
 			model: { provider: PROVIDER, modelId: MODEL_ID, thinkingLevel: "off", timeoutMs: 120_000 },
 			reason: "Use this exact local model",
 		}, host.ctx);
-		expect(configured.result).toMatchObject({ targetId: "demo-agent", credentialEnv: CREDENTIAL_ENV });
+		expect(configured.result).toMatchObject({ targetId: "demo-agent" });
+		expect(configured.result.credentialEnv).toBeUndefined();
 		expect(configured.result.targetGitSha).toMatch(/^[0-9a-f]{40}$/);
 		expect(configured.view.target).toMatchObject({ status: "ready", id: "demo-agent" });
 		expect(readFileSync(join(projectDir, "manifest.yaml"), "utf8")).toContain("id: demo-agent");
-		// The credential value is host-owned; only its variable name is ever recorded.
+		// Credential values and variable names stay in host-owned details, not the
+		// JSON the Builder model receives.
 		expect(JSON.stringify(configured)).not.toContain("fixture");
+		expect(JSON.stringify(configured)).not.toContain(CREDENTIAL_ENV);
 
 		const otherDir = root("ahde-cycle-missing-model-");
 		const otherTools = tools(otherDir);

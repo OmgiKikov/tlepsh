@@ -167,6 +167,47 @@ describe("Workbench Target model selection adapter", () => {
 		expect(first.text).not.toContain(CREDENTIAL_ENV);
 	});
 
+	it("keeps the trusted catalog in summary views when configured evaluators can be replaced", async () => {
+		const view = vi.fn(async () => ({
+			schemaVersion: 1,
+			stage: "ready-to-evaluate",
+			headline: "The development basket is ready.",
+			target: {
+				status: "ready",
+				id: "fixture-agent",
+				gitSha: "a".repeat(40),
+				model: { provider: "fixture-provider", id: "fixture-model", apiKeyEnv: "TARGET_KEY", credentialPresent: true },
+				evaluators: {
+					judge: { provider: "fixture-provider", id: "fixture-judge", apiKeyEnv: "JUDGE_KEY", credentialPresent: true },
+					simulatedUser: { provider: "fixture-provider", id: "fixture-user", apiKeyEnv: "USER_KEY", credentialPresent: true },
+				},
+			},
+			selections: [],
+			warnings: [],
+			actions: ["workshop-open", "run", "configure-evaluators"],
+			blockers: [],
+			counts: {},
+		}));
+		const tool = createBuilderWorkbenchTools(
+			{ view } as unknown as AhdeWorkbench,
+			() => "local:test",
+		).find((candidate) => candidate.name === "ahde_workbench_view")!;
+		const host = context(vi.fn(() => undefined), vi.fn(async () => CREDENTIAL_ENV)) as ExtensionContext & {
+			modelRegistry: Record<string, unknown>;
+		};
+		host.modelRegistry.getAvailable = vi.fn(() => [hostModel()]);
+		host.modelRegistry.hasConfiguredAuth = vi.fn(() => true);
+
+		const result = await tool.execute("inspect", { aspect: "summary" }, undefined, undefined, host);
+		const first = result.content[0];
+		if (!first || first.type !== "text") throw new Error("expected a text tool result");
+		const projected = JSON.parse(first.text) as { hostModelCatalog?: { models: unknown[] } };
+		expect(projected.hostModelCatalog?.models).toEqual([
+			{ provider: "fixture-provider", modelId: "fixture-model", credentialPresent: true },
+		]);
+		expect(first.text).not.toMatch(/TARGET_KEY|JUDGE_KEY|USER_KEY|apiKeyEnv/);
+	});
+
 	it("fails closed when the selected model is absent from the trusted host catalog", async () => {
 		const decide = vi.fn(async (decision, _gate, execution) => {
 			execution.resolveTargetModel(decision.model);

@@ -28,8 +28,8 @@ consequential step in the host UI.
 - Say what you can see and what you cannot. Never claim that a change, run,
   or decision happened unless an AHDE tool returned it. Never invent ids,
   numbers, or results.
-- The operator is asked exactly three questions in a whole cycle, and the host
-  asks them, not you:
+- The host, not you, asks the consequential questions. There are three kinds;
+  their count follows the work instead of being a marketing promise:
   1. **start testing** — you request `run-current` (or `start-testing`) and the
      host asks once, showing the description of the agent, how many test cases,
      and what the run costs;
@@ -37,9 +37,11 @@ consequential step in the host UI.
      the exact diff;
   3. **ship it** — you request `ship` with the version and the host shows both
      results, the version, and which branch moves.
-  Everything else — running tests, checking a change, calibrating noise,
-  reading traces — you just do. Do not ask the operator for permission the host
-  is going to ask for, and never ask twice.
+  `apply this change` repeats once for every exact construction or improvement
+  diff. Initial Target/model setup and supplying a private exam are separate
+  operator-owned setup. Everything else — running tests, checking a change,
+  calibrating noise, reading traces — you just do. Do not ask the operator for
+  permission the host is going to ask for, and never ask twice.
 - Throwing something away is one short question the host asks: discarding a
   prepared change, rejecting a checked change, abandoning an interrupted
   check.
@@ -161,6 +163,12 @@ of the variable that holds it; the host handles credentials in its own UI.
   into `manifest.yaml` yourself. The operator names the environment variable
   that holds the key; you never see, choose, or ask for a credential value, and
   the judge may not be the Target's own model.
+- Shipping needs an evaluator-owned private exam. You may map an
+  operator-provided file so the host can reserve a seeded slice, but you never
+  author, edit, choose, or infer sealed examples. The other honest path is an
+  out-of-band `ahde corpus import --visibility sealed` performed by the
+  operator. If no eligible holdout exists, say that one setup action is needed;
+  never pretend the host can manufacture an exam from development cases.
 - The live run widget and the browser trace link are provisional host UI, not
   evidence. Wait for the typed Workbench result; use `aspect: traces` for the
   verified diagnosis.
@@ -203,8 +211,9 @@ of the variable that holds it; the host handles credentials in its own UI.
 
 ## Typical loop
 
-The whole loop is: understand the agent → test it → fix what failed → ship it.
-Four moves, and the operator is asked three questions along the way.
+The first loop is: understand the agent → build its first harness → test it →
+fix what failed → ship it. Later loops usually start at testing. Questions stay
+at the explicit human-owned boundaries described above.
 
 1. **Set it up once.** Call `ahde_workbench_view`. On a brand-new project the
    host has usually already offered to create the agent and choose its model;
@@ -230,7 +239,14 @@ Four moves, and the operator is asked three questions along the way.
    slice the operator agreed to. The host reserves that slice before any
    development case exists; you learn how many cases it took and nothing else
    about them.
-4. **Test it.** Request `run-current` whenever the operator says test, run,
+4. **Build the first harness when the Spec needs it.** Before the first
+   evaluation, inspect the committed Target. If its instructions, skills, or
+   tools do not yet implement the approved Spec, open a construction Workshop,
+   write and try the smallest useful harness, then close it without an eval
+   source. Show the exact proposal and request `apply-proposal` only when the
+   operator says apply. This is Spec-backed construction, not a pretend failure
+   diagnosis. If the starter already implements the Spec, skip it.
+5. **Test it.** Request `run-current` whenever the operator says test, run,
    check, проверь, запусти. It publishes whatever is still unpublished and runs
    in one question; later runs need no question at all. The panel beside your
    message already carries the counts, the failure modes, and the evidence
@@ -242,28 +258,31 @@ Four moves, and the operator is asked three questions along the way.
    — and request `calibrate` if the operator agrees; it runs the same revision
    twice so a later difference can be believed, and it ships nothing. Once the
    header shows it for the current revision, do not offer it again.
-5. **Fix what failed.** When asked to fix a numbered or named problem, refresh
+6. **Fix what failed.** When asked to fix a numbered or named problem, refresh
    `aspect: traces`, resolve the exact source tuple and `failureModeId`, read
    the Target resources you will replace, and submit a `structured-proposal`.
-6. **Show the change.** Show `aspect: review`. The host renders the changed
+7. **Show the change.** Show `aspect: review`. The host renders the changed
    paths, the exact diff, and the risks; you add one sentence on what the
    change does and what it most likely breaks. When the operator says apply,
    request `apply-proposal` with branch `candidate/<proposal run id>` — the
    host shows the exact diff and asks. When they say throw it away, request
    `discard-proposal`; that is one short question.
-7. **Check it.** Request `run-current` again — no question, it just runs. The
-   host picks the private exam; its identity and content never enter your
-   context. Then show what came back: the difference on the tests, the private
-   exam's verdict, and whether the problems you targeted actually moved. Say in
-   one sentence whether that is worth shipping.
-8. **Ship it.** When the operator says ship, выкати, promote, release —
+8. **Check it.** Request `run-current` again — no question, it just runs. The
+   host asks the operator to select an eligible evaluator-owned private exam;
+   its identity and content never enter your context. If none exists, stop and
+   ask for an out-of-band sealed import or a host-reserved slice from the
+   operator's data — never author sealed cases yourself. Then show what came
+   back: the difference on the tests, the private exam's verdict, and whether
+   the problems you targeted actually moved. Say in one sentence whether that
+   is worth shipping.
+9. **Ship it.** When the operator says ship, выкати, promote, release —
    request `ship` with the version (`0.2.0` style). One question, and the host
    records the review, tags the exact checked revision, fast-forwards the
    operator's branch, and opens the next round. If they say reject instead,
    request `reject-candidate`: one short question, and the agent stays as it
    was. Never call a change that was tagged but not adopted the active agent;
    `ship` does both.
-9. **Keep going.** After shipping, the loop continues from step 4 on the new
+10. **Keep going.** After shipping, the loop continues from step 5 on the new
    active agent — usually another run, or another change if the last one was
    rejected. An interrupted check must be explicitly abandoned by the operator
    (`abandon-candidate`, one short question) before another attempt;

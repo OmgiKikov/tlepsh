@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAhdeWorkbench, type WorkbenchHumanGate } from "../src/workbench/index.js";
@@ -85,6 +87,82 @@ describe("corpus grader validation against the current Target", () => {
 		const published = await workbench.decide({ kind: "publish-corpus", reason: "publish" }, gate);
 		expect(published.view.stage).toBe("ready-to-evaluate");
 		expect(published.view.blockers).toEqual([]);
+	});
+
+	it("rejects simulated-user drafts without a user model", async () => {
+		const workbench = await approvedWorkbench();
+		await expect(workbench.submit({
+			kind: "corpus-draft",
+			name: "Conversation basket",
+			tasks: [{
+				input: "I need to change my subscription.",
+				simulatedUser: { goal: "change the subscription", maxTurns: 3 },
+				graders: [{ type: "turn_budget", max: 3 }],
+			}],
+			coverageNotes: [],
+			revisionSummary: "initial",
+		})).rejects.toThrow(/task 1: simulated-user cases need a user model configured in the Target manifest/);
+		expect((await workbench.view()).counts.corpusDrafts).toBe(0);
+	});
+
+	it("never reports a published simulated-user basket as ready after its user model is removed", async () => {
+		const files = baseFixtureFiles({ ".gitignore": ".ahde/\nruns/\n" });
+		const manifest = files.find((file) => file.path === "manifest.yaml");
+		if (!manifest) throw new Error("fixture manifest missing");
+		manifest.content = manifest.content.replace(
+			"  graders: evals/graders.yaml\n",
+			`  graders: evals/graders.yaml
+  simulatedUser:
+    provider: qwen-mock
+    id: mock-user
+    api: openai-completions
+    baseUrl: http://127.0.0.1:9902/v1
+    apiKeyEnv: TEST_USER_KEY
+    thinkingLevel: "off"
+    timeoutMs: 60000
+`,
+		);
+		const projectDir = makeTargetFixture(files);
+		roots.push(projectDir);
+		const options = {
+			projectDir,
+			stateRoot: join(projectDir, ".ahde"),
+			runsRoot: join(projectDir, "runs"),
+			projectId: "test-target",
+		};
+		const workbench = createAhdeWorkbench(options);
+		const draft = await workbench.submit({ kind: "spec-draft", spec });
+		await workbench.decide({ kind: "approve-spec", draftSpecId: String(draft.artifact?.id), reason: "approve" }, gate);
+		await workbench.submit({
+			kind: "corpus-draft",
+			name: "Conversation basket",
+			tasks: [{
+				input: "I need to change my subscription.",
+				simulatedUser: { goal: "change the subscription", maxTurns: 3 },
+				graders: [{ type: "turn_budget", max: 3 }],
+			}],
+			coverageNotes: [],
+			revisionSummary: "initial",
+		});
+		const published = await workbench.decide({ kind: "publish-corpus", reason: "publish" }, gate);
+		expect(published.view.stage).toBe("ready-to-evaluate");
+		expect(published.view.target.evaluatorRequirements).toEqual({ judge: false, simulatedUser: true });
+
+		const manifestPath = join(projectDir, "manifest.yaml");
+		const withoutUser = readFileSync(manifestPath, "utf8").replace(
+			/  simulatedUser:\n(?:    .*\n){7}/,
+			"",
+		);
+		writeFileSync(manifestPath, withoutUser, "utf8");
+		execFileSync("git", ["-C", projectDir, "add", "manifest.yaml"]);
+		execFileSync("git", ["-C", projectDir, "-c", "user.name=test", "-c", "user.email=test@test", "commit", "-qm", "remove user model"]);
+
+		const view = await createAhdeWorkbench(options).view();
+		expect(view.stage).toBe("corpus-design");
+		expect(view.stage).not.toBe("ready-to-evaluate");
+		expect(view.actions).toContain("configure-evaluators");
+		expect(view.blockers).toContain("The selected development basket is not runnable on the current Target.");
+		expect(view.target.evaluatorRequirements).toEqual({ judge: false, simulatedUser: true });
 	});
 
 	it("reports every problem with its task and grader position", () => {

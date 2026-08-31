@@ -37,6 +37,10 @@ function loadedView(): WorkbenchView {
 			id: "competitor-research",
 			gitSha: "a".repeat(40),
 			model: { provider: "openai", id: "gpt-test", apiKeyEnv: "OPENAI_API_KEY", credentialPresent: true },
+			evaluators: {
+				judge: { provider: "anthropic", id: "judge-test", apiKeyEnv: "JUDGE_API_KEY", credentialPresent: false },
+				simulatedUser: null,
+			},
 		},
 		focus: { proposal: `builder-run-${"d".repeat(20)}0` },
 		selections,
@@ -103,6 +107,12 @@ describe("model-facing projection", () => {
 		expect(projected.stage).toBe("proposal-review");
 		expect(projected.actions).toEqual(view.actions);
 		expect(projected.counts).toEqual(view.counts);
+		expect((projected.target as { model: Record<string, unknown> }).model.apiKeyEnv).toBeUndefined();
+		expect(JSON.stringify(projected)).not.toMatch(/OPENAI_API_KEY|JUDGE_API_KEY|apiKeyEnv/);
+		// The transcript renderer receives the unprojected details and keeps the
+		// environment-variable names it needs to guide the human.
+		expect(view.target.model?.apiKeyEnv).toBe("OPENAI_API_KEY");
+		expect(view.target.evaluators?.judge?.apiKeyEnv).toBe("JUDGE_API_KEY");
 
 		const content = projected.detail.content;
 		expect(content.proposalHash).toBeUndefined();
@@ -152,6 +162,36 @@ describe("model-facing projection", () => {
 			kind: "publish-corpus",
 			message: "Development corpus published",
 			result: { corpusId: "corpus-1", taskCount: 12, publicationReceiptId: "receipt-1" },
+		});
+	});
+
+	it("removes host credential references from decision results without mutating human details", () => {
+		const decision = {
+			kind: "configure-evaluators",
+			result: {
+				configured: [
+					{ role: "judge", model: "anthropic/judge-test", credentialEnv: "JUDGE_API_KEY" },
+				],
+			},
+		};
+		const projected = projectForModel(decision) as { result: { configured: Record<string, unknown>[] } };
+		expect(projected.result.configured[0]).toEqual({ role: "judge", model: "anthropic/judge-test" });
+		expect(decision.result.configured[0]?.credentialEnv).toBe("JUDGE_API_KEY");
+	});
+
+	it("removes credential references even inside otherwise-verbatim claims", () => {
+		const projected = projectForModel({
+			claim: {
+				targetId: "agent",
+				contextHash: `sha256:${"a".repeat(64)}`,
+				apiKeyEnv: "TARGET_KEY",
+				nested: { credentialEnv: "JUDGE_KEY", stable: true },
+			},
+		}) as { claim: Record<string, unknown> };
+		expect(projected.claim).toEqual({
+			targetId: "agent",
+			contextHash: `sha256:${"a".repeat(64)}`,
+			nested: { stable: true },
 		});
 	});
 });

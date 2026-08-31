@@ -161,12 +161,14 @@ function abortIfRequested(signal?: AbortSignal): void {
 const MODEL_WARNING_LIMIT = 3;
 /** Digest fields the persona is forbidden to quote and no tool call ever accepts back. */
 const DIGEST_KEY = /(?:hash|sha256)$/i;
+/** Credential references are useful to the human renderer, never to Builder Pi. */
+const HOST_CREDENTIAL_KEYS = new Set(["apiKeyEnv", "credentialEnv"]);
 /** Claims the persona must echo verbatim to author its next call; never pruned. */
 const VERBATIM_KEYS = new Set(["authoringContext", "claim"]);
 
 export interface ModelProjectionOptions {
 	include?: readonly WorkbenchViewInclude[];
-	/** Attached to a summary view while `configure-target` is the legal next step. */
+	/** Attached while a summary view can configure or replace a Target/evaluator model. */
 	hostModelCatalog?: HostModelCatalog | null;
 }
 
@@ -179,6 +181,17 @@ function looksLikeWorkbenchView(value: Record<string, unknown>): boolean {
 		typeof value.stage === "string" &&
 		Array.isArray(value.selections) &&
 		isRecord(value.counts);
+}
+
+/** Preserve every echo-required claim field, including digests, except host credential references. */
+function projectCredentialSafeVerbatim(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(projectCredentialSafeVerbatim);
+	if (!isRecord(value)) return value;
+	return Object.fromEntries(
+		Object.entries(value)
+			.filter(([key]) => !HOST_CREDENTIAL_KEYS.has(key))
+			.map(([key, item]) => [key, projectCredentialSafeVerbatim(item)]),
+	);
 }
 
 function projectWorkbenchView(view: Record<string, unknown>, options: ModelProjectionOptions): Record<string, unknown> {
@@ -211,7 +224,10 @@ export function projectForModel(value: unknown, options: ModelProjectionOptions 
 	const projected: Record<string, unknown> = {};
 	for (const [key, item] of Object.entries(value)) {
 		if (DIGEST_KEY.test(key)) continue;
-		projected[key] = VERBATIM_KEYS.has(key) ? item : projectForModel(item, options);
+		if (HOST_CREDENTIAL_KEYS.has(key)) continue;
+		projected[key] = VERBATIM_KEYS.has(key)
+			? projectCredentialSafeVerbatim(item)
+			: projectForModel(item, options);
 	}
 	return projected;
 }
@@ -319,9 +335,8 @@ export function createBuilderWorkbenchTools(
 				// configure-target and configure-evaluators are the decisions that need
 				// a model id, and the trusted host catalog is the only place those ids
 				// exist. It rides along while either is still the next thing to do.
-				const evaluatorSetupPending = view.target.status !== "missing" &&
-					(view.target.evaluators?.judge == null || view.target.evaluators.simulatedUser == null);
-				const catalog = (view.stage === "target-setup" || evaluatorSetupPending) &&
+				const evaluatorConfigurationLegal = view.actions.includes("configure-evaluators");
+				const catalog = (view.stage === "target-setup" || evaluatorConfigurationLegal) &&
 						(query.aspect ?? "summary") === "summary"
 					? hostModelCatalog(ctx)
 					: null;

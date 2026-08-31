@@ -4,7 +4,8 @@ AHDE turns a rough agent idea into a reviewed, testable harness without
 training model weights:
 
 ```text
-intent -> Spec -> Target harness + eval corpus -> runs + diagnosis
+intent -> Spec -> construction workshop -> reviewed Target harness + eval corpus
+       -> runs + diagnosis
        -> proposal -> candidate experiment -> human promote or reject
 ```
 
@@ -52,7 +53,12 @@ When AHDE is installed globally or linked, the last command is simply:
 ahde
 ```
 
-A typical Builder conversation looks like — three questions in a whole cycle:
+A typical improvement cycle after initial setup looks like this. There are
+three kinds of consequential question: start testing, apply one exact change,
+and ship. The apply question repeats for every proposed diff. A new agent can
+also require explicit Spec/model setup and a Spec-backed construction diff
+before its first evaluation. This transcript assumes the operator has already
+provided or reserved the private holdout used at ship time:
 
 ```text
 > Хочу собрать агента для ...
@@ -75,7 +81,7 @@ Builder: Development improved, sealed gate passed.
 AHDE asks once: ship as v0.2.0 — promote, fast-forward main, next cycle?  [y/n]
 ```
 
-Everything between those three questions just happens: runs, checks,
+Everything between those decision boundaries just happens: runs, checks,
 calibration, and the diagnosis. A run that history says would be unusually
 expensive (over `AHDE_ROUTINE_COST_USD`, default 2, or `AHDE_ROUTINE_MINUTES`,
 default 10) asks one extra yes/no first, and so do the two irreversible
@@ -269,6 +275,7 @@ The durable loop is:
 
 ```text
 Spec draft --human approve--> approved Spec
+approved Spec --> construction Workshop --> exact Proposal --human apply--> first Harness
 Spec-bound corpus revisions --human publish--> development Corpus + lineage
 Target runs --> deterministic Diagnosis --> read-only evidence link
 semantic Harness intents --> compiled exact Proposal --human apply--> candidate commit
@@ -293,10 +300,11 @@ Their tool schemas do not accept model-supplied `actor`, `approved`, or
 the exact hash or diff, asks the operator, revalidates it, and writes a durable
 receipt. Consequential calls fail closed outside an interactive TUI.
 
-The conversation reaches those decisions through two composites, so the whole
-cycle asks three questions: `start-testing` (approve the Spec draft, publish the
-reviewed basket, run), `apply-proposal` (the exact diff), and `ship` (review,
-promote, adopt, continue). A composite is orchestration, not new authority: it
+The conversation reaches those decisions through two composites and one exact
+diff boundary: `start-testing` (approve the Spec draft, publish the reviewed
+basket, run), `apply-proposal` (once for each construction or improvement
+diff), and `ship` (review, promote, adopt, continue). A composite is
+orchestration, not new authority: it
 calls the same services in the same order, writes the same receipts, and stops
 at the first step that declines or fails. Discarding a proposal, rejecting a
 candidate, and abandoning an interrupted attempt are one short question each.
@@ -312,10 +320,12 @@ additionally match the current Target revision and suite hash. Structured
 Harness authoring accepts semantic instruction/execution-policy/skill/tool
 intents; only the host compiler chooses repository paths, file modes, hashes,
 and unified diffs. There are no product presets for agent types. A request such
-as “build a deep research agent” follows the ordinary Spec → eval → diagnosis
-→ Proposal path; when evidence shows that network research is required, AHDE
-proposes the exact policy, environment-variable names, descriptor, and
-executable for human review and candidate verification.
+as “build a deep research agent” follows the ordinary Spec → construction →
+eval → diagnosis → Proposal path. The first tools and skills can be built in a
+Spec-backed Workshop before any run; later evidence justifies further changes.
+AHDE still proposes exact policy, environment-variable names, descriptors, and
+executables for human review and candidate verification — it never grants
+capabilities merely because an agent category was named.
 
 After a failed development evaluation, Builder selects only stable
 `failureModeId` handles from the current deterministic Improvement Brief. The
@@ -380,6 +390,15 @@ to the existing hash-verified report built from canonical `session.jsonl` and
 Sealed holdout cases, graders, expected outputs, identifiers, and traces are
 never shown to Builder Pi or the Evidence Explorer. The evaluator gives Target
 Pi one sealed case at a time, and only bounded gate results cross that boundary.
+
+Shipping requires a sufficiently large evaluator-owned sealed holdout. AHDE
+does not fabricate one: the operator either imports private cases out of band
+with `ahde corpus import --visibility sealed`, or asks the host to reserve a
+seeded slice from an operator-provided file during dataset ingest. Builder Pi
+may help map that file, but it never sees the reserved rows and cannot author,
+edit, select, or infer the sealed examples. If no eligible holdout exists,
+candidate verification stops before the run and names the operator action
+required.
 
 ## Driving the Workbench from your own backend
 

@@ -575,9 +575,9 @@ describe("stage labels and next steps", () => {
 			"target-setup": "Describe the agent you want to build",
 			"spec-design": "Describe the agent you want",
 			"spec-review": "Say “ok” to approve it, or what to change",
-			"corpus-design": "Say “tests” and the Builder writes the cases",
+			"corpus-design": "Describe what the agent still needs built, or say “tests” to write the cases",
 			"corpus-review": "Say “tests” to publish them and run",
-			"ready-to-evaluate": "Say “tests” to run them",
+			"ready-to-evaluate": "Describe what the agent still needs built, or say “tests” to run them",
 			"improvement-authoring": "Say “fix the first problem”",
 			"proposal-review": "Say “apply” after reading the diff, or “discard”",
 			"candidate-verification": "Say “check” to verify the change",
@@ -626,7 +626,7 @@ describe("renderStatus", () => {
 			"Target support-bot @ aaaaaaaaaa · openai/gpt-5 ✓",
 			"Evidence 2 eval runs · 1 open proposal · 3 candidates",
 			"Noise not calibrated · say “calibrate” or /calibrate",
-			"Next Say “tests” to run them",
+			"Next Describe what the agent still needs built, or say “tests” to run them",
 		]);
 		expect(lines.join("\n")).not.toContain("{");
 	});
@@ -717,7 +717,7 @@ describe("renderHeader", () => {
 		expect(lines[0]).toBe("");
 		expect(lines[1]).toBe("AHDE Builder · build, evaluate, and improve another agent through evidence");
 		expect(lines[2]).toBe("Target support-bot @ aaaaaaaaaa · openai/gpt-5 ✓");
-		expect(lines[3]).toBe("Stage Ready to run · Next Say “tests” to run them");
+		expect(lines[3]).toBe("Stage Ready to run · Next Describe what the agent still needs built, or say “tests” to run them");
 		expect(lines[4]).toBe("Evidence 2 eval runs · 1 open proposal · 3 candidates · Builder model anthropic/claude-opus ✓");
 		expect(lines[5]).toBe("Noise not calibrated · say “calibrate” or /calibrate");
 		expect(lines[6]).toBe("Describe what you want in plain language · /help for shortcuts");

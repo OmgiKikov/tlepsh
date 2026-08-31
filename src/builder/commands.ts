@@ -711,10 +711,38 @@ export function registerAhdeBuilderCommands(
 						: warn(`Target model ${target.provider}/${target.id} · export ${target.apiKeyEnv} in the shell that runs ahde before /run`));
 				}
 			}
+			const evaluators = view.target.evaluators ?? { judge: null, simulatedUser: null };
+			const evaluatorLabels = {
+				judge: "Judge model",
+				simulatedUser: "Simulated-user model",
+			} as const;
+			for (const role of ["judge", "simulatedUser"] as const) {
+				const evaluator = evaluators[role];
+				const label = evaluatorLabels[role];
+				const required = view.target.evaluatorRequirements?.[role] ?? evaluator !== null;
+				if (!evaluator) {
+					lines.push(required
+						? warn(`${label} is required by the current basket but not configured`)
+						: p.muted(`· ${label} not configured · not required by the current basket`));
+					continue;
+				}
+				lines.push(evaluator.credentialPresent
+					? ok(`${label} ${evaluator.provider}/${evaluator.id} · ${evaluator.apiKeyEnv} is set`)
+					: required
+						? warn(`${label} ${evaluator.provider}/${evaluator.id} · export ${evaluator.apiKeyEnv} in the shell that runs ahde before /run`)
+						: p.muted(`· ${label} ${evaluator.provider}/${evaluator.id} · ${evaluator.apiKeyEnv} is missing, but this basket does not use it`));
+			}
 			lines.push(`${p.dim("Stage")} ${stageLabel(view.stage)} · ${nextStep(view)}`);
 			for (const blocker of view.blockers) lines.push(warn(oneLine(blocker, 200)));
 			for (const warning of view.warnings.slice(0, 6)) lines.push(p.muted(`· ${oneLine(warning, 200)}`));
-			const ready = Boolean(model && credentialPresent && view.target.status === "ready" && view.target.model?.credentialPresent && view.blockers.length === 0);
+			const evaluatorsReady = (["judge", "simulatedUser"] as const).every((role) => {
+				const required = view.target.evaluatorRequirements?.[role] ?? evaluators[role] !== null;
+				return !required || Boolean(evaluators[role]?.credentialPresent);
+			});
+			const ready = Boolean(
+				model && credentialPresent && view.target.status === "ready" &&
+				view.target.model?.credentialPresent && evaluatorsReady && view.blockers.length === 0
+			);
 			lines.push(ready ? ok("Ready: everything needed for /run is in place") : warn("Action required before the next run"));
 			presenter.show(ctx, { title: "AHDE Doctor", tone: ready ? "success" : "warning", lines });
 		},

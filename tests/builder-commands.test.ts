@@ -654,7 +654,7 @@ describe("Builder Pi slash commands", () => {
 		const text = output.text();
 		expect(text).toContain("AHDE · Ready to run");
 		expect(text).toContain("Target target-demo @ aaaaaaaaaa · anthropic/claude-sonnet-4 ✓");
-		expect(text).toContain("Next Say “tests” to run them");
+		expect(text).toContain("Next Describe what the agent still needs built, or say “tests” to run them");
 		expect(text).toContain("Target not created yet");
 		expect(text).toContain("ahde init .");
 		expect(text).not.toContain("schemaVersion");
@@ -1796,10 +1796,58 @@ describe("Builder Pi slash commands", () => {
 		expect(text).toContain("✓ Builder model anthropic/claude-sonnet-4 · credential present");
 		expect(text).toContain("✓ Target target-demo @ aaaaaaaaaa");
 		expect(text).toContain("✓ Target model anthropic/claude-sonnet-4 · ANTHROPIC_API_KEY is set");
-		expect(text).toContain("Stage Ready to run · Say “tests” to run them");
+		expect(text).toContain("· Judge model not configured · not required by the current basket");
+		expect(text).toContain("· Simulated-user model not configured · not required by the current basket");
+		expect(text).toContain("Stage Ready to run · Describe what the agent still needs built, or say “tests” to run them");
 		expect(text).toContain("✓ Ready: everything needed for /run is in place");
 		expect(text).not.toMatch(MARKERS);
 		expect(text).not.toMatch(/[{}]|schemaVersion/);
+	});
+
+	it("includes evaluator credential readiness and refuses ready when a configured evaluator key is missing", async () => {
+		const fixture = workbench({
+			view: async () => viewAt("ready-to-evaluate", {
+				target: {
+					...baseView.target,
+					evaluators: {
+						judge: { provider: "anthropic", id: "claude-judge", apiKeyEnv: "JUDGE_API_KEY", credentialPresent: false },
+						simulatedUser: { provider: "openai", id: "gpt-user", apiKeyEnv: "USER_API_KEY", credentialPresent: true },
+					},
+				},
+			}),
+		});
+		const { commands, output } = register(fixture.value);
+
+		await command(commands, "doctor").handler("", context().ctx);
+
+		expect(output.blocks.map((block) => [block.title, block.tone])).toEqual([["AHDE Doctor", "warning"]]);
+		const text = output.text();
+		expect(text).toContain("! Judge model anthropic/claude-judge · export JUDGE_API_KEY in the shell that runs ahde before /run");
+		expect(text).toContain("✓ Simulated-user model openai/gpt-user · USER_API_KEY is set");
+		expect(text).toContain("! Action required before the next run");
+		expect(text).not.toContain("Ready: everything needed");
+	});
+
+	it("reports an unused evaluator's missing key without blocking the current basket", async () => {
+		const fixture = workbench({
+			view: async () => viewAt("ready-to-evaluate", {
+				target: {
+					...baseView.target,
+					evaluatorRequirements: { judge: false, simulatedUser: false },
+					evaluators: {
+						judge: { provider: "anthropic", id: "claude-judge", apiKeyEnv: "JUDGE_API_KEY", credentialPresent: false },
+						simulatedUser: null,
+					},
+				},
+			}),
+		});
+		const { commands, output } = register(fixture.value);
+
+		await command(commands, "doctor").handler("", context().ctx);
+
+		expect(output.blocks[0]?.tone).toBe("success");
+		expect(output.text()).toContain("· Judge model anthropic/claude-judge · JUDGE_API_KEY is missing, but this basket does not use it");
+		expect(output.text()).toContain("✓ Ready: everything needed for /run is in place");
 	});
 
 	it("names the missing credential env and blockers in /doctor without ever printing a value", async () => {
@@ -1846,7 +1894,7 @@ describe("Builder Pi slash commands", () => {
 		expect(type).toBe("info");
 		expect(message.split("\n")[0]).toBe("AHDE · Ready to run");
 		expect(message).toContain("Target target-demo @ aaaaaaaaaa · anthropic/claude-sonnet-4 ✓");
-		expect(message).toContain("Next Say “tests” to run them");
+		expect(message).toContain("Next Describe what the agent still needs built, or say “tests” to run them");
 		expect(message).not.toMatch(MARKERS);
 		expect(message).not.toContain("schemaVersion");
 

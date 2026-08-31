@@ -356,6 +356,11 @@ export interface WorkbenchView {
 			judge: WorkbenchTargetModelSummary | null;
 			simulatedUser: WorkbenchTargetModelSummary | null;
 		};
+		/** Which evaluator roles the currently selected development surface calls. */
+		evaluatorRequirements?: {
+			judge: boolean;
+			simulatedUser: boolean;
+		};
 	};
 	focus: Partial<Record<WorkbenchSelectionKind, string>>;
 	selections: WorkbenchSelectionSummary[];

@@ -274,12 +274,22 @@ export function resolveScoredCasesForEval(options: {
  * regex or an unsupported judge grader from blocking a reviewed basket.
  */
 export function assertGradersRunnable(
-	tasks: readonly { expected?: string | undefined; graders?: readonly GraderSpec[] }[],
+	tasks: readonly {
+		expected?: string | undefined;
+		graders?: readonly GraderSpec[];
+		simulatedUser?: unknown;
+	}[],
 	manifest: Pick<TargetManifest, "evalSuite">,
 	label = "corpus draft",
 ): void {
 	const problems: string[] = [];
 	tasks.forEach((task, taskIndex) => {
+		if (task.simulatedUser !== undefined && !manifest.evalSuite.simulatedUser) {
+			problems.push(
+				`task ${taskIndex + 1}: simulated-user cases need a user model configured in the Target manifest ` +
+				"(evalSuite.simulatedUser), and this Target has none. Ask the operator to configure the simulated-user model first.",
+			);
+		}
 		(task.graders ?? []).forEach((grader, graderIndex) => {
 			const where = `task ${taskIndex + 1} grader ${graderIndex + 1}`;
 			if (grader.type === "output_matches") {

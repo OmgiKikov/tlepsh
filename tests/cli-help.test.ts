@@ -68,9 +68,11 @@ describe("one Builder persona", () => {
 		}
 	});
 
-	it("promises exactly three questions and never hands work back as a command", () => {
+	it("names the three question kinds without promising a false fixed count", () => {
 		const working = persona.split("## How to work with the operator")[1]?.split("\n## ")[0] ?? "";
-		expect(working).toContain("exactly three questions");
+		expect(working).toContain("There are three kinds");
+		expect(working).toContain("their count follows the work instead of being a marketing promise");
+		expect(working).not.toContain("exactly three questions");
 		expect(working).toMatch(/\*\*start testing\*\*/);
 		expect(working).toMatch(/\*\*apply this change\*\*/);
 		expect(working).toMatch(/\*\*ship it\*\*/);

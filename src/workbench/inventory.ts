@@ -969,10 +969,20 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 		if (draftChoice === "ambiguous") {
 			return { stage: "selection-required", headline: "Choose the Spec draft to review.", actions: ["select spec-draft"], blockers: [`${unapprovedDrafts.length} Spec drafts await review.`] };
 		}
-		return { stage: "spec-review", headline: "Review and approve an exact Spec draft.", actions: ["review", "start-testing", "approve-spec"], blockers: [] };
+		return {
+			stage: "spec-review",
+			headline: "Review and approve an exact Spec draft; evaluator models can be configured before its cases are written.",
+			actions: ["review", "start-testing", "approve-spec", "configure-evaluators"],
+			blockers: [],
+		};
 	}
 	if (approved.length === 0) {
-		return { stage: "spec-design", headline: "Describe the agent; Builder Pi will structure an editable Spec draft.", actions: ["submit spec-draft"], blockers: [] };
+		return {
+			stage: "spec-design",
+			headline: "Describe the agent; Builder Pi will structure an editable Spec draft.",
+			actions: ["submit spec-draft", "configure-evaluators"],
+			blockers: [],
+		};
 	}
 	const approvedChoice = selectedOrUniqueId(approved, inventory.validFocus["approved-spec"]?.id, (spec) => spec.id);
 	if (approvedChoice === "ambiguous") {
@@ -988,16 +998,36 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 	const reviewableDrafts = compatibleDrafts.filter((draft) => !publishedDraftIds.has(draft.id));
 	const focusedDraft = inventory.validFocus["corpus-draft"]?.id;
 	if (development.length === 0 || (focusedDraft && reviewableDrafts.some((draft) => draft.id === focusedDraft))) {
-		if (reviewableDrafts.length === 0) return { stage: "corpus-design", headline: "Build a maintainable development eval basket from the approved Spec.", actions: ["submit corpus-draft"], blockers: [] };
+		if (reviewableDrafts.length === 0) {
+			return {
+				stage: "corpus-design",
+				headline: "Build the first harness in a construction workshop and assemble a maintainable development eval basket from the approved Spec.",
+				actions: ["workshop-open", "submit corpus-draft", "configure-evaluators"],
+				blockers: [],
+			};
+		}
 		const draftChoice = selectedOrUniqueId(reviewableDrafts, focusedDraft, (draft) => draft.id);
 		if (draftChoice === "ambiguous") return { stage: "selection-required", headline: "Choose the corpus draft revision to publish.", actions: ["select corpus-draft"], blockers: [`${reviewableDrafts.length} unpublished corpus drafts match the approved Spec.`] };
-		return { stage: "corpus-review", headline: "Review the exact development corpus draft before publishing it.", actions: ["review", "publish-corpus"], blockers: [] };
+		return {
+			stage: "corpus-review",
+			headline: "Review the exact development corpus draft before publishing it; configure any evaluator model its cases require.",
+			actions: ["review", "publish-corpus", "configure-evaluators"],
+			blockers: [],
+		};
 	}
 	const corpusChoice = selectedOrUniqueId(development, inventory.validFocus["development-corpus"]?.id, (corpus) => corpus.id);
 	if (corpusChoice === "ambiguous") return { stage: "selection-required", headline: "Choose the development corpus for this loop.", actions: ["select development-corpus"], blockers: [`${development.length} development corpora exist.`] };
 
 	const selectedCorpus = development.find((corpus) => corpus.id === corpusChoice)!;
 	const lineage = inventory.developmentLineage.get(selectedCorpus.id)!;
+	if (lineage.currentSuiteHash === null || lineage.currentTargetGitSha === null) {
+		return {
+			stage: "corpus-design",
+			headline: "The published development basket cannot run on the current Target; configure its evaluator models or revise the cases.",
+			actions: ["workshop-open", "configure-evaluators", "submit corpus-draft"],
+			blockers: ["The selected development basket is not runnable on the current Target."],
+		};
+	}
 	const compatibleEvals = inventory.developmentEvals.filter((run) =>
 		run.target.id === target.manifest.id &&
 		run.target.gitSha === lineage.currentTargetGitSha &&
@@ -1005,8 +1035,20 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 		run.suiteHash === lineage.currentSuiteHash &&
 		run.summary.error === 0
 	);
-	if (compatibleEvals.length === 0) return { stage: "ready-to-evaluate", headline: "Run the approved development surface and inspect its diagnosis.", actions: ["run"], blockers: [] };
-	return { stage: "improvement-authoring", headline: "Use the diagnosis to author a structured harness proposal.", actions: ["traces", "submit structured-proposal"], blockers: [] };
+	if (compatibleEvals.length === 0) {
+		return {
+			stage: "ready-to-evaluate",
+			headline: "The approved development surface is ready; run it, or finish the first harness in a construction workshop before measuring.",
+			actions: ["workshop-open", "run", "configure-evaluators"],
+			blockers: [],
+		};
+	}
+	return {
+		stage: "improvement-authoring",
+		headline: "Use the diagnosis to improve the harness in a workshop or with a structured proposal.",
+		actions: ["workshop-open", "traces", "submit structured-proposal", "configure-evaluators"],
+		blockers: [],
+	};
 }
 
 function modelSummary(
@@ -1020,6 +1062,52 @@ function modelSummary(
 		apiKeyEnv: model.apiKeyEnv,
 		credentialPresent: Boolean(env[model.apiKeyEnv]?.trim()),
 	};
+}
+
+type EvaluatorRequirements = { judge: boolean; simulatedUser: boolean };
+type EvaluatorRequirementTask = {
+	graders?: readonly { type: string }[] | undefined;
+	effectiveGraders?: readonly { type: string }[] | undefined;
+	simulatedUser?: unknown;
+};
+
+function requirementsOf(
+	tasks: readonly EvaluatorRequirementTask[],
+): EvaluatorRequirements {
+	return {
+		judge: tasks.some((task) => (task.effectiveGraders ?? task.graders ?? []).some((grader) => grader.type === "judge")),
+		simulatedUser: tasks.some((task) => task.simulatedUser !== undefined),
+	};
+}
+
+/** Evaluator credentials only gate a run when the selected development surface calls them. */
+function evaluatorRequirementsOf(inventory: WorkbenchInventory): EvaluatorRequirements {
+	let tasks: readonly EvaluatorRequirementTask[] = inventory.target?.tasks ?? [];
+	const focusedDraft = inventory.validFocus["corpus-draft"]?.id;
+	const draft = focusedDraft ? inventory.corpusDrafts.find((item) => item.id === focusedDraft) : null;
+	if (draft) return requirementsOf(draft.tasks);
+
+	const focusedCorpus = inventory.validFocus["development-corpus"]?.id;
+	const lineageIds = [...inventory.developmentLineage.keys()];
+	const corpusId = focusedCorpus && inventory.developmentLineage.has(focusedCorpus)
+		? focusedCorpus
+		: lineageIds.length === 1
+			? lineageIds[0]
+			: null;
+	if (corpusId) {
+		try {
+			const corpus = loadCorpus({
+				stateRoot: inventory.stateRoot,
+				projectId: inventory.projectId,
+				corpusId,
+			});
+			tasks = corpus.tasks;
+		} catch {
+			// Inventory already reports corpus integrity failures. Readiness remains
+			// conservative through that blocker without deriving claims from bad data.
+		}
+	}
+	return requirementsOf(tasks);
 }
 
 function targetModelSummary(
@@ -1088,6 +1176,7 @@ export function deriveWorkbenchView(
 	const proposals = inventory.proposals.slice(0, MAX_VIEW_ITEMS);
 	const candidates = inventory.candidates.slice(0, MAX_VIEW_ITEMS);
 	const state = stageFor(inventory);
+	const evaluatorRequirements = evaluatorRequirementsOf(inventory);
 	return {
 		schemaVersion: 1,
 		project: { id: inventory.projectId, directory: basename(inventory.projectDir) },
@@ -1100,6 +1189,7 @@ export function deriveWorkbenchView(
 				gitSha: inventory.target.gitSha,
 				model: targetModelSummary(inventory, env),
 				evaluators: evaluatorSummaries(inventory, env),
+				evaluatorRequirements,
 			}
 			: {
 				status: "missing",
@@ -1107,6 +1197,7 @@ export function deriveWorkbenchView(
 				gitSha: null,
 				model: null,
 				evaluators: { judge: null, simulatedUser: null },
+				evaluatorRequirements: { judge: false, simulatedUser: false },
 			},
 		focus: Object.fromEntries(Object.entries(inventory.validFocus).map(([kind, entry]) => [kind, entry?.id])),
 		selections: [
