@@ -766,10 +766,10 @@ export function registerAhdeBuilderCommands(
 	pi.registerCommand("holdout", {
 		description: "Privately import an operator-owned sealed JSONL exam; its content and identity stay hidden from Builder Pi",
 		async handler(args, ctx) {
+			noArguments("holdout", args);
 			await prepare(ctx, "holdout");
 			if (!options.importSealedHoldout) throw new Error("sealed holdout import is unavailable in this host");
-			const typedPath = args.trim();
-			const sourcePath = typedPath || await ctx.ui.input(
+			const sourcePath = await ctx.ui.input(
 				"Path to the private sealed JSONL corpus",
 				"./private-holdout.jsonl",
 			);

@@ -1773,7 +1773,7 @@ describe("Builder Pi slash commands", () => {
 		expect(output.show).not.toHaveBeenCalled();
 	});
 
-	it.each(["help", "doctor", "status", "traces", "review"])("rejects arguments to /%s before touching the host", async (name) => {
+	it.each(["help", "doctor", "holdout", "status", "traces", "review"])("rejects arguments to /%s before touching the host", async (name) => {
 		const fixture = workbench();
 		const { commands, output } = register(fixture.value);
 		const host = context();
@@ -1811,12 +1811,13 @@ describe("Builder Pi slash commands", () => {
 		const fixture = workbench();
 		const importSealedHoldout = vi.fn(() => ({ taskCount: 20 }));
 		const { commands, output, onWorkbenchChanged } = register(fixture.value, { importSealedHoldout });
+		const answers = ["/private/evals/customer-secrets.jsonl", "Private promotion exam"];
 		const host = context({
 			confirm: async () => true,
-			input: async () => "Private promotion exam",
+			input: async () => answers.shift(),
 		});
 
-		await command(commands, "holdout").handler("/private/evals/customer-secrets.jsonl", host.ctx);
+		await command(commands, "holdout").handler("", host.ctx);
 
 		expect(importSealedHoldout).toHaveBeenCalledWith({
 			sourcePath: "/private/evals/customer-secrets.jsonl",
