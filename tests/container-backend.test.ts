@@ -23,6 +23,7 @@ import {
 	type ContainerRuntimeStatus,
 } from "../src/target/container-backend.js";
 import { prepareToolHome } from "../src/target/tool-setup.js";
+import { effectiveTargetSandbox, targetFilesystemConfinement } from "../src/target/runtime.js";
 import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 
 const DIGEST = `sha256:${"a".repeat(64)}`;
@@ -116,7 +117,8 @@ function invocationFixture(overrides: {
 		toolHomeMode?: "ro" | "rw";
 		workspaceMode?: "ro" | "rw";
 	argv?: string[];
-	cwd?: string;
+		cwd?: string;
+		containerName?: string;
 } = {}) {
 	const root = scratchRoot("container-argv");
 	const workspaceDir = join(root, "workspace");
@@ -149,6 +151,7 @@ function invocationFixture(overrides: {
 			cwd: overrides.cwd ?? workspaceDir,
 			argv: overrides.argv ?? [join(workspaceDir, "bin/echo_json")],
 			user: "1000:1000",
+			containerName: overrides.containerName ?? "ahde-test",
 			hostEnvironment: { PATH: "/usr/bin:/bin", HOME: "/host/home" },
 		}),
 	};
@@ -171,6 +174,8 @@ describe("container backend argv", () => {
 		expect(fixture.invocation.args).toEqual([
 			"run",
 			"--rm",
+			"--name",
+			"ahde-test",
 			"--network",
 			"none",
 			"--user",
@@ -397,6 +402,25 @@ describe("container backend argv", () => {
 			})
 		).toThrow(/unsafe image reference/);
 	});
+
+	it("mints a bounded name and exposes a daemon-side force-remove hook", () => {
+		const fake = fakeDocker();
+		const fixture = invocationFixture({ containerName: "ahde-cleanup-test" });
+		const invocation = dockerBackend.invocation({
+			policy: policy(),
+			mounts: { workspaceDir: fixture.workspaceDir, scratchDir: fixture.scratchDir },
+			network: "deny",
+			environment: {},
+			cwd: fixture.workspaceDir,
+			argv: ["/bin/true"],
+			containerName: "ahde-cleanup-test",
+			hostEnvironment: { PATH: fake.binDir },
+		});
+		expect(flagValues(invocation.args, "--name")).toEqual(["ahde-cleanup-test"]);
+		invocation.terminate?.();
+		expect(loggedArgv(fake.logPath)).toEqual(["rm", "-f", "ahde-cleanup-test"]);
+		expect(() => invocationFixture({ containerName: "unsafe/name" })).toThrow(/unsafe container name/);
+	});
 });
 
 describe("gondolin", () => {
@@ -470,31 +494,19 @@ describe("required / best-effort / off matrix", () => {
 			);
 	});
 
-	it("required refuses a mutable tag before it ever probes a runtime", () => {
+	it("every policy refuses a mutable tag before it ever probes a runtime", () => {
 		let probed = false;
 		expect(() =>
 			resolveContainerSandbox({
 				policy: policy({ image: TAG }),
-				sandbox: "required",
+				sandbox: "best-effort",
 				detect: () => {
 					probed = true;
 					return available;
 				},
 			})
-		).toThrow(/must be pinned to a digest \(name@sha256:…\) when sandbox: required/);
+		).toThrow(/must be pinned to a digest \(name@sha256:…\); mutable tags cannot identify comparable evidence/);
 		expect(probed).toBe(false);
-	});
-
-	it("best-effort accepts a tag with a warning and a fingerprint that says it is a tag", () => {
-		const decision = resolveContainerSandbox({
-			policy: policy({ image: TAG }),
-			sandbox: "best-effort",
-			detect: () => available,
-		});
-		expect(decision.mode).toBe("container");
-		expect(decision.fingerprint).toBe(`container:docker@${TAG}`);
-		expect(decision.warnings).toHaveLength(1);
-		expect(decision.warnings[0]).toContain("is a mutable tag, not a pinned digest");
 	});
 
 	it("best-effort falls back to the OS sandbox with a warning and a different fingerprint", () => {
@@ -525,7 +537,8 @@ describe("required / best-effort / off matrix", () => {
 		expect(containerImageDigest(PINNED)).toBe(DIGEST);
 		expect(containerImageDigest(TAG)).toBeNull();
 		expect(containerSandboxFingerprint(policy())).toBe(`container:docker@${DIGEST}`);
-		expect(containerSandboxFingerprint(policy({ image: TAG }))).toBe(`container:docker@${TAG}`);
+		expect(() => containerSandboxFingerprint(policy({ image: TAG })))
+			.toThrow(/mutable tags cannot identify comparable evidence/);
 		expect(containerSandboxFingerprint(policy({ runtime: "gondolin" }))).toBe(`container:gondolin@${DIGEST}`);
 		// The host backends keep their own values, so container evidence and host
 		// evidence can never land in the same comparability class.
@@ -595,11 +608,11 @@ ${options.extra ?? ""}`;
 		});
 	});
 
-	it("refuses a mutable tag under sandbox: required and accepts it under best-effort", () => {
+	it("refuses a mutable tag under both required and best-effort", () => {
 		expect(() => loadTarget(targetFixture(block({ sandbox: "required", image: TAG }))))
 			.toThrow(/must be pinned to a digest/);
-		const relaxed = loadTarget(targetFixture(block({ sandbox: "best-effort", image: TAG })));
-		expect(relaxed.manifest.execution.container?.image).toBe(TAG);
+		expect(() => loadTarget(targetFixture(block({ sandbox: "best-effort", image: TAG }))))
+			.toThrow(/mutable tags cannot identify comparable evidence/);
 	});
 
 	it("refuses a container block under sandbox: off and out-of-range limits", () => {
@@ -653,6 +666,22 @@ describe("the built-in bash under the container backend", () => {
 		expect(result.sandboxFingerprint).toBe(`container:docker@${DIGEST}`);
 		expect(result.sandboxBackend).toBe("none");
 		expect(result.sandboxWarnings).toEqual([]);
+		expect(effectiveTargetSandbox({ hasDeclaredTools: false, executionPolicy: result }))
+			.toBe(`container:docker@${DIGEST}`);
+		expect(effectiveTargetSandbox({
+			hasDeclaredTools: true,
+			executionPolicy: result,
+			targetTools: { sandboxFingerprint: `container:docker@${DIGEST}` },
+		})).toBe(`container:docker@${DIGEST}`);
+		expect(() => effectiveTargetSandbox({
+			hasDeclaredTools: true,
+			targetTools: { sandboxFingerprint: `container:docker@${TAG}` },
+		})).toThrow();
+		expect(targetFilesystemConfinement({
+			workspaceMode: "isolated",
+			toolNames: ["bash"],
+			sandbox: `container:docker@${DIGEST}`,
+		})).toBe("workspace-confined-v1");
 		expect(result.customTools.map((tool) => tool.name)).toEqual(["bash"]);
 	});
 
@@ -780,7 +809,7 @@ function resolvedDirectoryTool(workspaceDir: string) {
 }
 
 describe("ahde validate readiness line", () => {
-	it("names the runtime, its version, and whether the image is pinned", () => {
+	it("names the runtime, its version, and the pinned image", () => {
 		const fake = fakeDocker({ version: "27.1" });
 		expect(describeSandboxReadiness(
 			{ sandbox: "required", container: policy() },
@@ -791,7 +820,7 @@ describe("ahde validate readiness line", () => {
 		expect(describeSandboxReadiness(
 			{ sandbox: "best-effort", container: policy({ image: TAG }) },
 			{ environment: { PATH: fake.binDir } },
-		).line).toBe("sandbox: container (docker 27.1, image UNPINNED tag)");
+		)).toMatchObject({ failClosed: true });
 	});
 
 	it("prints the fail-closed reason instead of a readiness claim", () => {

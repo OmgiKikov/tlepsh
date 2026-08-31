@@ -204,15 +204,17 @@ describe("Target tool broker and Pi registration", () => {
 			.toBe("workspace-confined-v1");
 		expect(targetFilesystemConfinement({ workspaceMode: "direct", toolNames: ["read"], sandbox: "sandbox-exec" }))
 			.toBe("direct-unconfined-v1");
-		// A container confines the filesystem strictly more than any OS profile.
-		// The fingerprint is the only place that can say so today: the
-		// provenance `sandbox` enum has no container member.
+		// A content-pinned container is a first-class confinement identity.
 		expect(targetFilesystemConfinement({
 			workspaceMode: "isolated",
 			toolNames: ["echo_json"],
-			sandbox: "none",
-			sandboxFingerprint: `container:docker@sha256:${"a".repeat(64)}`,
+			sandbox: `container:docker@sha256:${"a".repeat(64)}`,
 		})).toBe("workspace-confined-v1");
+		expect(() => targetFilesystemConfinement({
+			workspaceMode: "isolated",
+			toolNames: ["echo_json"],
+			sandbox: "container:docker@latest",
+		})).toThrow();
 	});
 
 	it("carries a sandbox fingerprint beside the OS backend on every tool runtime", () => {

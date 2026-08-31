@@ -13,6 +13,7 @@ import {
 	type ToolDefinition,
 	type WriteOperations,
 } from "@earendil-works/pi-coding-agent";
+import type { ExecutionFingerprint } from "./provenance.js";
 import {
 	containerBackendFor,
 	resolveExecutionBackend,
@@ -22,12 +23,7 @@ import {
 } from "./target/container-backend.js";
 
 export type ExecutionTool = "read" | "bash" | "edit" | "write";
-/**
- * The OS-level backends. `container` is deliberately not a member: this type
- * flows into `ExecutionFingerprint["sandbox"]`, a closed enum in provenance.ts
- * with no container value. The container identity travels beside it as
- * `ExecutionPolicyResult.sandboxFingerprint`.
- */
+/** The OS-level backends. Container identity is carried by `sandboxFingerprint`. */
 export type SandboxBackend = "sandbox-exec" | "bwrap" | "none";
 /** What actually wrapped one invocation, including the container runtime. */
 export type ExecutionBackend = SandboxBackend | "container";
@@ -63,20 +59,15 @@ export interface ExecutionPolicyOptions {
 
 export interface ExecutionPolicyResult {
 	customTools: ToolDefinition<any, any, any>[];
-	/**
-	 * The OS backend that confined the run. A containerized run reports
-	 * `"none"` here — pessimistic, never optimistic — because the provenance
-	 * enum cannot yet express a container; read `sandboxFingerprint` for the
-	 * truth.
-	 */
+	/** The OS backend, or `none` when the separate container backend ran. */
 	sandboxBackend: SandboxBackend;
 	/**
 	 * The value the provenance `sandbox` axis must carry:
 	 * `container:docker@sha256:…` for a containerized run, otherwise the OS
 	 * backend's own name. A container backend starts a new comparability class.
 	 */
-	sandboxFingerprint: string;
-	/** Recorded, non-fatal findings: an unpinned image, a best-effort fallback. */
+	sandboxFingerprint: ExecutionFingerprint["sandbox"];
+	/** Recorded, non-fatal findings such as a best-effort fallback. */
 	sandboxWarnings: string[];
 	effectiveEnvironmentNames: string[];
 }
@@ -355,7 +346,7 @@ function sandboxInvocation(
 	command: string,
 	container?: ContainerPolicy,
 	cwd?: string,
-): { executable: string; args: string[]; spawnEnvironment?: NodeJS.ProcessEnv } {
+): { executable: string; args: string[]; spawnEnvironment?: NodeJS.ProcessEnv; terminate?: () => void } {
 	if (backend === "container") {
 		if (!container) throw new Error("container backend requires an execution.container policy");
 		return containerBackendFor(container.runtime).invocation({
@@ -525,16 +516,20 @@ function bashOperations(
 			child.stderr.on("data", (chunk: Buffer) => onData(chunk));
 
 			let stopped: "aborted" | "timeout" | undefined;
-			const stopForAbort = () => {
-				stopped = "aborted";
+			const stop = (reason: "aborted" | "timeout") => {
+				if (stopped) return;
+				stopped = reason;
+				invocation.terminate?.();
 				terminateProcess(child.pid);
+			};
+			const stopForAbort = () => {
+				stop("aborted");
 			};
 			signal?.addEventListener("abort", stopForAbort, { once: true });
 			const timer = timeout === undefined
 				? undefined
 				: setTimeout(() => {
-					stopped = "timeout";
-					terminateProcess(child.pid);
+					stop("timeout");
 				}, timeout * 1_000);
 
 			try {
@@ -590,9 +585,8 @@ export function buildExecutionPolicy(options: ExecutionPolicyOptions): Execution
 
 	return {
 		customTools,
-		// A containerized run has no OS backend to name. `"none"` understates the
-		// confinement rather than overstating it; `sandboxFingerprint` carries
-		// the truth until the provenance enum can express a container.
+		// A containerized run has no OS backend to name. `sandboxFingerprint`
+		// carries its content-pinned identity in persisted provenance.
 		sandboxBackend: sandbox.backend === "container" ? "none" : sandbox.backend,
 		sandboxFingerprint: sandbox.fingerprint,
 		sandboxWarnings: sandbox.warnings,

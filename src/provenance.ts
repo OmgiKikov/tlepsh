@@ -197,11 +197,18 @@ export const ModelFingerprintSchema = z.strictObject({
 export type ModelFingerprint = z.infer<typeof ModelFingerprintSchema>;
 
 /** Capabilities and resource-discovery policy that can change agent behaviour. */
+export const ContainerSandboxFingerprintSchema = z
+	.string()
+	.regex(/^container:(?:docker|gondolin)@sha256:[0-9a-f]{64}$/);
+
 export const ExecutionFingerprintSchema = z.strictObject({
 	workspace: z.enum(["isolated-copy-v1", "direct-v1"]),
 	tools: z.array(NonEmptyStringSchema),
 	environment: z.array(NonEmptyStringSchema),
-	sandbox: z.enum(["sandbox-exec", "bwrap", "none", "unavailable"]),
+	sandbox: z.union([
+		z.enum(["sandbox-exec", "bwrap", "none", "unavailable"]),
+		ContainerSandboxFingerprintSchema,
+	]),
 	network: z.enum(["deny", "allow"]),
 	filesystem: z.enum([
 		"workspace-confined-v1",

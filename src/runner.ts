@@ -48,6 +48,7 @@ import {
 import {
 	createTargetAgentSession,
 	createTargetToolRuntime,
+	effectiveTargetSandbox,
 	targetFilesystemConfinement,
 	type TargetToolRuntime,
 } from "./target/runtime.js";
@@ -528,9 +529,11 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 		...target.manifest.execution.tools,
 		...(targetToolRuntime?.toolNames ?? target.tools.map((tool) => tool.descriptor.name)),
 	];
-	const effectiveSandbox = target.tools.length > 0
-		? targetToolRuntime?.sandboxBackend ?? "unavailable"
-		: policyResult?.sandboxBackend ?? "unavailable";
+	const effectiveSandbox = effectiveTargetSandbox({
+		hasDeclaredTools: target.tools.length > 0,
+		...(policyResult ? { executionPolicy: policyResult } : {}),
+		...(targetToolRuntime ? { targetTools: targetToolRuntime } : {}),
+	});
 	const effectiveFilesystem = targetFilesystemConfinement({
 		workspaceMode: options.workspaceMode ?? "isolated",
 		toolNames: capabilityToolNames,

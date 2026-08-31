@@ -26,6 +26,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { accessSync, constants } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 
@@ -102,13 +103,17 @@ export function containerImageDigest(image: string): string | null {
  * The provenance `sandbox` value for a run confined by this backend.
  *
  * A pinned image collapses to its digest: two operators who pin the same
- * digest produce comparable evidence no matter what they called the tag. An
- * unpinned image keeps its mutable reference verbatim, so the value itself
- * says the evidence is not reproducible.
+ * digest produce comparable evidence no matter what they called the tag.
+ * Mutable references are refused rather than assigned a false stable identity.
  */
 export function containerSandboxFingerprint(policy: ContainerPolicy): string {
 	const digest = containerImageDigest(policy.image);
-	return `container:${policy.runtime}@${digest ?? policy.image}`;
+	if (!digest) {
+		throw new Error(
+			`execution.container.image must be pinned to a digest (name@sha256:…); mutable tags cannot identify comparable evidence; got ${policy.image}`,
+		);
+	}
+	return `container:${policy.runtime}@${digest}`;
 }
 
 /** True for any fingerprint produced by a container backend. */
@@ -255,6 +260,8 @@ export interface ContainerInvocationRequest {
 	user?: string;
 	/** Host environment the runtime CLI itself is spawned with. Defaults to `process.env`. */
 	hostEnvironment?: NodeJS.ProcessEnv;
+	/** Stable injection seam for tests. Production calls receive a fresh unguessable name. */
+	containerName?: string;
 }
 
 export interface ContainerInvocation {
@@ -267,6 +274,8 @@ export interface ContainerInvocation {
 	 * `args`.
 	 */
 	spawnEnvironment: NodeJS.ProcessEnv;
+	/** Force-remove the named container after timeout, abort, or output overflow. */
+	terminate?: () => void;
 }
 
 export interface ContainerBackend {
@@ -399,7 +408,11 @@ function dockerArguments(request: ContainerInvocationRequest): string[] {
 	}
 	if (request.argv.length === 0) throw new Error("container backend requires a command");
 	const table = mountTable(mounts);
-	const args = ["run", "--rm"];
+	const containerName = request.containerName ?? `ahde-${process.pid}-${randomUUID()}`;
+	if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(containerName)) {
+		throw new Error(`container backend refuses an unsafe container name: ${containerName}`);
+	}
+	const args = ["run", "--rm", "--name", containerName];
 
 	// Network is the runtime's, not a profile's: `none` gives the container no
 	// interface at all. `--network host` is never emitted — it would hand the
@@ -443,10 +456,25 @@ export const dockerBackend: ContainerBackend = {
 	invocation(request: ContainerInvocationRequest): ContainerInvocation {
 		const hostEnvironment = request.hostEnvironment ?? process.env;
 		const binary = executableOnPath("docker", hostEnvironment.PATH ?? "") ?? "docker";
+		const spawnEnvironment = runtimeCliEnvironment(hostEnvironment);
+		const containerName = request.containerName ?? `ahde-${process.pid}-${randomUUID()}`;
+		const resolvedRequest = { ...request, containerName };
 		return {
 			executable: binary,
-			args: dockerArguments(request),
-			spawnEnvironment: runtimeCliEnvironment(hostEnvironment),
+			args: dockerArguments(resolvedRequest),
+			spawnEnvironment,
+			terminate: () => {
+				// Killing the attached Docker CLI does not guarantee that the daemon
+				// stops the container. Address the daemon by the exact host-minted name
+				// before killing the client; a normal `--rm` exit makes this a harmless
+				// "not found". Cleanup is bounded and never inherits Target env.
+				spawnSync(binary, ["rm", "-f", containerName], {
+					env: spawnEnvironment,
+					stdio: "ignore",
+					timeout: 5_000,
+					windowsHide: true,
+				});
+			},
 		};
 	},
 };
@@ -481,7 +509,7 @@ export interface ContainerSandboxDecision {
 	/** `container` runs inside the runtime; `fallback` hands the run back to the OS sandbox. */
 	mode: ContainerSandboxMode;
 	status: ContainerRuntimeStatus;
-	/** Non-fatal findings the run records: an unpinned image, a fallback. */
+	/** Non-fatal findings the run records, such as a best-effort fallback. */
 	warnings: string[];
 	/**
 	 * The provenance `sandbox` value for this decision. Present only for
@@ -509,7 +537,7 @@ export interface ResolveContainerSandboxOptions {
  * | `required`    | yes | tag           | refused (the manifest already refuses it at load) |
  * | `required`    | no  | any           | refused, fail closed, with the runtime's exact reason |
  * | `best-effort` | yes | pinned digest | container; `container:<runtime>@sha256:…` |
- * | `best-effort` | yes | tag           | container + warning; `container:<runtime>@<tag>` |
+ * | `best-effort` | yes | tag           | refused: a mutable image cannot identify evidence |
  * | `best-effort` | no  | any           | fallback to the OS sandbox + warning; the OS backend's own value |
  * | `off`         | —   | —             | never reaches here (the manifest refuses the block) |
  */
@@ -518,10 +546,9 @@ export function resolveContainerSandbox(options: ResolveContainerSandboxOptions)
 	if (sandbox === "off") {
 		throw new Error("execution.container requires sandbox: required or best-effort; sandbox: off declares no containment");
 	}
-	const pinned = isPinnedContainerImage(policy.image);
-	if (sandbox === "required" && !pinned) {
+	if (!isPinnedContainerImage(policy.image)) {
 		throw new Error(
-			`execution.container.image must be pinned to a digest (name@sha256:…) when sandbox: required; got ${policy.image}`,
+			`execution.container.image must be pinned to a digest (name@sha256:…); mutable tags cannot identify comparable evidence; got ${policy.image}`,
 		);
 	}
 	const detect = options.detect
@@ -542,13 +569,7 @@ export function resolveContainerSandbox(options: ResolveContainerSandboxOptions)
 			],
 		};
 	}
-	const warnings = pinned
-		? []
-		: [
-			`execution.container.image ${policy.image} is a mutable tag, not a pinned digest; ` +
-			"container evidence from a tag is not reproducible and sandbox: required refuses it",
-		];
-	return { mode: "container", status, warnings, fingerprint: containerSandboxFingerprint(policy) };
+	return { mode: "container", status, warnings: [], fingerprint: containerSandboxFingerprint(policy) };
 }
 
 export interface ExecutionBackendChoice<T extends string> {
@@ -633,10 +654,9 @@ export function describeSandboxReadiness(execution: {
 			failClosed: false,
 		};
 	}
-	const image = isPinnedContainerImage(execution.container.image) ? "image pinned" : "image UNPINNED tag";
 	const version = decision.status.version ? ` ${decision.status.version}` : "";
 	return {
-		line: `sandbox: container (${execution.container.runtime}${version}, ${image})`,
+		line: `sandbox: container (${execution.container.runtime}${version}, image pinned)`,
 		failClosed: false,
 	};
 }

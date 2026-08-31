@@ -405,15 +405,12 @@ export function dataMaxBytes(environment: NodeJS.ProcessEnv = process.env): numb
  */
 export const ContainerBlock = z.strictObject({
 	runtime: z.enum(["docker", "gondolin"]).default("docker"),
-	/**
-	 * Pinned `name@sha256:…` under `sandbox: required`; a mutable tag is
-	 * accepted only under `best-effort`, and then only with a warning.
-	 */
+	/** A content-pinned image. Mutable tags can never identify comparable evidence. */
 	image: z
 		.string()
 		.min(1)
 		.max(512)
-		.regex(CONTAINER_IMAGE_REFERENCE, "container image must be a plain reference, optionally pinned as name@sha256:<digest>"),
+		.regex(CONTAINER_IMAGE_REFERENCE, "container image must be a plain name@sha256:<digest> reference"),
 	memoryMb: z.number().int().min(1).max(65_536).optional(),
 	cpus: z.number().min(0.1).max(64).optional(),
 	pidsLimit: z.number().int().min(1).max(4_096).optional(),
@@ -441,12 +438,12 @@ export const ExecutionPolicyBlock = z
 			});
 			return;
 		}
-		if (execution.sandbox === "required" && !isPinnedContainerImage(execution.container.image)) {
+		if (!isPinnedContainerImage(execution.container.image)) {
 			context.addIssue({
 				code: "custom",
 				path: ["container", "image"],
 				message:
-					`execution.container.image must be pinned to a digest (name@sha256:…) when sandbox: required; got ${execution.container.image}`,
+					`execution.container.image must be pinned to a digest (name@sha256:…); mutable tags cannot identify comparable evidence; got ${execution.container.image}`,
 			});
 		}
 	});

@@ -277,7 +277,7 @@ export function sandboxInvocation(options: {
 	toolHomeRoot?: string;
 	toolHomeMode?: "ro" | "rw";
 	hostEnvironment?: NodeJS.ProcessEnv;
-}): { executable: string; args: string[]; spawnEnvironment?: NodeJS.ProcessEnv } {
+}): { executable: string; args: string[]; spawnEnvironment?: NodeJS.ProcessEnv; terminate?: () => void } {
 	if (options.backend === "container") {
 		if (!options.container) throw new Error("container backend requires an execution.container policy");
 		return containerBackendFor(options.container.runtime).invocation({
@@ -422,11 +422,16 @@ export class TargetToolBroker {
 		let outputBytes = 0;
 		let stopped: "aborted" | "overflow" | "timeout" | undefined;
 		let stdinError: Error | undefined;
+		const stop = (reason: "aborted" | "overflow" | "timeout") => {
+			if (stopped) return;
+			stopped = reason;
+			command.terminate?.();
+			killProcessTree(child.pid);
+		};
 		const collect = (destination: Buffer[]) => (chunk: Buffer) => {
 			outputBytes += chunk.byteLength;
 			if (outputBytes > tool.descriptor.maxOutputBytes) {
-				if (!stopped) stopped = "overflow";
-				killProcessTree(child.pid);
+				stop("overflow");
 				return;
 			}
 			destination.push(Buffer.from(chunk));
@@ -437,13 +442,11 @@ export class TargetToolBroker {
 			stdinError = error;
 		});
 		const abort = () => {
-			if (!stopped) stopped = "aborted";
-			killProcessTree(child.pid);
+			stop("aborted");
 		};
 		signal?.addEventListener("abort", abort, { once: true });
 		const timer = setTimeout(() => {
-			if (!stopped) stopped = "timeout";
-			killProcessTree(child.pid);
+			stop("timeout");
 		}, tool.descriptor.timeoutMs);
 
 		try {

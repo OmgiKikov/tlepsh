@@ -27,7 +27,7 @@ import { InMemoryCredentialStore, type AssistantMessage, type Message } from "@e
 import type { ExecutionPolicyResult } from "../execution-policy.js";
 import { EXECUTION_POLICY_SESSION_OPTIONS } from "../execution-policy.js";
 import type { DialogueMessage, ResolvedTarget } from "../manifest.js";
-import type { ExecutionFingerprint } from "../provenance.js";
+import { ExecutionFingerprintSchema, type ExecutionFingerprint } from "../provenance.js";
 import {
 	isContainerSandboxFingerprint,
 	resolveExecutionBackend,
@@ -47,10 +47,8 @@ export interface TargetToolRuntime {
 	customTools: ToolDefinition<any, any, any>[];
 	/**
 	 * The *OS* sandbox that confined this run, or null. Deliberately narrower
-	 * than `TargetToolSandboxBackend`: `ExecutionFingerprint["sandbox"]` is a
-	 * closed enum with no container member, so a container run reports null
-	 * here and carries its identity in `sandboxFingerprint` instead. Null is
-	 * pessimistic (it records the run as unconfined), never optimistic.
+	 * than `TargetToolSandboxBackend`: a container run reports null here and
+	 * carries its content-pinned identity in `sandboxFingerprint` instead.
 	 */
 	sandboxBackend: Exclude<TargetToolSandboxBackend, "container"> | null;
 	/**
@@ -59,8 +57,8 @@ export interface TargetToolRuntime {
 	 * backend's own name. Evidence produced in a container is never comparable
 	 * with evidence produced on the host, by design.
 	 */
-	sandboxFingerprint: string;
-	/** Recorded, non-fatal findings: an unpinned image, a best-effort fallback. */
+	sandboxFingerprint: ExecutionFingerprint["sandbox"];
+	/** Recorded, non-fatal findings such as a best-effort fallback. */
 	sandboxWarnings: string[];
 	effectiveEnvironmentNames: string[];
 	toolNames: string[];
@@ -68,6 +66,23 @@ export interface TargetToolRuntime {
 	toolHomeRoot: string | null;
 	/** One entry per multi-file tool; `ran` is false when it declares no setup. */
 	toolSetups: ToolSetupOutcome[];
+}
+
+/**
+ * The one sandbox identity persisted by both ordinary runs and candidate
+ * preflight. Declared process tools own the effective backend when present;
+ * otherwise the built-in execution policy does. Parsing here makes it
+ * impossible to silently collapse a container into `none` or `unavailable`.
+ */
+export function effectiveTargetSandbox(options: {
+	hasDeclaredTools: boolean;
+	executionPolicy?: Pick<ExecutionPolicyResult, "sandboxFingerprint">;
+	targetTools?: Pick<TargetToolRuntime, "sandboxFingerprint">;
+}): ExecutionFingerprint["sandbox"] {
+	const identity = options.hasDeclaredTools
+		? options.targetTools?.sandboxFingerprint ?? "unavailable"
+		: options.executionPolicy?.sandboxFingerprint ?? "unavailable";
+	return ExecutionFingerprintSchema.shape.sandbox.parse(identity);
 }
 
 /**
@@ -212,19 +227,12 @@ export function targetFilesystemConfinement(options: {
 	workspaceMode: "isolated" | "direct";
 	toolNames: readonly string[];
 	sandbox: ExecutionFingerprint["sandbox"];
-	/**
-	 * The true sandbox identity when it does not fit the fingerprint enum. A
-	 * container confines the filesystem strictly more than any OS profile, so a
-	 * caller that knows the run was containerized says so here.
-	 */
-	sandboxFingerprint?: string;
 }): ExecutionFingerprint["filesystem"] {
 	if (options.workspaceMode === "direct") return "direct-unconfined-v1";
-	if (options.sandboxFingerprint && isContainerSandboxFingerprint(options.sandboxFingerprint)) {
-		return "workspace-confined-v1";
-	}
+	const sandbox = ExecutionFingerprintSchema.shape.sandbox.parse(options.sandbox);
+	if (isContainerSandboxFingerprint(sandbox)) return "workspace-confined-v1";
 	const processCapable = options.toolNames.some((tool) => !["read", "edit", "write"].includes(tool));
-	return processCapable && (options.sandbox === "none" || options.sandbox === "unavailable")
+	return processCapable && (sandbox === "none" || sandbox === "unavailable")
 		? "isolated-copy-unconfined-v1"
 		: "workspace-confined-v1";
 }
