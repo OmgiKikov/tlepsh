@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import {
+	compactExperimentHistory,
 	compileExperimentHistory,
+	experimentSignature,
+	losingExperimentSignatures,
+	MAX_AUTHORING_HISTORY_ATTEMPTS,
 	MAX_HISTORY_ATTEMPTS,
 	renderExperimentHistory,
 } from "../src/application/experiment-history.js";
@@ -290,6 +294,103 @@ it("caps a long project and says how much it left out", () => {
 	expect(history.attempts).toHaveLength(5);
 	expect(history.omitted).toBe(MAX_HISTORY_ATTEMPTS);
 	expect(renderExperimentHistory(history).at(-1)).toBe(`… and ${MAX_HISTORY_ATTEMPTS} earlier attempts`);
+});
+
+it("leaves the targeted failure modes empty when the Builder run cannot be read", () => {
+	const root = runsRoot();
+	// The promoted fixture carries an applied-Builder origin whose Builder run
+	// was never written. Memory is an aid: one pruned run narrows a row, it does
+	// not make the memory unreadable.
+	writeCandidate(root, "cand-1", { at: "2026-08-20T10:00:00.000Z", outcome: "promoted", sealedVerdict: "pass" });
+
+	const history = compileExperimentHistory({ runsRoot: root });
+
+	expect(history.attempts[0]?.candidateId).toBe("cand-1");
+	expect(history.attempts[0]?.failureModeIds).toEqual([]);
+	expect(history.unreadable).toBe(0);
+});
+
+it("compacts to the newest attempts that fit, and counts every one it dropped", () => {
+	const root = runsRoot();
+	for (let index = 0; index < MAX_AUTHORING_HISTORY_ATTEMPTS + 4; index += 1) {
+		const day = String(index + 1).padStart(2, "0");
+		writeCandidate(root, `cand-${day}`, {
+			at: `2026-08-${day}T10:00:00.000Z`,
+			outcome: "rejected",
+			reason: `attempt ${day} cost too much`,
+		});
+	}
+	const history = compileExperimentHistory({ runsRoot: root });
+	expect(history.attempts).toHaveLength(MAX_AUTHORING_HISTORY_ATTEMPTS + 4);
+
+	const compact = compactExperimentHistory(history);
+
+	expect(compact.attempts).toHaveLength(MAX_AUTHORING_HISTORY_ATTEMPTS);
+	// Newest first, and the four that did not fit are counted, never dropped
+	// silently: a Builder shown eight of twelve is told it is eight of twelve.
+	expect(compact.attempts[0]?.at).toBe("2026-08-12T10:00:00.000Z");
+	expect(compact.omitted).toBe(4);
+	expect(compact.attempts[0]).toMatchObject({
+		outcome: "rejected",
+		development: "improved +50.0pp",
+		reason: "attempt 12 cost too much",
+		changedPaths: ["AGENTS.md", "skills/check-dbo/SKILL.md"],
+	});
+	// A byte budget bites before the count does, and says so the same way.
+	const tiny = compactExperimentHistory(history, { maxBytes: 400 });
+	expect(tiny.attempts.length).toBeLessThan(MAX_AUTHORING_HISTORY_ATTEMPTS);
+	expect(tiny.omitted).toBe(history.attempts.length - tiny.attempts.length);
+	expect(JSON.stringify(tiny)).not.toContain("sha256:");
+	// Nothing at all still fits, and still reports honestly.
+	const none = compactExperimentHistory(history, { maxBytes: 0 });
+	expect(none.attempts).toEqual([]);
+	expect(none.omitted).toBe(history.attempts.length);
+});
+
+it("recognises a losing experiment by its changed files and the mode it aimed at", () => {
+	const attempt = (overrides: Record<string, unknown>) => ({
+		candidateId: "c",
+		at: "2026-08-20T10:00:00.000Z",
+		baseline: "abc",
+		candidate: "def",
+		mode: "candidate",
+		changedPaths: ["AGENTS.md"],
+		failureModeIds: [`failure-mode-${"a".repeat(24)}`],
+		development: { verdict: "improved", scoreDelta: 0.5, confidence95: null, tasks: 4, repetitions: 3 },
+		sealed: null,
+		outcome: "evaluated",
+		reason: null,
+		...overrides,
+	});
+	const history = {
+		attempts: [
+			// Improved and never rejected: still a live answer, not a dead end.
+			attempt({}),
+			// Rejected by a human even though the numbers moved.
+			attempt({ candidateId: "c2", outcome: "rejected", changedPaths: ["skills/a/SKILL.md"] }),
+			// Measured and did not improve.
+			attempt({
+				candidateId: "c3",
+				changedPaths: ["bin/tool"],
+				development: { verdict: "inconclusive", scoreDelta: 0, confidence95: null, tasks: 4, repetitions: 3 },
+			}),
+			// Lost, but nobody recorded what it changed: nothing to recognise.
+			attempt({ candidateId: "c4", outcome: "rejected", changedPaths: [] }),
+		],
+		omitted: 0,
+		unreadable: 0,
+	} as unknown as Parameters<typeof losingExperimentSignatures>[0];
+
+	const losing = losingExperimentSignatures(history);
+	const mode = `failure-mode-${"a".repeat(24)}`;
+
+	expect(losing.has(experimentSignature(["skills/a/SKILL.md"], mode))).toBe(true);
+	expect(losing.has(experimentSignature(["bin/tool"], mode))).toBe(true);
+	expect(losing.has(experimentSignature(["AGENTS.md"], mode))).toBe(false);
+	expect(losing.size).toBe(2);
+	// Path order is not part of the identity; the failure mode is.
+	expect(experimentSignature(["b", "a"], mode)).toBe(experimentSignature(["a", "b"], mode));
+	expect(losing.has(experimentSignature(["skills/a/SKILL.md"], `failure-mode-${"b".repeat(24)}`))).toBe(false);
 });
 
 it("renders one readable line per attempt and says so when there is nothing yet", () => {

@@ -1,8 +1,10 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadCandidateRecord } from "./candidate-review.js";
+import { loadBuilderProposalRunEnvelope } from "./builder-proposal.js";
 import type { CandidateRecord } from "../domain/candidate.js";
 import { gateVerdictOf } from "../domain/candidate.js";
+import { canonicalJson } from "../provenance.js";
 
 /**
  * What this project already tried, and how it went.
@@ -25,8 +27,19 @@ import { gateVerdictOf } from "../domain/candidate.js";
 
 /** Newest attempts a history projection will carry. */
 export const MAX_HISTORY_ATTEMPTS = 20;
+/** Newest attempts the compact authoring projection will carry. */
+export const MAX_AUTHORING_HISTORY_ATTEMPTS = 8;
+/**
+ * Bytes the compact authoring projection may add to a bounded authoring
+ * context. Attempts are dropped oldest-first until the canonical JSON fits, and
+ * the count of dropped attempts is always reported — a silent truncation would
+ * let the Builder believe it had seen everything.
+ */
+export const MAX_AUTHORING_HISTORY_BYTES = 8 * 1024;
 const MAX_REASON_CHARS = 300;
 const MAX_PATHS = 12;
+/** Attested failure modes one attempt may name; a proposal is capped at 8. */
+const MAX_FAILURE_MODES = 8;
 
 export type AttemptOutcome =
 	| "promoted"
@@ -54,12 +67,16 @@ export interface Attempt {
 	mode: string;
 	/**
 	 * Harness paths the proposal replaced, from the scope validation the host
-	 * recorded — the exact list, without a byte of their content. The failure
-	 * modes an attempt targeted live on the Builder proposal artifact, not on
-	 * the candidate record, and join this projection when the Builder view is
-	 * wired to it.
+	 * recorded — the exact list, without a byte of their content.
 	 */
 	changedPaths: string[];
+	/**
+	 * The failure modes this attempt targeted, from the attested proposal basis
+	 * on the Builder run the candidate was applied from. Empty when the attempt
+	 * has no Builder run, or when that run can no longer be read — history is an
+	 * aid, so an unreadable sibling narrows the answer instead of failing it.
+	 */
+	failureModeIds: string[];
 	development: AttemptSurface | null;
 	/** Sealed verdict and design only; never its content. */
 	sealed: AttemptSurface | null;
@@ -161,7 +178,7 @@ function outcomeOf(record: CandidateRecord): { outcome: AttemptOutcome; reason: 
 	return { outcome, reason: reason === null ? null : clip(reason, MAX_REASON_CHARS) };
 }
 
-function attemptOf(record: CandidateRecord): Attempt {
+function attemptOf(record: CandidateRecord, runsRoot: string): Attempt {
 	const built = record.events.find((event) => event.type === "built");
 	const evaluated = record.events.find((event) => event.type === "evaluated");
 	const evaluation = evaluated?.type === "evaluated" ? evaluated.evaluation : null;
@@ -175,6 +192,7 @@ function attemptOf(record: CandidateRecord): Attempt {
 		candidate: built?.type === "built" ? shortSha(built.candidate.sha) : null,
 		mode: record.mode,
 		changedPaths: readChangedPaths(record).slice(0, MAX_PATHS),
+		failureModeIds: readFailureModeIds(record, runsRoot),
 		development: evaluation ? surfaceOf(evaluation.development) : null,
 		sealed: evaluation?.sealedHoldout ? surfaceOf(evaluation.sealedHoldout) : null,
 		outcome,
@@ -197,6 +215,24 @@ function readChangedPaths(record: CandidateRecord): string[] {
 }
 
 /**
+ * The attested proposal basis on the Builder run this candidate was applied
+ * from is the authority on what an attempt was aiming at. Read leniently: a
+ * Builder run that has been pruned narrows one row of the memory, it never
+ * makes the memory unreadable.
+ */
+function readFailureModeIds(record: CandidateRecord, runsRoot: string): string[] {
+	if (record.origin.kind !== "applied-builder") return [];
+	try {
+		const run = loadBuilderProposalRunEnvelope(runsRoot, record.origin.builderRunId);
+		const basis = run.request.proposalBasis;
+		if (!basis) return [];
+		return basis.failureModes.map((mode) => mode.failureModeId).sort().slice(0, MAX_FAILURE_MODES);
+	} catch {
+		return [];
+	}
+}
+
+/**
  * Pure read. Newest attempts first, so "what did we already try for this" is
  * answered by the first few rows.
  */
@@ -215,7 +251,7 @@ export function compileExperimentHistory(input: ExperimentHistoryInput): Experim
 		}
 		if (input.targetId !== undefined && record.targetId !== input.targetId) continue;
 		if (input.projectId !== undefined && record.projectId !== input.projectId) continue;
-		attempts.push(attemptOf(record));
+		attempts.push(attemptOf(record, resolve(input.runsRoot)));
 	}
 	attempts.sort((left, right) => (left.at < right.at ? 1 : left.at > right.at ? -1 : 0));
 	return { attempts: attempts.slice(0, limit), omitted: Math.max(0, attempts.length - limit), unreadable };
@@ -231,7 +267,8 @@ export function renderExperimentHistory(history: ExperimentHistory): string[] {
 			: "not evaluated";
 		const sealed = attempt.sealed ? ` · sealed ${attempt.sealed.verdict}` : "";
 		const why = attempt.reason ? ` · “${attempt.reason}”` : "";
-		return `${attempt.outcome} · ${change} · ${development}${sealed}${why}`;
+		const aim = attempt.failureModeIds.length > 0 ? ` · for ${attempt.failureModeIds.join(", ")}` : "";
+		return `${attempt.outcome} · ${change} · ${development}${sealed}${aim}${why}`;
 	});
 	if (history.omitted > 0) lines.push(`… and ${history.omitted} earlier attempt${history.omitted === 1 ? "" : "s"}`);
 	return lines;
@@ -240,4 +277,103 @@ export function renderExperimentHistory(history: ExperimentHistory): string[] {
 function points(value: number): string {
 	const rounded = Math.round(value * 1000) / 10;
 	return `${rounded > 0 ? "+" : ""}${rounded.toFixed(1)}pp`;
+}
+
+// ---------------------------------------------------------------------------
+// The compact form that fits inside a bounded authoring context.
+
+/**
+ * One prior attempt in the shape the Builder reads immediately before it
+ * authors: what it changed, what it was aiming at, what it scored, how it
+ * ended and, when a human said it, why. Everything is a short string, so
+ * folding this into the authoring context cannot cost more than its own byte
+ * budget.
+ */
+export interface CompactAttempt {
+	at: string;
+	outcome: AttemptOutcome;
+	changedPaths: string[];
+	failureModeIds: string[];
+	/** `improved +5.6pp`, `regressed -2.0pp`, or `not evaluated`. */
+	development: string;
+	/** The sealed verdict alone — never a task, an input or a corpus identity. */
+	sealed: string | null;
+	reason: string | null;
+}
+
+export interface CompactExperimentHistory {
+	attempts: CompactAttempt[];
+	/** Attempts that exist but did not fit the cap or the byte budget. */
+	omitted: number;
+}
+
+export interface CompactExperimentHistoryOptions {
+	/** Newest attempts to consider. Defaults to {@link MAX_AUTHORING_HISTORY_ATTEMPTS}. */
+	limit?: number;
+	/** Canonical-JSON bytes the projection may occupy. */
+	maxBytes?: number;
+}
+
+function compactAttemptOf(attempt: Attempt): CompactAttempt {
+	return {
+		at: attempt.at,
+		outcome: attempt.outcome,
+		changedPaths: attempt.changedPaths,
+		failureModeIds: attempt.failureModeIds,
+		development: attempt.development
+			? `${attempt.development.verdict}${attempt.development.scoreDelta === null ? "" : ` ${points(attempt.development.scoreDelta)}`}`
+			: "not evaluated",
+		sealed: attempt.sealed ? attempt.sealed.verdict : null,
+		reason: attempt.reason,
+	};
+}
+
+/**
+ * Fold a history projection into the few newest attempts that fit a byte
+ * budget. Oldest first out of the door, and every dropped attempt is counted:
+ * a Builder that is shown five of nineteen attempts is told it is five of
+ * nineteen.
+ */
+export function compactExperimentHistory(
+	history: ExperimentHistory,
+	options: CompactExperimentHistoryOptions = {},
+): CompactExperimentHistory {
+	const limit = Math.max(0, Math.trunc(options.limit ?? MAX_AUTHORING_HISTORY_ATTEMPTS));
+	const maxBytes = Math.max(0, Math.trunc(options.maxBytes ?? MAX_AUTHORING_HISTORY_BYTES));
+	const considered = history.attempts.slice(0, limit).map(compactAttemptOf);
+	let kept = considered;
+	while (kept.length > 0 && Buffer.byteLength(canonicalJson(kept), "utf8") > maxBytes) {
+		kept = kept.slice(0, -1);
+	}
+	return {
+		attempts: kept,
+		omitted: history.omitted + (history.attempts.length - kept.length),
+	};
+}
+
+/**
+ * The identity a repeat is recognised by: the exact changed-path set plus one
+ * targeted failure mode. Two attempts that replace the same files for the same
+ * mode are the same experiment, whatever the diff inside those files said.
+ */
+export function experimentSignature(changedPaths: readonly string[], failureModeId: string): string {
+	return canonicalJson({ changedPaths: [...changedPaths].sort(), failureModeId });
+}
+
+/**
+ * Attempts whose development verdict was anything but `improved`, or that a
+ * human rejected outright. Re-running one of these is spending the budget on a
+ * question that already has an answer.
+ */
+export function losingExperimentSignatures(history: ExperimentHistory): Set<string> {
+	const signatures = new Set<string>();
+	for (const attempt of history.attempts) {
+		const lost = attempt.outcome === "rejected" ||
+			(attempt.development !== null && attempt.development.verdict !== "improved");
+		if (!lost || attempt.changedPaths.length === 0) continue;
+		for (const failureModeId of attempt.failureModeIds) {
+			signatures.add(experimentSignature(attempt.changedPaths, failureModeId));
+		}
+	}
+	return signatures;
 }

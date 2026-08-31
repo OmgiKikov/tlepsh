@@ -491,6 +491,10 @@ ahde check --target . --candidate <candidate-id>
 # improvement cycles inside the gates; promotion is never the loop's
 ahde improve --target . --until 90% --max-cycles 5 --jobs 4
 
+# search, not one guess: 2-4 changes for one problem, one Pareto table
+ahde search --target . --candidates <builder-run-a>,<builder-run-b> --jobs 4
+ahde improve --target . --until 90% --max-cycles 5 --candidates 3
+
 # exact candidate experiment and terminal human decision
 ahde candidate --target . --builder-run <builder-run-id> \
   --project my-agent --development-corpus <development-corpus-id> \
@@ -531,7 +535,26 @@ twice in a row, infrastructure errors go over the budget, or a verified candidat
 is ready. It never touches the sealed guardrail and never promotes, adopts,
 publishes a corpus or approves a Spec. A promotion additionally drafts the cases
 it flipped fail→pass as regression guards; the operator publishes that draft like
-any other.
+any other. The loop also refuses to re-propose a change whose changed files and
+targeted failure mode match an attempt that already ended rejected or not
+`improved`, and stops with that reason once every proposable mode is used up: the
+Builder reads the same memory before it authors, through
+`ahde_workbench_view` with `aspect: "history"` and the `priorAttempts` the
+committed-Target view carries.
+
+`ahde search` spends the same money on several hypotheses instead of one. Give it
+2–4 unapplied proposals that all target the same failure mode; it applies each on
+its own `candidate/search-<n>` branch, screens each with the cheap check, pays for
+the full matched development verification only where the screen found something,
+and prints a Pareto table — verdict, score delta with its 95% interval, cost and
+latency ratios, the screen's numbers, and which candidates are dominated. A
+candidate is dominated when another verified candidate is at least as good on
+both score delta and cost ratio and strictly better on one of them (exact ties
+break by candidate order, so the frontier is never empty). A flat screen and an
+exhausted `--budget` are named in the table, never applied silently. Sealed
+verification is not part of a search: you pick one candidate and that one goes
+through the unchanged sealed gate and promotion. `ahde improve --candidates N`
+runs the same search inside a cycle.
 
 Corpus drafts and proposals are authored in Builder Pi; the commands above only
 publish, evaluate, and decide over the artifacts it produced. The typed proposal

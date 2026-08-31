@@ -41,6 +41,10 @@ import {
 	renderImprovementLoopTable,
 	runImprovementLoop,
 } from "./application/improvement-loop.js";
+import {
+	renderProposalSearchTable,
+	runProposalSearch,
+} from "./application/proposal-search.js";
 
 import { runAppliedBuilderCandidate } from "./application/builder-candidate.js";
 import { diagnoseEvalRun } from "./diagnosis.js";
@@ -90,6 +94,7 @@ import {
 import type { RunEventListener } from "./run-events.js";
 import {
 	CliInvocationError,
+	parseCandidateIdList,
 	parseCliInvocation,
 	parsePassRateFlag,
 } from "./cli-invocation.js";
@@ -1088,6 +1093,7 @@ async function main(): Promise<void> {
 				until,
 				maxCycles,
 				repetitions,
+				...(arg("candidates") ? { candidates: Number(arg("candidates")) } : {}),
 				...(arg("jobs") ? { jobs: Number(arg("jobs")) } : {}),
 				author: recordedBuilderProposalAuthor({ stateRoot: stateRoot(), runsRoot: runsRoot(), projectId }),
 				onCycle: (line) => process.stderr.write(`${line}\n`),
@@ -1099,9 +1105,55 @@ async function main(): Promise<void> {
 					`\nnext: ahde review --candidate ${result.candidateId} --recommend promote|reject --reason <text>`,
 				);
 			}
+			// A search hands back several candidates and picks none: pointing at
+			// one of them would be the loop making the human's decision.
+			const searched = [...result.cycles].reverse().find((cycle) => cycle.search)?.search ?? null;
+			if (searched && searched.frontier.length > 0) {
+				const winners = searched.frontier
+					.map((ordinal) => searched.rows.find((row) => row.ordinal === ordinal)?.candidateId)
+					.filter((id): id is string => typeof id === "string");
+				console.log(
+					`\nnext: pick one — ahde review --candidate <${winners.join(" | ")}> ` +
+					"--recommend promote|reject --reason <text>",
+				);
+			}
 			// A loop that stopped without a verified candidate has nothing to ship;
 			// that is a finding, not a crash.
-			if (!result.candidateId) process.exitCode = 1;
+			if (!result.candidateId && !(searched && searched.frontier.length > 0)) process.exitCode = 1;
+			break;
+		}
+		case "search": {
+			const targetDir = resolve(requireArg("target"));
+			const proposalRunIds = parseCandidateIdList(requireArg("candidates"));
+			const projectId = arg("project") ?? loadTarget(targetDir).manifest.id;
+			const corpusId = arg("corpus");
+			const repetitions = arg("repetitions") ? Number(arg("repetitions")) : DEFAULT_REPETITIONS;
+			const approvedSpecId = soleApprovedSpecId(projectId);
+			// Every hypothesis has to be about the same failure mode; the first
+			// proposal's attested basis names it and the search refuses the rest.
+			const failureModeId = soleSearchFailureModeId(proposalRunIds);
+			const result = await runProposalSearch({
+				repositoryDir: targetDir,
+				runsRoot: runsRoot(),
+				stateRoot: stateRoot(),
+				projectId,
+				approvedSpecId,
+				failureModeId,
+				proposalRunIds,
+				...(corpusId ? { developmentCorpus: { stateRoot: stateRoot(), projectId, corpusId } } : {}),
+				...(corpusId
+					? { developmentTasks: loadCorpus({ stateRoot: stateRoot(), projectId, corpusId }).tasks.length }
+					: {}),
+				repetitions,
+				...(arg("budget") ? { executionBudget: Number(arg("budget")) } : {}),
+				...(arg("jobs") ? { jobs: Number(arg("jobs")) } : {}),
+				onCandidate: (line) => process.stderr.write(`${line}\n`),
+				onRunEvent: cliRunProgress(),
+			});
+			console.log(renderProposalSearchTable(result));
+			// The search compares and stops. Promotion, adoption and the sealed
+			// guardrail are the human's, on the one candidate they pick.
+			if (result.frontier.length === 0) process.exitCode = 1;
 			break;
 		}
 		case "calibrate": {
@@ -1194,6 +1246,34 @@ function soleApprovedSpecId(projectId: string): string {
 	throw new Error(
 		`project ${projectId} has ${specs.length} approved Specs; run the loop from \`ahde\` where one is selected`,
 	);
+}
+
+/**
+ * The one failure mode a search is about, read from the attested proposal basis
+ * of every hypothesis. Two hypotheses aiming at different modes are not a
+ * search — they are two searches — and comparing them in one table would put
+ * two unrelated questions in the same row.
+ */
+function soleSearchFailureModeId(proposalRunIds: readonly string[]): string {
+	const shared = proposalRunIds.map((runId) => {
+		const record = loadBuilderProposalRun(runsRoot(), runId);
+		const basis = record.request.proposalBasis;
+		if (!basis) throw new Error(`proposal ${runId} carries no attested failure-mode basis; it cannot enter a search`);
+		return new Set(basis.failureModes.map((mode) => mode.failureModeId));
+	});
+	const common = [...(shared[0] ?? new Set<string>())]
+		.filter((id) => shared.every((ids) => ids.has(id)))
+		.sort();
+	if (common.length === 0) {
+		throw new Error("the supplied proposals share no failure mode; a search compares hypotheses for exactly one");
+	}
+	if (common.length > 1) {
+		throw new Error(
+			`the supplied proposals share ${common.length} failure modes (${common.join(", ")}); ` +
+			"a search compares hypotheses for exactly one",
+		);
+	}
+	return common[0]!;
 }
 
 function cliFailure(error: unknown): { message: string; next?: string } {

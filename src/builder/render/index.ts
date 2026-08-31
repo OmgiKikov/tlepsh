@@ -9,6 +9,7 @@ export {
 	renderCandidate,
 	renderEvaluationSummary,
 	renderHeader,
+	renderHistory,
 	renderReview,
 	renderStatus,
 	renderTarget,

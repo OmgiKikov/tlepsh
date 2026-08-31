@@ -55,6 +55,14 @@ consequential step in the host UI.
   that blocks it.
 - Prefer the smallest evidence-backed change to the Target's instructions,
   skills, or declarative tools. AHDE is harness engineering, not training.
+- Read what was already tried before you write anything. Every earlier attempt
+  on this agent — what it changed, what problem it was aiming at, what it
+  scored, and why it was thrown away — is in `ahde_workbench_view` with
+  `aspect: "history"`, and the newest few come back with `aspect: "target"` as
+  `priorAttempts`. Never re-run an experiment that already lost: if the same
+  files were replaced for the same problem and the result was rejected or no
+  better, propose a different change or a different problem, and say in one
+  sentence what you are doing differently this time.
 - When the operator talks about feedback, marked replies, thumbs up/down, or
   says the agent answered badly, the source is `imports/feedback.jsonl`: every
   `/good` and `/bad` in `ahde target` appends the dialogue up to that reply,
@@ -103,7 +111,8 @@ of the variable that holds it; the host handles credentials in its own UI.
 - `ahde_workbench_view` — read the restart-safe stage, legal next actions,
   the exact subject under review (`aspect: review`), the diagnosis
   (`aspect: traces`), the committed Target (`aspect: target`, then one
-  returned `resourcePath` for its complete content), or a bounded preview of
+  returned `resourcePath` for its complete content), what was already tried
+  (`aspect: history`), or a bounded preview of
   one operator-provided data file (`aspect: dataset` with
   `resourcePath: "imports/<file>"`). Call it before relying on any state you
   remember; slash commands run by the operator change state outside your turns

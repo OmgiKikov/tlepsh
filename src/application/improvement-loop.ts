@@ -47,6 +47,19 @@ import { CANDIDATE_SCOPE_POLICY } from "./candidate-experiment.js";
 import { runCheapCheck, type CheapCheckResult } from "./cheap-check.js";
 import { targetWithDevelopmentCorpus } from "./corpus-target.js";
 import {
+	compileExperimentHistory,
+	experimentSignature,
+	losingExperimentSignatures,
+} from "./experiment-history.js";
+import {
+	MAX_SEARCH_CANDIDATES,
+	MIN_SEARCH_CANDIDATES,
+	proposalSearchGate,
+	renderProposalSearchTable,
+	runProposalSearch,
+	type ProposalSearchResult,
+} from "./proposal-search.js";
+import {
 	compileImprovementBrief,
 	deriveEvidenceLinkedProposalSelection,
 	type EvidenceLinkedProposalSelection,
@@ -126,7 +139,15 @@ export type ImprovementLoopStopReason =
 	/** The diagnosis has nothing a harness change can address. */
 	| "no-proposable-failure-mode"
 	/** The author produced no change. */
-	| "no-change-proposed";
+	| "no-change-proposed"
+	/**
+	 * Every proposable failure mode was already tried with exactly this change,
+	 * and lost. Repeating it would spend the budget on a question that already
+	 * has an answer.
+	 */
+	| "experiments-exhausted"
+	/** A multi-candidate search finished; which hypothesis wins is the human's. */
+	| "search-decision-required";
 
 export const IMPROVEMENT_LOOP_STOP_MESSAGES: Readonly<Record<ImprovementLoopStopReason, string>> = {
 	"target-reached": "the target pass rate is reached",
@@ -137,10 +158,43 @@ export const IMPROVEMENT_LOOP_STOP_MESSAGES: Readonly<Record<ImprovementLoopStop
 	"sealed-gate-required": "a verified candidate is ready — the sealed guardrail and the promotion are yours",
 	"no-proposable-failure-mode": "no failure mode is eligible for a harness change",
 	"no-change-proposed": "the proposal author produced no change",
+	"experiments-exhausted":
+		"every proposable failure mode has already been tried with exactly this change, and it lost",
+	"search-decision-required":
+		"the search compared several hypotheses — picking the winner is yours, and so is the sealed guardrail",
 };
+
+/** Why one cycle refused to spend anything on the change it was handed. */
+export type ImprovementCycleSkipReason =
+	/** This exact changed-path set was already tried for this failure mode, and lost. */
+	| "repeat-of-a-losing-experiment"
+	/** Fewer hypotheses came back than a search needs. */
+	| "too-few-hypotheses";
+
+export const IMPROVEMENT_CYCLE_SKIP_MESSAGES: Readonly<Record<ImprovementCycleSkipReason, string>> = {
+	"repeat-of-a-losing-experiment":
+		"this exact change was already tried for this failure mode and did not improve anything",
+	"too-few-hypotheses": `a search needs at least ${MIN_SEARCH_CANDIDATES} hypotheses for one failure mode`,
+};
+
+/** What one cycle refused, and which failure mode it refused it for. */
+export interface ImprovementCycleSkip {
+	reason: ImprovementCycleSkipReason;
+	failureModeId: string;
+	changedPaths: string[];
+	proposalRunId: string;
+}
 
 export interface ImprovementProposalRequest {
 	cycle: number;
+	/**
+	 * Which hypothesis of this cycle is being asked for, 1-based. With
+	 * `candidates: 1` it is always 1; a search asks for the same failure mode
+	 * `variants` times and expects a different hypothesis each time.
+	 */
+	variant: number;
+	/** How many hypotheses this cycle wants for the mode. */
+	variants: number;
 	repositoryDir: string;
 	runsRoot: string;
 	stateRoot: string;
@@ -208,6 +262,10 @@ export interface ImprovementLoopCycle {
 	candidateSha: string | null;
 	screen: ImprovementLoopScreen | null;
 	verification: ImprovementLoopVerification | null;
+	/** The Pareto table, when this cycle compared several hypotheses. */
+	search: ProposalSearchResult | null;
+	/** What this cycle refused to spend anything on, and why. */
+	skipped: ImprovementCycleSkip | null;
 	/** Target executions this cycle actually spent. */
 	executions: number;
 	note: string;
@@ -235,8 +293,17 @@ export interface ImprovementLoopOptions {
 	until: number;
 	maxCycles: number;
 	repetitions: number;
+	/**
+	 * Hypotheses per cycle. `1` (the default) is one proposal, one screen, one
+	 * verification. `2`..`4` asks the author for that many hypotheses for the
+	 * top failure mode and compares them in one search, so the cycle ends with a
+	 * Pareto table instead of a single verdict.
+	 */
+	candidates?: number;
 	jobs?: number;
 	branchPrefix?: string;
+	/** Branch prefix for a multi-candidate search; the ordinal is appended. */
+	searchBranchPrefix?: string;
 	author: ImprovementProposalAuthor;
 	/**
 	 * Handed to the proposal author, wrapped so that every decision creating
@@ -262,6 +329,10 @@ export interface ImprovementLoopDependencies {
 	runCheapCheck: typeof runCheapCheck;
 	runAppliedCandidate: typeof runAppliedBuilderCandidate;
 	compileFailureBundle: typeof compileFailureBundle;
+	/** What was already tried, so the loop can refuse to try it again. */
+	compileExperimentHistory: typeof compileExperimentHistory;
+	/** Several hypotheses for one failure mode, compared in one table. */
+	runProposalSearch: typeof runProposalSearch;
 }
 
 const DEFAULT_DEPENDENCIES: ImprovementLoopDependencies = {
@@ -275,6 +346,8 @@ const DEFAULT_DEPENDENCIES: ImprovementLoopDependencies = {
 	runCheapCheck,
 	runAppliedCandidate: runAppliedBuilderCandidate,
 	compileFailureBundle,
+	compileExperimentHistory,
+	runProposalSearch,
 };
 
 function abortIfRequested(signal?: AbortSignal): void {
@@ -286,8 +359,13 @@ function abortIfRequested(signal?: AbortSignal): void {
  * then most reproducible, then the stable id so the choice never depends on
  * map order.
  */
-export function topProposableFailureMode(brief: ImprovementBrief): FailureMode | null {
-	const proposable = brief.modes.filter((mode) => mode.decision === "propose-harness-change");
+export function topProposableFailureMode(
+	brief: ImprovementBrief,
+	/** Modes this loop has already exhausted; skipped whatever their impact. */
+	exclude: ReadonlySet<string> = new Set(),
+): FailureMode | null {
+	const proposable = brief.modes.filter((mode) =>
+		mode.decision === "propose-harness-change" && !exclude.has(mode.failureModeId));
 	if (proposable.length === 0) return null;
 	return [...proposable].sort((left, right) =>
 		right.impact.taskCoverageBps - left.impact.taskCoverageBps ||
@@ -319,6 +397,10 @@ export function improvementCycleLine(cycle: ImprovementLoopCycle, maxCycles: num
 		const delta = cycle.verification.scoreDelta;
 		parts.push(`verify ${cycle.verification.verdict} ${delta >= 0 ? "+" : ""}${(delta * 100).toFixed(1)}pp`);
 	}
+	if (cycle.search) {
+		parts.push(`search ${cycle.search.rows.filter((row) => row.status === "verified").length}/${cycle.search.rows.length} verified`);
+	}
+	if (cycle.skipped) parts.push(`refused — ${IMPROVEMENT_CYCLE_SKIP_MESSAGES[cycle.skipped.reason]}`);
 	parts.push(cycle.note);
 	return parts.join(" · ");
 }
@@ -335,27 +417,73 @@ export function renderImprovementLoopTable(result: ImprovementLoopResult): strin
 		const verification = cycle.verification
 			? `${cycle.verification.verdict} ${cycle.verification.scoreDelta >= 0 ? "+" : ""}` +
 				`${(cycle.verification.scoreDelta * 100).toFixed(1)}pp`
-			: "skipped";
+			: cycle.search
+				? `search of ${cycle.search.rows.length}`
+				: cycle.skipped
+					? `refused (${cycle.skipped.reason})`
+					: "skipped";
 		return `| ${cycle.cycle} | ${percent(cycle.passRate)}${cycle.evalReused ? " (reused)" : ""} | ` +
 			`${cycle.failureModeId ?? "—"} | ${cycle.branch ?? "—"} | ${screen} | ${verification} |`;
 	});
+	const searches = result.cycles.flatMap((cycle) =>
+		cycle.search ? ["", `Cycle ${cycle.cycle} — hypotheses for ${cycle.failureModeId ?? "—"}:`, renderProposalSearchTable(cycle.search)] : []);
+	const refusals = result.cycles.flatMap((cycle) =>
+		cycle.skipped
+			? [`Cycle ${cycle.cycle} refused ${cycle.skipped.proposalRunId}: ${IMPROVEMENT_CYCLE_SKIP_MESSAGES[cycle.skipped.reason]}.`]
+			: []);
 	return [
 		header,
 		divider,
 		...rows,
+		...searches,
 		"",
+		...refusals,
 		`Stopped: ${result.stopMessage}.`,
 		`Target executions spent: ${result.executions}.`,
 		result.candidateId
 			? `Candidate ${result.candidateId} is verified on development evidence. Promotion is yours: ` +
 				"`ship it` runs the sealed guardrail and the release decisions."
-			: "No candidate reached a development verdict; nothing is waiting on a release decision.",
+			: result.cycles.some((cycle) => cycle.search)
+				? "Several hypotheses were compared; pick one from the table above, then ship it."
+				: "No candidate reached a development verdict; nothing is waiting on a release decision.",
 	].join("\n");
 }
 
 interface CycleEval {
 	record: EvalRunRecord;
 	reused: boolean;
+}
+
+/**
+ * The experiments this project already ran and lost, by changed-path set and
+ * targeted failure mode. Reading the memory is best-effort: a runs root that
+ * cannot be listed leaves the loop exactly as blind as it was before, never
+ * broken.
+ */
+function losingSignatures(
+	dependencies: ImprovementLoopDependencies,
+	runsRoot: string,
+	options: ImprovementLoopOptions,
+): Set<string> {
+	try {
+		return losingExperimentSignatures(dependencies.compileExperimentHistory({
+			runsRoot,
+			projectId: options.projectId,
+		}));
+	} catch {
+		return new Set<string>();
+	}
+}
+
+/** Exactly what a recorded proposal would replace, before a byte of it is applied. */
+function proposalChangedPaths(runsRoot: string, proposalRunId: string): string[] {
+	try {
+		const record = loadBuilderProposalRun(runsRoot, proposalRunId);
+		if (record.result.status !== "completed" || record.result.proposal?.decision !== "propose") return [];
+		return record.result.proposal.changes.map((change) => change.path).sort();
+	} catch {
+		return [];
+	}
 }
 
 export async function runImprovementLoop(
@@ -368,11 +496,15 @@ export async function runImprovementLoop(
 	const stateRoot = resolve(options.stateRoot);
 	const branchPrefix = options.branchPrefix ?? "candidate/auto-";
 	const actorId = options.actorId ?? "local-user";
+	const candidatesPerCycle = Math.trunc(options.candidates ?? 1);
 	if (!Number.isFinite(options.until) || options.until < 0 || options.until > 1) {
 		throw new Error(`--until must be a pass rate between 0 and 1, got ${options.until}`);
 	}
 	if (!Number.isInteger(options.maxCycles) || options.maxCycles < 1 || options.maxCycles > MAX_IMPROVEMENT_CYCLES) {
 		throw new Error(`--max-cycles must be between 1 and ${MAX_IMPROVEMENT_CYCLES}, got ${options.maxCycles}`);
+	}
+	if (candidatesPerCycle < 1 || candidatesPerCycle > MAX_SEARCH_CANDIDATES) {
+		throw new Error(`--candidates must be between 1 and ${MAX_SEARCH_CANDIDATES}, got ${options.candidates}`);
 	}
 
 	const cycles: ImprovementLoopCycle[] = [];
@@ -382,6 +514,12 @@ export async function runImprovementLoop(
 	let finalPassRate = 0;
 	let cached: CycleEval | null = null;
 	let cachedForSha: string | null = null;
+	// What already lost, read once: a project's candidate records do not change
+	// while its own loop is running, and every experiment this loop finishes is
+	// added below rather than re-read from disk.
+	const losing = losingSignatures(dependencies, runsRoot, options);
+	/** Failure modes this loop has stopped asking about. */
+	const exhaustedModes = new Set<string>();
 
 	const resolveTarget = () => {
 		const base = dependencies.loadTarget(repositoryDir);
@@ -425,6 +563,8 @@ export async function runImprovementLoop(
 			candidateSha: null,
 			screen: null,
 			verification: null,
+			search: null,
+			skipped: null,
 			executions: 0,
 			note: "",
 		};
@@ -470,8 +610,12 @@ export async function runImprovementLoop(
 		// ---- diagnose and pick ---------------------------------------------
 		const diagnosis = dependencies.diagnoseEval(runsRoot, evaluation.record.evalRunId);
 		const brief = dependencies.compileImprovementBrief(runsRoot, diagnosis);
-		const mode = brief.proposalEligible ? topProposableFailureMode(brief) : null;
+		const mode = brief.proposalEligible ? topProposableFailureMode(brief, exhaustedModes) : null;
 		if (!mode) {
+			// A mode the loop exhausted itself is a different answer from a brief
+			// that never had one: the first says "everything left has been tried",
+			// the second says "nothing here is a harness defect".
+			if (exhaustedModes.size > 0) return finish("experiments-exhausted", brief.headline, cycle);
 			return finish("no-proposable-failure-mode", brief.headline, cycle);
 		}
 		cycle.failureModeId = mode.failureModeId;
@@ -485,33 +629,40 @@ export async function runImprovementLoop(
 		const selection = deriveEvidenceLinkedProposalSelection(brief, proposalBasis);
 
 		// ---- author ---------------------------------------------------------
+		// With `candidates: 1` this asks once; a search asks for the same failure
+		// mode `candidates` times and expects a different hypothesis each time.
 		const failureBundlePath = dependencies.compileFailureBundle(target, evaluation.record, runsRoot);
-		const decision = await options.author({
-			...(options.gate ? { gate: improvementLoopGate(options.gate) } : {}),
-			cycle: cycleIndex,
-			repositoryDir,
-			runsRoot,
-			stateRoot,
-			projectId: options.projectId,
-			approvedSpecId: options.approvedSpecId,
-			baseTargetSha: target.gitSha,
-			evalRunId: evaluation.record.evalRunId,
-			diagnosisId: diagnosis.diagnosisId,
-			brief,
-			failureMode: mode,
-			selection,
-			failureBundlePath,
-			...(options.signal ? { signal: options.signal } : {}),
-		});
-		abortIfRequested(options.signal);
-		if (decision.kind === "no-change") {
-			return finish("no-change-proposed", decision.reason, cycle);
-		}
-
-		let proposalRunId: string;
-		if (decision.kind === "recorded") {
-			proposalRunId = decision.builderRunId;
-		} else {
+		const proposalRunIds: string[] = [];
+		let exhaustedAuthor: string | null = null;
+		for (let variant = 1; variant <= candidatesPerCycle; variant += 1) {
+			const decision = await options.author({
+				...(options.gate ? { gate: improvementLoopGate(options.gate) } : {}),
+				cycle: cycleIndex,
+				variant,
+				variants: candidatesPerCycle,
+				repositoryDir,
+				runsRoot,
+				stateRoot,
+				projectId: options.projectId,
+				approvedSpecId: options.approvedSpecId,
+				baseTargetSha: target.gitSha,
+				evalRunId: evaluation.record.evalRunId,
+				diagnosisId: diagnosis.diagnosisId,
+				brief,
+				failureMode: mode,
+				selection,
+				failureBundlePath,
+				...(options.signal ? { signal: options.signal } : {}),
+			});
+			abortIfRequested(options.signal);
+			if (decision.kind === "no-change") {
+				exhaustedAuthor = decision.reason;
+				break;
+			}
+			if (decision.kind === "recorded") {
+				proposalRunIds.push(decision.builderRunId);
+				continue;
+			}
 			const recorded = await dependencies.recordProposal({
 				proposal: decision.proposal,
 				targetDir: repositoryDir,
@@ -524,11 +675,95 @@ export async function runImprovementLoop(
 				...(options.signal ? { signal: options.signal } : {}),
 			});
 			if (recorded.record.result.status !== "completed" || recorded.record.result.proposal?.decision !== "propose") {
-				return finish("no-change-proposed", "the recorded proposal carries no change", cycle);
+				exhaustedAuthor = "the recorded proposal carries no change";
+				break;
 			}
-			proposalRunId = recorded.record.runId;
+			proposalRunIds.push(recorded.record.runId);
 		}
+		if (proposalRunIds.length === 0) {
+			return finish("no-change-proposed", exhaustedAuthor ?? "the proposal author produced no change", cycle);
+		}
+
+		// ---- search, when this cycle wants several hypotheses -----------------
+		if (candidatesPerCycle > 1) {
+			if (proposalRunIds.length < MIN_SEARCH_CANDIDATES) {
+				cycle.proposalRunId = proposalRunIds[0]!;
+				cycle.skipped = {
+					reason: "too-few-hypotheses",
+					failureModeId: mode.failureModeId,
+					changedPaths: proposalChangedPaths(runsRoot, proposalRunIds[0]!),
+					proposalRunId: proposalRunIds[0]!,
+				};
+				return finish(
+					"no-change-proposed",
+					exhaustedAuthor ?? IMPROVEMENT_CYCLE_SKIP_MESSAGES["too-few-hypotheses"],
+					cycle,
+				);
+			}
+			const search = await dependencies.runProposalSearch({
+				repositoryDir,
+				runsRoot,
+				stateRoot,
+				projectId: options.projectId,
+				approvedSpecId: options.approvedSpecId,
+				failureModeId: mode.failureModeId,
+				proposalRunIds,
+				...(options.developmentCorpus ? { developmentCorpus: options.developmentCorpus } : {}),
+				developmentTasks: Math.round(evaluation.record.summary.total / options.repetitions),
+				repetitions: options.repetitions,
+				...(options.jobs === undefined ? {} : { jobs: options.jobs }),
+				branchPrefix: options.searchBranchPrefix ?? `candidate/search-${cycleIndex}-`,
+				actorId,
+				...(options.gate ? { gate: proposalSearchGate(options.gate) } : {}),
+				...(options.signal ? { signal: options.signal } : {}),
+				...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
+				...(options.now ? { now: options.now } : {}),
+			});
+			executions += search.executions;
+			cycle.executions += search.executions;
+			cycle.search = search;
+			cycle.proposalRunId = proposalRunIds[0]!;
+			// The search compares; it never picks. Whichever hypothesis wins, the
+			// sealed guardrail and the promotion are still the human's.
+			return finish(
+				"search-decision-required",
+				`${search.frontier.length} of ${search.rows.length} hypotheses are on the frontier`,
+				cycle,
+			);
+		}
+
+		const proposalRunId = proposalRunIds[0]!;
 		cycle.proposalRunId = proposalRunId;
+
+		// ---- refuse a repeat --------------------------------------------------
+		// Cycle five must not re-propose what cycle two already lost. The identity
+		// of an experiment is its changed-path set plus the failure mode it aimed
+		// at; a match against a rejected or non-`improved` attempt is a question
+		// that already has an answer, and the budget goes elsewhere.
+		const changedPaths = proposalChangedPaths(runsRoot, proposalRunId);
+		if (changedPaths.length > 0 && losing.has(experimentSignature(changedPaths, mode.failureModeId))) {
+			cycle.skipped = {
+				reason: "repeat-of-a-losing-experiment",
+				failureModeId: mode.failureModeId,
+				changedPaths,
+				proposalRunId,
+			};
+			exhaustedModes.add(mode.failureModeId);
+			cycle.note = IMPROVEMENT_CYCLE_SKIP_MESSAGES["repeat-of-a-losing-experiment"];
+			cycles.push(cycle);
+			options.onCycle?.(improvementCycleLine(cycle, options.maxCycles), cycle);
+			if (topProposableFailureMode(brief, exhaustedModes) === null) {
+				return {
+					cycles,
+					stopReason: "experiments-exhausted",
+					stopMessage: IMPROVEMENT_LOOP_STOP_MESSAGES["experiments-exhausted"],
+					candidateId,
+					finalPassRate,
+					executions,
+				};
+			}
+			continue;
+		}
 
 		// ---- apply ----------------------------------------------------------
 		const branch = `${branchPrefix}${cycleIndex}`;
@@ -615,6 +850,11 @@ export async function runImprovementLoop(
 			candidatePassRate: verified.compare.summary.candidatePassRate,
 		};
 		finalPassRate = verified.compare.summary.candidatePassRate;
+		// This loop's own answers join its memory immediately, so a later cycle
+		// cannot re-run the experiment this one just lost.
+		if (verified.compare.gate.verdict !== "improved") {
+			losing.add(experimentSignature([...applied.receipt.paths].sort(), mode.failureModeId));
+		}
 
 		if (verified.compare.gate.verdict !== "improved") {
 			return finish(
@@ -710,14 +950,21 @@ export function recordedBuilderProposalAuthor(
 	};
 }
 
-/** Executions one planned loop is expected to spend, for the routine cost guard. */
+/**
+ * Executions one planned loop is expected to spend, for the routine cost guard.
+ * A cycle that compares several hypotheses screens and verifies each of them,
+ * so the estimate the operator is shown scales with `candidates` — a search
+ * must never cost more than the one question they answered.
+ */
 export function plannedImprovementExecutions(input: {
 	developmentTasks: number;
 	repetitions: number;
 	maxCycles: number;
+	candidates?: number;
 }): number {
+	const candidates = Math.max(1, Math.trunc(input.candidates ?? 1));
 	const run = input.developmentTasks * input.repetitions;
 	const screen = input.developmentTasks;
 	const verification = 2 * input.developmentTasks * input.repetitions;
-	return Math.max(0, Math.trunc(input.maxCycles)) * (run + screen + verification);
+	return Math.max(0, Math.trunc(input.maxCycles)) * (run + candidates * (screen + verification));
 }

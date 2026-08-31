@@ -35,6 +35,8 @@ Inspect and run:
   ahde check --target <dir> --candidate <id>   cheap screen: the failed cases, once
   ahde improve --target <dir> --until 90% --max-cycles 5
                                                run improvement cycles inside the gates
+  ahde search --target <dir> --candidates <id,id,id>
+                                               compare 2-4 changes for one problem
   ahde calibrate --target <dir>                measure run-to-run noise (A/A)
   ahde evidence [--port N] [--project <id>]    open the read-only trace explorer
   ahde list [--target <id>]                    list eval runs
@@ -51,7 +53,7 @@ ${builderCommandLines()}
 
 Use \`ahde <command> --help\` for focused help. Advanced automation commands:
   corpus  failures  compare  diagnose  regrade  report  label  judge-agreement
-  candidate  calibrate  check  improve  review  promote  reject
+  candidate  calibrate  check  improve  search  review  promote  reject
 
 Environment:
   AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)
@@ -204,7 +206,8 @@ never reused as a baseline and never stands in for a candidate arm, it is
 recorded in runs/screens/, it enters no comparison gate, and a promotion that
 cites one is refused. Exit 0 = promising, 1 = flat.`,
 	improve: `Usage: ahde improve --target <dir> --until <pass-rate> --max-cycles <n> \\
-                    [--jobs N] [--project <id>] [--repetitions N] [--corpus <development-id>]
+                    [--candidates N] [--jobs N] [--project <id>] [--repetitions N]
+                    [--corpus <development-id>]
 
 Run improvement cycles inside the gates. One cycle is: run -> diagnose -> take
 the top proposable failure mode -> apply the next unapplied Builder proposal
@@ -213,14 +216,46 @@ development verification when the screen is promising.
 
 --until takes a pass rate written either way: \`90%\` or \`0.9\`.
 
+--candidates N (1..4, default 1) makes each cycle a search instead of one guess:
+it takes N unapplied proposals for the top failure mode, screens and verifies
+each on its own \`candidate/search-<cycle>-<n>\` branch, and prints the Pareto
+table. The loop then stops, because which hypothesis wins is yours to say.
+
+The loop refuses to re-propose a change whose changed files and targeted failure
+mode match an attempt that already ended rejected or not \`improved\`; when every
+proposable mode is exhausted that way it stops and says so.
+
 The loop stops and hands back when the target pass rate is reached, the cycle
 budget is spent, a development verdict is not \`improved\`, the cheap check is
-flat twice in a row, infrastructure errors go over the budget, or a verified
-candidate is ready — because the sealed guardrail and the promotion are always
-yours. It never promotes, adopts, publishes a corpus or approves a Spec.
+flat twice in a row, infrastructure errors go over the budget, every proposable
+failure mode has already been tried and lost, a search needs a decision, or a
+verified candidate is ready — because the sealed guardrail and the promotion are
+always yours. It never promotes, adopts, publishes a corpus or approves a Spec.
 
 Authoring stays with Builder Pi: author the proposals in \`ahde\` first, then let
 the loop screen and verify them. Exit 0 = a verified candidate is waiting.`,
+	search: `Usage: ahde search --target <dir> --candidates <id,id,id> [--project <id>] \\
+                   [--jobs N] [--repetitions N] [--corpus <development-id>] [--budget N]
+
+Search, not one guess. Takes 2-4 unapplied Builder proposals that all target the
+same failure mode, applies each on its own \`candidate/search-<n>\` branch,
+screens each with the cheap check, and pays for the full matched development
+verification only where the screen found something. It prints a Pareto table:
+per candidate the verdict, score delta with its 95% interval, cost and latency
+ratios, the screen's numbers, and which candidates are dominated.
+
+A candidate is dominated when another verified candidate is at least as good on
+BOTH score delta and cost ratio and is strictly better on one of them (ties are
+broken by candidate order, so the frontier is never empty). A candidate whose
+screen was flat never reaches verification and is listed with that reason;
+--budget N caps the whole search and skipped candidates say so — nothing is
+capped silently.
+
+Sealed verification is not part of a search. You pick one candidate from the
+table and that one goes through the unchanged sealed gate and promotion. The
+search never promotes, adopts, publishes, approves, or opens the holdout.
+
+Exit 0 = at least one candidate is on the frontier.`,
 	review: `Usage: ahde review --candidate <id> --recommend promote|reject --reason <text> [--actor <id>]
 
 Record a human review over the exact evaluated Candidate evidence.`,
