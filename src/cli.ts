@@ -35,8 +35,13 @@ import { compileFailureBundle } from "./bundle.js";
 import { runCandidateExperiment } from "./application/candidate-experiment.js";
 import {
 	renderCheapCheckLine,
+	runCheapCheckForBuilderRun,
 	runCheapCheckForCandidate,
 } from "./application/cheap-check.js";
+import { renderCandidateVerdictLines } from "./application/candidate-verdict.js";
+import { proposeBranchChange } from "./application/branch-proposal.js";
+import { approveSpecDocument, LOCAL_OPERATOR_ACTOR_ID } from "./application/spec-document.js";
+import { adoptTargetCandidate, describeTargetAdoption } from "./application/target-adoption.js";
 import {
 	abandonImprovementLoop,
 	listUnfinishedImprovementLoops,
@@ -73,7 +78,7 @@ import {
 	inspectDatasetFile,
 	type DatasetHoldoutSpec,
 } from "./application/dataset-ingest.js";
-import { loadBuilderProposalRun } from "./application/builder-proposal.js";
+import { applyBuilderProposal, loadBuilderProposalRun } from "./application/builder-proposal.js";
 import { readTryToolInput, tryTool } from "./application/tool-workshop.js";
 import {
 	resolveDevelopmentTargetForEval,
@@ -108,6 +113,7 @@ import {
 	parseCandidateIdList,
 	parseCliInvocation,
 	parseDurationFlag,
+	parseFailureModeIdList,
 	parsePassRateFlag,
 } from "./cli-invocation.js";
 import { cliHelp } from "./cli-help.js";
@@ -1135,6 +1141,9 @@ async function main(): Promise<void> {
 					`  ${mode.severity.padEnd(8)} ${mode.scope.padEnd(10)} ${mode.title} — ` +
 						`${mode.impact.affectedTasks}/${mode.impact.totalTasks} task(s), ${mode.evidenceStrength} evidence, ${decision}`,
 				);
+				// The id is what `ahde propose --mode` takes; without it printed
+				// here, a proposal cannot be bound to a mode from the CLI at all.
+				console.log(`    ${mode.failureModeId}`);
 				console.log(`    hypothesis: ${mode.hypothesis}`);
 			}
 			if (brief.modes.length > 0 && diagnosis.issues.length > 0) console.log("Task-level drill-down:");
@@ -1214,6 +1223,118 @@ async function main(): Promise<void> {
 			judgeAgreementReport();
 			break;
 		}
+		case "spec": {
+			if (positional(0) !== "approve") {
+				throw new Error("usage: ahde spec approve --target <dir> [--project <id>] [--file spec.md] [--title <s>]");
+			}
+			const targetDir = resolve(requireArg("target"));
+			const projectId = arg("project") ?? loadTarget(targetDir).manifest.id;
+			const file = arg("file");
+			const approval = approveSpecDocument({
+				stateRoot: stateRoot(),
+				projectId,
+				documentPath: file ? resolve(file) : join(targetDir, "spec.md"),
+				...(arg("title") ? { title: arg("title")! } : {}),
+				...(arg("actor") ? { actorId: arg("actor")! } : {}),
+			});
+			for (const heading of approval.ignoredHeadings) {
+				console.error(`warning: section ${JSON.stringify(heading)} names no Spec field and was not read`);
+			}
+			console.log(
+				`${approval.specId}  ${approval.disposition === "approved" ? "approved" : "already approved"}`,
+			);
+			console.log(`title         ${approval.snapshot.spec.title}`);
+			console.log(
+				`contract      ${approval.snapshot.spec.successCriteria.length} success criterion(s) · ` +
+					`${approval.snapshot.spec.constraints.length} constraint(s) · ` +
+					`${approval.snapshot.spec.openQuestions.length} open question(s)`,
+			);
+			console.log(`receipt       ${approval.receipt.id}`);
+			console.log(`\nnext: ahde propose --target ${targetDir} --spec ${approval.specId} --branch <branch>`);
+			break;
+		}
+		case "propose": {
+			const targetDir = resolve(requireArg("target"));
+			const projectId = arg("project") ?? loadTarget(targetDir).manifest.id;
+			const branch = requireArg("branch");
+			const sourceEvalRunId = arg("eval");
+			const modes = arg("mode");
+			const result = await proposeBranchChange({
+				targetDir,
+				runsRoot: runsRoot(),
+				stateRoot: stateRoot(),
+				projectId,
+				specId: requireArg("spec"),
+				branch,
+				...(arg("summary") ? { summary: arg("summary")! } : {}),
+				...(sourceEvalRunId ? { sourceEvalRunId } : {}),
+				...(modes ? { failureModeIds: parseFailureModeIdList(modes) } : {}),
+				...(arg("run-id") ? { runId: arg("run-id")! } : {}),
+			});
+			console.log(`builder run   ${result.builderRunId}`);
+			console.log(`base          ${result.baseTargetSha}`);
+			console.log(`branch        ${branch} (${result.branchSha})`);
+			console.log(`changed       ${result.changedPaths.join(", ")}`);
+			console.log(
+				result.sourceEvalRunId
+					? `evidence      ${result.sourceEvalRunId}`
+					: "evidence      none — a construction proposal the approved Spec alone justifies",
+			);
+			if (result.proposalPath) console.log(`proposal      ${result.proposalPath}`);
+			console.log("applied       no — `ahde propose` never touches a branch or a checkout");
+			console.log(`\nnext: ahde apply --target ${targetDir} --builder-run ${result.builderRunId}`);
+			break;
+		}
+		case "apply": {
+			const targetDir = resolve(requireArg("target"));
+			const builderRunId = requireArg("builder-run");
+			const applied = applyBuilderProposal({
+				repoDir: targetDir,
+				runsRoot: runsRoot(),
+				runId: builderRunId,
+				requestedBranch: arg("branch") ?? `candidate/${builderRunId}`,
+				actor: { kind: "human", id: arg("actor") ?? LOCAL_OPERATOR_ACTOR_ID },
+				reason: arg("reason") ?? "Applied at the terminal by the operator running `ahde apply`.",
+			});
+			console.log(`branch        ${applied.receipt.branch}`);
+			console.log(`candidate     ${applied.receipt.candidateSha}`);
+			console.log(`base          ${applied.receipt.baseTargetSha}`);
+			console.log(`proposal hash ${applied.receipt.proposalSha256}`);
+			console.log(`paths         ${applied.receipt.paths.join(", ")}`);
+			console.log(`receipt       ${applied.receiptPath}`);
+			console.log("checkout      unchanged — the candidate was committed in a private worktree");
+			console.log(`\nnext: ahde check --target ${targetDir} --builder-run ${builderRunId}`);
+			break;
+		}
+		case "adopt": {
+			const targetDir = resolve(requireArg("target"));
+			const candidateId = requireArg("candidate");
+			// Describe, then adopt exactly what was described: the same two-step
+			// the Workbench runs, with the terminal as the human gate.
+			const subject = describeTargetAdoption({
+				repositoryDir: targetDir,
+				runsRoot: runsRoot(),
+				candidateId,
+			});
+			const adoption = adoptTargetCandidate({
+				repositoryDir: targetDir,
+				runsRoot: runsRoot(),
+				stateRoot: stateRoot(),
+				candidateId,
+				expectedSubjectHash: subject.subjectHash,
+				actor: { kind: "human", id: arg("actor") ?? LOCAL_OPERATOR_ACTOR_ID },
+				reason: arg("reason") ?? "Adopted at the terminal by the operator running `ahde adopt`.",
+			});
+			console.log(
+				`${adoption.disposition} ${adoption.subject.branch.name}: ` +
+					`${adoption.receipt.previousHead} → ${adoption.receipt.adoptedHead} ` +
+					`(${adoption.subject.promotion.tag})`,
+			);
+			console.log(`changed       ${adoption.subject.candidate.changedFiles.join(", ")}`);
+			console.log(`receipt       ${adoption.receipt.receiptId}`);
+			console.log(`              ${adoption.receiptPath}`);
+			break;
+		}
 		case "candidate": {
 				const holdoutCorpusId = arg("holdout-corpus");
 				const developmentCorpusId = arg("development-corpus");
@@ -1288,6 +1409,9 @@ async function main(): Promise<void> {
 				console.log(`\ncandidate eval run: ${result.candidate.evalRunId} (baseline: ${result.baseline.evalRunId})`);
 				console.log(`design: ${result.designHash}`);
 				console.log(`candidate record: ${result.record.candidateId}`);
+				// The two verdicts the ship gate turns on, read back from the record
+				// this run just wrote. The sealed line is verdict and design only.
+				for (const line of renderCandidateVerdictLines(result.record)) console.log(line);
 				if (result.developmentCorpus) {
 					console.log(
 						`development corpus: ${result.developmentCorpus.id} (${result.developmentCorpus.hash})`,
@@ -1309,28 +1433,36 @@ async function main(): Promise<void> {
 		}
 		case "check": {
 			const targetDir = resolve(requireArg("target"));
-			const candidateId = requireArg("candidate");
-			const screen = await runCheapCheckForCandidate({
+			const candidateId = arg("candidate");
+			const screenBuilderRunId = arg("builder-run");
+			const common = {
 				repositoryDir: targetDir,
 				runsRoot: runsRoot(),
 				stateRoot: stateRoot(),
-				candidateId,
 				onRunEvent: cliRunProgress(),
 				...(arg("jobs") ? { jobs: Number(arg("jobs")) } : {}),
-			});
+			};
+			// Either an evaluated Candidate or the applied Builder run that would
+			// become one; the screen is the same run either way.
+			const screen = screenBuilderRunId
+				? await runCheapCheckForBuilderRun({ ...common, builderRunId: screenBuilderRunId })
+				: await runCheapCheckForCandidate({ ...common, candidateId: requireArg("candidate") });
 			console.log(renderCheapCheckLine(screen));
 			for (const row of screen.rows) {
 				console.log(`  ${row.taskId}  ${row.screenOutcome.padEnd(5)} ${row.classification}`);
 			}
 			console.log(`screen eval run: ${screen.screenEvalRunId} (a screen — never a baseline, never evidence)`);
 			console.log(`screen record: ${screen.screenRecordPath}`);
+			const verifyHint = screenBuilderRunId ?? candidateId ?? "<id>";
 			if (screen.verdict === "flat") {
 				console.log(
-					"next: nothing improved. Author another change, or `ahde candidate --builder-run <id>` to verify anyway.",
+					`next: nothing improved. Author another change, or \`ahde candidate --builder-run ${verifyHint}\` to verify anyway.`,
 				);
 				process.exitCode = 1;
 			} else {
-				console.log(`next: ahde candidate --target ${targetDir} --builder-run <id> to verify it for real`);
+				console.log(
+					`next: ahde candidate --target ${targetDir} --builder-run ${screenBuilderRunId ?? "<id>"} to verify it for real`,
+				);
 			}
 			break;
 		}
@@ -1639,6 +1771,12 @@ function cliFailure(error: unknown): { message: string; next?: string } {
 		return {
 			message: "This command needs an interactive terminal (TTY).",
 			next: "Run it directly in a terminal. For automation, use the non-interactive `ahde run`, `ahde validate`, or library API.",
+		};
+	}
+	if (/Target HEAD must equal the Candidate baseline/i.test(message)) {
+		return {
+			message,
+			next: "If the branch already points at the promoted revision this candidate is adopted and there is nothing to do; otherwise put the branch back on the candidate's baseline first.",
 		};
 	}
 	if (/replace-with-model-id|starter placeholder|built-in.*placeholder/i.test(message)) {

@@ -107,7 +107,9 @@ describe("CLI help", () => {
 		expect(cliHelp(["calibrate", "--help"])).toContain("measure run-to-run noise");
 		expect(cliHelp(["calibrate", "--help"])).toContain("never promotable");
 		const check = cliHelp(["check", "--help"]);
-		expect(check).toContain("Usage: ahde check --target <dir> --candidate <id>");
+		expect(check).toContain("ahde check --target <dir> --candidate <id>");
+		expect(check).toContain("ahde check --target <dir> --builder-run <id>");
+		expect(check).toContain("before the verification it exists to\nsave");
 		expect(check).toContain("ONLY\nthe cases its source eval recorded as failing");
 		expect(check).toContain("It is a screen, never evidence.");
 		expect(check).toContain("promotion that cites one is refused");
@@ -156,6 +158,33 @@ describe("CLI help", () => {
 		expect(regrade).toContain("without calling the\nTarget model again");
 		expect(regrade).toContain("the graders it carried when its trace was recorded");
 		expect(regrade).toContain("Sealed\nevidence stays sealed and prints counts only");
+	});
+
+	it("documents the loop the CLI can now finish on its own", () => {
+		const help = cliHelp(["--help"]);
+		expect(help).toContain("Change and ship, without leaving the terminal:");
+		expect(help).toContain("spec approve  propose  apply  adopt");
+
+		const spec = cliHelp(["spec", "approve", "--help"]);
+		expect(spec).toContain("Usage: ahde spec approve --target <dir>");
+		expect(spec).toContain("Running this command IS the approval");
+		expect(spec).toContain("Approving the same content twice is a no-op");
+
+		const propose = cliHelp(["propose", "--help"]);
+		expect(propose).toContain("ahde propose --target <dir> --spec <id> --branch <ref>");
+		expect(propose).toContain("The branch is read, never\nmerged");
+		expect(propose).toContain("a change anywhere else is refused by name");
+		expect(propose).toContain("Sealed holdout evidence\ncan never steer a proposal");
+
+		const apply = cliHelp(["apply", "--help"]);
+		expect(apply).toContain("Usage: ahde apply --target <dir> --builder-run <id>");
+		expect(apply).toContain("the operator's checkout never\nmoves");
+		expect(apply).toContain("candidate/<builder-run-id> and must not already exist");
+
+		const adopt = cliHelp(["adopt", "--help"]);
+		expect(adopt).toContain("Usage: ahde adopt --target <dir> --candidate <id>");
+		expect(adopt).toContain("Running the command is the human confirmation.");
+		expect(adopt).toContain("a candidate that was never promoted");
 	});
 
 	it("renders focused help for nested automation actions", () => {
