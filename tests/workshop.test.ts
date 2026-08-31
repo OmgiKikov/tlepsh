@@ -21,6 +21,7 @@ import {
 	BuilderWorkshopEmptyError,
 	BuilderWorkshopScopeError,
 	openBuilderWorkshop,
+	reattachBuilderWorkshop,
 	type BuilderWorkshop,
 } from "../src/application/tool-workshop.js";
 import { inspectTargetAuthoringContext } from "../src/application/target-authoring-context.js";
@@ -161,6 +162,10 @@ setup:
   timeoutMs: 20000
   network: deny
 `;
+
+const NETWORK_DESCRIPTOR = LOOKUP_DESCRIPTOR
+	.replace("setup:\n  argv: [sh, -c, \"cp lib.sh prepared.sh\"]\n  timeoutMs: 20000\n  network: deny\n",
+		"setup:\n  argv: [sh, -c, \"cp lib.sh prepared.sh\"]\n  timeoutMs: 20000\n  network: allow\n");
 
 const LOOKUP_RUN = `#!/bin/sh
 IFS= read -r payload || exit 2
@@ -458,7 +463,6 @@ describe("the authoring profile", () => {
 				"AGENTS.md",
 				"bin",
 				"data",
-				"manifest.yaml",
 				"skills",
 				"tools",
 			]);
@@ -468,8 +472,9 @@ describe("the authoring profile", () => {
 				"tools/**",
 				"bin/**",
 				"data/**",
-				"manifest.yaml",
 			]);
+			const manifest = await workshop.bash({ argv: ["sh", "-c", "test ! -e manifest.yaml"] });
+			expect(manifest.exitCode).toBe(0);
 			// Git is host-side. There is no repository in the mount to run it against.
 			const git = await workshop.bash({ argv: ["sh", "-c", "git rev-parse --show-toplevel 2>&1; exit 0"] });
 			expect(git.stdout).not.toContain(workshop.path);
@@ -570,10 +575,6 @@ permissions:
 });
 
 describe("a tool that wants more than the profile grants", () => {
-	const NETWORK_DESCRIPTOR = LOOKUP_DESCRIPTOR
-		.replace("setup:\n  argv: [sh, -c, \"cp lib.sh prepared.sh\"]\n  timeoutMs: 20000\n  network: deny\n",
-			"setup:\n  argv: [sh, -c, \"cp lib.sh prepared.sh\"]\n  timeoutMs: 20000\n  network: allow\n");
-
 	function workbenchOn(dir: string): AhdeWorkbench {
 		return createAhdeWorkbench({
 			projectDir: dir,
@@ -595,7 +596,7 @@ describe("a tool that wants more than the profile grants", () => {
 			workshop.write({ path: "tools/lookup/tool.yaml", content: NETWORK_DESCRIPTOR });
 			const requirement = workshop.describeToolGrant("lookup");
 			expect(requirement?.network).toBe(true);
-			expect(requirement?.wants).toEqual(["network access"]);
+			expect(requirement?.wants).toEqual(["network access during setup"]);
 
 			// No host, no exception: the profile simply refuses.
 			await expect(workbench.workshopTry({ tool: "lookup", input: { term: "refunds" } }))
@@ -609,7 +610,7 @@ describe("a tool that wants more than the profile grants", () => {
 			await expect(workbench.workshopTry({ tool: "lookup", input: { term: "refunds" } }, { gate: declining }))
 				.rejects.toThrow(/did not allow lookup network access/);
 
-			// One question, asked exactly once, in the operator's words.
+			// One exact question for one exact invocation, in the operator's words.
 			const asked: WorkbenchConfirmation[] = [];
 			const allowing: WorkbenchHumanGate = {
 				confirm: vi.fn(async (confirmation: WorkbenchConfirmation) => {
@@ -629,14 +630,34 @@ describe("a tool that wants more than the profile grants", () => {
 			expect(asked).toHaveLength(1);
 			expect(asked[0]?.kind).toBe("workshop-grant");
 			expect(asked[0]?.policy).toBe("one-question");
-			expect(asked[0]?.question).toBe("This tool wants network access to run its setup — allow once?");
+			expect(asked[0]?.question).toBe("This tool wants network access during setup — allow for this exact try?");
 
-			// Granted once means granted once: the second try does not ask again.
+			// The grant is one-shot: even identical bytes need a new human action.
 			await workbench.workshopTry({ tool: "lookup", input: { term: "refunds" } }, { gate: allowing });
-			expect(asked).toHaveLength(1);
+			expect(asked).toHaveLength(2);
+			expect(asked[1]?.subject).toMatchObject({
+				tool: "lookup",
+				setupNetwork: true,
+				runtimeNetwork: false,
+				toolDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+			});
+			expect(asked[1]?.subjectHash).not.toBe(asked[0]?.subjectHash);
 
-			// The grant is for that exact capability set, not for the tool name.
-			// Adding a credential request after the answer asks a new question.
+			// Any authored-byte change invalidates the grant, even when the tool's
+			// declared capability set stayed identical.
+			workshop.write({ path: "tools/lookup/lib.sh", content: "ANSWER=changed-after-grant\n" });
+			await workbench.workshopTry({ tool: "lookup", input: { term: "refunds" } }, { gate: allowing });
+			expect(asked).toHaveLength(3);
+			expect(asked[2]?.subject).toMatchObject({
+				tool: "lookup",
+				network: true,
+				environment: [],
+				snapshotHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+			});
+			expect(asked[2]?.subjectHash).not.toBe(asked[1]?.subjectHash);
+
+			// Adding a credential request changes both bytes and capabilities and
+			// therefore asks yet another exact question.
 			workshop.write({
 				path: "tools/lookup/tool.yaml",
 				content: NETWORK_DESCRIPTOR.replace(
@@ -645,8 +666,8 @@ describe("a tool that wants more than the profile grants", () => {
 				),
 			});
 			await workbench.workshopTry({ tool: "lookup", input: { term: "refunds" } }, { gate: allowing });
-			expect(asked).toHaveLength(2);
-			expect(asked[1]?.subject).toMatchObject({
+			expect(asked).toHaveLength(4);
+			expect(asked[3]?.subject).toMatchObject({
 				tool: "lookup",
 				network: true,
 				environment: ["WORKSHOP_TARGET_SECRET"],
@@ -654,7 +675,7 @@ describe("a tool that wants more than the profile grants", () => {
 
 			// And the exception travels into the diff the operator applies.
 			const compiled = workshop.compile({ summary: "A tool that fetches its dependency", validationPlan: ["Re-run the basket"] });
-			expect(compiled.proposal.risks.some((risk) => /operator allowed lookup network access once/.test(risk))).toBe(true);
+			expect(compiled.proposal.risks.some((risk) => /operator allowed lookup network access during setup for one exact try/.test(risk))).toBe(true);
 			expect(compiled.proposal.risks.some((risk) => risk.includes("local:test-human"))).toBe(true);
 		} finally {
 			workshop.dispose();
@@ -822,6 +843,49 @@ describe("closing the workshop is the proposal", () => {
 		expect(execFileSync("git", ["-C", dir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim())
 			.toBe(compiled.baseTargetSha);
 		expect(worktreeCount(dir)).toBe(1);
+	}, 120_000);
+
+	it("treats persisted workshop state as selection only and restores no grant", async () => {
+		const dir = fixture({ manifest: PERMISSIVE_MANIFEST });
+		const workshop = open(dir);
+		let reattached: BuilderWorkshop | null = null;
+		try {
+			writeLookupTool(workshop);
+			workshop.write({ path: "tools/lookup/tool.yaml", content: NETWORK_DESCRIPTOR });
+			const requirement = workshop.describeToolGrant("lookup");
+			expect(requirement).not.toBeNull();
+			const snapshotHash = workshop.snapshotHash();
+			workshop.grantToolAccess({
+				tool: "lookup",
+				wants: requirement!.wants,
+				snapshotHash,
+				actorId: "local:test-human",
+				now: () => "2026-08-31T00:00:00.000Z",
+			});
+			expect(workshop.status().grants).toHaveLength(1);
+			const descriptor = workshop.describe();
+			expect(descriptor).not.toHaveProperty("grants");
+
+			const target = loadTarget(dir);
+			const authoring = inspectTargetAuthoringContext({
+				repositoryDir: dir,
+				expectedTarget: { id: target.manifest.id, gitSha: target.gitSha },
+			});
+			reattached = reattachBuilderWorkshop({
+				repositoryDir: dir,
+				expectedTarget: { id: target.manifest.id, gitSha: target.gitSha },
+				authoringContext: authoring.claim,
+				descriptor,
+			});
+			expect(reattached.status().grants).toEqual([]);
+			await expect(reattached.tryTool({ tool: "lookup", input: { term: "refunds" } }))
+				.rejects.toThrow(/operator has to allow that once/);
+		} finally {
+			reattached?.dispose();
+			// Reattached disposal owns the same detached worktree. If construction
+			// failed before that point, the original handle still owns cleanup.
+			if (!reattached) workshop.dispose();
+		}
 	}, 120_000);
 });
 

@@ -545,12 +545,16 @@ export const PersistedWorkbenchWorkshopSchema = z.strictObject({
 	scratchRoot: z.string().min(1).max(4_096),
 	openedAt: z.iso.datetime({ offset: true }),
 	snapshotHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+	// Legacy V1 notes persisted grants here. Parse them only so an existing
+	// workshop can be re-attached safely; the reattach path deliberately ignores
+	// them and every new descriptor omits them. Editable selection state grants
+	// no runtime authority.
 	grants: z.array(z.strictObject({
 		tool: z.string().min(1).max(64),
 		wants: z.array(NonBlankSchema.max(200)).min(1).max(8),
 		grantedAt: z.iso.datetime({ offset: true }),
 		actorId: z.string().min(1).max(200),
-	})).max(32),
+	})).max(32).optional(),
 });
 export type PersistedWorkbenchWorkshop = z.infer<typeof PersistedWorkbenchWorkshopSchema>;
 

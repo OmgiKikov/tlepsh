@@ -1325,7 +1325,7 @@ export class AhdeWorkbench {
 				repositoryDir: this.projectDir,
 				expectedTarget: { id: authoringContext.target.id, gitSha: authoringContext.target.gitSha },
 				authoringContext: authoringContext.claim,
-				descriptor: { ...recorded, grants: recorded.grants },
+				descriptor: recorded,
 			});
 			reattached = true;
 		} else {
@@ -1339,7 +1339,7 @@ export class AhdeWorkbench {
 						repositoryDir: this.projectDir,
 						expectedTarget: { id: authoringContext.target.id, gitSha: authoringContext.target.gitSha },
 						authoringContext: authoringContext.claim,
-						descriptor: { ...recorded, grants: recorded.grants },
+						descriptor: recorded,
 					});
 					abandoned.dispose();
 				} finally {
@@ -1570,20 +1570,23 @@ export class AhdeWorkbench {
 			}
 			const subject = {
 				workshopId: workshop.workshopId,
+				snapshotHash: workshop.snapshotHash(),
+				tryNumber: workshop.status().tries + 1,
 				tool: requirement.tool,
+				toolDigest: requirement.toolDigest,
 				network: requirement.network,
+				setupNetwork: requirement.setupNetwork,
+				runtimeNetwork: requirement.runtimeNetwork,
 				environment: requirement.environment,
 			};
 			const confirmation: WorkbenchConfirmation = {
 				kind: "workshop-grant",
-				title: `Allow ${requirement.tool} ${requirement.wants.join(" and ")} once`,
+				title: `Allow ${requirement.tool} ${requirement.wants.join(" and ")} for one exact try`,
 				reason: `the ${requirement.tool} tool declares it and the workshop denies it by default`,
 				subject,
 				subjectHash: hashValue(subject),
 				policy: "one-question",
-				question: requirement.network
-					? `This tool wants network access to run its setup — allow once?`
-					: `This tool wants ${requirement.wants.join(" and ")} — allow once?`,
+				question: `This tool wants ${requirement.wants.join(" and ")} — allow for this exact try?`,
 			};
 			const decision = await options.gate.confirm(confirmation, options.signal);
 			abortIfRequested(options.signal);
@@ -1596,6 +1599,7 @@ export class AhdeWorkbench {
 			workshop.grantToolAccess({
 				tool: requirement.tool,
 				wants: requirement.wants,
+				snapshotHash: subject.snapshotHash,
 				actorId: actorId(decision.actorId),
 				now: this.dependencies.now,
 			});

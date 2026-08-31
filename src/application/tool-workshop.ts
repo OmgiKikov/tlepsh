@@ -45,6 +45,7 @@ import {
 } from "../target/tool-broker.js";
 import { prepareToolHome, type ToolSetupOutcome } from "../target/tool-setup.js";
 import { loadTargetTools, type TargetToolLayout } from "../target/tool-manifest.js";
+import { resolveExecutionBackend } from "../target/container-backend.js";
 import {
 	compileHarnessAuthoringProposal,
 	renderManifest,
@@ -166,7 +167,7 @@ function applyDraft(worktreePath: string, patch: string): void {
 
 /**
  * Run one declared tool on one JSON input inside a private scratch copy of the
- * Harness, exactly as a Target would: same descriptor, same OS sandbox, same
+ * Harness, exactly as a Target would: same descriptor, same declared backend, same
  * declared setup step, same workspace projection (no evals, no imports, no
  * secrets, only declared data).
  *
@@ -228,7 +229,13 @@ async function runDeclaredToolOnSurface(options: {
 		throw new ToolWorkshopError(`Target declares no tool named ${options.tool}; declared: ${declared}`);
 	}
 	const scratchDir = join(options.scratchRoot, "sandbox");
-	const sandboxBackend = detectTargetToolSandbox(options.directory, scratchDir);
+	// Resolve the Target's declared backend once and hand that exact choice to
+	// both setup and the tool call. A container Target must never be previewed on
+	// host dependencies and then measured in a different OCI environment.
+	const sandboxBackend = resolveExecutionBackend({
+		policy: options.target.manifest.execution,
+		osBackend: () => detectTargetToolSandbox(options.directory, scratchDir),
+	}).backend;
 	const prepared = tool.layout === "directory"
 		? prepareToolHome({
 			workspaceDir: options.directory,
@@ -329,8 +336,8 @@ const WORKSHOP_SCOPE_DIRECTORIES = ["skills", "tools", "bin", "data"] as const;
 const WORKSHOP_PATH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
 /** `manifest.yaml` is host-owned: the workshop derives its declarations. */
 const WORKSHOP_MANIFEST = "manifest.yaml";
-/** The whole surface a workshop's own code ever sees, host-rendered manifest included. */
-export const BUILDER_WORKSHOP_MOUNTED_PATHS = [...BUILDER_WORKSHOP_SCOPE, WORKSHOP_MANIFEST] as const;
+/** The whole surface workshop-authored code may see. Host policy stays outside. */
+export const BUILDER_WORKSHOP_MOUNTED_PATHS = [...BUILDER_WORKSHOP_SCOPE] as const;
 
 export const MAX_WORKSHOP_FILE_BYTES = TARGET_AUTHORING_LIMITS.resourceBytes;
 export const MAX_WORKSHOP_CHANGES = 256;
@@ -679,8 +686,12 @@ export interface WorkshopChange {
 /** What one workshop tool wants beyond the authoring profile, before it runs. */
 export interface WorkshopToolGrantRequirement {
 	tool: string;
+	/** Exact resolved descriptor + executable/support-file identity. */
+	toolDigest: string;
 	/** The declared tool or its setup step asks to reach the network. */
 	network: boolean;
+	setupNetwork: boolean;
+	runtimeNetwork: boolean;
 	/** Environment variables the declared tool asks for — credentials, in practice. */
 	environment: readonly string[];
 	/** Human words for the one question the host asks. */
@@ -690,7 +701,12 @@ export interface WorkshopToolGrantRequirement {
 /** The operator's recorded answer to that one question. */
 export interface WorkshopGrant {
 	tool: string;
+	toolDigest: string;
 	wants: readonly string[];
+	/** Exact authored bytes this one-process exception reviewed. */
+	snapshotHash: string;
+	/** A grant is consumed before its exact try starts, even when execution fails. */
+	used: boolean;
 	grantedAt: string;
 	actorId: string;
 }
@@ -751,7 +767,6 @@ export interface BuilderWorkshopDescriptor {
 	scratchRoot: string;
 	openedAt: string;
 	snapshotHash: string;
-	grants: readonly WorkshopGrant[];
 }
 
 export interface CompiledWorkshopProposal {
@@ -799,7 +814,6 @@ export class BuilderWorkshop {
 		basis: BuilderWorkshopBasis;
 		approvedSpecId: string;
 		fromProposalRunId?: string | null;
-		grants?: readonly WorkshopGrant[];
 		openedAt: string;
 		baseManifestText: string;
 		baseManifest: TargetManifestValue;
@@ -818,7 +832,6 @@ export class BuilderWorkshop {
 		this.fromProposalRunId = options.fromProposalRunId ?? null;
 		this.baseManifestText = options.baseManifestText;
 		this.baseManifest = options.baseManifest;
-		for (const grant of options.grants ?? []) this.grants.push({ ...grant, wants: [...grant.wants] });
 	}
 
 	get open(): boolean {
@@ -1130,6 +1143,10 @@ export class BuilderWorkshop {
 			throw new BuilderWorkshopScopeError(files.symlinks, "the workshop contains a symlink");
 		}
 		for (const file of files.entries.values()) {
+			// manifest.yaml contains host-owned model/evaluator configuration and
+			// credential variable names. It participates in the host-side snapshot
+			// and compiled diff, but authored code gets only authorable resources.
+			if (file.path === WORKSHOP_MANIFEST) continue;
 			const destination = join(surface, file.path);
 			mkdirSync(dirname(destination), { recursive: true, mode: 0o755 });
 			writeFileSync(destination, file.content);
@@ -1227,22 +1244,56 @@ export class BuilderWorkshop {
 		this.syncDeclarations();
 		const resolved = loadTarget(this.path).tools.find((tool) => tool.descriptor.name === toolName);
 		if (!resolved) return null;
-		const network = resolved.descriptor.permissions.network === "allow" ||
-			resolved.descriptor.setup?.network === "allow";
+		const runtimeNetwork = resolved.descriptor.permissions.network === "allow";
+		const setupNetwork = resolved.descriptor.setup?.network === "allow";
+		const network = runtimeNetwork || setupNetwork;
 		const environment = [...resolved.descriptor.permissions.environment];
 		if (!network && environment.length === 0) return null;
 		const wants: string[] = [];
-		if (network) wants.push("network access");
+		if (setupNetwork) wants.push("network access during setup");
+		if (runtimeNetwork) wants.push("network access during tool execution");
 		if (environment.length > 0) wants.push(`the ${environment.join(", ")} environment ${environment.length === 1 ? "variable" : "variables"}`);
-		return { tool: toolName, network, environment, wants };
+		return {
+			tool: toolName,
+			toolDigest: resolved.digest,
+			network,
+			setupNetwork,
+			runtimeNetwork,
+			environment,
+			wants,
+		};
 	}
 
 	/** Record the operator's one-question answer. Only a host ever calls this. */
-	grantToolAccess(grant: { tool: string; wants: readonly string[]; actorId: string; now: () => string }): WorkshopGrant {
+	grantToolAccess(grant: {
+		tool: string;
+		wants: readonly string[];
+		snapshotHash: string;
+		actorId: string;
+		now: () => string;
+	}): WorkshopGrant {
 		this.assertOpen();
+		const currentRequirement = this.describeToolGrant(grant.tool);
+		if (!currentRequirement) {
+			throw new ToolWorkshopError(`the requested ${grant.tool} access no longer matches the tool declaration; ask again`);
+		}
+		const expected = canonicalList([...currentRequirement.wants].sort((left, right) => left.localeCompare(right)));
+		const offered = canonicalList([...grant.wants].sort((left, right) => left.localeCompare(right)));
+		if (expected !== offered) {
+			throw new ToolWorkshopError(`the requested ${grant.tool} access no longer matches the tool declaration; ask again`);
+		}
+		const current = this.snapshotHash();
+		if (current !== grant.snapshotHash) {
+			throw new ToolWorkshopError(
+				`the workshop changed while ${grant.tool} access was being reviewed (${grant.snapshotHash} → ${current}); ask again`,
+			);
+		}
 		const recorded: WorkshopGrant = {
 			tool: grant.tool,
+			toolDigest: currentRequirement.toolDigest,
 			wants: [...grant.wants],
+			snapshotHash: grant.snapshotHash,
+			used: false,
 			grantedAt: grant.now(),
 			actorId: grant.actorId,
 		};
@@ -1250,13 +1301,30 @@ export class BuilderWorkshop {
 		return recorded;
 	}
 
-	toolAccessGranted(requirement: WorkshopToolGrantRequirement): boolean {
+	toolAccessGranted(requirement: WorkshopToolGrantRequirement, snapshotHash = this.snapshotHash()): boolean {
 		this.assertOpen();
 		const expected = canonicalList([...requirement.wants].sort((left, right) => left.localeCompare(right)));
 		return this.grants.some((grant) =>
 			grant.tool === requirement.tool &&
+			grant.toolDigest === requirement.toolDigest &&
+			grant.snapshotHash === snapshotHash &&
+			!grant.used &&
 			canonicalList([...grant.wants].sort((left, right) => left.localeCompare(right))) === expected
 		);
+	}
+
+	private consumeToolAccess(requirement: WorkshopToolGrantRequirement, snapshotHash: string): boolean {
+		const expected = canonicalList([...requirement.wants].sort((left, right) => left.localeCompare(right)));
+		const grant = this.grants.find((candidate) =>
+			candidate.tool === requirement.tool &&
+			candidate.toolDigest === requirement.toolDigest &&
+			candidate.snapshotHash === snapshotHash &&
+			!candidate.used &&
+			canonicalList([...candidate.wants].sort((left, right) => left.localeCompare(right))) === expected
+		);
+		if (!grant) return false;
+		grant.used = true;
+		return true;
 	}
 
 	/**
@@ -1273,13 +1341,13 @@ export class BuilderWorkshop {
 		}
 		this.syncDeclarations();
 		const requirement = this.describeToolGrant(options.tool);
-		if (requirement && !this.toolAccessGranted(requirement)) {
-			throw new BuilderWorkshopGrantRequiredError(requirement.tool, requirement.wants);
-		}
 		// Fix what is being tried before anything runs, so the result describes the
 		// exact bytes that produced it rather than whatever is on disk afterwards.
 		const before = this.walkAuthoringScope();
 		const snapshotHash = workshopSnapshotHash(before.entries);
+		if (requirement && !this.consumeToolAccess(requirement, snapshotHash)) {
+			throw new BuilderWorkshopGrantRequiredError(requirement.tool, requirement.wants);
+		}
 		const changedPaths = this.changesFrom(before.entries).map((change) => change.path);
 		const target = loadTarget(this.path);
 		// `try` gets the same filesystem promise as `bash`: only the authorable
@@ -1536,7 +1604,6 @@ export class BuilderWorkshop {
 			scratchRoot: this.scratchRoot,
 			openedAt: this.openedAt,
 			snapshotHash: this.snapshotHash(),
-			grants: this.grants.map((grant) => ({ ...grant, wants: [...grant.wants] })),
 		};
 	}
 
@@ -1622,7 +1689,14 @@ export class BuilderWorkshop {
 			changes: compiled,
 			// A host-granted exception is part of the change's risk, so it travels
 			// with the artifact into every screen that renders the proposal.
-			risks: [...(metadata.risks ?? []), ...this.grants.map(grantRisk)],
+			risks: [
+				...(metadata.risks ?? []),
+				...this.grants.map(grantRisk),
+				...(this.grants.length > 0 && !this.grants.some((grant) =>
+					grant.used && grant.snapshotHash === workshopSnapshotHash(snapshot.entries))
+					? ["The exact proposal snapshot was not tried after its latest authored change with a reviewed capability exception."]
+					: []),
+			],
 			validationPlan: metadata.validationPlan ?? [],
 		});
 		validateCandidateProposal(proposal, {
@@ -1761,8 +1835,9 @@ function canonicalList(value: readonly string[]): string {
 
 /** The sentence a granted exception adds to the diff the operator applies. */
 function grantRisk(grant: WorkshopGrant): string {
-	return `The operator allowed ${grant.tool} ${grant.wants.join(" and ")} once inside the workshop ` +
-		`(${grant.actorId}, ${grant.grantedAt}); this proposal was tried with that exception in place.`;
+	return `The operator allowed ${grant.tool} ${grant.wants.join(" and ")} for one exact try ` +
+		`of ${grant.toolDigest} at ${grant.snapshotHash} (${grant.actorId}, ${grant.grantedAt}); ` +
+		`the exception was ${grant.used ? "consumed" : "not consumed"}.`;
 }
 
 function inWorkshopScope(path: string): boolean {
@@ -1883,7 +1958,6 @@ export function reattachBuilderWorkshop(options: {
 			basis: descriptor.basis,
 			approvedSpecId: descriptor.approvedSpecId,
 			fromProposalRunId: descriptor.fromProposalRunId,
-			grants: descriptor.grants,
 			openedAt: descriptor.openedAt,
 			baseManifestText,
 			baseManifest: TargetManifest.parse(parseYaml(baseManifestText)),
