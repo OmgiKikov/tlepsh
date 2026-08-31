@@ -5,14 +5,17 @@
  * A verification costs (development + sealed tasks) × repetitions × 2 arms.
  * This costs `failed tasks × 1`. It is a SCREEN and never evidence:
  *
- * - its EvalRun carries the `solo` label, which is outside the reusable set
- *   (`findReusableBaseline` only ever asks for `baseline`) and which the
- *   EvalRun schema forbids from naming a baseline, so it can never stand in
- *   for a candidate arm either — the same treatment `regrade` got;
- * - every screen is additionally recorded in `runs/screens/<id>.json`, and
- *   {@link screenEvalRunIds} is consulted by promotion evidence verification
- *   and by trace-derived regression cases, so a screen can never be laundered
- *   into either;
+ * - its EvalRun carries `purpose: "screen"`, written atomically with the record
+ *   itself. Baseline reuse, the comparison gate, promotion evidence,
+ *   regression-case selection and the Workbench inventory all read that field,
+ *   so a process killed before anything else is written still leaves a run
+ *   nothing will admit;
+ * - it also carries the one-arm `solo` label, but purpose — not label — is the
+ *   exclusion boundary. Ordinary solo development evidence may be reused;
+ *   a screen may not, and it can never stand in for a candidate arm;
+ * - every screen is additionally recorded in `runs/screens/<id>.json` as
+ *   belt-and-braces. {@link screenExclusion} reads that sidecar and fails
+ *   CLOSED: an unreadable marker refuses everything it might name;
  * - nothing here ever calls the comparison gate. The screen compares the
  *   candidate's outcomes with the *recorded* outcomes of the source eval,
  *   which is a reading of artifacts, not a matched measurement.
@@ -33,6 +36,7 @@ import { loadCorpus } from "../corpus.js";
 import { withinInfrastructureBudget } from "../domain/comparison-gate.js";
 import {
 	loadVerifiedEvalRun,
+	readEvalRunIndex,
 	runSuite,
 	type EvalRunRecord,
 } from "../eval.js";
@@ -51,6 +55,13 @@ import { CandidateRecordSchema, type CandidateRecord } from "../domain/candidate
  * `screen` label would have to change the EvalRun schema in `src/eval.ts`.
  */
 export const CHEAP_CHECK_SCREEN_LABEL = "solo" as const;
+
+/**
+ * A screen's identity, written into its EvalRun. This — not the sidecar — is
+ * what `findReusableBaseline`, the comparison gate, promotion evidence,
+ * regression-case selection and the Workbench inventory read.
+ */
+export const CHEAP_CHECK_SCREEN_PURPOSE = "screen" as const;
 
 /** One screen repetition. More would make it a measurement, not a screen. */
 export const CHEAP_CHECK_REPETITIONS = 1;
@@ -182,38 +193,80 @@ export function screenRecordPath(runsRoot: string, screenId: string): string {
 }
 
 /**
- * Every EvalRun this project recorded as a screen. Read leniently: one bad
- * file on disk must never make a promotion or a regression case impossible to
- * decide — but it also must never let a screen through, so an unreadable
- * screen directory entry is reported by id when its name allows.
+ * What the `runs/screens/` sidecar says, including what it fails to say.
+ *
+ * The sidecar is belt-and-braces now that {@link EvalRunRecord.purpose} carries
+ * a screen's identity, and it fails CLOSED: an entry that cannot be read still
+ * names something, so whatever it might name is refused. A marker keeps its
+ * screen's eval run id in its filename (`screen-<evalRunId>.json`), so a
+ * corrupt-but-named marker blocks exactly that run; a marker whose name reveals
+ * nothing blocks everything, because everything is what it might name.
  */
-export function screenEvalRunIds(runsRoot: string): Set<string> {
+export interface ScreenExclusion {
+	/** Eval runs a readable — or name-readable — marker calls a screen. */
+	ids: Set<string>;
+	/** Marker filenames that could not be read at all. */
+	unreadable: string[];
+	/** True when an unreadable marker's filename named no eval run. */
+	blocksEverything: boolean;
+}
+
+const NAMED_SCREEN_MARKER = /^screen-([A-Za-z0-9][A-Za-z0-9._-]{0,199})\.json$/;
+
+export function screenExclusion(runsRoot: string): ScreenExclusion {
 	const ids = new Set<string>();
+	const unreadable: string[] = [];
+	let blocksEverything = false;
 	const root = screensRoot(runsRoot);
-	if (!existsSync(root)) return ids;
+	if (!existsSync(root)) return { ids, unreadable, blocksEverything };
 	let entries: string[];
 	try {
 		entries = readdirSync(root);
 	} catch {
-		return ids;
+		// A screens directory that cannot be listed hides an unknown number of
+		// screens. Nothing in it can be ruled out, so nothing is admitted.
+		return { ids, unreadable: [root], blocksEverything: true };
 	}
 	for (const entry of entries) {
 		if (!entry.endsWith(".json")) continue;
 		try {
 			const record = readJsonArtifact(join(root, entry), CheapCheckScreenRecordSchema);
 			ids.add(record.evalRunId);
-		} catch {
-			// An unreadable screen marker cannot name its eval run; it also cannot
-			// admit one, because a screen is only ever admitted by an exact match.
 			continue;
+		} catch {
+			unreadable.push(entry);
 		}
+		const named = NAMED_SCREEN_MARKER.exec(entry);
+		if (named) ids.add(named[1]!);
+		else blocksEverything = true;
 	}
-	return ids;
+	return { ids, unreadable, blocksEverything };
 }
 
-/** True when this EvalRun was produced by a cheap check and is therefore never evidence. */
+/**
+ * Every EvalRun this project's sidecar records as a screen. Kept for callers
+ * that only need the set; use {@link screenExclusion} where an unreadable
+ * marker has to fail closed.
+ */
+export function screenEvalRunIds(runsRoot: string): Set<string> {
+	return screenExclusion(runsRoot).ids;
+}
+
+/**
+ * True when this EvalRun is excluded from evidence: a screen, or quarantined
+ * legacy one-arm evidence whose purpose cannot be reconstructed. The record's
+ * own `purpose` is the primary answer; the sidecar is consulted after it, and
+ * an unreadable marker refuses rather than passes.
+ */
 export function isScreenEvalRun(runsRoot: string, evalRunId: string): boolean {
-	return screenEvalRunIds(runsRoot).has(evalRunId);
+	try {
+		if (readEvalRunIndex(runsRoot, evalRunId).purpose !== "evidence") return true;
+	} catch {
+		// An index that will not parse is not proof of anything; the sidecar and
+		// every downstream verifier still get their say.
+	}
+	const exclusion = screenExclusion(runsRoot);
+	return exclusion.blocksEverything || exclusion.ids.has(evalRunId);
 }
 
 interface TaskOutcomeAggregate {
@@ -346,6 +399,10 @@ export async function runCheapCheck(
 			const screen = await dependencies.runSuite(subset, {
 				runsRoot,
 				label: CHEAP_CHECK_SCREEN_LABEL,
+				// Written into the EvalRun itself, atomically with the record: the
+				// marker below is belt-and-braces, and a crash between the two leaves
+				// a run that every reader still refuses.
+				purpose: CHEAP_CHECK_SCREEN_PURPOSE,
 				repetitions: CHEAP_CHECK_REPETITIONS,
 				evidenceVisibility: "development",
 				...(options.jobs === undefined ? {} : { jobs: options.jobs }),

@@ -194,7 +194,16 @@ credential.
 4. Comparability excludes the changing Harness revision but includes every other effective execution and grading input.
 5. The Target sees one holdout input at a time, never the holdout corpus, graders, expected answers, or future cases.
 6. A Proposal cannot modify corpus or model configuration and cannot be applied
-   without an explicit human command. It may update only `AGENTS.md`,
+   without explicit human authority. An interactive apply means the human read
+   THIS diff. Improve and proposal search instead authorize automated trials on
+   throwaway branches and say explicitly that this is not individual diff
+   review. Their receipts and Candidate origins record `via:
+   "improvement-loop"` or `via: "proposal-search"`, so no reader can mistake
+   them for reviewed applies. Improve lists changed paths in its cycle table;
+   `/review` shows the exact diff, and review/ship bind that diff's artifact hash
+   before recording release authority. Nothing touches the operator's branch or
+   working tree before adoption.
+   A Proposal may update only `AGENTS.md`,
    `skills/**`, `tools/**`, `bin/**`, `data/**`, and the manifest's declared
    resources. Only declared `data/` directories reach a Target workspace; they
    are bounded in total bytes and are shown to the Builder as shape, never
@@ -359,3 +368,23 @@ credential.
     the host UI and never a value, the exact non-secret `manifest.yaml` diff,
     one commit touching only `manifest.yaml`, and an immutable receipt. A judge
     equal to the Target's own model is refused.
+41. A cheap-check screen's identity lives in its own EvalRun (`purpose:
+    "screen"`), written atomically with the record. Baseline reuse, every
+    non-exploratory comparison, promotion evidence, regression-case selection
+    and the Workbench inventory refuse it by reading that field, so a process
+    killed before the `runs/screens/` marker is written still leaves a run
+    nothing admits. The marker remains as belt-and-braces and fails closed: an
+    unreadable marker refuses everything it might name.
+42. `ahde improve` binds a proposal to a cycle by SURFACE — dataset label and
+    hash, suite hash, Target revision and approved Spec — plus the failure mode the proposal
+    attests to, never by the id of an eval run the invocation itself just
+    minted. A proposal prepared before the command therefore matches; one
+    prepared after a stop still matches the next invocation while the surface
+    holds; and one whose surface moved is refused with a typed reason naming
+    what moved. Every invocation carries a loop id, its branches are
+    `candidate/auto-<loopId>-<n>`, and a second `improve` over an unfinished
+    loop reports it and refuses until `--resume` or `--abandon`. The ledger is
+    checkpointed after every spend and created branch, and resumption also reads
+    the Git refs so a crash cannot make a branch name reusable. The loop stops at
+    the first verified candidate: compounding before a full-stack matched and
+    sealed baseline exists would overstate what the evidence proved.

@@ -341,17 +341,50 @@ export type BuilderProposalAdmission = z.infer<typeof BuilderProposalAdmissionSc
 
 const HumanActorSchema = z.strictObject({ kind: z.literal("human"), id: NonBlankSchema });
 
+/**
+ * v2 added `via: improvement-loop`; v3 adds `via: proposal-search`. v1
+ * receipts stay readable exactly as written: they predate automated applies,
+ * and every one of them was an interactive apply.
+ */
+export const BUILDER_APPLY_RECEIPT_SCHEMA_VERSION = 3;
+
+/**
+ * How the apply happened, when it was not a human reading the diff.
+ * `improvement-loop` and `proposal-search` mean the operator authorized an
+ * automated trial on throwaway branches without reviewing each proposal on its
+ * own. Absent means an interactive apply — a human saw this exact diff and said
+ * yes to it.
+ */
+export const BuilderApplyViaSchema = z.enum(["improvement-loop", "proposal-search"]);
+export type BuilderApplyVia = z.infer<typeof BuilderApplyViaSchema>;
+
 export const BuilderApplyReceiptSchema = z.strictObject({
-	schemaVersion: z.literal(1),
+	schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(BUILDER_APPLY_RECEIPT_SCHEMA_VERSION)]),
 	runId: RunIdSchema,
 	proposalSha256: Sha256Schema,
 	baseTargetSha: GitShaSchema,
 	candidateSha: GitShaSchema,
 	branch: NonBlankSchema,
 	paths: z.array(z.string().min(1)).min(1).refine((paths) => new Set(paths).size === paths.length, "paths must be unique"),
+	/**
+	 * The human whose authority this apply carries. For an automated improve or
+	 * search apply that is the operator who authorized the trial — never a
+	 * fiction, but never a claim that they read this diff either; `via` says
+	 * which it was.
+	 */
 	actor: HumanActorSchema,
+	via: BuilderApplyViaSchema.optional(),
 	appliedAt: TimestampSchema,
 	reason: NonBlankSchema,
+}).superRefine((receipt, context) => {
+	const minimumVersion = receipt.via === "proposal-search" ? 3 : receipt.via === "improvement-loop" ? 2 : 1;
+	if (receipt.schemaVersion < minimumVersion) {
+		context.addIssue({
+			code: "custom",
+			path: ["via"],
+			message: `${receipt.via} requires apply-receipt schemaVersion ${minimumVersion}`,
+		});
+	}
 });
 export type BuilderApplyReceipt = z.infer<typeof BuilderApplyReceiptSchema>;
 
@@ -1321,6 +1354,11 @@ export interface ApplyBuilderProposalOptions {
 	expectedBuilderRunHash?: string;
 	requestedBranch: string;
 	actor: { kind: "human"; id: string };
+	/**
+	 * Set by a caller that applies without showing this diff to a human — today
+	 * only `ahde improve`. Absent means the actor read this exact diff.
+	 */
+	via?: BuilderApplyVia;
 	reason: string;
 }
 
@@ -1578,6 +1616,7 @@ export function applyBuilderProposal(
 	const now = deps.now;
 	const runId = RunIdSchema.parse(options.runId);
 	const actor = HumanActorSchema.parse(options.actor);
+	const via = options.via === undefined ? undefined : BuilderApplyViaSchema.parse(options.via);
 	const reason = NonBlankSchema.parse(options.reason);
 	const repositoryDir = repositoryRoot(options.repoDir);
 	const branchRef = validateBranch(repositoryDir, options.requestedBranch);
@@ -1718,7 +1757,7 @@ export function applyBuilderProposal(
 		gitText(repositoryDir, ["update-ref", "-m", `AHDE apply ${runId}`, branchRef, candidateSha, ZERO_SHA]);
 		branchCreated = true;
 		const receipt = BuilderApplyReceiptSchema.parse({
-			schemaVersion: 1,
+			schemaVersion: BUILDER_APPLY_RECEIPT_SCHEMA_VERSION,
 			runId,
 			proposalSha256: persisted.artifacts.proposal.sha256,
 			baseTargetSha: baseSha,
@@ -1726,6 +1765,9 @@ export function applyBuilderProposal(
 			branch: options.requestedBranch,
 			paths,
 			actor,
+			// Absent for an interactive apply, so the receipt of a diff a human read
+			// is byte-identical to what it always was, minus the version bump.
+			...(via ? { via } : {}),
 			appliedAt,
 			reason,
 		});

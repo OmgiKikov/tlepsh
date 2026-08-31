@@ -2,13 +2,12 @@ import type {
 	WorkbenchCandidateSummary,
 	WorkbenchConfirmation,
 	WorkbenchDatasetCase,
+	WorkbenchProposalReview,
 } from "../../workbench/types.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
 import { bullets, clean, numbered, oneLine, pluralize, shortHash, shortSha, wrap } from "./format.js";
 import type { Paint } from "./paint.js";
 import { renderCandidate, renderDatasetCases } from "./view.js";
-
-const MAX_CONFIRM_DIFF_LINES = 200;
 
 type Bag = Record<string, unknown>;
 
@@ -172,9 +171,25 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 		case "ship": {
 			const steps = strings(subject.steps);
 			const candidate = subject.candidate;
+			const diff = subject.diff === null || subject.diff === undefined ? null : bag(subject.diff);
+			const exactDiff = typeof diff?.exactDiff === "string" ? diff.exactDiff : "";
 			return [
 				`${paint.dim("Development")} ${text(subject.development, 96)}`,
 				`${paint.dim("Sealed")} ${text(subject.sealed, 96)}`,
+				// The diff summary belongs BEFORE the yes: a loop-applied candidate was
+				// never shown file by file, and this is the last chance to see what it is.
+				...(diff
+					? [
+						`${paint.dim("Diff")} ${paint.bold(pluralize(Number(diff.files ?? 0), "file"))} ${paint.dim("·")} ` +
+							`${text(strings(diff.paths).join(", "), 96)}`,
+						diff.via === "improvement-loop" || diff.via === "proposal-search"
+							? `${paint.dim("Applied")} ${paint.warning(`by the ${diff.via === "improvement-loop" ? "improvement loop" : "proposal search"}`)} ${paint.dim(`— ${text(diff.appliedBy, 40)} authorized the automated trial, not this individual diff`)}`
+							: `${paint.dim("Applied")} ${paint.dim(`by ${text(diff.appliedBy, 40)}, who read this diff`)}`,
+						...(exactDiff
+							? [paint.dim(`Exact diff · ${shortHash(text(diff.proposalHash, 80))}`), ...renderUnifiedDiff(exactDiff, paint, { maxLines: Number.MAX_SAFE_INTEGER })]
+							: [paint.warning("Exact diff is unavailable; do not ship this automated candidate")]),
+					]
+					: []),
 				...(isCandidateSummary(candidate) ? judgeCalibrationLines(candidate, paint) : []),
 				`${paint.dim("Version")} ${subject.tag ? paint.bold(text(subject.tag, 40)) : paint.warning("already promoted")}`,
 				`${paint.dim("Branch")} ${text(subject.fastForward, 96)}`,
@@ -277,7 +292,12 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 		case "reject-candidate":
 		case "adopt-candidate":
 		case "continue-cycle": {
-			const lines = isCandidateSummary(subject.candidate) ? renderCandidate(subject.candidate, paint) : describe(subject.candidate, paint);
+			const proposal = subject.proposal === null || subject.proposal === undefined
+				? null
+				: subject.proposal as WorkbenchProposalReview;
+			const lines = isCandidateSummary(subject.candidate)
+				? renderCandidate({ ...subject.candidate, proposal }, paint)
+				: describe(subject.candidate, paint);
 			if (confirmation.kind === "review-candidate") lines.push(`${paint.dim("Recommendation")} ${paint.bold(text(subject.recommendation))}`);
 			if (confirmation.kind === "promote-candidate") lines.push(`${paint.dim("Tag")} ${paint.success(text(subject.tag))} ${paint.dim("· annotated tag on the exact candidate revision")}`);
 			if (confirmation.kind === "adopt-candidate") {

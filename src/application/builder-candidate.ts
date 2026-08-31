@@ -237,6 +237,9 @@ export async function runAppliedBuilderCandidate(
 		applyReceipt: receiptArtifact,
 		application: {
 			actor: receipt.actor,
+			// Carried through verbatim: a candidate the loop applied says so for the
+			// rest of its life, including in the ship dialog.
+			...(receipt.via ? { via: receipt.via } : {}),
 			reason: receipt.reason,
 			appliedAt: receipt.appliedAt,
 			baseTargetSha: receipt.baseTargetSha,

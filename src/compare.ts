@@ -112,6 +112,19 @@ export function compareVerifiedEvalRuns(
 	const b = bVerified.record;
 	const mode = options.mode;
 	const invalid: string[] = [];
+	// A screen is a one-repetition, candidate-only re-run of what already failed.
+	// Reading it beside a baseline would dress a screen up as a measurement, so
+	// every comparison but the explicitly exploratory one refuses it — from the
+	// record's own `purpose`, with no sidecar in the path.
+	if (mode !== "exploratory") {
+		for (const [role, record] of [["baseline", a], ["candidate", b]] as const) {
+			if (record.purpose !== "evidence") {
+				invalid.push(record.purpose === "screen"
+					? `${role} eval ${record.evalRunId} is a cheap-check screen, which is never evidence`
+					: `${role} eval ${record.evalRunId} predates first-class run purpose and is ambiguous one-arm evidence; rerun it`);
+			}
+		}
+	}
 	const diffs = axisDifferences(a.provenance, b.provenance);
 	if (diffs.length > 0) invalid.push(`differing axes: ${diffs.join(", ")}`);
 	if (a.target.id !== b.target.id) invalid.push(`different targets: ${a.target.id} vs ${b.target.id}`);

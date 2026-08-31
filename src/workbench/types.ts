@@ -161,6 +161,13 @@ export interface WorkbenchCandidateSummary {
 	proposalId: string;
 	baseline: { ref: string; sha: string };
 	candidate: { ref: string; sha: string } | null;
+	/**
+	 * Who put the diff on the branch, and how. A non-null `via` means a human
+	 * authorized an automated improve/search trial, not this individual diff:
+	 * review and ship say so and show the exact hash-bound proposal. Null for a
+	 * manual candidate.
+	 */
+	appliedBy?: { actorId: string; via: "improvement-loop" | "proposal-search" | null; paths: string[] } | null;
 	development: {
 		baselineEvalRunId: string;
 		candidateEvalRunId: string;
@@ -269,6 +276,10 @@ export type WorkbenchReviewDetail =
 		application: { branch: string; baseTargetSha: string; candidateSha: string; appliedAt: string };
 	})
 	| ({ kind: "candidate" } & WorkbenchCandidateSummary & {
+		/** Exact proposal behind an applied Builder candidate, including its diff. */
+		proposal?: WorkbenchProposalReview | null;
+		/** Read-side corruption is visible while rejection remains available. */
+		proposalError?: string | null;
 		adoption: { receiptId: string; adoptedAt: string; branch: string } | null;
 		continuation: { receiptId: string; continuedAt: string } | null;
 		impact: WorkbenchCandidateImpactProjection | null;
@@ -777,6 +788,12 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		candidates: z.number().int().min(1).max(4).optional(),
 		jobs: z.number().int().min(1).max(64).optional(),
 		developmentCorpusId: ArtifactIdSchema.optional(),
+		/** Continue the named unfinished loop instead of refusing to start. */
+		resumeLoopId: z.string().regex(/^loop_[a-z0-9]{6,32}$/).optional(),
+		/** Drop the named unfinished loop (its branches survive), then start fresh. */
+		abandonLoopId: z.string().regex(/^loop_[a-z0-9]{6,32}$/).optional(),
+		/** How old a development EvalRun may be and still be reused, in milliseconds. */
+		baselineMaxAgeMs: z.number().int().min(0).max(365 * 24 * 60 * 60 * 1_000).optional(),
 		reason: NonBlankSchema.max(4_000),
 	}),
 ]);
@@ -976,6 +993,8 @@ export interface WorkbenchImproveResult {
 	stopMessage: string;
 	table: string;
 	candidateId: string | null;
+	/** This invocation's id. `--resume`/`--abandon` name it. */
+	loopId: string;
 	finalPassRate: number;
 	executions: number;
 	/** Hypotheses each cycle compared; 1 means today's single-change behaviour. */

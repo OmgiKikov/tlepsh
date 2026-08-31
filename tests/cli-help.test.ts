@@ -108,15 +108,27 @@ describe("CLI help", () => {
 		expect(check).toContain("Usage: ahde check --target <dir> --candidate <id>");
 		expect(check).toContain("ONLY\nthe cases its source eval recorded as failing");
 		expect(check).toContain("It is a screen, never evidence.");
-		expect(check).toContain("a promotion that\ncites one is refused");
+		expect(check).toContain("promotion that cites one is refused");
 		expect(check).toContain("Exit 0 = promising, 1 = flat.");
 		const improve = cliHelp(["improve", "--help"]);
 		expect(improve).toContain("Usage: ahde improve --target <dir> --until <pass-rate> --max-cycles <n>");
-		expect(improve).toContain("cheap check -> full\ndevelopment verification");
+		expect(improve).toContain("cheap check -> full development verification");
 		expect(improve).toContain("`90%` or `0.9`");
 		expect(improve).toContain("the sealed guardrail and the promotion are\nalways yours");
 		expect(improve).toContain("--candidates N (1..4, default 1) makes each cycle a search instead of one guess");
 		expect(improve).toContain("already ended rejected or not `improved`");
+		// No pretending about who writes the changes, and no pretending the
+		// operator will see each diff before it lands.
+		expect(improve).toContain("WHAT THE LOOP AUTHORS: nothing.");
+		expect(improve).toContain("A headless\nproposal author is NOT shipped yet");
+		expect(improve).toContain("WITHOUT showing you each diff");
+		expect(improve).toContain("`via: improvement-loop`");
+		expect(improve).toContain("WHICH PROPOSAL MATCHES");
+		expect(improve).toContain("Not\nthe id of an eval run");
+		expect(improve).not.toContain("--compound");
+		expect(improve).toContain("stops and hands back");
+		expect(improve).toContain("--resume <loopId> or drop the claim with --abandon <loopId>");
+		expect(improve).toContain("--baseline-max-age <ms> bounds evidence reuse");
 		const search = cliHelp(["search", "--help"]);
 		expect(search).toContain("Usage: ahde search --target <dir> --candidates <id,id,id>");
 		expect(search).toContain("Search, not one guess.");
@@ -125,6 +137,9 @@ describe("CLI help", () => {
 		expect(search).toContain("Sealed verification is not part of a search.");
 		expect(search).toContain("never promotes, adopts, publishes, approves, or opens the holdout");
 		expect(improve).toContain("It never promotes, adopts, publishes a corpus or approves a Spec.");
+		const review = cliHelp(["review", "--help"]);
+		expect(review).toContain("call prints its exact diff and refuses to record the review");
+		expect(review).toContain("--proposal-hash");
 		const serve = cliHelp(["serve", "--help"]);
 		expect(serve).toContain("Usage: ahde serve --target <dir>");
 		expect(serve).toContain("transport for the\nsame human gate, never an exemption from it");

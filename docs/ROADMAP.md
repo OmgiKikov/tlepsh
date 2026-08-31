@@ -118,43 +118,49 @@ Four lanes in worktrees off master, merged into `v2-measurement` after
 Acceptance for the wave: all three verification commands green on the merged
 branch; the closed-loop Pi test passes with exactly three confirmations.
 
-## Wave 2 — the loop that compounds
+## Wave 2 — the measured improvement loop
 
 5. **Cheap check before the expensive one** — *landed*. `ahde check --target .
    --candidate <id>`, and `verify-candidate` runs it first: the candidate on
    only the cases the source eval recorded as failing, once, candidate arm
    only, against those cases' recorded outcomes. `flat` (nothing previously
    failing now passes) stops the verification until the operator forces it.
-   The screen is never evidence: its eval run carries `solo`, every screen is
+   The screen is never evidence: its eval run atomically carries `purpose:
+   "screen"` (the `solo` label is not the trust boundary), every screen is
    recorded under `runs/screens/`, no comparison gate sees one, promotion
    refuses a candidate that cites one, and `add-case-from-run` refuses one as a
    source (old item 19).
 6. **Population** — *landed*. `ahde search --target . --candidates <id,id,id>`
    and `ahde improve --candidates N` (1..4, default 1). One failure mode, 2–4
-   already-authored hypotheses, each applied on its own `candidate/search-<n>`
+   already-authored hypotheses, each applied on its own
+   `candidate/search-<searchId>-<n>`
    branch, each screened by the cheap check, and the full matched development
    verification paid only where the screen found something. The result is a
    Pareto table: verdict, score delta with its 95% interval, cost and latency
    ratios, the screen's numbers, and which candidates are dominated (another
    verified candidate at least as good on both score and cost and strictly
-   better on one; exact ties break by candidate order, so the frontier is never
-   empty). The whole search runs under one estimate and the existing `--jobs`
+   better on one; exact ties break by candidate order). Only `improved`
+   development verdicts enter the release frontier, which may honestly be
+   empty. The whole search runs under one estimate and the existing `--jobs`
    pool; a flat screen and an exhausted budget are typed skip reasons the table
    names. Sealed verification is not part of the search: `proposalSearchGate`
    throws on every consequential decision and on the sealed picker, and the
    human picks one candidate that then meets the unchanged sealed gate and
    promotion (old item 8).
 7. **Autoloop inside the gates** — *landed*. `ahde improve --target . --until
-   90% --max-cycles 5 [--jobs N] [--project id]` and a routine Workbench
-   `improve` decision under the same cost guard, estimated over the whole
+   90% --max-cycles 5 [--jobs N] [--project id]` and a consequential Workbench
+   `improve` decision with one cost disclosure estimated over the whole
    planned loop: run → diagnose → top proposable failure mode → the next
-   unapplied Builder proposal → apply on `candidate/auto-<n>` → cheap check →
+   unapplied Builder proposal → apply on `candidate/auto-<loopId>-<n>` → cheap check →
    development verification when the screen is promising. It stops at the
    target pass rate, the cycle budget, a verdict other than `improved`, two
    flat screens in a row, an over-budget infrastructure error, or a verified
    candidate — because the sealed guardrail and the promotion are the human's.
-   Authoring still needs Builder Pi: a headless authoring seam is wave 3 (#12)
-   (old item 2).
+   Authoring still needs Builder Pi: a headless authoring seam is wave 3 (#12).
+   The ledger checkpoints spend and branches; `--resume` validates the exact
+   Target/Spec/corpus/configuration and also reads Git refs after a crash. It
+   stops at the first verified candidate: public compounding is withheld until
+   one matched and sealed comparison can cover the full stack (old item 2).
 8. **Promoted fixes become guards** — *landed*. A promotion derives the tasks
    that flipped fail→pass between its two development arms into one corpus
    draft revision, through the same exact-evidence rules the Builder's
@@ -269,8 +275,8 @@ branch; the closed-loop Pi test passes with exactly three confirmations.
 On two or three real agents: at least one promotion on judge-graded tasks
 with measured judge agreement above the threshold; a "change → verdict" cycle
 an order of magnitude cheaper than a full verification thanks to the cheap
-check and regrade; three consecutive cycles without a sealed regression and
-with compounding gains; the platform drives the loop headlessly with its own
+check and regrade; three promoted cycles without a sealed regression and with
+cumulative gains; the platform drives the loop headlessly with its own
 confirmation UI.
 
 ## Non-goals (with reasons)

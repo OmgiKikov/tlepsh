@@ -171,9 +171,10 @@ export const WORKBENCH_GATE_POLICY = {
 	"run-eval": "routine",
 	calibrate: "routine",
 	"verify-candidate": "routine",
-	// The autoloop is measurement too: many runs, one estimate covering the
-	// whole planned loop, and not one decision that creates release authority.
-	improve: "routine",
+	// The loop measures, but it also applies exact proposals to throwaway refs.
+	// Its one up-front disclosure is therefore always a real full confirmation,
+	// never a routine auto-approval hidden behind the cost threshold.
+	improve: "consequential",
 } as const satisfies Record<WorkbenchDecisionInput["kind"], WorkbenchGateClass>;
 
 export function workbenchGateClass(kind: WorkbenchDecisionInput["kind"]): WorkbenchGateClass {

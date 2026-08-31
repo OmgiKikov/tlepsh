@@ -11,7 +11,7 @@ import {
 import {
 	comparisonGateEvidence,
 } from "./candidate-experiment.js";
-import { screenEvalRunIds } from "./cheap-check.js";
+import { screenExclusion } from "./cheap-check.js";
 import { corpusDatasetLabel } from "./corpus-target.js";
 import { compareEvalRuns, type CompareResult } from "../compare.js";
 import { promotableVerdicts, withinInfrastructureBudget, type GateSurface } from "../domain/comparison-gate.js";
@@ -29,7 +29,7 @@ import {
 import { TargetManifest, type JudgeCalibrationPolicy } from "../manifest.js";
 import { judgeEvidenceCalibration } from "./judge-labels.js";
 import { judgeCalibrationRefusal } from "../domain/judge-agreement.js";
-import { loadEvalRun, loadVerifiedEvalRun, type EvalRunRecord } from "../eval.js";
+import { loadEvalRun, loadVerifiedEvalRun, readEvalRunIndex, type EvalRunRecord } from "../eval.js";
 import { SpecSnapshotSchema } from "../spec.js";
 import { canonicalJson, hashValue } from "../provenance.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
@@ -40,6 +40,12 @@ export interface ReviewCandidateOptions {
 	candidateId: string;
 	/** Exact Candidate aggregate reviewed by a host confirmation, when one exists. */
 	expectedCandidateHash?: string;
+	/**
+	 * Exact proposal artifact displayed by the host. Required for a promote
+	 * recommendation when an automated improve/search applied the candidate,
+	 * because that earlier authority did not mean the operator read the diff.
+	 */
+	expectedProposalHash?: string;
 	recommendation: "promote" | "reject";
 	reason: string;
 	actorId?: string;
@@ -99,6 +105,31 @@ function assertExpectedCandidateHash(
 	}
 }
 
+function assertAutomatedProposalWasReviewed(
+	record: CandidateRecord,
+	expectedProposalHash: string | undefined,
+	recommendation: ReviewCandidateOptions["recommendation"],
+): void {
+	// Rejecting creates no release authority and must remain possible even when a
+	// proposal artifact is damaged. A promote recommendation is the boundary at
+	// which an automated trial must become an individually reviewed diff.
+	if (
+		recommendation === "reject" ||
+		record.origin.kind !== "applied-builder" ||
+		record.origin.application.via === undefined
+	) return;
+	const proposalHash = record.origin.proposal.sha256;
+	if (expectedProposalHash === undefined) {
+		throw new Error(
+			`candidate ${record.candidateId} was applied by ${record.origin.application.via} without individual diff review; ` +
+			`review requires the exact proposal hash ${proposalHash}`,
+		);
+	}
+	if (expectedProposalHash !== proposalHash) {
+		throw new Error("proposal changed after confirmation; candidate review is stale");
+	}
+}
+
 function evaluatedExperimentId(record: CandidateRecord): string {
 	const evaluated = record.events.find((event) => event.type === "evaluated");
 	if (!evaluated || evaluated.type !== "evaluated") {
@@ -117,6 +148,7 @@ function persist(record: CandidateRecord, runsRoot: string): CandidateRecord {
 export function reviewCandidate(options: ReviewCandidateOptions): CandidateRecord {
 	const record = loadCandidateRecord(options.runsRoot, options.candidateId);
 	assertExpectedCandidateHash(record, options.expectedCandidateHash, "review");
+	assertAutomatedProposalWasReviewed(record, options.expectedProposalHash, options.recommendation);
 	if (candidateStatus(record) !== "evaluated") {
 		throw new Error(`candidate ${record.candidateId} must be evaluated before review`);
 	}
@@ -430,6 +462,9 @@ function verifyAppliedBuilderOrigin(record: CandidateRecord, runsRootInput: stri
 		receipt.baseTargetSha !== origin.application.baseTargetSha ||
 		receipt.candidateSha !== origin.application.candidateSha ||
 		receipt.actor.id !== origin.application.actor.id ||
+		// A candidate cannot quietly lose the fact that a loop applied it, nor
+		// gain the claim that a human read the diff.
+		receipt.via !== origin.application.via ||
 		receipt.reason !== origin.application.reason ||
 		receipt.appliedAt !== origin.application.appliedAt ||
 		JSON.stringify([...receipt.paths].sort()) !== JSON.stringify(proposal.changes.map((change) => change.path).sort())
@@ -477,8 +512,7 @@ function verifyAppliedBuilderOrigin(record: CandidateRecord, runsRootInput: stri
  * can never reach a promotion — not as an arm, not as a source eval.
  */
 function assertNoScreenEvidence(record: CandidateRecord, runsRoot: string): void {
-	const screens = screenEvalRunIds(runsRoot);
-	if (screens.size === 0) return;
+	const exclusion = screenExclusion(runsRoot);
 	const cited = new Set<string>();
 	const evaluated = record.events.find((event) => event.type === "evaluated");
 	if (evaluated?.type === "evaluated") {
@@ -493,10 +527,24 @@ function assertNoScreenEvidence(record: CandidateRecord, runsRoot: string): void
 	if (record.origin.kind === "applied-builder" && record.origin.source) {
 		cited.add(record.origin.source.evalRunId);
 	}
-	const offending = [...cited].filter((evalRunId) => screens.has(evalRunId)).sort();
+	// The EvalRun's own `purpose` is the first answer, so a screen whose sidecar
+	// never got written is still refused. The sidecar is the second, and an
+	// unreadable one refuses everything it might name.
+	const offending = [...cited].filter((evalRunId) => {
+		if (exclusion.blocksEverything || exclusion.ids.has(evalRunId)) return true;
+		try {
+			return readEvalRunIndex(runsRoot, evalRunId).purpose !== "evidence";
+		} catch {
+			return false;
+		}
+	}).sort();
 	if (offending.length > 0) {
 		throw new Error(
-			`promotion refused: ${offending.join(", ")} is a cheap-check screen, which is never promotion evidence`,
+			`promotion refused: ${offending.join(", ")} includes a cheap-check screen, which is never promotion evidence, ` +
+			"or an ambiguous legacy one-arm run, which must be rerun" +
+			(exclusion.unreadable.length > 0
+				? ` (${exclusion.unreadable.length} screen marker(s) could not be read, so nothing they might name is admitted)`
+				: ""),
 		);
 	}
 }

@@ -29,6 +29,7 @@ import { SpecSnapshotSchema, loadApprovedSpec, saveSpecSnapshot } from "../src/s
 import {
 	ApprovedSpecBuilderInputSchema,
 	BuilderApplyReceiptSchema,
+	loadBuilderProposalRun,
 	PersistedBuilderRunSchema,
 } from "../src/application/builder-proposal.js";
 import { CandidateProposalSchema } from "../src/builders/adapters.js";
@@ -45,6 +46,12 @@ import {
 import { readJsonArtifact, writeJsonArtifact, writeTextArtifact } from "../src/storage/artifacts.js";
 import { baseFixtureFiles } from "./fixtures.js";
 import { appendJudgeLabels, judgeFingerprintHashOf } from "../src/application/judge-labels.js";
+import { runImprovementLoop } from "../src/application/improvement-loop.js";
+import { compileHarnessAuthoringProposal } from "../src/application/harness-authoring.js";
+import { candidateProposalReview, candidateSummary, proposalReview } from "../src/workbench/resolution.js";
+import { plainPaint, renderCandidate, renderConfirmation } from "../src/builder/render/index.js";
+import { SEALED_VERIFICATION_REPETITIONS } from "./helpers/sealed-holdout.js";
+import { improveFixture, READY_INSTRUCTION } from "./helpers/improve-fixtures.js";
 
 const roots: string[] = [];
 const baselineSha = "a".repeat(40);
@@ -221,7 +228,8 @@ function writePair(
 		artifacts: { runId: string; sha256: string }[],
 		baselineId: string | null,
 	): EvalRunRecord => ({
-		schemaVersion: 2,
+		schemaVersion: 3,
+		purpose: "evidence" as const,
 		evalRunId,
 		target: {
 			id: targetId,
@@ -602,6 +610,81 @@ afterEach(() => {
 });
 
 describe("candidate human review", () => {
+	it("reconstructs an exact candidate proposal and fails closed when its artifact changes", () => {
+		const value = fixture(false);
+		const candidate = loadCandidateRecord(value.runsRoot, value.candidateId);
+		if (candidate.origin.kind !== "applied-builder") throw new Error("fixture must be Builder-authored");
+		const review = candidateProposalReview(value.runsRoot, candidate);
+		expect(review).toMatchObject({
+			runId: candidate.origin.builderRunId,
+			proposalHash: candidate.origin.proposal.sha256,
+			paths: ["AGENTS.md"],
+		});
+		writeFileSync(candidate.origin.proposal.path, "{}\n");
+		expect(() => candidateProposalReview(value.runsRoot, candidate)).toThrow(
+			/Builder proposal changed after the candidate was created/,
+		);
+	});
+
+	it("requires the exact displayed proposal hash before reviewing an automated apply", () => {
+		const value = fixture(false);
+		const candidate = loadCandidateRecord(value.runsRoot, value.candidateId);
+		if (candidate.origin.kind !== "applied-builder") throw new Error("fixture must be Builder-authored");
+		const automated = CandidateRecordSchema.parse({
+			...candidate,
+			origin: {
+				...candidate.origin,
+				application: { ...candidate.origin.application, via: "improvement-loop" },
+			},
+		});
+		writeJsonArtifact(candidateRecordPath(value.runsRoot, value.candidateId), CandidateRecordSchema, automated);
+
+		expect(() => reviewCandidate({
+			...value,
+			recommendation: "promote",
+			reason: "looks good",
+			now: () => at,
+		})).toThrow(/review requires the exact proposal hash/);
+		expect(() => reviewCandidate({
+			...value,
+			expectedProposalHash: `sha256:${"0".repeat(64)}`,
+			recommendation: "promote",
+			reason: "looks good",
+			now: () => at,
+		})).toThrow(/proposal changed after confirmation/);
+		reviewCandidate({
+			...value,
+			expectedProposalHash: candidate.origin.proposal.sha256,
+			recommendation: "promote",
+			reason: "read exact diff",
+			now: () => at,
+		});
+		expect(loadCandidateRecord(value.runsRoot, value.candidateId).events.at(-1)).toMatchObject({
+			type: "reviewed",
+			review: { recommendation: "promote", reason: "read exact diff" },
+		});
+	});
+
+	it("keeps rejection available when an automated proposal artifact is damaged", () => {
+		const value = fixture(false);
+		const candidate = loadCandidateRecord(value.runsRoot, value.candidateId);
+		if (candidate.origin.kind !== "applied-builder") throw new Error("fixture must be Builder-authored");
+		writeJsonArtifact(candidateRecordPath(value.runsRoot, value.candidateId), CandidateRecordSchema, CandidateRecordSchema.parse({
+			...candidate,
+			origin: {
+				...candidate.origin,
+				application: { ...candidate.origin.application, via: "proposal-search" },
+			},
+		}));
+		writeFileSync(candidate.origin.proposal.path, "damaged\n");
+		expect(() => reviewCandidate({
+			...value,
+			recommendation: "reject",
+			reason: "artifact is damaged",
+			now: () => at,
+		})).not.toThrow();
+	});
+
 	it("rejects stale review and rejection hashes before appending an event", () => {
 		const value = fixture(false);
 		const evaluated = loadCandidateRecord(value.runsRoot, value.candidateId);
@@ -1060,4 +1143,106 @@ describe("candidate human review", () => {
 		})).toThrow(/Builder diagnosis hash mismatch/);
 		expect(git(repo.dir, "tag", "--list", "v2.4.0")).toBe("");
 	});
+});
+
+describe("a candidate the improvement loop applied says so", () => {
+	it("renders its origin in the review, and the ship dialog shows the diff first", async () => {
+		const fixture = await improveFixture();
+		try {
+			const loop = await runImprovementLoop({
+				repositoryDir: fixture.projectDir,
+				runsRoot: fixture.runsRoot,
+				stateRoot: fixture.stateRoot,
+				projectId: fixture.projectId,
+				approvedSpecId: fixture.approvedSpecId,
+				developmentCorpus: {
+					stateRoot: fixture.stateRoot,
+					projectId: fixture.projectId,
+					corpusId: fixture.corpusId,
+				},
+				until: 1,
+				maxCycles: 1,
+				repetitions: SEALED_VERIFICATION_REPETITIONS,
+				actorId: "local:improve-human",
+				author: (request) => ({
+					kind: "propose",
+					proposal: compileHarnessAuthoringProposal({
+						repositoryDir: request.repositoryDir,
+						expectedBaseTargetSha: request.baseTargetSha,
+						intents: [{ type: "instructions.replace", content: `# Improve fixture\n\n${READY_INSTRUCTION}\n` }],
+						summary: "Make the answer contract explicit.",
+						diagnoses: request.selection.diagnoses,
+						risks: ["Instruction-only behaviour change"],
+						validationPlan: ["Re-run the reviewed development basket"],
+					}),
+				}),
+			});
+			const record = loadCandidateRecord(fixture.runsRoot, loop.candidateId!);
+			const summary = candidateSummary(record);
+			const proposal = proposalReview(loadBuilderProposalRun(fixture.runsRoot, record.proposalId));
+
+			// The projection carries who applied it, how, and what changed.
+			expect(summary.appliedBy).toMatchObject({
+				actorId: "local:improve-human",
+				via: "improvement-loop",
+				paths: ["AGENTS.md"],
+			});
+
+			// candidate-review renders that origin instead of implying a reviewed diff.
+			const review = renderCandidate({ ...summary, proposal }, plainPaint).join("\n");
+			expect(review).toContain("applied by the improvement loop");
+			expect(review).toContain("authorized the automated trial, not this individual diff");
+			expect(review).toContain("AGENTS.md");
+			expect(review).toContain("Exact proposal");
+			expect(review).toContain("READY");
+
+			// …and the ship dialog shows the diff summary BEFORE the human ships.
+			const dialog = renderConfirmation({
+				kind: "ship",
+				title: "Ship this candidate",
+				reason: "Ship it",
+				policy: "consequential",
+				subjectHash: `sha256:${"0".repeat(64)}`,
+				question: "Ship this candidate?",
+				subject: {
+					operation: "ship",
+					steps: ["review-candidate", "promote-candidate"],
+					candidateId: summary.candidateId,
+					development: "improved · +50.0pp",
+					sealed: "not run",
+					version: "0.2.0",
+					tag: "v0.2.0",
+					fastForward: "already adopted",
+					diff: {
+						appliedBy: "local:improve-human",
+						via: "improvement-loop",
+						files: 1,
+						paths: ["AGENTS.md"],
+						reviewed: false,
+						exactDiff: proposal.exactDiff,
+						proposalHash: proposal.proposalHash,
+					},
+					candidate: summary,
+				},
+			}, plainPaint).join("\n");
+			expect(dialog).toContain("Diff");
+			expect(dialog).toContain("AGENTS.md");
+			expect(dialog).toContain("by the improvement loop");
+			expect(dialog).toContain("Exact diff");
+			expect(dialog).toContain("READY");
+			expect(dialog.indexOf("Diff")).toBeLessThan(dialog.indexOf("This one confirmation covers"));
+
+			// An interactively applied candidate reads the other way round.
+			const application = { ...(record.origin as { application: Record<string, unknown> }).application };
+			delete application.via;
+			const byHand = candidateSummary({
+				...record,
+				origin: { ...record.origin, application },
+			} as typeof record);
+			expect(byHand.appliedBy?.via).toBeNull();
+			expect(renderCandidate(byHand, plainPaint).join("\n")).toContain("who read this diff");
+		} finally {
+			await fixture.close();
+		}
+	}, 600_000);
 });

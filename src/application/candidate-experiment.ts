@@ -215,10 +215,11 @@ export function assertHoldoutDisjoint(
 }
 
 /**
- * The provenance a run of this exact target WOULD record, reconstructed without
- * running it. Exported so a test can hold it against the axes a real EvalRun
- * wrote: the two must agree axis for axis, or baseline reuse silently misses
- * and snapshot verification rejects evidence it produced itself.
+ * The provenance axes a run of this exact Target would carry, probed without
+ * running it. Tests hold this against a real EvalRun axis for axis, and the
+ * improvement loop uses it to ask whether evidence it already paid for is still
+ * comparable. If this reconstruction drifts, baseline reuse and snapshot
+ * verification must fail closed rather than accept a different measurement.
  */
 export function effectiveProvenance(target: ResolvedTarget): ProvenanceAxes {
 	const scratch = mkdtempSync(join(tmpdir(), "ahde-execution-probe-"));

@@ -3,22 +3,30 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { compileHarnessAuthoringProposal } from "../src/application/harness-authoring.js";
 import {
+	abandonImprovementLoop,
 	IMPROVEMENT_CYCLE_SKIP_MESSAGES,
+	IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE,
 	IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS,
 	IMPROVEMENT_LOOP_STOP_MESSAGES,
 	ImprovementLoopForbiddenDecisionError,
 	improvementCycleLine,
 	improvementLoopGate,
+	listUnfinishedImprovementLoops,
+	loadImprovementLoopRun,
 	plannedImprovementExecutions,
+	RECORDED_PROPOSAL_STALE_MESSAGES,
 	recordedBuilderProposalAuthor,
 	renderImprovementLoopTable,
 	runImprovementLoop,
 	topProposableFailureMode,
+	UnfinishedImprovementLoopError,
 	type ImprovementLoopCycle,
 	type ImprovementLoopDependencies,
 	type ImprovementLoopResult,
 	type ImprovementProposalAuthor,
 } from "../src/application/improvement-loop.js";
+import { loadBuilderApplyReceipt } from "../src/application/builder-proposal.js";
+import { loadEvalRun } from "../src/eval.js";
 import { loadCandidateRecord } from "../src/application/candidate-review.js";
 import { compileImprovementBrief } from "../src/application/improvement-brief.js";
 import { diagnoseEvalRun } from "../src/diagnosis.js";
@@ -52,6 +60,20 @@ function refusingGate(): WorkbenchHumanGate & { calls: WorkbenchConfirmation[] }
 			if (confirmation.policy !== "routine") {
 				throw new Error(`the loop asked for a ${confirmation.policy} decision: ${confirmation.kind}`);
 			}
+			return { approved: true, actorId: "local:loop-human" };
+		},
+		async selectSealed() {
+			throw new Error("the loop opened the sealed holdout");
+		},
+	};
+}
+
+function recordingApprovingGate(): WorkbenchHumanGate & { calls: WorkbenchConfirmation[] } {
+	const calls: WorkbenchConfirmation[] = [];
+	return {
+		calls,
+		async confirm(confirmation) {
+			calls.push(confirmation);
 			return { approved: true, actorId: "local:loop-human" };
 		},
 		async selectSealed() {
@@ -111,11 +133,12 @@ function loopOptions(fixture: ImproveFixture, overrides: Record<string, unknown>
 }
 
 /** A verification result shaped like the one `runAppliedBuilderCandidate` returns. */
-function fakeVerification(verdict: string, candidatePassRate: number) {
+function fakeVerification(verdict: string, candidatePassRate: number, candidateId = "candidate-fake", baselineReused = false) {
 	return {
-		record: { candidateId: "candidate-fake" },
+		record: { candidateId },
 		baseline: { summary: { total: 4 } },
 		candidate: { summary: { total: 4 } },
+		baselineReused,
 		compare: {
 			gate: { verdict },
 			summary: { scoreDelta: 0, delta: 0, candidatePassRate },
@@ -143,7 +166,7 @@ describe("autoloop — one cycle, inside the gates", () => {
 		const cycle = result.cycles[0]!;
 		expect(cycle.evalRunId).toMatch(/^erun_/);
 		expect(cycle.failureModeId).toMatch(/^failure-mode-/);
-		expect(cycle.branch).toBe("candidate/auto-1");
+		expect(cycle.branch).toBe(`candidate/auto-${result.loopId}-1`);
 		expect(cycle.screen).toMatchObject({ verdict: "promising", improved: 2, tasks: 2, withinErrorBudget: true });
 		expect(cycle.verification).toMatchObject({ verdict: "improved", candidatePassRate: 1 });
 		expect(result.stopReason).toBe("target-reached");
@@ -161,7 +184,8 @@ describe("autoloop — one cycle, inside the gates", () => {
 		// it asked for none. It asked for nothing at all.
 		expect(gate.calls).toEqual([]);
 		expect(tags(fixture.projectDir)).toEqual([]);
-		expect(branches(fixture.projectDir).filter((name) => name.startsWith("candidate/"))).toEqual(["candidate/auto-1"]);
+		expect(branches(fixture.projectDir).filter((name) => name.startsWith("candidate/")))
+			.toEqual([`candidate/auto-${result.loopId}-1`]);
 		// The candidate the loop produced is evidence, not a release.
 		const record = loadCandidateRecord(fixture.runsRoot, result.candidateId!);
 		expect(candidateStatus(record)).toBe("evaluated");
@@ -181,12 +205,15 @@ describe("autoloop — one cycle, inside the gates", () => {
 
 		const table = renderImprovementLoopTable(result);
 		const rows = table.split("\n");
-		expect(rows[0]).toBe("| cycle | pass rate | failure mode | branch | screen | verification |");
+		expect(rows[0]).toBe("| cycle | pass rate | failure mode | branch | changed paths | screen | verification |");
 		expect(rows[2]).toContain("| 1 |");
-		expect(rows[2]).toContain("candidate/auto-1");
+		expect(rows[2]).toContain(`candidate/auto-${result.loopId}-1`);
 		expect(table).toContain(`Stopped: ${IMPROVEMENT_LOOP_STOP_MESSAGES["target-reached"]}.`);
 		expect(table).toContain(`Target executions spent: ${result.executions}.`);
+		expect(table).toContain("verified · awaiting your decision");
 		expect(table).toContain("Promotion is yours");
+		// The table never pretends the loop wrote the change it applied.
+		expect(table).toContain(IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE);
 	});
 });
 
@@ -227,10 +254,13 @@ describe("autoloop — the stop conditions", () => {
 			expect(result.candidateId).toBeNull();
 			expect(flat).toHaveBeenCalledTimes(2);
 			expect(runAppliedCandidate).not.toHaveBeenCalled();
-			expect(result.cycles.map((cycle) => cycle.branch)).toEqual(["candidate/auto-1", "candidate/auto-2"]);
+			expect(result.cycles.map((cycle) => cycle.branch)).toEqual([
+				`candidate/auto-${result.loopId}-1`,
+				`candidate/auto-${result.loopId}-2`,
+			]);
 			expect(result.cycles[1]!.evalReused).toBe(true);
 			expect(result.cycles[1]!.note).toContain("2 in a row");
-			expect(renderImprovementLoopTable(result)).toContain("nothing is waiting on a release decision");
+			expect(renderImprovementLoopTable(result)).toContain("No improved candidate is waiting on a release decision");
 		} finally {
 			await fixture.close();
 		}
@@ -262,8 +292,10 @@ describe("autoloop — the stop conditions", () => {
 			});
 			expect(result.stopReason).toBe("development-verdict");
 			expect(result.cycles).toHaveLength(1);
+			expect(result.candidateId).toBeNull();
 			expect(result.cycles[0]!.verification).toMatchObject({ verdict: "unchanged" });
 			expect(result.cycles[0]!.note).toContain("unchanged");
+			expect(renderImprovementLoopTable(result)).toContain("No improved candidate is waiting");
 		} finally {
 			await fixture.close();
 		}
@@ -272,7 +304,8 @@ describe("autoloop — the stop conditions", () => {
 	it("stops when infrastructure errors go over the budget, without calling it a failure", async () => {
 		const fixture = await improveFixture();
 		try {
-			const result = await runImprovementLoop(loopOptions(fixture), {
+			// Reuse off: this test is about what a fresh, errored measurement does.
+			const result = await runImprovementLoop(loopOptions(fixture, { baselineMaxAgeMs: 0 }), {
 				runSuite: (async () => ({
 					evalRunId: "erun_broken",
 					summary: { total: 4, pass: 0, fail: 0, error: 4, allPassRate: 0 },
@@ -403,7 +436,7 @@ describe("the loop remembers what already lost", () => {
 			);
 
 			expect(result.cycles[0]!.skipped).toBeNull();
-			expect(result.cycles[0]!.branch).toBe("candidate/auto-1");
+			expect(result.cycles[0]!.branch).toBe(`candidate/auto-${result.loopId}-1`);
 			expect(result.stopReason).toBe("target-reached");
 		} finally {
 			await fixture.close();
@@ -450,8 +483,8 @@ describe("--candidates turns a cycle into a search", () => {
 			expect(search).not.toBeNull();
 			expect(search!.failureModeId).toBe(result.cycles[0]!.failureModeId);
 			expect(search!.rows.map((row) => row.branch)).toEqual([
-				"candidate/search-1-1",
-				"candidate/search-1-2",
+				`candidate/search-${result.loopId}-1-1`,
+				`candidate/search-${result.loopId}-1-2`,
 			]);
 			// One hypothesis fixes the cases, the other changes nothing the graders
 			// see: the screen keeps the second out of a paid verification.
@@ -546,7 +579,7 @@ describe("the loop's gate", () => {
 });
 
 describe("the improve decision", () => {
-	it("asks once, as routine measurement, with an estimate covering the whole planned loop", async () => {
+	it("asks once with the full automated-apply disclosure and a whole-loop estimate", async () => {
 		const fixture = await improveFixture();
 		try {
 			const observed: ImprovementLoopResult = {
@@ -554,6 +587,7 @@ describe("the improve decision", () => {
 				stopReason: "max-cycles",
 				stopMessage: IMPROVEMENT_LOOP_STOP_MESSAGES["max-cycles"],
 				candidateId: null,
+				loopId: "loop_observed01",
 				finalPassRate: 0,
 				executions: 0,
 			};
@@ -570,7 +604,7 @@ describe("the improve decision", () => {
 					}) as never,
 				},
 			});
-			const gate = refusingGate();
+			const gate = recordingApprovingGate();
 			const decided = await workbench.decide({
 				kind: "improve",
 				until: 0.9,
@@ -582,15 +616,35 @@ describe("the improve decision", () => {
 			expect(gate.calls).toHaveLength(1);
 			const confirmation = gate.calls[0]!;
 			expect(confirmation.kind).toBe("improve");
-			expect(confirmation.policy).toBe("routine");
+			expect(confirmation.policy).toBe("consequential");
 			expect(confirmation.estimate?.executions).toBe(plannedImprovementExecutions({
 				developmentTasks: 2,
 				repetitions: 2,
 				maxCycles: 3,
 			}));
 			expect(confirmation.question).toContain("never promotes, adopts, publishes or approves");
-			expect((confirmation.subject as { neverDecides: string[] }).neverDecides)
-				.toEqual([...IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS]);
+			// The ONE question is also the ONE disclosure. It says out loud that the
+			// loop applies diffs nobody will see one by one, on throwaway branches,
+			// and where those diffs can be read afterwards.
+			expect(confirmation.question).toContain("only time you will be asked");
+			expect(confirmation.question).toContain("APPLIES proposals on throwaway");
+			expect(confirmation.question).toContain("candidate/auto-<loopId>-<n>");
+			expect(confirmation.question).toContain("WITHOUT showing you each diff");
+			expect(confirmation.question).toContain("Nothing touches your branch or your working tree");
+			expect(confirmation.question).toContain("cycle table");
+			expect(confirmation.question).toContain("ship dialog");
+			// And it does not pretend the loop writes the proposals.
+			expect(confirmation.question).toContain(IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE);
+			const subject = confirmation.subject as {
+				neverDecides: string[];
+				touchesYourBranch: boolean;
+				applies: string;
+				diffsVisibleIn: string[];
+			};
+			expect(subject.neverDecides).toEqual([...IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS]);
+			expect(subject.touchesYourBranch).toBe(false);
+			expect(subject.applies).toContain("without showing each diff");
+			expect(subject.diffsVisibleIn).toContain("the exact diff in the ship dialog");
 
 			expect(decided.result.stopReason).toBe("max-cycles");
 			expect(decided.result.table).toContain("| cycle |");
@@ -603,10 +657,10 @@ describe("the improve decision", () => {
 		}
 	}, 600_000);
 
-	it("renders the Pareto table as a routine decision when it is asked for several changes", async () => {
+	it("renders the Pareto table under the same full confirmation when it is asked for several changes", async () => {
 		const fixture = await improveFixture();
 		try {
-			const gate = refusingGate();
+			const gate = recordingApprovingGate();
 			const workbench = createAhdeWorkbench({
 				projectDir: fixture.projectDir,
 				stateRoot: fixture.stateRoot,
@@ -626,9 +680,9 @@ describe("the improve decision", () => {
 				reason: "Try two different fixes for the top problem",
 			}, gate);
 
-			// One question, still routine, and the estimate covers both hypotheses.
+			// One full question, and the estimate covers both hypotheses.
 			expect(gate.calls).toHaveLength(1);
-			expect(gate.calls[0]!.policy).toBe("routine");
+			expect(gate.calls[0]!.policy).toBe("consequential");
 			expect(gate.calls[0]!.estimate?.executions).toBe(plannedImprovementExecutions({
 				developmentTasks: 2,
 				repetitions: SEALED_VERIFICATION_REPETITIONS,
@@ -709,7 +763,7 @@ describe("improve needs a human in front of a terminal", () => {
 
 	const input = { kind: "improve", until: 0.9, maxCycles: 2, repetitions: 2, reason: "Improve this agent" } as const;
 
-	it("fails closed without the local TUI, even though it is routine measurement", async () => {
+	it("fails closed without the local TUI because it applies proposals", async () => {
 		const { tool, decide } = decideTool();
 		await expect(tool.execute("call", input, undefined, vi.fn(), headless)).rejects.toThrow();
 		// The loop applies diffs; an RPC or print host is not a human saying yes.
@@ -735,8 +789,47 @@ describe("improve needs a human in front of a terminal", () => {
 	});
 });
 
-describe("the shipped proposal author", () => {
-	it("takes the next unapplied proposal bound to this evidence, once each", async () => {
+/**
+ * A request shaped exactly as the loop builds one, for the surface the fixture's
+ * own development eval measured. `evalRunId` is deliberately something the
+ * author must ignore.
+ */
+function authorRequest(
+	fixture: ImproveFixture,
+	failureModeId: string,
+	overrides: Partial<Record<string, unknown>> = {},
+) {
+	const source = loadEvalRun(fixture.runsRoot, fixture.evalRunId);
+	return {
+		cycle: 1,
+		variant: 1,
+		variants: 1,
+		repositoryDir: fixture.projectDir,
+		runsRoot: fixture.runsRoot,
+		stateRoot: fixture.stateRoot,
+		projectId: fixture.projectId,
+		approvedSpecId: fixture.approvedSpecId,
+		baseTargetSha: fixture.baselineSha,
+		// A fresh invocation always has a NEW eval run id. Nothing may key off it.
+		evalRunId: "erun_a_brand_new_invocation",
+		surface: {
+			targetId: source.target.id,
+			targetGitSha: source.target.gitSha,
+			dataset: source.dataset,
+			datasetHash: source.datasetHash,
+			suiteHash: source.suiteHash,
+		},
+		diagnosisId: "diagnosis-x",
+		brief: {} as never,
+		failureMode: { failureModeId } as never,
+		selection: {} as never,
+		failureBundlePath: "/dev/null",
+		...overrides,
+	} as Parameters<ImprovementProposalAuthor>[0];
+}
+
+describe("the shipped proposal author binds by surface, not by eval-run id", () => {
+	it("applies a proposal the Builder prepared BEFORE the command, and uses each once", async () => {
 		const fixture = await improveFixture();
 		try {
 			const author = recordedBuilderProposalAuthor({
@@ -744,37 +837,266 @@ describe("the shipped proposal author", () => {
 				runsRoot: fixture.runsRoot,
 				projectId: fixture.projectId,
 			});
-			const request = {
-				cycle: 1,
-				variant: 1,
-				variants: 1,
-				repositoryDir: fixture.projectDir,
-				runsRoot: fixture.runsRoot,
-				stateRoot: fixture.stateRoot,
-				projectId: fixture.projectId,
-				approvedSpecId: fixture.approvedSpecId,
-				baseTargetSha: fixture.baselineSha,
-				evalRunId: fixture.evalRunId,
-				diagnosisId: "diagnosis-x",
-				brief: {} as never,
-				failureMode: {} as never,
-				selection: {} as never,
-				failureBundlePath: "/dev/null",
-			};
 
 			// Nothing recorded yet: the loop is told what to do, not left guessing.
-			const empty = await author(request);
-			expect(empty).toMatchObject({ kind: "no-change" });
-			expect(empty.kind === "no-change" && empty.reason).toContain("Author one in `ahde`");
+			const empty = await author(authorRequest(fixture, "failure-mode-unknown"));
+			expect(empty).toMatchObject({ kind: "no-change", staleness: "no-recorded-proposal" });
+			expect(empty.kind === "no-change" && empty.reason)
+				.toContain(RECORDED_PROPOSAL_STALE_MESSAGES["no-recorded-proposal"]);
+			// No pretending: the stop names the missing milestone.
+			expect(empty.kind === "no-change" && empty.reason).toContain("headless proposal author is not shipped yet");
 
+			// The Builder writes one, in the conversation, before `ahde improve` runs.
 			const recorded = await recordFixtureProposal(fixture, READY_INSTRUCTION);
-			const first = await author(request);
-			expect(first).toEqual({ kind: "recorded", builderRunId: recorded.runId });
-			// One proposal is one attempt: the next cycle does not re-apply it.
-			expect(await author({ ...request, cycle: 2 })).toMatchObject({ kind: "no-change" });
+			const request = authorRequest(fixture, recorded.failureModeId);
 
-			// A proposal bound to different evidence is not this cycle's.
-			expect(await author({ ...request, evalRunId: "erun_somewhere_else" })).toMatchObject({ kind: "no-change" });
+			// The invocation's own eval run id is new and irrelevant: the surface matches.
+			expect(await author(request)).toEqual({ kind: "recorded", builderRunId: recorded.runId });
+			// One proposal is one attempt: the next cycle does not re-apply it.
+			expect(await author({ ...request, cycle: 2 })).toMatchObject({
+				kind: "no-change",
+				staleness: "already-used",
+			});
+		} finally {
+			await fixture.close();
+		}
+	}, 600_000);
+
+	it("refuses a stale proposal with a typed reason naming exactly what moved", async () => {
+		const fixture = await improveFixture();
+		try {
+			const author = () => recordedBuilderProposalAuthor({
+				stateRoot: fixture.stateRoot,
+				runsRoot: fixture.runsRoot,
+				projectId: fixture.projectId,
+			});
+			const recorded = await recordFixtureProposal(fixture, READY_INSTRUCTION);
+			const request = authorRequest(fixture, recorded.failureModeId);
+
+			const moved = [
+				["spec-changed", { approvedSpecId: "spec-another-approved-contract" }],
+				["target-revision-moved", { surface: { ...request.surface, targetGitSha: "b".repeat(40) } }],
+				["dataset-changed", { surface: { ...request.surface, datasetHash: `sha256:${"c".repeat(64)}` } }],
+				["suite-changed", { surface: { ...request.surface, suiteHash: `sha256:${"d".repeat(64)}` } }],
+				["failure-mode-differs", { failureMode: { failureModeId: `failure-mode-${"e".repeat(24)}` } }],
+			] as const;
+			for (const [reason, override] of moved) {
+				const refused = await author()({ ...request, ...override } as typeof request);
+				expect(refused).toMatchObject({ kind: "no-change", staleness: reason });
+				expect(refused.kind === "no-change" && refused.reason)
+					.toContain(RECORDED_PROPOSAL_STALE_MESSAGES[reason]);
+			}
+
+			// The unchanged surface still matches, so the refusals above were about
+			// what moved and not about the proposal being unusable.
+			expect(await author()(request)).toEqual({ kind: "recorded", builderRunId: recorded.runId });
+		} finally {
+			await fixture.close();
+		}
+	}, 600_000);
+});
+
+describe("a cycle reuses evidence it already paid for", () => {
+	it("reads the fresh development eval on this revision instead of running one", async () => {
+		const fixture = await improveFixture();
+		try {
+			// The fixture's own `run-eval` measured exactly this revision, basket and
+			// suite at the same repetitions. A cycle that re-ran it would be spending
+			// money on a question that already has an answer.
+			const runSuite = vi.fn(async () => {
+				throw new Error("a reusable development eval must not be re-run");
+			});
+			const result = await runImprovementLoop(loopOptions(fixture), {
+				runSuite: runSuite as unknown as ImprovementLoopDependencies["runSuite"],
+			});
+
+			expect(runSuite).not.toHaveBeenCalled();
+			const first = result.cycles[0]!;
+			expect(first.evalReused).toBe(true);
+			expect(first.evalRunId).toBe(fixture.evalRunId);
+			// The reuse is free: only screen and candidate verification work remains.
+			expect(first.executions).toBeLessThan(plannedImprovementExecutions({
+				developmentTasks: 2,
+				repetitions: SEALED_VERIFICATION_REPETITIONS,
+				maxCycles: 1,
+			}));
+			expect(improvementCycleLine(first, 3)).toContain("(reused)");
+			expect(renderImprovementLoopTable(result)).toContain("(reused)");
+		} finally {
+			await fixture.close();
+		}
+	}, 600_000);
+
+	it("does not report a reused verification baseline as newly spent work", async () => {
+		const fixture = await improveFixture();
+		try {
+			const result = await runImprovementLoop(loopOptions(fixture), {
+				runCheapCheck: (async () => ({
+					tasks: ["a", "b"], improved: 2, unchanged: 0, regressed: 0, inconclusive: 0,
+					verdict: "promising", runIds: ["r1", "r2"], rows: [], withinErrorBudget: true,
+					screenId: "screen-reused", screenEvalRunId: "erun_screen_reused",
+					screenRecordPath: "/dev/null", sourceEvalRunId: fixture.evalRunId,
+					candidateSha: "0".repeat(40),
+				})) as unknown as ImprovementLoopDependencies["runCheapCheck"],
+				runAppliedCandidate: (async () =>
+					fakeVerification("improved", 1, "candidate-reused-baseline", true)) as unknown as
+					ImprovementLoopDependencies["runAppliedCandidate"],
+			});
+			expect(result.executions).toBe(2 + 4);
+			expect(result.cycles[0]!.executions).toBe(2 + 4);
+		} finally {
+			await fixture.close();
+		}
+	}, 600_000);
+
+	it("pays for the measurement when reuse is disabled", async () => {
+		const fixture = await improveFixture();
+		try {
+			const result = await runImprovementLoop(
+				loopOptions(fixture, { baselineMaxAgeMs: 0, author: scriptedAuthor([]) }),
+			);
+			expect(result.cycles[0]!.evalReused).toBe(false);
+			expect(result.cycles[0]!.evalRunId).not.toBe(fixture.evalRunId);
+			expect(result.cycles[0]!.executions).toBeGreaterThan(0);
+		} finally {
+			await fixture.close();
+		}
+	}, 600_000);
+});
+
+describe("the loop's applies are honestly attributed", () => {
+	it("records the confirming operator AND via: improvement-loop on the receipt", async () => {
+		const fixture = await improveFixture();
+		try {
+			const result = await runImprovementLoop(loopOptions(fixture, { actorId: "local:loop-human" }));
+			const cycle = result.cycles[0]!;
+			const receipt = loadBuilderApplyReceipt(fixture.runsRoot, cycle.proposalRunId!);
+
+			expect(receipt.schemaVersion).toBe(3);
+			// The actor is real — they confirmed the loop — and `via` is what stops
+			// the record from claiming they read this diff.
+			expect(receipt.actor).toEqual({ kind: "human", id: "local:loop-human" });
+			expect(receipt.via).toBe("improvement-loop");
+			expect(receipt.branch).toBe(cycle.branch);
+
+			// It survives into the candidate, which is what the review reads.
+			const record = loadCandidateRecord(fixture.runsRoot, result.candidateId!);
+			expect(record.origin.kind === "applied-builder" && record.origin.application.via)
+				.toBe("improvement-loop");
+			// And the cycle table shows the diff the operator never saw one by one.
+			expect(cycle.changedPaths).toEqual(["AGENTS.md"]);
+			expect(renderImprovementLoopTable(result)).toContain("AGENTS.md");
+		} finally {
+			await fixture.close();
+		}
+	}, 600_000);
+
+	it("leaves an interactive apply without a via, so a reviewed diff stays a reviewed diff", async () => {
+		const fixture = await improveFixture();
+		try {
+			const proposal = await recordFixtureProposal(fixture, READY_INSTRUCTION);
+			await fixture.workbench.decide({
+				kind: "apply-proposal",
+				runId: proposal.runId,
+				branch: "candidate/by-hand",
+				reason: "Apply the reviewed fixture proposal",
+			}, approvingGate());
+			const receipt = loadBuilderApplyReceipt(fixture.runsRoot, proposal.runId);
+			expect(receipt.via).toBeUndefined();
+		} finally {
+			await fixture.close();
+		}
+	}, 600_000);
+});
+
+describe("one invocation, unique resumable branches", () => {
+	it("names every branch after the loop, and never reuses one", async () => {
+		const fixture = await improveFixture();
+		try {
+			const result = await runImprovementLoop(loopOptions(fixture));
+			expect(result.loopId).toMatch(/^loop_[a-z0-9]{6,32}$/);
+			expect(result.cycles[0]!.branch).toBe(`candidate/auto-${result.loopId}-1`);
+			expect(branches(fixture.projectDir)).toContain(`candidate/auto-${result.loopId}-1`);
+
+			// The ledger says the loop finished, so the next `improve` is unblocked.
+			const ledger = loadImprovementLoopRun(fixture.runsRoot, result.loopId);
+			expect(ledger).toMatchObject({ status: "finished", projectId: fixture.projectId });
+			expect(ledger.branches).toEqual([`candidate/auto-${result.loopId}-1`]);
+			expect(listUnfinishedImprovementLoops(fixture.runsRoot, fixture.projectId).running).toEqual([]);
+		} finally {
+			await fixture.close();
+		}
+	}, 600_000);
+
+	it("reports an unfinished loop and refuses until --resume or --abandon", async () => {
+		const fixture = await improveFixture();
+		try {
+			// A loop killed mid-flight leaves a `running` ledger entry.
+			const stranded = "loop_abandonme01";
+			await expect(runImprovementLoop(loopOptions(fixture, {
+				loopId: stranded,
+				runSuite: undefined,
+				author: () => {
+					throw new Error("killed mid-cycle");
+				},
+			}))).rejects.toThrow(/killed mid-cycle/);
+			const open = listUnfinishedImprovementLoops(fixture.runsRoot, fixture.projectId);
+			expect(open.running.map((loop) => loop.loopId)).toEqual([stranded]);
+
+			// A second `improve` sees it and says exactly what to do about it.
+			const refusal = new UnfinishedImprovementLoopError(open.running, open.unreadable);
+			expect(refusal.message).toContain(stranded);
+			expect(refusal.message).toContain("--resume");
+			expect(refusal.message).toContain("--abandon");
+			await expect(fixture.workbench.decide({
+				kind: "improve",
+				until: 1,
+				maxCycles: 1,
+				repetitions: SEALED_VERIFICATION_REPETITIONS,
+				reason: "Improve while another loop is open",
+			}, approvingGate())).rejects.toThrow(UnfinishedImprovementLoopError);
+
+			// `--abandon` drops the claim and leaves the branches alone.
+			const before = branches(fixture.projectDir);
+			const dropped = abandonImprovementLoop(fixture.runsRoot, fixture.projectId, stranded);
+			expect(dropped.status).toBe("abandoned");
+			expect(() => abandonImprovementLoop(fixture.runsRoot, fixture.projectId, stranded))
+				.toThrow(/only a running loop can be abandoned/);
+			expect(branches(fixture.projectDir)).toEqual(before);
+			expect(listUnfinishedImprovementLoops(fixture.runsRoot, fixture.projectId).running).toEqual([]);
+		} finally {
+			await fixture.close();
+		}
+	}, 600_000);
+
+	it("checkpoints a partial branch and resumes on the next collision-free cycle", async () => {
+		const fixture = await improveFixture();
+		try {
+			const loopId = "loop_resumeme01";
+			await expect(runImprovementLoop(
+				loopOptions(fixture, {
+					loopId,
+					maxCycles: 2,
+					author: scriptedAuthor([NO_OP_INSTRUCTION, READY_INSTRUCTION]),
+				}),
+				{
+					runCheapCheck: (async () => {
+						throw new Error("killed after the branch was created");
+					}) as unknown as ImprovementLoopDependencies["runCheapCheck"],
+				},
+			)).rejects.toThrow(/killed after the branch/);
+			const interrupted = loadImprovementLoopRun(fixture.runsRoot, loopId);
+			expect(interrupted).toMatchObject({ status: "running", lastCycle: 1 });
+			expect(interrupted.branches).toEqual([`candidate/auto-${loopId}-1`]);
+
+			const result = await runImprovementLoop(loopOptions(fixture, {
+				loopId,
+				maxCycles: 2,
+				author: scriptedAuthor([NO_OP_INSTRUCTION, READY_INSTRUCTION]),
+			}));
+			expect(result.loopId).toBe(loopId);
+			expect(result.cycles[0]!.cycle).toBe(2);
+			expect(result.cycles[0]!.branch).toBe(`candidate/auto-${loopId}-2`);
 		} finally {
 			await fixture.close();
 		}
@@ -817,6 +1139,8 @@ describe("failure-mode selection", () => {
 			cycle: 2,
 			evalRunId: "erun_1",
 			evalReused: true,
+			baseTargetSha: "0".repeat(40),
+			changedPaths: [],
 			pass: 1,
 			total: 4,
 			passRate: 0.25,

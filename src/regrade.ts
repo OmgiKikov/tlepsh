@@ -316,6 +316,9 @@ export async function regradeEvalRun(options: RegradeOptions): Promise<RegradeRe
 	const sealed = isSealedEvalRun(sourceRecord);
 	const record: EvalRunRecord = {
 		schemaVersion: EVAL_RUN_SCHEMA_VERSION,
+		// A regrade re-scores recorded traces; a regrade of a screen would still be
+		// a screen, so the source's purpose is copied rather than assumed.
+		purpose: sourceRecord.purpose,
 		evalRunId,
 		target: sourceRecord.target,
 		label,

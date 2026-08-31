@@ -194,7 +194,8 @@ function writeDevelopmentEval(
 	writeJsonArtifact(join(paths.runsRoot, runId, "run.json"), RunRecordSchema, run);
 	const evidence = { runtime, model, judge: null, execution, eval: evaluation };
 	const record: EvalRunRecord = {
-		schemaVersion: 2,
+		schemaVersion: 3,
+		purpose: "evidence" as const,
 		evalRunId,
 		target: run.target,
 		label: "solo",

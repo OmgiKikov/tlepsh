@@ -16,6 +16,8 @@ import {
 	listEvalRunIndexes,
 	listEvalRunIndexesLenient,
 	listPublicEvalRunIndexesBounded,
+	readEvalRunIndex,
+	EVAL_RUN_SCHEMA_VERSION,
 	loadRun,
 	loadVerifiedEvalRun,
 	runSuite,
@@ -37,6 +39,7 @@ import {
 	type RunRecord,
 } from "../src/provenance.js";
 import { writeJsonArtifact } from "../src/storage/artifacts.js";
+import { compareVerifiedEvalRuns } from "../src/compare.js";
 
 const cleanupPaths: string[] = [];
 
@@ -134,7 +137,8 @@ function writeEvalFixture(taskIds?: string[]): { runsRoot: string; record: EvalR
 		eval: first.eval,
 	});
 	const record: EvalRunRecord = {
-		schemaVersion: 2,
+		schemaVersion: 3,
+		purpose: "evidence" as const,
 		evalRunId: "erun-test",
 		target: first.target,
 		label: "baseline",
@@ -633,7 +637,8 @@ describe("baseline reuse", () => {
 			eval: first.eval,
 		});
 		writeEvalRun(runsRoot, {
-			schemaVersion: 2,
+			schemaVersion: 3,
+			purpose: "evidence" as const,
 			evalRunId: "erun_reusable",
 			target,
 			label: "baseline",
@@ -716,5 +721,91 @@ describe("baseline reuse", () => {
 	it("an unreadable finishedAt cannot prove freshness", () => {
 		const broken = writeReusableBaseline("not-a-timestamp");
 		expect(findReusableBaseline(broken.runsRoot, broken.query)).toBeNull();
+	});
+});
+
+describe("eval run purpose", () => {
+	it("reads a two-arm pre-purpose (v2) index as evidence, byte-for-byte unchanged on disk", () => {
+		const fixture = writeEvalFixture();
+		const path = join(fixture.runsRoot, fixture.record.evalRunId, "eval_run.json");
+		// Exactly what a v2 index on disk looks like: no `purpose`, schemaVersion 2.
+		const { purpose: _purpose, ...rest } = fixture.record;
+		const legacyBytes = `${JSON.stringify({ ...rest, schemaVersion: 2 }, null, 2)}\n`;
+		writeFileSync(path, legacyBytes);
+
+		const read = readEvalRunIndex(fixture.runsRoot, fixture.record.evalRunId);
+		// A screen could never wear a baseline/candidate label, so this arm is known.
+		expect(read.purpose).toBe("evidence");
+		expect(read.schemaVersion).toBe(EVAL_RUN_SCHEMA_VERSION);
+		// Reading is not rewriting: the artifact keeps its exact bytes.
+		expect(readFileSync(path, "utf8")).toBe(legacyBytes);
+		// And it is still ordinary evidence: reusable, and comparable.
+		expect(loadVerifiedEvalRun(fixture.runsRoot, fixture.record.evalRunId).record.purpose).toBe("evidence");
+	});
+
+	it("quarantines a one-arm v2 index because a missing marker makes screen vs evidence unknowable", () => {
+		const fixture = writeEvalFixture();
+		const path = join(fixture.runsRoot, fixture.record.evalRunId, "eval_run.json");
+		const { purpose: _purpose, ...rest } = fixture.record;
+		writeFileSync(path, `${JSON.stringify({ ...rest, schemaVersion: 2, label: "solo" }, null, 2)}\n`);
+
+		const read = readEvalRunIndex(fixture.runsRoot, fixture.record.evalRunId);
+		expect(read.purpose).toBe("legacy-unknown");
+		const verified = { record: read, runs: [], hasRunHashes: true } as unknown as
+			Parameters<typeof compareVerifiedEvalRuns>[0];
+		const compared = compareVerifiedEvalRuns(verified, verified, { mode: "candidate" });
+		expect(compared.status).toBe("invalid");
+		expect(compared.issues.join(" ")).toContain("ambiguous one-arm evidence");
+	});
+
+	it("keeps every provenance key and the provenanceKey hash exactly where they were", () => {
+		const fixture = writeEvalFixture();
+		// `purpose` is OUTSIDE the provenance axes on purpose: adding it must not
+		// move a single provenance key, or every baseline on disk stops matching.
+		expect(Object.keys(fixture.record.provenance).sort()).toEqual([
+			"ahdeVersion",
+			"datasetHash",
+			"evaluatorId",
+			"execution",
+			"judge",
+			"modelApi",
+			"modelApiKeyEnv",
+			"modelBaseUrl",
+			"modelId",
+			"modelSpec",
+			"params",
+			"piSha",
+			"piVersion",
+			"provider",
+			"suiteHash",
+			"thinkingLevel",
+		]);
+		expect(fixture.record.provenance).not.toHaveProperty("purpose");
+		expect(fixture.record.provenanceKey).toBe(hashValue(fixture.record.provenance));
+		// The same axes hash the same whether the record is evidence or a screen.
+		const asScreen = { ...fixture.record, purpose: "screen" as const, label: "solo" as const };
+		expect(hashValue(asScreen.provenance)).toBe(fixture.record.provenanceKey);
+	});
+
+	it("refuses a v1 index, which really does describe a different contract", () => {
+		const fixture = writeEvalFixture();
+		const path = join(fixture.runsRoot, fixture.record.evalRunId, "eval_run.json");
+		const { purpose: _purpose, ...rest } = fixture.record;
+		writeFileSync(path, JSON.stringify({ ...rest, schemaVersion: 1 }, null, 2));
+		expect(() => readEvalRunIndex(fixture.runsRoot, fixture.record.evalRunId)).toThrow();
+	});
+
+	it("will not let a screen wear a two-arm label", () => {
+		const fixture = writeEvalFixture();
+		expect(EvalRunRecordSchema.safeParse({
+			...fixture.record,
+			purpose: "screen",
+			label: "baseline",
+		}).success).toBe(false);
+		expect(EvalRunRecordSchema.safeParse({
+			...fixture.record,
+			purpose: "screen",
+			label: "solo",
+		}).success).toBe(true);
 	});
 });
