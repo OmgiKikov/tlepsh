@@ -19,7 +19,7 @@ import {
 	gateVerdictOf,
 	isPromotionGradeGateEvidence,
 } from "../src/domain/candidate.js";
-import { EvalRunRecordSchema, loadEvalRun, writeEvalRun, type EvalRunRecord } from "../src/eval.js";
+import { EvalRunRecordSchema, loadEvalRun, loadVerifiedEvalRun, writeEvalRun, type EvalRunRecord } from "../src/eval.js";
 import { compareEvalRuns } from "../src/compare.js";
 import {
 	comparisonGateEvidence,
@@ -45,7 +45,12 @@ import {
 } from "../src/provenance.js";
 import { readJsonArtifact, writeJsonArtifact, writeTextArtifact } from "../src/storage/artifacts.js";
 import { baseFixtureFiles } from "./fixtures.js";
-import { appendJudgeLabels, judgeFingerprintHashOf } from "../src/application/judge-labels.js";
+import {
+	appendJudgeLabels,
+	judgeFingerprintHashOf,
+	judgeLabelLineageFor,
+	type JudgeLabelRow,
+} from "../src/application/judge-labels.js";
 import { runImprovementLoop } from "../src/application/improvement-loop.js";
 import { compileHarnessAuthoringProposal } from "../src/application/harness-authoring.js";
 import { candidateProposalReview, candidateSummary, proposalReview } from "../src/workbench/resolution.js";
@@ -267,6 +272,7 @@ function fixture(
 		targetId?: string;
 		execution?: ExecutionFingerprint;
 		judgeSpecHash?: string;
+		developmentTasks?: number;
 	} = {},
 	withSource = true,
 ): { runsRoot: string; candidateId: string } {
@@ -284,7 +290,7 @@ function fixture(
 		network: "deny",
 		filesystem: "workspace-confined-v1",
 	});
-	writePair(runsRoot, targetId, fixtureBaselineSha, fixtureCandidateSha, "eval-base", "eval-candidate", "development", execution, { tasks: 1, repetitions: 1 }, overrides.judgeSpecHash);
+	writePair(runsRoot, targetId, fixtureBaselineSha, fixtureCandidateSha, "eval-base", "eval-candidate", "development", execution, { tasks: overrides.developmentTasks ?? 1, repetitions: 1 }, overrides.judgeSpecHash);
 	if (withHoldout) {
 		writePair(runsRoot, targetId, fixtureBaselineSha, fixtureCandidateSha, "holdout-base", "holdout-candidate", "sealed-holdout", execution, { tasks: 15, repetitions: 2 });
 	}
@@ -579,6 +585,48 @@ function fixture(
 	});
 	writeJsonArtifact(candidateRecordPath(runsRoot, candidateId), CandidateRecordSchema, CandidateRecordSchema.parse(record));
 	return { runsRoot, candidateId };
+}
+
+/** Exact, source-validated calibration subjects for this Candidate's Spec. */
+function calibrationRows(value: { runsRoot: string; candidateId: string }): JudgeLabelRow[] {
+	const candidate = loadCandidateRecord(value.runsRoot, value.candidateId);
+	if (candidate.origin.kind !== "applied-builder") throw new Error("fixture requires an applied Builder origin");
+	const evalRunId = "eval-candidate";
+	const verified = loadVerifiedEvalRun(value.runsRoot, evalRunId);
+	const lineage = judgeLabelLineageFor({
+		runsRoot: value.runsRoot,
+		evalRunId,
+		approvedSpec: {
+			projectId: candidate.origin.approvedSpec.projectId,
+			specId: candidate.origin.approvedSpec.specId,
+			specContentHash: candidate.origin.approvedSpec.specContentHash,
+			snapshotHash: candidate.origin.approvedSpec.snapshotHash,
+		},
+	});
+	const judgeFingerprintHash = judgeFingerprintHashOf(value.runsRoot, evalRunId) ?? undefined;
+	return verified.runs.map((run) => {
+		const graderIndex = run.evalResults?.graders.findIndex((grader) => grader.checkCode === "semantic-rubric") ?? -1;
+		const grader = graderIndex >= 0 ? run.evalResults?.graders[graderIndex] : undefined;
+		if (!grader?.specHash) throw new Error(`run ${run.runId} has no judge grader fixture`);
+		const judge = grader.passed ? "pass" as const : "fail" as const;
+		return {
+			lineage,
+			runId: run.runId,
+			taskId: run.taskId,
+			graderIndex,
+			graderSpecHash: grader.specHash,
+			judgeFingerprintHash,
+			subject: "judge-facing" as const,
+			subjectHash: hashValue({ evalRunId, runId: run.runId, graderIndex, fixture: "judge-subject" }),
+			human: judge,
+			judge,
+			at,
+		};
+	});
+}
+
+function legacyCalibrationRows(value: { runsRoot: string; candidateId: string }): JudgeLabelRow[] {
+	return calibrationRows(value).map(({ subject: _subject, subjectHash: _subjectHash, ...row }) => row);
 }
 
 function git(dir: string, ...args: string[]): string {
@@ -915,7 +963,7 @@ describe("candidate human review", () => {
 
 	it("refuses promotion on an unchecked judge when the Target requires calibration", () => {
 		const repo = repository(calibratedManifest);
-		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec });
+		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec, developmentTasks: 4 });
 		const stateRoot = mkdtempSync(join(tmpdir(), "ahde-promote-labels-"));
 		roots.push(stateRoot);
 		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
@@ -928,39 +976,35 @@ describe("candidate human review", () => {
 			reason: "ship it",
 			now: () => at,
 		});
-		expect(() => promote("3.1.0")).toThrow(/promotion refused: this evidence is graded by 1 judge grader spec\(s\) with 0 human label\(s\)/);
+		expect(() => promote("3.1.0")).toThrow(/promotion refused: this evidence is graded by 1 judge grader spec\(s\), but each spec requires at least 4 independent subject\(s\)/);
 		expect(git(repo.dir, "tag", "--list", "v3.1.0")).toBe("");
 
 		// Three agreeing labels are still one short of the declared minimum.
-		appendJudgeLabels(stateRoot, "project", "eval-candidate", [0, 1, 2].map((index) => ({
-			runId: "eval-candidate-run",
-			taskId: `development-task-${index}`,
-			graderIndex: 1,
-			graderSpecHash: judgeSpec,
-			judgeFingerprintHash: judgeFingerprintHashOf(value.runsRoot, "eval-candidate") ?? undefined,
-			// Written under the current screen: this human read the judge's own
-			// subject, so the label certifies this judge.
-			subject: "judge-facing" as const,
-			subjectHash: `sha256:${"1".repeat(64)}`,
-			human: "pass" as const,
-			judge: "pass" as const,
-			at,
-		})));
-		expect(() => promote("3.1.0")).toThrow(/with 3 human label\(s\) at 100% agreement/);
+		const rows = calibrationRows(value);
+		appendJudgeLabels(stateRoot, "project", "eval-candidate", rows.slice(0, 3));
+		expect(() => promote("3.1.0")).toThrow(/3 subject\(s\) at 100%/);
 
-		appendJudgeLabels(stateRoot, "project", "eval-candidate", [{
-			runId: "eval-candidate-run",
-			taskId: "development-task-3",
-			graderIndex: 1,
-			graderSpecHash: judgeSpec,
-			judgeFingerprintHash: judgeFingerprintHashOf(value.runsRoot, "eval-candidate") ?? undefined,
-			subject: "judge-facing" as const,
-			subjectHash: `sha256:${"1".repeat(64)}`,
-			human: "pass" as const,
-			judge: "pass" as const,
-			at,
-		}]);
+		appendJudgeLabels(stateRoot, "project", "eval-candidate", rows.slice(3));
 		expect(promote("3.1.0").tag).toBe("v3.1.0");
+	});
+
+	it("does not let repeated labels for one subject satisfy minLabels", () => {
+		const repo = repository(calibratedManifest);
+		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec, developmentTasks: 4 });
+		const stateRoot = mkdtempSync(join(tmpdir(), "ahde-promote-label-repeat-"));
+		roots.push(stateRoot);
+		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+		const [one] = calibrationRows(value);
+		appendJudgeLabels(stateRoot, "project", "eval-candidate", [one!, one!, one!, one!]);
+		expect(() => promoteReviewedCandidate({
+			repositoryDir: repo.dir,
+			...value,
+			stateRoot,
+			version: "3.1.1",
+			reason: "ship it",
+			now: () => at,
+		})).toThrow(/1 subject\(s\) at 100%.*3 repeated label\(s\) were ignored/);
+		expect(git(repo.dir, "tag", "--list", "v3.1.1")).toBe("");
 	});
 
 	/**
@@ -971,20 +1015,11 @@ describe("candidate human review", () => {
 	 */
 	it("does not let labels written under the old screen satisfy requireCalibration", () => {
 		const repo = repository(calibratedManifest);
-		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec });
+		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec, developmentTasks: 4 });
 		const stateRoot = mkdtempSync(join(tmpdir(), "ahde-promote-legacy-"));
 		roots.push(stateRoot);
 		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
-		appendJudgeLabels(stateRoot, "project", "eval-candidate", [0, 1, 2, 3].map((index) => ({
-			runId: "eval-candidate-run",
-			taskId: `development-task-${index}`,
-			graderIndex: 1,
-			graderSpecHash: judgeSpec,
-			judgeFingerprintHash: judgeFingerprintHashOf(value.runsRoot, "eval-candidate") ?? undefined,
-			human: "pass" as const,
-			judge: "pass" as const,
-			at,
-		})));
+		appendJudgeLabels(stateRoot, "project", "eval-candidate", legacyCalibrationRows(value));
 		const promote = (version: string) => promoteReviewedCandidate({
 			repositoryDir: repo.dir,
 			...value,
@@ -994,7 +1029,7 @@ describe("candidate human review", () => {
 			now: () => at,
 		});
 		// Four labels on disk, none of them counted, and the refusal says why.
-		expect(() => promote("3.3.0")).toThrow(/with 0 human label\(s\)/);
+		expect(() => promote("3.3.0")).toThrow(/0 subject\(s\) at 0%/);
 		expect(() => promote("3.3.0")).toThrow(/4 older label\(s\) were not counted/);
 		expect(() => promote("3.3.0")).toThrow(/allowLegacyLabels: true/);
 		expect(git(repo.dir, "tag", "--list", "v3.3.0")).toBe("");
@@ -1004,20 +1039,11 @@ describe("candidate human review", () => {
 		const repo = repository(
 			calibratedManifest.replace("      minLabels: 4\n", "      minLabels: 4\n      allowLegacyLabels: true\n"),
 		);
-		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec });
+		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec, developmentTasks: 4 });
 		const stateRoot = mkdtempSync(join(tmpdir(), "ahde-promote-legacy-ok-"));
 		roots.push(stateRoot);
 		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
-		appendJudgeLabels(stateRoot, "project", "eval-candidate", [0, 1, 2, 3].map((index) => ({
-			runId: "eval-candidate-run",
-			taskId: `development-task-${index}`,
-			graderIndex: 1,
-			graderSpecHash: judgeSpec,
-			judgeFingerprintHash: judgeFingerprintHashOf(value.runsRoot, "eval-candidate") ?? undefined,
-			human: "pass" as const,
-			judge: "pass" as const,
-			at,
-		})));
+		appendJudgeLabels(stateRoot, "project", "eval-candidate", legacyCalibrationRows(value));
 		expect(promoteReviewedCandidate({
 			repositoryDir: repo.dir,
 			...value,

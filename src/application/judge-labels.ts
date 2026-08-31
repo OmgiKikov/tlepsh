@@ -21,6 +21,7 @@ import {
 import { isSealedEvalRun, judgeSubjectFor, loadVerifiedEvalRun, readEvalRunIndex } from "../eval.js";
 import { GraderSpec, type ResolvedTask } from "../manifest.js";
 import { AHDE_EVALUATOR_ID, hashValue, type RunRecord } from "../provenance.js";
+import { ApprovedSpecReferenceSchema, type ApprovedSpecReference } from "../spec.js";
 import { appendJsonlArtifact, readJsonlArtifact } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import { lastAssistantText, openTrace, redactTraceText } from "../trace.js";
@@ -41,6 +42,19 @@ export const AssertionAnswerSchema = z.enum(["yes", "no", "unknown"]);
 export type LabelAssertionAnswer = z.infer<typeof AssertionAnswerSchema>;
 
 const JudgeLabelRowShape = z.strictObject({
+	/**
+	 * Host-stamped provenance for the eval lineage under which this subject was
+	 * labelled. Older rows remain readable without it, but an unbound row can
+	 * never satisfy a promotion calibration policy.
+	 */
+	lineage: z.strictObject({
+		evalRunId: z.string().regex(ARTIFACT_ID_PATTERN),
+		targetId: z.string().min(1).max(200),
+		datasetHash: z.string().regex(HASH_PATTERN),
+		suiteHash: z.string().regex(HASH_PATTERN),
+		evaluatorId: z.string().min(1).max(200),
+		approvedSpec: ApprovedSpecReferenceSchema.optional(),
+	}).optional(),
 	/** The exact run whose answer was read. */
 	runId: z.string().regex(ARTIFACT_ID_PATTERN),
 	taskId: z.string().min(1).max(200),
@@ -170,10 +184,19 @@ export function appendJudgeLabels(
 	evalRunId: string,
 	rows: readonly JudgeLabelRow[],
 ): void {
+	const id = EvalRunIdSchema.parse(evalRunId);
+	const parsed = rows.map((row) => JudgeLabelRowSchema.parse(row));
+	for (const row of parsed) {
+		if (row.lineage && row.lineage.evalRunId !== id) {
+			throw new Error(
+				`label lineage eval run ${row.lineage.evalRunId} does not match destination ${id}`,
+			);
+		}
+	}
 	appendJsonlArtifact(
-		judgeLabelFilePath(stateRoot, projectId, evalRunId),
+		judgeLabelFilePath(stateRoot, projectId, id),
 		JudgeLabelRowSchema,
-		rows.map((row) => JudgeLabelRowSchema.parse(row)),
+		parsed,
 	);
 }
 
@@ -184,10 +207,19 @@ export function readProjectJudgeLabels(stateRoot: string, projectId: string): Ju
 	const rows: JudgeLabelRow[] = [];
 	for (const entry of readdirSync(root).sort()) {
 		if (!entry.endsWith(".jsonl")) continue;
-		rows.push(...readJsonlArtifact(join(root, entry), JudgeLabelRowSchema, {
+		const evalRunId = entry.slice(0, -".jsonl".length);
+		const parsed = readJsonlArtifact(join(root, entry), JudgeLabelRowSchema, {
 			maxBytes: MAX_LABEL_FILE_BYTES,
 			maxRecords: MAX_LABEL_RECORDS,
-		}));
+		});
+		for (const row of parsed) {
+			if (row.lineage && row.lineage.evalRunId !== evalRunId) {
+				throw new Error(
+					`label lineage eval run ${row.lineage.evalRunId} does not match file ${entry}`,
+				);
+			}
+		}
+		rows.push(...parsed);
 	}
 	return rows;
 }
@@ -199,10 +231,28 @@ export interface JudgeCalibration {
 	totalLabels: number;
 }
 
+/** Stable identity of one independent human-labelled judge subject. */
+function calibrationSubjectId(row: JudgeLabelRow): string {
+	return hashValue({
+		schemaVersion: 1,
+		evalRunId: row.lineage?.evalRunId ?? null,
+		runId: row.runId,
+		taskId: row.taskId,
+		graderIndex: row.graderIndex,
+		graderSpecHash: row.graderSpecHash,
+		judgeFingerprintHash: row.judgeFingerprintHash ?? null,
+		subjectHash: row.subjectHash ?? null,
+	});
+}
+
+function agreementRows(rows: readonly JudgeLabelRow[]): JudgeAgreementInput[] {
+	return rows.map((row) => ({ ...row, calibrationSubjectId: calibrationSubjectId(row) }));
+}
+
 /** Read this project's labels and reduce them to per-grader agreement. */
 export function loadJudgeCalibration(stateRoot: string, projectId: string): JudgeCalibration {
-	const rows: JudgeAgreementInput[] = readProjectJudgeLabels(stateRoot, projectId);
-	const report = judgeAgreement(rows);
+	const rows = readProjectJudgeLabels(stateRoot, projectId);
+	const report = judgeAgreement(agreementRows(rows));
 	return {
 		byGraderSpecHash: new Map(report.byGrader.map((entry) => [entry.graderSpecHash, entry])),
 		pooled: report.pooled,
@@ -236,12 +286,82 @@ export interface JudgeEvidenceCalibration {
 	specHashes: string[];
 	/** Agreement over the labels covering exactly those specs; null when none exist. */
 	stats: JudgeAgreementStats | null;
+	/** Independent coverage for every grader spec the evidence used. */
+	byGraderSpecHash: Map<string, JudgeAgreementStats>;
+	/** Coverage for each exact rubric + judge instrument used by the evidence. */
+	instruments: Array<{
+		graderSpecHash: string;
+		judgeFingerprintHash: string;
+		stats: JudgeAgreementStats | null;
+	}>;
 	/**
 	 * Labels for these specs that were written under the old screen. Counted
 	 * whether or not they were included, so a screen can say why the number it
 	 * shows is smaller than the number of labels on disk.
 	 */
 	legacyLabels: number;
+	/** Matching labels that lacked an exact approved-Spec/eval-lineage receipt. */
+	unboundLabels: number;
+	/** Bound labels whose exact Spec or eval lineage was not this evidence's. */
+	lineageMismatchLabels: number;
+}
+
+export type JudgeLabelLineage = NonNullable<JudgeLabelRow["lineage"]>;
+
+function lineageFor(
+	record: ReturnType<typeof loadVerifiedEvalRun>["record"],
+	approvedSpec?: ApprovedSpecReference,
+): JudgeLabelLineage {
+	return {
+		evalRunId: record.evalRunId,
+		targetId: record.target.id,
+		datasetHash: record.datasetHash,
+		suiteHash: record.suiteHash,
+		evaluatorId: record.provenance.evaluatorId,
+		...(approvedSpec ? { approvedSpec: ApprovedSpecReferenceSchema.parse(approvedSpec) } : {}),
+	};
+}
+
+/** Host-derived label receipt; imports cannot provide or override it. */
+export function judgeLabelLineageFor(options: {
+	runsRoot: string;
+	evalRunId: string;
+	approvedSpec?: ApprovedSpecReference;
+}): JudgeLabelLineage {
+	const verified = loadVerifiedEvalRun(options.runsRoot, EvalRunIdSchema.parse(options.evalRunId));
+	return lineageFor(verified.record, options.approvedSpec);
+}
+
+function evalLineageIdentity(lineage: Omit<JudgeLabelLineage, "evalRunId" | "approvedSpec">): string {
+	return hashValue({
+		schemaVersion: 1,
+		targetId: lineage.targetId,
+		datasetHash: lineage.datasetHash,
+		suiteHash: lineage.suiteHash,
+		evaluatorId: lineage.evaluatorId,
+	});
+}
+
+function approvedSpecIdentity(reference: ApprovedSpecReference): string {
+	return hashValue(ApprovedSpecReferenceSchema.parse(reference));
+}
+
+/** Revalidate a stored row against the exact source eval artifacts it names. */
+function rowMatchesSource(
+	row: JudgeLabelRow,
+	source: ReturnType<typeof loadVerifiedEvalRun>,
+): boolean {
+	if (!row.lineage || row.lineage.evalRunId !== source.record.evalRunId) return false;
+	const expectedLineage = lineageFor(source.record, row.lineage.approvedSpec);
+	if (evalLineageIdentity(row.lineage) !== evalLineageIdentity(expectedLineage)) return false;
+	const fingerprint = source.record.provenance.judge ? hashValue(source.record.provenance.judge) : null;
+	if (!fingerprint || row.judgeFingerprintHash !== fingerprint) return false;
+	const run = source.runs.find((candidate) => candidate.runId === row.runId);
+	if (!run || run.taskId !== row.taskId || run.status !== "completed") return false;
+	const grader = run.evalResults?.graders[row.graderIndex];
+	return grader?.checkCode === "semantic-rubric" &&
+		grader.specHash === row.graderSpecHash &&
+		(grader.passed ? "pass" : "fail") === row.judge;
 }
 
 /**
@@ -261,31 +381,118 @@ export function judgeEvidenceCalibration(options: {
 	 * passes the manifest's `allowLegacyLabels`, which defaults to false.
 	 */
 	includeLegacyLabels?: boolean;
+	/** Exact approved Spec the candidate and its development corpus belong to. */
+	approvedSpec?: ApprovedSpecReference;
+	/** Promotion gates require both the eval receipt and an approved Spec. */
+	requireBoundLineage?: boolean;
 }): JudgeEvidenceCalibration {
-	const specHashes = [...new Set(
-		options.evalRunIds.flatMap((evalRunId) => judgeGraderSpecHashes(options.runsRoot, evalRunId)),
-	)].sort();
-	if (specHashes.length === 0) return { specHashes, stats: null, legacyLabels: 0 };
+	const evidence = options.evalRunIds.map((evalRunId) =>
+		loadVerifiedEvalRun(options.runsRoot, EvalRunIdSchema.parse(evalRunId))
+	);
+	const specHashes = [...new Set(evidence.flatMap(({ runs }) =>
+		runs.flatMap((run) => (run.evalResults?.graders ?? [])
+			.filter((grader) => grader.checkCode === "semantic-rubric" && grader.specHash)
+			.map((grader) => grader.specHash!))
+	))].sort();
+	const instruments = [...new Map(evidence.flatMap(({ record, runs }) => {
+		const judgeFingerprintHash = record.provenance.judge ? hashValue(record.provenance.judge) : null;
+		if (!judgeFingerprintHash) return [];
+		return [...new Set(runs.flatMap((run) => (run.evalResults?.graders ?? [])
+			.filter((grader) => grader.checkCode === "semantic-rubric" && grader.specHash)
+			.map((grader) => grader.specHash!)))]
+			.map((graderSpecHash) => {
+				const key = `${graderSpecHash}\u0000${judgeFingerprintHash}`;
+				return [key, { graderSpecHash, judgeFingerprintHash }] as const;
+			});
+	})).values()].sort((left, right) =>
+		left.graderSpecHash.localeCompare(right.graderSpecHash) ||
+		left.judgeFingerprintHash.localeCompare(right.judgeFingerprintHash)
+	);
+	if (specHashes.length === 0) {
+		return {
+			specHashes,
+			stats: null,
+			byGraderSpecHash: new Map(),
+			instruments: [],
+			legacyLabels: 0,
+			unboundLabels: 0,
+			lineageMismatchLabels: 0,
+		};
+	}
 	const wanted = new Set(specHashes);
 	// A label certifies one rubric AS ANSWERED BY ONE JUDGE. Evidence graded by a
 	// judge nobody labelled is uncalibrated even when the rubric is old and
 	// well-labelled — that is the whole point of measuring the instrument.
 	const judges = new Set(
-		options.evalRunIds
-			.map((evalRunId) => judgeFingerprintHashOf(options.runsRoot, evalRunId))
+		evidence
+			.map(({ record }) => record.provenance.judge ? hashValue(record.provenance.judge) : null)
 			.filter((hash): hash is string => hash !== null),
 	);
-	const matching = readProjectJudgeLabels(options.stateRoot, options.projectId)
+	const candidates = readProjectJudgeLabels(options.stateRoot, options.projectId)
 		.filter((row) => wanted.has(row.graderSpecHash))
 		.filter((row) => row.judgeFingerprintHash !== undefined && judges.has(row.judgeFingerprintHash));
-	const legacyLabels = matching.filter(isLegacyJudgeLabel).length;
+	const legacyLabels = candidates.filter(isLegacyJudgeLabel).length;
+	const unboundLabels = candidates.filter((row) =>
+		row.lineage === undefined || (options.requireBoundLineage === true && row.lineage.approvedSpec === undefined)
+	).length;
+	const expectedSpec = options.approvedSpec
+		? approvedSpecIdentity(ApprovedSpecReferenceSchema.parse(options.approvedSpec))
+		: null;
+	// Sealed subjects are never shown to a labeller. A promotion may therefore
+	// be certified only by a matching development lineage; every judge grader
+	// spec used on sealed evidence must also have independent development labels.
+	const allowedDevelopmentLineages = new Set(
+		evidence
+			.filter(({ record }) => record.evidenceVisibility !== "sealed")
+			.map(({ record }) => evalLineageIdentity(lineageFor(record))),
+	);
+	const sourceCache = new Map<string, ReturnType<typeof loadVerifiedEvalRun> | null>();
+	const bound = candidates.filter((row) => {
+		if (options.requireBoundLineage === true && expectedSpec === null) return false;
+		if (!row.lineage) return options.requireBoundLineage !== true && expectedSpec === null;
+		if (options.requireBoundLineage === true && !row.lineage.approvedSpec) return false;
+		if (expectedSpec !== null && (!row.lineage.approvedSpec || approvedSpecIdentity(row.lineage.approvedSpec) !== expectedSpec)) {
+			return false;
+		}
+		// Calibration is evidence about the exact evaluated subjects, not a
+		// project-global reputation score. A receipt from another run cannot move
+		// into this promotion merely because its corpus hashes happen to match.
+		if (!options.evalRunIds.includes(row.lineage.evalRunId)) return false;
+		if (!allowedDevelopmentLineages.has(evalLineageIdentity(row.lineage))) return false;
+		let source = sourceCache.get(row.lineage.evalRunId);
+		if (source === undefined) {
+			try {
+				source = loadVerifiedEvalRun(options.runsRoot, row.lineage.evalRunId);
+			} catch {
+				source = null;
+			}
+			sourceCache.set(row.lineage.evalRunId, source);
+		}
+		return source !== null && rowMatchesSource(row, source);
+	});
+	const lineageMismatchLabels = candidates.length - unboundLabels - bound.filter((row) => row.lineage !== undefined).length;
 	const rows = options.includeLegacyLabels === false
-		? matching.filter((row) => !isLegacyJudgeLabel(row))
-		: matching;
+		? bound.filter((row) => !isLegacyJudgeLabel(row))
+		: bound;
+	const report = rows.length === 0 ? null : judgeAgreement(agreementRows(rows));
+	const instrumentCoverage = instruments.map((instrument) => {
+		const instrumentRows = rows.filter((row) =>
+			row.graderSpecHash === instrument.graderSpecHash &&
+			row.judgeFingerprintHash === instrument.judgeFingerprintHash
+		);
+		return {
+			...instrument,
+			stats: instrumentRows.length === 0 ? null : judgeAgreement(agreementRows(instrumentRows)).pooled,
+		};
+	});
 	return {
 		specHashes,
-		stats: rows.length === 0 ? null : judgeAgreement(rows).pooled,
+		stats: report?.pooled ?? null,
+		byGraderSpecHash: new Map(report?.byGrader.map((entry) => [entry.graderSpecHash, entry]) ?? []),
+		instruments: instrumentCoverage,
 		legacyLabels,
+		unboundLabels,
+		lineageMismatchLabels,
 	};
 }
 
@@ -540,7 +747,7 @@ function labelSubjectFields(
  * human was shown. A file cannot claim it graded the judge-facing subject.
  */
 export const JudgeLabelImportRowSchema = JudgeLabelRowShape
-	.omit({ at: true, judge: true, judgeAssertions: true, subject: true, subjectHash: true })
+	.omit({ lineage: true, at: true, judge: true, judgeAssertions: true, subject: true, subjectHash: true })
 	.extend({
 		at: JudgeLabelRowShape.shape.at.optional(),
 		judge: JudgeLabelRowShape.shape.judge.optional(),
@@ -556,6 +763,8 @@ export interface ImportJudgeLabelsOptions {
 	sealedDatasetHashes?: ReadonlySet<string>;
 	/** The exact suite the evidence was graded under, when it is in scope. */
 	suite?: JudgeLabelSuite;
+	/** Immutable Builder Spec this eval lineage belongs to, when in scope. */
+	approvedSpec?: ApprovedSpecReference;
 	now?: () => string;
 }
 
@@ -566,6 +775,9 @@ export interface ImportJudgeLabelsOptions {
  * artifact, and the one thing it must not do is quietly redefine the evidence.
  */
 export function importJudgeLabels(options: ImportJudgeLabelsOptions): JudgeLabelRow[] {
+	if (options.approvedSpec && options.approvedSpec.projectId !== options.projectId) {
+		throw new Error("judge label approved Spec project mismatch");
+	}
 	const subjects = collectJudgeLabelSubjects({
 		runsRoot: options.runsRoot,
 		evalRunId: options.evalRunId,
@@ -574,6 +786,11 @@ export function importJudgeLabels(options: ImportJudgeLabelsOptions): JudgeLabel
 	});
 	const byKey = new Map(subjects.map((subject) => [`${subject.runId} ${subject.graderIndex}`, subject]));
 	const judgeFingerprint = judgeFingerprintHashOf(options.runsRoot, options.evalRunId);
+	const lineage = judgeLabelLineageFor({
+		runsRoot: options.runsRoot,
+		evalRunId: options.evalRunId,
+		...(options.approvedSpec ? { approvedSpec: options.approvedSpec } : {}),
+	});
 	const parsed = readJsonlArtifact(resolve(options.filePath), JudgeLabelImportRowSchema, {
 		maxBytes: MAX_LABEL_FILE_BYTES,
 		maxRecords: MAX_LABEL_RECORDS,
@@ -608,6 +825,7 @@ export function importJudgeLabels(options: ImportJudgeLabelsOptions): JudgeLabel
 			);
 		}
 		return JudgeLabelRowSchema.parse({
+			lineage,
 			runId: row.runId,
 			taskId: row.taskId,
 			graderIndex: row.graderIndex,
@@ -658,6 +876,9 @@ export interface RunJudgeLabelSessionOptions extends ImportJudgeLabelsOptions {
 export async function runJudgeLabelSession(
 	options: Omit<RunJudgeLabelSessionOptions, "filePath">,
 ): Promise<{ labelled: number; skipped: number; rows: JudgeLabelRow[] }> {
+	if (options.approvedSpec && options.approvedSpec.projectId !== options.projectId) {
+		throw new Error("judge label approved Spec project mismatch");
+	}
 	const subjects = collectJudgeLabelSubjects({
 		runsRoot: options.runsRoot,
 		evalRunId: options.evalRunId,
@@ -668,6 +889,11 @@ export async function runJudgeLabelSession(
 	});
 	const now = options.now ?? (() => new Date().toISOString());
 	const judgeFingerprint = judgeFingerprintHashOf(options.runsRoot, options.evalRunId);
+	const lineage = judgeLabelLineageFor({
+		runsRoot: options.runsRoot,
+		evalRunId: options.evalRunId,
+		...(options.approvedSpec ? { approvedSpec: options.approvedSpec } : {}),
+	});
 	const rows: JudgeLabelRow[] = [];
 	let skipped = 0;
 	for (const [offset, subject] of subjects.entries()) {
@@ -682,6 +908,7 @@ export async function runJudgeLabelSession(
 			? answer.assertions
 			: undefined;
 		const row = JudgeLabelRowSchema.parse({
+			lineage,
 			runId: subject.runId,
 			taskId: subject.taskId,
 			graderIndex: subject.graderIndex,

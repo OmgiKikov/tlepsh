@@ -12,6 +12,16 @@
 export interface JudgeAgreementInput {
 	/** Identity of the exact normalized grader spec the judge ran. */
 	graderSpecHash: string;
+	/**
+	 * Host-derived identity of the independent judge subject this comparison
+	 * describes. When present, repeating the same label never manufactures a
+	 * larger sample; conflicting labels for the same subject are excluded.
+	 *
+	 * The application layer derives this from the exact eval/run/task/grader,
+	 * judge fingerprint and judge-facing subject hash. Pure arithmetic callers
+	 * may omit it, in which case each input row is one independent subject.
+	 */
+	calibrationSubjectId?: string | undefined;
 	human: "pass" | "fail";
 	judge: "pass" | "fail";
 	/**
@@ -29,9 +39,15 @@ export interface JudgeAgreementInput {
 
 /** The 2×2 table, the rates derived from it, and how much it rests on. */
 export interface JudgeAgreementStats {
-	/** Labels behind these numbers. */
+	/** Unique, non-conflicting human-labelled subjects behind these numbers. */
 	n: number;
-	/** Share of labels where the judge and the human said the same thing. */
+	/** Binary checks behind the rates; greater than `n` for assertion rubrics. */
+	nChecks: number;
+	/** Exact repeated labels ignored while reducing the sample. */
+	duplicateLabels: number;
+	/** Subject identities excluded because their human labels conflicted. */
+	conflictedSubjects: number;
+	/** Share of checks where the judge and the human said the same thing. */
 	agreement: number;
 	/**
 	 * Cohen's κ, or null when it is undefined: agreement corrected for the
@@ -57,6 +73,9 @@ export interface JudgeAgreementReport {
 
 const EMPTY: JudgeAgreementStats = {
 	n: 0,
+	nChecks: 0,
+	duplicateLabels: 0,
+	conflictedSubjects: 0,
 	agreement: 0,
 	kappa: null,
 	falsePass: 0,
@@ -116,18 +135,73 @@ function comparisons(rows: readonly JudgeAgreementInput[]): { human: "pass" | "f
 	return pairs;
 }
 
+function scoringIdentity(input: JudgeAgreementInput): string {
+	return JSON.stringify({
+		human: input.human,
+		judge: input.judge,
+		assertions: input.assertions ?? null,
+		judgeAssertions: input.judgeAssertions ?? null,
+	});
+}
+
+/**
+ * One subject contributes at most once. Identical repeats are harmless but do
+ * not add confidence; contradictory human answers make that subject unusable
+ * until the conflict is resolved, so the whole group is dropped fail-closed.
+ */
+function independentSubjects(inputs: readonly JudgeAgreementInput[]): {
+	rows: JudgeAgreementInput[];
+	duplicateLabels: number;
+	conflictedSubjects: number;
+} {
+	const groups = new Map<string, { first: JudgeAgreementInput; scoring: string; rows: number; conflicted: boolean }>();
+	for (const [index, input] of inputs.entries()) {
+		const key = input.calibrationSubjectId ?? `unkeyed:${index}`;
+		const scoring = scoringIdentity(input);
+		const existing = groups.get(key);
+		if (!existing) {
+			groups.set(key, { first: input, scoring, rows: 1, conflicted: false });
+			continue;
+		}
+		existing.rows += 1;
+		if (existing.scoring !== scoring) existing.conflicted = true;
+	}
+	let duplicateLabels = 0;
+	let conflictedSubjects = 0;
+	const rows: JudgeAgreementInput[] = [];
+	for (const group of groups.values()) {
+		duplicateLabels += group.rows - 1;
+		if (group.conflicted) {
+			conflictedSubjects += 1;
+			continue;
+		}
+		rows.push(group.first);
+	}
+	return { rows, duplicateLabels, conflictedSubjects };
+}
+
 function statsFor(inputs: readonly JudgeAgreementInput[]): JudgeAgreementStats {
-	const rows = comparisons(inputs);
-	if (rows.length === 0) return { ...EMPTY };
+	const independent = independentSubjects(inputs);
+	const rows = comparisons(independent.rows);
+	if (rows.length === 0) {
+		return {
+			...EMPTY,
+			duplicateLabels: independent.duplicateLabels,
+			conflictedSubjects: independent.conflictedSubjects,
+		};
+	}
 	const truePass = rows.filter((row) => row.judge === "pass" && row.human === "pass").length;
 	const trueFail = rows.filter((row) => row.judge === "fail" && row.human === "fail").length;
 	const falsePass = rows.filter((row) => row.judge === "pass" && row.human === "fail").length;
 	const falseFail = rows.filter((row) => row.judge === "fail" && row.human === "pass").length;
-	const n = rows.length;
+	const nChecks = rows.length;
 	return {
-		n,
-		agreement: (truePass + trueFail) / n,
-		kappa: cohensKappa({ n, truePass, trueFail, falsePass, falseFail }),
+		n: independent.rows.length,
+		nChecks,
+		duplicateLabels: independent.duplicateLabels,
+		conflictedSubjects: independent.conflictedSubjects,
+		agreement: (truePass + trueFail) / nChecks,
+		kappa: cohensKappa({ n: nChecks, truePass, trueFail, falsePass, falseFail }),
 		falsePass,
 		falseFail,
 		truePass,
@@ -167,9 +241,33 @@ export interface JudgeCalibrationRequirement {
  */
 export function judgeCalibrationRefusal(
 	requirement: JudgeCalibrationRequirement | undefined,
-	evidence: { judgeGraderSpecs: number; stats: JudgeAgreementStats | null },
+	evidence: {
+		judgeGraderSpecs: number;
+		stats: JudgeAgreementStats | null;
+		/** Exact coverage for every judge grader spec used by the evidence. */
+		byGraderSpec?: readonly {
+			graderSpecHash: string;
+			judgeFingerprintHash?: string;
+			stats: JudgeAgreementStats | null;
+		}[];
+	},
 ): string | null {
 	if (!requirement || evidence.judgeGraderSpecs === 0) return null;
+	if (evidence.byGraderSpec) {
+		const insufficient = evidence.byGraderSpec.filter(({ stats }) =>
+			(stats?.n ?? 0) < requirement.minLabels || (stats?.agreement ?? 0) < requirement.minAgreement
+		);
+		if (insufficient.length === 0 && evidence.byGraderSpec.length === evidence.judgeGraderSpecs) return null;
+		const coverage = insufficient
+			.map(({ graderSpecHash, judgeFingerprintHash, stats }) =>
+				`${graderSpecHash.slice(0, 15)}…${judgeFingerprintHash ? ` / judge ${judgeFingerprintHash.slice(0, 15)}…` : ""}: ` +
+				`${stats?.n ?? 0} subject(s) at ${Math.round((stats?.agreement ?? 0) * 100)}%`
+			)
+			.join(", ");
+		return `this evidence is graded by ${evidence.judgeGraderSpecs} judge grader spec(s), but each spec ` +
+			`requires at least ${requirement.minLabels} independent subject(s) at ${Math.round(requirement.minAgreement * 100)}%; ` +
+			`insufficient coverage: ${coverage || "unreported grader spec"}`;
+	}
 	const labels = evidence.stats?.n ?? 0;
 	const agreement = evidence.stats?.agreement ?? 0;
 	if (labels >= requirement.minLabels && agreement >= requirement.minAgreement) return null;
@@ -181,5 +279,8 @@ export function judgeCalibrationRefusal(
 /** `84% · κ 0.62 · n=50`, the one line every screen shows. */
 export function formatJudgeAgreement(stats: JudgeAgreementStats): string {
 	const kappa = stats.kappa === null ? "κ n/a" : `κ ${stats.kappa.toFixed(2)}`;
-	return `${Math.round(stats.agreement * 100)}% · ${kappa} · n=${stats.n}`;
+	const checks = stats.nChecks === stats.n ? "" : ` · checks=${stats.nChecks}`;
+	const duplicates = stats.duplicateLabels === 0 ? "" : ` · duplicates=${stats.duplicateLabels}`;
+	const conflicts = stats.conflictedSubjects === 0 ? "" : ` · conflicts=${stats.conflictedSubjects}`;
+	return `${Math.round(stats.agreement * 100)}% · ${kappa} · n=${stats.n}${checks}${duplicates}${conflicts}`;
 }

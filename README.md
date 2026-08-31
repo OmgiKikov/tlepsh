@@ -484,7 +484,7 @@ assertion list as a checklist — takes your blind verdict, and only then reveal
 what the judge said:
 
 ```bash
-ahde label <eval-run-id> --target . --sample 30 --seed calibration-1
+ahde label <eval-run-id> --target . --spec <approved-spec-id> --sample 30 --seed calibration-1
 ahde label <eval-run-id> --target . --file ./labels.jsonl   # non-interactive
 ahde judge-agreement <eval-run-id> --target .
 ```
@@ -494,19 +494,23 @@ prompt builders call it too — so the two cannot drift into grading different
 things. On an assertion rubric the screen asks yes / no / unknown per assertion
 and the label records both sides, so agreement is measured check by check: a
 judge that is wrong about one of twelve reads as 92%, not as a failed label.
+The report keeps those binary checks separate from independent subjects.
+Relabelling the same subject cannot increase `n`; identical repeats are shown
+as repeats, and a conflicting re-label excludes that subject fail-closed.
 
 Labels land in `<state-root>/projects/<id>/labels/<eval-run-id>.jsonl` as
-`{ runId, taskId, graderIndex, graderSpecHash, subject?, subjectHash?,
+`{ lineage?, runId, taskId, graderIndex, graderSpecHash, subject?, subjectHash?,
 assertions?, judgeAssertions?, human, judge, note?, at }`. They are notes about
-an instrument, not evidence about a Target: no receipt, no provenance axis, and
-sealed evidence is never labelled. `ahde report`, the HTML report, the candidate
-review block, and the promote confirmation then all show one line — `judge
-agreement 84% · κ 0.62 · n=50`, or `judge not calibrated`.
+an instrument, not a verdict about a Target. New rows carry a host-stamped
+receipt for the exact source EvalRun and, when in Builder scope, its immutable
+approved Spec. Sealed evidence is never labelled. `ahde report`, the HTML
+report, the candidate review block, and the promote confirmation show only the
+matching eval lineage — `judge agreement 84% · κ 0.62 · n=50`, or `judge not
+calibrated`.
 
-Labels written before the screen showed the judge's own subject stay valid and
-stay in the report, but they graded a different object, so they do not count
-toward `requireCalibration` unless the Target writes
-`allowLegacyLabels: true`.
+Labels written before lineage receipts stay readable, but cannot authorize a
+promotion. `allowLegacyLabels: true` may count the older screen shape only when
+the row still has the exact Spec/EvalRun receipt; it never disables provenance.
 
 A Target that wants that line to be more than information can say so:
 
@@ -517,11 +521,11 @@ evalSuite:
     requireCalibration: { minAgreement: 0.8, minLabels: 30 }
 ```
 
-With it set, promoting evidence graded by an unchecked judge is refused with
-the exact numbers. Unset by default — measuring the instrument is worth doing
-long before it is worth blocking on — and evidence that no judge graded is
-never affected. Add `allowLegacyLabels: true` to count labels collected under
-the older screen as well.
+With it set, every exact grader-spec + judge pair must independently meet both
+thresholds on the Candidate's own development EvalRun; pooled labels cannot
+hide an uncalibrated rubric. Unset by default — measuring the instrument is
+worth doing long before it is worth blocking on — and evidence that no judge
+graded is never affected.
 
 ### Setting up the evaluator models without YAML
 
@@ -564,7 +568,7 @@ ahde report <eval-run-id>
 ahde regrade <eval-run-id> --target . --graders ./strict-graders.yaml
 
 # check the judge against your own eyes
-ahde label <eval-run-id> --target . --sample 30 --seed calibration-1
+ahde label <eval-run-id> --target . --spec <approved-spec-id> --sample 30 --seed calibration-1
 ahde judge-agreement <eval-run-id> --target .
 
 # 👍/👎 marks collected while talking to the Target

@@ -9,6 +9,7 @@ import {
 	isLegacyJudgeLabel,
 	judgeEvidenceCalibration,
 	judgeFingerprintHashOf,
+	judgeLabelLineageFor,
 	judgeLabelFilePath,
 	type JudgeLabelRow,
 	type JudgeLabelSuite,
@@ -49,6 +50,18 @@ const ASSERTIONS_GRADER = {
 const SPEC_A = hashValue(GraderSpec.parse(RUBRIC_GRADER));
 const SPEC_ASSERTIONS = hashValue(GraderSpec.parse(ASSERTIONS_GRADER));
 const SPEC_B = `sha256:${"b2".repeat(32)}`;
+const APPROVED_A = {
+	projectId: "project",
+	specId: `spec-${"a".repeat(64)}`,
+	specContentHash: `sha256:${"a".repeat(64)}`,
+	snapshotHash: `sha256:${"1".repeat(64)}`,
+} as const;
+const APPROVED_B = {
+	...APPROVED_A,
+	specId: `spec-${"b".repeat(64)}`,
+	specContentHash: `sha256:${"b".repeat(64)}`,
+	snapshotHash: `sha256:${"2".repeat(64)}`,
+} as const;
 
 afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -305,6 +318,7 @@ describe("label import", () => {
 			stateRoot: value.stateRoot,
 			projectId: value.projectId,
 			evalRunId: value.evalRunId,
+			approvedSpec: APPROVED_A,
 			now: () => at,
 			filePath: labelFile(value.stateRoot, [
 				{ runId: "run-0", taskId: "task-0", graderIndex: 1, graderSpecHash: SPEC_A, human: "fail", note: "судья добр" },
@@ -314,6 +328,13 @@ describe("label import", () => {
 		expect(rows.map((row) => [row.human, row.judge])).toEqual([["fail", "pass"], ["fail", "fail"]]);
 		expect(rows[0]?.at).toBe(at);
 		expect(rows[0]?.note).toBe("судья добр");
+		expect(rows[0]?.lineage).toMatchObject({
+			evalRunId: value.evalRunId,
+			targetId: "test-target",
+			datasetHash: value.suite.datasetHash,
+			suiteHash: value.suite.suiteHash,
+			approvedSpec: APPROVED_A,
+		});
 		const stored = readProjectJudgeLabels(value.stateRoot, value.projectId);
 		expect(stored).toEqual(rows);
 		expect(readFileSync(judgeLabelFilePath(value.stateRoot, value.projectId, value.evalRunId), "utf8")
@@ -588,7 +609,8 @@ describe("assertion checklists", () => {
 		// Pooled, these two labels agree perfectly and say nothing. Per assertion
 		// they say the judge waves through exactly one check out of six.
 		const report = judgeAgreement(readProjectJudgeLabels(value.stateRoot, value.projectId));
-		expect(report.pooled.n).toBe(6);
+		expect(report.pooled.n).toBe(2);
+		expect(report.pooled.nChecks).toBe(6);
 		expect(report.pooled.agreement).toBeCloseTo(5 / 6, 10);
 		expect(report.pooled.falsePass).toBe(1);
 	});
@@ -626,13 +648,20 @@ describe("assertion checklists", () => {
 
 describe("calibration on the screens", () => {
 	function label(value: EvidenceFixture, human: "pass" | "fail", judge: "pass" | "fail", count: number): void {
+		const offset = readProjectJudgeLabels(value.stateRoot, value.projectId).length;
+		const subjects = collectJudgeLabelSubjects({
+			runsRoot: value.runsRoot,
+			evalRunId: value.evalRunId,
+		});
 		appendJudgeLabels(
 			value.stateRoot,
 			value.projectId,
 			value.evalRunId,
-			Array.from({ length: count }, (_unused, index) => ({
-				runId: `run-${index % 2}`,
-				taskId: `task-${index % 2}`,
+			Array.from({ length: count }, (_unused, index) => {
+				const subject = subjects[(offset + index) % subjects.length]!;
+				return {
+				runId: subject.runId,
+				taskId: subject.taskId,
 				graderIndex: 1,
 				graderSpecHash: SPEC_A,
 				// A label certifies one rubric as answered by one judge.
@@ -640,12 +669,13 @@ describe("calibration on the screens", () => {
 				human,
 				judge,
 				at,
-			})),
+			};
+			}),
 		);
 	}
 
 	it("puts one line per judge grader on the report, and says so when nobody has checked", () => {
-		const value = evidence({ tasks: 2 });
+		const value = evidence({ tasks: 10 });
 		const uncalibrated = collectEvalReportData(value.runsRoot, value.evalRunId, () => at, {
 			labels: { stateRoot: value.stateRoot, projectId: value.projectId },
 		});
@@ -671,7 +701,7 @@ describe("calibration on the screens", () => {
 
 	it("pools only the labels of the grader specs this evidence actually used", () => {
 		const value = evidence({ tasks: 2 });
-		label(value, "pass", "pass", 4);
+		label(value, "pass", "pass", 2);
 		appendJudgeLabels(value.stateRoot, value.projectId, "erun-elsewhere", [{
 			runId: "run-0",
 			taskId: "task-0",
@@ -682,7 +712,7 @@ describe("calibration on the screens", () => {
 			judge: "pass",
 			at,
 		}]);
-		expect(loadJudgeCalibration(value.stateRoot, value.projectId).totalLabels).toBe(5);
+		expect(loadJudgeCalibration(value.stateRoot, value.projectId).totalLabels).toBe(3);
 		const calibration = judgeEvidenceCalibration({
 			runsRoot: value.runsRoot,
 			stateRoot: value.stateRoot,
@@ -690,7 +720,7 @@ describe("calibration on the screens", () => {
 			evalRunIds: [value.evalRunId],
 		});
 		expect(calibration.specHashes).toEqual([SPEC_A]);
-		expect(calibration.stats?.n).toBe(4);
+		expect(calibration.stats?.n).toBe(2);
 	});
 
 	/**
@@ -700,14 +730,14 @@ describe("calibration on the screens", () => {
 	 */
 	it("does not let labels for one judge certify a different judge", () => {
 		const value = evidence({ tasks: 2 });
-		label(value, "pass", "pass", 6);
+		label(value, "pass", "pass", 2);
 		const own = judgeEvidenceCalibration({
 			runsRoot: value.runsRoot,
 			stateRoot: value.stateRoot,
 			projectId: value.projectId,
 			evalRunIds: [value.evalRunId],
 		});
-		expect(own.stats?.n).toBe(6);
+		expect(own.stats?.n).toBe(2);
 
 		// The same rubric, answered by a judge nobody labelled.
 		appendJudgeLabels(value.stateRoot, value.projectId, value.evalRunId, [{
@@ -726,8 +756,113 @@ describe("calibration on the screens", () => {
 			projectId: value.projectId,
 			evalRunIds: [value.evalRunId],
 		});
-		expect(unchanged.stats?.n).toBe(6);
+		expect(unchanged.stats?.n).toBe(2);
 		expect(unchanged.stats?.agreement).toBe(1);
+	});
+});
+
+describe("calibration trust boundary", () => {
+	function boundRow(value: EvidenceFixture, human: "pass" | "fail" = "pass"): JudgeLabelRow {
+		const subject = collectJudgeLabelSubjects({
+			runsRoot: value.runsRoot,
+			evalRunId: value.evalRunId,
+			suite: value.suite,
+		})[0]!;
+		return {
+			lineage: judgeLabelLineageFor({
+				runsRoot: value.runsRoot,
+				evalRunId: value.evalRunId,
+				approvedSpec: APPROVED_A,
+			}),
+			runId: subject.runId,
+			taskId: subject.taskId,
+			graderIndex: subject.graderIndex,
+			graderSpecHash: subject.graderSpecHash,
+			judgeFingerprintHash: judgeFingerprintHashOf(value.runsRoot, value.evalRunId) ?? undefined,
+			subject: "judge-facing",
+			subjectHash: subject.subjectHash!,
+			human,
+			judge: subject.judge,
+			at,
+		};
+	}
+
+	it("counts an exact subject once and excludes a conflicting re-label", () => {
+		const value = evidence({ tasks: 2 });
+		const row = boundRow(value);
+		appendJudgeLabels(value.stateRoot, value.projectId, value.evalRunId, [row, row]);
+		const query = {
+			runsRoot: value.runsRoot,
+			stateRoot: value.stateRoot,
+			projectId: value.projectId,
+			evalRunIds: [value.evalRunId],
+			approvedSpec: APPROVED_A,
+			requireBoundLineage: true,
+		};
+		expect(judgeEvidenceCalibration(query).stats).toMatchObject({
+			n: 1,
+			duplicateLabels: 1,
+			conflictedSubjects: 0,
+		});
+
+		appendJudgeLabels(value.stateRoot, value.projectId, value.evalRunId, [{ ...row, human: "fail" }]);
+		expect(judgeEvidenceCalibration(query).stats).toMatchObject({
+			n: 0,
+			duplicateLabels: 2,
+			conflictedSubjects: 1,
+		});
+		const report = collectEvalReportData(value.runsRoot, value.evalRunId, () => at, {
+			labels: { stateRoot: value.stateRoot, projectId: value.projectId },
+		});
+		expect(report.judgeCalibration[0]?.line).toContain("judge not calibrated");
+		expect(report.judgeCalibration[0]?.line).toContain("duplicates=2 · conflicts=1");
+	});
+
+	it("does not let another approved Spec lineage certify this evidence", () => {
+		const value = evidence({ tasks: 2 });
+		appendJudgeLabels(value.stateRoot, value.projectId, value.evalRunId, [boundRow(value)]);
+		const exact = judgeEvidenceCalibration({
+			runsRoot: value.runsRoot,
+			stateRoot: value.stateRoot,
+			projectId: value.projectId,
+			evalRunIds: [value.evalRunId],
+			approvedSpec: APPROVED_A,
+			requireBoundLineage: true,
+		});
+		expect(exact.stats?.n).toBe(1);
+
+		const foreign = judgeEvidenceCalibration({
+			runsRoot: value.runsRoot,
+			stateRoot: value.stateRoot,
+			projectId: value.projectId,
+			evalRunIds: [value.evalRunId],
+			approvedSpec: APPROVED_B,
+			requireBoundLineage: true,
+		});
+		expect(foreign.stats).toBeNull();
+		expect(foreign.lineageMismatchLabels).toBe(1);
+	});
+
+	it("does not let a receipt from another eval lineage certify this evidence", () => {
+		const value = evidence({ tasks: 2 });
+		const row = boundRow(value);
+		appendJudgeLabels(value.stateRoot, value.projectId, value.evalRunId, [{
+			...row,
+			lineage: {
+				...row.lineage!,
+				datasetHash: `sha256:${"0".repeat(64)}`,
+			},
+		}]);
+		const calibration = judgeEvidenceCalibration({
+			runsRoot: value.runsRoot,
+			stateRoot: value.stateRoot,
+			projectId: value.projectId,
+			evalRunIds: [value.evalRunId],
+			approvedSpec: APPROVED_A,
+			requireBoundLineage: true,
+		});
+		expect(calibration.stats).toBeNull();
+		expect(calibration.lineageMismatchLabels).toBe(1);
 	});
 });
 
@@ -774,6 +909,9 @@ describe("labels written under the old screen", () => {
 describe("promotion policy", () => {
 	const stats = (n: number, agreement: number) => ({
 		n,
+		nChecks: n,
+		duplicateLabels: 0,
+		conflictedSubjects: 0,
 		agreement,
 		kappa: 0.5,
 		falsePass: 0,
@@ -802,5 +940,27 @@ describe("promotion policy", () => {
 		expect(judgeCalibrationRefusal(policy, { judgeGraderSpecs: 1, stats: stats(40, 0.75) }))
 			.toContain("75% agreement");
 		expect(judgeCalibrationRefusal(policy, { judgeGraderSpecs: 1, stats: stats(30, 0.8) })).toBeNull();
+	});
+
+	it("requires the declared sample and agreement for every grader spec, not only pooled", () => {
+		const policy = { minAgreement: 0.8, minLabels: 30 };
+		const pooled = stats(60, 0.9);
+		const refusal = judgeCalibrationRefusal(policy, {
+			judgeGraderSpecs: 2,
+			stats: pooled,
+			byGraderSpec: [
+				{ graderSpecHash: SPEC_A, stats: stats(60, 0.9) },
+				{ graderSpecHash: SPEC_B, stats: null },
+			],
+		});
+		expect(refusal).toContain(`${SPEC_B.slice(0, 15)}…: 0 subject(s)`);
+		expect(judgeCalibrationRefusal(policy, {
+			judgeGraderSpecs: 2,
+			stats: pooled,
+			byGraderSpec: [
+				{ graderSpecHash: SPEC_A, stats: stats(30, 0.8) },
+				{ graderSpecHash: SPEC_B, stats: stats(30, 0.8) },
+			],
+		})).toBeNull();
 	});
 });

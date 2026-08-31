@@ -639,11 +639,23 @@ export class AhdeWorkbench {
 		const evaluated = candidate.events.find((event) => event.type === "evaluated");
 		if (evaluated?.type !== "evaluated") return candidateSummary(candidate);
 		try {
+			const approvedSpec = candidate.origin.kind === "applied-builder"
+				? {
+					projectId: candidate.origin.approvedSpec.projectId,
+					specId: candidate.origin.approvedSpec.specId,
+					specContentHash: candidate.origin.approvedSpec.specContentHash,
+					snapshotHash: candidate.origin.approvedSpec.snapshotHash,
+				}
+				: candidate.specId
+					? loadApprovedSpec({ stateRoot: this.stateRoot, projectId: candidate.projectId, specId: candidate.specId }).reference
+					: undefined;
 			const calibration = judgeEvidenceCalibration({
 				runsRoot: this.runsRoot,
 				stateRoot: this.stateRoot,
 				projectId: this.projectId,
 				evalRunIds: [evaluated.evaluation.development.candidate.evalRunId],
+				requireBoundLineage: true,
+				...(approvedSpec ? { approvedSpec } : {}),
 			});
 			if (calibration.specHashes.length === 0) return candidateSummary(candidate);
 			return candidateSummary(

@@ -113,7 +113,7 @@ const COMMAND_SPECS = {
 	},
 	report: { flags: ["out", "project"], positionals: 1 },
 	label: {
-		flags: ["target", "project", "sample", "seed", "file"],
+		flags: ["target", "project", "spec", "sample", "seed", "file"],
 		requiredFlags: ["target"],
 		positionals: 1,
 	},

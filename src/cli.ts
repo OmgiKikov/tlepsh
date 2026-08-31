@@ -18,9 +18,8 @@ import { evaluatorReadiness } from "./application/configure-evaluators.js";
 import {
 	collectJudgeLabelSubjects,
 	importJudgeLabels,
-	isLegacyJudgeLabel,
+	judgeEvidenceCalibration,
 	judgeLabelFilePath,
-	loadJudgeCalibration,
 	readProjectJudgeLabels,
 	runJudgeLabelSession,
 	type JudgeLabelSubject,
@@ -81,7 +80,7 @@ import {
 	resolveScoredCasesForEval,
 	targetWithDevelopmentCorpus,
 } from "./application/corpus-target.js";
-import { listSpecSnapshots, loadSpecSnapshot } from "./spec.js";
+import { listSpecSnapshots, loadApprovedSpec, loadSpecSnapshot, type ApprovedSpecReference } from "./spec.js";
 import {
 	createEvidenceExplorer,
 	type EvidenceExplorer,
@@ -446,6 +445,27 @@ function reportProjectId(evalRunId: string): string {
 	return readEvalRunIndex(runsRoot(), evalRunId).target.id;
 }
 
+/**
+ * Bind new calibration labels to one immutable approved Spec when possible.
+ * Multiple approved Specs are never guessed between: an ambiguous receipt is
+ * worse than no receipt because a promotion might mistake it for authority.
+ */
+function labelApprovedSpec(projectId: string): ApprovedSpecReference | undefined {
+	const explicit = arg("spec");
+	if (explicit) {
+		return loadApprovedSpec({ stateRoot: stateRoot(), projectId, specId: explicit }).reference;
+	}
+	const approved = listSpecSnapshots(stateRoot(), projectId)
+		.filter((snapshot) => snapshot.status === "approved");
+	if (approved.length === 0) return undefined;
+	if (approved.length > 1) {
+		throw new Error(
+			`project ${projectId} has ${approved.length} approved Specs; pass --spec <id> so labels get one exact lineage receipt`,
+		);
+	}
+	return loadApprovedSpec({ stateRoot: stateRoot(), projectId, specId: approved[0]!.id }).reference;
+}
+
 /** Sealed corpus content hashes, so a legacy sealed eval run is refused too. */
 function sealedCorpusHashes(projectId: string): Set<string> {
 	try {
@@ -512,19 +532,21 @@ async function askAssertionChecklist(
 async function labelJudge(): Promise<void> {
 	const evalRunId = positional(0);
 	if (!evalRunId) {
-		console.error("usage: ahde label <evalRunId> --target <dir> [--project <id>] [--sample N] [--seed <text>] [--file <labels.jsonl>]\n");
+		console.error("usage: ahde label <evalRunId> --target <dir> [--project <id>] [--spec <approvedSpecId>] [--sample N] [--seed <text>] [--file <labels.jsonl>]\n");
 		console.log(USAGE);
 		process.exit(1);
 	}
 	const targetDir = resolve(requireArg("target"));
 	const target = loadTarget(targetDir);
 	const projectId = arg("project") ?? target.manifest.id;
+	const approvedSpec = labelApprovedSpec(projectId);
 	const file = arg("file");
 	const context = {
 		runsRoot: runsRoot(),
 		stateRoot: stateRoot(),
 		projectId,
 		evalRunId,
+		...(approvedSpec ? { approvedSpec } : {}),
 		sealedDatasetHashes: sealedCorpusHashes(projectId),
 		// The suite is what makes the screen show the judge's own subject: the
 		// rubric it was asked, the assertions it answered, the reference answer it
@@ -538,7 +560,7 @@ async function labelJudge(): Promise<void> {
 	if (file) {
 		const rows = importJudgeLabels({ ...context, filePath: resolve(file) });
 		console.log(`imported ${rows.length} label(s) into ${judgeLabelFilePath(stateRoot(), projectId, evalRunId)}`);
-		printJudgeAgreement(projectId);
+		printJudgeAgreement(projectId, evalRunId);
 		return;
 	}
 	if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
@@ -588,22 +610,46 @@ async function labelJudge(): Promise<void> {
 	} finally {
 		io.close();
 	}
-	printJudgeAgreement(projectId);
+	printJudgeAgreement(projectId, evalRunId);
 }
 
-function printJudgeAgreement(projectId: string): void {
-	const report = judgeAgreement(readProjectJudgeLabels(stateRoot(), projectId));
-	if (report.pooled.n === 0) {
-		console.log("judge not calibrated — no labels yet for this project");
+function printJudgeAgreement(projectId: string, evalRunId?: string): void {
+	const report = evalRunId
+		? (() => {
+			const exact = judgeEvidenceCalibration({
+				runsRoot: runsRoot(),
+				stateRoot: stateRoot(),
+				projectId,
+				evalRunIds: [evalRunId],
+			});
+			return {
+				byGrader: [...exact.byGraderSpecHash.entries()]
+					.sort(([left], [right]) => left.localeCompare(right))
+					.map(([graderSpecHash, stats]) => ({ graderSpecHash, ...stats })),
+				pooled: exact.stats,
+			};
+		})()
+		: (() => {
+			const raw = judgeAgreement(readProjectJudgeLabels(stateRoot(), projectId));
+			return { byGrader: raw.byGrader, pooled: raw.pooled };
+		})();
+	if (!report.pooled || (
+		report.pooled.n === 0 &&
+		report.pooled.duplicateLabels === 0 &&
+		report.pooled.conflictedSubjects === 0
+	)) {
+		console.log("judge not calibrated — no independent labels yet for this eval lineage");
 		return;
 	}
-	console.log("grader spec           agreement   κ       n    false-pass  false-fail");
+	console.log("grader spec           agreement   κ    subjects  checks  repeats  conflicts  false-pass  false-fail");
 	for (const grader of [...report.byGrader, { graderSpecHash: "pooled", ...report.pooled }]) {
 		console.log(
 			`${grader.graderSpecHash.replace("sha256:", "").slice(0, 20).padEnd(20)}  ` +
 				`${`${Math.round(grader.agreement * 100)}%`.padStart(8)}  ` +
 				`${(grader.kappa === null ? "n/a" : grader.kappa.toFixed(2)).padStart(6)}  ` +
-				`${String(grader.n).padStart(4)}  ${String(grader.falsePass).padStart(10)}  ${String(grader.falseFail).padStart(10)}`,
+				`${String(grader.n).padStart(8)}  ${String(grader.nChecks).padStart(6)}  ` +
+				`${String(grader.duplicateLabels).padStart(7)}  ${String(grader.conflictedSubjects).padStart(9)}  ` +
+				`${String(grader.falsePass).padStart(10)}  ${String(grader.falseFail).padStart(10)}`,
 		);
 	}
 }
@@ -624,17 +670,22 @@ function judgeAgreementReport(): void {
 	});
 	const specs = new Set(subjects.map((subject) => subject.graderSpecHash));
 	console.log(`eval run ${evalRunId}: ${specs.size} judge grader spec(s) over ${subjects.length} judged check(s)`);
-	const legacy = readProjectJudgeLabels(stateRoot(), projectId).filter(isLegacyJudgeLabel).length;
+	const exact = judgeEvidenceCalibration({
+		runsRoot: runsRoot(),
+		stateRoot: stateRoot(),
+		projectId,
+		evalRunIds: [evalRunId],
+	});
+	const legacy = exact.legacyLabels;
 	if (legacy > 0) {
 		console.log(
 			`${legacy} label(s) were written before the screen showed the judge's own subject; ` +
 				"they do not count toward requireCalibration unless allowLegacyLabels is set",
 		);
 	}
-	printJudgeAgreement(projectId);
-	const calibration = loadJudgeCalibration(stateRoot(), projectId);
+	printJudgeAgreement(projectId, evalRunId);
 	for (const specHash of [...specs].sort()) {
-		if (!calibration.byGraderSpecHash.has(specHash)) {
+		if (!exact.byGraderSpecHash.has(specHash)) {
 			console.log(`judge not calibrated — ${specHash.slice(0, 27)}… has no labels; run \`ahde label ${evalRunId}\``);
 		}
 	}

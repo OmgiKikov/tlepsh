@@ -30,7 +30,7 @@ import { TargetManifest, type JudgeCalibrationPolicy } from "../manifest.js";
 import { judgeEvidenceCalibration } from "./judge-labels.js";
 import { judgeCalibrationRefusal } from "../domain/judge-agreement.js";
 import { loadEvalRun, loadVerifiedEvalRun, readEvalRunIndex, type EvalRunRecord } from "../eval.js";
-import { SpecSnapshotSchema } from "../spec.js";
+import { loadApprovedSpec, SpecSnapshotSchema } from "../spec.js";
 import { canonicalJson, hashValue } from "../provenance.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
@@ -670,6 +670,16 @@ function assertJudgeCalibrated(
 			"promotion refused: evalSuite.judge.requireCalibration is set but this promotion has no label store to check it against",
 		);
 	}
+	const approvedSpec = record.origin.kind === "applied-builder"
+		? {
+			projectId: record.origin.approvedSpec.projectId,
+			specId: record.origin.approvedSpec.specId,
+			specContentHash: record.origin.approvedSpec.specContentHash,
+			snapshotHash: record.origin.approvedSpec.snapshotHash,
+		}
+		: record.specId
+			? loadApprovedSpec({ stateRoot: options.stateRoot, projectId: record.projectId, specId: record.specId }).reference
+			: undefined;
 	const calibration = judgeEvidenceCalibration({
 		runsRoot: options.runsRoot,
 		stateRoot: options.stateRoot,
@@ -681,18 +691,37 @@ function assertJudgeCalibrated(
 		// Those labels stay on disk and stay readable; they just do not certify
 		// this judge unless the Target says in writing that they may.
 		includeLegacyLabels: policy.allowLegacyLabels === true,
+		requireBoundLineage: true,
+		...(approvedSpec ? { approvedSpec } : {}),
 	});
 	const refusal = judgeCalibrationRefusal(policy, {
-		judgeGraderSpecs: calibration.specHashes.length,
+		judgeGraderSpecs: Math.max(calibration.specHashes.length, calibration.instruments.length),
 		stats: calibration.stats,
+		byGraderSpec: calibration.instruments.map((instrument) => ({
+			graderSpecHash: instrument.graderSpecHash,
+			judgeFingerprintHash: instrument.judgeFingerprintHash,
+			stats: instrument.stats,
+		})),
 	});
 	if (refusal) {
 		const legacy = policy.allowLegacyLabels !== true && calibration.legacyLabels > 0
 			? ` ${calibration.legacyLabels} older label(s) were not counted: they were written before the labelling screen ` +
 				"showed the judge's own subject. Re-label them, or set evalSuite.judge.requireCalibration.allowLegacyLabels: true."
 			: "";
+		const unbound = calibration.unboundLabels > 0
+			? ` ${calibration.unboundLabels} label(s) were not counted because they lack an exact approved-Spec/eval-lineage receipt.`
+			: "";
+		const mismatched = calibration.lineageMismatchLabels > 0
+			? ` ${calibration.lineageMismatchLabels} label(s) belong to another approved Spec or eval lineage.`
+			: "";
+		const repeats = calibration.stats?.duplicateLabels
+			? ` ${calibration.stats.duplicateLabels} repeated label(s) were ignored.`
+			: "";
+		const conflicts = calibration.stats?.conflictedSubjects
+			? ` ${calibration.stats.conflictedSubjects} conflicting subject(s) were excluded fail-closed.`
+			: "";
 		throw new Error(
-			`promotion refused: ${refusal}.${legacy} ` +
+			`promotion refused: ${refusal}.${legacy}${unbound}${mismatched}${repeats}${conflicts} ` +
 				"Run `ahde label <evalRunId> --target <dir>` and grade the judge before promoting.",
 		);
 	}

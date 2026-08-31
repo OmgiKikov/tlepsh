@@ -47,7 +47,7 @@ Inspect and run:
   ahde feedback list [--target <dir>]          👍/👎 marks collected in ahde target
   ahde tool try --target <dir> --tool <name> --input <json|@path>
                                                run one declared tool in its sandbox
-  ahde label <evalRunId> --target <dir>        check the judge against your own eyes
+  ahde label <evalRunId> --target <dir> [--spec <id>]  check the judge against your own eyes
   ahde judge-agreement <evalRunId> --target <dir>
                                                how far that judge is calibrated
 
@@ -207,8 +207,8 @@ Build a static, bounded HTML evidence report for one development EvalRun.
 Judge graders carry one line each: \`judge agreement 84% · κ 0.62 · n=50\` from
 this project's labels, or \`judge not calibrated\` when nobody has checked yet.`,
 	label: `Usage:
-  ahde label <evalRunId> --target <dir> [--project <id>] [--sample N] [--seed <text>]
-  ahde label <evalRunId> --target <dir> --file <labels.jsonl>
+  ahde label <evalRunId> --target <dir> [--project <id>] [--spec <approvedSpecId>] [--sample N] [--seed <text>]
+  ahde label <evalRunId> --target <dir> [--spec <approvedSpecId>] --file <labels.jsonl>
 
 Grade the judge on the same object the judge graded. For a deterministic seeded
 sample of judge-graded development runs it shows exactly what the judge was
@@ -219,14 +219,19 @@ pass / fail / skip (or one yes / no / unknown per assertion) and an optional
 note, and only then reveals what the judge said. Answers append to
 <state-root>/projects/<id>/labels/<evalRunId>.jsonl.
 
+Each new row is stamped with the exact source EvalRun lineage. When the project
+has one approved Spec it is bound automatically; with several, --spec is
+required. Only labels bound to the candidate's approved Spec and development
+eval lineage can satisfy a promotion calibration policy.
+
 Without a TTY, --file imports the same rows from JSONL: one object per line with
 runId, taskId, graderIndex, graderSpecHash, human, optional assertions
 (yes/no/unknown per assertion), and optional note. Every row is checked against
 the recorded evidence before it is stored.
 
-Labels written before the screen showed the judge's own subject stay readable
-and stay in the agreement report, but they do not satisfy
-evalSuite.judge.requireCalibration unless it sets allowLegacyLabels: true.
+Labels written before lineage receipts stay readable, but cannot satisfy a
+promotion calibration policy. allowLegacyLabels only opts into the older
+screen shape; it does not opt out of exact Spec/eval provenance.
 
 Sealed holdout evidence is never labelled: reading it is exactly what a holdout
 forbids.`,
@@ -234,8 +239,10 @@ forbids.`,
 
 Compare this project's human labels with the judge that graded them: agreement
 rate, Cohen's κ, and how often the judge waves a failure through or invents one.
-Per judge grader spec, plus the pooled total. κ is n/a when the labels are all
-one verdict — chance alone explains such a table and there is nothing to correct.`,
+Per judge grader spec, plus the pooled total. Subjects and assertion-level checks
+are separate; repeated labels do not enlarge the sample, and conflicting labels
+are reported and excluded. κ is n/a when the labels are all one verdict — chance
+alone explains such a table and there is nothing to correct.`,
 	candidate: `Usage:
   ahde candidate --target <dir> --builder-run <id> [--development-corpus <id>] [--holdout-corpus <id>] [--project <id>] [--repetitions N]
   ahde candidate --target <dir> --branch <ref> --base <ref> --proposal <id> --diagnosis <id> [options]

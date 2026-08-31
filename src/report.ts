@@ -13,7 +13,7 @@ import {
 	readEvalRunIndex,
 	type EvalRunRecord,
 } from "./eval.js";
-import { loadJudgeCalibration, type JudgeCalibration } from "./application/judge-labels.js";
+import { judgeEvidenceCalibration, type JudgeCalibration } from "./application/judge-labels.js";
 import { formatJudgeAgreement } from "./domain/judge-agreement.js";
 import { canonicalJson, hashValue, type RunRecord } from "./provenance.js";
 import { openTrace, redactTraceText, type TraceMessage } from "./trace.js";
@@ -512,8 +512,8 @@ export function judgeCalibrationRows(
 				agreement: stats?.agreement ?? 0,
 				kappa: stats?.kappa ?? null,
 				labels: stats?.n ?? 0,
-				line: stats && stats.n > 0
-					? `judge agreement ${formatJudgeAgreement(stats)}`
+				line: stats && (stats.n > 0 || stats.duplicateLabels > 0 || stats.conflictedSubjects > 0)
+					? `${stats.n > 0 ? "judge agreement" : "judge not calibrated"} ${formatJudgeAgreement(stats)}`
 					: consulted
 						? "judge not calibrated"
 						: "judge calibration not available here",
@@ -724,7 +724,28 @@ export function collectEvalReportData(
 	let calibration: JudgeCalibration | null = null;
 	if (options.labels) {
 		try {
-			calibration = loadJudgeCalibration(options.labels.stateRoot, options.labels.projectId);
+			const exact = judgeEvidenceCalibration({
+				runsRoot,
+				stateRoot: options.labels.stateRoot,
+				projectId: options.labels.projectId,
+				evalRunIds: [evalRunId],
+			});
+			calibration = {
+				byGraderSpecHash: exact.byGraderSpecHash,
+				pooled: exact.stats ?? {
+					n: 0,
+					nChecks: 0,
+					duplicateLabels: 0,
+					conflictedSubjects: 0,
+					agreement: 0,
+					kappa: null,
+					falsePass: 0,
+					falseFail: 0,
+					truePass: 0,
+					trueFail: 0,
+				},
+				totalLabels: exact.stats?.n ?? 0,
+			};
 		} catch {
 			calibration = null;
 		}

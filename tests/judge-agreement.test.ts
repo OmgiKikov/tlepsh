@@ -88,6 +88,51 @@ describe("Cohen's κ", () => {
 });
 
 describe("per-grader agreement", () => {
+	it("counts one independent subject once and excludes conflicting re-labels", () => {
+		const same = {
+			graderSpecHash: SPEC_A,
+			calibrationSubjectId: "subject-1",
+			judge: "pass" as const,
+			human: "pass" as const,
+		};
+		const duplicates = judgeAgreement([same, same, same]).pooled;
+		expect(duplicates).toMatchObject({
+			n: 1,
+			nChecks: 1,
+			duplicateLabels: 2,
+			conflictedSubjects: 0,
+			agreement: 1,
+		});
+		expect(formatJudgeAgreement(duplicates)).toContain("duplicates=2");
+
+		const conflicted = judgeAgreement([
+			same,
+			{ ...same, human: "fail" as const },
+			{ ...same, calibrationSubjectId: "subject-2" },
+		]).pooled;
+		expect(conflicted).toMatchObject({
+			n: 1,
+			nChecks: 1,
+			duplicateLabels: 1,
+			conflictedSubjects: 1,
+			agreement: 1,
+		});
+		expect(formatJudgeAgreement(conflicted)).toContain("conflicts=1");
+	});
+
+	it("separates independent subjects from assertion-level checks", () => {
+		const stats = judgeAgreement([{
+			graderSpecHash: SPEC_A,
+			calibrationSubjectId: "checklist-1",
+			human: "fail",
+			judge: "fail",
+			assertions: ["yes", "no", "yes"],
+			judgeAssertions: ["yes", "no", "no"],
+		}]).pooled;
+		expect(stats).toMatchObject({ n: 1, nChecks: 3, agreement: 2 / 3 });
+		expect(formatJudgeAgreement(stats)).toContain("n=1 · checks=3");
+	});
+
 	it("keeps each grader spec on its own row and sorts them stably", () => {
 		const report = judgeAgreement([
 			...cell(SPEC_B, "pass", "fail", 3),

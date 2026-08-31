@@ -102,8 +102,10 @@ Four lanes in worktrees off master, merged into `v2-measurement` after
    checklists; score = yes/total; stable failure-mode signatures per failed
    assertion index) and `jury` (n independent judge calls, majority);
    `ahde label <eval-run>` collects human pass/fail on a seeded sample without
-   showing the judge's verdict first; `ahde judge-agreement` reports n,
-   agreement rate and Cohen's κ per grader; reports and candidate reviews show
+   showing the judge's verdict first; every row is bound to one exact EvalRun
+   and approved Spec, repeated subjects are deduplicated, and conflicts fail
+   closed; `ahde judge-agreement` reports independent n, assertion checks,
+   agreement rate and Cohen's κ per grader-spec + judge pair; reports and candidate reviews show
    `judge agreement 84% · κ 0.62 · n=50` or `judge not calibrated`; optional
    `evalSuite.judge.requireCalibration` refuses promotion on uncalibrated
    judge evidence.
