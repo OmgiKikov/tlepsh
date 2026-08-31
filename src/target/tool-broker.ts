@@ -284,6 +284,7 @@ export function sandboxInvocation(options: {
 			policy: options.container,
 			mounts: {
 				workspaceDir: options.workspaceDir,
+				workspaceMode: options.confinement.writeRoots.includes(options.workspaceDir) ? "rw" : "ro",
 				scratchDir: options.scratchDir,
 				...(options.toolHomeRoot ? { toolHomeRoot: options.toolHomeRoot } : {}),
 				...(options.toolHomeMode ? { toolHomeMode: options.toolHomeMode } : {}),

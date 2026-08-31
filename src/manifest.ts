@@ -414,10 +414,6 @@ export const ContainerBlock = z.strictObject({
 		.min(1)
 		.max(512)
 		.regex(CONTAINER_IMAGE_REFERENCE, "container image must be a plain reference, optionally pinned as name@sha256:<digest>"),
-	workdir: z
-		.string()
-		.regex(/^\/[A-Za-z0-9._\-/]*$/, "container workdir must be an absolute container path")
-		.default("/workspace"),
 	memoryMb: z.number().int().min(1).max(65_536).optional(),
 	cpus: z.number().min(0.1).max(64).optional(),
 	pidsLimit: z.number().int().min(1).max(4_096).optional(),

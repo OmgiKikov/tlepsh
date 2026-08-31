@@ -375,7 +375,6 @@ if (targetTools.sandboxFingerprint !== targetTools.sandboxBackend) {
 const containerPolicy = {
   runtime: "docker",
   image: "registry.example.com/ahde/target@sha256:" + "c".repeat(64),
-  workdir: "/workspace",
   readOnlyRootfs: true,
 };
 const containerArgs = dockerBackend.invocation({

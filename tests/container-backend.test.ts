@@ -53,7 +53,6 @@ function policy(overrides: Partial<ContainerPolicy> = {}): ContainerPolicy {
 	return {
 		runtime: "docker",
 		image: PINNED,
-		workdir: "/workspace",
 		readOnlyRootfs: true,
 		...overrides,
 	};
@@ -114,7 +113,8 @@ function invocationFixture(overrides: {
 	network?: "deny" | "allow";
 	environment?: NodeJS.ProcessEnv;
 	toolHomeRoot?: string;
-	toolHomeMode?: "ro" | "rw";
+		toolHomeMode?: "ro" | "rw";
+		workspaceMode?: "ro" | "rw";
 	argv?: string[];
 	cwd?: string;
 } = {}) {
@@ -137,6 +137,7 @@ function invocationFixture(overrides: {
 				scratchDir,
 				...(toolHomeRoot ? { toolHomeRoot } : {}),
 				...(overrides.toolHomeMode ? { toolHomeMode: overrides.toolHomeMode } : {}),
+				...(overrides.workspaceMode ? { workspaceMode: overrides.workspaceMode } : {}),
 			},
 			network: overrides.network ?? "deny",
 			environment: overrides.environment ?? {
@@ -271,6 +272,14 @@ describe("container backend argv", () => {
 		expect(noTools.invocation.args.join(" ")).not.toContain("/tools");
 	});
 
+	it("mounts the workspace read-only unless the caller grants workspace writes", () => {
+		const readOnly = invocationFixture({ workspaceMode: "ro" });
+		expect(readOnly.invocation.args).toContain(`${readOnly.workspaceDir}:/workspace:ro`);
+
+		const writable = invocationFixture({ workspaceMode: "rw" });
+		expect(writable.invocation.args).toContain(`${writable.workspaceDir}:/workspace:rw`);
+	});
+
 	it("starts from an empty environment and never inherits the host's", () => {
 		process.env[HOST_SECRET] = "must-not-leak";
 		const args = invocationFixture({
@@ -290,8 +299,8 @@ describe("container backend argv", () => {
 			TERM: "dumb",
 			ALLOWED_VALUE: "visible",
 		});
-		expect(args.join(" ")).not.toContain(HOST_SECRET);
-		expect(args.join(" ")).not.toContain("must-not-leak");
+		expect(args.join("\0")).not.toContain(HOST_SECRET);
+		expect(args.join("\0")).not.toContain("must-not-leak");
 		// The host PATH is host environment: /opt/homebrew names nothing inside
 		// the image and would be a leak for no benefit.
 		expect(args.join(" ")).not.toContain("/opt/homebrew");
@@ -568,7 +577,6 @@ ${options.extra ?? ""}`;
 		expect(target.manifest.execution.container).toEqual({
 			runtime: "docker",
 			image: PINNED,
-			workdir: "/workspace",
 			readOnlyRootfs: true,
 		});
 	});
@@ -577,7 +585,7 @@ ${options.extra ?? ""}`;
 		const target = loadTarget(targetFixture(block({
 			sandbox: "required",
 			image: PINNED,
-			extra: "    workdir: /workspace\n    memoryMb: 2048\n    cpus: 2\n    pidsLimit: 256\n    readOnlyRootfs: false\n",
+			extra: "    memoryMb: 2048\n    cpus: 2\n    pidsLimit: 256\n    readOnlyRootfs: false\n",
 		})));
 		expect(target.manifest.execution.container).toMatchObject({
 			memoryMb: 2048,
@@ -684,7 +692,7 @@ describe("the built-in bash under the container backend", () => {
 				TERM: "dumb",
 				ALLOWED_VALUE: "visible",
 			});
-			expect(args.join(" ")).not.toContain("must-not-leak");
+			expect(args.join("\0")).not.toContain("must-not-leak");
 		} finally {
 			if (originalPath === undefined) delete process.env.PATH;
 			else process.env.PATH = originalPath;
@@ -723,6 +731,7 @@ describe("declared tool setup inside the container", () => {
 				.toEqual([{ tool: "lookup", ran: true, exitCode: 0 }]);
 			const args = loggedArgv(fake.logPath);
 			expect(args).toContain(`${toolHomeRoot}:/tools:rw`);
+			expect(args).toContain(`${workspaceDir}:/workspace:ro`);
 			expect(flagValues(args, "-w")).toEqual(["/tools/lookup"]);
 			expect(args).toContain(PINNED);
 			// The setup command resolves inside the image, so no host PATH lookup
@@ -815,7 +824,10 @@ describe("ahde validate readiness line", () => {
 
 // ---------- integration: a real container, or an explicit skip ----------
 
-const dockerStatus = detectContainerRuntime("docker", { force: true });
+// A loaded machine can take a while to answer the version probe; the gate is
+// deliberately more patient than a run's own detection so the integration lane
+// is skipped for a real reason, never for a busy CPU.
+const dockerStatus = detectContainerRuntime("docker", { force: true, timeoutMs: 60_000 });
 const INTEGRATION_IMAGE = "busybox:latest";
 
 function localImage(): string | null {
@@ -827,6 +839,18 @@ function localImage(): string | null {
 }
 
 const integrationImage = localImage();
+/** The pinned `name@sha256:…` form, which is the only image `sandbox: required` accepts. */
+function pinnedIntegrationImage(): string | null {
+	if (!integrationImage) return null;
+	const inspect = spawnSync(
+		"docker",
+		["image", "inspect", integrationImage, "--format", "{{if .RepoDigests}}{{index .RepoDigests 0}}{{end}}"],
+		{ encoding: "utf8", timeout: 30_000 },
+	);
+	const reference = (inspect.stdout ?? "").trim();
+	return inspect.status === 0 && isPinnedContainerImage(reference) ? reference : null;
+}
+const integrationPinnedImage = pinnedIntegrationImage();
 const skipReason = dockerStatus.available
 	? (integrationImage ? "" : ` — SKIPPED: docker ${dockerStatus.version} is up but ${INTEGRATION_IMAGE} is neither local nor pullable`)
 	: ` — SKIPPED: ${dockerStatus.reason}`;
@@ -886,10 +910,16 @@ describe.skipIf(!integrationImage)(`container backend integration (real docker)$
 				timeout: 120_000,
 			});
 		};
-		// `--network none` leaves only loopback; no route to any address exists.
-		const denied = run("deny", "ip route 2>/dev/null | grep -q default && echo routed || echo no-route");
+		// `--network none` gives the container no interface but loopback: the
+		// runtime enforces the policy, not a profile string the Target could
+		// argue with.
+		const denied = run("deny", "[ -e /sys/class/net/eth0 ] && echo attached || echo no-interface");
 		expect(denied.status).toBe(0);
-		expect(denied.stdout.trim()).toBe("no-route");
+		expect(denied.stdout.trim()).toBe("no-interface");
+
+		const allowed = run("allow", "[ -e /sys/class/net/eth0 ] && echo attached || echo no-interface");
+		expect(allowed.status).toBe(0);
+		expect(allowed.stdout.trim()).toBe("attached");
 
 		const wrote = run("deny", "printf container-wrote > /workspace/out.txt && echo ok");
 		expect(wrote.status).toBe(0);
@@ -898,5 +928,51 @@ describe.skipIf(!integrationImage)(`container backend integration (real docker)$
 		// The root filesystem is read-only; only /tmp and the mounts are writable.
 		const readOnly = run("deny", "touch /etc/ahde-probe 2>/dev/null && echo writable || echo read-only");
 		expect(readOnly.stdout.trim()).toBe("read-only");
+		const tmp = run("deny", "printf x > /tmp/probe && echo tmpfs-writable");
+		expect(tmp.stdout.trim()).toBe("tmpfs-writable");
+	});
+
+	// `sandbox: required` accepts only a pinned digest, so this one case needs
+	// the image's RepoDigest; a locally built image has none.
+	it.skipIf(!integrationPinnedImage)("runs the Target's built-in bash inside a real container, end to end", async () => {
+		process.env[HOST_SECRET] = "must-not-leak";
+		const root = scratchRoot("integration-bash");
+		const workspaceDir = join(root, "workspace");
+		const scratchDir = join(root, "scratch");
+		mkdirSync(workspaceDir, { recursive: true });
+		mkdirSync(scratchDir, { recursive: true });
+		writeFileSync(join(workspaceDir, "note.txt"), "graded-bytes\n");
+
+		const built = buildExecutionPolicy({
+			workspaceDir,
+			scratchDir,
+			policy: {
+				tools: ["bash"],
+				environmentAllowlist: ["ALLOWED_VALUE"],
+				network: "deny",
+				sandbox: "required",
+				container: policy({ image: integrationPinnedImage as string, memoryMb: 256, pidsLimit: 64 }),
+			},
+			environment: {
+				PATH: "/usr/bin:/bin",
+				LANG: "C",
+				HOME: join(scratchDir, "home"),
+				TMPDIR: join(scratchDir, "tmp"),
+			},
+			sourceEnvironment: { ALLOWED_VALUE: "visible", [HOST_SECRET]: "must-not-leak" },
+		});
+		expect(built.sandboxFingerprint).toBe(`container:docker@${containerImageDigest(integrationPinnedImage as string)}`);
+
+		const bash = built.customTools.find((tool) => tool.name === "bash");
+		if (!bash) throw new Error("bash tool was not registered");
+		const result = await bash.execute(
+			"integration-bash",
+			{ command: `printf '%s|%s|%s|%s' "$PWD" "$(cat note.txt | tr -d '\\n')" "$ALLOWED_VALUE" "\${${HOST_SECRET}-unset}"` },
+			undefined,
+			undefined,
+			undefined as never,
+		);
+		const text = result.content.filter((part) => part.type === "text").map((part) => ("text" in part ? part.text : "")).join("");
+		expect(text).toContain("/workspace|graded-bytes|visible|unset");
 	});
 });

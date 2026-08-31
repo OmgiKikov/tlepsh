@@ -208,13 +208,13 @@ branch; the closed-loop Pi test passes with exactly three confirmations.
 13. **Gondolin / Docker for the Target's built-in `bash`**; `sandbox: required`
     in the bank profile.
     *Docker backend landed (`src/target/container-backend.ts`). Declaring
-    `execution.container: { runtime, image, workdir?, memoryMb?, cpus?,
+    `execution.container: { runtime, image, memoryMb?, cpus?,
     pidsLimit?, readOnlyRootfs? }` selects it — there is no second switch that
     could disagree with the block. The built-in `bash`, every declared tool and
     every declared `setup` step then run as*
     `docker run --rm --network none|bridge --user <non-root> --cap-drop ALL
     --security-opt no-new-privileges --read-only --tmpfs /tmp --memory --cpus
-    --pids-limit -v <workspace>:/workspace:rw -v <scratch>:/scratch:rw
+    --pids-limit -v <workspace>:/workspace:ro|rw -v <scratch>:/scratch:rw
     -v <toolHome>:/tools:ro|rw -e … -w /workspace --entrypoint <argv0> <image>
     <argv…>`*, with an environment built from nothing —* `PATH` `HOME` `TMPDIR`
     `LANG` `TERM` *plus the declared allowlist, one* `-e NAME=value` *at a time;
