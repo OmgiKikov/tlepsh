@@ -3,6 +3,7 @@ import {
 	CliInvocationError,
 	detectEarlyCliExit,
 	parseCliInvocation,
+	parseDurationFlag,
 	type CliAction,
 	type CliCommand,
 	type ParsedCliInvocation,
@@ -257,5 +258,64 @@ describe("side-effect-free CLI invocation parsing", () => {
 		} catch (error) {
 			expect(error).toBeInstanceOf(CliInvocationError);
 		}
+	});
+});
+
+/**
+ * The two wave-3 operator commands. `log` is a pure read; `watch` is one tick
+ * or a schedule, never both, and its interval is written the way an operator
+ * says it.
+ */
+describe("ahde log and ahde watch", () => {
+	it.each([
+		{
+			name: "log with every knob",
+			argv: ["log", "--target", "./agent", "--project", "demo", "--limit", "5", "--json"],
+			flags: { target: "./agent", project: "demo", limit: "5", json: "true" },
+		},
+		{
+			name: "watch as a single tick",
+			argv: ["watch", "--target", "./agent", "--once", "--repetitions", "2", "--jobs", "2"],
+			flags: { target: "./agent", once: "true", repetitions: "2", jobs: "2" },
+		},
+		{
+			name: "watch on a schedule",
+			argv: ["watch", "--target", "./agent", "--project", "demo", "--corpus", "corpus-dev", "--every", "1d", "--max-runs", "7"],
+			flags: { target: "./agent", project: "demo", corpus: "corpus-dev", every: "1d", "max-runs": "7" },
+		},
+	] as const)("parses $name", ({ argv, flags }) => {
+		const parsed = commandInvocation(argv);
+		expect(parsed.flags).toEqual(flags);
+		expect(parsed.positionals).toEqual([]);
+	});
+
+	it.each([
+		["30s", 30_000],
+		["5m", 300_000],
+		["2h", 7_200_000],
+		["1d", 86_400_000],
+		["nightly", null],
+		["5", null],
+		["1w", null],
+		["0s", null],
+	] as const)("reads --every %s the way an operator writes it", (value, expected) => {
+		expect(parseDurationFlag(value)).toBe(expected);
+	});
+
+	it.each([
+		[["log"], /missing required flag --target for log/],
+		[["log", "--target", "./agent", "--limit", "0"], /--limit for log must be between 1 and 100/],
+		[["watch"], /missing required flag --target for watch/],
+		[["watch", "--target", "./agent", "--once", "--every", "5m"], /watch takes --once or --every, never both/],
+		[["watch", "--target", "./agent", "--max-runs", "3"], /--max-runs for watch bounds a schedule/],
+		[["watch", "--target", "./agent", "--every", "nightly"], /--every for watch must be a duration such as 30s, 5m, 2h or 1d/],
+		[["watch", "--target", "./agent", "--every", "1s"], /--every for watch must be between 10s and 30d/],
+		[["watch", "--target", "./agent", "--every", "60d"], /--every for watch must be between 10s and 30d/],
+		[["watch", "--target", "./agent", "--corpus", "corpus-dev"], /missing required flag --project for watch with --corpus/],
+		// A watch never runs a candidate arm, so there is no candidate to name.
+		[["watch", "--target", "./agent", "--candidate", "cand-1"], /unknown flag --candidate for watch/],
+		[["log", "--target", "./agent", "erun-1"], /log accepts 0 positional arguments; got 1/],
+	] as const)("rejects %j", (argv, message) => {
+		expect(() => parseCliInvocation(argv)).toThrow(message);
 	});
 });

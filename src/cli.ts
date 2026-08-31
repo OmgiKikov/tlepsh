@@ -108,9 +108,15 @@ import {
 	CliInvocationError,
 	parseCandidateIdList,
 	parseCliInvocation,
+	parseDurationFlag,
 	parsePassRateFlag,
 } from "./cli-invocation.js";
 import { cliHelp } from "./cli-help.js";
+// Wave 3 operator surfaces: the agent's growth, and the ground under it.
+import { compileAgentLog } from "./application/agent-log.js";
+import { runWatch } from "./application/watch.js";
+import { renderAgentLog } from "./builder/render/agent-log.js";
+import { renderWatchTick, renderWatchTickDetail } from "./builder/render/watch.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 let loadedEnvironment: EnvReport | undefined;
@@ -631,6 +637,57 @@ function judgeAgreementReport(): void {
 		if (!calibration.byGraderSpecHash.has(specHash)) {
 			console.log(`judge not calibrated — ${specHash.slice(0, 27)}… has no labels; run \`ahde label ${evalRunId}\``);
 		}
+	}
+}
+
+/**
+ * The basket on a schedule. Every tick is ordinary development evidence on the
+ * ACTIVE revision, and the pair it forms with the previous tick is an A/A
+ * experiment — so `inconclusive` is the healthy answer and anything else on an
+ * unchanged revision is drift. Nothing durable changes beyond the eval run the
+ * tick produced.
+ */
+async function watchTarget(): Promise<void> {
+	const targetDir = resolve(requireArg("target"));
+	const corpusId = arg("corpus");
+	const baseTarget = loadTarget(targetDir);
+	const projectId = arg("project") ?? baseTarget.manifest.id;
+	const target = corpusId
+		? targetWithDevelopmentCorpus(baseTarget, loadCorpus({ stateRoot: stateRoot(), projectId, corpusId }))
+		: baseTarget;
+	assertTargetReadyToRun(target);
+	const every = arg("every");
+	const everyMs = every ? parseDurationFlag(every) : null;
+	const maxRuns = arg("max-runs");
+	const controller = new AbortController();
+	const stop = (): void => {
+		process.off("SIGINT", stop);
+		process.off("SIGTERM", stop);
+		process.stderr.write("\nAHDE watch: stopping after the current tick\n");
+		controller.abort();
+	};
+	process.once("SIGINT", stop);
+	process.once("SIGTERM", stop);
+	try {
+		const result = await runWatch({
+			target,
+			runsRoot: runsRoot(),
+			projectId,
+			repetitions: Number(arg("repetitions") ?? String(DEFAULT_REPETITIONS)),
+			...(everyMs !== null ? { everyMs } : {}),
+			...(maxRuns ? { maxRuns: Number(maxRuns) } : {}),
+			...(arg("jobs") ? { jobs: Number(arg("jobs")) } : {}),
+			signal: controller.signal,
+			onRunEvent: cliRunProgress(),
+			onTick: (tick) => {
+				console.log(renderWatchTick(tick, plainPaint));
+				for (const line of renderWatchTickDetail(tick, plainPaint)) console.log(line);
+			},
+		});
+		process.exitCode = result.exitCode;
+	} finally {
+		process.off("SIGINT", stop);
+		process.off("SIGTERM", stop);
 	}
 }
 
@@ -1452,6 +1509,29 @@ async function main(): Promise<void> {
 				actorId: arg("actor"),
 			});
 			console.log(`rejected candidate ${record.candidateId} (recorded in candidate evidence)`);
+			break;
+		}
+		case "log": {
+			const targetDir = resolve(requireArg("target"));
+			const projectId = arg("project");
+			const limit = arg("limit");
+			// A pure read over durable candidate evidence: no model call, and not
+			// one byte written.
+			const log = compileAgentLog({
+				runsRoot: runsRoot(),
+				targetId: loadTarget(targetDir).manifest.id,
+				...(projectId ? { projectId } : {}),
+				...(limit ? { limit: Number(limit) } : {}),
+			});
+			if (flagPresent("json")) {
+				console.log(JSON.stringify(log, null, 2));
+				break;
+			}
+			for (const line of renderAgentLog(log, plainPaint)) console.log(line);
+			break;
+		}
+		case "watch": {
+			await watchTarget();
 			break;
 		}
 		default:

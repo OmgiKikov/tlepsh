@@ -38,6 +38,8 @@ Inspect and run:
   ahde search --target <dir> --candidates <id,id,id>
                                                compare 2-4 changes for one problem
   ahde calibrate --target <dir>                measure run-to-run noise (A/A)
+  ahde log --target <dir> [--project <id>]     the agent's growth, version by version
+  ahde watch --target <dir> [--every 1d]       the basket on a schedule; drift vs noise
   ahde evidence [--port N] [--project <id>]    open the read-only trace explorer
   ahde serve --target <dir> [--port N]         drive the Workbench over a local
                                                HTTP/JSON API; your UI is the gate
@@ -56,6 +58,7 @@ ${builderCommandLines()}
 Use \`ahde <command> --help\` for focused help. Advanced automation commands:
   corpus  failures  compare  diagnose  regrade  report  label  judge-agreement
   candidate  calibrate  check  improve  search  review  promote  reject
+  log  watch
 
 Environment:
   AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)
@@ -362,6 +365,62 @@ Tag the exact reviewed Candidate revision. This does not switch the active check
 	reject: `Usage: ahde reject --candidate <id> --reason <text> [--actor <id>]
 
 Record an immutable rejection for the exact reviewed Candidate.`,
+	log: `Usage: ahde log --target <dir> [--project <id>] [--limit N] [--json]
+
+The agent's growth, version by version. One row per promotion, newest first:
+the tag, the date, baseline -> candidate revision, the development score with
+its 95% interval, the sealed verdict and how big that exam was, the cost ratio,
+the failure modes the promotion resolved, your own reason, and \`applied by the
+improvement loop\` when the apply receipt says so.
+
+Rejections appear as dimmed rows between the promotions, because a growth curve
+drawn only from the wins is a sales deck. Under the rows: a bounded sparkline of
+development score per version and what the whole log cost.
+
+A resolved failure mode is one the source diagnosis named whose every attached
+task flipped fail->pass between the two development arms. That is a description of a
+promotion, never evidence for one — per-task flips never decide a verdict.
+
+A sealed row carries a verdict and a size and nothing else: never a task id,
+never an input, never the corpus it came from.
+
+A pure read. No model call, nothing written, no state changed. --json prints
+the same projection.`,
+	watch: `Usage: ahde watch --target <dir> [--project <id>] [--corpus <development-id>]
+                  [--every <30s|5m|2h|1d>] [--once] [--jobs N] [--repetitions N]
+                  [--max-runs N]
+
+Run the basket against the ACTIVE Target revision on a schedule and tell drift
+apart from noise. Each tick is ordinary development evidence (label \`solo\`,
+never a candidate arm) compared with the previous tick of the same revision.
+
+Nothing about the Target moved between two ticks, so the pair is an A/A
+experiment and the honest verdict is \`inconclusive\`:
+
+  inconclusive  healthy
+  regressed     DRIFT — the 95% interval is entirely below zero while the
+                harness revision did not change
+  improved      DRIFT as well. On an unchanged revision a gain is not a win.
+
+When this revision has an A/A calibration the line shows its flip rate, so you
+can see whether today's difference is inside known noise; without one it says
+\`noise not calibrated\` and points at \`ahde calibrate\`.
+
+One line per tick:
+  watch 2026-08-31T10:00 · 88.9% vs 90.0% · inconclusive · flip 10% (calibrated) · $0.12
+The first score is this tick, the second the tick it was compared with.
+
+A drift says behaviour changed below the harness boundary. It can come from a
+provider/model rollout, stochastic variance, runtime, tool, or external-data
+change; watch does not invent a root cause from scores alone.
+
+A drift changes no durable state beyond the ordinary eval run the tick produced:
+nothing is promoted, adopted, or written as a receipt. The previous tick is
+found by scanning eval-run indexes — watch stores nothing new.
+
+--once (the default without --every) runs one tick and exits. --every loops on
+a monotonic schedule until SIGINT; --max-runs bounds it. Exit 0 = healthy,
+3 = drift, 2 = no comparable baseline yet.`,
 	"corpus publish": `Usage: ahde corpus publish --project <id> --draft <id> --name <name> --visibility development|sealed
 
 Publish a reviewed Builder corpus draft. Prefer the Builder Workbench for
