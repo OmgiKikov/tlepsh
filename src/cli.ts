@@ -333,7 +333,15 @@ async function builderPi(sessionMode: BuilderSessionMode = "new"): Promise<void>
 }
 
 async function evidence(): Promise<void> {
-	const explorer = createEvidenceExplorer({ runsRoot: runsRoot() });
+	// With a project the explorer can read that project's human judge labels and
+	// report the same calibration `ahde report` does; without one it says the
+	// calibration is not available here rather than claiming the judge is
+	// unchecked.
+	const projectId = arg("project");
+	const explorer = createEvidenceExplorer({
+		runsRoot: runsRoot(),
+		...(projectId ? { labels: { stateRoot: stateRoot(), projectId } } : {}),
+	});
 	const address = await explorer.listen(Number(arg("port") ?? "0"));
 	console.log(`AHDE Evidence: ${address.url}`);
 	console.log("read-only development traces · sealed holdout evidence is hidden");

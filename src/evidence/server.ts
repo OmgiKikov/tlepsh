@@ -28,6 +28,14 @@ const MAX_PENDING_SSE_BYTES = 1024 * 1024;
 
 export interface EvidenceExplorerOptions {
 	runsRoot: string;
+	/**
+	 * Where this project's human judge labels live. Without it the explorer
+	 * would render "judge not calibrated" beside evidence `ahde report` shows as
+	 * calibrated — the same eval run, two AHDE surfaces, opposite claims. Absent
+	 * means the explorer says nothing about calibration rather than asserting
+	 * the negative.
+	 */
+	labels?: { stateRoot: string; projectId: string };
 }
 
 export interface EvidenceExplorerAddress {
@@ -427,6 +435,7 @@ export function createEvidenceExplorer(options: EvidenceExplorerOptions): Eviden
 			try {
 				data = collectEvalReportData(runsRoot, evalRunId, undefined, {
 					allowDiagnosisCreation: false,
+					...(options.labels ? { labels: options.labels } : {}),
 				});
 			} catch {
 				send(response, 422, "text/plain; charset=utf-8", "Evidence report failed integrity or visibility checks.\n", headOnly);

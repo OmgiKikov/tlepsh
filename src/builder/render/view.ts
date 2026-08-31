@@ -455,6 +455,13 @@ export function renderDatasetCases(cases: readonly WorkbenchDatasetCase[], paint
 			const last = sample.messages[sample.messages.length - 1]?.content ?? "";
 			lines.push(`      ${paint.dim("dialogue:")} ${pluralize(sample.messages.length, "turn")} ${paint.dim(`ending in “${oneLine(last, 50)}”`)}`);
 		}
+		if (sample.simulatedUser) {
+			const persona = sample.simulatedUser.persona ? ` as ${oneLine(sample.simulatedUser.persona, 40)}` : "";
+			lines.push(
+				`      ${paint.dim("live user:")} ${oneLine(sample.simulatedUser.goal, 60)}${persona} ` +
+					paint.dim(`· up to ${pluralize(sample.simulatedUser.maxTurns, "turn")}`),
+			);
+		}
 		if (sample.metadata) {
 			const pairs = Object.entries(sample.metadata).slice(0, 4).map(([key, value]) => `${oneLine(key, 20)}=${oneLine(value, 24)}`);
 			lines.push(`      ${paint.dim("metadata:")} ${oneLine(pairs.join(" · "), 88)}`);

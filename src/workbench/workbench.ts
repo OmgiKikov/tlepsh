@@ -499,6 +499,14 @@ function datasetCasePreview(task: CorpusTask): WorkbenchDatasetCase {
 				content: datasetText(message.content, 200),
 			}))
 			: null,
+		simulatedUser: task.simulatedUser
+			? {
+				goal: datasetText(task.simulatedUser.goal, 400),
+				persona: task.simulatedUser.persona === undefined ? null : datasetText(task.simulatedUser.persona, 400),
+				maxTurns: task.simulatedUser.maxTurns,
+				stopWhen: task.simulatedUser.stopWhen === undefined ? null : datasetText(task.simulatedUser.stopWhen, 200),
+			}
+			: null,
 		metadata: task.metadata
 			? Object.fromEntries(Object.entries(task.metadata).map(([key, value]) => [key, datasetText(value, 200)]))
 			: null,

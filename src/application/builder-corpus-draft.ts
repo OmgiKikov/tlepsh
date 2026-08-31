@@ -52,6 +52,9 @@ export const BuilderCorpusDraftTaskInputSchema = z.strictObject({
 	input: NonBlankSchema.max(32_000),
 	expected: TaskSchema.shape.expected,
 	messages: TaskSchema.shape.messages,
+	// A case may instead ask a second model to play the user for N turns.
+	// `taskDialogueIssue` below is the one place that refuses both at once.
+	simulatedUser: TaskSchema.shape.simulatedUser,
 	metadata: TaskSchema.shape.metadata,
 	graders: z.array(GraderSpec).min(1).max(16),
 }).superRefine((task, context) => {

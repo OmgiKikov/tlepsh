@@ -476,6 +476,12 @@ function projectComparison(
 export function judgeCalibrationRows(
 	runs: readonly RunRecord[],
 	calibration: JudgeCalibration | null,
+	/**
+	 * Whether a label store was consulted at all. "Not calibrated" is a claim
+	 * about the judge; a surface that never opened the labels has no business
+	 * making it, and would otherwise contradict `ahde report` on the same run.
+	 */
+	consulted = true,
 ): ReportJudgeCalibration[] {
 	const names = new Map<string, Set<string>>();
 	for (const run of runs) {
@@ -499,7 +505,9 @@ export function judgeCalibrationRows(
 				labels: stats?.n ?? 0,
 				line: stats && stats.n > 0
 					? `judge agreement ${formatJudgeAgreement(stats)}`
-					: "judge not calibrated",
+					: consulted
+						? "judge not calibrated"
+						: "judge calibration not available here",
 			};
 		});
 }
@@ -720,7 +728,7 @@ export function collectEvalReportData(
 		comparison,
 		comparisonGateLine: comparison ? renderGateLine(comparison) : "",
 		runs,
-		judgeCalibration: judgeCalibrationRows(verified.runs, calibration),
+		judgeCalibration: judgeCalibrationRows(verified.runs, calibration, options.labels !== undefined),
 		projection,
 		redactionNotice:
 			"This report contains normalized, size-bounded, credential-redacted traces, run errors, grader metadata, and diagnosis text. Protected canonical artifacts remain unchanged on disk.",
