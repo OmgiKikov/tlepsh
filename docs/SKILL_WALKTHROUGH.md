@@ -819,7 +819,7 @@ apply/adopt family the skill declared. What remains, and what each still needs:
 
 | gap | still needs |
 |---|---|
-| `ahde log` / `ahde watch` | the `codex/integrate-polish` merge; `scripts/skill-shim-log.mjs` stays until then, and step 8's passport is the one thing the CLI cannot yet build |
+| `ahde log` / `ahde watch` | the `codex/integrate-polish` merge; `scripts/skill-shim-log.mjs` stays until then for the growth line — step 8's passport is no longer among what it is needed for, see **Passport** below |
 | `ahde review` diff + `--proposal-hash` | the same merge; today the agent must render the diff itself |
 | `ahde diagnose` renders N identical modes | grader identity on the mode line; the id is printed now, so a mode is at least addressable |
 | `ahde corpus publish` is Builder-Pi-only | a `corpus draft` command; `corpus import` is the scripted equivalent and the crib says so |
@@ -830,3 +830,96 @@ One shim remains (`skill-shim-log.mjs`, 75 lines), for one step, and it is
 already scheduled. Counting prescribed commands rather than steps: of the 19 the
 first walkthrough exercised plus the 4 new ones, 21 of 23 now do exactly what
 the skill says — `log` and `watch` are the two that still do not exist.
+
+## Passport — step 8, without the shim
+
+`ahde passport` landed after the walk above and closes the hand-over step. The
+run below is over the same `skill-run2` artifacts, with nothing rebuilt, nothing
+re-measured, and no model called:
+
+```
+ahde passport --target <dir> [--project <id>]
+              [--candidate <id> | --tag v0.1.0 | latest] [--json] [--out <path>]
+```
+
+```
+$ ahde passport --target .
+# Version passport — returns-agent v0.1.0
+
+- agent: returns-agent
+- version: v0.1.0
+- date: 2026-08-31
+- revision: f0ae64c0f9 → b960b2b496
+- model: openai-compatible/scripted-mock
+
+## Promised — spec-bc824da34f2e…
+
+*Агент поддержки по возвратам*
+
+Success criteria
+- ответ по-русски
+- срок возврата — 30 дней с даты доставки
+- заявка оформляется в личном кабинете, раздел «Возвраты»
+
+Constraints
+- без инструментов
+- без сети
+
+## Measured
+
+- development: **improved** — pass rate 0% → 100% · mean score 0.00 → 1.00 (+100.0pp, 95% CI +100.0pp … +100.0pp) on 6 tasks × 2 repetitions
+- sealed guardrail: **pass** on 18 tasks × 2 repetitions
+- per answer, candidate over baseline: latency ×0.87 · tokens ×1.00
+
+## Judge
+
+judge not calibrated — no judge grader graded this evidence
+
+## Known limits
+
+- none recorded — every targeted failure mode the proposal named was resolved
+- calibrated noise band: not measured (`ahde calibrate --target <dir>`)
+- data: development “Возвраты — development” (corpus-e75f8bbf1b60…, 6 cases); sealed exam (18 cases)
+
+## Provenance
+
+- spec: spec-bc824da34f2e…
+- proposal: sha256:dddda4e91f3a…
+- gate policies: development-ci-v4, sealed-guardrail-v4
+- eval runs: development erun_mthq8fsl1qh0hq → erun_mthq9lmkvmg9wa; sealed erun_mthq9mnm9hhiyl → erun_mthq9osy156fh8
+- applied by: local-user — Applied at the terminal by the operator running `ahde apply`.
+- candidate record: candidate-5423049a-9aa8-4d03-8f60-7c34fdaa6c45
+[exit 0]
+```
+
+Every line is read back from an artifact this walkthrough already wrote. The
+promise is the approved Spec of step 1, verbatim; the measurement is the same
+gate evidence step 6 printed; the ratios, the policy ids, the eval runs and the
+apply receipt's own sentence come out of the Candidate record; the corpus name
+and its case count come from the metadata `corpus import` published. Nothing is
+recomputed and nothing is remembered.
+
+Two lines say they have nothing rather than guessing, which is the point: this
+Target's graders are deterministic, so no judge was calibrated, and no `ahde
+calibrate` was ever run here, so there is no measured noise band to put beside a
++100pp result. On a real Target both lines carry numbers — the judge line prints
+`judge agreement N% · κ … · n=…` together with the majority-class baseline of
+the human labels, because agreement over labels that are 90% pass is worth
+exactly what a coin that always says pass is worth.
+
+The sealed exam contributes its verdict and `18 tasks × 2 repetitions` and
+nothing else. Its corpus id, its name and its cases are not read while the page
+is built and are absent from `--json` as well, which is the projection the page
+is rendered from.
+
+`--candidate <id>` issues a passport for a candidate that was verified but never
+promoted; the header then reads `not promoted — verified only` in place of the
+tag. A missing subject or a missing artifact exits 2 with a `next:` line:
+
+```
+$ ahde passport --target . --tag v9.9.9
+error: no promoted candidate of project returns-agent carries the tag v9.9.9
+next: Run `ahde passport --target <dir>` for the newest promotion, or name a tag
+      `ahde promote` printed.
+[exit 2]
+```
