@@ -346,7 +346,7 @@ function sandboxInvocation(
 	command: string,
 	container?: ContainerPolicy,
 	cwd?: string,
-): { executable: string; args: string[]; spawnEnvironment?: NodeJS.ProcessEnv; terminate?: () => void } {
+): { executable: string; args: string[]; spawnEnvironment?: NodeJS.ProcessEnv; terminate?: () => void; dispose?: () => void } {
 	if (backend === "container") {
 		if (!container) throw new Error("container backend requires an execution.container policy");
 		return containerBackendFor(container.runtime).invocation({
@@ -521,7 +521,6 @@ function bashOperations(
 			const stop = (reason: "aborted" | "timeout") => {
 				if (stopped) return;
 				stopped = reason;
-				invocation.terminate?.();
 				terminateProcess(child.pid);
 			};
 			const stopForAbort = () => {
@@ -537,16 +536,22 @@ function bashOperations(
 				}, timeout * 1_000);
 
 			try {
-				const exitCode = await new Promise<number | null>((resolveExit, reject) => {
-					child.once("error", reject);
-					child.once("close", resolveExit);
-				});
+				let exitCode: number | null;
+				try {
+					exitCode = await new Promise<number | null>((resolveExit, reject) => {
+						child.once("error", reject);
+						child.once("close", resolveExit);
+					});
+				} finally {
+					if (stopped) invocation.terminate?.();
+				}
 				if (stopped === "aborted" || signal?.aborted) throw new Error("aborted");
 				if (stopped === "timeout") throw new Error(`timeout:${timeout}`);
 				return { exitCode };
 			} finally {
 				if (timer) clearTimeout(timer);
 				signal?.removeEventListener("abort", stopForAbort);
+				invocation.dispose?.();
 			}
 		},
 	};

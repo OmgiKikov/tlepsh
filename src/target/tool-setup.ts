@@ -181,6 +181,7 @@ function runSetup(
 	// overflow. A container is daemon-owned, so force-remove its exact minted
 	// name before surfacing the infrastructure error.
 	if (result.error) invocation.terminate?.();
+	invocation.dispose?.();
 	const stdout = boundedText(result.stdout);
 	const stderr = boundedText(result.stderr);
 	const outcome: ToolSetupOutcome = {

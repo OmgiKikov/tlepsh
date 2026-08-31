@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -20,6 +20,7 @@ import {
 	resolveContainerSandbox,
 	resolveExecutionBackend,
 	type ContainerPolicy,
+	type ContainerRuntimeIdentity,
 	type ContainerRuntimeStatus,
 } from "../src/target/container-backend.js";
 import { prepareToolHome } from "../src/target/tool-setup.js";
@@ -34,7 +35,18 @@ const DIGEST = `sha256:${"a".repeat(64)}`;
 const PINNED = `registry.example.com/ahde/target@${DIGEST}`;
 const TAG = "registry.example.com/ahde/target:1.2.3";
 const PLATFORM = "linux/amd64";
-const RUNTIME_IDENTITY = { version: "27.1.0", os: "linux", arch: "amd64" } as const;
+const RUNTIME_IDENTITY = {
+	version: "27.1.0",
+	os: "linux",
+	arch: "amd64",
+	daemonId: "daemon-test-id",
+	kernelVersion: "6.10.0-test",
+	driver: "overlay2",
+	cgroupDriver: "cgroupfs",
+	cgroupVersion: "2",
+	securityOptionsHash: "b".repeat(64),
+	contextHash: "c".repeat(64),
+} as const;
 const EXPECTED_CONTAINER_USER = typeof process.getuid === "function" && process.getuid() !== 0
 	? `${process.getuid()}:${typeof process.getgid === "function" ? process.getgid() : 0}`
 	: "65534:65534";
@@ -79,6 +91,7 @@ function fakeDocker(options: {
 	failReason?: string;
 	logPath?: string;
 	hangRun?: boolean;
+	failCleanup?: boolean;
 } = {}): {
 	binDir: string;
 	logPath: string;
@@ -93,9 +106,28 @@ function fakeDocker(options: {
 if [ "$1" = "version" ]; then
 ${versionBranch}
 fi
+if [ "$1" = "info" ]; then
+  printf '%s\n' '${JSON.stringify({
+	ID: RUNTIME_IDENTITY.daemonId,
+	KernelVersion: RUNTIME_IDENTITY.kernelVersion,
+	Driver: RUNTIME_IDENTITY.driver,
+	CgroupDriver: RUNTIME_IDENTITY.cgroupDriver,
+	CgroupVersion: RUNTIME_IDENTITY.cgroupVersion,
+	SecurityOptions: ["name=seccomp,profile=builtin"],
+  })}'
+  exit 0
+fi
 : > ${JSON.stringify(logPath)}
-for argument in "$@"; do printf '%s\\n' "$argument" >> ${JSON.stringify(logPath)}; done
+previous=''
+for argument in "$@"; do
+  printf '%s\\n' "$argument" >> ${JSON.stringify(logPath)}
+  if [ "$previous" = "--env-file" ] && [ -f "$argument" ]; then
+    while IFS= read -r line; do printf 'ENV:%s\\n' "$line" >> ${JSON.stringify(logPath)}; done < "$argument"
+  fi
+  previous="$argument"
+done
 ${options.hangRun ? 'if [ "$1" = "run" ]; then while :; do :; done; fi' : ""}
+${options.failCleanup ? 'if [ "$1" = "rm" ]; then printf \'daemon cleanup refused\\n\' >&2; exit 1; fi' : ""}
 printf 'fake-docker-ran\\n'
 `;
 	const binary = join(binDir, "docker");
@@ -118,7 +150,17 @@ function flagValues(args: readonly string[], flag: string): string[] {
 
 function environmentMap(args: readonly string[]): Record<string, string> {
 	const map: Record<string, string> = {};
-	for (const entry of flagValues(args, "-e")) {
+	const path = flagValues(args, "--env-file")[0];
+	let entries: string[] | null = null;
+	if (path) {
+		try {
+			entries = readFileSync(path, "utf8").split("\n").filter(Boolean);
+		} catch {
+			// Runtime tests inspect argv after the invocation disposed its private
+			// env-file; the fake client copied only its non-secret test contents.
+		}
+	}
+	for (const entry of entries ?? args.filter((argument) => argument.startsWith("ENV:")).map((argument) => argument.slice(4))) {
 		const split = entry.indexOf("=");
 		map[entry.slice(0, split)] = entry.slice(split + 1);
 	}
@@ -186,6 +228,7 @@ describe("container backend argv", () => {
 			toolHomeMode: "ro",
 			argv: [join(scratchRoot("noop"), "unused")].slice(0, 0).concat(["/bin/sh", "-c", "echo hi"]),
 		});
+		const environmentFile = flagValues(fixture.invocation.args, "--env-file")[0] as string;
 		expect(fixture.invocation.args).toEqual([
 			"run",
 			"--rm",
@@ -216,18 +259,8 @@ describe("container backend argv", () => {
 			`${fixture.scratchDir}:/scratch:rw`,
 			"-v",
 			`${fixture.toolHomeRoot}:/tools:ro`,
-			"-e",
-			`PATH=${CONTAINER_PATH}`,
-			"-e",
-			"HOME=/scratch/home",
-			"-e",
-			"TMPDIR=/tmp",
-			"-e",
-			"LANG=C",
-			"-e",
-			"TERM=dumb",
-			"-e",
-			"ALLOWED_VALUE=visible",
+			"--env-file",
+			environmentFile,
 			"-w",
 			"/workspace",
 			"--entrypoint",
@@ -236,6 +269,14 @@ describe("container backend argv", () => {
 			"-c",
 			"echo hi",
 		]);
+		expect(environmentMap(fixture.invocation.args)).toEqual({
+			PATH: CONTAINER_PATH,
+			HOME: "/scratch/home",
+			TMPDIR: "/tmp",
+			LANG: "C",
+			TERM: "dumb",
+			ALLOWED_VALUE: "visible",
+		});
 	});
 
 	it("denies the network with --network none and never hands over the host network namespace", () => {
@@ -304,7 +345,7 @@ describe("container backend argv", () => {
 
 	it("starts from an empty environment and never inherits the host's", () => {
 		process.env[HOST_SECRET] = "must-not-leak";
-		const args = invocationFixture({
+		const fixture = invocationFixture({
 			environment: {
 				PATH: "/opt/homebrew/bin:/usr/bin",
 				HOME: "/nowhere/home",
@@ -312,7 +353,8 @@ describe("container backend argv", () => {
 				LANG: "C",
 				ALLOWED_VALUE: "visible",
 			},
-		}).invocation.args;
+		});
+		const args = fixture.invocation.args;
 		expect(environmentMap(args)).toEqual({
 			PATH: CONTAINER_PATH,
 			HOME: "/scratch/home",
@@ -323,9 +365,23 @@ describe("container backend argv", () => {
 		});
 		expect(args.join("\0")).not.toContain(HOST_SECRET);
 		expect(args.join("\0")).not.toContain("must-not-leak");
+		expect(args.join("\0")).not.toContain("ALLOWED_VALUE=visible");
+		const environmentFile = flagValues(args, "--env-file")[0] as string;
+		expect(statSync(environmentFile).mode & 0o777).toBe(0o600);
+		fixture.invocation.dispose?.();
+		expect(existsSync(environmentFile)).toBe(false);
 		// The host PATH is host environment: /opt/homebrew names nothing inside
 		// the image and would be a leak for no benefit.
 		expect(args.join(" ")).not.toContain("/opt/homebrew");
+	});
+
+	it("refuses env-file record injection before the runtime can start", () => {
+		expect(() => invocationFixture({ environment: { "SAFE\nINJECTED": "value" } }))
+			.toThrow(/unsafe environment name/);
+		expect(() => invocationFixture({ environment: { SAFE: "value\nINJECTED=secret" } }))
+			.toThrow(/multiline or NUL value for SAFE/);
+		expect(() => invocationFixture({ environment: { SAFE: "value\0secret" } }))
+			.toThrow(/multiline or NUL value for SAFE/);
 	});
 
 	it("translates every model-visible path to a container path, mounts aside", () => {
@@ -461,6 +517,26 @@ describe("container backend argv", () => {
 		expect(loggedArgv(fake.logPath)).toEqual(["rm", "-f", "ahde-cleanup-test"]);
 		expect(() => invocationFixture({ containerName: "unsafe/name" })).toThrow(/unsafe container name/);
 	});
+
+	it("fails closed when the daemon cannot confirm container removal", () => {
+		const fake = fakeDocker({ failCleanup: true });
+		const fixture = invocationFixture({ containerName: "ahde-cleanup-failure" });
+		const invocation = dockerBackend.invocation({
+			policy: policy(),
+			mounts: { workspaceDir: fixture.workspaceDir, scratchDir: fixture.scratchDir },
+			network: "deny",
+			environment: {},
+			cwd: fixture.workspaceDir,
+			argv: ["/bin/true"],
+			containerName: "ahde-cleanup-failure",
+			hostEnvironment: { PATH: fake.binDir },
+		});
+		const environmentFile = flagValues(invocation.args, "--env-file")[0] as string;
+		expect(() => invocation.terminate?.()).toThrow(
+			/failed to remove container ahde-cleanup-failure after 3 attempts: daemon cleanup refused/,
+		);
+		expect(existsSync(environmentFile)).toBe(false);
+	});
 });
 
 describe("gondolin", () => {
@@ -490,12 +566,40 @@ describe("container runtime detection", () => {
 		const fake = fakeDocker({ version: "27.1.0" });
 		const environment = { PATH: fake.binDir };
 		const first = detectContainerRuntime("docker", { environment });
-		expect(first).toEqual({ runtime: "docker", available: true, ...RUNTIME_IDENTITY });
+		expect(first).toMatchObject({
+			runtime: "docker",
+			available: true,
+			version: RUNTIME_IDENTITY.version,
+			os: RUNTIME_IDENTITY.os,
+			arch: RUNTIME_IDENTITY.arch,
+			daemonId: RUNTIME_IDENTITY.daemonId,
+			kernelVersion: RUNTIME_IDENTITY.kernelVersion,
+			driver: RUNTIME_IDENTITY.driver,
+			cgroupDriver: RUNTIME_IDENTITY.cgroupDriver,
+			cgroupVersion: RUNTIME_IDENTITY.cgroupVersion,
+			contextHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+			securityOptionsHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+		});
 
 		// Delete the binary: a second call must answer from the memo, never probe.
 		rmSync(join(fake.binDir, "docker"));
 		expect(detectContainerRuntime("docker", { environment })).toEqual(first);
 		expect(detectContainerRuntime("docker", { environment, force: true }).available).toBe(false);
+	});
+
+	it("keeps Docker contexts in separate cache and evidence identities", () => {
+		const fake = fakeDocker({ version: "27.1.0" });
+		const first = detectContainerRuntime("docker", {
+			environment: { PATH: fake.binDir, DOCKER_CONTEXT: "review-a" },
+		});
+		const second = detectContainerRuntime("docker", {
+			environment: { PATH: fake.binDir, DOCKER_CONTEXT: "review-b" },
+		});
+		expect(first.available).toBe(true);
+		expect(second.available).toBe(true);
+		expect(first.contextHash).not.toBe(second.contextHash);
+		expect(containerSandboxFingerprint(policy(), first as ContainerRuntimeIdentity))
+			.not.toBe(containerSandboxFingerprint(policy(), second as ContainerRuntimeIdentity));
 	});
 
 	it("reports a missing binary and an unreachable daemon as distinct, exact reasons", () => {
@@ -569,7 +673,7 @@ describe("required / best-effort / off matrix", () => {
 	it("refuses container evidence when the runtime cannot identify its server exactly", () => {
 		const incomplete: ContainerRuntimeStatus = { runtime: "docker", available: true, version: "27.1.0" };
 		expect(() => resolveContainerSandbox({ policy: policy(), sandbox: "required", detect: () => incomplete }))
-			.toThrow(/did not report an exact server version, OS, and architecture/);
+			.toThrow(/did not report an exact daemon, context, kernel, cgroup, and server identity/);
 		const relaxed = resolveContainerSandbox({ policy: policy(), sandbox: "best-effort", detect: () => incomplete });
 		expect(relaxed.mode).toBe("fallback");
 		expect(relaxed.warnings[0]).toContain("falling back to the host OS sandbox");
@@ -1135,7 +1239,9 @@ describe.skipIf(!integrationPinnedImage || !integrationPlatform)(`container back
 			},
 			sourceEnvironment: { ALLOWED_VALUE: "visible", [HOST_SECRET]: "must-not-leak" },
 		});
-		if (!dockerStatus.version || !dockerStatus.os || !dockerStatus.arch) {
+		if (!dockerStatus.version || !dockerStatus.os || !dockerStatus.arch || !dockerStatus.daemonId ||
+			!dockerStatus.kernelVersion || !dockerStatus.driver || !dockerStatus.cgroupDriver ||
+			!dockerStatus.cgroupVersion || !dockerStatus.securityOptionsHash || !dockerStatus.contextHash) {
 			throw new Error("real Docker probe returned no exact runtime identity");
 		}
 		expect(built.sandboxFingerprint).toBe(containerSandboxFingerprint(
@@ -1145,7 +1251,18 @@ describe.skipIf(!integrationPinnedImage || !integrationPlatform)(`container back
 				memoryMb: 256,
 				pidsLimit: 64,
 			}),
-			{ version: dockerStatus.version, os: dockerStatus.os, arch: dockerStatus.arch },
+			{
+				version: dockerStatus.version,
+				os: dockerStatus.os,
+				arch: dockerStatus.arch,
+				daemonId: dockerStatus.daemonId,
+				kernelVersion: dockerStatus.kernelVersion,
+				driver: dockerStatus.driver,
+				cgroupDriver: dockerStatus.cgroupDriver,
+				cgroupVersion: dockerStatus.cgroupVersion,
+				securityOptionsHash: dockerStatus.securityOptionsHash,
+				contextHash: dockerStatus.contextHash,
+			},
 		));
 
 		const bash = built.customTools.find((tool) => tool.name === "bash");

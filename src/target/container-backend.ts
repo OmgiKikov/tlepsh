@@ -21,13 +21,15 @@
  *     enters the container's argv, its cwd, or its environment.
  *  2. The container environment starts empty. `PATH`, `HOME`, `TMPDIR`,
  *     `LANG` and `TERM` are set to container-owned values, and only the
- *     Target's declared allowlist names are copied in, one `-e NAME=value` at
- *     a time. The host's environment is never inherited.
+ *     Target's declared allowlist names are copied through a private,
+ *     invocation-scoped env-file. Values never enter the Docker CLI argv and
+ *     the host's environment is never inherited.
  */
 
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { accessSync, constants } from "node:fs";
+import { accessSync, constants, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 
 export type ContainerRuntimeName = "docker" | "gondolin";
@@ -117,6 +119,15 @@ export interface ContainerRuntimeIdentity {
 	version: string;
 	os: string;
 	arch: string;
+	/** Exact daemon + host-kernel execution context, never just the CLI version. */
+	daemonId: string;
+	kernelVersion: string;
+	driver: string;
+	cgroupDriver: string;
+	cgroupVersion: string;
+	securityOptionsHash: string;
+	/** Hash of the exact Docker context/socket/config environment used by probe and run. */
+	contextHash: string;
 }
 
 export function containerSandboxFingerprint(
@@ -158,6 +169,13 @@ export interface ContainerRuntimeStatus {
 	/** Server OS and architecture; both affect container execution semantics. */
 	os?: string;
 	arch?: string;
+	daemonId?: string;
+	kernelVersion?: string;
+	driver?: string;
+	cgroupDriver?: string;
+	cgroupVersion?: string;
+	securityOptionsHash?: string;
+	contextHash?: string;
 	/** Exact reason the runtime is unusable. Present iff `available` is false. */
 	reason?: string;
 }
@@ -196,7 +214,13 @@ function firstLine(value: string | null | undefined): string {
 	return (value ?? "").split("\n").map((line) => line.trim()).find((line) => line.length > 0) ?? "";
 }
 
-function probeDocker(binary: string, timeoutMs: number): ContainerRuntimeStatus {
+function runtimeContextHash(binary: string, environment: NodeJS.ProcessEnv): string {
+	return createHash("sha256")
+		.update(JSON.stringify({ binary, environment: runtimeCliEnvironment(environment) }))
+		.digest("hex");
+}
+
+function probeDocker(binary: string, timeoutMs: number, hostEnvironment: NodeJS.ProcessEnv): ContainerRuntimeStatus {
 	// One `docker version` call is the cheapest probe that proves the *daemon*
 	// answers: `docker --version` only proves a client
 	// binary exists, which is exactly the failure a bank profile must not
@@ -205,6 +229,7 @@ function probeDocker(binary: string, timeoutMs: number): ContainerRuntimeStatus 
 		binary,
 		["version", "--format", "{{.Server.Version}}|{{.Server.Os}}|{{.Server.Arch}}"],
 		{
+			env: runtimeCliEnvironment(hostEnvironment),
 			encoding: "utf8",
 			stdio: ["ignore", "pipe", "pipe"],
 			timeout: timeoutMs,
@@ -227,7 +252,49 @@ function probeDocker(binary: string, timeoutMs: number): ContainerRuntimeStatus 
 		const detail = firstLine(probe.stderr) || firstLine(probe.stdout) || `exit ${probe.status}`;
 		return { runtime: "docker", available: false, reason: `docker daemon is not reachable: ${detail}` };
 	}
-	return { runtime: "docker", available: true, version, os, arch };
+	const info = spawnSync(binary, ["info", "--format", "{{json .}}"], {
+		env: runtimeCliEnvironment(hostEnvironment),
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "pipe"],
+		timeout: timeoutMs,
+		windowsHide: true,
+	});
+	if (info.error || info.status !== 0) {
+		const detail = firstLine(info.stderr) || firstLine(info.stdout) || info.error?.message || `exit ${info.status}`;
+		return { runtime: "docker", available: false, reason: `docker daemon identity is unavailable: ${detail}` };
+	}
+	let parsed: Record<string, unknown>;
+	try {
+		parsed = JSON.parse(firstLine(info.stdout)) as Record<string, unknown>;
+	} catch {
+		return { runtime: "docker", available: false, reason: "docker daemon identity was not valid JSON" };
+	}
+	const text = (key: string): string => typeof parsed[key] === "string" ? (parsed[key] as string).trim() : "";
+	const daemonId = text("ID");
+	const kernelVersion = text("KernelVersion");
+	const driver = text("Driver");
+	const cgroupDriver = text("CgroupDriver");
+	const cgroupVersion = text("CgroupVersion");
+	const securityOptions = Array.isArray(parsed.SecurityOptions)
+		? parsed.SecurityOptions.filter((value): value is string => typeof value === "string").sort()
+		: [];
+	if (!daemonId || !kernelVersion || !driver || !cgroupDriver || !cgroupVersion) {
+		return { runtime: "docker", available: false, reason: "docker daemon identity is incomplete" };
+	}
+	return {
+		runtime: "docker",
+		available: true,
+		version,
+		os,
+		arch,
+		daemonId,
+		kernelVersion,
+		driver,
+		cgroupDriver,
+		cgroupVersion,
+		securityOptionsHash: createHash("sha256").update(JSON.stringify(securityOptions)).digest("hex"),
+		contextHash: runtimeContextHash(binary, hostEnvironment),
+	};
 }
 
 /**
@@ -242,7 +309,11 @@ export function detectContainerRuntime(
 ): ContainerRuntimeStatus {
 	const environment = options.environment ?? process.env;
 	const pathValue = environment.PATH ?? "";
-	const key = `${runtime}\0${pathValue}`;
+	const binary = runtime === "docker" ? executableOnPath("docker", pathValue) : undefined;
+	// Cache the decision for the exact runtime CLI environment, even when the
+	// binary disappears after the first probe. A run must not silently switch
+	// containment identity halfway through; `force` is the explicit re-probe.
+	const key = `${runtime}\0${runtimeContextHash(runtime, environment)}`;
 	if (!options.force) {
 		const cached = detectionCache.get(key);
 		if (cached) return cached;
@@ -250,11 +321,10 @@ export function detectContainerRuntime(
 	const status = runtime === "gondolin"
 		? gondolinBackend.unavailable()
 		: (() => {
-			const binary = executableOnPath("docker", pathValue);
 			if (!binary) {
 				return { runtime: "docker" as const, available: false, reason: "docker executable not found on PATH" };
 			}
-			return probeDocker(binary, options.timeoutMs ?? DETECTION_TIMEOUT_MS);
+			return probeDocker(binary, options.timeoutMs ?? DETECTION_TIMEOUT_MS, environment);
 		})();
 	detectionCache.set(key, status);
 	return status;
@@ -309,6 +379,8 @@ export interface ContainerInvocation {
 	spawnEnvironment: NodeJS.ProcessEnv;
 	/** Force-remove the named container after timeout, abort, or output overflow. */
 	terminate?: () => void;
+	/** Remove host-side invocation material after any normal or abnormal exit. */
+	dispose?: () => void;
 }
 
 export interface ContainerBackend {
@@ -434,7 +506,7 @@ function runtimeCliEnvironment(hostEnvironment: NodeJS.ProcessEnv): NodeJS.Proce
 	return environment;
 }
 
-function dockerArguments(request: ContainerInvocationRequest): string[] {
+function dockerArguments(request: ContainerInvocationRequest, environmentFile: string): string[] {
 	const { policy, mounts } = request;
 	if (!CONTAINER_IMAGE_REFERENCE.test(policy.image)) {
 		throw new Error(`container backend refuses an unsafe image reference: ${policy.image}`);
@@ -476,7 +548,7 @@ function dockerArguments(request: ContainerInvocationRequest): string[] {
 		args.push("-v", `${mounts.toolHomeRoot}:${CONTAINER_TOOL_HOME}:${mounts.toolHomeMode ?? "ro"}`);
 	}
 
-	for (const [name, value] of containerEnvironment(request, table)) args.push("-e", `${name}=${value}`);
+	args.push("--env-file", environmentFile);
 	args.push("-w", containerPath(request.cwd, table, "cwd"));
 
 	// `--entrypoint` is not decoration: an image that declares its own
@@ -500,21 +572,67 @@ export const dockerBackend: ContainerBackend = {
 		const spawnEnvironment = runtimeCliEnvironment(hostEnvironment);
 		const containerName = request.containerName ?? `ahde-${process.pid}-${randomUUID()}`;
 		const resolvedRequest = { ...request, containerName };
+		// Docker needs the env-file on the host, but Target code must never see it
+		// through the /scratch mount. Keep it in a private host-only directory.
+		const environmentRoot = mkdtempSync(join(tmpdir(), "ahde-container-env-"));
+		const environmentFile = join(environmentRoot, "environment");
+		const dispose = (): void => {
+			rmSync(environmentRoot, { recursive: true, force: true });
+		};
+		let args: string[];
+		try {
+			const lines = containerEnvironment(request, mountTable(request.mounts)).map(([name, value]) => {
+				if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+					throw new Error(`container backend refuses an unsafe environment name: ${name}`);
+				}
+				if (/[\0\r\n]/.test(value)) {
+					throw new Error(`container backend refuses a multiline or NUL value for ${name}`);
+				}
+				return `${name}=${value}`;
+			});
+			writeFileSync(environmentFile, `${lines.join("\n")}\n`, { mode: 0o600, flag: "wx" });
+			args = dockerArguments(resolvedRequest, environmentFile);
+		} catch (error) {
+			dispose();
+			throw error;
+		}
 		return {
 			executable: binary,
-			args: dockerArguments(resolvedRequest),
+			args,
 			spawnEnvironment,
+			dispose,
 			terminate: () => {
 				// Killing the attached Docker CLI does not guarantee that the daemon
-				// stops the container. Address the daemon by the exact host-minted name
-				// before killing the client; a normal `--rm` exit makes this a harmless
-				// "not found". Cleanup is bounded and never inherits Target env.
-				spawnSync(binary, ["rm", "-f", containerName], {
-					env: spawnEnvironment,
-					stdio: "ignore",
-					timeout: 5_000,
-					windowsHide: true,
-				});
+				// stops the container. Once the client is confirmed closed, address the
+				// daemon by the exact host-minted name; a normal `--rm` exit makes this
+				// a harmless "not found". Cleanup is bounded and never inherits Target
+				// env.
+				try {
+					let failure = "container cleanup failed";
+					for (let attempt = 1; attempt <= 3; attempt += 1) {
+						const removed = spawnSync(binary, ["rm", "-f", containerName], {
+							env: spawnEnvironment,
+							encoding: "utf8",
+							stdio: ["ignore", "pipe", "pipe"],
+							timeout: 5_000,
+							windowsHide: true,
+						});
+						if (removed.status === 0) return;
+						const detail = firstLine(removed.stderr) || firstLine(removed.stdout) || removed.error?.message || `exit ${removed.status}`;
+						// A killed client can close just before the daemon publishes the
+						// named container. Require three observations rather than accepting
+						// the first "not found" and leaking a late-created orphan.
+						if (/no such (?:container|object)|not found/i.test(detail) && attempt === 3) return;
+						failure = detail;
+						if (attempt < 3) {
+							const retryGate = new Int32Array(new SharedArrayBuffer(4));
+							Atomics.wait(retryGate, 0, 0, attempt * 50);
+						}
+					}
+					throw new Error(`failed to remove container ${containerName} after 3 attempts: ${failure}`);
+				} finally {
+					dispose();
+				}
 			},
 		};
 	},
@@ -595,16 +713,38 @@ export function resolveContainerSandbox(options: ResolveContainerSandboxOptions)
 	const detect = options.detect
 		?? ((runtime: ContainerRuntimeName) => detectContainerRuntime(runtime, options.detectOptions ?? {}));
 	const status = detect(policy.runtime);
-	const identityValues = [status.version, status.os, status.arch];
+	const identityValues = [
+		status.version,
+		status.os,
+		status.arch,
+		status.daemonId,
+		status.kernelVersion,
+		status.driver,
+		status.cgroupDriver,
+		status.cgroupVersion,
+		status.securityOptionsHash,
+		status.contextHash,
+	];
 	const identity = status.available && identityValues.every(
 		(value) => typeof value === "string" && value.trim().length > 0 && value.length <= 256,
 	)
-		? { version: status.version as string, os: status.os as string, arch: status.arch as string }
+		? {
+			version: status.version as string,
+			os: status.os as string,
+			arch: status.arch as string,
+			daemonId: status.daemonId as string,
+			kernelVersion: status.kernelVersion as string,
+			driver: status.driver as string,
+			cgroupDriver: status.cgroupDriver as string,
+			cgroupVersion: status.cgroupVersion as string,
+			securityOptionsHash: status.securityOptionsHash as string,
+			contextHash: status.contextHash as string,
+		}
 		: null;
 	if (!status.available || !identity) {
 		const reason = !status.available
 			? status.reason ?? `${policy.runtime} runtime is unavailable`
-			: `${policy.runtime} did not report an exact server version, OS, and architecture`;
+			: `${policy.runtime} did not report an exact daemon, context, kernel, cgroup, and server identity`;
 		if (sandbox === "required") {
 			throw new Error(
 				`execution.container declares ${policy.runtime} but no usable runtime is present; sandbox: required fails closed: ${reason}`,

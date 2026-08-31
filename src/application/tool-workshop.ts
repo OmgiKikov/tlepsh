@@ -1092,10 +1092,15 @@ export class BuilderWorkshop {
 			kill();
 		}, timeoutMs);
 		try {
-			const exitCode = await new Promise<number | null>((settle, reject) => {
-				child.once("error", reject);
-				child.once("close", settle);
-			});
+			let exitCode: number | null;
+			try {
+				exitCode = await new Promise<number | null>((settle, reject) => {
+					child.once("error", reject);
+					child.once("close", settle);
+				});
+			} finally {
+				if (stopped) invocation.terminate?.();
+			}
 			if (stopped === "aborted") throw new ToolWorkshopError("the workshop command was aborted");
 			const outText = boundedOutput(Buffer.concat(stdout).toString("utf8"));
 			const errText = boundedOutput(Buffer.concat(stderr).toString("utf8"));
@@ -1123,6 +1128,7 @@ export class BuilderWorkshop {
 		} finally {
 			clearTimeout(timer);
 			request.signal?.removeEventListener("abort", abort);
+			invocation.dispose?.();
 			rmSync(surface, { recursive: true, force: true });
 		}
 	}

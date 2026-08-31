@@ -250,6 +250,18 @@ describe("Target tool broker and Pi registration", () => {
 		const scratch = join(dir, ".ahde-test-scratch-container");
 		try {
 			const target = loadTarget(dir);
+			const runtimeIdentity = {
+				version: "27.1.0",
+				os: "linux",
+				arch: "amd64",
+				daemonId: "test-daemon",
+				kernelVersion: "6.10.0-test",
+				driver: "overlay2",
+				cgroupDriver: "cgroupfs",
+				cgroupVersion: "2",
+				securityOptionsHash: "d".repeat(64),
+				contextHash: "e".repeat(64),
+			};
 			const runtime = createTargetToolRuntime({
 				target,
 				workspaceDir: dir,
@@ -257,18 +269,12 @@ describe("Target tool broker and Pi registration", () => {
 				detectContainerRuntime: () => ({
 					runtime: "docker",
 					available: true,
-					version: "27.1.0",
-					os: "linux",
-					arch: "amd64",
+					...runtimeIdentity,
 				}),
 			});
 			const container = target.manifest.execution.container;
 			if (!container) throw new Error("container policy missing from fixture");
-			expect(runtime.sandboxFingerprint).toBe(containerSandboxFingerprint(container, {
-				version: "27.1.0",
-				os: "linux",
-				arch: "amd64",
-			}));
+			expect(runtime.sandboxFingerprint).toBe(containerSandboxFingerprint(container, runtimeIdentity));
 			expect(runtime.sandboxBackend).toBeNull();
 			expect(runtime.sandboxWarnings).toEqual([]);
 		} finally {

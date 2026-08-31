@@ -286,6 +286,7 @@ export function sandboxInvocation(options: {
 	args: string[];
 	spawnEnvironment?: NodeJS.ProcessEnv;
 	terminate?: () => void;
+	dispose?: () => void;
 	limits: AppliedResourceLimits | null;
 } {
 	const capped = options.limits ? applyResourceLimits(options.backend, options.argv, options.limits) : null;
@@ -608,7 +609,6 @@ export class TargetToolBroker {
 		const stop = (reason: "aborted" | "overflow" | "timeout") => {
 			if (stopped) return;
 			stopped = reason;
-			command.terminate?.();
 			killProcessTree(child.pid);
 		};
 		const collect = (destination: Buffer[]) => (chunk: Buffer) => {
@@ -634,10 +634,17 @@ export class TargetToolBroker {
 
 		try {
 			child.stdin.end(input);
-			const exitCode = await new Promise<number | null>((resolveExit, reject) => {
-				child.once("error", reject);
-				child.once("close", resolveExit);
-			});
+			let exitCode: number | null;
+			try {
+				exitCode = await new Promise<number | null>((resolveExit, reject) => {
+					child.once("error", reject);
+					child.once("close", resolveExit);
+				});
+			} finally {
+				// The daemon cleanup must happen only after the runtime client is
+				// dead; otherwise `rm` can race a still-in-flight container create.
+				if (stopped) command.terminate?.();
+			}
 			if (stopped === "aborted" || signal?.aborted) throw new Error(`Target tool ${tool.descriptor.name} aborted`);
 			if (stdinError) throw new Error(`Target tool ${tool.descriptor.name} could not read JSON input`, { cause: stdinError });
 			return {
@@ -651,6 +658,7 @@ export class TargetToolBroker {
 		} finally {
 			clearTimeout(timer);
 			signal?.removeEventListener("abort", abort);
+			command.dispose?.();
 		}
 	}
 
