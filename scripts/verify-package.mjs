@@ -233,7 +233,7 @@ const expectedCliCommandNames = [
 	"root", "builder-pi", "continue", "resume", "target", "evidence", "serve",
 	"init", "run", "validate", "list", "failures", "corpus", "feedback", "tool",
 	"compare", "diagnose", "regrade", "report", "label", "judge-agreement",
-	"candidate", "calibrate", "check", "improve", "review", "promote", "reject",
+	"candidate", "calibrate", "check", "improve", "search", "review", "promote", "reject",
 ];
 if (JSON.stringify(CLI_COMMANDS) !== JSON.stringify(expectedCliCommandNames)) {
   throw new Error(\`installed package registered an unexpected CLI command surface: \${CLI_COMMANDS.join(", ")}\`);
