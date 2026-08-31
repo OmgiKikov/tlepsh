@@ -24,6 +24,7 @@ export * from "./application/target-bootstrap.js";
 export * from "./application/target-authoring-context.js";
 export * from "./application/target-feedback.js";
 export * from "./application/tool-workshop.js";
+export * from "./application/version-passport.js";
 export * from "./builders/adapters.js";
 export * from "./builder/extension.js";
 export * from "./builder/commands.js";
