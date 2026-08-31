@@ -563,6 +563,8 @@ export const PersistedWorkbenchWorkshopSchema = z.strictObject({
 	baseTargetSha: z.string().regex(/^[0-9a-f]{40}$/),
 	basis: z.enum(["construction", "improvement"]),
 	approvedSpecId: ArtifactIdSchema,
+	/** Exact improvement lineage captured at open; null for construction/legacy notes. */
+	source: ProposalBasisSelectionSchema.omit({ failureModeIds: true }).nullable().default(null),
 	fromProposalRunId: ArtifactIdSchema.nullable(),
 	worktreePath: z.string().min(1).max(4_096),
 	scratchRoot: z.string().min(1).max(4_096),

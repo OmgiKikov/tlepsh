@@ -105,8 +105,16 @@ function open(dir: string, overrides: Partial<Parameters<typeof openBuilderWorks
 		repositoryDir: dir,
 		expectedTarget: { id: context.target.id, gitSha: context.target.gitSha },
 		authoringContext: context.claim,
-		basis: "improvement",
-		approvedSpecId: "spec_workshop_fixture",
+		binding: {
+			basis: "improvement",
+			approvedSpecId: "spec_workshop_fixture",
+			source: {
+				algorithmId: "exact-eval-signals-v1",
+				evalRunId: "erun_workshop_fixture",
+				diagnosisId: "diag_workshop_fixture",
+				briefId: "brief-000000000000000000000000",
+			},
+		},
 		...overrides,
 	});
 }
@@ -871,11 +879,30 @@ describe("closing the workshop is the proposal", () => {
 				repositoryDir: dir,
 				expectedTarget: { id: target.manifest.id, gitSha: target.gitSha },
 			});
+			const expectedBinding = {
+				basis: "improvement" as const,
+				approvedSpecId: descriptor.approvedSpecId,
+				source: descriptor.source!,
+			};
+			expect(() => reattachBuilderWorkshop({
+				repositoryDir: dir,
+				expectedTarget: { id: target.manifest.id, gitSha: target.gitSha },
+				authoringContext: authoring.claim,
+				descriptor: {
+					...descriptor,
+					source: { ...descriptor.source!, briefId: "brief-ffffffffffffffffffffffff" },
+				},
+				expectedBinding,
+			})).toThrow(/Spec or evidence basis is stale/);
+			// A failed reattach is not abandonment: it removes neither worktree nor
+			// scratch, so the exact original descriptor can still resume.
+			expect(existsSync(workshop.path)).toBe(true);
 			reattached = reattachBuilderWorkshop({
 				repositoryDir: dir,
 				expectedTarget: { id: target.manifest.id, gitSha: target.gitSha },
 				authoringContext: authoring.claim,
 				descriptor,
+				expectedBinding,
 			});
 			expect(reattached.status().grants).toEqual([]);
 			await expect(reattached.tryTool({ tool: "lookup", input: { term: "refunds" } }))
@@ -1211,6 +1238,146 @@ describe("the construction workshop", () => {
 		await expect(second.submit({ kind: "workshop-open", workshopId: "workshop_00000000000000ff" }))
 			.rejects.toThrow(/no workshop workshop_00000000000000ff is recorded/);
 		restarted.closeWorkshop();
+	}, 180_000);
+
+	it("keeps the original approved Spec across mutable focus and refuses a rebind", async () => {
+		const dir = fixture();
+		const { workbench, stateRoot, runsRoot, gate, approvedSpecId } = await specApproved(dir);
+		const opened = await workbench.submit({ kind: "workshop-open" });
+		const workshopId = String(opened.artifact?.workshopId);
+		workbench.workshopWrite({ path: "AGENTS.md", content: "# Workshop Target\n\nBound to Spec A.\n" });
+
+		// A newly approved Spec becomes focus, but focus is selection state. It may
+		// neither redirect recovery nor change what this workshop will close under.
+		await workbench.submit({
+			kind: "spec-draft",
+			spec: { ...SPEC, title: "Workshop agent version B", purpose: "A different approved purpose." },
+		});
+		const approvedB = await workbench.decide({ kind: "approve-spec", reason: "Approve a second exact Spec" }, gate);
+		const approvedSpecIdB = String(approvedB.result.approvedSpecId);
+		expect(approvedSpecIdB).not.toBe(approvedSpecId);
+		await expect(workbench.submit({
+			kind: "workshop-close",
+			approvedSpecId: approvedSpecIdB,
+			summary: "Attempt to rebind at close",
+			validationPlan: ["Must not run"],
+		})).rejects.toThrow(/does not match the workshop's immutable binding/);
+		workbench.suspendWorkshop();
+
+		const restarted = createAhdeWorkbench({ projectDir: dir, stateRoot, runsRoot, projectId: "workshop-target" });
+		await expect(restarted.submit({
+			kind: "workshop-open",
+			workshopId,
+			approvedSpecId: approvedSpecIdB,
+		})).rejects.toThrow(/does not match the recorded workshop/);
+		// The refusal was non-destructive and recovery still derives Spec A by id,
+		// independently of the new focus.
+		const resumed = await restarted.submit({ kind: "workshop-open", workshopId });
+		expect(resumed.artifact?.approvedSpecId).toBe(approvedSpecId);
+		expect(restarted.workshopRead({ path: "AGENTS.md" }).content).toContain("Bound to Spec A");
+		restarted.closeWorkshop();
+	}, 180_000);
+
+	it("refuses a stale construction/improvement basis without deleting recovery state", async () => {
+		const dir = fixture();
+		const { workbench, stateRoot, runsRoot } = await specApproved(dir);
+		const opened = await workbench.submit({ kind: "workshop-open" });
+		const workshopId = String(opened.artifact?.workshopId);
+		workbench.workshopWrite({ path: "AGENTS.md", content: "# Workshop Target\n\nRecover me.\n" });
+		workbench.suspendWorkshop();
+		const statePath = join(stateRoot, "projects", "workshop-target", "workbench", "workshop.json");
+		const original = JSON.parse(readFileSync(statePath, "utf8")) as Record<string, unknown>;
+		const tampered = {
+			...original,
+			basis: "improvement",
+			source: {
+				algorithmId: "exact-eval-signals-v1",
+				evalRunId: "erun_stale",
+				diagnosisId: "diag_stale",
+				briefId: "brief-ffffffffffffffffffffffff",
+			},
+		};
+		writeFileSync(statePath, `${JSON.stringify(tampered)}\n`);
+		const restarted = createAhdeWorkbench({ projectDir: dir, stateRoot, runsRoot, projectId: "workshop-target" });
+		await expect(restarted.submit({ kind: "workshop-open", workshopId }))
+			.rejects.toThrow(/basis changed from improvement to construction/);
+		expect(existsSync(String(original.worktreePath))).toBe(true);
+		expect(existsSync(statePath)).toBe(true);
+
+		// Restore the exact host note and prove the rejected reattach left a usable
+		// workshop rather than an orphan.
+		writeFileSync(statePath, `${JSON.stringify(original)}\n`);
+		const recovered = createAhdeWorkbench({ projectDir: dir, stateRoot, runsRoot, projectId: "workshop-target" });
+		await recovered.submit({ kind: "workshop-open", workshopId });
+		expect(recovered.workshopRead({ path: "AGENTS.md" }).content).toContain("Recover me");
+		recovered.closeWorkshop();
+	}, 180_000);
+
+	it("restores consumed-grant disclosure after a crash but never live authority", async () => {
+		const dir = fixture({ manifest: PERMISSIVE_MANIFEST });
+		const { workbench, stateRoot, runsRoot, gate } = await specApproved(dir);
+		const opened = await workbench.submit({ kind: "workshop-open" });
+		const workshopId = String(opened.artifact?.workshopId);
+		workbench.workshopWrite({ path: "tools/lookup/tool.yaml", content: NETWORK_DESCRIPTOR });
+		workbench.workshopWrite({ path: "tools/lookup/run", content: LOOKUP_RUN });
+		workbench.workshopWrite({ path: "tools/lookup/lib.sh", content: "ANSWER=audited\n" });
+		try {
+			await workbench.workshopTry({ tool: "lookup", input: { term: "refunds" } }, { gate });
+		} catch (error) {
+			if (!sandboxUnavailable(error)) throw error;
+		}
+
+		// Simulate a hard process loss: do not call suspend/close on the old object.
+		const restarted = createAhdeWorkbench({ projectDir: dir, stateRoot, runsRoot, projectId: "workshop-target" });
+		await restarted.submit({ kind: "workshop-open", workshopId });
+		expect(restarted.workshopStatus().grants).toEqual([
+			expect.objectContaining({
+				workshopId,
+				tool: "lookup",
+				used: true,
+				actorId: "local:test-human",
+				consumedAt: expect.any(String),
+			}),
+		]);
+		await expect(restarted.workshopTry({ tool: "lookup", input: { term: "refunds" } }))
+			.rejects.toThrow(/no host here to allow it once/);
+
+		const closed = await restarted.submit({
+			kind: "workshop-close",
+			summary: "Keep the attempted network setup disclosure",
+			validationPlan: ["Run the reviewed basket"],
+		});
+		const proposal = loadBuilderProposalRun(runsRoot, String(closed.artifact?.runId)).result.proposal;
+		expect(proposal?.risks).toEqual(expect.arrayContaining([
+			expect.stringMatching(/operator allowed lookup network access during setup for one exact try/i),
+		]));
+	}, 180_000);
+
+	it("suspends on graceful shutdown and resumes the exact work with fresh runtime scratch", async () => {
+		const dir = fixture();
+		const { workbench, stateRoot, runsRoot } = await specApproved(dir);
+		const opened = await workbench.submit({ kind: "workshop-open" });
+		const workshopId = String(opened.artifact?.workshopId);
+		workbench.workshopWrite({ path: "AGENTS.md", content: "# Workshop Target\n\nResume after shutdown.\n" });
+		const statePath = join(stateRoot, "projects", "workshop-target", "workbench", "workshop.json");
+		const descriptor = JSON.parse(readFileSync(statePath, "utf8")) as { worktreePath: string; scratchRoot: string };
+		mkdirSync(join(descriptor.scratchRoot, "leftover"), { recursive: true });
+		writeFileSync(join(descriptor.scratchRoot, "leftover/runtime.txt"), "temporary\n");
+
+		workbench.suspendWorkshop();
+		expect(workbench.workshopOpen).toBe(false);
+		expect(existsSync(statePath)).toBe(true);
+		expect(existsSync(descriptor.worktreePath)).toBe(true);
+		expect(readdirSync(descriptor.scratchRoot)).toEqual([]);
+		expect(worktreeCount(dir)).toBe(2);
+
+		const restarted = createAhdeWorkbench({ projectDir: dir, stateRoot, runsRoot, projectId: "workshop-target" });
+		await restarted.submit({ kind: "workshop-open", workshopId });
+		expect(restarted.workshopRead({ path: "AGENTS.md" }).content).toContain("Resume after shutdown");
+		restarted.closeWorkshop();
+		expect(existsSync(statePath)).toBe(false);
+		expect(existsSync(descriptor.worktreePath)).toBe(false);
+		expect(worktreeCount(dir)).toBe(1);
 	}, 180_000);
 
 	it("never trusts a persisted cleanup path and removes an abandoned crash-surviving worktree", async () => {

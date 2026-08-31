@@ -254,12 +254,14 @@ export function createAhdeBuilderExtension(options: BuilderExtensionOptions): Ex
 		for (const tool of tools) pi.registerTool(tool);
 		for (const tool of createWorkshopTools(workbench)) pi.registerTool(tool);
 		refreshWorkshopTools();
-		// A conversation that ends with an open workshop leaves no worktree behind.
+		// Conversation shutdown is not abandonment: preserve the exact worktree
+		// and note, while dropping every process-local grant and runtime scratch.
 		pi.on("session_shutdown", () => {
 			try {
-				workbench.closeWorkshop();
+				workbench.suspendWorkshop();
 			} catch {
-				// Disposal is best-effort at shutdown; `git worktree prune` recovers.
+				// Suspension is best-effort; the last descriptor was already persisted
+				// after each mutation and grants are never restored as authority.
 			}
 			return undefined;
 		});

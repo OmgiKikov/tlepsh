@@ -22,6 +22,7 @@ import {
 	WorkbenchSubmitInputSchema,
 	WorkbenchViewQuerySchema,
 } from "../src/workbench/types.js";
+import { AhdeWorkbench } from "../src/workbench/workbench.js";
 import { buildProjectStatus } from "../src/builder/project-context.js";
 import { createCorpus } from "../src/corpus.js";
 
@@ -329,6 +330,9 @@ describe("Builder Pi extension registry", () => {
 				terminate: true,
 			});
 		}
+		const suspend = vi.spyOn(AhdeWorkbench.prototype, "suspendWorkshop");
+		expect(handlers.get("session_shutdown")?.()).toBeUndefined();
+		expect(suspend).toHaveBeenCalledOnce();
 	});
 
 	it("counts every sealed corpus before bounding the public development inventory", () => {

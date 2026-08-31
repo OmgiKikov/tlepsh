@@ -16,6 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
+import { z } from "zod";
 import {
 	CandidateProposalSchema,
 	validateCandidateProposal,
@@ -54,6 +55,7 @@ import {
 	type HarnessAuthoringIntent,
 } from "./harness-authoring.js";
 import { assertResourceOnlyManifestChange } from "./builder-proposal.js";
+import { ProposalBasisSelectionSchema } from "./improvement-brief.js";
 import {
 	assertTargetAuthoringSurfaceWithinLimits,
 	classifyTargetAuthoringResourcePath,
@@ -352,6 +354,7 @@ const MAX_WORKSHOP_ARGUMENT_BYTES = 4096;
 const DEFAULT_WORKSHOP_TIMEOUT_MS = 120_000;
 const MAX_WORKSHOP_TIMEOUT_MS = 600_000;
 const MAX_WORKSHOP_OUTPUT_BYTES = 256 * 1024;
+export const MAX_WORKSHOP_GRANT_AUDIT_EVENTS = 256;
 const WORKSHOP_COMMAND = /^[A-Za-z0-9._-]+$/;
 const WORKSHOP_SCRATCH_PREFIX = "ahde-workshop-";
 
@@ -714,6 +717,25 @@ export interface WorkshopGrant {
 	actorId: string;
 }
 
+/**
+ * Durable disclosure that one exact live grant was consumed. This is audit
+ * history only: replaying it can explain risk, but can never authorize a tool.
+ */
+export const WorkshopGrantAuditEventSchema = z.strictObject({
+	schemaVersion: z.literal(1),
+	eventId: z.string().regex(/^workshop-grant_[0-9a-f]{24}$/),
+	workshopId: z.string().regex(/^workshop_[0-9a-f]{16}$/),
+	tool: z.string().regex(TOOL_NAME),
+	toolDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+	wants: z.array(z.string().min(1).max(200)).min(1).max(8),
+	snapshotHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+	used: z.literal(true),
+	grantedAt: z.iso.datetime({ offset: true }),
+	consumedAt: z.iso.datetime({ offset: true }),
+	actorId: z.string().min(1).max(256),
+});
+export type WorkshopGrantAuditEvent = z.infer<typeof WorkshopGrantAuditEventSchema>;
+
 export interface WorkshopStatus {
 	workshopId: string;
 	target: { id: string; gitSha: string };
@@ -727,7 +749,7 @@ export interface WorkshopStatus {
 	scope: readonly string[];
 	/** Exact content identity of everything in scope, right now. */
 	snapshotHash: string;
-	grants: readonly WorkshopGrant[];
+	grants: readonly (WorkshopGrant | WorkshopGrantAuditEvent)[];
 }
 
 /**
@@ -737,20 +759,28 @@ export interface WorkshopStatus {
  */
 export type BuilderWorkshopBasis = "construction" | "improvement";
 
+export const BuilderWorkshopSourceSchema = ProposalBasisSelectionSchema.omit({ failureModeIds: true });
+export type BuilderWorkshopSource = z.infer<typeof BuilderWorkshopSourceSchema>;
+
+/** Immutable authority captured when a workshop opens. */
+export type BuilderWorkshopBinding =
+	| { basis: "construction"; approvedSpecId: string; source: null }
+	| { basis: "improvement"; approvedSpecId: string; source: BuilderWorkshopSource };
+
 export interface OpenBuilderWorkshopOptions {
 	repositoryDir: string;
 	/** Host-derived Target identity; a workshop never trusts a model for it. */
 	expectedTarget: { id: string; gitSha: string };
 	/** The exact claim minted from the same clean revision this copies. */
 	authoringContext: TargetAuthoringContextClaim;
-	/** Spec-backed construction, or diagnosis-backed improvement. */
-	basis: BuilderWorkshopBasis;
-	/** The exact approved Spec this workshop is bound to. */
-	approvedSpecId: string;
+	/** Exact Spec/evidence authority; selection state may never rewrite it. */
+	binding: BuilderWorkshopBinding;
 	/** Reopening a closed proposal: its exact whole-file diffs seed the worktree. */
 	seed?: { proposalRunId: string; patch: string } | undefined;
 	workshopId?: string;
 	now?: () => string;
+	grantHistory?: readonly WorkshopGrantAuditEvent[];
+	onGrantConsumed?: (event: WorkshopGrantAuditEvent) => void;
 }
 
 /**
@@ -765,6 +795,7 @@ export interface BuilderWorkshopDescriptor {
 	baseTargetSha: string;
 	basis: BuilderWorkshopBasis;
 	approvedSpecId: string;
+	source: BuilderWorkshopSource | null;
 	fromProposalRunId: string | null;
 	worktreePath: string;
 	scratchRoot: string;
@@ -777,6 +808,38 @@ export interface CompiledWorkshopProposal {
 	changes: WorkshopChange[];
 	/** The exact revision the diff is against; identical to `proposal.baseTargetSha`. */
 	baseTargetSha: string;
+}
+
+function assertWorkshopBinding(input: BuilderWorkshopBinding): BuilderWorkshopBinding {
+	if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(input.approvedSpecId)) {
+		throw new ToolWorkshopError("a workshop requires one exact approved Spec id");
+	}
+	if (input.basis === "construction") {
+		if (input.source !== null) {
+			throw new ToolWorkshopError("a construction workshop cannot carry improvement evidence");
+		}
+		return { basis: input.basis, approvedSpecId: input.approvedSpecId, source: null };
+	}
+	if (input.basis === "improvement") {
+		if (input.source === null) {
+			throw new ToolWorkshopError("an improvement workshop requires one exact evidence source");
+		}
+		return {
+			basis: input.basis,
+			approvedSpecId: input.approvedSpecId,
+			source: BuilderWorkshopSourceSchema.parse(input.source),
+		};
+	}
+	throw new ToolWorkshopError("invalid workshop basis");
+}
+
+function sameWorkshopBinding(left: BuilderWorkshopBinding, right: BuilderWorkshopBinding): boolean {
+	if (left.basis !== right.basis || left.approvedSpecId !== right.approvedSpecId) return false;
+	if (left.source === null || right.source === null) return left.source === right.source;
+	return left.source.algorithmId === right.source.algorithmId &&
+		left.source.evalRunId === right.source.evalRunId &&
+		left.source.diagnosisId === right.source.diagnosisId &&
+		left.source.briefId === right.source.briefId;
 }
 
 /**
@@ -795,6 +858,7 @@ export class BuilderWorkshop {
 	readonly claim: TargetAuthoringContextClaim;
 	readonly basis: BuilderWorkshopBasis;
 	readonly approvedSpecId: string;
+	readonly source: BuilderWorkshopSource | null;
 	readonly fromProposalRunId: string | null;
 	private readonly worktree: DetachedWorktreeHandle;
 	private readonly scratchRoot: string;
@@ -802,6 +866,8 @@ export class BuilderWorkshop {
 	private readonly baseManifest: TargetManifestValue;
 	private readonly written = new Set<string>();
 	private readonly grants: WorkshopGrant[] = [];
+	private readonly grantHistory: WorkshopGrantAuditEvent[];
+	private readonly onGrantConsumed: ((event: WorkshopGrantAuditEvent) => void) | undefined;
 	private writes = 0;
 	private commands = 0;
 	private tries = 0;
@@ -814,12 +880,13 @@ export class BuilderWorkshop {
 		scratchRoot: string;
 		targetId: string;
 		claim: TargetAuthoringContextClaim;
-		basis: BuilderWorkshopBasis;
-		approvedSpecId: string;
+		binding: BuilderWorkshopBinding;
 		fromProposalRunId?: string | null;
 		openedAt: string;
 		baseManifestText: string;
 		baseManifest: TargetManifestValue;
+		grantHistory?: readonly WorkshopGrantAuditEvent[];
+		onGrantConsumed?: (event: WorkshopGrantAuditEvent) => void;
 	}) {
 		this.workshopId = options.workshopId;
 		this.repositoryDir = options.repositoryDir;
@@ -830,11 +897,26 @@ export class BuilderWorkshop {
 		this.path = realpathSync(options.worktree.path);
 		this.openedAt = options.openedAt;
 		this.claim = options.claim;
-		this.basis = options.basis;
-		this.approvedSpecId = options.approvedSpecId;
+		const binding = assertWorkshopBinding(options.binding);
+		this.basis = binding.basis;
+		this.approvedSpecId = binding.approvedSpecId;
+		this.source = binding.source;
 		this.fromProposalRunId = options.fromProposalRunId ?? null;
 		this.baseManifestText = options.baseManifestText;
 		this.baseManifest = options.baseManifest;
+		this.grantHistory = (options.grantHistory ?? []).map((event) => WorkshopGrantAuditEventSchema.parse(event));
+		if (this.grantHistory.some((event) => event.workshopId !== this.workshopId)) {
+			throw new ToolWorkshopError("workshop grant history belongs to a different workshop");
+		}
+		if (new Set(this.grantHistory.map((event) => event.eventId)).size !== this.grantHistory.length) {
+			throw new ToolWorkshopError("workshop grant history contains duplicate events");
+		}
+		if (this.grantHistory.length > MAX_WORKSHOP_GRANT_AUDIT_EVENTS) {
+			throw new ToolWorkshopError(
+				`workshop grant history exceeds ${MAX_WORKSHOP_GRANT_AUDIT_EVENTS} events`,
+			);
+		}
+		this.onGrantConsumed = options.onGrantConsumed;
 	}
 
 	get open(): boolean {
@@ -1322,17 +1404,45 @@ export class BuilderWorkshop {
 		);
 	}
 
-	private consumeToolAccess(requirement: WorkshopToolGrantRequirement, snapshotHash: string): boolean {
+	private consumeToolAccess(
+		requirement: WorkshopToolGrantRequirement,
+		snapshotHash: string,
+		now: () => string,
+	): boolean {
 		const expected = canonicalList([...requirement.wants].sort((left, right) => left.localeCompare(right)));
-		const grant = this.grants.find((candidate) =>
+		const index = this.grants.findIndex((candidate) =>
 			candidate.tool === requirement.tool &&
 			candidate.toolDigest === requirement.toolDigest &&
 			candidate.snapshotHash === snapshotHash &&
 			!candidate.used &&
 			canonicalList([...candidate.wants].sort((left, right) => left.localeCompare(right))) === expected
 		);
+		if (index < 0) return false;
+		const [grant] = this.grants.splice(index, 1);
 		if (!grant) return false;
 		grant.used = true;
+		if (this.grantHistory.length >= MAX_WORKSHOP_GRANT_AUDIT_EVENTS) {
+			throw new ToolWorkshopError(
+				`workshop ${this.workshopId} reached its ${MAX_WORKSHOP_GRANT_AUDIT_EVENTS}-event grant audit limit`,
+			);
+		}
+		const event = WorkshopGrantAuditEventSchema.parse({
+			schemaVersion: 1,
+			eventId: `workshop-grant_${randomBytes(12).toString("hex")}`,
+			workshopId: this.workshopId,
+			tool: grant.tool,
+			toolDigest: grant.toolDigest,
+			wants: [...grant.wants],
+			snapshotHash: grant.snapshotHash,
+			used: true,
+			grantedAt: grant.grantedAt,
+			consumedAt: now(),
+			actorId: grant.actorId,
+		});
+		// Persist before execution. A storage failure consumes the live grant and
+		// aborts the try, so neither a crash nor retry can turn audit into authority.
+		this.onGrantConsumed?.(event);
+		this.grantHistory.push(event);
 		return true;
 	}
 
@@ -1343,7 +1453,7 @@ export class BuilderWorkshop {
 	 * operator has allowed it once, and the try reports the exact snapshot it
 	 * ran against.
 	 */
-	async tryTool(options: { tool: string; input: unknown; signal?: AbortSignal }): Promise<TryToolResult> {
+	async tryTool(options: { tool: string; input: unknown; signal?: AbortSignal; now?: () => string }): Promise<TryToolResult> {
 		this.assertOpen();
 		if (!TOOL_NAME.test(options.tool)) {
 			throw new ToolWorkshopError(`invalid tool name: ${JSON.stringify(options.tool)}`);
@@ -1354,7 +1464,11 @@ export class BuilderWorkshop {
 		// exact bytes that produced it rather than whatever is on disk afterwards.
 		const before = this.walkAuthoringScope();
 		const snapshotHash = workshopSnapshotHash(before.entries);
-		if (requirement && !this.consumeToolAccess(requirement, snapshotHash)) {
+		if (requirement && !this.consumeToolAccess(
+			requirement,
+			snapshotHash,
+			options.now ?? (() => new Date().toISOString()),
+		)) {
 			throw new BuilderWorkshopGrantRequiredError(requirement.tool, requirement.wants);
 		}
 		const changedPaths = this.changesFrom(before.entries).map((change) => change.path);
@@ -1583,6 +1697,10 @@ export class BuilderWorkshop {
 	}
 
 	status(): WorkshopStatus {
+		const grants = [
+			...this.grantHistory.map((event) => ({ ...event, wants: [...event.wants] })),
+			...this.grants.map((grant) => ({ ...grant, wants: [...grant.wants] })),
+		];
 		return {
 			workshopId: this.workshopId,
 			target: { id: this.targetId, gitSha: this.baseTargetSha },
@@ -1594,7 +1712,7 @@ export class BuilderWorkshop {
 			changes: this.disposed ? [] : this.changes(),
 			scope: BUILDER_WORKSHOP_SCOPE,
 			snapshotHash: this.disposed ? "" : this.snapshotHash(),
-			grants: this.grants.map((grant) => ({ ...grant, wants: [...grant.wants] })),
+			grants,
 		};
 	}
 
@@ -1608,6 +1726,7 @@ export class BuilderWorkshop {
 			baseTargetSha: this.baseTargetSha,
 			basis: this.basis,
 			approvedSpecId: this.approvedSpecId,
+			source: this.source === null ? null : { ...this.source },
 			fromProposalRunId: this.fromProposalRunId,
 			worktreePath: this.path,
 			scratchRoot: this.scratchRoot,
@@ -1689,6 +1808,7 @@ export class BuilderWorkshop {
 			};
 		});
 
+		const grants = this.status().grants;
 		const proposal = CandidateProposalSchema.parse({
 			schemaVersion: 1,
 			decision: "propose",
@@ -1700,8 +1820,8 @@ export class BuilderWorkshop {
 			// with the artifact into every screen that renders the proposal.
 			risks: [
 				...(metadata.risks ?? []),
-				...this.grants.map(grantRisk),
-				...(this.grants.length > 0 && !this.grants.some((grant) =>
+				...grants.map(grantRisk),
+				...(grants.length > 0 && !grants.some((grant) =>
 					grant.used && grant.snapshotHash === workshopSnapshotHash(snapshot.entries))
 					? ["The exact proposal snapshot was not tried after its latest authored change with a reviewed capability exception."]
 					: []),
@@ -1816,7 +1936,20 @@ export class BuilderWorkshop {
 		});
 	}
 
-	/** The workshop dies here: no worktree, no scratch, no trace in the checkout. */
+	/**
+	 * End one Builder process without abandoning its work. The exact descriptor
+	 * and detached worktree survive; live grants and runtime scratch do not.
+	 */
+	suspend(): void {
+		this.assertOpen();
+		this.grants.splice(0, this.grants.length);
+		for (const entry of readdirSync(this.scratchRoot)) {
+			rmSync(join(this.scratchRoot, entry), { recursive: true, force: true });
+		}
+		this.disposed = true;
+	}
+
+	/** Explicit abandonment: no worktree, no scratch, no trace in the checkout. */
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
@@ -1843,7 +1976,7 @@ function canonicalList(value: readonly string[]): string {
 }
 
 /** The sentence a granted exception adds to the diff the operator applies. */
-function grantRisk(grant: WorkshopGrant): string {
+function grantRisk(grant: WorkshopGrant | WorkshopGrantAuditEvent): string {
 	return `The operator allowed ${grant.tool} ${grant.wants.join(" and ")} for one exact try ` +
 		`of ${grant.toolDigest} at ${grant.snapshotHash} (${grant.actorId}, ${grant.grantedAt}); ` +
 		`the exception was ${grant.used ? "consumed" : "not consumed"}.`;
@@ -1865,6 +1998,7 @@ function inWorkshopScope(path: string): boolean {
  */
 export function openBuilderWorkshop(options: OpenBuilderWorkshopOptions): BuilderWorkshop {
 	const repositoryDir = realpathSync(resolve(options.repositoryDir));
+	const binding = assertWorkshopBinding(options.binding);
 	if (!/^[0-9a-f]{40}$/.test(options.expectedTarget.gitSha)) {
 		throw new ToolWorkshopError("a workshop opens only on an exact 40-character Git commit");
 	}
@@ -1896,12 +2030,13 @@ export function openBuilderWorkshop(options: OpenBuilderWorkshopOptions): Builde
 			scratchRoot,
 			targetId: manifest.id,
 			claim: options.authoringContext,
-			basis: options.basis,
-			approvedSpecId: options.approvedSpecId,
+			binding,
 			fromProposalRunId: options.seed?.proposalRunId ?? null,
 			openedAt: (options.now ?? (() => new Date().toISOString()))(),
 			baseManifestText: manifestText,
 			baseManifest: manifest,
+			grantHistory: options.grantHistory,
+			onGrantConsumed: options.onGrantConsumed,
 		});
 	} catch (error) {
 		if (scratchRoot) rmSync(scratchRoot, { recursive: true, force: true });
@@ -1922,20 +2057,29 @@ export function reattachBuilderWorkshop(options: {
 	expectedTarget: { id: string; gitSha: string };
 	authoringContext: TargetAuthoringContextClaim;
 	descriptor: BuilderWorkshopDescriptor;
+	expectedBinding: BuilderWorkshopBinding;
+	grantHistory?: readonly WorkshopGrantAuditEvent[];
+	onGrantConsumed?: (event: WorkshopGrantAuditEvent) => void;
 }): BuilderWorkshop {
 	const repositoryDir = realpathSync(resolve(options.repositoryDir));
 	const descriptor = options.descriptor;
+	const descriptorBinding = assertWorkshopBinding({
+		basis: descriptor.basis,
+		approvedSpecId: descriptor.approvedSpecId,
+		source: descriptor.source,
+	} as BuilderWorkshopBinding);
+	const expectedBinding = assertWorkshopBinding(options.expectedBinding);
+	if (!sameWorkshopBinding(descriptorBinding, expectedBinding)) {
+		throw new ToolWorkshopError(
+			"the recorded workshop Spec or evidence basis is stale; explicitly abandon it or restore its exact lineage",
+		);
+	}
 	if (!existsSync(descriptor.worktreePath)) {
-		if (existsSync(descriptor.scratchRoot)) {
-			const abandonedScratch = workshopScratchRoot(descriptor.scratchRoot);
-			rmSync(abandonedScratch, { recursive: true, force: true });
-		}
 		throw new ToolWorkshopError("the recorded workshop worktree is gone; open a new one");
 	}
 	const worktree = reattachDetachedWorktree(repositoryDir, descriptor.worktreePath, descriptor.baseTargetSha);
-	let scratchRoot: string | undefined;
 	try {
-		scratchRoot = workshopScratchRoot(descriptor.scratchRoot);
+		const scratchRoot = workshopScratchRoot(descriptor.scratchRoot);
 		if (descriptor.baseTargetSha !== options.expectedTarget.gitSha || descriptor.targetId !== options.expectedTarget.id) {
 			throw new ToolWorkshopError("the recorded workshop belongs to a different Target revision; discard it and open a new one");
 		}
@@ -1964,12 +2108,13 @@ export function reattachBuilderWorkshop(options: {
 			scratchRoot,
 			targetId: manifest.id,
 			claim: options.authoringContext,
-			basis: descriptor.basis,
-			approvedSpecId: descriptor.approvedSpecId,
+			binding: expectedBinding,
 			fromProposalRunId: descriptor.fromProposalRunId,
 			openedAt: descriptor.openedAt,
 			baseManifestText,
 			baseManifest: TargetManifest.parse(parseYaml(baseManifestText)),
+			grantHistory: options.grantHistory,
+			onGrantConsumed: options.onGrantConsumed,
 		});
 		const current = workshop.snapshotHash();
 		if (current !== descriptor.snapshotHash) {
@@ -1979,8 +2124,8 @@ export function reattachBuilderWorkshop(options: {
 		}
 		return workshop;
 	} catch (error) {
-		worktree.close();
-		if (scratchRoot) rmSync(scratchRoot, { recursive: true, force: true });
+		// Re-attachment grants no cleanup authority. The exact worktree/note stay
+		// available for an explicit close, discard, or abandon after the refusal.
 		throw error;
 	}
 }
