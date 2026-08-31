@@ -10,8 +10,10 @@
  *
  * The sealed boundary is the same one every other surface keeps: the holdout
  * contributes a verdict and a design size, and nothing else. Its corpus id, its
- * name, its tasks and its answers are never read here and can never appear in
- * the rendered passport or in the JSON projection behind it.
+ * name, its tasks and its answers never enter the projection, so they cannot
+ * appear in the rendered page or in the JSON behind it — the renderer is not
+ * what is keeping them out. The corpus store is opened for the development
+ * corpus's name and case count, and for nothing sealed.
  */
 
 import { existsSync, readdirSync } from "node:fs";
@@ -673,7 +675,7 @@ export function renderVersionPassportMarkdown(passport: VersionPassport): string
 		? passport.versionTag
 		: "not promoted — verified only";
 	const lines: string[] = [
-		`# Version passport — ${passport.agentId} ${version}`,
+		`# Version passport — ${passport.agentId} ${passport.versionTag ?? "(verified only)"}`,
 		"",
 		`- agent: ${passport.agentId}`,
 		`- version: ${version}`,

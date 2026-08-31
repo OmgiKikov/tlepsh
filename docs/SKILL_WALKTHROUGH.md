@@ -908,13 +908,15 @@ the human labels, because agreement over labels that are 90% pass is worth
 exactly what a coin that always says pass is worth.
 
 The sealed exam contributes its verdict and `18 tasks × 2 repetitions` and
-nothing else. Its corpus id, its name and its cases are not read while the page
-is built and are absent from `--json` as well, which is the projection the page
-is rendered from.
+nothing else. Its corpus id, its name and its cases never enter the projection
+the page is rendered from, so they are absent from `--json` too — not merely
+hidden by the renderer. The corpus store is read for the development corpus's
+name and case count and for nothing sealed.
 
 `--candidate <id>` issues a passport for a candidate that was verified but never
-promoted; the header then reads `not promoted — verified only` in place of the
-tag. A missing subject or a missing artifact exits 2 with a `next:` line:
+promoted; its `version:` line then reads `not promoted — verified only` in place
+of a tag, and the date is the instant it was measured rather than shipped. A
+missing subject or a missing artifact exits 2 with a `next:` line:
 
 ```
 $ ahde passport --target . --tag v9.9.9

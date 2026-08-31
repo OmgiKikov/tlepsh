@@ -114,7 +114,7 @@ function comparison(options: {
  * engine uses, so every cross-field invariant the record schema enforces is
  * exercised by the fixture rather than worked around.
  */
-function promotedRecord(options: { diagnosisBound: boolean }): CandidateRecord {
+function promotedRecord(options: { diagnosisBound: boolean; promote?: boolean }): CandidateRecord {
 	const source = options.diagnosisBound
 		? {
 			evalRunId: "erun-source",
@@ -127,8 +127,11 @@ function promotedRecord(options: { diagnosisBound: boolean }): CandidateRecord {
 			developmentCorpus: fixture.developmentCorpus,
 		}
 		: null;
+	const candidateId = options.promote === false
+		? "candidate-verified-only"
+		: options.diagnosisBound ? "candidate-fixture" : "candidate-construction";
 	const proposed = createCandidate({
-		candidateId: options.diagnosisBound ? "candidate-fixture" : "candidate-construction",
+		candidateId,
 		projectId: PROJECT_ID,
 		targetId: PROJECT_ID,
 		specId: fixture.specId,
@@ -231,6 +234,7 @@ function promotedRecord(options: { diagnosisBound: boolean }): CandidateRecord {
 			reason: "Development improved; sealed guardrail passed.",
 		},
 	});
+	if (options.promote === false) return reviewed;
 	return transitionCandidate(reviewed, {
 		type: "promoted",
 		eventId: "fixture-promoted",
@@ -543,6 +547,21 @@ describe("version passport", () => {
 		} finally {
 			cleanup(empty);
 		}
+	});
+
+	it("says `not promoted — verified only` where the version tag would be", () => {
+		persist(promotedRecord({ diagnosisBound: true, promote: false }), fixture.runsRoot);
+		const verified = passport({ candidateId: "candidate-verified-only" });
+		const page = renderVersionPassportMarkdown(verified);
+
+		expect(verified.promoted).toBe(false);
+		expect(verified.versionTag).toBeNull();
+		// Not promoted, so the date is the instant it was measured.
+		expect(verified.at).toBe("2026-08-30T10:03:00.000Z");
+		expect(page).toContain("# Version passport — test-target (verified only)");
+		expect(page).toContain("- version: not promoted — verified only");
+		// It still is not the newest promotion; the default subject is unchanged.
+		expect(passport().candidateId).toBe("candidate-fixture");
 	});
 
 	it("refuses a candidate whose record cannot be read, and a tag nothing carries", () => {
