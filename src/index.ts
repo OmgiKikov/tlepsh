@@ -48,6 +48,7 @@ export * from "./runner.js";
 export * from "./serve/index.js";
 export * from "./storage/artifacts.js";
 export * from "./spec.js";
+export * from "./target/container-backend.js";
 export * from "./target/runtime.js";
 export {
 	TARGET_FEEDBACK_SHORTCUTS,

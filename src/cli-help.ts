@@ -157,7 +157,18 @@ Validate Target structure, Git/runtime identity, dataset, tools, placeholders,
 and credential presence without contacting the model provider. Reports the two
 evaluator models beside the Target's own — \`judge: configured ·
 <provider>/<id> · key TEST_JUDGE_KEY set\` — because a configured judge with no
-key fails at the first graded case and nowhere earlier.`,
+key fails at the first graded case and nowhere earlier.
+
+The sandbox line reports what would actually confine a run on THIS host:
+
+  sandbox: best-effort (host OS sandbox)
+  sandbox: container (docker 27.1, image pinned)
+  sandbox: container requested, container backend unavailable (…); falling back …
+  sandbox: FAIL CLOSED — <the exact reason the declared containment is refused>
+
+A container backend changes the execution fingerprint and therefore starts a
+new comparability class: baselines recorded on the host are not reusable
+against container evidence, by design.`,
 	list: `Usage: ahde list [--target <id>]
 
 List valid local eval-run indexes. Invalid artifacts are skipped with a warning.`,

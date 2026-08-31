@@ -1,0 +1,662 @@
+/**
+ * Container containment for the Target's built-in `bash`, its declared tools,
+ * and their `setup` step.
+ *
+ * `sandbox-exec` and `bwrap` are process-level sandboxes on the operator's own
+ * host: the process still sees the host's kernel, its `/usr`, its network
+ * stack, and whatever the profile forgot to deny. For a bank platform that is
+ * not enough. This backend runs the same declared argv inside a container with
+ * only the workspace, the scratch directory and (when multi-file tools exist)
+ * the prepared tool home mounted, an environment built from nothing, and the
+ * declared network policy enforced by the container runtime rather than by a
+ * profile string.
+ *
+ * Docker is implemented. Gondolin (Earendil's Apache-2.0 micro-VM) gets the
+ * same `ContainerBackend` interface and a stub that fails closed — nothing is
+ * vendored here, so a build that claims Gondolin must first ship it.
+ *
+ * Two rules hold for every invocation this module builds:
+ *
+ *  1. Every path the model can see is a container path. A host path never
+ *     enters the container's argv, its cwd, or its environment.
+ *  2. The container environment starts empty. `PATH`, `HOME`, `TMPDIR`,
+ *     `LANG` and `TERM` are set to container-owned values, and only the
+ *     Target's declared allowlist names are copied in, one `-e NAME=value` at
+ *     a time. The host's environment is never inherited.
+ */
+
+import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { accessSync, constants } from "node:fs";
+import { delimiter, isAbsolute, join } from "node:path";
+
+export type ContainerRuntimeName = "docker" | "gondolin";
+
+/**
+ * The resolved `execution.container` block. Structurally identical to the
+ * manifest schema, restated here so the backend does not depend on the
+ * manifest module (and so tests can build one by hand).
+ */
+export interface ContainerPolicy {
+	runtime: ContainerRuntimeName;
+	image: string;
+	memoryMb?: number;
+	cpus?: number;
+	pidsLimit?: number;
+	readOnlyRootfs: boolean;
+}
+
+/** Container-side mount points. The model never learns any other spelling. */
+export const CONTAINER_WORKSPACE = "/workspace";
+export const CONTAINER_SCRATCH = "/scratch";
+export const CONTAINER_TOOL_HOME = "/tools";
+export const CONTAINER_TMP = "/tmp";
+
+/**
+ * The container's PATH. Deliberately not the host's: `/opt/homebrew/bin` and
+ * friends are host paths, and leaking one into the container's environment
+ * would break rule 1 for no benefit — nothing there exists inside the image.
+ */
+export const CONTAINER_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+/** Absolute prefixes that already name something inside the image. */
+const CONTAINER_ROOTS = [
+	CONTAINER_WORKSPACE,
+	CONTAINER_SCRATCH,
+	CONTAINER_TOOL_HOME,
+	CONTAINER_TMP,
+	"/bin",
+	"/sbin",
+	"/lib",
+	"/lib64",
+	"/usr",
+	"/etc",
+	"/opt",
+	"/srv",
+	"/var",
+	"/run",
+	"/home",
+	"/root",
+];
+
+/** `name[:tag]@sha256:<64 hex>` — the only reproducible way to name an image. */
+const PINNED_IMAGE = /@sha256:[0-9a-f]{64}$/;
+
+/**
+ * A conservative image reference: no whitespace, no shell metacharacters, no
+ * leading dash (which `docker run` would read as a flag).
+ */
+export const CONTAINER_IMAGE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/;
+
+/** True when the image is pinned to a content digest and therefore reproducible. */
+export function isPinnedContainerImage(image: string): boolean {
+	return PINNED_IMAGE.test(image);
+}
+
+/** `sha256:<64 hex>` for a pinned reference, otherwise null. */
+export function containerImageDigest(image: string): string | null {
+	const match = PINNED_IMAGE.exec(image);
+	return match ? match[0].slice(1) : null;
+}
+
+/**
+ * The provenance `sandbox` value for a run confined by this backend.
+ *
+ * A pinned image collapses to its digest: two operators who pin the same
+ * digest produce comparable evidence no matter what they called the tag.
+ * Mutable references are refused rather than assigned a false stable identity.
+ */
+export function containerSandboxFingerprint(policy: ContainerPolicy): string {
+	const digest = containerImageDigest(policy.image);
+	if (!digest) {
+		throw new Error(
+			`execution.container.image must be pinned to a digest (name@sha256:…); mutable tags cannot identify comparable evidence; got ${policy.image}`,
+		);
+	}
+	return `container:${policy.runtime}@${digest}`;
+}
+
+/** True for any fingerprint produced by a container backend. */
+export function isContainerSandboxFingerprint(value: string): boolean {
+	return value.startsWith("container:");
+}
+
+// ---------- runtime detection ----------
+
+export interface ContainerRuntimeStatus {
+	runtime: ContainerRuntimeName;
+	available: boolean;
+	/** Server version reported by the runtime, when it answered. */
+	version?: string;
+	/** Exact reason the runtime is unusable. Present iff `available` is false. */
+	reason?: string;
+}
+
+export interface DetectContainerRuntimeOptions {
+	/** Environment the runtime binary is looked up in. Defaults to `process.env`. */
+	environment?: NodeJS.ProcessEnv;
+	/** Bound on the version probe. Detection must never hang a run. */
+	timeoutMs?: number;
+	/** Bypass the per-process memo. Tests only. */
+	force?: boolean;
+}
+
+const DETECTION_TIMEOUT_MS = 5_000;
+const detectionCache = new Map<string, ContainerRuntimeStatus>();
+
+/** Tests point PATH at a fake runtime; the memo must not outlive that fixture. */
+export function resetContainerRuntimeDetection(): void {
+	detectionCache.clear();
+}
+
+function executableOnPath(name: string, pathValue: string): string | undefined {
+	const candidates = isAbsolute(name)
+		? [name]
+		: pathValue.split(delimiter).filter(Boolean).map((entry) => join(entry, name));
+	for (const candidate of candidates) {
+		try {
+			accessSync(candidate, constants.X_OK);
+			return candidate;
+		} catch {}
+	}
+	return undefined;
+}
+
+function firstLine(value: string | null | undefined): string {
+	return (value ?? "").split("\n").map((line) => line.trim()).find((line) => line.length > 0) ?? "";
+}
+
+function probeDocker(binary: string, timeoutMs: number): ContainerRuntimeStatus {
+	// `docker version --format {{.Server.Version}}` is the cheapest call that
+	// proves the *daemon* answers: `docker --version` only proves a client
+	// binary exists, which is exactly the failure a bank profile must not
+	// mistake for containment.
+	const probe = spawnSync(binary, ["version", "--format", "{{.Server.Version}}"], {
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "pipe"],
+		timeout: timeoutMs,
+		windowsHide: true,
+	});
+	if (probe.error) {
+		const code = (probe.error as NodeJS.ErrnoException).code;
+		return {
+			runtime: "docker",
+			available: false,
+			reason: code === "ETIMEDOUT"
+				? `docker version probe timed out after ${timeoutMs}ms`
+				: probe.error.message,
+		};
+	}
+	const version = firstLine(probe.stdout);
+	if (probe.status !== 0 || !version) {
+		const detail = firstLine(probe.stderr) || firstLine(probe.stdout) || `exit ${probe.status}`;
+		return { runtime: "docker", available: false, reason: `docker daemon is not reachable: ${detail}` };
+	}
+	return { runtime: "docker", available: true, version };
+}
+
+/**
+ * Probe a container runtime once per process. A run that spawns hundreds of
+ * subprocesses must not spawn hundreds of `docker version` calls, and the
+ * answer cannot change under a running eval without invalidating the evidence
+ * anyway.
+ */
+export function detectContainerRuntime(
+	runtime: ContainerRuntimeName,
+	options: DetectContainerRuntimeOptions = {},
+): ContainerRuntimeStatus {
+	const environment = options.environment ?? process.env;
+	const pathValue = environment.PATH ?? "";
+	const key = `${runtime}\0${pathValue}`;
+	if (!options.force) {
+		const cached = detectionCache.get(key);
+		if (cached) return cached;
+	}
+	const status = runtime === "gondolin"
+		? gondolinBackend.unavailable()
+		: (() => {
+			const binary = executableOnPath("docker", pathValue);
+			if (!binary) {
+				return { runtime: "docker" as const, available: false, reason: "docker executable not found on PATH" };
+			}
+			return probeDocker(binary, options.timeoutMs ?? DETECTION_TIMEOUT_MS);
+		})();
+	detectionCache.set(key, status);
+	return status;
+}
+
+// ---------- invocation ----------
+
+export interface ContainerMountPlan {
+	/** Host workspace, mounted at `/workspace`. */
+	workspaceDir: string;
+	/** `ro` for read-only declared tools; `rw` for the built-in shell and workspace-write tools. */
+	workspaceMode?: "ro" | "rw";
+	/** Host scratch, mounted read-write at `/scratch`. */
+	scratchDir: string;
+	/** Prepared multi-file tool home, mounted at `/tools`. Omitted when no directory tool exists. */
+	toolHomeRoot?: string;
+	/**
+	 * `ro` for every ordinary tool call; `rw` only while a declared `setup`
+	 * step populates the home it is about to be locked out of.
+	 */
+	toolHomeMode?: "ro" | "rw";
+}
+
+export interface ContainerInvocationRequest {
+	policy: ContainerPolicy;
+	mounts: ContainerMountPlan;
+	network: "deny" | "allow";
+	/**
+	 * The scrubbed host-side environment. Path values under a mount are
+	 * rewritten to container paths; everything else is copied verbatim.
+	 */
+	environment: NodeJS.ProcessEnv;
+	/** Host path under a mount, or an absolute container path. */
+	cwd: string;
+	/** argv[0] is a host path under a mount, an absolute container path, or a bare command. */
+	argv: readonly string[];
+	/** `uid[:gid]`. Defaults to the calling uid, or `65534:65534` when that is root. */
+	user?: string;
+	/** Host environment the runtime CLI itself is spawned with. Defaults to `process.env`. */
+	hostEnvironment?: NodeJS.ProcessEnv;
+	/** Stable injection seam for tests. Production calls receive a fresh unguessable name. */
+	containerName?: string;
+}
+
+export interface ContainerInvocation {
+	executable: string;
+	args: string[];
+	/**
+	 * Environment for the *runtime CLI process on the host* — never the
+	 * container's. `docker` needs its own PATH and its context/socket
+	 * variables; the container's environment travels in `-e` flags inside
+	 * `args`.
+	 */
+	spawnEnvironment: NodeJS.ProcessEnv;
+	/** Force-remove the named container after timeout, abort, or output overflow. */
+	terminate?: () => void;
+}
+
+export interface ContainerBackend {
+	readonly runtime: ContainerRuntimeName;
+	/** Why this runtime cannot be used, as a status object. */
+	unavailable(): ContainerRuntimeStatus;
+	/** Build the exact argv for one confined invocation. */
+	invocation(request: ContainerInvocationRequest): ContainerInvocation;
+}
+
+/** Host variables the runtime CLI needs to find its own daemon. Never forwarded into the container. */
+const RUNTIME_CLI_ENVIRONMENT = [
+	"DOCKER_HOST",
+	"DOCKER_CONTEXT",
+	"DOCKER_CONFIG",
+	"DOCKER_CERT_PATH",
+	"DOCKER_TLS_VERIFY",
+	"XDG_RUNTIME_DIR",
+	"XDG_CONFIG_HOME",
+];
+
+/** Names the container backend owns; a declared allowlist can never redefine them. */
+const CONTAINER_FIXED_ENVIRONMENT = new Set(["PATH", "HOME", "TMPDIR", "LANG", "TERM"]);
+
+function mountTable(mounts: ContainerMountPlan): { host: string; container: string }[] {
+	const table = [
+		{ host: mounts.workspaceDir, container: CONTAINER_WORKSPACE },
+		{ host: mounts.scratchDir, container: CONTAINER_SCRATCH },
+	];
+	if (mounts.toolHomeRoot) table.push({ host: mounts.toolHomeRoot, container: CONTAINER_TOOL_HOME });
+	// Longest host prefix first: a tool home nested inside scratch must resolve
+	// to /tools, not to /scratch/<…>.
+	return table.sort((a, b) => b.host.length - a.host.length);
+}
+
+function underPrefix(path: string, prefix: string): boolean {
+	return path === prefix || path.startsWith(prefix.endsWith("/") ? prefix : `${prefix}/`);
+}
+
+/** Translate one host path to its container spelling, or null when it is not mounted. */
+function translate(path: string, table: readonly { host: string; container: string }[]): string | null {
+	for (const entry of table) {
+		if (underPrefix(path, entry.host)) {
+			const rest = path.slice(entry.host.length);
+			return rest ? `${entry.container}${rest}` : entry.container;
+		}
+	}
+	return null;
+}
+
+/**
+ * A path the container will see. Host paths under a mount are rewritten;
+ * absolute paths that already name something in the image pass through; an
+ * absolute host path that is not mounted is refused rather than leaked.
+ */
+function containerPath(
+	path: string,
+	table: readonly { host: string; container: string }[],
+	label: string,
+): string {
+	const mapped = translate(path, table);
+	if (mapped) return mapped;
+	if (!isAbsolute(path)) return path;
+	if (CONTAINER_ROOTS.some((root) => underPrefix(path, root))) return path;
+	throw new Error(`container backend refuses a host ${label} outside the mounted roots: ${path}`);
+}
+
+/** Environment values are translated only when they are mounted host paths. */
+function containerValue(value: string, table: readonly { host: string; container: string }[]): string {
+	return translate(value, table) ?? value;
+}
+
+function defaultUser(): string {
+	const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+	const gid = typeof process.getgid === "function" ? process.getgid() : 0;
+	// Never root inside the container. When the harness itself runs as root the
+	// only safe choice is `nobody`; the bind mounts must then already be
+	// world-writable, which is the operator's call, not a silent escalation.
+	if (uid === 0) return "65534:65534";
+	return `${uid}:${gid}`;
+}
+
+function containerEnvironment(
+	request: ContainerInvocationRequest,
+	table: readonly { host: string; container: string }[],
+): [string, string][] {
+	// HOME and TMPDIR are host paths under scratch today. Only their translated
+	// spelling may enter the container; an untranslatable one is replaced, never
+	// passed through, because a host path in HOME is exactly the leak rule 1
+	// forbids.
+	const home = (request.environment.HOME && translate(request.environment.HOME, table))
+		?? `${CONTAINER_SCRATCH}/home`;
+	const temporary = (request.environment.TMPDIR && translate(request.environment.TMPDIR, table))
+		?? CONTAINER_TMP;
+	const fixed: [string, string][] = [
+		["PATH", CONTAINER_PATH],
+		["HOME", home],
+		["TMPDIR", temporary],
+		["LANG", request.environment.LANG ?? "C.UTF-8"],
+		// A confined process has no terminal. Saying so beats letting a host
+		// TERM leak in and change how a tool renders its output.
+		["TERM", "dumb"],
+	];
+	const declared: [string, string][] = [];
+	for (const [name, value] of Object.entries(request.environment)) {
+		if (value === undefined || CONTAINER_FIXED_ENVIRONMENT.has(name)) continue;
+		declared.push([name, containerValue(value, table)]);
+	}
+	declared.sort(([a], [b]) => a.localeCompare(b));
+	return [...fixed, ...declared];
+}
+
+function runtimeCliEnvironment(hostEnvironment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	const environment: NodeJS.ProcessEnv = {
+		PATH: hostEnvironment.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+	};
+	// The docker CLI reads ~/.docker/{config.json,contexts} to find the daemon.
+	if (hostEnvironment.HOME) environment.HOME = hostEnvironment.HOME;
+	for (const name of RUNTIME_CLI_ENVIRONMENT) {
+		const value = hostEnvironment[name];
+		if (value !== undefined) environment[name] = value;
+	}
+	return environment;
+}
+
+function dockerArguments(request: ContainerInvocationRequest): string[] {
+	const { policy, mounts } = request;
+	if (!CONTAINER_IMAGE_REFERENCE.test(policy.image)) {
+		throw new Error(`container backend refuses an unsafe image reference: ${policy.image}`);
+	}
+	if (request.argv.length === 0) throw new Error("container backend requires a command");
+	const table = mountTable(mounts);
+	const containerName = request.containerName ?? `ahde-${process.pid}-${randomUUID()}`;
+	if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(containerName)) {
+		throw new Error(`container backend refuses an unsafe container name: ${containerName}`);
+	}
+	const args = ["run", "--rm", "--name", containerName];
+
+	// Network is the runtime's, not a profile's: `none` gives the container no
+	// interface at all. `--network host` is never emitted — it would hand the
+	// Target the operator's whole network namespace.
+	args.push("--network", request.network === "deny" ? "none" : "bridge");
+	args.push("--user", request.user ?? defaultUser());
+	args.push("--cap-drop", "ALL");
+	args.push("--security-opt", "no-new-privileges");
+	if (policy.readOnlyRootfs) {
+		args.push("--read-only");
+		args.push("--tmpfs", `${CONTAINER_TMP}:rw,nosuid,nodev,exec,mode=1777`);
+	}
+	if (policy.memoryMb !== undefined) args.push("--memory", `${policy.memoryMb}m`);
+	if (policy.cpus !== undefined) args.push("--cpus", String(policy.cpus));
+	if (policy.pidsLimit !== undefined) args.push("--pids-limit", String(policy.pidsLimit));
+
+	args.push("-v", `${mounts.workspaceDir}:${CONTAINER_WORKSPACE}:${mounts.workspaceMode ?? "rw"}`);
+	args.push("-v", `${mounts.scratchDir}:${CONTAINER_SCRATCH}:rw`);
+	if (mounts.toolHomeRoot) {
+		args.push("-v", `${mounts.toolHomeRoot}:${CONTAINER_TOOL_HOME}:${mounts.toolHomeMode ?? "ro"}`);
+	}
+
+	for (const [name, value] of containerEnvironment(request, table)) args.push("-e", `${name}=${value}`);
+	args.push("-w", containerPath(request.cwd, table, "cwd"));
+
+	// `--entrypoint` is not decoration: an image that declares its own
+	// ENTRYPOINT would otherwise prepend it to the declared argv, so the bytes
+	// that ran would not be the bytes the descriptor names.
+	const [command, ...rest] = request.argv;
+	args.push("--entrypoint", containerPath(command as string, table, "command"));
+	args.push(policy.image);
+	for (const argument of rest) args.push(containerPath(argument, table, "argument"));
+	return args;
+}
+
+export const dockerBackend: ContainerBackend = {
+	runtime: "docker",
+	unavailable(): ContainerRuntimeStatus {
+		return { runtime: "docker", available: false, reason: "docker runtime not detected" };
+	},
+	invocation(request: ContainerInvocationRequest): ContainerInvocation {
+		const hostEnvironment = request.hostEnvironment ?? process.env;
+		const binary = executableOnPath("docker", hostEnvironment.PATH ?? "") ?? "docker";
+		const spawnEnvironment = runtimeCliEnvironment(hostEnvironment);
+		const containerName = request.containerName ?? `ahde-${process.pid}-${randomUUID()}`;
+		const resolvedRequest = { ...request, containerName };
+		return {
+			executable: binary,
+			args: dockerArguments(resolvedRequest),
+			spawnEnvironment,
+			terminate: () => {
+				// Killing the attached Docker CLI does not guarantee that the daemon
+				// stops the container. Address the daemon by the exact host-minted name
+				// before killing the client; a normal `--rm` exit makes this a harmless
+				// "not found". Cleanup is bounded and never inherits Target env.
+				spawnSync(binary, ["rm", "-f", containerName], {
+					env: spawnEnvironment,
+					stdio: "ignore",
+					timeout: 5_000,
+					windowsHide: true,
+				});
+			},
+		};
+	},
+};
+
+export const GONDOLIN_UNAVAILABLE = "gondolin runtime not available in this build";
+
+/**
+ * Gondolin is Earendil's Apache-2.0 micro-VM and the next backend behind this
+ * interface. Nothing is vendored: the stub fails closed so a manifest that
+ * asks for it under `sandbox: required` stops the run instead of quietly
+ * falling back to a weaker containment.
+ */
+export const gondolinBackend: ContainerBackend = {
+	runtime: "gondolin",
+	unavailable(): ContainerRuntimeStatus {
+		return { runtime: "gondolin", available: false, reason: GONDOLIN_UNAVAILABLE };
+	},
+	invocation(): ContainerInvocation {
+		throw new Error(GONDOLIN_UNAVAILABLE);
+	},
+};
+
+export function containerBackendFor(runtime: ContainerRuntimeName): ContainerBackend {
+	return runtime === "gondolin" ? gondolinBackend : dockerBackend;
+}
+
+// ---------- the required / best-effort / off matrix ----------
+
+export type ContainerSandboxMode = "container" | "fallback";
+
+export interface ContainerSandboxDecision {
+	/** `container` runs inside the runtime; `fallback` hands the run back to the OS sandbox. */
+	mode: ContainerSandboxMode;
+	status: ContainerRuntimeStatus;
+	/** Non-fatal findings the run records, such as a best-effort fallback. */
+	warnings: string[];
+	/**
+	 * The provenance `sandbox` value for this decision. Present only for
+	 * `container`; a fallback deliberately reports the OS backend that
+	 * actually confined the run, so it can never masquerade as container
+	 * evidence.
+	 */
+	fingerprint?: string;
+}
+
+export interface ResolveContainerSandboxOptions {
+	policy: ContainerPolicy;
+	sandbox: "required" | "best-effort" | "off";
+	/** Detection seam. Tests inject a fake runtime instead of touching a daemon. */
+	detect?: (runtime: ContainerRuntimeName) => ContainerRuntimeStatus;
+	detectOptions?: DetectContainerRuntimeOptions;
+}
+
+/**
+ * Decide whether one run is confined by the container runtime.
+ *
+ * | `execution.sandbox` | runtime usable | image | outcome |
+ * |---|---|---|---|
+ * | `required`    | yes | pinned digest | container; `container:<runtime>@sha256:…` |
+ * | `required`    | yes | tag           | refused (the manifest already refuses it at load) |
+ * | `required`    | no  | any           | refused, fail closed, with the runtime's exact reason |
+ * | `best-effort` | yes | pinned digest | container; `container:<runtime>@sha256:…` |
+ * | `best-effort` | yes | tag           | refused: a mutable image cannot identify evidence |
+ * | `best-effort` | no  | any           | fallback to the OS sandbox + warning; the OS backend's own value |
+ * | `off`         | —   | —             | never reaches here (the manifest refuses the block) |
+ */
+export function resolveContainerSandbox(options: ResolveContainerSandboxOptions): ContainerSandboxDecision {
+	const { policy, sandbox } = options;
+	if (sandbox === "off") {
+		throw new Error("execution.container requires sandbox: required or best-effort; sandbox: off declares no containment");
+	}
+	if (!isPinnedContainerImage(policy.image)) {
+		throw new Error(
+			`execution.container.image must be pinned to a digest (name@sha256:…); mutable tags cannot identify comparable evidence; got ${policy.image}`,
+		);
+	}
+	const detect = options.detect
+		?? ((runtime: ContainerRuntimeName) => detectContainerRuntime(runtime, options.detectOptions ?? {}));
+	const status = detect(policy.runtime);
+	if (!status.available) {
+		const reason = status.reason ?? `${policy.runtime} runtime is unavailable`;
+		if (sandbox === "required") {
+			throw new Error(
+				`execution.container declares ${policy.runtime} but no usable runtime is present; sandbox: required fails closed: ${reason}`,
+			);
+		}
+		return {
+			mode: "fallback",
+			status,
+			warnings: [
+				`container backend unavailable (${reason}); falling back to the host OS sandbox — this run is NOT container evidence`,
+			],
+		};
+	}
+	return { mode: "container", status, warnings: [], fingerprint: containerSandboxFingerprint(policy) };
+}
+
+export interface ExecutionBackendChoice<T extends string> {
+	/** `"container"` when the runtime confines the run; otherwise whatever the OS seam returned. */
+	backend: T | "container";
+	/** The provenance `sandbox` value for this run. */
+	sandboxFingerprint: string;
+	warnings: string[];
+	status?: ContainerRuntimeStatus;
+}
+
+/**
+ * One decision point shared by the built-in `bash`, the declared-tool broker
+ * and the `setup` step: they must never disagree about what confined a run.
+ *
+ * `osBackend` is the caller's existing OS-sandbox detection — it is only
+ * consulted when no container was asked for, or when `best-effort` falls back
+ * to it. Passing it in keeps this module free of the platform probes.
+ */
+export function resolveExecutionBackend<T extends string>(options: {
+	policy: { sandbox: "required" | "best-effort" | "off"; container?: ContainerPolicy };
+	osBackend: () => T;
+	detect?: (runtime: ContainerRuntimeName) => ContainerRuntimeStatus;
+	detectOptions?: DetectContainerRuntimeOptions;
+}): ExecutionBackendChoice<T> {
+	if (!options.policy.container) {
+		const backend = options.osBackend();
+		return { backend, sandboxFingerprint: backend, warnings: [] };
+	}
+	const decision = resolveContainerSandbox({
+		policy: options.policy.container,
+		sandbox: options.policy.sandbox,
+		...(options.detect ? { detect: options.detect } : {}),
+		...(options.detectOptions ? { detectOptions: options.detectOptions } : {}),
+	});
+	if (decision.mode === "container") {
+		return {
+			backend: "container",
+			sandboxFingerprint: decision.fingerprint as string,
+			warnings: decision.warnings,
+			status: decision.status,
+		};
+	}
+	// best-effort fallback: the OS sandbox actually confined this run, so the
+	// fingerprint says so. It is a different value from any container
+	// fingerprint, which is the whole point — fallback evidence must never be
+	// comparable with container evidence.
+	const backend = options.osBackend();
+	return { backend, sandboxFingerprint: backend, warnings: decision.warnings, status: decision.status };
+}
+
+// ---------- `ahde validate` readiness ----------
+
+export interface SandboxReadiness {
+	line: string;
+	/** True when the declared policy cannot be honoured on this host. */
+	failClosed: boolean;
+}
+
+/**
+ * The one line `ahde validate` prints about containment. It states what would
+ * actually confine a run on this host right now, never what the manifest
+ * hopes for.
+ */
+export function describeSandboxReadiness(execution: {
+	sandbox: "required" | "best-effort" | "off";
+	container?: ContainerPolicy;
+	tools?: readonly string[];
+}, detectOptions: DetectContainerRuntimeOptions = {}): SandboxReadiness {
+	if (!execution.container) {
+		return { line: `sandbox: ${execution.sandbox} (host OS sandbox)`, failClosed: false };
+	}
+	let decision: ContainerSandboxDecision;
+	try {
+		decision = resolveContainerSandbox({ policy: execution.container, sandbox: execution.sandbox, detectOptions });
+	} catch (error) {
+		return { line: `sandbox: FAIL CLOSED — ${(error as Error).message}`, failClosed: true };
+	}
+	if (decision.mode === "fallback") {
+		return {
+			line: `sandbox: container requested, ${decision.warnings[0] ?? "unavailable"} (${execution.sandbox})`,
+			failClosed: false,
+		};
+	}
+	const version = decision.status.version ? ` ${decision.status.version}` : "";
+	return {
+		line: `sandbox: container (${execution.container.runtime}${version}, image pinned)`,
+		failClosed: false,
+	};
+}

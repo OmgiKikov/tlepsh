@@ -39,7 +39,7 @@ import {
 import { writeJsonArtifact } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import { buildExecutionPolicy } from "../execution-policy.js";
-import { createTargetToolRuntime, targetFilesystemConfinement } from "../target/runtime.js";
+import { createTargetToolRuntime, effectiveTargetSandbox, targetFilesystemConfinement } from "../target/runtime.js";
 import { computeTargetWorkspaceHash } from "../runner.js";
 import type { RunEventListener } from "../run-events.js";
 import {
@@ -243,9 +243,11 @@ export function effectiveProvenance(target: ResolvedTarget): ProvenanceAxes {
 			...target.manifest.execution.tools,
 			...targetTools.toolNames,
 		];
-		const sandbox = target.tools.length > 0
-			? targetTools.sandboxBackend ?? "unavailable"
-			: policy.sandboxBackend;
+		const sandbox = effectiveTargetSandbox({
+			hasDeclaredTools: target.tools.length > 0,
+			executionPolicy: policy,
+			targetTools,
+		});
 		return provenanceAxes({
 			runtime: target.runtime,
 			model: modelFingerprint(target.manifest.model),

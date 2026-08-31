@@ -27,7 +27,13 @@ import { InMemoryCredentialStore, type AssistantMessage, type Message } from "@e
 import type { ExecutionPolicyResult } from "../execution-policy.js";
 import { EXECUTION_POLICY_SESSION_OPTIONS } from "../execution-policy.js";
 import type { DialogueMessage, ResolvedTarget } from "../manifest.js";
-import type { ExecutionFingerprint } from "../provenance.js";
+import { ExecutionFingerprintSchema, type ExecutionFingerprint } from "../provenance.js";
+import {
+	isContainerSandboxFingerprint,
+	resolveExecutionBackend,
+	type ContainerRuntimeName,
+	type ContainerRuntimeStatus,
+} from "./container-backend.js";
 import { detectTargetToolSandbox, TargetToolBroker, type TargetToolSandboxBackend } from "./tool-broker.js";
 import { prepareToolHome, type ToolSetupOutcome } from "./tool-setup.js";
 import { loadTargetTools, type ResolvedTargetTool } from "./tool-manifest.js";
@@ -39,13 +45,44 @@ import {
 
 export interface TargetToolRuntime {
 	customTools: ToolDefinition<any, any, any>[];
-	sandboxBackend: TargetToolSandboxBackend | null;
+	/**
+	 * The *OS* sandbox that confined this run, or null. Deliberately narrower
+	 * than `TargetToolSandboxBackend`: a container run reports null here and
+	 * carries its content-pinned identity in `sandboxFingerprint` instead.
+	 */
+	sandboxBackend: Exclude<TargetToolSandboxBackend, "container"> | null;
+	/**
+	 * The value the provenance `sandbox` axis must carry:
+	 * `container:docker@sha256:…` for a containerized run, otherwise the OS
+	 * backend's own name. Evidence produced in a container is never comparable
+	 * with evidence produced on the host, by design.
+	 */
+	sandboxFingerprint: ExecutionFingerprint["sandbox"];
+	/** Recorded, non-fatal findings such as a best-effort fallback. */
+	sandboxWarnings: string[];
 	effectiveEnvironmentNames: string[];
 	toolNames: string[];
 	/** Prepared home for multi-file tools, or null when none are declared. */
 	toolHomeRoot: string | null;
 	/** One entry per multi-file tool; `ran` is false when it declares no setup. */
 	toolSetups: ToolSetupOutcome[];
+}
+
+/**
+ * The one sandbox identity persisted by both ordinary runs and candidate
+ * preflight. Declared process tools own the effective backend when present;
+ * otherwise the built-in execution policy does. Parsing here makes it
+ * impossible to silently collapse a container into `none` or `unavailable`.
+ */
+export function effectiveTargetSandbox(options: {
+	hasDeclaredTools: boolean;
+	executionPolicy?: Pick<ExecutionPolicyResult, "sandboxFingerprint">;
+	targetTools?: Pick<TargetToolRuntime, "sandboxFingerprint">;
+}): ExecutionFingerprint["sandbox"] {
+	const identity = options.hasDeclaredTools
+		? options.targetTools?.sandboxFingerprint ?? "unavailable"
+		: options.executionPolicy?.sandboxFingerprint ?? "unavailable";
+	return ExecutionFingerprintSchema.shape.sandbox.parse(identity);
 }
 
 /**
@@ -192,8 +229,10 @@ export function targetFilesystemConfinement(options: {
 	sandbox: ExecutionFingerprint["sandbox"];
 }): ExecutionFingerprint["filesystem"] {
 	if (options.workspaceMode === "direct") return "direct-unconfined-v1";
+	const sandbox = ExecutionFingerprintSchema.shape.sandbox.parse(options.sandbox);
+	if (isContainerSandboxFingerprint(sandbox)) return "workspace-confined-v1";
 	const processCapable = options.toolNames.some((tool) => !["read", "edit", "write"].includes(tool));
-	return processCapable && (options.sandbox === "none" || options.sandbox === "unavailable")
+	return processCapable && (sandbox === "none" || sandbox === "unavailable")
 		? "isolated-copy-unconfined-v1"
 		: "workspace-confined-v1";
 }
@@ -209,6 +248,8 @@ export interface CreateTargetToolRuntimeOptions {
 	 * private home under `scratchDir` for this run alone.
 	 */
 	toolHomeRoot?: string;
+	/** Container-runtime detection seam. Production callers omit this. */
+	detectContainerRuntime?: (runtime: ContainerRuntimeName) => ContainerRuntimeStatus;
 }
 
 function assertWorkspaceToolIdentity(
@@ -255,6 +296,8 @@ export function createTargetToolRuntime(options: CreateTargetToolRuntimeOptions)
 		return {
 			customTools: [],
 			sandboxBackend: null,
+			sandboxFingerprint: "unavailable",
+			sandboxWarnings: [],
 			effectiveEnvironmentNames: [],
 			toolNames: [],
 			toolHomeRoot: null,
@@ -274,9 +317,17 @@ export function createTargetToolRuntime(options: CreateTargetToolRuntimeOptions)
 	);
 	const needsToolHome = reloaded.tools.some((tool) => tool.layout === "directory");
 	// Detecting the backend once keeps preparation and execution on one decision.
-	const sandboxBackend = needsToolHome
-		? detectTargetToolSandbox(realpathSync(resolve(options.workspaceDir)), options.scratchDir)
+	// A container backend must be decided here too: the declared `setup` step
+	// has to run inside the same container the tool calls will run in.
+	const execution = options.target.manifest.execution;
+	const choice = needsToolHome || execution.container
+		? resolveExecutionBackend({
+			policy: execution,
+			osBackend: () => detectTargetToolSandbox(realpathSync(resolve(options.workspaceDir)), options.scratchDir),
+			...(options.detectContainerRuntime ? { detect: options.detectContainerRuntime } : {}),
+		})
 		: undefined;
+	const sandboxBackend = choice?.backend;
 	const prepared = needsToolHome
 		? prepareToolHome({
 			workspaceDir: options.workspaceDir,
@@ -302,7 +353,9 @@ export function createTargetToolRuntime(options: CreateTargetToolRuntimeOptions)
 	}
 	return {
 		customTools: reloaded.tools.map((tool) => definition(tool, broker)),
-		sandboxBackend: broker.sandboxBackend,
+		sandboxBackend: broker.sandboxBackend === "container" ? null : broker.sandboxBackend,
+		sandboxFingerprint: choice?.sandboxFingerprint ?? broker.sandboxBackend,
+		sandboxWarnings: choice?.warnings ?? [],
 		effectiveEnvironmentNames: [...environmentNames].sort(),
 		toolNames: reloaded.tools.map((tool) => tool.descriptor.name),
 		toolHomeRoot: prepared?.root ?? null,

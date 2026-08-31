@@ -204,6 +204,63 @@ describe("Target tool broker and Pi registration", () => {
 			.toBe("workspace-confined-v1");
 		expect(targetFilesystemConfinement({ workspaceMode: "direct", toolNames: ["read"], sandbox: "sandbox-exec" }))
 			.toBe("direct-unconfined-v1");
+		// A content-pinned container is a first-class confinement identity.
+		expect(targetFilesystemConfinement({
+			workspaceMode: "isolated",
+			toolNames: ["echo_json"],
+			sandbox: `container:docker@sha256:${"a".repeat(64)}`,
+		})).toBe("workspace-confined-v1");
+		expect(() => targetFilesystemConfinement({
+			workspaceMode: "isolated",
+			toolNames: ["echo_json"],
+			sandbox: "container:docker@latest",
+		})).toThrow();
+	});
+
+	it("carries a sandbox fingerprint beside the OS backend on every tool runtime", () => {
+		const dir = toolFixture();
+		const scratch = join(dir, ".ahde-test-scratch-fingerprint");
+		try {
+			const target = loadTarget(dir);
+			let runtime;
+			try {
+				runtime = createTargetToolRuntime({ target, workspaceDir: dir, scratchDir: scratch });
+			} catch (error) {
+				expect((error as Error).message).toMatch(/No usable sandbox backend/);
+				return;
+			}
+			// A single-file tool needs no prepared home, so no backend choice is
+			// made up front; the broker's own detection is the fingerprint.
+			expect(runtime.sandboxFingerprint).toBe(runtime.sandboxBackend);
+			expect(runtime.sandboxFingerprint.startsWith("container:")).toBe(false);
+			expect(runtime.sandboxWarnings).toEqual([]);
+		} finally {
+			cleanup(dir);
+		}
+	});
+
+	it("selects the container backend for declared tools and never reports a host OS sandbox for one", () => {
+		const dir = toolFixture({
+			manifest: manifest().replace(
+				"  sandbox: best-effort\n",
+				`  sandbox: required\n  container:\n    runtime: docker\n    image: ahde/target@sha256:${"b".repeat(64)}\n`,
+			),
+		});
+		const scratch = join(dir, ".ahde-test-scratch-container");
+		try {
+			const target = loadTarget(dir);
+			const runtime = createTargetToolRuntime({
+				target,
+				workspaceDir: dir,
+				scratchDir: scratch,
+				detectContainerRuntime: () => ({ runtime: "docker", available: true, version: "27.1.0" }),
+			});
+			expect(runtime.sandboxFingerprint).toBe(`container:docker@sha256:${"b".repeat(64)}`);
+			expect(runtime.sandboxBackend).toBeNull();
+			expect(runtime.sandboxWarnings).toEqual([]);
+		} finally {
+			cleanup(dir);
+		}
 	});
 
 	it("registers and executes the working JSON-stdin template tool when a sandbox backend is available", async () => {
