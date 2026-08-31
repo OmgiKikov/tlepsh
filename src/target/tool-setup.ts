@@ -3,6 +3,7 @@ import {
 	chmodSync,
 	existsSync,
 	lstatSync,
+	mkdtempSync,
 	mkdirSync,
 	readFileSync,
 	readdirSync,
@@ -394,9 +395,40 @@ export function prepareToolHome(options: PrepareToolHomeOptions): PreparedToolHo
 		}).backend;
 	const setups: ToolSetupOutcome[] = [];
 	for (const tool of tools) {
-		const toolDir = join(root, tool.descriptor.name);
-		copyToolDirectory(tool, options.workspaceDir, toolDir);
-		setups.push(runSetup(tool, toolDir, { ...options, backend, toolHomeRoot: root }));
+		// A setup may have broader env/network authority than another tool. Never
+		// mount their shared final home rw: prepare one tool in a private home and
+		// scratch, attest it, then atomically compose only that directory.
+		const preparationRoot = mkdtempSync(join(dirname(root), ".ahde-tool-prepare-"));
+		chmodSync(preparationRoot, 0o700);
+		const stagingHome = join(preparationRoot, "tool-home");
+		const stagingScratch = join(preparationRoot, "scratch");
+		mkdirSync(stagingHome, { mode: 0o700 });
+		mkdirSync(stagingScratch, { mode: 0o700 });
+		try {
+			const stagedToolDir = join(stagingHome, tool.descriptor.name);
+			copyToolDirectory(tool, options.workspaceDir, stagedToolDir);
+			const outcome = runSetup(tool, stagedToolDir, {
+				...options,
+				backend,
+				scratchDir: stagingScratch,
+				toolHomeRoot: stagingHome,
+			});
+			const topLevel = readdirSync(stagingHome).sort(comparePath);
+			if (topLevel.length !== 1 || topLevel[0] !== tool.descriptor.name) {
+				throw new Error(`Target tool ${tool.descriptor.name} setup wrote outside its private tool directory`);
+			}
+			// Refuse symlinks, special files, and a tree changing during the
+			// handoff before it can enter the shared runtime home.
+			preparedToolHomeHash(stagingHome);
+			const destination = join(root, tool.descriptor.name);
+			if (existsSync(destination)) {
+				throw new Error(`prepared tool home already contains ${tool.descriptor.name}`);
+			}
+			renameSync(stagedToolDir, destination);
+			setups.push(outcome);
+		} finally {
+			rmSync(preparationRoot, { recursive: true, force: true });
+		}
 	}
 	const sha256 = preparedToolHomeHash(root);
 	const temporary = `${markerPath}.tmp`;

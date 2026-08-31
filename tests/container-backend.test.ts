@@ -929,7 +929,7 @@ describe("the built-in bash under the container backend", () => {
 });
 
 describe("declared tool setup inside the container", () => {
-	it("runs the setup step in the same container with the tool home mounted rw", () => {
+	it("runs setup in a private one-tool home before composing the final home", () => {
 		const fake = fakeDocker({ version: "27.1.0" });
 		const originalPath = process.env.PATH;
 		process.env.PATH = fake.binDir;
@@ -955,10 +955,14 @@ describe("declared tool setup inside the container", () => {
 				sandboxBackend: "container",
 				tools: [resolvedDirectoryTool(workspaceDir)],
 			});
-			expect(prepared.setups.map((setup) => ({ tool: setup.tool, ran: setup.ran, exitCode: setup.exitCode })))
+				expect(prepared.setups.map((setup) => ({ tool: setup.tool, ran: setup.ran, exitCode: setup.exitCode })))
 				.toEqual([{ tool: "lookup", ran: true, exitCode: 0 }]);
 			const args = loggedArgv(fake.logPath);
-			expect(args).toContain(`${toolHomeRoot}:/tools:rw`);
+			const setupToolMount = flagValues(args, "-v").find((mount) => mount.endsWith(":/tools:rw"));
+			expect(setupToolMount).toBeDefined();
+			expect(setupToolMount).not.toBe(`${toolHomeRoot}:/tools:rw`);
+			expect(setupToolMount).toMatch(/\.ahde-tool-prepare-[^/]+\/tool-home:\/tools:rw$/);
+			expect(existsSync(join(toolHomeRoot, "lookup", "run"))).toBe(true);
 			expect(args).toContain(`${workspaceDir}:/workspace:ro`);
 			expect(flagValues(args, "-w")).toEqual(["/tools/lookup"]);
 			expect(args).toContain(PINNED);
