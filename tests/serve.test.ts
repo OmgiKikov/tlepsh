@@ -19,7 +19,6 @@ import {
 	type WorkbenchHumanGate,
 } from "../src/workbench/index.js";
 import { recordBuilderAuthoredProposal } from "../src/application/builder-authoring.js";
-import { applyBuilderProposal } from "../src/application/builder-proposal.js";
 import { createHostContext } from "./helpers/builder-tools.js";
 import {
 	NOW,
@@ -852,15 +851,16 @@ function cycleRootPaths(root: string): CycleRoot {
 	};
 }
 
-/** The same dependency wiring for both drivers, so only the gate differs. */
+/**
+ * The same dependency wiring for both drivers, so only the gate differs. The
+ * clock stays the ambient one — frozen by the test around the two phases whose
+ * receipts are compared, real while a candidate's events are being appended.
+ * The proposal run id is the one host-minted value in these receipts that is
+ * neither content-derived nor time-derived, so it is pinned here.
+ */
 function cycleDependencies(): Partial<AhdeWorkbenchDependencies> {
 	return {
-		now: () => NOW,
-		// The proposal run id and the apply timestamp are the only host-minted
-		// values in these receipts that are not content-derived; pinning them is
-		// what makes a byte comparison between two transports meaningful.
 		recordProposal: (input) => recordBuilderAuthoredProposal({ ...input, runId: "builder-serve-cycle" }),
-		applyProposal: (input) => applyBuilderProposal(input, { now: () => NOW }),
 	};
 }
 
@@ -900,11 +900,6 @@ describe("serve full cycle", () => {
 		gitIn(paths.projectDir, "config", "user.email", "serve@ahde.local");
 		gitIn(paths.projectDir, "add", ".");
 		gitIn(paths.projectDir, "commit", "-q", "-m", "baseline");
-		// Corpus metadata stamps its own `createdAt` from the wall clock. Freezing
-		// Date (not the timers) is what lets two transports be compared byte for
-		// byte; run ids stay unique because they also draw on Math.random.
-		vi.useFakeTimers({ toFake: ["Date"] });
-		vi.setSystemTime(Date.parse(NOW));
 	});
 
 	afterAll(async () => {
@@ -930,6 +925,17 @@ describe("serve full cycle", () => {
 			cpSync(source.root, root, { recursive: true });
 			return cycleRootPaths(root);
 		};
+
+		// Corpus metadata and Builder run records stamp themselves from the wall
+		// clock. Freezing Date (never the timers) around the two phases whose
+		// receipts are compared is what makes a byte comparison meaningful; the
+		// long measured phases keep a real clock, and run ids stay unique because
+		// they also draw on Math.random.
+		const freeze = (): void => {
+			vi.useFakeTimers({ toFake: ["Date"] });
+			vi.setSystemTime(Date.parse(NOW));
+		};
+		const thaw = (): void => { vi.useRealTimers(); };
 
 		const served = fork("api");
 		const twin = fork("tui");
@@ -984,6 +990,7 @@ describe("serve full cycle", () => {
 
 		try {
 			// --- spec ------------------------------------------------------------
+			freeze();
 			await submit({ kind: "spec-draft", spec: CYCLE_SPEC });
 			const approved = await decide({ kind: "approve-spec", reason: "Approve the served contract" });
 			expect(approved.result.approvedSpecId).toBeTruthy();
@@ -1026,7 +1033,8 @@ describe("serve full cycle", () => {
 					.toEqual(readFileSync(join(receiptRoot(twin), relative)));
 			}
 
-			// --- run -------------------------------------------------------------
+			// --- run (a real clock: this phase is measured, not compared) --------
+			thaw();
 			const measured = await decide({
 				kind: "run-eval",
 				repetitions: SEALED_VERIFICATION_REPETITIONS,
@@ -1040,6 +1048,7 @@ describe("serve full cycle", () => {
 
 			// --- propose (a post-measurement twin shares every minted run id) -----
 			const proposalTwin = forkOf(served, "propose");
+			freeze();
 			const targetView = json(await call(url, "/v1/view?aspect=target", { token }));
 			const authoringContext = targetView.detail.content.claim;
 			expect(authoringContext).toBeTruthy();
@@ -1087,7 +1096,8 @@ describe("serve full cycle", () => {
 			expect(JSON.parse(readFileSync(join(builderDir(served), "apply_receipt.json"), "utf8")))
 				.toMatchObject({ actor: { kind: "human", id: ACTOR }, appliedAt: NOW });
 
-			// --- verify ----------------------------------------------------------
+			// --- verify (a real clock again) --------------------------------------
+			thaw();
 			const sealed = createCorpus({
 				stateRoot: served.stateRoot,
 				projectId: CYCLE_PROJECT,
@@ -1131,6 +1141,7 @@ describe("serve full cycle", () => {
 			expect(json(await call(url, "/v1/confirmations", { token })).confirmations).toEqual([]);
 			expect(loadTarget(served.projectDir).gitSha).toBe(applied.result.candidateSha);
 		} finally {
+			thaw();
 			await api.close();
 			openServers.length = 0;
 			for (const root of forks) rmSync(root, { recursive: true, force: true });
