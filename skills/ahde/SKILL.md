@@ -34,9 +34,11 @@ the engine's verdicts count, and only its gate ships.
    file the operator imported, not `runs/**` sealed records. If a command
    prints sealed counts, that is all you may know.
 2. Every number you state comes from a run artifact (`ahde report`, `ahde
-   list`, `diagnose`, `log`) — never from memory or estimation.
-3. A behavioral claim needs a conclusive run: infrastructure errors (exit 2)
-   are inconclusive, fix the path and rerun; they are never failures.
+   list`, `diagnose`, the candidate record) — never from memory or estimation.
+3. A behavioral claim needs a conclusive run: an infrastructure error is
+   inconclusive, fix the path and rerun; it is never a failure. Only `ahde run`
+   implements the 0/1/2 split — everywhere else an infrastructure error also
+   exits 1, so read the message, not the code.
 4. Harness edits happen on a branch (`candidate/<slug>`), never on the
    operator's checkout branch. `main` moves only by the engine's promotion.
 5. Ask the operator before anything that costs real money beyond one basket
@@ -48,9 +50,13 @@ the engine's verdicts count, and only its gate ships.
 
 1. **Understand.** Write `spec.md`: users, jobs, inputs, allowed actions,
    observable success criteria, constraints. Short; criteria must be checkable.
+   It is your contract with the operator — no CLI reads it. The *typed* Spec the
+   ship gate needs is a separate object Builder Pi writes.
 2. **Scaffold or adopt.** New: `ahde init .` then edit. Existing agent: keep
    its files, add `manifest.yaml` from the template. `ahde validate --target .`
-   until `readiness: ready to run`.
+   until `readiness: ready to run`. Commit before baselining: `ahde run` will
+   happily produce evidence on a dirty tree, but a dirty revision cannot seed a
+   proposal and the baseline has to be re-run.
 3. **Create the benchmark.** Prefer the client's real data dropped in
    `imports/`:
    - `ahde corpus inspect --project <id> --file imports/<file>` — see columns;
@@ -59,8 +65,10 @@ the engine's verdicts count, and only its gate ships.
      development cases + a sealed exam reserved BEFORE you see anything;
    - or hand-write `evals/development.jsonl` cases (30–50, from real
      failures), and let the operator import a private exam:
-     `ahde corpus import --project <id> --visibility sealed --file <path>`
-     (≥15 cases or the ship gate stays underpowered).
+     `ahde corpus import --project <id> --visibility sealed --name "<exam>"
+      --file <path>` (≥15 cases or the ship gate stays underpowered; `--name`
+     is required). The same command with `--visibility development` is how a
+     scripted run publishes the development corpus.
    Graders: deterministic first (`output_contains`, `output_matches`,
    `tool_called`); `judge` with `assertions:` checklists where prose must be
    judged (needs `configure-evaluators`; the judge may not be the target's
@@ -74,31 +82,47 @@ the engine's verdicts count, and only its gate ships.
    mode (instructions / a skill / a declarative tool + `bin/` executable +
    fixture in `data/`), try tools with
    `ahde tool try --target . --tool <name> --input '<json>'`.
-6. **Screen, then verify.** `ahde check --target . --candidate <id>` runs only
-   the previously failing cases once — flat means author a different change,
-   not spend the full verification. Full matched verification:
+6. **Verify, and screen when you can.** Full matched verification:
    `ahde candidate --target . --builder-run <id> --project <id>
    --development-corpus <id> --holdout-corpus <sealed-id> --repetitions 3`.
+   `ahde check --target . --candidate <id>` re-runs only the previously failing
+   cases once, but it takes a *candidate* id, which only `ahde candidate`
+   creates — so today it cannot screen before the verification it was meant to
+   save you. `ahde candidate` prints the development verdict but **not** the
+   sealed one: read `events[].evaluation.sealedHoldout.comparison.verdict` from
+   `runs/candidates/<id>/candidate.json` and say where you read it.
 7. **Ship.** `ahde review --candidate <id> --recommend promote --reason …`
-   (it prints the exact diff and requires the printed `--proposal-hash` on the
-   second call), then `ahde promote --target . --candidate <id> --to 0.X.0
-   --reason …`. Promotion requires: development verdict not `regressed`,
-   sealed guardrail `pass`, an applied proposal with its receipt. Then show
-   the operator `ahde log --target .` — the growth line is the deliverable.
+   (it records the review immediately — it prints no diff and enforces no hash,
+   so show the operator the proposal diff yourself first), then
+   `ahde promote --target . --candidate <id> --to 0.X.0 --reason …`. Promotion
+   requires: development verdict not `regressed`, sealed guardrail `pass`, an
+   applied proposal with its receipt.
 8. **Hand over.** The client-facing artifact is the version passport: what
    was promised (spec.md) ↔ what was measured (dev score with CI + sealed
-   verdict + design size), cost per answer, known limits. Build it from
-   `ahde log --json` and the candidate record; never from memory.
+   verdict + design size), cost per answer, known limits. Build it from the
+   candidate record and `ahde list`; never from memory.
 
 ## Known engine gaps (v0 of this skill)
+
+Measured end to end on 2026-08-31 — see `docs/SKILL_WALKTHROUGH.md` for the
+command log, the exact error text, and the smallest fix for each.
 
 - The CLI cannot yet turn a branch diff into a typed Proposal or apply it:
   `propose` / `apply` / `adopt` exist only inside Builder Pi and the
   `scripts/real-loop.mjs` pattern. Until `ahde propose --branch` lands, use
-  that pattern via a helper script and say so in your report.
+  that pattern via a helper script (`scripts/skill-propose.mjs`) and say so in
+  your report. The same script must write the approved Spec, because no CLI
+  does and `ahde candidate --builder-run` refuses without one.
+- There is no `ahde log` and no `ahde watch`. The growth line exists as
+  `renderExperimentHistory()`; until it is wired up, build the passport from
+  `runs/candidates/<id>/candidate.json` (`scripts/skill-shim-log.mjs`).
+- `ahde review` records the recommendation on the first call: no diff, no
+  `--proposal-hash`. You are the one who has to show the diff.
+- `ahde check` needs a candidate id, so it cannot screen before the
+  verification it exists to save.
 - `ahde improve --until 90% --max-cycles N` automates run→diagnose→apply→
-  screen→verify inside the gates, but authoring still needs proposals to
-  exist first.
+  screen→verify inside the gates, but it only accepts a proposal bound to the
+  EvalRun it just made — which means only Builder Pi can feed it.
 
 ## Command crib
 
@@ -106,14 +130,14 @@ the engine's verdicts count, and only its gate ships.
 ahde validate --target .                      readiness; no model calls
 ahde run --target . --repetitions 3           development evidence (exit 1=fails, 2=inconclusive)
 ahde list · diagnose <erun> · report <erun>   what happened and why
-ahde corpus inspect|ingest|import|publish     benchmark creation (sealed at ingest)
+ahde corpus inspect|ingest|import|list        benchmark creation (sealed at ingest)
+  (`corpus publish` needs a Builder-Pi `corpus-draft-…`; scripted, use
+   `corpus import --visibility development|sealed --file <jsonl>`)
 ahde calibrate --target .                     A/A noise band for this revision
-ahde check --target . --candidate <id>        cheap screen: failed cases, once
+ahde check --target . --candidate <id>        failed cases, once — needs an existing candidate
 ahde candidate --target . …                   matched baseline-vs-candidate + sealed gate
-ahde review · promote --to 0.X.0             the human gate; diff-hash bound
+ahde review · promote --to 0.X.0             the human gate (review shows no diff yet)
 ahde label <erun> --target . --sample 30      calibrate the judge against a human
 ahde judge-agreement <erun> --target .        how far that judge is trusted
-ahde log --target .                           versions × score × cost — the growth chart
-ahde watch --target . --every 1d              drift vs noise on a schedule
 ahde feedback list --target .                 👍/👎 marks collected in ahde target
 ```
