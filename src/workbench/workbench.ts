@@ -1280,8 +1280,23 @@ export class AhdeWorkbench {
 			});
 			reattached = true;
 		} else {
-			// A workshop nobody re-attached to is dead weight in `git worktree list`.
-			if (recorded) this.forgetWorkshop();
+			// Opening a new workshop explicitly abandons any crash-surviving one.
+			// Re-validate it before cleanup so an edited state file can never choose a
+			// path to remove; then forget the selection note whether cleanup succeeds
+			// or fails closed.
+			if (recorded) {
+				try {
+					const abandoned = reattachBuilderWorkshop({
+						repositoryDir: this.projectDir,
+						expectedTarget: { id: authoringContext.target.id, gitSha: authoringContext.target.gitSha },
+						authoringContext: authoringContext.claim,
+						descriptor: { ...recorded, grants: recorded.grants },
+					});
+					abandoned.dispose();
+				} finally {
+					this.forgetWorkshop();
+				}
+			}
 			workshop = openBuilderWorkshop({
 				repositoryDir: this.projectDir,
 				expectedTarget: { id: authoringContext.target.id, gitSha: authoringContext.target.gitSha },
@@ -1497,7 +1512,7 @@ export class AhdeWorkbench {
 		const workshop = this.requireWorkshop();
 		const parsed = WorkshopTryInputSchema.parse(input);
 		const requirement = workshop.describeToolGrant(parsed.tool);
-		if (requirement && !workshop.status().grants.some((grant) => grant.tool === requirement.tool)) {
+		if (requirement && !workshop.toolAccessGranted(requirement)) {
 			if (!options.gate) {
 				throw new Error(
 					`the ${requirement.tool} tool wants ${requirement.wants.join(" and ")}; ` +

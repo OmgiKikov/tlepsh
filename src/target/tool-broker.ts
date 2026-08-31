@@ -23,6 +23,8 @@ export interface TargetToolBrokerOptions {
 	toolHomeRoot?: string;
 	/** Production callers should omit this. Tests may inject a previously probed backend. */
 	sandboxBackend?: TargetToolSandboxBackend;
+	/** Optional caps for unreviewed authoring processes; normal Target calls omit them. */
+	resourceLimits?: SandboxResourceLimits;
 }
 
 export interface TargetToolBrokerResult {
@@ -550,6 +552,7 @@ export class TargetToolBroker {
 			confinement: toolConfinement(tool, this.options.workspaceDir, this.toolHomeRoot),
 			cwd: this.options.workspaceDir,
 			argv: [executable, ...tool.descriptor.command.argv.slice(1)],
+			...(this.options.resourceLimits ? { limits: this.options.resourceLimits } : {}),
 		});
 		const startedMs = Date.now();
 		const child = spawn(command.executable, command.args, {

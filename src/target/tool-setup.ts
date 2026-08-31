@@ -14,6 +14,7 @@ import {
 	buildToolEnvironment,
 	detectTargetToolSandbox,
 	sandboxInvocation,
+	type SandboxResourceLimits,
 	type TargetToolSandboxBackend,
 } from "./tool-broker.js";
 import type { ResolvedTargetTool, TargetToolPolicyEnvelope } from "./tool-manifest.js";
@@ -61,6 +62,8 @@ export interface PrepareToolHomeOptions {
 	policy: TargetToolPolicyEnvelope;
 	sandboxBackend?: TargetToolSandboxBackend;
 	sourceEnvironment?: NodeJS.ProcessEnv;
+	/** Optional caps for an unreviewed setup process; normal Target setup omits them. */
+	resourceLimits?: SandboxResourceLimits;
 }
 
 export interface PreparedToolHome {
@@ -151,6 +154,7 @@ function runSetup(
 		},
 		cwd: toolDir,
 		argv: [command, ...setup.argv.slice(1)],
+		...(options.resourceLimits ? { limits: options.resourceLimits } : {}),
 	});
 	const startedMs = Date.now();
 	const result = spawnSync(invocation.executable, invocation.args, {

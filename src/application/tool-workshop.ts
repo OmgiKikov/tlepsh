@@ -39,6 +39,7 @@ import {
 	TargetToolBroker,
 	detectTargetToolSandbox,
 	type AppliedResourceLimits,
+	type SandboxResourceLimits,
 	type TargetToolConfinement,
 	type TargetToolSandboxBackend,
 } from "../target/tool-broker.js";
@@ -205,9 +206,84 @@ export async function tryTool(options: TryToolOptions): Promise<TryToolResult> {
 }
 
 /**
- * The body of one try, over an already-materialized Harness directory: a
- * detached worktree of an exact revision, or a Builder workshop's own copy.
- * Nothing here reads or writes the operator's checkout.
+ * Execute one resolved Target tool over a directory that is already the whole
+ * filesystem surface it may see. The ordinary try path hands this an eval-style
+ * snapshot; a Builder workshop hands it the much smaller authorable projection.
+ */
+async function runDeclaredToolOnSurface(options: {
+	target: ResolvedTarget;
+	directory: string;
+	toolHomeRoot: string;
+	scratchRoot: string;
+	tool: string;
+	input: unknown;
+	source: TryToolResult["source"];
+	signal?: AbortSignal;
+	resourceLimits?: SandboxResourceLimits;
+}): Promise<TryToolResult> {
+	const resolved = loadTargetTools(options.directory, options.target.manifest.tools, options.target.manifest.execution);
+	const tool = resolved.tools.find((candidate) => candidate.descriptor.name === options.tool);
+	if (!tool) {
+		const declared = resolved.tools.map((candidate) => candidate.descriptor.name).join(", ") || "none";
+		throw new ToolWorkshopError(`Target declares no tool named ${options.tool}; declared: ${declared}`);
+	}
+	const scratchDir = join(options.scratchRoot, "sandbox");
+	const sandboxBackend = detectTargetToolSandbox(options.directory, scratchDir);
+	const prepared = tool.layout === "directory"
+		? prepareToolHome({
+			workspaceDir: options.directory,
+			scratchDir,
+			tools: resolved.tools,
+			toolHomeRoot: options.toolHomeRoot,
+			policy: options.target.manifest.execution,
+			sandboxBackend,
+			...(options.resourceLimits ? { resourceLimits: options.resourceLimits } : {}),
+		})
+		: null;
+	const broker = new TargetToolBroker({
+		workspaceDir: options.directory,
+		scratchDir,
+		policy: options.target.manifest.execution,
+		sandboxBackend,
+		...(prepared ? { toolHomeRoot: prepared.root } : {}),
+		...(options.resourceLimits ? { resourceLimits: options.resourceLimits } : {}),
+	});
+	const raw = await broker.runRaw(tool, options.input, options.signal);
+	const stdout = boundedOutput(raw.stdout);
+	const stderr = boundedOutput(raw.stderr);
+	const setup = prepared?.setups.find((outcome) => outcome.tool === tool.descriptor.name) ?? null;
+	return {
+		schemaVersion: 1,
+		tool: tool.descriptor.name,
+		layout: tool.layout,
+		source: options.source,
+		target: {
+			id: options.target.manifest.id,
+			gitSha: options.target.gitSha,
+			toolsetHash: resolved.toolsetHash,
+			toolDigest: tool.digest,
+		},
+		sandbox: broker.sandboxBackend,
+		setup: setup && setup.ran
+			? {
+				...setup,
+				stdout: boundedOutput(setup.stdout).text,
+				stderr: boundedOutput(setup.stderr).text,
+			}
+			: null,
+		stdout: stdout.text,
+		stderr: stderr.text,
+		exitCode: raw.exitCode,
+		durationMs: raw.durationMs,
+		truncated: raw.truncated || stdout.truncated || stderr.truncated,
+		timedOut: raw.stopped === "timeout",
+	} satisfies TryToolResult;
+}
+
+/**
+ * The ordinary try path starts from a detached exact revision, then subtracts
+ * eval inputs, state, secrets and undeclared data through the same snapshot the
+ * Target runner uses. Nothing here reads or writes the operator's checkout.
  */
 async function runDeclaredToolInDirectory(options: {
 	directory: string;
@@ -217,66 +293,21 @@ async function runDeclaredToolInDirectory(options: {
 	signal?: AbortSignal;
 }): Promise<TryToolResult> {
 	const target = loadTarget(options.directory);
-	const scratchRoot = mkdtempSync(join(tmpdir(), "ahde-tool-try-"));
+	const scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), "ahde-tool-try-")));
 	const runsRoot = join(scratchRoot, "runs");
 	mkdirSync(runsRoot, { recursive: true, mode: 0o700 });
 	const snapshot = materializeTargetWorkspaceSnapshot(target, runsRoot);
 	try {
-		const resolved = loadTargetTools(snapshot.dir, target.manifest.tools, target.manifest.execution);
-		const tool = resolved.tools.find((candidate) => candidate.descriptor.name === options.tool);
-		if (!tool) {
-			const declared = resolved.tools.map((candidate) => candidate.descriptor.name).join(", ") || "none";
-			throw new ToolWorkshopError(`Target declares no tool named ${options.tool}; declared: ${declared}`);
-		}
-		const scratchDir = join(scratchRoot, "sandbox");
-		const sandboxBackend = detectTargetToolSandbox(snapshot.dir, scratchDir);
-		const prepared = tool.layout === "directory"
-			? prepareToolHome({
-				workspaceDir: snapshot.dir,
-				scratchDir,
-				tools: resolved.tools,
-				toolHomeRoot: snapshot.toolHomeDir,
-				policy: target.manifest.execution,
-				sandboxBackend,
-			})
-			: null;
-		const broker = new TargetToolBroker({
-			workspaceDir: snapshot.dir,
-			scratchDir,
-			policy: target.manifest.execution,
-			sandboxBackend,
-			...(prepared ? { toolHomeRoot: prepared.root } : {}),
-		});
-		const raw = await broker.runRaw(tool, options.input, options.signal);
-		const stdout = boundedOutput(raw.stdout);
-		const stderr = boundedOutput(raw.stderr);
-		const setup = prepared?.setups.find((outcome) => outcome.tool === tool.descriptor.name) ?? null;
-		return {
-			schemaVersion: 1,
-			tool: tool.descriptor.name,
-			layout: tool.layout,
+		return await runDeclaredToolOnSurface({
+			target,
+			directory: snapshot.dir,
+			toolHomeRoot: snapshot.toolHomeDir,
+			scratchRoot,
+			tool: options.tool,
+			input: options.input,
 			source: options.source,
-			target: {
-				id: target.manifest.id,
-				gitSha: target.gitSha,
-				toolsetHash: resolved.toolsetHash,
-				toolDigest: tool.digest,
-			},
-			sandbox: broker.sandboxBackend,
-			setup: setup && setup.ran
-				? {
-					...setup,
-					stdout: boundedOutput(setup.stdout).text,
-					stderr: boundedOutput(setup.stderr).text,
-				}
-				: null,
-			stdout: stdout.text,
-			stderr: stderr.text,
-			exitCode: raw.exitCode,
-			durationMs: raw.durationMs,
-			truncated: raw.truncated || stdout.truncated || stderr.truncated,
-			timedOut: raw.stopped === "timeout",
-		} satisfies TryToolResult;
+			...(options.signal ? { signal: options.signal } : {}),
+		});
 	} finally {
 		disposeTargetWorkspaceSnapshot(snapshot);
 		rmSync(scratchRoot, { recursive: true, force: true });
@@ -312,6 +343,7 @@ const DEFAULT_WORKSHOP_TIMEOUT_MS = 120_000;
 const MAX_WORKSHOP_TIMEOUT_MS = 600_000;
 const MAX_WORKSHOP_OUTPUT_BYTES = 256 * 1024;
 const WORKSHOP_COMMAND = /^[A-Za-z0-9._-]+$/;
+const WORKSHOP_SCRATCH_PREFIX = "ahde-workshop-";
 
 /** A refusal that always names the exact offending path. */
 export class BuilderWorkshopScopeError extends ToolWorkshopError {
@@ -348,6 +380,34 @@ export class BuilderWorkshopGrantRequiredError extends ToolWorkshopError {
 		this.tool = tool;
 		this.wants = [...wants];
 	}
+}
+
+/**
+ * A persisted workshop descriptor is selection state, not authority. In
+ * particular its cleanup path may never choose an arbitrary directory: accept
+ * only a real, direct child of the OS temp directory minted with our prefix.
+ */
+function workshopScratchRoot(input: string): string {
+	let root: string;
+	try {
+		root = realpathSync(resolve(input));
+	} catch (error) {
+		throw new ToolWorkshopError("the recorded workshop scratch directory is gone; open a new one", { cause: error });
+	}
+	const temporary = realpathSync(resolve(tmpdir()));
+	const child = relative(temporary, root);
+	if (
+		!child ||
+		isAbsolute(child) ||
+		child === ".." ||
+		child.startsWith(`..${sep}`) ||
+		child.includes(sep) ||
+		!basename(root).startsWith(WORKSHOP_SCRATCH_PREFIX) ||
+		!statSync(root).isDirectory()
+	) {
+		throw new ToolWorkshopError(`refusing an unsafe workshop scratch directory: ${root}`);
+	}
+	return root;
 }
 
 function assertWorkshopScope(requested: string): void {
@@ -747,7 +807,7 @@ export class BuilderWorkshop {
 		this.workshopId = options.workshopId;
 		this.repositoryDir = options.repositoryDir;
 		this.worktree = options.worktree;
-		this.scratchRoot = options.scratchRoot;
+		this.scratchRoot = workshopScratchRoot(options.scratchRoot);
 		this.baseTargetSha = options.worktree.sha;
 		this.targetId = options.targetId;
 		this.path = realpathSync(options.worktree.path);
@@ -1190,8 +1250,13 @@ export class BuilderWorkshop {
 		return recorded;
 	}
 
-	private granted(requirement: WorkshopToolGrantRequirement): boolean {
-		return this.grants.some((grant) => grant.tool === requirement.tool);
+	toolAccessGranted(requirement: WorkshopToolGrantRequirement): boolean {
+		this.assertOpen();
+		const expected = canonicalList([...requirement.wants].sort((left, right) => left.localeCompare(right)));
+		return this.grants.some((grant) =>
+			grant.tool === requirement.tool &&
+			canonicalList([...grant.wants].sort((left, right) => left.localeCompare(right))) === expected
+		);
 	}
 
 	/**
@@ -1208,7 +1273,7 @@ export class BuilderWorkshop {
 		}
 		this.syncDeclarations();
 		const requirement = this.describeToolGrant(options.tool);
-		if (requirement && !this.granted(requirement)) {
+		if (requirement && !this.toolAccessGranted(requirement)) {
 			throw new BuilderWorkshopGrantRequiredError(requirement.tool, requirement.wants);
 		}
 		// Fix what is being tried before anything runs, so the result describes the
@@ -1216,14 +1281,33 @@ export class BuilderWorkshop {
 		const before = this.walkAuthoringScope();
 		const snapshotHash = workshopSnapshotHash(before.entries);
 		const changedPaths = this.changesFrom(before.entries).map((change) => change.path);
+		const target = loadTarget(this.path);
+		// `try` gets the same filesystem promise as `bash`: only the authorable
+		// projection exists. Loading the Target above is host-side validation; the
+		// authored process below never receives the full detached worktree whose
+		// tracked files may include product source, notes, evals, or state.
+		const surface = this.materializeAuthoringSurface();
+		const tryScratch = realpathSync(mkdtempSync(join(this.scratchRoot, "try-")));
+		const toolHomeRoot = join(tryScratch, "tool-home");
+		mkdirSync(toolHomeRoot, { recursive: true, mode: 0o700 });
 		this.tries += 1;
-		const result = await runDeclaredToolInDirectory({
-			directory: this.path,
-			tool: options.tool,
-			input: options.input,
-			source: { kind: "workshop", ref: null, changedPaths, snapshotHash },
-			...(options.signal ? { signal: options.signal } : {}),
-		});
+		let result: TryToolResult;
+		try {
+			result = await runDeclaredToolOnSurface({
+				target,
+				directory: surface,
+				toolHomeRoot: realpathSync(toolHomeRoot),
+				scratchRoot: tryScratch,
+				tool: options.tool,
+				input: options.input,
+				source: { kind: "workshop", ref: null, changedPaths, snapshotHash },
+				resourceLimits: AUTHORING_RESOURCE_LIMITS,
+				...(options.signal ? { signal: options.signal } : {}),
+			});
+		} finally {
+			rmSync(surface, { recursive: true, force: true });
+			rmSync(tryScratch, { recursive: true, force: true });
+		}
 		const after = workshopSnapshotHash(this.walkAuthoringScope().entries);
 		if (after !== snapshotHash) {
 			throw new ToolWorkshopError(
@@ -1657,7 +1741,10 @@ export class BuilderWorkshop {
 		try {
 			this.worktree.close();
 		} catch (error) {
-			errors.push(error);
+			// Another recovered Builder process may already have abandoned this
+			// exact crash-surviving worktree. Missing is the desired end state; only a
+			// still-present path turns its cleanup error into our error.
+			if (existsSync(this.path)) errors.push(error);
 		}
 		try {
 			rmSync(this.scratchRoot, { recursive: true, force: true });
@@ -1717,7 +1804,7 @@ export function openBuilderWorkshop(options: OpenBuilderWorkshopOptions): Builde
 		if (manifest.id !== options.expectedTarget.id) {
 			throw new ToolWorkshopError("the workshop revision declares a different Target identity");
 		}
-		scratchRoot = mkdtempSync(join(tmpdir(), "ahde-workshop-"));
+		scratchRoot = realpathSync(mkdtempSync(join(tmpdir(), WORKSHOP_SCRATCH_PREFIX)));
 		return new BuilderWorkshop({
 			workshopId: options.workshopId ?? `workshop_${randomBytes(8).toString("hex")}`,
 			repositoryDir,
@@ -1754,20 +1841,26 @@ export function reattachBuilderWorkshop(options: {
 }): BuilderWorkshop {
 	const repositoryDir = realpathSync(resolve(options.repositoryDir));
 	const descriptor = options.descriptor;
-	if (descriptor.baseTargetSha !== options.expectedTarget.gitSha || descriptor.targetId !== options.expectedTarget.id) {
-		throw new ToolWorkshopError("the recorded workshop belongs to a different Target revision; discard it and open a new one");
-	}
-	if (
-		options.authoringContext.targetGitSha !== options.expectedTarget.gitSha ||
-		options.authoringContext.targetId !== options.expectedTarget.id
-	) {
-		throw new ToolWorkshopError("the authoring context claim does not describe the selected Target revision");
-	}
-	if (!existsSync(descriptor.worktreePath) || !existsSync(descriptor.scratchRoot)) {
+	if (!existsSync(descriptor.worktreePath)) {
+		if (existsSync(descriptor.scratchRoot)) {
+			const abandonedScratch = workshopScratchRoot(descriptor.scratchRoot);
+			rmSync(abandonedScratch, { recursive: true, force: true });
+		}
 		throw new ToolWorkshopError("the recorded workshop worktree is gone; open a new one");
 	}
 	const worktree = reattachDetachedWorktree(repositoryDir, descriptor.worktreePath, descriptor.baseTargetSha);
+	let scratchRoot: string | undefined;
 	try {
+		scratchRoot = workshopScratchRoot(descriptor.scratchRoot);
+		if (descriptor.baseTargetSha !== options.expectedTarget.gitSha || descriptor.targetId !== options.expectedTarget.id) {
+			throw new ToolWorkshopError("the recorded workshop belongs to a different Target revision; discard it and open a new one");
+		}
+		if (
+			options.authoringContext.targetGitSha !== options.expectedTarget.gitSha ||
+			options.authoringContext.targetId !== options.expectedTarget.id
+		) {
+			throw new ToolWorkshopError("the authoring context claim does not describe the selected Target revision");
+		}
 		const manifestText = workshopText(readFileSync(join(worktree.path, WORKSHOP_MANIFEST)), WORKSHOP_MANIFEST);
 		const manifest = TargetManifest.parse(parseYaml(manifestText));
 		if (manifest.id !== options.expectedTarget.id) {
@@ -1784,7 +1877,7 @@ export function reattachBuilderWorkshop(options: {
 			workshopId: descriptor.workshopId,
 			repositoryDir,
 			worktree,
-			scratchRoot: descriptor.scratchRoot,
+			scratchRoot,
 			targetId: manifest.id,
 			claim: options.authoringContext,
 			basis: descriptor.basis,
@@ -1804,6 +1897,7 @@ export function reattachBuilderWorkshop(options: {
 		return workshop;
 	} catch (error) {
 		worktree.close();
+		if (scratchRoot) rmSync(scratchRoot, { recursive: true, force: true });
 		throw error;
 	}
 }

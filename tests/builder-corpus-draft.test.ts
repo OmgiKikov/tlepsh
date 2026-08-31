@@ -5,6 +5,7 @@ import {
 	readFileSync,
 	rmSync,
 	symlinkSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -445,7 +446,7 @@ describe("Builder Corpus Draft V2", () => {
 			revisionSummary: "Initial draft",
 		})).toThrow(/regular non-symlink directory/);
 		expect(existsSync(join(outside, "corpus-draft"))).toBe(false);
-		rmSync(draftDirectory);
+		unlinkSync(draftDirectory);
 
 		const created = createBuilderCorpusDraft({
 			stateRoot,

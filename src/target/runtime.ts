@@ -261,8 +261,17 @@ export function createTargetToolRuntime(options: CreateTargetToolRuntimeOptions)
 			toolSetups: [],
 		};
 	}
+	// Sandbox profiles name concrete filesystem paths. macOS exposes its temp
+	// directory through `/var` while the kernel resolves it as `/private/var`;
+	// mixing the two spellings makes an otherwise allowed setup cwd unreadable
+	// inside sandbox-exec. Canonicalize every runtime root once before it reaches
+	// either backend so the profile, cwd and prepared tool home describe the same
+	// bytes.
+	const workspaceDir = realpathSync(resolve(options.workspaceDir));
+	mkdirSync(resolve(options.scratchDir), { recursive: true, mode: 0o700 });
+	const scratchDir = realpathSync(resolve(options.scratchDir));
 	const reloaded = loadTargetTools(
-		options.workspaceDir,
+		workspaceDir,
 		options.target.manifest.tools,
 		options.target.manifest.execution,
 	);
@@ -275,22 +284,25 @@ export function createTargetToolRuntime(options: CreateTargetToolRuntimeOptions)
 	const needsToolHome = reloaded.tools.some((tool) => tool.layout === "directory");
 	// Detecting the backend once keeps preparation and execution on one decision.
 	const sandboxBackend = needsToolHome
-		? detectTargetToolSandbox(realpathSync(resolve(options.workspaceDir)), options.scratchDir)
+		? detectTargetToolSandbox(workspaceDir, scratchDir)
 		: undefined;
+	const requestedToolHomeRoot = options.toolHomeRoot ?? join(scratchDir, "tool-workshop");
+	if (needsToolHome) mkdirSync(resolve(requestedToolHomeRoot), { recursive: true, mode: 0o700 });
+	const toolHomeRoot = needsToolHome ? realpathSync(resolve(requestedToolHomeRoot)) : undefined;
 	const prepared = needsToolHome
 		? prepareToolHome({
-			workspaceDir: options.workspaceDir,
-			scratchDir: options.scratchDir,
+			workspaceDir,
+			scratchDir,
 			tools: reloaded.tools,
-			toolHomeRoot: options.toolHomeRoot ?? join(options.scratchDir, "tool-workshop"),
+			toolHomeRoot: toolHomeRoot as string,
 			policy: options.target.manifest.execution,
 			...(sandboxBackend ? { sandboxBackend } : {}),
 			...(options.sourceEnvironment ? { sourceEnvironment: options.sourceEnvironment } : {}),
 		})
 		: null;
 	const broker = new TargetToolBroker({
-		workspaceDir: options.workspaceDir,
-		scratchDir: options.scratchDir,
+		workspaceDir,
+		scratchDir,
 		policy: options.target.manifest.execution,
 		sourceEnvironment: options.sourceEnvironment,
 		...(prepared ? { toolHomeRoot: prepared.root } : {}),

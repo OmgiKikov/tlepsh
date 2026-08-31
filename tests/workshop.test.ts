@@ -478,6 +478,59 @@ describe("the authoring profile", () => {
 		}
 	}, 120_000);
 
+	it("gives try_tool the authorable projection too, not the detached Target worktree", async () => {
+		const dir = fixture();
+		const protectedText = "TRACKED PRODUCT NOTE THAT IS NOT AUTHORABLE";
+		writeFileSync(join(dir, "operator-notes.md"), `${protectedText}\n`);
+		execFileSync("git", ["-C", dir, "add", "operator-notes.md"]);
+		execFileSync("git", [
+			"-C", dir, "-c", "user.name=test", "-c", "user.email=test@test", "commit", "--amend", "--no-edit", "-q",
+		]);
+		const workshop = open(dir);
+		try {
+			workshop.write({
+				path: "tools/snoop/tool.yaml",
+				content: `schemaVersion: 1
+name: snoop
+description: List files visible to this authored tool.
+parameters:
+  type: object
+  properties:
+    probe: { type: string, minLength: 1, maxLength: 10 }
+  required: [probe]
+  additionalProperties: false
+command:
+  argv: [tools/snoop/run]
+timeoutMs: 10000
+maxOutputBytes: 8192
+output: text
+permissions:
+  environment: []
+  network: deny
+  filesystem: read-only
+`,
+			});
+			workshop.write({
+				path: "tools/snoop/run",
+				content: "#!/bin/sh\nfind . -maxdepth 2 -type f -print | sort\n[ ! -e operator-notes.md ] || cat operator-notes.md\n",
+			});
+			let tried;
+			try {
+				tried = await workshop.tryTool({ tool: "snoop", input: { probe: "files" } });
+			} catch (error) {
+				if (sandboxUnavailable(error)) return;
+				throw error;
+			}
+			expect(tried.exitCode).toBe(0);
+			expect(tried.stdout).not.toContain("operator-notes.md");
+			expect(tried.stdout).not.toContain(protectedText);
+			expect(tried.stdout).not.toContain("evals/");
+			expect(tried.stdout).not.toContain(".git");
+		} finally {
+			workshop.dispose();
+		}
+	}, 120_000);
+
 	it("applies the documented ulimit caps the backend can enforce, and says so when it cannot", async () => {
 		const dir = fixture();
 		const workshop = open(dir);
@@ -581,6 +634,23 @@ describe("a tool that wants more than the profile grants", () => {
 			// Granted once means granted once: the second try does not ask again.
 			await workbench.workshopTry({ tool: "lookup", input: { term: "refunds" } }, { gate: allowing });
 			expect(asked).toHaveLength(1);
+
+			// The grant is for that exact capability set, not for the tool name.
+			// Adding a credential request after the answer asks a new question.
+			workshop.write({
+				path: "tools/lookup/tool.yaml",
+				content: NETWORK_DESCRIPTOR.replace(
+					"environment: []",
+					"environment: [WORKSHOP_TARGET_SECRET]",
+				),
+			});
+			await workbench.workshopTry({ tool: "lookup", input: { term: "refunds" } }, { gate: allowing });
+			expect(asked).toHaveLength(2);
+			expect(asked[1]?.subject).toMatchObject({
+				tool: "lookup",
+				network: true,
+				environment: ["WORKSHOP_TARGET_SECRET"],
+			});
 
 			// And the exception travels into the diff the operator applies.
 			const compiled = workshop.compile({ summary: "A tool that fetches its dependency", validationPlan: ["Re-run the basket"] });
@@ -1077,5 +1147,45 @@ describe("the construction workshop", () => {
 		await expect(second.submit({ kind: "workshop-open", workshopId: "workshop_00000000000000ff" }))
 			.rejects.toThrow(/no workshop workshop_00000000000000ff is recorded/);
 		restarted.closeWorkshop();
+	}, 180_000);
+
+	it("never trusts a persisted cleanup path and removes an abandoned crash-surviving worktree", async () => {
+		const dir = fixture();
+		const { workbench, stateRoot, runsRoot } = await specApproved(dir);
+		const first = await workbench.submit({ kind: "workshop-open" });
+		const firstId = String(first.artifact?.workshopId);
+		const firstPath = (workbench as unknown as { workshop: BuilderWorkshop }).workshop.path;
+		workbench.workshopWrite({ path: "AGENTS.md", content: "# Workshop Target\n\nCrash survivor.\n" });
+
+		// A new process chooses a new workshop instead of re-attaching. The old
+		// validated worktree is removed first; only the new one remains registered.
+		const restarted = createAhdeWorkbench({ projectDir: dir, stateRoot, runsRoot, projectId: "workshop-target" });
+		const replacement = await restarted.submit({ kind: "workshop-open" });
+		expect(replacement.artifact?.workshopId).not.toBe(firstId);
+		expect(existsSync(firstPath)).toBe(false);
+		expect(worktreeCount(dir)).toBe(2);
+		restarted.closeWorkshop();
+		workbench.closeWorkshop();
+
+		// Persisted state may be edited, but it may never turn cleanup into an
+		// arbitrary recursive delete.
+		const opened = await workbench.submit({ kind: "workshop-open" });
+		const workshopId = String(opened.artifact?.workshopId);
+		const protectedDir = mkdtempSync(join(tmpdir(), "ahde-protected-cleanup-"));
+		const marker = join(protectedDir, "keep.txt");
+		writeFileSync(marker, "keep\n");
+		try {
+			const statePath = join(stateRoot, "projects", "workshop-target", "workbench", "workshop.json");
+			const descriptor = JSON.parse(readFileSync(statePath, "utf8")) as Record<string, unknown>;
+			descriptor.scratchRoot = protectedDir;
+			writeFileSync(statePath, `${JSON.stringify(descriptor)}\n`);
+			const tampered = createAhdeWorkbench({ projectDir: dir, stateRoot, runsRoot, projectId: "workshop-target" });
+			await expect(tampered.submit({ kind: "workshop-open", workshopId }))
+				.rejects.toThrow(/unsafe workshop scratch directory/);
+			expect(readFileSync(marker, "utf8")).toBe("keep\n");
+		} finally {
+			workbench.closeWorkshop();
+			rmSync(protectedDir, { recursive: true, force: true });
+		}
 	}, 180_000);
 });
