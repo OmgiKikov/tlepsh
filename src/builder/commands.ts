@@ -744,7 +744,9 @@ export function registerAhdeBuilderCommands(
 				lines.push(warn(
 					shipping.sealedHoldout === "missing"
 						? `Ship gate has no sealed holdout — /holdout privately imports one (minimum ${shipping.minimumTasks} cases)`
-						: `Ship gate holdout is underpowered — /holdout privately imports a separate exam with at least ${shipping.minimumTasks} cases`,
+						: shipping.sealedHoldout === "underpowered"
+							? `Ship gate holdout is underpowered — /holdout privately imports a separate exam with at least ${shipping.minimumTasks} cases`
+							: `Ship gate holdout is unavailable or failed integrity checks — repair private corpus storage or /holdout privately imports a replacement`,
 				));
 			}
 			lines.push(`${p.dim("Stage")} ${stageLabel(view.stage)} · ${nextStep(view)}`);

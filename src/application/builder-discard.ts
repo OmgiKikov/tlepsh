@@ -6,7 +6,11 @@ import { CandidateProposalSchema } from "../builders/adapters.js";
 import { canonicalJson, hashValue } from "../provenance.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
-import { loadBuilderProposalRun } from "./builder-proposal.js";
+import { builderApplyIntentPath, loadBuilderProposalRun } from "./builder-proposal.js";
+import {
+	claimBuilderProposalDecision,
+	loadBuilderProposalDecisionClaim,
+} from "./builder-proposal-decision.js";
 
 const ArtifactIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/);
 const HashSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
@@ -95,11 +99,17 @@ export function assertBuilderProposalNotDiscarded(runsRoot: string, runId: strin
 	if (existsSync(builderDiscardReceiptPath(runsRoot, runId))) {
 		throw new Error(`builder proposal ${runId} was already discarded and cannot be applied`);
 	}
+	if (loadBuilderProposalDecisionClaim(runsRoot, runId)?.decision === "discard") {
+		throw new Error(`builder proposal ${runId} has an immutable discard decision claim and cannot be applied`);
+	}
 }
 
 export function discardBuilderProposal(
 	options: DiscardBuilderProposalOptions,
-	dependencies: { now?: () => string } = {},
+	dependencies: {
+		now?: () => string;
+		writeReceipt?: (path: string, receipt: BuilderDiscardReceipt) => void;
+	} = {},
 ): DiscardBuilderProposalResult {
 	const runId = ArtifactIdSchema.parse(options.runId);
 	const reason = NonBlankSchema.parse(options.reason);
@@ -109,11 +119,23 @@ export function discardBuilderProposal(
 	if (existsSync(receiptPath)) throw new Error(`discard receipt already exists for builder run ${runId}`);
 	const applyReceiptPath = resolveContainedArtifactPath(options.runsRoot, "builders", runId, "apply_receipt.json");
 	if (existsSync(applyReceiptPath)) throw new Error(`builder proposal ${runId} was already applied and cannot be discarded`);
+	if (existsSync(builderApplyIntentPath(options.runsRoot, runId))) {
+		throw new Error(`builder proposal ${runId} has a recoverable apply in progress and cannot be discarded`);
+	}
 
 	const described = describeBuilderProposalDiscard(options.runsRoot, runId);
 	if (described.subjectHash !== expectedSubjectHash) {
 		throw new Error("Builder proposal changed after confirmation; discard approval is stale");
 	}
+	const record = loadBuilderProposalRun(options.runsRoot, runId);
+	const builderRunSha256 = hashValue(record);
+	const existingClaim = loadBuilderProposalDecisionClaim(options.runsRoot, runId);
+	if (existingClaim?.decision === "apply") {
+		throw new Error(`builder proposal ${runId} already has an immutable apply decision claim; cannot discard`);
+	}
+	const discardedAt = existingClaim?.decision === "discard"
+		? existingClaim.decidedAt
+		: (dependencies.now ?? (() => new Date().toISOString()))();
 	const receipt = BuilderDiscardReceiptSchema.parse({
 		schemaVersion: 1,
 		runId,
@@ -121,10 +143,24 @@ export function discardBuilderProposal(
 		subjectHash: described.subjectHash,
 		baseTargetSha: described.subject.baseTargetSha,
 		actor,
-		discardedAt: (dependencies.now ?? (() => new Date().toISOString()))(),
+		discardedAt,
 		reason,
 	});
-	writeJsonArtifact(receiptPath, BuilderDiscardReceiptSchema, receipt, { immutable: true });
+	claimBuilderProposalDecision(options.runsRoot, runId, {
+		schemaVersion: 1,
+		decision: "discard",
+		runId,
+		builderRunSha256,
+		proposalSha256: receipt.proposalSha256,
+		baseTargetSha: receipt.baseTargetSha,
+		subjectHash: receipt.subjectHash,
+		actor: receipt.actor,
+		decidedAt: receipt.discardedAt,
+		reason: receipt.reason,
+	});
+	(dependencies.writeReceipt ?? ((path, value) => {
+		writeJsonArtifact(path, BuilderDiscardReceiptSchema, value, { immutable: true });
+	}))(receiptPath, receipt);
 	return { receipt, receiptPath };
 }
 

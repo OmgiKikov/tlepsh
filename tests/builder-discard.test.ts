@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,11 +8,16 @@ import {
 	discardBuilderProposal,
 	loadBuilderDiscardReceipt,
 } from "../src/application/builder-discard.js";
-import { recordBuilderAuthoredProposal } from "../src/application/builder-authoring.js";
+import {
+	approveBuilderSpecDraft,
+	describeSpecDraftApproval,
+	recordBuilderAuthoredProposal,
+	saveBuilderSpecDraft,
+} from "../src/application/builder-authoring.js";
 import { CANDIDATE_SCOPE_POLICY } from "../src/application/candidate-experiment.js";
 import { applyBuilderProposal } from "../src/application/builder-proposal.js";
 import { hashFile } from "../src/provenance.js";
-import { saveSpecSnapshot } from "../src/spec.js";
+import { deriveWorkbenchView, loadWorkbenchInventory } from "../src/workbench/inventory.js";
 
 const roots: string[] = [];
 
@@ -66,10 +71,9 @@ async function proposalFixture() {
 	const runsRoot = mkdtempSync(join(tmpdir(), "ahde-discard-runs-"));
 	const stateRoot = mkdtempSync(join(tmpdir(), "ahde-discard-state-"));
 	roots.push(runsRoot, stateRoot);
-	const spec = saveSpecSnapshot({
+	const draft = saveBuilderSpecDraft({
 		stateRoot,
 		projectId: "discard-project",
-		status: "approved",
 		spec: {
 			schemaVersion: 1,
 			title: "Discard fixture",
@@ -83,6 +87,15 @@ async function proposalFixture() {
 			openQuestions: [],
 		},
 	});
+	const approvalSubject = describeSpecDraftApproval(stateRoot, "discard-project", draft.id);
+	const spec = approveBuilderSpecDraft({
+		stateRoot,
+		projectId: "discard-project",
+		draftSpecId: draft.id,
+		expectedDraftSnapshotHash: approvalSubject.draftSnapshotHash,
+		actor: { kind: "human", id: "local:operator" },
+		reason: "Approve exact discard fixture",
+	}).approved;
 	const base = readFileSync(join(target.root, "AGENTS.md"), "utf8");
 	const run = await recordBuilderAuthoredProposal({
 		proposal: {
@@ -107,7 +120,13 @@ async function proposalFixture() {
 		runsRoot,
 		timeoutMs: 1_000,
 	});
-	return { runsRoot, runId: run.record.runId, repoDir: target.root };
+	return {
+		runsRoot,
+		stateRoot,
+		projectId: "discard-project",
+		runId: run.record.runId,
+		repoDir: target.root,
+	};
 }
 
 describe("durable Builder proposal discard", () => {
@@ -160,4 +179,133 @@ describe("durable Builder proposal discard", () => {
 			reason: "attempted stale apply",
 		})).toThrow(/already discarded/);
 	});
+
+	it("surfaces an interrupted discard and resumes only the exact decision after restart", async () => {
+		const value = await proposalFixture();
+		const described = describeBuilderProposalDiscard(value.runsRoot, value.runId);
+		const options = {
+			runsRoot: value.runsRoot,
+			runId: value.runId,
+			actor: { kind: "human" as const, id: "local:operator" },
+			reason: "Requested interactively via /discard",
+			expectedSubjectHash: described.subjectHash,
+		};
+		expect(() => discardBuilderProposal(options, {
+			now: () => "2026-08-26T12:00:00.000Z",
+			writeReceipt: () => { throw new Error("simulated process death before discard receipt"); },
+		})).toThrow(/simulated process death/);
+		expect(existsSync(join(value.runsRoot, "builders", value.runId, "decision_claim.json"))).toBe(true);
+		expect(existsSync(join(value.runsRoot, "builders", value.runId, "discard_receipt.json"))).toBe(false);
+
+		const inventory = loadWorkbenchInventory({
+			projectDir: value.repoDir,
+			stateRoot: value.stateRoot,
+			runsRoot: value.runsRoot,
+			projectId: value.projectId,
+		});
+		expect(inventory.integrityBlockers).toEqual([]);
+		expect(inventory.proposals.find((proposal) => proposal.record.runId === value.runId)?.status)
+			.toBe("discard-pending");
+		expect(deriveWorkbenchView(inventory)).toMatchObject({
+			stage: "proposal-review",
+			actions: ["review", "discard"],
+		});
+		expect(() => applyBuilderProposal({
+			repoDir: value.repoDir,
+			runsRoot: value.runsRoot,
+			runId: value.runId,
+			requestedBranch: `candidate/${value.runId}`,
+			actor: { kind: "human", id: "local:operator" },
+			reason: "Requested interactively via /apply",
+		})).toThrow(/discard decision claim/);
+
+		const recovered = discardBuilderProposal(options, {
+			now: () => "2099-01-01T00:00:00.000Z",
+		});
+		expect(recovered.receipt.discardedAt).toBe("2026-08-26T12:00:00.000Z");
+	});
+
+	it("surfaces an interrupted apply and deterministically replays the command defaults after restart", async () => {
+		const value = await proposalFixture();
+		const options = {
+			repoDir: value.repoDir,
+			runsRoot: value.runsRoot,
+			runId: value.runId,
+			requestedBranch: `candidate/${value.runId}`,
+			actor: { kind: "human" as const, id: "local:operator" },
+			reason: "Requested interactively via /apply",
+		};
+		expect(() => applyBuilderProposal(options, {
+			now: () => "2026-08-26T12:00:00.000Z",
+			writeIntent: () => { throw new Error("simulated process death after apply claim"); },
+		})).toThrow(/simulated process death/);
+
+		const inventory = loadWorkbenchInventory({
+			projectDir: value.repoDir,
+			stateRoot: value.stateRoot,
+			runsRoot: value.runsRoot,
+			projectId: value.projectId,
+		});
+		expect(inventory.integrityBlockers).toEqual([]);
+		expect(inventory.proposals.find((proposal) => proposal.record.runId === value.runId)?.status)
+			.toBe("apply-pending");
+		expect(deriveWorkbenchView(inventory)).toMatchObject({
+			stage: "proposal-review",
+			actions: ["review", "apply"],
+		});
+
+		const recovered = applyBuilderProposal(options, {
+			now: () => "2099-01-01T00:00:00.000Z",
+		});
+		expect(recovered.receipt.appliedAt).toBe("2026-08-26T12:00:00.000Z");
+		expect(recovered.receipt.branch).toBe(`candidate/${value.runId}`);
+	});
+
+	it.each(["apply-paths", "discard-subject"] as const)(
+		"treats a tampered pending %s claim as an inventory integrity blocker",
+		async (kind) => {
+			const value = await proposalFixture();
+			const claimPath = join(value.runsRoot, "builders", value.runId, "decision_claim.json");
+			if (kind === "apply-paths") {
+				expect(() => applyBuilderProposal({
+					repoDir: value.repoDir,
+					runsRoot: value.runsRoot,
+					runId: value.runId,
+					requestedBranch: `candidate/${value.runId}`,
+					actor: { kind: "human", id: "local:operator" },
+					reason: "Requested interactively via /apply",
+				}, {
+					now: () => "2026-08-26T12:00:00.000Z",
+					writeIntent: () => { throw new Error("stop after claim"); },
+				})).toThrow(/stop after claim/);
+				const claim = JSON.parse(readFileSync(claimPath, "utf8")) as Record<string, unknown>;
+				writeFileSync(claimPath, `${JSON.stringify({ ...claim, paths: ["skills/forged.md"] })}\n`);
+			} else {
+				const described = describeBuilderProposalDiscard(value.runsRoot, value.runId);
+				expect(() => discardBuilderProposal({
+					runsRoot: value.runsRoot,
+					runId: value.runId,
+					actor: { kind: "human", id: "local:operator" },
+					reason: "Requested interactively via /discard",
+					expectedSubjectHash: described.subjectHash,
+				}, {
+					now: () => "2026-08-26T12:00:00.000Z",
+					writeReceipt: () => { throw new Error("stop after claim"); },
+				})).toThrow(/stop after claim/);
+				const claim = JSON.parse(readFileSync(claimPath, "utf8")) as Record<string, unknown>;
+				writeFileSync(claimPath, `${JSON.stringify({ ...claim, subjectHash: `sha256:${"f".repeat(64)}` })}\n`);
+			}
+
+			const inventory = loadWorkbenchInventory({
+				projectDir: value.repoDir,
+				stateRoot: value.stateRoot,
+				runsRoot: value.runsRoot,
+				projectId: value.projectId,
+			});
+			expect(inventory.proposals).toEqual([]);
+			expect(inventory.integrityBlockers.join("\n")).toMatch(
+				kind === "apply-paths" ? /claim paths do not match/ : /claim subject does not match/,
+			);
+		},
+	);
 });

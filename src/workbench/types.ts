@@ -373,7 +373,7 @@ export interface WorkbenchView {
 	 * exam is large enough to make a future ship decision meaningful.
 	 */
 	shippingReadiness?: {
-		sealedHoldout: "missing" | "underpowered" | "ready";
+		sealedHoldout: "missing" | "underpowered" | "ready" | "unavailable";
 		minimumTasks: number;
 	};
 	/** Newest A/A calibration of the exact active Target revision, if any. */

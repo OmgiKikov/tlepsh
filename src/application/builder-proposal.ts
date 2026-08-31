@@ -63,6 +63,11 @@ import {
 	type TargetAuthoringContextClaim,
 } from "./target-authoring-context.js";
 import { withDetachedWorktree } from "../git/experiment-worktree.js";
+import {
+	claimBuilderProposalDecision,
+	loadBuilderProposalDecisionClaim,
+	type BuilderProposalDecisionClaim,
+} from "./builder-proposal-decision.js";
 
 const GIT_SHA = /^[0-9a-f]{40}$/;
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
@@ -403,7 +408,15 @@ const BuilderApplyIntentSchema = z.strictObject({
 	builderRunSha256: Sha256Schema,
 	receipt: BuilderApplyReceiptSchema,
 });
-type BuilderApplyIntent = z.infer<typeof BuilderApplyIntentSchema>;
+export type BuilderApplyIntent = z.infer<typeof BuilderApplyIntentSchema>;
+
+export function builderApplyIntentPath(runsRoot: string, runIdInput: string): string {
+	return resolveContainedArtifactPath(runsRoot, "builders", RunIdSchema.parse(runIdInput), "apply_intent.json");
+}
+
+export function loadBuilderApplyIntent(runsRoot: string, runIdInput: string): BuilderApplyIntent {
+	return readJsonArtifact(builderApplyIntentPath(runsRoot, runIdInput), BuilderApplyIntentSchema);
+}
 
 export interface RunBuilderProposalOptions {
 	adapter: BuilderAdapter;
@@ -1440,10 +1453,57 @@ function validateBranchName(repositoryDir: string, branch: string): string {
 	return `refs/heads/${branch}`;
 }
 
+function directBranchSha(repositoryDir: string, branch: string, ref: string): string | null {
+	const symbolic = gitStatus(repositoryDir, ["symbolic-ref", "--quiet", ref]);
+	if (symbolic === 0) throw new Error(`branch is a symbolic ref and is not an admissible candidate: ${branch}`);
+	if (symbolic !== 1) throw new Error(`cannot verify whether branch ${branch} is symbolic`);
+	const status = gitStatus(repositoryDir, ["show-ref", "--verify", "--quiet", ref]);
+	if (status === 1) return null;
+	if (status !== 0) throw new Error(`cannot verify whether branch ${branch} exists`);
+	const sha = gitText(repositoryDir, ["rev-parse", "--verify", ref]);
+	if (!GIT_SHA.test(sha)) throw new Error(`branch ${branch} does not resolve to an exact object id`);
+	return sha;
+}
+
 function assertBranchAbsent(repositoryDir: string, branch: string, ref: string): void {
-	if (gitStatus(repositoryDir, ["show-ref", "--verify", "--quiet", ref]) === 0) {
-		throw new Error(`branch already exists: ${branch}`);
-	}
+	if (directBranchSha(repositoryDir, branch, ref) !== null) throw new Error(`branch already exists: ${branch}`);
+}
+
+function applyDecisionClaim(
+	builderRunSha256: string,
+	receipt: BuilderApplyReceipt,
+): BuilderProposalDecisionClaim {
+	return {
+		schemaVersion: 1,
+		decision: "apply",
+		runId: receipt.runId,
+		builderRunSha256,
+		proposalSha256: receipt.proposalSha256,
+		baseTargetSha: receipt.baseTargetSha,
+		candidateSha: receipt.candidateSha,
+		branch: receipt.branch,
+		paths: receipt.paths,
+		actor: receipt.actor,
+		via: receipt.via ?? null,
+		decidedAt: receipt.appliedAt,
+		reason: receipt.reason,
+	};
+}
+
+function applyReceiptFromDecisionClaim(claim: Extract<BuilderProposalDecisionClaim, { decision: "apply" }>): BuilderApplyReceipt {
+	return BuilderApplyReceiptSchema.parse({
+		schemaVersion: BUILDER_APPLY_RECEIPT_SCHEMA_VERSION,
+		runId: claim.runId,
+		proposalSha256: claim.proposalSha256,
+		baseTargetSha: claim.baseTargetSha,
+		candidateSha: claim.candidateSha,
+		branch: claim.branch,
+		paths: claim.paths,
+		actor: claim.actor,
+		...(claim.via ? { via: claim.via } : {}),
+		appliedAt: claim.decidedAt,
+		reason: claim.reason,
+	});
 }
 
 function assertRegularBounded(path: string, maxBytes: number, label: string): void {
@@ -1668,7 +1728,7 @@ export function applyBuilderProposal(
 	const builderRunPath = resolveContainedArtifactPath(options.runsRoot, "builders", runId, "builder_run.json");
 	const proposalPath = resolveContainedArtifactPath(options.runsRoot, "builders", runId, "proposal.json");
 	const receiptPath = resolveContainedArtifactPath(options.runsRoot, "builders", runId, "apply_receipt.json");
-	const intentPath = resolveContainedArtifactPath(options.runsRoot, "builders", runId, "apply_intent.json");
+	const intentPath = builderApplyIntentPath(options.runsRoot, runId);
 	const discardReceiptPath = resolveContainedArtifactPath(options.runsRoot, "builders", runId, "discard_receipt.json");
 	if (existsSync(discardReceiptPath)) {
 		throw new Error(`builder proposal ${runId} was already discarded and cannot be applied`);
@@ -1741,7 +1801,7 @@ export function applyBuilderProposal(
 
 	const builderRunSha256 = hashValue(persisted);
 	const intent = existsSync(intentPath)
-		? readJsonArtifact(intentPath, BuilderApplyIntentSchema)
+		? loadBuilderApplyIntent(options.runsRoot, runId)
 		: null;
 	if (intent) {
 		if (intent.builderRunSha256 !== builderRunSha256) throw new Error("apply intent does not match the exact Builder run");
@@ -1757,20 +1817,47 @@ export function applyBuilderProposal(
 			bound.reason !== reason
 		) throw new Error("apply retry does not match its durable pre-mutation intent");
 	}
-	if (existsSync(receiptPath)) {
-		if (!intent) throw new Error(`apply receipt already exists for builder run ${runId}`);
-		const receipt = loadBuilderApplyReceipt(options.runsRoot, runId);
-		if (canonicalJson(receipt) !== canonicalJson(intent.receipt)) {
-			throw new Error("apply receipt does not match its durable pre-mutation intent");
+	let decisionClaim = loadBuilderProposalDecisionClaim(options.runsRoot, runId);
+	if (decisionClaim) {
+		if (decisionClaim.decision !== "apply") {
+			throw new Error(`builder proposal ${runId} already has an immutable discard decision claim; cannot apply`);
 		}
-		const branchStatus = gitStatus(repositoryDir, ["show-ref", "--verify", "--quiet", branchRef]);
-		if (branchStatus !== 0 || gitText(repositoryDir, ["rev-parse", branchRef]) !== receipt.candidateSha) {
+		if (
+			decisionClaim.builderRunSha256 !== builderRunSha256 ||
+			decisionClaim.proposalSha256 !== persisted.artifacts.proposal.sha256 ||
+			decisionClaim.baseTargetSha !== baseSha ||
+			decisionClaim.branch !== options.requestedBranch ||
+			canonicalJson(decisionClaim.paths) !== canonicalJson(paths) ||
+			canonicalJson(decisionClaim.actor) !== canonicalJson(actor) ||
+			decisionClaim.via !== (via ?? null) ||
+			decisionClaim.reason !== reason
+		) throw new Error("apply retry does not match its immutable proposal decision claim");
+	}
+	// An apply_intent from the pre-decision-claim implementation is already
+	// durable apply authority. Claim it before a concurrent discard can proceed.
+	if (intent && !decisionClaim) {
+		decisionClaim = claimBuilderProposalDecision(
+			options.runsRoot,
+			runId,
+			applyDecisionClaim(builderRunSha256, intent.receipt),
+		).claim;
+	}
+	if (existsSync(receiptPath)) {
+		if (!intent && !decisionClaim) throw new Error(`apply receipt already exists for builder run ${runId}`);
+		const receipt = loadBuilderApplyReceipt(options.runsRoot, runId);
+		const expectedReceipt = decisionClaim?.decision === "apply"
+			? applyReceiptFromDecisionClaim(decisionClaim)
+			: intent?.receipt;
+		if (!expectedReceipt || canonicalJson(receipt) !== canonicalJson(expectedReceipt)) {
+			throw new Error("apply receipt does not match its durable proposal decision authority");
+		}
+		if (directBranchSha(repositoryDir, options.requestedBranch, branchRef) !== receipt.candidateSha) {
 			throw new Error("apply receipt exists but its exact candidate branch is missing or changed");
 		}
-		try { unlinkSync(intentPath); } catch { /* A stale intent is safe beside a complete receipt. */ }
+		if (intent) try { unlinkSync(intentPath); } catch { /* A stale intent is safe beside a complete receipt. */ }
 		return { receipt, receiptPath };
 	}
-	if (!intent) assertBranchAbsent(repositoryDir, options.requestedBranch, branchRef);
+	if (!intent && !decisionClaim) assertBranchAbsent(repositoryDir, options.requestedBranch, branchRef);
 
 	const patch = `${proposal.changes.map((change) => change.unifiedDiff.trimEnd()).join("\n")}\n`;
 	const temporaryRoot = mkdtempSync(join(tmpdir(), TEMP_PREFIX));
@@ -1815,7 +1902,9 @@ export function applyBuilderProposal(
 		);
 		}
 
-		const appliedAt = intent?.receipt.appliedAt ?? TimestampSchema.parse(now());
+		const appliedAt = decisionClaim?.decision === "apply"
+			? decisionClaim.decidedAt
+			: intent?.receipt.appliedAt ?? TimestampSchema.parse(now());
 		const identityEnvironment: NodeJS.ProcessEnv = {
 			...process.env,
 			GIT_AUTHOR_NAME: "AHDE Builder",
@@ -1856,7 +1945,17 @@ export function applyBuilderProposal(
 			if (canonicalJson(receipt) !== canonicalJson(intent.receipt)) {
 				throw new Error("reconstructed candidate does not match its durable apply intent");
 			}
-		} else {
+		}
+		const claimed = claimBuilderProposalDecision(
+			options.runsRoot,
+			runId,
+			applyDecisionClaim(builderRunSha256, receipt),
+		);
+		decisionClaim = claimed.claim;
+		if (decisionClaim.decision !== "apply") {
+			throw new Error("proposal decision claim changed while applying");
+		}
+		if (!intent) {
 			deps.writeIntent(intentPath, {
 				schemaVersion: 1,
 				builderRunSha256,
@@ -1865,31 +1964,34 @@ export function applyBuilderProposal(
 			intentWritten = true;
 		}
 
-		const branchStatus = gitStatus(repositoryDir, ["show-ref", "--verify", "--quiet", branchRef]);
-		if (branchStatus === 1) {
-			gitText(repositoryDir, ["update-ref", "-m", `AHDE apply ${runId}`, branchRef, candidateSha, ZERO_SHA]);
-		} else if (branchStatus === 0) {
-			if (gitText(repositoryDir, ["rev-parse", branchRef]) !== candidateSha) {
+		const existingBranchSha = directBranchSha(repositoryDir, options.requestedBranch, branchRef);
+		if (existingBranchSha === null) {
+			gitText(repositoryDir, ["update-ref", "--no-deref", "-m", `AHDE apply ${runId}`, branchRef, candidateSha, ZERO_SHA]);
+			if (directBranchSha(repositoryDir, options.requestedBranch, branchRef) !== candidateSha) {
+				throw new Error("candidate branch did not publish as the exact direct ref");
+			}
+			branchCreated = true;
+		} else {
+			if (existingBranchSha !== candidateSha) {
 				throw new Error("durable apply intent collides with a branch at another revision");
 			}
-		} else {
-			throw new Error(`cannot verify whether branch ${options.requestedBranch} exists`);
 		}
-		branchCreated = true;
 		try {
 			deps.writeReceipt(receiptPath, receipt);
 			receiptWritten = true;
 		} catch (error) {
-			const rollback = spawnSync("git", ["-C", repositoryDir, "update-ref", "-d", branchRef, candidateSha], {
-				encoding: "utf8",
-			});
-			if (rollback.status !== 0) {
-				throw new AggregateError([error, new Error(rollback.stderr.trim())], "receipt write and branch rollback failed");
-			}
-			branchCreated = false;
-			if (intentWritten) {
-				try { unlinkSync(intentPath); } catch { /* The exact intent remains safely retryable. */ }
-				intentWritten = false;
+			if (branchCreated) {
+				const rollback = spawnSync("git", ["-C", repositoryDir, "update-ref", "--no-deref", "-d", branchRef, candidateSha], {
+					encoding: "utf8",
+				});
+				if (rollback.status !== 0) {
+					throw new AggregateError([error, new Error(rollback.stderr.trim())], "receipt write and branch rollback failed");
+				}
+				branchCreated = false;
+				if (intentWritten) {
+					try { unlinkSync(intentPath); } catch { /* The exact claim remains safely retryable. */ }
+					intentWritten = false;
+				}
 			}
 			throw error;
 		}
@@ -1901,7 +2003,7 @@ export function applyBuilderProposal(
 	} catch (error) {
 		operationError = error;
 		if (branchCreated && !receiptWritten && candidateSha) {
-			const rollback = spawnSync("git", ["-C", repositoryDir, "update-ref", "-d", branchRef, candidateSha], {
+			const rollback = spawnSync("git", ["-C", repositoryDir, "update-ref", "--no-deref", "-d", branchRef, candidateSha], {
 				encoding: "utf8",
 			});
 			if (rollback.status !== 0) {

@@ -375,15 +375,16 @@ export function requireDevelopmentEval(
 
 export function requireProposal(
 	inventory: WorkbenchInventory,
-	status: WorkbenchProposalInventory["status"],
+	status: WorkbenchProposalInventory["status"] | readonly WorkbenchProposalInventory["status"][],
 	explicitId?: string,
 ): WorkbenchProposalInventory {
+	const statuses = Array.isArray(status) ? status : [status];
 	return resolveOne({
-		items: inventory.proposals.filter((proposal) => proposal.status === status),
+		items: inventory.proposals.filter((proposal) => statuses.includes(proposal.status)),
 		explicitId,
 		focusId: inventory.validFocus.proposal?.id,
 		id: (proposal) => proposal.record.runId,
-		label: `${status} proposal`,
+		label: `${statuses.join("/")} proposal`,
 	});
 }
 

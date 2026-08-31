@@ -191,8 +191,11 @@ credential.
    symlinks all fail closed on the resolved real path with the offending path
    named. The workshop's shell is argv-only inside the same OS sandbox a
    declared Target tool runs in, with bounded output and a bounded timeout. The
-   four workshop tools exist only while a workshop is open; the workshop is
-   bound to one proposal attempt and dies with it, leaving no worktree behind.
+   four workshop tools exist only while a workshop session is active. A clean
+   shutdown suspends the exact worktree and host note for reattachment, while
+   deleting runtime scratch and all live grants; explicit discard removes the
+   worktree. Reattachment re-derives the exact Spec, basis, source, and snapshot
+   before restoring authoring access.
    A capability exception is one-shot and host-owned, bound to the exact
    workshop snapshot, tool digest, phase, network mode, and env names; it is
    consumed before execution and is never restored after restart.
@@ -224,7 +227,10 @@ credential.
    approved Spec without inventing diagnosis evidence; every later improvement
    remains bound to conclusive development evidence.
 7. The user's current checkout is never switched by an experiment.
-8. Durable artifacts are schema-versioned, validated on read, and written atomically.
+8. Durable artifacts are schema-versioned, validated on read, and written
+   atomically. Any transition spanning Git and artifact storage writes an exact
+   immutable intent before the Git effect; restart either completes that same
+   transition or fails closed, never infers a new decision from mutable state.
 9. Infrastructure failures are inconclusive evidence, not behavioral failures.
 10. Raw traces are protected evidence and are rejected before read/parse when
     their canonical byte or record bound is exceeded; reports use bounded,
@@ -244,8 +250,10 @@ credential.
 17. Declarative Target tool descriptors and executable bytes are part of Target
    identity: for a multi-file tool that is every file in its directory, sorted
    and mode-aware, plus its declared lockfile bytes. A declared setup step runs
-   once per prepared tool home, inside the same sandbox, writing only that
-   home. The resulting tree is attested by canonical path, bytes, executable
+   once in a private per-tool staging home and scratch directory inside the
+   same sandbox; it never receives write access to the shared final tool home.
+   The staged directory is attested and atomically promoted into that home.
+   The resulting tree is attested by canonical path, bytes, executable
    bits, and empty directories; symlinks and special files fail closed. That
    prepared-home hash is persisted in every member Run and EvalRun and must
    reproduce before cache reuse, baseline reuse, exact snapshot selection, or
@@ -260,7 +268,12 @@ credential.
     Runs, participates in baseline reuse, and is mandatory promotion evidence.
     Changes to the live Target cannot be attributed only to an unchanged Git SHA.
 20. Apply and Discard are durable, mutually exclusive terminal decisions for one
-    exact Builder Proposal.
+    exact Builder Proposal. One immutable decision claim serializes them before
+    branch mutation or receipt publication; interrupted decisions appear as a
+    recoverable pending state and only the exact claimed action may resume.
+    Promote and Reject use the same rule for a reviewed Candidate. Promotion
+    additionally binds an unsigned direct annotated tag, rejects symbolic refs,
+    and keeps legacy promotion journals recoverable across upgrades.
 21. Workbench may advance only from receipt-backed, revalidated artifacts in
     the exact selected lineage. A Spec approval cannot authorize another Spec's
     corpus, and a development corpus cannot be reused across Spec or Target
@@ -342,7 +355,10 @@ credential.
     recorded as evaluated evidence and refused at promotion; it is never thrown
     away. A verification never starts on a holdout smaller than the policy
     minimum. Older evidence (v1–v3) stays readable and renders its verdict, but
-    a promotion on it is refused until the candidate is verified again.
+    a promotion on it is refused until the candidate is verified again. Early
+    ship readiness host-verifies the actual private corpus bytes, mode, hash,
+    parse, and task count; Builder receives only the coarse state `missing`,
+    `underpowered`, `ready`, or `unavailable`.
 35. Noise is measured, never assumed: an A/A calibration of the same Target
     revision is the receipt for run-to-run noise, informs the recommended
     number of repetitions, and is never promotion evidence.

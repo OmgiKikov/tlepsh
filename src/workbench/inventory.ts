@@ -5,19 +5,25 @@ import {
 	type BuilderCorpusDraft,
 } from "../application/builder-corpus-draft.js";
 import { loadBuilderCorpusImportReceiptForDraft } from "../application/builder-corpus-import.js";
-import { builderDiscardReceiptPath } from "../application/builder-discard.js";
 import {
+	builderDiscardReceiptPath,
+	describeBuilderProposalDiscard,
+	loadBuilderDiscardReceipt,
+} from "../application/builder-discard.js";
+import {
+	builderApplyIntentPath,
 	listBuilderProposalAdmissions,
+	loadBuilderApplyIntent,
 	loadBuilderApplyReceipt,
 	loadBuilderProposalRunEnvelope,
 	verifyBuilderProposalRunEvidence,
 	type PersistedBuilderRun,
 } from "../application/builder-proposal.js";
+import { loadBuilderProposalDecisionClaim } from "../application/builder-proposal-decision.js";
 import {
 	loadDevelopmentCorpusPublicationReceipt,
 	loadSpecApprovalReceipt,
 } from "../application/builder-authoring.js";
-import { loadBuilderDiscardReceipt } from "../application/builder-discard.js";
 import { loadCandidateRecord } from "../application/candidate-review.js";
 import { targetWithDevelopmentCorpus } from "../application/corpus-target.js";
 import {
@@ -76,7 +82,7 @@ const MAX_PROPOSAL_BYTES = 4 * 1024 * 1024;
 
 export interface WorkbenchProposalInventory {
 	record: PersistedBuilderRun;
-	status: "open" | "applied" | "discarded";
+	status: "open" | "apply-pending" | "discard-pending" | "applied" | "discarded";
 }
 
 export interface WorkbenchDevelopmentLineage {
@@ -109,6 +115,12 @@ export interface WorkbenchInventory {
 	adoptedCandidates: Map<string, TargetAdoptionReceipt>;
 	/** Terminal candidates whose reviewed loop was explicitly closed by a human. */
 	continuedCandidates: Map<string, CycleContinuationReceipt>;
+	/**
+	 * Host-only verification of the private exam. The model sees only this
+	 * coarse result; corpus identity, paths, content, hashes, and failure details
+	 * never cross the Workbench view boundary.
+	 */
+	sealedHoldoutReadiness: NonNullable<WorkbenchView["shippingReadiness"]>["sealedHoldout"];
 	focus: WorkbenchFocus;
 	validFocus: Partial<Record<WorkbenchSelectionKind, WorkbenchFocusEntry>>;
 	warnings: string[];
@@ -249,18 +261,85 @@ function listProposals(
 			}
 			const applyPath = resolveContainedArtifactPath(runsRoot, "builders", runId, "apply_receipt.json");
 			const discardPath = builderDiscardReceiptPath(runsRoot, runId);
+			const intentPath = builderApplyIntentPath(runsRoot, runId);
 			const hasApply = existsSync(applyPath);
 			const hasDiscard = existsSync(discardPath);
+			const hasApplyIntent = existsSync(intentPath);
+			const decisionClaim = loadBuilderProposalDecisionClaim(runsRoot, runId);
 			if (hasApply && hasDiscard) throw new Error("proposal has mutually exclusive apply and discard receipts");
+			if (decisionClaim && (
+				decisionClaim.runId !== record.runId ||
+				decisionClaim.builderRunSha256 !== hashValue(record) ||
+				decisionClaim.proposalSha256 !== record.artifacts.proposal?.sha256 ||
+				decisionClaim.baseTargetSha !== record.result.proposal.baseTargetSha
+			)) throw new Error("proposal decision claim does not bind the exact admitted proposal");
+			const expectedPaths = record.result.proposal.changes.map((change) => change.path).sort();
+			if (
+				decisionClaim?.decision === "apply" &&
+				canonicalArray(decisionClaim.paths) !== canonicalArray(expectedPaths)
+			) throw new Error("apply decision claim paths do not match the exact proposal");
+			if (
+				decisionClaim?.decision === "discard" &&
+				decisionClaim.subjectHash !== describeBuilderProposalDiscard(runsRoot, runId).subjectHash
+			) throw new Error("discard decision claim subject does not match the exact proposal");
+			if (decisionClaim?.decision === "apply" && hasDiscard) {
+				throw new Error("discard receipt conflicts with the immutable apply decision claim");
+			}
+			if (decisionClaim?.decision === "discard" && (hasApply || hasApplyIntent)) {
+				throw new Error("apply state conflicts with the immutable discard decision claim");
+			}
+			if (hasApplyIntent) {
+				const intent = loadBuilderApplyIntent(runsRoot, runId);
+				if (
+					intent.builderRunSha256 !== hashValue(record) ||
+					intent.receipt.runId !== record.runId ||
+					intent.receipt.proposalSha256 !== record.artifacts.proposal?.sha256 ||
+					intent.receipt.baseTargetSha !== record.result.proposal.baseTargetSha ||
+					canonicalArray(intent.receipt.paths) !== canonicalArray(expectedPaths)
+				) throw new Error("apply intent does not bind the exact proposal");
+				if (decisionClaim?.decision === "apply" && canonicalJson({
+					candidateSha: decisionClaim.candidateSha,
+					branch: decisionClaim.branch,
+					paths: decisionClaim.paths,
+					actor: decisionClaim.actor,
+					via: decisionClaim.via,
+					decidedAt: decisionClaim.decidedAt,
+					reason: decisionClaim.reason,
+				}) !== canonicalJson({
+					candidateSha: intent.receipt.candidateSha,
+					branch: intent.receipt.branch,
+					paths: intent.receipt.paths,
+					actor: intent.receipt.actor,
+					via: intent.receipt.via ?? null,
+					decidedAt: intent.receipt.appliedAt,
+					reason: intent.receipt.reason,
+				})) throw new Error("apply intent does not match the immutable apply decision claim");
+			}
 			if (hasApply) {
 				const receipt = loadBuilderApplyReceipt(runsRoot, runId);
-				const expectedPaths = record.result.proposal.changes.map((change) => change.path).sort();
 				if (
 					receipt.runId !== record.runId ||
 					receipt.proposalSha256 !== record.artifacts.proposal?.sha256 ||
 					receipt.baseTargetSha !== record.result.proposal.baseTargetSha ||
 					canonicalArray(receipt.paths) !== canonicalArray(expectedPaths)
 				) throw new Error("apply receipt does not bind the exact proposal");
+				if (decisionClaim?.decision === "apply" && canonicalJson({
+					candidateSha: decisionClaim.candidateSha,
+					branch: decisionClaim.branch,
+					paths: decisionClaim.paths,
+					actor: decisionClaim.actor,
+					via: decisionClaim.via,
+					decidedAt: decisionClaim.decidedAt,
+					reason: decisionClaim.reason,
+				}) !== canonicalJson({
+					candidateSha: receipt.candidateSha,
+					branch: receipt.branch,
+					paths: receipt.paths,
+					actor: receipt.actor,
+					via: receipt.via ?? null,
+					decidedAt: receipt.appliedAt,
+					reason: receipt.reason,
+				})) throw new Error("apply receipt does not match the immutable apply decision claim");
 			}
 			if (hasDiscard) {
 				const receipt = loadBuilderDiscardReceipt(runsRoot, runId);
@@ -269,10 +348,24 @@ function listProposals(
 					receipt.proposalSha256 !== record.artifacts.proposal?.sha256 ||
 					receipt.baseTargetSha !== record.result.proposal.baseTargetSha
 				) throw new Error("discard receipt does not bind the exact proposal");
+				if (decisionClaim?.decision === "discard" && (
+					receipt.subjectHash !== decisionClaim.subjectHash ||
+					canonicalJson(receipt.actor) !== canonicalJson(decisionClaim.actor) ||
+					receipt.discardedAt !== decisionClaim.decidedAt ||
+					receipt.reason !== decisionClaim.reason
+				)) throw new Error("discard receipt does not match the immutable discard decision claim");
 			}
 			proposals.push({
 				record,
-				status: hasApply ? "applied" : hasDiscard ? "discarded" : "open",
+				status: hasApply
+					? "applied"
+					: hasDiscard
+						? "discarded"
+						: decisionClaim?.decision === "discard"
+							? "discard-pending"
+							: decisionClaim?.decision === "apply" || hasApplyIntent
+								? "apply-pending"
+								: "open",
 			});
 		} catch (error) {
 			integrityFailure(warnings, blockers, `proposal ${runId}: ${errorMessage(error)}`);
@@ -507,9 +600,38 @@ export function loadWorkbenchInventory(options: {
 		}
 	}
 	let corpora: CorpusMetadata[] = [];
+	let sealedHoldoutReadiness: WorkbenchInventory["sealedHoldoutReadiness"] = "missing";
 	try {
 		corpora = listCorpora({ stateRoot: options.stateRoot, projectId: options.projectId });
+		const sealed = corpora.filter((corpus) => corpus.visibility === "sealed");
+		if (sealed.length > 0) {
+			let largestVerifiedCorpus = 0;
+			let verifiedCorpora = 0;
+			for (const corpus of sealed) {
+				try {
+					const verified = loadCorpus({
+						stateRoot: options.stateRoot,
+						projectId: options.projectId,
+						corpusId: corpus.id,
+					});
+					// Protect the metadata-list/read seam as well as content itself: a
+					// corpus changed between those reads is not release evidence.
+					if (canonicalJson(verified.metadata) !== canonicalJson(corpus)) {
+						throw new Error("sealed corpus metadata changed during verification");
+					}
+					verifiedCorpora += 1;
+					largestVerifiedCorpus = Math.max(largestVerifiedCorpus, verified.tasks.length);
+				} catch {
+					// A broken private exam cannot qualify, but it also cannot poison a
+					// different independently verified exam. Failure details stay here.
+				}
+			}
+			sealedHoldoutReadiness = verifiedCorpora === 0
+				? "unavailable"
+				: largestVerifiedCorpus >= SEALED_GATE_POLICY.minTasks ? "ready" : "underpowered";
+		}
 	} catch {
+		sealedHoldoutReadiness = "unavailable";
 		integrityFailure(
 			warnings,
 			integrityBlockers,
@@ -796,6 +918,7 @@ export function loadWorkbenchInventory(options: {
 		abandonedCandidates,
 		adoptedCandidates,
 		continuedCandidates,
+		sealedHoldoutReadiness,
 		focus,
 		warnings,
 		integrityBlockers,
@@ -954,12 +1077,23 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 	}
 	if (appliedChoice) return { stage: "candidate-verification", headline: "The proposal is applied; verify its exact candidate revision.", actions: ["run"], blockers: [] };
 
-	const open = inventory.proposals.filter((proposal) => proposal.status === "open");
-	const proposalChoice = selectedOrUniqueId(open, inventory.validFocus.proposal?.id, (proposal) => proposal.record.runId);
+	const reviewable = inventory.proposals.filter((proposal) =>
+		proposal.status === "open" || proposal.status === "apply-pending" || proposal.status === "discard-pending"
+	);
+	const proposalChoice = selectedOrUniqueId(reviewable, inventory.validFocus.proposal?.id, (proposal) => proposal.record.runId);
 	if (proposalChoice === "ambiguous") {
-		return { stage: "selection-required", headline: "Choose the proposal to review.", actions: ["select proposal"], blockers: [`${open.length} proposals await a decision.`] };
+		return { stage: "selection-required", headline: "Choose the proposal to review.", actions: ["select proposal"], blockers: [`${reviewable.length} proposals await a decision or recovery.`] };
 	}
-	if (proposalChoice) return { stage: "proposal-review", headline: "Review the exact proposal diff, then apply or discard it.", actions: ["review", "apply", "discard"], blockers: [] };
+	if (proposalChoice) {
+		const proposal = reviewable.find((item) => item.record.runId === proposalChoice)!;
+		if (proposal.status === "apply-pending") {
+			return { stage: "proposal-review", headline: "This proposal has an interrupted apply; resume the exact apply decision.", actions: ["review", "apply"], blockers: [] };
+		}
+		if (proposal.status === "discard-pending") {
+			return { stage: "proposal-review", headline: "This proposal has an interrupted discard; resume the exact discard decision.", actions: ["review", "discard"], blockers: [] };
+		}
+		return { stage: "proposal-review", headline: "Review the exact proposal diff, then apply or discard it.", actions: ["review", "apply", "discard"], blockers: [] };
+	}
 
 	const approved = inventory.specs.filter((spec) => spec.status === "approved" && inventory.verifiedApprovedSpecIds.has(spec.id));
 	const unapprovedDrafts = inventory.specs.filter((spec) =>
@@ -1178,10 +1312,6 @@ export function deriveWorkbenchView(
 	const candidates = inventory.candidates.slice(0, MAX_VIEW_ITEMS);
 	const state = stageFor(inventory);
 	const evaluatorRequirements = evaluatorRequirementsOf(inventory);
-	const sealed = inventory.corpora.filter((corpus) => corpus.visibility === "sealed");
-	const sealedHoldout = sealed.some((corpus) => corpus.taskCount >= SEALED_GATE_POLICY.minTasks)
-		? "ready"
-		: sealed.length > 0 ? "underpowered" : "missing";
 	return {
 		schemaVersion: 1,
 		project: { id: inventory.projectId, directory: basename(inventory.projectDir) },
@@ -1235,7 +1365,7 @@ export function deriveWorkbenchView(
 		blockers: state.blockers,
 		warnings: [...inventory.warnings, ...sealedExposureWarnings(inventory)],
 		shippingReadiness: {
-			sealedHoldout,
+			sealedHoldout: inventory.sealedHoldoutReadiness,
 			minimumTasks: SEALED_GATE_POLICY.minTasks,
 		},
 		calibration: calibrationOf(inventory),
@@ -1246,7 +1376,9 @@ export function deriveWorkbenchView(
 			developmentCorpora: inventory.developmentLineage.size,
 			sealedCorpora: inventory.corpora.filter((corpus) => corpus.visibility === "sealed").length,
 			developmentEvals: inventory.developmentEvals.length,
-			openProposals: inventory.proposals.filter((proposal) => proposal.status === "open").length,
+			openProposals: inventory.proposals.filter((proposal) =>
+				proposal.status === "open" || proposal.status === "apply-pending" || proposal.status === "discard-pending"
+			).length,
 			candidates: inventory.candidates.length,
 			calibrations: inventory.calibrations.length,
 		},

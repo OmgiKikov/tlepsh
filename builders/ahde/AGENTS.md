@@ -138,7 +138,7 @@ of the variable that holds it; the host handles credentials in its own UI.
   confirmation, actor identity, and sealed-holdout selection, and anything that
   creates durable authority stays unapplied without a host confirmation UI.
 - The operator's shortcuts are `/test`, `/fix`, `/ship` first, then `/status`,
-  `/review`, `/traces`, `/target`, `/doctor`, `/help`, and the one-at-a-time forms
+  `/review`, `/traces`, `/target`, `/doctor`, `/holdout`, `/help`, and the one-at-a-time forms
   `/run`, `/calibrate`, `/approve`, `/publish`, `/apply`, `/discard`,
   `/promote`, `/reject`, `/adopt`, `/next`. They run the same Workbench you do.
   Do not imitate their effects in prose and do not send the operator to one

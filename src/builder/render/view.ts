@@ -93,7 +93,9 @@ function shippingReadinessLine(view: WorkbenchView, paint: Paint): string | null
 	if (!readiness || view.counts.approvedSpecs === 0 || readiness.sealedHoldout === "ready") return null;
 	const state = readiness.sealedHoldout === "missing"
 		? "no sealed holdout"
-		: `sealed holdout has fewer than ${readiness.minimumTasks} cases`;
+		: readiness.sealedHoldout === "underpowered"
+			? `sealed holdout has fewer than ${readiness.minimumTasks} cases`
+			: "sealed holdout is unavailable or failed integrity checks";
 	return `${paint.dim("Ship gate")} ${paint.warning(state)} ${paint.dim(`· /holdout imports an operator-owned JSONL exam (minimum ${readiness.minimumTasks})`)}`;
 }
 

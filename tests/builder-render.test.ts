@@ -659,6 +659,18 @@ describe("renderStatus", () => {
 			shippingReadiness: { sealedHoldout: "ready", minimumTasks: 15 },
 		}), plainPaint);
 		expect(ready.join("\n")).not.toContain("Ship gate");
+
+		const unavailableView = makeView({
+			shippingReadiness: { sealedHoldout: "unavailable", minimumTasks: 15 },
+		});
+		const unavailable = renderStatus(unavailableView, plainPaint);
+		expect(unavailable).toContain("Ship gate sealed holdout is unavailable or failed integrity checks · /holdout imports an operator-owned JSONL exam (minimum 15)");
+		const header = renderHeader(
+			{ view: unavailableView, builderModel: { label: "openai/gpt-5", credentialPresent: true } },
+			plainPaint,
+		).join("\n");
+		expect(header).toContain("Ship gate sealed holdout is unavailable or failed integrity checks");
+		expect(header).not.toMatch(/corpus-[0-9a-f]{64}|sha256:|corpus\.jsonl|PRIVATE/);
 	});
 
 	it("describes missing, bootstrap-required, and credential-less targets", () => {

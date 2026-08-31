@@ -36,6 +36,10 @@ import {
 	runApprovedSpecBuilderProposal,
 	runBuilderProposal,
 } from "../src/application/builder-proposal.js";
+import {
+	describeBuilderProposalDiscard,
+	discardBuilderProposal,
+} from "../src/application/builder-discard.js";
 import { runSuite } from "../src/eval.js";
 import { loadTarget } from "../src/manifest.js";
 import { saveSpecSnapshot, type AgentSpec } from "../src/spec.js";
@@ -1207,8 +1211,17 @@ permissions:
 		const candidateSha = staged.receipt.candidateSha;
 		// This is the exact externally visible state a process death immediately
 		// after update-ref leaves behind: branch + intent, but no receipt.
-		git(repositoryDir, ["update-ref", "refs/heads/candidate/apply-crash", candidateSha, "0".repeat(40)]);
+		git(repositoryDir, ["update-ref", "--no-deref", "refs/heads/candidate/apply-crash", candidateSha, "0".repeat(40)]);
 		expect(existsSync(join(persisted.runDir, "apply_receipt.json"))).toBe(false);
+		expect(existsSync(join(persisted.runDir, "decision_claim.json"))).toBe(true);
+		const discardSubject = describeBuilderProposalDiscard(options.runsRoot, options.runId);
+		expect(() => discardBuilderProposal({
+			runsRoot: options.runsRoot,
+			runId: options.runId,
+			actor: { kind: "human", id: "reviewer" },
+			reason: "try to reverse the interrupted decision",
+			expectedSubjectHash: discardSubject.subjectHash,
+		})).toThrow(/apply in progress|apply decision claim/);
 
 		const recovered = applyBuilderProposal(options, { now: () => "2099-01-01T00:00:00.000Z" });
 		expect(recovered.receipt.candidateSha).toBe(candidateSha);
@@ -1277,6 +1290,32 @@ permissions:
 		}, { now: () => NOW })).toThrow(/branch already exists/);
 		expect(git(repositoryDir, ["rev-parse", "candidate/existing"])).toBe(baseSha);
 		expect(git(repositoryDir, ["branch", "--show-current"])).toBe("main");
+	});
+
+	it.each([
+		["existing", "refs/heads/main"],
+		["dangling", "refs/heads/does-not-exist"],
+	] as const)("rejects a %s symbolic candidate branch without touching its target", async (kind, targetRef) => {
+		const { repositoryDir, baseSha } = initRepository();
+		const runId = `builder-symbolic-${kind}`;
+		const branch = `candidate/symbolic-${kind}`;
+		const branchRef = `refs/heads/${branch}`;
+		const persisted = await persistProposal({ repositoryDir, baseSha, runId });
+		git(repositoryDir, ["symbolic-ref", branchRef, targetRef]);
+		const mainBefore = git(repositoryDir, ["rev-parse", "refs/heads/main"]);
+
+		expect(() => applyBuilderProposal({
+			repoDir: repositoryDir,
+			runsRoot: dirname(dirname(persisted.runDir)),
+			runId,
+			requestedBranch: branch,
+			actor: { kind: "human", id: "reviewer" },
+			reason: "must reject symbolic candidate refs",
+		}, { now: () => NOW })).toThrow(/symbolic ref/);
+
+		expect(git(repositoryDir, ["symbolic-ref", branchRef])).toBe(targetRef);
+		expect(git(repositoryDir, ["rev-parse", "refs/heads/main"])).toBe(mainBefore);
+		expect(existsSync(join(persisted.runDir, "decision_claim.json"))).toBe(false);
 	});
 
 	it("requires the empty-hash sentinel for new files and rejects Gitlink modes", async () => {

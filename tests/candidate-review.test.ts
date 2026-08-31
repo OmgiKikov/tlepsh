@@ -656,6 +656,32 @@ function repository(manifest?: string): { dir: string; baselineSha: string; cand
 	return { dir, baselineSha: baseline, candidateSha: git(dir, "rev-parse", "HEAD") };
 }
 
+function writePromotionTag(
+	dir: string,
+	value: { tag: string; candidateSha: string; tagMessage: string; at: string },
+): void {
+	execFileSync(
+		"git",
+		[
+			"-C", dir,
+			"-c", "user.name=AHDE human gate",
+			"-c", "user.email=ahde@local",
+			"-c", "tag.gpgSign=false",
+			"tag", "-a", "--no-sign", "--cleanup=verbatim",
+			value.tag, "-m", value.tagMessage, value.candidateSha,
+		],
+		{
+			stdio: ["ignore", "pipe", "pipe"],
+			env: {
+				...process.env,
+				GIT_COMMITTER_NAME: "AHDE human gate",
+				GIT_COMMITTER_EMAIL: "ahde@local",
+				GIT_COMMITTER_DATE: value.at,
+			},
+		},
+	);
+}
+
 afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -948,13 +974,14 @@ describe("candidate human review", () => {
 			tag: string;
 			candidateSha: string;
 			tagMessage: string;
+			at: string;
 		};
-		git(
-			repo.dir,
-			"-c", "user.name=AHDE human gate",
-			"-c", "user.email=ahde@local",
-			"tag", "-a", staged.tag, "-m", staged.tagMessage, staged.candidateSha,
-		);
+		expect(() => decideCandidateRejection({
+			...value,
+			reason: "reject raced with pending promotion",
+			now: () => at,
+		})).toThrow(/promotion in progress/);
+		writePromotionTag(repo.dir, staged);
 		expect(candidateStatus(loadCandidateRecord(value.runsRoot, value.candidateId))).toBe("reviewed");
 
 		const recovered = promoteReviewedCandidate({ ...options, now: () => "2099-01-01T00:00:00.000Z" });
@@ -962,6 +989,111 @@ describe("candidate human review", () => {
 		expect(recovered.tag).toBe(staged.tag);
 		expect(git(repo.dir, "rev-list", "-n", "1", staged.tag)).toBe(staged.candidateSha);
 		expect(existsSync(join(value.runsRoot, "candidates", value.candidateId, "promotion_intent.json"))).toBe(false);
+	});
+
+	it("does not let a stale promoter overwrite a rejection that completed before its claim", () => {
+		const repo = repository();
+		const value = fixture(true, { ...repo, targetId: "test-target" });
+		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+		const options = {
+			repositoryDir: repo.dir,
+			...value,
+			version: "1.2.10",
+			reason: "stale promoter",
+			now: () => at,
+		};
+		expect(() => promoteReviewedCandidate(options, {
+			writeClaim: (path, claim) => {
+				decideCandidateRejection({ ...value, reason: "reject won", now: () => at });
+				writeFileSync(path, `${JSON.stringify(claim)}\n`, { mode: 0o600 });
+			},
+		})).toThrow(/candidate changed while claiming promotion/);
+		expect(candidateStatus(loadCandidateRecord(value.runsRoot, value.candidateId))).toBe("rejected");
+		expect(git(repo.dir, "tag", "--list", "v1.2.10")).toBe("");
+		expect(existsSync(join(value.runsRoot, "candidates", value.candidateId, "promotion_intent.json"))).toBe(false);
+		expect(existsSync(join(value.runsRoot, "candidates", value.candidateId, "transition_claim.json"))).toBe(false);
+	});
+
+	it("recovers legacy v1 promotion journals both before and after tag creation", () => {
+		for (const tagAlreadyExists of [false, true]) {
+			const repo = repository();
+			const value = fixture(true, { ...repo, targetId: "test-target" });
+			reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+			const options = {
+				repositoryDir: repo.dir,
+				...value,
+				version: tagAlreadyExists ? "1.2.12" : "1.2.11",
+				reason: "legacy crash recovery",
+				now: () => at,
+			};
+			const captured: Record<string, unknown>[] = [];
+			expect(() => promoteReviewedCandidate(options, {
+				writeIntent: (path, intent) => {
+					captured.push(intent as unknown as Record<string, unknown>);
+					writeFileSync(path, `${JSON.stringify(intent)}\n`, { mode: 0o600 });
+					throw new Error("simulate upgrade from v1 journal");
+				},
+			})).toThrow(/simulate upgrade from v1 journal/);
+			const capturedIntent = captured[0];
+			if (!capturedIntent) throw new Error("expected promotion intent");
+			const { taggerName: _name, taggerEmail: _email, ...legacyFields } = capturedIntent;
+			const legacyIntent = { ...legacyFields, schemaVersion: 1 } as unknown as {
+				tag: string;
+				candidateSha: string;
+				tagMessage: string;
+				at: string;
+			};
+			const candidateDir = join(value.runsRoot, "candidates", value.candidateId);
+			rmSync(join(candidateDir, "transition_claim.json"));
+			writeFileSync(join(candidateDir, "promotion_intent.json"), `${JSON.stringify(legacyIntent)}\n`, { mode: 0o600 });
+			if (tagAlreadyExists) writePromotionTag(repo.dir, legacyIntent);
+
+			const recovered = promoteReviewedCandidate({ ...options, now: () => "2099-01-01T00:00:00.000Z" });
+			expect(candidateStatus(recovered.record)).toBe("promoted");
+			expect(git(repo.dir, "rev-list", "-n", "1", legacyIntent.tag)).toBe(legacyIntent.candidateSha);
+			expect(existsSync(join(candidateDir, "promotion_intent.json"))).toBe(false);
+			expect(existsSync(join(candidateDir, "transition_claim.json"))).toBe(false);
+		}
+	});
+
+	it("refuses even a dangling symbolic tag ref during promotion recovery", () => {
+		const repo = repository();
+		const value = fixture(true, { ...repo, targetId: "test-target" });
+		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+		const options = {
+			repositoryDir: repo.dir,
+			...value,
+			version: "1.2.13",
+			reason: "symbolic collision",
+			now: () => at,
+		};
+		expect(() => promoteReviewedCandidate(options, {
+			writeIntent: (path, intent) => {
+				writeFileSync(path, `${JSON.stringify(intent)}\n`, { mode: 0o600 });
+				throw new Error("simulated crash before tag");
+			},
+		})).toThrow(/simulated crash before tag/);
+		git(repo.dir, "symbolic-ref", "refs/tags/v1.2.13", "refs/tags/missing-promotion-tag");
+		expect(() => promoteReviewedCandidate(options)).toThrow(/symbolic ref/);
+		expect(candidateStatus(loadCandidateRecord(value.runsRoot, value.candidateId))).toBe("reviewed");
+	});
+
+	it("forces an unsigned deterministic annotated tag when tag.gpgSign is enabled", () => {
+		const repo = repository();
+		git(repo.dir, "config", "tag.gpgSign", "true");
+		const value = fixture(true, { ...repo, targetId: "test-target" });
+		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+		const result = promoteReviewedCandidate({
+			repositoryDir: repo.dir,
+			...value,
+			version: "1.2.14",
+			reason: "unsigned deterministic tag",
+			now: () => at,
+		});
+		const tagObject = git(repo.dir, "rev-parse", result.tag);
+		const body = git(repo.dir, "cat-file", "tag", tagObject);
+		expect(body).not.toContain("BEGIN PGP SIGNATURE");
+		expect(body).toContain("tagger AHDE human gate <ahde@local> 1787738400 +0000");
 	});
 
 	it("rejects a stale promotion hash before creating a tag or promotion event", () => {

@@ -1807,6 +1807,21 @@ describe("Builder Pi slash commands", () => {
 		expect(text).not.toMatch(/[{}]|schemaVersion/);
 	});
 
+	it("reports an unavailable sealed holdout generically in /doctor", async () => {
+		const fixture = workbench({
+			view: async () => viewAt("ready-to-evaluate", {
+				shippingReadiness: { sealedHoldout: "unavailable", minimumTasks: 15 },
+			}),
+		});
+		const { commands, output } = register(fixture.value);
+
+		await command(commands, "doctor").handler("", context().ctx);
+
+		const text = output.text();
+		expect(text).toContain("! Ship gate holdout is unavailable or failed integrity checks — repair private corpus storage or /holdout privately imports a replacement");
+		expect(text).not.toMatch(/corpus-[0-9a-f]{64}|sha256:|corpus\.jsonl|PRIVATE/);
+	});
+
 	it("imports a sealed holdout through host UI without putting its path or identity in the Builder transcript", async () => {
 		const fixture = workbench();
 		const importSealedHoldout = vi.fn(() => ({ taskCount: 20 }));

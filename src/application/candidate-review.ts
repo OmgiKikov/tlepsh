@@ -88,7 +88,7 @@ export interface PromoteReviewedCandidateResult {
 	candidateSha: string;
 }
 
-const PromotionIntentSchema = z.strictObject({
+const LegacyPromotionIntentSchema = z.strictObject({
 	schemaVersion: z.literal(1),
 	candidateBeforeSha256: z.string().regex(/^sha256:[0-9a-f]{64}$/),
 	tag: z.string().regex(/^v\d+\.\d+\.\d+$/),
@@ -99,14 +99,48 @@ const PromotionIntentSchema = z.strictObject({
 	tagMessage: z.string().min(1),
 	promoted: CandidateRecordSchema,
 });
+
+const ExactPromotionIntentSchema = z.strictObject({
+	schemaVersion: z.literal(2),
+	candidateBeforeSha256: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+	tag: z.string().regex(/^v\d+\.\d+\.\d+$/),
+	candidateSha: z.string().regex(/^[0-9a-f]{40}$/),
+	at: z.iso.datetime({ offset: true }),
+	actorId: z.string().min(1),
+	reason: z.string().min(1),
+	tagMessage: z.string().min(1),
+	taggerName: z.literal("AHDE human gate"),
+	taggerEmail: z.literal("ahde@local"),
+	promoted: CandidateRecordSchema,
+});
+const PromotionIntentSchema = z.discriminatedUnion("schemaVersion", [
+	LegacyPromotionIntentSchema,
+	ExactPromotionIntentSchema,
+]);
 type PromotionIntent = z.infer<typeof PromotionIntentSchema>;
+const PROMOTION_TAGGER_NAME = "AHDE human gate";
+const PROMOTION_TAGGER_EMAIL = "ahde@local";
+
+const CandidateTransitionClaimSchema = z.strictObject({
+	schemaVersion: z.literal(1),
+	operation: z.enum(["promote", "reject"]),
+	channel: z.enum(["record-only", "git-tag"]),
+	candidateId: z.string().min(1),
+	candidateBeforeSha256: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+	candidateAfterSha256: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+	promotionIntentSha256: z.string().regex(/^sha256:[0-9a-f]{64}$/).nullable(),
+	after: CandidateRecordSchema,
+});
+type CandidateTransitionClaim = z.infer<typeof CandidateTransitionClaimSchema>;
 
 export interface PromoteReviewedCandidateDependencies {
 	writeIntent: (path: string, intent: PromotionIntent) => void;
+	writeClaim: (path: string, claim: CandidateTransitionClaim) => void;
 }
 
 const DEFAULT_PROMOTION_DEPENDENCIES: PromoteReviewedCandidateDependencies = {
 	writeIntent: (path, intent) => writeJsonArtifact(path, PromotionIntentSchema, intent, { immutable: true }),
+	writeClaim: (path, claim) => writeJsonArtifact(path, CandidateTransitionClaimSchema, claim, { immutable: true }),
 };
 
 export function candidateRecordPath(runsRoot: string, candidateId: string): string {
@@ -166,6 +200,90 @@ function persist(record: CandidateRecord, runsRoot: string): CandidateRecord {
 	return validated;
 }
 
+function persistIfUnchanged(
+	record: CandidateRecord,
+	runsRoot: string,
+	expectedCurrentHash: string,
+	operation: string,
+): CandidateRecord {
+	const current = loadCandidateRecord(runsRoot, record.candidateId);
+	if (hashValue(current) !== expectedCurrentHash) {
+		throw new Error(`candidate changed while ${operation}; refusing to overwrite newer state`);
+	}
+	return persist(record, runsRoot);
+}
+
+function promotionIntentPath(runsRoot: string, candidateId: string): string {
+	return resolveContainedArtifactPath(runsRoot, "candidates", candidateId, "promotion_intent.json");
+}
+
+function transitionClaimPath(runsRoot: string, candidateId: string): string {
+	return resolveContainedArtifactPath(runsRoot, "candidates", candidateId, "transition_claim.json");
+}
+
+function readTransitionClaim(path: string): CandidateTransitionClaim | null {
+	if (!existsSync(path)) return null;
+	const claim = readJsonArtifact(path, CandidateTransitionClaimSchema);
+	if (
+		hashValue(claim.after) !== claim.candidateAfterSha256 ||
+		claim.after.candidateId !== claim.candidateId
+	) {
+		throw new Error("candidate transition claim failed its integrity check");
+	}
+	return claim;
+}
+
+function assertExactClaim(actual: CandidateTransitionClaim, expected: CandidateTransitionClaim): void {
+	if (canonicalJson(actual) !== canonicalJson(expected)) {
+		throw new Error(
+			`candidate ${expected.candidateId} already has a different ${actual.operation} transition in progress`,
+		);
+	}
+}
+
+function acquireTransitionClaim(
+	path: string,
+	claim: CandidateTransitionClaim,
+	writeClaim: (path: string, claim: CandidateTransitionClaim) => void,
+): CandidateTransitionClaim {
+	const existing = readTransitionClaim(path);
+	if (existing) {
+		assertExactClaim(existing, claim);
+		return existing;
+	}
+	writeClaim(path, claim);
+	const published = readTransitionClaim(path);
+	if (!published) throw new Error("candidate transition claim disappeared during publication");
+	assertExactClaim(published, claim);
+	return published;
+}
+
+function removeExactTransitionClaim(path: string, claim: CandidateTransitionClaim): void {
+	const existing = readTransitionClaim(path);
+	if (!existing) return;
+	assertExactClaim(existing, claim);
+	unlinkSync(path);
+}
+
+function transitionClaim(
+	operation: "promote" | "reject",
+	channel: "record-only" | "git-tag",
+	before: CandidateRecord,
+	after: CandidateRecord,
+	promotionIntentSha256: string | null,
+): CandidateTransitionClaim {
+	return CandidateTransitionClaimSchema.parse({
+		schemaVersion: 1,
+		operation,
+		channel,
+		candidateId: before.candidateId,
+		candidateBeforeSha256: hashValue(before),
+		candidateAfterSha256: hashValue(after),
+		promotionIntentSha256,
+		after,
+	});
+}
+
 /** Append an explicit human review. Review never promotes or rejects by itself. */
 export function reviewCandidate(options: ReviewCandidateOptions): CandidateRecord {
 	const record = loadCandidateRecord(options.runsRoot, options.candidateId);
@@ -191,22 +309,82 @@ export function reviewCandidate(options: ReviewCandidateOptions): CandidateRecor
 }
 
 /** Append the human rejection decision after review. */
-export function decideCandidateRejection(options: DecideCandidateOptions): CandidateRecord {
-	const record = loadCandidateRecord(options.runsRoot, options.candidateId);
+export function decideCandidateRejection(
+	options: DecideCandidateOptions,
+	dependencies: Partial<Pick<PromoteReviewedCandidateDependencies, "writeClaim">> = {},
+): CandidateRecord {
+	const writeClaim = dependencies.writeClaim ?? DEFAULT_PROMOTION_DEPENDENCIES.writeClaim;
+	const claimPath = transitionClaimPath(options.runsRoot, options.candidateId);
+	const pendingPromotionPath = promotionIntentPath(options.runsRoot, options.candidateId);
+	let record = loadCandidateRecord(options.runsRoot, options.candidateId);
+	const existingClaim = readTransitionClaim(claimPath);
+	if (existingClaim?.operation === "promote" || existsSync(pendingPromotionPath)) {
+		throw new Error(`candidate ${record.candidateId} has a promotion in progress; resume that exact promotion before rejection`);
+	}
+
+	if (existingClaim) {
+		const decision = existingClaim.after.events.at(-1);
+		if (
+			existingClaim.operation !== "reject" ||
+			existingClaim.channel !== "record-only" ||
+			decision?.type !== "rejected" ||
+			decision.actor.id !== (options.actorId ?? "local-user") ||
+			decision.decision.reason !== options.reason
+		) {
+			throw new Error(`candidate ${record.candidateId} already has a different rejection in progress`);
+		}
+		if (
+			options.expectedCandidateHash !== undefined &&
+			options.expectedCandidateHash !== existingClaim.candidateBeforeSha256
+		) throw new Error("candidate changed after confirmation; rejection is stale");
+		const currentHash = hashValue(record);
+		if (currentHash === existingClaim.candidateAfterSha256) {
+			removeExactTransitionClaim(claimPath, existingClaim);
+			return existingClaim.after;
+		}
+		if (currentHash !== existingClaim.candidateBeforeSha256) {
+			throw new Error("candidate changed while rejecting; refusing to overwrite newer state");
+		}
+		const rejected = persistIfUnchanged(
+			existingClaim.after,
+			options.runsRoot,
+			existingClaim.candidateBeforeSha256,
+			"rejecting",
+		);
+		removeExactTransitionClaim(claimPath, existingClaim);
+		return rejected;
+	}
+
 	assertExpectedCandidateHash(record, options.expectedCandidateHash, "rejection");
 	if (candidateStatus(record) !== "reviewed") {
 		throw new Error(`candidate ${record.candidateId} must be reviewed before rejection`);
 	}
-	return persist(
-		transitionCandidate(record, {
-			type: "rejected",
-			eventId: `${record.candidateId}:rejected:${record.events.length}`,
-			at: (options.now ?? (() => new Date().toISOString()))(),
-			actor: { kind: "human", id: options.actorId ?? "local-user" },
-			decision: { experimentId: evaluatedExperimentId(record), reason: options.reason },
-		}),
-		options.runsRoot,
-	);
+	const rejected = transitionCandidate(record, {
+		type: "rejected",
+		eventId: `${record.candidateId}:rejected:${record.events.length}`,
+		at: (options.now ?? (() => new Date().toISOString()))(),
+		actor: { kind: "human", id: options.actorId ?? "local-user" },
+		decision: { experimentId: evaluatedExperimentId(record), reason: options.reason },
+	});
+	const claim = transitionClaim("reject", "record-only", record, rejected, null);
+	acquireTransitionClaim(claimPath, claim, writeClaim);
+	// A promoter may have published its durable intent just before this claim won.
+	// Give that earlier external-effect journal priority and leave neither decision
+	// half-applied; a retry will deterministically acquire one claim.
+	if (existsSync(pendingPromotionPath)) {
+		removeExactTransitionClaim(claimPath, claim);
+		throw new Error(`candidate ${record.candidateId} has a promotion in progress; resume that exact promotion before rejection`);
+	}
+	try {
+		record = persistIfUnchanged(rejected, options.runsRoot, claim.candidateBeforeSha256, "rejecting");
+	} catch (error) {
+		// No external effect exists for a rejection. A stale reader that acquired
+		// the now-free claim must not strand that claim after the CAS refuses.
+		removeExactTransitionClaim(claimPath, claim);
+		throw error;
+	}
+	removeExactTransitionClaim(claimPath, claim);
+	return record;
 }
 
 /**
@@ -214,30 +392,74 @@ export function decideCandidateRejection(options: DecideCandidateOptions): Candi
  * the Git tag first; this function refuses A/A, missing holdout evidence, or
  * a review that recommended rejection through the aggregate invariants.
  */
-export function decideCandidatePromotion(options: DecideCandidateOptions & { tag: string }): CandidateRecord {
+export function decideCandidatePromotion(
+	options: DecideCandidateOptions & { tag: string },
+	dependencies: Partial<Pick<PromoteReviewedCandidateDependencies, "writeClaim">> = {},
+): CandidateRecord {
+	const writeClaim = dependencies.writeClaim ?? DEFAULT_PROMOTION_DEPENDENCIES.writeClaim;
+	const claimPath = transitionClaimPath(options.runsRoot, options.candidateId);
+	const pendingIntentPath = promotionIntentPath(options.runsRoot, options.candidateId);
+	if (existsSync(pendingIntentPath)) {
+		throw new Error(`candidate ${options.candidateId} already has a Git promotion in progress`);
+	}
 	const record = loadCandidateRecord(options.runsRoot, options.candidateId);
+	const existingClaim = readTransitionClaim(claimPath);
+	if (existingClaim) {
+		if (existingClaim.operation !== "promote" || existingClaim.channel !== "record-only") {
+			throw new Error(`candidate ${record.candidateId} already has a different ${existingClaim.operation} transition in progress`);
+		}
+		const decision = existingClaim.after.events.at(-1);
+		if (
+			decision?.type !== "promoted" ||
+			decision.actor.id !== (options.actorId ?? "local-user") ||
+			decision.decision.tag !== options.tag ||
+			decision.decision.reason !== options.reason
+		) throw new Error(`candidate ${record.candidateId} already has a different promotion in progress`);
+		if (
+			options.expectedCandidateHash !== undefined &&
+			options.expectedCandidateHash !== existingClaim.candidateBeforeSha256
+		) throw new Error("candidate changed after confirmation; promotion decision is stale");
+		const currentHash = hashValue(record);
+		if (currentHash === existingClaim.candidateAfterSha256) {
+			removeExactTransitionClaim(claimPath, existingClaim);
+			return existingClaim.after;
+		}
+		if (currentHash !== existingClaim.candidateBeforeSha256) {
+			throw new Error("candidate changed while promoting; refusing to overwrite newer state");
+		}
+		const promoted = persistIfUnchanged(
+			existingClaim.after,
+			options.runsRoot,
+			existingClaim.candidateBeforeSha256,
+			"promoting",
+		);
+		removeExactTransitionClaim(claimPath, existingClaim);
+		return promoted;
+	}
+
 	assertExpectedCandidateHash(record, options.expectedCandidateHash, "promotion decision");
 	if (candidateStatus(record) !== "reviewed") {
 		throw new Error(`candidate ${record.candidateId} must be reviewed before promotion`);
 	}
 	verifyPromotionEvidence(record, options.runsRoot);
-	const built = record.events.find((event) => event.type === "built");
-	if (!built || built.type !== "built") throw new Error(`candidate ${record.candidateId} has no built revision`);
-	return persist(
-		transitionCandidate(record, {
-			type: "promoted",
-			eventId: `${record.candidateId}:promoted:${record.events.length}`,
-			at: (options.now ?? (() => new Date().toISOString()))(),
-			actor: { kind: "human", id: options.actorId ?? "local-user" },
-			decision: {
-				experimentId: evaluatedExperimentId(record),
-				candidate: built.candidate,
-				tag: options.tag,
-				reason: options.reason,
-			},
-		}),
-		options.runsRoot,
-	);
+	const promoted = previewPromotion(record, {
+		tag: options.tag,
+		reason: options.reason,
+		actorId: options.actorId ?? "local-user",
+		at: (options.now ?? (() => new Date().toISOString()))(),
+	});
+	const claim = transitionClaim("promote", "record-only", record, promoted, null);
+	acquireTransitionClaim(claimPath, claim, writeClaim);
+	let persisted: CandidateRecord;
+	try {
+		persisted = persistIfUnchanged(promoted, options.runsRoot, claim.candidateBeforeSha256, "promoting");
+	} catch (error) {
+		// This record-only decision has no external side effect to recover.
+		removeExactTransitionClaim(claimPath, claim);
+		throw error;
+	}
+	removeExactTransitionClaim(claimPath, claim);
+	return persisted;
 }
 
 function git(repositoryDir: string, args: string[]): string {
@@ -245,6 +467,157 @@ function git(repositoryDir: string, args: string[]): string {
 		encoding: "utf8",
 		stdio: ["ignore", "pipe", "pipe"],
 	}).trim();
+}
+
+function gitRaw(repositoryDir: string, args: string[]): string {
+	return execFileSync("git", ["-C", repositoryDir, ...args], {
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+}
+
+function tagExists(repositoryDir: string, tag: string): boolean {
+	const tagRef = `refs/tags/${tag}`;
+	const symbolic = spawnSync(
+		"git",
+		["-C", repositoryDir, "symbolic-ref", "--quiet", "--no-recurse", tagRef],
+		{ encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+	);
+	if (symbolic.status === 0) {
+		throw new Error(`tag ${tag} is a symbolic ref; promotion requires a direct annotated tag`);
+	}
+	if (symbolic.status !== 1 && symbolic.status !== 128) {
+		throw new Error(`cannot inspect whether ${tagRef} is symbolic`);
+	}
+	const result = spawnSync(
+		"git",
+		["-C", repositoryDir, "show-ref", "--verify", "--quiet", tagRef],
+		{ stdio: "ignore" },
+	);
+	if (result.status === 0) return true;
+	if (result.status === 1) return false;
+	throw new Error(`cannot verify whether tag ${tag} exists`);
+}
+
+function taggerOffset(at: string): string {
+	const match = /(Z|[+-]\d{2}:\d{2})$/.exec(at);
+	if (!match) throw new Error(`invalid promotion timestamp: ${at}`);
+	return match[1] === "Z" ? "+0000" : match[1]!.replace(":", "");
+}
+
+function verifyExactPromotionTag(repositoryDir: string, intent: PromotionIntent): void {
+	const tagRef = `refs/tags/${intent.tag}`;
+	const symbolic = spawnSync(
+		"git",
+		["-C", repositoryDir, "symbolic-ref", "--quiet", "--no-recurse", tagRef],
+		{ encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+	);
+	if (symbolic.status === 0) {
+		throw new Error("durable promotion intent collides with a symbolic tag ref");
+	}
+	if (symbolic.status !== 1) {
+		throw new Error(`cannot inspect whether ${tagRef} is symbolic`);
+	}
+	const tagObject = git(repositoryDir, ["rev-parse", "--verify", tagRef]);
+	if (git(repositoryDir, ["cat-file", "-t", tagObject]) !== "tag") {
+		throw new Error("durable promotion intent requires a direct annotated tag object");
+	}
+	const raw = gitRaw(repositoryDir, ["cat-file", "tag", tagObject]);
+	const separator = raw.indexOf("\n\n");
+	if (separator < 0) throw new Error("durable promotion tag object is malformed");
+	const headers = raw.slice(0, separator).split("\n");
+	const expectedPrefix = [
+		`object ${intent.candidateSha}`,
+		"type commit",
+		`tag ${intent.tag}`,
+	];
+	const tagger = headers[3] ?? "";
+	const exactTagger = intent.schemaVersion === 2
+		? `tagger ${intent.taggerName} <${intent.taggerEmail}> ${Math.floor(Date.parse(intent.at) / 1_000)} ${taggerOffset(intent.at)}`
+		: null;
+	const taggerMatches = exactTagger
+		? tagger === exactTagger
+		: /^tagger AHDE human gate <ahde@local> \d+ [+-]\d{4}$/.test(tagger);
+	const headersMatch =
+		headers.length === 4 &&
+		canonicalJson(headers.slice(0, 3)) === canonicalJson(expectedPrefix) &&
+		taggerMatches;
+	const body = raw.slice(separator + 2);
+	const messageMatches = intent.schemaVersion === 2
+		? body === intent.tagMessage
+		: body === intent.tagMessage || body === `${intent.tagMessage}\n`;
+	if (!headersMatch || !messageMatches) {
+		throw new Error(
+			`durable promotion intent collides with a changed or unrelated annotated tag (${headersMatch ? "message" : "headers"})`,
+		);
+	}
+}
+
+function createExactPromotionTag(repositoryDir: string, intent: PromotionIntent): void {
+	execFileSync(
+		"git",
+		[
+			"-C",
+			repositoryDir,
+			"-c",
+			`user.name=${PROMOTION_TAGGER_NAME}`,
+			"-c",
+			`user.email=${PROMOTION_TAGGER_EMAIL}`,
+			"-c",
+			"tag.gpgSign=false",
+			"tag",
+			"-a",
+			"--no-sign",
+			"--cleanup=verbatim",
+			intent.tag,
+			"-m",
+			intent.tagMessage,
+			intent.candidateSha,
+		],
+		{
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+			env: {
+				...process.env,
+				GIT_COMMITTER_NAME: PROMOTION_TAGGER_NAME,
+				GIT_COMMITTER_EMAIL: PROMOTION_TAGGER_EMAIL,
+				GIT_COMMITTER_DATE: intent.at,
+			},
+		},
+	);
+	verifyExactPromotionTag(repositoryDir, intent);
+}
+
+function candidateBeforePromotion(promoted: CandidateRecord, expectedHash: string): CandidateRecord {
+	const last = promoted.events.at(-1);
+	if (last?.type !== "promoted") throw new Error("durable promotion state has no terminal promotion event");
+	const before = CandidateRecordSchema.parse({ ...promoted, events: promoted.events.slice(0, -1) });
+	if (hashValue(before) !== expectedHash) {
+		throw new Error("durable promotion state does not match its pre-transition Candidate hash");
+	}
+	return before;
+}
+
+function removeExactPromotionIntent(path: string, intent: PromotionIntent): void {
+	if (!existsSync(path)) return;
+	const existing = readJsonArtifact(path, PromotionIntentSchema);
+	if (canonicalJson(existing) !== canonicalJson(intent)) {
+		throw new Error("promotion intent changed before cleanup");
+	}
+	unlinkSync(path);
+}
+
+function rollbackExactPromotionTag(repositoryDir: string, intent: PromotionIntent): boolean {
+	if (!tagExists(repositoryDir, intent.tag)) return true;
+	verifyExactPromotionTag(repositoryDir, intent);
+	const tagRef = `refs/tags/${intent.tag}`;
+	const objectId = git(repositoryDir, ["rev-parse", "--verify", tagRef]);
+	const deleted = spawnSync(
+		"git",
+		["-C", repositoryDir, "update-ref", "-d", tagRef, objectId],
+		{ stdio: "ignore" },
+	);
+	return deleted.status === 0 && !tagExists(repositoryDir, intent.tag);
 }
 
 function builtRevision(record: CandidateRecord): { ref: string; sha: string } {
@@ -764,8 +1137,39 @@ export function promoteReviewedCandidate(
 	}
 	if (!options.reason.trim()) throw new Error("promotion reason must not be blank");
 	const repositoryDir = resolve(options.repositoryDir);
-	const record = loadCandidateRecord(options.runsRoot, options.candidateId);
-	assertExpectedCandidateHash(record, options.expectedCandidateHash, "promotion");
+	const tag = `v${options.version}`;
+	const intentPath = promotionIntentPath(options.runsRoot, options.candidateId);
+	const claimPath = transitionClaimPath(options.runsRoot, options.candidateId);
+	// Load both journals before inspecting lifecycle status: after a process dies,
+	// candidate.json may already contain the terminal event while cleanup remains.
+	const existingIntent = existsSync(intentPath)
+		? readJsonArtifact(intentPath, PromotionIntentSchema)
+		: null;
+	const existingClaim = readTransitionClaim(claimPath);
+	if (existingClaim && (existingClaim.operation !== "promote" || existingClaim.channel !== "git-tag")) {
+		throw new Error(
+			`candidate ${options.candidateId} already has a ${existingClaim.operation} transition in progress`,
+		);
+	}
+	const initiallyLoaded = loadCandidateRecord(options.runsRoot, options.candidateId);
+	let record: CandidateRecord;
+	let at: string;
+	if (existingIntent) {
+		record = candidateBeforePromotion(existingIntent.promoted, existingIntent.candidateBeforeSha256);
+		at = existingIntent.at;
+	} else if (existingClaim) {
+		record = candidateBeforePromotion(existingClaim.after, existingClaim.candidateBeforeSha256);
+		const promotion = existingClaim.after.events.at(-1);
+		if (promotion?.type !== "promoted") throw new Error("promotion claim has no promotion event");
+		at = promotion.at;
+	} else {
+		record = initiallyLoaded;
+		at = (options.now ?? (() => new Date().toISOString()))();
+	}
+	if (
+		options.expectedCandidateHash !== undefined &&
+		options.expectedCandidateHash !== hashValue(record)
+	) throw new Error("candidate changed after confirmation; promotion is stale");
 	if (candidateStatus(record) !== "reviewed") {
 		throw new Error(`candidate ${record.candidateId} must be reviewed before promotion`);
 	}
@@ -791,26 +1195,7 @@ export function promoteReviewedCandidate(
 		...(options.stateRoot ? { stateRoot: options.stateRoot } : {}),
 	});
 
-	const tag = `v${options.version}`;
-	const intentPath = resolveContainedArtifactPath(
-		options.runsRoot,
-		"candidates",
-		record.candidateId,
-		"promotion_intent.json",
-	);
-	const existingIntent = existsSync(intentPath)
-		? readJsonArtifact(intentPath, PromotionIntentSchema)
-		: null;
-	const tagExists = spawnSync(
-		"git",
-		["-C", repositoryDir, "show-ref", "--verify", "--quiet", `refs/tags/${tag}`],
-		{ stdio: "ignore" },
-	);
-	if (tagExists.status === 0 && !existingIntent) throw new Error(`tag ${tag} already exists`);
-	if (tagExists.status !== 0 && tagExists.status !== 1) throw new Error(`cannot verify whether tag ${tag} exists`);
-
 	const actorId = options.actorId ?? "local-user";
-	const at = existingIntent?.at ?? (options.now ?? (() => new Date().toISOString()))();
 	const promoted = CandidateRecordSchema.parse(
 		previewPromotion(record, { tag, reason: options.reason, actorId, at }),
 	);
@@ -821,7 +1206,7 @@ export function promoteReviewedCandidate(
 		reason: options.reason,
 	});
 	const intent = PromotionIntentSchema.parse({
-		schemaVersion: 1,
+		schemaVersion: existingIntent?.schemaVersion ?? 2,
 		candidateBeforeSha256: hashValue(record),
 		tag,
 		candidateSha: candidate.sha,
@@ -829,47 +1214,72 @@ export function promoteReviewedCandidate(
 		actorId,
 		reason: options.reason,
 		tagMessage: message,
+		...(existingIntent?.schemaVersion === 1
+			? {}
+			: { taggerName: PROMOTION_TAGGER_NAME, taggerEmail: PROMOTION_TAGGER_EMAIL }),
 		promoted,
 	});
 	if (existingIntent) {
 		if (canonicalJson(existingIntent) !== canonicalJson(intent)) {
 			throw new Error("promotion retry does not match its durable pre-tag intent");
 		}
-	} else {
-		deps.writeIntent(intentPath, intent);
+	}
+	const claim = transitionClaim("promote", "git-tag", record, promoted, hashValue(intent));
+	acquireTransitionClaim(claimPath, claim, deps.writeClaim);
+
+	// The immutable claim closes the stale-reader race. Re-read before the first
+	// external effect; if a reject won and completed while this process still held
+	// a reviewed snapshot, release our effect-free claim and fail closed.
+	const currentAfterClaim = loadCandidateRecord(options.runsRoot, options.candidateId);
+	const currentAfterClaimHash = hashValue(currentAfterClaim);
+	if (
+		currentAfterClaimHash !== claim.candidateBeforeSha256 &&
+		currentAfterClaimHash !== claim.candidateAfterSha256
+	) {
+		if (!existingIntent) removeExactTransitionClaim(claimPath, claim);
+		throw new Error("candidate changed while claiming promotion; refusing to create a tag");
 	}
 
-	if (tagExists.status === 0) {
-		const tagRef = `refs/tags/${tag}`;
-		if (
-			git(repositoryDir, ["cat-file", "-t", tagRef]) !== "tag" ||
-			git(repositoryDir, ["rev-parse", `${tagRef}^{commit}`]) !== candidate.sha ||
-			git(repositoryDir, ["for-each-ref", "--format=%(contents)", tagRef]) !== message
-		) throw new Error("durable promotion intent collides with a changed or unrelated tag");
-	} else {
-		git(repositoryDir, [
-			"-c",
-			"user.name=AHDE human gate",
-			"-c",
-			"user.email=ahde@local",
-			"tag",
-			"-a",
-			tag,
-			"-m",
-			message,
-			candidate.sha,
-		]);
+	const existingTag = tagExists(repositoryDir, tag);
+	if (existingTag && !existingIntent) {
+		removeExactTransitionClaim(claimPath, claim);
+		throw new Error(`tag ${tag} already exists`);
 	}
+	if (!existingIntent) deps.writeIntent(intentPath, intent);
+	const publishedIntent = readJsonArtifact(intentPath, PromotionIntentSchema);
+	if (canonicalJson(publishedIntent) !== canonicalJson(intent)) {
+		throw new Error("promotion intent changed during publication");
+	}
+
+	let createdTagThisCall = false;
 	try {
-		const result = { record: persist(promoted, options.runsRoot), tag, candidateSha: candidate.sha };
-		try { unlinkSync(intentPath); } catch { /* Tag and Candidate record are already consistent. */ }
+		if (existingTag) {
+			verifyExactPromotionTag(repositoryDir, intent);
+		} else {
+			createExactPromotionTag(repositoryDir, intent);
+			createdTagThisCall = true;
+		}
+		const current = loadCandidateRecord(options.runsRoot, options.candidateId);
+		const currentHash = hashValue(current);
+		const persisted = currentHash === claim.candidateAfterSha256
+			? promoted
+			: persistIfUnchanged(promoted, options.runsRoot, claim.candidateBeforeSha256, "promoting");
+		const result = { record: persisted, tag, candidateSha: candidate.sha };
+		// Once both stores agree, either cleanup order is recoverable. Removing the
+		// mutex first leaves the promotion intent as a conservative rejection block.
+		removeExactTransitionClaim(claimPath, claim);
+		removeExactPromotionIntent(intentPath, intent);
 		return result;
 	} catch (error) {
-		// The tag did not exist before this call and was created only after every
-		// validation gate passed, so compensating deletion cannot remove user data.
-		const rollback = spawnSync("git", ["-C", repositoryDir, "tag", "-d", tag], { stdio: "ignore" });
-		if (rollback.status === 0) {
-			try { unlinkSync(intentPath); } catch { /* Preserve the persistence failure. */ }
+		const current = loadCandidateRecord(options.runsRoot, options.candidateId);
+		if (hashValue(current) === claim.candidateAfterSha256) {
+			// Publication won even if a later cleanup step failed. Leave any remaining
+			// journal for an exact retry to finish instead of undoing a valid release.
+			throw error;
+		}
+		if (createdTagThisCall && rollbackExactPromotionTag(repositoryDir, intent)) {
+			removeExactPromotionIntent(intentPath, intent);
+			removeExactTransitionClaim(claimPath, claim);
 		}
 		throw error;
 	}

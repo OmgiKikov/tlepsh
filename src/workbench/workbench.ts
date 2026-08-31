@@ -1971,7 +1971,7 @@ export class AhdeWorkbench {
 				break;
 			}
 			case "proposal-review":
-				content = { kind: "proposal", ...proposalReview(requireProposal(inventory, "open").record) };
+				content = { kind: "proposal", ...proposalReview(requireProposal(inventory, ["open", "apply-pending", "discard-pending"]).record) };
 				break;
 			case "candidate-review":
 			case "release-decision": {
@@ -2862,11 +2862,11 @@ export class AhdeWorkbench {
 		}
 
 		if (input.kind === "apply-proposal") {
-			const proposal = requireProposal(inventory, "open", input.runId);
+			const proposal = requireProposal(inventory, ["open", "apply-pending"], input.runId);
 			const before = { operation: "apply-proposal", branch: input.branch, builderRunHash: hashValue(proposal.record), ...proposalReview(proposal.record) };
 			const actor = await this.confirm(input, gate, "Apply exact Builder proposal", before, options.signal);
 			const current = this.decisionInventory(input.kind);
-			const afterProposal = requireProposal(current, "open", proposal.record.runId);
+			const afterProposal = requireProposal(current, ["open", "apply-pending"], proposal.record.runId);
 			const after = { operation: "apply-proposal", branch: input.branch, builderRunHash: hashValue(afterProposal.record), ...proposalReview(afterProposal.record) };
 			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
 			const result = this.dependencies.applyProposal({ repoDir: this.projectDir, runsRoot: this.runsRoot, runId: proposal.record.runId, expectedBuilderRunHash: after.builderRunHash, requestedBranch: input.branch, actor: { kind: "human", id: actor }, reason: input.reason });
@@ -2875,13 +2875,13 @@ export class AhdeWorkbench {
 		}
 
 		if (input.kind === "discard-proposal") {
-			const proposal = requireProposal(inventory, "open", input.runId);
+			const proposal = requireProposal(inventory, ["open", "discard-pending"], input.runId);
 			const before = this.dependencies.describeProposalDiscard(this.runsRoot, proposal.record.runId);
 			const actor = await this.confirm(input, gate, "Discard exact Builder proposal", before, options.signal, {
 				question: "Discard this proposal? It can never be applied later.",
 			});
 			const current = this.decisionInventory(input.kind);
-			requireProposal(current, "open", proposal.record.runId);
+			requireProposal(current, ["open", "discard-pending"], proposal.record.runId);
 			const after = this.dependencies.describeProposalDiscard(this.runsRoot, proposal.record.runId);
 			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
 			const result = this.dependencies.discardProposal({ runsRoot: this.runsRoot, runId: proposal.record.runId, actor: { kind: "human", id: actor }, reason: input.reason, expectedSubjectHash: before.subjectHash }, { now: this.dependencies.now });

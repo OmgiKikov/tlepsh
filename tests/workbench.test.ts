@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -1894,6 +1894,94 @@ describe("AHDE Workbench", () => {
 		expect(blockedSerialized).not.toContain(sealed.id);
 		expect(blockedSerialized).not.toContain("secret holdout name");
 		expect(blockedSerialized).not.toContain("secret prompt");
+	});
+
+	it("marks a metadata-sized holdout unavailable when its private content is missing, corrupt, hash-mismatched, or unsafe", async () => {
+		const cases = [
+			{
+				label: "missing",
+				mutate: (path: string) => rmSync(path),
+			},
+			{
+				label: "corrupt",
+				mutate: (path: string) => writeFileSync(path, "PRIVATE-CORRUPTION-CANARY\n", "utf8"),
+			},
+			{
+				label: "hash-mismatch",
+				mutate: (path: string) => {
+					const rows = readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+					rows[0] = { ...rows[0], input: "PRIVATE-HASH-MISMATCH-CANARY" };
+					writeFileSync(path, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`, "utf8");
+				},
+			},
+			{
+				label: "unsafe-mode",
+				mutate: (path: string) => chmodSync(path, 0o644),
+			},
+		] as const;
+
+		for (const scenario of cases) {
+			const paths = target();
+			const sealed = createCorpus({
+				stateRoot: paths.stateRoot,
+				projectId: "test-target",
+				name: `PRIVATE-${scenario.label}-HOLDOUT`,
+				visibility: "sealed",
+				tasks: Array.from({ length: 15 }, (_, index) => ({
+					id: `${scenario.label}-${index}`,
+					...task(`PRIVATE-${scenario.label}-PROMPT-${index}`, "private answer"),
+				})),
+			});
+			const before = await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view();
+			expect(before.shippingReadiness, scenario.label).toEqual({ sealedHoldout: "ready", minimumTasks: 15 });
+
+			const contentPath = join(paths.stateRoot, "projects", "test-target", "corpora", sealed.id, sealed.contentPath);
+			scenario.mutate(contentPath);
+			const view = await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view();
+			const serialized = JSON.stringify(view);
+
+			expect(view.shippingReadiness, scenario.label).toEqual({ sealedHoldout: "unavailable", minimumTasks: 15 });
+			expect(view.counts.sealedCorpora, scenario.label).toBe(1);
+			expect(serialized, scenario.label).not.toContain(sealed.id);
+			expect(serialized, scenario.label).not.toContain(sealed.hash);
+			expect(serialized, scenario.label).not.toContain(`PRIVATE-${scenario.label}`);
+			expect(serialized, scenario.label).not.toContain(contentPath);
+		}
+	});
+
+	it("bases readiness on independently verified holdouts instead of invalid metadata counts", async () => {
+		const paths = target();
+		const broken = createCorpus({
+			stateRoot: paths.stateRoot,
+			projectId: "test-target",
+			name: "PRIVATE-BROKEN-LARGE-HOLDOUT",
+			visibility: "sealed",
+			tasks: Array.from({ length: 15 }, (_, index) => ({ id: `broken-${index}`, ...task(`broken-${index}`) })),
+		});
+		const brokenPath = join(paths.stateRoot, "projects", "test-target", "corpora", broken.id, broken.contentPath);
+		rmSync(brokenPath);
+		createCorpus({
+			stateRoot: paths.stateRoot,
+			projectId: "test-target",
+			name: "PRIVATE-VALID-SMALL-HOLDOUT",
+			visibility: "sealed",
+			tasks: [{ id: "small", ...task("small") }],
+		});
+
+		const underpowered = await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view();
+		expect(underpowered.shippingReadiness).toEqual({ sealedHoldout: "underpowered", minimumTasks: 15 });
+		expect(JSON.stringify(underpowered)).not.toContain(broken.id);
+
+		createCorpus({
+			stateRoot: paths.stateRoot,
+			projectId: "test-target",
+			name: "PRIVATE-VALID-READY-HOLDOUT",
+			visibility: "sealed",
+			tasks: Array.from({ length: 15 }, (_, index) => ({ id: `ready-${index}`, ...task(`ready-${index}`) })),
+		});
+		const ready = await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view();
+		expect(ready.shippingReadiness).toEqual({ sealedHoldout: "ready", minimumTasks: 15 });
+		expect(JSON.stringify(ready)).not.toMatch(/PRIVATE-(?:BROKEN|VALID)/);
 	});
 
 	it("warns once a sealed holdout has judged too many candidates, without naming it", async () => {
