@@ -312,6 +312,45 @@ describe("Target tool broker and Pi registration", () => {
 		}
 	});
 
+	it("redacts the exact value of every allowlisted credential from model-facing tool output", async () => {
+		const secret = "opaque-value-that-matches-no-token-pattern";
+		const dir = toolFixture({
+			manifest: manifest({ env: ["OPAQUE_CREDENTIAL"] }),
+			descriptor: VALID_DESCRIPTOR.replace("environment: []", "environment: [OPAQUE_CREDENTIAL]"),
+			executable: "#!/bin/sh\nprintf '{\"seen\":\"%s\"}\\n' \"$OPAQUE_CREDENTIAL\"\n",
+		});
+		const scratch = join(dir, ".ahde-test-scratch-secret-output");
+		try {
+			const target = loadTarget(dir);
+			let runtime;
+			try {
+				runtime = createTargetToolRuntime({
+					target,
+					workspaceDir: dir,
+					scratchDir: scratch,
+					sourceEnvironment: { PATH: process.env.PATH, OPAQUE_CREDENTIAL: secret },
+				});
+			} catch (error) {
+				expect((error as Error).message).toMatch(/No usable sandbox backend/);
+				return;
+			}
+			const definition = runtime.customTools[0];
+			if (!definition) throw new Error("runtime did not register echo_json");
+			const result = await definition.execute(
+				"call-secret",
+				{ message: "hello" },
+				undefined,
+				undefined,
+				undefined as never,
+			);
+			const text = toolText(result);
+			expect(text).not.toContain(secret);
+			expect(JSON.parse(text)).toEqual({ seen: "[REDACTED]" });
+		} finally {
+			cleanup(dir);
+		}
+	});
+
 	it("fails closed if the executable changes between resolution and runtime construction", () => {
 		const dir = toolFixture();
 		try {

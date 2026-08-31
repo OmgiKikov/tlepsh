@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { hashFile, hashValue } from "../provenance.js";
+import { redactSensitiveText } from "../trace.js";
 import { resolveExecutionBackend } from "./container-backend.js";
 import {
 	buildToolEnvironment,
@@ -27,7 +28,7 @@ import type { ResolvedTargetTool, TargetToolPolicyEnvelope } from "./tool-manife
 export const MAX_TOOL_SETUP_OUTPUT_BYTES = 64 * 1024;
 
 const MARKER_FILE = ".ahde-tool-home.json";
-const MAX_TOOL_HOME_MARKER_BYTES = 16 * 1024 * 1024;
+const MAX_TOOL_HOME_MARKER_BYTES = 256 * 1024;
 
 /** The exact empty prepared-home identity used by Targets with no directory tools. */
 export const EMPTY_PREPARED_TOOL_HOME_HASH = hashValue({ schemaVersion: 1, entries: [] });
@@ -84,7 +85,7 @@ export interface PreparedToolHome {
 }
 
 interface ToolHomeMarker {
-	schemaVersion: 1;
+	schemaVersion: 2;
 	identity: string;
 	sha256: string;
 	setups: ToolSetupOutcome[];
@@ -188,7 +189,7 @@ function readMarker(path: string): ToolHomeMarker | null {
 		if (stat.size > MAX_TOOL_HOME_MARKER_BYTES) return null;
 		const value = JSON.parse(readFileSync(path, "utf8")) as Partial<ToolHomeMarker>;
 		if (
-			value.schemaVersion !== 1 || typeof value.identity !== "string" ||
+			value.schemaVersion !== 2 || typeof value.identity !== "string" ||
 			typeof value.sha256 !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value.sha256) ||
 			!Array.isArray(value.setups) || !value.setups.every(isToolSetupOutcome)
 		) return null;
@@ -207,8 +208,12 @@ function resetPreparedToolHome(root: string): void {
 	for (const name of readdirSync(root)) rmSync(join(root, name), { recursive: true, force: true });
 }
 
-function boundedText(buffer: Buffer | string | null | undefined): { text: string; truncated: boolean } {
-	const raw = typeof buffer === "string" ? Buffer.from(buffer, "utf8") : buffer ?? Buffer.alloc(0);
+function boundedText(
+	buffer: Buffer | string | null | undefined,
+	sensitiveValues: readonly string[] = [],
+): { text: string; truncated: boolean } {
+	const source = typeof buffer === "string" ? buffer : (buffer ?? Buffer.alloc(0)).toString("utf8");
+	const raw = Buffer.from(redactSensitiveText(source, sensitiveValues), "utf8");
 	const truncated = raw.byteLength > MAX_TOOL_SETUP_OUTPUT_BYTES;
 	const slice = truncated ? raw.subarray(0, MAX_TOOL_SETUP_OUTPUT_BYTES) : raw;
 	return { text: slice.toString("utf8"), truncated };
@@ -273,6 +278,10 @@ function runSetup(
 		...(options.sourceEnvironment ? { sourceEnvironment: options.sourceEnvironment } : {}),
 		toolHome: toolDir,
 	});
+	const sourceEnvironment = options.sourceEnvironment ?? process.env;
+	const sensitiveValues = tool.descriptor.permissions.environment
+		.map((name) => sourceEnvironment[name])
+		.filter((value): value is string => typeof value === "string" && value.length > 0);
 	// Under the container backend the setup command must resolve inside the
 	// image, so the host PATH is not consulted at all: resolving it here would
 	// bake a host path into the container's argv.
@@ -315,8 +324,8 @@ function runSetup(
 	// name before surfacing the infrastructure error.
 	if (result.error) invocation.terminate?.();
 	invocation.dispose?.();
-	const stdout = boundedText(result.stdout);
-	const stderr = boundedText(result.stderr);
+	const stdout = boundedText(result.stdout, sensitiveValues);
+	const stderr = boundedText(result.stderr, sensitiveValues);
 	const outcome: ToolSetupOutcome = {
 		tool: tool.descriptor.name,
 		ran: true,
@@ -374,7 +383,7 @@ export function prepareToolHome(options: PrepareToolHomeOptions): PreparedToolHo
 	resetPreparedToolHome(root);
 	if (tools.length === 0) {
 		const sha256 = preparedToolHomeHash(root);
-		writeFileSync(markerPath, `${JSON.stringify({ schemaVersion: 1, identity, sha256, setups: [] })}\n`, { mode: 0o600 });
+		writeFileSync(markerPath, `${JSON.stringify({ schemaVersion: 2, identity, sha256, setups: [] })}\n`, { mode: 0o600 });
 		return { root, setups: [], sha256, prepared: true };
 	}
 
@@ -391,7 +400,11 @@ export function prepareToolHome(options: PrepareToolHomeOptions): PreparedToolHo
 	}
 	const sha256 = preparedToolHomeHash(root);
 	const temporary = `${markerPath}.tmp`;
-	writeFileSync(temporary, `${JSON.stringify({ schemaVersion: 1, identity, sha256, setups })}\n`, { mode: 0o600 });
+	// The marker lives under a mounted tool home. Keep only non-sensitive setup
+	// metadata there: raw stdout/stderr are transient diagnostics and may contain
+	// a credential even after a successful command.
+	const markerSetups = setups.map((outcome) => ({ ...outcome, stdout: "", stderr: "" }));
+	writeFileSync(temporary, `${JSON.stringify({ schemaVersion: 2, identity, sha256, setups: markerSetups })}\n`, { mode: 0o600 });
 	renameSync(temporary, markerPath);
 	return { root, setups, sha256, prepared: true };
 }

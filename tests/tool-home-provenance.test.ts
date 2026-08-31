@@ -141,6 +141,57 @@ describe("prepared tool-home provenance", () => {
 		}
 	});
 
+	it("never persists or reports an allowlisted credential printed by setup", () => {
+		const value = fixture();
+		if (!value) return;
+		const secret = "opaque-setup-value-with-no-token-shape";
+		try {
+			const home = join(value.root, "home-secret");
+			const options = value.options(home, secret);
+			const setup = options.tools[0]?.descriptor.setup;
+			if (!setup) throw new Error("fixture setup is missing");
+			setup.argv = [
+				"/bin/sh",
+				"-c",
+				"printf '%s' \"$PREP_VERSION\"; printf '%s' \"$PREP_VERSION\" > prepared.txt",
+			];
+			const prepared = prepareToolHome(options);
+			expect(prepared.setups[0]?.stdout).toBe("[REDACTED]");
+			const marker = readFileSync(join(home, ".ahde-tool-home.json"), "utf8");
+			expect(marker).not.toContain(secret);
+			expect(JSON.parse(marker).setups[0]).toMatchObject({ stdout: "", stderr: "" });
+
+			const cached = prepareToolHome(value.options(home, secret));
+			expect(cached.prepared).toBe(false);
+			expect(cached.setups[0]).toMatchObject({ stdout: "", stderr: "" });
+		} finally {
+			rmSync(value.root, { recursive: true, force: true });
+		}
+	});
+
+	it("redacts an allowlisted credential from setup failure diagnostics", () => {
+		const value = fixture();
+		if (!value) return;
+		const secret = "opaque-failing-setup-value";
+		try {
+			const options = value.options(join(value.root, "home-failure"), secret);
+			const setup = options.tools[0]?.descriptor.setup;
+			if (!setup) throw new Error("fixture setup is missing");
+			setup.argv = ["/bin/sh", "-c", "printf '%s' \"$PREP_VERSION\" >&2; exit 7"];
+			let failure: Error | null = null;
+			try {
+				prepareToolHome(options);
+			} catch (error) {
+				failure = error as Error;
+			}
+			expect(failure).not.toBeNull();
+			expect(failure?.message).not.toContain(secret);
+			expect(failure?.message).toContain("[REDACTED]");
+		} finally {
+			rmSync(value.root, { recursive: true, force: true });
+		}
+	});
+
 	it("fails closed on symlinks and irregular files in the prepared tree", () => {
 		const root = mkdtempSync(join(tmpdir(), "ahde-prepared-home-invalid-"));
 		try {

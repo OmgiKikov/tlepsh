@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { accessSync, constants, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import { hashFile } from "../provenance.js";
+import { redactSensitiveText } from "../trace.js";
 import { containerBackendFor, type ContainerPolicy } from "./container-backend.js";
 import {
 	resolveStrictTargetFile,
@@ -262,6 +263,13 @@ function buildEnvironment(
 			? { toolHome: join(options.toolHomeRoot, tool.descriptor.name) }
 			: {}),
 	});
+}
+
+function sensitiveEnvironmentValues(tool: ResolvedTargetTool, options: TargetToolBrokerOptions): string[] {
+	const source = options.sourceEnvironment ?? process.env;
+	return tool.descriptor.permissions.environment
+		.map((name) => source[name])
+		.filter((value): value is string => typeof value === "string" && value.length > 0);
 }
 
 /** Wrap one argv in the detected OS sandbox under an explicit confinement. */
@@ -577,6 +585,7 @@ export class TargetToolBroker {
 			throw new Error(`Target tool ${tool.descriptor.name} executable changed after resolution`);
 		}
 		const { environment } = buildEnvironment(tool, this.options);
+		const sensitiveValues = sensitiveEnvironmentValues(tool, this.options);
 		const command = sandboxInvocation({
 			backend: this.sandboxBackend,
 			workspaceDir: this.options.workspaceDir,
@@ -595,7 +604,7 @@ export class TargetToolBroker {
 			detached: process.platform !== "win32",
 			// The container runtime CLI is a host process and needs the host's own
 			// PATH and daemon variables; the container's environment travels in the
-			// `-e` flags inside `command.args`, never here.
+			// a private env-file referenced by `command.args`, never here.
 			env: command.spawnEnvironment ?? environment,
 			stdio: ["pipe", "pipe", "pipe"],
 			windowsHide: true,
@@ -648,8 +657,14 @@ export class TargetToolBroker {
 			if (stopped === "aborted" || signal?.aborted) throw new Error(`Target tool ${tool.descriptor.name} aborted`);
 			if (stdinError) throw new Error(`Target tool ${tool.descriptor.name} could not read JSON input`, { cause: stdinError });
 			return {
-				stdout: decodeUtf8(Buffer.concat(stdout), `Target tool ${tool.descriptor.name} stdout`),
-				stderr: decodeUtf8(Buffer.concat(stderr), `Target tool ${tool.descriptor.name} stderr`),
+				stdout: redactSensitiveText(
+					decodeUtf8(Buffer.concat(stdout), `Target tool ${tool.descriptor.name} stdout`),
+					sensitiveValues,
+				),
+				stderr: redactSensitiveText(
+					decodeUtf8(Buffer.concat(stderr), `Target tool ${tool.descriptor.name} stderr`),
+					sensitiveValues,
+				),
 				exitCode,
 				durationMs: Date.now() - startedMs,
 				truncated: stopped === "overflow",

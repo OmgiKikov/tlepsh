@@ -509,7 +509,7 @@ function bashOperations(
 				detached: process.platform !== "win32",
 				// The container runtime CLI is a host process: it needs the host's
 				// PATH and daemon variables. The container's own environment travels
-				// in `-e` flags inside `invocation.args`, never here.
+				// in a private env-file referenced by `invocation.args`, never here.
 				env: invocation.spawnEnvironment ?? environment,
 				stdio: ["ignore", "pipe", "pipe"],
 				windowsHide: true,

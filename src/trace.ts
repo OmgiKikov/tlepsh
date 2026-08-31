@@ -79,6 +79,20 @@ export function redactTraceText(text: string): string {
 		.replace(/\b(Bearer\s+)[A-Za-z0-9._~+\/-]{10,}/gi, "$1[REDACTED_TOKEN]");
 }
 
+/**
+ * Redact host-known secret values before applying the shape-based scrubber.
+ * Credential names are policy; their values are authority and must not come
+ * back through tool output merely because an executable printed an opaque
+ * value that does not resemble a well-known token format.
+ */
+export function redactSensitiveText(text: string, values: readonly string[]): string {
+	let redacted = text;
+	const exact = [...new Set(values.filter((value) => value.length > 0))]
+		.sort((left, right) => right.length - left.length || left.localeCompare(right));
+	for (const value of exact) redacted = redacted.split(value).join("[REDACTED]");
+	return redactTraceText(redacted);
+}
+
 interface SessionEntry {
 	type: string;
 	message?: {
