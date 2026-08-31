@@ -3,6 +3,7 @@ import type {
 	WorkbenchDatasetCase,
 	WorkbenchDatasetDetail,
 	WorkbenchGateProjection,
+	WorkbenchHistoryDetail,
 	WorkbenchImprovementBriefProjection,
 	WorkbenchReviewDetail,
 	WorkbenchTargetDetail,
@@ -422,7 +423,68 @@ export function renderTarget(content: WorkbenchTargetDetail, paint: Paint): stri
 		lines.push("", `${section(content.resource.path, paint)} ${paint.dim(`${resourceKind(content.resource.kind)} · ${bytes(content.resource.bytes)} · ${shortHash(content.resource.sha256)}`)}`);
 		lines.push(...clean(content.resource.content).split("\n").map((line) => `  ${line}`));
 	}
+	if (content.priorAttempts && content.priorAttempts.length > 0) {
+		lines.push("", paint.dim("Already tried"));
+		for (const attempt of content.priorAttempts) {
+			lines.push(`  ${attemptLine(attempt.outcome, attempt.changedPaths, attempt.development, attempt.sealed, attempt.reason, paint)}`);
+		}
+		if (content.priorAttemptsOmitted) {
+			lines.push(`  ${paint.muted(`… and ${pluralize(content.priorAttemptsOmitted, "earlier attempt")} not shown`)}`);
+		}
+	}
 	lines.push(`${paint.dim("Launch")} ${paint.bold(content.launch)} ${paint.dim("· talk to the built agent in its own isolated Pi")}`);
+	return lines;
+}
+
+/** `rejected · AGENTS.md · improved -2.0pp · sealed fail · “3× the cost”`. */
+function attemptLine(
+	outcome: string,
+	changedPaths: readonly string[],
+	development: string,
+	sealed: string | null,
+	reason: string | null,
+	paint: Paint,
+): string {
+	const tone = outcome === "promoted"
+		? paint.success(outcome)
+		: outcome === "rejected"
+			? paint.warning(outcome)
+			: paint.muted(outcome);
+	const change = changedPaths.length > 0 ? oneLine(changedPaths.join(", "), 60) : "—";
+	return joinNonEmpty([
+		tone,
+		change,
+		oneLine(development, 40),
+		sealed ? `sealed ${oneLine(sealed, 20)}` : null,
+		reason ? paint.dim(`“${oneLine(reason, 90)}”`) : null,
+	], paint.dim(" · "));
+}
+
+/**
+ * What was already tried on this Target, newest first. Reading it is how a
+ * proposer stops re-running an experiment that has already lost.
+ */
+export function renderHistory(content: WorkbenchHistoryDetail, paint: Paint): string[] {
+	if (content.attempts.length === 0) {
+		return [
+			`${section("Already tried", paint)} ${paint.muted("nothing yet — this is the first change on this agent")}`,
+		];
+	}
+	const lines = [
+		`${section("Already tried", paint)} ${pluralize(content.attempts.length, "attempt")}` +
+			(content.omitted > 0 ? paint.dim(` · ${content.omitted} older not shown`) : "") +
+			(content.unreadable > 0 ? paint.warning(` · ${pluralize(content.unreadable, "record")} unreadable`) : ""),
+	];
+	for (const attempt of content.attempts) {
+		const development = attempt.development
+			? `${attempt.development.verdict}${attempt.development.scoreDelta === null ? "" : ` ${points(attempt.development.scoreDelta)}`}`
+			: "not evaluated";
+		lines.push(`  ${paint.dim(attempt.at.slice(0, 10))} ${attemptLine(attempt.outcome, attempt.changedPaths, development, attempt.sealed?.verdict ?? null, attempt.reason, paint)}`);
+		if (attempt.failureModeIds.length > 0) {
+			lines.push(`      ${paint.dim("aimed at")} ${oneLine(attempt.failureModeIds.join(", "), 90)}`);
+		}
+	}
+	lines.push(paint.dim("Never re-run an experiment that already lost; change something else."));
 	return lines;
 }
 
@@ -474,6 +536,8 @@ export function renderView(view: WorkbenchView, paint: Paint, options: RenderRev
 		? renderTraces(view.detail.content, paint)
 		: view.detail.aspect === "dataset"
 		? renderDataset(view.detail.content, paint)
+		: view.detail.aspect === "history"
+		? renderHistory(view.detail.content, paint)
 		: renderTarget(view.detail.content, paint);
 	return [...status, "", ...detail];
 }
@@ -483,6 +547,7 @@ export function viewTitle(view: WorkbenchView): string {
 	if (!view.detail) return `AHDE · ${stageLabel(view.stage)}`;
 	if (view.detail.aspect === "traces") return "AHDE · Diagnosis";
 	if (view.detail.aspect === "target") return "AHDE · Target";
+	if (view.detail.aspect === "history") return "AHDE · Already tried";
 	if (view.detail.aspect === "dataset") return "AHDE · Dataset";
 	switch (view.detail.content.kind) {
 		case "spec-draft": return "AHDE · Spec review";

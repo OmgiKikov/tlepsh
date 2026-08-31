@@ -31,6 +31,7 @@ export const CLI_COMMANDS = [
 	"calibrate",
 	"check",
 	"improve",
+	"search",
 	"review",
 	"promote",
 	"reject",
@@ -133,9 +134,17 @@ const COMMAND_SPECS = {
 		positionals: 0,
 	},
 	// The autoloop. `--until` is a pass rate, as `90%` or `0.9`.
+	// `--candidates N` (2..4) makes each cycle a search instead of one guess.
 	improve: {
-		flags: ["target", "until", "max-cycles", "jobs", "project", "repetitions", "corpus"],
+		flags: ["target", "until", "max-cycles", "jobs", "project", "repetitions", "corpus", "candidates"],
 		requiredFlags: ["target", "until", "max-cycles"],
+		positionals: 0,
+	},
+	// Several hypotheses for one failure mode, compared in one Pareto table.
+	// `--candidates` here is a comma-separated list of proposal run ids.
+	search: {
+		flags: ["target", "candidates", "jobs", "project", "repetitions", "corpus", "budget"],
+		requiredFlags: ["target", "candidates"],
 		positionals: 0,
 	},
 	review: {
@@ -291,9 +300,41 @@ function validateSharedFlagValues(flags: Readonly<Record<string, string>>, conte
 	assertIntegerFlag(flags, "sample", context, { minimum: 1 });
 	assertIntegerFlag(flags, "jobs", context, { minimum: 1, maximum: 64 });
 	assertIntegerFlag(flags, "max-cycles", context, { minimum: 1, maximum: 10 });
+	assertIntegerFlag(flags, "budget", context, { minimum: 1 });
 	assertPassRateFlag(flags, "until", context);
 	// 0 days means "never reuse a baseline"; every run measures its own.
 	assertIntegerFlag(flags, "baseline-max-age", context, { minimum: 0, maximum: 3_650 });
+}
+
+/**
+ * Hypotheses one search compares. Kept here rather than imported so argv
+ * validation stays free of application services (see the module docstring).
+ */
+const MIN_SEARCH_CANDIDATE_IDS = 2;
+const MAX_SEARCH_CANDIDATE_IDS = 4;
+const PROPOSAL_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
+
+/** `--candidates <id,id,id>`: two to four distinct proposal run ids. */
+export function parseCandidateIdList(value: string): string[] {
+	return value.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+}
+
+function assertProposalRunIdList(value: string, context: string): void {
+	const ids = parseCandidateIdList(value);
+	if (ids.length < MIN_SEARCH_CANDIDATE_IDS || ids.length > MAX_SEARCH_CANDIDATE_IDS) {
+		cliError(
+			`--candidates for ${context} must name between ${MIN_SEARCH_CANDIDATE_IDS} and ` +
+			`${MAX_SEARCH_CANDIDATE_IDS} proposal run ids, comma-separated; got ${ids.length}`,
+		);
+	}
+	if (new Set(ids).size !== ids.length) {
+		cliError(`--candidates for ${context} lists the same proposal twice`);
+	}
+	for (const id of ids) {
+		if (!PROPOSAL_RUN_ID.test(id)) {
+			cliError(`--candidates for ${context} contains an invalid proposal run id ${JSON.stringify(id)}`);
+		}
+	}
 }
 
 /** A pass rate, written the way an operator says it: `90%`, `0.9`, or `90`. */
@@ -403,8 +444,19 @@ function validateCommandRelationships(command: CliCommand, flags: Readonly<Recor
 	if (command === "calibrate" && flags.corpus !== undefined && flags.project === undefined) {
 		cliError("missing required flag --project for calibrate with --corpus");
 	}
-	if (command === "improve" && flags.corpus !== undefined && flags.project === undefined) {
-		cliError("missing required flag --project for improve with --corpus");
+	if (command === "improve") {
+		if (flags.corpus !== undefined && flags.project === undefined) {
+			cliError("missing required flag --project for improve with --corpus");
+		}
+		// One flag, two readings, decided by the command: `improve --candidates`
+		// counts hypotheses, `search --candidates` names them.
+		assertIntegerFlag(flags, "candidates", "improve", { minimum: 1, maximum: MAX_SEARCH_CANDIDATE_IDS });
+	}
+	if (command === "search") {
+		if (flags.corpus !== undefined && flags.project === undefined) {
+			cliError("missing required flag --project for search with --corpus");
+		}
+		assertProposalRunIdList(flags.candidates as string, "search");
 	}
 	if (command !== "candidate") return;
 	if (flags.dataset !== undefined && flags["development-corpus"] !== undefined) {

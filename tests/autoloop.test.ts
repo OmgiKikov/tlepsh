@@ -511,6 +511,8 @@ describe("the shipped proposal author", () => {
 			});
 			const request = {
 				cycle: 1,
+				variant: 1,
+				variants: 1,
 				repositoryDir: fixture.projectDir,
 				runsRoot: fixture.runsRoot,
 				stateRoot: fixture.stateRoot,
@@ -589,6 +591,8 @@ describe("failure-mode selection", () => {
 			candidateSha: null,
 			screen: null,
 			verification: null,
+			search: null,
+			skipped: null,
 			executions: 0,
 			note: "nothing to propose",
 		};

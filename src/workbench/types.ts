@@ -30,6 +30,7 @@ import type { PersistedBuilderRun } from "../application/builder-proposal.js";
 import type { CandidateImpact } from "../application/candidate-impact.js";
 import type { TargetAdoptionReceipt } from "../application/target-adoption.js";
 import type { TargetAuthoringContext } from "../application/target-authoring-context.js";
+import type { ExperimentHistory } from "../application/experiment-history.js";
 import type { ImprovementBrief } from "../application/improvement-brief.js";
 import type { DiagnosisRecord } from "../diagnosis.js";
 import type { CandidateStatus, ComparisonSummaryEvidence } from "../domain/candidate.js";
@@ -38,6 +39,7 @@ import type {
 	ImprovementLoopCycle,
 	ImprovementLoopStopReason,
 } from "../application/improvement-loop.js";
+import type { ProposalSearchResult } from "../application/proposal-search.js";
 import type { CycleContinuationReceipt } from "./cycle-continuation.js";
 import type { WorkbenchGateClass, WorkbenchRunEstimate } from "./transition-policy.js";
 
@@ -284,6 +286,20 @@ export interface WorkbenchTracesDetail {
 export type WorkbenchTargetDetail = TargetAuthoringContext | { launch: "ahde init ." };
 
 /**
+ * What was already tried on this Target, newest first. Compiled from immutable
+ * candidate records: sealed evidence contributes a verdict and a design size,
+ * never a task, an input or a corpus identity, and nothing here carries a hash,
+ * a receipt or a byte of trace content.
+ */
+export interface WorkbenchHistoryDetail {
+	attempts: ExperimentHistory["attempts"];
+	/** Attempts that exist but did not fit the cap. */
+	omitted: number;
+	/** Candidate directories that could not be read as records. */
+	unreadable: number;
+}
+
+/**
  * One inbox file as the host reads it. The preview is bounded and
  * credential-redacted, and the rows a sealed slice already reserved are gone
  * before it is computed, so nothing here describes the exam.
@@ -297,6 +313,7 @@ export type WorkbenchDetail =
 	| { aspect: "review"; content: WorkbenchReviewDetail }
 	| { aspect: "traces"; content: WorkbenchTracesDetail }
 	| { aspect: "target"; content: WorkbenchTargetDetail }
+	| { aspect: "history"; content: WorkbenchHistoryDetail }
 	| { aspect: "dataset"; content: WorkbenchDatasetDetail };
 
 export interface WorkbenchSelectionSummary {
@@ -344,7 +361,7 @@ export const WorkbenchViewIncludeSchema = z.enum(["selections"]);
 export type WorkbenchViewInclude = z.infer<typeof WorkbenchViewIncludeSchema>;
 
 export const WorkbenchViewQuerySchema = z.strictObject({
-	aspect: z.enum(["summary", "traces", "review", "target", "dataset"]).optional(),
+	aspect: z.enum(["summary", "traces", "review", "target", "history", "dataset"]).optional(),
 	resourcePath: z.string().min(1).max(500).optional(),
 	/**
 	 * Projection hint read by the model-facing transport, not by the Workbench:
@@ -682,6 +699,13 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		until: z.number().min(0).max(1),
 		maxCycles: z.number().int().min(1).max(10),
 		repetitions: z.number().int().min(1).max(10),
+		/**
+		 * Hypotheses per cycle. 1 (the default) is one change, one screen, one
+		 * verification. 2..4 asks for that many different changes for the top
+		 * failure mode and compares them in one Pareto table; the loop stops
+		 * there, because which one wins is the operator's to say.
+		 */
+		candidates: z.number().int().min(1).max(4).optional(),
 		jobs: z.number().int().min(1).max(64).optional(),
 		developmentCorpusId: ArtifactIdSchema.optional(),
 		reason: NonBlankSchema.max(4_000),
@@ -861,6 +885,13 @@ export interface WorkbenchImproveResult {
 	candidateId: string | null;
 	finalPassRate: number;
 	executions: number;
+	/** Hypotheses each cycle compared; 1 means today's single-change behaviour. */
+	candidates: number;
+	/**
+	 * The Pareto table of the last cycle that compared several hypotheses. The
+	 * operator picks one and applies or ships it through the unchanged path.
+	 */
+	search: ProposalSearchResult | null;
 }
 
 /** Typed payload of every consequential decision, keyed by its decision kind. */

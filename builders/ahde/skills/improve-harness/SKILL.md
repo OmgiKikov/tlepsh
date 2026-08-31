@@ -19,6 +19,18 @@ description: Write and run the change in a bound workshop, close it into an evid
    evidence-supported rerun or repair action instead.
 3. Prefer changing focused Target context, skills, or declarative tools over
    adding broad orchestration or benchmark-specific phrases.
+3b. **Read what was already tried first.** Call `ahde_workbench_view` with
+   `aspect: "history"` (or read `priorAttempts` on `aspect: "target"`) before
+   you open a workshop. Each row says what an attempt changed, which failure
+   modes it aimed at, what it scored, and why it ended. If the change you were
+   about to write replaces the same files for the same failure mode as an
+   attempt that was rejected or came back anything but `improved`, do not write
+   it: pick a different hypothesis or a different failure mode, and say in one
+   sentence what is different this time. When two or three plausible
+   hypotheses exist for the same problem, write them all and let the operator
+   compare them — the host applies each on its own branch, screens it, verifies
+   what looks promising, and shows a table with score, cost and which
+   candidates are dominated. You never pick the winner.
 4. **Open a workshop and work in it.** Submit `kind: workshop-open` through
    `ahde_workbench_submit`. The host opens a private copy of the exact clean
    Target revision — it is not the operator's checkout, and nothing you do in it

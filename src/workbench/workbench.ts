@@ -37,6 +37,10 @@ import {
 } from "../application/harness-authoring.js";
 import { inspectTargetAuthoringContext } from "../application/target-authoring-context.js";
 import {
+	compactExperimentHistory,
+	compileExperimentHistory,
+} from "../application/experiment-history.js";
+import {
 	openBuilderWorkshop,
 	type BuilderWorkshop,
 	type TryToolResult,
@@ -195,6 +199,7 @@ import {
 	type WorkbenchDecisionInput,
 	type WorkbenchDecisionExecutionOptions,
 	type WorkbenchDecisionResult,
+	type WorkbenchHistoryDetail,
 	type WorkbenchHumanGate,
 	type WorkbenchImprovementBriefProjection,
 	type WorkbenchDatasetRecipeArtifact,
@@ -266,6 +271,8 @@ export interface AhdeWorkbenchDependencies {
 	diagnoseEval: typeof diagnoseEvalRun;
 	compileImprovementBrief: (runsRoot: string, diagnosis: ReturnType<typeof diagnoseEvalRun>) => ImprovementBrief;
 	inspectTargetAuthoringContext: typeof inspectTargetAuthoringContext;
+	/** What was already tried: the read side of this project's candidate records. */
+	compileExperimentHistory: typeof compileExperimentHistory;
 	evidenceLink: (record: EvalRunRecord) => WorkbenchEvidenceLink | null | Promise<WorkbenchEvidenceLink | null>;
 	applyProposal: typeof applyBuilderProposal;
 	describeProposalDiscard: typeof describeBuilderProposalDiscard;
@@ -329,6 +336,7 @@ const DEFAULT_DEPENDENCIES: AhdeWorkbenchDependencies = {
 	diagnoseEval: diagnoseEvalRun,
 	compileImprovementBrief,
 	inspectTargetAuthoringContext,
+	compileExperimentHistory,
 	evidenceLink: () => null,
 	applyProposal: applyBuilderProposal,
 	describeProposalDiscard: describeBuilderProposalDiscard,
@@ -640,6 +648,24 @@ export class AhdeWorkbench {
 				available: false,
 				reason: (error instanceof Error ? error.message : String(error)).slice(0, 500),
 			};
+		}
+	}
+
+	/**
+	 * What this project already tried on the Target that is loaded now. Scoped
+	 * to one Target and one project so a shared runs root cannot show the
+	 * Builder another agent's experiments; an unreadable candidate directory is
+	 * counted, never fatal, because memory is an aid.
+	 */
+	private experimentHistory(inventory: WorkbenchInventory): WorkbenchHistoryDetail {
+		try {
+			return this.dependencies.compileExperimentHistory({
+				runsRoot: this.runsRoot,
+				projectId: this.projectId,
+				...(inventory.target ? { targetId: inventory.target.manifest.id } : {}),
+			});
+		} catch {
+			return { attempts: [], omitted: 0, unreadable: 0 };
 		}
 	}
 
@@ -1260,6 +1286,9 @@ export class AhdeWorkbench {
 		const aspect = query.aspect ?? "summary";
 		if (aspect === "summary") return view;
 		if (aspect === "target") {
+			// The Builder reads this immediately before it authors, so it is where
+			// the memory of what was already tried belongs: what each attempt
+			// changed, what it was aiming at, what it scored, and why it ended.
 			const content: WorkbenchTargetDetail = inventory.target
 				? this.dependencies.inspectTargetAuthoringContext({
 					repositoryDir: this.projectDir,
@@ -1268,9 +1297,13 @@ export class AhdeWorkbench {
 						gitSha: inventory.target.gitSha,
 					},
 					...(query.resourcePath ? { resourcePath: query.resourcePath } : {}),
+					history: compactExperimentHistory(this.experimentHistory(inventory)),
 				})
 				: { launch: "ahde init ." };
 			return { ...view, detail: { aspect, content } };
+		}
+		if (aspect === "history") {
+			return { ...view, detail: { aspect, content: this.experimentHistory(inventory) } };
 		}
 		if (aspect === "dataset") {
 			const sourcePath = query.resourcePath!;
@@ -2358,10 +2391,12 @@ export class AhdeWorkbench {
 			if (!inventory.target) throw new Error("`improve` needs one exact resolved Target");
 			const approved = requireApprovedSpec(inventory);
 			const corpus = requireDevelopmentCorpus(inventory, input.developmentCorpusId, approved.id);
+			const candidates = input.candidates ?? 1;
 			const plannedExecutions = plannedImprovementExecutions({
 				developmentTasks: corpus.taskCount,
 				repetitions: input.repetitions,
 				maxCycles: input.maxCycles,
+				candidates,
 			});
 			const target = `${Math.round(input.until * 100)}%`;
 			const subject = {
@@ -2371,13 +2406,16 @@ export class AhdeWorkbench {
 				until: input.until,
 				maxCycles: input.maxCycles,
 				repetitions: input.repetitions,
+				candidates,
 				plannedExecutions,
 				neverDecides: [...IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS],
 			};
 			const actor = await this.confirm(input, gate, `Improve until ${target}`, subject, options.signal, {
 				question:
 					`Run up to ${input.maxCycles} improvement cycle${input.maxCycles === 1 ? "" : "s"} ` +
-					`towards ${target} (at most ${plannedExecutions} Target executions)? ` +
+					`towards ${target}` +
+					(candidates > 1 ? `, comparing ${candidates} changes per cycle` : "") +
+					` (at most ${plannedExecutions} Target executions)? ` +
 					"The loop never promotes, adopts, publishes or approves anything.",
 				estimate: this.runEstimate(plannedExecutions, inventory.target),
 			});
@@ -2391,6 +2429,7 @@ export class AhdeWorkbench {
 				until: input.until,
 				maxCycles: input.maxCycles,
 				repetitions: input.repetitions,
+				candidates,
 				...(input.jobs === undefined ? {} : { jobs: input.jobs }),
 				author: this.dependencies.authorImprovementProposal ?? recordedBuilderProposalAuthor({
 					stateRoot: this.stateRoot,
@@ -2404,6 +2443,7 @@ export class AhdeWorkbench {
 				now: this.dependencies.now,
 			});
 			const table = renderImprovementLoopTable(loop);
+			const search = [...loop.cycles].reverse().find((cycle) => cycle.search)?.search ?? null;
 			return {
 				kind: input.kind,
 				message:
@@ -2417,6 +2457,8 @@ export class AhdeWorkbench {
 					candidateId: loop.candidateId,
 					finalPassRate: loop.finalPassRate,
 					executions: loop.executions,
+					candidates,
+					search,
 				},
 				view: await this.viewOf(this.inventory()),
 			};

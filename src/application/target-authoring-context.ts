@@ -6,6 +6,9 @@ import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { TargetManifest } from "../manifest.js";
 import { canonicalJson, hashValue } from "../provenance.js";
+// Type-only: the memory of what was already tried is compiled by the caller, so
+// this module stays a reader of Git and nothing else.
+import type { CompactExperimentHistory } from "./experiment-history.js";
 import {
 	classifyTargetToolDescriptorPath,
 	MAX_TOOL_DIRECTORY_FILES,
@@ -37,6 +40,13 @@ const MAX_TOOLS = TARGET_AUTHORING_LIMITS.maxTools;
 const MAX_RESOURCES = 1 + MAX_SKILLS + (MAX_TOOLS * MAX_TOOL_DIRECTORY_FILES);
 /** How many data file names one bounded listing may name. */
 const MAX_DATA_ENTRY_SAMPLE = 32;
+/**
+ * Canonical-JSON bytes the memory of prior attempts may occupy inside one
+ * authoring context. It is carved out of the same model-context limit the
+ * overview already lives under, so folding history in can never push the exact
+ * Git surface out: attempts are dropped, oldest first, and counted.
+ */
+export const MAX_AUTHORING_HISTORY_PROJECTION_BYTES = 8 * 1024;
 
 export type TargetAuthoringContextErrorCode =
 	| "TARGET_CONTEXT_INVALID"
@@ -106,6 +116,14 @@ export interface TargetAuthoringContextRequest {
 	expectedTarget: { id: string; gitSha: string };
 	/** Absent returns the bounded overview; present returns one declared resource too. */
 	resourcePath?: string;
+	/**
+	 * What this project already tried, compiled by the host from immutable
+	 * candidate records. It is attached to the overview and is deliberately NOT
+	 * part of `contextHash` or the claim: the exact Git revision a proposal is
+	 * authored against cannot depend on how many experiments have since been run,
+	 * or every stored claim would expire the moment a candidate finished.
+	 */
+	history?: CompactExperimentHistory;
 }
 
 export interface TargetAuthoringContext {
@@ -133,6 +151,15 @@ export interface TargetAuthoringContext {
 	/** Declared `data/**` directories, by shape only. */
 	data: TargetAuthoringDataDirectory[];
 	resource?: TargetAuthoringResourceRead;
+	/**
+	 * What was already tried on this Target: what each attempt changed, what it
+	 * was aiming at, what it scored and why it ended the way it did. Bounded to
+	 * whatever fits {@link MAX_AUTHORING_HISTORY_PROJECTION_BYTES} inside the
+	 * model-context limit; `priorAttemptsOmitted` says how many did not fit.
+	 * Never part of `contextHash`.
+	 */
+	priorAttempts?: CompactExperimentHistory["attempts"];
+	priorAttemptsOmitted?: number;
 	launch: "ahde target";
 }
 
@@ -448,6 +475,39 @@ export function assertTargetAuthoringSurfaceWithinLimits(
 }
 
 /**
+ * Fit the memory of prior attempts into whatever the bounded overview has left.
+ *
+ * The exact Git surface always wins: the history budget is the smaller of its
+ * own cap and the room remaining under the model-context limit, and attempts
+ * are dropped oldest-first until the whole projection fits. Nothing is dropped
+ * quietly — `omitted` carries every attempt the Builder is not being shown.
+ */
+function boundedPriorAttempts(
+	history: CompactExperimentHistory | undefined,
+	surface: {
+		manifestBytes: number;
+		target: TargetAuthoringContext["target"];
+		resources: readonly TargetAuthoringResource[];
+		data: readonly TargetAuthoringDataDirectory[];
+	},
+): CompactExperimentHistory | null {
+	if (!history) return null;
+	const overviewBytes = Buffer.byteLength(
+		canonicalJson({ target: surface.target, resources: surface.resources, data: surface.data }),
+		"utf8",
+	);
+	const budget = Math.max(
+		0,
+		Math.min(MAX_AUTHORING_HISTORY_PROJECTION_BYTES, MAX_CONTEXT_PROJECTION_BYTES - overviewBytes),
+	);
+	let attempts = [...history.attempts];
+	while (attempts.length > 0 && Buffer.byteLength(canonicalJson(attempts), "utf8") > budget) {
+		attempts = attempts.slice(0, -1);
+	}
+	return { attempts, omitted: history.omitted + (history.attempts.length - attempts.length) };
+}
+
+/**
  * Inspect the exact, manifest-declared Target authoring surface.
  *
  * This is intentionally one deep interface: callers never handle Git paths,
@@ -668,6 +728,12 @@ export function inspectTargetAuthoringContext(
 
 	assertCleanRevision(repositoryDir, request.expectedTarget.gitSha);
 	const selected = requestedPath ? resources.get(requestedPath) : undefined;
+	const history = boundedPriorAttempts(request.history, {
+		manifestBytes: manifestBlob.bytes,
+		target,
+		resources: summaries,
+		data,
+	});
 	return {
 		schemaVersion: 1,
 		algorithmId: "git-manifest-context-v1",
@@ -675,6 +741,7 @@ export function inspectTargetAuthoringContext(
 		claim,
 		target,
 		resources: summaries,
+		...(history ? { priorAttempts: history.attempts, priorAttemptsOmitted: history.omitted } : {}),
 		data,
 		...(selected ? { resource: { ...selected.summary, content: selected.content } } : {}),
 		launch: "ahde target",
