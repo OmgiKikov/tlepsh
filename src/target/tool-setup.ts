@@ -2,13 +2,16 @@ import { spawnSync } from "node:child_process";
 import {
 	chmodSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	readFileSync,
+	readdirSync,
+	realpathSync,
 	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { hashFile, hashValue } from "../provenance.js";
 import { resolveExecutionBackend } from "./container-backend.js";
 import {
@@ -24,6 +27,10 @@ import type { ResolvedTargetTool, TargetToolPolicyEnvelope } from "./tool-manife
 export const MAX_TOOL_SETUP_OUTPUT_BYTES = 64 * 1024;
 
 const MARKER_FILE = ".ahde-tool-home.json";
+const MAX_TOOL_HOME_MARKER_BYTES = 16 * 1024 * 1024;
+
+/** The exact empty prepared-home identity used by Targets with no directory tools. */
+export const EMPTY_PREPARED_TOOL_HOME_HASH = hashValue({ schemaVersion: 1, entries: [] });
 
 export interface ToolSetupOutcome {
 	tool: string;
@@ -70,8 +77,134 @@ export interface PrepareToolHomeOptions {
 export interface PreparedToolHome {
 	root: string;
 	setups: ToolSetupOutcome[];
+	/** Exact paths, bytes, and executable bits produced by preparation. */
+	sha256: string;
 	/** False when a previous call for the same tool identities already prepared it. */
 	prepared: boolean;
+}
+
+interface ToolHomeMarker {
+	schemaVersion: 1;
+	identity: string;
+	sha256: string;
+	setups: ToolSetupOutcome[];
+}
+
+function portableRelativePath(root: string, path: string): string {
+	return relative(root, path).split(sep).join("/");
+}
+
+function comparePath(left: string, right: string): number {
+	return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/**
+ * Attest the complete prepared tree. The marker is host bookkeeping, not
+ * Target state; every other entry participates, including empty directories.
+ * Permissions are reduced to executable bits: those change whether a command
+ * can run, while host umask-specific read/write bits do not describe Target
+ * behaviour.
+ */
+export function preparedToolHomeHash(rootPath: string): string {
+	const root = resolve(rootPath);
+	const rootStat = lstatSync(root);
+	if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+		throw new Error("prepared tool home root must be a real directory");
+	}
+	const canonicalRoot = realpathSync(root);
+	const entries: Array<{
+		path: string;
+		kind: "directory" | "file";
+		executableMode: number;
+		sha256?: string;
+	}> = [];
+
+	const visit = (directory: string): void => {
+		for (const name of readdirSync(directory).sort(comparePath)) {
+			const path = join(directory, name);
+			const relativePath = portableRelativePath(canonicalRoot, path);
+			const before = lstatSync(path);
+			if (before.isSymbolicLink()) {
+				throw new Error(`prepared tool home contains a symlink: ${relativePath}`);
+			}
+			// Only the exact, regular host marker at the root is excluded. A
+			// marker-shaped symlink or directory is untrusted state and fails closed.
+			if (relativePath === MARKER_FILE) {
+				if (!before.isFile()) throw new Error("prepared tool home marker is not a regular file");
+				continue;
+			}
+			if (before.isDirectory()) {
+				entries.push({
+					path: relativePath,
+					kind: "directory",
+					executableMode: before.mode & 0o111,
+				});
+				visit(path);
+				continue;
+			}
+			if (!before.isFile()) {
+				throw new Error(`prepared tool home contains a non-regular file: ${relativePath}`);
+			}
+			const content = readFileSync(path);
+			const after = lstatSync(path);
+			if (
+				after.isSymbolicLink() || !after.isFile() ||
+				after.dev !== before.dev || after.ino !== before.ino ||
+				after.size !== before.size || after.mtimeMs !== before.mtimeMs ||
+				(after.mode & 0o111) !== (before.mode & 0o111)
+			) {
+				throw new Error(`prepared tool home changed while hashing: ${relativePath}`);
+			}
+			entries.push({
+				path: relativePath,
+				kind: "file",
+				executableMode: before.mode & 0o111,
+				sha256: hashFile(content.toString("base64")),
+			});
+		}
+	};
+	visit(canonicalRoot);
+	return entries.length === 0 ? EMPTY_PREPARED_TOOL_HOME_HASH : hashValue({ schemaVersion: 1, entries });
+}
+
+function isToolSetupOutcome(value: unknown): value is ToolSetupOutcome {
+	if (typeof value !== "object" || value === null) return false;
+	const outcome = value as Partial<ToolSetupOutcome>;
+	return typeof outcome.tool === "string" && outcome.tool.length > 0 &&
+		typeof outcome.ran === "boolean" &&
+		(outcome.exitCode === null || (typeof outcome.exitCode === "number" && Number.isInteger(outcome.exitCode))) &&
+		typeof outcome.durationMs === "number" && Number.isFinite(outcome.durationMs) && outcome.durationMs >= 0 &&
+		typeof outcome.stdout === "string" && typeof outcome.stderr === "string" &&
+		typeof outcome.truncated === "boolean" &&
+		(outcome.network === "deny" || outcome.network === "allow");
+}
+
+function readMarker(path: string): ToolHomeMarker | null {
+	try {
+		const stat = lstatSync(path);
+		if (stat.isSymbolicLink() || !stat.isFile()) {
+			throw new Error("prepared tool home marker must be a regular file");
+		}
+		if (stat.size > MAX_TOOL_HOME_MARKER_BYTES) return null;
+		const value = JSON.parse(readFileSync(path, "utf8")) as Partial<ToolHomeMarker>;
+		if (
+			value.schemaVersion !== 1 || typeof value.identity !== "string" ||
+			typeof value.sha256 !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value.sha256) ||
+			!Array.isArray(value.setups) || !value.setups.every(isToolSetupOutcome)
+		) return null;
+		return value as ToolHomeMarker;
+	} catch {
+		return null;
+	}
+}
+
+/** Remove only a fully inspectable old cache. Symlinks and special files stop preparation. */
+function resetPreparedToolHome(root: string): void {
+	// Inspection includes every old entry except a regular host marker. This is
+	// intentionally done before removal so an attacker cannot turn a bad cache
+	// into an accepted one merely by making us delete the evidence.
+	preparedToolHomeHash(root);
+	for (const name of readdirSync(root)) rmSync(join(root, name), { recursive: true, force: true });
 }
 
 function boundedText(buffer: Buffer | string | null | undefined): { text: string; truncated: boolean } {
@@ -215,25 +348,34 @@ function runSetup(
 
 /**
  * Materialize every multi-file tool into a private prepared home and run each
- * declared setup step exactly once for that home. The prepared bytes are the
- * hash-verified workspace bytes; whatever setup adds is derived state that no
- * provenance hash ever sees.
+ * declared setup step exactly once for that home. Setup output is attested and
+ * returned to the caller as Target identity; the host-owned marker stores the
+ * same digest and is excluded from it.
  */
 export function prepareToolHome(options: PrepareToolHomeOptions): PreparedToolHome {
 	const root = resolve(options.toolHomeRoot);
 	const tools = directoryTools(options.tools);
 	mkdirSync(root, { recursive: true, mode: 0o700 });
+	const rootStat = lstatSync(root);
+	if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+		throw new Error("prepared tool home root must be a real directory");
+	}
 	const identity = markerIdentity(options.tools);
 	const markerPath = join(root, MARKER_FILE);
 	if (existsSync(markerPath)) {
-		const marker = JSON.parse(readFileSync(markerPath, "utf8")) as { identity?: string; setups?: ToolSetupOutcome[] };
-		if (marker.identity === identity) {
-			return { root, setups: marker.setups ?? [], prepared: false };
+		const marker = readMarker(markerPath);
+		if (marker?.identity === identity) {
+			const currentHash = preparedToolHomeHash(root);
+			if (currentHash === marker.sha256) {
+				return { root, setups: marker.setups, sha256: currentHash, prepared: false };
+			}
 		}
 	}
+	resetPreparedToolHome(root);
 	if (tools.length === 0) {
-		writeFileSync(markerPath, `${JSON.stringify({ identity, setups: [] })}\n`, { mode: 0o600 });
-		return { root, setups: [], prepared: true };
+		const sha256 = preparedToolHomeHash(root);
+		writeFileSync(markerPath, `${JSON.stringify({ schemaVersion: 1, identity, sha256, setups: [] })}\n`, { mode: 0o600 });
+		return { root, setups: [], sha256, prepared: true };
 	}
 
 	const backend = options.sandboxBackend
@@ -247,8 +389,9 @@ export function prepareToolHome(options: PrepareToolHomeOptions): PreparedToolHo
 		copyToolDirectory(tool, options.workspaceDir, toolDir);
 		setups.push(runSetup(tool, toolDir, { ...options, backend, toolHomeRoot: root }));
 	}
+	const sha256 = preparedToolHomeHash(root);
 	const temporary = `${markerPath}.tmp`;
-	writeFileSync(temporary, `${JSON.stringify({ identity, setups })}\n`, { mode: 0o600 });
+	writeFileSync(temporary, `${JSON.stringify({ schemaVersion: 1, identity, sha256, setups })}\n`, { mode: 0o600 });
 	renameSync(temporary, markerPath);
-	return { root, setups, prepared: true };
+	return { root, setups, sha256, prepared: true };
 }

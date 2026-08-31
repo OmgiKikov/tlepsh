@@ -43,7 +43,8 @@ export function loadExactEvalSnapshot(
 			run.target.id !== record.target.id ||
 			run.target.gitSha !== record.target.gitSha ||
 			run.target.toolsetHash !== record.target.toolsetHash ||
-			run.target.workspaceHash !== record.target.workspaceHash
+			run.target.workspaceHash !== record.target.workspaceHash ||
+			run.target.preparedToolHomeHash !== record.target.preparedToolHomeHash
 		) mismatch(evalRunId, `run ${runId} target does not match the eval target`);
 		if (run.label !== record.label) mismatch(evalRunId, `run ${runId} label does not match`);
 		if (run.eval.suiteId !== record.suiteId || run.eval.suiteHash !== record.suiteHash) {

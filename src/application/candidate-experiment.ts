@@ -40,7 +40,7 @@ import { writeJsonArtifact } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import { buildExecutionPolicy } from "../execution-policy.js";
 import { createTargetToolRuntime, effectiveTargetSandbox, targetFilesystemConfinement } from "../target/runtime.js";
-import { computeTargetWorkspaceHash } from "../runner.js";
+import { computeTargetSnapshotHashes } from "../runner.js";
 import type { RunEventListener } from "../run-events.js";
 import {
 	targetEvalSurface,
@@ -286,6 +286,7 @@ function assertReusableBaselineIdentity(record: EvalRunRecord, query: ReusableBa
 		record.target.gitSha !== query.targetGitSha ? "target revision" :
 		record.target.toolsetHash !== query.toolsetHash ? "toolset hash" :
 		record.target.workspaceHash !== query.workspaceHash ? "workspace hash" :
+		record.target.preparedToolHomeHash !== query.preparedToolHomeHash ? "prepared tool-home hash" :
 		record.evidenceVisibility !== query.evidenceVisibility ? "evidence visibility" :
 		record.repetitions !== query.repetitions ? "repetitions" :
 		axisDifferences(record.provenance, query.provenance).length > 0 ? "provenance axes" :
@@ -488,12 +489,13 @@ async function runMatchedEvaluation(
 	execution: MatchedEvaluationExecution = {},
 ): Promise<MatchedEvaluationResult> {
 	const { onRunEvent, signal, jobs, baselineMaxAgeMs } = execution;
-	const baselineWorkspaceHash = computeTargetWorkspaceHash(baselineTarget, runsRoot);
+	const baselineSnapshot = computeTargetSnapshotHashes(baselineTarget, runsRoot);
 	const query: ReusableBaselineQuery = {
 		targetId: baselineTarget.manifest.id,
 		targetGitSha: baselineSha,
 		toolsetHash: baselineTarget.toolsetHash,
-		workspaceHash: baselineWorkspaceHash,
+		workspaceHash: baselineSnapshot.workspaceHash,
+		preparedToolHomeHash: baselineSnapshot.preparedToolHomeHash,
 		provenance: effectiveProvenance(baselineTarget),
 		evidenceVisibility,
 		label: "baseline",
@@ -509,7 +511,8 @@ async function runMatchedEvaluation(
 			label: "baseline",
 			repetitions,
 			evidenceVisibility,
-			expectedWorkspaceHash: baselineWorkspaceHash,
+			expectedWorkspaceHash: baselineSnapshot.workspaceHash,
+			expectedPreparedToolHomeHash: baselineSnapshot.preparedToolHomeHash,
 			...(onRunEvent ? { onRunEvent } : {}),
 			...(signal ? { signal } : {}),
 			...(jobs === undefined ? {} : { jobs }),

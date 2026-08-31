@@ -129,6 +129,7 @@ function writePair(
 	const suiteHash = hashValue({ dataset, suite: true });
 	const datasetHash = hashValue({ dataset });
 	const workspaceHash = (gitSha: string): string => hashValue({ targetId, gitSha, workspace: true });
+	const preparedToolHomeHash = (gitSha: string): string => hashValue({ targetId, gitSha, preparedToolHome: true });
 	const provenance = provenanceAxes({
 		runtime,
 		model,
@@ -172,6 +173,7 @@ function writePair(
 				gitSha,
 				toolsetHash: `sha256:${"a".repeat(64)}`,
 				workspaceHash: workspaceHash(gitSha),
+				preparedToolHomeHash: preparedToolHomeHash(gitSha),
 			},
 			runtime,
 			model,
@@ -236,6 +238,7 @@ function writePair(
 			gitSha,
 			toolsetHash: `sha256:${"a".repeat(64)}`,
 			workspaceHash: workspaceHash(gitSha),
+			preparedToolHomeHash: preparedToolHomeHash(gitSha),
 		},
 		label,
 		baselineEvalRunId: baselineId,

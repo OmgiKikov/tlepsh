@@ -574,6 +574,9 @@ function verifyPair(
 	if (!baseline.record.target.workspaceHash || !candidate.record.target.workspaceHash) {
 		issues.push(`${visibility} evidence is missing exact Target workspace hashes`);
 	}
+	if (!baseline.record.target.preparedToolHomeHash || !candidate.record.target.preparedToolHomeHash) {
+		issues.push(`${visibility} evidence is missing exact prepared tool-home hashes`);
+	}
 	if (
 		!withinInfrastructureBudget(baseline.record.summary.error, baseline.record.summary.total) ||
 		!withinInfrastructureBudget(candidate.record.summary.error, candidate.record.summary.total)

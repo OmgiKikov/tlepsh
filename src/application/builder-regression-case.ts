@@ -14,7 +14,7 @@ import type { LoadedCorpus } from "../corpus.js";
 import { loadVerifiedEvalRun, type EvalRunRecord } from "../eval.js";
 import type { ResolvedTarget } from "../manifest.js";
 import { canonicalJson, hashValue } from "../provenance.js";
-import { computeTargetWorkspaceHash } from "../runner.js";
+import { computeTargetSnapshotHashes } from "../runner.js";
 import type { ApprovedSpecReference } from "../spec.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import { openTrace } from "../trace.js";
@@ -72,7 +72,7 @@ function evidenceError(message: string): never {
 function exactSourceSurface(
 	options: ResolveDevelopmentFailureOperationsOptions,
 	record: EvalRunRecord,
-	workspaceHash: string,
+	snapshot: { workspaceHash: string; preparedToolHomeHash: string },
 ): boolean {
 	if (
 		options.developmentCorpus.metadata.projectId !== options.approvedSpec.projectId ||
@@ -85,7 +85,8 @@ function exactSourceSurface(
 		record.target.id === expected.manifest.id &&
 		record.target.gitSha === expected.gitSha &&
 		record.target.toolsetHash === expected.toolsetHash &&
-		record.target.workspaceHash === workspaceHash &&
+		record.target.workspaceHash === snapshot.workspaceHash &&
+		record.target.preparedToolHomeHash === snapshot.preparedToolHomeHash &&
 		record.dataset === expected.manifest.evalSuite.dataset.replace(/\.jsonl$/, "").split("/").pop() &&
 		record.datasetHash === expected.datasetHash &&
 		record.suiteHash === expected.suiteHash &&
@@ -104,7 +105,7 @@ export function resolveDevelopmentFailureOperations(
 	const requested = BuilderWorkbenchCorpusRevisionOperationsSchema.parse(options.operations);
 	const operations: BuilderCorpusDraftRevisionOperation[] = [];
 	const verifiedTaskProvenance: BuilderCorpusDraftVerifiedProvenanceBinding[] = [];
-	let currentWorkspaceHash: string | undefined;
+	let currentSnapshot: ReturnType<typeof computeTargetSnapshotHashes> | undefined;
 	// A cheap-check screen is a one-repetition, candidate-revision run of the
 	// cases that already failed. It is a screen, not evidence, so it can never
 	// be the hash-indexed development failure a regression case cites.
@@ -116,7 +117,7 @@ export function resolveDevelopmentFailureOperations(
 			continue;
 		}
 
-		currentWorkspaceHash ??= computeTargetWorkspaceHash(options.target, options.runsRoot);
+		currentSnapshot ??= computeTargetSnapshotHashes(options.target, options.runsRoot);
 		screens ??= screenExclusion(options.runsRoot);
 		if (screens.blocksEverything || screens.ids.has(operation.evalRunId)) {
 			evidenceError("source is a cheap-check screen, which is never evidence");
@@ -127,7 +128,7 @@ export function resolveDevelopmentFailureOperations(
 		if (allowedRecord?.purpose !== undefined && allowedRecord.purpose !== "evidence") {
 			evidenceError("source is a cheap-check screen, which is never evidence");
 		}
-		if (!allowedRecord || !exactSourceSurface(options, allowedRecord, currentWorkspaceHash)) {
+		if (!allowedRecord || !exactSourceSurface(options, allowedRecord, currentSnapshot)) {
 			evidenceError("source is not compatible verified development evidence for this Workbench lineage");
 		}
 		const verified = loadVerifiedEvalRun(resolve(options.runsRoot), operation.evalRunId);

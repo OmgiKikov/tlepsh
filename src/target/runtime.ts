@@ -35,7 +35,11 @@ import {
 	type ContainerRuntimeStatus,
 } from "./container-backend.js";
 import { detectTargetToolSandbox, TargetToolBroker, type TargetToolSandboxBackend } from "./tool-broker.js";
-import { prepareToolHome, type ToolSetupOutcome } from "./tool-setup.js";
+import {
+	EMPTY_PREPARED_TOOL_HOME_HASH,
+	prepareToolHome,
+	type ToolSetupOutcome,
+} from "./tool-setup.js";
 import { loadTargetTools, type ResolvedTargetTool } from "./tool-manifest.js";
 import {
 	createTargetFeedbackExtension,
@@ -64,6 +68,8 @@ export interface TargetToolRuntime {
 	toolNames: string[];
 	/** Prepared home for multi-file tools, or null when none are declared. */
 	toolHomeRoot: string | null;
+	/** Exact paths, bytes, and executable modes in the prepared home. */
+	preparedToolHomeHash: string;
 	/** One entry per multi-file tool; `ran` is false when it declares no setup. */
 	toolSetups: ToolSetupOutcome[];
 }
@@ -301,6 +307,7 @@ export function createTargetToolRuntime(options: CreateTargetToolRuntimeOptions)
 			effectiveEnvironmentNames: [],
 			toolNames: [],
 			toolHomeRoot: null,
+			preparedToolHomeHash: EMPTY_PREPARED_TOOL_HOME_HASH,
 			toolSetups: [],
 		};
 	}
@@ -371,6 +378,7 @@ export function createTargetToolRuntime(options: CreateTargetToolRuntimeOptions)
 		effectiveEnvironmentNames: [...environmentNames].sort(),
 		toolNames: reloaded.tools.map((tool) => tool.descriptor.name),
 		toolHomeRoot: prepared?.root ?? null,
+		preparedToolHomeHash: prepared?.sha256 ?? EMPTY_PREPARED_TOOL_HOME_HASH,
 		toolSetups: prepared?.setups ?? [],
 	};
 }

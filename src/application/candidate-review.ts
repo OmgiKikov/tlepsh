@@ -269,6 +269,9 @@ function verifyEvaluationPair(
 		if (!evidence.target.workspaceHash) {
 			throw new Error(`${label} ${side} lacks a hash-anchored Target workspace and is legacy, non-promotable evidence`);
 		}
+		if (!evidence.target.preparedToolHomeHash) {
+			throw new Error(`${label} ${side} lacks a hash-anchored prepared tool home and is legacy, non-promotable evidence`);
+		}
 		const execution = evidence.provenance.execution;
 		const processCapableTools = execution.tools.filter((tool) =>
 			!["read", "edit", "write"].includes(tool),

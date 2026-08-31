@@ -24,7 +24,7 @@ import { EXACT_COMPARISON_GATE_ALGORITHM_ID_V4 } from "../src/domain/comparison-
 import { diagnoseEvalRun } from "../src/diagnosis.js";
 import { writeEvalRun, type EvalRunRecord } from "../src/eval.js";
 import { loadTarget, type GraderSpec } from "../src/manifest.js";
-import { computeTargetWorkspaceHash } from "../src/runner.js";
+import { computeTargetSnapshotHashes } from "../src/runner.js";
 import {
 	RunRecordSchema,
 	executionFingerprint,
@@ -128,7 +128,8 @@ function writeDevelopmentEval(
 	});
 	const execution = executionFingerprint("isolated");
 	mkdirSync(paths.runsRoot, { recursive: true });
-	const workspaceHash = workspaceHashOverride ?? computeTargetWorkspaceHash(resolved, paths.runsRoot);
+	const snapshot = computeTargetSnapshotHashes(resolved, paths.runsRoot);
+	const workspaceHash = workspaceHashOverride ?? snapshot.workspaceHash;
 	const evaluation = {
 		suiteId: resolved.manifest.evalSuite.id,
 		suiteHash: resolved.suiteHash,
@@ -161,6 +162,7 @@ function writeDevelopmentEval(
 			gitSha: resolved.gitSha,
 			toolsetHash: toolsetHashOverride ?? resolved.toolsetHash,
 			workspaceHash,
+			preparedToolHomeHash: snapshot.preparedToolHomeHash,
 		},
 		runtime,
 		model,

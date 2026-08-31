@@ -27,7 +27,7 @@ import {
 	provenanceKey,
 	type RunRecord,
 } from "../../src/provenance.js";
-import { computeTargetWorkspaceHash } from "../../src/runner.js";
+import { computeTargetSnapshotHashes } from "../../src/runner.js";
 import type { AgentSpec } from "../../src/spec.js";
 import { writeJsonArtifact } from "../../src/storage/artifacts.js";
 import {
@@ -189,7 +189,7 @@ export function writeDevelopmentEval(paths: FixturePaths, corpusId: string, eval
 	});
 	const execution = executionFingerprint("isolated");
 	mkdirSync(paths.runsRoot, { recursive: true });
-	const workspaceHash = computeTargetWorkspaceHash(resolved, paths.runsRoot);
+	const snapshot = computeTargetSnapshotHashes(resolved, paths.runsRoot);
 	const evaluation = {
 		suiteId: resolved.manifest.evalSuite.id,
 		suiteHash: resolved.suiteHash,
@@ -217,7 +217,8 @@ export function writeDevelopmentEval(paths: FixturePaths, corpusId: string, eval
 			id: resolved.manifest.id,
 			gitSha: resolved.gitSha,
 			toolsetHash: resolved.toolsetHash,
-			workspaceHash,
+			workspaceHash: snapshot.workspaceHash,
+			preparedToolHomeHash: snapshot.preparedToolHomeHash,
 		},
 		runtime,
 		model,

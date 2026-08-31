@@ -193,6 +193,7 @@ function evalRecord(
 		gitSha: target.gitSha,
 		toolsetHash: target.toolsetHash,
 		workspaceHash: options.expectedWorkspaceHash ?? hashValue({ target: target.gitSha, id }),
+		preparedToolHomeHash: options.expectedPreparedToolHomeHash ?? hashValue({ prepared: target.gitSha, id }),
 	};
 	const evalSurface = {
 		suiteId: target.manifest.evalSuite.id,
@@ -274,6 +275,7 @@ function reusableRecord(
 		gitSha: query.targetGitSha,
 		toolsetHash: query.toolsetHash,
 		workspaceHash: query.workspaceHash,
+		preparedToolHomeHash: query.preparedToolHomeHash,
 	};
 	const evalSurface = {
 		suiteId: "test-suite",
@@ -560,6 +562,9 @@ permissions:
 		expect(runtime.suiteCalls[1]?.target.tools.map((tool) => tool.descriptor.name)).toEqual(["search_docs"]);
 		// Custom tool identity is deliberately not an execution comparison axis.
 		expect(runtime.reuseQueries[0]?.provenance.execution.tools).toEqual(["read", "bash"]);
+		expect(runtime.reuseQueries[0]?.preparedToolHomeHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+		expect(runtime.suiteCalls[0]?.options.expectedPreparedToolHomeHash)
+			.toBe(runtime.reuseQueries[0]?.preparedToolHomeHash);
 		assertCheckoutUnchanged(repository);
 	});
 
@@ -649,6 +654,7 @@ permissions:
 			label: "baseline",
 			repetitions: 3,
 		});
+		expect(runtime.reuseQueries[0]?.preparedToolHomeHash).toMatch(/^sha256:[0-9a-f]{64}$/);
 		expect(runtime.suiteCalls).toHaveLength(1);
 		expect(runtime.suiteCalls[0]?.options).toMatchObject({
 			label: "candidate",

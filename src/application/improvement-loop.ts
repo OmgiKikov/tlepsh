@@ -38,7 +38,7 @@ import {
 	type ReusableBaselineQuery,
 } from "../eval.js";
 import { loadTarget, type ResolvedTarget } from "../manifest.js";
-import { computeTargetWorkspaceHash } from "../runner.js";
+import { computeTargetSnapshotHashes } from "../runner.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import type { RunEventListener } from "../run-events.js";
@@ -587,8 +587,8 @@ export interface ImprovementLoopDependencies {
 	runProposalSearch: typeof runProposalSearch;
 	/** Evidence already on disk that a cycle can read instead of pay for. */
 	findReusableBaseline: typeof findReusableBaseline;
-	/** Exact model-visible workspace identity, for the reuse query. */
-	computeTargetWorkspaceHash: typeof computeTargetWorkspaceHash;
+	/** Exact model-visible source and prepared-home identity, for the reuse query. */
+	computeTargetSnapshotHashes: typeof computeTargetSnapshotHashes;
 	/** The provenance a run of this Target would carry, probed without running. */
 	effectiveProvenance: typeof effectiveProvenance;
 }
@@ -607,7 +607,7 @@ const DEFAULT_DEPENDENCIES: ImprovementLoopDependencies = {
 	compileExperimentHistory,
 	runProposalSearch,
 	findReusableBaseline,
-	computeTargetWorkspaceHash,
+	computeTargetSnapshotHashes,
 	effectiveProvenance,
 };
 
@@ -915,11 +915,13 @@ export async function runImprovementLoop(
 	 */
 	const reusableEvidence = (target: ResolvedTarget): EvalRunRecord | null => {
 		try {
+			const snapshot = dependencies.computeTargetSnapshotHashes(target, runsRoot);
 			const query: ReusableBaselineQuery = {
 				targetId: target.manifest.id,
 				targetGitSha: target.gitSha,
 				toolsetHash: target.toolsetHash,
-				workspaceHash: dependencies.computeTargetWorkspaceHash(target, runsRoot),
+				workspaceHash: snapshot.workspaceHash,
+				preparedToolHomeHash: snapshot.preparedToolHomeHash,
 				provenance: dependencies.effectiveProvenance(target),
 				evidenceVisibility: "development",
 				label: "solo",

@@ -247,6 +247,8 @@ export const RunRecordSchema = z
 			toolsetHash: HashSchema.optional(),
 			/** Exact model-visible workspace bytes/modes. Legacy or direct-mode runs may omit it. */
 			workspaceHash: HashSchema.optional(),
+			/** Exact prepared tool-home paths, bytes, and executable modes. Legacy runs may omit it. */
+			preparedToolHomeHash: HashSchema.optional(),
 		}),
 		runtime: z.strictObject({
 			piVersion: NonEmptyStringSchema,

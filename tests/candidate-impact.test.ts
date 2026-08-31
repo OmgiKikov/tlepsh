@@ -141,6 +141,7 @@ function writeEvaluation(options: {
 		eval: { suiteHash, datasetHash },
 	});
 	const workspaceHash = hashValue({ targetId, gitSha: options.gitSha, workspace: true });
+	const preparedToolHomeHash = hashValue({ targetId, gitSha: options.gitSha, preparedToolHome: true });
 	const runIds: string[] = [];
 	const runArtifacts: { runId: string; sha256: string }[] = [];
 	let pass = 0;
@@ -170,6 +171,7 @@ function writeEvaluation(options: {
 				gitSha: options.gitSha,
 				toolsetHash: hashValue({ tools: true }),
 				workspaceHash,
+				preparedToolHomeHash,
 			},
 			runtime,
 			model,
@@ -203,6 +205,7 @@ function writeEvaluation(options: {
 			gitSha: options.gitSha,
 			toolsetHash: hashValue({ tools: true }),
 			workspaceHash,
+			preparedToolHomeHash,
 		},
 		label: options.label,
 		baselineEvalRunId: options.baselineEvalRunId,

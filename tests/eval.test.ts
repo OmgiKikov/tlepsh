@@ -367,6 +367,33 @@ describe("typed eval evidence", () => {
 		expect(loadVerifiedEvalRun(legacy.runsRoot, legacy.record.evalRunId).record.taskIds).toBeUndefined();
 	});
 
+	it("verifies one exact prepared tool-home identity across every member run", () => {
+		const fixture = writeEvalFixture(["task-a", "task-b"]);
+		const preparedToolHomeHash = hash("9");
+		for (const runId of fixture.record.runIds) {
+			const run = loadRun(fixture.runsRoot, runId);
+			writeJsonArtifact(join(fixture.runsRoot, runId, "run.json"), RunRecordSchema, {
+				...run,
+				target: { ...run.target, preparedToolHomeHash },
+			});
+		}
+		const indexPath = join(fixture.runsRoot, fixture.record.evalRunId, "eval_run.json");
+		writeFileSync(indexPath, `${JSON.stringify({
+			...fixture.record,
+			target: { ...fixture.record.target, preparedToolHomeHash },
+		}, null, 2)}\n`);
+		expect(loadVerifiedEvalRun(fixture.runsRoot, fixture.record.evalRunId).record.target.preparedToolHomeHash)
+			.toBe(preparedToolHomeHash);
+
+		const changed = loadRun(fixture.runsRoot, fixture.record.runIds[0]!);
+		writeJsonArtifact(join(fixture.runsRoot, changed.runId, "run.json"), RunRecordSchema, {
+			...changed,
+			target: { ...changed.target, preparedToolHomeHash: hash("0") },
+		});
+		expect(() => loadVerifiedEvalRun(fixture.runsRoot, fixture.record.evalRunId))
+			.toThrow(/target does not match the eval target/);
+	});
+
 	it("rejects taskIds that do not match the exact run source order", () => {
 		const fixture = writeEvalFixture(["task-b", "task-a"]);
 		expect(() => loadVerifiedEvalRun(fixture.runsRoot, fixture.record.evalRunId)).toThrow(
@@ -620,6 +647,7 @@ describe("baseline reuse", () => {
 			gitSha: "a".repeat(40),
 			toolsetHash: hash("7"),
 			workspaceHash: hash("8"),
+			preparedToolHomeHash: hash("9"),
 		};
 		const parent = { evalRunId: "erun_reusable", candidateOf: null };
 		const runs = [
@@ -664,6 +692,7 @@ describe("baseline reuse", () => {
 				targetGitSha: target.gitSha,
 				toolsetHash: target.toolsetHash,
 				workspaceHash: target.workspaceHash,
+				preparedToolHomeHash: target.preparedToolHomeHash,
 				provenance,
 				evidenceVisibility: "development",
 				label: "baseline",
@@ -718,9 +747,32 @@ describe("baseline reuse", () => {
 		expect(findReusableBaseline(fresh.runsRoot, { ...fresh.query, maxAgeMs: 0 })).toBeNull();
 	});
 
+	it("refuses baseline reuse when current preparation produces different bytes", () => {
+		const fresh = writeReusableBaseline(new Date().toISOString());
+		expect(findReusableBaseline(fresh.runsRoot, fresh.query)?.evalRunId).toBe("erun_reusable");
+		expect(findReusableBaseline(fresh.runsRoot, {
+			...fresh.query,
+			preparedToolHomeHash: hash("0"),
+		})).toBeNull();
+	});
+
 	it("an unreadable finishedAt cannot prove freshness", () => {
 		const broken = writeReusableBaseline("not-a-timestamp");
 		expect(findReusableBaseline(broken.runsRoot, broken.query)).toBeNull();
+	});
+});
+
+describe("prepared snapshot expectation", () => {
+	it("stops before a model call when preparation no longer reproduces the queried hash", async () => {
+		const targetDir = makeTargetFixture(baseFixtureFiles());
+		const runsRoot = mkdtempSync(join(tmpdir(), "ahde-prepared-expectation-"));
+		cleanupPaths.push(targetDir, runsRoot);
+		await expect(runSuite(loadTarget(targetDir), {
+			runsRoot,
+			label: "baseline",
+			repetitions: 1,
+			expectedPreparedToolHomeHash: hash("0"),
+		})).rejects.toThrow(/tool-home preparation changed after the baseline reuse query/);
 	});
 });
 

@@ -52,6 +52,7 @@ import {
 	targetFilesystemConfinement,
 	type TargetToolRuntime,
 } from "./target/runtime.js";
+import { preparedToolHomeHash as hashPreparedToolHome } from "./target/tool-setup.js";
 
 /**
  * Task orchestration around the single Target Pi construction seam in
@@ -97,6 +98,8 @@ export interface TargetWorkspaceSnapshot {
 	 * EvalRun; nothing it produces re-enters the hashed workspace.
 	 */
 	readonly toolHomeDir: string;
+	/** Null only when a caller requested a source-only snapshot. */
+	readonly preparedToolHomeHash: string | null;
 }
 
 const trustedWorkspaceSnapshots = new WeakSet<TargetWorkspaceSnapshot>();
@@ -398,6 +401,7 @@ function copyGitVisibleWorkspace(target: ResolvedTarget, workspaceDir: string, r
 export function materializeTargetWorkspaceSnapshot(
 	target: ResolvedTarget,
 	runsRoot: string,
+	options: { prepareToolHome?: boolean } = {},
 ): TargetWorkspaceSnapshot {
 	const temporaryRoot = mkdtempSync(join(tmpdir(), "ahde-eval-snapshot-"));
 	chmodSync(temporaryRoot, 0o700);
@@ -408,11 +412,31 @@ export function materializeTargetWorkspaceSnapshot(
 		assertTargetSourceIdentity(target, loadTarget(target.dir), "during");
 		const toolHomeDir = join(temporaryRoot, "tool-home");
 		privateDirectory(toolHomeDir);
+		let preparedToolHomeHash: string | null = null;
+		if (options.prepareToolHome) {
+			const preparationScratch = join(temporaryRoot, "preparation-sandbox");
+			try {
+				const runtimeHash = createTargetToolRuntime({
+					target,
+					workspaceDir: destination,
+					scratchDir: preparationScratch,
+					toolHomeRoot: toolHomeDir,
+				}).preparedToolHomeHash;
+				preparedToolHomeHash = hashPreparedToolHome(toolHomeDir);
+				if (preparedToolHomeHash !== runtimeHash) {
+					throw new Error("prepared tool-home attestation does not match its materialized bytes");
+				}
+			} finally {
+				rmSync(preparationScratch, { recursive: true, force: true });
+			}
+			assertTargetSourceIdentity(target, loadTarget(target.dir), "after tool-home preparation for");
+		}
 		const snapshot = Object.freeze({
 			dir: realpathSync(destination),
 			sha256: workspaceTreeHash(destination),
 			targetIdentity: targetSnapshotIdentity(target),
 			toolHomeDir: realpathSync(toolHomeDir),
+			preparedToolHomeHash,
 		});
 		trustedWorkspaceSnapshots.add(snapshot);
 		workspaceSnapshotRoots.set(snapshot, temporaryRoot);
@@ -430,7 +454,20 @@ export function disposeTargetWorkspaceSnapshot(snapshot: TargetWorkspaceSnapshot
 	const temporaryRoot = workspaceSnapshotRoots.get(snapshot);
 	workspaceSnapshotRoots.delete(snapshot);
 	if (!temporaryRoot) throw new Error("eval workspace snapshot cleanup root is missing");
-	rmSync(temporaryRoot, { recursive: true, force: true });
+	let verificationError: Error | undefined;
+	try {
+		if (
+			snapshot.preparedToolHomeHash !== null &&
+			hashPreparedToolHome(snapshot.toolHomeDir) !== snapshot.preparedToolHomeHash
+		) {
+			verificationError = new Error("prepared tool-home snapshot changed before cleanup");
+		}
+	} catch (error) {
+		verificationError = error instanceof Error ? error : new Error(String(error));
+	} finally {
+		rmSync(temporaryRoot, { recursive: true, force: true });
+	}
+	if (verificationError) throw verificationError;
 }
 
 /** Resolve the exact model-visible Target workspace identity without running a model. */
@@ -438,6 +475,25 @@ export function computeTargetWorkspaceHash(target: ResolvedTarget, runsRoot: str
 	const snapshot = materializeTargetWorkspaceSnapshot(target, runsRoot);
 	try {
 		return snapshot.sha256;
+	} finally {
+		disposeTargetWorkspaceSnapshot(snapshot);
+	}
+}
+
+/** Reproduce the complete source + setup-derived Target identity without a model call. */
+export function computeTargetSnapshotHashes(
+	target: ResolvedTarget,
+	runsRoot: string,
+): { workspaceHash: string; preparedToolHomeHash: string } {
+	const snapshot = materializeTargetWorkspaceSnapshot(target, runsRoot, { prepareToolHome: true });
+	try {
+		if (snapshot.preparedToolHomeHash === null) {
+			throw new Error("prepared Target snapshot has no tool-home attestation");
+		}
+		return {
+			workspaceHash: snapshot.sha256,
+			preparedToolHomeHash: snapshot.preparedToolHomeHash,
+		};
 	} finally {
 		disposeTargetWorkspaceSnapshot(snapshot);
 	}
@@ -472,6 +528,12 @@ function prepareWorkspace(
 	}
 	if (workspaceTreeHash(snapshot.dir) !== snapshot.sha256) {
 		throw new Error("eval workspace snapshot changed before task materialization");
+	}
+	if (
+		snapshot.preparedToolHomeHash !== null &&
+		hashPreparedToolHome(snapshot.toolHomeDir) !== snapshot.preparedToolHomeHash
+	) {
+		throw new Error("prepared tool-home snapshot changed before task materialization");
 	}
 	copySnapshotTree(snapshot.dir, workspaceDir);
 	if (workspaceTreeHash(snapshot.dir) !== snapshot.sha256 || workspaceTreeHash(workspaceDir) !== snapshot.sha256) {
@@ -522,6 +584,13 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			// failure here is infrastructure — the record below records "error".
 			...(options.workspaceSnapshot ? { toolHomeRoot: options.workspaceSnapshot.toolHomeDir } : {}),
 		});
+		if (
+			options.workspaceSnapshot?.preparedToolHomeHash !== null &&
+			options.workspaceSnapshot?.preparedToolHomeHash !== undefined &&
+			targetToolRuntime.preparedToolHomeHash !== options.workspaceSnapshot.preparedToolHomeHash
+		) {
+			throw new Error("prepared tool-home snapshot changed before run initialization");
+		}
 	} catch (error) {
 		policyError = error;
 	}
@@ -541,6 +610,9 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 	});
 
 	const model = target.manifest.model;
+	const preparedToolHomeHash = targetToolRuntime?.preparedToolHomeHash
+		?? options.workspaceSnapshot?.preparedToolHomeHash
+		?? undefined;
 	// A dialogue case ends in the user turn `input` repeats, so the turns before
 	// it are the conversation to seed and the last one stays the graded prompt.
 	const seededTurns = task.messages ? task.messages.slice(0, -1) : [];
@@ -559,6 +631,7 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			gitSha: target.gitSha,
 			toolsetHash: target.toolsetHash,
 			...(workspaceHash ? { workspaceHash } : {}),
+			...(preparedToolHomeHash ? { preparedToolHomeHash } : {}),
 		},
 		runtime: { ...target.runtime },
 		model: modelFingerprint(model),

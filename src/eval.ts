@@ -1031,6 +1031,8 @@ const EvalRunRecordFields = {
 		toolsetHash: HashSchema.optional(),
 		/** Exact shared model-visible source snapshot. Legacy indexes may omit it. */
 		workspaceHash: HashSchema.optional(),
+		/** Exact shared prepared tool-home snapshot. Legacy indexes may omit it. */
+		preparedToolHomeHash: HashSchema.optional(),
 	}),
 	/**
 	 * `regrade` marks an eval that re-scored recorded traces instead of calling
@@ -1201,6 +1203,8 @@ export interface RunSuiteOptions {
 	purpose?: Exclude<EvalRunPurpose, "legacy-unknown">;
 	/** @internal Exact source hash captured for a baseline-reuse query. */
 	expectedWorkspaceHash?: string;
+	/** @internal Exact prepared-home hash captured for a baseline-reuse query. */
+	expectedPreparedToolHomeHash?: string;
 	/** Optional synchronous, observational listener for all task executions. */
 	onRunEvent?: RunEventListener;
 	/** Host-owned cancellation propagated through Target and judge sessions. */
@@ -1407,10 +1411,18 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 	const workspaceSnapshot = materializeTargetWorkspaceSnapshot(
 		target,
 		options.runsRoot,
+		{ prepareToolHome: true },
 	);
 	if (options.expectedWorkspaceHash && workspaceSnapshot.sha256 !== options.expectedWorkspaceHash) {
 		disposeTargetWorkspaceSnapshot(workspaceSnapshot);
 		throw new Error("Target workspace changed after the baseline reuse query");
+	}
+	if (
+		options.expectedPreparedToolHomeHash &&
+		workspaceSnapshot.preparedToolHomeHash !== options.expectedPreparedToolHomeHash
+	) {
+		disposeTargetWorkspaceSnapshot(workspaceSnapshot);
+		throw new Error("Target tool-home preparation changed after the baseline reuse query");
 	}
 
 	const execute = async (planned: PlannedRun): Promise<CompletedRun> => {
@@ -1462,9 +1474,16 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 	// carried through it, because "first wins" has no meaning in a pool.
 	const effectiveExecution: ExecutionFingerprint | undefined = completed[0]?.record.execution;
 	if (!effectiveExecution) throw new Error("evaluation produced no execution fingerprint");
+	const preparedToolHomeHash = completed[0]?.record.target.preparedToolHomeHash;
+	if (!preparedToolHomeHash || workspaceSnapshot.preparedToolHomeHash !== preparedToolHomeHash) {
+		throw new Error("evaluation produced no matching prepared tool-home attestation");
+	}
 	for (const slot of completed) {
 		if (canonicalJson(slot.record.execution) !== canonicalJson(effectiveExecution)) {
 			throw new Error("execution policy changed within one eval run");
+		}
+		if (slot.record.target.preparedToolHomeHash !== preparedToolHomeHash) {
+			throw new Error("prepared tool home changed within one eval run");
 		}
 	}
 	const total = runIds.length;
@@ -1487,6 +1506,7 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 			gitSha: target.gitSha,
 			toolsetHash: target.toolsetHash,
 			workspaceHash: workspaceSnapshot.sha256,
+			preparedToolHomeHash,
 		},
 		label: options.label,
 		baselineEvalRunId: options.baselineEvalRunId ?? null,
@@ -1782,7 +1802,8 @@ export function loadVerifiedEvalRun(runsRoot: string, evalRunId: string): Verifi
 			run.target.id !== record.target.id ||
 			run.target.gitSha !== record.target.gitSha ||
 			run.target.toolsetHash !== record.target.toolsetHash ||
-			run.target.workspaceHash !== record.target.workspaceHash
+			run.target.workspaceHash !== record.target.workspaceHash ||
+			run.target.preparedToolHomeHash !== record.target.preparedToolHomeHash
 		) {
 			evidenceMismatch(evalRunId, `run ${runId} target does not match the eval target`);
 		}
@@ -1889,6 +1910,8 @@ export interface ReusableBaselineQuery {
 	toolsetHash: string;
 	/** Exact model-visible workspace identity. */
 	workspaceHash: string;
+	/** Exact setup-derived tool-home identity for this same Target revision. */
+	preparedToolHomeHash: string;
 	provenance: ProvenanceAxes;
 	evidenceVisibility: EvidenceVisibility;
 	label: "baseline" | "candidate" | "solo";
@@ -1939,6 +1962,7 @@ export function findReusableBaseline(runsRoot: string, query: ReusableBaselineQu
 		if (record.target.id !== query.targetId || record.target.gitSha !== query.targetGitSha) continue;
 		if (record.target.toolsetHash !== query.toolsetHash) continue;
 		if (record.target.workspaceHash !== query.workspaceHash) continue;
+		if (record.target.preparedToolHomeHash !== query.preparedToolHomeHash) continue;
 		if (record.evidenceVisibility !== query.evidenceVisibility) continue;
 		if (record.provenanceKey === "") continue;
 		if (record.repetitions !== query.repetitions) continue;
