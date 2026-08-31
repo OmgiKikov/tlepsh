@@ -167,7 +167,7 @@ Compare two runs only when every execution/grading axis except Harness revision 
 	diagnose: `Usage: ahde diagnose <evalRunId>
 
 Derive deterministic failure modes and proposal eligibility from a development EvalRun.`,
-	regrade: `Usage: ahde regrade <evalRunId> --target <dir> [--graders <path>] [--label baseline|solo|regrade]
+	regrade: `Usage: ahde regrade <evalRunId> --target <dir> [--graders <path>] [--label solo|regrade]
                    [--jobs N] [--project <id>]
 
 Re-score the recorded traces of one eval run with graders, without calling the
