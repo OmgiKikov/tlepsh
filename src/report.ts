@@ -19,6 +19,8 @@ import { canonicalJson, hashValue, type RunRecord } from "./provenance.js";
 import { openTrace, redactTraceText, type TraceMessage } from "./trace.js";
 import { writeTextArtifact } from "./storage/artifacts.js";
 import { resolveContainedArtifactPath } from "./storage/paths.js";
+// The optional growth section: the same projection `ahde log` prints.
+import { compileAgentLog, sparkline, type AgentLog } from "./application/agent-log.js";
 
 const MAX_MESSAGE_CHARS = 20_000;
 const MAX_TRACE_MESSAGES = 500;
@@ -221,6 +223,13 @@ export interface EvalReportData {
 	runs: ReportRun[];
 	/** Empty when no judge grader ran; one row per judge grader spec otherwise. */
 	judgeCalibration: ReportJudgeCalibration[];
+	/**
+	 * The agent's growth for this Target — the same bounded projection
+	 * `ahde log` prints. Null when no project is known, because a log is asked
+	 * for by project, and null when the candidate evidence cannot be read: a
+	 * missing growth section never costs a report its run evidence.
+	 */
+	agentLog: AgentLog | null;
 	projection: EvalReportProjection;
 	redactionNotice: string;
 }
@@ -720,6 +729,21 @@ export function collectEvalReportData(
 			calibration = null;
 		}
 	}
+	// The growth section is optional and additive: a project is what a log is
+	// asked for by, and an unreadable candidate directory must never cost a
+	// report the run evidence it exists for.
+	let agentLog: AgentLog | null = null;
+	if (options.labels) {
+		try {
+			agentLog = compileAgentLog({
+				runsRoot,
+				targetId: evalRun.target.id,
+				projectId: options.labels.projectId,
+			});
+		} catch {
+			agentLog = null;
+		}
+	}
 	const data: EvalReportData = {
 		generatedAt: now(),
 		evalRun: projectedEvalRun,
@@ -729,6 +753,7 @@ export function collectEvalReportData(
 		comparisonGateLine: comparison ? renderGateLine(comparison) : "",
 		runs,
 		judgeCalibration: judgeCalibrationRows(verified.runs, calibration, options.labels !== undefined),
+		agentLog,
 		projection,
 		redactionNotice:
 			"This report contains normalized, size-bounded, credential-redacted traces, run errors, grader metadata, and diagnosis text. Protected canonical artifacts remain unchanged on disk.",
@@ -801,6 +826,7 @@ export function renderEvalReportHtml(data: EvalReportData): string {
 <style>
 :root{color-scheme:dark;--bg:#090b10;--panel:#10131b;--panel2:#151a24;--line:#252b38;--text:#edf0f7;--muted:#929bae;--blue:#6d7cff;--green:#43d17b;--red:#ff667a;--amber:#f2b84b;--radius:14px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 	*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 15% -10%,#1b2140 0,transparent 35%),var(--bg);color:var(--text)}button{font:inherit}.shell{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:100vh}.side{position:sticky;top:0;height:100vh;border-right:1px solid var(--line);padding:22px 16px;background:rgba(9,11,16,.88);backdrop-filter:blur(16px);overflow:auto}.brand{display:flex;gap:10px;align-items:center;font-weight:750;letter-spacing:.02em;margin:0 8px 24px}.mark{width:28px;height:28px;border-radius:9px;background:linear-gradient(135deg,#8590ff,#4b57e8);box-shadow:0 0 24px #6070ff77}.eyebrow{text-transform:uppercase;letter-spacing:.12em;font-size:11px;color:var(--muted);margin:20px 8px 8px}.run-link{display:block;width:100%;border:0;background:transparent;color:var(--muted);padding:9px 10px;border-radius:9px;text-align:left;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.run-link:hover,.run-link.active{background:var(--panel2);color:var(--text)}.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:8px;background:var(--red)}.dot.pass{background:var(--green)}main{padding:36px clamp(24px,4vw,64px);max-width:1500px;width:100%}.top{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:30px}.top h1{font-size:clamp(28px,4vw,48px);line-height:1.05;margin:7px 0 10px;letter-spacing:-.04em}.sub{color:var(--muted);font-size:14px}.badge{display:inline-flex;align-items:center;padding:7px 10px;border:1px solid var(--line);border-radius:999px;background:var(--panel);font-size:12px;color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:22px 0 30px}.stat{background:linear-gradient(145deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:var(--radius);padding:18px}.stat strong{font-size:30px;letter-spacing:-.04em;display:block}.stat span{font-size:12px;color:var(--muted)}section{margin:30px 0}.section-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}.section-title h2{font-size:18px;margin:0}.issues{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.issue{border:1px solid var(--line);background:var(--panel);border-radius:var(--radius);padding:18px}.issue-head{display:flex;justify-content:space-between;gap:10px}.issue h3{font-size:15px;margin:0 0 8px}.pill{font-size:10px;text-transform:uppercase;letter-spacing:.09em;border-radius:999px;padding:5px 8px;background:#252b3b;color:#c9d0e1}.pill.blocking{background:#481d29;color:#ff9aaa}.issue p{color:var(--muted);font-size:13px;line-height:1.55}.issue ul{padding-left:18px;color:#cbd1df;font-size:13px;line-height:1.55}.brief-headline{font-size:14px;color:#cbd1df;line-height:1.55}.mode-meta,.mode-impact,.mode-evidence{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.hypothesis{border-left:2px solid var(--amber);padding-left:10px}.evidence-list{margin:8px 0;padding-left:18px;color:#cbd1df;font-size:12px}.evidence-list li{margin:7px 0}.trace-link{border:1px solid #39425a;background:#171d2a;color:#cbd3ff;border-radius:8px;padding:7px 9px;cursor:pointer;font-size:12px}.trace-link:hover,.trace-link.active{border-color:var(--blue);color:#fff}.table-wrap{border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--panel)}table{border-collapse:collapse;width:100%;font-size:13px}th,td{padding:13px 14px;border-bottom:1px solid var(--line);text-align:left}th{color:var(--muted);font-weight:550;background:#121620}tr:last-child td{border-bottom:0}tr[data-run]{cursor:pointer}tr[data-run]:hover{background:var(--panel2)}.outcome{font-weight:700}.outcome.pass{color:var(--green)}.outcome.fail,.outcome.error{color:var(--red)}.trace{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);min-height:220px}.trace-empty{padding:44px;text-align:center;color:var(--muted)}.trace-head{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}.message{padding:18px;border-bottom:1px solid var(--line)}.message:last-child{border-bottom:0}.message-label{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--blue);margin-bottom:9px}.message pre{white-space:pre-wrap;word-break:break-word;margin:0;color:#dce1ec;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}.tool{margin-top:10px;background:#0b0e14;border:1px solid #262d3c;border-radius:10px;padding:12px}.tool.error{border-color:#632a36}.notice{font-size:12px;color:var(--muted);border-left:2px solid var(--blue);padding:8px 12px}.delta{color:var(--green)}@media(max-width:900px){.shell{grid-template-columns:1fr}.side{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line)}.grid{grid-template-columns:repeat(2,1fr)}.issues{grid-template-columns:1fr}}@media(max-width:520px){.grid{grid-template-columns:1fr}.top{display:block}}
+tr.attempt td{color:var(--muted)}tr.version td:first-child{font-weight:700}
 </style>
 </head>
 <body>
@@ -812,6 +838,7 @@ export function renderEvalReportHtml(data: EvalReportData): string {
 <section id="comparison-section" hidden><div class="section-title"><h2>Matched comparison</h2><span class="badge" id="comparison-verdict"></span></div><p class="notice" id="comparison-gate"></p><div class="table-wrap"><table><thead><tr><th>Task</th><th>Baseline</th><th>Candidate</th><th>Score</th><th>Delta</th></tr></thead><tbody id="comparison"></tbody></table></div></section>
 <section><div class="section-title"><h2>Run evidence</h2></div><p class="notice" id="judge-calibration" hidden></p><p class="notice" id="projection-notice">${htmlText(projectionNotice(data.projection))}</p><div class="table-wrap"><table><thead><tr><th>Task</th><th>Rep</th><th>Outcome</th><th>Latency</th><th>Tools</th><th>Tokens</th></tr></thead><tbody id="runs"></tbody></table></div></section>
 <section><div class="section-title"><h2>Trace inspector</h2><span class="badge" id="trace-id">Select a run</span></div><div class="trace" id="trace"><div class="trace-empty">Choose a run to inspect its normalized trace.</div></div></section>
+<section id="growth-section" hidden><div class="section-title"><h2>Growth</h2><span class="badge" id="growth-status"></span></div><p class="notice" id="growth-chart"></p><div class="table-wrap"><table><thead><tr><th>Version</th><th>Date</th><th>Revision</th><th>Development</th><th>Sealed</th><th>Cost</th><th>Resolved modes</th><th>Reason</th></tr></thead><tbody id="growth"></tbody></table></div></section>
 <p class="notice" id="notice"></p>
 </main></div>
 <script>const DATA=${embeddedJson(data)};
@@ -840,6 +867,23 @@ if(DATA.comparison&&DATA.comparison.status==='comparable'){const c=DATA.comparis
 document.addEventListener('click',ev=>{const target=ev.target;const node=target instanceof Element?target.closest('[data-run]'):null;if(node instanceof HTMLElement)showRun(node.dataset.run)});
 window.addEventListener('hashchange',()=>{const id=runIdFromHash();if(id)showRun(id,false,false)});
 	const requestedRunId=runIdFromHash();if(!(requestedRunId&&showRun(requestedRunId,false,false))&&DATA.runs.length)showRun(DATA.runs[0].runId,false,false);
+// Growth: the same bounded projection \`ahde log\` prints. Promotions in full,
+// rejections dimmed between them, and a sealed cell that is a verdict and a
+// size and nothing else.
+const GROWTH_SPARKLINE=${embeddedJson(data.agentLog ? sparkline(data.agentLog.versions.map((version) => version.score)) : "")};
+if(DATA.agentLog&&DATA.agentLog.rows.length){const g=DATA.agentLog;const versions=g.rows.filter(r=>r.outcome==='promoted').length;
+	q('#growth-section').hidden=false;
+	q('#growth-status').textContent=versions+' version'+(versions===1?'':'s')+' · '+g.rows.length+' decided attempt'+(g.rows.length===1?'':'s')+(g.omitted?' · '+g.omitted+' earlier omitted':'');
+	q('#growth-chart').textContent='score '+GROWTH_SPARKLINE+' · $'+g.cumulativeCostUsd.toFixed(2)+' cumulative over '+g.rows.length+' attempt'+(g.rows.length===1?'':'s');
+	const pp=(v)=>v===null||v===undefined?'—':(v>0?'+':'')+(Math.round(v*1000)/10).toFixed(1)+'pp';
+	const rate=(v)=>v===null||v===undefined?'—':(v*100).toFixed(1)+'%';
+	q('#growth').innerHTML=g.rows.map(r=>{
+		const dev=r.development?esc(r.development.verdict)+' · '+esc(rate(r.development.baselineScore))+' → '+esc(rate(r.development.candidateScore))+' ('+esc(pp(r.development.scoreDelta))+(r.development.confidence95?', CI '+esc(pp(r.development.confidence95.low))+' … '+esc(pp(r.development.confidence95.high)):'')+')':'not evaluated';
+		const sealed=r.sealed?esc(r.sealed.verdict)+' on '+esc(r.sealed.tasks)+'×'+esc(r.sealed.repetitions):'—';
+		const modes=r.resolvedModes.count?esc(r.resolvedModes.count)+' mode'+(r.resolvedModes.count===1?'':'s')+(r.resolvedModes.examples.length?', e.g. '+r.resolvedModes.examples.map(esc).join('; '):''):'—';
+		const loop=r.appliedByImprovementLoop?' <span class="pill">improvement loop</span>':'';
+		return '<tr class="'+(r.outcome==='promoted'?'version':'attempt')+'"><td>'+esc(r.tag??'rejected')+'</td><td>'+esc(r.at.slice(0,10))+'</td><td>'+esc(r.baseline)+' → '+esc(r.candidate??'—')+'</td><td>'+dev+'</td><td>'+sealed+'</td><td>$'+r.costUsd.toFixed(2)+(r.costRatio===null?'':' · ×'+r.costRatio.toFixed(2))+'</td><td>'+modes+'</td><td>'+esc(r.reason??'')+loop+'</td></tr>';
+	}).join('')}
 </script></body></html>`;
 	if (Buffer.byteLength(html, "utf8") > MAX_REPORT_HTML_BYTES) {
 		throw new Error(`rendered report exceeds the ${MAX_REPORT_HTML_BYTES}-byte safety limit`);

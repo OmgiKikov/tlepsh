@@ -36,6 +36,10 @@ export const CLI_COMMANDS = [
 	"review",
 	"promote",
 	"reject",
+	// Wave 3, operator surfaces: what the agent became, and whether the ground
+	// under an unchanged revision is still where it was.
+	"log",
+	"watch",
 ] as const;
 
 export type CliCommand = typeof CLI_COMMANDS[number];
@@ -173,6 +177,21 @@ const COMMAND_SPECS = {
 	reject: {
 		flags: ["candidate", "reason", "actor"],
 		requiredFlags: ["candidate", "reason"],
+		positionals: 0,
+	},
+	// The agent's growth, version by version. A pure read over durable
+	// candidate evidence: no model call, nothing written.
+	log: {
+		flags: ["target", "project", "limit", "json"],
+		booleanFlags: ["json"],
+		requiredFlags: ["target"],
+		positionals: 0,
+	},
+	// The basket on a schedule. `--every` takes 30s | 5m | 2h | 1d.
+	watch: {
+		flags: ["target", "project", "corpus", "every", "once", "jobs", "repetitions", "max-runs"],
+		booleanFlags: ["once"],
+		requiredFlags: ["target"],
 		positionals: 0,
 	},
 } as const satisfies Record<Exclude<CliCommand, "corpus" | "feedback" | "tool">, InvocationSpec>;
@@ -327,6 +346,56 @@ function validateSharedFlagValues(flags: Readonly<Record<string, string>>, conte
 	assertPassRateFlag(flags, "until", context);
 	// 0 days means "never reuse a baseline"; every run measures its own.
 	assertIntegerFlag(flags, "baseline-max-age", context, { minimum: 0, maximum: 3_650 });
+	// `ahde log` and `ahde watch`: bounded rows and a bounded schedule.
+	assertIntegerFlag(flags, "limit", context, { minimum: 1, maximum: MAX_LOG_ROWS });
+	assertIntegerFlag(flags, "max-runs", context, { minimum: 1, maximum: MAX_WATCH_RUNS });
+	assertDurationFlag(flags, "every", context);
+}
+
+/**
+ * Bounds for the two wave-3 operator commands, restated here rather than
+ * imported: argv validation stays free of application services (see the module
+ * docstring). `src/application/watch.ts` owns the same interval and run
+ * bounds; `MAX_LOG_ROWS` is the ceiling `--limit` may ask for, above the
+ * default in `src/application/agent-log.ts`.
+ */
+const MAX_LOG_ROWS = 100;
+const MAX_WATCH_RUNS = 1_000;
+const MIN_WATCH_INTERVAL_MS = 10_000;
+const MAX_WATCH_INTERVAL_MS = 30 * 24 * 60 * 60 * 1_000;
+
+const DURATION = /^(0|[1-9][0-9]*)(s|m|h|d)$/;
+const DURATION_UNIT_MS: Readonly<Record<string, number>> = {
+	s: 1_000,
+	m: 60_000,
+	h: 3_600_000,
+	d: 86_400_000,
+};
+
+/** A schedule written the way an operator says it: `30s`, `5m`, `2h`, `1d`. */
+export function parseDurationFlag(value: string): number | null {
+	const match = DURATION.exec(value.trim());
+	if (!match) return null;
+	const unit = DURATION_UNIT_MS[match[2] as string];
+	if (unit === undefined) return null;
+	const milliseconds = Number(match[1]) * unit;
+	return Number.isSafeInteger(milliseconds) && milliseconds > 0 ? milliseconds : null;
+}
+
+function assertDurationFlag(
+	flags: Readonly<Record<string, string>>,
+	name: string,
+	context: string,
+): void {
+	const value = flags[name];
+	if (value === undefined) return;
+	const milliseconds = parseDurationFlag(value);
+	if (milliseconds === null) {
+		cliError(`--${name} for ${context} must be a duration such as 30s, 5m, 2h or 1d; got ${JSON.stringify(value)}`);
+	}
+	if (milliseconds < MIN_WATCH_INTERVAL_MS || milliseconds > MAX_WATCH_INTERVAL_MS) {
+		cliError(`--${name} for ${context} must be between 10s and 30d`);
+	}
 }
 
 /**
@@ -480,6 +549,18 @@ function validateCommandRelationships(command: CliCommand, flags: Readonly<Recor
 			cliError("missing required flag --project for search with --corpus");
 		}
 		assertProposalRunIdList(flags.candidates as string, "search");
+	}
+	if (command === "watch") {
+		if (flags.corpus !== undefined && flags.project === undefined) {
+			cliError("missing required flag --project for watch with --corpus");
+		}
+		// One tick or a schedule; asking for both is asking two questions.
+		if (flags.once !== undefined && flags.every !== undefined) {
+			cliError("watch takes --once or --every, never both");
+		}
+		if (flags["max-runs"] !== undefined && flags.every === undefined) {
+			cliError("--max-runs for watch bounds a schedule; add --every <30s|5m|2h|1d>");
+		}
 	}
 	if (command !== "candidate") return;
 	if (flags.dataset !== undefined && flags["development-corpus"] !== undefined) {

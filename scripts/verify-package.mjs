@@ -59,6 +59,8 @@ try {
 		"dist/application/builder-regression-case.js",
 		"dist/application/target-scaffold.js",
 		"dist/application/target-authoring-context.js",
+		"dist/application/agent-log.js",
+		"dist/application/watch.js",
 		"dist/application/experiment-history.js",
 		"dist/application/proposal-search.js",
 		"dist/application/target-feedback.js",
@@ -172,8 +174,11 @@ import {
 	AHDE_WORKSHOP_TOOL_NAMES,
 	CLI_COMMANDS,
 	parseCliInvocation,
+	parseDurationFlag,
 	openBuilderWorkshop,
 	createAhdeServeApi,
+	compileAgentLog,
+	runWatch,
   applyBuilderProposal,
   approveBuilderSpecDraft,
   candidateStatus,
@@ -224,12 +229,15 @@ const expectedCommandNames = [
 	"target",
 ];
 // The CLI command surface the installed package registers. serve is the
-// platform seam: the Workbench behind a loopback HTTP/JSON API.
+// platform seam: the Workbench behind a loopback HTTP/JSON API; log and watch
+// are the operator's read surfaces (growth, and drift on an unchanged
+// revision).
 const expectedCliCommandNames = [
 	"root", "builder-pi", "continue", "resume", "target", "evidence", "serve",
 	"init", "run", "validate", "list", "failures", "corpus", "feedback", "tool",
 	"compare", "diagnose", "regrade", "report", "label", "judge-agreement",
-	"candidate", "calibrate", "check", "improve", "review", "promote", "reject",
+	"candidate", "calibrate", "check", "improve", "search", "review", "promote",
+	"reject", "log", "watch",
 ];
 if (JSON.stringify(CLI_COMMANDS) !== JSON.stringify(expectedCliCommandNames)) {
   throw new Error(\`installed package registered an unexpected CLI command surface: \${CLI_COMMANDS.join(", ")}\`);
@@ -249,6 +257,26 @@ if (JSON.stringify(CLI_COMMANDS) !== JSON.stringify(expectedCliCommandNames)) {
   }
   if (!refusedRemoteBind) throw new Error("installed ahde serve accepted a non-loopback --host");
 }
+{
+  const logged = parseCliInvocation(["log", "--target", "./agent", "--project", "demo", "--limit", "5", "--json"]);
+  if (logged.command !== "log" || logged.flags.json !== "true" || logged.flags.limit !== "5") {
+    throw new Error("installed ahde log invocation spec did not parse its pinned flags");
+  }
+  const watched = parseCliInvocation(["watch", "--target", "./agent", "--every", "5m", "--max-runs", "3"]);
+  if (watched.command !== "watch" || watched.flags.every !== "5m" || watched.flags["max-runs"] !== "3") {
+    throw new Error("installed ahde watch invocation spec did not parse its pinned flags");
+  }
+  if (parseDurationFlag("2h") !== 7200000 || parseDurationFlag("nightly") !== null) {
+    throw new Error("installed ahde watch did not parse --every the way an operator writes it");
+  }
+  let refusedBothSchedules = false;
+  try {
+    parseCliInvocation(["watch", "--target", "./agent", "--once", "--every", "5m"]);
+  } catch (error) {
+    refusedBothSchedules = /--once or --every/.test(String(error?.message ?? error));
+  }
+  if (!refusedBothSchedules) throw new Error("installed ahde watch accepted --once together with --every");
+}
 
 for (const [name, value] of Object.entries({
 	AHDE_BUILDER_COMMAND_NAMES,
@@ -257,6 +285,8 @@ for (const [name, value] of Object.entries({
 	AHDE_WORKSHOP_TOOL_NAMES,
 	openBuilderWorkshop,
 	createAhdeServeApi,
+	compileAgentLog,
+	runWatch,
   applyBuilderProposal,
   approveBuilderSpecDraft,
   candidateStatus,

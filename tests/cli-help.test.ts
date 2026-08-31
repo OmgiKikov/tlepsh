@@ -161,6 +161,32 @@ describe("CLI help", () => {
 		expect(cliHelp(["feedback", "clear", "--help"])).toContain("imports/feedback.<timestamp>.jsonl");
 	});
 
+	it("offers the growth log and the drift watch beside the loop commands", () => {
+		const help = cliHelp(["--help"]);
+		expect(help).toContain("ahde log --target <dir> [--project <id>]     the agent's growth, version by version");
+		expect(help).toContain("ahde watch --target <dir> [--every 1d]       the basket on a schedule; drift vs noise");
+		expect(help).toContain("log  watch");
+
+		const log = cliHelp(["log", "--help"]);
+		expect(log).toContain("Usage: ahde log --target <dir> [--project <id>] [--limit N] [--json]");
+		expect(log).toContain("One row per promotion, newest first");
+		expect(log).toContain("Rejections appear as dimmed rows");
+		expect(log).toContain("never evidence for one — per-task flips never decide a verdict");
+		expect(log).toContain("A sealed row carries a verdict and a size and nothing else");
+		expect(log).toContain("A pure read. No model call, nothing written");
+
+		const watch = cliHelp(["watch", "--help"]);
+		expect(watch).toContain("Usage: ahde watch --target <dir>");
+		expect(watch).toContain("the pair is an A/A\nexperiment and the honest verdict is `inconclusive`");
+		expect(watch).toContain("harness revision did not change");
+		expect(watch).toContain("watch does not invent a root cause from scores alone");
+		expect(watch).toContain("On an unchanged revision a gain is not a win.");
+		expect(watch).toContain("`noise not calibrated`");
+		expect(watch).toContain("nothing is promoted, adopted, or written as a receipt");
+		expect(watch).toContain("watch stores nothing new");
+		expect(watch).toContain("Exit 0 = healthy,\n3 = drift, 2 = no comparable baseline yet.");
+	});
+
 	it("no longer advertises the deleted one-shot adapter commands", () => {
 		const help = cliHelp(["--help"]);
 		expect(help).not.toContain("  builder  ");

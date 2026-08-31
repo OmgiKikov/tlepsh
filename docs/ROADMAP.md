@@ -212,8 +212,38 @@ branch; the closed-loop Pi test passes with exactly three confirmations.
     CONTEXT invariants consolidated to about 15.
 15. **Growth chart** — `ahde log`: versions × pass rate × cost, resolved
     failure modes, a human changelog per promotion (old item 16).
+    *Landed as `ahde log --target <dir> [--project <id>] [--limit N] [--json]`
+    (`src/application/agent-log.ts`, rendered by
+    `src/builder/render/agent-log.ts`): a pure read over immutable Candidate
+    records, one row per promotion, newest first — tag, date, baseline →
+    candidate revision, the development score with its 95% interval, the sealed
+    verdict and design size (never a task id or a corpus identity), the cost
+    ratio, the failure modes the promotion resolved (modes the source diagnosis
+    named whose tasks flipped fail→pass, via `detectPromotionFlips` and the
+    brief), the operator's reason, and `applied by the improvement loop` when
+    the apply receipt says so. Rejections are dimmed rows between the
+    promotions, and under them a bounded sparkline of development score per
+    version plus the cumulative cost. The same projection is the HTML report's
+    optional Growth section whenever a project is known.*
 16. **Model comparison mode** and **`ahde watch`** (old items 13, 14) as the
     platform demands.
+    *`ahde watch` landed (`src/application/watch.ts`,
+    `src/builder/render/watch.ts`): each tick runs the basket against the ACTIVE
+    revision as ordinary development evidence (`solo`, never a candidate arm)
+    and compares it with the previous tick of that revision through
+    `compareEvalRuns` in exploratory mode — an A/A pair. `inconclusive` is
+    healthy; `regressed` on an unchanged revision is **drift** somewhere below
+    the harness boundary, and `improved` is drift too, reported as such rather
+    than as a win. The score alone does not pretend to distinguish a provider
+    rollout from stochastic, runtime, tool, or external-data changes. A
+    calibration of that exact revision puts its
+    flip rate beside the verdict; without one the line says `noise not
+    calibrated` and points at `ahde calibrate`. `--once` exits 0 healthy /
+    3 drift / 2 no comparable baseline; `--every 30s|5m|2h|1d` loops on a
+    monotonic timer until SIGINT, bounded by `--max-runs`. Nothing new is
+    stored — the previous tick is found by scanning eval-run indexes, screens
+    excluded by their durable markers — and a drift changes no durable state
+    beyond the eval run its tick produced. Model comparison mode is still open.*
 
 ## Owner-only items (nothing else depends on the code)
 
