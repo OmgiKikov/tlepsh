@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { accessSync, constants, lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { access, lstat, mkdir, open, readFile, realpath } from "node:fs/promises";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import {
 	createBashToolDefinition,
 	createEditToolDefinition,
@@ -14,6 +15,7 @@ import {
 	type WriteOperations,
 } from "@earendil-works/pi-coding-agent";
 import type { ExecutionFingerprint } from "./provenance.js";
+import { redactSensitiveText } from "./trace.js";
 import {
 	containerBackendFor,
 	resolveExecutionBackend,
@@ -473,6 +475,53 @@ function terminateProcess(pid: number | undefined): void {
 	}
 }
 
+function sensitiveOutputStream(onData: (chunk: Buffer) => void, values: readonly string[]) {
+	const exact = [...new Set(values.filter((value) => value.length > 0))]
+		.sort((left, right) => right.length - left.length || left.localeCompare(right));
+	if (exact.length === 0) {
+		return { write: onData, end: () => {} };
+	}
+	const decoder = new StringDecoder("utf8");
+	const retainedCharacters = Math.max(...exact.map((value) => value.length)) - 1;
+	let pending = "";
+	let ended = false;
+	const emit = (final: boolean): void => {
+		pending = redactSensitiveText(pending, exact);
+		if (final) {
+			// A killed command may stop halfway through printing a credential. Do
+			// not reveal that trailing prefix merely because it never became a full
+			// exact match.
+			let partialStart = pending.length;
+			for (const value of exact) {
+				for (let length = 1; length < value.length && length <= pending.length; length += 1) {
+					if (value.startsWith(pending.slice(-length))) partialStart = Math.min(partialStart, pending.length - length);
+				}
+			}
+			if (partialStart < pending.length) pending = `${pending.slice(0, partialStart)}[REDACTED]`;
+			if (pending) onData(Buffer.from(pending, "utf8"));
+			pending = "";
+			return;
+		}
+		const ready = pending.length - retainedCharacters;
+		if (ready <= 0) return;
+		onData(Buffer.from(pending.slice(0, ready), "utf8"));
+		pending = pending.slice(ready);
+	};
+	return {
+		write(chunk: Buffer): void {
+			if (ended) return;
+			pending += decoder.write(chunk);
+			emit(false);
+		},
+		end(): void {
+			if (ended) return;
+			ended = true;
+			pending += decoder.end();
+			emit(true);
+		},
+	};
+}
+
 function bashOperations(
 	backend: ExecutionBackend,
 	binary: string | undefined,
@@ -481,6 +530,7 @@ function bashOperations(
 	scratchDir: string,
 	environment: NodeJS.ProcessEnv,
 	network: "deny" | "allow",
+	sensitiveValues: readonly string[],
 	container?: ContainerPolicy,
 ): BashOperations {
 	return {
@@ -514,8 +564,10 @@ function bashOperations(
 				stdio: ["ignore", "pipe", "pipe"],
 				windowsHide: true,
 			});
-			child.stdout.on("data", (chunk: Buffer) => onData(chunk));
-			child.stderr.on("data", (chunk: Buffer) => onData(chunk));
+			const stdout = sensitiveOutputStream(onData, sensitiveValues);
+			const stderr = sensitiveOutputStream(onData, sensitiveValues);
+			child.stdout.on("data", (chunk: Buffer) => stdout.write(chunk));
+			child.stderr.on("data", (chunk: Buffer) => stderr.write(chunk));
 
 			let stopped: "aborted" | "timeout" | undefined;
 			const stop = (reason: "aborted" | "timeout") => {
@@ -543,6 +595,8 @@ function bashOperations(
 						child.once("close", resolveExit);
 					});
 				} finally {
+					stdout.end();
+					stderr.end();
 					if (stopped) invocation.terminate?.();
 				}
 				if (stopped === "aborted" || signal?.aborted) throw new Error("aborted");
@@ -563,6 +617,10 @@ export function buildExecutionPolicy(options: ExecutionPolicyOptions): Execution
 	mkdirSync(requestedScratch, { recursive: true, mode: 0o700 });
 	const scratchDir = canonicalDirectory(requestedScratch, "scratchDir");
 	const environment = buildEnvironment(options, scratchDir);
+	const sourceEnvironment = options.sourceEnvironment ?? process.env;
+	const sensitiveValues = options.policy.environmentAllowlist
+		.map((name) => sourceEnvironment[name])
+		.filter((value): value is string => typeof value === "string" && value.length > 0);
 	const sandbox = detectSandbox(options, workspaceDir, scratchDir, environment);
 	const operations = filesystemOperations(workspaceDir);
 	const tools = [...new Set(options.policy.tools)];
@@ -585,6 +643,7 @@ export function buildExecutionPolicy(options: ExecutionPolicyOptions): Execution
 						scratchDir,
 						environment,
 						options.policy.network,
+						sensitiveValues,
 						options.policy.container,
 					),
 				}),

@@ -1275,6 +1275,6 @@ describe.skipIf(!integrationPinnedImage || !integrationPlatform)(`container back
 			undefined as never,
 		);
 		const text = result.content.filter((part) => part.type === "text").map((part) => ("text" in part ? part.text : "")).join("");
-		expect(text).toContain("/workspace|graded-bytes|visible|unset");
+		expect(text).toContain("/workspace|graded-bytes|[REDACTED]|unset");
 	});
 });

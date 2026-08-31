@@ -77,7 +77,7 @@ describe("execution policy", () => {
 		}
 	});
 
-	it("scrubs ambient secrets and copies only explicitly allowlisted environment values", async () => {
+	it("scrubs ambient secrets and never returns explicitly allowlisted values to the model", async () => {
 		const built = fixture(
 			{
 				tools: ["bash"],
@@ -98,7 +98,7 @@ describe("execution policy", () => {
 						`/usr/bin/printf '%s|%s|%s|%s' "$ALLOWED_VALUE" "\${AMBIENT_SECRET-unset}" "$HOME" "\${PI_SESSION_ID-unset}"`,
 				}),
 			);
-			expect(output).toBe(`visible|unset|${realpathSync(built.homeDir)}|unset`);
+			expect(output).toBe(`[REDACTED]|unset|${realpathSync(built.homeDir)}|unset`);
 			expect(built.result.effectiveEnvironmentNames).toEqual([
 				"ALLOWED_VALUE",
 				"HOME",
@@ -106,6 +106,33 @@ describe("execution policy", () => {
 				"PATH",
 				"TMPDIR",
 			]);
+		} finally {
+			rmSync(built.root, { recursive: true, force: true });
+		}
+	});
+
+	it("redacts a credential split across stream chunks and a trailing partial value", async () => {
+		const secret = "opaque-split-secret";
+		const built = fixture(
+			{
+				tools: ["bash"],
+				environmentAllowlist: ["ALLOWED_VALUE"],
+				network: "allow",
+				sandbox: "off",
+			},
+			{ ALLOWED_VALUE: secret },
+		);
+		try {
+			const split = text(await execute(built.result, "bash", {
+				command: "/usr/bin/printf 'prefix:opaque-split-'; /bin/sleep 0.05; /usr/bin/printf 'secret'",
+			}));
+			expect(split).toBe("prefix:[REDACTED]");
+			expect(split).not.toContain(secret);
+
+			const partial = text(await execute(built.result, "bash", {
+				command: "/usr/bin/printf 'prefix:opaque-split-'",
+			}));
+			expect(partial).toBe("prefix:[REDACTED]");
 		} finally {
 			rmSync(built.root, { recursive: true, force: true });
 		}
