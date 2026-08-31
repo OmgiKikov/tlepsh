@@ -73,12 +73,16 @@ import {
 } from "../application/cheap-check.js";
 import { buildPromotionRegressionGuards } from "../application/regression-guards.js";
 import {
+	abandonImprovementLoop,
+	IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE,
 	IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS,
 	improvementLoopGate,
+	listUnfinishedImprovementLoops,
 	plannedImprovementExecutions,
 	recordedBuilderProposalAuthor,
 	renderImprovementLoopTable,
 	runImprovementLoop,
+	UnfinishedImprovementLoopError,
 	type ImprovementProposalAuthor,
 } from "../application/improvement-loop.js";
 import {
@@ -1044,6 +1048,18 @@ export class AhdeWorkbench {
 			fastForward: plan.includes("adopt-candidate")
 				? `${branch ?? "current branch"} ${shortSha(summary.baseline.sha)} → ${shortSha(summary.candidate?.sha ?? "")}`
 				: "already adopted",
+			// What is actually being shipped, and who put it there. A candidate the
+			// improvement loop applied was never shown to a human diff by diff; the
+			// last gate before a release is where that stops being true.
+			diff: summary.appliedBy
+				? {
+					appliedBy: summary.appliedBy.actorId,
+					via: summary.appliedBy.via,
+					files: summary.appliedBy.paths.length,
+					paths: summary.appliedBy.paths.slice(0, 20),
+					reviewed: summary.appliedBy.via === null,
+				}
+				: null,
 			candidate: summary,
 		};
 		const title = version ? `Ship candidate as v${version}` : "Ship this candidate";
@@ -2400,10 +2416,27 @@ export class AhdeWorkbench {
 			const approved = requireApprovedSpec(inventory);
 			const corpus = requireDevelopmentCorpus(inventory, input.developmentCorpusId, approved.id);
 			const candidates = input.candidates ?? 1;
+			const compound = input.compound === true;
+			// An unfinished loop is reported, not raced. `--abandon` drops the claim
+			// (never the branches); `--resume` continues the same branch series.
+			if (input.abandonLoopId) {
+				abandonImprovementLoop(this.runsRoot, this.projectId, input.abandonLoopId, this.dependencies.now);
+			}
+			const unfinished = listUnfinishedImprovementLoops(this.runsRoot, this.projectId);
+			const resumed = input.resumeLoopId
+				? unfinished.running.find((loop) => loop.loopId === input.resumeLoopId) ?? null
+				: null;
+			if (input.resumeLoopId && !resumed) {
+				throw new Error(`no unfinished improvement loop ${input.resumeLoopId} in this project`);
+			}
+			const blocking = unfinished.running.filter((loop) => loop.loopId !== resumed?.loopId);
+			if (blocking.length > 0 || unfinished.unreadable.length > 0) {
+				throw new UnfinishedImprovementLoopError(blocking, unfinished.unreadable);
+			}
 			const plannedExecutions = plannedImprovementExecutions({
 				developmentTasks: corpus.taskCount,
 				repetitions: input.repetitions,
-				maxCycles: input.maxCycles,
+				maxCycles: input.maxCycles - (resumed?.cyclesCompleted ?? 0),
 				candidates,
 			});
 			const target = `${Math.round(input.until * 100)}%`;
@@ -2415,7 +2448,15 @@ export class AhdeWorkbench {
 				maxCycles: input.maxCycles,
 				repetitions: input.repetitions,
 				candidates,
+				compound,
+				resumingLoopId: resumed?.loopId ?? null,
 				plannedExecutions,
+				// The one confirmation is also the one disclosure. What the operator is
+				// approving is a loop that APPLIES diffs without showing each of them.
+				applies: "on throwaway candidate/auto-<loopId>-<n> branches, without showing each diff",
+				touchesYourBranch: false,
+				diffsVisibleIn: ["the cycle table", "the final review", "the ship dialog"],
+				authoring: IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE,
 				neverDecides: [...IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS],
 			};
 			const actor = await this.confirm(input, gate, `Improve until ${target}`, subject, options.signal, {
@@ -2423,8 +2464,14 @@ export class AhdeWorkbench {
 					`Run up to ${input.maxCycles} improvement cycle${input.maxCycles === 1 ? "" : "s"} ` +
 					`towards ${target}` +
 					(candidates > 1 ? `, comparing ${candidates} changes per cycle` : "") +
+					(compound ? ", stacking each verified candidate on the last" : "") +
 					` (at most ${plannedExecutions} Target executions)? ` +
-					"The loop never promotes, adopts, publishes or approves anything.",
+					"This is the only time you will be asked: the loop APPLIES proposals on throwaway " +
+					"`candidate/auto-<loopId>-<n>` branches WITHOUT showing you each diff. " +
+					"Nothing touches your branch or your working tree, and every diff is listed in the cycle " +
+					"table and shown again in the final review and the ship dialog. " +
+					"The loop never promotes, adopts, publishes or approves anything. " +
+					IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE,
 				estimate: this.runEstimate(plannedExecutions, inventory.target),
 			});
 			const loop = await this.dependencies.runImprovementLoop({
@@ -2438,6 +2485,9 @@ export class AhdeWorkbench {
 				maxCycles: input.maxCycles,
 				repetitions: input.repetitions,
 				candidates,
+				compound,
+				...(resumed ? { loopId: resumed.loopId, resumeFromCycle: resumed.cyclesCompleted } : {}),
+				...(input.baselineMaxAgeMs === undefined ? {} : { baselineMaxAgeMs: input.baselineMaxAgeMs }),
 				...(input.jobs === undefined ? {} : { jobs: input.jobs }),
 				author: this.dependencies.authorImprovementProposal ?? recordedBuilderProposalAuthor({
 					stateRoot: this.stateRoot,
@@ -2456,13 +2506,16 @@ export class AhdeWorkbench {
 				kind: input.kind,
 				message:
 					`${loop.cycles.length} improvement cycle${loop.cycles.length === 1 ? "" : "s"} ran. ` +
-					`Stopped because ${loop.stopMessage}.`,
+					`Stopped because ${loop.stopMessage}. ${IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE}`,
 				result: {
 					cycles: loop.cycles,
 					stopReason: loop.stopReason,
 					stopMessage: loop.stopMessage,
 					table,
 					candidateId: loop.candidateId,
+					candidateChain: loop.candidateChain,
+					loopId: loop.loopId,
+					compound: loop.compound,
 					finalPassRate: loop.finalPassRate,
 					executions: loop.executions,
 					candidates,

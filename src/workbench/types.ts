@@ -161,6 +161,12 @@ export interface WorkbenchCandidateSummary {
 	proposalId: string;
 	baseline: { ref: string; sha: string };
 	candidate: { ref: string; sha: string } | null;
+	/**
+	 * Who put the diff on the branch, and how. `via: "improvement-loop"` means a
+	 * human confirmed one `ahde improve` run, not this diff: the review and the
+	 * ship dialog say so and show the changed paths. Null for a manual candidate.
+	 */
+	appliedBy?: { actorId: string; via: "improvement-loop" | null; paths: string[] } | null;
 	development: {
 		baselineEvalRunId: string;
 		candidateEvalRunId: string;
@@ -708,6 +714,19 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		candidates: z.number().int().min(1).max(4).optional(),
 		jobs: z.number().int().min(1).max(64).optional(),
 		developmentCorpusId: ArtifactIdSchema.optional(),
+		/**
+		 * Keep going after a cycle verifies `improved`, building the next cycle on
+		 * the candidate branch. The candidates stack, so the last one contains the
+		 * earlier improvements. Nothing is promoted or adopted either way, and the
+		 * operator's own branch is never touched.
+		 */
+		compound: z.boolean().optional(),
+		/** Continue the named unfinished loop instead of refusing to start. */
+		resumeLoopId: z.string().regex(/^loop_[a-z0-9]{6,32}$/).optional(),
+		/** Drop the named unfinished loop (its branches survive), then start fresh. */
+		abandonLoopId: z.string().regex(/^loop_[a-z0-9]{6,32}$/).optional(),
+		/** How old a development EvalRun may be and still be reused, in milliseconds. */
+		baselineMaxAgeMs: z.number().int().min(0).max(365 * 24 * 60 * 60 * 1_000).optional(),
 		reason: NonBlankSchema.max(4_000),
 	}),
 ]);
@@ -889,6 +908,12 @@ export interface WorkbenchImproveResult {
 	stopMessage: string;
 	table: string;
 	candidateId: string | null;
+	/** Every verified candidate, oldest first; with `compound` each contains the last. */
+	candidateChain: string[];
+	/** This invocation's id. `--resume`/`--abandon` name it. */
+	loopId: string;
+	/** True when the loop was allowed to build the next cycle on its own candidate. */
+	compound: boolean;
 	finalPassRate: number;
 	executions: number;
 	/** Hypotheses each cycle compared; 1 means today's single-change behaviour. */

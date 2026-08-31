@@ -214,7 +214,12 @@ export function assertHoldoutDisjoint(
 	}
 }
 
-function effectiveProvenance(target: ResolvedTarget): ProvenanceAxes {
+/**
+ * The provenance axes a run of this Target would carry, probed without running
+ * anything. Exported for the one other caller that has to ask "would a run I
+ * already paid for still be comparable": the improvement loop's evidence reuse.
+ */
+export function effectiveProvenance(target: ResolvedTarget): ProvenanceAxes {
 	const scratch = mkdtempSync(join(tmpdir(), "ahde-execution-probe-"));
 	try {
 		const policy = buildExecutionPolicy({

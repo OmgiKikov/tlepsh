@@ -430,6 +430,9 @@ function verifyAppliedBuilderOrigin(record: CandidateRecord, runsRootInput: stri
 		receipt.baseTargetSha !== origin.application.baseTargetSha ||
 		receipt.candidateSha !== origin.application.candidateSha ||
 		receipt.actor.id !== origin.application.actor.id ||
+		// A candidate cannot quietly lose the fact that a loop applied it, nor
+		// gain the claim that a human read the diff.
+		receipt.via !== origin.application.via ||
 		receipt.reason !== origin.application.reason ||
 		receipt.appliedAt !== origin.application.appliedAt ||
 		JSON.stringify([...receipt.paths].sort()) !== JSON.stringify(proposal.changes.map((change) => change.path).sort())

@@ -37,9 +37,12 @@ import {
 	runCheapCheckForCandidate,
 } from "./application/cheap-check.js";
 import {
+	abandonImprovementLoop,
+	listUnfinishedImprovementLoops,
 	recordedBuilderProposalAuthor,
 	renderImprovementLoopTable,
 	runImprovementLoop,
+	UnfinishedImprovementLoopError,
 } from "./application/improvement-loop.js";
 import {
 	renderProposalSearchTable,
@@ -1135,6 +1138,27 @@ async function main(): Promise<void> {
 			const corpusId = arg("corpus");
 			const repetitions = arg("repetitions") ? Number(arg("repetitions")) : DEFAULT_REPETITIONS;
 			const approvedSpecId = soleApprovedSpecId(projectId);
+			// An unfinished loop is reported, not raced onto the same branch names.
+			// `--abandon` drops the claim (never the branches); `--resume` continues.
+			if (arg("abandon")) {
+				const dropped = abandonImprovementLoop(runsRoot(), projectId, arg("abandon")!);
+				console.log(
+					`abandoned improvement loop ${dropped.loopId} (${dropped.cyclesCompleted} cycle(s)). ` +
+					`Its branches are untouched: ${dropped.branches.join(", ") || "none"}.`,
+				);
+			}
+			const unfinished = listUnfinishedImprovementLoops(runsRoot(), projectId);
+			const resumeLoopId = arg("resume");
+			const resumed = resumeLoopId
+				? unfinished.running.find((loop) => loop.loopId === resumeLoopId) ?? null
+				: null;
+			if (resumeLoopId && !resumed) {
+				throw new Error(`no unfinished improvement loop ${resumeLoopId} in project ${projectId}`);
+			}
+			const blocking = unfinished.running.filter((loop) => loop.loopId !== resumed?.loopId);
+			if (blocking.length > 0 || unfinished.unreadable.length > 0) {
+				throw new UnfinishedImprovementLoopError(blocking, unfinished.unreadable);
+			}
 			const result = await runImprovementLoop({
 				repositoryDir: targetDir,
 				runsRoot: runsRoot(),
@@ -1146,12 +1170,16 @@ async function main(): Promise<void> {
 				maxCycles,
 				repetitions,
 				...(arg("candidates") ? { candidates: Number(arg("candidates")) } : {}),
+				...(arg("compound") ? { compound: true } : {}),
+				...(resumed ? { loopId: resumed.loopId, resumeFromCycle: resumed.cyclesCompleted } : {}),
+				...(arg("baseline-max-age") ? { baselineMaxAgeMs: Number(arg("baseline-max-age")) } : {}),
 				...(arg("jobs") ? { jobs: Number(arg("jobs")) } : {}),
 				author: recordedBuilderProposalAuthor({ stateRoot: stateRoot(), runsRoot: runsRoot(), projectId }),
 				onCycle: (line) => process.stderr.write(`${line}\n`),
 				onRunEvent: cliRunProgress(),
 			});
 			console.log(renderImprovementLoopTable(result));
+			console.log(`\nloop ${result.loopId}`);
 			if (result.candidateId) {
 				console.log(
 					`\nnext: ahde review --candidate ${result.candidateId} --recommend promote|reject --reason <text>`,

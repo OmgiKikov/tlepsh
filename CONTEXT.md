@@ -176,7 +176,16 @@ credential.
 4. Comparability excludes the changing Harness revision but includes every other effective execution and grading input.
 5. The Target sees one holdout input at a time, never the holdout corpus, graders, expected answers, or future cases.
 6. A Proposal cannot modify corpus or model configuration and cannot be applied
-   without an explicit human command. It may update only `AGENTS.md`,
+   without an explicit human command. There are exactly two such commands: an
+   interactive apply, where a human reads THIS diff and says yes; and the single
+   confirmation of one `ahde improve` run, which states before the yes that the
+   loop will apply proposals on throwaway `candidate/auto-<loopId>-<n>` branches
+   without showing each diff, that nothing touches the operator's branch or
+   working tree, and that every diff is listed in the cycle table and shown
+   again in the review and the ship dialog. An apply made under the second
+   command records `via: "improvement-loop"` on its receipt and on the
+   Candidate's origin, so no reader can mistake it for a diff a human read.
+   A Proposal may update only `AGENTS.md`,
    `skills/**`, `tools/**`, `bin/**`, `data/**`, and the manifest's declared
    resources. Only declared `data/` directories reach a Target workspace; they
    are bounded in total bytes and are shown to the Builder as shape, never
@@ -321,3 +330,22 @@ credential.
     the autoloop refuses to re-propose a change whose changed-path set and
     targeted failure mode match an attempt that already ended rejected or
     not `improved`.
+38. A cheap-check screen's identity lives in its own EvalRun (`purpose:
+    "screen"`), written atomically with the record. Baseline reuse, every
+    non-exploratory comparison, promotion evidence, regression-case selection
+    and the Workbench inventory refuse it by reading that field, so a process
+    killed before the `runs/screens/` marker is written still leaves a run
+    nothing admits. The marker remains as belt-and-braces and fails closed: an
+    unreadable marker refuses everything it might name.
+39. `ahde improve` binds a proposal to a cycle by SURFACE — dataset label and
+    hash, suite hash, Target revision — plus the failure mode the proposal
+    attests to, never by the id of an eval run the invocation itself just
+    minted. A proposal prepared before the command therefore matches; one
+    prepared after a stop still matches the next invocation while the surface
+    holds; and one whose surface moved is refused with a typed reason naming
+    what moved. Every invocation carries a loop id, its branches are
+    `candidate/auto-<loopId>-<n>`, and a second `improve` over an unfinished
+    loop reports it and refuses until `--resume` or `--abandon`. With
+    `--compound` a verified candidate becomes the next cycle's working
+    baseline — stacking candidates, never promoting or adopting, never touching
+    the operator's branch.

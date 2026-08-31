@@ -137,9 +137,21 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 		case "ship": {
 			const steps = strings(subject.steps);
 			const candidate = subject.candidate;
+			const diff = subject.diff === null || subject.diff === undefined ? null : bag(subject.diff);
 			return [
 				`${paint.dim("Development")} ${text(subject.development, 96)}`,
 				`${paint.dim("Sealed")} ${text(subject.sealed, 96)}`,
+				// The diff summary belongs BEFORE the yes: a loop-applied candidate was
+				// never shown file by file, and this is the last chance to see what it is.
+				...(diff
+					? [
+						`${paint.dim("Diff")} ${paint.bold(pluralize(Number(diff.files ?? 0), "file"))} ${paint.dim("·")} ` +
+							`${text(strings(diff.paths).join(", "), 96)}`,
+						diff.via === "improvement-loop"
+							? `${paint.dim("Applied")} ${paint.warning("by the improvement loop")} ${paint.dim(`— ${text(diff.appliedBy, 40)} confirmed the loop, not this diff`)}`
+							: `${paint.dim("Applied")} ${paint.dim(`by ${text(diff.appliedBy, 40)}, who read this diff`)}`,
+					]
+					: []),
 				...(isCandidateSummary(candidate) ? judgeCalibrationLines(candidate, paint) : []),
 				`${paint.dim("Version")} ${subject.tag ? paint.bold(text(subject.tag, 40)) : paint.warning("already promoted")}`,
 				`${paint.dim("Branch")} ${text(subject.fastForward, 96)}`,

@@ -148,9 +148,15 @@ const COMMAND_SPECS = {
 	},
 	// The autoloop. `--until` is a pass rate, as `90%` or `0.9`.
 	// `--candidates N` (2..4) makes each cycle a search instead of one guess.
+	// `--compound` stacks each verified candidate on the last; `--resume` and
+	// `--abandon` name an unfinished loop this project already started.
 	improve: {
-		flags: ["target", "until", "max-cycles", "jobs", "project", "repetitions", "corpus", "candidates"],
+		flags: [
+			"target", "until", "max-cycles", "jobs", "project", "repetitions", "corpus", "candidates",
+			"compound", "resume", "abandon", "baseline-max-age",
+		],
 		requiredFlags: ["target", "until", "max-cycles"],
+		booleanFlags: ["compound"],
 		positionals: 0,
 	},
 	// Several hypotheses for one failure mode, compared in one Pareto table.
@@ -474,6 +480,16 @@ function validateCommandRelationships(command: CliCommand, flags: Readonly<Recor
 		// One flag, two readings, decided by the command: `improve --candidates`
 		// counts hypotheses, `search --candidates` names them.
 		assertIntegerFlag(flags, "candidates", "improve", { minimum: 1, maximum: MAX_SEARCH_CANDIDATE_IDS });
+		assertIntegerFlag(flags, "baseline-max-age", "improve", { minimum: 0 });
+		if (flags.resume !== undefined && flags.abandon !== undefined) {
+			cliError("improve cannot combine --resume with --abandon; pick one loop and one verb");
+		}
+		for (const name of ["resume", "abandon"] as const) {
+			const value = flags[name];
+			if (value !== undefined && !/^loop_[a-z0-9]{6,32}$/.test(value)) {
+				cliError(`--${name} for improve must be a loop id such as loop_m1k2j3abcd; got ${JSON.stringify(value)}`);
+			}
+		}
 	}
 	if (command === "search") {
 		if (flags.corpus !== undefined && flags.project === undefined) {

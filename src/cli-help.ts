@@ -240,13 +240,34 @@ never reused as a baseline and never stands in for a candidate arm, it is
 recorded in runs/screens/, it enters no comparison gate, and a promotion that
 cites one is refused. Exit 0 = promising, 1 = flat.`,
 	improve: `Usage: ahde improve --target <dir> --until <pass-rate> --max-cycles <n> \\
-                    [--candidates N] [--jobs N] [--project <id>] [--repetitions N]
-                    [--corpus <development-id>]
+                    [--candidates N] [--compound] [--jobs N] [--project <id>]
+                    [--repetitions N] [--corpus <development-id>]
+                    [--baseline-max-age <ms>] [--resume <loopId> | --abandon <loopId>]
 
-Run improvement cycles inside the gates. One cycle is: run -> diagnose -> take
-the top proposable failure mode -> apply the next unapplied Builder proposal
-bound to that evidence on \`candidate/auto-<n>\` -> cheap check -> full
-development verification when the screen is promising.
+Run improvement cycles inside the gates. One cycle is: reuse or run -> diagnose
+-> take the top proposable failure mode -> apply a matching Builder proposal on
+\`candidate/auto-<loopId>-<n>\` -> cheap check -> full development verification
+when the screen is promising.
+
+WHAT THE LOOP AUTHORS: nothing. It applies proposals the Builder has already
+prepared in \`ahde\` (say "fix it"), screens them and verifies them. A headless
+proposal author is NOT shipped yet — it is the next milestone. Without a
+prepared proposal the loop measures, diagnoses, and stops saying so.
+
+WHICH PROPOSAL MATCHES: the one whose attested basis still describes this
+cycle's development SURFACE — same dataset label and hash, same suite hash, same
+Target revision — and whose failure modes include the one this cycle chose. Not
+the id of an eval run: every invocation mints a new one, so a proposal you
+prepared in the conversation just before running this command matches, and one
+prepared after a stop still matches the next run while the surface holds. A
+proposal that no longer matches is refused with what moved.
+
+WHAT IT APPLIES WITHOUT ASKING AGAIN: every proposal it picks, on throwaway
+\`candidate/auto-<loopId>-<n>\` branches, WITHOUT showing you each diff. Your
+branch and working tree are never touched. Every diff is listed in the cycle
+table and shown again in the review and in the ship dialog, and each apply
+receipt records \`via: improvement-loop\` so nothing later mistakes it for a
+diff a human read.
 
 --until takes a pass rate written either way: \`90%\` or \`0.9\`.
 
@@ -254,6 +275,23 @@ development verification when the screen is promising.
 it takes N unapplied proposals for the top failure mode, screens and verifies
 each on its own \`candidate/search-<cycle>-<n>\` branch, and prints the Pareto
 table. The loop then stops, because which hypothesis wins is yours to say.
+
+--compound keeps going after a cycle verifies \`improved\`, building the next
+cycle on the candidate branch as the new working baseline. The candidates stack,
+so \`auto-<loopId>-2\` contains \`auto-<loopId>-1\`'s change and shipping the
+last one ships the whole chain through the sealed gate. Nothing is promoted or
+adopted, and your branch stays where it is. Without --compound, the loop stops
+at the first verified candidate.
+
+--baseline-max-age <ms> bounds evidence reuse: a cycle first looks for a fresh,
+comparable, conclusive development eval run on the current revision and reuses
+it instead of paying again. The cycle table marks those rows \`(reused)\`. 0
+disables reuse.
+
+Every invocation gets a loop id, and the branches carry it. A second \`improve\`
+on a project with an unfinished loop reports it and refuses; continue it with
+--resume <loopId> or drop the claim with --abandon <loopId>. Either way the
+branches the earlier loop made are left exactly where they are.
 
 The loop refuses to re-propose a change whose changed files and targeted failure
 mode match an attempt that already ended rejected or not \`improved\`; when every
@@ -266,8 +304,7 @@ failure mode has already been tried and lost, a search needs a decision, or a
 verified candidate is ready — because the sealed guardrail and the promotion are
 always yours. It never promotes, adopts, publishes a corpus or approves a Spec.
 
-Authoring stays with Builder Pi: author the proposals in \`ahde\` first, then let
-the loop screen and verify them. Exit 0 = a verified candidate is waiting.`,
+Exit 0 = a verified candidate is waiting.`,
 	search: `Usage: ahde search --target <dir> --candidates <id,id,id> [--project <id>] \\
                    [--jobs N] [--repetitions N] [--corpus <development-id>] [--budget N]
 

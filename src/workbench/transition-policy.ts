@@ -117,6 +117,11 @@ export const WORKBENCH_GATE_POLICY = {
 	"verify-candidate": "routine",
 	// The autoloop is measurement too: many runs, one estimate covering the
 	// whole planned loop, and not one decision that creates release authority.
+	// Its ONE confirmation is also its only disclosure — it says out loud that
+	// diffs will be applied on throwaway `candidate/auto-*` branches without
+	// being shown one by one, that nothing touches the operator's branch, and
+	// where every diff can be read afterwards — so a second, per-apply dialog
+	// would be theatre, not consent.
 	improve: "routine",
 } as const satisfies Record<WorkbenchDecisionInput["kind"], WorkbenchGateClass>;
 

@@ -100,6 +100,16 @@ export function candidateSummary(
 		proposalId: record.proposalId,
 		baseline: record.baseline,
 		candidate: built?.type === "built" ? built.candidate : null,
+		// How the diff got onto the branch. `improvement-loop` says a human
+		// confirmed one loop rather than this diff, and every reader of this
+		// candidate — the review, the ship dialog — is told so.
+		appliedBy: record.origin.kind === "applied-builder"
+			? {
+				actorId: record.origin.application.actor.id,
+				via: record.origin.application.via ?? null,
+				paths: [...(record.events.find((event) => event.type === "validated")?.scope.changedFiles ?? [])].sort(),
+			}
+			: null,
 		development: evaluated?.type === "evaluated"
 			? {
 				baselineEvalRunId: evaluated.evaluation.development.baseline.evalRunId,

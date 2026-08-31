@@ -209,6 +209,18 @@ export function renderCandidate(
 		`${section(title, paint)} ${paint.dim(candidate.candidateId)} ${paint.dim("·")} ${statusTone(candidate.status)}`,
 		`${paint.dim("Revision")} ${candidate.baseline.ref}@${shortSha(candidate.baseline.sha)} → ${candidate.candidate ? `${candidate.candidate.ref}@${shortSha(candidate.candidate.sha)}` : paint.muted("not built")}`,
 	];
+	// A loop apply is not a reviewed apply. The candidate says which it was, here
+	// and in the ship dialog, so nobody has to infer it from the branch name.
+	const applied = candidate.appliedBy;
+	if (applied) {
+		lines.push(applied.via === "improvement-loop"
+			? `${paint.dim("Applied")} ${paint.warning("applied by the improvement loop")} ` +
+				`${paint.dim(`— ${applied.actorId} confirmed the loop, not this diff`)}`
+			: `${paint.dim("Applied")} ${paint.dim(`by ${applied.actorId}, who read this diff`)}`);
+		if (applied.paths.length > 0) {
+			lines.push(`${paint.dim("Diff")} ${oneLine(applied.paths.join(", "), 120)} ${paint.dim(`(${pluralize(applied.paths.length, "file")})`)}`);
+		}
+	}
 	if (candidate.development?.comparison) lines.push(...comparisonLines(candidate.development.comparison, candidate.development.gate, paint));
 	else if (candidate.development) lines.push(`${paint.dim("Development")} ${paint.muted("comparison not reconstructable")}`);
 	else lines.push(`${paint.dim("Development")} ${paint.muted("not evaluated yet")}`);
