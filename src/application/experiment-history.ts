@@ -125,7 +125,13 @@ function candidateIds(runsRoot: string): string[] {
 	}
 }
 
-function surfaceOf(evaluation: unknown): AttemptSurface | null {
+/**
+ * The verdict and design one evaluated surface carries, and nothing else.
+ * Exported because every reader of a candidate's outcome — history here, the
+ * verdict lines `ahde candidate` prints — must be bounded the same way: a
+ * verdict, a delta, an interval and a design size, never a task or a corpus.
+ */
+export function comparisonSurfaceOf(evaluation: unknown): AttemptSurface | null {
 	const matched = evaluation as { comparison?: unknown } | undefined;
 	const comparison = matched?.comparison as
 		| {
@@ -193,8 +199,8 @@ function attemptOf(record: CandidateRecord, runsRoot: string): Attempt {
 		mode: record.mode,
 		changedPaths: readChangedPaths(record).slice(0, MAX_PATHS),
 		failureModeIds: readFailureModeIds(record, runsRoot),
-		development: evaluation ? surfaceOf(evaluation.development) : null,
-		sealed: evaluation?.sealedHoldout ? surfaceOf(evaluation.sealedHoldout) : null,
+		development: evaluation ? comparisonSurfaceOf(evaluation.development) : null,
+		sealed: evaluation?.sealedHoldout ? comparisonSurfaceOf(evaluation.sealedHoldout) : null,
 		outcome,
 		reason: reason ?? (source ? null : originReason(record)),
 	};
