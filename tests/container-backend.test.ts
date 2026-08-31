@@ -24,11 +24,20 @@ import {
 } from "../src/target/container-backend.js";
 import { prepareToolHome } from "../src/target/tool-setup.js";
 import { effectiveTargetSandbox, targetFilesystemConfinement } from "../src/target/runtime.js";
+import {
+	AUTHORING_RESOURCE_LIMITS,
+	sandboxInvocation as targetSandboxInvocation,
+} from "../src/target/tool-broker.js";
 import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 
 const DIGEST = `sha256:${"a".repeat(64)}`;
 const PINNED = `registry.example.com/ahde/target@${DIGEST}`;
 const TAG = "registry.example.com/ahde/target:1.2.3";
+const PLATFORM = "linux/amd64";
+const RUNTIME_IDENTITY = { version: "27.1.0", os: "linux", arch: "amd64" } as const;
+const EXPECTED_CONTAINER_USER = typeof process.getuid === "function" && process.getuid() !== 0
+	? `${process.getuid()}:${typeof process.getgid === "function" ? process.getgid() : 0}`
+	: "65534:65534";
 /** Set in the parent process before every argv assertion; must never reach a container. */
 const HOST_SECRET = "AHDE_CONTAINER_TEST_HOST_SECRET";
 
@@ -54,6 +63,7 @@ function policy(overrides: Partial<ContainerPolicy> = {}): ContainerPolicy {
 	return {
 		runtime: "docker",
 		image: PINNED,
+		platform: PLATFORM,
 		readOnlyRootfs: true,
 		...overrides,
 	};
@@ -64,7 +74,12 @@ function policy(overrides: Partial<ContainerPolicy> = {}): ContainerPolicy {
  * client does, and records every later invocation's argv. Nothing here needs a
  * daemon: the point is the argv the harness constructs.
  */
-function fakeDocker(options: { version?: string; failReason?: string; logPath?: string } = {}): {
+function fakeDocker(options: {
+	version?: string;
+	failReason?: string;
+	logPath?: string;
+	hangRun?: boolean;
+} = {}): {
 	binDir: string;
 	logPath: string;
 } {
@@ -73,13 +88,14 @@ function fakeDocker(options: { version?: string; failReason?: string; logPath?: 
 	const logPath = options.logPath ?? join(binDir, "..", "docker-argv.log");
 	const versionBranch = options.failReason
 		? `printf '%s\\n' ${JSON.stringify(options.failReason)} >&2; exit 1`
-		: `printf '%s\\n' ${JSON.stringify(options.version ?? "27.1.0")}`;
+		: `printf '%s|%s|%s\\n' ${JSON.stringify(options.version ?? "27.1.0")} linux amd64`;
 	const script = `#!/bin/sh
 if [ "$1" = "version" ]; then
 ${versionBranch}
 fi
 : > ${JSON.stringify(logPath)}
 for argument in "$@"; do printf '%s\\n' "$argument" >> ${JSON.stringify(logPath)}; done
+${options.hangRun ? 'if [ "$1" = "run" ]; then while :; do :; done; fi' : ""}
 printf 'fake-docker-ran\\n'
 `;
 	const binary = join(binDir, "docker");
@@ -150,7 +166,6 @@ function invocationFixture(overrides: {
 			},
 			cwd: overrides.cwd ?? workspaceDir,
 			argv: overrides.argv ?? [join(workspaceDir, "bin/echo_json")],
-			user: "1000:1000",
 			containerName: overrides.containerName ?? "ahde-test",
 			hostEnvironment: { PATH: "/usr/bin:/bin", HOME: "/host/home" },
 		}),
@@ -176,10 +191,12 @@ describe("container backend argv", () => {
 			"--rm",
 			"--name",
 			"ahde-test",
+			"--platform",
+			PLATFORM,
 			"--network",
 			"none",
 			"--user",
-			"1000:1000",
+			EXPECTED_CONTAINER_USER,
 			"--cap-drop",
 			"ALL",
 			"--security-opt",
@@ -251,7 +268,7 @@ describe("container backend argv", () => {
 		expect(flagValues(args, "--cap-drop")).toEqual(["ALL"]);
 		expect(flagValues(args, "--security-opt")).toEqual(["no-new-privileges"]);
 		const user = flagValues(args, "--user")[0] as string;
-		expect(user).toBe("1000:1000");
+		expect(user).toBe(EXPECTED_CONTAINER_USER);
 
 		// The default derives from the calling process and is never root.
 		const derived = dockerBackend.invocation({
@@ -401,6 +418,29 @@ describe("container backend argv", () => {
 				hostEnvironment: { PATH: "/usr/bin" },
 			})
 		).toThrow(/unsafe image reference/);
+		expect(() => invocationFixture({ container: { image: TAG } }))
+			.toThrow(/refuses a mutable image/);
+		expect(() => invocationFixture({ container: { platform: "--privileged" } }))
+			.toThrow(/unsafe platform/);
+	});
+
+	it("keeps authoring resource caps inside a container invocation", () => {
+		const fixture = invocationFixture();
+		const invocation = targetSandboxInvocation({
+			backend: "container",
+			workspaceDir: fixture.workspaceDir,
+			scratchDir: fixture.scratchDir,
+			environment: {},
+			confinement: { network: "deny", readRoots: [], writeRoots: [] },
+			cwd: fixture.workspaceDir,
+			argv: [join(fixture.workspaceDir, "tools/run")],
+			container: policy(),
+			limits: AUTHORING_RESOURCE_LIMITS,
+		});
+		expect(invocation.limits?.limits).toEqual(AUTHORING_RESOURCE_LIMITS);
+		expect(flagValues(invocation.args, "--entrypoint")).toEqual(["/bin/sh"]);
+		expect(invocation.args).toContain("/workspace/tools/run");
+		expect(invocation.terminate).toBeTypeOf("function");
 	});
 
 	it("mints a bounded name and exposes a daemon-side force-remove hook", () => {
@@ -450,7 +490,7 @@ describe("container runtime detection", () => {
 		const fake = fakeDocker({ version: "27.1.0" });
 		const environment = { PATH: fake.binDir };
 		const first = detectContainerRuntime("docker", { environment });
-		expect(first).toEqual({ runtime: "docker", available: true, version: "27.1.0" });
+		expect(first).toEqual({ runtime: "docker", available: true, ...RUNTIME_IDENTITY });
 
 		// Delete the binary: a second call must answer from the memo, never probe.
 		rmSync(join(fake.binDir, "docker"));
@@ -477,14 +517,14 @@ describe("container runtime detection", () => {
 });
 
 describe("required / best-effort / off matrix", () => {
-	const available: ContainerRuntimeStatus = { runtime: "docker", available: true, version: "27.1.0" };
+	const available: ContainerRuntimeStatus = { runtime: "docker", available: true, ...RUNTIME_IDENTITY };
 	const missing: ContainerRuntimeStatus = { runtime: "docker", available: false, reason: "docker executable not found on PATH" };
 
 	it("required + usable runtime + pinned digest runs in the container", () => {
 		const decision = resolveContainerSandbox({ policy: policy(), sandbox: "required", detect: () => available });
 		expect(decision.mode).toBe("container");
 		expect(decision.warnings).toEqual([]);
-		expect(decision.fingerprint).toBe(`container:docker@${DIGEST}`);
+		expect(decision.fingerprint).toBe(containerSandboxFingerprint(policy(), RUNTIME_IDENTITY));
 	});
 
 	it("required + no usable runtime fails closed with the runtime's exact reason", () => {
@@ -526,6 +566,15 @@ describe("required / best-effort / off matrix", () => {
 		expect(choice.sandboxFingerprint.startsWith("container:")).toBe(false);
 	});
 
+	it("refuses container evidence when the runtime cannot identify its server exactly", () => {
+		const incomplete: ContainerRuntimeStatus = { runtime: "docker", available: true, version: "27.1.0" };
+		expect(() => resolveContainerSandbox({ policy: policy(), sandbox: "required", detect: () => incomplete }))
+			.toThrow(/did not report an exact server version, OS, and architecture/);
+		const relaxed = resolveContainerSandbox({ policy: policy(), sandbox: "best-effort", detect: () => incomplete });
+		expect(relaxed.mode).toBe("fallback");
+		expect(relaxed.warnings[0]).toContain("falling back to the host OS sandbox");
+	});
+
 	it("sandbox: off cannot declare containment", () => {
 		expect(() => resolveContainerSandbox({ policy: policy(), sandbox: "off", detect: () => available }))
 			.toThrow(/sandbox: off declares no containment/);
@@ -536,10 +585,19 @@ describe("required / best-effort / off matrix", () => {
 		expect(isPinnedContainerImage(TAG)).toBe(false);
 		expect(containerImageDigest(PINNED)).toBe(DIGEST);
 		expect(containerImageDigest(TAG)).toBeNull();
-		expect(containerSandboxFingerprint(policy())).toBe(`container:docker@${DIGEST}`);
-		expect(() => containerSandboxFingerprint(policy({ image: TAG })))
+		expect(containerSandboxFingerprint(policy(), RUNTIME_IDENTITY)).toMatch(
+			new RegExp(`^container:docker@${DIGEST}:config:[0-9a-f]{64}$`),
+		);
+		expect(() => containerSandboxFingerprint(policy({ image: TAG }), RUNTIME_IDENTITY))
 			.toThrow(/mutable tags cannot identify comparable evidence/);
-		expect(containerSandboxFingerprint(policy({ runtime: "gondolin" }))).toBe(`container:gondolin@${DIGEST}`);
+		expect(containerSandboxFingerprint(policy({ runtime: "gondolin" }), RUNTIME_IDENTITY))
+			.toMatch(new RegExp(`^container:gondolin@${DIGEST}:config:[0-9a-f]{64}$`));
+		expect(containerSandboxFingerprint(policy({ memoryMb: 512 }), RUNTIME_IDENTITY))
+			.not.toBe(containerSandboxFingerprint(policy(), RUNTIME_IDENTITY));
+		expect(containerSandboxFingerprint(policy({ platform: "linux/arm64" }), RUNTIME_IDENTITY))
+			.not.toBe(containerSandboxFingerprint(policy(), RUNTIME_IDENTITY));
+		expect(containerSandboxFingerprint(policy(), { ...RUNTIME_IDENTITY, version: "28.0.0" }))
+			.not.toBe(containerSandboxFingerprint(policy(), RUNTIME_IDENTITY));
 		// The host backends keep their own values, so container evidence and host
 		// evidence can never land in the same comparability class.
 		expect(
@@ -583,6 +641,7 @@ evalSuite:
   container:
     runtime: docker
     image: ${options.image}
+    platform: ${PLATFORM}
 ${options.extra ?? ""}`;
 
 	it("loads a pinned container block with its defaults", () => {
@@ -590,6 +649,7 @@ ${options.extra ?? ""}`;
 		expect(target.manifest.execution.container).toEqual({
 			runtime: "docker",
 			image: PINNED,
+			platform: PLATFORM,
 			readOnlyRootfs: true,
 		});
 	});
@@ -627,6 +687,12 @@ ${options.extra ?? ""}`;
 		expect(() =>
 			loadTarget(targetFixture(block({ sandbox: "required", image: PINNED, extra: "    pidsLimit: 0\n" })))
 		).toThrow();
+		expect(() => loadTarget(targetFixture(
+			block({ sandbox: "required", image: PINNED }).replace(`    platform: ${PLATFORM}\n`, ""),
+		))).toThrow(/platform/);
+		expect(() => loadTarget(targetFixture(
+			block({ sandbox: "required", image: PINNED }).replace(PLATFORM, "--privileged"),
+		))).toThrow(/platform/);
 	});
 });
 
@@ -661,18 +727,19 @@ describe("the built-in bash under the container backend", () => {
 	it("records the container fingerprint and never claims a host OS sandbox", () => {
 		const result = fixture({
 			sandbox: "required",
-			detect: () => ({ runtime: "docker", available: true, version: "27.1.0" }),
+			detect: () => ({ runtime: "docker", available: true, ...RUNTIME_IDENTITY }),
 		});
-		expect(result.sandboxFingerprint).toBe(`container:docker@${DIGEST}`);
+		const fingerprint = containerSandboxFingerprint(policy(), RUNTIME_IDENTITY);
+		expect(result.sandboxFingerprint).toBe(fingerprint);
 		expect(result.sandboxBackend).toBe("none");
 		expect(result.sandboxWarnings).toEqual([]);
 		expect(effectiveTargetSandbox({ hasDeclaredTools: false, executionPolicy: result }))
-			.toBe(`container:docker@${DIGEST}`);
+			.toBe(fingerprint);
 		expect(effectiveTargetSandbox({
 			hasDeclaredTools: true,
 			executionPolicy: result,
-			targetTools: { sandboxFingerprint: `container:docker@${DIGEST}` },
-		})).toBe(`container:docker@${DIGEST}`);
+			targetTools: { sandboxFingerprint: fingerprint },
+		})).toBe(fingerprint);
 		expect(() => effectiveTargetSandbox({
 			hasDeclaredTools: true,
 			targetTools: { sandboxFingerprint: `container:docker@${TAG}` },
@@ -680,7 +747,7 @@ describe("the built-in bash under the container backend", () => {
 		expect(targetFilesystemConfinement({
 			workspaceMode: "isolated",
 			toolNames: ["bash"],
-			sandbox: `container:docker@${DIGEST}`,
+			sandbox: fingerprint,
 		})).toBe("workspace-confined-v1");
 		expect(result.customTools.map((tool) => tool.name)).toEqual(["bash"]);
 	});
@@ -701,7 +768,7 @@ describe("the built-in bash under the container backend", () => {
 		try {
 			const result = fixture({
 				sandbox: "required",
-				detect: () => ({ runtime: "docker", available: true, version: "27.1.0" }),
+				detect: () => ({ runtime: "docker", available: true, ...RUNTIME_IDENTITY }),
 			});
 			const bash = result.customTools.find((tool) => tool.name === "bash");
 			if (!bash) throw new Error("bash tool was not registered");
@@ -722,6 +789,34 @@ describe("the built-in bash under the container backend", () => {
 				ALLOWED_VALUE: "visible",
 			});
 			expect(args.join("\0")).not.toContain("must-not-leak");
+		} finally {
+			if (originalPath === undefined) delete process.env.PATH;
+			else process.env.PATH = originalPath;
+		}
+	});
+
+	it("does not spawn a container when abort arrives during cwd resolution", async () => {
+		const fake = fakeDocker();
+		const originalPath = process.env.PATH;
+		process.env.PATH = fake.binDir;
+		try {
+			const result = fixture({
+				sandbox: "required",
+				detect: () => ({ runtime: "docker", available: true, ...RUNTIME_IDENTITY }),
+			});
+			const bash = result.customTools.find((tool) => tool.name === "bash");
+			if (!bash) throw new Error("bash tool was not registered");
+			const controller = new AbortController();
+			const running = bash.execute(
+				"call-aborted",
+				{ command: "echo must-not-run" },
+				controller.signal,
+				undefined,
+				undefined as never,
+			);
+			queueMicrotask(() => controller.abort());
+			await expect(running).rejects.toThrow(/aborted/);
+			expect(() => readFileSync(fake.logPath, "utf8")).toThrow();
 		} finally {
 			if (originalPath === undefined) delete process.env.PATH;
 			else process.env.PATH = originalPath;
@@ -772,6 +867,38 @@ describe("declared tool setup inside the container", () => {
 			else process.env.PATH = originalPath;
 		}
 	});
+
+	it("force-removes the exact daemon container after setup timeout", () => {
+		const fake = fakeDocker({ hangRun: true });
+		const originalPath = process.env.PATH;
+		process.env.PATH = fake.binDir;
+		const root = scratchRoot("setup-container-timeout");
+		const workspaceDir = join(root, "workspace");
+		const scratchDir = join(root, "scratch");
+		const toolHomeRoot = join(root, "tool-home");
+		mkdirSync(join(workspaceDir, "tools/lookup"), { recursive: true });
+		mkdirSync(scratchDir, { recursive: true });
+		writeFileSync(join(workspaceDir, "tools/lookup/run"), "#!/bin/sh\nexit 0\n");
+		chmodSync(join(workspaceDir, "tools/lookup/run"), 0o755);
+		const tool = resolvedDirectoryTool(workspaceDir);
+		tool.descriptor.setup = { argv: ["/bin/sh", "-c", "true"], timeoutMs: 50, network: "deny" };
+		try {
+			expect(() => prepareToolHome({
+				workspaceDir,
+				scratchDir,
+				toolHomeRoot,
+				policy: { environmentAllowlist: [], network: "deny", sandbox: "required", container: policy() },
+				sandboxBackend: "container",
+				tools: [tool],
+			})).toThrow(/timed out/);
+			const cleanupArgv = loggedArgv(fake.logPath);
+			expect(cleanupArgv.slice(0, 2)).toEqual(["rm", "-f"]);
+			expect(cleanupArgv[2]).toMatch(/^ahde-[0-9]+-[0-9a-f-]+$/);
+		} finally {
+			if (originalPath === undefined) delete process.env.PATH;
+			else process.env.PATH = originalPath;
+		}
+	});
 });
 
 /** A minimal resolved directory tool with a declared setup step. */
@@ -814,7 +941,10 @@ describe("ahde validate readiness line", () => {
 		expect(describeSandboxReadiness(
 			{ sandbox: "required", container: policy() },
 			{ environment: { PATH: fake.binDir } },
-		)).toEqual({ line: "sandbox: container (docker 27.1, image pinned)", failClosed: false });
+		)).toEqual({
+			line: "sandbox: container (docker 27.1, server linux/amd64, target linux/amd64, image pinned)",
+			failClosed: false,
+		});
 
 		resetContainerRuntimeDetection();
 		expect(describeSandboxReadiness(
@@ -880,12 +1010,17 @@ function pinnedIntegrationImage(): string | null {
 	return inspect.status === 0 && isPinnedContainerImage(reference) ? reference : null;
 }
 const integrationPinnedImage = pinnedIntegrationImage();
+const integrationPlatform = dockerStatus.available && dockerStatus.os && dockerStatus.arch
+	? `${dockerStatus.os}/${dockerStatus.arch}`
+	: null;
 const skipReason = dockerStatus.available
-	? (integrationImage ? "" : ` — SKIPPED: docker ${dockerStatus.version} is up but ${INTEGRATION_IMAGE} is neither local nor pullable`)
+	? (integrationPinnedImage && integrationPlatform
+		? ""
+		: ` — SKIPPED: docker ${dockerStatus.version} is up but no pinned image/platform was resolved`)
 	: ` — SKIPPED: ${dockerStatus.reason}`;
 if (skipReason) console.warn(`[container-backend integration]${skipReason}`);
 
-describe.skipIf(!integrationImage)(`container backend integration (real docker)${skipReason}`, () => {
+describe.skipIf(!integrationPinnedImage || !integrationPlatform)(`container backend integration (real docker)${skipReason}`, () => {
 	it("runs the declared argv inside the container, sees only container paths, and inherits no host environment", () => {
 		process.env[HOST_SECRET] = "must-not-leak";
 		const root = scratchRoot("integration");
@@ -896,7 +1031,12 @@ describe.skipIf(!integrationImage)(`container backend integration (real docker)$
 		writeFileSync(join(workspaceDir, "hello.txt"), "workspace-bytes\n");
 
 		const invocation = dockerBackend.invocation({
-			policy: policy({ image: integrationImage as string, memoryMb: 256, pidsLimit: 64 }),
+			policy: policy({
+				image: integrationPinnedImage as string,
+				platform: integrationPlatform as string,
+				memoryMb: 256,
+				pidsLimit: 64,
+			}),
 			mounts: { workspaceDir, scratchDir },
 			network: "deny",
 			environment: { HOME: join(scratchDir, "home"), LANG: "C", ALLOWED_VALUE: "visible" },
@@ -926,7 +1066,7 @@ describe.skipIf(!integrationImage)(`container backend integration (real docker)$
 
 		const run = (network: "deny" | "allow", command: string) => {
 			const invocation = dockerBackend.invocation({
-				policy: policy({ image: integrationImage as string }),
+				policy: policy({ image: integrationPinnedImage as string, platform: integrationPlatform as string }),
 				mounts: { workspaceDir, scratchDir },
 				network,
 				environment: {},
@@ -963,7 +1103,7 @@ describe.skipIf(!integrationImage)(`container backend integration (real docker)$
 
 	// `sandbox: required` accepts only a pinned digest, so this one case needs
 	// the image's RepoDigest; a locally built image has none.
-	it.skipIf(!integrationPinnedImage)("runs the Target's built-in bash inside a real container, end to end", async () => {
+	it.skipIf(!integrationPinnedImage || !integrationPlatform)("runs the Target's built-in bash inside a real container, end to end", async () => {
 		process.env[HOST_SECRET] = "must-not-leak";
 		const root = scratchRoot("integration-bash");
 		const workspaceDir = join(root, "workspace");
@@ -980,7 +1120,12 @@ describe.skipIf(!integrationImage)(`container backend integration (real docker)$
 				environmentAllowlist: ["ALLOWED_VALUE"],
 				network: "deny",
 				sandbox: "required",
-				container: policy({ image: integrationPinnedImage as string, memoryMb: 256, pidsLimit: 64 }),
+				container: policy({
+					image: integrationPinnedImage as string,
+					platform: integrationPlatform as string,
+					memoryMb: 256,
+					pidsLimit: 64,
+				}),
 			},
 			environment: {
 				PATH: "/usr/bin:/bin",
@@ -990,7 +1135,18 @@ describe.skipIf(!integrationImage)(`container backend integration (real docker)$
 			},
 			sourceEnvironment: { ALLOWED_VALUE: "visible", [HOST_SECRET]: "must-not-leak" },
 		});
-		expect(built.sandboxFingerprint).toBe(`container:docker@${containerImageDigest(integrationPinnedImage as string)}`);
+		if (!dockerStatus.version || !dockerStatus.os || !dockerStatus.arch) {
+			throw new Error("real Docker probe returned no exact runtime identity");
+		}
+		expect(built.sandboxFingerprint).toBe(containerSandboxFingerprint(
+			policy({
+				image: integrationPinnedImage as string,
+				platform: integrationPlatform as string,
+				memoryMb: 256,
+				pidsLimit: 64,
+			}),
+			{ version: dockerStatus.version, os: dockerStatus.os, arch: dockerStatus.arch },
+		));
 
 		const bash = built.customTools.find((tool) => tool.name === "bash");
 		if (!bash) throw new Error("bash tool was not registered");

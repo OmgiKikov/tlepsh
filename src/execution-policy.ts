@@ -63,7 +63,7 @@ export interface ExecutionPolicyResult {
 	sandboxBackend: SandboxBackend;
 	/**
 	 * The value the provenance `sandbox` axis must carry:
-	 * `container:docker@sha256:…` for a containerized run, otherwise the OS
+	 * `container:docker@sha256:…:config:…` for a containerized run, otherwise the OS
 	 * backend's own name. A container backend starts a new comparability class.
 	 */
 	sandboxFingerprint: ExecutionFingerprint["sandbox"];
@@ -490,6 +490,8 @@ function bashOperations(
 				throw new Error("Invalid timeout: must be a positive, bounded number of seconds");
 			}
 			const canonicalCwd = await existingPathIn(workspaceDir, cwd, "bash cwd");
+			// Abort may arrive while the asynchronous path check is in flight.
+			if (signal?.aborted) throw new Error("aborted");
 			const invocation = sandboxInvocation(
 				backend,
 				binary,
@@ -526,6 +528,8 @@ function bashOperations(
 				stop("aborted");
 			};
 			signal?.addEventListener("abort", stopForAbort, { once: true });
+			// AbortSignal does not replay an event that happened before subscription.
+			if (signal?.aborted) stopForAbort();
 			const timer = timeout === undefined
 				? undefined
 				: setTimeout(() => {

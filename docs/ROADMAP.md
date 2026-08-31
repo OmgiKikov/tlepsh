@@ -208,11 +208,11 @@ branch; the closed-loop Pi test passes with exactly three confirmations.
 13. **Gondolin / Docker for the Target's built-in `bash`**; `sandbox: required`
     in the bank profile.
     *Docker backend landed (`src/target/container-backend.ts`). Declaring
-    `execution.container: { runtime, image, memoryMb?, cpus?,
+    `execution.container: { runtime, image, platform, memoryMb?, cpus?,
     pidsLimit?, readOnlyRootfs? }` selects it — there is no second switch that
     could disagree with the block. The built-in `bash`, every declared tool and
     every declared `setup` step then run as*
-    `docker run --rm --name <host-minted> --network none|bridge --user <non-root> --cap-drop ALL
+    `docker run --rm --name <host-minted> --platform <os/arch> --network none|bridge --user <non-root> --cap-drop ALL
     --security-opt no-new-privileges --read-only --tmpfs /tmp --memory --cpus
     --pids-limit -v <workspace>:/workspace:ro|rw -v <scratch>:/scratch:rw
     -v <toolHome>:/tools:ro|rw -e … -w /workspace --entrypoint <argv0> <image>
@@ -220,13 +220,15 @@ branch; the closed-loop Pi test passes with exactly three confirmations.
     `LANG` `TERM` *plus the declared allowlist, one* `-e NAME=value` *at a time;
     the host's environment is never inherited and no host path enters the
     container's argv, cwd or environment. Every container image is pinned as
-    `name@sha256:…`; a mutable tag is refused because it cannot identify
+    `name@sha256:…`, and its OCI platform is explicit; a mutable tag or
+    host-native platform selection is refused because neither can identify
     comparable evidence. `sandbox: required` fails closed with the runtime's exact reason when no
-    runtime answers `docker version --format {{.Server.Version}}` (probed once
+    runtime answers the bounded version/OS/architecture probe (once
     per process, bounded); `best-effort` falls back to the host OS sandbox with
     a warning and a different fingerprint when the runtime is unavailable, so a
     fallback never masquerades as container evidence. `ahde validate` prints
-    `sandbox: container (docker 27.1, image pinned)` or the fail-closed reason.
+    `sandbox: container (docker 27.1, server linux/arm64, target linux/arm64,
+    image pinned)` or the fail-closed reason.
     Container start latency is part of the run's `latencyMs` — it is real.
     Timeout, abort, and output overflow force-remove the exact named container
     through the daemon before killing the attached CLI, so a bounded run cannot
@@ -235,8 +237,9 @@ branch; the closed-loop Pi test passes with exactly three confirmations.
     ***A container backend changes the execution fingerprint and therefore
     starts a new comparability class: existing host baselines are not reusable
     against it, by design.*** *`RunRecord.execution.sandbox` now carries the
-    content-pinned value* `container:<runtime>@<image digest>`*, e.g.*
-    `container:docker@sha256:…`*, through the same `effectiveTargetSandbox`
+    content-pinned value* `container:<runtime>@<image digest>:config:<hash>`*,
+    where the hash binds platform, limits, rootfs mode, non-root user and runtime
+    server identity, through the same `effectiveTargetSandbox`
     seam used by ordinary runs and Candidate preflight. Container evidence is
     classified* `workspace-confined-v1` *and can be promoted; a host fallback
     keeps the host backend's identity and cannot masquerade as container

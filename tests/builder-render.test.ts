@@ -60,6 +60,7 @@ import {
 	type WorkbenchCalibrationProjection,
 	type WorkbenchCandidateSummary,
 	type WorkbenchConfirmation,
+	type WorkbenchDecisionInput,
 	type WorkbenchDecisionResult,
 	type WorkbenchFailureModeProjection,
 	type WorkbenchGateProjection,
@@ -507,7 +508,7 @@ const targetContext: TargetAuthoringContext = {
 };
 
 function makeConfirmation(
-	kind: WorkbenchConfirmation["kind"],
+	kind: WorkbenchDecisionInput["kind"],
 	subject: unknown,
 	reason = "Reviewed the exact subject",
 ): WorkbenchConfirmation {
@@ -1736,12 +1737,12 @@ describe("renderConfirmation", () => {
 	});
 
 	it("always ends with the Reason and Exact subject lines", () => {
-		const kinds: WorkbenchConfirmation["kind"][] = [
+		const kinds: WorkbenchDecisionInput["kind"][] = [
 			"scaffold-target", "configure-target", "approve-spec", "publish-corpus", "run-eval", "apply-proposal",
 			"discard-proposal", "verify-candidate", "abandon-candidate", "review-candidate", "promote-candidate",
 			"reject-candidate", "adopt-candidate", "continue-cycle", "run-current",
 		];
-		const ephemeral = new Set<WorkbenchConfirmation["kind"]>(["run-eval", "verify-candidate", "run-current"]);
+		const ephemeral = new Set<WorkbenchDecisionInput["kind"]>(["run-eval", "verify-candidate", "run-current"]);
 		for (const kind of kinds) {
 			const lines = renderConfirmation(makeConfirmation(kind, {}, "Because the reviewer said so"), plainPaint);
 			if (ephemeral.has(kind)) {

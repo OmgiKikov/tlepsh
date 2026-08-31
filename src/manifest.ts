@@ -5,7 +5,11 @@ import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { hashValue } from "./provenance.js";
-import { CONTAINER_IMAGE_REFERENCE, isPinnedContainerImage } from "./target/container-backend.js";
+import {
+	CONTAINER_IMAGE_REFERENCE,
+	CONTAINER_PLATFORM_REFERENCE,
+	isPinnedContainerImage,
+} from "./target/container-backend.js";
 import { loadTargetTools, type ResolvedTargetTool } from "./target/tool-manifest.js";
 
 // ---------- Grader specs (declarative, target-owned) ----------
@@ -411,6 +415,12 @@ export const ContainerBlock = z.strictObject({
 		.min(1)
 		.max(512)
 		.regex(CONTAINER_IMAGE_REFERENCE, "container image must be a plain name@sha256:<digest> reference"),
+	/** Required so an OCI image-index digest never resolves to host-dependent bytes. */
+	platform: z
+		.string()
+		.min(1)
+		.max(128)
+		.regex(CONTAINER_PLATFORM_REFERENCE, "container platform must be os/arch or os/arch/variant"),
 	memoryMb: z.number().int().min(1).max(65_536).optional(),
 	cpus: z.number().min(0.1).max(64).optional(),
 	pidsLimit: z.number().int().min(1).max(4_096).optional(),

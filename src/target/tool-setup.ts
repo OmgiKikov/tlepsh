@@ -15,6 +15,7 @@ import {
 	buildToolEnvironment,
 	detectTargetToolSandbox,
 	sandboxInvocation,
+	type SandboxResourceLimits,
 	type TargetToolSandboxBackend,
 } from "./tool-broker.js";
 import type { ResolvedTargetTool, TargetToolPolicyEnvelope } from "./tool-manifest.js";
@@ -62,6 +63,8 @@ export interface PrepareToolHomeOptions {
 	policy: TargetToolPolicyEnvelope;
 	sandboxBackend?: TargetToolSandboxBackend;
 	sourceEnvironment?: NodeJS.ProcessEnv;
+	/** Optional caps for an unreviewed setup process; normal Target setup omits them. */
+	resourceLimits?: SandboxResourceLimits;
 }
 
 export interface PreparedToolHome {
@@ -162,6 +165,7 @@ function runSetup(
 		// The one moment the prepared home is writable: a setup step populates
 		// the directory every later tool call then reads read-only.
 		toolHomeMode: "rw",
+		...(options.resourceLimits ? { limits: options.resourceLimits } : {}),
 	});
 	const startedMs = Date.now();
 	const result = spawnSync(invocation.executable, invocation.args, {
@@ -173,6 +177,10 @@ function runSetup(
 		maxBuffer: MAX_TOOL_SETUP_OUTPUT_BYTES,
 		windowsHide: true,
 	});
+	// `spawnSync` kills only the attached runtime CLI on timeout or output
+	// overflow. A container is daemon-owned, so force-remove its exact minted
+	// name before surfacing the infrastructure error.
+	if (result.error) invocation.terminate?.();
 	const stdout = boundedText(result.stdout);
 	const stderr = boundedText(result.stderr);
 	const outcome: ToolSetupOutcome = {

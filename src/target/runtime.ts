@@ -53,7 +53,7 @@ export interface TargetToolRuntime {
 	sandboxBackend: Exclude<TargetToolSandboxBackend, "container"> | null;
 	/**
 	 * The value the provenance `sandbox` axis must carry:
-	 * `container:docker@sha256:…` for a containerized run, otherwise the OS
+	 * `container:docker@sha256:…:config:…` for a containerized run, otherwise the OS
 	 * backend's own name. Evidence produced in a container is never comparable
 	 * with evidence produced on the host, by design.
 	 */
@@ -304,8 +304,17 @@ export function createTargetToolRuntime(options: CreateTargetToolRuntimeOptions)
 			toolSetups: [],
 		};
 	}
+	// Sandbox profiles name concrete filesystem paths. macOS exposes its temp
+	// directory through `/var` while the kernel resolves it as `/private/var`;
+	// mixing the two spellings makes an otherwise allowed setup cwd unreadable
+	// inside sandbox-exec. Canonicalize every runtime root once before it reaches
+	// either backend so the profile, cwd and prepared tool home describe the same
+	// bytes.
+	const workspaceDir = realpathSync(resolve(options.workspaceDir));
+	mkdirSync(resolve(options.scratchDir), { recursive: true, mode: 0o700 });
+	const scratchDir = realpathSync(resolve(options.scratchDir));
 	const reloaded = loadTargetTools(
-		options.workspaceDir,
+		workspaceDir,
 		options.target.manifest.tools,
 		options.target.manifest.execution,
 	);
@@ -323,25 +332,28 @@ export function createTargetToolRuntime(options: CreateTargetToolRuntimeOptions)
 	const choice = needsToolHome || execution.container
 		? resolveExecutionBackend({
 			policy: execution,
-			osBackend: () => detectTargetToolSandbox(realpathSync(resolve(options.workspaceDir)), options.scratchDir),
+			osBackend: () => detectTargetToolSandbox(workspaceDir, scratchDir),
 			...(options.detectContainerRuntime ? { detect: options.detectContainerRuntime } : {}),
 		})
 		: undefined;
 	const sandboxBackend = choice?.backend;
+	const requestedToolHomeRoot = options.toolHomeRoot ?? join(scratchDir, "tool-workshop");
+	if (needsToolHome) mkdirSync(resolve(requestedToolHomeRoot), { recursive: true, mode: 0o700 });
+	const toolHomeRoot = needsToolHome ? realpathSync(resolve(requestedToolHomeRoot)) : undefined;
 	const prepared = needsToolHome
 		? prepareToolHome({
-			workspaceDir: options.workspaceDir,
-			scratchDir: options.scratchDir,
+			workspaceDir,
+			scratchDir,
 			tools: reloaded.tools,
-			toolHomeRoot: options.toolHomeRoot ?? join(options.scratchDir, "tool-workshop"),
+			toolHomeRoot: toolHomeRoot as string,
 			policy: options.target.manifest.execution,
 			...(sandboxBackend ? { sandboxBackend } : {}),
 			...(options.sourceEnvironment ? { sourceEnvironment: options.sourceEnvironment } : {}),
 		})
 		: null;
 	const broker = new TargetToolBroker({
-		workspaceDir: options.workspaceDir,
-		scratchDir: options.scratchDir,
+		workspaceDir,
+		scratchDir,
 		policy: options.target.manifest.execution,
 		sourceEnvironment: options.sourceEnvironment,
 		...(prepared ? { toolHomeRoot: prepared.root } : {}),

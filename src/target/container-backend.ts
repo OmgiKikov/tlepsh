@@ -26,7 +26,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { accessSync, constants } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 
@@ -40,6 +40,8 @@ export type ContainerRuntimeName = "docker" | "gondolin";
 export interface ContainerPolicy {
 	runtime: ContainerRuntimeName;
 	image: string;
+	/** Exact OCI target selected by the runtime; prevents host-native multi-arch drift. */
+	platform: string;
 	memoryMb?: number;
 	cpus?: number;
 	pidsLimit?: number;
@@ -88,6 +90,9 @@ const PINNED_IMAGE = /@sha256:[0-9a-f]{64}$/;
  */
 export const CONTAINER_IMAGE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/;
 
+/** Docker/OCI platform: `os/arch` with an optional variant, never a CLI flag. */
+export const CONTAINER_PLATFORM_REFERENCE = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)?$/;
+
 /** True when the image is pinned to a content digest and therefore reproducible. */
 export function isPinnedContainerImage(image: string): boolean {
 	return PINNED_IMAGE.test(image);
@@ -102,18 +107,40 @@ export function containerImageDigest(image: string): string | null {
 /**
  * The provenance `sandbox` value for a run confined by this backend.
  *
- * A pinned image collapses to its digest: two operators who pin the same
- * digest produce comparable evidence no matter what they called the tag.
- * Mutable references are refused rather than assigned a false stable identity.
+ * The readable prefix keeps the image digest. The configuration hash binds
+ * the explicit OCI platform, resource limits, rootfs mode, non-root user and
+ * exact runtime server identity; changing any execution input starts a new
+ * comparability class. Mutable references are refused rather than assigned a
+ * false stable identity.
  */
-export function containerSandboxFingerprint(policy: ContainerPolicy): string {
+export interface ContainerRuntimeIdentity {
+	version: string;
+	os: string;
+	arch: string;
+}
+
+export function containerSandboxFingerprint(
+	policy: ContainerPolicy,
+	runtime: ContainerRuntimeIdentity,
+): string {
 	const digest = containerImageDigest(policy.image);
 	if (!digest) {
 		throw new Error(
 			`execution.container.image must be pinned to a digest (name@sha256:…); mutable tags cannot identify comparable evidence; got ${policy.image}`,
 		);
 	}
-	return `container:${policy.runtime}@${digest}`;
+	const configurationHash = createHash("sha256")
+		.update(JSON.stringify({
+			runtime,
+			platform: policy.platform,
+			memoryMb: policy.memoryMb ?? null,
+			cpus: policy.cpus ?? null,
+			pidsLimit: policy.pidsLimit ?? null,
+			readOnlyRootfs: policy.readOnlyRootfs,
+			user: defaultUser(),
+		}))
+		.digest("hex");
+	return `container:${policy.runtime}@${digest}:config:${configurationHash}`;
 }
 
 /** True for any fingerprint produced by a container backend. */
@@ -128,6 +155,9 @@ export interface ContainerRuntimeStatus {
 	available: boolean;
 	/** Server version reported by the runtime, when it answered. */
 	version?: string;
+	/** Server OS and architecture; both affect container execution semantics. */
+	os?: string;
+	arch?: string;
 	/** Exact reason the runtime is unusable. Present iff `available` is false. */
 	reason?: string;
 }
@@ -167,16 +197,20 @@ function firstLine(value: string | null | undefined): string {
 }
 
 function probeDocker(binary: string, timeoutMs: number): ContainerRuntimeStatus {
-	// `docker version --format {{.Server.Version}}` is the cheapest call that
-	// proves the *daemon* answers: `docker --version` only proves a client
+	// One `docker version` call is the cheapest probe that proves the *daemon*
+	// answers: `docker --version` only proves a client
 	// binary exists, which is exactly the failure a bank profile must not
 	// mistake for containment.
-	const probe = spawnSync(binary, ["version", "--format", "{{.Server.Version}}"], {
-		encoding: "utf8",
-		stdio: ["ignore", "pipe", "pipe"],
-		timeout: timeoutMs,
-		windowsHide: true,
-	});
+	const probe = spawnSync(
+		binary,
+		["version", "--format", "{{.Server.Version}}|{{.Server.Os}}|{{.Server.Arch}}"],
+		{
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+			timeout: timeoutMs,
+			windowsHide: true,
+		},
+	);
 	if (probe.error) {
 		const code = (probe.error as NodeJS.ErrnoException).code;
 		return {
@@ -187,12 +221,13 @@ function probeDocker(binary: string, timeoutMs: number): ContainerRuntimeStatus 
 				: probe.error.message,
 		};
 	}
-	const version = firstLine(probe.stdout);
-	if (probe.status !== 0 || !version) {
+	const identity = firstLine(probe.stdout).split("|");
+	const [version, os, arch] = identity;
+	if (probe.status !== 0 || !version || !os || !arch || identity.length !== 3) {
 		const detail = firstLine(probe.stderr) || firstLine(probe.stdout) || `exit ${probe.status}`;
 		return { runtime: "docker", available: false, reason: `docker daemon is not reachable: ${detail}` };
 	}
-	return { runtime: "docker", available: true, version };
+	return { runtime: "docker", available: true, version, os, arch };
 }
 
 /**
@@ -256,8 +291,6 @@ export interface ContainerInvocationRequest {
 	cwd: string;
 	/** argv[0] is a host path under a mount, an absolute container path, or a bare command. */
 	argv: readonly string[];
-	/** `uid[:gid]`. Defaults to the calling uid, or `65534:65534` when that is root. */
-	user?: string;
 	/** Host environment the runtime CLI itself is spawned with. Defaults to `process.env`. */
 	hostEnvironment?: NodeJS.ProcessEnv;
 	/** Stable injection seam for tests. Production calls receive a fresh unguessable name. */
@@ -406,19 +439,27 @@ function dockerArguments(request: ContainerInvocationRequest): string[] {
 	if (!CONTAINER_IMAGE_REFERENCE.test(policy.image)) {
 		throw new Error(`container backend refuses an unsafe image reference: ${policy.image}`);
 	}
+	if (!isPinnedContainerImage(policy.image)) {
+		throw new Error(
+			`container backend refuses a mutable image; use name@sha256:<digest>: ${policy.image}`,
+		);
+	}
+	if (!CONTAINER_PLATFORM_REFERENCE.test(policy.platform)) {
+		throw new Error(`container backend refuses an unsafe platform: ${policy.platform}`);
+	}
 	if (request.argv.length === 0) throw new Error("container backend requires a command");
 	const table = mountTable(mounts);
 	const containerName = request.containerName ?? `ahde-${process.pid}-${randomUUID()}`;
 	if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(containerName)) {
 		throw new Error(`container backend refuses an unsafe container name: ${containerName}`);
 	}
-	const args = ["run", "--rm", "--name", containerName];
+	const args = ["run", "--rm", "--name", containerName, "--platform", policy.platform];
 
 	// Network is the runtime's, not a profile's: `none` gives the container no
 	// interface at all. `--network host` is never emitted — it would hand the
 	// Target the operator's whole network namespace.
 	args.push("--network", request.network === "deny" ? "none" : "bridge");
-	args.push("--user", request.user ?? defaultUser());
+	args.push("--user", defaultUser());
 	args.push("--cap-drop", "ALL");
 	args.push("--security-opt", "no-new-privileges");
 	if (policy.readOnlyRootfs) {
@@ -554,8 +595,16 @@ export function resolveContainerSandbox(options: ResolveContainerSandboxOptions)
 	const detect = options.detect
 		?? ((runtime: ContainerRuntimeName) => detectContainerRuntime(runtime, options.detectOptions ?? {}));
 	const status = detect(policy.runtime);
-	if (!status.available) {
-		const reason = status.reason ?? `${policy.runtime} runtime is unavailable`;
+	const identityValues = [status.version, status.os, status.arch];
+	const identity = status.available && identityValues.every(
+		(value) => typeof value === "string" && value.trim().length > 0 && value.length <= 256,
+	)
+		? { version: status.version as string, os: status.os as string, arch: status.arch as string }
+		: null;
+	if (!status.available || !identity) {
+		const reason = !status.available
+			? status.reason ?? `${policy.runtime} runtime is unavailable`
+			: `${policy.runtime} did not report an exact server version, OS, and architecture`;
 		if (sandbox === "required") {
 			throw new Error(
 				`execution.container declares ${policy.runtime} but no usable runtime is present; sandbox: required fails closed: ${reason}`,
@@ -569,7 +618,7 @@ export function resolveContainerSandbox(options: ResolveContainerSandboxOptions)
 			],
 		};
 	}
-	return { mode: "container", status, warnings: [], fingerprint: containerSandboxFingerprint(policy) };
+	return { mode: "container", status, warnings: [], fingerprint: containerSandboxFingerprint(policy, identity) };
 }
 
 export interface ExecutionBackendChoice<T extends string> {
@@ -655,8 +704,13 @@ export function describeSandboxReadiness(execution: {
 		};
 	}
 	const version = decision.status.version ? ` ${decision.status.version}` : "";
+	const server = decision.status.os && decision.status.arch
+		? `, server ${decision.status.os}/${decision.status.arch}`
+		: "";
 	return {
-		line: `sandbox: container (${execution.container.runtime}${version}, image pinned)`,
+		line:
+			`sandbox: container (${execution.container.runtime}${version}${server}, ` +
+			`target ${execution.container.platform}, image pinned)`,
 		failClosed: false,
 	};
 }

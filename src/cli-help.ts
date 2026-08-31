@@ -162,7 +162,7 @@ key fails at the first graded case and nowhere earlier.
 The sandbox line reports what would actually confine a run on THIS host:
 
   sandbox: best-effort (host OS sandbox)
-  sandbox: container (docker 27.1, image pinned)
+  sandbox: container (docker 27.1, server linux/arm64, target linux/arm64, image pinned)
   sandbox: container requested, container backend unavailable (…); falling back …
   sandbox: FAIL CLOSED — <the exact reason the declared containment is refused>
 

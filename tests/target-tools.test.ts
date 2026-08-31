@@ -16,6 +16,7 @@ import { loadTarget } from "../src/manifest.js";
 import { loadVerifiedEvalRun, runSuite } from "../src/eval.js";
 import { startMockModel } from "../src/mock-model.js";
 import { createTargetToolRuntime, targetFilesystemConfinement } from "../src/target/runtime.js";
+import { containerSandboxFingerprint } from "../src/target/container-backend.js";
 import { validateTargetToolArguments } from "../src/target/tool-manifest.js";
 import { openTrace, traceToolCalls } from "../src/trace.js";
 import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
@@ -205,10 +206,10 @@ describe("Target tool broker and Pi registration", () => {
 		expect(targetFilesystemConfinement({ workspaceMode: "direct", toolNames: ["read"], sandbox: "sandbox-exec" }))
 			.toBe("direct-unconfined-v1");
 		// A content-pinned container is a first-class confinement identity.
-		expect(targetFilesystemConfinement({
-			workspaceMode: "isolated",
-			toolNames: ["echo_json"],
-			sandbox: `container:docker@sha256:${"a".repeat(64)}`,
+			expect(targetFilesystemConfinement({
+				workspaceMode: "isolated",
+				toolNames: ["echo_json"],
+				sandbox: `container:docker@sha256:${"a".repeat(64)}:config:${"c".repeat(64)}`,
 		})).toBe("workspace-confined-v1");
 		expect(() => targetFilesystemConfinement({
 			workspaceMode: "isolated",
@@ -243,7 +244,7 @@ describe("Target tool broker and Pi registration", () => {
 		const dir = toolFixture({
 			manifest: manifest().replace(
 				"  sandbox: best-effort\n",
-				`  sandbox: required\n  container:\n    runtime: docker\n    image: ahde/target@sha256:${"b".repeat(64)}\n`,
+				`  sandbox: required\n  container:\n    runtime: docker\n    image: ahde/target@sha256:${"b".repeat(64)}\n    platform: linux/amd64\n`,
 			),
 		});
 		const scratch = join(dir, ".ahde-test-scratch-container");
@@ -253,9 +254,21 @@ describe("Target tool broker and Pi registration", () => {
 				target,
 				workspaceDir: dir,
 				scratchDir: scratch,
-				detectContainerRuntime: () => ({ runtime: "docker", available: true, version: "27.1.0" }),
+				detectContainerRuntime: () => ({
+					runtime: "docker",
+					available: true,
+					version: "27.1.0",
+					os: "linux",
+					arch: "amd64",
+				}),
 			});
-			expect(runtime.sandboxFingerprint).toBe(`container:docker@sha256:${"b".repeat(64)}`);
+			const container = target.manifest.execution.container;
+			if (!container) throw new Error("container policy missing from fixture");
+			expect(runtime.sandboxFingerprint).toBe(containerSandboxFingerprint(container, {
+				version: "27.1.0",
+				os: "linux",
+				arch: "amd64",
+			}));
 			expect(runtime.sandboxBackend).toBeNull();
 			expect(runtime.sandboxWarnings).toEqual([]);
 		} finally {
