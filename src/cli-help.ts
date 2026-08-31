@@ -39,6 +39,8 @@ Inspect and run:
                                                compare 2-4 changes for one problem
   ahde calibrate --target <dir>                measure run-to-run noise (A/A)
   ahde evidence [--port N] [--project <id>]    open the read-only trace explorer
+  ahde serve --target <dir> [--port N]         drive the Workbench over a local
+                                               HTTP/JSON API; your UI is the gate
   ahde list [--target <id>]                    list eval runs
   ahde feedback list [--target <dir>]          👍/👎 marks collected in ahde target
   ahde tool try --target <dir> --tool <name> --input <json|@path>
@@ -103,6 +105,38 @@ With --project the report also shows how far this project's judge has been
 checked against a human, exactly as \`ahde report\` does. Without it the page
 says the calibration is not available here rather than calling the judge
 unchecked.`,
+	serve: `Usage: ahde serve --target <dir> [--project <id>] [--port N] [--host 127.0.0.1]
+                  [--token-file <path>] [--confirmation-timeout <seconds>] [--allow-concurrent]
+
+Serve the Workbench over a local HTTP/JSON API so a platform backend can drive
+the same loop and show its own confirmation UI. The API is a transport for the
+same human gate, never an exemption from it.
+
+A consequential decision does not run. It opens a pending confirmation and the
+operation blocks: POST /v1/decide answers 202 with { status:
+"awaiting-confirmation", confirmationId, kind, title, question, subject,
+subjectHash, policy }, and the decision proceeds only when
+POST /v1/confirmations/<id> arrives with { approved: true, subjectHash } quoting
+that exact hash. A wrong hash, an unknown id, a second answer, an expiry, and
+shutdown are each refusals. Routine measurement runs without a question under
+the same cost guard; an expensive run escalates to a pending confirmation like
+any other. Actor identity and sealed-holdout selection stay host-owned: a body
+that carries actor, actorId, approved, or confirmed is refused.
+
+Routes (GET unless marked): /v1/health, /v1/view, POST /v1/submit,
+POST /v1/decide, /v1/confirmations, POST /v1/confirmations/<id>, /v1/events
+(SSE: workbench-changed, run-progress, confirmation-opened/closed). Every other
+response is exactly the shape the Builder tools return.
+
+Binds 127.0.0.1 only. A bearer token is minted at startup and printed once to
+stderr — pass --token-file to also write it 0600 for a supervisor to read. No
+CORS, Host and Origin are checked, bodies are bounded, and one server holds a
+project at a time unless --allow-concurrent says otherwise.
+--confirmation-timeout defaults to 600 seconds (5..3600); an expired
+confirmation is a refusal.
+
+Target bootstrap (scaffold/configure) still belongs to the local TUI: choosing
+a model and a credential needs the trusted host catalog, not an HTTP body.`,
 	init: `Usage: ahde init <dir> [--template <target-dir>]
 
 Create a generic Target harness and its first Git commit. Then run \`ahde\` in

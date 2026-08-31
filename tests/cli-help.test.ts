@@ -94,6 +94,7 @@ describe("CLI help", () => {
 		expect(help).toContain("ahde improve --target <dir> --until 90% --max-cycles 5");
 		expect(help).toContain("candidate  calibrate  check  improve  search  review  promote  reject");
 		expect(help).toContain("ahde search --target <dir> --candidates <id,id,id>");
+		expect(help).toContain("ahde serve --target <dir> [--port N]         drive the Workbench over a local");
 		expect(help).toContain("AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)");
 	});
 
@@ -124,6 +125,15 @@ describe("CLI help", () => {
 		expect(search).toContain("Sealed verification is not part of a search.");
 		expect(search).toContain("never promotes, adopts, publishes, approves, or opens the holdout");
 		expect(improve).toContain("It never promotes, adopts, publishes a corpus or approves a Spec.");
+		const serve = cliHelp(["serve", "--help"]);
+		expect(serve).toContain("Usage: ahde serve --target <dir>");
+		expect(serve).toContain("transport for the\nsame human gate, never an exemption from it");
+		expect(serve).toContain("POST /v1/confirmations/<id>");
+		expect(serve).toContain("A wrong hash, an unknown id, a second answer, an expiry, and\nshutdown are each refusals.");
+		expect(serve).toContain("a body\nthat carries actor, actorId, approved, or confirmed is refused");
+		expect(serve).toContain("Binds 127.0.0.1 only.");
+		expect(serve).toContain("printed once to\nstderr");
+		expect(serve).toContain("--allow-concurrent");
 		const regrade = cliHelp(["regrade", "--help"]);
 		expect(regrade).toContain("Usage: ahde regrade <evalRunId> --target <dir>");
 		expect(regrade).toContain("without calling the\nTarget model again");

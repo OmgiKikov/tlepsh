@@ -13,6 +13,7 @@ export const CLI_COMMANDS = [
 	"resume",
 	"target",
 	"evidence",
+	"serve",
 	"init",
 	"run",
 	"validate",
@@ -61,6 +62,11 @@ export class CliInvocationError extends Error {
 
 interface InvocationSpec {
 	flags: readonly string[];
+	/**
+	 * Flags in `flags` that take no value. They are still recorded as strings
+	 * (`"true"`) so the parsed shape stays one map of names to values.
+	 */
+	booleanFlags?: readonly string[];
 	requiredFlags?: readonly string[];
 	positionals: number;
 }
@@ -74,6 +80,13 @@ const COMMAND_SPECS = {
 	resume: { flags: ROOT_FLAGS, positionals: 0 },
 	target: { flags: ["target", "message"], positionals: 0 },
 	evidence: { flags: ["port", "project"], positionals: 0 },
+	// The Workbench behind a loopback HTTP/JSON API whose human gate is the
+	// platform's. `--host` exists to be explicit, not to reach the network.
+	serve: {
+		flags: ["target", "project", "port", "host", "token-file", "confirmation-timeout", "allow-concurrent"],
+		booleanFlags: ["allow-concurrent"],
+		positionals: 0,
+	},
 	init: { flags: ["template"], positionals: 1 },
 	run: {
 		flags: ["target", "task", "repetitions", "jobs", "label", "dataset", "project", "corpus"],
@@ -228,8 +241,10 @@ function tokenize(
 	tokens: readonly string[],
 	allowedFlags: readonly string[],
 	context: string,
+	booleanFlags: readonly string[] = [],
 ): { flags: Record<string, string>; positionals: string[] } {
 	const allowed = new Set(allowedFlags);
+	const booleans = new Set(booleanFlags);
 	const flags: Record<string, string> = {};
 	const positionals: string[] = [];
 
@@ -244,6 +259,10 @@ function tokenize(
 		const name = token.slice(2);
 		if (!allowed.has(name)) cliError(`unknown flag --${name} for ${context}`);
 		if (Object.hasOwn(flags, name)) cliError(`duplicate flag --${name} for ${context}`);
+		if (booleans.has(name)) {
+			flags[name] = "true";
+			continue;
+		}
 		const value = tokens[index + 1];
 		if (value === undefined || value.length === 0 || value.startsWith("-")) {
 			cliError(`missing value for --${name} in ${context}`);
@@ -294,7 +313,11 @@ function validateSharedFlagValues(flags: Readonly<Record<string, string>>, conte
 	assertEnumFlag(flags, "label", context === "regrade" ? ["baseline", "solo", "regrade"] : ["baseline", "solo"], context);
 	assertEnumFlag(flags, "visibility", ["development", "sealed"], context);
 	assertEnumFlag(flags, "recommend", ["promote", "reject"], context);
+	// `ahde serve` binds loopback only; naming any other host is a usage error,
+	// not something the server quietly reinterprets.
+	assertEnumFlag(flags, "host", ["127.0.0.1", "localhost"], context);
 	assertIntegerFlag(flags, "port", context, { minimum: 0, maximum: 65_535 });
+	assertIntegerFlag(flags, "confirmation-timeout", context, { minimum: 1, maximum: 3_600 });
 	assertIntegerFlag(flags, "repetitions", context, { minimum: 1 });
 	assertIntegerFlag(flags, "sealed", context, { minimum: 1 });
 	assertIntegerFlag(flags, "sample", context, { minimum: 1 });
@@ -494,8 +517,8 @@ export function parseCliInvocation(argv: readonly string[]): CliInvocation {
 	if (command === "corpus" || command === "feedback" || command === "tool") {
 		return parseActionCommand(command, tokens);
 	}
-	const spec = COMMAND_SPECS[command];
-	const parsed = tokenize(tokens, spec.flags, command);
+	const spec: InvocationSpec = COMMAND_SPECS[command];
+	const parsed = tokenize(tokens, spec.flags, command, spec.booleanFlags ?? []);
 	assertInvocationSpec(parsed, spec, command);
 	validateCommandRelationships(command, parsed.flags);
 	return freezeInvocation(command, null, parsed);
