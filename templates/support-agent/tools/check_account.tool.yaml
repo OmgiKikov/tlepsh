@@ -1,0 +1,29 @@
+# A declared tool the agent may call by name, sandboxed by these permissions.
+# Try it without spending a model call:
+#   ahde tool try --target . --tool check_account --input '{"id":"42"}'
+#
+# Note: a declared tool and a `bash bin/<name>` call are different things.
+# `tool_called` graders match whichever the agent actually used — the demo's
+# graders matched `bash`, so its AGENTS.md prescribed the literal bash line.
+schemaVersion: 1
+name: check_account
+description: "REPLACE-ME: что возвращает система, одной строкой — это видит модель."
+parameters:
+  type: object
+  properties:
+    id:
+      type: string
+      description: "REPLACE-ME: идентификатор договора/клиента из обращения."
+      minLength: 1
+      maxLength: 64
+  required: [id]
+  additionalProperties: false
+command:
+  argv: [bin/check_account]
+timeoutMs: 5000
+maxOutputBytes: 8192
+output: json
+permissions:
+  environment: []
+  network: deny
+  filesystem: read-only

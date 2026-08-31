@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Демо-заглушка внешней системы. Прод-версия: запрос к внутреннему сервису.
+#
+# Two calling conventions, both supported here on purpose:
+#   * declared tool  — one line of JSON arrives on stdin  ({"id":"42"})
+#   * bash bin/check_account --id 42 — the agent runs it directly
+set -euo pipefail
+id=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --id) id="${2:-}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -z "$id" ] && [ ! -t 0 ]; then
+  payload="$(cat || true)"
+  id="$(printf '%s' "$payload" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\{0,1\}\([^",}]*\).*/\1/p')"
+fi
+# REPLACE-ME: настоящий запрос. Заглушка отвечает одинаково на любой id.
+printf 'account_status: ok\nlimits: none\nid: %s\n' "${id:-unknown}"

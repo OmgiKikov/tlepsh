@@ -1,0 +1,2 @@
+{"id":"example-001","input":"Обращение: <REPLACE-ME: текст обращения с триггером, например договор №42>.","graders":[{"type":"tool_called","tool":"bash","argsContains":"check_account"},{"type":"output_contains","text":"REPLACE-ME"}]}
+{"id":"example-002","input":"Обращение: <REPLACE-ME: текст обращения без триггера>.","graders":[{"type":"output_contains","text":"REPLACE-ME"}]}

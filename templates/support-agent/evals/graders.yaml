@@ -1,0 +1,14 @@
+# Graders that apply to every case in evals/development.jsonl.
+# Per-case graders live in the case's own `graders` array and are additive.
+#
+# Deterministic first — they cost nothing and never drift:
+#   {"type": "output_contains", "text": "жалоба"}        # substring, case-insensitive by default
+#   {"type": "output_matches",  "pattern": "^Тип обращения: "}
+#   {"type": "tool_called",     "tool": "bash", "argsContains": "check_account"}
+#
+# `judge` only where prose has to be judged. It needs the manifest's judge
+# block, the judge may not be the Target's own model, and an uncalibrated
+# judge is reported as such in the passport until you run
+# `ahde label <evalRunId> --target .`:
+#   {"type": "judge", "rubric": "Ответ классифицирует обращение как вопрос и по существу раскрывает тему."}
+defaults: []
