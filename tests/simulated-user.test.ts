@@ -1,9 +1,12 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadTarget } from "../src/manifest.js";
+import { effectiveProvenance, runCandidateExperiment } from "../src/application/candidate-experiment.js";
 import { compileDatasetCases } from "../src/application/dataset-ingest.js";
+import { loadExactEvalSnapshot } from "../src/application/exact-eval-snapshot.js";
 import { renderRunTurns, runSuite } from "../src/eval.js";
 import {
 	startMockModel,
@@ -11,6 +14,7 @@ import {
 	type MockRequestContext,
 	type MockStep,
 } from "../src/mock-model.js";
+import { axisDifferences, canonicalJson, hashValue } from "../src/provenance.js";
 import { openTrace } from "../src/trace.js";
 import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 
@@ -445,6 +449,90 @@ describe("the user model is a measurement input", () => {
 			cleanup(runsRoot);
 		}
 	}, 180_000);
+
+	/**
+	 * Regression: two of the three places that rebuild a run's provenance carried
+	 * the judge axis and dropped the user model. A simulated-user baseline was
+	 * therefore never reusable, and the snapshot verifier rejected the very
+	 * evidence its own runSuite had just written.
+	 */
+	it("rebuilds the same axes everywhere: reconstruction, snapshot and the canonical index agree", async () => {
+		const dir = makeTargetFixture(baseFixtureFiles({
+			"manifest.yaml": manifestYaml({ targetUrl: targetMock.url, userUrl: userMock.url }),
+			"evals/development.jsonl": datasetOf([SENTINEL_CASE]),
+		}));
+		const runsRoot = join(dir, "..", `simulated-user-parity-${Date.now()}`);
+		try {
+			const target = loadTarget(dir);
+			const evalRun = await runSuite(target, { runsRoot, label: "baseline", repetitions: 1 });
+
+			// 1. candidate-experiment's reconstruction, the input to baseline reuse.
+			const reconstructed = effectiveProvenance(loadTarget(dir));
+			expect(axisDifferences(reconstructed, evalRun.provenance)).toEqual([]);
+			expect(canonicalJson(reconstructed.simulatedUser))
+				.toBe(canonicalJson(evalRun.provenance.simulatedUser));
+			expect(hashValue(reconstructed)).toBe(evalRun.provenanceKey);
+
+			// 2. exact-eval-snapshot, the verifier every sealed read goes through.
+			const snapshot = loadExactEvalSnapshot(runsRoot, evalRun.evalRunId, "development");
+			expect(snapshot.runs).toHaveLength(1);
+			expect(hashValue(snapshot.record.provenance)).toBe(evalRun.provenanceKey);
+
+			// 3. and the axis is the user model itself, not a placeholder.
+			expect(evalRun.provenance.simulatedUser?.id).toBe("mock-user");
+		} finally {
+			cleanup(dir);
+			cleanup(runsRoot);
+		}
+	}, 180_000);
+
+	it("carries a candidate experiment on a simulated-user suite all the way to evaluated", async () => {
+		const dir = makeTargetFixture(baseFixtureFiles({
+			"manifest.yaml": manifestYaml({ targetUrl: targetMock.url, userUrl: userMock.url }),
+			"evals/development.jsonl": datasetOf([SENTINEL_CASE]),
+		}));
+		const runsRoot = join(dir, "..", `simulated-user-candidate-${Date.now()}`);
+		try {
+			const git = (...args: string[]): string =>
+				execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+			git("config", "user.name", "AHDE Test");
+			git("config", "user.email", "ahde-test@example.invalid");
+			const baselineSha = git("rev-parse", "HEAD");
+			writeFileSync(join(dir, "AGENTS.md"), "# Test Agent\n\nОтвечай кратко и называй срок в днях.\n");
+			git("add", "-A");
+			git("commit", "-qm", "candidate");
+			const candidateSha = git("rev-parse", "HEAD");
+
+			const result = await runCandidateExperiment({
+				repositoryDir: dir,
+				runsRoot,
+				baselineRef: baselineSha,
+				candidateRef: candidateSha,
+				mode: "candidate",
+				repetitions: 1,
+				projectId: "simulated-user-project",
+			});
+
+			expect(result.record.events.map((event) => event.type))
+				.toEqual(["proposed", "built", "validated", "evaluated"]);
+			expect(result.changedFiles).toEqual(["AGENTS.md"]);
+			// Both arms measured the same instrument, and both say so.
+			for (const arm of [result.baseline, result.candidate]) {
+				expect(arm.provenance.simulatedUser?.id).toBe("mock-user");
+				expect(arm.summary.error).toBe(0);
+			}
+			expect(result.baseline.provenanceKey).toBe(result.candidate.provenanceKey);
+			// The comparison the reviewer reads exists, over real conversations, and
+			// the pair is comparable — which is exactly what the missing axis broke.
+			expect(result.compare.a.evalRunId).toBe(result.baseline.evalRunId);
+			expect(result.compare.b.evalRunId).toBe(result.candidate.evalRunId);
+			expect(result.compare.status).not.toBe("invalid");
+			expect(result.compare.issues).toEqual([]);
+		} finally {
+			cleanup(dir);
+			cleanup(runsRoot);
+		}
+	}, 300_000);
 
 	it("fails closed when a suite has simulated-user cases and no user model", () => {
 		const dir = makeTargetFixture(baseFixtureFiles({
