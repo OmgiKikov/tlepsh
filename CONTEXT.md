@@ -46,8 +46,12 @@ the harness under development runs in a different Target Pi invocation.
   manifest declarations, and exact diffs from a clean Target snapshot. It is
   the fallback path for single-file edits and the only way to change the
   Target's execution policy; a workshop diff can change only resources.
+  Execution configuration is patch-like: omitted fields — including the full
+  container block — are preserved, while container replacement or removal must
+  be explicit in the reviewed intent.
 - **Target Authoring Context** — a bounded safe projection of one exact clean
-  Target commit: sanitized model/execution metadata plus only its
+  Target commit: sanitized model/execution metadata, the complete non-secret
+  pinned container policy, plus only its
   manifest-declared instructions, skills, and tool descriptor/executable
   resources. Builder reads it through Workbench, never through ambient files.
 - **Proposal** — the immutable exact Harness file replacement set compiled
@@ -189,6 +193,9 @@ credential.
    declared Target tool runs in, with bounded output and a bounded timeout. The
    four workshop tools exist only while a workshop is open; the workshop is
    bound to one proposal attempt and dies with it, leaving no worktree behind.
+   A capability exception is one-shot and host-owned, bound to the exact
+   workshop snapshot, tool digest, phase, network mode, and env names; it is
+   consumed before execution and is never restored after restart.
 2. Evidence always points at immutable snapshots; renderers never reread the current checkout.
 3. Candidate and baseline revisions differ, except in explicit A/A calibration mode.
 4. Comparability excludes the changing Harness revision but includes every other effective execution and grading input.
@@ -208,10 +215,14 @@ credential.
    resources. Only declared `data/` directories reach a Target workspace; they
    are bounded in total bytes and are shown to the Builder as shape, never
    content.
-   A complete `execution.configure` intent may change the Target execution
-   policy only in the same exact reviewed Proposal; every resulting tool must
-   validate against that policy, and the Candidate must still pass matched
-   development and sealed verification before promotion.
+   An `execution.configure` intent may change the Target execution policy only
+   in the same exact reviewed Proposal; omission preserves existing policy and
+   container containment, while container replacement/removal is explicit.
+   Every resulting tool must validate against that policy, and the Candidate
+   must still pass matched development and sealed verification before
+   promotion. Before the first eval, a construction Proposal may cite the exact
+   approved Spec without inventing diagnosis evidence; every later improvement
+   remains bound to conclusive development evidence.
 7. The user's current checkout is never switched by an experiment.
 8. Durable artifacts are schema-versioned, validated on read, and written atomically.
 9. Infrastructure failures are inconclusive evidence, not behavioral failures.
@@ -231,12 +242,15 @@ credential.
     confirms an exact immutable subject in TUI mode, revalidates it, and records
     a one-operation receipt; non-interactive calls fail closed.
 17. Declarative Target tool descriptors and executable bytes are part of Target
-    identity: for a multi-file tool that is every file in its directory, sorted
-    and mode-aware, plus its declared lockfile bytes. A declared setup step runs
-    once per prepared tool home, inside the same sandbox, writing only that
-    home; its output is derived state that no provenance hash sees, and its
-    failure is an infrastructure error. Missing confinement is recorded honestly
-    and is never promotable.
+   identity: for a multi-file tool that is every file in its directory, sorted
+   and mode-aware, plus its declared lockfile bytes. A declared setup step runs
+   once per prepared tool home, inside the same sandbox, writing only that
+   home. The resulting tree is attested by canonical path, bytes, executable
+   bits, and empty directories; symlinks and special files fail closed. That
+   prepared-home hash is persisted in every member Run and EvalRun and must
+   reproduce before cache reuse, baseline reuse, exact snapshot selection, or
+   promotion. Setup failure or attestation drift is an infrastructure error.
+   Missing confinement is recorded honestly and is never promotable.
 18. Initial Target id/model configuration is a one-time host-confirmed bootstrap
     commit over an exact clean scaffold. Builder receives only the credential
     variable name; the host injects the selected value into a memory-only Target
@@ -292,9 +306,10 @@ credential.
     a brief proposal-ineligible, and sealed evidence never enters a
     Builder-visible brief.
 30. Harness authoring context is read only from the exact clean Git commit
-    selected by the host. It enumerates no ambient files and exposes only
-    canonical manifest-declared `AGENTS.md`, skill `SKILL.md`, and tool
-    descriptor/executable resources. Dirty or stale revisions, undeclared or
+   selected by the host. It enumerates no ambient files and exposes only
+   the complete non-secret execution policy and canonical manifest-declared
+   `AGENTS.md`, skill `SKILL.md`, and tool descriptor/executable resources.
+   Dirty or stale revisions, undeclared or
     private paths, traversal, symlinks, unsafe modes, malformed UTF-8, and
     oversized context fail closed before Proposal compilation. Git replacement
     refs are ignored. Structured authoring must echo the host-minted context
