@@ -254,7 +254,12 @@ function selectSubject(options: CompileVersionPassportOptions, projectId: string
 	return promoted;
 }
 
-function developmentMeasurement(comparison: unknown): PassportDevelopmentMeasurement | null {
+/**
+ * One gate's evidence, read through the same reader for either surface. The
+ * development surface keeps the whole of it; the sealed surface keeps the
+ * verdict and the design and the caller drops the rest on the floor.
+ */
+function gateMeasurement(comparison: unknown): PassportDevelopmentMeasurement | null {
 	const evidence = comparison as {
 		verdict?: unknown;
 		summary?: Record<string, unknown>;
@@ -482,10 +487,13 @@ export function compileVersionPassport(options: CompileVersionPassportOptions): 
 			"Verify it first with `ahde candidate --target <dir> --builder-run <id>`.",
 		);
 	}
+	// The promise is read first: a page that cannot say what was promised is not
+	// a passport, whatever else it could have measured.
+	const promised = approvedPromise(options, record);
 	const promotion = promotionOf(record);
 	const development = evaluated.evaluation.development;
 	const sealed = evaluated.evaluation.sealedHoldout ?? null;
-	const sealedComparison = developmentMeasurement(sealed?.comparison);
+	const sealedComparison = gateMeasurement(sealed?.comparison);
 
 	const judge = judgeCalibration(options, projectId, [
 		// The development lineage only. Sealed evidence is never labelled and its
@@ -508,9 +516,9 @@ export function compileVersionPassport(options: CompileVersionPassportOptions): 
 		at: promotion?.at ?? evaluated.at,
 		revisions: { baselineSha: record.baseline.sha, candidateSha },
 		model,
-		promised: approvedPromise(options, record),
+		promised,
 		measured: {
-			development: developmentMeasurement(development.comparison),
+			development: gateMeasurement(development.comparison),
 			sealed: sealedComparison
 				? { verdict: sealedComparison.verdict, design: sealedComparison.design }
 				: null,
