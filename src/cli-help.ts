@@ -61,6 +61,7 @@ Change and ship, without leaving the terminal:
                                                the matched experiment and sealed gate
   ahde review · ahde promote --to 0.X.0        your gate, on the exact evidence
   ahde adopt --target <dir> --candidate <id>   fast-forward onto the promoted revision
+  ahde passport --target <dir> [--tag v0.X.0]  promised vs measured, for the client
 
 Inside Builder Pi:
 ${builderCommandLines()}
@@ -69,7 +70,7 @@ ${builderCommandLines()}
 Use \`ahde <command> --help\` for focused help. Advanced automation commands:
   corpus  failures  compare  diagnose  regrade  report  label  judge-agreement
   candidate  calibrate  check  improve  search  review  promote  reject
-  log  watch  spec approve  propose  apply  adopt
+  log  watch  spec approve  propose  apply  adopt  passport
 
 Environment:
   AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)
@@ -439,6 +440,27 @@ in the checkout, a candidate that was never promoted, a promotion tag that does
 not point at the evaluated commit, a HEAD that is not the candidate's baseline,
 or a fast-forward that is not one. Re-running a completed adoption reports it
 as already adopted rather than repeating it.`,
+	passport: `Usage:
+  ahde passport --target <dir> [--project <id>] [latest] [--json] [--out <path>]
+  ahde passport --target <dir> --candidate <id>
+  ahde passport --target <dir> --tag v0.1.0
+
+The client-facing version passport: what was promised, beside what was
+measured, for one shipped candidate. Markdown on stdout, and to --out when you
+give one; --json prints the projection behind it instead.
+
+The subject is the newest candidate record with a promotion. --candidate names
+one explicitly — including one that was verified but never promoted, which the
+header says in place of a version tag — and --tag resolves the promotion tag.
+The bare positional \`latest\` is the default written out.
+
+Everything on the page is read back from durable artifacts: the Candidate
+record, the approved Spec snapshot, the EvalRun indexes, the published corpus
+metadata, the human judge labels. No model is called and no number is
+remembered. The sealed holdout contributes its verdict and its design size and
+nothing else — never its corpus, its cases, or its answers.
+
+Exit 2 when the subject or an artifact the page rests on is missing.`,
 	review: `Usage: ahde review --candidate <id> --recommend promote|reject --reason <text> [--actor <id>]
                    [--proposal-hash <sha256>]
 

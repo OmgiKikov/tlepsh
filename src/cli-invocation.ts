@@ -40,6 +40,7 @@ export const CLI_COMMANDS = [
 	"promote",
 	"reject",
 	"adopt",
+	"passport",
 	// Wave 3, operator surfaces: what the agent became, and whether the ground
 	// under an unchanged revision is still where it was.
 	"log",
@@ -85,6 +86,12 @@ interface InvocationSpec {
 	booleanFlags?: readonly string[];
 	requiredFlags?: readonly string[];
 	positionals: number;
+	/**
+	 * Positionals beyond `positionals` that may be given and need not be. Used
+	 * where a word only writes the default out, so `ahde passport` and
+	 * `ahde passport latest` are the same invocation.
+	 */
+	optionalPositionals?: number;
 }
 
 const ROOT_FLAGS = ["target", "project", "port"] as const;
@@ -232,6 +239,16 @@ const COMMAND_SPECS = {
 		booleanFlags: ["once"],
 		requiredFlags: ["target"],
 		positionals: 0,
+	},
+	// The client-facing page: promise beside measurement, for one shipped or
+	// verified candidate. The lone positional is the bare word `latest`, which
+	// is what the default already is.
+	passport: {
+		flags: ["target", "project", "candidate", "tag", "out", "json"],
+		booleanFlags: ["json"],
+		requiredFlags: ["target"],
+		positionals: 0,
+		optionalPositionals: 1,
 	},
 } as const satisfies Record<Exclude<CliCommand, "corpus" | "feedback" | "tool" | "spec">, InvocationSpec>;
 
@@ -542,11 +559,12 @@ function assertInvocationSpec(
 	for (const name of spec.requiredFlags ?? []) {
 		if (parsed.flags[name] === undefined) cliError(`missing required flag --${name} for ${context}`);
 	}
-	if (parsed.positionals.length !== spec.positionals) {
-		if (parsed.positionals.length < spec.positionals) {
-			cliError(`${context} requires ${spec.positionals} positional argument${spec.positionals === 1 ? "" : "s"}; got ${parsed.positionals.length}`);
-		}
-		cliError(`${context} accepts ${spec.positionals} positional argument${spec.positionals === 1 ? "" : "s"}; got ${parsed.positionals.length}`);
+	const mostPositionals = spec.positionals + (spec.optionalPositionals ?? 0);
+	if (parsed.positionals.length < spec.positionals) {
+		cliError(`${context} requires ${spec.positionals} positional argument${spec.positionals === 1 ? "" : "s"}; got ${parsed.positionals.length}`);
+	}
+	if (parsed.positionals.length > mostPositionals) {
+		cliError(`${context} accepts ${mostPositionals} positional argument${mostPositionals === 1 ? "" : "s"}; got ${parsed.positionals.length}`);
 	}
 	validateSharedFlagValues(parsed.flags, context);
 }
@@ -664,6 +682,11 @@ function validateCommandRelationships(command: CliCommand, flags: Readonly<Recor
 			cliError(`propose requires --eval and --mode together; missing --${evidence[0] === "eval" ? "mode" : "eval"}`);
 		}
 		if (flags.mode !== undefined) assertFailureModeIdList(flags.mode, "propose");
+	}
+	// A passport is about exactly one subject: the candidate, or the promotion
+	// tag that names one, or the newest promotion when neither is given.
+	if (command === "passport" && flags.candidate !== undefined && flags.tag !== undefined) {
+		cliError("passport cannot combine --candidate with --tag");
 	}
 	if (command !== "candidate") return;
 	if (flags.dataset !== undefined && flags["development-corpus"] !== undefined) {

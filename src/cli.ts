@@ -1,5 +1,5 @@
 import { dirname, join, resolve } from "node:path";
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { describeEnvVar, loadDotEnv, type EnvReport } from "./env.js";
@@ -42,6 +42,10 @@ import { renderCandidateVerdictLines } from "./application/candidate-verdict.js"
 import { proposeBranchChange } from "./application/branch-proposal.js";
 import { approveSpecDocument, LOCAL_OPERATOR_ACTOR_ID } from "./application/spec-document.js";
 import { adoptTargetCandidate, describeTargetAdoption } from "./application/target-adoption.js";
+import {
+	compileVersionPassport,
+	renderVersionPassportMarkdown,
+} from "./application/version-passport.js";
 import {
 	abandonImprovementLoop,
 	listUnfinishedImprovementLoops,
@@ -1335,6 +1339,34 @@ async function main(): Promise<void> {
 			console.log(`              ${adoption.receiptPath}`);
 			break;
 		}
+		case "passport": {
+			const subject = positional(0);
+			if (subject !== undefined && subject !== "latest") {
+				throw new Error(`ahde passport takes no subject but the word \`latest\`; got ${JSON.stringify(subject)}`);
+			}
+			const targetDir = resolve(requireArg("target"));
+			const passport = compileVersionPassport({
+				targetDir,
+				runsRoot: runsRoot(),
+				stateRoot: stateRoot(),
+				...(arg("project") ? { projectId: arg("project")! } : {}),
+				...(arg("candidate") ? { candidateId: arg("candidate")! } : {}),
+				...(arg("tag") ? { tag: arg("tag")! } : {}),
+			});
+			// `--json` is the exact projection the page is rendered from, hashes
+			// whole; the page itself is what the client is handed.
+			const rendered = flagPresent("json")
+				? `${JSON.stringify(passport, null, "\t")}\n`
+				: renderVersionPassportMarkdown(passport);
+			const out = arg("out");
+			if (out) {
+				const path = resolve(out);
+				writeFileSync(path, renderVersionPassportMarkdown(passport), "utf8");
+				console.error(`passport written to ${path}`);
+			}
+			process.stdout.write(rendered);
+			break;
+		}
 		case "candidate": {
 				const holdoutCorpusId = arg("holdout-corpus");
 				const developmentCorpusId = arg("development-corpus");
@@ -1767,6 +1799,12 @@ function soleSearchFailureModeId(proposalRunIds: readonly string[]): string {
 
 function cliFailure(error: unknown): { message: string; next?: string } {
 	const message = redactTraceText(error instanceof Error ? error.message : String(error)).slice(0, 4_000);
+	// A refusal that already knows what the operator should do next says so
+	// itself, rather than being recognized here by the shape of its sentence.
+	const carried = (error as { next?: unknown } | null)?.next;
+	if (typeof carried === "string" && carried.trim().length > 0) {
+		return { message, next: redactTraceText(carried).slice(0, 1_000) };
+	}
 	if (/requires an interactive terminal|requires TTY stdin and stdout/i.test(message)) {
 		return {
 			message: "This command needs an interactive terminal (TTY).",
