@@ -47,6 +47,18 @@ the engine's verdicts count, and only its gate ships.
    run, and before any promotion. Show the diff before asking to apply.
 6. Differences smaller than the calibrated noise band (`ahde calibrate`) are
    noise; do not claim improvement inside it.
+7. Context discipline: redirect every run's output to a file
+   (`... > run.log 2>&1`), then read only the verdict lines
+   (`grep -E "^eval run|verdict|guardrail" run.log`); on failure, the last 50
+   lines. Never pour a run log into your context. Raw per-case traces are the
+   opposite: when diagnosing, open the actual `runs/<erun>/**` development
+   trace files and read them whole — summaries lose the signal.
+8. A number is not believed until someone reads transcripts. After every
+   verification, read at least two: one case the change improved and one it
+   did not, and say in one line what you saw.
+9. Inside an authorized budget, never ask whether to continue. Stop only at
+   the budget, a verified candidate, or two flat screens in a row — then hand
+   back with the log.
 
 ## The loop (an order, end to end)
 
@@ -121,6 +133,39 @@ the engine's verdicts count, and only its gate ships.
    verdict + design size), cost per answer, known limits. Build it from the two
    verdict lines `ahde candidate` printed, `ahde list`, and — until `ahde log`
    lands — `node scripts/skill-shim-log.mjs --target .`; never from memory.
+
+## The improvement loop, disciplined
+
+Between steps 4 and 7 you may cycle. Keep the cycle honest the same way every
+time:
+
+- **One attempts log per agent, `attempts.tsv`, git-untracked, tab-separated**
+  — one row per attempt, crashes included, never deleted:
+
+  ```
+  branch	builder_run	screen	dev	sealed	cost_usd	status	description
+  work/tool-call	builder-8e1c…	27/38	improved +64pp	pass 18x2	1.92	keep	order_lookup tool + call-first rule
+  work/shorter-sys	builder-2f7a…	0/11	-	-	0.11	discard	flat screen; instructions cut alone did nothing
+  work/retry-parse	builder-9c1d…	-	-	-	0.00	crash	propose refused: evals/ in diff
+  ```
+
+- **Keep or revert, nothing in between.** A losing or flat attempt is
+  discarded the same day it is measured (`git branch -D work/<slug>`, row says
+  `discard`); never patch forward on top of a loss. A winning attempt becomes
+  the next baseline only through promote + adopt.
+- **Ties lose.** `inconclusive` on the development gate is a discard, not a
+  maybe. The gate's word is final; you do not argue with it, you author a
+  different change.
+- **Small edits, and a tax on complexity.** At most ~4 changed files per
+  proposal. At an equal verdict the smaller diff wins; an attempt that only
+  deletes and stays flat on the gate is a win — log it as `keep simplified`.
+  Never trade +1pp for +200 lines of harness.
+- **Read what already lost before proposing.** `attempts.tsv` first, then the
+  raw development traces of the losing attempts (`runs/<erun>/**`, never
+  sealed). Re-proposing the same files for the same failure mode after a loss
+  is forbidden; say in one line what is different this time.
+- **Budget is set once, up front** — N attempts or $X, agreed with the
+  operator before the first cycle. Rule 9 applies until it runs out.
 
 ## Known engine gaps (v1 of this skill)
 
