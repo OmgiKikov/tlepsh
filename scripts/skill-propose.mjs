@@ -1,5 +1,15 @@
 #!/usr/bin/env node
-// Stand-in for the `ahde propose --branch` / `ahde apply` the SKILL says do not
+// SUPERSEDED on 2026-09-01. Everything below is now three CLI commands:
+//
+//   ahde spec approve --target <dir> [--file spec.md]
+//   ahde propose --target <dir> --spec <id> --branch <ref> [--eval <erun> --mode <id>]
+//   ahde apply --target <dir> --builder-run <id> [--branch candidate/<name>]
+//
+// Use those. This file is kept as the record of what the CLI had to grow into
+// — the service list below is exactly the choreography those commands run, and
+// docs/SKILL_WALKTHROUGH.md's ADDENDUM is the same loop walked without it.
+//
+// Stand-in for the `ahde propose --branch` / `ahde apply` the SKILL said did not
 // exist yet. Takes a Target dir, the source EvalRun, and new file contents, and
 // leaves behind exactly what `ahde candidate --builder-run` needs:
 // an approved Spec, a typed CandidateProposal, and an apply receipt on a branch.
@@ -8,18 +18,19 @@
 //     --file <relpath>=<contentFile> [--file ...] --branch candidate/<slug> \
 //     --summary <text> --reason <text> [--run-id <id>]
 //
-// Application services it needed (this list IS the spec for `ahde propose/apply`):
-//   dist/spec.js                        saveSpecSnapshot        (approved Spec — no CLI exists)
-//   dist/diagnosis.js                   diagnoseEvalRun         (has a CLI: `ahde diagnose`)
+// Application services it needed (this list WAS the spec for `ahde propose/apply`;
+// each line now names the command that owns the call):
+//   dist/spec.js                        saveSpecSnapshot        (`ahde spec approve`)
+//   dist/diagnosis.js                   diagnoseEvalRun         (`ahde diagnose`)
 //   dist/application/improvement-brief.js
 //                                       compileImprovementBrief, deriveEvidenceLinkedProposalSelection
-//                                                               (no CLI)
+//                                                               (`ahde propose`)
 //   dist/application/harness-authoring.js
-//                                       wholeFileDiff           (no CLI)
-//   dist/builders/adapters.js           BuilderRunRecordSchema  (no CLI)
+//                                       wholeFileDiff           (`ahde propose`)
+//   dist/builders/adapters.js           BuilderRunRecordSchema  (`ahde propose`)
 //   dist/application/builder-proposal.js
-//                                       runApprovedSpecBuilderProposal, applyBuilderProposal
-//                                                               (no CLI)
+//                                       runApprovedSpecBuilderProposal  (`ahde propose`)
+//                                       applyBuilderProposal            (`ahde apply`)
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";

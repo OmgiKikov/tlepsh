@@ -569,3 +569,264 @@ finding: this is not a missing engine, it is a missing CLI surface over an engin
 that is already there. `ahde propose --branch`, `ahde apply`, `ahde log`, a
 `--builder-run` on `check`, and a diff+hash on `review` would close every gap
 above except the cosmetic ones, and would make the skill true as written.
+
+---
+
+# ADDENDUM — 2026-09-01: the same loop, CLI only
+
+The four seams above that needed `scripts/skill-propose.mjs` are now commands.
+This section is the same order re-walked with nothing but `node dist/cli.js`,
+on a fresh scratch Target (`skill-run2/returns-agent`), the same scripted mock
+model, the same deterministic graders. Output is verbatim; exit codes are real.
+Per-run progress lines from `AHDE run n/N` are trimmed.
+
+New in this run: `ahde spec approve`, `ahde propose`, `ahde apply`,
+`ahde adopt`, `ahde check --builder-run`, the sealed verdict on
+`ahde candidate`, the failure-mode id on `ahde diagnose`, and exit 2 for
+infrastructure failures.
+
+## (a) Command log
+
+### Setup — unchanged from the first walkthrough
+
+`ahde init returns-agent`, `spec.md` written by hand, `manifest.yaml` pointed at
+the scripted mock, six development cases with three deterministic graders
+(`30 дней`, `/дат[а-яё]* доставки/`, `личном кабинете`), committed as
+`f0ae64c`. `ahde validate --target .` → `readiness: ready to run` [exit 0].
+Corpora imported exactly as before:
+
+```
+$ ahde corpus import --project returns-agent --visibility sealed --name "…" --file ../private/sealed-exam.jsonl
+corpus-8eea490e0b55…  sealed  18 tasks  sha256:c04eb79607b0…
+[exit 0]
+$ ahde corpus import --project returns-agent --visibility development --name "…" --file evals/development.jsonl
+corpus-e75f8bbf1b60…  development  6 tasks  sha256:0aab38b36eb8…
+[exit 0]
+```
+
+### Step 1 — the typed Spec (was GAP 10, was shim)
+
+```
+$ ahde spec approve --target .
+warning: section "Notes for the operator" names no Spec field and was not read
+spec-bc824da34f2e153ce25c579e8bbcdc2d0fd289f0ea2f0d9a4e76891750340144  approved
+title         Агент поддержки по возвратам
+contract      3 success criterion(s) · 2 constraint(s) · 0 open question(s)
+receipt       spec-approval-bd291edbd5dde269a792ecf1100882fa2bb818531a8e233a0580721803a7a928
+
+next: ahde propose --target … --spec spec-bc824da3… --branch <branch>
+[exit 0]
+
+$ ahde spec approve --target .          # idempotent, as promised
+spec-bc824da34f2e153ce25c579e8bbcdc2d0fd289f0ea2f0d9a4e76891750340144  already approved
+[exit 0]
+```
+
+The prose headings map to the typed fields; `## Notes for the operator` is left
+to the human and *said* to be left, rather than silently dropped.
+
+### Steps 2–4 — baseline and diagnosis
+
+```
+$ ahde run --target . --project returns-agent --corpus corpus-e75f8bbf1b60… \
+    --label baseline --repetitions 2 --jobs 1
+eval run erun_mthq8fsl1qh0hq: 0/12 all-pass (12 fail, 0 error)
+[exit 1]
+
+$ ahde diagnose erun_mthq8fsl1qh0hq
+diagnosis diagnosis-f632eb90db2e2bcdcada: actionable — 6 issue(s), 0 infrastructure error(s)
+0/12 passed. Found 3 diagnosed failure mode(s); 3 repeat across tasks.
+proposal gate: eligible for exact human review
+  major    systemic   Output contract check failed across tasks — 6/6 task(s), high evidence, propose-harness-change
+    failure-mode-504eb75b19bb74374efedbdc
+    hypothesis: The same deterministic grader predicate was unsatisfied in the cited runs. …
+  major    systemic   Output contract check failed across tasks — 6/6 task(s), high evidence, propose-harness-change
+    failure-mode-5d167ca4d1f139ca73d66f80
+  major    systemic   Output contract check failed across tasks — 6/6 task(s), high evidence, propose-harness-change
+    failure-mode-ae01f203e27d3966bcf2e8d1
+Task-level drill-down:
+  major    dev-1 · output-contract: … Evidence: output does not contain "30 дней"; output does not match /дат[а-яё]* доставки/
+[exit 0]
+```
+
+GAP 6 is only half-fixed: the three modes still render with the same title and
+hypothesis, but each now prints its id — which is what `propose --mode` takes,
+so the mode is at least *addressable* from the CLI. One mode per failed grader
+(three graders, three modes).
+
+### Step 5 — propose and apply (was the shim; GAP 8's other half)
+
+The fix is authored the ordinary way — a branch, a commit, back to `master`:
+
+```
+$ git checkout -b work/returns-policy && …edit AGENTS.md… && git commit -am …
+$ git checkout master                                 # 5c4c86d on the branch
+```
+
+```
+$ ahde propose --target . --project returns-agent --spec spec-bc824da3… \
+    --branch work/returns-policy --eval erun_mthq8fsl1qh0hq \
+    --mode failure-mode-504eb75b…,failure-mode-5d167ca4…,failure-mode-ae01f203… \
+    --summary "Русский ответ: 30 дней с даты доставки, заявка в личном кабинете → «Возвраты»." \
+    --run-id builder-returns-1
+builder run   builder-returns-1
+base          f0ae64c0f96ac09433e27d28d90aaa6da5b232a7
+branch        work/returns-policy (5c4c86d739dfe2d391e577d0f575dbd7813e562b)
+changed       AGENTS.md
+evidence      erun_mthq8fsl1qh0hq
+proposal      …/runs/builders/builder-returns-1/proposal.json
+applied       no — `ahde propose` never touches a branch or a checkout
+[exit 0]
+```
+
+`propose` alone left nothing applied: `git branch --list candidate/*` was empty
+and the checkout was still `master` at `f0ae64c`.
+
+```
+$ ahde apply --target . --builder-run builder-returns-1 --branch candidate/returns-policy
+branch        candidate/returns-policy
+candidate     b960b2b496e9ff13bd049ed483cdc81ba1640045
+base          f0ae64c0f96ac09433e27d28d90aaa6da5b232a7
+proposal hash sha256:dddda4e91f3ad94ba3f680d428286757945aef0efeb114177e654fac87da92aa
+paths         AGENTS.md
+receipt       …/runs/builders/builder-returns-1/apply_receipt.json
+checkout      unchanged — the candidate was committed in a private worktree
+[exit 0]
+
+$ git branch --show-current && git rev-parse --short HEAD
+master
+f0ae64c
+```
+
+Out of scope is refused by name, with nothing applied:
+
+```
+$ ahde propose … --branch work/out-of-scope --run-id builder-out-of-scope
+error: branch work/out-of-scope did not produce a proposal (failed): branch change is
+       outside the allowed harness scope: evals/development.jsonl
+       (allowed: AGENTS.md, manifest.yaml, skills/**, bin/**, tools/**, data/**)
+       · builder run builder-out-of-scope
+[exit 2]
+```
+
+### Step 6 — screen first, then verify (was GAP 2, was impossible)
+
+```
+$ ahde check --target . --builder-run builder-returns-1 --jobs 1
+screen promising · 6 previously failing cases × 1 · 6 improved · 0 unchanged · 0 regressed
+  dev-1  pass  improved
+  … dev-2 … dev-6 …
+screen eval run: erun_mthq9cwiz8zzko (a screen — never a baseline, never evidence)
+next: ahde candidate --target … --builder-run builder-returns-1 to verify it for real
+[exit 0]
+```
+
+Six runs, before any CandidateRecord existed. The verification then ran in the
+prescribed order — and printed the sealed verdict (was **GAP 1**):
+
+```
+$ ahde candidate --target . --builder-run builder-returns-1 --project returns-agent \
+    --development-corpus corpus-e75f8bbf1b60… --holdout-corpus corpus-8eea490e0b55… \
+    --repetitions 2 --jobs 1
+# Compare: baseline erun_mthq8fsl1qh0hq vs candidate erun_mthq9lmkvmg9wa
+- target: returns-agent (f0ae64c0 → b960b2b4)
+- all-pass rate: 0% (0/12) → 100% (12/12)
+- development verdict: improved — +100.0pp (95% CI +100.0pp … +100.0pp) on 6 × 2 · latency ×0.9
+candidate record: candidate-5423049a-9aa8-4d03-8f60-7c34fdaa6c45
+development verdict: improved +100.0pp (95% CI +100.0pp … +100.0pp) on 6 tasks × 2 repetitions
+sealed guardrail: pass on 18 tasks × 2 repetitions — no regression: 95% CI +100.0pp … +100.0pp
+                  is not entirely below zero on 18 tasks × 2 repetitions
+sealed holdout: erun_mthq9mnm9hhiyl → erun_mthq9osy156fh8
+[exit 0]
+```
+
+The sealed line carries a verdict, a design size and the gate's own reason —
+sentences the gate already writes without task identifiers. No task, no input,
+no corpus id.
+
+### Step 7 — ship, then adopt (adopt was shim-only)
+
+```
+$ ahde review --candidate candidate-5423049a-… --recommend promote \
+    --reason "Development improved +100pp; sealed guardrail passed on 18 × 2."
+reviewed candidate candidate-5423049a-9aa8-4d03-8f60-7c34fdaa6c45: promote
+[exit 0]
+
+$ ahde promote --target . --candidate candidate-5423049a-… --to 0.1.0 \
+    --reason "Ship the reviewed returns-policy candidate."
+promoted candidate candidate-5423049a-…: tag v0.1.0 at b960b2b496e9ff13bd049ed483cdc81ba1640045
+[exit 0]
+
+$ ahde adopt --target . --candidate candidate-5423049a-…
+adopted master: f0ae64c0f96ac09433e27d28d90aaa6da5b232a7 → b960b2b496e9ff13bd049ed483cdc81ba1640045 (v0.1.0)
+changed       AGENTS.md
+receipt       target-adoption-receipt-f0e137f8d16f881ae5133a8cf1b5de1c6422ed510e733e91247f2ed5ef5dbf12
+              …/.ahde/target-adoptions/candidate-…/receipt.json
+[exit 0]
+
+$ git branch --show-current && git rev-parse --short HEAD
+master
+b960b2b
+```
+
+The operator's branch moved exactly once, at `adopt`, by fast-forward, onto the
+exact evaluated commit the tag points at.
+
+### Exit codes (was GAP 5)
+
+```
+$ ahde check --target . --candidate builder-returns-1
+error: artifact "…/runs/candidates/builder-returns-1/candidate.json": read failed: ENOENT …
+[exit 2]
+
+$ ahde diagnose erun_mthq9osy156fh8            # the sealed holdout eval
+error: improvement brief is unavailable for this evaluation
+[exit 2]
+
+$ ahde adopt --target . --candidate candidate-5423049a-…   # already adopted
+error: Target HEAD must equal the Candidate baseline before adoption.
+next: If the branch already points at the promoted revision this candidate is adopted
+      and there is nothing to do; otherwise put the branch back on the candidate's
+      baseline first.
+[exit 2]
+```
+
+Exit 1 now means only a verdict a command measured — `run` with failures,
+`check` flat, `tool try` non-zero, `improve`/`search` with nothing on the
+frontier. Everything thrown is exit 2.
+
+### Still missing
+
+```
+$ ahde log --target .
+usage error: unknown command "log"
+[exit 2]
+```
+
+## (b) VERDICT
+
+**Yes — the loop closes on the CLI alone, from a client order to an adopted,
+sealed-gated `v0.1.0`.** All eight steps of `skills/ahde/SKILL.md` complete with
+`node dist/cli.js` and nothing else, in the prescribed order, including the two
+that ran backwards or not at all before: the cheap screen now runs *before* the
+verification it exists to save, and the sealed guardrail verdict is printed
+rather than read out of a JSON file by hand. `scripts/skill-propose.mjs` is
+superseded and marked as such.
+
+Of the eleven gaps in the first walkthrough, six are closed here — 1 (partly:
+the sealed verdict prints, `ahde log` does not), 2, 5, 8, 10, and the propose/
+apply/adopt family the skill declared. What remains, and what each still needs:
+
+| gap | still needs |
+|---|---|
+| `ahde log` / `ahde watch` | the `codex/integrate-polish` merge; `scripts/skill-shim-log.mjs` stays until then, and step 8's passport is the one thing the CLI cannot yet build |
+| `ahde review` diff + `--proposal-hash` | the same merge; today the agent must render the diff itself |
+| `ahde diagnose` renders N identical modes | grader identity on the mode line; the id is printed now, so a mode is at least addressable |
+| `ahde corpus publish` is Builder-Pi-only | a `corpus draft` command; `corpus import` is the scripted equivalent and the crib says so |
+| `ahde improve` cannot be fed non-interactively | letting `improve` accept a pre-authored proposal, or shell out to a proposer |
+| `ahde init`'s half-Russian `next:` line | cosmetic |
+
+One shim remains (`skill-shim-log.mjs`, 75 lines), for one step, and it is
+already scheduled. Counting prescribed commands rather than steps: of the 19 the
+first walkthrough exercised plus the 4 new ones, 21 of 23 now do exactly what
+the skill says — `log` and `watch` are the two that still do not exist.
