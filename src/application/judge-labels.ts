@@ -18,7 +18,8 @@ import {
 	type JudgeAgreementInput,
 	type JudgeAgreementStats,
 } from "../domain/judge-agreement.js";
-import { isSealedEvalRun, loadVerifiedEvalRun, readEvalRunIndex } from "../eval.js";
+import { isSealedEvalRun, judgeSubjectFor, loadVerifiedEvalRun, readEvalRunIndex } from "../eval.js";
+import { GraderSpec, type ResolvedTask } from "../manifest.js";
 import { hashValue, type RunRecord } from "../provenance.js";
 import { appendJsonlArtifact, readJsonlArtifact } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
@@ -35,7 +36,11 @@ export const MAX_LABEL_NOTE_CHARS = 500;
 /** How much of the task and the answer a labelling screen shows. */
 export const MAX_LABEL_SUBJECT_CHARS = 2_000;
 
-export const JudgeLabelRowSchema = z.strictObject({
+/** One assertion, as the human ticked it and as the judge answered it. */
+export const AssertionAnswerSchema = z.enum(["yes", "no", "unknown"]);
+export type LabelAssertionAnswer = z.infer<typeof AssertionAnswerSchema>;
+
+const JudgeLabelRowShape = z.strictObject({
 	/** The exact run whose answer was read. */
 	runId: z.string().regex(ARTIFACT_ID_PATTERN),
 	taskId: z.string().min(1).max(200),
@@ -50,12 +55,70 @@ export const JudgeLabelRowSchema = z.strictObject({
 	 * Absent on labels written before this was recorded — those certify nothing.
 	 */
 	judgeFingerprintHash: z.string().regex(HASH_PATTERN).optional(),
+	/**
+	 * What the human was actually shown. `judge-facing` means the screen carried
+	 * the exact subject the judge was given — the same context, the same answer
+	 * or transcript, the same rubric or assertion list, the same reference
+	 * answer — identified by `subjectHash`. Absent means the label was written
+	 * under the old screen, which showed the first user turn and the last
+	 * assistant reply and never the question the judge was asked: a different
+	 * object, so it certifies nothing about this judge unless a project opts in.
+	 */
+	subject: z.enum(["judge-facing"]).optional(),
+	/** Identity of that exact judge subject. Present only with `subject`. */
+	subjectHash: z.string().regex(HASH_PATTERN).optional(),
+	/**
+	 * The human's tick per assertion, in the grader's own order. Present only on
+	 * an assertion rubric graded through the checklist screen; agreement is then
+	 * measured assertion by assertion instead of on the pooled verdict.
+	 */
+	assertions: z.array(AssertionAnswerSchema).min(1).max(64).optional(),
+	/** What the judge answered per assertion, from the recorded grader result. */
+	judgeAssertions: z.array(AssertionAnswerSchema).min(1).max(64).optional(),
 	human: z.enum(["pass", "fail"]),
 	judge: z.enum(["pass", "fail"]),
 	note: z.string().min(1).max(MAX_LABEL_NOTE_CHARS).optional(),
 	at: z.iso.datetime({ offset: true }),
 });
+
+export const JudgeLabelRowSchema = JudgeLabelRowShape.superRefine((row, context) => {
+	if ((row.subjectHash === undefined) !== (row.subject === undefined)) {
+		context.addIssue({
+			code: "custom",
+			path: ["subjectHash"],
+			message: "subject and subjectHash are recorded together or not at all",
+		});
+	}
+	if ((row.assertions === undefined) !== (row.judgeAssertions === undefined)) {
+		context.addIssue({
+			code: "custom",
+			path: ["judgeAssertions"],
+			message: "a per-assertion label records both sides of the checklist",
+		});
+	}
+	if (row.assertions && row.judgeAssertions && row.assertions.length !== row.judgeAssertions.length) {
+		context.addIssue({
+			code: "custom",
+			path: ["judgeAssertions"],
+			message: "the human and the judge must answer the same number of assertions",
+		});
+	}
+	// A checklist passes only when every assertion is yes, on both sides. A row
+	// whose summary disagrees with its own ticks would make the pooled and the
+	// per-assertion readings of the same labels contradict each other.
+	if (row.assertions && row.human !== (row.assertions.every((answer) => answer === "yes") ? "pass" : "fail")) {
+		context.addIssue({ code: "custom", path: ["human"], message: "must reflect the ticked assertions" });
+	}
+	if (row.judgeAssertions && row.judge !== (row.judgeAssertions.every((answer) => answer === "yes") ? "pass" : "fail")) {
+		context.addIssue({ code: "custom", path: ["judge"], message: "must reflect the judge's assertions" });
+	}
+});
 export type JudgeLabelRow = z.infer<typeof JudgeLabelRowSchema>;
+
+/** A label written under the old screen: valid, but about a different object. */
+export function isLegacyJudgeLabel(row: Pick<JudgeLabelRow, "subject">): boolean {
+	return row.subject === undefined;
+}
 
 const ProjectIdSchema = z.string().regex(PROJECT_ID_PATTERN, "projectId must be one safe path segment");
 const EvalRunIdSchema = z.string().regex(ARTIFACT_ID_PATTERN, "evalRunId must be one safe path segment");
@@ -173,6 +236,12 @@ export interface JudgeEvidenceCalibration {
 	specHashes: string[];
 	/** Agreement over the labels covering exactly those specs; null when none exist. */
 	stats: JudgeAgreementStats | null;
+	/**
+	 * Labels for these specs that were written under the old screen. Counted
+	 * whether or not they were included, so a screen can say why the number it
+	 * shows is smaller than the number of labels on disk.
+	 */
+	legacyLabels: number;
 }
 
 /**
@@ -186,11 +255,17 @@ export function judgeEvidenceCalibration(options: {
 	stateRoot: string;
 	projectId: string;
 	evalRunIds: readonly string[];
+	/**
+	 * Count labels written under the old screen. Screens pass true so the
+	 * project keeps seeing every label it has collected; the promotion gate
+	 * passes the manifest's `allowLegacyLabels`, which defaults to false.
+	 */
+	includeLegacyLabels?: boolean;
 }): JudgeEvidenceCalibration {
 	const specHashes = [...new Set(
 		options.evalRunIds.flatMap((evalRunId) => judgeGraderSpecHashes(options.runsRoot, evalRunId)),
 	)].sort();
-	if (specHashes.length === 0) return { specHashes, stats: null };
+	if (specHashes.length === 0) return { specHashes, stats: null, legacyLabels: 0 };
 	const wanted = new Set(specHashes);
 	// A label certifies one rubric AS ANSWERED BY ONE JUDGE. Evidence graded by a
 	// judge nobody labelled is uncalibrated even when the rubric is old and
@@ -200,15 +275,33 @@ export function judgeEvidenceCalibration(options: {
 			.map((evalRunId) => judgeFingerprintHashOf(options.runsRoot, evalRunId))
 			.filter((hash): hash is string => hash !== null),
 	);
-	const rows = readProjectJudgeLabels(options.stateRoot, options.projectId)
+	const matching = readProjectJudgeLabels(options.stateRoot, options.projectId)
 		.filter((row) => wanted.has(row.graderSpecHash))
 		.filter((row) => row.judgeFingerprintHash !== undefined && judges.has(row.judgeFingerprintHash));
-	return { specHashes, stats: rows.length === 0 ? null : judgeAgreement(rows).pooled };
+	const legacyLabels = matching.filter(isLegacyJudgeLabel).length;
+	const rows = options.includeLegacyLabels === false
+		? matching.filter((row) => !isLegacyJudgeLabel(row))
+		: matching;
+	return {
+		specHashes,
+		stats: rows.length === 0 ? null : judgeAgreement(rows).pooled,
+		legacyLabels,
+	};
 }
 
 // ---------- Labelling subjects ----------
 
-/** One judge check a human is asked to grade blind. */
+/**
+ * One judge check a human is asked to grade blind.
+ *
+ * `subject: "judge-facing"` means every field below was derived by
+ * `judgeSubjectFor` from the same run and the same grader spec the judge was
+ * given, so `subjectHash` is literally the identity of the judge's own input.
+ * `subject: "legacy"` is the fallback when the suite that produced the
+ * evidence is not in scope: the screen then shows the first user turn and the
+ * last assistant reply, which is a different object, and the labels it
+ * collects say so.
+ */
 export interface JudgeLabelSubject {
 	runId: string;
 	taskId: string;
@@ -218,9 +311,27 @@ export interface JudgeLabelSubject {
 	/** What the judge decided. Never shown before the human has answered. */
 	judge: "pass" | "fail";
 	judgeReason: string;
-	/** Bounded, credential-redacted task input and final answer. */
+	/** Which object this screen shows. */
+	subject: "judge-facing" | "legacy";
+	/** Identity of the exact judge subject; null on a legacy screen. */
+	subjectHash: string | null;
+	/** `dialogue` when the judge read the conversation, not one reply. */
+	kind: "single-turn" | "dialogue";
+	/**
+	 * Bounded, credential-redacted. `input` is what the person wanted — the
+	 * request, or the goal on a dialogue case — and `answer` is the final reply
+	 * or the whole transcript, exactly as the judge saw it.
+	 */
 	input: string;
 	answer: string;
+	/** The criterion the judge was asked, bounded; null when there was none. */
+	rubric: string | null;
+	/** The checklist the judge answered one by one; null when there is none. */
+	assertions: readonly string[] | null;
+	/** What the judge answered per assertion, in the same order. */
+	judgeAssertions: readonly LabelAssertionAnswer[] | null;
+	/** The reference answer, only when this grader showed the judge one. */
+	reference: string | null;
 }
 
 function boundedSubjectText(value: string): string {
@@ -234,6 +345,17 @@ function firstUserText(messages: ReturnType<typeof openTrace>): string {
 	return messages.find((message) => message.role === "user")?.text ?? "";
 }
 
+/**
+ * The suite that produced the evidence being labelled. Without it the screen
+ * cannot know what the judge was asked, only what the agent answered — so it
+ * falls back to the legacy subject and marks every label it collects.
+ */
+export interface JudgeLabelSuite {
+	datasetHash: string;
+	suiteHash: string;
+	tasks: readonly ResolvedTask[];
+}
+
 export interface CollectJudgeLabelSubjectsOptions {
 	runsRoot: string;
 	evalRunId: string;
@@ -243,6 +365,8 @@ export interface CollectJudgeLabelSubjectsOptions {
 	seed?: string;
 	/** Sealed corpus hashes, so a legacy sealed eval run is refused too. */
 	sealedDatasetHashes?: ReadonlySet<string>;
+	/** The exact suite the evidence was graded under. */
+	suite?: JudgeLabelSuite;
 }
 
 /**
@@ -266,6 +390,14 @@ export function collectJudgeLabelSubjects(
 	if (isSealedEvalRun(verified.record, options.sealedDatasetHashes)) {
 		throw new Error("sealed holdout evidence is never labelled: its content must stay unread");
 	}
+	// The suite is only usable when it is the one that graded this evidence.
+	// A drifted dataset would render a different rubric beside the same run,
+	// which is exactly the confusion the judge-facing subject exists to end.
+	const suite = options.suite &&
+			options.suite.datasetHash === verified.record.datasetHash &&
+			options.suite.suiteHash === verified.record.suiteHash
+		? new Map(options.suite.tasks.map((task) => [task.id, task]))
+		: null;
 	const subjects: JudgeLabelSubject[] = [];
 	for (const run of verified.runs) {
 		if (run.status !== "completed" || !run.evalResults) continue;
@@ -273,8 +405,30 @@ export function collectJudgeLabelSubjects(
 			.map((grader, graderIndex) => ({ grader, graderIndex }))
 			.filter((entry) => entry.grader.checkCode === "semantic-rubric" && entry.grader.specHash);
 		if (judged.length === 0) continue;
-		const { input, answer } = runTexts(options.runsRoot, run);
+		const legacy = runTexts(options.runsRoot, run);
+		const messages = suite ? runTrace(options.runsRoot, run) : [];
+		const task = suite?.get(run.taskId);
 		for (const entry of judged) {
+			const spec = task?.effectiveGraders[entry.graderIndex];
+			// Belt and braces: the spec must hash to the identity the run recorded,
+			// or it is not the grader that produced this verdict.
+			const graderSpec = spec && spec.type === "judge" && hashValue(GraderSpec.parse(spec)) === entry.grader.specHash
+				? spec
+				: null;
+			const judgeSubject = task && graderSpec
+				? judgeSubjectFor(
+					{
+						input: task.input,
+						messages,
+						simulatedUser: task.simulatedUser,
+						expected: task.expected,
+					},
+					graderSpec,
+				)
+				: null;
+			const judgeAssertions = judgeSubject?.assertions
+				? judgeAssertionAnswers(judgeSubject.assertions.length, entry.grader.assertions)
+				: null;
 			subjects.push({
 				runId: run.runId,
 				taskId: run.taskId,
@@ -283,8 +437,31 @@ export function collectJudgeLabelSubjects(
 				graderName: entry.grader.name,
 				judge: entry.grader.passed ? "pass" : "fail",
 				judgeReason: boundedSubjectText(entry.grader.reason),
-				input,
-				answer,
+				...(judgeSubject
+					? {
+						subject: "judge-facing" as const,
+						subjectHash: hashValue(judgeSubject),
+						kind: judgeSubject.kind,
+						input: boundedSubjectText(judgeSubject.context),
+						answer: boundedSubjectText(judgeSubject.answer),
+						rubric: judgeSubject.rubric === null ? null : boundedSubjectText(judgeSubject.rubric),
+						assertions: judgeSubject.assertions
+							? judgeSubject.assertions.map(boundedSubjectText)
+							: null,
+						judgeAssertions,
+						reference: judgeSubject.reference === null ? null : boundedSubjectText(judgeSubject.reference),
+					}
+					: {
+						subject: "legacy" as const,
+						subjectHash: null,
+						kind: "single-turn" as const,
+						input: legacy.input,
+						answer: legacy.answer,
+						rubric: null,
+						assertions: null,
+						judgeAssertions: null,
+						reference: null,
+					}),
 			});
 		}
 	}
@@ -303,22 +480,68 @@ export function collectJudgeLabelSubjects(
 		.map((entry) => entry.subject);
 }
 
+function runTrace(runsRoot: string, run: RunRecord): ReturnType<typeof openTrace> {
+	if (!run.trace.sha256) return [];
+	return openTrace(resolveContainedArtifactPath(runsRoot, run.runId), run.trace.path, run.trace.sha256);
+}
+
 function runTexts(runsRoot: string, run: RunRecord): { input: string; answer: string } {
-	if (!run.trace.sha256) return { input: "", answer: "" };
-	const runDir = resolveContainedArtifactPath(runsRoot, run.runId);
-	const messages = openTrace(runDir, run.trace.path, run.trace.sha256);
+	const messages = runTrace(runsRoot, run);
 	return {
 		input: boundedSubjectText(firstUserText(messages)),
 		answer: boundedSubjectText(lastAssistantText(messages) ?? ""),
 	};
 }
 
+/**
+ * What the judge answered for each assertion, recovered from the recorded
+ * grader result. The evidence keeps only the failed indexes and cannot tell
+ * "no" from "unknown" apart after the fold, so a failed assertion is reported
+ * as `no`: the pass/fail arithmetic is identical either way, and inventing the
+ * distinction would put a verdict in the judge's mouth.
+ */
+function judgeAssertionAnswers(
+	total: number,
+	recorded: { total: number; failed: number[] } | undefined,
+): LabelAssertionAnswer[] | null {
+	if (!recorded || recorded.total !== total) return null;
+	const failed = new Set(recorded.failed);
+	return Array.from({ length: total }, (_unused, index) => failed.has(index + 1) ? "no" : "yes");
+}
+
+/**
+ * What a written label records about the object it graded. A judge-facing
+ * screen stamps the exact subject identity; a legacy screen stamps nothing,
+ * and the row is then excluded from `requireCalibration` by default.
+ *
+ * The per-assertion pair travels together or not at all: half a checklist
+ * cannot be scored.
+ */
+function labelSubjectFields(
+	subject: JudgeLabelSubject,
+	assertions: readonly LabelAssertionAnswer[] | undefined,
+): Record<string, unknown> {
+	const ticked = assertions && subject.judgeAssertions
+		? { assertions: [...assertions], judgeAssertions: [...subject.judgeAssertions] }
+		: {};
+	return subject.subject === "judge-facing" && subject.subjectHash !== null
+		? { subject: "judge-facing", subjectHash: subject.subjectHash, ...ticked }
+		: ticked;
+}
+
 // ---------- Non-interactive import ----------
 
-/** One imported row: everything except the timestamp the host stamps. */
-export const JudgeLabelImportRowSchema = JudgeLabelRowSchema
-	.omit({ at: true, judge: true })
-	.extend({ at: JudgeLabelRowSchema.shape.at.optional(), judge: JudgeLabelRowSchema.shape.judge.optional() });
+/**
+ * One imported row: everything except what the host stamps from the evidence —
+ * the timestamp, the judge's verdicts, and the identity of the subject the
+ * human was shown. A file cannot claim it graded the judge-facing subject.
+ */
+export const JudgeLabelImportRowSchema = JudgeLabelRowShape
+	.omit({ at: true, judge: true, judgeAssertions: true, subject: true, subjectHash: true })
+	.extend({
+		at: JudgeLabelRowShape.shape.at.optional(),
+		judge: JudgeLabelRowShape.shape.judge.optional(),
+	});
 export type JudgeLabelImportRow = z.infer<typeof JudgeLabelImportRowSchema>;
 
 export interface ImportJudgeLabelsOptions {
@@ -328,6 +551,8 @@ export interface ImportJudgeLabelsOptions {
 	evalRunId: string;
 	filePath: string;
 	sealedDatasetHashes?: ReadonlySet<string>;
+	/** The exact suite the evidence was graded under, when it is in scope. */
+	suite?: JudgeLabelSuite;
 	now?: () => string;
 }
 
@@ -342,6 +567,7 @@ export function importJudgeLabels(options: ImportJudgeLabelsOptions): JudgeLabel
 		runsRoot: options.runsRoot,
 		evalRunId: options.evalRunId,
 		...(options.sealedDatasetHashes ? { sealedDatasetHashes: options.sealedDatasetHashes } : {}),
+		...(options.suite ? { suite: options.suite } : {}),
 	});
 	const byKey = new Map(subjects.map((subject) => [`${subject.runId} ${subject.graderIndex}`, subject]));
 	const judgeFingerprint = judgeFingerprintHashOf(options.runsRoot, options.evalRunId);
@@ -370,12 +596,21 @@ export function importJudgeLabels(options: ImportJudgeLabelsOptions): JudgeLabel
 		if (row.judge !== undefined && row.judge !== subject.judge) {
 			throw new Error(`label ${index + 1}: judge verdict contradicts the recorded grade (${subject.judge})`);
 		}
+		if (row.assertions && !subject.assertions) {
+			throw new Error(`label ${index + 1}: run ${row.runId} grader ${row.graderIndex} is not an assertion checklist`);
+		}
+		if (row.assertions && subject.assertions && row.assertions.length !== subject.assertions.length) {
+			throw new Error(
+				`label ${index + 1}: expected ${subject.assertions.length} assertion answer(s), got ${row.assertions.length}`,
+			);
+		}
 		return JudgeLabelRowSchema.parse({
 			runId: row.runId,
 			taskId: row.taskId,
 			graderIndex: row.graderIndex,
 			graderSpecHash: row.graderSpecHash,
 			...(judgeFingerprint === null ? {} : { judgeFingerprintHash: judgeFingerprint }),
+			...labelSubjectFields(subject, row.assertions),
 			human: row.human,
 			judge: subject.judge,
 			...(row.note ? { note: row.note } : {}),
@@ -395,6 +630,12 @@ export interface JudgeLabelPrompt {
 	ask: (subject: JudgeLabelSubject, ordinal: number, total: number) => Promise<{
 		answer: JudgeLabelAnswer;
 		note?: string;
+		/**
+		 * One tick per assertion, in the grader's own order, when the screen
+		 * showed a checklist. The overall verdict must follow from them: a
+		 * checklist passes only when every assertion is yes.
+		 */
+		assertions?: readonly LabelAssertionAnswer[];
 	}>;
 	/** Called after the answer, with the verdict the judge had recorded. */
 	reveal: (subject: JudgeLabelSubject, answer: JudgeLabelAnswer) => void;
@@ -420,6 +661,7 @@ export async function runJudgeLabelSession(
 		...(options.sample === undefined ? {} : { sample: options.sample }),
 		...(options.seed === undefined ? {} : { seed: options.seed }),
 		...(options.sealedDatasetHashes ? { sealedDatasetHashes: options.sealedDatasetHashes } : {}),
+		...(options.suite ? { suite: options.suite } : {}),
 	});
 	const now = options.now ?? (() => new Date().toISOString());
 	const judgeFingerprint = judgeFingerprintHashOf(options.runsRoot, options.evalRunId);
@@ -432,12 +674,17 @@ export async function runJudgeLabelSession(
 			skipped += 1;
 			continue;
 		}
+		const ticked = answer.assertions && subject.assertions &&
+				answer.assertions.length === subject.assertions.length
+			? answer.assertions
+			: undefined;
 		const row = JudgeLabelRowSchema.parse({
 			runId: subject.runId,
 			taskId: subject.taskId,
 			graderIndex: subject.graderIndex,
 			graderSpecHash: subject.graderSpecHash,
 			...(judgeFingerprint === null ? {} : { judgeFingerprintHash: judgeFingerprint }),
+			...labelSubjectFields(subject, ticked),
 			human: answer.answer,
 			judge: subject.judge,
 			...(answer.note?.trim() ? { note: answer.note.trim().slice(0, MAX_LABEL_NOTE_CHARS) } : {}),

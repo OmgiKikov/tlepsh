@@ -624,14 +624,24 @@ function assertJudgeCalibrated(
 		stateRoot: options.stateRoot,
 		projectId: record.projectId,
 		evalRunIds: promotionEvalRunIds(record),
+		// A human who was shown the first user turn and the last assistant reply
+		// graded a different object from the judge, who was shown the rubric, the
+		// assertions, the reference answer and — on a conversation — every turn.
+		// Those labels stay on disk and stay readable; they just do not certify
+		// this judge unless the Target says in writing that they may.
+		includeLegacyLabels: policy.allowLegacyLabels === true,
 	});
 	const refusal = judgeCalibrationRefusal(policy, {
 		judgeGraderSpecs: calibration.specHashes.length,
 		stats: calibration.stats,
 	});
 	if (refusal) {
+		const legacy = policy.allowLegacyLabels !== true && calibration.legacyLabels > 0
+			? ` ${calibration.legacyLabels} older label(s) were not counted: they were written before the labelling screen ` +
+				"showed the judge's own subject. Re-label them, or set evalSuite.judge.requireCalibration.allowLegacyLabels: true."
+			: "";
 		throw new Error(
-			`promotion refused: ${refusal}. ` +
+			`promotion refused: ${refusal}.${legacy} ` +
 				"Run `ahde label <evalRunId> --target <dir>` and grade the judge before promoting.",
 		);
 	}

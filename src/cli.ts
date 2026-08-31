@@ -17,6 +17,7 @@ import { judgeAgreement } from "./domain/judge-agreement.js";
 import {
 	collectJudgeLabelSubjects,
 	importJudgeLabels,
+	isLegacyJudgeLabel,
 	judgeLabelFilePath,
 	loadJudgeCalibration,
 	readProjectJudgeLabels,
@@ -442,17 +443,49 @@ function sealedCorpusHashes(projectId: string): Set<string> {
 	}
 }
 
+/**
+ * Exactly what the judge was shown, in the judge's own order: what the person
+ * wanted, what the agent said (or the whole conversation), the reference answer
+ * when the judge was given one, and the question it was asked. A human grading
+ * anything less is not calibrating this judge.
+ */
 function labelSubjectBlock(subject: JudgeLabelSubject, ordinal: number, total: number): string {
-	return [
+	const lines = [
 		"",
 		`── ${ordinal}/${total} · ${subject.taskId} · ${subject.graderName}`,
-		"task:",
+		...(subject.subject === "legacy"
+			? ["(legacy screen: the suite that graded this evidence is not in scope, so the judge's own", " rubric and reference cannot be shown — these labels are excluded from requireCalibration)", ""]
+			: []),
+		subject.kind === "dialogue" ? "goal:" : "task:",
 		subject.input || "(no recorded task input)",
 		"",
-		"answer:",
+		subject.kind === "dialogue" ? "conversation:" : "answer:",
 		subject.answer || "(no final answer)",
 		"",
-	].join("\n");
+	];
+	if (subject.reference !== null) lines.push("reference answer:", subject.reference, "");
+	if (subject.rubric !== null) lines.push("rubric:", subject.rubric, "");
+	if (subject.assertions) {
+		lines.push("assertions — answer each yes / no / unknown:");
+		lines.push(...subject.assertions.map((assertion, index) => `  ${index + 1}. ${assertion}`), "");
+	}
+	return lines.join("\n");
+}
+
+/** One tick per assertion; the overall verdict follows from the ticks. */
+async function askAssertionChecklist(
+	io: { question: (prompt: string) => Promise<string> },
+	assertions: readonly string[],
+): Promise<("yes" | "no" | "unknown")[]> {
+	const answers: ("yes" | "no" | "unknown")[] = [];
+	for (const [index, assertion] of assertions.entries()) {
+		let raw = "";
+		while (!["yes", "no", "unknown", "y", "n", "u"].includes(raw)) {
+			raw = (await io.question(`  ${index + 1}. ${assertion}\n     yes / no / unknown: `)).trim().toLowerCase();
+		}
+		answers.push(raw.startsWith("y") ? "yes" : raw.startsWith("n") ? "no" : "unknown");
+	}
+	return answers;
 }
 
 /**
@@ -468,7 +501,8 @@ async function labelJudge(): Promise<void> {
 		process.exit(1);
 	}
 	const targetDir = resolve(requireArg("target"));
-	const projectId = arg("project") ?? loadTarget(targetDir).manifest.id;
+	const target = loadTarget(targetDir);
+	const projectId = arg("project") ?? target.manifest.id;
 	const file = arg("file");
 	const context = {
 		runsRoot: runsRoot(),
@@ -476,6 +510,14 @@ async function labelJudge(): Promise<void> {
 		projectId,
 		evalRunId,
 		sealedDatasetHashes: sealedCorpusHashes(projectId),
+		// The suite is what makes the screen show the judge's own subject: the
+		// rubric it was asked, the assertions it answered, the reference answer it
+		// compared against. It is used only when its hashes match the evidence.
+		suite: {
+			datasetHash: target.datasetHash,
+			suiteHash: target.suiteHash,
+			tasks: target.tasks,
+		},
 	};
 	if (file) {
 		const rows = importJudgeLabels({ ...context, filePath: resolve(file) });
@@ -495,6 +537,20 @@ async function labelJudge(): Promise<void> {
 			prompt: {
 				ask: async (subject, ordinal, total) => {
 					process.stdout.write(labelSubjectBlock(subject, ordinal, total));
+					if (subject.assertions) {
+						// The checklist IS the verdict: a rubric of independent checks
+						// passes only when every one of them holds, so asking for a
+						// pooled pass/fail as well would invite them to disagree.
+						const skip = (await io.question("label this check? (enter to grade, s to skip): ")).trim().toLowerCase();
+						if (skip.startsWith("s")) return { answer: "skip" as const };
+						const assertions = await askAssertionChecklist(io, subject.assertions);
+						const note = (await io.question("note (optional): ")).trim();
+						return {
+							answer: assertions.every((entry) => entry === "yes") ? "pass" as const : "fail" as const,
+							assertions,
+							...(note ? { note } : {}),
+						};
+					}
 					let answer = "";
 					while (!["pass", "fail", "skip", "p", "f", "s"].includes(answer)) {
 						answer = (await io.question("your verdict — pass / fail / skip: ")).trim().toLowerCase();
@@ -552,6 +608,13 @@ function judgeAgreementReport(): void {
 	});
 	const specs = new Set(subjects.map((subject) => subject.graderSpecHash));
 	console.log(`eval run ${evalRunId}: ${specs.size} judge grader spec(s) over ${subjects.length} judged check(s)`);
+	const legacy = readProjectJudgeLabels(stateRoot(), projectId).filter(isLegacyJudgeLabel).length;
+	if (legacy > 0) {
+		console.log(
+			`${legacy} label(s) were written before the screen showed the judge's own subject; ` +
+				"they do not count toward requireCalibration unless allowLegacyLabels is set",
+		);
+	}
 	printJudgeAgreement(projectId);
 	const calibration = loadJudgeCalibration(stateRoot(), projectId);
 	for (const specHash of [...specs].sort()) {

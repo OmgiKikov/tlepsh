@@ -852,6 +852,10 @@ describe("candidate human review", () => {
 			graderIndex: 1,
 			graderSpecHash: judgeSpec,
 			judgeFingerprintHash: judgeFingerprintHashOf(value.runsRoot, "eval-candidate") ?? undefined,
+			// Written under the current screen: this human read the judge's own
+			// subject, so the label certifies this judge.
+			subject: "judge-facing" as const,
+			subjectHash: `sha256:${"1".repeat(64)}`,
 			human: "pass" as const,
 			judge: "pass" as const,
 			at,
@@ -864,11 +868,78 @@ describe("candidate human review", () => {
 			graderIndex: 1,
 			graderSpecHash: judgeSpec,
 			judgeFingerprintHash: judgeFingerprintHashOf(value.runsRoot, "eval-candidate") ?? undefined,
+			subject: "judge-facing" as const,
+			subjectHash: `sha256:${"1".repeat(64)}`,
 			human: "pass" as const,
 			judge: "pass" as const,
 			at,
 		}]);
 		expect(promote("3.1.0").tag).toBe("v3.1.0");
+	});
+
+	/**
+	 * A human shown the first user turn and the last assistant reply graded a
+	 * different object from the judge, which read the rubric, the assertions and
+	 * the reference answer. Those labels stay on disk and stay readable; they
+	 * just do not certify this judge until the Target says so in writing.
+	 */
+	it("does not let labels written under the old screen satisfy requireCalibration", () => {
+		const repo = repository(calibratedManifest);
+		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec });
+		const stateRoot = mkdtempSync(join(tmpdir(), "ahde-promote-legacy-"));
+		roots.push(stateRoot);
+		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+		appendJudgeLabels(stateRoot, "project", "eval-candidate", [0, 1, 2, 3].map((index) => ({
+			runId: "eval-candidate-run",
+			taskId: `development-task-${index}`,
+			graderIndex: 1,
+			graderSpecHash: judgeSpec,
+			judgeFingerprintHash: judgeFingerprintHashOf(value.runsRoot, "eval-candidate") ?? undefined,
+			human: "pass" as const,
+			judge: "pass" as const,
+			at,
+		})));
+		const promote = (version: string) => promoteReviewedCandidate({
+			repositoryDir: repo.dir,
+			...value,
+			stateRoot,
+			version,
+			reason: "ship it",
+			now: () => at,
+		});
+		// Four labels on disk, none of them counted, and the refusal says why.
+		expect(() => promote("3.3.0")).toThrow(/with 0 human label\(s\)/);
+		expect(() => promote("3.3.0")).toThrow(/4 older label\(s\) were not counted/);
+		expect(() => promote("3.3.0")).toThrow(/allowLegacyLabels: true/);
+		expect(git(repo.dir, "tag", "--list", "v3.3.0")).toBe("");
+	});
+
+	it("counts the same old labels when the Target opts in with allowLegacyLabels", () => {
+		const repo = repository(
+			calibratedManifest.replace("      minLabels: 4\n", "      minLabels: 4\n      allowLegacyLabels: true\n"),
+		);
+		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec });
+		const stateRoot = mkdtempSync(join(tmpdir(), "ahde-promote-legacy-ok-"));
+		roots.push(stateRoot);
+		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
+		appendJudgeLabels(stateRoot, "project", "eval-candidate", [0, 1, 2, 3].map((index) => ({
+			runId: "eval-candidate-run",
+			taskId: `development-task-${index}`,
+			graderIndex: 1,
+			graderSpecHash: judgeSpec,
+			judgeFingerprintHash: judgeFingerprintHashOf(value.runsRoot, "eval-candidate") ?? undefined,
+			human: "pass" as const,
+			judge: "pass" as const,
+			at,
+		})));
+		expect(promoteReviewedCandidate({
+			repositoryDir: repo.dir,
+			...value,
+			stateRoot,
+			version: "3.4.0",
+			reason: "ship it",
+			now: () => at,
+		}).tag).toBe("v3.4.0");
 	});
 
 	it("refuses when the policy cannot be evaluated at all", () => {

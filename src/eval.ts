@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import {
 	GraderSpec,
+	JudgeGrader,
 	graderName,
 	graderNeedsExpected,
 	hasReferenceAnswer,
@@ -302,44 +303,108 @@ function isReferenceChoice(value: unknown): value is ReferenceChoice {
 }
 
 /**
- * What the judge is looking at. On an ordinary case it is one request and one
+ * Everything one graded run puts in front of a judge, before any grader has
+ * said what it wants from it. On an ordinary case it is one request and one
  * answer, exactly as it has always been. On a simulated-user case it is the
  * conversation: the goal the person came with, and every turn the agent took to
  * get them there — because a rubric like "asks before assuming" cannot be
  * decided from the last reply alone.
+ */
+/** One judge grader, exactly as the manifest admits it. */
+export type JudgeGraderSpec = z.infer<typeof JudgeGrader>;
+
+export interface JudgeRunView {
+	/** The case's task input, exactly as the runner sent it. */
+	input: string;
+	/** The graded run's trace messages, in order. Empty for a run with no trace. */
+	messages: readonly TraceMessage[];
+	/** The case's simulated user, when it declared one. */
+	simulatedUser?: { goal: string } | undefined;
+	/** The case's reference answer, when it has one. */
+	expected?: string | undefined;
+}
+
+/**
+ * The exact object one judge grader was asked about: what it was shown, and
+ * what it was asked. `judgeSubjectFor` is the only place this is derived, so
+ * the prompt the judge received and the screen a human is asked to grade
+ * cannot describe two different things.
  *
- * The blocks are split rather than rendered as one, so the ordinary path emits
+ * The blocks stay split rather than pre-rendered, so the ordinary path emits
  * byte-identical prompts to the ones that produced every existing verdict.
  */
-interface JudgeSubject {
-	input: string;
-	output: string;
-	/** Rendered conversation, or null when the judge grades a single reply. */
-	transcript: string | null;
-	/** The simulated user's goal, when there was one. */
-	goal: string | null;
+export interface JudgeSubject {
+	/**
+	 * `dialogue` when the judge read a conversation, `single-turn` when it read
+	 * one request and one reply. A frozen-history case is `single-turn`: the
+	 * judge saw the last user turn and the answer, and nothing else.
+	 */
+	kind: "single-turn" | "dialogue";
+	/** What the person wanted: the request, or the goal on a dialogue case. */
+	context: string;
+	/** The final answer, or the whole rendered conversation on a dialogue case. */
+	answer: string;
+	/** The free-prose criterion the judge was asked, or null when there is none. */
+	rubric: string | null;
+	/** The assertion list the judge answered one by one, or null. */
+	assertions: readonly string[] | null;
+	/** The reference answer, or null when this grader never showed the judge one. */
+	reference: string | null;
+}
+
+/**
+ * What this grader put in front of this judge.
+ *
+ * Pure — trace messages in, subject out — and the ONLY derivation of it. The
+ * judge prompt builders below and `ahde label` both call this, so the object a
+ * human is asked to grade is the object the judge graded, down to the byte a
+ * hash of it would produce.
+ */
+export function judgeSubjectFor(run: JudgeRunView, grader: JudgeGraderSpec): JudgeSubject {
+	// A case declares a simulated user or it does not; that one fact decides
+	// both halves at once, so the context and the answer can never disagree
+	// about which kind of thing the judge was looking at.
+	const dialogue = run.simulatedUser !== undefined;
+	return {
+		kind: dialogue ? "dialogue" : "single-turn",
+		context: dialogue ? run.simulatedUser!.goal : run.input,
+		answer: dialogue
+			? renderDialogueTranscript(
+				// The recovery prompt is the host asking for a final answer, not the
+				// person asking for anything. Showing it as a user turn would let a
+				// rubric about how the agent handled the user grade the harness.
+				dialogueTurns(run.messages).filter((turn) =>
+					!(turn.role === "user" && turn.text === FINAL_ANSWER_RECOVERY_PROMPT)),
+			)
+			: lastAssistantText([...run.messages]) ?? "",
+		rubric: grader.rubric ?? null,
+		assertions: grader.assertions ?? null,
+		// Only the reference protocol shows the judge the reference answer; every
+		// other judge grader is blind to it even on a case that has one.
+		reference: grader.withReference === true ? run.expected ?? "" : null,
+	};
 }
 
 function judgeContextBlock(subject: JudgeSubject): string[] {
-	return subject.transcript !== null && subject.goal !== null
-		? ["<цель пользователя>", subject.goal, "</цель пользователя>"]
-		: ["<обращение>", subject.input, "</обращение>"];
+	return subject.kind === "dialogue"
+		? ["<цель пользователя>", subject.context, "</цель пользователя>"]
+		: ["<обращение>", subject.context, "</обращение>"];
 }
 
 function judgeAnswerBlock(subject: JudgeSubject): string[] {
-	return subject.transcript === null
-		? ["<ответ агента>", subject.output, "</ответ агента>"]
-		: ["<диалог агента с пользователем>", subject.transcript, "</диалог агента с пользователем>"];
+	return subject.kind === "dialogue"
+		? ["<диалог агента с пользователем>", subject.answer, "</диалог агента с пользователем>"]
+		: ["<ответ агента>", subject.answer, "</ответ агента>"];
 }
 
 /** Reference and rubric each get their own delimited block, verbatim. */
-function judgeReferencePrompt(rubric: string, expected: string, subject: JudgeSubject): string {
+function judgeReferencePrompt(subject: JudgeSubject): string {
 	return [
-		"<критерий>", rubric, "</критерий>",
+		"<критерий>", subject.rubric ?? "", "</критерий>",
 		"",
 		...judgeContextBlock(subject),
 		"",
-		"<эталонный ответ>", expected, "</эталонный ответ>",
+		"<эталонный ответ>", subject.reference ?? "", "</эталонный ответ>",
 		"",
 		...judgeAnswerBlock(subject),
 		"",
@@ -355,23 +420,36 @@ function judgeReferencePrompt(rubric: string, expected: string, subject: JudgeSu
 }
 
 /** Reference and rubric each get their own delimited block, verbatim. */
-function judgeAssertionsPrompt(
-	spec: { rubric?: string | undefined; assertions: readonly string[] },
-	subject: JudgeSubject,
-): string {
+function judgeAssertionsPrompt(subject: JudgeSubject, assertions: readonly string[]): string {
 	return [
-		...(spec.rubric ? ["<критерий>", spec.rubric, "</критерий>", ""] : []),
+		...(subject.rubric ? ["<критерий>", subject.rubric, "</критерий>", ""] : []),
 		...judgeContextBlock(subject),
 		"",
 		...judgeAnswerBlock(subject),
 		"",
 		"<утверждения>",
-		...spec.assertions.map((assertion, index) => `${index + 1}. ${assertion}`),
+		...assertions.map((assertion, index) => `${index + 1}. ${assertion}`),
 		"</утверждения>",
 		"",
-		`Оцени каждое утверждение независимо и верни ровно ${spec.assertions.length} verdict(s) в том же порядке:`,
+		`Оцени каждое утверждение независимо и верни ровно ${assertions.length} verdict(s) в том же порядке:`,
 		'{"verdicts": [{"index": 1, "answer": "yes"|"no"|"unknown", "evidence": "краткое обоснование"}]}',
 	].join("\n");
+}
+
+/**
+ * The rubric-only prompt is frozen for single-reply cases: every existing judge
+ * verdict was produced by exactly this string, character for character.
+ */
+function judgeRubricPrompt(subject: JudgeSubject): string {
+	return subject.kind === "single-turn"
+		? `Критерий: ${subject.rubric}\n\nОбращение: ${subject.context}\n\nОтвет агента: ${subject.answer}`
+		: [
+			"<критерий>", subject.rubric ?? "", "</критерий>",
+			"",
+			...judgeContextBlock(subject),
+			"",
+			...judgeAnswerBlock(subject),
+		].join("\n");
 }
 
 function judgeJsonObject(text: string): Record<string, unknown> {
@@ -716,22 +794,14 @@ export async function gradeRun(
 		// already covers every turn: a tool called on turn 2 is a tool called.
 		toolCalls = traceToolCalls(traceMessages);
 	}
-	// Rendered once per run, not once per grader, and only where a conversation
-	// is what the case measures. Every other case grades exactly what it always
-	// graded — the last reply — so no existing verdict moves.
-	const subject: JudgeSubject = {
+	// Assembled once per run, not once per grader. What the judge is shown is
+	// derived from it by `judgeSubjectFor` and nowhere else, so a case without a
+	// simulated user grades exactly what it always graded — the last reply.
+	const runView: JudgeRunView = {
 		input: task.input,
-		output: output ?? "",
-		transcript: task.simulatedUser
-			? renderDialogueTranscript(
-				// The recovery prompt is the host asking for a final answer, not the
-				// person asking for anything. Showing it as a user turn would let a
-				// rubric about how the agent handled the user grade the harness.
-				dialogueTurns(traceMessages).filter((turn) =>
-					!(turn.role === "user" && turn.text === FINAL_ANSWER_RECOVERY_PROMPT)),
-			)
-			: null,
-		goal: task.simulatedUser?.goal ?? null,
+		messages: traceMessages,
+		simulatedUser: task.simulatedUser,
+		expected: task.expected,
 	};
 	const results: GraderResult[] = [];
 	const judgeSpend = { calls: 0, tokens: 0, costUsd: 0 };
@@ -766,11 +836,15 @@ export async function gradeRun(
 			if (!judge) throw new Error("judge grader without judge model config");
 			const assertions = normalizedSpec.assertions;
 			const jury = normalizedSpec.jury ?? 1;
+			// The one derivation of what this judge was shown and asked. `ahde
+			// label` calls the same function, so the human cannot end up grading a
+			// different object from the judge they are being compared against.
+			const subject = judgeSubjectFor(runView, normalizedSpec);
 			const judged = await gradeJudge(
 				assertions
 					? {
 						system: JUDGE_ASSERTIONS_SYSTEM,
-						user: judgeAssertionsPrompt({ rubric: normalizedSpec.rubric, assertions }, subject),
+						user: judgeAssertionsPrompt(subject, assertions),
 						// One juror folded alone is that juror's own verdict; the jury
 						// fold in gradeJudge then decides each assertion across jurors.
 						parse: (text) => foldJury(
@@ -782,23 +856,13 @@ export async function gradeRun(
 					: normalizedSpec.withReference
 					? {
 						system: JUDGE_REFERENCE_SYSTEM,
-						user: judgeReferencePrompt(normalizedSpec.rubric ?? "", task.expected ?? "", subject),
+						user: judgeReferencePrompt(subject),
 						parse: parseReferenceVerdict,
 						jury,
 					}
 					: {
 						system: JUDGE_SYSTEM,
-						// The rubric-only prompt is frozen for single-reply cases: every
-						// existing judge verdict was produced by exactly this string.
-						user: subject.transcript === null
-							? `Критерий: ${normalizedSpec.rubric}\n\nОбращение: ${task.input}\n\nОтвет агента: ${output ?? ""}`
-							: [
-								"<критерий>", normalizedSpec.rubric ?? "", "</критерий>",
-								"",
-								...judgeContextBlock(subject),
-								"",
-								...judgeAnswerBlock(subject),
-							].join("\n"),
+						user: judgeRubricPrompt(subject),
 						parse: parseVerdict,
 						jury,
 					},

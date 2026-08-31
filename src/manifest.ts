@@ -474,6 +474,15 @@ export const JudgeCalibrationPolicy = z.strictObject({
 	minAgreement: z.number().min(0).max(1),
 	/** Fewest labels that make that rate mean anything. */
 	minLabels: z.number().int().positive().max(100_000),
+	/**
+	 * Count labels written under the old labelling screen, which showed the
+	 * human the first user turn and the last assistant reply — never the rubric,
+	 * the assertions, the reference answer, or the conversation the judge
+	 * actually read. Those humans graded a different object, so by default they
+	 * do not certify this judge. Absent means false: the safe direction, and
+	 * canonical JSON drops the key, so every existing manifest hashes unchanged.
+	 */
+	allowLegacyLabels: z.literal(true).optional(),
 });
 export type JudgeCalibrationPolicy = z.infer<typeof JudgeCalibrationPolicy>;
 

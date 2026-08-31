@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { gradeRun } from "../src/eval.js";
+import { gradeRun, judgeSubjectFor } from "../src/eval.js";
 import { GraderSpec, ModelBlock, type ResolvedTask, type TargetManifest } from "../src/manifest.js";
 import { startMockModel, type MockModelHandle } from "../src/mock-model.js";
 import { GraderResultSchema, hashFile, hashValue, type GraderResult, type RunRecord } from "../src/provenance.js";
@@ -28,26 +28,39 @@ function judgeModel(url: string): TargetManifest["model"] {
 	});
 }
 
+interface GradeOptions {
+	/** Extra fields on the resolved case: `expected`, `simulatedUser`, … */
+	task?: Partial<ResolvedTask>;
+	/** Trace turns, in order. Defaults to one question and one answer. */
+	turns?: readonly { role: "user" | "assistant"; text: string }[];
+}
+
 /** Grade one answer through the real trace path, with a scripted judge. */
 async function grade(
 	graders: unknown[],
 	answer: string,
 	replies: readonly string[],
+	options: GradeOptions = {},
 ): Promise<{ results: GraderResult[]; runsRoot: string; requests: () => number }> {
 	const queue = [...replies];
 	const server = await startMockModel([{ steps: [], resolve: () => ({ text: queue.shift() ?? "{}" }) }]);
 	servers.push(server);
 	const runsRoot = mkdtempSync(join(tmpdir(), "ahde-judge-assertions-"));
 	cleanupPaths.push(runsRoot);
-	const trace = `${[
-		{ type: "message", message: { role: "user", content: [{ type: "text", text: "вопрос" }] } },
-		{ type: "message", message: { role: "assistant", content: [{ type: "text", text: answer }] } },
-	].map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+	const turns = options.turns ?? [
+		{ role: "user" as const, text: "вопрос" },
+		{ role: "assistant" as const, text: answer },
+	];
+	const trace = `${turns.map((turn) => JSON.stringify({
+		type: "message",
+		message: { role: turn.role, content: [{ type: "text", text: turn.text }] },
+	})).join("\n")}\n`;
 	mkdirSync(join(runsRoot, "run-a"), { recursive: true });
 	writeFileSync(join(runsRoot, "run-a", "session.jsonl"), trace);
 	const task = {
 		id: "task-a",
 		input: "вопрос",
+		...options.task,
 		effectiveGraders: graders as ResolvedTask["effectiveGraders"],
 	} as ResolvedTask;
 	const record: RunRecord = baseRunRecord({
@@ -55,6 +68,13 @@ async function grade(
 	});
 	const graded = await gradeRun(task, record, runsRoot, judgeModel(server.url));
 	return { results: graded.graders, runsRoot, requests: server.requests };
+}
+
+function judgePrompt(runsRoot: string, graderIndex = 0): string {
+	const sidecar = JSON.parse(
+		readFileSync(join(runsRoot, "run-a", "judge", `${graderIndex}.json`), "utf8"),
+	) as { request: { body: { messages: { content: string }[] } } };
+	return sidecar.request.body.messages[1]!.content;
 }
 
 const RUBRIC = { type: "judge", rubric: "Ответ полный и вежливый" } as const;
@@ -198,6 +218,135 @@ describe("assertion rubrics", () => {
 			.toBe("Критерий: Ответ полный и вежливый\n\nОбращение: вопрос\n\nОтвет агента: Ответ");
 		expect(sidecar.request.body.temperature).toBe(0);
 		expect(() => readFileSync(join(runsRoot, "run-a", "judge", "0.verdict.json"), "utf8")).toThrow();
+	});
+});
+
+/**
+ * The prompt builders now read one derived subject instead of the task and the
+ * grader directly, so `ahde label` can put the same object in front of a human.
+ * These four strings are the whole grading contract: if a refactor moves one
+ * byte, evidence graded before it becomes incomparable with evidence after.
+ */
+describe("one judge subject, four frozen prompts", () => {
+	const DIALOGUE_TURNS = [
+		{ role: "user" as const, text: "Сколько длится возврат?" },
+		{ role: "assistant" as const, text: "Тридцать дней." },
+		{ role: "user" as const, text: "А для золотых?" },
+		{ role: "assistant" as const, text: "Тоже тридцать." },
+	];
+
+	it("renders the rubric-only single-turn prompt exactly as it always has", async () => {
+		const { runsRoot } = await grade([RUBRIC], "Ответ", [JSON.stringify({ passed: true, reason: "ок" })]);
+		expect(judgePrompt(runsRoot))
+			.toBe("Критерий: Ответ полный и вежливый\n\nОбращение: вопрос\n\nОтвет агента: Ответ");
+	});
+
+	it("renders the assertions prompt exactly as it always has", async () => {
+		const { runsRoot } = await grade(
+			[{ ...ASSERTIONS, rubric: "и общий критерий" }],
+			"Ответ",
+			[JSON.stringify({ verdicts: [1, 2, 3].map((index) => ({ index, answer: "yes", evidence: "ок" })) })],
+		);
+		expect(judgePrompt(runsRoot)).toBe([
+			"<критерий>", "и общий критерий", "</критерий>",
+			"",
+			"<обращение>", "вопрос", "</обращение>",
+			"",
+			"<ответ агента>", "Ответ", "</ответ агента>",
+			"",
+			"<утверждения>",
+			"1. назван срок",
+			"2. назван канал подачи",
+			"3. нет обещаний, которых банк не даёт",
+			"</утверждения>",
+			"",
+			"Оцени каждое утверждение независимо и верни ровно 3 verdict(s) в том же порядке:",
+			'{"verdicts": [{"index": 1, "answer": "yes"|"no"|"unknown", "evidence": "краткое обоснование"}]}',
+		].join("\n"));
+	});
+
+	it("renders the reference prompt exactly as it always has", async () => {
+		const { runsRoot } = await grade(
+			[{ ...RUBRIC, withReference: true }],
+			"Тридцать дней",
+			[JSON.stringify({ choice: "C", reason: "то же самое" })],
+			{ task: { expected: "30 дней" } },
+		);
+		expect(judgePrompt(runsRoot)).toBe([
+			"<критерий>", "Ответ полный и вежливый", "</критерий>",
+			"",
+			"<обращение>", "вопрос", "</обращение>",
+			"",
+			"<эталонный ответ>", "30 дней", "</эталонный ответ>",
+			"",
+			"<ответ агента>", "Тридцать дней", "</ответ агента>",
+			"",
+			"Выбери ровно один вариант:",
+			"A: ответ агента — полностью согласованное подмножество эталона.",
+			"B: ответ агента — полностью согласованное надмножество эталона.",
+			"C: ответ агента содержит те же фактические сведения, что и эталон.",
+			"D: ответ агента противоречит эталону.",
+			"E: ответы отличаются только в деталях, не влияющих на фактическую сторону.",
+			"",
+			'Верни JSON ровно с этими полями: {"choice": "C", "reason": "краткое обоснование выбора"}',
+		].join("\n"));
+	});
+
+	it("renders the dialogue rubric prompt exactly as it always has", async () => {
+		const { runsRoot } = await grade(
+			[RUBRIC],
+			"Тоже тридцать.",
+			[JSON.stringify({ passed: true, reason: "ок" })],
+			{
+				task: { simulatedUser: { goal: "узнать срок возврата", maxTurns: 3 } },
+				turns: DIALOGUE_TURNS,
+			},
+		);
+		expect(judgePrompt(runsRoot)).toBe([
+			"<критерий>", "Ответ полный и вежливый", "</критерий>",
+			"",
+			"<цель пользователя>", "узнать срок возврата", "</цель пользователя>",
+			"",
+			"<диалог агента с пользователем>",
+			"Пользователь: Сколько длится возврат?\nАгент: Тридцать дней.\nПользователь: А для золотых?\nАгент: Тоже тридцать.",
+			"</диалог агента с пользователем>",
+		].join("\n"));
+	});
+
+	it("derives the same subject the prompt was built from, and nothing the judge did not see", () => {
+		const message = (role: "user" | "assistant", text: string) =>
+			({ role, text, at: null } as never);
+		const run = {
+			input: "вопрос",
+			messages: [message("user", "вопрос"), message("assistant", "Ответ")],
+			expected: "30 дней",
+		};
+		// A rubric-only grader is blind to the reference answer even when the case
+		// has one; only `withReference` opens that block.
+		expect(judgeSubjectFor(run, GraderSpec.parse(RUBRIC) as never)).toEqual({
+			kind: "single-turn",
+			context: "вопрос",
+			answer: "Ответ",
+			rubric: "Ответ полный и вежливый",
+			assertions: null,
+			reference: null,
+		});
+		expect(judgeSubjectFor(run, GraderSpec.parse({ ...RUBRIC, withReference: true }) as never).reference)
+			.toBe("30 дней");
+		expect(judgeSubjectFor(run, GraderSpec.parse(ASSERTIONS) as never)).toMatchObject({
+			rubric: null,
+			assertions: ASSERTIONS.assertions,
+		});
+		// A conversation swaps both halves at once: the goal for the request, the
+		// whole rendered transcript for the last reply.
+		expect(judgeSubjectFor(
+			{
+				...run,
+				messages: [message("user", "а?"), message("assistant", "да")],
+				simulatedUser: { goal: "узнать" },
+			},
+			GraderSpec.parse(RUBRIC) as never,
+		)).toMatchObject({ kind: "dialogue", context: "узнать", answer: "Пользователь: а?\nАгент: да" });
 	});
 });
 
