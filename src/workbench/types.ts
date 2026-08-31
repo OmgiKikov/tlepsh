@@ -745,6 +745,12 @@ export interface WorkbenchDatasetCase {
 	input: string;
 	expected: string | null;
 	messages: { role: "user" | "assistant"; content: string }[] | null;
+	/**
+	 * The live user a case asks for, when it is a conversation rather than one
+	 * message. The operator confirms an import by reading these sample cases, so
+	 * a goal and a persona that shape every turn must be visible there.
+	 */
+	simulatedUser: { goal: string; persona: string | null; maxTurns: number; stopWhen: string | null } | null;
 	metadata: Record<string, string> | null;
 	graders: GraderSpec[];
 }

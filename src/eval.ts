@@ -41,7 +41,8 @@ import {
 	type RunEventIdentity,
 	type RunEventListener,
 } from "./run-events.js";
-import { callEvaluatorModel } from "./evaluator-model.js";
+import {
+	EvaluatorModelError, callEvaluatorModel } from "./evaluator-model.js";
 import { readJsonArtifact, writeJsonArtifact, writeTextArtifact } from "./storage/artifacts.js";
 import { resolveContainedArtifactPath } from "./storage/paths.js";
 import {
@@ -1063,6 +1064,13 @@ export async function gradeRecordedRun(
 		record.status = "error";
 		record.error = `evaluation infrastructure: ${gradeError instanceof Error ? gradeError.message : String(gradeError)}`;
 		record.evalResults = null;
+		// Grading failed, but the calls it already made were charged. Losing that
+		// spend would make a failed regrade or evaluation report $0.00 for money
+		// the operator actually owes, and the cost guard would keep under-
+		// estimating from that record forever.
+		if (gradeError instanceof EvaluatorModelError && gradeError.metrics.calls > 0) {
+			record.metrics = { ...record.metrics, judge: gradeError.metrics };
+		}
 	}
 	if (graded) {
 		record.evalResults = {

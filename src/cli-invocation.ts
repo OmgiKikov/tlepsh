@@ -72,7 +72,7 @@ const COMMAND_SPECS = {
 	continue: { flags: ROOT_FLAGS, positionals: 0 },
 	resume: { flags: ROOT_FLAGS, positionals: 0 },
 	target: { flags: ["target", "message"], positionals: 0 },
-	evidence: { flags: ["port"], positionals: 0 },
+	evidence: { flags: ["port", "project"], positionals: 0 },
 	init: { flags: ["template"], positionals: 1 },
 	run: {
 		flags: ["target", "task", "repetitions", "jobs", "label", "dataset", "project", "corpus"],

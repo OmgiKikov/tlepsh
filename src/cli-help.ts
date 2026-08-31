@@ -36,7 +36,7 @@ Inspect and run:
   ahde improve --target <dir> --until 90% --max-cycles 5
                                                run improvement cycles inside the gates
   ahde calibrate --target <dir>                measure run-to-run noise (A/A)
-  ahde evidence [--port N]                     open the read-only trace explorer
+  ahde evidence [--port N] [--project <id>]    open the read-only trace explorer
   ahde list [--target <id>]                    list eval runs
   ahde feedback list [--target <dir>]          👍/👎 marks collected in ahde target
   ahde tool try --target <dir> --tool <name> --input <json|@path>
@@ -92,10 +92,15 @@ answer written later can use what was wrong.`,
 
 Move imports/feedback.jsonl aside to imports/feedback.<timestamp>.jsonl.
 Nothing is deleted, and the archive is still importable.`,
-	evidence: `Usage: ahde evidence [--port N]
+	evidence: `Usage: ahde evidence [--port N] [--project <id>]
 
 Serve the read-only Evidence Explorer on loopback. Port 0 chooses a free port.
-Sealed holdout content and state-changing operations are never exposed.`,
+Sealed holdout content and state-changing operations are never exposed.
+
+With --project the report also shows how far this project's judge has been
+checked against a human, exactly as \`ahde report\` does. Without it the page
+says the calibration is not available here rather than calling the judge
+unchecked.`,
 	init: `Usage: ahde init <dir> [--template <target-dir>]
 
 Create a generic Target harness and its first Git commit. Then run \`ahde\` in
