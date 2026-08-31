@@ -92,6 +92,7 @@ describe("CLI help", () => {
 		expect(help).toContain("ahde calibrate --target <dir>                measure run-to-run noise (A/A)");
 		expect(help).toContain("ahde check --target <dir> --candidate <id>   cheap screen: the failed cases, once");
 		expect(help).toContain("ahde improve --target <dir> --until 90% --max-cycles 5");
+		expect(help).toContain("ahde serve --target <dir> [--port N]         drive the Workbench over a local");
 		expect(help).toContain("candidate  calibrate  check  improve  review  promote  reject");
 		expect(help).toContain("AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)");
 	});
@@ -114,6 +115,15 @@ describe("CLI help", () => {
 		expect(improve).toContain("`90%` or `0.9`");
 		expect(improve).toContain("the sealed guardrail and the promotion are always\nyours");
 		expect(improve).toContain("It never promotes, adopts, publishes a corpus or approves a Spec.");
+		const serve = cliHelp(["serve", "--help"]);
+		expect(serve).toContain("Usage: ahde serve --target <dir>");
+		expect(serve).toContain("transport for the\nsame human gate, never an exemption from it");
+		expect(serve).toContain("POST /v1/confirmations/<id>");
+		expect(serve).toContain("A wrong hash, an unknown id, a second answer, an expiry, and\nshutdown are each refusals.");
+		expect(serve).toContain("a body\nthat carries actor, actorId, approved, or confirmed is refused");
+		expect(serve).toContain("Binds 127.0.0.1 only.");
+		expect(serve).toContain("printed once to\nstderr");
+		expect(serve).toContain("--allow-concurrent");
 		const regrade = cliHelp(["regrade", "--help"]);
 		expect(regrade).toContain("Usage: ahde regrade <evalRunId> --target <dir>");
 		expect(regrade).toContain("without calling the\nTarget model again");

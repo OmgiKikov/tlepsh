@@ -181,6 +181,16 @@ branch; the closed-loop Pi test passes with exactly three confirmations.
     "RPC fails closed"; per-project state/runs roots on a server; Builder via
     Pi `--mode rpc`. The seams (`AhdeWorkbenchDependencies`, `gate.confirm`)
     already exist; this is an implementation, not a refactor.
+    *Landed as `ahde serve` (`src/serve/**`): the Workbench behind a loopback
+    HTTP/JSON API on `/v1/view`, `/v1/submit`, `/v1/decide`,
+    `/v1/confirmations`, `POST /v1/confirmations/:id`, `/v1/events`, and
+    `/v1/health`. The injected gate does not auto-approve — a consequential
+    decision opens a pending confirmation bound to the exact host-minted
+    subject hash and blocks until the platform answers that id with that hash;
+    a wrong hash, an unknown id, a replay, an expiry and a shutdown are
+    refusals. The actor is the API's own authenticated identity, never a
+    request field. Remaining: the Builder itself over Pi `--mode rpc`, and
+    per-project roots for a multi-project server.*
 13. **Gondolin / Docker for the Target's built-in `bash`**; `sandbox: required`
     in the bank profile.
 14. **Ceremony cut** — receipts only at approve/publish/apply/promote/adopt;

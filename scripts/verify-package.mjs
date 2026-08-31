@@ -67,6 +67,9 @@ try {
 		"dist/builder/run-observation.js",
 		"dist/cli-invocation.js",
 		"dist/evidence/live.js",
+		"dist/serve/server.js",
+		"dist/serve/confirmations.js",
+		"dist/serve/session-lock.js",
 		"dist/run-events.js",
 		"dist/target/command.js",
 		"dist/workbench/workbench.js",
@@ -165,7 +168,10 @@ import {
 	AHDE_BUILDER_REGISTERED_TOOL_NAMES,
 	AHDE_BUILDER_TOOL_NAMES,
 	AHDE_WORKSHOP_TOOL_NAMES,
+	CLI_COMMANDS,
+	parseCliInvocation,
 	openBuilderWorkshop,
+	createAhdeServeApi,
   applyBuilderProposal,
   approveBuilderSpecDraft,
   candidateStatus,
@@ -215,6 +221,32 @@ const expectedCommandNames = [
 	"approve", "publish", "apply", "discard", "promote", "reject", "adopt", "next",
 	"target",
 ];
+// The CLI command surface the installed package registers. serve is the
+// platform seam: the Workbench behind a loopback HTTP/JSON API.
+const expectedCliCommandNames = [
+	"root", "builder-pi", "continue", "resume", "target", "evidence", "serve",
+	"init", "run", "validate", "list", "failures", "corpus", "feedback", "tool",
+	"compare", "diagnose", "regrade", "report", "label", "judge-agreement",
+	"candidate", "calibrate", "check", "improve", "review", "promote", "reject",
+];
+if (JSON.stringify(CLI_COMMANDS) !== JSON.stringify(expectedCliCommandNames)) {
+  throw new Error(\`installed package registered an unexpected CLI command surface: \${CLI_COMMANDS.join(", ")}\`);
+}
+{
+  const served = parseCliInvocation([
+    "serve", "--target", "./agent", "--port", "0", "--host", "127.0.0.1", "--allow-concurrent",
+  ]);
+  if (served.command !== "serve" || served.flags["allow-concurrent"] !== "true" || served.flags.port !== "0") {
+    throw new Error("installed ahde serve invocation spec did not parse its pinned flags");
+  }
+  let refusedRemoteBind = false;
+  try {
+    parseCliInvocation(["serve", "--target", "./agent", "--host", "0.0.0.0"]);
+  } catch (error) {
+    refusedRemoteBind = /--host .* 127\\.0\\.0\\.1, localhost/.test(String(error?.message ?? error));
+  }
+  if (!refusedRemoteBind) throw new Error("installed ahde serve accepted a non-loopback --host");
+}
 
 for (const [name, value] of Object.entries({
 	AHDE_BUILDER_COMMAND_NAMES,
@@ -222,6 +254,7 @@ for (const [name, value] of Object.entries({
 	AHDE_BUILDER_TOOL_NAMES,
 	AHDE_WORKSHOP_TOOL_NAMES,
 	openBuilderWorkshop,
+	createAhdeServeApi,
   applyBuilderProposal,
   approveBuilderSpecDraft,
   candidateStatus,
@@ -626,6 +659,55 @@ try {
   await explorer.close();
 }
 
+// The platform seam on a real loopback socket: one bearer token, one route
+// table, and no way in without the token the server minted.
+const serveApi = createAhdeServeApi({
+  projectDir: targetDir,
+  stateRoot,
+  runsRoot,
+  projectId: "package-serve-smoke",
+  actorId: "api:package-smoke",
+});
+const serveAddress = await serveApi.listen();
+try {
+  if (serveAddress.host !== "127.0.0.1" || serveAddress.url !== \`http://127.0.0.1:\${serveAddress.port}\`) {
+    throw new Error(\`ahde serve bound an unexpected address: \${serveAddress.url}\`);
+  }
+  const unauthorized = await fetch(\`\${serveAddress.url}/v1/health\`, { signal: AbortSignal.timeout(5_000) });
+  if (unauthorized.status !== 401 || unauthorized.headers.get("www-authenticate") !== "Bearer") {
+    throw new Error("ahde serve answered without a bearer token");
+  }
+  const authorized = { authorization: "Bearer " + serveApi.token };
+  const health = await fetch(\`\${serveAddress.url}/v1/health\`, {
+    headers: authorized,
+    signal: AbortSignal.timeout(5_000),
+  });
+  const healthBody = await health.text();
+  if (health.status !== 200 || !healthBody.includes('"ok":true') || healthBody.includes(serveApi.token)) {
+    throw new Error("ahde serve health did not answer the minted token safely");
+  }
+  const wrongMethod = await fetch(\`\${serveAddress.url}/v1/view\`, {
+    method: "POST",
+    headers: authorized,
+    body: "{}",
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (wrongMethod.status !== 405 || wrongMethod.headers.get("allow") !== "GET") {
+    throw new Error("ahde serve accepted an undeclared method");
+  }
+  const forgedAuthority = await fetch(\`\${serveAddress.url}/v1/decide\`, {
+    method: "POST",
+    headers: { ...authorized, "content-type": "application/json" },
+    body: JSON.stringify({ kind: "approve-spec", reason: "package smoke", actor: "someone-else" }),
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (forgedAuthority.status !== 400 || !(await forgedAuthority.text()).includes("host-owned authority")) {
+    throw new Error("ahde serve accepted a client-supplied actor");
+  }
+} finally {
+  await serveApi.close();
+}
+
 // Full installed-package acceptance path. The model endpoint is loopback-only,
 // stateless, bounded, and returns a deterministic answer based solely on the
 // Target system instructions. No external network or model token is used.
@@ -985,7 +1067,7 @@ try {
 		readFileSync(join(consumerDir, "node_modules", "ahde", "package.json"), "utf8"),
 	);
 	console.log(
-		`verified ${installedManifest.name}@${installedManifest.version}: pack → clean install → init → validate → Builder startup + sandboxed Target tool + loopback live/final Evidence HTTP + canonical candidate promotion`,
+		`verified ${installedManifest.name}@${installedManifest.version}: pack → clean install → init → validate → Builder startup + sandboxed Target tool + loopback live/final Evidence HTTP + token-gated serve API + canonical candidate promotion`,
 	);
 } finally {
 	rmSync(workRoot, { recursive: true, force: true });

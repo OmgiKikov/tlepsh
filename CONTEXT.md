@@ -101,6 +101,19 @@ the harness under development runs in a different Target Pi invocation.
   has finished and the cost is unknown. Estimates are read from existing run
   artifacts and persist nothing. Consequential and one-question decisions still
   fail closed outside an interactive TUI; routine decisions may run headless.
+  The consequential gate may additionally be *served* — over the loopback
+  HTTP/JSON API of `ahde serve`, to one authenticated operator, so a platform
+  can render the confirmation in its own UI. That API is a transport for the
+  same gate and never an exemption from it: a consequential decision opens a
+  pending confirmation and the operation blocks; the confirmation binds the
+  exact subject hash the Workbench minted, and an answer is accepted only for
+  that exact confirmation id with that exact hash. A mismatched hash, an
+  unknown id, a second answer, an expiry (bounded, default 10 minutes) and a
+  server shutdown are refusals and never approvals. Authority stays host-side:
+  the actor comes from the API's own authenticated identity and a request body
+  carrying `actor`, `actorId`, `approved`, or `confirmed` is refused, not
+  sanitized. Target bootstrap keeps needing the trusted host model catalog, so
+  it remains a local-TUI step.
 - **Gate Policy** — the named rule a Comparison Verdict is decided under.
   `development-ci-v4`: improved iff the whole interval is above zero,
   regressed iff it is entirely below zero, otherwise inconclusive.
@@ -134,6 +147,14 @@ loopback-only, read-only projection of already-created canonical evidence. In
 the long-lived Builder process it can additionally project bounded,
 restart-ephemeral development RunEvents behind a random capability URL. That
 live view is never evidence and cannot perform state transitions.
+
+The `ahde serve` API is outside both model trust domains too: it is the
+operator's own host surface, reachable only from 127.0.0.1 with a bearer token
+minted at startup, and it drives the Workbench through the same `view`,
+`submit`, and `decide` operations behind the same human gate. Its `/v1/events`
+stream is the same bounded, redacted, development-only RunEvent seam the
+Evidence Explorer projects — never sealed content, never evidence, never a
+credential.
 
 ## Non-negotiable invariants
 

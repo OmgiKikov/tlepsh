@@ -74,7 +74,8 @@ import {
 	type EvidenceExplorer,
 	type EvidenceExplorerAddress,
 } from "./evidence/server.js";
-import { launchBuilderPi, type BuilderSessionMode } from "./builder/runtime.js";
+import { launchBuilderPi, resolveBuilderAssets, type BuilderSessionMode } from "./builder/runtime.js";
+import { createAhdeServeApi } from "./serve/server.js";
 import { renderCalibration } from "./builder/render/calibration.js";
 import { renderDataset } from "./builder/render/view.js";
 import { plainPaint } from "./builder/render/paint.js";
@@ -349,6 +350,53 @@ async function evidence(): Promise<void> {
 	});
 }
 
+/** A flag that takes no value; `arg()` would read the next token instead. */
+function flagPresent(name: string): boolean {
+	return process.argv.slice(2).includes(`--${name}`);
+}
+
+/**
+ * The Workbench behind a loopback HTTP/JSON API. The platform's backend drives
+ * the same operations and renders the same confirmations; the gate is injected,
+ * never removed, and the token is printed exactly once, here, to stderr.
+ */
+async function serveWorkbench(): Promise<void> {
+	const projectDir = resolve(arg("target") ?? process.cwd());
+	const serveStateRoot = process.env.AHDE_STATE_DIR
+		? resolve(process.env.AHDE_STATE_DIR)
+		: join(projectDir, ".ahde");
+	const serveRunsRoot = process.env.AHDE_RUNS_DIR
+		? resolve(process.env.AHDE_RUNS_DIR)
+		: join(projectDir, "runs");
+	const timeout = arg("confirmation-timeout");
+	const api = createAhdeServeApi({
+		projectDir,
+		stateRoot: serveStateRoot,
+		runsRoot: serveRunsRoot,
+		templateDir: resolveBuilderAssets(packageRoot).targetTemplateDir,
+		...(arg("project") ? { projectId: arg("project")! } : {}),
+		...(arg("host") ? { host: arg("host")! } : {}),
+		...(arg("token-file") ? { tokenFile: arg("token-file")! } : {}),
+		...(timeout ? { confirmationTimeoutSeconds: Number(timeout) } : {}),
+		...(flagPresent("allow-concurrent") ? { allowConcurrent: true } : {}),
+	});
+	const address = await api.listen(Number(arg("port") ?? "0"));
+	// The token is a credential: stderr once, never a log line, never a response.
+	process.stderr.write(`AHDE serve token: ${api.token}\n`);
+	console.log(`AHDE serve: ${address.url} · project ${api.projectId} · operator ${api.actorId}`);
+	console.log("loopback only · bearer token required · consequential decisions wait for POST /v1/confirmations/<id>");
+	console.log("press Ctrl-C to stop; a pending confirmation is refused on shutdown");
+	await new Promise<void>((resolveStop) => {
+		const stop = (): void => {
+			process.off("SIGINT", stop);
+			process.off("SIGTERM", stop);
+			void api.close().finally(resolveStop);
+		};
+		process.once("SIGINT", stop);
+		process.once("SIGTERM", stop);
+	});
+}
+
 async function targetPi(): Promise<void> {
 	const targetDir = resolveInteractiveTargetDirectory(arg("target"));
 	const target = loadTarget(targetDir);
@@ -563,6 +611,10 @@ async function main(): Promise<void> {
 		}
 		case "evidence": {
 			await evidence();
+			break;
+		}
+		case "serve": {
+			await serveWorkbench();
 			break;
 		}
 		case "run": {

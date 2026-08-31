@@ -381,6 +381,42 @@ Sealed holdout cases, graders, expected outputs, identifiers, and traces are
 never shown to Builder Pi or the Evidence Explorer. The evaluator gives Target
 Pi one sealed case at a time, and only bounded gate results cross that boundary.
 
+## Driving the Workbench from your own backend
+
+`ahde serve` puts the same Workbench behind a local HTTP/JSON API so a platform
+can run the loop and render the confirmations in its own UI:
+
+```bash
+ahde serve --target . --port 4700 --token-file ./serve.token
+```
+
+```
+GET  /v1/health                  is it up, what stage, how many pending confirmations
+GET  /v1/view                    the same projection the Builder's view tool returns
+POST /v1/submit                  the same non-consequential authoring the submit tool does
+POST /v1/decide                  200 with the decision, or 202 awaiting-confirmation
+GET  /v1/confirmations           what the operator has to answer right now
+POST /v1/confirmations/<id>      { approved, subjectHash } — the answer, and the result
+GET  /v1/events                  SSE: workbench-changed, run-progress, confirmation-*
+```
+
+The gate is injected, not removed. A consequential decision opens a pending
+confirmation bound to the exact host-minted `subjectHash` and blocks; it
+proceeds only when that exact id is answered with that exact hash. A wrong
+hash, an unknown id, a second answer, an expiry (default 10 minutes) and a
+shutdown are refusals — never approvals. Routine measurement runs without a
+question under the same cost guard, and an expensive run escalates to a pending
+confirmation like any other.
+
+Authority stays host-side: the actor is the API's own authenticated identity
+and a body carrying `actor`, `actorId`, `approved`, or `confirmed` is refused
+rather than sanitized. The server binds `127.0.0.1`, mints one bearer token at
+startup and prints it once to stderr, checks `Host` and `Origin`, sets no CORS
+headers, allows only the declared method per route, bounds every body, and
+holds one session per project unless `--allow-concurrent` says otherwise.
+Choosing a Target model still needs the trusted host catalog, so bootstrap
+remains a local-TUI step.
+
 ## Judge graders, and checking the judge
 
 A `judge` grader can ask for prose or for a checklist. Prefer the checklist: a
