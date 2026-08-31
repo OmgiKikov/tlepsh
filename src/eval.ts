@@ -866,9 +866,9 @@ export type EvidenceVisibility = z.infer<typeof EvidenceVisibilitySchema>;
  *
  * Bumped to 3 in V2: `purpose` moved a screen's identity out of the
  * `runs/screens/` sidecar and into the EvalRun itself, written atomically with
- * the record. A v2 index predates that field and is read as `evidence` — which
- * is exactly what every v2 record was, because the only writer of screens
- * always paired them with a marker. `purpose` is deliberately OUTSIDE
+ * the record. A v2 index predates that field: two-arm labels are evidence,
+ * while one-arm labels are `legacy-unknown` because a missing marker cannot
+ * distinguish an old screen from ordinary solo evidence. `purpose` is deliberately OUTSIDE
  * `provenance`, so every provenance key and `provenanceKey` hash is unchanged.
  */
 export const EVAL_RUN_SCHEMA_VERSION = 3;
@@ -880,7 +880,7 @@ export const EVAL_RUN_SCHEMA_VERSION = 3;
  * distinction lives in the record, so a process killed between the EvalRun
  * write and the marker write still leaves a screen that everything refuses.
  */
-export const EvalRunPurposeSchema = z.enum(["evidence", "screen"]);
+export const EvalRunPurposeSchema = z.enum(["evidence", "screen", "legacy-unknown"]);
 export type EvalRunPurpose = z.infer<typeof EvalRunPurposeSchema>;
 
 const EvalRunRecordFields = {
@@ -992,9 +992,10 @@ export const EvalRunRecordSchema = z.strictObject({
 export type EvalRunRecord = z.infer<typeof EvalRunRecordSchema>;
 
 /**
- * The pre-`purpose` shape. Everything a v2 index could be was evidence: the one
- * writer of screens has always paired them with a marker, so reading v2 as
- * `evidence` cannot launder a screen that the marker still names.
+ * The pre-`purpose` shape. Baseline/candidate labels are unambiguously evidence;
+ * solo/regrade are not, because a screen whose process died before writing its
+ * marker has exactly that shape. Those one-arm records are quarantined as
+ * `legacy-unknown` and must be rerun.
  */
 const LegacyEvalRunRecordSchemaV2 = z.strictObject({
 	schemaVersion: z.literal(2),
@@ -1003,7 +1004,8 @@ const LegacyEvalRunRecordSchemaV2 = z.strictObject({
 
 /**
  * The reader every EvalRun index goes through: the current shape, or the
- * pre-`purpose` shape upgraded to `evidence`. A v1 index still fails, because
+ * pre-`purpose` shape upgraded by its label. Ambiguous one-arm records are
+ * quarantined instead of becoming evidence. A v1 index still fails, because
  * its provenance contract genuinely differs.
  */
 export const EvalRunIndexSchema: z.ZodType<EvalRunRecord> = z.union([
@@ -1011,7 +1013,13 @@ export const EvalRunIndexSchema: z.ZodType<EvalRunRecord> = z.union([
 	LegacyEvalRunRecordSchemaV2.transform((record): EvalRunRecord => ({
 		...record,
 		schemaVersion: EVAL_RUN_SCHEMA_VERSION,
-		purpose: "evidence",
+		// A v2 baseline/candidate arm could never be a cheap-check screen. A v2
+		// solo/regrade run could be either ordinary evidence or a screen whose
+		// process died before its marker; that ambiguity is quarantined rather than
+		// laundered into evidence.
+		purpose: record.label === "baseline" || record.label === "candidate"
+			? "evidence"
+			: "legacy-unknown",
 	})),
 ]);
 
@@ -1051,7 +1059,7 @@ export interface RunSuiteOptions {
 	 * What this run is for. Defaults to `evidence`; only the cheap check asks
 	 * for `screen`, and it is written into the EvalRun itself, not a sidecar.
 	 */
-	purpose?: EvalRunPurpose;
+	purpose?: Exclude<EvalRunPurpose, "legacy-unknown">;
 	/** @internal Exact source hash captured for a baseline-reuse query. */
 	expectedWorkspaceHash?: string;
 	/** Optional synchronous, observational listener for all task executions. */

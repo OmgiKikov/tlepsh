@@ -852,6 +852,13 @@ describe("renderReview", () => {
 		expect(text).not.toContain("+New guidance");
 	});
 
+	it("never truncates the human's exact proposal review by default", () => {
+		const exactDiff = [DIFF.trimEnd(), ...Array.from({ length: 450 }, (_, index) => `+line-${index}`)].join("\n");
+		const text = renderReview(makeProposal({ exactDiff }), plainPaint).join("\n");
+		expect(text).toContain("+line-449");
+		expect(text).not.toContain("more diff lines");
+	});
+
 	it("renders an applied proposal with its branch line", () => {
 		const lines = renderReview(makeApplied(), plainPaint);
 		expect(lines[0]).toBe("Applied proposal run-1");
@@ -1630,9 +1637,19 @@ describe("renderConfirmation", () => {
 		expect(abandon[0]).toBe("Candidate candidate-1 · built");
 		expect(abandon).toContain("Abandoning records that this attempt produced no evidence; the applied proposal can be verified again.");
 		tail(abandon);
-		const review = renderConfirmation(makeConfirmation("review-candidate", { operation: "review-candidate", candidateHash: HASH, candidate: makeCandidate(), recommendation: "promote" }), tagPaint);
+		const review = renderConfirmation(makeConfirmation("review-candidate", {
+			operation: "review-candidate",
+			candidateHash: HASH,
+			candidate: makeCandidate({
+				appliedBy: { actorId: "operator", via: "improvement-loop", paths: ["AGENTS.md"] },
+			}),
+			proposal: makeProposal(),
+			recommendation: "promote",
+		}), tagPaint);
 		expect(review[0]).toBe("<heading>Candidate</heading> <dim>candidate-1</dim> <dim>·</dim> <accent>evaluated</accent>");
 		expect(review).toContain("<dim>Recommendation</dim> <bold>promote</bold>");
+		expect(review.join("\n")).toContain("Use the lookup tool first");
+		expect(review.join("\n")).toContain("Exact proposal");
 		const promote = renderConfirmation(makeConfirmation("promote-candidate", { operation: "promote-candidate", candidateHash: HASH, candidate, version: "1.2.0", tag: "v1.2.0" }), tagPaint);
 		expect(promote).toContain("<dim>Tag</dim> <success>v1.2.0</success> <dim>· annotated tag on the exact candidate revision</dim>");
 		// What the promotion costs is on the confirmation the human approves.

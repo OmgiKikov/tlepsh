@@ -148,15 +148,13 @@ const COMMAND_SPECS = {
 	},
 	// The autoloop. `--until` is a pass rate, as `90%` or `0.9`.
 	// `--candidates N` (2..4) makes each cycle a search instead of one guess.
-	// `--compound` stacks each verified candidate on the last; `--resume` and
-	// `--abandon` name an unfinished loop this project already started.
+	// `--resume` and `--abandon` name an unfinished loop this project started.
 	improve: {
 		flags: [
 			"target", "until", "max-cycles", "jobs", "project", "repetitions", "corpus", "candidates",
-			"compound", "resume", "abandon", "baseline-max-age",
+			"resume", "abandon", "baseline-max-age",
 		],
 		requiredFlags: ["target", "until", "max-cycles"],
-		booleanFlags: ["compound"],
 		positionals: 0,
 	},
 	// Several hypotheses for one failure mode, compared in one Pareto table.
@@ -167,7 +165,7 @@ const COMMAND_SPECS = {
 		positionals: 0,
 	},
 	review: {
-		flags: ["candidate", "recommend", "reason", "actor"],
+		flags: ["candidate", "recommend", "reason", "actor", "proposal-hash"],
 		requiredFlags: ["candidate", "recommend", "reason"],
 		positionals: 0,
 	},

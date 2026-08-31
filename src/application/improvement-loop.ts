@@ -3,7 +3,7 @@
  *
  * One cycle is: run → diagnose → pick the top proposable failure mode →
  * author a proposal through the existing application chain → apply it on
- * `candidate/auto-<n>` → cheap check → full development verification if the
+ * `candidate/auto-<loopId>-<n>` → cheap check → full development verification if the
  * screen is promising.
  *
  * What the loop may do is exactly what the operator asked for when they said
@@ -19,6 +19,8 @@
  * candidate is where it stops and hands back.
  */
 
+import { randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { z } from "zod";
@@ -35,7 +37,6 @@ import {
 	type EvalRunRecord,
 	type ReusableBaselineQuery,
 } from "../eval.js";
-import { withDetachedWorktree } from "../git/experiment-worktree.js";
 import { loadTarget, type ResolvedTarget } from "../manifest.js";
 import { computeTargetWorkspaceHash } from "../runner.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
@@ -98,7 +99,21 @@ export const IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE =
 const LoopIdSchema = z.string().regex(/^loop_[a-z0-9]{6,32}$/);
 const ArtifactIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/);
 
-export const IMPROVEMENT_LOOP_RUN_SCHEMA_VERSION = 1;
+export const IMPROVEMENT_LOOP_RUN_SCHEMA_VERSION = 2;
+
+const ImprovementLoopConfigurationSchema = z.strictObject({
+	approvedSpecId: ArtifactIdSchema,
+	targetGitSha: z.string().regex(/^[0-9a-f]{40}$/),
+	developmentCorpusId: ArtifactIdSchema.nullable(),
+	developmentCorpusHash: z.string().regex(/^sha256:[0-9a-f]{64}$/).nullable(),
+	until: z.number().min(0).max(1),
+	maxCycles: z.number().int().min(1).max(MAX_IMPROVEMENT_CYCLES),
+	repetitions: z.number().int().positive(),
+	candidates: z.number().int().min(1).max(MAX_SEARCH_CANDIDATES),
+	branchPrefix: z.string().min(1).max(200),
+	searchBranchPrefix: z.string().min(1).max(200),
+});
+type ImprovementLoopConfiguration = z.infer<typeof ImprovementLoopConfigurationSchema>;
 
 /**
  * The durable record of one `ahde improve` invocation. It exists so a second
@@ -112,12 +127,18 @@ export const ImprovementLoopRunRecordSchema = z.strictObject({
 	status: z.enum(["running", "finished", "abandoned"]),
 	startedAt: z.string().min(1).max(64),
 	updatedAt: z.string().min(1).max(64),
-	/** Cycles this loop has already completed; `--resume` starts after them. */
-	cyclesCompleted: z.number().int().nonnegative().max(MAX_IMPROVEMENT_CYCLES),
+	configuration: ImprovementLoopConfigurationSchema,
+	/** Highest cycle ordinal already claimed. A partial applied cycle still counts. */
+	lastCycle: z.number().int().nonnegative().max(MAX_IMPROVEMENT_CYCLES),
 	/** Branches this loop created, in order. Never deleted by the loop. */
 	branches: z.array(z.string().min(1).max(200)).max(4 * MAX_IMPROVEMENT_CYCLES),
-	/** The candidate chain, when the loop was compounding. */
-	candidateIds: z.array(ArtifactIdSchema).max(MAX_IMPROVEMENT_CYCLES),
+	/** Verified candidates this loop produced. Today the loop stops at the first. */
+	candidateIds: z.array(ArtifactIdSchema).max(1),
+	/** Target executions actually spent, including work before a process restart. */
+	executions: z.number().int().nonnegative(),
+	finalPassRate: z.number().min(0).max(1),
+	/** One flat screen survives a restart, so the two-flat stop remains true. */
+	consecutiveFlat: z.number().int().min(0).max(2),
 	/** Set when the loop finished; a running record has none. */
 	stopReason: z.string().min(1).max(64).nullable(),
 });
@@ -132,7 +153,7 @@ export function improvementLoopRecordPath(runsRoot: string, loopId: string): str
 }
 
 export function newImprovementLoopId(): string {
-	return `loop_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+	return `loop_${randomBytes(12).toString("hex")}`;
 }
 
 function writeImprovementLoopRun(runsRoot: string, record: ImprovementLoopRunRecord): void {
@@ -189,8 +210,8 @@ export class UnfinishedImprovementLoopError extends Error {
 		super(
 			`this project has ${loops.length + unreadable.length} unfinished improvement loop(s): ` +
 			[
-				...loops.map((loop) =>
-					`${loop.loopId} (started ${loop.startedAt}, ${loop.cyclesCompleted} cycle(s), ` +
+			...loops.map((loop) =>
+					`${loop.loopId} (started ${loop.startedAt}, ${loop.lastCycle} cycle slot(s) claimed, ` +
 					`branches ${loop.branches.join(", ") || "none"})`),
 				...unreadable.map((entry) => `${entry} (unreadable)`),
 			].join("; ") +
@@ -212,6 +233,9 @@ export function abandonImprovementLoop(
 	if (record.projectId !== projectId) {
 		throw new Error(`improvement loop ${loopId} belongs to project ${record.projectId}`);
 	}
+	if (record.status !== "running") {
+		throw new Error(`improvement loop ${loopId} is ${record.status}; only a running loop can be abandoned`);
+	}
 	const abandoned: ImprovementLoopRunRecord = {
 		...record,
 		status: "abandoned",
@@ -225,7 +249,7 @@ export function abandonImprovementLoop(
 /**
  * Every decision that creates release authority or asks for human judgement.
  * The loop refuses all of them; `apply-proposal` is deliberately absent
- * because applying on `candidate/auto-<n>` is the work the operator asked for.
+ * because applying on `candidate/auto-<loopId>-<n>` is the work the operator asked for.
  */
 export const IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS: readonly WorkbenchDecisionInput["kind"][] = [
 	"scaffold-target",
@@ -366,6 +390,8 @@ export type RecordedProposalStaleReason =
 	| "suite-changed"
 	/** It is bound to a different failure mode than the one this cycle chose. */
 	| "failure-mode-differs"
+	/** The approved product contract changed while the measured surface stayed alike. */
+	| "spec-changed"
 	/** It carries no attested basis, so nothing can bind it to a surface. */
 	| "no-attested-basis";
 
@@ -378,6 +404,7 @@ export const RECORDED_PROPOSAL_STALE_MESSAGES:
 	"dataset-changed": "the development basket changed since the proposal was written",
 	"suite-changed": "the eval suite changed since the proposal was written",
 	"failure-mode-differs": "no recorded proposal targets the failure mode this cycle chose",
+	"spec-changed": "the recorded proposal belongs to a different approved Spec",
 	"no-attested-basis": "the recorded proposal carries no attested evidence basis, so nothing binds it to this surface",
 };
 
@@ -462,8 +489,6 @@ export interface ImprovementLoopCycle {
 	evalReused: boolean;
 	/** The revision this cycle measured and proposed against. */
 	baseTargetSha: string;
-	/** With `--compound`, the candidate branch this cycle built on. */
-	compoundedFrom: string | null;
 	/** The changed paths of the applied proposal, so the table shows the diff. */
 	changedPaths: string[];
 	pass: number;
@@ -490,16 +515,8 @@ export interface ImprovementLoopResult {
 	stopMessage: string;
 	/** The verified candidate the human can ship, when the loop produced one. */
 	candidateId: string | null;
-	/**
-	 * Every verified candidate this loop produced, oldest first. With
-	 * `--compound` each one contains the ones before it, so shipping the last
-	 * ships the stack. Without it, this holds at most one.
-	 */
-	candidateChain: string[];
 	/** This invocation's id: the branch names carry it, `--resume` names it. */
 	loopId: string;
-	/** True when the loop was allowed to build the next cycle on its own candidate. */
-	compound: boolean;
 	finalPassRate: number;
 	executions: number;
 }
@@ -533,15 +550,6 @@ export interface ImprovementLoopOptions {
 	 * series instead of colliding with it.
 	 */
 	loopId?: string;
-	/** Cycles an earlier, resumed invocation already finished. */
-	resumeFromCycle?: number;
-	/**
-	 * Keep going after a cycle verifies `improved`, building the next cycle on
-	 * the candidate branch as the new working baseline. Nothing is promoted or
-	 * adopted and the operator's branch is never touched; the candidates simply
-	 * stack, so the last one contains all the earlier improvements.
-	 */
-	compound?: boolean;
 	/**
 	 * How old a development EvalRun may be and still be reused instead of
 	 * measured again. Undefined keeps `findReusableBaseline`'s seven days; 0
@@ -583,8 +591,6 @@ export interface ImprovementLoopDependencies {
 	computeTargetWorkspaceHash: typeof computeTargetWorkspaceHash;
 	/** The provenance a run of this Target would carry, probed without running. */
 	effectiveProvenance: typeof effectiveProvenance;
-	/** A throwaway checkout of the candidate revision, for a compounding cycle. */
-	withDetachedWorktree: typeof withDetachedWorktree;
 }
 
 const DEFAULT_DEPENDENCIES: ImprovementLoopDependencies = {
@@ -603,7 +609,6 @@ const DEFAULT_DEPENDENCIES: ImprovementLoopDependencies = {
 	findReusableBaseline,
 	computeTargetWorkspaceHash,
 	effectiveProvenance,
-	withDetachedWorktree,
 };
 
 function abortIfRequested(signal?: AbortSignal): void {
@@ -641,10 +646,9 @@ export function improvementCycleLine(cycle: ImprovementLoopCycle, maxCycles: num
 		`AHDE improve cycle ${cycle.cycle}/${maxCycles}`,
 		`run ${cycle.pass}/${cycle.total} ${percent(cycle.passRate)}${cycle.evalReused ? " (reused)" : ""}`,
 	];
-	if (cycle.compoundedFrom) parts.push(`on ${cycle.compoundedFrom}`);
 	if (cycle.failureModeId) parts.push(`mode ${cycle.failureModeId}`);
 	if (cycle.branch) parts.push(`branch ${cycle.branch}`);
-	if (cycle.changedPaths.length > 0) parts.push(`diff ${cycle.changedPaths.join(", ")}`);
+	if (cycle.changedPaths.length > 0) parts.push(`changed paths ${cycle.changedPaths.join(", ")}`);
 	if (cycle.screen) {
 		parts.push(
 			`screen ${cycle.screen.verdict} ${cycle.screen.improved}/${cycle.screen.tasks}` +
@@ -665,7 +669,7 @@ export function improvementCycleLine(cycle: ImprovementLoopCycle, maxCycles: num
 
 /** The compact per-cycle table the loop hands back. */
 export function renderImprovementLoopTable(result: ImprovementLoopResult): string {
-	const header = "| cycle | pass rate | failure mode | branch | diff | screen | verification |";
+	const header = "| cycle | pass rate | failure mode | branch | changed paths | screen | verification |";
 	const divider = "|---|---|---|---|---|---|---|";
 	const rows = result.cycles.map((cycle) => {
 		const screen = cycle.screen
@@ -686,25 +690,16 @@ export function renderImprovementLoopTable(result: ImprovementLoopResult): strin
 	});
 	const searches = result.cycles.flatMap((cycle) =>
 		cycle.search ? ["", `Cycle ${cycle.cycle} — hypotheses for ${cycle.failureModeId ?? "—"}:`, renderProposalSearchTable(cycle.search)] : []);
+	const latestSearch = [...result.cycles].reverse().find((cycle) => cycle.search)?.search ?? null;
 	const refusals = result.cycles.flatMap((cycle) =>
 		cycle.skipped
 			? [`Cycle ${cycle.cycle} refused ${cycle.skipped.proposalRunId}: ${IMPROVEMENT_CYCLE_SKIP_MESSAGES[cycle.skipped.reason]}.`]
 			: []);
-	// With `--compound` each candidate is built on the one before it, so the
-	// chain is what a reader has to see: shipping the last one ships the stack.
-	const chain = result.compound && result.candidateChain.length > 1
-		? [
-			"",
-			`Candidate chain (each includes the ones before it): ${result.candidateChain.join(" → ")}.`,
-			`Shipping ${result.candidateChain[result.candidateChain.length - 1]} ships the stack through the sealed gate.`,
-		]
-		: [];
 	return [
 		header,
 		divider,
 		...rows,
 		...searches,
-		...chain,
 		"",
 		...refusals,
 		`Stopped: ${result.stopMessage}.`,
@@ -712,9 +707,9 @@ export function renderImprovementLoopTable(result: ImprovementLoopResult): strin
 		result.candidateId
 			? `Candidate ${result.candidateId} is verified · awaiting your decision. Promotion is yours: ` +
 				"`ship it` runs the sealed guardrail and the release decisions."
-			: result.cycles.some((cycle) => cycle.search)
+			: latestSearch && latestSearch.frontier.length > 0
 				? "Several hypotheses were compared; pick one from the table above, then ship it."
-				: "No candidate reached a development verdict; nothing is waiting on a release decision.",
+				: "No improved candidate is waiting on a release decision.",
 		IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE,
 	].join("\n");
 }
@@ -756,14 +751,52 @@ function proposalChangedPaths(runsRoot: string, proposalRunId: string): string[]
 	}
 }
 
-/** Where one cycle measures, proposes and applies from. */
-interface CycleBaseline {
-	/** The checkout for target resolution and authoring: the repo, or a throwaway worktree. */
-	authoringDir: string;
-	/** The revision this cycle treats as its baseline. */
-	sha: string;
-	/** The candidate branch this baseline came from, when compounding. */
-	compoundedFrom: string | null;
+function unique(values: readonly string[]): string[] {
+	return [...new Set(values)].sort();
+}
+
+/**
+ * Git is the last-resort checkpoint. If the process died after creating a ref
+ * but before updating the loop ledger, resumption still skips that occupied
+ * cycle ordinal instead of colliding with it or overwriting it.
+ */
+function claimedBranchCycles(
+	repositoryDir: string,
+	branchPrefix: string,
+	searchBranchPrefix: string,
+): { branches: string[]; lastCycle: number } {
+	let branches: string[] = [];
+	try {
+		branches = execFileSync(
+			"git",
+			["-C", repositoryDir, "for-each-ref", "--format=%(refname:short)", "refs/heads"],
+			{ encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+		).split("\n").map((line) => line.trim()).filter(Boolean);
+	} catch {
+		return { branches: [], lastCycle: 0 };
+	}
+	let lastCycle = 0;
+	const claimed: string[] = [];
+	for (const branch of branches) {
+		let ordinal: number | null = null;
+		if (branch.startsWith(branchPrefix)) {
+			const suffix = branch.slice(branchPrefix.length);
+			if (/^\d+$/.test(suffix)) ordinal = Number(suffix);
+		} else if (branch.startsWith(searchBranchPrefix)) {
+			const suffix = branch.slice(searchBranchPrefix.length);
+			const matched = /^(\d+)-\d+$/.exec(suffix);
+			if (matched) ordinal = Number(matched[1]);
+		}
+		if (ordinal !== null && Number.isSafeInteger(ordinal) && ordinal > 0) {
+			lastCycle = Math.max(lastCycle, ordinal);
+			claimed.push(branch);
+		}
+	}
+	return { branches: unique(claimed), lastCycle };
+}
+
+function sameLoopConfiguration(left: ImprovementLoopConfiguration, right: ImprovementLoopConfiguration): boolean {
+	return JSON.stringify(left) === JSON.stringify(right);
 }
 
 export async function runImprovementLoop(
@@ -776,7 +809,6 @@ export async function runImprovementLoop(
 	const stateRoot = resolve(options.stateRoot);
 	const actorId = options.actorId ?? "local-user";
 	const candidatesPerCycle = Math.trunc(options.candidates ?? 1);
-	const compound = options.compound === true;
 	const now = options.now ?? (() => new Date().toISOString());
 	if (!Number.isFinite(options.until) || options.until < 0 || options.until > 1) {
 		throw new Error(`--until must be a pass rate between 0 and 1, got ${options.until}`);
@@ -792,19 +824,57 @@ export async function runImprovementLoop(
 	// a continuation back on the series it left.
 	const loopId = LoopIdSchema.parse(options.loopId ?? newImprovementLoopId());
 	const branchPrefix = options.branchPrefix ?? `candidate/auto-${loopId}-`;
-	const resumeFromCycle = Math.max(0, Math.trunc(options.resumeFromCycle ?? 0));
+	const searchBranchPrefix = options.searchBranchPrefix ?? `candidate/search-${loopId}-`;
+
+	const developmentCorpus = options.developmentCorpus ? dependencies.loadCorpus(options.developmentCorpus) : null;
+	const resolveTarget = (dir: string): ResolvedTarget => {
+		const base = dependencies.loadTarget(dir);
+		return developmentCorpus ? targetWithDevelopmentCorpus(base, developmentCorpus) : base;
+	};
+	const rootTarget = resolveTarget(repositoryDir);
+	const configuration = ImprovementLoopConfigurationSchema.parse({
+		approvedSpecId: options.approvedSpecId,
+		targetGitSha: rootTarget.gitSha,
+		developmentCorpusId: developmentCorpus?.metadata.id ?? null,
+		developmentCorpusHash: developmentCorpus?.metadata.hash ?? null,
+		until: options.until,
+		maxCycles: options.maxCycles,
+		repetitions: options.repetitions,
+		candidates: candidatesPerCycle,
+		branchPrefix,
+		searchBranchPrefix,
+	});
+	const recordPath = improvementLoopRecordPath(runsRoot, loopId);
+	const previous = existsSync(recordPath) ? loadImprovementLoopRun(runsRoot, loopId) : null;
+	if (previous) {
+		if (previous.projectId !== options.projectId) {
+			throw new Error(`improvement loop ${loopId} belongs to project ${previous.projectId}`);
+		}
+		if (previous.status !== "running") {
+			throw new Error(`improvement loop ${loopId} is ${previous.status}; only a running loop can be resumed`);
+		}
+		if (!sameLoopConfiguration(previous.configuration, configuration)) {
+			throw new Error(
+				`improvement loop ${loopId} cannot resume with different Target, Spec, corpus, target rate, ` +
+				"cycle budget, repetitions, hypothesis count, or branch namespace; abandon it and start a new loop",
+			);
+		}
+	}
+	const gitClaims = claimedBranchCycles(repositoryDir, branchPrefix, searchBranchPrefix);
+	if (!previous && gitClaims.branches.length > 0) {
+		throw new Error(`improvement loop ${loopId} has branches but no durable ledger; choose a new loop id`);
+	}
 
 	const cycles: ImprovementLoopCycle[] = [];
-	const candidateChain: string[] = [];
-	const branchesMade: string[] = [];
-	let executions = 0;
-	let consecutiveFlat = 0;
-	let candidateId: string | null = null;
-	let finalPassRate = 0;
+	const candidateIds: string[] = [...(previous?.candidateIds ?? [])];
+	const branchesMade: string[] = unique([...(previous?.branches ?? []), ...gitClaims.branches]);
+	let executions = previous?.executions ?? 0;
+	let consecutiveFlat = previous?.consecutiveFlat ?? 0;
+	let candidateId: string | null = candidateIds.at(-1) ?? null;
+	let finalPassRate = previous?.finalPassRate ?? 0;
+	let lastCycle = Math.max(previous?.lastCycle ?? 0, gitClaims.lastCycle);
 	let cached: CycleEval | null = null;
 	let cachedForSha: string | null = null;
-	/** The revision the next cycle builds on. Moves only with `--compound`. */
-	let baseline: CycleBaseline = { authoringDir: repositoryDir, sha: "", compoundedFrom: null };
 	// What already lost, read once: a project's candidate records do not change
 	// while its own loop is running, and every experiment this loop finishes is
 	// added below rather than re-read from disk.
@@ -812,36 +882,29 @@ export async function runImprovementLoop(
 	/** Failure modes this loop has stopped asking about. */
 	const exhaustedModes = new Set<string>();
 
-	const startedAt = now();
+	const startedAt = previous?.startedAt ?? now();
 	const ledger = (
 		status: ImprovementLoopRunRecord["status"],
 		stopReason: string | null,
 	): void => {
-		try {
-			writeImprovementLoopRun(runsRoot, {
-				schemaVersion: IMPROVEMENT_LOOP_RUN_SCHEMA_VERSION,
-				loopId,
-				projectId: options.projectId,
-				status,
-				startedAt,
-				updatedAt: now(),
-				cyclesCompleted: resumeFromCycle + cycles.length,
-				branches: branchesMade,
-				candidateIds: candidateChain,
-				stopReason,
-			});
-		} catch {
-			// The ledger is bookkeeping. A runs root that will not take it must not
-			// stop the measurement the operator paid for.
-		}
+		writeImprovementLoopRun(runsRoot, {
+			schemaVersion: IMPROVEMENT_LOOP_RUN_SCHEMA_VERSION,
+			loopId,
+			projectId: options.projectId,
+			status,
+			startedAt,
+			updatedAt: now(),
+			configuration,
+			lastCycle,
+			branches: unique(branchesMade),
+			candidateIds: [...candidateIds],
+			executions,
+			finalPassRate,
+			consecutiveFlat,
+			stopReason,
+		});
 	};
 	ledger("running", null);
-
-	const resolveTarget = (dir: string): ResolvedTarget => {
-		const base = dependencies.loadTarget(dir);
-		const corpus = options.developmentCorpus ? dependencies.loadCorpus(options.developmentCorpus) : null;
-		return corpus ? targetWithDevelopmentCorpus(base, corpus) : base;
-	};
 
 	/**
 	 * A development EvalRun already on disk that answers exactly this cycle's
@@ -880,6 +943,7 @@ export async function runImprovementLoop(
 		if (partial) {
 			partial.note = note;
 			cycles.push(partial);
+			lastCycle = Math.max(lastCycle, partial.cycle);
 			options.onCycle?.(improvementCycleLine(partial, options.maxCycles), partial);
 		}
 		ledger("finished", reason);
@@ -888,28 +952,31 @@ export async function runImprovementLoop(
 			stopReason: reason,
 			stopMessage: IMPROVEMENT_LOOP_STOP_MESSAGES[reason],
 			candidateId,
-			candidateChain: [...candidateChain],
 			loopId,
-			compound,
 			finalPassRate,
 			executions,
 		};
 	};
+	if (candidateId) {
+		return finish(
+			"sealed-gate-required",
+			`candidate ${candidateId} was already verified before the interrupted process stopped`,
+		);
+	}
 
 	/** Result of one cycle: either the loop stops, or it goes round again. */
 	type CycleOutcome =
 		| { kind: "stop"; result: ImprovementLoopResult }
-		| { kind: "continue"; nextBaseline?: CycleBaseline };
+		| { kind: "continue" };
 
-	const runCycle = async (cycleIndex: number, from: CycleBaseline): Promise<CycleOutcome> => {
+	const runCycle = async (cycleIndex: number): Promise<CycleOutcome> => {
 		abortIfRequested(options.signal);
-		const target = resolveTarget(from.authoringDir);
+		const target = resolveTarget(repositoryDir);
 		const cycle: ImprovementLoopCycle = {
 			cycle: cycleIndex,
 			evalRunId: "",
 			evalReused: false,
 			baseTargetSha: target.gitSha,
-			compoundedFrom: from.compoundedFrom,
 			changedPaths: [],
 			pass: 0,
 			total: 0,
@@ -952,8 +1019,9 @@ export async function runImprovementLoop(
 				evaluation = { record, reused: false };
 				cached = evaluation;
 				cachedForSha = target.gitSha;
-				executions += record.summary.total;
-				cycle.executions += record.summary.total;
+					executions += record.summary.total;
+					cycle.executions += record.summary.total;
+					ledger("running", null);
 			}
 		}
 		cycle.evalRunId = evaluation.record.evalRunId;
@@ -1014,7 +1082,7 @@ export async function runImprovementLoop(
 				cycle: cycleIndex,
 				variant,
 				variants: candidatesPerCycle,
-				repositoryDir: from.authoringDir,
+				repositoryDir,
 				runsRoot,
 				stateRoot,
 				projectId: options.projectId,
@@ -1040,7 +1108,7 @@ export async function runImprovementLoop(
 			}
 			const recorded = await dependencies.recordProposal({
 				proposal: decision.proposal,
-				targetDir: from.authoringDir,
+				targetDir: repositoryDir,
 				allowedPaths: [...CANDIDATE_SCOPE_POLICY.allowed],
 				approvedSpec: { stateRoot, projectId: options.projectId, specId: options.approvedSpecId },
 				runsRoot,
@@ -1091,7 +1159,7 @@ export async function runImprovementLoop(
 				developmentTasks: Math.round(evaluation.record.summary.total / options.repetitions),
 				repetitions: options.repetitions,
 				...(options.jobs === undefined ? {} : { jobs: options.jobs }),
-				branchPrefix: options.searchBranchPrefix ?? `candidate/search-${cycleIndex}-`,
+				branchPrefix: `${searchBranchPrefix}${cycleIndex}-`,
 				actorId,
 				...(options.gate ? { gate: proposalSearchGate(options.gate) } : {}),
 				...(options.signal ? { signal: options.signal } : {}),
@@ -1101,10 +1169,21 @@ export async function runImprovementLoop(
 			executions += search.executions;
 			cycle.executions += search.executions;
 			cycle.search = search;
-			cycle.proposalRunId = proposalRunIds[0]!;
-			branchesMade.push(...search.rows.flatMap((row) => (row.branch === null ? [] : [row.branch])));
-			// The search compares; it never picks. Whichever hypothesis wins, the
-			// sealed guardrail and the promotion are still the human's.
+				cycle.proposalRunId = proposalRunIds[0]!;
+				branchesMade.push(...search.rows.flatMap((row) => (row.branch === null ? [] : [row.branch])));
+				lastCycle = Math.max(lastCycle, cycleIndex);
+				ledger("running", null);
+			// The search compares; it never picks. A non-improved row is evidence,
+			// not a release option, so an empty frontier needs no human choice.
+			if (search.frontier.length === 0) {
+				return { kind: "stop", result: finish(
+					"development-verdict",
+					"no searched hypothesis reached an improved development verdict",
+					cycle,
+				) };
+			}
+			// Whichever improved hypothesis wins, the sealed guardrail and promotion
+			// are still the human's.
 			return { kind: "stop", result: finish(
 				"search-decision-required",
 				`${search.frontier.length} of ${search.rows.length} hypotheses are on the frontier`,
@@ -1131,6 +1210,7 @@ export async function runImprovementLoop(
 			exhaustedModes.add(mode.failureModeId);
 			cycle.note = IMPROVEMENT_CYCLE_SKIP_MESSAGES["repeat-of-a-losing-experiment"];
 			cycles.push(cycle);
+			lastCycle = Math.max(lastCycle, cycleIndex);
 			options.onCycle?.(improvementCycleLine(cycle, options.maxCycles), cycle);
 			if (topProposableFailureMode(brief, exhaustedModes) === null) {
 				ledger("finished", "experiments-exhausted");
@@ -1139,13 +1219,12 @@ export async function runImprovementLoop(
 					stopReason: "experiments-exhausted",
 					stopMessage: IMPROVEMENT_LOOP_STOP_MESSAGES["experiments-exhausted"],
 					candidateId,
-					candidateChain: [...candidateChain],
 					loopId,
-					compound,
 					finalPassRate,
 					executions,
 				} };
 			}
+			ledger("running", null);
 			return { kind: "continue" };
 		}
 
@@ -1167,6 +1246,8 @@ export async function runImprovementLoop(
 		cycle.candidateSha = applied.receipt.candidateSha;
 		cycle.changedPaths = [...applied.receipt.paths].sort();
 		branchesMade.push(applied.receipt.branch);
+		lastCycle = Math.max(lastCycle, cycleIndex);
+		ledger("running", null);
 
 		// ---- cheap check ------------------------------------------------------
 		const screen = await dependencies.runCheapCheck({
@@ -1192,6 +1273,10 @@ export async function runImprovementLoop(
 			withinErrorBudget: screen.withinErrorBudget,
 			screenEvalRunId: screen.screenEvalRunId,
 		};
+		// Persist spend before making a behavioural decision from the screen. A
+		// crash may abandon this already-claimed branch, but it must not erase what
+		// the loop paid for.
+		ledger("running", null);
 
 		// A flat screen from an over-budget run is inconclusive, not a finding
 		// (invariant 9): the verification still gets to answer.
@@ -1199,6 +1284,7 @@ export async function runImprovementLoop(
 			consecutiveFlat += 1;
 			cycle.note = `screen flat (${consecutiveFlat} in a row) — no verification spent`;
 			cycles.push(cycle);
+			lastCycle = Math.max(lastCycle, cycleIndex);
 			options.onCycle?.(improvementCycleLine(cycle, options.maxCycles), cycle);
 			if (consecutiveFlat >= 2) {
 				ledger("finished", "flat-screen-twice");
@@ -1207,13 +1293,12 @@ export async function runImprovementLoop(
 					stopReason: "flat-screen-twice",
 					stopMessage: IMPROVEMENT_LOOP_STOP_MESSAGES["flat-screen-twice"],
 					candidateId,
-					candidateChain: [...candidateChain],
 					loopId,
-					compound,
 					finalPassRate,
 					executions,
 				} };
 			}
+			ledger("running", null);
 			return { kind: "continue" };
 		}
 		consecutiveFlat = 0;
@@ -1233,10 +1318,10 @@ export async function runImprovementLoop(
 			...(options.signal ? { signal: options.signal } : {}),
 			...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
 		});
-		const spent = verified.baseline.summary.total + verified.candidate.summary.total;
+		const spent = verified.candidate.summary.total +
+			(verified.baselineReused ? 0 : verified.baseline.summary.total);
 		executions += spent;
 		cycle.executions += spent;
-		candidateId = verified.record.candidateId;
 		cycle.verification = {
 			candidateId: verified.record.candidateId,
 			verdict: verified.compare.gate.verdict,
@@ -1245,6 +1330,14 @@ export async function runImprovementLoop(
 			candidatePassRate: verified.compare.summary.candidatePassRate,
 		};
 		finalPassRate = verified.compare.summary.candidatePassRate;
+		if (verified.compare.gate.verdict === "improved") {
+			candidateId = verified.record.candidateId;
+			candidateIds.splice(0, candidateIds.length, verified.record.candidateId);
+		}
+		// Checkpoint both arms before interpreting the verdict. Only an improved
+		// candidate enters candidateIds; a flat/regressed experiment stays history,
+		// never something the CLI tells the operator to review or ship.
+		ledger("running", null);
 		// This loop's own answers join its memory immediately, so a later cycle
 		// cannot re-run the experiment this one just lost.
 		if (verified.compare.gate.verdict !== "improved") {
@@ -1256,54 +1349,23 @@ export async function runImprovementLoop(
 			) };
 		}
 
-		candidateChain.push(verified.record.candidateId);
 		if (finalPassRate >= options.until) {
 			return { kind: "stop", result: finish("target-reached", `${percent(finalPassRate)} ≥ ${percent(options.until)}`, cycle) };
 		}
-		if (!compound) {
-			// Without `--compound` this is where measurement ends: making the
-			// candidate the next baseline would mean promoting and adopting it, and
-			// both are the human's, behind the sealed guardrail.
-			return { kind: "stop", result: finish(
-				"sealed-gate-required",
-				`candidate ${verified.record.candidateId} verified · awaiting your decision`,
-				cycle,
-			) };
-		}
-		// `--compound`: keep the operator's branch untouched and simply build the
-		// next cycle on this candidate's revision, so improvements stack.
-		cycle.note = `candidate ${verified.record.candidateId} verified · awaiting your decision — compounding onto ${applied.receipt.branch}`;
-		cycles.push(cycle);
-		options.onCycle?.(improvementCycleLine(cycle, options.maxCycles), cycle);
-		return {
-			kind: "continue",
-			nextBaseline: {
-				authoringDir: "",
-				sha: applied.receipt.candidateSha,
-				compoundedFrom: applied.receipt.branch,
-			},
-		};
+		// A verified candidate is a release decision boundary. Starting another
+		// cycle from it would hide the earlier changes from the final matched and
+		// sealed baseline, so the public loop stops instead of claiming to compound.
+		return { kind: "stop", result: finish(
+			"sealed-gate-required",
+			`candidate ${verified.record.candidateId} verified · awaiting your decision`,
+			cycle,
+		) };
 	};
 
-	for (let cycleIndex = resumeFromCycle + 1; cycleIndex <= options.maxCycles; cycleIndex += 1) {
+	for (let cycleIndex = lastCycle + 1; cycleIndex <= options.maxCycles; cycleIndex += 1) {
 		abortIfRequested(options.signal);
-		// A compounding cycle measures and authors against the candidate revision,
-		// in a throwaway checkout. Nothing about the operator's own working tree
-		// changes, in either shape.
-		const outcome = baseline.compoundedFrom === null
-			? await runCycle(cycleIndex, { ...baseline, authoringDir: repositoryDir })
-			: await dependencies.withDetachedWorktree(
-				{ repositoryDir, ref: baseline.sha },
-				async (worktree) => runCycle(cycleIndex, { ...baseline, authoringDir: worktree.path }),
-			);
+		const outcome = await runCycle(cycleIndex);
 		if (outcome.kind === "stop") return outcome.result;
-		if (outcome.nextBaseline) {
-			baseline = outcome.nextBaseline;
-			// A new baseline invalidates the measurement cache: a different revision
-			// is a different question.
-			cached = null;
-			cachedForSha = null;
-		}
 	}
 
 	ledger("finished", "max-cycles");
@@ -1312,9 +1374,7 @@ export async function runImprovementLoop(
 		stopReason: "max-cycles",
 		stopMessage: IMPROVEMENT_LOOP_STOP_MESSAGES["max-cycles"],
 		candidateId,
-		candidateChain: [...candidateChain],
 		loopId,
-		compound,
 		finalPassRate,
 		executions,
 	};
@@ -1367,9 +1427,10 @@ export function recordedBuilderProposalAuthor(
 			"already-used": 1,
 			"no-attested-basis": 2,
 			"failure-mode-differs": 3,
-			"target-revision-moved": 4,
-			"suite-changed": 5,
-			"dataset-changed": 6,
+			"spec-changed": 4,
+			"target-revision-moved": 5,
+			"suite-changed": 6,
+			"dataset-changed": 7,
 		};
 		let best: RecordedProposalStaleReason = admissions.length === 0 ? "no-recorded-proposal" : "already-used";
 		const note = (reason: RecordedProposalStaleReason): void => {
@@ -1401,6 +1462,10 @@ export function recordedBuilderProposalAuthor(
 			const basis = record.request.proposalBasis;
 			if (!attestation || !basis) {
 				note("no-attested-basis");
+				continue;
+			}
+			if (record.request.approvedSpec?.specId !== request.approvedSpecId) {
+				note("spec-changed");
 				continue;
 			}
 			// ---- the surface-binding rule, in full ----------------------------

@@ -40,6 +40,12 @@ export interface ReviewCandidateOptions {
 	candidateId: string;
 	/** Exact Candidate aggregate reviewed by a host confirmation, when one exists. */
 	expectedCandidateHash?: string;
+	/**
+	 * Exact proposal artifact displayed by the host. Required for a promote
+	 * recommendation when an automated improve/search applied the candidate,
+	 * because that earlier authority did not mean the operator read the diff.
+	 */
+	expectedProposalHash?: string;
 	recommendation: "promote" | "reject";
 	reason: string;
 	actorId?: string;
@@ -99,6 +105,31 @@ function assertExpectedCandidateHash(
 	}
 }
 
+function assertAutomatedProposalWasReviewed(
+	record: CandidateRecord,
+	expectedProposalHash: string | undefined,
+	recommendation: ReviewCandidateOptions["recommendation"],
+): void {
+	// Rejecting creates no release authority and must remain possible even when a
+	// proposal artifact is damaged. A promote recommendation is the boundary at
+	// which an automated trial must become an individually reviewed diff.
+	if (
+		recommendation === "reject" ||
+		record.origin.kind !== "applied-builder" ||
+		record.origin.application.via === undefined
+	) return;
+	const proposalHash = record.origin.proposal.sha256;
+	if (expectedProposalHash === undefined) {
+		throw new Error(
+			`candidate ${record.candidateId} was applied by ${record.origin.application.via} without individual diff review; ` +
+			`review requires the exact proposal hash ${proposalHash}`,
+		);
+	}
+	if (expectedProposalHash !== proposalHash) {
+		throw new Error("proposal changed after confirmation; candidate review is stale");
+	}
+}
+
 function evaluatedExperimentId(record: CandidateRecord): string {
 	const evaluated = record.events.find((event) => event.type === "evaluated");
 	if (!evaluated || evaluated.type !== "evaluated") {
@@ -117,6 +148,7 @@ function persist(record: CandidateRecord, runsRoot: string): CandidateRecord {
 export function reviewCandidate(options: ReviewCandidateOptions): CandidateRecord {
 	const record = loadCandidateRecord(options.runsRoot, options.candidateId);
 	assertExpectedCandidateHash(record, options.expectedCandidateHash, "review");
+	assertAutomatedProposalWasReviewed(record, options.expectedProposalHash, options.recommendation);
 	if (candidateStatus(record) !== "evaluated") {
 		throw new Error(`candidate ${record.candidateId} must be evaluated before review`);
 	}
@@ -501,14 +533,15 @@ function assertNoScreenEvidence(record: CandidateRecord, runsRoot: string): void
 	const offending = [...cited].filter((evalRunId) => {
 		if (exclusion.blocksEverything || exclusion.ids.has(evalRunId)) return true;
 		try {
-			return readEvalRunIndex(runsRoot, evalRunId).purpose === "screen";
+			return readEvalRunIndex(runsRoot, evalRunId).purpose !== "evidence";
 		} catch {
 			return false;
 		}
 	}).sort();
 	if (offending.length > 0) {
 		throw new Error(
-			`promotion refused: ${offending.join(", ")} is a cheap-check screen, which is never promotion evidence` +
+			`promotion refused: ${offending.join(", ")} includes a cheap-check screen, which is never promotion evidence, ` +
+			"or an ambiguous legacy one-arm run, which must be rerun" +
 			(exclusion.unreadable.length > 0
 				? ` (${exclusion.unreadable.length} screen marker(s) could not be read, so nothing they might name is admitted)`
 				: ""),

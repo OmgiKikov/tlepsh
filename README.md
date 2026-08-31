@@ -556,16 +556,18 @@ stays sealed and prints counts only.
 `ahde check` runs a candidate on only the cases its source eval recorded as
 failing, once, candidate arm only, instead of the full
 `(development + sealed cases) x repetitions x 2 arms`. It is a screen and never
-evidence: its eval run carries the `solo` label, which is never reused as a
-baseline and never stands in for a candidate arm, every screen is recorded under
-`runs/screens/`, no comparison gate ever sees one, and a promotion that cites one
-is refused. `verify-candidate` runs the screen first and stops on a flat verdict
+evidence: its EvalRun atomically carries `purpose: "screen"`; that purpose (not
+the one-arm `solo` label) excludes it from baseline reuse, comparison, promotion,
+regression cases, and Workbench evidence. Every screen is also recorded under
+`runs/screens/` as a fail-closed backstop. `verify-candidate` stops on a flat verdict
 unless the operator forces the measurement anyway.
 
 `ahde improve` runs the same cycle over and over — run, diagnose, apply the next
-unapplied Builder proposal on `candidate/auto-<n>`, cheap check, verify what
-looks promising — under one routine cost question covering the whole planned
-loop. It stops and hands back when the target pass rate is reached, the cycle
+unapplied Builder proposal on `candidate/auto-<loopId>-<n>`, cheap check, verify
+what looks promising. In Builder Pi, one consequential confirmation shows the
+whole planned execution bound before any proposal is applied; invoking the
+low-level CLI command is the corresponding bounded authorization. It stops and
+hands back when the target pass rate is reached, the cycle
 budget is spent, a development verdict is not `improved`, the cheap check is flat
 twice in a row, infrastructure errors go over the budget, or a verified candidate
 is ready. It never touches the sealed guardrail and never promotes, adopts,
@@ -578,15 +580,26 @@ Builder reads the same memory before it authors, through
 `ahde_workbench_view` with `aspect: "history"` and the `priorAttempts` the
 committed-Target view carries.
 
+An automated improve/search apply is recorded as such; it does not claim the
+operator read that proposal. Before a promote recommendation, Candidate review
+shows the exact diff. The public `ahde review` command prints it and refuses the
+first time, then requires the printed `--proposal-hash`; Builder Pi binds the
+same hash into review and ship. Rejection stays possible even if that artifact
+is damaged.
+The loop stops at the first verified candidate. It does not expose a compound
+mode until one final matched and sealed comparison can honestly cover the whole
+stack.
+
 `ahde search` spends the same money on several hypotheses instead of one. Give it
 2–4 unapplied proposals that all target the same failure mode; it applies each on
-its own `candidate/search-<n>` branch, screens each with the cheap check, pays for
+its own `candidate/search-<searchId>-<n>` branch, screens each with the cheap check, pays for
 the full matched development verification only where the screen found something,
 and prints a Pareto table — verdict, score delta with its 95% interval, cost and
 latency ratios, the screen's numbers, and which candidates are dominated. A
 candidate is dominated when another verified candidate is at least as good on
 both score delta and cost ratio and strictly better on one of them (exact ties
-break by candidate order, so the frontier is never empty). A flat screen and an
+break by candidate order). Only `improved` development verdicts enter the
+release frontier, so it is honestly empty when every hypothesis is flat. A flat screen and an
 exhausted `--budget` are named in the table, never applied silently. Sealed
 verification is not part of a search: you pick one candidate and that one goes
 through the unchanged sealed gate and promotion. `ahde improve --candidates N`

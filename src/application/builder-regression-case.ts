@@ -124,7 +124,7 @@ export function resolveDevelopmentFailureOperations(
 		const allowedRecord = options.compatibleEvalRuns.find((record) => record.evalRunId === operation.evalRunId);
 		// The record says what it is: a screen written by a process that died
 		// before its marker is still a screen, and still refused here.
-		if (allowedRecord?.purpose === "screen") {
+		if (allowedRecord?.purpose !== undefined && allowedRecord.purpose !== "evidence") {
 			evidenceError("source is a cheap-check screen, which is never evidence");
 		}
 		if (!allowedRecord || !exactSourceSurface(options, allowedRecord, currentWorkspaceHash)) {

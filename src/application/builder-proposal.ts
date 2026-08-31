@@ -342,24 +342,24 @@ export type BuilderProposalAdmission = z.infer<typeof BuilderProposalAdmissionSc
 const HumanActorSchema = z.strictObject({ kind: z.literal("human"), id: NonBlankSchema });
 
 /**
- * Bumped to 2 in V2 for `via`. v1 receipts stay readable exactly as written:
- * they predate the loop recording how it applied, and every one of them was an
- * interactive apply.
+ * v2 added `via: improvement-loop`; v3 adds `via: proposal-search`. v1
+ * receipts stay readable exactly as written: they predate automated applies,
+ * and every one of them was an interactive apply.
  */
-export const BUILDER_APPLY_RECEIPT_SCHEMA_VERSION = 2;
+export const BUILDER_APPLY_RECEIPT_SCHEMA_VERSION = 3;
 
 /**
  * How the apply happened, when it was not a human reading the diff.
- * `improvement-loop` means: the operator confirmed one `ahde improve` run, and
- * this diff went onto a throwaway `candidate/auto-*` branch inside it without
- * being shown on its own. Absent means an interactive apply — a human saw this
- * exact diff and said yes to it.
+ * `improvement-loop` and `proposal-search` mean the operator authorized an
+ * automated trial on throwaway branches without reviewing each proposal on its
+ * own. Absent means an interactive apply — a human saw this exact diff and said
+ * yes to it.
  */
-export const BuilderApplyViaSchema = z.literal("improvement-loop");
+export const BuilderApplyViaSchema = z.enum(["improvement-loop", "proposal-search"]);
 export type BuilderApplyVia = z.infer<typeof BuilderApplyViaSchema>;
 
 export const BuilderApplyReceiptSchema = z.strictObject({
-	schemaVersion: z.union([z.literal(1), z.literal(BUILDER_APPLY_RECEIPT_SCHEMA_VERSION)]),
+	schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(BUILDER_APPLY_RECEIPT_SCHEMA_VERSION)]),
 	runId: RunIdSchema,
 	proposalSha256: Sha256Schema,
 	baseTargetSha: GitShaSchema,
@@ -367,20 +367,22 @@ export const BuilderApplyReceiptSchema = z.strictObject({
 	branch: NonBlankSchema,
 	paths: z.array(z.string().min(1)).min(1).refine((paths) => new Set(paths).size === paths.length, "paths must be unique"),
 	/**
-	 * The human whose authority this apply carries. For a loop apply that is the
-	 * operator who confirmed the loop — never a fiction, but never a claim that
-	 * they read this diff either; `via` is what says which it was.
+	 * The human whose authority this apply carries. For an automated improve or
+	 * search apply that is the operator who authorized the trial — never a
+	 * fiction, but never a claim that they read this diff either; `via` says
+	 * which it was.
 	 */
 	actor: HumanActorSchema,
 	via: BuilderApplyViaSchema.optional(),
 	appliedAt: TimestampSchema,
 	reason: NonBlankSchema,
 }).superRefine((receipt, context) => {
-	if (receipt.via !== undefined && receipt.schemaVersion < BUILDER_APPLY_RECEIPT_SCHEMA_VERSION) {
+	const minimumVersion = receipt.via === "proposal-search" ? 3 : receipt.via === "improvement-loop" ? 2 : 1;
+	if (receipt.schemaVersion < minimumVersion) {
 		context.addIssue({
 			code: "custom",
 			path: ["via"],
-			message: `via requires apply-receipt schemaVersion ${BUILDER_APPLY_RECEIPT_SCHEMA_VERSION}`,
+			message: `${receipt.via} requires apply-receipt schemaVersion ${minimumVersion}`,
 		});
 	}
 });

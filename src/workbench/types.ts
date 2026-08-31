@@ -162,11 +162,12 @@ export interface WorkbenchCandidateSummary {
 	baseline: { ref: string; sha: string };
 	candidate: { ref: string; sha: string } | null;
 	/**
-	 * Who put the diff on the branch, and how. `via: "improvement-loop"` means a
-	 * human confirmed one `ahde improve` run, not this diff: the review and the
-	 * ship dialog say so and show the changed paths. Null for a manual candidate.
+	 * Who put the diff on the branch, and how. A non-null `via` means a human
+	 * authorized an automated improve/search trial, not this individual diff:
+	 * review and ship say so and show the exact hash-bound proposal. Null for a
+	 * manual candidate.
 	 */
-	appliedBy?: { actorId: string; via: "improvement-loop" | null; paths: string[] } | null;
+	appliedBy?: { actorId: string; via: "improvement-loop" | "proposal-search" | null; paths: string[] } | null;
 	development: {
 		baselineEvalRunId: string;
 		candidateEvalRunId: string;
@@ -275,6 +276,10 @@ export type WorkbenchReviewDetail =
 		application: { branch: string; baseTargetSha: string; candidateSha: string; appliedAt: string };
 	})
 	| ({ kind: "candidate" } & WorkbenchCandidateSummary & {
+		/** Exact proposal behind an applied Builder candidate, including its diff. */
+		proposal?: WorkbenchProposalReview | null;
+		/** Read-side corruption is visible while rejection remains available. */
+		proposalError?: string | null;
 		adoption: { receiptId: string; adoptedAt: string; branch: string } | null;
 		continuation: { receiptId: string; continuedAt: string } | null;
 		impact: WorkbenchCandidateImpactProjection | null;
@@ -714,13 +719,6 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		candidates: z.number().int().min(1).max(4).optional(),
 		jobs: z.number().int().min(1).max(64).optional(),
 		developmentCorpusId: ArtifactIdSchema.optional(),
-		/**
-		 * Keep going after a cycle verifies `improved`, building the next cycle on
-		 * the candidate branch. The candidates stack, so the last one contains the
-		 * earlier improvements. Nothing is promoted or adopted either way, and the
-		 * operator's own branch is never touched.
-		 */
-		compound: z.boolean().optional(),
 		/** Continue the named unfinished loop instead of refusing to start. */
 		resumeLoopId: z.string().regex(/^loop_[a-z0-9]{6,32}$/).optional(),
 		/** Drop the named unfinished loop (its branches survive), then start fresh. */
@@ -908,12 +906,8 @@ export interface WorkbenchImproveResult {
 	stopMessage: string;
 	table: string;
 	candidateId: string | null;
-	/** Every verified candidate, oldest first; with `compound` each contains the last. */
-	candidateChain: string[];
 	/** This invocation's id. `--resume`/`--abandon` name it. */
 	loopId: string;
-	/** True when the loop was allowed to build the next cycle on its own candidate. */
-	compound: boolean;
 	finalPassRate: number;
 	executions: number;
 	/** Hypotheses each cycle compared; 1 means today's single-change behaviour. */

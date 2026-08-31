@@ -665,7 +665,7 @@ export function loadWorkbenchInventory(options: {
 			// never selectable evidence, never a reusable baseline and never the
 			// source a proposal or a regression case cites, and the record says so
 			// itself — so it never enters the inventory at all.
-			.filter((run) => run.purpose !== "screen")
+			.filter((run) => run.purpose === "evidence")
 			.map((run) => loadEvalRun(options.runsRoot, run.evalRunId))
 			.filter((run) => target === null || run.target.id === target.manifest.id);
 	} catch {

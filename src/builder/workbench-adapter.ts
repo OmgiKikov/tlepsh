@@ -360,12 +360,12 @@ export function createBuilderWorkbenchTools(
 			label: "Decide in Builder Workbench",
 			description: [
 				"Do the work the operator asked for. Call this yourself when they say it in plain words (test, run, check, fix it, apply, ship, next) — never tell them to type a slash command instead. Every kind requires a non-blank `reason`.",
-				"Three kinds ask the operator a question; the rest just happen. Prefer these three:",
+				"Four kinds ask the operator a question; the rest just happen. Prefer these:",
 				"• { kind: \"run-current\", repetitions (3 recommended; a sealed verdict needs ≥ 2) } — “test it”, wherever they are. At spec-review/corpus-review it becomes start-testing (approve + publish + run in one question); at ready-to-evaluate/improvement-authoring it runs the basket without asking; at candidate-verification it verifies the applied candidate without asking. An unusually expensive run asks once.",
 				"• { kind: \"apply-proposal\", runId?, branch } — the only moment a diff touches the repository; the host shows the exact diff.",
 				"• { kind: \"ship\", version: \"x.y.z\" } — “ship it”: records the promote review, tags the exact revision, fast-forwards the operator's branch, and closes the cycle, in one question. `version` is required while the promotion is still pending; at candidate-adoption/complete it is optional.",
 				"Also available: { kind: \"start-testing\", repetitions } explicitly; { kind: \"calibrate\", repetitions } measures noise once per Target revision (no question); { kind: \"discard-proposal\" } and { kind: \"reject-candidate\" } and { kind: \"abandon-candidate\" } are one short yes/no.",
-				"• { kind: \"improve\", until (0..1 pass rate), maxCycles, repetitions, candidates?, jobs?, developmentCorpusId? } — the autoloop: run → diagnose → apply the next open proposal → cheap check on the cases that already failed → verify what looks promising, over and over. One question up front for the whole planned loop. It stops and hands back the moment the sealed guardrail or a release decision is what is left; it never promotes, adopts, publishes or approves.",
+				"• { kind: \"improve\", until (0..1 pass rate), maxCycles, repetitions, candidates?, jobs?, developmentCorpusId?, baselineMaxAgeMs?, resumeLoopId?, abandonLoopId? } — the autoloop: reuse or run → diagnose → apply the next matching open proposal → cheap check on the cases that already failed → verify what looks promising. One full confirmation up front authorizes automated applies only on throwaway branches. It stops at the first verified candidate because the exact diff, sealed guardrail and release remain human decisions; it never promotes, adopts, publishes or approves.",
 				"  candidates: 2..4 turns each cycle into a search instead of one guess: it takes that many open proposals for the top failure mode, screens and verifies each on its own branch, and returns a Pareto table (score delta with its interval, cost and latency ratios, which candidates are dominated). It picks nothing — show the table and let the operator choose, then apply or ship the one they name. It also refuses to re-apply a change whose files and failure mode match an attempt that already lost.",
 				"The fine-grained decisions still exist for scripts and for recovery, each with its own dialog: target-setup → { kind: \"scaffold-target\" } then { kind: \"configure-target\", targetId (kebab-case), model: { provider, modelId, thinkingLevel?, timeoutMs?, params? } };",
 				"spec-review → { kind: \"approve-spec\", draftSpecId? }; corpus-review → { kind: \"publish-corpus\", draftId?, name? };",
@@ -384,13 +384,8 @@ export function createBuilderWorkbenchTools(
 				// durable authority still needs the local TUI, and the policy on each
 				// confirmation enforces that again at the moment of the decision.
 				//
-				// `improve` is the exception on the routine side: its cycles apply
-				// diffs on throwaway `candidate/auto-*` branches, and applying is the
-				// one moment a diff touches the repository. The operator's request is
-				// the permission for the loop, but that request has to come from a
-				// human in front of a terminal, not from an RPC or print host.
 				const policy = workbenchGateClass(params.kind);
-				if (policy !== "routine" || params.kind === "improve") requireHostUI(ctx, "Workbench decision");
+				if (policy !== "routine") requireHostUI(ctx, "Workbench decision");
 				// Never close this over the REQUESTED kind: routine `run-current`
 				// auto-chains into the consequential `start-testing` composite, and a
 				// guard that already decided "routine" would let an RPC or print host

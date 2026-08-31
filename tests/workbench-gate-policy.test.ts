@@ -156,7 +156,7 @@ describe("Workbench gate policy", () => {
 			"run-eval": "routine",
 			calibrate: "routine",
 			"verify-candidate": "routine",
-			improve: "routine",
+				improve: "consequential",
 		});
 		expect(workbenchGateClass("ship")).toBe("consequential");
 		expect(workbenchGateClass("run-current")).toBe("routine");

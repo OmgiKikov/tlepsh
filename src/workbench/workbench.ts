@@ -162,6 +162,7 @@ import {
 	type WorkbenchInventory,
 } from "./inventory.js";
 import {
+	candidateProposalReview,
 	candidateSummary,
 	compatibleDevelopmentEvals,
 	diagnosisSummary,
@@ -206,6 +207,7 @@ import {
 	type WorkbenchHistoryDetail,
 	type WorkbenchHumanGate,
 	type WorkbenchImprovementBriefProjection,
+	type WorkbenchProposalReview,
 	type WorkbenchDatasetRecipeArtifact,
 	type WorkbenchReviewDetail,
 	type WorkbenchRunEvalResult,
@@ -643,6 +645,26 @@ export class AhdeWorkbench {
 		}
 	}
 
+	/** The exact code change behind a Builder candidate, when it has one. */
+	private candidateProposal(candidate: CandidateRecord): WorkbenchProposalReview | null {
+		return candidateProposalReview(this.runsRoot, candidate);
+	}
+
+	/** Read-side degradation: show the corruption and keep rejection reachable. */
+	private candidateProposalProjection(candidate: CandidateRecord): {
+		proposal: WorkbenchProposalReview | null;
+		proposalError: string | null;
+	} {
+		try {
+			return { proposal: this.candidateProposal(candidate), proposalError: null };
+		} catch (error) {
+			return {
+				proposal: null,
+				proposalError: error instanceof Error ? error.message : String(error),
+			};
+		}
+	}
+
 	/** Impact is a review aid; an unavailable projection never blocks a human decision. */
 	private candidateImpact(candidate: CandidateRecord): WorkbenchCandidateImpactProjection {
 		if (!["evaluated", "reviewed", "promoted", "rejected"].includes(candidateStatus(candidate))) {
@@ -1018,6 +1040,7 @@ export class AhdeWorkbench {
 		// refuse on it. `candidateView` swallows its own errors, so a missing
 		// label store degrades to the plain summary instead of blocking a ship.
 		const summary = this.candidateView(candidate);
+		const proposal = this.candidateProposal(candidate);
 		const candidateId = candidate.candidateId;
 		const sameCandidate = (subject: unknown): boolean =>
 			(subject as { candidate?: { candidateId?: unknown } }).candidate?.candidateId === candidateId;
@@ -1058,6 +1081,8 @@ export class AhdeWorkbench {
 					files: summary.appliedBy.paths.length,
 					paths: summary.appliedBy.paths.slice(0, 20),
 					reviewed: summary.appliedBy.via === null,
+					exactDiff: proposal?.exactDiff ?? null,
+					proposalHash: proposal?.proposalHash ?? null,
 				}
 				: null,
 			candidate: summary,
@@ -1367,11 +1392,13 @@ export class AhdeWorkbench {
 			case "candidate-adoption":
 			case "complete": {
 				const candidate = requireOpenTerminalCandidate(inventory);
+				const proposal = this.candidateProposalProjection(candidate);
 				const adoption = inventory.adoptedCandidates.get(candidate.candidateId) ?? null;
 				const continuation = inventory.continuedCandidates.get(candidate.candidateId) ?? null;
 				content = {
 					kind: "candidate",
 					...this.candidateView(candidate),
+					...proposal,
 					adoption: adoption
 						? { receiptId: adoption.receiptId, adoptedAt: adoption.adoptedAt, branch: adoption.intent.subject.branch.name }
 						: null,
@@ -1394,9 +1421,11 @@ export class AhdeWorkbench {
 			case "candidate-review":
 			case "release-decision": {
 				const candidate = requireCandidate(inventory, ["proposed", "built", "validated", "evaluated", "reviewed"]);
+				const proposal = this.candidateProposalProjection(candidate);
 				content = {
 					kind: "candidate",
 					...this.candidateView(candidate),
+					...proposal,
 					adoption: null,
 					continuation: null,
 					impact: this.candidateImpact(candidate),
@@ -2416,12 +2445,11 @@ export class AhdeWorkbench {
 			const approved = requireApprovedSpec(inventory);
 			const corpus = requireDevelopmentCorpus(inventory, input.developmentCorpusId, approved.id);
 			const candidates = input.candidates ?? 1;
-			const compound = input.compound === true;
+			if (input.resumeLoopId && input.abandonLoopId) {
+				throw new Error("improve cannot resume and abandon a loop in the same decision");
+			}
 			// An unfinished loop is reported, not raced. `--abandon` drops the claim
 			// (never the branches); `--resume` continues the same branch series.
-			if (input.abandonLoopId) {
-				abandonImprovementLoop(this.runsRoot, this.projectId, input.abandonLoopId, this.dependencies.now);
-			}
 			const unfinished = listUnfinishedImprovementLoops(this.runsRoot, this.projectId);
 			const resumed = input.resumeLoopId
 				? unfinished.running.find((loop) => loop.loopId === input.resumeLoopId) ?? null
@@ -2429,16 +2457,24 @@ export class AhdeWorkbench {
 			if (input.resumeLoopId && !resumed) {
 				throw new Error(`no unfinished improvement loop ${input.resumeLoopId} in this project`);
 			}
-			const blocking = unfinished.running.filter((loop) => loop.loopId !== resumed?.loopId);
+			const abandoned = input.abandonLoopId
+				? unfinished.running.find((loop) => loop.loopId === input.abandonLoopId) ?? null
+				: null;
+			if (input.abandonLoopId && !abandoned) {
+				throw new Error(`no unfinished improvement loop ${input.abandonLoopId} in this project`);
+			}
+			const blocking = unfinished.running.filter((loop) =>
+				loop.loopId !== resumed?.loopId && loop.loopId !== abandoned?.loopId);
 			if (blocking.length > 0 || unfinished.unreadable.length > 0) {
 				throw new UnfinishedImprovementLoopError(blocking, unfinished.unreadable);
 			}
 			const plannedExecutions = plannedImprovementExecutions({
 				developmentTasks: corpus.taskCount,
 				repetitions: input.repetitions,
-				maxCycles: input.maxCycles - (resumed?.cyclesCompleted ?? 0),
+				maxCycles: input.maxCycles - (resumed?.lastCycle ?? 0),
 				candidates,
 			});
+			const estimate = this.runEstimate(plannedExecutions, inventory.target);
 			const target = `${Math.round(input.until * 100)}%`;
 			const subject = {
 				operation: "improve",
@@ -2448,14 +2484,16 @@ export class AhdeWorkbench {
 				maxCycles: input.maxCycles,
 				repetitions: input.repetitions,
 				candidates,
-				compound,
 				resumingLoopId: resumed?.loopId ?? null,
+				abandoningLoopId: abandoned?.loopId ?? null,
 				plannedExecutions,
+				estimatedCost: formatEstimatedCost(estimate),
+				estimatedTime: formatEstimatedTime(estimate),
 				// The one confirmation is also the one disclosure. What the operator is
 				// approving is a loop that APPLIES diffs without showing each of them.
 				applies: "on throwaway candidate/auto-<loopId>-<n> branches, without showing each diff",
 				touchesYourBranch: false,
-				diffsVisibleIn: ["the cycle table", "the final review", "the ship dialog"],
+				diffsVisibleIn: ["changed paths in the cycle table", "the exact diff in /review", "the exact diff in the ship dialog"],
 				authoring: IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE,
 				neverDecides: [...IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS],
 			};
@@ -2464,16 +2502,20 @@ export class AhdeWorkbench {
 					`Run up to ${input.maxCycles} improvement cycle${input.maxCycles === 1 ? "" : "s"} ` +
 					`towards ${target}` +
 					(candidates > 1 ? `, comparing ${candidates} changes per cycle` : "") +
-					(compound ? ", stacking each verified candidate on the last" : "") +
 					` (at most ${plannedExecutions} Target executions)? ` +
 					"This is the only time you will be asked: the loop APPLIES proposals on throwaway " +
 					"`candidate/auto-<loopId>-<n>` branches WITHOUT showing you each diff. " +
-					"Nothing touches your branch or your working tree, and every diff is listed in the cycle " +
-					"table and shown again in the final review and the ship dialog. " +
+					"Nothing touches your branch or your working tree. Changed paths are listed in the cycle " +
+					"table; the exact diff is shown in /review and bound by hash to the ship dialog. " +
 					"The loop never promotes, adopts, publishes or approves anything. " +
 					IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE,
-				estimate: this.runEstimate(plannedExecutions, inventory.target),
+				estimate,
 			});
+			// Abandoning is itself state-changing. Do it only after the human approved
+			// the exact improve subject, never while merely preparing the dialog.
+			if (input.abandonLoopId) {
+				abandonImprovementLoop(this.runsRoot, this.projectId, input.abandonLoopId, this.dependencies.now);
+			}
 			const loop = await this.dependencies.runImprovementLoop({
 				repositoryDir: this.projectDir,
 				runsRoot: this.runsRoot,
@@ -2485,8 +2527,7 @@ export class AhdeWorkbench {
 				maxCycles: input.maxCycles,
 				repetitions: input.repetitions,
 				candidates,
-				compound,
-				...(resumed ? { loopId: resumed.loopId, resumeFromCycle: resumed.cyclesCompleted } : {}),
+				...(resumed ? { loopId: resumed.loopId } : {}),
 				...(input.baselineMaxAgeMs === undefined ? {} : { baselineMaxAgeMs: input.baselineMaxAgeMs }),
 				...(input.jobs === undefined ? {} : { jobs: input.jobs }),
 				author: this.dependencies.authorImprovementProposal ?? recordedBuilderProposalAuthor({
@@ -2513,9 +2554,7 @@ export class AhdeWorkbench {
 					stopMessage: loop.stopMessage,
 					table,
 					candidateId: loop.candidateId,
-					candidateChain: loop.candidateChain,
 					loopId: loop.loopId,
-					compound: loop.compound,
 					finalPassRate: loop.finalPassRate,
 					executions: loop.executions,
 					candidates,
@@ -2527,12 +2566,13 @@ export class AhdeWorkbench {
 
 		if (input.kind === "review-candidate") {
 			const candidate = requireCandidate(inventory, ["evaluated"], input.candidateId);
-			const before = { operation: "review-candidate", candidateHash: hashValue(candidate), candidate: this.candidateView(candidate), recommendation: input.recommendation };
+			const proposal = input.recommendation === "promote" ? this.candidateProposal(candidate) : null;
+			const before = { operation: "review-candidate", candidateHash: hashValue(candidate), candidate: this.candidateView(candidate), proposal, recommendation: input.recommendation };
 			const actor = await this.confirm(input, gate, "Record exact candidate review", before, options.signal);
 			const current = this.decisionInventory(input.kind);
 			const after = requireCandidate(current, ["evaluated"], candidate.candidateId);
 			if (hashValue(after) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
-			const reviewed = this.dependencies.reviewCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, recommendation: input.recommendation, reason: input.reason, actorId: actor, now: this.dependencies.now });
+			const reviewed = this.dependencies.reviewCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, ...(proposal ? { expectedProposalHash: proposal.proposalHash } : {}), recommendation: input.recommendation, reason: input.reason, actorId: actor, now: this.dependencies.now });
 			const settled = this.select("candidate", reviewed.candidateId);
 			return { kind: input.kind, message: "Human candidate review recorded.", result: candidateSummary(reviewed), view: await this.viewOf(settled) };
 		}

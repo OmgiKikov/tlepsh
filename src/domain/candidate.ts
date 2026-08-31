@@ -58,8 +58,8 @@ const AppliedBuilderOriginSchema = z.strictObject({
 	applyReceipt: CandidateArtifactRefSchema,
 	application: z.strictObject({
 		/**
-		 * The human whose authority this apply carries. For an apply made inside an
-		 * `ahde improve` run that is the operator who confirmed the loop — and
+		 * The human whose authority this apply carries. For an automated improve or
+		 * search that is the operator who authorized the trial — and
 		 * `via` below is what stops the record from implying they read this diff.
 		 */
 		actor: HumanActorSchema,
@@ -68,7 +68,7 @@ const AppliedBuilderOriginSchema = z.strictObject({
 		 * and canonically dropped — for every interactive apply, so existing
 		 * candidate records are unchanged.
 		 */
-		via: z.literal("improvement-loop").optional(),
+		via: z.enum(["improvement-loop", "proposal-search"]).optional(),
 		reason: VerbatimTextSchema,
 		appliedAt: TimestampSchema,
 		baseTargetSha: GitShaSchema,

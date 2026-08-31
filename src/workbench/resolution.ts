@@ -1,4 +1,10 @@
-import type { PersistedBuilderRun } from "../application/builder-proposal.js";
+import { createHash } from "node:crypto";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { resolve } from "node:path";
+import {
+	loadBuilderProposalRun,
+	type PersistedBuilderRun,
+} from "../application/builder-proposal.js";
 import type { BuilderCorpusDraft } from "../application/builder-corpus-draft.js";
 import type { CorpusMetadata } from "../corpus.js";
 import type { DiagnosisRecord } from "../diagnosis.js";
@@ -12,6 +18,8 @@ import {
 import type { EvalRunRecord } from "../eval.js";
 import type { SpecSnapshot } from "../spec.js";
 import { redactTraceText } from "../trace.js";
+import { canonicalJson } from "../provenance.js";
+import { resolveContainedArtifactPath } from "../storage/paths.js";
 import { WorkbenchSelectionRequiredError } from "./errors.js";
 import type {
 	WorkbenchInventory,
@@ -20,7 +28,9 @@ import type {
 import type {
 	WorkbenchCandidateSummary,
 	WorkbenchDiagnosisSummary,
-	WorkbenchProposalReview, WorkbenchGateProjection } from "./types.js";
+	WorkbenchGateProjection,
+	WorkbenchProposalReview,
+} from "./types.js";
 
 const MAX_DIFF_BYTES = 4 * 1024 * 1024;
 
@@ -62,6 +72,72 @@ export function proposalReview(record: PersistedBuilderRun): WorkbenchProposalRe
 	};
 }
 
+function assertExactCandidateArtifact(
+	path: string,
+	recordedPath: string,
+	expectedHash: string,
+	label: string,
+): Buffer {
+	const entry = lstatSync(path);
+	if (entry.isSymbolicLink() || !entry.isFile()) {
+		throw new Error(`${label} must remain a regular non-symlink artifact`);
+	}
+	const recordedEntry = lstatSync(resolve(recordedPath));
+	if (recordedEntry.isSymbolicLink() || !recordedEntry.isFile()) {
+		throw new Error(`${label} Candidate path must remain a regular non-symlink artifact`);
+	}
+	// macOS may spell the same regular file through /var and /private/var. The
+	// resolved inode must match; a symlink at the recorded leaf is still refused.
+	if (realpathSync(path) !== realpathSync(resolve(recordedPath))) {
+		throw new Error(`${label} path no longer matches the Candidate record`);
+	}
+	const bytes = readFileSync(path);
+	const actual = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+	if (actual !== expectedHash) throw new Error(`${label} changed after the candidate was created`);
+	return bytes;
+}
+
+/**
+ * Resolve the exact proposal behind a Candidate, not merely another run with
+ * the same id. Automated applies cross a trust boundary here: both immutable
+ * artifact hashes and the embedded proposal must agree before a host may show
+ * the diff or bind a human review to it.
+ */
+export function candidateProposalReview(
+	runsRoot: string,
+	candidate: CandidateRecord,
+): WorkbenchProposalReview | null {
+	if (candidate.origin.kind !== "applied-builder") return null;
+	const origin = candidate.origin;
+	const builderRunPath = resolveContainedArtifactPath(runsRoot, "builders", origin.builderRunId, "builder_run.json");
+	assertExactCandidateArtifact(builderRunPath, origin.builderRun.path, origin.builderRun.sha256, "Builder run");
+	const proposalPath = resolveContainedArtifactPath(runsRoot, "builders", origin.builderRunId, "proposal.json");
+	const proposalBytes = assertExactCandidateArtifact(
+		proposalPath,
+		origin.proposal.path,
+		origin.proposal.sha256,
+		"Builder proposal",
+	);
+	const record = loadBuilderProposalRun(runsRoot, origin.builderRunId);
+	const review = proposalReview(record);
+	if (
+		review.proposalHash !== origin.proposal.sha256 ||
+		origin.application.proposalSha256 !== origin.proposal.sha256
+	) {
+		throw new Error("Builder proposal identity no longer matches the Candidate record");
+	}
+	let artifact: unknown;
+	try {
+		artifact = JSON.parse(proposalBytes.toString("utf8")) as unknown;
+	} catch (error) {
+		throw new Error("Builder proposal is no longer valid JSON", { cause: error });
+	}
+	if (canonicalJson(artifact) !== canonicalJson(record.result.proposal)) {
+		throw new Error("Builder proposal artifact no longer matches the exact diff recorded by the Builder run");
+	}
+	return review;
+}
+
 export function diagnosisSummary(record: DiagnosisRecord): WorkbenchDiagnosisSummary {
 	return {
 		diagnosisId: record.diagnosisId,
@@ -101,8 +177,8 @@ export function candidateSummary(
 		baseline: record.baseline,
 		candidate: built?.type === "built" ? built.candidate : null,
 		// How the diff got onto the branch. `improvement-loop` says a human
-		// confirmed one loop rather than this diff, and every reader of this
-		// candidate — the review, the ship dialog — is told so.
+		// authorized an automated trial rather than this diff, and every reader of
+		// this candidate — the review, the ship dialog — is told so.
 		appliedBy: record.origin.kind === "applied-builder"
 			? {
 				actorId: record.origin.application.actor.id,

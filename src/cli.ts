@@ -39,12 +39,15 @@ import {
 import {
 	abandonImprovementLoop,
 	listUnfinishedImprovementLoops,
+	MAX_IMPROVEMENT_CYCLES,
+	plannedImprovementExecutions,
 	recordedBuilderProposalAuthor,
 	renderImprovementLoopTable,
 	runImprovementLoop,
 	UnfinishedImprovementLoopError,
 } from "./application/improvement-loop.js";
 import {
+	MAX_SEARCH_CANDIDATES,
 	renderProposalSearchTable,
 	runProposalSearch,
 } from "./application/proposal-search.js";
@@ -56,6 +59,7 @@ import { redactTraceText } from "./trace.js";
 import { buildEvalReport } from "./report.js";
 import {
 	decideCandidateRejection,
+	loadCandidateRecord,
 	promoteReviewedCandidate,
 	reviewCandidate,
 } from "./application/candidate-review.js";
@@ -87,6 +91,7 @@ import { renderCalibration } from "./builder/render/calibration.js";
 import { renderDataset } from "./builder/render/view.js";
 import { plainPaint } from "./builder/render/paint.js";
 import { DEFAULT_REPETITIONS, calibrationProjection } from "./workbench/calibration.js";
+import { candidateProposalReview } from "./workbench/resolution.js";
 import { resolveCommitRef } from "./git/experiment-worktree.js";
 import { SEALED_GATE_POLICY } from "./domain/comparison-gate.js";
 import { runInteractiveTarget } from "./target/interactive.js";
@@ -1134,21 +1139,36 @@ async function main(): Promise<void> {
 			const until = parsePassRateFlag(requireArg("until"));
 			if (until === null) throw new Error("--until must be a pass rate such as 90% or 0.9");
 			const maxCycles = Number(requireArg("max-cycles"));
-			const projectId = arg("project") ?? loadTarget(targetDir).manifest.id;
+			const baseTarget = loadTarget(targetDir);
+			const projectId = arg("project") ?? baseTarget.manifest.id;
 			const corpusId = arg("corpus");
 			const repetitions = arg("repetitions") ? Number(arg("repetitions")) : DEFAULT_REPETITIONS;
+			const candidates = arg("candidates") ? Number(arg("candidates")) : 1;
+			if (!Number.isInteger(maxCycles) || maxCycles < 1 || maxCycles > MAX_IMPROVEMENT_CYCLES) {
+				throw new Error(`--max-cycles must be between 1 and ${MAX_IMPROVEMENT_CYCLES}, got ${maxCycles}`);
+			}
+			if (!Number.isInteger(repetitions) || repetitions < 1) {
+				throw new Error(`--repetitions must be a positive integer, got ${repetitions}`);
+			}
+			if (!Number.isInteger(candidates) || candidates < 1 || candidates > MAX_SEARCH_CANDIDATES) {
+				throw new Error(`--candidates must be between 1 and ${MAX_SEARCH_CANDIDATES}, got ${candidates}`);
+			}
+			const resumeLoopId = arg("resume");
+			const abandonLoopId = arg("abandon");
+			if (resumeLoopId && abandonLoopId) {
+				throw new Error("improve cannot resume and abandon a loop in the same invocation");
+			}
 			const approvedSpecId = soleApprovedSpecId(projectId);
 			// An unfinished loop is reported, not raced onto the same branch names.
 			// `--abandon` drops the claim (never the branches); `--resume` continues.
-			if (arg("abandon")) {
-				const dropped = abandonImprovementLoop(runsRoot(), projectId, arg("abandon")!);
+			if (abandonLoopId) {
+				const dropped = abandonImprovementLoop(runsRoot(), projectId, abandonLoopId);
 				console.log(
-					`abandoned improvement loop ${dropped.loopId} (${dropped.cyclesCompleted} cycle(s)). ` +
+					`abandoned improvement loop ${dropped.loopId} (${dropped.lastCycle} cycle slot(s) claimed). ` +
 					`Its branches are untouched: ${dropped.branches.join(", ") || "none"}.`,
 				);
 			}
 			const unfinished = listUnfinishedImprovementLoops(runsRoot(), projectId);
-			const resumeLoopId = arg("resume");
 			const resumed = resumeLoopId
 				? unfinished.running.find((loop) => loop.loopId === resumeLoopId) ?? null
 				: null;
@@ -1159,6 +1179,20 @@ async function main(): Promise<void> {
 			if (blocking.length > 0 || unfinished.unreadable.length > 0) {
 				throw new UnfinishedImprovementLoopError(blocking, unfinished.unreadable);
 			}
+			const effectiveTarget = corpusId
+				? targetWithDevelopmentCorpus(baseTarget, loadCorpus({ stateRoot: stateRoot(), projectId, corpusId }))
+				: baseTarget;
+			const plannedExecutions = plannedImprovementExecutions({
+				developmentTasks: effectiveTarget.tasks.length,
+				repetitions,
+				maxCycles: maxCycles - (resumed?.lastCycle ?? 0),
+				candidates,
+			});
+			process.stderr.write(
+				`AHDE improve authorization · up to ${plannedExecutions} Target executions · ` +
+				"proposals may be applied to throwaway branches without individual diff review; " +
+				"the exact diff must be hash-confirmed at review\n",
+			);
 			const result = await runImprovementLoop({
 				repositoryDir: targetDir,
 				runsRoot: runsRoot(),
@@ -1169,9 +1203,8 @@ async function main(): Promise<void> {
 				until,
 				maxCycles,
 				repetitions,
-				...(arg("candidates") ? { candidates: Number(arg("candidates")) } : {}),
-				...(arg("compound") ? { compound: true } : {}),
-				...(resumed ? { loopId: resumed.loopId, resumeFromCycle: resumed.cyclesCompleted } : {}),
+				candidates,
+				...(resumed ? { loopId: resumed.loopId } : {}),
 				...(arg("baseline-max-age") ? { baselineMaxAgeMs: Number(arg("baseline-max-age")) } : {}),
 				...(arg("jobs") ? { jobs: Number(arg("jobs")) } : {}),
 				author: recordedBuilderProposalAuthor({ stateRoot: stateRoot(), runsRoot: runsRoot(), projectId }),
@@ -1275,9 +1308,30 @@ async function main(): Promise<void> {
 			if (recommendation !== "promote" && recommendation !== "reject") {
 				throw new Error(`--recommend must be promote or reject, got ${recommendation}`);
 			}
+			const candidateId = requireArg("candidate");
+			const candidate = loadCandidateRecord(runsRoot(), candidateId);
+			let expectedProposalHash: string | undefined;
+			if (
+				recommendation === "promote" &&
+				candidate.origin.kind === "applied-builder" &&
+				candidate.origin.application.via !== undefined
+			) {
+				const proposal = candidateProposalReview(runsRoot(), candidate);
+				if (!proposal) throw new Error(`candidate ${candidateId} has no reconstructable proposal to review`);
+				console.log(`exact automated proposal ${proposal.proposalHash}:`);
+				console.log(proposal.exactDiff);
+				expectedProposalHash = arg("proposal-hash");
+				if (!expectedProposalHash) {
+					throw new Error(
+						`candidate ${candidateId} was applied by ${candidate.origin.application.via} without individual diff review; ` +
+						`read the exact diff above, then rerun with --proposal-hash ${proposal.proposalHash}`,
+					);
+				}
+			}
 			const record = reviewCandidate({
 				runsRoot: runsRoot(),
-				candidateId: requireArg("candidate"),
+				candidateId,
+				...(expectedProposalHash ? { expectedProposalHash } : {}),
 				recommendation,
 				reason: requireArg("reason"),
 				actorId: arg("actor"),

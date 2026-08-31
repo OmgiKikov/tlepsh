@@ -7,7 +7,8 @@
  * with nothing learned about the neighbouring hypotheses. This module spends
  * the same money on several and hands back a Pareto table.
  *
- * What it does: apply each proposal on its own `candidate/search-<n>` branch,
+ * What it does: apply each proposal on its own
+ * `candidate/search-<searchId>-<n>` branch,
  * screen it with the ordinary cheap check, and pay for the full matched
  * development verification only where the screen found something. What it never
  * does: promote, adopt, publish, approve, review, or open the sealed holdout.
@@ -19,15 +20,16 @@
  *
  * The evidence rules are inherited, not re-invented. Every screen is a
  * {@link runCheapCheck}, so it carries all four of that module's exclusions
- * (the `solo` label that is never reused as a baseline and can never stand in
- * for a candidate arm, the durable `runs/screens/` marker, no comparison gate,
- * and the refusal to screen a screen or sealed evidence). Every verification is
+ * (`purpose: "screen"` in the EvalRun, the durable `runs/screens/` marker, no
+ * comparison gate, and the refusal to screen a screen or sealed evidence).
+ * Every verification is
  * an ordinary development candidate experiment whose candidate arm carries the
  * `candidate` label, which `findReusableBaseline` never asks for. No new
  * receipt type exists here: the search writes apply receipts, screen records
  * and candidate records, all of them shapes that already existed.
  */
 
+import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import type { CorpusRef } from "../corpus.js";
 import type { GateVerdict } from "../domain/comparison-gate.js";
@@ -46,6 +48,11 @@ import { runCheapCheck } from "./cheap-check.js";
 /** Hypotheses one search may compare. Fewer is a guess; more is a budget hole. */
 export const MIN_SEARCH_CANDIDATES = 2;
 export const MAX_SEARCH_CANDIDATES = 4;
+
+/** Collision-resistant namespace for one standalone search's throwaway refs. */
+export function newProposalSearchId(): string {
+	return randomBytes(12).toString("hex");
+}
 
 /**
  * Every decision that creates release authority or asks for human judgement.
@@ -193,7 +200,7 @@ export interface ProposalSearchDevelopment {
 }
 
 export interface ProposalSearchRow {
-	/** 1-based position, which is also the `candidate/search-<n>` branch number. */
+	/** 1-based position, which is also the final branch-name ordinal. */
 	ordinal: number;
 	proposalRunId: string;
 	branch: string | null;
@@ -326,14 +333,14 @@ function costKey(development: ProposalSearchDevelopment): number {
  * either Y is strictly better on one of them, or Y ties on both and comes
  * first. The tie-break by ordinal is what keeps the frontier non-empty when two
  * hypotheses measure identically; without it, "worse or equal on both" would
- * mark every member of a tie as dominated and leave the human nothing to pick.
+ * mark every improved member of a tie as dominated and erase a viable frontier.
  *
- * Only verified rows take part. A screened-out or skipped hypothesis has no
- * verdict, so it can neither dominate nor be dominated: it is reported with its
- * reason instead.
+ * Only rows with an `improved` development verdict take part. A screened-out,
+ * skipped, flat or regressed hypothesis is evidence but not a release option.
  */
 function markDomination(rows: ProposalSearchRow[]): number[] {
-	const verified = rows.filter((row) => row.status === "verified" && row.development !== null);
+	const verified = rows.filter((row) =>
+		row.status === "verified" && row.development?.verdict === "improved");
 	for (const row of verified) {
 		const mine = row.development as ProposalSearchDevelopment;
 		let dominatedBy: number | null = null;
@@ -444,7 +451,7 @@ export async function runProposalSearch(
 	const repositoryDir = resolve(options.repositoryDir);
 	const runsRoot = resolve(options.runsRoot);
 	const stateRoot = resolve(options.stateRoot);
-	const branchPrefix = options.branchPrefix ?? "candidate/search-";
+	const branchPrefix = options.branchPrefix ?? `candidate/search-${newProposalSearchId()}-`;
 	const actorId = options.actorId ?? "local-user";
 	const proposalRunIds = [...options.proposalRunIds];
 	if (proposalRunIds.length < MIN_SEARCH_CANDIDATES || proposalRunIds.length > MAX_SEARCH_CANDIDATES) {
@@ -514,6 +521,7 @@ export async function runProposalSearch(
 				runId: plan.proposalRunId,
 				requestedBranch: `${branchPrefix}${ordinal}`,
 				actor: { kind: "human", id: actorId },
+				via: "proposal-search",
 				reason: `Proposal search ${ordinal}: try one hypothesis for ${options.failureModeId}.`,
 			}, options.now ? { now: options.now } : {});
 		} catch (error) {
@@ -599,7 +607,8 @@ export async function runProposalSearch(
 			record(searchCandidateLine(row));
 			continue;
 		}
-		const spent = verified.baseline.summary.total + verified.candidate.summary.total;
+		const spent = verified.candidate.summary.total +
+			(verified.baselineReused ? 0 : verified.baseline.summary.total);
 		executions += spent;
 		row.executions += spent;
 		row.candidateId = verified.record.candidateId;
@@ -697,11 +706,13 @@ export function renderProposalSearchTable(result: ProposalSearchResult): string 
 				(row.screen.withinErrorBudget ? "" : " · inconclusive")
 			: "—";
 		const development = row.development;
-		const frontier = row.status !== "verified"
+		const frontier = row.status !== "verified" || !development
 			? "—"
-			: row.dominated
-				? `dominated by ${row.dominatedBy}`
-				: "best so far";
+			: development.verdict !== "improved"
+				? "not improved"
+				: row.dominated
+					? `dominated by ${row.dominatedBy}`
+					: "best so far";
 		return `| ${row.ordinal} | ${row.branch ?? "—"} | ${row.changedPaths.join(", ") || "—"} | ${screen} | ` +
 			`${development ? development.verdict : "skipped"} | ${development ? points(development.scoreDelta) : "—"} | ` +
 			`${development ? `${points(development.confidence95.low)}…${points(development.confidence95.high)}` : "—"} | ` +

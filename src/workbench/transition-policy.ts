@@ -115,14 +115,10 @@ export const WORKBENCH_GATE_POLICY = {
 	"run-eval": "routine",
 	calibrate: "routine",
 	"verify-candidate": "routine",
-	// The autoloop is measurement too: many runs, one estimate covering the
-	// whole planned loop, and not one decision that creates release authority.
-	// Its ONE confirmation is also its only disclosure — it says out loud that
-	// diffs will be applied on throwaway `candidate/auto-*` branches without
-	// being shown one by one, that nothing touches the operator's branch, and
-	// where every diff can be read afterwards — so a second, per-apply dialog
-	// would be theatre, not consent.
-	improve: "routine",
+	// The loop measures, but it also applies exact proposals to throwaway refs.
+	// Its one up-front disclosure is therefore always a real full confirmation,
+	// never a routine auto-approval hidden behind the cost threshold.
+	improve: "consequential",
 } as const satisfies Record<WorkbenchDecisionInput["kind"], WorkbenchGateClass>;
 
 export function workbenchGateClass(kind: WorkbenchDecisionInput["kind"]): WorkbenchGateClass {

@@ -176,15 +176,15 @@ credential.
 4. Comparability excludes the changing Harness revision but includes every other effective execution and grading input.
 5. The Target sees one holdout input at a time, never the holdout corpus, graders, expected answers, or future cases.
 6. A Proposal cannot modify corpus or model configuration and cannot be applied
-   without an explicit human command. There are exactly two such commands: an
-   interactive apply, where a human reads THIS diff and says yes; and the single
-   confirmation of one `ahde improve` run, which states before the yes that the
-   loop will apply proposals on throwaway `candidate/auto-<loopId>-<n>` branches
-   without showing each diff, that nothing touches the operator's branch or
-   working tree, and that every diff is listed in the cycle table and shown
-   again in the review and the ship dialog. An apply made under the second
-   command records `via: "improvement-loop"` on its receipt and on the
-   Candidate's origin, so no reader can mistake it for a diff a human read.
+   without explicit human authority. An interactive apply means the human read
+   THIS diff. Improve and proposal search instead authorize automated trials on
+   throwaway branches and say explicitly that this is not individual diff
+   review. Their receipts and Candidate origins record `via:
+   "improvement-loop"` or `via: "proposal-search"`, so no reader can mistake
+   them for reviewed applies. Improve lists changed paths in its cycle table;
+   `/review` shows the exact diff, and review/ship bind that diff's artifact hash
+   before recording release authority. Nothing touches the operator's branch or
+   working tree before adoption.
    A Proposal may update only `AGENTS.md`,
    `skills/**`, `tools/**`, `bin/**`, `data/**`, and the manifest's declared
    resources. Only declared `data/` directories reach a Target workspace; they
@@ -338,14 +338,15 @@ credential.
     nothing admits. The marker remains as belt-and-braces and fails closed: an
     unreadable marker refuses everything it might name.
 39. `ahde improve` binds a proposal to a cycle by SURFACE — dataset label and
-    hash, suite hash, Target revision — plus the failure mode the proposal
+    hash, suite hash, Target revision and approved Spec — plus the failure mode the proposal
     attests to, never by the id of an eval run the invocation itself just
     minted. A proposal prepared before the command therefore matches; one
     prepared after a stop still matches the next invocation while the surface
     holds; and one whose surface moved is refused with a typed reason naming
     what moved. Every invocation carries a loop id, its branches are
     `candidate/auto-<loopId>-<n>`, and a second `improve` over an unfinished
-    loop reports it and refuses until `--resume` or `--abandon`. With
-    `--compound` a verified candidate becomes the next cycle's working
-    baseline — stacking candidates, never promoting or adopting, never touching
-    the operator's branch.
+    loop reports it and refuses until `--resume` or `--abandon`. The ledger is
+    checkpointed after every spend and created branch, and resumption also reads
+    the Git refs so a crash cannot make a branch name reusable. The loop stops at
+    the first verified candidate: compounding before a full-stack matched and
+    sealed baseline exists would overstate what the evidence proved.

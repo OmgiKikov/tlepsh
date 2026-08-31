@@ -9,6 +9,7 @@ import {
 	ProposalSearchError,
 	ProposalSearchForbiddenDecisionError,
 	assertProposalSearchGate,
+	newProposalSearchId,
 	plannedProposalSearchExecutions,
 	proposalSearchGate,
 	renderProposalSearchTable,
@@ -21,6 +22,7 @@ import { loadCandidateRecord } from "../src/application/candidate-review.js";
 import { screenEvalRunIds } from "../src/application/cheap-check.js";
 import { loadEvalRun } from "../src/eval.js";
 import { candidateStatus } from "../src/domain/candidate.js";
+import { loadBuilderApplyReceipt } from "../src/application/builder-proposal.js";
 import { listCorpora } from "../src/corpus.js";
 import { SEALED_VERIFICATION_REPETITIONS } from "./helpers/sealed-holdout.js";
 import {
@@ -31,6 +33,13 @@ import {
 	recordFixtureProposal,
 	type ImproveFixture,
 } from "./helpers/improve-fixtures.js";
+
+it("gives standalone searches collision-resistant branch namespaces", () => {
+	const first = newProposalSearchId();
+	const second = newProposalSearchId();
+	expect(first).toMatch(/^[0-9a-f]{24}$/);
+	expect(second).not.toBe(first);
+});
 
 /**
  * Search, not one guess. These tests are about the three promises the module
@@ -110,6 +119,7 @@ function searchOptions(fixture: ImproveFixture, proposalRunIds: string[], failur
 		},
 		developmentTasks: 2,
 		repetitions: SEALED_VERIFICATION_REPETITIONS,
+		branchPrefix: "candidate/search-",
 		...overrides,
 	} as Parameters<typeof runProposalSearch>[0];
 }
@@ -211,6 +221,28 @@ describe("the Pareto table", () => {
 		expect(tie.frontier).toEqual([1]);
 	});
 });
+
+it("never puts a non-improved hypothesis on the release frontier", async () => {
+	const fixture = await improveFixture();
+	try {
+		const first = await recordFixtureProposal(fixture, READY_INSTRUCTION);
+		const second = await recordFixtureProposal(fixture, `${READY_INSTRUCTION} Another attempt.`);
+		const result = await runProposalSearch(
+			searchOptions(fixture, [first.runId, second.runId], first.failureModeId),
+			{
+				runCheapCheck: (async () => screenResult("promising", 1, "non-improved")) as unknown as ProposalSearchDependencies["runCheapCheck"],
+				runAppliedCandidate: (async () =>
+					verificationResult({ candidateId: "candidate-flat", verdict: "unchanged", scoreDelta: 0, costRatio: 1 })) as unknown as ProposalSearchDependencies["runAppliedCandidate"],
+			},
+		);
+		expect(result.frontier).toEqual([]);
+		const table = renderProposalSearchTable(result);
+		expect(table).toContain("not improved");
+		expect(table).toContain("nothing here is ready for the sealed gate");
+	} finally {
+		await fixture.close();
+	}
+}, 600_000);
 
 describe("what a search refuses to spend", () => {
 	it("keeps a flat screen out of the verification and says so by name", async () => {
@@ -374,6 +406,10 @@ describe("a search creates no release authority", () => {
 			expect(tags(fixture.projectDir)).toEqual([]);
 			expect(branches(fixture.projectDir).filter((name) => name.startsWith("candidate/")))
 				.toEqual(["candidate/search-1", "candidate/search-2"]);
+			const firstReceipt = loadBuilderApplyReceipt(fixture.runsRoot, first.runId);
+			const secondReceipt = loadBuilderApplyReceipt(fixture.runsRoot, second.runId);
+			expect(firstReceipt).toMatchObject({ schemaVersion: 3, via: "proposal-search" });
+			expect(secondReceipt).toMatchObject({ schemaVersion: 3, via: "proposal-search" });
 			const record = loadCandidateRecord(fixture.runsRoot, result.rows[0]!.candidateId!);
 			expect(candidateStatus(record)).toBe("evaluated");
 			expect(record.events.some((event) => event.type === "reviewed" || event.type === "promoted")).toBe(false);

@@ -5,6 +5,7 @@ import type {
 	WorkbenchGateProjection,
 	WorkbenchHistoryDetail,
 	WorkbenchImprovementBriefProjection,
+	WorkbenchProposalReview,
 	WorkbenchReviewDetail,
 	WorkbenchTargetDetail,
 	WorkbenchTracesDetail,
@@ -195,12 +196,15 @@ export function judgeAgreementLine(
 
 export function renderCandidate(
 	candidate: WorkbenchCandidateSummary & {
+		proposal?: WorkbenchProposalReview | null;
+		proposalError?: string | null;
 		adoption?: { receiptId: string; adoptedAt: string; branch: string } | null;
 		continuation?: { receiptId: string; continuedAt: string } | null;
 		impact?: Parameters<typeof renderImpact>[0];
 	},
 	paint: Paint,
 	title = "Candidate",
+	maxDiffLines = Number.MAX_SAFE_INTEGER,
 ): string[] {
 	const statusTone = candidate.status === "promoted"
 		? paint.success
@@ -213,12 +217,21 @@ export function renderCandidate(
 	// and in the ship dialog, so nobody has to infer it from the branch name.
 	const applied = candidate.appliedBy;
 	if (applied) {
-		lines.push(applied.via === "improvement-loop"
-			? `${paint.dim("Applied")} ${paint.warning("applied by the improvement loop")} ` +
-				`${paint.dim(`— ${applied.actorId} confirmed the loop, not this diff`)}`
+		lines.push(applied.via
+			? `${paint.dim("Applied")} ${paint.warning(`applied by the ${applied.via === "improvement-loop" ? "improvement loop" : "proposal search"}`)} ` +
+				`${paint.dim(`— ${applied.actorId} authorized the automated trial, not this individual diff`)}`
 			: `${paint.dim("Applied")} ${paint.dim(`by ${applied.actorId}, who read this diff`)}`);
 		if (applied.paths.length > 0) {
 			lines.push(`${paint.dim("Diff")} ${oneLine(applied.paths.join(", "), 120)} ${paint.dim(`(${pluralize(applied.paths.length, "file")})`)}`);
+		}
+		if (candidate.proposal) {
+			const stats = diffStats(candidate.proposal.exactDiff);
+			lines.push(`${paint.dim("Exact proposal")} ${paint.dim(shortHash(candidate.proposal.proposalHash))} ${paint.dim(`(${paint.added(`+${stats.added}`)} ${paint.removed(`-${stats.removed}`)})`)}`);
+			lines.push(...renderUnifiedDiff(candidate.proposal.exactDiff, paint, { maxLines: maxDiffLines }));
+		}
+		if (candidate.proposalError) {
+			lines.push(paint.error(`Exact proposal unavailable — ${oneLine(candidate.proposalError, 180)}`));
+			lines.push(paint.muted("Promotion is blocked; rejection remains available."));
 		}
 	}
 	if (candidate.development?.comparison) lines.push(...comparisonLines(candidate.development.comparison, candidate.development.gate, paint));
@@ -335,7 +348,9 @@ function renderProposal(
 		lines.push(`${paint.dim("Applied")} branch ${paint.bold(content.application.branch)} ${paint.dim("·")} ${shortSha(content.application.baseTargetSha)} → ${shortSha(content.application.candidateSha)} ${paint.dim(when(content.application.appliedAt))}`);
 	}
 	lines.push(paint.dim("Diff"));
-	lines.push(...renderUnifiedDiff(content.exactDiff, paint, { maxLines: options.maxDiffLines }));
+	lines.push(...renderUnifiedDiff(content.exactDiff, paint, {
+		maxLines: options.maxDiffLines ?? Number.MAX_SAFE_INTEGER,
+	}));
 	return lines;
 }
 
@@ -346,7 +361,7 @@ export function renderReview(content: WorkbenchReviewDetail, paint: Paint, optio
 		case "corpus-draft": return renderCorpusDraft(content, paint, options);
 		case "proposal":
 		case "applied-proposal": return renderProposal(content, paint, options);
-		case "candidate": return renderCandidate(content, paint);
+		case "candidate": return renderCandidate(content, paint, "Candidate", options.maxDiffLines ?? Number.MAX_SAFE_INTEGER);
 		case "interrupted-candidate": return [
 			...renderCandidate(content, paint, "Interrupted candidate"),
 			paint.warning("Verification stopped before evidence was complete. /discard abandons this attempt so the applied proposal can be retried."),

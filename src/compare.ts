@@ -118,8 +118,10 @@ export function compareVerifiedEvalRuns(
 	// record's own `purpose`, with no sidecar in the path.
 	if (mode !== "exploratory") {
 		for (const [role, record] of [["baseline", a], ["candidate", b]] as const) {
-			if (record.purpose === "screen") {
-				invalid.push(`${role} eval ${record.evalRunId} is a cheap-check screen, which is never evidence`);
+			if (record.purpose !== "evidence") {
+				invalid.push(record.purpose === "screen"
+					? `${role} eval ${record.evalRunId} is a cheap-check screen, which is never evidence`
+					: `${role} eval ${record.evalRunId} predates first-class run purpose and is ambiguous one-arm evidence; rerun it`);
 			}
 		}
 	}

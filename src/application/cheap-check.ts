@@ -10,10 +10,9 @@
  *   regression-case selection and the Workbench inventory all read that field,
  *   so a process killed before anything else is written still leaves a run
  *   nothing will admit;
- * - it also carries the `solo` label, which is outside the reusable set
- *   (`findReusableBaseline` only ever asks for `baseline`) and which the
- *   EvalRun schema forbids from naming a baseline, so it can never stand in
- *   for a candidate arm either — the same treatment `regrade` got;
+ * - it also carries the one-arm `solo` label, but purpose — not label — is the
+ *   exclusion boundary. Ordinary solo development evidence may be reused;
+ *   a screen may not, and it can never stand in for a candidate arm;
  * - every screen is additionally recorded in `runs/screens/<id>.json` as
  *   belt-and-braces. {@link screenExclusion} reads that sidecar and fails
  *   CLOSED: an unreadable marker refuses everything it might name;
@@ -254,13 +253,14 @@ export function screenEvalRunIds(runsRoot: string): Set<string> {
 }
 
 /**
- * True when this EvalRun is a screen and therefore never evidence. The record's
+ * True when this EvalRun is excluded from evidence: a screen, or quarantined
+ * legacy one-arm evidence whose purpose cannot be reconstructed. The record's
  * own `purpose` is the primary answer; the sidecar is consulted after it, and
  * an unreadable marker refuses rather than passes.
  */
 export function isScreenEvalRun(runsRoot: string, evalRunId: string): boolean {
 	try {
-		if (readEvalRunIndex(runsRoot, evalRunId).purpose === "screen") return true;
+		if (readEvalRunIndex(runsRoot, evalRunId).purpose !== "evidence") return true;
 	} catch {
 		// An index that will not parse is not proof of anything; the sidecar and
 		// every downstream verifier still get their say.

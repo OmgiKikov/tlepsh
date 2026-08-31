@@ -1,9 +1,10 @@
-import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
 	CHEAP_CHECK_REPETITIONS,
 	CHEAP_CHECK_SCREEN_LABEL,
+	CHEAP_CHECK_SCREEN_PURPOSE,
 	CheapCheckError,
 	cheapCheckPlanForCandidate,
 	isScreenEvalRun,
@@ -11,8 +12,12 @@ import {
 	resolveFailedTaskIds,
 	runCheapCheck,
 	screenEvalRunIds,
+	screenExclusion,
 	type CheapCheckResult,
 } from "../src/application/cheap-check.js";
+import { resolveDevelopmentFailureOperations } from "../src/application/builder-regression-case.js";
+import { loadWorkbenchInventory } from "../src/workbench/inventory.js";
+import { compareVerifiedEvalRuns } from "../src/compare.js";
 import { loadCorpus } from "../src/corpus.js";
 import { targetWithDevelopmentCorpus } from "../src/application/corpus-target.js";
 import {
@@ -122,9 +127,9 @@ describe("cheap check — the screen before the expensive measurement", () => {
 
 		for (const evalRunId of screens) {
 			const record = loadEvalRun(fixture.runsRoot, evalRunId);
-			// `solo` is the treatment `regrade` got: never reused as a baseline, and
-			// the schema forbids it from naming one, so it can never stand in for a
-			// candidate arm either.
+			// `purpose: screen`, not the one-arm label, is the exclusion boundary.
+			// The label still proves this is not a baseline/candidate arm structurally.
+			expect(record.purpose).toBe("screen");
 			expect(record.label).toBe(CHEAP_CHECK_SCREEN_LABEL);
 			expect(record.label).not.toBe("baseline");
 			expect(record.label).not.toBe("candidate");
@@ -307,6 +312,119 @@ describe("verify-candidate spends nothing on a flat screen", () => {
 			await local.close();
 		}
 	}, 180_000);
+});
+
+describe("a screen's identity lives in its own EvalRun", () => {
+	it("stamps purpose: screen on the record, atomically with it", () => {
+		for (const evalRunId of screenEvalRunIds(fixture.runsRoot)) {
+			expect(loadEvalRun(fixture.runsRoot, evalRunId).purpose).toBe(CHEAP_CHECK_SCREEN_PURPOSE);
+		}
+		// Ordinary development evidence is `evidence`, and says so.
+		expect(loadEvalRun(fixture.runsRoot, fixture.evalRunId).purpose).toBe("evidence");
+	});
+
+	it("refuses a screen everywhere even when the marker was never written", async () => {
+		// Exactly the crash the sidecar could not survive: the EvalRun is on disk,
+		// the `runs/screens/` marker never got written. Simulated by deleting the
+		// marker of a real screen, which is byte-identical to the crash state.
+		const screenId = [...screenEvalRunIds(fixture.runsRoot)][0]!;
+		const markerPath = join(fixture.runsRoot, "screens", `screen-${screenId}.json`);
+		const marker = readFileSync(markerPath, "utf8");
+		rmSync(markerPath);
+		try {
+			const orphan = loadEvalRun(fixture.runsRoot, screenId);
+			expect(screenEvalRunIds(fixture.runsRoot).has(screenId)).toBe(false);
+			// …and yet nothing admits it.
+			expect(orphan.purpose).toBe("screen");
+			expect(isScreenEvalRun(fixture.runsRoot, screenId)).toBe(true);
+
+			// 1. Baseline reuse.
+			expect(findReusableBaseline(fixture.runsRoot, {
+				targetId: orphan.target.id,
+				targetGitSha: orphan.target.gitSha,
+				toolsetHash: orphan.target.toolsetHash!,
+				workspaceHash: orphan.target.workspaceHash!,
+				provenance: orphan.provenance,
+				evidenceVisibility: "development",
+				label: "solo",
+				repetitions: orphan.repetitions,
+				maxAgeMs: DEFAULT_BASELINE_MAX_AGE_MS,
+			})).toBeNull();
+
+			// 2. Every non-exploratory comparison.
+			const verified = loadVerifiedEvalRun(fixture.runsRoot, screenId);
+			const compared = compareVerifiedEvalRuns(verified, verified, { mode: "candidate" });
+			expect(compared.status).toBe("invalid");
+			expect(compared.issues.join(" ")).toContain("cheap-check screen, which is never evidence");
+
+			// 3. The Workbench inventory, which is what a proposal or a regression
+			//    case is allowed to cite.
+			const inventory = loadWorkbenchInventory({
+				projectDir: fixture.projectDir,
+				stateRoot: fixture.stateRoot,
+				runsRoot: fixture.runsRoot,
+				projectId: fixture.projectId,
+			});
+			expect(inventory.developmentEvals.map((run) => run.evalRunId)).not.toContain(screenId);
+			expect(inventory.developmentEvals.every((run) => run.purpose === "evidence")).toBe(true);
+
+			// 4. Regression cases derived from a trace.
+			expect(() => resolveDevelopmentFailureOperations({
+				runsRoot: fixture.runsRoot,
+				approvedSpec: { projectId: fixture.projectId } as never,
+				target: loadTarget(fixture.projectDir),
+				developmentCorpus: loadCorpus({
+					stateRoot: fixture.stateRoot,
+					projectId: fixture.projectId,
+					corpusId: fixture.corpusId,
+				}),
+				compatibleEvalRuns: [orphan],
+				operations: [{
+					type: "add-case-from-run",
+					evalRunId: screenId,
+					runId: orphan.runIds[0]!,
+					task: { input: "x", graders: [{ type: "output_contains", text: "READY" }] },
+				}],
+			})).toThrow(/cheap-check screen, which is never evidence/);
+
+			// 5. A screen cannot even be screened against.
+			await expect(runCheapCheck({
+				repositoryDir: fixture.projectDir,
+				runsRoot: fixture.runsRoot,
+				candidateRef: fixSha,
+				baselineRef: fixture.baselineSha,
+				sourceEvalRunId: screenId,
+			})).rejects.toThrow(/a screen cannot be screened against another screen/);
+		} finally {
+			writeFileSync(markerPath, marker);
+		}
+	}, 120_000);
+
+	it("fails closed on an unreadable marker instead of skipping it", () => {
+		const screens = join(fixture.runsRoot, "screens");
+		const named = join(screens, "screen-erun_corrupt_marker.json");
+		const opaque = join(screens, "not-a-screen-name.json");
+		writeFileSync(named, "{ this is not JSON");
+		try {
+			// A corrupt marker still NAMES a run through its filename, and that run
+			// is refused rather than admitted.
+			const byName = screenExclusion(fixture.runsRoot);
+			expect(byName.unreadable).toContain("screen-erun_corrupt_marker.json");
+			expect(byName.ids.has("erun_corrupt_marker")).toBe(true);
+			expect(byName.blocksEverything).toBe(false);
+			expect(isScreenEvalRun(fixture.runsRoot, "erun_corrupt_marker")).toBe(true);
+
+			// A marker whose name reveals nothing might name anything, so it blocks
+			// everything: fail closed, never skip.
+			writeFileSync(opaque, "{ also not JSON");
+			const everything = screenExclusion(fixture.runsRoot);
+			expect(everything.blocksEverything).toBe(true);
+			expect(isScreenEvalRun(fixture.runsRoot, fixture.evalRunId)).toBe(true);
+		} finally {
+			rmSync(named, { force: true });
+			rmSync(opaque, { force: true });
+		}
+	});
 });
 
 describe("cheap check bookkeeping", () => {
