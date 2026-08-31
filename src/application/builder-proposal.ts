@@ -393,6 +393,18 @@ export const BuilderApplyReceiptSchema = z.strictObject({
 });
 export type BuilderApplyReceipt = z.infer<typeof BuilderApplyReceiptSchema>;
 
+/**
+ * Durable two-phase bridge between the candidate commit/ref and its authority
+ * receipt. Git refs and JSON artifacts cannot share one atomic rename, so a
+ * retry replays this exact intent instead of mistaking a crash for a collision.
+ */
+const BuilderApplyIntentSchema = z.strictObject({
+	schemaVersion: z.literal(1),
+	builderRunSha256: Sha256Schema,
+	receipt: BuilderApplyReceiptSchema,
+});
+type BuilderApplyIntent = z.infer<typeof BuilderApplyIntentSchema>;
+
 export interface RunBuilderProposalOptions {
 	adapter: BuilderAdapter;
 	baseTargetSha: string;
@@ -1380,11 +1392,13 @@ export interface ApplyBuilderProposalResult {
 export interface ApplyBuilderProposalDependencies {
 	now: () => string;
 	writeReceipt: (path: string, receipt: BuilderApplyReceipt) => void;
+	writeIntent: (path: string, intent: BuilderApplyIntent) => void;
 }
 
 const DEFAULT_APPLY_DEPENDENCIES: ApplyBuilderProposalDependencies = {
 	now: () => new Date().toISOString(),
 	writeReceipt: (path, receipt) => writeJsonArtifact(path, BuilderApplyReceiptSchema, receipt, { immutable: true }),
+	writeIntent: (path, intent) => writeJsonArtifact(path, BuilderApplyIntentSchema, intent, { immutable: true }),
 };
 
 function gitText(repositoryDir: string, args: string[], input?: string, env?: NodeJS.ProcessEnv): string {
@@ -1417,17 +1431,19 @@ function repositoryRoot(input: string): string {
 	return canonical;
 }
 
-function validateBranch(repositoryDir: string, branch: string): string {
+function validateBranchName(repositoryDir: string, branch: string): string {
 	if (!branch || branch !== branch.trim() || branch.startsWith("-") || branch.startsWith("refs/") || /[\0\r\n]/.test(branch)) {
 		throw new Error("requestedBranch must be an exact clean local branch name");
 	}
 	const checked = gitText(repositoryDir, ["check-ref-format", "--branch", branch]);
 	if (checked !== branch) throw new Error("Git normalized requestedBranch; refusing an inexact name");
-	const ref = `refs/heads/${branch}`;
+	return `refs/heads/${branch}`;
+}
+
+function assertBranchAbsent(repositoryDir: string, branch: string, ref: string): void {
 	if (gitStatus(repositoryDir, ["show-ref", "--verify", "--quiet", ref]) === 0) {
 		throw new Error(`branch already exists: ${branch}`);
 	}
-	return ref;
 }
 
 function assertRegularBounded(path: string, maxBytes: number, label: string): void {
@@ -1647,12 +1663,12 @@ export function applyBuilderProposal(
 	const via = options.via === undefined ? undefined : BuilderApplyViaSchema.parse(options.via);
 	const reason = NonBlankSchema.parse(options.reason);
 	const repositoryDir = repositoryRoot(options.repoDir);
-	const branchRef = validateBranch(repositoryDir, options.requestedBranch);
+	const branchRef = validateBranchName(repositoryDir, options.requestedBranch);
 	const runDir = canonicalBuilderRunDirectory(options.runsRoot, runId);
 	const builderRunPath = resolveContainedArtifactPath(options.runsRoot, "builders", runId, "builder_run.json");
 	const proposalPath = resolveContainedArtifactPath(options.runsRoot, "builders", runId, "proposal.json");
 	const receiptPath = resolveContainedArtifactPath(options.runsRoot, "builders", runId, "apply_receipt.json");
-	if (existsSync(receiptPath)) throw new Error(`apply receipt already exists for builder run ${runId}`);
+	const intentPath = resolveContainedArtifactPath(options.runsRoot, "builders", runId, "apply_intent.json");
 	const discardReceiptPath = resolveContainedArtifactPath(options.runsRoot, "builders", runId, "discard_receipt.json");
 	if (existsSync(discardReceiptPath)) {
 		throw new Error(`builder proposal ${runId} was already discarded and cannot be applied`);
@@ -1723,6 +1739,39 @@ export function applyBuilderProposal(
 		}
 	}
 
+	const builderRunSha256 = hashValue(persisted);
+	const intent = existsSync(intentPath)
+		? readJsonArtifact(intentPath, BuilderApplyIntentSchema)
+		: null;
+	if (intent) {
+		if (intent.builderRunSha256 !== builderRunSha256) throw new Error("apply intent does not match the exact Builder run");
+		const bound = intent.receipt;
+		if (
+			bound.runId !== runId ||
+			bound.proposalSha256 !== persisted.artifacts.proposal.sha256 ||
+			bound.baseTargetSha !== baseSha ||
+			bound.branch !== options.requestedBranch ||
+			canonicalJson(bound.paths) !== canonicalJson(paths) ||
+			canonicalJson(bound.actor) !== canonicalJson(actor) ||
+			bound.via !== via ||
+			bound.reason !== reason
+		) throw new Error("apply retry does not match its durable pre-mutation intent");
+	}
+	if (existsSync(receiptPath)) {
+		if (!intent) throw new Error(`apply receipt already exists for builder run ${runId}`);
+		const receipt = loadBuilderApplyReceipt(options.runsRoot, runId);
+		if (canonicalJson(receipt) !== canonicalJson(intent.receipt)) {
+			throw new Error("apply receipt does not match its durable pre-mutation intent");
+		}
+		const branchStatus = gitStatus(repositoryDir, ["show-ref", "--verify", "--quiet", branchRef]);
+		if (branchStatus !== 0 || gitText(repositoryDir, ["rev-parse", branchRef]) !== receipt.candidateSha) {
+			throw new Error("apply receipt exists but its exact candidate branch is missing or changed");
+		}
+		try { unlinkSync(intentPath); } catch { /* A stale intent is safe beside a complete receipt. */ }
+		return { receipt, receiptPath };
+	}
+	if (!intent) assertBranchAbsent(repositoryDir, options.requestedBranch, branchRef);
+
 	const patch = `${proposal.changes.map((change) => change.unifiedDiff.trimEnd()).join("\n")}\n`;
 	const temporaryRoot = mkdtempSync(join(tmpdir(), TEMP_PREFIX));
 	safeTemporaryRoot(temporaryRoot);
@@ -1732,6 +1781,7 @@ export function applyBuilderProposal(
 	let worktreeAdded = false;
 	let branchCreated = false;
 	let receiptWritten = false;
+	let intentWritten = intent !== null;
 	let candidateSha = "";
 	let operationError: unknown;
 
@@ -1765,7 +1815,7 @@ export function applyBuilderProposal(
 		);
 		}
 
-		const appliedAt = TimestampSchema.parse(now());
+		const appliedAt = intent?.receipt.appliedAt ?? TimestampSchema.parse(now());
 		const identityEnvironment: NodeJS.ProcessEnv = {
 			...process.env,
 			GIT_AUTHOR_NAME: "AHDE Builder",
@@ -1787,8 +1837,6 @@ export function applyBuilderProposal(
 			.split("\0").filter(Boolean).sort();
 		if (!samePaths(committedPaths, paths)) throw new Error("candidate commit paths differ from validated proposal paths");
 
-		gitText(repositoryDir, ["update-ref", "-m", `AHDE apply ${runId}`, branchRef, candidateSha, ZERO_SHA]);
-		branchCreated = true;
 		const receipt = BuilderApplyReceiptSchema.parse({
 			schemaVersion: BUILDER_APPLY_RECEIPT_SCHEMA_VERSION,
 			runId,
@@ -1804,6 +1852,30 @@ export function applyBuilderProposal(
 			appliedAt,
 			reason,
 		});
+		if (intent) {
+			if (canonicalJson(receipt) !== canonicalJson(intent.receipt)) {
+				throw new Error("reconstructed candidate does not match its durable apply intent");
+			}
+		} else {
+			deps.writeIntent(intentPath, {
+				schemaVersion: 1,
+				builderRunSha256,
+				receipt,
+			});
+			intentWritten = true;
+		}
+
+		const branchStatus = gitStatus(repositoryDir, ["show-ref", "--verify", "--quiet", branchRef]);
+		if (branchStatus === 1) {
+			gitText(repositoryDir, ["update-ref", "-m", `AHDE apply ${runId}`, branchRef, candidateSha, ZERO_SHA]);
+		} else if (branchStatus === 0) {
+			if (gitText(repositoryDir, ["rev-parse", branchRef]) !== candidateSha) {
+				throw new Error("durable apply intent collides with a branch at another revision");
+			}
+		} else {
+			throw new Error(`cannot verify whether branch ${options.requestedBranch} exists`);
+		}
+		branchCreated = true;
 		try {
 			deps.writeReceipt(receiptPath, receipt);
 			receiptWritten = true;
@@ -1815,7 +1887,15 @@ export function applyBuilderProposal(
 				throw new AggregateError([error, new Error(rollback.stderr.trim())], "receipt write and branch rollback failed");
 			}
 			branchCreated = false;
+			if (intentWritten) {
+				try { unlinkSync(intentPath); } catch { /* The exact intent remains safely retryable. */ }
+				intentWritten = false;
+			}
 			throw error;
+		}
+		if (intentWritten) {
+			try { unlinkSync(intentPath); } catch { /* Receipt + ref are already complete; retry can prune it. */ }
+			intentWritten = false;
 		}
 		return { receipt, receiptPath };
 	} catch (error) {
@@ -1828,6 +1908,10 @@ export function applyBuilderProposal(
 				throw new AggregateError([error, new Error(rollback.stderr.trim())], "proposal apply and branch rollback failed");
 			}
 			branchCreated = false;
+			if (intentWritten) {
+				try { unlinkSync(intentPath); } catch { /* Preserve the primary failure. */ }
+				intentWritten = false;
+			}
 		}
 		throw error;
 	} finally {

@@ -1182,6 +1182,41 @@ permissions:
 		}).toEqual(before);
 	});
 
+	it("recovers the exact branch and receipt after a crash between Git mutation and receipt publication", async () => {
+		const { repositoryDir, baseSha } = initRepository();
+		const persisted = await persistProposal({ repositoryDir, baseSha, runId: "builder-apply-crash" });
+		const options = {
+			repoDir: repositoryDir,
+			runsRoot: dirname(dirname(persisted.runDir)),
+			runId: "builder-apply-crash",
+			requestedBranch: "candidate/apply-crash",
+			actor: { kind: "human" as const, id: "reviewer" },
+			reason: "recover the confirmed apply",
+		};
+		let captured: { receipt: { candidateSha: string } } | null = null;
+		expect(() => applyBuilderProposal(options, {
+			now: () => NOW,
+			writeIntent: (path, intent) => {
+				captured = intent;
+				writeFileSync(path, `${JSON.stringify(intent)}\n`, { mode: 0o600 });
+				throw new Error("simulated process death after durable intent");
+			},
+		})).toThrow(/simulated process death/);
+		if (!captured) throw new Error("apply intent was not captured");
+		const staged = captured as unknown as { receipt: { candidateSha: string } };
+		const candidateSha = staged.receipt.candidateSha;
+		// This is the exact externally visible state a process death immediately
+		// after update-ref leaves behind: branch + intent, but no receipt.
+		git(repositoryDir, ["update-ref", "refs/heads/candidate/apply-crash", candidateSha, "0".repeat(40)]);
+		expect(existsSync(join(persisted.runDir, "apply_receipt.json"))).toBe(false);
+
+		const recovered = applyBuilderProposal(options, { now: () => "2099-01-01T00:00:00.000Z" });
+		expect(recovered.receipt.candidateSha).toBe(candidateSha);
+		expect(recovered.receipt.appliedAt).toBe(NOW);
+		expect(git(repositoryDir, ["rev-parse", "candidate/apply-crash"])).toBe(candidateSha);
+		expect(existsSync(join(persisted.runDir, "apply_intent.json"))).toBe(false);
+	});
+
 	it("rejects a stale base hash before creating a branch", async () => {
 		const { repositoryDir, baseSha } = initRepository();
 		const stale = proposal(baseSha, { baseSha256: `sha256:${"0".repeat(64)}` });
