@@ -3,6 +3,7 @@ import type {
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import type { AhdeWorkbench } from "../workbench/workbench.js";
+import { SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
 import { DEFAULT_REPETITIONS } from "../workbench/calibration.js";
 import {
 	WorkbenchDecisionDeclinedError,
@@ -44,6 +45,7 @@ export const AHDE_BUILDER_COMMAND_NAMES = [
 	"ship",
 	"help",
 	"doctor",
+	"holdout",
 	"status",
 	"run",
 	"calibrate",
@@ -83,6 +85,7 @@ Looking around:
   /traces               diagnosis, failure modes, and the evidence link
   /target [resource]    the exact committed Target, or one declared resource
   /doctor               model auth, Target readiness, and recovery steps
+  /holdout              privately import the operator-owned sealed JSONL exam
   /help                 this reference
 
 One step at a time (the same decisions, taken separately):
@@ -272,6 +275,8 @@ export interface RegisterBuilderCommandsOptions {
 	onWorkbenchChanged?: () => void | Promise<void>;
 	/** Optional bridge to the conversation for “fix problem N” shortcuts. */
 	sendUserMessage?: (text: string) => void;
+	/** Host-only sealed import. The path and corpus identity never enter Builder Pi. */
+	importSealedHoldout?: (input: { sourcePath: string; name: string }) => { taskCount: number };
 }
 
 export function registerAhdeBuilderCommands(
@@ -732,6 +737,16 @@ export function registerAhdeBuilderCommands(
 						? warn(`${label} ${evaluator.provider}/${evaluator.id} · export ${evaluator.apiKeyEnv} in the shell that runs ahde before /run`)
 						: p.muted(`· ${label} ${evaluator.provider}/${evaluator.id} · ${evaluator.apiKeyEnv} is missing, but this basket does not use it`));
 			}
+			const shipping = view.shippingReadiness;
+			if (shipping?.sealedHoldout === "ready") {
+				lines.push(ok("Ship gate has a sufficiently large evaluator-only sealed holdout"));
+			} else if (shipping) {
+				lines.push(warn(
+					shipping.sealedHoldout === "missing"
+						? `Ship gate has no sealed holdout — /holdout privately imports one (minimum ${shipping.minimumTasks} cases)`
+						: `Ship gate holdout is underpowered — /holdout privately imports a separate exam with at least ${shipping.minimumTasks} cases`,
+				));
+			}
 			lines.push(`${p.dim("Stage")} ${stageLabel(view.stage)} · ${nextStep(view)}`);
 			for (const blocker of view.blockers) lines.push(warn(oneLine(blocker, 200)));
 			for (const warning of view.warnings.slice(0, 6)) lines.push(p.muted(`· ${oneLine(warning, 200)}`));
@@ -745,6 +760,47 @@ export function registerAhdeBuilderCommands(
 			);
 			lines.push(ready ? ok("Ready: everything needed for /run is in place") : warn("Action required before the next run"));
 			presenter.show(ctx, { title: "AHDE Doctor", tone: ready ? "success" : "warning", lines });
+		},
+	});
+
+	pi.registerCommand("holdout", {
+		description: "Privately import an operator-owned sealed JSONL exam; its content and identity stay hidden from Builder Pi",
+		async handler(args, ctx) {
+			await prepare(ctx, "holdout");
+			if (!options.importSealedHoldout) throw new Error("sealed holdout import is unavailable in this host");
+			const typedPath = args.trim();
+			const sourcePath = typedPath || await ctx.ui.input(
+				"Path to the private sealed JSONL corpus",
+				"./private-holdout.jsonl",
+			);
+			if (sourcePath === undefined || !sourcePath.trim()) {
+				ctx.ui.notify("Cancelled — nothing changed.", "info");
+				return;
+			}
+			const name = await ctx.ui.input("Name for this immutable exam", "Promotion holdout");
+			if (name === undefined || !name.trim()) {
+				ctx.ui.notify("Cancelled — nothing changed.", "info");
+				return;
+			}
+			const approved = await ctx.ui.confirm(
+				"Import sealed holdout",
+				`Import ${sourcePath.trim()} as an evaluator-only exam? Builder Pi will see only whether it is large enough to ship.`,
+				{ signal: ctx.signal },
+			);
+			if (!approved) {
+				ctx.ui.notify("Cancelled — nothing changed.", "info");
+				return;
+			}
+			const result = options.importSealedHoldout({ sourcePath: sourcePath.trim(), name: name.trim() });
+			await options.onWorkbenchChanged?.();
+			const minimum = SEALED_GATE_POLICY.minTasks;
+			presenter.show(ctx, {
+				title: "Sealed holdout imported",
+				tone: result.taskCount >= minimum ? "success" : "warning",
+				lines: result.taskCount >= minimum
+					? [`${result.taskCount} evaluator-only cases are ready for the ship gate.`, "Builder Pi never receives their content or identity."]
+					: [`${result.taskCount} evaluator-only cases were imported; the ship gate needs at least ${minimum}.`, "Import a sufficiently large, separate holdout before applying a candidate."],
+			});
 		},
 	});
 

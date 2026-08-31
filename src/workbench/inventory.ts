@@ -34,6 +34,7 @@ import {
 	type CandidateArtifactRef,
 	type CandidateRecord,
 } from "../domain/candidate.js";
+import { SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
 import {
 	isSealedEvalRun,
 	listEvalRunIndexesLenient,
@@ -1177,6 +1178,10 @@ export function deriveWorkbenchView(
 	const candidates = inventory.candidates.slice(0, MAX_VIEW_ITEMS);
 	const state = stageFor(inventory);
 	const evaluatorRequirements = evaluatorRequirementsOf(inventory);
+	const sealed = inventory.corpora.filter((corpus) => corpus.visibility === "sealed");
+	const sealedHoldout = sealed.some((corpus) => corpus.taskCount >= SEALED_GATE_POLICY.minTasks)
+		? "ready"
+		: sealed.length > 0 ? "underpowered" : "missing";
 	return {
 		schemaVersion: 1,
 		project: { id: inventory.projectId, directory: basename(inventory.projectDir) },
@@ -1229,6 +1234,10 @@ export function deriveWorkbenchView(
 		actions: state.actions,
 		blockers: state.blockers,
 		warnings: [...inventory.warnings, ...sealedExposureWarnings(inventory)],
+		shippingReadiness: {
+			sealedHoldout,
+			minimumTasks: SEALED_GATE_POLICY.minTasks,
+		},
 		calibration: calibrationOf(inventory),
 		counts: {
 			specDrafts: inventory.specs.filter((spec) => spec.status === "draft").length,

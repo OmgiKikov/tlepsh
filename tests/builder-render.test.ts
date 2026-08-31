@@ -649,6 +649,18 @@ describe("renderStatus", () => {
 		expect(text).not.toContain("run-2");
 	});
 
+	it("surfaces the future ship blocker before a candidate is applied", () => {
+		const lines = renderStatus(makeView({
+			shippingReadiness: { sealedHoldout: "missing", minimumTasks: 15 },
+		}), plainPaint);
+		expect(lines).toContain("Ship gate no sealed holdout · /holdout imports an operator-owned JSONL exam (minimum 15)");
+
+		const ready = renderStatus(makeView({
+			shippingReadiness: { sealedHoldout: "ready", minimumTasks: 15 },
+		}), plainPaint);
+		expect(ready.join("\n")).not.toContain("Ship gate");
+	});
+
 	it("describes missing, bootstrap-required, and credential-less targets", () => {
 		const missing = renderStatus(makeView({ target: { status: "missing", id: null, gitSha: null, model: null } }), tagPaint);
 		expect(missing[1]).toBe("<dim>Target</dim> <muted>not created yet</muted>");

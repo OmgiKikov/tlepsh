@@ -367,6 +367,15 @@ export interface WorkbenchView {
 	actions: string[];
 	blockers: string[];
 	warnings: string[];
+	/**
+	 * Coarse, model-safe release readiness. It never carries a holdout id, name,
+	 * hash, task, or grader; the Builder only learns whether the operator-owned
+	 * exam is large enough to make a future ship decision meaningful.
+	 */
+	shippingReadiness?: {
+		sealedHoldout: "missing" | "underpowered" | "ready";
+		minimumTasks: number;
+	};
 	/** Newest A/A calibration of the exact active Target revision, if any. */
 	calibration: WorkbenchCalibrationProjection | null;
 	detail?: WorkbenchDetail;

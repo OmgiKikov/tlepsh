@@ -83,6 +83,20 @@ function evidenceLine(view: WorkbenchView, paint: Paint): string {
 	])}`;
 }
 
+/**
+ * The development loop remains usable without an exam, but applying a change
+ * before one exists creates a late, expensive dead end. Keep that future ship
+ * blocker in the persistent product surface from the first session onward.
+ */
+function shippingReadinessLine(view: WorkbenchView, paint: Paint): string | null {
+	const readiness = view.shippingReadiness;
+	if (!readiness || readiness.sealedHoldout === "ready") return null;
+	const state = readiness.sealedHoldout === "missing"
+		? "no sealed holdout"
+		: `sealed holdout has fewer than ${readiness.minimumTasks} cases`;
+	return `${paint.dim("Ship gate")} ${paint.warning(state)} ${paint.dim(`· /holdout imports an operator-owned JSONL exam (minimum ${readiness.minimumTasks})`)}`;
+}
+
 /** Stages where an uncalibrated Target is worth one nudge, not a blocker. */
 const CALIBRATION_STAGES = new Set<WorkbenchView["stage"]>(["ready-to-evaluate", "improvement-authoring"]);
 
@@ -107,11 +121,13 @@ function calibrationLine(view: WorkbenchView, paint: Paint): string | null {
 export function renderStatus(view: WorkbenchView, paint: Paint): string[] {
 	const noise = calibrationLine(view, paint);
 	const evaluators = evaluatorLine(view, paint);
+	const shipping = shippingReadinessLine(view, paint);
 	const lines = [
 		`${paint.accent(paint.bold("AHDE"))} ${paint.dim("·")} ${paint.bold(stageLabel(view.stage))}`,
 		targetLine(view, paint),
 		...(evaluators ? [evaluators] : []),
 		evidenceLine(view, paint),
+		...(shipping ? [shipping] : []),
 		...(noise ? [noise] : []),
 		`${paint.dim("Next")} ${nextStep(view)}`,
 	];
@@ -154,6 +170,8 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 	lines.push(targetLine(view, paint));
 	lines.push(`${paint.dim("Stage")} ${paint.bold(stageLabel(view.stage))} ${paint.dim("·")} ${paint.dim("Next")} ${nextStep(view)}`);
 	lines.push(`${evidenceLine(view, paint)} ${paint.dim("·")} ${paint.dim("Builder model")} ${builder}`);
+	const shipping = shippingReadinessLine(view, paint);
+	if (shipping) lines.push(shipping);
 	const noise = calibrationLine(view, paint);
 	if (noise) lines.push(noise);
 	if (view.blockers.length > 0 && view.stage !== "target-setup") {

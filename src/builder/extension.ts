@@ -1,4 +1,5 @@
 import { userInfo } from "node:os";
+import { resolve } from "node:path";
 import type {
 	ExtensionAPI,
 	ExtensionFactory,
@@ -51,7 +52,7 @@ import {
 	compileImprovementBrief,
 	type ImprovementBrief,
 } from "../application/improvement-brief.js";
-import { listCorpora, loadCorpus } from "../corpus.js";
+import { importCorpus, listCorpora, loadCorpus } from "../corpus.js";
 import { diagnoseEvalRun, type DiagnosisRecord } from "../diagnosis.js";
 import {
 	listEvalRunIndexes,
@@ -89,6 +90,7 @@ export interface BuilderExtensionDependencies {
 	loadSpecApprovalReceipt: typeof loadSpecApprovalReceipt;
 	listCorpora: typeof listCorpora;
 	loadCorpus: typeof loadCorpus;
+	importCorpus: typeof importCorpus;
 	describeCorpusPublication: typeof describeDevelopmentCorpusPublication;
 	publishDevelopmentCorpus: typeof publishBuilderDevelopmentCorpus;
 	loadCorpusPublicationReceipt: typeof loadDevelopmentCorpusPublicationReceipt;
@@ -139,6 +141,7 @@ const DEFAULT_DEPENDENCIES: BuilderExtensionDependencies = {
 	loadSpecApprovalReceipt,
 	listCorpora,
 	loadCorpus,
+	importCorpus,
 	describeCorpusPublication: describeDevelopmentCorpusPublication,
 	publishDevelopmentCorpus: publishBuilderDevelopmentCorpus,
 	loadCorpusPublicationReceipt: loadDevelopmentCorpusPublicationReceipt,
@@ -266,6 +269,13 @@ export function createAhdeBuilderExtension(options: BuilderExtensionOptions): Ex
 			beginLiveTrace: dependencies.beginLiveTrace,
 			presenter,
 			onWorkbenchChanged,
+			importSealedHoldout: ({ sourcePath, name }) => dependencies.importCorpus({
+				stateRoot: options.stateRoot,
+				projectId: workbench.projectId,
+				name,
+				visibility: "sealed",
+				sourcePath: resolve(options.projectDir, sourcePath),
+			}),
 			sendUserMessage: typeof pi.sendUserMessage === "function"
 				? (text) => pi.sendUserMessage(text)
 				: undefined,
@@ -282,4 +292,3 @@ export function createAhdeBuilderTools(options: BuilderExtensionOptions): readon
 		...createWorkshopTools(workbench),
 	];
 }
-

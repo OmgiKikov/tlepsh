@@ -1878,6 +1878,7 @@ describe("AHDE Workbench", () => {
 		const view = await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view();
 		const serialized = JSON.stringify(view);
 		expect(view.counts.sealedCorpora).toBe(1);
+		expect(view.shippingReadiness).toEqual({ sealedHoldout: "underpowered", minimumTasks: 15 });
 		expect(serialized).not.toContain(sealed.id);
 		expect(serialized).not.toContain("secret holdout name");
 		expect(serialized).not.toContain("secret prompt");

@@ -425,6 +425,7 @@ function register(
 		/** `null` omits the presenter so the command layer builds one from `pi`. */
 		presenter?: TranscriptPresenter | null;
 		sendUserMessage?: (text: string) => void;
+		importSealedHoldout?: RegisterOptions["importSealedHoldout"];
 		/** Extra host capabilities (appendEntry, sendMessage) for the presenter fallback tests. */
 		pi?: Record<string, unknown>;
 	} = {},
@@ -452,6 +453,7 @@ function register(
 		...(options.presenter === null ? {} : { presenter: options.presenter ?? output.presenter }),
 		...(options.beginLiveTrace ? { beginLiveTrace: options.beginLiveTrace } : {}),
 		...(options.sendUserMessage ? { sendUserMessage: options.sendUserMessage } : {}),
+		...(options.importSealedHoldout ? { importSealedHoldout: options.importSealedHoldout } : {}),
 	});
 	return {
 		registered,
@@ -599,6 +601,7 @@ describe("Builder Pi slash commands", () => {
 			"ship",
 			"help",
 			"doctor",
+			"holdout",
 			"status",
 			"run",
 			"calibrate",
@@ -615,7 +618,7 @@ describe("Builder Pi slash commands", () => {
 			"target",
 		]);
 		expect(registered.map(({ name }) => name)).toEqual([...AHDE_BUILDER_COMMAND_NAMES]);
-		expect(registered).toHaveLength(19);
+		expect(registered).toHaveLength(20);
 		expect(registered.every(({ options }) => options.description && options.handler)).toBe(true);
 	});
 
@@ -1745,7 +1748,7 @@ describe("Builder Pi slash commands", () => {
 			name,
 			name === "apply" ? "candidate/fix" : name === "promote" ? "1.0.0" : "",
 		]);
-		expect(invocations).toHaveLength(19);
+		expect(invocations).toHaveLength(20);
 
 		for (const settings of [
 			{ hasUI: false, mode: "print" as const },
@@ -1802,6 +1805,27 @@ describe("Builder Pi slash commands", () => {
 		expect(text).toContain("✓ Ready: everything needed for /run is in place");
 		expect(text).not.toMatch(MARKERS);
 		expect(text).not.toMatch(/[{}]|schemaVersion/);
+	});
+
+	it("imports a sealed holdout through host UI without putting its path or identity in the Builder transcript", async () => {
+		const fixture = workbench();
+		const importSealedHoldout = vi.fn(() => ({ taskCount: 20 }));
+		const { commands, output, onWorkbenchChanged } = register(fixture.value, { importSealedHoldout });
+		const host = context({
+			confirm: async () => true,
+			input: async () => "Private promotion exam",
+		});
+
+		await command(commands, "holdout").handler("/private/evals/customer-secrets.jsonl", host.ctx);
+
+		expect(importSealedHoldout).toHaveBeenCalledWith({
+			sourcePath: "/private/evals/customer-secrets.jsonl",
+			name: "Private promotion exam",
+		});
+		expect(onWorkbenchChanged).toHaveBeenCalledTimes(1);
+		expect(output.text()).toContain("20 evaluator-only cases are ready for the ship gate");
+		expect(output.text()).not.toContain("customer-secrets");
+		expect(output.text()).not.toContain("Private promotion exam");
 	});
 
 	it("includes evaluator credential readiness and refuses ready when a configured evaluator key is missing", async () => {
