@@ -15,7 +15,7 @@ import {
 import { delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { hashFile, hashValue } from "../provenance.js";
 import { redactSensitiveText } from "../trace.js";
-import { resolveExecutionBackend } from "./container-backend.js";
+import { resolveExecutionBackend, type ContainerRuntimeBinding } from "./container-backend.js";
 import {
 	buildToolEnvironment,
 	detectTargetToolSandbox,
@@ -71,6 +71,7 @@ export interface PrepareToolHomeOptions {
 	toolHomeRoot: string;
 	policy: TargetToolPolicyEnvelope;
 	sandboxBackend?: TargetToolSandboxBackend;
+	containerRuntime?: ContainerRuntimeBinding;
 	sourceEnvironment?: NodeJS.ProcessEnv;
 	/** Optional caps for an unreviewed setup process; normal Target setup omits them. */
 	resourceLimits?: SandboxResourceLimits;
@@ -304,13 +305,16 @@ function runSetup(
 		cwd: toolDir,
 		argv: [command, ...setup.argv.slice(1)],
 		...(options.policy.container ? { container: options.policy.container } : {}),
+		...(options.containerRuntime ? { containerRuntime: options.containerRuntime } : {}),
 		toolHomeRoot: options.toolHomeRoot,
 		// The one moment the prepared home is writable: a setup step populates
 		// the directory every later tool call then reads read-only.
 		toolHomeMode: "rw",
 		...(options.resourceLimits ? { limits: options.resourceLimits } : {}),
+		lifecycleTimeoutMs: setup.timeoutMs,
 	});
 	const startedMs = Date.now();
+	invocation.assertReady?.();
 	const result = spawnSync(invocation.executable, invocation.args, {
 		cwd: toolDir,
 		env: invocation.spawnEnvironment ?? environment,
@@ -388,11 +392,18 @@ export function prepareToolHome(options: PrepareToolHomeOptions): PreparedToolHo
 		return { root, setups: [], sha256, prepared: true };
 	}
 
-	const backend = options.sandboxBackend
-		?? resolveExecutionBackend({
+	const choice = options.sandboxBackend === undefined || (options.sandboxBackend === "container" && !options.containerRuntime)
+		? resolveExecutionBackend({
 			policy: options.policy,
 			osBackend: () => detectTargetToolSandbox(options.workspaceDir, options.scratchDir),
-		}).backend;
+		})
+		: undefined;
+	const backend = options.sandboxBackend ?? choice?.backend;
+	if (!backend) throw new Error("Target tool setup could not resolve a sandbox backend");
+	const containerRuntime = options.containerRuntime ?? choice?.containerRuntime;
+	if (backend === "container" && !containerRuntime) {
+		throw new Error("container tool setup has no runtime binding from the provenance probe");
+	}
 	const setups: ToolSetupOutcome[] = [];
 	for (const tool of tools) {
 		// A setup may have broader env/network authority than another tool. Never
@@ -410,6 +421,7 @@ export function prepareToolHome(options: PrepareToolHomeOptions): PreparedToolHo
 			const outcome = runSetup(tool, stagedToolDir, {
 				...options,
 				backend,
+				...(containerRuntime ? { containerRuntime } : {}),
 				scratchDir: stagingScratch,
 				toolHomeRoot: stagingHome,
 			});

@@ -232,10 +232,11 @@ async function runDeclaredToolOnSurface(options: {
 	// Resolve the Target's declared backend once and hand that exact choice to
 	// both setup and the tool call. A container Target must never be previewed on
 	// host dependencies and then measured in a different OCI environment.
-	const sandboxBackend = resolveExecutionBackend({
+	const sandboxChoice = resolveExecutionBackend({
 		policy: options.target.manifest.execution,
 		osBackend: () => detectTargetToolSandbox(options.directory, scratchDir),
-	}).backend;
+	});
+	const sandboxBackend = sandboxChoice.backend;
 	const prepared = tool.layout === "directory"
 		? prepareToolHome({
 			workspaceDir: options.directory,
@@ -244,6 +245,7 @@ async function runDeclaredToolOnSurface(options: {
 			toolHomeRoot: options.toolHomeRoot,
 			policy: options.target.manifest.execution,
 			sandboxBackend,
+			...(sandboxChoice.containerRuntime ? { containerRuntime: sandboxChoice.containerRuntime } : {}),
 			...(options.resourceLimits ? { resourceLimits: options.resourceLimits } : {}),
 		})
 		: null;
@@ -252,6 +254,7 @@ async function runDeclaredToolOnSurface(options: {
 		scratchDir,
 		policy: options.target.manifest.execution,
 		sandboxBackend,
+		...(sandboxChoice.containerRuntime ? { containerRuntime: sandboxChoice.containerRuntime } : {}),
 		...(prepared ? { toolHomeRoot: prepared.root } : {}),
 		...(options.resourceLimits ? { resourceLimits: options.resourceLimits } : {}),
 	});

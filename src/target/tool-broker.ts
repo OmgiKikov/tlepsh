@@ -3,7 +3,12 @@ import { accessSync, constants, mkdirSync, readFileSync, realpathSync, statSync 
 import { delimiter, join, resolve } from "node:path";
 import { hashFile } from "../provenance.js";
 import { redactSensitiveText } from "../trace.js";
-import { containerBackendFor, type ContainerPolicy } from "./container-backend.js";
+import {
+	containerBackendFor,
+	resolveExecutionBackend,
+	type ContainerPolicy,
+	type ContainerRuntimeBinding,
+} from "./container-backend.js";
 import {
 	resolveStrictTargetFile,
 	type ResolvedTargetTool,
@@ -25,6 +30,8 @@ export interface TargetToolBrokerOptions {
 	toolHomeRoot?: string;
 	/** Production callers should omit this. Tests may inject a previously probed backend. */
 	sandboxBackend?: TargetToolSandboxBackend;
+	/** Exact runtime capability returned with a container backend decision. */
+	containerRuntime?: ContainerRuntimeBinding;
 	/** Optional caps for unreviewed authoring processes; normal Target calls omit them. */
 	resourceLimits?: SandboxResourceLimits;
 }
@@ -287,12 +294,15 @@ export function sandboxInvocation(options: {
 	toolHomeRoot?: string;
 	toolHomeMode?: "ro" | "rw";
 	hostEnvironment?: NodeJS.ProcessEnv;
+	containerRuntime?: ContainerRuntimeBinding;
+	lifecycleTimeoutMs?: number;
 	/** Optional `ulimit` caps applied inside the sandbox; omitted leaves them at the host's. */
 	limits?: SandboxResourceLimits;
 }): {
 	executable: string;
 	args: string[];
 	spawnEnvironment?: NodeJS.ProcessEnv;
+	assertReady?: () => void;
 	terminate?: () => void;
 	dispose?: () => void;
 	limits: AppliedResourceLimits | null;
@@ -315,6 +325,8 @@ export function sandboxInvocation(options: {
 			cwd: options.cwd,
 			argv,
 			...(options.hostEnvironment ? { hostEnvironment: options.hostEnvironment } : {}),
+			...(options.containerRuntime ? { runtimeBinding: options.containerRuntime } : {}),
+			...(options.lifecycleTimeoutMs !== undefined ? { lifecycleTimeoutMs: options.lifecycleTimeoutMs } : {}),
 		});
 		return { ...invocation, limits: capped?.applied ?? null };
 	}
@@ -522,6 +534,7 @@ function decodeUtf8(buffer: Buffer, label: string): string {
 export class TargetToolBroker {
 	readonly sandboxBackend: TargetToolSandboxBackend;
 	private readonly toolHomeRoot: string | undefined;
+	private readonly containerRuntime: ContainerRuntimeBinding | undefined;
 
 	constructor(private readonly options: TargetToolBrokerOptions) {
 		this.options.workspaceDir = realWorkspace(options.workspaceDir);
@@ -530,7 +543,14 @@ export class TargetToolBroker {
 		this.options.scratchDir = realpathSync(this.options.scratchDir);
 		this.toolHomeRoot = options.toolHomeRoot ? realWorkspace(options.toolHomeRoot) : undefined;
 		this.options.toolHomeRoot = this.toolHomeRoot;
-		this.sandboxBackend = options.sandboxBackend ?? detectTargetToolSandbox(this.options.workspaceDir, this.options.scratchDir);
+		const choice = options.sandboxBackend === undefined
+			? resolveExecutionBackend({
+				policy: options.policy,
+				osBackend: () => detectTargetToolSandbox(this.options.workspaceDir, this.options.scratchDir),
+			})
+			: undefined;
+		this.sandboxBackend = options.sandboxBackend ?? choice?.backend ?? detectTargetToolSandbox(this.options.workspaceDir, this.options.scratchDir);
+		this.containerRuntime = options.containerRuntime ?? choice?.containerRuntime;
 	}
 
 	effectiveEnvironmentNames(tool: ResolvedTargetTool): string[] {
@@ -595,9 +615,12 @@ export class TargetToolBroker {
 			cwd: this.options.workspaceDir,
 			argv: [executable, ...tool.descriptor.command.argv.slice(1)],
 			...(this.options.policy.container ? { container: this.options.policy.container } : {}),
+			...(this.containerRuntime ? { containerRuntime: this.containerRuntime } : {}),
 			...(this.toolHomeRoot ? { toolHomeRoot: this.toolHomeRoot } : {}),
 			...(this.options.resourceLimits ? { limits: this.options.resourceLimits } : {}),
+			lifecycleTimeoutMs: tool.descriptor.timeoutMs,
 		});
+		command.assertReady?.();
 		const startedMs = Date.now();
 		const child = spawn(command.executable, command.args, {
 			cwd: this.options.workspaceDir,

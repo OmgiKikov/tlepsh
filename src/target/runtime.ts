@@ -355,6 +355,7 @@ export function createTargetToolRuntime(options: CreateTargetToolRuntimeOptions)
 			toolHomeRoot: toolHomeRoot as string,
 			policy: options.target.manifest.execution,
 			...(sandboxBackend ? { sandboxBackend } : {}),
+			...(choice?.containerRuntime ? { containerRuntime: choice.containerRuntime } : {}),
 			...(options.sourceEnvironment ? { sourceEnvironment: options.sourceEnvironment } : {}),
 		})
 		: null;
@@ -365,6 +366,7 @@ export function createTargetToolRuntime(options: CreateTargetToolRuntimeOptions)
 		sourceEnvironment: options.sourceEnvironment,
 		...(prepared ? { toolHomeRoot: prepared.root } : {}),
 		...(sandboxBackend ? { sandboxBackend } : {}),
+		...(choice?.containerRuntime ? { containerRuntime: choice.containerRuntime } : {}),
 	});
 	const environmentNames = new Set<string>();
 	for (const tool of reloaded.tools) {

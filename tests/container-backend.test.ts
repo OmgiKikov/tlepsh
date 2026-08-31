@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { dirname, join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildExecutionPolicy } from "../src/execution-policy.js";
 import { loadTarget } from "../src/manifest.js";
 import { hashFile } from "../src/provenance.js";
@@ -92,6 +92,8 @@ function fakeDocker(options: {
 	logPath?: string;
 	hangRun?: boolean;
 	failCleanup?: boolean;
+	inspectLabelsFile?: string;
+	infoFile?: string;
 } = {}): {
 	binDir: string;
 	logPath: string;
@@ -107,6 +109,8 @@ if [ "$1" = "version" ]; then
 ${versionBranch}
 fi
 if [ "$1" = "info" ]; then
+${options.infoFile ? `  /bin/cat ${JSON.stringify(options.infoFile)}
+  exit 0` : `
   printf '%s\n' '${JSON.stringify({
 	ID: RUNTIME_IDENTITY.daemonId,
 	KernelVersion: RUNTIME_IDENTITY.kernelVersion,
@@ -115,8 +119,13 @@ if [ "$1" = "info" ]; then
 	CgroupVersion: RUNTIME_IDENTITY.cgroupVersion,
 	SecurityOptions: ["name=seccomp,profile=builtin"],
   })}'
-  exit 0
+  exit 0`}
 fi
+${options.inspectLabelsFile ? `if [ "$1" = "inspect" ]; then
+  if [ -f ${JSON.stringify(options.inspectLabelsFile)} ]; then /bin/cat ${JSON.stringify(options.inspectLabelsFile)}; exit 0; fi
+  printf 'No such container\\n' >&2
+  exit 1
+fi` : ""}
 : > ${JSON.stringify(logPath)}
 previous=''
 for argument in "$@"; do
@@ -128,6 +137,7 @@ for argument in "$@"; do
 done
 ${options.hangRun ? 'if [ "$1" = "run" ]; then while :; do :; done; fi' : ""}
 ${options.failCleanup ? 'if [ "$1" = "rm" ]; then printf \'daemon cleanup refused\\n\' >&2; exit 1; fi' : ""}
+${options.inspectLabelsFile ? `if [ "$1" = "rm" ]; then /bin/rm -f ${JSON.stringify(options.inspectLabelsFile)}; fi` : ""}
 printf 'fake-docker-ran\\n'
 `;
 	const binary = join(binDir, "docker");
@@ -138,6 +148,17 @@ printf 'fake-docker-ran\\n'
 
 function loggedArgv(logPath: string): string[] {
 	return readFileSync(logPath, "utf8").split("\n").filter((line) => line.length > 0);
+}
+
+function boundFakeDocker(fake: ReturnType<typeof fakeDocker>) {
+	const status = detectContainerRuntime("docker", { environment: { PATH: fake.binDir }, force: true });
+	const choice = resolveExecutionBackend({
+		policy: { sandbox: "required" as const, container: policy() },
+		osBackend: () => "sandbox-exec" as const,
+		detect: () => status,
+	});
+	if (!choice.containerRuntime) throw new Error("fake Docker probe returned no runtime binding");
+	return choice.containerRuntime;
 }
 
 function flagValues(args: readonly string[], flag: string): string[] {
@@ -229,11 +250,22 @@ describe("container backend argv", () => {
 			argv: [join(scratchRoot("noop"), "unused")].slice(0, 0).concat(["/bin/sh", "-c", "echo hi"]),
 		});
 		const environmentFile = flagValues(fixture.invocation.args, "--env-file")[0] as string;
+		const cidFile = flagValues(fixture.invocation.args, "--cidfile")[0] as string;
+		const labels = flagValues(fixture.invocation.args, "--label");
+		expect(cidFile).toMatch(/ahde-container-lifecycle-[^/]+\/container\.cid$/);
+		expect(labels).toHaveLength(4);
+		expect(labels).toContain("com.ahde.managed=true");
+		expect(labels).toContain("com.ahde.expires-at-ms=unbounded");
+		expect(labels.find((label) => label.startsWith("com.ahde.owner="))).toMatch(/=[0-9a-f]{64}$/);
+		expect(labels.find((label) => label.startsWith("com.ahde.session="))).toMatch(/=[0-9a-f-]{36}$/);
 		expect(fixture.invocation.args).toEqual([
 			"run",
 			"--rm",
 			"--name",
 			"ahde-test",
+			"--cidfile",
+			cidFile,
+			...labels.flatMap((label) => ["--label", label]),
 			"--platform",
 			PLATFORM,
 			"--network",
@@ -501,6 +533,7 @@ describe("container backend argv", () => {
 
 	it("mints a bounded name and exposes a daemon-side force-remove hook", () => {
 		const fake = fakeDocker();
+		const runtimeBinding = boundFakeDocker(fake);
 		const fixture = invocationFixture({ containerName: "ahde-cleanup-test" });
 		const invocation = dockerBackend.invocation({
 			policy: policy(),
@@ -511,6 +544,7 @@ describe("container backend argv", () => {
 			argv: ["/bin/true"],
 			containerName: "ahde-cleanup-test",
 			hostEnvironment: { PATH: fake.binDir },
+			runtimeBinding,
 		});
 		expect(flagValues(invocation.args, "--name")).toEqual(["ahde-cleanup-test"]);
 		invocation.terminate?.();
@@ -520,6 +554,7 @@ describe("container backend argv", () => {
 
 	it("fails closed when the daemon cannot confirm container removal", () => {
 		const fake = fakeDocker({ failCleanup: true });
+		const runtimeBinding = boundFakeDocker(fake);
 		const fixture = invocationFixture({ containerName: "ahde-cleanup-failure" });
 		const invocation = dockerBackend.invocation({
 			policy: policy(),
@@ -530,12 +565,110 @@ describe("container backend argv", () => {
 			argv: ["/bin/true"],
 			containerName: "ahde-cleanup-failure",
 			hostEnvironment: { PATH: fake.binDir },
+			runtimeBinding,
 		});
 		const environmentFile = flagValues(invocation.args, "--env-file")[0] as string;
-		expect(() => invocation.terminate?.()).toThrow(
-			/failed to remove container ahde-cleanup-failure after 3 attempts: daemon cleanup refused/,
+		try {
+			expect(() => invocation.terminate?.()).toThrow(
+				/failed to remove container ahde-cleanup-failure after 8 attempts: daemon cleanup refused/,
+			);
+			expect(existsSync(environmentFile)).toBe(false);
+		} finally {
+			rmSync(dirname(environmentFile), { recursive: true, force: true });
+		}
+	});
+
+	it("recovers only an expired, exactly labelled crash orphan from its private journal", () => {
+		const labelState = join(scratchRoot("recovery-labels"), "labels.json");
+		const fake = fakeDocker({ inspectLabelsFile: labelState });
+		const runtimeBinding = boundFakeDocker(fake);
+		const fixture = invocationFixture();
+		const clock = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+		const first = dockerBackend.invocation({
+			policy: policy(),
+			mounts: { workspaceDir: fixture.workspaceDir, scratchDir: fixture.scratchDir },
+			network: "deny",
+			environment: {},
+			cwd: fixture.workspaceDir,
+			argv: ["/bin/true"],
+			containerName: "ahde-recover-exact",
+			runtimeBinding,
+			lifecycleTimeoutMs: 100,
+		});
+		const firstRoot = dirname(flagValues(first.args, "--cidfile")[0] as string);
+		const labels = Object.fromEntries(
+			flagValues(first.args, "--label").map((label) => {
+				const split = label.indexOf("=");
+				return [label.slice(0, split), label.slice(split + 1)];
+			}),
 		);
-		expect(existsSync(environmentFile)).toBe(false);
+		writeFileSync(labelState, `${JSON.stringify(labels)}\n`);
+		clock.mockReturnValue(1_800_000_020_000);
+		const second = dockerBackend.invocation({
+			policy: policy(),
+			mounts: { workspaceDir: fixture.workspaceDir, scratchDir: fixture.scratchDir },
+			network: "deny",
+			environment: {},
+			cwd: fixture.workspaceDir,
+			argv: ["/bin/true"],
+			runtimeBinding,
+		});
+		try {
+			second.assertReady?.();
+			expect(loggedArgv(fake.logPath)).toEqual(["rm", "-f", "ahde-recover-exact"]);
+			expect(existsSync(firstRoot)).toBe(false);
+		} finally {
+			second.dispose?.();
+			clock.mockRestore();
+			rmSync(firstRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("refuses recovery when a container's ownership labels do not match the journal", () => {
+		const labelState = join(scratchRoot("recovery-label-mismatch"), "labels.json");
+		const fake = fakeDocker({ inspectLabelsFile: labelState });
+		const runtimeBinding = boundFakeDocker(fake);
+		const fixture = invocationFixture();
+		const clock = vi.spyOn(Date, "now").mockReturnValue(1_900_000_000_000);
+		const first = dockerBackend.invocation({
+			policy: policy(),
+			mounts: { workspaceDir: fixture.workspaceDir, scratchDir: fixture.scratchDir },
+			network: "deny",
+			environment: {},
+			cwd: fixture.workspaceDir,
+			argv: ["/bin/true"],
+			containerName: "ahde-recover-mismatch",
+			runtimeBinding,
+			lifecycleTimeoutMs: 100,
+		});
+		const firstRoot = dirname(flagValues(first.args, "--cidfile")[0] as string);
+		const labels = Object.fromEntries(
+			flagValues(first.args, "--label").map((label) => {
+				const split = label.indexOf("=");
+				return [label.slice(0, split), label.slice(split + 1)];
+			}),
+		);
+		labels["com.ahde.session"] = "00000000-0000-0000-0000-000000000000";
+		writeFileSync(labelState, `${JSON.stringify(labels)}\n`);
+		clock.mockReturnValue(1_900_000_020_000);
+		const second = dockerBackend.invocation({
+			policy: policy(),
+			mounts: { workspaceDir: fixture.workspaceDir, scratchDir: fixture.scratchDir },
+			network: "deny",
+			environment: {},
+			cwd: fixture.workspaceDir,
+			argv: ["/bin/true"],
+			runtimeBinding,
+		});
+		try {
+			expect(() => second.assertReady?.()).toThrow(/ownership labels do not match/);
+			expect(existsSync(labelState)).toBe(true);
+			expect(existsSync(firstRoot)).toBe(true);
+		} finally {
+			second.dispose?.();
+			clock.mockRestore();
+			rmSync(firstRoot, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -870,9 +1003,10 @@ describe("the built-in bash under the container backend", () => {
 		const originalPath = process.env.PATH;
 		process.env.PATH = fake.binDir;
 		try {
+			const detected = detectContainerRuntime("docker", { environment: { PATH: fake.binDir }, force: true });
 			const result = fixture({
 				sandbox: "required",
-				detect: () => ({ runtime: "docker", available: true, ...RUNTIME_IDENTITY }),
+				detect: () => detected,
 			});
 			const bash = result.customTools.find((tool) => tool.name === "bash");
 			if (!bash) throw new Error("bash tool was not registered");
@@ -893,6 +1027,80 @@ describe("the built-in bash under the container backend", () => {
 				ALLOWED_VALUE: "visible",
 			});
 			expect(args.join("\0")).not.toContain("must-not-leak");
+		} finally {
+			if (originalPath === undefined) delete process.env.PATH;
+			else process.env.PATH = originalPath;
+		}
+	});
+
+	it("keeps the probed absolute client and Docker context after ambient process changes", async () => {
+		const bound = fakeDocker();
+		const switched = fakeDocker();
+		const originalPath = process.env.PATH;
+		const originalContext = process.env.DOCKER_CONTEXT;
+		process.env.PATH = bound.binDir;
+		process.env.DOCKER_CONTEXT = "bound-context";
+		try {
+			const result = fixture({ sandbox: "required" });
+			process.env.PATH = switched.binDir;
+			process.env.DOCKER_CONTEXT = "attacker-switched-context";
+			const bash = result.customTools.find((tool) => tool.name === "bash");
+			if (!bash) throw new Error("bash tool was not registered");
+			await bash.execute("bound-runtime", { command: "echo hi" }, undefined, undefined, undefined as never);
+			expect(loggedArgv(bound.logPath)[0]).toBe("run");
+			expect(() => readFileSync(switched.logPath, "utf8")).toThrow();
+		} finally {
+			if (originalPath === undefined) delete process.env.PATH;
+			else process.env.PATH = originalPath;
+			if (originalContext === undefined) delete process.env.DOCKER_CONTEXT;
+			else process.env.DOCKER_CONTEXT = originalContext;
+		}
+	});
+
+	it("fails closed when the probed Docker client bytes change before execution", async () => {
+		const fake = fakeDocker();
+		const originalPath = process.env.PATH;
+		process.env.PATH = fake.binDir;
+		try {
+			const result = fixture({ sandbox: "required" });
+			const binary = join(fake.binDir, "docker");
+			writeFileSync(binary, `${readFileSync(binary, "utf8")}\n# replaced after probe\n`);
+			chmodSync(binary, 0o755);
+			const bash = result.customTools.find((tool) => tool.name === "bash");
+			if (!bash) throw new Error("bash tool was not registered");
+			await expect(
+				bash.execute("changed-runtime", { command: "echo must-not-run" }, undefined, undefined, undefined as never),
+			).rejects.toThrow(/container runtime changed after resolution/);
+			if (existsSync(fake.logPath)) expect(loggedArgv(fake.logPath)).not.toContain("run");
+		} finally {
+			if (originalPath === undefined) delete process.env.PATH;
+			else process.env.PATH = originalPath;
+		}
+	});
+
+	it("fails closed when the bound context starts addressing a different daemon", async () => {
+		const infoFile = join(scratchRoot("daemon-identity"), "info.json");
+		const info = (daemonId: string) => ({
+			ID: daemonId,
+			KernelVersion: RUNTIME_IDENTITY.kernelVersion,
+			Driver: RUNTIME_IDENTITY.driver,
+			CgroupDriver: RUNTIME_IDENTITY.cgroupDriver,
+			CgroupVersion: RUNTIME_IDENTITY.cgroupVersion,
+			SecurityOptions: ["name=seccomp,profile=builtin"],
+		});
+		writeFileSync(infoFile, `${JSON.stringify(info(RUNTIME_IDENTITY.daemonId))}\n`);
+		const fake = fakeDocker({ infoFile });
+		const originalPath = process.env.PATH;
+		process.env.PATH = fake.binDir;
+		try {
+			const result = fixture({ sandbox: "required" });
+			writeFileSync(infoFile, `${JSON.stringify(info("different-daemon-id"))}\n`);
+			const bash = result.customTools.find((tool) => tool.name === "bash");
+			if (!bash) throw new Error("bash tool was not registered");
+			await expect(
+				bash.execute("changed-daemon", { command: "echo must-not-run" }, undefined, undefined, undefined as never),
+			).rejects.toThrow(/expected daemon-test-id\/.+, got different-daemon-id\//);
+			if (existsSync(fake.logPath)) expect(loggedArgv(fake.logPath)).not.toContain("run");
 		} finally {
 			if (originalPath === undefined) delete process.env.PATH;
 			else process.env.PATH = originalPath;
@@ -1121,6 +1329,13 @@ const integrationPinnedImage = pinnedIntegrationImage();
 const integrationPlatform = dockerStatus.available && dockerStatus.os && dockerStatus.arch
 	? `${dockerStatus.os}/${dockerStatus.arch}`
 	: null;
+const integrationRuntimeBinding = dockerStatus.available
+	? resolveExecutionBackend({
+		policy: { sandbox: "required" as const, container: policy() },
+		osBackend: () => "sandbox-exec" as const,
+		detect: () => dockerStatus,
+	}).containerRuntime
+	: undefined;
 const skipReason = dockerStatus.available
 	? (integrationPinnedImage && integrationPlatform
 		? ""
@@ -1128,7 +1343,7 @@ const skipReason = dockerStatus.available
 	: ` — SKIPPED: ${dockerStatus.reason}`;
 if (skipReason) console.warn(`[container-backend integration]${skipReason}`);
 
-describe.skipIf(!integrationPinnedImage || !integrationPlatform)(`container backend integration (real docker)${skipReason}`, () => {
+describe.skipIf(!integrationPinnedImage || !integrationPlatform || !integrationRuntimeBinding)(`container backend integration (real docker)${skipReason}`, () => {
 	it("runs the declared argv inside the container, sees only container paths, and inherits no host environment", () => {
 		process.env[HOST_SECRET] = "must-not-leak";
 		const root = scratchRoot("integration");
@@ -1154,12 +1369,15 @@ describe.skipIf(!integrationPinnedImage || !integrationPlatform)(`container back
 				"-c",
 				`printf '%s|%s|%s|%s' "$PWD" "$(cat hello.txt | tr -d '\\n')" "$ALLOWED_VALUE" "\${${HOST_SECRET}-unset}"`,
 			],
+			runtimeBinding: integrationRuntimeBinding,
 		});
+		invocation.assertReady?.();
 		const result = spawnSync(invocation.executable, invocation.args, {
 			encoding: "utf8",
 			env: invocation.spawnEnvironment,
 			timeout: 120_000,
 		});
+		invocation.dispose?.();
 		expect(result.stderr ?? "").not.toMatch(/Error response from daemon/);
 		expect(result.status).toBe(0);
 		expect(result.stdout.trim()).toBe("/workspace|workspace-bytes|visible|unset");
@@ -1180,12 +1398,16 @@ describe.skipIf(!integrationPinnedImage || !integrationPlatform)(`container back
 				environment: {},
 				cwd: workspaceDir,
 				argv: ["/bin/sh", "-c", command],
+				runtimeBinding: integrationRuntimeBinding,
 			});
-			return spawnSync(invocation.executable, invocation.args, {
+			invocation.assertReady?.();
+			const result = spawnSync(invocation.executable, invocation.args, {
 				encoding: "utf8",
 				env: invocation.spawnEnvironment,
 				timeout: 120_000,
 			});
+			invocation.dispose?.();
+			return result;
 		};
 		// `--network none` gives the container no interface but loopback: the
 		// runtime enforces the policy, not a profile string the Target could

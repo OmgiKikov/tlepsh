@@ -20,6 +20,7 @@ import {
 	containerBackendFor,
 	resolveExecutionBackend,
 	type ContainerPolicy,
+	type ContainerRuntimeBinding,
 	type ContainerRuntimeName,
 	type ContainerRuntimeStatus,
 } from "./target/container-backend.js";
@@ -347,8 +348,17 @@ function sandboxInvocation(
 	network: "deny" | "allow",
 	command: string,
 	container?: ContainerPolicy,
+	containerRuntime?: ContainerRuntimeBinding,
 	cwd?: string,
-): { executable: string; args: string[]; spawnEnvironment?: NodeJS.ProcessEnv; terminate?: () => void; dispose?: () => void } {
+	lifecycleTimeoutMs?: number,
+): {
+	executable: string;
+	args: string[];
+	spawnEnvironment?: NodeJS.ProcessEnv;
+	assertReady?: () => void;
+	terminate?: () => void;
+	dispose?: () => void;
+} {
 	if (backend === "container") {
 		if (!container) throw new Error("container backend requires an execution.container policy");
 		return containerBackendFor(container.runtime).invocation({
@@ -360,6 +370,8 @@ function sandboxInvocation(
 			// workspace; the host spelling of that directory never reaches it.
 			cwd: cwd ?? workspaceDir,
 			argv: ["/bin/sh", "-c", command],
+			...(containerRuntime ? { runtimeBinding: containerRuntime } : {}),
+			...(lifecycleTimeoutMs !== undefined ? { lifecycleTimeoutMs } : {}),
 		});
 	}
 	if (backend === "sandbox-exec" && binary) {
@@ -379,7 +391,14 @@ function detectSandbox(
 	workspaceDir: string,
 	scratchDir: string,
 	environment: NodeJS.ProcessEnv,
-): { backend: ExecutionBackend; binary?: string; profile: string; fingerprint: string; warnings: string[] } {
+): {
+	backend: ExecutionBackend;
+	binary?: string;
+	profile: string;
+	fingerprint: string;
+	warnings: string[];
+	containerRuntime?: ContainerRuntimeBinding;
+} {
 	const profile = macosProfile(workspaceDir, scratchDir, options.policy.network);
 	if (!options.policy.tools.includes("bash") || options.policy.sandbox === "off") {
 		if (options.policy.tools.includes("bash") && options.policy.network === "deny") {
@@ -403,7 +422,13 @@ function detectSandbox(
 		...(options.detectContainerRuntime ? { detect: options.detectContainerRuntime } : {}),
 	});
 	if (choice.backend === "container") {
-		return { backend: "container", profile, fingerprint: choice.sandboxFingerprint, warnings: choice.warnings };
+		return {
+			backend: "container",
+			profile,
+			fingerprint: choice.sandboxFingerprint,
+			warnings: choice.warnings,
+			...(choice.containerRuntime ? { containerRuntime: choice.containerRuntime } : {}),
+		};
 	}
 	return {
 		backend: choice.backend,
@@ -532,6 +557,7 @@ function bashOperations(
 	network: "deny" | "allow",
 	sensitiveValues: readonly string[],
 	container?: ContainerPolicy,
+	containerRuntime?: ContainerRuntimeBinding,
 ): BashOperations {
 	return {
 		exec: async (command, cwd, { onData, signal, timeout }) => {
@@ -552,8 +578,11 @@ function bashOperations(
 				network,
 				command,
 				container,
+				containerRuntime,
 				canonicalCwd,
+				timeout === undefined ? undefined : timeout * 1_000,
 			);
+			invocation.assertReady?.();
 			const child = spawn(invocation.executable, invocation.args, {
 				cwd: canonicalCwd,
 				detached: process.platform !== "win32",
@@ -645,6 +674,7 @@ export function buildExecutionPolicy(options: ExecutionPolicyOptions): Execution
 						options.policy.network,
 						sensitiveValues,
 						options.policy.container,
+						sandbox.containerRuntime,
 					),
 				}),
 			);
