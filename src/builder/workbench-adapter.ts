@@ -7,7 +7,11 @@ import { oneLine, pluralize } from "./render/format.js";
 import { themePaint } from "./render/paint.js";
 import { nextStep, stageLabel } from "./render/stage.js";
 import { renderDatasetCases, renderReview, renderView, viewTitle } from "./render/view.js";
+import { t } from "../i18n.js";
 import { renderVersionPassport } from "./render/passport.js";
+import { renderAgentLogChart } from "./render/agent-log.js";
+import { handoffLines } from "./render/handoff.js";
+import { compileAgentLog } from "../application/agent-log.js";
 import { renderWorkshopCloseReview } from "./render/workshop-close.js";
 import type { WorkshopTrySummary } from "../application/tool-workshop.js";
 import { markerPaint, type TranscriptPresenter } from "./transcript.js";
@@ -514,17 +518,30 @@ export function createBuilderWorkbenchTools(
 					if (options.presenter) {
 						try {
 							const lines = renderDecision(result, markerPaint, { liveTraceUrl: observation?.liveTraceUrl ?? null });
+							// Ship is the moment the agent became a version, so the page that
+							// says what it promised and what it measured is shown without
+							// being asked for, and the growth line puts it beside the ones
+							// before it.
 							if (result.kind === "ship") {
 								try {
 									const { passport } = await compileBuilderPassport(workbench, { view: result.view });
-									lines.push(
-										"",
-										...renderVersionPassport(passport, markerPaint),
-									);
+									lines.push("", ...renderVersionPassport(passport, markerPaint));
 								} catch (error) {
-									lines.push("", markerPaint.warning(`Passport unavailable: ${oneLine(error instanceof Error ? error.message : String(error), 180)}`));
+									lines.push("", markerPaint.warning(t("result.passport-unavailable", {
+										reason: oneLine(error instanceof Error ? error.message : String(error), 180),
+									})));
+								}
+								try {
+									lines.push("", ...renderAgentLogChart(compileAgentLog({
+										runsRoot: workbench.runsRoot,
+										projectId: workbench.projectId,
+										...(result.view.target.id ? { targetId: result.view.target.id } : {}),
+									}), markerPaint));
+								} catch {
+									// The growth line is a second look at the same evidence.
 								}
 							}
+							lines.push(...handoffLines(result, markerPaint));
 							options.presenter.show(ctx, {
 								title: `${decisionHeadline(result)}`,
 								tone: "success",

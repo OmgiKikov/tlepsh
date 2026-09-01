@@ -29,6 +29,7 @@ import {
 	when,
 	wrap,
 } from "../src/builder/render/format.js";
+import { handoffLines } from "../src/builder/render/handoff.js";
 import { setLanguage } from "../src/i18n.js";
 import { renderImpact } from "../src/builder/render/impact.js";
 import { renderToolPermissions, toolPermissionsFromDiff } from "../src/builder/render/tool-permissions.js";
@@ -2430,5 +2431,48 @@ describe("the workshop-close review", () => {
 		} finally {
 			setLanguage(null);
 		}
+	});
+});
+
+describe("the hand-off to the agent", () => {
+	const applied = (verification: unknown): WorkbenchDecisionResult => ({
+		kind: "apply-proposal",
+		message: "applied",
+		result: {
+			runId: "builder-run_1",
+			branch: "ahde/candidate-1",
+			candidateSha: SHA_A,
+			proposalHash: HASH,
+			...(verification === undefined ? {} : { verification }),
+		},
+		view: makeView({ stage: "candidate-review" }),
+	} as unknown as WorkbenchDecisionResult);
+
+	it("offers the agent after a release and after the first apply that was actually checked", () => {
+		expect(handoffLines(decision("ship", { candidate: {}, tag: "v0.2.0" } as never, "complete"), plainPaint))
+			.toEqual(["", "Talk to the agent: ahde target (in a new terminal)"]);
+		expect(handoffLines(applied({ outcome: "improved" }), plainPaint))
+			.toEqual(["", "Talk to the agent: ahde target (in a new terminal)"]);
+		try {
+			setLanguage("ru");
+			expect(handoffLines(applied({ outcome: "improved" }), plainPaint))
+				.toEqual(["", "Поговорить с агентом: ahde target (в новом терминале)"]);
+		} finally {
+			setLanguage(null);
+		}
+	});
+
+	it("stays quiet while there is nothing to talk to", () => {
+		// Apply without an automatic check, and a check that never ran, promise nothing.
+		expect(handoffLines(applied(undefined), plainPaint)).toEqual([]);
+		expect(handoffLines(applied({ outcome: "blocked", reason: "no sealed holdout" }), plainPaint)).toEqual([]);
+		// Neither does any other decision, nor a project without a ready agent.
+		expect(handoffLines(decision("discard-proposal", { runId: "r", receiptHash: HASH }, "ready-to-evaluate"), plainPaint))
+			.toEqual([]);
+		const unready = {
+			...applied({ outcome: "improved" }),
+			view: makeView({ target: { status: "bootstrap-required", id: null, gitSha: null, model: null } }),
+		} as WorkbenchDecisionResult;
+		expect(handoffLines(unready, plainPaint)).toEqual([]);
 	});
 });
