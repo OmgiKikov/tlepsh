@@ -2,34 +2,41 @@
 
 ## Status 2026-09-01
 
-**Landed.** The product is a measurement engine plus a skill an ordinary coding
-agent follows — `skills/ahde/SKILL.md`, proven end to end twice: on a scripted
-mock (`docs/SKILL_WALKTHROUGH.md`) and on a real 9B model
-(`docs/DEMO_REAL_MODEL.md`, 41.7% → 98.3% development, sealed guardrail `pass`,
-promoted `v0.1.0`, $0.19 of Target spend). The CLI seams the skill needs are all
-present and scriptable: `spec approve`, `propose`, `apply`, `check`,
-`candidate`, `review`, `promote`, `adopt`, plus `regrade`, `label`,
-`judge-agreement`, `calibrate`, `log`, `watch` and `serve`. `ahde passport`
-writes the client-facing promised-vs-measured page from durable artifacts.
-`templates/support-agent` scaffolds the call-tool-first pattern with the
-`.gitignore` (`.ahde/`, `runs/`, `imports/`) that keeps a sealed exam out of
-Git. Item 14's ceremony cut is done for the docs: the README is one page around
-a real transcript, and CONTEXT.md is five guarantees plus a glossary, with the
-42 invariants preserved unchanged in `docs/INVARIANTS_V1.md`.
+**Landed.** Builder Pi stays the front door; the engine under it is now
+fully scriptable without the TUI: `spec approve`, `propose`, `apply`,
+`check --builder-run`, `candidate`, `review`, `promote`, `adopt`, plus
+`regrade`, `label`, `judge-agreement`, `calibrate`, `log`, `watch`, `serve`,
+and `ahde passport` — the client-facing promised-vs-measured page built from
+durable artifacts. That CLI loop was proven end to end twice: on a scripted
+mock (`docs/CLI_WALKTHROUGH.md`) and on a real 9B model
+(`docs/DEMO_REAL_MODEL.md`: 41.7% → 98.3% development, sealed guardrail
+`pass`, promoted `v0.1.0`, $0.19 of Target spend, judge spend now recorded
+separately). Item 11 landed as `ahde corpus synth` (the judge model writes a
+sealed exam the builder never sees; `--review` for a human to edit and seal).
+`ahde export --training` writes passing development trajectories for a later
+train-under-harness step and never a sealed one. `templates/support-agent`
+scaffolds the call-tool-first pattern with the `.gitignore` that keeps the
+store out of Git, and the engine now refuses a tracked `.ahde/` outright.
+Codex's `integrate-polish` (container backend, growth log, watch, improve
+from the CLI, judge-calibration binding) is merged into master. Item 14's
+ceremony cut is done for the docs: one-page README around a real transcript,
+CONTEXT.md as five guarantees plus a glossary, the 42 invariants preserved in
+`docs/INVARIANTS_V1.md`.
 
-**Deprecated.** The Builder-Pi TUI — bare `ahde`, the Workbench conversation,
-slash commands, panels. The interface is the coding agent the operator already
-runs. Its engine paths stay (Workbench, gate policy, the three consequential
-decisions, the receipts); `ahde serve` is the headless successor.
+**Tried and retired.** A skill file for external coding agents was built and
+A/B-tested against the bare CLI: an Opus-class builder closes the loop with or
+without it; a Haiku-class builder fails with or without it and fakes the
+release with `git tag`. The engine's help is self-sufficient above the builder
+floor, and nothing helps below it — so the skill is gone, its loop discipline
+lives in the Builder persona, and Builder Pi (no shell, typed tools, host-owned
+questions) is the interface for everyone who is not scripting.
 
-**Next.** v1.1: host-side sealed synthesis (item 11) — an evaluator-model call
-whose output never enters a model's context, so a sealed exam can be grown
-without a human writing every case. v1.2: `export --training` and model
-comparison mode (item 16, still open). Then: three splits (development,
-validation, sealed) so tuning stops eating the same evidence it is judged on;
-the Pareto table from `ahde search` as the default presentation of a change;
-and transfer/continued reporting — whether a harness gain holds on a different
-model and across successive promotions.
+**Next.** Builder Pi polish for its first human user: panels in the operator's
+language, one money question per cycle (authorized at apply), the diff on
+screen when a workshop closes, `ahde label` offered once in the flow. Then
+model comparison mode (item 16), three splits (development / validation /
+sealed), the Pareto table as the default presentation of a change, and
+transfer/continued reporting.
 
 Status 2026-08-31. Integration branch `codex/integrate-polish` (off master
 `83535d8`). This

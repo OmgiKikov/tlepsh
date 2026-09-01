@@ -1,12 +1,13 @@
-# AHDE — a measurement engine for agent harnesses
+# AHDE — build, benchmark, and improve Pi agent harnesses
 
-A Unix-style CLI (`ahde`) plus a skill (`skills/ahde/SKILL.md`) that an ordinary
-coding agent — Claude Code, Pi, Codex — follows to build, benchmark, improve and
-ship a Pi agent harness. Brains in the skill, instruments in the engine: it builds
-the benchmark, reserves a sealed exam no model ever reads, runs matched
+`ahde` opens **Builder Pi**: you describe the agent in plain language; the
+Builder structures the Spec, assembles the benchmark, reserves a sealed exam no
+model ever reads, builds and tries the harness in a bound workshop, runs matched
 baseline-vs-candidate experiments, decides the verdict under a named gate policy
-and refuses to ship without a human. It changes instructions, skills and declared
-tools — never weights — and promotes nothing on its own authority.
+and asks you three questions — start testing, apply this change, ship. The same
+engine is a Unix-style CLI for scripts, CI and platforms (`ahde serve`). It
+changes instructions, skills and declared tools — never weights — and promotes
+nothing on its own authority.
 
 ## Install
 
@@ -18,10 +19,24 @@ npm install --global ahde
 
 From a checkout: `npm ci --ignore-scripts && npm run build` → `dist/cli.js`.
 
-## Use it from your coding agent
+## Use it
 
-Copy `skills/ahde/SKILL.md` into the agent's skills dir (Claude Code:
-`~/.claude/skills/ahde/`) or point it at the file, then give it the order:
+```bash
+mkdir my-agent && cd my-agent
+ahde            # Builder Pi: describe the agent; guided setup happens here
+ahde target     # talk to the built agent; /good and /bad become test cases
+```
+
+Builder Pi has no shell and no file access of its own: it works through three
+typed tools and a bound workshop, and every consequential step is a host-owned
+question with the exact subject on screen. Give the Builder a Sonnet/Opus-class
+model — below that floor the loop does not close; the Target can be as small as
+a 9B model.
+
+## The same loop from a script
+
+Every step Builder Pi performs is a CLI command, so a platform, a CI job or a
+coding agent can drive the engine without the TUI:
 
 1. `spec.md`, then `ahde spec approve` — the typed Spec the gate needs.
 2. `ahde init .` or adopt an agent, until `validate` says `ready to run`.
@@ -34,7 +49,7 @@ Copy `skills/ahde/SKILL.md` into the agent's skills dir (Claude Code:
 
 ## A real transcript
 
-One coding agent, the skill, and `openrouter/qwen/qwen3.5-9b` — a 9B model — on a
+A coding agent driving the CLI, and `openrouter/qwen/qwen3.5-9b` — a 9B model — on a
 Russian bank-ombudsman agent whose harness was weakened first, so the fix had to
 be rediscovered. Every line copied from a run artifact; full log in
 [DEMO_REAL_MODEL.md](docs/DEMO_REAL_MODEL.md).
@@ -186,10 +201,10 @@ npm run verify:package   # pack, install into an empty consumer, drive it
 RL or weight changes · autonomous apply, promotion or deployment · a UI inside
 AHDE (`serve` is the seam) · Windows.
 
-## Deprecated in this release
+## Interfaces
 
-Bare `ahde` opened **Builder Pi**: a conversational TUI with slash commands
-(`/test`, `/fix`, `/ship`, `/review`, `/promote`, …), stage headers and panels,
-where a Builder model drove the engine for you. Deprecated — the interface is the
-coding agent you already use. The engine paths underneath remain (Workbench, gate
-policy, three consequential decisions, receipts); `serve` is the successor.
+- `ahde` — Builder Pi, the conversation. Three consequential questions, panels
+  the model never sees, one login in `~/.ahde`.
+- The CLI — the same engine for automation, verified end to end above.
+- `ahde serve` — the engine behind a loopback HTTP API with the same human gate,
+  for a platform that renders the confirmations in its own UI.
