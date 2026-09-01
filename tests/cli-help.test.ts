@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { cliHelp } from "../src/cli-help.js";
 import { SEALED_GATE_POLICY } from "../src/domain/comparison-gate.js";
 import { AHDE_BUILDER_COMMAND_NAMES } from "../src/builder/commands.js";
+import { setLanguage, t } from "../src/i18n.js";
 
 /** Every `/name` mentioned inside one fenced block or help section. */
 function slashNames(text: string): string[] {
@@ -15,13 +16,21 @@ describe("one Builder command list", () => {
 		expect(slashNames(section)).toEqual([...AHDE_BUILDER_COMMAND_NAMES, "login", "model"]);
 	});
 
+	// The reference is a localized string now, so the invariant has to hold in
+	// every language: a translation that quietly drops a command is a bug.
 	it("keeps the in-Builder /help reference equal to the registered commands", () => {
-		const source = readFileSync(new URL("../src/builder/commands.ts", import.meta.url), "utf8");
-		const reference = source.split("Commands:")[1]?.split("Every consequential step")[0] ?? "";
-		expect(reference).not.toBe("");
-		for (const name of AHDE_BUILDER_COMMAND_NAMES) expect(reference).toContain(`/${name}`);
-		expect(reference).toContain("/login");
-		expect(reference).toContain("/model");
+		try {
+			for (const lang of ["en", "ru"] as const) {
+				setLanguage(lang);
+				const reference = t("help.body");
+				expect(reference).not.toBe("");
+				for (const name of AHDE_BUILDER_COMMAND_NAMES) expect(reference).toContain(`/${name}`);
+				expect(reference).toContain("/login");
+				expect(reference).toContain("/model");
+			}
+		} finally {
+			setLanguage(null);
+		}
 	});
 
 	it("keeps the README slash block equal to the registered commands", () => {

@@ -1,3 +1,4 @@
+import { t } from "../i18n.js";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -59,9 +60,9 @@ function safeProviderFailure(message: string | undefined): string {
 	return "Builder model request failed. Run /doctor, then retry or choose another model with /model.";
 }
 
-const LOGIN_CHOICE = "Log in to a provider (OAuth or API key)";
-const MODEL_CHOICE = "Pick a model that already has a credential";
-const LATER_CHOICE = "Not now";
+const LOGIN_CHOICE = (): string => t("onboarding.login-choice");
+const MODEL_CHOICE = (): string => t("onboarding.model-choice");
+const LATER_CHOICE = (): string => t("onboarding.later-choice");
 
 /** Install the AHDE-owned visual/product identity over the embedded Pi host. */
 export function installAhdeBuilderProductShell(
@@ -132,21 +133,21 @@ export function installAhdeBuilderProductShell(
 	const onboard = async (ctx: ExtensionContext, view: WorkbenchView | null): Promise<void> => {
 		if (!state.builderModel.credentialPresent) {
 			if (typeof ctx.ui.select !== "function") {
-				ctx.ui.notify("Connect the Builder to a model first: /login, or /model to pick one with a credential.", "warning");
+				ctx.ui.notify(t("onboarding.connect-first"), "warning");
 				return;
 			}
 			const choice = await ctx.ui.select(
-				"AHDE Builder needs a model to talk to you",
-				[LOGIN_CHOICE, MODEL_CHOICE, LATER_CHOICE],
+				t("onboarding.builder-needs-model"),
+				[LOGIN_CHOICE(), MODEL_CHOICE(), LATER_CHOICE()],
 			);
-			if (choice === LOGIN_CHOICE) {
+			if (choice === LOGIN_CHOICE()) {
 				ctx.ui.setEditorText("/login");
-				ctx.ui.notify("Press Enter to open the provider login. One login serves every AHDE project.", "info");
-			} else if (choice === MODEL_CHOICE) {
+				ctx.ui.notify(t("onboarding.login-hint"), "info");
+			} else if (choice === MODEL_CHOICE()) {
 				ctx.ui.setEditorText("/model");
-				ctx.ui.notify("Press Enter to open the model picker.", "info");
+				ctx.ui.notify(t("onboarding.model-hint"), "info");
 			} else {
-				ctx.ui.notify("You can connect any time with /login or /model.", "info");
+				ctx.ui.notify(t("onboarding.connect-anytime"), "info");
 			}
 			return;
 		}
@@ -162,13 +163,13 @@ export function installAhdeBuilderProductShell(
 				await refresh();
 			}
 			if (current && current.stage !== "target-setup") {
-				ctx.ui.notify("Now describe what the agent should do, for whom, and what “done” looks like. One question at a time from here.", "info");
+				ctx.ui.notify(t("onboarding.describe-now"), "info");
 				return;
 			}
 			ctx.ui.notify(
 				(current ?? view).target.status === "missing"
-					? "No agent yet. Tell me what you want to build and I will set it up here."
-					: "The agent exists but has no model yet. Tell me which model it should use.",
+					? t("onboarding.no-agent-yet")
+					: t("onboarding.agent-no-model"),
 				"info",
 			);
 		} else {
@@ -194,8 +195,8 @@ export function installAhdeBuilderProductShell(
 	pi.on("session_start", async (event, ctx) => {
 		if (ctx.mode !== "tui") return;
 		host = ctx;
-		ctx.ui.setTitle("AHDE Builder");
-		ctx.ui.setWorkingMessage("AHDE Builder is working…");
+		ctx.ui.setTitle(t("header.title"));
+		ctx.ui.setWorkingMessage(t("onboarding.working"));
 		ctx.ui.setHeader((hostTui, theme) => {
 			tui = hostTui;
 			const paint = themePaint(theme);
@@ -209,7 +210,7 @@ export function installAhdeBuilderProductShell(
 		});
 		await refresh();
 		if (state.error) {
-			ctx.ui.notify(`AHDE could not read project state: ${state.error}\nRun /doctor for recovery guidance.`, "error");
+			ctx.ui.notify(t("onboarding.state-unreadable", { error: state.error }), "error");
 			return;
 		}
 		if (event.reason === "startup" || event.reason === "new" || event.reason === "resume") {

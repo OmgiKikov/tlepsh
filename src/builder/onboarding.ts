@@ -4,6 +4,7 @@ import {
 	TargetModelSelectionSchema,
 	type TargetModelSelection,
 } from "../application/target-model-selection.js";
+import { t } from "../i18n.js";
 import type { TargetManifest } from "../manifest.js";
 import type { AhdeWorkbench } from "../workbench/workbench.js";
 import type { WorkbenchHumanGate, WorkbenchView } from "../workbench/types.js";
@@ -99,12 +100,12 @@ export async function selectTargetCredentialEnvironment(
 	ctx: Pick<ExtensionContext, "ui">,
 	selection: TargetModelSelection,
 	/** What the key is for, in the operator's words. */
-	subject = "the agent",
+	subject = t("onboarding.subject-agent"),
 ): Promise<string> {
 	const suggested = credentialPlaceholder(selection.provider);
 	if (process.env[suggested]?.trim()) return suggested;
 	const selected = await ctx.ui.input(
-		`Environment variable holding the ${selection.provider} key for ${subject}`,
+		t("onboarding.credential-env", { provider: selection.provider, subject }),
 		suggested,
 	);
 	if (selected === undefined) throw new Error("Target model configuration was cancelled by the operator");
@@ -128,7 +129,7 @@ export async function selectEvaluatorCredentialEnvironment(
 	return await selectTargetCredentialEnvironment(
 		ctx,
 		selection,
-		role === "judge" ? "the judge" : "the simulated user",
+		role === "judge" ? t("onboarding.subject-judge") : t("onboarding.subject-user"),
 	);
 }
 
@@ -197,7 +198,7 @@ function modelChoices(ctx: Pick<ExtensionContext, "model" | "modelRegistry">): M
 		seen.add(key);
 		choices.push({ label: `${key}${suffix}`, selection: { provider, modelId: id } });
 	};
-	if (ctx.model) push(ctx.model.provider, ctx.model.id, " (same as the Builder)");
+	if (ctx.model) push(ctx.model.provider, ctx.model.id, t("onboarding.same-as-builder"));
 	for (const model of hostModelCatalog(ctx).models) {
 		if (choices.length >= MAX_MODEL_CHOICES) break;
 		if (!model.credentialPresent) continue;
@@ -228,21 +229,21 @@ export function calmSetupFailure(error: unknown): string {
 	return `Setup did not finish: ${oneLine(message, 200)}`;
 }
 
-const CREATE_HERE = "Create the agent here";
-const LATER = "Not now";
-const OTHER_MODEL = "Another model — I will tell the Builder";
+const CREATE_HERE = (): string => t("onboarding.create-here");
+const LATER = (): string => t("onboarding.later-choice");
+const OTHER_MODEL = (): string => t("onboarding.other-model");
 
 async function createTarget(ctx: ExtensionContext, host: OnboardingHost, view: WorkbenchView): Promise<WorkbenchView | null> {
 	const choice = await ctx.ui.select(
-		`This folder (${oneLine(view.project.directory, 60)}) has no agent yet`,
-		[CREATE_HERE, LATER],
+		t("onboarding.no-agent-here", { directory: oneLine(view.project.directory, 60) }),
+		[CREATE_HERE(), LATER()],
 	);
-	if (choice !== CREATE_HERE) return null;
+	if (choice !== CREATE_HERE()) return null;
 	const result = await host.workbench.decide(
 		{ kind: "scaffold-target", reason: "First run: create the agent in the current directory" },
 		answeredGate(host.actorId),
 	);
-	host.presenter.show(ctx, { title: "Agent created", tone: "success", lines: renderDecision(result, markerPaint) });
+	host.presenter.show(ctx, { title: t("panel.agent-created"), tone: "success", lines: renderDecision(result, markerPaint) });
 	return result.view;
 }
 
@@ -250,8 +251,8 @@ async function chooseModel(ctx: ExtensionContext, host: OnboardingHost, view: Wo
 	const choices = modelChoices(ctx);
 	if (choices.length === 0) return null;
 	const selected = await ctx.ui.select(
-		"Which model should the agent itself use?",
-		[...choices.map((choice) => choice.label), OTHER_MODEL],
+		t("onboarding.which-model"),
+		[...choices.map((choice) => choice.label), OTHER_MODEL()],
 	);
 	const choice = choices.find((item) => item.label === selected);
 	if (!choice) return null;
@@ -267,7 +268,7 @@ async function chooseModel(ctx: ExtensionContext, host: OnboardingHost, view: Wo
 		answeredGate(host.actorId),
 		{ resolveTargetModel: targetModelResolver(ctx, apiKeyEnv) },
 	);
-	host.presenter.show(ctx, { title: "Agent configured", tone: "success", lines: renderDecision(result, markerPaint) });
+	host.presenter.show(ctx, { title: t("panel.agent-configured"), tone: "success", lines: renderDecision(result, markerPaint) });
 	return result.view;
 }
 
@@ -295,7 +296,7 @@ export async function runFirstRunOnboarding(
 		return view;
 	} catch (error) {
 		if (error instanceof WorkbenchDecisionDeclinedError) return null;
-		ctx.ui.notify(`${calmSetupFailure(error)} You can also just tell me what you want to build.`, "warning");
+		ctx.ui.notify(`${calmSetupFailure(error)} ${t("onboarding.setup-fallback")}`, "warning");
 		return null;
 	}
 }

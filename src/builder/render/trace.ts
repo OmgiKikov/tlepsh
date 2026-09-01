@@ -2,6 +2,7 @@ import type { GraderFinding, RunRow, TranscriptEntry } from "../../application/r
 import type { EvalPageMode, RunDetailPageModel } from "../../evidence/pages.js";
 import { oneLine } from "./format.js";
 import type { Paint } from "./paint.js";
+import { t } from "../../i18n.js";
 
 /**
  * Traces inside the TUI. The same pure projections the Evidence Explorer
@@ -76,20 +77,20 @@ export function renderRunsTable(
 	options: { limit?: number } = {},
 ): string[] {
 	const limit = Math.max(1, Math.min(options.limit ?? DEFAULT_TRACE_TABLE_ROWS, MAX_TRACE_TABLE_ROWS));
-	if (rows.length === 0) return [paint.dim("No runs to show for this evaluation.")];
+	if (rows.length === 0) return [paint.dim(t("table.none"))];
 	const titles = new Map(modes.map((mode) => [mode.id, mode.title]));
 	const shown = rows.slice(0, limit);
 	const columns = { index: 3, task: 18, rep: 3, outcome: 7, score: 5, graders: 24, mode: 24, tools: 5 };
 	const header = [
 		pad("#", columns.index),
-		pad("task", columns.task),
-		pad("rep", columns.rep),
-		pad("outcome", columns.outcome),
-		pad("score", columns.score),
-		pad("graders", columns.graders),
-		pad("failure mode", columns.mode),
-		pad("tools", columns.tools),
-		"latency",
+		pad(t("table.col.task"), columns.task),
+		pad(t("table.col.rep"), columns.rep),
+		pad(t("table.col.outcome"), columns.outcome),
+		pad(t("table.col.score"), columns.score),
+		pad(t("table.col.graders"), columns.graders),
+		pad(t("table.col.mode"), columns.mode),
+		pad(t("table.col.tools"), columns.tools),
+		t("table.col.latency"),
 	].join(" ");
 	const lines = [paint.dim(header)];
 	shown.forEach((row, position) => {
@@ -109,9 +110,9 @@ export function renderRunsTable(
 		].join(" "));
 	});
 	if (rows.length > shown.length) {
-		lines.push(paint.dim(`… ${rows.length - shown.length} more rows · /traces ${Math.min(rows.length, MAX_TRACE_TABLE_ROWS)} shows more`));
+		lines.push(paint.dim(t("table.more", { n: rows.length - shown.length, m: Math.min(rows.length, MAX_TRACE_TABLE_ROWS) })));
 	}
-	lines.push(paint.dim("say “/trace 1” to open row 1 · “/trace next” walks the failures · the evidence link above has every run"));
+	lines.push(paint.dim(t("table.hint")));
 	return lines;
 }
 
@@ -138,9 +139,9 @@ function renderGrader(grader: GraderFinding, paint: Paint): string[] {
 function renderEntry(entry: TranscriptEntry, paint: Paint): string[] {
 	switch (entry.kind) {
 		case "user":
-			return [`  ${paint.accent("›")} ${paint.bold("user")}`, ...wrapSentence(entry.text.slice(0, MAX_TURN_CHARS)).map((line) => `    ${line}`)];
+			return [`  ${paint.accent("›")} ${paint.bold(t("trace.user"))}`, ...wrapSentence(entry.text.slice(0, MAX_TURN_CHARS)).map((line) => `    ${line}`)];
 		case "assistant": {
-			const head = entry.final ? paint.bold("agent · final answer") : paint.bold("agent");
+			const head = entry.final ? paint.bold(t("trace.finalAnswer")) : paint.bold(t("trace.agent"));
 			const body = wrapSentence(entry.text.slice(0, MAX_TURN_CHARS)).map((line) => `    ${entry.final ? paint.accent(line) : line}`);
 			return [`  ${paint.accent("‹")} ${head}`, ...body];
 		}
@@ -163,24 +164,24 @@ export function renderTracePanel(model: RunDetailPageModel, paint: Paint): strin
 	const run = model.run;
 	const score = meanGraderScore(model.graders);
 	const lines: string[] = [
-		`${paint.heading("Run")} ${run.taskId}#${run.repetitionIndex} · ${paintOutcome(run.outcome, outcomeWord(run.outcome), paint)}` +
-			`${score === null ? "" : ` · score ${pct(score)}`} · ${duration(run.metrics.latencyMs)} · ${run.metrics.toolCalls} tool call(s) · ${paint.dim(run.runId)}`,
+		`${paint.heading(t("trace.run"))} ${run.taskId}#${run.repetitionIndex} · ${paintOutcome(run.outcome, outcomeWord(run.outcome), paint)}` +
+			`${score === null ? "" : ` · ${t("table.col.score")} ${pct(score)}`} · ${duration(run.metrics.latencyMs)} · ${t("trace.toolCalls", { n: run.metrics.toolCalls })} · ${paint.dim(run.runId)}`,
 	];
-	if (run.error) lines.push(`${paint.heading("Error")} ${oneLine(run.error, 200)}`);
-	lines.push("", paint.heading("Why"));
+	if (run.error) lines.push(`${paint.heading(t("trace.error"))} ${oneLine(run.error, 200)}`);
+	lines.push("", paint.heading(t("trace.why")));
 	for (const sentence of model.explanation.sentences) {
 		for (const line of wrapSentence(sentence)) lines.push(`  ${line}`);
 	}
-	lines.push("", paint.heading("Verdict"));
-	if (model.graders.length === 0) lines.push(`  ${paint.dim("No grader graded this run.")}`);
+	lines.push("", paint.heading(t("trace.verdict")));
+	if (model.graders.length === 0) lines.push(`  ${paint.dim(t("trace.noGraders"))}`);
 	for (const grader of model.graders) lines.push(...renderGrader(grader, paint));
-	lines.push("", paint.heading("Conversation"));
+	lines.push("", paint.heading(t("trace.conversation")));
 	if (!model.transcript) {
 		lines.push(`  ${paint.dim(oneLine(model.traceNotice, 160))}`);
 	} else {
 		for (const entry of model.transcript.entries) lines.push(...renderEntry(entry, paint));
 		if (model.transcript.truncated) {
-			lines.push(`  ${paint.dim(`… ${model.transcript.omittedCount} more entries; the Explorer page has the bounded rest`)}`);
+			lines.push(`  ${paint.dim(t("trace.moreEntries", { n: model.transcript.omittedCount }))}`);
 		}
 	}
 	lines.push("");
@@ -190,7 +191,7 @@ export function renderTracePanel(model: RunDetailPageModel, paint: Paint): strin
 	lines.push(paint.dim([...walk, `explorer /runs/${run.runId}`].join(" · ")));
 	if (lines.length > MAX_TRACE_PANEL_LINES) {
 		const kept = lines.slice(0, MAX_TRACE_PANEL_LINES - 1);
-		kept.push(paint.dim(`… ${lines.length - kept.length} more lines omitted; open /runs/${run.runId} in the Explorer`));
+		kept.push(paint.dim(t("trace.omitted", { n: lines.length - kept.length, run: run.runId })));
 		return kept;
 	}
 	return lines;

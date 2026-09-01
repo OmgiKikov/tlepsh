@@ -72,6 +72,7 @@ an explicit --project still wins.
 
 Environment:
   AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)
+  AHDE_LANG       host language, en or ru (default: settings.json, then the shell locale)
   AHDE_RUNS_DIR   run artifacts directory (default: ./runs)
   AHDE_STATE_DIR  private workflow state (default: ./.ahde)`;
 

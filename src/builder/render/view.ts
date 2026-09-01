@@ -12,6 +12,7 @@ import type {
 	WorkbenchView,
 } from "../../workbench/types.js";
 import { formatResourceFragment } from "../../domain/comparison-gate.js";
+import { plural, t, verdictLabel } from "../../i18n.js";
 import { formatFlipRate, formatNoiseBand } from "./calibration.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
 import {
@@ -43,12 +44,12 @@ export interface RenderReviewOptions {
 }
 
 function targetLine(view: WorkbenchView, paint: Paint): string {
-	if (view.target.status === "missing") return `${paint.dim("Target")} ${paint.muted("not created yet")}`;
+	if (view.target.status === "missing") return `${paint.dim(t("label.target"))} ${paint.muted(t("target.missing"))}`;
 	const model = view.target.model;
 	const modelText = view.target.status === "bootstrap-required" || !model
-		? paint.warning("model not chosen")
-		: `${oneLine(`${model.provider}/${model.id}`, 60)} ${model.credentialPresent ? paint.success("✓") : paint.warning(`(${oneLine(model.apiKeyEnv, 40)} missing)`)}`;
-	return `${paint.dim("Target")} ${paint.bold(oneLine(view.target.id ?? "—", 60))} ${paint.dim(`@ ${shortSha(view.target.gitSha)}`)} ${paint.dim("·")} ${modelText}`;
+		? paint.warning(t("target.model-not-chosen"))
+		: `${oneLine(`${model.provider}/${model.id}`, 60)} ${model.credentialPresent ? paint.success("✓") : paint.warning(t("target.credential-missing", { env: oneLine(model.apiKeyEnv, 40) }))}`;
+	return `${paint.dim(t("label.target"))} ${paint.bold(oneLine(view.target.id ?? "—", 60))} ${paint.dim(`@ ${shortSha(view.target.gitSha)}`)} ${paint.dim("·")} ${modelText}`;
 }
 
 /**
@@ -61,25 +62,25 @@ function evaluatorLine(view: WorkbenchView, paint: Paint): string | null {
 	const evaluators = view.target.evaluators;
 	if (!evaluators) return null;
 	const parts: string[] = [];
-	for (const [role, label] of [["judge", "judge"], ["simulatedUser", "user model"]] as const) {
+	for (const [role, labelKey] of [["judge", "label.judge"], ["simulatedUser", "label.user-model"]] as const) {
 		const model = evaluators[role];
 		if (!model) continue;
 		parts.push(
-			`${paint.dim(label)} ${oneLine(`${model.provider}/${model.id}`, 40)} ${
-				model.credentialPresent ? paint.success("✓") : paint.warning(`(${oneLine(model.apiKeyEnv, 40)} missing)`)
+			`${paint.dim(t(labelKey))} ${oneLine(`${model.provider}/${model.id}`, 40)} ${
+				model.credentialPresent ? paint.success("✓") : paint.warning(t("target.credential-missing", { env: oneLine(model.apiKeyEnv, 40) }))
 			}`,
 		);
 	}
-	return parts.length === 0 ? null : `${paint.dim("Evaluators")} ${parts.join(paint.dim(" · "))}`;
+	return parts.length === 0 ? null : `${paint.dim(t("label.evaluators"))} ${parts.join(paint.dim(" · "))}`;
 }
 
 function evidenceLine(view: WorkbenchView, paint: Paint): string {
 	const counts = view.counts;
-	return `${paint.dim("Evidence")} ${joinNonEmpty([
-		pluralize(counts.developmentEvals, "eval run"),
-		pluralize(counts.openProposals, "open proposal"),
-		pluralize(counts.candidates, "candidate"),
-		counts.sealedCorpora > 0 ? pluralize(counts.sealedCorpora, "sealed holdout") : null,
+	return `${paint.dim(t("label.evidence"))} ${joinNonEmpty([
+		plural(counts.developmentEvals, "eval run"),
+		plural(counts.openProposals, "open proposal"),
+		plural(counts.candidates, "candidate"),
+		counts.sealedCorpora > 0 ? plural(counts.sealedCorpora, "sealed holdout") : null,
 	])}`;
 }
 
@@ -92,11 +93,11 @@ function shippingReadinessLine(view: WorkbenchView, paint: Paint): string | null
 	const readiness = view.shippingReadiness;
 	if (!readiness || view.counts.approvedSpecs === 0 || readiness.sealedHoldout === "ready") return null;
 	const state = readiness.sealedHoldout === "missing"
-		? "no sealed holdout"
+		? t("ship-gate.missing")
 		: readiness.sealedHoldout === "underpowered"
-			? `sealed holdout has fewer than ${readiness.minimumTasks} cases`
-			: "sealed holdout is unavailable or failed integrity checks";
-	return `${paint.dim("Ship gate")} ${paint.warning(state)} ${paint.dim(`· /holdout imports an operator-owned JSONL exam (minimum ${readiness.minimumTasks})`)}`;
+			? t("ship-gate.underpowered", { minimum: readiness.minimumTasks })
+			: t("ship-gate.unavailable");
+	return `${paint.dim(t("label.ship-gate"))} ${paint.warning(state)} ${paint.dim(t("ship-gate.hint", { minimum: readiness.minimumTasks }))}`;
 }
 
 /** Stages where an uncalibrated Target is worth one nudge, not a blocker. */
@@ -110,13 +111,13 @@ const CALIBRATION_STAGES = new Set<WorkbenchView["stage"]>(["ready-to-evaluate",
 function calibrationLine(view: WorkbenchView, paint: Paint): string | null {
 	const calibration = view.calibration;
 	if (calibration) {
-		const verdict = oneLine(calibration.verdict, 20);
-		return `${paint.dim("Noise")} A/A ${calibration.verdict === "inconclusive" ? verdict : paint.warning(verdict)} ${paint.dim("·")} ` +
-			`${formatNoiseBand(calibration)} ${paint.dim("·")} flip ${formatFlipRate(calibration)} ${paint.dim("·")} ` +
-			`${calibration.recommendedRepetitions} reps recommended`;
+		const verdict = oneLine(verdictLabel(calibration.verdict), 20);
+		return `${paint.dim(t("label.noise"))} A/A ${calibration.verdict === "inconclusive" ? verdict : paint.warning(verdict)} ${paint.dim("·")} ` +
+			`${formatNoiseBand(calibration)} ${paint.dim("·")} ${t("noise.flip")} ${formatFlipRate(calibration)} ${paint.dim("·")} ` +
+			`${t("noise.reps", { count: calibration.recommendedRepetitions })}`;
 	}
 	if (!CALIBRATION_STAGES.has(view.stage)) return null;
-	return `${paint.dim("Noise")} ${paint.muted("not calibrated")} ${paint.dim("· say “calibrate” or /calibrate")}`;
+	return `${paint.dim(t("label.noise"))} ${paint.muted(t("noise.not-calibrated"))} ${paint.dim(t("noise.hint"))}`;
 }
 
 /** Compact status block used by /status and as the fallback for every panel. */
@@ -131,16 +132,16 @@ export function renderStatus(view: WorkbenchView, paint: Paint): string[] {
 		evidenceLine(view, paint),
 		...(shipping ? [shipping] : []),
 		...(noise ? [noise] : []),
-		`${paint.dim("Next")} ${nextStep(view)}`,
+		`${paint.dim(t("label.next"))} ${nextStep(view)}`,
 	];
-	if (view.blockers.length > 0) lines.push(`${paint.warning("Blocked")} ${view.blockers.map((item) => oneLine(item, 200)).join(" ")}`);
+	if (view.blockers.length > 0) lines.push(`${paint.warning(t("label.blocked"))} ${view.blockers.map((item) => oneLine(item, 200)).join(" ")}`);
 	if (view.warnings.length > 0) {
-		lines.push(`${paint.warning("Warnings")}`);
+		lines.push(`${paint.warning(t("label.warnings"))}`);
 		lines.push(...bullets(view.warnings, paint, { limit: 6, max: 200 }));
 	}
 	const selected = view.selections.filter((item) => item.selected);
 	if (selected.length > 0) {
-		lines.push(`${paint.dim("Selected")} ${selected.map((item) => `${item.kind} ${oneLine(item.label, 40)}`).join(paint.dim(" · "))}`);
+		lines.push(`${paint.dim(t("label.selected"))} ${selected.map((item) => `${item.kind} ${oneLine(item.label, 40)}`).join(paint.dim(" · "))}`);
 	}
 	return lines;
 }
@@ -155,31 +156,31 @@ export interface HeaderState {
 /** Persistent header: identity, live stage, next step, evidence, and readiness. */
 export function renderHeader(state: HeaderState, paint: Paint): string[] {
 	const builder = state.builderModel.label
-		? `${state.builderModel.label} ${state.builderModel.credentialPresent ? paint.success("✓") : paint.warning("· not connected — /login")}`
-		: paint.warning("not connected — /login");
-	const lines = ["", `${paint.accent(paint.bold("AHDE Builder"))} ${paint.dim("· build, evaluate, and improve another agent through evidence")}`];
+		? `${state.builderModel.label} ${state.builderModel.credentialPresent ? paint.success("✓") : paint.warning(t("header.not-connected-suffix"))}`
+		: paint.warning(t("header.not-connected"));
+	const lines = ["", `${paint.accent(paint.bold(t("header.title")))} ${paint.dim(t("header.tagline"))}`];
 	if (state.error) {
-		lines.push(`${paint.error("Project state unavailable")} ${oneLine(state.error, 160)}`);
-		lines.push(`${paint.dim("Builder model")} ${builder} ${paint.dim("· /doctor for recovery")}`);
+		lines.push(`${paint.error(t("header.state-unavailable"))} ${oneLine(state.error, 160)}`);
+		lines.push(`${paint.dim(t("label.builder-model"))} ${builder} ${paint.dim(t("header.doctor-hint"))}`);
 		lines.push("");
 		return lines;
 	}
 	const view = state.view;
 	if (!view) {
-		lines.push(`${paint.dim("Builder model")} ${builder}`, "");
+		lines.push(`${paint.dim(t("label.builder-model"))} ${builder}`, "");
 		return lines;
 	}
 	lines.push(targetLine(view, paint));
-	lines.push(`${paint.dim("Stage")} ${paint.bold(stageLabel(view.stage))} ${paint.dim("·")} ${paint.dim("Next")} ${nextStep(view)}`);
-	lines.push(`${evidenceLine(view, paint)} ${paint.dim("·")} ${paint.dim("Builder model")} ${builder}`);
+	lines.push(`${paint.dim(t("label.stage"))} ${paint.bold(stageLabel(view.stage))} ${paint.dim("·")} ${paint.dim(t("label.next"))} ${nextStep(view)}`);
+	lines.push(`${evidenceLine(view, paint)} ${paint.dim("·")} ${paint.dim(t("label.builder-model"))} ${builder}`);
 	const shipping = shippingReadinessLine(view, paint);
 	if (shipping) lines.push(shipping);
 	const noise = calibrationLine(view, paint);
 	if (noise) lines.push(noise);
 	if (view.blockers.length > 0 && view.stage !== "target-setup") {
-		lines.push(`${paint.warning("Blocked")} ${oneLine(view.blockers.join(" "), 200)}`);
+		lines.push(`${paint.warning(t("label.blocked"))} ${oneLine(view.blockers.join(" "), 200)}`);
 	}
-	lines.push(paint.dim("Describe what you want in plain language · /help for shortcuts"));
+	lines.push(paint.dim(t("header.help")));
 	lines.push("");
 	return lines;
 }
@@ -205,9 +206,9 @@ function resourceSuffix(gate: { resources: WorkbenchGateProjection["resources"] 
 
 function gateLine(gate: NonNullable<NonNullable<WorkbenchCandidateSummary["development"]>["gate"]>, paint: Paint): string {
 	const tone = verdictTone(gate.verdict, paint);
-	return `  ${paint.dim("Verdict")} ${tone(gate.verdict)} ${paint.dim("·")} ${points(gate.scoreDelta)} ${paint.dim(`(95% CI ${points(gate.confidence95.low)} … ${points(gate.confidence95.high)})`)} ${paint.dim(`· ${gate.tasks} × ${gate.repetitions}`)}` +
+	return `  ${paint.dim(t("label.verdict"))} ${tone(verdictLabel(gate.verdict))} ${paint.dim("·")} ${points(gate.scoreDelta)} ${paint.dim(`(${t("unit.ci")} ${points(gate.confidence95.low)} … ${points(gate.confidence95.high)})`)} ${paint.dim(`· ${gate.tasks} × ${gate.repetitions}`)}` +
 		resourceSuffix(gate, paint) +
-		(gate.flags.collapsedTasks > 0 ? ` ${paint.error(`· ${pluralize(gate.flags.collapsedTasks, "task")} collapsed`)}` : "");
+		(gate.flags.collapsedTasks > 0 ? ` ${paint.error(t("development.collapsed", { tasks: plural(gate.flags.collapsedTasks, "task") }))}` : "");
 }
 
 function comparisonLines(
@@ -218,11 +219,11 @@ function comparisonLines(
 	const delta = summary.delta;
 	const tone = delta > 0 ? paint.success : delta < 0 ? paint.error : paint.muted;
 	const score = gate
-		? ` ${paint.dim(`· score ${percent(gate.baselineScore)} → ${percent(gate.candidateScore)}`)}`
+		? ` ${paint.dim(t("development.score", { before: percent(gate.baselineScore), after: percent(gate.candidateScore) }))}`
 		: "";
 	const lines = [
-		`${paint.dim("Development")} baseline ${percent(summary.baselinePassRate)} → candidate ${percent(summary.candidatePassRate)} ${tone(`(${points(delta)})`)} ${paint.dim(`on ${pluralize(summary.taskCount, "task")}`)}${score}`,
-		`  ${paint.success(`↑ ${summary.improved} improved`)} ${paint.dim("·")} ${summary.regressed > 0 ? paint.warning(`↓ ${summary.regressed} lower`) : paint.muted("↓ 0 lower")} ${paint.dim("·")} ${paint.muted(`= ${summary.unchanged} unchanged`)} ${paint.dim(`· 95% CI ${points(summary.confidence95.low)} … ${points(summary.confidence95.high)}`)}`,
+		`${paint.dim(t("label.development"))} ${t("development.comparison", { baseline: percent(summary.baselinePassRate), candidate: percent(summary.candidatePassRate) })} ${tone(`(${points(delta)})`)} ${paint.dim(t("development.on-tasks", { tasks: plural(summary.taskCount, "task"), count: summary.taskCount }))}${score}`,
+		`  ${paint.success(t("development.improved", { count: summary.improved }))} ${paint.dim("·")} ${summary.regressed > 0 ? paint.warning(t("development.lower", { count: summary.regressed })) : paint.muted(t("development.lower", { count: 0 }))} ${paint.dim("·")} ${paint.muted(t("development.unchanged", { count: summary.unchanged }))} ${paint.dim(`· ${t("unit.ci")} ${points(summary.confidence95.low)} … ${points(summary.confidence95.high)}`)}`,
 	];
 	if (gate) lines.push(gateLine(gate, paint));
 	return lines;
@@ -233,9 +234,9 @@ export function judgeAgreementLine(
 	calibration: NonNullable<WorkbenchCandidateSummary["judgeAgreement"]> | null,
 	paint: Paint,
 ): string {
-	if (!calibration) return `${paint.dim("Judge")} ${paint.warning("not calibrated")} ${paint.dim("· ahde label")}`;
+	if (!calibration) return `${paint.dim(t("label.judge-instrument"))} ${paint.warning(t("judge.not-calibrated"))} ${paint.dim(t("judge.label-hint"))}`;
 	const kappa = calibration.kappa === null ? "κ n/a" : `κ ${calibration.kappa.toFixed(2)}`;
-	return `${paint.dim("Judge")} agreement ${percent(calibration.agreement)} ${paint.dim("·")} ${kappa} ${paint.dim(`· n=${calibration.labels}`)}`;
+	return `${paint.dim(t("label.judge-instrument"))} ${t("judge.agreement", { rate: percent(calibration.agreement) })} ${paint.dim("·")} ${kappa} ${paint.dim(`· n=${calibration.labels}`)}`;
 }
 
 export function renderCandidate(
@@ -247,7 +248,7 @@ export function renderCandidate(
 		impact?: Parameters<typeof renderImpact>[0];
 	},
 	paint: Paint,
-	title = "Candidate",
+	title = t("candidate.title"),
 	maxDiffLines = Number.MAX_SAFE_INTEGER,
 ): string[] {
 	const statusTone = candidate.status === "promoted"
@@ -255,22 +256,22 @@ export function renderCandidate(
 		: candidate.status === "rejected" ? paint.error : paint.accent;
 	const lines = [
 		`${section(title, paint)} ${paint.dim(candidate.candidateId)} ${paint.dim("·")} ${statusTone(candidate.status)}`,
-		`${paint.dim("Revision")} ${candidate.baseline.ref}@${shortSha(candidate.baseline.sha)} → ${candidate.candidate ? `${candidate.candidate.ref}@${shortSha(candidate.candidate.sha)}` : paint.muted("not built")}`,
+		`${paint.dim(t("label.revision"))} ${candidate.baseline.ref}@${shortSha(candidate.baseline.sha)} → ${candidate.candidate ? `${candidate.candidate.ref}@${shortSha(candidate.candidate.sha)}` : paint.muted(t("candidate.not-built"))}`,
 	];
 	// A loop apply is not a reviewed apply. The candidate says which it was, here
 	// and in the ship dialog, so nobody has to infer it from the branch name.
 	const applied = candidate.appliedBy;
 	if (applied) {
 		lines.push(applied.via
-			? `${paint.dim("Applied")} ${paint.warning(`applied by the ${applied.via === "improvement-loop" ? "improvement loop" : "proposal search"}`)} ` +
-				`${paint.dim(`— ${applied.actorId} authorized the automated trial, not this individual diff`)}`
-			: `${paint.dim("Applied")} ${paint.dim(`by ${applied.actorId}, who read this diff`)}`);
+			? `${paint.dim(t("label.applied"))} ${paint.warning(t(applied.via === "improvement-loop" ? "candidate.applied-by-loop" : "candidate.applied-by-search"))} ` +
+				`${paint.dim(t("candidate.applied-automated", { actor: applied.actorId }))}`
+			: `${paint.dim(t("label.applied"))} ${paint.dim(t("candidate.applied-reviewed", { actor: applied.actorId }))}`);
 		if (applied.paths.length > 0) {
-			lines.push(`${paint.dim("Diff")} ${oneLine(applied.paths.join(", "), 120)} ${paint.dim(`(${pluralize(applied.paths.length, "file")})`)}`);
+			lines.push(`${paint.dim(t("label.diff"))} ${oneLine(applied.paths.join(", "), 120)} ${paint.dim(`(${plural(applied.paths.length, "file")})`)}`);
 		}
 		if (candidate.proposal) {
 			const stats = diffStats(candidate.proposal.exactDiff);
-			lines.push(`${paint.dim("Exact proposal")} ${paint.dim(shortHash(candidate.proposal.proposalHash))} ${paint.dim(`(${paint.added(`+${stats.added}`)} ${paint.removed(`-${stats.removed}`)})`)}`);
+			lines.push(`${paint.dim(t("label.exact-proposal"))} ${paint.dim(shortHash(candidate.proposal.proposalHash))} ${paint.dim(`(${paint.added(`+${stats.added}`)} ${paint.removed(`-${stats.removed}`)})`)}`);
 			lines.push(...renderUnifiedDiff(candidate.proposal.exactDiff, paint, { maxLines: maxDiffLines }));
 		}
 		if (candidate.proposalError) {
@@ -279,26 +280,26 @@ export function renderCandidate(
 		}
 	}
 	if (candidate.development?.comparison) lines.push(...comparisonLines(candidate.development.comparison, candidate.development.gate, paint));
-	else if (candidate.development) lines.push(`${paint.dim("Development")} ${paint.muted("comparison not reconstructable")}`);
-	else lines.push(`${paint.dim("Development")} ${paint.muted("not evaluated yet")}`);
+	else if (candidate.development) lines.push(`${paint.dim(t("label.development"))} ${paint.muted(t("candidate.not-reconstructable"))}`);
+	else lines.push(`${paint.dim(t("label.development"))} ${paint.muted(t("candidate.not-evaluated"))}`);
 	const sealedGate = candidate.sealedHoldout.gate;
-	lines.push(`${paint.dim("Sealed holdout")} ${candidate.sealedHoldout.executed
+	lines.push(`${paint.dim(t("label.sealed-holdout"))} ${candidate.sealedHoldout.executed
 		? (sealedGate
-			? `${verdictTone(sealedGate.verdict, paint)(sealedGate.verdict)} ${paint.dim("·")} ${points(sealedGate.scoreDelta)} ${paint.dim(`(95% CI ${points(sealedGate.confidence95.low)} … ${points(sealedGate.confidence95.high)}) · ${sealedGate.tasks} × ${sealedGate.repetitions}`)}${resourceSuffix(sealedGate, paint)}`
-			: (candidate.sealedHoldout.gatePassed ? paint.success("gate passed") : paint.error("legacy evidence — not promotable")))
-		: paint.muted("not executed")}`);
+			? `${verdictTone(sealedGate.verdict, paint)(verdictLabel(sealedGate.verdict))} ${paint.dim("·")} ${points(sealedGate.scoreDelta)} ${paint.dim(`(${t("unit.ci")} ${points(sealedGate.confidence95.low)} … ${points(sealedGate.confidence95.high)}) · ${sealedGate.tasks} × ${sealedGate.repetitions}`)}${resourceSuffix(sealedGate, paint)}`
+			: (candidate.sealedHoldout.gatePassed ? paint.success(t("sealed.gate-passed")) : paint.error(t("sealed.legacy"))))
+		: paint.muted(t("sealed.not-executed"))}`);
 	if (sealedGate && sealedGate.verdict !== "pass") lines.push(`  ${paint.muted(oneLine(sealedGate.reasons[0] ?? "", 160))}`);
 	if (candidate.judgeAgreement !== undefined) lines.push(judgeAgreementLine(candidate.judgeAgreement, paint));
 	lines.push(...renderImpact(candidate.impact ?? null, paint));
 	if (candidate.review) {
 		const tone = candidate.review.recommendation === "promote" ? paint.success : paint.error;
-		lines.push(`${paint.dim("Review")} ${tone(candidate.review.recommendation)} ${paint.dim("—")} ${oneLine(candidate.review.reason, 160)}`);
+		lines.push(`${paint.dim(t("label.review"))} ${tone(candidate.review.recommendation)} ${paint.dim("—")} ${oneLine(candidate.review.reason, 160)}`);
 	}
-	if (candidate.promotion) lines.push(`${paint.dim("Promoted")} ${paint.success(candidate.promotion.tag)} ${paint.dim(when(candidate.promotion.at))} ${paint.dim("—")} ${oneLine(candidate.promotion.reason, 120)}`);
-	if (candidate.rejection) lines.push(`${paint.dim("Rejected")} ${paint.dim(when(candidate.rejection.at))} ${paint.dim("—")} ${oneLine(candidate.rejection.reason, 120)}`);
-	if (candidate.adoption) lines.push(`${paint.dim("Adopted")} branch ${paint.bold(candidate.adoption.branch)} ${paint.dim(when(candidate.adoption.adoptedAt))}`);
-	else if (candidate.status === "promoted") lines.push(`${paint.dim("Adopted")} ${paint.warning("not yet — /adopt fast-forwards the current branch")}`);
-	if (candidate.continuation) lines.push(`${paint.dim("Cycle")} closed ${paint.dim(when(candidate.continuation.continuedAt))}`);
+	if (candidate.promotion) lines.push(`${paint.dim(t("label.promoted"))} ${paint.success(candidate.promotion.tag)} ${paint.dim(when(candidate.promotion.at))} ${paint.dim("—")} ${oneLine(candidate.promotion.reason, 120)}`);
+	if (candidate.rejection) lines.push(`${paint.dim(t("label.rejected"))} ${paint.dim(when(candidate.rejection.at))} ${paint.dim("—")} ${oneLine(candidate.rejection.reason, 120)}`);
+	if (candidate.adoption) lines.push(`${paint.dim(t("label.adopted"))} ${t("result.branch")} ${paint.bold(candidate.adoption.branch)} ${paint.dim(when(candidate.adoption.adoptedAt))}`);
+	else if (candidate.status === "promoted") lines.push(`${paint.dim(t("label.adopted"))} ${paint.warning(t("candidate.not-adopted"))}`);
+	if (candidate.continuation) lines.push(`${paint.dim(t("label.cycle"))} ${t("candidate.cycle-closed", { when: paint.dim(when(candidate.continuation.continuedAt)) })}`);
 	return lines;
 }
 
@@ -308,7 +309,7 @@ function renderSpec(content: Extract<WorkbenchReviewDetail, { kind: "spec-draft"
 		? [`${paint.dim(label.padEnd(15))} ${paint.muted("—")}`]
 		: [paint.dim(label), ...bullets(items, paint, { limit: 10, max: 140 })];
 	const lines = [
-		`${section("Spec draft", paint)} ${paint.dim(content.id)}`,
+		`${section(t("section.spec-draft"), paint)} ${paint.dim(content.id)}`,
 		labeled(paint.dim("Title"), paint.bold(oneLine(spec.title, 120)), 15),
 		paint.dim("Purpose"),
 		...wrap(spec.purpose, 96, "  "),
@@ -354,7 +355,7 @@ function renderCorpusDraft(
 ): string[] {
 	const maxTasks = options.maxTasks ?? 25;
 	const lines = [
-		`${section("Eval basket draft", paint)} ${paint.bold(oneLine(content.name, 80))} ${paint.dim("·")} ${pluralize(content.tasks.length, "case")} ${paint.dim(`· ${content.id}`)}`,
+		`${section(t("section.basket-draft"), paint)} ${paint.bold(oneLine(content.name, 80))} ${paint.dim("·")} ${pluralize(content.tasks.length, "case")} ${paint.dim(`· ${content.id}`)}`,
 	];
 	if (content.importSource) lines.push(`${paint.dim("Imported from")} ${oneLine(String((content.importSource as { path?: unknown }).path ?? "imports/"), 120)}`);
 	content.tasks.slice(0, maxTasks).forEach((task, index) => {
@@ -405,9 +406,9 @@ export function renderReview(content: WorkbenchReviewDetail, paint: Paint, optio
 		case "corpus-draft": return renderCorpusDraft(content, paint, options);
 		case "proposal":
 		case "applied-proposal": return renderProposal(content, paint, options);
-		case "candidate": return renderCandidate(content, paint, "Candidate", options.maxDiffLines ?? Number.MAX_SAFE_INTEGER);
+		case "candidate": return renderCandidate(content, paint, t("candidate.title"), options.maxDiffLines ?? Number.MAX_SAFE_INTEGER);
 		case "interrupted-candidate": return [
-			...renderCandidate(content, paint, "Interrupted candidate"),
+			...renderCandidate(content, paint, t("candidate.interrupted")),
 			paint.warning("Verification stopped before evidence was complete. /discard abandons this attempt so the applied proposal can be retried."),
 		];
 		case "workflow": return [`${section(stageLabel(content.stage), paint)}`, ...wrap(content.headline, 96, "  ")];
@@ -444,7 +445,7 @@ export function renderEvaluationSummary(
 export function renderTraces(content: WorkbenchTracesDetail, paint: Paint): string[] {
 	const brief = content.improvementBrief;
 	const lines = [
-		`${section("Evaluation", paint)} ${renderEvaluationSummary(content.evaluation, paint)}`,
+		`${section(t("section.evaluation"), paint)} ${renderEvaluationSummary(content.evaluation, paint)}`,
 	];
 	const status = brief.status === "actionable"
 		? paint.success("actionable")
@@ -478,11 +479,11 @@ function resourceKind(kind: string): string {
 /** Exact committed Target context: identity, execution policy, declared resources. */
 export function renderTarget(content: WorkbenchTargetDetail, paint: Paint): string[] {
 	if (!("target" in content)) {
-		return [`${section("Target", paint)} ${paint.muted("not created yet")}`, `${paint.dim("Next")} describe the agent; the Builder scaffolds it (or run ${paint.bold(content.launch)})`];
+		return [`${section(t("section.target"), paint)} ${paint.muted("not created yet")}`, `${paint.dim("Next")} describe the agent; the Builder scaffolds it (or run ${paint.bold(content.launch)})`];
 	}
 	const execution = content.target.execution;
 	const lines = [
-		`${section("Target", paint)} ${paint.bold(oneLine(content.target.id, 60))} ${paint.dim(`@ ${shortSha(content.target.gitSha)}`)}`,
+		`${section(t("section.target"), paint)} ${paint.bold(oneLine(content.target.id, 60))} ${paint.dim(`@ ${shortSha(content.target.gitSha)}`)}`,
 		`${paint.dim("Model")} ${oneLine(`${content.target.model.provider}/${content.target.model.id}`, 80)} ${paint.dim(`· thinking ${oneLine(content.target.model.thinkingLevel, 20)}`)}`,
 		`${paint.dim("Execution")} tools ${oneLine(execution.tools.join(", "), 60) || "none"} ${paint.dim("·")} network ${oneLine(execution.network, 10)} ${paint.dim("·")} sandbox ${oneLine(execution.sandbox, 20)} ${paint.dim("·")} env ${oneLine(execution.environmentAllowlist.join(", "), 80) || "none"}`,
 		paint.dim("Resources"),
@@ -538,11 +539,11 @@ function attemptLine(
 export function renderHistory(content: WorkbenchHistoryDetail, paint: Paint): string[] {
 	if (content.attempts.length === 0) {
 		return [
-			`${section("Already tried", paint)} ${paint.muted("nothing yet — this is the first change on this agent")}`,
+			`${section(t("section.already-tried"), paint)} ${paint.muted("nothing yet — this is the first change on this agent")}`,
 		];
 	}
 	const lines = [
-		`${section("Already tried", paint)} ${pluralize(content.attempts.length, "attempt")}` +
+		`${section(t("section.already-tried"), paint)} ${pluralize(content.attempts.length, "attempt")}` +
 			(content.omitted > 0 ? paint.dim(` · ${content.omitted} older not shown`) : "") +
 			(content.unreadable > 0 ? paint.warning(` · ${pluralize(content.unreadable, "record")} unreadable`) : ""),
 	];
@@ -563,7 +564,7 @@ export function renderHistory(content: WorkbenchHistoryDetail, paint: Paint): st
 export function renderDataset(content: WorkbenchDatasetDetail, paint: Paint): string[] {
 	const preview = content.preview;
 	const lines = [
-		`${section("Dataset", paint)} ${paint.bold(oneLine(content.sourcePath, 56))} ${paint.dim("·")} ${oneLine(preview.format, 16)} ${paint.dim(`· ${bytes(preview.bytes)}`)}`,
+		`${section(t("section.dataset"), paint)} ${paint.bold(oneLine(content.sourcePath, 56))} ${paint.dim("·")} ${oneLine(preview.format, 16)} ${paint.dim(`· ${bytes(preview.bytes)}`)}`,
 		`${paint.dim("Rows")} ${pluralize(preview.rowCount, "row")} ${paint.dim("·")} ${pluralize(preview.columns.length, "column")}` +
 			(preview.holdout
 				? ` ${paint.dim("·")} ${paint.warning(`${preview.holdout.reserved} reserved for the sealed exam`)}`
@@ -622,18 +623,19 @@ export function renderView(view: WorkbenchView, paint: Paint, options: RenderRev
 
 /** Title used by panels and tool cards for a detailed view. */
 export function viewTitle(view: WorkbenchView): string {
-	if (!view.detail) return `AHDE · ${stageLabel(view.stage)}`;
-	if (view.detail.aspect === "traces") return "AHDE · Diagnosis";
-	if (view.detail.aspect === "target") return "AHDE · Target";
-	if (view.detail.aspect === "history") return "AHDE · Already tried";
-	if (view.detail.aspect === "dataset") return "AHDE · Dataset";
+	const panel = (detail: string): string => t("panel.title", { detail });
+	if (!view.detail) return panel(stageLabel(view.stage));
+	if (view.detail.aspect === "traces") return panel(t("panel.diagnosis"));
+	if (view.detail.aspect === "target") return panel(t("panel.target"));
+	if (view.detail.aspect === "history") return panel(t("panel.history"));
+	if (view.detail.aspect === "dataset") return panel(t("panel.dataset"));
 	switch (view.detail.content.kind) {
-		case "spec-draft": return "AHDE · Spec review";
-		case "corpus-draft": return "AHDE · Eval basket review";
-		case "proposal": return "AHDE · Proposal review";
-		case "applied-proposal": return "AHDE · Applied proposal";
-		case "candidate": return "AHDE · Candidate review";
-		case "interrupted-candidate": return "AHDE · Interrupted candidate";
-		case "workflow": return `AHDE · ${stageLabel(view.stage)}`;
+		case "spec-draft": return panel(t("panel.spec-review"));
+		case "corpus-draft": return panel(t("panel.basket-review"));
+		case "proposal": return panel(t("panel.proposal-review"));
+		case "applied-proposal": return panel(t("panel.applied-proposal"));
+		case "candidate": return panel(t("panel.candidate-review"));
+		case "interrupted-candidate": return panel(t("panel.interrupted-candidate"));
+		case "workflow": return panel(stageLabel(view.stage));
 	}
 }

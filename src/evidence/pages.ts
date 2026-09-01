@@ -1,3 +1,4 @@
+import { language, t } from "../i18n.js";
 import {
 	flipSubject,
 	type CandidateFlip,
@@ -175,7 +176,7 @@ export function renderPage(options: PageOptions): string {
 			: `<span class="crumb">${h(crumb.label)}</span>`)
 		.join('<span class="sep">/</span>');
 	return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="${language()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${h(options.title)}</title>
 <style>${EVIDENCE_STYLESHEET}</style>
 </head><body>
@@ -251,8 +252,10 @@ export function renderRunsTable(rows: readonly RunRow[], options: RunsTableOptio
 		+ `<td class="num">${row.metrics.tokens.toLocaleString("en-US")}</td>`
 		+ `</tr>`).join("");
 	return `<div class="scroll"><table><thead><tr>`
-		+ `<th>Task</th><th>Rep</th><th>Input</th><th>Outcome</th><th>Score</th><th>Graders</th>`
-		+ `<th>Failure mode</th><th>Tools</th><th>Latency</th><th>Cost</th><th>Tokens</th>`
+		+ `<th>${h(t("explorer.th.task"))}</th><th>${h(t("explorer.th.rep"))}</th><th>${h(t("explorer.th.input"))}</th>`
+		+ `<th>${h(t("explorer.th.outcome"))}</th><th>${h(t("explorer.th.score"))}</th><th>${h(t("explorer.th.graders"))}</th>`
+		+ `<th>${h(t("explorer.th.failure-mode"))}</th><th>${h(t("explorer.th.tools"))}</th><th>${h(t("explorer.th.latency"))}</th>`
+		+ `<th>${h(t("explorer.th.cost"))}</th><th>${h(t("explorer.th.tokens"))}</th>`
 		+ `</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
@@ -342,14 +345,14 @@ export function renderEvalPage(model: EvalPageModel): string {
 	const modes = model.modes.length === 0
 		? '<div class="card">No failure modes: the verified diagnosis found nothing to group.</div>'
 		: `<ul class="modes">${model.modes.map((mode) => `<li>
-<div class="row"><h3><a href="${h(mode.href)}">${h(mode.title)}</a></h3><span class="count">${mode.runCount} run(s) · ${mode.affectedTasks}/${mode.totalTasks} tasks · ${Math.round(mode.reproductionBps / 100)}% reproduction</span></div>
+<div class="row"><h3><a href="${h(mode.href)}">${h(mode.title)}</a></h3><span class="count">${h(t("explorer.mode-count", { runs: mode.runCount, affected: mode.affectedTasks, total: mode.totalTasks, reproduction: Math.round(mode.reproductionBps / 100) }))}</span></div>
 <div class="pills"><span class="pill">${h(mode.scope)}</span><span class="pill">${h(mode.severity)}</span><span class="pill">${h(mode.decision)}</span></div>
 <p class="hyp"><b>Hypothesis, not proof.</b> ${h(mode.hypothesis)}</p>
 </li>`).join("")}</ul>`;
 
 	const candidates = model.candidates.length === 0
 		? ""
-		: `<section><h2>Candidates covering this eval</h2><div class="cards">${model.candidates.map((candidate) => `<div class="card"><h3><a href="${h(candidate.href)}">${h(candidate.candidateId)}</a></h3><p class="sub">this eval is the ${h(candidate.role)} arm · ${h(candidate.verdict)}</p></div>`).join("")}</div></section>`;
+		: `<section><h2>${h(t("explorer.h2.candidates"))}</h2><div class="cards">${model.candidates.map((candidate) => `<div class="card"><h3><a href="${h(candidate.href)}">${h(candidate.candidateId)}</a></h3><p class="sub">${h(t("explorer.eval-arm", { role: candidate.role, verdict: candidate.verdict }))}</p></div>`).join("")}</div></section>`;
 
 	const body = `
 <div class="head">
@@ -374,10 +377,10 @@ export function renderEvalPage(model: EvalPageModel): string {
 		: "Proposal gate: blocked. Mode-level suggestions are diagnostic guidance only until the global evidence gate is satisfied."}</p>
 	${model.judgeCalibration.map((line) => `<p class="note">${h(line)}</p>`).join("")}
 </section>
-<section><h2>Failure modes</h2>${modes}</section>
+<section><h2>${h(t("explorer.h2.failure-modes"))}</h2>${modes}</section>
 ${candidates}
 <section>
-	<h2>Runs</h2>
+	<h2>${h(t("explorer.h2.runs"))}</h2>
 	<div class="filters">
 		<input id="filter" type="search" placeholder="Filter by task id or input text" aria-label="Filter runs">
 		<span class="count" id="filter-count"></span>
@@ -462,7 +465,7 @@ function renderVerdict(graders: readonly GraderFinding[]): string {
 	if (graders.length === 0) return '<div class="card">This run recorded no grader results.</div>';
 	return graders.map((grader) => {
 		const assertions = grader.assertionVerdicts
-			? `<div class="scroll"><table><thead><tr><th>#</th><th>Answer</th><th>Judge evidence</th></tr></thead><tbody>${grader.assertionVerdicts.map((assertion) => `<tr><td class="num">${assertion.index}</td><td><span class="chip ${assertion.answer === "yes" ? "pass" : assertion.answer === "no" ? "fail" : "error"}">${h(assertion.answer)}</span></td><td class="wrapcell">${h(assertion.evidence)}</td></tr>`).join("")}</tbody></table></div>`
+			? `<div class="scroll"><table><thead><tr><th>${h(t("explorer.th.index"))}</th><th>${h(t("explorer.th.answer"))}</th><th>${h(t("explorer.th.judge-evidence"))}</th></tr></thead><tbody>${grader.assertionVerdicts.map((assertion) => `<tr><td class="num">${assertion.index}</td><td><span class="chip ${assertion.answer === "yes" ? "pass" : assertion.answer === "no" ? "fail" : "error"}">${h(assertion.answer)}</span></td><td class="wrapcell">${h(assertion.evidence)}</td></tr>`).join("")}</tbody></table></div>`
 			: grader.assertions
 				? `<p class="note">The record keeps ${grader.assertions.passed}/${grader.assertions.total} assertions; per-assertion evidence is not available for this run.</p>`
 				: "";
@@ -505,7 +508,7 @@ export function renderRunDetailPage(model: RunDetailPageModel): string {
 	const body = `
 <div class="head">
 	<div>
-		<h1>${h(run.taskId)} <span class="sub">repetition ${run.repetitionIndex}</span></h1>
+		<h1>${h(run.taskId)} <span class="sub">${h(t("explorer.repetition", { index: run.repetitionIndex }))}</span></h1>
 		<div class="sub mono">${h(run.runId)} · ${h(model.evalRunId)} · ${h(model.label)}</div>
 		<div class="sub">${h(run.startedAt)}${run.finishedAt ? ` → ${h(run.finishedAt)}` : ""}</div>
 	</div>
@@ -521,11 +524,11 @@ export function renderRunDetailPage(model: RunDetailPageModel): string {
 	<div class="stat"><b>${run.metrics.tokens.toLocaleString("en-US")}</b><span>Tokens</span></div>
 	<div class="stat"><b>$${run.metrics.costUsd.toFixed(5)}</b><span>Cost</span></div>
 </div>
-<section><h2>Why</h2>${renderWhy(model.explanation)}</section>
-${run.error ? `<section><h2>Run error</h2><div class="card"><pre class="errpre">${h(run.error)}</pre></div></section>` : ""}
-<section><h2>Verdict</h2><div class="cards">${renderVerdict(model.graders)}</div></section>
+<section><h2>${h(t("explorer.h2.why"))}</h2>${renderWhy(model.explanation)}</section>
+${run.error ? `<section><h2>${h(t("explorer.h2.run-error"))}</h2><div class="card"><pre class="errpre">${h(run.error)}</pre></div></section>` : ""}
+<section><h2>${h(t("explorer.h2.verdict"))}</h2><div class="cards">${renderVerdict(model.graders)}</div></section>
 <section>
-	<h2>Conversation</h2>
+	<h2>${h(t("explorer.h2.conversation"))}</h2>
 	<details class="turn"><summary>System instructions</summary><pre>The Target's system instructions are not recorded in session.jsonl; this transcript starts at the case input.</pre></details>
 	${model.input === null ? "" : `<details class="turn" open><summary>Case input</summary><pre>${h(model.input)}</pre></details>`}
 	${renderTranscript(model)}
@@ -596,7 +599,7 @@ export function renderComparePage(model: ComparePageModel): string {
 	const body = `
 <div class="head">
 	<div>
-		<h1>${h(model.targetId)} candidate</h1>
+		<h1>${h(model.targetId)} ${h(t("explorer.candidate-suffix"))}</h1>
 		<div class="sub mono">${h(model.candidateId)}</div>
 		<div class="sub mono">${h(model.baseline.evalRunId)} (${h(model.baseline.revision.slice(0, 12))}) → ${h(model.candidate.evalRunId)} (${h(model.candidate.revision.slice(0, 12))})</div>
 	</div>
@@ -618,8 +621,8 @@ export function renderComparePage(model: ComparePageModel): string {
 		: `<p class="note">No sealed holdout comparison is recorded for this candidate.</p>`}
 </section>
 <section>
-	<h2>Per-task outcome</h2>
-	<div class="scroll"><table><thead><tr><th>Task</th><th>Baseline</th><th>Candidate</th><th>Score</th><th>Delta</th><th>Flip</th></tr></thead><tbody>${rows}</tbody></table></div>
+	<h2>${h(t("explorer.h2.per-task"))}</h2>
+	<div class="scroll"><table><thead><tr><th>${h(t("explorer.th.task"))}</th><th>${h(t("explorer.th.baseline"))}</th><th>${h(t("explorer.th.candidate"))}</th><th>${h(t("explorer.th.score"))}</th><th>${h(t("explorer.th.delta"))}</th><th>${h(t("explorer.th.flip"))}</th></tr></thead><tbody>${rows}</tbody></table></div>
 	${model.notices.map((notice) => `<p class="note">${h(notice)}</p>`).join("")}
 	<p class="note">Per-task flips are flags for review; the verdict above comes only from the paired interval.</p>
 </section>`;

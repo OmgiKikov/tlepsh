@@ -1,3 +1,4 @@
+import { t } from "../i18n.js";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { z } from "zod";
@@ -731,15 +732,15 @@ export function failureModeExplanation(mode: FailureMode): FailureModeExplanatio
 
 /** What re-ran the task: a real candidate, or a same-revision noise measurement. */
 export function flipSubject(flip: Pick<CandidateFlip, "mode">): string {
-	return flip.mode === "aa-calibration" ? "A/A calibration" : "Candidate";
+	return t(flip.mode === "aa-calibration" ? "why.flip-subject-aa" : "why.flip-subject-candidate");
 }
 
 /** How one task stood in one arm, from its pass count over its repetitions. */
 export function flipStanding(pass: number, total: number): string {
-	if (total === 0) return "not run";
-	if (pass === 0) return "failed";
-	if (pass === total) return "passed";
-	return `${pass}/${total} passed`;
+	if (total === 0) return t("why.standing-not-run");
+	if (pass === 0) return t("why.standing-failed");
+	if (pass === total) return t("why.standing-passed");
+	return t("why.standing-partial", { pass, total });
 }
 
 export function candidateFlip(input: {
@@ -789,10 +790,10 @@ export function explainRun(input: {
 	const taskId = publicTaskId(run.taskId);
 	const failed = graders.filter((grader) => !grader.passed);
 	const headline = outcome === "error"
-		? `${taskId} repetition ${run.repetitionIndex} ended with an infrastructure error, so its evidence is inconclusive rather than a behavioural failure.`
+		? t("why.error", { task: taskId, rep: run.repetitionIndex })
 		: outcome === "pass"
-			? `${taskId} repetition ${run.repetitionIndex} passed: all ${graders.length} grader(s) were satisfied.`
-			: `${taskId} repetition ${run.repetitionIndex} failed: ${failed.length} of ${graders.length} grader(s) did not pass.`;
+			? t("why.pass", { task: taskId, rep: run.repetitionIndex, graders: graders.length })
+			: t("why.fail", { task: taskId, rep: run.repetitionIndex, failed: failed.length, graders: graders.length });
 	const explanation: Omit<RunExplanation, "sentences"> = {
 		runId: run.runId,
 		taskId,
@@ -810,32 +811,41 @@ function explanationSentences(explanation: Omit<RunExplanation, "sentences">): s
 	const lines: string[] = [explanation.headline];
 	for (const grader of explanation.graders) {
 		lines.push(grader.expected
-			? `${grader.graderName} (${grader.graderType}) ${grader.expected}; ${grader.actual}.`
-			: `${grader.graderName} (${grader.graderType}): ${grader.actual}.`);
-		lines.push(`The grader recorded: “${grader.reason}”.`);
+			? t("why.grader-expected", { name: grader.graderName, type: grader.graderType, expected: grader.expected, actual: grader.actual })
+			: t("why.grader-plain", { name: grader.graderName, type: grader.graderType, actual: grader.actual }));
+		lines.push(t("why.grader-reason", { reason: grader.reason }));
 		for (const assertion of grader.assertions) {
-			lines.push(
-				`Assertion ${assertion.index} was answered “${assertion.answer}”; the judge's evidence: “${assertion.evidence}”.`,
-			);
+			lines.push(t("why.assertion", { index: assertion.index, answer: assertion.answer, evidence: assertion.evidence }));
 		}
 		if (grader.jury) {
 			const passed = grader.jury.filter((vote) => vote.passed).length;
-			lines.push(`A jury of ${grader.jury.length} decided this grader: ${passed} of ${grader.jury.length} voted pass.`);
+			lines.push(t("why.jury", { size: grader.jury.length, passed }));
 		}
 	}
 	for (const mode of explanation.failureModes) {
-		lines.push(
-			`This run is evidence for the failure mode “${mode.title}” (${mode.scope}, ${mode.severity}, ` +
-			`${mode.affectedTasks} of ${mode.totalTasks} task(s), ${Math.round(mode.reproductionBps / 100)}% reproduction).`,
-		);
-		lines.push(`Hypothesis, not proof: ${mode.hypothesis}`);
+		lines.push(t("why.failure-mode", {
+			title: mode.title,
+			scope: mode.scope,
+			severity: mode.severity,
+			affected: mode.affectedTasks,
+			total: mode.totalTasks,
+			reproduction: Math.round(mode.reproductionBps / 100),
+		}));
+		lines.push(t("why.hypothesis", { hypothesis: mode.hypothesis }));
 	}
 	if (explanation.flip) {
 		const flip = explanation.flip;
-		lines.push(
-			`${flipSubject(flip)} ${flip.candidateId} re-ran this task: ${flip.before} → ${flip.after} ` +
-			`(${flip.direction}; baseline ${flip.baselinePass}/${flip.baselineTotal}, candidate ${flip.candidatePass}/${flip.candidateTotal}).`,
-		);
+		lines.push(t("why.flip", {
+			subject: flipSubject(flip),
+			candidate: flip.candidateId,
+			before: flip.before,
+			after: flip.after,
+			direction: flip.direction,
+			baselinePass: flip.baselinePass,
+			baselineTotal: flip.baselineTotal,
+			candidatePass: flip.candidatePass,
+			candidateTotal: flip.candidateTotal,
+		}));
 	}
 	return lines;
 }
