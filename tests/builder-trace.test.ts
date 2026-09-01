@@ -244,7 +244,12 @@ describe("traces in the TUI", () => {
 		expect(h.blocks.map((block) => [block.title, block.tone])).toEqual([["AHDE · Trace task_006#0", "warning"]]);
 		expect(h.text()).toContain("Why");
 		expect(h.notes).toHaveLength(1);
-		expect(h.notes[0]!.options).toEqual({ triggerTurn: true });
+		// The injection is visible: the operator reads one dim line naming what
+		// the Builder was just handed.
+		expect(h.notes[0]!.options).toEqual({
+			triggerTurn: true,
+			label: "Builder received: the trace of task_006#0",
+		});
 		expect(h.notes[0]!.text).toContain("task_006#0");
 
 		await h.command("trace").handler("next", h.ctx);

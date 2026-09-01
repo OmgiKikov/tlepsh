@@ -619,9 +619,14 @@ describe("Builder Pi slash commands", () => {
 			"passport",
 			"trace",
 			"log",
+			// What is happening without asking: the cycle, the background
+			// measurement, and the way to stop it.
+			"plan",
+			"jobs",
+			"stop",
 		]);
 		expect(registered.map(({ name }) => name)).toEqual([...AHDE_BUILDER_COMMAND_NAMES]);
-		expect(registered).toHaveLength(23);
+		expect(registered).toHaveLength(26);
 		expect(registered.every(({ options }) => options.description && options.handler)).toBe(true);
 	});
 
@@ -707,13 +712,13 @@ describe("Builder Pi slash commands", () => {
 			1,
 			{ kind: "run-current", repetitions: 3, reason: "investigate routing" },
 			expect.objectContaining({ confirm: expect.any(Function), selectSealed: expect.any(Function) }),
-			{ signal: controller.signal, onRunEvent: expect.any(Function) },
+			{ signal: expect.any(AbortSignal), onRunEvent: expect.any(Function) },
 		);
 		expect(fixture.decide).toHaveBeenNthCalledWith(
 			2,
 			{ kind: "run-current", repetitions: 3, reason: "Requested interactively via /run" },
 			expect.any(Object),
-			{ signal: controller.signal, onRunEvent: expect.any(Function) },
+			{ signal: expect.any(AbortSignal), onRunEvent: expect.any(Function) },
 		);
 		expect(output.blocks.map((block) => block.title)).toEqual(["Run complete", "Run complete"]);
 
@@ -732,7 +737,7 @@ describe("Builder Pi slash commands", () => {
 		expect(fixture.decide).toHaveBeenCalledWith(
 			{ kind: "run-current", repetitions: 2, reason: "check the routing fix" },
 			expect.objectContaining({ confirm: expect.any(Function) }),
-			{ signal: undefined, onRunEvent: expect.any(Function) },
+			{ signal: expect.any(AbortSignal), onRunEvent: expect.any(Function) },
 		);
 		expect(output.blocks.map((block) => block.title)).toEqual(["Run complete"]);
 
@@ -853,13 +858,13 @@ describe("Builder Pi slash commands", () => {
 			1,
 			{ kind: "calibrate", repetitions: 3, reason: "Requested interactively via /calibrate" },
 			expect.objectContaining({ confirm: expect.any(Function), selectSealed: expect.any(Function) }),
-			{ signal: undefined, onRunEvent: expect.any(Function) },
+			{ signal: expect.any(AbortSignal), onRunEvent: expect.any(Function) },
 		);
 		expect(fixture.decide).toHaveBeenNthCalledWith(
 			2,
 			{ kind: "calibrate", repetitions: 5, reason: "before trusting small deltas" },
 			expect.any(Object),
-			{ signal: undefined, onRunEvent: expect.any(Function) },
+			{ signal: expect.any(AbortSignal), onRunEvent: expect.any(Function) },
 		);
 		expect(output.blocks.map((block) => [block.title, block.tone])).toEqual([
 			["Noise calibrated", "success"],
@@ -921,13 +926,15 @@ describe("Builder Pi slash commands", () => {
 		expect(visible).toContain("tool → bash · {\"command\":\"pwd\"}");
 		expect(visible).toContain("tool ✓ bash · /tmp/ahde-demo");
 		expect(visible).toContain("grade ✓ · pass · 2/2 graders · ✓1 ✗0 so far");
-		expect(new Set(host.setStatus.mock.calls.map(([key]) => key))).toEqual(new Set(["ahde-run-progress"]));
+		// The job segment reports the same measurement in the footer; the live
+		// widget stays the only writer of its own key.
+		expect(new Set(host.setStatus.mock.calls.map(([key]) => key))).toEqual(new Set(["ahde-run-progress", "ahde-job"]));
 		expect(new Set(host.setWidget.mock.calls.map(([key]) => key))).toEqual(new Set(["ahde-run-progress"]));
 		expect(host.setStatus).toHaveBeenCalledWith(
 			"ahde-run-progress",
 			expect.stringMatching(/^AHDE run graded 1\/1 · running 0 █{12} 100% · ✓1 ✗0 · task-routing · graded pass$/),
 		);
-		expect(host.setStatus).toHaveBeenLastCalledWith("ahde-run-progress", undefined);
+		expect(host.setStatus).toHaveBeenCalledWith("ahde-run-progress", undefined);
 		expect(host.setWidget).toHaveBeenLastCalledWith("ahde-run-progress", undefined);
 
 		expect(output.blocks.map((block) => [block.title, block.tone])).toEqual([["Run complete", "success"]]);
@@ -1158,7 +1165,7 @@ describe("Builder Pi slash commands", () => {
 		const host = context({ signal: controller.signal });
 
 		await expect(command(commands, "run").handler("", host.ctx)).rejects.toThrow(message);
-		expect(host.setStatus).toHaveBeenLastCalledWith("ahde-run-progress", undefined);
+		expect(host.setStatus).toHaveBeenCalledWith("ahde-run-progress", undefined);
 		expect(host.setWidget).toHaveBeenLastCalledWith("ahde-run-progress", undefined);
 		expect(host.notify).toHaveBeenCalledTimes(1);
 		expect(host.notify).toHaveBeenCalledWith(
@@ -1188,7 +1195,10 @@ describe("Builder Pi slash commands", () => {
 		expect(output.blocks.map((block) => [block.title, block.tone])).toEqual([["Proposal applied", "success"]]);
 		expect(output.text()).toContain("Proposal applied branch candidate/routing");
 		expect(output.text()).toContain("Your checkout was not switched");
-		expect(output.note).toHaveBeenCalledWith(expect.stringContaining("Operator ran /apply"));
+		expect(output.note).toHaveBeenCalledWith(
+			expect.stringContaining("Operator ran /apply"),
+			expect.objectContaining({ label: expect.stringContaining("/apply") }),
+		);
 		expect(String(output.note.mock.calls[0]?.[0])).toContain("candidate-verification (Candidate verification)");
 		expect(onWorkbenchChanged).toHaveBeenCalledTimes(1);
 
@@ -1377,7 +1387,10 @@ describe("Builder Pi slash commands", () => {
 		);
 		expect(reviewingFixture.output.blocks.map((block) => [block.title, block.tone])).toEqual([["Candidate rejected", "warning"]]);
 		expect(reviewingFixture.output.text()).toContain("Candidate rejected cand-1 · rejected");
-		expect(reviewingFixture.output.note).toHaveBeenCalledWith(expect.stringContaining("Operator ran /reject"));
+		expect(reviewingFixture.output.note).toHaveBeenCalledWith(
+			expect.stringContaining("Operator ran /reject"),
+			expect.objectContaining({ label: expect.stringContaining("/reject") }),
+		);
 		expect(reviewingFixture.onWorkbenchChanged).toHaveBeenCalledTimes(1);
 
 		const deciding = gatedWorkbench("release-decision");
@@ -1424,7 +1437,10 @@ describe("Builder Pi slash commands", () => {
 		expect(output.blocks.map((block) => [block.title, block.tone])).toEqual([[title, tone]]);
 		expect(output.text()).toContain("Next ");
 		expect(output.text()).not.toMatch(/[{}]|schemaVersion/);
-		expect(output.note).toHaveBeenCalledWith(expect.stringContaining(`Operator ran /${name}`));
+		expect(output.note).toHaveBeenCalledWith(
+			expect.stringContaining(`Operator ran /${name}`),
+			expect.objectContaining({ label: expect.stringContaining(`/${name}`) }),
+		);
 		expect(onWorkbenchChanged).toHaveBeenCalledTimes(1);
 		expect(host.notify).not.toHaveBeenCalled();
 		expect(host.confirm).not.toHaveBeenCalled();
@@ -1544,7 +1560,7 @@ describe("Builder Pi slash commands", () => {
 		expect(verifying.decide).toHaveBeenCalledWith(
 			{ kind: "run-current", repetitions: 3, reason: "Verification from /review" },
 			expect.any(Object),
-			{ signal: undefined, onRunEvent: expect.any(Function) },
+			{ signal: expect.any(AbortSignal), onRunEvent: expect.any(Function) },
 		);
 		expect(verification.output.blocks.map((block) => [block.title, block.tone])).toEqual([
 			["AHDE · Candidate verification", "info"],
@@ -1751,7 +1767,7 @@ describe("Builder Pi slash commands", () => {
 			name,
 			name === "apply" ? "candidate/fix" : name === "promote" ? "1.0.0" : "",
 		]);
-		expect(invocations).toHaveLength(23);
+		expect(invocations).toHaveLength(26);
 
 		for (const settings of [
 			{ hasUI: false, mode: "print" as const },
@@ -1970,13 +1986,18 @@ describe("Builder Pi slash commands", () => {
 		await command(commands, "approve").handler("", host.ctx);
 
 		expect(host.notify).not.toHaveBeenCalled();
-		expect(appendEntry).toHaveBeenCalledTimes(1);
-		expect(appendEntry).toHaveBeenCalledWith(
+		// The panel, then the one dim line naming what was put into the Builder's head.
+		expect(appendEntry).toHaveBeenCalledTimes(2);
+		expect(appendEntry).toHaveBeenNthCalledWith(
+			1,
 			AHDE_TRANSCRIPT_ENTRY_TYPE,
 			expect.objectContaining({ schemaVersion: 1, title: "Spec approved", tone: "success", lines: expect.any(Array) }),
 		);
 		const lines = (appendEntry.mock.calls[0]?.[1] as { lines: string[] }).lines;
 		expect(lines.map(stripMarkers).join("\n")).toContain("Spec approved spec-1");
+		const injection = (appendEntry.mock.calls[1]?.[1] as { title: string; lines: string[] });
+		expect(injection.title).toBe("");
+		expect(injection.lines.map(stripMarkers).join("\n")).toBe("✎ Builder received: the result of /approve (approve-spec completed)");
 		expect(sendMessage).toHaveBeenCalledWith(
 			{ customType: AHDE_MODEL_NOTE_TYPE, content: expect.stringContaining("Operator ran /approve"), display: false },
 			{ triggerTurn: false },
@@ -2080,7 +2101,9 @@ describe("Builder Pi slash commands", () => {
 		expect(chosenHost.select).toHaveBeenCalledWith(
 			"Choose sealed holdout",
 			["1. Holdout A · 5 tasks", "2. Holdout B · 7 tasks"],
-			{ signal: controller.signal },
+			// The measurement runs under the job's own signal, so /stop dismisses
+			// this picker exactly as it cancels the run behind it.
+			{ signal: expect.any(AbortSignal) },
 		);
 		expect(chosen).toEqual([{ approved: true, actorId: "local:alice", selectedIndex: 1 }]);
 
