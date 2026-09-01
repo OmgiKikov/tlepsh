@@ -38,7 +38,7 @@ import {
 	type CorpusTask,
 } from "../corpus.js";
 import { SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
-import { callEvaluatorModel } from "../evaluator-model.js";
+import { callEvaluatorModel, evaluatorCostUsd } from "../evaluator-model.js";
 import { loadTarget, taskDialogueIssue, type GraderSpec, type ResolvedTarget } from "../manifest.js";
 import {
 	canonicalJson,
@@ -124,10 +124,29 @@ export const SealedSynthReceiptSchema = z.strictObject({
 			reviewPath: z.string().min(1).max(1_024),
 			caseCount: z.number().int().positive(),
 		}),
+		/**
+		 * A draft that came back. Written when a sealed import names a review file
+		 * this project generated, so the exam's origin — generated, then read and
+		 * edited by a human — survives into the passport. Still a pointer and a
+		 * count: the import read the file, this record never does.
+		 */
+		z.strictObject({
+			kind: z.literal("review-imported"),
+			reviewPath: z.string().min(1).max(1_024),
+			corpusId: CorpusIdSchema,
+			corpusHash: HashSchema,
+			taskCount: z.number().int().positive(),
+		}),
 	]),
 	at: z.iso.datetime({ offset: true }),
 });
 export type SealedSynthReceipt = z.infer<typeof SealedSynthReceiptSchema>;
+
+/**
+ * How a sealed exam came to exist, as far as a receipt can say. `null` is the
+ * ordinary case: an exam the operator brought, whose provenance is theirs.
+ */
+export type SealedExamOrigin = "judge-generated" | "judge-generated-reviewed";
 
 export interface SealedSynthOptions {
 	targetDir: string;
@@ -146,6 +165,34 @@ export interface SealedSynthOptions {
 	reviewPath?: string | undefined;
 	now?: () => string;
 	signal?: AbortSignal | undefined;
+}
+
+/**
+ * Everything that can be said about a generation *before* it happens: which
+ * model will write it, from which Spec, how many format examples it will see,
+ * what the question hashes to, and what it should cost. Every field is a
+ * coordinate, a count, or a hash — a plan is a subject a human can approve, so
+ * it is exactly the part of a sealed exam that is safe to show.
+ */
+export interface SealedSynthPlan {
+	/** `<provider>/<id>` of the judge that will write the exam. */
+	generatorModel: string;
+	generatorHash: string;
+	promptSha256: string;
+	/** UTF-8 size of `{ system, user }`, the basis of the input-token estimate. */
+	promptBytes: number;
+	specSource: SealedSynthReceipt["specSource"];
+	specId: string | null;
+	specSha256: string;
+	/** How many development cases the generator will actually be shown. */
+	examples: number;
+	developmentExampleIds: string[];
+	requested: number;
+	seed: string | null;
+	/** Where the draft would land, on the review path; null when sealing. */
+	reviewPath: string | null;
+	/** From the judge's declared rates. An estimate, and named as one. */
+	estimatedCostUsd: number;
 }
 
 export interface SealedSynthResult {
@@ -485,7 +532,7 @@ function admitCases(
 
 // ---------- the review file ----------
 
-function assertReviewPathOutsideTarget(reviewPath: string, targetDir: string): string {
+function assertReviewPathOutsideTarget(reviewPath: string, targetDir: string, stateRoot: string): string {
 	const resolved = resolve(reviewPath);
 	if (existsSync(resolved)) {
 		throw new SealedSynthRefusal(
@@ -502,13 +549,32 @@ function assertReviewPathOutsideTarget(reviewPath: string, targetDir: string): s
 	}
 	const realParent = realpathSync(parent);
 	const realTarget = realpathSync(targetDir);
-	if (contained(realTarget, realParent)) {
+	// The private state root is the one place inside a Target that is not part of
+	// it: the sealed corpora themselves already live there, 0700, undeclared, and
+	// out of every workspace snapshot. A draft beside them is no more exposed
+	// than the exams it is going to become. Everywhere else inside the Target is
+	// refused, because a Harness snapshot copies the Target.
+	const realState = existsSync(stateRoot) ? realpathSync(stateRoot) : resolve(stateRoot);
+	if (contained(realTarget, realParent) && !contained(realState, realParent)) {
 		throw new SealedSynthRefusal(
 			`the review file would land inside the Target tree: ${resolved}`,
 			`choose a path outside ${realTarget} — a Harness snapshot would carry a sealed exam into every run`,
 		);
 	}
 	return resolved;
+}
+
+/**
+ * Where a draft exam lands when nobody named a path: the project's own private
+ * state, beside the receipts, 0600 like everything else there. `discriminator`
+ * is whatever the caller wants the file named after — it is hashed, so it never
+ * appears in a filename, and the same discriminator always names the same file
+ * so a dialog can price a path and then write to it.
+ */
+export function sealedSynthReviewPath(stateRoot: string, projectId: string, discriminator: string): string {
+	const root = receiptsRoot(stateRoot, projectId, true);
+	if (!root) throw new Error("failed to create the sealed synthesis state directory");
+	return join(root, `review-${sha256Hex(`sealed-synth review ${discriminator}`).slice(0, 32)}.jsonl`);
 }
 
 function writeReviewFile(path: string, tasks: readonly CorpusTask[]): void {
@@ -527,7 +593,31 @@ function writeReviewFile(path: string, tasks: readonly CorpusTask[]): void {
  * immediately or hand it to a human to edit and seal. Returns hashes, ids, and
  * counts; the caller cannot print a case even by mistake.
  */
-export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promise<SealedSynthResult> {
+type JudgeModel = NonNullable<ResolvedTarget["manifest"]["evalSuite"]["judge"]>;
+
+interface SealedSynthPreflight {
+	target: ResolvedTarget;
+	judge: JudgeModel;
+	projectId: string;
+	count: number;
+	drawn: CorpusTask[];
+	spec: ResolvedSpec;
+	specSha256: string;
+	seed: string | null;
+	system: string;
+	user: string;
+	promptSha256: string;
+	promptBytes: number;
+	reviewPath: string | null;
+}
+
+/**
+ * Everything decided before a token is spent: the bounds, the two refusals, the
+ * Spec, the example draw, and the exact question. Shared by `planSealedSynthesis`
+ * and `synthesizeSealedCorpus` so a dialog prices exactly the run that follows
+ * it, and so a refusal costs nothing whichever surface asked.
+ */
+function preflight(options: SealedSynthOptions): SealedSynthPreflight {
 	const projectId = ProjectIdSchema.parse(options.projectId);
 	const count = Math.trunc(options.count);
 	if (!Number.isSafeInteger(count) || count < 1 || count > MAX_SEALED_SYNTH_CASES) {
@@ -556,7 +646,7 @@ export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promi
 
 	const reviewPath = options.reviewPath === undefined
 		? null
-		: assertReviewPathOutsideTarget(options.reviewPath, target.dir);
+		: assertReviewPathOutsideTarget(options.reviewPath, target.dir, options.stateRoot);
 
 	const spec = resolveSpec(options, target);
 	const specSha256 = hashValue(spec.text);
@@ -569,7 +659,71 @@ export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promi
 		graderShapes: graderShapes(target),
 		count,
 	});
-	const promptSha256 = hashValue({ system, user });
+	return {
+		target,
+		judge,
+		projectId,
+		count,
+		drawn,
+		spec,
+		specSha256,
+		seed,
+		system,
+		user,
+		promptSha256: hashValue({ system, user }),
+		promptBytes: Buffer.byteLength(system, "utf8") + Buffer.byteLength(user, "utf8"),
+		reviewPath,
+	};
+}
+
+/**
+ * A tokenizer would be exact and is not worth a dependency here: four bytes to
+ * the token is the usual English-and-Russian average, and the number is shown
+ * with a `~`. Output is the part that actually scales — one case is a request,
+ * an optional reference answer, and its graders.
+ */
+const ESTIMATE_BYTES_PER_TOKEN = 4;
+const ESTIMATE_OUTPUT_TOKENS_PER_CASE = 200;
+
+/** What one generation should cost, from the judge's own declared rates. */
+export function estimateSealedSynthCostUsd(judge: JudgeModel, promptBytes: number, cases: number): number {
+	const promptTokens = Math.ceil(promptBytes / ESTIMATE_BYTES_PER_TOKEN);
+	const completionTokens = cases * ESTIMATE_OUTPUT_TOKENS_PER_CASE;
+	return evaluatorCostUsd(judge.spec.cost, {
+		promptTokens,
+		completionTokens,
+		totalTokens: promptTokens + completionTokens,
+	});
+}
+
+/**
+ * What a generation would be, without doing it: the generator, the Spec it
+ * reads, how many format examples it sees, the question's hash, and the price.
+ * The two refusals happen here, so a misconfigured Target is told before a
+ * human is asked anything.
+ */
+export function planSealedSynthesis(options: SealedSynthOptions): SealedSynthPlan {
+	const ready = preflight(options);
+	return {
+		generatorModel: `${ready.judge.provider}/${ready.judge.id}`,
+		generatorHash: hashValue(modelFingerprint(ready.judge)),
+		promptSha256: ready.promptSha256,
+		promptBytes: ready.promptBytes,
+		specSource: ready.spec.source,
+		specId: ready.spec.specId,
+		specSha256: ready.specSha256,
+		examples: ready.drawn.length,
+		developmentExampleIds: ready.drawn.map((task) => task.id),
+		requested: ready.count,
+		seed: ready.seed,
+		reviewPath: ready.reviewPath,
+		estimatedCostUsd: estimateSealedSynthCostUsd(ready.judge, ready.promptBytes, ready.count),
+	};
+}
+
+export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promise<SealedSynthResult> {
+	const { target, judge, projectId, count, drawn, spec, specSha256, seed, system, user, promptSha256, reviewPath } =
+		preflight(options);
 
 	// The exact exchange lands on disk before anything is parsed, exactly as
 	// every other evaluator call does — but under a private directory this
@@ -681,6 +835,75 @@ export function listSealedSynthReceipts(stateRoot: string, projectIdInput: strin
 		receipts.push(receipt);
 	}
 	return receipts.sort((left, right) => right.at.localeCompare(left.at));
+}
+
+/**
+ * Close the loop on the review path. When a sealed import names a file this
+ * project generated as a draft, record that the exam now sealed is the one a
+ * human read and edited — the difference between "the judge wrote it and nobody
+ * looked" and "the judge wrote it and the operator vouched for it", which is
+ * the whole point of offering the draft. Returns `null` for any other file: an
+ * exam the operator brought is theirs, and this module has nothing to say
+ * about where it came from.
+ */
+export function recordSealedSynthReviewImport(options: {
+	stateRoot: string;
+	projectId: string;
+	sourcePath: string;
+	corpus: Pick<CorpusMetadata, "id" | "hash" | "taskCount">;
+	now?: () => string;
+}): SealedSynthReceipt | null {
+	const resolved = resolve(options.sourcePath);
+	const drafted = listSealedSynthReceipts(options.stateRoot, options.projectId)
+		.find((receipt) => receipt.outcome.kind === "review" && receipt.outcome.reviewPath === resolved);
+	if (!drafted) return null;
+	const now = options.now ?? (() => new Date().toISOString());
+	const receipt = SealedSynthReceiptSchema.parse({
+		...drafted,
+		outcome: {
+			kind: "review-imported",
+			reviewPath: resolved,
+			corpusId: options.corpus.id,
+			corpusHash: options.corpus.hash,
+			taskCount: options.corpus.taskCount,
+		},
+		at: now(),
+	});
+	const root = receiptsRoot(options.stateRoot, options.projectId, true);
+	if (!root) throw new Error("failed to create the sealed synthesis state directory");
+	const path = join(root, `${receiptSha(receipt)}.json`);
+	if (!existsSync(path)) writeJsonArtifact(path, SealedSynthReceiptSchema, receipt, { immutable: true });
+	return receipt;
+}
+
+/**
+ * How this sealed corpus came to exist, for a surface that already knows its
+ * id. The answer is a provenance word and nothing else — no case, no count of
+ * anything but what the caller already had, no path.
+ */
+export function sealedExamOrigin(
+	stateRoot: string,
+	projectId: string,
+	corpusId: string | null,
+): SealedExamOrigin | null {
+	if (!corpusId) return null;
+	let receipts: SealedSynthReceipt[];
+	try {
+		receipts = listSealedSynthReceipts(stateRoot, projectId);
+	} catch {
+		// Unreadable provenance narrows the line; it never fails the page.
+		return null;
+	}
+	// A reviewed exam was also generated, so the more specific answer wins.
+	for (const receipt of receipts) {
+		if (receipt.outcome.kind === "review-imported" && receipt.outcome.corpusId === corpusId) {
+			return "judge-generated-reviewed";
+		}
+	}
+	for (const receipt of receipts) {
+		if (receipt.outcome.kind === "sealed" && receipt.outcome.corpusId === corpusId) return "judge-generated";
+	}
+	return null;
 }
 
 // ---------- rendering ----------

@@ -37,6 +37,11 @@ import {
 	saveDatasetRecipeSubmission,
 	type DatasetRecipeSubmission,
 } from "../application/dataset-recipe.js";
+import {
+	planSealedSynthesis,
+	sealedSynthReviewPath,
+	synthesizeSealedCorpus,
+} from "../application/sealed-synth.js";
 import { resolveDevelopmentFailureOperations } from "../application/builder-regression-case.js";
 import {
 	compileHarnessAuthoringProposal,
@@ -250,6 +255,13 @@ import type { CandidateRecord } from "../domain/candidate.js";
 const MAX_REVIEW_BYTES = 5 * 1024 * 1024;
 const MAX_CONVERSATION_MODES = 3;
 /** Enough compiled cases to argue about; never enough to be the dataset. */
+/**
+ * Every generated exam is called the same thing. A name is the one part of a
+ * corpus a model could choose, and a chosen name is a channel: it would travel
+ * with the corpus into the sealed selector and back out on every surface that
+ * lists one. The host names it, once, for all of them.
+ */
+export const GENERATED_HOLDOUT_NAME = "Sealed exam (written by the judge)";
 const MAX_DATASET_SAMPLE_CASES = 5;
 const MAX_DATASET_CASE_CHARS = 400;
 const MAX_DATASET_CASE_TURNS = 6;
@@ -296,6 +308,14 @@ export interface AhdeWorkbenchDependencies {
 	compileDatasetCases: typeof compileDatasetCases;
 	saveDatasetRecipe: typeof saveDatasetRecipeSubmission;
 	ingestDataset: typeof ingestDataset;
+	/**
+	 * The exam the judge writes, in two halves: what it would be, so a human can
+	 * approve a price and a model before a token is spent, and doing it. Neither
+	 * half returns a case; the second one writes the sealed corpus itself.
+	 */
+	planSealedSynthesis: typeof planSealedSynthesis;
+	synthesizeSealedCorpus: typeof synthesizeSealedCorpus;
+	sealedSynthReviewPath: typeof sealedSynthReviewPath;
 	compileHarnessProposal: (input: CompileHarnessAuthoringInput) => CandidateProposal;
 	recordProposal: typeof recordBuilderAuthoredProposal;
 	runSuite: typeof runSuite;
@@ -364,6 +384,9 @@ const DEFAULT_DEPENDENCIES: AhdeWorkbenchDependencies = {
 	compileDatasetCases,
 	saveDatasetRecipe: saveDatasetRecipeSubmission,
 	ingestDataset,
+	planSealedSynthesis,
+	synthesizeSealedCorpus,
+	sealedSynthReviewPath,
 	compileHarnessProposal: compileHarnessAuthoringProposal,
 	recordProposal: recordBuilderAuthoredProposal,
 	runSuite,
@@ -2782,6 +2805,65 @@ export class AhdeWorkbench {
 					receiptId: ingested.receiptPath.split(/[\\/]/).at(-1)?.replace(/\.json$/, "") ?? "",
 				},
 				view: await this.viewOf(settled),
+			};
+		}
+
+		if (input.kind === "generate-holdout") {
+			// Host-owned, all of it. The name is the same for every generated exam
+			// because the model asks for an exam, not for a label on one; the Spec
+			// comes from the approved snapshot the host reads; the format examples
+			// are a seeded draw over published development cases. Nothing in
+			// `input` reaches the generator except a count and a seed.
+			const reviewPath = input.mode === "review"
+				? this.dependencies.sealedSynthReviewPath(
+					this.stateRoot,
+					this.projectId,
+					`${this.projectId} ${input.cases} ${input.seed ?? ""} ${this.dependencies.now()}`,
+				)
+				: undefined;
+			const request = {
+				targetDir: this.projectDir,
+				stateRoot: this.stateRoot,
+				projectId: this.projectId,
+				name: GENERATED_HOLDOUT_NAME,
+				count: input.cases,
+				...(input.seed ? { seed: input.seed } : {}),
+				...(reviewPath ? { reviewPath } : {}),
+			};
+			// Planned once before the dialog and again after it: the model, the
+			// price and the exact question the human approved must still be the
+			// ones the generator is asked. The plan is also the whole subject —
+			// hashes, ids and counts, and not one case, because there is no case
+			// yet and there never will be one on this side of the boundary.
+			const describe = () => ({
+				operation: "generate-holdout",
+				mode: input.mode,
+				...this.dependencies.planSealedSynthesis(request),
+			});
+			const before = describe();
+			await this.confirm(input, gate, t("confirm.title.generate-holdout"), before, options.signal);
+			this.decisionInventory(input.kind);
+			if (!exactSame(before, describe())) throw new WorkbenchStaleDecisionError(input.kind);
+			const generated = await this.dependencies.synthesizeSealedCorpus({
+				...request,
+				...(options.signal ? { signal: options.signal } : {}),
+			});
+			const cases = generated.corpus?.taskCount ?? generated.accepted;
+			return {
+				kind: input.kind,
+				message: generated.corpus
+					? `The judge wrote a sealed exam of ${cases} case${cases === 1 ? "" : "s"}. ` +
+						"Its content is evaluator-only and never enters this conversation."
+					: `The judge wrote a draft exam of ${cases} case${cases === 1 ? "" : "s"} to a private file. ` +
+						"The operator reads and edits it, then imports it with /holdout; you never see it.",
+				result: {
+					...(generated.corpus ? { corpusId: generated.corpus.id } : {}),
+					cases,
+					generator: generated.generatorModel,
+					promptHash: generated.promptSha256,
+					...(generated.reviewPath ? { reviewPath: generated.reviewPath } : {}),
+				},
+				view: await this.view(),
 			};
 		}
 

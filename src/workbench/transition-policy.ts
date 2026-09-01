@@ -23,6 +23,18 @@ const LEGAL_DECISION_STAGES = {
 	"publish-corpus": ["corpus-review"],
 	// A dataset may become the first basket or replace one already drafted.
 	"import-dataset": ["corpus-design", "corpus-review"],
+	// An exam is missing until the moment it is needed, and the moment it is
+	// needed is the one where the operator finds out — anywhere from writing the
+	// first basket to standing in front of a candidate that cannot be checked.
+	// It needs an approved Spec, which is why it starts no earlier.
+	"generate-holdout": [
+		"corpus-design",
+		"corpus-review",
+		"ready-to-evaluate",
+		"improvement-authoring",
+		"proposal-review",
+		"candidate-verification",
+	],
 	// The composite that carries the operator from a reviewed draft to a running
 	// evaluation. It is legal exactly where a pending review still blocks the run.
 	"start-testing": ["spec-review", "corpus-review"],
@@ -159,6 +171,10 @@ export const WORKBENCH_GATE_POLICY = {
 	"approve-spec": "consequential",
 	"publish-corpus": "consequential",
 	"import-dataset": "consequential",
+	// It spends the judge's tokens and it creates the one artifact promotion is
+	// measured against. Always a full dialog: the operator has to see which model
+	// is about to write their exam, and that they will never read it.
+	"generate-holdout": "consequential",
 	"review-candidate": "consequential",
 	"promote-candidate": "consequential",
 	"adopt-candidate": "consequential",

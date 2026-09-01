@@ -175,6 +175,9 @@ describe("Workbench gate policy", () => {
 			"approve-spec": "consequential",
 			"publish-corpus": "consequential",
 			"import-dataset": "consequential",
+			// The judge writing the exam spends money and creates the artifact
+			// promotion is measured against: always the full dialog.
+			"generate-holdout": "consequential",
 			"review-candidate": "consequential",
 			"promote-candidate": "consequential",
 			"adopt-candidate": "consequential",

@@ -704,6 +704,28 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		}).nullable(),
 		reason: NonBlankSchema.max(4_000),
 	}),
+	/**
+	 * The exam, when there is no data to hold out. The judge writes it — the one
+	 * model already outside the Target's trust domain, whose output never
+	 * re-enters a Builder context — from the approved Spec the host reads and a
+	 * seeded draw of published development cases shown for their shape. Nothing
+	 * about a case is model-supplied and nothing about one comes back: the
+	 * Builder asks for a count and a mode, and learns a count and a mode.
+	 *
+	 * `seal` writes the sealed corpus. `review` writes one 0600 draft into
+	 * private state for the operator to read, edit, and import through
+	 * `/holdout` — the honest default for a first exam, and the only path on
+	 * which a human has actually vouched for the questions.
+	 */
+	z.strictObject({
+		kind: z.literal("generate-holdout"),
+		/** Below the sealed guardrail's minimum an exam can only say `underpowered`. */
+		cases: z.number().int().min(15).max(200).default(20),
+		/** Fixes which development cases are shown as format examples. */
+		seed: z.string().min(1).max(200).optional(),
+		mode: z.enum(["seal", "review"]),
+		reason: NonBlankSchema.max(4_000),
+	}),
 	z.strictObject({
 		kind: z.literal("run-eval"),
 		developmentCorpusId: ArtifactIdSchema.optional(),
@@ -1065,6 +1087,20 @@ export interface WorkbenchDecisionResultMap {
 		sealedCount: number;
 		skippedRows: number;
 		receiptId: string;
+	};
+	/**
+	 * The whole of what a generated exam says about itself. `corpusId` is present
+	 * only on the sealing path, where it is the id of a corpus whose content no
+	 * model may read — the same id `publish-corpus` returns for a development
+	 * basket, and the same rule applies to it: an id is not content. `reviewPath`
+	 * is a path the operator is about to open, never a file anything here reads.
+	 */
+	"generate-holdout": {
+		corpusId?: string;
+		cases: number;
+		generator: string;
+		promptHash: string;
+		reviewPath?: string;
 	};
 	"run-eval": WorkbenchRunEvalResult;
 	calibrate: { candidateId: string; calibration: WorkbenchCalibrationProjection };
