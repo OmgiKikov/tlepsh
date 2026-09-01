@@ -1465,11 +1465,11 @@ describe("Builder Pi slash commands", () => {
 
 		await command(commands, "review").handler("", host.ctx);
 
-		expect(host.select).toHaveBeenCalledWith("Proposal", ["Apply to a candidate branch", "Discard", "Just looking"], { signal: undefined });
+		expect(host.select).toHaveBeenCalledWith("Proposal review", ["Apply to a candidate branch", "Discard", "Just looking"], { signal: undefined });
 		// The branch is named after the proposal; the diff was just rendered, so nothing else is asked.
 		expect(host.input).not.toHaveBeenCalled();
 		expect(fixture.decide).toHaveBeenCalledWith(
-			{ kind: "apply-proposal", branch: "candidate/builder-proposal-1", verify: { repetitions: 3 }, reason: "Applied from /review", runId: "builder-proposal-1" },
+			{ kind: "apply-proposal", branch: "candidate/builder-proposal-1", verify: { repetitions: 3 }, reason: "from the /review menu", runId: "builder-proposal-1" },
 			expect.any(Object),
 			expect.objectContaining({ signal: undefined, onRunEvent: expect.any(Function) }),
 		);
@@ -1494,7 +1494,7 @@ describe("Builder Pi slash commands", () => {
 		const discardingFixture = register(fixture.value);
 		await command(discardingFixture.commands, "review").handler("", discarding.ctx);
 		expect(fixture.decide).toHaveBeenLastCalledWith(
-			{ kind: "discard-proposal", reason: "Discarded from /review" },
+			{ kind: "discard-proposal", reason: "from the /review menu" },
 			expect.any(Object),
 			{ signal: undefined },
 		);
@@ -1509,10 +1509,10 @@ describe("Builder Pi slash commands", () => {
 	});
 
 	const reviewCases: Array<{ stage: WorkbenchStage; title: string; choice: string; input: WorkbenchDecisionInput; receipt: string }> = [
-		{ stage: "spec-review", title: "Spec draft", choice: "Approve this Spec", input: { kind: "approve-spec", reason: "Approved from /review" }, receipt: "Spec approved" },
-		{ stage: "corpus-review", title: "Eval basket draft", choice: "Publish this basket", input: { kind: "publish-corpus", reason: "Published from /review" }, receipt: "Eval basket published" },
-		{ stage: "candidate-adoption", title: "Promoted candidate", choice: "Adopt as the active Target", input: { kind: "adopt-candidate", reason: "Adopted from /review" }, receipt: "Candidate adopted" },
-		{ stage: "complete", title: "Cycle complete", choice: "Start the next cycle", input: { kind: "continue-cycle", reason: "Continued from /review" }, receipt: "Next cycle started" },
+		{ stage: "spec-review", title: "Spec draft", choice: "Approve this Spec", input: { kind: "approve-spec", reason: "from the /review menu" }, receipt: "Spec approved" },
+		{ stage: "corpus-review", title: "Eval basket draft", choice: "Publish this basket", input: { kind: "publish-corpus", reason: "from the /review menu" }, receipt: "Eval basket published" },
+		{ stage: "candidate-adoption", title: "Candidate promoted", choice: "Adopt as the active Target", input: { kind: "adopt-candidate", reason: "from the /review menu" }, receipt: "Candidate adopted" },
+		{ stage: "complete", title: "Cycle complete", choice: "Start the next cycle", input: { kind: "continue-cycle", reason: "from the /review menu" }, receipt: "Next cycle started" },
 	];
 
 	it.each(reviewCases)("offers “$choice” from /review at $stage", async ({ stage, title, choice, input, receipt }) => {
@@ -1547,7 +1547,7 @@ describe("Builder Pi slash commands", () => {
 		await command(recovery.commands, "review").handler("", recoveryHost.ctx);
 		expect(recoveryHost.select).toHaveBeenCalledWith("Interrupted candidate", ["Abandon this attempt", "Just looking"], { signal: undefined });
 		expect(interrupted.decide).toHaveBeenCalledWith(
-			{ kind: "abandon-candidate", candidateId: "candidate-stopped", reason: "Abandoned from /review" },
+			{ kind: "abandon-candidate", candidateId: "candidate-stopped", reason: "from the /review menu" },
 			expect.any(Object),
 			{ signal: undefined },
 		);
@@ -1569,7 +1569,7 @@ describe("Builder Pi slash commands", () => {
 		const verificationHost = context({ select: async () => "Verify the candidate now (/run)" });
 		await command(verification.commands, "review").handler("", verificationHost.ctx);
 		expect(verifying.decide).toHaveBeenCalledWith(
-			{ kind: "run-current", repetitions: 3, reason: "Verification from /review" },
+			{ kind: "run-current", repetitions: 3, reason: "from the /review menu" },
 			expect.any(Object),
 			{ signal: expect.any(AbortSignal), onRunEvent: expect.any(Function) },
 		);
@@ -1590,7 +1590,7 @@ describe("Builder Pi slash commands", () => {
 		// One composite decision, not four: review, promote, adopt and continue run
 		// underneath it and write the same four receipts.
 		expect(promoting.decide.mock.calls.map(([input]) => input)).toEqual([
-			{ kind: "ship", version: "1.0.0", reason: "Shipped from /review" },
+			{ kind: "ship", version: "1.0.0", reason: "from the /review menu" },
 		]);
 		expect(promotionHost.confirm).toHaveBeenCalledTimes(1);
 		expect(promotion.output.blocks.map((block) => block.title)).toEqual(["AHDE · Candidate review", "Shipped"]);
@@ -1600,7 +1600,7 @@ describe("Builder Pi slash commands", () => {
 		const rejectionHost = context({ select: async () => "Reject", confirm: async () => true });
 		await command(rejection.commands, "review").handler("", rejectionHost.ctx);
 		expect(rejecting.decide.mock.calls.map(([input]) => input)).toEqual([
-			{ kind: "reject-candidate", reason: "Rejected from /review" },
+			{ kind: "reject-candidate", reason: "from the /review menu" },
 		]);
 		expect(rejection.output.blocks.map((block) => block.title)).toEqual(["AHDE · Release decision", "Candidate rejected"]);
 	});

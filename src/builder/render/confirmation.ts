@@ -343,7 +343,7 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 					environment: credentials.map((entry) => text(entry.environment, 60)),
 					...(subject.setup ? { setup: { network: bag(subject.setup).network === "allow" ? "allow" : "deny" } } : { setup: null }),
 				}], paint),
-				`${paint.dim(t("label.package"))} ${pluralize(strings(subject.files).length, "file")} ${paint.dim(`· ${t("label.contract-tests")}`)} ${strings(subject.contractTests).join(", ")}`,
+				`${paint.dim(t("label.package"))} ${plural(strings(subject.files).length, "file")} ${paint.dim(`· ${t("label.contract-tests")}`)} ${strings(subject.contractTests).join(", ")}`,
 				paint.muted(t("confirm.tool-authoring.secrets")),
 			];
 		}

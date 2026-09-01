@@ -2031,16 +2031,20 @@ export class AhdeWorkbench {
 		};
 		const confirmation: WorkbenchConfirmation = {
 			kind: "tool-authoring",
-			title: `Allow ${compiled.brief.name} capabilities and try its contract tests`,
-			reason: "the Builder compiled a complete tool package from the reviewed conversational brief",
+			title: t("confirm.tool-authoring.title", { tool: compiled.brief.name }),
+			reason: t("confirm.tool-authoring.reason"),
 			subject,
 			subjectHash: hashValue(subject),
 			policy: "consequential",
-			question:
-				`${compiled.brief.name} will run as a sandboxed process with ` +
-				`${compiled.capabilities.filesystem} filesystem and ${compiled.capabilities.network} network` +
-				`${compiled.capabilities.credentialSlots.length > 0 ? `, using ${compiled.capabilities.credentialSlots.length} host credential binding(s)` : ""}. ` +
-				`Create the package and run ${plural(compiled.fixtures.length, "contract test")}?`,
+			question: t("confirm.tool-authoring.question", {
+				tool: compiled.brief.name,
+				filesystem: compiled.capabilities.filesystem,
+				network: compiled.capabilities.network,
+				credentials: compiled.capabilities.credentialSlots.length > 0
+					? t("confirm.tool-authoring.credentials", { count: compiled.capabilities.credentialSlots.length })
+					: "",
+				tests: localizedCount(compiled.fixtures.length, "contract test"),
+			}),
 		};
 		const decision = await options.gate.confirm(confirmation, options.signal);
 		abortIfRequested(options.signal);

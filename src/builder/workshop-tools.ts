@@ -3,7 +3,7 @@ import type { ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
-import { t } from "../i18n.js";
+import { plural, t, type MessageKey } from "../i18n.js";
 import { oneLine } from "./render/format.js";
 import { themePaint } from "./render/paint.js";
 import { createPolicyAwareGate, projectForModel } from "./workbench-adapter.js";
@@ -34,6 +34,13 @@ export const AHDE_WORKSHOP_TOOL_NAMES = [
 ] as const;
 
 const SCOPE = BUILDER_WORKSHOP_SCOPE.join(", ");
+
+/** What a write did, as the workshop recorded it; an unknown verb reads as a plain update. */
+function writeAction(action: string | undefined): MessageKey {
+	return action === "created" || action === "removed" || action === "unchanged"
+		? (`card.${action}` as MessageKey)
+		: "card.updated";
+}
 
 function card(lines: readonly string[]): Component {
 	return new Text(lines.join("\n"), 0, 0);
@@ -105,7 +112,7 @@ export function createWorkshopTools(
 			},
 			renderCall: (args: { path?: string }, theme: Theme) => {
 				const paint = themePaint(theme);
-				return card([`${paint.accent("workshop")} ${paint.dim("read")} ${oneLine(args.path ?? "", 80)}`]);
+				return card([`${paint.accent(t("card.workshop"))} ${paint.dim(`· ${t("card.read")}`)} ${oneLine(args.path ?? "", 80)}`]);
 			},
 			renderResult: (result, renderOptions, theme) => {
 				const paint = themePaint(theme);
@@ -116,10 +123,10 @@ export function createWorkshopTools(
 					content?: string | null;
 					entries?: { path: string }[] | null;
 				} | undefined;
-				if (!details) return card([paint.muted("workshop read")]);
+				if (!details) return card([paint.muted(`${t("card.workshop")} · ${t("card.read")}`)]);
 				const headline = details.kind === "directory"
-					? `${paint.bold(details.path ?? "")} ${paint.dim(`· ${details.entries?.length ?? 0} entries`)}`
-					: `${paint.bold(details.path ?? "")} ${paint.dim(`· ${details.bytes ?? 0} bytes`)}`;
+					? `${paint.bold(details.path ?? "")} ${paint.dim(t("card.entries", { entries: plural(details.entries?.length ?? 0, "entry") }))}`
+					: `${paint.bold(details.path ?? "")} ${paint.dim(t("card.bytes", { bytes: details.bytes ?? 0 }))}`;
 				if (!renderOptions.expanded) return card([headline]);
 				return card([
 					headline,
@@ -150,16 +157,16 @@ export function createWorkshopTools(
 			},
 			renderCall: (args: { path?: string; remove?: boolean; oldText?: string }, theme: Theme) => {
 				const paint = themePaint(theme);
-				const verb = args.remove ? "remove" : args.oldText !== undefined ? "replace in" : "write";
-				return card([`${paint.accent("workshop")} ${paint.dim(verb)} ${oneLine(args.path ?? "", 80)}`]);
+				const verb = args.remove ? "card.remove" : args.oldText !== undefined ? "card.replace" : "card.write";
+				return card([`${paint.accent(t("card.workshop"))} ${paint.dim(`· ${t(verb)}`)} ${oneLine(args.path ?? "", 80)}`]);
 			},
 			renderResult: (result, _renderOptions, theme) => {
 				const paint = themePaint(theme);
 				const details = result.details as { path?: string; action?: string; bytes?: number | null } | undefined;
-				if (!details) return card([paint.muted("workshop write")]);
+				if (!details) return card([paint.muted(`${t("card.workshop")} · ${t("card.write")}`)]);
 				return card([
-					`${paint.success("✓")} ${details.action ?? "wrote"} ${paint.bold(details.path ?? "")}` +
-						`${details.bytes === null || details.bytes === undefined ? "" : paint.dim(` · ${details.bytes} bytes`)}`,
+					`${paint.success("✓")} ${t(writeAction(details.action))} ${paint.bold(details.path ?? "")}` +
+						`${details.bytes === null || details.bytes === undefined ? "" : paint.dim(` ${t("card.bytes", { bytes: details.bytes })}`)}`,
 				]);
 			},
 		}),
@@ -185,7 +192,7 @@ export function createWorkshopTools(
 			},
 			renderCall: (args: { argv?: string[] }, theme: Theme) => {
 				const paint = themePaint(theme);
-				return card([`${paint.accent("workshop")} ${paint.dim("run")} ${oneLine((args.argv ?? []).join(" "), 100)}`]);
+				return card([`${paint.accent(t("card.workshop"))} ${paint.dim(`· ${t("card.run")}`)} ${oneLine((args.argv ?? []).join(" "), 100)}`]);
 			},
 			renderResult: (result, renderOptions, theme) => {
 				const paint = themePaint(theme);
@@ -197,10 +204,11 @@ export function createWorkshopTools(
 					stdout?: string;
 					stderr?: string;
 				} | undefined;
-				if (!details) return card([paint.muted("workshop command")]);
+				if (!details) return card([paint.muted(`${t("card.workshop")} · ${t("card.run")}`)]);
 				const ok = details.exitCode === 0;
-				const headline = `${ok ? paint.success("✓") : paint.error("✗")} exit ${details.exitCode ?? "killed"} ` +
-					paint.dim(`· ${details.durationMs ?? 0}ms · sandbox ${details.sandbox ?? "none"}`);
+				const headline = `${ok ? paint.success("✓") : paint.error("✗")} ${
+					t("card.exit", { code: details.exitCode ?? t("card.killed") })} ` +
+					paint.dim(t("card.sandbox", { ms: details.durationMs ?? 0, sandbox: details.sandbox ?? "none" }));
 				if (!renderOptions.expanded) return card([headline]);
 				return card([
 					headline,
@@ -238,7 +246,7 @@ export function createWorkshopTools(
 			},
 			renderCall: (args: { name?: string }, theme: Theme) => {
 				const paint = themePaint(theme);
-				return card([`${paint.accent("workshop")} ${paint.dim("build tool")} ${paint.bold(args.name ?? "")}`]);
+				return card([`${paint.accent(t("card.workshop"))} ${paint.dim(`· ${t("card.build-tool")}`)} ${paint.bold(args.name ?? "")}`]);
 			},
 			renderResult: (result, renderOptions, theme) => {
 				const paint = themePaint(theme);
@@ -249,17 +257,21 @@ export function createWorkshopTools(
 					tests?: { name: string; passed: boolean; durationMs: number; failure: string | null }[];
 					capabilities?: { network?: string; filesystem?: string; process?: string; credentials?: number };
 				} | undefined;
-				if (!details) return card([paint.muted("tool package")]);
+				if (!details) return card([paint.muted(t("card.unreadable.tool"))]);
 				const tests = details.tests ?? [];
 				const headline = `${details.allPassed ? paint.success("✓") : paint.error("✗")} ${paint.bold(details.tool ?? "tool")} ` +
-					`${tests.filter((test) => test.passed).length}/${tests.length} contract tests passed`;
+					t("card.contract-tests", { passed: tests.filter((test) => test.passed).length, total: tests.length });
 				if (!renderOptions.expanded) return card([headline]);
 				return card([
 					headline,
-					`  ${paint.dim("Capabilities")} network ${details.capabilities?.network ?? "—"} · filesystem ${details.capabilities?.filesystem ?? "—"} · process sandboxed · ${details.capabilities?.credentials ?? 0} credential binding(s)`,
-					`  ${paint.dim("Package")} ${(details.files ?? []).length} generated file(s)`,
+					`  ${paint.dim(t("card.capabilities"))} ${t("card.capabilities-detail", {
+						network: details.capabilities?.network ?? "—",
+						filesystem: details.capabilities?.filesystem ?? "—",
+						credentials: details.capabilities?.credentials ?? 0,
+					})}`,
+					`  ${paint.dim(t("label.package"))} ${t("card.generated-files", { files: plural((details.files ?? []).length, "file") })}`,
 					...tests.map((test) => `  ${test.passed ? paint.success("✓") : paint.error("✗")} ${test.name} ${paint.dim(`${test.durationMs}ms`)}${test.failure ? ` — ${oneLine(test.failure, 120)}` : ""}`),
-					...(details.allPassed ? [] : [paint.warning("Repair the failing case and try the package again before review.")]),
+					...(details.allPassed ? [] : [paint.warning(t("card.repair"))]),
 				]);
 			},
 		}),
@@ -288,7 +300,7 @@ export function createWorkshopTools(
 			renderCall: (args: { tool?: string; fixtures?: boolean }, theme: Theme) => {
 				const paint = themePaint(theme);
 				return card([
-					`${paint.accent("workshop")} ${paint.dim(args.fixtures === true ? "fixtures" : "try")} ${paint.bold(args.tool ?? "")}`,
+					`${paint.accent(t("card.workshop"))} ${paint.dim(`· ${args.fixtures === true ? t("workshop.fixtures-word") : t("card.try")}`)} ${paint.bold(args.tool ?? "")}`,
 				]);
 			},
 			renderResult: (result, renderOptions, theme) => {

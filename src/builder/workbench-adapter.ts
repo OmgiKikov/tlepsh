@@ -3,11 +3,11 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import { decisionHeadline, renderDecision } from "./render/decision.js";
-import { oneLine, pluralize } from "./render/format.js";
+import { oneLine } from "./render/format.js";
 import { themePaint } from "./render/paint.js";
 import { nextStep, stageLabel } from "./render/stage.js";
 import { renderDatasetCases, renderReview, renderView, viewTitle } from "./render/view.js";
-import { t } from "../i18n.js";
+import { plural, t } from "../i18n.js";
 import { renderVersionPassport } from "./render/passport.js";
 import { renderAgentLogChart } from "./render/agent-log.js";
 import { handoffLines } from "./render/handoff.js";
@@ -67,11 +67,11 @@ const WORKBENCH_TOOL_RENDERERS = {
 		renderCall(args: { aspect?: string; resourcePath?: string }, theme: Theme): Component {
 			const paint = themePaint(theme);
 			const detail = args.resourcePath ? ` ${oneLine(args.resourcePath, 60)}` : "";
-			return card([`${paint.accent("AHDE")} ${paint.dim("inspect")} ${args.aspect ?? "summary"}${detail}`]);
+			return card([`${paint.accent("AHDE")} ${paint.dim(`· ${t("card.inspect")}`)} ${args.aspect ?? "summary"}${detail}`]);
 		},
 		renderResult(details: unknown, expanded: boolean, theme: Theme): Component {
 			const paint = themePaint(theme);
-			if (!isWorkbenchView(details)) return card([paint.muted("Workbench view")]);
+			if (!isWorkbenchView(details)) return card([paint.muted(t("card.unreadable.view"))]);
 			if (!expanded) {
 				return card([`${paint.bold(viewTitle(details))} ${paint.dim("·")} ${nextStep(details)}`]);
 			}
@@ -81,12 +81,12 @@ const WORKBENCH_TOOL_RENDERERS = {
 	submit: {
 		renderCall(args: { kind?: string }, theme: Theme): Component {
 			const paint = themePaint(theme);
-			return card([`${paint.accent("AHDE")} ${paint.dim("author")} ${args.kind ?? "submission"}`]);
+			return card([`${paint.accent("AHDE")} ${paint.dim(`· ${t("card.author")}`)} ${args.kind ?? "submission"}`]);
 		},
 		renderResult(details: unknown, expanded: boolean, theme: Theme): Component {
 			const paint = themePaint(theme);
-			if (!isWorkbenchTurn(details)) return card([paint.muted("Workbench submission")]);
-			const lines = [`${paint.success("✓")} ${oneLine(details.message, 160)} ${paint.dim(`· now ${stageLabel(details.view.stage)}`)}`];
+			if (!isWorkbenchTurn(details)) return card([paint.muted(t("card.unreadable.submit"))]);
+			const lines = [`${paint.success("✓")} ${oneLine(details.message, 160)} ${paint.dim(`· ${t("card.now", { stage: stageLabel(details.view.stage) })}`)}`];
 			// A recipe is argued about in cases, so its card shows cases, not fields.
 			const recipe = details.kind === "dataset-recipe" && details.artifact
 				? details.artifact as unknown as WorkbenchDatasetRecipeArtifact
@@ -94,13 +94,13 @@ const WORKBENCH_TOOL_RENDERERS = {
 			if (recipe) {
 				const shown = expanded ? recipe.sampleCases : recipe.sampleCases.slice(0, 2);
 				lines.push(
-					`  ${paint.dim("From")} ${oneLine(recipe.sourcePath, 70)} ${paint.dim("·")} ${pluralize(recipe.developmentCount, "case")}` +
-						`${recipe.skippedRows > 0 ? paint.dim(` · ${pluralize(recipe.skippedRows, "row")} skipped`) : ""}` +
-						`${recipe.sealedReserved > 0 ? paint.dim(` · ${recipe.sealedReserved} already sealed`) : ""}`,
+					`  ${paint.dim(t("card.from"))} ${oneLine(recipe.sourcePath, 70)} ${paint.dim("·")} ${plural(recipe.developmentCount, "case")}` +
+						`${recipe.skippedRows > 0 ? paint.dim(` ${t("card.skipped", { rows: plural(recipe.skippedRows, "row") })}`) : ""}` +
+						`${recipe.sealedReserved > 0 ? paint.dim(` ${t("card.already-sealed", { count: recipe.sealedReserved })}`) : ""}`,
 					...renderDatasetCases(shown, paint),
 				);
 				if (recipe.sampleCases.length > shown.length) {
-					lines.push(`  ${paint.dim(`… +${recipe.sampleCases.length - shown.length} more sample cases`)}`);
+					lines.push(`  ${paint.dim(t("card.more-samples", { count: recipe.sampleCases.length - shown.length }))}`);
 				}
 				return card(lines);
 			}
@@ -109,7 +109,7 @@ const WORKBENCH_TOOL_RENDERERS = {
 					if (value === null || value === undefined) continue;
 					lines.push(`  ${paint.dim(key)} ${oneLine(typeof value === "string" ? value : JSON.stringify(value), 120)}`);
 				}
-				lines.push(`  ${paint.dim("Next")} ${nextStep(details.view)}`);
+				lines.push(`  ${paint.dim(t("label.next"))} ${nextStep(details.view)}`);
 			}
 			return card(lines);
 		},
@@ -117,13 +117,13 @@ const WORKBENCH_TOOL_RENDERERS = {
 	decide: {
 		renderCall(args: { kind?: string; reason?: string }, theme: Theme): Component {
 			const paint = themePaint(theme);
-			return card([`${paint.accent("AHDE")} ${paint.dim("decide")} ${paint.bold(args.kind ?? "decision")}${args.reason ? ` ${paint.dim(`— ${oneLine(args.reason, 100)}`)}` : ""}`]);
+			return card([`${paint.accent("AHDE")} ${paint.dim(`· ${t("card.decide")}`)} ${paint.bold(args.kind ?? "decision")}${args.reason ? ` ${paint.dim(`— ${oneLine(args.reason, 100)}`)}` : ""}`]);
 		},
 		renderResult(details: unknown, expanded: boolean, theme: Theme): Component {
 			const paint = themePaint(theme);
-			if (!isWorkbenchDecision(details)) return card([paint.muted("Workbench decision")]);
+			if (!isWorkbenchDecision(details)) return card([paint.muted(t("card.unreadable.decide"))]);
 			if (!expanded) {
-				return card([`${paint.success("✓")} ${decisionHeadline(details)} ${paint.dim(`· now ${stageLabel(details.view.stage)}`)}`]);
+				return card([`${paint.success("✓")} ${decisionHeadline(details)} ${paint.dim(`· ${t("card.now", { stage: stageLabel(details.view.stage) })}`)}`]);
 			}
 			return card(renderDecision(details, paint));
 		},
@@ -445,7 +445,7 @@ export function createBuilderWorkbenchTools(
 					if (!view.target.model?.credentialPresent) throw new Error("the agent model credential is not available in this host environment");
 					await options.onTalkToTarget();
 					try {
-						ctx.ui.notify("Opening the agent conversation… Exit it to return to Builder.", "info");
+						ctx.ui.notify(t("card.opening-agent"), "info");
 					} catch {
 						// Handoff still proceeds when the notification surface is unavailable.
 					}
@@ -561,7 +561,7 @@ export function createBuilderWorkbenchTools(
 					if (observation?.liveTraceUrl) {
 						try {
 							ctx.ui.notify(
-								`Live trace retained for 15 minutes: ${observation.liveTraceUrl}`,
+								t("card.live-trace-retained", { url: observation.liveTraceUrl }),
 								"info",
 							);
 						} catch {
