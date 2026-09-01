@@ -38,6 +38,8 @@ older step is still there, one at a time.
 /ship <version>         ship the verified candidate: promote, adopt, next cycle
 
 /status                 where you are and what to say next
+/plan                   the whole cycle as a checklist: done, current, still ahead
+/jobs  /stop            the background measurement, and how to cancel it
 /review                 the exact Spec, eval basket, diff, or candidate — with its actions
 /traces [rows]          diagnosis, failure modes, the evidence link, and the runs table
 /trace <n|next|prev>    one run: why it failed, every verdict, and the conversation

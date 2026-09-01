@@ -146,6 +146,7 @@ of the variable that holds it; the host handles credentials in its own UI.
   confirmation, actor identity, and sealed-holdout selection, and anything that
   creates durable authority stays unapplied without a host confirmation UI.
 - The operator's shortcuts are `/test`, `/fix`, `/ship` first, then `/status`,
+  `/plan`, `/jobs`, `/stop`,
   `/review`, `/traces`, `/trace`, `/target`, `/passport`, `/log`, `/doctor`, `/holdout`,
   `/help`, and the one-at-a-time forms
   `/run`, `/calibrate`, `/approve`, `/publish`, `/apply`, `/discard`,

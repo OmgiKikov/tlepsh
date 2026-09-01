@@ -96,6 +96,11 @@ function boundedLines(lines: readonly string[]): string[] {
 	return bounded;
 }
 
+/** One flat, bounded line for the visible half of an injection. */
+function oneLineLabel(label: string): string {
+	return stripMarkers(sanitizeTerminalText(label)).replace(/\s+/g, " ").trim().slice(0, 200);
+}
+
 function toneFor(paint: Paint, tone: TranscriptTone): (text: string) => string {
 	switch (tone) {
 		case "success": return paint.success;
@@ -108,8 +113,10 @@ function toneFor(paint: Paint, tone: TranscriptTone): (text: string) => string {
 /** Theme-aware component for one persisted AHDE transcript entry. */
 export function renderTranscriptEntry(entry: TranscriptEntry, theme: Pick<Theme, "fg" | "bold">): Text {
 	const paint = themePaint(theme);
-	const title = paint.bold(toneFor(paint, entry.tone)(`◆ ${entry.title}`));
 	const body = entry.lines.map((line) => `  ${applyPaint(line, paint)}`);
+	// A titleless entry is the one-line form: an injection notice, not a panel.
+	if (entry.title === "") return new Text(body.join("\n"), 0, 0);
+	const title = paint.bold(toneFor(paint, entry.tone)(`◆ ${entry.title}`));
 	return new Text([title, ...body].join("\n"), 0, 0);
 }
 
@@ -140,8 +147,12 @@ export interface TranscriptHost {
 export interface TranscriptPresenter {
 	/** Show a human block. Falls back to a notification when the host has no transcript entries. */
 	show(ctx: Pick<ExtensionContext, "ui">, block: { title: string; tone?: TranscriptTone; lines: string[] }): void;
-	/** Tell the Builder model, without showing anything, what the operator did outside the conversation. */
-	note(text: string, options?: { triggerTurn?: boolean }): void;
+	/**
+	 * Tell the Builder model what the operator did outside the conversation. The
+	 * text itself stays hidden; `label` is the one dim line the operator sees, so
+	 * that nothing is ever put into the Builder's head invisibly.
+	 */
+	note(text: string, options?: { triggerTurn?: boolean; label?: string }): void;
 }
 
 /**
@@ -169,6 +180,22 @@ export function createTranscriptPresenter(pi: TranscriptHost): TranscriptPresent
 			);
 		},
 		note(text, options) {
+			// What the model is told is visible as one dim line: an injection the
+			// operator cannot see is an injection they cannot argue with.
+			const label = options?.label;
+			if (label && typeof pi.appendEntry === "function") {
+				try {
+					const entry: TranscriptEntry = {
+						schemaVersion: 1,
+						title: "",
+						tone: "info",
+						lines: boundedLines([markerPaint.dim(`✎ ${oneLineLabel(label)}`)]),
+					};
+					pi.appendEntry(AHDE_TRANSCRIPT_ENTRY_TYPE, entry);
+				} catch {
+					// The visible half is a courtesy; the note itself still goes.
+				}
+			}
 			if (typeof pi.sendMessage !== "function") return;
 			try {
 				pi.sendMessage(
