@@ -222,10 +222,12 @@ import {
 	proposalReview,
 	requireApprovedSpec,
 	requireCandidate,
+	evaluationProjection,
 	requireCorpusDraft,
 	requireDevelopmentCorpus,
 	requireDevelopmentEval,
 	requireProposal,
+	requireReadableDevelopmentEval,
 	requireSpecDraft,
 	resolveOne,
 } from "./resolution.js";
@@ -2394,7 +2396,10 @@ export class AhdeWorkbench {
 			return { ...view, detail: { aspect, content: { sourcePath, preview } } };
 		}
 		if (aspect === "traces") {
-			const run = requireDevelopmentEval(inventory);
+			// Reading is not deciding: the run the operator just watched stays
+			// readable after the Target moves. `requireDevelopmentEval` keeps the
+			// strict set for everything that authors or promotes.
+			const run = requireReadableDevelopmentEval(inventory);
 			const diagnosis = this.dependencies.diagnoseEval(this.runsRoot, run.evalRunId);
 			const improvementBrief = this.dependencies.compileImprovementBrief(this.runsRoot, diagnosis);
 			const link = boundedEvidenceLink(await this.dependencies.evidenceLink(run));
@@ -2403,7 +2408,7 @@ export class AhdeWorkbench {
 				detail: {
 					aspect,
 					content: {
-						evaluation: { evalRunId: run.evalRunId, summary: run.summary, repetitions: run.repetitions },
+						evaluation: evaluationProjection(run, inventory.corpora),
 						diagnosis: diagnosisSummary(diagnosis),
 						improvementBrief: conversationalImprovementBrief(improvementBrief),
 						evidence: link ? { available: true, ...link } : { available: false },
@@ -3320,7 +3325,7 @@ export class AhdeWorkbench {
 			const improvementBrief = this.dependencies.compileImprovementBrief(this.runsRoot, diagnosis);
 			const link = boundedEvidenceLink(await this.dependencies.evidenceLink(record));
 			const settled = this.select("eval-run", record.evalRunId);
-			return { kind: input.kind, message: improvementBrief.headline, result: { evaluation: { evalRunId: record.evalRunId, summary: record.summary, repetitions: record.repetitions }, diagnosis: diagnosisSummary(diagnosis), improvementBrief: conversationalImprovementBrief(improvementBrief), evidence: link ? { available: true, ...link } : { available: false } }, view: await this.viewOf(settled) };
+			return { kind: input.kind, message: improvementBrief.headline, result: { evaluation: evaluationProjection(record, inventory.corpora), diagnosis: diagnosisSummary(diagnosis), improvementBrief: conversationalImprovementBrief(improvementBrief), evidence: link ? { available: true, ...link } : { available: false } }, view: await this.viewOf(settled) };
 		}
 
 		if (input.kind === "calibrate") {

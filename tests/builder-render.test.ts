@@ -258,6 +258,9 @@ function makeTraces(
 			evalRunId: "eval-1",
 			summary: { total: 10, pass: 6, fail: 4, error: 0, allPassRate: 0.6 },
 			repetitions: 1,
+			finishedAt: "2026-09-01T09:00:07.000Z",
+			targetGitSha: "4d533f07030f0a4b1c2d3e4f5a6b7c8d9e0f1a2b",
+			corpus: { name: "Ombudsman basket", taskCount: 10 },
 		},
 		diagnosis: {
 			diagnosisId: "diag-1",
@@ -1077,28 +1080,31 @@ describe("renderTraces", () => {
 	it("summarises the evaluation with a pass bar and lists the diagnosis", () => {
 		const lines = renderTraces(makeTraces(), plainPaint);
 		expect(lines[0]).toBe("Evaluation 6/10 passed ██████████░░░░░░ 60% · 4 failed · 0 errors · 1 repetition · eval-1");
-		expect(lines[1]).toBe("Diagnosis actionable · One systemic failure mode blocks 4 of 10 cases");
-		expect(lines[2]).toBe("Failure modes 1 systemic · 0 task-local");
-		expect(lines[3]).toBe("  1. Agent skips the lookup tool — 4 tasks (40% · reproduces 80%)");
-		expect(lines[4]).toBe("     systemic · major · evidence high · → propose fix");
-		expect(lines[5]).toBe("     Hypothesis: The instructions never mention the lookup tool.");
-		expect(lines[6]).toBe("     suggest: Mention the lookup tool in the instructions");
-		expect(lines[7]).toBe("Evidence http://127.0.0.1:4310/evidence/eval-1");
-		expect(lines[8]).toBe("Next say “fix the first problem” (or name a mode) to prepare an exact proposal");
-		expect(lines).toHaveLength(9);
+		// Which run the operator is reading: id, when, the revision it measured, the basket.
+		expect(lines[1]).toBe("Showing eval-1 · 2026-09-01 09:00:07Z · revision 4d533f0703 · Ombudsman basket · 10 cases");
+		expect(lines[2]).toBe("Diagnosis actionable · One systemic failure mode blocks 4 of 10 cases");
+		expect(lines[3]).toBe("Failure modes 1 systemic · 0 task-local");
+		expect(lines[4]).toBe("  1. Agent skips the lookup tool — 4 tasks (40% · reproduces 80%)");
+		expect(lines[5]).toBe("     systemic · major · evidence high · → propose fix");
+		expect(lines[6]).toBe("     Hypothesis: The instructions never mention the lookup tool.");
+		expect(lines[7]).toBe("     suggest: Mention the lookup tool in the instructions");
+		expect(lines[8]).toBe("Evidence http://127.0.0.1:4310/evidence/eval-1");
+		expect(lines[9]).toBe("Next say “fix the first problem” (or name a mode) to prepare an exact proposal");
+		expect(lines).toHaveLength(10);
 	});
 
 	it("tones the summary by errors and failures", () => {
 		const errors = renderTraces(makeTraces({}, {
-			evaluation: { evalRunId: "eval-2", summary: { total: 10, pass: 7, fail: 2, error: 1, allPassRate: 0.7 }, repetitions: 2 },
+			evaluation: { evalRunId: "eval-2", summary: { total: 10, pass: 7, fail: 2, error: 1, allPassRate: 0.7 }, repetitions: 2, finishedAt: "2026-09-01T09:00:07.000Z", targetGitSha: "4d533f07030f0a4b1c2d3e4f5a6b7c8d9e0f1a2b", corpus: null },
 		}), tagPaint);
 		expect(errors[0]).toContain("<warning><bold>7/10 passed</bold></warning>");
 		expect(errors[0]).toContain("<error>2 failed</error>");
 		expect(errors[0]).toContain("<warning>1 errors</warning>");
 		expect(errors[0]).toContain("<dim>· 2 repetitions · eval-2</dim>");
 		const perfect = renderTraces(makeTraces({}, {
-			evaluation: { evalRunId: "eval-3", summary: { total: 4, pass: 4, fail: 0, error: 0, allPassRate: 1 }, repetitions: 1 },
+			evaluation: { evalRunId: "eval-3", summary: { total: 4, pass: 4, fail: 0, error: 0, allPassRate: 1 }, repetitions: 1, finishedAt: "2026-09-01T09:00:07.000Z", targetGitSha: "4d533f07030f0a4b1c2d3e4f5a6b7c8d9e0f1a2b", corpus: null },
 		}), tagPaint);
+		expect(perfect[1]).toContain("its basket is no longer published");
 		expect(perfect[0]).toContain("<success><bold>4/4 passed</bold></success>");
 		expect(perfect[0]).toContain("<muted>0 failed</muted>");
 		expect(perfect[0]).toContain("<muted>0 errors</muted>");

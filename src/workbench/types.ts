@@ -255,6 +255,10 @@ export interface WorkbenchEvaluationProjection {
 	evalRunId: string;
 	summary: EvalRunSummary;
 	repetitions: number;
+	/** When it finished, the exact revision it measured, and the basket it ran. */
+	finishedAt: string;
+	targetGitSha: string;
+	corpus: { name: string; taskCount: number } | null;
 }
 
 /** Bounded candidate impact projection or the exact reason it is unavailable. */

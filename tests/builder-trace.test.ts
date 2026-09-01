@@ -17,6 +17,16 @@ import {
 import type { TranscriptPresenter, TranscriptTone } from "../src/builder/transcript.js";
 import { EvidenceNotFound } from "../src/evidence/model.js";
 import type { EvalPageModel, RunDetailPageModel } from "../src/evidence/pages.js";
+import type { CorpusMetadata } from "../src/corpus.js";
+import type { EvalRunRecord } from "../src/eval.js";
+import type { WorkbenchInventory } from "../src/workbench/inventory.js";
+import { WorkbenchSelectionRequiredError } from "../src/workbench/errors.js";
+import {
+	compatibleDevelopmentEvals,
+	evaluationProjection,
+	readableDevelopmentEvals,
+	requireReadableDevelopmentEval,
+} from "../src/workbench/resolution.js";
 
 type Registered = { description: string; handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> };
 type Options = Parameters<typeof registerAhdeBuilderCommands>[1];
@@ -120,7 +130,7 @@ function detail(runId: string, taskId: string, repetitionIndex: number, outcome:
 	} as unknown as RunDetailPageModel;
 }
 
-function harness(evidence: NonNullable<Options["evidence"]>) {
+function harness(evidence: NonNullable<Options["evidence"]>, view?: () => Promise<unknown>) {
 	const registered = new Map<string, Registered>();
 	const pi = {
 		registerCommand(name: string, options: Registered) {
@@ -144,7 +154,7 @@ function harness(evidence: NonNullable<Options["evidence"]>) {
 		detail: { aspect: "traces", content: { evaluation: { evalRunId: "erun_1", repetitions: 2 } } },
 	};
 	const workbench = {
-		view: vi.fn(async () => tracesView),
+		view: view ?? vi.fn(async () => tracesView),
 		decide: vi.fn(),
 		projectDir: "/tmp/agent",
 		stateRoot: "/tmp/agent/.ahde",
@@ -271,6 +281,99 @@ describe("traces in the TUI", () => {
 		await h.command("trace").handler("1", h.ctx);
 		expect(h.blocks.map((block) => [block.title, block.tone])).toEqual([["AHDE · Trace", "warning"]]);
 		expect(h.text()).toContain("This run cannot be opened here: run run_fail1 does not name an eval run");
+		expect(h.notes).toHaveLength(0);
+	});
+});
+
+/**
+ * Reading evidence is not deciding on it. A commit in the Target — and the
+ * Builder asks for one before it opens a workshop — used to make every past
+ * run "incompatible", so `/traces` and `/trace` died on the run the operator
+ * had just watched finish.
+ */
+describe("traces resolve as history", () => {
+	const lineage = {
+		publication: { approvedSpecId: "spec-1", draftId: "draft-1" },
+		datasetHash: "sha256:dataset",
+		currentSuiteHash: "sha256:suite",
+		currentTargetGitSha: "b".repeat(40),
+	};
+
+	function evalRun(id: string, over: Partial<EvalRunRecord> = {}): EvalRunRecord {
+		return {
+			evalRunId: id,
+			target: { id: "ombudsman", gitSha: "a".repeat(40) },
+			datasetHash: "sha256:dataset",
+			suiteHash: "sha256:suite",
+			repetitions: 3,
+			startedAt: `2026-09-01T09:0${id.at(-1)}:00.000Z`,
+			finishedAt: `2026-09-01T09:0${id.at(-1)}:07.000Z`,
+			summary: { total: 18, pass: 4, fail: 14, error: 0, allPassRate: 4 / 18 },
+			...over,
+		} as EvalRunRecord;
+	}
+
+	// Newest first, exactly as the inventory hands them over.
+	function inventory(runs: readonly EvalRunRecord[], focusEvalRunId?: string): WorkbenchInventory {
+		return {
+			target: { manifest: { id: "ombudsman" } },
+			specs: [{ id: "spec-1", status: "approved" }],
+			verifiedApprovedSpecIds: new Set(["spec-1"]),
+			corpora: [{ id: "corpus-1", name: "Ombudsman basket", visibility: "development", taskCount: 6, hash: "sha256:dataset" }],
+			developmentLineage: new Map([["corpus-1", lineage]]),
+			developmentEvals: [...runs],
+			validFocus: focusEvalRunId ? { "eval-run": { id: focusEvalRunId } } : {},
+		} as unknown as WorkbenchInventory;
+	}
+
+	it("keeps the last run readable after the Target revision moves, and after it errored", () => {
+		const newest = evalRun("erun_2", { summary: { total: 18, pass: 0, fail: 15, error: 3, allPassRate: 0 } as EvalRunRecord["summary"] });
+		const state = inventory([newest, evalRun("erun_1")]);
+
+		// The strict set — what a proposal must be argued from — stays empty.
+		expect(compatibleDevelopmentEvals(state)).toEqual([]);
+		expect(readableDevelopmentEvals(state).map((run) => run.evalRunId)).toEqual(["erun_2", "erun_1"]);
+		expect(requireReadableDevelopmentEval(state).evalRunId).toBe("erun_2");
+	});
+
+	it("prefers the named run, then the focused one, and says so when there is none", () => {
+		const state = inventory([evalRun("erun_2"), evalRun("erun_1")], "erun_1");
+		expect(requireReadableDevelopmentEval(state).evalRunId).toBe("erun_1");
+		expect(requireReadableDevelopmentEval(state, "erun_2").evalRunId).toBe("erun_2");
+		expect(() => requireReadableDevelopmentEval(state, "erun_9")).toThrow(WorkbenchSelectionRequiredError);
+		expect(() => requireReadableDevelopmentEval(inventory([]))).toThrow(/No compatible development EvalRun/);
+	});
+
+	it("never reads a run of another basket than the approved Spec published", () => {
+		const foreign = evalRun("erun_3", { datasetHash: "sha256:other" });
+		expect(readableDevelopmentEvals(inventory([foreign])).map((run) => run.evalRunId)).toEqual([]);
+	});
+
+	it("names the run it shows: id, when, revision, basket", () => {
+		const projection = evaluationProjection(evalRun("erun_2"), [
+			{ id: "corpus-1", name: "Ombudsman basket", visibility: "development", taskCount: 6, hash: "sha256:dataset" },
+		] as unknown as CorpusMetadata[]);
+		expect(projection).toMatchObject({
+			evalRunId: "erun_2",
+			finishedAt: "2026-09-01T09:02:07.000Z",
+			targetGitSha: "a".repeat(40),
+			corpus: { name: "Ombudsman basket", taskCount: 6 },
+		});
+	});
+
+	it("shows a calm panel instead of a raw refusal when nothing has been run yet", async () => {
+		const h = harness(
+			{ evalPage: () => page, runDetail: () => detail("run_fail1", "task_006", 0, "fail") },
+			async () => {
+				throw new WorkbenchSelectionRequiredError("development EvalRun", []);
+			},
+		);
+		for (const name of ["traces", "trace"]) await h.command(name).handler("", h.ctx);
+		expect(h.blocks.map((block) => [block.title, block.tone])).toEqual([
+			["AHDE · Runs", "info"],
+			["AHDE · Runs", "info"],
+		]);
+		expect(h.text()).toContain("No runs yet — say “test” and I will run the basket.");
 		expect(h.notes).toHaveLength(0);
 	});
 });

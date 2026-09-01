@@ -28,6 +28,7 @@ import type {
 import type {
 	WorkbenchCandidateSummary,
 	WorkbenchDiagnosisSummary,
+	WorkbenchEvaluationProjection,
 	WorkbenchGateProjection,
 	WorkbenchProposalReview,
 } from "./types.js";
@@ -325,19 +326,24 @@ export function requireDevelopmentCorpus(
 	});
 }
 
+/** The approved Spec a read or a decision is about: explicit, focused, or the only one. */
+function chosenApprovedSpecId(inventory: WorkbenchInventory, explicitId?: string): string | null {
+	const approved = inventory.specs.filter((spec) =>
+		spec.status === "approved" && inventory.verifiedApprovedSpecIds.has(spec.id)
+	);
+	const focused = inventory.validFocus["approved-spec"]?.id;
+	return explicitId ?? (focused && approved.some((spec) => spec.id === focused)
+		? focused
+		: approved.length === 1 ? approved[0]!.id : null);
+}
+
 export function compatibleDevelopmentEvals(
 	inventory: WorkbenchInventory,
 	explicitApprovedSpecId?: string,
 	explicitCorpusId?: string,
 ): EvalRunRecord[] {
 	if (!inventory.target) return [];
-	const approved = inventory.specs.filter((spec) =>
-		spec.status === "approved" && inventory.verifiedApprovedSpecIds.has(spec.id)
-	);
-	const focusedSpec = inventory.validFocus["approved-spec"]?.id;
-	const approvedSpecId = explicitApprovedSpecId ?? (focusedSpec && approved.some((spec) => spec.id === focusedSpec)
-		? focusedSpec
-		: approved.length === 1 ? approved[0]!.id : null);
+	const approvedSpecId = chosenApprovedSpecId(inventory, explicitApprovedSpecId);
 	if (!approvedSpecId) return [];
 	const compatibleCorpora = inventory.corpora.filter((corpus) =>
 		corpus.visibility === "development" &&
@@ -372,6 +378,71 @@ export function requireDevelopmentEval(
 		id: (run) => run.evalRunId,
 		label: "development EvalRun",
 	});
+}
+
+/**
+ * Evidence to READ, which is a different question from evidence to DECIDE on.
+ *
+ * `compatibleDevelopmentEvals` demands the run's revision, suite and dataset
+ * still match the Target's head, because a proposal may only be argued from a
+ * run of the revision it changes. History owes nothing of the sort: one commit
+ * in the Target — and the Builder asks for one before it opens a workshop —
+ * would otherwise hide every trace the operator had just watched being made.
+ * So the only rule left here is that the run measured a published development
+ * corpus of the approved Spec; a moved revision and recorded errors stay.
+ */
+export function readableDevelopmentEvals(
+	inventory: WorkbenchInventory,
+	explicitApprovedSpecId?: string,
+): EvalRunRecord[] {
+	if (!inventory.target) return [];
+	const approvedSpecId = chosenApprovedSpecId(inventory, explicitApprovedSpecId);
+	if (!approvedSpecId) return [];
+	const published = new Set(
+		[...inventory.developmentLineage.values()]
+			.filter((lineage) => lineage.publication.approvedSpecId === approvedSpecId)
+			.map((lineage) => lineage.datasetHash),
+	);
+	// `developmentEvals` already arrives newest first.
+	return inventory.developmentEvals.filter((run) =>
+		run.target.id === inventory.target!.manifest.id && published.has(run.datasetHash)
+	);
+}
+
+/** The run `/traces` and `/trace` show: the one named, else the focused one, else the newest. */
+export function requireReadableDevelopmentEval(
+	inventory: WorkbenchInventory,
+	explicitId?: string,
+): EvalRunRecord {
+	const items = readableDevelopmentEvals(inventory);
+	const ids = items.map((run) => run.evalRunId);
+	if (explicitId) {
+		const exact = items.find((run) => run.evalRunId === explicitId);
+		if (!exact) throw new WorkbenchSelectionRequiredError("development EvalRun", ids);
+		return exact;
+	}
+	const focusId = inventory.validFocus["eval-run"]?.id;
+	const chosen = items.find((run) => run.evalRunId === focusId) ?? items[0];
+	// Several readable runs are never ambiguous — the newest one is the answer —
+	// so the only refusal left is a project that has not measured anything yet.
+	if (!chosen) throw new WorkbenchSelectionRequiredError("development EvalRun", []);
+	return chosen;
+}
+
+/** Which evaluation this is, for a reader who did not launch it. */
+export function evaluationProjection(
+	run: EvalRunRecord,
+	corpora: readonly CorpusMetadata[],
+): WorkbenchEvaluationProjection {
+	const corpus = corpora.find((item) => item.hash === run.datasetHash);
+	return {
+		evalRunId: run.evalRunId,
+		summary: run.summary,
+		repetitions: run.repetitions,
+		finishedAt: run.finishedAt,
+		targetGitSha: run.target.gitSha,
+		corpus: corpus ? { name: corpus.name, taskCount: corpus.taskCount } : null,
+	};
 }
 
 export function requireProposal(

@@ -518,8 +518,18 @@ export function renderEvaluationSummary(
 /** Diagnosis screen shared by /traces and the post-run summary. */
 export function renderTraces(content: WorkbenchTracesDetail, paint: Paint): string[] {
 	const brief = content.improvementBrief;
+	const evaluation = content.evaluation;
 	const lines = [
-		`${section(t("section.evaluation"), paint)} ${renderEvaluationSummary(content.evaluation, paint)}`,
+		`${section(t("section.evaluation"), paint)} ${renderEvaluationSummary(evaluation, paint)}`,
+		// Which run this is. The Target moves under the operator, so a screen that
+		// only said "the diagnosis" left them guessing which measurement they read.
+		`${paint.dim(t("traces.showing"))} ${paint.bold(evaluation.evalRunId)} ${paint.dim(
+			`· ${when(evaluation.finishedAt)} · ${t("label.revision").toLowerCase()} ${shortSha(evaluation.targetGitSha)} · ${
+				evaluation.corpus
+					? `${oneLine(evaluation.corpus.name, 50)} · ${plural(evaluation.corpus.taskCount, "case")}`
+					: t("traces.basketGone")
+			}`,
+		)}`,
 	];
 	const status = brief.status === "actionable"
 		? paint.success("actionable")

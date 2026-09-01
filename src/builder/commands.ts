@@ -15,6 +15,7 @@ import type {
 	WorkbenchDecisionInput,
 	WorkbenchDecisionResult,
 	WorkbenchStartTestingResult,
+	WorkbenchTracesDetail,
 	WorkbenchVerifyCandidateResult,
 	WorkbenchView,
 } from "../workbench/types.js";
@@ -410,6 +411,27 @@ export function registerAhdeBuilderCommands(
 			// The table is a convenience over the same evidence the link opens; when
 			// the runs cannot be read here, the diagnosis and its link stand alone.
 		}
+	};
+
+	/**
+	 * The evidence both /traces and /trace read. A project that has measured
+	 * nothing yet is not an error — it is a sentence — so the one refusal the
+	 * Workbench still raises here becomes the panel that says what to do next.
+	 */
+	const tracesDetail = async (ctx: ExtensionCommandContext): Promise<WorkbenchTracesDetail | null> => {
+		let view: WorkbenchView;
+		try {
+			view = await workbench.view({ aspect: "traces" });
+		} catch (error) {
+			if (!(error instanceof WorkbenchSelectionRequiredError)) throw error;
+			presenter.show(ctx, { title: t("panel.title", { detail: t("panel.runs") }), tone: "info", lines: [t("trace.noRuns")] });
+			return null;
+		}
+		if (view.detail?.aspect !== "traces") {
+			presenter.show(ctx, { title: viewTitle(view), tone: "warning", lines: renderStatus(view, markerPaint) });
+			return null;
+		}
+		return view.detail.content;
 	};
 
 	const gate = (ctx: ExtensionCommandContext) => createPolicyAwareGate(
@@ -1154,14 +1176,11 @@ export function registerAhdeBuilderCommands(
 			const rowsWanted = args.trim();
 			if (rowsWanted && !/^\d{1,2}$/.test(rowsWanted)) throw new Error("/traces accepts a row count, for example /traces 30");
 			const signal = await prepare(ctx, "traces");
-			const view = await workbench.view({ aspect: "traces" });
-			if (view.detail?.aspect !== "traces") {
-				presenter.show(ctx, { title: viewTitle(view), tone: "warning", lines: renderStatus(view, markerPaint) });
-				return;
-			}
-			presenter.show(ctx, { title: t("panel.title", { detail: t("panel.diagnosis") }), tone: "info", lines: renderTraces(view.detail.content, markerPaint) });
-			showRunsTable(ctx, view.detail.content.evaluation.evalRunId, rowsWanted ? Number(rowsWanted) : DEFAULT_TRACE_TABLE_ROWS);
-			const modes = view.detail.content.improvementBrief.modes.filter((mode) => mode.selectableForProposal);
+			const content = await tracesDetail(ctx);
+			if (!content) return;
+			presenter.show(ctx, { title: t("panel.title", { detail: t("panel.diagnosis") }), tone: "info", lines: renderTraces(content, markerPaint) });
+			showRunsTable(ctx, content.evaluation.evalRunId, rowsWanted ? Number(rowsWanted) : DEFAULT_TRACE_TABLE_ROWS);
+			const modes = content.improvementBrief.modes.filter((mode) => mode.selectableForProposal);
 			if (modes.length > 0 && options.sendUserMessage && typeof ctx.ui.select === "function") {
 				const choices = modes.slice(0, 5).map((mode) => `Fix ${mode.ordinal}: ${oneLine(mode.title, 60)}`);
 				const selected = await ctx.ui.select("Prepare a proposal?", [...choices, "Not now"], { signal });
@@ -1304,12 +1323,9 @@ export function registerAhdeBuilderCommands(
 		description: "Open one run: why it failed, every grader's verdict, the conversation: /trace <row|next|prev|task id|run id>",
 		async handler(args, ctx) {
 			await prepare(ctx, "trace");
-			const view = await workbench.view({ aspect: "traces" });
-			if (view.detail?.aspect !== "traces") {
-				presenter.show(ctx, { title: viewTitle(view), tone: "warning", lines: renderStatus(view, markerPaint) });
-				return;
-			}
-			const evalRunId = view.detail.content.evaluation.evalRunId;
+			const content = await tracesDetail(ctx);
+			if (!content) return;
+			const evalRunId = content.evaluation.evalRunId;
 			let page: EvalPageModel;
 			try {
 				page = evidence.evalPage(workbench.runsRoot, evalRunId);
