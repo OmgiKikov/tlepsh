@@ -419,6 +419,35 @@ export function classifyTargetAuthoringResourcePath(path: string): {
 	return null;
 }
 
+/**
+ * Why one path is not a canonical Harness resource, in the words of the rule it
+ * broke. These sentences live directly beneath the expressions that enforce
+ * them so the two cannot drift apart: a refusal that names only the path
+ * ("noncanonical resource: skills/bank_knowledge/SKILL.md") leaves the Builder
+ * guessing, and the guess that followed the live one deleted the file.
+ */
+export function explainTargetAuthoringResourcePath(path: string): string {
+	if (path.startsWith("skills/")) {
+		const suggested = (path.split("/")[1] ?? "")
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, "-")
+			.replace(/^-+|-+$/g, "");
+		return "a skill is skills/<name>/SKILL.md with <name> in lowercase kebab-case" +
+			`${suggested ? ` (skills/${suggested}/SKILL.md)` : ""}, and the file is spelled exactly SKILL.md`;
+	}
+	if (path.startsWith("tools/")) {
+		return "a tool is tools/<name>/tool.yaml with tools/<name>/run beside it, or a single " +
+			"tools/<name>.tool.yaml, where <name> matches [a-z][a-z0-9_]*";
+	}
+	if (path.startsWith("bin/")) return "a tool executable is bin/<name>, where <name> matches [a-z][a-z0-9_]*";
+	if (path.startsWith("data/")) {
+		return "a data path is data/<name>/… with every segment starting with a lowercase letter or digit " +
+			"and holding only lowercase letters, digits, `.`, `-` or `_`";
+	}
+	if (path.toLowerCase() === "agents.md") return "the instructions file is spelled exactly AGENTS.md";
+	return "a Harness holds only AGENTS.md, skills/<name>/SKILL.md, tools/<name>/…, bin/<name> and data/<name>/…";
+}
+
 function expectedToolResourceCount(tool: TargetAuthoringToolDeclaration): number {
 	return tool.layout === "single-file" ? 2 : tool.fileCount;
 }

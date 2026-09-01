@@ -30,6 +30,7 @@ import { canonicalJson } from "../provenance.js";
 import {
 	assertTargetAuthoringSurfaceWithinLimits,
 	classifyTargetAuthoringResourcePath,
+	explainTargetAuthoringResourcePath,
 	inspectTargetAuthoringContext,
 	type TargetAuthoringDataDirectory,
 	type TargetAuthoringResource,
@@ -921,7 +922,7 @@ export function compileHarnessAuthoringProposal(
 		}
 		const identity = classifyTargetAuthoringResourcePath(file.path);
 		if (!identity || !file.afterMode || !identity.modes.includes(file.afterMode)) {
-			throw new Error(`compiled authoring resource is not canonical: ${file.path}`);
+			throw new Error(`compiled authoring resource is not canonical: ${file.path} — ${explainTargetAuthoringResourcePath(file.path)}`);
 		}
 		const bytes = Buffer.byteLength(file.after, "utf8");
 		resultingResources.set(file.path, {

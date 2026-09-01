@@ -188,6 +188,17 @@ function writeLookupTool(workshop: BuilderWorkshop, answer = "authored"): void {
 	workshop.write({ path: "tools/lookup/lib.sh", content: `ANSWER=${answer}\n` });
 }
 
+/** Does this host's filesystem tell `A.md` and `a.md` apart? */
+function caseSensitive(dir: string): boolean {
+	const probe = join(dir, "AhdeCaseProbe");
+	writeFileSync(probe, "", "utf8");
+	try {
+		return !existsSync(join(dir, "ahdecaseprobe"));
+	} finally {
+		rmSync(probe, { force: true });
+	}
+}
+
 describe("a workshop writes only inside its own worktree", () => {
 	it("keeps the operator's checkout byte-identical and leaves no worktree behind", () => {
 		const dir = fixture();
@@ -343,6 +354,23 @@ describe("a workshop refuses every path outside the Harness scope", () => {
 			workshop.dispose();
 		}
 	});
+	it("names the rule, not just the path, when a resource is not canonical", () => {
+		const dir = fixture();
+		const workshop = open(dir);
+		try {
+			workshop.write({ path: "skills/bank_knowledge/SKILL.md", content: "# Bank knowledge\n\nDeposits and fees.\n" });
+			// The live refusal said only the path. The Builder guessed "lowercase",
+			// renamed the file instead of the directory, and lost the skill.
+			expect(() => workshop.compile({ summary: "A knowledge base" }))
+				.toThrow(/skills\/bank_knowledge\/SKILL\.md — a skill is skills\/<name>\/SKILL\.md with <name> in lowercase kebab-case \(skills\/bank-knowledge\/SKILL\.md\)/);
+			workshop.write({ path: "skills/bank_knowledge/SKILL.md", remove: true });
+			workshop.write({ path: "skills/bank-knowledge/SKILL.md", content: "# Bank knowledge\n\nDeposits and fees.\n" });
+			expect(workshop.compile({ summary: "A knowledge base" }).changes.map((change) => change.path))
+				.toEqual(["manifest.yaml", "skills/bank-knowledge/SKILL.md"]);
+		} finally {
+			workshop.dispose();
+		}
+	}, 120_000);
 });
 
 describe("the workshop shell", () => {
@@ -380,6 +408,83 @@ describe("the workshop shell", () => {
 			// And it is a command, not a shell string the host interpolates.
 			await expect(workshop.bash({ argv: ["../../../bin/sh"] })).rejects.toThrow(/bare PATH command/);
 			await expect(workshop.bash({ argv: ["sh", "-c", "true"], cwd: "evals" })).rejects.toThrow(/workshop scope refuses evals/);
+		} finally {
+			workshop.dispose();
+		}
+	}, 120_000);
+
+	it("keeps a file a command renamed by letter case alone", async () => {
+		const dir = fixture();
+		const workshop = open(dir);
+		try {
+			workshop.write({ path: "skills/bank_knowledge/SKILL.md", content: "# Bank knowledge\n\nDeposits, credits, fees.\n" });
+			let renamed;
+			try {
+				renamed = await workshop.bash({ argv: ["sh", "-c", "mv skills/bank_knowledge/SKILL.md skills/bank_knowledge/skill.md"] });
+			} catch (error) {
+				if (sandboxUnavailable(error)) return;
+				throw error;
+			}
+			expect(renamed.exitCode).toBe(0);
+			// Where letter case folds, the produced `skill.md` and the removed
+			// `SKILL.md` are the same file: writing before removing deleted the very
+			// file the command had just renamed, and the skill left the proposal.
+			expect(readFileSync(join(workshop.path, "skills/bank_knowledge/skill.md"), "utf8")).toContain("Bank knowledge");
+			expect(workshop.changes().map((change) => change.path)).toContain("skills/bank_knowledge/skill.md");
+		} finally {
+			workshop.dispose();
+		}
+	}, 120_000);
+
+	it("refuses a command result whose paths differ only in letter case", async () => {
+		const dir = fixture();
+		const workshop = open(dir);
+		try {
+			let refusal: unknown = null;
+			let produced;
+			try {
+				produced = await workshop.bash({
+					argv: ["sh", "-c", "mkdir -p skills/two && printf 'a\\n' > skills/two/SKILL.md && printf 'b\\n' > skills/two/skill.md"],
+				});
+			} catch (error) {
+				if (sandboxUnavailable(error)) return;
+				refusal = error;
+			}
+			if (caseSensitive(workshop.path)) {
+				expect(refusal).toBeInstanceOf(BuilderWorkshopScopeError);
+				expect(String(refusal)).toMatch(/differ only in letter case/);
+				expect(String(refusal)).toContain("skills/two/SKILL.md");
+			} else {
+				// One file on this filesystem, so there is nothing to collide.
+				expect(produced?.exitCode).toBe(0);
+			}
+		} finally {
+			workshop.dispose();
+		}
+	}, 120_000);
+
+	it("refuses to close when a command deleted a file the workshop had written", async () => {
+		const dir = fixture();
+		const workshop = open(dir);
+		try {
+			workshop.write({ path: "AGENTS.md", content: "# Workshop Target\n\nAlways answer READY.\n" });
+			workshop.write({ path: "skills/bank-knowledge/SKILL.md", content: "# Bank knowledge\n\nDeposits and fees.\n" });
+			try {
+				await workshop.bash({ argv: ["sh", "-c", "rm skills/bank-knowledge/SKILL.md"] });
+			} catch (error) {
+				if (sandboxUnavailable(error)) return;
+				throw error;
+			}
+			// It was never in the base commit, so its disappearance is not a change:
+			// the close used to compile a proposal whose summary promised a skill the
+			// candidate branch does not have.
+			expect(() => workshop.compile({ summary: "Instructions and a knowledge base" }))
+				.toThrow(/skills\/bank-knowledge\/SKILL\.md/);
+			// Taking it back explicitly is allowed: the operator asked for nothing else.
+			workshop.write({ path: "skills/bank-knowledge/SKILL.md", content: "# Bank knowledge\n\nDeposits and fees.\n" });
+			workshop.write({ path: "skills/bank-knowledge/SKILL.md", remove: true });
+			expect(workshop.compile({ summary: "Instructions only" }).changes.map((change) => change.path))
+				.toEqual(["AGENTS.md"]);
 		} finally {
 			workshop.dispose();
 		}
