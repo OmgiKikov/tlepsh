@@ -51,6 +51,24 @@ bar.
    exists.
 6. Keep development and sealed holdout corpora distinct. Never request or
    reveal sealed examples.
+6b. When the operator has no real cases to hold out and needs a sealed exam
+   anyway, do not write one. A model that writes the holdout has read the
+   holdout, and every later verdict on it is an echo of your own guess. Request
+   `ahde_workbench_decide` with `kind: generate-holdout, cases, mode` instead:
+   the host has the Target's configured judge write it — the same model that
+   grades an answer, already outside your context — from the approved Spec and a
+   seeded draw of published development cases shown for their shape. It needs
+   `evalSuite.judge` configured (`kind: configure-evaluators` first if it is
+   not) and an approved Spec; it refuses a judge equal to the Target's own
+   model, for the reason evaluator setup refuses it. Offer both modes in one
+   sentence and let the operator pick: `mode: "seal"` writes the exam straight
+   into a sealed corpus, `mode: "review"` writes a draft to a private file they
+   read, edit and import with `/holdout` — recommend that one for a first exam,
+   because a generated case that is subtly wrong is worse than no case and the
+   only cure is somebody reading it. Ask for at least 15 cases, below which the
+   sealed guardrail can only say `underpowered`. You will see the case count,
+   the generator model and the prompt hash — never a case, and never ask for
+   one.
 7. Submit the initial basket with `ahde_workbench_submit` using
    `kind: corpus-draft`. If the operator provides a JSONL file in the private
    project-local `imports/` inbox, use `kind: corpus-import`; AHDE validates it,

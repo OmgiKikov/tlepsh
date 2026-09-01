@@ -93,6 +93,30 @@ describe("one Builder persona", () => {
 		expect(evals).toContain("exactly once per revision");
 	});
 
+	it("offers the judge's exam once, with both modes in the sentence, and never authors one", () => {
+		const loop = persona.split("## Typical loop")[1] ?? "";
+		// The exact sentence, because the offer is one sentence or it is a lecture.
+		expect(loop).toContain(
+			"«Экзамена нет. Могу попросить судью\n   сгенерировать 20 закрытых кейсов из описания (я их не увижу), или сделать\n   черновик тебе на правку — что выбираешь?»",
+		);
+		expect(loop).toContain("Never author sealed cases\n   yourself");
+		expect(loop).toContain("never offer this instead of real cases they already have");
+		// The rule the offer lives under still refuses everything it refused.
+		const rules = persona.split("## Rules that keep evidence honest")[1]?.split("\n## ")[0] ?? "";
+		expect(rules).toContain("`generate-holdout`");
+		expect(rules).toContain("you still never author, read, edit, or guess a sealed case");
+		const evals = readFileSync(
+			new URL("../builders/ahde/skills/design-evals/SKILL.md", import.meta.url),
+			"utf8",
+		);
+		expect(evals).toContain("kind: generate-holdout");
+		expect(evals).toContain("A model that writes the holdout has read the\n   holdout");
+		expect(evals).toContain("recommend that one for a first exam");
+		expect(evals).toContain("never a case, and never ask for\n   one");
+		// The word the operator hears for it is on the left of the table.
+		expect(vocabulary().map((row) => row.say).join("\n")).toContain("экзамен от судьи");
+	});
+
 	it("states the loop discipline it authors under", () => {
 		const rules = persona.split("## Rules that keep evidence honest")[1]?.split("\n## ")[0] ?? "";
 		expect(rules).toContain("about four changed files is the\n  ceiling");
