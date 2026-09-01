@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -817,5 +817,34 @@ describe("the durable record", () => {
 		const lines = renderVersionPassport(passport, plainPaint);
 		expect(lines).toContain("Обещано +5 п.п. · получено +9 п.п. ✓");
 		expect(lines).toContain("Builder предсказывает: попаданий 4/5 · ошибка ±9.2 п.п. · ✓✓✗✓✓");
+	});
+});
+
+/**
+ * The live session closed a construction workshop with no prediction, so the
+ * review panel read «прогноз не заявлен» on the path the Builder takes first.
+ * The schema always allowed it; only the persona never asked.
+ */
+describe("the persona predicts on the construction path too", () => {
+	const persona = readFileSync(new URL("../builders/ahde/AGENTS.md", import.meta.url), "utf8");
+	const workshop = readFileSync(new URL("../builders/ahde/skills/improve-harness/SKILL.md", import.meta.url), "utf8");
+
+	it("asks for the families and the delta when the first harness is closed", () => {
+		const loop = persona.split("## Typical loop")[1] ?? "";
+		expect(loop).toContain("State the prediction when you close a construction workshop too");
+		expect(loop).toContain("it is still a promise, so it\n   still carries `prediction`");
+		expect(loop).toContain("expectedPassRateDeltaPp");
+		expect(workshop).toContain("A construction close — the first harness, built from the Spec — names no\n   mode, and still states one");
+	});
+
+	it("accepts exactly that prediction: a delta, no mode", () => {
+		const prediction = ProposalPredictionSchema.parse({
+			modes: [],
+			expectedPassRateDeltaPp: 35,
+			note: "check_dbo 0/3 → 3/3 tasks, classification 1/6 → 5/6",
+		});
+		expect(() => assertPredictionScope(prediction, { failureModeIds: [], basis: "construction" })).not.toThrow();
+		expect(scorePredictedOverall(prediction, measurementOf({ delta: 0.4 })))
+			.toMatchObject({ kind: "pass-rate", predictedPp: 35, actualPp: 40, verdict: "hit" });
 	});
 });

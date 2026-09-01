@@ -65,6 +65,14 @@ interface FixtureOptions {
 	baseline?: GraderState[];
 	candidate?: GraderState[];
 	withHoldout?: boolean;
+	/** Tasks in the development corpus; every task repeats the same states. */
+	taskIds?: string[];
+	/**
+	 * A candidate the host cannot bind to a proposal basis: a manual one, or the
+	 * workshop construction close that builds the first harness. Either way
+	 * there is no diagnosis behind it and the families are the whole reading.
+	 */
+	unbound?: boolean;
 }
 
 function fileRef(path: string): { path: string; sha256: string } {
@@ -264,6 +272,7 @@ function fixture(options: FixtureOptions = {}) {
 		gitSha: baselineSha,
 		baselineEvalRunId: null,
 		states: baselineStates,
+		...(options.taskIds ? { taskIds: options.taskIds } : {}),
 	});
 	const candidate = writeEvaluation({
 		runsRoot,
@@ -272,6 +281,7 @@ function fixture(options: FixtureOptions = {}) {
 		gitSha: candidateSha,
 		baselineEvalRunId: baseline.evalRunId,
 		states: candidateStates,
+		...(options.taskIds ? { taskIds: options.taskIds } : {}),
 	});
 	const diagnosis = diagnoseEvalRun(runsRoot, source.evalRunId, () => at);
 	const brief = compileImprovementBrief(runsRoot, diagnosis);
@@ -455,7 +465,7 @@ function fixture(options: FixtureOptions = {}) {
 		specId: spec.id,
 		proposalId: builderRunId,
 		diagnosisId: diagnosis.diagnosisId,
-		origin: {
+		origin: options.unbound ? { kind: "manual", reason: "Built from the Spec, with nothing diagnosed yet." } : {
 			kind: "applied-builder",
 			builderRunId,
 			builderRun: fileRef(builderRunPath),
@@ -660,6 +670,56 @@ describe("CandidateImpact", () => {
 		const impact = inspectCandidateImpact(value);
 		expect(impact.proposalBasis?.targetedFailureModes[0]?.outcome).toBe(outcome);
 		expect(impact.verdict).toBe(verdict);
+	});
+
+	it("says what moved per grader family, counted in tasks", () => {
+		const value = fixture({ taskIds: ["task-1", "task-2", "task-3"] });
+		const impact = inspectCandidateImpact(value);
+
+		// Ordered by how much they moved: the check that got fixed comes first.
+		expect(impact.families).toMatchObject([
+			{
+				signature: { checkCode: "output-contains", subject: null },
+				category: "output-contract",
+				tasks: 3,
+				baselinePassedTasks: 0,
+				candidatePassedTasks: 3,
+				fixedTaskIds: ["task-1", "task-2", "task-3"],
+				regressedTaskIds: [],
+			},
+			{
+				signature: { checkCode: "semantic-rubric" },
+				tasks: 3,
+				baselinePassedTasks: 3,
+				candidatePassedTasks: 3,
+				fixedTaskIds: [],
+				regressedTaskIds: [],
+			},
+		]);
+		expect(impact.omittedFamilyCount).toBe(0);
+	});
+
+	it("reads a candidate with no diagnosis behind it by what its families did", () => {
+		const improved = inspectCandidateImpact(fixture({ unbound: true, taskIds: ["task-1", "task-2"] }));
+
+		// The old panel said "inconclusive · Candidate has no exact proposal-basis
+		// failure modes" here — on the path that builds the first harness.
+		expect(improved.proposalBasis).toBeNull();
+		expect(improved.verdict).toBe("improved");
+		expect(improved.inconclusiveReasons).toEqual([]);
+		expect(improved.families).toMatchObject([
+			{ signature: { checkCode: "output-contains" }, baselinePassedTasks: 0, candidatePassedTasks: 2 },
+			{ signature: { checkCode: "semantic-rubric" }, baselinePassedTasks: 2, candidatePassedTasks: 2 },
+		]);
+
+		const regressed = inspectCandidateImpact(fixture({
+			unbound: true,
+			baseline: [{ primary: true, secondary: true }, { primary: true, secondary: true }],
+			candidate: [{ primary: true, secondary: false }, { primary: true, secondary: false }],
+		}));
+		expect(regressed.verdict).toBe("regressed");
+		expect(regressed.families.find((family) => family.signature.checkCode === "semantic-rubric"))
+			.toMatchObject({ baselinePassedTasks: 1, candidatePassedTasks: 0, regressedTaskIds: ["task-1"] });
 	});
 
 	it("reports exact new signatures and task regressions", () => {
