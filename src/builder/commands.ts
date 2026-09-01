@@ -1,5 +1,4 @@
 import { t } from "../i18n.js";
-import { join } from "node:path";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -20,11 +19,6 @@ import type {
 	WorkbenchView,
 } from "../workbench/types.js";
 import { compileAgentLog } from "../application/agent-log.js";
-import {
-	compileVersionPassport,
-	renderVersionPassportMarkdown,
-} from "../application/version-passport.js";
-import { writeTextArtifact } from "../storage/artifacts.js";
 import { oneLine, pluralize } from "./render/format.js";
 import { renderAgentLog } from "./render/agent-log.js";
 import {
@@ -63,6 +57,7 @@ import {
 } from "./transcript.js";
 import { formatWorkbenchConfirmation } from "./workbench-gate.js";
 import { createPolicyAwareGate } from "./workbench-adapter.js";
+import { compileBuilderPassport } from "./passport-presentation.js";
 
 type CommandWorkbench = Pick<
 	AhdeWorkbench,
@@ -414,6 +409,17 @@ export function registerAhdeBuilderCommands(
 		try {
 			({ title, tone } = decisionTitle(result));
 			lines = renderDecision(result, markerPaint, { liveTraceUrl });
+			if (result.kind === "ship") {
+				try {
+					const { passport } = await compileBuilderPassport(workbench, { view: result.view });
+					lines.push(
+						"",
+						...renderVersionPassport(passport, markerPaint),
+					);
+				} catch (error) {
+					lines.push("", markerPaint.warning(`Passport unavailable: ${oneLine(describeError(error), 180)}`));
+				}
+			}
 			headline = decisionHeadline(result);
 		} catch {
 			lines = [oneLine(result.message, 600), ...(liveTraceUrl ? [`Live trace retained for 15 minutes: ${liveTraceUrl}`] : [])];
@@ -570,18 +576,34 @@ export function registerAhdeBuilderCommands(
 		branch: string | null,
 		reason: string,
 		runId?: string,
-		options: { showReview?: boolean } = {},
+		displayOptions: { showReview?: boolean } = {},
 	): Promise<void> => {
 		if (refuseWhileBusy(ctx)) return;
 		const review = await workbench.view({ aspect: "review" });
 		const detail = review.detail?.aspect === "review" ? review.detail.content : undefined;
 		const proposalRunId = runId ?? (detail?.kind === "proposal" ? detail.runId : undefined);
-		if (options.showReview !== false && detail?.kind === "proposal") {
+		if (displayOptions.showReview !== false && detail?.kind === "proposal") {
 			presenter.show(ctx, { title: viewTitle(review), tone: "info", lines: renderReview(detail, markerPaint) });
 		}
 		const chosen = branch ?? `candidate/${proposalRunId ?? "next"}`;
-		const result = await decide(ctx, "apply", { kind: "apply-proposal", branch: chosen, reason, ...(proposalRunId ? { runId: proposalRunId } : {}) }, signal);
-		if (result) await showDecision(ctx, "apply", result);
+		const observation = await beginBuilderRunObservation(ctx.ui, options.beginLiveTrace);
+		let outcome: BuilderLiveTraceOutcome = "error";
+		try {
+			const result = await decide(ctx, "apply", {
+				kind: "apply-proposal",
+				branch: chosen,
+				verify: { repetitions: DEFAULT_REPETITIONS },
+				reason,
+				...(proposalRunId ? { runId: proposalRunId } : {}),
+			}, signal, { onRunEvent: observation.onRunEvent });
+			outcome = result ? "completed" : "aborted";
+			if (result) await showDecision(ctx, "apply", result, observation.liveTraceUrl);
+		} catch (error) {
+			if (signal?.aborted) outcome = "aborted";
+			throw error;
+		} finally {
+			observation.finish(outcome);
+		}
 	};
 
 	const discardCurrent = async (ctx: ExtensionCommandContext, signal: AbortSignal | undefined, reason: string): Promise<void> => {
@@ -1190,27 +1212,7 @@ export function registerAhdeBuilderCommands(
 			await prepare(ctx, "passport");
 			const version = args.trim();
 			if (/\s/.test(version)) throw new Error("/passport accepts at most one version, for example /passport 0.2.0");
-			const view = await workbench.view();
-			const passport = compileVersionPassport({
-				runsRoot: workbench.runsRoot,
-				stateRoot: workbench.stateRoot,
-				projectId: workbench.projectId,
-				...(version ? { version } : {}),
-				...(view.target.id ? { targetId: view.target.id } : {}),
-				model: view.target.model ? { provider: view.target.model.provider, id: view.target.model.id } : null,
-			});
-			// The tag is host-minted semver, but the filename is still built from a
-			// bounded character set rather than from whatever the tag says.
-			const slug = passport.version.replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 60);
-			const name = `passport-${slug.startsWith("v") ? slug : `v${slug}`}.md`;
-			const file = join(workbench.projectDir, name);
-			let written: string | null = name;
-			try {
-				writeTextArtifact(file, renderVersionPassportMarkdown(passport));
-			} catch {
-				// The page is worth reading even when the file cannot be written.
-				written = null;
-			}
+			const { passport, written } = await compileBuilderPassport(workbench, { ...(version ? { version } : {}), save: true });
 			presenter.show(ctx, {
 				title: t("panel.title", { detail: t("panel.passport") }),
 				tone: "info",

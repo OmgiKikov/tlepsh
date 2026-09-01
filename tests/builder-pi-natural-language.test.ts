@@ -52,7 +52,7 @@ it("turns free operator input into gated Workbench decisions through a real Buil
 	try {
 		builderMock = await startMockModel([
 			{
-				match: ({ firstUser, toolCount }) => firstUser.includes("собери агента") && toolCount === 7,
+				match: ({ firstUser, toolCount }) => firstUser.includes("собери агента") && toolCount === 8,
 				steps: [],
 				resolve: (context) => {
 					const step = context.toolResults.length;

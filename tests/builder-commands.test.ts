@@ -1196,9 +1196,9 @@ describe("Builder Pi slash commands", () => {
 		await command(commands, "apply").handler("candidate/routing verify the fix", host.ctx);
 
 		expect(fixture.decide).toHaveBeenCalledWith(
-			{ kind: "apply-proposal", branch: "candidate/routing", reason: "verify the fix" },
+			{ kind: "apply-proposal", branch: "candidate/routing", verify: { repetitions: 3 }, reason: "verify the fix" },
 			expect.objectContaining({ confirm: expect.any(Function), selectSealed: expect.any(Function) }),
-			{ signal: undefined },
+			expect.objectContaining({ signal: undefined, onRunEvent: expect.any(Function) }),
 		);
 		expect(host.input).not.toHaveBeenCalled();
 		expect(output.blocks.map((block) => [block.title, block.tone])).toEqual([["Proposal applied", "success"]]);
@@ -1220,9 +1220,9 @@ describe("Builder Pi slash commands", () => {
 		await command(commands, "apply").handler("", implicit.ctx);
 		expect(implicit.input).not.toHaveBeenCalled();
 		expect(fixture.decide).toHaveBeenLastCalledWith(
-			{ kind: "apply-proposal", branch: "candidate/next", reason: "Requested interactively via /apply" },
+			{ kind: "apply-proposal", branch: "candidate/next", verify: { repetitions: 3 }, reason: "Requested interactively via /apply" },
 			expect.any(Object),
-			{ signal: undefined },
+			expect.objectContaining({ signal: undefined, onRunEvent: expect.any(Function) }),
 		);
 		expect(fixture.decide).toHaveBeenCalledTimes(2);
 	});
@@ -1256,7 +1256,7 @@ describe("Builder Pi slash commands", () => {
 		);
 		expect(recovery.output.blocks.map((block) => [block.title, block.tone])).toEqual([["Candidate attempt abandoned", "info"]]);
 		expect(recovery.output.text()).toContain("Interrupted candidate abandoned candidate-stopped · stopped at validated");
-		expect(recovery.output.text()).toContain("The applied proposal can be verified again with /run.");
+		expect(recovery.output.text()).toContain("The applied proposal can be verified again whenever you ask to check it.");
 	});
 
 	it("records the review and promotes through one intent gate at candidate-review", async () => {
@@ -1285,7 +1285,7 @@ describe("Builder Pi slash commands", () => {
 		expect(actorId).toHaveBeenCalled();
 		expect(output.blocks.map((block) => [block.title, block.tone])).toEqual([["Candidate promoted", "success"]]);
 		expect(output.text()).toContain("Candidate promoted v1.2.0");
-		expect(output.text()).toContain("The active Target is unchanged until you /adopt.");
+		expect(output.text()).toContain("The active agent is unchanged until you ask to adopt it.");
 		expect(output.note).toHaveBeenCalledTimes(1);
 		expect(String(output.note.mock.calls[0]?.[0])).toContain("Operator ran /promote");
 		expect(String(output.note.mock.calls[0]?.[0])).toContain("candidate-adoption (Adopt candidate)");
@@ -1467,9 +1467,9 @@ describe("Builder Pi slash commands", () => {
 		// The branch is named after the proposal; the diff was just rendered, so nothing else is asked.
 		expect(host.input).not.toHaveBeenCalled();
 		expect(fixture.decide).toHaveBeenCalledWith(
-			{ kind: "apply-proposal", branch: "candidate/builder-proposal-1", reason: "Applied from /review", runId: "builder-proposal-1" },
+			{ kind: "apply-proposal", branch: "candidate/builder-proposal-1", verify: { repetitions: 3 }, reason: "Applied from /review", runId: "builder-proposal-1" },
 			expect.any(Object),
-			{ signal: undefined },
+			expect.objectContaining({ signal: undefined, onRunEvent: expect.any(Function) }),
 		);
 		expect(output.blocks.map((block) => block.title)).toEqual(["AHDE · Proposal review", "Proposal applied"]);
 		const review = output.blocks[0]?.lines.map(stripMarkers).join("\n") ?? "";
@@ -2117,7 +2117,7 @@ describe("Builder Pi slash commands", () => {
 		expect(approved.decide).toHaveBeenCalledWith(
 			expect.objectContaining({ kind: "apply-proposal" }),
 			expect.any(Object),
-			{ signal: controller.signal },
+			expect.objectContaining({ signal: controller.signal, onRunEvent: expect.any(Function) }),
 		);
 		expect(approvedFixture.output.blocks.map((block) => block.title)).toEqual(["Proposal applied"]);
 	});

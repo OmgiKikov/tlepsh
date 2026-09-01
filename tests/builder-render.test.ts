@@ -745,16 +745,16 @@ describe("renderHeader", () => {
 		expect(lines[3]).toBe("Stage Ready to run · Next Describe what the agent still needs built, or say “tests” to run them");
 		expect(lines[4]).toBe("Evidence 2 eval runs · 1 open proposal · 3 candidates · Builder model anthropic/claude-opus ✓");
 		expect(lines[5]).toBe("Noise not calibrated · say “calibrate” or /calibrate");
-		expect(lines[6]).toBe("Describe what you want in plain language · /help for shortcuts");
+		expect(lines[6]).toBe("Describe what you want in plain language");
 		expect(lines[lines.length - 1]).toBe("");
 		expect(lines.join("\n")).not.toContain("{");
 	});
 
 	it("warns when the Builder is not connected or the Target credential is missing", () => {
 		const noLabel = renderHeader({ view: null, builderModel: { label: null, credentialPresent: false } }, tagPaint);
-		expect(noLabel.join("\n")).toContain("<dim>Builder model</dim> <warning>not connected — /login</warning>");
+		expect(noLabel.join("\n")).toContain("<dim>Builder model</dim> <warning>not connected — connect a model to continue</warning>");
 		const labelled = renderHeader({ view: null, builderModel: { label: "anthropic/claude-opus", credentialPresent: false } }, tagPaint);
-		expect(labelled.join("\n")).toContain("anthropic/claude-opus <warning>· not connected — /login</warning>");
+		expect(labelled.join("\n")).toContain("anthropic/claude-opus <warning>· not connected</warning>");
 		const view = makeView({
 			target: { status: "ready", id: "support-bot", gitSha: SHA_A, model: { provider: "openai", id: "gpt-5", apiKeyEnv: "OPENAI_API_KEY", credentialPresent: false } },
 		});
@@ -771,7 +771,7 @@ describe("renderHeader", () => {
 			"",
 			"AHDE Builder · build, evaluate, and improve another agent through evidence",
 			"Project state unavailable state.json is corrupt",
-			"Builder model not connected — /login · /doctor for recovery",
+			"Builder model not connected — connect a model to continue",
 			"",
 		]);
 	});
@@ -1332,7 +1332,7 @@ describe("renderDecision", () => {
 		]);
 		expect(renderDecision(decision("abandon-candidate", { candidateId: "candidate-1", interruptedStatus: "built", receiptHash: HASH }, "candidate-verification"), plainPaint)).toEqual([
 			"Interrupted candidate abandoned candidate-1 · stopped at built",
-			"The applied proposal can be verified again with /run.",
+			"The applied proposal can be verified again whenever you ask to check it.",
 			nextLine("candidate-verification"),
 		]);
 	});
@@ -1344,7 +1344,7 @@ describe("renderDecision", () => {
 		expect(reviewed[reviewed.length - 1]).toBe(nextLine("release-decision"));
 		expect(renderDecision(decision("promote-candidate", { candidate: makeCandidate({ status: "promoted" }), tag: "v1.2.0", candidateSha: SHA_B, guards: { draftId: null, cases: 0, taskIds: [], warning: null } }, "candidate-adoption"), tagPaint)).toEqual([
 			"<heading>Candidate promoted</heading> <success>v1.2.0</success> <dim>· bbbbbbbbbb</dim>",
-			"<muted>The tag records the exact reviewed revision. The active Target is unchanged until you /adopt.</muted>",
+			"<muted>The tag records the exact reviewed revision. The active agent is unchanged until you ask to adopt it.</muted>",
 			`<dim>Next</dim> ${nextStep(makeView({ stage: "candidate-adoption" }))} <dim>(Adopt candidate)</dim>`,
 		]);
 		const rejected = renderDecision(decision("reject-candidate", makeCandidate({ status: "rejected", rejection: { reason: "worse", at: AT } }), "complete"), plainPaint);

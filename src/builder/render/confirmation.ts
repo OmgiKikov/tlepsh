@@ -310,6 +310,21 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 				paint.muted("A/A measures how much the agent disagrees with itself, so later deltas can be believed."),
 			];
 		}
+		case "tool-authoring": {
+			const capabilities = bag(subject.capabilities);
+			const credentials = Array.isArray(capabilities.credentials) ? capabilities.credentials.map(bag) : [];
+			return [
+				`${paint.dim("Tool")} ${paint.bold(text(subject.tool, 64))}`,
+				...wrap(text(subject.purpose, 2_000), 92, "  "),
+				`${paint.dim("Data source")} ${text(subject.dataSource, 120)}`,
+				`${paint.dim("Network")} ${capabilities.network === "allow" ? paint.warning("allow") : paint.success("deny")}`,
+				`${paint.dim("Filesystem")} ${capabilities.filesystem === "workspace-write" ? paint.warning("workspace-write") : paint.success("read-only")}`,
+				`${paint.dim("Process")} ${paint.warning("sandboxed subprocess")}`,
+				`${paint.dim("Credentials")} ${credentials.length === 0 ? "none" : credentials.map((entry) => `${text(entry.id, 40)} ← ${text(entry.environment, 60)}`).join(", ")}`,
+				`${paint.dim("Package")} ${pluralize(strings(subject.files).length, "file")} ${paint.dim("· contract tests")} ${strings(subject.contractTests).join(", ")}`,
+				paint.muted("Secrets stay in the host environment. The Builder receives only test outcomes and the reviewable source diff."),
+			];
+		}
 		case "apply-proposal": {
 			const diff = typeof subject.exactDiff === "string" ? subject.exactDiff : "";
 			const stats = diffStats(diff);

@@ -65,7 +65,7 @@ function call(step: number, name: string, args: Record<string, unknown>): MockSt
 	return { toolCall: { id: `context-authoring-${step}`, name, arguments: args } };
 }
 
-it("uses the real three-tool Builder Pi to inspect exact Target context and stop at proposal review", async () => {
+it("uses the real typed Builder Pi to inspect exact Target context and stop at proposal review", async () => {
 	const targetMock = await startMockModel([{
 		match: () => true,
 		steps: [{ text: "pending" }],
@@ -153,7 +153,7 @@ it("uses the real three-tool Builder Pi to inspect exact Target context and stop
 					firstUser.includes("Исправь первую проблему") &&
 					system.includes("Before authoring, inspect the fresh Target overview") &&
 					system.includes("resourcePath") &&
-					toolCount === 7,
+					toolCount === 8,
 				steps: [],
 				resolve: (context) => {
 					const step = context.toolResults.length;

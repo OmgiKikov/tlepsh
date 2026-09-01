@@ -22,7 +22,13 @@ import {
 	validateCandidateProposal,
 	type CandidateProposal,
 } from "../builders/adapters.js";
-import { loadTarget, TargetManifest, type ResolvedTarget, type TargetManifest as TargetManifestValue } from "../manifest.js";
+import {
+	ExecutionPolicyBlock,
+	loadTarget,
+	TargetManifest,
+	type ResolvedTarget,
+	type TargetManifest as TargetManifestValue,
+} from "../manifest.js";
 import { redactTraceText } from "../trace.js";
 import {
 	openDetachedWorktree,
@@ -53,8 +59,9 @@ import {
 	wholeFileDiff,
 	HARNESS_AUTHORING_ALLOWED_PATHS,
 	type HarnessAuthoringIntent,
+	type HarnessExecutionPolicyPatch,
 } from "./harness-authoring.js";
-import { assertResourceOnlyManifestChange } from "./builder-proposal.js";
+import { assertManifestChangePolicy, assertResourceOnlyManifestChange } from "./builder-proposal.js";
 import { ProposalBasisSelectionSchema } from "./improvement-brief.js";
 import {
 	assertTargetAuthoringSurfaceWithinLimits,
@@ -357,6 +364,13 @@ const MAX_WORKSHOP_OUTPUT_BYTES = 256 * 1024;
 export const MAX_WORKSHOP_GRANT_AUDIT_EVENTS = 256;
 const WORKSHOP_COMMAND = /^[A-Za-z0-9._-]+$/;
 const WORKSHOP_SCRATCH_PREFIX = "ahde-workshop-";
+const WORKSHOP_CONTRACT_FIXTURE = /^fixtures\/([a-z0-9][a-z0-9_-]{0,63})\.json$/;
+const WorkshopContractManifestSchema = z.strictObject({
+	schemaVersion: z.literal(1),
+	tool: z.string().regex(TOOL_NAME),
+	fixtures: z.array(z.string().regex(WORKSHOP_CONTRACT_FIXTURE)).min(1).max(32)
+		.refine((paths) => new Set(paths).size === paths.length, "contract fixture paths must be unique"),
+});
 
 /** A refusal that always names the exact offending path. */
 export class BuilderWorkshopScopeError extends ToolWorkshopError {
@@ -717,6 +731,31 @@ export interface WorkshopGrant {
 	actorId: string;
 }
 
+/** One credential-redacted observation from the live write → try → repair loop. */
+export interface WorkshopTrySummary {
+	tool: string;
+	test: string | null;
+	passed: boolean;
+	exitCode: number | null;
+	timedOut: boolean;
+	truncated: boolean;
+	durationMs: number;
+	/** A bounded, already-redacted explanation; never raw process output. */
+	failure: string | null;
+	snapshotHash: string;
+	at: string;
+}
+
+/** Human-readable authority requested by one declared process tool. */
+export interface WorkshopToolCapabilitySummary {
+	tool: string;
+	network: "deny" | "allow";
+	filesystem: "read-only" | "workspace-write";
+	process: "sandboxed-subprocess";
+	/** Environment names are policy references, never their values. */
+	environment: string[];
+}
+
 /**
  * Durable disclosure that one exact live grant was consumed. This is audit
  * history only: replaying it can explain risk, but can never authorize a tool.
@@ -750,6 +789,10 @@ export interface WorkshopStatus {
 	/** Exact content identity of everything in scope, right now. */
 	snapshotHash: string;
 	grants: readonly (WorkshopGrant | WorkshopGrantAuditEvent)[];
+	/** Survives Builder restarts; values and full outputs are never retained. */
+	tryHistory: readonly WorkshopTrySummary[];
+	/** Current changed tools only, so close/review does not claim unrelated authority. */
+	toolCapabilities: readonly WorkshopToolCapabilitySummary[];
 }
 
 /**
@@ -801,6 +844,12 @@ export interface BuilderWorkshopDescriptor {
 	scratchRoot: string;
 	openedAt: string;
 	snapshotHash: string;
+	/** Host-authored execution widening needed by typed tool packages. */
+	toolAuthoringPolicy?: {
+		network: "deny" | "allow";
+		environmentAllowlist: string[];
+	};
+	tryHistory?: WorkshopTrySummary[];
 }
 
 export interface CompiledWorkshopProposal {
@@ -808,6 +857,7 @@ export interface CompiledWorkshopProposal {
 	changes: WorkshopChange[];
 	/** The exact revision the diff is against; identical to `proposal.baseTargetSha`. */
 	baseTargetSha: string;
+	manifestChangePolicy: "resources-only" | "execution-policy";
 }
 
 function assertWorkshopBinding(input: BuilderWorkshopBinding): BuilderWorkshopBinding {
@@ -867,7 +917,10 @@ export class BuilderWorkshop {
 	private readonly written = new Set<string>();
 	private readonly grants: WorkshopGrant[] = [];
 	private readonly grantHistory: WorkshopGrantAuditEvent[];
+	private readonly tryHistory: WorkshopTrySummary[];
 	private readonly onGrantConsumed: ((event: WorkshopGrantAuditEvent) => void) | undefined;
+	/** Cumulative, host-owned widening from the exact baseline execution policy. */
+	private toolAuthoringPolicy: { network: "deny" | "allow"; environmentAllowlist: string[] } | null;
 	private writes = 0;
 	private commands = 0;
 	private tries = 0;
@@ -885,6 +938,8 @@ export class BuilderWorkshop {
 		openedAt: string;
 		baseManifestText: string;
 		baseManifest: TargetManifestValue;
+		toolAuthoringPolicy?: { network: "deny" | "allow"; environmentAllowlist: string[] } | null;
+		tryHistory?: readonly WorkshopTrySummary[];
 		grantHistory?: readonly WorkshopGrantAuditEvent[];
 		onGrantConsumed?: (event: WorkshopGrantAuditEvent) => void;
 	}) {
@@ -904,6 +959,13 @@ export class BuilderWorkshop {
 		this.fromProposalRunId = options.fromProposalRunId ?? null;
 		this.baseManifestText = options.baseManifestText;
 		this.baseManifest = options.baseManifest;
+		this.toolAuthoringPolicy = options.toolAuthoringPolicy
+			? {
+				network: options.toolAuthoringPolicy.network,
+				environmentAllowlist: [...options.toolAuthoringPolicy.environmentAllowlist],
+			}
+			: null;
+		this.tryHistory = (options.tryHistory ?? []).slice(-32).map((entry) => ({ ...entry }));
 		this.grantHistory = (options.grantHistory ?? []).map((event) => WorkshopGrantAuditEventSchema.parse(event));
 		if (this.grantHistory.some((event) => event.workshopId !== this.workshopId)) {
 			throw new ToolWorkshopError("workshop grant history belongs to a different workshop");
@@ -1058,6 +1120,88 @@ export class BuilderWorkshop {
 	private defaultMode(requested: string, absolute: string, existed: boolean): "100644" | "100755" {
 		if (existed) return (lstatSync(absolute).mode & 0o111) === 0 ? "100644" : "100755";
 		return classifyTargetAuthoringResourcePath(requested)?.kind === "tool-executable" ? "100755" : "100644";
+	}
+
+	/**
+	 * Apply only the execution widening compiled by the typed Tool Authoring
+	 * module. Builder Pi cannot call this primitive directly and cannot change
+	 * sandbox mode, ambient tools, containers, or any model configuration.
+	 */
+	configureToolAuthoringPolicy(policyValue: {
+		network: "deny" | "allow";
+		environmentAllowlist: readonly string[];
+	}): void {
+		this.assertOpen();
+		const policy = ExecutionPolicyBlock.parse({
+			...this.baseManifest.execution,
+			network: policyValue.network,
+			environmentAllowlist: [...policyValue.environmentAllowlist],
+		});
+		if (this.baseManifest.execution.network === "allow" && policy.network !== "allow") {
+			throw new ToolWorkshopError("typed tool authoring cannot narrow an existing network policy");
+		}
+		const baseEnvironment = new Set(this.baseManifest.execution.environmentAllowlist);
+		for (const name of baseEnvironment) {
+			if (!policy.environmentAllowlist.includes(name)) {
+				throw new ToolWorkshopError(`typed tool authoring cannot remove existing environment permission ${name}`);
+			}
+		}
+		this.toolAuthoringPolicy = {
+			network: policy.network,
+			environmentAllowlist: [...policy.environmentAllowlist],
+		};
+		this.syncDeclarations();
+	}
+
+	/**
+	 * Replace one complete generated package. Validation happens before the old
+	 * directory is removed; a full-package authoring call never leaves stale
+	 * fixtures or support files from an earlier attempt in the reviewed diff.
+	 */
+	replaceToolPackage(
+		tool: string,
+		files: readonly { path: string; content: string; mode: "100644" | "100755" }[],
+	): void {
+		this.assertOpen();
+		if (!TOOL_NAME.test(tool)) throw new ToolWorkshopError(`invalid tool name: ${JSON.stringify(tool)}`);
+		if (files.length === 0) throw new ToolWorkshopError("a generated tool package cannot be empty");
+		if (this.writes + files.length + 1 > MAX_WORKSHOP_WRITES) {
+			throw new ToolWorkshopError(`a workshop performs at most ${MAX_WORKSHOP_WRITES} writes`);
+		}
+		const paths = new Set<string>();
+		for (const file of files) {
+			const requested = `tools/${tool}/${file.path}`;
+			assertWorkshopScope(requested);
+			if (!requested.startsWith(`tools/${tool}/`) || paths.has(requested)) {
+				throw new ToolWorkshopError(`duplicate or escaping generated tool path ${requested}`);
+			}
+			paths.add(requested);
+			if (!file.content || file.content.includes("\0") || file.content.includes("\r")) {
+				throw new ToolWorkshopError(`${requested} must be non-empty UTF-8 text with LF line endings`);
+			}
+			if (Buffer.byteLength(file.content, "utf8") > MAX_WORKSHOP_FILE_BYTES) {
+				throw new ToolWorkshopError(`${requested} exceeds the ${MAX_WORKSHOP_FILE_BYTES}-byte workshop limit`);
+			}
+		}
+		const directory = `tools/${tool}`;
+		const absolute = resolveWorkshopPath(this.path, directory);
+		const old = new Map<string, WorkshopFileState>();
+		const symlinks: string[] = [];
+		collectWorkshopFiles(this.path, directory, old, symlinks);
+		if (symlinks.length > 0) throw new BuilderWorkshopScopeError(symlinks, "a generated tool package contains a symlink");
+		for (const path of old.keys()) this.written.add(path);
+		rmSync(absolute, { recursive: true, force: true });
+		mkdirSync(absolute, { recursive: true, mode: 0o755 });
+		for (const file of files) {
+			const requested = `tools/${tool}/${file.path}`;
+			const destination = resolveWorkshopPath(this.path, requested);
+			mkdirSync(dirname(destination), { recursive: true, mode: 0o755 });
+			writeFileSync(destination, file.content, "utf8");
+			chmodSync(destination, file.mode === "100755" ? 0o755 : 0o644);
+			this.written.add(requested);
+		}
+		this.writes += files.length + 1;
+		this.syncDeclarations();
 	}
 
 	// -- running -------------------------------------------------------------
@@ -1453,7 +1597,13 @@ export class BuilderWorkshop {
 	 * operator has allowed it once, and the try reports the exact snapshot it
 	 * ran against.
 	 */
-	async tryTool(options: { tool: string; input: unknown; signal?: AbortSignal; now?: () => string }): Promise<TryToolResult> {
+	async tryTool(options: {
+		tool: string;
+		input: unknown;
+		test?: string;
+		signal?: AbortSignal;
+		now?: () => string;
+	}): Promise<TryToolResult> {
 		this.assertOpen();
 		if (!TOOL_NAME.test(options.tool)) {
 			throw new ToolWorkshopError(`invalid tool name: ${JSON.stringify(options.tool)}`);
@@ -1505,7 +1655,61 @@ export class BuilderWorkshop {
 				"the workshop changed while the tool was running; the result would not describe the code that ran",
 			);
 		}
+		const failure = result.timedOut
+			? "timed out"
+			: result.truncated
+				? "output was truncated"
+				: result.exitCode === 0
+					? null
+					: (result.stderr.trim().split("\n")[0] || `exit ${result.exitCode ?? "killed"}`).slice(0, 240);
+		this.tryHistory.push({
+			tool: result.tool,
+			test: options.test ?? null,
+			passed: failure === null,
+			exitCode: result.exitCode,
+			timedOut: result.timedOut,
+			truncated: result.truncated,
+			durationMs: result.durationMs,
+			failure,
+			snapshotHash,
+			at: (options.now ?? (() => new Date().toISOString()))(),
+		});
+		if (this.tryHistory.length > 32) this.tryHistory.splice(0, this.tryHistory.length - 32);
 		return result;
+	}
+
+	/** Attach the host's deterministic fixture assertion to the most recent try. */
+	recordContractAssertion(test: string, passed: boolean, failures: readonly string[]): void {
+		this.assertOpen();
+		const recent = this.tryHistory.at(-1);
+		if (!recent) throw new ToolWorkshopError("there is no tool try to attach a contract assertion to");
+		recent.test = test;
+		// A non-zero process result is a failed ad-hoc try, but may be the exact
+		// expected result of an error-handling contract fixture. The host assertion
+		// is authoritative once it has checked exit code and bounded output.
+		recent.passed = passed;
+		recent.failure = passed
+			? null
+			: failures.join("; ").slice(0, 240) || "contract assertion failed";
+	}
+
+	/** Record a host/runtime refusal that happened before a TryToolResult existed. */
+	recordFailedTry(tool: string, test: string | null, error: unknown, now: () => string): void {
+		this.assertOpen();
+		const message = redactTraceText(error instanceof Error ? error.message : String(error)).slice(0, 240);
+		this.tryHistory.push({
+			tool,
+			test,
+			passed: false,
+			exitCode: null,
+			timedOut: false,
+			truncated: false,
+			durationMs: 0,
+			failure: message || "tool try failed before execution",
+			snapshotHash: this.snapshotHash(),
+			at: now(),
+		});
+		if (this.tryHistory.length > 32) this.tryHistory.splice(0, this.tryHistory.length - 32);
 	}
 
 	// -- declarations --------------------------------------------------------
@@ -1523,11 +1727,29 @@ export class BuilderWorkshop {
 		const changedSkills = canonicalList(skills) !== canonicalList(this.baseManifest.skills);
 		const changedTools = canonicalList(tools) !== canonicalList(this.baseManifest.tools);
 		const changedData = canonicalList(data) !== canonicalList(this.baseManifest.data);
-		const rendered = changedSkills || changedTools || changedData
+		const execution = this.toolAuthoringPolicy
+			? ExecutionPolicyBlock.parse({
+				...this.baseManifest.execution,
+				network: this.toolAuthoringPolicy.network,
+				environmentAllowlist: this.toolAuthoringPolicy.environmentAllowlist,
+			})
+			: null;
+		const executionPatch: HarnessExecutionPolicyPatch | null = execution
+			? {
+				...(execution.network === this.baseManifest.execution.network ? {} : { network: execution.network }),
+				...(canonicalList(execution.environmentAllowlist) === canonicalList(this.baseManifest.execution.environmentAllowlist)
+					? {}
+					: { environmentAllowlist: execution.environmentAllowlist }),
+			}
+			: null;
+		const rendered = changedSkills || changedTools || changedData || executionPatch
 			? renderManifest(this.baseManifestText, this.baseManifest, {
 				...(changedSkills ? { skills } : {}),
 				...(changedTools ? { tools } : {}),
 				...(changedData ? { data } : {}),
+				...(execution && executionPatch && Object.keys(executionPatch).length > 0
+					? { execution: { policy: execution, patch: executionPatch } }
+					: {}),
 			})
 			: this.baseManifestText;
 		const path = join(this.path, WORKSHOP_MANIFEST);
@@ -1696,6 +1918,83 @@ export class BuilderWorkshop {
 		return [...new Set(ignored)].sort((left, right) => left.localeCompare(right));
 	}
 
+	/** Capabilities of tools whose package bytes differ from the base revision. */
+	toolCapabilities(): WorkshopToolCapabilitySummary[] {
+		this.assertOpen();
+		this.syncDeclarations();
+		const changed = new Set(this.changes().map((entry) => entry.path));
+		let tools: ResolvedTarget["tools"];
+		try {
+			tools = loadTarget(this.path).tools;
+		} catch {
+			// A half-written manual package is legal while the Builder is repairing
+			// it. Close and try still fail loudly; status remains inspectable.
+			return [];
+		}
+		return tools
+			.filter((tool) => {
+				const prefix = tool.directoryPath ? `${tool.directoryPath}/` : null;
+				return changed.has(tool.descriptorPath) || changed.has(tool.executablePath) ||
+					(prefix !== null && [...changed].some((path) => path.startsWith(prefix)));
+			})
+			.map((tool) => ({
+				tool: tool.descriptor.name,
+				network: tool.descriptor.permissions.network,
+				filesystem: tool.descriptor.permissions.filesystem,
+				process: "sandboxed-subprocess" as const,
+				environment: [...tool.descriptor.permissions.environment],
+			}));
+	}
+
+	/**
+	 * A typed package carries an executable contract manifest. Closing is allowed
+	 * only after every listed fixture passed against the exact bytes being
+	 * proposed. Manual tools without that manifest keep the legacy one-green-try
+	 * workflow; packages created by Tool Authoring cannot silently skip tests.
+	 */
+	private assertToolContractsPassed(
+		snapshot: ReadonlyMap<string, WorkshopFileState>,
+		changes: readonly WorkshopChange[],
+		resulting: ResolvedTarget,
+	): void {
+		const snapshotHash = workshopSnapshotHash(snapshot);
+		const changed = new Set(changes.map((change) => change.path));
+		for (const tool of resulting.tools) {
+			if (!tool.directoryPath) continue;
+			const prefix = `${tool.directoryPath}/`;
+			if (![...changed].some((path) => path.startsWith(prefix))) continue;
+			const manifestPath = `${tool.directoryPath}/contract-tests.json`;
+			const entry = snapshot.get(manifestPath);
+			if (!entry) continue;
+			let manifest: z.infer<typeof WorkshopContractManifestSchema>;
+			try {
+				manifest = WorkshopContractManifestSchema.parse(JSON.parse(workshopText(entry.content, manifestPath)));
+			} catch (error) {
+				throw new ToolWorkshopError(`${manifestPath} is not a valid AHDE contract-test manifest`, { cause: error });
+			}
+			if (manifest.tool !== tool.descriptor.name) {
+				throw new ToolWorkshopError(`${manifestPath} names ${manifest.tool}, not ${tool.descriptor.name}`);
+			}
+			const expected = manifest.fixtures.map((path) => {
+				const fixturePath = `${tool.directoryPath}/${path}`;
+				if (!snapshot.has(fixturePath)) {
+					throw new ToolWorkshopError(`${manifestPath} refers to missing ${fixturePath}`);
+				}
+				return WORKSHOP_CONTRACT_FIXTURE.exec(path)![1]!;
+			});
+			const passed = new Set(this.tryHistory
+				.filter((item) => item.tool === tool.descriptor.name && item.snapshotHash === snapshotHash && item.passed)
+				.map((item) => item.test)
+				.filter((name): name is string => name !== null));
+			const missing = expected.filter((name) => !passed.has(name));
+			if (missing.length > 0) {
+				throw new ToolWorkshopError(
+					`${tool.descriptor.name} is not ready to close: contract tests not green on the exact proposal snapshot: ${missing.join(", ")}`,
+				);
+			}
+		}
+	}
+
 	status(): WorkshopStatus {
 		const grants = [
 			...this.grantHistory.map((event) => ({ ...event, wants: [...event.wants] })),
@@ -1713,6 +2012,8 @@ export class BuilderWorkshop {
 			scope: BUILDER_WORKSHOP_SCOPE,
 			snapshotHash: this.disposed ? "" : this.snapshotHash(),
 			grants,
+			tryHistory: this.tryHistory.map((entry) => ({ ...entry })),
+			toolCapabilities: this.disposed ? [] : this.toolCapabilities(),
 		};
 	}
 
@@ -1732,6 +2033,15 @@ export class BuilderWorkshop {
 			scratchRoot: this.scratchRoot,
 			openedAt: this.openedAt,
 			snapshotHash: this.snapshotHash(),
+			...(this.toolAuthoringPolicy
+				? {
+					toolAuthoringPolicy: {
+						network: this.toolAuthoringPolicy.network,
+						environmentAllowlist: [...this.toolAuthoringPolicy.environmentAllowlist],
+					},
+				}
+				: {}),
+			tryHistory: this.tryHistory.map((entry) => ({ ...entry })),
 		};
 	}
 
@@ -1786,8 +2096,13 @@ export class BuilderWorkshop {
 		// The resulting Harness must load and must stay readable by its Builder.
 		const resulting = loadTarget(this.path);
 		this.assertResultingHarnessReadable(resulting);
+		this.assertToolContractsPassed(snapshot.entries, changes, resulting);
 		if (changes.some((change) => change.path === WORKSHOP_MANIFEST)) {
-			assertResourceOnlyManifestChange(this.baseManifest, TargetManifest.parse(resulting.manifest));
+			if (this.toolAuthoringPolicy) {
+				assertManifestChangePolicy(this.baseManifest, TargetManifest.parse(resulting.manifest), "execution-policy");
+			} else {
+				assertResourceOnlyManifestChange(this.baseManifest, TargetManifest.parse(resulting.manifest));
+			}
 		}
 
 		const evidenceRefs = [...new Set((metadata.diagnoses ?? []).flatMap((diagnosis) => diagnosis.evidence))];
@@ -1834,7 +2149,12 @@ export class BuilderWorkshop {
 		});
 		const patch = `${proposal.changes.map((change) => change.unifiedDiff.trimEnd()).join("\n")}\n`;
 		gitWorkshop(this.repositoryDir, ["apply", "--check", "--index", "-"], patch);
-		return { proposal, changes, baseTargetSha: this.baseTargetSha };
+		return {
+			proposal,
+			changes,
+			baseTargetSha: this.baseTargetSha,
+			manifestChangePolicy: this.toolAuthoringPolicy ? "execution-policy" : "resources-only",
+		};
 	}
 
 	/** Anything Git sees changed in the worktree that the Harness scope does not cover. */
@@ -2035,6 +2355,8 @@ export function openBuilderWorkshop(options: OpenBuilderWorkshopOptions): Builde
 			openedAt: (options.now ?? (() => new Date().toISOString()))(),
 			baseManifestText: manifestText,
 			baseManifest: manifest,
+			toolAuthoringPolicy: null,
+			tryHistory: [],
 			grantHistory: options.grantHistory,
 			onGrantConsumed: options.onGrantConsumed,
 		});
@@ -2113,6 +2435,8 @@ export function reattachBuilderWorkshop(options: {
 			openedAt: descriptor.openedAt,
 			baseManifestText,
 			baseManifest: TargetManifest.parse(parseYaml(baseManifestText)),
+			toolAuthoringPolicy: descriptor.toolAuthoringPolicy ?? null,
+			tryHistory: descriptor.tryHistory ?? [],
 			grantHistory: options.grantHistory,
 			onGrantConsumed: options.onGrantConsumed,
 		});

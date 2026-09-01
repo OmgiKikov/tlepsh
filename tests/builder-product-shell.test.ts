@@ -46,21 +46,24 @@ function install(
 ): {
 	handlers: Map<string, Handler>;
 	registerEntryRenderer: ReturnType<typeof vi.fn>;
+	sendUserMessage: ReturnType<typeof vi.fn>;
 	controller: ReturnType<typeof installAhdeBuilderProductShell>;
 } {
 	const handlers = new Map<string, Handler>();
 	const registerEntryRenderer = vi.fn();
+	const sendUserMessage = vi.fn();
 	const workbench = decide ? { view: workbenchView, decide } : { view: workbenchView };
 	const controller = installAhdeBuilderProductShell(
 		{
 			on: (event: string, handler: Handler) => handlers.set(event, handler),
 			registerEntryRenderer,
 			appendEntry: vi.fn(),
+			sendUserMessage,
 		} as unknown as ExtensionAPI,
 		workbench as never,
 		decide ? { actorId: () => "local:test-operator" } : {},
 	);
-	return { handlers, registerEntryRenderer, controller };
+	return { handlers, registerEntryRenderer, sendUserMessage, controller };
 }
 
 function host(options: {
@@ -149,8 +152,29 @@ describe("AHDE Builder product shell", () => {
 			expect.arrayContaining([expect.stringContaining("Log in")]),
 		);
 		expect(h.ui.setEditorText).toHaveBeenCalledWith("/login");
-		expect(h.ui.setStatus).toHaveBeenCalledWith("ahde-auth", "Builder model not connected · /login");
-		expect(h.renderHeader().join("\n")).toContain("not connected — /login");
+		expect(h.ui.setStatus).toHaveBeenCalledWith("ahde-auth", "Builder model not connected");
+		expect(h.renderHeader().join("\n")).toContain("openai/gpt-test · not connected");
+	});
+
+	it("keeps the first free-text idea through private model setup", async () => {
+		const { handlers, sendUserMessage } = install(async () => view());
+		const h = host({
+			credentialPresent: false,
+			select: async (title: string) => title.includes("what you just wrote")
+				? "Log in to a provider (OAuth or API key)"
+				: "Not now",
+		});
+		await start(handlers, h.ctx);
+		const transformed = await handlers.get("input")?.({
+			type: "input",
+			text: "Хочу агента, который разбирает обращения клиентов",
+			source: "interactive",
+		} as never, h.ctx as never) as { action: string; text: string };
+		expect(transformed).toEqual({ action: "transform", text: "/login", images: undefined });
+
+		h.ctx.modelRegistry.hasConfiguredAuth = vi.fn(() => true);
+		await handlers.get("model_select")?.({ type: "model_select", source: "set" } as never, h.ctx as never);
+		expect(sendUserMessage).toHaveBeenCalledWith("Хочу агента, который разбирает обращения клиентов");
 	});
 
 	it("keeps the header live after Workbench state changes", async () => {

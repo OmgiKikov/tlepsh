@@ -4,7 +4,7 @@
 Builder structures the Spec, assembles the benchmark, reserves a sealed exam no
 model ever reads, builds and tries the harness in a bound workshop, runs matched
 baseline-vs-candidate experiments, decides the verdict under a named gate policy
-and asks you three questions — start testing, apply this change, ship. The same
+and keeps consequential choices in explicit host-owned review. The same
 engine is a Unix-style CLI for scripts, CI and platforms (`ahde serve`). It
 changes instructions, skills and declared tools — never weights — and promotes
 nothing on its own authority.
@@ -27,8 +27,10 @@ ahde            # Builder Pi: describe the agent; guided setup happens here
 ahde target     # talk to the built agent; /good and /bad become test cases
 ```
 
-The same loop has compact Pi commands: three verbs do the work, and every
-older step is still there, one at a time.
+Free text is the complete product interface: ask the Builder to test, fix,
+apply, open the built agent, or ship, and it performs the matching operation.
+The compact Pi commands below are optional expert shortcuts, not vocabulary a
+user has to learn.
 
 ```text
 /test [repetitions]     test the agent: approve and publish whatever is pending,
@@ -62,9 +64,15 @@ older step is still there, one at a time.
 /next                   close the cycle and continue from the active Target
 ```
 
-Builder Pi has no shell and no file access of its own: it works through three
-typed tools and a bound workshop, and every consequential step is a host-owned
-question with the exact subject on screen. Money is asked once per cycle: the
+Builder Pi has no ambient shell and no arbitrary file access: it works through
+a narrow typed Workbench API and five temporary tools inside a bound workshop.
+It classifies a requested change as instructions (`AGENTS.md`), reusable
+knowledge (a skill), or an external action (a declarative tool). Tool creation
+is conversational: AHDE privately binds credentials, separately reviews
+network/filesystem/process capabilities, generates the descriptor, executable,
+input/output schemas, fixtures and contract manifest, then runs both successful
+and error-handling fixtures until the exact package is green. Every
+consequential step is a host-owned question with the exact subject on screen. Money is asked once per cycle: the
 apply question shows the verification estimate and approves it; verify asks
 again only above 1.5× that amount or when nothing was authorized. Give the
 Builder a Sonnet/Opus-class model — below that floor the loop does not close;
@@ -122,8 +130,9 @@ the conversation as a chat transcript, every grader's verdict, the judge's
 answer to each assertion, and a plain-language **Why** the host assembles from
 recorded fields (what the grader expected, what happened, which failure mode it
 belongs to — labelled as a hypothesis — and whether a candidate flipped it), and
-a per-task baseline-vs-candidate comparison. Inside Builder Pi, `/traces` shows
-the same failure modes and link. Sealed runs never appear on any page.
+a per-task baseline-vs-candidate comparison. Builder Pi can show the same
+failure modes and link directly in conversation. Sealed runs never appear on
+any page.
 
 ## What the engine guarantees
 

@@ -190,7 +190,7 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 	const lines = ["", `${paint.accent(paint.bold(t("header.title")))} ${paint.dim(t("header.tagline"))}`];
 	if (state.error) {
 		lines.push(`${paint.error(t("header.state-unavailable"))} ${oneLine(state.error, 160)}`);
-		lines.push(`${paint.dim(t("label.builder-model"))} ${builder} ${paint.dim(t("header.doctor-hint"))}`);
+		lines.push(`${paint.dim(t("label.builder-model"))} ${builder}`);
 		lines.push("");
 		return lines;
 	}

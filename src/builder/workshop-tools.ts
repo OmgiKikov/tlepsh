@@ -7,6 +7,7 @@ import { oneLine } from "./render/format.js";
 import { themePaint } from "./render/paint.js";
 import { createPolicyAwareGate, projectForModel } from "./workbench-adapter.js";
 import {
+	WorkshopAuthorToolSchema,
 	WorkshopBashToolSchema,
 	WorkshopReadToolSchema,
 	WorkshopTryToolSchema,
@@ -14,6 +15,7 @@ import {
 } from "./workbench-transport.js";
 import type { AhdeWorkbench } from "../workbench/workbench.js";
 import { BUILDER_WORKSHOP_SCOPE } from "../application/tool-workshop.js";
+import { selectToolCredentialEnvironments } from "./onboarding.js";
 
 type RegisteredWorkshopTool = ToolDefinition<TSchema, unknown>;
 
@@ -26,6 +28,7 @@ export const AHDE_WORKSHOP_TOOL_NAMES = [
 	"ahde_workshop_read",
 	"ahde_workshop_write",
 	"ahde_workshop_bash",
+	"ahde_workshop_author_tool",
 	"ahde_workshop_try",
 ] as const;
 
@@ -206,9 +209,63 @@ export function createWorkshopTools(
 			},
 		}),
 		defineTool({
+			name: "ahde_workshop_author_tool",
+			executionMode: SEQUENTIAL,
+			label: "Build and test a Target tool",
+			description: [
+				"Compile one conversational Tool Brief into a complete, canonical Target-tool package and run its contract fixtures.",
+				"Use this after interviewing the operator one question at a time about: purpose, input/output, data source, errors, permissions, and credentials.",
+				"Arguments: { name, purpose, dataSource, parameters: <JSON Schema>, output: { format: \"json\"|\"text\", description, schema? }, errors: [{ condition, behavior }], permissions: { network: \"deny\"|\"allow\", filesystem: \"read-only\"|\"workspace-write\", process: \"sandboxed-subprocess\" }, credentials: [{ id, purpose, required? }], implementation, supportFiles?, setup?, fixtures: [{ name, covers: \"happy-path\"|\"error-handling\", input, expect: { exitCode?, stdoutContains?, stderrContains?, jsonEquals? } }], timeoutMs?, maxOutputBytes? }.",
+				"implementation is the complete shebang executable. It may refer only to logical credentials with {{credential.<id>}}; the host privately asks the operator which environment variable supplies each one and substitutes the name. Never ask for or put a secret value in this call.",
+				"The host separately confirms network, filesystem and sandboxed-process capabilities before anything runs.",
+				"AHDE requires both a successful fixture and a deterministic error fixture, generates tool.yaml, run, input.schema.json, output.schema.json, README.md, fixtures/*.json and contract-tests.json, removes stale files from the previous package, then tries every fixture through the real Target tool broker.",
+				"A failing test is a repair instruction: change the implementation or contract and call this tool again. Do not close the workshop until allPassed is true.",
+			].join(" "),
+			parameters: WorkshopAuthorToolSchema.parameters,
+			prepareArguments: (args) => WorkshopAuthorToolSchema.prepare(args),
+			async execute(_id, params, signal, _update, ctx) {
+				abortIfRequested(signal);
+				if (!ctx.hasUI || ctx.mode !== "tui") {
+					throw new Error("Tool authoring needs the local host UI for credentials and capabilities; RPC, print, and JSON execution fail closed");
+				}
+				const credentialBindings = await selectToolCredentialEnvironments(ctx, params.name, params.credentials);
+				return textResult(await workbench.workshopAuthorTool(params, {
+					credentialBindings,
+					gate: gateFor(ctx),
+					...(signal ? { signal } : {}),
+				}));
+			},
+			renderCall: (args: { name?: string }, theme: Theme) => {
+				const paint = themePaint(theme);
+				return card([`${paint.accent("workshop")} ${paint.dim("build tool")} ${paint.bold(args.name ?? "")}`]);
+			},
+			renderResult: (result, renderOptions, theme) => {
+				const paint = themePaint(theme);
+				const details = result.details as {
+					tool?: string;
+					files?: string[];
+					allPassed?: boolean;
+					tests?: { name: string; passed: boolean; durationMs: number; failure: string | null }[];
+					capabilities?: { network?: string; filesystem?: string; process?: string; credentials?: number };
+				} | undefined;
+				if (!details) return card([paint.muted("tool package")]);
+				const tests = details.tests ?? [];
+				const headline = `${details.allPassed ? paint.success("✓") : paint.error("✗")} ${paint.bold(details.tool ?? "tool")} ` +
+					`${tests.filter((test) => test.passed).length}/${tests.length} contract tests passed`;
+				if (!renderOptions.expanded) return card([headline]);
+				return card([
+					headline,
+					`  ${paint.dim("Capabilities")} network ${details.capabilities?.network ?? "—"} · filesystem ${details.capabilities?.filesystem ?? "—"} · process sandboxed · ${details.capabilities?.credentials ?? 0} credential binding(s)`,
+					`  ${paint.dim("Package")} ${(details.files ?? []).length} generated file(s)`,
+					...tests.map((test) => `  ${test.passed ? paint.success("✓") : paint.error("✗")} ${test.name} ${paint.dim(`${test.durationMs}ms`)}${test.failure ? ` — ${oneLine(test.failure, 120)}` : ""}`),
+					...(details.allPassed ? [] : [paint.warning("Repair the failing case and try the package again before review.")]),
+				]);
+			},
+		}),
+		defineTool({
 			name: "ahde_workshop_try",
 			executionMode: SEQUENTIAL,
-			label: "Try a tool in the workshop",
+			label: "Try tool",
 			description: [
 				"Run one declared Target tool of the workshop's own Harness on one JSON input — including the tool you just wrote.",
 				"Arguments: { tool: string, input: <the tool's own JSON arguments> }.",

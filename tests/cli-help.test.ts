@@ -35,7 +35,7 @@ describe("one Builder command list", () => {
 
 	it("keeps the README slash block equal to the registered commands", () => {
 		const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
-		const block = readme.split("The same loop has compact Pi commands:")[1]?.split("```")[1] ?? "";
+		const block = readme.split("The compact Pi commands below are optional expert shortcuts")[1]?.split("```")[1] ?? "";
 		expect(block).not.toBe("");
 		expect(slashNames(block).sort()).toEqual([...AHDE_BUILDER_COMMAND_NAMES].sort());
 	});
@@ -54,11 +54,10 @@ describe("one Builder persona", () => {
 			.map((cells) => ({ say: cells[1] ?? "", means: cells[2] ?? "" }));
 	}
 
-	it("names the operator's shortcuts and no command AHDE does not register", () => {
+	it("keeps slash commands out of the model-facing tool instructions", () => {
 		const listed = slashNames(persona.split("## Tools")[1]?.split("\n## ")[0] ?? "");
-		expect([...listed].sort()).toEqual([...AHDE_BUILDER_COMMAND_NAMES].sort());
-		// The three verbs are named first, exactly as /help orders them.
-		expect(listed.slice(0, 3)).toEqual(["test", "fix", "ship"]);
+		expect(listed).toEqual([]);
+		expect(persona).toContain("Free text is the only required interface");
 	});
 
 	it("speaks the operator's words and keeps the jargon in the “it means” column", () => {
@@ -146,8 +145,8 @@ describe("one Builder persona", () => {
 		expect(working).toContain("Do the work.");
 		// A report request is answered, not forwarded to a terminal.
 		expect(working).toContain("покажи как вырос");
-		expect(working).toContain("`/passport` puts that page on\n  screen");
-		expect(working).toContain("Never answer with a terminal command");
+		expect(working).toContain("After Ship the host shows the Passport automatically");
+		expect(working).toContain("Never answer with a terminal or slash command");
 		expect(working).toContain("Never answer “use /test” or “type /apply”");
 		// The stage machine is not the operator's vocabulary.
 		expect(working).toContain("Never\n  narrate stages");

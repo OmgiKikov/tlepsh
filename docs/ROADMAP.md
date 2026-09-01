@@ -32,12 +32,22 @@ later train-under-harness step) stays on its branch. `feat/sealed-synth`
 candidate for a Builder-side decision rather than a CLI command, to be decided
 separately.
 
-**Next.** Builder Pi polish for its first human user: panels in the operator's
-language, one money question per cycle (authorized at apply), the diff on
-screen when a workshop closes, `ahde label` offered once in the flow. Then
-model comparison mode (item 16), three splits (development / validation /
-sealed), the Pareto table as the default presentation of a change, and
-transfer/continued reporting.
+**Landed after that review.** Free text is now the only required Builder
+interface; slash commands are optional host shortcuts. Builder classifies
+instructions vs skills vs external tools. Tool creation has a conversational
+brief, host-owned credential binding and capability review, a complete
+generated package, successful plus error-handling contract fixtures, and a
+write → try → repair loop that must be green on the exact final snapshot.
+Workshop close shows capabilities, tests and the full diff; Apply can fund and
+start matched verification immediately; the Builder can hand off to isolated
+Runtime Pi and return to the same conversation; Ship automatically renders the
+Passport without dirtying the Target checkout (explicit export can save it).
+
+**Next.** First-user acceptance and distribution polish: install from a clean
+machine, finish one agent from idea to Passport without knowing a command,
+measure time-to-first-working-agent, and fix every point where the host still
+exposes internal vocabulary. After that: model comparison mode (item 16), three
+splits (development / validation / sealed), and transfer/continued reporting.
 
 Status 2026-08-31. Integration branch `codex/integrate-polish` (off master
 `83535d8`). This

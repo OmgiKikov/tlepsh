@@ -218,19 +218,20 @@ import {
 } from "ahde";
 
 const expectedToolNames = ["ahde_workbench_view", "ahde_workbench_submit", "ahde_workbench_decide"];
-// The workshop four are registered but legal only while a workshop is open.
+// The workshop five are registered but legal only while a workshop is open.
 const expectedWorkshopToolNames = [
 	"ahde_workshop_read",
 	"ahde_workshop_write",
 	"ahde_workshop_bash",
+	"ahde_workshop_author_tool",
 	"ahde_workshop_try",
 ];
 const expectedRegisteredToolNames = [...expectedToolNames, ...expectedWorkshopToolNames];
 const expectedCommandNames = [
 	"test", "fix", "ship",
-	"help", "doctor", "status", "run", "calibrate", "traces", "review",
+	"help", "doctor", "holdout", "status", "run", "calibrate", "traces", "review",
 	"approve", "publish", "apply", "discard", "promote", "reject", "adopt", "next",
-	"target",
+	"target", "passport", "trace", "log",
 ];
 // The CLI command surface the installed package registers. serve is the
 // platform seam: the Workbench behind a loopback HTTP/JSON API; log and watch
@@ -241,7 +242,7 @@ const expectedCliCommandNames = [
 	"init", "run", "validate", "list", "failures", "corpus", "feedback", "tool",
 	"compare", "diagnose", "regrade", "report", "label", "judge-agreement",
 	"candidate", "calibrate", "check", "improve", "search", "review", "promote",
-	"reject", "log", "watch",
+	"reject", "passport", "log", "watch",
 ];
 if (JSON.stringify(CLI_COMMANDS) !== JSON.stringify(expectedCliCommandNames)) {
   throw new Error(\`installed package registered an unexpected CLI command surface: \${CLI_COMMANDS.join(", ")}\`);

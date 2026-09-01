@@ -47,6 +47,12 @@ import {
 	compileHarnessAuthoringProposal,
 	type HarnessAuthoringIntent,
 } from "../application/harness-authoring.js";
+import {
+	assertToolContract,
+	compileToolPackage,
+	ToolAuthoringBriefSchema,
+	type ToolAuthoringBrief,
+} from "../application/tool-authoring.js";
 import { inspectTargetAuthoringContext } from "../application/target-authoring-context.js";
 import {
 	compactExperimentHistory,
@@ -248,6 +254,7 @@ import {
 	type WorkbenchViewQuery,
 	type WorkbenchCheapCheckProjection,
 	type WorkbenchRegressionGuardsProjection,
+	type WorkbenchVerifyCandidateResult,
 	type PersistedWorkbenchWorkshop,
 } from "./types.js";
 import type { CandidateRecord } from "../domain/candidate.js";
@@ -269,6 +276,28 @@ const MAX_DATASET_CASE_TURNS = 6;
 export interface WorkbenchEvidenceLink {
 	url: string;
 	label?: string;
+}
+
+export interface WorkbenchToolContractResult {
+	name: string;
+	passed: boolean;
+	exitCode: number | null;
+	durationMs: number;
+	failure: string | null;
+}
+
+export interface WorkbenchToolAuthoringResult {
+	tool: string;
+	packageHash: string;
+	files: string[];
+	capabilities: {
+		network: "deny" | "allow";
+		filesystem: "read-only" | "workspace-write";
+		process: "sandboxed-subprocess";
+		credentials: number;
+	};
+	tests: WorkbenchToolContractResult[];
+	allPassed: boolean;
 }
 
 /** The exact options the one canonical proposal-recording service accepts. */
@@ -1002,7 +1031,9 @@ export class AhdeWorkbench {
 				// A composite pre-approves the exact decisions the human read. It
 				// never pre-approves a workshop grant: widening what pre-review code
 				// may reach is its own question, every time.
-				if (confirmation.kind === "workshop-grant") return gate.confirm(confirmation, signal);
+				if (confirmation.kind === "workshop-grant" || confirmation.kind === "tool-authoring") {
+					return gate.confirm(confirmation, signal);
+				}
 				const matches = planned.get(confirmation.kind);
 				if (matches && !used.has(confirmation.kind) && matches(confirmation.subject)) {
 					used.add(confirmation.kind);
@@ -1741,10 +1772,14 @@ export class AhdeWorkbench {
 		if (compiled.proposal.baseTargetSha !== authoringContext.target.gitSha) {
 			throw new Error("the workshop diff does not match the inspected Target authoring revision");
 		}
-		const grants = workshop.status().grants;
+		const workshopSummary = workshop.status();
+		const grants = workshopSummary.grants;
 		const recorded = await this.recordCompiledProposal({
 			proposal: compiled.proposal,
 			approvedSpecId: approved.id,
+			...(compiled.manifestChangePolicy === "execution-policy"
+				? { manifestChangePolicy: "execution-policy" as const }
+				: {}),
 			...(evidence ? { sourceEvalRunId: evidence.sourceEvalRunId } : {}),
 			proposalBasis: evidence
 				? { ...(currentBinding.source as BuilderWorkshopSource), failureModeIds: [...(input.failureModeIds ?? [])] }
@@ -1774,7 +1809,22 @@ export class AhdeWorkbench {
 				approvedSpecId: approved.id,
 				// What the operator allowed the workshop to reach, carried into the
 				// dialog they apply this diff behind.
-				grants: grants.map((grant) => `${grant.tool}: ${grant.wants.join(" and ")} (${grant.actorId})`),
+				// Builder Pi gets only the fact that host-owned authority was used.
+				// Exact environment names and actor identity remain in the human review
+				// and immutable audit record, never in conversational model context.
+				grants: grants.map((grant) => ({
+					tool: grant.tool,
+					capabilityCount: grant.wants.length,
+					used: grant.used,
+				})),
+				permissions: workshopSummary.toolCapabilities.map((capability) => ({
+					tool: capability.tool,
+					network: capability.network,
+					filesystem: capability.filesystem,
+					process: capability.process,
+					credentials: capability.environment.length,
+				})),
+				toolTests: workshopSummary.tryHistory,
 				authoringContextHash: authoringContext.contextHash,
 			},
 			view: await this.viewOf(settled),
@@ -1847,6 +1897,136 @@ export class AhdeWorkbench {
 		const result = workshop.write(WorkshopWriteInputSchema.parse(input));
 		this.rememberWorkshop(workshop);
 		return result;
+	}
+
+	/**
+	 * Turn one conversational brief into a complete Target-tool package and run
+	 * its contract fixtures. Credential bindings and the capability approval are
+	 * host inputs; neither can be supplied by Builder Pi.
+	 */
+	async workshopAuthorTool(
+		inputValue: ToolAuthoringBrief,
+		options: {
+			credentialBindings: Readonly<Record<string, string>>;
+			gate: WorkbenchHumanGate;
+			signal?: AbortSignal;
+		},
+	): Promise<WorkbenchToolAuthoringResult> {
+		const workshop = this.requireWorkshop();
+		const brief = ToolAuthoringBriefSchema.parse(inputValue);
+		const current = loadTarget(workshop.path);
+		const compiled = compileToolPackage({
+			brief,
+			credentialBindings: options.credentialBindings,
+			currentExecution: current.manifest.execution,
+		});
+		const subject = {
+			operation: "author-and-try-tool",
+			workshopId: workshop.workshopId,
+			packageHash: compiled.packageHash,
+			tool: compiled.brief.name,
+			purpose: compiled.brief.purpose,
+			dataSource: compiled.brief.dataSource,
+			inputSchema: compiled.brief.parameters,
+			output: compiled.brief.output,
+			errors: compiled.brief.errors,
+			capabilities: {
+				network: compiled.capabilities.network,
+				filesystem: compiled.capabilities.filesystem,
+				process: compiled.capabilities.process,
+				credentials: compiled.capabilities.credentialSlots.map((slot) => ({
+					id: slot.id,
+					purpose: slot.purpose,
+					environment: options.credentialBindings[slot.id],
+				})),
+			},
+			files: compiled.files.map((file) => `tools/${compiled.brief.name}/${file.path}`),
+			contractTests: compiled.fixtures.map((fixture) => fixture.name),
+		};
+		const confirmation: WorkbenchConfirmation = {
+			kind: "tool-authoring",
+			title: `Allow ${compiled.brief.name} capabilities and try its contract tests`,
+			reason: "the Builder compiled a complete tool package from the reviewed conversational brief",
+			subject,
+			subjectHash: hashValue(subject),
+			policy: "consequential",
+			question:
+				`${compiled.brief.name} will run as a sandboxed process with ` +
+				`${compiled.capabilities.filesystem} filesystem and ${compiled.capabilities.network} network` +
+				`${compiled.capabilities.credentialSlots.length > 0 ? `, using ${compiled.capabilities.credentialSlots.length} host credential binding(s)` : ""}. ` +
+				`Create the package and run ${plural(compiled.fixtures.length, "contract test")}?`,
+		};
+		const decision = await options.gate.confirm(confirmation, options.signal);
+		abortIfRequested(options.signal);
+		if (!decision.approved) throw new WorkbenchDecisionDeclinedError("tool-authoring");
+		const operator = actorId(decision.actorId);
+
+		workshop.configureToolAuthoringPolicy({
+			network: compiled.executionPolicy.network,
+			environmentAllowlist: compiled.executionPolicy.environmentAllowlist,
+		});
+		workshop.replaceToolPackage(compiled.brief.name, compiled.files);
+		this.rememberWorkshop(workshop);
+
+		const tests: WorkbenchToolContractResult[] = [];
+		for (const fixture of compiled.fixtures) {
+			abortIfRequested(options.signal);
+			try {
+				const requirement = workshop.describeToolGrant(compiled.brief.name);
+				if (requirement) {
+					workshop.grantToolAccess({
+						tool: requirement.tool,
+						wants: requirement.wants,
+						snapshotHash: workshop.snapshotHash(),
+						actorId: operator,
+						now: this.dependencies.now,
+					});
+				}
+				const tried = await workshop.tryTool({
+					tool: compiled.brief.name,
+					input: fixture.input,
+					test: fixture.name,
+					now: this.dependencies.now,
+					...(options.signal ? { signal: options.signal } : {}),
+				});
+				const assertion = assertToolContract(
+					fixture,
+					tried,
+					compiled.brief.output.format === "json" ? compiled.brief.output.schema : undefined,
+				);
+				workshop.recordContractAssertion(fixture.name, assertion.passed, assertion.failures);
+				tests.push({
+					name: fixture.name,
+					passed: assertion.passed,
+					exitCode: tried.exitCode,
+					durationMs: tried.durationMs,
+					failure: assertion.failures.join("; ") || null,
+				});
+			} catch (error) {
+				workshop.recordFailedTry(compiled.brief.name, fixture.name, error, this.dependencies.now);
+				tests.push({
+					name: fixture.name,
+					passed: false,
+					exitCode: null,
+					durationMs: 0,
+					failure: redactTraceText(error instanceof Error ? error.message : String(error)).slice(0, 240),
+				});
+			}
+			this.rememberWorkshop(workshop);
+		}
+		return {
+			tool: compiled.brief.name,
+			packageHash: compiled.packageHash,
+			files: compiled.files.map((file) => `tools/${compiled.brief.name}/${file.path}`),
+			capabilities: {
+				network: compiled.capabilities.network,
+				filesystem: compiled.capabilities.filesystem,
+				process: compiled.capabilities.process,
+				credentials: compiled.capabilities.credentialSlots.length,
+			},
+			tests,
+			allPassed: tests.every((test) => test.passed),
+		};
 	}
 
 	async workshopBash(input: WorkshopBashInput, options: { signal?: AbortSignal } = {}): Promise<WorkshopBashResult> {
@@ -1931,7 +2111,7 @@ export class AhdeWorkbench {
 		return result;
 	}
 
-	/** True while the four workshop tools are legal. Host-side gate, not model state. */
+	/** True while the five workshop tools are legal. Host-side gate, not model state. */
 	get workshopOpen(): boolean {
 		return this.workshop?.open === true;
 	}
@@ -3002,7 +3182,45 @@ export class AhdeWorkbench {
 			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
 			const result = this.dependencies.applyProposal({ repoDir: this.projectDir, runsRoot: this.runsRoot, runId: proposal.record.runId, expectedBuilderRunHash: after.builderRunHash, requestedBranch: input.branch, actor: { kind: "human", id: actor }, verificationAuthorization: verification, reason: input.reason });
 			const settled = this.select("proposal", proposal.record.runId);
-			return { kind: input.kind, message: "Proposal applied to an exact candidate branch; verification is now required.", result: { runId: result.receipt.runId, branch: result.receipt.branch, candidateSha: result.receipt.candidateSha, proposalHash: result.receipt.proposalSha256 }, view: await this.viewOf(settled) };
+			let view = await this.viewOf(settled);
+			let verified: WorkbenchVerifyCandidateResult | { outcome: "blocked"; reason: string } | undefined;
+			if (input.verify) {
+				try {
+					const check = await this.decide({
+						kind: "verify-candidate",
+						builderRunId: proposal.record.runId,
+						repetitions: input.verify.repetitions,
+						...(input.verify.force !== undefined ? { force: input.verify.force } : {}),
+						reason: `${input.reason} — automatic post-Apply verification`,
+					}, gate, options);
+					verified = check.result;
+					view = check.view;
+				} catch (error) {
+					// Apply is already durable. A missing/declined exam or runtime failure is
+					// an explicit verification blocker, never a lie that Apply rolled back.
+					verified = {
+						outcome: "blocked",
+						reason: redactTraceText(error instanceof Error ? error.message : String(error)).slice(0, 500),
+					};
+					view = await this.viewOf(this.select("proposal", proposal.record.runId));
+				}
+			}
+			return {
+				kind: input.kind,
+				message: verified === undefined
+					? "Proposal applied to an exact candidate branch; verification is now required."
+					: verified.outcome === "blocked"
+						? `Proposal applied; automatic verification is blocked: ${verified.reason}`
+						: "Proposal applied and automatic matched verification finished.",
+				result: {
+					runId: result.receipt.runId,
+					branch: result.receipt.branch,
+					candidateSha: result.receipt.candidateSha,
+					proposalHash: result.receipt.proposalSha256,
+					...(verified === undefined ? {} : { verification: verified }),
+				},
+				view,
+			};
 		}
 
 		if (input.kind === "discard-proposal") {

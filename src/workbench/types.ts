@@ -570,6 +570,22 @@ export const PersistedWorkbenchWorkshopSchema = z.strictObject({
 	scratchRoot: z.string().min(1).max(4_096),
 	openedAt: z.iso.datetime({ offset: true }),
 	snapshotHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+	toolAuthoringPolicy: z.strictObject({
+		network: z.enum(["deny", "allow"]),
+		environmentAllowlist: z.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,199}$/)).max(64),
+	}).optional(),
+	tryHistory: z.array(z.strictObject({
+		tool: z.string().regex(/^[a-z][a-z0-9_]{0,63}$/),
+		test: z.string().min(1).max(200).nullable(),
+		passed: z.boolean(),
+		exitCode: z.number().int().nullable(),
+		timedOut: z.boolean(),
+		truncated: z.boolean(),
+		durationMs: z.number().int().nonnegative(),
+		failure: z.string().max(240).nullable(),
+		snapshotHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+		at: z.iso.datetime({ offset: true }),
+	})).max(32).optional(),
 	// Legacy V1 notes persisted grants here. Parse them only so an existing
 	// workshop can be re-attached safely; the reattach path deliberately ignores
 	// them and every new descriptor omits them. Editable selection state grants
@@ -597,7 +613,7 @@ export const WorkbenchSubmitInputSchema = z.discriminatedUnion("kind", [
 ]);
 
 // ---------------------------------------------------------------------------
-// The four tools that exist only while a workshop is open. Their authority is
+// The five tools that exist only while a workshop is open. Their authority is
 // the open workshop itself: no repository, no revision, no absolute path, and
 // no scope ever arrives from the model.
 
@@ -753,6 +769,11 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		kind: z.literal("apply-proposal"),
 		runId: ArtifactIdSchema.optional(),
 		branch: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/),
+		/** Product path: the same Apply confirmation immediately funds verification. */
+		verify: z.strictObject({
+			repetitions: z.number().int().min(1).max(10).default(3),
+			force: z.boolean().optional(),
+		}).optional(),
 		reason: NonBlankSchema.max(4_000),
 	}),
 	z.strictObject({
@@ -874,7 +895,7 @@ export interface WorkbenchDecisionExecutionOptions {
  * exactly one tool inside one open workshop, and like every other confirmation
  * it is host-owned — a model can ask for it, never assert it.
  */
-export type WorkbenchConfirmationKind = WorkbenchDecisionInput["kind"] | "workshop-grant";
+export type WorkbenchConfirmationKind = WorkbenchDecisionInput["kind"] | "workshop-grant" | "tool-authoring";
 
 export interface WorkbenchConfirmation {
 	kind: WorkbenchConfirmationKind;
@@ -1112,7 +1133,14 @@ export interface WorkbenchDecisionResultMap {
 		| ({ resolvedAs: "run-eval" } & WorkbenchRunEvalResult)
 		| ({ resolvedAs: "verify-candidate" } & WorkbenchVerifyCandidateResult)
 		| ({ resolvedAs: "start-testing" } & WorkbenchStartTestingResult);
-	"apply-proposal": { runId: string; branch: string; candidateSha: string; proposalHash: string };
+	"apply-proposal": {
+		runId: string;
+		branch: string;
+		candidateSha: string;
+		proposalHash: string;
+		/** Present on the product Apply path; omitted by low-level recovery callers. */
+		verification?: WorkbenchVerifyCandidateResult | { outcome: "blocked"; reason: string };
+	};
 	"discard-proposal": { runId: string; receiptHash: string };
 	"verify-candidate": WorkbenchVerifyCandidateResult;
 	"abandon-candidate": {

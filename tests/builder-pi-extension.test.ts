@@ -25,6 +25,7 @@ import {
 import { AhdeWorkbench } from "../src/workbench/workbench.js";
 import { buildProjectStatus } from "../src/builder/project-context.js";
 import { createCorpus } from "../src/corpus.js";
+import { baseFixtureFiles, makeTargetFixture } from "./fixtures.js";
 
 const roots: string[] = [];
 
@@ -333,6 +334,48 @@ describe("Builder Pi extension registry", () => {
 		const suspend = vi.spyOn(AhdeWorkbench.prototype, "suspendWorkshop");
 		expect(handlers.get("session_shutdown")?.()).toBeUndefined();
 		expect(suspend).toHaveBeenCalledOnce();
+	});
+
+	it("turns plain-language agent handoff into a host-owned Runtime Pi transition", async () => {
+		const projectDir = makeTargetFixture(baseFixtureFiles());
+		roots.push(projectDir);
+		const requested = vi.fn();
+		const shutdown = vi.fn();
+		const previous = process.env.TEST_MODEL_KEY;
+		process.env.TEST_MODEL_KEY = "test-only";
+		try {
+			const tools = createAhdeBuilderTools({
+				projectDir,
+				stateRoot: root("ahde-builder-handoff-state-"),
+				runsRoot: root("ahde-builder-handoff-runs-"),
+				projectId: "demo",
+				onTalkToTarget: requested,
+			});
+			const decide = tools.find((tool) => tool.name === "ahde_workbench_decide")!;
+			const input = WorkbenchDecisionToolSchema.prepare({
+				kind: "talk-to-agent",
+				reason: "The operator wants to try the built agent",
+			});
+			const result = await decide.execute!(
+				"handoff-1",
+				input as never,
+				undefined,
+				() => undefined,
+				{
+					hasUI: true,
+					mode: "tui",
+					shutdown,
+					ui: { notify: vi.fn() },
+				} as never,
+			);
+			expect(requested).toHaveBeenCalledOnce();
+			expect(JSON.stringify(result)).toContain("opening the active agent");
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(shutdown).toHaveBeenCalledOnce();
+		} finally {
+			if (previous === undefined) delete process.env.TEST_MODEL_KEY;
+			else process.env.TEST_MODEL_KEY = previous;
+		}
 	});
 
 	it("counts every sealed corpus before bounding the public development inventory", () => {

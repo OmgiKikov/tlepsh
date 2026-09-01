@@ -132,6 +132,8 @@ export interface BuilderExtensionOptions extends BuilderProjectContext {
 	/** Trusted packaged target template; model tool input can never override it. */
 	templateDir?: string;
 	dependencies?: Partial<BuilderExtensionDependencies>;
+	/** Host-owned request to leave Builder Pi and enter isolated Runtime Pi. */
+	onTalkToTarget?: () => void | Promise<void>;
 }
 
 const DEFAULT_DEPENDENCIES: BuilderExtensionDependencies = {
@@ -192,7 +194,7 @@ export const CONSEQUENTIAL_BUILDER_TOOL_NAMES = [
 	"ahde_workbench_decide",
 ] as const;
 
-/** Every tool Builder Pi may ever call; the workshop four only while one is open. */
+/** Every tool Builder Pi may ever call; the workshop five only while one is open. */
 export const AHDE_BUILDER_REGISTERED_TOOL_NAMES = [
 	...AHDE_BUILDER_TOOL_NAMES,
 	...AHDE_WORKSHOP_TOOL_NAMES,
@@ -214,7 +216,7 @@ export function createAhdeBuilderExtension(options: BuilderExtensionOptions): Ex
 			},
 		}));
 		// Invariant 1: no generic edit/write outside a bound workshop worktree. The
-		// four workshop tools are legal exactly while one is open; a closed
+		// five workshop tools are legal exactly while one is open; a closed
 		// workshop is a recoverable mistake, an unknown tool is not.
 		pi.on("tool_call", (event) => {
 			if (allowedTools.has(event.toolName)) return undefined;
@@ -259,9 +261,10 @@ export function createAhdeBuilderExtension(options: BuilderExtensionOptions): Ex
 			beginLiveTrace: dependencies.beginLiveTrace,
 			presenter,
 			onWorkbenchChanged,
+			onTalkToTarget: options.onTalkToTarget,
 		});
 		for (const tool of tools) pi.registerTool(tool);
-		for (const tool of createWorkshopTools(workbench)) pi.registerTool(tool);
+		for (const tool of createWorkshopTools(workbench, { actorId: dependencies.actorId })) pi.registerTool(tool);
 		refreshWorkshopTools();
 		// Conversation shutdown is not abandonment: preserve the exact worktree
 		// and note, while dropping every process-local grant and runtime scratch.
@@ -319,7 +322,10 @@ export function createAhdeBuilderTools(options: BuilderExtensionOptions): readon
 	const dependencies = { ...DEFAULT_DEPENDENCIES, ...options.dependencies };
 	const workbench = createBuilderWorkbench(options, dependencies);
 	return [
-		...createBuilderWorkbenchTools(workbench, dependencies.actorId, { beginLiveTrace: dependencies.beginLiveTrace }),
-		...createWorkshopTools(workbench),
+		...createBuilderWorkbenchTools(workbench, dependencies.actorId, {
+			beginLiveTrace: dependencies.beginLiveTrace,
+			onTalkToTarget: options.onTalkToTarget,
+		}),
+		...createWorkshopTools(workbench, { actorId: dependencies.actorId }),
 	];
 }

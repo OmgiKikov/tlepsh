@@ -6,6 +6,7 @@ import {
 } from "../application/target-model-selection.js";
 import { t } from "../i18n.js";
 import type { TargetManifest } from "../manifest.js";
+import type { ToolCredentialSlot } from "../application/tool-authoring.js";
 import type { AhdeWorkbench } from "../workbench/workbench.js";
 import type { WorkbenchHumanGate, WorkbenchView } from "../workbench/types.js";
 import { WorkbenchDecisionDeclinedError } from "../workbench/errors.js";
@@ -88,7 +89,7 @@ export function hostModelCatalog(ctx: Pick<ExtensionContext, "modelRegistry">): 
 
 /** One line the model can copy a `{ provider, modelId }` out of. */
 export function describeHostModelCatalog(catalog: HostModelCatalog): string {
-	if (catalog.models.length === 0) return "the host catalog is empty; the operator must run /login first";
+	if (catalog.models.length === 0) return "the host catalog is empty; the operator must use the private model connection picker first";
 	const listed = catalog.models
 		.map((entry) => `${entry.provider}/${entry.modelId}${entry.credentialPresent ? "" : " (no credential)"}`)
 		.join(", ");
@@ -131,6 +132,32 @@ export async function selectEvaluatorCredentialEnvironment(
 		selection,
 		role === "judge" ? t("onboarding.subject-judge") : t("onboarding.subject-user"),
 	);
+}
+
+/**
+ * Resolve logical tool credential slots in host UI. Builder Pi supplies only
+ * purpose (`api_token`); the concrete environment name never appears in chat.
+ */
+export async function selectToolCredentialEnvironments(
+	ctx: Pick<ExtensionContext, "ui">,
+	tool: string,
+	slots: readonly ToolCredentialSlot[],
+): Promise<Record<string, string>> {
+	const bindings: Record<string, string> = {};
+	for (const slot of slots) {
+		const suggested = `AHDE_${tool}_${slot.id}`.toUpperCase().replace(/[^A-Z0-9_]/g, "_");
+		const selected = await ctx.ui.input(
+			`Environment variable holding ${slot.purpose} for ${tool}`,
+			suggested,
+		);
+		if (selected === undefined) throw new Error(`Tool credential setup for ${slot.id} was cancelled by the operator`);
+		const name = selected.trim() || suggested;
+		if (!/^[A-Za-z_][A-Za-z0-9_]{0,199}$/.test(name)) {
+			throw new Error("Tool credential binding must be one environment-variable name; never paste the credential value");
+		}
+		bindings[slot.id] = name;
+	}
+	return bindings;
 }
 
 /** Resolve one bounded evaluator selection against the trusted host catalog. */

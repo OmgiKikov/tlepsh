@@ -63,15 +63,15 @@ function builderModelStatus(ctx: Pick<ExtensionContext, "model" | "modelRegistry
 function safeProviderFailure(message: string | undefined): string {
 	const source = message ?? "";
 	if (/\b40[13]\b|unauthori[sz]ed|invalid (?:bearer|api key|token)|authentication/i.test(source)) {
-		return "Builder model authentication was rejected. Run /login or choose another configured model with /model, then retry.";
+		return "Builder model authentication was rejected. Say “connect model” to reopen connection setup, then retry.";
 	}
 	if (/\b429\b|rate.?limit|too many requests/i.test(source)) {
-		return "Builder model is rate-limited. Wait and retry, or choose another model with /model.";
+		return "Builder model is rate-limited. Wait and retry, or say “connect model” to choose another one.";
 	}
 	if (/fetch failed|ECONNREFUSED|ENOTFOUND|network|socket|connection/i.test(source)) {
-		return "Builder model is unreachable. Check network access or choose another model with /model, then retry.";
+		return "Builder model is unreachable. Check network access or say “connect model” to choose another one.";
 	}
-	return "Builder model request failed. Run /doctor, then retry or choose another model with /model.";
+	return "Builder model request failed. Retry, or say “connect model” to reopen setup.";
 }
 
 const LOGIN_CHOICE = (): string => t("onboarding.login-choice");
@@ -122,6 +122,8 @@ export function installAhdeBuilderProductShell(
 	};
 	let tui: TUI | null = null;
 	let host: ExtensionContext | null = null;
+	/** First ordinary message survives the host-owned login/model picker. */
+	let pendingFirstMessage: string | null = null;
 	const now = options.now ?? (() => Date.now());
 	const sessionStartedAt = now();
 
@@ -173,7 +175,7 @@ export function installAhdeBuilderProductShell(
 				"ahde",
 				view ? renderStatusBar(statusFacts(view)) : state.error ? "AHDE · blocked" : "AHDE",
 			);
-			host.ui.setStatus("ahde-auth", state.builderModel.credentialPresent ? undefined : "Builder model not connected · /login");
+			host.ui.setStatus("ahde-auth", state.builderModel.credentialPresent ? undefined : "Builder model not connected");
 		} catch {
 			// Status is cosmetic.
 		}
@@ -311,6 +313,29 @@ export function installAhdeBuilderProductShell(
 		}
 	});
 
+	// Free text remains the only required interface even before Builder Pi has a
+	// model. Preserve the user's actual idea, route connection through the host's
+	// private built-in picker, then replay the idea after model selection.
+	pi.on("input", async (event, ctx) => {
+		if (event.source !== "interactive" || event.text.trim().startsWith("/")) return undefined;
+		state.builderModel = builderModelStatus(ctx);
+		if (state.builderModel.credentialPresent) return undefined;
+		if (typeof ctx.ui.select !== "function") {
+			ctx.ui.notify("Connect a Builder model in this local TUI before continuing.", "warning");
+			return { action: "handled" as const };
+		}
+		pendingFirstMessage = event.text;
+		const choice = await ctx.ui.select(
+			"Connect the Builder, then AHDE will continue with what you just wrote",
+			[LOGIN_CHOICE, MODEL_CHOICE, LATER_CHOICE],
+		);
+		if (choice === LOGIN_CHOICE) return { action: "transform" as const, text: "/login", images: event.images };
+		if (choice === MODEL_CHOICE) return { action: "transform" as const, text: "/model", images: event.images };
+		pendingFirstMessage = null;
+		ctx.ui.setEditorText(event.text);
+		return { action: "handled" as const };
+	});
+
 	// Pi retains provider errors in its transcript. Replace raw provider JSON and
 	// bearer-token diagnostics with one stable AHDE recovery message before the
 	// finalized message is rendered or reused as context.
@@ -335,8 +360,12 @@ export function installAhdeBuilderProductShell(
 		// "restore" is the session replaying its own model; session_start owns that path.
 		if (event.source === "restore") return;
 		if (state.error || !state.builderModel.credentialPresent) return;
-		if (state.view?.stage !== "target-setup") return;
-		await runOnboarding(ctx, state.view);
+		if (state.view?.stage === "target-setup") await runOnboarding(ctx, state.view);
+		if (pendingFirstMessage && typeof pi.sendUserMessage === "function") {
+			const message = pendingFirstMessage;
+			pendingFirstMessage = null;
+			pi.sendUserMessage(message);
+		}
 	});
 
 	// Workbench state changes through tools during a turn; redraw when the model settles.

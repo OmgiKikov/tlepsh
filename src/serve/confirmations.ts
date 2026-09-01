@@ -228,6 +228,8 @@ export function createServeConfirmationRegistry(
 		if (closed) return Promise.resolve({ approved: false });
 		if (pendingById.size >= MAX_OPEN_CONFIRMATIONS) return Promise.resolve({ approved: false });
 		const openedAt = now();
+		const openedAtMs = Date.parse(openedAt);
+		const expiresFromMs = Number.isFinite(openedAtMs) ? openedAtMs : Date.now();
 		const confirmationId = newConfirmationId();
 		const projection: ServeConfirmationProjection = {
 			confirmationId,
@@ -242,7 +244,7 @@ export function createServeConfirmationRegistry(
 			...(input.estimate ? { estimate: input.estimate } : {}),
 			...(input.options ? { options: input.options } : {}),
 			openedAt,
-			expiresAt: new Date(Date.now() + timeoutMs).toISOString(),
+			expiresAt: new Date(expiresFromMs + timeoutMs).toISOString(),
 		};
 		return new Promise<GateAnswer>((resolveAnswer) => {
 			let timer: ReturnType<typeof setTimeout> | undefined;

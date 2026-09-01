@@ -22,6 +22,7 @@ import {
 	resolveBuilderHome,
 	validateBuilderPiArgs,
 } from "../src/builder/runtime.js";
+import { baseFixtureFiles, makeTargetFixture } from "./fixtures.js";
 
 const roots: string[] = [];
 
@@ -294,5 +295,72 @@ describe("Builder Pi runtime", () => {
 		writeFileSync(settingsPath, "{ not json");
 		await launchBuilderPi({ projectDir, builderHome, main: silentMain });
 		expect(readFileSync(settingsPath, "utf8")).toBe("{ not json");
+	});
+
+	it("opens Runtime Pi from free text and returns to the same Builder session", async () => {
+		const projectDir = makeTargetFixture(baseFixtureFiles());
+		roots.push(projectDir);
+		const stateRoot = root("ahde-builder-handoff-state-");
+		const runsRoot = root("ahde-builder-handoff-runs-");
+		const builderHome = root("ahde-builder-handoff-home-");
+		const targetRunner = vi.fn(async (target: { manifest: { id: string } }) => {
+			expect(target.manifest.id).toBe("test-target");
+		});
+		let invocation = 0;
+		const main = vi.fn(async (_args, options) => {
+			invocation += 1;
+			if (invocation !== 1) return;
+			const registered: { name: string; execute?: (...args: unknown[]) => Promise<unknown> }[] = [];
+			const methods: Record<string, unknown> = {
+				registerTool: (tool: { name: string }) => registered.push(tool),
+				registerCommand: vi.fn(),
+				on: vi.fn(),
+				setActiveTools: vi.fn(),
+				registerEntryRenderer: vi.fn(),
+				registerMessageRenderer: vi.fn(),
+				appendEntry: vi.fn(),
+			};
+			const pi = new Proxy(methods, {
+				get(target, property) {
+					if (property in target) return target[property as string];
+					const fallback = vi.fn();
+					target[property as string] = fallback;
+					return fallback;
+				},
+			});
+			await options!.extensionFactories![0]!.factory(pi as never);
+			const tool = registered.find((candidate) => candidate.name === "ahde_workbench_decide")!;
+			await tool.execute!(
+				"handoff",
+				{ kind: "talk-to-agent", reason: "Try the agent" } as never,
+				undefined as never,
+				(() => undefined) as never,
+				{
+					hasUI: true,
+					mode: "tui",
+					shutdown: vi.fn(),
+					ui: { notify: vi.fn() },
+				} as never,
+			);
+		});
+		const previous = process.env.TEST_MODEL_KEY;
+		process.env.TEST_MODEL_KEY = "test-only";
+		try {
+			await launchBuilderPi({
+				projectDir,
+				stateRoot,
+				runsRoot,
+				builderHome,
+				projectId: "test-target",
+				main,
+				targetRunner: targetRunner as never,
+			});
+		} finally {
+			if (previous === undefined) delete process.env.TEST_MODEL_KEY;
+			else process.env.TEST_MODEL_KEY = previous;
+		}
+		expect(targetRunner).toHaveBeenCalledOnce();
+		expect(main).toHaveBeenCalledTimes(2);
+		expect(main.mock.calls[1]?.[0]).toContain("--continue");
 	});
 });

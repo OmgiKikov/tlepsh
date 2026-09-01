@@ -233,12 +233,26 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 			return verificationLines(result.result, paint, view);
 		case "improve":
 			return improveLines(result.result, paint, view);
-		case "apply-proposal":
-			return [
+		case "apply-proposal": {
+			const lines = [
 				`${section(t("result.proposal-applied"), paint)} ${t("result.branch")} ${paint.bold(result.result.branch)} ${paint.dim(`· ${t("result.candidate-word")} ${shortSha(result.result.candidateSha)} · ${t("result.proposal-word")} ${shortHash(result.result.proposalHash)}`)}`,
 				paint.muted(t("result.checkout-unchanged")),
-				nextLine(view, paint),
 			];
+			const verification = result.result.verification;
+			if (verification?.outcome === "blocked") {
+				lines.push(
+					`${paint.warning(t("result.verification-blocked"))} ${oneLine(verification.reason, 240)}`,
+					nextLine(view, paint),
+				);
+				return lines;
+			}
+			if (verification) {
+				lines.push("", ...verificationLines(verification, paint, view));
+				return lines;
+			}
+			lines.push(nextLine(view, paint));
+			return lines;
+		}
 		case "discard-proposal":
 			return [`${section(t("result.proposal-discarded"), paint)} ${paint.dim(result.result.runId)}`, nextLine(view, paint)];
 		case "abandon-candidate":

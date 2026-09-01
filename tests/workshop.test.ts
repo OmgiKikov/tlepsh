@@ -1060,6 +1060,7 @@ describe("the reviewed diff is the code that ran", () => {
 			"ahde_workshop_read",
 			"ahde_workshop_write",
 			"ahde_workshop_bash",
+			"ahde_workshop_author_tool",
 			"ahde_workshop_try",
 		]);
 		for (const tool of tools) {
@@ -1116,12 +1117,79 @@ describe("the construction workshop", () => {
 			expect(opened.kind).toBe("workshop-open");
 			expect(opened.artifact?.basis).toBe("construction");
 			expect(workbench.workshopStatus().basis).toBe("construction");
-			// The four hands work here exactly as they do after a diagnosis.
+			// The five hands work here exactly as they do after a diagnosis.
 			workbench.workshopWrite({ path: "AGENTS.md", content: "# Workshop Target\n\nAnswer READY.\n" });
 			expect(workbench.workshopRead({ path: "AGENTS.md" }).content).toContain("READY");
 		} finally {
 			workbench.closeWorkshop();
 		}
+	}, 120_000);
+
+	it("turns a conversational brief into a reviewed, contract-tested package", async () => {
+		const dir = fixture();
+		const { workbench, gate } = await specApproved(dir);
+		await workbench.submit({ kind: "workshop-open" });
+		const authored = await workbench.workshopAuthorTool({
+			name: "health_check",
+			purpose: "Report whether the configured service can answer.",
+			dataSource: "A deterministic local service adapter for the first version.",
+			parameters: {
+				type: "object",
+				properties: { simulateError: { type: "boolean" } },
+				required: [],
+				additionalProperties: false,
+			},
+			output: {
+				format: "json",
+				description: "Service health.",
+				schema: {
+					type: "object",
+					properties: { ok: { type: "boolean" } },
+					required: ["ok"],
+					additionalProperties: false,
+				},
+			},
+			errors: [{ condition: "The service is unavailable", behavior: "Exit 2 and explain it on stderr." }],
+			permissions: { network: "deny", filesystem: "read-only", process: "sandboxed-subprocess" },
+			credentials: [],
+			implementation:
+				"#!/bin/sh\ninput=$(cat)\ncase \"$input\" in *'\"simulateError\":true'*) printf 'service unavailable\\n' >&2; exit 2;; esac\nprintf '{\"ok\":true}\\n'\n",
+			supportFiles: [],
+			fixtures: [
+				{ name: "healthy", covers: "happy-path", input: {}, expect: { exitCode: 0, jsonEquals: { ok: true } } },
+				{ name: "service-error", covers: "error-handling", input: { simulateError: true }, expect: { exitCode: 2, stderrContains: "service unavailable" } },
+			],
+			timeoutMs: 10_000,
+			maxOutputBytes: 8_192,
+		}, { credentialBindings: {}, gate });
+
+		expect(authored.allPassed).toBe(true);
+		expect(authored.tests.map((test) => [test.name, test.passed])).toEqual([
+			["healthy", true],
+			["service-error", true],
+		]);
+		expect(vi.mocked(gate.confirm).mock.calls.at(-1)?.[0]).toMatchObject({
+			kind: "tool-authoring",
+			subject: {
+				capabilities: { network: "deny", filesystem: "read-only", process: "sandboxed-subprocess" },
+			},
+		});
+
+		const closed = await workbench.submit({
+			kind: "workshop-close",
+			summary: "Build the health-check tool",
+			risks: ["The real service adapter is still needed."],
+			validationPlan: ["Verify agent routing and final answers."],
+		});
+		expect(closed.artifact?.permissions).toEqual([expect.objectContaining({ tool: "health_check" })]);
+		expect(closed.artifact?.toolTests).toEqual(expect.arrayContaining([
+			expect.objectContaining({ test: "healthy", passed: true }),
+			expect.objectContaining({ test: "service-error", passed: true }),
+		]));
+		expect(closed.artifact?.changedPaths).toEqual(expect.arrayContaining([
+			"added tools/health_check/run",
+			"added tools/health_check/tool.yaml",
+		]));
 	}, 120_000);
 
 	it("closes into the ordinary proposal with no evidence behind it", async () => {

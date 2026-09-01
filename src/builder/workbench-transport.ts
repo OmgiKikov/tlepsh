@@ -2,6 +2,7 @@ import { Type, type TUnsafe } from "typebox";
 import { z } from "zod";
 import { BuilderWorkbenchCorpusRevisionOperationSchema } from "../application/builder-regression-case.js";
 import { HarnessAuthoringIntentSchema } from "../application/harness-authoring.js";
+import { ToolAuthoringBriefSchema, type ToolAuthoringBrief } from "../application/tool-authoring.js";
 import { GraderSpec } from "../manifest.js";
 import {
 	WorkbenchDecisionInputSchema,
@@ -426,10 +427,19 @@ function createToolSchema<TInput>(schema: z.ZodType<TInput>, discriminator: stri
 
 export const WorkbenchViewToolSchema = createToolSchema<WorkbenchViewQuery>(WorkbenchViewQuerySchema, "aspect");
 export const WorkbenchSubmitToolSchema = createToolSchema<z.output<typeof WorkbenchSubmitInputSchema>>(WorkbenchSubmitInputSchema, "kind");
-export const WorkbenchDecisionToolSchema = createToolSchema<WorkbenchDecisionInput>(WorkbenchDecisionInputSchema, "kind");
+const TalkToAgentInputSchema = z.strictObject({
+	kind: z.literal("talk-to-agent"),
+	reason: z.string().trim().min(1).max(4_000),
+});
+export type WorkbenchDecisionToolInput = WorkbenchDecisionInput | z.output<typeof TalkToAgentInputSchema>;
+export const WorkbenchDecisionToolSchema = createToolSchema<WorkbenchDecisionToolInput>(
+	z.discriminatedUnion("kind", [...WorkbenchDecisionInputSchema.options, TalkToAgentInputSchema]),
+	"kind",
+);
 
-/** The four tools that exist only while a workshop is open. */
+/** The five tools that exist only while a workshop is open. */
 export const WorkshopReadToolSchema = createToolSchema<WorkshopReadInput>(WorkshopReadInputSchema, "path");
 export const WorkshopWriteToolSchema = createToolSchema<WorkshopWriteInput>(WorkshopWriteInputSchema, "path");
 export const WorkshopBashToolSchema = createToolSchema<WorkshopBashInput>(WorkshopBashInputSchema, "argv");
 export const WorkshopTryToolSchema = createToolSchema<WorkshopTryInput>(WorkshopTryInputSchema, "tool");
+export const WorkshopAuthorToolSchema = createToolSchema<ToolAuthoringBrief>(ToolAuthoringBriefSchema, "name");

@@ -6,8 +6,8 @@ import { decisionHeadline, renderDecision } from "./render/decision.js";
 import { oneLine, pluralize } from "./render/format.js";
 import { themePaint } from "./render/paint.js";
 import { nextStep, stageLabel } from "./render/stage.js";
-import { DEFAULT_MAX_DIFF_LINES } from "./render/diff.js";
 import { renderDatasetCases, renderReview, renderView, viewTitle } from "./render/view.js";
+import { renderVersionPassport } from "./render/passport.js";
 import { markerPaint, type TranscriptPresenter } from "./transcript.js";
 import type {
 	WorkbenchDatasetRecipeArtifact,
@@ -135,6 +135,7 @@ import {
 	type BeginBuilderLiveTrace,
 	type BuilderLiveTraceOutcome,
 } from "./run-observation.js";
+import { compileBuilderPassport } from "./passport-presentation.js";
 
 type RegisteredWorkbenchTool = ToolDefinition<TSchema, unknown>;
 
@@ -294,6 +295,8 @@ export interface BuilderWorkbenchToolOptions {
 	presenter?: TranscriptPresenter;
 	/** Invoked after a decision changed Workbench state (header refresh). */
 	onWorkbenchChanged?: () => void | Promise<void>;
+	/** Host handoff from Builder Pi to the isolated interactive Target Pi. */
+	onTalkToTarget?: () => void | Promise<void>;
 }
 
 export function createBuilderWorkbenchTools(
@@ -360,7 +363,7 @@ export function createBuilderWorkbenchTools(
 				"• { kind: \"dataset-recipe\", sourcePath: \"imports/<file>\", recipe, name, revisionSummary, approvedSpecId? } — how to read any other data file (csv/tsv/json/jsonl/markdown/text/chat export) as cases. Write the recipe from aspect: \"dataset\" alone; the host re-validates it against the real columns and answers with the first compiled sample cases plus a submissionId. Nothing is imported until the operator confirms { kind: \"import-dataset\" }.",
 					"recipe = { schemaVersion: 1, input?: { column } | { template: \"…{{column}}…\" }, expected?: { column }, dialogue?: { column }, simulatedUser?: { goalColumn, personaColumn?, maxTurns?, stopWhen? }, metadata?: [column, …], filters?: [{ column, equals } | { column, matches }], sample?: { limit, seed, stratifyBy? }, graders: [grader, …], idPrefix? } — needs input or dialogue; a simulatedUser recipe needs input and cannot carry dialogue; grader text may use {{column}} and {{expected}}.",
 				"• { kind: \"select\", entity: \"spec-draft\" | \"approved-spec\" | \"corpus-draft\" | \"development-corpus\" | \"eval-run\" | \"proposal\" | \"candidate\", id }",
-				"• { kind: \"workshop-open\", fromProposalRunId?, workshopId? } — open your only writable surface: a private copy of the exact clean Target revision, scoped to AGENTS.md, skills/**, tools/**, bin/**, data/**. While it is open you also have ahde_workshop_read / _write / _bash / _try; write the change, run it, fix it, run it again. Nothing inside it has a network, a Target credential, or any evals/, imports/, runs/, .git or .env to read. It opens two ways: right after the Spec is approved, to BUILD the first harness against that Spec (no evidence is cited, and the proposal records none); and after a conclusive evaluation, to IMPROVE it against the diagnosis. fromProposalRunId reopens a closed proposal seeded with its exact diff; workshopId re-attaches to a workshop a previous session left open.",
+				"• { kind: \"workshop-open\", fromProposalRunId?, workshopId? } — open your only writable surface: a private copy of the exact clean Target revision, scoped to AGENTS.md, skills/**, tools/**, bin/**, data/**. While it is open you also have ahde_workshop_read / _write / _bash / _try / _author_tool; use _author_tool for a complete tested external-action package and the low-level tools for focused repairs. Nothing inside it has undeclared authority or any evals/, imports/, runs/, .git or .env to read. It opens two ways: right after the Spec is approved, to BUILD the first harness against that Spec (no evidence is cited, and the proposal records none); and after a conclusive evaluation, to IMPROVE it against the diagnosis. fromProposalRunId reopens a closed proposal seeded with its exact diff; workshopId re-attaches to a workshop a previous session left open.",
 				"• { kind: \"workshop-close\", summary, validationPlan: string[], risks?: string[], source?: { algorithmId, evalRunId, diagnosisId, briefId } (from aspect=traces), failureModeIds?: [failureModeId, …] } — compile the workshop's diff into the exact reviewable proposal. A construction workshop closes without source/failureModeIds; an improvement workshop needs both. The host derives every path, mode, hash and diff from one snapshot of what is on disk; a workshop that changed nothing, touched anything out of scope, or left a Git-ignored file inside the scope is refused by path.",
 				"• { kind: \"workshop-discard\" } — throw the open workshop away; nothing it wrote ever existed.",
 				"• { kind: \"structured-proposal\", authoringContext: <claim from aspect=target>, approvedSpecId?, source?, failureModeIds?, summary, intents: [intent, …], risks?: string[], validationPlan: string[] } — the second path: cheaper for a semantic edit you have no reason to run, and the only way to change the Target's execution policy. During construction (an approved Spec, before evaluation), omit source and failureModeIds: the proposal is Spec-bound and records no invented evidence. During improvement, both are required and must come verbatim from aspect=traces.",
@@ -383,10 +386,45 @@ export function createBuilderWorkbenchTools(
 						const review = await workbench.view({ aspect: "review" });
 						const content = review.detail?.aspect === "review" ? review.detail.content : undefined;
 						if (content?.kind === "proposal") {
+							const artifact = turn.artifact as {
+								changedPaths?: string[];
+								permissions?: { tool: string; network: string; filesystem: string; process: string; credentials: number }[];
+								toolTests?: { tool: string; test: string | null; passed: boolean; durationMs: number; failure: string | null }[];
+							} | null;
+							const permissions = artifact?.permissions ?? [];
+							const tests = artifact?.toolTests ?? [];
 							options.presenter.show(ctx, {
 								title: viewTitle(review),
 								tone: "info",
-								lines: renderReview(content, markerPaint, { maxDiffLines: DEFAULT_MAX_DIFF_LINES }),
+								lines: [
+									markerPaint.bold("Created / changed"),
+									...(artifact?.changedPaths ?? []).map((path) => `  • ${oneLine(path, 120)}`),
+									...(permissions.length > 0
+										? [
+											"",
+											markerPaint.bold("Capabilities"),
+											...permissions.map((item) =>
+												`  • ${item.tool}: network ${item.network} · filesystem ${item.filesystem} · ${item.process}` +
+												`${item.credentials > 0 ? ` · ${item.credentials} credential binding(s)` : ""}`
+											),
+										]
+										: []),
+									...(tests.length > 0
+										? [
+											"",
+											markerPaint.bold("Tool tests"),
+											...tests.map((test) =>
+												`  ${test.passed ? markerPaint.success("✓") : markerPaint.error("✗")} ${test.tool}${test.test ? ` · ${test.test}` : ""} ${markerPaint.dim(`${test.durationMs}ms`)}` +
+												`${test.failure ? ` — ${oneLine(test.failure, 100)}` : ""}`
+											),
+										]
+										: []),
+									"",
+									...renderReview(content, markerPaint, { maxDiffLines: Number.MAX_SAFE_INTEGER }),
+									"",
+									markerPaint.bold("Apply / Discard"),
+									markerPaint.muted("Say which one you want. Nothing changes until Apply is confirmed."),
+								],
 							});
 						}
 					} catch {
@@ -404,9 +442,10 @@ export function createBuilderWorkbenchTools(
 			label: "Decide in Builder Workbench",
 			description: [
 				"Do the work the operator asked for. Call this yourself when they say it in plain words (test, run, check, fix it, apply, ship, next) — never tell them to type a slash command instead. Every kind requires a non-blank `reason`.",
+				"• { kind: \"talk-to-agent\", reason } — when the operator says they want to try, open, or talk to the built agent. The host leaves Builder Pi, opens the isolated Target Pi on the exact active revision, then returns to this Builder conversation when they exit.",
 				"Four kinds ask the operator a question; the rest just happen. Prefer these:",
 				"• { kind: \"run-current\", repetitions (3 recommended; a sealed verdict needs ≥ 2) } — “test it”, wherever they are. At spec-review/corpus-review it becomes start-testing (approve + publish + run in one question); at ready-to-evaluate/improvement-authoring it runs the basket without asking; at candidate-verification it verifies the applied candidate without asking. An unusually expensive run asks once.",
-				"• { kind: \"apply-proposal\", runId?, branch } — the only moment a diff touches the repository; the host shows the exact diff.",
+				"• { kind: \"apply-proposal\", runId?, branch, verify: { repetitions: 3 } } — the only moment a diff touches the repository; the host shows the exact diff and cost, then automatically runs the matched candidate verification. Always include verify on the conversational product path; omission exists only for low-level recovery.",
 				"• { kind: \"ship\", version: \"x.y.z\" } — “ship it”: records the promote review, tags the exact revision, fast-forwards the operator's branch, and closes the cycle, in one question. `version` is required while the promotion is still pending; at candidate-adoption/complete it is optional.",
 				"Also available: { kind: \"start-testing\", repetitions } explicitly; { kind: \"calibrate\", repetitions } measures noise once per Target revision (no question); { kind: \"discard-proposal\" } and { kind: \"reject-candidate\" } and { kind: \"abandon-candidate\" } are one short yes/no.",
 				"• { kind: \"improve\", until (0..1 pass rate), maxCycles, repetitions, candidates?, jobs?, developmentCorpusId?, baselineMaxAgeMs?, resumeLoopId?, abandonLoopId? } — the autoloop: reuse or run → diagnose → apply the next matching open proposal → cheap check on the cases that already failed → verify what looks promising. One full confirmation up front authorizes automated applies only on throwaway branches. It stops at the first verified candidate because the exact diff, sealed guardrail and release remain human decisions; it never promotes, adopts, publishes or approves.",
@@ -426,6 +465,25 @@ export function createBuilderWorkbenchTools(
 			renderResult: (result, renderOptions, theme) => WORKBENCH_TOOL_RENDERERS.decide.renderResult(result.details, renderOptions.expanded, theme),
 			async execute(_id, params, signal, _update, ctx) {
 				abortIfRequested(signal);
+				if (params.kind === "talk-to-agent") {
+					requireHostUI(ctx, "Talk to agent");
+					if (!options.onTalkToTarget) throw new Error("this host cannot open the interactive agent conversation");
+					const view = await workbench.view();
+					if (view.target.status !== "ready") throw new Error("the agent must be created and configured before it can be opened");
+					if (!view.target.model?.credentialPresent) throw new Error("the agent model credential is not available in this host environment");
+					await options.onTalkToTarget();
+					try {
+						ctx.ui.notify("Opening the agent conversation… Exit it to return to Builder.", "info");
+					} catch {
+						// Handoff still proceeds when the notification surface is unavailable.
+					}
+					setTimeout(() => ctx.shutdown(), 0);
+					return textResult({
+						kind: params.kind,
+						message: "The host is opening the active agent in its isolated Runtime Pi.",
+						view,
+					});
+				}
 				// Routine measurement may run headless; anything that can create
 				// durable authority still needs the local TUI, and the policy on each
 				// confirmation enforces that again at the moment of the decision.
@@ -461,6 +519,7 @@ export function createBuilderWorkbenchTools(
 					params.kind === "run-eval" ||
 					params.kind === "calibrate" ||
 					params.kind === "improve" ||
+					(params.kind === "apply-proposal" && params.verify !== undefined) ||
 					params.kind === "verify-candidate";
 				const observation = showsRunProgress
 					? await beginBuilderRunObservation(ctx.ui, options.beginLiveTrace)
@@ -486,10 +545,22 @@ export function createBuilderWorkbenchTools(
 					outcome = "completed";
 					if (options.presenter) {
 						try {
+							const lines = renderDecision(result, markerPaint, { liveTraceUrl: observation?.liveTraceUrl ?? null });
+							if (result.kind === "ship") {
+								try {
+									const { passport } = await compileBuilderPassport(workbench, { view: result.view });
+									lines.push(
+										"",
+										...renderVersionPassport(passport, markerPaint),
+									);
+								} catch (error) {
+									lines.push("", markerPaint.warning(`Passport unavailable: ${oneLine(error instanceof Error ? error.message : String(error), 180)}`));
+								}
+							}
 							options.presenter.show(ctx, {
 								title: `${decisionHeadline(result)}`,
 								tone: "success",
-								lines: renderDecision(result, markerPaint, { liveTraceUrl: observation?.liveTraceUrl ?? null }),
+								lines,
 							});
 						} catch {
 							// Human presentation never changes the decision result.

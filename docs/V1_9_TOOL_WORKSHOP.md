@@ -208,7 +208,7 @@ files that exist after every write and every command, through the same
 `renderManifest` the intent compiler uses, so the workshop's Harness always
 loads and a hand-edited manifest can never survive into a proposal.
 
-### The four tools
+### The five tools
 
 They are registered once and legal only while a workshop is open — the
 `tool_call` guard refuses them otherwise, and `setActiveTools` hides them so the
@@ -232,6 +232,17 @@ model is not offered hands it does not have.
 - **`ahde_workshop_try`** — `tryTool` against the workshop's own copy, so a tool
   written a second ago can be run a second later, setup step included. Still a
   look, not a measurement: no artifact, no evidence, no eval run.
+- **`ahde_workshop_author_tool`** — the high-level product path. Builder Pi
+  supplies a conversational brief containing purpose, input/output, source,
+  errors, capabilities, logical credential slots, implementation and fixtures.
+  The host — never the model — binds each slot to an environment-variable name
+  and presents one exact capability review. AHDE then creates `tool.yaml`,
+  `run`, input/output JSON Schemas, `README.md`, support files,
+  `fixtures/*.json` and `contract-tests.json`, replaces stale package files,
+  and runs every fixture through the real Target broker. At least one
+  happy-path and one deterministic error-handling fixture are mandatory.
+  Failing output is a repair instruction; close refuses until every fixture is
+  green on the exact final snapshot.
 
 ### The proposal is the diff
 
@@ -240,7 +251,8 @@ worktree against its baseline commit:
 
 ```
 workshop-open (submit)          →  detached worktree of the exact clean commit
-  read / write / bash / try     →  0..n times, no artifacts, no evidence
+  read / write / bash / try / author-tool
+                                →  0..n times, no eval evidence
 workshop-close (submit)         →  git diff → CandidateProposal
                                 →  the same scope assertion (allowed paths +
                                    assertResourceOnlyManifestChange + the
@@ -267,12 +279,11 @@ the Builder can fix what it wrote, and `workshop-discard` throws it away.
 ### The intent compiler stays
 
 `harness-authoring.ts` remains the second path: the fallback for semantic edits
-that do not need a live try loop, and the **only** way to change the Target's
-execution policy (`execution.configure`), because a workshop diff may change
-resources and resource declarations only. It is legal for both Spec-backed
-construction and diagnosis-backed improvement. Its execution intent is a
-patch; omitting `container` preserves the exact reviewed YAML node, while
-replacement and removal are explicit actions in the diff.
+that do not need a live try loop. Arbitrary execution-policy changes still go
+through its typed `execution.configure` intent. The Tool Authoring path may
+widen only the exact network mode and credential environment allowlist required
+by the reviewed package; the same manifest change appears in the final diff.
+It is legal for both Spec-backed construction and diagnosis-backed improvement.
 
 ## Left out on purpose
 
@@ -281,17 +292,20 @@ replacement and removal are explicit actions in the diff.
   in one of those so the operator's conversation receives the outcome rather
   than fifty tool results. The workshop works without it; the loop is simply
   noisier in the transcript than it needs to be.
-- **One workshop per Builder conversation.** No parallel workshops, no
-  workshop over a branch other than the current clean Target revision, and no
-  resuming a workshop after the process dies.
-- **A workshop diff cannot change the execution policy.** `execution.configure`
-  stays an intent, because the policy is a manifest field rather than a Harness
-  resource and `assertResourceOnlyManifestChange` refuses it by design.
+- **One workshop per Builder conversation.** No parallel workshops and no
+  workshop over a branch other than the current clean Target revision. A clean
+  shutdown persists selection state and exact try summaries; reattachment
+  re-derives the Spec, Target revision and snapshot and restores no capability
+  authority.
+- **A workshop cannot freely edit execution policy.** Only the typed Tool
+  Authoring path may add its reviewed network/environment requirements;
+  arbitrary policy changes remain intents.
 - **Setup output is not cached across snapshots.** Two EvalRuns of the same
   revision each run `npm ci` once. A content-addressed cache keyed by
   `toolsetHash` is an obvious follow-up and a poor thing to get wrong early.
-- **`tryTool` runs one tool per call.** No batch, no sample-input file format,
-  no recorded try history.
+- **`tryTool` runs one tool per call.** The typed authoring operation sequences
+  its bounded fixture manifest, and persists only redacted summaries; tries
+  remain non-evidence.
 - **Data is copied, not mounted.** A 64 MiB corpus is copied per run workspace.
   Fine at this bound; a read-only bind of a declared data root is the way out
   when it stops being fine.

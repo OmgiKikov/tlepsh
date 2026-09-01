@@ -58,7 +58,8 @@ describe("host model catalog", () => {
 			},
 		} as unknown as Pick<ExtensionContext, "modelRegistry">;
 		expect(hostModelCatalog(broken)).toEqual({ models: [], omittedModels: 0 });
-		expect(describeHostModelCatalog(hostModelCatalog(broken))).toContain("/login");
+		expect(describeHostModelCatalog(hostModelCatalog(broken))).toContain("private model connection picker");
+		expect(describeHostModelCatalog(hostModelCatalog(broken))).not.toContain("/login");
 	});
 
 	it("names real ids when configure-target guesses one that does not exist", () => {

@@ -19,6 +19,13 @@ description: Write and run the change in a bound workshop, close it into an evid
    evidence-supported rerun or repair action instead.
 3. Prefer changing focused Target context, skills, or declarative tools over
    adding broad orchestration or benchmark-specific phrases.
+   Classify the surface explicitly: decisions, tone and boundaries belong in
+   `AGENTS.md`; reusable knowledge or procedure belongs in a skill; anything
+   that reads an external source or performs an external action belongs in a
+   tool. For a tool, interview in normal conversation until purpose, input,
+   output, data source, error behavior, permissions, and logical credential
+   slots are known. Ask one high-information question at a time and choose
+   safe defaults for the rest. Never ask for a secret or environment name.
 3a. **Loop discipline.** Keep a proposal to about four changed files; more than
    that is two hypotheses, so write them separately and let each be measured on
    its own. At an equal verdict the smaller diff wins, and a change that only
@@ -42,7 +49,7 @@ description: Write and run the change in a bound workshop, close it into an evid
 4. **Open a workshop and work in it.** Submit `kind: workshop-open` through
    `ahde_workbench_submit`. The host opens a private copy of the exact clean
    Target revision — it is not the operator's checkout, and nothing you do in it
-   changes anything until they apply a diff. Four tools exist while it is open,
+   changes anything until they apply a diff. Five tools exist while it is open,
    and only then:
    - `ahde_workshop_read` — read the file you are about to change, or list a
      directory, before you touch it. Never write from memory.
@@ -57,9 +64,17 @@ description: Write and run the change in a bound workshop, close it into an evid
    - `ahde_workshop_try` — run a declared tool of that copy, including the one
      you just wrote, on one JSON input. Its setup step runs exactly as it will
      for a Target.
+   - `ahde_workshop_author_tool` — preferred for a new or repaired tool. Give
+     it the complete conversational brief and fixture expectations. The host
+     privately binds credentials, confirms network/filesystem/process
+     capabilities, compiles the full package (descriptor, executable, input
+     and output schemas, fixtures and contract manifest), and runs every
+     fixture. Include at least one happy-path fixture and one deterministic
+     error-handling fixture. Read the returned failures, repair the brief, and call it again.
    Write, try, read the failure, fix, try again. Do not propose a tool you have
-   not run at least once green. A try is a look, never a measurement: it is not
-   evidence and never substitutes for a run.
+   not run green. Every fixture of a typed package must pass against the exact
+   final snapshot before close. A try is a look, never a measurement: it is
+   not evidence and never substitutes for a run.
 5. **Close the workshop into the proposal.** Submit `kind: workshop-close` with
    the `source` tuple and `failureModeIds` selected above, a `summary`, and a
    `validationPlan`. The host compiles the proposal from the diff of the files
@@ -88,9 +103,11 @@ description: Write and run the change in a bound workshop, close it into an evid
    id>` — the host shows the exact diff and asks; when they say throw it away,
    request `discard-proposal`, which is one short question. The two outcomes
    are durable and mutually exclusive.
-9. An applied change is a candidate, not a release. When the operator says
-   check it, request `run-current`: it runs the exact matched experiment
-   without another question. Then inspect `aspect: review` and
+9. An applied change is a candidate, not a release. Request `apply-proposal`
+   with `verify: { repetitions: 3 }`: after the exact diff is confirmed the
+   host automatically runs the unchanged-agent versus candidate experiment.
+   If that check is blocked, say exactly why; never imply Apply rolled back.
+   Then inspect `aspect: review` and
    `aspect: traces`. The private exam is evaluator-only and selected by the
    host.
 10. When the operator says ship it, выкати, promote or release, request `ship`
@@ -98,7 +115,8 @@ description: Write and run the change in a bound workshop, close it into an evid
    tags the exact checked revision, fast-forwards the operator's branch so the
    change becomes the active agent for `ahde target`, and opens the next
    round — four immutable receipts, one dialog. If any step refuses, it stops
-   there and says so; nothing after it happened.
+   there and says so; nothing after it happened. The host shows and saves the
+   version Passport immediately after a successful Ship.
 11. When the operator rejects instead, request `reject-candidate`: one short
    question, and the agent stays at its baseline. Then `continue-cycle` closes
    the round. Never describe a change that was tagged but not adopted as the

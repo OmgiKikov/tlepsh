@@ -127,7 +127,7 @@ it("writes a tool in the workshop, tries it, closes, applies, verifies and ships
 
 		builderMock = await startMockModel([
 			{
-				match: ({ firstUser, toolCount }) => firstUser.includes("инструмент для агента") && toolCount === 7,
+				match: ({ firstUser, toolCount }) => firstUser.includes("инструмент для агента") && toolCount === 8,
 				steps: [],
 				resolve: (context) => {
 					const step = context.toolResults.length;
@@ -499,7 +499,7 @@ it("builds the first harness from the Spec, ships it, then improves it from its 
 
 		builderMock = await startMockModel([
 			{
-				match: ({ firstUser, toolCount }) => firstUser.includes("агента по спецификации") && toolCount === 7,
+				match: ({ firstUser, toolCount }) => firstUser.includes("агента по спецификации") && toolCount === 8,
 				steps: [],
 				resolve: (context) => {
 					const step = context.toolResults.length;

@@ -272,6 +272,24 @@ function validateParameterValue(value: unknown, schema: Record<string, unknown>,
 	}
 }
 
+/** Validate the bounded JSON-Schema dialect Target tools use for contracts. */
+export function validateTargetToolJsonSchema(
+	value: unknown,
+	path = "tool JSON Schema",
+): Record<string, unknown> {
+	validateParameterSchemaNode(value, path, 0);
+	return value as Record<string, unknown>;
+}
+
+/** Validate one value against the same bounded dialect used for tool inputs. */
+export function validateTargetToolJsonValue(
+	value: unknown,
+	schema: Record<string, unknown>,
+	path = "tool JSON value",
+): void {
+	validateParameterValue(value, validateTargetToolJsonSchema(schema, `${path} schema`), path);
+}
+
 export function validateTargetToolArguments(tool: ResolvedTargetTool, value: unknown): Record<string, unknown> {
 	validateParameterValue(value, tool.descriptor.parameters, `tool ${tool.descriptor.name} arguments`);
 	return value as Record<string, unknown>;
@@ -346,7 +364,7 @@ export function validateTargetToolDescriptor(
 	if (RESERVED_TOOL_NAMES.has(descriptor.name)) {
 		throw new Error(`${descriptorPath}: tool name "${descriptor.name}" is reserved`);
 	}
-	validateParameterSchemaNode(descriptor.parameters, `${descriptorPath}.parameters`, 0);
+	validateTargetToolJsonSchema(descriptor.parameters, `${descriptorPath}.parameters`);
 
 	if (new Set(descriptor.permissions.environment).size !== descriptor.permissions.environment.length) {
 		throw new Error(`${descriptorPath}: duplicate environment permission`);

@@ -4,6 +4,9 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { main as piMain, VERSION as PI_VERSION, type ExtensionFactory, type MainOptions } from "@earendil-works/pi-coding-agent";
 import { writeTextArtifact } from "../storage/artifacts.js";
+import { loadTarget } from "../manifest.js";
+import { runInteractiveTarget } from "../target/interactive.js";
+import { assertTargetReadyToRun } from "../target/readiness.js";
 import { createAhdeBuilderExtension, type BuilderExtensionDependencies } from "./extension.js";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -51,6 +54,8 @@ export interface LaunchBuilderPiOptions {
 	dependencies?: Partial<BuilderExtensionDependencies>;
 	main?: (args: string[], options?: MainOptions) => Promise<void>;
 	extensionFactory?: ExtensionFactory;
+	/** Injectable isolated Runtime Pi launcher for host-loop tests. */
+	targetRunner?: typeof runInteractiveTarget;
 }
 
 function assertRegularFile(path: string, label: string): void {
@@ -272,20 +277,6 @@ export async function launchBuilderPi(options: LaunchBuilderPiOptions = {}): Pro
 	migrateLegacyBuilderConfig(join(privateRoot, "config"), agentDir);
 	seedBuilderSettings(agentDir);
 	const assets = resolveBuilderAssets(options.packageRoot);
-	const extensionFactory = options.extensionFactory ?? createAhdeBuilderExtension({
-		projectDir,
-		stateRoot,
-		runsRoot,
-		projectId: options.projectId,
-		templateDir: assets.targetTemplateDir,
-		dependencies: options.dependencies,
-	});
-	const args = buildBuilderPiArgs({
-		assets,
-		sessionDir,
-		piArgs: options.piArgs,
-		sessionMode: options.sessionMode ?? "new",
-	});
 	const runMain = options.main ?? piMain;
 
 	const previousCwd = process.cwd();
@@ -300,15 +291,42 @@ export async function launchBuilderPi(options: LaunchBuilderPiOptions = {}): Pro
 		// notice tells AHDE users to run a binary they did not install and could
 		// move the runtime away from AHDE's pinned version.
 		process.env.PI_SKIP_VERSION_CHECK = "1";
-		await runMain(args, {
-			extensionFactories: [{ name: "ahde-builder", factory: extensionFactory }],
-			allowedBuiltinCommands: AHDE_BUILDER_BUILTIN_COMMANDS,
-			preferredExtensionCommands: AHDE_BUILDER_PREFERRED_EXTENSION_COMMANDS,
-			allowBash: false,
-			resumeHint: false,
-			// AHDE's own onboarding selector replaces Pi's "No models available" notice.
-			modelFallbackHint: false,
-		});
+		let sessionMode = options.sessionMode ?? "new";
+		for (;;) {
+			let talkToTarget = false;
+			const extensionFactory = options.extensionFactory ?? createAhdeBuilderExtension({
+				projectDir,
+				stateRoot,
+				runsRoot,
+				projectId: options.projectId,
+				templateDir: assets.targetTemplateDir,
+				dependencies: options.dependencies,
+				onTalkToTarget: () => {
+					talkToTarget = true;
+				},
+			});
+			const args = buildBuilderPiArgs({
+				assets,
+				sessionDir,
+				piArgs: options.piArgs,
+				sessionMode,
+			});
+			await runMain(args, {
+				extensionFactories: [{ name: "ahde-builder", factory: extensionFactory }],
+				allowedBuiltinCommands: AHDE_BUILDER_BUILTIN_COMMANDS,
+				preferredExtensionCommands: AHDE_BUILDER_PREFERRED_EXTENSION_COMMANDS,
+				allowBash: false,
+				resumeHint: false,
+				// AHDE's own onboarding selector replaces Pi's "No models available" notice.
+				modelFallbackHint: false,
+			});
+			if (!talkToTarget) break;
+			const target = loadTarget(projectDir);
+			assertTargetReadyToRun(target);
+			await (options.targetRunner ?? runInteractiveTarget)(target);
+			// Exiting Runtime Pi returns to the same Builder conversation and state.
+			sessionMode = "continue";
+		}
 	} finally {
 		process.chdir(previousCwd);
 		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;

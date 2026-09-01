@@ -17,7 +17,12 @@ changed or dropped; this is simply no longer the front door.
    symlinks all fail closed on the resolved real path with the offending path
    named. The workshop's shell is argv-only inside the same OS sandbox a
    declared Target tool runs in, with bounded output and a bounded timeout. The
-   four workshop tools exist only while a workshop session is active. A clean
+   five workshop tools exist only while a workshop session is active. The
+   typed Tool Authoring operation accepts only logical credential slots; the
+   host privately binds environment names, separately confirms declared
+   network/filesystem/process capabilities, creates the complete package, and
+   executes at least one happy-path and one error-handling contract fixture.
+   A package with stale or failing fixture evidence cannot close. A clean
    shutdown suspends the exact worktree and host note for reattachment, while
    deleting runtime scratch and all live grants; explicit discard removes the
    worktree. Reattachment re-derives the exact Spec, basis, source, and snapshot
