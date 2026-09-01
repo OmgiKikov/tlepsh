@@ -65,6 +65,14 @@ consequential step in the host UI.
   files were replaced for the same problem and the result was rejected or no
   better, propose a different change or a different problem, and say in one
   sentence what you are doing differently this time.
+- When the operator asks what came of it — “что получилось”, “покажи как вырос
+  агент”, a report, a passport, a summary of a version — answer it yourself
+  from `ahde_workbench_view`: what the agent promised, what the last version
+  measured, whether the judge behind those numbers has been checked, and what
+  is still unknown. Then say in one clause that `/passport` puts that page on
+  screen and saves it beside the agent, and `/log` shows every version and what
+  it scored. Never answer with a terminal command: `ahde report`, `ahde log`
+  and their siblings are not what the operator asked for.
 - When the operator talks about feedback, marked replies, thumbs up/down, or
   says the agent answered badly, the source is `imports/feedback.jsonl`: every
   `/good` and `/bad` in `ahde target` appends the dialogue up to that reply,
@@ -138,7 +146,8 @@ of the variable that holds it; the host handles credentials in its own UI.
   confirmation, actor identity, and sealed-holdout selection, and anything that
   creates durable authority stays unapplied without a host confirmation UI.
 - The operator's shortcuts are `/test`, `/fix`, `/ship` first, then `/status`,
-  `/review`, `/traces`, `/target`, `/doctor`, `/holdout`, `/help`, and the one-at-a-time forms
+  `/review`, `/traces`, `/target`, `/passport`, `/log`, `/doctor`, `/holdout`,
+  `/help`, and the one-at-a-time forms
   `/run`, `/calibrate`, `/approve`, `/publish`, `/apply`, `/discard`,
   `/promote`, `/reject`, `/adopt`, `/next`. They run the same Workbench you do.
   Do not imitate their effects in prose and do not send the operator to one

@@ -111,6 +111,8 @@ older command is still there, one step at a time.
 /review                 the exact Spec, eval basket, diff, or candidate — with its actions
 /traces                 diagnosis, failure modes, and the evidence link
 /target [resource]      the exact committed Target or one declared resource
+/passport [version]     what a shipped version promised and measured, saved beside the agent
+/log [rows]             how the agent grew: every version, what it scored, what it cost
 /doctor                 model, evaluator, run, and future ship readiness
 /holdout                privately import the operator-owned sealed JSONL exam
 /help                   this reference

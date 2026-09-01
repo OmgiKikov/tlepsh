@@ -110,6 +110,10 @@ describe("one Builder persona", () => {
 		expect(working).toMatch(/\*\*apply this change\*\*/);
 		expect(working).toMatch(/\*\*ship it\*\*/);
 		expect(working).toContain("Do the work.");
+		// A report request is answered, not forwarded to a terminal.
+		expect(working).toContain("покажи как вырос");
+		expect(working).toContain("`/passport` puts that page on\n  screen");
+		expect(working).toContain("Never answer with a terminal command");
 		expect(working).toContain("Never answer “use /test” or “type /apply”");
 		// The stage machine is not the operator's vocabulary.
 		expect(working).toContain("Never\n  narrate stages");
