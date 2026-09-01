@@ -34,6 +34,7 @@ import {
 	wrap,
 } from "./format.js";
 import { renderImpact } from "./impact.js";
+import { regradedDevelopmentLine } from "./regrade.js";
 import { toolPermissionsFromDiff } from "./tool-permissions.js";
 import {
 	predictionAbsentLine,
@@ -340,6 +341,11 @@ export function renderCandidate(
 	if (candidate.development?.comparison) lines.push(...comparisonLines(candidate.development.comparison, candidate.development.gate, paint));
 	else if (candidate.development) lines.push(`${paint.dim(t("label.development"))} ${paint.muted(t("candidate.not-reconstructable"))}`);
 	else lines.push(`${paint.dim(t("label.development"))} ${paint.muted(t("candidate.not-evaluated"))}`);
+	// The rubric moved after this candidate was decided, and both arms were
+	// re-scored under it. One extra line, never a rewrite of the verdict above.
+	if (candidate.regraded && candidate.development?.comparison) {
+		lines.push(regradedDevelopmentLine(candidate.development.comparison, candidate.regraded, paint));
+	}
 	const sealedGate = candidate.sealedHoldout.gate;
 	lines.push(`${paint.dim(t("label.sealed-holdout"))} ${candidate.sealedHoldout.executed
 		? (sealedGate
