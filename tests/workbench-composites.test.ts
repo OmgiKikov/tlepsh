@@ -205,8 +205,8 @@ describe("start-testing composite", () => {
 					spec: "Support policy assistant — already approved",
 					basket: "Reviewed development basket · 2 cases",
 					run: "2 × 3 = 6 Target executions",
-					estimatedCost: "unknown — nothing comparable has run yet",
-					estimatedTime: "unknown — nothing comparable has run yet",
+					estimatedCost: "unknown · nothing comparable has run yet",
+					estimatedTime: "unknown · nothing comparable has run yet",
 				},
 			});
 			expect(confirmation?.subjectHash).toMatch(/^sha256:[0-9a-f]{64}$/);
