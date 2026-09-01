@@ -72,7 +72,7 @@ export const EVIDENCE_TOKENS_DARK = `:root{color-scheme:dark;${FONT_TOKENS}${DAR
 
 /** The runs table and its chips. Shared verbatim by the explorer and the report. */
 export const EVIDENCE_TABLE_CSS = `
-.scroll{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius)}
+.scroll{overflow:auto;max-height:78vh;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius)}
 .scroll table{border-collapse:separate;border-spacing:0;width:100%;font-size:12.5px}
 .scroll th,.scroll td{padding:8px 11px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;white-space:nowrap;color:var(--text)}
 .scroll thead th{position:sticky;top:0;z-index:2;background:var(--surface2);color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--line-strong)}
@@ -135,7 +135,8 @@ section{margin:0 0 26px}
 .hyp b{color:var(--error)}
 .modes{list-style:none;margin:0;padding:0;display:grid;gap:8px}
 .modes li{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:11px 13px}
-.modes .row{display:flex;gap:10px;align-items:baseline;justify-content:space-between;flex-wrap:wrap}
+.modes .row,.rowline{display:flex;gap:10px;align-items:baseline;justify-content:space-between;flex-wrap:wrap}
+.errpre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:12.5px/1.6 var(--mono)}
 .turn{border:1px solid var(--line);border-radius:var(--radius);margin:0 0 9px;background:var(--surface);overflow:hidden}
 .turn>.who{font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);padding:7px 13px;background:var(--surface2);border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:10px}
 .turn pre{margin:0;padding:11px 13px;white-space:pre-wrap;overflow-wrap:anywhere;font:12.5px/1.6 var(--mono)}
@@ -469,7 +470,7 @@ function renderVerdict(graders: readonly GraderFinding[]): string {
 			? `<p class="note">Jury: ${grader.jury.map((vote) => `juror ${vote.juror} ${vote.passed ? "pass" : "fail"}${vote.choice ? ` (${vote.choice})` : ""}${vote.answers ? ` [${vote.answers.join(", ")}]` : ""}`).join(" · ")}</p>`
 			: "";
 		return `<div class="card">
-<div class="row" style="display:flex;justify-content:space-between;gap:10px;align-items:baseline;flex-wrap:wrap">
+<div class="rowline">
 	<h3 class="mono">${h(grader.name)}</h3>
 	<span><span class="chip ${grader.passed ? "pass" : "fail"}">${grader.passed ? "pass" : "fail"}</span> <span class="gchip">${h(grader.type)} ${h(grader.chip)}</span> <span class="gchip">score ${grader.score.toFixed(2)}</span>${grader.choice ? ` <span class="gchip">choice ${h(grader.choice)}</span>` : ""}</span>
 </div>
@@ -521,7 +522,7 @@ export function renderRunDetailPage(model: RunDetailPageModel): string {
 	<div class="stat"><b>$${run.metrics.costUsd.toFixed(5)}</b><span>Cost</span></div>
 </div>
 <section><h2>Why</h2>${renderWhy(model.explanation)}</section>
-${run.error ? `<section><h2>Run error</h2><div class="card"><pre class="mono" style="margin:0;white-space:pre-wrap">${h(run.error)}</pre></div></section>` : ""}
+${run.error ? `<section><h2>Run error</h2><div class="card"><pre class="errpre">${h(run.error)}</pre></div></section>` : ""}
 <section><h2>Verdict</h2><div class="cards">${renderVerdict(model.graders)}</div></section>
 <section>
 	<h2>Conversation</h2>

@@ -554,7 +554,7 @@ function toolActual(facts: RunTraceFacts | null, recordedToolCalls: number): str
 		? ` and ${facts.toolNames.length - MAX_NAMED_TOOLS} more`
 		: "";
 	return names.length > 0
-		? `the agent made ${total} tool call(s), calling ${names.join(", ")}${more}`
+		? `the agent made ${total} tool call(s), to ${names.join(", ")}${more}`
 		: `the agent made ${total} tool call(s)`;
 }
 

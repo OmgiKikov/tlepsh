@@ -202,7 +202,7 @@ describe("the host's plain-language account of one run", () => {
 		expect(lines[0]).toBe("task-1 repetition 0 failed: 1 of 1 grader(s) did not pass.");
 		expect(lines[1]).toBe(
 			"task-1#0:tool_called:bash(check_dbo) (tool_called) expected a call to `bash` with arguments containing `check_dbo`; " +
-			"the agent made 1 tool call(s), calling read.",
+			"the agent made 1 tool call(s), to read.",
 		);
 		expect(lines[2]).toBe('The grader recorded: “never called bash with args containing "check_dbo"”.');
 	});
