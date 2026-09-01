@@ -32,6 +32,12 @@ import {
 	renderRegradeSummary,
 } from "./regrade.js";
 import { compileFailureBundle } from "./bundle.js";
+import {
+	DEFAULT_TRAINING_MIN_SCORE,
+	exportTrainingData,
+	renderTrainingExportSummary,
+	TrainingExportError,
+} from "./application/export-training.js";
 import { runCandidateExperiment } from "./application/candidate-experiment.js";
 import {
 	renderCheapCheckLine,
@@ -654,6 +660,39 @@ function printJudgeAgreement(projectId: string, evalRunId?: string): void {
 	}
 }
 
+/**
+ * The training-data export. A pure read over durable development evidence: no
+ * model call, no Target execution, and the only thing written is the JSONL.
+ *
+ * Missing or unexportable artifacts exit 2 rather than 1: an empty or partial
+ * training corpus that looked like success is exactly the failure a later
+ * training run cannot detect.
+ */
+function exportTraining(): void {
+	const targetDir = resolve(requireArg("target"));
+	const projectId = arg("project") ?? loadTarget(targetDir).manifest.id;
+	const minScore = arg("min-score");
+	let result;
+	try {
+		result = exportTrainingData({
+			runsRoot: runsRoot(),
+			...(arg("eval") ? { evalRunId: arg("eval") as string } : {}),
+			...(arg("all") ? { all: true } : {}),
+			...(arg("out") ? { outPath: resolve(arg("out") as string) } : {}),
+			...(minScore ? { minScore: parsePassRateFlag(minScore) ?? DEFAULT_TRAINING_MIN_SCORE } : {}),
+			...(arg("include-failed") ? { includeFailed: true } : {}),
+			...(arg("include-aa") ? { includeAa: true } : {}),
+			sealedDatasetHashes: sealedCorpusHashes(projectId),
+		});
+	} catch (error) {
+		if (!(error instanceof TrainingExportError)) throw error;
+		console.error(`error: ${error.message}`);
+		process.exitCode = 2;
+		return;
+	}
+	for (const line of renderTrainingExportSummary(result)) console.log(line);
+}
+
 function judgeAgreementReport(): void {
 	const evalRunId = positional(0);
 	if (!evalRunId) {
@@ -1204,6 +1243,10 @@ async function main(): Promise<void> {
 			for (const grader of report.judgeCalibration) {
 				console.log(`${grader.line}  ${grader.graderNames.join(", ")}`);
 			}
+			break;
+		}
+		case "export": {
+			exportTraining();
 			break;
 		}
 		case "label": {

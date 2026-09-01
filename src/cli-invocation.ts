@@ -26,6 +26,8 @@ export const CLI_COMMANDS = [
 	"diagnose",
 	"regrade",
 	"report",
+	// The training-data export: development evidence out, sealed evidence never.
+	"export",
 	"label",
 	"judge-agreement",
 	"candidate",
@@ -112,6 +114,15 @@ const COMMAND_SPECS = {
 		positionals: 1,
 	},
 	report: { flags: ["out", "project"], positionals: 1 },
+	// The training-data export. `--training` is required rather than implied so
+	// a later `ahde export --<something-else>` cannot silently change what a
+	// bare `ahde export` writes.
+	export: {
+		flags: ["training", "target", "project", "eval", "all", "out", "min-score", "include-failed", "include-aa"],
+		booleanFlags: ["training", "all", "include-failed", "include-aa"],
+		requiredFlags: ["training", "target"],
+		positionals: 0,
+	},
 	label: {
 		flags: ["target", "project", "spec", "sample", "seed", "file"],
 		requiredFlags: ["target"],
@@ -348,6 +359,8 @@ function validateSharedFlagValues(flags: Readonly<Record<string, string>>, conte
 	assertIntegerFlag(flags, "max-cycles", context, { minimum: 1, maximum: 10 });
 	assertIntegerFlag(flags, "budget", context, { minimum: 1 });
 	assertPassRateFlag(flags, "until", context);
+	// The training export's selection bar is the same kind of number as `--until`.
+	assertPassRateFlag(flags, "min-score", context);
 	// 0 days means "never reuse a baseline"; every run measures its own.
 	assertIntegerFlag(flags, "baseline-max-age", context, { minimum: 0, maximum: 3_650 });
 	// `ahde log` and `ahde watch`: bounded rows and a bounded schedule.
@@ -556,6 +569,15 @@ function validateCommandRelationships(command: CliCommand, flags: Readonly<Recor
 			if (value !== undefined && !/^loop_[a-z0-9]{6,32}$/.test(value)) {
 				cliError(`--${name} for improve must be a loop id such as loop_m1k2j3abcd; got ${JSON.stringify(value)}`);
 			}
+		}
+	}
+	// One eval run or every compatible one — never both, and never neither: an
+	// export that guessed its own scope would write a file nobody asked for.
+	if (command === "export") {
+		const one = flags.eval !== undefined;
+		const every = flags.all !== undefined;
+		if (one === every) {
+			cliError("export --training takes either --eval <erun-id> or --all, never both and never neither");
 		}
 	}
 	if (command === "search") {

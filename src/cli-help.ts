@@ -44,6 +44,7 @@ Inspect and run:
   ahde serve --target <dir> [--port N]         drive the Workbench over a local
                                                HTTP/JSON API; your UI is the gate
   ahde list [--target <id>]                    list eval runs
+  ahde export --training --target <dir> --all  development evidence as tuning JSONL
   ahde feedback list [--target <dir>]          👍/👎 marks collected in ahde target
   ahde tool try --target <dir> --tool <name> --input <json|@path>
                                                run one declared tool in its sandbox
@@ -56,9 +57,9 @@ ${builderCommandLines()}
   plus the Pi built-ins /login and /model for the Builder's own model
 
 Use \`ahde <command> --help\` for focused help. Advanced automation commands:
-  corpus  failures  compare  diagnose  regrade  report  label  judge-agreement
-  candidate  calibrate  check  improve  search  review  promote  reject
-  log  watch
+  corpus  failures  compare  diagnose  regrade  report  export  label
+  judge-agreement  candidate  calibrate  check  improve  search  review
+  promote  reject  log  watch
 
 Environment:
   AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)
@@ -206,6 +207,37 @@ evidence stays sealed and prints counts only.`,
 Build a static, bounded HTML evidence report for one development EvalRun.
 Judge graders carry one line each: \`judge agreement 84% · κ 0.62 · n=50\` from
 this project's labels, or \`judge not calibrated\` when nobody has checked yet.`,
+	export: `Usage: ahde export --training --target <dir> [--project <id>] \\
+                   (--eval <erun-id> | --all) [--out <path.jsonl>] [--min-score <0..1>] \\
+                   [--include-failed] [--include-aa]
+
+Turn development evidence into JSONL for a later "train a small model under the
+optimized harness" step. One line per exported run, in the standard chat-tuning
+shape: \`messages\` (system, user, assistant with content or tool_calls, tool),
+\`tools\` (what the harness declared), and \`meta\` (task, run, eval, revision,
+workspace hash, model, graders, score, passed, repetition).
+
+The system message is the Target's effective instructions AS THAT RUN SAW THEM,
+read from the run's own workspace snapshot — never re-read from your current
+checkout. Everything else is derived through the one session.jsonl parser, with
+its hash check, and every string passes the credential redactor.
+
+WHAT IT NEVER CONTAINS: sealed holdout anything. Visibility is checked on the
+bounded EvalRun index before a single trace is opened, exactly as \`report\` and
+\`diagnose\` check it, and again on the verified record. Cheap-check screens
+(\`purpose: screen\`) and ambiguous legacy one-arm records are refused the same
+way. A/A calibration arms are excluded unless --include-aa, because they measure
+noise rather than behaviour. Candidate arms are ordinary development evidence
+and are included.
+
+--min-score is the bar on the mean grader score (default 1.0 — only runs whose
+graders were completely satisfied). --include-failed also writes the runs below
+it, marked \`"passed": false\`, for preference or contrastive data.
+Infrastructure errors are never exported: they are inconclusive evidence.
+
+--out defaults to <runs-root>/exports/training-<timestamp>.jsonl. The summary
+prints runs scanned, exported, and skipped by reason (sealed / screen / failed /
+infra / aa). Exit 2 = the named evidence is missing or not exportable.`,
 	label: `Usage:
   ahde label <evalRunId> --target <dir> [--project <id>] [--spec <approvedSpecId>] [--sample N] [--seed <text>]
   ahde label <evalRunId> --target <dir> [--spec <approvedSpecId>] --file <labels.jsonl>
