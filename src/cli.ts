@@ -152,6 +152,17 @@ function runsRoot(): string {
 	return process.env.AHDE_RUNS_DIR ? resolve(process.env.AHDE_RUNS_DIR) : resolve(process.cwd(), "runs");
 }
 
+/**
+ * Where one eval run is read from when the operator is standing somewhere else.
+ * `AHDE_RUNS_DIR` still wins, as it does everywhere; without it a named Target
+ * carries its own `runs/`, the same place Builder Pi and `ahde serve` look.
+ * Without either it is the current directory, exactly as it always was.
+ */
+function runsRootForTarget(targetDir: string | undefined): string {
+	if (process.env.AHDE_RUNS_DIR) return resolve(process.env.AHDE_RUNS_DIR);
+	return targetDir ? resolve(targetDir, "runs") : resolve(process.cwd(), "runs");
+}
+
 function stateRoot(): string {
 	return process.env.AHDE_STATE_DIR ? resolve(process.env.AHDE_STATE_DIR) : resolve(process.cwd(), ".ahde");
 }
@@ -263,7 +274,7 @@ function requireArg(name: string): string {
 	const value = arg(name);
 	if (!value) {
 		console.error(`missing --${name}\n`);
-		console.log(USAGE);
+		console.log(cliHelp(process.argv.slice(2)));
 		process.exit(2);
 	}
 	return value;
@@ -769,8 +780,10 @@ async function main(): Promise<void> {
 		invocation = parseCliInvocation(process.argv.slice(2));
 	} catch (error) {
 		if (!(error instanceof CliInvocationError)) throw error;
+		// The page for the command they typed, not the whole product tour: a
+		// usage error is about one invocation.
 		console.error(`usage error: ${error.message}\n`);
-		console.error(USAGE);
+		console.error(cliHelp(process.argv.slice(2)));
 		process.exitCode = 2;
 		return;
 	}
@@ -1150,12 +1163,13 @@ async function main(): Promise<void> {
 		case "diagnose": {
 			const evalRunId = positional(0);
 			if (!evalRunId) {
-				console.error("usage: ahde diagnose <evalRunId>\n");
-				console.log(USAGE);
+				console.error("usage: ahde diagnose <evalRunId> [--target <dir>]\n");
+				console.log(cliHelp(["diagnose"]));
 				process.exit(2);
 			}
-			const diagnosis = diagnoseEvalRun(runsRoot(), evalRunId);
-			const brief = compileImprovementBrief(runsRoot(), diagnosis);
+			const diagnoseRunsRoot = runsRootForTarget(arg("target"));
+			const diagnosis = diagnoseEvalRun(diagnoseRunsRoot, evalRunId);
+			const brief = compileImprovementBrief(diagnoseRunsRoot, diagnosis);
 			console.log(
 				`diagnosis ${diagnosis.diagnosisId}: ${diagnosis.status} — ` +
 					`${diagnosis.summary.issueCount} issue(s), ${diagnosis.summary.infrastructureErrors} infrastructure error(s)`,
@@ -1189,7 +1203,7 @@ async function main(): Promise<void> {
 			if (diagnosis.issues.length > 30) {
 				console.log(`  ... ${diagnosis.issues.length - 30} task-level issue(s) omitted; open the evidence report for bounded drill-down.`);
 			}
-			console.log(`evidence: ${resolve(runsRoot(), evalRunId, "diagnosis.json")}`);
+			console.log(`evidence: ${resolve(diagnoseRunsRoot, evalRunId, "diagnosis.json")}`);
 			if (diagnosis.status === "inconclusive") process.exitCode = 2;
 			break;
 		}
@@ -1237,7 +1251,7 @@ async function main(): Promise<void> {
 				process.exit(2);
 			}
 			const report = buildEvalReport(
-				runsRoot(),
+				runsRootForTarget(arg("target")),
 				evalRunId,
 				arg("out") ? resolve(arg("out") as string) : undefined,
 				{ stateRoot: stateRoot(), projectId: reportProjectId(evalRunId) },

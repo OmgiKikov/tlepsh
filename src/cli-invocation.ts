@@ -124,7 +124,9 @@ const COMMAND_SPECS = {
 		positionals: 1,
 	},
 	compare: { flags: [], positionals: 2 },
-	diagnose: { flags: [], positionals: 1 },
+	// `--target <dir>` says whose runs to read, for an operator standing
+	// somewhere else. It never changes what a diagnosis is.
+	diagnose: { flags: ["target"], positionals: 1 },
 	regrade: {
 		flags: ["target", "graders", "label", "jobs", "project"],
 		requiredFlags: ["target"],

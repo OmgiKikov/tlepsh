@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { cliHelp } from "../src/cli-help.js";
+import { SEALED_GATE_POLICY } from "../src/domain/comparison-gate.js";
 import { AHDE_BUILDER_COMMAND_NAMES } from "../src/builder/commands.js";
 
 /** Every `/name` mentioned inside one fenced block or help section. */
@@ -102,6 +103,32 @@ describe("CLI help", () => {
 		expect(help).toContain("ahde search --target <dir> --candidates <id,id,id>");
 		expect(help).toContain("ahde serve --target <dir> [--port N]         drive the Workbench over a local");
 		expect(help).toContain("AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)");
+	});
+
+	it("routes a two-word command's help however the operator ordered it", () => {
+		// The action can sit after a flag and its value; reading the first bare
+		// token would find `demo` and silently fall back to the root page.
+		for (const argv of [
+			["corpus", "list", "--help"],
+			["corpus", "--project", "demo", "list", "--help"],
+			["corpus", "--target", "./agent", "list"],
+		]) {
+			expect(cliHelp(argv)).toContain("Usage: ahde corpus list");
+		}
+		expect(cliHelp(["spec", "--target", "./agent", "approve", "--help"]))
+			.toContain("Usage: ahde spec approve");
+		expect(cliHelp(["tool", "--target", "./agent", "try", "--help"]))
+			.toContain("Usage: ahde tool try");
+		// An unknown action still gets the product tour, not a wrong page.
+		expect(cliHelp(["corpus", "--project", "demo", "delete"])).toContain("Agent Harness Development Environment");
+	});
+
+	it("states the sealed floor where a sealed corpus is created", () => {
+		for (const command of [["corpus", "import"], ["corpus", "ingest"]]) {
+			expect(cliHelp(command)).toContain(String(SEALED_GATE_POLICY.minTasks));
+		}
+		expect(cliHelp(["corpus", "import"])).toContain(`${SEALED_GATE_POLICY.minRepetitions} repetitions`);
+		expect(cliHelp(["corpus", "import"])).toContain("promotion stays locked");
 	});
 
 	it("renders focused help for top-level commands", () => {

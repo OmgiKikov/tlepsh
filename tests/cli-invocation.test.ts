@@ -144,6 +144,8 @@ describe("side-effect-free CLI invocation parsing", () => {
 		// Flag drift the walkthrough hit: both of these were usage errors.
 		{ name: "calibrate jobs", argv: ["calibrate", "--target", "./agent", "--jobs", "4"], command: "calibrate", action: null },
 		{ name: "report target", argv: ["report", "erun-1", "--target", "./agent"], command: "report", action: null },
+		// `--target` says whose runs/ to read, for an operator standing elsewhere.
+		{ name: "diagnose target", argv: ["diagnose", "erun-1", "--target", "./agent"], command: "diagnose", action: null },
 		{ name: "review", argv: ["review", "--candidate", "candidate-1", "--recommend", "promote", "--reason", "passed"], command: "review", action: null },
 		{ name: "review exact automated proposal", argv: ["review", "--candidate", "candidate-1", "--recommend", "promote", "--reason", "passed", "--proposal-hash", `sha256:${"a".repeat(64)}`], command: "review", action: null },
 		{ name: "promote", argv: ["promote", "--target", "./agent", "--candidate", "candidate-1", "--to", "1.2.3", "--reason", "approved"], command: "promote", action: null },

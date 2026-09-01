@@ -214,7 +214,8 @@ loop closes on the CLI alone. What is still rough:
 ahde validate --target .                      readiness; no model calls
 ahde spec approve --target .                  spec.md → the typed Spec + its receipt
 ahde run --target . --repetitions 3           development evidence (exit 1=fails, 2=inconclusive)
-ahde list · diagnose <erun> · report <erun> --target .   what happened and why
+ahde list · diagnose <erun> --target . · report <erun> --target .
+                                              what happened and why
 ahde corpus inspect|ingest|import|list --target .   benchmark creation (sealed at ingest;
                                               --project defaults to the Target id)
   (`corpus publish` needs a Builder-Pi `corpus-draft-…`; scripted, use

@@ -1,4 +1,5 @@
 import { AHDE_BUILDER_COMMAND_NAMES } from "./builder/commands.js";
+import { SEALED_GATE_POLICY } from "./domain/comparison-gate.js";
 
 /** One command list: the slash commands Builder Pi actually registers, wrapped for the terminal. */
 function builderCommandLines(width = 72, indent = "  "): string {
@@ -201,9 +202,14 @@ Compile a bounded failure bundle from one exact development EvalRun.`,
 	compare: `Usage: ahde compare <evalRunA> <evalRunB>
 
 Compare two runs only when every execution/grading axis except Harness revision matches.`,
-	diagnose: `Usage: ahde diagnose <evalRunId>
+	diagnose: `Usage: ahde diagnose <evalRunId> [--target <dir>]
 
-Derive deterministic failure modes and proposal eligibility from a development EvalRun.`,
+Derive deterministic failure modes and proposal eligibility from a development
+EvalRun. Prints each mode's id, which is what \`ahde propose --mode\` takes.
+
+--target <dir> reads that Target's runs/ instead of the current directory's,
+for an operator standing somewhere else; AHDE_RUNS_DIR still wins over both.
+It changes where the evidence is read from, never what a diagnosis is.`,
 	regrade: `Usage: ahde regrade <evalRunId> --target <dir> [--graders <path>] [--label solo|regrade]
                    [--jobs N] [--project <id>]
 
@@ -581,6 +587,11 @@ receipt-backed lineage.`,
 the Target id: a corpus imported under any other name is refused later by
 \`ahde candidate\`, whose project comes from the Builder run.
 
+A sealed corpus needs at least ${SEALED_GATE_POLICY.minTasks} cases and ${SEALED_GATE_POLICY.minRepetitions} repetitions before the ship gate can
+reach a verdict at all; below that the guardrail is permanently underpowered
+and promotion stays locked. Importing fewer is allowed and warned about, never
+silently accepted.
+
 Import bounded JSONL. Prefer Builder Pi's project-local imports/ inbox for an editable, Spec-bound draft.`,
 	"corpus list": `Usage: ahde corpus list [--target <dir>] [--project <id>]
 
@@ -606,7 +617,8 @@ computed, and a sealed row is never printed.`,
 
 Compile a dataset into eval cases through a mapping recipe. The sealed slice is
 drawn first from (file sha256, seed, count, column) and published as a sealed
-corpus; the rest become one development corpus. Prints the receipt, both corpus
+corpus; the rest become one development corpus. Reserve at least
+${SEALED_GATE_POLICY.minTasks} rows: a smaller exam can never produce a sealed verdict. Prints the receipt, both corpus
 ids, and the skipped-row counts — never a sealed row. A file that already has a
 sealed slice keeps it; repeat the same --sealed/--seed to ingest it again.
 Prefer Builder Pi: it shows sample cases and asks the operator to confirm.
@@ -630,12 +642,27 @@ Your checkout is never touched, no eval evidence is written, and output is
 bounded and redacted. Exit 0 = the tool exited 0, 1 = the tool failed.`,
 };
 
+const ACTION_COMMANDS = new Set(["corpus", "feedback", "tool", "spec"]);
+
+/**
+ * The action inside `ahde corpus list --help`, wherever the operator put it.
+ * Matching against the help keys rather than "the first bare token" is what
+ * keeps `ahde corpus --project demo list --help` from reading `demo` — a flag's
+ * value — as the action and falling back to the root page.
+ */
+function nestedAction(command: string, argv: readonly string[]): string | undefined {
+	for (let index = 1; index < argv.length; index += 1) {
+		const token = argv[index];
+		if (token === undefined || token.startsWith("-")) continue;
+		if (Object.hasOwn(COMMAND_HELP, `${command} ${token}`)) return token;
+	}
+	return undefined;
+}
+
 /** Render root or command-specific help without reading project or environment state. */
 export function cliHelp(argv: readonly string[]): string {
 	const command = argv[0];
 	if (!command || command === "--help" || command === "-h" || command === "help") return CORE;
-	const nested = command === "corpus" || command === "feedback" || command === "tool" || command === "spec"
-		? argv.find((token, index) => index > 0 && !token.startsWith("-"))
-		: undefined;
+	const nested = ACTION_COMMANDS.has(command) ? nestedAction(command, argv) : undefined;
 	return COMMAND_HELP[nested ? `${command} ${nested}` : command] ?? CORE;
 }
