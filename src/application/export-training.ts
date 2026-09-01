@@ -156,6 +156,12 @@ export interface TrainingExportResult {
 	notes: TrainingExportNote[];
 	/** True only when more notes existed than {@link MAX_TRAINING_EXPORT_NOTES}. */
 	notesTruncated: boolean;
+	/**
+	 * EvalRun indexes in the runs root that would not parse — legacy schema
+	 * versions, damaged artifacts. They are not scanned and contribute to no
+	 * count, so they are reported rather than silently absent from the export.
+	 */
+	unreadableEvalRunIds: string[];
 }
 
 export interface ExportTrainingDataOptions {
@@ -638,7 +644,17 @@ export function exportTrainingData(options: ExportTrainingDataOptions): Training
 
 	const path = options.outPath ? resolve(options.outPath) : defaultOutPath(runsRoot, now);
 	writeTextArtifact(path, lines.length === 0 ? "" : `${lines.join("\n")}\n`);
-	return { path, counts: tally.counts, notes: tally.notes, notesTruncated: tally.notesTruncated };
+	return {
+		path,
+		counts: tally.counts,
+		notes: tally.notes,
+		notesTruncated: tally.notesTruncated,
+		// An index that will not parse was never a candidate for export, but an
+		// operator counting lines deserves to know it existed.
+		unreadableEvalRunIds: explicit === undefined
+			? listed.invalid.map((entry) => entry.evalRunId).sort()
+			: [],
+	};
 }
 
 /**
@@ -683,5 +699,11 @@ export function renderTrainingExportSummary(result: TrainingExportResult): strin
 		lines.push(`note: ${entry.evalRunId}${entry.runId ? `/${entry.runId}` : ""} · ${entry.reason} · ${entry.detail}`);
 	}
 	if (result.notesTruncated) lines.push(`note: further skip reasons omitted after ${MAX_TRAINING_EXPORT_NOTES}`);
+	if (result.unreadableEvalRunIds.length > 0) {
+		lines.push(
+			`note: ${result.unreadableEvalRunIds.length} eval run index(es) could not be read and were not scanned: ` +
+				result.unreadableEvalRunIds.slice(0, MAX_TRAINING_EXPORT_NOTES).join(", "),
+		);
+	}
 	return lines;
 }

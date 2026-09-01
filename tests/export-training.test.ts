@@ -7,6 +7,7 @@ import {
 	TRAINING_TRUNCATION_MARKER,
 	TrainingExportError,
 	exportTrainingData,
+	renderTrainingExportSummary,
 	trainingExportOptionsFromFlags,
 	MAX_TRAINING_MESSAGE_CHARS,
 	type TrainingExportLine,
@@ -748,6 +749,21 @@ describe("ahde export --training: output and refusals", () => {
 		const result = exportTrainingData({ runsRoot, all: true });
 		expect(result.counts.exported).toBe(0);
 		expect(result.counts.skipped.infra).toBe(1);
+	});
+
+	it("reports an eval run index it could not read instead of silently skipping it", () => {
+		const runsRoot = newRunsRoot();
+		writeEvalRun(runsRoot, {
+			evalRunId: "erun_good",
+			runs: [{ runId: "run_good", taskId: "task_1", trace: conversationTrace({ question: "q", answer: "a", toolResult: "r" }) }],
+		});
+		mkdirSync(join(runsRoot, "erun_damaged"), { recursive: true });
+		writeFileSync(join(runsRoot, "erun_damaged", "eval_run.json"), "{ not json");
+
+		const result = exportTrainingData({ runsRoot, all: true });
+		expect(result.counts.exported).toBe(1);
+		expect(result.unreadableEvalRunIds).toEqual(["erun_damaged"]);
+		expect(renderTrainingExportSummary(result).join("\n")).toContain("could not be read and were not scanned");
 	});
 
 	it("refuses a selection that is neither one eval run nor all of them", () => {
