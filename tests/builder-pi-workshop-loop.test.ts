@@ -17,6 +17,7 @@ import {
 	createAhdeBuilderExtension,
 } from "../src/builder/extension.js";
 import { resolveBuilderAssets } from "../src/builder/runtime.js";
+import { AHDE_TRANSCRIPT_ENTRY_TYPE, stripMarkers } from "../src/builder/transcript.js";
 import {
 	listBuilderProposalAdmissions,
 	loadBuilderProposalRun,
@@ -280,6 +281,9 @@ it("writes a tool in the workshop, tries it, closes, applies, verifies and ships
 		]);
 
 		const registered: ToolDefinition[] = [];
+		// Panels and questions in the order the operator met them.
+		const timeline: string[] = [];
+		const panels: { type: string; data: { title: string; lines: string[] } }[] = [];
 		const extension = createAhdeBuilderExtension({
 			projectDir,
 			stateRoot,
@@ -292,6 +296,10 @@ it("writes a tool in the workshop, tries it, closes, applies, verifies and ships
 			registerTool: (tool: ToolDefinition) => registered.push(tool),
 			registerCommand: () => undefined,
 			on: () => undefined,
+			appendEntry: (type: string, data: { title: string; lines: string[] }) => {
+				panels.push({ type, data });
+				timeline.push(`panel:${data.title}`);
+			},
 		} as never);
 		expect(registered.map((tool) => tool.name)).toEqual([...AHDE_BUILDER_REGISTERED_TOOL_NAMES]);
 
@@ -302,6 +310,11 @@ it("writes a tool in the workshop, tries it, closes, applies, verifies and ships
 					: undefined,
 			credentialEnv: TARGET_CREDENTIAL_ENV,
 		});
+		const askHuman = host.ctx.ui.confirm.bind(host.ctx.ui);
+		(host.ctx.ui as { confirm: unknown }).confirm = async (title: string, body: string) => {
+			timeline.push(`ask:${title}`);
+			return askHuman(title, body);
+		};
 		const observed: { name: string; kind: string; details: Record<string, any> }[] = [];
 		const trustedTools: ToolDefinition[] = registered.map((tool) => ({
 			...tool,
@@ -393,6 +406,18 @@ it("writes a tool in the workshop, tries it, closes, applies, verifies and ships
 			"added tools/ready_check/tool.yaml",
 		]);
 		expect(closed.details.view.stage).toBe("proposal-review");
+
+		// The operator never had to ask for the diff: closing the workshop left the
+		// same review /review renders as a persisted transcript panel, and it was
+		// there before the apply question.
+		const review = panels.find((panel) => panel.data.title === "AHDE · Proposal review");
+		expect(review?.type).toBe(AHDE_TRANSCRIPT_ENTRY_TYPE);
+		const body = stripMarkers(review!.data.lines.join("\n"));
+		expect(body).toContain("+++ b/tools/ready_check/tool.yaml");
+		expect(body).toContain("Validation plan");
+		expect(body).toContain("Changes");
+		expect(timeline.indexOf("panel:AHDE · Proposal review"))
+			.toBeLessThan(timeline.indexOf("ask:Apply exact Builder proposal"));
 
 		// Applied, verified and shipped through the unchanged downstream contract.
 		const verified = observed.find((entry) => entry.details.result?.resolvedAs === "verify-candidate")!;

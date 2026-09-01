@@ -111,6 +111,7 @@ import { assertGradersRunnable, targetWithDevelopmentCorpus } from "../applicati
 import {
 	applyBuilderProposal,
 	loadBuilderApplyReceipt,
+	type PersistedBuilderRun,
 } from "../application/builder-proposal.js";
 import {
 	compileImprovementBrief,
@@ -194,13 +195,14 @@ import {
 	requireSpecDraft,
 	resolveOne,
 } from "./resolution.js";
-import { calibrationProjection } from "./calibration.js";
+import { calibrationProjection, DEFAULT_REPETITIONS } from "./calibration.js";
 import {
 	assertWorkbenchDecisionStage,
 	assertWorkshopStage,
 	estimateRunCost,
 	routineCostGuard,
 	workbenchGateClass,
+	type AuthorizedRunEstimate,
 	type WorkbenchRunEstimate,
 } from "./transition-policy.js";
 import {
@@ -816,16 +818,22 @@ export class AhdeWorkbench {
 		title: string,
 		subject: unknown,
 		signal?: AbortSignal,
-		presentation: { question?: string; estimate?: WorkbenchRunEstimate } = {},
+		presentation: {
+			question?: string;
+			estimate?: WorkbenchRunEstimate;
+			/** What an earlier dialog already priced and the operator approved. */
+			authorized?: AuthorizedRunEstimate | null;
+		} = {},
 	): Promise<string> {
 		abortIfRequested(signal);
 		const exact = boundedSubject(subject, input.kind);
 		let policy = workbenchGateClass(input.kind);
 		let question = presentation.question ?? `${title}?`;
 		// The guard is the only thing that can turn a routine decision back into a
-		// question: an unusually expensive or entirely unknown run.
+		// question: an unusually expensive or entirely unknown run that nobody has
+		// already approved the price of.
 		if (policy === "routine" && presentation.estimate) {
-			const guard = routineCostGuard(presentation.estimate);
+			const guard = routineCostGuard(presentation.estimate, process.env, presentation.authorized);
 			if (guard) {
 				policy = "one-question";
 				question = `${question} ${capitalize(guard)}. Continue?`;
@@ -912,6 +920,35 @@ export class AhdeWorkbench {
 				warning: `regression guards were not built: ${error instanceof Error ? error.message : String(error)}`,
 			};
 		}
+	}
+
+	/**
+	 * What checking this proposal will cost once it is applied, priced exactly
+	 * the way `verify-candidate` prices itself: the screen over the cases that
+	 * already failed, then both arms over the development basket and the sealed
+	 * holdout, at the repetitions “check it” uses.
+	 *
+	 * The exam contributes its SIZE and nothing else — no id, no name — and only
+	 * the money and the minutes ever leave this method. The largest eligible
+	 * holdout is priced because the operator may pick any of them: the amount on
+	 * screen is then the most the check can cost, never less.
+	 */
+	private verificationEstimate(
+		record: PersistedBuilderRun,
+		inventory: WorkbenchInventory,
+	): WorkbenchRunEstimate {
+		const development = record.request.sourceAttestation?.developmentCorpus;
+		const developmentTasks = development
+			? inventory.corpora.find((corpus) => corpus.id === development.id)?.taskCount ?? 0
+			: 0;
+		const sealedTasks = inventory.corpora
+			.filter((corpus) => corpus.visibility === "sealed" && corpus.taskCount >= SEALED_GATE_POLICY.minTasks)
+			.reduce((largest, corpus) => Math.max(largest, corpus.taskCount), 0);
+		const screen = record.request.source?.evalRunId ? developmentTasks : 0;
+		return this.runEstimate(
+			screen + 2 * (developmentTasks + sealedTasks) * DEFAULT_REPETITIONS,
+			inventory.target,
+		);
 	}
 
 	/** What one run of this many executions is expected to cost on this Target. */
@@ -2864,12 +2901,18 @@ export class AhdeWorkbench {
 		if (input.kind === "apply-proposal") {
 			const proposal = requireProposal(inventory, ["open", "apply-pending"], input.runId);
 			const before = { operation: "apply-proposal", branch: input.branch, builderRunHash: hashValue(proposal.record), ...proposalReview(proposal.record) };
-			const actor = await this.confirm(input, gate, "Apply exact Builder proposal", before, options.signal);
+			// The price of the check rides on the confirmation, not in the hashed
+			// subject: it is read from finished runs and would otherwise turn a
+			// concurrent run into a stale-decision refusal.
+			const verification = this.verificationEstimate(proposal.record, inventory);
+			const actor = await this.confirm(input, gate, "Apply exact Builder proposal", before, options.signal, {
+				estimate: verification,
+			});
 			const current = this.decisionInventory(input.kind);
 			const afterProposal = requireProposal(current, ["open", "apply-pending"], proposal.record.runId);
 			const after = { operation: "apply-proposal", branch: input.branch, builderRunHash: hashValue(afterProposal.record), ...proposalReview(afterProposal.record) };
 			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
-			const result = this.dependencies.applyProposal({ repoDir: this.projectDir, runsRoot: this.runsRoot, runId: proposal.record.runId, expectedBuilderRunHash: after.builderRunHash, requestedBranch: input.branch, actor: { kind: "human", id: actor }, reason: input.reason });
+			const result = this.dependencies.applyProposal({ repoDir: this.projectDir, runsRoot: this.runsRoot, runId: proposal.record.runId, expectedBuilderRunHash: after.builderRunHash, requestedBranch: input.branch, actor: { kind: "human", id: actor }, verificationAuthorization: verification, reason: input.reason });
 			const settled = this.select("proposal", proposal.record.runId);
 			return { kind: input.kind, message: "Proposal applied to an exact candidate branch; verification is now required.", result: { runId: result.receipt.runId, branch: result.receipt.branch, candidateSha: result.receipt.candidateSha, proposalHash: result.receipt.proposalSha256 }, view: await this.viewOf(settled) };
 		}
@@ -2950,6 +2993,10 @@ export class AhdeWorkbench {
 					subject: { operation: "verify-applied-candidate", builderRunId: builderRun.runId, builderRunHash: hashValue(builderRun), applyReceiptHash: hashValue(applyReceipt), proposalHash: builderRun.artifacts.proposal?.sha256 ?? null, baseTargetSha: applyReceipt.baseTargetSha, candidateSha: applyReceipt.candidateSha, approvedSpec: builderRun.request.approvedSpec, developmentCorpus: development ?? null, sealedHoldout: { id: selected.id, hash: selected.hash, taskCount: selected.taskCount }, repetitions: input.repetitions, screen: builderRun.request.source?.evalRunId ?? null, force: input.force === true },
 					approvedSpecId: builderRun.request.approvedSpec.specId,
 					sourceEvalRunId: builderRun.request.source?.evalRunId ?? null,
+					// The receipt of this exact candidate is the authorization: it says
+					// what the human who read this diff was told the check would cost.
+					// A candidate applied outside that dialog carries none.
+					authorized: applyReceipt.verificationAuthorization ?? null,
 					developmentCorpus,
 					sealedCorpus: { stateRoot: this.stateRoot, projectId: this.projectId, corpusId: selected.id } satisfies CorpusRef,
 				};
@@ -2964,6 +3011,7 @@ export class AhdeWorkbench {
 					? `Screen the cases that already failed, then verify the candidate against its baseline (up to ${executions + developmentTasks} Target executions)?`
 					: `Verify the candidate against its baseline (${executions} Target executions)?`,
 				estimate: this.runEstimate(executions + (before.sourceEvalRunId ? developmentTasks : 0), inventory.target),
+				authorized: before.authorized,
 			});
 			if (choice.actorId && actorId(choice.actorId) !== actor) throw new Error("sealed selection and confirmation came from different human actors");
 			const after = build();

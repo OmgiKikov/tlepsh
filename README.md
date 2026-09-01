@@ -41,6 +41,8 @@ older step is still there, one at a time.
 /review                 the exact Spec, eval basket, diff, or candidate — with its actions
 /traces                 diagnosis, failure modes, and the evidence link
 /target [resource]      the exact committed Target or one declared resource
+/passport [version]     what a shipped version promised and measured, saved beside the agent
+/log [rows]             how the agent grew: every version, what it scored, what it cost
 /doctor                 model, evaluator, run, and future ship readiness
 /holdout                privately import the operator-owned sealed JSONL exam
 /help                   this reference
@@ -58,9 +60,11 @@ older step is still there, one at a time.
 
 Builder Pi has no shell and no file access of its own: it works through three
 typed tools and a bound workshop, and every consequential step is a host-owned
-question with the exact subject on screen. Give the Builder a Sonnet/Opus-class
-model — below that floor the loop does not close; the Target can be as small as
-a 9B model.
+question with the exact subject on screen. Money is asked once per cycle: the
+apply question shows the verification estimate and approves it; verify asks
+again only above 1.5× that amount or when nothing was authorized. Give the
+Builder a Sonnet/Opus-class model — below that floor the loop does not close;
+the Target can be as small as a 9B model.
 
 ## Evidence
 

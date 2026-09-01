@@ -29,6 +29,19 @@ export const BuilderProposalDecisionClaimSchema = z.discriminatedUnion("decision
 			.refine((paths) => new Set(paths).size === paths.length, "paths must be unique"),
 		actor: HumanActorSchema,
 		via: z.enum(["improvement-loop", "proposal-search"]).nullable(),
+		/**
+		 * The verification amount the apply dialog showed and the operator
+		 * approved with the diff, or null for an automated apply. It rides on the
+		 * claim because the claim, not the receipt, is what a crashed apply is
+		 * rebuilt from: leaving it out would make a recovered receipt differ from
+		 * the one the human authorized.
+		 */
+		verificationAuthorization: z.strictObject({
+			executions: z.number().int().min(0),
+			sampledRuns: z.number().int().min(0),
+			costUsd: z.number().min(0).nullable(),
+			minutes: z.number().min(0).nullable(),
+		}).nullable(),
 		decidedAt: TimestampSchema,
 		reason: NonBlankSchema,
 	}),

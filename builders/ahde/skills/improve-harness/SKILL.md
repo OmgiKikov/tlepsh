@@ -19,6 +19,14 @@ description: Write and run the change in a bound workshop, close it into an evid
    evidence-supported rerun or repair action instead.
 3. Prefer changing focused Target context, skills, or declarative tools over
    adding broad orchestration or benchmark-specific phrases.
+3a. **Loop discipline.** Keep a proposal to about four changed files; more than
+   that is two hypotheses, so write them separately and let each be measured on
+   its own. At an equal verdict the smaller diff wins, and a change that only
+   deletes and comes back flat is worth keeping — less harness for the same
+   score is a better harness. A tie is a discard: `inconclusive` means the
+   evidence cannot tell the revisions apart, so say it in one sentence and
+   throw the change away or measure something else, never argue it into a ship
+   and never re-run the same experiment hoping for a different number.
 3b. **Read what was already tried first.** Call `ahde_workbench_view` with
    `aspect: "history"` (or read `priorAttempts` on `aspect: "target"`) before
    you open a workshop. Each row says what an attempt changed, which failure

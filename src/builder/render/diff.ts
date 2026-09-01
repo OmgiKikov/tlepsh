@@ -7,7 +7,7 @@ export const DEFAULT_MAX_DIFF_LINES = 400;
 export function renderUnifiedDiff(
 	diff: string,
 	paint: Paint,
-	options: { maxLines?: number } = {},
+	options: { maxLines?: number; remainder?: string } = {},
 ): string[] {
 	const maxLines = options.maxLines ?? DEFAULT_MAX_DIFF_LINES;
 	const lines = clean(diff).split("\n");
@@ -21,7 +21,8 @@ export function renderUnifiedDiff(
 		return line;
 	});
 	if (lines.length > maxLines) {
-		shown.push(paint.warning(`… ${lines.length - maxLines} more diff lines; open the full proposal artifact for the exact remainder`));
+		const remainder = options.remainder ?? "open the full proposal artifact for the exact remainder";
+		shown.push(paint.warning(`… ${lines.length - maxLines} more diff lines; ${remainder}`));
 	}
 	return shown;
 }

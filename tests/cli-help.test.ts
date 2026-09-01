@@ -69,6 +69,39 @@ describe("one Builder persona", () => {
 		}
 	});
 
+	it("offers the judge check exactly once, the way noise calibration is offered", () => {
+		const loop = persona.split("## Typical loop")[1] ?? "";
+		expect(loop).toContain("оцени 20 ответов вслепую — 10 минут — и я буду знать, насколько верить судье");
+		expect(loop).toContain("ahde label");
+		expect(loop).toContain("never bring it up again");
+		// The same one-offer shape as the noise measurement it mirrors.
+		expect(loop).toContain("offer that measurement once for this revision");
+		const evals = readFileSync(
+			new URL("../builders/ahde/skills/design-evals/SKILL.md", import.meta.url),
+			"utf8",
+		);
+		expect(evals).toContain("оцени 20 ответов вслепую");
+		expect(evals).toContain("exactly once per revision");
+	});
+
+	it("states the loop discipline it authors under", () => {
+		const rules = persona.split("## Rules that keep evidence honest")[1]?.split("\n## ")[0] ?? "";
+		expect(rules).toContain("about four changed files is the\n  ceiling");
+		expect(rules).toContain("At an equal verdict the smaller diff wins");
+		expect(rules).toContain("only deletes and\n  comes back flat is worth keeping");
+		expect(rules).toContain("A tie is a discard");
+		expect(rules).toContain("Never re-propose the same files for the same failure mode after a loss");
+		const improve = readFileSync(
+			new URL("../builders/ahde/skills/improve-harness/SKILL.md", import.meta.url),
+			"utf8",
+		);
+		expect(improve).toContain("Loop discipline");
+		expect(improve).toContain("about four changed files");
+		expect(improve).toContain("A tie is a discard");
+		// The rule this one restates has to still be there to restate.
+		expect(improve).toContain("already tried");
+	});
+
 	it("names the three question kinds without promising a false fixed count", () => {
 		const working = persona.split("## How to work with the operator")[1]?.split("\n## ")[0] ?? "";
 		expect(working).toContain("There are three kinds");
@@ -78,6 +111,10 @@ describe("one Builder persona", () => {
 		expect(working).toMatch(/\*\*apply this change\*\*/);
 		expect(working).toMatch(/\*\*ship it\*\*/);
 		expect(working).toContain("Do the work.");
+		// A report request is answered, not forwarded to a terminal.
+		expect(working).toContain("покажи как вырос");
+		expect(working).toContain("`/passport` puts that page on\n  screen");
+		expect(working).toContain("Never answer with a terminal command");
 		expect(working).toContain("Never answer “use /test” or “type /apply”");
 		// The stage machine is not the operator's vocabulary.
 		expect(working).toContain("Never\n  narrate stages");

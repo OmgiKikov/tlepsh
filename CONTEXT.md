@@ -21,6 +21,10 @@ decision. A failed or underpowered sealed gate is recorded and refused at
 promotion, never discarded. Consequential decisions fail closed outside an
 interactive TUI; the `ahde serve` API is a transport for the same gate, where a
 decision blocks on a confirmation bound to the exact host-minted subject hash.
+Money is authorized once per cycle: the apply question prices the verification
+that follows it and records that authorization on the receipt, so the check runs
+without a second money question while it stays within 1.5× the approved amount,
+and a candidate applied outside that dialog authorizes nothing.
 
 **3. Every number traces to an immutable run artifact.** Evidence points at
 hash-pinned Harness and Corpus snapshots; renderers never reread the checkout.

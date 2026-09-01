@@ -972,11 +972,14 @@ describe("the loop's applies are honestly attributed", () => {
 			const cycle = result.cycles[0]!;
 			const receipt = loadBuilderApplyReceipt(fixture.runsRoot, cycle.proposalRunId!);
 
-			expect(receipt.schemaVersion).toBe(3);
+			expect(receipt.schemaVersion).toBe(4);
 			// The actor is real — they confirmed the loop — and `via` is what stops
 			// the record from claiming they read this diff.
 			expect(receipt.actor).toEqual({ kind: "human", id: "local:loop-human" });
 			expect(receipt.via).toBe("improvement-loop");
+			// No dialog priced this diff's check, so the loop authorized no spend
+			// for it: a later verification asks the money question for itself.
+			expect(receipt.verificationAuthorization).toBeUndefined();
 			expect(receipt.branch).toBe(cycle.branch);
 
 			// It survives into the candidate, which is what the review reads.

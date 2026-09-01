@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -17,7 +18,15 @@ import type {
 	WorkbenchVerifyCandidateResult,
 	WorkbenchView,
 } from "../workbench/types.js";
+import { compileAgentLog } from "../application/agent-log.js";
+import {
+	compileVersionPassport,
+	renderVersionPassportMarkdown,
+} from "../application/version-passport.js";
+import { writeTextArtifact } from "../storage/artifacts.js";
 import { oneLine, pluralize } from "./render/format.js";
+import { renderAgentLog } from "./render/agent-log.js";
+import { renderVersionPassport } from "./render/passport.js";
 import { decisionHeadline, renderDecision } from "./render/decision.js";
 import { nextStep, stageLabel } from "./render/stage.js";
 import { renderReview, renderStatus, renderTarget, renderTraces, viewTitle } from "./render/view.js";
@@ -35,7 +44,10 @@ import {
 import { formatWorkbenchConfirmation } from "./workbench-gate.js";
 import { createPolicyAwareGate } from "./workbench-adapter.js";
 
-type CommandWorkbench = Pick<AhdeWorkbench, "view" | "decide">;
+type CommandWorkbench = Pick<
+	AhdeWorkbench,
+	"view" | "decide" | "projectDir" | "stateRoot" | "runsRoot" | "projectId"
+>;
 
 export const AHDE_BUILDER_COMMAND_NAMES = [
 	// The three verbs the operator actually says; everything below is a shortcut
@@ -60,6 +72,8 @@ export const AHDE_BUILDER_COMMAND_NAMES = [
 	"adopt",
 	"next",
 	"target",
+	"passport",
+	"log",
 ] as const;
 
 const BUILDER_HELP = `AHDE Builder
@@ -84,6 +98,8 @@ Looking around:
   /review               the exact artifact awaiting your review, with actions
   /traces               diagnosis, failure modes, and the evidence link
   /target [resource]    the exact committed Target, or one declared resource
+  /passport [version]   what the newest shipped version promised and measured
+  /log [n]              how the agent grew: every version and what it scored
   /doctor               model auth, Target readiness, and recovery steps
   /holdout              privately import the operator-owned sealed JSONL exam
   /help                 this reference
@@ -952,6 +968,72 @@ export function registerAhdeBuilderCommands(
 				? renderTarget(view.detail.content, markerPaint)
 				: renderStatus(view, markerPaint);
 			presenter.show(ctx, { title: resourcePath ? `AHDE · ${oneLine(resourcePath, 60)}` : "AHDE · Target", tone: "info", lines });
+		},
+	});
+
+	/**
+	 * The version passport: what the shipped agent promised, what it measured,
+	 * how far its judge has been checked, and what is still unknown. It is a
+	 * read of durable artifacts — nothing here runs, spends, or decides — and it
+	 * lands twice: on screen now, and as a file the operator can send to someone
+	 * who was not in the room.
+	 */
+	pi.registerCommand("passport", {
+		description: "Show what a shipped version promised and measured, and write it beside the agent: /passport [version]",
+		async handler(args, ctx) {
+			await prepare(ctx, "passport");
+			const version = args.trim();
+			if (/\s/.test(version)) throw new Error("/passport accepts at most one version, for example /passport 0.2.0");
+			const view = await workbench.view();
+			const passport = compileVersionPassport({
+				runsRoot: workbench.runsRoot,
+				stateRoot: workbench.stateRoot,
+				projectId: workbench.projectId,
+				...(version ? { version } : {}),
+				...(view.target.id ? { targetId: view.target.id } : {}),
+				model: view.target.model ? { provider: view.target.model.provider, id: view.target.model.id } : null,
+			});
+			// The tag is host-minted semver, but the filename is still built from a
+			// bounded character set rather than from whatever the tag says.
+			const slug = passport.version.replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 60);
+			const name = `passport-${slug.startsWith("v") ? slug : `v${slug}`}.md`;
+			const file = join(workbench.projectDir, name);
+			let written: string | null = name;
+			try {
+				writeTextArtifact(file, renderVersionPassportMarkdown(passport));
+			} catch {
+				// The page is worth reading even when the file cannot be written.
+				written = null;
+			}
+			presenter.show(ctx, {
+				title: "AHDE · Passport",
+				tone: "info",
+				lines: [
+					...renderVersionPassport(passport, markerPaint),
+					"",
+					written
+						? `${markerPaint.dim("Written to")} ${oneLine(written, 100)}`
+						: markerPaint.warning("This directory is not writable, so nothing was saved beside the agent."),
+				],
+			});
+		},
+	});
+
+	/** The growth log: every decided attempt, newest first, and the curve under it. */
+	pi.registerCommand("log", {
+		description: "Show how the agent grew: every promoted and rejected version: /log [rows]",
+		async handler(args, ctx) {
+			await prepare(ctx, "log");
+			const requested = args.trim();
+			if (requested && !/^\d{1,3}$/.test(requested)) throw new Error("/log accepts a row count, for example /log 10");
+			const view = await workbench.view();
+			const log = compileAgentLog({
+				runsRoot: workbench.runsRoot,
+				projectId: workbench.projectId,
+				...(view.target.id ? { targetId: view.target.id } : {}),
+				...(requested ? { limit: Number(requested) } : {}),
+			});
+			presenter.show(ctx, { title: "AHDE · Growth", tone: "info", lines: renderAgentLog(log, markerPaint) });
 		},
 	});
 }

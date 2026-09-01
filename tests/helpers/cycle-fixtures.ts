@@ -166,7 +166,13 @@ function comparison(surface: "development" | "sealed") {
 }
 
 /** One conclusive development EvalRun for the current Target revision (mirrors tests/workbench.test.ts). */
-export function writeDevelopmentEval(paths: FixturePaths, corpusId: string, evalRunId: string): EvalRunRecord {
+export function writeDevelopmentEval(
+	paths: FixturePaths,
+	corpusId: string,
+	evalRunId: string,
+	/** What this run cost, for fixtures that exercise the run cost estimate. */
+	spend: { costUsd?: number; latencyMs?: number } = {},
+): EvalRunRecord {
 	const resolved = targetWithDevelopmentCorpus(
 		loadTarget(paths.projectDir),
 		loadCorpus({ stateRoot: paths.stateRoot, projectId: PROJECT_ID, corpusId }),
@@ -212,7 +218,9 @@ export function writeDevelopmentEval(paths: FixturePaths, corpusId: string, eval
 		status: "completed",
 		error: null,
 		startedAt: NOW,
-		finishedAt: NOW,
+		// A run that took time really finished later: the cost estimate reads
+		// wall-clock from these two stamps before it falls back to latencyMs.
+		finishedAt: new Date(Date.parse(NOW) + (spend.latencyMs ?? 0)).toISOString(),
 		target: {
 			id: resolved.manifest.id,
 			gitSha: resolved.gitSha,
@@ -227,8 +235,8 @@ export function writeDevelopmentEval(paths: FixturePaths, corpusId: string, eval
 		trace: { path: "session.jsonl", sessionId: null, sha256: hashFile(traceContent) },
 		metrics: {
 			tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			costUsd: 0,
-			latencyMs: 0,
+			costUsd: spend.costUsd ?? 0,
+			latencyMs: spend.latencyMs ?? 0,
 			toolCalls: 0,
 			toolErrors: 0,
 			recoveryAttempts: 0,

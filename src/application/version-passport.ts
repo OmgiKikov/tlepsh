@@ -8,28 +8,43 @@
  * snapshot, the EvalRun indexes, the corpus metadata, the human judge labels —
  * and never from a model, a memory, or a number somebody typed into a report.
  *
+ * Two surfaces read it, and one module serves both so the page cannot drift:
+ *
+ *   - `ahde passport --target <dir>` selects a subject (the newest promotion, a
+ *     promotion tag, or one candidate id) and refuses with a next step when the
+ *     subject or an artifact the page rests on is missing. Its projection is
+ *     what `--json` prints, hashes whole.
+ *   - `/passport [version]` inside Builder Pi describes one *shipped* version of
+ *     the project the Workbench already has open. It never refuses over a
+ *     missing sibling artifact: it narrows the section and says so under “What
+ *     this page could not read”, because the operator is looking at a panel, not
+ *     driving a script.
+ *
  * The sealed boundary is the same one every other surface keeps: the holdout
  * contributes a verdict and a design size, and nothing else. Its corpus id, its
- * name, its tasks and its answers never enter the projection, so they cannot
- * appear in the rendered page or in the JSON behind it — the renderer is not
- * what is keeping them out. The corpus store is opened for the development
- * corpus's name and case count, and for nothing sealed.
+ * name, its tasks, its answers and its eval run ids never enter either
+ * projection, so they cannot appear in a rendered page or in the JSON behind it
+ * — the renderer is not what is keeping them out. The corpus store is opened for
+ * the development corpus's name and case count, and for nothing sealed.
  */
 
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { formatJudgeAgreement, type JudgeAgreementStats } from "../domain/judge-agreement.js";
 import { formatPoints } from "../domain/comparison-gate.js";
-import type { CandidateRecord } from "../domain/candidate.js";
+import { isPromotionGradeGateEvidence, type CandidateRecord } from "../domain/candidate.js";
+import { loadDiagnosis } from "../diagnosis.js";
 import { loadTarget } from "../manifest.js";
 import { listCorpora } from "../corpus.js";
 import { readEvalRunIndex } from "../eval.js";
 import { formatEvaluatorSpend } from "../evaluator-model.js";
-import { loadSpecSnapshot } from "../spec.js";
+import { loadApprovedSpec, loadSpecSnapshot } from "../spec.js";
 import { calibrationProjection } from "../workbench/calibration.js";
 import { loadCandidateRecord } from "./candidate-review.js";
 import { inspectCandidateImpact } from "./candidate-impact.js";
+import { compileImprovementBrief, publicTaskId } from "./improvement-brief.js";
 import { judgeEvidenceCalibration } from "./judge-labels.js";
+import { detectPromotionFlips } from "./regression-guards.js";
 
 /** Failure a passport cannot recover from, with the operator's next step. */
 export class VersionPassportError extends Error {
@@ -42,6 +57,65 @@ export class VersionPassportError extends Error {
 		this.next = next;
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Shared reads. Both surfaces walk the same candidate directory, keep the same
+// sealed boundary, and compute the judge's majority-class baseline the same way.
+
+/** Candidate directories only, never following a symlink out of the runs root. */
+function candidateIds(runsRoot: string): string[] {
+	const root = join(resolve(runsRoot), "candidates");
+	if (!existsSync(root)) return [];
+	try {
+		return readdirSync(root, { withFileTypes: true })
+			.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+			.map((entry) => entry.name)
+			.sort();
+	} catch {
+		return [];
+	}
+}
+
+type PromotedEvent = Extract<CandidateRecord["events"][number], { type: "promoted" }>;
+
+function promotedEventOf(record: CandidateRecord): PromotedEvent | null {
+	const event = record.events.find((candidate) => candidate.type === "promoted");
+	return event?.type === "promoted" ? event : null;
+}
+
+/**
+ * The share of human labels in their more common class — the score a judge that
+ * never looked would get. Reported beside agreement because 90% agreement on a
+ * corpus where 90% of the labels say pass is 90% agreement with a coin that
+ * always says pass.
+ */
+function majorityClassBaseline(stats: JudgeAgreementStats): number | null {
+	if (stats.n === 0) return null;
+	const humanPass = stats.truePass + stats.falseFail;
+	const humanFail = stats.trueFail + stats.falsePass;
+	return Math.max(humanPass, humanFail) / stats.n;
+}
+
+/**
+ * The judge spend recorded on these exact eval runs. An index that cannot be
+ * read contributes nothing: a missing number is reported as no judge spend
+ * shown, never as a guess. Sealed runs are never passed in, as they are never
+ * opened for anything else either.
+ */
+function judgeSpendOf(runsRoot: string, evalRunIds: readonly string[]): number {
+	let total = 0;
+	for (const evalRunId of evalRunIds) {
+		try {
+			total += readEvalRunIndex(runsRoot, evalRunId).judgeCostUsd ?? 0;
+		} catch {
+			// An unreadable index is already reported by every other surface.
+		}
+	}
+	return total;
+}
+
+// ---------------------------------------------------------------------------
+// The CLI surface: one subject, chosen by id or tag, or the newest promotion.
 
 export interface CompileVersionPassportOptions {
 	/** The Target checkout, for the manifest that names the agent and its model. */
@@ -137,11 +211,14 @@ export interface PassportProvenance {
 	specId: string | null;
 	proposalHash: string | null;
 	gatePolicyIds: string[];
+	/**
+	 * The development lineage only. A sealed run id names the exam it came from
+	 * to anyone holding the runs root, so it stays out of the projection rather
+	 * than being filtered by whichever renderer happens to print it.
+	 */
 	evalRuns: {
 		developmentBaseline: string;
 		developmentCandidate: string;
-		sealedBaseline: string | null;
-		sealedCandidate: string | null;
 	};
 	/** Verbatim from the apply receipt the record carries. */
 	appliedBy: { actorId: string; reason: string; at: string } | null;
@@ -177,20 +254,6 @@ export interface VersionPassport {
 	provenance: PassportProvenance;
 }
 
-/** Candidate directories only, never following a symlink out of the runs root. */
-function candidateIds(runsRoot: string): string[] {
-	const root = join(resolve(runsRoot), "candidates");
-	if (!existsSync(root)) return [];
-	try {
-		return readdirSync(root, { withFileTypes: true })
-			.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
-			.map((entry) => entry.name)
-			.sort();
-	} catch {
-		return [];
-	}
-}
-
 /**
  * Every readable record for one project, newest first. An unreadable sibling is
  * skipped rather than fatal: a passport is about one candidate, and a broken
@@ -210,8 +273,8 @@ function projectRecords(runsRoot: string, projectId: string): CandidateRecord[] 
 }
 
 function promotionOf(record: CandidateRecord): { tag: string; at: string } | null {
-	const promoted = record.events.find((event) => event.type === "promoted");
-	return promoted?.type === "promoted" ? { tag: promoted.decision.tag, at: promoted.at } : null;
+	const promoted = promotedEventOf(record);
+	return promoted ? { tag: promoted.decision.tag, at: promoted.at } : null;
 }
 
 function evaluatedEvent(record: CandidateRecord) {
@@ -302,39 +365,9 @@ function resourceRatios(comparison: unknown, judgeCostUsd: number): PassportReso
 	return { costRatio, latencyRatio, tokenRatio, judgeCostUsd };
 }
 
-/**
- * The judge spend recorded on these exact eval runs. An index that cannot be
- * read contributes nothing: a missing number is reported as no judge spend
- * shown, never as a guess.
- */
-function judgeSpendOf(runsRoot: string, evalRunIds: readonly string[]): number {
-	let total = 0;
-	for (const evalRunId of evalRunIds) {
-		try {
-			total += readEvalRunIndex(runsRoot, evalRunId).judgeCostUsd ?? 0;
-		} catch {
-			// An unreadable index is already reported by every other surface.
-		}
-	}
-	return total;
-}
-
 function policyIdOf(comparison: unknown): string | null {
 	const policyId = (comparison as { policyId?: unknown } | null | undefined)?.policyId;
 	return typeof policyId === "string" ? policyId : null;
-}
-
-/**
- * The share of human labels in their more common class — the score a judge that
- * never looked would get. Reported beside agreement because 90% agreement on a
- * corpus where 90% of the labels say pass is 90% agreement with a coin that
- * always says pass.
- */
-function majorityClassBaseline(stats: JudgeAgreementStats): number | null {
-	if (stats.n === 0) return null;
-	const humanPass = stats.truePass + stats.falseFail;
-	const humanFail = stats.trueFail + stats.falsePass;
-	return Math.max(humanPass, humanFail) / stats.n;
 }
 
 /**
@@ -400,7 +433,7 @@ function noiseBand(
  * the read-only candidate-impact seam. Only the targeted-mode outcomes are read
  * from it; the sealed fields it also carries are not part of a passport.
  */
-function unresolvedModes(
+function unresolvedTargetedModes(
 	runsRoot: string,
 	record: CandidateRecord,
 ): { diagnosisBound: boolean; unresolved: PassportUnresolvedMode[]; note: string | null } {
@@ -502,7 +535,7 @@ function approvedPromise(options: CompileVersionPassportOptions, record: Candida
 }
 
 /** Read one candidate's promise-against-measurement, from artifacts alone. */
-export function compileVersionPassport(options: CompileVersionPassportOptions): VersionPassport {
+function compileTargetPassport(options: CompileVersionPassportOptions): VersionPassport {
 	const target = loadTarget(options.targetDir);
 	const projectId = options.projectId ?? target.manifest.id;
 	const record = selectSubject(options, projectId);
@@ -529,7 +562,7 @@ export function compileVersionPassport(options: CompileVersionPassportOptions): 
 		development.candidate.evalRunId,
 	]);
 
-	const limits = unresolvedModes(options.runsRoot, record);
+	const limits = unresolvedTargetedModes(options.runsRoot, record);
 	const model = measuredModel(options.runsRoot, development.candidate.evalRunId) ??
 		{ provider: target.manifest.model.provider, id: target.manifest.model.id };
 
@@ -582,8 +615,6 @@ export function compileVersionPassport(options: CompileVersionPassportOptions): 
 			evalRuns: {
 				developmentBaseline: development.baseline.evalRunId,
 				developmentCandidate: development.candidate.evalRunId,
-				sealedBaseline: sealed?.baseline.evalRunId ?? null,
-				sealedCandidate: sealed?.candidate.evalRunId ?? null,
 			},
 			appliedBy: record.origin.kind === "applied-builder"
 				? {
@@ -594,6 +625,418 @@ export function compileVersionPassport(options: CompileVersionPassportOptions): 
 				: null,
 		},
 	};
+}
+
+// ---------------------------------------------------------------------------
+// The Builder surface: one shipped version of the project already open, with a
+// warnings channel instead of a refusal for anything that narrows the page.
+
+const MAX_CRITERIA = 20;
+const MAX_MODE_TITLE_CHARS = 90;
+const MAX_UNRESOLVED_MODES = 5;
+const MAX_FLIPS_CONSIDERED = 200;
+const MAX_REASON_CHARS = 300;
+
+function clip(value: string, max: number): string {
+	const flat = value.replace(/\s+/gu, " ").trim();
+	return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
+}
+
+/** The paired development statistics of the promoted comparison. */
+export interface VersionPassportDevelopment {
+	verdict: string;
+	tasks: number;
+	repetitions: number;
+	excludedTasks: number;
+	baselinePassRate: number;
+	candidatePassRate: number;
+	baselineScore: number;
+	candidateScore: number;
+	scoreDelta: number;
+	confidence95: { low: number; high: number };
+}
+
+/** The sealed exam as a passport may know it: a verdict and a design size. */
+export interface VersionPassportSealed {
+	verdict: string;
+	tasks: number;
+	repetitions: number;
+}
+
+export interface VersionPassportResources {
+	costRatio: number | null;
+	latencyRatio: number | null;
+	tokenRatio: number | null;
+	/**
+	 * The judge endpoint's own bill across the two development arms. A total,
+	 * never a ratio: an instrument's cost is not the agent's per-answer cost.
+	 */
+	judgeCostUsd: number;
+}
+
+export interface VersionPassportJudge {
+	agreement: number;
+	kappa: number | null;
+	/** Independent labelled subjects behind the agreement. */
+	subjects: number;
+	checks: number;
+	/**
+	 * The share of human labels in their more common class. An instrument that
+	 * always answered with that class would score exactly this, so agreement at
+	 * or below the line certifies nothing.
+	 */
+	majorityClassBaseline: number | null;
+}
+
+/** How much this exact revision disagrees with itself, when anyone measured. */
+export interface VersionPassportNoise {
+	verdict: string;
+	confidence95: { low: number; high: number };
+	flipRate: number;
+	tasks: number;
+	repetitions: number;
+	at: string;
+}
+
+export interface ShippedVersionPassport {
+	schemaVersion: 1;
+	agent: string;
+	version: string;
+	at: string;
+	baselineSha: string;
+	candidateSha: string;
+	model: { provider: string; id: string } | null;
+	promised: {
+		title: string;
+		purpose: string;
+		successCriteria: string[];
+		constraints: string[];
+	} | null;
+	measured: {
+		development: VersionPassportDevelopment | null;
+		sealed: VersionPassportSealed | null;
+		resources: VersionPassportResources | null;
+	};
+	/** null means nobody has checked the judge against a human. */
+	judge: VersionPassportJudge | null;
+	limits: {
+		/** Failure modes this change aimed at that did not fully flip. */
+		unresolvedModes: string[];
+		unresolvedOmitted: number;
+		noise: VersionPassportNoise | null;
+		/** Development basket identity, and the exam as a count only. */
+		developmentCorpus: { id: string; hash: string } | null;
+		sealedTasks: number;
+	};
+	provenance: {
+		candidateId: string;
+		experimentId: string;
+		approvedSpecId: string | null;
+		proposalRunId: string | null;
+		proposalSha256: string | null;
+		appliedBy: string | null;
+		/** Absent for an interactive apply: a human read that exact diff. */
+		appliedVia: string | null;
+		reviewedBy: string | null;
+		promotedBy: string | null;
+		reason: string | null;
+		developmentEvalRuns: { baseline: string; candidate: string } | null;
+	};
+	/** What could not be read; each one narrows a section above. */
+	warnings: string[];
+}
+
+export interface VersionPassportInput {
+	runsRoot: string;
+	stateRoot: string;
+	projectId: string;
+	/** Promotion tag to compile. The newest promotion of this project otherwise. */
+	version?: string;
+	targetId?: string;
+	/** The Target's current model, as the manifest records it. Display only. */
+	model?: { provider: string; id: string } | null;
+}
+
+export interface VersionPassportDependencies {
+	detectFlips: typeof detectPromotionFlips;
+	loadDiagnosis: typeof loadDiagnosis;
+	compileBrief: typeof compileImprovementBrief;
+	judgeCalibration: typeof judgeEvidenceCalibration;
+	loadSpec: typeof loadApprovedSpec;
+}
+
+const DEFAULT_DEPENDENCIES: VersionPassportDependencies = {
+	detectFlips: detectPromotionFlips,
+	loadDiagnosis,
+	compileBrief: compileImprovementBrief,
+	judgeCalibration: judgeEvidenceCalibration,
+	loadSpec: loadApprovedSpec,
+};
+
+/**
+ * Every promoted version of this project, newest first. A/A calibration is
+ * never a version, and an unreadable record narrows the list instead of
+ * failing it.
+ */
+function promotedRecords(
+	input: VersionPassportInput,
+): { records: { record: CandidateRecord; promotion: PromotedEvent }[]; unreadable: number } {
+	const runsRoot = resolve(input.runsRoot);
+	const records: { record: CandidateRecord; promotion: PromotedEvent }[] = [];
+	let unreadable = 0;
+	for (const candidateId of candidateIds(runsRoot)) {
+		let record: CandidateRecord;
+		try {
+			record = loadCandidateRecord(runsRoot, candidateId);
+		} catch {
+			unreadable += 1;
+			continue;
+		}
+		if (record.mode === "aa-calibration") continue;
+		if (record.projectId !== input.projectId) continue;
+		if (input.targetId !== undefined && record.targetId !== input.targetId) continue;
+		const promotion = promotedEventOf(record);
+		if (promotion) records.push({ record, promotion });
+	}
+	records.sort((left, right) => (left.promotion.at < right.promotion.at ? 1 : left.promotion.at > right.promotion.at ? -1 : 0));
+	return { records, unreadable };
+}
+
+/** `v0.2.0` and `0.2.0` name the same version to an operator. */
+function sameVersion(tag: string, requested: string): boolean {
+	const normalize = (value: string): string => value.trim().replace(/^v/i, "");
+	return normalize(tag) === normalize(requested);
+}
+
+/** The noise measurement for this exact revision, when one exists. */
+function noiseFor(input: VersionPassportInput, targetSha: string): VersionPassportNoise | null {
+	const runsRoot = resolve(input.runsRoot);
+	let newest: VersionPassportNoise | null = null;
+	for (const candidateId of candidateIds(runsRoot)) {
+		let record: CandidateRecord;
+		try {
+			record = loadCandidateRecord(runsRoot, candidateId);
+		} catch {
+			continue;
+		}
+		if (record.mode !== "aa-calibration" || record.projectId !== input.projectId) continue;
+		if (record.baseline.sha !== targetSha) continue;
+		const evaluated = record.events.find((event) => event.type === "evaluated");
+		if (evaluated?.type !== "evaluated") continue;
+		const evidence = evaluated.evaluation.development.comparison;
+		if (!evidence || !("verdict" in evidence) || !("design" in evidence)) continue;
+		const summary = evidence.summary;
+		const measured: VersionPassportNoise = {
+			verdict: evidence.verdict,
+			confidence95: { ...summary.confidence95 },
+			flipRate: summary.taskCount > 0 ? (summary.improved + summary.regressed) / summary.taskCount : 0,
+			tasks: evidence.design.tasks,
+			repetitions: evidence.design.repetitions,
+			at: evaluated.at,
+		};
+		if (!newest || measured.at > newest.at) newest = measured;
+	}
+	return newest;
+}
+
+/**
+ * Failure modes the change aimed at that did not fully flip fail→pass. The
+ * same strict rule the growth log uses to call a mode resolved, read the other
+ * way round: one improved example never retires a mode.
+ */
+function unresolvedModeTitles(
+	record: CandidateRecord,
+	runsRoot: string,
+	dependencies: VersionPassportDependencies,
+	warnings: string[],
+): { titles: string[]; omitted: number } {
+	if (record.origin.kind !== "applied-builder" || !record.origin.source) return { titles: [], omitted: 0 };
+	try {
+		const flips = dependencies.detectFlips(runsRoot, record).slice(0, MAX_FLIPS_CONSIDERED);
+		const flipped = new Set(flips.map((flip) => publicTaskId(flip.taskId)));
+		const diagnosis = dependencies.loadDiagnosis(runsRoot, record.origin.source.evalRunId);
+		const brief = dependencies.compileBrief(runsRoot, diagnosis);
+		const unresolved = brief.modes.filter(
+			(mode) => mode.taskIds.length > 0 && !mode.taskIds.every((taskId) => flipped.has(taskId)),
+		);
+		const titles = unresolved
+			.slice(0, MAX_UNRESOLVED_MODES)
+			.map((mode) => clip(mode.title, MAX_MODE_TITLE_CHARS));
+		return { titles, omitted: Math.max(0, unresolved.length - titles.length) };
+	} catch {
+		warnings.push("the diagnosis this change was authored against could not be read, so unresolved failure modes are unknown");
+		return { titles: [], omitted: 0 };
+	}
+}
+
+/**
+ * One shipped version, as a page. Throws only when there is no such version to
+ * describe; everything narrower is a warning on the page itself.
+ */
+function compileShippedPassport(
+	input: VersionPassportInput,
+	dependenciesInput: Partial<VersionPassportDependencies>,
+): ShippedVersionPassport {
+	const dependencies: VersionPassportDependencies = { ...DEFAULT_DEPENDENCIES, ...dependenciesInput };
+	const runsRoot = resolve(input.runsRoot);
+	const warnings: string[] = [];
+	const { records, unreadable } = promotedRecords(input);
+	if (unreadable > 0) {
+		warnings.push(`${unreadable} candidate record${unreadable === 1 ? "" : "s"} could not be read and were skipped`);
+	}
+	const chosen = input.version
+		? records.find((entry) => sameVersion(entry.promotion.decision.tag, input.version!))
+		: records[0];
+	if (!chosen) {
+		throw new Error(input.version
+			? `no promoted version ${input.version} exists for this agent`
+			: "nothing has been promoted yet, so there is no version to describe");
+	}
+	const { record, promotion } = chosen;
+	const evaluated = record.events.find((event) => event.type === "evaluated");
+	const evaluation = evaluated?.type === "evaluated" ? evaluated.evaluation : null;
+	const development = evaluation?.development.comparison ?? null;
+	const sealed = evaluation?.sealedHoldout?.comparison ?? null;
+	const reviewed = record.events.find((event) => event.type === "reviewed");
+
+	let promised: ShippedVersionPassport["promised"] = null;
+	const approvedSpecId = record.specId ??
+		(record.origin.kind === "applied-builder" ? record.origin.approvedSpec.specId : null);
+	if (approvedSpecId) {
+		try {
+			const loaded = dependencies.loadSpec({
+				stateRoot: input.stateRoot,
+				projectId: input.projectId,
+				specId: approvedSpecId,
+			});
+			promised = {
+				title: loaded.snapshot.spec.title,
+				purpose: loaded.snapshot.spec.purpose,
+				successCriteria: loaded.snapshot.spec.successCriteria.slice(0, MAX_CRITERIA),
+				constraints: loaded.snapshot.spec.constraints.slice(0, MAX_CRITERIA),
+			};
+		} catch {
+			warnings.push("the approved Spec this version was built against could not be read, so its promise is not quoted here");
+		}
+	} else {
+		warnings.push("this version is not bound to an approved Spec, so it promised nothing in writing");
+	}
+
+	// The judge that graded the development evidence, checked against the
+	// operator's own blind labels. Sealed evidence is never labelled.
+	let judge: VersionPassportJudge | null = null;
+	const developmentRuns = evaluation
+		? { baseline: evaluation.development.baseline.evalRunId, candidate: evaluation.development.candidate.evalRunId }
+		: null;
+	if (developmentRuns) {
+		try {
+			const calibration = dependencies.judgeCalibration({
+				runsRoot,
+				stateRoot: input.stateRoot,
+				projectId: input.projectId,
+				evalRunIds: [developmentRuns.baseline, developmentRuns.candidate],
+			});
+			const stats = calibration.stats;
+			if (stats && stats.nChecks > 0) {
+				judge = {
+					agreement: stats.agreement,
+					kappa: stats.kappa,
+					subjects: stats.n,
+					checks: stats.nChecks,
+					majorityClassBaseline: majorityClassBaseline(stats),
+				};
+			}
+		} catch {
+			warnings.push("judge labels could not be read, so the judge reads as not calibrated here");
+		}
+	}
+
+	const unresolved = unresolvedModeTitles(record, runsRoot, dependencies, warnings);
+	const built = record.events.find((event) => event.type === "built");
+	return {
+		schemaVersion: 1,
+		agent: record.targetId,
+		version: promotion.decision.tag,
+		at: promotion.at,
+		baselineSha: record.baseline.sha,
+		candidateSha: built?.type === "built" ? built.candidate.sha : promotion.decision.candidate.sha,
+		model: input.model ?? null,
+		promised,
+		measured: {
+			development: isPromotionGradeGateEvidence(development)
+				? {
+					verdict: development.verdict,
+					tasks: development.design.tasks,
+					repetitions: development.design.repetitions,
+					excludedTasks: development.design.excludedTasks,
+					baselinePassRate: development.summary.baselinePassRate,
+					candidatePassRate: development.summary.candidatePassRate,
+					baselineScore: development.summary.baselineScore,
+					candidateScore: development.summary.candidateScore,
+					scoreDelta: development.summary.scoreDelta,
+					confidence95: { ...development.summary.confidence95 },
+				}
+				: null,
+			sealed: isPromotionGradeGateEvidence(sealed)
+				? { verdict: sealed.verdict, tasks: sealed.design.tasks, repetitions: sealed.design.repetitions }
+				: null,
+			resources: isPromotionGradeGateEvidence(development)
+				? {
+					costRatio: development.resources.costRatio,
+					latencyRatio: development.resources.latencyRatio,
+					tokenRatio: development.resources.tokenRatio,
+					judgeCostUsd: developmentRuns
+						? judgeSpendOf(runsRoot, [developmentRuns.baseline, developmentRuns.candidate])
+						: 0,
+				}
+				: null,
+		},
+		judge,
+		limits: {
+			unresolvedModes: unresolved.titles,
+			unresolvedOmitted: unresolved.omitted,
+			noise: noiseFor(input, record.baseline.sha),
+			developmentCorpus: evaluation?.development.corpus
+				? { id: evaluation.development.corpus.id, hash: evaluation.development.corpus.hash }
+				: null,
+			// The exam's size, and not one thing more about it.
+			sealedTasks: isPromotionGradeGateEvidence(sealed) ? sealed.design.tasks : 0,
+		},
+		provenance: {
+			candidateId: record.candidateId,
+			experimentId: promotion.decision.experimentId,
+			approvedSpecId,
+			proposalRunId: record.origin.kind === "applied-builder" ? record.origin.builderRunId : null,
+			proposalSha256: record.origin.kind === "applied-builder" ? record.origin.application.proposalSha256 : null,
+			appliedBy: record.origin.kind === "applied-builder" ? record.origin.application.actor.id : null,
+			appliedVia: record.origin.kind === "applied-builder" ? record.origin.application.via ?? null : null,
+			reviewedBy: reviewed?.type === "reviewed" ? reviewed.actor.id : null,
+			promotedBy: promotion.actor.kind === "human" ? promotion.actor.id : null,
+			reason: clip(promotion.decision.reason, MAX_REASON_CHARS),
+			// The development lineage only; the sealed arms name the exam.
+			developmentEvalRuns: developmentRuns,
+		},
+		warnings,
+	};
+}
+
+/**
+ * Compile a passport. `targetDir` picks the CLI's subject-selecting read of one
+ * candidate; everything else is the Builder's read of one shipped version of the
+ * project already open.
+ */
+export function compileVersionPassport(options: CompileVersionPassportOptions): VersionPassport;
+export function compileVersionPassport(
+	input: VersionPassportInput,
+	dependencies?: Partial<VersionPassportDependencies>,
+): ShippedVersionPassport;
+export function compileVersionPassport(
+	input: CompileVersionPassportOptions | VersionPassportInput,
+	dependencies: Partial<VersionPassportDependencies> = {},
+): VersionPassport | ShippedVersionPassport {
+	return "targetDir" in input
+		? compileTargetPassport(input)
+		: compileShippedPassport(input, dependencies);
 }
 
 // ---------------------------------------------------------------------------
@@ -610,17 +1053,30 @@ function shortHash(value: string): string {
 	return `${match[1] ?? ""}${match[2]!.slice(0, HASH_HEX)}…`;
 }
 
-function percent(rate: number): string {
+function shortSha(value: string): string {
+	return value.slice(0, HASH_HEX);
+}
+
+/** `0%`, `41.7%`, `100%`: a rate an operator reads, not a fixed width. */
+function trimmedPercent(rate: number): string {
 	const rounded = Math.round(rate * 1_000) / 10;
 	return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}%`;
+}
+
+function percent(value: number): string {
+	return `${(value * 100).toFixed(1)}%`;
 }
 
 function score(value: number | null): string {
 	return value === null ? "n/a" : value.toFixed(2);
 }
 
-function ratio(value: number | null): string | null {
+function ratioOrNull(value: number | null): string | null {
 	return value === null ? null : `×${value.toFixed(2)}`;
+}
+
+function ratio(value: number | null): string {
+	return value === null || !Number.isFinite(value) ? "—" : `×${value.toFixed(2)}`;
 }
 
 function design(value: PassportDesign): string {
@@ -632,13 +1088,58 @@ function bullets(items: readonly string[], empty: string): string[] {
 	return items.length === 0 ? [`- ${empty}`] : items.map((item) => `- ${item}`);
 }
 
+/** The judge line every surface shares, so the two cannot drift. */
+export function judgeSummaryLine(judge: VersionPassportJudge | null): string {
+	if (!judge) return "judge not calibrated — nobody has checked it against a human";
+	const kappa = judge.kappa === null ? "κ n/a" : `κ ${judge.kappa.toFixed(2)}`;
+	// The majority-class baseline travels with agreement wherever agreement goes:
+	// a number above a line nobody can see certifies nothing.
+	const baseline = judge.majorityClassBaseline === null
+		? ""
+		: ` · majority-class baseline ${Math.round(judge.majorityClassBaseline * 100)}%`;
+	return `agreement ${Math.round(judge.agreement * 100)}% · ${kappa} · ${judge.subjects} subject${
+		judge.subjects === 1 ? "" : "s"
+	}, ${judge.checks} check${judge.checks === 1 ? "" : "s"}${baseline}`;
+}
+
+/** The development line every surface shares. */
+export function developmentSummaryLine(development: VersionPassportDevelopment | null): string {
+	if (!development) return "no promotion-grade development evidence on this record";
+	return `${development.verdict} · pass ${percent(development.baselinePassRate)} → ${
+		percent(development.candidatePassRate)
+	} · score ${percent(development.baselineScore)} → ${percent(development.candidateScore)} (${
+		formatPoints(development.scoreDelta)
+	}, 95% CI ${formatPoints(development.confidence95.low)} … ${formatPoints(development.confidence95.high)})`;
+}
+
+/**
+ * `judge $0.01 total`, or null when no judge spend was recorded. A ratio
+ * compares two arms; the judge's bill is a total, so it never joins them.
+ */
+export function judgeSpendLine(
+	resources: VersionPassportResources | PassportResourceRatios | null,
+): string | null {
+	return resources && resources.judgeCostUsd > 0
+		? `judge ${formatEvaluatorSpend(resources.judgeCostUsd)} total`
+		: null;
+}
+
+/** The resource line every surface shares: three ratios and the judge's bill. */
+export function resourceSummaryLine(resources: VersionPassportResources | null): string {
+	const ratios = `cost ${ratio(resources?.costRatio ?? null)} · latency ${
+		ratio(resources?.latencyRatio ?? null)
+	} · tokens ${ratio(resources?.tokenRatio ?? null)}`;
+	const judge = judgeSpendLine(resources);
+	return judge === null ? ratios : `${ratios} · ${judge}`;
+}
+
 function developmentLine(measurement: PassportDevelopmentMeasurement): string {
 	const interval = measurement.confidence95
 		? `, 95% CI ${formatPoints(measurement.confidence95.low)} … ${formatPoints(measurement.confidence95.high)}`
 		: "";
 	const delta = measurement.scoreDelta === null ? "" : ` (${formatPoints(measurement.scoreDelta)}${interval})`;
 	return `- development: **${measurement.verdict}** — pass rate ` +
-		`${percent(measurement.baselinePassRate)} → ${percent(measurement.candidatePassRate)} · ` +
+		`${trimmedPercent(measurement.baselinePassRate)} → ${trimmedPercent(measurement.candidatePassRate)} · ` +
 		`mean score ${score(measurement.baselineScore)} → ${score(measurement.candidateScore)}${delta} ` +
 		`on ${design(measurement.design)}`;
 }
@@ -652,13 +1153,13 @@ function judgeLines(judge: PassportJudge): string[] {
 		return ["judge not calibrated — this judge has no human labels; run `ahde label <evalRunId> --target <dir>`"];
 	}
 	const baseline = judge.majorityClassBaseline;
-	const beside = baseline === null ? "" : ` · majority-class baseline ${percent(baseline)}`;
+	const beside = baseline === null ? "" : ` · majority-class baseline ${trimmedPercent(baseline)}`;
 	return [
 		`judge agreement ${formatJudgeAgreement(judge.stats)}${beside}`,
 		"",
 		baseline === null
 			? "Agreement is the share of checks where the judge and the human said the same thing."
-			: `An instrument that always answered with the more common human label would score ${percent(baseline)}; ` +
+			: `An instrument that always answered with the more common human label would score ${trimmedPercent(baseline)}; ` +
 				"only the distance above that line is agreement the judge earned.",
 	];
 }
@@ -671,8 +1172,8 @@ function limitLines(limits: VersionPassport["limits"]): string[] {
 		for (const mode of limits.unresolved) {
 			lines.push(
 				`- ${mode.outcome}: ${shortHash(mode.failureModeId)} (${mode.category}) — ` +
-					`failure rate ${percent(mode.baselineFailureRateBps / 10_000)} → ` +
-					`${percent(mode.candidateFailureRateBps / 10_000)}`,
+					`failure rate ${trimmedPercent(mode.baselineFailureRateBps / 10_000)} → ` +
+					`${trimmedPercent(mode.candidateFailureRateBps / 10_000)}`,
 			);
 		}
 	} else if (limits.unresolvedNote?.startsWith("not derivable")) {
@@ -700,8 +1201,8 @@ function limitLines(limits: VersionPassport["limits"]): string[] {
 	return lines;
 }
 
-/** The client-facing page. Markdown, because the client keeps it. */
-export function renderVersionPassportMarkdown(passport: VersionPassport): string {
+/** The client-facing page for one candidate. Markdown, because the client keeps it. */
+function renderTargetPassportMarkdown(passport: VersionPassport): string {
 	const version = passport.promoted && passport.versionTag
 		? passport.versionTag
 		: "not promoted — verified only";
@@ -742,11 +1243,10 @@ export function renderVersionPassportMarkdown(passport: VersionPassport): string
 	const ratios = passport.measured.resources;
 	const ratioParts = ratios
 		? [
-			ratio(ratios.costRatio) === null ? null : `cost ${ratio(ratios.costRatio)}`,
-			ratio(ratios.latencyRatio) === null ? null : `latency ${ratio(ratios.latencyRatio)}`,
-			ratio(ratios.tokenRatio) === null ? null : `tokens ${ratio(ratios.tokenRatio)}`,
-			// A ratio compares two arms; this is a total, so it says so.
-			ratios.judgeCostUsd > 0 ? `judge ${formatEvaluatorSpend(ratios.judgeCostUsd)} total` : null,
+			ratioOrNull(ratios.costRatio) === null ? null : `cost ${ratioOrNull(ratios.costRatio)}`,
+			ratioOrNull(ratios.latencyRatio) === null ? null : `latency ${ratioOrNull(ratios.latencyRatio)}`,
+			ratioOrNull(ratios.tokenRatio) === null ? null : `tokens ${ratioOrNull(ratios.tokenRatio)}`,
+			judgeSpendLine(ratios),
 		].filter((part): part is string => part !== null)
 		: [];
 	lines.push(
@@ -760,9 +1260,6 @@ export function renderVersionPassportMarkdown(passport: VersionPassport): string
 
 	const provenance = passport.provenance;
 	const evalRuns = provenance.evalRuns;
-	const sealedRuns = evalRuns.sealedBaseline && evalRuns.sealedCandidate
-		? `; sealed ${evalRuns.sealedBaseline} → ${evalRuns.sealedCandidate}`
-		: "";
 	lines.push(
 		"",
 		"## Provenance",
@@ -770,11 +1267,103 @@ export function renderVersionPassportMarkdown(passport: VersionPassport): string
 		`- spec: ${provenance.specId === null ? "none" : shortHash(provenance.specId)}`,
 		`- proposal: ${provenance.proposalHash === null ? "none" : shortHash(provenance.proposalHash)}`,
 		`- gate policies: ${provenance.gatePolicyIds.length > 0 ? provenance.gatePolicyIds.join(", ") : "none"}`,
-		`- eval runs: development ${evalRuns.developmentBaseline} → ${evalRuns.developmentCandidate}${sealedRuns}`,
+		// The sealed arms are deliberately absent: an eval run id names the exam.
+		`- eval runs: development ${evalRuns.developmentBaseline} → ${evalRuns.developmentCandidate}`,
 		provenance.appliedBy === null
 			? "- applied by: not recorded (manual candidate)"
 			: `- applied by: ${provenance.appliedBy.actorId} — ${provenance.appliedBy.reason}`,
 		`- candidate record: ${passport.candidateId}`,
 	);
 	return `${lines.join("\n")}\n`;
+}
+
+/** The same page for a shipped version: what the operator can send onward. */
+function renderShippedPassportMarkdown(passport: ShippedVersionPassport): string {
+	const lines: string[] = [];
+	lines.push(`# ${passport.agent} ${passport.version}`, "");
+	lines.push(`- Shipped: ${passport.at}`);
+	lines.push(`- Revisions: ${shortSha(passport.baselineSha)} → ${shortSha(passport.candidateSha)}`);
+	lines.push(`- Model: ${passport.model ? `${passport.model.provider}/${passport.model.id}` : "—"}`);
+	lines.push("");
+
+	lines.push("## Promised", "");
+	if (!passport.promised) {
+		lines.push("_No approved Spec is bound to this version._", "");
+	} else {
+		lines.push(`**${passport.promised.title}** — ${passport.promised.purpose}`, "");
+		lines.push("Success criteria:", "");
+		for (const criterion of passport.promised.successCriteria) lines.push(`- ${criterion}`);
+		if (passport.promised.successCriteria.length === 0) lines.push("- _none stated_");
+		lines.push("", "Constraints:", "");
+		for (const constraint of passport.promised.constraints) lines.push(`- ${constraint}`);
+		if (passport.promised.constraints.length === 0) lines.push("- _none stated_");
+		lines.push("");
+	}
+
+	lines.push("## Measured", "");
+	const development = passport.measured.development;
+	lines.push(`- Development: ${developmentSummaryLine(development)}`);
+	if (development) {
+		lines.push(`- Design: ${development.tasks} cases × ${development.repetitions} repetitions${
+			development.excludedTasks > 0 ? `, ${development.excludedTasks} excluded` : ""
+		}`);
+	}
+	lines.push(`- Sealed exam: ${passport.measured.sealed
+		? `${passport.measured.sealed.verdict} on ${passport.measured.sealed.tasks} × ${passport.measured.sealed.repetitions} (contents evaluator-only)`
+		: "no promotion-grade sealed evidence on this record"}`);
+	lines.push(`- Resources: ${passport.measured.resources ? resourceSummaryLine(passport.measured.resources) : "—"}`);
+	lines.push("");
+
+	lines.push("## Judge", "");
+	lines.push(`- ${judgeSummaryLine(passport.judge)}`);
+	lines.push("");
+
+	lines.push("## Known limits", "");
+	if (passport.limits.unresolvedModes.length === 0) {
+		lines.push("- Targeted failure modes: none left unresolved by this change, or none were targeted");
+	} else {
+		lines.push("- Targeted failure modes still unresolved:");
+		for (const title of passport.limits.unresolvedModes) lines.push(`  - ${title}`);
+		if (passport.limits.unresolvedOmitted > 0) {
+			lines.push(`  - _…and ${passport.limits.unresolvedOmitted} more_`);
+		}
+	}
+	const noise = passport.limits.noise;
+	lines.push(`- Noise: ${noise
+		? `A/A ${noise.verdict} · 95% CI ${formatPoints(noise.confidence95.low)} … ${formatPoints(noise.confidence95.high)} · flip rate ${
+			percent(noise.flipRate)
+		} on ${noise.tasks} × ${noise.repetitions}`
+		: "never measured on this revision"}`);
+	lines.push(`- Data: development basket ${passport.limits.developmentCorpus
+		? `${passport.limits.developmentCorpus.id} (${passport.limits.developmentCorpus.hash.replace("sha256:", "").slice(0, 12)})`
+		: "—"} · sealed exam ${passport.limits.sealedTasks} case${passport.limits.sealedTasks === 1 ? "" : "s"} (identity evaluator-only)`);
+	lines.push("");
+
+	lines.push("## Provenance", "");
+	const provenance = passport.provenance;
+	lines.push(`- Candidate: ${provenance.candidateId} · experiment ${provenance.experimentId}`);
+	lines.push(`- Approved Spec: ${provenance.approvedSpecId ?? "—"}`);
+	lines.push(`- Proposal: ${provenance.proposalRunId ?? "—"}${
+		provenance.proposalSha256 ? ` (${provenance.proposalSha256.replace("sha256:", "").slice(0, 12)})` : ""
+	}`);
+	lines.push(`- Applied by: ${provenance.appliedBy ?? "—"}${
+		provenance.appliedVia ? ` via the ${provenance.appliedVia.replace("-", " ")}, which showed no diff` : ", who read the exact diff"
+	}`);
+	lines.push(`- Reviewed by: ${provenance.reviewedBy ?? "—"} · promoted by: ${provenance.promotedBy ?? "—"}`);
+	lines.push(`- Development evidence: ${provenance.developmentEvalRuns
+		? `${provenance.developmentEvalRuns.baseline} vs ${provenance.developmentEvalRuns.candidate}`
+		: "—"}`);
+	if (provenance.reason) lines.push(`- Reason: ${provenance.reason}`);
+	if (passport.warnings.length > 0) {
+		lines.push("", "## What this page could not read", "");
+		for (const warning of passport.warnings) lines.push(`- ${warning}`);
+	}
+	return `${lines.join("\n")}\n`;
+}
+
+/** The page, for whichever of the two projections was compiled. */
+export function renderVersionPassportMarkdown(passport: VersionPassport | ShippedVersionPassport): string {
+	return "agentId" in passport
+		? renderTargetPassportMarkdown(passport)
+		: renderShippedPassportMarkdown(passport);
 }
