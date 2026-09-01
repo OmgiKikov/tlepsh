@@ -925,3 +925,8 @@ next: Run `ahde passport --target <dir>` for the newest promotion, or name a tag
       `ahde promote` printed.
 [exit 2]
 ```
+
+
+## Update — 2026-09-01, after the master merge
+
+`ahde log` and `ahde watch` exist on master now (they arrived with `codex/integrate-polish`), and `ahde passport` builds step 8 directly; `scripts/skill-shim-log.mjs` was removed. `ahde review` gates automated (improve/search) applies with `--proposal-hash`; an operator's own `ahde apply` still records at once. Everything above this line is the log as it happened.

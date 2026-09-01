@@ -72,9 +72,15 @@ the engine's verdicts count, and only its gate ships.
    heading it does not recognize stays yours and is reported as unread.
 2. **Scaffold or adopt.** New: `ahde init .` then edit. Existing agent: keep
    its files, add `manifest.yaml` from the template. `ahde validate --target .`
-   until `readiness: ready to run`. Commit before baselining: `ahde run` will
-   happily produce evidence on a dirty tree, but a dirty revision cannot seed a
-   proposal and the baseline has to be re-run.
+   until `readiness: ready to run`. Before the first `git add`, make sure
+   `.gitignore` lists `.ahde/`, `runs/` and `imports/`: the engine's store —
+   including the sealed exam — lives under `.ahde/`, and a `git add -A` that
+   sweeps it in puts the exam into a git object (if that happened:
+   `git rm -r --cached .ahde runs imports`). Commit before baselining: `ahde run`
+   will happily produce evidence on a dirty tree, but a dirty revision cannot
+   seed a proposal and the baseline has to be re-run. Use the Target id as
+   `--project` everywhere the engine asks for one; a proposal belongs to that
+   project and refuses corpora imported under another name.
 3. **Create the benchmark.** Prefer the client's real data dropped in
    `imports/`:
    - `ahde corpus inspect --project <id> --file imports/<file>` — see columns;
@@ -116,12 +122,17 @@ the engine's verdicts count, and only its gate ships.
    (development + sealed) × repetitions × 2 arms. Flat means nothing improved;
    stop and author something else. Promising earns the verification:
    `ahde candidate --target . --builder-run <id> --project <id>
-   --development-corpus <id> --holdout-corpus <sealed-id> --repetitions 3`,
-   which prints both the development verdict and the sealed guardrail verdict
-   with its design size. Quote those two lines; do not open the record.
-7. **Ship.** `ahde review --candidate <id> --recommend promote --reason …`
-   (it records the review immediately — it prints no diff and enforces no hash,
-   so show the operator the proposal diff yourself first), then
+   --holdout-corpus <sealed-id> --repetitions 3` — a Builder-run candidate
+   re-tests the manifest's own development dataset, so there is no
+   `--development-corpus` here (passing one is refused by design). It prints
+   both the development verdict and the sealed guardrail verdict with its
+   design size. Quote those two lines; do not open the record.
+7. **Ship.** `ahde review --candidate <id> --recommend promote --reason …`.
+   For a candidate you applied with `ahde apply` the review records at once —
+   your apply was the read, so show the operator the proposal diff yourself
+   before this step. For a candidate `ahde improve`/`search` applied on its
+   own, the first call prints the exact diff and refuses; repeat it with the
+   printed `--proposal-hash`. Then
    `ahde promote --target . --candidate <id> --to 0.X.0 --reason …`. Promotion
    requires: development verdict not `regressed`, sealed guardrail `pass`, an
    applied proposal with its receipt. Promotion tags the revision but does not
@@ -130,9 +141,12 @@ the engine's verdicts count, and only its gate ships.
    command that moves their checkout.
 8. **Hand over.** The client-facing artifact is the version passport: what
    was promised (spec.md) ↔ what was measured (dev score with CI + sealed
-   verdict + design size), cost per answer, known limits. Build it from the two
-   verdict lines `ahde candidate` printed, `ahde list`, and — until `ahde log`
-   lands — `node scripts/skill-shim-log.mjs --target .`; never from memory.
+   verdict + design size), cost per answer, known limits. `ahde passport
+   --target . --out passport-v0.X.0.md` writes it from the durable artifacts
+   (never from memory); `ahde log --target .` is the growth line across
+   versions, and `ahde watch --target . --every 1d` keeps the shipped agent
+   honest afterwards — drift on an unchanged revision is a provider or data
+   change, not a win.
 
 ## The improvement loop, disciplined
 
@@ -169,26 +183,24 @@ time:
 
 ## Known engine gaps (v1 of this skill)
 
-Measured end to end on 2026-08-31 and re-measured on 2026-09-01 — see
-`docs/SKILL_WALKTHROUGH.md` for both command logs. The loop above now closes on
-the CLI alone; what is left is the hand-over surface and two rough edges.
+Measured end to end on 2026-08-31 (mock) and 2026-09-01 (mock, then a real
+9B model — see `docs/SKILL_WALKTHROUGH.md` and `docs/DEMO_REAL_MODEL.md`). The
+loop closes on the CLI alone. What is still rough:
 
-- There is no `ahde log` and no `ahde watch`. They land with the
-  `codex/integrate-polish` merge, together with the `--proposal-hash` gate on
-  `ahde review`. Until then the growth line exists only as
-  `renderExperimentHistory()`, so build step 8's passport with
-  `node scripts/skill-shim-log.mjs --target .` (the one shim still needed) and
-  say so in your report.
-- `ahde review` records the recommendation on the first call: no diff, no
-  `--proposal-hash`. You are the one who has to show the diff.
+- `ahde propose` on a dirty Target tree fails with raw git plumbing instead of
+  "commit first" — commit, then propose.
 - `ahde diagnose` prints one failure mode per failed grader with the same
   title and hypothesis; only the ids differ. Read the task drill-down to tell
   them apart, and pass every id you are actually fixing to `propose --mode`
   (comma-separated).
-- `ahde improve --until 90% --max-cycles N` automates run→diagnose→apply→
-  screen→verify inside the gates, but it only accepts a proposal bound to the
-  EvalRun it just made — which means only Builder Pi can feed it. Drive the
-  loop yourself with the commands above instead.
+- `ahde improve` applies proposals that already exist; `ahde propose --eval
+  <erun> --mode <id>` makes exactly that kind. Whether a headless loop picks
+  them up is not yet proven in a walkthrough — drive the cycle yourself with
+  the commands above until it is.
+- Judge spend is not recorded under `runs/`; a run's `costUsd` is the Target
+  model only. Say "plus judge" whenever you quote a cost.
+- `ahde corpus publish` needs a Builder-Pi corpus draft; scripted, use
+  `corpus import --visibility development|sealed`.
 
 ## Command crib
 
@@ -206,8 +218,11 @@ ahde propose --target . --spec <id> --branch <ref> [--eval <erun> --mode <id>]
 ahde apply --target . --builder-run <id>      candidate commit + receipt; checkout unmoved
 ahde check --target . --builder-run <id>      failed cases, once — the screen, before the bill
 ahde candidate --target . …                   matched baseline-vs-candidate + sealed gate
-ahde review · promote --to 0.X.0             the human gate (review shows no diff yet)
+ahde review · promote --to 0.X.0             the human gate (diff + --proposal-hash for automated applies)
 ahde adopt --target . --candidate <id>        fast-forward onto the promoted revision
+ahde passport --target . [--out <md>]         promised ↔ measured, for the client
+ahde log --target .                           versions × score × cost — the growth line
+ahde watch --target . --every 1d              drift vs noise on the shipped revision
 ahde label <erun> --target . --sample 30      calibrate the judge against a human
 ahde judge-agreement <erun> --target .        how far that judge is trusted
 ahde feedback list --target .                 👍/👎 marks collected in ahde target
