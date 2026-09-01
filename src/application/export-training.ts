@@ -2,6 +2,7 @@ import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
+import { parsePassRateFlag } from "../cli-invocation.js";
 import { runGraderScore } from "../compare.js";
 import { isScreenEvalRun } from "./cheap-check.js";
 import { publicTaskId } from "./improvement-brief.js";
@@ -638,6 +639,34 @@ export function exportTrainingData(options: ExportTrainingDataOptions): Training
 	const path = options.outPath ? resolve(options.outPath) : defaultOutPath(runsRoot, now);
 	writeTextArtifact(path, lines.length === 0 ? "" : `${lines.join("\n")}\n`);
 	return { path, counts: tally.counts, notes: tally.notes, notesTruncated: tally.notesTruncated };
+}
+
+/**
+ * Turn one validated CLI invocation's flags into export options.
+ *
+ * This lives here rather than in `cli.ts` so it can be pinned by a test. It
+ * consumes the parser's own flag map — where a boolean flag is the string
+ * `"true"` — instead of re-reading `process.argv`, which cannot tell
+ * `--all` at the end of a line from `--all` that was never passed.
+ */
+export function trainingExportOptionsFromFlags(
+	flags: Readonly<Record<string, string | undefined>>,
+	base: { runsRoot: string; sealedDatasetHashes?: ReadonlySet<string>; now?: () => Date },
+): ExportTrainingDataOptions {
+	const minScore = flags["min-score"] === undefined
+		? undefined
+		: parsePassRateFlag(flags["min-score"]) ?? DEFAULT_TRAINING_MIN_SCORE;
+	return {
+		runsRoot: base.runsRoot,
+		...(base.sealedDatasetHashes ? { sealedDatasetHashes: base.sealedDatasetHashes } : {}),
+		...(base.now ? { now: base.now } : {}),
+		...(flags.eval !== undefined ? { evalRunId: flags.eval } : {}),
+		...(flags.all === "true" ? { all: true } : {}),
+		...(flags.out !== undefined ? { outPath: resolve(flags.out) } : {}),
+		...(minScore !== undefined ? { minScore } : {}),
+		...(flags["include-failed"] === "true" ? { includeFailed: true } : {}),
+		...(flags["include-aa"] === "true" ? { includeAa: true } : {}),
+	};
 }
 
 /** One operator-facing summary; the counts always add up to `runsScanned`. */

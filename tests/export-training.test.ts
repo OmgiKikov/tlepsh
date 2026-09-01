@@ -7,10 +7,15 @@ import {
 	TRAINING_TRUNCATION_MARKER,
 	TrainingExportError,
 	exportTrainingData,
+	trainingExportOptionsFromFlags,
 	MAX_TRAINING_MESSAGE_CHARS,
 	type TrainingExportLine,
 } from "../src/application/export-training.js";
-import { CliInvocationError, parseCliInvocation } from "../src/cli-invocation.js";
+import {
+	CliInvocationError,
+	parseCliInvocation,
+	type ParsedCliInvocation,
+} from "../src/cli-invocation.js";
 import { EvalRunRecordSchema, type EvalRunRecord } from "../src/eval.js";
 import {
 	RunRecordSchema,
@@ -253,6 +258,13 @@ function readLines(path: string): TrainingExportLine[] {
 		.split("\n")
 		.filter((line) => line.trim().length > 0)
 		.map((line) => JSON.parse(line) as TrainingExportLine);
+}
+
+/** The flag map the CLI hands the export, produced by the real parser. */
+function commandFlags(argv: readonly string[]): ParsedCliInvocation["flags"] {
+	const parsed = parseCliInvocation(argv);
+	expect(parsed.kind).toBe("command");
+	return (parsed as ParsedCliInvocation).flags;
 }
 
 function totalSkipped(counts: { skipped: Record<string, number> }): number {
@@ -776,6 +788,34 @@ describe("ahde export --training: invocation", () => {
 			},
 			positionals: [],
 		});
+	});
+
+	/**
+	 * The bug this pins: a value-less `--all` at the end of the line is invisible
+	 * to a helper that reads the token AFTER a flag, and `--all --include-failed`
+	 * makes one boolean swallow the next. The parser already resolved both into
+	 * `"true"`, so the mapping consumes its map and never re-reads argv.
+	 */
+	it("maps the parser's own flags, boolean flags included", () => {
+		const trailing = commandFlags(["export", "--training", "--target", "./agent", "--all"]);
+		expect(trainingExportOptionsFromFlags(trailing, { runsRoot: "/runs" }))
+			.toEqual({ runsRoot: "/runs", all: true });
+
+		const adjacent = commandFlags([
+			"export", "--training", "--target", "./agent", "--all", "--include-failed", "--include-aa",
+		]);
+		expect(trainingExportOptionsFromFlags(adjacent, { runsRoot: "/runs" }))
+			.toEqual({ runsRoot: "/runs", all: true, includeFailed: true, includeAa: true });
+
+		const named = commandFlags([
+			"export", "--training", "--target", "./agent", "--eval", "erun_1", "--min-score", "80%",
+		]);
+		expect(trainingExportOptionsFromFlags(named, { runsRoot: "/runs" }))
+			.toEqual({ runsRoot: "/runs", evalRunId: "erun_1", minScore: 0.8 });
+
+		// Every mapped form must survive the module's own selection check.
+		expect(() => exportTrainingData({ ...trainingExportOptionsFromFlags(trailing, { runsRoot: newRunsRoot() }) }))
+			.not.toThrow();
 	});
 
 	it.each([

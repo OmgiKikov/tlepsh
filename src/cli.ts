@@ -33,9 +33,9 @@ import {
 } from "./regrade.js";
 import { compileFailureBundle } from "./bundle.js";
 import {
-	DEFAULT_TRAINING_MIN_SCORE,
 	exportTrainingData,
 	renderTrainingExportSummary,
+	trainingExportOptionsFromFlags,
 	TrainingExportError,
 } from "./application/export-training.js";
 import { runCandidateExperiment } from "./application/candidate-experiment.js";
@@ -668,22 +668,17 @@ function printJudgeAgreement(projectId: string, evalRunId?: string): void {
  * training corpus that looked like success is exactly the failure a later
  * training run cannot detect.
  */
-function exportTraining(): void {
+function exportTraining(flags: Readonly<Record<string, string>>): void {
 	const targetDir = resolve(requireArg("target"));
-	const projectId = arg("project") ?? loadTarget(targetDir).manifest.id;
-	const minScore = arg("min-score");
+	const projectId = flags.project ?? loadTarget(targetDir).manifest.id;
 	let result;
 	try {
-		result = exportTrainingData({
+		// The parser's own flag map, not process.argv: `arg()` reads the token
+		// after a flag, which is nothing at all for a value-less `--all`.
+		result = exportTrainingData(trainingExportOptionsFromFlags(flags, {
 			runsRoot: runsRoot(),
-			...(arg("eval") ? { evalRunId: arg("eval") as string } : {}),
-			...(arg("all") ? { all: true } : {}),
-			...(arg("out") ? { outPath: resolve(arg("out") as string) } : {}),
-			...(minScore ? { minScore: parsePassRateFlag(minScore) ?? DEFAULT_TRAINING_MIN_SCORE } : {}),
-			...(arg("include-failed") ? { includeFailed: true } : {}),
-			...(arg("include-aa") ? { includeAa: true } : {}),
 			sealedDatasetHashes: sealedCorpusHashes(projectId),
-		});
+		}));
 	} catch (error) {
 		if (!(error instanceof TrainingExportError)) throw error;
 		console.error(`error: ${error.message}`);
@@ -1246,7 +1241,7 @@ async function main(): Promise<void> {
 			break;
 		}
 		case "export": {
-			exportTraining();
+			exportTraining(invocation.flags);
 			break;
 		}
 		case "label": {
