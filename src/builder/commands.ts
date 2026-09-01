@@ -29,6 +29,10 @@ import { oneLine, pluralize } from "./render/format.js";
 import { renderAgentLog } from "./render/agent-log.js";
 import { renderVersionPassport } from "./render/passport.js";
 import { decisionHeadline, renderDecision } from "./render/decision.js";
+import { compilePlan, renderPlan, type PlanFacts } from "./render/plan.js";
+import { renderReceipt } from "./render/receipt.js";
+import { createBuilderJobs, type BuilderJobs, type JobAuthorization } from "./jobs.js";
+import type { BuilderSpendReader } from "./spend.js";
 import { nextStep, stageLabel } from "./render/stage.js";
 import { renderReview, renderStatus, renderTarget, renderTraces, viewTitle } from "./render/view.js";
 import {
@@ -85,6 +89,9 @@ export const AHDE_BUILDER_COMMAND_NAMES = [
 	"passport",
 	"trace",
 	"log",
+	"plan",
+	"jobs",
+	"stop",
 ] as const;
 
 /** The `/help` reference, in the operator's language. */
@@ -100,7 +107,7 @@ function abortIfRequested(signal?: AbortSignal): void {
 	if (signal?.aborted) throw signal.reason ?? new Error("command aborted");
 }
 
-async function prepare(ctx: ExtensionCommandContext, command: string): Promise<AbortSignal | undefined> {
+async function awaitIdle(ctx: ExtensionCommandContext, command: string): Promise<AbortSignal | undefined> {
 	requireTui(ctx, command);
 	const signal = ctx.signal;
 	await ctx.waitForIdle();
@@ -270,6 +277,12 @@ export interface RegisterBuilderCommandsOptions {
 	};
 	/** Host-only sealed import. The path and corpus identity never enter Builder Pi. */
 	importSealedHoldout?: (input: { sourcePath: string; name: string }) => { taskCount: number };
+	/** What a finished measurement actually cost; without it, panels carry no receipt. */
+	spend?: BuilderSpendReader;
+	/** One background measurement at a time; created locally when omitted. */
+	jobs?: BuilderJobs;
+	/** Open workshop, for the `/plan` sub-items. */
+	workshopStatus?: () => { files: number; tries: number } | null;
 }
 
 function describeError(error: unknown): string {
@@ -315,6 +328,39 @@ export function registerAhdeBuilderCommands(
 	};
 	/** Where /trace next|prev stands, per evaluation; forgotten when the eval changes. */
 	let traceCursor: { evalRunId: string; index: number } | null = null;
+	const spendReader = options.spend ?? null;
+	/**
+	 * The host context of the command being handled. A background job outlives
+	 * its command, so it reports through the newest context the operator gave us
+	 * rather than holding the one it started under.
+	 */
+	let host: ExtensionCommandContext | null = null;
+	const jobs = options.jobs ?? createBuilderJobs({
+		host: {
+			setStatus: (key, text) => host?.ui.setStatus(key, text),
+			show: (block) => {
+				if (host) presenter.show(host, block);
+			},
+			note: (text, note) => presenter.note(text, { triggerTurn: note.triggerTurn, label: note.label }),
+			waitForIdle: async () => {
+				await host?.waitForIdle();
+			},
+		},
+	});
+
+	/** Every handler starts here: the host context a background job reports through. */
+	const prepare = async (ctx: ExtensionCommandContext, command: string): Promise<AbortSignal | undefined> => {
+		host = ctx;
+		return awaitIdle(ctx, command);
+	};
+
+	/** One sentence instead of a second concurrent measurement. */
+	const refuseWhileBusy = (ctx: ExtensionCommandContext): boolean => {
+		const busy = jobs.busy();
+		if (!busy) return false;
+		ctx.ui.notify(busy, "warning");
+		return true;
+	};
 
 	const showRunsTable = (ctx: ExtensionCommandContext, evalRunId: string, limit: number): void => {
 		try {
@@ -349,8 +395,9 @@ export function registerAhdeBuilderCommands(
 		ctx: ExtensionCommandContext,
 		command: string,
 		result: WorkbenchDecisionResult,
-		liveTraceUrl?: string | null,
-	): Promise<void> => {
+		options: { liveTraceUrl?: string | null; note?: boolean } = {},
+	): Promise<string> => {
+		const liveTraceUrl = options.liveTraceUrl;
 		// Presentation is downstream of the durable decision: a rendering fault
 		// degrades to the Workbench message instead of masking a completed step.
 		let title = `/${command} completed`;
@@ -365,13 +412,47 @@ export function registerAhdeBuilderCommands(
 			lines = [oneLine(result.message, 600), ...(liveTraceUrl ? [`Live trace retained for 15 minutes: ${liveTraceUrl}`] : [])];
 			headline = oneLine(result.message, 200);
 		}
+		// What it cost, from the records the measurement wrote. A decision that
+		// spent nothing, or whose records cannot be read, simply has no receipt.
+		const receipt = spendReader ? renderReceipt(result, markerPaint, spendReader) : null;
+		if (receipt) lines.push(receipt);
 		presenter.show(ctx, { title, tone, lines });
-		presenter.note(
-			`Operator ran /${command}: ${headline}. ` +
-			`Workbench stage is now ${result.view.stage} (${stageLabel(result.view.stage)}): ${result.view.headline} ` +
-			"Call ahde_workbench_view before relying on any earlier state.",
-		);
+		if (options.note !== false) {
+			presenter.note(
+				`Operator ran /${command}: ${headline}. ` +
+				`Workbench stage is now ${result.view.stage} (${stageLabel(result.view.stage)}): ${result.view.headline} ` +
+				"Call ahde_workbench_view before relying on any earlier state.",
+				{ label: t("note.decision", { command, detail: oneLine(headline, 80) }) },
+			);
+		}
 		await changed();
+		return headline;
+	};
+
+	/**
+	 * The same gate, reporting the moment it approved. That moment is where the
+	 * price is known and where the spending starts, so it is also where a long
+	 * measurement is allowed to leave the foreground.
+	 */
+	const reportingGate = (
+		ctx: ExtensionCommandContext,
+		authorized: (authorization: JobAuthorization) => void,
+	): ReturnType<typeof gate> => {
+		const base = gate(ctx);
+		return {
+			async confirm(confirmation, signal) {
+				const approval = await base.confirm(confirmation, signal);
+				if (approval.approved) {
+					try {
+						authorized({ kind: confirmation.kind, estimate: confirmation.estimate ?? null });
+					} catch {
+						// Reporting is presentation; it can never change the decision.
+					}
+				}
+				return approval;
+			},
+			selectSealed: (request, signal) => base.selectSealed(request, signal),
+		};
 	};
 
 	/** Run one decision with human-friendly failure handling. */
@@ -380,10 +461,17 @@ export function registerAhdeBuilderCommands(
 		command: string,
 		input: WorkbenchDecisionInput,
 		signal: AbortSignal | undefined,
-		extra: Parameters<CommandWorkbench["decide"]>[2] = {},
+		extra: Parameters<CommandWorkbench["decide"]>[2] & {
+			authorized?: (authorization: JobAuthorization) => void;
+		} = {},
 	): Promise<WorkbenchDecisionResult | null> => {
+		const { authorized, ...execution } = extra;
 		try {
-			const result = await workbench.decide(input, gate(ctx), { signal, ...extra });
+			const result = await workbench.decide(
+				input,
+				authorized ? reportingGate(ctx, authorized) : gate(ctx),
+				{ signal, ...execution },
+			);
 			return result;
 		} catch (error) {
 			if (signal?.aborted) throw error;
@@ -394,32 +482,68 @@ export function registerAhdeBuilderCommands(
 		}
 	};
 
+	/**
+	 * Every measurement runs as a job. Short ones stay in front of the operator
+	 * exactly as before — the job resolves the command only when it finishes —
+	 * and long ones hand the conversation back the moment the gate approved.
+	 */
 	const runObserved = async (
 		ctx: ExtensionCommandContext,
 		command: string,
 		input: WorkbenchDecisionInput,
 		signal: AbortSignal | undefined,
 	): Promise<void> => {
-		const observation = await beginBuilderRunObservation(ctx.ui, options.beginLiveTrace);
-		let outcome: BuilderLiveTraceOutcome = "error";
-		let result: WorkbenchDecisionResult | null;
+		if (refuseWhileBusy(ctx)) return;
+		let liveTraceUrl: string | null = null;
+		// While the measurement is still in front of the operator, their own
+		// interrupt stops it. Once it is backgrounded the command returns and the
+		// link is dropped, so a later interrupt cannot kill a job they left running.
+		const interrupt = (): void => {
+			jobs.stop();
+		};
+		signal?.addEventListener("abort", interrupt);
 		try {
-			result = await decide(ctx, command, input, signal, { onRunEvent: observation.onRunEvent });
-			outcome = result ? "completed" : "aborted";
-		} catch (error) {
-			if (signal?.aborted) outcome = "aborted";
-			observation.finish(outcome);
-			if (observation.liveTraceUrl) {
-				try {
-					ctx.ui.notify(`Live trace retained for 15 minutes: ${observation.liveTraceUrl}`, "info");
-				} catch {
-					// Preserve the original run error when host notification fails.
-				}
-			}
-			throw error;
+			await jobs.start({
+				command,
+				label: (kind) => kind === "verify-candidate"
+					? t("job.label.verify")
+					: kind === "calibrate"
+						? t("job.label.calibrate")
+						: t("job.label.run"),
+				async run({ signal: jobSignal, onRunEvent, authorized }) {
+					const observation = await beginBuilderRunObservation(ctx.ui, options.beginLiveTrace);
+					liveTraceUrl = observation.liveTraceUrl;
+					let outcome: BuilderLiveTraceOutcome = "error";
+					const listener: typeof onRunEvent = (event) => {
+						observation.onRunEvent(event);
+						onRunEvent(event);
+					};
+					try {
+						const result = await decide(ctx, command, input, jobSignal, {
+							onRunEvent: listener,
+							authorized,
+						});
+						outcome = result ? "completed" : "aborted";
+						observation.finish(outcome);
+						return result;
+					} catch (error) {
+						if (jobSignal.aborted || signal?.aborted) outcome = "aborted";
+						observation.finish(outcome);
+						if (observation.liveTraceUrl) {
+							try {
+								ctx.ui.notify(`Live trace retained for 15 minutes: ${observation.liveTraceUrl}`, "info");
+							} catch {
+								// Preserve the original run error when host notification fails.
+							}
+						}
+						throw error;
+					}
+				},
+				present: (result, background) => showDecision(ctx, command, result, { liveTraceUrl, note: !background }),
+			});
+		} finally {
+			signal?.removeEventListener("abort", interrupt);
 		}
-		observation.finish(outcome);
-		if (result) await showDecision(ctx, command, result, observation.liveTraceUrl);
 	};
 
 	const askVersion = async (ctx: ExtensionCommandContext): Promise<string | null> => {
@@ -441,6 +565,7 @@ export function registerAhdeBuilderCommands(
 		runId?: string,
 		options: { showReview?: boolean } = {},
 	): Promise<void> => {
+		if (refuseWhileBusy(ctx)) return;
 		const review = await workbench.view({ aspect: "review" });
 		const detail = review.detail?.aspect === "review" ? review.detail.content : undefined;
 		const proposalRunId = runId ?? (detail?.kind === "proposal" ? detail.runId : undefined);
@@ -453,6 +578,7 @@ export function registerAhdeBuilderCommands(
 	};
 
 	const discardCurrent = async (ctx: ExtensionCommandContext, signal: AbortSignal | undefined, reason: string): Promise<void> => {
+		if (refuseWhileBusy(ctx)) return;
 		const review = await workbench.view({ aspect: "review" });
 		const detail = review.detail?.aspect === "review" ? review.detail.content : undefined;
 		const input: WorkbenchDecisionInput = detail?.kind === "interrupted-candidate"
@@ -525,6 +651,7 @@ export function registerAhdeBuilderCommands(
 		version: string | null,
 		reason: string,
 	): Promise<void> => {
+		if (refuseWhileBusy(ctx)) return;
 		let view = await workbench.view();
 		if (view.stage !== "candidate-review" && view.stage !== "release-decision") {
 			throw new Error(`/promote is not available during ${stageLabel(view.stage)}; ${nextStep(view)}`);
@@ -548,6 +675,7 @@ export function registerAhdeBuilderCommands(
 	};
 
 	const rejectCurrent = async (ctx: ExtensionCommandContext, signal: AbortSignal | undefined, reason: string): Promise<void> => {
+		if (refuseWhileBusy(ctx)) return;
 		let view = await workbench.view();
 		if (view.stage !== "candidate-review" && view.stage !== "release-decision") {
 			throw new Error(`/reject is not available during ${stageLabel(view.stage)}; ${nextStep(view)}`);
@@ -574,6 +702,7 @@ export function registerAhdeBuilderCommands(
 		input: WorkbenchDecisionInput,
 		signal: AbortSignal | undefined,
 	): Promise<void> => {
+		if (refuseWhileBusy(ctx)) return;
 		const result = await decide(ctx, command, input, signal);
 		if (result) await showDecision(ctx, command, result);
 	};
@@ -648,6 +777,7 @@ export function registerAhdeBuilderCommands(
 		version: string | null,
 		reason: string,
 	): Promise<void> => {
+		if (refuseWhileBusy(ctx)) return;
 		const view = await workbench.view();
 		const shippable = ["candidate-review", "release-decision", "candidate-adoption", "complete"];
 		if (!shippable.includes(view.stage)) {
@@ -1130,7 +1260,10 @@ export function registerAhdeBuilderCommands(
 			});
 			// The one thing the host cannot write: a reading of the trace. The
 			// Builder gets the same bounded facts and answers in the operator's words.
-			presenter.note(traceNoteForModel(detail), { triggerTurn: true });
+			presenter.note(traceNoteForModel(detail), {
+				triggerTurn: true,
+				label: t("note.trace", { run: `${oneLine(detail.run.taskId, 40)}#${detail.run.repetitionIndex}` }),
+			});
 		},
 	});
 
@@ -1149,6 +1282,78 @@ export function registerAhdeBuilderCommands(
 				...(requested ? { limit: Number(requested) } : {}),
 			});
 			presenter.show(ctx, { title: t("panel.title", { detail: t("panel.growth") }), tone: "info", lines: renderAgentLog(log, markerPaint) });
+		},
+	});
+
+	/**
+	 * The cycle as a checklist. A pure projection of the view — the same one the
+	 * header folds into a single line — enriched with the two aspects that carry
+	 * the harness surface and the newest measurement. Nothing runs, nothing is
+	 * written, and the Builder is told nothing.
+	 */
+	pi.registerCommand("plan", {
+		description: "Show the whole cycle as a checklist: what is done, what you are in, what is left",
+		async handler(args, ctx) {
+			noArguments("plan", args);
+			await prepare(ctx, "plan");
+			const view = await workbench.view();
+			const facts: PlanFacts = {};
+			try {
+				const target = await workbench.view({ aspect: "target" });
+				const content = target.detail?.aspect === "target" ? target.detail.content : null;
+				if (content && "target" in content) {
+					facts.harness = {
+						tools: content.target.execution.tools.length,
+						skills: content.resources.filter((resource) => resource.kind === "skill").length,
+					};
+				}
+			} catch {
+				// The plan is worth reading without the harness surface.
+			}
+			if (view.counts.developmentEvals > 0) {
+				try {
+					const traces = await workbench.view({ aspect: "traces" });
+					if (traces.detail?.aspect === "traces") {
+						const summary = traces.detail.content.evaluation.summary;
+						facts.baseline = { pass: summary.pass, total: summary.total };
+					}
+				} catch {
+					// An undiagnosed evaluation still counts; only its rate is missing.
+				}
+			}
+			const workshop = options.workshopStatus?.() ?? null;
+			if (workshop) facts.workshop = workshop;
+			const active = jobs.active();
+			if (active) facts.job = { label: active.label, progress: active.progress };
+			presenter.show(ctx, {
+				title: t("panel.title", { detail: t("panel.plan") }),
+				tone: view.blockers.length > 0 ? "warning" : "info",
+				lines: renderPlan(compilePlan(view, facts), markerPaint),
+			});
+		},
+	});
+
+	/** What is measuring right now, and how to stop it. */
+	pi.registerCommand("jobs", {
+		description: "Show the background measurement that is running, if any",
+		async handler(args, ctx) {
+			noArguments("jobs", args);
+			await prepare(ctx, "jobs");
+			presenter.show(ctx, {
+				title: t("panel.title", { detail: t("panel.background") }),
+				tone: "info",
+				lines: jobs.lines(),
+			});
+		},
+	});
+
+	/** Cancel the running measurement through the signal the Workbench honours. */
+	pi.registerCommand("stop", {
+		description: "Stop the background measurement; nothing it measured is kept",
+		async handler(args, ctx) {
+			noArguments("stop", args);
+			await prepare(ctx, "stop");
+			if (!jobs.stop()) ctx.ui.notify(t("job.nothing-to-stop"), "info");
 		},
 	});
 }

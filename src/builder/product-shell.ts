@@ -7,8 +7,11 @@ import { truncateToWidth, type TUI } from "@earendil-works/pi-tui";
 import type { AhdeWorkbench } from "../workbench/workbench.js";
 import type { WorkbenchStage, WorkbenchView } from "../workbench/types.js";
 import { themePaint } from "./render/paint.js";
+import { compilePlan } from "./render/plan.js";
 import { nextStep, stageLabel } from "./render/stage.js";
+import { renderStatusBar } from "./render/status-bar.js";
 import { renderHeader, type HeaderState } from "./render/view.js";
+import type { BuilderSpendReader } from "./spend.js";
 import { runFirstRunOnboarding } from "./onboarding.js";
 import {
 	createTranscriptPresenter,
@@ -27,6 +30,14 @@ export interface ProductShellOptions {
 	/** Enables the host-driven first-run setup (create agent here, choose its model). */
 	actorId?: () => string;
 	presenter?: TranscriptPresenter;
+	/**
+	 * What this cycle has already cost, read back from the records it wrote.
+	 * Omitted in hosts and tests that have no runs root; the footer then simply
+	 * carries fewer segments.
+	 */
+	spend?: BuilderSpendReader;
+	/** Wall clock, injected so a test can pin the elapsed segment. */
+	now?: () => number;
 }
 
 /**
@@ -77,15 +88,61 @@ export function installAhdeBuilderProductShell(
 		view: null,
 		builderModel: { label: null, credentialPresent: false },
 		error: null,
+		plan: null,
 	};
 	let tui: TUI | null = null;
 	let host: ExtensionContext | null = null;
+	const now = options.now ?? (() => Date.now());
+	const sessionStartedAt = now();
+
+	/** Candidate stages are the only ones where a branch is worth a footer segment. */
+	const BRANCH_STAGES = new Set<WorkbenchStage>([
+		"candidate-verification",
+		"candidate-review",
+		"release-decision",
+		"candidate-adoption",
+	]);
+
+	/**
+	 * Elapsed, spend, and the candidate branch — each read behind its own
+	 * try/catch, because a status segment must never be able to break a redraw.
+	 */
+	const statusFacts = (view: WorkbenchView): Parameters<typeof renderStatusBar>[0] => {
+		const facts: Parameters<typeof renderStatusBar>[0] = { stage: view.stage };
+		const spend = options.spend;
+		if (!spend) return facts;
+		try {
+			const cycle = spend.cycle({
+				targetId: view.target.id,
+				candidateIds: view.selections.filter((item) => item.kind === "candidate").map((item) => item.id),
+			});
+			const startedAt = cycle?.firstAt ? Date.parse(cycle.firstAt) : Number.NaN;
+			facts.elapsedMs = Number.isFinite(startedAt)
+				? Math.max(0, now() - startedAt)
+				: Math.max(0, now() - sessionStartedAt);
+			if (cycle) facts.costUsd = cycle.costUsd + cycle.judgeCostUsd;
+		} catch {
+			// A cycle that cannot be summed simply contributes no segment.
+		}
+		if (!BRANCH_STAGES.has(view.stage)) return facts;
+		try {
+			const candidateId = view.focus.candidate ??
+				view.selections.find((selection) => selection.kind === "candidate")?.id;
+			if (candidateId) facts.branch = spend.branchOf(candidateId);
+		} catch {
+			// Same rule: no branch is better than a wrong one.
+		}
+		return facts;
+	};
 
 	const applyStatus = (): void => {
 		if (!host) return;
 		const view = state.view;
 		try {
-			host.ui.setStatus("ahde", view ? `AHDE · ${stageLabel(view.stage)}` : state.error ? "AHDE · blocked" : "AHDE");
+			host.ui.setStatus(
+				"ahde",
+				view ? renderStatusBar(statusFacts(view)) : state.error ? "AHDE · blocked" : "AHDE",
+			);
 			host.ui.setStatus("ahde-auth", state.builderModel.credentialPresent ? undefined : "Builder model not connected · /login");
 		} catch {
 			// Status is cosmetic.
@@ -101,8 +158,12 @@ export function installAhdeBuilderProductShell(
 		try {
 			state.view = await workbench.view();
 			state.error = null;
+			// The plan is a pure projection of the view we just read: no second
+			// read, no artifact, nothing the model is told.
+			state.plan = compilePlan(state.view);
 		} catch (error) {
 			state.view = null;
+			state.plan = null;
 			state.error = error instanceof Error ? error.message : String(error);
 		}
 		applyStatus();

@@ -113,6 +113,9 @@ const NOUNS = {
 		execution: ["Target execution", "Target executions"],
 		cycle: ["cycle", "cycles"],
 		file: ["file", "files"],
+		tool: ["tool", "tools"],
+		skill: ["skill", "skills"],
+		try: ["try", "tries"],
 		job: ["job", "jobs"],
 		row: ["row", "rows"],
 		item: ["item", "items"],
@@ -132,6 +135,9 @@ const NOUNS = {
 		execution: ["запуск", "запуска", "запусков"],
 		cycle: ["цикл", "цикла", "циклов"],
 		file: ["файл", "файла", "файлов"],
+		tool: ["инструмент", "инструмента", "инструментов"],
+		skill: ["скилл", "скилла", "скиллов"],
+		try: ["запуск", "запуска", "запусков"],
 		job: ["работа", "работы", "работ"],
 		row: ["строка", "строки", "строк"],
 		item: ["элемент", "элемента", "элементов"],
@@ -432,6 +438,61 @@ const en = {
 	"panel.runs": "Runs",
 	"panel.trace": "Trace {run}",
 	"panel.traceShort": "Trace",
+	"panel.plan": "Plan",
+	"panel.background": "Background",
+
+	"plan.step.spec": "Description",
+	"plan.step.harness": "Harness",
+	"plan.step.tests": "Tests",
+	"plan.step.exam": "Exam",
+	"plan.step.baseline": "Baseline",
+	"plan.step.change": "Change",
+	"plan.step.verification": "Verification",
+	"plan.step.release": "Release",
+	"plan.none": "not yet",
+	"plan.spec.approved": "approved",
+	"plan.spec.draft": "draft awaiting your review",
+	"plan.harness.configured": "configured",
+	"plan.tests.published": "published",
+	"plan.tests.draft": "draft",
+	"plan.exam.ready": "ready for the ship gate",
+	"plan.baseline.none": "nothing has run yet",
+	"plan.baseline.recorded": "recorded",
+	"plan.baseline.rate": "{pass}/{total} · {percent} passed",
+	"plan.change.open": "waiting for your reading",
+	"plan.change.applied": "applied on {branch}",
+	"plan.change.applied-unknown": "applied",
+	"plan.workshop": "workshop · {files} changed · {tries}",
+	"plan.verification.measured": "measured",
+	"plan.verification.none": "not verified yet",
+	"plan.verification.development": "development: {verdict}",
+	"plan.verification.sealed": "exam: {verdict}",
+	"plan.release.none": "not shipped",
+	"plan.release.rejected": "rejected",
+	"plan.job": "running: {label} · {progress}",
+	"plan.header": "Plan {done}/{total} · {marker} {step}",
+
+	"receipt.judge": "judge {cost}",
+	"unit.hour-short": "h",
+	"unit.minute-short": "m",
+	"unit.second-short": "s",
+	"status.spend": "{cost} this cycle",
+
+	"note.decision": "Builder received: the result of /{command} ({detail})",
+	"note.trace": "Builder received: the trace of {run}",
+	"note.job": "Builder received: the background {label} ({detail})",
+
+	"job.started": "Started in the background",
+	"job.finished": "Background task finished",
+	"job.failed": "Background task failed",
+	"job.stopped": "Background task stopped",
+	"job.busy": "Wait — {label} is running ({progress})",
+	"job.none": "Nothing is running in the background",
+	"job.stop-hint": "/stop cancels it; the measurement is discarded",
+	"job.nothing-to-stop": "Nothing is running, so there is nothing to stop",
+	"job.label.run": "the test run",
+	"job.label.verify": "candidate verification",
+	"job.label.calibrate": "the noise measurement",
 	"trace.run": "Run",
 	"trace.error": "Error",
 	"trace.why": "Why",
@@ -669,6 +730,9 @@ Commands: three verbs do the work.
 
 Looking around:
   /status               where you are and the next step
+  /plan                 the whole cycle as a checklist: done, current, still ahead
+  /jobs                 the background measurement that is running, if any
+  /stop                 cancel it; nothing it measured is kept
   /review               the exact artifact awaiting your review, with actions
   /traces [rows]        diagnosis, failure modes, the evidence link, and the runs table
   /trace <n|next|prev>  one run: why it failed, every verdict, and the conversation
@@ -967,6 +1031,61 @@ const ru: Record<MessageKey, string> = {
 	"panel.runs": "Прогоны",
 	"panel.trace": "Прогон {run}",
 	"panel.traceShort": "Прогон",
+	"panel.plan": "План",
+	"panel.background": "Фон",
+
+	"plan.step.spec": "Описание",
+	"plan.step.harness": "Харнес",
+	"plan.step.tests": "Тесты",
+	"plan.step.exam": "Экзамен",
+	"plan.step.baseline": "База",
+	"plan.step.change": "Правка",
+	"plan.step.verification": "Проверка",
+	"plan.step.release": "Выпуск",
+	"plan.none": "ещё нет",
+	"plan.spec.approved": "одобрено",
+	"plan.spec.draft": "черновик ждёт проверки",
+	"plan.harness.configured": "настроен",
+	"plan.tests.published": "опубликованы",
+	"plan.tests.draft": "черновик",
+	"plan.exam.ready": "готов к выкатке",
+	"plan.baseline.none": "прогонов ещё не было",
+	"plan.baseline.recorded": "записана",
+	"plan.baseline.rate": "{pass}/{total} · {percent} проходит",
+	"plan.change.open": "ждёт твоего чтения",
+	"plan.change.applied": "на ветке {branch}",
+	"plan.change.applied-unknown": "применена",
+	"plan.workshop": "мастерская · изменено {files} · {tries}",
+	"plan.verification.measured": "измерено",
+	"plan.verification.none": "ещё не проверяли",
+	"plan.verification.development": "разработка: {verdict}",
+	"plan.verification.sealed": "экзамен: {verdict}",
+	"plan.release.none": "не выкачено",
+	"plan.release.rejected": "отклонён",
+	"plan.job": "идёт: {label} · {progress}",
+	"plan.header": "План {done}/{total} · {marker} {step}",
+
+	"receipt.judge": "судья {cost}",
+	"unit.hour-short": "ч",
+	"unit.minute-short": "м",
+	"unit.second-short": "с",
+	"status.spend": "{cost} за цикл",
+
+	"note.decision": "Builder получил: результат /{command} ({detail})",
+	"note.trace": "Builder получил: разбор прогона {run}",
+	"note.job": "Builder получил: фоновую задачу — {label} ({detail})",
+
+	"job.started": "Запущено в фоне",
+	"job.finished": "Фоновая задача завершена",
+	"job.failed": "Фоновая задача не удалась",
+	"job.stopped": "Фоновая задача остановлена",
+	"job.busy": "Дождись — {label} идёт ({progress})",
+	"job.none": "В фоне ничего не идёт",
+	"job.stop-hint": "/stop остановит; измерение будет выброшено",
+	"job.nothing-to-stop": "Ничего не идёт — останавливать нечего",
+	"job.label.run": "прогон тестов",
+	"job.label.verify": "проверка кандидата",
+	"job.label.calibrate": "измерение шума",
 	"trace.run": "Прогон",
 	"trace.error": "Ошибка",
 	"trace.why": "Почему",
@@ -1204,6 +1323,9 @@ const ru: Record<MessageKey, string> = {
 
 Посмотреть:
   /status               где ты и что дальше
+  /plan                 весь цикл списком: что сделано, где ты, что осталось
+  /jobs                 фоновое измерение, если оно идёт
+  /stop                 остановить его; измеренное не сохраняется
   /review               то, что ждёт твоей проверки, вместе с действиями
   /traces [строк]       разбор, типы сбоев, ссылка на данные и таблица прогонов
   /trace <n|next|prev>  один прогон: почему провал, все вердикты и диалог

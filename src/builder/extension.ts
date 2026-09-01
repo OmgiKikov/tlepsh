@@ -71,6 +71,7 @@ import {
 } from "./workbench-adapter.js";
 import { registerAhdeBuilderCommands } from "./commands.js";
 import { installAhdeBuilderProductShell } from "./product-shell.js";
+import { createBuilderSpendReader } from "./spend.js";
 import type { BeginBuilderLiveTrace } from "./run-observation.js";
 import { createTranscriptPresenter } from "./transcript.js";
 import { AHDE_WORKSHOP_TOOL_NAMES, createWorkshopTools } from "./workshop-tools.js";
@@ -228,7 +229,14 @@ export function createAhdeBuilderExtension(options: BuilderExtensionOptions): Ex
 			return { block: true, reason: `AHDE Builder tool is not allowed: ${event.toolName}`, terminate: true };
 		});
 		const presenter = createTranscriptPresenter(pi);
-		const shell = installAhdeBuilderProductShell(pi, workbench, { actorId: dependencies.actorId, presenter });
+		// What every measurement cost, read back from the records it wrote. One
+		// reader for the whole process, so the header and the receipts agree.
+		const spend = createBuilderSpendReader({ runsRoot: workbench.runsRoot });
+		const shell = installAhdeBuilderProductShell(pi, workbench, {
+			actorId: dependencies.actorId,
+			presenter,
+			spend,
+		});
 		/**
 		 * The model only sees the hands it currently has. This is ergonomics; the
 		 * `tool_call` guard above is the boundary, and it never depends on it.

@@ -35,6 +35,7 @@ import {
 } from "./format.js";
 import { renderImpact } from "./impact.js";
 import type { Paint } from "./paint.js";
+import { planHeadline, type Plan } from "./plan.js";
 import { nextStep, stageLabel } from "./stage.js";
 
 export interface RenderReviewOptions {
@@ -154,6 +155,8 @@ export interface HeaderState {
 	builderModel: { label: string | null; credentialPresent: boolean };
 	error?: string | null;
 	previousSessions?: number;
+	/** The cycle as a checklist, folded to one line under the stage. */
+	plan?: Plan | null;
 }
 
 /** Persistent header: identity, live stage, next step, evidence, and readiness. */
@@ -175,6 +178,9 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 	}
 	lines.push(targetLine(view, paint));
 	lines.push(`${paint.dim(t("label.stage"))} ${paint.bold(stageLabel(view.stage))} ${paint.dim("·")} ${paint.dim(t("label.next"))} ${nextStep(view)}`);
+	// The whole cycle, one line under the stage: how many phases are behind,
+	// and the one the operator is standing in. `/plan` opens the same compilation.
+	if (state.plan) lines.push(paint.dim(planHeadline(state.plan)));
 	lines.push(`${evidenceLine(view, paint)} ${paint.dim("·")} ${paint.dim(t("label.builder-model"))} ${builder}`);
 	const shipping = shippingReadinessLine(view, paint);
 	if (shipping) lines.push(shipping);
