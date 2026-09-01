@@ -118,6 +118,7 @@ import { resolveInteractiveTargetDirectory } from "./target/command.js";
 import {
 	assertTargetReadyToRun,
 	inspectTargetReadiness,
+	toolCredentialReadiness,
 } from "./target/readiness.js";
 import type { RunEventListener } from "./run-events.js";
 import {
@@ -924,6 +925,10 @@ async function main(): Promise<void> {
 			// said here, beside the Target's own model.
 			const evaluators = evaluatorReadiness(target.manifest);
 			for (const evaluator of evaluators) console.log(`  ${evaluator.line}`);
+			// Every key a declared tool says it needs, said here rather than
+			// discovered inside a sandbox at the first call.
+			const toolKeys = toolCredentialReadiness(target);
+			for (const key of toolKeys) console.log(`  ${key.line}`);
 			console.log(`  tasks: ${target.tasks.length} (${target.datasetHash.slice(7, 19)}…)`);
 			console.log(`  suite: ${target.manifest.evalSuite.id} (${target.suiteHash.slice(7, 19)}…)`);
 			console.log(`  skills: ${target.manifest.skills.join(", ") || "(none)"}`);
@@ -952,11 +957,21 @@ async function main(): Promise<void> {
 				// never call one — but it is exactly the surprise this line exists
 				// to prevent, so it is stated rather than hidden behind "ready".
 				const uncredentialed = evaluators.filter((entry) => entry.configured && !entry.credentialPresent);
+				const uncredentialedTools = toolKeys.filter((entry) => !entry.present);
 				if (uncredentialed.length > 0) {
 					console.log(
 						`  readiness: ACTION REQUIRED — configure ${
 							uncredentialed.map((entry) => entry.apiKeyEnv).join(", ")
 						} outside chat before any judged or simulated case runs`,
+					);
+					process.exitCode = 2;
+				} else if (uncredentialedTools.length > 0) {
+					console.log(
+						`  readiness: ACTION REQUIRED — export ${
+							[...new Set(uncredentialedTools.map((entry) => entry.environmentName))].join(", ")
+						} in the shell that runs ahde before ${
+							[...new Set(uncredentialedTools.map((entry) => entry.tool))].join(", ")
+						} can run`,
 					);
 					process.exitCode = 2;
 				} else {

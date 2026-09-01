@@ -211,12 +211,29 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 	if (noise) lines.push(noise);
 	const judge = headerJudgeLine(state, paint);
 	if (judge) lines.push(judge);
+	const keys = toolCredentialLine(view, paint);
+	if (keys) lines.push(keys);
 	if (view.blockers.length > 0 && view.stage !== "target-setup") {
 		lines.push(`${paint.warning(t("label.blocked"))} ${oneLine(view.blockers.join(" "), 200)}`);
 	}
 	lines.push(paint.dim(t("header.help")));
 	lines.push("");
 	return lines;
+}
+
+/**
+ * A tool that declares a key nobody exported is one line, before it becomes a
+ * confusing failure inside a sandbox. The whole recovery is in the line.
+ */
+function toolCredentialLine(view: WorkbenchView, paint: Paint): string | null {
+	const missing = (view.target.toolCredentials ?? []).filter((entry) => !entry.present);
+	if (missing.length === 0) return null;
+	const names = [...new Set(missing.map((entry) => entry.environment))];
+	const tools = [...new Set(missing.map((entry) => entry.tool))];
+	return `${paint.warning(t("label.tool-key"))} ${t("tool-key.missing", {
+		tools: tools.join(", "),
+		names: names.join(", "),
+	})}`;
 }
 
 function verdictTone(verdict: string, paint: Paint): (text: string) => string {

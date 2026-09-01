@@ -361,6 +361,13 @@ export interface WorkbenchView {
 			judge: boolean;
 			simulatedUser: boolean;
 		};
+		/**
+		 * Every environment variable a declared tool says it needs, and whether
+		 * anything is exported under that name. The name is policy, never the
+		 * value: a tool credential is entered in the operator's own shell, and
+		 * neither the Builder nor this projection ever reads what it holds.
+		 */
+		toolCredentials?: readonly { tool: string; environment: string; present: boolean }[];
 	};
 	focus: Partial<Record<WorkbenchSelectionKind, string>>;
 	selections: WorkbenchSelectionSummary[];

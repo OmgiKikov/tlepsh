@@ -13,7 +13,7 @@ import { nextStep, stageLabel } from "./render/stage.js";
 import { renderStatusBar } from "./render/status-bar.js";
 import { renderHeader, type HeaderState } from "./render/view.js";
 import type { BuilderSpendReader } from "./spend.js";
-import { runFirstRunOnboarding } from "./onboarding.js";
+import { confirmDeclaredToolCredentials, runFirstRunOnboarding } from "./onboarding.js";
 import {
 	createTranscriptPresenter,
 	registerAhdeTranscriptRenderer,
@@ -124,6 +124,8 @@ export function installAhdeBuilderProductShell(
 	let host: ExtensionContext | null = null;
 	/** First ordinary message survives the host-owned login/model picker. */
 	let pendingFirstMessage: string | null = null;
+	/** Declared tool keys already asked about; one question per name per session. */
+	const askedToolKeys = new Set<string>();
 	const now = options.now ?? (() => Date.now());
 	const sessionStartedAt = now();
 
@@ -268,6 +270,12 @@ export function installAhdeBuilderProductShell(
 				"info",
 			);
 		} else {
+			// A tool that declares a key nobody exported is the host's question, not
+			// the model's, and it is asked once per name per session.
+			const missing = (view.target.toolCredentials ?? [])
+				.filter((entry) => !entry.present && !askedToolKeys.has(entry.environment));
+			for (const entry of missing) askedToolKeys.add(entry.environment);
+			if (missing.length > 0) await confirmDeclaredToolCredentials(ctx, missing);
 			ctx.ui.notify(nextStep(view), "info");
 		}
 	};

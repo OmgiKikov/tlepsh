@@ -2,6 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it, vi } from "vitest";
 import {
 	calmSetupFailure,
+	confirmDeclaredToolCredentials,
 	describeHostModelCatalog,
 	hostModelCatalog,
 	targetIdFromDirectory,
@@ -97,5 +98,62 @@ describe("target id from directory", () => {
 		expect(targetIdFromDirectory("Competitor Research")).toBe("competitor-research");
 		expect(targetIdFromDirectory("my-agent")).toBe("agent");
 		expect(targetIdFromDirectory("...")).toBe("agent");
+	});
+});
+
+describe("a declared tool key nobody exported", () => {
+	function uiContext(answers: (string | undefined)[]) {
+		const notes: { message: string; tone: string }[] = [];
+		const asked: { prompt: string; preset: string }[] = [];
+		const queue = [...answers];
+		return {
+			notes,
+			asked,
+			ctx: {
+				ui: {
+					input: vi.fn((prompt: string, preset: string) => {
+						asked.push({ prompt, preset });
+						return Promise.resolve(queue.shift());
+					}),
+					notify: vi.fn((message: string, tone: string) => {
+						notes.push({ message, tone });
+					}),
+				},
+			} as unknown as Pick<ExtensionContext, "ui">,
+		};
+	}
+
+	it("asks the host's own question about the variable and tells the operator to export it", async () => {
+		const host = uiContext(["WEATHER_API_KEY"]);
+		await confirmDeclaredToolCredentials(host.ctx, [
+			{ tool: "weather", environment: "WEATHER_API_KEY" },
+			{ tool: "weather", environment: "WEATHER_API_KEY" },
+		]);
+		// One question per variable, prefilled with the declared name.
+		expect(host.asked).toEqual([
+			{ prompt: "Environment variable holding the credential for weather", preset: "WEATHER_API_KEY" },
+		]);
+		expect(host.notes).toEqual([{
+			message: "Nothing is stored here. Export WEATHER_API_KEY in the shell that runs ahde, then try the tool again.",
+			tone: "info",
+		}]);
+	});
+
+	it("says a different variable is a change to the tool, and refuses a pasted value", async () => {
+		const renamed = uiContext(["MY_OWN_KEY"]);
+		await confirmDeclaredToolCredentials(renamed.ctx, [{ tool: "weather", environment: "WEATHER_API_KEY" }]);
+		expect(renamed.notes[0]?.message).toBe(
+			"weather declares WEATHER_API_KEY, not MY_OWN_KEY. Changing which variable it reads is a change to the tool, " +
+			"so ask for it in plain words and I will prepare the diff.",
+		);
+
+		const pasted = uiContext(["sk-live-000111222333"]);
+		await confirmDeclaredToolCredentials(pasted.ctx, [{ tool: "weather", environment: "WEATHER_API_KEY" }]);
+		expect(pasted.notes).toEqual([{
+			message: "That is not an environment-variable name. Name the variable, never paste the credential itself.",
+			tone: "warning",
+		}]);
+		// Whatever was typed is never echoed back or kept.
+		expect(JSON.stringify(pasted.notes)).not.toContain("sk-live");
 	});
 });

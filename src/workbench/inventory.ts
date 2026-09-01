@@ -34,6 +34,7 @@ import {
 	loadCycleContinuationReceipt,
 	type CycleContinuationReceipt,
 } from "./cycle-continuation.js";
+import { toolCredentialReadiness } from "../target/readiness.js";
 import { listCorpora, loadCorpus, type CorpusMetadata } from "../corpus.js";
 import {
 	candidateStatus,
@@ -1326,6 +1327,8 @@ export function deriveWorkbenchView(
 				model: targetModelSummary(inventory, env),
 				evaluators: evaluatorSummaries(inventory, env),
 				evaluatorRequirements,
+				toolCredentials: toolCredentialReadiness(inventory.target, env)
+					.map((entry) => ({ tool: entry.tool, environment: entry.environmentName, present: entry.present })),
 			}
 			: {
 				status: "missing",
@@ -1334,6 +1337,7 @@ export function deriveWorkbenchView(
 				model: null,
 				evaluators: { judge: null, simulatedUser: null },
 				evaluatorRequirements: { judge: false, simulatedUser: false },
+				toolCredentials: [],
 			},
 		focus: Object.fromEntries(Object.entries(inventory.validFocus).map(([kind, entry]) => [kind, entry?.id])),
 		selections: [

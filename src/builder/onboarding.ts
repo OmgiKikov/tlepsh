@@ -96,6 +96,8 @@ export function describeHostModelCatalog(catalog: HostModelCatalog): string {
 	return catalog.omittedModels > 0 ? `${listed}, and ${catalog.omittedModels} more` : listed;
 }
 
+const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,199}$/;
+
 /** Ask only for the variable name; the credential value never enters Builder Pi. */
 export async function selectTargetCredentialEnvironment(
 	ctx: Pick<ExtensionContext, "ui">,
@@ -111,7 +113,7 @@ export async function selectTargetCredentialEnvironment(
 	);
 	if (selected === undefined) throw new Error("Target model configuration was cancelled by the operator");
 	const value = selected.trim() || suggested;
-	if (!/^[A-Za-z_][A-Za-z0-9_]{0,199}$/.test(value)) {
+	if (!ENVIRONMENT_NAME.test(value)) {
 		throw new Error("Target credential must be one environment-variable name; never paste the credential value");
 	}
 	return value;
@@ -147,17 +149,55 @@ export async function selectToolCredentialEnvironments(
 	for (const slot of slots) {
 		const suggested = `AHDE_${tool}_${slot.id}`.toUpperCase().replace(/[^A-Z0-9_]/g, "_");
 		const selected = await ctx.ui.input(
-			`Environment variable holding ${slot.purpose} for ${tool}`,
+			t("onboarding.tool-credential-env", { purpose: slot.purpose, tool }),
 			suggested,
 		);
 		if (selected === undefined) throw new Error(`Tool credential setup for ${slot.id} was cancelled by the operator`);
 		const name = selected.trim() || suggested;
-		if (!/^[A-Za-z_][A-Za-z0-9_]{0,199}$/.test(name)) {
+		if (!ENVIRONMENT_NAME.test(name)) {
 			throw new Error("Tool credential binding must be one environment-variable name; never paste the credential value");
 		}
 		bindings[slot.id] = name;
 	}
 	return bindings;
+}
+
+/**
+ * A tool already in the harness declares a key that nobody exported.
+ *
+ * The host asks about it, not the model, and it asks the same question
+ * onboarding asks for a model key: which environment variable holds this — and
+ * never what it holds. Nothing is recorded: the answer is either the name the
+ * descriptor already declares, in which case the operator is told to export it,
+ * or a different name, in which case the descriptor is what has to change and
+ * saying so is the whole answer.
+ */
+export async function confirmDeclaredToolCredentials(
+	ctx: Pick<ExtensionContext, "ui">,
+	missing: readonly { tool: string; environment: string }[],
+): Promise<void> {
+	if (typeof ctx.ui.input !== "function") return;
+	const asked = new Set<string>();
+	for (const entry of missing) {
+		if (asked.has(entry.environment)) continue;
+		asked.add(entry.environment);
+		const answered = await ctx.ui.input(
+			t("onboarding.tool-credential-env", { purpose: t("onboarding.subject-tool-key"), tool: entry.tool }),
+			entry.environment,
+		);
+		if (answered === undefined) return;
+		const name = answered.trim() || entry.environment;
+		if (!ENVIRONMENT_NAME.test(name)) {
+			ctx.ui.notify(t("onboarding.tool-credential-name-only"), "warning");
+			continue;
+		}
+		ctx.ui.notify(
+			name === entry.environment
+				? t("onboarding.tool-credential-export", { environment: name })
+				: t("onboarding.tool-credential-rename", { tool: entry.tool, declared: entry.environment, chosen: name }),
+			"info",
+		);
+	}
 }
 
 /** Resolve one bounded evaluator selection against the trusted host catalog. */

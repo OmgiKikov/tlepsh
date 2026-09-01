@@ -45,6 +45,40 @@ export function inspectTargetReadiness(
 	};
 }
 
+export interface ToolCredentialReadinessLine {
+	tool: string;
+	environmentName: string;
+	present: boolean;
+	line: string;
+}
+
+/**
+ * What `ahde validate` prints for every key a declared tool says it needs.
+ *
+ * A tool credential fails the same way a judge credential does — inside a
+ * sandbox, at the first call, as whatever the tool's own code prints — unless
+ * it is stated here beside the model keys. The value is never read: only
+ * whether something non-empty is exported under that name.
+ */
+export function toolCredentialReadiness(
+	target: Pick<ResolvedTarget, "tools">,
+	environment: NodeJS.ProcessEnv = process.env,
+): ToolCredentialReadinessLine[] {
+	const lines: ToolCredentialReadinessLine[] = [];
+	for (const tool of target.tools) {
+		for (const environmentName of tool.descriptor.permissions.environment) {
+			const present = Boolean(environment[environmentName]?.trim());
+			lines.push({
+				tool: tool.descriptor.name,
+				environmentName,
+				present,
+				line: `tool ${tool.descriptor.name}: key ${environmentName} ${present ? "set" : "MISSING"}`,
+			});
+		}
+	}
+	return lines;
+}
+
 export function assertTargetReadyToRun(
 	target: Pick<ResolvedTarget, "manifest">,
 	environment: NodeJS.ProcessEnv = process.env,

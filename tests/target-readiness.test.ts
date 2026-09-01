@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	assertTargetReadyToRun,
 	inspectTargetReadiness,
+	toolCredentialReadiness,
 } from "../src/target/readiness.js";
 import type { ResolvedTarget } from "../src/manifest.js";
 
@@ -59,5 +60,29 @@ describe("Target readiness", () => {
 
 	it("treats an empty credential as missing", () => {
 		expect(inspectTargetReadiness(target(), { TARGET_TEST_KEY: "  " }).credential.status).toBe("missing");
+	});
+});
+
+describe("declared tool credentials", () => {
+	const tools = [
+		{ descriptor: { name: "weather", permissions: { environment: ["WEATHER_API_KEY"] } } },
+		{ descriptor: { name: "crm", permissions: { environment: ["CRM_TOKEN", "CRM_REGION"] } } },
+		{ descriptor: { name: "clock", permissions: { environment: [] } } },
+	] as unknown as ResolvedTarget["tools"];
+
+	it("says set or MISSING for every key a declared tool names, and reads no value", () => {
+		const lines = toolCredentialReadiness({ tools }, { CRM_TOKEN: "sk-live-000111", CRM_REGION: "  " });
+		expect(lines.map((line) => line.line)).toEqual([
+			"tool weather: key WEATHER_API_KEY MISSING",
+			"tool crm: key CRM_TOKEN set",
+			"tool crm: key CRM_REGION MISSING",
+		]);
+		expect(JSON.stringify(lines)).not.toContain("sk-live");
+	});
+
+	it("says nothing at all about a tool that declares no key", () => {
+		expect(toolCredentialReadiness({ tools }, { WEATHER_API_KEY: "k", CRM_TOKEN: "k", CRM_REGION: "k" })
+			.every((line) => line.present)).toBe(true);
+		expect(toolCredentialReadiness({ tools }, {}).some((line) => line.tool === "clock")).toBe(false);
 	});
 });

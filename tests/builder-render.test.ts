@@ -776,6 +776,35 @@ describe("renderHeader", () => {
 		]);
 	});
 
+	it("names a declared tool key nobody exported, with the one thing to do", () => {
+		const view = makeView({
+			target: {
+				status: "ready",
+				id: "support-bot",
+				gitSha: SHA_A,
+				model: { provider: "openai", id: "gpt-5", apiKeyEnv: "OPENAI_API_KEY", credentialPresent: true },
+				toolCredentials: [
+					{ tool: "weather", environment: "WEATHER_API_KEY", present: false },
+					{ tool: "crm", environment: "CRM_TOKEN", present: true },
+				],
+			},
+		});
+		expect(renderHeader({ view, builderModel: { label: "x", credentialPresent: true } }, plainPaint).join("\n"))
+			.toContain("Tool key weather needs WEATHER_API_KEY — export it in the shell that runs ahde");
+		// Nothing is said about a key that is already there.
+		const satisfied = makeView({
+			target: {
+				status: "ready",
+				id: "support-bot",
+				gitSha: SHA_A,
+				model: { provider: "openai", id: "gpt-5", apiKeyEnv: "OPENAI_API_KEY", credentialPresent: true },
+				toolCredentials: [{ tool: "crm", environment: "CRM_TOKEN", present: true }],
+			},
+		});
+		expect(renderHeader({ view: satisfied, builderModel: { label: "x", credentialPresent: true } }, plainPaint).join("\n"))
+			.not.toContain("Tool key");
+	});
+
 	it("shows blockers except during target setup", () => {
 		const blocked = renderHeader({ view: makeView({ blockers: ["Spec not approved"] }), builderModel: { label: "x", credentialPresent: true } }, plainPaint);
 		expect(blocked.join("\n")).toContain("Blocked Spec not approved");
