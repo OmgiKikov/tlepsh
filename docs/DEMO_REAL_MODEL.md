@@ -1,5 +1,9 @@
 # Demo: the AHDE loop on a real model, end to end
 
+> Recorded on branch `skill-path` with an external CLI workflow (`spec approve` /
+> `propose` / `apply` / `adopt`) that was not shipped; the engine, the numbers and
+> the passport are the same ones Builder Pi produces.
+
 One coding agent (no Builder Pi, no shims) driving `skills/ahde/SKILL.md` against a
 real OpenRouter model, from a deliberately weakened harness to a promoted,
 sealed-gated `v0.1.0`. Every number below is copied from a run artifact.
