@@ -21,6 +21,7 @@ import {
 	reviseBuilderCorpusDraft,
 } from "../application/builder-corpus-draft.js";
 import { importBuilderCorpusDraft } from "../application/builder-corpus-import.js";
+import { recordSealedSynthReviewImport } from "../application/sealed-synth.js";
 import { compileHarnessAuthoringProposal } from "../application/harness-authoring.js";
 import { runAppliedBuilderCandidate } from "../application/builder-candidate.js";
 import {
@@ -271,13 +272,33 @@ export function createAhdeBuilderExtension(options: BuilderExtensionOptions): Ex
 			beginLiveTrace: dependencies.beginLiveTrace,
 			presenter,
 			onWorkbenchChanged,
-			importSealedHoldout: ({ sourcePath, name }) => dependencies.importCorpus({
-				stateRoot: options.stateRoot,
-				projectId: workbench.projectId,
-				name,
-				visibility: "sealed",
-				sourcePath: resolve(options.projectDir, sourcePath),
-			}),
+			importSealedHoldout: ({ sourcePath, name }) => {
+				const resolved = resolve(options.projectDir, sourcePath);
+				const corpus = dependencies.importCorpus({
+					stateRoot: options.stateRoot,
+					projectId: workbench.projectId,
+					name,
+					visibility: "sealed",
+					sourcePath: resolved,
+				});
+				// When this file is a draft the judge wrote for this project, the
+				// exam that just got sealed is one a human actually read. That is
+				// the difference the passport reports, so it is recorded here, at
+				// the only moment both facts are in the same place. Any other file
+				// records nothing: its provenance is the operator's.
+				try {
+					recordSealedSynthReviewImport({
+						stateRoot: options.stateRoot,
+						projectId: workbench.projectId,
+						sourcePath: resolved,
+						corpus,
+					});
+				} catch {
+					// Provenance is a nice-to-have on a page; the exam is not. An
+					// unwritable receipt narrows the passport, it never fails an import.
+				}
+				return corpus;
+			},
 			sendUserMessage: typeof pi.sendUserMessage === "function"
 				? (text) => pi.sendUserMessage(text)
 				: undefined,

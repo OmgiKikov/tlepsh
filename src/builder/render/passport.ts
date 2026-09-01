@@ -4,6 +4,7 @@ import {
 	judgeSummaryLine,
 	type ShippedVersionPassport,
 } from "../../application/version-passport.js";
+import { plural, t } from "../../i18n.js";
 import { bullets, oneLine, section, shortHash, shortSha, wrap } from "./format.js";
 import type { Paint } from "./paint.js";
 
@@ -100,9 +101,15 @@ export function renderVersionPassport(passport: ShippedVersionPassport, paint: P
 		: paint.muted("never measured on this revision")}`);
 	lines.push(`${paint.dim("Data")} basket ${passport.limits.developmentCorpus
 		? `${oneLine(passport.limits.developmentCorpus.id, 24)} ${paint.dim(`(${shortHash(passport.limits.developmentCorpus.hash)})`)}`
-		: "—"} ${paint.dim("·")} exam ${passport.limits.sealedTasks} case${passport.limits.sealedTasks === 1 ? "" : "s"} ${
-		paint.dim("· identity evaluator-only")
-	}`);
+		: "—"} ${paint.dim("·")} exam ${plural(passport.limits.sealedTasks, "case")}${
+		// Who wrote the questions, when a receipt says so. It changes what the
+		// verdict is worth, so it belongs beside the count and not in a footnote.
+		passport.limits.sealedOrigin
+			? ` ${paint.dim(`· ${t(passport.limits.sealedOrigin === "judge-generated-reviewed"
+				? "passport.exam-generated-reviewed"
+				: "passport.exam-generated")}`)}`
+			: ""
+	} ${paint.dim("· identity evaluator-only")}`);
 
 	const provenance = passport.provenance;
 	lines.push("", section("Provenance", paint));

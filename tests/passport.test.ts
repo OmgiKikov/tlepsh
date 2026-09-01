@@ -500,7 +500,7 @@ describe("version passport", () => {
 			at: "2026-08-30T09:00:00.000Z",
 		});
 		expect(projection.measured.sealed).toEqual({ verdict: "pass", design: { tasks: 18, repetitions: 2 } });
-		expect(projection.limits.dataset.sealed).toEqual({ cases: 18 });
+		expect(projection.limits.dataset.sealed).toEqual({ cases: 18, origin: null });
 		expect(projection.judge).toMatchObject({ stats: null, majorityClassBaseline: null });
 		// The projection is JSON, exactly as `--json` prints it.
 		expect(JSON.parse(JSON.stringify(projection))).toEqual(projection);

@@ -85,6 +85,7 @@ import {
 	type DatasetHoldoutSpec,
 } from "./application/dataset-ingest.js";
 import {
+	recordSealedSynthReviewImport,
 	renderSealedSynthOutput,
 	SealedSynthRefusal,
 	synthesizeSealedCorpus,
@@ -1079,6 +1080,17 @@ async function main(): Promise<void> {
 					visibility: visibility as CorpusVisibility,
 					sourcePath: resolve(requireArg("file")),
 				});
+				if (visibility === "sealed") {
+					// The documented way to seal a `--review` draft is this command.
+					// Record that a human read it, so the passport can say so later.
+					const reviewed = recordSealedSynthReviewImport({
+						stateRoot: stateRoot(),
+						projectId,
+						sourcePath: resolve(requireArg("file")),
+						corpus: metadata,
+					});
+					if (reviewed) console.error("note: sealed from a generated draft; recorded as reviewed by the operator");
+				}
 				console.log(
 					`${metadata.id}  ${metadata.visibility}  ${metadata.taskCount} tasks  ${metadata.hash}`,
 				);
