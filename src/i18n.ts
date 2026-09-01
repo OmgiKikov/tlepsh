@@ -325,6 +325,48 @@ const en = {
 	"judge.label-hint": "· ahde label",
 	"judge.label-hint-long": "· ahde label checks it against your own eyes",
 	"judge.agreement": "agreement {rate}",
+	"judge.agrees-with-you": "agrees with you {rate}",
+
+	// The judge calibration exercise: one answer at a time, blind, then the
+	// reveal. Every string here is read mid-exercise, so none of them may name a
+	// stage, a hash, or a grader type.
+	"label.no-judge": "There is nothing to check the judge on — the tests have no judge graders",
+	"label.panel": "Judge {ordinal}/{total}",
+	"label.done": "Judge checked",
+	"label.field.request": "what they asked",
+	"label.field.goal": "the goal",
+	"label.field.answer": "the agent answered",
+	"label.field.conversation": "the conversation",
+	"label.field.reference": "reference answer",
+	"label.field.rubric": "the rubric the judge was given",
+	"label.field.assertions": "the checklist the judge answered",
+	"label.legacy": "the basket that graded this run is out of scope, so the judge's own rubric cannot be shown",
+	"label.ask": "Your verdict — before you see the judge's",
+	"label.ask-assertion": "{index}/{total} · {assertion}",
+	"label.ask-note": "What was wrong? (optional)",
+	"label.choice.good": "good",
+	"label.choice.bad": "bad",
+	"label.choice.skip": "skip",
+	"label.choice.stop": "stop",
+	"label.choice.yes": "yes",
+	"label.choice.no": "no",
+	"label.choice.unknown": "don't know",
+	"label.reveal": "the judge said: {verdict} · {agreement}",
+	"label.reveal-agrees": "agrees with you",
+	"label.reveal-disagrees": "DISAGREES with you",
+	"label.reveal-assertion": "{index}. you said {human} · the judge said {judge}",
+	"label.stopped": "Stopped — {labelled} answered, {left} left.",
+	"label.nothing": "Nothing was answered, so nothing was written.",
+	"label.all-labelled": "You have already answered every judged case in this run",
+	"label.summary": "agreement {rate} · κ {kappa} · n={n}",
+	"label.by-grader": "by rubric:",
+	"label.perfect": "The judge agreed with you every time.",
+	"label.meaning": "The judge is wrong about one answer in {ratio}; {direction}",
+	"label.meaning-misses-failures": "it catches failures worse than successes.",
+	"label.meaning-invents-failures": "it fails answers you would have passed.",
+	"label.meaning-both": "it errs in both directions equally.",
+	"label.next-more": "Another {count} answers will sharpen the number",
+	"label.next-enough": "That is enough to trust the judge at release",
 
 	"confirm.start-testing.title": "Start testing — {parts}",
 	"confirm.start-testing.part.approve-spec": "approve the Spec",
@@ -739,6 +781,8 @@ Looking around:
   /target [resource]    the exact committed Target, or one declared resource
   /passport [version]   what the newest shipped version promised and measured
   /log [n]              how the agent grew: every version and what it scored
+  /label [n]            check the judge: grade n answers blind, then see what
+                        it said — about ten minutes, and nothing runs
   /doctor               model auth, Target readiness, and recovery steps
   /holdout              privately import the operator-owned sealed JSONL exam
   /help                 this reference
@@ -920,6 +964,45 @@ const ru: Record<MessageKey, string> = {
 	"judge.label-hint": "· ahde label",
 	"judge.label-hint-long": "· ahde label сверит его с твоими глазами",
 	"judge.agreement": "согласие {rate}",
+	"judge.agrees-with-you": "согласен с тобой {rate}",
+
+	"label.no-judge": "Судью проверять не на чем — в тестах нет judge-грейдеров",
+	"label.panel": "Судья {ordinal}/{total}",
+	"label.done": "Судья проверен",
+	"label.field.request": "что спросили",
+	"label.field.goal": "цель пользователя",
+	"label.field.answer": "агент ответил",
+	"label.field.conversation": "диалог",
+	"label.field.reference": "эталонный ответ",
+	"label.field.rubric": "критерий, который дали судье",
+	"label.field.assertions": "чек-лист, который заполнял судья",
+	"label.legacy": "тесты, по которым оценивали этот прогон, вне области видимости — критерий судьи показать нечем",
+	"label.ask": "Твой вердикт — до того, как увидишь судью",
+	"label.ask-assertion": "{index}/{total} · {assertion}",
+	"label.ask-note": "Что не так? (можно пропустить)",
+	"label.choice.good": "хорошо",
+	"label.choice.bad": "плохо",
+	"label.choice.skip": "пропустить",
+	"label.choice.stop": "стоп",
+	"label.choice.yes": "да",
+	"label.choice.no": "нет",
+	"label.choice.unknown": "не знаю",
+	"label.reveal": "судья сказал: {verdict} · {agreement}",
+	"label.reveal-agrees": "согласен с тобой",
+	"label.reveal-disagrees": "РАСХОДИТСЯ с тобой",
+	"label.reveal-assertion": "{index}. ты — {human} · судья — {judge}",
+	"label.stopped": "Стоп — ответов: {labelled}, осталось: {left}.",
+	"label.nothing": "Ты не ответил ни разу, так что записывать нечего.",
+	"label.all-labelled": "Ты уже оценил все ответы этого прогона, которые смотрел судья",
+	"label.summary": "согласие {rate} · κ {kappa} · n={n}",
+	"label.by-grader": "по критериям:",
+	"label.perfect": "Судья согласился с тобой везде.",
+	"label.meaning": "Судья ошибается примерно в одном ответе из {ratio}; {direction}",
+	"label.meaning-misses-failures": "провалы он ловит хуже, чем успехи.",
+	"label.meaning-invents-failures": "он заваливает ответы, которые ты бы принял.",
+	"label.meaning-both": "он ошибается в обе стороны одинаково.",
+	"label.next-more": "Ещё {count} ответов уточнят цифру",
+	"label.next-enough": "Этого достаточно, чтобы верить судье при выпуске",
 
 	"confirm.start-testing.title": "Начать тесты — {parts}",
 	"confirm.start-testing.part.approve-spec": "одобрить описание",
@@ -1332,6 +1415,8 @@ const ru: Record<MessageKey, string> = {
   /target [ресурс]      точный закоммиченный агент или один его ресурс
   /passport [версия]    что обещала и что измерила последняя выкаченная версия
   /log [n]              как агент рос: каждая версия и её результат
+  /label [n]            проверить судью: оценить n ответов вслепую и увидеть,
+                        что сказал он — минут десять, ничего не прогоняется
   /doctor               ключи моделей, готовность агента и как починить
   /holdout              приватно загрузить твой закрытый JSONL-экзамен
   /help                 эта справка

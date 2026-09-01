@@ -563,6 +563,34 @@ export interface JudgeLabelSuite {
 	tasks: readonly ResolvedTask[];
 }
 
+/**
+ * Identity of one labellable check inside one eval run: the exact run and the
+ * exact grader position. This is the key `importJudgeLabels` already refuses a
+ * second row for, and the key a screen uses to stop asking a question this
+ * operator has already answered.
+ */
+export function judgeLabelSubjectKey(subject: Pick<JudgeLabelRow, "runId" | "graderIndex">): string {
+	return `${subject.runId} ${subject.graderIndex}`;
+}
+
+/**
+ * The checks of one eval run this project has already labelled. A screen skips
+ * these BEFORE it draws its sample, so asking for twenty answers yields twenty
+ * questions the operator has not seen rather than twenty minus the repeats.
+ */
+export function labelledJudgeSubjectKeys(
+	stateRoot: string,
+	projectId: string,
+	evalRunId: string,
+): Set<string> {
+	const id = EvalRunIdSchema.parse(evalRunId);
+	return new Set(
+		readProjectJudgeLabels(stateRoot, projectId)
+			.filter((row) => row.lineage?.evalRunId === id)
+			.map(judgeLabelSubjectKey),
+	);
+}
+
 export interface CollectJudgeLabelSubjectsOptions {
 	runsRoot: string;
 	evalRunId: string;
@@ -574,6 +602,12 @@ export interface CollectJudgeLabelSubjectsOptions {
 	sealedDatasetHashes?: ReadonlySet<string>;
 	/** The exact suite the evidence was graded under. */
 	suite?: JudgeLabelSuite;
+	/**
+	 * Checks to leave out of the draw entirely, keyed by
+	 * {@link judgeLabelSubjectKey}. Applied before sampling, so the sample size
+	 * is a promise about new questions.
+	 */
+	skipSubjects?: ReadonlySet<string>;
 }
 
 /**
@@ -675,12 +709,15 @@ export function collectJudgeLabelSubjects(
 			});
 		}
 	}
-	if (options.sample === undefined || options.sample >= subjects.length) return subjects;
+	const drawable = options.skipSubjects
+		? subjects.filter((subject) => !options.skipSubjects!.has(judgeLabelSubjectKey(subject)))
+		: subjects;
+	if (options.sample === undefined || options.sample >= drawable.length) return drawable;
 	if (!Number.isInteger(options.sample) || options.sample < 1) {
 		throw new Error(`--sample must be a positive integer, got ${options.sample}`);
 	}
 	const seed = options.seed ?? "";
-	return subjects
+	return drawable
 		.map((subject) => ({
 			subject,
 			key: hashValue({ seed, runId: subject.runId, graderIndex: subject.graderIndex }),
@@ -844,7 +881,12 @@ export function importJudgeLabels(options: ImportJudgeLabelsOptions): JudgeLabel
 
 // ---------- Interactive labelling ----------
 
-export type JudgeLabelAnswer = "pass" | "fail" | "skip";
+/**
+ * `stop` is the operator leaving, not a verdict: the walk ends where it stands
+ * and every answer already given is already on disk. It is never revealed
+ * against, never counted as a skip, and never written as a label.
+ */
+export type JudgeLabelAnswer = "pass" | "fail" | "skip" | "stop";
 
 export interface JudgeLabelPrompt {
 	/** Show one subject and collect the human's verdict, blind to the judge. */
@@ -865,6 +907,8 @@ export interface JudgeLabelPrompt {
 export interface RunJudgeLabelSessionOptions extends ImportJudgeLabelsOptions {
 	sample?: number;
 	seed?: string;
+	/** Checks this operator has already answered; left out before the draw. */
+	skipSubjects?: ReadonlySet<string>;
 	prompt: JudgeLabelPrompt;
 }
 
@@ -875,7 +919,7 @@ export interface RunJudgeLabelSessionOptions extends ImportJudgeLabelsOptions {
  */
 export async function runJudgeLabelSession(
 	options: Omit<RunJudgeLabelSessionOptions, "filePath">,
-): Promise<{ labelled: number; skipped: number; rows: JudgeLabelRow[] }> {
+): Promise<{ labelled: number; skipped: number; stopped: boolean; total: number; rows: JudgeLabelRow[] }> {
 	if (options.approvedSpec && options.approvedSpec.projectId !== options.projectId) {
 		throw new Error("judge label approved Spec project mismatch");
 	}
@@ -886,6 +930,7 @@ export async function runJudgeLabelSession(
 		...(options.seed === undefined ? {} : { seed: options.seed }),
 		...(options.sealedDatasetHashes ? { sealedDatasetHashes: options.sealedDatasetHashes } : {}),
 		...(options.suite ? { suite: options.suite } : {}),
+		...(options.skipSubjects ? { skipSubjects: options.skipSubjects } : {}),
 	});
 	const now = options.now ?? (() => new Date().toISOString());
 	const judgeFingerprint = judgeFingerprintHashOf(options.runsRoot, options.evalRunId);
@@ -896,8 +941,15 @@ export async function runJudgeLabelSession(
 	});
 	const rows: JudgeLabelRow[] = [];
 	let skipped = 0;
+	let stopped = false;
 	for (const [offset, subject] of subjects.entries()) {
 		const answer = await options.prompt.ask(subject, offset + 1, subjects.length);
+		// Leaving is not an answer, so there is nothing to reveal against and
+		// nothing to record. Everything answered before this is already on disk.
+		if (answer.answer === "stop") {
+			stopped = true;
+			break;
+		}
 		options.prompt.reveal(subject, answer.answer);
 		if (answer.answer === "skip") {
 			skipped += 1;
@@ -923,5 +975,5 @@ export async function runJudgeLabelSession(
 		appendJudgeLabels(options.stateRoot, options.projectId, options.evalRunId, [row]);
 		rows.push(row);
 	}
-	return { labelled: rows.length, skipped, rows };
+	return { labelled: rows.length, skipped, stopped, total: subjects.length, rows };
 }

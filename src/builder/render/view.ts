@@ -157,6 +157,29 @@ export interface HeaderState {
 	previousSessions?: number;
 	/** The cycle as a checklist, folded to one line under the stage. */
 	plan?: Plan | null;
+	/**
+	 * How far this project's judge has been checked against this operator's own
+	 * eyes. Undefined means no judge grades anything here, so the header stays
+	 * silent; null means one does and nobody has checked it.
+	 */
+	judge?: { agreement: number; kappa: number | null; labels: number } | null | undefined;
+}
+
+/**
+ * The instrument line in the header: `Judge agrees with you 84% · κ 0.62 · n=20`.
+ *
+ * Separate from {@link judgeAgreementLine}, which speaks about one candidate's
+ * evidence. This one speaks about the judge the operator is working with, in the
+ * second person, because they are the other half of the number.
+ */
+function headerJudgeLine(state: HeaderState, paint: Paint): string | null {
+	if (state.judge === undefined) return null;
+	if (state.judge === null) {
+		return `${paint.dim(t("label.judge-instrument"))} ${paint.warning(t("judge.not-calibrated"))} ${paint.dim(t("judge.label-hint"))}`;
+	}
+	const kappa = state.judge.kappa === null ? "κ n/a" : `κ ${state.judge.kappa.toFixed(2)}`;
+	return `${paint.dim(t("label.judge-instrument"))} ${t("judge.agrees-with-you", { rate: percent(state.judge.agreement) })} ` +
+		`${paint.dim("·")} ${kappa} ${paint.dim(`· n=${state.judge.labels}`)}`;
 }
 
 /** Persistent header: identity, live stage, next step, evidence, and readiness. */
@@ -186,6 +209,8 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 	if (shipping) lines.push(shipping);
 	const noise = calibrationLine(view, paint);
 	if (noise) lines.push(noise);
+	const judge = headerJudgeLine(state, paint);
+	if (judge) lines.push(judge);
 	if (view.blockers.length > 0 && view.stage !== "target-setup") {
 		lines.push(`${paint.warning(t("label.blocked"))} ${oneLine(view.blockers.join(" "), 200)}`);
 	}

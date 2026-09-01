@@ -6,6 +6,7 @@ import type {
 import { truncateToWidth, type TUI } from "@earendil-works/pi-tui";
 import type { AhdeWorkbench } from "../workbench/workbench.js";
 import type { WorkbenchStage, WorkbenchView } from "../workbench/types.js";
+import { loadJudgeCalibration } from "../application/judge-labels.js";
 import { themePaint } from "./render/paint.js";
 import { compilePlan } from "./render/plan.js";
 import { nextStep, stageLabel } from "./render/stage.js";
@@ -19,7 +20,9 @@ import {
 	type TranscriptPresenter,
 } from "./transcript.js";
 
-type ProductWorkbench = Pick<AhdeWorkbench, "view"> & Partial<Pick<AhdeWorkbench, "decide">>;
+type ProductWorkbench =
+	& Pick<AhdeWorkbench, "view">
+	& Partial<Pick<AhdeWorkbench, "decide" | "stateRoot" | "projectId" | "runsRoot">>;
 
 export interface ProductShellController {
 	/** Re-read Workbench state and redraw the header/status; never throws. */
@@ -89,6 +92,33 @@ export function installAhdeBuilderProductShell(
 		builderModel: { label: null, credentialPresent: false },
 		error: null,
 		plan: null,
+	};
+
+	/**
+	 * How far the judge behind this project's evidence has been checked. Read
+	 * from the labels on disk, so `/label` moves the header the moment it writes
+	 * one. A project whose baskets have no judge grader keeps no line at all:
+	 * an instrument nobody used graded nothing.
+	 */
+	const judgeState = (view: WorkbenchView): HeaderState["judge"] => {
+		const stateRoot = workbench.stateRoot;
+		const projectId = workbench.projectId;
+		if (!stateRoot || !projectId) return undefined;
+		// A basket that declares a judge grader, or a Target that has configured
+		// one: either way an instrument is in play and its trust is a fact the
+		// operator is entitled to see.
+		const evaluators = view.target.evaluators;
+		const judged = view.target.evaluatorRequirements?.judge === true || Boolean(evaluators?.judge);
+		if (!judged) return undefined;
+		try {
+			const pooled = loadJudgeCalibration(stateRoot, projectId).pooled;
+			return pooled.n === 0
+				? null
+				: { agreement: pooled.agreement, kappa: pooled.kappa, labels: pooled.n };
+		} catch {
+			// The header is a read; an unreadable label file is simply no line.
+			return undefined;
+		}
 	};
 	let tui: TUI | null = null;
 	let host: ExtensionContext | null = null;
@@ -161,9 +191,11 @@ export function installAhdeBuilderProductShell(
 			// The plan is a pure projection of the view we just read: no second
 			// read, no artifact, nothing the model is told.
 			state.plan = compilePlan(state.view);
+			state.judge = judgeState(state.view);
 		} catch (error) {
 			state.view = null;
 			state.plan = null;
+			state.judge = undefined;
 			state.error = error instanceof Error ? error.message : String(error);
 		}
 		applyStatus();

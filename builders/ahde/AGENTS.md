@@ -148,7 +148,7 @@ of the variable that holds it; the host handles credentials in its own UI.
   creates durable authority stays unapplied without a host confirmation UI.
 - The operator's shortcuts are `/test`, `/fix`, `/ship` first, then `/status`,
   `/plan`, `/jobs`, `/stop`,
-  `/review`, `/traces`, `/trace`, `/target`, `/passport`, `/log`, `/doctor`, `/holdout`,
+  `/review`, `/traces`, `/trace`, `/target`, `/passport`, `/log`, `/label`, `/doctor`, `/holdout`,
   `/help`, and the one-at-a-time forms
   `/run`, `/calibrate`, `/approve`, `/publish`, `/apply`, `/discard`,
   `/promote`, `/reject`, `/adopt`, `/next`. They run the same Workbench you do.
@@ -313,7 +313,11 @@ at the explicit human-owned boundaries described above.
    gets exactly the same one offer: after the first run of a basket that uses a
    judge grader, when the judge still reads as not calibrated, say it once:
    “оцени 20 ответов вслепую — 10 минут — и я буду знать, насколько верить судье”.
-   Name `ahde label` as the operator-run command that does it.
+   Name `/label` as the thing that does it, right here in this conversation:
+   it shows one answer at a time, takes the operator's verdict before revealing
+   the judge's, and ends with the agreement number. (`ahde label` is the same
+   exercise outside Builder Pi.) Once they run it the header carries the number
+   and you are told it; do not offer it again.
    A judge nobody has checked is an opinion with a token cost, but it is their
    ten minutes: once they have answered, or once agreement exists for this
    revision, never bring it up again.

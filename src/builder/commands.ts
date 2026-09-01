@@ -27,6 +27,12 @@ import {
 import { writeTextArtifact } from "../storage/artifacts.js";
 import { oneLine, pluralize } from "./render/format.js";
 import { renderAgentLog } from "./render/agent-log.js";
+import {
+	MAX_LABEL_SAMPLE,
+	NoJudgedEvidence,
+	runBuilderLabelSession,
+	type LabelScreen,
+} from "./label-session.js";
 import { renderVersionPassport } from "./render/passport.js";
 import { decisionHeadline, renderDecision } from "./render/decision.js";
 import { compilePlan, renderPlan, type PlanFacts } from "./render/plan.js";
@@ -92,6 +98,7 @@ export const AHDE_BUILDER_COMMAND_NAMES = [
 	"plan",
 	"jobs",
 	"stop",
+	"label",
 ] as const;
 
 /** The `/help` reference, in the operator's language. */
@@ -1354,6 +1361,71 @@ export function registerAhdeBuilderCommands(
 			noArguments("stop", args);
 			await prepare(ctx, "stop");
 			if (!jobs.stop()) ctx.ui.notify(t("job.nothing-to-stop"), "info");
+		},
+	});
+
+	/**
+	 * Check the judge: grade n of its answers blind, then see what it said.
+	 *
+	 * Nothing here runs the Target, spends a token, or decides anything. What it
+	 * writes is a note about an instrument — how far this judge and this operator
+	 * agree — and the exercise is over in ten minutes, which is the only reason
+	 * anyone ever does it.
+	 */
+	pi.registerCommand("label", {
+		description: `Check the judge: grade its answers blind, then see what it said: /label [n up to ${MAX_LABEL_SAMPLE}]`,
+		async handler(args, ctx) {
+			const signal = await prepare(ctx, "label");
+			const requested = args.trim();
+			if (requested && !/^\d{1,2}$/.test(requested)) {
+				throw new Error(`/label takes how many answers to grade, for example /label 20 (1 to ${MAX_LABEL_SAMPLE})`);
+			}
+			if (typeof ctx.ui.select !== "function") {
+				throw new Error("/label needs a host that can ask you a question; this one cannot");
+			}
+			const select = ctx.ui.select.bind(ctx.ui);
+			const view = await workbench.view();
+			const screen: LabelScreen = {
+				show: (block) => presenter.show(ctx, block),
+				select: (title, choices) => select(title, choices, { signal }),
+				input: (title, placeholder) => ctx.ui.input(title, placeholder, { signal }),
+				notify: (message, tone) => ctx.ui.notify(message, tone),
+			};
+			let result;
+			try {
+				result = await runBuilderLabelSession({
+					runsRoot: workbench.runsRoot,
+					stateRoot: workbench.stateRoot,
+					projectId: workbench.projectId,
+					targetDir: workbench.projectDir,
+					targetId: view.target.id,
+					...(requested ? { sample: Number(requested) } : {}),
+					screen,
+					paint: markerPaint,
+				});
+			} catch (error) {
+				// The one refusal that is not a fault: there is no judge to check.
+				if (error instanceof NoJudgedEvidence) {
+					ctx.ui.notify(error.message, "info");
+					return;
+				}
+				throw error;
+			}
+			if (result.labelled === 0) return;
+			// The Builder is told the number, not the answers: what it may say next
+			// is how far the judge can be trusted, never which case the operator
+			// disliked. The visible half of the injection says exactly that.
+			const stats = result.stats;
+			presenter.note(
+				`Operator ran /label on eval run ${result.evalRunId}: ${result.labelled} answer(s) graded blind` +
+				(stats
+					? `, judge agreement now ${Math.round(stats.agreement * 100)}% over ${stats.n} independent subject(s)` +
+						` (false-pass ${stats.falsePass}, false-fail ${stats.falseFail}).`
+					: ".") +
+				" Do not offer the judge check again for this revision. Never quote an individual label back to them.",
+				{ label: t("label.done") },
+			);
+			await changed();
 		},
 	});
 }

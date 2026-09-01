@@ -631,9 +631,11 @@ describe("Builder Pi slash commands", () => {
 			"plan",
 			"jobs",
 			"stop",
+			// Checking the instrument the evidence leans on.
+			"label",
 		]);
 		expect(registered.map(({ name }) => name)).toEqual([...AHDE_BUILDER_COMMAND_NAMES]);
-		expect(registered).toHaveLength(26);
+		expect(registered).toHaveLength(27);
 		expect(registered.every(({ options }) => options.description && options.handler)).toBe(true);
 	});
 
@@ -1774,7 +1776,7 @@ describe("Builder Pi slash commands", () => {
 			name,
 			name === "apply" ? "candidate/fix" : name === "promote" ? "1.0.0" : "",
 		]);
-		expect(invocations).toHaveLength(26);
+		expect(invocations).toHaveLength(27);
 
 		for (const settings of [
 			{ hasUI: false, mode: "print" as const },
