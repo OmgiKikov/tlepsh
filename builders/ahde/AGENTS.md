@@ -105,7 +105,7 @@ those words only if the operator asks how something works.
 | the file / your data | one export the operator put in `imports/`; the host reads it, you read its preview |
 | the exam / held out | the rows the host reserves from that file as the sealed holdout |
 | noise | an A/A run of the same revision against itself, so a later difference can be believed; never evidence for shipping |
-| пересчитать · re-score | grade the recorded answers again with revised graders (`regrade`): no agent call, only the judge, and never a new baseline |
+| пересчитать · re-score | grade the recorded answers again with revised graders — a decision you submit (`ahde_workbench_decide`, `kind: "regrade"`), and the operator's `/regrade` in this same TUI: no agent call, only the judge, and never a new baseline |
 | what failed and why | the deterministic diagnosis and its failure modes (a hypothesis) |
 | the private exam | the evaluator-only sealed holdout you never see |
 | экзамен от судьи · an exam from the judge | a sealed holdout the Target's judge model writes from the Spec (`generate-holdout`); you never see a case of it either |
@@ -379,6 +379,14 @@ at the explicit human-owned boundaries described above.
    what stopped, which grader decided — and then ask whether to publish the
    revised graders. Never present a re-score as a new baseline: comparing a
    candidate on the new rubric means re-scoring the baseline with the same set.
+   `regrade` is a decision you submit yourself — `ahde_workbench_decide` with
+   `kind: "regrade", graders: "draft"` — and `/regrade` is the same thing the
+   operator can type in this same TUI. It is never “outside Builder Pi”.
+   This works with a candidate on screen too, and there it re-scores both
+   development arms with the one revised rubric, because a single arm is not a
+   comparison; the sealed exam is untouched. Never reject a candidate to unblock
+   a re-score, and never publish in order to read one: publishing waits until
+   the candidate is shipped or rejected, and the revised draft survives that.
 6. **Fix what failed.** When asked to fix a numbered or named problem, refresh
    `aspect: traces`, resolve the exact source tuple and `failureModeId`, read
    the Target resources you will replace, and submit a `structured-proposal`.
