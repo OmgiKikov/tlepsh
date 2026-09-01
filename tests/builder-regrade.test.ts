@@ -5,6 +5,7 @@ import { listBuilderCorpusDrafts } from "../src/application/builder-corpus-draft
 import {
 	compileRegradeDiff,
 	planRegradeGraders,
+	projectCandidateRegrade,
 	RegradeRefused,
 	resolveRegradeSource,
 	type EvalRunSource,
@@ -348,6 +349,54 @@ describe("choosing the evidence to re-score", () => {
 	it("leaves an unknown id to the caller, and says when there is nothing to re-score", () => {
 		expect(resolveRegradeSource({ evals, explicitId: "erun_nope", readIndex: missing })).toBeNull();
 		expect(() => resolveRegradeSource({ evals: [], readIndex: missing })).toThrow(/run the basket first/);
+	});
+});
+
+describe("reading a candidate's arms back after a re-score", () => {
+	const derived = (evalRunId: string, regradeOf: string, suiteHash: string, finishedAt: string, pass: number) => ({
+		evalRunId,
+		regradeOf,
+		suiteHash,
+		finishedAt,
+		runIds: [],
+		summary: { total: 1, pass, fail: 1 - pass, error: 0, allPassRate: pass },
+	});
+	const runsRoot = "/nowhere";
+	const arms = { baselineEvalRunId: "erun_base", candidateEvalRunId: "erun_cand" };
+
+	it("takes the newest re-score of each arm", () => {
+		expect(projectCandidateRegrade({
+			runsRoot,
+			evals: [
+				derived("erun_r1", "erun_base", "sha256:x", "2026-09-01T10:00:00.000Z", 0),
+				derived("erun_r2", "erun_base", "sha256:x", "2026-09-01T11:00:00.000Z", 1),
+				derived("erun_r3", "erun_cand", "sha256:x", "2026-09-01T11:00:00.000Z", 0),
+			],
+			...arms,
+		})).toMatchObject({
+			baselineEvalRunId: "erun_r2",
+			candidateEvalRunId: "erun_r3",
+			baselinePassRate: 1,
+			candidatePassRate: 0,
+		});
+	});
+
+	it("shows nothing when one arm is missing or the two were scored differently", () => {
+		// One arm alone is not a comparison.
+		expect(projectCandidateRegrade({
+			runsRoot,
+			evals: [derived("erun_r1", "erun_cand", "sha256:x", "2026-09-01T10:00:00.000Z", 0)],
+			...arms,
+		})).toBeNull();
+		// Two arms under two rubrics are not one either.
+		expect(projectCandidateRegrade({
+			runsRoot,
+			evals: [
+				derived("erun_r1", "erun_base", "sha256:x", "2026-09-01T10:00:00.000Z", 0),
+				derived("erun_r2", "erun_cand", "sha256:y", "2026-09-01T10:00:00.000Z", 0),
+			],
+			...arms,
+		})).toBeNull();
 	});
 });
 
