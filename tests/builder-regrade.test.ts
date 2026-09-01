@@ -1,6 +1,7 @@
-import { readFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { listBuilderCorpusDrafts } from "../src/application/builder-corpus-draft.js";
 import {
 	compileRegradeDiff,
 	planRegradeGraders,
@@ -15,11 +16,15 @@ import { createBuilderJobs } from "../src/builder/jobs.js";
 import { plainPaint } from "../src/builder/render/paint.js";
 import { receiptFacts, receiptSubject } from "../src/builder/render/receipt.js";
 import { renderRegrade, renderRegradeFlip } from "../src/builder/render/regrade.js";
-import { runSuite, type EvalRunRecord } from "../src/eval.js";
+import { renderCandidate } from "../src/builder/render/view.js";
+import { loadEvalRun, loadRun, runSuite, writeEvalRun, type EvalRunRecord } from "../src/eval.js";
 import { setLanguage } from "../src/i18n.js";
 import { loadTarget, type GraderSpec } from "../src/manifest.js";
 import { startMockModel, type MockModelHandle } from "../src/mock-model.js";
+import { hashValue, RunRecordSchema, type RunRecord } from "../src/provenance.js";
 import { regradeEvalRun } from "../src/regrade.js";
+import { writeJsonArtifact } from "../src/storage/artifacts.js";
+import type { AhdeWorkbench } from "../src/workbench/index.js";
 import {
 	assertWorkbenchDecisionStage,
 	workbenchDecisionStages,
@@ -27,6 +32,15 @@ import {
 } from "../src/workbench/transition-policy.js";
 import type { WorkbenchDecisionResult } from "../src/workbench/types.js";
 import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
+import {
+	cleanupPaths,
+	DEVELOPMENT_BASELINE_EVAL,
+	DEVELOPMENT_CANDIDATE_EVAL,
+	gate,
+	PROJECT_ID,
+	terminalCandidateFixture,
+	type CycleFixture,
+} from "./helpers/cycle-fixtures.js";
 
 /**
  * «Судья слишком строгий» → the rubric changes → the recorded answers are
@@ -220,6 +234,27 @@ describe("re-scoring recorded answers with a revised rubric", () => {
 		}
 	});
 
+	it("draws a candidate's whole comparison when both arms were re-scored", () => {
+		const baseline: RegradeDiff = { ...diff, passRateBefore: 0.25, passRateAfter: 0.5, nowPassing: 1, nowFailing: 0, unchanged: 3 };
+		const paired: RegradeDiff = { ...diff, pairedBaseline: baseline };
+		try {
+			setLanguage("en");
+			// The recorded comparison, then the same comparison under the new
+			// rubric, then what moved across both arms — never one arm alone.
+			expect(renderRegrade(paired, plainPaint)).toContain(
+				"On the new rubric development 25% → 50% became 50% → 75% (↑3 ↓1 =4) · exam unchanged",
+			);
+			setLanguage("ru");
+			expect(renderRegrade(paired, plainPaint)).toContain(
+				"На новой рубрике разработка 25% → 50% стало 50% → 75% (↑3 ↓1 =4) · экзамен без изменений",
+			);
+		} finally {
+			setLanguage(null);
+		}
+		// A single-arm re-score keeps exactly the panel it had.
+		expect(renderRegrade(diff, plainPaint).some((line) => line.includes("became"))).toBe(false);
+	});
+
 	it("says which assertion the rewritten rubric answered differently", () => {
 		const flip = {
 			taskId: "task_006",
@@ -323,9 +358,35 @@ describe("the re-score as a Builder decision", () => {
 			"corpus-review",
 			"ready-to-evaluate",
 			"improvement-authoring",
+			// Where the operator argues with the judge in front of a verdict.
+			"candidate-review",
 		]);
 		expect(() => assertWorkbenchDecisionStage("regrade", "corpus-review")).not.toThrow();
-		expect(() => assertWorkbenchDecisionStage("regrade", "candidate-review")).toThrow(/not legal during/);
+		expect(() => assertWorkbenchDecisionStage("regrade", "candidate-review")).not.toThrow();
+		expect(() => assertWorkbenchDecisionStage("regrade", "target-setup")).toThrow(/not legal during/);
+	});
+
+	it("refuses to publish a revision at candidate-review by naming the door instead", () => {
+		expect(() => assertWorkbenchDecisionStage("publish-corpus", "candidate-review"))
+			.toThrow(/publish-corpus is not legal during candidate-review\./);
+		// Not the stage machine's generic “read the evidence, then say ship it”:
+		// the operator revising a rubric needs the one action that reads it.
+		try {
+			setLanguage("en");
+			expect(() => assertWorkbenchDecisionStage("publish-corpus", "candidate-review")).toThrow(
+				"Revised graders are read here by re-scoring, not by publishing: request `regrade`, " +
+				"which re-scores the recorded answers of both development arms with them and pays only the judge. " +
+				"Publishing waits until this candidate is shipped or rejected; the revised draft survives that.",
+			);
+			setLanguage("ru");
+			expect(() => assertWorkbenchDecisionStage("publish-corpus", "candidate-review"))
+				.toThrow(/попроси `regrade`/);
+		} finally {
+			setLanguage(null);
+		}
+		// Every other stage keeps the plain rule and its unblocking action.
+		expect(() => assertWorkbenchDecisionStage("publish-corpus", "target-setup"))
+			.toThrow(/expected corpus-review\. Do this first:/);
 	});
 
 	it("reads /regrade the way an operator types it", () => {
@@ -428,5 +489,235 @@ describe("the persona knows what to do when the judge is disputed", () => {
 		const table = persona.split("## Vocabulary")[1]?.split("\n## ")[0] ?? "";
 		expect(table).toContain("| пересчитать · re-score |");
 		expect(table).toContain("no agent call, only the judge, and never a new baseline");
+		// Whose decision it is, and where `/regrade` lives — the two things the
+		// Builder guessed wrong in front of a real operator.
+		expect(table).toContain("a decision you submit (`ahde_workbench_decide`, `kind: \"regrade\"`)");
+		expect(table).toContain("the operator's `/regrade` in this same TUI");
+	});
+
+	it("knows the re-score is its own to submit, and that a candidate needs both arms", () => {
+		const loop = persona.split("## Typical loop")[1] ?? "";
+		expect(loop).toContain("`kind: \"regrade\", graders: \"draft\"`");
+		expect(loop).toContain("It is never “outside Builder Pi”.");
+		expect(loop).toContain("re-scores both\n   development arms with the one revised rubric");
+		expect(loop).toContain("the sealed exam is untouched");
+		expect(loop).toContain("Never reject a candidate to unblock\n   a re-score, and never publish in order to read one");
+	});
+});
+
+/**
+ * A regrade engine that never grades. It copies each recorded run into a
+ * derived EvalRun and fails it — which is what a hardened rubric does — and
+ * writes real artifacts, because the diff, the panel and the review line all
+ * read the two immutable EvalRuns rather than this return value.
+ */
+function failingRegrade(calls: { evalRunId: string; suiteHash: string }[]): typeof regradeEvalRun {
+	return async ({ runsRoot, evalRunId, target }) => {
+		calls.push({ evalRunId, suiteHash: target.suiteHash });
+		const source = loadEvalRun(runsRoot, evalRunId);
+		const derivedEvalRunId = `erun_regrade_${calls.length}`;
+		const derivedRuns = source.runIds.map((sourceRunId) => {
+			const before = loadRun(runsRoot, sourceRunId);
+			const runId = `run-${derivedEvalRunId}-${sourceRunId}`;
+			const after: RunRecord = {
+				...before,
+				runId,
+				label: "regrade",
+				eval: { ...before.eval, suiteHash: target.suiteHash },
+				evalResults: {
+					outcome: "fail",
+					graders: (before.evalResults?.graders ?? []).map((grader) => ({
+						...grader,
+						passed: false,
+						score: 0,
+						reason: "the hardened rubric refused it",
+					})),
+				},
+				parent: { evalRunId: derivedEvalRunId, candidateOf: null },
+				derivedFrom: { evalRunId: source.evalRunId, runId: sourceRunId },
+			};
+			mkdirSync(join(runsRoot, runId), { recursive: true });
+			copyFileSync(join(runsRoot, sourceRunId, "session.jsonl"), join(runsRoot, runId, "session.jsonl"));
+			writeJsonArtifact(join(runsRoot, runId, "run.json"), RunRecordSchema, after);
+			return after;
+		});
+		const provenance = { ...source.provenance, suiteHash: target.suiteHash };
+		const record: EvalRunRecord = {
+			...source,
+			evalRunId: derivedEvalRunId,
+			label: "regrade",
+			regradeOf: source.evalRunId,
+			suiteHash: target.suiteHash,
+			provenance,
+			provenanceKey: hashValue(provenance),
+			runIds: derivedRuns.map((run) => run.runId),
+			runArtifacts: derivedRuns.map((run) => ({ runId: run.runId, sha256: hashValue(run) })),
+			summary: {
+				total: derivedRuns.length,
+				pass: 0,
+				fail: derivedRuns.length,
+				error: 0,
+				allPassRate: 0,
+			},
+		};
+		writeEvalRun(runsRoot, record);
+		return { record, source, flips: [], judge: { calls: 0, tokens: 0, costUsd: 0 }, sealed: false };
+	};
+}
+
+/**
+ * The re-score where it was impossible: a candidate is on screen, its verdict
+ * rests on a judge the operator has just called too lenient, and the rubric
+ * they rewrote has to be read against answers that are already paid for.
+ *
+ * Both arms or nothing: re-scoring only the candidate would compare it against
+ * a baseline that never faced the new rule.
+ */
+describe("re-scoring what a candidate is being judged on", () => {
+	let fixture: CycleFixture | undefined;
+	/** Every call the Workbench made to the regrade engine, in order. */
+	const calls: { evalRunId: string; suiteHash: string }[] = [];
+	const reviewGate = gate();
+	let revision: Awaited<ReturnType<AhdeWorkbench["submit"]>>;
+	let regraded: Extract<WorkbenchDecisionResult, { kind: "regrade" }>;
+
+	/** The rubric the operator hardened after reading the candidate's evidence. */
+	const HARDENED: GraderSpec[] = [{ type: "output_matches", pattern: "^30 calendar days$" }];
+
+	beforeAll(async () => {
+		fixture = await terminalCandidateFixture(
+			"evaluated",
+			{ regradeEvalRun: failingRegrade(calls) },
+			// The recorded comparison the operator is arguing with: the baseline
+			// failed the one case and the candidate passed it.
+			{ baseline: "fail", candidate: "pass" },
+		);
+		const draft = listBuilderCorpusDrafts(fixture.stateRoot, PROJECT_ID)[0]!;
+		revision = await fixture.workbench.submit({
+			kind: "corpus-revision",
+			operations: [{ type: "set-graders", taskId: draft.tasks[0]!.id, graders: HARDENED }],
+			revisionSummary: "The judge was too lenient: demand the exact policy wording",
+		});
+		const decision = await fixture.workbench.decide(
+			{ kind: "regrade", graders: "draft", reason: "Re-score the recorded answers on the hardened rubric" },
+			reviewGate,
+		);
+		if (decision.kind !== "regrade") throw new Error("expected a regrade decision");
+		regraded = decision;
+	}, SUITE_TIMEOUT_MS);
+
+	afterAll(() => {
+		cleanupPaths(fixture);
+	});
+
+	it("says what the revision is for, right where publishing is impossible", () => {
+		expect(revision.view.stage).toBe("candidate-review");
+		expect(revision.message).toBe(
+			"New immutable corpus-draft revision saved. " +
+			"A candidate is under review, so this revision is not published yet: request `regrade` to re-score " +
+			"the recorded answers of both arms (judge only). " +
+			"Publishing waits until the candidate is shipped or rejected.",
+		);
+	});
+
+	it("re-scores both arms with one rubric, in comparison order", () => {
+		expect(calls.map((call) => call.evalRunId)).toEqual([
+			DEVELOPMENT_BASELINE_EVAL,
+			DEVELOPMENT_CANDIDATE_EVAL,
+		]);
+		// One plan, one scoring identity: that is what keeps the two arms
+		// comparable with each other and out of the basket they came from.
+		expect(new Set(calls.map((call) => call.suiteHash)).size).toBe(1);
+	});
+
+	it("prices both arms in the one question it asks", () => {
+		const confirmation = reviewGate.confirm.mock.calls[0]?.[0];
+		expect(confirmation?.kind).toBe("regrade");
+		expect(confirmation?.subject).toMatchObject({
+			operation: "regrade",
+			graders: "draft",
+			changedGraders: 1,
+			targetExecutions: 0,
+			sources: [
+				{ evalRunId: DEVELOPMENT_BASELINE_EVAL, runs: 1 },
+				{ evalRunId: DEVELOPMENT_CANDIDATE_EVAL, runs: 1 },
+			],
+		});
+		expect(confirmation?.question).toContain("2 recorded answers");
+		expect(confirmation?.estimate?.executions).toBe(2);
+	});
+
+	it("reports the comparison before and after, and says the exam did not move", () => {
+		expect(regraded.message).toBe(
+			"Re-scored 2 recorded answers across both development arms with the revised graders: " +
+			"development 0% → 100% became 0% → 0%. The Target was not called; only the judge was paid. " +
+			"Both development arms were re-scored with the same revised graders, so they still compare; " +
+			"the sealed exam is untouched, because its graders belong to the judge and stay evaluator-only. " +
+			"This is a re-score, not a new baseline.",
+		);
+		// The result is the candidate arm, carrying the arm it is measured against.
+		expect(regraded.result.sourceEvalRunId).toBe(DEVELOPMENT_CANDIDATE_EVAL);
+		expect(regraded.result.passRateBefore).toBe(1);
+		expect(regraded.result.passRateAfter).toBe(0);
+		expect(regraded.result.pairedBaseline).toMatchObject({
+			sourceEvalRunId: DEVELOPMENT_BASELINE_EVAL,
+			passRateBefore: 0,
+			passRateAfter: 0,
+			nowPassing: 0,
+			nowFailing: 0,
+			unchanged: 1,
+		});
+		expect(regraded.result.nowFailing).toBe(1);
+		expect(regraded.result.targetExecutions).toBe(0);
+		expect(regraded.view.stage).toBe("candidate-review");
+	});
+
+	it("carries the re-score onto the candidate review, in both languages", async () => {
+		const view = await fixture!.workbench.view({ aspect: "review" });
+		if (view.detail?.aspect !== "review" || view.detail.content.kind !== "candidate") {
+			throw new Error("expected the candidate review");
+		}
+		const content = view.detail.content;
+		expect(content.regraded).toMatchObject({
+			baselineEvalRunId: expect.stringContaining("erun_regrade_"),
+			candidateEvalRunId: expect.stringContaining("erun_regrade_"),
+			baselinePassRate: 0,
+			candidatePassRate: 0,
+			nowPassing: 0,
+			nowFailing: 1,
+			unchanged: 1,
+		});
+		try {
+			setLanguage("en");
+			const english = renderCandidate(content, plainPaint);
+			// Beside the recorded verdict, never instead of it.
+			expect(english).toContain("Development baseline 0% → candidate 100% (+100 pts) on 15 tasks · score 0% → 100%");
+			expect(english).toContain("On the new rubric development 0% → 100% became 0% → 0% (↑0 ↓1 =1) · exam unchanged");
+			setLanguage("ru");
+			expect(renderCandidate(content, plainPaint)).toContain(
+				"На новой рубрике разработка 0% → 100% стало 0% → 0% (↑0 ↓1 =1) · экзамен без изменений",
+			);
+		} finally {
+			setLanguage(null);
+		}
+	});
+
+	it("re-scores one run when the operator names one that is not an arm", async () => {
+		const before = calls.length;
+		const named = await fixture!.workbench.decide(
+			{ kind: "regrade", graders: "draft", evalRunId: fixture!.evalRunId, reason: "Re-score that other run" },
+			gate(),
+		);
+		if (named.kind !== "regrade") throw new Error("expected a regrade decision");
+		expect(calls.slice(before).map((call) => call.evalRunId)).toEqual([fixture!.evalRunId]);
+		expect(named.result.pairedBaseline).toBeUndefined();
+		expect(named.message).toContain("Re-scored 1 recorded answer with the revised graders");
+	});
+
+	it("refuses to publish the revision here, and names the door", async () => {
+		await expect(fixture!.workbench.decide(
+			{ kind: "publish-corpus", reason: "Publish the hardened basket" },
+			gate(),
+		)).rejects.toThrow(/request `regrade`, which re-scores the recorded answers of both development arms/);
 	});
 });
