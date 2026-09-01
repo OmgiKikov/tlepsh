@@ -1974,6 +1974,20 @@ describe("sanitization", () => {
 		}), plainPaint).join("\n");
 		expectClean(traces);
 		expect(traces).toContain("safetext more end was never called");
+		// A tool name is authored outside the host, so it is redacted like any
+		// other borrowed string before it becomes a title.
+		const credential = renderTraces(makeTraces({
+			modes: [makeMode({
+				signature: {
+					kind: "grader-check",
+					checkCode: "required-tool",
+					subject: "sk-toolnamesecret1234567890",
+					discriminatorHash: HASH,
+				},
+			})],
+		}), plainPaint).join("\n");
+		expect(credential).not.toContain("sk-toolnamesecret1234567890");
+		expect(credential).toContain("REDACTED_API_KEY");
 		const target = renderTarget({
 			...targetContext,
 			resources: [{ kind: "skill", name: "x", path: `skills/${OSC}x`, mode: "100644", bytes: 1, sha256: HASH }],

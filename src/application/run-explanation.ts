@@ -41,6 +41,8 @@ export const MAX_ANSWER_CHARS = 8_000;
 export const MAX_INPUT_PREVIEW_TASKS = 500;
 /** Characters of a quoted reply shown beside a failure mode. */
 const MAX_EXCERPT_REPLY_CHARS = 240;
+/** Characters of a tool name shown inside a failure mode's title. */
+const MAX_NAMED_SUBJECT_CHARS = 100;
 /** Tool names named in one explanation. */
 const MAX_NAMED_TOOLS = 6;
 /** Characters of any single quoted fragment inside an explanation. */
@@ -707,7 +709,7 @@ export function failureModeReading(
 			: signature.checkCode === null
 				? t("mode.title.legacy")
 				: signature.checkCode === "required-tool" && signature.subject
-					? t("mode.title.required-tool-named", { tool: signature.subject })
+					? t("mode.title.required-tool-named", { tool: quote(signature.subject, MAX_NAMED_SUBJECT_CHARS) })
 					: t(CHECK_TITLE_KEY[signature.checkCode]);
 	const clauses = mode.observations.map((item) =>
 		t(OBSERVATION_KEY[item.code], { runs: item.runs, observed: mode.observedRuns }));

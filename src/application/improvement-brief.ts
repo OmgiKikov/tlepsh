@@ -560,7 +560,12 @@ function modeTitle(mode: ModeAccumulator, scope: FailureMode["scope"]): string {
 			: mode.category === "output-contract"
 				? "Output contract check failed"
 				: "Semantic rubric check failed");
-	const named = mode.signature.subject ? `${base}: ${mode.signature.subject}` : base;
+	// A tool name is authored outside this module; it is redacted before it
+	// becomes prose, exactly as a task id is.
+	const subject = mode.signature.subject
+		? boundedRedacted(mode.signature.subject, MAX_CHECK_SUBJECT_CHARS).trim()
+		: "";
+	const named = subject ? `${base}: ${subject}` : base;
 	return scope === "systemic" ? `${named} across tasks` : named;
 }
 
