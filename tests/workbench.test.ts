@@ -1371,7 +1371,7 @@ describe("AHDE Workbench", () => {
 		expect(persisted.result.proposal?.diagnoses).toEqual([expect.objectContaining({
 			failureIds: selection.failureModeIds,
 			evidence: [`eval:${evaluation.evalRunId}/run:run-${evaluation.evalRunId}`],
-			rootCause: expect.stringMatching(/^Host-derived hypothesis \(not proven\):/),
+			rootCause: expect.stringMatching(/^Host-derived from the cited traces \(what happened, not why\):/),
 		})]);
 
 		writeFileSync(join(paths.projectDir, "AGENTS.md"), "# A later live Target change\n", "utf8");

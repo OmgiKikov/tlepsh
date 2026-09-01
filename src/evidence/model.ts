@@ -5,6 +5,8 @@ import { candidateRecordPath, loadCandidateRecord } from "../application/candida
 import {
 	candidateFlip,
 	explainRun,
+	failureModeExcerpt,
+	failureModeReading,
 	graderFindings,
 	openRunTrace,
 	runScore,
@@ -211,19 +213,25 @@ export function collectEvalPage(
 	for (const row of allRows) {
 		for (const id of row.failureModeIds) runCountByMode.set(id, (runCountByMode.get(id) ?? 0) + 1);
 	}
-	const modes: EvalPageMode[] = brief.modes.map((mode) => ({
+	const modes: EvalPageMode[] = brief.modes.map((mode) => {
+		const reading = failureModeReading(mode);
+		const first = mode.evidence[0];
+		const excerpt = first ? failureModeExcerpt(first) : null;
+		return {
 		id: mode.failureModeId,
-		title: mode.title,
+		title: reading.title,
 		scope: mode.scope,
 		severity: mode.severity,
 		decision: mode.decision,
-		hypothesis: mode.hypothesis,
+		facts: reading.facts,
+		excerpt: excerpt === null || !first ? null : `${first.taskId} · ${excerpt}`,
 		affectedTasks: mode.impact.affectedTasks,
 		totalTasks: mode.impact.totalTasks,
 		reproductionBps: mode.impact.reproductionBps,
 		runCount: runCountByMode.get(mode.failureModeId) ?? 0,
 		href: `/evals/${encodeURIComponent(evalRunId)}?mode=${encodeURIComponent(mode.failureModeId)}`,
-	}));
+		};
+	});
 
 	const outcomeFilter = options.query?.outcome ?? null;
 	const modeFilter = options.query?.mode ?? null;

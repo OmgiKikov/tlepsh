@@ -19,6 +19,7 @@ import {
 	axisDifferences,
 	canonicalJson,
 	hashValue,
+	MAX_CHECK_SUBJECT_CHARS,
 	provenanceAxes,
 	provenanceKey,
 	ProvenanceAxesSchema,
@@ -986,6 +987,11 @@ export async function gradeRun(
 			name: graderName(normalizedSpec, task, index),
 			specHash: hashValue(normalizedSpec),
 			checkCode: graderCheckCode(normalizedSpec.type),
+			// The one part of a required-tool check that is not task wording: two
+			// tasks asking for the same tool are asking for the same behaviour.
+			...(normalizedSpec.type === "tool_called" && normalizedSpec.tool.length <= MAX_CHECK_SUBJECT_CHARS
+				? { checkSubject: normalizedSpec.tool }
+				: {}),
 		});
 	}
 	return { graders: results, judge: judgeCalled ? judgeSpend : null };

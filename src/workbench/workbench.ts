@@ -674,6 +674,7 @@ function conversationalImprovementBrief(brief: ImprovementBrief): WorkbenchImpro
 	const modes = brief.modes.slice(0, MAX_CONVERSATION_MODES).map((mode, index) => ({
 		ordinal: index + 1,
 		failureModeId: mode.failureModeId,
+		signature: mode.signature,
 		category: mode.category,
 		scope: mode.scope,
 		severity: mode.severity,
@@ -682,15 +683,20 @@ function conversationalImprovementBrief(brief: ImprovementBrief): WorkbenchImpro
 		selectableForProposal: brief.proposalEligible && mode.decision === "propose-harness-change",
 		title: mode.title.slice(0, 500),
 		summary: mode.summary.slice(0, 1_000),
-		hypothesis: mode.hypothesis.slice(0, 1_000),
+		facts: mode.facts.slice(0, 1_000),
+		observations: mode.observations,
+		observedRuns: mode.observedRuns,
 		suggestions: mode.suggestions.slice(0, 2).map((item) => item.slice(0, 500)),
 		impact: mode.impact,
 		taskIds: mode.taskIds.slice(0, 5),
+		// The raw excerpt travels with the evidence: a Builder that reads this
+		// projection reads what the Target called and said, not only that it failed.
 		evidence: mode.evidence.slice(0, 3).map((item) => ({
 			runId: item.runId,
 			taskId: item.taskId,
 			traceAvailable: item.traceAvailable,
 			graderNames: item.graderNames.slice(0, 3),
+			excerpt: item.excerpt,
 		})),
 		omittedEvidenceCount: mode.omittedEvidenceCount + Math.max(0, mode.evidence.length - 3),
 	}));

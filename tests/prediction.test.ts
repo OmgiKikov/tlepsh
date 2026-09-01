@@ -374,7 +374,7 @@ function targetedMode(overrides: Partial<TargetedModeImpact> = {}): TargetedMode
 	return {
 		failureModeId: MODE_A,
 		modeSha256: HASH,
-		signature: { kind: "grader-check", checkCode: "required-tool", discriminatorHash: HASH },
+		signature: { kind: "grader-check", checkCode: "required-tool", subject: "lookup", discriminatorHash: HASH },
 		category: "tool-selection",
 		outcome: "improved",
 		baseline: { failedOccurrences: 26, totalOccurrences: 26, failureRateBps: 10_000 },
@@ -432,6 +432,8 @@ function impactOf(modes: TargetedModeImpact[]): CandidateImpact {
 			basisSha256: HASH,
 			targetedFailureModes: modes,
 		},
+		families: [],
+		omittedFamilyCount: 0,
 		newFailureModes: [],
 		omittedNewFailureModeCount: 0,
 		worsenedFailureModes: [],

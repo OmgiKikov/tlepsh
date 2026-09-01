@@ -211,6 +211,8 @@ export interface WorkbenchDiagnosisSummary {
 export interface WorkbenchFailureModeProjection {
 	ordinal: number;
 	failureModeId: string;
+	/** The family this mode is: what the check was, and what it named. */
+	signature: ImprovementBrief["modes"][number]["signature"];
 	category: ImprovementBrief["modes"][number]["category"];
 	scope: ImprovementBrief["modes"][number]["scope"];
 	severity: ImprovementBrief["modes"][number]["severity"];
@@ -219,11 +221,14 @@ export interface WorkbenchFailureModeProjection {
 	selectableForProposal: boolean;
 	title: string;
 	summary: string;
-	hypothesis: string;
+	/** What the cited traces show, in canonical English; screens re-say it. */
+	facts: string;
+	observations: ImprovementBrief["modes"][number]["observations"];
+	observedRuns: number;
 	suggestions: string[];
 	impact: ImprovementBrief["modes"][number]["impact"];
 	taskIds: string[];
-	evidence: { runId: string; taskId: string; traceAvailable: boolean; graderNames: string[] }[];
+	evidence: ImprovementBrief["modes"][number]["evidence"];
 	omittedEvidenceCount: number;
 }
 

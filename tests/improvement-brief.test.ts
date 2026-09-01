@@ -11,6 +11,8 @@ import {
 	ProposalBasisSelectionSchema,
 	compileImprovementBrief,
 	deriveEvidenceLinkedProposalSelection,
+	graderFamilyDiscriminator,
+	graderFamilyModeId,
 } from "../src/application/improvement-brief.js";
 import {
 	RunRecordSchema,
@@ -53,6 +55,10 @@ interface RunInput {
 	graders?: GraderResult[];
 	error?: string;
 	trace?: boolean;
+	/** Tools the Target called in this run, in order. */
+	toolCalls?: string[];
+	/** The last thing the Target said. */
+	reply?: string;
 }
 
 interface FixtureOptions {
@@ -82,6 +88,7 @@ function exactGrader(options: {
 	name?: string;
 	type?: string;
 	reason?: string;
+	checkSubject?: string;
 }): GraderResult {
 	return {
 		name: options.name ?? "required-answer",
@@ -91,6 +98,7 @@ function exactGrader(options: {
 		reason: options.reason ?? (options.passed ? "required answer present" : "required answer missing"),
 		specHash: options.specHash,
 		checkCode: options.checkCode ?? "output-contains",
+		...(options.checkSubject === undefined ? {} : { checkSubject: options.checkSubject }),
 	};
 }
 
@@ -125,10 +133,26 @@ function fixture(options: FixtureOptions): {
 		mkdirSync(runDir, { recursive: true });
 		let traceHash: string | null = null;
 		if (input.trace) {
-			const trace = `${JSON.stringify({
-				type: "message",
-				message: { role: "assistant", content: [{ type: "text", text: `answer:${runId}` }] },
-			})}\n`;
+			const calls = (input.toolCalls ?? []).map((name, callIndex) => ({
+				type: "toolCall",
+				id: `call-${callIndex}`,
+				name,
+				arguments: {},
+			}));
+			const lines = [
+				...(calls.length === 0 ? [] : [JSON.stringify({
+					type: "message",
+					message: { role: "assistant", content: calls },
+				})]),
+				JSON.stringify({
+					type: "message",
+					message: {
+						role: "assistant",
+						content: [{ type: "text", text: input.reply ?? `answer:${runId}` }],
+					},
+				}),
+			];
+			const trace = `${lines.join("\n")}\n`;
 			writeFileSync(join(runDir, "session.jsonl"), trace);
 			traceHash = hashFile(trace);
 		}
@@ -238,7 +262,8 @@ describe("deterministic improvement brief", () => {
 		expect(mode).toMatchObject({
 			signature: {
 				checkCode: "output-contains",
-				discriminatorHash: hashValue({ checkCode: "output-contains", specHash }),
+				subject: null,
+				discriminatorHash: hashValue({ checkCode: "output-contains", subject: null }),
 			},
 			category: "output-contract",
 			scope: "systemic",
@@ -258,7 +283,7 @@ describe("deterministic improvement brief", () => {
 		});
 		expect(mode?.failureModeId).toBe(`failure-mode-${hashValue({
 			algorithmId: IMPROVEMENT_BRIEF_ALGORITHM_ID,
-			signature: { kind: "grader-check", checkCode: "output-contains", specHash },
+			signature: { kind: "grader-check", checkCode: "output-contains", subject: null },
 		}).slice(7, 31)}`);
 		expect(mode?.evidence.map((item) => item.taskId)).toEqual(["task-a", "task-b"]);
 		expect(mode?.evidence[0]?.traceAvailable).toBe(true);
@@ -487,11 +512,14 @@ describe("deterministic improvement brief", () => {
 		for (let taskIndex = 0; taskIndex < 12; taskIndex += 1) {
 			const graders: GraderResult[] = [];
 			for (let modeIndex = 0; modeIndex < 30; modeIndex += 1) {
-				const specHash = hashValue({ type: "output_contains", modeIndex });
+				const specHash = hashValue({ type: "tool_called", modeIndex });
 				for (let duplicate = 0; duplicate < 8; duplicate += 1) {
 					graders.push(exactGrader({
 						passed: false,
 						specHash,
+						checkCode: "required-tool",
+						type: "tool_called",
+						checkSubject: `tool-${modeIndex}`,
 						name: `mode-${modeIndex}-check-${duplicate}-${"n".repeat(170)}`,
 						reason: `mode ${modeIndex} failed ${"r".repeat(490)}`,
 					}));
@@ -592,7 +620,7 @@ describe("proposal basis selection", () => {
 		expect(selection.diagnoses).toEqual(brief.modes.map((mode) => ({
 			failureIds: [mode.failureModeId],
 			evidence: mode.evidence.map((item) => `eval:${brief.evalRunId}/run:${item.runId}`),
-			rootCause: `Host-derived hypothesis (not proven): ${mode.hypothesis}`,
+			rootCause: `Host-derived from the cited traces (what happened, not why): ${mode.facts}`,
 		})));
 	});
 
@@ -671,5 +699,175 @@ describe("proposal basis selection", () => {
 				{ ...brief.modes[1]!, failureModeId: id },
 			],
 		})).toThrow(/failure mode ids must be unique/);
+	});
+});
+
+/**
+ * The live ombudsman run, in miniature: six cases times three repetitions, a
+ * `check_dbo` contract on three of them, a classification keyword on five, and
+ * one judge rubric per case. The host used to report sixteen task-local modes
+ * for what a person reading the traces called in one line — no tool call, no
+ * classification, a question back to the customer.
+ */
+describe("the diagnosis a person would have written", () => {
+	const toolSpec = hashValue({ type: "tool_called", tool: "check_dbo" });
+	const rubricSpec = (task: string) => hashValue({ type: "judge", rubric: task });
+	const keywordSpec = (task: string) => hashValue({ type: "output_contains", text: task });
+
+	function contractGraders(task: string, options: { keyword: boolean; rubric: boolean }): GraderResult[] {
+		return [
+			exactGrader({
+				passed: false,
+				specHash: toolSpec,
+				checkCode: "required-tool",
+				type: "tool_called",
+				checkSubject: "check_dbo",
+				name: `${task}:tool_called:check_dbo`,
+				reason: "never called check_dbo",
+			}),
+			exactGrader({ passed: options.keyword, specHash: keywordSpec(task), name: `${task}:contains` }),
+			exactGrader({
+				passed: options.rubric,
+				specHash: rubricSpec(task),
+				checkCode: "semantic-rubric",
+				type: "judge",
+				name: `${task}:judge`,
+			}),
+		];
+	}
+
+	function answerGraders(task: string, options: { keyword: boolean; rubric: boolean }): GraderResult[] {
+		return [
+			exactGrader({ passed: options.keyword, specHash: keywordSpec(task), name: `${task}:contains` }),
+			exactGrader({
+				passed: options.rubric,
+				specHash: rubricSpec(task),
+				checkCode: "semantic-rubric",
+				type: "judge",
+				name: `${task}:judge`,
+			}),
+		];
+	}
+
+	function liveRun(): ReturnType<typeof fixture> {
+		const runs: RunInput[] = [];
+		for (let repetitionIndex = 0; repetitionIndex < 3; repetitionIndex += 1) {
+			// Three contract cases: check_dbo is required, never called, and the
+			// agent hands the question back instead of answering.
+			runs.push({
+				taskId: "task-complaint",
+				repetitionIndex,
+				trace: true,
+				reply: "Для рассмотрения жалобы уточните дату списания.\nПодготовить официальный текст?",
+				graders: contractGraders("task-complaint", { keyword: true, rubric: false }),
+			});
+			runs.push({
+				taskId: "task-closure",
+				repetitionIndex,
+				trace: true,
+				// One repetition types the tool call instead of making it.
+				reply: repetitionIndex === 0
+					? "<tool_call>\n<function=check_dbo>\n<parameter=contract_number>\nДБО-1\n</parameter>\n</function>\n</tool_call>"
+					: "Я не имею полномочий закрывать договоры.",
+				graders: contractGraders("task-closure", { keyword: repetitionIndex === 0, rubric: repetitionIndex !== 2 }),
+			});
+			runs.push({
+				taskId: "task-fee",
+				repetitionIndex,
+				trace: true,
+				// One repetition answers in a mix of scripts.
+				reply: repetitionIndex === 1
+					? "Клиент表达了不满 regarding комиссию."
+					: "Укажите файл договора, чтобы я проверил тариф.",
+				graders: contractGraders("task-fee", { keyword: true, rubric: false }),
+			});
+			// Three answer-only cases: no tool is required of them.
+			runs.push({
+				taskId: "task-question",
+				repetitionIndex,
+				trace: true,
+				toolCalls: ["bash", "read"],
+				reply: "Комиссия начисляется по тарифу. Что-нибудь ещё?",
+				graders: answerGraders("task-question", { keyword: repetitionIndex !== 0, rubric: false }),
+			});
+			runs.push({
+				taskId: "task-thanks",
+				repetitionIndex,
+				trace: true,
+				reply: "Спасибо за обращение.",
+				graders: answerGraders("task-thanks", { keyword: repetitionIndex === 2, rubric: false }),
+			});
+			// One case flips between repetitions: instability, not a defect.
+			runs.push({
+				taskId: "task-rights",
+				repetitionIndex,
+				trace: true,
+				toolCalls: ["bash"],
+				reply: "Вы вправе подать жалобу в течение 30 дней.",
+				graders: answerGraders("task-rights", { keyword: repetitionIndex !== 2, rubric: repetitionIndex !== 2 }),
+			});
+		}
+		return fixture({ repetitions: 3, evidenceVisibility: "development", runs });
+	}
+
+	it("clusters three causes across the corpus instead of one mode per case", () => {
+		const value = liveRun();
+		const brief = compileImprovementBrief(value.runsRoot, value.diagnosis);
+
+		expect(brief.modes.map((mode) => [mode.title, mode.scope, mode.impact.affectedTasks])).toEqual([
+			["Semantic rubric check failed across tasks", "systemic", 6],
+			["Output contract check failed across tasks", "systemic", 4],
+			["Required tool check failed: check_dbo across tasks", "systemic", 3],
+			["Task outcome instability", "task-local", 1],
+		]);
+		expect(brief.summary.systemicFailureModeCount).toBe(3);
+		expect(brief.summary.taskLocalFailureModeCount).toBe(1);
+		expect(brief.headline).toContain("Found 4 diagnosed failure mode(s); 3 repeat across tasks");
+	});
+
+	it("says what the traces show instead of restating the failed predicate", () => {
+		const value = liveRun();
+		const brief = compileImprovementBrief(value.runsRoot, value.diagnosis);
+		const tool = brief.modes.find((mode) => mode.signature.subject === "check_dbo")!;
+
+		expect(tool.observations).toEqual([
+			{ code: "no-tool-call", runs: 9 },
+			{ code: "tool-call-as-text", runs: 1 },
+			{ code: "asks-a-question", runs: 3 },
+			{ code: "mixed-script", runs: 1 },
+		]);
+		expect(tool.observedRuns).toBe(9);
+		expect(tool.facts).toBe(
+			"No tool was called in 9 of 9 failing runs; " +
+			"1 replies printed a tool call as text instead of making one; " +
+			"3 replies asked the user a question instead of answering; " +
+			"1 replies mixed writing systems.",
+		);
+		// Every cited run carries the raw trace it was read from.
+		expect(tool.evidence[0]).toMatchObject({
+			taskId: "task-closure",
+			excerpt: {
+				toolNames: [],
+				reply: expect.stringContaining("<function=check_dbo>"),
+				observations: ["no-tool-call", "tool-call-as-text"],
+			},
+		});
+		expect(tool.evidence.every((item) => item.excerpt !== null)).toBe(true);
+		// A mode that is not about tools still quotes what the agent said.
+		const rubric = brief.modes.find((mode) => mode.signature.checkCode === "semantic-rubric")!;
+		expect(rubric.evidence.some((item) => item.excerpt?.toolNames.includes("bash"))).toBe(true);
+	});
+
+	it("keeps the failure mode id a stable function of the family alone", () => {
+		const value = liveRun();
+		const brief = compileImprovementBrief(value.runsRoot, value.diagnosis);
+		const tool = brief.modes.find((mode) => mode.signature.subject === "check_dbo")!;
+
+		expect(tool.failureModeId).toBe(graderFamilyModeId({ checkCode: "required-tool", subject: "check_dbo" }));
+		expect(tool.signature.discriminatorHash)
+			.toBe(graderFamilyDiscriminator({ checkCode: "required-tool", subject: "check_dbo" }));
+		// A second tool is a second defect, never the same one.
+		expect(graderFamilyModeId({ checkCode: "required-tool", subject: "search" }))
+			.not.toBe(tool.failureModeId);
 	});
 });

@@ -411,7 +411,7 @@ describe("the host's plain-language account of one run", () => {
 			facts: null,
 			modes: [{
 				failureModeId: "failure-mode-" + "0".repeat(24),
-				signature: { kind: "grader-check", checkCode: "output-contains", discriminatorHash: `sha256:${"b".repeat(64)}` },
+				signature: { kind: "grader-check", checkCode: "output-contains", subject: null, discriminatorHash: `sha256:${"b".repeat(64)}` },
 				category: "output-contract",
 				scope: "task-local",
 				severity: "major",
@@ -419,7 +419,9 @@ describe("the host's plain-language account of one run", () => {
 				decision: "propose-harness-change",
 				title: "Output contract check failed",
 				summary: "one task",
-				hypothesis: "The same deterministic grader predicate was unsatisfied.",
+				facts: "No tool was called in 1 of 1 failing runs.",
+				observations: [{ code: "no-tool-call" as const, runs: 1 }],
+				observedRuns: 1,
 				suggestions: ["define the answer fields"],
 				impact: {
 					affectedTasks: 1,
@@ -430,7 +432,13 @@ describe("the host's plain-language account of one run", () => {
 					reproductionBps: 5_000,
 				},
 				taskIds: ["task-1"],
-				evidence: [{ runId: run.runId, taskId: "task-1", traceAvailable: true, graderNames: ["contains"] }],
+				evidence: [{
+					runId: run.runId,
+					taskId: "task-1",
+					traceAvailable: true,
+					graderNames: ["contains"],
+					excerpt: { toolNames: [], reply: "нет договора", observations: ["no-tool-call" as const] },
+				}],
 				counterEvidence: [],
 				evidenceNotes: [],
 				omittedEvidenceCount: 0,
@@ -446,12 +454,12 @@ describe("the host's plain-language account of one run", () => {
 				candidateTotal: 2,
 			}),
 		});
-		expect(explanation.failureModes[0]?.isHypothesis).toBe(true);
 		expect(explanation.sentences).toContain(
-			'This run is evidence for the failure mode “Output contract check failed” (task-local, major, 1 of 4 task(s), 50% reproduction).',
+			'This run is evidence for the failure mode “The answer missed a required element” (task-local, major, 1 of 4 task(s), 50% reproduction).',
 		);
+		// The host says what the traces show, counted, instead of a template hypothesis.
 		expect(explanation.sentences).toContain(
-			"Hypothesis, not proof: The same deterministic grader predicate was unsatisfied.",
+			"What the traces show: No tool was called in 1 of 1 failing runs.",
 		);
 		expect(explanation.sentences.at(-1)).toBe(
 			"A/A calibration candidate-aa re-ran this task: failed → passed (improved; baseline 0/2, candidate 2/2).",

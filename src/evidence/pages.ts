@@ -136,6 +136,7 @@ section{margin:0 0 26px}
 .hyp b{color:var(--error)}
 .modes{list-style:none;margin:0;padding:0;display:grid;gap:8px}
 .modes li{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:11px 13px}
+.modes .excerpt{color:var(--muted);margin:6px 0 0;font-size:12px;word-break:break-word}
 .modes .row,.rowline{display:flex;gap:10px;align-items:baseline;justify-content:space-between;flex-wrap:wrap}
 .errpre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font:12.5px/1.6 var(--mono)}
 .turn{border:1px solid var(--line);border-radius:var(--radius);margin:0 0 9px;background:var(--surface);overflow:hidden}
@@ -291,7 +292,10 @@ export interface EvalPageMode {
 	scope: string;
 	severity: string;
 	decision: string;
-	hypothesis: string;
+	/** What the cited traces show, in the operator's language. */
+	facts: string;
+	/** One raw excerpt behind the mode: what was called, and what was said. */
+	excerpt: string | null;
 	affectedTasks: number;
 	totalTasks: number;
 	reproductionBps: number;
@@ -347,7 +351,8 @@ export function renderEvalPage(model: EvalPageModel): string {
 		: `<ul class="modes">${model.modes.map((mode) => `<li>
 <div class="row"><h3><a href="${h(mode.href)}">${h(mode.title)}</a></h3><span class="count">${h(t("explorer.mode-count", { runs: mode.runCount, affected: mode.affectedTasks, total: mode.totalTasks, reproduction: Math.round(mode.reproductionBps / 100) }))}</span></div>
 <div class="pills"><span class="pill">${h(mode.scope)}</span><span class="pill">${h(mode.severity)}</span><span class="pill">${h(mode.decision)}</span></div>
-<p class="hyp"><b>Hypothesis, not proof.</b> ${h(mode.hypothesis)}</p>
+<p class="hyp">${h(mode.facts)}</p>
+${mode.excerpt ? `<p class="excerpt mono">${h(mode.excerpt)}</p>` : ""}
 </li>`).join("")}</ul>`;
 
 	const candidates = model.candidates.length === 0
@@ -495,7 +500,7 @@ function renderWhy(explanation: RunExplanation): string {
 	}).join("");
 	const modes = explanation.failureModes.map((mode) =>
 		`<p>This run is evidence for the failure mode “${h(mode.title)}” (${h(mode.scope)}, ${h(mode.severity)}, ${mode.affectedTasks} of ${mode.totalTasks} task(s), ${Math.round(mode.reproductionBps / 100)}% reproduction).</p>`
-		+ `<p class="hyp"><b>Hypothesis, not proof:</b> ${h(mode.hypothesis)}</p>`).join("");
+		+ `<p class="hyp">${h(t("why.facts", { facts: mode.facts }))}</p>`).join("");
 	const flip = explanation.flip
 		? `<p>${h(flipSubject(explanation.flip))} <span class="mono">${h(explanation.flip.candidateId)}</span> re-ran this task: <span class="${explanation.flip.direction === "improved" ? "up" : explanation.flip.direction === "regressed" ? "down" : "same"}">${h(explanation.flip.badge)} ${h(explanation.flip.before)} → ${h(explanation.flip.after)}</span> (${h(explanation.flip.direction)}; baseline ${explanation.flip.baselinePass}/${explanation.flip.baselineTotal}, candidate ${explanation.flip.candidatePass}/${explanation.flip.candidateTotal}).</p>`
 		: "";

@@ -50,7 +50,9 @@ const at = "2026-08-28T12:00:00.000Z";
 const targetId = "impact-target";
 const artifactHash = `sha256:${"d".repeat(64)}`;
 const primarySpecHash = hashValue({ type: "output_contains", text: "primary" });
-const secondarySpecHash = hashValue({ type: "output_contains", text: "secondary" });
+// Two different grader families, not two spellings of one: modes now cluster by
+// family, so a second `output_contains` check would be the same failure mode.
+const secondarySpecHash = hashValue({ type: "judge", rubric: "secondary" });
 
 interface GraderState {
 	primary: boolean;
@@ -85,7 +87,7 @@ function grader(
 ) {
 	return {
 		name,
-		type: checkCode === "required-tool" ? "tool_called" : "output_contains",
+		type: checkCode === "required-tool" ? "tool_called" : checkCode === "semantic-rubric" ? "judge" : "output_contains",
 		passed,
 		score: passed ? 1 : 0,
 		reason: passed ? `${name} passed` : `${name} failed`,
@@ -152,7 +154,7 @@ function writeEvaluation(options: {
 			: `${options.evalRunId}-${taskId}-run-${repetitionIndex}`;
 		const graders = [
 			grader("primary", state.primary, "output-contains", primarySpecHash, state.legacy ?? false),
-			grader("secondary", state.secondary, "output-contains", secondarySpecHash, state.legacy ?? false),
+			grader("secondary", state.secondary, "semantic-rubric", secondarySpecHash, state.legacy ?? false),
 		];
 		const outcome = graders.every((item) => item.passed) ? "pass" as const : "fail" as const;
 		if (outcome === "pass") pass += 1;
@@ -277,7 +279,7 @@ function fixture(options: FixtureOptions = {}) {
 		mode.signature.checkCode === "output-contains" &&
 		mode.signature.discriminatorHash === hashValue({
 			checkCode: "output-contains",
-			specHash: primarySpecHash,
+			subject: null,
 		}));
 	if (!primaryMode) throw new Error("fixture primary failure mode missing");
 	const selection = deriveEvidenceLinkedProposalSelection(brief, {
@@ -676,7 +678,7 @@ describe("CandidateImpact", () => {
 		expect(impact.verdict).toBe("regressed");
 		expect(impact.newFailureModes).toHaveLength(1);
 		expect(impact.newFailureModes[0]).toMatchObject({
-			signature: { checkCode: "output-contains" },
+			signature: { checkCode: "semantic-rubric" },
 			baseline: { failedOccurrences: 0 },
 			candidate: { failedOccurrences: 2 },
 		});
