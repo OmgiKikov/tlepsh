@@ -38,10 +38,16 @@ Consequences, enforced:
   exam grades itself twice.
 - The refusal happens before the endpoint is called, so a misconfigured Target
   spends nothing.
-- This is a host command, not a Builder tool. There is no
-  `ahde_workbench_submit` or `ahde_workbench_decide` shape for it, deliberately:
-  the model in the conversation must not be able to ask for a holdout, and the
-  operator's shell is the only surface that can.
+- The Builder may *ask* and may never *author*. `generate-holdout` is a
+  consequential Workbench decision whose entire model-facing surface is
+  `{ cases, seed?, mode }` in and `{ corpusId?, cases, generator, promptHash,
+  reviewPath? }` out. What must not happen is a Builder that has read the exam,
+  and that is a property of what comes back, not of who asked: everything
+  deciding what the exam *says* — the judge, the Spec, the example draw, the
+  corpus name — is host-owned, and nothing about a case comes back. A model
+  cannot name the exam either: every generated corpus gets the same host-fixed
+  name, because a chosen one would be a channel travelling with the corpus onto
+  every surface that lists one.
 
 ## What is recorded, and what is not
 
@@ -161,25 +167,68 @@ Two refusals protect the file:
 - Nothing here promotes, adopts, publishes a development corpus, or approves a
   Spec. It creates one sealed corpus (or one file) and one receipt.
 
-## Skill paragraph
+## Inside the loop
 
-Proposed addition for the Builder skill that owns corpus design. This repo keeps
-its Builder skills at `builders/ahde/skills/design-evals/SKILL.md` (there is no
-`skills/ahde/SKILL.md`); the paragraph belongs after step 6, "Keep development
-and sealed holdout corpora distinct." It is written here and **not** applied —
-editing `skills/**` is out of scope for this change.
+The same capability, from the Builder Pi conversation and from `/holdout`.
 
-> 6b. When the operator has no real cases to hold out and asks for a sealed exam
-> anyway, do not write one. There is no Builder surface for authoring sealed
-> content and there will not be: a model that writes the holdout has read the
-> holdout, and every later verdict on it is an echo of your own guess. Tell them
-> the host can write it with the Target's configured judge model — the same
-> model that grades an answer, already outside your context — by running
-> `ahde corpus synth --target . --sealed <N> --name "<exam name>"` in their own
-> terminal. It needs `evalSuite.judge` configured (`kind: configure-evaluators`
-> if it is not) and a Spec: `--from <file>`, `spec.md` in the Target, or the
-> approved Spec you already helped them write. Recommend `--review <path>` for a
-> first exam so they read and edit the cases before sealing them, and recommend
-> at least 15 cases, below which the sealed guardrail can only say
-> `underpowered`. You will see the corpus id, the case count, the generator
-> model and the prompt hash — never a case, and never ask for one.
+**The decision.** `ahde_workbench_decide` with
+`{ kind: "generate-holdout", cases (15..200, default 20), seed?, mode, reason }`.
+Consequential: it always asks. `cases` starts at 15 because that is
+`SEALED_GATE_POLICY.minTasks` — below it the guardrail can only ever say
+`underpowered`, so the schema refuses an exam that could not produce a verdict
+rather than spending on one. The legal stages run from `corpus-design` (where an
+approved Spec first exists) to `candidate-verification` (where a missing exam
+finally stops the operator).
+
+Everything else is host-owned: the manifest's judge, the approved Spec the host
+reads, the seeded draw of published development cases, and the corpus name —
+one name for every generated exam, because a name is the one part of a corpus a
+model could choose and it would travel with the corpus onto every surface that
+lists one.
+
+**The dialog** is the plan, not the exam. `planSealedSynthesis` runs the same
+preflight as the generation that follows it and returns coordinates, counts and
+hashes plus a cost from the judge's declared rates; that object *is* the subject
+the hash covers, and it is planned again after the dialog and compared, so what
+gets asked is what the human approved. Four lines and, on the draft path, a
+fifth:
+
+```
+Экзамен       20 кейсов · генерирует судья openrouter/anthropic/claude-sonnet-4.5
+Источник      описание агента + 5 примеров из тестов (только форма)
+              Builder содержимого не увидит; в разговор попадёт только число кейсов
+Стоимость     ~$0.12
+Черновик      — в файл вне репо; правишь и импортируешь через /holdout
+```
+
+**`mode: "review"`** writes the draft into
+`<state-root>/projects/<id>/sealed-synth/review-<hash>.jsonl`, 0600. That is
+inside the Target directory when the state root is `.ahde/`, which the CLI's
+review guard refuses — relaxed by exactly one directory, on the argument that
+the sealed corpora themselves already live under the state root: a draft beside
+them is no more exposed than the exams it is about to become. Everywhere else
+inside the Target stays refused, for the reason it always was.
+
+**`/holdout`** now opens with one question — import a file, generate with the
+judge, generate a draft to review — and routes the last two into the decision.
+The ship-gate header names the second route only where there is no exam at all;
+an underpowered or unavailable one is repaired, not replaced by a guess.
+
+**Provenance.** The passport's data line says
+`sealed exam (20 cases, generated by the judge, sealed unreviewed)`, or
+`… reviewed by the operator` when the sealed corpus came from a draft somebody
+read. The reviewed case is recorded at import — `/holdout`, or the
+`ahde corpus import` this document already recommends — because that is the only
+moment both facts are in one place. It is read back by corpus id, which the
+passport compiler already holds and still does not print. An exam the operator
+brought records nothing: its provenance is theirs.
+
+## The Builder's own rule
+
+`builders/ahde/AGENTS.md` and `builders/ahde/skills/design-evals/SKILL.md` carry
+it. The short form: when the operator has no real cases to hold out, the Builder
+offers the judge once, in one sentence, with both modes in it — «Экзамена нет.
+Могу попросить судью сгенерировать 20 закрытых кейсов из описания (я их не
+увижу), или сделать черновик тебе на правку — что выбираешь?» — and never
+offers it instead of real cases they already have. It still never authors,
+reads, edits, or guesses a sealed case. Asking is not reading.

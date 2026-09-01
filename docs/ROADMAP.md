@@ -234,7 +234,11 @@ branch; the closed-loop Pi test passes with exactly three confirmations.
     an immutable sealed corpus, or with `--review <path>` into one 0600 file
     outside the Target tree for the human to edit and seal. Printed output is
     the corpus id, the case count, the generator model and the prompt hash; the
-    receipt records fingerprints, hashes, ids and counts and no case content
+    receipt records fingerprints, hashes, ids and counts and no case content.
+    The same capability is reachable from inside the loop as the consequential
+    `generate-holdout` decision — `{ cases, seed?, mode }` in, `{ corpusId?,
+    cases, generator, promptHash, reviewPath? }` out — and from `/holdout`,
+    whose first question is now where the exam should come from
     (`docs/SEALED_SYNTH.md`, old item 3).
 
 11b. **The proposer remembers what was already tried** — *landed*.
