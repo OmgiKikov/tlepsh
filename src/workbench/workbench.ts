@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync, rmSync } from "node:fs";
 import { userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { plural as localizedCount, t } from "../i18n.js";
 import {
 	appendJsonlArtifact,
 	readJsonArtifact,
@@ -828,7 +829,7 @@ export class AhdeWorkbench {
 		abortIfRequested(signal);
 		const exact = boundedSubject(subject, input.kind);
 		let policy = workbenchGateClass(input.kind);
-		let question = presentation.question ?? `${title}?`;
+		let question = presentation.question ?? t("confirm.question", { title });
 		// The guard is the only thing that can turn a routine decision back into a
 		// question: an unusually expensive or entirely unknown run that nobody has
 		// already approved the price of.
@@ -836,7 +837,7 @@ export class AhdeWorkbench {
 			const guard = routineCostGuard(presentation.estimate, process.env, presentation.authorized);
 			if (guard) {
 				policy = "one-question";
-				question = `${question} ${capitalize(guard)}. Continue?`;
+				question = t("confirm.cost-guard", { question, guard: capitalize(guard) });
 			}
 		}
 		const confirmation: WorkbenchConfirmation = {
@@ -1028,9 +1029,14 @@ export class AhdeWorkbench {
 		const executions = caseCount * input.repetitions;
 		const estimate = corpusDraft ? this.runEstimate(executions, inventory.target) : undefined;
 		const parts: string[] = [];
-		if (specDraft) parts.push("approve the Spec");
-		if (corpusDraft) parts.push("publish the eval basket", `run ${executions} Target execution${executions === 1 ? "" : "s"}`);
-		const title = `Start testing — ${parts.join(", ")}`;
+		if (specDraft) parts.push(t("confirm.start-testing.part.approve-spec"));
+		if (corpusDraft) {
+			parts.push(
+				t("confirm.start-testing.part.publish-corpus", { cases: localizedCount(caseCount, "case") }),
+				t("confirm.start-testing.part.run", { runs: localizedCount(executions, "execution") }),
+			);
+		}
+		const title = t("confirm.start-testing.title", { parts: parts.join(", ") });
 		const subject = {
 			operation: "start-testing",
 			steps: plan,
@@ -1055,7 +1061,7 @@ export class AhdeWorkbench {
 			},
 		};
 		const actor = await this.confirm(input, gate, title, subject, options.signal, {
-			question: `${title}?`,
+			question: t("confirm.question", { title }),
 			...(estimate ? { estimate } : {}),
 		});
 		const scoped = this.compositeGate(gate, actor, planned);
@@ -1183,8 +1189,8 @@ export class AhdeWorkbench {
 				: null,
 			candidate: summary,
 		};
-		const title = version ? `Ship candidate as v${version}` : "Ship this candidate";
-		const actor = await this.confirm(input, gate, title, subject, options.signal, { question: `${title}?` });
+		const title = version ? t("confirm.ship.title", { version }) : t("confirm.ship.title-untagged");
+		const actor = await this.confirm(input, gate, title, subject, options.signal, { question: t("confirm.question", { title }) });
 		const scoped = this.compositeGate(gate, actor, planned);
 		const steps: WorkbenchCompositeStep[] = [];
 		let shipped = summary;
@@ -2612,7 +2618,7 @@ export class AhdeWorkbench {
 				candidate: candidateSummary(candidate),
 			};
 			const actor = await this.confirm(input, gate, "Abandon interrupted candidate attempt", before, options.signal, {
-				question: "Abandon this interrupted attempt? The applied proposal can be verified again.",
+				question: t("confirm.abandon-candidate"),
 			});
 			const current = this.decisionInventory(input.kind);
 			if (current.abandonedCandidates.has(candidate.candidateId)) throw new WorkbenchStaleDecisionError(input.kind);
@@ -2802,7 +2808,7 @@ export class AhdeWorkbench {
 			};
 			const before = build();
 			await this.confirm(input, gate, "Run exact development evaluation", before.subject, options.signal, {
-				question: `Run ${Number(before.subject.taskCount) * input.repetitions} Target executions on the reviewed basket?`,
+				question: t("confirm.run-eval", { runs: localizedCount(Number(before.subject.taskCount) * input.repetitions, "execution") }),
 				estimate: this.runEstimate(Number(before.subject.taskCount) * input.repetitions, inventory.target),
 			});
 			const after = build();
@@ -2864,7 +2870,7 @@ export class AhdeWorkbench {
 			};
 			const before = build();
 			const actor = await this.confirm(input, gate, "Calibrate run-to-run noise", before.subject, options.signal, {
-				question: `Measure noise with ${Number(before.subject.executions)} Target executions?`,
+				question: t("confirm.calibrate", { runs: localizedCount(Number(before.subject.executions), "execution") }),
 				estimate: this.runEstimate(Number(before.subject.executions), inventory.target),
 			});
 			const after = build();
@@ -2905,7 +2911,7 @@ export class AhdeWorkbench {
 			// subject: it is read from finished runs and would otherwise turn a
 			// concurrent run into a stale-decision refusal.
 			const verification = this.verificationEstimate(proposal.record, inventory);
-			const actor = await this.confirm(input, gate, "Apply exact Builder proposal", before, options.signal, {
+			const actor = await this.confirm(input, gate, t("confirm.apply-proposal.title"), before, options.signal, {
 				estimate: verification,
 			});
 			const current = this.decisionInventory(input.kind);
@@ -2921,7 +2927,7 @@ export class AhdeWorkbench {
 			const proposal = requireProposal(inventory, ["open", "discard-pending"], input.runId);
 			const before = this.dependencies.describeProposalDiscard(this.runsRoot, proposal.record.runId);
 			const actor = await this.confirm(input, gate, "Discard exact Builder proposal", before, options.signal, {
-				question: "Discard this proposal? It can never be applied later.",
+				question: t("confirm.discard-proposal"),
 			});
 			const current = this.decisionInventory(input.kind);
 			requireProposal(current, ["open", "discard-pending"], proposal.record.runId);
@@ -3277,7 +3283,7 @@ export class AhdeWorkbench {
 			const needsReview = candidateStatus(candidate) === "evaluated";
 			const before = { operation: "reject-candidate", candidateHash: hashValue(candidate), candidate: this.candidateView(candidate) };
 			const actor = await this.confirm(input, gate, "Reject exact candidate", before, options.signal, {
-				question: "Reject this candidate? The agent stays at its baseline.",
+				question: t("confirm.reject-candidate"),
 			});
 			const current = this.decisionInventory(input.kind);
 			if (hashValue(requireCandidate(current, ["evaluated", "reviewed"], candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);

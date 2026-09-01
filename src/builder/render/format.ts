@@ -1,3 +1,4 @@
+import { t } from "../../i18n.js";
 import { sanitizeTerminalText } from "../../trace.js";
 import { stripMarkers } from "./markers.js";
 import type { Paint } from "./paint.js";
@@ -43,7 +44,7 @@ export function percent(rate: number): string {
 export function points(delta: number): string {
 	if (!Number.isFinite(delta)) return "—";
 	const value = Math.round(delta * 1000) / 10;
-	return `${value > 0 ? "+" : ""}${value} pts`;
+	return `${value > 0 ? "+" : ""}${value} ${t("unit.points")}`;
 }
 
 export function bar(ratio: number, width = 20): string {

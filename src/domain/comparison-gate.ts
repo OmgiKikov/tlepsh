@@ -1,3 +1,4 @@
+import { t } from "../i18n.js";
 import { sha256Hex } from "../provenance.js";
 
 /**
@@ -200,9 +201,9 @@ export function formatResourceFragment(
 ): string {
 	if (!resources) return "";
 	const parts = [
-		resources.costRatio === null ? null : `cost ${formatRatio(resources.costRatio)}`,
-		resources.latencyRatio === null ? null : `latency ${formatRatio(resources.latencyRatio)}`,
-		options.tokens && resources.tokenRatio !== null ? `tokens ${formatRatio(resources.tokenRatio)}` : null,
+		resources.costRatio === null ? null : `${t("unit.cost-ratio")} ${formatRatio(resources.costRatio)}`,
+		resources.latencyRatio === null ? null : `${t("unit.latency-ratio")} ${formatRatio(resources.latencyRatio)}`,
+		options.tokens && resources.tokenRatio !== null ? `${t("unit.token-ratio")} ${formatRatio(resources.tokenRatio)}` : null,
 	].filter((part): part is string => part !== null);
 	return parts.join(" · ");
 }

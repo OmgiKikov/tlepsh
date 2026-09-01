@@ -1,3 +1,4 @@
+import { plural, t } from "../i18n.js";
 import { isSealedEvalRun, listEvalRunIndexesLenient, loadRun } from "../eval.js";
 import type { WorkbenchDecisionInput, WorkbenchStage } from "./types.js";
 
@@ -334,14 +335,13 @@ export function routineCostGuard(
 	if (estimate.executions === 0) return null;
 	if (authorizedRunCovers(estimate, authorization)) return null;
 	if (estimate.sampledRuns === 0 || estimate.costUsd === null || estimate.minutes === null) {
-		return `no comparable run has finished yet, so ${estimate.executions} Target execution` +
-			`${estimate.executions === 1 ? "" : "s"} cost an unknown amount`;
+		return t("guard.unknown-cost", { runs: plural(estimate.executions, "execution") });
 	}
 	if (estimate.costUsd > bounds.costUsd) {
-		return `about $${estimate.costUsd.toFixed(2)} — over the $${bounds.costUsd} routine bound (AHDE_ROUTINE_COST_USD)`;
+		return t("guard.over-cost", { cost: estimate.costUsd.toFixed(2), bound: bounds.costUsd });
 	}
 	if (estimate.minutes > bounds.minutes) {
-		return `about ${Math.ceil(estimate.minutes)} minutes — over the ${bounds.minutes}-minute routine bound (AHDE_ROUTINE_MINUTES)`;
+		return t("guard.over-minutes", { minutes: Math.ceil(estimate.minutes), bound: bounds.minutes });
 	}
 	return null;
 }

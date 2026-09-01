@@ -7,8 +7,9 @@ import type {
 	WorkbenchVerifyCandidateResult,
 	WorkbenchView,
 } from "../../workbench/types.js";
+import { plural, t, verdictLabel } from "../../i18n.js";
 import { formatFlipRate, formatNoiseBand, renderCalibration } from "./calibration.js";
-import { oneLine, pluralize, section, shortHash, shortSha } from "./format.js";
+import { oneLine, section, shortHash, shortSha } from "./format.js";
 import type { Paint } from "./paint.js";
 import { nextStep, stageLabel } from "./stage.js";
 import { renderCandidate, renderTraces } from "./view.js";
@@ -19,46 +20,43 @@ export interface RenderDecisionOptions {
 }
 
 function nextLine(view: WorkbenchView, paint: Paint): string {
-	return `${paint.dim("Next")} ${nextStep(view)} ${paint.dim(`(${stageLabel(view.stage)})`)}`;
+	return `${paint.dim(t("label.next"))} ${nextStep(view)} ${paint.dim(`(${stageLabel(view.stage)})`)}`;
 }
 
 function runLines(result: Extract<WorkbenchDecisionResult, { kind: "run-eval" }>["result"], paint: Paint, options: RenderDecisionOptions): string[] {
 	const lines = renderTraces(result, paint);
-	if (options.liveTraceUrl) lines.push(`${paint.dim("Live trace")} ${paint.link(options.liveTraceUrl)} ${paint.dim("· retained for 15 minutes")}`);
+	if (options.liveTraceUrl) lines.push(`${paint.dim(t("label.live-trace"))} ${paint.link(options.liveTraceUrl)} ${paint.dim(t("result.retained"))}`);
 	return lines;
 }
 
 /** The screen in one line: what it cost, what it found, what it is not. */
 function screenLine(screen: WorkbenchCheapCheckProjection, paint: Paint): string {
-	const detail = `${screen.improved} improved · ${screen.unchanged} unchanged · ${screen.regressed} regressed` +
-		(screen.inconclusive > 0 ? ` · ${screen.inconclusive} inconclusive` : "");
-	return `${paint.dim("Cheap check")} ${screen.verdict === "promising" ? paint.success("promising") : paint.muted("flat")} ` +
-		`${paint.dim(`· ${pluralize(screen.tasks, "previously failing case")} × 1 · ${detail}`)}` +
-		(screen.withinErrorBudget ? "" : ` ${paint.muted("· over the infrastructure error budget, so inconclusive")}`);
+	const detail = t("result.screen-detail", { improved: screen.improved, unchanged: screen.unchanged, regressed: screen.regressed }) +
+		(screen.inconclusive > 0 ? ` ${t("result.screen-inconclusive", { count: screen.inconclusive })}` : "");
+	return `${paint.dim(t("label.cheap-check"))} ${screen.verdict === "promising" ? paint.success(verdictLabel("promising")) : paint.muted(verdictLabel("flat"))} ` +
+		`${paint.dim(t("result.screen-shape", { cases: plural(screen.tasks, "previously failing case"), detail }))}` +
+		(screen.withinErrorBudget ? "" : ` ${paint.muted(t("result.screen-over-budget"))}`);
 }
 
 function verificationLines(result: WorkbenchVerifyCandidateResult, paint: Paint, view: WorkbenchView): string[] {
 	if (result.outcome === "stopped-by-screen") {
 		return [
 			screenLine(result.screen, paint),
-			paint.muted(
-				`Nothing was measured: the ${result.spared.executions}-execution verification was not spent. ` +
-				"A screen is not a verdict — author another change, or verify anyway with force.",
-			),
+			paint.muted(t("result.nothing-measured", { executions: result.spared.executions })),
 			nextLine(view, paint),
 		];
 	}
 	const lines: string[] = [];
 	if (result.screen) lines.push(screenLine(result.screen, paint));
-	lines.push(...renderCandidate(result.candidate, paint, "Candidate verified"));
+	lines.push(...renderCandidate(result.candidate, paint, t("candidate.verified")));
 	lines.push(nextLine(view, paint));
 	return lines;
 }
 
 function improveLines(result: WorkbenchImproveResult, paint: Paint, view: WorkbenchView): string[] {
 	const lines = [
-		`${section("Improvement cycles", paint)} ${pluralize(result.cycles.length, "cycle")} ` +
-			`${paint.dim(`· ${result.executions} Target executions · ${Math.round(result.finalPassRate * 100)}% pass rate`)}`,
+		`${section(t("result.improvement-cycles"), paint)} ${plural(result.cycles.length, "cycle")} ` +
+			`${paint.dim(t("result.pass-rate", { executions: plural(result.executions, "execution"), rate: Math.round(result.finalPassRate * 100) }))}`,
 	];
 	for (const cycle of result.cycles) {
 		const screen = cycle.screen ? `screen ${cycle.screen.verdict} ${cycle.screen.improved}/${cycle.screen.tasks}` : "no screen";
@@ -69,9 +67,9 @@ function improveLines(result: WorkbenchImproveResult, paint: Paint, view: Workbe
 			`  ${cycle.cycle}. ${cycle.pass}/${cycle.total} · ${screen} · ${verification} · ${cycle.note}`,
 		));
 	}
-	lines.push(paint.muted(`Stopped: ${result.stopMessage}.`));
+	lines.push(paint.muted(t("result.stopped", { reason: result.stopMessage })));
 	if (result.candidateId) {
-		lines.push(paint.muted("Promotion is yours: say “ship it” to run the sealed guardrail and release."));
+		lines.push(paint.muted(t("result.promotion-yours")));
 	}
 	lines.push(nextLine(view, paint));
 	return lines;
@@ -90,31 +88,31 @@ function startTestingLines(
 	const lines: string[] = [];
 	for (const step of result.steps) {
 		if (step.kind === "approve-spec") {
-			lines.push(`${section("Spec approved", paint)} ${paint.dim(result.approvedSpecId ?? "")}`);
+			lines.push(`${section(t("result.spec-approved"), paint)} ${paint.dim(result.approvedSpecId ?? "")}`);
 		}
 		if (step.kind === "publish-corpus" && result.developmentCorpus) {
-			lines.push(`${section("Tests published", paint)} ${pluralize(result.developmentCorpus.taskCount, "case")} ${paint.dim(`· ${result.developmentCorpus.id}`)}`);
+			lines.push(`${section(t("result.tests-published"), paint)} ${plural(result.developmentCorpus.taskCount, "case")} ${paint.dim(`· ${result.developmentCorpus.id}`)}`);
 		}
 	}
 	if (result.evaluation) lines.push(...runLines(result.evaluation, paint, options));
-	else if (result.pending) lines.push(paint.muted(`Still needed: ${result.pending}`));
+	else if (result.pending) lines.push(paint.muted(t("result.still-needed", { pending: result.pending })));
 	lines.push(nextLine(view, paint));
 	return lines;
 }
 
 function shipLines(result: WorkbenchShipResult, paint: Paint, view: WorkbenchView): string[] {
 	const lines = [
-		`${section("Shipped", paint)} ${result.tag ? paint.success(result.tag) : paint.muted("already tagged")}` +
+		`${section(t("result.shipped"), paint)} ${result.tag ? paint.success(result.tag) : paint.muted(t("result.already-tagged"))}` +
 			(result.adoption
 				? ` ${paint.dim("·")} ${paint.bold(result.adoption.branch)} ${shortSha(result.adoption.fromSha)} → ${paint.success(shortSha(result.adoption.toSha))}`
 				: ""),
-		...renderCandidate(result.candidate, paint, "Candidate"),
+		...renderCandidate(result.candidate, paint, t("candidate.title")),
 	];
 	if (result.adoption) {
-		lines.push(paint.muted("The promoted harness is now the active Target for `ahde target` and the next cycle."));
+		lines.push(paint.muted(t("result.active-target")));
 	}
 	if (result.continuation) {
-		lines.push(paint.muted(`Cycle closed · next: ${stageLabel(result.continuation.nextStage)}.`));
+		lines.push(paint.muted(t("result.next-cycle", { stage: stageLabel(result.continuation.nextStage) })));
 	}
 	lines.push(nextLine(view, paint));
 	return lines;
@@ -126,28 +124,28 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 	switch (result.kind) {
 		case "scaffold-target":
 			return [
-				`${section("Target harness created", paint)} ${paint.bold(result.result.targetId)} ${paint.dim(`@ ${shortSha(result.result.targetGitSha)}`)}`,
-				`${paint.dim("Receipt")} ${paint.dim(result.result.receiptId)}`,
+				`${section(t("result.target-created"), paint)} ${paint.bold(result.result.targetId)} ${paint.dim(`@ ${shortSha(result.result.targetGitSha)}`)}`,
+				`${paint.dim(t("label.receipt"))} ${paint.dim(result.result.receiptId)}`,
 				nextLine(view, paint),
 			];
 		case "configure-target": {
 			const model = view.target.model;
 			return [
-				`${section("Target configured", paint)} ${paint.bold(result.result.targetId)} ${paint.dim(`@ ${shortSha(result.result.targetGitSha)}`)}`,
-				`${paint.dim("Model")} ${model ? oneLine(`${model.provider}/${model.id}`, 80) : "—"} ${paint.dim("· credential env")} ${paint.bold(oneLine(result.result.credentialEnv, 60))} ${model?.credentialPresent ? paint.success("present") : paint.warning(`missing — export ${oneLine(result.result.credentialEnv, 60)} before running`)}`,
+				`${section(t("result.target-configured"), paint)} ${paint.bold(result.result.targetId)} ${paint.dim(`@ ${shortSha(result.result.targetGitSha)}`)}`,
+				`${paint.dim(t("label.model"))} ${model ? oneLine(`${model.provider}/${model.id}`, 80) : "—"} ${paint.dim("· credential env")} ${paint.bold(oneLine(result.result.credentialEnv, 60))} ${model?.credentialPresent ? paint.success(t("result.credential-present")) : paint.warning(t("result.credential-missing", { env: oneLine(result.result.credentialEnv, 60) }))}`,
 				nextLine(view, paint),
 			];
 		}
 		case "configure-evaluators": {
 			const lines = [
-				`${section("Evaluator models configured", paint)} ${paint.dim(`@ ${shortSha(result.result.targetGitSha)}`)}`,
+				`${section(t("result.evaluators-configured"), paint)} ${paint.dim(`@ ${shortSha(result.result.targetGitSha)}`)}`,
 			];
 			for (const entry of result.result.configured) {
 				const present = Boolean(process.env[entry.credentialEnv]?.trim());
 				lines.push(
-					`${paint.dim(entry.role === "judge" ? "Judge" : "Simulated user")} ${oneLine(entry.model, 60)} ` +
+					`${paint.dim(entry.role === "judge" ? t("label.judge-instrument") : t("result.simulated-user"))} ${oneLine(entry.model, 60)} ` +
 						`${paint.dim("· credential env")} ${paint.bold(oneLine(entry.credentialEnv, 60))} ` +
-						`${present ? paint.success("present") : paint.warning(`missing — export ${oneLine(entry.credentialEnv, 60)} before running`)}`,
+						`${present ? paint.success(t("result.credential-present")) : paint.warning(t("result.credential-missing", { env: oneLine(entry.credentialEnv, 60) }))}`,
 				);
 			}
 			lines.push(nextLine(view, paint));
@@ -155,35 +153,35 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 		}
 		case "approve-spec":
 			return [
-				`${section("Spec approved", paint)} ${paint.dim(result.result.approvedSpecId)}`,
+				`${section(t("result.spec-approved"), paint)} ${paint.dim(result.result.approvedSpecId)}`,
 				nextLine(view, paint),
 			];
 		case "publish-corpus":
 			return [
-				`${section("Development basket published", paint)} ${pluralize(result.result.taskCount, "case")} ${paint.dim(`· ${result.result.corpusId} · ${shortHash(result.result.corpusHash)}`)}`,
+				`${section(t("result.basket-published"), paint)} ${plural(result.result.taskCount, "case")} ${paint.dim(`· ${result.result.corpusId} · ${shortHash(result.result.corpusHash)}`)}`,
 				nextLine(view, paint),
 			];
 		case "import-dataset": {
 			const lines = [
-				`${section("Dataset imported", paint)} ${pluralize(result.result.taskCount, "case")} ${paint.dim(`from ${oneLine(result.result.sourcePath, 60)}`)}`,
+				`${section(t("result.dataset-imported"), paint)} ${plural(result.result.taskCount, "case")} ${paint.dim(`from ${oneLine(result.result.sourcePath, 60)}`)}`,
 				result.result.sealedCount > 0
-					? `${paint.dim("Sealed")} ${paint.bold(pluralize(result.result.sealedCount, "case"))} held out ${paint.dim("· the exam; nobody develops against it")}`
-					: `${paint.dim("Sealed")} ${paint.warning("nothing held out")} ${paint.dim("· there is no exam for this file")}`,
+					? `${paint.dim(t("label.sealed"))} ${paint.bold(plural(result.result.sealedCount, "case"))} ${t("result.sealed-held-out")} ${paint.dim(t("result.sealed-exam"))}`
+					: `${paint.dim(t("label.sealed"))} ${paint.warning(t("result.sealed-none"))} ${paint.dim(t("result.sealed-no-exam"))}`,
 			];
 			if (result.result.skippedRows > 0) {
-				lines.push(`${paint.dim("Skipped")} ${pluralize(result.result.skippedRows, "row")} ${paint.dim("did not map to a case")}`);
+				lines.push(`${paint.dim(t("label.skipped"))} ${plural(result.result.skippedRows, "row")} ${paint.dim(t("result.skipped-rows"))}`);
 			}
-			lines.push(paint.muted("The cases landed in an editable draft; review them, then publish."), nextLine(view, paint));
+			lines.push(paint.muted(t("result.draft-landed")), nextLine(view, paint));
 			return lines;
 		}
 		case "run-eval":
 			return [...runLines(result.result, paint, options), nextLine(view, paint)];
 		case "calibrate": {
 			const lines = [
-				`${section("Noise calibrated", paint)} ${paint.dim(result.result.candidateId)}`,
+				`${section(t("result.noise-calibrated"), paint)} ${paint.dim(result.result.candidateId)}`,
 				...renderCalibration(result.result.calibration, paint),
 			];
-			if (options.liveTraceUrl) lines.push(`${paint.dim("Live trace")} ${paint.link(options.liveTraceUrl)} ${paint.dim("· retained for 15 minutes")}`);
+			if (options.liveTraceUrl) lines.push(`${paint.dim(t("label.live-trace"))} ${paint.link(options.liveTraceUrl)} ${paint.dim(t("result.retained"))}`);
 			lines.push(nextLine(view, paint));
 			return lines;
 		}
@@ -201,37 +199,37 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 			return improveLines(result.result, paint, view);
 		case "apply-proposal":
 			return [
-				`${section("Proposal applied", paint)} branch ${paint.bold(result.result.branch)} ${paint.dim(`· candidate ${shortSha(result.result.candidateSha)} · proposal ${shortHash(result.result.proposalHash)}`)}`,
-				paint.muted("Your checkout was not switched; the candidate lives on its own branch until you adopt it."),
+				`${section(t("result.proposal-applied"), paint)} ${t("result.branch")} ${paint.bold(result.result.branch)} ${paint.dim(`· ${t("result.candidate-word")} ${shortSha(result.result.candidateSha)} · ${t("result.proposal-word")} ${shortHash(result.result.proposalHash)}`)}`,
+				paint.muted(t("result.checkout-unchanged")),
 				nextLine(view, paint),
 			];
 		case "discard-proposal":
-			return [`${section("Proposal discarded", paint)} ${paint.dim(result.result.runId)}`, nextLine(view, paint)];
+			return [`${section(t("result.proposal-discarded"), paint)} ${paint.dim(result.result.runId)}`, nextLine(view, paint)];
 		case "abandon-candidate":
 			return [
-				`${section("Interrupted candidate abandoned", paint)} ${paint.dim(`${result.result.candidateId} · stopped at ${result.result.interruptedStatus}`)}`,
-				paint.muted("The applied proposal can be verified again with /run."),
+				`${section(t("result.candidate-abandoned"), paint)} ${paint.dim(t("result.stopped-at", { candidate: result.result.candidateId, status: result.result.interruptedStatus }))}`,
+				paint.muted(t("result.verify-again")),
 				nextLine(view, paint),
 			];
 		case "review-candidate":
-			return [...renderCandidate(result.result, paint, "Review recorded"), nextLine(view, paint)];
+			return [...renderCandidate(result.result, paint, t("candidate.review-recorded")), nextLine(view, paint)];
 		case "promote-candidate":
 			return [
-				`${section("Candidate promoted", paint)} ${paint.success(result.result.tag)} ${paint.dim(`· ${shortSha(result.result.candidateSha)}`)}`,
-				paint.muted("The tag records the exact reviewed revision. The active Target is unchanged until you /adopt."),
+				`${section(t("result.candidate-promoted"), paint)} ${paint.success(result.result.tag)} ${paint.dim(`· ${shortSha(result.result.candidateSha)}`)}`,
+				paint.muted(t("result.tag-records")),
 				nextLine(view, paint),
 			];
 		case "reject-candidate":
-			return [...renderCandidate(result.result, paint, "Candidate rejected"), nextLine(view, paint)];
+			return [...renderCandidate(result.result, paint, t("candidate.rejected")), nextLine(view, paint)];
 		case "adopt-candidate":
 			return [
-				`${section("Candidate adopted", paint)} branch ${paint.bold(result.result.branch)} ${shortSha(result.result.fromSha)} → ${paint.success(shortSha(result.result.toSha))} ${paint.dim(`· ${result.result.tag}`)}${result.result.disposition !== "adopted" ? paint.dim(` · ${result.result.disposition}`) : ""}`,
-				paint.muted("The promoted harness is now the active Target for `ahde target` and the next cycle."),
+				`${section(t("result.candidate-adopted"), paint)} ${t("result.branch")} ${paint.bold(result.result.branch)} ${shortSha(result.result.fromSha)} → ${paint.success(shortSha(result.result.toSha))} ${paint.dim(`· ${result.result.tag}`)}${result.result.disposition !== "adopted" ? paint.dim(` · ${result.result.disposition}`) : ""}`,
+				paint.muted(t("result.active-target")),
 				nextLine(view, paint),
 			];
 		case "continue-cycle":
 			return [
-				`${section("Cycle closed", paint)} active Target ${shortSha(result.result.activeTargetSha)} ${paint.dim(`· ${result.result.candidate.status} candidate ${result.result.candidate.candidateId}`)}`,
+				`${section(t("result.cycle-closed"), paint)} ${t("result.active-target-line")} ${shortSha(result.result.activeTargetSha)} ${paint.dim(`· ${result.result.candidate.status} candidate ${result.result.candidate.candidateId}`)}`,
 				nextLine(view, paint),
 			];
 	}

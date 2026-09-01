@@ -5,6 +5,7 @@ import type {
 	WorkbenchDatasetCase,
 	WorkbenchProposalReview,
 } from "../../workbench/types.js";
+import { plural, t } from "../../i18n.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
 import { bullets, clean, numbered, oneLine, pluralize, shortHash, shortSha, wrap } from "./format.js";
 import type { Paint } from "./paint.js";
@@ -88,11 +89,11 @@ function stepLabel(step: string): string {
 function judgeCalibrationLines(candidate: WorkbenchCandidateSummary, paint: Paint): string[] {
 	if (candidate.judgeAgreement === undefined) return [];
 	if (candidate.judgeAgreement === null) {
-		return [`${paint.dim("Judge")} ${paint.warning("not calibrated")} ${paint.dim("· ahde label checks it against your own eyes")}`];
+		return [`${paint.dim(t("label.judge-instrument"))} ${paint.warning(t("judge.not-calibrated"))} ${paint.dim(t("judge.label-hint-long"))}`];
 	}
 	const { agreement, kappa, labels } = candidate.judgeAgreement;
 	const kappaText = kappa === null ? "κ —" : `κ ${kappa.toFixed(2)}`;
-	return [`${paint.dim("Judge")} agreement ${Math.round(agreement * 100)}% ${paint.dim(`· ${kappaText} · n=${labels}`)}`];
+	return [`${paint.dim(t("label.judge-instrument"))} ${t("judge.agreement", { rate: `${Math.round(agreement * 100)}%` })} ${paint.dim(`· ${kappaText} · n=${labels}`)}`];
 }
 
 /**
@@ -104,16 +105,16 @@ function judgeCalibrationLines(candidate: WorkbenchCandidateSummary, paint: Pain
 const APPLY_PROPOSAL_DIFF_LINES = 120;
 
 function verificationLine(estimate: WorkbenchRunEstimate | undefined, paint: Paint): string {
-	const covenant = paint.dim("— approving this change also approves that measurement");
+	const covenant = paint.dim(t("estimate.covenant"));
 	if (!estimate || estimate.costUsd === null || estimate.minutes === null) {
-		return `${paint.dim("Verification")} ${paint.warning("unknown")} ${
-			paint.dim("· nothing comparable has run yet")
+		return `${paint.dim(t("label.verification"))} ${paint.warning(t("estimate.unknown"))} ${
+			paint.dim(t("estimate.nothing-comparable"))
 		} ${covenant}`;
 	}
-	const cost = estimate.costUsd < 0.01 ? "under $0.01" : `about $${estimate.costUsd.toFixed(2)}`;
+	const cost = estimate.costUsd < 0.01 ? t("estimate.under-cent") : t("estimate.about-cost", { cost: estimate.costUsd.toFixed(2) });
 	const minutes = Math.ceil(estimate.minutes);
-	const time = estimate.minutes < 1 ? "under a minute" : `about ${minutes} minute${minutes === 1 ? "" : "s"}`;
-	return `${paint.dim("Verification")} ${cost} ${paint.dim("·")} ${time} ${covenant}`;
+	const time = estimate.minutes < 1 ? t("estimate.under-minute") : t("estimate.about-minutes", { minutes: plural(minutes, "minute") });
+	return `${paint.dim(t("label.verification"))} ${cost} ${paint.dim("·")} ${time} ${covenant}`;
 }
 
 function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string[] {
@@ -180,14 +181,14 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 		case "start-testing": {
 			const steps = strings(subject.steps);
 			return [
-				`${paint.dim("Spec")} ${text(subject.spec, 96)}`,
-				`${paint.dim("Basket")} ${text(subject.basket, 96)}`,
-				`${paint.dim("Run")} ${text(subject.run, 96)}`,
-				`${paint.dim("Estimate")} ${text(subject.estimatedCost, 40)} ${paint.dim("·")} ${text(subject.estimatedTime, 40)}`,
+				`${paint.dim(t("label.spec"))} ${text(subject.spec, 96)}`,
+				`${paint.dim(t("label.basket"))} ${text(subject.basket, 96)}`,
+				`${paint.dim(t("label.run"))} ${text(subject.run, 96)}`,
+				`${paint.dim(t("label.estimate"))} ${text(subject.estimatedCost, 40)} ${paint.dim("·")} ${text(subject.estimatedTime, 40)}`,
 				"",
-				paint.dim("This one confirmation covers:"),
+				paint.dim(t("confirm.covers")),
 				...bullets(steps.map((step) => stepLabel(step)), paint),
-				paint.muted("Each step still writes its own durable record; the first one that fails stops the rest."),
+				paint.muted(t("confirm.step-record")),
 			];
 		}
 		case "ship": {
@@ -196,27 +197,27 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			const diff = subject.diff === null || subject.diff === undefined ? null : bag(subject.diff);
 			const exactDiff = typeof diff?.exactDiff === "string" ? diff.exactDiff : "";
 			return [
-				`${paint.dim("Development")} ${text(subject.development, 96)}`,
-				`${paint.dim("Sealed")} ${text(subject.sealed, 96)}`,
+				`${paint.dim(t("label.development"))} ${text(subject.development, 96)}`,
+				`${paint.dim(t("label.sealed"))} ${text(subject.sealed, 96)}`,
 				// The diff summary belongs BEFORE the yes: a loop-applied candidate was
 				// never shown file by file, and this is the last chance to see what it is.
 				...(diff
 					? [
-						`${paint.dim("Diff")} ${paint.bold(pluralize(Number(diff.files ?? 0), "file"))} ${paint.dim("·")} ` +
+						`${paint.dim(t("label.diff"))} ${paint.bold(plural(Number(diff.files ?? 0), "file"))} ${paint.dim("·")} ` +
 							`${text(strings(diff.paths).join(", "), 96)}`,
 						diff.via === "improvement-loop" || diff.via === "proposal-search"
-							? `${paint.dim("Applied")} ${paint.warning(`by the ${diff.via === "improvement-loop" ? "improvement loop" : "proposal search"}`)} ${paint.dim(`— ${text(diff.appliedBy, 40)} authorized the automated trial, not this individual diff`)}`
-							: `${paint.dim("Applied")} ${paint.dim(`by ${text(diff.appliedBy, 40)}, who read this diff`)}`,
+							? `${paint.dim(t("label.applied"))} ${paint.warning(t(diff.via === "improvement-loop" ? "candidate.applied-by-loop" : "candidate.applied-by-search"))} ${paint.dim(t("candidate.applied-automated", { actor: text(diff.appliedBy, 40) }))}`
+							: `${paint.dim(t("label.applied"))} ${paint.dim(t("candidate.applied-reviewed", { actor: text(diff.appliedBy, 40) }))}`,
 						...(exactDiff
 							? [paint.dim(`Exact diff · ${shortHash(text(diff.proposalHash, 80))}`), ...renderUnifiedDiff(exactDiff, paint, { maxLines: Number.MAX_SAFE_INTEGER })]
 							: [paint.warning("Exact diff is unavailable; do not ship this automated candidate")]),
 					]
 					: []),
 				...(isCandidateSummary(candidate) ? judgeCalibrationLines(candidate, paint) : []),
-				`${paint.dim("Version")} ${subject.tag ? paint.bold(text(subject.tag, 40)) : paint.warning("already promoted")}`,
-				`${paint.dim("Branch")} ${text(subject.fastForward, 96)}`,
+				`${paint.dim(t("label.version"))} ${subject.tag ? paint.bold(text(subject.tag, 40)) : paint.warning("already promoted")}`,
+				`${paint.dim(t("label.branch"))} ${text(subject.fastForward, 96)}`,
 				"",
-				paint.dim("This one confirmation covers:"),
+				paint.dim(t("confirm.covers")),
 				...bullets(steps.map((step) => stepLabel(step)), paint),
 				...(isCandidateSummary(candidate) ? ["", ...renderCandidate(candidate, paint)] : []),
 			];
@@ -288,14 +289,14 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			const diff = typeof subject.exactDiff === "string" ? subject.exactDiff : "";
 			const stats = diffStats(diff);
 			return [
-				`${paint.dim("Branch")} ${paint.bold(text(subject.branch, 80))} ${paint.dim("· base")} ${shortSha(text(subject.baseTargetSha, 40))}`,
+				`${paint.dim(t("label.branch"))} ${paint.bold(text(subject.branch, 80))} ${paint.dim("· base")} ${shortSha(text(subject.baseTargetSha, 40))}`,
 				...wrap(typeof subject.summary === "string" ? subject.summary : "", 92, "  "),
-				`${paint.dim("Changes")} ${strings(subject.paths).map((path) => oneLine(path, 60)).join(", ") || "—"} ${paint.dim(`(${paint.added(`+${stats.added}`)} ${paint.removed(`-${stats.removed}`)})`)}`,
+				`${paint.dim(t("label.changes"))} ${strings(subject.paths).map((path) => oneLine(path, 60)).join(", ") || "—"} ${paint.dim(`(${paint.added(`+${stats.added}`)} ${paint.removed(`-${stats.removed}`)})`)}`,
 				verificationLine(confirmation.estimate, paint),
-				...(strings(subject.risks).length > 0 ? [paint.warning("Risks"), ...bullets(strings(subject.risks), paint, { limit: 5 })] : []),
+				...(strings(subject.risks).length > 0 ? [paint.warning(t("label.risks")), ...bullets(strings(subject.risks), paint, { limit: 5 })] : []),
 				// The diff itself, here, before the yes — /review is a second look at
 				// it, never the only one.
-				paint.dim("Diff"),
+				paint.dim(t("label.diff")),
 				...renderUnifiedDiff(diff, paint, {
 					maxLines: APPLY_PROPOSAL_DIFF_LINES,
 					remainder: "/review shows the exact remainder",
@@ -328,8 +329,8 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			const lines = isCandidateSummary(subject.candidate)
 				? renderCandidate({ ...subject.candidate, proposal }, paint)
 				: describe(subject.candidate, paint);
-			if (confirmation.kind === "review-candidate") lines.push(`${paint.dim("Recommendation")} ${paint.bold(text(subject.recommendation))}`);
-			if (confirmation.kind === "promote-candidate") lines.push(`${paint.dim("Tag")} ${paint.success(text(subject.tag))} ${paint.dim("· annotated tag on the exact candidate revision")}`);
+			if (confirmation.kind === "review-candidate") lines.push(`${paint.dim(t("label.recommendation"))} ${paint.bold(text(subject.recommendation))}`);
+			if (confirmation.kind === "promote-candidate") lines.push(`${paint.dim(t("label.tag"))} ${paint.success(text(subject.tag))} ${paint.dim("· annotated tag on the exact candidate revision")}`);
 			if (confirmation.kind === "adopt-candidate") {
 				const adoption = bag(subject.adoption);
 				const branch = bag(adoption.branch);
@@ -361,7 +362,7 @@ export function renderConfirmation(confirmation: WorkbenchConfirmation, paint: P
 	return [
 		...subjectLines(confirmation, paint),
 		"",
-		`${paint.dim("Reason")} ${clean(oneLine(confirmation.reason, 300))}`,
-		...(EPHEMERAL_SUBJECTS.has(confirmation.kind) ? [] : [`${paint.dim("Exact subject")} ${paint.dim(confirmation.subjectHash)}`]),
+		`${paint.dim(t("label.reason"))} ${clean(oneLine(confirmation.reason, 300))}`,
+		...(EPHEMERAL_SUBJECTS.has(confirmation.kind) ? [] : [`${paint.dim(t("label.exact-subject"))} ${paint.dim(confirmation.subjectHash)}`]),
 	];
 }
