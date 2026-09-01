@@ -227,7 +227,7 @@ it("drives the complete canonical Workbench tool loop without revealing sealed c
 		const firstRun = host.confirmations.find((entry) => entry.title === "Run exact development evaluation");
 		expect(firstRun?.body).toBe(
 			"Run 2 Target executions on the reviewed basket? " +
-			"No comparable run has finished yet, so 2 Target executions cost an unknown amount. Continue?",
+			"No comparable run has finished yet, so 2 Target executions cannot be priced up front — the receipt will say what it cost, and the next estimate will have a number. Continue?",
 		);
 		// The candidate verification ran on the operator's ask alone: by then the
 		// baseline evidence makes its cost knowable and it is under the guard.

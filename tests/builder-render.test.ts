@@ -1620,7 +1620,7 @@ describe("renderConfirmation", () => {
 		]);
 		ephemeralTail(lines);
 		const single = renderConfirmation(makeConfirmation("run-eval", { taskCount: 1, target: {}, developmentCorpus: {} }), plainPaint);
-		expect(single[0]).toBe("Run 1 case × 1 repetition = 1 Target executions · each one calls the Target model");
+		expect(single[0]).toBe("Run 1 case × 1 repetition = 1 Target execution · each one calls the Target model");
 	});
 
 	it("prices the A/A calibration and says nothing is promoted", () => {

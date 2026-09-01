@@ -311,6 +311,52 @@ describe("ru renders", () => {
 		]);
 	});
 
+	it("renders the run and verify dialog bodies in Russian", () => {
+		setLanguage("ru");
+		const runEval: WorkbenchConfirmation = {
+			kind: "run-eval",
+			title: t("confirm.title.run-eval"),
+			reason: "оператор сказал «тесты»",
+			subject: {
+				operation: "run-development-evaluation",
+				taskCount: 6,
+				repetitions: 3,
+				target: { id: "support-bot", gitSha: SHA_A },
+				developmentCorpus: { id: "corpus-1", taskCount: 6 },
+			},
+			subjectHash: "e".repeat(64),
+			policy: "routine",
+			question: t("confirm.run-eval", { runs: plural(18, "execution") }),
+		};
+		const run = renderConfirmation(runEval, plainPaint);
+		expect(run[0]).toBe("Прогон 6 кейсов × 3 повтора = 18 запусков · каждый — вызов модели агента");
+		expect(run[1]).toBe("Агент support-bot @ aaaaaaaaaa · тесты corpus-1 (6 кейсов)");
+		expect(leakedEnglish(run.join("\n"))).toEqual([]);
+
+		const verify: WorkbenchConfirmation = {
+			kind: "verify-candidate",
+			title: t("confirm.title.verify-candidate"),
+			reason: "проверяю применённую правку",
+			subject: {
+				operation: "verify-applied-candidate",
+				baseTargetSha: SHA_A,
+				candidateSha: SHA_B,
+				repetitions: 3,
+				developmentCorpus: { id: "corpus-1", hash: "f".repeat(64) },
+				sealedHoldout: { id: "sealed-1", hash: "0".repeat(64), taskCount: 20 },
+			},
+			subjectHash: "e".repeat(64),
+			policy: "routine",
+			question: t("confirm.verify-candidate", { runs: plural(156, "execution") }),
+		};
+		const lines = renderConfirmation(verify, plainPaint);
+		expect(lines[0]).toBe("Парный эксперимент база aaaaaaaaaa против кандидата bbbbbbbbbb · 3 повтора");
+		expect(lines[2]).toBe("Экзамен 20 кейсов · что внутри — знает только оценщик");
+		expect(lines[3]).toBe("Обе ревизии прогоняются по всем кейсам; закрытого Билдер не видит.");
+		expect(verify.question).toBe("Сверить кандидата с базой (156 запусков)?");
+		expect(leakedEnglish(lines.join("\n"))).toEqual([]);
+	});
+
 	it("renders the verdict block in Russian and keeps the tokens intact", () => {
 		setLanguage("ru");
 		const lines = renderCandidate(makeCandidate(), plainPaint, t("candidate.verified"));
