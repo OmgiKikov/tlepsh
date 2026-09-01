@@ -724,10 +724,9 @@ export function failureModeReading(
 				failed: mode.impact.failedOccurrences,
 			})
 			: `${sentenceCase(clauses.join("; "))}.`;
-	return {
-		title: mode.scope === "systemic" ? t("mode.title.across-tasks", { title: base }) : base,
-		facts,
-	};
+	// The scope is said once, by the surface that shows it as a chip or a pill.
+	// Saying it in the title too was the same two words twice in two lines.
+	return { title: base, facts };
 }
 
 function sentenceCase(value: string): string {

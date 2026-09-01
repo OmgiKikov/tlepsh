@@ -1089,7 +1089,7 @@ describe("renderTraces", () => {
 		const lines = renderTraces(makeTraces(), plainPaint);
 		expect(lines[0]).toBe("Evaluation 6/10 passed ██████████░░░░░░ 60% · 4 failed · 0 errors · 1 repetition · eval-1");
 		expect(lines[1]).toBe("Diagnosis actionable · 6/10 passed · 1 failure mode(s), 1 of them across tasks");
-		expect(lines[2]).toBe("  1. lookup was never called, across tasks — 4 of 10 tasks (reproduces 80%)");
+		expect(lines[2]).toBe("  1. lookup was never called — 4 of 10 tasks (reproduces 80%)");
 		expect(lines[3]).toBe("     across tasks · → propose fix");
 		expect(lines[4]).toBe("     No tool was called in 8 of 8 failing runs.");
 		expect(lines[5]).toBe("       run-1 · no tool call · “I can answer that from memory.”");
@@ -1135,7 +1135,7 @@ describe("renderTraces", () => {
 		expect(text).toContain("<muted>one case</muted> <dim>·</dim> <muted>→ not selectable</muted>");
 		expect(text).toContain("<warning>→ rerun to stabilize</warning>");
 		expect(text).toContain("<error>→ repair evidence path</error>");
-		expect(text).toContain("<bold>3.</bold> <bold>The same case flips between repetitions, across tasks</bold>");
+		expect(text).toContain("<bold>3.</bold> <bold>The same case flips between repetitions</bold>");
 		expect(text).toContain("  <dim>… +2 more modes in the Evidence Explorer</dim>");
 		// One raw excerpt under every mode: the panel quotes evidence, not advice.
 		const excerptLines = text.split("\n").filter((line) => line.includes("no tool call"));

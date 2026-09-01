@@ -970,7 +970,7 @@ describe("Builder Pi slash commands", () => {
 		const text = output.text();
 		expect(text).toContain("1/3 passed");
 		expect(text).toContain("2 failed");
-		expect(text).toContain("lookup was never called, across tasks");
+		expect(text).toContain("lookup was never called");
 		expect(text).toContain("The same case flips between repetitions");
 		expect(text).toContain(`Live trace ${LIVE_URL} · retained for 15 minutes`);
 		expect(text).toContain("Next Say “fix the first problem”");
@@ -1638,7 +1638,7 @@ describe("Builder Pi slash commands", () => {
 		const text = output.text();
 		expect(text).toContain("Evaluation 1/3 passed");
 		expect(text).toContain("Diagnosis actionable · 1/3 passed · 2 failure mode(s), 1 of them across tasks");
-		expect(text).toContain("1. lookup was never called, across tasks — 2 of 3 tasks (reproduces 100%)");
+		expect(text).toContain("1. lookup was never called — 2 of 3 tasks (reproduces 100%)");
 		expect(text).toContain("     No tool was called in 2 of 2 failing runs.");
 		// The panel quotes one raw excerpt per mode instead of a template hypothesis.
 		expect(text).toContain("run-development-1 · no tool call · “I already know the answer.”");
