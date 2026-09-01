@@ -27,6 +27,35 @@ ahde            # Builder Pi: describe the agent; guided setup happens here
 ahde target     # talk to the built agent; /good and /bad become test cases
 ```
 
+The same loop has compact Pi commands: three verbs do the work, and every
+older step is still there, one at a time.
+
+```text
+/test [repetitions]     test the agent: approve and publish whatever is pending,
+                        run the basket, or verify the applied candidate
+/fix [n]                fix problem n: refresh the traces, prepare the exact
+                        change, show the diff
+/ship <version>         ship the verified candidate: promote, adopt, next cycle
+
+/status                 where you are and what to say next
+/review                 the exact Spec, eval basket, diff, or candidate — with its actions
+/traces                 diagnosis, failure modes, and the evidence link
+/target [resource]      the exact committed Target or one declared resource
+/doctor                 model, evaluator, run, and future ship readiness
+/holdout                privately import the operator-owned sealed JSONL exam
+/help                   this reference
+
+/run [repetitions]      alias of /test
+/calibrate [reps]       measure run-to-run noise: the same revision against itself
+/approve  /publish      approve the Spec · publish the eval basket, one at a time
+/apply <branch>         apply the reviewed proposal to a candidate branch
+/discard                discard a proposal or abandon an interrupted candidate
+/promote <version>      promote the verified candidate without adopting it
+/reject                 reject the verified candidate
+/adopt                  fast-forward the current branch to the promoted candidate
+/next                   close the cycle and continue from the active Target
+```
+
 Builder Pi has no shell and no file access of its own: it works through three
 typed tools and a bound workshop, and every consequential step is a host-owned
 question with the exact subject on screen. Give the Builder a Sonnet/Opus-class
