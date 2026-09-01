@@ -1,4 +1,4 @@
-import { t, type MessageKey } from "../i18n.js";
+import { noun, plural, t, type MessageKey } from "../i18n.js";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { z } from "zod";
@@ -711,8 +711,12 @@ export function failureModeReading(
 				: signature.checkCode === "required-tool" && signature.subject
 					? t("mode.title.required-tool-named", { tool: quote(signature.subject, MAX_NAMED_SUBJECT_CHARS) })
 					: t(CHECK_TITLE_KEY[signature.checkCode]);
-	const clauses = mode.observations.map((item) =>
-		t(OBSERVATION_KEY[item.code], { runs: item.runs, observed: mode.observedRuns }));
+	const clauses = mode.observations.map((item) => t(OBSERVATION_KEY[item.code], {
+		runs: item.runs,
+		observed: mode.observedRuns,
+		runNoun: noun(mode.observedRuns, "failing run"),
+		replies: plural(item.runs, "reply"),
+	}));
 	const facts = signature.kind === "infrastructure-error"
 		? t("mode.fact.infrastructure")
 		: clauses.length === 0

@@ -459,7 +459,7 @@ describe("the host's plain-language account of one run", () => {
 		);
 		// The host says what the traces show, counted, instead of a template hypothesis.
 		expect(explanation.sentences).toContain(
-			"What the traces show: No tool was called in 1 of 1 failing runs.",
+			"What the traces show: No tool was called in 1 of 1 failing run.",
 		);
 		expect(explanation.sentences.at(-1)).toBe(
 			"A/A calibration candidate-aa re-ran this task: failed → passed (improved; baseline 0/2, candidate 2/2).",

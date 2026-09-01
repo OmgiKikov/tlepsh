@@ -472,14 +472,26 @@ describe("deterministic improvement brief", () => {
 		const runs: RunInput[] = [];
 		for (let index = 0; index < 105; index += 1) {
 			const taskId = `task-${index.toString().padStart(3, "0")}`;
+			// One family every task shares, plus one family of its own: modes cluster
+			// by family now, so the task-local count comes from distinct tools.
+			const ownTool = exactGrader({
+				passed: false,
+				specHash: hashValue({ type: "tool_called", index }),
+				checkCode: "required-tool",
+				type: "tool_called",
+				checkSubject: `tool-${index}`,
+			});
 			runs.push({
 				taskId,
 				repetitionIndex: 0,
-				graders: [exactGrader({
-					passed: false,
-					specHash,
-					reason: `failure-${index} ${"x".repeat(600)} sk-boundedsecret1234567890`,
-				})],
+				graders: [
+					exactGrader({
+						passed: false,
+						specHash,
+						reason: `failure-${index} ${"x".repeat(600)} sk-boundedsecret1234567890`,
+					}),
+					ownTool,
+				],
 			});
 			runs.push({ taskId, repetitionIndex: 1, graders: [exactGrader({ passed: true, specHash })] });
 		}
@@ -489,13 +501,13 @@ describe("deterministic improvement brief", () => {
 		expect(brief.summary).toMatchObject({
 			tasks: 105,
 			failedTasks: 105,
-			failureModeCount: 106,
-			systemicFailureModeCount: 1,
+			failureModeCount: 107,
+			systemicFailureModeCount: 2,
 			taskLocalFailureModeCount: 105,
-			omittedFailureModeCount: 76,
+			omittedFailureModeCount: 77,
 		});
 		expect(brief.modes).toHaveLength(30);
-		const systemic = brief.modes[0];
+		const systemic = brief.modes.find((mode) => mode.signature.checkCode === "output-contains");
 		expect(systemic?.scope).toBe("systemic");
 		expect(systemic?.taskIds).toHaveLength(100);
 		expect(systemic?.evidence).toHaveLength(12);
@@ -839,9 +851,9 @@ describe("the diagnosis a person would have written", () => {
 		expect(tool.observedRuns).toBe(9);
 		expect(tool.facts).toBe(
 			"No tool was called in 9 of 9 failing runs; " +
-			"1 replies printed a tool call as text instead of making one; " +
+			"1 reply printed a tool call as text instead of making one; " +
 			"3 replies asked the user a question instead of answering; " +
-			"1 replies mixed writing systems.",
+			"1 reply mixed writing systems.",
 		);
 		// Every cited run carries the raw trace it was read from.
 		expect(tool.evidence[0]).toMatchObject({

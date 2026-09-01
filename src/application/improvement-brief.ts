@@ -579,11 +579,11 @@ const OBSERVATION_ORDER: readonly TraceObservation[] = [
 ];
 
 const OBSERVATION_CLAUSES: Record<TraceObservation, string> = {
-	"no-tool-call": "no tool was called in {runs} of {observed} failing runs",
-	"tool-call-as-text": "{runs} replies printed a tool call as text instead of making one",
-	"asks-a-question": "{runs} replies asked the user a question instead of answering",
-	"mixed-script": "{runs} replies mixed writing systems",
-	"empty-reply": "{runs} runs ended with no reply at all",
+	"no-tool-call": "no tool was called in {runs} of {observed} failing {runNoun}",
+	"tool-call-as-text": "{runs} {replyNoun} printed a tool call as text instead of making one",
+	"asks-a-question": "{runs} {replyNoun} asked the user a question instead of answering",
+	"mixed-script": "{runs} {replyNoun} mixed writing systems",
+	"empty-reply": "{runs} of {observed} failing {runNoun} ended with no reply at all",
 };
 
 /** Counts of every observation across the failing runs whose trace was read. */
@@ -630,7 +630,9 @@ function factsFor(
 	const clauses = observations.map((item) =>
 		OBSERVATION_CLAUSES[item.code]
 			.replace("{runs}", String(item.runs))
-			.replace("{observed}", String(observedRuns)));
+			.replace("{observed}", String(observedRuns))
+			.replace("{runNoun}", observedRuns === 1 ? "run" : "runs")
+			.replace("{replyNoun}", item.runs === 1 ? "reply" : "replies"));
 	const sentence = `${clauses[0]!.charAt(0).toUpperCase()}${clauses[0]!.slice(1)}`;
 	return `${[sentence, ...clauses.slice(1)].join("; ")}.`;
 }
@@ -743,16 +745,20 @@ function addFlakyModes(
 	modes: Map<string, ModeAccumulator>,
 	outcomesByTask: ReadonlyMap<string, TaskOutcomes>,
 ): void {
-	for (const [taskId, outcomes] of [...outcomesByTask.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+	for (const [, outcomes] of [...outcomesByTask.entries()].sort(([a], [b]) => a.localeCompare(b))) {
 		if (outcomes.pass.length === 0 || outcomes.fail.length === 0) continue;
-		const identity = { kind: "outcome-instability", taskId };
+		// One mode, however many cases flip. A flip has one cause worth naming —
+		// the same revision does not decide the same case the same way twice —
+		// and three identical task-local rows say that three times instead of
+		// once, which is the noise this brief exists to remove.
+		const identity = { kind: "outcome-instability" };
 		const mode = accumulatorFor(modes, {
 			identity,
 			signature: {
 				kind: "outcome-instability",
 				checkCode: null,
 				subject: null,
-				discriminatorHash: hashValue({ taskId }),
+				discriminatorHash: hashValue(identity),
 			},
 			category: "flaky-behavior",
 			legacy: false,

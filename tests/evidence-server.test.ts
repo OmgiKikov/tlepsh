@@ -925,7 +925,7 @@ describe("read-only evidence explorer", () => {
 		// Summary, failure modes and the filter box sit above the table.
 		expect(html).toContain("Pass rate");
 		// The mode says what the traces show, and quotes one of them.
-		expect(html).toContain("failing runs");
+		expect(html).toContain("failing run");
 		expect(html).toContain("no tool call");
 		expect(html).toContain('id="filter"');
 		// No external resource of any kind.
