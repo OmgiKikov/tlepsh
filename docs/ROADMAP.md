@@ -222,8 +222,20 @@ branch; the closed-loop Pi test passes with exactly three confirmations.
     turns; graders read the whole transcript. Readiness fails before spending
     Target calls when a selected case needs that model but its configuration or
     credential is missing (old item 0b).
-11. **Host-side sealed generation** — an evaluator-model call whose output
-    never enters the Builder's context; the human edits and seals (old item 3).
+11. **Host-side sealed generation** — *landed*. `ahde corpus synth --target .
+    --sealed N --name "<exam>"`: an evaluator-model call whose output never
+    enters any agent's context. The generator is the Target's configured JUDGE,
+    refused when there is none and refused when it equals the Target model —
+    a Builder that wrote the holdout has read it. The prompt carries the Spec,
+    K seeded development cases as format examples, and the suite's grader
+    shapes; the answer is validated case by case, malformed cases are dropped
+    and counted, ids are derived host-side, and anything repeating a
+    development input is dropped as a duplicate. The result goes straight into
+    an immutable sealed corpus, or with `--review <path>` into one 0600 file
+    outside the Target tree for the human to edit and seal. Printed output is
+    the corpus id, the case count, the generator model and the prompt hash; the
+    receipt records fingerprints, hashes, ids and counts and no case content
+    (`docs/SEALED_SYNTH.md`, old item 3).
 
 11b. **The proposer remembers what was already tried** — *landed*.
     [Meta-Harness](https://arxiv.org/abs/2603.28052) makes this the core of the

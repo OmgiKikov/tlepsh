@@ -84,6 +84,11 @@ import {
 	inspectDatasetFile,
 	type DatasetHoldoutSpec,
 } from "./application/dataset-ingest.js";
+import {
+	renderSealedSynthOutput,
+	SealedSynthRefusal,
+	synthesizeSealedCorpus,
+} from "./application/sealed-synth.js";
 import { loadBuilderProposalRun } from "./application/builder-proposal.js";
 import { readTryToolInput, tryTool } from "./application/tool-workshop.js";
 import {
@@ -1014,6 +1019,35 @@ async function main(): Promise<void> {
 			// `--file imports/<name>` is read from the Target when one is named,
 			// and from the current directory otherwise, as it always was.
 			const corpusProjectDir = corpusTargetDir ?? process.cwd();
+			if (action === "synth") {
+				// The action that WRITES a holdout instead of drawing one, so the
+				// Target is required rather than one of two ways to say the project:
+				// the manifest is where the judge lives.
+				const targetDir = corpusTargetDir ?? resolve(requireArg("target"));
+				let result;
+				try {
+					result = await synthesizeSealedCorpus({
+						targetDir,
+						stateRoot: stateRoot(),
+						projectId,
+						name: requireArg("name"),
+						count: Number(requireArg("sealed")),
+						...(arg("seed") ? { seed: arg("seed")! } : {}),
+						...(arg("from") ? { specPath: resolve(arg("from")!) } : {}),
+						...(arg("examples") ? { examples: Number(arg("examples")!) } : {}),
+						...(arg("review") ? { reviewPath: resolve(arg("review")!) } : {}),
+					});
+				} catch (error) {
+					if (!(error instanceof SealedSynthRefusal)) throw error;
+					console.error(`refused: ${error.message}`);
+					console.error(`next: ${error.next}`);
+					process.exit(2);
+				}
+				const rendered = renderSealedSynthOutput(result);
+				for (const line of rendered.stdout) console.log(line);
+				for (const line of rendered.warnings) console.error(line);
+				break;
+			}
 			if (action === "publish") {
 				const visibility = requireArg("visibility");
 				if (visibility !== "development" && visibility !== "sealed") {
@@ -1119,7 +1153,7 @@ async function main(): Promise<void> {
 				}
 				break;
 			}
-			throw new Error("usage: ahde corpus publish|import|list|inspect|ingest [--target <dir>] [--project <id>] ...");
+			throw new Error("usage: ahde corpus publish|import|list|inspect|ingest|synth [--target <dir>] [--project <id>] ...");
 		}
 		case "feedback": {
 			const lines = runTargetFeedbackCommand({

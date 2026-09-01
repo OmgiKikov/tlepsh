@@ -50,6 +50,7 @@ export type CliAction =
 	| "list"
 	| "inspect"
 	| "ingest"
+	| "synth"
 	| "clear"
 	| "try";
 
@@ -264,7 +265,16 @@ const CORPUS_ACTION_SPECS = {
 		requiredFlags: ["file", "recipe", "name"],
 		positionals: 0,
 	},
-} as const satisfies Record<"publish" | "import" | "list" | "inspect" | "ingest", InvocationSpec>;
+	// The one command that WRITES a holdout instead of drawing one. `--project`
+	// defaults to the Target id, so it is optional here and nowhere else in
+	// `corpus`; `--seed` fixes which development cases are shown as format
+	// examples and is not the row draw the other actions mean by that name.
+	synth: {
+		flags: ["target", "project", "sealed", "name", "seed", "from", "examples", "review"],
+		requiredFlags: ["target", "sealed", "name"],
+		positionals: 0,
+	},
+} as const satisfies Record<"publish" | "import" | "list" | "inspect" | "ingest" | "synth", InvocationSpec>;
 
 const FEEDBACK_ACTION_SPECS = {
 	list: { flags: ["target"], positionals: 0 },
@@ -398,6 +408,13 @@ function validateSharedFlagValues(flags: Readonly<Record<string, string>>, conte
  */
 const MAX_LOG_ROWS = 100;
 const MAX_WATCH_RUNS = 1_000;
+/**
+ * Bounds for `corpus synth`, restated here for the same reason: argv validation
+ * imports no application service. `src/application/sealed-synth.ts` owns
+ * `MAX_SEALED_SYNTH_CASES` and `MAX_SEALED_SYNTH_EXAMPLES`.
+ */
+const MAX_SYNTH_CASES = 200;
+const MAX_SYNTH_EXAMPLES = 20;
 const MIN_WATCH_INTERVAL_MS = 10_000;
 const MAX_WATCH_INTERVAL_MS = 30 * 24 * 60 * 60 * 1_000;
 
@@ -557,6 +574,14 @@ function validateActionRelationships(context: string, flags: Readonly<Record<str
 	if (context.startsWith("corpus ") && context !== "corpus publish" &&
 		flags.project === undefined && flags.target === undefined) {
 		cliError(`${context} requires --project <id> or --target <dir> (the Target id is the default project)`);
+	}
+	// `corpus synth` reads both flags differently: `--sealed N` is how many cases
+	// to WRITE, and `--seed` fixes which development cases are shown as format
+	// examples. Neither reproduces a row draw, so neither implies the other.
+	if (context === "corpus synth") {
+		assertIntegerFlag(flags, "sealed", context, { minimum: 1, maximum: MAX_SYNTH_CASES });
+		assertIntegerFlag(flags, "examples", context, { minimum: 0, maximum: MAX_SYNTH_EXAMPLES });
+		return;
 	}
 	const sealed = flags.sealed !== undefined;
 	const seed = flags.seed !== undefined;
