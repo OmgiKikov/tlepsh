@@ -162,6 +162,8 @@ export function candidateSummary(
 	record: CandidateRecord,
 	/** Judge calibration for the evidence this candidate rests on, when it uses one. */
 	judgeAgreement?: WorkbenchCandidateSummary["judgeAgreement"],
+	/** Both development arms re-scored with one revised rubric, when a pair exists. */
+	regraded?: WorkbenchCandidateSummary["regraded"],
 ): WorkbenchCandidateSummary {
 	const evaluated = record.events.find((event) => event.type === "evaluated");
 	const reviewed = record.events.find((event) => event.type === "reviewed");
@@ -203,6 +205,7 @@ export function candidateSummary(
 			}
 			: { executed: false, gatePassed: false, gate: null },
 		...(judgeAgreement === undefined ? {} : { judgeAgreement }),
+		...(regraded === undefined || regraded === null ? {} : { regraded }),
 		review: reviewed?.type === "reviewed" ? reviewed.review : null,
 		promotion: promoted?.type === "promoted"
 			? { tag: promoted.decision.tag, reason: promoted.decision.reason, at: promoted.at }

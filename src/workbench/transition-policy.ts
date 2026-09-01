@@ -44,7 +44,13 @@ const LEGAL_DECISION_STAGES = {
 	// both exist. `corpus-review` is the important one: revising the graders is
 	// what puts a draft there, and re-scoring before publishing is the whole
 	// point — the operator sees what the new rubric would have said.
-	regrade: ["corpus-review", "ready-to-evaluate", "improvement-authoring"],
+	//
+	// `candidate-review` is where the operator disputes the judge with a verdict
+	// in front of them, and the recorded answers there are the candidate's two
+	// development arms. Nothing else at that stage can read a revised rubric:
+	// publishing waits for the release decision, and rejecting the candidate to
+	// unblock it throws away the very evidence being argued about.
+	regrade: ["corpus-review", "ready-to-evaluate", "improvement-authoring", "candidate-review"],
 	// The autoloop starts wherever a measurement can start, and hands back the
 	// moment a release decision is the only way forward.
 	improve: ["ready-to-evaluate", "improvement-authoring"],
@@ -92,6 +98,16 @@ export function assertWorkbenchDecisionStage(
 ): void {
 	const legal = LEGAL_DECISION_STAGES[kind] as readonly WorkbenchStage[];
 	if (!legal.includes(stage)) {
+		// One refusal names a door instead of a rule, because this is the pair a
+		// revised rubric walks into: the operator hardened the graders while a
+		// candidate is on screen, and publishing looks like the way to apply
+		// them. The unblocking action for this stage is “read the evidence and
+		// ship” — true, and useless to someone arguing with the judge.
+		if (kind === "publish-corpus" && stage === "candidate-review") {
+			throw new Error(
+				`${kind} is not legal during ${stage}. ${t("refuse.publish-at-candidate-review")}`,
+			);
+		}
 		throw new Error(
 			`${kind} is not legal during ${stage}; expected ${legal.join(" or ")}. ` +
 			`Do this first: ${UNBLOCKING_ACTION[stage]}.`,

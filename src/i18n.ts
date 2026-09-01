@@ -220,6 +220,7 @@ const en = {
 	"label.builder-model": "Builder model",
 	"label.verdict": "Verdict",
 	"label.development": "Development",
+	"label.regraded": "On the new rubric",
 	"label.sealed-holdout": "Sealed holdout",
 	"label.judge-instrument": "Judge",
 	"label.revision": "Revision",
@@ -310,6 +311,9 @@ const en = {
 	"candidate.applied-reviewed": "by {actor}, who read this diff",
 	"candidate.not-adopted": "not yet — /adopt fast-forwards the current branch",
 	"candidate.cycle-closed": "closed {when}",
+	// Both arms re-scored with one revised rubric, beside the recorded verdict
+	// and never instead of it: a re-score is not a new baseline.
+	"candidate.regraded": "development {recorded} became {revised} ({moved})",
 
 	"development.comparison": "baseline {baseline} → candidate {candidate}",
 	"development.on-tasks": "on {tasks}",
@@ -408,6 +412,12 @@ const en = {
 	"guard.over-cost": "about ${cost} — over the ${bound} routine bound (AHDE_ROUTINE_COST_USD)",
 	"guard.over-minutes": "about {minutes} minutes — over the {bound}-minute routine bound (AHDE_ROUTINE_MINUTES)",
 
+	// Two doors an operator standing in front of a candidate keeps trying: they
+	// revised the rubric, so they reach for publish. Publishing is not how a
+	// revised rubric is read — re-scoring is — and it waits for the candidate.
+	"refuse.publish-at-candidate-review": "Revised graders are read here by re-scoring, not by publishing: request `regrade`, which re-scores the recorded answers of both development arms with them and pays only the judge. Publishing waits until this candidate is shipped or rejected; the revised draft survives that.",
+	"submit.revision-at-candidate-review": "A candidate is under review, so this revision is not published yet: request `regrade` to re-score the recorded answers of both arms (judge only). Publishing waits until the candidate is shipped or rejected.",
+
 	"estimate.unknown": "unknown",
 	"estimate.nothing-comparable": "· nothing comparable has run yet",
 	"estimate.covenant": "— approving this change also approves that measurement",
@@ -443,6 +453,12 @@ const en = {
 	"regrade.grader-passes": "now passes",
 	"regrade.grader-fails": "now fails",
 	"regrade.not-a-baseline": "This is a re-score, not a new baseline: to measure a candidate on the new graders, re-score the baseline with the same set.",
+	// A candidate's recorded answers are two arms, not one run. Re-scoring one
+	// of them alone produces a number nothing compares with, so the pair is
+	// always re-scored together and the exam is never touched.
+	"regrade.both-arms": "Both development arms were re-scored with the same revised graders, so they still compare; the sealed exam is untouched, because its graders belong to the judge and stay evaluator-only.",
+	"regrade.named-one-arm": "You named one arm, and both were re-scored: one arm alone is not a comparison.",
+	"regrade.exam-untouched": "exam unchanged",
 	"result.shipped": "Shipped",
 	"result.proposal-applied": "Proposal applied",
 	"result.proposal-discarded": "Proposal discarded",
@@ -937,6 +953,7 @@ const ru: Record<MessageKey, string> = {
 	"label.builder-model": "Модель Билдера",
 	"label.verdict": "Вердикт",
 	"label.development": "Разработка",
+	"label.regraded": "На новой рубрике",
 	"label.sealed-holdout": "Экзамен",
 	"label.judge-instrument": "Судья",
 	"label.revision": "Ревизия",
@@ -1025,6 +1042,7 @@ const ru: Record<MessageKey, string> = {
 	"candidate.applied-reviewed": "{actor}, который прочитал этот диф",
 	"candidate.not-adopted": "ещё нет — /adopt переведёт текущую ветку",
 	"candidate.cycle-closed": "закрыт {when}",
+	"candidate.regraded": "разработка {recorded} стало {revised} ({moved})",
 
 	"development.comparison": "было {baseline} → кандидат {candidate}",
 	"development.on-tasks": "· задач {count}",
@@ -1120,6 +1138,9 @@ const ru: Record<MessageKey, string> = {
 	"guard.over-cost": "около ${cost} — больше рутинного порога ${bound} (AHDE_ROUTINE_COST_USD)",
 	"guard.over-minutes": "около {minutes} мин — больше рутинного порога {bound} мин (AHDE_ROUTINE_MINUTES)",
 
+	"refuse.publish-at-candidate-review": "Новые грейдеры читают пересчётом, а не публикацией: попроси `regrade` — он пересчитает записанные ответы обеих веток разработки новыми грейдерами, платит только судья. Публикация подождёт, пока кандидата не выкатят или не отклонят; ревизия черновика это переживёт.",
+	"submit.revision-at-candidate-review": "Кандидат на обзоре, поэтому ревизия пока не публикуется: попроси `regrade`, чтобы пересчитать записанные ответы обеих веток (платит только судья). Публикация подождёт, пока кандидата не выкатят или не отклонят.",
+
 	"estimate.unknown": "неизвестно",
 	"estimate.nothing-comparable": "· сравнимых прогонов ещё не было",
 	"estimate.covenant": "— одобряя правку, ты одобряешь и эту проверку",
@@ -1153,6 +1174,9 @@ const ru: Record<MessageKey, string> = {
 	"regrade.grader-passes": "теперь проходит",
 	"regrade.grader-fails": "теперь падает",
 	"regrade.not-a-baseline": "Это пересчёт, не новая база: чтобы измерить кандидата на новых грейдерах, пересчитай и базу тем же набором.",
+	"regrade.both-arms": "Обе ветки разработки пересчитаны одним и тем же набором грейдеров, поэтому они по-прежнему сравнимы; закрытый экзамен не тронут — его грейдеры принадлежат судье и остаются только у него.",
+	"regrade.named-one-arm": "Ты назвал одну ветку, а пересчитаны обе: одна ветка — это не сравнение.",
+	"regrade.exam-untouched": "экзамен без изменений",
 	"result.shipped": "Выкачено",
 	"result.proposal-applied": "Правка применена",
 	"result.proposal-discarded": "Правка выброшена",
