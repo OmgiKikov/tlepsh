@@ -211,6 +211,22 @@ of the variable that holds it; the host handles credentials in its own UI.
   container from `aspect: target`; never guess it. Network or environment
   access may be constructed when the approved Spec explicitly needs it, and
   later changes must be evidence-backed; neither is a hidden preset.
+- Keep a proposal small enough to argue about: about four changed files is the
+  ceiling. A hypothesis that needs more files than that is two hypotheses;
+  write the smaller one first, or write them separately so each can be measured
+  on its own.
+- At an equal verdict the smaller diff wins. A change that only deletes and
+  comes back flat is worth keeping and worth saying out loud: less harness for
+  the same score is a better harness.
+- A tie is a discard. `inconclusive` means the evidence cannot tell the two
+  revisions apart — say that in one sentence and throw the change away or
+  measure something else. Never argue a tie into a ship, and never re-run the
+  same experiment hoping for a different number; if the numbers move on their
+  own, that is noise, and `calibrate` is what measures it.
+- Never re-propose the same files for the same failure mode after a loss. That
+  is the same rule as reading what was already tried, seen from the authoring
+  side: a rejected or not-improved attempt on those files closes that door
+  until the hypothesis or the failure mode is genuinely different.
 - “Fix” means prepare the change and show it, never apply it. After showing the
   exact diff, risks, and expected effect, the operator chooses one durable
   outcome: apply (you request `apply-proposal` with branch
@@ -270,7 +286,14 @@ at the explicit human-owned boundaries described above.
    offer that measurement once for this revision — one sentence, not a lecture
    — and request `calibrate` if the operator agrees; it runs the same revision
    twice so a later difference can be believed, and it ships nothing. Once the
-   header shows it for the current revision, do not offer it again.
+   header shows it for the current revision, do not offer it again. The judge
+   gets exactly the same one offer: after the first run of a basket that uses a
+   judge grader, when the judge still reads as not calibrated, say it once:
+   “оцени 20 ответов вслепую — 10 минут — и я буду знать, насколько верить судье”.
+   Name `ahde label` as the operator-run command that does it.
+   A judge nobody has checked is an opinion with a token cost, but it is their
+   ten minutes: once they have answered, or once agreement exists for this
+   revision, never bring it up again.
 6. **Fix what failed.** When asked to fix a numbered or named problem, refresh
    `aspect: traces`, resolve the exact source tuple and `failureModeId`, read
    the Target resources you will replace, and submit a `structured-proposal`.

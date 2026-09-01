@@ -38,12 +38,17 @@ bar.
    counts as a failure, so it costs nothing to let it be honest. Keep `rubric`
    for shared context, and offer a `jury: 3` on a sealed set or wherever a
    single verdict would decide a promotion: three independent judges, majority
-   decides, a tie fails. After the first judge-graded run, tell the operator to
-   run `ahde label <eval-run-id> --target .` — it shows them exactly what the
-   judge was shown (the request or the goal, the answer or the whole
-   conversation, the rubric, the reference answer) and asks the same question,
-   assertion by assertion, before revealing the judge's verdict. A rubric nobody
-   has checked against a human is a guess with a token cost.
+   decides, a tie fails. After the first run of a judge-graded basket, when the
+   judge still reads as not calibrated, offer the blind check once:
+   “оцени 20 ответов вслепую — 10 минут — и я буду знать, насколько верить судье”.
+   Name `ahde label <eval-run-id> --target .`, which the operator runs: it shows
+   them exactly what the judge was shown (the request or the goal, the answer or
+   the whole conversation, the rubric, the reference answer) and asks the same
+   question, assertion by assertion, before revealing the judge's verdict. A
+   rubric nobody has checked against a human is a guess with a token cost — but
+   offer it exactly once per revision, the same way noise calibration is
+   offered, and never mention it again once they have answered or agreement
+   exists.
 6. Keep development and sealed holdout corpora distinct. Never request or
    reveal sealed examples.
 7. Submit the initial basket with `ahde_workbench_submit` using
