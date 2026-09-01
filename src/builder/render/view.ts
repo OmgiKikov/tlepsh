@@ -12,7 +12,7 @@ import type {
 	WorkbenchView,
 } from "../../workbench/types.js";
 import { formatResourceFragment } from "../../domain/comparison-gate.js";
-import { plural, t, verdictLabel } from "../../i18n.js";
+import { candidateStatusLabel, plural, t, verdictLabel } from "../../i18n.js";
 import { formatFlipRate, formatNoiseBand } from "./calibration.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
 import {
@@ -313,7 +313,7 @@ export function renderCandidate(
 		? paint.success
 		: candidate.status === "rejected" ? paint.error : paint.accent;
 	const lines = [
-		`${section(title, paint)} ${paint.dim(candidate.candidateId)} ${paint.dim("·")} ${statusTone(candidate.status)}`,
+		`${section(title, paint)} ${paint.dim(candidate.candidateId)} ${paint.dim("·")} ${statusTone(candidateStatusLabel(candidate.status))}`,
 		`${paint.dim(t("label.revision"))} ${candidate.baseline.ref}@${shortSha(candidate.baseline.sha)} → ${candidate.candidate ? `${candidate.candidate.ref}@${shortSha(candidate.candidate.sha)}` : paint.muted(t("candidate.not-built"))}`,
 	];
 	// A loop apply is not a reviewed apply. The candidate says which it was, here
@@ -447,26 +447,30 @@ function renderProposal(
 ): string[] {
 	const stats = diffStats(content.exactDiff);
 	const lines = [
-		`${section(content.kind === "applied-proposal" ? "Applied proposal" : "Proposal", paint)} ${paint.dim(content.runId)}`,
+		`${section(t(content.kind === "applied-proposal" ? "panel.applied-proposal" : "section.proposal"), paint)} ${paint.dim(content.runId)}`,
 		...wrap(content.summary, 96, "  "),
-		`${paint.dim("Changes")} ${content.paths.map((path) => paint.bold(oneLine(path, 80))).join(paint.dim(", "))} ${paint.dim(`(${paint.added(`+${stats.added}`)} ${paint.removed(`-${stats.removed}`)})`)}`,
-		`${paint.dim("Base")} ${shortSha(content.baseTargetSha)} ${paint.dim("· proposal")} ${paint.dim(shortHash(content.proposalHash))}`,
+		`${paint.dim(t("label.changes"))} ${content.paths.map((path) => paint.bold(oneLine(path, 80))).join(paint.dim(", "))} ${paint.dim(`(${paint.added(`+${stats.added}`)} ${paint.removed(`-${stats.removed}`)})`)}`,
+		`${paint.dim(t("label.base-revision"))} ${shortSha(content.baseTargetSha)} ${paint.dim(`· ${t("result.proposal-word")}`)} ${paint.dim(shortHash(content.proposalHash))}`,
 	];
 	if (content.evidenceBasis) {
-		lines.push(`${paint.dim("Evidence")} eval ${content.evidenceBasis.evalRunId} ${paint.dim("·")} ${pluralize(content.evidenceBasis.failureModes.length, "targeted failure mode")} ${paint.dim(`· ${pluralize(content.evidenceBasis.runRefs.length, "run reference")}`)}`);
+		lines.push(`${paint.dim(t("label.evidence"))} ${t("review.evidence", {
+			run: content.evidenceBasis.evalRunId,
+			modes: plural(content.evidenceBasis.failureModes.length, "failure mode"),
+			refs: plural(content.evidenceBasis.runRefs.length, "run reference"),
+		})}`);
 	} else {
-		lines.push(`${paint.dim("Evidence")} ${paint.muted("none linked (spec-only proposal)")}`);
+		lines.push(`${paint.dim(t("label.evidence"))} ${paint.muted(t("review.evidence-none"))}`);
 	}
 	// The promise, on the same screen as the diff it is a promise about.
 	lines.push(predictionPromiseLine(content.prediction, paint) ?? predictionAbsentLine(paint));
 	const predictionNote = predictionNoteLine(content.prediction, paint);
 	if (predictionNote) lines.push(predictionNote);
-	if (content.risks.length > 0) lines.push(paint.warning("Risks"), ...bullets(content.risks, paint, { limit: 6, max: 160 }));
-	if (content.validationPlan.length > 0) lines.push(paint.dim("Validation plan"), ...bullets(content.validationPlan, paint, { limit: 6, max: 160 }));
+	if (content.risks.length > 0) lines.push(paint.warning(t("label.risks")), ...bullets(content.risks, paint, { limit: 6, max: 160 }));
+	if (content.validationPlan.length > 0) lines.push(paint.dim(t("label.validation-plan")), ...bullets(content.validationPlan, paint, { limit: 6, max: 160 }));
 	if (content.kind === "applied-proposal") {
-		lines.push(`${paint.dim("Applied")} branch ${paint.bold(content.application.branch)} ${paint.dim("·")} ${shortSha(content.application.baseTargetSha)} → ${shortSha(content.application.candidateSha)} ${paint.dim(when(content.application.appliedAt))}`);
+		lines.push(`${paint.dim(t("label.applied"))} ${t("result.branch")} ${paint.bold(content.application.branch)} ${paint.dim("·")} ${shortSha(content.application.baseTargetSha)} → ${shortSha(content.application.candidateSha)} ${paint.dim(when(content.application.appliedAt))}`);
 	}
-	lines.push(paint.dim("Diff"));
+	lines.push(paint.dim(t("label.diff")));
 	lines.push(...renderUnifiedDiff(content.exactDiff, paint, {
 		maxLines: options.maxDiffLines ?? Number.MAX_SAFE_INTEGER,
 	}));
@@ -483,7 +487,7 @@ export function renderReview(content: WorkbenchReviewDetail, paint: Paint, optio
 		case "candidate": return renderCandidate(content, paint, t("candidate.title"), options.maxDiffLines ?? Number.MAX_SAFE_INTEGER);
 		case "interrupted-candidate": return [
 			...renderCandidate(content, paint, t("candidate.interrupted")),
-			paint.warning("Verification stopped before evidence was complete. /discard abandons this attempt so the applied proposal can be retried."),
+			paint.warning(t("review.interrupted-warning")),
 		];
 		case "workflow": return [`${section(stageLabel(content.stage), paint)}`, ...wrap(content.headline, 96, "  ")];
 	}
@@ -512,7 +516,9 @@ export function renderEvaluationSummary(
 ): string {
 	const summary = evaluation.summary;
 	const tone = summary.error > 0 ? paint.warning : summary.fail === 0 ? paint.success : paint.accent;
-	return `${tone(paint.bold(`${summary.pass}/${summary.total} passed`))} ${paint.dim(bar(summary.allPassRate, 16))} ${paint.dim(percent(summary.allPassRate))} ${paint.dim("·")} ${summary.fail > 0 ? paint.error(`${summary.fail} failed`) : paint.muted("0 failed")} ${paint.dim("·")} ${summary.error > 0 ? paint.warning(`${summary.error} errors`) : paint.muted("0 errors")} ${paint.dim(`· ${pluralize(evaluation.repetitions, "repetition")} · ${evaluation.evalRunId}`)}`;
+	const failed = t("run.failed", { count: summary.fail });
+	const errors = plural(summary.error, "error");
+	return `${tone(paint.bold(t("run.passed", { pass: summary.pass, total: summary.total })))} ${paint.dim(bar(summary.allPassRate, 16))} ${paint.dim(percent(summary.allPassRate))} ${paint.dim("·")} ${summary.fail > 0 ? paint.error(failed) : paint.muted(failed)} ${paint.dim("·")} ${summary.error > 0 ? paint.warning(errors) : paint.muted(errors)} ${paint.dim(`· ${plural(evaluation.repetitions, "repetition")} · ${evaluation.evalRunId}`)}`;
 }
 
 /** Diagnosis screen shared by /traces and the post-run summary. */

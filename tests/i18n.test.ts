@@ -314,7 +314,9 @@ describe("ru renders", () => {
 		setLanguage("ru");
 		const lines = renderCandidate(makeCandidate(), plainPaint, t("candidate.verified"));
 		const text = lines.join("\n");
-		expect(lines[0]).toBe("Кандидат проверен candidate-1 · evaluated");
+		expect(lines[0]).toBe("Кандидат проверен candidate-1 · оценён");
+		// The status the record stores is a token; only its label bends.
+		expect(makeCandidate().status).toBe("evaluated");
 		expect(text).toContain("Разработка было 40% → кандидат 70% (+30 п.п.) · задач 10 · балл 40% → 70%");
 		expect(text).toContain("Вердикт стало лучше · +23 п.п. (95% ДИ +5 п.п. … +35 п.п.) · 10 × 3 · цена ×1.4 · задержка ×0.9");
 		expect(text).toContain("Экзамен пройден · +20 п.п. (95% ДИ +2 п.п. … +38 п.п.) · 20 × 3");

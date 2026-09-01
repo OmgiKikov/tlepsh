@@ -116,6 +116,9 @@ const NOUNS = {
 		file: ["file", "files"],
 		"changed file": ["changed file", "changed files"],
 		"contract test": ["contract test", "contract tests"],
+		error: ["error", "errors"],
+		"failure mode": ["failure mode", "failure modes"],
+		"run reference": ["run reference", "run references"],
 		entry: ["entry", "entries"],
 		tool: ["tool", "tools"],
 		skill: ["skill", "skills"],
@@ -142,6 +145,9 @@ const NOUNS = {
 		file: ["файл", "файла", "файлов"],
 		"changed file": ["изменённый файл", "изменённых файла", "изменённых файлов"],
 		"contract test": ["контрактный тест", "контрактных теста", "контрактных тестов"],
+		error: ["ошибка", "ошибки", "ошибок"],
+		"failure mode": ["тип сбоя", "типа сбоя", "типов сбоя"],
+		"run reference": ["ссылка на прогон", "ссылки на прогон", "ссылок на прогон"],
 		entry: ["элемент", "элемента", "элементов"],
 		tool: ["инструмент", "инструмента", "инструментов"],
 		skill: ["скилл", "скилла", "скиллов"],
@@ -261,6 +267,7 @@ const en = {
 	"label.cheap-check": "Cheap check",
 	"label.exact-proposal": "Exact proposal",
 	"label.base": "base",
+	"label.base-revision": "Base",
 
 	"target.missing": "not created yet",
 	"target.model-not-chosen": "model not chosen",
@@ -776,6 +783,35 @@ const en = {
 	"error.selection-required": "{message}. Ask the Builder to select one (for example “use the first one”).",
 	"error.selection-choices": " Choices: {choices}.",
 	"error.not-available": "/{command} is not available during {stage}; {next}",
+
+	// The proposal under review, the run it came from, and the one-line
+	// headline both of them collapse into on a tool card.
+	"section.proposal": "Proposal",
+	"label.validation-plan": "Validation plan",
+	"review.evidence": "eval {run} · {modes} targeted · {refs}",
+	"review.evidence-none": "none linked (spec-only proposal)",
+	"review.interrupted-warning": "Verification stopped before evidence was complete. /discard abandons this attempt so the applied proposal can be retried.",
+	"run.passed": "{pass}/{total} passed",
+	"run.failed": "{count} failed",
+	"headline.run": "{passed} · {modes}",
+	"headline.candidate": "candidate {status}",
+	"headline.cheap-check-flat": "cheap check flat · verification not spent",
+	"headline.cheap-check-shape": "cheap check flat · {improved}/{tasks} improved · verification not spent",
+	"headline.verify": "candidate {status} · development {development} · sealed {sealed}",
+	"headline.not-run": "not run",
+	"headline.nothing-to-do": "nothing to do",
+	"headline.no-new-tag": "no new tag",
+	"headline.fast-forwarded": "{branch} fast-forwarded",
+	"headline.next-stage": "next {stage}",
+	"headline.improve": "{cycles} · {rate}% · stopped: {reason}",
+	"headline.calibrate": "A/A {verdict} · {band} · flip {flip} · {reps} recommended",
+	"candidate.status.proposed": "proposed",
+	"candidate.status.built": "built",
+	"candidate.status.validated": "validated",
+	"candidate.status.evaluated": "evaluated",
+	"candidate.status.reviewed": "reviewed",
+	"candidate.status.promoted": "promoted",
+	"candidate.status.rejected": "rejected",
 	"label.tool": "Tool",
 	"label.data-source": "Data source",
 	"label.package": "Package",
@@ -1088,6 +1124,7 @@ const ru: Record<MessageKey, string> = {
 	"label.cheap-check": "Быстрая проба",
 	"label.exact-proposal": "Точная правка",
 	"label.base": "база",
+	"label.base-revision": "База",
 
 	"target.missing": "ещё не создан",
 	"target.model-not-chosen": "модель не выбрана",
@@ -1585,6 +1622,33 @@ const ru: Record<MessageKey, string> = {
 	"error.selection-required": "{message}. Попроси Билдера выбрать (например, «возьми первый»).",
 	"error.selection-choices": " Варианты: {choices}.",
 	"error.not-available": "/{command} сейчас недоступна — идёт {stage}; {next}",
+
+	"section.proposal": "Правка",
+	"label.validation-plan": "План проверки",
+	"review.evidence": "прогон {run} · целились в {modes} · {refs}",
+	"review.evidence-none": "ничего не привязано (правка только по описанию)",
+	"review.interrupted-warning": "Проверка оборвалась, данных не хватило. /discard сбросит эту попытку — применённую правку можно будет проверить снова.",
+	"run.passed": "прошли {pass}/{total}",
+	"run.failed": "упало {count}",
+	"headline.run": "{passed} · {modes}",
+	"headline.candidate": "кандидат {status}",
+	"headline.cheap-check-flat": "быстрая проба пустая · проверку не тратили",
+	"headline.cheap-check-shape": "быстрая проба пустая · лучше {improved}/{tasks} · проверку не тратили",
+	"headline.verify": "кандидат {status} · разработка {development} · экзамен {sealed}",
+	"headline.not-run": "не прогонялся",
+	"headline.nothing-to-do": "делать нечего",
+	"headline.no-new-tag": "новых тегов нет",
+	"headline.fast-forwarded": "{branch} перемотана",
+	"headline.next-stage": "дальше {stage}",
+	"headline.improve": "{cycles} · {rate}% · остановка: {reason}",
+	"headline.calibrate": "A/A {verdict} · {band} · переворотов {flip} · советую {reps}",
+	"candidate.status.proposed": "предложен",
+	"candidate.status.built": "собран",
+	"candidate.status.validated": "готов",
+	"candidate.status.evaluated": "оценён",
+	"candidate.status.reviewed": "отсмотрен",
+	"candidate.status.promoted": "выкачен",
+	"candidate.status.rejected": "отклонён",
 	"label.tool": "Инструмент",
 	"label.data-source": "Источник данных",
 	"label.package": "Пакет",
@@ -1820,6 +1884,12 @@ const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru }
  */
 export function t(key: MessageKey, params?: MessageParams): string {
 	return interpolate(TABLES[language()][key] ?? en[key], params);
+}
+
+/** The human label for a candidate's lifecycle status; the stored token never changes. */
+export function candidateStatusLabel(status: string): string {
+	const key = `candidate.status.${status}` as MessageKey;
+	return key in en ? t(key) : status;
 }
 
 /** The human label for a verdict token; the token itself never changes. */

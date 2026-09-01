@@ -895,7 +895,7 @@ describe("renderReview", () => {
 		expect(lines[1]).toBe("  Tell the agent to call lookup before answering.");
 		expect(lines[2]).toBe("<dim>Changes</dim> <bold>AGENTS.md</bold> <dim>(<added>+2</added> <removed>-1</removed>)</dim>");
 		expect(lines[3]).toBe("<dim>Base</dim> aaaaaaaaaa <dim>· proposal</dim> <dim>cccccccccccc…</dim>");
-		expect(text).toContain("<dim>Evidence</dim> eval eval-1 <dim>·</dim> 1 targeted failure mode <dim>· 1 run reference</dim>");
+		expect(text).toContain("<dim>Evidence</dim> eval eval-1 · 1 failure mode targeted · 1 run reference");
 		expect(text).toContain("<warning>Risks</warning>\n  <dim>•</dim> May slow down simple replies");
 		expect(text).toContain("<dim>Validation plan</dim>\n  <dim>•</dim> Re-run the development basket");
 		expect(text).toContain("<dim>Diff</dim>\n<dim>diff --git a/AGENTS.md b/AGENTS.md</dim>\n<dim>index 1111111..2222222 100644</dim>\n<bold>--- a/AGENTS.md</bold>\n<bold>+++ b/AGENTS.md</bold>\n<accent>@@ -1,2 +1,3 @@</accent>\n Existing line\n<removed>-Old guidance</removed>\n<added>+New guidance</added>\n<added>+Use the lookup tool first</added>");
@@ -1094,7 +1094,7 @@ describe("renderTraces", () => {
 		}), tagPaint);
 		expect(errors[0]).toContain("<warning><bold>7/10 passed</bold></warning>");
 		expect(errors[0]).toContain("<error>2 failed</error>");
-		expect(errors[0]).toContain("<warning>1 errors</warning>");
+		expect(errors[0]).toContain("<warning>1 error</warning>");
 		expect(errors[0]).toContain("<dim>· 2 repetitions · eval-2</dim>");
 		const perfect = renderTraces(makeTraces({}, {
 			evaluation: { evalRunId: "eval-3", summary: { total: 4, pass: 4, fail: 0, error: 0, allPassRate: 1 }, repetitions: 1 },
@@ -1478,14 +1478,14 @@ describe("renderDecision · calibrate", () => {
 
 	it("summarises the calibration in one headline", () => {
 		expect(decisionHeadline(decision("calibrate", { candidateId: "calibration-1", calibration: makeCalibration() }, "ready-to-evaluate")))
-			.toBe("A/A inconclusive · ±6.0pp · flip 10% · 3 reps recommended");
+			.toBe("A/A inconclusive · ±6.0pp · flip 10% · 3 repetitions recommended");
 	});
 });
 
 describe("decisionHeadline", () => {
 	it("summarises runs, verifications, and falls back to the one-line message", () => {
-		expect(decisionHeadline(decision("run-eval", makeTraces(), "improvement-authoring"))).toBe("6/10 passed · 1 failure modes");
-		expect(decisionHeadline(decision("run-current", { resolvedAs: "run-eval", ...makeTraces() }, "improvement-authoring"))).toBe("6/10 passed · 1 failure modes");
+		expect(decisionHeadline(decision("run-eval", makeTraces(), "improvement-authoring"))).toBe("6/10 passed · 1 failure mode");
+		expect(decisionHeadline(decision("run-current", { resolvedAs: "run-eval", ...makeTraces() }, "improvement-authoring"))).toBe("6/10 passed · 1 failure mode");
 		expect(decisionHeadline(decision("run-current", { resolvedAs: "verify-candidate", outcome: "verified" as const, screen: null, candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"))).toBe("candidate evaluated");
 		expect(decisionHeadline(decision("verify-candidate", { outcome: "verified" as const, screen: null, candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"))).toBe("candidate evaluated · development improved · sealed pass");
 		expect(decisionHeadline(decision("verify-candidate", { outcome: "verified" as const, screen: null, candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: false, gatePassed: false, verdict: null } }, "candidate-review"))).toBe("candidate evaluated · development improved · sealed not run");

@@ -1478,7 +1478,7 @@ describe("Builder Pi slash commands", () => {
 		expect(review).toContain("Proposal builder-proposal-1");
 		expect(review).toContain("Route lookups through the evidence tool before answering.");
 		expect(review).toContain("Changes AGENTS.md (+1 -0)");
-		expect(review).toContain("Evidence eval erun-current · 1 targeted failure mode");
+		expect(review).toContain("Evidence eval erun-current · 1 failure mode targeted · 1 run reference");
 		expect(review).toContain("+Always call the lookup tool before answering.");
 		expect(review).not.toMatch(/[{}]|schemaVersion/);
 

@@ -8,7 +8,7 @@ import type {
 	WorkbenchView,
 } from "../../workbench/types.js";
 import { SEALED_GATE_POLICY } from "../../domain/comparison-gate.js";
-import { plural, t, verdictLabel } from "../../i18n.js";
+import { candidateStatusLabel, plural, t, verdictLabel } from "../../i18n.js";
 import { formatFlipRate, formatNoiseBand, renderCalibration } from "./calibration.js";
 import { regradeHeadline, renderRegrade } from "./regrade.js";
 import { oneLine, section, shortHash, shortSha } from "./format.js";
@@ -296,48 +296,64 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 	}
 }
 
+function runHeadline(result: { evaluation: { summary: { pass: number; total: number } }; improvementBrief: { summary: { failureModeCount: number } } }): string {
+	return t("headline.run", {
+		passed: t("run.passed", { pass: result.evaluation.summary.pass, total: result.evaluation.summary.total }),
+		modes: plural(result.improvementBrief.summary.failureModeCount, "failure mode"),
+	});
+}
+
 function startTestingHeadline(result: WorkbenchStartTestingResult): string {
-	if (result.evaluation) {
-		return `${result.evaluation.evaluation.summary.pass}/${result.evaluation.evaluation.summary.total} passed · ` +
-			`${result.evaluation.improvementBrief.summary.failureModeCount} failure modes`;
-	}
-	return result.steps.map((step) => step.kind.replace(/-/g, " ")).join(" · ") || "nothing to do";
+	if (result.evaluation) return runHeadline(result.evaluation);
+	return result.steps.map((step) => step.kind.replace(/-/g, " ")).join(" · ") || t("headline.nothing-to-do");
 }
 
 function verifyHeadline(result: WorkbenchVerifyCandidateResult): string {
 	if (result.outcome === "stopped-by-screen") {
-		return `cheap check flat · ${result.screen.improved}/${result.screen.tasks} improved · verification not spent`;
+		return t("headline.cheap-check-shape", { improved: result.screen.improved, tasks: result.screen.tasks });
 	}
-	return `candidate ${result.candidate.status} · development ${result.development.verdict} · ` +
-		`sealed ${result.sealedHoldout.verdict ?? "not run"}`;
+	return t("headline.verify", {
+		status: candidateStatusLabel(result.candidate.status),
+		development: verdictLabel(result.development.verdict),
+		sealed: result.sealedHoldout.verdict ? verdictLabel(result.sealedHoldout.verdict) : t("headline.not-run"),
+	});
 }
 
 /** One-line headline for status bars and collapsed tool cards. */
 export function decisionHeadline(result: WorkbenchDecisionResult): string {
 	switch (result.kind) {
 		case "run-eval":
-			return `${result.result.evaluation.summary.pass}/${result.result.evaluation.summary.total} passed · ${result.result.improvementBrief.summary.failureModeCount} failure modes`;
+			return runHeadline(result.result);
 		case "run-current":
-			if (result.result.resolvedAs === "run-eval") {
-				return `${result.result.evaluation.summary.pass}/${result.result.evaluation.summary.total} passed · ${result.result.improvementBrief.summary.failureModeCount} failure modes`;
-			}
+			if (result.result.resolvedAs === "run-eval") return runHeadline(result.result);
 			if (result.result.resolvedAs === "start-testing") return startTestingHeadline(result.result);
 			return result.result.outcome === "stopped-by-screen"
-				? "cheap check flat · verification not spent"
-				: `candidate ${result.result.candidate.status}`;
+				? t("headline.cheap-check-flat")
+				: t("headline.candidate", { status: candidateStatusLabel(result.result.candidate.status) });
 		case "start-testing":
 			return startTestingHeadline(result.result);
 		case "ship":
-			return `${result.result.tag ?? "no new tag"}${result.result.adoption ? ` · ${result.result.adoption.branch} fast-forwarded` : ""}` +
-				`${result.result.continuation ? ` · next ${result.result.continuation.nextStage}` : ""}`;
+			return `${result.result.tag ?? t("headline.no-new-tag")}${
+				result.result.adoption ? ` · ${t("headline.fast-forwarded", { branch: result.result.adoption.branch })}` : ""
+			}${
+				result.result.continuation ? ` · ${t("headline.next-stage", { stage: stageLabel(result.result.continuation.nextStage) })}` : ""
+			}`;
 		case "verify-candidate":
 			return verifyHeadline(result.result);
 		case "improve":
-			return `${result.result.cycles.length} cycle(s) · ${Math.round(result.result.finalPassRate * 100)}% · stopped: ${result.result.stopReason}`;
+			return t("headline.improve", {
+				cycles: plural(result.result.cycles.length, "cycle"),
+				rate: Math.round(result.result.finalPassRate * 100),
+				reason: result.result.stopReason,
+			});
 		case "calibrate": {
 			const calibration = result.result.calibration;
-			return `A/A ${calibration.verdict} · ${formatNoiseBand(calibration)} · flip ${formatFlipRate(calibration)} · ` +
-				`${calibration.recommendedRepetitions} reps recommended`;
+			return t("headline.calibrate", {
+				verdict: verdictLabel(calibration.verdict),
+				band: formatNoiseBand(calibration),
+				flip: formatFlipRate(calibration),
+				reps: plural(calibration.recommendedRepetitions, "repetition"),
+			});
 		}
 		case "regrade":
 			return regradeHeadline(result.result);
