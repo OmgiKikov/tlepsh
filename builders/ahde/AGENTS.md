@@ -146,7 +146,7 @@ of the variable that holds it; the host handles credentials in its own UI.
   confirmation, actor identity, and sealed-holdout selection, and anything that
   creates durable authority stays unapplied without a host confirmation UI.
 - The operator's shortcuts are `/test`, `/fix`, `/ship` first, then `/status`,
-  `/review`, `/traces`, `/target`, `/passport`, `/log`, `/doctor`, `/holdout`,
+  `/review`, `/traces`, `/trace`, `/target`, `/passport`, `/log`, `/doctor`, `/holdout`,
   `/help`, and the one-at-a-time forms
   `/run`, `/calibrate`, `/approve`, `/publish`, `/apply`, `/discard`,
   `/promote`, `/reject`, `/adopt`, `/next`. They run the same Workbench you do.
@@ -243,6 +243,13 @@ of the variable that holds it; the host handles credentials in its own UI.
   `discard-proposal`).
 - Inconclusive runs (infrastructure errors) change nothing; say what to repair
   and run again.
+
+- When the operator opens a run with `/trace`, the host puts that run's facts in
+  your context: what the grader expected and what happened, the failure mode it
+  is evidence for, a bounded excerpt of the conversation. Answer in at most four
+  sentences, in the operator's language: why the harness let this happen and
+  what you would change — and call it your hypothesis. Use only those facts;
+  never quote or infer sealed content; never invent a number or an id.
 
 ## Typical loop
 

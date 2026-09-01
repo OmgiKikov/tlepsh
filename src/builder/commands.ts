@@ -31,6 +31,15 @@ import { decisionHeadline, renderDecision } from "./render/decision.js";
 import { nextStep, stageLabel } from "./render/stage.js";
 import { renderReview, renderStatus, renderTarget, renderTraces, viewTitle } from "./render/view.js";
 import {
+	DEFAULT_TRACE_TABLE_ROWS,
+	MAX_TRACE_TABLE_ROWS,
+	renderRunsTable,
+	renderTracePanel,
+	traceNoteForModel,
+} from "./render/trace.js";
+import { collectEvalPage, collectRunDetailPage, EvidenceNotFound } from "../evidence/model.js";
+import type { EvalPageModel, RunDetailPageModel } from "../evidence/pages.js";
+import {
 	beginBuilderRunObservation,
 	type BeginBuilderLiveTrace,
 	type BuilderLiveTraceOutcome,
@@ -73,6 +82,7 @@ export const AHDE_BUILDER_COMMAND_NAMES = [
 	"next",
 	"target",
 	"passport",
+	"trace",
 	"log",
 ] as const;
 
@@ -96,7 +106,8 @@ Commands: three verbs do the work.
 Looking around:
   /status               where you are and the next step
   /review               the exact artifact awaiting your review, with actions
-  /traces               diagnosis, failure modes, and the evidence link
+  /traces [rows]        diagnosis, failure modes, the evidence link, and the runs table
+  /trace <n|next|prev>  one run: why it failed, every verdict, and the conversation
   /target [resource]    the exact committed Target, or one declared resource
   /passport [version]   what the newest shipped version promised and measured
   /log [n]              how the agent grew: every version and what it scored
@@ -291,8 +302,44 @@ export interface RegisterBuilderCommandsOptions {
 	onWorkbenchChanged?: () => void | Promise<void>;
 	/** Optional bridge to the conversation for “fix problem N” shortcuts. */
 	sendUserMessage?: (text: string) => void;
+	/** Evidence loaders behind /traces and /trace; the Explorer's own, unless a test injects page models. */
+	evidence?: {
+		evalPage: (runsRoot: string, evalRunId: string) => EvalPageModel;
+		runDetail: (runsRoot: string, runId: string) => RunDetailPageModel;
+	};
 	/** Host-only sealed import. The path and corpus identity never enter Builder Pi. */
 	importSealedHoldout?: (input: { sourcePath: string; name: string }) => { taskCount: number };
+}
+
+function describeError(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+/** Which row `/trace <arg>` means: a 1-based row, next/prev from the cursor, a task id, or a run id. */
+export function resolveTraceTarget(
+	argument: string,
+	rows: readonly EvalPageModel["rows"][number][],
+	cursor: number | null,
+): { index: number; row: EvalPageModel["rows"][number] } | "end" {
+	if (rows.length === 0) throw new Error("This evaluation has no runs to open.");
+	const at = (index: number) => ({ index, row: rows[index]! });
+	if (argument === "" || argument === "next") {
+		if (argument === "" && cursor === null) return at(0);
+		const index = cursor === null ? 0 : cursor + 1;
+		return index >= rows.length ? "end" : at(index);
+	}
+	if (argument === "prev") {
+		if (cursor === null || cursor === 0) return "end";
+		return at(cursor - 1);
+	}
+	if (/^\d{1,3}$/.test(argument)) {
+		const index = Number(argument) - 1;
+		if (index < 0 || index >= rows.length) throw new Error(`/trace ${argument}: the table has ${rows.length} row(s); say /traces to see them`);
+		return at(index);
+	}
+	const byId = rows.findIndex((row) => row.runId === argument || row.taskId === argument || `${row.taskId}#${row.repetitionIndex}` === argument);
+	if (byId >= 0) return at(byId);
+	throw new Error(`/trace needs a row number from /traces, “next”, “prev”, a task id, or a run id — not “${argument}”`);
 }
 
 export function registerAhdeBuilderCommands(
@@ -301,6 +348,26 @@ export function registerAhdeBuilderCommands(
 ): void {
 	const presenter = options.presenter ?? createTranscriptPresenter(pi);
 	const workbench = options.workbench;
+	const evidence = options.evidence ?? {
+		evalPage: (runsRoot: string, evalRunId: string) => collectEvalPage(runsRoot, evalRunId),
+		runDetail: (runsRoot: string, runId: string) => collectRunDetailPage(runsRoot, runId),
+	};
+	/** Where /trace next|prev stands, per evaluation; forgotten when the eval changes. */
+	let traceCursor: { evalRunId: string; index: number } | null = null;
+
+	const showRunsTable = (ctx: ExtensionCommandContext, evalRunId: string, limit: number): void => {
+		try {
+			const page = evidence.evalPage(workbench.runsRoot, evalRunId);
+			presenter.show(ctx, {
+				title: "AHDE · Runs",
+				tone: "info",
+				lines: renderRunsTable(page.rows, page.modes, markerPaint, { limit: Math.min(limit, MAX_TRACE_TABLE_ROWS) }),
+			});
+		} catch {
+			// The table is a convenience over the same evidence the link opens; when
+			// the runs cannot be read here, the diagnosis and its link stand alone.
+		}
+	};
 
 	const gate = (ctx: ExtensionCommandContext) => createPolicyAwareGate(
 		ctx,
@@ -853,7 +920,8 @@ export function registerAhdeBuilderCommands(
 	pi.registerCommand("traces", {
 		description: "Show the diagnosis, failure modes, and the read-only evidence link",
 		async handler(args, ctx) {
-			noArguments("traces", args);
+			const rowsWanted = args.trim();
+			if (rowsWanted && !/^\d{1,2}$/.test(rowsWanted)) throw new Error("/traces accepts a row count, for example /traces 30");
 			const signal = await prepare(ctx, "traces");
 			const view = await workbench.view({ aspect: "traces" });
 			if (view.detail?.aspect !== "traces") {
@@ -861,6 +929,7 @@ export function registerAhdeBuilderCommands(
 				return;
 			}
 			presenter.show(ctx, { title: "AHDE · Diagnosis", tone: "info", lines: renderTraces(view.detail.content, markerPaint) });
+			showRunsTable(ctx, view.detail.content.evaluation.evalRunId, rowsWanted ? Number(rowsWanted) : DEFAULT_TRACE_TABLE_ROWS);
 			const modes = view.detail.content.improvementBrief.modes.filter((mode) => mode.selectableForProposal);
 			if (modes.length > 0 && options.sendUserMessage && typeof ctx.ui.select === "function") {
 				const choices = modes.slice(0, 5).map((mode) => `Fix ${mode.ordinal}: ${oneLine(mode.title, 60)}`);
@@ -1016,6 +1085,52 @@ export function registerAhdeBuilderCommands(
 						: markerPaint.warning("This directory is not writable, so nothing was saved beside the agent."),
 				],
 			});
+		},
+	});
+
+	/** One run on screen — the host's facts and the conversation — then the Builder's own reading of it. */
+	pi.registerCommand("trace", {
+		description: "Open one run: why it failed, every grader's verdict, the conversation: /trace <row|next|prev|task id|run id>",
+		async handler(args, ctx) {
+			await prepare(ctx, "trace");
+			const view = await workbench.view({ aspect: "traces" });
+			if (view.detail?.aspect !== "traces") {
+				presenter.show(ctx, { title: viewTitle(view), tone: "warning", lines: renderStatus(view, markerPaint) });
+				return;
+			}
+			const evalRunId = view.detail.content.evaluation.evalRunId;
+			let page: EvalPageModel;
+			try {
+				page = evidence.evalPage(workbench.runsRoot, evalRunId);
+			} catch (error) {
+				presenter.show(ctx, { title: "AHDE · Trace", tone: "warning", lines: [oneLine(`The runs of ${evalRunId} cannot be listed here: ${describeError(error)}`, 200)] });
+				return;
+			}
+			const cursor = traceCursor?.evalRunId === evalRunId ? traceCursor.index : null;
+			const target = resolveTraceTarget(args.trim(), page.rows, cursor);
+			if (target === "end") {
+				ctx.ui.notify("No more runs in that direction.", "info");
+				return;
+			}
+			traceCursor = { evalRunId, index: target.index };
+			let detail: RunDetailPageModel;
+			try {
+				detail = evidence.runDetail(workbench.runsRoot, target.row.runId);
+			} catch (error) {
+				const reason = error instanceof EvidenceNotFound
+					? `This run cannot be opened here: ${describeError(error)}`
+					: `The trace could not be read: ${describeError(error)}`;
+				presenter.show(ctx, { title: "AHDE · Trace", tone: "warning", lines: [oneLine(reason, 200)] });
+				return;
+			}
+			presenter.show(ctx, {
+				title: `AHDE · Trace ${oneLine(detail.run.taskId, 40)}#${detail.run.repetitionIndex}`,
+				tone: detail.run.outcome === "pass" ? "info" : "warning",
+				lines: renderTracePanel(detail, markerPaint),
+			});
+			// The one thing the host cannot write: a reading of the trace. The
+			// Builder gets the same bounded facts and answers in the operator's words.
+			presenter.note(traceNoteForModel(detail), { triggerTurn: true });
 		},
 	});
 

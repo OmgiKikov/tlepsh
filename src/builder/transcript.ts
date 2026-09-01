@@ -141,7 +141,7 @@ export interface TranscriptPresenter {
 	/** Show a human block. Falls back to a notification when the host has no transcript entries. */
 	show(ctx: Pick<ExtensionContext, "ui">, block: { title: string; tone?: TranscriptTone; lines: string[] }): void;
 	/** Tell the Builder model, without showing anything, what the operator did outside the conversation. */
-	note(text: string): void;
+	note(text: string, options?: { triggerTurn?: boolean }): void;
 }
 
 /**
@@ -168,12 +168,12 @@ export function createTranscriptPresenter(pi: TranscriptHost): TranscriptPresent
 				tone === "error" ? "error" : tone === "warning" ? "warning" : "info",
 			);
 		},
-		note(text) {
+		note(text, options) {
 			if (typeof pi.sendMessage !== "function") return;
 			try {
 				pi.sendMessage(
 					{ customType: AHDE_MODEL_NOTE_TYPE, content: sanitizeTerminalText(text).slice(0, 4_000), display: false },
-					{ triggerTurn: false },
+					{ triggerTurn: options?.triggerTurn ?? false },
 				);
 			} catch {
 				// The note is a courtesy for conversational continuity, never a requirement.

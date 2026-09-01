@@ -39,7 +39,8 @@ older step is still there, one at a time.
 
 /status                 where you are and what to say next
 /review                 the exact Spec, eval basket, diff, or candidate — with its actions
-/traces                 diagnosis, failure modes, and the evidence link
+/traces [rows]          diagnosis, failure modes, the evidence link, and the runs table
+/trace <n|next|prev>    one run: why it failed, every verdict, and the conversation
 /target [resource]      the exact committed Target or one declared resource
 /passport [version]     what a shipped version promised and measured, saved beside the agent
 /log [rows]             how the agent grew: every version, what it scored, what it cost

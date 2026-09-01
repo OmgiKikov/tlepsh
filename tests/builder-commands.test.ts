@@ -617,10 +617,11 @@ describe("Builder Pi slash commands", () => {
 			"next",
 			"target",
 			"passport",
+			"trace",
 			"log",
 		]);
 		expect(registered.map(({ name }) => name)).toEqual([...AHDE_BUILDER_COMMAND_NAMES]);
-		expect(registered).toHaveLength(22);
+		expect(registered).toHaveLength(23);
 		expect(registered.every(({ options }) => options.description && options.handler)).toBe(true);
 	});
 
@@ -1750,7 +1751,7 @@ describe("Builder Pi slash commands", () => {
 			name,
 			name === "apply" ? "candidate/fix" : name === "promote" ? "1.0.0" : "",
 		]);
-		expect(invocations).toHaveLength(22);
+		expect(invocations).toHaveLength(23);
 
 		for (const settings of [
 			{ hasUI: false, mode: "print" as const },
@@ -1775,13 +1776,25 @@ describe("Builder Pi slash commands", () => {
 		expect(output.show).not.toHaveBeenCalled();
 	});
 
-	it.each(["help", "doctor", "holdout", "status", "traces", "review"])("rejects arguments to /%s before touching the host", async (name) => {
+	it.each(["help", "doctor", "holdout", "status", "review"])("rejects arguments to /%s before touching the host", async (name) => {
 		const fixture = workbench();
 		const { commands, output } = register(fixture.value);
 		const host = context();
 
 		await expect(command(commands, name).handler("unexpected", host.ctx))
 			.rejects.toThrow(`/${name} does not accept arguments`);
+		expect(host.waitForIdle).not.toHaveBeenCalled();
+		expect(fixture.view).not.toHaveBeenCalled();
+		expect(output.show).not.toHaveBeenCalled();
+	});
+
+	it("/traces accepts only a row count, and rejects anything else before touching the host", async () => {
+		const fixture = workbench();
+		const { commands, output } = register(fixture.value);
+		const host = context();
+
+		await expect(command(commands, "traces").handler("unexpected", host.ctx))
+			.rejects.toThrow("/traces accepts a row count, for example /traces 30");
 		expect(host.waitForIdle).not.toHaveBeenCalled();
 		expect(fixture.view).not.toHaveBeenCalled();
 		expect(output.show).not.toHaveBeenCalled();
