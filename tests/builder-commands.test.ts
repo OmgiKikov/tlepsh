@@ -310,6 +310,13 @@ function defaultDecision(input: WorkbenchDecisionInput): WorkbenchDecisionResult
 			}, viewAt("ready-to-evaluate", { calibration: calibration({ repetitions: input.repetitions }) }));
 		case "approve-spec":
 			return decision("approve-spec", { approvedSpecId: "spec-1", receiptId: "receipt-approve" }, viewAt("corpus-design"));
+		case "generate-holdout":
+			return decision("generate-holdout", {
+				...(input.mode === "seal" ? { corpusId: `corpus-${"a".repeat(64)}` } : { reviewPath: "/private/state/sealed-synth/review-abc.jsonl" }),
+				cases: input.cases,
+				generator: "openrouter/anthropic/claude-sonnet-4.5",
+				promptHash: hash("a"),
+			}, viewAt("ready-to-evaluate"));
 		case "publish-corpus":
 			return decision("publish-corpus", {
 				corpusId: "corpus-1",
@@ -1860,6 +1867,48 @@ describe("Builder Pi slash commands", () => {
 		expect(output.text()).toContain("20 evaluator-only cases are ready for the ship gate");
 		expect(output.text()).not.toContain("customer-secrets");
 		expect(output.text()).not.toContain("Private promotion exam");
+	});
+
+	it("routes /holdout's other two answers into the generate-holdout decision", async () => {
+		for (const [choice, mode] of [[1, "seal"], [2, "review"]] as const) {
+			const fixture = workbench();
+			const importSealedHoldout = vi.fn(() => ({ taskCount: 20 }));
+			const { commands, output } = register(fixture.value, { importSealedHoldout });
+			const host = context({
+				select: async (title, choices) => {
+					expect(title).toBe("Where should the sealed exam come from?");
+					expect(choices).toEqual(["Import a file", "Generate with the judge", "Generate a draft to review"]);
+					return choices[choice];
+				},
+				input: async (title) => {
+					expect(title).toBe("How many cases? (minimum 15)");
+					return "24";
+				},
+			});
+
+			await command(commands, "holdout").handler("", host.ctx);
+
+			// The file import is untouched on these two paths: the exam is written,
+			// not read off the operator's disk.
+			expect(importSealedHoldout).not.toHaveBeenCalled();
+			expect(fixture.decide).toHaveBeenCalledTimes(1);
+			expect(fixture.decide.mock.calls[0]?.[0]).toMatchObject({ kind: "generate-holdout", cases: 24, mode });
+			const text = output.text();
+			expect(text).toContain("24 cases · written by the judge openrouter/anthropic/claude-sonnet-4.5");
+			expect(text).toContain(mode === "seal" ? "Exam created" : "Exam draft ready");
+		}
+	});
+
+	it("refuses a case count that is not a number, before asking the Workbench anything", async () => {
+		const fixture = workbench();
+		const { commands } = register(fixture.value, { importSealedHoldout: vi.fn(() => ({ taskCount: 20 })) });
+		const host = context({
+			select: async (_title, choices) => choices[1],
+			input: async () => "twenty",
+		});
+
+		await expect(command(commands, "holdout").handler("", host.ctx)).rejects.toThrow(/whole number/);
+		expect(fixture.decide).not.toHaveBeenCalled();
 	});
 
 	it("includes evaluator credential readiness and refuses ready when a configured evaluator key is missing", async () => {

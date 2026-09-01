@@ -180,7 +180,9 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 			];
 			if (result.result.reviewPath) {
 				lines.push(
-					`${paint.dim(t("label.draft"))} ${oneLine(result.result.reviewPath, 100)}`,
+					// The one line here that has to survive being copied out of a
+					// terminal, so it gets the wider bound blockers get.
+					`${paint.dim(t("label.draft"))} ${oneLine(result.result.reviewPath, 200)}`,
 					paint.muted(t("generate-holdout.draft-next")),
 				);
 			} else {
