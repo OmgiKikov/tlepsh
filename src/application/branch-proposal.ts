@@ -7,7 +7,9 @@ import {
 	type CandidateProposal,
 } from "../builders/adapters.js";
 import { diagnoseEvalRun } from "../diagnosis.js";
+import { readEvalRunIndex } from "../eval.js";
 import { resolveCommitRef } from "../git/experiment-worktree.js";
+import { assertUntrackedEngineStore } from "./store-hygiene.js";
 import {
 	resolveCanonicalProposalBasis,
 	runApprovedSpecBuilderProposal,
@@ -82,6 +84,63 @@ function treeEntryMode(repositoryDir: string, sha: string, path: string): "10064
 	const mode = entry.split(" ", 1)[0];
 	if (mode === "100644" || mode === "100755") return mode;
 	throw new Error(`branch change ${path} is not a regular file at ${sha.slice(0, 12)} (mode ${mode ?? "unknown"})`);
+}
+
+/** A refusal `ahde propose` can explain, with the operator's next step. */
+export class BranchProposalError extends Error {
+	readonly name = "BranchProposalError";
+	/** What the operator should do about it. Surfaced by the CLI as `next:`. */
+	readonly next: string;
+
+	constructor(message: string, next: string, options?: ErrorOptions) {
+		super(message, options);
+		this.next = next;
+	}
+}
+
+/**
+ * Whether the checkout carries anything the recorded revision cannot name.
+ * Deliberately the same question `gitSha()` in manifest.ts asks before it
+ * appends `-dirty-<hash>`, so the two can never disagree about what dirty is.
+ */
+function hasUncommittedChanges(repositoryDir: string): boolean {
+	return git(repositoryDir, ["status", "--porcelain=v1", "--untracked-files=all"]).trim().length > 0;
+}
+
+/**
+ * A proposal is a diff against an exact commit. A dirty tree has no commit to
+ * be a diff against — the revision recorded for it is `<sha>-dirty-<hash>`,
+ * which names no Git object — so the refusal says that instead of letting
+ * `rev-parse` fail on a string it was never given.
+ */
+export function assertCleanProposalBaseline(repositoryDir: string, sourceRevision?: string): void {
+	if (hasUncommittedChanges(repositoryDir)) {
+		throw new BranchProposalError(
+			"the Target has uncommitted changes; a proposal compiles only against a clean committed baseline",
+			"commit or stash them, then run ahde propose again",
+		);
+	}
+	if (sourceRevision !== undefined && sourceRevision.includes("-dirty-")) {
+		throw new BranchProposalError(
+			`the evidence was recorded on a dirty tree (${sourceRevision}); ` +
+			"a proposal compiles only against a clean committed baseline",
+			"the tree is clean now — re-run the baseline and propose against that eval run",
+		);
+	}
+}
+
+/**
+ * The revision the named evidence was recorded at, or undefined when there is
+ * no evidence to name and when its index cannot be read — an unreadable eval
+ * run is reported by the evidence chain below, in its own words.
+ */
+function recordedSourceRevision(runsRoot: string, sourceEvalRunId?: string): string | undefined {
+	if (sourceEvalRunId === undefined) return undefined;
+	try {
+		return readEvalRunIndex(runsRoot, sourceEvalRunId).target.gitSha;
+	} catch {
+		return undefined;
+	}
 }
 
 export interface BranchChangeInput {
@@ -186,6 +245,10 @@ export async function proposeBranchChange(options: BranchProposalOptions): Promi
 	if ((options.sourceEvalRunId === undefined) !== (failureModeIds.length === 0)) {
 		throw new Error("a diagnosed proposal needs both --eval and --mode; a construction proposal needs neither");
 	}
+	// Both refusals before any work: the engine store must not already be inside
+	// a Git object, and the baseline this diff is taken against must be a commit.
+	assertUntrackedEngineStore(options.targetDir);
+	assertCleanProposalBaseline(options.targetDir, recordedSourceRevision(options.runsRoot, options.sourceEvalRunId));
 	const branchSha = resolveCommitRef(options.targetDir, options.branch);
 	const summary = options.summary ?? `Harness change from branch ${options.branch}.`;
 

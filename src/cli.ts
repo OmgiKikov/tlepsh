@@ -41,6 +41,11 @@ import {
 import { renderCandidateVerdictLines } from "./application/candidate-verdict.js";
 import { proposeBranchChange } from "./application/branch-proposal.js";
 import { approveSpecDocument, LOCAL_OPERATOR_ACTOR_ID } from "./application/spec-document.js";
+import {
+	assertUntrackedEngineStore,
+	ensureLocalArtifactIgnores,
+	renderLocalArtifactIgnoreLine,
+} from "./application/store-hygiene.js";
 import { adoptTargetCandidate, describeTargetAdoption } from "./application/target-adoption.js";
 import {
 	compileVersionPassport,
@@ -807,8 +812,14 @@ async function main(): Promise<void> {
 			const templateDir = template
 				? resolve(template.startsWith("/") || template.startsWith(".") ? template : join(process.cwd(), template))
 				: join(packageRoot, "templates", "basic-agent");
-			scaffoldTarget(templateDir, resolve(dir));
+			let ignoreLine: string | null = null;
+			scaffoldTarget(templateDir, resolve(dir), (added) => {
+				ignoreLine = renderLocalArtifactIgnoreLine(added);
+			});
 			console.log(`scaffolded target → ${resolve(dir)} (template: ${template ?? "built-in basic-agent"})`);
+			// The engine store lives inside the Target and holds the sealed exam:
+			// say which rules were written rather than leaving it to be discovered.
+			if (ignoreLine) console.log(ignoreLine);
 			console.log("next: открой Builder Pi — он покажет exact one-time Target/model diff перед commit:");
 			console.log(`      cd ${resolve(dir)} && ahde`);
 			break;
@@ -1232,6 +1243,11 @@ async function main(): Promise<void> {
 				throw new Error("usage: ahde spec approve --target <dir> [--project <id>] [--file spec.md] [--title <s>]");
 			}
 			const targetDir = resolve(requireArg("target"));
+			// Before an approval that the ship gate will later rest on: the engine
+			// store must not already be committed, and it must be ignored from here.
+			assertUntrackedEngineStore(targetDir);
+			const ignoreLine = renderLocalArtifactIgnoreLine(ensureLocalArtifactIgnores(targetDir));
+			if (ignoreLine) console.log(ignoreLine);
 			const projectId = arg("project") ?? loadTarget(targetDir).manifest.id;
 			const file = arg("file");
 			const approval = approveSpecDocument({

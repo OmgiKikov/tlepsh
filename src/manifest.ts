@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, lstatSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
@@ -11,6 +11,7 @@ import {
 	isPinnedContainerImage,
 } from "./target/container-backend.js";
 import { loadTargetTools, type ResolvedTargetTool } from "./target/tool-manifest.js";
+import { ensureLocalArtifactIgnores } from "./application/store-hygiene.js";
 
 // ---------- Grader specs (declarative, target-owned) ----------
 
@@ -660,9 +661,6 @@ export interface ResolvedTarget {
 }
 
 const HARNESS_ROOT = resolve(fileURLToPath(import.meta.url), "../..");
-const LOCAL_ARTIFACT_GITIGNORE =
-	"# AHDE local state, Builder imports, run evidence, and secrets\n/.ahde/\n/imports/\n/runs/\n/.env\n/.env.*\n!/.env.example\n";
-
 function sourceFiles(root: string, directory = root): { name: string; content: string }[] {
 	const files: { name: string; content: string }[] = [];
 	for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -690,20 +688,18 @@ function packageJsonFor(packageName: string): Record<string, unknown> {
 	}
 }
 
-function addLocalArtifactIgnores(targetDir: string): void {
-	const path = join(targetDir, ".gitignore");
-	let existing = "";
-	if (existsSync(path)) {
-		if (!lstatSync(path).isFile()) throw new Error("template .gitignore must be a regular file");
-		existing = readFileSync(path, "utf8");
-		if (existing.endsWith(LOCAL_ARTIFACT_GITIGNORE)) return;
-	}
-	const separator = existing.length === 0 ? "" : existing.endsWith("\n") ? "\n" : "\n\n";
-	writeFileSync(path, `${existing}${separator}${LOCAL_ARTIFACT_GITIGNORE}`);
-}
-
-/** Scaffold a new target from a working template (copy + fresh git init). */
-export function scaffoldTarget(templateDir: string, destDir: string): string {
+/**
+ * Scaffold a new target from a working template (copy + fresh git init).
+ *
+ * `onGitignore` reports the ignore lines this scaffold had to add, so `ahde
+ * init` can name them; the rules are applied either way, before the first
+ * commit, because the engine store must never be inside one.
+ */
+export function scaffoldTarget(
+	templateDir: string,
+	destDir: string,
+	onGitignore?: (added: readonly string[]) => void,
+): string {
 	if (existsSync(destDir)) throw new Error(`target dir already exists: ${destDir}`);
 	const source = resolve(templateDir);
 	readFileSync(join(source, "manifest.yaml")); // template must be a target
@@ -711,7 +707,10 @@ export function scaffoldTarget(templateDir: string, destDir: string): string {
 		recursive: true,
 		filter: (p) => !relative(source, p).split(sep).includes(".git"),
 	});
-	addLocalArtifactIgnores(resolve(destDir));
+	// Not `onGitignore?.(ensureLocalArtifactIgnores(...))`: an optional call
+	// does not evaluate its argument, so the rules would go unwritten.
+	const addedIgnores = ensureLocalArtifactIgnores(resolve(destDir));
+	onGitignore?.(addedIgnores);
 	execFileSync("git", ["-C", destDir, "init", "-q"]);
 	execFileSync("git", ["-C", destDir, "add", "."]);
 	execFileSync("git", ["-C", destDir, "-c", "user.name=ahde", "-c", "user.email=ahde@local", "commit", "-qm", "scaffold from template"]);

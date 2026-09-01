@@ -72,13 +72,14 @@ the engine's verdicts count, and only its gate ships.
    heading it does not recognize stays yours and is reported as unread.
 2. **Scaffold or adopt.** New: `ahde init .` then edit. Existing agent: keep
    its files, add `manifest.yaml` from the template. `ahde validate --target .`
-   until `readiness: ready to run`. Before the first `git add`, make sure
-   `.gitignore` lists `.ahde/`, `runs/` and `imports/`: the engine's store —
-   including the sealed exam — lives under `.ahde/`, and a `git add -A` that
-   sweeps it in puts the exam into a git object (if that happened:
-   `git rm -r --cached .ahde runs imports`). Commit before baselining: `ahde run`
-   will happily produce evidence on a dirty tree, but a dirty revision cannot
-   seed a proposal and the baseline has to be re-run. Use the Target id as
+   until `readiness: ready to run`. `ahde init` and `ahde spec approve` top up
+   `.gitignore` with `.ahde/`, `runs/` and `imports/` and name what they added:
+   the engine's store — including the sealed exam — lives under `.ahde/`, and a
+   `git add -A` that swept it in puts the exam into a git object. If that
+   already happened, `spec approve` and `propose` refuse by name until
+   `git rm -r --cached .ahde runs`. Commit before baselining: `ahde run` will
+   happily produce evidence on a dirty tree, but `propose` refuses a dirty
+   baseline and the run has to be repeated clean. Use the Target id as
    `--project` everywhere the engine asks for one; a proposal belongs to that
    project and refuses corpora imported under another name.
 3. **Create the benchmark.** Prefer the client's real data dropped in
@@ -187,8 +188,6 @@ Measured end to end on 2026-08-31 (mock) and 2026-09-01 (mock, then a real
 9B model — see `docs/SKILL_WALKTHROUGH.md` and `docs/DEMO_REAL_MODEL.md`). The
 loop closes on the CLI alone. What is still rough:
 
-- `ahde propose` on a dirty Target tree fails with raw git plumbing instead of
-  "commit first" — commit, then propose.
 - `ahde diagnose` prints one failure mode per failed grader with the same
   title and hypothesis; only the ids differ. Read the task drill-down to tell
   them apart, and pass every id you are actually fixing to `propose --mode`
