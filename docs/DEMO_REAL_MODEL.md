@@ -378,7 +378,7 @@ next: the tree is clean now — re-run the baseline and propose against that eva
 
 `ahde improve` had the same defect in a different costume — a raw zod regex
 failure on `targetGitSha` — and now refuses from the same shared check. See
-ADDENDUM-2 in `docs/SKILL_WALKTHROUGH.md`.
+ADDENDUM-2 in the (retired) CLI walkthrough — see docs/ROADMAP.md "Tried and retired".
 
 **2. The engine's own store lives inside the target, is not git-ignored, and holds
 the sealed corpus.** `ahde corpus import` writes to `<target>/.ahde/projects/<id>/corpora/…`
@@ -503,7 +503,7 @@ a real zero, not a missing one. Check the block before quoting a total.
 **7. The engine gap the skill lists as open is closed in this build.**
 **STATUS: still true, and one more closed.** `ahde improve` picks up a proposal
 authored at the terminal with `ahde propose --eval … --mode …` — proven end to
-end in ADDENDUM-2 of `docs/SKILL_WALKTHROUGH.md`: it matched on the development
+end in ADDENDUM-2 of the (retired) CLI walkthrough — see docs/ROADMAP.md "Tried and retired": it matched on the development
 surface, applied the proposal on its own throwaway branch, screened it 6/6,
 verified `improved +100.0pp`, hit the `--until` gate on cycle 1 of 2 and stopped
 with a verified candidate, the operator's checkout never moving.
