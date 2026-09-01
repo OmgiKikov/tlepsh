@@ -61,9 +61,10 @@ One JSONL line per exported run:
   "messages": [
     { "role": "system",    "content": "<the AGENTS.md that run saw>" },
     { "role": "user",      "content": "Проверь договор 42." },
-    { "role": "assistant", "content": "Сейчас посмотрю договор.",
+    { "role": "assistant",
       "tool_calls": [ { "id": "call_1", "type": "function",
-                        "function": { "name": "lookup", "arguments": "{\"number\":\"42\"}" } } ] },
+                        "function": { "name": "lookup", "arguments": "{\"number\":\"42\"}" } } ],
+      "content": "Сейчас посмотрю договор." },
     { "role": "tool", "name": "lookup", "tool_call_id": "call_1", "content": "contract 42: active" },
     { "role": "assistant", "content": "Договор 42 действует." }
   ],
