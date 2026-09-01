@@ -104,6 +104,16 @@ Nothing is deleted, and the archive is still importable.`,
 Serve the read-only Evidence Explorer on loopback. Port 0 chooses a free port.
 Sealed holdout content and state-changing operations are never exposed.
 
+Routes:
+  /                          every public evaluation index
+  /evals/<evalRunId>         the runs table: one row per case x repetition, failures
+                             first, with the failure-mode list above it
+                             (?outcome=fail|error|pass and ?mode=<failure-mode-id> filter it)
+  /runs/<runId>              one run: the conversation, every grader's verdict, and
+                             the host's plain-language explanation of why it failed
+  /candidates/<candidateId>  baseline versus candidate per task, with the sealed
+                             verdict and design size only
+
 With --project the report also shows how far this project's judge has been
 checked against a human, exactly as \`ahde report\` does. Without it the page
 says the calibration is not available here rather than calling the judge

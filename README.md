@@ -376,6 +376,33 @@ ahde diagnose <eval-run-id>
 ahde evidence
 ```
 
+The explorer serves four routes, all read-only:
+
+```
+/                          every public evaluation index
+/evals/<evalRunId>         the runs table: one row per case x repetition, failures
+                           first, with the run summary and failure-mode list above it
+                           (?outcome=fail|error|pass and ?mode=<failure-mode-id> filter it)
+/runs/<runId>              one run: the conversation, every grader's verdict, and the
+                           host's plain-language explanation of why it failed
+/candidates/<candidateId>  baseline versus candidate per task, with the sealed verdict
+                           and design size only
+```
+
+The runs table gives each row the case input preview, outcome, mean score,
+grader chips (`3/4` for an assertion rubric), the failure mode it is evidence
+for, tool calls, latency, cost and tokens. A run page renders the trace as a
+chat transcript — user turns, assistant turns, tool calls as expandable cards
+with their result and duration, thinking collapsed, the final answer marked —
+beside the verdict of every grader and a **Why** paragraph the host assembles
+from recorded fields alone: what the grader expected, what the record shows
+instead, the failure mode's hypothesis labelled as a hypothesis, and the
+baseline→candidate flip when a Candidate covers the same task. Nothing there is
+written by a model, and a grader phrasing the host does not recognize is quoted
+verbatim rather than paraphrased. `src/application/run-explanation.ts` is the
+single pure projection behind all of it, so the web pages, `report.html`, and
+the Builder read the same sentences.
+
 `/run`, `/traces`, the CLI, and this report all consume the same deterministic
 Improvement Brief. New evidence is grouped only by an exact grader-check
 fingerprint; a mode becomes systemic after it appears on at least two distinct
@@ -402,7 +429,10 @@ to the existing hash-verified report built from canonical `session.jsonl` and
 `run.json`.
 
 Sealed holdout cases, graders, expected outputs, identifiers, and traces are
-never shown to Builder Pi or the Evidence Explorer. The evaluator gives Target
+never shown to Builder Pi or the Evidence Explorer. A sealed EvalRun and every
+Run inside it answer 404 on every route, including the run page reached by id,
+and a candidate comparison shows the sealed arm's verdict and design size and
+nothing else — no eval run id, no corpus identity, no case. The evaluator gives Target
 Pi one sealed case at a time, and only bounded gate results cross that boundary.
 
 Shipping requires a sufficiently large evaluator-owned sealed holdout. AHDE
