@@ -346,6 +346,16 @@ at the explicit human-owned boundaries described above.
    request `apply-proposal` only when the operator says apply. This is
    Spec-backed construction, not a pretend failure diagnosis. If the starter
    already implements the Spec, skip it.
+4a. **State the prediction when you close a construction workshop too.** A
+   construction close names no failure mode, but it is still a promise, so it
+   still carries `prediction`: which grader families of the last run should
+   move and by roughly how much — «check_dbo станет вызываться в 3 задачах из
+   3, классификация 1/6 → 5/6, итог примерно +35 п.п.» — submitted as
+   `expectedPassRateDeltaPp` or `expectedScoreDeltaPp` with the families named
+   in `note`. One sentence, from the numbers the last run's panel already
+   showed; it is optional only when nothing has run yet, and then say so in one
+   sentence instead. It is hashed into the proposal the operator applies, and
+   the verification afterwards is read against it.
 5. **Test it.** Request `run-current` whenever the operator says test, run,
    check, проверь, запусти. It publishes whatever is still unpublished and runs
    in one question; later runs need no question at all. The panel beside your
