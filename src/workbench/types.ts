@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ProposalPredictionSchema, type ProposalPrediction } from "../builders/adapters.js";
 import type { GateSurface, GateVerdict } from "../domain/comparison-gate.js";
 import {
 	BuilderCorpusDraftCoverageNotesSchema,
@@ -95,6 +96,8 @@ export interface WorkbenchProposalReview {
 	paths: string[];
 	risks: string[];
 	validationPlan: string[];
+	/** The promise hashed into this exact proposal; null on a pre-v2 proposal. */
+	prediction: ProposalPrediction | null;
 	authoringContext: PersistedBuilderRun["request"]["authoringContext"];
 	evidenceBasis: {
 		algorithmId: string;
@@ -499,6 +502,12 @@ const StructuredProposalInputSchema = z.strictObject({
 	intents: HarnessAuthoringIntentsSchema,
 	risks: z.array(NonBlankSchema.max(4_000)).max(100).default([]),
 	validationPlan: z.array(NonBlankSchema.max(4_000)).min(1).max(100),
+	/**
+	 * The falsifiable promise this change is judged against. It is hashed into
+	 * the proposal the operator applies, so it cannot be edited once the result
+	 * is in. A construction proposal names no mode: there is no measurement yet.
+	 */
+	prediction: ProposalPredictionSchema.optional(),
 }).superRefine((value, context) => {
 	if ((value.source === undefined) !== (value.failureModeIds === undefined)) {
 		context.addIssue({
@@ -544,6 +553,8 @@ const CloseWorkshopInputSchema = z.strictObject({
 	summary: NonBlankSchema.max(4_000),
 	risks: z.array(NonBlankSchema.max(4_000)).max(100).default([]),
 	validationPlan: z.array(NonBlankSchema.max(4_000)).min(1).max(100),
+	/** The same falsifiable promise a `structured-proposal` carries. */
+	prediction: ProposalPredictionSchema.optional(),
 }).superRefine((value, context) => {
 	if ((value.source === undefined) !== (value.failureModeIds === undefined)) {
 		context.addIssue({

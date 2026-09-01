@@ -106,6 +106,7 @@ function proposalAdapter(
 	const evidenceRefs = evidence?.evidenceRefs ?? ["diagnosis:answer-quality"];
 	const proposal: CandidateProposal = {
 		schemaVersion: 1,
+		prediction: null,
 		decision: "propose",
 		baseTargetSha: baseSha,
 		summary: "Make the answer contract explicit.",

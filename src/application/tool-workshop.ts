@@ -18,9 +18,11 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import {
+	CANDIDATE_PROPOSAL_SCHEMA_VERSION,
 	CandidateProposalSchema,
 	validateCandidateProposal,
 	type CandidateProposal,
+	type ProposalPredictionInput,
 } from "../builders/adapters.js";
 import {
 	ExecutionPolicyBlock,
@@ -2287,6 +2289,8 @@ export class BuilderWorkshop {
 		diagnoses?: CandidateProposal["diagnoses"];
 		risks?: CandidateProposal["risks"];
 		validationPlan?: CandidateProposal["validationPlan"];
+		/** The falsifiable promise the next verification is read against. */
+		prediction?: ProposalPredictionInput | null;
 	}): CompiledWorkshopProposal {
 		this.assertOpen();
 		this.assertBaselineUnmoved();
@@ -2357,8 +2361,9 @@ export class BuilderWorkshop {
 
 		const grants = this.status().grants;
 		const proposal = CandidateProposalSchema.parse({
-			schemaVersion: 1,
+			schemaVersion: CANDIDATE_PROPOSAL_SCHEMA_VERSION,
 			decision: "propose",
+			prediction: metadata.prediction ?? null,
 			baseTargetSha: this.baseTargetSha,
 			summary: metadata.summary,
 			diagnoses: metadata.diagnoses ?? [],

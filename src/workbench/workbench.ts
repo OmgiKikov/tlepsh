@@ -54,6 +54,7 @@ import {
 	type ToolAuthoringBrief,
 } from "../application/tool-authoring.js";
 import { inspectTargetAuthoringContext } from "../application/target-authoring-context.js";
+import { assertPredictionScope } from "../application/prediction.js";
 import {
 	compactExperimentHistory,
 	compileExperimentHistory,
@@ -138,7 +139,7 @@ import {
 	deriveEvidenceLinkedProposalSelection,
 	type ImprovementBrief,
 } from "../application/improvement-brief.js";
-import type { CandidateProposal } from "../builders/adapters.js";
+import type { CandidateProposal, ProposalPredictionInput } from "../builders/adapters.js";
 import {
 	listCorpora,
 	loadCorpus,
@@ -320,6 +321,8 @@ export interface CompileHarnessAuthoringInput {
 	diagnoses?: CandidateProposal["diagnoses"];
 	risks: string[];
 	validationPlan: string[];
+	/** The falsifiable promise hashed into the proposal the operator applies. */
+	prediction?: ProposalPredictionInput | null;
 }
 
 export interface AhdeWorkbenchDependencies {
@@ -1785,6 +1788,12 @@ export class AhdeWorkbench {
 		if (canonicalJson(workshop.claim) !== canonicalJson(authoringContext.claim)) {
 			throw new Error("the Target changed while the workshop was open; discard it and open a new one");
 		}
+		// A promise may only name what this close is actually aiming at, and a
+		// construction close is aiming at nothing measured yet.
+		assertPredictionScope(input.prediction, {
+			failureModeIds: input.failureModeIds ?? [],
+			basis: construction ? "construction" : "improvement",
+		});
 		// The diff is the proposal: whatever is on disk, compiled exactly, from one
 		// snapshot taken before anything is derived from it.
 		const compiled = workshop.compile({
@@ -1792,6 +1801,7 @@ export class AhdeWorkbench {
 			...(evidence ? { diagnoses: evidence.selectedEvidence.diagnoses } : {}),
 			risks: input.risks,
 			validationPlan: input.validationPlan,
+			prediction: input.prediction ?? null,
 		});
 		if (compiled.proposal.baseTargetSha !== authoringContext.target.gitSha) {
 			throw new Error("the workshop diff does not match the inspected Target authoring revision");
@@ -2674,6 +2684,10 @@ export class AhdeWorkbench {
 		if (canonicalJson(input.authoringContext) !== canonicalJson(authoringContext.claim)) {
 			throw new Error("Target authoring context is stale; refresh the Target overview and every replaced resource.");
 		}
+		assertPredictionScope(input.prediction, {
+			failureModeIds: input.failureModeIds ?? [],
+			basis: construction ? "construction" : "improvement",
+		});
 		const proposal = this.dependencies.compileHarnessProposal({
 			repositoryDir: this.projectDir,
 			expectedBaseTargetSha: authoringContext.target.gitSha,
@@ -2682,6 +2696,7 @@ export class AhdeWorkbench {
 			...(evidence ? { diagnoses: evidence.selectedEvidence.diagnoses } : {}),
 			risks: input.risks,
 			validationPlan: input.validationPlan,
+			prediction: input.prediction ?? null,
 		});
 		if (proposal.baseTargetSha !== authoringContext.target.gitSha) {
 			throw new Error("compiled proposal does not match the inspected Target authoring revision");

@@ -56,6 +56,7 @@ export function proposalReview(record: PersistedBuilderRun): WorkbenchProposalRe
 		paths: record.result.proposal.changes.map((change) => change.path),
 		risks: record.result.proposal.risks,
 		validationPlan: record.result.proposal.validationPlan,
+		prediction: record.result.proposal.prediction,
 		authoringContext: record.request.authoringContext ?? null,
 		evidenceBasis: record.request.proposalBasis
 			? {

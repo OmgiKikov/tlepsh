@@ -43,9 +43,75 @@ const ProposalChangeSchema = z.strictObject({
 	evidenceRefs: z.array(NonEmptySchema),
 });
 
+/** Predicted failure modes one proposal may name; a proposal targets at most 8. */
+export const MAX_PREDICTED_MODES = 8;
+/** A delta is a percentage-point figure; nothing outside ±100 is a prediction. */
+const DeltaPointsSchema = z.number().min(-100).max(100);
+
+const PredictedModeSchema = z
+	.strictObject({
+		failureModeId: NonEmptySchema,
+		/** Tasks this mode is still expected to fail after the change. */
+		expectedFailingTasks: z.number().int().nonnegative().max(1_000_000),
+		/** Tasks the mode was measured over — the denominator the promise is read against. */
+		ofTasks: z.number().int().positive().max(1_000_000),
+	})
+	.superRefine((mode, context) => {
+		if (mode.expectedFailingTasks > mode.ofTasks) {
+			context.addIssue({
+				code: "custom",
+				path: ["expectedFailingTasks"],
+				message: "expectedFailingTasks cannot exceed ofTasks",
+			});
+		}
+	});
+export type ProposalPredictedMode = z.infer<typeof PredictedModeSchema>;
+
+/**
+ * The falsifiable number a change is judged against.
+ *
+ * Evidence, an inferred cause and a targeted fix already travel with every
+ * proposal; the promise did not. Without it a verification can only say
+ * "improved" or "regressed" — never "the Builder said 26/26 would become 3/26
+ * and it became 1/26". It is authored once, at submission, hashed into the
+ * proposal the operator approves, and never edited afterwards: a prediction
+ * that can be revised once the result is in predicts nothing.
+ */
+export const ProposalPredictionSchema = z
+	.strictObject({
+		modes: z.array(PredictedModeSchema).max(MAX_PREDICTED_MODES),
+		/** Expected pass-rate movement of the whole basket, in percentage points. */
+		expectedPassRateDeltaPp: DeltaPointsSchema.nullable().default(null),
+		/** Expected movement of the mean paired grader score the gate decides on. */
+		expectedScoreDeltaPp: DeltaPointsSchema.nullable().default(null),
+		note: NonEmptySchema.nullable().default(null),
+	})
+	.superRefine((prediction, context) => {
+		if (new Set(prediction.modes.map((mode) => mode.failureModeId)).size !== prediction.modes.length) {
+			context.addIssue({ code: "custom", path: ["modes"], message: "predicted failure mode ids must be unique" });
+		}
+		if (
+			prediction.modes.length === 0 &&
+			prediction.expectedPassRateDeltaPp === null &&
+			prediction.expectedScoreDeltaPp === null
+		) {
+			context.addIssue({ code: "custom", path: [], message: "a prediction must promise at least one number" });
+		}
+	});
+export type ProposalPrediction = z.infer<typeof ProposalPredictionSchema>;
+/** The shape a caller may hand a compiler, before the schema fills its defaults. */
+export type ProposalPredictionInput = z.input<typeof ProposalPredictionSchema>;
+
+/**
+ * Proposals carrying a `prediction` are written at version 2. Version 1 is
+ * still read exactly as before and reads back as `prediction: null` — an old
+ * proposal promised nothing, and nothing may invent a promise for it.
+ */
+export const CANDIDATE_PROPOSAL_SCHEMA_VERSION = 2;
+
 export const CandidateProposalSchema = z
 	.strictObject({
-		schemaVersion: z.literal(1),
+		schemaVersion: z.union([z.literal(1), z.literal(CANDIDATE_PROPOSAL_SCHEMA_VERSION)]),
 		decision: z.enum(["propose", "no-change"]),
 		baseTargetSha: GitShaSchema,
 		summary: NonEmptySchema,
@@ -53,8 +119,20 @@ export const CandidateProposalSchema = z
 		changes: z.array(ProposalChangeSchema),
 		risks: z.array(NonEmptySchema),
 		validationPlan: z.array(NonEmptySchema),
+		/** Absent on every pre-v2 proposal, and on a construction proposal that stated no number. */
+		prediction: ProposalPredictionSchema.nullable().default(null),
 	})
 	.superRefine((proposal, context) => {
+		if (proposal.prediction && proposal.schemaVersion < CANDIDATE_PROPOSAL_SCHEMA_VERSION) {
+			context.addIssue({
+				code: "custom",
+				path: ["prediction"],
+				message: `a prediction requires proposal schemaVersion ${CANDIDATE_PROPOSAL_SCHEMA_VERSION}`,
+			});
+		}
+		if (proposal.decision === "no-change" && proposal.prediction) {
+			context.addIssue({ code: "custom", path: ["prediction"], message: "no-change cannot promise an impact" });
+		}
 		if (proposal.decision === "propose" && proposal.changes.length === 0) {
 			context.addIssue({ code: "custom", path: ["changes"], message: "propose requires at least one change" });
 		}

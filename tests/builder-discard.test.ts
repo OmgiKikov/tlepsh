@@ -100,6 +100,7 @@ async function proposalFixture() {
 	const run = await recordBuilderAuthoredProposal({
 		proposal: {
 			schemaVersion: 1,
+			prediction: null,
 			decision: "propose",
 			baseTargetSha: target.sha,
 			summary: "Tighten the answer contract",

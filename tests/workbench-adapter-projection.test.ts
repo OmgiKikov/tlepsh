@@ -52,6 +52,7 @@ function loadedView(): WorkbenchView {
 			aspect: "review",
 			content: {
 				kind: "proposal",
+				prediction: null,
 				runId: `builder-run-${"d".repeat(20)}0`,
 				proposalHash: `sha256:${"e".repeat(64)}`,
 				baseTargetSha: "f".repeat(40),

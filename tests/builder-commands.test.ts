@@ -251,6 +251,7 @@ function proposalReview(): Extract<WorkbenchReviewDetail, { kind: "proposal" }> 
 		kind: "proposal",
 		runId: "builder-proposal-1",
 		proposalHash: hash("e"),
+		prediction: null,
 		baseTargetSha: SHA_A,
 		summary: "Route lookups through the evidence tool before answering.",
 		paths: ["AGENTS.md"],

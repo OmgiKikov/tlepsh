@@ -5,9 +5,11 @@ import { resolve } from "node:path";
 import { parse as parseYaml, parseDocument, stringify as stringifyYaml } from "yaml";
 import { z } from "zod";
 import {
+	CANDIDATE_PROPOSAL_SCHEMA_VERSION,
 	CandidateProposalSchema,
 	validateCandidateProposal,
 	type CandidateProposal,
+	type ProposalPredictionInput,
 } from "../builders/adapters.js";
 import {
 	ContainerBlock,
@@ -302,6 +304,8 @@ export interface CompileHarnessAuthoringProposalOptions {
 	diagnoses?: CandidateProposal["diagnoses"];
 	risks?: CandidateProposal["risks"];
 	validationPlan?: CandidateProposal["validationPlan"];
+	/** The falsifiable promise the next verification is read against. */
+	prediction?: ProposalPredictionInput | null;
 }
 
 const MetadataTextSchema = boundedText(MAX_METADATA_TEXT_BYTES, "proposal metadata");
@@ -976,7 +980,7 @@ export function compileHarnessAuthoringProposal(
 		}));
 
 	const proposal = CandidateProposalSchema.parse({
-		schemaVersion: 1,
+		schemaVersion: CANDIDATE_PROPOSAL_SCHEMA_VERSION,
 		decision: changes.length > 0 ? "propose" : "no-change",
 		baseTargetSha,
 		summary: metadata.summary,
@@ -984,6 +988,8 @@ export function compileHarnessAuthoringProposal(
 		changes,
 		risks: metadata.risks,
 		validationPlan: metadata.validationPlan,
+		// A no-change result promises nothing: there is no diff to be right about.
+		prediction: changes.length > 0 ? options.prediction ?? null : null,
 	});
 	validateCandidateProposal(proposal, {
 		baseTargetSha,
