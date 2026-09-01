@@ -6,7 +6,8 @@ import { decisionHeadline, renderDecision } from "./render/decision.js";
 import { oneLine, pluralize } from "./render/format.js";
 import { themePaint } from "./render/paint.js";
 import { nextStep, stageLabel } from "./render/stage.js";
-import { renderDatasetCases, renderView, viewTitle } from "./render/view.js";
+import { DEFAULT_MAX_DIFF_LINES } from "./render/diff.js";
+import { renderDatasetCases, renderReview, renderView, viewTitle } from "./render/view.js";
 import { markerPaint, type TranscriptPresenter } from "./transcript.js";
 import type {
 	WorkbenchDatasetRecipeArtifact,
@@ -370,10 +371,28 @@ export function createBuilderWorkbenchTools(
 			].join("\n"),
 			parameters: WorkbenchSubmitToolSchema.parameters,
 			prepareArguments: (args) => WorkbenchSubmitToolSchema.prepare(args),
-			async execute(_id, params, signal) {
+			async execute(_id, params, signal, _update, ctx) {
 				abortIfRequested(signal);
 				const turn = await workbench.submit(params, { signal });
 				await changed();
+				// A closed workshop has become a diff the operator has to decide on.
+				// Put it on screen now: reading it must not depend on remembering
+				// /review or ctrl+o.
+				if (params.kind === "workshop-close" && options.presenter) {
+					try {
+						const review = await workbench.view({ aspect: "review" });
+						const content = review.detail?.aspect === "review" ? review.detail.content : undefined;
+						if (content?.kind === "proposal") {
+							options.presenter.show(ctx, {
+								title: viewTitle(review),
+								tone: "info",
+								lines: renderReview(content, markerPaint, { maxDiffLines: DEFAULT_MAX_DIFF_LINES }),
+							});
+						}
+					} catch {
+						// Showing the diff never changes what the submission returned.
+					}
+				}
 				return textResult(turn);
 			},
 			renderCall: (args, theme) => WORKBENCH_TOOL_RENDERERS.submit.renderCall(args, theme),

@@ -1594,35 +1594,47 @@ describe("renderConfirmation", () => {
 		return { operation: "apply-proposal", branch: "ahde/fix-lookup", builderRunHash: HASH, ...makeProposal() };
 	}
 
-	it("prices the check the apply also authorizes, and keeps the risks", () => {
+	it("shows the diff and the price of the check the apply also authorizes", () => {
 		const lines = renderConfirmation({
 			...makeConfirmation("apply-proposal", applySubject()),
 			estimate: { executions: 84, sampledRuns: 6, costUsd: 0.42, minutes: 3.2 },
 		}, plainPaint);
-		// The whole body, verbatim: the money question for the check that follows
-		// this change is asked here, once, with the change itself.
+		// The whole body, verbatim: the diff is on screen before anyone says yes,
+		// and the money question for the check that follows is asked right here.
 		expect(lines).toEqual([
 			"Branch ahde/fix-lookup · base aaaaaaaaaa",
 			"  Tell the agent to call lookup before answering.",
-			"Changes AGENTS.md (+2 -1 · full diff shown by /review)",
+			"Changes AGENTS.md (+2 -1)",
 			"Verification about $0.42 · about 4 minutes — approving this change also approves that measurement",
 			"Risks",
 			"  • May slow down simple replies",
+			"Diff",
+			"diff --git a/AGENTS.md b/AGENTS.md",
+			"index 1111111..2222222 100644",
+			"--- a/AGENTS.md",
+			"+++ b/AGENTS.md",
+			"@@ -1,2 +1,3 @@",
+			" Existing line",
+			"-Old guidance",
+			"+New guidance",
+			"+Use the lookup tool first",
 			"Your checkout stays where it is; the proposal is committed on the candidate branch.",
 			"",
 			"Reason Reviewed the exact subject",
 			`Exact subject ${HASH}`,
 		]);
 		for (const line of lines) expect(line.length).toBeLessThanOrEqual(110);
+		// Every line is painted by the ordinary helpers; nothing here is raw text.
 		const painted = renderConfirmation({
 			...makeConfirmation("apply-proposal", applySubject()),
 			estimate: { executions: 84, sampledRuns: 6, costUsd: 0.42, minutes: 3.2 },
 		}, tagPaint);
 		expect(painted[0]).toBe("<dim>Branch</dim> <bold>ahde/fix-lookup</bold> <dim>· base</dim> aaaaaaaaaa");
-		expect(painted[3]).toContain("<dim>Verification</dim> about $0.42");
+		expect(painted[2]).toBe("<dim>Changes</dim> AGENTS.md <dim>(<added>+2</added> <removed>-1</removed>)</dim>");
+		expect(painted).toContain("<added>+New guidance</added>");
 	});
 
-	it("says the check is unknown when nothing comparable has run", () => {
+	it("says the check is unknown when nothing comparable has run, and points long diffs at /review", () => {
 		const unknown = renderConfirmation(makeConfirmation("apply-proposal", applySubject()), plainPaint);
 		expect(unknown[3]).toBe(
 			"Verification unknown · nothing comparable has run yet — approving this change also approves that measurement",
@@ -1634,6 +1646,15 @@ describe("renderConfirmation", () => {
 		expect(sampled[3]).toBe(
 			"Verification under $0.01 · under a minute — approving this change also approves that measurement",
 		);
+
+		const exactDiff = [DIFF.trimEnd(), ...Array.from({ length: 200 }, (_, index) => `+line-${index}`)].join("\n");
+		const long = renderConfirmation(makeConfirmation("apply-proposal", {
+			...applySubject(),
+			...makeProposal({ exactDiff }),
+		}), plainPaint);
+		expect(long).toContain("+line-110");
+		expect(long).not.toContain("+line-111");
+		expect(long).toContain("… 89 more diff lines; /review shows the exact remainder");
 	});
 
 	it("describes a discard subject generically", () => {

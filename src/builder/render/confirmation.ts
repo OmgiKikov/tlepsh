@@ -100,6 +100,9 @@ function judgeCalibrationLines(candidate: WorkbenchCandidateSummary, paint: Pain
  * is one question per cycle: approving the diff approves the measurement that
  * follows it, so the amount belongs on the same screen as the diff.
  */
+/** Diff lines the apply dialog shows inline before anyone says yes. */
+const APPLY_PROPOSAL_DIFF_LINES = 120;
+
 function verificationLine(estimate: WorkbenchRunEstimate | undefined, paint: Paint): string {
 	const covenant = paint.dim("— approving this change also approves that measurement");
 	if (!estimate || estimate.costUsd === null || estimate.minutes === null) {
@@ -287,9 +290,16 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			return [
 				`${paint.dim("Branch")} ${paint.bold(text(subject.branch, 80))} ${paint.dim("· base")} ${shortSha(text(subject.baseTargetSha, 40))}`,
 				...wrap(typeof subject.summary === "string" ? subject.summary : "", 92, "  "),
-				`${paint.dim("Changes")} ${strings(subject.paths).map((path) => oneLine(path, 60)).join(", ") || "—"} ${paint.dim(`(${paint.added(`+${stats.added}`)} ${paint.removed(`-${stats.removed}`)} · full diff shown by /review)`)}`,
+				`${paint.dim("Changes")} ${strings(subject.paths).map((path) => oneLine(path, 60)).join(", ") || "—"} ${paint.dim(`(${paint.added(`+${stats.added}`)} ${paint.removed(`-${stats.removed}`)})`)}`,
 				verificationLine(confirmation.estimate, paint),
 				...(strings(subject.risks).length > 0 ? [paint.warning("Risks"), ...bullets(strings(subject.risks), paint, { limit: 5 })] : []),
+				// The diff itself, here, before the yes — /review is a second look at
+				// it, never the only one.
+				paint.dim("Diff"),
+				...renderUnifiedDiff(diff, paint, {
+					maxLines: APPLY_PROPOSAL_DIFF_LINES,
+					remainder: "/review shows the exact remainder",
+				}),
 				paint.muted("Your checkout stays where it is; the proposal is committed on the candidate branch."),
 			];
 		}
