@@ -58,6 +58,16 @@ import { inspectCandidateImpact } from "./candidate-impact.js";
 import { compileImprovementBrief, publicTaskId } from "./improvement-brief.js";
 import { judgeEvidenceCalibration } from "./judge-labels.js";
 import { detectPromotionFlips } from "./regression-guards.js";
+import {
+	calibrationStrip,
+	compilePredictionCalibration,
+	measurementOf,
+	predictedVersusActual,
+	readCandidatePrediction,
+	scorePredictedOverall,
+	type PredictedOverallOutcome,
+	type PredictionCalibration,
+} from "./prediction.js";
 
 /** Failure a passport cannot recover from, with the operator's next step. */
 export class VersionPassportError extends Error {
@@ -739,6 +749,8 @@ export interface ShippedVersionPassport {
 		development: VersionPassportDevelopment | null;
 		sealed: VersionPassportSealed | null;
 		resources: VersionPassportResources | null;
+		/** What the applied proposal promised, beside what the gate measured. */
+		predicted: PredictedOverallOutcome | null;
 	};
 	/** null means nobody has checked the judge against a human. */
 	judge: VersionPassportJudge | null;
@@ -766,6 +778,8 @@ export interface ShippedVersionPassport {
 		promotedBy: string | null;
 		reason: string | null;
 		developmentEvalRuns: { baseline: string; candidate: string } | null;
+		/** This Builder's whole predicted-vs-actual record on this project. */
+		predictionCalibration: PredictionCalibration;
 	};
 	/** What could not be read; each one narrows a section above. */
 	warnings: string[];
@@ -1015,6 +1029,11 @@ function compileShippedPassport(
 						: 0,
 				}
 				: null,
+			// The promise the operator applied, scored against the gate that decided.
+			predicted: scorePredictedOverall(
+				readCandidatePrediction(runsRoot, record),
+				measurementOf(isPromotionGradeGateEvidence(development) ? development.summary : null),
+			),
 		},
 		judge,
 		limits: {
@@ -1041,9 +1060,35 @@ function compileShippedPassport(
 			reason: clip(promotion.decision.reason, MAX_REASON_CHARS),
 			// The development lineage only; the sealed arms name the exam.
 			developmentEvalRuns: developmentRuns,
+			predictionCalibration: predictionCalibrationOf(input, runsRoot),
 		},
 		warnings,
 	};
+}
+
+/**
+ * How well this Builder has predicted, over every decided candidate of the
+ * project. It belongs beside the provenance of one version because a single
+ * kept promise means little; a record of them is what makes the next promise
+ * worth reading.
+ */
+function predictionCalibrationOf(input: VersionPassportInput, runsRoot: string): PredictionCalibration {
+	const entries = [];
+	for (const record of projectRecords(runsRoot, input.projectId)) {
+		if (input.targetId !== undefined && record.targetId !== input.targetId) continue;
+		if (record.mode === "aa-calibration") continue;
+		const decided = record.events.find((event) => event.type === "promoted" || event.type === "rejected");
+		if (!decided) continue;
+		const evaluated = record.events.find((event) => event.type === "evaluated");
+		const development = evaluated?.type === "evaluated" ? evaluated.evaluation.development.comparison : null;
+		entries.push({
+			candidateId: record.candidateId,
+			at: decided.at,
+			prediction: readCandidatePrediction(runsRoot, record),
+			measurement: measurementOf(isPromotionGradeGateEvidence(development) ? development.summary : null),
+		});
+	}
+	return compilePredictionCalibration(entries);
 }
 
 /**
@@ -1339,6 +1384,7 @@ function renderShippedPassportMarkdown(passport: ShippedVersionPassport): string
 		? `${passport.measured.sealed.verdict} on ${passport.measured.sealed.tasks} × ${passport.measured.sealed.repetitions} (contents evaluator-only)`
 		: "no promotion-grade sealed evidence on this record"}`);
 	lines.push(`- Resources: ${passport.measured.resources ? resourceSummaryLine(passport.measured.resources) : "—"}`);
+	lines.push(`- Predicted: ${predictedVersusActual(passport.measured.predicted) ?? "no prediction was stated for this version"}`);
 	lines.push("");
 
 	lines.push("## Judge", "");
@@ -1381,6 +1427,12 @@ function renderShippedPassportMarkdown(passport: ShippedVersionPassport): string
 	lines.push(`- Development evidence: ${provenance.developmentEvalRuns
 		? `${provenance.developmentEvalRuns.baseline} vs ${provenance.developmentEvalRuns.candidate}`
 		: "—"}`);
+	const calibration = provenance.predictionCalibration;
+	lines.push(`- Prediction record: ${calibration.scored === 0
+		? "nothing decided has carried a prediction yet"
+		: `${calibration.hits}/${calibration.scored} hit${
+			calibration.meanAbsoluteErrorPp === null ? "" : `, mean error ±${calibration.meanAbsoluteErrorPp}pp`
+		} · ${calibrationStrip(calibration)}`}`);
 	if (provenance.reason) lines.push(`- Reason: ${provenance.reason}`);
 	if (passport.warnings.length > 0) {
 		lines.push("", "## What this page could not read", "");

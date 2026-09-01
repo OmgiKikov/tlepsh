@@ -6,6 +6,7 @@ import {
 } from "../../application/version-passport.js";
 import { plural, t } from "../../i18n.js";
 import { bullets, oneLine, section, shortHash, shortSha, wrap } from "./format.js";
+import { passportPredictionLine, predictionCalibrationLine } from "./prediction.js";
 import type { Paint } from "./paint.js";
 
 /** One-line renderings share the 110-column budget every AHDE panel uses. */
@@ -77,6 +78,9 @@ export function renderVersionPassport(passport: ShippedVersionPassport, paint: P
 	} ${paint.dim("·")} tokens ${ratio(resources?.tokenRatio ?? null)}${
 		judgeSpend === null ? "" : ` ${paint.dim("·")} ${judgeSpend}`
 	}`);
+	// What this version promised before anyone measured it.
+	const predicted = passportPredictionLine(passport.measured.predicted, paint);
+	if (predicted) lines.push(predicted);
 
 	lines.push("", section("Judge", paint));
 	lines.push(passport.judge
@@ -127,6 +131,7 @@ export function renderVersionPassport(passport: ShippedVersionPassport, paint: P
 	lines.push(`${paint.dim("Reviewed by")} ${oneLine(provenance.reviewedBy ?? "—", 40)} ${paint.dim("· promoted by")} ${
 		oneLine(provenance.promotedBy ?? "—", 40)
 	}`);
+	lines.push(predictionCalibrationLine(provenance.predictionCalibration, paint));
 	if (provenance.reason) lines.push(...wrap(`“${provenance.reason}”`, 96, "  "));
 	if (passport.warnings.length > 0) {
 		lines.push("", paint.warning("Could not be read"));

@@ -432,11 +432,11 @@ it("renders a projection that survives --json unchanged", () => {
 
 	expect(roundTripped).toEqual(log);
 	expect(Object.keys(roundTripped).sort()).toEqual([
-		"cumulativeCostUsd", "omitted", "projectId", "rows", "targetId", "unreadable", "versions",
+		"calibration", "cumulativeCostUsd", "omitted", "projectId", "rows", "targetId", "unreadable", "versions",
 	]);
 	expect(Object.keys(roundTripped.rows[0] ?? {}).sort()).toEqual([
 		"appliedByImprovementLoop", "at", "baseline", "candidate", "candidateId", "costRatio", "costUsd",
-		"development", "outcome", "reason", "resolvedModes", "sealed", "tag",
+		"development", "outcome", "prediction", "reason", "resolvedModes", "sealed", "tag",
 	]);
 });
 

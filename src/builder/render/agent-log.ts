@@ -9,6 +9,7 @@ import {
 	MAX_SPARKLINE_WIDTH,
 } from "../../application/agent-log.js";
 import { joinNonEmpty, oneLine, section } from "./format.js";
+import { predictionCalibrationLine } from "./prediction.js";
 import type { Paint } from "./paint.js";
 
 /** One-line renderings share the 110-column budget every AHDE panel uses. */
@@ -132,5 +133,7 @@ export function renderAgentLog(log: AgentLog, paint: Paint): string[] {
 		lines.push(paint.dim(`${log.unreadable} candidate record(s) could not be read and are not shown`));
 	}
 	lines.push("", ...renderAgentLogChart(log, paint));
+	// Under the growth curve: how well this Builder predicted its own results.
+	lines.push(predictionCalibrationLine(log.calibration, paint));
 	return lines;
 }

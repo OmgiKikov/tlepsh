@@ -3,7 +3,13 @@ import { join, resolve } from "node:path";
 import { loadCandidateRecord } from "./candidate-review.js";
 import { loadBuilderProposalRunEnvelope } from "./builder-proposal.js";
 import type { CandidateRecord } from "../domain/candidate.js";
-import { gateVerdictOf } from "../domain/candidate.js";
+import { gateVerdictOf, isPromotionGradeGateEvidence } from "../domain/candidate.js";
+import {
+	measurementOf,
+	predictedVersusActual,
+	readCandidatePrediction,
+	scorePredictedOverall,
+} from "./prediction.js";
 import { canonicalJson } from "../provenance.js";
 
 /**
@@ -80,6 +86,13 @@ export interface Attempt {
 	development: AttemptSurface | null;
 	/** Sealed verdict and design only; never its content. */
 	sealed: AttemptSurface | null;
+	/**
+	 * `aimed +40.0pp, got +50.0pp` — what the proposal behind this attempt
+	 * promised, beside what the gate measured. Null when it promised nothing,
+	 * so a proposer reading its own history can see which of its own numbers
+	 * held and which did not.
+	 */
+	prediction: string | null;
 	outcome: AttemptOutcome;
 	/** The human's own words on review, promotion or rejection. */
 	reason: string | null;
@@ -201,6 +214,14 @@ function attemptOf(record: CandidateRecord, runsRoot: string): Attempt {
 		failureModeIds: readFailureModeIds(record, runsRoot),
 		development: evaluation ? comparisonSurfaceOf(evaluation.development) : null,
 		sealed: evaluation?.sealedHoldout ? comparisonSurfaceOf(evaluation.sealedHoldout) : null,
+		prediction: predictedVersusActual(scorePredictedOverall(
+			readCandidatePrediction(runsRoot, record),
+			measurementOf(
+				isPromotionGradeGateEvidence(evaluation?.development.comparison)
+					? evaluation!.development.comparison.summary
+					: null,
+			),
+		)),
 		outcome,
 		reason: reason ?? (source ? null : originReason(record)),
 	};
@@ -274,7 +295,8 @@ export function renderExperimentHistory(history: ExperimentHistory): string[] {
 		const sealed = attempt.sealed ? ` · sealed ${attempt.sealed.verdict}` : "";
 		const why = attempt.reason ? ` · “${attempt.reason}”` : "";
 		const aim = attempt.failureModeIds.length > 0 ? ` · for ${attempt.failureModeIds.join(", ")}` : "";
-		return `${attempt.outcome} · ${change} · ${development}${sealed}${aim}${why}`;
+		const predicted = attempt.prediction ? ` · ${attempt.prediction}` : "";
+		return `${attempt.outcome} · ${change} · ${development}${sealed}${aim}${predicted}${why}`;
 	});
 	if (history.omitted > 0) lines.push(`… and ${history.omitted} earlier attempt${history.omitted === 1 ? "" : "s"}`);
 	return lines;
@@ -304,6 +326,8 @@ export interface CompactAttempt {
 	development: string;
 	/** The sealed verdict alone — never a task, an input or a corpus identity. */
 	sealed: string | null;
+	/** `aimed +40.0pp, got +50.0pp`, or null when this attempt promised nothing. */
+	prediction: string | null;
 	reason: string | null;
 }
 
@@ -330,6 +354,7 @@ function compactAttemptOf(attempt: Attempt): CompactAttempt {
 			? `${attempt.development.verdict}${attempt.development.scoreDelta === null ? "" : ` ${points(attempt.development.scoreDelta)}`}`
 			: "not evaluated",
 		sealed: attempt.sealed ? attempt.sealed.verdict : null,
+		prediction: attempt.prediction,
 		reason: attempt.reason,
 	};
 }

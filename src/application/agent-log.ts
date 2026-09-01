@@ -7,6 +7,13 @@ import { loadDiagnosis } from "../diagnosis.js";
 import { readJsonArtifact } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import { hashFile } from "../provenance.js";
+import {
+	compilePredictionCalibration,
+	measurementOf,
+	readCandidatePrediction,
+	type PredictionCalibration,
+} from "./prediction.js";
+import type { ProposalPrediction } from "../builders/adapters.js";
 import type { CandidateRecord } from "../domain/candidate.js";
 import { isPromotionGradeGateEvidence, gateVerdictOf } from "../domain/candidate.js";
 import { z } from "zod";
@@ -103,6 +110,8 @@ export interface AgentLogRow {
 	reason: string | null;
 	/** True when the apply receipt says the improvement loop applied it. */
 	appliedByImprovementLoop: boolean;
+	/** The promise the proposal behind this attempt made; null when it made none. */
+	prediction: ProposalPrediction | null;
 }
 
 /** One point of the growth chart: a promoted version and what it scored. */
@@ -125,6 +134,8 @@ export interface AgentLog {
 	versions: AgentLogVersion[];
 	/** Sum of every arm of every row in this projection, in USD. */
 	cumulativeCostUsd: number;
+	/** How often this Builder's promise survived the evidence, over these rows. */
+	calibration: PredictionCalibration;
 }
 
 export interface AgentLogInput {
@@ -349,6 +360,7 @@ function rowOf(
 			: NO_RESOLVED_MODES,
 		reason: clip(decision.reason, MAX_REASON_CHARS),
 		appliedByImprovementLoop: appliedByImprovementLoop(record, runsRoot),
+		prediction: readCandidatePrediction(runsRoot, record),
 	};
 }
 
@@ -400,6 +412,14 @@ export function compileAgentLog(
 		unreadable,
 		versions,
 		cumulativeCostUsd: kept.reduce((total, row) => total + row.costUsd, 0),
+		// Rejections count exactly as promotions do: a track record drawn only
+		// from the attempts that landed would flatter the Builder.
+		calibration: compilePredictionCalibration(kept.map((row) => ({
+			candidateId: row.candidateId,
+			at: row.at,
+			prediction: row.prediction,
+			measurement: measurementOf(row.development),
+		}))),
 	};
 }
 
