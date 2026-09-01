@@ -559,6 +559,27 @@ describe("static evidence report", () => {
 		expect(html).not.toContain(RUN_ERROR_SECRET);
 		expect(html).toContain("\\u003cimg src=x onerror=alert(2)>");
 		expect(html).toContain("\\u003csvg onload=alert(3)>");
+
+		// The offline artifact carries the live explorer's own runs table and its
+		// host-written explanations, so an operator reading report.html and an
+		// operator reading /evals/<id> see the same rows and the same sentences.
+		expect(html).toContain(
+			"<thead><tr><th>Task</th><th>Rep</th><th>Input</th><th>Outcome</th><th>Score</th><th>Graders</th>" +
+			"<th>Failure mode</th><th>Tools</th><th>Latency</th><th>Cost</th><th>Tokens</th></tr></thead>",
+		);
+		expect(html).toContain('href="#run=run-report"');
+		expect(html).toContain('data-run="run-report"');
+		expect(html).toContain('<span class="chip error">error</span>');
+		expect(html).toContain('id="filter"');
+		expect(data.rows.map((row) => row.runId)).toEqual(["run-report-error", "run-report"]);
+		expect(data.rows.map((row) => row.taskId)).toEqual(["unsafe-error-task", "[REDACTED_API_KEY]~082c20a7e365"]);
+		expect(data.omittedTableRowCount).toBe(0);
+		// Every projected run failed here, so each one is explained.
+		expect(data.explanations).toHaveLength(2);
+		expect(data.explanations.every((explanation) => explanation.sentences.length > 0)).toBe(true);
+		expect(JSON.stringify(data.explanations)).not.toContain(GRADER_METADATA_SECRET);
+		expect(JSON.stringify(data.explanations)).not.toContain(RUN_ERROR_SECRET);
+		expect(JSON.stringify(data.explanations)).not.toContain(TASK_ID_SECRET);
 	});
 
 	it("projects oversized evidence failure-first with deterministic run and cumulative trace budgets", () => {

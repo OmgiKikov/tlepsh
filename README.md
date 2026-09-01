@@ -108,6 +108,19 @@ Success criteria
 - eval runs: erun_mtht4wvdm7jns0 → erun_mthtdbgxb4s6qm · applied by: local-user
 ```
 
+## Traces
+
+Every run leaves a trace, and the Evidence Explorer turns them into pages:
+`ahde evidence` (or the link Builder Pi prints after a run) serves, on loopback
+and read-only, a runs table per evaluation — one row per case × repetition,
+failures first, filterable by outcome and failure mode — a page per run with
+the conversation as a chat transcript, every grader's verdict, the judge's
+answer to each assertion, and a plain-language **Why** the host assembles from
+recorded fields (what the grader expected, what happened, which failure mode it
+belongs to — labelled as a hypothesis — and whether a candidate flipped it), and
+a per-task baseline-vs-candidate comparison. Inside Builder Pi, `/traces` shows
+the same failure modes and link. Sealed runs never appear on any page.
+
 ## What the engine guarantees
 
 1. **No model can read the sealed exam** — reserved at ingest before anyone sees the data; the CLI prints counts, design size and verdict, not content.

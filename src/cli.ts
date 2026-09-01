@@ -1209,6 +1209,7 @@ async function main(): Promise<void> {
 				console.log(`  ... ${diagnosis.issues.length - 30} task-level issue(s) omitted; open the evidence report for bounded drill-down.`);
 			}
 			console.log(`evidence: ${resolve(diagnoseRunsRoot, evalRunId, "diagnosis.json")}`);
+			console.log(`explorer: run \`ahde evidence\` and open /evals/${evalRunId} for the runs table, per-run traces, and the host's plain-language explanation of each failure`);
 			if (diagnosis.status === "inconclusive") process.exitCode = 2;
 			break;
 		}
@@ -1262,6 +1263,7 @@ async function main(): Promise<void> {
 				{ stateRoot: stateRoot(), projectId: reportProjectId(evalRunId) },
 			);
 			console.log(report.path);
+			console.log(`explorer: run \`ahde evidence\` and open /evals/${evalRunId} for the same runs table with live per-run trace pages`);
 			for (const grader of report.judgeCalibration) {
 				console.log(`${grader.line}  ${grader.graderNames.join(", ")}`);
 			}
