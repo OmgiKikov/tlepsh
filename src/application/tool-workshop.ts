@@ -344,42 +344,6 @@ export function describeFixtureRun(run: ToolFixtureRunResult): string {
 }
 
 /**
- * The newest fixture run of each tool, recovered from the workshop's own try
- * history. This is what the close panel states — `✓ 3/3 fixtures` — and it is
- * deliberately workshop-local, restart-surviving scratch rather than evidence:
- * a run only counts for the exact snapshot it ran against, so repairing a tool
- * and closing without re-running shows the repair as untested.
- */
-export function lastFixtureRunPerTool(
-	history: readonly { tool: string; test: string | null; passed: boolean; failure: string | null; exitCode: number | null; durationMs: number; snapshotHash: string }[],
-): ToolFixtureRunResult[] {
-	const byTool = new Map<string, typeof history[number][]>();
-	for (const entry of history) {
-		if (entry.test === null) continue;
-		byTool.set(entry.tool, [...(byTool.get(entry.tool) ?? []), entry]);
-	}
-	const runs: ToolFixtureRunResult[] = [];
-	for (const [tool, entries] of byTool) {
-		const newest = entries[entries.length - 1];
-		if (!newest) continue;
-		// One run is the named tries against one snapshot; a retry of the same
-		// fixture replaces the earlier attempt rather than counting twice.
-		const latest = new Map<string, typeof history[number]>();
-		for (const entry of entries) {
-			if (entry.snapshotHash === newest.snapshotHash) latest.set(entry.test as string, entry);
-		}
-		runs.push(summarizeFixtures(tool, [...latest.values()].map((entry) => ({
-			name: entry.test as string,
-			passed: entry.passed,
-			exitCode: entry.exitCode,
-			durationMs: entry.durationMs,
-			failures: entry.failure === null ? [] : [entry.failure],
-		}))));
-	}
-	return runs.sort((left, right) => left.tool.localeCompare(right.tool));
-}
-
-/**
  * Every fixture of one tool, in filename order. A tool with no `fixtures/`
  * directory has no contract tests, which is a fact about it rather than an
  * error: the refusal belongs to whoever asked to run them.
@@ -1046,6 +1010,8 @@ export interface BuilderWorkshopDescriptor {
 export interface CompiledWorkshopProposal {
 	proposal: CandidateProposal;
 	changes: WorkshopChange[];
+	/** What the declared tools this diff touches say about themselves, right now. */
+	toolTests: ToolFixtureRunResult[];
 	/** The exact revision the diff is against; identical to `proposal.baseTargetSha`. */
 	baseTargetSha: string;
 	manifestChangePolicy: "resources-only" | "execution-policy";
@@ -2228,52 +2194,91 @@ export class BuilderWorkshop {
 	}
 
 	/**
-	 * A typed package carries an executable contract manifest. Closing is allowed
-	 * only after every listed fixture passed against the exact bytes being
-	 * proposed. Manual tools without that manifest keep the legacy one-green-try
-	 * workflow; packages created by Tool Authoring cannot silently skip tests.
+	 * What the contract tests of this exact proposal say, tool by tool.
+	 *
+	 * Only the tools the resulting Harness actually declares and this proposal
+	 * actually changed are in it, and only tries against the exact snapshot being
+	 * proposed count. A package the Builder removed contributes nothing: the live
+	 * close panel showed `✗ check_dbo 0/3` for a package that was no longer in
+	 * the proposal at all, and the operator applied the diff anyway.
+	 *
+	 * A tool with no fixtures reports zero of zero — an honest "no contract
+	 * tests", never a stale result from an earlier package.
 	 */
-	private assertToolContractsPassed(
+	private toolContractReport(
 		snapshot: ReadonlyMap<string, WorkshopFileState>,
 		changes: readonly WorkshopChange[],
 		resulting: ResolvedTarget,
-	): void {
+	): ToolFixtureRunResult[] {
 		const snapshotHash = workshopSnapshotHash(snapshot);
 		const changed = new Set(changes.map((change) => change.path));
+		const runs: ToolFixtureRunResult[] = [];
 		for (const tool of resulting.tools) {
-			if (!tool.directoryPath) continue;
-			const prefix = `${tool.directoryPath}/`;
-			if (![...changed].some((path) => path.startsWith(prefix))) continue;
-			const manifestPath = `${tool.directoryPath}/contract-tests.json`;
-			const entry = snapshot.get(manifestPath);
-			if (!entry) continue;
-			let manifest: z.infer<typeof WorkshopContractManifestSchema>;
-			try {
-				manifest = WorkshopContractManifestSchema.parse(JSON.parse(workshopText(entry.content, manifestPath)));
-			} catch (error) {
-				throw new ToolWorkshopError(`${manifestPath} is not a valid AHDE contract-test manifest`, { cause: error });
+			const prefix = tool.directoryPath ? `${tool.directoryPath}/` : null;
+			const touched = changed.has(tool.descriptorPath) || changed.has(tool.executablePath) ||
+				(prefix !== null && [...changed].some((path) => path.startsWith(prefix)));
+			if (!touched) continue;
+			const declared = this.declaredContractFixtures(snapshot, tool);
+			// The newest attempt per fixture, and only against these exact bytes: a
+			// repair that was never re-tried shows as untested, not as its old pass.
+			const attempts = new Map<string, WorkshopTrySummary>();
+			for (const item of this.tryHistory) {
+				if (item.tool !== tool.descriptor.name || item.snapshotHash !== snapshotHash || item.test === null) continue;
+				attempts.set(item.test, item);
 			}
-			if (manifest.tool !== tool.descriptor.name) {
-				throw new ToolWorkshopError(`${manifestPath} names ${manifest.tool}, not ${tool.descriptor.name}`);
-			}
-			const expected = manifest.fixtures.map((path) => {
-				const fixturePath = `${tool.directoryPath}/${path}`;
-				if (!snapshot.has(fixturePath)) {
-					throw new ToolWorkshopError(`${manifestPath} refers to missing ${fixturePath}`);
+			runs.push(summarizeFixtures(tool.descriptor.name, declared.map((name) => {
+				const attempt = attempts.get(name);
+				if (!attempt) {
+					return { name, passed: false, exitCode: null, durationMs: 0, failures: ["never run against the exact proposal snapshot"] };
 				}
-				return WORKSHOP_CONTRACT_FIXTURE.exec(path)![1]!;
-			});
-			const passed = new Set(this.tryHistory
-				.filter((item) => item.tool === tool.descriptor.name && item.snapshotHash === snapshotHash && item.passed)
-				.map((item) => item.test)
-				.filter((name): name is string => name !== null));
-			const missing = expected.filter((name) => !passed.has(name));
-			if (missing.length > 0) {
-				throw new ToolWorkshopError(
-					`${tool.descriptor.name} is not ready to close: contract tests not green on the exact proposal snapshot: ${missing.join(", ")}`,
-				);
-			}
+				return {
+					name,
+					passed: attempt.passed,
+					exitCode: attempt.exitCode,
+					durationMs: attempt.durationMs,
+					failures: attempt.passed ? [] : [attempt.failure ?? "failed"],
+				};
+			})));
 		}
+		return runs.sort((left, right) => left.tool.localeCompare(right.tool));
+	}
+
+	/**
+	 * The contract tests one declared tool carries in the exact proposal snapshot:
+	 * the executable manifest a generated package writes, or, failing that, the
+	 * `fixtures/*.json` a hand-written package holds. A single-file tool has
+	 * neither and declares none.
+	 */
+	private declaredContractFixtures(
+		snapshot: ReadonlyMap<string, WorkshopFileState>,
+		tool: ResolvedTarget["tools"][number],
+	): string[] {
+		if (!tool.directoryPath) return [];
+		const manifestPath = `${tool.directoryPath}/contract-tests.json`;
+		const entry = snapshot.get(manifestPath);
+		if (!entry) {
+			return [...snapshot.keys()]
+				.flatMap((path) => {
+					if (!path.startsWith(`${tool.directoryPath}/`)) return [];
+					const name = WORKSHOP_CONTRACT_FIXTURE.exec(path.slice((tool.directoryPath as string).length + 1))?.[1];
+					return name ? [name] : [];
+				})
+				.sort((left, right) => left.localeCompare(right));
+		}
+		let manifest: z.infer<typeof WorkshopContractManifestSchema>;
+		try {
+			manifest = WorkshopContractManifestSchema.parse(JSON.parse(workshopText(entry.content, manifestPath)));
+		} catch (error) {
+			throw new ToolWorkshopError(`${manifestPath} is not a valid AHDE contract-test manifest`, { cause: error });
+		}
+		if (manifest.tool !== tool.descriptor.name) {
+			throw new ToolWorkshopError(`${manifestPath} names ${manifest.tool}, not ${tool.descriptor.name}`);
+		}
+		return manifest.fixtures.map((path) => {
+			const fixturePath = `${tool.directoryPath}/${path}`;
+			if (!snapshot.has(fixturePath)) throw new ToolWorkshopError(`${manifestPath} refers to missing ${fixturePath}`);
+			return WORKSHOP_CONTRACT_FIXTURE.exec(path)![1]!;
+		});
 	}
 
 	status(): WorkshopStatus {
@@ -2390,7 +2395,18 @@ export class BuilderWorkshop {
 		// The resulting Harness must load and must stay readable by its Builder.
 		const resulting = loadTarget(this.path);
 		this.assertResultingHarnessReadable(resulting);
-		this.assertToolContractsPassed(snapshot.entries, changes, resulting);
+		// The tests of the Harness this proposal would create, run against the
+		// exact bytes being proposed. A declared tool whose own contract is red is
+		// not a proposal anybody should be applying.
+		const toolTests = this.toolContractReport(snapshot.entries, changes, resulting);
+		const red = toolTests.find((run) => run.total > 0 && !run.allPassed);
+		if (red) {
+			const failed = red.fixtures.find((fixture) => !fixture.passed);
+			throw new ToolWorkshopError(
+				`${red.tool} is not ready to close: contract test ${failed?.name ?? "?"} is not green on the exact ` +
+				`proposal snapshot — ${failed?.failures.join("; ") || "it did not pass"}`,
+			);
+		}
 		if (changes.some((change) => change.path === WORKSHOP_MANIFEST)) {
 			if (this.toolAuthoringPolicy) {
 				assertManifestChangePolicy(this.baseManifest, TargetManifest.parse(resulting.manifest), "execution-policy");
@@ -2447,6 +2463,7 @@ export class BuilderWorkshop {
 		return {
 			proposal,
 			changes,
+			toolTests,
 			baseTargetSha: this.baseTargetSha,
 			manifestChangePolicy: this.toolAuthoringPolicy ? "execution-policy" : "resources-only",
 		};

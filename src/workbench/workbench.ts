@@ -1908,7 +1908,7 @@ export class AhdeWorkbench {
 					process: capability.process,
 					credentials: capability.environment.length,
 				})),
-				toolTests: workshopSummary.tryHistory,
+				toolTests: compiled.toolTests,
 				authoringContextHash: authoringContext.contextHash,
 			},
 			view: await this.viewOf(settled),

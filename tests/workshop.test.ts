@@ -1302,10 +1302,18 @@ describe("the construction workshop", () => {
 			validationPlan: ["Verify agent routing and final answers."],
 		});
 		expect(closed.artifact?.permissions).toEqual([expect.objectContaining({ tool: "health_check" })]);
-		expect(closed.artifact?.toolTests).toEqual(expect.arrayContaining([
-			expect.objectContaining({ test: "healthy", passed: true }),
-			expect.objectContaining({ test: "service-error", passed: true }),
-		]));
+		// One entry per declared tool the diff touches, green against the exact
+		// bytes being proposed — never a try history that outlived its package.
+		expect(closed.artifact?.toolTests).toEqual([{
+			tool: "health_check",
+			total: 2,
+			passed: 2,
+			allPassed: true,
+			fixtures: [
+				expect.objectContaining({ name: "healthy", passed: true }),
+				expect.objectContaining({ name: "service-error", passed: true }),
+			],
+		}]);
 		expect(closed.artifact?.changedPaths).toEqual(expect.arrayContaining([
 			"added tools/health_check/run",
 			"added tools/health_check/tool.yaml",
@@ -1605,6 +1613,70 @@ describe("the construction workshop", () => {
 		} finally {
 			workbench.closeWorkshop();
 			rmSync(protectedDir, { recursive: true, force: true });
+		}
+	}, 180_000);
+});
+
+describe("a close reports the tests of the Harness it would create", () => {
+	const SINGLE_FILE_DESCRIPTOR = `schemaVersion: 1
+name: lookup
+description: Return the prepared answer for a term.
+parameters:
+	type: object
+	properties:
+		term: { type: string, minLength: 1, maxLength: 100 }
+	required: [term]
+	additionalProperties: false
+command:
+	argv: [bin/lookup]
+timeoutMs: 10000
+maxOutputBytes: 8192
+output: json
+permissions:
+	environment: []
+	network: deny
+	filesystem: read-only
+`.replace(/\t/g, "  ");
+
+	it("refuses a red package, and forgets one the proposal removed", async () => {
+		const dir = fixture();
+		const workshop = open(dir);
+		try {
+			writeLookupTool(workshop);
+			workshop.write({
+				path: "tools/lookup/fixtures/happy.json",
+				content: `${JSON.stringify({ input: { term: "refunds" }, expect: { exitCode: 0 } })}\n`,
+			});
+			// The package declares a contract test nobody has run against these exact
+			// bytes. The close names it instead of compiling a proposal about it.
+			expect(() => workshop.compile({ summary: "Add the lookup tool" }))
+				.toThrow(/lookup is not ready to close: contract test happy is not green on the exact proposal snapshot/);
+
+			let run;
+			try {
+				run = await workshop.tryFixtures({ tool: "lookup" });
+			} catch (error) {
+				if (sandboxUnavailable(error)) return;
+				throw error;
+			}
+			expect(run.allPassed).toBe(true);
+			expect(workshop.compile({ summary: "Add the lookup tool" }).toolTests).toEqual([
+				expect.objectContaining({ tool: "lookup", total: 1, passed: 1, allPassed: true }),
+			]);
+
+			// Now do what the live Builder did: throw the package away and declare a
+			// plain script instead. The removed package's results are not this
+			// proposal's results, and a script with no fixtures says exactly that.
+			for (const path of ["tools/lookup/tool.yaml", "tools/lookup/run", "tools/lookup/lib.sh", "tools/lookup/fixtures/happy.json"]) {
+				workshop.write({ path, remove: true });
+			}
+			workshop.write({ path: "tools/lookup.tool.yaml", content: SINGLE_FILE_DESCRIPTOR });
+			workshop.write({ path: "bin/lookup", content: "#!/bin/sh\nIFS= read -r payload || exit 2\nprintf '{\"answer\":\"plain\"}\\n'\n" });
+			expect(workshop.compile({ summary: "Replace the package with a script" }).toolTests).toEqual([
+				{ tool: "lookup", total: 0, passed: 0, allPassed: false, fixtures: [] },
+			]);
+		} finally {
+			workshop.dispose();
 		}
 	}, 180_000);
 });

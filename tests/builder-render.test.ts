@@ -34,7 +34,7 @@ import { setLanguage } from "../src/i18n.js";
 import { renderImpact } from "../src/builder/render/impact.js";
 import { renderToolPermissions, toolPermissionsFromDiff } from "../src/builder/render/tool-permissions.js";
 import { fixtureLines, renderWorkshopCloseReview } from "../src/builder/render/workshop-close.js";
-import { lastFixtureRunPerTool } from "../src/application/tool-workshop.js";
+import type { ToolFixtureRunResult } from "../src/application/tool-workshop.js";
 import { plainPaint, type Paint } from "../src/builder/render/paint.js";
 import { STAGE_LABELS, nextStep, stageLabel } from "../src/builder/render/stage.js";
 import { workbenchGateClass } from "../src/workbench/transition-policy.js";
@@ -2398,11 +2398,16 @@ describe("tool permissions", () => {
 });
 
 describe("the workshop-close review", () => {
-	const history = [
-		{ tool: "weather", test: "sunny", passed: true, exitCode: 0, timedOut: false, truncated: false, durationMs: 12, failure: null, snapshotHash: `sha256:${"a".repeat(64)}`, at: "2026-01-01T00:00:00.000Z" },
-		{ tool: "weather", test: "sunny", passed: true, exitCode: 0, timedOut: false, truncated: false, durationMs: 11, failure: null, snapshotHash: `sha256:${"b".repeat(64)}`, at: "2026-01-01T00:01:00.000Z" },
-		{ tool: "weather", test: "unknown-city", passed: true, exitCode: 3, timedOut: false, truncated: false, durationMs: 9, failure: null, snapshotHash: `sha256:${"b".repeat(64)}`, at: "2026-01-01T00:02:00.000Z" },
-	];
+	const green: ToolFixtureRunResult[] = [{
+		tool: "weather",
+		total: 2,
+		passed: 2,
+		allPassed: true,
+		fixtures: [
+			{ name: "sunny", passed: true, exitCode: 0, durationMs: 11, failures: [] },
+			{ name: "unknown-city", passed: true, exitCode: 3, durationMs: 9, failures: [] },
+		],
+	}];
 	const content = {
 		kind: "proposal" as const,
 		runId: "builder-run_1",
@@ -2419,7 +2424,7 @@ describe("the workshop-close review", () => {
 	};
 
 	it("says what was created, what it may reach, how its fixtures went, and the two outcomes", () => {
-		const lines = renderWorkshopCloseReview(content, history, plainPaint);
+		const lines = renderWorkshopCloseReview(content, green, plainPaint);
 		const text = lines.join("\n");
 		expect(text).toContain("Created / changed");
 		expect(text).toContain("• tools/weather/tool.yaml");
@@ -2432,20 +2437,29 @@ describe("the workshop-close review", () => {
 		expect(text).toContain("Nothing changes until you apply.");
 	});
 
-	it("counts only the newest run, names the failing fixture, and bends into Russian", () => {
-		const failed = [
-			...history.slice(0, 2),
-			{ ...history[2]!, passed: false, failure: "stdout JSON.city is missing" },
-		];
-		expect(fixtureLines(lastFixtureRunPerTool(failed), plainPaint)).toEqual([
+	it("names the failing fixture, says so when a package has no tests, and bends into Russian", () => {
+		const failed: ToolFixtureRunResult[] = [{
+			...green[0]!,
+			passed: 1,
+			allPassed: false,
+			fixtures: [
+				green[0]!.fixtures[0]!,
+				{ name: "unknown-city", passed: false, exitCode: 3, durationMs: 9, failures: ["stdout JSON.city is missing"] },
+			],
+		}];
+		expect(fixtureLines(failed, plainPaint)).toEqual([
 			"  ✗ weather 1/2 — unknown-city: stdout JSON.city is missing",
 		]);
+		// A declared tool that carries no fixtures says exactly that. It never
+		// borrows a number from a package that is no longer in the proposal.
+		expect(fixtureLines([{ tool: "check_dbo", total: 0, passed: 0, allPassed: false, fixtures: [] }], plainPaint))
+			.toEqual(["  — check_dbo declares no contract tests"]);
 		try {
 			setLanguage("ru");
-			expect(fixtureLines(lastFixtureRunPerTool(history), plainPaint)).toEqual([
-				"  ✓ weather 2/2 фикстур",
-			]);
-			expect(renderWorkshopCloseReview(content, history, plainPaint).join("\n"))
+			expect(fixtureLines(green, plainPaint)).toEqual(["  ✓ weather 2/2 фикстур"]);
+			expect(fixtureLines([{ tool: "check_dbo", total: 0, passed: 0, allPassed: false, fixtures: [] }], plainPaint))
+				.toEqual(["  — check_dbo не объявляет контрактных тестов"]);
+			expect(renderWorkshopCloseReview(content, green, plainPaint).join("\n"))
 				.toContain("Создано / изменено");
 		} finally {
 			setLanguage(null);
