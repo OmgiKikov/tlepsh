@@ -1,4 +1,4 @@
-import type { CandidateImpact } from "../../application/candidate-impact.js";
+import type { CandidateFamilyImpact, CandidateImpact } from "../../application/candidate-impact.js";
 import {
 	scorePredictedModes,
 	scorePredictedOverall,
@@ -27,6 +27,28 @@ const OUTCOME_GLYPH: Record<CandidateImpact["proposalBasis"] extends infer T
 function rate(counts: { failedOccurrences: number; totalOccurrences: number }): string {
 	return `${counts.failedOccurrences}/${counts.totalOccurrences} failed`;
 }
+
+/**
+ * A family named the way the corpus names it: the check, and the tool it
+ * requires where it requires one. `tool_called check_dbo`, `judge`,
+ * `output_contains` — machine-readable tokens the operator can grep for, so
+ * this line and the grader that produced it use the same word.
+ */
+function familyLabel(family: CandidateFamilyImpact): string {
+	const check = GRADER_TYPE_OF_CHECK[family.signature.checkCode];
+	return family.signature.subject ? `${check} ${family.signature.subject}` : check;
+}
+
+const GRADER_TYPE_OF_CHECK: Record<CandidateFamilyImpact["signature"]["checkCode"], string> = {
+	"required-tool": "tool_called",
+	"output-contains": "output_contains",
+	"output-matches": "output_matches",
+	"no-secret": "no_secret",
+	"semantic-rubric": "judge",
+	"reference-exact": "exact",
+	"reference-similarity": "similarity",
+	"turn-budget": "turn_budget",
+};
 
 function verdictText(verdict: CandidateImpact["verdict"], paint: Paint): string {
 	switch (verdict) {
@@ -86,6 +108,29 @@ export function renderImpact(
 		paint,
 	);
 	if (overall) lines.push(`  ${overall}`);
+	// What moved, per grader family. This is the answer to "did it work" that
+	// does not need a diagnosis behind it: every candidate has two matched arms.
+	if (impact.families.length > 0) {
+		lines.push(`  ${paint.dim(t("impact.families"))}`);
+		for (const family of impact.families) {
+			const delta = family.candidatePassedTasks - family.baselinePassedTasks;
+			const tone = delta > 0 ? paint.success : delta < 0 ? paint.error : paint.muted;
+			lines.push(
+				`    ${tone(delta > 0 ? "↑" : delta < 0 ? "↓" : "=")} ${oneLine(familyLabel(family), 60)}` +
+				` ${paint.dim("·")} ${tone(t("impact.family-tasks", {
+					before: family.baselinePassedTasks,
+					after: family.candidatePassedTasks,
+					tasks: family.tasks,
+				}))}` +
+				(family.regressedTaskIds.length > 0
+					? ` ${paint.error(t("impact.family-regressed", { count: family.regressedTaskIds.length }))}`
+					: ""),
+			);
+		}
+		if (impact.omittedFamilyCount > 0) {
+			lines.push(`    ${paint.dim(t("impact.family-omitted", { count: impact.omittedFamilyCount }))}`);
+		}
+	}
 	if (impact.proposalBasis) {
 		const modes = impact.proposalBasis.targetedFailureModes;
 		const scored = new Map(
@@ -107,7 +152,7 @@ export function renderImpact(
 			if (outcome && options.prediction) lines.push(`      ${predictedModeFragment(outcome, paint)}`);
 		}
 	} else {
-		lines.push(`  ${paint.muted("No targeted failure modes: this candidate was not authored from a diagnosis.")}`);
+		lines.push(`  ${paint.muted(t("impact.no-diagnosis"))}`);
 	}
 	if (impact.newFailureModes.length > 0) {
 		lines.push(`  ${paint.error(`New ${pluralize(impact.newFailureModes.length, "failure mode")}:`)}`);
