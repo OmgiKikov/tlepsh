@@ -41,7 +41,7 @@ import type {
 	ImprovementLoopStopReason,
 } from "../application/improvement-loop.js";
 import type { ProposalSearchResult } from "../application/proposal-search.js";
-import type { RegradeDiff } from "../application/regrade-decision.js";
+import type { CandidateRegradeProjection, RegradeDiff } from "../application/regrade-decision.js";
 import type { CycleContinuationReceipt } from "./cycle-continuation.js";
 import type { WorkbenchGateClass, WorkbenchRunEstimate } from "./transition-policy.js";
 
@@ -186,6 +186,13 @@ export interface WorkbenchCandidateSummary {
 	 * nobody has labelled that judge yet.
 	 */
 	judgeAgreement?: { agreement: number; kappa: number | null; labels: number } | null;
+	/**
+	 * Both development arms re-scored with one revised rubric, when the project
+	 * holds such a pair. It is read beside the recorded verdict and never in
+	 * place of it: a re-score is not a new baseline, and this candidate was
+	 * decided by the graders that were in force when its answers were scored.
+	 */
+	regraded?: CandidateRegradeProjection | null;
 	review: { experimentId: string; recommendation: "promote" | "reject"; reason: string } | null;
 	promotion: { tag: string; reason: string; at: string } | null;
 	rejection: { reason: string; at: string } | null;

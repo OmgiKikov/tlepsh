@@ -44,6 +44,9 @@ export const ACTOR_ID = "local:test-human";
 export const CANDIDATE_ID = "candidate-cycle-1";
 export const PROMOTION_TAG = "v1.0.0";
 export const CANDIDATE_BRANCH = "candidate/workbench-cycle";
+/** The two development arms the candidate record names; written only on request. */
+export const DEVELOPMENT_BASELINE_EVAL = "erun_cycle_development_baseline";
+export const DEVELOPMENT_CANDIDATE_EVAL = "erun_cycle_development_candidate";
 export const CANDIDATE_AGENTS_MD = "# Cycle fixture\n\nAnswer only from approved local evidence and say when it is missing.\n";
 export const APPLY_REASON = "Apply the reviewed cycle-fixture proposal";
 export const EXPERIMENT_ID = "experiment-cycle-1";
@@ -60,6 +63,13 @@ export interface RecordingGate extends WorkbenchHumanGate {
 	selectSealed: Mock<WorkbenchHumanGate["selectSealed"]>;
 }
 
+/**
+ * Where the fixture candidate stops. `evaluated` is the stage an operator
+ * actually argues with the judge at: the evidence is in and the release
+ * decision is not made yet.
+ */
+export type CandidateFixtureStatus = "promoted" | "rejected" | "evaluated";
+
 export interface CycleFixture extends FixturePaths {
 	projectId: typeof PROJECT_ID;
 	workbench: AhdeWorkbench;
@@ -68,7 +78,7 @@ export interface CycleFixture extends FixturePaths {
 	baselineSha: string;
 	candidateSha: string;
 	candidateId: string;
-	status: "promoted" | "rejected";
+	status: CandidateFixtureStatus;
 	tag: string;
 	proposalRunId: string;
 	evalRunId: string;
@@ -170,8 +180,12 @@ export function writeDevelopmentEval(
 	paths: FixturePaths,
 	corpusId: string,
 	evalRunId: string,
-	/** What this run cost, for fixtures that exercise the run cost estimate. */
-	spend: { costUsd?: number; latencyMs?: number } = {},
+	/**
+	 * What this run cost, for fixtures that exercise the run cost estimate, and
+	 * how its one recorded answer scored — a re-score needs two arms that do not
+	 * already agree.
+	 */
+	spend: { costUsd?: number; latencyMs?: number; outcome?: "pass" | "fail" } = {},
 ): EvalRunRecord {
 	const resolved = targetWithDevelopmentCorpus(
 		loadTarget(paths.projectDir),
@@ -203,6 +217,7 @@ export function writeDevelopmentEval(
 		datasetHash: resolved.datasetHash,
 	};
 	const runId = `run-${evalRunId}`;
+	const passed = spend.outcome === "pass";
 	const firstTask = resolved.tasks[0];
 	if (!firstTask) throw new Error("fixture corpus has no tasks");
 	const traceContent = [
@@ -242,13 +257,13 @@ export function writeDevelopmentEval(
 			recoveryAttempts: 0,
 		},
 		evalResults: {
-			outcome: "fail",
+			outcome: passed ? "pass" : "fail",
 			graders: [{
 				name: "fixture",
 				type: "output_contains",
-				passed: false,
-				score: 0,
-				reason: "fixture failure",
+				passed,
+				score: passed ? 1 : 0,
+				reason: passed ? "fixture pass" : "fixture failure",
 				specHash: hashValue(firstTask.effectiveGraders[0]!),
 				checkCode: "output-contains",
 			}],
@@ -277,7 +292,7 @@ export function writeDevelopmentEval(
 		runArtifacts: [{ runId, sha256: hashValue(run) }],
 		startedAt: NOW,
 		finishedAt: NOW,
-		summary: { total: 1, pass: 0, fail: 1, error: 0, allPassRate: 0 },
+		summary: { total: 1, pass: passed ? 1 : 0, fail: passed ? 0 : 1, error: 0, allPassRate: passed ? 1 : 0 },
 	};
 	writeEvalRun(paths.runsRoot, record);
 	return record;
@@ -290,7 +305,7 @@ export function writeDevelopmentEval(
  */
 function terminalCandidateRecord(input: {
 	paths: FixturePaths;
-	status: "promoted" | "rejected";
+	status: CandidateFixtureStatus;
 	candidateId: string;
 	proposalRunId: string;
 	approvedSpec: { projectId: string; specId: string; specContentHash: string; snapshotHash: string };
@@ -376,8 +391,8 @@ function terminalCandidateRecord(input: {
 			designHash: FIXTURE_HASH,
 			mode: "candidate",
 			development: {
-				baseline: { evalRunId: "erun_cycle_development_baseline", harness: baseline },
-				candidate: { evalRunId: "erun_cycle_development_candidate", harness: revision },
+				baseline: { evalRunId: DEVELOPMENT_BASELINE_EVAL, harness: baseline },
+				candidate: { evalRunId: DEVELOPMENT_CANDIDATE_EVAL, harness: revision },
 				comparison: comparison("development"),
 				corpus: input.developmentCorpus,
 			},
@@ -390,6 +405,8 @@ function terminalCandidateRecord(input: {
 			infrastructureErrors: 0,
 		},
 	});
+	// Where the operator reads the evidence and nothing is decided yet.
+	if (input.status === "evaluated") return record;
 	record = transitionCandidate(record, {
 		type: "reviewed",
 		eventId: `${input.candidateId}:reviewed`,
@@ -432,8 +449,14 @@ function terminalCandidateRecord(input: {
  * exactly the state `promote-candidate` / `reject-candidate` leave behind.
  */
 export async function terminalCandidateFixture(
-	status: "promoted" | "rejected",
+	status: CandidateFixtureStatus,
 	dependencies: Partial<AhdeWorkbenchDependencies> = {},
+	/**
+	 * Write the two development arms the candidate record names, and say how
+	 * each one scored. Left out by default: most fixtures only need the record
+	 * to name them, and two more EvalRuns would move every inventory count.
+	 */
+	developmentArms?: { baseline: "pass" | "fail"; candidate: "pass" | "fail" },
 ): Promise<CycleFixture> {
 	const paths = targetPaths();
 	const branch = git(paths.projectDir, "symbolic-ref", "--short", "HEAD");
@@ -456,6 +479,10 @@ export async function terminalCandidateFixture(
 	const published = await workbench.decide({ kind: "publish-corpus", reason: "Publish the exact cycle basket" }, gate());
 	const corpusId = published.result.corpusId;
 	const evaluation = writeDevelopmentEval(paths, corpusId, "erun_cycle_baseline");
+	if (developmentArms) {
+		writeDevelopmentEval(paths, corpusId, DEVELOPMENT_BASELINE_EVAL, { outcome: developmentArms.baseline });
+		writeDevelopmentEval(paths, corpusId, DEVELOPMENT_CANDIDATE_EVAL, { outcome: developmentArms.candidate });
+	}
 
 	const proposal = compileHarnessAuthoringProposal({
 		repositoryDir: paths.projectDir,
@@ -502,7 +529,8 @@ export async function terminalCandidateFixture(
 	if (status === "promoted") {
 		git(paths.projectDir, "tag", "-a", PROMOTION_TAG, "-m", `AHDE promotion ${CANDIDATE_ID}`, applied.result.candidateSha);
 	}
-	// promote-candidate / reject-candidate leave the terminal candidate focused.
+	// promote-candidate / reject-candidate leave the terminal candidate focused;
+	// an evaluated candidate is the one the review is about.
 	await workbench.submit({ kind: "select", entity: "candidate", id: CANDIDATE_ID });
 
 	return {

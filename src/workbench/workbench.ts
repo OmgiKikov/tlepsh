@@ -137,7 +137,10 @@ import {
 	compileRegradeDiff,
 	estimateRegradeJudgeSpend,
 	planRegradeGraders,
+	projectCandidateRegrade,
 	resolveRegradeSource,
+	type CandidateRegradeProjection,
+	type RegradeDiff,
 } from "../application/regrade-decision.js";
 import { regradeEvalRun } from "../regrade.js";
 import {
@@ -757,12 +760,18 @@ export class AhdeWorkbench {
 
 	/**
 	 * One candidate as a human reads it, carrying how far the judge behind its
-	 * evidence has been checked. Like impact, this is a review aid: an
-	 * unreadable label store leaves the line off rather than blocking a decision.
+	 * evidence has been checked and — when the operator has since rewritten the
+	 * rubric and re-scored both arms — what that rubric says about the same two
+	 * arms. Like impact, both are review aids: an unreadable label store or a
+	 * half-readable re-score leaves the line off rather than blocking a decision.
 	 */
-	private candidateView(candidate: CandidateRecord): WorkbenchCandidateSummary {
+	private candidateView(
+		candidate: CandidateRecord,
+		developmentEvals: WorkbenchInventory["developmentEvals"],
+	): WorkbenchCandidateSummary {
 		const evaluated = candidate.events.find((event) => event.type === "evaluated");
 		if (evaluated?.type !== "evaluated") return candidateSummary(candidate);
+		const regraded = this.candidateRegrade(evaluated.evaluation.development, developmentEvals);
 		try {
 			const approvedSpec = candidate.origin.kind === "applied-builder"
 				? {
@@ -782,7 +791,7 @@ export class AhdeWorkbench {
 				requireBoundLineage: true,
 				...(approvedSpec ? { approvedSpec } : {}),
 			});
-			if (calibration.specHashes.length === 0) return candidateSummary(candidate);
+			if (calibration.specHashes.length === 0) return candidateSummary(candidate, undefined, regraded);
 			return candidateSummary(
 				candidate,
 				calibration.stats
@@ -792,9 +801,32 @@ export class AhdeWorkbench {
 						labels: calibration.stats.n,
 					}
 					: null,
+				regraded,
 			);
 		} catch {
-			return candidateSummary(candidate);
+			return candidateSummary(candidate, undefined, regraded);
+		}
+	}
+
+	/**
+	 * Both development arms of one candidate, re-scored with the same revised
+	 * rubric — or null, which is the ordinary answer: most candidates are never
+	 * re-scored, and the check costs nothing until a derived run actually names
+	 * one of the two arms.
+	 */
+	private candidateRegrade(
+		development: { baseline: { evalRunId: string }; candidate: { evalRunId: string } },
+		developmentEvals: WorkbenchInventory["developmentEvals"],
+	): CandidateRegradeProjection | null {
+		try {
+			return projectCandidateRegrade({
+				runsRoot: this.runsRoot,
+				evals: developmentEvals,
+				baselineEvalRunId: development.baseline.evalRunId,
+				candidateEvalRunId: development.candidate.evalRunId,
+			});
+		} catch {
+			return null;
 		}
 	}
 
@@ -1074,6 +1106,44 @@ export class AhdeWorkbench {
 		);
 	}
 
+	/**
+	 * The recorded evaluations one re-score covers, in comparison order.
+	 *
+	 * At `candidate-review` the recorded answers are not a run, they are a
+	 * comparison: the candidate's two development arms. Re-scoring one of them
+	 * alone would produce a number with nothing to compare it against, so both
+	 * arms are always re-scored with the same revised graders — including when
+	 * the operator names one of them explicitly. Any other development run, and
+	 * every other stage, re-scores exactly one run, as before.
+	 */
+	private regradeSources(
+		inventory: WorkbenchInventory,
+		stage: WorkbenchStage,
+		explicitId?: string,
+	): EvalRunRecord[] {
+		const arms = stage === "candidate-review" ? this.candidateDevelopmentArms(inventory) : null;
+		if (arms && (explicitId === undefined || arms.some((arm) => arm.evalRunId === explicitId))) return arms;
+		return [this.regradeSource(inventory, explicitId)];
+	}
+
+	/** The candidate under review, as its two recorded development arms. */
+	private candidateDevelopmentArms(inventory: WorkbenchInventory): [EvalRunRecord, EvalRunRecord] | null {
+		let development: { baseline: { evalRunId: string }; candidate: { evalRunId: string } };
+		try {
+			const candidate = requireCandidate(inventory, ["evaluated"]);
+			const evaluated = candidate.events.find((event) => event.type === "evaluated");
+			if (evaluated?.type !== "evaluated") return null;
+			development = evaluated.evaluation.development;
+		} catch {
+			return null;
+		}
+		const find = (evalRunId: string): EvalRunRecord | undefined =>
+			inventory.developmentEvals.find((run) => run.evalRunId === evalRunId);
+		const baseline = find(development.baseline.evalRunId);
+		const candidateArm = find(development.candidate.evalRunId);
+		return baseline && candidateArm ? [baseline, candidateArm] : null;
+	}
+
 	/** What one run of this many executions is expected to cost on this Target. */
 	private runEstimate(executions: number, target: WorkbenchInventory["target"]): WorkbenchRunEstimate {
 		return estimateRunCost({
@@ -1265,7 +1335,7 @@ export class AhdeWorkbench {
 		// exactly what the operator must see BEFORE approving — promotion can
 		// refuse on it. `candidateView` swallows its own errors, so a missing
 		// label store degrades to the plain summary instead of blocking a ship.
-		const summary = this.candidateView(candidate);
+		const summary = this.candidateView(candidate, inventory.developmentEvals);
 		const proposal = this.candidateProposal(candidate);
 		const candidateId = candidate.candidateId;
 		const sameCandidate = (subject: unknown): boolean =>
@@ -2426,7 +2496,7 @@ export class AhdeWorkbench {
 				const continuation = inventory.continuedCandidates.get(candidate.candidateId) ?? null;
 				content = {
 					kind: "candidate",
-					...this.candidateView(candidate),
+					...this.candidateView(candidate, inventory.developmentEvals),
 					...proposal,
 					adoption: adoption
 						? { receiptId: adoption.receiptId, adoptedAt: adoption.adoptedAt, branch: adoption.intent.subject.branch.name }
@@ -2453,7 +2523,7 @@ export class AhdeWorkbench {
 				const proposal = this.candidateProposalProjection(candidate);
 				content = {
 					kind: "candidate",
-					...this.candidateView(candidate),
+					...this.candidateView(candidate, inventory.developmentEvals),
 					...proposal,
 					adoption: null,
 					continuation: null,
@@ -2673,7 +2743,12 @@ export class AhdeWorkbench {
 				revisionSummary: input.revisionSummary,
 			}, { now: this.dependencies.now });
 			const settled = this.select("corpus-draft", result.draft.id);
-			return { kind: input.kind, message: "New immutable corpus-draft revision saved.", artifact: { id: result.draft.id, parentDraftId: parent.id, draftHash: hashValue(result.draft), taskCount: result.draft.tasks.length }, view: await this.viewOf(settled) };
+			// A revision written in front of a candidate has exactly one next step,
+			// and it is not the one the stage machine's headline suggests.
+			const next = deriveWorkbenchView(settled).stage === "candidate-review"
+				? ` ${t("submit.revision-at-candidate-review")}`
+				: "";
+			return { kind: input.kind, message: `New immutable corpus-draft revision saved.${next}`, artifact: { id: result.draft.id, parentDraftId: parent.id, draftHash: hashValue(result.draft), taskCount: result.draft.tasks.length }, view: await this.viewOf(settled) };
 		}
 
 		if (input.kind === "workshop-open") {
@@ -3402,44 +3477,58 @@ export class AhdeWorkbench {
 		if (input.kind === "regrade") {
 			if (!inventory.target) throw new Error("Target is not ready");
 			const approved = requireApprovedSpec(inventory);
-			const source = this.regradeSource(inventory, input.evalRunId);
+			// One or two, and the second one is never optional where it exists: a
+			// candidate's arms are re-scored as a pair or the number means nothing.
+			const sources = this.regradeSources(inventory, stage, input.evalRunId);
+			const paired = sources.length > 1;
 			const draft = input.graders === "draft"
 				? requireCorpusDraft(inventory, undefined, approved.id, true)
 				: null;
 			const build = (): {
 				plan: ReturnType<typeof planRegradeGraders>;
-				source: EvalRunRecord;
+				sources: EvalRunRecord[];
 				subject: Record<string, unknown>;
 			} => {
 				const current = this.decisionInventory(input.kind);
 				const currentApproved = requireApprovedSpec(current, approved.id);
-				const currentSource = this.regradeSource(current, source.evalRunId);
+				const currentSources = sources.map((source) => this.regradeSource(current, source.evalRunId));
 				const currentDraft = draft ? requireCorpusDraft(current, draft.id, currentApproved.id, true) : null;
+				const primary = currentSources[0]!;
+				// Two arms that answered different case sets were never a comparison,
+				// so one revised rubric cannot be planned for both of them.
+				for (const source of currentSources) {
+					if (source.dataset !== primary.dataset || source.datasetHash !== primary.datasetHash) {
+						throw new Error(
+							`eval runs ${primary.evalRunId} and ${source.evalRunId} scored different case sets; ` +
+							"one re-score covers one set of questions",
+						);
+					}
+				}
 				// The exact cases the recorded traces answered, wherever they live:
 				// the manifest dataset, or the published corpus that produced them.
 				const scored = resolveScoredCasesForEval({
 					target: loadTarget(this.projectDir),
-					evalRun: currentSource,
+					evalRun: primary,
 					stateRoot: this.stateRoot,
 					projectId: this.projectId,
 				}).target;
 				const plan = planRegradeGraders({
 					scored,
 					revised: currentDraft ? currentDraft.tasks : null,
-					sourceJudge: currentSource.provenance.judge,
+					sourceJudge: primary.provenance.judge,
 				});
 				return {
 					plan,
-					source: currentSource,
+					sources: currentSources,
 					subject: {
 						operation: "regrade",
 						target: { id: scored.manifest.id, gitSha: scored.gitSha },
-						source: {
-							evalRunId: currentSource.evalRunId,
-							datasetHash: currentSource.datasetHash,
-							suiteHash: currentSource.suiteHash,
-							runs: currentSource.runIds.length,
-						},
+						sources: currentSources.map((source) => ({
+							evalRunId: source.evalRunId,
+							datasetHash: source.datasetHash,
+							suiteHash: source.suiteHash,
+							runs: source.runIds.length,
+						})),
 						graders: input.graders,
 						...(currentDraft ? { draft: { id: currentDraft.id, hash: hashValue(currentDraft) } } : {}),
 						changedGraders: plan.changed.length,
@@ -3451,37 +3540,54 @@ export class AhdeWorkbench {
 				};
 			};
 			const before = build();
+			const gradings = before.sources.reduce((total, source) => total + source.runIds.length, 0);
 			await this.confirm(input, gate, t("confirm.title.regrade"), before.subject, options.signal, {
-				question: t("confirm.regrade", { answers: localizedCount(before.source.runIds.length, "recorded answer") }),
+				question: t("confirm.regrade", { answers: localizedCount(gradings, "recorded answer") }),
 				// A regrade's unit of work is a grading, never a Target execution.
 				// The guard prices the judge, which is the only model it pays.
 				estimate: estimateRegradeJudgeSpend({
 					runsRoot: this.runsRoot,
 					targetId: inventory.target.manifest.id,
-					gradings: before.source.runIds.length,
+					gradings,
 				}),
 			});
 			const after = build();
 			if (!exactSame(before.subject, after.subject)) throw new WorkbenchStaleDecisionError(input.kind);
-			const result = await this.dependencies.regradeEvalRun({
-				runsRoot: this.runsRoot,
-				evalRunId: after.source.evalRunId,
-				target: after.plan.target,
-				...(options.signal ? { signal: options.signal } : {}),
-			});
-			abortIfRequested(options.signal);
-			const diff = compileRegradeDiff({
-				runsRoot: this.runsRoot,
-				result,
-				graders: input.graders,
-				changed: after.plan.changed,
-			});
+			const diffs: RegradeDiff[] = [];
+			for (const source of after.sources) {
+				const result = await this.dependencies.regradeEvalRun({
+					runsRoot: this.runsRoot,
+					evalRunId: source.evalRunId,
+					target: after.plan.target,
+					...(options.signal ? { signal: options.signal } : {}),
+				});
+				abortIfRequested(options.signal);
+				diffs.push(compileRegradeDiff({
+					runsRoot: this.runsRoot,
+					result,
+					graders: input.graders,
+					changed: after.plan.changed,
+				}));
+			}
+			// `sources` is in comparison order, so the last diff is the arm whose
+			// verdict the operator is arguing with and the first is what it is
+			// measured against.
+			const baselineDiff = paired ? diffs[0]! : null;
+			const diff = diffs[diffs.length - 1]!;
+			const rate = (value: number): string => `${Math.round(value * 100)}%`;
 			return {
 				kind: input.kind,
-				message: `Re-scored ${localizedCount(diff.total, "recorded answer")} with the revised graders: ` +
-					`${diff.passBefore}/${diff.total} → ${diff.passAfter}/${diff.total}. ` +
-					"The Target was not called; only the judge was paid. This is a re-score, not a new baseline.",
-				result: diff,
+				message: baselineDiff
+					? `Re-scored ${localizedCount(gradings, "recorded answer")} across both development arms ` +
+						`with the revised graders: development ${rate(baselineDiff.passRateBefore)} → ${rate(diff.passRateBefore)} ` +
+						`became ${rate(baselineDiff.passRateAfter)} → ${rate(diff.passRateAfter)}. ` +
+						`The Target was not called; only the judge was paid. ${t("regrade.both-arms")} ` +
+						(input.evalRunId ? `${t("regrade.named-one-arm")} ` : "") +
+						"This is a re-score, not a new baseline."
+					: `Re-scored ${localizedCount(diff.total, "recorded answer")} with the revised graders: ` +
+						`${diff.passBefore}/${diff.total} → ${diff.passAfter}/${diff.total}. ` +
+						"The Target was not called; only the judge was paid. This is a re-score, not a new baseline.",
+				result: baselineDiff ? { ...diff, pairedBaseline: baselineDiff } : diff,
 				view: await this.view(),
 			};
 		}
@@ -3865,7 +3971,7 @@ export class AhdeWorkbench {
 		if (input.kind === "review-candidate") {
 			const candidate = requireCandidate(inventory, ["evaluated"], input.candidateId);
 			const proposal = input.recommendation === "promote" ? this.candidateProposal(candidate) : null;
-			const before = { operation: "review-candidate", candidateHash: hashValue(candidate), candidate: this.candidateView(candidate), proposal, recommendation: input.recommendation };
+			const before = { operation: "review-candidate", candidateHash: hashValue(candidate), candidate: this.candidateView(candidate, inventory.developmentEvals), proposal, recommendation: input.recommendation };
 			const actor = await this.confirm(input, gate, t("confirm.title.review-candidate"), before, options.signal);
 			const current = this.decisionInventory(input.kind);
 			const after = requireCandidate(current, ["evaluated"], candidate.candidateId);
@@ -3877,7 +3983,7 @@ export class AhdeWorkbench {
 
 		if (input.kind === "promote-candidate") {
 			const candidate = requireCandidate(inventory, ["reviewed"], input.candidateId);
-			const before = { operation: "promote-candidate", candidateHash: hashValue(candidate), candidate: this.candidateView(candidate), version: input.version, tag: `v${input.version}` };
+			const before = { operation: "promote-candidate", candidateHash: hashValue(candidate), candidate: this.candidateView(candidate, inventory.developmentEvals), version: input.version, tag: `v${input.version}` };
 			const actor = await this.confirm(input, gate, t("confirm.title.promote-candidate"), before, options.signal);
 			const current = this.decisionInventory(input.kind);
 			if (hashValue(requireCandidate(current, ["reviewed"], candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
@@ -3906,7 +4012,7 @@ export class AhdeWorkbench {
 			// the same single question, so "reject" never bounces off a stage rule.
 			const candidate = requireCandidate(inventory, ["evaluated", "reviewed"], input.candidateId);
 			const needsReview = candidateStatus(candidate) === "evaluated";
-			const before = { operation: "reject-candidate", candidateHash: hashValue(candidate), candidate: this.candidateView(candidate) };
+			const before = { operation: "reject-candidate", candidateHash: hashValue(candidate), candidate: this.candidateView(candidate, inventory.developmentEvals) };
 			const actor = await this.confirm(input, gate, t("confirm.title.reject-candidate"), before, options.signal, {
 				question: t("confirm.reject-candidate"),
 			});

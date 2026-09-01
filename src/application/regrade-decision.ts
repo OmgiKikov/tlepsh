@@ -112,6 +112,13 @@ export interface RegradeDiff {
 	/** Zero by construction: a regrade re-scores what is already recorded. */
 	targetExecutions: 0;
 	sealed: boolean;
+	/**
+	 * The baseline arm of the same candidate, re-scored with the same graders.
+	 * Present only when the re-score covered a candidate's whole development
+	 * comparison, and then `this` diff is the candidate arm: a rubric that moved
+	 * one arm alone would compare a candidate against a rule it never faced.
+	 */
+	pairedBaseline?: RegradeDiff;
 }
 
 /** What a regrade is expected to cost. Only the judge is ever billed. */
@@ -528,5 +535,100 @@ export function compileRegradeDiff(input: {
 		judge: { calls: result.judge.calls, tokens: result.judge.tokens, costUsd: result.judge.costUsd },
 		targetExecutions: 0,
 		sealed,
+	};
+}
+
+// ---------------------------------------------------------------------------
+// What a candidate's own evidence says once the rubric changed.
+
+/** The little of an EvalRun needed to find and read a re-score of one arm. */
+export type RegradedEvalRun = Pick<
+	EvalRunRecord,
+	"evalRunId" | "regradeOf" | "suiteHash" | "summary" | "finishedAt" | "runIds"
+>;
+
+/**
+ * Both development arms of one candidate, re-scored with the same rubric.
+ *
+ * This is a reading of evidence that already exists, never a verdict: the
+ * recorded comparison stays exactly what it was, and this says what the same
+ * two arms look like under the graders the operator has since rewritten.
+ */
+export interface CandidateRegradeProjection {
+	/** The derived EvalRun of each arm, so a reader can open them. */
+	baselineEvalRunId: string;
+	candidateEvalRunId: string;
+	/** The one scoring identity both arms were re-scored under. */
+	suiteHash: string;
+	baselinePassRate: number;
+	candidatePassRate: number;
+	/** Recorded answers whose verdict the new rubric moved, over both arms. */
+	nowPassing: number;
+	nowFailing: number;
+	unchanged: number;
+}
+
+/** Verdicts the new rubric moved, counted from the derived runs of both arms. */
+function countMovedVerdicts(
+	runsRoot: string,
+	derived: readonly RegradedEvalRun[],
+): Pick<CandidateRegradeProjection, "nowPassing" | "nowFailing" | "unchanged"> {
+	let nowPassing = 0;
+	let nowFailing = 0;
+	let unchanged = 0;
+	for (const record of derived) {
+		for (const runId of record.runIds) {
+			let after: RunRecord;
+			let before: RunRecord;
+			try {
+				after = loadRun(runsRoot, runId);
+				const source = after.derivedFrom;
+				if (!source) continue;
+				before = loadRun(runsRoot, source.runId);
+			} catch {
+				// A run whose record cannot be re-read narrows the count; a review
+				// aid never blocks a release decision on a missing file.
+				continue;
+			}
+			const from = runOutcome(before);
+			const to = runOutcome(after);
+			if (from === to) unchanged += 1;
+			else if (to === "pass") nowPassing += 1;
+			else if (from === "pass") nowFailing += 1;
+		}
+	}
+	return { nowPassing, nowFailing, unchanged };
+}
+
+/**
+ * The newest re-score of each development arm, when both exist and were scored
+ * the same way. Anything else is null: one re-scored arm is not a comparison,
+ * and two arms scored under different rubrics are not one either.
+ */
+export function projectCandidateRegrade(input: {
+	runsRoot: string;
+	/** Every development EvalRun of this project; order does not matter. */
+	evals: readonly RegradedEvalRun[];
+	baselineEvalRunId: string;
+	candidateEvalRunId: string;
+}): CandidateRegradeProjection | null {
+	const newestRegradeOf = (sourceEvalRunId: string): RegradedEvalRun | null => {
+		let newest: RegradedEvalRun | null = null;
+		for (const run of input.evals) {
+			if (run.regradeOf !== sourceEvalRunId) continue;
+			if (!newest || Date.parse(run.finishedAt) >= Date.parse(newest.finishedAt)) newest = run;
+		}
+		return newest;
+	};
+	const baseline = newestRegradeOf(input.baselineEvalRunId);
+	const candidate = newestRegradeOf(input.candidateEvalRunId);
+	if (!baseline || !candidate || baseline.suiteHash !== candidate.suiteHash) return null;
+	return {
+		baselineEvalRunId: baseline.evalRunId,
+		candidateEvalRunId: candidate.evalRunId,
+		suiteHash: candidate.suiteHash,
+		baselinePassRate: baseline.summary.allPassRate,
+		candidatePassRate: candidate.summary.allPassRate,
+		...countMovedVerdicts(input.runsRoot, [baseline, candidate]),
 	};
 }

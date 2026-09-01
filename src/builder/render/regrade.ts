@@ -1,6 +1,10 @@
 import { formatEvaluatorSpend } from "../../evaluator-model.js";
 import { plural, t } from "../../i18n.js";
-import type { RegradeCaseFlip, RegradeDiff } from "../../application/regrade-decision.js";
+import type {
+	CandidateRegradeProjection,
+	RegradeCaseFlip,
+	RegradeDiff,
+} from "../../application/regrade-decision.js";
 import { joinNonEmpty, oneLine, percent, section } from "./format.js";
 import type { Paint } from "./paint.js";
 
@@ -51,6 +55,31 @@ export function renderRegradeFlip(flip: RegradeCaseFlip, paint: Paint): string {
 	]);
 }
 
+/**
+ * A candidate's whole comparison under the rubric the operator just rewrote,
+ * on one line beside the recorded verdict.
+ *
+ * It never replaces that verdict: the candidate was decided by the graders in
+ * force when its answers were scored, and this says what the same two arms
+ * would look like now. The exam is named because it is the one thing a reader
+ * might assume moved with them — it cannot: its graders are the judge's own.
+ */
+export function regradedDevelopmentLine(
+	recorded: { baselinePassRate: number; candidatePassRate: number },
+	revised: Pick<
+		CandidateRegradeProjection,
+		"baselinePassRate" | "candidatePassRate" | "nowPassing" | "nowFailing" | "unchanged"
+	>,
+	paint: Paint,
+): string {
+	const moved = `${paint.success("↑")}${revised.nowPassing} ${paint.warning("↓")}${revised.nowFailing} =${revised.unchanged}`;
+	return `${paint.dim(t("label.regraded"))} ${t("candidate.regraded", {
+		recorded: `${percent(recorded.baselinePassRate)} → ${percent(recorded.candidatePassRate)}`,
+		revised: `${percent(revised.baselinePassRate)} → ${percent(revised.candidatePassRate)}`,
+		moved,
+	})} ${paint.dim(`· ${t("regrade.exam-untouched")}`)}`;
+}
+
 export function renderRegrade(diff: RegradeDiff, paint: Paint): string[] {
 	const headline = joinNonEmpty([
 		t("regrade.was-now", { before: percent(diff.passRateBefore), after: percent(diff.passRateAfter) }),
@@ -66,6 +95,24 @@ export function renderRegrade(diff: RegradeDiff, paint: Paint): string[] {
 		`${paint.dim(`= ${t("regrade.unchanged")}`)}: ${diff.unchanged}`,
 		paint.dim(`${t("regrade.score")} ${diff.meanScoreBefore.toFixed(2)} → ${diff.meanScoreAfter.toFixed(2)}`),
 	]));
+
+	// A candidate's arms were re-scored together, so the thing the operator
+	// actually asked — what the comparison says now — is spelled out before the
+	// per-answer detail of the arm they were arguing about.
+	const baseline = diff.pairedBaseline;
+	if (baseline) {
+		lines.push(regradedDevelopmentLine(
+			{ baselinePassRate: baseline.passRateBefore, candidatePassRate: diff.passRateBefore },
+			{
+				baselinePassRate: baseline.passRateAfter,
+				candidatePassRate: diff.passRateAfter,
+				nowPassing: baseline.nowPassing + diff.nowPassing,
+				nowFailing: baseline.nowFailing + diff.nowFailing,
+				unchanged: baseline.unchanged + diff.unchanged,
+			},
+			paint,
+		));
+	}
 
 	if (diff.changedGraderCount > 0) {
 		lines.push(paint.dim(t("regrade.rubrics", { count: diff.changedGraderCount })));
