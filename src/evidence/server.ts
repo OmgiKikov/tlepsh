@@ -1,3 +1,4 @@
+import { language } from "../i18n.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
@@ -116,7 +117,7 @@ function renderIndexDocument(
 	const table = rows.length === 0
 		? '<div class="scroll"><div class="empty">No development evidence yet. Run an evaluation from Builder Pi.</div></div>'
 		: `<div class="scroll"><table><thead><tr><th>Eval run</th><th>Target</th><th>Label</th><th>Started</th><th>Pass rate</th></tr></thead><tbody>${rows.map((row) => row.html).join("")}</tbody></table></div>`;
-	return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AHDE Evidence</title><style>${EVIDENCE_STYLESHEET}</style></head><body><nav class="topbar"><span class="crumb">AHDE Evidence</span></nav><main class="wrap"><div class="head"><div><h1>AHDE Evidence</h1><div class="sub">Development and candidate evaluation indexes. Reports verify member evidence when opened. Sealed holdout traces are never exposed here.</div></div></div><p class="note" data-index-truncated="${truncated}" data-index-shown="${rows.length}" data-index-omitted-public="${omittedPublicCount}" data-index-fields-truncated="${fieldsTruncated}" data-index-fields-redacted="${fieldsRedacted}">${status}${clipping}${redaction}</p>${table}</main></body></html>`;
+	return `<!doctype html><html lang="${language()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AHDE Evidence</title><style>${EVIDENCE_STYLESHEET}</style></head><body><nav class="topbar"><span class="crumb">AHDE Evidence</span></nav><main class="wrap"><div class="head"><div><h1>AHDE Evidence</h1><div class="sub">Development and candidate evaluation indexes. Reports verify member evidence when opened. Sealed holdout traces are never exposed here.</div></div></div><p class="note" data-index-truncated="${truncated}" data-index-shown="${rows.length}" data-index-omitted-public="${omittedPublicCount}" data-index-fields-truncated="${fieldsTruncated}" data-index-fields-redacted="${fieldsRedacted}">${status}${clipping}${redaction}</p>${table}</main></body></html>`;
 }
 
 function renderIndex(records: PublicEvalRunIndexEntry[], omittedPublicCount = 0): string {

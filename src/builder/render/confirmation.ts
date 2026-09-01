@@ -70,13 +70,13 @@ function specLines(spec: unknown, paint: Paint): string[] {
 /** Operator-facing name for one planned sub-decision of a composite. */
 function stepLabel(step: string): string {
 	switch (step) {
-		case "approve-spec": return "approve the Spec draft";
-		case "publish-corpus": return "publish the eval basket";
-		case "run-eval": return "run the basket against the Target";
-		case "review-candidate": return "record the review";
-		case "promote-candidate": return "tag the reviewed revision";
-		case "adopt-candidate": return "fast-forward this branch to it";
-		case "continue-cycle": return "close the cycle";
+		case "approve-spec": return t("confirm.step.approve-spec");
+		case "publish-corpus": return t("confirm.step.publish-corpus");
+		case "run-eval": return t("confirm.step.run-eval");
+		case "review-candidate": return t("confirm.step.review-candidate");
+		case "promote-candidate": return t("confirm.step.promote-candidate");
+		case "adopt-candidate": return t("confirm.step.adopt-candidate");
+		case "continue-cycle": return t("confirm.step.continue-cycle");
 		default: return step;
 	}
 }
@@ -209,12 +209,12 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 							? `${paint.dim(t("label.applied"))} ${paint.warning(t(diff.via === "improvement-loop" ? "candidate.applied-by-loop" : "candidate.applied-by-search"))} ${paint.dim(t("candidate.applied-automated", { actor: text(diff.appliedBy, 40) }))}`
 							: `${paint.dim(t("label.applied"))} ${paint.dim(t("candidate.applied-reviewed", { actor: text(diff.appliedBy, 40) }))}`,
 						...(exactDiff
-							? [paint.dim(`Exact diff · ${shortHash(text(diff.proposalHash, 80))}`), ...renderUnifiedDiff(exactDiff, paint, { maxLines: Number.MAX_SAFE_INTEGER })]
-							: [paint.warning("Exact diff is unavailable; do not ship this automated candidate")]),
+							? [paint.dim(t("confirm.ship.exact-diff", { hash: shortHash(text(diff.proposalHash, 80)) })), ...renderUnifiedDiff(exactDiff, paint, { maxLines: Number.MAX_SAFE_INTEGER })]
+							: [paint.warning(t("confirm.ship.no-exact-diff"))]),
 					]
 					: []),
 				...(isCandidateSummary(candidate) ? judgeCalibrationLines(candidate, paint) : []),
-				`${paint.dim(t("label.version"))} ${subject.tag ? paint.bold(text(subject.tag, 40)) : paint.warning("already promoted")}`,
+				`${paint.dim(t("label.version"))} ${subject.tag ? paint.bold(text(subject.tag, 40)) : paint.warning(t("confirm.ship.already-promoted"))}`,
 				`${paint.dim(t("label.branch"))} ${text(subject.fastForward, 96)}`,
 				"",
 				paint.dim(t("confirm.covers")),
@@ -299,9 +299,9 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 				paint.dim(t("label.diff")),
 				...renderUnifiedDiff(diff, paint, {
 					maxLines: APPLY_PROPOSAL_DIFF_LINES,
-					remainder: "/review shows the exact remainder",
+					remainder: t("confirm.apply-remainder"),
 				}),
-				paint.muted("Your checkout stays where it is; the proposal is committed on the candidate branch."),
+				paint.muted(t("confirm.apply-checkout")),
 			];
 		}
 		case "discard-proposal":

@@ -1,3 +1,4 @@
+import { t } from "../i18n.js";
 import { join } from "node:path";
 import type {
 	ExtensionAPI,
@@ -76,53 +77,8 @@ export const AHDE_BUILDER_COMMAND_NAMES = [
 	"log",
 ] as const;
 
-const BUILDER_HELP = `AHDE Builder
-
-Talk normally: describe the agent you want, answer one useful question at a time,
-and AHDE turns the conversation into a reviewed Spec, evaluation cases, runs,
-diagnosis, and exact harness changes. Slash commands are shortcuts, not a
-requirement.
-
-Workflow:  idea → Spec → eval basket → run → diagnosis → proposal → diff review
-           → apply → candidate verification → promote/reject → adopt → next cycle
-
-Commands: three verbs do the work.
-  /test [N] [reason]    test the agent — approve, publish and run whatever is
-                        pending, or verify the candidate you just changed
-  /fix [n] [reason]     fix problem n (the first one by default): refresh the
-                        traces, prepare the change, and show you the diff
-  /ship [version]       ship the verified candidate: promote, adopt, next cycle
-
-Looking around:
-  /status               where you are and the next step
-  /review               the exact artifact awaiting your review, with actions
-  /traces               diagnosis, failure modes, and the evidence link
-  /target [resource]    the exact committed Target, or one declared resource
-  /passport [version]   what the newest shipped version promised and measured
-  /log [n]              how the agent grew: every version and what it scored
-  /doctor               model auth, Target readiness, and recovery steps
-  /holdout              privately import the operator-owned sealed JSONL exam
-  /help                 this reference
-
-One step at a time (the same decisions, taken separately):
-  /run [N] [reason]     alias of /test
-  /calibrate [N]        measure run-to-run noise: the same revision against itself
-  /approve [reason]     approve the reviewed Spec draft
-  /publish [name]       publish the reviewed eval basket
-  /apply <branch>       apply the reviewed proposal to a candidate branch
-  /discard [reason]     discard a proposal or abandon an interrupted candidate
-  /promote <version>    promote the verified candidate (records the review first)
-  /reject [reason]      reject the verified candidate
-  /adopt [reason]       fast-forward the current branch to the promoted candidate
-  /next [reason]        close this cycle and continue with the active Target
-
-Pi's own built-ins configure the Builder's model, not the agent's:
-  /login                connect a provider (OAuth or API key), once per machine
-  /model                pick a Builder model that already has a credential
-
-Every consequential step shows the exact subject and asks you once: starting
-the tests, applying a diff, and shipping. Runs and checks just happen — unless
-one would cost more than usual, and then you get a single yes/no.`;
+/** The `/help` reference, in the operator's language. */
+const builderHelp = (): string => t("help.body");
 
 function requireTui(ctx: ExtensionCommandContext, command: string): void {
 	if (!ctx.hasUI || ctx.mode !== "tui") {
@@ -226,58 +182,58 @@ export function humanizeCommandError(error: unknown): { message: string; tone: T
 }
 
 function startTestingTitle(result: WorkbenchStartTestingResult): { title: string; tone: TranscriptTone } {
-	if (!result.evaluation) return { title: "Ready for the next step", tone: "info" };
-	return { title: "Run complete", tone: result.evaluation.evaluation.summary.error > 0 ? "warning" : "success" };
+	if (!result.evaluation) return { title: t("panel.ready-next"), tone: "info" };
+	return { title: t("panel.run-complete"), tone: result.evaluation.evaluation.summary.error > 0 ? "warning" : "success" };
 }
 
 function verifyTitle(result: WorkbenchVerifyCandidateResult): { title: string; tone: TranscriptTone } {
 	return result.outcome === "stopped-by-screen"
-		? { title: "Cheap check found nothing", tone: "info" }
-		: { title: "Candidate verified", tone: "success" };
+		? { title: t("panel.cheap-check-nothing"), tone: "info" }
+		: { title: t("panel.candidate-verified"), tone: "success" };
 }
 
 function decisionTitle(result: WorkbenchDecisionResult): { title: string; tone: TranscriptTone } {
 	switch (result.kind) {
-		case "run-eval": return { title: "Run complete", tone: result.result.evaluation.summary.error > 0 ? "warning" : "success" };
+		case "run-eval": return { title: t("panel.run-complete"), tone: result.result.evaluation.summary.error > 0 ? "warning" : "success" };
 		case "run-current":
 			if (result.result.resolvedAs === "run-eval") {
-				return { title: "Run complete", tone: result.result.evaluation.summary.error > 0 ? "warning" : "success" };
+				return { title: t("panel.run-complete"), tone: result.result.evaluation.summary.error > 0 ? "warning" : "success" };
 			}
 			if (result.result.resolvedAs === "start-testing") return startTestingTitle(result.result);
 			return verifyTitle(result.result);
 		case "start-testing": return startTestingTitle(result.result);
-		case "ship": return { title: "Shipped", tone: "success" };
+		case "ship": return { title: t("panel.shipped"), tone: "success" };
 		case "verify-candidate": return verifyTitle(result.result);
 		case "improve":
 			return {
-				title: "Improvement cycles complete",
+				title: t("panel.improvement-complete"),
 				tone: result.result.candidateId ? "success" : "info",
 			};
 		case "calibrate":
 			return {
-				title: "Noise calibrated",
+				title: t("panel.noise-calibrated"),
 				tone: result.result.calibration.verdict === "inconclusive" ? "success" : "warning",
 			};
-		case "scaffold-target": return { title: "Target created", tone: "success" };
-		case "configure-target": return { title: "Target configured", tone: "success" };
+		case "scaffold-target": return { title: t("panel.target-created"), tone: "success" };
+		case "configure-target": return { title: t("panel.target-configured"), tone: "success" };
 		case "configure-evaluators":
 			return {
-				title: "Evaluator models configured",
+				title: t("panel.evaluators-configured"),
 				// A configured judge whose key is not exported fails at the first
 				// graded case, so the line is a warning until the shell has it.
 				tone: "success",
 			};
-		case "approve-spec": return { title: "Spec approved", tone: "success" };
-		case "publish-corpus": return { title: "Eval basket published", tone: "success" };
-		case "import-dataset": return { title: "Dataset imported", tone: "success" };
-		case "apply-proposal": return { title: "Proposal applied", tone: "success" };
-		case "discard-proposal": return { title: "Proposal discarded", tone: "info" };
-		case "abandon-candidate": return { title: "Candidate attempt abandoned", tone: "info" };
-		case "review-candidate": return { title: "Review recorded", tone: "info" };
-		case "promote-candidate": return { title: "Candidate promoted", tone: "success" };
-		case "reject-candidate": return { title: "Candidate rejected", tone: "warning" };
-		case "adopt-candidate": return { title: "Candidate adopted", tone: "success" };
-		case "continue-cycle": return { title: "Next cycle started", tone: "success" };
+		case "approve-spec": return { title: t("panel.spec-approved"), tone: "success" };
+		case "publish-corpus": return { title: t("panel.basket-published"), tone: "success" };
+		case "import-dataset": return { title: t("panel.dataset-imported"), tone: "success" };
+		case "apply-proposal": return { title: t("panel.proposal-applied"), tone: "success" };
+		case "discard-proposal": return { title: t("panel.proposal-discarded"), tone: "info" };
+		case "abandon-candidate": return { title: t("panel.attempt-abandoned"), tone: "info" };
+		case "review-candidate": return { title: t("panel.review-recorded"), tone: "info" };
+		case "promote-candidate": return { title: t("panel.candidate-promoted"), tone: "success" };
+		case "reject-candidate": return { title: t("panel.candidate-rejected"), tone: "warning" };
+		case "adopt-candidate": return { title: t("panel.candidate-adopted"), tone: "success" };
+		case "continue-cycle": return { title: t("panel.next-cycle"), tone: "success" };
 	}
 }
 
@@ -651,7 +607,7 @@ export function registerAhdeBuilderCommands(
 			ctx.ui.notify(`Nothing to fix yet — ${nextStep(view)}`, "info");
 			return;
 		}
-		presenter.show(ctx, { title: "AHDE · Diagnosis", tone: "info", lines: renderTraces(view.detail.content, markerPaint) });
+		presenter.show(ctx, { title: t("panel.title", { detail: t("panel.diagnosis") }), tone: "info", lines: renderTraces(view.detail.content, markerPaint) });
 		const modes = view.detail.content.improvementBrief.modes.filter((mode) => mode.selectableForProposal);
 		if (modes.length === 0) {
 			ctx.ui.notify("No failure mode has enough evidence to change the harness yet. Run again, or add cases.", "info");
@@ -702,7 +658,7 @@ export function registerAhdeBuilderCommands(
 		async handler(args, ctx) {
 			noArguments("help", args);
 			await prepare(ctx, "help");
-			presenter.show(ctx, { title: "AHDE Builder help", tone: "info", lines: BUILDER_HELP.split("\n").slice(2) });
+			presenter.show(ctx, { title: t("panel.help"), tone: "info", lines: builderHelp().split("\n").slice(2) });
 		},
 	});
 
@@ -719,23 +675,26 @@ export function registerAhdeBuilderCommands(
 			const warn = (text: string) => p.warning(`! ${text}`);
 			const lines: string[] = [];
 			lines.push(model
-				? (credentialPresent ? ok(`Builder model ${model.provider}/${model.id} · credential present (provider access is verified on first request)`) : warn(`Builder model ${model.provider}/${model.id} has no credential — /login, or /model to pick a configured model`))
-				: warn("No Builder model selected — /login to connect a provider, then /model"));
-			if (view.target.status === "missing") lines.push(warn("No Target yet — describe the agent and the Builder will create it"));
-			else if (view.target.status === "bootstrap-required") lines.push(warn("Target exists but its model is not chosen — tell the Builder which model to use"));
+				? (credentialPresent
+					? ok(t("doctor.builder-ok", { model: `${model.provider}/${model.id}` }))
+					: warn(t("doctor.builder-no-credential", { model: `${model.provider}/${model.id}` })))
+				: warn(t("doctor.builder-none")));
+			if (view.target.status === "missing") lines.push(warn(t("doctor.target-missing")));
+			else if (view.target.status === "bootstrap-required") lines.push(warn(t("doctor.target-bootstrap")));
 			else {
-				lines.push(ok(`Target ${view.target.id} @ ${view.target.gitSha?.slice(0, 10) ?? "—"}`));
+				lines.push(ok(t("doctor.target-ok", { id: view.target.id ?? "—", sha: view.target.gitSha?.slice(0, 10) ?? "—" })));
 				const target = view.target.model;
 				if (target) {
+					const model = `${target.provider}/${target.id}`;
 					lines.push(target.credentialPresent
-						? ok(`Target model ${target.provider}/${target.id} · ${target.apiKeyEnv} is set`)
-						: warn(`Target model ${target.provider}/${target.id} · export ${target.apiKeyEnv} in the shell that runs ahde before /run`));
+						? ok(t("doctor.target-model-ok", { model, env: target.apiKeyEnv }))
+						: warn(t("doctor.target-model-missing", { model, env: target.apiKeyEnv })));
 				}
 			}
 			const evaluators = view.target.evaluators ?? { judge: null, simulatedUser: null };
 			const evaluatorLabels = {
-				judge: "Judge model",
-				simulatedUser: "Simulated-user model",
+				judge: t("doctor.judge-model"),
+				simulatedUser: t("doctor.simulated-user-model"),
 			} as const;
 			for (const role of ["judge", "simulatedUser"] as const) {
 				const evaluator = evaluators[role];
@@ -743,29 +702,30 @@ export function registerAhdeBuilderCommands(
 				const required = view.target.evaluatorRequirements?.[role] ?? evaluator !== null;
 				if (!evaluator) {
 					lines.push(required
-						? warn(`${label} is required by the current basket but not configured`)
-						: p.muted(`· ${label} not configured · not required by the current basket`));
+						? warn(t("doctor.evaluator-required", { label }))
+						: p.muted(t("doctor.evaluator-optional", { label })));
 					continue;
 				}
+				const model = `${evaluator.provider}/${evaluator.id}`;
 				lines.push(evaluator.credentialPresent
-					? ok(`${label} ${evaluator.provider}/${evaluator.id} · ${evaluator.apiKeyEnv} is set`)
+					? ok(t("doctor.evaluator-ok", { label, model, env: evaluator.apiKeyEnv }))
 					: required
-						? warn(`${label} ${evaluator.provider}/${evaluator.id} · export ${evaluator.apiKeyEnv} in the shell that runs ahde before /run`)
-						: p.muted(`· ${label} ${evaluator.provider}/${evaluator.id} · ${evaluator.apiKeyEnv} is missing, but this basket does not use it`));
+						? warn(t("doctor.evaluator-missing", { label, model, env: evaluator.apiKeyEnv }))
+						: p.muted(t("doctor.evaluator-unused", { label, model, env: evaluator.apiKeyEnv })));
 			}
 			const shipping = view.counts.approvedSpecs > 0 ? view.shippingReadiness : undefined;
 			if (shipping?.sealedHoldout === "ready") {
-				lines.push(ok("Ship gate has a sufficiently large evaluator-only sealed holdout"));
+				lines.push(ok(t("doctor.gate-ready")));
 			} else if (shipping) {
 				lines.push(warn(
 					shipping.sealedHoldout === "missing"
-						? `Ship gate has no sealed holdout — /holdout privately imports one (minimum ${shipping.minimumTasks} cases)`
+						? t("doctor.gate-missing", { minimum: shipping.minimumTasks })
 						: shipping.sealedHoldout === "underpowered"
-							? `Ship gate holdout is underpowered — /holdout privately imports a separate exam with at least ${shipping.minimumTasks} cases`
-							: `Ship gate holdout is unavailable or failed integrity checks — repair private corpus storage or /holdout privately imports a replacement`,
+							? t("doctor.gate-underpowered", { minimum: shipping.minimumTasks })
+							: t("doctor.gate-unavailable"),
 				));
 			}
-			lines.push(`${p.dim("Stage")} ${stageLabel(view.stage)} · ${nextStep(view)}`);
+			lines.push(`${p.dim(t("label.stage"))} ${stageLabel(view.stage)} · ${nextStep(view)}`);
 			for (const blocker of view.blockers) lines.push(warn(oneLine(blocker, 200)));
 			for (const warning of view.warnings.slice(0, 6)) lines.push(p.muted(`· ${oneLine(warning, 200)}`));
 			const evaluatorsReady = (["judge", "simulatedUser"] as const).every((role) => {
@@ -776,8 +736,8 @@ export function registerAhdeBuilderCommands(
 				model && credentialPresent && view.target.status === "ready" &&
 				view.target.model?.credentialPresent && evaluatorsReady && view.blockers.length === 0
 			);
-			lines.push(ready ? ok("Ready: everything needed for /run is in place") : warn("Action required before the next run"));
-			presenter.show(ctx, { title: "AHDE Doctor", tone: ready ? "success" : "warning", lines });
+			lines.push(ready ? ok(t("doctor.ready")) : warn(t("doctor.action-required")));
+			presenter.show(ctx, { title: t("panel.doctor"), tone: ready ? "success" : "warning", lines });
 		},
 	});
 
@@ -813,7 +773,7 @@ export function registerAhdeBuilderCommands(
 			await options.onWorkbenchChanged?.();
 			const minimum = SEALED_GATE_POLICY.minTasks;
 			presenter.show(ctx, {
-				title: "Sealed holdout imported",
+				title: t("panel.holdout-imported"),
 				tone: result.taskCount >= minimum ? "success" : "warning",
 				lines: result.taskCount >= minimum
 					? [`${result.taskCount} evaluator-only cases are ready for the ship gate.`, "Builder Pi never receives their content or identity."]
@@ -860,7 +820,7 @@ export function registerAhdeBuilderCommands(
 				presenter.show(ctx, { title: viewTitle(view), tone: "warning", lines: renderStatus(view, markerPaint) });
 				return;
 			}
-			presenter.show(ctx, { title: "AHDE · Diagnosis", tone: "info", lines: renderTraces(view.detail.content, markerPaint) });
+			presenter.show(ctx, { title: t("panel.title", { detail: t("panel.diagnosis") }), tone: "info", lines: renderTraces(view.detail.content, markerPaint) });
 			const modes = view.detail.content.improvementBrief.modes.filter((mode) => mode.selectableForProposal);
 			if (modes.length > 0 && options.sendUserMessage && typeof ctx.ui.select === "function") {
 				const choices = modes.slice(0, 5).map((mode) => `Fix ${mode.ordinal}: ${oneLine(mode.title, 60)}`);
@@ -967,7 +927,7 @@ export function registerAhdeBuilderCommands(
 			const lines = view.detail?.aspect === "target"
 				? renderTarget(view.detail.content, markerPaint)
 				: renderStatus(view, markerPaint);
-			presenter.show(ctx, { title: resourcePath ? `AHDE · ${oneLine(resourcePath, 60)}` : "AHDE · Target", tone: "info", lines });
+			presenter.show(ctx, { title: t("panel.title", { detail: resourcePath ? oneLine(resourcePath, 60) : t("panel.target") }), tone: "info", lines });
 		},
 	});
 
@@ -1006,7 +966,7 @@ export function registerAhdeBuilderCommands(
 				written = null;
 			}
 			presenter.show(ctx, {
-				title: "AHDE · Passport",
+				title: t("panel.title", { detail: t("panel.passport") }),
 				tone: "info",
 				lines: [
 					...renderVersionPassport(passport, markerPaint),
@@ -1033,7 +993,7 @@ export function registerAhdeBuilderCommands(
 				...(view.target.id ? { targetId: view.target.id } : {}),
 				...(requested ? { limit: Number(requested) } : {}),
 			});
-			presenter.show(ctx, { title: "AHDE · Growth", tone: "info", lines: renderAgentLog(log, markerPaint) });
+			presenter.show(ctx, { title: t("panel.title", { detail: t("panel.growth") }), tone: "info", lines: renderAgentLog(log, markerPaint) });
 		},
 	});
 }

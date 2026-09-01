@@ -1,3 +1,4 @@
+import { language, t } from "./i18n.js";
 import { basename, dirname, resolve } from "node:path";
 import { z } from "zod";
 import {
@@ -898,7 +899,7 @@ function projectionNotice(projection: EvalReportProjection): string {
 
 export function renderEvalReportHtml(data: EvalReportData): string {
 	const html = `<!doctype html>
-<html lang="en">
+<html lang="${language()}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -912,25 +913,25 @@ tr.attempt td{color:var(--muted)}tr.version td:first-child{font-weight:700}
 </style>
 </head>
 <body>
-<div class="shell"><aside class="side"><div class="brand"><span class="mark"></span> AHDE Evidence</div><div class="eyebrow">Runs</div><div id="run-nav"></div></aside><main>
+<div class="shell"><aside class="side"><div class="brand"><span class="mark"></span> AHDE Evidence</div><div class="eyebrow">${htmlText(t("report.nav.runs"))}</div><div id="run-nav"></div></aside><main>
 <header class="top"><div><span class="badge" id="status-badge"></span><h1 id="title"></h1><div class="sub" id="subtitle"></div></div><span class="badge" id="revision"></span></header>
 <div class="grid" id="stats"></div>
-	<section><div class="section-title"><h2>Failure modes</h2><span class="badge" id="failure-mode-status"></span></div><p class="brief-headline" id="brief-headline"></p><p class="notice" id="proposal-gate"></p><div class="issues" id="failure-modes"></div></section>
-<section><div class="section-title"><h2>Task issue drill-down</h2><span class="badge" id="diagnosis-status"></span></div><div class="issues" id="issues"></div></section>
-<section id="comparison-section" hidden><div class="section-title"><h2>Matched comparison</h2><span class="badge" id="comparison-verdict"></span></div><p class="notice" id="comparison-gate"></p><div class="table-wrap"><table><thead><tr><th>Task</th><th>Baseline</th><th>Candidate</th><th>Score</th><th>Delta</th></tr></thead><tbody id="comparison"></tbody></table></div></section>
-<section><div class="section-title"><h2>Run evidence</h2><span class="badge">${data.rows.length} run(s)</span></div><p class="notice" id="judge-calibration" hidden></p><p class="notice" id="projection-notice">${htmlText(projectionNotice(data.projection))}</p><div class="filters"><input id="filter" type="search" placeholder="Filter by task id or input text" aria-label="Filter runs"><span class="count" id="filter-count"></span></div>${renderRunsTable(data.rows, {
+	<section><div class="section-title"><h2>${htmlText(t("report.h2.failure-modes"))}</h2><span class="badge" id="failure-mode-status"></span></div><p class="brief-headline" id="brief-headline"></p><p class="notice" id="proposal-gate"></p><div class="issues" id="failure-modes"></div></section>
+<section><div class="section-title"><h2>${htmlText(t("report.h2.drill-down"))}</h2><span class="badge" id="diagnosis-status"></span></div><div class="issues" id="issues"></div></section>
+<section id="comparison-section" hidden><div class="section-title"><h2>${htmlText(t("report.h2.comparison"))}</h2><span class="badge" id="comparison-verdict"></span></div><p class="notice" id="comparison-gate"></p><div class="table-wrap"><table><thead><tr><th>${htmlText(t("report.th.task"))}</th><th>${htmlText(t("report.th.baseline"))}</th><th>${htmlText(t("report.th.candidate"))}</th><th>${htmlText(t("report.th.score"))}</th><th>${htmlText(t("report.th.delta"))}</th></tr></thead><tbody id="comparison"></tbody></table></div></section>
+<section><div class="section-title"><h2>${htmlText(t("report.h2.run-evidence"))}</h2><span class="badge">${data.rows.length} run(s)</span></div><p class="notice" id="judge-calibration" hidden></p><p class="notice" id="projection-notice">${htmlText(projectionNotice(data.projection))}</p><div class="filters"><input id="filter" type="search" placeholder="${htmlText(t("report.filter-placeholder"))}" aria-label="${htmlText(t("report.filter-label"))}"><span class="count" id="filter-count"></span></div>${renderRunsTable(data.rows, {
 	hrefForRun: (runId) => `#run=${encodeURIComponent(runId)}`,
 	modeLabels: new Map(data.improvementBrief.modes.map((mode) => [mode.failureModeId, mode.title])),
 	dataRun: true,
 })}${data.omittedTableRowCount > 0 ? `<p class="notice">${data.omittedTableRowCount} further run row(s) omitted by the bounded table.</p>` : ""}</section>
-<section><div class="section-title"><h2>Trace inspector</h2><span class="badge" id="trace-id">Select a run</span></div><div class="trace" id="trace"><div class="trace-empty">Choose a run to inspect its normalized trace.</div></div></section>
-<section id="growth-section" hidden><div class="section-title"><h2>Growth</h2><span class="badge" id="growth-status"></span></div><p class="notice" id="growth-chart"></p><div class="table-wrap"><table><thead><tr><th>Version</th><th>Date</th><th>Revision</th><th>Development</th><th>Sealed</th><th>Cost</th><th>Resolved modes</th><th>Reason</th></tr></thead><tbody id="growth"></tbody></table></div></section>
+<section><div class="section-title"><h2>${htmlText(t("report.h2.trace-inspector"))}</h2><span class="badge" id="trace-id">${htmlText(t("report.select-run"))}</span></div><div class="trace" id="trace"><div class="trace-empty">${htmlText(t("report.choose-run"))}</div></div></section>
+<section id="growth-section" hidden><div class="section-title"><h2>${htmlText(t("report.h2.growth"))}</h2><span class="badge" id="growth-status"></span></div><p class="notice" id="growth-chart"></p><div class="table-wrap"><table><thead><tr><th>${htmlText(t("report.th.version"))}</th><th>${htmlText(t("report.th.date"))}</th><th>${htmlText(t("report.th.revision"))}</th><th>${htmlText(t("report.th.development"))}</th><th>${htmlText(t("report.th.sealed"))}</th><th>${htmlText(t("report.th.cost"))}</th><th>${htmlText(t("report.th.resolved-modes"))}</th><th>${htmlText(t("report.th.reason"))}</th></tr></thead><tbody id="growth"></tbody></table></div></section>
 <p class="notice" id="notice"></p>
 </main></div>
 <script>const DATA=${embeddedJson(data)};
 const q=(s)=>document.querySelector(s), esc=(v)=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const e=DATA.evalRun,d=DATA.diagnosis,b=DATA.improvementBrief;q('#title').textContent=e.target.id;q('#subtitle').textContent=e.evalRunId+' · '+e.label+' · '+e.startedAt;q('#revision').textContent=e.target.gitSha.slice(0,12);q('#status-badge').textContent=b.status;q('#failure-mode-status').textContent=b.summary.failureModeCount+' modes'+(b.summary.omittedFailureModeCount?' · '+b.summary.omittedFailureModeCount+' omitted':'');q('#diagnosis-status').textContent=d.summary.issueCount+' issues'+(DATA.projection.diagnosis.issues.omittedCount?' · '+DATA.projection.diagnosis.issues.omittedCount+' omitted':'');q('#brief-headline').textContent=b.headline;q('#proposal-gate').textContent=b.proposalEligible?'Proposal gate: eligible for an exact human-reviewed harness proposal.':'Proposal gate: blocked. Mode-level suggestions are diagnostic guidance only until the global evidence gate is satisfied.';q('#notice').textContent=DATA.redactionNotice;
-const pct=Math.round(e.summary.allPassRate*100);q('#stats').innerHTML=[['Pass rate',pct+'%'],['Passed',e.summary.pass+'/'+e.summary.total],['Errors',e.summary.error],['Failure modes',b.summary.failureModeCount]].map(([l,v])=>'<div class="stat"><strong>'+esc(v)+'</strong><span>'+esc(l)+'</span></div>').join('');
+const pct=Math.round(e.summary.allPassRate*100);q('#stats').innerHTML=[[${embeddedJson(t("report.stat.pass-rate"))},pct+'%'],[${embeddedJson(t("report.stat.passed"))},e.summary.pass+'/'+e.summary.total],[${embeddedJson(t("report.stat.errors"))},e.summary.error],[${embeddedJson(t("report.stat.failure-modes"))},b.summary.failureModeCount]].map(([l,v])=>'<div class="stat"><strong>'+esc(v)+'</strong><span>'+esc(l)+'</span></div>').join('');
 const includedRunIds=new Set(DATA.runs.map(r=>r.runId));
 const evidenceRow=(item,label)=>'<li><strong>'+esc(label)+'</strong> · '+esc(item.taskId)+(item.graderNames.length?' · graders: '+item.graderNames.map(esc).join(', '):'')+(item.traceAvailable&&includedRunIds.has(item.runId)?' <button class="trace-link" data-run="'+esc(item.runId)+'">Open trace</button>':'')+'</li>';
 const modeCards=b.modes.map(m=>{

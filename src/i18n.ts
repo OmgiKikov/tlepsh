@@ -528,10 +528,93 @@ const en = {
 	"why.standing-passed": "passed",
 	"why.standing-partial": "{pass}/{total} passed",
 
-	"help.body": `Talk normally: describe the agent you want, answer one useful question at a time,
+	"confirm.apply-checkout": "Your checkout stays where it is; the proposal is committed on the candidate branch.",
+	"confirm.apply-remainder": "/review shows the exact remainder",
+	"confirm.ship.already-promoted": "already promoted",
+	"confirm.step.approve-spec": "approve the Spec draft",
+	"confirm.step.publish-corpus": "publish the eval basket",
+	"confirm.step.run-eval": "run the basket against the Target",
+	"confirm.step.review-candidate": "record the review",
+	"confirm.step.promote-candidate": "tag the reviewed revision",
+	"confirm.step.adopt-candidate": "fast-forward this branch to it",
+	"confirm.step.continue-cycle": "close the cycle",
+	"confirm.ship.exact-diff": "Exact diff · {hash}",
+	"confirm.ship.no-exact-diff": "Exact diff is unavailable; do not ship this automated candidate",
+	"report.h2.failure-modes": "Failure modes",
+	"report.h2.drill-down": "Task issue drill-down",
+	"report.h2.comparison": "Matched comparison",
+	"report.h2.run-evidence": "Run evidence",
+	"report.h2.trace-inspector": "Trace inspector",
+	"report.h2.growth": "Growth",
+	"report.nav.runs": "Runs",
+	"report.select-run": "Select a run",
+	"report.choose-run": "Choose a run to inspect its normalized trace.",
+	"report.filter-placeholder": "Filter by task id or input text",
+	"report.filter-label": "Filter runs",
+	"report.stat.pass-rate": "Pass rate",
+	"report.stat.passed": "Passed",
+	"report.stat.errors": "Errors",
+	"report.stat.failure-modes": "Failure modes",
+	"report.th.task": "Task",
+	"report.th.baseline": "Baseline",
+	"report.th.candidate": "Candidate",
+	"report.th.score": "Score",
+	"report.th.delta": "Delta",
+	"report.th.version": "Version",
+	"report.th.date": "Date",
+	"report.th.revision": "Revision",
+	"report.th.development": "Development",
+	"report.th.sealed": "Sealed",
+	"report.th.cost": "Cost",
+	"report.th.resolved-modes": "Resolved modes",
+	"report.th.reason": "Reason",
+	"help.body": `AHDE Builder
+
+Talk normally: describe the agent you want, answer one useful question at a time,
 and AHDE turns the conversation into a reviewed Spec, evaluation cases, runs,
 diagnosis, and exact harness changes. Slash commands are shortcuts, not a
-requirement.`,
+requirement.
+
+Workflow:  idea → Spec → eval basket → run → diagnosis → proposal → diff review
+           → apply → candidate verification → promote/reject → adopt → next cycle
+
+Commands: three verbs do the work.
+  /test [N] [reason]    test the agent — approve, publish and run whatever is
+                        pending, or verify the candidate you just changed
+  /fix [n] [reason]     fix problem n (the first one by default): refresh the
+                        traces, prepare the change, and show you the diff
+  /ship [version]       ship the verified candidate: promote, adopt, next cycle
+
+Looking around:
+  /status               where you are and the next step
+  /review               the exact artifact awaiting your review, with actions
+  /traces               diagnosis, failure modes, and the evidence link
+  /target [resource]    the exact committed Target, or one declared resource
+  /passport [version]   what the newest shipped version promised and measured
+  /log [n]              how the agent grew: every version and what it scored
+  /doctor               model auth, Target readiness, and recovery steps
+  /holdout              privately import the operator-owned sealed JSONL exam
+  /help                 this reference
+
+One step at a time (the same decisions, taken separately):
+  /run [N] [reason]     alias of /test
+  /calibrate [N]        measure run-to-run noise: the same revision against itself
+  /approve [reason]     approve the reviewed Spec draft
+  /publish [name]       publish the reviewed eval basket
+  /apply <branch>       apply the reviewed proposal to a candidate branch
+  /discard [reason]     discard a proposal or abandon an interrupted candidate
+  /promote <version>    promote the verified candidate (records the review first)
+  /reject [reason]      reject the verified candidate
+  /adopt [reason]       fast-forward the current branch to the promoted candidate
+  /next [reason]        close this cycle and continue with the active Target
+
+Pi's own built-ins configure the Builder's model, not the agent's:
+  /login                connect a provider (OAuth or API key), once per machine
+  /model                pick a Builder model that already has a credential
+
+Every consequential step shows the exact subject and asks you once: starting
+the tests, applying a diff, and shipping. Runs and checks just happen — unless
+one would cost more than usual, and then you get a single yes/no.`,
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -903,10 +986,93 @@ const ru: Record<MessageKey, string> = {
 	"why.standing-passed": "пройдена",
 	"why.standing-partial": "пройдена {pass}/{total}",
 
-	"help.body": `Говори обычными словами: опиши агента, который нужен, отвечай по одному
-вопросу за раз — AHDE превратит разговор в проверенное описание, тестовые
-кейсы, прогоны, разбор и точные правки харнесса. Слэш-команды — это
-сокращения, а не обязанность.`,
+	"confirm.apply-checkout": "Твой рабочий каталог остаётся на месте; правка коммитится на ветку кандидата.",
+	"confirm.apply-remainder": "/review покажет точный остаток",
+	"confirm.ship.already-promoted": "уже выкачен",
+	"confirm.step.approve-spec": "одобрить черновик описания",
+	"confirm.step.publish-corpus": "опубликовать тесты",
+	"confirm.step.run-eval": "прогнать тесты против агента",
+	"confirm.step.review-candidate": "записать обзор",
+	"confirm.step.promote-candidate": "поставить тег на проверенную ревизию",
+	"confirm.step.adopt-candidate": "перевести эту ветку на неё",
+	"confirm.step.continue-cycle": "закрыть цикл",
+	"confirm.ship.exact-diff": "Точный диф · {hash}",
+	"confirm.ship.no-exact-diff": "Точного дифа нет; не выкатывай этого автоматического кандидата",
+	"report.h2.failure-modes": "Типы сбоев",
+	"report.h2.drill-down": "Разбор по задачам",
+	"report.h2.comparison": "Парное сравнение",
+	"report.h2.run-evidence": "Данные прогонов",
+	"report.h2.trace-inspector": "Трейсы",
+	"report.h2.growth": "Рост",
+	"report.nav.runs": "Прогоны",
+	"report.select-run": "Выбери прогон",
+	"report.choose-run": "Выбери прогон, чтобы посмотреть его трейс.",
+	"report.filter-placeholder": "Фильтр по id задачи или тексту входа",
+	"report.filter-label": "Фильтр прогонов",
+	"report.stat.pass-rate": "Проходит",
+	"report.stat.passed": "Пройдено",
+	"report.stat.errors": "Ошибки",
+	"report.stat.failure-modes": "Типы сбоев",
+	"report.th.task": "Задача",
+	"report.th.baseline": "База",
+	"report.th.candidate": "Кандидат",
+	"report.th.score": "Балл",
+	"report.th.delta": "Разница",
+	"report.th.version": "Версия",
+	"report.th.date": "Дата",
+	"report.th.revision": "Ревизия",
+	"report.th.development": "Разработка",
+	"report.th.sealed": "Экзамен",
+	"report.th.cost": "Цена",
+	"report.th.resolved-modes": "Закрытые сбои",
+	"report.th.reason": "Причина",
+	"help.body": `AHDE Билдер
+
+Говори обычными словами: опиши агента, который тебе нужен, отвечай по одному
+полезному вопросу за раз — AHDE превратит разговор в проверенное описание,
+тестовые кейсы, прогоны, разбор и точные правки харнесса. Слэш-команды —
+сокращения, а не обязанность.
+
+Путь:  идея → описание → тесты → прогон → разбор → правка → чтение дифа
+       → применить → проверка кандидата → выкатить/отклонить → принять → новый цикл
+
+Команды: работу делают три глагола.
+  /test [N] [причина]   проверить агента — одобрю, опубликую и прогоню всё,
+                        что ждёт, или проверю правку, которую ты только сделал
+  /fix [n] [причина]    исправить проблему n (по умолчанию первую): обновлю
+                        трейсы, подготовлю правку и покажу диф
+  /ship [версия]        выкатить проверенного кандидата: выкатка, принятие, новый цикл
+
+Посмотреть:
+  /status               где ты и что дальше
+  /review               то, что ждёт твоей проверки, вместе с действиями
+  /traces               разбор, типы сбоев и ссылка на данные
+  /target [ресурс]      точный закоммиченный агент или один его ресурс
+  /passport [версия]    что обещала и что измерила последняя выкаченная версия
+  /log [n]              как агент рос: каждая версия и её результат
+  /doctor               ключи моделей, готовность агента и как починить
+  /holdout              приватно загрузить твой закрытый JSONL-экзамен
+  /help                 эта справка
+
+По одному шагу (те же решения, но по отдельности):
+  /run [N] [причина]    то же, что /test
+  /calibrate [N]        измерить шум: та же ревизия против себя же
+  /approve [причина]    одобрить проверенное описание
+  /publish [имя]        опубликовать проверенные тесты
+  /apply <ветка>        применить проверенную правку на ветку кандидата
+  /discard [причина]    выбросить правку или сбросить прерванного кандидата
+  /promote <версия>     выкатить проверенного кандидата (сначала запишет обзор)
+  /reject [причина]     отклонить проверенного кандидата
+  /adopt [причина]      перевести текущую ветку на выкаченного кандидата
+  /next [причина]       закрыть цикл и продолжить с активным агентом
+
+Встроенные команды Pi настраивают модель Билдера, а не агента:
+  /login                подключить провайдера (OAuth или API-ключ), раз на машину
+  /model                выбрать модель Билдера, у которой уже есть ключ
+
+Каждый серьёзный шаг показывает точный предмет и спрашивает один раз: начать
+тесты, применить диф, выкатить. Прогоны и проверки просто происходят — если
+только один не выйдет дороже обычного, тогда будет один да/нет.`,
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };
