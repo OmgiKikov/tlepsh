@@ -239,6 +239,7 @@ const en = {
 	"label.skipped": "Skipped",
 	"label.cheap-check": "Cheap check",
 	"label.exact-proposal": "Exact proposal",
+	"label.base": "base",
 
 	"target.missing": "not created yet",
 	"target.model-not-chosen": "model not chosen",
@@ -697,6 +698,7 @@ const ru: Record<MessageKey, string> = {
 	"label.skipped": "Пропущено",
 	"label.cheap-check": "Быстрая проба",
 	"label.exact-proposal": "Точная правка",
+	"label.base": "база",
 
 	"target.missing": "ещё не создан",
 	"target.model-not-chosen": "модель не выбрана",
@@ -752,7 +754,7 @@ const ru: Record<MessageKey, string> = {
 	"candidate.cycle-closed": "закрыт {when}",
 
 	"development.comparison": "было {baseline} → кандидат {candidate}",
-	"development.on-tasks": "на {tasks}",
+	"development.on-tasks": "· задач {count}",
 	"development.score": "· балл {before} → {after}",
 	"development.improved": "↑ {count} лучше",
 	"development.lower": "↓ {count} хуже",
@@ -787,7 +789,7 @@ const ru: Record<MessageKey, string> = {
 
 	"guard.unknown-cost": "сравнимых прогонов ещё не было, поэтому {runs} стоят неизвестно сколько",
 	"guard.over-cost": "около ${cost} — больше рутинного порога ${bound} (AHDE_ROUTINE_COST_USD)",
-	"guard.over-minutes": "около {minutes} минут — больше рутинного порога {bound} минут (AHDE_ROUTINE_MINUTES)",
+	"guard.over-minutes": "около {minutes} мин — больше рутинного порога {bound} мин (AHDE_ROUTINE_MINUTES)",
 
 	"estimate.unknown": "неизвестно",
 	"estimate.nothing-comparable": "· сравнимых прогонов ещё не было",
@@ -795,7 +797,7 @@ const ru: Record<MessageKey, string> = {
 	"estimate.under-cent": "меньше $0.01",
 	"estimate.about-cost": "около ${cost}",
 	"estimate.under-minute": "меньше минуты",
-	"estimate.about-minutes": "около {minutes}",
+	"estimate.about-minutes": "около {count} мин",
 
 	"result.target-created": "Агент создан",
 	"result.target-configured": "Агент настроен",

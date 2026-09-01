@@ -113,7 +113,7 @@ function verificationLine(estimate: WorkbenchRunEstimate | undefined, paint: Pai
 	}
 	const cost = estimate.costUsd < 0.01 ? t("estimate.under-cent") : t("estimate.about-cost", { cost: estimate.costUsd.toFixed(2) });
 	const minutes = Math.ceil(estimate.minutes);
-	const time = estimate.minutes < 1 ? t("estimate.under-minute") : t("estimate.about-minutes", { minutes: plural(minutes, "minute") });
+	const time = estimate.minutes < 1 ? t("estimate.under-minute") : t("estimate.about-minutes", { minutes: plural(minutes, "minute"), count: minutes });
 	return `${paint.dim(t("label.verification"))} ${cost} ${paint.dim("·")} ${time} ${covenant}`;
 }
 
@@ -289,7 +289,7 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			const diff = typeof subject.exactDiff === "string" ? subject.exactDiff : "";
 			const stats = diffStats(diff);
 			return [
-				`${paint.dim(t("label.branch"))} ${paint.bold(text(subject.branch, 80))} ${paint.dim("· base")} ${shortSha(text(subject.baseTargetSha, 40))}`,
+				`${paint.dim(t("label.branch"))} ${paint.bold(text(subject.branch, 80))} ${paint.dim(`· ${t("label.base")}`)} ${shortSha(text(subject.baseTargetSha, 40))}`,
 				...wrap(typeof subject.summary === "string" ? subject.summary : "", 92, "  "),
 				`${paint.dim(t("label.changes"))} ${strings(subject.paths).map((path) => oneLine(path, 60)).join(", ") || "—"} ${paint.dim(`(${paint.added(`+${stats.added}`)} ${paint.removed(`-${stats.removed}`)})`)}`,
 				verificationLine(confirmation.estimate, paint),

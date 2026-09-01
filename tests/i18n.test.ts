@@ -292,10 +292,10 @@ describe("ru renders", () => {
 		};
 		const lines = renderConfirmation(confirmation, plainPaint);
 		expect(lines).toEqual([
-			"Ветка ahde/candidate-1 · base aaaaaaaaaa",
+			"Ветка ahde/candidate-1 · база aaaaaaaaaa",
 			"  Добавить упоминание инструмента поиска в инструкции",
 			"Изменения AGENTS.md (+1 -0)",
-			"Проверка около $0.42 · около 4 минуты — одобряя правку, ты одобряешь и эту проверку",
+			"Проверка около $0.42 · около 4 мин — одобряя правку, ты одобряешь и эту проверку",
 			"Диф",
 			"--- a/AGENTS.md",
 			"+++ b/AGENTS.md",
@@ -314,7 +314,7 @@ describe("ru renders", () => {
 		const lines = renderCandidate(makeCandidate(), plainPaint, t("candidate.verified"));
 		const text = lines.join("\n");
 		expect(lines[0]).toBe("Кандидат проверен candidate-1 · evaluated");
-		expect(text).toContain("Разработка было 40% → кандидат 70% (+30 п.п.) на 10 задач · балл 40% → 70%");
+		expect(text).toContain("Разработка было 40% → кандидат 70% (+30 п.п.) · задач 10 · балл 40% → 70%");
 		expect(text).toContain("Вердикт стало лучше · +23 п.п. (95% ДИ +5 п.п. … +35 п.п.) · 10 × 3 · цена ×1.4 · задержка ×0.9");
 		expect(text).toContain("Экзамен пройден · +20 п.п. (95% ДИ +2 п.п. … +38 п.п.) · 20 × 3");
 		expect(text).toContain("Судья не откалиброван · ahde label");

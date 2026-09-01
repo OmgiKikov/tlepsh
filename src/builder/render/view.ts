@@ -222,7 +222,7 @@ function comparisonLines(
 		? ` ${paint.dim(t("development.score", { before: percent(gate.baselineScore), after: percent(gate.candidateScore) }))}`
 		: "";
 	const lines = [
-		`${paint.dim(t("label.development"))} ${t("development.comparison", { baseline: percent(summary.baselinePassRate), candidate: percent(summary.candidatePassRate) })} ${tone(`(${points(delta)})`)} ${paint.dim(t("development.on-tasks", { tasks: plural(summary.taskCount, "task") }))}${score}`,
+		`${paint.dim(t("label.development"))} ${t("development.comparison", { baseline: percent(summary.baselinePassRate), candidate: percent(summary.candidatePassRate) })} ${tone(`(${points(delta)})`)} ${paint.dim(t("development.on-tasks", { tasks: plural(summary.taskCount, "task"), count: summary.taskCount }))}${score}`,
 		`  ${paint.success(t("development.improved", { count: summary.improved }))} ${paint.dim("·")} ${summary.regressed > 0 ? paint.warning(t("development.lower", { count: summary.regressed })) : paint.muted(t("development.lower", { count: 0 }))} ${paint.dim("·")} ${paint.muted(t("development.unchanged", { count: summary.unchanged }))} ${paint.dim(`· ${t("unit.ci")} ${points(summary.confidence95.low)} … ${points(summary.confidence95.high)}`)}`,
 	];
 	if (gate) lines.push(gateLine(gate, paint));
