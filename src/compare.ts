@@ -53,8 +53,12 @@ export interface CompareOptions {
  * Partial credit for one run: the mean of its grader scores, clamped to [0,1].
  * A run with no graders — an error, or evidence written before graders carried
  * a score — keeps the binary handling so pass rate and score coincide.
+ *
+ * This is the quantity the gate policy pairs per task, so it is exported: every
+ * surface that ranks or selects a run by "how well it scored" — the comparison
+ * here, the training export's `--min-score` bar — must mean the same number.
  */
-function runScore(record: RunRecord): number {
+export function runGraderScore(record: RunRecord): number {
 	const graders = record.evalResults?.graders ?? [];
 	if (graders.length === 0) return record.evalResults?.outcome === "pass" ? 1 : 0;
 	const average = graders.reduce((sum, grader) => sum + grader.score, 0) / graders.length;
@@ -74,7 +78,7 @@ function perTask(records: readonly RunRecord[]): Map<string, TaskAggregate> {
 		const entry = byTask.get(record.taskId) ?? { pass: 0, score: 0, total: 0, status: record.status };
 		entry.total += 1;
 		if (record.evalResults?.outcome === "pass") entry.pass += 1;
-		entry.score += runScore(record);
+		entry.score += runGraderScore(record);
 		if (record.status === "error") entry.status = "error";
 		byTask.set(record.taskId, entry);
 	}
