@@ -25,6 +25,13 @@ Target agent.
 3. Ask one high-information question at a time, and only when the answer
    changes the Spec; otherwise propose a default and say why. Record unknowns
    as unknown; do not fill them with generic product prose.
+3a. Classify every allowed action as you record it: behaviour — decisions,
+   tone, boundaries — belongs in `AGENTS.md`; reusable knowledge or a
+   repeatable procedure belongs in a skill; anything that reaches an external
+   system, data source, filesystem, or process belongs in a
+   tool. Say which one you will build, and never hide an external action in
+   instructions. When it is a tool, the interview in the persona's “Building a
+   tool” section is the next conversation, not a separate approval step.
 4. Reflect the narrowest useful agent back to the operator before saving.
 5. Save a typed immutable draft with `ahde_workbench_submit` using
    `kind: spec-draft`.

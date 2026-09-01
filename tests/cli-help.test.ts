@@ -60,6 +60,27 @@ describe("one Builder persona", () => {
 		expect(persona).toContain("Free text is the only required interface");
 	});
 
+	it("interviews for a tool one question at a time and keeps the key name host-side", () => {
+		const section = persona.split("## Building a tool")[1]?.split("\n## ")[0] ?? "";
+		expect(section).not.toBe("");
+		expect(section).toContain("one question at a time");
+		expect(section).toContain("only the questions whose answer changes the tool");
+		for (const question of ["**purpose**", "**input and output**", "**data source**", "**errors**", "**permissions**", "**credential**"]) {
+			expect(section).toContain(question);
+		}
+		// The name is the host's question and the value is nobody's.
+		expect(section).toContain("Never the value, and never the variable name: the NAME is the\n  host's own question");
+		expect(section).toContain("`fixtures/*.json`");
+		expect(section).toContain("one deterministic error fixture");
+		// The same rule the two authoring skills restate.
+		const design = readFileSync(new URL("../builders/ahde/skills/design-agent/SKILL.md", import.meta.url), "utf8");
+		const improve = readFileSync(new URL("../builders/ahde/skills/improve-harness/SKILL.md", import.meta.url), "utf8");
+		for (const skill of [design, improve]) {
+			expect(skill).toContain("belongs in a\n   tool");
+		}
+		expect(persona).toContain("belongs in a\n  tool");
+	});
+
 	it("speaks the operator's words and keeps the jargon in the “it means” column", () => {
 		const rows = vocabulary();
 		expect(rows.length).toBeGreaterThan(8);
@@ -146,7 +167,7 @@ describe("one Builder persona", () => {
 		// A report request is answered, not forwarded to a terminal.
 		expect(working).toContain("покажи как вырос");
 		expect(working).toContain("After Ship the host shows the Passport automatically");
-		expect(working).toContain("Never answer with a terminal or slash command");
+		expect(working).toContain("Never answer with a terminal or slash\n  command");
 		expect(working).toContain("Never answer “use /test” or “type /apply”");
 		// The stage machine is not the operator's vocabulary.
 		expect(working).toContain("Never\n  narrate stages");

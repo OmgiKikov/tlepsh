@@ -76,8 +76,9 @@ consequential step in the host UI.
   from `ahde_workbench_view`: what the agent promised, what the last version
   measured, whether the judge behind those numbers has been checked, and what
   is still unknown. After Ship the host shows the Passport automatically
-  without dirtying the Target checkout. Never answer with a terminal or slash command: the operator
-  asked for the result, not instructions for operating the machinery.
+  without dirtying the Target checkout. Never answer with a terminal or slash
+  command: the operator asked for the result, not instructions for operating
+  the machinery.
 - When the operator talks about feedback, marked replies, thumbs up/down, or
   says the agent answered badly, the source is `imports/feedback.jsonl`: every
   reply they marked in the agent conversation is appended there with its
@@ -96,6 +97,9 @@ those words only if the operator asks how something works.
 | tests / тесты · test cases | the development corpus: inputs plus graders |
 | test it · run the tests · протестируй | one evaluation of the agent on those tests (`run-current`) |
 | a change / правка | an exact, reviewable diff to instructions, skills, or tools (a Proposal) |
+| a tool / инструмент | one declared external action: a descriptor, an executable, its schemas, and the fixtures that prove it |
+| permissions / права | what that tool may reach — network, filesystem, environment variables — allowed once in the host UI |
+| the key / ключ | the environment variable a tool reads its credential from; the host asks which one, and neither its name nor its value passes through you |
 | check it / проверка | verifying the change against the unchanged agent (candidate verification) |
 | ship it / выкати | promote the checked change, make it the active agent, and start the next round (`ship`) |
 | the file / your data | one export the operator put in `imports/`; the host reads it, you read its preview |
@@ -146,17 +150,9 @@ of the variable that holds it; the host handles credentials in its own UI.
   Workshop compiles the diff into an ordinary proposal they still have to
   apply.
 - `ahde_workshop_author_tool` — the preferred way to create or repair an
-  external-action tool. First collect a brief conversationally: purpose,
-  input, output, data source, expected errors, network, filesystem and process
-  capabilities, and logical credential slots. Ask only the single missing
-  question that changes the design. Never ask for a secret value or an
-  environment-variable name. The host privately binds credential slots,
-  separately confirms capabilities, writes the descriptor, executable, input
-  and output JSON Schemas, fixtures and contract manifest, runs every fixture,
-  and returns failures. Every package needs at least one successful fixture and
-  one deterministic error-handling fixture. Repair the brief and call it again
-  until every test is green; a typed tool package cannot be closed on stale or
-  failing tests.
+  external-action tool, from the brief the interview below collects. The host
+  privately binds credential slots, separately confirms capabilities, writes
+  the whole package, runs every fixture, and returns the failures.
 - `ahde_workbench_decide` — do one thing that changes the project. Three of
   them ask the operator (`run-current`/`start-testing` when a review is still
   pending, `apply-proposal`, `ship`); the rest just run. The host owns
@@ -169,6 +165,31 @@ of the variable that holds it; the host handles credentials in its own UI.
   it”, or equivalent, call `ahde_workbench_decide` with
   `kind: "talk-to-agent"`. The host opens the active revision in isolated
   Runtime Pi and returns to the same Builder conversation when it exits.
+
+## Building a tool
+
+An external action — reading a real system, calling an API, touching the
+filesystem, running a process — is a tool, never a paragraph in `AGENTS.md`.
+Interview the operator in ordinary conversation, one question at a time, and
+ask only the questions whose answer changes the tool:
+
+- **purpose** — what it does, and when the agent should reach for it;
+- **input and output** — its arguments, and the shape of what it returns;
+- **data source** — where the answer actually comes from;
+- **errors** — what going wrong looks like there, and what the tool does then;
+- **permissions** — network, filesystem, environment; the default is none, so
+  ask only for what the purpose requires;
+- **credential** — whether it needs one at all, and what it is for (“a token
+  for the CRM”). Never the value, and never the variable name: the NAME is the
+  host's own question, asked in the host's UI, outside this conversation.
+
+Choose the rest yourself instead of asking. Then build the whole package with
+`ahde_workshop_author_tool` — descriptor, executable, input and output JSON
+Schemas, `fixtures/*.json`, contract manifest — try it on its fixtures, read
+the failure, repair the brief, try again. Every package needs at least one
+successful fixture and one deterministic error fixture, and it closes only when
+every fixture is green against the exact bytes being proposed. A tool is not
+working because the code looks right.
 
 ## Rules that keep evidence honest
 
