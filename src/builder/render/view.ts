@@ -309,7 +309,7 @@ function renderSpec(content: Extract<WorkbenchReviewDetail, { kind: "spec-draft"
 		? [`${paint.dim(label.padEnd(15))} ${paint.muted("—")}`]
 		: [paint.dim(label), ...bullets(items, paint, { limit: 10, max: 140 })];
 	const lines = [
-		`${section("Spec draft", paint)} ${paint.dim(content.id)}`,
+		`${section(t("section.spec-draft"), paint)} ${paint.dim(content.id)}`,
 		labeled(paint.dim("Title"), paint.bold(oneLine(spec.title, 120)), 15),
 		paint.dim("Purpose"),
 		...wrap(spec.purpose, 96, "  "),
@@ -355,7 +355,7 @@ function renderCorpusDraft(
 ): string[] {
 	const maxTasks = options.maxTasks ?? 25;
 	const lines = [
-		`${section("Eval basket draft", paint)} ${paint.bold(oneLine(content.name, 80))} ${paint.dim("·")} ${pluralize(content.tasks.length, "case")} ${paint.dim(`· ${content.id}`)}`,
+		`${section(t("section.basket-draft"), paint)} ${paint.bold(oneLine(content.name, 80))} ${paint.dim("·")} ${pluralize(content.tasks.length, "case")} ${paint.dim(`· ${content.id}`)}`,
 	];
 	if (content.importSource) lines.push(`${paint.dim("Imported from")} ${oneLine(String((content.importSource as { path?: unknown }).path ?? "imports/"), 120)}`);
 	content.tasks.slice(0, maxTasks).forEach((task, index) => {
@@ -445,7 +445,7 @@ export function renderEvaluationSummary(
 export function renderTraces(content: WorkbenchTracesDetail, paint: Paint): string[] {
 	const brief = content.improvementBrief;
 	const lines = [
-		`${section("Evaluation", paint)} ${renderEvaluationSummary(content.evaluation, paint)}`,
+		`${section(t("section.evaluation"), paint)} ${renderEvaluationSummary(content.evaluation, paint)}`,
 	];
 	const status = brief.status === "actionable"
 		? paint.success("actionable")
@@ -479,11 +479,11 @@ function resourceKind(kind: string): string {
 /** Exact committed Target context: identity, execution policy, declared resources. */
 export function renderTarget(content: WorkbenchTargetDetail, paint: Paint): string[] {
 	if (!("target" in content)) {
-		return [`${section("Target", paint)} ${paint.muted("not created yet")}`, `${paint.dim("Next")} describe the agent; the Builder scaffolds it (or run ${paint.bold(content.launch)})`];
+		return [`${section(t("section.target"), paint)} ${paint.muted("not created yet")}`, `${paint.dim("Next")} describe the agent; the Builder scaffolds it (or run ${paint.bold(content.launch)})`];
 	}
 	const execution = content.target.execution;
 	const lines = [
-		`${section("Target", paint)} ${paint.bold(oneLine(content.target.id, 60))} ${paint.dim(`@ ${shortSha(content.target.gitSha)}`)}`,
+		`${section(t("section.target"), paint)} ${paint.bold(oneLine(content.target.id, 60))} ${paint.dim(`@ ${shortSha(content.target.gitSha)}`)}`,
 		`${paint.dim("Model")} ${oneLine(`${content.target.model.provider}/${content.target.model.id}`, 80)} ${paint.dim(`· thinking ${oneLine(content.target.model.thinkingLevel, 20)}`)}`,
 		`${paint.dim("Execution")} tools ${oneLine(execution.tools.join(", "), 60) || "none"} ${paint.dim("·")} network ${oneLine(execution.network, 10)} ${paint.dim("·")} sandbox ${oneLine(execution.sandbox, 20)} ${paint.dim("·")} env ${oneLine(execution.environmentAllowlist.join(", "), 80) || "none"}`,
 		paint.dim("Resources"),
@@ -539,11 +539,11 @@ function attemptLine(
 export function renderHistory(content: WorkbenchHistoryDetail, paint: Paint): string[] {
 	if (content.attempts.length === 0) {
 		return [
-			`${section("Already tried", paint)} ${paint.muted("nothing yet — this is the first change on this agent")}`,
+			`${section(t("section.already-tried"), paint)} ${paint.muted("nothing yet — this is the first change on this agent")}`,
 		];
 	}
 	const lines = [
-		`${section("Already tried", paint)} ${pluralize(content.attempts.length, "attempt")}` +
+		`${section(t("section.already-tried"), paint)} ${pluralize(content.attempts.length, "attempt")}` +
 			(content.omitted > 0 ? paint.dim(` · ${content.omitted} older not shown`) : "") +
 			(content.unreadable > 0 ? paint.warning(` · ${pluralize(content.unreadable, "record")} unreadable`) : ""),
 	];
@@ -564,7 +564,7 @@ export function renderHistory(content: WorkbenchHistoryDetail, paint: Paint): st
 export function renderDataset(content: WorkbenchDatasetDetail, paint: Paint): string[] {
 	const preview = content.preview;
 	const lines = [
-		`${section("Dataset", paint)} ${paint.bold(oneLine(content.sourcePath, 56))} ${paint.dim("·")} ${oneLine(preview.format, 16)} ${paint.dim(`· ${bytes(preview.bytes)}`)}`,
+		`${section(t("section.dataset"), paint)} ${paint.bold(oneLine(content.sourcePath, 56))} ${paint.dim("·")} ${oneLine(preview.format, 16)} ${paint.dim(`· ${bytes(preview.bytes)}`)}`,
 		`${paint.dim("Rows")} ${pluralize(preview.rowCount, "row")} ${paint.dim("·")} ${pluralize(preview.columns.length, "column")}` +
 			(preview.holdout
 				? ` ${paint.dim("·")} ${paint.warning(`${preview.holdout.reserved} reserved for the sealed exam`)}`
