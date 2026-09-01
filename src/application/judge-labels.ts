@@ -821,7 +821,7 @@ export function importJudgeLabels(options: ImportJudgeLabelsOptions): JudgeLabel
 		...(options.sealedDatasetHashes ? { sealedDatasetHashes: options.sealedDatasetHashes } : {}),
 		...(options.suite ? { suite: options.suite } : {}),
 	});
-	const byKey = new Map(subjects.map((subject) => [`${subject.runId} ${subject.graderIndex}`, subject]));
+	const byKey = new Map(subjects.map((subject) => [`${subject.runId}\0${subject.graderIndex}`, subject]));
 	const judgeFingerprint = judgeFingerprintHashOf(options.runsRoot, options.evalRunId);
 	const lineage = judgeLabelLineageFor({
 		runsRoot: options.runsRoot,
@@ -835,7 +835,7 @@ export function importJudgeLabels(options: ImportJudgeLabelsOptions): JudgeLabel
 	const at = (options.now ?? (() => new Date().toISOString()))();
 	const seen = new Set<string>();
 	const rows = parsed.map((row, index) => {
-		const key = `${row.runId} ${row.graderIndex}`;
+		const key = `${row.runId}\0${row.graderIndex}`;
 		const subject = byKey.get(key);
 		if (!subject) {
 			throw new Error(

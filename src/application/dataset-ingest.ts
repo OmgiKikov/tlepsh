@@ -406,7 +406,7 @@ function parseRecipe(value: unknown, columns: readonly string[]): DatasetMapping
 // ---------- deterministic selection ----------
 
 function selectionKey(sourceSha256: string, scope: string, seed: string, rowIndex: number): string {
-	return createHash("sha256").update(`${sourceSha256} ${scope} ${seed} ${rowIndex}`).digest("hex");
+	return createHash("sha256").update(`${sourceSha256}\0${scope}\0${seed}\0${rowIndex}`).digest("hex");
 }
 
 /**
