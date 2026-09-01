@@ -341,6 +341,42 @@ export function describeFixtureRun(run: ToolFixtureRunResult): string {
 }
 
 /**
+ * The newest fixture run of each tool, recovered from the workshop's own try
+ * history. This is what the close panel states — `✓ 3/3 fixtures` — and it is
+ * deliberately workshop-local, restart-surviving scratch rather than evidence:
+ * a run only counts for the exact snapshot it ran against, so repairing a tool
+ * and closing without re-running shows the repair as untested.
+ */
+export function lastFixtureRunPerTool(
+	history: readonly { tool: string; test: string | null; passed: boolean; failure: string | null; exitCode: number | null; durationMs: number; snapshotHash: string }[],
+): ToolFixtureRunResult[] {
+	const byTool = new Map<string, typeof history[number][]>();
+	for (const entry of history) {
+		if (entry.test === null) continue;
+		byTool.set(entry.tool, [...(byTool.get(entry.tool) ?? []), entry]);
+	}
+	const runs: ToolFixtureRunResult[] = [];
+	for (const [tool, entries] of byTool) {
+		const newest = entries[entries.length - 1];
+		if (!newest) continue;
+		// One run is the named tries against one snapshot; a retry of the same
+		// fixture replaces the earlier attempt rather than counting twice.
+		const latest = new Map<string, typeof history[number]>();
+		for (const entry of entries) {
+			if (entry.snapshotHash === newest.snapshotHash) latest.set(entry.test as string, entry);
+		}
+		runs.push(summarizeFixtures(tool, [...latest.values()].map((entry) => ({
+			name: entry.test as string,
+			passed: entry.passed,
+			exitCode: entry.exitCode,
+			durationMs: entry.durationMs,
+			failures: entry.failure === null ? [] : [entry.failure],
+		}))));
+	}
+	return runs.sort((left, right) => left.tool.localeCompare(right.tool));
+}
+
+/**
  * Every fixture of one tool, in filename order. A tool with no `fixtures/`
  * directory has no contract tests, which is a fact about it rather than an
  * error: the refusal belongs to whoever asked to run them.

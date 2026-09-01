@@ -9,6 +9,7 @@ import { plural, t } from "../../i18n.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
 import { bullets, clean, numbered, oneLine, pluralize, shortHash, shortSha, wrap } from "./format.js";
 import type { Paint } from "./paint.js";
+import { renderToolPermissions, toolPermissionsFromDiff } from "./tool-permissions.js";
 import { renderCandidate, renderDatasetCases } from "./view.js";
 
 type Bag = Record<string, unknown>;
@@ -314,15 +315,19 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			const capabilities = bag(subject.capabilities);
 			const credentials = Array.isArray(capabilities.credentials) ? capabilities.credentials.map(bag) : [];
 			return [
-				`${paint.dim("Tool")} ${paint.bold(text(subject.tool, 64))}`,
+				`${paint.dim(t("label.tool"))} ${paint.bold(text(subject.tool, 64))}`,
 				...wrap(text(subject.purpose, 2_000), 92, "  "),
-				`${paint.dim("Data source")} ${text(subject.dataSource, 120)}`,
-				`${paint.dim("Network")} ${capabilities.network === "allow" ? paint.warning("allow") : paint.success("deny")}`,
-				`${paint.dim("Filesystem")} ${capabilities.filesystem === "workspace-write" ? paint.warning("workspace-write") : paint.success("read-only")}`,
-				`${paint.dim("Process")} ${paint.warning("sandboxed subprocess")}`,
-				`${paint.dim("Credentials")} ${credentials.length === 0 ? "none" : credentials.map((entry) => `${text(entry.id, 40)} ← ${text(entry.environment, 60)}`).join(", ")}`,
-				`${paint.dim("Package")} ${pluralize(strings(subject.files).length, "file")} ${paint.dim("· contract tests")} ${strings(subject.contractTests).join(", ")}`,
-				paint.muted("Secrets stay in the host environment. The Builder receives only test outcomes and the reviewable source diff."),
+				`${paint.dim(t("label.data-source"))} ${text(subject.dataSource, 120)}`,
+				...renderToolPermissions([{
+					tool: text(subject.tool, 64),
+					removed: false,
+					network: capabilities.network === "allow" ? "allow" : "deny",
+					filesystem: capabilities.filesystem === "workspace-write" ? "workspace-write" : "read-only",
+					environment: credentials.map((entry) => text(entry.environment, 60)),
+					...(subject.setup ? { setup: { network: bag(subject.setup).network === "allow" ? "allow" : "deny" } } : { setup: null }),
+				}], paint),
+				`${paint.dim(t("label.package"))} ${pluralize(strings(subject.files).length, "file")} ${paint.dim(`· ${t("label.contract-tests")}`)} ${strings(subject.contractTests).join(", ")}`,
+				paint.muted(t("confirm.tool-authoring.secrets")),
 			];
 		}
 		case "apply-proposal": {
@@ -332,6 +337,9 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 				`${paint.dim(t("label.branch"))} ${paint.bold(text(subject.branch, 80))} ${paint.dim(`· ${t("label.base")}`)} ${shortSha(text(subject.baseTargetSha, 40))}`,
 				...wrap(typeof subject.summary === "string" ? subject.summary : "", 92, "  "),
 				`${paint.dim(t("label.changes"))} ${strings(subject.paths).map((path) => oneLine(path, 60)).join(", ") || "—"} ${paint.dim(`(${paint.added(`+${stats.added}`)} ${paint.removed(`-${stats.removed}`)})`)}`,
+				// Applying a tool is the durable moment its authority becomes real, so
+				// the block says what it reaches before the yes, not only inside YAML.
+				...renderToolPermissions(toolPermissionsFromDiff(diff), paint),
 				verificationLine(confirmation.estimate, paint),
 				...(strings(subject.risks).length > 0 ? [paint.warning(t("label.risks")), ...bullets(strings(subject.risks), paint, { limit: 5 })] : []),
 				// The diff itself, here, before the yes — /review is a second look at

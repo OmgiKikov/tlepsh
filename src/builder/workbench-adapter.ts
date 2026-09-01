@@ -8,6 +8,8 @@ import { themePaint } from "./render/paint.js";
 import { nextStep, stageLabel } from "./render/stage.js";
 import { renderDatasetCases, renderReview, renderView, viewTitle } from "./render/view.js";
 import { renderVersionPassport } from "./render/passport.js";
+import { renderWorkshopCloseReview } from "./render/workshop-close.js";
+import type { WorkshopTrySummary } from "../application/tool-workshop.js";
 import { markerPaint, type TranscriptPresenter } from "./transcript.js";
 import type {
 	WorkbenchDatasetRecipeArtifact,
@@ -386,45 +388,11 @@ export function createBuilderWorkbenchTools(
 						const review = await workbench.view({ aspect: "review" });
 						const content = review.detail?.aspect === "review" ? review.detail.content : undefined;
 						if (content?.kind === "proposal") {
-							const artifact = turn.artifact as {
-								changedPaths?: string[];
-								permissions?: { tool: string; network: string; filesystem: string; process: string; credentials: number }[];
-								toolTests?: { tool: string; test: string | null; passed: boolean; durationMs: number; failure: string | null }[];
-							} | null;
-							const permissions = artifact?.permissions ?? [];
-							const tests = artifact?.toolTests ?? [];
+							const artifact = turn.artifact as { toolTests?: WorkshopTrySummary[] } | null;
 							options.presenter.show(ctx, {
 								title: viewTitle(review),
 								tone: "info",
-								lines: [
-									markerPaint.bold("Created / changed"),
-									...(artifact?.changedPaths ?? []).map((path) => `  • ${oneLine(path, 120)}`),
-									...(permissions.length > 0
-										? [
-											"",
-											markerPaint.bold("Capabilities"),
-											...permissions.map((item) =>
-												`  • ${item.tool}: network ${item.network} · filesystem ${item.filesystem} · ${item.process}` +
-												`${item.credentials > 0 ? ` · ${item.credentials} credential binding(s)` : ""}`
-											),
-										]
-										: []),
-									...(tests.length > 0
-										? [
-											"",
-											markerPaint.bold("Tool tests"),
-											...tests.map((test) =>
-												`  ${test.passed ? markerPaint.success("✓") : markerPaint.error("✗")} ${test.tool}${test.test ? ` · ${test.test}` : ""} ${markerPaint.dim(`${test.durationMs}ms`)}` +
-												`${test.failure ? ` — ${oneLine(test.failure, 100)}` : ""}`
-											),
-										]
-										: []),
-									"",
-									...renderReview(content, markerPaint, { maxDiffLines: Number.MAX_SAFE_INTEGER }),
-									"",
-									markerPaint.bold("Apply / Discard"),
-									markerPaint.muted("Say which one you want. Nothing changes until Apply is confirmed."),
-								],
+								lines: renderWorkshopCloseReview(content, artifact?.toolTests ?? [], markerPaint),
 							});
 						}
 					} catch {

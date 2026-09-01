@@ -29,7 +29,11 @@ import {
 	when,
 	wrap,
 } from "../src/builder/render/format.js";
+import { setLanguage } from "../src/i18n.js";
 import { renderImpact } from "../src/builder/render/impact.js";
+import { renderToolPermissions, toolPermissionsFromDiff } from "../src/builder/render/tool-permissions.js";
+import { fixtureLines, renderWorkshopCloseReview } from "../src/builder/render/workshop-close.js";
+import { lastFixtureRunPerTool } from "../src/application/tool-workshop.js";
 import { plainPaint, type Paint } from "../src/builder/render/paint.js";
 import { STAGE_LABELS, nextStep, stageLabel } from "../src/builder/render/stage.js";
 import { workbenchGateClass } from "../src/workbench/transition-policy.js";
@@ -2282,6 +2286,149 @@ describe("renderView and viewTitle", () => {
 		];
 		for (const [content, title] of reviews) {
 			expect(viewTitle(makeView({ stage: "complete", detail: { aspect: "review", content } }))).toBe(title);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// The two screens a new tool has to pass through: what it may reach, and
+// whether its own tests agree that it works.
+
+const WEATHER_TOOL_DIFF = `diff --git a/tools/weather/tool.yaml b/tools/weather/tool.yaml
+new file mode 100644
+--- /dev/null
++++ b/tools/weather/tool.yaml
+@@ -0,0 +1,14 @@
++schemaVersion: 1
++name: weather
++description: Current conditions for one city.
++parameters:
++  type: object
++  properties: {}
++  required: []
++  additionalProperties: false
++command:
++  argv: [tools/weather/run]
++permissions:
++  environment: [WEATHER_API_KEY]
++  network: allow
++  filesystem: read-only
+diff --git a/tools/clock/tool.yaml b/tools/clock/tool.yaml
+deleted file mode 100644
+--- a/tools/clock/tool.yaml
++++ /dev/null
+@@ -1,2 +0,0 @@
+-schemaVersion: 1
+-name: clock
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -1,1 +1,1 @@
+-old
++new
+`;
+
+describe("tool permissions", () => {
+	it("reads what each tool in the diff may reach, and says a removed tool is gone", () => {
+		expect(toolPermissionsFromDiff(WEATHER_TOOL_DIFF)).toEqual([
+			{
+				tool: "weather",
+				removed: false,
+				network: "allow",
+				filesystem: "read-only",
+				environment: ["WEATHER_API_KEY"],
+				setup: null,
+			},
+			{ tool: "clock", removed: true, network: "deny", filesystem: "read-only", environment: [], setup: null },
+		]);
+		// A diff with no tool descriptor asks for no authority and prints nothing.
+		expect(toolPermissionsFromDiff("diff --git a/AGENTS.md b/AGENTS.md\n+++ b/AGENTS.md\n+new\n")).toEqual([]);
+		expect(renderToolPermissions([], plainPaint)).toEqual([]);
+	});
+
+	it("puts the block in the apply dialog, above the diff the operator confirms", () => {
+		const lines = renderConfirmation(makeConfirmation("apply-proposal", {
+			branch: "ahde/candidate-1",
+			baseTargetSha: SHA_A,
+			summary: "Add the weather tool",
+			paths: ["tools/weather/tool.yaml"],
+			risks: [],
+			exactDiff: WEATHER_TOOL_DIFF,
+		}), plainPaint).join("\n");
+		expect(lines).toContain("Permissions");
+		expect(lines).toContain("• weather network allow · filesystem read-only · env WEATHER_API_KEY");
+		expect(lines).toContain("• clock removed by this change");
+		// The machine-readable tokens are untouched; only the labels are language.
+		try {
+			setLanguage("ru");
+			const ru = renderConfirmation(makeConfirmation("apply-proposal", {
+				branch: "ahde/candidate-1",
+				baseTargetSha: SHA_A,
+				summary: "Add the weather tool",
+				paths: ["tools/weather/tool.yaml"],
+				risks: [],
+				exactDiff: WEATHER_TOOL_DIFF,
+			}), plainPaint).join("\n");
+			expect(ru).toContain("Права");
+			expect(ru).toContain("• weather сеть allow · файлы read-only · ключи WEATHER_API_KEY");
+			expect(ru).toContain("• clock удаляется этой правкой");
+		} finally {
+			setLanguage(null);
+		}
+	});
+});
+
+describe("the workshop-close review", () => {
+	const history = [
+		{ tool: "weather", test: "sunny", passed: true, exitCode: 0, timedOut: false, truncated: false, durationMs: 12, failure: null, snapshotHash: `sha256:${"a".repeat(64)}`, at: "2026-01-01T00:00:00.000Z" },
+		{ tool: "weather", test: "sunny", passed: true, exitCode: 0, timedOut: false, truncated: false, durationMs: 11, failure: null, snapshotHash: `sha256:${"b".repeat(64)}`, at: "2026-01-01T00:01:00.000Z" },
+		{ tool: "weather", test: "unknown-city", passed: true, exitCode: 3, timedOut: false, truncated: false, durationMs: 9, failure: null, snapshotHash: `sha256:${"b".repeat(64)}`, at: "2026-01-01T00:02:00.000Z" },
+	];
+	const content = {
+		kind: "proposal" as const,
+		runId: "builder-run_1",
+		proposalHash: HASH,
+		baseTargetSha: SHA_A,
+		summary: "Add the weather tool",
+		paths: ["manifest.yaml", "tools/weather/tool.yaml"],
+		risks: [],
+		validationPlan: ["Run the basket"],
+		authoringContext: null,
+		evidenceBasis: null,
+		exactDiff: WEATHER_TOOL_DIFF,
+	};
+
+	it("says what was created, what it may reach, how its fixtures went, and the two outcomes", () => {
+		const lines = renderWorkshopCloseReview(content, history, plainPaint);
+		const text = lines.join("\n");
+		expect(text).toContain("Created / changed");
+		expect(text).toContain("• tools/weather/tool.yaml");
+		expect(text).toContain("Permissions");
+		expect(text).toContain("Tool tests");
+		expect(text).toContain("✓ weather 2/2 fixtures");
+		// The whole diff, then the only two things that can happen next.
+		expect(text).toContain("+name: weather");
+		expect(text).toContain("Apply or discard");
+		expect(text).toContain("Nothing changes until you apply.");
+	});
+
+	it("counts only the newest run, names the failing fixture, and bends into Russian", () => {
+		const failed = [
+			...history.slice(0, 2),
+			{ ...history[2]!, passed: false, failure: "stdout JSON.city is missing" },
+		];
+		expect(fixtureLines(lastFixtureRunPerTool(failed), plainPaint)).toEqual([
+			"  ✗ weather 1/2 — unknown-city: stdout JSON.city is missing",
+		]);
+		try {
+			setLanguage("ru");
+			expect(fixtureLines(lastFixtureRunPerTool(history), plainPaint)).toEqual([
+				"  ✓ weather 2/2 фикстур",
+			]);
+			expect(renderWorkshopCloseReview(content, history, plainPaint).join("\n"))
+				.toContain("Создано / изменено");
+		} finally {
+			setLanguage(null);
 		}
 	});
 });
