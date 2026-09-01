@@ -1239,11 +1239,11 @@ describe("renderImpact", () => {
 		const lines = renderImpact({ available: true, impact }, tagPaint);
 		expect(lines[0]).toBe("<dim>Impact</dim> <warning>mixed</warning> <dim>· cost ×1.4 · latency ×0.9 · tokens ×1.1</dim>");
 		expect(lines[1]).toBe("  <dim>Targeted 5 failure modes:</dim>");
-		expect(lines[2]).toBe("    <success>✓</success> <success>resolved</success> · tool-selection · baseline 4/4 failed → candidate 0/4 failed · 0/2 tasks still affected");
-		expect(lines[3]).toBe("    <success>↑</success> <success>improved</success> · output-contract · baseline 4/4 failed → candidate 1/4 failed · 1/2 tasks still affected");
-		expect(lines[4]).toBe("    <warning>=</warning> <warning>persisted</warning> · answer-quality · baseline 4/4 failed → candidate 4/4 failed · 2/2 tasks still affected");
-		expect(lines[5]).toBe("    <error>↓</error> <error>worsened</error> · flaky-behavior · baseline 2/4 failed → candidate 4/4 failed · 2/2 tasks still affected");
-		expect(lines[6]).toBe("    <warning>?</warning> <warning>not-reproduced</warning> · infrastructure · baseline 0/4 failed → candidate 0/4 failed · 0/2 tasks still affected");
+		expect(lines[2]).toBe("    <success>✓</success> <success>resolved</success> <dim>·</dim> tool-selection <dim>·</dim> baseline 4/4 failed → candidate 0/4 failed · 0/2 tasks still affected");
+		expect(lines[3]).toBe("    <success>↑</success> <success>improved</success> <dim>·</dim> output-contract <dim>·</dim> baseline 4/4 failed → candidate 1/4 failed · 1/2 tasks still affected");
+		expect(lines[4]).toBe("    <warning>=</warning> <warning>persisted</warning> <dim>·</dim> answer-quality <dim>·</dim> baseline 4/4 failed → candidate 4/4 failed · 2/2 tasks still affected");
+		expect(lines[5]).toBe("    <error>↓</error> <error>worsened</error> <dim>·</dim> flaky-behavior <dim>·</dim> baseline 2/4 failed → candidate 4/4 failed · 2/2 tasks still affected");
+		expect(lines[6]).toBe("    <warning>?</warning> <warning>not-reproduced</warning> <dim>·</dim> infrastructure <dim>·</dim> baseline 0/4 failed → candidate 0/4 failed · 0/2 tasks still affected");
 		expect(lines).toHaveLength(7);
 	});
 
