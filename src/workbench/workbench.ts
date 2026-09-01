@@ -1033,10 +1033,17 @@ export class AhdeWorkbench {
 		record: PersistedBuilderRun,
 		inventory: WorkbenchInventory,
 	): WorkbenchRunEstimate {
-		const development = record.request.sourceAttestation?.developmentCorpus;
-		const developmentTasks = development
-			? inventory.corpora.find((corpus) => corpus.id === development.id)?.taskCount ?? 0
-			: 0;
+		// The same basket the verification will actually run: the published
+		// development corpus of this proposal's Spec, not whatever the Builder
+		// happened to be measured on. An unresolvable one prices at zero here and
+		// refuses at `verify-candidate`, where there is a human to tell.
+		const specId = record.request.approvedSpec?.specId;
+		let developmentTasks = 0;
+		try {
+			developmentTasks = specId ? requireDevelopmentCorpus(inventory, undefined, specId).taskCount : 0;
+		} catch {
+			developmentTasks = 0;
+		}
 		const sealedTasks = inventory.corpora
 			.filter((corpus) => corpus.visibility === "sealed" && corpus.taskCount >= SEALED_GATE_POLICY.minTasks)
 			.reduce((largest, corpus) => Math.max(largest, corpus.taskCount), 0);
@@ -3382,7 +3389,7 @@ export class AhdeWorkbench {
 				projectId: this.projectId,
 				specId: after.approvedSpecId,
 				origin: { kind: "manual", reason: "A/A calibration" },
-				developmentCorpus: after.developmentCorpus,
+				...(after.developmentCorpus ? { developmentCorpus: after.developmentCorpus } : {}),
 				actorId: actor,
 				...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
 				...(options.signal ? { signal: options.signal } : {}),
@@ -3613,15 +3620,36 @@ export class AhdeWorkbench {
 					throw new Error("selected evaluator-owned holdout is unavailable or changed; identity remains hidden");
 				}
 				if (sealedLoaded.metadata.visibility !== "sealed" || sealedLoaded.metadata.hash !== selected.hash) throw new Error("sealed holdout changed");
-				const development = builderRun.request.sourceAttestation?.developmentCorpus;
-				let developmentCorpus: CorpusRef | undefined;
-				if (development) {
-					const receipt = loadDevelopmentCorpusPublicationReceipt(this.stateRoot, this.projectId, development.id);
-					if (receipt.corpus.hash !== development.hash) throw new Error("Builder development source differs from its publication receipt");
-					developmentCorpus = { stateRoot: this.stateRoot, projectId: this.projectId, corpusId: development.id };
+				// The development arm is the published development corpus of the Spec
+				// this proposal was written against — the operator's own cases, resolved
+				// exactly the way `run-eval` resolves them. It is never the manifest
+				// dataset: a construction proposal carries no attestation at all, and
+				// falling back to `evalSuite.dataset` measured a template file nobody
+				// wrote and called the result the development verdict.
+				const approvedSpecId = builderRun.request.approvedSpec.specId;
+				const currentCorpus = requireDevelopmentCorpus(current, undefined, approvedSpecId);
+				const receipt = loadDevelopmentCorpusPublicationReceipt(this.stateRoot, this.projectId, currentCorpus.id);
+				const lineage = current.developmentLineage.get(currentCorpus.id);
+				const loaded = loadCorpus({ stateRoot: this.stateRoot, projectId: this.projectId, corpusId: currentCorpus.id });
+				if (
+					!lineage ||
+					lineage.publication.approvedSpecId !== approvedSpecId ||
+					loaded.metadata.visibility !== "development" ||
+					loaded.metadata.hash !== receipt.corpus.hash
+				) throw new Error("development corpus does not match its reviewed Spec lineage");
+				// An improvement proposal names the basket it was measured on. It has to
+				// be that same one, or before and after would compare two different exams.
+				const attested = builderRun.request.sourceAttestation?.developmentCorpus;
+				if (attested && (attested.id !== loaded.metadata.id || attested.hash !== loaded.metadata.hash)) {
+					throw new Error(
+						"the Builder measured a development corpus that is not the published one of this Spec; " +
+						"publish the corpus it used, or author against the published one",
+					);
 				}
+				const development = { id: loaded.metadata.id, hash: loaded.metadata.hash, taskCount: loaded.metadata.taskCount };
+				const developmentCorpus: CorpusRef = { stateRoot: this.stateRoot, projectId: this.projectId, corpusId: loaded.metadata.id };
 				return {
-					subject: { operation: "verify-applied-candidate", builderRunId: builderRun.runId, builderRunHash: hashValue(builderRun), applyReceiptHash: hashValue(applyReceipt), proposalHash: builderRun.artifacts.proposal?.sha256 ?? null, baseTargetSha: applyReceipt.baseTargetSha, candidateSha: applyReceipt.candidateSha, approvedSpec: builderRun.request.approvedSpec, developmentCorpus: development ?? null, sealedHoldout: { id: selected.id, hash: selected.hash, taskCount: selected.taskCount }, repetitions: input.repetitions, screen: builderRun.request.source?.evalRunId ?? null, force: input.force === true },
+					subject: { operation: "verify-applied-candidate", builderRunId: builderRun.runId, builderRunHash: hashValue(builderRun), applyReceiptHash: hashValue(applyReceipt), proposalHash: builderRun.artifacts.proposal?.sha256 ?? null, baseTargetSha: applyReceipt.baseTargetSha, candidateSha: applyReceipt.candidateSha, approvedSpec: builderRun.request.approvedSpec, developmentCorpus: development, sealedHoldout: { id: selected.id, hash: selected.hash, taskCount: selected.taskCount }, repetitions: input.repetitions, screen: builderRun.request.source?.evalRunId ?? null, force: input.force === true },
 					approvedSpecId: builderRun.request.approvedSpec.specId,
 					sourceEvalRunId: builderRun.request.source?.evalRunId ?? null,
 					// The receipt of this exact candidate is the authorization: it says
@@ -3634,8 +3662,7 @@ export class AhdeWorkbench {
 			};
 			const before = build();
 			// Two arms over the development basket and the sealed holdout.
-			const developmentTasks = inventory.corpora
-				.find((corpus) => corpus.id === before.subject.developmentCorpus?.id)?.taskCount ?? 0;
+			const developmentTasks = before.subject.developmentCorpus.taskCount;
 			const executions = 2 * (developmentTasks + selected.taskCount) * input.repetitions;
 			const actor = await this.confirm(input, gate, t("confirm.title.verify-candidate"), before.subject, options.signal, {
 				question: before.sourceEvalRunId
@@ -3663,7 +3690,7 @@ export class AhdeWorkbench {
 						candidateRef: after.subject.candidateSha,
 						baselineRef: after.subject.baseTargetSha,
 						sourceEvalRunId: after.sourceEvalRunId,
-						...(after.developmentCorpus ? { developmentCorpus: after.developmentCorpus } : {}),
+						developmentCorpus: after.developmentCorpus,
 						...(options.signal ? { signal: options.signal } : {}),
 						...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
 						now: this.dependencies.now,
@@ -3706,7 +3733,7 @@ export class AhdeWorkbench {
 					projectId: this.projectId,
 					approvedSpec: { stateRoot: this.stateRoot, specId: after.approvedSpecId },
 					repetitions: input.repetitions,
-					...(after.developmentCorpus ? { developmentCorpus: after.developmentCorpus } : {}),
+					developmentCorpus: after.developmentCorpus,
 					sealedCorpus: after.sealedCorpus,
 					actorId: actor,
 					...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),

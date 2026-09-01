@@ -1739,14 +1739,14 @@ describe("renderConfirmation", () => {
 			baseTargetSha: SHA_A,
 			candidateSha: SHA_B,
 			approvedSpec: { projectId: "proj", specId: "spec-1", specContentHash: HASH, snapshotHash: HASH },
-			developmentCorpus: { id: "corpus-1", hash: HASH },
+			developmentCorpus: { id: "corpus-1", hash: HASH, taskCount: 6 },
 			sealedHoldout: { id: "corpus-SEALED-IDENTITY", hash: SEALED_HASH, taskCount: 7 },
 			repetitions: 2,
 		}), plainPaint);
 		const text = lines.join("\n");
 		expect(lines.slice(0, 4)).toEqual([
 			"Matched experiment baseline aaaaaaaaaa vs candidate bbbbbbbbbb · 2 repetitions",
-			"Development basket corpus-1 (cccccccccccc…)",
+			"Development basket 6 cases · corpus-1 (cccccccccccc…)",
 			"Sealed holdout 7 cases · identity stays evaluator-only",
 			"Both revisions run every case; the Builder never sees sealed content.",
 		]);

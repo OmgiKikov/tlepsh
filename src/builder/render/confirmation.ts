@@ -381,7 +381,12 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			const repetitions = Number(subject.repetitions ?? 1);
 			return [
 				`${paint.dim("Matched experiment")} baseline ${shortSha(text(subject.baseTargetSha, 40))} vs candidate ${paint.bold(shortSha(text(subject.candidateSha, 40)))} ${paint.dim(`· ${pluralize(repetitions, "repetition")}`)}`,
-				`${paint.dim("Development basket")} ${development.id ? `${text(development.id)} ${paint.dim(`(${shortHash(text(development.hash))})`)}` : paint.muted("none")}`,
+				// The count first: this is the number of the operator's own cases both
+				// arms will run, and reading it here is how they catch a basket that is
+				// not the one they wrote.
+				`${paint.dim("Development basket")} ${development.id
+					? `${pluralize(Number(development.taskCount ?? 0), "case")} ${paint.dim(`· ${text(development.id)} (${shortHash(text(development.hash))})`)}`
+					: paint.muted("none")}`,
 				`${paint.dim("Sealed holdout")} ${pluralize(Number(holdout.taskCount ?? 0), "case")} ${paint.dim("· identity stays evaluator-only")}`,
 				paint.muted("Both revisions run every case; the Builder never sees sealed content."),
 			];
