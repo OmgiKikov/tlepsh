@@ -9,7 +9,7 @@ import {
 import { diagnoseEvalRun } from "../diagnosis.js";
 import { readEvalRunIndex } from "../eval.js";
 import { resolveCommitRef } from "../git/experiment-worktree.js";
-import { assertUntrackedEngineStore } from "./store-hygiene.js";
+import { assertCleanTargetTree, assertUntrackedEngineStore } from "./store-hygiene.js";
 import {
 	resolveCanonicalProposalBasis,
 	runApprovedSpecBuilderProposal,
@@ -99,27 +99,14 @@ export class BranchProposalError extends Error {
 }
 
 /**
- * Whether the checkout carries anything the recorded revision cannot name.
- * Deliberately the same question `gitSha()` in manifest.ts asks before it
- * appends `-dirty-<hash>`, so the two can never disagree about what dirty is.
- */
-function hasUncommittedChanges(repositoryDir: string): boolean {
-	return git(repositoryDir, ["status", "--porcelain=v1", "--untracked-files=all"]).trim().length > 0;
-}
-
-/**
- * A proposal is a diff against an exact commit. A dirty tree has no commit to
- * be a diff against — the revision recorded for it is `<sha>-dirty-<hash>`,
- * which names no Git object — so the refusal says that instead of letting
- * `rev-parse` fail on a string it was never given.
+ * A proposal is a diff against an exact commit — for the operator's own tree,
+ * and for the evidence the diff answers.
  */
 export function assertCleanProposalBaseline(repositoryDir: string, sourceRevision?: string): void {
-	if (hasUncommittedChanges(repositoryDir)) {
-		throw new BranchProposalError(
-			"the Target has uncommitted changes; a proposal compiles only against a clean committed baseline",
-			"commit or stash them, then run ahde propose again",
-		);
-	}
+	assertCleanTargetTree(repositoryDir, {
+		because: "a proposal compiles only against a clean committed baseline",
+		next: "commit or stash them, then run ahde propose again",
+	});
 	if (sourceRevision !== undefined && sourceRevision.includes("-dirty-")) {
 		throw new BranchProposalError(
 			`the evidence was recorded on a dirty tree (${sourceRevision}); ` +

@@ -930,3 +930,151 @@ next: Run `ahde passport --target <dir>` for the newest promotion, or name a tag
 ## Update — 2026-09-01, after the master merge
 
 `ahde log` and `ahde watch` exist on master now (they arrived with `codex/integrate-polish`), and `ahde passport` builds step 8 directly; `scripts/skill-shim-log.mjs` was removed. `ahde review` gates automated (improve/search) applies with `--proposal-hash`; an operator's own `ahde apply` still records at once. Everything above this line is the log as it happened.
+
+# ADDENDUM-2 — 2026-09-01: `ahde improve` picks up a CLI-authored proposal
+
+The open question in `skills/ahde/SKILL.md` was whether the headless loop can
+use a proposal made from the terminal, or only ones authored inside Builder Pi.
+It can. Below is the whole run on a scratch Target (`improve-agent`) driven by
+the scripted mock model, verbatim, exit codes real. Per-run `AHDE run n/N`
+progress lines are trimmed; nothing else is.
+
+The dataset is six cases, each graded by two deterministic `output_contains`
+predicates (`READY`, `thirty days`); the mock answers with both only when the
+system prompt carries the marker `AHDE-REPRO-V2`, which is exactly what the fix
+on `work/fix` adds to `AGENTS.md`.
+
+## Setup, baseline, diagnosis
+
+```
+$ ahde spec approve --target .
+.gitignore     added /.ahde/, /imports/, /runs/, /.env, /.env.*, !/.env.example
+spec-56bccccd837190b786d349d372f57e0761dfa229962a709f064fbabc2c4dd3e6  approved
+title         improve-agent — spec
+[exit 0]
+
+$ ahde corpus import --target . --visibility sealed --name "exam" --file ../private/sealed-exam.jsonl
+corpus-12e54672f7c29d62b2246bc37eb2c537d57847cac76264317fa217ed427ad838  sealed  18 tasks  sha256:dde1600f0eb4…
+[exit 0]
+
+$ ahde run --target . --label baseline --repetitions 2 --jobs 2
+eval run erun_mtidk247hmmjmh: 0/12 all-pass (12 fail, 0 error)
+[exit 1]
+
+$ ahde diagnose erun_mtidk247hmmjmh
+diagnosis diagnosis-41bdecf8380b2a1ac209: actionable — 6 issue(s), 0 infrastructure error(s)
+0/12 passed. Found 2 diagnosed failure mode(s); 2 repeat across tasks.
+proposal gate: eligible for exact human review
+  major    systemic   Output contract check failed across tasks — 6/6 task(s), high evidence, propose-harness-change
+    failure-mode-46f4558769188dd02ef47aca
+  major    systemic   Output contract check failed across tasks — 6/6 task(s), high evidence, propose-harness-change
+    failure-mode-66d52570023fb35d66cecf46
+[exit 0]
+```
+
+## The proposal, authored at the terminal and NOT applied
+
+```
+$ git checkout -b work/fix && …append the answer contract to AGENTS.md… && git commit -am … && git checkout master
+
+$ ahde propose --target . --spec spec-56bccccd… --branch work/fix \
+    --eval erun_mtidk247hmmjmh \
+    --mode failure-mode-46f4558769188dd02ef47aca,failure-mode-66d52570023fb35d66cecf46 \
+    --summary "READY + thirty days"
+builder run   builder-85c71a52-2ac2-4e7d-9e45-12f9df72c6d2
+base          5b5ecc74dd1fda7ce36a8497a832732bbc226947
+branch        work/fix (18358865813be5430986adfea35ae27a4da51c01)
+changed       AGENTS.md
+evidence      erun_mtidk247hmmjmh
+proposal      …/runs/builders/builder-85c71a52-2ac2-4e7d-9e45-12f9df72c6d2/proposal.json
+applied       no — `ahde propose` never touches a branch or a checkout
+[exit 0]
+```
+
+`ahde apply` was deliberately NOT run. The loop below is what picks it up.
+
+## `ahde improve`
+
+```
+$ ahde improve --target . --until 90% --max-cycles 2 --project improve-agent \
+    --jobs 2 --repetitions 2
+AHDE improve authorization · up to 84 Target executions · proposals may be applied to throwaway branches without individual diff review; the exact diff must be hash-confirmed at review
+AHDE improve cycle 1/2 · run 0/12 0% · mode failure-mode-46f4558769188dd02ef47aca · branch candidate/auto-loop_c14678bb0a86fec21ff75a4c-1 · changed paths AGENTS.md · screen promising 6/6 · verify improved +100.0pp · 100% ≥ 90%
+| cycle | pass rate | failure mode | branch | changed paths | screen | verification |
+|---|---|---|---|---|---|---|
+| 1 | 0% | failure-mode-46f4558769188dd02ef47aca | candidate/auto-loop_c14678bb0a86fec21ff75a4c-1 | AGENTS.md | promising 6/6 | improved +100.0pp |
+
+Stopped: the target pass rate is reached.
+Target executions spent: 30.
+Candidate candidate-e6489b4c-5fc2-44da-89f7-313d3c979e67 is verified · awaiting your decision. Promotion is yours: `ship it` runs the sealed guardrail and the release decisions.
+The loop applies proposals the Builder has already prepared in `ahde`; it does not write them. A headless proposal author is not shipped yet — it is the next milestone.
+
+loop loop_c14678bb0a86fec21ff75a4c
+
+next: ahde review --candidate candidate-e6489b4c-5fc2-44da-89f7-313d3c979e67 --recommend promote|reject --reason <text>
+[exit 0]
+```
+
+And what it left behind:
+
+```
+$ git branch --list
+  candidate/auto-loop_c14678bb0a86fec21ff75a4c-1
+* master
+  work/fix
+
+$ git branch --show-current && git rev-parse --short HEAD
+master
+5b5ecc7
+```
+
+## VERDICT
+
+**It works.** `ahde improve` matched the proposal `ahde propose` had recorded —
+same development surface (dataset label and hash, suite hash, Target revision,
+approved Spec) and the failure mode the cycle chose — applied it on its own
+throwaway `candidate/auto-<loopId>-1` branch, screened it (6/6 promising),
+paid for the full matched verification (`improved +100.0pp`), reached the
+`--until 90%` gate on cycle 1 of 2, and stopped with a verified candidate and
+nothing promoted. The operator's checkout never moved: still `master` at the
+baseline `5b5ecc7`. The `--eval erun_…` used in `propose` is not the eval run
+the loop then measured — as the `improve --help` text says, a proposal matches
+on the *surface*, not on an eval run id, which is what makes a proposal
+prepared before the command still match during it.
+
+So the SKILL's "not yet proven in a walkthrough" bullet is now proven, and the
+`propose --eval … --mode …` → `improve` handoff is a real path.
+
+## One bug found on the way
+
+The first attempt failed, because the command's own log file was written inside
+the Target:
+
+```
+$ ahde improve --target . --until 90% --max-cycles 2 --project improve-agent > improve.log 2>&1
+error: [
+  {
+    "origin": "string",
+    "code": "invalid_format",
+    "format": "regex",
+    "pattern": "/^[0-9a-f]{40}$/",
+    "path": [
+      "targetGitSha"
+    ],
+    "message": "Invalid string: must match pattern /^[0-9a-f]{40}$/"
+  }
+]
+[exit 2]
+```
+
+`improve.log` is an untracked file, so the revision is `<sha>-dirty-<hash>`,
+which the loop's own configuration schema rejects as a regex failure. This is
+the same class of defect as CAVEAT 1 — raw plumbing where a sentence belongs —
+and it is very easy to hit, because rule 7 of the skill *tells* the agent to
+redirect run output to a file. It now refuses in words:
+
+```
+error: the Target has uncommitted changes; an improvement loop cuts every branch from one clean committed baseline
+next: commit or stash them (a run log written inside the Target counts), then run ahde improve again
+[exit 2]
+```

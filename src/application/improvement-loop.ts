@@ -55,6 +55,7 @@ import {
 	loadBuilderProposalRun,
 } from "./builder-proposal.js";
 import { assertBuilderProposalNotDiscarded } from "./builder-discard.js";
+import { assertCleanTargetTree } from "./store-hygiene.js";
 import { CANDIDATE_SCOPE_POLICY, effectiveProvenance } from "./candidate-experiment.js";
 import { runCheapCheck, type CheapCheckResult } from "./cheap-check.js";
 import { targetWithDevelopmentCorpus } from "./corpus-target.js";
@@ -831,6 +832,15 @@ export async function runImprovementLoop(
 		const base = dependencies.loadTarget(dir);
 		return developmentCorpus ? targetWithDevelopmentCorpus(base, developmentCorpus) : base;
 	};
+	// Every branch this loop cuts and every candidate it verifies is bound to one
+	// exact revision, so a dirty tree has nothing to bind to. Said here, in the
+	// operator's words, rather than as a regex failure on `<sha>-dirty-<hash>` —
+	// and it is easy to hit, because `improve > improve.log` inside the Target is
+	// itself an uncommitted file.
+	assertCleanTargetTree(repositoryDir, {
+		because: "an improvement loop cuts every branch from one clean committed baseline",
+		next: "commit or stash them (a run log written inside the Target counts), then run ahde improve again",
+	});
 	const rootTarget = resolveTarget(repositoryDir);
 	const configuration = ImprovementLoopConfigurationSchema.parse({
 		approvedSpecId: options.approvedSpecId,

@@ -195,9 +195,11 @@ loop closes on the CLI alone. What is still rough:
   them apart, and pass every id you are actually fixing to `propose --mode`
   (comma-separated).
 - `ahde improve` applies proposals that already exist; `ahde propose --eval
-  <erun> --mode <id>` makes exactly that kind. Whether a headless loop picks
-  them up is not yet proven in a walkthrough — drive the cycle yourself with
-  the commands above until it is.
+  <erun> --mode <id>` makes exactly that kind, and the loop does pick one up —
+  proven end to end in `docs/SKILL_WALKTHROUGH.md` ADDENDUM-2. It still writes
+  none itself, so author the proposal first, then hand the cycle over. Keep the
+  tree clean: `improve` (like `propose`) refuses a dirty baseline, and a run log
+  written inside the Target is exactly that — redirect it outside.
 - Judge spend is its own number, never inside the Target's `costUsd`: per run
   in `metrics.judge.costUsd`, summed on the eval run as `judgeCostUsd`, and
   printed by `ahde run` and `ahde passport` when it is above zero. It is

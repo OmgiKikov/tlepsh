@@ -126,6 +126,52 @@ export function trackedEngineStorePaths(targetDir: string): string[] {
 	return raw.split("\0").filter((path) => path.length > 0);
 }
 
+/**
+ * A refusal about the state of the operator's checkout, with the next step.
+ * Surfaced by the CLI as `error:` plus `next:`.
+ */
+export class DirtyTargetTreeError extends Error {
+	readonly name = "DirtyTargetTreeError";
+	readonly next: string;
+
+	constructor(message: string, next: string) {
+		super(message);
+		this.next = next;
+	}
+}
+
+/**
+ * Whether the checkout carries anything the recorded revision cannot name.
+ * Deliberately the same question `gitSha()` in manifest.ts asks before it
+ * appends `-dirty-<hash>`, so the two can never disagree about what dirty is —
+ * untracked files included, because they are hashed into that suffix too.
+ */
+export function targetTreeIsDirty(repositoryDir: string): boolean {
+	const status = execFileSync(
+		"git",
+		["-C", repositoryDir, "status", "--porcelain=v1", "--untracked-files=all"],
+		{ encoding: "utf8", maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] },
+	);
+	return status.trim().length > 0;
+}
+
+/**
+ * Every command that binds work to an exact commit needs one to exist. A dirty
+ * tree records its revision as `<sha>-dirty-<hash>`, which names no Git object,
+ * so the refusal says that instead of letting a schema or `rev-parse` fail on a
+ * string neither was given.
+ */
+export function assertCleanTargetTree(
+	repositoryDir: string,
+	reason: { because: string; next: string },
+): void {
+	if (!targetTreeIsDirty(repositoryDir)) return;
+	throw new DirtyTargetTreeError(
+		`the Target has uncommitted changes; ${reason.because}`,
+		reason.next,
+	);
+}
+
 /** Refuse a Target whose engine store is already inside a Git object. */
 export function assertUntrackedEngineStore(targetDir: string): void {
 	const tracked = trackedEngineStorePaths(targetDir);
