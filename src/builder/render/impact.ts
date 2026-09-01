@@ -1,8 +1,15 @@
 import type { CandidateImpact } from "../../application/candidate-impact.js";
+import {
+	scorePredictedModes,
+	scorePredictedOverall,
+	type PredictionMeasurement,
+} from "../../application/prediction.js";
+import type { ProposalPrediction } from "../../builders/adapters.js";
 import { formatResourceFragment } from "../../domain/comparison-gate.js";
 import { t } from "../../i18n.js";
 import type { WorkbenchCandidateImpactProjection } from "../../workbench/types.js";
 import { oneLine, pluralize } from "./format.js";
+import { predictedModeFragment, predictedOverallLine } from "./prediction.js";
 import type { Paint } from "./paint.js";
 
 const OUTCOME_GLYPH: Record<CandidateImpact["proposalBasis"] extends infer T
@@ -46,11 +53,20 @@ function toolContractLines(tools: readonly string[], paint: Paint): string[] {
 	];
 }
 
+export interface RenderImpactOptions {
+	/** Tools this change brings in, named where the verdict is read. */
+	tools?: readonly string[];
+	/** The promise hashed into the proposal this candidate was applied from. */
+	prediction?: ProposalPrediction | null;
+	/** What the gate measured, so the promise can be read against it. */
+	measurement?: PredictionMeasurement | null;
+}
+
 /** Human summary of what the candidate did to the failure modes it targeted. */
 export function renderImpact(
 	projection: WorkbenchCandidateImpactProjection | null,
 	paint: Paint,
-	options: { tools?: readonly string[] } = {},
+	options: RenderImpactOptions = {},
 ): string[] {
 	if (!projection) return [];
 	if (!projection.available) {
@@ -63,8 +79,18 @@ export function renderImpact(
 			(resources ? ` ${paint.dim(`· ${resources}`)}` : ""),
 		...toolContractLines(options.tools ?? [], paint),
 	];
+	// The promise beside the result, before the per-mode detail: the one number
+	// the operator can hold this change to.
+	const overall = predictedOverallLine(
+		scorePredictedOverall(options.prediction, options.measurement ?? null),
+		paint,
+	);
+	if (overall) lines.push(`  ${overall}`);
 	if (impact.proposalBasis) {
 		const modes = impact.proposalBasis.targetedFailureModes;
+		const scored = new Map(
+			scorePredictedModes(options.prediction, modes).map((outcome) => [outcome.failureModeId, outcome]),
+		);
 		lines.push(`  ${paint.dim(`Targeted ${pluralize(modes.length, "failure mode")}:`)}`);
 		for (const mode of modes) {
 			const glyph = OUTCOME_GLYPH[mode.outcome] ?? "·";
@@ -75,6 +101,10 @@ export function renderImpact(
 				`    ${tone(glyph)} ${tone(mode.outcome)} · ${mode.category} · baseline ${rate(mode.baseline)} → candidate ${rate(mode.candidate)}` +
 				` · ${mode.candidateAffectedTasks}/${mode.sourceAffectedTasks} tasks still affected`,
 			);
+			const outcome = scored.get(mode.failureModeId);
+			// Only where a promise exists at all; an unpredicted mode says so once
+			// the proposal carried a prediction, and stays silent when it did not.
+			if (outcome && options.prediction) lines.push(`      ${predictedModeFragment(outcome, paint)}`);
 		}
 	} else {
 		lines.push(`  ${paint.muted("No targeted failure modes: this candidate was not authored from a diagnosis.")}`);

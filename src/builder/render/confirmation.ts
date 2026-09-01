@@ -10,9 +10,26 @@ import { diffStats, renderUnifiedDiff } from "./diff.js";
 import { bullets, clean, numbered, oneLine, pluralize, shortHash, shortSha, wrap } from "./format.js";
 import type { Paint } from "./paint.js";
 import { renderToolPermissions, toolPermissionsFromDiff } from "./tool-permissions.js";
+import {
+	predictionAbsentLine,
+	predictionNoteLine,
+	predictionPromiseLine,
+} from "./prediction.js";
+import { ProposalPredictionSchema, type ProposalPrediction } from "../../builders/adapters.js";
 import { renderCandidate, renderDatasetCases } from "./view.js";
 
 type Bag = Record<string, unknown>;
+
+/**
+ * A confirmation subject is a bounded projection, so the prediction arrives
+ * here as plain data. It is re-parsed rather than trusted: a dialog never
+ * renders a promise it cannot validate.
+ */
+function predictionOf(value: unknown): ProposalPrediction | null {
+	if (value === null || value === undefined) return null;
+	const parsed = ProposalPredictionSchema.safeParse(value);
+	return parsed.success ? parsed.data : null;
+}
 
 function bag(value: unknown): Bag {
 	return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Bag) : {};
@@ -333,6 +350,8 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 		case "apply-proposal": {
 			const diff = typeof subject.exactDiff === "string" ? subject.exactDiff : "";
 			const stats = diffStats(diff);
+			// The promise the operator is approving, on the screen where they say yes.
+			const prediction = predictionOf(subject.prediction);
 			return [
 				`${paint.dim(t("label.branch"))} ${paint.bold(text(subject.branch, 80))} ${paint.dim(`· ${t("label.base")}`)} ${shortSha(text(subject.baseTargetSha, 40))}`,
 				...wrap(typeof subject.summary === "string" ? subject.summary : "", 92, "  "),
@@ -340,6 +359,8 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 				// Applying a tool is the durable moment its authority becomes real, so
 				// the block says what it reaches before the yes, not only inside YAML.
 				...renderToolPermissions(toolPermissionsFromDiff(diff), paint),
+				predictionPromiseLine(prediction, paint) ?? predictionAbsentLine(paint),
+				...(predictionNoteLine(prediction, paint) ? [predictionNoteLine(prediction, paint)!] : []),
 				verificationLine(confirmation.estimate, paint),
 				...(strings(subject.risks).length > 0 ? [paint.warning(t("label.risks")), ...bullets(strings(subject.risks), paint, { limit: 5 })] : []),
 				// The diff itself, here, before the yes — /review is a second look at

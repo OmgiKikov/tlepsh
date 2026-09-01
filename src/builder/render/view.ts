@@ -35,6 +35,12 @@ import {
 } from "./format.js";
 import { renderImpact } from "./impact.js";
 import { toolPermissionsFromDiff } from "./tool-permissions.js";
+import {
+	predictionAbsentLine,
+	predictionNoteLine,
+	predictionPromiseLine,
+} from "./prediction.js";
+import { measurementOf } from "../../application/prediction.js";
 import type { Paint } from "./paint.js";
 import { planHeadline, type Plan } from "./plan.js";
 import { nextStep, stageLabel } from "./stage.js";
@@ -343,9 +349,16 @@ export function renderCandidate(
 	if (sealedGate && sealedGate.verdict !== "pass") lines.push(`  ${paint.muted(oneLine(sealedGate.reasons[0] ?? "", 160))}`);
 	if (candidate.judgeAgreement !== undefined) lines.push(judgeAgreementLine(candidate.judgeAgreement, paint));
 	// The verdict is read beside the questions the tool cases answer, so the
-	// gate's "better" is never mistaken for "it calls the tool correctly".
+	// gate's "better" is never mistaken for "it calls the tool correctly", and
+	// beside the promise the proposal made, so "better" is never mistaken for
+	// "as much better as it said".
 	lines.push(...renderImpact(candidate.impact ?? null, paint, {
 		tools: toolPermissionsFromDiff(candidate.proposal?.exactDiff ?? "").filter((entry) => !entry.removed).map((entry) => entry.tool),
+		prediction: candidate.proposal?.prediction ?? null,
+		// The gate this candidate was decided on is the only measured side a
+		// prediction may be read against; without one, the paired summary still
+		// carries the pass rate a pass-rate promise is about.
+		measurement: measurementOf(candidate.development?.gate ?? candidate.development?.comparison ?? null),
 	}));
 	if (candidate.review) {
 		const tone = candidate.review.recommendation === "promote" ? paint.success : paint.error;
@@ -444,6 +457,10 @@ function renderProposal(
 	} else {
 		lines.push(`${paint.dim("Evidence")} ${paint.muted("none linked (spec-only proposal)")}`);
 	}
+	// The promise, on the same screen as the diff it is a promise about.
+	lines.push(predictionPromiseLine(content.prediction, paint) ?? predictionAbsentLine(paint));
+	const predictionNote = predictionNoteLine(content.prediction, paint);
+	if (predictionNote) lines.push(predictionNote);
 	if (content.risks.length > 0) lines.push(paint.warning("Risks"), ...bullets(content.risks, paint, { limit: 6, max: 160 }));
 	if (content.validationPlan.length > 0) lines.push(paint.dim("Validation plan"), ...bullets(content.validationPlan, paint, { limit: 6, max: 160 }));
 	if (content.kind === "applied-proposal") {

@@ -349,6 +349,7 @@ function makeProposal(overrides: Partial<ProposalReview> = {}): ProposalReview {
 		paths: ["AGENTS.md"],
 		risks: ["May slow down simple replies"],
 		validationPlan: ["Re-run the development basket"],
+		prediction: null,
 		authoringContext: null,
 		evidenceBasis: {
 			algorithmId: "exact-eval-signals-v1",
@@ -1656,6 +1657,7 @@ describe("renderConfirmation", () => {
 			"Branch ahde/fix-lookup · base aaaaaaaaaa",
 			"  Tell the agent to call lookup before answering.",
 			"Changes AGENTS.md (+2 -1)",
+			"Prediction no prediction stated",
 			"Verification about $0.42 · about 4 minutes — approving this change also approves that measurement",
 			"Risks",
 			"  • May slow down simple replies",
@@ -1687,14 +1689,14 @@ describe("renderConfirmation", () => {
 
 	it("says the check is unknown when nothing comparable has run, and points long diffs at /review", () => {
 		const unknown = renderConfirmation(makeConfirmation("apply-proposal", applySubject()), plainPaint);
-		expect(unknown[3]).toBe(
+		expect(unknown[4]).toBe(
 			"Verification unknown · nothing comparable has run yet — approving this change also approves that measurement",
 		);
 		const sampled = renderConfirmation({
 			...makeConfirmation("apply-proposal", applySubject()),
 			estimate: { executions: 4, sampledRuns: 2, costUsd: 0.004, minutes: 0.5 },
 		}, plainPaint);
-		expect(sampled[3]).toBe(
+		expect(sampled[4]).toBe(
 			"Verification under $0.01 · under a minute — approving this change also approves that measurement",
 		);
 
