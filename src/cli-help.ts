@@ -57,9 +57,9 @@ ${builderCommandLines()}
   plus the Pi built-ins /login and /model for the Builder's own model
 
 Use \`ahde <command> --help\` for focused help. Advanced automation commands:
-  corpus  failures  compare  diagnose  regrade  report  export  label
-  judge-agreement  candidate  calibrate  check  improve  search  review
-  promote  reject  log  watch
+  corpus  failures  compare  diagnose  regrade  report  label  judge-agreement
+  candidate  calibrate  check  improve  search  review  promote  reject
+  export  log  watch
 
 Environment:
   AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)

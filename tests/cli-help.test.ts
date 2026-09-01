@@ -95,6 +95,8 @@ describe("CLI help", () => {
 		expect(help).toContain("ahde check --target <dir> --candidate <id>   cheap screen: the failed cases, once");
 		expect(help).toContain("ahde improve --target <dir> --until 90% --max-cycles 5");
 		expect(help).toContain("candidate  calibrate  check  improve  search  review  promote  reject");
+		expect(help).toContain("export  log  watch");
+		expect(help).toContain("ahde export --training --target <dir> --all  development evidence as tuning JSONL");
 		expect(help).toContain("ahde search --target <dir> --candidates <id,id,id>");
 		expect(help).toContain("ahde serve --target <dir> [--port N]         drive the Workbench over a local");
 		expect(help).toContain("AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)");
