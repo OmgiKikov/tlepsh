@@ -1,5 +1,36 @@
 # AHDE Roadmap — V2: measure, then improve, then integrate
 
+## Status 2026-09-01
+
+**Landed.** The product is a measurement engine plus a skill an ordinary coding
+agent follows — `skills/ahde/SKILL.md`, proven end to end twice: on a scripted
+mock (`docs/SKILL_WALKTHROUGH.md`) and on a real 9B model
+(`docs/DEMO_REAL_MODEL.md`, 41.7% → 98.3% development, sealed guardrail `pass`,
+promoted `v0.1.0`, $0.19 of Target spend). The CLI seams the skill needs are all
+present and scriptable: `spec approve`, `propose`, `apply`, `check`,
+`candidate`, `review`, `promote`, `adopt`, plus `regrade`, `label`,
+`judge-agreement`, `calibrate`, `log`, `watch` and `serve`. `ahde passport`
+writes the client-facing promised-vs-measured page from durable artifacts.
+`templates/support-agent` scaffolds the call-tool-first pattern with the
+`.gitignore` (`.ahde/`, `runs/`, `imports/`) that keeps a sealed exam out of
+Git. Item 14's ceremony cut is done for the docs: the README is one page around
+a real transcript, and CONTEXT.md is five guarantees plus a glossary, with the
+42 invariants preserved unchanged in `docs/INVARIANTS_V1.md`.
+
+**Deprecated.** The Builder-Pi TUI — bare `ahde`, the Workbench conversation,
+slash commands, panels. The interface is the coding agent the operator already
+runs. Its engine paths stay (Workbench, gate policy, the three consequential
+decisions, the receipts); `ahde serve` is the headless successor.
+
+**Next.** v1.1: host-side sealed synthesis (item 11) — an evaluator-model call
+whose output never enters a model's context, so a sealed exam can be grown
+without a human writing every case. v1.2: `export --training` and model
+comparison mode (item 16, still open). Then: three splits (development,
+validation, sealed) so tuning stops eating the same evidence it is judged on;
+the Pareto table from `ahde search` as the default presentation of a change;
+and transfer/continued reporting — whether a harness gain holds on a different
+model and across successive promotions.
+
 Status 2026-08-31. Integration branch `codex/integrate-polish` (off master
 `83535d8`). This
 supersedes the "after V1.8" ordering; the old item numbers are mapped to waves
