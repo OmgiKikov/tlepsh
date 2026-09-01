@@ -75,10 +75,22 @@ description: Write and run the change in a bound workshop, close it into an evid
    not run green. Every fixture of a typed package must pass against the exact
    final snapshot before close. A try is a look, never a measurement: it is
    not evidence and never substitutes for a run.
+4a. **Predict the impact before you close.** Every improvement proposal states,
+   in one sentence and in numbers, what it expects to happen — «ожидаю: mode X
+   26/26 → ≤3/26 задач, итог +40 п.п.» — and submits exactly those numbers in
+   `prediction` on the same submission: one entry per targeted mode with
+   `expectedFailingTasks` out of `ofTasks` (the affected-task count the brief
+   reported for that mode), plus `expectedScoreDeltaPp` for the whole basket.
+   Read `improvementBrief.modes[].impact.affectedTasks` for the denominator;
+   never invent it. If the evidence genuinely does not support a number, submit
+   no `prediction` and say in one sentence why not — «слишком мало задач, чтобы
+   назвать цифру». The prediction is hashed into the proposal the operator
+   applies and the next verification is read against it: never restate it
+   differently afterwards, and never edit a prediction once the result is in.
 5. **Close the workshop into the proposal.** Submit `kind: workshop-close` with
-   the `source` tuple and `failureModeIds` selected above, a `summary`, and a
-   `validationPlan`. The host compiles the proposal from the diff of the files
-   you actually ran — you never author paths, modes, hashes, or diffs — and
+   the `source` tuple and `failureModeIds` selected above, a `summary`, a
+   `validationPlan`, and the `prediction` from step 4a. The host compiles the
+   proposal from the diff of the files you actually ran — you never author paths, modes, hashes, or diffs — and
    refuses a workshop that changed nothing or touched anything outside the
    scope, naming the exact paths. If you must abandon the attempt, submit
    `kind: workshop-discard`; nothing it wrote ever existed. A workshop is bound
@@ -88,8 +100,9 @@ description: Write and run the change in a bound workshop, close it into an evid
    `ahde_workbench_view` with `aspect: target` for the fresh exact-Git authoring
    index, read every resource you will fully replace through the same view with
    one returned `resourcePath`, and submit `kind: structured-proposal` with the
-   exact unchanged `claim` as `authoringContext` and semantic intents only. It
-   is also the only way to change the Target's execution policy. Never use
+   exact unchanged `claim` as `authoringContext`, semantic intents only, and the
+   same `prediction`. It is also the only way to change the Target's execution
+   policy. Never use
    remembered content, undeclared paths, or a resource from another revision.
 7. Inspect `ahde_workbench_view` with `aspect: review`. The host renders the
    evidence references, exact changed paths and diff, risks, and validation
