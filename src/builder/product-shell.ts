@@ -321,16 +321,16 @@ export function installAhdeBuilderProductShell(
 		state.builderModel = builderModelStatus(ctx);
 		if (state.builderModel.credentialPresent) return undefined;
 		if (typeof ctx.ui.select !== "function") {
-			ctx.ui.notify("Connect a Builder model in this local TUI before continuing.", "warning");
+			ctx.ui.notify(t("onboarding.connect-in-tui"), "warning");
 			return { action: "handled" as const };
 		}
 		pendingFirstMessage = event.text;
 		const choice = await ctx.ui.select(
-			"Connect the Builder, then AHDE will continue with what you just wrote",
-			[LOGIN_CHOICE, MODEL_CHOICE, LATER_CHOICE],
+			t("onboarding.connect-then-continue"),
+			[LOGIN_CHOICE(), MODEL_CHOICE(), LATER_CHOICE()],
 		);
-		if (choice === LOGIN_CHOICE) return { action: "transform" as const, text: "/login", images: event.images };
-		if (choice === MODEL_CHOICE) return { action: "transform" as const, text: "/model", images: event.images };
+		if (choice === LOGIN_CHOICE()) return { action: "transform" as const, text: "/login", images: event.images };
+		if (choice === MODEL_CHOICE()) return { action: "transform" as const, text: "/model", images: event.images };
 		pendingFirstMessage = null;
 		ctx.ui.setEditorText(event.text);
 		return { action: "handled" as const };

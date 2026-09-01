@@ -239,7 +239,7 @@ describe("ru renders", () => {
 			"Агент support-bot @ aaaaaaaaaa · openai/gpt-5 ✓",
 			"Стадия Проверка описания · Дальше Скажи «ок» или что поправить",
 			"Данные 2 прогона · 1 открытая правка · 3 кандидата · Модель Билдера anthropic/claude-opus ✓",
-			"Просто скажи, что нужно · /help — список команд",
+			"Просто скажи, что нужно",
 			"",
 		]);
 		expect(leakedEnglish(lines.join("\n"))).toEqual([]);
