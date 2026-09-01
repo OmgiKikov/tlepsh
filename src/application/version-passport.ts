@@ -24,6 +24,7 @@ import type { CandidateRecord } from "../domain/candidate.js";
 import { loadTarget } from "../manifest.js";
 import { listCorpora } from "../corpus.js";
 import { readEvalRunIndex } from "../eval.js";
+import { formatEvaluatorSpend } from "../evaluator-model.js";
 import { loadSpecSnapshot } from "../spec.js";
 import { calibrationProjection } from "../workbench/calibration.js";
 import { loadCandidateRecord } from "./candidate-review.js";
@@ -87,6 +88,13 @@ export interface PassportResourceRatios {
 	costRatio: number | null;
 	latencyRatio: number | null;
 	tokenRatio: number | null;
+	/**
+	 * What the judge endpoint cost across the two development arms this page
+	 * rests on. Its own number, never inside the ratios: the judge is the
+	 * instrument, and an instrument's bill is not the agent's per-answer cost.
+	 * Sealed evidence contributes nothing here, as it contributes nothing else.
+	 */
+	judgeCostUsd: number;
 }
 
 export interface PassportJudge {
@@ -286,12 +294,29 @@ function gateMeasurement(comparison: unknown): PassportDevelopmentMeasurement | 
 	};
 }
 
-function resourceRatios(comparison: unknown): PassportResourceRatios | null {
+function resourceRatios(comparison: unknown, judgeCostUsd: number): PassportResourceRatios | null {
 	const resources = (comparison as { resources?: PassportResourceRatios } | null | undefined)?.resources;
 	if (!resources) return null;
 	const { costRatio, latencyRatio, tokenRatio } = resources;
-	if (costRatio === null && latencyRatio === null && tokenRatio === null) return null;
-	return { costRatio, latencyRatio, tokenRatio };
+	if (costRatio === null && latencyRatio === null && tokenRatio === null && judgeCostUsd === 0) return null;
+	return { costRatio, latencyRatio, tokenRatio, judgeCostUsd };
+}
+
+/**
+ * The judge spend recorded on these exact eval runs. An index that cannot be
+ * read contributes nothing: a missing number is reported as no judge spend
+ * shown, never as a guess.
+ */
+function judgeSpendOf(runsRoot: string, evalRunIds: readonly string[]): number {
+	let total = 0;
+	for (const evalRunId of evalRunIds) {
+		try {
+			total += readEvalRunIndex(runsRoot, evalRunId).judgeCostUsd ?? 0;
+		} catch {
+			// An unreadable index is already reported by every other surface.
+		}
+	}
+	return total;
 }
 
 function policyIdOf(comparison: unknown): string | null {
@@ -524,7 +549,13 @@ export function compileVersionPassport(options: CompileVersionPassportOptions): 
 			sealed: sealedComparison
 				? { verdict: sealedComparison.verdict, design: sealedComparison.design }
 				: null,
-			resources: resourceRatios(development.comparison),
+			resources: resourceRatios(
+				development.comparison,
+				judgeSpendOf(options.runsRoot, [
+					development.baseline.evalRunId,
+					development.candidate.evalRunId,
+				]),
+			),
 		},
 		judge,
 		limits: {
@@ -714,6 +745,8 @@ export function renderVersionPassportMarkdown(passport: VersionPassport): string
 			ratio(ratios.costRatio) === null ? null : `cost ${ratio(ratios.costRatio)}`,
 			ratio(ratios.latencyRatio) === null ? null : `latency ${ratio(ratios.latencyRatio)}`,
 			ratio(ratios.tokenRatio) === null ? null : `tokens ${ratio(ratios.tokenRatio)}`,
+			// A ratio compares two arms; this is a total, so it says so.
+			ratios.judgeCostUsd > 0 ? `judge ${formatEvaluatorSpend(ratios.judgeCostUsd)} total` : null,
 		].filter((part): part is string => part !== null)
 		: [];
 	lines.push(

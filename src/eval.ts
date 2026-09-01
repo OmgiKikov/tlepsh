@@ -1067,6 +1067,14 @@ const EvalRunRecordFields = {
 	startedAt: z.string().min(1),
 	finishedAt: z.string().min(1),
 	summary: EvalRunSummarySchema,
+	/**
+	 * What grading this eval run cost at the judge endpoint, summed over its
+	 * member runs. Deliberately its OWN field and never folded into the
+	 * Target's `costUsd`: the judge is the instrument, not the thing measured,
+	 * and a cost that mixed the two could not answer either question. Absent on
+	 * runs that called no judge and on evidence written before this existed.
+	 */
+	judgeCostUsd: z.number().nonnegative().optional(),
 } as const;
 
 type EvalRunRecordShape = z.infer<z.ZodObject<typeof EvalRunRecordFields>> & {
@@ -1466,6 +1474,12 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 	if (options.signal?.aborted) throw options.signal.reason ?? new Error("evaluation aborted");
 
 	const runIds = completed.map((slot) => slot.record.runId);
+	// The judge's own spend, kept apart from the Target's. A run that errored at
+	// the judge endpoint still spent what it spent, and its metrics carry it.
+	const judgeCostUsd = completed.reduce(
+		(total, slot) => total + (slot.record.metrics.judge?.costUsd ?? 0),
+		0,
+	);
 	const pass = completed.filter((slot) => slot.outcome === "pass").length;
 	const fail = completed.filter((slot) => slot.outcome === "fail").length;
 	const error = completed.filter((slot) => slot.outcome === "error").length;
@@ -1530,6 +1544,9 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 		startedAt,
 		finishedAt: new Date().toISOString(),
 		summary: { total, pass, fail, error, allPassRate: total === 0 ? 0 : pass / total },
+		// Absent rather than zero on a suite with no judge, so an eval_run.json
+		// stays byte-for-byte what it was before judge accounting existed.
+		...(judgeCostUsd > 0 ? { judgeCostUsd } : {}),
 	};
 	writeEvalRun(options.runsRoot, record);
 	return record;

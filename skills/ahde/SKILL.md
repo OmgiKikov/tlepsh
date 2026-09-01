@@ -198,8 +198,11 @@ loop closes on the CLI alone. What is still rough:
   <erun> --mode <id>` makes exactly that kind. Whether a headless loop picks
   them up is not yet proven in a walkthrough — drive the cycle yourself with
   the commands above until it is.
-- Judge spend is not recorded under `runs/`; a run's `costUsd` is the Target
-  model only. Say "plus judge" whenever you quote a cost.
+- Judge spend is its own number, never inside the Target's `costUsd`: per run
+  in `metrics.judge.costUsd`, summed on the eval run as `judgeCostUsd`, and
+  printed by `ahde run` and `ahde passport` when it is above zero. It is
+  computed from the judge block's declared `spec.cost`, so a manifest with
+  zeroed rates reports a real zero — check the block before quoting a total.
 - `ahde corpus publish` needs a Builder-Pi corpus draft; scripted, use
   `corpus import --visibility development|sealed`.
 

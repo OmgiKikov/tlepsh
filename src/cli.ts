@@ -14,6 +14,7 @@ import {
 	runSuite,
 } from "./eval.js";
 import { judgeAgreement } from "./domain/judge-agreement.js";
+import { formatEvaluatorSpend } from "./evaluator-model.js";
 import { evaluatorReadiness } from "./application/configure-evaluators.js";
 import {
 	collectJudgeLabelSubjects,
@@ -869,9 +870,13 @@ async function main(): Promise<void> {
 				onRunEvent: cliRunProgress(),
 				...(arg("jobs") ? { jobs: Number(arg("jobs")) } : {}),
 			});
+			// The judge is the instrument, not the thing measured, so its spend is
+			// said beside the result rather than folded into the Target's cost.
+			const judgeSpend = record.judgeCostUsd ?? 0;
 			console.log(
 				`eval run ${record.evalRunId}: ${record.summary.pass}/${record.summary.total} all-pass ` +
-					`(${record.summary.fail} fail, ${record.summary.error} error)`,
+					`(${record.summary.fail} fail, ${record.summary.error} error)` +
+					`${judgeSpend > 0 ? ` · judge ${formatEvaluatorSpend(judgeSpend)}` : ""}`,
 			);
 			for (const runId of record.runIds) {
 				// How long the conversation ran is the first thing an operator wants

@@ -314,6 +314,12 @@ export async function regradeEvalRun(options: RegradeOptions): Promise<RegradeRe
 	const fail = graded.filter((item) => item.outcome === "fail").length;
 	const error = graded.filter((item) => item.outcome === "error").length;
 	const sealed = isSealedEvalRun(sourceRecord);
+	// A regrade re-decides judge graders, so it pays the judge again — its own
+	// spend, never the source's.
+	const judgeCostUsd = graded.reduce(
+		(sum, item) => sum + (item.record.metrics.judge?.costUsd ?? 0),
+		0,
+	);
 	const record: EvalRunRecord = {
 		schemaVersion: EVAL_RUN_SCHEMA_VERSION,
 		// A regrade re-scores recorded traces; a regrade of a screen would still be
@@ -346,6 +352,7 @@ export async function regradeEvalRun(options: RegradeOptions): Promise<RegradeRe
 		startedAt,
 		finishedAt: new Date().toISOString(),
 		summary: { total, pass, fail, error, allPassRate: total === 0 ? 0 : pass / total },
+		...(judgeCostUsd > 0 ? { judgeCostUsd } : {}),
 	};
 	writeEvalRun(runsRoot, record);
 

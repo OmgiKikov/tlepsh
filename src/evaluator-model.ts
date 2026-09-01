@@ -98,6 +98,17 @@ export function evaluatorCostUsd(
 	return (rates.input * usage.promptTokens + rates.output * usage.completionTokens) / 1_000_000;
 }
 
+/**
+ * Judge spend for a terminal line: two decimals, because that is how money is
+ * read — except where two decimals would round a real bill down to `$0.00` and
+ * say "free" about something that was not. Callers print this only when the
+ * amount is above zero.
+ */
+export function formatEvaluatorSpend(costUsd: number): string {
+	if (costUsd > 0 && costUsd < 0.005) return "<$0.01";
+	return `$${costUsd.toFixed(2)}`;
+}
+
 export function evaluatorContentToString(content: unknown): string {
 	if (typeof content === "string") return content;
 	if (Array.isArray(content)) {
