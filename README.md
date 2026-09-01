@@ -33,70 +33,16 @@ question with the exact subject on screen. Give the Builder a Sonnet/Opus-class
 model — below that floor the loop does not close; the Target can be as small as
 a 9B model.
 
-## The same loop from a script
+## Evidence
 
-Every step Builder Pi performs is a CLI command, so a platform, a CI job or a
-coding agent can drive the engine without the TUI:
-
-1. `spec.md`, then `ahde spec approve` — the typed Spec the gate needs.
-2. `ahde init .` or adopt an agent, until `validate` says `ready to run`.
-3. `ahde corpus ingest … --sealed 20` — the exam is reserved **before** anyone sees it.
-4. `ahde run --label baseline`, `ahde diagnose <erun>`, then read raw traces.
-5. Fix one failure mode on a branch; `ahde propose` binds it to the evidence, `apply` commits it.
-6. `ahde check` — the failing cases, once, before you pay.
-7. `ahde candidate` — the matched experiment + the sealed guardrail.
-8. `ahde review` · `promote --to 0.1.0` · `adopt` · `passport`.
-
-## A real transcript
-
-A coding agent driving the CLI, and `openrouter/qwen/qwen3.5-9b` — a 9B model — on a
-Russian bank-ombudsman agent whose harness was weakened first, so the fix had to
-be rediscovered. Every line copied from a run artifact; full log in
-[DEMO_REAL_MODEL.md](docs/DEMO_REAL_MODEL.md).
-
-```console
-$ ahde run --target . --label baseline --repetitions 2 --jobs 4
-eval run erun_mtht4wvdm7jns0: 25/60 all-pass (35 fail, 0 error)
-
-$ ahde diagnose erun_mtht4wvdm7jns0
-diagnosis-7048254cfcb9…: actionable — 40 issue(s), 0 infrastructure error(s)
-  major  systemic  Required tool check failed across tasks — 12/30 task(s)
-```
-
-It never called `bin/check_dbo` (one task ran `ls -la`, saw `bin`, then answered
-*«у меня нет доступа к банковской базе»*), and nothing named the output contract.
-One file changed.
-
-```console
-$ ahde propose --target . --spec spec-98eb4c… --branch work/call-tool-first \
-    --eval erun_mtht4wvdm7jns0 --mode failure-mode-0c69a077…,…
-builder run builder-92dc0a22-…  changed AGENTS.md
-applied     no — `propose` never touches a branch or a checkout
-
-$ ahde apply --target . --builder-run builder-92dc0a22-…
-branch      candidate/builder-92dc0a22-…  hash sha256:80b37395d409…
-checkout    unchanged — committed in a private worktree
-
-$ ahde check --target . --builder-run builder-92dc0a22-…
-screen promising · 23 previously failing cases × 1 · 22 improved · 0 unchanged · 1 regressed
-
-$ ahde candidate --target . --builder-run builder-92dc0a22-… --project ombudsman \
-    --holdout-corpus corpus-4cdbd52f… --repetitions 2 --jobs 4
-development verdict: improved +50.0pp (95% CI +35.0pp … +64.2pp) on 30 tasks × 2 repetitions
-sealed guardrail: pass on 14 tasks × 2 repetitions — no regression: 95% CI +37.5pp … +73.2pp is not entirely below zero on 14 tasks × 2 repetitions
-
-$ ahde calibrate --target . --repetitions 2
-Spread ±9.6pp (95% CI -9.2 pts … +10 pts) · flip 33%
-
-$ ahde promote --target . --candidate candidate-7a4bfa29-… --to 0.1.0 --reason "…"
-promoted candidate candidate-7a4bfa29-…: tag v0.1.0 at 5a48ce5ff5
-
-$ ahde passport --target . --out passport-v0.1.0.md
-```
-
-41.7% → 98.3%, against a ±9.6pp noise band: the lower bound of +35.0pp is three
-and a half bands clear. Spend over 444 artifacts: **$0.19**, Target calls only — judge
-spend is recorded nowhere, so unmeasured.
+On a real model — `openrouter/qwen/qwen3.5-9b`, a 9B Target — the engine took a
+deliberately weakened ombudsman harness from **25/60 passing (41.7%)** to
+**98.3%**: `development verdict: improved +50.0pp (95% CI +35.0pp … +64.2pp) on
+30 tasks × 2 repetitions`, `sealed guardrail: pass on 14 tasks × 2
+repetitions`, A/A noise band ±9.6pp, promoted `v0.1.0`, $0.19 of Target spend.
+The fix was rediscovered from raw traces, not remembered. The full command log
+and every caveat are in `docs/DEMO_REAL_MODEL.md`; the same engine runs under
+Builder Pi.
 
 ## The passport it wrote
 
@@ -147,7 +93,6 @@ All take `--target <dir>` (`corpus`: `--project <id>`).
 ```text
 init <dir> [--template <d>]  scaffold a harness + commit
 validate                     readiness; no model calls
-spec approve                 spec.md becomes the typed Spec
 corpus inspect|ingest|import|list  the benchmark; sealed at ingest
 run --repetitions 3          development evidence
 list · report · diagnose <erun>  what happened, and why
@@ -155,14 +100,11 @@ regrade <erun>               re-score traces, no model calls
 calibrate                    the A/A noise band
 label <erun>                 grade the judge blind
 judge-agreement <erun>       agreement rate and Cohen's κ
-propose --spec --branch      branch to proposal; applies nothing
-apply --builder-run <id>     candidate commit; checkout unmoved
-check --builder-run <id>     the failed cases, before the bill
+check --candidate <id>       the failed cases, before the bill
 candidate --builder-run <id>  matched comparison + sealed gate
 improve --until 90%          prepared proposals, in the gates
 search --candidates <ids>    2–4 changes, one Pareto table
 review · promote --to 0.X.0  the human gate
-adopt --candidate <id>       fast-forward onto the promotion
 passport [--out <md>]        promised vs measured
 log                          versions × score × cost
 watch --every 1d             drift vs noise, once shipped
