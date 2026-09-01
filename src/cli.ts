@@ -39,7 +39,11 @@ import {
 	runCheapCheckForCandidate,
 } from "./application/cheap-check.js";
 import { renderCandidateVerdictLines } from "./application/candidate-verdict.js";
-import { renderLocalArtifactIgnoreLine } from "./application/store-hygiene.js";
+import {
+	assertScaffoldableTargetLocation,
+	assertUntrackedEngineStore,
+	renderLocalArtifactIgnoreLine,
+} from "./application/store-hygiene.js";
 import {
 	compileVersionPassport,
 	renderVersionPassportMarkdown,
@@ -822,6 +826,10 @@ async function main(): Promise<void> {
 			const templateDir = template
 				? resolve(template.startsWith("/") || template.startsWith(".") ? template : join(process.cwd(), template))
 				: join(packageRoot, "templates", "basic-agent");
+			// A new Target inside a checkout that already committed an engine
+			// store inherits its problem: the sealed exam is already a Git object
+			// there, and a scaffold would quietly add a second store beside it.
+			assertScaffoldableTargetLocation(resolve(dir));
 			let ignoreLine: string | null = null;
 			scaffoldTarget(templateDir, resolve(dir), (added) => {
 				ignoreLine = renderLocalArtifactIgnoreLine(added);
@@ -848,7 +856,12 @@ async function main(): Promise<void> {
 			if (dataset && corpusId) {
 				throw new Error("run cannot combine --dataset with --corpus");
 			}
-			const baseTarget = loadTarget(resolve(requireArg("target")), dataset ? { dataset } : undefined);
+			const targetDir = resolve(requireArg("target"));
+			// The store this run is about to write into holds the sealed exam.
+			// A Target that already committed it is refused before any model
+			// call, alongside the readiness check the operator already knows.
+			assertUntrackedEngineStore(targetDir);
+			const baseTarget = loadTarget(targetDir, dataset ? { dataset } : undefined);
 			const target = corpusId
 				? targetWithDevelopmentCorpus(
 					baseTarget,
@@ -1296,6 +1309,9 @@ async function main(): Promise<void> {
 				const holdoutCorpusId = arg("holdout-corpus");
 				const developmentCorpusId = arg("development-corpus");
 				const targetDir = resolve(requireArg("target"));
+				// A verification that a promotion will later rest on: the engine
+				// store must not already be inside a Git object before it starts.
+				assertUntrackedEngineStore(targetDir);
 				const projectId = arg("project") ?? loadTarget(targetDir).manifest.id;
 				const builderRunId = arg("builder-run");
 				const requestedSpecId = arg("spec");

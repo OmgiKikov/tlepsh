@@ -157,7 +157,11 @@ that directory to configure identity/model and continue the guided workflow.
 
 The scaffold's .gitignore is topped up with .ahde/, runs/ and imports/ before
 that first commit, and the added lines are named: the engine's store lives
-inside the Target and holds the sealed exam.`,
+inside the Target and holds the sealed exam.
+
+For the same reason it refuses to scaffold inside a checkout that already
+TRACKS anything under .ahde/ or runs/ — a commit cannot be un-made, and a new
+Target would inherit that store's problem.`,
 	run: `Usage:
   ahde run --target <dir> [--task <id>] [--repetitions N] [--jobs N] [--label baseline|solo] [--dataset <rel>]
   ahde run --target <dir> --project <id> --corpus <development-id> [--task <id>] [--repetitions N]
@@ -165,9 +169,12 @@ inside the Target and holds the sealed exam.`,
 --jobs sets concurrent executions (default 4; 1 for a loopback model endpoint).
 
 Run development evidence only. AHDE checks Target setup and credential presence
-before creating run artifacts. Exit 0 = all pass, 1 = behavioral failures,
-2 = inconclusive infrastructure/model errors. Candidate verification belongs
-to the reviewed Builder flow or \`ahde candidate\`.`,
+before creating run artifacts, and refuses by path a Target that already TRACKS
+anything under .ahde/ or runs/ — that store holds the sealed exam.
+
+Exit 0 = all pass, 1 = behavioral failures, 2 = inconclusive
+infrastructure/model errors. Candidate verification belongs to the reviewed
+Builder flow or \`ahde candidate\`.`,
 	validate: `Usage: ahde validate --target <dir> [--dataset <rel>]
 
 Validate Target structure, Git/runtime identity, dataset, tools, placeholders,
@@ -275,7 +282,10 @@ alone explains such a table and there is nothing to correct.`,
 --baseline-max-age <days> bounds baseline reuse (default 7; 0 always re-runs).
 
 Run an exact matched baseline/candidate experiment. Prefer Builder Pi: its host
-gate selects sealed evidence without exposing the holdout identity to the model.`,
+gate selects sealed evidence without exposing the holdout identity to the model.
+
+A verification a promotion will rest on refuses a Target that already TRACKS
+anything under .ahde/ or runs/, by path: that store holds the sealed exam.`,
 	calibrate: `Usage: ahde calibrate --target <dir> [--repetitions N] [--jobs N] [--project <id>]
                      [--corpus <development-id>]
 

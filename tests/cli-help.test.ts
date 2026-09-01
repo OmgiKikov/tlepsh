@@ -130,6 +130,11 @@ describe("CLI help", () => {
 	it("renders focused help for top-level commands", () => {
 		expect(cliHelp(["run", "--help"])).toContain("Exit 0 = all pass");
 		expect(cliHelp(["init", "--help"])).toContain("first Git commit");
+		// The engine store holds the sealed exam, so every command that writes
+		// into one says it refuses a Target that already committed it.
+		for (const command of ["init", "run", "candidate"]) {
+			expect(cliHelp([command, "--help"])).toMatch(/TRACKS\s+anything under \.ahde\/ or runs\//u);
+		}
 		expect(cliHelp(["target", "--help"])).toContain("Requires a configured Target");
 		expect(cliHelp(["calibrate", "--help"])).toContain("measure run-to-run noise");
 		expect(cliHelp(["calibrate", "--help"])).toContain("never promotable");

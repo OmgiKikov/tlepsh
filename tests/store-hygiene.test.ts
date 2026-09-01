@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	assertCleanTargetTree,
+	assertScaffoldableTargetLocation,
 	assertUntrackedEngineStore,
 	DirtyTargetTreeError,
 	ensureLocalArtifactIgnores,
@@ -18,9 +19,10 @@ import { AGENTS_MD, cleanup, makeTargetFixture } from "./fixtures.js";
 /**
  * The engine store lives inside the Target and holds the sealed exam, so two
  * things have to be true before any command that a promotion later rests on:
- * `.gitignore` covers it, and Git does not already track it. The third rule
- * here is the one that used to fail as raw plumbing — a proposal is a diff
- * against a commit, and a dirty tree has no commit to be a diff against.
+ * `.gitignore` covers it, and Git does not already track it — asked of the
+ * Target itself, and of the checkout a new Target would be scaffolded into.
+ * The last rule here is the one that used to fail as raw plumbing: work bound
+ * to an exact commit has none when the tree is dirty.
  */
 
 const ALL_IGNORE_LINES = ["/.ahde/", "/imports/", "/runs/", "/.env", "/.env.*", "!/.env.example"];
@@ -150,6 +152,46 @@ describe("assertUntrackedEngineStore", () => {
 			expect(trackedEngineStorePaths(dir)).toEqual([]);
 		} finally {
 			cleanup(dir);
+		}
+	});
+});
+
+describe("assertScaffoldableTargetLocation", () => {
+	/**
+	 * `ahde init <dir>` creates `<dir>`, so the refusal has to be asked of the
+	 * checkout the scaffold would land in — the dir itself does not exist yet.
+	 */
+	it("refuses a scaffold inside a checkout that already committed the store", () => {
+		const dir = repoFixture();
+		try {
+			mkdirSync(join(dir, "runs", "erun_1"), { recursive: true });
+			writeFileSync(join(dir, "runs", "erun_1", "eval_run.json"), "{}\n");
+			git(dir, "add", "-A");
+			git(dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "oops");
+
+			let thrown: unknown;
+			try {
+				assertScaffoldableTargetLocation(join(dir, "new-agent"));
+			} catch (error) {
+				thrown = error;
+			}
+			expect(thrown).toBeInstanceOf(TargetStoreHygieneError);
+			expect((thrown as TargetStoreHygieneError).message).toContain("runs/erun_1/eval_run.json");
+			expect((thrown as TargetStoreHygieneError).next).toContain("git rm -r --cached .ahde runs");
+		} finally {
+			cleanup(dir);
+		}
+	});
+
+	it("allows a scaffold beside a clean checkout, and outside a repository", () => {
+		const repo = repoFixture();
+		const plain = makeTargetFixture([{ path: "AGENTS.md", content: AGENTS_MD }], false);
+		try {
+			expect(() => assertScaffoldableTargetLocation(join(repo, "new-agent"))).not.toThrow();
+			expect(() => assertScaffoldableTargetLocation(join(plain, "new-agent"))).not.toThrow();
+		} finally {
+			cleanup(repo);
+			cleanup(plain);
 		}
 	});
 });

@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 /**
  * The engine's store lives inside the Target, and it holds the sealed exam.
@@ -177,4 +177,17 @@ export function assertUntrackedEngineStore(targetDir: string): void {
 	const tracked = trackedEngineStorePaths(targetDir);
 	if (tracked.length === 0) return;
 	throw new TargetStoreHygieneError(tracked);
+}
+
+/**
+ * The same refusal, asked before a Target exists.
+ *
+ * `ahde init` creates `destDir`, so there is nothing there to inspect yet; the
+ * question is about the checkout it would be created in. A directory that
+ * already committed an engine store would hand the new Target that store's
+ * problem — the sealed exam is a Git object there, and a scaffold beside it
+ * only adds a second one.
+ */
+export function assertScaffoldableTargetLocation(destDir: string): void {
+	assertUntrackedEngineStore(dirname(resolve(destDir)));
 }
