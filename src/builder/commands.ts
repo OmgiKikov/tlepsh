@@ -236,6 +236,12 @@ function decisionTitle(result: WorkbenchDecisionResult): { title: string; tone: 
 		case "approve-spec": return { title: t("panel.spec-approved"), tone: "success" };
 		case "publish-corpus": return { title: t("panel.basket-published"), tone: "success" };
 		case "import-dataset": return { title: t("panel.dataset-imported"), tone: "success" };
+		case "generate-holdout":
+			return {
+				// A draft is not an exam yet: somebody still has to read it.
+				title: t(result.result.reviewPath ? "panel.holdout-drafted" : "panel.holdout-generated"),
+				tone: result.result.reviewPath || result.result.cases < SEALED_GATE_POLICY.minTasks ? "warning" : "success",
+			};
 		case "apply-proposal": return { title: t("panel.proposal-applied"), tone: "success" };
 		case "discard-proposal": return { title: t("panel.proposal-discarded"), tone: "info" };
 		case "abandon-candidate": return { title: t("panel.attempt-abandoned"), tone: "info" };
@@ -808,10 +814,46 @@ export function registerAhdeBuilderCommands(
 	});
 
 	pi.registerCommand("holdout", {
-		description: "Privately import an operator-owned sealed JSONL exam; its content and identity stay hidden from Builder Pi",
+		description: "Get a sealed exam: import an operator-owned JSONL file, or have the judge write one. Either way its content stays hidden from Builder Pi",
 		async handler(args, ctx) {
 			noArguments("holdout", args);
 			await prepare(ctx, "holdout");
+			const minimum = SEALED_GATE_POLICY.minTasks;
+			// Three ways to end up with an exam, and one question that names all
+			// three. The two generated ones are Workbench decisions with their own
+			// dialog; the import is this command's own host UI, as it always was.
+			if (typeof ctx.ui.select === "function") {
+				const importChoice = t("holdout.import-file");
+				const sealChoice = t("holdout.generate-seal");
+				const reviewChoice = t("holdout.generate-review");
+				const chosen = await ctx.ui.select(
+					t("holdout.choose"),
+					[importChoice, sealChoice, reviewChoice],
+					{ signal: ctx.signal },
+				);
+				if (chosen === undefined) {
+					ctx.ui.notify("Cancelled — nothing changed.", "info");
+					return;
+				}
+				if (chosen === sealChoice || chosen === reviewChoice) {
+					const answer = await ctx.ui.input(t("holdout.how-many", { minimum }), String(minimum + 5));
+					if (answer === undefined || !answer.trim()) {
+						ctx.ui.notify("Cancelled — nothing changed.", "info");
+						return;
+					}
+					const cases = Number(answer.trim());
+					if (!Number.isSafeInteger(cases)) {
+						throw new Error(`How many cases must be a whole number; got ${JSON.stringify(answer.trim())}`);
+					}
+					await simpleDecision(ctx, "holdout", {
+						kind: "generate-holdout",
+						cases,
+						mode: chosen === sealChoice ? "seal" : "review",
+						reason: t("holdout.reason"),
+					}, ctx.signal);
+					return;
+				}
+			}
 			if (!options.importSealedHoldout) throw new Error("sealed holdout import is unavailable in this host");
 			const sourcePath = await ctx.ui.input(
 				"Path to the private sealed JSONL corpus",
@@ -837,7 +879,6 @@ export function registerAhdeBuilderCommands(
 			}
 			const result = options.importSealedHoldout({ sourcePath: sourcePath.trim(), name: name.trim() });
 			await options.onWorkbenchChanged?.();
-			const minimum = SEALED_GATE_POLICY.minTasks;
 			presenter.show(ctx, {
 				title: t("panel.holdout-imported"),
 				tone: result.taskCount >= minimum ? "success" : "warning",

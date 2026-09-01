@@ -7,6 +7,7 @@ import type {
 	WorkbenchVerifyCandidateResult,
 	WorkbenchView,
 } from "../../workbench/types.js";
+import { SEALED_GATE_POLICY } from "../../domain/comparison-gate.js";
 import { plural, t, verdictLabel } from "../../i18n.js";
 import { formatFlipRate, formatNoiseBand, renderCalibration } from "./calibration.js";
 import { oneLine, section, shortHash, shortSha } from "./format.js";
@@ -161,6 +162,39 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 				`${section(t("result.basket-published"), paint)} ${plural(result.result.taskCount, "case")} ${paint.dim(`· ${result.result.corpusId} · ${shortHash(result.result.corpusHash)}`)}`,
 				nextLine(view, paint),
 			];
+		/**
+		 * A count, a model, and — on the draft path — a path to open. The corpus
+		 * id is deliberately absent even though the result carries it: an id here
+		 * is one more thing to copy out of a terminal, and nothing an operator
+		 * does with this exam needs it.
+		 */
+		case "generate-holdout": {
+			const cases = result.result.cases;
+			const lines = [
+				`${section(t(result.result.reviewPath ? "panel.holdout-drafted" : "panel.holdout-generated"), paint)} ${
+					paint.bold(t("generate-holdout.by-judge", {
+						cases: plural(cases, "case"),
+						generator: oneLine(result.result.generator, 60),
+					}))
+				}`,
+			];
+			if (result.result.reviewPath) {
+				lines.push(
+					`${paint.dim(t("label.draft"))} ${oneLine(result.result.reviewPath, 100)}`,
+					paint.muted(t("generate-holdout.draft-next")),
+				);
+			} else {
+				lines.push(paint.muted(t("generate-holdout.sealed-note")));
+			}
+			if (cases < SEALED_GATE_POLICY.minTasks) {
+				lines.push(paint.warning(t("generate-holdout.underpowered", {
+					cases: plural(cases, "case"),
+					minimum: SEALED_GATE_POLICY.minTasks,
+				})));
+			}
+			lines.push(nextLine(view, paint));
+			return lines;
+		}
 		case "import-dataset": {
 			const lines = [
 				`${section(t("result.dataset-imported"), paint)} ${plural(result.result.taskCount, "case")} ${paint.dim(`from ${oneLine(result.result.sourcePath, 60)}`)}`,

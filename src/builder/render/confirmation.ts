@@ -237,6 +237,31 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 				paint.muted("Publishing makes these cases the development evidence for this Spec lineage."),
 			];
 		}
+		/**
+		 * Four facts and, on the draft path, a fifth: how many cases and which
+		 * model writes them, what it is given, that none of it comes back, and
+		 * what it costs. Every one of them is in the subject the hash covers, and
+		 * none of them is a case — the exam does not exist yet, and when it does
+		 * this dialog is not where it appears.
+		 */
+		case "generate-holdout": {
+			const cases = Number(subject.requested ?? 0);
+			const examples = Number(subject.examples ?? 0);
+			const cost = Number(subject.estimatedCostUsd ?? 0);
+			const lines = [
+				`${paint.dim(t("label.exam"))} ${paint.bold(t("generate-holdout.by-judge", {
+					cases: plural(cases, "case"),
+					generator: text(subject.generatorModel, 80),
+				}))}`,
+				`${paint.dim(t("label.source"))} ${examples > 0
+					? t("generate-holdout.source", { examples: plural(examples, "example") })
+					: t("generate-holdout.source-spec-only")}`,
+				paint.muted(t("generate-holdout.blind")),
+				`${paint.dim(t("label.cost"))} ${cost >= 0.005 ? `~$${cost.toFixed(2)}` : "<$0.01"}`,
+			];
+			if (subject.mode === "review") lines.push(paint.warning(t("generate-holdout.draft")));
+			return lines;
+		}
 		case "import-dataset": {
 			const sealed = subject.sealed === null || subject.sealed === undefined ? null : bag(subject.sealed);
 			const recipe = bag(subject.recipe);

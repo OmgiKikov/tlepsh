@@ -1844,6 +1844,9 @@ describe("Builder Pi slash commands", () => {
 		const answers = ["/private/evals/customer-secrets.jsonl", "Private promotion exam"];
 		const host = context({
 			confirm: async () => true,
+			// The first question is where the exam comes from; importing a file is
+			// still the first option and still the same flow behind it.
+			select: async (_title, choices) => choices[0],
 			input: async () => answers.shift(),
 		});
 

@@ -97,7 +97,10 @@ function shippingReadinessLine(view: WorkbenchView, paint: Paint): string | null
 		: readiness.sealedHoldout === "underpowered"
 			? t("ship-gate.underpowered", { minimum: readiness.minimumTasks })
 			: t("ship-gate.unavailable");
-	return `${paint.dim(t("label.ship-gate"))} ${paint.warning(state)} ${paint.dim(t("ship-gate.hint", { minimum: readiness.minimumTasks }))}`;
+	// With no exam at all the operator has two ways out and both are named; with
+	// a broken or too-small one they have exactly one, and it is not the judge.
+	const hint = readiness.sealedHoldout === "missing" ? "ship-gate.hint-none" : "ship-gate.hint";
+	return `${paint.dim(t("label.ship-gate"))} ${paint.warning(state)} ${paint.dim(t(hint, { minimum: readiness.minimumTasks }))}`;
 }
 
 /** Stages where an uncalibrated Target is worth one nudge, not a blocker. */

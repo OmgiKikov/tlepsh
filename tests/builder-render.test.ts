@@ -653,7 +653,7 @@ describe("renderStatus", () => {
 		const lines = renderStatus(makeView({
 			shippingReadiness: { sealedHoldout: "missing", minimumTasks: 15 },
 		}), plainPaint);
-		expect(lines).toContain("Ship gate no sealed holdout · /holdout imports an operator-owned JSONL exam (minimum 15)");
+		expect(lines).toContain("Ship gate no sealed holdout · /holdout imports your JSONL exam (minimum 15) · or lets the judge write one");
 
 		const ready = renderStatus(makeView({
 			shippingReadiness: { sealedHoldout: "ready", minimumTasks: 15 },
@@ -664,6 +664,7 @@ describe("renderStatus", () => {
 			shippingReadiness: { sealedHoldout: "unavailable", minimumTasks: 15 },
 		});
 		const unavailable = renderStatus(unavailableView, plainPaint);
+		// A broken exam is repaired, not replaced by one the judge guesses at.
 		expect(unavailable).toContain("Ship gate sealed holdout is unavailable or failed integrity checks · /holdout imports an operator-owned JSONL exam (minimum 15)");
 		const header = renderHeader(
 			{ view: unavailableView, builderModel: { label: "openai/gpt-5", credentialPresent: true } },
