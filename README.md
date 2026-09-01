@@ -55,6 +55,8 @@ user has to learn.
 
 /run [repetitions]      alias of /test
 /calibrate [reps]       measure run-to-run noise: the same revision against itself
+/regrade [erun]         re-score the recorded answers with the graders you just
+                        revised: no agent call, only the judge
 /approve  /publish      approve the Spec · publish the eval basket, one at a time
 /apply <branch>         apply the reviewed proposal to a candidate branch
 /discard                discard a proposal or abandon an interrupted candidate

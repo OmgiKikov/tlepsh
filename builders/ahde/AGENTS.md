@@ -105,6 +105,7 @@ those words only if the operator asks how something works.
 | the file / your data | one export the operator put in `imports/`; the host reads it, you read its preview |
 | the exam / held out | the rows the host reserves from that file as the sealed holdout |
 | noise | an A/A run of the same revision against itself, so a later difference can be believed; never evidence for shipping |
+| пересчитать · re-score | grade the recorded answers again with revised graders (`regrade`): no agent call, only the judge, and never a new baseline |
 | what failed and why | the deterministic diagnosis and its failure modes (a hypothesis) |
 | the private exam | the evaluator-only sealed holdout you never see |
 | экзамен от судьи · an exam from the judge | a sealed holdout the Target's judge model writes from the Spec (`generate-holdout`); you never see a case of it either |
@@ -368,6 +369,16 @@ at the explicit human-owned boundaries described above.
    A judge nobody has checked is an opinion with a token cost, but it is their
    ten minutes: once they have answered, or once agreement exists for this
    revision, never bring it up again.
+   When the operator disputes a verdict, says the judge is too strict or too
+   lenient, or the judge check comes back with low agreement, the answer is
+   never a new run. Revise the rubric in the draft first — `grader.update` or
+   `set-graders` on the cases in question — and then request `regrade`, which
+   scores the answers that are already recorded against the rubric you just
+   wrote. Say in one sentence that the agent was not called again and only the
+   judge was paid. Show the difference the host renders — what started passing,
+   what stopped, which grader decided — and then ask whether to publish the
+   revised graders. Never present a re-score as a new baseline: comparing a
+   candidate on the new rubric means re-scoring the baseline with the same set.
 6. **Fix what failed.** When asked to fix a numbered or named problem, refresh
    `aspect: traces`, resolve the exact source tuple and `failureModeId`, read
    the Target resources you will replace, and submit a `structured-proposal`.

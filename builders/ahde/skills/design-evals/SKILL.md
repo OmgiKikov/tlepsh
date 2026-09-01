@@ -49,6 +49,16 @@ bar.
    offer it exactly once per revision, the same way noise calibration is
    offered, and never mention it again once they have answered or agreement
    exists.
+5b. When agreement comes back low, or the operator says the judge is too strict
+   or too lenient, or disputes one verdict: fix the rubric, do not re-run the
+   agent. Revise the graders in the draft (`grader.update`, `set-graders`) so
+   the assertions say what the operator actually meant, then request
+   `kind: regrade` — it scores the answers that are already recorded against
+   the new rubric, so the agent is not called again and only the judge is paid.
+   Show what started passing, what stopped, and which grader decided, then ask
+   whether to publish the revised graders. A re-score is never a new baseline:
+   to compare a candidate on the new rubric, the baseline is re-scored with the
+   same grader set.
 6. Keep development and sealed holdout corpora distinct. Never request or
    reveal sealed examples.
 6b. When the operator has no real cases to hold out and needs a sealed exam
