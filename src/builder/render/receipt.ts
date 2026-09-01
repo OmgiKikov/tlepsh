@@ -24,6 +24,13 @@ export interface ReceiptSubject {
 	evalRunIds: string[];
 	/** Candidates whose two development arms are the measurement. */
 	candidateIds: string[];
+	/**
+	 * The measurement called no Target: its member runs carry the *recorded*
+	 * Target spend of the runs they were derived from, and re-printing that as
+	 * this decision's bill would charge the operator twice for one answer. Only
+	 * the judge's own line survives.
+	 */
+	judgeOnly?: boolean;
 }
 
 export interface ReceiptFacts {
@@ -59,6 +66,8 @@ export function receiptSubject(result: WorkbenchDecisionResult): ReceiptSubject 
 			return result.result.evaluation ? subject([result.result.evaluation.evaluation.evalRunId]) : null;
 		case "calibrate":
 			return subject([], [result.result.calibration.candidateId]);
+		case "regrade":
+			return { ...subject([result.result.evalRunId]), judgeOnly: true };
 		case "verify-candidate":
 			return verifySubject(result.result);
 		case "run-current":
@@ -91,7 +100,10 @@ function verifySubject(
 }
 
 /** Fold every arm of one decision into a single receipt. */
-export function receiptFacts(spends: readonly EvalRunSpend[]): ReceiptFacts | null {
+export function receiptFacts(
+	spends: readonly EvalRunSpend[],
+	options: { judgeOnly?: boolean } = {},
+): ReceiptFacts | null {
 	if (spends.length === 0) return null;
 	let runs = 0;
 	let costUsd: number | null = null;
@@ -109,8 +121,10 @@ export function receiptFacts(spends: readonly EvalRunSpend[]): ReceiptFacts | nu
 	const span = started ? Date.parse(finished) - Date.parse(started) : Number.NaN;
 	return {
 		at: finished,
-		runs,
-		costUsd,
+		// A judge-only measurement ran no Target execution and bought no Target
+		// tokens: the count and the money would both be the source run's.
+		runs: options.judgeOnly ? 0 : runs,
+		costUsd: options.judgeOnly ? null : costUsd,
 		judgeCostUsd,
 		durationMs: Number.isFinite(span) && span >= 0 ? span : null,
 	};
@@ -180,6 +194,6 @@ export function renderReceipt(
 	} catch {
 		return null;
 	}
-	const facts = receiptFacts(spends);
+	const facts = receiptFacts(spends, wanted.judgeOnly ? { judgeOnly: true } : {});
 	return facts ? renderReceiptFacts(facts, paint) : null;
 }

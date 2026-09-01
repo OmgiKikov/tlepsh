@@ -104,6 +104,7 @@ const NOUNS = {
 		case: ["case", "cases"],
 		"development case": ["development case", "development cases"],
 		"previously failing case": ["previously failing case", "previously failing cases"],
+		"recorded answer": ["recorded answer", "recorded answers"],
 		"eval run": ["eval run", "eval runs"],
 		"open proposal": ["open proposal", "open proposals"],
 		candidate: ["candidate", "candidates"],
@@ -126,6 +127,7 @@ const NOUNS = {
 		case: ["кейс", "кейса", "кейсов"],
 		"development case": ["кейс разработки", "кейса разработки", "кейсов разработки"],
 		"previously failing case": ["ранее падавший кейс", "ранее падавших кейса", "ранее падавших кейсов"],
+		"recorded answer": ["записанный ответ", "записанных ответа", "записанных ответов"],
 		"eval run": ["прогон", "прогона", "прогонов"],
 		"open proposal": ["открытая правка", "открытые правки", "открытых правок"],
 		candidate: ["кандидат", "кандидата", "кандидатов"],
@@ -397,6 +399,7 @@ const en = {
 	"confirm.abandon-candidate": "Abandon this interrupted attempt? The applied proposal can be verified again.",
 	"confirm.run-eval": "Run {runs} on the reviewed basket?",
 	"confirm.calibrate": "Measure noise with {runs}?",
+	"confirm.regrade": "Re-score {answers} with the revised graders? The Target is not called again; only the judge is paid.",
 	"confirm.covers": "This one confirmation covers:",
 	"confirm.step-record": "Each step still writes its own durable record; the first one that fails stops the rest.",
 	"confirm.cost-guard": "{question} {guard}. Continue?",
@@ -421,6 +424,25 @@ const en = {
 	"result.basket-published": "Development basket published",
 	"result.dataset-imported": "Dataset imported",
 	"result.noise-calibrated": "Noise calibrated",
+	// The re-score, in the words an operator used to ask for it: what the new
+	// rubric would have said about answers that are already paid for.
+	"result.regraded": "Re-scored",
+	"regrade.was-now": "was {before} \u2192 now {after}",
+	"regrade.no-target": "the Target was not called",
+	"regrade.now-passing": "now passing",
+	"regrade.now-failing": "now failing",
+	"regrade.unchanged": "unchanged",
+	"regrade.score": "score",
+	"regrade.rubrics": "rubrics rewritten: {count}",
+	"regrade.no-change": "no verdict moved",
+	"regrade.sealed": "sealed evidence: which answers moved stays withheld",
+	"regrade.more": "\u2026 +{count} more",
+	"regrade.assertion": "assertion {index} now {answer}",
+	"regrade.yes": "yes",
+	"regrade.no": "no",
+	"regrade.grader-passes": "now passes",
+	"regrade.grader-fails": "now fails",
+	"regrade.not-a-baseline": "This is a re-score, not a new baseline: to measure a candidate on the new graders, re-score the baseline with the same set.",
 	"result.shipped": "Shipped",
 	"result.proposal-applied": "Proposal applied",
 	"result.proposal-discarded": "Proposal discarded",
@@ -555,6 +577,7 @@ const en = {
 	"job.label.run": "the test run",
 	"job.label.verify": "candidate verification",
 	"job.label.calibrate": "the noise measurement",
+	"job.label.regrade": "the re-score",
 	"trace.run": "Run",
 	"trace.error": "Error",
 	"trace.why": "Why",
@@ -591,6 +614,7 @@ const en = {
 	"panel.shipped": "Shipped",
 	"panel.improvement-complete": "Improvement cycles complete",
 	"panel.noise-calibrated": "Noise calibrated",
+	"panel.regraded": "Re-scored with the new graders",
 	"panel.target-created": "Target created",
 	"panel.target-configured": "Target configured",
 	"panel.evaluators-configured": "Evaluator models configured",
@@ -753,6 +777,7 @@ const en = {
 	"confirm.title.generate-holdout": "Have the judge write a sealed exam",
 	"confirm.title.run-eval": "Run exact development evaluation",
 	"confirm.title.calibrate": "Calibrate run-to-run noise",
+	"confirm.title.regrade": "Re-score the recorded answers",
 	"confirm.title.discard-proposal": "Discard exact Builder proposal",
 	"confirm.title.verify-candidate": "Verify exact applied candidate",
 	"confirm.title.review-candidate": "Record exact candidate review",
@@ -841,6 +866,8 @@ Looking around:
 One step at a time (the same decisions, taken separately):
   /run [N] [reason]     alias of /test
   /calibrate [N]        measure run-to-run noise: the same revision against itself
+  /regrade [erun]       re-score the recorded answers with the graders you just
+                        revised — the agent is not called again, only the judge
   /approve [reason]     approve the reviewed Spec draft
   /publish [name]       publish the reviewed eval basket
   /apply <branch>       apply the reviewed proposal to a candidate branch
@@ -1084,6 +1111,7 @@ const ru: Record<MessageKey, string> = {
 	"confirm.abandon-candidate": "Сбросить прерванную попытку? Применённую правку можно проверить снова.",
 	"confirm.run-eval": "Прогнать {runs} на проверенных тестах?",
 	"confirm.calibrate": "Измерить шум — {runs}?",
+	"confirm.regrade": "Пересчитать {answers} новыми грейдерами? Target заново не вызывается, платим только судье.",
 	"confirm.covers": "Это одно подтверждение включает:",
 	"confirm.step-record": "Каждый шаг пишет свою запись; первый упавший останавливает остальные.",
 	"confirm.cost-guard": "{question} {guard}. Продолжить?",
@@ -1107,7 +1135,24 @@ const ru: Record<MessageKey, string> = {
 	"result.tests-published": "Тесты опубликованы",
 	"result.basket-published": "Тесты разработки опубликованы",
 	"result.dataset-imported": "Данные загружены",
-	"result.noise-calibrated": "Шум измерен",
+	"result.noise-calibrated": "\u0428\u0443\u043c \u0438\u0437\u043c\u0435\u0440\u0435\u043d",
+	"result.regraded": "Пересчёт",
+	"regrade.was-now": "было {before} \u2192 стало {after}",
+	"regrade.no-target": "Target не вызывался",
+	"regrade.now-passing": "теперь проходят",
+	"regrade.now-failing": "теперь падают",
+	"regrade.unchanged": "без изменений",
+	"regrade.score": "балл",
+	"regrade.rubrics": "переписаны рубрики: {count}",
+	"regrade.no-change": "ни один вердикт не сдвинулся",
+	"regrade.sealed": "закрытые данные: какие ответы сдвинулись — не показываем",
+	"regrade.more": "\u2026 ещё {count}",
+	"regrade.assertion": "утверждение {index} теперь {answer}",
+	"regrade.yes": "да",
+	"regrade.no": "нет",
+	"regrade.grader-passes": "теперь проходит",
+	"regrade.grader-fails": "теперь падает",
+	"regrade.not-a-baseline": "Это пересчёт, не новая база: чтобы измерить кандидата на новых грейдерах, пересчитай и базу тем же набором.",
 	"result.shipped": "Выкачено",
 	"result.proposal-applied": "Правка применена",
 	"result.proposal-discarded": "Правка выброшена",
@@ -1240,6 +1285,7 @@ const ru: Record<MessageKey, string> = {
 	"job.label.run": "прогон тестов",
 	"job.label.verify": "проверка кандидата",
 	"job.label.calibrate": "измерение шума",
+	"job.label.regrade": "пересчёт",
 	"trace.run": "Прогон",
 	"trace.error": "Ошибка",
 	"trace.why": "Почему",
@@ -1276,6 +1322,7 @@ const ru: Record<MessageKey, string> = {
 	"panel.shipped": "Выкачено",
 	"panel.improvement-complete": "Циклы улучшений закончены",
 	"panel.noise-calibrated": "Шум измерен",
+	"panel.regraded": "Пересчёт с новыми грейдерами",
 	"panel.target-created": "Агент создан",
 	"panel.target-configured": "Агент настроен",
 	"panel.evaluators-configured": "Модели оценщиков настроены",
@@ -1438,6 +1485,7 @@ const ru: Record<MessageKey, string> = {
 	"confirm.title.generate-holdout": "Судья напишет закрытый экзамен",
 	"confirm.title.run-eval": "Прогнать тесты",
 	"confirm.title.calibrate": "Измерить шум между прогонами",
+	"confirm.title.regrade": "Пересчитать записанные ответы",
 	"confirm.title.discard-proposal": "Выбросить правку",
 	"confirm.title.verify-candidate": "Проверить применённую правку",
 	"confirm.title.review-candidate": "Записать обзор кандидата",
@@ -1526,6 +1574,8 @@ const ru: Record<MessageKey, string> = {
 По одному шагу (те же решения, но по отдельности):
   /run [N] [причина]    то же, что /test
   /calibrate [N]        измерить шум: та же ревизия против себя же
+  /regrade [erun]       пересчитать записанные ответы новыми грейдерами —
+                        агента заново не зовём, платим только судье
   /approve [причина]    одобрить проверенное описание
   /publish [имя]        опубликовать проверенные тесты
   /apply <ветка>        применить проверенную правку на ветку кандидата

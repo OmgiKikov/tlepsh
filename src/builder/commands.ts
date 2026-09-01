@@ -77,6 +77,7 @@ export const AHDE_BUILDER_COMMAND_NAMES = [
 	"status",
 	"run",
 	"calibrate",
+	"regrade",
 	"traces",
 	"review",
 	"approve",
@@ -139,6 +140,31 @@ function parseRepetitions(args: string, command: string): { repetitions: number;
 		throw new Error(`/${command} repetitions must be an integer between 1 and 10`);
 	}
 	return { repetitions, reason: tokens.join(" ") || fallback };
+}
+
+const EVAL_RUN_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
+
+/**
+ * `/regrade [erun] [draft|target] [reason]`.
+ *
+ * The default is the draft, because the operator typing `/regrade` has just
+ * revised the rubric and that revision is what they mean. `target` re-runs
+ * today's rubric, which says something only when the judge model itself moved
+ * — the Workbench refuses it as a no-op otherwise rather than billing for it.
+ */
+export function parseRegrade(args: string): {
+	evalRunId: string | null;
+	graders: "draft" | "target";
+	reason: string;
+} {
+	const fallback = "Requested interactively via /regrade";
+	const tokens = args.trim().split(/\s+/).filter(Boolean);
+	const named = tokens[0]?.startsWith("erun_") ? tokens.shift() ?? null : null;
+	if (named !== null && !EVAL_RUN_PATTERN.test(named)) {
+		throw new Error("/regrade takes the eval run id shown by /traces, for example /regrade erun_abc123");
+	}
+	const graders = tokens[0] === "draft" || tokens[0] === "target" ? tokens.shift() as "draft" | "target" : "draft";
+	return { evalRunId: named, graders, reason: tokens.join(" ") || fallback };
 }
 
 const BRANCH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
@@ -233,6 +259,13 @@ function decisionTitle(result: WorkbenchDecisionResult): { title: string; tone: 
 			return {
 				title: t("panel.noise-calibrated"),
 				tone: result.result.calibration.verdict === "inconclusive" ? "success" : "warning",
+			};
+		// A re-score that moved nothing is a real answer, not a failure: the
+		// rubric the operator rewrote turned out to say the same thing.
+		case "regrade":
+			return {
+				title: t("panel.regraded"),
+				tone: result.result.nowPassing + result.result.nowFailing > 0 ? "success" : "info",
 			};
 		case "scaffold-target": return { title: t("panel.target-created"), tone: "success" };
 		case "configure-target": return { title: t("panel.target-configured"), tone: "success" };
@@ -535,7 +568,9 @@ export function registerAhdeBuilderCommands(
 					? t("job.label.verify")
 					: kind === "calibrate"
 						? t("job.label.calibrate")
-						: t("job.label.run"),
+						: kind === "regrade"
+							? t("job.label.regrade")
+							: t("job.label.run"),
 				async run({ signal: jobSignal, onRunEvent, authorized }) {
 					const observation = await beginBuilderRunObservation(ctx.ui, options.beginLiveTrace);
 					liveTraceUrl = observation.liveTraceUrl;
@@ -1086,6 +1121,30 @@ export function registerAhdeBuilderCommands(
 			const signal = await prepare(ctx, "calibrate");
 			const parsed = parseRepetitions(args, "calibrate");
 			await runObserved(ctx, "calibrate", { kind: "calibrate", repetitions: parsed.repetitions, reason: parsed.reason }, signal);
+		},
+	});
+
+	/**
+	 * The answer to “the judge is too strict”. The rubric changes in the draft,
+	 * the recorded answers are scored again, and the operator sees the
+	 * difference — without buying one Target token a second time.
+	 */
+	pi.registerCommand("regrade", {
+		description: "Re-score the recorded answers with the revised graders, without calling the agent again: /regrade [erun]",
+		async handler(args, ctx) {
+			const signal = await prepare(ctx, "regrade");
+			const parsed = parseRegrade(args);
+			await runObserved(
+				ctx,
+				"regrade",
+				{
+					kind: "regrade",
+					graders: parsed.graders,
+					...(parsed.evalRunId ? { evalRunId: parsed.evalRunId } : {}),
+					reason: parsed.reason,
+				},
+				signal,
+			);
 		},
 	});
 

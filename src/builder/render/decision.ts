@@ -10,6 +10,7 @@ import type {
 import { SEALED_GATE_POLICY } from "../../domain/comparison-gate.js";
 import { plural, t, verdictLabel } from "../../i18n.js";
 import { formatFlipRate, formatNoiseBand, renderCalibration } from "./calibration.js";
+import { regradeHeadline, renderRegrade } from "./regrade.js";
 import { oneLine, section, shortHash, shortSha } from "./format.js";
 import type { Paint } from "./paint.js";
 import { nextStep, stageLabel } from "./stage.js";
@@ -221,6 +222,8 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 			lines.push(nextLine(view, paint));
 			return lines;
 		}
+		case "regrade":
+			return [...renderRegrade(result.result, paint), nextLine(view, paint)];
 		case "run-current":
 			if (result.result.resolvedAs === "run-eval") return [...runLines(result.result, paint, options), nextLine(view, paint)];
 			if (result.result.resolvedAs === "start-testing") return startTestingLines(result.result, paint, view, options);
@@ -336,6 +339,8 @@ export function decisionHeadline(result: WorkbenchDecisionResult): string {
 			return `A/A ${calibration.verdict} · ${formatNoiseBand(calibration)} · flip ${formatFlipRate(calibration)} · ` +
 				`${calibration.recommendedRepetitions} reps recommended`;
 		}
+		case "regrade":
+			return regradeHeadline(result.result);
 		default:
 			return oneLine(result.message, 120);
 	}
