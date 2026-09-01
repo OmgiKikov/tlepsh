@@ -7,6 +7,7 @@ import {
 	type ToolAuthoringBrief,
 } from "../src/application/tool-authoring.js";
 import {
+	describeFixtureRun,
 	openBuilderWorkshop,
 	type BuilderWorkshop,
 } from "../src/application/tool-workshop.js";
@@ -153,6 +154,49 @@ describe("conversational Tool Authoring", () => {
 				"tools/health_check/tool.yaml",
 				"tools/health_check/run",
 			]));
+		} finally {
+			opened.dispose();
+		}
+	});
+
+	it("runs the package's own fixture files back off disk and closes on a green run", async () => {
+		const dir = targetFixture();
+		const target = loadTarget(dir);
+		const opened = workshop(dir);
+		try {
+			const compiled = compileToolPackage({
+				brief: brief(),
+				credentialBindings: {},
+				currentExecution: target.manifest.execution,
+			});
+			opened.configureToolAuthoringPolicy({
+				network: compiled.executionPolicy.network,
+				environmentAllowlist: compiled.executionPolicy.environmentAllowlist,
+			});
+			opened.replaceToolPackage(compiled.brief.name, compiled.files);
+
+			// What lands on disk is the small hand-writable form: an input and what
+			// to expect. The name is the filename and what it covers is the exit code.
+			expect(JSON.parse(readFileSync(join(opened.path, "tools/health_check/fixtures/healthy.json"), "utf8")))
+				.toEqual({ input: {}, expect: { exitCode: 0, jsonEquals: { ok: true } } });
+			expect(opened.fixturesFor("health_check").map((fixture) => [fixture.name, fixture.covers]))
+				.toEqual([["healthy", "happy-path"], ["service-error", "error-handling"]]);
+
+			let run;
+			try {
+				run = await opened.tryFixtures({ tool: "health_check" });
+			} catch (error) {
+				if (error instanceof Error && /No usable sandbox backend/.test(error.message)) return;
+				throw error;
+			}
+			expect(run).toMatchObject({ tool: "health_check", total: 2, passed: 2, allPassed: true });
+			expect(describeFixtureRun(run)).toBe("✓ 2/2 fixtures");
+			// The run is what makes the package closable, and the close panel reads
+			// the same history.
+			expect(opened.status().tryHistory.map((entry) => [entry.test, entry.passed]))
+				.toEqual([["healthy", true], ["service-error", true]]);
+			expect(() => opened.compile({ summary: "Add health check", validationPlan: ["Run contract fixtures"] }))
+				.not.toThrow();
 		} finally {
 			opened.dispose();
 		}

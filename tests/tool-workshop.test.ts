@@ -15,7 +15,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import { compileHarnessAuthoringProposal, HARNESS_AUTHORING_ALLOWED_PATHS } from "../src/application/harness-authoring.js";
 import { CANDIDATE_SCOPE_POLICY } from "../src/application/candidate-experiment.js";
 import { inspectTargetAuthoringContext } from "../src/application/target-authoring-context.js";
-import { readTryToolInput, tryTool } from "../src/application/tool-workshop.js";
+import {
+	describeFixtureRun,
+	readToolFixtures,
+	readTryToolInput,
+	runToolFixtures,
+	tryTool,
+} from "../src/application/tool-workshop.js";
+import { parseToolFixtureFile } from "../src/application/tool-authoring.js";
 import { parseCliInvocation } from "../src/cli-invocation.js";
 import { loadTarget } from "../src/manifest.js";
 import {
@@ -751,7 +758,14 @@ describe("ahde tool try invocation", () => {
 		expect(() => parseCliInvocation(["tool"])).toThrow(/missing action for tool; expected try/);
 		expect(() => parseCliInvocation(["tool", "run", "--target", "/tmp/a"])).toThrow(/unknown action "run" for tool/);
 		expect(() => parseCliInvocation(["tool", "try", "--target", "/tmp/a", "--tool", "lookup"]))
-			.toThrow(/missing required flag --input for tool try/);
+			.toThrow(/tool try requires exactly one of --input <json\|@path> or --fixtures/);
+		expect(() => parseCliInvocation(["tool", "try", "--target", "/tmp/a", "--tool", "lookup", "--input", "{}", "--fixtures"]))
+			.toThrow(/tool try requires exactly one of --input <json\|@path> or --fixtures/);
+		expect(parseCliInvocation(["tool", "try", "--target", "/tmp/agent", "--tool", "lookup", "--fixtures"])).toMatchObject({
+			command: "tool",
+			action: "try",
+			flags: { target: "/tmp/agent", tool: "lookup", fixtures: "true" },
+		});
 		expect(() => parseCliInvocation(["tool", "try", "--target", "/tmp/a", "--tool", "lookup", "--input", "{}", "--project", "p"]))
 			.toThrow(/unknown flag --project for tool/);
 	});
@@ -780,5 +794,115 @@ describe("tool directory statistics", () => {
 			disposeTargetWorkspaceSnapshot(snapshot);
 		}
 		expect(existsSync(snapshot.toolHomeDir)).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Contract fixtures: a tool package carries its own tests.
+
+const FIXTURE_RUN_SCRIPT = `#!/bin/sh
+IFS= read -r payload || exit 2
+. "$AHDE_TOOL_HOME/lib.sh"
+case "$payload" in *'"boom"'*) printf 'no such term\\n' >&2; exit 3;; esac
+printf '{"answer":"%s","payload":%s}\\n' "$ANSWER" "$payload"
+`;
+
+/** The same tool, plus the two fixtures the convention asks every package for. */
+function fixtureToolFixture(extra: Record<string, string> = {}): string {
+	const dir = directoryToolFixture({
+		files: {
+			"tools/lookup/run": FIXTURE_RUN_SCRIPT,
+			"tools/lookup/fixtures/answers.json": `${JSON.stringify({
+				input: { term: "refunds" },
+				expect: { exitCode: 0, json: { answer: "authored" } },
+			}, null, 2)}\n`,
+			"tools/lookup/fixtures/rejects-unknown.json": `${JSON.stringify({
+				input: { term: "boom" },
+				expect: { exitCode: 3, stderrContains: "no such term" },
+			}, null, 2)}\n`,
+			...extra,
+		},
+	});
+	chmodSync(join(dir, "tools/lookup/run"), 0o755);
+	commit(dir);
+	return dir;
+}
+
+describe("tool contract fixtures", () => {
+	it("reads the small on-disk form and derives the name and what it covers", () => {
+		const happy = parseToolFixtureFile("answers", '{"input":{"term":"x"},"expect":{"exitCode":0}}');
+		expect(happy).toMatchObject({ name: "answers", covers: "happy-path" });
+		const sad = parseToolFixtureFile("rejects-unknown", '{"input":{},"expect":{"exitCode":3}}');
+		expect(sad).toMatchObject({ name: "rejects-unknown", covers: "error-handling" });
+		// A file that names itself something else is a rename nobody finished.
+		expect(() => parseToolFixtureFile("answers", '{"name":"other","input":{},"expect":{}}'))
+			.toThrow(/fixtures\/answers.json names itself other/);
+		expect(() => parseToolFixtureFile("answers", "not json")).toThrow(/is not valid JSON/);
+	});
+
+	it("joins the tool's own identity, so changing a fixture changes the tool", () => {
+		const dir = fixtureToolFixture();
+		const tool = loadTarget(dir).tools[0]!;
+		expect(tool.files.map((file) => file.path)).toEqual([
+			"fixtures/answers.json",
+			"fixtures/rejects-unknown.json",
+			"lib.sh",
+			"run",
+			"tool.yaml",
+		]);
+		const before = tool.digest;
+		writeFileSync(
+			join(dir, "tools/lookup/fixtures/answers.json"),
+			'{"input":{"term":"payments"},"expect":{"exitCode":0}}\n',
+		);
+		commit(dir);
+		expect(loadTarget(dir).tools[0]!.digest).not.toBe(before);
+	});
+
+	it("runs every fixture of one tool against an exact revision and judges it deterministically", async () => {
+		const dir = fixtureToolFixture();
+		expect(readToolFixtures(dir, "lookup").map((fixture) => fixture.name))
+			.toEqual(["answers", "rejects-unknown"]);
+		let run;
+		try {
+			run = await runToolFixtures({ repositoryDir: dir, tool: "lookup" });
+		} catch (error) {
+			if (sandboxUnavailable(error)) return;
+			throw error;
+		}
+		expect(run).toMatchObject({ tool: "lookup", total: 2, passed: 2, allPassed: true });
+		expect(describeFixtureRun(run)).toBe("✓ 2/2 fixtures");
+		expect(run.fixtures.map((fixture) => [fixture.name, fixture.passed, fixture.exitCode]))
+			.toEqual([["answers", true, 0], ["rejects-unknown", true, 3]]);
+		// The checkout stays exactly as clean as a single try leaves it.
+		expect(execFileSync("git", ["-C", dir, "status", "--porcelain"], { encoding: "utf8" })).toBe("");
+	});
+
+	it("names the failing fixture and what it expected, and says when there are none", async () => {
+		const dir = fixtureToolFixture({
+			"tools/lookup/fixtures/answers.json": `${JSON.stringify({
+				input: { term: "refunds" },
+				expect: { exitCode: 0, json: { answer: "rewritten" } },
+			}, null, 2)}\n`,
+		});
+		let run;
+		try {
+			run = await runToolFixtures({ repositoryDir: dir, tool: "lookup" });
+		} catch (error) {
+			if (sandboxUnavailable(error)) return;
+			throw error;
+		}
+		expect(run).toMatchObject({ total: 2, passed: 1, allPassed: false });
+		expect(run.fixtures[0]?.failures).toEqual([
+			'stdout JSON.answer is "authored", expected "rewritten"',
+		]);
+		expect(describeFixtureRun(run)).toBe(
+			'✗ 1/2 — answers: stdout JSON.answer is "authored", expected "rewritten"',
+		);
+
+		const bare = directoryToolFixture();
+		expect(readToolFixtures(bare, "lookup")).toEqual([]);
+		await expect(runToolFixtures({ repositoryDir: bare, tool: "lookup" }))
+			.rejects.toThrow(/tools\/lookup declares no contract fixtures/);
 	});
 });

@@ -85,3 +85,12 @@ export function describeEnvVar(name: string, report: EnvReport, env = process.en
 	const source = report.sources.get(name) ?? (value === undefined ? "(unset)" : "shell");
 	return `${fingerprint(value)} from ${source}`;
 }
+
+/**
+ * The declared variables that are not set on this host. A tool that names a
+ * key nobody exported fails inside its sandbox with whatever its own code says;
+ * naming the missing variable first turns that into one thing to do.
+ */
+export function missingEnvNames(names: readonly string[], env: Record<string, string | undefined> = process.env): string[] {
+	return names.filter((name) => (env[name] ?? "") === "");
+}

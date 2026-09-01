@@ -32,8 +32,16 @@ const ToolContractExpectationSchema = z.strictObject({
 	exitCode: z.number().int().min(0).max(255).default(0),
 	stdoutContains: z.string().min(1).max(8_192).optional(),
 	stderrContains: z.string().min(1).max(8_192).optional(),
+	/**
+	 * A partial expected value: every key it names must be present in the parsed
+	 * stdout JSON with the same value. Anything the tool also returns is allowed,
+	 * so a fixture states what it is about rather than the whole payload.
+	 */
+	json: z.unknown().optional(),
+	/** The whole parsed stdout, byte for byte after canonicalization. */
 	jsonEquals: z.unknown().optional(),
 });
+export type ToolContractExpectation = z.infer<typeof ToolContractExpectationSchema>;
 
 const ToolContractFixtureSchema = z.strictObject({
 	name: z.string().regex(FIXTURE_NAME, "fixture name must be lowercase kebab/snake case"),
@@ -50,6 +58,47 @@ const ToolContractFixtureSchema = z.strictObject({
 	}
 });
 export type ToolContractFixture = z.infer<typeof ToolContractFixtureSchema>;
+
+/**
+ * What one `tools/<name>/fixtures/<fixture>.json` file actually holds. The
+ * file is the small thing an operator can write by hand — an input and what to
+ * expect — because the two derivable fields are derivable: the fixture's name
+ * is its filename, and what it covers is whether it expects exit 0.
+ */
+const ToolFixtureFileSchema = z.strictObject({
+	/** Optional and, when present, must equal the filename. */
+	name: z.string().regex(FIXTURE_NAME).optional(),
+	covers: z.enum(["happy-path", "error-handling"]).optional(),
+	input: z.unknown(),
+	expect: ToolContractExpectationSchema,
+});
+
+/** The `<fixture>` of `tools/<tool>/fixtures/<fixture>.json`, or null. */
+export function toolFixtureName(path: string): string | null {
+	return /^(?:.*\/)?fixtures\/([a-z0-9][a-z0-9_-]{0,63})\.json$/.exec(path)?.[1] ?? null;
+}
+
+/** Read one fixture file into the exact fixture the assertion runs on. */
+export function parseToolFixtureFile(name: string, text: string): ToolContractFixture {
+	if (!FIXTURE_NAME.test(name)) throw new Error(`fixture name must be lowercase kebab/snake case: ${JSON.stringify(name)}`);
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch (error) {
+		throw new Error(`fixtures/${name}.json is not valid JSON`, { cause: error });
+	}
+	const file = ToolFixtureFileSchema.parse(parsed);
+	if (file.name !== undefined && file.name !== name) {
+		throw new Error(`fixtures/${name}.json names itself ${file.name}`);
+	}
+	const covers = file.covers ?? (file.expect.exitCode === 0 ? "happy-path" : "error-handling");
+	return ToolContractFixtureSchema.parse({ name, covers, input: file.input, expect: file.expect });
+}
+
+/** The bytes AHDE writes for one fixture: what goes in, and what to expect. */
+export function renderToolFixtureFile(fixture: ToolContractFixture): string {
+	return `${JSON.stringify({ input: fixture.input, expect: fixture.expect }, null, 2)}\n`;
+}
 
 const ToolSupportFileSchema = z.strictObject({
 	path: z.string().regex(FILE_PATH, "support file path must be a safe relative path"),
@@ -313,7 +362,7 @@ export function compileToolPackage(input: {
 		{ path: "README.md", content: readme(brief), mode: "100644" },
 		...brief.fixtures.map((fixture): ToolPackageFile => ({
 			path: `fixtures/${fixture.name}.json`,
-			content: `${JSON.stringify(fixture, null, 2)}\n`,
+			content: renderToolFixtureFile(fixture),
 			mode: "100644",
 		})),
 		...brief.supportFiles,
@@ -352,6 +401,44 @@ export interface ToolContractAssertion {
 	failures: string[];
 }
 
+const MAX_JSON_SUBSET_FAILURES = 8;
+
+/**
+ * Compare a partial expectation against what the tool actually printed. Only
+ * what the fixture names is checked, recursively; anything else the tool
+ * returns is its own business, so adding a field to a payload does not break
+ * every fixture that never mentioned it.
+ */
+function jsonSubsetFailures(expected: unknown, actual: unknown, path: string, failures: string[]): void {
+	if (failures.length >= MAX_JSON_SUBSET_FAILURES) return;
+	if (Array.isArray(expected)) {
+		if (!Array.isArray(actual) || actual.length !== expected.length) {
+			failures.push(`${path} is not an array of ${expected.length}`);
+			return;
+		}
+		for (const [index, item] of expected.entries()) jsonSubsetFailures(item, actual[index], `${path}[${index}]`, failures);
+		return;
+	}
+	if (expected !== null && typeof expected === "object") {
+		if (actual === null || typeof actual !== "object" || Array.isArray(actual)) {
+			failures.push(`${path} is not an object`);
+			return;
+		}
+		const object = actual as Record<string, unknown>;
+		for (const [key, value] of Object.entries(expected as Record<string, unknown>)) {
+			if (!(key in object)) {
+				failures.push(`${path}.${key} is missing`);
+				continue;
+			}
+			jsonSubsetFailures(value, object[key], `${path}.${key}`, failures);
+		}
+		return;
+	}
+	if (canonicalJson(expected) !== canonicalJson(actual)) {
+		failures.push(`${path} is ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`);
+	}
+}
+
 /** Exact, deterministic assertion over one real Target-tool invocation. */
 export function assertToolContract(
 	fixture: ToolContractFixture,
@@ -370,7 +457,10 @@ export function assertToolContract(
 	if (fixture.expect.stderrContains !== undefined && !result.stderr.includes(fixture.expect.stderrContains)) {
 		failures.push(`stderr does not contain ${JSON.stringify(fixture.expect.stderrContains)}`);
 	}
-	if (fixture.expect.jsonEquals !== undefined || (fixture.expect.exitCode === 0 && outputJsonSchema !== undefined)) {
+	const readsJson = fixture.expect.jsonEquals !== undefined ||
+		fixture.expect.json !== undefined ||
+		(fixture.expect.exitCode === 0 && outputJsonSchema !== undefined);
+	if (readsJson) {
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(result.stdout);
@@ -383,6 +473,9 @@ export function assertToolContract(
 			} catch (error) {
 				failures.push(error instanceof Error ? error.message : String(error));
 			}
+		}
+		if (failures.length === 0 && fixture.expect.json !== undefined) {
+			jsonSubsetFailures(fixture.expect.json, parsed, "stdout JSON", failures);
 		}
 		if (
 			failures.length === 0 &&

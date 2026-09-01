@@ -61,6 +61,11 @@ import {
 	type HarnessAuthoringIntent,
 	type HarnessExecutionPolicyPatch,
 } from "./harness-authoring.js";
+import {
+	assertToolContract,
+	parseToolFixtureFile,
+	type ToolContractFixture,
+} from "./tool-authoring.js";
 import { assertManifestChangePolicy, assertResourceOnlyManifestChange } from "./builder-proposal.js";
 import { ProposalBasisSelectionSchema } from "./improvement-brief.js";
 import {
@@ -297,6 +302,153 @@ async function runDeclaredToolOnSurface(options: {
 		truncated: raw.truncated || stdout.truncated || stderr.truncated,
 		timedOut: raw.stopped === "timeout",
 	} satisfies TryToolResult;
+}
+
+// ---------------------------------------------------------------------------
+// Contract fixtures.
+//
+// A tool package carries its own tests: `tools/<name>/fixtures/<fixture>.json`,
+// each one an input and what to expect back. They live inside the tool
+// directory, so they join its digest like every other file, and they are the
+// same tests in the Workshop, on the CLI, and in the close panel.
+
+/** One fixture, run for real, judged deterministically. */
+export interface ToolFixtureOutcome {
+	name: string;
+	passed: boolean;
+	exitCode: number | null;
+	durationMs: number;
+	/** Empty when it passed; bounded and already redacted when it did not. */
+	failures: string[];
+}
+
+export interface ToolFixtureRunResult {
+	tool: string;
+	total: number;
+	passed: number;
+	allPassed: boolean;
+	fixtures: ToolFixtureOutcome[];
+}
+
+const MAX_TOOL_FIXTURES = 32;
+
+/** `✓ 3/3 fixtures`, or the first failure — one line, in either language. */
+export function describeFixtureRun(run: ToolFixtureRunResult): string {
+	if (run.total === 0) return `— ${run.tool}: no fixtures`;
+	if (run.allPassed) return `✓ ${run.passed}/${run.total} fixtures`;
+	const failed = run.fixtures.find((fixture) => !fixture.passed);
+	return `✗ ${run.passed}/${run.total} — ${failed?.name ?? "?"}: ${failed?.failures.join("; ") ?? "failed"}`;
+}
+
+/**
+ * Every fixture of one tool, in filename order. A tool with no `fixtures/`
+ * directory has no contract tests, which is a fact about it rather than an
+ * error: the refusal belongs to whoever asked to run them.
+ */
+export function readToolFixtures(rootDir: string, tool: string): ToolContractFixture[] {
+	if (!TOOL_NAME.test(tool)) throw new ToolWorkshopError(`invalid tool name: ${JSON.stringify(tool)}`);
+	const directory = resolve(rootDir, "tools", tool, "fixtures");
+	if (!existsSync(directory)) return [];
+	const names = readdirSync(directory, { withFileTypes: true })
+		.filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+		.map((entry) => entry.name.slice(0, -".json".length))
+		.sort((left, right) => left.localeCompare(right));
+	if (names.length > MAX_TOOL_FIXTURES) {
+		throw new ToolWorkshopError(`tools/${tool}/fixtures holds more than ${MAX_TOOL_FIXTURES} fixtures`);
+	}
+	return names.map((name) => {
+		try {
+			return parseToolFixtureFile(name, readFileSync(join(directory, `${name}.json`), "utf8"));
+		} catch (error) {
+			throw new ToolWorkshopError(
+				`tools/${tool}/fixtures/${name}.json is not a valid contract fixture: ${error instanceof Error ? error.message : String(error)}`,
+				{ cause: error },
+			);
+		}
+	});
+}
+
+/**
+ * The declared output schema of a JSON tool, when the package carries one. A
+ * fixture then also proves the tool keeps its own contract, not just that it
+ * printed something the fixture recognised.
+ */
+function toolOutputSchema(rootDir: string, target: ResolvedTarget, tool: string): Record<string, unknown> | undefined {
+	const descriptor = target.tools.find((entry) => entry.descriptor.name === tool)?.descriptor;
+	if (descriptor?.output !== "json") return undefined;
+	const path = resolve(rootDir, "tools", tool, "output.schema.json");
+	if (!existsSync(path)) return undefined;
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+		return typeof parsed === "object" && parsed !== null ? parsed as Record<string, unknown> : undefined;
+	} catch {
+		// A malformed schema is a package problem the fixtures will not hide; it
+		// simply stops being an extra assertion.
+		return undefined;
+	}
+}
+
+function fixtureOutcome(
+	fixture: ToolContractFixture,
+	result: TryToolResult,
+	schema: Record<string, unknown> | undefined,
+): ToolFixtureOutcome {
+	const assertion = assertToolContract(fixture, result, schema);
+	return {
+		name: fixture.name,
+		passed: assertion.passed,
+		exitCode: result.exitCode,
+		durationMs: result.durationMs,
+		failures: assertion.failures.map((failure) => redactTraceText(failure).slice(0, 240)),
+	};
+}
+
+function summarizeFixtures(tool: string, fixtures: readonly ToolFixtureOutcome[]): ToolFixtureRunResult {
+	const passed = fixtures.filter((fixture) => fixture.passed).length;
+	return {
+		tool,
+		total: fixtures.length,
+		passed,
+		allPassed: fixtures.length > 0 && passed === fixtures.length,
+		fixtures: [...fixtures],
+	};
+}
+
+/**
+ * Run every declared fixture of one tool against one exact revision, outside
+ * any workshop. This is what `ahde tool try --fixtures` is: the same package
+ * tests the Builder runs, available to whoever owns the checkout.
+ */
+export async function runToolFixtures(options: {
+	repositoryDir: string;
+	tool: string;
+	source?: ToolWorkshopSource;
+	signal?: AbortSignal;
+}): Promise<ToolFixtureRunResult> {
+	if (!TOOL_NAME.test(options.tool)) throw new ToolWorkshopError(`invalid tool name: ${JSON.stringify(options.tool)}`);
+	const source: ToolWorkshopSource = options.source ?? { kind: "head" };
+	const ref = source.kind === "branch" ? source.ref : "HEAD";
+	return withDetachedWorktree({ repositoryDir: options.repositoryDir, ref }, async (worktree) => {
+		const fixtures = readToolFixtures(worktree.path, options.tool);
+		if (fixtures.length === 0) {
+			throw new ToolWorkshopError(
+				`tools/${options.tool} declares no contract fixtures; add tools/${options.tool}/fixtures/<name>.json`,
+			);
+		}
+		const schema = toolOutputSchema(worktree.path, loadTarget(worktree.path), options.tool);
+		const outcomes: ToolFixtureOutcome[] = [];
+		for (const fixture of fixtures) {
+			const result = await runDeclaredToolInDirectory({
+				directory: worktree.path,
+				tool: options.tool,
+				input: fixture.input,
+				source: { kind: source.kind, ref: source.kind === "branch" ? source.ref : null, changedPaths: [] },
+				...(options.signal ? { signal: options.signal } : {}),
+			});
+			outcomes.push(fixtureOutcome(fixture, result, schema));
+		}
+		return summarizeFixtures(options.tool, outcomes);
+	});
 }
 
 /**
@@ -1676,6 +1828,50 @@ export class BuilderWorkshop {
 		});
 		if (this.tryHistory.length > 32) this.tryHistory.splice(0, this.tryHistory.length - 32);
 		return result;
+	}
+
+	/** The declared contract fixtures of one tool of this workshop's own copy. */
+	fixturesFor(tool: string): ToolContractFixture[] {
+		this.assertOpen();
+		this.syncDeclarations();
+		return readToolFixtures(this.path, tool);
+	}
+
+	/**
+	 * Run every fixture of one tool against the exact bytes now in the workshop.
+	 * Each fixture is a real invocation through the same broker a Target uses, so
+	 * a green run means the package works, not that it parses.
+	 */
+	async tryFixtures(options: {
+		tool: string;
+		signal?: AbortSignal;
+		now?: () => string;
+		/** Called before each invocation, so a caller can re-grant declared authority. */
+		beforeEach?: (fixture: ToolContractFixture) => void;
+	}): Promise<ToolFixtureRunResult> {
+		this.assertOpen();
+		const fixtures = this.fixturesFor(options.tool);
+		if (fixtures.length === 0) {
+			throw new ToolWorkshopError(
+				`tools/${options.tool} declares no contract fixtures; write tools/${options.tool}/fixtures/<name>.json first`,
+			);
+		}
+		const schema = toolOutputSchema(this.path, loadTarget(this.path), options.tool);
+		const outcomes: ToolFixtureOutcome[] = [];
+		for (const fixture of fixtures) {
+			options.beforeEach?.(fixture);
+			const result = await this.tryTool({
+				tool: options.tool,
+				input: fixture.input,
+				test: fixture.name,
+				...(options.now ? { now: options.now } : {}),
+				...(options.signal ? { signal: options.signal } : {}),
+			});
+			const outcome = fixtureOutcome(fixture, result, schema);
+			this.recordContractAssertion(outcome.name, outcome.passed, outcome.failures);
+			outcomes.push(outcome);
+		}
+		return summarizeFixtures(options.tool, outcomes);
 	}
 
 	/** Attach the host's deterministic fixture assertion to the most recent try. */

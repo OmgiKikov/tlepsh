@@ -168,6 +168,7 @@ passport [--out <md>]        promised vs measured
 log                          versions × score × cost
 watch --every 1d             drift vs noise, once shipped
 tool try --tool <n>          one declared tool, sandboxed
+tool try --tool <n> --fixtures  its own contract, per fixture
 feedback list                👍/👎 marks from the Target
 serve [--port N]             the engine behind a loopback API
 ```

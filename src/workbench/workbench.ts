@@ -67,13 +67,16 @@ import {
 	type BuilderWorkshopBinding,
 	type BuilderWorkshopBasis,
 	type BuilderWorkshopSource,
+	type ToolFixtureRunResult,
 	type TryToolResult,
 	type WorkshopGrantAuditEvent,
+	type WorkshopToolGrantRequirement,
 	type WorkshopBashResult,
 	type WorkshopReadResult,
 	type WorkshopStatus,
 	type WorkshopWriteResult,
 } from "../application/tool-workshop.js";
+import { missingEnvNames } from "../env.js";
 import { runAppliedBuilderCandidate } from "../application/builder-candidate.js";
 import { formatPoints, SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
 import {
@@ -516,6 +519,20 @@ function currentBranchName(repositoryDir: string): string | null {
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * Refuse before asking whether a tool may read a key that is not there. The
+ * `next:` clause is the whole recovery: one exported variable in the shell that
+ * runs ahde. The value never reaches the Builder, this process, or the log.
+ */
+function assertDeclaredKeysPresent(requirement: WorkshopToolGrantRequirement): void {
+	const missing = missingEnvNames(requirement.environment);
+	if (missing.length === 0) return;
+	throw new Error(
+		`the ${requirement.tool} tool declares ${missing.join(", ")}, and ${missing.length === 1 ? "it is" : "they are"} not set here; ` +
+		`next: export ${missing[0]} in the shell that runs ahde`,
+	);
 }
 
 function actorId(value: string | undefined): string {
@@ -1974,6 +1991,7 @@ export class AhdeWorkbench {
 			try {
 				const requirement = workshop.describeToolGrant(compiled.brief.name);
 				if (requirement) {
+					assertDeclaredKeysPresent(requirement);
 					workshop.grantToolAccess({
 						tool: requirement.tool,
 						wants: requirement.wants,
@@ -2051,56 +2069,81 @@ export class AhdeWorkbench {
 	 * answer is recorded on the workshop and carried into the proposal the close
 	 * compiles. Without a gate there is nobody to ask, so it stays refused.
 	 */
+	/**
+	 * One host question that authorizes the declared authority of one exact
+	 * package, and the operator identity it was answered by, so a fixture run
+	 * can re-grant per invocation without asking again.
+	 *
+	 * A declared environment variable that is not set on this host is refused
+	 * before the question is asked: allowing a tool to read a key nobody
+	 * exported produces a confusing failure inside the sandbox instead of a
+	 * sentence naming the one thing to do.
+	 */
+	private async authorizeWorkshopTool(
+		workshop: BuilderWorkshop,
+		tool: string,
+		options: { signal?: AbortSignal; gate?: WorkbenchHumanGate; invocations?: number },
+	): Promise<{ requirement: WorkshopToolGrantRequirement; actor: string } | null> {
+		const requirement = workshop.describeToolGrant(tool);
+		if (!requirement) return null;
+		assertDeclaredKeysPresent(requirement);
+		if (workshop.toolAccessGranted(requirement)) return null;
+		if (!options.gate) {
+			throw new Error(
+				`the ${requirement.tool} tool wants ${requirement.wants.join(" and ")}; ` +
+				"a workshop grants neither by default and there is no host here to allow it once",
+			);
+		}
+		const invocations = options.invocations ?? 1;
+		const subject = {
+			workshopId: workshop.workshopId,
+			snapshotHash: workshop.snapshotHash(),
+			tryNumber: workshop.status().tries + 1,
+			tool: requirement.tool,
+			toolDigest: requirement.toolDigest,
+			network: requirement.network,
+			setupNetwork: requirement.setupNetwork,
+			runtimeNetwork: requirement.runtimeNetwork,
+			environment: requirement.environment,
+			...(invocations > 1 ? { invocations } : {}),
+		};
+		const scope = invocations > 1 ? `${invocations} exact fixture runs` : "one exact try";
+		const asked = invocations > 1 ? `${invocations} exact fixture runs` : "this exact try";
+		const confirmation: WorkbenchConfirmation = {
+			kind: "workshop-grant",
+			title: `Allow ${requirement.tool} ${requirement.wants.join(" and ")} for ${scope}`,
+			reason: `the ${requirement.tool} tool declares it and the workshop denies it by default`,
+			subject,
+			subjectHash: hashValue(subject),
+			policy: "one-question",
+			question: `This tool wants ${requirement.wants.join(" and ")} — allow for ${asked}?`,
+		};
+		const decision = await options.gate.confirm(confirmation, options.signal);
+		abortIfRequested(options.signal);
+		if (!decision.approved) {
+			throw new Error(
+				`the operator did not allow ${requirement.tool} ${requirement.wants.join(" and ")}; ` +
+				"write a tool that needs neither, or ask again",
+			);
+		}
+		const actor = actorId(decision.actorId);
+		workshop.grantToolAccess({
+			tool: requirement.tool,
+			wants: requirement.wants,
+			snapshotHash: subject.snapshotHash,
+			actorId: actor,
+			now: this.dependencies.now,
+		});
+		return { requirement, actor };
+	}
+
 	async workshopTry(
 		input: WorkshopTryInput,
 		options: { signal?: AbortSignal; gate?: WorkbenchHumanGate } = {},
 	): Promise<TryToolResult> {
 		const workshop = this.requireWorkshop();
 		const parsed = WorkshopTryInputSchema.parse(input);
-		const requirement = workshop.describeToolGrant(parsed.tool);
-		if (requirement && !workshop.toolAccessGranted(requirement)) {
-			if (!options.gate) {
-				throw new Error(
-					`the ${requirement.tool} tool wants ${requirement.wants.join(" and ")}; ` +
-					"a workshop grants neither by default and there is no host here to allow it once",
-				);
-			}
-			const subject = {
-				workshopId: workshop.workshopId,
-				snapshotHash: workshop.snapshotHash(),
-				tryNumber: workshop.status().tries + 1,
-				tool: requirement.tool,
-				toolDigest: requirement.toolDigest,
-				network: requirement.network,
-				setupNetwork: requirement.setupNetwork,
-				runtimeNetwork: requirement.runtimeNetwork,
-				environment: requirement.environment,
-			};
-			const confirmation: WorkbenchConfirmation = {
-				kind: "workshop-grant",
-				title: `Allow ${requirement.tool} ${requirement.wants.join(" and ")} for one exact try`,
-				reason: `the ${requirement.tool} tool declares it and the workshop denies it by default`,
-				subject,
-				subjectHash: hashValue(subject),
-				policy: "one-question",
-				question: `This tool wants ${requirement.wants.join(" and ")} — allow for this exact try?`,
-			};
-			const decision = await options.gate.confirm(confirmation, options.signal);
-			abortIfRequested(options.signal);
-			if (!decision.approved) {
-				throw new Error(
-					`the operator did not allow ${requirement.tool} ${requirement.wants.join(" and ")}; ` +
-					"write a tool that needs neither, or ask again",
-				);
-			}
-			workshop.grantToolAccess({
-				tool: requirement.tool,
-				wants: requirement.wants,
-				snapshotHash: subject.snapshotHash,
-				actorId: actorId(decision.actorId),
-				now: this.dependencies.now,
-			});
-		}
+		await this.authorizeWorkshopTool(workshop, parsed.tool, options);
 		const result = await workshop.tryTool({
 			tool: parsed.tool,
 			input: parsed.input,
@@ -2109,6 +2152,55 @@ export class AhdeWorkbench {
 		});
 		this.rememberWorkshop(workshop);
 		return result;
+	}
+
+	/**
+	 * Run every declared contract fixture of one tool of the open workshop. One
+	 * question authorizes the whole run, because running a package's own tests
+	 * is one operator action, not one per file.
+	 */
+	async workshopTryFixtures(
+		input: WorkshopTryInput,
+		options: { signal?: AbortSignal; gate?: WorkbenchHumanGate } = {},
+	): Promise<ToolFixtureRunResult> {
+		const workshop = this.requireWorkshop();
+		const parsed = WorkshopTryInputSchema.parse(input);
+		const fixtures = workshop.fixturesFor(parsed.tool);
+		if (fixtures.length === 0) {
+			throw new Error(
+				`tools/${parsed.tool} declares no contract fixtures; write tools/${parsed.tool}/fixtures/<name>.json first`,
+			);
+		}
+		const granted = await this.authorizeWorkshopTool(workshop, parsed.tool, {
+			...options,
+			invocations: fixtures.length,
+		});
+		try {
+			return await workshop.tryFixtures({
+				tool: parsed.tool,
+				now: this.dependencies.now,
+				...(options.signal ? { signal: options.signal } : {}),
+				...(granted
+					? {
+						// The operator allowed this exact package for this exact run; each
+						// invocation still consumes its own single-use grant.
+						beforeEach: () => {
+							if (!workshop.toolAccessGranted(granted.requirement)) {
+								workshop.grantToolAccess({
+									tool: granted.requirement.tool,
+									wants: granted.requirement.wants,
+									snapshotHash: workshop.snapshotHash(),
+									actorId: granted.actor,
+									now: this.dependencies.now,
+								});
+							}
+						},
+					}
+					: {}),
+			});
+		} finally {
+			this.rememberWorkshop(workshop);
+		}
 	}
 
 	/** True while the five workshop tools are legal. Host-side gate, not model state. */

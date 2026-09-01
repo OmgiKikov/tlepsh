@@ -3,6 +3,7 @@ import type { ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
+import { t } from "../i18n.js";
 import { oneLine } from "./render/format.js";
 import { themePaint } from "./render/paint.js";
 import { createPolicyAwareGate, projectForModel } from "./workbench-adapter.js";
@@ -268,7 +269,7 @@ export function createWorkshopTools(
 			label: "Try tool",
 			description: [
 				"Run one declared Target tool of the workshop's own Harness on one JSON input — including the tool you just wrote.",
-				"Arguments: { tool: string, input: <the tool's own JSON arguments> }.",
+				"Arguments: { tool: string, input: <the tool's own JSON arguments> } — or { tool: string, fixtures: true } to run every fixture the package declares in tools/<tool>/fixtures/*.json and get per-fixture pass/fail back.",
 				"It prepares the tool home, runs the declared setup step once, and executes the tool exactly as a Target would.",
 				"A tool whose descriptor or declared setup asks for the network or for an environment variable is refused here until the operator allows it once;",
 				"the host asks them, the answer is recorded on the workshop, and it travels into the diff they later apply. You cannot set that flag yourself.",
@@ -279,17 +280,38 @@ export function createWorkshopTools(
 			prepareArguments: (args) => WorkshopTryToolSchema.prepare(args),
 			async execute(_id, params, signal, _update, ctx) {
 				abortIfRequested(signal);
-				return textResult(await workbench.workshopTry(params, {
-					gate: gateFor(ctx),
-					...(signal ? { signal } : {}),
-				}));
+				const options = { gate: gateFor(ctx), ...(signal ? { signal } : {}) };
+				return textResult(params.fixtures === true
+					? await workbench.workshopTryFixtures(params, options)
+					: await workbench.workshopTry(params, options));
 			},
-			renderCall: (args: { tool?: string }, theme: Theme) => {
+			renderCall: (args: { tool?: string; fixtures?: boolean }, theme: Theme) => {
 				const paint = themePaint(theme);
-				return card([`${paint.accent("workshop")} ${paint.dim("try")} ${paint.bold(args.tool ?? "")}`]);
+				return card([
+					`${paint.accent("workshop")} ${paint.dim(args.fixtures === true ? "fixtures" : "try")} ${paint.bold(args.tool ?? "")}`,
+				]);
 			},
 			renderResult: (result, renderOptions, theme) => {
 				const paint = themePaint(theme);
+				const run = result.details as {
+					tool?: string;
+					total?: number;
+					passed?: number;
+					allPassed?: boolean;
+					fixtures?: { name: string; passed: boolean; durationMs: number; failures: string[] }[];
+				} | undefined;
+				if (run?.fixtures) {
+					const headline = `${run.allPassed ? paint.success("✓") : paint.error("✗")} ${paint.bold(run.tool ?? "")} ` +
+						`${run.passed ?? 0}/${run.total ?? 0} ${t("workshop.fixtures-word")}`;
+					if (!renderOptions.expanded) return card([headline]);
+					return card([
+						headline,
+						...run.fixtures.map((fixture) =>
+							`  ${fixture.passed ? paint.success("✓") : paint.error("✗")} ${fixture.name} ${paint.dim(`${fixture.durationMs}ms`)}` +
+							`${fixture.failures.length > 0 ? ` — ${oneLine(fixture.failures.join("; "), 120)}` : ""}`
+						),
+					]);
+				}
 				const details = result.details as {
 					tool?: string;
 					exitCode?: number | null;

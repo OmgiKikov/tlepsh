@@ -91,7 +91,7 @@ import {
 	synthesizeSealedCorpus,
 } from "./application/sealed-synth.js";
 import { loadBuilderProposalRun } from "./application/builder-proposal.js";
-import { readTryToolInput, tryTool } from "./application/tool-workshop.js";
+import { describeFixtureRun, readTryToolInput, runToolFixtures, tryTool } from "./application/tool-workshop.js";
 import {
 	resolveDevelopmentTargetForEval,
 	resolveScoredCasesForEval,
@@ -1176,8 +1176,26 @@ async function main(): Promise<void> {
 			break;
 		}
 		case "tool": {
-			if (positional(0) !== "try") throw new Error("usage: ahde tool try --target <dir> --tool <name> --input <json|@path>");
+			if (positional(0) !== "try") {
+				throw new Error("usage: ahde tool try --target <dir> --tool <name> (--input <json|@path> | --fixtures)");
+			}
 			const branch = arg("branch");
+			if (arg("fixtures") !== undefined) {
+				const run = await runToolFixtures({
+					repositoryDir: resolve(requireArg("target")),
+					tool: requireArg("tool"),
+					...(branch ? { source: { kind: "branch" as const, ref: branch } } : {}),
+				});
+				console.log(`tool ${run.tool} · ${describeFixtureRun(run)}`);
+				for (const fixture of run.fixtures) {
+					console.log(
+						`  ${fixture.passed ? "✓" : "✗"} ${fixture.name} · exit ${fixture.exitCode ?? "killed"} · ${fixture.durationMs}ms` +
+							`${fixture.failures.length > 0 ? ` — ${fixture.failures.join("; ")}` : ""}`,
+					);
+				}
+				if (!run.allPassed) process.exitCode = 1;
+				break;
+			}
 			const result = await tryTool({
 				repositoryDir: resolve(requireArg("target")),
 				tool: requireArg("tool"),

@@ -173,10 +173,33 @@ failure, not a stack trace about it.
 For operators and tests:
 
 ```
-ahde tool try --target <dir> --tool <name> --input <json|@path> [--branch <ref>]
+ahde tool try --target <dir> --tool <name> (--input <json|@path> | --fixtures) [--branch <ref>]
 ```
 
 Exit 0 when the tool exited 0, 1 when it did not.
+
+### The tool's own contract: `fixtures/`
+
+A tool package carries its tests inside itself, as
+`tools/<name>/fixtures/<fixture>.json`:
+
+```json
+{ "input": { "term": "refunds" }, "expect": { "exitCode": 0, "json": { "answer": "authored" } } }
+```
+
+`expect` takes `exitCode` (default 0), `stdoutContains`, `stderrContains`,
+`json` — a *partial* expected value, where every key it names must match and
+anything else the tool returns is its own business — and `jsonEquals` for the
+whole payload. The fixture's name is its filename and what it covers is derived
+from `exitCode`, so the file stays the smallest thing a person can write by
+hand. Because the files live inside `tools/<name>/`, they join the tool's digest
+like every other file: changing a fixture changes the tool.
+
+The same fixtures run in three places, against the same broker a Target uses:
+`ahde tool try --fixtures` outside the Workshop, `ahde_workshop_try` with
+`{ tool, fixtures: true }` inside it, and `ahde_workshop_author_tool` after it
+writes a package. A typed package cannot be closed until every fixture named in
+its `contract-tests.json` is green against the exact snapshot being proposed.
 
 ## What landed (the Builder-facing surface)
 

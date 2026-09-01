@@ -661,6 +661,11 @@ export const WorkshopTryInputSchema = z.strictObject({
 	tool: z.string().min(1).max(64),
 	/** JSON arguments, validated against the tool's own declared schema. */
 	input: z.unknown(),
+	/**
+	 * Ignore `input` and run every `tools/<tool>/fixtures/*.json` instead. One
+	 * question authorizes the whole run; the answer is per-fixture pass/fail.
+	 */
+	fixtures: z.boolean().optional(),
 });
 export type WorkshopTryInput = z.infer<typeof WorkshopTryInputSchema>;
 /** Caller input; downstream defaults are materialized by parse inside Workbench. */

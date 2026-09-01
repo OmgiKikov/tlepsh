@@ -229,9 +229,13 @@ const COMMAND_SPECS = {
 } as const satisfies Record<Exclude<CliCommand, "corpus" | "feedback" | "tool">, InvocationSpec>;
 
 const TOOL_ACTION_SPECS = {
+	// `--input` is one ad-hoc invocation; `--fixtures` is the package's own
+	// contract tests. Exactly one of them, because a fixture run ignores an
+	// input and an input run proves nothing about the fixtures.
 	try: {
-		flags: ["target", "tool", "input", "branch"],
-		requiredFlags: ["target", "tool", "input"],
+		flags: ["target", "tool", "input", "branch", "fixtures"],
+		booleanFlags: ["fixtures"],
+		requiredFlags: ["target", "tool"],
 		positionals: 0,
 	},
 } as const satisfies Record<"try", InvocationSpec>;
@@ -548,13 +552,17 @@ function unionFlags(specs: Readonly<Record<string, InvocationSpec>>): string[] {
 	return [...new Set(Object.values(specs).flatMap((spec) => spec.flags))];
 }
 
+function unionBooleanFlags(specs: Readonly<Record<string, InvocationSpec>>): string[] {
+	return [...new Set(Object.values(specs).flatMap((spec) => spec.booleanFlags ?? []))];
+}
+
 function parseActionCommand(
 	command: ActionCommand,
 	tokens: readonly string[],
 ): ParsedCliInvocation {
 	const specs = ACTION_COMMAND_SPECS[command];
 	const actions = Object.keys(specs);
-	const parsed = tokenize(tokens, unionFlags(specs), command);
+	const parsed = tokenize(tokens, unionFlags(specs), command, unionBooleanFlags(specs));
 	const actionToken = parsed.positionals.shift();
 	if (actionToken === undefined) cliError(`missing action for ${command}; expected ${actions.join(", ")}`);
 	const spec = actions.includes(actionToken) ? specs[actionToken] : undefined;
@@ -590,6 +598,13 @@ function validateActionRelationships(context: string, flags: Readonly<Record<str
 	}
 	if (flags["stratify-by"] !== undefined && !sealed) {
 		cliError(`--stratify-by for ${context} only applies to a sealed slice; add --sealed N --seed S`);
+	}
+	if (context === "tool try") {
+		const hasInput = flags.input !== undefined;
+		const hasFixtures = flags.fixtures !== undefined;
+		if (hasInput === hasFixtures) {
+			cliError("tool try requires exactly one of --input <json|@path> or --fixtures");
+		}
 	}
 }
 

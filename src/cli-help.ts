@@ -46,8 +46,9 @@ Inspect and run:
                                                HTTP/JSON API; your UI is the gate
   ahde list [--target <id>]                    list eval runs
   ahde feedback list [--target <dir>]          👍/👎 marks collected in ahde target
-  ahde tool try --target <dir> --tool <name> --input <json|@path>
-                                               run one declared tool in its sandbox
+  ahde tool try --target <dir> --tool <name> (--input <json|@path> | --fixtures)
+                                               run one declared tool in its sandbox,
+                                               or its whole fixture contract
   ahde label <evalRunId> --target <dir> [--spec <id>]  check the judge against your own eyes
   ahde judge-agreement <evalRunId> --target <dir>
                                                how far that judge is calibrated
@@ -603,15 +604,22 @@ ids, N, the seed, the counts, and the timestamp. No case content, ever.
 
 Below 15 cases the sealed guardrail can only ever say \`underpowered\`, and the
 command says so.`,
-	"tool try": `Usage: ahde tool try --target <dir> --tool <name> --input <json|@path> [--branch <ref>]
+	"tool try": `Usage: ahde tool try --target <dir> --tool <name> (--input <json|@path> | --fixtures) [--branch <ref>]
 
-Run one declared Target tool on one JSON input inside a private scratch copy of
-the Harness: same descriptor, same OS sandbox, same declared setup step, same
-workspace projection a Target sees. --input takes inline JSON or @path to a JSON
-file; --branch tries an exact other revision instead of HEAD.
+Run one declared Target tool inside a private scratch copy of the Harness: same
+descriptor, same OS sandbox, same declared setup step, same workspace projection
+a Target sees. --input takes inline JSON or @path to a JSON file. --fixtures
+ignores --input and runs every tools/<name>/fixtures/*.json instead — the tool's
+own contract, the same tests the Builder runs — and prints one line per fixture.
+--branch tries an exact other revision instead of HEAD.
+
+A fixture file is { "input": {...}, "expect": { "exitCode"?, "stdoutContains"?,
+"stderrContains"?, "json"? } }, where "json" is a partial expected value: every
+key it names must match, anything else the tool returns is its own business.
 
 Your checkout is never touched, no eval evidence is written, and output is
-bounded and redacted. Exit 0 = the tool exited 0, 1 = the tool failed.`,
+bounded and redacted. Exit 0 = the tool exited 0 (or every fixture passed),
+1 = the tool failed (or a fixture did).`,
 };
 
 const ACTION_COMMANDS = new Set(["corpus", "feedback", "tool"]);

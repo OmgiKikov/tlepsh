@@ -665,7 +665,9 @@ describe("a tool that wants more than the profile grants", () => {
 			expect(asked[2]?.subjectHash).not.toBe(asked[1]?.subjectHash);
 
 			// Adding a credential request changes both bytes and capabilities and
-			// therefore asks yet another exact question.
+			// therefore asks yet another exact question — but only once the key it
+			// names actually exists. A declared key nobody exported is refused
+			// before the question, with the one thing to do.
 			workshop.write({
 				path: "tools/lookup/tool.yaml",
 				content: NETWORK_DESCRIPTOR.replace(
@@ -673,7 +675,20 @@ describe("a tool that wants more than the profile grants", () => {
 					"environment: [WORKSHOP_TARGET_SECRET]",
 				),
 			});
-			await workbench.workshopTry({ tool: "lookup", input: { term: "refunds" } }, { gate: allowing });
+			delete process.env.WORKSHOP_TARGET_SECRET;
+			await expect(workbench.workshopTry({ tool: "lookup", input: { term: "refunds" } }, { gate: allowing }))
+				.rejects.toThrow(
+					"the lookup tool declares WORKSHOP_TARGET_SECRET, and it is not set here; " +
+					"next: export WORKSHOP_TARGET_SECRET in the shell that runs ahde",
+				);
+			expect(asked).toHaveLength(3);
+
+			process.env.WORKSHOP_TARGET_SECRET = "fixture-value";
+			try {
+				await workbench.workshopTry({ tool: "lookup", input: { term: "refunds" } }, { gate: allowing });
+			} finally {
+				delete process.env.WORKSHOP_TARGET_SECRET;
+			}
 			expect(asked).toHaveLength(4);
 			expect(asked[3]?.subject).toMatchObject({
 				tool: "lookup",
