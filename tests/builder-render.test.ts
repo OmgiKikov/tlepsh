@@ -2412,6 +2412,7 @@ describe("the workshop-close review", () => {
 		paths: ["manifest.yaml", "tools/weather/tool.yaml"],
 		risks: [],
 		validationPlan: ["Run the basket"],
+		prediction: null,
 		authoringContext: null,
 		evidenceBasis: null,
 		exactDiff: WEATHER_TOOL_DIFF,
