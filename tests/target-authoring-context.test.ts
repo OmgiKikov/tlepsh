@@ -266,6 +266,32 @@ describe("Target Authoring Context", () => {
 		expectCode(() => inspect(stale.repositoryDir, stale.gitSha), "TARGET_CONTEXT_STALE");
 	});
 
+	/**
+	 * The host creates `.ahde/` and `runs/` inside the Target, so a checkout
+	 * that has not been told to ignore them is not the operator's dirt. This is
+	 * what refused the very first workshop of a freshly adopted Target.
+	 */
+	it("never counts the host's own store as the operator's uncommitted work", () => {
+		const fixture = commitFixture();
+		mkdirSync(join(fixture.repositoryDir, ".ahde", "projects"), { recursive: true });
+		writeFileSync(join(fixture.repositoryDir, ".ahde", "projects", "focus.json"), "{}\n");
+		mkdirSync(join(fixture.repositoryDir, "runs", "erun_1"), { recursive: true });
+		writeFileSync(join(fixture.repositoryDir, "runs", "erun_1", "eval_run.json"), "{}\n");
+		expect(git(fixture.repositoryDir, "status", "--porcelain=v1", "--untracked-files=all")).not.toBe("");
+
+		expect(inspect(fixture.repositoryDir, fixture.gitSha).target.id).toBe("context-agent");
+
+		// A real stray file is still a refusal, and it says which one to commit.
+		writeFileSync(join(fixture.repositoryDir, "notes.md"), "operator work\n");
+		try {
+			inspect(fixture.repositoryDir, fixture.gitSha);
+			throw new Error("expected TargetAuthoringContextError");
+		} catch (error) {
+			expect((error as TargetAuthoringContextError).code).toBe("TARGET_CONTEXT_DIRTY");
+			expect((error as Error).message).toBe("Target has uncommitted changes: notes.md. Commit them, then author.");
+		}
+	});
+
 	it("reads the named commit bytes even when a replacement ref targets another commit", () => {
 		const fixture = commitFixture();
 		const replacementAgents = "# Replacement instructions\n\nThese bytes must not enter the exact context.\n";

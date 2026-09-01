@@ -83,6 +83,38 @@ export function renderLocalArtifactIgnoreLine(added: readonly string[]): string 
 /** The engine store, by the two roots a Target must never commit. */
 export const ENGINE_STORE_PATHS: readonly string[] = [".ahde", "runs"];
 
+/** Whether one repository-relative path belongs to the engine's store. */
+function inEngineStore(path: string): boolean {
+	return ENGINE_STORE_PATHS.some((root) => path === root || path.startsWith(`${root}/`));
+}
+
+/**
+ * The paths in `git status --porcelain=v1 -z` that the OPERATOR owns.
+ *
+ * AHDE creates `.ahde/` and `runs/` inside the Target itself, so a Target
+ * whose `.gitignore` does not name them yet is not a dirty checkout — it is a
+ * checkout the host has not finished tidying, and no refusal about
+ * uncommitted work may be built on it. `ensureLocalArtifactIgnores` writes
+ * the rules; this makes every dirty check agree even before it has run, or
+ * after an operator edits the file back.
+ *
+ * `-z` because porcelain quotes any other path that is not plain ASCII, and a
+ * quoted `"runs/…"` would read as the operator's. A rename contributes both
+ * of its paths, so moving a real file into the store still counts.
+ */
+export function operatorDirtyPaths(porcelain: string): string[] {
+	const paths = porcelain
+		.split("\0")
+		.filter((field) => field.length > 0)
+		// A rename's second field carries no `XY ` status prefix; it is a bare path.
+		.map((field) => (/^[ MADRCU?!]{2} /.test(field) ? field.slice(3) : field))
+		.filter((path) => !inEngineStore(path));
+	return [...new Set(paths)].sort();
+}
+
+/** Git's exclusion of the same two roots, for commands that read the tree rather than its status. */
+export const ENGINE_STORE_EXCLUDE: readonly string[] = ENGINE_STORE_PATHS.map((root) => `:(exclude)${root}`);
+
 /**
  * A sealed corpus that reached a Git object cannot be un-published; the only
  * thing left is to stop using the branch that carries it. Surfaced as `next:`.
@@ -141,18 +173,29 @@ export class DirtyTargetTreeError extends Error {
 }
 
 /**
- * Whether the checkout carries anything the recorded revision cannot name.
- * Deliberately the same question `gitSha()` in manifest.ts asks before it
- * appends `-dirty-<hash>`, so the two can never disagree about what dirty is —
- * untracked files included, because they are hashed into that suffix too.
+ * Everything in the checkout the recorded revision cannot name, host store
+ * excluded. Deliberately the same question `gitSha()` in manifest.ts asks
+ * before it appends `-dirty-<hash>`, so the two can never disagree about what
+ * dirty is — untracked files included, because they are hashed into that
+ * suffix too.
  */
-export function targetTreeIsDirty(repositoryDir: string): boolean {
+export function dirtyTargetPaths(repositoryDir: string): string[] {
 	const status = execFileSync(
 		"git",
-		["-C", repositoryDir, "status", "--porcelain=v1", "--untracked-files=all"],
+		["-C", repositoryDir, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
 		{ encoding: "utf8", maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] },
 	);
-	return status.trim().length > 0;
+	return operatorDirtyPaths(status);
+}
+
+export function targetTreeIsDirty(repositoryDir: string): boolean {
+	return dirtyTargetPaths(repositoryDir).length > 0;
+}
+
+/** `AGENTS.md, tools/check_dbo` — at most four, so a refusal stays one sentence. */
+export function namedDirtyPaths(paths: readonly string[]): string {
+	const shown = paths.slice(0, 4).join(", ");
+	return paths.length > 4 ? `${shown} (and ${paths.length - 4} more)` : shown;
 }
 
 /**
@@ -165,9 +208,12 @@ export function assertCleanTargetTree(
 	repositoryDir: string,
 	reason: { because: string; next: string },
 ): void {
-	if (!targetTreeIsDirty(repositoryDir)) return;
+	const dirty = dirtyTargetPaths(repositoryDir);
+	if (dirty.length === 0) return;
+	// Which files. An operator told only "uncommitted changes" cannot act on it,
+	// and the answer is always to commit them — never to throw them away.
 	throw new DirtyTargetTreeError(
-		`the Target has uncommitted changes; ${reason.because}`,
+		`the Target has uncommitted changes (${namedDirtyPaths(dirty)}); ${reason.because}`,
 		reason.next,
 	);
 }

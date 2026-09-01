@@ -18,6 +18,7 @@ import { canonicalJson, hashValue } from "../provenance.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
 import { safeArtifactSegment } from "../storage/paths.js";
 import { loadCandidateRecord } from "./candidate-review.js";
+import { namedDirtyPaths, operatorDirtyPaths } from "./store-hygiene.js";
 
 const GitShaSchema = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/, "expected a full Git SHA");
 const HashSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/, "expected a sha256 fingerprint");
@@ -236,8 +237,16 @@ function repositoryRoot(input: string): string {
 }
 
 function assertClean(repositoryDir: string): void {
-	if (gitRaw(repositoryDir, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).length > 0) {
-		fail("TARGET_ADOPTION_DIRTY", "Target adoption requires a clean worktree and index.");
+	// The host's own `.ahde/` and `runs/` sit inside the Target; only the
+	// operator's files can stand between them and their released version.
+	const dirty = operatorDirtyPaths(
+		gitRaw(repositoryDir, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).toString("utf8"),
+	);
+	if (dirty.length > 0) {
+		fail(
+			"TARGET_ADOPTION_DIRTY",
+			`Target adoption requires a clean worktree and index; commit ${namedDirtyPaths(dirty)}.`,
+		);
 	}
 }
 

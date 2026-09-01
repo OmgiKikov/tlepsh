@@ -8,6 +8,7 @@ import {
 	assertUntrackedEngineStore,
 	DirtyTargetTreeError,
 	ensureLocalArtifactIgnores,
+	operatorDirtyPaths,
 	renderLocalArtifactIgnoreLine,
 	targetTreeIsDirty,
 	TargetStoreHygieneError,
@@ -207,6 +208,40 @@ describe("assertCleanTargetTree", () => {
 		}
 	});
 
+	/**
+	 * AHDE writes `.ahde/` and `runs/` into the Target itself, so a checkout
+	 * that has not been told to ignore them yet is not the operator's dirt.
+	 * `-z` is why: porcelain quotes any path that is not plain ASCII, and a
+	 * quoted `"runs/…"` would otherwise read as somebody's own file.
+	 */
+	it("reads the operator's paths out of a porcelain status, host store excluded", () => {
+		expect(operatorDirtyPaths("?? .ahde/\0?? runs/erun_1/eval_run.json\0")).toEqual([]);
+		expect(operatorDirtyPaths(" M AGENTS.md\0?? runs/x\0?? tools/check_dbo/\0"))
+			.toEqual(["AGENTS.md", "tools/check_dbo/"]);
+		// A rename contributes both paths, so moving a real file into the store counts.
+		expect(operatorDirtyPaths("R  runs/moved.md\0notes.md\0")).toEqual(["notes.md"]);
+		expect(operatorDirtyPaths("?? runs/файл\0?? кейсы.md\0")).toEqual(["кейсы.md"]);
+		expect(operatorDirtyPaths("")).toEqual([]);
+		// The store never masks a path that only starts with the same letters.
+		expect(operatorDirtyPaths("?? runsheet.md\0")).toEqual(["runsheet.md"]);
+	});
+
+	it("leaves an unignored engine store out of the dirty tree it refuses on", () => {
+		const dir = repoFixture();
+		try {
+			mkdirSync(join(dir, ".ahde", "projects"), { recursive: true });
+			writeFileSync(join(dir, ".ahde", "projects", "focus.json"), "{}\n");
+			mkdirSync(join(dir, "runs", "erun_1"), { recursive: true });
+			writeFileSync(join(dir, "runs", "erun_1", "eval_run.json"), "{}\n");
+			expect(git(dir, "status", "--porcelain=v1", "--untracked-files=all")).not.toBe("");
+
+			expect(targetTreeIsDirty(dir)).toBe(false);
+			expect(() => assertCleanTargetTree(dir, { because: "why", next: "how" })).not.toThrow();
+		} finally {
+			cleanup(dir);
+		}
+	});
+
 	it("says what a dirty tree stops, per command, with the operator's next step", () => {
 		const dir = repoFixture();
 		try {
@@ -223,7 +258,8 @@ describe("assertCleanTargetTree", () => {
 			}
 			expect(thrown).toBeInstanceOf(DirtyTargetTreeError);
 			const error = thrown as DirtyTargetTreeError;
-			expect(error.message).toBe("the Target has uncommitted changes; why");
+			// The paths, because "commit them" is unactionable without them.
+			expect(error.message).toBe("the Target has uncommitted changes (improve.log); why");
 			expect(error.next).toBe("how");
 			expect(targetTreeIsDirty(dir)).toBe(true);
 		} finally {
