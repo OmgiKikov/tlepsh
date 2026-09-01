@@ -34,6 +34,8 @@ import { setLanguage } from "../src/i18n.js";
 import { renderImpact } from "../src/builder/render/impact.js";
 import { renderToolPermissions, toolPermissionsFromDiff } from "../src/builder/render/tool-permissions.js";
 import { fixtureLines, renderWorkshopCloseReview } from "../src/builder/render/workshop-close.js";
+import { createWorkshopTools } from "../src/builder/workshop-tools.js";
+import type { AhdeWorkbench } from "../src/workbench/workbench.js";
 import type { ToolFixtureRunResult } from "../src/application/tool-workshop.js";
 import { plainPaint, type Paint } from "../src/builder/render/paint.js";
 import { STAGE_LABELS, nextStep, stageLabel } from "../src/builder/render/stage.js";
@@ -2507,5 +2509,94 @@ describe("the hand-off to the agent", () => {
 			view: makeView({ target: { status: "bootstrap-required", id: null, gitSha: null, model: null } }),
 		} as WorkbenchDecisionResult;
 		expect(handoffLines(unready, plainPaint)).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// The workshop tool cards: a refusal is a result too.
+// ---------------------------------------------------------------------------
+
+describe("the workshop tool cards", () => {
+	type Card = {
+		renderResult?: (result: unknown, options: unknown, theme: unknown, context: unknown) => Text;
+		name: string;
+	};
+	const cards = createWorkshopTools({} as AhdeWorkbench) as unknown as Card[];
+	const card = (name: string): Card => cards.find((entry) => entry.name === name)!;
+
+	/** Exactly what Pi hands a renderer when `execute` threw. */
+	const thrown = (message: string) => ({ content: [{ type: "text", text: message }], details: {} });
+
+	function render(name: string, result: unknown, args: unknown, expanded = false): string {
+		return card(name).renderResult!(result, { expanded }, fakeTheme, { args }).render(200).join("\n");
+	}
+
+	it("shows the reason a command, a try or a package was refused, never an invented result", () => {
+		// The live session read `✗ exit killed · 0ms · sandbox none` three times.
+		// Nothing had been killed: the host refused argv[0] before spawning it.
+		const bash = render(
+			"ahde_workshop_bash",
+			thrown("argv[0] must be a bare PATH command or an absolute executable path"),
+			{ argv: ["tools/check_dbo/run", "DBO-2345"] },
+		);
+		expect(bash).toContain("argv[0] must be a bare PATH command");
+		expect(bash).not.toContain("exit killed");
+		expect(bash).not.toContain("sandbox none");
+
+		const tried = render(
+			"ahde_workshop_try",
+			thrown("the check_dbo tool wants network access during setup to run here; the operator has to allow that once before it may be tried"),
+			{ tool: "check_dbo" },
+		);
+		expect(tried).toContain("check_dbo");
+		expect(tried).toContain("the operator has to allow that once");
+		expect(tried).not.toContain("exit killed");
+
+		// And `✗ tool 0/0 contract tests passed`, four times, for a package that
+		// was rejected before a single test of it existed.
+		const authored = render(
+			"ahde_workshop_author_tool",
+			thrown("a tool package needs one happy-path fixture and one error-handling fixture\nsecond line is not shown"),
+			{ name: "check_dbo" },
+		);
+		expect(authored).toContain("check_dbo");
+		expect(authored).toContain("needs one happy-path fixture and one error-handling fixture");
+		expect(authored).not.toContain("0/0");
+		expect(authored).not.toContain("second line is not shown");
+
+		// A write refused by scope is a refusal, not a green “✓ wrote”.
+		const written = render(
+			"ahde_workshop_write",
+			thrown("workshop scope refuses evals/development.jsonl: only AGENTS.md, skills/**, tools/**, bin/**, data/** exist in a workshop"),
+			{ path: "evals/development.jsonl" },
+		);
+		expect(written).toContain("workshop scope refuses evals/development.jsonl");
+		expect(written).not.toContain("✓");
+	});
+
+	it("still renders a real result, and names the first failing contract test", () => {
+		const ran = render("ahde_workshop_bash", {
+			details: { argv: ["sh", "-c", "true"], exitCode: 1, durationMs: 20, sandbox: "sandbox-exec" },
+			content: [{ type: "text", text: "{}" }],
+		}, { argv: ["sh", "-c", "true"] });
+		expect(ran).toContain("exit 1");
+		expect(ran).toContain("sandbox sandbox-exec");
+
+		// Tests that did run report their count and why the first one failed, so
+		// the collapsed line is a repair instruction rather than a score.
+		const red = render("ahde_workshop_author_tool", {
+			details: {
+				tool: "check_dbo",
+				allPassed: false,
+				files: ["tools/check_dbo/run"],
+				tests: [
+					{ name: "valid-contract", passed: false, durationMs: 12, failure: "expected exit 0, got 1; stdout is not valid JSON" },
+					{ name: "unknown-contract", passed: true, durationMs: 9, failure: null },
+				],
+			},
+			content: [{ type: "text", text: "{}" }],
+		}, { name: "check_dbo" });
+		expect(red).toContain("1/2 contract tests passed");
+		expect(red).toContain("expected exit 0, got 1; stdout is not valid JSON");
 	});
 });
