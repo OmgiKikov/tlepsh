@@ -20,7 +20,8 @@ import type {
 } from "../workbench/types.js";
 import { compileAgentLog } from "../application/agent-log.js";
 import { oneLine, pluralize } from "./render/format.js";
-import { renderAgentLog } from "./render/agent-log.js";
+import { renderAgentLog, renderAgentLogChart } from "./render/agent-log.js";
+import { handoffLines } from "./render/handoff.js";
 import {
 	MAX_LABEL_SAMPLE,
 	NoJudgedEvidence,
@@ -417,9 +418,21 @@ export function registerAhdeBuilderCommands(
 						...renderVersionPassport(passport, markerPaint),
 					);
 				} catch (error) {
-					lines.push("", markerPaint.warning(`Passport unavailable: ${oneLine(describeError(error), 180)}`));
+					lines.push("", markerPaint.warning(t("result.passport-unavailable", { reason: oneLine(describeError(error), 180) })));
+				}
+				try {
+					lines.push("", ...renderAgentLogChart(compileAgentLog({
+						runsRoot: workbench.runsRoot,
+						projectId: workbench.projectId,
+						...(result.view.target.id ? { targetId: result.view.target.id } : {}),
+					}), markerPaint));
+				} catch {
+					// The growth line is a second look at the same evidence.
 				}
 			}
+			// The same hand-off the conversational path ends with: a shortcut is not
+			// a reason to be told less.
+			lines.push(...handoffLines(result, markerPaint));
 			headline = decisionHeadline(result);
 		} catch {
 			lines = [oneLine(result.message, 600), ...(liveTraceUrl ? [`Live trace retained for 15 minutes: ${liveTraceUrl}`] : [])];
@@ -597,7 +610,7 @@ export function registerAhdeBuilderCommands(
 				...(proposalRunId ? { runId: proposalRunId } : {}),
 			}, signal, { onRunEvent: observation.onRunEvent });
 			outcome = result ? "completed" : "aborted";
-			if (result) await showDecision(ctx, "apply", result, observation.liveTraceUrl);
+			if (result) await showDecision(ctx, "apply", result, { liveTraceUrl: observation.liveTraceUrl });
 		} catch (error) {
 			if (signal?.aborted) outcome = "aborted";
 			throw error;
