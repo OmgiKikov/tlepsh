@@ -110,7 +110,9 @@ function estimateMinutes(estimate: WorkbenchRunEstimate | null): number | null {
 }
 
 function backgroundThresholdMinutes(env: NodeJS.ProcessEnv): number {
-	const raw = Number(env.AHDE_JOB_MIN_MINUTES);
+	const configured = env.AHDE_JOB_MIN_MINUTES?.trim();
+	if (!configured) return DEFAULT_BACKGROUND_MINUTES;
+	const raw = Number(configured);
 	return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_BACKGROUND_MINUTES;
 }
 
