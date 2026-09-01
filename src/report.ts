@@ -17,6 +17,21 @@ import { judgeEvidenceCalibration, type JudgeCalibration } from "./application/j
 import { formatJudgeAgreement } from "./domain/judge-agreement.js";
 import { canonicalJson, hashValue, type RunRecord } from "./provenance.js";
 import { openTrace, redactTraceText, type TraceMessage } from "./trace.js";
+import {
+	explainRun,
+	graderFindings,
+	runsTable,
+	taskInputPreviews,
+	traceFacts,
+	type RunExplanation,
+	type RunRow,
+} from "./application/run-explanation.js";
+import {
+	EVIDENCE_TABLE_CSS,
+	EVIDENCE_TOKENS_DARK,
+	RUNS_TABLE_FILTER_SCRIPT,
+	renderRunsTable,
+} from "./evidence/pages.js";
 import { writeTextArtifact } from "./storage/artifacts.js";
 import { resolveContainedArtifactPath } from "./storage/paths.js";
 // The optional growth section: the same projection `ahde log` prints.
@@ -45,6 +60,8 @@ const MAX_REPRESENTATIVE_TRACE_CHARS = 8_000;
 const MAX_COUNTER_REPRESENTATIVES = 5;
 const MAX_COUNTER_TRACE_CHARS = 4_000;
 const MAX_REPORT_DATA_BYTES = 3 * 1024 * 1024;
+/** Table rows embedded in a static report. One row per case × repetition. */
+export const MAX_REPORT_TABLE_ROWS = 1_000;
 export const MAX_REPORT_HTML_BYTES = 20 * 1024 * 1024;
 export const MAX_DETAIL_RUNS = 50;
 export const MAX_NORMALIZED_TRACE_CHARS = 250_000;
@@ -230,6 +247,15 @@ export interface EvalReportData {
 	 * missing growth section never costs a report its run evidence.
 	 */
 	agentLog: AgentLog | null;
+	/**
+	 * One row per case × repetition — the same projection the live Evidence
+	 * Explorer tabulates, so the offline artifact and the served page cannot show
+	 * different numbers for the same eval.
+	 */
+	rows: RunRow[];
+	/** Host-written explanation of every run that did not pass, in table order. */
+	explanations: RunExplanation[];
+	omittedTableRowCount: number;
 	projection: EvalReportProjection;
 	redactionNotice: string;
 }
@@ -765,6 +791,36 @@ export function collectEvalReportData(
 			agentLog = null;
 		}
 	}
+	// The table and the host-written explanations use exactly the projection the
+	// live explorer serves, so an operator reading `report.html` offline and an
+	// operator reading `/evals/<id>` see the same rows and the same sentences.
+	const inputPreviews = taskInputPreviews(runsRoot, verified.runs);
+	const allTableRows = runsTable(runsRoot, verified.runs, improvementBrief, { inputPreviews });
+	const tableRows = allTableRows.slice(0, MAX_REPORT_TABLE_ROWS);
+	const verifiedById = new Map(verified.runs.map((run) => [run.runId, run]));
+	const explanations = tableRows
+		.filter((row) => row.outcome !== "pass")
+		.map((row) => {
+			const sourceRun = verifiedById.get(row.runId)!;
+			const messages = sourceRun.trace.sha256
+				? (() => {
+					try {
+						const artifact = resolveContainedArtifactPath(runsRoot, sourceRun.runId, sourceRun.trace.path);
+						return openTrace(dirname(artifact), basename(artifact), sourceRun.trace.sha256);
+					} catch {
+						return null;
+					}
+				})()
+				: null;
+			return explainRun({
+				run: sourceRun,
+				graders: graderFindings(runsRoot, sourceRun, { includeJudgeVerdicts: true }),
+				facts: messages ? traceFacts(messages) : null,
+				modes: improvementBrief.modes.filter((mode) =>
+					mode.evidence.some((evidence) => evidence.runId === row.runId)),
+				flip: null,
+			});
+		});
 	const data: EvalReportData = {
 		generatedAt: now(),
 		evalRun: projectedEvalRun,
@@ -775,6 +831,9 @@ export function collectEvalReportData(
 		runs,
 		judgeCalibration: judgeCalibrationRows(verified.runs, calibration, options.labels !== undefined),
 		agentLog,
+		rows: tableRows,
+		explanations,
+		omittedTableRowCount: allTableRows.length - tableRows.length,
 		projection,
 		redactionNotice:
 			"This report contains normalized, size-bounded, credential-redacted traces, run errors, grader metadata, and diagnosis text. Protected canonical artifacts remain unchanged on disk.",
@@ -845,6 +904,8 @@ export function renderEvalReportHtml(data: EvalReportData): string {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AHDE Evidence Report</title>
 <style>
+${EVIDENCE_TOKENS_DARK}
+${EVIDENCE_TABLE_CSS}
 :root{color-scheme:dark;--bg:#090b10;--panel:#10131b;--panel2:#151a24;--line:#252b38;--text:#edf0f7;--muted:#929bae;--blue:#6d7cff;--green:#43d17b;--red:#ff667a;--amber:#f2b84b;--radius:14px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 	*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 15% -10%,#1b2140 0,transparent 35%),var(--bg);color:var(--text)}button{font:inherit}.shell{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:100vh}.side{position:sticky;top:0;height:100vh;border-right:1px solid var(--line);padding:22px 16px;background:rgba(9,11,16,.88);backdrop-filter:blur(16px);overflow:auto}.brand{display:flex;gap:10px;align-items:center;font-weight:750;letter-spacing:.02em;margin:0 8px 24px}.mark{width:28px;height:28px;border-radius:9px;background:linear-gradient(135deg,#8590ff,#4b57e8);box-shadow:0 0 24px #6070ff77}.eyebrow{text-transform:uppercase;letter-spacing:.12em;font-size:11px;color:var(--muted);margin:20px 8px 8px}.run-link{display:block;width:100%;border:0;background:transparent;color:var(--muted);padding:9px 10px;border-radius:9px;text-align:left;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.run-link:hover,.run-link.active{background:var(--panel2);color:var(--text)}.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:8px;background:var(--red)}.dot.pass{background:var(--green)}main{padding:36px clamp(24px,4vw,64px);max-width:1500px;width:100%}.top{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:30px}.top h1{font-size:clamp(28px,4vw,48px);line-height:1.05;margin:7px 0 10px;letter-spacing:-.04em}.sub{color:var(--muted);font-size:14px}.badge{display:inline-flex;align-items:center;padding:7px 10px;border:1px solid var(--line);border-radius:999px;background:var(--panel);font-size:12px;color:var(--muted)}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:22px 0 30px}.stat{background:linear-gradient(145deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:var(--radius);padding:18px}.stat strong{font-size:30px;letter-spacing:-.04em;display:block}.stat span{font-size:12px;color:var(--muted)}section{margin:30px 0}.section-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}.section-title h2{font-size:18px;margin:0}.issues{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.issue{border:1px solid var(--line);background:var(--panel);border-radius:var(--radius);padding:18px}.issue-head{display:flex;justify-content:space-between;gap:10px}.issue h3{font-size:15px;margin:0 0 8px}.pill{font-size:10px;text-transform:uppercase;letter-spacing:.09em;border-radius:999px;padding:5px 8px;background:#252b3b;color:#c9d0e1}.pill.blocking{background:#481d29;color:#ff9aaa}.issue p{color:var(--muted);font-size:13px;line-height:1.55}.issue ul{padding-left:18px;color:#cbd1df;font-size:13px;line-height:1.55}.brief-headline{font-size:14px;color:#cbd1df;line-height:1.55}.mode-meta,.mode-impact,.mode-evidence{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.hypothesis{border-left:2px solid var(--amber);padding-left:10px}.evidence-list{margin:8px 0;padding-left:18px;color:#cbd1df;font-size:12px}.evidence-list li{margin:7px 0}.trace-link{border:1px solid #39425a;background:#171d2a;color:#cbd3ff;border-radius:8px;padding:7px 9px;cursor:pointer;font-size:12px}.trace-link:hover,.trace-link.active{border-color:var(--blue);color:#fff}.table-wrap{border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--panel)}table{border-collapse:collapse;width:100%;font-size:13px}th,td{padding:13px 14px;border-bottom:1px solid var(--line);text-align:left}th{color:var(--muted);font-weight:550;background:#121620}tr:last-child td{border-bottom:0}tr[data-run]{cursor:pointer}tr[data-run]:hover{background:var(--panel2)}.outcome{font-weight:700}.outcome.pass{color:var(--green)}.outcome.fail,.outcome.error{color:var(--red)}.trace{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);min-height:220px}.trace-empty{padding:44px;text-align:center;color:var(--muted)}.trace-head{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}.message{padding:18px;border-bottom:1px solid var(--line)}.message:last-child{border-bottom:0}.message-label{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--blue);margin-bottom:9px}.message pre{white-space:pre-wrap;word-break:break-word;margin:0;color:#dce1ec;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}.tool{margin-top:10px;background:#0b0e14;border:1px solid #262d3c;border-radius:10px;padding:12px}.tool.error{border-color:#632a36}.notice{font-size:12px;color:var(--muted);border-left:2px solid var(--blue);padding:8px 12px}.delta{color:var(--green)}@media(max-width:900px){.shell{grid-template-columns:1fr}.side{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line)}.grid{grid-template-columns:repeat(2,1fr)}.issues{grid-template-columns:1fr}}@media(max-width:520px){.grid{grid-template-columns:1fr}.top{display:block}}
 tr.attempt td{color:var(--muted)}tr.version td:first-child{font-weight:700}
@@ -857,7 +918,11 @@ tr.attempt td{color:var(--muted)}tr.version td:first-child{font-weight:700}
 	<section><div class="section-title"><h2>Failure modes</h2><span class="badge" id="failure-mode-status"></span></div><p class="brief-headline" id="brief-headline"></p><p class="notice" id="proposal-gate"></p><div class="issues" id="failure-modes"></div></section>
 <section><div class="section-title"><h2>Task issue drill-down</h2><span class="badge" id="diagnosis-status"></span></div><div class="issues" id="issues"></div></section>
 <section id="comparison-section" hidden><div class="section-title"><h2>Matched comparison</h2><span class="badge" id="comparison-verdict"></span></div><p class="notice" id="comparison-gate"></p><div class="table-wrap"><table><thead><tr><th>Task</th><th>Baseline</th><th>Candidate</th><th>Score</th><th>Delta</th></tr></thead><tbody id="comparison"></tbody></table></div></section>
-<section><div class="section-title"><h2>Run evidence</h2></div><p class="notice" id="judge-calibration" hidden></p><p class="notice" id="projection-notice">${htmlText(projectionNotice(data.projection))}</p><div class="table-wrap"><table><thead><tr><th>Task</th><th>Rep</th><th>Outcome</th><th>Latency</th><th>Tools</th><th>Tokens</th></tr></thead><tbody id="runs"></tbody></table></div></section>
+<section><div class="section-title"><h2>Run evidence</h2><span class="badge">${data.rows.length} run(s)</span></div><p class="notice" id="judge-calibration" hidden></p><p class="notice" id="projection-notice">${htmlText(projectionNotice(data.projection))}</p><div class="filters"><input id="filter" type="search" placeholder="Filter by task id or input text" aria-label="Filter runs"><span class="count" id="filter-count"></span></div>${renderRunsTable(data.rows, {
+	hrefForRun: (runId) => `#run=${encodeURIComponent(runId)}`,
+	modeLabels: new Map(data.improvementBrief.modes.map((mode) => [mode.failureModeId, mode.title])),
+	dataRun: true,
+})}${data.omittedTableRowCount > 0 ? `<p class="notice">${data.omittedTableRowCount} further run row(s) omitted by the bounded table.</p>` : ""}</section>
 <section><div class="section-title"><h2>Trace inspector</h2><span class="badge" id="trace-id">Select a run</span></div><div class="trace" id="trace"><div class="trace-empty">Choose a run to inspect its normalized trace.</div></div></section>
 <section id="growth-section" hidden><div class="section-title"><h2>Growth</h2><span class="badge" id="growth-status"></span></div><p class="notice" id="growth-chart"></p><div class="table-wrap"><table><thead><tr><th>Version</th><th>Date</th><th>Revision</th><th>Development</th><th>Sealed</th><th>Cost</th><th>Resolved modes</th><th>Reason</th></tr></thead><tbody id="growth"></tbody></table></div></section>
 <p class="notice" id="notice"></p>
@@ -880,14 +945,14 @@ const modeCards=b.modes.map(m=>{
 q('#failure-modes').innerHTML=modeCards.length?modeCards.join(''):'<article class="issue"><h3>No actionable failure modes</h3><p>The verified diagnosis does not support a harness change.</p></article>';
 q('#issues').innerHTML=d.issues.length?d.issues.map(i=>'<article class="issue"><div class="issue-head"><div><h3>'+esc(i.taskId)+' · '+esc(i.category)+'</h3><span class="pill '+esc(i.severity)+'">'+esc(i.confidence)+' confidence</span></div><span class="pill '+esc(i.severity)+'">'+esc(i.severity)+'</span></div><p>'+esc(i.rootCause)+'</p><ul>'+i.suggestions.map(s=>'<li>'+esc(s)+'</li>').join('')+'</ul></article>').join(''):'<article class="issue"><h3>No actionable failures</h3><p>All recorded tasks completed and passed.</p></article>';
 if(DATA.judgeCalibration.length){q('#judge-calibration').hidden=false;q('#judge-calibration').textContent=DATA.judgeCalibration.map(c=>c.line+' — '+c.graderNames.join(', ')).join(' · ')}
-const runRows=DATA.runs.map(r=>'<tr data-run="'+esc(r.runId)+'"><td>'+esc(r.taskId)+'</td><td>'+r.repetitionIndex+'</td><td class="outcome '+esc(r.outcome)+'">'+esc(r.outcome)+'</td><td>'+r.metrics.latencyMs+' ms</td><td>'+r.metrics.toolCalls+(r.metrics.toolErrors?' / '+r.metrics.toolErrors+' errors':'')+'</td><td>'+r.metrics.tokens+'</td></tr>').join('');q('#runs').innerHTML=runRows;
 q('#run-nav').innerHTML=DATA.runs.map(r=>'<button class="run-link" data-run="'+esc(r.runId)+'"><span class="dot '+(r.outcome==='pass'?'pass':'')+'"></span>'+esc(r.taskId)+' · '+r.repetitionIndex+'</button>').join('');
 if(DATA.comparison&&DATA.comparison.status==='comparable'){const c=DATA.comparison;q('#comparison-section').hidden=false;q('#comparison-verdict').textContent=c.gate.surface+' '+c.gate.verdict;q('#comparison-gate').textContent=DATA.comparisonGateLine;q('#comparison').innerHTML=c.rows.map(r=>'<tr><td>'+esc(r.taskId)+'</td><td>'+r.aPass+'/'+r.aTotal+'</td><td>'+r.bPass+'/'+r.bTotal+'</td><td>'+Math.round(r.aScore*100)+'% → '+Math.round(r.bScore*100)+'%</td><td class="'+(r.scoreDelta>0?'delta':'')+'">'+(r.scoreDelta>0?'+':'')+Math.round(r.scoreDelta*100)+' pp</td></tr>').join('')}
 	function runIdFromHash(){try{return new URLSearchParams(window.location.hash.slice(1)).get('run')}catch{return null}}
-	function showRun(id,scroll=true,syncHash=true){if(typeof id!=='string')return false;const r=DATA.runs.find(x=>x.runId===id);if(!r)return false;document.querySelectorAll('[data-run]').forEach(n=>n.classList.toggle('active',n instanceof HTMLElement&&n.dataset.run===id));q('#trace-id').textContent=r.runId;const traceOmission=r.traceProjection&&r.traceProjection.omittedCount?'<div class="message"><div class="message-label">Projection</div><p class="sub">'+esc(r.traceProjection.omittedCount)+' trace message(s) omitted.</p></div>':(!r.traceProjection&&DATA.projection.truncatedTraceRunIds.includes(id)?'<div class="message"><div class="message-label">Projection</div><p class="sub">Trace omitted after a global projection budget was exhausted.</p></div>':'');const grader='<div class="message"><div class="message-label">Graders</div>'+r.graders.map(g=>'<div class="tool '+(g.passed?'':'error')+'"><strong>'+esc(g.passed?'PASS':'FAIL')+' · '+esc(g.name)+'</strong><pre>'+esc(g.reason)+'</pre></div>').join('')+(r.graderProjection.omittedCount?'<p class="sub">'+esc(r.graderProjection.omittedCount)+' grader(s) omitted.</p>':'')+'</div>';q('#trace').innerHTML=(r.error?'<div class="message"><div class="message-label">Run error</div><pre>'+esc(r.error)+'</pre></div>':'')+r.trace.map(m=>'<div class="message"><div class="message-label">'+esc(m.role)+'</div>'+(m.text?'<pre>'+esc(m.text)+'</pre>':'')+m.toolCalls.map(t=>'<div class="tool"><strong>call · '+esc(t.name)+'</strong><pre>'+esc(t.arguments)+'</pre></div>').join('')+(m.omittedToolCallCount?'<p class="sub">'+esc(m.omittedToolCallCount)+' tool call(s) omitted.</p>':'')+(m.toolResult?'<div class="tool '+(m.toolResult.isError?'error':'')+'"><strong>result · '+esc(m.toolResult.name)+'</strong><pre>'+esc(m.toolResult.text)+'</pre></div>':'')+'</div>').join('')+traceOmission+grader;if(syncHash){const params=new URLSearchParams(window.location.hash.slice(1));params.set('run',id);const next='#'+params.toString();if(window.location.hash!==next)window.location.hash=next}if(scroll)q('#trace').scrollIntoView({behavior:'smooth',block:'start'});return true}
+	function showRun(id,scroll=true,syncHash=true){if(typeof id!=='string')return false;const r=DATA.runs.find(x=>x.runId===id);if(!r)return false;document.querySelectorAll('[data-run]').forEach(n=>n.classList.toggle('active',n instanceof HTMLElement&&n.dataset.run===id));q('#trace-id').textContent=r.runId;const traceOmission=r.traceProjection&&r.traceProjection.omittedCount?'<div class="message"><div class="message-label">Projection</div><p class="sub">'+esc(r.traceProjection.omittedCount)+' trace message(s) omitted.</p></div>':(!r.traceProjection&&DATA.projection.truncatedTraceRunIds.includes(id)?'<div class="message"><div class="message-label">Projection</div><p class="sub">Trace omitted after a global projection budget was exhausted.</p></div>':'');const grader='<div class="message"><div class="message-label">Graders</div>'+r.graders.map(g=>'<div class="tool '+(g.passed?'':'error')+'"><strong>'+esc(g.passed?'PASS':'FAIL')+' · '+esc(g.name)+'</strong><pre>'+esc(g.reason)+'</pre></div>').join('')+(r.graderProjection.omittedCount?'<p class="sub">'+esc(r.graderProjection.omittedCount)+' grader(s) omitted.</p>':'')+'</div>';const ex=DATA.explanations.find(x=>x.runId===id);const why=ex?'<div class="message"><div class="message-label">Why</div>'+ex.sentences.map(s=>'<p class="sub">'+esc(s)+'</p>').join('')+'</div>':'';q('#trace').innerHTML=why+(r.error?'<div class="message"><div class="message-label">Run error</div><pre>'+esc(r.error)+'</pre></div>':'')+r.trace.map(m=>'<div class="message"><div class="message-label">'+esc(m.role)+'</div>'+(m.text?'<pre>'+esc(m.text)+'</pre>':'')+m.toolCalls.map(t=>'<div class="tool"><strong>call · '+esc(t.name)+'</strong><pre>'+esc(t.arguments)+'</pre></div>').join('')+(m.omittedToolCallCount?'<p class="sub">'+esc(m.omittedToolCallCount)+' tool call(s) omitted.</p>':'')+(m.toolResult?'<div class="tool '+(m.toolResult.isError?'error':'')+'"><strong>result · '+esc(m.toolResult.name)+'</strong><pre>'+esc(m.toolResult.text)+'</pre></div>':'')+'</div>').join('')+traceOmission+grader;if(syncHash){const params=new URLSearchParams(window.location.hash.slice(1));params.set('run',id);const next='#'+params.toString();if(window.location.hash!==next)window.location.hash=next}if(scroll)q('#trace').scrollIntoView({behavior:'smooth',block:'start'});return true}
 document.addEventListener('click',ev=>{const target=ev.target;const node=target instanceof Element?target.closest('[data-run]'):null;if(node instanceof HTMLElement)showRun(node.dataset.run)});
 window.addEventListener('hashchange',()=>{const id=runIdFromHash();if(id)showRun(id,false,false)});
 	const requestedRunId=runIdFromHash();if(!(requestedRunId&&showRun(requestedRunId,false,false))&&DATA.runs.length)showRun(DATA.runs[0].runId,false,false);
+${RUNS_TABLE_FILTER_SCRIPT}
 // Growth: the same bounded projection \`ahde log\` prints. Promotions in full,
 // rejections dimmed between them, and a sealed cell that is a verdict and a
 // size and nothing else.
