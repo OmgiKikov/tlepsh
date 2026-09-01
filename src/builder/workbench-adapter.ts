@@ -327,6 +327,7 @@ export function createBuilderWorkbenchTools(
 				"Arguments: { aspect?: \"summary\" | \"review\" | \"traces\" | \"target\" | \"history\" | \"dataset\", resourcePath?: string, include?: [\"selections\"] }.",
 				"aspect omitted/summary = stage + counts; review = the exact Spec draft, eval basket, proposal diff, or candidate awaiting a decision;",
 				"traces = evaluation summary, failure modes (improvementBrief.modes with ordinal + failureModeId), evidence link;",
+				"each mode is one cause across tasks — the check and the tool it names — and carries facts (what the traces show, counted), observations, and evidence[].excerpt: the tools that run called, its last reply, and what the host observed about it. Read the excerpts before you write anything;",
 				"target = the committed Target index (resources with path/kind) — pass one returned resourcePath to read that file's complete content;",
 				"it also carries priorAttempts: the newest earlier attempts on this agent (what each changed, which failure modes it aimed at, what it scored, how it ended) plus priorAttemptsOmitted;",
 				"history = the same memory in full: every recorded attempt on this Target, newest first, with omitted and unreadable counts. Read it before proposing and never re-run an experiment that already lost;",
