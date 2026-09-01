@@ -273,6 +273,35 @@ export interface RoutineCostGuardBounds {
 	minutes: number;
 }
 
+/**
+ * How far a measurement may drift past the amount an earlier dialog put on
+ * screen before the money question is worth asking again. An estimate is a
+ * mean over past runs, so it moves a little between the apply and the check;
+ * half as much again is drift, and more than that is a different decision.
+ */
+export const AUTHORIZED_RUN_HEADROOM = 1.5;
+
+/** The amount one confirmation authorized, as the operator read it. */
+export interface AuthorizedRunEstimate {
+	costUsd: number | null;
+	minutes: number | null;
+}
+
+/**
+ * Whether a measurement the operator already paid the question for stays
+ * inside what they approved. An authorization that was unknown when it was
+ * given covers nothing: no amount was on screen, so no amount was approved.
+ */
+export function authorizedRunCovers(
+	estimate: WorkbenchRunEstimate,
+	authorization: AuthorizedRunEstimate | null | undefined,
+): boolean {
+	if (!authorization || authorization.costUsd === null || authorization.minutes === null) return false;
+	if (estimate.costUsd === null || estimate.minutes === null) return false;
+	return estimate.costUsd <= authorization.costUsd * AUTHORIZED_RUN_HEADROOM &&
+		estimate.minutes <= authorization.minutes * AUTHORIZED_RUN_HEADROOM;
+}
+
 /** `AHDE_ROUTINE_COST_USD` / `AHDE_ROUTINE_MINUTES`, or the defaults. */
 export function routineCostBounds(
 	environment: Record<string, string | undefined> = process.env,
@@ -289,13 +318,21 @@ export function routineCostBounds(
 	};
 }
 
-/** Why a routine decision still asks once, or null when it runs silently. */
+/**
+ * Why a routine decision still asks once, or null when it runs silently.
+ *
+ * `authorization` is what an earlier consequential dialog already showed and
+ * the operator already approved for this exact measurement — the money
+ * question is asked once per cycle, not once per run.
+ */
 export function routineCostGuard(
 	estimate: WorkbenchRunEstimate,
 	environment: Record<string, string | undefined> = process.env,
+	authorization?: AuthorizedRunEstimate | null,
 ): string | null {
 	const bounds = routineCostBounds(environment);
 	if (estimate.executions === 0) return null;
+	if (authorizedRunCovers(estimate, authorization)) return null;
 	if (estimate.sampledRuns === 0 || estimate.costUsd === null || estimate.minutes === null) {
 		return `no comparable run has finished yet, so ${estimate.executions} Target execution` +
 			`${estimate.executions === 1 ? "" : "s"} cost an unknown amount`;

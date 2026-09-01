@@ -1,10 +1,33 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
+import { recordBuilderAuthoredProposal } from "../src/application/builder-authoring.js";
+import { loadBuilderApplyReceipt } from "../src/application/builder-proposal.js";
+import { CANDIDATE_SCOPE_POLICY } from "../src/application/candidate-experiment.js";
+import { compileHarnessAuthoringProposal } from "../src/application/harness-authoring.js";
 import { createPolicyAwareGate } from "../src/builder/workbench-adapter.js";
+import { createCorpus } from "../src/corpus.js";
+import { loadTarget } from "../src/manifest.js";
+import {
+	createAhdeWorkbench,
+	type AhdeWorkbench,
+	type AhdeWorkbenchDependencies,
+} from "../src/workbench/index.js";
 import type { WorkbenchConfirmation } from "../src/workbench/types.js";
 import { createHostContext } from "./helpers/builder-tools.js";
+import {
+	NOW,
+	PROJECT_ID,
+	gate,
+	spec,
+	targetPaths,
+	task,
+	writeDevelopmentEval,
+	type FixturePaths,
+	type RecordingGate,
+} from "./helpers/cycle-fixtures.js";
+import { SEALED_VERIFICATION_REPETITIONS, sealedHoldoutTasks } from "./helpers/sealed-holdout.js";
 import { writeEvalRun, type EvalRunRecord } from "../src/eval.js";
 import {
 	RunRecordSchema,
@@ -17,10 +40,12 @@ import {
 } from "../src/provenance.js";
 import { writeJsonArtifact } from "../src/storage/artifacts.js";
 import {
+	AUTHORIZED_RUN_HEADROOM,
 	DEFAULT_ROUTINE_COST_USD,
 	DEFAULT_ROUTINE_MINUTES,
 	WORKBENCH_GATE_POLICY,
 	assertWorkbenchDecisionStage,
+	authorizedRunCovers,
 	estimateRunCost,
 	routineCostBounds,
 	routineCostGuard,
@@ -36,9 +61,13 @@ afterEach(() => {
 	while (created.length > 0) rmSync(created.pop()!, { recursive: true, force: true });
 });
 
-function runsRootWith(runs: readonly { costUsd: number; seconds: number }[], targetId = TARGET_ID): string {
-	const runsRoot = mkdtempSync(join(tmpdir(), "ahde-gate-policy-"));
-	created.push(runsRoot);
+function runsRootWith(
+	runs: readonly { costUsd: number; seconds: number }[],
+	targetId = TARGET_ID,
+	into?: string,
+): string {
+	const runsRoot = into ?? mkdtempSync(join(tmpdir(), "ahde-gate-policy-"));
+	if (!into) created.push(runsRoot);
 	if (runs.length === 0) return runsRoot;
 	const runtime = {
 		piVersion: "0.84.3",
@@ -318,4 +347,202 @@ describe("routine cost guard", () => {
 		const runsRoot = runsRootWith([]);
 		expect(routineCostGuard(estimateRunCost({ runsRoot, targetId: TARGET_ID, executions: 0, jobs: 1 }))).toBeNull();
 	});
+
+	it("stays silent for a measurement an earlier dialog already priced", () => {
+		const runsRoot = runsRootWith([{ costUsd: 0.5, seconds: 60 }]);
+		const estimate = estimateRunCost({ runsRoot, targetId: TARGET_ID, executions: 20, jobs: 4 });
+		expect(estimate).toMatchObject({ costUsd: 10, minutes: 5 });
+		// $10 was on screen at apply time; the check that follows costs $10.
+		expect(routineCostGuard(estimate, {}, { costUsd: 10, minutes: 5 })).toBeNull();
+		// Drift is drift: half as much again is still the same decision.
+		expect(routineCostGuard(estimate, {}, { costUsd: 7, minutes: 4 })).toBeNull();
+		expect(authorizedRunCovers(estimate, { costUsd: 10 / AUTHORIZED_RUN_HEADROOM, minutes: 5 })).toBe(true);
+		// Beyond it, the operator is being asked about a different amount.
+		expect(routineCostGuard(estimate, {}, { costUsd: 6, minutes: 5 }))
+			.toMatch(/about \$10\.00 — over the \$2 routine bound/);
+		// Time is authorized the same way money is, and the guard names whichever
+		// bound it crosses first.
+		expect(authorizedRunCovers(estimate, { costUsd: 10, minutes: 3 })).toBe(false);
+		expect(routineCostGuard(estimate, { AHDE_ROUTINE_COST_USD: "100", AHDE_ROUTINE_MINUTES: "4" }, { costUsd: 10, minutes: 3 }))
+			.toMatch(/about 5 minutes — over the 4-minute routine bound/);
+		// Nothing authorized, and an amount nobody could read when it was given,
+		// authorize nothing at all.
+		expect(routineCostGuard(estimate, {}, null)).toMatch(/over the \$2 routine bound/);
+		expect(routineCostGuard(estimate, {}, { costUsd: null, minutes: null }))
+			.toMatch(/over the \$2 routine bound/);
+		// An amount that has become unknowable is a question again.
+		const unknown = estimateRunCost({ runsRoot: runsRootWith([]), targetId: TARGET_ID, executions: 20, jobs: 4 });
+		expect(routineCostGuard(unknown, {}, { costUsd: 10, minutes: 5 }))
+			.toMatch(/no comparable run has finished yet/);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// The money question, asked once per cycle.
+// ---------------------------------------------------------------------------
+
+/** Spec → basket → baseline eval → proposal → apply, against a gate we can read. */
+async function appliedProposalFixture(
+	human: RecordingGate,
+	dependencies: Partial<AhdeWorkbenchDependencies> = {},
+): Promise<{ paths: FixturePaths; workbench: AhdeWorkbench; runId: string }> {
+	const paths = targetPaths();
+	created.push(paths.projectDir);
+	const workbench = createAhdeWorkbench({
+		...paths,
+		projectId: PROJECT_ID,
+		dependencies: { now: () => NOW, ...dependencies },
+	});
+	await workbench.submit({ kind: "spec-draft", spec: spec() });
+	const approved = await workbench.decide({ kind: "approve-spec", reason: "Approve the exact Spec" }, human);
+	await workbench.submit({
+		kind: "corpus-draft",
+		name: "Authorization development basket",
+		tasks: [task()],
+		coverageNotes: ["One policy question"],
+		revisionSummary: "Initial basket",
+	});
+	const published = await workbench.decide({ kind: "publish-corpus", reason: "Publish the exact basket" }, human);
+	// A baseline that really cost something, so the guard has an amount to
+	// object to and the estimate has history to read.
+	writeDevelopmentEval(paths, published.result.corpusId, "erun_authorization_baseline", {
+		costUsd: 1,
+		latencyMs: 6_000,
+	});
+	// The exam exists before the diff does, exactly as it must: the price of the
+	// check is only honest when the holdout it will run is already reserved.
+	createCorpus({
+		stateRoot: paths.stateRoot,
+		projectId: PROJECT_ID,
+		name: "Evaluator-only authorization holdout",
+		visibility: "sealed",
+		tasks: sealedHoldoutTasks("PRIVATE AUTHORIZATION HOLDOUT"),
+	});
+	const recorded = await recordBuilderAuthoredProposal({
+		proposal: compileHarnessAuthoringProposal({
+			repositoryDir: paths.projectDir,
+			intents: [{ type: "instructions.replace", content: "# Authorized\n\nAnswer only from approved local evidence.\n" }],
+			summary: "Make the evidence boundary explicit",
+			diagnoses: [],
+			risks: ["Instruction-only behavior change"],
+			validationPlan: ["Re-run the reviewed development basket"],
+		}),
+		targetDir: paths.projectDir,
+		allowedPaths: [...CANDIDATE_SCOPE_POLICY.allowed],
+		approvedSpec: { stateRoot: paths.stateRoot, projectId: PROJECT_ID, specId: approved.result.approvedSpecId },
+		runsRoot: paths.runsRoot,
+		timeoutMs: 30_000,
+	});
+	await workbench.decide({
+		kind: "apply-proposal",
+		runId: recorded.record.runId,
+		branch: "candidate/authorized",
+		reason: "Apply the exact reviewed diff",
+	}, human);
+	return { paths, workbench, runId: recorded.record.runId };
+}
+
+/** Rewrite the immutable receipt: what a candidate applied another way looks like. */
+function rewriteAuthorization(
+	paths: FixturePaths,
+	runId: string,
+	authorization: { executions: number; sampledRuns: number; costUsd: number | null; minutes: number | null } | null,
+): void {
+	const path = join(paths.runsRoot, "builders", runId, "apply_receipt.json");
+	const receipt = { ...loadBuilderApplyReceipt(paths.runsRoot, runId) };
+	if (authorization) receipt.verificationAuthorization = authorization;
+	else delete receipt.verificationAuthorization;
+	rmSync(path);
+	writeFileSync(path, `${JSON.stringify(receipt, null, "\t")}\n`, "utf8");
+}
+
+describe("one money question per cycle", () => {
+	/** The verification stops here, right after the gate has had its chance. */
+	function stopAtTheMeasurement(): {
+		measured: Mock;
+		dependencies: Partial<AhdeWorkbenchDependencies>;
+	} {
+		const measured = vi.fn(async () => {
+			throw new Error("fixture stop: the measurement itself is not what this test spends");
+		});
+		return { measured, dependencies: { runAppliedCandidate: measured as never } };
+	}
+
+	/**
+	 * Questions, not gate calls: a routine decision still passes through the
+	 * gate for its actor identity, and the host shows no dialog for it.
+	 */
+	function questions(human: RecordingGate): number {
+		return human.confirm.mock.calls.filter((call) => call[0].policy !== "routine").length;
+	}
+
+	async function verify(workbench: AhdeWorkbench, human: RecordingGate, measured: Mock): Promise<void> {
+		const before = measured.mock.calls.length;
+		await expect(workbench.decide({
+			kind: "verify-candidate",
+			repetitions: SEALED_VERIFICATION_REPETITIONS,
+			reason: "Check the applied candidate",
+		}, human)).rejects.toThrow(/candidate verification failed/);
+		// The gate had its chance and the measurement was reached: whatever the
+		// gate did or did not ask, it did it here.
+		expect(measured.mock.calls.length).toBe(before + 1);
+	}
+
+	it("prices the check on the apply dialog, records it, and does not ask again", async () => {
+		const human = gate();
+		const { measured, dependencies } = stopAtTheMeasurement();
+		const { paths, workbench, runId } = await appliedProposalFixture(human, dependencies);
+		const apply = human.confirm.mock.calls.at(-1)?.[0];
+		expect(apply).toMatchObject({ kind: "apply-proposal", policy: "consequential" });
+		// A Spec-bound construction diff attests no development basket, so the
+		// price is the 15-case exam, both arms, at the repetitions “check it” uses.
+		expect(apply?.estimate).toMatchObject({ executions: 2 * 15 * 3, sampledRuns: 1 });
+		expect(apply?.estimate?.costUsd).toBeGreaterThan(DEFAULT_ROUTINE_COST_USD);
+
+		// The receipt of this exact candidate carries exactly what was on screen.
+		const receipt = loadBuilderApplyReceipt(paths.runsRoot, runId);
+		expect(receipt.schemaVersion).toBe(4);
+		expect(receipt.verificationAuthorization).toEqual(apply?.estimate);
+
+		// The check itself is cheaper than what was authorized, so it just runs:
+		// the sealed holdout is still selected, but nothing is asked.
+		const asked = questions(human);
+		await verify(workbench, human, measured);
+		expect(human.selectSealed).toHaveBeenCalledTimes(1);
+		expect(questions(human)).toBe(asked);
+	}, 60_000);
+
+	it("asks again when nothing was authorized, when the amount grew, and when it was unknown", async () => {
+		const human = gate();
+		const { measured, dependencies } = stopAtTheMeasurement();
+		const { paths, workbench, runId } = await appliedProposalFixture(human, dependencies);
+		const authorized = loadBuilderApplyReceipt(paths.runsRoot, runId).verificationAuthorization;
+		if (!authorized) throw new Error("the apply dialog recorded no authorization");
+
+		// A candidate applied outside the dialog — no diff was read, no price shown.
+		rewriteAuthorization(paths, runId, null);
+		let asked = questions(human);
+		await verify(workbench, human, measured);
+		expect(questions(human)).toBe(asked + 1);
+		expect(human.confirm.mock.calls.at(-1)?.[0]).toMatchObject({ kind: "verify-candidate", policy: "one-question" });
+		expect(human.confirm.mock.calls.at(-1)?.[0].question).toMatch(/over the \$2 routine bound/);
+
+		// An amount far under what the check now costs.
+		rewriteAuthorization(paths, runId, { ...authorized, costUsd: (authorized.costUsd ?? 0) / 10, minutes: 0.001 });
+		asked = questions(human);
+		await verify(workbench, human, measured);
+		expect(questions(human)).toBe(asked + 1);
+
+		// Unknown when it was given: nothing was on screen, so nothing was approved.
+		rewriteAuthorization(paths, runId, { ...authorized, costUsd: null, minutes: null });
+		asked = questions(human);
+		await verify(workbench, human, measured);
+		expect(questions(human)).toBe(asked + 1);
+
+		// Restored, it is silent again.
+		rewriteAuthorization(paths, runId, authorized);
+		asked = questions(human);
+		await verify(workbench, human, measured);
+		expect(questions(human)).toBe(asked);
+	}, 60_000);
 });

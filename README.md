@@ -89,7 +89,13 @@ Everything between those decision boundaries just happens: runs, checks,
 calibration, and the diagnosis. A run that history says would be unusually
 expensive (over `AHDE_ROUTINE_COST_USD`, default 2, or `AHDE_ROUTINE_MINUTES`,
 default 10) asks one extra yes/no first, and so do the two irreversible
-throw-aways (discard a proposal, reject a candidate).
+throw-aways (discard a proposal, reject a candidate). The check that follows a
+change is not one of them: the apply question prices it on the same screen as
+the diff (`Verification about $0.40 · about 4 minutes`) and that approval
+covers it, so the money is asked once per cycle rather than once per run. It
+comes back only when the check turns out to cost more than half again what was
+approved, or when nothing was approved because the change was applied without
+that dialog.
 
 The same loop has compact Pi commands: three verbs do the work, and every
 older command is still there, one step at a time.
@@ -318,6 +324,10 @@ Measurement — running the basket, verifying a candidate, calibrating noise —
 is routine: it runs without a dialog, may run headless, and asks once only when
 history estimates more than `AHDE_ROUTINE_COST_USD` (default 2) or
 `AHDE_ROUTINE_MINUTES` (default 10), or when nothing comparable has run yet.
+The apply dialog prices the verification that follows it and records the amount
+in the apply receipt, so that one check runs without a second money question
+while its estimate stays within 1.5× of what was approved; a candidate applied
+outside that dialog authorizes nothing and is guarded as usual.
 
 Corpus revisions are immutable and content-addressed. Publishing records both
 the canonical Corpus receipt and an exact Workbench lineage binding approved

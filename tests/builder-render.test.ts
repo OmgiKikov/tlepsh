@@ -1589,22 +1589,51 @@ describe("renderConfirmation", () => {
 		ephemeralTail(lines);
 	});
 
-	it("summarises the change and risks for apply-proposal without repeating the diff", () => {
-		const proposal = makeProposal();
-		const lines = renderConfirmation(makeConfirmation("apply-proposal", {
-			operation: "apply-proposal",
-			branch: "ahde/fix-lookup",
-			builderRunHash: HASH,
-			...proposal,
-		}), tagPaint);
-		const text = lines.join("\n");
-		expect(lines[0]).toBe("<dim>Branch</dim> <bold>ahde/fix-lookup</bold> <dim>· base</dim> aaaaaaaaaa");
-		expect(lines[1]).toBe("  Tell the agent to call lookup before answering.");
-		expect(lines[2]).toBe("<dim>Changes</dim> AGENTS.md <dim>(<added>+2</added> <removed>-1</removed> · full diff shown by /review)</dim>");
-		expect(text).toContain("<warning>Risks</warning>\n  <dim>•</dim> May slow down simple replies\n<muted>Your checkout stays where it is; the proposal is committed on the candidate branch.</muted>");
-		expect(text).not.toContain("diff --git");
-		expect(lines[lines.length - 2]).toBe("<dim>Reason</dim> Reviewed the exact subject");
-		expect(lines[lines.length - 1]).toBe(`<dim>Exact subject</dim> <dim>${HASH}</dim>`);
+	/** The exact subject of an apply, as the confirmation builds it. */
+	function applySubject(): Record<string, unknown> {
+		return { operation: "apply-proposal", branch: "ahde/fix-lookup", builderRunHash: HASH, ...makeProposal() };
+	}
+
+	it("prices the check the apply also authorizes, and keeps the risks", () => {
+		const lines = renderConfirmation({
+			...makeConfirmation("apply-proposal", applySubject()),
+			estimate: { executions: 84, sampledRuns: 6, costUsd: 0.42, minutes: 3.2 },
+		}, plainPaint);
+		// The whole body, verbatim: the money question for the check that follows
+		// this change is asked here, once, with the change itself.
+		expect(lines).toEqual([
+			"Branch ahde/fix-lookup · base aaaaaaaaaa",
+			"  Tell the agent to call lookup before answering.",
+			"Changes AGENTS.md (+2 -1 · full diff shown by /review)",
+			"Verification about $0.42 · about 4 minutes — approving this change also approves that measurement",
+			"Risks",
+			"  • May slow down simple replies",
+			"Your checkout stays where it is; the proposal is committed on the candidate branch.",
+			"",
+			"Reason Reviewed the exact subject",
+			`Exact subject ${HASH}`,
+		]);
+		for (const line of lines) expect(line.length).toBeLessThanOrEqual(110);
+		const painted = renderConfirmation({
+			...makeConfirmation("apply-proposal", applySubject()),
+			estimate: { executions: 84, sampledRuns: 6, costUsd: 0.42, minutes: 3.2 },
+		}, tagPaint);
+		expect(painted[0]).toBe("<dim>Branch</dim> <bold>ahde/fix-lookup</bold> <dim>· base</dim> aaaaaaaaaa");
+		expect(painted[3]).toContain("<dim>Verification</dim> about $0.42");
+	});
+
+	it("says the check is unknown when nothing comparable has run", () => {
+		const unknown = renderConfirmation(makeConfirmation("apply-proposal", applySubject()), plainPaint);
+		expect(unknown[3]).toBe(
+			"Verification unknown · nothing comparable has run yet — approving this change also approves that measurement",
+		);
+		const sampled = renderConfirmation({
+			...makeConfirmation("apply-proposal", applySubject()),
+			estimate: { executions: 4, sampledRuns: 2, costUsd: 0.004, minutes: 0.5 },
+		}, plainPaint);
+		expect(sampled[3]).toBe(
+			"Verification under $0.01 · under a minute — approving this change also approves that measurement",
+		);
 	});
 
 	it("describes a discard subject generically", () => {

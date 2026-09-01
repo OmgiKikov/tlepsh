@@ -120,8 +120,17 @@ the harness under development runs in a different Target Pi invocation.
   `calibrate`, `verify-candidate`) executes without a dialog under a cost guard
   that asks once when history estimates more than `AHDE_ROUTINE_COST_USD`
   (default 2) or `AHDE_ROUTINE_MINUTES` (default 10), or when no comparable run
-  has finished and the cost is unknown. Estimates are read from existing run
-  artifacts and persist nothing. Consequential and one-question decisions still
+  has finished and the cost is unknown. Money is asked once per cycle, not once
+  per run: the `apply-proposal` dialog prices the check that diff will need
+  (the screen plus both arms over the development basket and the sealed
+  holdout) and records that amount in the apply receipt, so `verify-candidate`
+  runs silently while its own estimate stays within 1.5× of what was approved.
+  It asks again when nothing was authorized (a candidate applied outside the
+  dialog, including every automated apply), when the estimate outgrows that
+  headroom, or when the amount was unknown at apply time and now crosses the
+  routine bound. `start-testing` authorizes its own run and `calibrate` keeps
+  its own question. Estimates are read from existing run artifacts and persist
+  nothing. Consequential and one-question decisions still
   fail closed outside an interactive TUI; routine decisions may run headless.
   The consequential gate may additionally be *served* — over the loopback
   HTTP/JSON API of `ahde serve`, to one authenticated operator, so a platform

@@ -408,8 +408,12 @@ describe("a search creates no release authority", () => {
 				.toEqual(["candidate/search-1", "candidate/search-2"]);
 			const firstReceipt = loadBuilderApplyReceipt(fixture.runsRoot, first.runId);
 			const secondReceipt = loadBuilderApplyReceipt(fixture.runsRoot, second.runId);
-			expect(firstReceipt).toMatchObject({ schemaVersion: 3, via: "proposal-search" });
-			expect(secondReceipt).toMatchObject({ schemaVersion: 3, via: "proposal-search" });
+			expect(firstReceipt).toMatchObject({ schemaVersion: 4, via: "proposal-search" });
+			expect(secondReceipt).toMatchObject({ schemaVersion: 4, via: "proposal-search" });
+			// Nobody read these diffs in a dialog, so nobody was shown the price of
+			// checking them: an automated apply authorizes no verification spend.
+			expect(firstReceipt.verificationAuthorization).toBeUndefined();
+			expect(secondReceipt.verificationAuthorization).toBeUndefined();
 			const record = loadCandidateRecord(fixture.runsRoot, result.rows[0]!.candidateId!);
 			expect(candidateStatus(record)).toBe("evaluated");
 			expect(record.events.some((event) => event.type === "reviewed" || event.type === "promoted")).toBe(false);

@@ -1,3 +1,4 @@
+import type { WorkbenchRunEstimate } from "../../workbench/transition-policy.js";
 import type {
 	WorkbenchCandidateSummary,
 	WorkbenchConfirmation,
@@ -92,6 +93,24 @@ function judgeCalibrationLines(candidate: WorkbenchCandidateSummary, paint: Pain
 	const { agreement, kappa, labels } = candidate.judgeAgreement;
 	const kappaText = kappa === null ? "κ —" : `κ ${kappa.toFixed(2)}`;
 	return [`${paint.dim("Judge")} agreement ${Math.round(agreement * 100)}% ${paint.dim(`· ${kappaText} · n=${labels}`)}`];
+}
+
+/**
+ * The check this change is going to need, priced before it is applied. Money
+ * is one question per cycle: approving the diff approves the measurement that
+ * follows it, so the amount belongs on the same screen as the diff.
+ */
+function verificationLine(estimate: WorkbenchRunEstimate | undefined, paint: Paint): string {
+	const covenant = paint.dim("— approving this change also approves that measurement");
+	if (!estimate || estimate.costUsd === null || estimate.minutes === null) {
+		return `${paint.dim("Verification")} ${paint.warning("unknown")} ${
+			paint.dim("· nothing comparable has run yet")
+		} ${covenant}`;
+	}
+	const cost = estimate.costUsd < 0.01 ? "under $0.01" : `about $${estimate.costUsd.toFixed(2)}`;
+	const minutes = Math.ceil(estimate.minutes);
+	const time = estimate.minutes < 1 ? "under a minute" : `about ${minutes} minute${minutes === 1 ? "" : "s"}`;
+	return `${paint.dim("Verification")} ${cost} ${paint.dim("·")} ${time} ${covenant}`;
 }
 
 function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string[] {
@@ -269,6 +288,7 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 				`${paint.dim("Branch")} ${paint.bold(text(subject.branch, 80))} ${paint.dim("· base")} ${shortSha(text(subject.baseTargetSha, 40))}`,
 				...wrap(typeof subject.summary === "string" ? subject.summary : "", 92, "  "),
 				`${paint.dim("Changes")} ${strings(subject.paths).map((path) => oneLine(path, 60)).join(", ") || "—"} ${paint.dim(`(${paint.added(`+${stats.added}`)} ${paint.removed(`-${stats.removed}`)} · full diff shown by /review)`)}`,
+				verificationLine(confirmation.estimate, paint),
 				...(strings(subject.risks).length > 0 ? [paint.warning("Risks"), ...bullets(strings(subject.risks), paint, { limit: 5 })] : []),
 				paint.muted("Your checkout stays where it is; the proposal is committed on the candidate branch."),
 			];

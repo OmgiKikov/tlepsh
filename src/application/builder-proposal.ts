@@ -352,11 +352,12 @@ export type BuilderProposalAdmission = z.infer<typeof BuilderProposalAdmissionSc
 const HumanActorSchema = z.strictObject({ kind: z.literal("human"), id: NonBlankSchema });
 
 /**
- * v2 added `via: improvement-loop`; v3 adds `via: proposal-search`. v1
- * receipts stay readable exactly as written: they predate automated applies,
- * and every one of them was an interactive apply.
+ * v2 added `via: improvement-loop`; v3 adds `via: proposal-search`; v4 adds
+ * the verification amount the apply dialog authorized. v1 receipts stay
+ * readable exactly as written: they predate automated applies, and every one
+ * of them was an interactive apply.
  */
-export const BUILDER_APPLY_RECEIPT_SCHEMA_VERSION = 3;
+export const BUILDER_APPLY_RECEIPT_SCHEMA_VERSION = 4;
 
 /**
  * How the apply happened, when it was not a human reading the diff.
@@ -368,8 +369,24 @@ export const BUILDER_APPLY_RECEIPT_SCHEMA_VERSION = 3;
 export const BuilderApplyViaSchema = z.enum(["improvement-loop", "proposal-search"]);
 export type BuilderApplyVia = z.infer<typeof BuilderApplyViaSchema>;
 
+/**
+ * What the human who read this diff was told the matching check would cost,
+ * and therefore also approved. It is host-computed from finished runs at the
+ * moment of the apply dialog; nothing a model says can reach it. Verification
+ * reads it back instead of asking the money question a second time.
+ */
+export const BuilderVerificationAuthorizationSchema = z.strictObject({
+	/** Target executions the estimate priced: screen + both arms of both baskets. */
+	executions: z.number().int().min(0),
+	/** Finished runs the mean came from; 0 means the amount was unknown. */
+	sampledRuns: z.number().int().min(0),
+	costUsd: z.number().min(0).nullable(),
+	minutes: z.number().min(0).nullable(),
+});
+export type BuilderVerificationAuthorization = z.infer<typeof BuilderVerificationAuthorizationSchema>;
+
 export const BuilderApplyReceiptSchema = z.strictObject({
-	schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(BUILDER_APPLY_RECEIPT_SCHEMA_VERSION)]),
+	schemaVersion: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(BUILDER_APPLY_RECEIPT_SCHEMA_VERSION)]),
 	runId: RunIdSchema,
 	proposalSha256: Sha256Schema,
 	baseTargetSha: GitShaSchema,
@@ -384,6 +401,12 @@ export const BuilderApplyReceiptSchema = z.strictObject({
 	 */
 	actor: HumanActorSchema,
 	via: BuilderApplyViaSchema.optional(),
+	/**
+	 * Present only for an apply the operator confirmed in a dialog that priced
+	 * the check. An automated apply shows no diff and no price, so it carries
+	 * no authorization and its verification asks for itself.
+	 */
+	verificationAuthorization: BuilderVerificationAuthorizationSchema.optional(),
 	appliedAt: TimestampSchema,
 	reason: NonBlankSchema,
 }).superRefine((receipt, context) => {
@@ -393,6 +416,13 @@ export const BuilderApplyReceiptSchema = z.strictObject({
 			code: "custom",
 			path: ["via"],
 			message: `${receipt.via} requires apply-receipt schemaVersion ${minimumVersion}`,
+		});
+	}
+	if (receipt.verificationAuthorization && receipt.schemaVersion < 4) {
+		context.addIssue({
+			code: "custom",
+			path: ["verificationAuthorization"],
+			message: "an authorized verification amount requires apply-receipt schemaVersion 4",
 		});
 	}
 });
@@ -1394,6 +1424,12 @@ export interface ApplyBuilderProposalOptions {
 	 * only `ahde improve`. Absent means the actor read this exact diff.
 	 */
 	via?: BuilderApplyVia;
+	/**
+	 * Host-computed price of the check this apply dialog also authorized. The
+	 * caller owns it end to end: it is derived from finished runs, never from
+	 * anything a model supplied, and it is absent for an automated apply.
+	 */
+	verificationAuthorization?: BuilderVerificationAuthorization;
 	reason: string;
 }
 
@@ -1485,6 +1521,7 @@ function applyDecisionClaim(
 		paths: receipt.paths,
 		actor: receipt.actor,
 		via: receipt.via ?? null,
+		verificationAuthorization: receipt.verificationAuthorization ?? null,
 		decidedAt: receipt.appliedAt,
 		reason: receipt.reason,
 	};
@@ -1501,6 +1538,7 @@ function applyReceiptFromDecisionClaim(claim: Extract<BuilderProposalDecisionCla
 		paths: claim.paths,
 		actor: claim.actor,
 		...(claim.via ? { via: claim.via } : {}),
+		...(claim.verificationAuthorization ? { verificationAuthorization: claim.verificationAuthorization } : {}),
 		appliedAt: claim.decidedAt,
 		reason: claim.reason,
 	});
@@ -1721,6 +1759,9 @@ export function applyBuilderProposal(
 	const runId = RunIdSchema.parse(options.runId);
 	const actor = HumanActorSchema.parse(options.actor);
 	const via = options.via === undefined ? undefined : BuilderApplyViaSchema.parse(options.via);
+	const requestedAuthorization = options.verificationAuthorization === undefined
+		? undefined
+		: BuilderVerificationAuthorizationSchema.parse(options.verificationAuthorization);
 	const reason = NonBlankSchema.parse(options.reason);
 	const repositoryDir = repositoryRoot(options.repoDir);
 	const branchRef = validateBranchName(repositoryDir, options.requestedBranch);
@@ -1842,6 +1883,12 @@ export function applyBuilderProposal(
 			applyDecisionClaim(builderRunSha256, intent.receipt),
 		).claim;
 	}
+	// A retry replays the amount the human actually approved, exactly the way
+	// the apply timestamp is replayed: re-estimating it from newer history
+	// would rebuild a receipt nobody authorized.
+	const verificationAuthorization = (decisionClaim?.decision === "apply"
+		? decisionClaim.verificationAuthorization
+		: null) ?? intent?.receipt.verificationAuthorization ?? requestedAuthorization;
 	if (existsSync(receiptPath)) {
 		if (!intent && !decisionClaim) throw new Error(`apply receipt already exists for builder run ${runId}`);
 		const receipt = loadBuilderApplyReceipt(options.runsRoot, runId);
@@ -1938,6 +1985,7 @@ export function applyBuilderProposal(
 			// Absent for an interactive apply, so the receipt of a diff a human read
 			// is byte-identical to what it always was, minus the version bump.
 			...(via ? { via } : {}),
+			...(verificationAuthorization ? { verificationAuthorization } : {}),
 			appliedAt,
 			reason,
 		});
