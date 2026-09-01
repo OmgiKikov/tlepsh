@@ -621,7 +621,7 @@ describe("AHDE Workbench", () => {
 		const approved = await restarted.decide({ kind: "approve-spec", reason: "The exact Spec matches our intent" }, approvalGate);
 		expect(approved.result.approvedSpecId).toMatch(/^spec-/);
 		expect(approved.view.stage).toBe("corpus-design");
-		expect(approved.view.actions).toEqual(["workshop-open", "submit corpus-draft", "configure-evaluators"]);
+		expect(approved.view.actions).toEqual(["workshop-open", "submit corpus-draft", "configure-evaluators", "generate-holdout"]);
 		expect(approved.view.headline).toContain("construction workshop");
 		expect(approvalGate.confirm).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -660,7 +660,7 @@ describe("AHDE Workbench", () => {
 		expect(corpusId).toMatch(/^corpus-/);
 		expect(published.result.lineageHash).toMatch(/^sha256:/);
 		expect(published.view.stage).toBe("ready-to-evaluate");
-		expect(published.view.actions).toEqual(["workshop-open", "run", "configure-evaluators"]);
+		expect(published.view.actions).toEqual(["workshop-open", "run", "configure-evaluators", "generate-holdout"]);
 		expect(published.view.headline).toContain("construction workshop");
 		expect(existsSync(join(paths.stateRoot, "projects", "test-target", "workbench", "corpus-publications", `${corpusId}.json`))).toBe(true);
 		expect(publicationGate.confirm).toHaveBeenCalledWith(

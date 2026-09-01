@@ -41,6 +41,7 @@ import {
 	type CandidateRecord,
 } from "../domain/candidate.js";
 import { SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
+import { workbenchDecisionStages } from "./transition-policy.js";
 import {
 	isSealedEvalRun,
 	listEvalRunIndexesLenient,
@@ -1361,7 +1362,13 @@ export function deriveWorkbenchView(
 					: candidateStatus(candidate),
 			)),
 		],
-		actions: state.actions,
+		// Offered where it is the answer to something and nowhere else: only when
+		// there is no exam at all, and only at a stage that can act on it. An
+		// underpowered or unavailable exam is repaired, not replaced by a guess.
+		actions: inventory.sealedHoldoutReadiness === "missing" &&
+				workbenchDecisionStages("generate-holdout").includes(state.stage)
+			? [...state.actions, "generate-holdout"]
+			: state.actions,
 		blockers: state.blockers,
 		warnings: [...inventory.warnings, ...sealedExposureWarnings(inventory)],
 		shippingReadiness: {

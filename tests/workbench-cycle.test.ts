@@ -305,7 +305,7 @@ describe("Workbench improvement-cycle closure", () => {
 			// starts by measuring again rather than authoring from stale evidence.
 			expect(continued.result.nextStage).toBe("ready-to-evaluate");
 			expect(continued.view.stage).toBe(continued.result.nextStage);
-			expect(continued.view.actions).toEqual(["workshop-open", "run", "configure-evaluators"]);
+			expect(continued.view.actions).toEqual(["workshop-open", "run", "configure-evaluators", "generate-holdout"]);
 			expect(continued.view.counts.developmentEvals).toBe(1);
 			expect(continued.view.focus.candidate).toBeUndefined();
 			expect(continued.view.target.gitSha).toBe(fixture.candidateSha);
