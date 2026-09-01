@@ -1,9 +1,9 @@
 # <REPLACE-ME: Agent name> — spec
 
 <!--
-  `ahde spec approve --target .` reads only the headings below (English or
-  Russian spellings both work) and one bullet per line. Anything else in the
-  file stays yours and is reported as unread.
+  Builder Pi reads only the headings below (English or Russian spellings both
+  work) and one bullet per line when it turns this file into the typed Spec the
+  ship gate needs. Anything else in the file stays yours.
 
   The rule that matters: every bullet under "Success criteria" must map 1:1
   onto a grader in evals/. If a criterion has no grader, it is a wish; if a

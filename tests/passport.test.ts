@@ -595,7 +595,7 @@ describe("version passport", () => {
 	});
 
 	it("is on the command crib and has its own help page", () => {
-		expect(cliHelp([])).toContain("spec approve  propose  apply  adopt  passport");
+		expect(cliHelp([])).toContain("log  watch  passport");
 		expect(cliHelp([])).toContain("ahde passport --target <dir> [--tag v0.X.0]");
 		const help = cliHelp(["passport", "--help"]);
 		expect(help).toContain("ahde passport --target <dir> [--project <id>] [latest] [--json] [--out <path>]");

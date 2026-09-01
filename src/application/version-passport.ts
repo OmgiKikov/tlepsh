@@ -481,7 +481,7 @@ function approvedPromise(options: CompileVersionPassportOptions, record: Candida
 	if (record.specId === null) {
 		throw new VersionPassportError(
 			`candidate ${record.candidateId} carries no approved Spec; a passport cannot say what was promised`,
-			"Approve one with `ahde spec approve --target <dir>` and re-run the candidate against it.",
+			"Open `ahde` in the Target, approve the Spec there, and re-run the candidate against it.",
 		);
 	}
 	try {

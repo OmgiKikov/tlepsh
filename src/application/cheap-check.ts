@@ -47,7 +47,6 @@ import type { RunEventListener } from "../run-events.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import { assertEvalSurfaceMatches, targetWithDevelopmentCorpus } from "./corpus-target.js";
-import { loadBuilderApplyReceipt, loadBuilderProposalRunEnvelope } from "./builder-proposal.js";
 import { CandidateRecordSchema, type CandidateRecord } from "../domain/candidate.js";
 
 /**
@@ -532,81 +531,6 @@ export async function runCheapCheckForCandidate(
 		...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
 		...(options.now ? { now: options.now } : {}),
 	}, dependencies);
-}
-
-export interface CheapCheckBuilderRunOptions {
-	repositoryDir: string;
-	runsRoot: string;
-	stateRoot: string;
-	builderRunId: string;
-	/** Refuses when the Builder run names another project; never selects one. */
-	expectedProjectId?: string;
-	jobs?: number;
-	signal?: AbortSignal;
-	onRunEvent?: RunEventListener;
-	now?: () => string;
-}
-
-/**
- * The screen where the skill puts it: before the verification it exists to
- * save. An applied Builder run already carries everything the screen needs —
- * the source eval on the run record, the exact revisions on the apply receipt —
- * so it does not have to wait for the CandidateRecord `ahde candidate` writes.
- */
-export async function runCheapCheckForBuilderRun(
-	options: CheapCheckBuilderRunOptions,
-	dependencies: Partial<CheapCheckDependencies> = {},
-): Promise<CheapCheckResult> {
-	const runsRoot = resolve(options.runsRoot);
-	const plan = cheapCheckPlanForBuilderRun(runsRoot, options.builderRunId, options.stateRoot);
-	assertExpectedProject(plan, options.expectedProjectId, `builder run ${options.builderRunId}`);
-	return runCheapCheck({
-		repositoryDir: options.repositoryDir,
-		runsRoot,
-		candidateRef: plan.candidateSha,
-		baselineRef: plan.baseTargetSha,
-		sourceEvalRunId: plan.sourceEvalRunId,
-		...(plan.developmentCorpus ? { developmentCorpus: plan.developmentCorpus } : {}),
-		...(options.jobs === undefined ? {} : { jobs: options.jobs }),
-		...(options.signal ? { signal: options.signal } : {}),
-		...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
-		...(options.now ? { now: options.now } : {}),
-	}, dependencies);
-}
-
-/** What an applied Builder run says a screen of it would have to run. */
-export function cheapCheckPlanForBuilderRun(
-	runsRoot: string,
-	builderRunId: string,
-	stateRoot: string,
-): CheapCheckPlan {
-	const run = loadBuilderProposalRunEnvelope(runsRoot, builderRunId);
-	const source = run.request.source;
-	if (!source) {
-		throw new CheapCheckError(
-			`builder run ${builderRunId} has no source development eval to screen against`,
-		);
-	}
-	let receipt;
-	try {
-		receipt = loadBuilderApplyReceipt(runsRoot, builderRunId);
-	} catch (error) {
-		throw new CheapCheckError(
-			`builder run ${builderRunId} has not been applied; run \`ahde apply --builder-run ${builderRunId}\` first`,
-			{ cause: error },
-		);
-	}
-	const projectId = run.request.approvedSpec?.projectId ?? null;
-	const corpus = run.request.sourceAttestation?.developmentCorpus ?? null;
-	return {
-		candidateSha: receipt.candidateSha,
-		baseTargetSha: receipt.baseTargetSha,
-		sourceEvalRunId: source.evalRunId,
-		developmentCorpus: corpus && projectId
-			? { stateRoot: resolve(stateRoot), projectId, corpusId: corpus.id }
-			: null,
-		projectId,
-	};
 }
 
 export interface CheapCheckPlan {

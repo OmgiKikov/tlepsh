@@ -33,8 +33,7 @@ Start:
 Inspect and run:
   ahde validate --target <dir>                 local readiness check; no model call
   ahde run --target <dir> [options]            run development evidence
-  ahde check --target <dir> --builder-run <id>  cheap screen: the failed cases, once
-                                               (or --candidate <id> for an evaluated one)
+  ahde check --target <dir> --candidate <id>   cheap screen: the failed cases, once
   ahde improve --target <dir> --until 90% --max-cycles 5
                                                run improvement cycles inside the gates
   ahde search --target <dir> --candidates <id,id,id>
@@ -53,16 +52,10 @@ Inspect and run:
   ahde judge-agreement <evalRunId> --target <dir>
                                                how far that judge is calibrated
 
-Change and ship, without leaving the terminal:
-  ahde spec approve --target <dir> [--file spec.md]
-                                               approve the typed Spec the gate needs
-  ahde propose --target <dir> --spec <id> --branch <ref>
-                                               compile a branch into a typed proposal
-  ahde apply --target <dir> --builder-run <id> commit it on its own candidate branch
+Verify and ship (authoring and adoption live in Builder Pi):
   ahde candidate --target <dir> --builder-run <id>
                                                the matched experiment and sealed gate
   ahde review · ahde promote --to 0.X.0        your gate, on the exact evidence
-  ahde adopt --target <dir> --candidate <id>   fast-forward onto the promoted revision
   ahde passport --target <dir> [--tag v0.X.0]  promised vs measured, for the client
 
 Inside Builder Pi:
@@ -72,7 +65,7 @@ ${builderCommandLines()}
 Use \`ahde <command> --help\` for focused help. Advanced automation commands:
   corpus  failures  compare  diagnose  regrade  report  label  judge-agreement
   candidate  calibrate  check  improve  search  review  promote  reject
-  log  watch  spec approve  propose  apply  adopt  passport
+  log  watch  passport
 
 Wherever a command takes both, --project defaults to the Target's manifest id;
 an explicit --project still wins.
@@ -205,7 +198,7 @@ Compare two runs only when every execution/grading axis except Harness revision 
 	diagnose: `Usage: ahde diagnose <evalRunId> [--target <dir>]
 
 Derive deterministic failure modes and proposal eligibility from a development
-EvalRun. Prints each mode's id, which is what \`ahde propose --mode\` takes.
+EvalRun. Prints each mode's id, which is what a Builder Pi proposal is bound to.
 
 --target <dir> reads that Target's runs/ instead of the current directory's,
 for an operator standing somewhere else; AHDE_RUNS_DIR still wins over both.
@@ -292,9 +285,7 @@ gate selects sealed evidence without exposing the holdout identity to the model.
 Run the current revision against itself (A/A) to measure run-to-run noise:
 how large a difference has to be before it means anything. The calibration
 record is ordinary candidate evidence in A/A mode and is never promotable.`,
-	check: `Usage:
-  ahde check --target <dir> --candidate <id> [--project <id>] [--jobs N]
-  ahde check --target <dir> --builder-run <id> [--project <id>] [--jobs N]
+	check: `Usage: ahde check --target <dir> --candidate <id> [--project <id>] [--jobs N]
 
 The cheap check before the expensive one. Runs the candidate revision on ONLY
 the cases its source eval recorded as failing, once, candidate arm only, and
@@ -303,10 +294,8 @@ compares with those cases' recorded outcomes.
 The project comes from the evidence itself. --project (default: the Target's
 manifest id) only asserts which one that is, and a disagreement is refused.
 
---builder-run screens an applied Builder proposal directly, so the screen can
-run where it belongs: after \`ahde apply\`, before the verification it exists to
-save. --candidate screens an already-evaluated Candidate record. Exactly one of
-the two.
+--candidate names the Candidate record to screen; it is the only subject a
+screen has, and the revisions it runs are read from that record.
 
 A verification costs (development + sealed cases) x repetitions x 2 arms; this
 costs one run per failed case. \`promising\` means at least one previously
@@ -404,80 +393,6 @@ table and that one goes through the unchanged sealed gate and promotion. The
 search never promotes, adopts, publishes, approves, or opens the holdout.
 
 Exit 0 = at least one candidate is on the frontier.`,
-	"spec approve": `Usage: ahde spec approve --target <dir> [--project <id>] [--file spec.md] [--title <text>]
-                         [--actor <id>]
-
-Turn the spec.md you wrote for the operator into the typed immutable Spec the
-ship gate needs. Running this command IS the approval: the receipt is written
-on the spot, under the same local actor id promotion uses. --project defaults
-to the Target's manifest id.
-
-It first makes the Target's store safe to live in: \`.gitignore\` is topped up
-with .ahde/, runs/ and imports/ (the added lines are named), and a Target that
-already TRACKS anything under .ahde/ or runs/ is refused by path — the engine's
-store holds the sealed exam, and a commit cannot be un-made.
-
-Headings name the fields — Purpose, Users, Jobs, Inputs, Allowed actions,
-Success criteria, Constraints, Open questions — and the bullets under each
-heading are its items. The first \`# <title>\` is the title unless --title says
-otherwise; text before the first section is the purpose when no Purpose
-section exists. Any other heading is left to the human and reported as unread.
-
---file defaults to <target>/spec.md and is resolved from the current directory
-when given. Approving the same content twice is a no-op: the draft is
-content-addressed, so the second call finds the receipt and prints the
-specification id it already approved.`,
-	propose: `Usage:
-  ahde propose --target <dir> --spec <id> --branch <ref> [--project <id>] [--summary <text>]
-  ahde propose --target <dir> --spec <id> --branch <ref> --eval <evalRunId> --mode <failureModeId>
-
---project defaults to the Target's manifest id.
-
-A proposal is a diff against a commit, so both a dirty Target tree and evidence
-recorded on one are refused in words, with the next step. A Target that tracks
-anything under .ahde/ or runs/ is refused by path.
-
-Compile the difference between the Target's committed baseline and a branch
-into the typed Builder proposal the engine gates on. The branch is read, never
-merged: nothing is applied, no branch moves, and your checkout stays where it
-is.
-
-Only the harness may differ — AGENTS.md, manifest.yaml, skills/**, bin/**,
-tools/**, data/** — and a change anywhere else is refused by name. manifest.yaml
-may only change its declared resource lists; evals/** can never be proposed.
-
---eval with --mode binds the proposal to diagnosed evidence: the exact EvalRun
-and the failure mode ids \`ahde diagnose\` printed. Without them it is a
-construction proposal that the approved Spec alone justifies, which \`ahde
-candidate\` will verify but which carries no diagnosis. Sealed holdout evidence
-can never steer a proposal and is refused here.
-
-Prints the builder-run id, the base revision, and the changed paths.`,
-	apply: `Usage: ahde apply --target <dir> --builder-run <id> [--branch candidate/<name>]
-                  [--reason <text>] [--actor <id>]
-
-Apply one reviewed proposal: a candidate commit on its own new branch, plus the
-durable apply receipt that binds proposal hash, base and candidate revisions.
-The commit is made in a private worktree, so the operator's checkout never
-moves and no existing branch is touched. --branch defaults to
-candidate/<builder-run-id> and must not already exist.
-
-The proposal's base SHA, every file hash, and the path allowlist are re-checked
-against the repository before anything is written; a stale or out-of-scope
-proposal is refused with nothing applied.
-
-Prints the branch, the candidate SHA and the proposal hash.`,
-	adopt: `Usage: ahde adopt --target <dir> --candidate <id> [--reason <text>] [--actor <id>]
-
-Make the promoted revision the active Target: one fast-forward of the current
-branch onto the exact evaluated candidate, with a durable adoption receipt.
-Running the command is the human confirmation.
-
-It refuses, by name, anything that is not exactly that: an uncommitted change
-in the checkout, a candidate that was never promoted, a promotion tag that does
-not point at the evaluated commit, a HEAD that is not the candidate's baseline,
-or a fast-forward that is not one. Re-running a completed adoption reports it
-as already adopted rather than repeating it.`,
 	passport: `Usage:
   ahde passport --target <dir> [--project <id>] [latest] [--json] [--out <path>]
   (--project defaults to the Target's manifest id)
@@ -642,7 +557,7 @@ Your checkout is never touched, no eval evidence is written, and output is
 bounded and redacted. Exit 0 = the tool exited 0, 1 = the tool failed.`,
 };
 
-const ACTION_COMMANDS = new Set(["corpus", "feedback", "tool", "spec"]);
+const ACTION_COMMANDS = new Set(["corpus", "feedback", "tool"]);
 
 /**
  * The action inside `ahde corpus list --help`, wherever the operator put it.

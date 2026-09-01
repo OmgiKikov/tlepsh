@@ -28,9 +28,6 @@ export const CLI_COMMANDS = [
 	"report",
 	"label",
 	"judge-agreement",
-	"spec",
-	"propose",
-	"apply",
 	"candidate",
 	"calibrate",
 	"check",
@@ -39,7 +36,6 @@ export const CLI_COMMANDS = [
 	"review",
 	"promote",
 	"reject",
-	"adopt",
 	"passport",
 	// Wave 3, operator surfaces: what the agent became, and whether the ground
 	// under an unchanged revision is still where it was.
@@ -55,8 +51,7 @@ export type CliAction =
 	| "inspect"
 	| "ingest"
 	| "clear"
-	| "try"
-	| "approve";
+	| "try";
 
 export type CliEarlyExit =
 	| { kind: "help" }
@@ -139,27 +134,6 @@ const COMMAND_SPECS = {
 		positionals: 1,
 	},
 	"judge-agreement": { flags: ["target", "project"], requiredFlags: ["target"], positionals: 1 },
-	// A branch, compiled into the typed proposal the engine gates on. `--eval`
-	// with `--mode` binds it to diagnosed evidence; neither makes it a
-	// construction change the approved Spec alone justifies.
-	propose: {
-		flags: ["target", "project", "spec", "branch", "summary", "eval", "mode", "run-id"],
-		requiredFlags: ["target", "spec", "branch"],
-		positionals: 0,
-	},
-	// The human apply: a candidate commit on its own branch, plus the receipt.
-	// It never moves the operator's checkout.
-	apply: {
-		flags: ["target", "builder-run", "branch", "reason", "actor"],
-		requiredFlags: ["target", "builder-run"],
-		positionals: 0,
-	},
-	// The confirmed fast-forward onto the promoted revision.
-	adopt: {
-		flags: ["target", "candidate", "reason", "actor"],
-		requiredFlags: ["target", "candidate"],
-		positionals: 0,
-	},
 	candidate: {
 		flags: [
 			"target",
@@ -186,12 +160,11 @@ const COMMAND_SPECS = {
 		requiredFlags: ["target"],
 		positionals: 0,
 	},
-	// The cheap screen: the failed cases only, once, candidate arm only. It
-	// takes an applied Builder run as well, so it can run before the
-	// verification it exists to save.
+	// The cheap screen: the failed cases only, once, candidate arm only, for
+	// one evaluated Candidate record.
 	check: {
-		flags: ["target", "candidate", "builder-run", "project", "jobs"],
-		requiredFlags: ["target"],
+		flags: ["target", "candidate", "project", "jobs"],
+		requiredFlags: ["target", "candidate"],
 		positionals: 0,
 	},
 	// The autoloop. `--until` is a pass rate, as `90%` or `0.9`.
@@ -252,15 +225,7 @@ const COMMAND_SPECS = {
 		positionals: 0,
 		optionalPositionals: 1,
 	},
-} as const satisfies Record<Exclude<CliCommand, "corpus" | "feedback" | "tool" | "spec">, InvocationSpec>;
-
-const SPEC_ACTION_SPECS = {
-	approve: {
-		flags: ["target", "project", "file", "title", "actor"],
-		requiredFlags: ["target"],
-		positionals: 0,
-	},
-} as const satisfies Record<"approve", InvocationSpec>;
+} as const satisfies Record<Exclude<CliCommand, "corpus" | "feedback" | "tool">, InvocationSpec>;
 
 const TOOL_ACTION_SPECS = {
 	try: {
@@ -306,13 +271,12 @@ const FEEDBACK_ACTION_SPECS = {
 	clear: { flags: ["target"], positionals: 0 },
 } as const satisfies Record<"list" | "clear", InvocationSpec>;
 
-type ActionCommand = "corpus" | "feedback" | "tool" | "spec";
+type ActionCommand = "corpus" | "feedback" | "tool";
 
 const ACTION_COMMAND_SPECS: Readonly<Record<ActionCommand, Readonly<Record<string, InvocationSpec>>>> = {
 	corpus: CORPUS_ACTION_SPECS,
 	feedback: FEEDBACK_ACTION_SPECS,
 	tool: TOOL_ACTION_SPECS,
-	spec: SPEC_ACTION_SPECS,
 };
 const ACTION_COMMANDS = new Set<string>(Object.keys(ACTION_COMMAND_SPECS));
 const COMMAND_NAMES = new Set<string>(CLI_COMMANDS.filter((command) => command !== "root"));
@@ -502,31 +466,6 @@ function assertProposalRunIdList(value: string, context: string): void {
 	}
 }
 
-/** Failure modes one proposal may answer; a proposal basis is capped at 8. */
-const MAX_PROPOSAL_FAILURE_MODES = 8;
-const FAILURE_MODE_ID = /^failure-mode-[0-9a-f]{24}$/;
-
-/** `--mode <id[,id]>`: the diagnosed failure modes this proposal answers. */
-export function parseFailureModeIdList(value: string): string[] {
-	return value.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0);
-}
-
-function assertFailureModeIdList(value: string, context: string): void {
-	const ids = parseFailureModeIdList(value);
-	if (ids.length === 0 || ids.length > MAX_PROPOSAL_FAILURE_MODES) {
-		cliError(
-			`--mode for ${context} must name between 1 and ${MAX_PROPOSAL_FAILURE_MODES} failure mode ids, ` +
-			`comma-separated; got ${ids.length}`,
-		);
-	}
-	if (new Set(ids).size !== ids.length) cliError(`--mode for ${context} lists the same failure mode twice`);
-	for (const id of ids) {
-		if (!FAILURE_MODE_ID.test(id)) {
-			cliError(`--mode for ${context} contains an invalid failure mode id ${JSON.stringify(id)}`);
-		}
-	}
-}
-
 /** A pass rate, written the way an operator says it: `90%`, `0.9`, or `90`. */
 export function parsePassRateFlag(value: string): number | null {
 	const text = value.trim();
@@ -676,23 +615,6 @@ function validateCommandRelationships(command: CliCommand, flags: Readonly<Recor
 		if (flags["max-runs"] !== undefined && flags.every === undefined) {
 			cliError("--max-runs for watch bounds a schedule; add --every <30s|5m|2h|1d>");
 		}
-	}
-	// The screen reads either an evaluated Candidate or the applied Builder run
-	// that would become one. Naming both would leave which revision it screens
-	// to the reader.
-	if (command === "check") {
-		const named = ["candidate", "builder-run"].filter((name) => flags[name] !== undefined);
-		if (named.length === 0) cliError("check requires --candidate or --builder-run");
-		if (named.length > 1) cliError("check cannot combine --candidate with --builder-run");
-	}
-	// A diagnosed proposal names the evidence AND the mode inside it; naming one
-	// alone is a half-bound proposal, which the engine refuses later anyway.
-	if (command === "propose") {
-		const evidence = ["eval", "mode"].filter((name) => flags[name] !== undefined);
-		if (evidence.length === 1) {
-			cliError(`propose requires --eval and --mode together; missing --${evidence[0] === "eval" ? "mode" : "eval"}`);
-		}
-		if (flags.mode !== undefined) assertFailureModeIdList(flags.mode, "propose");
 	}
 	// A passport is about exactly one subject: the candidate, or the promotion
 	// tag that names one, or the newest promotion when neither is given.

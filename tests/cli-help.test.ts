@@ -93,10 +93,8 @@ describe("CLI help", () => {
 		expect(help).toContain("Advanced automation commands");
 		expect(help).toContain("compare  diagnose  regrade  report");
 		expect(help).toContain("ahde calibrate --target <dir>                measure run-to-run noise (A/A)");
-		// The screen's own form: `--builder-run` runs it where the skill puts it,
-		// before the verification it exists to save.
-		expect(help).toContain("ahde check --target <dir> --builder-run <id>  cheap screen: the failed cases, once");
-		expect(help).toContain("(or --candidate <id> for an evaluated one)");
+		// The screen has one subject and one form: an evaluated Candidate record.
+		expect(help).toContain("ahde check --target <dir> --candidate <id>   cheap screen: the failed cases, once");
 		expect(help).toContain("--project defaults to the Target's manifest id");
 		expect(help).toContain("ahde improve --target <dir> --until 90% --max-cycles 5");
 		expect(help).toContain("candidate  calibrate  check  improve  search  review  promote  reject");
@@ -115,8 +113,6 @@ describe("CLI help", () => {
 		]) {
 			expect(cliHelp(argv)).toContain("Usage: ahde corpus list");
 		}
-		expect(cliHelp(["spec", "--target", "./agent", "approve", "--help"]))
-			.toContain("Usage: ahde spec approve");
 		expect(cliHelp(["tool", "--target", "./agent", "try", "--help"]))
 			.toContain("Usage: ahde tool try");
 		// An unknown action still gets the product tour, not a wrong page.
@@ -138,9 +134,8 @@ describe("CLI help", () => {
 		expect(cliHelp(["calibrate", "--help"])).toContain("measure run-to-run noise");
 		expect(cliHelp(["calibrate", "--help"])).toContain("never promotable");
 		const check = cliHelp(["check", "--help"]);
-		expect(check).toContain("ahde check --target <dir> --candidate <id>");
-		expect(check).toContain("ahde check --target <dir> --builder-run <id>");
-		expect(check).toContain("before the verification it exists to\nsave");
+		expect(check).toContain("Usage: ahde check --target <dir> --candidate <id>");
+		expect(check).not.toContain("--builder-run");
 		expect(check).toContain("ONLY\nthe cases its source eval recorded as failing");
 		expect(check).toContain("It is a screen, never evidence.");
 		expect(check).toContain("promotion that cites one is refused");
@@ -191,31 +186,18 @@ describe("CLI help", () => {
 		expect(regrade).toContain("Sealed\nevidence stays sealed and prints counts only");
 	});
 
-	it("documents the loop the CLI can now finish on its own", () => {
+	it("sends authoring and adoption to Builder Pi, and advertises no retired command", () => {
 		const help = cliHelp(["--help"]);
-		expect(help).toContain("Change and ship, without leaving the terminal:");
-		expect(help).toContain("spec approve  propose  apply  adopt");
-
-		const spec = cliHelp(["spec", "approve", "--help"]);
-		expect(spec).toContain("Usage: ahde spec approve --target <dir>");
-		expect(spec).toContain("Running this command IS the approval");
-		expect(spec).toContain("Approving the same content twice is a no-op");
-
-		const propose = cliHelp(["propose", "--help"]);
-		expect(propose).toContain("ahde propose --target <dir> --spec <id> --branch <ref>");
-		expect(propose).toContain("The branch is read, never\nmerged");
-		expect(propose).toContain("a change anywhere else is refused by name");
-		expect(propose).toContain("Sealed holdout evidence\ncan never steer a proposal");
-
-		const apply = cliHelp(["apply", "--help"]);
-		expect(apply).toContain("Usage: ahde apply --target <dir> --builder-run <id>");
-		expect(apply).toContain("the operator's checkout never\nmoves");
-		expect(apply).toContain("candidate/<builder-run-id> and must not already exist");
-
-		const adopt = cliHelp(["adopt", "--help"]);
-		expect(adopt).toContain("Usage: ahde adopt --target <dir> --candidate <id>");
-		expect(adopt).toContain("Running the command is the human confirmation.");
-		expect(adopt).toContain("a candidate that was never promoted");
+		expect(help).toContain("Verify and ship (authoring and adoption live in Builder Pi):");
+		expect(help).toContain("log  watch  passport");
+		// The external CLI workflow is retired: the root page must not name it,
+		// and asking for its help must land on the product tour instead.
+		for (const retired of ["ahde spec approve", "ahde propose", "ahde apply", "ahde adopt"]) {
+			expect(help).not.toContain(retired);
+		}
+		for (const argv of [["spec", "approve"], ["propose"], ["apply"], ["adopt"]]) {
+			expect(cliHelp([...argv, "--help"])).toBe(help);
+		}
 	});
 
 	it("renders focused help for nested automation actions", () => {

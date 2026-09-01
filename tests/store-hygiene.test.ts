@@ -3,10 +3,6 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-	assertCleanProposalBaseline,
-	BranchProposalError,
-} from "../src/application/branch-proposal.js";
-import {
 	assertCleanTargetTree,
 	assertUntrackedEngineStore,
 	DirtyTargetTreeError,
@@ -158,60 +154,35 @@ describe("assertUntrackedEngineStore", () => {
 	});
 });
 
-describe("assertCleanProposalBaseline", () => {
-	it("accepts a clean tree and a committed evidence revision", () => {
+describe("assertCleanTargetTree", () => {
+	it("accepts a clean tree", () => {
 		const dir = repoFixture();
 		try {
-			expect(() => assertCleanProposalBaseline(dir, "a".repeat(40))).not.toThrow();
+			expect(targetTreeIsDirty(dir)).toBe(false);
+			expect(() => assertCleanTargetTree(dir, { because: "why", next: "how" })).not.toThrow();
 		} finally {
 			cleanup(dir);
 		}
 	});
 
-	it("refuses uncommitted changes in words, with the operator's next step", () => {
+	it("says what a dirty tree stops, per command, with the operator's next step", () => {
 		const dir = repoFixture();
 		try {
-			// An untracked file is a dirty tree: `gitSha` hashes it into the revision.
-			writeFileSync(join(dir, "run.log"), "eval run erun_1\n");
+			// An untracked file is a dirty tree: `gitSha` hashes it into the
+			// revision. The improvement loop used to fail this as a regex on
+			// `<sha>-dirty-<hash>`, which is easy to hit: `improve > improve.log`
+			// inside the Target is itself the uncommitted file.
+			writeFileSync(join(dir, "improve.log"), "AHDE improve cycle 1/2\n");
 			let thrown: unknown;
 			try {
-				assertCleanProposalBaseline(dir);
+				assertCleanTargetTree(dir, { because: "why", next: "how" });
 			} catch (error) {
 				thrown = error;
 			}
 			expect(thrown).toBeInstanceOf(DirtyTargetTreeError);
 			const error = thrown as DirtyTargetTreeError;
-			expect(error.message).toBe(
-				"the Target has uncommitted changes; a proposal compiles only against a clean committed baseline",
-			);
-			expect(error.next).toBe("commit or stash them, then run ahde propose again");
-		} finally {
-			cleanup(dir);
-		}
-	});
-
-	it("refuses evidence recorded on a dirty tree, naming the revision that is not a commit", () => {
-		const dir = repoFixture();
-		try {
-			const dirty = `${"a".repeat(40)}-dirty-bf3db8dbd147`;
-			expect(() => assertCleanProposalBaseline(dir, dirty)).toThrow(BranchProposalError);
-			expect(() => assertCleanProposalBaseline(dir, dirty)).toThrow(new RegExp(dirty));
-			expect(() => assertCleanProposalBaseline(dir, dirty))
-				.toThrow(/a proposal compiles only against a clean committed baseline/);
-		} finally {
-			cleanup(dir);
-		}
-	});
-
-	it("says what a dirty tree stops, per command", () => {
-		const dir = repoFixture();
-		try {
-			writeFileSync(join(dir, "improve.log"), "AHDE improve cycle 1/2\n");
-			// The improvement loop used to fail this as a regex on
-			// `<sha>-dirty-<hash>`, which is easy to hit: `improve > improve.log`
-			// inside the Target is itself the uncommitted file.
-			expect(() => assertCleanTargetTree(dir, { because: "why", next: "how" }))
-				.toThrow("the Target has uncommitted changes; why");
+			expect(error.message).toBe("the Target has uncommitted changes; why");
+			expect(error.next).toBe("how");
 			expect(targetTreeIsDirty(dir)).toBe(true);
 		} finally {
 			cleanup(dir);

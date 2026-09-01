@@ -99,39 +99,6 @@ describe("side-effect-free CLI invocation parsing", () => {
 		{ name: "candidate refs", argv: ["candidate", "--target", "./agent", "--base", "main", "--branch", "candidate/x", "--proposal", "proposal-1", "--diagnosis", "diagnosis-1"], command: "candidate", action: null },
 		{ name: "check", argv: ["check", "--target", "./agent", "--candidate", "candidate-1"], command: "check", action: null },
 		{ name: "check jobs", argv: ["check", "--target", "./agent", "--candidate", "candidate-1", "--project", "demo", "--jobs", "4"], command: "check", action: null },
-		{ name: "check from an applied builder run", argv: ["check", "--target", "./agent", "--builder-run", "builder-1"], command: "check", action: null },
-		{ name: "spec approve", argv: ["spec", "approve", "--target", "./agent"], command: "spec", action: "approve" },
-		{
-			name: "spec approve with every knob",
-			argv: ["spec", "approve", "--target", "./agent", "--project", "demo", "--file", "spec.md", "--title", "Returns agent", "--actor", "kikov"],
-			command: "spec",
-			action: "approve",
-		},
-		{
-			name: "propose from a branch",
-			argv: ["propose", "--target", "./agent", "--spec", "spec-1", "--branch", "work/fix"],
-			command: "propose",
-			action: null,
-		},
-		{
-			name: "propose bound to diagnosed evidence",
-			argv: [
-				"propose", "--target", "./agent", "--spec", "spec-1", "--branch", "work/fix",
-				"--project", "demo", "--summary", "Answer contract",
-				"--eval", "erun-1", "--mode", "failure-mode-0123456789abcdef01234567",
-				"--run-id", "builder-returns-1",
-			],
-			command: "propose",
-			action: null,
-		},
-		{ name: "apply", argv: ["apply", "--target", "./agent", "--builder-run", "builder-1"], command: "apply", action: null },
-		{
-			name: "apply onto a named branch",
-			argv: ["apply", "--target", "./agent", "--builder-run", "builder-1", "--branch", "candidate/x", "--reason", "Reviewed the diff.", "--actor", "kikov"],
-			command: "apply",
-			action: null,
-		},
-		{ name: "adopt", argv: ["adopt", "--target", "./agent", "--candidate", "candidate-1"], command: "adopt", action: null },
 		{ name: "improve percent", argv: ["improve", "--target", "./agent", "--until", "90%", "--max-cycles", "5"], command: "improve", action: null },
 		{ name: "improve rate", argv: ["improve", "--target", "./agent", "--until", "0.9", "--max-cycles", "3", "--jobs", "2", "--project", "demo", "--repetitions", "2"], command: "improve", action: null },
 		{ name: "improve with several hypotheses", argv: ["improve", "--target", "./agent", "--until", "90%", "--max-cycles", "2", "--candidates", "3"], command: "improve", action: null },
@@ -181,7 +148,13 @@ describe("side-effect-free CLI invocation parsing", () => {
 
 	it.each([
 		[["wat"], /unknown command "wat"/],
-		[["builder", "propose", "--target", "./agent"], /unknown command "builder"/],
+		[["builder", "run", "--target", "./agent"], /unknown command "builder"/],
+		// The external CLI workflow is retired: Builder Pi is the only interface
+		// that authors a change, approves the Spec, or moves the Target branch.
+		[["spec", "approve", "--target", "./agent"], /unknown command "spec"/],
+		[["propose", "--target", "./agent", "--branch", "work/fix"], /unknown command "propose"/],
+		[["apply", "--target", "./agent", "--builder-run", "builder-1"], /unknown command "apply"/],
+		[["adopt", "--target", "./agent", "--candidate", "candidate-1"], /unknown command "adopt"/],
 		[["corpus", "delete", "--project", "demo"], /unknown action "delete" for corpus/],
 		[["feedback"], /missing action for feedback; expected list, clear/],
 		[["feedback", "purge"], /unknown action "purge" for feedback; expected list, clear/],
@@ -226,11 +199,7 @@ describe("side-effect-free CLI invocation parsing", () => {
 		[["run"], /missing required flag --target for run/],
 		[["regrade", "erun-a"], /missing required flag --target for regrade/],
 		[["check", "--candidate", "candidate-1"], /missing required flag --target for check/],
-		[["spec", "approve"], /missing required flag --target for spec approve/],
-		[["propose", "--target", "./agent", "--branch", "work/fix"], /missing required flag --spec for propose/],
-		[["propose", "--target", "./agent", "--spec", "spec-1"], /missing required flag --branch for propose/],
-		[["apply", "--target", "./agent"], /missing required flag --builder-run for apply/],
-		[["adopt", "--target", "./agent"], /missing required flag --candidate for adopt/],
+		[["check", "--target", "./agent"], /missing required flag --candidate for check/],
 		[["improve", "--target", "./agent", "--max-cycles", "3"], /missing required flag --until for improve/],
 		[["improve", "--target", "./agent", "--until", "90%"], /missing required flag --max-cycles for improve/],
 		[["improve", "--target", "./agent", "--until", "120%", "--max-cycles", "3"], /--until for improve must be a pass rate/],
@@ -271,21 +240,8 @@ describe("side-effect-free CLI invocation parsing", () => {
 		[["corpus", "inspect", "--project", "demo", "--file", "imports/x.csv", "--sealed", "10"], /corpus inspect requires --sealed and --seed together/],
 		[["corpus", "ingest", "--project", "demo", "--file", "imports/x.csv", "--recipe", "{}", "--name", "x", "--seed", "exam-1"], /corpus ingest requires --sealed and --seed together/],
 		[["corpus", "ingest", "--project", "demo", "--file", "imports/x.csv", "--recipe", "{}", "--name", "x", "--stratify-by", "tier"], /--stratify-by for corpus ingest only applies to a sealed slice/],
-		[["check", "--target", "./agent"], /check requires --candidate or --builder-run/],
-		[["check", "--target", "./agent", "--candidate", "candidate-1", "--builder-run", "builder-1"], /check cannot combine --candidate with --builder-run/],
-		[["propose", "--target", "./agent", "--spec", "spec-1", "--branch", "work/fix", "--eval", "erun-1"], /propose requires --eval and --mode together; missing --mode/],
-		[["propose", "--target", "./agent", "--spec", "spec-1", "--branch", "work/fix", "--mode", "failure-mode-0123456789abcdef01234567"], /propose requires --eval and --mode together; missing --eval/],
-		[
-			["propose", "--target", "./agent", "--spec", "spec-1", "--branch", "work/fix", "--eval", "erun-1", "--mode", "the-first-one"],
-			/--mode for propose contains an invalid failure mode id "the-first-one"/,
-		],
-		[
-			[
-				"propose", "--target", "./agent", "--spec", "spec-1", "--branch", "work/fix", "--eval", "erun-1",
-				"--mode", "failure-mode-0123456789abcdef01234567,failure-mode-0123456789abcdef01234567",
-			],
-			/--mode for propose lists the same failure mode twice/,
-		],
+		// The screen has exactly one subject, and it is a Candidate record.
+		[["check", "--target", "./agent", "--builder-run", "builder-1"], /unknown flag --builder-run for check/],
 	] as const)("rejects contradictory command modes in %j", (argv, message) => {
 		expect(() => parseCliInvocation(argv)).toThrow(message);
 	});

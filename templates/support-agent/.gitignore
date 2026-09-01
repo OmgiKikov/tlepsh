@@ -4,5 +4,5 @@ attempts.tsv
 *.log
 # AHDE's project store lives inside the target and holds imported corpora,
 # including the SEALED exam. Never let `git add -A` sweep it into a commit:
-# `ahde propose` refuses any branch that touches it.
+# AHDE refuses to run against a Target that already tracks it.
 .ahde/
