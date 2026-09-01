@@ -329,12 +329,20 @@ judge not calibrated — this judge has no human labels; run `ahde label <evalRu
 Everything below is a deviation from the skill, an engine rough edge, or a limit on
 what the numbers above can carry.
 
+**Each caveat carries a STATUS line added 2026-09-01**, when the engine-fix lane on
+branch `skill-path` reproduced every item on a scratch Target with the mock model
+and fixed what could be fixed. The caveat text itself is left exactly as it was
+written during the run: it is the log, not the plan.
+
 **0. `targets/ombudsman/` is not committed anywhere.** The order said to copy the
 *committed* harness from `<worktree>/targets/ombudsman/`; that path does not exist on
 this branch, and `git log --all -- 'targets/ombudsman/*'` returns nothing on any
 branch. The directory exists only as an untracked working-tree folder in the
 operator's main checkout, so the copy was taken from there (read-only; nothing was
 written to it). Only `docs/examples/ombudsman-holdout.jsonl` is under version control.
+
+**STATUS: unchanged; nothing to fix in the engine.** It is a fact about the
+operator's checkout, not about `ahde`.
 
 **1. `ahde propose` dies on a dirty baseline revision with a raw git error.**
 The second baseline recorded its revision as
@@ -349,6 +357,24 @@ The skill does warn that "a dirty revision cannot seed a proposal", so the
 *behaviour* is intended; the *message* is not — it names a git plumbing failure
 instead of saying "the baseline was run on a dirty tree, re-run it clean".
 Workaround: commit everything, re-run the baseline, propose against the new run.
+
+**STATUS: fixed.** `ahde propose` refuses in a sentence, exit 2, before any work:
+
+```
+error: the Target has uncommitted changes; a proposal compiles only against a clean committed baseline
+next: commit or stash them, then run ahde propose again
+```
+
+and, when the tree is clean but the named evidence was not:
+
+```
+error: the evidence was recorded on a dirty tree (6c8e392420…-dirty-bf3db8dbd147); a proposal compiles only against a clean committed baseline
+next: the tree is clean now — re-run the baseline and propose against that eval run
+```
+
+`ahde improve` had the same defect in a different costume — a raw zod regex
+failure on `targetGitSha` — and now refuses from the same shared check. See
+ADDENDUM-2 in `docs/SKILL_WALKTHROUGH.md`.
 
 **2. The engine's own store lives inside the target, is not git-ignored, and holds
 the sealed corpus.** `ahde corpus import` writes to `<target>/.ahde/projects/<id>/corpora/…`
@@ -369,6 +395,22 @@ to `.gitignore`, delete and re-cut the branch, re-baseline. **Suggested fix: shi
 `.gitignore` with `.ahde/`, `runs/`, `imports/` in `ahde init` and in every template**
 — `templates/support-agent/` in this commit does exactly that.
 
+**STATUS: fixed, both halves.** `ahde init` and `ahde spec approve` top up the
+Target's `.gitignore` rule by rule — idempotently, keeping a Target's own
+spelling of `runs/` — and name what they added:
+
+```
+.gitignore     added /.ahde/, /imports/, /runs/, /.env, /.env.*, !/.env.example
+```
+
+And once it has already happened, `ahde spec approve` and `ahde propose` refuse
+by path rather than several steps later, exit 2:
+
+```
+error: .ahde/projects/ombudsman/corpora/corpus-70bb00e3…/corpus.jsonl is tracked by git in the Target (and 2 more paths); .ahde/ and runs/ are the engine's store and hold the sealed exam
+next: git rm -r --cached .ahde runs and ignore them; sealed content must never enter a git object
+```
+
 **3. `ahde corpus import --project <id>` accepts a project id the rest of the flow
 will later reject.** The corpora were first imported under `--project ombudsman-demo`
 as instructed. `ahde candidate` refused, because a builder run's project is the
@@ -383,6 +425,15 @@ which is why the corpus ids in this log are `corpus-9925b525…` / `corpus-4cdbd
 and not the ids the first import printed. `corpus import` could validate the project
 against the target's manifest at import time instead.
 
+**STATUS: fixed by removing the chance to typo it.** `corpus inspect|ingest|import|list`
+now take `--target <dir>` and read the project from its manifest, the way
+`propose`, `candidate`, `label`, `watch` and `passport` already did — so
+`ahde corpus import --target . --visibility sealed …` cannot name a project the
+rest of the flow will reject. An explicit `--project` still wins and still
+works; one of the two is required. `check` and `log` got the same default, and
+on `check` the project comes off the evidence, so `--project` asserts it and a
+disagreement is refused instead of silently screening something else.
+
 **4. `ahde candidate` refuses `--development-corpus` for a builder run.**
 
 ```
@@ -394,6 +445,12 @@ the development arm is fixed to `evalSuite.dataset`, and only `--holdout-corpus`
 passed. The imported development corpus is therefore registered but unused by the
 verification.
 
+**STATUS: not a defect, not changed.** A Builder-run candidate is bound to the
+development surface its proposal was authored against; letting `--development-corpus`
+swap that surface underneath it would let a candidate be verified on cases its
+evidence never saw. `skills/ahde/SKILL.md` step 6 already says so. The refusal
+message is the documentation.
+
 **5. Flag drift between the skill's crib and the CLI.** `ahde report <erun> --target .`
 → `usage error: unknown flag --target for report` (it takes no `--target`).
 `ahde calibrate … --jobs 4` → `usage error: unknown flag --jobs for calibrate` (so the
@@ -401,13 +458,52 @@ calibration alone ran at the default job count, not the `--jobs 4` the order ask
 for). `ahde check` is documented as `--candidate <id>` in `ahde --help` but takes
 `--builder-run <id>`, as the skill says.
 
+**STATUS: fixed, all three.** `ahde calibrate --jobs N` passes through exactly as
+`ahde run` does. `ahde report <erun> --target <dir>` takes the project from that
+manifest (as `passport` does) and reads that Target's `runs/`; `ahde diagnose`
+gained the same `--target` for the same reason. The root help now shows
+`ahde check --target <dir> --builder-run <id>` with `--candidate <id>` as the
+second form, which is the order the skill uses. Two more found while checking:
+`ahde corpus --project demo list --help` printed the product tour instead of the
+corpus-list page (the action was read as "the first bare token", which is the
+flag's value), and every usage error printed the whole root help rather than the
+page for the command that failed. Both fixed.
+
 **6. Judge cost is not in the artifacts.** The $0.1885 total is the sum of `costUsd`
 over `runs/run_*/run.json`, which covers Target calls only. The judge
 (`z-ai/glm-5.3`, 2 judge cases × repetitions) writes no cost field anywhere under
 `runs/`, and its `spec.cost` in the manifest is zeroed, so its spend is unmeasured —
 small, but genuinely unknown rather than zero.
 
-**7. The engine gap the skill lists as open is closed in this build.** `ahde passport`
+**STATUS: fixed, and the caveat was half wrong.** Judge usage *was* captured all
+along: every judge-graded `run.json` carries `metrics.judge = { calls, tokens,
+costUsd }`, with the cost derived from the judge block's declared `spec.cost`.
+Reproduced on a scratch Target with a judge whose block declares rates:
+
+```
+"judge": { "calls": 1, "tokens": 49, "costUsd": 6.3e-05 }
+```
+
+What was missing is everything above one run.json, which is why the number read
+as absent. Now: the eval run sums it as its own `judgeCostUsd` field —
+deliberately never folded into the Target's `costUsd`, because the judge is the
+instrument, not the thing measured — `ahde run` prints ` · judge $X.XX` after
+its summary, and `ahde passport` puts `judge $X.XX total` on the resources line.
+Both print only above zero, and both render a real sub-cent bill as `<$0.01`
+rather than rounding it down to `$0.00`. A suite with no judge writes no field.
+
+The original run's number stays genuinely unknown for the reason the caveat
+gives — that manifest's judge block had zeroed rates, and a zeroed rate produces
+a real zero, not a missing one. Check the block before quoting a total.
+
+**7. The engine gap the skill lists as open is closed in this build.**
+**STATUS: still true, and one more closed.** `ahde improve` picks up a proposal
+authored at the terminal with `ahde propose --eval … --mode …` — proven end to
+end in ADDENDUM-2 of `docs/SKILL_WALKTHROUGH.md`: it matched on the development
+surface, applied the proposal on its own throwaway branch, screened it 6/6,
+verified `improved +100.0pp`, hit the `--until` gate on cycle 1 of 2 and stopped
+with a verified candidate, the operator's checkout never moving.
+ `ahde passport`
 exists and produced the passport above directly; `node scripts/skill-shim-log.mjs`
 was not needed. `ahde review` still records on the first call with no
 `--proposal-hash`, so the diff was shown by hand, as the skill instructs.
@@ -419,9 +515,16 @@ is a no-regression test, not a precise estimate. The development verdict's own
 (`ahde label` was never run), so the two `judge`-graded cases carry an unvalidated
 grader, and the passport says so.
 
+**STATUS: unchanged; not a defect.** This is what the numbers can carry, and
+every surface that quotes them already says it.
+
 **9. The sealed exam was never opened.** No sealed case text, id, or per-case result
 was read at any point; the only sealed facts stated here are the counts and verdicts
 the CLI printed.
+
+**STATUS: unchanged, and now harder to break by accident** — see caveat 2: the
+store that holds the exam is git-ignored on creation and a Target that already
+tracks it is refused by name.
 
 ## Appendix — the promoted `AGENTS.md` (v0.1.0), verbatim
 
