@@ -166,6 +166,8 @@ export function renderLabelSummary(summary: LabelSummary, paint: Paint): string[
 			lines.push(`  ${oneLine(name, 48).padEnd(48)} ${judgeAgreementSummary(entry.stats)}`);
 		}
 	}
-	lines.push("", `${paint.dim(t("label.next"))} ${judgeNextStep(summary.pooled)}`);
+	// The next step is a whole sentence in the operator's own voice, so it gets
+	// its own line rather than a `Next:` label it would read badly after.
+	lines.push("", paint.dim(judgeNextStep(summary.pooled)));
 	return lines;
 }
