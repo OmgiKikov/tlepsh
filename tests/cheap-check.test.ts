@@ -10,6 +10,7 @@ import {
 	isScreenEvalRun,
 	renderCheapCheckLine,
 	resolveFailedTaskIds,
+	assertExpectedProject,
 	runCheapCheck,
 	screenEvalRunIds,
 	screenExclusion,
@@ -202,6 +203,26 @@ describe("cheap check — the screen before the expensive measurement", () => {
 			sourceEvalRunId: fixture.evalRunId,
 		});
 		expect(plan.developmentCorpus?.corpusId).toBe(fixture.corpusId);
+		// The project comes off the evidence, so `--project` can only assert it.
+		expect(plan.projectId).toBe(fixture.projectId);
+	});
+
+	it("refuses a screen whose --project disagrees with the evidence", () => {
+		// `--project` names which candidate is being screened; it never chooses
+		// one. Screening another project's evidence silently would be worse.
+		const plan = {
+			candidateSha: fixSha,
+			baseTargetSha: fixture.baselineSha,
+			sourceEvalRunId: fixture.evalRunId,
+			developmentCorpus: null,
+			projectId: fixture.projectId,
+		};
+		expect(() => assertExpectedProject(plan, fixture.projectId, "candidate c")).not.toThrow();
+		expect(() => assertExpectedProject(plan, undefined, "candidate c")).not.toThrow();
+		// Legacy evidence names no project; there is nothing to disagree with.
+		expect(() => assertExpectedProject({ ...plan, projectId: null }, "other", "candidate c")).not.toThrow();
+		expect(() => assertExpectedProject(plan, "other", "candidate c"))
+			.toThrow(new RegExp(`candidate c belongs to project ${fixture.projectId}, not other`));
 	});
 
 	it("refuses a candidate whose origin carries no source eval", () => {

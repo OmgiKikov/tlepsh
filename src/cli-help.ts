@@ -32,7 +32,8 @@ Start:
 Inspect and run:
   ahde validate --target <dir>                 local readiness check; no model call
   ahde run --target <dir> [options]            run development evidence
-  ahde check --target <dir> --candidate <id>   cheap screen: the failed cases, once
+  ahde check --target <dir> --builder-run <id>  cheap screen: the failed cases, once
+                                               (or --candidate <id> for an evaluated one)
   ahde improve --target <dir> --until 90% --max-cycles 5
                                                run improvement cycles inside the gates
   ahde search --target <dir> --candidates <id,id,id>
@@ -71,6 +72,9 @@ Use \`ahde <command> --help\` for focused help. Advanced automation commands:
   corpus  failures  compare  diagnose  regrade  report  label  judge-agreement
   candidate  calibrate  check  improve  search  review  promote  reject
   log  watch  spec approve  propose  apply  adopt  passport
+
+Wherever a command takes both, --project defaults to the Target's manifest id;
+an explicit --project still wins.
 
 Environment:
   AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)
@@ -155,7 +159,11 @@ a model and a credential needs the trusted host catalog, not an HTTP body.`,
 	init: `Usage: ahde init <dir> [--template <target-dir>]
 
 Create a generic Target harness and its first Git commit. Then run \`ahde\` in
-that directory to configure identity/model and continue the guided workflow.`,
+that directory to configure identity/model and continue the guided workflow.
+
+The scaffold's .gitignore is topped up with .ahde/, runs/ and imports/ before
+that first commit, and the added lines are named: the engine's store lives
+inside the Target and holds the sealed exam.`,
 	run: `Usage:
   ahde run --target <dir> [--task <id>] [--repetitions N] [--jobs N] [--label baseline|solo] [--dataset <rel>]
   ahde run --target <dir> --project <id> --corpus <development-id> [--task <id>] [--repetitions N]
@@ -213,13 +221,16 @@ The result is an ordinary EvalRun with a new suiteHash computed from the graders
 actually used, so two runs regraded with the same graders compare to each other
 while a regrade whose graders changed is refused against its own source. Sealed
 evidence stays sealed and prints counts only.`,
-	report: `Usage: ahde report <evalRunId> [--out <path>] [--project <id>]
+	report: `Usage: ahde report <evalRunId> [--target <dir>] [--out <path>] [--project <id>]
 
 Build a static, bounded HTML evidence report for one development EvalRun.
+--project defaults to the manifest id of --target when you give one, and to the
+eval run's own recorded Target id when you do not.
 Judge graders carry one line each: \`judge agreement 84% · κ 0.62 · n=50\` from
 this project's labels, or \`judge not calibrated\` when nobody has checked yet.`,
 	label: `Usage:
   ahde label <evalRunId> --target <dir> [--project <id>] [--spec <approvedSpecId>] [--sample N] [--seed <text>]
+  (--project defaults to the Target's manifest id)
   ahde label <evalRunId> --target <dir> [--spec <approvedSpecId>] --file <labels.jsonl>
 
 Grade the judge on the same object the judge graded. For a deterministic seeded
@@ -248,6 +259,7 @@ screen shape; it does not opt out of exact Spec/eval provenance.
 Sealed holdout evidence is never labelled: reading it is exactly what a holdout
 forbids.`,
 	"judge-agreement": `Usage: ahde judge-agreement <evalRunId> --target <dir> [--project <id>]
+                            (--project defaults to the Target's manifest id)
 
 Compare this project's human labels with the judge that graded them: agreement
 rate, Cohen's κ, and how often the judge waves a failure through or invents one.
@@ -259,12 +271,17 @@ alone explains such a table and there is nothing to correct.`,
   ahde candidate --target <dir> --builder-run <id> [--development-corpus <id>] [--holdout-corpus <id>] [--project <id>] [--repetitions N]
   ahde candidate --target <dir> --branch <ref> --base <ref> --proposal <id> --diagnosis <id> [options]
 
+--project defaults to the Target's manifest id.
 --jobs sets concurrent executions (default 4; 1 for a loopback model endpoint).
 --baseline-max-age <days> bounds baseline reuse (default 7; 0 always re-runs).
 
 Run an exact matched baseline/candidate experiment. Prefer Builder Pi: its host
 gate selects sealed evidence without exposing the holdout identity to the model.`,
-	calibrate: `Usage: ahde calibrate --target <dir> [--repetitions N] [--project <id>] [--corpus <development-id>]
+	calibrate: `Usage: ahde calibrate --target <dir> [--repetitions N] [--jobs N] [--project <id>]
+                     [--corpus <development-id>]
+
+--jobs sets concurrent executions (default 4; 1 for a loopback model endpoint).
+--project defaults to the Target's manifest id.
 
 Run the current revision against itself (A/A) to measure run-to-run noise:
 how large a difference has to be before it means anything. The calibration
@@ -276,6 +293,9 @@ record is ordinary candidate evidence in A/A mode and is never promotable.`,
 The cheap check before the expensive one. Runs the candidate revision on ONLY
 the cases its source eval recorded as failing, once, candidate arm only, and
 compares with those cases' recorded outcomes.
+
+The project comes from the evidence itself. --project (default: the Target's
+manifest id) only asserts which one that is, and a disagreement is refused.
 
 --builder-run screens an applied Builder proposal directly, so the screen can
 run where it belongs: after \`ahde apply\`, before the verification it exists to
@@ -383,7 +403,13 @@ Exit 0 = at least one candidate is on the frontier.`,
 
 Turn the spec.md you wrote for the operator into the typed immutable Spec the
 ship gate needs. Running this command IS the approval: the receipt is written
-on the spot, under the same local actor id promotion uses.
+on the spot, under the same local actor id promotion uses. --project defaults
+to the Target's manifest id.
+
+It first makes the Target's store safe to live in: \`.gitignore\` is topped up
+with .ahde/, runs/ and imports/ (the added lines are named), and a Target that
+already TRACKS anything under .ahde/ or runs/ is refused by path — the engine's
+store holds the sealed exam, and a commit cannot be un-made.
 
 Headings name the fields — Purpose, Users, Jobs, Inputs, Allowed actions,
 Success criteria, Constraints, Open questions — and the bullets under each
@@ -398,6 +424,12 @@ specification id it already approved.`,
 	propose: `Usage:
   ahde propose --target <dir> --spec <id> --branch <ref> [--project <id>] [--summary <text>]
   ahde propose --target <dir> --spec <id> --branch <ref> --eval <evalRunId> --mode <failureModeId>
+
+--project defaults to the Target's manifest id.
+
+A proposal is a diff against a commit, so both a dirty Target tree and evidence
+recorded on one are refused in words, with the next step. A Target that tracks
+anything under .ahde/ or runs/ is refused by path.
 
 Compile the difference between the Target's committed baseline and a branch
 into the typed Builder proposal the engine gates on. The branch is read, never
@@ -442,6 +474,7 @@ or a fast-forward that is not one. Re-running a completed adoption reports it
 as already adopted rather than repeating it.`,
 	passport: `Usage:
   ahde passport --target <dir> [--project <id>] [latest] [--json] [--out <path>]
+  (--project defaults to the Target's manifest id)
   ahde passport --target <dir> --candidate <id>
   ahde passport --target <dir> --tag v0.1.0
 
@@ -479,6 +512,8 @@ Tag the exact reviewed Candidate revision. This does not switch the active check
 Record an immutable rejection for the exact reviewed Candidate.`,
 	log: `Usage: ahde log --target <dir> [--project <id>] [--limit N] [--json]
 
+--project defaults to the Target's manifest id.
+
 The agent's growth, version by version. One row per promotion, newest first:
 the tag, the date, baseline -> candidate revision, the development score with
 its 95% interval, the sealed verdict and how big that exam was, the cost ratio,
@@ -501,6 +536,8 @@ the same projection.`,
 	watch: `Usage: ahde watch --target <dir> [--project <id>] [--corpus <development-id>]
                   [--every <30s|5m|2h|1d>] [--once] [--jobs N] [--repetitions N]
                   [--max-runs N]
+
+--project defaults to the Target's manifest id.
 
 Run the basket against the ACTIVE Target revision on a schedule and tell drift
 apart from noise. Each tick is ordinary development evidence (label \`solo\`,
@@ -537,21 +574,35 @@ a monotonic schedule until SIGINT; --max-runs bounds it. Exit 0 = healthy,
 
 Publish a reviewed Builder corpus draft. Prefer the Builder Workbench for
 receipt-backed lineage.`,
-	"corpus import": `Usage: ahde corpus import --project <id> --name <name> --visibility development|sealed --file <jsonl>
+	"corpus import": `Usage: ahde corpus import [--target <dir>] [--project <id>] --name <name>
+                          --visibility development|sealed --file <jsonl>
+
+--project defaults to the manifest id of --target; give one or the other. Use
+the Target id: a corpus imported under any other name is refused later by
+\`ahde candidate\`, whose project comes from the Builder run.
 
 Import bounded JSONL. Prefer Builder Pi's project-local imports/ inbox for an editable, Spec-bound draft.`,
-	"corpus list": `Usage: ahde corpus list --project <id>
+	"corpus list": `Usage: ahde corpus list [--target <dir>] [--project <id>]
+
+--project defaults to the manifest id of --target; give one or the other.
 
 List corpus metadata. Sealed content is never printed.`,
-	"corpus inspect": `Usage: ahde corpus inspect --project <id> --file imports/<file> [--sealed N --seed S]
+	"corpus inspect": `Usage: ahde corpus inspect [--target <dir>] [--project <id>] --file imports/<file>
+                           [--sealed N --seed S]
+
+--project defaults to the manifest id of --target; give one or the other. With
+--target the imports/ inbox is read from that Target instead of the cwd.
 
 Preview one file in the project-local imports/ inbox: format, columns with
 inferred types and three sample values each, row count, and how many rows the
 sealed slice reserves. csv, tsv, json, jsonl, markdown tables, plain text, and
 chat exports. Rows held out for the sealed exam are excluded before anything is
 computed, and a sealed row is never printed.`,
-	"corpus ingest": `Usage: ahde corpus ingest --project <id> --file imports/<file> --recipe <json|@path> \\
-                   --name <name> [--sealed N --seed S [--stratify-by <column>]]
+	"corpus ingest": `Usage: ahde corpus ingest [--target <dir>] [--project <id>] --file imports/<file> \\
+                   --recipe <json|@path> --name <name> [--sealed N --seed S [--stratify-by <column>]]
+
+--project defaults to the manifest id of --target; give one or the other. With
+--target the imports/ inbox is read from that Target instead of the cwd.
 
 Compile a dataset into eval cases through a mapping recipe. The sealed slice is
 drawn first from (file sha256, seed, count, column) and published as a sealed

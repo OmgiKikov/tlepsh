@@ -130,7 +130,7 @@ const COMMAND_SPECS = {
 		requiredFlags: ["target"],
 		positionals: 1,
 	},
-	report: { flags: ["out", "project"], positionals: 1 },
+	report: { flags: ["target", "out", "project"], positionals: 1 },
 	label: {
 		flags: ["target", "project", "spec", "sample", "seed", "file"],
 		requiredFlags: ["target"],
@@ -180,7 +180,7 @@ const COMMAND_SPECS = {
 		positionals: 0,
 	},
 	calibrate: {
-		flags: ["target", "repetitions", "project", "corpus"],
+		flags: ["target", "repetitions", "jobs", "project", "corpus"],
 		requiredFlags: ["target"],
 		positionals: 0,
 	},
@@ -268,6 +268,10 @@ const TOOL_ACTION_SPECS = {
 	},
 } as const satisfies Record<"try", InvocationSpec>;
 
+// `--target <dir>` names the Target the corpus belongs to, and its manifest id
+// is the project. Naming the project by hand is still allowed and still wins;
+// what it is no longer is the only way to say it, which is how a corpus used to
+// end up under an id the rest of the flow then refused.
 const CORPUS_ACTION_SPECS = {
 	publish: {
 		flags: ["project", "draft", "name", "visibility"],
@@ -275,23 +279,22 @@ const CORPUS_ACTION_SPECS = {
 		positionals: 0,
 	},
 	import: {
-		flags: ["project", "name", "visibility", "file"],
-		requiredFlags: ["project", "name", "visibility", "file"],
+		flags: ["target", "project", "name", "visibility", "file"],
+		requiredFlags: ["name", "visibility", "file"],
 		positionals: 0,
 	},
 	list: {
-		flags: ["project"],
-		requiredFlags: ["project"],
+		flags: ["target", "project"],
 		positionals: 0,
 	},
 	inspect: {
-		flags: ["project", "file", "sealed", "seed"],
-		requiredFlags: ["project", "file"],
+		flags: ["target", "project", "file", "sealed", "seed"],
+		requiredFlags: ["file"],
 		positionals: 0,
 	},
 	ingest: {
-		flags: ["project", "file", "recipe", "name", "sealed", "seed", "stratify-by"],
-		requiredFlags: ["project", "file", "recipe", "name"],
+		flags: ["target", "project", "file", "recipe", "name", "sealed", "seed", "stratify-by"],
+		requiredFlags: ["file", "recipe", "name"],
 		positionals: 0,
 	},
 } as const satisfies Record<"publish" | "import" | "list" | "inspect" | "ingest", InvocationSpec>;
@@ -608,6 +611,12 @@ function parseActionCommand(
 
 /** A sealed slice is a draw, not a count: it needs its seed to be reproducible. */
 function validateActionRelationships(context: string, flags: Readonly<Record<string, string>>): void {
+	// The project has to be sayable, one way or the other. `corpus publish`
+	// takes a Builder draft id and no Target, so it still names it outright.
+	if (context.startsWith("corpus ") && context !== "corpus publish" &&
+		flags.project === undefined && flags.target === undefined) {
+		cliError(`${context} requires --project <id> or --target <dir> (the Target id is the default project)`);
+	}
 	const sealed = flags.sealed !== undefined;
 	const seed = flags.seed !== undefined;
 	if (sealed !== seed) {

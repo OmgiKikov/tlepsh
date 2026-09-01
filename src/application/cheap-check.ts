@@ -495,6 +495,8 @@ export interface CheapCheckCandidateOptions {
 	runsRoot: string;
 	stateRoot: string;
 	candidateId: string;
+	/** Refuses when the record names another project; never selects one. */
+	expectedProjectId?: string;
 	jobs?: number;
 	signal?: AbortSignal;
 	onRunEvent?: RunEventListener;
@@ -517,6 +519,7 @@ export async function runCheapCheckForCandidate(
 		CandidateRecordSchema,
 	);
 	const plan = cheapCheckPlanForCandidate(record, options.stateRoot);
+	assertExpectedProject(plan, options.expectedProjectId, `candidate ${options.candidateId}`);
 	return runCheapCheck({
 		repositoryDir: options.repositoryDir,
 		runsRoot,
@@ -536,6 +539,8 @@ export interface CheapCheckBuilderRunOptions {
 	runsRoot: string;
 	stateRoot: string;
 	builderRunId: string;
+	/** Refuses when the Builder run names another project; never selects one. */
+	expectedProjectId?: string;
 	jobs?: number;
 	signal?: AbortSignal;
 	onRunEvent?: RunEventListener;
@@ -554,6 +559,7 @@ export async function runCheapCheckForBuilderRun(
 ): Promise<CheapCheckResult> {
 	const runsRoot = resolve(options.runsRoot);
 	const plan = cheapCheckPlanForBuilderRun(runsRoot, options.builderRunId, options.stateRoot);
+	assertExpectedProject(plan, options.expectedProjectId, `builder run ${options.builderRunId}`);
 	return runCheapCheck({
 		repositoryDir: options.repositoryDir,
 		runsRoot,
@@ -599,6 +605,7 @@ export function cheapCheckPlanForBuilderRun(
 		developmentCorpus: corpus && projectId
 			? { stateRoot: resolve(stateRoot), projectId, corpusId: corpus.id }
 			: null,
+		projectId,
 	};
 }
 
@@ -607,6 +614,21 @@ export interface CheapCheckPlan {
 	baseTargetSha: string;
 	sourceEvalRunId: string;
 	developmentCorpus: CorpusRef | null;
+	/** The project the evidence itself names. Null on legacy evidence only. */
+	projectId: string | null;
+}
+
+/**
+ * A screen never selects its project — it reads the one its evidence was
+ * recorded under. `--project` is therefore a check, not a selector: naming a
+ * different project is a mistake about which candidate is being screened, and
+ * silently screening the other one would be worse than saying so.
+ */
+export function assertExpectedProject(plan: CheapCheckPlan, expected: string | undefined, subject: string): void {
+	if (expected === undefined || plan.projectId === null || plan.projectId === expected) return;
+	throw new CheapCheckError(
+		`${subject} belongs to project ${plan.projectId}, not ${expected}`,
+	);
 }
 
 /** What a Candidate record says a screen of it would have to run. */
@@ -632,6 +654,7 @@ export function cheapCheckPlanForCandidate(
 		developmentCorpus: source.developmentCorpus
 			? { stateRoot: resolve(stateRoot), projectId: record.projectId, corpusId: source.developmentCorpus.id }
 			: null,
+		projectId: record.projectId,
 	};
 }
 

@@ -92,7 +92,11 @@ describe("CLI help", () => {
 		expect(help).toContain("Advanced automation commands");
 		expect(help).toContain("compare  diagnose  regrade  report");
 		expect(help).toContain("ahde calibrate --target <dir>                measure run-to-run noise (A/A)");
-		expect(help).toContain("ahde check --target <dir> --candidate <id>   cheap screen: the failed cases, once");
+		// The screen's own form: `--builder-run` runs it where the skill puts it,
+		// before the verification it exists to save.
+		expect(help).toContain("ahde check --target <dir> --builder-run <id>  cheap screen: the failed cases, once");
+		expect(help).toContain("(or --candidate <id> for an evaluated one)");
+		expect(help).toContain("--project defaults to the Target's manifest id");
 		expect(help).toContain("ahde improve --target <dir> --until 90% --max-cycles 5");
 		expect(help).toContain("candidate  calibrate  check  improve  search  review  promote  reject");
 		expect(help).toContain("ahde search --target <dir> --candidates <id,id,id>");

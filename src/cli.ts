@@ -457,6 +457,11 @@ async function targetPi(): Promise<void> {
 function reportProjectId(evalRunId: string): string {
 	const explicit = arg("project");
 	if (explicit) return explicit;
+	// `--target <dir>` names it the way `ahde passport` does, from the manifest;
+	// without one the eval run's own recorded Target id is the same default it
+	// always was.
+	const targetDir = arg("target");
+	if (targetDir) return loadTarget(resolve(targetDir)).manifest.id;
 	return readEvalRunIndex(runsRoot(), evalRunId).target.id;
 }
 
@@ -978,7 +983,15 @@ async function main(): Promise<void> {
 		}
 		case "corpus": {
 			const action = positional(0);
-			const projectId = requireArg("project");
+			// The Target's manifest id is the project every other command already
+			// defaults to; a corpus imported under any other name is refused later
+			// by `ahde candidate`, which is exactly the trap this closes.
+			const corpusTargetDir = arg("target") ? resolve(arg("target")!) : null;
+			const projectId = arg("project") ??
+				(corpusTargetDir ? loadTarget(corpusTargetDir).manifest.id : requireArg("project"));
+			// `--file imports/<name>` is read from the Target when one is named,
+			// and from the current directory otherwise, as it always was.
+			const corpusProjectDir = corpusTargetDir ?? process.cwd();
 			if (action === "publish") {
 				const visibility = requireArg("visibility");
 				if (visibility !== "development" && visibility !== "sealed") {
@@ -1025,7 +1038,7 @@ async function main(): Promise<void> {
 			if (action === "inspect") {
 				const sourcePath = requireArg("file");
 				const preview = inspectDatasetFile({
-					projectDir: process.cwd(),
+					projectDir: corpusProjectDir,
 					sourcePath,
 					holdout: datasetHoldout(projectId, sourcePath),
 				});
@@ -1035,7 +1048,7 @@ async function main(): Promise<void> {
 			if (action === "ingest") {
 				const sourcePath = requireArg("file");
 				const result = ingestDataset({
-					projectDir: process.cwd(),
+					projectDir: corpusProjectDir,
 					stateRoot: stateRoot(),
 					projectId,
 					sourcePath,
@@ -1084,7 +1097,7 @@ async function main(): Promise<void> {
 				}
 				break;
 			}
-			throw new Error("usage: ahde corpus publish|import|list|inspect|ingest --project <id> ...");
+			throw new Error("usage: ahde corpus publish|import|list|inspect|ingest [--target <dir>] [--project <id>] ...");
 		}
 		case "feedback": {
 			const lines = runTargetFeedbackCommand({
@@ -1214,7 +1227,7 @@ async function main(): Promise<void> {
 		case "report": {
 			const evalRunId = positional(0);
 			if (!evalRunId) {
-				console.error("usage: ahde report <evalRunId> [--out <path>] [--project <id>]\n");
+				console.error("usage: ahde report <evalRunId> [--target <dir>] [--out <path>] [--project <id>]\n");
 				console.log(USAGE);
 				process.exit(2);
 			}
@@ -1489,6 +1502,9 @@ async function main(): Promise<void> {
 				repositoryDir: targetDir,
 				runsRoot: runsRoot(),
 				stateRoot: stateRoot(),
+				// The screen reads its project off the evidence; `--project`
+				// (defaulting to the Target id) only asserts which one that is.
+				expectedProjectId: arg("project") ?? loadTarget(targetDir).manifest.id,
 				onRunEvent: cliRunProgress(),
 				...(arg("jobs") ? { jobs: Number(arg("jobs")) } : {}),
 			};
@@ -1677,6 +1693,7 @@ async function main(): Promise<void> {
 				projectId,
 				origin: { kind: "manual", reason: "A/A calibration" },
 				...(developmentCorpus ? { developmentCorpus } : {}),
+				...(arg("jobs") ? { jobs: Number(arg("jobs")) } : {}),
 				onRunEvent: cliRunProgress(),
 			});
 			const calibration = calibrationProjection(result.record);
@@ -1746,14 +1763,15 @@ async function main(): Promise<void> {
 		}
 		case "log": {
 			const targetDir = resolve(requireArg("target"));
-			const projectId = arg("project");
+			const targetId = loadTarget(targetDir).manifest.id;
+			const projectId = arg("project") ?? targetId;
 			const limit = arg("limit");
 			// A pure read over durable candidate evidence: no model call, and not
 			// one byte written.
 			const log = compileAgentLog({
 				runsRoot: runsRoot(),
-				targetId: loadTarget(targetDir).manifest.id,
-				...(projectId ? { projectId } : {}),
+				targetId,
+				projectId,
 				...(limit ? { limit: Number(limit) } : {}),
 			});
 			if (flagPresent("json")) {

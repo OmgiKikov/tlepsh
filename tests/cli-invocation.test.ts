@@ -77,6 +77,11 @@ describe("side-effect-free CLI invocation parsing", () => {
 		{ name: "corpus inspect with the exam in force", argv: ["corpus", "inspect", "--project", "demo", "--file", "imports/tickets.csv", "--sealed", "40", "--seed", "exam-1"], command: "corpus", action: "inspect" },
 		{ name: "corpus ingest", argv: ["corpus", "ingest", "--project", "demo", "--file", "imports/tickets.csv", "--recipe", "@recipe.json", "--name", "tickets"], command: "corpus", action: "ingest" },
 		{ name: "corpus ingest with a stratified exam", argv: ["corpus", "ingest", "--project", "demo", "--file", "imports/tickets.csv", "--recipe", "{}", "--name", "tickets", "--sealed", "40", "--seed", "exam-1", "--stratify-by", "tier"], command: "corpus", action: "ingest" },
+		// --target names the project the way every other command does: from the manifest.
+		{ name: "corpus list by target", argv: ["corpus", "list", "--target", "./agent"], command: "corpus", action: "list" },
+		{ name: "corpus import by target", argv: ["corpus", "import", "--target", "./agent", "--name", "holdout", "--visibility", "sealed", "--file", "tasks.jsonl"], command: "corpus", action: "import" },
+		{ name: "corpus inspect by target", argv: ["corpus", "inspect", "--target", "./agent", "--file", "imports/tickets.csv"], command: "corpus", action: "inspect" },
+		{ name: "corpus ingest by target", argv: ["corpus", "ingest", "--target", "./agent", "--file", "imports/tickets.csv", "--recipe", "{}", "--name", "tickets"], command: "corpus", action: "ingest" },
 		{ name: "feedback list", argv: ["feedback", "list"], command: "feedback", action: "list" },
 		{ name: "feedback list for a chosen Target", argv: ["feedback", "list", "--target", "./agent"], command: "feedback", action: "list" },
 		{ name: "feedback clear", argv: ["feedback", "--target", "./agent", "clear"], command: "feedback", action: "clear" },
@@ -136,6 +141,9 @@ describe("side-effect-free CLI invocation parsing", () => {
 		{ name: "search four", argv: ["search", "--target", "./agent", "--candidates", "builder-1,builder-2,builder-3,builder-4", "--project", "demo", "--jobs", "4", "--budget", "200"], command: "search", action: null },
 		{ name: "calibrate", argv: ["calibrate", "--target", "./agent"], command: "calibrate", action: null },
 		{ name: "calibrate corpus", argv: ["calibrate", "--target", "./agent", "--repetitions", "3", "--project", "demo", "--corpus", "corpus-dev"], command: "calibrate", action: null },
+		// Flag drift the walkthrough hit: both of these were usage errors.
+		{ name: "calibrate jobs", argv: ["calibrate", "--target", "./agent", "--jobs", "4"], command: "calibrate", action: null },
+		{ name: "report target", argv: ["report", "erun-1", "--target", "./agent"], command: "report", action: null },
 		{ name: "review", argv: ["review", "--candidate", "candidate-1", "--recommend", "promote", "--reason", "passed"], command: "review", action: null },
 		{ name: "review exact automated proposal", argv: ["review", "--candidate", "candidate-1", "--recommend", "promote", "--reason", "passed", "--proposal-hash", `sha256:${"a".repeat(64)}`], command: "review", action: null },
 		{ name: "promote", argv: ["promote", "--target", "./agent", "--candidate", "candidate-1", "--to", "1.2.3", "--reason", "approved"], command: "promote", action: null },
@@ -203,6 +211,10 @@ describe("side-effect-free CLI invocation parsing", () => {
 		[["regrade", "erun-a", "erun-b", "--target", "./agent"], /regrade accepts 1 positional argument; got 2/],
 		[["--target", "./agent", "stray"], /root accepts 0 positional arguments; got 1/],
 		[["corpus", "list", "extra", "--project", "demo"], /corpus list accepts 0 positional arguments; got 1/],
+		// One of the two has to be sayable; `corpus publish` has no Target at all.
+		[["corpus", "list"], /corpus list requires --project <id> or --target <dir>/],
+		[["corpus", "import", "--name", "x", "--visibility", "sealed", "--file", "x.jsonl"], /corpus import requires --project <id> or --target <dir>/],
+		[["corpus", "publish", "--target", "./agent", "--draft", "d", "--name", "n", "--visibility", "development"], /unknown flag --target for corpus publish/],
 		[["feedback", "clear", "extra"], /feedback clear accepts 0 positional arguments; got 1/],
 	] as const)("rejects missing or excess positionals in %j", (argv, message) => {
 		expect(() => parseCliInvocation(argv)).toThrow(message);

@@ -81,7 +81,9 @@ the engine's verdicts count, and only its gate ships.
    happily produce evidence on a dirty tree, but `propose` refuses a dirty
    baseline and the run has to be repeated clean. Use the Target id as
    `--project` everywhere the engine asks for one; a proposal belongs to that
-   project and refuses corpora imported under another name.
+   project and refuses corpora imported under another name. Every command that
+   takes `--target` defaults `--project` to the manifest id, so passing
+   `--target .` is enough — `corpus inspect|ingest|import|list` included.
 3. **Create the benchmark.** Prefer the client's real data dropped in
    `imports/`:
    - `ahde corpus inspect --project <id> --file imports/<file>` — see columns;
@@ -207,11 +209,12 @@ loop closes on the CLI alone. What is still rough:
 ahde validate --target .                      readiness; no model calls
 ahde spec approve --target .                  spec.md → the typed Spec + its receipt
 ahde run --target . --repetitions 3           development evidence (exit 1=fails, 2=inconclusive)
-ahde list · diagnose <erun> · report <erun>   what happened and why
-ahde corpus inspect|ingest|import|list        benchmark creation (sealed at ingest)
+ahde list · diagnose <erun> · report <erun> --target .   what happened and why
+ahde corpus inspect|ingest|import|list --target .   benchmark creation (sealed at ingest;
+                                              --project defaults to the Target id)
   (`corpus publish` needs a Builder-Pi `corpus-draft-…`; scripted, use
    `corpus import --visibility development|sealed --file <jsonl>`)
-ahde calibrate --target .                     A/A noise band for this revision
+ahde calibrate --target . [--jobs N]          A/A noise band for this revision
 ahde propose --target . --spec <id> --branch <ref> [--eval <erun> --mode <id>]
                                               a branch → the typed proposal (applies nothing)
 ahde apply --target . --builder-run <id>      candidate commit + receipt; checkout unmoved
