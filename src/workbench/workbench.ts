@@ -76,6 +76,11 @@ import {
 	type WorkshopStatus,
 	type WorkshopWriteResult,
 } from "../application/tool-workshop.js";
+import {
+	changedToolDescriptors,
+	toolContractCases,
+	toolContractCasesWithoutJudge,
+} from "../application/tool-contract-cases.js";
 import { missingEnvNames } from "../env.js";
 import { runAppliedBuilderCandidate } from "../application/builder-candidate.js";
 import { formatPoints, SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
@@ -589,6 +594,8 @@ function datasetText(value: string, max = MAX_DATASET_CASE_CHARS): string {
 function datasetGrader(grader: WorkbenchDatasetCase["graders"][number]): WorkbenchDatasetCase["graders"][number] {
 	const named = grader.name !== undefined ? { name: datasetText(grader.name, 120) } : {};
 	switch (grader.type) {
+		case "no_secret":
+			return { ...grader, ...named };
 		case "tool_called":
 			return {
 				...grader,
@@ -2137,6 +2144,82 @@ export class AhdeWorkbench {
 		return { requirement, actor };
 	}
 
+	/**
+	 * Three development cases per tool an applied proposal created or changed:
+	 * the tool is called with the argument that was meant, a missing argument is
+	 * asked about rather than invented, and a tool failure is reported rather
+	 * than papered over. Every one of them also fails if the answer contains
+	 * something shaped like a credential.
+	 *
+	 * They land in an immutable draft and stop there. Publishing a case changes
+	 * what every later verdict means, so it stays the operator's decision — the
+	 * Builder's line is "I added 3 contract cases for <tool>; publish them with
+	 * the next test", not "I added tests".
+	 *
+	 * Drafting can fail for ordinary reasons — no approved Spec yet, a Target
+	 * that cannot be read — and none of them are a reason to pretend Apply did
+	 * not happen. A failure here returns nothing and says nothing.
+	 */
+	private draftToolContractCases(exactDiff: string): { tool: string; draftId: string; cases: number }[] {
+		try {
+			const inventory = this.inventory();
+			if (!inventory.target) return [];
+			const changed = changedToolDescriptors(exactDiff)
+				.flatMap((entry) => entry.descriptor === null ? [] : [entry.descriptor]);
+			if (changed.length === 0) return [];
+			const approved = requireApprovedSpec(inventory);
+			const exact = loadApprovedSpec({ stateRoot: this.stateRoot, projectId: this.projectId, specId: approved.id });
+			const judged = Boolean(inventory.target.manifest.evalSuite.judge);
+			const drafted: { tool: string; draftId: string; cases: number }[] = [];
+			for (const descriptor of changed) {
+				const name = typeof descriptor.name === "string" ? descriptor.name : null;
+				if (!name) continue;
+				const shape = {
+					name,
+					description: typeof descriptor.description === "string" ? descriptor.description : "",
+					...(typeof descriptor.parameters === "object" && descriptor.parameters !== null
+						? { parameters: descriptor.parameters as Record<string, unknown> }
+						: {}),
+				};
+				const composed = judged ? toolContractCases(shape) : toolContractCasesWithoutJudge(shape);
+				const tasks = composed.map((entry) => ({
+					input: entry.input,
+					graders: entry.graders,
+					metadata: entry.metadata,
+				}));
+				assertGradersRunnable(tasks, inventory.target.manifest, `contract cases for ${name}`);
+				// Revise the open draft when there is one, so the operator keeps one
+				// editable surface instead of collecting a draft per applied tool.
+				const open = inventory.corpusDrafts.filter((draft) => draft.approvedSpec.specId === approved.id);
+				const parent = open[open.length - 1];
+				const summary = `Contract cases for the ${name} tool`;
+				const draft = parent
+					? this.dependencies.reviseCorpusDraft({
+						stateRoot: this.stateRoot,
+						approvedSpec: exact.reference,
+						parentDraftId: parent.id,
+						operations: tasks.map((task) => ({ type: "add" as const, task })),
+						verifiedTaskProvenance: [],
+						revisionSummary: summary,
+					}, { now: this.dependencies.now }).draft
+					: this.dependencies.createCorpusDraft({
+						stateRoot: this.stateRoot,
+						approvedSpec: exact.reference,
+						name: `${name} contract`,
+						tasks,
+						coverageNotes: [`Does the agent call ${name}, with the right arguments, and say so when it fails?`],
+						revisionSummary: summary,
+					}, { now: this.dependencies.now }).draft;
+				drafted.push({ tool: name, draftId: draft.id, cases: tasks.length });
+			}
+			return drafted;
+		} catch {
+			// The apply is durable and the operator is looking at it. A draft that
+			// could not be written is not a reason to make that look like a failure.
+			return [];
+		}
+	}
+
 	async workshopTry(
 		input: WorkshopTryInput,
 		options: { signal?: AbortSignal; gate?: WorkbenchHumanGate } = {},
@@ -3273,6 +3356,10 @@ export class AhdeWorkbench {
 			const after = { operation: "apply-proposal", branch: input.branch, builderRunHash: hashValue(afterProposal.record), ...proposalReview(afterProposal.record) };
 			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
 			const result = this.dependencies.applyProposal({ repoDir: this.projectDir, runsRoot: this.runsRoot, runId: proposal.record.runId, expectedBuilderRunHash: after.builderRunHash, requestedBranch: input.branch, actor: { kind: "human", id: actor }, verificationAuthorization: verification, reason: input.reason });
+			// A tool that was just applied has an executable contract nobody has
+			// measured: whether the agent calls it, with what, and what it says when
+			// it fails. Draft those cases now, while the diff is still the subject.
+			const contractCases = this.draftToolContractCases(after.exactDiff);
 			const settled = this.select("proposal", proposal.record.runId);
 			let view = await this.viewOf(settled);
 			let verified: WorkbenchVerifyCandidateResult | { outcome: "blocked"; reason: string } | undefined;
@@ -3310,6 +3397,7 @@ export class AhdeWorkbench {
 					candidateSha: result.receipt.candidateSha,
 					proposalHash: result.receipt.proposalSha256,
 					...(verified === undefined ? {} : { verification: verified }),
+					...(contractCases.length > 0 ? { contractCases } : {}),
 				},
 				view,
 			};

@@ -419,6 +419,21 @@ it("writes a tool in the workshop, tries it, closes, applies, verifies and ships
 		expect(timeline.indexOf("panel:AHDE · Proposal review"))
 			.toBeLessThan(timeline.indexOf("ask:Apply exact Builder proposal"));
 
+		// The close panel is the review the operator asked for: what was created,
+		// what the tool may reach, whether its own fixtures passed, and the two
+		// outcomes — all above the same complete diff.
+		expect(body).toContain("Created / changed");
+		expect(body).toContain("Permissions");
+		expect(body).toContain("• ready_check network deny · filesystem read-only · env none");
+		expect(body).toContain("Apply or discard");
+
+		// Applying a tool drafts the three cases nobody has measured yet, and
+		// stops there: publishing one changes what every later verdict means.
+		const applied = observed.find((entry) => entry.kind === "apply-proposal")!;
+		expect(applied.details.result.contractCases).toEqual([
+			{ tool: "ready_check", draftId: expect.stringMatching(/^corpus-draft/), cases: 3 },
+		]);
+
 		// Applied, verified and shipped through the unchanged downstream contract.
 		const verified = observed.find((entry) => entry.details.result?.resolvedAs === "verify-candidate")!;
 		expect(verified.details.result).toMatchObject({

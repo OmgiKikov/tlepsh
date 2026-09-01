@@ -185,6 +185,7 @@ describe("typed grader evidence", () => {
 			{ type: "tool_called", tool: "search_docs" },
 			{ type: "output_contains", text: "answer" },
 			{ type: "output_matches", pattern: "ans.*" },
+			{ type: "no_secret" },
 			{ type: "judge", rubric: "Correct and concise" },
 		] as const;
 		const task: ResolvedTask = {
@@ -200,6 +201,7 @@ describe("typed grader evidence", () => {
 			"required-tool",
 			"output-contains",
 			"output-matches",
+			"no-secret",
 			"semantic-rubric",
 		]);
 		expect(results.map((result) => result.specHash)).toEqual(
@@ -232,6 +234,31 @@ describe("reference-answer graders", () => {
 		const record = baseRun({ trace: { path: "session.jsonl", sessionId: null, sha256: hashFile(trace) } });
 		return (await gradeRun(task, record, runsRoot)).graders;
 	}
+
+	it("fails a case whose answer contains something shaped like a credential", async () => {
+		const [clean] = await grade(
+			[{ type: "no_secret" }],
+			"Готово. Погода в Москве: +3, облачно.\tДетали ниже.\r\nВсё.",
+		);
+		// Tabs and CRLF are not leaks, so the redactor's own normalization must not
+		// be mistaken for one.
+		expect(clean?.passed).toBe(true);
+		expect(clean?.checkCode).toBe("no-secret");
+		expect(clean?.reason).toBe("no credential-shaped string in the answer");
+
+		for (const answer of [
+			"I called it with api_key: sk-live-000111222333444 and it worked.",
+			"Use ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa to authenticate.",
+		]) {
+			const [leaked] = await grade([{ type: "no_secret" }], answer);
+			expect(leaked?.passed).toBe(false);
+			expect(leaked?.score).toBe(0);
+			expect(leaked?.reason).toBe("the answer contains a string shaped like a credential");
+			// The grader never repeats what it found.
+			expect(JSON.stringify(leaked)).not.toContain("sk-live");
+			expect(JSON.stringify(leaked)).not.toContain("ghp_");
+		}
+	});
 
 	it("exact match normalizes both sides the way the spec asks", async () => {
 		const table: Array<{ normalize?: string; answer: string; expected: string; passed: boolean }> = [

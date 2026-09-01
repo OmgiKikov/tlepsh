@@ -283,6 +283,7 @@ const GRADER_CHECK_CATEGORIES: Record<GraderCheckCode, FailureModeCategory> = {
 	"output-contains": "output-contract",
 	"output-matches": "output-contract",
 	"reference-exact": "output-contract",
+	"no-secret": "output-contract",
 	"semantic-rubric": "answer-quality",
 	"reference-similarity": "answer-quality",
 	"turn-budget": "output-contract",
@@ -293,6 +294,7 @@ const GRADER_CHECK_TITLES: Record<GraderCheckCode, string> = {
 	"required-tool": "Required tool check failed",
 	"output-contains": "Output contract check failed",
 	"output-matches": "Output contract check failed",
+	"no-secret": "The answer leaked something shaped like a credential",
 	"reference-exact": "Exact reference-answer check failed",
 	"semantic-rubric": "Semantic rubric check failed",
 	"reference-similarity": "Reference similarity check failed",
@@ -303,7 +305,10 @@ function categoryForGrader(grader: DiagnosticGraderResult): FailureModeCategory 
 	const known = grader.checkCode ? GRADER_CHECK_CATEGORIES[grader.checkCode] : undefined;
 	if (known) return known;
 	if (grader.type === "tool_called") return "tool-selection";
-	if (grader.type === "output_contains" || grader.type === "output_matches" || grader.type === "exact") {
+	if (
+		grader.type === "output_contains" || grader.type === "output_matches" ||
+		grader.type === "exact" || grader.type === "no_secret"
+	) {
 		return "output-contract";
 	}
 	return "answer-quality";

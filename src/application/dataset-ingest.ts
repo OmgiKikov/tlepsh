@@ -316,6 +316,9 @@ function substituteGrader(grader: GraderSpec, resolve: (name: string) => string)
 	const substituted = (text: string): string => text.replace(PLACEHOLDER_PATTERN, (_match, name: string) => resolve(name.trim()));
 	const named = grader.name !== undefined ? { name: substituted(grader.name) } : {};
 	switch (grader.type) {
+		// Nothing to substitute: the redactor is the whole specification.
+		case "no_secret":
+			return { ...grader, ...named };
 		case "tool_called":
 			return {
 				...grader,

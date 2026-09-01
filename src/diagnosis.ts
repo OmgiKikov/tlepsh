@@ -75,7 +75,8 @@ function categoryFor(aggregate: TaskAggregate): DiagnosisCategory[] {
 	if (
 		aggregate.failedGraderTypes.has("output_contains") ||
 		aggregate.failedGraderTypes.has("output_matches") ||
-		aggregate.failedGraderTypes.has("exact")
+		aggregate.failedGraderTypes.has("exact") ||
+		aggregate.failedGraderTypes.has("no_secret")
 	) categories.push("output-contract");
 	if (
 		aggregate.failedGraderTypes.has("judge") ||

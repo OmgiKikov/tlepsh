@@ -1247,6 +1247,22 @@ describe("renderImpact", () => {
 		]);
 	});
 
+	it("names what the tool cases answer, and what the gate answers instead", () => {
+		const lines = renderImpact(
+			{ available: true, impact: makeImpact({ verdict: "improved", proposalBasis: null }) },
+			plainPaint,
+			{ tools: ["weather", "crm"] },
+		);
+		expect(lines[1]).toBe("  Tool contract for weather, crm, through the development cases:");
+		expect(lines[2]).toBe(
+			"    calls the tool · right arguments · says so when it fails · no credential in the answer. " +
+			"“Answers better” is the gate above.",
+		);
+		// A candidate that changed no tool says nothing about tool contracts.
+		expect(renderImpact({ available: true, impact: makeImpact({ proposalBasis: null }) }, plainPaint))
+			.not.toContain("Tool contract");
+	});
+
 	it("lists new and worsened failure modes with omitted counts", () => {
 		const lines = renderImpact({
 			available: true,

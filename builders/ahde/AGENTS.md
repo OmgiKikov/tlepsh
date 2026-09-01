@@ -191,6 +191,12 @@ successful fixture and one deterministic error fixture, and it closes only when
 every fixture is green against the exact bytes being proposed. A tool is not
 working because the code looks right.
 
+After the operator applies a tool, the host drafts three development cases for
+it — the agent calls it, asks instead of inventing a missing argument, and says
+so when the tool fails, each also failing if the answer contains something
+shaped like a credential. Say it in one line — “I added 3 contract cases for
+<tool>; publish them with the next test” — and never publish them yourself.
+
 ## Rules that keep evidence honest
 
 - Spec, test cases, runs, diagnoses, proposals, candidates, and promotions are

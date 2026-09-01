@@ -1,5 +1,6 @@
 import type { CandidateImpact } from "../../application/candidate-impact.js";
 import { formatResourceFragment } from "../../domain/comparison-gate.js";
+import { t } from "../../i18n.js";
 import type { WorkbenchCandidateImpactProjection } from "../../workbench/types.js";
 import { oneLine, pluralize } from "./format.js";
 import type { Paint } from "./paint.js";
@@ -30,8 +31,27 @@ function verdictText(verdict: CandidateImpact["verdict"], paint: Paint): string 
 	}
 }
 
+/**
+ * The four questions a tool change is measured by, named where the verdict is
+ * read. Three of them are behaviour — does the agent call the tool, with the
+ * arguments that were meant, and does it say so when the tool fails — and the
+ * fourth is that the answer never contains the credential. All four are
+ * development cases; "answers better" is the gate below them, not a case.
+ */
+function toolContractLines(tools: readonly string[], paint: Paint): string[] {
+	if (tools.length === 0) return [];
+	return [
+		`  ${paint.dim(t("impact.tool-contract", { tools: tools.join(", ") }))}`,
+		`    ${paint.dim(t("impact.tool-contract-questions"))}`,
+	];
+}
+
 /** Human summary of what the candidate did to the failure modes it targeted. */
-export function renderImpact(projection: WorkbenchCandidateImpactProjection | null, paint: Paint): string[] {
+export function renderImpact(
+	projection: WorkbenchCandidateImpactProjection | null,
+	paint: Paint,
+	options: { tools?: readonly string[] } = {},
+): string[] {
 	if (!projection) return [];
 	if (!projection.available) {
 		return [`${paint.dim("Impact")} ${paint.muted(`unavailable — ${oneLine(projection.reason, 200)}`)}`];
@@ -41,6 +61,7 @@ export function renderImpact(projection: WorkbenchCandidateImpactProjection | nu
 	const lines: string[] = [
 		`${paint.dim("Impact")} ${verdictText(impact.verdict, paint)}` +
 			(resources ? ` ${paint.dim(`· ${resources}`)}` : ""),
+		...toolContractLines(options.tools ?? [], paint),
 	];
 	if (impact.proposalBasis) {
 		const modes = impact.proposalBasis.targetedFailureModes;

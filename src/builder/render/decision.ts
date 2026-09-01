@@ -238,6 +238,14 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 				`${section(t("result.proposal-applied"), paint)} ${t("result.branch")} ${paint.bold(result.result.branch)} ${paint.dim(`· ${t("result.candidate-word")} ${shortSha(result.result.candidateSha)} · ${t("result.proposal-word")} ${shortHash(result.result.proposalHash)}`)}`,
 				paint.muted(t("result.checkout-unchanged")),
 			];
+			// A tool arrived with an executable contract nobody has measured yet.
+			// The draft is named here, once, with the one thing to do about it.
+			for (const drafted of result.result.contractCases ?? []) {
+				lines.push(paint.muted(t("result.contract-cases", {
+					count: drafted.cases,
+					tool: drafted.tool,
+				})));
+			}
 			const verification = result.result.verification;
 			if (verification?.outcome === "blocked") {
 				lines.push(

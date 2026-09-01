@@ -42,6 +42,20 @@ export const OutputMatchesGrader = z.strictObject({
 	pattern: z.string(),
 });
 
+/**
+ * The answer must not contain anything shaped like a credential.
+ *
+ * A grader cannot be given the secret to look for — the value never reaches
+ * AHDE, by design — so this one asks the question the trace redactor already
+ * answers: does the final answer contain a string that looks like a key, a
+ * token, or a bearer header? It takes no configuration for the same reason: a
+ * pattern written by hand would be a second, weaker copy of the redactor.
+ */
+export const NoSecretGrader = z.strictObject({
+	type: z.literal("no_secret"),
+	name: z.string().optional(),
+});
+
 /** One rubric may carry at most this many isolated yes/no assertions. */
 export const MAX_JUDGE_ASSERTIONS = 12;
 export const MAX_JUDGE_ASSERTION_CHARS = 500;
@@ -142,6 +156,7 @@ export const GraderSpec = z.discriminatedUnion("type", [
 	ToolCalledGrader,
 	OutputContainsGrader,
 	OutputMatchesGrader,
+	NoSecretGrader,
 	JudgeGrader,
 	ExactGrader,
 	SimilarityGrader,
@@ -1029,6 +1044,8 @@ function graderDetail(spec: GraderSpec): string {
 				`${spec.withReference ? "+reference" : ""}`;
 		case "output_matches":
 			return `/${spec.pattern.slice(0, 24)}/`;
+		case "no_secret":
+			return "redaction";
 		case "exact":
 			return spec.normalize;
 		case "similarity":

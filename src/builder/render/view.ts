@@ -34,6 +34,7 @@ import {
 	wrap,
 } from "./format.js";
 import { renderImpact } from "./impact.js";
+import { toolPermissionsFromDiff } from "./tool-permissions.js";
 import type { Paint } from "./paint.js";
 import { planHeadline, type Plan } from "./plan.js";
 import { nextStep, stageLabel } from "./stage.js";
@@ -341,7 +342,11 @@ export function renderCandidate(
 		: paint.muted(t("sealed.not-executed"))}`);
 	if (sealedGate && sealedGate.verdict !== "pass") lines.push(`  ${paint.muted(oneLine(sealedGate.reasons[0] ?? "", 160))}`);
 	if (candidate.judgeAgreement !== undefined) lines.push(judgeAgreementLine(candidate.judgeAgreement, paint));
-	lines.push(...renderImpact(candidate.impact ?? null, paint));
+	// The verdict is read beside the questions the tool cases answer, so the
+	// gate's "better" is never mistaken for "it calls the tool correctly".
+	lines.push(...renderImpact(candidate.impact ?? null, paint, {
+		tools: toolPermissionsFromDiff(candidate.proposal?.exactDiff ?? "").filter((entry) => !entry.removed).map((entry) => entry.tool),
+	}));
 	if (candidate.review) {
 		const tone = candidate.review.recommendation === "promote" ? paint.success : paint.error;
 		lines.push(`${paint.dim(t("label.review"))} ${tone(candidate.review.recommendation)} ${paint.dim("—")} ${oneLine(candidate.review.reason, 160)}`);
@@ -381,6 +386,7 @@ function graderLabel(grader: { type: string } & Record<string, unknown>): string
 		case "tool_called": return `tool ${String(grader.tool ?? grader.name ?? "?")}${grader.argsContains ? ` ∋ “${oneLine(String(grader.argsContains), 30)}”` : ""}`;
 		case "output_contains": return `contains “${oneLine(String(grader.text ?? ""), 30)}”`;
 		case "output_matches": return `matches /${oneLine(String(grader.pattern ?? ""), 30)}/`;
+		case "no_secret": return t("grader.no-secret");
 		case "judge": {
 			// A judge may now carry assertions instead of a rubric; showing an empty
 			// quote for the whole check is worse than showing the checks themselves.

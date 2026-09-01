@@ -1152,6 +1152,12 @@ export interface WorkbenchDecisionResultMap {
 		proposalHash: string;
 		/** Present on the product Apply path; omitted by low-level recovery callers. */
 		verification?: WorkbenchVerifyCandidateResult | { outcome: "blocked"; reason: string };
+		/**
+		 * Development cases the host drafted for every tool this proposal created
+		 * or changed. A draft, never a publication: what the agent does with a new
+		 * tool is the operator's next test, not a silent change to the corpus.
+		 */
+		contractCases?: { tool: string; draftId: string; cases: number }[];
 	};
 	"discard-proposal": { runId: string; receiptHash: string };
 	"verify-candidate": WorkbenchVerifyCandidateResult;
