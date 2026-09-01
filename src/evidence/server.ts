@@ -10,7 +10,7 @@ import {
 	type EvalRunRecord,
 	type PublicEvalRunIndexEntry,
 } from "../eval.js";
-import { collectEvalReportData, renderEvalReportHtml } from "../report.js";
+import { collectEvalReportData } from "../report.js";
 import { safeArtifactSegment } from "../storage/paths.js";
 import {
 	createLiveTraceHub,
@@ -19,6 +19,20 @@ import {
 	type EvidenceLiveTrace,
 	type LiveTraceFrame,
 } from "./live.js";
+import {
+	EvidenceNotDiagnosed,
+	EvidenceNotFound,
+	collectComparePage,
+	collectEvalPage,
+	collectRunDetailPage,
+} from "./model.js";
+import {
+	EVIDENCE_STYLESHEET,
+	h,
+	renderComparePage,
+	renderEvalPage,
+	renderRunDetailPage,
+} from "./pages.js";
 
 const LOOPBACK_HOST = "127.0.0.1";
 export const EVIDENCE_INDEX_MAX_RECORDS = 100;
@@ -52,16 +66,6 @@ export interface EvidenceExplorer {
 	close(): Promise<void>;
 }
 
-function escapeHtml(value: string): string {
-	return value.replace(/[&<>"']/g, (character) => ({
-		"&": "&amp;",
-		"<": "&lt;",
-		">": "&gt;",
-		'"': "&quot;",
-		"'": "&#39;",
-	})[character] ?? character);
-}
-
 function securityHeaders(response: ServerResponse): void {
 	response.setHeader("Cache-Control", "no-store");
 	response.setHeader("Content-Security-Policy", "default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
@@ -70,6 +74,9 @@ function securityHeaders(response: ServerResponse): void {
 	response.setHeader("X-Content-Type-Options", "nosniff");
 	response.setHeader("X-Frame-Options", "DENY");
 }
+
+const NOT_DIAGNOSED_BODY = "Evidence is not diagnosed yet; run the AHDE diagnosis operation first.\n";
+const COLLECTION_FAILURE_BODY = "Evidence report failed integrity or visibility checks.\n";
 
 function send(response: ServerResponse, status: number, type: string, body: string, headOnly = false): void {
 	securityHeaders(response);
@@ -86,7 +93,9 @@ function renderIndexRow(record: PublicEvalRunIndexEntry): {
 } {
 	const rate = Math.round(record.allPassRate * 100);
 	return {
-		html: `<a class="run" href="/evals/${encodeURIComponent(record.evalRunId)}"><span><strong>${escapeHtml(record.targetId)}</strong><small>${escapeHtml(record.evalRunId)} · ${escapeHtml(record.label)} · ${escapeHtml(record.startedAt)}</small></span><b>${rate}%</b></a>`,
+		html: `<tr><td class="mono"><a href="/evals/${encodeURIComponent(record.evalRunId)}">${h(record.evalRunId)}</a></td>`
+			+ `<td>${h(record.targetId)}</td><td>${h(record.label)}</td>`
+			+ `<td class="mono">${h(record.startedAt)}</td><td class="num">${rate}%</td></tr>`,
 		fieldsTruncated: record.fieldsTruncated,
 		fieldsRedacted: record.fieldsRedacted,
 	};
@@ -104,7 +113,10 @@ function renderIndexDocument(
 		: `Showing all ${rows.length} public evaluation index(es).`;
 	const clipping = fieldsTruncated ? " Long public identifier fields are clipped." : "";
 	const redaction = fieldsRedacted ? " Credential-shaped public identifiers are redacted." : "";
-	return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AHDE Evidence</title><style>:root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui;background:#090b10;color:#edf0f7}*{box-sizing:border-box}body{max-width:980px;margin:0 auto;padding:48px 24px}h1{font-size:42px;letter-spacing:-.04em;margin:0 0 8px}p{color:#929bae;margin:0 0 32px}.run{display:flex;justify-content:space-between;align-items:center;gap:24px;padding:18px;margin:10px 0;color:inherit;text-decoration:none;border:1px solid #252b38;border-radius:14px;background:#10131b}.run:hover{border-color:#6d7cff;background:#151a24}.run span{min-width:0}.run strong,.run small{display:block}.run small{margin-top:6px;color:#929bae;overflow:hidden;text-overflow:ellipsis}.run b{font-size:24px;color:#8d98ff}.empty{padding:30px;border:1px dashed #303746;border-radius:14px;color:#929bae}</style></head><body><h1>AHDE Evidence</h1><p>Development and candidate evaluation indexes. Reports verify member evidence when opened. Sealed holdout traces are never exposed here.</p><p data-index-truncated="${truncated}" data-index-shown="${rows.length}" data-index-omitted-public="${omittedPublicCount}" data-index-fields-truncated="${fieldsTruncated}" data-index-fields-redacted="${fieldsRedacted}">${status}${clipping}${redaction}</p>${rows.map((row) => row.html).join("") || '<div class="empty">No development evidence yet. Run an evaluation from Builder Pi.</div>'}</body></html>`;
+	const table = rows.length === 0
+		? '<div class="scroll"><div class="empty">No development evidence yet. Run an evaluation from Builder Pi.</div></div>'
+		: `<div class="scroll"><table><thead><tr><th>Eval run</th><th>Target</th><th>Label</th><th>Started</th><th>Pass rate</th></tr></thead><tbody>${rows.map((row) => row.html).join("")}</tbody></table></div>`;
+	return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AHDE Evidence</title><style>${EVIDENCE_STYLESHEET}</style></head><body><nav class="topbar"><span class="crumb">AHDE Evidence</span></nav><main class="wrap"><div class="head"><div><h1>AHDE Evidence</h1><div class="sub">Development and candidate evaluation indexes. Reports verify member evidence when opened. Sealed holdout traces are never exposed here.</div></div></div><p class="note" data-index-truncated="${truncated}" data-index-shown="${rows.length}" data-index-omitted-public="${omittedPublicCount}" data-index-fields-truncated="${fieldsTruncated}" data-index-fields-redacted="${fieldsRedacted}">${status}${clipping}${redaction}</p>${table}</main></body></html>`;
 }
 
 function renderIndex(records: PublicEvalRunIndexEntry[], omittedPublicCount = 0): string {
@@ -124,7 +136,7 @@ function renderIndex(records: PublicEvalRunIndexEntry[], omittedPublicCount = 0)
 	return html;
 }
 
-function parseEvalId(pathname: string, prefix: string): string | null {
+function parseEvalId(pathname: string, prefix: string, label = "eval run id"): string | null {
 	if (!pathname.startsWith(prefix)) return null;
 	const encoded = pathname.slice(prefix.length);
 	if (!encoded || encoded.includes("/")) return null;
@@ -135,10 +147,37 @@ function parseEvalId(pathname: string, prefix: string): string | null {
 		return null;
 	}
 	try {
-		return safeArtifactSegment(decoded, "eval run id");
+		return safeArtifactSegment(decoded, label);
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * How a page-collection failure becomes a status code. A missing or sealed
+ * subject is indistinguishable from a subject that never existed — the response
+ * body must not confirm that a sealed artifact is there.
+ */
+function sendCollectionFailure(response: ServerResponse, error: unknown, headOnly: boolean): void {
+	if (error instanceof EvidenceNotFound) {
+		send(response, 404, "text/plain; charset=utf-8", "Not found\n", headOnly);
+		return;
+	}
+	if (error instanceof EvidenceNotDiagnosed) {
+		send(response, 409, "text/plain; charset=utf-8", NOT_DIAGNOSED_BODY, headOnly);
+		return;
+	}
+	send(response, 422, "text/plain; charset=utf-8", COLLECTION_FAILURE_BODY, headOnly);
+}
+
+/** Only the filter keys the eval page understands cross the query boundary. */
+function evalPageQuery(url: URL): { outcome?: string; mode?: string } {
+	const outcome = url.searchParams.get("outcome");
+	const mode = url.searchParams.get("mode");
+	return {
+		...(outcome === "pass" || outcome === "fail" || outcome === "error" ? { outcome } : {}),
+		...(mode && /^failure-mode-[0-9a-f]{24}$/.test(mode) ? { mode } : {}),
+	};
 }
 
 function parseLiveTraceId(pathname: string, prefix: string): string | null {
@@ -400,6 +439,42 @@ export function createEvidenceExplorer(options: EvidenceExplorerOptions): Eviden
 				return;
 			}
 
+			// One run's conversation, verdict, and host-written explanation. The
+			// owning eval decides visibility; a run that cannot name one is refused.
+			const runId = parseEvalId(url.pathname, "/runs/", "run id");
+			if (runId) {
+				try {
+					send(
+						response,
+						200,
+						"text/html; charset=utf-8",
+						renderRunDetailPage(collectRunDetailPage(runsRoot, runId)),
+						headOnly,
+					);
+				} catch (error) {
+					sendCollectionFailure(response, error, headOnly);
+				}
+				return;
+			}
+
+			// Baseline versus candidate for one Candidate record. The sealed arm
+			// contributes a verdict and a design size and nothing else.
+			const candidateId = parseEvalId(url.pathname, "/candidates/", "candidate id");
+			if (candidateId) {
+				try {
+					send(
+						response,
+						200,
+						"text/html; charset=utf-8",
+						renderComparePage(collectComparePage(runsRoot, candidateId)),
+						headOnly,
+					);
+				} catch (error) {
+					sendCollectionFailure(response, error, headOnly);
+				}
+				return;
+			}
+
 			const apiId = parseEvalId(url.pathname, "/api/evals/");
 			const pageId = parseEvalId(url.pathname, "/evals/");
 			const evalRunId = apiId ?? pageId;
@@ -431,22 +506,31 @@ export function createEvidenceExplorer(options: EvidenceExplorerOptions): Eviden
 				send(response, 409, "text/plain; charset=utf-8", "Evidence is not diagnosed yet; run the AHDE diagnosis operation first.\n", headOnly);
 				return;
 			}
-			let data: ReturnType<typeof collectEvalReportData>;
+			if (apiId) {
+				let data: ReturnType<typeof collectEvalReportData>;
+				try {
+					data = collectEvalReportData(runsRoot, evalRunId, undefined, {
+						allowDiagnosisCreation: false,
+						...(options.labels ? { labels: options.labels } : {}),
+					});
+				} catch {
+					send(response, 422, "text/plain; charset=utf-8", "Evidence report failed integrity or visibility checks.\n", headOnly);
+					return;
+				}
+				send(response, 200, "application/json; charset=utf-8", `${JSON.stringify(data)}\n`, headOnly);
+				return;
+			}
+			let page: string;
 			try {
-				data = collectEvalReportData(runsRoot, evalRunId, undefined, {
-					allowDiagnosisCreation: false,
+				page = renderEvalPage(collectEvalPage(runsRoot, evalRunId, {
 					...(options.labels ? { labels: options.labels } : {}),
-				});
+					query: evalPageQuery(url),
+				}));
 			} catch {
 				send(response, 422, "text/plain; charset=utf-8", "Evidence report failed integrity or visibility checks.\n", headOnly);
 				return;
 			}
-			if (apiId) {
-				const body = `${JSON.stringify(data)}\n`;
-				send(response, 200, "application/json; charset=utf-8", body, headOnly);
-				return;
-			}
-			send(response, 200, "text/html; charset=utf-8", renderEvalReportHtml(data), headOnly);
+			send(response, 200, "text/html; charset=utf-8", page, headOnly);
 		})().catch((error: unknown) => {
 			if (response.headersSent || response.writableEnded) {
 				if (!response.writableEnded) response.destroy();
