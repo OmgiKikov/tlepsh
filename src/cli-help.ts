@@ -463,6 +463,42 @@ after the opening message is then written by the configured
 evalSuite.simulatedUser model. Optional "maxTurns" (1..12, default 6) and
 "stopWhen" bound the conversation. A recipe maps "dialogue" or "simulatedUser",
 never both.`,
+	"corpus synth": `Usage: ahde corpus synth --target <dir> [--project <id>] --sealed <N> --name "<exam name>" \\
+                  [--seed <s>] [--from <spec.md>] [--examples <K>] [--review <path>]
+
+Write a sealed exam when there is no real one to import. The generator is this
+Target's configured JUDGE model — never the Builder, and never the Target's own
+model. A Builder that wrote the holdout would have read it, and every number
+measured against it afterwards would be an echo. No judge, or a judge equal to
+the Target model: refused, exit 2.
+
+The prompt carries the Spec (--from <file>, else spec.md in the Target, else the
+project's approved Spec snapshot; refused when there is none), K development
+cases as FORMAT examples (default 5, drawn deterministically from the dataset
+hash, the seed and the case id), and the development suite's grader shapes. It
+asks for N new cases in the same case schema, novel and diverse.
+
+The answer is validated case by case against the case schema; malformed cases
+are dropped and counted, ids are derived host-side from the Spec hash and the
+normalized input (never taken from the generator), and any case repeating a
+development input is dropped as a duplicate. The result is written DIRECTLY as
+an immutable sealed corpus.
+
+Prints the corpus id, the case count, the generator model, and the prompt hash —
+and never a case, a fragment of one, or a count that could reconstruct one.
+Counts, the receipt path, and the sealed guardrail warning go to stderr.
+
+--review <path> is the human path: instead of sealing, the cases are written to
+that file (mode 0600, refused inside the Target tree, refused when it already
+exists) for you to read and edit. Seal them yourself afterwards:
+  ahde corpus import --project <id> --visibility sealed --name <name> --file <path>
+
+A receipt lands in <state-root>/projects/<id>/sealed-synth/<hash>.json: the
+generator fingerprint, the prompt hash, the Spec hash, the development example
+ids, N, the seed, the counts, and the timestamp. No case content, ever.
+
+Below 15 cases the sealed guardrail can only ever say \`underpowered\`, and the
+command says so.`,
 	"tool try": `Usage: ahde tool try --target <dir> --tool <name> --input <json|@path> [--branch <ref>]
 
 Run one declared Target tool on one JSON input inside a private scratch copy of

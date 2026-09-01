@@ -73,6 +73,11 @@ import {
 	inspectDatasetFile,
 	type DatasetHoldoutSpec,
 } from "./application/dataset-ingest.js";
+import {
+	renderSealedSynthOutput,
+	SealedSynthRefusal,
+	synthesizeSealedCorpus,
+} from "./application/sealed-synth.js";
 import { loadBuilderProposalRun } from "./application/builder-proposal.js";
 import { readTryToolInput, tryTool } from "./application/tool-workshop.js";
 import {
@@ -957,6 +962,36 @@ async function main(): Promise<void> {
 		}
 		case "corpus": {
 			const action = positional(0);
+			if (action === "synth") {
+				// The one corpus action that defaults its project: it already reads
+				// the Target manifest to find the judge, so the Target id is right
+				// there and asking for it twice is ceremony.
+				const targetDir = resolve(requireArg("target"));
+				const synthTarget = loadTarget(targetDir);
+				let result;
+				try {
+					result = await synthesizeSealedCorpus({
+						targetDir,
+						stateRoot: stateRoot(),
+						projectId: arg("project") ?? synthTarget.manifest.id,
+						name: requireArg("name"),
+						count: Number(requireArg("sealed")),
+						...(arg("seed") ? { seed: arg("seed")! } : {}),
+						...(arg("from") ? { specPath: resolve(arg("from")!) } : {}),
+						...(arg("examples") ? { examples: Number(arg("examples")!) } : {}),
+						...(arg("review") ? { reviewPath: resolve(arg("review")!) } : {}),
+					});
+				} catch (error) {
+					if (!(error instanceof SealedSynthRefusal)) throw error;
+					console.error(`refused: ${error.message}`);
+					console.error(`next: ${error.next}`);
+					process.exit(2);
+				}
+				const rendered = renderSealedSynthOutput(result);
+				for (const line of rendered.stdout) console.log(line);
+				for (const line of rendered.warnings) console.error(line);
+				break;
+			}
 			const projectId = requireArg("project");
 			if (action === "publish") {
 				const visibility = requireArg("visibility");
@@ -1063,7 +1098,7 @@ async function main(): Promise<void> {
 				}
 				break;
 			}
-			throw new Error("usage: ahde corpus publish|import|list|inspect|ingest --project <id> ...");
+			throw new Error("usage: ahde corpus publish|import|list|inspect|ingest|synth --project <id> ...");
 		}
 		case "feedback": {
 			const lines = runTargetFeedbackCommand({
