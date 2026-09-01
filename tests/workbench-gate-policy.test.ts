@@ -190,6 +190,9 @@ describe("Workbench gate policy", () => {
 			"run-current": "routine",
 			"run-eval": "routine",
 			calibrate: "routine",
+			// Cheapest measurement there is: it re-scores answers already bought
+			// and calls no Target at all. The guard still prices the judge.
+			regrade: "routine",
 			"verify-candidate": "routine",
 				improve: "consequential",
 		});

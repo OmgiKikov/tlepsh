@@ -41,6 +41,7 @@ import type {
 	ImprovementLoopStopReason,
 } from "../application/improvement-loop.js";
 import type { ProposalSearchResult } from "../application/proposal-search.js";
+import type { RegradeDiff } from "../application/regrade-decision.js";
 import type { CycleContinuationReceipt } from "./cycle-continuation.js";
 import type { WorkbenchGateClass, WorkbenchRunEstimate } from "./transition-policy.js";
 
@@ -788,6 +789,22 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		repetitions: z.number().int().min(1).max(10),
 		reason: NonBlankSchema.max(4_000),
 	}),
+	/**
+	 * Re-score recorded answers with a rubric that just changed. The Target is
+	 * never called — the answers are already on disk — so the only bill is the
+	 * judge's, and the only thing that may differ from the source evaluation is
+	 * how its cases are graded. `draft` takes the rubrics from the unpublished
+	 * corpus revision the Builder just wrote; `target` re-runs the judge under
+	 * the ones the basket already carries, which says something only when the
+	 * judge model itself moved.
+	 */
+	z.strictObject({
+		kind: z.literal("regrade"),
+		/** Defaults to the newest measured development evaluation of this Target. */
+		evalRunId: ArtifactIdSchema.optional(),
+		graders: z.enum(["draft", "target"]),
+		reason: NonBlankSchema.max(4_000),
+	}),
 	z.strictObject({
 		kind: z.literal("apply-proposal"),
 		runId: ArtifactIdSchema.optional(),
@@ -1148,6 +1165,8 @@ export interface WorkbenchDecisionResultMap {
 	};
 	"run-eval": WorkbenchRunEvalResult;
 	calibrate: { candidateId: string; calibration: WorkbenchCalibrationProjection };
+	/** The derived EvalRun, and exactly what the new rubric moved. */
+	regrade: RegradeDiff;
 	/**
 	 * Whatever “run it” means where the operator stands. A pending review is not
 	 * an error: it resolves to the `start-testing` composite and its one dialog.

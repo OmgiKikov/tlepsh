@@ -128,7 +128,18 @@ import {
 	promoteReviewedCandidate,
 	reviewCandidate,
 } from "../application/candidate-review.js";
-import { assertGradersRunnable, targetWithDevelopmentCorpus } from "../application/corpus-target.js";
+import {
+	assertGradersRunnable,
+	resolveScoredCasesForEval,
+	targetWithDevelopmentCorpus,
+} from "../application/corpus-target.js";
+import {
+	compileRegradeDiff,
+	estimateRegradeJudgeSpend,
+	planRegradeGraders,
+	resolveRegradeSource,
+} from "../application/regrade-decision.js";
+import { regradeEvalRun } from "../regrade.js";
 import {
 	applyBuilderProposal,
 	loadBuilderApplyReceipt,
@@ -153,7 +164,9 @@ import { candidateStatus } from "../domain/candidate.js";
 import {
 	DEFAULT_EVAL_JOBS,
 	defaultEvalJobs,
+	isSealedEvalRun,
 	loadEvalRun,
+	readEvalRunIndex,
 	runSuite,
 	type EvalRunRecord,
 } from "../eval.js";
@@ -361,6 +374,8 @@ export interface AhdeWorkbenchDependencies {
 	runSuite: typeof runSuite;
 	/** A/A calibration of one exact revision; never a promotion path. */
 	runCalibration: typeof runCandidateExperiment;
+	/** Re-score recorded traces with a revised rubric; never a Target call. */
+	regradeEvalRun: typeof regradeEvalRun;
 	diagnoseEval: typeof diagnoseEvalRun;
 	compileImprovementBrief: (runsRoot: string, diagnosis: ReturnType<typeof diagnoseEvalRun>) => ImprovementBrief;
 	inspectTargetAuthoringContext: typeof inspectTargetAuthoringContext;
@@ -431,6 +446,7 @@ const DEFAULT_DEPENDENCIES: AhdeWorkbenchDependencies = {
 	recordProposal: recordBuilderAuthoredProposal,
 	runSuite,
 	runCalibration: runCandidateExperiment,
+	regradeEvalRun,
 	diagnoseEval: diagnoseEvalRun,
 	compileImprovementBrief,
 	inspectTargetAuthoringContext,
@@ -1028,6 +1044,33 @@ export class AhdeWorkbench {
 		return this.runEstimate(
 			screen + 2 * (developmentTasks + sealedTasks) * DEFAULT_REPETITIONS,
 			inventory.target,
+		);
+	}
+
+	/**
+	 * The recorded evaluation a re-score is about: the one named, or the newest
+	 * measured development evidence of this Target.
+	 *
+	 * A regrade of a regrade is deliberately not the default — the operator
+	 * means "the run I just read", and that is a run that actually called the
+	 * Target — but naming one is allowed, because re-scoring a re-score is
+	 * still only judge money.
+	 *
+	 * Sealed evidence is not in this list and can never be re-scored here. The
+	 * refusal names the boundary rather than offering a menu the requested id
+	 * could never be on: the id was already the caller's, and what stays hidden
+	 * is the exam's content, not the fact that it is one.
+	 */
+	private regradeSource(inventory: WorkbenchInventory, explicitId?: string): EvalRunRecord {
+		const chosen = resolveRegradeSource({
+			evals: inventory.developmentEvals,
+			...(explicitId ? { explicitId } : {}),
+			readIndex: (evalRunId) => readEvalRunIndex(this.runsRoot, evalRunId),
+		});
+		if (chosen) return chosen as EvalRunRecord;
+		throw new WorkbenchSelectionRequiredError(
+			"development EvalRun",
+			inventory.developmentEvals.filter((run) => run.regradeOf === undefined).map((run) => run.evalRunId),
 		);
 	}
 
@@ -3352,6 +3395,93 @@ export class AhdeWorkbench {
 				message: `Noise measured on this revision: A/A ${calibration.verdict}; ` +
 					`${calibration.recommendedRepetitions} repetition${calibration.recommendedRepetitions === 1 ? "" : "s"} recommended.`,
 				result: { candidateId: result.record.candidateId, calibration },
+				view: await this.view(),
+			};
+		}
+
+		if (input.kind === "regrade") {
+			if (!inventory.target) throw new Error("Target is not ready");
+			const approved = requireApprovedSpec(inventory);
+			const source = this.regradeSource(inventory, input.evalRunId);
+			const draft = input.graders === "draft"
+				? requireCorpusDraft(inventory, undefined, approved.id, true)
+				: null;
+			const build = (): {
+				plan: ReturnType<typeof planRegradeGraders>;
+				source: EvalRunRecord;
+				subject: Record<string, unknown>;
+			} => {
+				const current = this.decisionInventory(input.kind);
+				const currentApproved = requireApprovedSpec(current, approved.id);
+				const currentSource = this.regradeSource(current, source.evalRunId);
+				const currentDraft = draft ? requireCorpusDraft(current, draft.id, currentApproved.id, true) : null;
+				// The exact cases the recorded traces answered, wherever they live:
+				// the manifest dataset, or the published corpus that produced them.
+				const scored = resolveScoredCasesForEval({
+					target: loadTarget(this.projectDir),
+					evalRun: currentSource,
+					stateRoot: this.stateRoot,
+					projectId: this.projectId,
+				}).target;
+				const plan = planRegradeGraders({
+					scored,
+					revised: currentDraft ? currentDraft.tasks : null,
+					sourceJudge: currentSource.provenance.judge,
+				});
+				return {
+					plan,
+					source: currentSource,
+					subject: {
+						operation: "regrade",
+						target: { id: scored.manifest.id, gitSha: scored.gitSha },
+						source: {
+							evalRunId: currentSource.evalRunId,
+							datasetHash: currentSource.datasetHash,
+							suiteHash: currentSource.suiteHash,
+							runs: currentSource.runIds.length,
+						},
+						graders: input.graders,
+						...(currentDraft ? { draft: { id: currentDraft.id, hash: hashValue(currentDraft) } } : {}),
+						changedGraders: plan.changed.length,
+						suiteHash: plan.target.suiteHash,
+						// Said in the subject, not only in the panel: the one number
+						// that makes this decision cheap is that it buys no Target time.
+						targetExecutions: 0,
+					},
+				};
+			};
+			const before = build();
+			await this.confirm(input, gate, t("confirm.title.regrade"), before.subject, options.signal, {
+				question: t("confirm.regrade", { answers: localizedCount(before.source.runIds.length, "recorded answer") }),
+				// A regrade's unit of work is a grading, never a Target execution.
+				// The guard prices the judge, which is the only model it pays.
+				estimate: estimateRegradeJudgeSpend({
+					runsRoot: this.runsRoot,
+					targetId: inventory.target.manifest.id,
+					gradings: before.source.runIds.length,
+				}),
+			});
+			const after = build();
+			if (!exactSame(before.subject, after.subject)) throw new WorkbenchStaleDecisionError(input.kind);
+			const result = await this.dependencies.regradeEvalRun({
+				runsRoot: this.runsRoot,
+				evalRunId: after.source.evalRunId,
+				target: after.plan.target,
+				...(options.signal ? { signal: options.signal } : {}),
+			});
+			abortIfRequested(options.signal);
+			const diff = compileRegradeDiff({
+				runsRoot: this.runsRoot,
+				result,
+				graders: input.graders,
+				changed: after.plan.changed,
+			});
+			return {
+				kind: input.kind,
+				message: `Re-scored ${localizedCount(diff.total, "recorded answer")} with the revised graders: ` +
+					`${diff.passBefore}/${diff.total} → ${diff.passAfter}/${diff.total}. ` +
+					"The Target was not called; only the judge was paid. This is a re-score, not a new baseline.",
+				result: diff,
 				view: await this.view(),
 			};
 		}

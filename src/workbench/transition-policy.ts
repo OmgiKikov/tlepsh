@@ -40,6 +40,11 @@ const LEGAL_DECISION_STAGES = {
 	"start-testing": ["spec-review", "corpus-review"],
 	"run-eval": ["ready-to-evaluate", "improvement-authoring"],
 	calibrate: ["ready-to-evaluate", "improvement-authoring"],
+	// A re-score belongs wherever a recorded evaluation and a revised rubric can
+	// both exist. `corpus-review` is the important one: revising the graders is
+	// what puts a draft there, and re-scoring before publishing is the whole
+	// point — the operator sees what the new rubric would have said.
+	regrade: ["corpus-review", "ready-to-evaluate", "improvement-authoring"],
 	// The autoloop starts wherever a measurement can start, and hands back the
 	// moment a release decision is the only way forward.
 	improve: ["ready-to-evaluate", "improvement-authoring"],
@@ -187,6 +192,9 @@ export const WORKBENCH_GATE_POLICY = {
 	"run-current": "routine",
 	"run-eval": "routine",
 	calibrate: "routine",
+	// Measurement too, and the cheapest kind: no Target call at all. The guard
+	// still applies, because re-deciding a judge grader is re-buying the judge.
+	regrade: "routine",
 	"verify-candidate": "routine",
 	// The loop measures, but it also applies exact proposals to throwaway refs.
 	// Its one up-front disclosure is therefore always a real full confirmation,
