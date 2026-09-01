@@ -16,6 +16,7 @@ import { renderWorkshopCloseReview } from "./render/workshop-close.js";
 import type { WorkshopTrySummary } from "../application/tool-workshop.js";
 import { markerPaint, type TranscriptPresenter } from "./transcript.js";
 import type {
+	WorkbenchConfirmation,
 	WorkbenchDatasetRecipeArtifact,
 	WorkbenchDecisionResult,
 	WorkbenchHumanGate,
@@ -504,9 +505,23 @@ export function createBuilderWorkbenchTools(
 					const resolveEvaluatorModel = params.kind === "configure-evaluators"
 						? evaluatorModelResolver(ctx, evaluatorCredentialEnvironment)
 						: undefined;
+					// Every confirmation passes through the gate, routine ones included,
+					// so this is where the live counter learns what the whole job plans
+					// to execute rather than what one eval run does.
+					const gate = createPolicyAwareGate(ctx, actorId, guard, undefined, sealedGuard);
+					const reporting = observation
+						? {
+							...gate,
+							async confirm(confirmation: WorkbenchConfirmation, confirmSignal?: AbortSignal) {
+								const approval = await gate.confirm(confirmation, confirmSignal);
+								if (approval.approved) observation.plan(confirmation.estimate?.executions ?? null);
+								return approval;
+							},
+						}
+						: gate;
 					const result = await workbench.decide(
 						params,
-						createPolicyAwareGate(ctx, actorId, guard, undefined, sealedGuard),
+						reporting,
 						{
 							signal,
 							...(observation ? { onRunEvent: observation.onRunEvent } : {}),

@@ -582,7 +582,12 @@ export function registerAhdeBuilderCommands(
 					try {
 						const result = await decide(ctx, command, input, jobSignal, {
 							onRunEvent: listener,
-							authorized,
+							// The moment the gate approved is the moment the whole job's
+							// planned executions are known, so both counters learn it there.
+							authorized: (authorization) => {
+								observation.plan(authorization.estimate?.executions ?? null);
+								authorized(authorization);
+							},
 						});
 						outcome = result ? "completed" : "aborted";
 						observation.finish(outcome);

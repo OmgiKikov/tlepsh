@@ -15,6 +15,8 @@ export type BeginBuilderLiveTrace = () => BuilderLiveTrace | null | Promise<Buil
 export interface BuilderRunObservation {
 	liveTraceUrl: string | null;
 	onRunEvent: RunEventListener;
+	/** What the approved estimate says the whole job will execute; see `RunProgressPresenter.plan`. */
+	plan(executions: number | null): void;
 	finish(outcome: BuilderLiveTraceOutcome): void;
 }
 
@@ -76,6 +78,9 @@ export async function beginBuilderRunObservation(
 	let finished = false;
 	return {
 		liveTraceUrl: liveTrace?.url ?? null,
+		plan(executions) {
+			presenter.plan(executions);
+		},
 		onRunEvent(event) {
 			emitRunEvent(presenter.onRunEvent, event);
 			emitRunEvent(liveTrace?.onRunEvent, event);

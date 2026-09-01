@@ -1062,6 +1062,48 @@ describe("Builder Pi slash commands", () => {
 		progress.dispose();
 	});
 
+	it("counts the whole job the gate priced, not one eval run of it", () => {
+		const setStatus = vi.fn();
+		const setWidget = vi.fn();
+		const progress = createRunProgressPresenter({ setStatus, setWidget });
+		const leg = { total: 90 };
+		const statuses = (): string[] => setStatus.mock.calls.map(([, value]) => String(value));
+
+		// A verification runs two arms over the development basket and the sealed
+		// exam; each eval run only knows its own 90.
+		progress.plan(372);
+		progress.onRunEvent(runEvent({ type: "run_started" }, { ...leg, runId: "run-a", ordinal: 1 }));
+		expect(statuses().at(-1)).toContain("AHDE run graded 0/372 · running 1");
+		progress.onRunEvent(runEvent(
+			{ type: "run_graded", outcome: "pass", passedGraders: 1, totalGraders: 1 },
+			{ ...leg, runId: "run-a", ordinal: 1 },
+		));
+		expect(statuses().at(-1)).toContain("AHDE run graded 1/372 · running 0");
+		// A later, smaller estimate never shrinks a job that already ran past it.
+		progress.plan(90);
+		expect(statuses().at(-1)).toContain("/372");
+		progress.dispose();
+	});
+
+	it("never prints a denominator smaller than what it has already graded", () => {
+		const setStatus = vi.fn();
+		const setWidget = vi.fn();
+		const progress = createRunProgressPresenter({ setStatus, setWidget });
+		const statuses = (): string[] => setStatus.mock.calls.map(([, value]) => String(value));
+
+		// No estimate reached the presenter, and the job outlives one eval run:
+		// the bar tracks what happened instead of claiming 200%.
+		for (let index = 0; index < 3; index += 1) {
+			progress.onRunEvent(runEvent(
+				{ type: "run_graded", outcome: "fail", passedGraders: 0, totalGraders: 1 },
+				{ total: 2, runId: `run-${index}`, ordinal: index + 1 },
+			));
+		}
+		expect(statuses().at(-1)).toContain("AHDE run graded 3/3");
+		expect(statuses().at(-1)).toContain("100%");
+		progress.dispose();
+	});
+
 	it("never splices interleaved assistant text from two runs into one line", () => {
 		const setStatus = vi.fn();
 		const setWidget = vi.fn();

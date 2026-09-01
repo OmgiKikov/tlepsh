@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { language, plural, resolveLanguage, setLanguage, settingsPath, t, verdictLabel } from "../src/i18n.js";
 import { renderConfirmation } from "../src/builder/render/confirmation.js";
 import { renderDecision } from "../src/builder/render/decision.js";
@@ -9,6 +9,7 @@ import { renderHeader, renderCandidate } from "../src/builder/render/view.js";
 import { plainPaint } from "../src/builder/render/paint.js";
 import { stageLabel, nextStep } from "../src/builder/render/stage.js";
 import { renderRunDetailPage } from "../src/evidence/pages.js";
+import { createRunProgressPresenter } from "../src/builder/run-progress.js";
 import { explainRun } from "../src/application/run-explanation.js";
 import type { WorkbenchCandidateSummary, WorkbenchConfirmation, WorkbenchView } from "../src/workbench/types.js";
 
@@ -394,6 +395,36 @@ describe("ru renders", () => {
 		// The run and task ids stay exactly as recorded.
 		expect(explanation.runId).toBe("run-7");
 		expect(explanation.taskId).toBe("task-3");
+	});
+
+	it("watches a running measurement in Russian, and counts the whole job", () => {
+		setLanguage("ru");
+		const setStatus = vi.fn();
+		const setWidget = vi.fn();
+		const progress = createRunProgressPresenter({ setStatus, setWidget }, { liveTraceUrl: "http://127.0.0.1:6333/live/abc" });
+		const run = { evalRunId: "erun-1", runId: "run-a", taskId: "task_001", repetitionIndex: 0, ordinal: 1, total: 90 };
+		const at = "2026-08-28T10:00:00.000Z";
+
+		progress.plan(372);
+		progress.onRunEvent({ type: "run_started", at, run } as never);
+		progress.onRunEvent({
+			type: "tool_finished", at, run,
+			toolCallId: "call-1", toolName: "bash", isError: false, output: "ok", truncated: false,
+		} as never);
+		progress.onRunEvent({
+			type: "run_graded", at, run, outcome: "fail", passedGraders: 0, totalGraders: 3,
+		} as never);
+
+		const status = String(setStatus.mock.calls.at(-1)?.[1]);
+		expect(status).toContain("AHDE прогон оценено 1/372 · идёт 0");
+		expect(status).toContain("· оценено провален");
+		const frame = (setWidget.mock.calls.at(-1)?.[1] ?? []) as string[];
+		expect(frame[0]).toBe("AHDE · черновой трейс прогона");
+		expect(frame[1]).toBe("открыть живой трейс · http://127.0.0.1:6333/live/abc");
+		expect(frame).toContain("прогон · старт 1/90 · task_001");
+		expect(frame).toContain("инструмент ✓ bash · ok");
+		expect(frame).toContain("оценка ✗ · провален · проверок 0/3 · пока ✓0 ✗1");
+		progress.dispose();
 	});
 
 	it("stamps the rendered page with the resolved language", () => {

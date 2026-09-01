@@ -152,7 +152,10 @@ export function createBuilderJobs(options: BuilderJobsOptions): BuilderJobs {
 		controller: AbortController;
 		startedAt: number;
 		graded: number;
+		/** The last eval run's own total; the fallback when no estimate priced the job. */
 		total: number;
+		/** What the approved estimate says the WHOLE job will execute. */
+		planned: number | null;
 		background: boolean;
 		stopping: boolean;
 		ticker: { unref?(): void } | null;
@@ -160,7 +163,13 @@ export function createBuilderJobs(options: BuilderJobsOptions): BuilderJobs {
 
 	let running: RunningJob | null = null;
 
-	const progressOf = (job: RunningJob): string => job.total > 0 ? `${job.graded}/${job.total}` : "—";
+	// A verification runs two arms over two baskets, so one eval run's total is
+	// not the job's. Prefer what the gate priced, and never print a denominator
+	// smaller than what has already been graded.
+	const progressOf = (job: RunningJob): string => {
+		const total = Math.max(job.planned ?? job.total, job.graded);
+		return total > 0 ? `${job.graded}/${total}` : "—";
+	};
 
 	const writeStatus = (): void => {
 		if (!running) {
@@ -236,6 +245,7 @@ export function createBuilderJobs(options: BuilderJobsOptions): BuilderJobs {
 				startedAt: now(),
 				graded: 0,
 				total: 0,
+				planned: null,
 				background: false,
 				stopping: false,
 				ticker: null,
@@ -315,6 +325,8 @@ export function createBuilderJobs(options: BuilderJobsOptions): BuilderJobs {
 						onRunEvent: observe(job),
 						authorized: (authorization) => {
 							clearTimeout(grace);
+							const planned = authorization.estimate?.executions ?? 0;
+							if (planned > 0) job.planned = Math.max(job.planned ?? 0, planned);
 							goBackground(authorization);
 						},
 					});
