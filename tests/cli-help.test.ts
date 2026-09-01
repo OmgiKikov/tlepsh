@@ -165,6 +165,16 @@ describe("CLI help", () => {
 		expect(cliHelp(["corpus", "inspect", "--help"])).toContain("a sealed row is never printed");
 		expect(cliHelp(["corpus", "ingest", "--help"])).toContain("--recipe <json|@path>");
 		expect(cliHelp(["corpus", "ingest", "--help"])).toContain("never a sealed row");
+		const synth = cliHelp(["corpus", "synth", "--help"]);
+		expect(synth).toContain("Usage: ahde corpus synth --target <dir>");
+		// Why the judge and not the Builder, said where an operator will read it.
+		expect(synth).toContain("configured JUDGE model");
+		expect(synth).toContain("never the Builder");
+		expect(synth).toContain("refused, exit 2");
+		expect(synth).toContain("never a case, a fragment of one");
+		expect(synth).toContain("--review <path> is the human path");
+		expect(synth).toContain("refused inside the Target tree");
+		expect(synth).toContain("No case content, ever.");
 	});
 
 	it("documents where a marked reply goes and how it becomes cases", () => {
