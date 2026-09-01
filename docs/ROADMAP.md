@@ -2,34 +2,35 @@
 
 ## Status 2026-09-01
 
-**Landed.** Builder Pi stays the front door; the engine under it is now
-fully scriptable without the TUI: `spec approve`, `propose`, `apply`,
-`check --builder-run`, `candidate`, `review`, `promote`, `adopt`, plus
-`regrade`, `label`, `judge-agreement`, `calibrate`, `log`, `watch`, `serve`,
-and `ahde passport` — the client-facing promised-vs-measured page built from
-durable artifacts. That CLI loop was proven end to end twice: on a scripted
-mock (`docs/CLI_WALKTHROUGH.md`) and on a real 9B model
-(`docs/DEMO_REAL_MODEL.md`: 41.7% → 98.3% development, sealed guardrail
-`pass`, promoted `v0.1.0`, $0.19 of Target spend, judge spend now recorded
-separately). Item 11 landed as `ahde corpus synth` (the judge model writes a
-sealed exam the builder never sees; `--review` for a human to edit and seal).
-`ahde export --training` writes passing development trajectories for a later
-train-under-harness step and never a sealed one. `templates/support-agent`
-scaffolds the call-tool-first pattern with the `.gitignore` that keeps the
-store out of Git, and the engine now refuses a tracked `.ahde/` outright.
-Codex's `integrate-polish` (container backend, growth log, watch, improve
-from the CLI, judge-calibration binding) is merged into master. Item 14's
-ceremony cut is done for the docs: one-page README around a real transcript,
-CONTEXT.md as five guarantees plus a glossary, the 42 invariants preserved in
-`docs/INVARIANTS_V1.md`.
+**Landed.** Builder Pi is the front door. From the `skill-path` experiment
+only the universally useful parts were merged: `ahde passport` (the
+client-facing promised-vs-measured page, built from durable artifacts), store
+hygiene (`init` writes the `.gitignore` that keeps `.ahde/`, `runs/`,
+`imports/` out of Git, and the engine refuses a tracked store outright), judge
+spend recorded beside the Target's, `calibrate --jobs`, `diagnose --target`,
+`--project` defaulting to the Target id, focused help on a usage error, the
+`templates/support-agent` scaffold, and the real-model demo as evidence
+(`docs/DEMO_REAL_MODEL.md`: a weakened harness on `qwen/qwen3.5-9b`, 41.7% →
+98.3% development, sealed guardrail `pass`, $0.19). Codex's `integrate-polish`
+(container backend, growth log, watch, improve from the CLI, judge-calibration
+binding) is merged into master. Item 14's ceremony cut is done for the docs:
+one-page README, CONTEXT.md as five guarantees plus a glossary, the 42
+invariants preserved in `docs/INVARIANTS_V1.md`.
 
-**Tried and retired.** A skill file for external coding agents was built and
-A/B-tested against the bare CLI: an Opus-class builder closes the loop with or
-without it; a Haiku-class builder fails with or without it and fakes the
-release with `git tag`. The engine's help is self-sufficient above the builder
-floor, and nothing helps below it — so the skill is gone, its loop discipline
-lives in the Builder persona, and Builder Pi (no shell, typed tools, host-owned
-questions) is the interface for everyone who is not scripting.
+**Tried and retired.** A skill file for external coding agents plus an
+external CLI workflow (`spec approve` / `propose` / `apply` / `adopt`) were
+built and A/B-tested against the bare CLI: an Opus-class builder closes the
+loop with or without the skill; a Haiku-class builder fails with or without it
+and fakes the release with `git tag`. Conclusion: Builder Pi — no shell, typed
+tools, host-owned questions — is the interface; the external workflow is not
+shipped. Its loop discipline (small diffs, ties lose, a tax on complexity,
+never re-propose a loser) moves into the Builder persona.
+
+**Parked.** `feat/export-training` (passing development trajectories for a
+later train-under-harness step) stays on its branch. `feat/sealed-synth`
+(item 11 — the judge model writes a sealed exam the builder never sees) is a
+candidate for a Builder-side decision rather than a CLI command, to be decided
+separately.
 
 **Next.** Builder Pi polish for its first human user: panels in the operator's
 language, one money question per cycle (authorized at apply), the diff on
