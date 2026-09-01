@@ -1,5 +1,44 @@
 # AHDE Roadmap — V2: measure, then improve, then integrate
 
+## Status 2026-09-01
+
+**Landed.** Builder Pi is the front door. From the `skill-path` experiment
+only the universally useful parts were merged: `ahde passport` (the
+client-facing promised-vs-measured page, built from durable artifacts), store
+hygiene (`init` writes the `.gitignore` that keeps `.ahde/`, `runs/`,
+`imports/` out of Git, and the engine refuses a tracked store outright), judge
+spend recorded beside the Target's, `calibrate --jobs`, `diagnose --target`,
+`--project` defaulting to the Target id, focused help on a usage error, the
+`templates/support-agent` scaffold, and the real-model demo as evidence
+(`docs/DEMO_REAL_MODEL.md`: a weakened harness on `qwen/qwen3.5-9b`, 41.7% →
+98.3% development, sealed guardrail `pass`, $0.19). Codex's `integrate-polish`
+(container backend, growth log, watch, improve from the CLI, judge-calibration
+binding) is merged into master. Item 14's ceremony cut is done for the docs:
+one-page README, CONTEXT.md as five guarantees plus a glossary, the 42
+invariants preserved in `docs/INVARIANTS_V1.md`.
+
+**Tried and retired.** A skill file for external coding agents plus an
+external CLI workflow (`spec approve` / `propose` / `apply` / `adopt`) were
+built and A/B-tested against the bare CLI: an Opus-class builder closes the
+loop with or without the skill; a Haiku-class builder fails with or without it
+and fakes the release with `git tag`. Conclusion: Builder Pi — no shell, typed
+tools, host-owned questions — is the interface; the external workflow is not
+shipped. Its loop discipline (small diffs, ties lose, a tax on complexity,
+never re-propose a loser) moves into the Builder persona.
+
+**Parked.** `feat/export-training` (passing development trajectories for a
+later train-under-harness step) stays on its branch. `feat/sealed-synth`
+(item 11 — the judge model writes a sealed exam the builder never sees) is a
+candidate for a Builder-side decision rather than a CLI command, to be decided
+separately.
+
+**Next.** Builder Pi polish for its first human user: panels in the operator's
+language, one money question per cycle (authorized at apply), the diff on
+screen when a workshop closes, `ahde label` offered once in the flow. Then
+model comparison mode (item 16), three splits (development / validation /
+sealed), the Pareto table as the default presentation of a change, and
+transfer/continued reporting.
+
 Status 2026-08-31. Integration branch `codex/integrate-polish` (off master
 `83535d8`). This
 supersedes the "after V1.8" ordering; the old item numbers are mapped to waves
