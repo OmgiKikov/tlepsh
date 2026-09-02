@@ -225,7 +225,13 @@ function containedRelativePath(root: string, candidate: string): string | null {
 	return normalizedRepositoryPath(rel);
 }
 
-function isPrivateWorkspacePath(
+/**
+ * Whether one repository-relative path is host-private and must never reach a
+ * model-visible workspace snapshot. Exported so the rule can be pinned
+ * directly: it is the boundary between what the operator wrote and what AHDE
+ * put in their working tree.
+ */
+export function isPrivateWorkspacePath(
 	path: string,
 	evaluationFiles: ReadonlySet<string>,
 	nestedRunsRoot: string | null,
@@ -234,6 +240,11 @@ function isPrivateWorkspacePath(
 	const normalized = normalizedRepositoryPath(path);
 	const parts = normalized.split("/");
 	if (parts[0] === "imports") return true;
+	// The recorded dataset `ahde export` writes beside the Target. It is
+	// compiled FROM evidence, so letting it back into a workspace snapshot would
+	// feed a run its own past conversations and move the workspace hash every
+	// time an operator exported. Top-level only, exactly like `imports/`.
+	if (parts[0] === "exports") return true;
 	// `data/` is a declared scope: undeclared data never reaches a Target.
 	if (parts[0] === "data" && !dataDirectories.some((declared) => normalized.startsWith(`${declared}/`))) {
 		return true;
