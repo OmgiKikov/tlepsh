@@ -1,0 +1,64 @@
+# Python-агент поддержки провайдера. Идентификатор и модели ниже — стартовые
+# заглушки, как во всех шаблонах AHDE: запустите `ahde` в этой папке, и
+# первый диалог спросит, какую модель должен использовать агент, а какую —
+# судья, и запишет ответ сюда отдельным ревьюируемым коммитом.
+id: my-agent
+model:
+  # Модель самого агента. Ходит к ней agent.py, ключ берёт из переменной,
+  # названной в apiKeyEnv, — значение не попадает ни в манифест, ни в улики.
+  provider: openai-compatible
+  id: replace-with-model-id
+  api: openai-completions
+  baseUrl: http://127.0.0.1:1234/v1
+  apiKeyEnv: AHDE_MODEL_API_KEY
+  thinkingLevel: "off"
+  timeoutMs: 300000
+execution:
+  # Агент — не Pi, а обычная программа: AHDE запускает её и говорит по
+  # протоколу v1. `python3` берётся из PATH; относительный путь запрещён.
+  kind: command
+  command:
+    argv: [python3, agent.py]
+    protocolVersion: 1
+    startupTimeoutMs: 30000
+  # Для command-агента этот список задаёт не инструменты Pi, а границы
+  # песочницы: read означает, что рабочую копию менять нельзя.
+  tools: [read]
+  # AHDE_WORLD объявляют оба инструмента: хост кладёт туда путь к состоянию
+  # мира конкретного кейса.
+  environmentAllowlist: [AHDE_WORLD]
+  # Агент сам ходит к чат-эндпоинту, поэтому сеть открыта.
+  network: allow
+  sandbox: best-effort
+instructions:
+  agentsMd: AGENTS.md
+# Editable surface: цикл улучшения правит системный промпт, а не программу.
+harness:
+  files: [prompts/**]
+skills: []
+tools: [tools/get_account.tool.yaml, tools/create_ticket.tool.yaml]
+data: [data/kb]
+evalSuite:
+  id: my-agent-development
+  dataset: evals/development.jsonl
+  graders: evals/graders.yaml
+  # Один кейс судится прозой, поэтому блок judge объявлен. Пока в нём стоит
+  # заглушка, Workbench показывает его как ненастроенный и предлагает
+  # `configure-evaluators`; судьёй не может быть модель самого агента.
+  judge:
+    provider: openai-compatible
+    id: replace-with-model-id
+    api: openai-completions
+    baseUrl: http://127.0.0.1:1234/v1
+    apiKeyEnv: AHDE_JUDGE_API_KEY
+    thinkingLevel: "off"
+    timeoutMs: 300000
+  # Два кейса — диалоги: вторую сторону играет отдельная модель.
+  simulatedUser:
+    provider: openai-compatible
+    id: replace-with-model-id
+    api: openai-completions
+    baseUrl: http://127.0.0.1:1234/v1
+    apiKeyEnv: AHDE_USER_API_KEY
+    thinkingLevel: "off"
+    timeoutMs: 300000

@@ -1,0 +1,25 @@
+# Данные абонента. Хост запускает bin/get_account в песочнице и отдаёт агенту
+# ровно то, что тот напечатал. Попробовать без модели:
+#   ahde tool try --target . --tool get_account --input '{"account":"42"}'
+schemaVersion: 1
+name: get_account
+description: Тариф, баланс и статус абонента по номеру договора или лицевого счёта.
+parameters:
+  type: object
+  properties:
+    account:
+      type: string
+      description: Номер договора или лицевого счёта из обращения.
+      minLength: 1
+      maxLength: 32
+  required: [account]
+  additionalProperties: false
+command:
+  argv: [bin/get_account]
+timeoutMs: 5000
+maxOutputBytes: 8192
+output: json
+permissions:
+  environment: [AHDE_WORLD]
+  network: deny
+  filesystem: read-only

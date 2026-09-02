@@ -1,0 +1,9 @@
+runs/
+imports/
+attempts.tsv
+*.log
+__pycache__/
+# AHDE's project store lives inside the target and holds imported corpora,
+# including the SEALED exam. Never let `git add -A` sweep it into a commit:
+# AHDE refuses to run against a Target that already tracks it.
+.ahde/

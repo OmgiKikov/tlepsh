@@ -1,0 +1,29 @@
+# Заявка мастеру. Пишет в состояние мира прогона, поэтому объявляет
+# workspace-write: это единственный инструмент шаблона, который что-то меняет.
+schemaVersion: 1
+name: create_ticket
+description: Создать заявку на выезд мастера и вернуть её номер.
+parameters:
+  type: object
+  properties:
+    account:
+      type: string
+      description: Номер договора абонента.
+      minLength: 1
+      maxLength: 32
+    reason:
+      type: string
+      description: Что случилось, одной строкой.
+      minLength: 1
+      maxLength: 500
+  required: [account, reason]
+  additionalProperties: false
+command:
+  argv: [bin/create_ticket]
+timeoutMs: 5000
+maxOutputBytes: 8192
+output: json
+permissions:
+  environment: [AHDE_WORLD]
+  network: deny
+  filesystem: workspace-write
