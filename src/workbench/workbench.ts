@@ -679,6 +679,18 @@ export function datasetCasePreview(task: CorpusTask): WorkbenchDatasetCase {
 				stopWhen: task.simulatedUser.stopWhen === undefined ? null : datasetText(task.simulatedUser.stopWhen, 200),
 			}
 			: null,
+		world: task.world
+			? {
+				state: datasetText(canonicalJson(task.world.state), 2_000),
+				expect: task.world.expect
+					? task.world.expect.map((expectation) => ({
+						path: datasetText(expectation.path, 200),
+						op: expectation.op,
+						value: expectation.value === undefined ? null : datasetText(canonicalJson(expectation.value), 200),
+					}))
+					: null,
+			}
+			: null,
 		metadata: task.metadata
 			? Object.fromEntries(Object.entries(task.metadata).map(([key, value]) => [key, datasetText(value, 200)]))
 			: null,

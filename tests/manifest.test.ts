@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { GraderSpec, graderName, loadTarget, scaffoldTarget } from "../src/manifest.js";
-import { hashValue } from "../src/provenance.js";
+import { canonicalJson, hashValue } from "../src/provenance.js";
 import { AGENTS_MD, baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 
 describe("loadTarget", () => {
@@ -375,6 +375,61 @@ describe("scaffoldTarget", () => {
 		} finally {
 			cleanup(template);
 			cleanup(dest);
+		}
+	});
+});
+
+/**
+ * The seam commit added three optional fields — `execution.kind`,
+ * `execution.command`, `harness` on the manifest and `world` on a case — and
+ * one line to `datasetIdentity`. Optional rather than defaulted is the whole
+ * reason these literals still hold: canonical JSON drops an absent key, so a
+ * manifest and a dataset that use none of them hash exactly as before, and
+ * every `provenanceKey` in every runs store stays where it is.
+ */
+describe("identity stability across the optional seam fields", () => {
+	// Computed on 50bca3c, the commit before the seam fields existed.
+	const BASE_DATASET_HASH = "sha256:66fb1c48a43a21da97f828c7194c8e3eb4d767753b038a204d4ed360eab8a8fc";
+	const BASE_SUITE_HASH = "sha256:1da953c85efa348d5b684d598d71b9c013c47912e221d8e2a80d424dd2188427";
+
+	it("hashes the base fixture exactly as it did before the fields existed", () => {
+		const dir = makeTargetFixture(baseFixtureFiles());
+		try {
+			const target = loadTarget(dir);
+			expect(target.datasetHash).toBe(BASE_DATASET_HASH);
+			expect(target.suiteHash).toBe(BASE_SUITE_HASH);
+		} finally {
+			cleanup(dir);
+		}
+	});
+
+	it("parses a manifest without the new keys into an object that carries none of them", () => {
+		const dir = makeTargetFixture(baseFixtureFiles());
+		try {
+			const canonical = canonicalJson(loadTarget(dir).manifest);
+			expect(canonical).not.toContain('"kind"');
+			expect(canonical).not.toContain('"command"');
+			expect(canonical).not.toContain('"harness"');
+		} finally {
+			cleanup(dir);
+		}
+	});
+
+	it("moves the dataset hash when a case declares a world", () => {
+		const withoutWorld = { id: "task_001", input: "x", graders: [{ type: "output_contains", text: "ok" }] };
+		const dir = makeTargetFixture(
+			baseFixtureFiles({ "evals/development.jsonl": `${JSON.stringify(withoutWorld)}\n` }),
+		);
+		const worldDir = makeTargetFixture(
+			baseFixtureFiles({
+				"evals/development.jsonl": `${JSON.stringify({ ...withoutWorld, world: { state: { balance: 10 } } })}\n`,
+			}),
+		);
+		try {
+			expect(loadTarget(worldDir).datasetHash).not.toBe(loadTarget(dir).datasetHash);
+		} finally {
+			cleanup(dir);
+			cleanup(worldDir);
 		}
 	});
 });
