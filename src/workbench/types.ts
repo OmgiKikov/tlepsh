@@ -1066,6 +1066,16 @@ export interface WorkbenchDatasetCase {
 	 * a goal and a persona that shape every turn must be visible there.
 	 */
 	simulatedUser: { goal: string; persona: string | null; maxTurns: number; stopWhen: string | null } | null;
+	/**
+	 * The world a case happens in. `state` and each expectation's `value` are
+	 * bounded, redacted canonical JSON rather than live data: this is a thing a
+	 * human reads to confirm an import, and the same rule that keeps a case's
+	 * text out of a screen unredacted applies to the state behind it.
+	 */
+	world: {
+		state: string;
+		expect: { path: string; op: "equals" | "exists" | "contains"; value: string | null }[] | null;
+	} | null;
 	metadata: Record<string, string> | null;
 	graders: GraderSpec[];
 }

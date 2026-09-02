@@ -44,7 +44,7 @@ const RevisionSummarySchema = NonBlankSchema.max(4_000);
 
 /**
  * Builder input deliberately omits task ids; the trusted host derives them.
- * The three optional case fields reuse `manifest.ts` schemas verbatim, so a
+ * The optional case fields reuse `manifest.ts` schemas verbatim, so a
  * compiled dataset case and a hand-written one are bounded identically, and
  * the dialogue invariant is checked on this path too.
  */
@@ -55,6 +55,9 @@ export const BuilderCorpusDraftTaskInputSchema = z.strictObject({
 	// A case may instead ask a second model to play the user for N turns.
 	// `taskDialogueIssue` below is the one place that refuses both at once.
 	simulatedUser: TaskSchema.shape.simulatedUser,
+	// The world a case happens in travels with the case: this is an explicit
+	// field list, so omitting it would drop the world between draft and corpus.
+	world: TaskSchema.shape.world,
 	metadata: TaskSchema.shape.metadata,
 	graders: z.array(GraderSpec).min(1).max(16),
 }).superRefine((task, context) => {

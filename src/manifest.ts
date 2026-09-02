@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import { hashValue } from "./provenance.js";
+import { canonicalJson, hashValue } from "./provenance.js";
 import {
 	CONTAINER_IMAGE_REFERENCE,
 	CONTAINER_PLATFORM_REFERENCE,
@@ -241,6 +241,126 @@ export const SimulatedUserSpecSchema = z.strictObject({
 });
 export type SimulatedUserSpec = z.infer<typeof SimulatedUserSpecSchema>;
 
+/**
+ * A case's world is read, not executed: it is data the Target's tools answer
+ * from, so it stays small enough for a human to read in a review and for a
+ * canonical hash to stay cheap.
+ */
+export const MAX_WORLD_BYTES = 16 * 1024;
+export const MAX_WORLD_DEPTH = 5;
+
+/** The names that turn a plain object literal into prototype pollution. */
+const DANGEROUS_WORLD_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+/** Dotted path: `order.items.0.status`. No wildcards — an expectation names one place. */
+const WORLD_PATH = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
+
+/**
+ * One assertion about the world after the agent has acted. `equals` and
+ * `contains` compare against `value`; `exists` only asks whether the path is
+ * there, so carrying a value would be a promise nothing reads.
+ */
+export const WorldExpectationSchema = z.strictObject({
+	path: z.string().min(1).max(200).regex(WORLD_PATH, "world expectation path is a dotted path with no wildcards"),
+	op: z.enum(["equals", "exists", "contains"]),
+	value: z.unknown().optional(),
+});
+export type WorldExpectation = z.infer<typeof WorldExpectationSchema>;
+
+/**
+ * The bounded structural check the byte bound cannot make: how deep the state
+ * nests, and whether any key at any depth is one of the three names that turn
+ * an assignment into prototype pollution. Mirrors the rule
+ * `target/tool-manifest.ts` applies to declared tool parameter schemas.
+ */
+function worldStateIssue(value: unknown, depth: number, path: string): string | null {
+	if (value === null || typeof value !== "object") return null;
+	if (depth > MAX_WORLD_DEPTH) return `${path} nests deeper than ${MAX_WORLD_DEPTH} levels`;
+	if (Array.isArray(value)) {
+		for (const [index, item] of value.entries()) {
+			const issue = worldStateIssue(item, depth + 1, `${path}[${index}]`);
+			if (issue) return issue;
+		}
+		return null;
+	}
+	for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+		if (DANGEROUS_WORLD_KEYS.has(key)) return `${path}.${key} is a reserved property name`;
+		const issue = worldStateIssue(child, depth + 1, `${path}.${key}`);
+		if (issue) return issue;
+	}
+	return null;
+}
+
+/**
+ * Zod strips a literal `__proto__` key out of a record and out of an object
+ * before any refinement can see it, so a refinement over the *parsed* world
+ * would report a state that is not the one the author wrote. This looks at the
+ * raw value instead, so a world that declares the name is refused rather than
+ * quietly edited. Deeper keys survive parsing — `state`'s values are
+ * `z.unknown()` — and `worldStateIssue` catches them there.
+ */
+function rawWorldProtoKey(value: unknown): string | null {
+	const plainObject = (candidate: unknown): candidate is Record<string, unknown> =>
+		candidate !== null && typeof candidate === "object" && !Array.isArray(candidate);
+	if (!plainObject(value)) return null;
+	if (Object.hasOwn(value, "__proto__")) return "world";
+	const state = value.state;
+	return plainObject(state) && Object.hasOwn(state, "__proto__") ? "state" : null;
+}
+
+const WorldObjectSchema = z
+	.strictObject({
+		state: z.record(z.string().min(1).max(64), z.unknown()),
+		expect: z.array(WorldExpectationSchema).max(8).optional(),
+	})
+	.superRefine((world, context) => {
+		const bytes = Buffer.byteLength(canonicalJson(world.state), "utf8");
+		if (bytes > MAX_WORLD_BYTES) {
+			context.addIssue({
+				code: "custom",
+				path: ["state"],
+				message: `world state is ${bytes} bytes, over the ${MAX_WORLD_BYTES} byte bound`,
+			});
+		}
+		const structure = worldStateIssue(world.state, 1, "state");
+		if (structure) context.addIssue({ code: "custom", path: ["state"], message: structure });
+		for (const [index, expectation] of (world.expect ?? []).entries()) {
+			const hasValue = expectation.value !== undefined;
+			if (expectation.op === "exists" && hasValue) {
+				context.addIssue({
+					code: "custom",
+					path: ["expect", index, "value"],
+					message: "an exists expectation asks only whether the path is there; it takes no value",
+				});
+			}
+			if (expectation.op !== "exists" && !hasValue) {
+				context.addIssue({
+					code: "custom",
+					path: ["expect", index, "value"],
+					message: `a ${expectation.op} expectation compares against a value and must carry one`,
+				});
+			}
+		}
+	});
+
+/**
+ * The state a case starts from and what must be true of it afterwards.
+ *
+ * Optional on `TaskSchema` and never defaulted: canonical JSON drops an absent
+ * key, so every dataset written before worlds existed keeps the exact
+ * `datasetHash` it already has.
+ */
+export const WorldSchema = z
+	.unknown()
+	.superRefine((value, context) => {
+		const where = rawWorldProtoKey(value);
+		if (where) {
+			context.addIssue({ code: "custom", path: [where], message: `${where}.__proto__ is a reserved property name` });
+		}
+	})
+	.pipe(WorldObjectSchema);
+export type World = z.infer<typeof WorldSchema>;
+
 export const TaskSchema = z.strictObject({
 	id: z.string().min(1),
 	input: z.string().min(1),
@@ -256,6 +376,11 @@ export const TaskSchema = z.strictObject({
 	 * user message; every later user turn comes from the user model.
 	 */
 	simulatedUser: SimulatedUserSpecSchema.optional(),
+	/**
+	 * The state this case happens in, and what must be true of it afterwards.
+	 * Absent means the case is a pure question with no world behind it.
+	 */
+	world: WorldSchema.optional(),
 	metadata: TaskMetadataSchema.optional(),
 	graders: z.array(GraderSpec).optional(),
 });
@@ -449,6 +574,19 @@ export const ContainerBlock = z.strictObject({
 });
 export type ContainerBlock = z.infer<typeof ContainerBlock>;
 
+/**
+ * A Target that is not Pi: an executable AHDE starts and speaks a versioned
+ * line protocol to. `argv` is the exact command, never a shell string, so no
+ * quoting rule can turn a manifest into a second parser.
+ */
+export const CommandBackendBlock = z.strictObject({
+	argv: z.array(z.string().min(1).max(4_096)).min(1).max(32),
+	/** The wire contract AHDE speaks. A literal so an old adapter fails loudly. */
+	protocolVersion: z.literal(1),
+	startupTimeoutMs: z.number().int().min(1_000).max(120_000).default(30_000),
+});
+export type CommandBackendBlock = z.infer<typeof CommandBackendBlock>;
+
 export const ExecutionPolicyBlock = z
 	.strictObject({
 		tools: z.array(z.enum(["read", "bash", "edit", "write"])).min(1).default(["read", "bash"]),
@@ -458,8 +596,37 @@ export const ExecutionPolicyBlock = z
 		network: z.enum(["deny", "allow"]).default("deny"),
 		sandbox: z.enum(["required", "best-effort", "off"]).default("best-effort"),
 		container: ContainerBlock.optional(),
+		/**
+		 * Which backend runs the Target. Optional and never defaulted: a default
+		 * would put the key into the canonical JSON of every existing manifest and
+		 * move every `provenanceKey` in every runs store. Absent means `pi`; read
+		 * it through `executionKindOf` rather than testing the field.
+		 */
+		kind: z.enum(["pi", "command"]).optional(),
+		command: CommandBackendBlock.optional(),
 	})
 	.superRefine((execution, context) => {
+		if (execution.kind === "command" && !execution.command) {
+			context.addIssue({
+				code: "custom",
+				path: ["command"],
+				message: "execution.kind: command requires an execution.command block naming the executable",
+			});
+		}
+		if (execution.command && execution.kind !== "command") {
+			context.addIssue({
+				code: "custom",
+				path: ["kind"],
+				message: "execution.command is only read under execution.kind: command",
+			});
+		}
+		if (execution.kind === "command" && execution.sandbox === "off") {
+			context.addIssue({
+				code: "custom",
+				path: ["sandbox"],
+				message: "execution.kind: command requires sandbox: required or best-effort; a command Target declares no containment",
+			});
+		}
 		if (!execution.container) return;
 		if (execution.sandbox === "off") {
 			context.addIssue({
@@ -479,6 +646,15 @@ export const ExecutionPolicyBlock = z
 		}
 	});
 export type ExecutionPolicyBlock = z.infer<typeof ExecutionPolicyBlock>;
+
+/**
+ * Which backend a manifest asks for. The one place that reads the absence of
+ * `kind` as `pi`, so no caller has to remember that an old manifest predates
+ * the field.
+ */
+export function executionKindOf(execution: Pick<ExecutionPolicyBlock, "kind">): "pi" | "command" {
+	return execution.kind ?? "pi";
+}
 
 const RESERVED_MODEL_PARAMS = new Set(["model", "messages", "stream", "tools"]);
 
@@ -580,6 +756,20 @@ export const SimulatedUserModelBlock = ModelBlockShape
 	.superRefine(reservedModelParams)
 	.superRefine(reservedTemperatureParam("evalSuite.simulatedUser"));
 
+/** One declared harness path or glob: relative, no traversal, no absolute root. */
+const HarnessGlob = z
+	.string()
+	.min(1)
+	.max(200)
+	.regex(/^[A-Za-z0-9_][A-Za-z0-9_./*-]*$/, "harness files are relative paths or globs under the target root")
+	.refine((value) => !value.split("/").includes(".."), "harness files cannot traverse out of the target root");
+
+/**
+ * What a Pi Target's harness is when the manifest does not say. Exactly the
+ * surface `ahde` has always been willing to rewrite.
+ */
+export const DEFAULT_PI_HARNESS_FILES = ["AGENTS.md", "skills/**", "tools/**", "bin/**"] as const;
+
 const TargetManifestShape = z.strictObject({
 	id: z
 		.string()
@@ -592,6 +782,17 @@ const TargetManifestShape = z.strictObject({
 	skills: z.array(z.string().min(1)).default([]),
 	/** Explicit target-owned subprocess descriptors. Ambient discovery is disabled. */
 	tools: z.array(z.string().min(1)).default([]),
+	/**
+	 * The declared editable surface: the files a proposal may rewrite and the
+	 * files a harness hash is taken over. Invariants 5 and 17 will read it
+	 * instead of naming the Pi layout, which is what lets a Target whose harness
+	 * is a prompt file or a config tree be improved by the same loop.
+	 *
+	 * Optional and never defaulted, for the reason `kind` is: a default would
+	 * write the key into the canonical JSON of every existing manifest. Absent
+	 * means `DEFAULT_PI_HARNESS_FILES`; read it through `harnessFilesOf`.
+	 */
+	harness: z.strictObject({ files: z.array(HarnessGlob).min(1).max(64) }).optional(),
 	/**
 	 * Declared data directories under `data/`. Only these are copied into a
 	 * Target workspace snapshot and hashed into its workspace identity;
@@ -647,6 +848,14 @@ function placeholderJudgeIsNoJudge(manifest: TargetManifestValue): TargetManifes
 // well as parsing — receipts write manifests back out through the same schema.
 export const TargetManifest = TargetManifestShape.overwrite(placeholderJudgeIsNoJudge);
 export type TargetManifest = TargetManifestValue;
+
+/**
+ * The Target's editable surface: what the manifest declares, or the Pi default
+ * for every manifest written before the field existed.
+ */
+export function harnessFilesOf(manifest: Pick<TargetManifest, "harness">): readonly string[] {
+	return manifest.harness?.files ?? DEFAULT_PI_HARNESS_FILES;
+}
 
 // ---------- Resolved target ----------
 
@@ -852,6 +1061,12 @@ function datasetIdentity(task: Task): Record<string, unknown> {
 		expected: task.expected,
 		messages: task.messages,
 		simulatedUser: task.simulatedUser,
+		// This function enumerates; it does not spread. Without this line two
+		// cases that differ only in the world they happen in would hash to one
+		// `datasetHash` and a run against one would count as evidence for the
+		// other. Canonical JSON drops it when absent, so every dataset without a
+		// world keeps the hash it already has.
+		world: task.world,
 		metadata: task.metadata,
 	};
 }
@@ -1014,6 +1229,13 @@ export function loadTarget(dir: string, override?: { dataset?: string }): Resolv
 		throw new Error(`manifest.yaml: ${manifestResult.error.message}`);
 	}
 	const manifest = manifestResult.data;
+	// seam: removed by the command-adapter lane. The schema already admits
+	// `execution.kind: command` so four lanes can fork from one commit, but no
+	// backend reads it yet — refusing here is what stops a command Target from
+	// silently running as Pi and producing evidence attributed to the wrong agent.
+	if (executionKindOf(manifest.execution) === "command") {
+		throw new Error("manifest.yaml: command Target backend is not available in this build");
+	}
 	const manifestDataset = manifest.evalSuite.dataset;
 	if (override?.dataset) manifest.evalSuite.dataset = override.dataset;
 
