@@ -18,16 +18,13 @@ export const CLI_COMMANDS = [
 	"run",
 	"validate",
 	"list",
-	"failures",
 	"corpus",
 	"feedback",
 	"tool",
-	"compare",
 	"diagnose",
 	"regrade",
 	"report",
 	"label",
-	"judge-agreement",
 	"candidate",
 	"calibrate",
 	"check",
@@ -45,7 +42,6 @@ export const CLI_COMMANDS = [
 
 export type CliCommand = typeof CLI_COMMANDS[number];
 export type CliAction =
-	| "publish"
 	| "import"
 	| "list"
 	| "inspect"
@@ -114,12 +110,6 @@ const COMMAND_SPECS = {
 	},
 	validate: { flags: ["target", "dataset"], requiredFlags: ["target"], positionals: 0 },
 	list: { flags: ["target"], positionals: 0 },
-	failures: {
-		flags: ["target", "project", "dataset", "out"],
-		requiredFlags: ["target"],
-		positionals: 1,
-	},
-	compare: { flags: [], positionals: 2 },
 	// `--target <dir>` says whose runs to read, for an operator standing
 	// somewhere else. It never changes what a diagnosis is.
 	diagnose: { flags: ["target"], positionals: 1 },
@@ -134,7 +124,6 @@ const COMMAND_SPECS = {
 		requiredFlags: ["target"],
 		positionals: 1,
 	},
-	"judge-agreement": { flags: ["target", "project"], requiredFlags: ["target"], positionals: 1 },
 	candidate: {
 		flags: [
 			"target",
@@ -245,11 +234,6 @@ const TOOL_ACTION_SPECS = {
 // what it is no longer is the only way to say it, which is how a corpus used to
 // end up under an id the rest of the flow then refused.
 const CORPUS_ACTION_SPECS = {
-	publish: {
-		flags: ["project", "draft", "name", "visibility"],
-		requiredFlags: ["project", "draft", "name", "visibility"],
-		positionals: 0,
-	},
 	import: {
 		flags: ["target", "project", "name", "visibility", "file"],
 		requiredFlags: ["name", "visibility", "file"],
@@ -278,7 +262,7 @@ const CORPUS_ACTION_SPECS = {
 		requiredFlags: ["target", "sealed", "name"],
 		positionals: 0,
 	},
-} as const satisfies Record<"publish" | "import" | "list" | "inspect" | "ingest" | "synth", InvocationSpec>;
+} as const satisfies Record<"import" | "list" | "inspect" | "ingest" | "synth", InvocationSpec>;
 
 const FEEDBACK_ACTION_SPECS = {
 	list: { flags: ["target"], positionals: 0 },
@@ -577,10 +561,8 @@ function parseActionCommand(
 
 /** A sealed slice is a draw, not a count: it needs its seed to be reproducible. */
 function validateActionRelationships(context: string, flags: Readonly<Record<string, string>>): void {
-	// The project has to be sayable, one way or the other. `corpus publish`
-	// takes a Builder draft id and no Target, so it still names it outright.
-	if (context.startsWith("corpus ") && context !== "corpus publish" &&
-		flags.project === undefined && flags.target === undefined) {
+	// The project has to be sayable, one way or the other.
+	if (context.startsWith("corpus ") && flags.project === undefined && flags.target === undefined) {
 		cliError(`${context} requires --project <id> or --target <dir> (the Target id is the default project)`);
 	}
 	// `corpus synth` reads both flags differently: `--sealed N` is how many cases

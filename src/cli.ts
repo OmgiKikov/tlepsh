@@ -6,7 +6,6 @@ import { describeEnvVar, loadDotEnv, type EnvReport } from "./env.js";
 import { loadTarget, scaffoldTarget } from "./manifest.js";
 import {
 	listEvalRunIndexesLenient,
-	loadEvalRun,
 	loadRun,
 	readEvalRunIndex,
 	renderEvalRunListLine,
@@ -17,7 +16,6 @@ import { judgeAgreement } from "./domain/judge-agreement.js";
 import { formatEvaluatorSpend } from "./evaluator-model.js";
 import { evaluatorReadiness } from "./application/configure-evaluators.js";
 import {
-	collectJudgeLabelSubjects,
 	importJudgeLabels,
 	judgeEvidenceCalibration,
 	judgeLabelFilePath,
@@ -25,14 +23,13 @@ import {
 	runJudgeLabelSession,
 	type JudgeLabelSubject,
 } from "./application/judge-labels.js";
-import { compareEvalRuns, renderCompareMarkdown } from "./compare.js";
+import { renderCompareMarkdown } from "./compare.js";
 import {
 	isRegradeLabel,
 	readGraderDefaults,
 	regradeEvalRun,
 	renderRegradeSummary,
 } from "./regrade.js";
-import { compileFailureBundle } from "./bundle.js";
 import { runCandidateExperiment } from "./application/candidate-experiment.js";
 import {
 	renderCheapCheckLine,
@@ -77,7 +74,6 @@ import {
 } from "./application/candidate-review.js";
 import { createCorpus, importCorpus, listCorpora, loadCorpus, type CorpusVisibility } from "./corpus.js";
 import { runTargetFeedbackCommand } from "./application/target-feedback.js";
-import { loadBuilderCorpusDraft } from "./application/builder-corpus-draft.js";
 import {
 	datasetHoldoutInForce,
 	ingestDataset,
@@ -93,7 +89,6 @@ import {
 import { loadBuilderProposalRun } from "./application/builder-proposal.js";
 import { describeFixtureRun, readTryToolInput, runToolFixtures, tryTool } from "./application/tool-workshop.js";
 import {
-	resolveDevelopmentTargetForEval,
 	resolveScoredCasesForEval,
 	targetWithDevelopmentCorpus,
 } from "./application/corpus-target.js";
@@ -688,43 +683,6 @@ function printJudgeAgreement(projectId: string, evalRunId?: string): void {
 	}
 }
 
-function judgeAgreementReport(): void {
-	const evalRunId = positional(0);
-	if (!evalRunId) {
-		console.error("usage: ahde judge-agreement <evalRunId> --target <dir> [--project <id>]\n");
-		console.log(USAGE);
-		process.exit(2);
-	}
-	const targetDir = resolve(requireArg("target"));
-	const projectId = arg("project") ?? loadTarget(targetDir).manifest.id;
-	const subjects = collectJudgeLabelSubjects({
-		runsRoot: runsRoot(),
-		evalRunId,
-		sealedDatasetHashes: sealedCorpusHashes(projectId),
-	});
-	const specs = new Set(subjects.map((subject) => subject.graderSpecHash));
-	console.log(`eval run ${evalRunId}: ${specs.size} judge grader spec(s) over ${subjects.length} judged check(s)`);
-	const exact = judgeEvidenceCalibration({
-		runsRoot: runsRoot(),
-		stateRoot: stateRoot(),
-		projectId,
-		evalRunIds: [evalRunId],
-	});
-	const legacy = exact.legacyLabels;
-	if (legacy > 0) {
-		console.log(
-			`${legacy} label(s) were written before the screen showed the judge's own subject; ` +
-				"they do not count toward requireCalibration unless allowLegacyLabels is set",
-		);
-	}
-	printJudgeAgreement(projectId, evalRunId);
-	for (const specHash of [...specs].sort()) {
-		if (!exact.byGraderSpecHash.has(specHash)) {
-			console.log(`judge not calibrated — ${specHash.slice(0, 27)}… has no labels; run \`ahde label ${evalRunId}\``);
-		}
-	}
-}
-
 /**
  * The basket on a schedule. Every tick is ordinary development evidence on the
  * ACTIVE revision, and the pair it forms with the previous tick is an A/A
@@ -999,31 +957,6 @@ async function main(): Promise<void> {
 			}
 			break;
 		}
-		case "failures": {
-			const evalRunId = positional(0);
-			if (!evalRunId) {
-				console.error(
-					"usage: ahde failures <evalRunId> --target <dir> [--project <id>] [--dataset <rel>] [--out <path>]\n",
-				);
-				console.log(USAGE);
-				process.exit(2);
-			}
-			const dataset = arg("dataset");
-			const target = loadTarget(
-				resolve(requireArg("target")),
-				dataset ? { dataset } : undefined,
-			);
-			const evalRun = loadEvalRun(runsRoot(), evalRunId);
-			const sourceTarget = resolveDevelopmentTargetForEval({
-				target,
-				evalRun,
-				stateRoot: stateRoot(),
-				projectId: arg("project") ?? target.manifest.id,
-			}).target;
-			const out = compileFailureBundle(sourceTarget, evalRun, runsRoot(), { outPath: arg("out") });
-			console.log(out);
-			break;
-		}
 		case "corpus": {
 			const action = positional(0);
 			// The Target's manifest id is the project every other command already
@@ -1062,25 +995,6 @@ async function main(): Promise<void> {
 				const rendered = renderSealedSynthOutput(result);
 				for (const line of rendered.stdout) console.log(line);
 				for (const line of rendered.warnings) console.error(line);
-				break;
-			}
-			if (action === "publish") {
-				const visibility = requireArg("visibility");
-				if (visibility !== "development" && visibility !== "sealed") {
-					throw new Error(`--visibility must be development or sealed, got ${visibility}`);
-				}
-				const draft = loadBuilderCorpusDraft(stateRoot(), projectId, requireArg("draft"));
-				const metadata = createCorpus({
-					stateRoot: stateRoot(),
-					projectId,
-					name: requireArg("name"),
-					visibility: visibility as CorpusVisibility,
-					tasks: draft.tasks,
-				});
-				console.log(
-					`${metadata.id}  ${metadata.visibility}  ${metadata.taskCount} tasks  ${metadata.hash}`,
-				);
-				console.log(`published from reviewed draft ${draft.id}`);
 				break;
 			}
 			if (action === "import") {
@@ -1230,19 +1144,6 @@ async function main(): Promise<void> {
 			if (result.exitCode !== 0) process.exitCode = 1;
 			break;
 		}
-		case "compare": {
-			const a = positional(0);
-			const b = positional(1);
-			if (!a || !b) {
-				console.error("usage: ahde compare <evalRunA> <evalRunB>\n");
-				console.log(USAGE);
-				process.exit(2);
-			}
-			const result = compareEvalRuns(runsRoot(), a, b, { mode: "exploratory" });
-			console.log(renderCompareMarkdown(result));
-			if (result.error) process.exit(2);
-			break;
-		}
 		case "diagnose": {
 			const evalRunId = positional(0);
 			if (!evalRunId) {
@@ -1350,10 +1251,6 @@ async function main(): Promise<void> {
 		}
 		case "label": {
 			await labelJudge();
-			break;
-		}
-		case "judge-agreement": {
-			judgeAgreementReport();
 			break;
 		}
 		case "passport": {

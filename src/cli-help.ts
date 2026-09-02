@@ -50,8 +50,6 @@ Inspect and run:
                                                run one declared tool in its sandbox,
                                                or its whole fixture contract
   ahde label <evalRunId> --target <dir> [--spec <id>]  check the judge against your own eyes
-  ahde judge-agreement <evalRunId> --target <dir>
-                                               how far that judge is calibrated
 
 Verify and ship (authoring and adoption live in Builder Pi):
   ahde candidate --target <dir> --builder-run <id>
@@ -64,9 +62,8 @@ ${builderCommandLines()}
   plus the Pi built-ins /login and /model for the Builder's own model
 
 Use \`ahde <command> --help\` for focused help. Advanced automation commands:
-  corpus  failures  compare  diagnose  regrade  report  label  judge-agreement
-  candidate  calibrate  check  improve  search  review  promote  reject
-  log  watch  passport
+  corpus  diagnose  regrade  report  label  candidate  calibrate  check
+  improve  search  review  promote  reject  log  watch  passport
 
 Wherever a command takes both, --project defaults to the Target's manifest id;
 an explicit --project still wins.
@@ -208,12 +205,6 @@ against container evidence, by design.`,
 	list: `Usage: ahde list [--target <id>]
 
 List valid local eval-run indexes. Invalid artifacts are skipped with a warning.`,
-	failures: `Usage: ahde failures <evalRunId> --target <dir> [--project <id>] [--dataset <rel>] [--out <path>]
-
-Compile a bounded failure bundle from one exact development EvalRun.`,
-	compare: `Usage: ahde compare <evalRunA> <evalRunB>
-
-Compare two runs only when every execution/grading axis except Harness revision matches.`,
 	diagnose: `Usage: ahde diagnose <evalRunId> [--target <dir>]
 
 Derive deterministic failure modes and proposal eligibility from a development
@@ -276,15 +267,6 @@ screen shape; it does not opt out of exact Spec/eval provenance.
 
 Sealed holdout evidence is never labelled: reading it is exactly what a holdout
 forbids.`,
-	"judge-agreement": `Usage: ahde judge-agreement <evalRunId> --target <dir> [--project <id>]
-                            (--project defaults to the Target's manifest id)
-
-Compare this project's human labels with the judge that graded them: agreement
-rate, Cohen's κ, and how often the judge waves a failure through or invents one.
-Per judge grader spec, plus the pooled total. Subjects and assertion-level checks
-are separate; repeated labels do not enlarge the sample, and conflicting labels
-are reported and excluded. κ is n/a when the labels are all one verdict — chance
-alone explains such a table and there is nothing to correct.`,
 	candidate: `Usage:
   ahde candidate --target <dir> --builder-run <id> [--development-corpus <id>] [--holdout-corpus <id>] [--project <id>] [--repetitions N]
   ahde candidate --target <dir> --branch <ref> --base <ref> --proposal <id> --diagnosis <id> [options]
@@ -513,10 +495,6 @@ found by scanning eval-run indexes — watch stores nothing new.
 --once (the default without --every) runs one tick and exits. --every loops on
 a monotonic schedule until SIGINT; --max-runs bounds it. Exit 0 = healthy,
 3 = drift, 2 = no comparable baseline yet.`,
-	"corpus publish": `Usage: ahde corpus publish --project <id> --draft <id> --name <name> --visibility development|sealed
-
-Publish a reviewed Builder corpus draft. Prefer the Builder Workbench for
-receipt-backed lineage.`,
 	"corpus import": `Usage: ahde corpus import [--target <dir>] [--project <id>] --name <name>
                           --visibility development|sealed --file <jsonl>
 

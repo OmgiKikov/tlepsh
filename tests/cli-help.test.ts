@@ -181,13 +181,13 @@ describe("CLI help", () => {
 		expect(help).toContain("ahde resume");
 		expect(help).toContain("Inside Builder Pi");
 		expect(help).toContain("Advanced automation commands");
-		expect(help).toContain("compare  diagnose  regrade  report");
+		expect(help).toContain("corpus  diagnose  regrade  report  label  candidate  calibrate  check");
 		expect(help).toContain("ahde calibrate --target <dir>                measure run-to-run noise (A/A)");
 		// The screen has one subject and one form: an evaluated Candidate record.
 		expect(help).toContain("ahde check --target <dir> --candidate <id>   cheap screen: the failed cases, once");
 		expect(help).toContain("--project defaults to the Target's manifest id");
 		expect(help).toContain("ahde improve --target <dir> --until 90% --max-cycles 5");
-		expect(help).toContain("candidate  calibrate  check  improve  search  review  promote  reject");
+		expect(help).toContain("improve  search  review  promote  reject  log  watch  passport");
 		expect(help).toContain("ahde search --target <dir> --candidates <id,id,id>");
 		expect(help).toContain("ahde serve --target <dir> [--port N]         drive the Workbench over a local");
 		expect(help).toContain("AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)");
@@ -297,7 +297,6 @@ describe("CLI help", () => {
 
 	it("renders focused help for nested automation actions", () => {
 		expect(cliHelp(["corpus", "import", "--help"])).toContain("imports/ inbox");
-		expect(cliHelp(["corpus", "publish", "--help"])).toContain("Builder corpus draft");
 		expect(cliHelp(["corpus", "inspect", "--help"])).toContain("--file imports/<file>");
 		expect(cliHelp(["corpus", "inspect", "--help"])).toContain("a sealed row is never printed");
 		expect(cliHelp(["corpus", "ingest", "--help"])).toContain("--recipe <json|@path>");

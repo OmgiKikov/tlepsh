@@ -69,8 +69,6 @@ describe("side-effect-free CLI invocation parsing", () => {
 		{ name: "run corpus", argv: ["run", "--target", "./agent", "--project", "demo", "--corpus", "corpus-dev"], command: "run", action: null },
 		{ name: "validate", argv: ["validate", "--target", "./agent", "--dataset", "evals/dev.jsonl"], command: "validate", action: null },
 		{ name: "list", argv: ["list", "--target", "agent-id"], command: "list", action: null },
-		{ name: "failures", argv: ["failures", "erun-1", "--target", "./agent", "--out", "failure.json"], command: "failures", action: null },
-		{ name: "corpus publish", argv: ["corpus", "publish", "--project", "demo", "--draft", "draft-1", "--name", "dev", "--visibility", "development"], command: "corpus", action: "publish" },
 		{ name: "corpus import", argv: ["corpus", "import", "--project", "demo", "--name", "holdout", "--visibility", "sealed", "--file", "tasks.jsonl"], command: "corpus", action: "import" },
 		{ name: "corpus list", argv: ["corpus", "--project", "demo", "list"], command: "corpus", action: "list" },
 		{ name: "corpus inspect", argv: ["corpus", "inspect", "--project", "demo", "--file", "imports/tickets.csv"], command: "corpus", action: "inspect" },
@@ -92,7 +90,6 @@ describe("side-effect-free CLI invocation parsing", () => {
 		{ name: "feedback list", argv: ["feedback", "list"], command: "feedback", action: "list" },
 		{ name: "feedback list for a chosen Target", argv: ["feedback", "list", "--target", "./agent"], command: "feedback", action: "list" },
 		{ name: "feedback clear", argv: ["feedback", "--target", "./agent", "clear"], command: "feedback", action: "clear" },
-		{ name: "compare", argv: ["compare", "erun-a", "erun-b"], command: "compare", action: null },
 		{ name: "diagnose", argv: ["diagnose", "erun-a"], command: "diagnose", action: null },
 		{ name: "regrade", argv: ["regrade", "erun-a", "--target", "./agent"], command: "regrade", action: null },
 		{
@@ -136,14 +133,14 @@ describe("side-effect-free CLI invocation parsing", () => {
 	});
 
 	it("returns immutable normalized flags and positionals without mutating argv", () => {
-		const argv = Object.freeze(["failures", "erun-1", "--out", "bundle.json", "--target", "./agent"]);
+		const argv = Object.freeze(["report", "erun-1", "--out", "bundle.json", "--target", "./agent"]);
 		const before = [...argv];
 		const result = commandInvocation(argv);
 
 		expect(argv).toEqual(before);
 		expect(result).toEqual({
 			kind: "command",
-			command: "failures",
+			command: "report",
 			action: null,
 			flags: { out: "bundle.json", target: "./agent" },
 			positionals: ["erun-1"],
@@ -186,17 +183,13 @@ describe("side-effect-free CLI invocation parsing", () => {
 	it.each([
 		[["init"], /init requires 1 positional argument; got 0/],
 		[["init", "a", "b"], /init accepts 1 positional argument; got 2/],
-		[["compare", "only-one"], /compare requires 2 positional arguments; got 1/],
-		[["compare", "a", "b", "c"], /compare accepts 2 positional arguments; got 3/],
 		[["diagnose", "erun", "extra"], /diagnose accepts 1 positional argument; got 2/],
 		[["regrade", "--target", "./agent"], /regrade requires 1 positional argument; got 0/],
 		[["regrade", "erun-a", "erun-b", "--target", "./agent"], /regrade accepts 1 positional argument; got 2/],
 		[["--target", "./agent", "stray"], /root accepts 0 positional arguments; got 1/],
 		[["corpus", "list", "extra", "--project", "demo"], /corpus list accepts 0 positional arguments; got 1/],
-		// One of the two has to be sayable; `corpus publish` has no Target at all.
 		[["corpus", "list"], /corpus list requires --project <id> or --target <dir>/],
 		[["corpus", "import", "--name", "x", "--visibility", "sealed", "--file", "x.jsonl"], /corpus import requires --project <id> or --target <dir>/],
-		[["corpus", "publish", "--target", "./agent", "--draft", "d", "--name", "n", "--visibility", "development"], /unknown flag --target for corpus publish/],
 		[["feedback", "clear", "extra"], /feedback clear accepts 0 positional arguments; got 1/],
 	] as const)("rejects missing or excess positionals in %j", (argv, message) => {
 		expect(() => parseCliInvocation(argv)).toThrow(message);
@@ -228,7 +221,6 @@ describe("side-effect-free CLI invocation parsing", () => {
 		[["search", "--target", "./agent", "--candidates", "builder-1,../etc"], /--candidates for search contains an invalid proposal run id/],
 		[["search", "--target", "./agent", "--candidates", "b1,b2", "--corpus", "corpus-dev"], /missing required flag --project for search with --corpus/],
 		[["calibrate"], /missing required flag --target for calibrate/],
-		[["corpus", "publish", "--project", "demo"], /missing required flag --draft for corpus publish/],
 		[["corpus", "inspect", "--project", "demo"], /missing required flag --file for corpus inspect/],
 		[["corpus", "ingest", "--project", "demo", "--file", "imports/x.csv", "--name", "x"], /missing required flag --recipe for corpus ingest/],
 		[["review", "--candidate", "candidate-1", "--recommend", "reject"], /missing required flag --reason for review/],

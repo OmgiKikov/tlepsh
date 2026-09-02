@@ -239,8 +239,8 @@ const expectedCommandNames = [
 // revision).
 const expectedCliCommandNames = [
 	"root", "builder-pi", "continue", "resume", "target", "evidence", "serve",
-	"init", "run", "validate", "list", "failures", "corpus", "feedback", "tool",
-	"compare", "diagnose", "regrade", "report", "label", "judge-agreement",
+	"init", "run", "validate", "list", "corpus", "feedback", "tool",
+	"diagnose", "regrade", "report", "label",
 	"candidate", "calibrate", "check", "improve", "search", "review", "promote",
 	"reject", "passport", "log", "watch",
 ];
