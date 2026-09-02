@@ -285,6 +285,14 @@ import {
 	type PersistedWorkbenchWorkshop,
 } from "./types.js";
 import type { CandidateRecord } from "../domain/candidate.js";
+import { decideScaffoldTarget, decideConfigureTarget, decideConfigureEvaluators } from "./decisions/setup.js";
+import { decideApproveSpec, decidePublishCorpus, decideImportDataset, decideGenerateHoldout } from "./decisions/corpus.js";
+import { decideRunEval, decideCalibrate, decideRegrade } from "./decisions/evaluation.js";
+import { decideApplyProposal, decideDiscardProposal } from "./decisions/proposal.js";
+import { decideVerifyCandidate, decideAbandonCandidate } from "./decisions/candidate.js";
+import { decideReviewCandidate, decidePromoteCandidate, decideRejectCandidate, decideAdoptCandidate, decideContinueCycle } from "./decisions/release.js";
+import { decideImprove } from "./decisions/improve.js";
+import type { DecisionContext } from "./decisions/shared.js";
 
 const MAX_REVIEW_BYTES = 5 * 1024 * 1024;
 const MAX_CONVERSATION_MODES = 3;
@@ -296,7 +304,7 @@ const MAX_CONVERSATION_MODES = 3;
  * lists one. The host names it, once, for all of them.
  */
 export const GENERATED_HOLDOUT_NAME = "Sealed exam (written by the judge)";
-const MAX_DATASET_SAMPLE_CASES = 5;
+export const MAX_DATASET_SAMPLE_CASES = 5;
 const MAX_DATASET_CASE_CHARS = 400;
 const MAX_DATASET_CASE_TURNS = 6;
 
@@ -497,12 +505,12 @@ export function canonicalPath(input: string): string {
 	}
 }
 
-function abortIfRequested(signal?: AbortSignal): void {
+export function abortIfRequested(signal?: AbortSignal): void {
 	if (signal?.aborted) throw signal.reason ?? new Error("operation aborted");
 }
 
 /** The finished candidate whose loop is still open; focus only breaks ties. */
-function requireOpenTerminalCandidate(inventory: WorkbenchInventory, explicitId?: string): CandidateRecord {
+export function requireOpenTerminalCandidate(inventory: WorkbenchInventory, explicitId?: string): CandidateRecord {
 	return resolveOne({
 		items: openTerminalCandidatesOf(inventory),
 		explicitId,
@@ -517,7 +525,7 @@ function shortSha(sha: string): string {
 }
 
 /** Money the human recognises, or an honest “unknown”. */
-function formatEstimatedCost(estimate: WorkbenchRunEstimate | undefined): string {
+export function formatEstimatedCost(estimate: WorkbenchRunEstimate | undefined): string {
 	if (!estimate || estimate.costUsd === null) return `${t("estimate.unknown")} ${t("estimate.nothing-comparable")}`;
 	if (estimate.costUsd < 0.01) return t("estimate.under-cent");
 	return `${t("estimate.about-cost", { cost: estimate.costUsd.toFixed(2) })} (${
@@ -525,7 +533,7 @@ function formatEstimatedCost(estimate: WorkbenchRunEstimate | undefined): string
 	})`;
 }
 
-function formatEstimatedTime(estimate: WorkbenchRunEstimate | undefined): string {
+export function formatEstimatedTime(estimate: WorkbenchRunEstimate | undefined): string {
 	if (!estimate || estimate.minutes === null) return `${t("estimate.unknown")} ${t("estimate.nothing-comparable")}`;
 	if (estimate.minutes < 1) return t("estimate.under-minute");
 	const minutes = Math.ceil(estimate.minutes);
@@ -567,13 +575,13 @@ function assertDeclaredKeysPresent(requirement: WorkshopToolGrantRequirement): v
 	);
 }
 
-function actorId(value: string | undefined): string {
+export function actorId(value: string | undefined): string {
 	const actor = value?.trim();
 	if (!actor || actor.length > 256) throw new Error("human gate did not provide a bounded actor identity");
 	return actor;
 }
 
-function exactSame(left: unknown, right: unknown): boolean {
+export function exactSame(left: unknown, right: unknown): boolean {
 	return canonicalJson(left) === canonicalJson(right);
 }
 
@@ -601,7 +609,7 @@ function boundedSubject(value: unknown, label: string): unknown {
 	return value;
 }
 
-function boundedEvidenceLink(link: WorkbenchEvidenceLink | null): WorkbenchEvidenceLink | null {
+export function boundedEvidenceLink(link: WorkbenchEvidenceLink | null): WorkbenchEvidenceLink | null {
 	if (!link) return null;
 	const parsed = new URL(link.url);
 	if (
@@ -652,7 +660,7 @@ function datasetGrader(grader: WorkbenchDatasetCase["graders"][number]): Workben
  * One compiled case as a human reads it: bounded, credential-redacted, and
  * carrying no derived id, so a sample can never be mistaken for the corpus.
  */
-function datasetCasePreview(task: CorpusTask): WorkbenchDatasetCase {
+export function datasetCasePreview(task: CorpusTask): WorkbenchDatasetCase {
 	return {
 		input: datasetText(task.input),
 		expected: task.expected === undefined ? null : datasetText(task.expected),
@@ -678,7 +686,7 @@ function datasetCasePreview(task: CorpusTask): WorkbenchDatasetCase {
 }
 
 /** Small model-facing diagnosis projection; full evidence remains in the verified report. */
-function conversationalImprovementBrief(brief: ImprovementBrief): WorkbenchImprovementBriefProjection {
+export function conversationalImprovementBrief(brief: ImprovementBrief): WorkbenchImprovementBriefProjection {
 	const modes = brief.modes.slice(0, MAX_CONVERSATION_MODES).map((mode, index) => ({
 		ordinal: index + 1,
 		failureModeId: mode.failureModeId,
@@ -733,8 +741,10 @@ export class AhdeWorkbench {
 	readonly stateRoot: string;
 	readonly runsRoot: string;
 	readonly projectId: string;
-	private readonly templateDir: string | undefined;
-	private readonly dependencies: AhdeWorkbenchDependencies;
+	/** @internal — read by the decision handlers in ./decisions. */
+	readonly templateDir: string | undefined;
+	/** @internal — read by the decision handlers in ./decisions. */
+	readonly dependencies: AhdeWorkbenchDependencies;
 	/** At most one open workshop per Builder conversation; it dies with its proposal. */
 	private workshop: BuilderWorkshop | null = null;
 
@@ -747,7 +757,8 @@ export class AhdeWorkbench {
 		this.dependencies = { ...DEFAULT_DEPENDENCIES, ...options.dependencies };
 	}
 
-	private inventory(): WorkbenchInventory {
+	/** @internal — called by the decision handlers in ./decisions. */
+	inventory(): WorkbenchInventory {
 		return this.dependencies.loadInventory({
 			projectDir: this.projectDir,
 			stateRoot: this.stateRoot,
@@ -757,7 +768,8 @@ export class AhdeWorkbench {
 		});
 	}
 
-	private decisionInventory(
+	/** @internal — called by the decision handlers in ./decisions. */
+	decisionInventory(
 		kind: Exclude<WorkbenchDecisionInput["kind"], "run-current">,
 	): WorkbenchInventory {
 		const inventory = this.inventory();
@@ -776,7 +788,8 @@ export class AhdeWorkbench {
 	 * arms. Like impact, both are review aids: an unreadable label store or a
 	 * half-readable re-score leaves the line off rather than blocking a decision.
 	 */
-	private candidateView(
+	/** @internal — called by the decision handlers in ./decisions. */
+	candidateView(
 		candidate: CandidateRecord,
 		developmentEvals: WorkbenchInventory["developmentEvals"],
 	): WorkbenchCandidateSummary {
@@ -842,7 +855,8 @@ export class AhdeWorkbench {
 	}
 
 	/** The exact code change behind a Builder candidate, when it has one. */
-	private candidateProposal(candidate: CandidateRecord): WorkbenchProposalReview | null {
+	/** @internal — called by the decision handlers in ./decisions. */
+	candidateProposal(candidate: CandidateRecord): WorkbenchProposalReview | null {
 		return candidateProposalReview(this.runsRoot, candidate);
 	}
 
@@ -900,7 +914,8 @@ export class AhdeWorkbench {
 	}
 
 	/** Selects one artifact and returns the state the caller's view should report. */
-	private select(kind: WorkbenchSelectionKind, id: string): WorkbenchInventory {
+	/** @internal — called by the decision handlers in ./decisions. */
+	select(kind: WorkbenchSelectionKind, id: string): WorkbenchInventory {
 		const inventory = this.inventory();
 		const artifact = workbenchArtifactValue(inventory, kind, id);
 		if (!artifact) {
@@ -924,12 +939,14 @@ export class AhdeWorkbench {
 	 * rows out of a file, every later read of that file replays the exact draw,
 	 * so the reserved rows never reappear in a preview or a compiled case.
 	 */
-	private datasetHoldout(sourcePath: string): DatasetHoldoutSpec | null {
+	/** @internal — called by the decision handlers in ./decisions. */
+	datasetHoldout(sourcePath: string): DatasetHoldoutSpec | null {
 		return datasetHoldoutInForce(this.stateRoot, this.projectId, sourcePath);
 	}
 
 	/** The exact recipe under discussion: named, focused by recency, or ambiguous. */
-	private requireDatasetRecipe(approvedSpecId: string, submissionId?: string): DatasetRecipeSubmission {
+	/** @internal — called by the decision handlers in ./decisions. */
+	requireDatasetRecipe(approvedSpecId: string, submissionId?: string): DatasetRecipeSubmission {
 		if (submissionId) {
 			const submission = loadDatasetRecipeSubmission(this.stateRoot, this.projectId, submissionId);
 			if (submission.approvedSpec.specId !== approvedSpecId) {
@@ -951,7 +968,8 @@ export class AhdeWorkbench {
 	 * here, so it still has exactly one human actor identity and can still be
 	 * declined; it simply does not interrupt.
 	 */
-	private async confirm(
+	/** @internal — called by the decision handlers in ./decisions. */
+	async confirm(
 		input: WorkbenchDecisionInput,
 		gate: WorkbenchHumanGate,
 		title: string,
@@ -995,7 +1013,8 @@ export class AhdeWorkbench {
 	}
 
 	/** The screen, as the operator reads it. It is never gate evidence. */
-	private screenProjection(screen: CheapCheckResult): WorkbenchCheapCheckProjection {
+	/** @internal — called by the decision handlers in ./decisions. */
+	screenProjection(screen: CheapCheckResult): WorkbenchCheapCheckProjection {
 		return {
 			verdict: screen.verdict,
 			tasks: screen.tasks.length,
@@ -1015,7 +1034,8 @@ export class AhdeWorkbench {
 	 * wrong with degrades to a warning the operator reads next to the tag.
 	 * Nothing here publishes — the draft waits for an explicit publication.
 	 */
-	private promotionGuards(record: CandidateRecord, tag: string): WorkbenchRegressionGuardsProjection {
+	/** @internal — called by the decision handlers in ./decisions. */
+	promotionGuards(record: CandidateRecord, tag: string): WorkbenchRegressionGuardsProjection {
 		const empty = { draftId: null, cases: 0, taskIds: [] as string[] };
 		try {
 			const evaluated = record.events.find((event) => event.type === "evaluated");
@@ -1072,7 +1092,8 @@ export class AhdeWorkbench {
 	 * holdout is priced because the operator may pick any of them: the amount on
 	 * screen is then the most the check can cost, never less.
 	 */
-	private verificationEstimate(
+	/** @internal — called by the decision handlers in ./decisions. */
+	verificationEstimate(
 		record: PersistedBuilderRun,
 		inventory: WorkbenchInventory,
 	): WorkbenchRunEstimate {
@@ -1111,7 +1132,8 @@ export class AhdeWorkbench {
 	 * could never be on: the id was already the caller's, and what stays hidden
 	 * is the exam's content, not the fact that it is one.
 	 */
-	private regradeSource(inventory: WorkbenchInventory, explicitId?: string): EvalRunRecord {
+	/** @internal — called by the decision handlers in ./decisions. */
+	regradeSource(inventory: WorkbenchInventory, explicitId?: string): EvalRunRecord {
 		const chosen = resolveRegradeSource({
 			evals: inventory.developmentEvals,
 			...(explicitId ? { explicitId } : {}),
@@ -1134,7 +1156,8 @@ export class AhdeWorkbench {
 	 * the operator names one of them explicitly. Any other development run, and
 	 * every other stage, re-scores exactly one run, as before.
 	 */
-	private regradeSources(
+	/** @internal — called by the decision handlers in ./decisions. */
+	regradeSources(
 		inventory: WorkbenchInventory,
 		stage: WorkbenchStage,
 		explicitId?: string,
@@ -1163,7 +1186,8 @@ export class AhdeWorkbench {
 	}
 
 	/** What one run of this many executions is expected to cost on this Target. */
-	private runEstimate(executions: number, target: WorkbenchInventory["target"]): WorkbenchRunEstimate {
+	/** @internal — called by the decision handlers in ./decisions. */
+	runEstimate(executions: number, target: WorkbenchInventory["target"]): WorkbenchRunEstimate {
 		return estimateRunCost({
 			runsRoot: this.runsRoot,
 			targetId: target?.manifest.id ?? "",
@@ -2316,7 +2340,8 @@ export class AhdeWorkbench {
 	 * that cannot be read — and none of them are a reason to pretend Apply did
 	 * not happen. A failure here returns nothing and says nothing.
 	 */
-	private draftToolContractCases(exactDiff: string): { tool: string; draftId: string; cases: number }[] {
+	/** @internal — called by the decision handlers in ./decisions. */
+	draftToolContractCases(exactDiff: string): { tool: string; draftId: string; cases: number }[] {
 		try {
 			const inventory = this.inventory();
 			if (!inventory.target) return [];
@@ -2461,7 +2486,8 @@ export class AhdeWorkbench {
 	 * inventory once after its write and reports that exact state, instead of
 	 * paying for a second read of the same thing.
 	 */
-	private async viewOf(inventory: WorkbenchInventory, queryValue: WorkbenchViewQuery = {}): Promise<WorkbenchView> {
+	/** @internal — called by the decision handlers in ./decisions. */
+	async viewOf(inventory: WorkbenchInventory, queryValue: WorkbenchViewQuery = {}): Promise<WorkbenchView> {
 		const query = WorkbenchViewQuerySchema.parse(queryValue);
 		const view = deriveWorkbenchView(inventory);
 		const aspect = query.aspect ?? "summary";
@@ -2930,6 +2956,7 @@ export class AhdeWorkbench {
 		abortIfRequested(options.signal);
 		const inventory = this.inventory();
 		const stage = deriveWorkbenchView(inventory).stage;
+		const ctx: DecisionContext = { inventory, stage, gate, options };
 		if (input.kind === "run-current") {
 			const partialCandidate = inventory.candidates.find((candidate) =>
 				candidate.projectId === this.projectId &&
@@ -3001,1222 +3028,45 @@ export class AhdeWorkbench {
 		if (input.kind === "start-testing") return await this.startTesting(input, gate, options, inventory, stage);
 		if (input.kind === "ship") return await this.ship(input, gate, options, inventory, stage);
 
-		if (input.kind === "scaffold-target") {
-			if (inventory.target) throw new WorkbenchStaleDecisionError(input.kind);
-			if (!this.templateDir) throw new Error("AHDE Builder is missing its trusted starter template");
-			const before = this.dependencies.describeTargetScaffold({
-				projectDir: this.projectDir,
-				templateDir: this.templateDir,
-			});
-			const actor = await this.confirm(input, gate, t("confirm.title.scaffold-target"), before, options.signal);
-			const current = this.decisionInventory(input.kind);
-			if (current.target) throw new WorkbenchStaleDecisionError(input.kind);
-			const after = this.dependencies.describeTargetScaffold({
-				projectDir: this.projectDir,
-				templateDir: this.templateDir,
-			});
-			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
-			const result = this.dependencies.applyTargetScaffold({
-				projectDir: this.projectDir,
-				stateRoot: this.stateRoot,
-				templateDir: this.templateDir,
-				expectedSubjectHash: hashValue(before),
-				actor: { kind: "human", id: actor },
-				reason: input.reason,
-			});
-			return {
-				kind: input.kind,
-				message: "Target harness created. Choose its identity and model next.",
-				result: {
-					targetId: result.target.manifest.id,
-					targetGitSha: result.target.gitSha,
-					receiptId: result.receipt.id,
-				},
-				view: await this.view(),
-			};
-		}
+		if (input.kind === "scaffold-target") return decideScaffoldTarget(this, input, ctx);
 
-		if (input.kind === "configure-target") {
-			if (!inventory.target) throw new WorkbenchStaleDecisionError(input.kind);
-			if (!options.resolveTargetModel) {
-				throw new Error("Target model selection requires the trusted host model catalog");
-			}
-			const describe = () => this.dependencies.describeTargetBootstrap({
-				targetDir: this.projectDir,
-				stateRoot: this.stateRoot,
-				runsRoot: this.runsRoot,
-				targetId: input.targetId,
-				model: options.resolveTargetModel!(input.model),
-			});
-			const before = describe();
-			const actor = await this.confirm(input, gate, t("confirm.title.configure-target"), before, options.signal);
-			const current = this.decisionInventory(input.kind);
-			if (!current.target) throw new WorkbenchStaleDecisionError(input.kind);
-			const after = describe();
-			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
-			const result = this.dependencies.configureTargetBootstrap({
-				targetDir: this.projectDir,
-				stateRoot: this.stateRoot,
-				runsRoot: this.runsRoot,
-				targetId: input.targetId,
-				model: after.next.model,
-				expectedSubjectHash: before.subjectHash,
-				actor: { kind: "human", id: actor },
-				reason: input.reason,
-			});
-			return {
-				kind: input.kind,
-				message: "Target identity and model configured in a one-time reviewed commit.",
-				result: {
-					targetId: result.manifest.id,
-					targetGitSha: result.receipt.configuredTargetSha,
-					receiptId: result.receipt.id,
-					credentialEnv: result.manifest.model.apiKeyEnv,
-				},
-				view: await this.view(),
-			};
-		}
+		if (input.kind === "configure-target") return decideConfigureTarget(this, input, ctx);
 
-		if (input.kind === "configure-evaluators") {
-			if (!inventory.target) throw new WorkbenchStaleDecisionError(input.kind);
-			if (!options.resolveEvaluatorModel) {
-				throw new Error("Evaluator model selection requires the trusted host model catalog");
-			}
-			const resolve = options.resolveEvaluatorModel;
-			// Resolved once, before the dialog and again after it: the subject the
-			// human approved must still be the subject that gets committed.
-			const describe = () => this.dependencies.describeEvaluatorConfiguration({
-				targetDir: this.projectDir,
-				stateRoot: this.stateRoot,
-				...(input.judge ? { judge: resolve("judge", input.judge) } : {}),
-				...(input.simulatedUser ? { simulatedUser: resolve("simulatedUser", input.simulatedUser) } : {}),
-			});
-			const before = describe();
-			const actor = await this.confirm(input, gate, t("confirm.title.configure-evaluators"), before, options.signal);
-			const current = this.decisionInventory(input.kind);
-			if (!current.target) throw new WorkbenchStaleDecisionError(input.kind);
-			const after = describe();
-			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
-			const result = this.dependencies.configureEvaluators({
-				targetDir: this.projectDir,
-				stateRoot: this.stateRoot,
-				...(input.judge ? { judge: after.next.judge } : {}),
-				...(input.simulatedUser ? { simulatedUser: after.next.simulatedUser } : {}),
-				expectedSubjectHash: before.subjectHash,
-				actor: { kind: "human", id: actor },
-				reason: input.reason,
-			});
-			const configured: { role: "judge" | "simulatedUser"; model: string; credentialEnv: string }[] = [];
-			if (input.judge && result.manifest.evalSuite.judge) {
-				const judge = result.manifest.evalSuite.judge;
-				configured.push({ role: "judge", model: `${judge.provider}/${judge.id}`, credentialEnv: judge.apiKeyEnv });
-			}
-			if (input.simulatedUser && result.manifest.evalSuite.simulatedUser) {
-				const user = result.manifest.evalSuite.simulatedUser;
-				configured.push({ role: "simulatedUser", model: `${user.provider}/${user.id}`, credentialEnv: user.apiKeyEnv });
-			}
-			return {
-				kind: input.kind,
-				message: "Evaluator models configured in a reviewed commit. Export their key variables before the next run.",
-				result: {
-					targetGitSha: result.receipt.configuredTargetSha,
-					receiptId: result.receipt.id,
-					configured,
-				},
-				view: await this.view(),
-			};
-		}
+		if (input.kind === "configure-evaluators") return decideConfigureEvaluators(this, input, ctx);
 
-		if (input.kind === "approve-spec") {
-			const draft = requireSpecDraft(inventory, input.draftSpecId);
-			const beforeDescription = this.dependencies.describeSpecApproval(this.stateRoot, this.projectId, draft.id);
-			const before = { ...beforeDescription, spec: draft.spec };
-			const actor = await this.confirm(input, gate, t("confirm.title.approve-spec"), before, options.signal);
-			const current = this.decisionInventory(input.kind);
-			const reloadedDraft = requireSpecDraft(current, draft.id);
-			const afterDescription = this.dependencies.describeSpecApproval(this.stateRoot, this.projectId, draft.id);
-			const after = { ...afterDescription, spec: reloadedDraft.spec };
-			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
-			const result = this.dependencies.approveSpecDraft({ stateRoot: this.stateRoot, projectId: this.projectId, draftSpecId: draft.id, expectedDraftSnapshotHash: beforeDescription.draftSnapshotHash, actor: { kind: "human", id: actor }, reason: input.reason }, { now: this.dependencies.now });
-			const settled = this.select("approved-spec", result.approved.id);
-			return { kind: input.kind, message: t("message.spec-approved"), result: { approvedSpecId: result.approved.id, receiptId: result.receipt.id }, view: await this.viewOf(settled) };
-		}
+		if (input.kind === "approve-spec") return decideApproveSpec(this, input, ctx);
 
-		if (input.kind === "abandon-candidate") {
-			const candidates = inventory.candidates.filter((candidate) =>
-				candidate.projectId === this.projectId &&
-				["proposed", "built", "validated"].includes(candidateStatus(candidate)) &&
-				!inventory.abandonedCandidates.has(candidate.candidateId)
-			);
-			const candidate = resolveOne({
-				items: candidates,
-				explicitId: input.candidateId,
-				focusId: inventory.validFocus.candidate?.id,
-				id: (item) => item.candidateId,
-				label: "interrupted candidate",
-			});
-			const status = candidateStatus(candidate);
-			if (status !== "proposed" && status !== "built" && status !== "validated") {
-				throw new Error("only an interrupted candidate checkpoint can be abandoned");
-			}
-			const before = {
-				operation: "abandon-interrupted-candidate",
-				candidateHash: hashValue(candidate),
-				candidate: candidateSummary(candidate),
-			};
-			const actor = await this.confirm(input, gate, t("confirm.title.abandon-candidate"), before, options.signal, {
-				question: t("confirm.abandon-candidate"),
-			});
-			const current = this.decisionInventory(input.kind);
-			if (current.abandonedCandidates.has(candidate.candidateId)) throw new WorkbenchStaleDecisionError(input.kind);
-			const reloaded = requireCandidate(current, [status], candidate.candidateId);
-			if (hashValue(reloaded) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
-			const receipt = recordCandidateAbandonment({
-				stateRoot: this.stateRoot,
-				projectId: this.projectId,
-				candidate: reloaded,
-				interruptedStatus: status,
-				actor: { kind: "human", id: actor },
-				reason: input.reason,
-				now: this.dependencies.now,
-			});
-			const settled = candidate.origin.kind === "applied-builder"
-				? this.select("proposal", candidate.origin.builderRunId)
-				: this.inventory();
-			return {
-				kind: input.kind,
-				message: "Interrupted candidate attempt abandoned durably; the exact applied proposal can be retried.",
-				result: { candidateId: candidate.candidateId, interruptedStatus: status, receiptHash: receipt.receiptHash },
-				view: await this.viewOf(settled),
-			};
-		}
+		if (input.kind === "abandon-candidate") return decideAbandonCandidate(this, input, ctx);
 
-		if (input.kind === "publish-corpus") {
-			const approved = requireApprovedSpec(inventory);
-			const draft = requireCorpusDraft(inventory, input.draftId, approved.id, true);
-			if (inventory.target) assertGradersRunnable(draft.tasks, inventory.target.manifest, `corpus draft ${draft.id}`);
-			const name = input.name ?? draft.name;
-			const publication = this.dependencies.describeCorpusPublication({ projectId: this.projectId, name, tasks: draft.tasks });
-			const before = { operation: "publish-development-corpus", draftId: draft.id, draftHash: hashValue(draft), approvedSpec: draft.approvedSpec, publication, tasks: draft.tasks };
-			const actor = await this.confirm(input, gate, t("confirm.title.publish-corpus"), before, options.signal);
-			const current = this.decisionInventory(input.kind);
-			const currentApproved = requireApprovedSpec(current, approved.id);
-			const reloaded = requireCorpusDraft(current, draft.id, currentApproved.id, true);
-			const afterPublication = this.dependencies.describeCorpusPublication({ projectId: this.projectId, name, tasks: reloaded.tasks });
-			const after = { operation: "publish-development-corpus", draftId: reloaded.id, draftHash: hashValue(reloaded), approvedSpec: reloaded.approvedSpec, publication: afterPublication, tasks: reloaded.tasks };
-			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
-			let matchingExisting: CorpusMetadata[];
-			try {
-				matchingExisting = listCorpora({ stateRoot: this.stateRoot, projectId: this.projectId }).filter((corpus) =>
-					corpus.visibility === "development" &&
-					corpus.name === name &&
-					corpus.hash === publication.contentHash &&
-					corpus.taskCount === publication.taskCount
-				);
-			} catch {
-				throw new Error("development corpus inventory is unavailable; publication cannot be recovered safely");
-			}
-			if (matchingExisting.length > 1) throw new Error("multiple development corpora match the reviewed publication subject");
-			const result = matchingExisting[0]
-				? (() => {
-					const corpus = matchingExisting[0]!;
-					const receipt = loadDevelopmentCorpusPublicationReceipt(this.stateRoot, this.projectId, corpus.id);
-					if (receipt.subject.subjectHash !== publication.subjectHash || receipt.corpus.hash !== corpus.hash) {
-						throw new Error("existing corpus publication receipt does not match the reviewed subject");
-					}
-					return { corpus, receipt, receiptPath: "recovered-existing-publication" };
-				})()
-				: this.dependencies.publishDevelopmentCorpus({ stateRoot: this.stateRoot, projectId: this.projectId, name, tasks: reloaded.tasks, expectedSubjectHash: publication.subjectHash, actor: { kind: "human", id: actor }, reason: input.reason }, { now: this.dependencies.now });
-			const lineage = recordWorkbenchCorpusPublication({ stateRoot: this.stateRoot, draft: reloaded, publication: result });
-			const settled = this.select("development-corpus", result.corpus.id);
-			return { kind: input.kind, message: t("message.corpus-published"), result: { corpusId: result.corpus.id, corpusHash: result.corpus.hash, taskCount: result.corpus.taskCount, publicationReceiptId: result.receipt.id, lineageHash: lineage.linkHash }, view: await this.viewOf(settled) };
-		}
+		if (input.kind === "publish-corpus") return decidePublishCorpus(this, input, ctx);
 
-		if (input.kind === "import-dataset") {
-			const approved = requireApprovedSpec(inventory);
-			const submission = this.requireDatasetRecipe(approved.id, input.submissionId);
-			const inForce = this.datasetHoldout(submission.sourcePath);
-			const requested: DatasetHoldoutSpec | null = input.sealed
-				? {
-					count: input.sealed.count,
-					seed: input.sealed.seed,
-					...(input.sealed.stratifyBy !== undefined ? { stratifyBy: input.sealed.stratifyBy } : {}),
-				}
-				: null;
-			// A second draw over a file that already has one would put previously
-			// sealed rows into a development corpus, so the exam is drawn once.
-			if (inForce && !exactSame(inForce, requested)) {
-				throw new Error(
-					`${submission.sourcePath} already holds out ${inForce.count} row${inForce.count === 1 ? "" : "s"} ` +
-					`with seed ${JSON.stringify(inForce.seed)}; import it again with that exact sealed slice, or use another file.`,
-				);
-			}
-			const holdout = requested;
-			const build = (): { subject: Record<string, unknown>; developmentCount: number } => {
-				const compiled = this.dependencies.compileDatasetCases({
-					projectDir: this.projectDir,
-					sourcePath: submission.sourcePath,
-					recipe: submission.recipe,
-					holdout,
-				});
-				if (compiled.sourceSha256 !== submission.sourceSha256) {
-					throw new Error(`${submission.sourcePath} changed since the recipe was validated; submit the recipe again`);
-				}
-				if (compiled.tasks.length === 0) throw new Error("the recipe compiles no development cases");
-				if (compiled.tasks.length > MAX_BUILDER_CORPUS_DRAFT_TASKS) {
-					throw new Error(
-						`the recipe compiles ${compiled.tasks.length} cases; a reviewable basket holds at most ` +
-						`${MAX_BUILDER_CORPUS_DRAFT_TASKS}. Add sample: { limit, seed } to the recipe first.`,
-					);
-				}
-				return {
-					subject: {
-						operation: "import-dataset",
-						submissionId: submission.id,
-						approvedSpec: submission.approvedSpec,
-						sourcePath: submission.sourcePath,
-						name: submission.name,
-						recipe: submission.recipe,
-						developmentCount: compiled.tasks.length,
-						skippedRows: compiled.skipped.length,
-						sealed: holdout,
-						sampleCases: compiled.tasks.slice(0, MAX_DATASET_SAMPLE_CASES).map(datasetCasePreview),
-					},
-					developmentCount: compiled.tasks.length,
-				};
-			};
-			const before = build();
-			const actor = await this.confirm(input, gate, t("confirm.title.import-dataset"), before.subject, options.signal);
-			const current = this.decisionInventory(input.kind);
-			requireApprovedSpec(current, approved.id);
-			const after = build();
-			if (!exactSame(before.subject, after.subject)) throw new WorkbenchStaleDecisionError(input.kind);
-			// Fixed order: the sealed slice is compiled and published before any
-			// development case exists, so no reserved row can leak into the draft.
-			const ingested = this.dependencies.ingestDataset({
-				projectDir: this.projectDir,
-				stateRoot: this.stateRoot,
-				projectId: this.projectId,
-				sourcePath: submission.sourcePath,
-				recipe: submission.recipe,
-				holdout,
-				developmentName: submission.name,
-				now: this.dependencies.now,
-			});
-			const exact = loadApprovedSpec({ stateRoot: this.stateRoot, projectId: this.projectId, specId: approved.id });
-			const result = this.dependencies.createCorpusDraft({
-				stateRoot: this.stateRoot,
-				approvedSpec: exact.reference,
-				name: submission.name,
-				tasks: ingested.tasks.map(({ id: _derivedId, ...task }) => task),
-				coverageNotes: [],
-				revisionSummary: submission.revisionSummary,
-			}, { now: this.dependencies.now });
-			const settled = this.select("corpus-draft", result.draft.id);
-			const sealedCount = ingested.sealedCorpus?.taskCount ?? 0;
-			return {
-				kind: input.kind,
-				message: `Imported ${ingested.tasks.length} case${ingested.tasks.length === 1 ? "" : "s"} into an editable draft` +
-					`${sealedCount > 0 ? `; ${sealedCount} sealed case${sealedCount === 1 ? "" : "s"} held out` : ""}. ` +
-					"Review it, then publish.",
-				result: {
-					draftId: result.draft.id,
-					taskCount: result.draft.tasks.length,
-					approvedSpecId: result.draft.approvedSpec.specId,
-					sourcePath: ingested.receipt.sourcePath,
-					sealedCount,
-					skippedRows: ingested.skipped.length,
-					receiptId: ingested.receiptPath.split(/[\\/]/).at(-1)?.replace(/\.json$/, "") ?? "",
-				},
-				view: await this.viewOf(settled),
-			};
-		}
+		if (input.kind === "import-dataset") return decideImportDataset(this, input, ctx);
 
-		if (input.kind === "generate-holdout") {
-			// Host-owned, all of it. The name is the same for every generated exam
-			// because the model asks for an exam, not for a label on one; the Spec
-			// comes from the approved snapshot the host reads; the format examples
-			// are a seeded draw over published development cases. Nothing in
-			// `input` reaches the generator except a count and a seed.
-			const reviewPath = input.mode === "review"
-				? this.dependencies.sealedSynthReviewPath(
-					this.stateRoot,
-					this.projectId,
-					`${this.projectId} ${input.cases} ${input.seed ?? ""} ${this.dependencies.now()}`,
-				)
-				: undefined;
-			const request = {
-				targetDir: this.projectDir,
-				stateRoot: this.stateRoot,
-				projectId: this.projectId,
-				name: GENERATED_HOLDOUT_NAME,
-				count: input.cases,
-				...(input.seed ? { seed: input.seed } : {}),
-				...(reviewPath ? { reviewPath } : {}),
-			};
-			// Planned once before the dialog and again after it: the model, the
-			// price and the exact question the human approved must still be the
-			// ones the generator is asked. The plan is also the whole subject —
-			// hashes, ids and counts, and not one case, because there is no case
-			// yet and there never will be one on this side of the boundary.
-			const describe = () => ({
-				operation: "generate-holdout",
-				mode: input.mode,
-				...this.dependencies.planSealedSynthesis(request),
-			});
-			const before = describe();
-			await this.confirm(input, gate, t("confirm.title.generate-holdout"), before, options.signal);
-			this.decisionInventory(input.kind);
-			if (!exactSame(before, describe())) throw new WorkbenchStaleDecisionError(input.kind);
-			const generated = await this.dependencies.synthesizeSealedCorpus({
-				...request,
-				...(options.signal ? { signal: options.signal } : {}),
-			});
-			const cases = generated.corpus?.taskCount ?? generated.accepted;
-			// A judge that wrote 20 and had one thrown out by validation must not
-			// read as "wrote 19": the operator asked for a number, and the answer
-			// says which cases of it never existed and why.
-			const dropped = generated.droppedMalformed + generated.droppedDuplicate;
-			const shortfall = cases < generated.requested
-				? ` ${t("message.exam-shortfall", {
-					requested: generated.requested,
-					dropped,
-					malformed: generated.droppedMalformed,
-					duplicate: generated.droppedDuplicate,
-				})}`
-				: "";
-			return {
-				kind: input.kind,
-				message: `${t(generated.corpus ? "message.exam-sealed" : "message.exam-draft", {
-					cases: localizedCount(cases, "case"),
-				})}${shortfall}`,
-				result: {
-					...(generated.corpus ? { corpusId: generated.corpus.id } : {}),
-					cases,
-					requested: generated.requested,
-					dropped: { malformed: generated.droppedMalformed, duplicate: generated.droppedDuplicate },
-					generator: generated.generatorModel,
-					promptHash: generated.promptSha256,
-					...(generated.reviewPath ? { reviewPath: generated.reviewPath } : {}),
-				},
-				view: await this.view(),
-			};
-		}
+		if (input.kind === "generate-holdout") return decideGenerateHoldout(this, input, ctx);
 
-		if (input.kind === "run-eval") {
-			if (!inventory.target) throw new Error("Target is not ready");
-			const approved = requireApprovedSpec(inventory);
-			const corpus = requireDevelopmentCorpus(inventory, input.developmentCorpusId, approved.id);
-			const build = (): { target: ResolvedTarget; subject: Record<string, unknown> } => {
-				const current = this.decisionInventory(input.kind);
-				const currentApproved = requireApprovedSpec(current, approved.id);
-				const currentCorpus = requireDevelopmentCorpus(current, corpus.id, currentApproved.id);
-				let target = loadTarget(this.projectDir);
-				const receipt = loadDevelopmentCorpusPublicationReceipt(this.stateRoot, this.projectId, currentCorpus.id);
-				const lineage = current.developmentLineage.get(currentCorpus.id);
-				const loaded = loadCorpus({ stateRoot: this.stateRoot, projectId: this.projectId, corpusId: currentCorpus.id });
-				if (
-					!lineage ||
-					lineage.publication.approvedSpecId !== currentApproved.id ||
-					loaded.metadata.visibility !== "development" ||
-					loaded.metadata.hash !== receipt.corpus.hash
-				) throw new Error("development corpus does not match its reviewed Spec lineage");
-				target = targetWithDevelopmentCorpus(target, loaded);
-				return { target, subject: { operation: "run-development-evaluation", projectId: this.projectId, approvedSpec: { id: currentApproved.id, snapshotHash: hashValue(currentApproved) }, target: { id: target.manifest.id, gitSha: target.gitSha, toolsetHash: target.toolsetHash }, dataset: target.manifest.evalSuite.dataset, datasetHash: target.datasetHash, suiteHash: target.suiteHash, taskCount: target.tasks.length, repetitions: input.repetitions, developmentCorpus: { id: loaded.metadata.id, hash: loaded.metadata.hash, taskCount: loaded.metadata.taskCount, lineageHash: lineage.publication.linkHash } } };
-			};
-			const before = build();
-			await this.confirm(input, gate, t("confirm.title.run-eval"), before.subject, options.signal, {
-				question: t("confirm.run-eval", { runs: localizedCount(Number(before.subject.taskCount) * input.repetitions, "execution") }),
-				estimate: this.runEstimate(Number(before.subject.taskCount) * input.repetitions, inventory.target),
-			});
-			const after = build();
-			if (!exactSame(before.subject, after.subject)) throw new WorkbenchStaleDecisionError(input.kind);
-			const record = await this.dependencies.runSuite(after.target, {
-				runsRoot: this.runsRoot,
-				label: "solo",
-				repetitions: input.repetitions,
-				...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
-				...(options.signal ? { signal: options.signal } : {}),
-			});
-			abortIfRequested(options.signal);
-			const diagnosis = this.dependencies.diagnoseEval(this.runsRoot, record.evalRunId);
-			const improvementBrief = this.dependencies.compileImprovementBrief(this.runsRoot, diagnosis);
-			const link = boundedEvidenceLink(await this.dependencies.evidenceLink(record));
-			const settled = this.select("eval-run", record.evalRunId);
-			return { kind: input.kind, message: improvementBrief.headline, result: { evaluation: evaluationProjection(record, inventory.corpora), diagnosis: diagnosisSummary(diagnosis), improvementBrief: conversationalImprovementBrief(improvementBrief), evidence: link ? { available: true, ...link } : { available: false } }, view: await this.viewOf(settled) };
-		}
+		if (input.kind === "run-eval") return decideRunEval(this, input, ctx);
 
-		if (input.kind === "calibrate") {
-			if (!inventory.target) throw new Error("Target is not ready");
-			const approved = requireApprovedSpec(inventory);
-			const corpus = requireDevelopmentCorpus(inventory, undefined, approved.id);
-			const build = (): {
-				subject: Record<string, unknown>;
-				targetGitSha: string;
-				approvedSpecId: string;
-				developmentCorpus: CorpusRef;
-			} => {
-				const current = this.decisionInventory(input.kind);
-				const currentApproved = requireApprovedSpec(current, approved.id);
-				const currentCorpus = requireDevelopmentCorpus(current, corpus.id, currentApproved.id);
-				const target = loadTarget(this.projectDir);
-				const receipt = loadDevelopmentCorpusPublicationReceipt(this.stateRoot, this.projectId, currentCorpus.id);
-				const lineage = current.developmentLineage.get(currentCorpus.id);
-				const loaded = loadCorpus({ stateRoot: this.stateRoot, projectId: this.projectId, corpusId: currentCorpus.id });
-				if (
-					!lineage ||
-					lineage.publication.approvedSpecId !== currentApproved.id ||
-					loaded.metadata.visibility !== "development" ||
-					loaded.metadata.hash !== receipt.corpus.hash
-				) throw new Error("development corpus does not match its reviewed Spec lineage");
-				return {
-					subject: {
-						operation: "calibrate-noise",
-						target: { id: target.manifest.id, gitSha: target.gitSha },
-						developmentCorpus: {
-							id: loaded.metadata.id,
-							hash: loaded.metadata.hash,
-							taskCount: loaded.metadata.taskCount,
-						},
-						repetitions: input.repetitions,
-						executions: 2 * loaded.metadata.taskCount * input.repetitions,
-					},
-					targetGitSha: target.gitSha,
-					approvedSpecId: currentApproved.id,
-					developmentCorpus: { stateRoot: this.stateRoot, projectId: this.projectId, corpusId: currentCorpus.id },
-				};
-			};
-			const before = build();
-			const actor = await this.confirm(input, gate, t("confirm.title.calibrate"), before.subject, options.signal, {
-				question: t("confirm.calibrate", { runs: localizedCount(Number(before.subject.executions), "execution") }),
-				estimate: this.runEstimate(Number(before.subject.executions), inventory.target),
-			});
-			const after = build();
-			if (!exactSame(before.subject, after.subject)) throw new WorkbenchStaleDecisionError(input.kind);
-			// Both arms are the same exact revision: the experiment measures the
-			// harness against itself and can never become promotion evidence.
-			const result = await this.dependencies.runCalibration({
-				repositoryDir: this.projectDir,
-				runsRoot: this.runsRoot,
-				baselineRef: after.targetGitSha,
-				candidateRef: after.targetGitSha,
-				mode: "aa-calibration",
-				repetitions: input.repetitions,
-				projectId: this.projectId,
-				specId: after.approvedSpecId,
-				origin: { kind: "manual", reason: "A/A calibration" },
-				...(after.developmentCorpus ? { developmentCorpus: after.developmentCorpus } : {}),
-				actorId: actor,
-				...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
-				...(options.signal ? { signal: options.signal } : {}),
-			});
-			abortIfRequested(options.signal);
-			const calibration = calibrationProjection(result.record);
-			if (!calibration) throw new Error("calibration produced no development verdict; nothing was measured");
-			return {
-				kind: input.kind,
-				message: `Noise measured on this revision: A/A ${calibration.verdict}; ` +
-					`${calibration.recommendedRepetitions} repetition${calibration.recommendedRepetitions === 1 ? "" : "s"} recommended.`,
-				result: { candidateId: result.record.candidateId, calibration },
-				view: await this.view(),
-			};
-		}
+		if (input.kind === "calibrate") return decideCalibrate(this, input, ctx);
 
-		if (input.kind === "regrade") {
-			if (!inventory.target) throw new Error("Target is not ready");
-			const approved = requireApprovedSpec(inventory);
-			// One or two, and the second one is never optional where it exists: a
-			// candidate's arms are re-scored as a pair or the number means nothing.
-			const sources = this.regradeSources(inventory, stage, input.evalRunId);
-			const paired = sources.length > 1;
-			const draft = input.graders === "draft"
-				? requireCorpusDraft(inventory, undefined, approved.id, true)
-				: null;
-			const build = (): {
-				plan: ReturnType<typeof planRegradeGraders>;
-				sources: EvalRunRecord[];
-				subject: Record<string, unknown>;
-			} => {
-				const current = this.decisionInventory(input.kind);
-				const currentApproved = requireApprovedSpec(current, approved.id);
-				const currentSources = sources.map((source) => this.regradeSource(current, source.evalRunId));
-				const currentDraft = draft ? requireCorpusDraft(current, draft.id, currentApproved.id, true) : null;
-				const primary = currentSources[0]!;
-				// Two arms that answered different case sets were never a comparison,
-				// so one revised rubric cannot be planned for both of them.
-				for (const source of currentSources) {
-					if (source.dataset !== primary.dataset || source.datasetHash !== primary.datasetHash) {
-						throw new Error(
-							`eval runs ${primary.evalRunId} and ${source.evalRunId} scored different case sets; ` +
-							"one re-score covers one set of questions",
-						);
-					}
-				}
-				// The exact cases the recorded traces answered, wherever they live:
-				// the manifest dataset, or the published corpus that produced them.
-				const scored = resolveScoredCasesForEval({
-					target: loadTarget(this.projectDir),
-					evalRun: primary,
-					stateRoot: this.stateRoot,
-					projectId: this.projectId,
-				}).target;
-				const plan = planRegradeGraders({
-					scored,
-					revised: currentDraft ? currentDraft.tasks : null,
-					sourceJudge: primary.provenance.judge,
-				});
-				return {
-					plan,
-					sources: currentSources,
-					subject: {
-						operation: "regrade",
-						target: { id: scored.manifest.id, gitSha: scored.gitSha },
-						sources: currentSources.map((source) => ({
-							evalRunId: source.evalRunId,
-							datasetHash: source.datasetHash,
-							suiteHash: source.suiteHash,
-							runs: source.runIds.length,
-						})),
-						graders: input.graders,
-						...(currentDraft ? { draft: { id: currentDraft.id, hash: hashValue(currentDraft) } } : {}),
-						changedGraders: plan.changed.length,
-						suiteHash: plan.target.suiteHash,
-						// Said in the subject, not only in the panel: the one number
-						// that makes this decision cheap is that it buys no Target time.
-						targetExecutions: 0,
-					},
-				};
-			};
-			const before = build();
-			const gradings = before.sources.reduce((total, source) => total + source.runIds.length, 0);
-			await this.confirm(input, gate, t("confirm.title.regrade"), before.subject, options.signal, {
-				question: t("confirm.regrade", { answers: localizedCount(gradings, "recorded answer") }),
-				// A regrade's unit of work is a grading, never a Target execution.
-				// The guard prices the judge, which is the only model it pays.
-				estimate: estimateRegradeJudgeSpend({
-					runsRoot: this.runsRoot,
-					targetId: inventory.target.manifest.id,
-					gradings,
-				}),
-			});
-			const after = build();
-			if (!exactSame(before.subject, after.subject)) throw new WorkbenchStaleDecisionError(input.kind);
-			const diffs: RegradeDiff[] = [];
-			for (const source of after.sources) {
-				const result = await this.dependencies.regradeEvalRun({
-					runsRoot: this.runsRoot,
-					evalRunId: source.evalRunId,
-					target: after.plan.target,
-					...(options.signal ? { signal: options.signal } : {}),
-				});
-				abortIfRequested(options.signal);
-				diffs.push(compileRegradeDiff({
-					runsRoot: this.runsRoot,
-					result,
-					graders: input.graders,
-					changed: after.plan.changed,
-				}));
-			}
-			// `sources` is in comparison order, so the last diff is the arm whose
-			// verdict the operator is arguing with and the first is what it is
-			// measured against.
-			const baselineDiff = paired ? diffs[0]! : null;
-			const diff = diffs[diffs.length - 1]!;
-			const rate = (value: number): string => `${Math.round(value * 100)}%`;
-			return {
-				kind: input.kind,
-				message: baselineDiff
-					? `Re-scored ${localizedCount(gradings, "recorded answer")} across both development arms ` +
-						`with the revised graders: development ${rate(baselineDiff.passRateBefore)} → ${rate(diff.passRateBefore)} ` +
-						`became ${rate(baselineDiff.passRateAfter)} → ${rate(diff.passRateAfter)}. ` +
-						`The Target was not called; only the judge was paid. ${t("regrade.both-arms")} ` +
-						(input.evalRunId ? `${t("regrade.named-one-arm")} ` : "") +
-						"This is a re-score, not a new baseline."
-					: `Re-scored ${localizedCount(diff.total, "recorded answer")} with the revised graders: ` +
-						`${diff.passBefore}/${diff.total} → ${diff.passAfter}/${diff.total}. ` +
-						"The Target was not called; only the judge was paid. This is a re-score, not a new baseline.",
-				result: baselineDiff ? { ...diff, pairedBaseline: baselineDiff } : diff,
-				view: await this.view(),
-			};
-		}
+		if (input.kind === "regrade") return decideRegrade(this, input, ctx);
 
-		if (input.kind === "apply-proposal") {
-			const proposal = requireProposal(inventory, ["open", "apply-pending"], input.runId);
-			const before = { operation: "apply-proposal", branch: input.branch, builderRunHash: hashValue(proposal.record), ...proposalReview(proposal.record) };
-			// The price of the check rides on the confirmation, not in the hashed
-			// subject: it is read from finished runs and would otherwise turn a
-			// concurrent run into a stale-decision refusal.
-			const verification = this.verificationEstimate(proposal.record, inventory);
-			const actor = await this.confirm(input, gate, t("confirm.apply-proposal.title"), before, options.signal, {
-				estimate: verification,
-			});
-			const current = this.decisionInventory(input.kind);
-			const afterProposal = requireProposal(current, ["open", "apply-pending"], proposal.record.runId);
-			const after = { operation: "apply-proposal", branch: input.branch, builderRunHash: hashValue(afterProposal.record), ...proposalReview(afterProposal.record) };
-			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
-			const result = this.dependencies.applyProposal({ repoDir: this.projectDir, runsRoot: this.runsRoot, runId: proposal.record.runId, expectedBuilderRunHash: after.builderRunHash, requestedBranch: input.branch, actor: { kind: "human", id: actor }, verificationAuthorization: verification, reason: input.reason });
-			// A tool that was just applied has an executable contract nobody has
-			// measured: whether the agent calls it, with what, and what it says when
-			// it fails. Draft those cases now, while the diff is still the subject.
-			const contractCases = this.draftToolContractCases(after.exactDiff);
-			const settled = this.select("proposal", proposal.record.runId);
-			let view = await this.viewOf(settled);
-			let verified: WorkbenchVerifyCandidateResult | { outcome: "blocked"; reason: string } | undefined;
-			if (input.verify) {
-				try {
-					const check = await this.decide({
-						kind: "verify-candidate",
-						builderRunId: proposal.record.runId,
-						repetitions: input.verify.repetitions,
-						...(input.verify.force !== undefined ? { force: input.verify.force } : {}),
-						reason: `${input.reason} — automatic post-Apply verification`,
-					}, gate, options);
-					verified = check.result;
-					view = check.view;
-				} catch (error) {
-					// Apply is already durable. A missing/declined exam or runtime failure is
-					// an explicit verification blocker, never a lie that Apply rolled back.
-					verified = {
-						outcome: "blocked",
-						reason: redactTraceText(error instanceof Error ? error.message : String(error)).slice(0, 500),
-					};
-					view = await this.viewOf(this.select("proposal", proposal.record.runId));
-				}
-			}
-			return {
-				kind: input.kind,
-				message: verified === undefined
-					? t("message.proposal-applied")
-					: verified.outcome === "blocked"
-						? t("message.proposal-applied-blocked", { reason: verified.reason })
-						: t("message.proposal-applied-verified"),
-				result: {
-					runId: result.receipt.runId,
-					branch: result.receipt.branch,
-					candidateSha: result.receipt.candidateSha,
-					proposalHash: result.receipt.proposalSha256,
-					...(verified === undefined ? {} : { verification: verified }),
-					...(contractCases.length > 0 ? { contractCases } : {}),
-				},
-				view,
-			};
-		}
+		if (input.kind === "apply-proposal") return decideApplyProposal(this, input, ctx);
 
-		if (input.kind === "discard-proposal") {
-			const proposal = requireProposal(inventory, ["open", "discard-pending"], input.runId);
-			const before = this.dependencies.describeProposalDiscard(this.runsRoot, proposal.record.runId);
-			const actor = await this.confirm(input, gate, t("confirm.title.discard-proposal"), before, options.signal, {
-				question: t("confirm.discard-proposal"),
-			});
-			const current = this.decisionInventory(input.kind);
-			requireProposal(current, ["open", "discard-pending"], proposal.record.runId);
-			const after = this.dependencies.describeProposalDiscard(this.runsRoot, proposal.record.runId);
-			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
-			const result = this.dependencies.discardProposal({ runsRoot: this.runsRoot, runId: proposal.record.runId, actor: { kind: "human", id: actor }, reason: input.reason, expectedSubjectHash: before.subjectHash }, { now: this.dependencies.now });
-			return { kind: input.kind, message: t("message.proposal-discarded"), result: { runId: result.receipt.runId, receiptHash: hashValue(result.receipt) }, view: await this.view() };
-		}
+		if (input.kind === "discard-proposal") return decideDiscardProposal(this, input, ctx);
 
-		if (input.kind === "verify-candidate") {
-			const interrupted = inventory.candidates.find((candidate) =>
-				["proposed", "built", "validated"].includes(candidateStatus(candidate)) &&
-				!inventory.abandonedCandidates.has(candidate.candidateId)
-			);
-			if (interrupted) {
-				throw new Error(
-					`candidate ${interrupted.candidateId} stopped at ${candidateStatus(interrupted)}; ` +
-					"review and explicitly abandon or recover it before starting another verification",
-				);
-			}
-			const proposal = requireProposal(inventory, "applied", input.builderRunId);
-			// A construction change can be applied before the first basket or the
-			// exam exists, and this is where that is found out. Each refusal names
-			// the request that supplies what is missing: the exit is forward, never
-			// a retreat — nothing here can be discarded or abandoned, only completed.
-			const verifiedSpecId = proposal.record.request.approvedSpec?.specId;
-			if (verifiedSpecId) {
-				try {
-					requireDevelopmentCorpus(inventory, undefined, verifiedSpecId);
-				} catch (error) {
-					throw new Error(
-						`${error instanceof Error ? error.message : String(error)}. The candidate is measured on the published ` +
-						"basket of its Spec: write the cases (corpus-draft) and publish them (publish-corpus — legal at this stage), " +
-						"or import a dataset; then verify again.",
-					);
-				}
-			}
-			let sealed: CorpusMetadata[];
-			try {
-				sealed = listCorpora({ stateRoot: this.stateRoot, projectId: this.projectId }).filter((corpus) => corpus.visibility === "sealed");
-			} catch {
-				throw new Error("evaluator-owned sealed holdout inventory is unavailable; identities remain hidden");
-			}
-			if (sealed.length === 0) {
-				throw new Error(
-					"Candidate verification requires an evaluator-owned sealed holdout corpus. Get one first: request generate-holdout " +
-					"(the Target's judge writes it from the Spec; the operator's /holdout does the same) or import a sealed JSONL; then verify again.",
-				);
-			}
-			const choice = await gate.selectSealed({ title: "Select evaluator-only sealed holdout", options: sealed.map((corpus, index) => ({ label: `Holdout ${index + 1} · ${corpus.name}`, taskCount: corpus.taskCount })) }, options.signal);
-			abortIfRequested(options.signal);
-			if (!choice.approved) throw new WorkbenchDecisionDeclinedError(input.kind);
-			if (choice.selectedIndex === undefined || !sealed[choice.selectedIndex]) throw new Error("human gate returned an invalid sealed holdout selection");
-			const selected = sealed[choice.selectedIndex]!;
-			if (selected.taskCount < SEALED_GATE_POLICY.minTasks) {
-				throw new Error(
-					`The selected sealed holdout has ${selected.taskCount} task${selected.taskCount === 1 ? "" : "s"}; ` +
-					`a sealed verdict needs at least ${SEALED_GATE_POLICY.minTasks}. Add holdout cases before verifying.`,
-				);
-			}
-			if (input.repetitions < SEALED_GATE_POLICY.minRepetitions) {
-				throw new Error(`Candidate verification needs at least ${SEALED_GATE_POLICY.minRepetitions} repetitions for a sealed verdict.`);
-			}
-			const build = () => {
-				const current = this.decisionInventory(input.kind);
-				const partial = current.candidates.find((candidate) =>
-					["proposed", "built", "validated"].includes(candidateStatus(candidate)) &&
-					!current.abandonedCandidates.has(candidate.candidateId)
-				);
-				if (partial) throw new WorkbenchStaleDecisionError(input.kind);
-				const currentProposal = requireProposal(current, "applied", proposal.record.runId);
-				const builderRun = currentProposal.record;
-				const applyReceipt = loadBuilderApplyReceipt(this.runsRoot, proposal.record.runId);
-				if (builderRun.request.approvedSpec?.projectId !== this.projectId) throw new Error("Builder proposal is not bound to this project approved Spec");
-				let sealedLoaded: ReturnType<typeof loadCorpus>;
-				try {
-					sealedLoaded = loadCorpus({ stateRoot: this.stateRoot, projectId: this.projectId, corpusId: selected.id });
-				} catch {
-					throw new Error("selected evaluator-owned holdout is unavailable or changed; identity remains hidden");
-				}
-				if (sealedLoaded.metadata.visibility !== "sealed" || sealedLoaded.metadata.hash !== selected.hash) throw new Error("sealed holdout changed");
-				// The development arm is the published development corpus of the Spec
-				// this proposal was written against — the operator's own cases, resolved
-				// exactly the way `run-eval` resolves them. It is never the manifest
-				// dataset: a construction proposal carries no attestation at all, and
-				// falling back to `evalSuite.dataset` measured a template file nobody
-				// wrote and called the result the development verdict.
-				const approvedSpecId = builderRun.request.approvedSpec.specId;
-				const currentCorpus = requireDevelopmentCorpus(current, undefined, approvedSpecId);
-				const receipt = loadDevelopmentCorpusPublicationReceipt(this.stateRoot, this.projectId, currentCorpus.id);
-				const lineage = current.developmentLineage.get(currentCorpus.id);
-				const loaded = loadCorpus({ stateRoot: this.stateRoot, projectId: this.projectId, corpusId: currentCorpus.id });
-				if (
-					!lineage ||
-					lineage.publication.approvedSpecId !== approvedSpecId ||
-					loaded.metadata.visibility !== "development" ||
-					loaded.metadata.hash !== receipt.corpus.hash
-				) throw new Error("development corpus does not match its reviewed Spec lineage");
-				// An improvement proposal names the basket it was measured on. It has to
-				// be that same one, or before and after would compare two different exams.
-				const attested = builderRun.request.sourceAttestation?.developmentCorpus;
-				if (attested && (attested.id !== loaded.metadata.id || attested.hash !== loaded.metadata.hash)) {
-					throw new Error(
-						"the Builder measured a development corpus that is not the published one of this Spec; " +
-						"publish the corpus it used, or author against the published one",
-					);
-				}
-				const development = { id: loaded.metadata.id, hash: loaded.metadata.hash, taskCount: loaded.metadata.taskCount };
-				const developmentCorpus: CorpusRef = { stateRoot: this.stateRoot, projectId: this.projectId, corpusId: loaded.metadata.id };
-				return {
-					subject: { operation: "verify-applied-candidate", builderRunId: builderRun.runId, builderRunHash: hashValue(builderRun), applyReceiptHash: hashValue(applyReceipt), proposalHash: builderRun.artifacts.proposal?.sha256 ?? null, baseTargetSha: applyReceipt.baseTargetSha, candidateSha: applyReceipt.candidateSha, approvedSpec: builderRun.request.approvedSpec, developmentCorpus: development, sealedHoldout: { id: selected.id, hash: selected.hash, taskCount: selected.taskCount }, repetitions: input.repetitions, screen: builderRun.request.source?.evalRunId ?? null, force: input.force === true },
-					approvedSpecId: builderRun.request.approvedSpec.specId,
-					sourceEvalRunId: builderRun.request.source?.evalRunId ?? null,
-					// The receipt of this exact candidate is the authorization: it says
-					// what the human who read this diff was told the check would cost.
-					// A candidate applied outside that dialog carries none.
-					authorized: applyReceipt.verificationAuthorization ?? null,
-					developmentCorpus,
-					sealedCorpus: { stateRoot: this.stateRoot, projectId: this.projectId, corpusId: selected.id } satisfies CorpusRef,
-				};
-			};
-			const before = build();
-			// Two arms over the development basket and the sealed holdout.
-			const developmentTasks = before.subject.developmentCorpus.taskCount;
-			const executions = 2 * (developmentTasks + selected.taskCount) * input.repetitions;
-			const actor = await this.confirm(input, gate, t("confirm.title.verify-candidate"), before.subject, options.signal, {
-				question: before.sourceEvalRunId
-					? t("confirm.verify-candidate.screened", { runs: localizedCount(executions + developmentTasks, "execution") })
-					: t("confirm.verify-candidate", { runs: localizedCount(executions, "execution") }),
-				estimate: this.runEstimate(executions + (before.sourceEvalRunId ? developmentTasks : 0), inventory.target),
-				authorized: before.authorized,
-			});
-			if (choice.actorId && actorId(choice.actorId) !== actor) throw new Error("sealed selection and confirmation came from different human actors");
-			const after = build();
-			if (!exactSame(before.subject, after.subject)) throw new WorkbenchStaleDecisionError(input.kind);
+		if (input.kind === "verify-candidate") return decideVerifyCandidate(this, input, ctx);
 
-			// The cheap check first. It runs the candidate on the cases that already
-			// failed, once, candidate arm only — a screen, never evidence: it enters
-			// no gate and can never reach promotion. A flat screen stops the spend
-			// unless the operator explicitly forced it; a screen whose own
-			// infrastructure errors blew the budget is inconclusive and stops
-			// nothing (invariant 9).
-			let screen: CheapCheckResult | null = null;
-			if (after.sourceEvalRunId) {
-				try {
-					screen = await this.dependencies.runCheapCheck({
-						repositoryDir: this.projectDir,
-						runsRoot: this.runsRoot,
-						candidateRef: after.subject.candidateSha,
-						baselineRef: after.subject.baseTargetSha,
-						sourceEvalRunId: after.sourceEvalRunId,
-						developmentCorpus: after.developmentCorpus,
-						...(options.signal ? { signal: options.signal } : {}),
-						...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
-						now: this.dependencies.now,
-					});
-				} catch (error) {
-					// A screen that cannot run is not a verdict. Say so and measure.
-					console.error("AHDE host-only cheap check failure:", error);
-					screen = null;
-				}
-			}
-			if (screen && screen.verdict === "flat" && screen.withinErrorBudget && input.force !== true) {
-				const projection = this.screenProjection(screen);
-				return {
-					kind: input.kind,
-					message:
-						`Cheap check found nothing: ${screen.tasks.length} previously failing case` +
-						`${screen.tasks.length === 1 ? "" : "s"} re-run once on the candidate, ` +
-						`${screen.improved} improved, ${screen.unchanged} unchanged, ${screen.regressed} regressed. ` +
-						`The ${executions}-execution verification was not spent. ` +
-						"Author another change, or verify anyway with force.",
-					result: {
-						outcome: "stopped-by-screen",
-						builderRunId: after.subject.builderRunId,
-						candidateSha: after.subject.candidateSha,
-						screen: projection,
-						spared: { executions },
-					},
-					view: await this.viewOf(this.inventory()),
-				};
-			}
+		if (input.kind === "improve") return decideImprove(this, input, ctx);
 
-			let result: Awaited<ReturnType<typeof runAppliedBuilderCandidate>>;
-			try {
-				result = await this.dependencies.runAppliedCandidate({
-					repositoryDir: this.projectDir,
-					runsRoot: this.runsRoot,
-					builderRunId: proposal.record.runId,
-					expectedBuilderRunHash: after.subject.builderRunHash,
-					expectedApplyReceiptHash: after.subject.applyReceiptHash,
-					projectId: this.projectId,
-					approvedSpec: { stateRoot: this.stateRoot, specId: after.approvedSpecId },
-					repetitions: input.repetitions,
-					developmentCorpus: after.developmentCorpus,
-					sealedCorpus: after.sealedCorpus,
-					actorId: actor,
-					...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
-					...(options.signal ? { signal: options.signal } : {}),
-				});
-			} catch (error) {
-				// Exact evaluator diagnostics remain host-only because thrown messages can
-				// otherwise become Builder model context through a failed tool result.
-				console.error("AHDE host-only candidate verification failure:", error);
-				throw new Error("candidate verification failed after the sealed gate; sealed identities and contents remain hidden");
-			}
-			const settled = this.select("candidate", result.record.candidateId);
-			const sealedVerdict = result.sealedHoldout?.compare.gate.verdict ?? null;
-			return {
-				kind: input.kind,
-				message: sealedVerdict === "pass"
-					? "Candidate verification completed: development compared and the sealed guardrail passed."
-					: sealedVerdict === null
-						? "Candidate verification completed on development evidence; no sealed holdout ran."
-						: `Candidate verification completed; the sealed guardrail verdict is ${sealedVerdict}, so this candidate cannot be promoted.`,
-				result: {
-					outcome: "verified",
-					candidate: candidateSummary(result.record),
-					development: { verdict: result.compare.gate.verdict, delta: result.compare.summary.delta, confidence95: result.compare.summary.confidence95 },
-					sealedHoldout: { executed: result.sealedHoldout !== null, gatePassed: sealedVerdict === "pass", verdict: sealedVerdict },
-					screen: screen ? this.screenProjection(screen) : null,
-				},
-				view: await this.viewOf(settled),
-			};
-		}
+		if (input.kind === "review-candidate") return decideReviewCandidate(this, input, ctx);
 
-		if (input.kind === "improve") {
-			if (!inventory.target) throw new Error("`improve` needs one exact resolved Target");
-			const approved = requireApprovedSpec(inventory);
-			const corpus = requireDevelopmentCorpus(inventory, input.developmentCorpusId, approved.id);
-			const candidates = input.candidates ?? 1;
-			if (input.resumeLoopId && input.abandonLoopId) {
-				throw new Error("improve cannot resume and abandon a loop in the same decision");
-			}
-			// An unfinished loop is reported, not raced. `--abandon` drops the claim
-			// (never the branches); `--resume` continues the same branch series.
-			const unfinished = listUnfinishedImprovementLoops(this.runsRoot, this.projectId);
-			const resumed = input.resumeLoopId
-				? unfinished.running.find((loop) => loop.loopId === input.resumeLoopId) ?? null
-				: null;
-			if (input.resumeLoopId && !resumed) {
-				throw new Error(`no unfinished improvement loop ${input.resumeLoopId} in this project`);
-			}
-			const abandoned = input.abandonLoopId
-				? unfinished.running.find((loop) => loop.loopId === input.abandonLoopId) ?? null
-				: null;
-			if (input.abandonLoopId && !abandoned) {
-				throw new Error(`no unfinished improvement loop ${input.abandonLoopId} in this project`);
-			}
-			const blocking = unfinished.running.filter((loop) =>
-				loop.loopId !== resumed?.loopId && loop.loopId !== abandoned?.loopId);
-			if (blocking.length > 0 || unfinished.unreadable.length > 0) {
-				throw new UnfinishedImprovementLoopError(blocking, unfinished.unreadable);
-			}
-			const plannedExecutions = plannedImprovementExecutions({
-				developmentTasks: corpus.taskCount,
-				repetitions: input.repetitions,
-				maxCycles: input.maxCycles - (resumed?.lastCycle ?? 0),
-				candidates,
-			});
-			const estimate = this.runEstimate(plannedExecutions, inventory.target);
-			const target = `${Math.round(input.until * 100)}%`;
-			const subject = {
-				operation: "improve",
-				approvedSpecId: approved.id,
-				developmentCorpus: { id: corpus.id, hash: corpus.hash, taskCount: corpus.taskCount },
-				until: input.until,
-				maxCycles: input.maxCycles,
-				repetitions: input.repetitions,
-				candidates,
-				resumingLoopId: resumed?.loopId ?? null,
-				abandoningLoopId: abandoned?.loopId ?? null,
-				plannedExecutions,
-				estimatedCost: formatEstimatedCost(estimate),
-				estimatedTime: formatEstimatedTime(estimate),
-				// The one confirmation is also the one disclosure. What the operator is
-				// approving is a loop that APPLIES diffs without showing each of them.
-				applies: "on throwaway candidate/auto-<loopId>-<n> branches, without showing each diff",
-				touchesYourBranch: false,
-				diffsVisibleIn: ["changed paths in the cycle table", "the exact diff in /review", "the exact diff in the ship dialog"],
-				authoring: IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE,
-				neverDecides: [...IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS],
-			};
-			const actor = await this.confirm(input, gate, `Improve until ${target}`, subject, options.signal, {
-				question:
-					`Run up to ${input.maxCycles} improvement cycle${input.maxCycles === 1 ? "" : "s"} ` +
-					`towards ${target}` +
-					(candidates > 1 ? `, comparing ${candidates} changes per cycle` : "") +
-					` (at most ${plannedExecutions} Target executions)? ` +
-					"This is the only time you will be asked: the loop APPLIES proposals on throwaway " +
-					"`candidate/auto-<loopId>-<n>` branches WITHOUT showing you each diff. " +
-					"Nothing touches your branch or your working tree. Changed paths are listed in the cycle " +
-					"table; the exact diff is shown in /review and bound by hash to the ship dialog. " +
-					"The loop never promotes, adopts, publishes or approves anything. " +
-					IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE,
-				estimate,
-			});
-			// Abandoning is itself state-changing. Do it only after the human approved
-			// the exact improve subject, never while merely preparing the dialog.
-			if (input.abandonLoopId) {
-				abandonImprovementLoop(this.runsRoot, this.projectId, input.abandonLoopId, this.dependencies.now);
-			}
-			const loop = await this.dependencies.runImprovementLoop({
-				repositoryDir: this.projectDir,
-				runsRoot: this.runsRoot,
-				stateRoot: this.stateRoot,
-				projectId: this.projectId,
-				approvedSpecId: approved.id,
-				developmentCorpus: { stateRoot: this.stateRoot, projectId: this.projectId, corpusId: corpus.id },
-				until: input.until,
-				maxCycles: input.maxCycles,
-				repetitions: input.repetitions,
-				candidates,
-				...(resumed ? { loopId: resumed.loopId } : {}),
-				...(input.baselineMaxAgeMs === undefined ? {} : { baselineMaxAgeMs: input.baselineMaxAgeMs }),
-				...(input.jobs === undefined ? {} : { jobs: input.jobs }),
-				author: this.dependencies.authorImprovementProposal ?? recordedBuilderProposalAuthor({
-					stateRoot: this.stateRoot,
-					runsRoot: this.runsRoot,
-					projectId: this.projectId,
-				}),
-				gate: improvementLoopGate(gate),
-				actorId: actor,
-				...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
-				...(options.signal ? { signal: options.signal } : {}),
-				now: this.dependencies.now,
-			});
-			const table = renderImprovementLoopTable(loop);
-			const search = [...loop.cycles].reverse().find((cycle) => cycle.search)?.search ?? null;
-			return {
-				kind: input.kind,
-				message:
-					`${loop.cycles.length} improvement cycle${loop.cycles.length === 1 ? "" : "s"} ran. ` +
-					`Stopped because ${loop.stopMessage}. ${IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE}`,
-				result: {
-					cycles: loop.cycles,
-					stopReason: loop.stopReason,
-					stopMessage: loop.stopMessage,
-					table,
-					candidateId: loop.candidateId,
-					loopId: loop.loopId,
-					finalPassRate: loop.finalPassRate,
-					executions: loop.executions,
-					candidates,
-					search,
-				},
-				view: await this.viewOf(this.inventory()),
-			};
-		}
+		if (input.kind === "promote-candidate") return decidePromoteCandidate(this, input, ctx);
 
-		if (input.kind === "review-candidate") {
-			const candidate = requireCandidate(inventory, ["evaluated"], input.candidateId);
-			const proposal = input.recommendation === "promote" ? this.candidateProposal(candidate) : null;
-			const before = { operation: "review-candidate", candidateHash: hashValue(candidate), candidate: this.candidateView(candidate, inventory.developmentEvals), proposal, recommendation: input.recommendation };
-			const actor = await this.confirm(input, gate, t("confirm.title.review-candidate"), before, options.signal);
-			const current = this.decisionInventory(input.kind);
-			const after = requireCandidate(current, ["evaluated"], candidate.candidateId);
-			if (hashValue(after) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
-			const reviewed = this.dependencies.reviewCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, ...(proposal ? { expectedProposalHash: proposal.proposalHash } : {}), recommendation: input.recommendation, reason: input.reason, actorId: actor, now: this.dependencies.now });
-			const settled = this.select("candidate", reviewed.candidateId);
-			return { kind: input.kind, message: t("message.review-recorded"), result: candidateSummary(reviewed), view: await this.viewOf(settled) };
-		}
+		if (input.kind === "reject-candidate") return decideRejectCandidate(this, input, ctx);
 
-		if (input.kind === "promote-candidate") {
-			const candidate = requireCandidate(inventory, ["reviewed"], input.candidateId);
-			const before = { operation: "promote-candidate", candidateHash: hashValue(candidate), candidate: this.candidateView(candidate, inventory.developmentEvals), version: input.version, tag: `v${input.version}` };
-			const actor = await this.confirm(input, gate, t("confirm.title.promote-candidate"), before, options.signal);
-			const current = this.decisionInventory(input.kind);
-			if (hashValue(requireCandidate(current, ["reviewed"], candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
-			const promoted = this.dependencies.promoteCandidate({ repositoryDir: this.projectDir, runsRoot: this.runsRoot, stateRoot: this.stateRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, version: input.version, reason: input.reason, actorId: actor, now: this.dependencies.now });
-			// The promotion is written. Pinning what it fixed comes after, and its
-			// failure is a warning: a bookkeeping step never un-ships a release.
-			const guards = this.promotionGuards(promoted.record, promoted.tag);
-			const settled = this.select("candidate", promoted.record.candidateId);
-			return {
-				kind: input.kind,
-				message: [
-					`Candidate promoted as ${promoted.tag}. Adopt it to make it the active Target.`,
-					...(guards.cases > 0
-						? [`${guards.cases} case(s) that flipped fail→pass are drafted as regression guards in ${guards.draftId}; publish that draft to pin them.`]
-						: []),
-					...(guards.warning ? [guards.warning] : []),
-				].join(" "),
-				result: { candidate: candidateSummary(promoted.record), tag: promoted.tag, candidateSha: promoted.candidateSha, guards },
-				view: await this.viewOf(settled),
-			};
-		}
+		if (input.kind === "adopt-candidate") return decideAdoptCandidate(this, input, ctx);
 
-		if (input.kind === "reject-candidate") {
-			// Rejecting is legal where the operator reads the evidence, not only one
-			// step later: at `candidate-review` the review is recorded first, after
-			// the same single question, so "reject" never bounces off a stage rule.
-			const candidate = requireCandidate(inventory, ["evaluated", "reviewed"], input.candidateId);
-			const needsReview = candidateStatus(candidate) === "evaluated";
-			const before = { operation: "reject-candidate", candidateHash: hashValue(candidate), candidate: this.candidateView(candidate, inventory.developmentEvals) };
-			const actor = await this.confirm(input, gate, t("confirm.title.reject-candidate"), before, options.signal, {
-				question: t("confirm.reject-candidate"),
-			});
-			const current = this.decisionInventory(input.kind);
-			if (hashValue(requireCandidate(current, ["evaluated", "reviewed"], candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
-			const reviewedRecord = needsReview
-				? this.dependencies.reviewCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, recommendation: "reject", reason: input.reason, actorId: actor, now: this.dependencies.now })
-				: candidate;
-			const rejected = this.dependencies.rejectCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: hashValue(reviewedRecord), reason: input.reason, actorId: actor, now: this.dependencies.now });
-			const settled = this.select("candidate", rejected.candidateId);
-			return { kind: input.kind, message: t("message.candidate-rejected"), result: candidateSummary(rejected), view: await this.viewOf(settled) };
-		}
-
-		if (input.kind === "adopt-candidate") {
-			const candidate = requireOpenTerminalCandidate(inventory, input.candidateId);
-			if (candidateStatus(candidate) !== "promoted") throw new Error("only a promoted candidate can be adopted");
-			if (inventory.adoptedCandidates.has(candidate.candidateId)) throw new WorkbenchStaleDecisionError(input.kind);
-			const describe = () => this.dependencies.describeTargetAdoption({
-				repositoryDir: this.projectDir,
-				runsRoot: this.runsRoot,
-				candidateId: candidate.candidateId,
-			});
-			const before = describe();
-			const actor = await this.confirm(
-				input,
-				gate,
-				"Adopt promoted candidate as the active Target",
-				{ operation: "adopt-candidate", candidateHash: hashValue(candidate), candidate: candidateSummary(candidate), adoption: before },
-				options.signal,
-			);
-			const current = this.decisionInventory(input.kind);
-			if (current.adoptedCandidates.has(candidate.candidateId)) throw new WorkbenchStaleDecisionError(input.kind);
-			if (hashValue(requireOpenTerminalCandidate(current, candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
-			const after = describe();
-			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
-			const result = this.dependencies.adoptTargetCandidate({
-				repositoryDir: this.projectDir,
-				runsRoot: this.runsRoot,
-				stateRoot: this.stateRoot,
-				candidateId: candidate.candidateId,
-				expectedSubjectHash: after.subjectHash,
-				actor: { kind: "human", id: actor },
-				reason: input.reason,
-			}, { now: this.dependencies.now });
-			const settled = this.select("candidate", candidate.candidateId);
-			return {
-				kind: input.kind,
-				message: `Branch ${result.subject.branch.name} now points at the promoted candidate ${result.subject.promotion.tag}. Start the next cycle when ready.`,
-				result: {
-					candidate: candidateSummary(candidate),
-					disposition: result.disposition,
-					branch: result.subject.branch.name,
-					fromSha: result.receipt.previousHead,
-					toSha: result.receipt.adoptedHead,
-					tag: result.subject.promotion.tag,
-					receiptId: result.receipt.receiptId,
-				},
-				view: await this.viewOf(settled),
-			};
-		}
-
-		if (input.kind === "continue-cycle") {
-			const candidate = requireOpenTerminalCandidate(inventory, input.candidateId);
-			if (inventory.continuedCandidates.has(candidate.candidateId)) throw new WorkbenchStaleDecisionError(input.kind);
-			if (!inventory.target) throw new Error("continuing the improvement cycle requires one exact Target");
-			const continuationOptions = {
-				repositoryDir: this.projectDir,
-				runsRoot: this.runsRoot,
-				stateRoot: this.stateRoot,
-				projectId: this.projectId,
-				targetId: inventory.target.manifest.id,
-				candidateId: candidate.candidateId,
-			};
-			const before = this.dependencies.describeCycleContinuation(continuationOptions);
-			const actor = await this.confirm(
-				input,
-				gate,
-				"Close this improvement cycle and continue",
-				{ operation: "continue-cycle", candidateHash: hashValue(candidate), candidate: candidateSummary(candidate), continuation: before },
-				options.signal,
-			);
-			const current = this.decisionInventory(input.kind);
-			if (current.continuedCandidates.has(candidate.candidateId)) throw new WorkbenchStaleDecisionError(input.kind);
-			if (hashValue(requireOpenTerminalCandidate(current, candidate.candidateId)) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
-			const after = this.dependencies.describeCycleContinuation(continuationOptions);
-			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
-			const result = this.dependencies.recordCycleContinuation({
-				...continuationOptions,
-				expectedSubjectHash: after.subjectHash,
-				actor: { kind: "human", id: actor },
-				reason: input.reason,
-			}, { now: this.dependencies.now });
-			// Release the closed candidate from focus so the next stage derives from artifacts alone.
-			saveWorkbenchFocus(
-				this.stateRoot,
-				clearWorkbenchFocus(
-					loadWorkbenchFocus(this.stateRoot, this.projectId, this.dependencies.now),
-					"candidate",
-					this.dependencies.now,
-				),
-			);
-			const view = await this.view();
-			return {
-				kind: input.kind,
-				message: `Improvement cycle closed. The Workbench continues at ${view.stage}: ${view.headline}`,
-				result: {
-					candidate: candidateSummary(candidate),
-					disposition: result.disposition,
-					activeTargetSha: result.subject.activeTargetSha,
-					receiptId: result.receipt.receiptId,
-					nextStage: view.stage,
-				},
-				view,
-			};
-		}
+		if (input.kind === "continue-cycle") return decideContinueCycle(this, input, ctx);
 
 		const exhaustive: never = input;
 		throw new Error(`unsupported Workbench decision ${JSON.stringify(exhaustive)}`);
