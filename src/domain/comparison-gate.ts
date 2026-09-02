@@ -9,7 +9,7 @@ import { sha256Hex } from "../provenance.js";
  * over repetitions plus arm statuses). Everything here is pure and
  * deterministic so the same rows always yield the same verdict and hash.
  *
- * Rule `exact-comparison-gate-v4` (see docs/V1_8_EVIDENCE_GATE.md):
+ * Rule `exact-comparison-gate-v4` (invariant 34 in docs/INVARIANTS_V1.md):
  *   score_run = mean of the run's grader scores, clamped to [0,1]; a run with
  *               no graders keeps the binary handling (1 when it passed, else 0)
  *   score_i   = mean of a task's run scores over its repetitions

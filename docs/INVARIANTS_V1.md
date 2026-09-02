@@ -1,8 +1,21 @@
-# AHDE invariants, v1 — the exhaustive historical statement
+# AHDE invariants — the exhaustive statement
 
-These 42 invariants are the historical, exhaustive statement that the five
-guarantees in [CONTEXT.md](../CONTEXT.md) summarize. Nothing here has been
-changed or dropped; this is simply no longer the front door.
+These 42 invariants are the exhaustive statement behind the five guarantees
+in the [README](../README.md). Nothing here is dropped when the product
+surface changes; when a rule genuinely changes, its number keeps its place
+and the text says what changed and why.
+
+A note on the judge-written exam (invariants 5, 13 and 34): when the operator
+has no data to hold out, the Target's *judge* model writes the sealed exam
+from the approved Spec and a seeded, shape-only draw of published development
+cases. The Builder never sees a case of it — it learns the count, the
+generator's name and the prompt hash. A judge equal to the Target's own model
+is refused for the same reason evaluator setup refuses it: a model that wrote
+the exam must not be the model taking it. The draft mode writes to a private
+file outside the repository for a human to read before `/holdout <path>`
+seals it; the seal mode writes the corpus directly. Either way the exam stays
+evaluator-only, and a judge-written exam is recorded as such on every verdict
+it decides.
 
 ## Non-negotiable invariants
 
