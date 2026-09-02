@@ -1,4 +1,10 @@
-import type { ExtensionContext, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type {
+	AgentToolResult,
+	ExtensionContext,
+	Theme,
+	ToolDefinition,
+	ToolRenderResultOptions,
+} from "@earendil-works/pi-coding-agent";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
@@ -59,6 +65,31 @@ function isWorkbenchDecision(value: unknown): value is WorkbenchDecisionResult {
 
 function card(lines: readonly string[]): Component {
 	return new Text(lines.join("\n"), 0, 0);
+}
+
+/**
+ * A refused tool call, on screen. Pi hands a thrown tool the reason as text
+ * and an empty `details`, so every collapsed card used to fall through to its
+ * own label — “Workbench submission” — and the only account of the refusal the
+ * human ever read was the Builder's paraphrase of it.
+ *
+ * The first line is the sentence the host wrote; the rest is stack and
+ * context the transcript does not owe anyone.
+ */
+export function refusalCard(result: AgentToolResult<unknown>, theme: Theme): Component {
+	const paint = themePaint(theme);
+	const reason = result.content
+		.flatMap((part) => (part.type === "text" ? part.text.split("\n") : []))
+		.map((line) => line.trim())
+		.find((line) => line.length > 0) ?? "";
+	return card([`${paint.error("✗")} ${oneLine(hostRefusal(reason), 140)}`]);
+}
+
+/** The two refusals the host words itself, bent into the operator's language. */
+function hostRefusal(reason: string): string {
+	if (/ was declined by the human operator$/.test(reason)) return t("refusal.declined");
+	if (/^No compatible .+ is available$/.test(reason)) return t("refusal.nothing-yet");
+	return reason;
 }
 
 /** Compact, theme-aware transcript cards for the three Workbench tools. */
@@ -142,6 +173,19 @@ import {
 	type BuilderLiveTraceOutcome,
 } from "./run-observation.js";
 import { compileBuilderPassport } from "./passport-presentation.js";
+
+/** One tool result on screen: what it produced, or why it refused. */
+function renderToolResult(
+	renderer: (details: unknown, expanded: boolean, theme: Theme) => Component,
+	result: AgentToolResult<unknown>,
+	renderOptions: ToolRenderResultOptions,
+	theme: Theme,
+	/** Pi's render context, of which only this one fact reaches a card. */
+	context: { isError: boolean },
+): Component {
+	if (context.isError) return refusalCard(result, theme);
+	return renderer(result.details, renderOptions.expanded, theme);
+}
 
 type RegisteredWorkbenchTool = ToolDefinition<TSchema, unknown>;
 
@@ -354,7 +398,7 @@ export function createBuilderWorkbenchTools(
 				return textResult(view, { include: include ?? [], hostModelCatalog: models });
 			},
 			renderCall: (args, theme) => WORKBENCH_TOOL_RENDERERS.view.renderCall(args, theme),
-			renderResult: (result, renderOptions, theme) => WORKBENCH_TOOL_RENDERERS.view.renderResult(result.details, renderOptions.expanded, theme),
+			renderResult: (result, renderOptions, theme, context) => renderToolResult(WORKBENCH_TOOL_RENDERERS.view.renderResult, result, renderOptions, theme, context),
 		}),
 		defineTool({
 			name: "ahde_workbench_submit",
@@ -406,7 +450,7 @@ export function createBuilderWorkbenchTools(
 				return textResult(turn);
 			},
 			renderCall: (args, theme) => WORKBENCH_TOOL_RENDERERS.submit.renderCall(args, theme),
-			renderResult: (result, renderOptions, theme) => WORKBENCH_TOOL_RENDERERS.submit.renderResult(result.details, renderOptions.expanded, theme),
+			renderResult: (result, renderOptions, theme, context) => renderToolResult(WORKBENCH_TOOL_RENDERERS.submit.renderResult, result, renderOptions, theme, context),
 		}),
 		defineTool({
 			name: "ahde_workbench_decide",
@@ -434,7 +478,7 @@ export function createBuilderWorkbenchTools(
 			parameters: WorkbenchDecisionToolSchema.parameters,
 			prepareArguments: (args) => WorkbenchDecisionToolSchema.prepare(args),
 			renderCall: (args, theme) => WORKBENCH_TOOL_RENDERERS.decide.renderCall(args, theme),
-			renderResult: (result, renderOptions, theme) => WORKBENCH_TOOL_RENDERERS.decide.renderResult(result.details, renderOptions.expanded, theme),
+			renderResult: (result, renderOptions, theme, context) => renderToolResult(WORKBENCH_TOOL_RENDERERS.decide.renderResult, result, renderOptions, theme, context),
 			async execute(_id, params, signal, _update, ctx) {
 				abortIfRequested(signal);
 				if (params.kind === "talk-to-agent") {

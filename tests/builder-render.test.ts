@@ -30,6 +30,7 @@ import {
 	wrap,
 } from "../src/builder/render/format.js";
 import { handoffLines } from "../src/builder/render/handoff.js";
+import { refusalCard } from "../src/builder/workbench-adapter.js";
 import { setLanguage } from "../src/i18n.js";
 import { renderImpact } from "../src/builder/render/impact.js";
 import { renderToolPermissions, toolPermissionsFromDiff } from "../src/builder/render/tool-permissions.js";
@@ -2499,5 +2500,47 @@ describe("the hand-off to the agent", () => {
 			view: makeView({ target: { status: "bootstrap-required", id: null, gitSha: null, model: null } }),
 		} as WorkbenchDecisionResult;
 		expect(handoffLines(unready, plainPaint)).toEqual([]);
+	});
+});
+
+/**
+ * A refused tool call used to collapse to its own label — "Workbench
+ * submission" — so the only account of the refusal the human ever read was
+ * the Builder's paraphrase of it, three screens later.
+ */
+describe("a refusal on screen", () => {
+	function refusal(text: string) {
+		return refusalCard(
+			{ content: [{ type: "text", text }], details: {} } as unknown as Parameters<typeof refusalCard>[0],
+			fakeTheme as unknown as Theme,
+		).render(200).join("\n").trimEnd();
+	}
+
+	it("shows the first line of the reason the host gave, bounded", () => {
+		expect(refusal("Target has uncommitted changes: notes.md. Commit them, then author.\n    at openWorkshop"))
+			.toBe("<error>✗</error> Target has uncommitted changes: notes.md. Commit them, then author.");
+		// Bounded: a runaway reason cannot push the transcript around.
+		const long = refusal(`${"x".repeat(400)}`);
+		expect([...long.split("</error> ")[1]!].length).toBe(140);
+		expect(long).toContain("…");
+		// Nothing to say is still a card, never a crash.
+		expect(refusal("")).toBe("<error>✗</error>");
+	});
+
+	it("bends the two refusals the host words itself, and leaves the rest exact", () => {
+		expect(refusal("apply-proposal was declined by the human operator"))
+			.toContain("Cancelled — nothing changed.");
+		expect(refusal("No compatible development EvalRun is available"))
+			.toContain("There is nothing to work on yet.");
+		setLanguage("ru");
+		try {
+			expect(refusal("apply-proposal was declined by the human operator"))
+				.toContain("Отменено — ничего не изменилось.");
+			// A message the host did not word itself is shown exactly as it came.
+			expect(refusal("tools/check_dbo is outside the declared Harness scope"))
+				.toContain("tools/check_dbo is outside the declared Harness scope");
+		} finally {
+			setLanguage(null);
+		}
 	});
 });

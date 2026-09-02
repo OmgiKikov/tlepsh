@@ -268,7 +268,11 @@ describe("traces in the TUI", () => {
 		expect(runDetail.mock.calls.at(-1)?.[1]).toBe("run_fail1");
 		await h.command("trace").handler("prev", h.ctx);
 		expect(h.notify).toHaveBeenCalledWith("No more runs in that direction.", "info");
-		await expect(h.command("trace").handler("what", h.ctx)).rejects.toThrow(/needs a row number/);
+		// A mistyped argument is a panel in the transcript, not Pi's raw
+		// `Extension "command:trace" error:` with a stack under it.
+		await h.command("trace").handler("what", h.ctx);
+		expect(h.blocks.at(-1)?.title).toBe("AHDE · /trace");
+		expect(stripMarkers(h.blocks.at(-1)!.lines.join("\n"))).toMatch(/needs a row number/);
 	});
 
 	it("refuses a run the Explorer refuses, without a note to the Builder", async () => {

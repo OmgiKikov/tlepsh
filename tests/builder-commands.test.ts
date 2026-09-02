@@ -591,6 +591,32 @@ function gatedWorkbench(
 	});
 }
 
+/**
+ * A refusal reaches the operator as a transcript panel, never as Pi's raw
+ * `Extension "command:<name>" error: …` with a stack under it. The sentence
+ * is the one the handler raised; only its framing changed, so these assert
+ * exactly what the operator now reads.
+ */
+async function expectRefusal(
+	commands: Map<string, CommandOptions>,
+	name: string,
+	args: string,
+	ctx: ExtensionCommandContext,
+	output: ReturnType<typeof presenterFixture>,
+	message: string | RegExp,
+): Promise<void> {
+	const before = output.blocks.length;
+	await command(commands, name).handler(args, ctx);
+	// The refusal is the last thing on screen; a handler that drew something
+	// before it failed — /fix shows the diagnosis first — keeps what it drew.
+	expect(output.blocks.length).toBeGreaterThan(before);
+	const panel = output.blocks.at(-1)!;
+	expect(panel.title).toBe(`AHDE · /${name}`);
+	const text = stripMarkers(panel.lines.join("\n"));
+	if (typeof message === "string") expect(text).toContain(message);
+	else expect(text).toMatch(message);
+}
+
 function command(
 	commands: Map<string, CommandOptions>,
 	name: string,
@@ -688,8 +714,7 @@ describe("Builder Pi slash commands", () => {
 		expect(host.select).not.toHaveBeenCalled();
 		expect(fixture.decide).not.toHaveBeenCalled();
 
-		await expect(command(commands, "target").handler("two paths", host.ctx))
-			.rejects.toThrow("/target accepts at most one");
+		await expectRefusal(commands, "target", "two paths", host.ctx, output, "/target accepts at most one");
 		expect(fixture.view).toHaveBeenCalledTimes(5);
 	});
 
@@ -736,8 +761,7 @@ describe("Builder Pi slash commands", () => {
 		);
 		expect(output.blocks.map((block) => block.title)).toEqual(["Run complete", "Run complete"]);
 
-		await expect(command(commands, "run").handler("11 too many", host.ctx))
-			.rejects.toThrow("/run repetitions must be an integer between 1 and 10");
+		await expectRefusal(commands, "run", "11 too many", host.ctx, output, "/run repetitions must be an integer between 1 and 10");
 		expect(fixture.decide).toHaveBeenCalledTimes(2);
 	});
 
@@ -799,14 +823,12 @@ describe("Builder Pi slash commands", () => {
 		expect(explicit.decide.mock.calls.map(([input]) => input)).toEqual([
 			{ kind: "ship", version: "2.2.0", reason: "ship the reviewed fix" },
 		]);
-		await expect(command(second.commands, "ship").handler("v2", explicitHost.ctx))
-			.rejects.toThrow("version must be semver like 0.2.0");
+		await expectRefusal(second.commands, "ship", "v2", explicitHost.ctx, second.output, "version must be semver like 0.2.0");
 
 		// Nothing to ship yet: the command says where the operator actually is.
 		const early = workbench({ view: async () => viewAt("improvement-authoring") });
 		const third = register(early.value);
-		await expect(command(third.commands, "ship").handler("", context().ctx))
-			.rejects.toThrow(/\/ship is not available during Diagnosis/);
+		await expectRefusal(third.commands, "ship", "", context().ctx, third.output, /\/ship is not available during Diagnosis/);
 		expect(early.decide).not.toHaveBeenCalled();
 	});
 
@@ -829,8 +851,7 @@ describe("Builder Pi slash commands", () => {
 		);
 
 		// An out-of-range ordinal is refused instead of guessed.
-		await expect(command(commands, "fix").handler("7", host.ctx))
-			.rejects.toThrow(/there is no problem 7 to fix/);
+		await expectRefusal(commands, "fix", "7", host.ctx, output, /there is no problem 7 to fix/);
 		expect(sendUserMessage).toHaveBeenCalledTimes(1);
 
 		// Nothing measured yet: /fix explains where to start rather than failing.
@@ -889,8 +910,7 @@ describe("Builder Pi slash commands", () => {
 		expect(text).toContain("Recommended 3 repetitions per run to keep noise under 10 points");
 		expect(text).not.toContain("{");
 
-		await expect(command(commands, "calibrate").handler("11 too many", host.ctx))
-			.rejects.toThrow("/calibrate repetitions must be an integer between 1 and 10");
+		await expectRefusal(commands, "calibrate", "11 too many", host.ctx, output, "/calibrate repetitions must be an integer between 1 and 10");
 		expect(fixture.decide).toHaveBeenCalledTimes(2);
 	});
 
@@ -1178,7 +1198,7 @@ describe("Builder Pi slash commands", () => {
 		});
 		const host = context({ signal: controller.signal });
 
-		await expect(command(commands, "run").handler("", host.ctx)).rejects.toThrow(message);
+		await expectRefusal(commands, "run", "", host.ctx, output, message);
 		expect(host.setStatus).toHaveBeenCalledWith("ahde-run-progress", undefined);
 		expect(host.setWidget).toHaveBeenLastCalledWith("ahde-run-progress", undefined);
 		expect(host.notify).toHaveBeenCalledTimes(1);
@@ -1188,7 +1208,8 @@ describe("Builder Pi slash commands", () => {
 		);
 		expect(JSON.stringify(host.notify.mock.calls)).not.toContain(message);
 		expect(finish).toHaveBeenCalledWith(abort ? "aborted" : "error");
-		expect(output.show).not.toHaveBeenCalled();
+		// The refusal panel is the only thing drawn; no decision summary.
+		expect(output.show).toHaveBeenCalledTimes(1);
 		expect(output.note).not.toHaveBeenCalled();
 		expect(onWorkbenchChanged).not.toHaveBeenCalled();
 	});
@@ -1216,8 +1237,7 @@ describe("Builder Pi slash commands", () => {
 		expect(String(output.note.mock.calls[0]?.[0])).toContain("candidate-verification (Candidate verification)");
 		expect(onWorkbenchChanged).toHaveBeenCalledTimes(1);
 
-		await expect(command(commands, "apply").handler("-invalid", host.ctx))
-			.rejects.toThrow("branch must be one bounded Git branch name");
+		await expectRefusal(commands, "apply", "-invalid", host.ctx, output, "branch must be one bounded Git branch name");
 		expect(fixture.decide).toHaveBeenCalledTimes(1);
 
 		// Without a branch the proposal id names the candidate branch; nothing is asked.
@@ -1330,9 +1350,9 @@ describe("Builder Pi slash commands", () => {
 		expect(fixture.decide).toHaveBeenCalledTimes(2);
 		expect(cancelled.confirm).not.toHaveBeenCalled();
 
-		await expect(command(commands, "promote").handler("v1", host.ctx)).rejects.toThrow("version must be semver like 0.2.0");
+		await expectRefusal(commands, "promote", "v1", host.ctx, output, "version must be semver like 0.2.0");
 		const malformed = context({ confirm: async () => true, input: async () => "banana" });
-		await expect(command(commands, "promote").handler("", malformed.ctx)).rejects.toThrow("version must be semver like 0.2.0");
+		await expectRefusal(commands, "promote", "", malformed.ctx, output, "version must be semver like 0.2.0");
 		expect(fixture.decide).toHaveBeenCalledTimes(2);
 	});
 
@@ -1347,11 +1367,9 @@ describe("Builder Pi slash commands", () => {
 		const { commands, output } = register(fixture.value);
 		const host = context({ confirm: async () => true });
 
-		await expect(command(commands, name).handler(args, host.ctx))
-			.rejects.toThrow(`/${name} is not available during ${label}`);
+		await expectRefusal(commands, name, args, host.ctx, output, `/${name} is not available during ${label}`);
 		expect(fixture.decide).not.toHaveBeenCalled();
 		expect(host.confirm).not.toHaveBeenCalled();
-		expect(output.show).not.toHaveBeenCalled();
 	});
 
 	it("stops after a declined review and never pre-approves a different candidate", async () => {
@@ -1712,7 +1730,7 @@ describe("Builder Pi slash commands", () => {
 		expect(onWorkbenchChanged).not.toHaveBeenCalled();
 	});
 
-	it("rethrows unexpected Workbench errors with a one-line message and the original cause", async () => {
+	it("shows an unexpected Workbench error as one line, and off the TUI still raises it", async () => {
 		const original = new Error("disk full\n    while writing the receipt");
 		const fixture = workbench({
 			decide: async () => {
@@ -1722,19 +1740,21 @@ describe("Builder Pi slash commands", () => {
 		const { commands, output, onWorkbenchChanged } = register(fixture.value);
 		const host = context();
 
+		// The stack behind it is not the operator's business; the sentence is.
+		await expectRefusal(commands, "approve", "", host.ctx, output, "disk full while writing the receipt");
+		expect(output.blocks[0]?.tone).toBe("error");
+		expect(host.notify).not.toHaveBeenCalled();
+		expect(onWorkbenchChanged).not.toHaveBeenCalled();
+
+		// A host with no transcript to draw into is owed the error itself.
 		let failure: unknown;
 		try {
-			await command(commands, "approve").handler("", host.ctx);
+			await command(commands, "approve").handler("", context({ hasUI: true, mode: "rpc" }).ctx);
 		} catch (error) {
 			failure = error;
 		}
-
 		expect(failure).toBeInstanceOf(Error);
-		expect((failure as Error).message).toBe("disk full while writing the receipt");
-		expect((failure as Error).cause).toBe(original);
-		expect(host.notify).not.toHaveBeenCalled();
-		expect(output.show).not.toHaveBeenCalled();
-		expect(onWorkbenchChanged).not.toHaveBeenCalled();
+		expect((failure as Error).message).toBe("/approve requires the local Builder Pi TUI");
 	});
 
 	it("waits for the agent to become idle before reading or mutating Workbench state", async () => {
@@ -1762,16 +1782,50 @@ describe("Builder Pi slash commands", () => {
 
 		const aborted = new AbortController();
 		const abortedFixture = workbench();
-		const abortedCommands = register(abortedFixture.value).commands;
+		const aborting = register(abortedFixture.value);
 		const abortedHost = context({
 			signal: aborted.signal,
 			waitForIdle: async () => {
 				aborted.abort(new Error("stopped while waiting"));
 			},
 		});
-		await expect(command(abortedCommands, "run").handler("", abortedHost.ctx))
-			.rejects.toThrow("stopped while waiting");
+		await expectRefusal(aborting.commands, "run", "", abortedHost.ctx, aborting.output, "stopped while waiting");
 		expect(abortedFixture.decide).not.toHaveBeenCalled();
+	});
+
+	/**
+	 * Pi renders a thrown command handler as `Extension "command:traces"
+	 * error: …` with a stack under it — its own framing, in English, and it
+	 * looks like the product crashed. Every AHDE command goes into the
+	 * transcript instead, whatever it failed on.
+	 */
+	it("puts any command failure in the transcript instead of Pi's raw extension error", async () => {
+		const fixture = workbench({
+			view: async () => {
+				throw new WorkbenchSelectionRequiredError("development EvalRun", []);
+			},
+		});
+		const { commands, output } = register(fixture.value);
+		const host = context();
+
+		// A host refusal, an argument the operator mistyped, and a plain crash.
+		await expectRefusal(commands, "status", "", host.ctx, output, "No compatible development EvalRun is available");
+		await expectRefusal(commands, "run", "11", host.ctx, output, "/run repetitions must be an integer");
+		expect(output.blocks.map((block) => block.title)).toEqual(["AHDE · /status", "AHDE · /run"]);
+		expect(output.blocks.map((block) => block.tone)).toEqual(["warning", "error"]);
+
+		// A cancelled dialog is not a failure: it stays a notification, and the
+		// guard never turns it into a panel that looks like something broke.
+		const cancelling = workbench({
+			decide: async () => {
+				throw new WorkbenchDecisionDeclinedError("approve-spec");
+			},
+		});
+		const second = register(cancelling.value);
+		const cancelled = context();
+		await command(second.commands, "approve").handler("", cancelled.ctx);
+		expect(second.output.show).not.toHaveBeenCalled();
+		expect(cancelled.notify).toHaveBeenCalledWith("Cancelled — nothing changed.", "info");
 	});
 
 	it("fails closed for every command outside the local TUI", async () => {
@@ -1811,11 +1865,9 @@ describe("Builder Pi slash commands", () => {
 		const { commands, output } = register(fixture.value);
 		const host = context();
 
-		await expect(command(commands, name).handler("unexpected", host.ctx))
-			.rejects.toThrow(`/${name} does not accept arguments`);
+		await expectRefusal(commands, name, "unexpected", host.ctx, output, `/${name} does not accept arguments`);
 		expect(host.waitForIdle).not.toHaveBeenCalled();
 		expect(fixture.view).not.toHaveBeenCalled();
-		expect(output.show).not.toHaveBeenCalled();
 	});
 
 	it("/traces accepts only a row count, and rejects anything else before touching the host", async () => {
@@ -1823,11 +1875,9 @@ describe("Builder Pi slash commands", () => {
 		const { commands, output } = register(fixture.value);
 		const host = context();
 
-		await expect(command(commands, "traces").handler("unexpected", host.ctx))
-			.rejects.toThrow("/traces accepts a row count, for example /traces 30");
+		await expectRefusal(commands, "traces", "unexpected", host.ctx, output, "/traces accepts a row count, for example /traces 30");
 		expect(host.waitForIdle).not.toHaveBeenCalled();
 		expect(fixture.view).not.toHaveBeenCalled();
-		expect(output.show).not.toHaveBeenCalled();
 	});
 
 	it("reports Builder model auth and Target credential readiness in /doctor", async () => {
@@ -1924,13 +1974,13 @@ describe("Builder Pi slash commands", () => {
 
 	it("refuses a case count that is not a number, before asking the Workbench anything", async () => {
 		const fixture = workbench();
-		const { commands } = register(fixture.value, { importSealedHoldout: vi.fn(() => ({ taskCount: 20 })) });
+		const { commands, output } = register(fixture.value, { importSealedHoldout: vi.fn(() => ({ taskCount: 20 })) });
 		const host = context({
 			select: async (_title, choices) => choices[1],
 			input: async () => "twenty",
 		});
 
-		await expect(command(commands, "holdout").handler("", host.ctx)).rejects.toThrow(/whole number/);
+		await expectRefusal(commands, "holdout", "", host.ctx, output, /whole number/);
 		expect(fixture.decide).not.toHaveBeenCalled();
 	});
 

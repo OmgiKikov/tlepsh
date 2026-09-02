@@ -6,7 +6,7 @@ import type { TSchema } from "typebox";
 import { t } from "../i18n.js";
 import { oneLine } from "./render/format.js";
 import { themePaint } from "./render/paint.js";
-import { createPolicyAwareGate, projectForModel } from "./workbench-adapter.js";
+import { createPolicyAwareGate, projectForModel, refusalCard } from "./workbench-adapter.js";
 import {
 	WorkshopAuthorToolSchema,
 	WorkshopBashToolSchema,
@@ -107,7 +107,8 @@ export function createWorkshopTools(
 				const paint = themePaint(theme);
 				return card([`${paint.accent("workshop")} ${paint.dim("read")} ${oneLine(args.path ?? "", 80)}`]);
 			},
-			renderResult: (result, renderOptions, theme) => {
+			renderResult: (result, renderOptions, theme, context) => {
+				if (context.isError) return refusalCard(result, theme);
 				const paint = themePaint(theme);
 				const details = result.details as {
 					path?: string;
@@ -153,7 +154,8 @@ export function createWorkshopTools(
 				const verb = args.remove ? "remove" : args.oldText !== undefined ? "replace in" : "write";
 				return card([`${paint.accent("workshop")} ${paint.dim(verb)} ${oneLine(args.path ?? "", 80)}`]);
 			},
-			renderResult: (result, _renderOptions, theme) => {
+			renderResult: (result, _renderOptions, theme, context) => {
+				if (context.isError) return refusalCard(result, theme);
 				const paint = themePaint(theme);
 				const details = result.details as { path?: string; action?: string; bytes?: number | null } | undefined;
 				if (!details) return card([paint.muted("workshop write")]);
@@ -187,7 +189,8 @@ export function createWorkshopTools(
 				const paint = themePaint(theme);
 				return card([`${paint.accent("workshop")} ${paint.dim("run")} ${oneLine((args.argv ?? []).join(" "), 100)}`]);
 			},
-			renderResult: (result, renderOptions, theme) => {
+			renderResult: (result, renderOptions, theme, context) => {
+				if (context.isError) return refusalCard(result, theme);
 				const paint = themePaint(theme);
 				const details = result.details as {
 					argv?: string[];
@@ -240,7 +243,8 @@ export function createWorkshopTools(
 				const paint = themePaint(theme);
 				return card([`${paint.accent("workshop")} ${paint.dim("build tool")} ${paint.bold(args.name ?? "")}`]);
 			},
-			renderResult: (result, renderOptions, theme) => {
+			renderResult: (result, renderOptions, theme, context) => {
+				if (context.isError) return refusalCard(result, theme);
 				const paint = themePaint(theme);
 				const details = result.details as {
 					tool?: string;
@@ -291,7 +295,8 @@ export function createWorkshopTools(
 					`${paint.accent("workshop")} ${paint.dim(args.fixtures === true ? "fixtures" : "try")} ${paint.bold(args.tool ?? "")}`,
 				]);
 			},
-			renderResult: (result, renderOptions, theme) => {
+			renderResult: (result, renderOptions, theme, context) => {
+				if (context.isError) return refusalCard(result, theme);
 				const paint = themePaint(theme);
 				const run = result.details as {
 					tool?: string;

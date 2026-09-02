@@ -434,6 +434,39 @@ export function registerAhdeBuilderCommands(
 		return view.detail.content;
 	};
 
+	/**
+	 * Every slash command, behind one guard.
+	 *
+	 * Pi renders a thrown command handler as `Extension "command:traces"
+	 * error: …` with its stack under it — its own framing, in English — so a
+	 * refusal the operator merely typed wrong reads like a crash of the
+	 * product. The same sentence goes into the transcript as a panel instead.
+	 *
+	 * Without a TUI there is nowhere to draw one, and the caller — a script, an
+	 * RPC host, a test — is owed the error itself, so it is rethrown.
+	 */
+	const registerCommand = (
+		name: string,
+		definition: { description: string; handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> },
+	): void => {
+		pi.registerCommand(name, {
+			description: definition.description,
+			handler: async (args, ctx) => {
+				try {
+					await definition.handler(args, ctx);
+				} catch (error) {
+					if (!ctx.hasUI || ctx.mode !== "tui") throw error;
+					const human = humanizeCommandError(error);
+					presenter.show(ctx, {
+						title: t("panel.title", { detail: `/${name}` }),
+						tone: human.tone,
+						lines: [human.message],
+					});
+				}
+			},
+		});
+	};
+
 	const gate = (ctx: ExtensionCommandContext) => createPolicyAwareGate(
 		ctx,
 		options.actorId,
@@ -927,7 +960,7 @@ export function registerAhdeBuilderCommands(
 		options.sendUserMessage(note ? `${request} ${note}` : request);
 	};
 
-	pi.registerCommand("test", {
+	registerCommand("test", {
 		description: "Test the agent: publish and run whatever is pending, or verify the applied candidate: /test [repetitions] [reason]",
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "test");
@@ -936,7 +969,7 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 
-	pi.registerCommand("fix", {
+	registerCommand("fix", {
 		description: "Prepare the exact change for problem n from the current diagnosis: /fix [n] [reason]",
 		async handler(args, ctx) {
 			await prepare(ctx, "fix");
@@ -945,7 +978,7 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 
-	pi.registerCommand("ship", {
+	registerCommand("ship", {
 		description: "Ship the verified candidate — promote, adopt, next cycle: /ship [version] [reason]",
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "ship");
@@ -954,7 +987,7 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 
-	pi.registerCommand("help", {
+	registerCommand("help", {
 		description: "Show the AHDE Builder workflow and shortcuts",
 		async handler(args, ctx) {
 			noArguments("help", args);
@@ -963,7 +996,7 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 
-	pi.registerCommand("doctor", {
+	registerCommand("doctor", {
 		description: "Check Builder authentication, Target readiness, and recovery steps",
 		async handler(args, ctx) {
 			noArguments("doctor", args);
@@ -1042,7 +1075,7 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 
-	pi.registerCommand("holdout", {
+	registerCommand("holdout", {
 		description: "Get a sealed exam: import an operator-owned JSONL file, or have the judge write one. Either way its content stays hidden from Builder Pi",
 		async handler(args, ctx) {
 			noArguments("holdout", args);
@@ -1118,7 +1151,7 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 
-	pi.registerCommand("status", {
+	registerCommand("status", {
 		description: "Show where you are in the AHDE workflow and the next step",
 		async handler(args, ctx) {
 			noArguments("status", args);
@@ -1128,7 +1161,7 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 
-	pi.registerCommand("run", {
+	registerCommand("run", {
 		description: "Run the development basket or verify the applied candidate: /run [repetitions] [reason]",
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "run");
@@ -1137,7 +1170,7 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 
-	pi.registerCommand("calibrate", {
+	registerCommand("calibrate", {
 		description: "Measure run-to-run noise by running this exact revision against itself: /calibrate [repetitions] [reason]",
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "calibrate");
@@ -1151,7 +1184,7 @@ export function registerAhdeBuilderCommands(
 	 * the recorded answers are scored again, and the operator sees the
 	 * difference — without buying one Target token a second time.
 	 */
-	pi.registerCommand("regrade", {
+	registerCommand("regrade", {
 		description: "Re-score the recorded answers with the revised graders, without calling the agent again: /regrade [erun]",
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "regrade");
@@ -1170,7 +1203,7 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 
-	pi.registerCommand("traces", {
+	registerCommand("traces", {
 		description: "Show the diagnosis, failure modes, and the read-only evidence link",
 		async handler(args, ctx) {
 			const rowsWanted = args.trim();
@@ -1193,7 +1226,7 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 
-	pi.registerCommand("review", {
+	registerCommand("review", {
 		description: "Show the exact artifact awaiting your review and offer its decisions",
 		async handler(args, ctx) {
 			noArguments("review", args);
@@ -1207,7 +1240,7 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 
-	pi.registerCommand("approve", {
+	registerCommand("approve", {
 		description: "Approve the reviewed Spec draft: /approve [reason]",
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "approve");
@@ -1215,7 +1248,7 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 
-	pi.registerCommand("publish", {
+	registerCommand("publish", {
 		description: "Publish the reviewed eval basket as development evidence: /publish [name]",
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "publish");
@@ -1224,7 +1257,7 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 
-	pi.registerCommand("apply", {
+	registerCommand("apply", {
 		description: "Apply the reviewed proposal to a candidate branch: /apply [branch] [reason]",
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "apply");
@@ -1233,7 +1266,7 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 
-	pi.registerCommand("discard", {
+	registerCommand("discard", {
 		description: "Discard the reviewed proposal or abandon an interrupted candidate: /discard [reason]",
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "discard");
@@ -1241,7 +1274,7 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 
-	pi.registerCommand("promote", {
+	registerCommand("promote", {
 		description: "Promote the verified candidate: /promote <version> [reason]",
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "promote");
@@ -1250,7 +1283,7 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 
-	pi.registerCommand("reject", {
+	registerCommand("reject", {
 		description: "Reject the verified candidate: /reject [reason]",
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "reject");
@@ -1258,7 +1291,7 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 
-	pi.registerCommand("adopt", {
+	registerCommand("adopt", {
 		description: "Fast-forward the current branch to the promoted candidate: /adopt [reason]",
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "adopt");
@@ -1266,7 +1299,7 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 
-	pi.registerCommand("next", {
+	registerCommand("next", {
 		description: "Close this improvement cycle and continue with the active Target: /next [reason]",
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "next");
@@ -1274,7 +1307,7 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 
-	pi.registerCommand("target", {
+	registerCommand("target", {
 		description: "Show the exact committed Target, or one declared resource: /target [resource-path]",
 		async handler(args, ctx) {
 			await prepare(ctx, "target");
@@ -1297,7 +1330,7 @@ export function registerAhdeBuilderCommands(
 	 * lands twice: on screen now, and as a file the operator can send to someone
 	 * who was not in the room.
 	 */
-	pi.registerCommand("passport", {
+	registerCommand("passport", {
 		description: "Show what a shipped version promised and measured, and write it beside the agent: /passport [version]",
 		async handler(args, ctx) {
 			await prepare(ctx, "passport");
@@ -1319,7 +1352,7 @@ export function registerAhdeBuilderCommands(
 	});
 
 	/** One run on screen — the host's facts and the conversation — then the Builder's own reading of it. */
-	pi.registerCommand("trace", {
+	registerCommand("trace", {
 		description: "Open one run: why it failed, every grader's verdict, the conversation: /trace <row|next|prev|task id|run id>",
 		async handler(args, ctx) {
 			await prepare(ctx, "trace");
@@ -1365,7 +1398,7 @@ export function registerAhdeBuilderCommands(
 	});
 
 	/** The growth log: every decided attempt, newest first, and the curve under it. */
-	pi.registerCommand("log", {
+	registerCommand("log", {
 		description: "Show how the agent grew: every promoted and rejected version: /log [rows]",
 		async handler(args, ctx) {
 			await prepare(ctx, "log");
@@ -1388,7 +1421,7 @@ export function registerAhdeBuilderCommands(
 	 * the harness surface and the newest measurement. Nothing runs, nothing is
 	 * written, and the Builder is told nothing.
 	 */
-	pi.registerCommand("plan", {
+	registerCommand("plan", {
 		description: "Show the whole cycle as a checklist: what is done, what you are in, what is left",
 		async handler(args, ctx) {
 			noArguments("plan", args);
@@ -1431,7 +1464,7 @@ export function registerAhdeBuilderCommands(
 	});
 
 	/** What is measuring right now, and how to stop it. */
-	pi.registerCommand("jobs", {
+	registerCommand("jobs", {
 		description: "Show the background measurement that is running, if any",
 		async handler(args, ctx) {
 			noArguments("jobs", args);
@@ -1445,7 +1478,7 @@ export function registerAhdeBuilderCommands(
 	});
 
 	/** Cancel the running measurement through the signal the Workbench honours. */
-	pi.registerCommand("stop", {
+	registerCommand("stop", {
 		description: "Stop the background measurement; nothing it measured is kept",
 		async handler(args, ctx) {
 			noArguments("stop", args);
@@ -1462,7 +1495,7 @@ export function registerAhdeBuilderCommands(
 	 * agree — and the exercise is over in ten minutes, which is the only reason
 	 * anyone ever does it.
 	 */
-	pi.registerCommand("label", {
+	registerCommand("label", {
 		description: `Check the judge: grade its answers blind, then see what it said: /label [n up to ${MAX_LABEL_SAMPLE}]`,
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "label");
