@@ -6,7 +6,9 @@ import { loadCorpus, listCorpora, CorpusTaskSchema } from "../src/corpus.js";
 import { startMockModel, type MockModelHandle } from "../src/mock-model.js";
 import {
 	listSealedSynthReceipts,
+	planSealedSynthesis,
 	renderSealedSynthOutput,
+	sealedExamOrigin,
 	SealedSynthRefusal,
 	sealedSynthSource,
 	synthesizeSealedCorpus,
@@ -44,7 +46,10 @@ const SPEC_MD = `# Support answer agent
 - ответ вежлив
 `;
 
-function manifestYaml(judge: { provider: string; id: string; baseUrl: string } | null): string {
+function manifestYaml(
+	judge: { provider: string; id: string; baseUrl: string } | null,
+	declareKb = false,
+): string {
 	const judgeBlock = judge
 		? `  judge:
     provider: ${judge.provider}
@@ -68,11 +73,39 @@ model:
 instructions:
   agentsMd: AGENTS.md
 skills: [skills/check-dbo]
-evalSuite:
+${declareKb ? "data: [data/kb]\n" : ""}evalSuite:
   id: test-suite
   dataset: evals/development.jsonl
   graders: evals/graders.yaml
 ${judgeBlock}`;
+}
+
+/**
+ * Three short documents, each one paragraph past its heading, so every file is
+ * exactly one chunk and the ids a test asserts on are readable: `a.md#0`.
+ */
+const KB_DOCS: Record<string, string> = {
+	"data/kb/a.md": "# Тарифы\n\nТариф «Река» стоит 750 рублей в месяц.\n",
+	"data/kb/b.md": "# Блокировка\n\nДоступ приостанавливается на пятые сутки после появления задолженности.\n",
+	"data/kb/c.md": "# Мастер\n\nВыезд мастера стоит 600 рублей, если причина внутри квартиры.\n",
+};
+
+const KB_ANSWERS: Record<string, { question: string; answer: string }> = {
+	"a.md#0": { question: "Сколько стоит тариф «Река»?", answer: "750 рублей в месяц" },
+	"b.md#0": { question: "Когда отключат интернет за долг?", answer: "На пятые сутки после появления задолженности" },
+	"c.md#0": { question: "Сколько стоит выезд мастера?", answer: "600 рублей, если причина внутри квартиры" },
+};
+
+/** A judge that answers each passage with its own question-and-answer pair. */
+async function mockKbJudge(overrides: Record<string, string> = {}): Promise<MockModelHandle> {
+	const mock = await startMockModel(
+		Object.entries(KB_ANSWERS).map(([chunkId, pair]) => ({
+			match: ({ firstUser }: { firstUser: string }) => firstUser.includes(`# Passage ${chunkId}`),
+			steps: [{ text: overrides[chunkId] ?? JSON.stringify(pair) }],
+		})),
+	);
+	mocks.push(mock);
+	return mock;
 }
 
 interface Fixture {
@@ -82,12 +115,21 @@ interface Fixture {
 }
 
 /** A Target whose judge is the mock, plus a private state root and a scratch dir. */
-function fixture(options: { judge?: { provider: string; id: string; baseUrl: string } | null; spec?: boolean } = {}): Fixture {
+function fixture(
+	options: {
+		judge?: { provider: string; id: string; baseUrl: string } | null;
+		spec?: boolean;
+		/** `true` declares and populates data/kb; `"empty"` declares an empty one. */
+		kb?: boolean | "empty";
+	} = {},
+): Fixture {
 	const targetDir = makeTargetFixture(
 		baseFixtureFiles({
-			"manifest.yaml": manifestYaml(options.judge === undefined ? null : options.judge),
+			"manifest.yaml": manifestYaml(options.judge === undefined ? null : options.judge, Boolean(options.kb)),
 			"evals/development.jsonl": `${DEV_CASES.map((task) => JSON.stringify(task)).join("\n")}\n`,
 			...(options.spec === false ? {} : { "spec.md": SPEC_MD }),
+			...(options.kb === true ? KB_DOCS : {}),
+			...(options.kb === "empty" ? { "data/kb/README.pdf": "%PDF-1.4 не знание" } : {}),
 		}),
 	);
 	const stateRoot = mkdtempSync(join(tmpdir(), "ahde-synth-state-"));
@@ -464,5 +506,178 @@ describe("sealed synthetic generation cleanup", () => {
 		const entries = readdirSync(synthRoot, { withFileTypes: true });
 		expect(entries).not.toHaveLength(0);
 		expect(entries.every((entry) => entry.isFile() && /^[0-9a-f]{64}\.json$/.test(entry.name))).toBe(true);
+	});
+});
+
+describe("an exam written from the knowledge base", () => {
+	it("asks one question per passage and nails each answer to the passage it came from", async () => {
+		const mock = await mockKbJudge();
+		const { targetDir, stateRoot } = fixture({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+			kb: true,
+		});
+
+		const result = await synthesizeSealedCorpus({
+			targetDir,
+			stateRoot,
+			projectId: "project",
+			name: "KB exam",
+			// Five asked for, three passages available: an exam cannot ask more
+			// independent questions than it has sources.
+			count: 5,
+			source: "kb",
+			seed: "s1",
+			now: () => at,
+		});
+
+		expect(result.source).toBe("kb");
+		expect(result.requested).toBe(3);
+		expect(result.accepted).toBe(3);
+		expect(result.corpus?.taskCount).toBe(3);
+
+		const loaded = loadCorpus({ stateRoot, projectId: "project", corpusId: result.corpus!.id });
+		expect(loaded.tasks).toHaveLength(3);
+		const byChunk = new Map(loaded.tasks.map((task) => [task.metadata?.kbChunk, task]));
+		expect([...byChunk.keys()].sort()).toEqual(["a.md#0", "b.md#0", "c.md#0"]);
+		for (const [chunkId, task] of byChunk) {
+			const pair = KB_ANSWERS[String(chunkId)]!;
+			expect(task.input).toBe(pair.question);
+			expect(task.expected).toBe(pair.answer);
+			// Ids are still derived host-side; the judge never names a case.
+			expect(task.id).toMatch(/^synth-[0-9a-f]{24}$/);
+			expect(task.graders).toEqual([
+				{ type: "cites_source", chunk: chunkId, minOverlap: 0.35 },
+				{ type: "similarity", metric: "token-f1", threshold: 0.5 },
+			]);
+			// No judge grader: the model that wrote the question and the reference
+			// answer does not also mark the paper.
+			expect(task.graders?.some((grader) => grader.type === "judge")).toBe(false);
+		}
+
+		const receipt = result.receipt;
+		expect(receipt.schemaVersion).toBe(2);
+		expect(sealedSynthSource(receipt)).toBe("kb");
+		expect(receipt.schemaVersion === 2 && receipt.kbIndexHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+		expect(receipt.requested).toBe(3);
+		// Nothing about a case reaches the receipt or anything an operator reads.
+		const visible = JSON.stringify(receipt) + renderSealedSynthOutput(result).stdout.join("\n");
+		for (const pair of Object.values(KB_ANSWERS)) {
+			expect(visible).not.toContain(pair.question);
+			expect(visible).not.toContain(pair.answer);
+		}
+		expect(renderSealedSynthOutput(result).stdout.join("\n")).toContain("source        kb");
+
+		expect(sealedExamOrigin(stateRoot, "project", result.corpus!.id)).toBe("judge-generated-kb");
+	});
+
+	it("draws the same passages for the same seed, and different ones for another", async () => {
+		const first = await mockKbJudge();
+		const alpha = fixture({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: first.url },
+			kb: true,
+		});
+		const plan = (seed: string, count: number) =>
+			planSealedSynthesis({
+				targetDir: alpha.targetDir,
+				stateRoot: alpha.stateRoot,
+				projectId: "project",
+				name: "KB exam",
+				count,
+				source: "kb",
+				seed,
+			});
+		expect(plan("s1", 2).kbChunkIds).toEqual(plan("s1", 2).kbChunkIds);
+		expect(plan("s1", 2).kbChunkIds).toHaveLength(2);
+		expect(plan("s1", 3).kbIndexHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+		// Two different seeds over three passages must not always agree on two.
+		const seeds = ["s1", "s2", "s3", "s4"].map((seed) => plan(seed, 2).kbChunkIds.join(","));
+		expect(new Set(seeds).size).toBeGreaterThan(1);
+		// The whole corpus is drawn whatever the seed, once the count reaches it.
+		expect(plan("s9", 9).kbChunkIds.sort()).toEqual(["a.md#0", "b.md#0", "c.md#0"]);
+	});
+
+	it("refuses before a token is spent when there is no knowledge base to write from", async () => {
+		const mock = await mockKbJudge();
+		const undeclared = fixture({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+		});
+		const request = {
+			stateRoot: undeclared.stateRoot,
+			projectId: "project",
+			name: "KB exam",
+			count: 3,
+			source: "kb" as const,
+		};
+		expect(() => planSealedSynthesis({ ...request, targetDir: undeclared.targetDir }))
+			.toThrow(/declares no knowledge base/);
+		await expect(synthesizeSealedCorpus({ ...request, targetDir: undeclared.targetDir, now: () => at }))
+			.rejects.toMatchObject({ name: "SealedSynthRefusal" });
+		expect(listCorpora({ stateRoot: undeclared.stateRoot, projectId: "project" })).toEqual([]);
+		expect(listSealedSynthReceipts(undeclared.stateRoot, "project")).toEqual([]);
+
+		const empty = fixture({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+			kb: "empty",
+		});
+		expect(() =>
+			planSealedSynthesis({
+				...request,
+				targetDir: empty.targetDir,
+				stateRoot: empty.stateRoot,
+			})
+		).toThrow(/no readable \.md or \.txt document/);
+
+		// The Spec source over the same Target is untouched by any of this.
+		const spec = planSealedSynthesis({
+			targetDir: undeclared.targetDir,
+			stateRoot: undeclared.stateRoot,
+			projectId: "project",
+			name: "exam",
+			count: 3,
+		});
+		expect(spec.source).toBe("spec");
+		expect(spec.kbIndexHash).toBeNull();
+		expect(spec.kbChunkIds).toEqual([]);
+	});
+
+	it("counts a passage whose answer did not parse as a case that never existed", async () => {
+		const mock = await mockKbJudge({ "b.md#0": "I cannot help with that." });
+		const { targetDir, stateRoot } = fixture({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+			kb: true,
+		});
+		const result = await synthesizeSealedCorpus({
+			targetDir,
+			stateRoot,
+			projectId: "project",
+			name: "KB exam",
+			count: 3,
+			source: "kb",
+			now: () => at,
+		});
+		expect(result.requested).toBe(3);
+		expect(result.accepted).toBe(2);
+		expect(result.droppedMalformed).toBe(1);
+		expect(renderSealedSynthOutput(result).warnings.join("\n"))
+			.toContain("1 generated case(s) did not match the case schema");
+	});
+
+	it("drops a passage that asks the question another passage already asked", async () => {
+		const mock = await mockKbJudge({ "c.md#0": JSON.stringify(KB_ANSWERS["a.md#0"]) });
+		const { targetDir, stateRoot } = fixture({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+			kb: true,
+		});
+		const result = await synthesizeSealedCorpus({
+			targetDir,
+			stateRoot,
+			projectId: "project",
+			name: "KB exam",
+			count: 3,
+			source: "kb",
+			now: () => at,
+		});
+		expect(result.accepted).toBe(2);
+		expect(result.droppedDuplicate).toBe(1);
 	});
 });
