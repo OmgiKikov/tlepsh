@@ -73,6 +73,7 @@ import { ProposalBasisSelectionSchema } from "./improvement-brief.js";
 import {
 	assertTargetAuthoringSurfaceWithinLimits,
 	classifyTargetAuthoringResourcePath,
+	explainTargetAuthoringResourcePath,
 	TARGET_AUTHORING_LIMITS,
 	type TargetAuthoringContextClaim,
 	type TargetAuthoringResource,
@@ -340,42 +341,6 @@ export function describeFixtureRun(run: ToolFixtureRunResult): string {
 	if (run.allPassed) return `✓ ${run.passed}/${run.total} fixtures`;
 	const failed = run.fixtures.find((fixture) => !fixture.passed);
 	return `✗ ${run.passed}/${run.total} — ${failed?.name ?? "?"}: ${failed?.failures.join("; ") ?? "failed"}`;
-}
-
-/**
- * The newest fixture run of each tool, recovered from the workshop's own try
- * history. This is what the close panel states — `✓ 3/3 fixtures` — and it is
- * deliberately workshop-local, restart-surviving scratch rather than evidence:
- * a run only counts for the exact snapshot it ran against, so repairing a tool
- * and closing without re-running shows the repair as untested.
- */
-export function lastFixtureRunPerTool(
-	history: readonly { tool: string; test: string | null; passed: boolean; failure: string | null; exitCode: number | null; durationMs: number; snapshotHash: string }[],
-): ToolFixtureRunResult[] {
-	const byTool = new Map<string, typeof history[number][]>();
-	for (const entry of history) {
-		if (entry.test === null) continue;
-		byTool.set(entry.tool, [...(byTool.get(entry.tool) ?? []), entry]);
-	}
-	const runs: ToolFixtureRunResult[] = [];
-	for (const [tool, entries] of byTool) {
-		const newest = entries[entries.length - 1];
-		if (!newest) continue;
-		// One run is the named tries against one snapshot; a retry of the same
-		// fixture replaces the earlier attempt rather than counting twice.
-		const latest = new Map<string, typeof history[number]>();
-		for (const entry of entries) {
-			if (entry.snapshotHash === newest.snapshotHash) latest.set(entry.test as string, entry);
-		}
-		runs.push(summarizeFixtures(tool, [...latest.values()].map((entry) => ({
-			name: entry.test as string,
-			passed: entry.passed,
-			exitCode: entry.exitCode,
-			durationMs: entry.durationMs,
-			failures: entry.failure === null ? [] : [entry.failure],
-		}))));
-	}
-	return runs.sort((left, right) => left.tool.localeCompare(right.tool));
 }
 
 /**
@@ -1045,6 +1010,8 @@ export interface BuilderWorkshopDescriptor {
 export interface CompiledWorkshopProposal {
 	proposal: CandidateProposal;
 	changes: WorkshopChange[];
+	/** What the declared tools this diff touches say about themselves, right now. */
+	toolTests: ToolFixtureRunResult[];
 	/** The exact revision the diff is against; identical to `proposal.baseTargetSha`. */
 	baseTargetSha: string;
 	manifestChangePolicy: "resources-only" | "execution-policy";
@@ -1105,6 +1072,8 @@ export class BuilderWorkshop {
 	private readonly baseManifestText: string;
 	private readonly baseManifest: TargetManifestValue;
 	private readonly written = new Set<string>();
+	/** Written and then deliberately taken back; the diff owes nothing for these. */
+	private readonly removed = new Set<string>();
 	private readonly grants: WorkshopGrant[] = [];
 	private readonly grantHistory: WorkshopGrantAuditEvent[];
 	private readonly tryHistory: WorkshopTrySummary[];
@@ -1259,6 +1228,7 @@ export class BuilderWorkshop {
 			rmSync(absolute);
 			this.writes += 1;
 			this.written.add(request.path);
+			this.removed.add(request.path);
 			this.syncDeclarations();
 			return { path: request.path, action: "removed", mode: null, bytes: null, sha256: null };
 		}
@@ -1295,6 +1265,7 @@ export class BuilderWorkshop {
 		chmodSync(absolute, mode === "100755" ? 0o755 : 0o644);
 		this.writes += 1;
 		this.written.add(request.path);
+		this.removed.delete(request.path);
 		this.syncDeclarations();
 		const unchanged = before !== null && beforeMode === mode && before.equals(Buffer.from(next, "utf8"));
 		return {
@@ -1379,7 +1350,12 @@ export class BuilderWorkshop {
 		const symlinks: string[] = [];
 		collectWorkshopFiles(this.path, directory, old, symlinks);
 		if (symlinks.length > 0) throw new BuilderWorkshopScopeError(symlinks, "a generated tool package contains a symlink");
-		for (const path of old.keys()) this.written.add(path);
+		// Everything the previous package held is deliberately gone; only what
+		// this call writes back is promised to the diff.
+		for (const path of old.keys()) {
+			this.written.add(path);
+			this.removed.add(path);
+		}
 		rmSync(absolute, { recursive: true, force: true });
 		mkdirSync(absolute, { recursive: true, mode: 0o755 });
 		for (const file of files) {
@@ -1389,6 +1365,7 @@ export class BuilderWorkshop {
 			writeFileSync(destination, file.content, "utf8");
 			chmodSync(destination, file.mode === "100755" ? 0o755 : 0o644);
 			this.written.add(requested);
+			this.removed.delete(requested);
 		}
 		this.writes += files.length + 1;
 		this.syncDeclarations();
@@ -1597,9 +1574,12 @@ export class BuilderWorkshop {
 
 	/**
 	 * Fold what the command produced back into the real worktree. Everything is
-	 * validated first and written second: one symlink, one oversize file, or one
-	 * path outside the scope refuses the whole sync by name rather than leaving
-	 * the worktree half-updated.
+	 * validated first and written second: one symlink, one oversize file, one
+	 * path outside the scope, or two paths that differ only in letter case
+	 * refuses the whole sync by name rather than leaving the worktree
+	 * half-updated. Removals happen before writes, and the result is read back
+	 * and compared: a file the command produced is in the worktree afterwards,
+	 * with those exact bytes, or the command result is refused.
 	 */
 	private absorbAuthoringSurface(surface: string): void {
 		const produced = new Map<string, WorkshopFileState>();
@@ -1621,18 +1601,51 @@ export class BuilderWorkshop {
 				`a workshop command writes only inside ${BUILDER_WORKSHOP_SCOPE.join(", ")}, at most ${MAX_WORKSHOP_FILE_BYTES} bytes per file`,
 			);
 		}
+		// Two produced paths that differ only in case are one file on a
+		// case-insensitive filesystem, and absorbing both would keep whichever
+		// happened to be written last. Refuse the command result by name.
+		const folded = new Map<string, string>();
+		const collisions = new Set<string>();
+		for (const path of produced.keys()) {
+			const first = folded.get(path.toLowerCase());
+			if (first === undefined) folded.set(path.toLowerCase(), path);
+			else {
+				collisions.add(first);
+				collisions.add(path);
+			}
+		}
+		if (collisions.size > 0) {
+			throw new BuilderWorkshopScopeError(
+				[...collisions].sort((left, right) => left.localeCompare(right)),
+				"these paths differ only in letter case and cannot both exist in one Harness",
+			);
+		}
 		const before = this.walkAuthoringScope();
+		// Removals first. `mv SKILL.md skill.md` produces one path and drops the
+		// other, and on a case-insensitive filesystem they are the same file: with
+		// the write first, the removal of the old spelling deleted the rename.
+		for (const path of before.entries.keys()) {
+			if (path === WORKSHOP_MANIFEST || produced.has(path)) continue;
+			rmSync(join(this.path, path), { force: true });
+		}
 		for (const [path, file] of produced) {
-			const current = before.entries.get(path);
-			if (current && current.mode === file.mode && current.content.equals(file.content)) continue;
 			const destination = join(this.path, path);
 			mkdirSync(dirname(destination), { recursive: true, mode: 0o755 });
 			writeFileSync(destination, file.content);
 			chmodSync(destination, file.mode === "100755" ? 0o755 : 0o644);
 		}
-		for (const path of before.entries.keys()) {
-			if (path === WORKSHOP_MANIFEST || produced.has(path)) continue;
-			rmSync(join(this.path, path), { force: true });
+		// The absorb is only believable if the worktree now says exactly what the
+		// command produced, path by path. Anything else — a fold the check above
+		// did not model, a removal that took a produced file with it — stops here
+		// by name rather than silently shrinking the proposal.
+		const after = this.walkAuthoringScope();
+		for (const [path, file] of produced) {
+			const landed = after.entries.get(path);
+			if (landed && landed.mode === file.mode && landed.content.equals(file.content)) continue;
+			throw new ToolWorkshopError(
+				`${path} did not survive the workshop command: the worktree ` +
+				`${landed ? "holds different bytes for it" : "has no such file"} afterwards`,
+			);
 		}
 	}
 
@@ -2181,52 +2194,91 @@ export class BuilderWorkshop {
 	}
 
 	/**
-	 * A typed package carries an executable contract manifest. Closing is allowed
-	 * only after every listed fixture passed against the exact bytes being
-	 * proposed. Manual tools without that manifest keep the legacy one-green-try
-	 * workflow; packages created by Tool Authoring cannot silently skip tests.
+	 * What the contract tests of this exact proposal say, tool by tool.
+	 *
+	 * Only the tools the resulting Harness actually declares and this proposal
+	 * actually changed are in it, and only tries against the exact snapshot being
+	 * proposed count. A package the Builder removed contributes nothing: the live
+	 * close panel showed `✗ check_dbo 0/3` for a package that was no longer in
+	 * the proposal at all, and the operator applied the diff anyway.
+	 *
+	 * A tool with no fixtures reports zero of zero — an honest "no contract
+	 * tests", never a stale result from an earlier package.
 	 */
-	private assertToolContractsPassed(
+	private toolContractReport(
 		snapshot: ReadonlyMap<string, WorkshopFileState>,
 		changes: readonly WorkshopChange[],
 		resulting: ResolvedTarget,
-	): void {
+	): ToolFixtureRunResult[] {
 		const snapshotHash = workshopSnapshotHash(snapshot);
 		const changed = new Set(changes.map((change) => change.path));
+		const runs: ToolFixtureRunResult[] = [];
 		for (const tool of resulting.tools) {
-			if (!tool.directoryPath) continue;
-			const prefix = `${tool.directoryPath}/`;
-			if (![...changed].some((path) => path.startsWith(prefix))) continue;
-			const manifestPath = `${tool.directoryPath}/contract-tests.json`;
-			const entry = snapshot.get(manifestPath);
-			if (!entry) continue;
-			let manifest: z.infer<typeof WorkshopContractManifestSchema>;
-			try {
-				manifest = WorkshopContractManifestSchema.parse(JSON.parse(workshopText(entry.content, manifestPath)));
-			} catch (error) {
-				throw new ToolWorkshopError(`${manifestPath} is not a valid AHDE contract-test manifest`, { cause: error });
+			const prefix = tool.directoryPath ? `${tool.directoryPath}/` : null;
+			const touched = changed.has(tool.descriptorPath) || changed.has(tool.executablePath) ||
+				(prefix !== null && [...changed].some((path) => path.startsWith(prefix)));
+			if (!touched) continue;
+			const declared = this.declaredContractFixtures(snapshot, tool);
+			// The newest attempt per fixture, and only against these exact bytes: a
+			// repair that was never re-tried shows as untested, not as its old pass.
+			const attempts = new Map<string, WorkshopTrySummary>();
+			for (const item of this.tryHistory) {
+				if (item.tool !== tool.descriptor.name || item.snapshotHash !== snapshotHash || item.test === null) continue;
+				attempts.set(item.test, item);
 			}
-			if (manifest.tool !== tool.descriptor.name) {
-				throw new ToolWorkshopError(`${manifestPath} names ${manifest.tool}, not ${tool.descriptor.name}`);
-			}
-			const expected = manifest.fixtures.map((path) => {
-				const fixturePath = `${tool.directoryPath}/${path}`;
-				if (!snapshot.has(fixturePath)) {
-					throw new ToolWorkshopError(`${manifestPath} refers to missing ${fixturePath}`);
+			runs.push(summarizeFixtures(tool.descriptor.name, declared.map((name) => {
+				const attempt = attempts.get(name);
+				if (!attempt) {
+					return { name, passed: false, exitCode: null, durationMs: 0, failures: ["never run against the exact proposal snapshot"] };
 				}
-				return WORKSHOP_CONTRACT_FIXTURE.exec(path)![1]!;
-			});
-			const passed = new Set(this.tryHistory
-				.filter((item) => item.tool === tool.descriptor.name && item.snapshotHash === snapshotHash && item.passed)
-				.map((item) => item.test)
-				.filter((name): name is string => name !== null));
-			const missing = expected.filter((name) => !passed.has(name));
-			if (missing.length > 0) {
-				throw new ToolWorkshopError(
-					`${tool.descriptor.name} is not ready to close: contract tests not green on the exact proposal snapshot: ${missing.join(", ")}`,
-				);
-			}
+				return {
+					name,
+					passed: attempt.passed,
+					exitCode: attempt.exitCode,
+					durationMs: attempt.durationMs,
+					failures: attempt.passed ? [] : [attempt.failure ?? "failed"],
+				};
+			})));
 		}
+		return runs.sort((left, right) => left.tool.localeCompare(right.tool));
+	}
+
+	/**
+	 * The contract tests one declared tool carries in the exact proposal snapshot:
+	 * the executable manifest a generated package writes, or, failing that, the
+	 * `fixtures/*.json` a hand-written package holds. A single-file tool has
+	 * neither and declares none.
+	 */
+	private declaredContractFixtures(
+		snapshot: ReadonlyMap<string, WorkshopFileState>,
+		tool: ResolvedTarget["tools"][number],
+	): string[] {
+		if (!tool.directoryPath) return [];
+		const manifestPath = `${tool.directoryPath}/contract-tests.json`;
+		const entry = snapshot.get(manifestPath);
+		if (!entry) {
+			return [...snapshot.keys()]
+				.flatMap((path) => {
+					if (!path.startsWith(`${tool.directoryPath}/`)) return [];
+					const name = WORKSHOP_CONTRACT_FIXTURE.exec(path.slice((tool.directoryPath as string).length + 1))?.[1];
+					return name ? [name] : [];
+				})
+				.sort((left, right) => left.localeCompare(right));
+		}
+		let manifest: z.infer<typeof WorkshopContractManifestSchema>;
+		try {
+			manifest = WorkshopContractManifestSchema.parse(JSON.parse(workshopText(entry.content, manifestPath)));
+		} catch (error) {
+			throw new ToolWorkshopError(`${manifestPath} is not a valid AHDE contract-test manifest`, { cause: error });
+		}
+		if (manifest.tool !== tool.descriptor.name) {
+			throw new ToolWorkshopError(`${manifestPath} names ${manifest.tool}, not ${tool.descriptor.name}`);
+		}
+		return manifest.fixtures.map((path) => {
+			const fixturePath = `${tool.directoryPath}/${path}`;
+			if (!snapshot.has(fixturePath)) throw new ToolWorkshopError(`${manifestPath} refers to missing ${fixturePath}`);
+			return WORKSHOP_CONTRACT_FIXTURE.exec(path)![1]!;
+		});
 	}
 
 	status(): WorkshopStatus {
@@ -2317,11 +2369,22 @@ export class BuilderWorkshop {
 		}
 		// Nothing inside the scope may vanish from the diff behind a .gitignore —
 		// whether the model wrote it with a tool or a command produced it.
-		const ignored = new Set([...this.ignoredInScope(), ...this.swallowedWrites(snapshot.entries)]);
-		if (ignored.size > 0) {
+		const ignored = this.ignoredInScope();
+		if (ignored.length > 0) {
 			throw new BuilderWorkshopScopeError(
-				[...ignored].sort((left, right) => left.localeCompare(right)),
+				ignored,
 				"Git ignores these paths, so they can never reach a reviewed proposal",
+			);
+		}
+		// And nothing the Builder wrote leaves the proposal quietly: a file it
+		// created that is gone now, with no removal in the diff, is a promise the
+		// summary still makes and the candidate does not keep.
+		const swallowed = this.swallowedWrites(snapshot.entries);
+		if (swallowed.length > 0) {
+			throw new BuilderWorkshopScopeError(
+				swallowed,
+				"the workshop wrote these paths and the diff does not carry them; " +
+				"write them again, or remove them explicitly so the removal is reviewable",
 			);
 		}
 		if (changes.length === 0) throw new BuilderWorkshopEmptyError();
@@ -2332,7 +2395,18 @@ export class BuilderWorkshop {
 		// The resulting Harness must load and must stay readable by its Builder.
 		const resulting = loadTarget(this.path);
 		this.assertResultingHarnessReadable(resulting);
-		this.assertToolContractsPassed(snapshot.entries, changes, resulting);
+		// The tests of the Harness this proposal would create, run against the
+		// exact bytes being proposed. A declared tool whose own contract is red is
+		// not a proposal anybody should be applying.
+		const toolTests = this.toolContractReport(snapshot.entries, changes, resulting);
+		const red = toolTests.find((run) => run.total > 0 && !run.allPassed);
+		if (red) {
+			const failed = red.fixtures.find((fixture) => !fixture.passed);
+			throw new ToolWorkshopError(
+				`${red.tool} is not ready to close: contract test ${failed?.name ?? "?"} is not green on the exact ` +
+				`proposal snapshot — ${failed?.failures.join("; ") || "it did not pass"}`,
+			);
+		}
 		if (changes.some((change) => change.path === WORKSHOP_MANIFEST)) {
 			if (this.toolAuthoringPolicy) {
 				assertManifestChangePolicy(this.baseManifest, TargetManifest.parse(resulting.manifest), "execution-policy");
@@ -2389,6 +2463,7 @@ export class BuilderWorkshop {
 		return {
 			proposal,
 			changes,
+			toolTests,
 			baseTargetSha: this.baseTargetSha,
 			manifestChangePolicy: this.toolAuthoringPolicy ? "execution-policy" : "resources-only",
 		};
@@ -2412,18 +2487,23 @@ export class BuilderWorkshop {
 	}
 
 	/**
-	 * Paths the Builder wrote whose bytes differ from the baseline yet produce no
-	 * change: only a `.gitignore` can do that, and it is fatal at close.
+	 * Paths the Builder wrote that the reviewed diff will not carry. A
+	 * `.gitignore` can swallow one; so can a command that deleted it without
+	 * leaving a visible change, which is how a whole authored skill once left a
+	 * proposal whose summary still promised it. A file leaves only through an
+	 * explicit removal or through this refusal, by name.
 	 */
 	private swallowedWrites(entries: ReadonlyMap<string, WorkshopFileState>): string[] {
 		const visible = new Set(this.changesFrom(entries).map((change) => change.path));
-		return [...this.written].filter((path) => {
-			if (visible.has(path)) return false;
-			const present = entries.get(path);
-			const base = baseBlobAt(this.repositoryDir, this.baseTargetSha, path);
-			if (!present) return base !== null;
-			return !base || !base.content.equals(present.content);
-		});
+		return [...this.written]
+			.filter((path) => {
+				if (visible.has(path)) return false;
+				const present = entries.get(path);
+				if (!present) return !this.removed.has(path);
+				const base = baseBlobAt(this.repositoryDir, this.baseTargetSha, path);
+				return !base || !base.content.equals(present.content);
+			})
+			.sort((left, right) => left.localeCompare(right));
 	}
 
 	/** The workshop only ever compiles against the exact revision it copied. */
@@ -2444,7 +2524,12 @@ export class BuilderWorkshop {
 		const resources: TargetAuthoringResource[] = [];
 		const add = (path: string): void => {
 			const identity = classifyTargetAuthoringResourcePath(path);
-			if (!identity) throw new ToolWorkshopError(`the resulting Harness declares a noncanonical resource: ${path}`);
+			if (!identity) {
+				throw new ToolWorkshopError(
+					`the resulting Harness declares a noncanonical resource: ${path} — ` +
+					explainTargetAuthoringResourcePath(path),
+				);
+			}
 			const info = lstatSync(join(this.path, path));
 			resources.push({
 				kind: identity.kind,

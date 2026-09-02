@@ -1,9 +1,5 @@
 import { t } from "../../i18n.js";
-import {
-	lastFixtureRunPerTool,
-	type ToolFixtureRunResult,
-	type WorkshopTrySummary,
-} from "../../application/tool-workshop.js";
+import type { ToolFixtureRunResult } from "../../application/tool-workshop.js";
 import type { WorkbenchReviewDetail } from "../../workbench/types.js";
 import { oneLine } from "./format.js";
 import type { Paint } from "./paint.js";
@@ -16,16 +12,15 @@ import { renderReview } from "./view.js";
  * This is the review the operator asked for, in the order they asked for it:
  * what was created, what it is allowed to reach, whether its own tests passed,
  * the complete diff, and the two things that can happen next. Everything in it
- * is derived from the exact proposal and the workshop's own try history —
+ * is derived from the exact proposal and the tests of the tools it declares —
  * nothing is a claim the model made about its work.
  */
 export function renderWorkshopCloseReview(
 	content: Extract<WorkbenchReviewDetail, { kind: "proposal" | "applied-proposal" }>,
-	tryHistory: readonly WorkshopTrySummary[],
+	runs: readonly ToolFixtureRunResult[],
 	paint: Paint,
 ): string[] {
 	const permissions = renderToolPermissions(toolPermissionsFromDiff(content.exactDiff), paint);
-	const runs = lastFixtureRunPerTool(tryHistory);
 	return [
 		paint.bold(t("panel.created-changed")),
 		...content.paths.map((path) => `  • ${oneLine(path, 120)}`),

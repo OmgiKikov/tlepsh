@@ -34,7 +34,9 @@ import { setLanguage } from "../src/i18n.js";
 import { renderImpact } from "../src/builder/render/impact.js";
 import { renderToolPermissions, toolPermissionsFromDiff } from "../src/builder/render/tool-permissions.js";
 import { fixtureLines, renderWorkshopCloseReview } from "../src/builder/render/workshop-close.js";
-import { lastFixtureRunPerTool } from "../src/application/tool-workshop.js";
+import { createWorkshopTools } from "../src/builder/workshop-tools.js";
+import type { AhdeWorkbench } from "../src/workbench/workbench.js";
+import type { ToolFixtureRunResult } from "../src/application/tool-workshop.js";
 import { plainPaint, type Paint } from "../src/builder/render/paint.js";
 import { STAGE_LABELS, nextStep, stageLabel } from "../src/builder/render/stage.js";
 import { workbenchGateClass } from "../src/workbench/transition-policy.js";
@@ -1759,14 +1761,14 @@ describe("renderConfirmation", () => {
 			baseTargetSha: SHA_A,
 			candidateSha: SHA_B,
 			approvedSpec: { projectId: "proj", specId: "spec-1", specContentHash: HASH, snapshotHash: HASH },
-			developmentCorpus: { id: "corpus-1", hash: HASH },
+			developmentCorpus: { id: "corpus-1", hash: HASH, taskCount: 6 },
 			sealedHoldout: { id: "corpus-SEALED-IDENTITY", hash: SEALED_HASH, taskCount: 7 },
 			repetitions: 2,
 		}), plainPaint);
 		const text = lines.join("\n");
 		expect(lines.slice(0, 4)).toEqual([
 			"Matched experiment baseline aaaaaaaaaa vs candidate bbbbbbbbbb · 2 repetitions",
-			"Development basket corpus-1 (cccccccccccc…)",
+			"Development basket 6 cases · corpus-1 (cccccccccccc…)",
 			"Sealed holdout 7 cases · identity stays evaluator-only",
 			"Both revisions run every case; the Builder never sees sealed content.",
 		]);
@@ -2438,11 +2440,16 @@ describe("tool permissions", () => {
 });
 
 describe("the workshop-close review", () => {
-	const history = [
-		{ tool: "weather", test: "sunny", passed: true, exitCode: 0, timedOut: false, truncated: false, durationMs: 12, failure: null, snapshotHash: `sha256:${"a".repeat(64)}`, at: "2026-01-01T00:00:00.000Z" },
-		{ tool: "weather", test: "sunny", passed: true, exitCode: 0, timedOut: false, truncated: false, durationMs: 11, failure: null, snapshotHash: `sha256:${"b".repeat(64)}`, at: "2026-01-01T00:01:00.000Z" },
-		{ tool: "weather", test: "unknown-city", passed: true, exitCode: 3, timedOut: false, truncated: false, durationMs: 9, failure: null, snapshotHash: `sha256:${"b".repeat(64)}`, at: "2026-01-01T00:02:00.000Z" },
-	];
+	const green: ToolFixtureRunResult[] = [{
+		tool: "weather",
+		total: 2,
+		passed: 2,
+		allPassed: true,
+		fixtures: [
+			{ name: "sunny", passed: true, exitCode: 0, durationMs: 11, failures: [] },
+			{ name: "unknown-city", passed: true, exitCode: 3, durationMs: 9, failures: [] },
+		],
+	}];
 	const content = {
 		kind: "proposal" as const,
 		runId: "builder-run_1",
@@ -2459,7 +2466,7 @@ describe("the workshop-close review", () => {
 	};
 
 	it("says what was created, what it may reach, how its fixtures went, and the two outcomes", () => {
-		const lines = renderWorkshopCloseReview(content, history, plainPaint);
+		const lines = renderWorkshopCloseReview(content, green, plainPaint);
 		const text = lines.join("\n");
 		expect(text).toContain("Created / changed");
 		expect(text).toContain("• tools/weather/tool.yaml");
@@ -2472,20 +2479,29 @@ describe("the workshop-close review", () => {
 		expect(text).toContain("Nothing changes until you apply.");
 	});
 
-	it("counts only the newest run, names the failing fixture, and bends into Russian", () => {
-		const failed = [
-			...history.slice(0, 2),
-			{ ...history[2]!, passed: false, failure: "stdout JSON.city is missing" },
-		];
-		expect(fixtureLines(lastFixtureRunPerTool(failed), plainPaint)).toEqual([
+	it("names the failing fixture, says so when a package has no tests, and bends into Russian", () => {
+		const failed: ToolFixtureRunResult[] = [{
+			...green[0]!,
+			passed: 1,
+			allPassed: false,
+			fixtures: [
+				green[0]!.fixtures[0]!,
+				{ name: "unknown-city", passed: false, exitCode: 3, durationMs: 9, failures: ["stdout JSON.city is missing"] },
+			],
+		}];
+		expect(fixtureLines(failed, plainPaint)).toEqual([
 			"  ✗ weather 1/2 — unknown-city: stdout JSON.city is missing",
 		]);
+		// A declared tool that carries no fixtures says exactly that. It never
+		// borrows a number from a package that is no longer in the proposal.
+		expect(fixtureLines([{ tool: "check_dbo", total: 0, passed: 0, allPassed: false, fixtures: [] }], plainPaint))
+			.toEqual(["  — check_dbo declares no contract tests"]);
 		try {
 			setLanguage("ru");
-			expect(fixtureLines(lastFixtureRunPerTool(history), plainPaint)).toEqual([
-				"  ✓ weather 2/2 фикстур",
-			]);
-			expect(renderWorkshopCloseReview(content, history, plainPaint).join("\n"))
+			expect(fixtureLines(green, plainPaint)).toEqual(["  ✓ weather 2/2 фикстур"]);
+			expect(fixtureLines([{ tool: "check_dbo", total: 0, passed: 0, allPassed: false, fixtures: [] }], plainPaint))
+				.toEqual(["  — check_dbo не объявляет контрактных тестов"]);
+			expect(renderWorkshopCloseReview(content, green, plainPaint).join("\n"))
 				.toContain("Создано / изменено");
 		} finally {
 			setLanguage(null);
@@ -2533,5 +2549,94 @@ describe("the hand-off to the agent", () => {
 			view: makeView({ target: { status: "bootstrap-required", id: null, gitSha: null, model: null } }),
 		} as WorkbenchDecisionResult;
 		expect(handoffLines(unready, plainPaint)).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// The workshop tool cards: a refusal is a result too.
+// ---------------------------------------------------------------------------
+
+describe("the workshop tool cards", () => {
+	type Card = {
+		renderResult?: (result: unknown, options: unknown, theme: unknown, context: unknown) => Text;
+		name: string;
+	};
+	const cards = createWorkshopTools({} as AhdeWorkbench) as unknown as Card[];
+	const card = (name: string): Card => cards.find((entry) => entry.name === name)!;
+
+	/** Exactly what Pi hands a renderer when `execute` threw. */
+	const thrown = (message: string) => ({ content: [{ type: "text", text: message }], details: {} });
+
+	function render(name: string, result: unknown, args: unknown, expanded = false): string {
+		return card(name).renderResult!(result, { expanded }, fakeTheme, { args }).render(200).join("\n");
+	}
+
+	it("shows the reason a command, a try or a package was refused, never an invented result", () => {
+		// The live session read `✗ exit killed · 0ms · sandbox none` three times.
+		// Nothing had been killed: the host refused argv[0] before spawning it.
+		const bash = render(
+			"ahde_workshop_bash",
+			thrown("argv[0] must be a bare PATH command or an absolute executable path"),
+			{ argv: ["tools/check_dbo/run", "DBO-2345"] },
+		);
+		expect(bash).toContain("argv[0] must be a bare PATH command");
+		expect(bash).not.toContain("exit killed");
+		expect(bash).not.toContain("sandbox none");
+
+		const tried = render(
+			"ahde_workshop_try",
+			thrown("the check_dbo tool wants network access during setup to run here; the operator has to allow that once before it may be tried"),
+			{ tool: "check_dbo" },
+		);
+		expect(tried).toContain("check_dbo");
+		expect(tried).toContain("the operator has to allow that once");
+		expect(tried).not.toContain("exit killed");
+
+		// And `✗ tool 0/0 contract tests passed`, four times, for a package that
+		// was rejected before a single test of it existed.
+		const authored = render(
+			"ahde_workshop_author_tool",
+			thrown("a tool package needs one happy-path fixture and one error-handling fixture\nsecond line is not shown"),
+			{ name: "check_dbo" },
+		);
+		expect(authored).toContain("check_dbo");
+		expect(authored).toContain("needs one happy-path fixture and one error-handling fixture");
+		expect(authored).not.toContain("0/0");
+		expect(authored).not.toContain("second line is not shown");
+
+		// A write refused by scope is a refusal, not a green “✓ wrote”.
+		const written = render(
+			"ahde_workshop_write",
+			thrown("workshop scope refuses evals/development.jsonl: only AGENTS.md, skills/**, tools/**, bin/**, data/** exist in a workshop"),
+			{ path: "evals/development.jsonl" },
+		);
+		expect(written).toContain("workshop scope refuses evals/development.jsonl");
+		expect(written).not.toContain("✓");
+	});
+
+	it("still renders a real result, and names the first failing contract test", () => {
+		const ran = render("ahde_workshop_bash", {
+			details: { argv: ["sh", "-c", "true"], exitCode: 1, durationMs: 20, sandbox: "sandbox-exec" },
+			content: [{ type: "text", text: "{}" }],
+		}, { argv: ["sh", "-c", "true"] });
+		expect(ran).toContain("exit 1");
+		expect(ran).toContain("sandbox sandbox-exec");
+
+		// Tests that did run report their count and why the first one failed, so
+		// the collapsed line is a repair instruction rather than a score.
+		const red = render("ahde_workshop_author_tool", {
+			details: {
+				tool: "check_dbo",
+				allPassed: false,
+				files: ["tools/check_dbo/run"],
+				tests: [
+					{ name: "valid-contract", passed: false, durationMs: 12, failure: "expected exit 0, got 1; stdout is not valid JSON" },
+					{ name: "unknown-contract", passed: true, durationMs: 9, failure: null },
+				],
+			},
+			content: [{ type: "text", text: "{}" }],
+		}, { name: "check_dbo" });
+		expect(red).toContain("1/2 contract tests passed");
+		expect(red).toContain("expected exit 0, got 1; stdout is not valid JSON");
 	});
 });

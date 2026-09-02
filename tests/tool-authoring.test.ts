@@ -125,8 +125,10 @@ describe("conversational Tool Authoring", () => {
 			opened.replaceToolPackage(compiled.brief.name, compiled.files);
 
 			expect(readFileSync(join(opened.path, "tools/health_check/input.schema.json"), "utf8")).toContain("additionalProperties");
+			// Nothing has been tried against these exact bytes, so the close names the
+			// first test that is not green and why, rather than a bare list of names.
 			expect(() => opened.compile({ summary: "Add health check", validationPlan: ["Run contract fixtures"] }))
-				.toThrow(/contract tests not green.*healthy.*service-error/);
+				.toThrow(/health_check is not ready to close: contract test healthy is not green on the exact proposal snapshot — never run/);
 
 			const observed = await opened.tryTool({ tool: "health_check", input: {}, test: "healthy" });
 			const assertion = assertToolContract(
@@ -136,6 +138,9 @@ describe("conversational Tool Authoring", () => {
 			);
 			opened.recordContractAssertion("healthy", assertion.passed, assertion.failures);
 			expect(assertion).toEqual({ passed: true, failures: [] });
+			// One green fixture is not the contract: the other one still blocks.
+			expect(() => opened.compile({ summary: "Add health check", validationPlan: ["Run contract fixtures"] }))
+				.toThrow(/contract test service-error is not green on the exact proposal snapshot/);
 			const failedObserved = await opened.tryTool({
 				tool: "health_check",
 				input: { simulateError: true },

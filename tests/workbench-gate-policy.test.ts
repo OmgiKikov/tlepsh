@@ -7,7 +7,7 @@ import { loadBuilderApplyReceipt } from "../src/application/builder-proposal.js"
 import { CANDIDATE_SCOPE_POLICY } from "../src/application/candidate-experiment.js";
 import { compileHarnessAuthoringProposal } from "../src/application/harness-authoring.js";
 import { createPolicyAwareGate } from "../src/builder/workbench-adapter.js";
-import { createCorpus } from "../src/corpus.js";
+import { createCorpus, listCorpora } from "../src/corpus.js";
 import { loadTarget } from "../src/manifest.js";
 import {
 	createAhdeWorkbench,
@@ -20,6 +20,7 @@ import {
 	NOW,
 	PROJECT_ID,
 	gate,
+	git,
 	spec,
 	targetPaths,
 	task,
@@ -391,9 +392,23 @@ describe("routine cost guard", () => {
 async function appliedProposalFixture(
 	human: RecordingGate,
 	dependencies: Partial<AhdeWorkbenchDependencies> = {},
+	/** How big the operator's own basket is, and how big the manifest dataset is. */
+	basket: { developmentTasks?: number; manifestTasks?: number } = {},
 ): Promise<{ paths: FixturePaths; workbench: AhdeWorkbench; runId: string }> {
 	const paths = targetPaths();
 	created.push(paths.projectDir);
+	if (basket.manifestTasks !== undefined) {
+		// A template `evals/development.jsonl` nobody wrote cases into. Nothing in
+		// a Builder cycle may ever measure it; it is here to be visibly not used.
+		writeFileSync(
+			join(paths.projectDir, "evals", "development.jsonl"),
+			`${Array.from({ length: basket.manifestTasks }, (_, index) =>
+				JSON.stringify({ id: `template_${index}`, input: `Template case ${index}`, graders: [{ type: "output_contains", text: "30 days" }] })).join("\n")}\n`,
+			"utf8",
+		);
+		git(paths.projectDir, "add", "evals/development.jsonl");
+		git(paths.projectDir, "commit", "-qm", "template dataset");
+	}
 	const workbench = createAhdeWorkbench({
 		...paths,
 		projectId: PROJECT_ID,
@@ -404,7 +419,8 @@ async function appliedProposalFixture(
 	await workbench.submit({
 		kind: "corpus-draft",
 		name: "Authorization development basket",
-		tasks: [task()],
+		tasks: Array.from({ length: basket.developmentTasks ?? 1 }, (_, index) =>
+			task(`What is the refund window for policy ${index}?`)),
 		coverageNotes: ["One policy question"],
 		revisionSummary: "Initial basket",
 	});
@@ -500,9 +516,10 @@ describe("one money question per cycle", () => {
 		const { paths, workbench, runId } = await appliedProposalFixture(human, dependencies);
 		const apply = human.confirm.mock.calls.at(-1)?.[0];
 		expect(apply).toMatchObject({ kind: "apply-proposal", policy: "consequential" });
-		// A Spec-bound construction diff attests no development basket, so the
-		// price is the 15-case exam, both arms, at the repetitions “check it” uses.
-		expect(apply?.estimate).toMatchObject({ executions: 2 * 15 * 3, sampledRuns: 1 });
+		// A construction diff attests no basket, but the check still runs the
+		// published development corpus of its Spec: 1 development case plus the
+		// 15-case exam, both arms, at the repetitions “check it” uses.
+		expect(apply?.estimate).toMatchObject({ executions: 2 * (1 + 15) * 3, sampledRuns: 1 });
 		expect(apply?.estimate?.costUsd).toBeGreaterThan(DEFAULT_ROUTINE_COST_USD);
 
 		// The receipt of this exact candidate carries exactly what was on screen.
@@ -550,5 +567,64 @@ describe("one money question per cycle", () => {
 		asked = questions(human);
 		await verify(workbench, human, measured);
 		expect(questions(human)).toBe(asked);
+	}, 60_000);
+});
+
+// ---------------------------------------------------------------------------
+// Which basket the check actually runs.
+// ---------------------------------------------------------------------------
+
+describe("the development arm of a verification", () => {
+	it("runs the published basket of the Spec, never the manifest dataset", async () => {
+		const human = gate();
+		const measured = vi.fn(async (_options: { developmentCorpus?: { corpusId: string } }) => {
+			throw new Error("fixture stop: the measurement itself is not what this test spends");
+		});
+		const { workbench } = await appliedProposalFixture(
+			human,
+			{ runAppliedCandidate: measured as never },
+			{ developmentTasks: 6, manifestTasks: 30 },
+		);
+		await expect(workbench.decide({
+			kind: "verify-candidate",
+			repetitions: SEALED_VERIFICATION_REPETITIONS,
+			reason: "Check the applied candidate",
+		}, human)).rejects.toThrow(/candidate verification failed/);
+
+		// This is a construction proposal: `request.sourceAttestation` is null, and
+		// reading the basket off the attestation left it undefined — which made the
+		// experiment fall back to `evals/development.jsonl` and report a verdict
+		// over 30 template cases the operator never wrote.
+		const asked = human.confirm.mock.calls.at(-1)?.[0] as WorkbenchConfirmation;
+		expect(asked.kind).toBe("verify-candidate");
+		const subject = asked.subject as Record<string, unknown>;
+		const corpus = subject.developmentCorpus as { id: string; taskCount: number };
+		expect(corpus.taskCount).toBe(6);
+		expect(asked.question).toContain(`${2 * (6 + 15) * SEALED_VERIFICATION_REPETITIONS} Target executions`);
+		expect(asked.estimate?.executions).toBe(2 * (6 + 15) * SEALED_VERIFICATION_REPETITIONS);
+
+		// And the experiment is handed that exact corpus, not a dataset override.
+		expect(measured).toHaveBeenCalledTimes(1);
+		expect(measured.mock.calls[0]?.[0].developmentCorpus).toMatchObject({ corpusId: corpus.id });
+	}, 60_000);
+
+	it("refuses the check when the Spec has no published basket at all", async () => {
+		const human = gate();
+		const measured = vi.fn(async () => {
+			throw new Error("the verification must never run without a development basket");
+		});
+		const { paths, workbench } = await appliedProposalFixture(human, { runAppliedCandidate: measured as never });
+		// Take the published basket away and leave the exam: without the
+		// operator's own cases there is no before/after to measure at all.
+		for (const corpus of listCorpora({ stateRoot: paths.stateRoot, projectId: PROJECT_ID })) {
+			if (corpus.visibility !== "development") continue;
+			rmSync(join(paths.stateRoot, "projects", PROJECT_ID, "corpora", corpus.id), { recursive: true, force: true });
+		}
+		await expect(workbench.decide({
+			kind: "verify-candidate",
+			repetitions: SEALED_VERIFICATION_REPETITIONS,
+			reason: "Check the applied candidate",
+		}, human)).rejects.toThrow(/No compatible development corpus is available/);
+		expect(measured).not.toHaveBeenCalled();
 	}, 60_000);
 });

@@ -12,6 +12,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	classifyTargetAuthoringResourcePath,
+	explainTargetAuthoringResourcePath,
 	inspectTargetAuthoringContext,
 	TargetAuthoringContextError,
 	type TargetAuthoringContextErrorCode,
@@ -337,5 +339,32 @@ describe("Target Authoring Context", () => {
 		await expect(workbench.view({ aspect: "summary", resourcePath: "AGENTS.md" })).rejects.toThrow(
 			/resourcePath is valid only for the Target and dataset views/,
 		);
+	});
+});
+
+describe("the canonical resource rules say themselves", () => {
+	it("explains every shape a refusal can be about, and only for paths that are refused", () => {
+		// Each sentence names the rule the path broke. They live next to the
+		// expressions that enforce them; this is the test that they say the same.
+		expect(explainTargetAuthoringResourcePath("skills/bank_knowledge/SKILL.md"))
+			.toBe("a skill is skills/<name>/SKILL.md with <name> in lowercase kebab-case (skills/bank-knowledge/SKILL.md), and the file is spelled exactly SKILL.md");
+		expect(explainTargetAuthoringResourcePath("skills/Bank Knowledge/skill.md")).toContain("(skills/bank-knowledge/SKILL.md)");
+		expect(explainTargetAuthoringResourcePath("tools/CheckDbo/tool.yaml")).toContain("<name> matches [a-z][a-z0-9_]*");
+		expect(explainTargetAuthoringResourcePath("bin/Check-DBO")).toBe("a tool executable is bin/<name>, where <name> matches [a-z][a-z0-9_]*");
+		expect(explainTargetAuthoringResourcePath("data/Bank Facts/notes.md")).toContain("data/<name>/…");
+		expect(explainTargetAuthoringResourcePath("Agents.md")).toBe("the instructions file is spelled exactly AGENTS.md");
+		expect(explainTargetAuthoringResourcePath("README.md")).toContain("a Harness holds only AGENTS.md");
+
+		// And every path the sentences are about is one the classifier refuses.
+		for (const path of [
+			"skills/bank_knowledge/SKILL.md",
+			"skills/Bank Knowledge/skill.md",
+			"tools/CheckDbo/tool.yaml",
+			"bin/Check-DBO",
+			"Agents.md",
+			"README.md",
+		]) expect(classifyTargetAuthoringResourcePath(path)).toBeNull();
+		expect(classifyTargetAuthoringResourcePath("skills/bank-knowledge/SKILL.md")).toMatchObject({ kind: "skill", name: "bank-knowledge" });
+		expect(classifyTargetAuthoringResourcePath("bin/check_dbo")).toMatchObject({ kind: "tool-executable", name: "check_dbo" });
 	});
 });

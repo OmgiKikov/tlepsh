@@ -52,6 +52,24 @@ function textResult(details: unknown): { content: { type: "text"; text: string }
 	return { content: [{ type: "text", text: JSON.stringify(projectForModel(details), null, 2) }], details };
 }
 
+/**
+ * Pi turns a thrown tool error into `{ content: [the message], details: {} }`.
+ * Every renderer below then invented a result out of the fields that are not
+ * there: the live session showed `✗ exit killed · 0ms · sandbox none` for an
+ * argv the host had refused before running anything, and `✗ tool 0/0 contract
+ * tests passed` four times for a package that was rejected before its tests
+ * existed. The reason was in `content` the whole time. Show it.
+ */
+function refusal(result: { content?: readonly { type: string; text?: string }[]; details?: unknown }): string | null {
+	const details = result.details;
+	if (typeof details === "object" && details !== null && Object.keys(details).length > 0) return null;
+	const text = (result.content ?? [])
+		.map((part) => (part.type === "text" ? part.text ?? "" : ""))
+		.join("\n")
+		.trim();
+	return oneLine(text.split("\n")[0] ?? "", 120) || t("workshop.refused");
+}
+
 function head(text: string | null, lines: number): string[] {
 	if (!text) return [];
 	const split = text.split("\n");
@@ -107,8 +125,10 @@ export function createWorkshopTools(
 				const paint = themePaint(theme);
 				return card([`${paint.accent("workshop")} ${paint.dim("read")} ${oneLine(args.path ?? "", 80)}`]);
 			},
-			renderResult: (result, renderOptions, theme) => {
+			renderResult: (result, renderOptions, theme, context) => {
 				const paint = themePaint(theme);
+				const refused = refusal(result);
+				if (refused) return card([`${paint.error("✗")} ${paint.bold(oneLine(context.args?.path ?? "", 60))} ${refused}`]);
 				const details = result.details as {
 					path?: string;
 					kind?: string;
@@ -153,8 +173,10 @@ export function createWorkshopTools(
 				const verb = args.remove ? "remove" : args.oldText !== undefined ? "replace in" : "write";
 				return card([`${paint.accent("workshop")} ${paint.dim(verb)} ${oneLine(args.path ?? "", 80)}`]);
 			},
-			renderResult: (result, _renderOptions, theme) => {
+			renderResult: (result, _renderOptions, theme, context) => {
 				const paint = themePaint(theme);
+				const refused = refusal(result);
+				if (refused) return card([`${paint.error("✗")} ${paint.bold(oneLine(context.args?.path ?? "", 60))} ${refused}`]);
 				const details = result.details as { path?: string; action?: string; bytes?: number | null } | undefined;
 				if (!details) return card([paint.muted("workshop write")]);
 				return card([
@@ -187,8 +209,13 @@ export function createWorkshopTools(
 				const paint = themePaint(theme);
 				return card([`${paint.accent("workshop")} ${paint.dim("run")} ${oneLine((args.argv ?? []).join(" "), 100)}`]);
 			},
-			renderResult: (result, renderOptions, theme) => {
+			renderResult: (result, renderOptions, theme, context) => {
 				const paint = themePaint(theme);
+				// A refused argv never ran, so it has no exit code and no sandbox. Saying
+				// “exit killed · 0ms · sandbox none” sent the live Builder hunting for a
+				// sandbox bug that was really a host refusal of argv[0].
+				const refused = refusal(result);
+				if (refused) return card([`${paint.error("✗")} ${paint.bold(oneLine((context.args?.argv ?? []).join(" "), 60))} ${refused}`]);
 				const details = result.details as {
 					argv?: string[];
 					exitCode?: number | null;
@@ -240,8 +267,13 @@ export function createWorkshopTools(
 				const paint = themePaint(theme);
 				return card([`${paint.accent("workshop")} ${paint.dim("build tool")} ${paint.bold(args.name ?? "")}`]);
 			},
-			renderResult: (result, renderOptions, theme) => {
+			renderResult: (result, renderOptions, theme, context) => {
 				const paint = themePaint(theme);
+				// A package rejected before its tests existed has no tests to count, and
+				// `0/0 contract tests passed` told the live Builder nothing four times in
+				// a row. The rejection is the result; the collapsed line is where it goes.
+				const refused = refusal(result);
+				if (refused) return card([`${paint.error("✗")} ${paint.bold(context.args?.name ?? "")} ${refused}`]);
 				const details = result.details as {
 					tool?: string;
 					files?: string[];
@@ -251,8 +283,10 @@ export function createWorkshopTools(
 				} | undefined;
 				if (!details) return card([paint.muted("tool package")]);
 				const tests = details.tests ?? [];
+				const failed = tests.find((test) => !test.passed);
 				const headline = `${details.allPassed ? paint.success("✓") : paint.error("✗")} ${paint.bold(details.tool ?? "tool")} ` +
-					`${tests.filter((test) => test.passed).length}/${tests.length} contract tests passed`;
+					t("workshop.contract-tests", { passed: tests.filter((test) => test.passed).length, total: tests.length }) +
+					`${failed?.failure ? ` — ${oneLine(failed.failure, 120)}` : ""}`;
 				if (!renderOptions.expanded) return card([headline]);
 				return card([
 					headline,
@@ -291,8 +325,13 @@ export function createWorkshopTools(
 					`${paint.accent("workshop")} ${paint.dim(args.fixtures === true ? "fixtures" : "try")} ${paint.bold(args.tool ?? "")}`,
 				]);
 			},
-			renderResult: (result, renderOptions, theme) => {
+			renderResult: (result, renderOptions, theme, context) => {
 				const paint = themePaint(theme);
+				// A try that never started has no exit code and no sandbox: the refusal —
+				// a missing grant, arguments the tool's own schema rejects, a package that
+				// does not load — is the only thing there is to say about it.
+				const refused = refusal(result);
+				if (refused) return card([`${paint.error("✗")} ${paint.bold(context.args?.tool ?? "")} ${refused}`]);
 				const run = result.details as {
 					tool?: string;
 					total?: number;

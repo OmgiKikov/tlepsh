@@ -13,7 +13,7 @@ import { renderAgentLogChart } from "./render/agent-log.js";
 import { handoffLines } from "./render/handoff.js";
 import { compileAgentLog } from "../application/agent-log.js";
 import { renderWorkshopCloseReview } from "./render/workshop-close.js";
-import type { WorkshopTrySummary } from "../application/tool-workshop.js";
+import type { ToolFixtureRunResult } from "../application/tool-workshop.js";
 import { markerPaint, type TranscriptPresenter } from "./transcript.js";
 import type {
 	WorkbenchDatasetRecipeArtifact,
@@ -393,7 +393,7 @@ export function createBuilderWorkbenchTools(
 						const review = await workbench.view({ aspect: "review" });
 						const content = review.detail?.aspect === "review" ? review.detail.content : undefined;
 						if (content?.kind === "proposal") {
-							const artifact = turn.artifact as { toolTests?: WorkshopTrySummary[] } | null;
+							const artifact = turn.artifact as { toolTests?: ToolFixtureRunResult[] } | null;
 							options.presenter.show(ctx, {
 								title: viewTitle(review),
 								tone: "info",
