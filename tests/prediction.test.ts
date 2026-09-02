@@ -351,7 +351,7 @@ describe("the promise on screen", () => {
 
 	it("says so plainly when a proposal promised nothing, and quotes the reason when it gave one", () => {
 		expect(renderReview(proposalReview({ prediction: null }), plainPaint))
-			.toContain("Prediction no prediction stated");
+			.toContain("Prediction not stated");
 		expect(renderReview(
 			proposalReview({ prediction: prediction({ note: "only two tasks reproduce it, so a number would be noise" }) }),
 			plainPaint,
@@ -366,7 +366,7 @@ describe("the promise on screen", () => {
 		expect(russian[3]).toBe("Прогноз Ожидаю mode «aaaaaaaa» 26/26 → ≤3/26 · итог +40 п.п.");
 		// A subject that carries something the schema will not accept renders as silence.
 		expect(renderConfirmation(applyConfirmation({ modes: "everything" }), plainPaint)[3])
-			.toBe("Прогноз прогноз не заявлен");
+			.toBe("Прогноз не заявлен");
 	});
 });
 

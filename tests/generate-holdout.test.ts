@@ -328,7 +328,7 @@ describe("generate-holdout: the exam the judge writes", () => {
 		]);
 		expect(body[3]).toMatch(/^Стоимость (~\$\d+\.\d\d|<\$0\.01)$/);
 		// The draft path gets one more line, because it changes what happens next.
-		expect(body[4]).toBe("Черновик — в файл вне репо; правишь и импортируешь через /holdout");
+		expect(body[4]).toBe("Черновик — в файл вне репо; правишь и загружаешь командой /holdout <путь>");
 		expect(body).toContain("Причина нет данных для экзамена");
 
 		if (result.kind !== "generate-holdout") throw new Error("wrong kind");
@@ -337,7 +337,7 @@ describe("generate-holdout: the exam the judge writes", () => {
 		// The path is the point of the line, so it is printed whole.
 		expect(panel[1]).toBe(`Черновик ${result.result.reviewPath}`);
 		expect(panel[1]).not.toContain(SENTINEL);
-		expect(panel[2]).toBe("Прочитай, вычисти лишнее и запусти /holdout на этом файле, чтобы закрыть его.");
+		expect(panel[2]).toBe("Прочитай, вычисти лишнее, потом /holdout <путь к этому файлу> закроет его.");
 		expect(panel.join("\n")).not.toContain(SENTINEL);
 	});
 

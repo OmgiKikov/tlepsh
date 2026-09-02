@@ -435,7 +435,7 @@ describe("the re-score as a Builder decision", () => {
 		}
 		// Every other stage keeps the plain rule and its unblocking action.
 		expect(() => assertWorkbenchDecisionStage("publish-corpus", "target-setup"))
-			.toThrow(/expected corpus-review\. Do this first:/);
+			.toThrow(/expected corpus-review or candidate-verification\. Do this first:/);
 	});
 
 	it("reads /regrade the way an operator types it", () => {
