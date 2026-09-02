@@ -596,8 +596,29 @@ describe("ru refusals and notices", () => {
 			blockers: ["3 active candidates are compatible with this project."],
 			blockerReasons: [{ code: "blocker.candidates-ambiguous", params: { candidates: "3 кандидата" } }],
 		})).toEqual(["Этому проекту подходят 3 кандидата — выбери одного."]);
+		// A template still carrying REPLACE-ME names the fields it kept, and the
+		// field names are manifest keys: they stay Latin on purpose.
+		expect(blockerLines({
+			blockers: ["Target still contains the template's REPLACE-ME stand-ins in id, model.id."],
+			blockerReasons: [{ code: "blocker.target-stand-ins", params: { fields: "id, model.id" } }],
+		})).toEqual([
+			"У агента ещё стоят подставные REPLACE-ME из шаблона в полях id, model.id — выбери имя и модель.",
+		]);
 		// A view from before the reasons existed still renders its own sentence.
 		expect(blockerLines({ blockers: ["something older"] })).toEqual(["something older"]);
+	});
+
+	it("says the stand-in readiness line in Russian, with the count bent and the file names left alone", () => {
+		setLanguage("ru");
+		expect(t("readiness.stand-ins", { files: plural(1, "file"), names: "AGENTS.md" }))
+			.toBe("1 файл ещё с подставными REPLACE-ME из шаблона: AGENTS.md — опиши агента, и Билдер их заменит");
+		expect(t("readiness.stand-ins", { files: plural(5, "file"), names: "AGENTS.md" }).startsWith("5 файлов ещё")).toBe(true);
+		// The blocker is what stops the cycle; this line never does, and both name
+		// the same thing at the same stage.
+		expect(nextStep(makeView({
+			stage: "target-setup",
+			blockers: ["Target still contains the template's REPLACE-ME stand-ins in id."],
+		}))).toBe(t("next.model-required"));
 	});
 
 	it("hides the evidence counts until there is any evidence, and the judge until it has judged", () => {
