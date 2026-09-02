@@ -56,6 +56,7 @@ import { calibrationProjection } from "../workbench/calibration.js";
 import { loadCandidateRecord } from "./candidate-review.js";
 import { inspectCandidateImpact } from "./candidate-impact.js";
 import { compileImprovementBrief, publicTaskId } from "./improvement-brief.js";
+import { failureModeReading } from "./run-explanation.js";
 import { judgeEvidenceCalibration } from "./judge-labels.js";
 import { detectPromotionFlips } from "./regression-guards.js";
 import {
@@ -900,7 +901,7 @@ function unresolvedModeTitles(
 		);
 		const titles = unresolved
 			.slice(0, MAX_UNRESOLVED_MODES)
-			.map((mode) => clip(mode.title, MAX_MODE_TITLE_CHARS));
+			.map((mode) => clip(failureModeReading(mode).title, MAX_MODE_TITLE_CHARS));
 		return { titles, omitted: Math.max(0, unresolved.length - titles.length) };
 	} catch {
 		warnings.push("the diagnosis this change was authored against could not be read, so unresolved failure modes are unknown");

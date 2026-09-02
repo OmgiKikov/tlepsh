@@ -336,6 +336,8 @@ function defaultDecision(input: WorkbenchDecisionInput): WorkbenchDecisionResult
 			return decision("generate-holdout", {
 				...(input.mode === "seal" ? { corpusId: `corpus-${"a".repeat(64)}` } : { reviewPath: "/private/state/sealed-synth/review-abc.jsonl" }),
 				cases: input.cases,
+				requested: input.cases,
+				dropped: { malformed: 0, duplicate: 0 },
 				generator: "openrouter/anthropic/claude-sonnet-4.5",
 				promptHash: hash("a"),
 			}, viewAt("ready-to-evaluate"));
@@ -864,8 +866,8 @@ describe("Builder Pi slash commands", () => {
 		expect(fixture.view).toHaveBeenCalledWith({ aspect: "traces" });
 		expect(output.blocks.map((block) => block.title)).toEqual(["AHDE · Diagnosis"]);
 		expect(sendUserMessage).toHaveBeenCalledWith(
-			"Fix problem 1 (failure-mode-111111111111111111111111): Missing evidence lookup instruction. " +
-			"Prepare the proposal and show me the review.",
+			"Fix problem 1 (failure-mode-111111111111111111111111): lookup was never called. " +
+			"Prepare the change and show me the review.",
 		);
 
 		// An out-of-range ordinal is refused instead of guessed.
@@ -1692,7 +1694,7 @@ describe("Builder Pi slash commands", () => {
 		const fixture = workbench({ view: async () => tracesView });
 		const { commands, output } = register(fixture.value, { sendUserMessage });
 		const controller = new AbortController();
-		const host = context({ signal: controller.signal, select: async () => "Fix 1: Missing evidence lookup instruction" });
+		const host = context({ signal: controller.signal, select: async () => "Fix 1: lookup was never called" });
 
 		await command(commands, "traces").handler("", host.ctx);
 
@@ -1713,14 +1715,15 @@ describe("Builder Pi slash commands", () => {
 		expect(text).not.toContain(FIRST_MODE);
 
 		expect(host.select).toHaveBeenCalledWith(
-			"Prepare a proposal?",
-			["Fix 1: Missing evidence lookup instruction", "Not now"],
+			"Prepare a change?",
+			["Fix 1: lookup was never called", "Not now"],
 			{ signal: controller.signal },
 		);
 		expect(sendUserMessage).toHaveBeenCalledTimes(1);
 		const message = String(sendUserMessage.mock.calls[0]?.[0]);
 		expect(message).toContain(`Fix problem 1 (${FIRST_MODE})`);
-		expect(message).toContain("Missing evidence lookup instruction");
+		expect(message).toContain("lookup was never called");
+		expect(message).toContain("Prepare the change and show me the review.");
 		expect(message).not.toContain(SECOND_MODE);
 		expect(fixture.decide).not.toHaveBeenCalled();
 
@@ -1734,7 +1737,7 @@ describe("Builder Pi slash commands", () => {
 		expect(sendUserMessage).not.toHaveBeenCalled();
 
 		const unbridged = register(fixture.value);
-		const unbridgedHost = context({ select: async () => "Fix 1: Missing evidence lookup instruction" });
+		const unbridgedHost = context({ select: async () => "Fix 1: lookup was never called" });
 		await command(unbridged.commands, "traces").handler("", unbridgedHost.ctx);
 		expect(unbridgedHost.select).not.toHaveBeenCalled();
 		expect(unbridged.output.blocks.map((block) => block.title)).toEqual(["AHDE · Diagnosis"]);

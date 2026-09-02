@@ -3373,14 +3373,28 @@ export class AhdeWorkbench {
 				...(options.signal ? { signal: options.signal } : {}),
 			});
 			const cases = generated.corpus?.taskCount ?? generated.accepted;
+			// A judge that wrote 20 and had one thrown out by validation must not
+			// read as "wrote 19": the operator asked for a number, and the answer
+			// says which cases of it never existed and why.
+			const dropped = generated.droppedMalformed + generated.droppedDuplicate;
+			const shortfall = cases < generated.requested
+				? ` ${t("message.exam-shortfall", {
+					requested: generated.requested,
+					dropped,
+					malformed: generated.droppedMalformed,
+					duplicate: generated.droppedDuplicate,
+				})}`
+				: "";
 			return {
 				kind: input.kind,
-				message: t(generated.corpus ? "message.exam-sealed" : "message.exam-draft", {
+				message: `${t(generated.corpus ? "message.exam-sealed" : "message.exam-draft", {
 					cases: localizedCount(cases, "case"),
-				}),
+				})}${shortfall}`,
 				result: {
 					...(generated.corpus ? { corpusId: generated.corpus.id } : {}),
 					cases,
+					requested: generated.requested,
+					dropped: { malformed: generated.droppedMalformed, duplicate: generated.droppedDuplicate },
 					generator: generated.generatorModel,
 					promptHash: generated.promptSha256,
 					...(generated.reviewPath ? { reviewPath: generated.reviewPath } : {}),

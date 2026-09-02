@@ -1175,6 +1175,9 @@ export interface WorkbenchDecisionResultMap {
 	"generate-holdout": {
 		corpusId?: string;
 		cases: number;
+		/** How many the operator asked for, and how many the judge's draft lost to validation. */
+		requested: number;
+		dropped: { malformed: number; duplicate: number };
 		generator: string;
 		promptHash: string;
 		reviewPath?: string;

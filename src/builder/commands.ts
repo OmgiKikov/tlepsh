@@ -1,4 +1,5 @@
 import { t } from "../i18n.js";
+import { failureModeReading } from "../application/run-explanation.js";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
@@ -954,8 +955,11 @@ export function registerAhdeBuilderCommands(
 		if (!mode) {
 			throw new Error(`there is no problem ${ordinal} to fix; /traces lists ${pluralize(modes.length, "fixable problem")}`);
 		}
-		const request = `Fix problem ${mode.ordinal} (${mode.failureModeId}): ${oneLine(mode.title, 120)}. ` +
-			`Prepare the proposal and show me the review.`;
+		const request = t("traces.fix-message", {
+			ordinal: mode.ordinal,
+			id: mode.failureModeId,
+			title: oneLine(failureModeReading(mode).title, 120),
+		});
 		if (!options.sendUserMessage) {
 			ctx.ui.notify(`Ask the Builder: “fix problem ${mode.ordinal}”.`, "info");
 			return;
@@ -1218,12 +1222,13 @@ export function registerAhdeBuilderCommands(
 			showRunsTable(ctx, content.evaluation.evalRunId, rowsWanted ? Number(rowsWanted) : DEFAULT_TRACE_TABLE_ROWS);
 			const modes = content.improvementBrief.modes.filter((mode) => mode.selectableForProposal);
 			if (modes.length > 0 && options.sendUserMessage && typeof ctx.ui.select === "function") {
-				const choices = modes.slice(0, 5).map((mode) => `Fix ${mode.ordinal}: ${oneLine(mode.title, 60)}`);
-				const selected = await ctx.ui.select("Prepare a proposal?", [...choices, "Not now"], { signal });
+				const titleOf = (mode: (typeof modes)[number]): string => oneLine(failureModeReading(mode).title, 60);
+				const choices = modes.slice(0, 5).map((mode) => t("traces.fix-choice", { ordinal: mode.ordinal, title: titleOf(mode) }));
+				const selected = await ctx.ui.select(t("traces.prepare"), [...choices, t("traces.not-now")], { signal });
 				const index = choices.indexOf(selected ?? "");
 				if (index >= 0) {
 					const mode = modes[index]!;
-					options.sendUserMessage(`Fix problem ${mode.ordinal} (${mode.failureModeId}): ${oneLine(mode.title, 120)}. Prepare the proposal and show me the review.`);
+					options.sendUserMessage(t("traces.fix-message", { ordinal: mode.ordinal, id: mode.failureModeId, title: titleOf(mode) }));
 				}
 			}
 		},
@@ -1347,7 +1352,7 @@ export function registerAhdeBuilderCommands(
 					...renderVersionPassport(passport, markerPaint),
 					"",
 					written
-						? `${markerPaint.dim("Written to")} ${oneLine(written, 100)}`
+						? `${markerPaint.dim(t("passport.written-to"))} ${oneLine(written, 100)}`
 						: markerPaint.warning("This directory is not writable, so nothing was saved beside the agent."),
 				],
 			});
