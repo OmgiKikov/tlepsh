@@ -32,6 +32,7 @@
 		"prepack": "node scripts/prepare-pack.mjs && npm run build",
     "test": "vitest run",
     "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json && vitest run",
+    "check:quick": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json && vitest run --project quick",
 		"verify:package": "node scripts/verify-package.mjs",
     "vendor:build": "cd vendor/pi-mono && npm ci --ignore-scripts && npm run hydrate:model-data && npm run build:offline",
     "vendor:pack": "cd vendor/pi-mono/packages/telemetry && npm pack --pack-destination ../../../tarballs && cd ../ai && npm pack --pack-destination ../../../tarballs && cd ../agent && npm pack --pack-destination ../../../tarballs && cd ../protocol && npm pack --pack-destination ../../../tarballs && cd ../client && npm pack --pack-destination ../../../tarballs && cd ../tui && npm pack --pack-destination ../../../tarballs && cd ../coding-agent && npm pack --pack-destination ../../../tarballs",

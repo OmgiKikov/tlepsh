@@ -196,9 +196,14 @@ the exam.
 
 ```bash
 npm run check            # types, test types, the vitest suite
+npm run check:quick      # the same, minus the files that spawn Git, sandboxes and servers
 npm run demo             # the full loop on a scripted local model, free
 npm run verify:package   # pack, install into an empty consumer, drive it
 ```
+
+`check:quick` is the inner loop; `check` is what has to be green before a
+commit. The two differ by one list — the heavy files are named, with the reason
+each is heavy, at the top of `vitest.config.ts`.
 
 ## Deliberately out of scope
 
