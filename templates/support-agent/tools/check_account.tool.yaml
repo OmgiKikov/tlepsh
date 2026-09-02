@@ -5,6 +5,8 @@
 # Note: a declared tool and a `bash bin/<name>` call are different things.
 # `tool_called` graders match whichever the agent actually used — the demo's
 # graders matched `bash`, so its AGENTS.md prescribed the literal bash line.
+# Only the declared call receives `AHDE_WORLD`, the case's own world: a case
+# whose expectations are about the world has to be answered through this tool.
 schemaVersion: 1
 name: check_account
 description: "REPLACE-ME: что возвращает система, одной строкой — это видит модель."
@@ -16,14 +18,23 @@ parameters:
       description: "REPLACE-ME: идентификатор договора/клиента из обращения."
       minLength: 1
       maxLength: 64
+    action:
+      type: string
+      description: "REPLACE-ME: действие над договором; без него — только чтение."
+      enum: [freeze, unfreeze]
   required: [id]
   additionalProperties: false
 command:
   argv: [bin/check_account]
 timeoutMs: 5000
 maxOutputBytes: 8192
-output: json
+# The three lines the executable prints are text, not JSON; `json` here would
+# fail every declared call with "returned malformed JSON".
+output: text
 permissions:
   environment: []
   network: deny
-  filesystem: read-only
+  # An action the client asked for has to actually happen: writing the world
+  # back needs a writable directory, and the world's own directory is the only
+  # one this grants beyond the workspace.
+  filesystem: workspace-write
