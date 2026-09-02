@@ -51,6 +51,7 @@ user has to learn.
 /target [resource]      the exact committed Target or one declared resource
 /passport [version]     what a shipped version promised and measured, saved beside the agent
 /log [rows]             how the agent grew: every version, what it scored, what it cost
+/export [--all]         every recorded conversation as one dataset file beside the agent
 /label [n]              check the judge: grade n answers blind, then see what it said
 /doctor                 model, evaluator, run, and future ship readiness
 /holdout [file]         privately import the operator-owned sealed JSONL exam, or have the judge write one
