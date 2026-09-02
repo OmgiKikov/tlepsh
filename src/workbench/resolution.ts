@@ -6,7 +6,7 @@ import {
 	type PersistedBuilderRun,
 } from "../application/builder-proposal.js";
 import type { BuilderCorpusDraft } from "../application/builder-corpus-draft.js";
-import { measurementLine, measurementSurface } from "../application/measurement-line.js";
+import { measurementLine, measurementSurface, type MeasurementLine } from "../application/measurement-line.js";
 import type { CorpusMetadata } from "../corpus.js";
 import type { DiagnosisRecord } from "../diagnosis.js";
 import {
@@ -165,16 +165,24 @@ export function diagnosisSummary(record: DiagnosisRecord): WorkbenchDiagnosisSum
  * gate wins over the stored summary where both spell a field, which is what
  * makes the interval the score's rather than the pass rate's.
  */
-export function candidateHeadline(
+export function candidateMeasurement(
 	development: WorkbenchCandidateSummary["development"],
 	sealedHoldout: WorkbenchCandidateSummary["sealedHoldout"],
-): string {
+): MeasurementLine {
 	return measurementLine({
 		development: development && (development.comparison || development.gate)
 			? measurementSurface({ ...development.comparison, ...development.gate })
 			: null,
 		exam: sealedHoldout.gate,
-	}).text;
+	});
+}
+
+/** That measurement as the one sentence every surface prints. */
+export function candidateHeadline(
+	development: WorkbenchCandidateSummary["development"],
+	sealedHoldout: WorkbenchCandidateSummary["sealedHoldout"],
+): string {
+	return candidateMeasurement(development, sealedHoldout).text;
 }
 
 export function candidateSummary(

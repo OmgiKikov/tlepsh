@@ -329,9 +329,11 @@ export function decisionHeadline(result: WorkbenchDecisionResult): string {
 		case "run-current":
 			if (result.result.resolvedAs === "run-eval") return runHeadline(result.result);
 			if (result.result.resolvedAs === "start-testing") return startTestingHeadline(result.result);
+			// A verification reached through /test is the same verification, and
+			// says the same numbers, as one reached through /run.
 			return result.result.outcome === "stopped-by-screen"
 				? t("headline.cheap-check-flat")
-				: t("headline.candidate", { status: candidateStatusLabel(result.result.candidate.status) });
+				: verifyHeadline(result.result);
 		case "start-testing":
 			return startTestingHeadline(result.result);
 		case "ship":

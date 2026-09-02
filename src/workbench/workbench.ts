@@ -219,6 +219,7 @@ import {
 } from "./inventory.js";
 import {
 	candidateProposalReview,
+	candidateMeasurement,
 	candidateSummary,
 	compatibleDevelopmentEvals,
 	diagnosisSummary,
@@ -1404,7 +1405,8 @@ export class AhdeWorkbench {
 			// The exact sentence the panel, the log and the passport print. The
 			// last gate before a release quotes the measurement, never a digest
 			// of it that could differ from the screen the operator just read.
-			development: summary.headline,
+			// The exam has its own line below, so it is not repeated here.
+			development: candidateMeasurement(summary.development, summary.sealedHoldout).development,
 			sealed: summary.sealedHoldout.gate
 				? `${summary.sealedHoldout.gate.verdict} · ${summary.sealedHoldout.gate.tasks} × ${summary.sealedHoldout.gate.repetitions}`
 				: summary.sealedHoldout.executed ? "executed, no verdict" : "not run",

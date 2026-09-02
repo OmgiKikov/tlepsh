@@ -122,6 +122,12 @@ export interface MeasurementLine {
 	exam: string | null;
 	/** The small-basket caveat, or null when the basket is big enough. */
 	smallBasket: string | null;
+	/**
+	 * The development surface alone, for a screen that labels the exam on its
+	 * own line — the ship dialog does, and printing the exam twice there reads
+	 * as two measurements rather than one.
+	 */
+	development: string;
 	/** The sentence without the caveat, for a panel that prints it muted below. */
 	numbers: string;
 	/** The whole sentence, which is what the Builder is given to quote. */
@@ -193,6 +199,7 @@ export function measurementLine(input: {
 			passRate: null,
 			exam,
 			smallBasket: null,
+			development: t("measurement.none"),
 			numbers: text,
 			text,
 		};
@@ -231,5 +238,16 @@ export function measurementLine(input: {
 	const join = (parts: readonly (string | null)[]): string =>
 		parts.filter((part): part is string => typeof part === "string" && part.length > 0).join(" · ");
 	const numbers = join([verdict, head, passRate, exam]);
-	return { verdict, metric, delta, design, passRate, exam, smallBasket, numbers, text: join([numbers, smallBasket]) };
+	return {
+		verdict,
+		metric,
+		delta,
+		design,
+		passRate,
+		exam,
+		smallBasket,
+		development: join([verdict, head, passRate]),
+		numbers,
+		text: join([numbers, smallBasket]),
+	};
 }
