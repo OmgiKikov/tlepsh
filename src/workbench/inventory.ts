@@ -573,6 +573,13 @@ export function loadWorkbenchInventory(options: {
 		// YAML, a broken field — is still a warning, because it IS a surprise.
 		if (!/\bENOENT\b/.test(errorMessage(error))) warnings.push(`target: ${errorMessage(error)}`);
 	}
+	// A template's prose is starting material, not the agent. Saying so once, as
+	// a warning, is what stops the Builder from measuring `REPLACE-ME` and the
+	// operator from wondering whether it was supposed to edit those files.
+	if (target) {
+		const standIns = standInFilesLine(target.dir);
+		if (standIns) warnings.push(standIns);
+	}
 	let specs: SpecSnapshot[] = [];
 	try {
 		specs = listSpecSnapshots(options.stateRoot, options.projectId);

@@ -6,6 +6,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { AhdeWorkbench } from "../workbench/workbench.js";
 import { SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
+import { standInFilesLine } from "../target/placeholders.js";
 import { DEFAULT_REPETITIONS } from "../workbench/calibration.js";
 import {
 	WorkbenchDecisionDeclinedError,
@@ -1066,9 +1067,16 @@ export function registerAhdeBuilderCommands(
 							: t("doctor.gate-unavailable"),
 				));
 			}
+			// Template stand-ins are a readiness fact, not a footnote, so /doctor
+			// says the line itself. The view carries the same sentence for the
+			// Builder; printing it twice would only make it look like two problems.
+			const standIns = standInFilesLine(workbench.projectDir);
+			if (standIns) lines.push(warn(standIns));
 			lines.push(`${p.dim(t("label.stage"))} ${stageLabel(view.stage)} · ${nextStep(view)}`);
 			for (const blocker of blockerLines(view)) lines.push(warn(blocker));
-			for (const warning of view.warnings.slice(0, 6)) lines.push(p.muted(`· ${oneLine(warning, 200)}`));
+			for (const warning of view.warnings.filter((entry) => entry !== standIns).slice(0, 6)) {
+				lines.push(p.muted(`· ${oneLine(warning, 200)}`));
+			}
 			const evaluatorsReady = (["judge", "simulatedUser"] as const).every((role) => {
 				const required = view.target.evaluatorRequirements?.[role] ?? evaluators[role] !== null;
 				return !required || Boolean(evaluators[role]?.credentialPresent);

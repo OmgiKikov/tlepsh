@@ -152,6 +152,10 @@ export function buildProjectStatus(context: BuilderProjectContext): Record<strin
 		} catch (error) {
 			warnings.push(`target authoring context: ${errorMessage(error)}`);
 		}
+		// The same one line the view and /doctor carry: what the Builder is
+		// looking at is a template's placeholder prose, not a described agent.
+		const standIns = standInFilesLine(resolved.dir);
+		if (standIns) warnings.push(standIns);
 	} catch (error) {
 		target = { status: "not-ready", error: errorMessage(error) };
 	}

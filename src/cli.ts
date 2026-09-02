@@ -115,6 +115,7 @@ import {
 	inspectTargetReadiness,
 	toolCredentialReadiness,
 } from "./target/readiness.js";
+import { standInFilesLine } from "./target/placeholders.js";
 import type { RunEventListener } from "./run-events.js";
 import {
 	CliInvocationError,
@@ -887,6 +888,12 @@ async function main(): Promise<void> {
 			// discovered inside a sandbox at the first call.
 			const toolKeys = toolCredentialReadiness(target);
 			for (const key of toolKeys) console.log(`  ${key.line}`);
+			// Structurally valid and still unwritten are different things: a harness
+			// straight out of a template passes every check above while its
+			// instructions, its cases and its tool still say REPLACE-ME. Named once,
+			// never fatal — describing the agent is how they get replaced.
+			const standIns = standInFilesLine(target.dir);
+			if (standIns) console.log(`  ${standIns}`);
 			console.log(`  tasks: ${target.tasks.length} (${target.datasetHash.slice(7, 19)}…)`);
 			console.log(`  suite: ${target.manifest.evalSuite.id} (${target.suiteHash.slice(7, 19)}…)`);
 			console.log(`  skills: ${target.manifest.skills.join(", ") || "(none)"}`);
