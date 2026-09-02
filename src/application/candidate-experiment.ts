@@ -139,11 +139,21 @@ const DEFAULT_DEPENDENCIES: CandidateExperimentDependencies = {
 
 export class CandidateExperimentError extends Error {
 	readonly candidateRecordPath: string;
+	/**
+	 * Which arm was running when the experiment stopped. A development-phase
+	 * reason names only development evidence and may be shown to the Builder;
+	 * a sealed-phase reason may carry sealed identities and stays host-only.
+	 */
+	readonly phase: "development" | "sealed";
+	/** The reason alone, without the record path: what a screen may repeat. */
+	readonly reason: string;
 
-	constructor(message: string, candidateRecordPath: string, options?: ErrorOptions) {
+	constructor(message: string, candidateRecordPath: string, options?: ErrorOptions & { phase?: "development" | "sealed" }) {
 		super(`${message}; validated candidate record: ${candidateRecordPath}`, options);
 		this.name = "CandidateExperimentError";
 		this.candidateRecordPath = candidateRecordPath;
+		this.phase = options?.phase ?? "sealed";
+		this.reason = message;
 	}
 }
 
@@ -710,6 +720,7 @@ export async function runCandidateExperiment(
 				developmentCorpus,
 				sealedCorpus,
 			);
+			let phase: "development" | "sealed" = "development";
 			try {
 				const development = await runMatchedEvaluation(
 					deps,
@@ -730,6 +741,7 @@ export async function runCandidateExperiment(
 
 				let sealedHoldout: CandidateExperimentHoldoutResult | null = null;
 				if (sealedCorpus && holdoutBaselineTarget && holdoutCandidateTarget) {
+					phase = "sealed";
 					const holdout = await runMatchedEvaluation(
 						deps,
 						runsRoot,
@@ -847,7 +859,7 @@ export async function runCandidateExperiment(
 				throw new CandidateExperimentError(
 					`candidate experiment stopped at validated: ${error instanceof Error ? error.message : String(error)}`,
 					candidateRecordPath,
-					{ cause: error },
+					{ cause: error, phase },
 				);
 			}
 		},

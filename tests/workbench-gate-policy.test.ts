@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import { recordBuilderAuthoredProposal } from "../src/application/builder-authoring.js";
 import { loadBuilderApplyReceipt } from "../src/application/builder-proposal.js";
-import { CANDIDATE_SCOPE_POLICY } from "../src/application/candidate-experiment.js";
+import { CANDIDATE_SCOPE_POLICY, CandidateExperimentError } from "../src/application/candidate-experiment.js";
 import { compileHarnessAuthoringProposal } from "../src/application/harness-authoring.js";
 import { createPolicyAwareGate } from "../src/builder/workbench-adapter.js";
 import { createCorpus, listCorpora } from "../src/corpus.js";
@@ -607,6 +607,38 @@ describe("the development arm of a verification", () => {
 		expect(measured).toHaveBeenCalledTimes(1);
 		expect(measured.mock.calls[0]?.[0].developmentCorpus).toMatchObject({ corpusId: corpus.id });
 	}, 60_000);
+
+	it("names the reason when the check stops in the development arms, and hides it when it stops in the exam", async () => {
+		// The fifth live session: one candidate run errored, the comparison was
+		// inconclusive, and the operator read "failed after the sealed gate" —
+		// wrong phase, no reason, no way out.
+		for (const [phase, expected] of [
+			["development", /stopped before the exam: inconclusive: candidate task task-1 errored.*abandon the interrupted attempt/],
+			["sealed", /during the sealed exam; sealed identities and contents remain hidden.*Abandon the interrupted attempt/],
+		] as const) {
+			const human = gate();
+			const measured = vi.fn(async () => {
+				throw new CandidateExperimentError(
+					"candidate experiment stopped at validated: inconclusive: candidate task task-1 errored (baseline=erun-a, candidate=erun-b)",
+					"/private/runs/candidates/candidate-1/candidate.json",
+					{ phase },
+				);
+			});
+			const { workbench } = await appliedProposalFixture(human, { runAppliedCandidate: measured as never });
+			await expect(workbench.decide({
+				kind: "verify-candidate",
+				repetitions: SEALED_VERIFICATION_REPETITIONS,
+				reason: "Check the applied candidate",
+			}, human)).rejects.toThrow(expected);
+			if (phase === "sealed") {
+				await expect(workbench.decide({
+					kind: "verify-candidate",
+					repetitions: SEALED_VERIFICATION_REPETITIONS,
+					reason: "Check the applied candidate",
+				}, human)).rejects.not.toThrow(/candidate\.json|task-1/);
+			}
+		}
+	}, 120_000);
 
 	it("refuses the check when the Spec has no published basket at all", async () => {
 		const human = gate();

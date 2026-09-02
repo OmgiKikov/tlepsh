@@ -14,6 +14,7 @@ import { recordCandidateAbandonment } from "../candidate-abandonment.js";
 import { WorkbenchDecisionDeclinedError, WorkbenchStaleDecisionError } from "../errors.js";
 import { candidateSummary, requireCandidate, requireDevelopmentCorpus, requireProposal, resolveOne } from "../resolution.js";
 import { abortIfRequested, actorId, exactSame } from "../workbench.js";
+import { CandidateExperimentError } from "../../application/candidate-experiment.js";
 import type { DecisionContext, DecisionHost, DecisionInputOf } from "./shared.js";
 import type { WorkbenchDecisionResult } from "../types.js";
 
@@ -217,7 +218,16 @@ export async function decideVerifyCandidate(
 		// Exact evaluator diagnostics remain host-only because thrown messages can
 		// otherwise become Builder model context through a failed tool result.
 		console.error("AHDE host-only candidate verification failure:", error);
-		throw new Error("candidate verification failed after the sealed gate; sealed identities and contents remain hidden");
+		// A stop in the development arms names only development evidence, and
+		// the operator needs the reason: a run that errored is an infrastructure
+		// failure, not a verdict, and the way out is to abandon and verify again.
+		if (error instanceof CandidateExperimentError && error.phase === "development") {
+			throw new Error(
+				`the check stopped before the exam: ${error.reason.replace(/^candidate experiment stopped at validated: /, "")}. ` +
+				"Nothing was decided — abandon the interrupted attempt (/discard) and verify again.",
+			);
+		}
+		throw new Error("candidate verification failed during the sealed exam; sealed identities and contents remain hidden. Abandon the interrupted attempt (/discard) and verify again.");
 	}
 	const settled = host.select("candidate", result.record.candidateId);
 	const sealedVerdict = result.sealedHoldout?.compare.gate.verdict ?? null;
