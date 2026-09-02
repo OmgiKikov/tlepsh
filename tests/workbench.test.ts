@@ -1878,7 +1878,7 @@ describe("AHDE Workbench", () => {
 		const view = await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view();
 		const serialized = JSON.stringify(view);
 		expect(view.counts.sealedCorpora).toBe(1);
-		expect(view.shippingReadiness).toEqual({ sealedHoldout: "underpowered", minimumTasks: 15 });
+		expect(view.shippingReadiness).toEqual({ sealedHoldout: "underpowered", minimumTasks: 15, sealedCases: 1 });
 		expect(serialized).not.toContain(sealed.id);
 		expect(serialized).not.toContain("secret holdout name");
 		expect(serialized).not.toContain("secret prompt");
@@ -1933,14 +1933,15 @@ describe("AHDE Workbench", () => {
 				})),
 			});
 			const before = await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view();
-			expect(before.shippingReadiness, scenario.label).toEqual({ sealedHoldout: "ready", minimumTasks: 15 });
+			expect(before.shippingReadiness, scenario.label).toEqual({ sealedHoldout: "ready", minimumTasks: 15, sealedCases: 15 });
 
 			const contentPath = join(paths.stateRoot, "projects", "test-target", "corpora", sealed.id, sealed.contentPath);
 			scenario.mutate(contentPath);
 			const view = await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view();
 			const serialized = JSON.stringify(view);
 
-			expect(view.shippingReadiness, scenario.label).toEqual({ sealedHoldout: "unavailable", minimumTasks: 15 });
+			// Nothing verified, so there is no count to state either.
+			expect(view.shippingReadiness, scenario.label).toEqual({ sealedHoldout: "unavailable", minimumTasks: 15, sealedCases: null });
 			expect(view.counts.sealedCorpora, scenario.label).toBe(1);
 			expect(serialized, scenario.label).not.toContain(sealed.id);
 			expect(serialized, scenario.label).not.toContain(sealed.hash);
@@ -1969,7 +1970,8 @@ describe("AHDE Workbench", () => {
 		});
 
 		const underpowered = await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view();
-		expect(underpowered.shippingReadiness).toEqual({ sealedHoldout: "underpowered", minimumTasks: 15 });
+		// The count is the verified exam's, never the broken one's: 1, not 15.
+		expect(underpowered.shippingReadiness).toEqual({ sealedHoldout: "underpowered", minimumTasks: 15, sealedCases: 1 });
 		expect(JSON.stringify(underpowered)).not.toContain(broken.id);
 
 		createCorpus({
@@ -1980,7 +1982,7 @@ describe("AHDE Workbench", () => {
 			tasks: Array.from({ length: 15 }, (_, index) => ({ id: `ready-${index}`, ...task(`ready-${index}`) })),
 		});
 		const ready = await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view();
-		expect(ready.shippingReadiness).toEqual({ sealedHoldout: "ready", minimumTasks: 15 });
+		expect(ready.shippingReadiness).toEqual({ sealedHoldout: "ready", minimumTasks: 15, sealedCases: 15 });
 		expect(JSON.stringify(ready)).not.toMatch(/PRIVATE-(?:BROKEN|VALID)/);
 	});
 
