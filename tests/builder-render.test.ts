@@ -30,6 +30,7 @@ import {
 	wrap,
 } from "../src/builder/render/format.js";
 import { handoffLines } from "../src/builder/render/handoff.js";
+import { refusalCard } from "../src/builder/workbench-adapter.js";
 import { setLanguage } from "../src/i18n.js";
 import { renderImpact } from "../src/builder/render/impact.js";
 import { renderToolPermissions, toolPermissionsFromDiff } from "../src/builder/render/tool-permissions.js";
@@ -269,6 +270,9 @@ function makeTraces(
 			evalRunId: "eval-1",
 			summary: { total: 10, pass: 6, fail: 4, error: 0, allPassRate: 0.6 },
 			repetitions: 1,
+			finishedAt: "2026-09-01T09:00:07.000Z",
+			targetGitSha: "4d533f07030f0a4b1c2d3e4f5a6b7c8d9e0f1a2b",
+			corpus: { name: "Ombudsman basket", taskCount: 10 },
 		},
 		diagnosis: {
 			diagnosisId: "diag-1",
@@ -1090,27 +1094,30 @@ describe("renderTraces", () => {
 	it("summarises the evaluation with a pass bar and lists the diagnosis", () => {
 		const lines = renderTraces(makeTraces(), plainPaint);
 		expect(lines[0]).toBe("Evaluation 6/10 passed ██████████░░░░░░ 60% · 4 failed · 0 errors · 1 repetition · eval-1");
-		expect(lines[1]).toBe("Diagnosis actionable · 6/10 passed · 1 failure mode(s), 1 of them across tasks");
-		expect(lines[2]).toBe("  1. lookup was never called — 4 of 10 tasks (reproduces 80%)");
-		expect(lines[3]).toBe("     across tasks · → propose fix");
-		expect(lines[4]).toBe("     No tool was called in 8 of 8 failing runs.");
-		expect(lines[5]).toBe("       run-1 · no tool call · “I can answer that from memory.”");
-		expect(lines[6]).toBe("Evidence http://127.0.0.1:4310/evidence/eval-1");
-		expect(lines[7]).toBe("Next say “fix the first problem” (or name a mode) to prepare an exact proposal");
-		expect(lines).toHaveLength(8);
+		// Which run the operator is reading: id, when, the revision it measured, the basket.
+		expect(lines[1]).toBe("Showing eval-1 · 2026-09-01 09:00:07Z · revision 4d533f0703 · Ombudsman basket · 10 cases");
+		expect(lines[2]).toBe("Diagnosis actionable · 6/10 passed · 1 failure mode(s), 1 of them across tasks");
+		expect(lines[3]).toBe("  1. lookup was never called — 4 of 10 tasks (reproduces 80%)");
+		expect(lines[4]).toBe("     across tasks · → propose fix");
+		expect(lines[5]).toBe("     No tool was called in 8 of 8 failing runs.");
+		expect(lines[6]).toBe("       run-1 · no tool call · “I can answer that from memory.”");
+		expect(lines[7]).toBe("Evidence http://127.0.0.1:4310/evidence/eval-1");
+		expect(lines[8]).toBe("Next say “fix the first problem” (or name a mode) to prepare an exact proposal");
+		expect(lines).toHaveLength(9);
 	});
 
 	it("tones the summary by errors and failures", () => {
 		const errors = renderTraces(makeTraces({}, {
-			evaluation: { evalRunId: "eval-2", summary: { total: 10, pass: 7, fail: 2, error: 1, allPassRate: 0.7 }, repetitions: 2 },
+			evaluation: { evalRunId: "eval-2", summary: { total: 10, pass: 7, fail: 2, error: 1, allPassRate: 0.7 }, repetitions: 2, finishedAt: "2026-09-01T09:00:07.000Z", targetGitSha: "4d533f07030f0a4b1c2d3e4f5a6b7c8d9e0f1a2b", corpus: null },
 		}), tagPaint);
 		expect(errors[0]).toContain("<warning><bold>7/10 passed</bold></warning>");
 		expect(errors[0]).toContain("<error>2 failed</error>");
 		expect(errors[0]).toContain("<warning>1 errors</warning>");
 		expect(errors[0]).toContain("<dim>· 2 repetitions · eval-2</dim>");
 		const perfect = renderTraces(makeTraces({}, {
-			evaluation: { evalRunId: "eval-3", summary: { total: 4, pass: 4, fail: 0, error: 0, allPassRate: 1 }, repetitions: 1 },
+			evaluation: { evalRunId: "eval-3", summary: { total: 4, pass: 4, fail: 0, error: 0, allPassRate: 1 }, repetitions: 1, finishedAt: "2026-09-01T09:00:07.000Z", targetGitSha: "4d533f07030f0a4b1c2d3e4f5a6b7c8d9e0f1a2b", corpus: null },
 		}), tagPaint);
+		expect(perfect[1]).toContain("its basket is no longer published");
 		expect(perfect[0]).toContain("<success><bold>4/4 passed</bold></success>");
 		expect(perfect[0]).toContain("<muted>0 failed</muted>");
 		expect(perfect[0]).toContain("<muted>0 errors</muted>");
@@ -2567,8 +2574,8 @@ describe("the workshop tool cards", () => {
 	/** Exactly what Pi hands a renderer when `execute` threw. */
 	const thrown = (message: string) => ({ content: [{ type: "text", text: message }], details: {} });
 
-	function render(name: string, result: unknown, args: unknown, expanded = false): string {
-		return card(name).renderResult!(result, { expanded }, fakeTheme, { args }).render(200).join("\n");
+	function render(name: string, result: unknown, args: unknown, context: { isError?: boolean } = {}, expanded = false): string {
+		return card(name).renderResult!(result, { expanded }, fakeTheme, { args, ...context }).render(200).join("\n");
 	}
 
 	it("shows the reason a command, a try or a package was refused, never an invented result", () => {
@@ -2578,6 +2585,7 @@ describe("the workshop tool cards", () => {
 			"ahde_workshop_bash",
 			thrown("argv[0] must be a bare PATH command or an absolute executable path"),
 			{ argv: ["tools/check_dbo/run", "DBO-2345"] },
+			{ isError: true },
 		);
 		expect(bash).toContain("argv[0] must be a bare PATH command");
 		expect(bash).not.toContain("exit killed");
@@ -2587,6 +2595,7 @@ describe("the workshop tool cards", () => {
 			"ahde_workshop_try",
 			thrown("the check_dbo tool wants network access during setup to run here; the operator has to allow that once before it may be tried"),
 			{ tool: "check_dbo" },
+			{ isError: true },
 		);
 		expect(tried).toContain("check_dbo");
 		expect(tried).toContain("the operator has to allow that once");
@@ -2598,6 +2607,7 @@ describe("the workshop tool cards", () => {
 			"ahde_workshop_author_tool",
 			thrown("a tool package needs one happy-path fixture and one error-handling fixture\nsecond line is not shown"),
 			{ name: "check_dbo" },
+			{ isError: true },
 		);
 		expect(authored).toContain("check_dbo");
 		expect(authored).toContain("needs one happy-path fixture and one error-handling fixture");
@@ -2609,6 +2619,7 @@ describe("the workshop tool cards", () => {
 			"ahde_workshop_write",
 			thrown("workshop scope refuses evals/development.jsonl: only AGENTS.md, skills/**, tools/**, bin/**, data/** exist in a workshop"),
 			{ path: "evals/development.jsonl" },
+			{ isError: true },
 		);
 		expect(written).toContain("workshop scope refuses evals/development.jsonl");
 		expect(written).not.toContain("✓");
@@ -2638,5 +2649,47 @@ describe("the workshop tool cards", () => {
 		}, { name: "check_dbo" });
 		expect(red).toContain("1/2 contract tests passed");
 		expect(red).toContain("expected exit 0, got 1; stdout is not valid JSON");
+	});
+});
+
+/**
+ * A refused tool call used to collapse to its own label — "Workbench
+ * submission" — so the only account of the refusal the human ever read was
+ * the Builder's paraphrase of it, three screens later.
+ */
+describe("a refusal on screen", () => {
+	function refusal(text: string) {
+		return refusalCard(
+			{ content: [{ type: "text", text }], details: {} } as unknown as Parameters<typeof refusalCard>[0],
+			fakeTheme as unknown as Theme,
+		).render(200).join("\n").trimEnd();
+	}
+
+	it("shows the first line of the reason the host gave, bounded", () => {
+		expect(refusal("Target has uncommitted changes: notes.md. Commit them, then author.\n    at openWorkshop"))
+			.toBe("<error>✗</error> Target has uncommitted changes: notes.md. Commit them, then author.");
+		// Bounded: a runaway reason cannot push the transcript around.
+		const long = refusal(`${"x".repeat(400)}`);
+		expect([...long.split("</error> ")[1]!].length).toBe(140);
+		expect(long).toContain("…");
+		// Nothing to say is still a card, never a crash.
+		expect(refusal("")).toBe("<error>✗</error>");
+	});
+
+	it("bends the two refusals the host words itself, and leaves the rest exact", () => {
+		expect(refusal("apply-proposal was declined by the human operator"))
+			.toContain("Cancelled — nothing changed.");
+		expect(refusal("No compatible development EvalRun is available"))
+			.toContain("There is nothing to work on yet.");
+		setLanguage("ru");
+		try {
+			expect(refusal("apply-proposal was declined by the human operator"))
+				.toContain("Отменено — ничего не изменилось.");
+			// A message the host did not word itself is shown exactly as it came.
+			expect(refusal("tools/check_dbo is outside the declared Harness scope"))
+				.toContain("tools/check_dbo is outside the declared Harness scope");
+		} finally {
+			setLanguage(null);
+		}
 	});
 });

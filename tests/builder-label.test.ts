@@ -637,11 +637,16 @@ describe("/label as a Builder command", () => {
 	});
 
 	it("takes the sample size and rejects anything else before touching the host", async () => {
-		const { command } = registerLabel();
+		const { command, show } = registerLabel();
 		const host = labelContext();
 		for (const bad of ["twenty", "3 more", "-1", "999"]) {
-			await expect(command.handler(bad, host.ctx))
-				.rejects.toThrow("/label takes how many answers to grade");
+			// The refusal is a panel in the transcript, never Pi's raw
+			// `Extension "command:label" error:` with a stack under it.
+			await command.handler(bad, host.ctx);
+			expect(show).toHaveBeenLastCalledWith(host.ctx, expect.objectContaining({
+				title: "AHDE · /label",
+				lines: [expect.stringContaining("/label takes how many answers to grade")],
+			}));
 		}
 		expect(host.select).not.toHaveBeenCalled();
 	});
@@ -660,8 +665,11 @@ describe("/label as a Builder command", () => {
 
 	it("refuses a host that cannot ask a question, and one with no judged evidence", async () => {
 		const withoutSelect = registerLabel();
-		await expect(withoutSelect.command.handler("", labelContext({ withoutSelect: true }).ctx))
-			.rejects.toThrow("/label needs a host that can ask you a question");
+		const selectless = labelContext({ withoutSelect: true });
+		await withoutSelect.command.handler("", selectless.ctx);
+		expect(withoutSelect.show).toHaveBeenLastCalledWith(selectless.ctx, expect.objectContaining({
+			lines: [expect.stringContaining("/label needs a host that can ask you a question")],
+		}));
 
 		setLanguage("ru");
 		const fixture = evidence({ tasks: 2, noJudge: true });

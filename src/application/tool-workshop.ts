@@ -78,6 +78,7 @@ import {
 	type TargetAuthoringContextClaim,
 	type TargetAuthoringResource,
 } from "./target-authoring-context.js";
+import { namedDirtyPaths, operatorDirtyPaths } from "./store-hygiene.js";
 
 const TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 /** One try is a look at behavior, not a transcript: both streams stay small. */
@@ -2508,9 +2509,15 @@ export class BuilderWorkshop {
 
 	/** The workshop only ever compiles against the exact revision it copied. */
 	private assertBaselineUnmoved(): void {
-		if (gitWorkshop(this.repositoryDir, ["status", "--porcelain=v1", "--untracked-files=all"]) !== "") {
+		// The engine's own `.ahde/` and `runs/` live inside the Target and are
+		// never the operator's work; the refusal names the files that are.
+		const dirty = operatorDirtyPaths(
+			gitWorkshopRaw(this.repositoryDir, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
+		);
+		if (dirty.length > 0) {
 			throw new ToolWorkshopError(
-				"the Target checkout has uncommitted changes; a workshop compiles only against a clean revision",
+				`the Target checkout has uncommitted changes (${namedDirtyPaths(dirty)}); ` +
+				"commit them — a workshop compiles only against a clean revision",
 			);
 		}
 		const head = gitWorkshop(this.repositoryDir, ["rev-parse", "--verify", "HEAD^{commit}"]);

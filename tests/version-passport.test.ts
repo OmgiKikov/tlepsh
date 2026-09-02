@@ -196,7 +196,13 @@ describe("/passport and /log", () => {
 		expect(shown).toContain("Growth");
 		expect(shown).toContain(fixture.tag);
 		expect(shown).toContain("sealed pass on 15×2");
-		await expect(host.run("log", "not-a-number")).rejects.toThrow(/accepts a row count/);
-		await expect(host.run("passport", "1.0.0 extra")).rejects.toThrow(/at most one version/);
+		// A mistyped argument is a panel in the transcript, not Pi's raw
+		// `Extension "command:log" error:` with a stack under it.
+		await host.run("log", "not-a-number");
+		expect(host.blocks.at(-1)).toMatchObject({ title: "AHDE · /log" });
+		expect(host.text()).toMatch(/accepts a row count/);
+		await host.run("passport", "1.0.0 extra");
+		expect(host.blocks.at(-1)).toMatchObject({ title: "AHDE · /passport" });
+		expect(host.text()).toMatch(/at most one version/);
 	}, 60_000);
 });

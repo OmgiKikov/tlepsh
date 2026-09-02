@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it, vi } from "vitest";
-import { installAhdeBuilderProductShell } from "../src/builder/product-shell.js";
+import { ahdeCommandsFirst, installAhdeBuilderProductShell } from "../src/builder/product-shell.js";
 import { AHDE_TRANSCRIPT_ENTRY_TYPE } from "../src/builder/transcript.js";
 import type { WorkbenchView } from "../src/workbench/types.js";
 
@@ -84,6 +84,7 @@ function host(options: {
 		setWorkingMessage: vi.fn(),
 		notify: vi.fn(),
 		setEditorText: vi.fn(),
+		addAutocompleteProvider: vi.fn(),
 		input: vi.fn(async (_label: string, suggested: string) => suggested),
 		select: vi.fn(options.select ?? (async () => "Not now")),
 		setHeader: vi.fn((input: (tui: unknown, theme: Theme) => { render(width: number): string[] }) => {
@@ -123,6 +124,9 @@ describe("AHDE Builder product shell", () => {
 
 		expect(registerEntryRenderer).toHaveBeenCalledWith(AHDE_TRANSCRIPT_ENTRY_TYPE, expect.any(Function));
 		expect(h.ui.setTitle).toHaveBeenCalledWith("AHDE Builder");
+		// Pi drops extension wrappers on every session start, so the `/` palette
+		// ordering is asked for here rather than once at load.
+		expect(h.ui.addAutocompleteProvider).toHaveBeenCalledWith(ahdeCommandsFirst);
 		expect(h.ui.setWorkingMessage).toHaveBeenCalledWith("AHDE Builder is working…");
 		expect(h.ui.setStatus).toHaveBeenCalledWith("ahde", "AHDE · Target setup");
 		expect(h.ui.setStatus).toHaveBeenCalledWith("ahde-auth", undefined);
@@ -327,5 +331,66 @@ describe("AHDE Builder product shell", () => {
 
 		expect(result.message.errorMessage).toContain("authentication was rejected");
 		expect(result.message.errorMessage).not.toContain("SECRET_PROVIDER_JSON");
+	});
+});
+
+/**
+ * Typing “/” used to show `model, thinking, copy, name, session` and a counter
+ * reading 45 — Pi's own runtime commands before a single AHDE verb.
+ */
+describe("the / palette leads with AHDE's own verbs", () => {
+	const items = [
+		{ value: "model", label: "model" },
+		{ value: "thinking", label: "thinking" },
+		{ value: "test", label: "test" },
+		{ value: "quit", label: "quit" },
+		{ value: "traces", label: "traces" },
+	];
+	const signal = new AbortController().signal;
+
+	function palette(suggestions: unknown) {
+		return ahdeCommandsFirst({
+			getSuggestions: async () => suggestions,
+			applyCompletion: vi.fn(() => ({ lines: [], cursorLine: 0, cursorCol: 0 })),
+		} as never);
+	}
+
+	it("moves AHDE's commands to the front and keeps Pi's order inside each half", async () => {
+		const shown = await palette({ items, prefix: "/" }).getSuggestions([], 0, 0, { signal });
+		expect(shown?.items.map((item) => item.value)).toEqual(["test", "traces", "model", "thinking", "quit"]);
+	});
+
+	it("leaves arguments, paths, and lists it has no say in exactly as they were", async () => {
+		// An argument completion: the prefix is not a command name.
+		const argument = { items, prefix: "3 repetitions" };
+		expect(await palette(argument).getSuggestions([], 0, 0, { signal })).toBe(argument);
+		// A path carries a separator, so it is never a bare command name.
+		const path = { items: [{ value: "src/i18n.ts", label: "i18n.ts" }], prefix: "/Users/kikov/" };
+		expect(await palette(path).getSuggestions([], 0, 0, { signal })).toBe(path);
+		// Nothing of AHDE's in the list, or nothing but AHDE's: untouched either way.
+		const piOnly = { items: items.slice(0, 2), prefix: "/" };
+		expect(await palette(piOnly).getSuggestions([], 0, 0, { signal })).toBe(piOnly);
+		const ahdeOnly = { items: [{ value: "test", label: "test" }], prefix: "/t" };
+		expect(await palette(ahdeOnly).getSuggestions([], 0, 0, { signal })).toBe(ahdeOnly);
+		expect(await palette(null).getSuggestions([], 0, 0, { signal })).toBeNull();
+	});
+
+	it("delegates everything it does not reorder", () => {
+		const applyCompletion = vi.fn(() => ({ lines: ["/test "], cursorLine: 0, cursorCol: 6 }));
+		const shouldTriggerFileCompletion = vi.fn(() => true);
+		const wrapped = ahdeCommandsFirst({
+			triggerCharacters: ["/"],
+			getSuggestions: async () => null,
+			applyCompletion,
+			shouldTriggerFileCompletion,
+		} as never);
+		expect(wrapped.triggerCharacters).toEqual(["/"]);
+		expect(wrapped.applyCompletion([], 0, 0, { value: "test", label: "test" }, "/t"))
+			.toEqual({ lines: ["/test "], cursorLine: 0, cursorCol: 6 });
+		expect(applyCompletion).toHaveBeenCalledOnce();
+		expect(wrapped.shouldTriggerFileCompletion?.([], 0, 0)).toBe(true);
+		// A provider without the optional hook does not grow one.
+		expect(ahdeCommandsFirst({ getSuggestions: async () => null, applyCompletion } as never).shouldTriggerFileCompletion)
+			.toBeUndefined();
 	});
 });

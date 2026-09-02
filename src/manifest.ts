@@ -11,7 +11,11 @@ import {
 	isPinnedContainerImage,
 } from "./target/container-backend.js";
 import { loadTargetTools, type ResolvedTargetTool } from "./target/tool-manifest.js";
-import { ensureLocalArtifactIgnores } from "./application/store-hygiene.js";
+import {
+	ENGINE_STORE_EXCLUDE,
+	ensureLocalArtifactIgnores,
+	operatorDirtyPaths,
+} from "./application/store-hygiene.js";
 
 // ---------- Grader specs (declarative, target-owned) ----------
 
@@ -765,17 +769,24 @@ function computeRuntimeInfo(): RuntimeInfo {
 	};
 }
 
+/**
+ * The revision a Target records. The engine's own store lives inside the
+ * Target, so it is excluded from both halves — the question and the hash —
+ * whatever `.gitignore` says: `.ahde/` never belongs to the Target's identity.
+ */
 function gitSha(dir: string): string {
 	const head = execFileSync("git", ["-C", dir, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
-	const status = execFileSync("git", ["-C", dir, "status", "--porcelain=v1", "--untracked-files=all"], {
+	const status = execFileSync("git", ["-C", dir, "status", "--porcelain=v1", "-z", "--untracked-files=all"], {
 		encoding: "utf8",
 	});
-	if (!status.trim()) return head;
+	if (operatorDirtyPaths(status).length === 0) return head;
 
 	const diff = execFileSync("git", ["-C", dir, "diff", "--binary", "HEAD"], { encoding: "utf8" });
-	const untracked = execFileSync("git", ["-C", dir, "ls-files", "--others", "--exclude-standard", "-z"], {
-		encoding: "utf8",
-	})
+	const untracked = execFileSync(
+		"git",
+		["-C", dir, "ls-files", "--others", "--exclude-standard", "-z", "--", ".", ...ENGINE_STORE_EXCLUDE],
+		{ encoding: "utf8" },
+	)
 		.split("\0")
 		.filter(Boolean)
 		.sort()

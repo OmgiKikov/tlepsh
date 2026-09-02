@@ -181,6 +181,40 @@ describe("Builder Pi runtime", () => {
 		expect(process.env.PI_SKIP_VERSION_CHECK).toBe(previousSkipVersionCheck);
 	});
 
+	/**
+	 * The Builder creates `.ahde/` and `runs/` inside the operator's checkout.
+	 * A Target that reached the Builder any way other than `ahde init` used to
+	 * arrive with neither ignored, so its very first workshop was refused for
+	 * "uncommitted changes" the host had made itself.
+	 */
+	it("ignores its own store in the Target before it writes one", async () => {
+		const projectDir = root("ahde-builder-hygiene-");
+		const builderHome = root("ahde-builder-hygiene-home-");
+		await launchBuilderPi({
+			projectDir,
+			stateRoot: join(projectDir, ".ahde"),
+			runsRoot: join(projectDir, "runs"),
+			builderHome,
+			projectId: "demo",
+			main: silentMain,
+		});
+
+		const ignores = readFileSync(join(projectDir, ".gitignore"), "utf8");
+		for (const rule of ["/.ahde/", "/runs/", "/imports/", "/.env", "!/.env.example"]) {
+			expect(ignores).toContain(rule);
+		}
+		// Idempotent: a second launch tops up nothing.
+		await launchBuilderPi({
+			projectDir,
+			stateRoot: join(projectDir, ".ahde"),
+			runsRoot: join(projectDir, "runs"),
+			builderHome,
+			projectId: "demo",
+			main: silentMain,
+		});
+		expect(readFileSync(join(projectDir, ".gitignore"), "utf8")).toBe(ignores);
+	});
+
 	it("resolves the Builder home from an explicit path, AHDE_HOME, or the user home", async () => {
 		const home = root("ahde-home-");
 		await withEnv("AHDE_HOME", home, () => {

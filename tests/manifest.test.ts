@@ -107,6 +107,26 @@ describe("loadTarget", () => {
 		}
 	});
 
+	/**
+	 * The engine's store lives inside the Target, so it can never be part of
+	 * what the Target's revision names — with or without a `.gitignore` rule.
+	 * Otherwise the first `.ahde/` write turns every revision into
+	 * `<sha>-dirty-<hash>`, which names no Git object and refuses everything.
+	 */
+	it("keeps the host's own store out of the recorded revision", () => {
+		const dir = makeTargetFixture(baseFixtureFiles());
+		try {
+			const clean = loadTarget(dir);
+			mkdirSync(`${dir}/.ahde/projects`, { recursive: true });
+			writeFileSync(`${dir}/.ahde/projects/focus.json`, "{}\n");
+			mkdirSync(`${dir}/runs/erun_1`, { recursive: true });
+			writeFileSync(`${dir}/runs/erun_1/eval_run.json`, "{}\n");
+			expect(loadTarget(dir).gitSha).toBe(clean.gitSha);
+		} finally {
+			cleanup(dir);
+		}
+	});
+
 	it("suiteHash changes when grader defaults change, datasetHash does not", () => {
 		const dirA = makeTargetFixture(baseFixtureFiles());
 		const dirB = makeTargetFixture(

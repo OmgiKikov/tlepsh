@@ -3,11 +3,12 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, type TUI } from "@earendil-works/pi-tui";
+import { truncateToWidth, type AutocompleteProvider, type TUI } from "@earendil-works/pi-tui";
 import type { AhdeWorkbench } from "../workbench/workbench.js";
 import type { WorkbenchStage, WorkbenchView } from "../workbench/types.js";
 import { loadJudgeCalibration } from "../application/judge-labels.js";
 import { themePaint } from "./render/paint.js";
+import { AHDE_BUILDER_COMMAND_NAMES } from "./commands.js";
 import { compilePlan } from "./render/plan.js";
 import { nextStep, stageLabel } from "./render/stage.js";
 import { renderStatusBar } from "./render/status-bar.js";
@@ -19,6 +20,49 @@ import {
 	registerAhdeTranscriptRenderer,
 	type TranscriptPresenter,
 } from "./transcript.js";
+
+/** The AHDE verbs, by the exact value the `/` palette completes to. */
+const AHDE_PALETTE_NAMES: ReadonlySet<string> = new Set(AHDE_BUILDER_COMMAND_NAMES);
+
+/**
+ * AHDE's own commands lead the `/` menu.
+ *
+ * Pi builds one ordered list — its built-ins, then prompt templates, then
+ * extension commands, then skills — so an operator typing “/” met `model,
+ * thinking, copy, name, session` and a counter reading 45 before a single AHDE
+ * verb. `preferredExtensionCommands` does not help: it only decides which side
+ * wins a NAME collision, never the order.
+ *
+ * So this moves AHDE's half to the front of whatever the built-in provider
+ * already returned. It is a stable partition: nothing is hidden, nothing is
+ * re-scored, and inside each half the ranking Pi computed — fuzzy, once the
+ * operator types — stands exactly as it was. Only the command-name context is
+ * touched; arguments, `@` attachments and paths pass straight through.
+ */
+export function ahdeCommandsFirst(current: AutocompleteProvider): AutocompleteProvider {
+	return {
+		...(current.triggerCharacters ? { triggerCharacters: current.triggerCharacters } : {}),
+		async getSuggestions(lines, cursorLine, cursorCol, suggestOptions) {
+			const suggestions = await current.getSuggestions(lines, cursorLine, cursorCol, suggestOptions);
+			// `/`, `/tr` — a bare command name being typed, never a path or an argument.
+			if (!suggestions || !/^\/[^\s/]*$/.test(suggestions.prefix)) return suggestions;
+			const ahde = suggestions.items.filter((item) => AHDE_PALETTE_NAMES.has(item.value));
+			if (ahde.length === 0 || ahde.length === suggestions.items.length) return suggestions;
+			return {
+				...suggestions,
+				items: [...ahde, ...suggestions.items.filter((item) => !AHDE_PALETTE_NAMES.has(item.value))],
+			};
+		},
+		applyCompletion: (lines, cursorLine, cursorCol, item, prefix) =>
+			current.applyCompletion(lines, cursorLine, cursorCol, item, prefix),
+		...(current.shouldTriggerFileCompletion
+			? {
+				shouldTriggerFileCompletion: (lines, cursorLine, cursorCol) =>
+					current.shouldTriggerFileCompletion!(lines, cursorLine, cursorCol),
+			}
+			: {}),
+	};
+}
 
 type ProductWorkbench =
 	& Pick<AhdeWorkbench, "view">
@@ -298,6 +342,13 @@ export function installAhdeBuilderProductShell(
 	pi.on("session_start", async (event, ctx) => {
 		if (ctx.mode !== "tui") return;
 		host = ctx;
+		// Pi rebuilds the palette on every session start and drops extension
+		// wrappers with it, so the ordering is asked for here, not once at load.
+		try {
+			ctx.ui.addAutocompleteProvider(ahdeCommandsFirst);
+		} catch {
+			// A host with no autocomplete surface simply has no palette to order.
+		}
 		ctx.ui.setTitle(t("header.title"));
 		ctx.ui.setWorkingMessage(t("onboarding.working"));
 		ctx.ui.setHeader((hostTui, theme) => {

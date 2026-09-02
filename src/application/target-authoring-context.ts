@@ -14,6 +14,7 @@ import {
 	MAX_TOOL_DIRECTORY_FILES,
 	validateTargetToolDescriptor,
 } from "../target/tool-manifest.js";
+import { namedDirtyPaths, operatorDirtyPaths } from "./store-hygiene.js";
 
 const GIT_SHA = /^[0-9a-f]{40}$/;
 const TARGET_ID = /^[a-z0-9][a-z0-9-]*$/;
@@ -242,9 +243,18 @@ function assertExpectedTargetId(expected: TargetAuthoringContextRequest["expecte
 }
 
 function assertCleanRevision(repositoryDir: string, expectedRevision: string): void {
-	const status = gitRaw(repositoryDir, ["status", "--porcelain=v1", "--untracked-files=all"]);
-	if (status.length > 0) {
-		contextError("TARGET_CONTEXT_DIRTY", "Target has uncommitted changes; commit or remove them before authoring.");
+	// `.ahde/` and `runs/` are the host's own, created inside the Target by
+	// AHDE: they never count as the operator's uncommitted work, and the
+	// refusal names the files that do, because "commit them" is the only
+	// answer and it is unactionable without them.
+	const dirty = operatorDirtyPaths(
+		gitRaw(repositoryDir, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).toString("utf8"),
+	);
+	if (dirty.length > 0) {
+		contextError(
+			"TARGET_CONTEXT_DIRTY",
+			`Target has uncommitted changes: ${namedDirtyPaths(dirty)}. Commit them, then author.`,
+		);
 	}
 	if (!GIT_SHA.test(expectedRevision)) {
 		contextError("TARGET_CONTEXT_STALE", "The selected Target is not an exact committed revision; refresh the Target view.");

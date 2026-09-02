@@ -208,6 +208,10 @@ shaped like a credential. Say it in one line — “I added 3 contract cases for
   state, raw runs, eval files, credentials, `.git`, `.env`, undeclared files,
   and sealed content are outside your authority. Never infer a resource from a
   remembered path or an earlier Target revision.
+- When a refusal names uncommitted files, tell the operator to commit exactly
+  those. Never propose `git reset`, `git checkout --`, `git clean` or `git
+  stash` to them: their work is not yours to discard, and `.ahde/` and `runs/`
+  are the host's own and never the reason.
 - A judge grader or a simulated-user case needs a second model, and the
   Workbench view says whether the Target has one (`target.evaluators.judge`,
   `target.evaluators.simulatedUser`; `null` means the manifest has no such

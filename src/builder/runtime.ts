@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { main as piMain, VERSION as PI_VERSION, type ExtensionFactory, type MainOptions } from "@earendil-works/pi-coding-agent";
+import { ensureLocalArtifactIgnores } from "../application/store-hygiene.js";
 import { writeTextArtifact } from "../storage/artifacts.js";
 import { loadTarget } from "../manifest.js";
 import { runInteractiveTarget } from "../target/interactive.js";
@@ -268,6 +269,18 @@ export async function launchBuilderPi(options: LaunchBuilderPiOptions = {}): Pro
 		throw new Error(`Builder project directory must be a regular non-symlink directory: ${requestedProjectDir}`);
 	}
 	const projectDir = realpathSync(requestedProjectDir);
+	// The host is about to create its own store inside the operator's checkout.
+	// Ignoring it must happen before anything can see it as uncommitted work:
+	// `ahde init` tops up the same rules, but a Target adopted any other way
+	// reached the first workshop with `.ahde/` untracked and was refused.
+	// Idempotent line by line, and never fatal — a Target outside Git, or one
+	// whose `.gitignore` cannot be written, still opens.
+	try {
+		ensureLocalArtifactIgnores(projectDir);
+	} catch {
+		// The dirty checks exclude the host store on their own; this only spares
+		// the operator a `.gitignore` they would have had to write by hand.
+	}
 	const stateRoot = ensurePrivateDirectory(options.stateRoot ?? join(projectDir, ".ahde"));
 	const runsRoot = resolve(options.runsRoot ?? join(projectDir, "runs"));
 	const privateRoot = ensurePrivateDirectory(join(stateRoot, "builder-pi"));
