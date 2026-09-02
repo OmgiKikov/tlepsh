@@ -276,11 +276,23 @@ export function judgeCalibrationRefusal(
 		`the Target requires at least ${requirement.minLabels} label(s) at ${Math.round(requirement.minAgreement * 100)}%`;
 }
 
+/**
+ * `84% · κ 0.62 · n=50` from the reduced projection every screen carries — the
+ * three numbers, without the caveats only the full sample knows about.
+ */
+export function formatJudgeAgreementSummary(
+	stats: { agreement: number; kappa: number | null; labels: number },
+): string {
+	const kappa = stats.kappa === null ? "κ n/a" : `κ ${stats.kappa.toFixed(2)}`;
+	return `${Math.round(stats.agreement * 100)}% · ${kappa} · n=${stats.labels}`;
+}
+
 /** `84% · κ 0.62 · n=50`, the one line every screen shows. */
 export function formatJudgeAgreement(stats: JudgeAgreementStats): string {
 	const kappa = stats.kappa === null ? "κ n/a" : `κ ${stats.kappa.toFixed(2)}`;
 	const checks = stats.nChecks === stats.n ? "" : ` · checks=${stats.nChecks}`;
 	const duplicates = stats.duplicateLabels === 0 ? "" : ` · duplicates=${stats.duplicateLabels}`;
 	const conflicts = stats.conflictedSubjects === 0 ? "" : ` · conflicts=${stats.conflictedSubjects}`;
-	return `${Math.round(stats.agreement * 100)}% · ${kappa} · n=${stats.n}${checks}${duplicates}${conflicts}`;
+	return `${formatJudgeAgreementSummary({ agreement: stats.agreement, kappa: stats.kappa, labels: stats.n })}` +
+		`${checks}${duplicates}${conflicts}`;
 }

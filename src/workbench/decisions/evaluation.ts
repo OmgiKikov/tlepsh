@@ -6,7 +6,13 @@ import { loadDevelopmentCorpusPublicationReceipt } from "../../application/build
 import { resolveScoredCasesForEval, targetWithDevelopmentCorpus } from "../../application/corpus-target.js";
 import { compileRegradeDiff, estimateRegradeJudgeSpend, planRegradeGraders, type RegradeDiff } from "../../application/regrade-decision.js";
 import { loadCorpus, type CorpusRef } from "../../corpus.js";
-import { type EvalRunRecord } from "../../eval.js";
+import { loadVerifiedEvalRun, type EvalRunRecord } from "../../eval.js";
+import {
+	judgeEvidenceCalibration,
+	recordJudgeCalibrationOffer,
+	JUDGE_CALIBRATION_PROMPT_LABELS,
+} from "../../application/judge-labels.js";
+import { judgeAbstentions } from "../../application/run-explanation.js";
 import { loadTarget, type ResolvedTarget } from "../../manifest.js";
 import { hashValue } from "../../provenance.js";
 import { WorkbenchStaleDecisionError } from "../errors.js";
@@ -14,7 +20,82 @@ import { diagnosisSummary, requireApprovedSpec, evaluationProjection, requireCor
 import { calibrationProjection } from "../calibration.js";
 import { abortIfRequested, actorId, exactSame, boundedEvidenceLink, conversationalImprovementBrief } from "../workbench.js";
 import type { DecisionContext, DecisionHost, DecisionInputOf } from "./shared.js";
-import type { WorkbenchDecisionResult } from "../types.js";
+import type { WorkbenchDecisionResult, WorkbenchRunEvalResult, WorkbenchTracesDetail } from "../types.js";
+
+/**
+ * What one eval says about the judge that graded it: how far that judge has
+ * been checked against a human, and how often it declined to decide.
+ *
+ * Both readings are about the instrument rather than the agent, and both
+ * swallow their own errors: a missing or unreadable label store degrades to
+ * silence, never to a blocked run or a claim nobody can support.
+ */
+export function judgeAgreementOfEval(
+	host: Pick<DecisionHost, "runsRoot" | "stateRoot" | "projectId">,
+	evalRunId: string,
+): Pick<WorkbenchTracesDetail, "judgeAgreement" | "judgeAbstained"> {
+	const calibration = evidenceCalibration(host, evalRunId);
+	// No judge grader graded this run: there is no instrument to talk about, and
+	// a screen that said "not calibrated" here would be making that up.
+	if (!calibration || calibration.specHashes.length === 0) return {};
+	const stats = calibration.stats;
+	let abstained = 0;
+	try {
+		abstained = judgeAbstentions(loadVerifiedEvalRun(host.runsRoot, evalRunId).runs);
+	} catch {
+		abstained = 0;
+	}
+	return {
+		judgeAgreement: stats && stats.n > 0
+			? { agreement: stats.agreement, kappa: stats.kappa, labels: stats.n }
+			: null,
+		...(abstained > 0 ? { judgeAbstained: abstained } : {}),
+	};
+}
+
+function evidenceCalibration(
+	host: Pick<DecisionHost, "runsRoot" | "stateRoot" | "projectId">,
+	evalRunId: string,
+): ReturnType<typeof judgeEvidenceCalibration> | null {
+	try {
+		return judgeEvidenceCalibration({
+			runsRoot: host.runsRoot,
+			stateRoot: host.stateRoot,
+			projectId: host.projectId,
+			evalRunIds: [evalRunId],
+			// A screen shows every label the operator wrote, including the ones the
+			// promotion gate refuses; only `requireCalibration` reads the strict set.
+			includeLegacyLabels: true,
+		});
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * The same reading, plus the one-time offer to check this judge by hand. Only
+ * a run makes the offer: reading `/traces` twice is not two invitations, and
+ * the marker under the state root is what makes "once" survive a restart.
+ */
+export function judgeReadingOfEval(
+	host: Pick<DecisionHost, "runsRoot" | "stateRoot" | "projectId">,
+	evalRunId: string,
+): Pick<WorkbenchRunEvalResult, "judgeAgreement" | "judgeAbstained" | "judgeCalibration"> {
+	const reading = judgeAgreementOfEval(host, evalRunId);
+	if (reading.judgeAgreement === undefined) return reading;
+	const labelled = reading.judgeAgreement?.labels ?? 0;
+	let offered = false;
+	if (labelled < JUDGE_CALIBRATION_PROMPT_LABELS) {
+		try {
+			offered = recordJudgeCalibrationOffer(host.stateRoot, host.projectId, evalRunId);
+		} catch {
+			// An unwritable label directory costs the operator an invitation, never
+			// the run they just paid for.
+			offered = false;
+		}
+	}
+	return { ...reading, judgeCalibration: { labelled, offered } };
+}
 
 export async function decideRunEval(
 	host: DecisionHost,
@@ -61,7 +142,10 @@ export async function decideRunEval(
 	const improvementBrief = host.dependencies.compileImprovementBrief(host.runsRoot, diagnosis);
 	const link = boundedEvidenceLink(await host.dependencies.evidenceLink(record));
 	const settled = host.select("eval-run", record.evalRunId);
-	return { kind: input.kind, message: improvementBrief.headline, result: { evaluation: evaluationProjection(record, inventory.corpora), diagnosis: diagnosisSummary(diagnosis), improvementBrief: conversationalImprovementBrief(improvementBrief), evidence: link ? { available: true, ...link } : { available: false } }, view: await host.viewOf(settled) };
+	// Read after the run and before the view: the offer marker this may write is
+	// exactly what the view's `next` block then reports as a standing offer.
+	const judge = judgeReadingOfEval(host, record.evalRunId);
+	return { kind: input.kind, message: improvementBrief.headline, result: { evaluation: evaluationProjection(record, inventory.corpora), diagnosis: diagnosisSummary(diagnosis), improvementBrief: conversationalImprovementBrief(improvementBrief), evidence: link ? { available: true, ...link } : { available: false }, ...judge }, view: await host.viewOf(settled) };
 }
 
 export async function decideCalibrate(

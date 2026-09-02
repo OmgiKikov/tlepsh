@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	formatJudgeAgreement,
+	formatJudgeAgreementSummary,
 	judgeAgreement,
 	type JudgeAgreementInput,
 } from "../src/domain/judge-agreement.js";
@@ -159,5 +160,27 @@ describe("per-grader agreement", () => {
 		expect(formatJudgeAgreement(report.pooled)).toBe("70% · κ 0.40 · n=50");
 		expect(formatJudgeAgreement(judgeAgreement(cell(SPEC_A, "pass", "pass", 4)).pooled))
 			.toBe("100% · κ n/a · n=4");
+	});
+});
+
+/**
+ * Every judge screen prints the same three numbers, whether it holds the whole
+ * sample or the reduced projection a view carries. Two formatters that could
+ * round differently would be two answers to one question.
+ */
+describe("one agreement line, two carriers", () => {
+	it("says the same three numbers from the full stats and from the projection", () => {
+		const stats = judgeAgreement([
+			...cell(SPEC_A, "pass", "pass", 8),
+			...cell(SPEC_A, "fail", "fail", 2),
+			...cell(SPEC_A, "pass", "fail", 2),
+		]).pooled;
+		expect(formatJudgeAgreement(stats)).toBe("83% · κ 0.57 · n=12");
+		expect(formatJudgeAgreementSummary({ agreement: stats.agreement, kappa: stats.kappa, labels: stats.n }))
+			.toBe("83% · κ 0.57 · n=12");
+	});
+
+	it("says κ n/a rather than inventing one when it is undefined", () => {
+		expect(formatJudgeAgreementSummary({ agreement: 1, kappa: null, labels: 4 })).toBe("100% · κ n/a · n=4");
 	});
 });

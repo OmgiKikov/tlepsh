@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -23,11 +23,18 @@ import { judgeMeaning, judgeNextStep } from "../src/builder/render/label.js";
 import { stripMarkers, type TranscriptPresenter, type TranscriptTone } from "../src/builder/transcript.js";
 import { plainPaint } from "../src/builder/render/paint.js";
 import {
+	appendJudgeLabels,
+	judgeCalibrationOffer,
+	judgeCalibrationOfferPath,
 	judgeEvidenceCalibration,
 	judgeLabelFilePath,
 	readProjectJudgeLabels,
+	type JudgeLabelRow,
 	type JudgeLabelSuite,
 } from "../src/application/judge-labels.js";
+import { judgeReadingOfEval } from "../src/workbench/decisions/evaluation.js";
+import { workbenchNext } from "../src/workbench/next-actions.js";
+import type { WorkbenchView } from "../src/workbench/types.js";
 import { formatJudgeAgreement } from "../src/domain/judge-agreement.js";
 import { GraderSpec } from "../src/manifest.js";
 import { writeEvalRun, type EvalRunRecord } from "../src/eval.js";
@@ -724,5 +731,78 @@ describe("/label as a Builder command", () => {
 		expect(text).toContain("Do not offer the judge check again");
 		expect(text).not.toContain("kept private");
 		expect(options.label).toBe("Judge checked");
+	});
+});
+
+/**
+ * The offer is the host's, not the persona's: made once after the first
+ * judge-graded run, remembered on disk, and withdrawn when the operator has
+ * answered it. Ten labels is a prompt threshold — never a gate.
+ */
+describe("the standing offer to check the judge", () => {
+	function host(fixture: EvidenceFixture): Parameters<typeof judgeReadingOfEval>[0] {
+		return { runsRoot: fixture.runsRoot, stateRoot: fixture.stateRoot, projectId: fixture.projectId };
+	}
+
+	function label(index: number): JudgeLabelRow {
+		return {
+			runId: `erun_labels-run-${index % 6}`,
+			taskId: `task-${index % 6}`,
+			graderIndex: 1,
+			graderSpecHash: hashValue(GraderSpec.parse(RUBRIC_GRADER)),
+			human: "pass",
+			judge: "pass",
+			at,
+		};
+	}
+
+	it("is made exactly once, and the marker outlives the session", () => {
+		const fixture = evidence();
+		expect(judgeReadingOfEval(host(fixture), fixture.evalRunId).judgeCalibration)
+			.toEqual({ labelled: 0, offered: true });
+		// The same basket run again is not a second invitation.
+		expect(judgeReadingOfEval(host(fixture), fixture.evalRunId).judgeCalibration)
+			.toEqual({ labelled: 0, offered: false });
+		// Nothing in memory decided that: a fresh process reads the same answer
+		// off the marker beside the labels.
+		expect(existsSync(judgeCalibrationOfferPath(fixture.stateRoot, fixture.projectId))).toBe(true);
+		expect(judgeCalibrationOffer(fixture.stateRoot, fixture.projectId))
+			.toEqual({ labelled: 0, offered: true });
+	});
+
+	it("stops standing once the ten answers it asked for are written", () => {
+		const fixture = evidence();
+		judgeReadingOfEval(host(fixture), fixture.evalRunId);
+		appendJudgeLabels(
+			fixture.stateRoot,
+			fixture.projectId,
+			fixture.evalRunId,
+			Array.from({ length: 10 }, (_unused, index) => label(index)),
+		);
+		expect(judgeCalibrationOffer(fixture.stateRoot, fixture.projectId))
+			.toEqual({ labelled: 10, offered: false });
+	});
+
+	it("says nothing at all about a run no judge graded", () => {
+		const fixture = evidence({ noJudge: true });
+		expect(judgeReadingOfEval(host(fixture), fixture.evalRunId)).toEqual({});
+		expect(judgeCalibrationOffer(fixture.stateRoot, fixture.projectId)).toBeNull();
+	});
+
+	it("puts /label in the Builder's legal moves only while the offer stands", () => {
+		const view = (judgeCalibration?: { labelled: number; offered: boolean }) => ({
+			stage: "improvement-authoring" as const,
+			counts: { approvedSpecs: 1, corpusDrafts: 0 } as WorkbenchView["counts"],
+			...(judgeCalibration ? { judgeCalibration } : {}),
+		});
+		const offered = workbenchNext(view({ labelled: 0, offered: true })).decide
+			.find((entry) => entry.kind === "label");
+		expect(offered).toBeDefined();
+		// It is a question for a human, and it says so.
+		expect(offered?.asks).toBe(true);
+		expect(offered?.when).toContain("разметь 10 ответов");
+		expect(workbenchNext(view({ labelled: 12, offered: false })).decide.map((entry) => entry.kind))
+			.not.toContain("label");
+		expect(workbenchNext(view()).decide.map((entry) => entry.kind)).not.toContain("label");
 	});
 });

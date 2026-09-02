@@ -583,6 +583,18 @@ function modeLines(brief: WorkbenchImprovementBriefProjection, paint: Paint): st
 	return lines;
 }
 
+/**
+ * The instrument beside the run it graded: the agreement, or the one sentence
+ * the ship dialog also puts in its subject. Never a blocker — an uncalibrated
+ * judge is a fact about what the numbers above are worth, not a refusal.
+ */
+export function judgeRunAgreementLine(
+	calibration: NonNullable<WorkbenchCandidateSummary["judgeAgreement"]> | null,
+	paint: Paint,
+): string {
+	return calibration ? judgeAgreementLine(calibration, paint) : paint.warning(t("judge.uncalibrated"));
+}
+
 export function renderEvaluationSummary(
 	evaluation: WorkbenchTracesDetail["evaluation"],
 	paint: Paint,
@@ -599,7 +611,11 @@ export function renderTraces(content: WorkbenchTracesDetail, paint: Paint): stri
 	const brief = content.improvementBrief;
 	const evaluation = content.evaluation;
 	const lines = [
-		`${section(t("section.evaluation"), paint)} ${renderEvaluationSummary(evaluation, paint)}`,
+		`${section(t("section.evaluation"), paint)} ${renderEvaluationSummary(evaluation, paint)}` +
+			// A count of checks the judge would not decide, beside the pass/fail line
+			// it is already inside: those failures are the instrument's, not the
+			// agent's, and one number is what keeps them from reading as the agent's.
+			(content.judgeAbstained ? ` ${paint.dim("·")} ${paint.warning(t("judge.abstained", { count: content.judgeAbstained }))}` : ""),
 		// Which run this is. The Target moves under the operator, so a screen that
 		// only said "the diagnosis" left them guessing which measurement they read.
 		`${paint.dim(t("traces.showing"))} ${paint.bold(evaluation.evalRunId)} ${paint.dim(
@@ -619,6 +635,9 @@ export function renderTraces(content: WorkbenchTracesDetail, paint: Paint): stri
 		modes: brief.summary.failureModeCount,
 		systemic: brief.summary.systemicFailureModeCount,
 	})}`);
+	// How far the judge behind those verdicts has been checked, whenever one
+	// graded this run. Undefined means none did, so the panel stays silent.
+	if (content.judgeAgreement !== undefined) lines.push(judgeRunAgreementLine(content.judgeAgreement, paint));
 	if (brief.modes.length > 0) {
 		lines.push(...modeLines(brief, paint));
 	} else if (brief.summary.infrastructureErrors > 0) {

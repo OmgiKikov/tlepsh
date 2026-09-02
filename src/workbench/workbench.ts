@@ -183,7 +183,8 @@ import {
 	type BuilderProjectContext,
 } from "../builder/project-context.js";
 import { inspectCandidateImpact } from "../application/candidate-impact.js";
-import { judgeEvidenceCalibration } from "../application/judge-labels.js";
+import { judgeCalibrationOffer, judgeEvidenceCalibration } from "../application/judge-labels.js";
+import { formatJudgeAgreementSummary } from "../domain/judge-agreement.js";
 import {
 	adoptTargetCandidate,
 	describeTargetAdoption,
@@ -288,7 +289,7 @@ import {
 import type { CandidateRecord } from "../domain/candidate.js";
 import { decideScaffoldTarget, decideConfigureTarget, decideConfigureEvaluators } from "./decisions/setup.js";
 import { decideApproveSpec, decidePublishCorpus, decideImportDataset, decideGenerateHoldout } from "./decisions/corpus.js";
-import { decideRunEval, decideCalibrate, decideRegrade } from "./decisions/evaluation.js";
+import { decideRunEval, decideCalibrate, decideRegrade, judgeAgreementOfEval } from "./decisions/evaluation.js";
 import { decideApplyProposal, decideDiscardProposal } from "./decisions/proposal.js";
 import { decideVerifyCandidate, decideAbandonCandidate } from "./decisions/candidate.js";
 import { decideReviewCandidate, decidePromoteCandidate, decideRejectCandidate, decideAdoptCandidate, decideContinueCycle } from "./decisions/release.js";
@@ -697,6 +698,7 @@ export function conversationalImprovementBrief(brief: ImprovementBrief): Workben
 		severity: mode.severity,
 		evidenceStrength: mode.evidenceStrength,
 		decision: mode.decision,
+		...(mode.abstained ? { abstained: true } : {}),
 		selectableForProposal: brief.proposalEligible && mode.decision === "propose-harness-change",
 		title: mode.title.slice(0, 500),
 		summary: mode.summary.slice(0, 1_000),
@@ -1413,6 +1415,18 @@ export class AhdeWorkbench {
 			// A token, not a sentence: the subject the human approves is the same
 			// bytes in every language, and the dialog renders the phrase from it.
 			sealedOutcome: summary.sealedHoldout.gate?.outcome ?? null,
+			// How far the instrument behind those verdicts has been checked. Said
+			// here because this is the last moment before a release, and "nobody has
+			// ever checked this judge" is exactly the kind of thing an operator
+			// should read before approving rather than after. Absent when no judge
+			// graded the evidence: there is then no instrument to report on.
+			...(summary.judgeAgreement === undefined
+				? {}
+				: {
+					judge: summary.judgeAgreement
+						? formatJudgeAgreementSummary(summary.judgeAgreement)
+						: t("judge.uncalibrated"),
+				}),
 			version: version ?? null,
 			tag: version ? `v${version}` : null,
 			fastForward: plan.includes("adopt-candidate")
@@ -2498,9 +2512,14 @@ export class AhdeWorkbench {
 		// The stage is a pure function of durable artifacts; an open workshop is
 		// live host state, and the derived `next` block needs both to say which
 		// workshop submission is legal right now.
+		// The stage is a pure function of durable artifacts; the standing offer to
+		// check the judge is a fact about this project's label store, which the
+		// stage never reads. Both are attached here, where the view is rendered.
+		const judgeCalibration = judgeCalibrationOffer(this.stateRoot, this.projectId);
 		const view: WorkbenchView = {
 			...deriveWorkbenchView(inventory),
 			...(this.workshopOpen ? { workshopOpen: true } : {}),
+			...(judgeCalibration ? { judgeCalibration } : {}),
 		};
 		const aspect = query.aspect ?? "summary";
 		if (aspect === "summary") return view;
@@ -2551,6 +2570,11 @@ export class AhdeWorkbench {
 						diagnosis: diagnosisSummary(diagnosis),
 						improvementBrief: conversationalImprovementBrief(improvementBrief),
 						evidence: link ? { available: true, ...link } : { available: false },
+						// The same instrument reading the run panel carries, so /traces
+						// and the panel after a run cannot say different things about
+						// the judge that decided the numbers above them. The offer this
+						// records was already made by the run itself.
+						...judgeAgreementOfEval(this, run.evalRunId),
 					},
 				},
 			};

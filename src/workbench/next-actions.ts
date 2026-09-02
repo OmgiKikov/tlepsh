@@ -46,10 +46,12 @@ export interface WorkbenchNext {
 }
 
 /**
- * `talk-to-agent` is a host handoff rather than a Workbench decision, so it is
- * absent from every stage table; its one precondition is a configured Target.
+ * `talk-to-agent` and `label` are host handoffs rather than Workbench
+ * decisions, so they are absent from every stage table. `talk-to-agent` needs a
+ * configured Target; `label` appears only while the host's one-time offer to
+ * check the judge still stands.
  */
-type NextDecisionKind = WorkbenchDecisionInput["kind"] | "talk-to-agent";
+type NextDecisionKind = WorkbenchDecisionInput["kind"] | "talk-to-agent" | "label";
 
 /**
  * What `run-current` resolves to, mirroring the branch in `Workbench.decide`.
@@ -64,6 +66,8 @@ const DECIDE_WHEN = {
 	"apply-proposal": "the operator says apply; send branch candidate/<proposal run id> and verify: { repetitions: 3 }",
 	ship: "the operator says ship / выкати; review, tag, fast-forward and next cycle in one question",
 	"talk-to-agent": "the operator wants to open, try, or talk to the built agent",
+	label: "a judge has graded a run and nobody has checked it; offer it once, in one sentence — " +
+		"«10 минут: разметь 10 ответов, чтобы знать, можно ли верить судье»",
 	regrade: "the operator disputes a verdict or you revised graders; re-scores recorded answers, no agent call",
 	"generate-holdout": "no exam yet and the operator has no data to hold out; seal or draft",
 	"publish-corpus": "the operator approved the cases; at candidate-verification it is the forward exit",
@@ -101,12 +105,15 @@ const SUBMIT_WHEN = {
 } as const satisfies Record<WorkbenchSubmitInput["kind"], string>;
 
 type NextView = Pick<WorkbenchView, "stage" | "counts"> &
-	Partial<Pick<WorkbenchView, "target" | "shippingReadiness" | "workshopOpen">>;
+	Partial<Pick<WorkbenchView, "target" | "shippingReadiness" | "workshopOpen" | "judgeCalibration">>;
 
 function decisionLegal(kind: NextDecisionKind, view: NextView): boolean {
 	// The one decision with no stage table: the host refuses it until the
 	// Target is created and configured.
 	if (kind === "talk-to-agent") return view.target?.status === "ready";
+	// Offered while the host's one-time offer stands and the labels it asked for
+	// are not written yet. Ten is a prompt threshold, never a gate.
+	if (kind === "label") return view.judgeCalibration?.offered === true;
 	if (kind === "run-current") {
 		return RUN_CURRENT_RESOLUTIONS.some((resolved) => workbenchDecisionStages(resolved).includes(view.stage));
 	}
@@ -120,6 +127,8 @@ function decisionLegal(kind: NextDecisionKind, view: NextView): boolean {
 
 function decisionAsks(kind: NextDecisionKind, stage: WorkbenchStage): boolean {
 	if (kind === "talk-to-agent") return false;
+	// The whole point of the exercise is that a human answers it.
+	if (kind === "label") return true;
 	if (kind === "run-current") {
 		const resolved = RUN_CURRENT_RESOLUTIONS.find((candidate) => workbenchDecisionStages(candidate).includes(stage));
 		return resolved !== undefined && workbenchGateClass(resolved) !== "routine";
