@@ -3,7 +3,7 @@
 // Pi UI): approved Spec → baseline → A/A calibration → diagnosis → a Builder-
 // origin proposal replaying a known harness change → apply → matched
 // verification (development + sealed) → review → promote → adopt → continue.
-// This is how docs/V1_8_EVIDENCE_GATE.md "Closed loop on a real Target" was run.
+// This is how the first closed loop on a real Target was run (2026-08); the live sessions since drive Builder Pi instead.
 //
 // Usage:
 //   node scripts/real-loop.mjs <target-repo> <work-dir> <base-ref> <improved-ref> <holdout.jsonl> [repetitions] [jobs]
