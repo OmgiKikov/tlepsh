@@ -10,6 +10,7 @@ import {
 	CONTAINER_PLATFORM_REFERENCE,
 	isPinnedContainerImage,
 } from "./target/container-backend.js";
+import { isStandInModel } from "./target/placeholders.js";
 import { loadTargetTools, type ResolvedTargetTool } from "./target/tool-manifest.js";
 import {
 	ENGINE_STORE_EXCLUDE,
@@ -579,7 +580,7 @@ export const SimulatedUserModelBlock = ModelBlockShape
 	.superRefine(reservedModelParams)
 	.superRefine(reservedTemperatureParam("evalSuite.simulatedUser"));
 
-export const TargetManifest = z.strictObject({
+const TargetManifestShape = z.strictObject({
 	id: z
 		.string()
 		.regex(/^[a-z0-9][a-z0-9-]*$/, "target id: lowercase kebab-case"),
@@ -622,7 +623,30 @@ export const TargetManifest = z.strictObject({
 		simulatedUser: SimulatedUserModelBlock.optional(),
 	}),
 });
-export type TargetManifest = z.infer<typeof TargetManifest>;
+
+type TargetManifestValue = z.infer<typeof TargetManifestShape>;
+
+/**
+ * A template's `judge:` block is a shape to fill in, not a judge: its provider,
+ * id and endpoint are `REPLACE-ME`. Resolving it here — the one place a
+ * manifest becomes a value — is what keeps every reader honest. The view, the
+ * `judgeConfigured` check below, the sealed-synth preflight and `/doctor` all
+ * ask the same question of the same field, so a stand-in reads as "no judge
+ * configured" everywhere instead of as a judge that fails at the first call
+ * against `https://REPLACE-ME`. Configuring one goes through
+ * `configure-evaluators`, which writes a real block.
+ */
+function placeholderJudgeIsNoJudge(manifest: TargetManifestValue): TargetManifestValue {
+	const judge = manifest.evalSuite.judge;
+	if (!judge || !isStandInModel(judge)) return manifest;
+	const { judge: _placeholder, ...evalSuite } = manifest.evalSuite;
+	return { ...manifest, evalSuite };
+}
+
+// `overwrite`, not `transform`: this normalization has to survive encoding as
+// well as parsing — receipts write manifests back out through the same schema.
+export const TargetManifest = TargetManifestShape.overwrite(placeholderJudgeIsNoJudge);
+export type TargetManifest = TargetManifestValue;
 
 // ---------- Resolved target ----------
 
