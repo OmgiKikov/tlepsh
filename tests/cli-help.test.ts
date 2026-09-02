@@ -181,14 +181,15 @@ describe("CLI help", () => {
 		expect(help).toContain("ahde resume");
 		expect(help).toContain("Inside Builder Pi");
 		expect(help).toContain("Advanced automation commands");
-		expect(help).toContain("corpus  diagnose  regrade  report  label  candidate  calibrate  check");
+		expect(help).toContain("list  corpus  feedback  diagnose  regrade  report  label  candidate  calibrate");
 		expect(help).toContain("ahde calibrate --target <dir>                measure run-to-run noise (A/A)");
 		// The screen has one subject and one form: an evaluated Candidate record.
 		expect(help).toContain("ahde check --target <dir> --candidate <id>   cheap screen: the failed cases, once");
 		expect(help).toContain("--project defaults to the Target's manifest id");
-		expect(help).toContain("ahde improve --target <dir> --until 90% --max-cycles 5");
-		expect(help).toContain("improve  search  review  promote  reject  log  watch  passport");
-		expect(help).toContain("ahde search --target <dir> --candidates <id,id,id>");
+		// The autoloop and its search are machine verbs: focused help only.
+		expect(help).not.toContain("ahde improve --target");
+		expect(help).not.toContain("ahde search --target");
+		expect(help).toContain("check  improve  search  review  promote  reject  log  watch  passport");
 		expect(help).toContain("ahde serve --target <dir> [--port N]         drive the Workbench over a local");
 		expect(help).toContain("AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)");
 	});
@@ -314,7 +315,8 @@ describe("CLI help", () => {
 	});
 
 	it("documents where a marked reply goes and how it becomes cases", () => {
-		expect(cliHelp(["--help"])).toContain("ahde feedback list");
+		expect(cliHelp(["--help"])).toContain("feedback");
+		expect(cliHelp(["feedback", "list", "--help"])).toContain("Usage: ahde feedback list");
 		expect(cliHelp(["target", "--help"])).toContain("imports/feedback.jsonl");
 		expect(cliHelp(["target", "--help"])).toContain("/bad [note]");
 		const list = cliHelp(["feedback", "list", "--help"]);

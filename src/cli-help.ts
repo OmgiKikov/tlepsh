@@ -34,18 +34,12 @@ Inspect and run:
   ahde validate --target <dir>                 local readiness check; no model call
   ahde run --target <dir> [options]            run development evidence
   ahde check --target <dir> --candidate <id>   cheap screen: the failed cases, once
-  ahde improve --target <dir> --until 90% --max-cycles 5
-                                               run improvement cycles inside the gates
-  ahde search --target <dir> --candidates <id,id,id>
-                                               compare 2-4 changes for one problem
   ahde calibrate --target <dir>                measure run-to-run noise (A/A)
   ahde log --target <dir> [--project <id>]     the agent's growth, version by version
   ahde watch --target <dir> [--every 1d]       the basket on a schedule; drift vs noise
   ahde evidence [--port N] [--project <id>]    open the read-only trace explorer
   ahde serve --target <dir> [--port N]         drive the Workbench over a local
                                                HTTP/JSON API; your UI is the gate
-  ahde list [--target <id>]                    list eval runs
-  ahde feedback list [--target <dir>]          👍/👎 marks collected in ahde target
   ahde tool try --target <dir> --tool <name> (--input <json|@path> | --fixtures)
                                                run one declared tool in its sandbox,
                                                or its whole fixture contract
@@ -62,8 +56,8 @@ ${builderCommandLines()}
   plus the Pi built-ins /login and /model for the Builder's own model
 
 Use \`ahde <command> --help\` for focused help. Advanced automation commands:
-  corpus  diagnose  regrade  report  label  candidate  calibrate  check
-  improve  search  review  promote  reject  log  watch  passport
+  list  corpus  feedback  diagnose  regrade  report  label  candidate  calibrate
+  check  improve  search  review  promote  reject  log  watch  passport
 
 Wherever a command takes both, --project defaults to the Target's manifest id;
 an explicit --project still wins.
