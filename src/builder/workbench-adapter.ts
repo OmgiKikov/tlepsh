@@ -13,7 +13,7 @@ import { oneLine } from "./render/format.js";
 import { themePaint } from "./render/paint.js";
 import { nextStep, stageLabel } from "./render/stage.js";
 import { renderDatasetCases, renderReview, renderView, viewTitle } from "./render/view.js";
-import { plural, t } from "../i18n.js";
+import { hasMessage, plural, t } from "../i18n.js";
 import { renderVersionPassport } from "./render/passport.js";
 import { renderAgentLogChart } from "./render/agent-log.js";
 import { handoffLines } from "./render/handoff.js";
@@ -92,11 +92,42 @@ export function refusalCard(
 	return card([`${paint.error("✗")} ${named}${oneLine(hostRefusal(reason), 140)}`]);
 }
 
-/** The two refusals the host words itself, bent into the operator's language. */
+/**
+ * The refusals the host words itself, bent into the operator's language.
+ *
+ * The Workbench mints one English sentence for the model, scripts and tests;
+ * this is the one place it is turned into something a person who has never
+ * seen AHDE can act on. Anything not matched here still reaches the card in
+ * English, which is why the list grows rather than the Workbench bending.
+ */
 function hostRefusal(reason: string): string {
 	if (/ was declined by the human operator$/.test(reason)) return t("refusal.declined");
 	if (/^No compatible development EvalRun is available/.test(reason)) return t("refusal.nothing-yet");
+	const nothing = /^No compatible (.+?) is available/.exec(reason);
+	if (nothing) return t("refusal.nothing-of-kind", { kind: artifactLabel(nothing[1] ?? "") });
+	const several = /^Several compatible (.+?) artifacts exist/.exec(reason);
+	if (several) return t("refusal.pick-one", { kind: artifactLabel(several[1] ?? "") });
+	if (/ subject changed after confirmation; the decision is stale$/.test(reason)) return t("refusal.stale");
+	if (/^Target is not ready\b/.test(reason)) {
+		return t("refusal.target-not-ready", { next: t("next.target-setup") });
+	}
+	const running = /^running is not possible during ([a-z-]+)/.exec(reason);
+	if (running) return stageRefusal(running[1] ?? "");
 	return reason;
+}
+
+/** The Workbench's own artifact words, in the operator's vocabulary. */
+function artifactLabel(kind: string): string {
+	const key = `artifact.${kind.trim().toLowerCase().replace(/\s+/g, "-")}`;
+	return hasMessage(key) ? t(key) : kind;
+}
+
+/** `running is not possible during spec-review` and its kin, said as a next step. */
+function stageRefusal(stage: string): string {
+	const label = `stage.${stage}`;
+	const next = `next.${stage}`;
+	if (!hasMessage(label) || !hasMessage(next)) return t("refusal.not-now", { stage, next: "" }).trim();
+	return t("refusal.not-now", { stage: t(label), next: t(next) });
 }
 
 /** Compact, theme-aware transcript cards for the three Workbench tools. */

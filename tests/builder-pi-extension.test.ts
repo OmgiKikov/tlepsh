@@ -320,7 +320,7 @@ describe("Builder Pi extension registry", () => {
 		expect(registered.map((tool) => tool.name)).toEqual([...AHDE_BUILDER_REGISTERED_TOOL_NAMES]);
 		expect(commands).toEqual(AHDE_BUILDER_COMMAND_NAMES);
 		expect(handlers.get("user_bash")?.()).toMatchObject({
-			result: { exitCode: 126, output: expect.stringContaining("disables interactive shell") },
+			result: { exitCode: 126, output: expect.stringContaining("no shell here") },
 		});
 		expect(handlers.get("tool_call")?.({ toolName: "bash" } as never)).toMatchObject({ block: true, terminate: true });
 		expect(handlers.get("tool_call")?.({ toolName: "ahde_workbench_view" } as never)).toBeUndefined();

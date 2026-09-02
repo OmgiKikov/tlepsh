@@ -37,7 +37,17 @@ export function labelDonePanelTitle(): string {
  * says so in one line instead of quietly rendering a smaller object.
  */
 export function renderLabelSubject(subject: JudgeLabelSubject, paint: Paint): string[] {
-	const lines = [`${paint.dim(oneLine(subject.taskId, 60))} ${paint.dim("·")} ${paint.dim(oneLine(subject.graderName, 60))}`];
+	// A row keyed by `task_007` tells the operator nothing about which of twenty
+	// questions they are looking at. The case's own first line does, so it leads
+	// and the ids stay behind it, dimmed.
+	const headline = subject.input
+		.split("\n")
+		.map((line) => line.trim())
+		.find((line) => line.length > 0);
+	const identity = paint.dim(`${oneLine(subject.taskId, 40)} · ${oneLine(subject.graderName, 40)}`);
+	const lines = [headline
+		? `${paint.bold(oneLine(headline, 72))} ${paint.dim("·")} ${identity}`
+		: identity];
 	if (subject.subject === "legacy") lines.push(paint.warning(t("label.legacy")));
 	lines.push(...field(
 		t(subject.kind === "dialogue" ? "label.field.goal" : "label.field.request"),

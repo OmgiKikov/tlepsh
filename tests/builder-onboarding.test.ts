@@ -80,7 +80,7 @@ describe("host model catalog", () => {
 describe("first-run setup failures", () => {
 	it("turns the non-empty directory guard into one calm sentence", () => {
 		const calm = calmSetupFailure(new Error("target scaffold requires an otherwise empty current directory; found package.json"));
-		expect(calm).toContain("This folder is not empty");
+		expect(calm).toContain("This folder already holds");
 		expect(calm).toContain("package.json");
 		expect(calm).not.toContain("target scaffold requires");
 	});

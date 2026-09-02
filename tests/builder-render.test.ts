@@ -608,7 +608,7 @@ describe("stage labels and next steps", () => {
 			"release-decision": "Say “ship it 0.2.0” — or “reject”",
 			"candidate-adoption": "Say “ship it” to make it the active agent",
 			complete: "Say “next” to start the next cycle",
-			"selection-required": "Pick one of the two open proposals",
+			"selection-required": "Pick which one to continue with",
 		};
 		for (const stage of WorkbenchStageSchema.options) {
 			const view = makeView({ stage, headline: "Pick one of the two open proposals" });
@@ -616,8 +616,10 @@ describe("stage labels and next steps", () => {
 		}
 	});
 
-	it("uses the headline when a selection is required", () => {
-		expect(nextStep(makeView({ stage: "selection-required", headline: "Choose a candidate" }))).toBe("Choose a candidate");
+	// The headline is the Workbench's English sentence for the model; the
+	// operator gets the localized one, and the blocker under it names the count.
+	it("says which way out a required selection has, in the operator's language", () => {
+		expect(nextStep(makeView({ stage: "selection-required", headline: "Choose a candidate" }))).toBe("Pick which one to continue with");
 	});
 
 	it("points an interrupted candidate at reading it, then discarding it", () => {
@@ -1082,7 +1084,7 @@ describe("renderReview", () => {
 
 	it("renders a workflow placeholder with the stage label and headline", () => {
 		expect(renderReview({ kind: "workflow", stage: "spec-design", headline: "Describe the agent to draft a Spec." }, plainPaint))
-			.toEqual(["Spec design", "  Describe the agent to draft a Spec."]);
+			.toEqual(["Spec design", "  Describe the agent you want"]);
 	});
 });
 
@@ -1184,7 +1186,7 @@ describe("renderTarget", () => {
 		const missing: WorkbenchTargetDetail = { launch: "ahde init ." };
 		expect(renderTarget(missing, plainPaint)).toEqual([
 			"Target not created yet",
-			"Next describe the agent; the Builder scaffolds it (or run ahde init .)",
+			"Next describe the agent; the Builder creates it right here",
 		]);
 	});
 
@@ -1195,9 +1197,9 @@ describe("renderTarget", () => {
 		expect(lines[2]).toBe("Execution tools lookup, reply · network deny · sandbox required · env HOME");
 		expect(lines[3]).toBe("Resources");
 		expect(lines[4]).toBe(`  ${"AGENTS.md".padEnd(40)} ${"instructions".padEnd(16)} 2.0 KB`);
-		expect(lines[5]).toBe(`  ${"tools/lookup.tool.yaml".padEnd(40)} ${"tool descriptor".padEnd(16)} 512 B`);
-		expect(lines[6]).toBe(`  ${"tools/lookup".padEnd(40)} ${"tool executable".padEnd(16)} 1.5 KB · executable`);
-		expect(lines[7]).toBe("Launch ahde target · talk to the built agent in its own isolated Pi");
+		expect(lines[5]).toBe(`  ${"tools/lookup.tool.yaml".padEnd(40)} ${"tool description".padEnd(16)} 512 B`);
+		expect(lines[6]).toBe(`  ${"tools/lookup".padEnd(40)} ${"tool program".padEnd(16)} 1.5 KB · executable`);
+		expect(lines[7]).toBe("Launch ahde target · or just say “open the agent” and the Builder opens it for you");
 		expect(lines).toHaveLength(8);
 	});
 
@@ -1216,7 +1218,7 @@ describe("renderTarget", () => {
 		}, tagPaint);
 		const text = lines.join("\n");
 		expect(text).toContain("\n\n<heading>AGENTS.md</heading> <dim>instructions · 2.0 KB · cccccccccccc…</dim>\n  # Support bot\n  Always call lookup first.\n");
-		expect(lines[lines.length - 1]).toBe("<dim>Launch</dim> <bold>ahde target</bold> <dim>· talk to the built agent in its own isolated Pi</dim>");
+		expect(lines[lines.length - 1]).toBe("<dim>Launch</dim> <bold>ahde target</bold> <dim>· or just say “open the agent” and the Builder opens it for you</dim>");
 	});
 });
 
@@ -2532,13 +2534,13 @@ describe("the hand-off to the agent", () => {
 
 	it("offers the agent after a release and after the first apply that was actually checked", () => {
 		expect(handoffLines(decision("ship", { candidate: {}, tag: "v0.2.0" } as never, "complete"), plainPaint))
-			.toEqual(["", "Talk to the agent: ahde target (in a new terminal)"]);
+			.toEqual(["", "Want to try it? Say “open the agent” — you talk to it, and leaving it brings you back here."]);
 		expect(handoffLines(applied({ outcome: "improved" }), plainPaint))
-			.toEqual(["", "Talk to the agent: ahde target (in a new terminal)"]);
+			.toEqual(["", "Want to try it? Say “open the agent” — you talk to it, and leaving it brings you back here."]);
 		try {
 			setLanguage("ru");
 			expect(handoffLines(applied({ outcome: "improved" }), plainPaint))
-				.toEqual(["", "Поговорить с агентом: ahde target (в новом терминале)"]);
+				.toEqual(["", "Хочешь попробовать? Скажи «открой агента» — поговоришь с ним, а выйдешь и вернёшься сюда."]);
 		} finally {
 			setLanguage(null);
 		}
@@ -2688,6 +2690,28 @@ describe("a refusal on screen", () => {
 			// A message the host did not word itself is shown exactly as it came.
 			expect(refusal("tools/check_dbo is outside the declared Harness scope"))
 				.toContain("tools/check_dbo is outside the declared Harness scope");
+		} finally {
+			setLanguage(null);
+		}
+	});
+
+	/**
+	 * A stranger meets these three long before they meet a verdict: nothing to
+	 * select, two things to select between, and a subject that moved while they
+	 * were reading it. Each one says what was refused and the one way on.
+	 */
+	it("words the selection and staleness refusals in the operator's language", () => {
+		setLanguage("ru");
+		try {
+			expect(refusal("No compatible corpus draft is available"))
+				.toContain("Пока нет ни одного объекта: черновик тестов.");
+			expect(refusal("Several compatible development corpus artifacts exist; select one before continuing"))
+				.toContain("Подходит несколько: набор тестов — скажи, какой брать.");
+			expect(refusal("promote-candidate subject changed after confirmation; the decision is stale"))
+				.toContain("То, что ты подтвердил, изменилось, пока ты читал. Посмотри заново и повтори.");
+			// An illegal transition arrives as two lines; the card shows the human one.
+			expect(refusal("Сейчас это не следующий шаг — Проверка описания. Скажи «ок» или что поправить\napply-proposal is not legal during spec-review; expected proposal-review."))
+				.toBe("<error>✗</error> Сейчас это не следующий шаг — Проверка описания. Скажи «ок» или что поправить");
 		} finally {
 			setLanguage(null);
 		}

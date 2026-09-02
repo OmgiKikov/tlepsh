@@ -355,6 +355,18 @@ export interface WorkbenchSelectionSummary {
 	selected: boolean;
 }
 
+/**
+ * One blocker as a code the host can localize, plus whatever detail only the
+ * raw text carries (an id, a path, an integrity failure). `params` holds the
+ * already-bent nouns and counts the message interpolates.
+ */
+export interface WorkbenchBlockerReason {
+	code: string;
+	params?: Record<string, string | number>;
+	/** Free text the code cannot carry, appended after the localized sentence. */
+	detail?: string;
+}
+
 export interface WorkbenchView {
 	schemaVersion: 1;
 	project: { id: string; directory: string };
@@ -393,6 +405,16 @@ export interface WorkbenchView {
 	selections: WorkbenchSelectionSummary[];
 	actions: string[];
 	blockers: string[];
+	/**
+	 * The same blockers as a typed reason, index-aligned with {@link blockers}.
+	 *
+	 * `blockers` is the English sentence the Builder model reads and scripts
+	 * match on; the host draws the operator's language from the code instead, so
+	 * a Russian screen never has to print an English rule. Optional because a
+	 * view serialized before this field existed still parses — a host with no
+	 * reason simply renders the sentence it already had.
+	 */
+	blockerReasons?: readonly WorkbenchBlockerReason[];
 	warnings: string[];
 	/**
 	 * Coarse, model-safe release readiness. It never carries a holdout id, name,

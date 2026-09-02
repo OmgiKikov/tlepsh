@@ -138,7 +138,7 @@ export function renderAgentLog(log: AgentLog, paint: Paint): string[] {
 		lines.push(paint.dim(t("growth.omitted", { count: log.omitted, attempts: noun(log.omitted, "decided attempt") })));
 	}
 	if (log.unreadable > 0) {
-		lines.push(paint.dim(`${log.unreadable} candidate record(s) could not be read and are not shown`));
+		lines.push(paint.dim(t("growth.unreadable", { count: plural(log.unreadable, "record") })));
 	}
 	lines.push("", ...renderAgentLogChart(log, paint));
 	// Under the growth curve: how well this Builder predicted its own results.

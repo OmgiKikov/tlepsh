@@ -282,18 +282,21 @@ export function calmSetupFailure(error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);
 	const found = /otherwise empty current directory; found (.+)$/.exec(message);
 	if (found) {
-		return `This folder is not empty (it already has ${oneLine(found[1] ?? "files", 40)}), so I cannot create the agent inside it. Open an empty folder and run \`ahde\` there, or scaffold one with \`ahde init <dir>\`.`;
+		return t("onboarding.folder-not-empty", { found: oneLine(found[1] ?? "…", 40) });
 	}
 	if (/directory does not exist|must be a regular non-symlink directory/i.test(message)) {
-		return "This folder cannot hold an agent (it is missing or is not a regular directory). Run `ahde` from a normal, empty project folder.";
+		return t("onboarding.folder-unusable");
 	}
 	if (/not available in the trusted host catalog/i.test(message)) {
 		return oneLine(message, 300);
 	}
-	if (/cancelled by the operator/i.test(message)) {
-		return "Setup stopped. Tell me when you want to pick the agent's model.";
+	if (/environment-variable name/i.test(message)) {
+		return t("onboarding.credential-name-only");
 	}
-	return `Setup did not finish: ${oneLine(message, 200)}`;
+	if (/cancelled by the operator/i.test(message)) {
+		return t("onboarding.setup-stopped");
+	}
+	return t("onboarding.setup-failed", { reason: oneLine(message, 200) });
 }
 
 const CREATE_HERE = (): string => t("onboarding.create-here");

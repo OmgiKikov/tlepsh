@@ -35,9 +35,18 @@ export function stageLabel(stage: WorkbenchStage): string {
 	return STAGE_LABELS[stage] ?? stage;
 }
 
+/**
+ * What to say next at one stage, without a whole view to read it from. The
+ * Workbench headline is the model's English sentence about the same stage; it
+ * is only the fallback for a stage this host does not know.
+ */
+export function stageNextStep(stage: WorkbenchStage, fallback: string): string {
+	return STAGES.includes(stage) ? t(`next.${stage}`) : fallback;
+}
+
 /** One actionable sentence for the header and status; blockers win over hints. */
 export function nextStep(view: Pick<WorkbenchView, "stage" | "headline" | "blockers" | "detail">): string {
-	if (view.stage === "selection-required") return view.headline;
+	if (view.stage === "selection-required") return t("next.selection-required");
 	if (view.stage === "candidate-verification" && view.detail?.aspect === "review" && view.detail.content.kind === "interrupted-candidate") {
 		return t("next.interrupted");
 	}
