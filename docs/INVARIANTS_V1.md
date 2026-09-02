@@ -146,13 +146,12 @@ changed or dropped; this is simply no longer the front door.
     foreign evidence, candidate evidence, and all sealed evidence.
 29. Failure modes cluster by exact typed grader family — the check code and,
     where the check names one, its subject — never by the task-specific literal
-    a case carries. A systemic mode requires that family to fail on at least two
-    distinct tasks and at least a quarter of the corpus. Broad categories,
-    names, free-form reasons, and semantic similarity are not sufficient
-    evidence. What a mode states about itself is counted from the trace
-    observations the diagnosis recorded, never inferred. Infrastructure makes
-    a brief proposal-ineligible, and sealed evidence never enters a
-    Builder-visible brief.
+    a case carries. A systemic failure mode requires that family to fail on at
+    least two distinct tasks. Broad categories, names, free-form reasons, and
+    semantic similarity are not sufficient evidence. What a mode states about
+    itself is counted from the trace observations the diagnosis recorded, never
+    inferred. Infrastructure makes a brief proposal-ineligible, and sealed
+    evidence never enters a Builder-visible brief.
 30. Harness authoring context is read only from the exact clean Git commit
    selected by the host. It enumerates no ambient files and exposes only
    the complete non-secret execution policy and canonical manifest-declared

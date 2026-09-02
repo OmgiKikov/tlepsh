@@ -67,8 +67,8 @@ human-confirmed Adoption fast-forwards it.
   repetitions, execution and judge fingerprints, mode.
 - **Diagnosis** — failure modes derived from an Eval Run, one per cause: the
   grader family, not the task's own wording. A *systemic* mode needs that family
-  on two distinct tasks and a quarter of the corpus; what a mode says is counted
-  from the traces it cites, and the Eval Run stays the evidence.
+  on two distinct tasks; what a mode says is counted from the traces it cites,
+  and the Eval Run stays the evidence.
 - **Proposal** — the immutable exact file-replacement set compiled from a branch
   diff, bound to an approved Spec, a baseline snapshot and its development
   evidence. Compiling one applies nothing.

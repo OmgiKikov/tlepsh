@@ -23,16 +23,6 @@ import { redactTraceText } from "../trace.js";
 export const IMPROVEMENT_BRIEF_ALGORITHM_ID = "exact-eval-signals-v1" as const;
 /** Failure share (basis points) below which a mode is noise to stabilize, not a harness defect to fix. */
 export const PROPOSAL_REPRODUCTION_FLOOR_BPS = 2_500;
-/**
- * Corpus share (basis points) at which a mode stops being one task's problem.
- *
- * The same quarter the reproduction floor uses: below it a signal is a case's
- * own accident, at or above it the harness is doing the same thing everywhere.
- * Two tasks remain the hard minimum — one task can never be systemic — so a
- * large corpus needs a quarter of itself and a small one needs both.
- */
-export const SYSTEMIC_TASK_COVERAGE_FLOOR_BPS = PROPOSAL_REPRODUCTION_FLOOR_BPS;
-
 const MAX_FAILURE_MODES = 30;
 const MAX_TASK_IDS = 100;
 const MAX_EVIDENCE = 12;
@@ -112,17 +102,11 @@ export const FailureModeSchema = z.strictObject({
 	evidenceNotes: z.array(z.string().min(1).max(MAX_EVIDENCE_NOTE_CHARS)).max(MAX_EVIDENCE_NOTES),
 	omittedEvidenceCount: z.number().int().nonnegative(),
 }).superRefine((mode, context) => {
-	// Systemic is a derivation, not a claim a caller may make: two tasks at
-	// least, and at least the corpus share below which one case's accident
-	// cannot be told from a harness defect.
-	const systemic = mode.impact.affectedTasks >= 2 &&
-		mode.impact.taskCoverageBps >= SYSTEMIC_TASK_COVERAGE_FLOOR_BPS;
-	if ((mode.scope === "systemic") !== systemic) {
-		context.addIssue({
-			code: "custom",
-			path: ["scope"],
-			message: "systemic modes span at least two tasks and a quarter of the corpus",
-		});
+	if (mode.scope === "systemic" && mode.impact.affectedTasks < 2) {
+		context.addIssue({ code: "custom", path: ["scope"], message: "systemic modes require at least two affected tasks" });
+	}
+	if (mode.scope === "task-local" && mode.impact.affectedTasks !== 1) {
+		context.addIssue({ code: "custom", path: ["scope"], message: "task-local modes require exactly one affected task" });
 	}
 	if (mode.taskIds.length > mode.impact.affectedTasks) {
 		context.addIssue({ code: "custom", path: ["taskIds"], message: "cannot exceed affectedTasks" });
@@ -641,13 +625,8 @@ function finalizeMode(mode: ModeAccumulator, totalTasks: number, excerpts: RunEx
 	const failures = sortedObservations(mode.failures.values());
 	const passes = sortedObservations(mode.passes.values());
 	const affectedTaskIds = [...new Set(failures.map((item) => item.rawTaskId))].sort();
-	// Two tasks and a quarter of the corpus: below either, this is one case's
-	// accident and calling it systemic would put sixteen "task-local" rows on a
-	// screen that should have shown three causes.
 	const coverageBps = totalTasks === 0 ? 0 : Math.floor(affectedTaskIds.length * 10_000 / totalTasks);
-	const scope: FailureMode["scope"] = affectedTaskIds.length >= 2 && coverageBps >= SYSTEMIC_TASK_COVERAGE_FLOOR_BPS
-		? "systemic"
-		: "task-local";
+	const scope: FailureMode["scope"] = affectedTaskIds.length >= 2 ? "systemic" : "task-local";
 	const failedOccurrences = failures.length;
 	const passedOccurrences = passes.length;
 	const occurrenceTotal = failedOccurrences + passedOccurrences;
