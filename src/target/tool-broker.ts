@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { accessSync, constants, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { delimiter, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { hashFile } from "../provenance.js";
 import { redactSensitiveText } from "../trace.js";
 import {
@@ -28,6 +28,12 @@ export interface TargetToolBrokerOptions {
 	 * tools execute from here, never from the model-writable workspace copy.
 	 */
 	toolHomeRoot?: string;
+	/**
+	 * Absolute path of this run's world file. Present exactly when the case
+	 * declares a world; its directory becomes a confinement root and the path
+	 * itself travels to every tool as `AHDE_WORLD`.
+	 */
+	worldPath?: string;
 	/** Production callers should omit this. Tests may inject a previously probed backend. */
 	sandboxBackend?: TargetToolSandboxBackend;
 	/** Exact runtime capability returned with a container backend decision. */
@@ -63,6 +69,15 @@ export interface TargetToolConfinement {
 }
 
 export const AHDE_TOOL_HOME_ENVIRONMENT = "AHDE_TOOL_HOME";
+
+/**
+ * The absolute path of this run's world file, handed to every declared tool.
+ *
+ * Host-owned exactly as `AHDE_TOOL_HOME` is: a declared `environment`
+ * allowlist can neither define it nor take it away, because a tool that could
+ * be pointed at another run's world would be reading someone else's evidence.
+ */
+export const AHDE_WORLD_ENVIRONMENT = "AHDE_WORLD";
 
 const FIXED_ENVIRONMENT = new Set(["HOME", "LANG", "PATH", "TMPDIR"]);
 
@@ -124,16 +139,35 @@ export function macosProfile(
 	].join(" ");
 }
 
-/** The confinement one declared tool call runs under. */
+/**
+ * The confinement one declared tool call runs under.
+ *
+ * The world's DIRECTORY is the root, never the file: a tool that updates the
+ * world writes a temporary file beside it and renames, which needs the
+ * directory. Every tool may READ it — that is what a world is for — and only a
+ * tool whose descriptor already declares `workspace-write` may change it.
+ *
+ * A write root is not a read root on either backend: `sandbox-exec` grants
+ * `file-write*` and `file-read*` separately, and bwrap binds a path once. So a
+ * writable world is named on both lists, exactly as the workspace already is.
+ */
 export function toolConfinement(
 	tool: ResolvedTargetTool,
 	workspaceDir: string,
 	toolHomeRoot: string | undefined,
+	worldDir?: string,
 ): TargetToolConfinement {
+	const writable = tool.descriptor.permissions.filesystem === "workspace-write";
+	const readRoots = toolHomeRoot ? [toolHomeRoot] : [];
+	const writeRoots = writable ? [workspaceDir] : [];
+	if (worldDir) {
+		readRoots.push(worldDir);
+		if (writable) writeRoots.push(worldDir);
+	}
 	return {
 		network: tool.descriptor.permissions.network,
-		readRoots: toolHomeRoot ? [toolHomeRoot] : [],
-		writeRoots: tool.descriptor.permissions.filesystem === "workspace-write" ? [workspaceDir] : [],
+		readRoots,
+		writeRoots,
 	};
 }
 
@@ -236,6 +270,8 @@ export function buildToolEnvironment(options: {
 	environmentAllowlist: readonly string[];
 	sourceEnvironment?: NodeJS.ProcessEnv;
 	toolHome?: string;
+	/** Absolute path of this run's world file, exported as `AHDE_WORLD`. */
+	worldPath?: string;
 }): { environment: NodeJS.ProcessEnv; names: string[] } {
 	const home = join(options.scratchDir, "tool-home", options.label);
 	const temporary = join(options.scratchDir, "tool-tmp", options.label);
@@ -249,8 +285,11 @@ export function buildToolEnvironment(options: {
 		TMPDIR: temporary,
 	};
 	if (options.toolHome) environment[AHDE_TOOL_HOME_ENVIRONMENT] = options.toolHome;
+	if (options.worldPath) environment[AHDE_WORLD_ENVIRONMENT] = options.worldPath;
 	for (const name of options.environmentAllowlist) {
-		if (FIXED_ENVIRONMENT.has(name) || name === AHDE_TOOL_HOME_ENVIRONMENT) continue;
+		if (FIXED_ENVIRONMENT.has(name) || name === AHDE_TOOL_HOME_ENVIRONMENT || name === AHDE_WORLD_ENVIRONMENT) {
+			continue;
+		}
 		const value = source[name];
 		if (value !== undefined) environment[name] = value;
 	}
@@ -269,6 +308,7 @@ function buildEnvironment(
 		...(tool.layout === "directory" && options.toolHomeRoot
 			? { toolHome: join(options.toolHomeRoot, tool.descriptor.name) }
 			: {}),
+		...(options.worldPath ? { worldPath: options.worldPath } : {}),
 	});
 }
 
@@ -293,6 +333,12 @@ export function sandboxInvocation(options: {
 	/** Prepared multi-file tool home to mount at /tools, and whether that mount is writable. */
 	toolHomeRoot?: string;
 	toolHomeMode?: "ro" | "rw";
+	/**
+	 * The world directory to mount at /world. The OS backends read it off
+	 * `confinement`; a container names its mounts explicitly, so it is passed
+	 * here too, and `AHDE_WORLD` is rewritten to its container spelling.
+	 */
+	worldDir?: string;
 	hostEnvironment?: NodeJS.ProcessEnv;
 	containerRuntime?: ContainerRuntimeBinding;
 	lifecycleTimeoutMs?: number;
@@ -319,6 +365,14 @@ export function sandboxInvocation(options: {
 				scratchDir: options.scratchDir,
 				...(options.toolHomeRoot ? { toolHomeRoot: options.toolHomeRoot } : {}),
 				...(options.toolHomeMode ? { toolHomeMode: options.toolHomeMode } : {}),
+				...(options.worldDir
+					? {
+						worldDir: options.worldDir,
+						worldMode: options.confinement.writeRoots.includes(options.worldDir)
+							? "rw" as const
+							: "ro" as const,
+					}
+					: {}),
 			},
 			network: options.confinement.network,
 			environment: options.environment,
@@ -534,6 +588,7 @@ function decodeUtf8(buffer: Buffer, label: string): string {
 export class TargetToolBroker {
 	readonly sandboxBackend: TargetToolSandboxBackend;
 	private readonly toolHomeRoot: string | undefined;
+	private readonly worldDir: string | undefined;
 	private readonly containerRuntime: ContainerRuntimeBinding | undefined;
 
 	constructor(private readonly options: TargetToolBrokerOptions) {
@@ -543,6 +598,16 @@ export class TargetToolBroker {
 		this.options.scratchDir = realpathSync(this.options.scratchDir);
 		this.toolHomeRoot = options.toolHomeRoot ? realWorkspace(options.toolHomeRoot) : undefined;
 		this.options.toolHomeRoot = this.toolHomeRoot;
+		// The world file itself need not exist yet — the run writes it before the
+		// session starts — but its directory must, because a sandbox profile
+		// names concrete paths and bwrap binds them.
+		if (options.worldPath) {
+			const worldDir = realWorkspace(dirname(options.worldPath));
+			this.worldDir = worldDir;
+			this.options.worldPath = join(worldDir, basename(options.worldPath));
+		} else {
+			this.worldDir = undefined;
+		}
 		const choice = options.sandboxBackend === undefined
 			? resolveExecutionBackend({
 				policy: options.policy,
@@ -611,12 +676,13 @@ export class TargetToolBroker {
 			workspaceDir: this.options.workspaceDir,
 			scratchDir: this.options.scratchDir,
 			environment,
-			confinement: toolConfinement(tool, this.options.workspaceDir, this.toolHomeRoot),
+			confinement: toolConfinement(tool, this.options.workspaceDir, this.toolHomeRoot, this.worldDir),
 			cwd: this.options.workspaceDir,
 			argv: [executable, ...tool.descriptor.command.argv.slice(1)],
 			...(this.options.policy.container ? { container: this.options.policy.container } : {}),
 			...(this.containerRuntime ? { containerRuntime: this.containerRuntime } : {}),
 			...(this.toolHomeRoot ? { toolHomeRoot: this.toolHomeRoot } : {}),
+			...(this.worldDir ? { worldDir: this.worldDir } : {}),
 			...(this.options.resourceLimits ? { limits: this.options.resourceLimits } : {}),
 			lifecycleTimeoutMs: tool.descriptor.timeoutMs,
 		});

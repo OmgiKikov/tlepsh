@@ -25,6 +25,8 @@ import {
 	type RunRecord,
 } from "./provenance.js";
 import { writeJsonArtifact } from "./storage/artifacts.js";
+import { resolveContainedArtifactPath } from "./storage/paths.js";
+import { WORLD_STATE_SEGMENTS } from "./target/world-state.js";
 import { readTraceArtifact, traceToolErrors, type TranscriptTurn } from "./trace.js";
 import { EvaluatorModelError, type EvaluatorModelMetrics } from "./evaluator-model.js";
 import { nextSimulatedUserTurn, simulatedUserStop, type SimulatedUserStop } from "./simulated-user.js";
@@ -560,6 +562,16 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 		? workspaceTreeHash(executionCwd)
 		: undefined;
 	const scratchDir = join(runtimeDir, "sandbox");
+	// The world lives beside the sandbox, never inside `workspace/`: the
+	// workspace hash and the shared per-EvalRun snapshot are the Target's
+	// identity (invariant 19), and a case's starting state is not part of it.
+	// The directory is created now, before any sandbox profile is built, because
+	// a profile names concrete paths and bwrap binds them; the state itself is
+	// written below, once the run record is on disk.
+	const worldPath = task.world
+		? resolveContainedArtifactPath(options.runsRoot, runId, ...WORLD_STATE_SEGMENTS)
+		: undefined;
+	if (worldPath) privateDirectory(dirname(worldPath));
 	let policyResult: ExecutionPolicyResult | undefined;
 	let targetToolRuntime: TargetToolRuntime | undefined;
 	let policyError: unknown;
@@ -583,6 +595,7 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			// runs once for the whole suite, not once per task × repetition. A
 			// failure here is infrastructure — the record below records "error".
 			...(options.workspaceSnapshot ? { toolHomeRoot: options.workspaceSnapshot.toolHomeDir } : {}),
+			...(worldPath ? { worldPath } : {}),
 		});
 		if (
 			options.workspaceSnapshot?.preparedToolHomeHash !== null &&
@@ -665,6 +678,13 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 
 	// Crash-tolerant: provenance is on disk before any model call.
 	writeRunRecord(runDir, record);
+	// The world exists before the Target does. A tool that reads `AHDE_WORLD` on
+	// the agent's very first turn must find the state the case declared, not an
+	// empty file, and the state a run ends with is evidence, so it is written
+	// once, here, and never again by the host.
+	if (task.world && worldPath) {
+		writePrivateFile(worldPath, `${JSON.stringify(task.world.state, null, "\t")}\n`);
+	}
 	const eventRun: RunEventIdentity = {
 		evalRunId: options.evalRunId,
 		runId,

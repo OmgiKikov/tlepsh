@@ -254,6 +254,13 @@ export interface CreateTargetToolRuntimeOptions {
 	 * private home under `scratchDir` for this run alone.
 	 */
 	toolHomeRoot?: string;
+	/**
+	 * Absolute path of this run's world file, present exactly when the case
+	 * declares a world. Per run, never per EvalRun: two cases in one suite
+	 * happen in two different worlds, and one shared file would let the first
+	 * case's ending decide the second case's beginning.
+	 */
+	worldPath?: string;
 	/** Container-runtime detection seam. Production callers omit this. */
 	detectContainerRuntime?: (runtime: ContainerRuntimeName) => ContainerRuntimeStatus;
 }
@@ -365,6 +372,7 @@ export function createTargetToolRuntime(options: CreateTargetToolRuntimeOptions)
 		policy: options.target.manifest.execution,
 		sourceEnvironment: options.sourceEnvironment,
 		...(prepared ? { toolHomeRoot: prepared.root } : {}),
+		...(options.worldPath ? { worldPath: options.worldPath } : {}),
 		...(sandboxBackend ? { sandboxBackend } : {}),
 		...(choice?.containerRuntime ? { containerRuntime: choice.containerRuntime } : {}),
 	});
