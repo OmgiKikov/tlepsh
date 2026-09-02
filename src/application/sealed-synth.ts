@@ -38,6 +38,8 @@ import {
 	type CorpusTask,
 } from "../corpus.js";
 import { SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
+import { kbIndexHash as kbIndexHashOf, type KbChunk } from "../domain/kb.js";
+import { knowledgeBaseDeclared, readKnowledgeBase, KB_DATA_DECLARATION } from "../target/kb-tool.js";
 import { callEvaluatorModel, evaluatorCostUsd } from "../evaluator-model.js";
 import { loadTarget, taskDialogueIssue, type GraderSpec, type ResolvedTarget } from "../manifest.js";
 import {
@@ -89,8 +91,7 @@ export class SealedSynthRefusal extends Error {
  * hash, a count, an id, or a model coordinate; nothing reconstructs a case, and
  * `developmentExampleIds` names only cases the Builder may already read.
  */
-export const SealedSynthReceiptSchema = z.strictObject({
-	schemaVersion: z.literal(1),
+const SealedSynthReceiptFields = {
 	projectId: ProjectIdSchema,
 	targetId: z.string().min(1).max(100),
 	corpusName: z.string().trim().min(1).max(200),
@@ -139,14 +140,61 @@ export const SealedSynthReceiptSchema = z.strictObject({
 		}),
 	]),
 	at: z.iso.datetime({ offset: true }),
+} as const;
+
+/**
+ * The receipt as it was written before a knowledge base could be the subject.
+ * Kept verbatim, and never rewritten: a receipt's filename is the hash of its
+ * own content, so upgrading one in place would break the address it is stored
+ * under. Old receipts are read as what they are and answer `spec` when asked
+ * where their questions came from.
+ */
+export const SealedSynthReceiptV1Schema = z.strictObject({
+	schemaVersion: z.literal(1),
+	...SealedSynthReceiptFields,
 });
+
+/**
+ * Version 2 adds the two facts a knowledge-base exam has and a Spec exam does
+ * not: which source the questions were written from, and the identity of the
+ * chunk index they were written from. `kbIndexHash` is null on the `spec`
+ * source — an absent knowledge base is a fact, not a hash of nothing.
+ */
+export const SealedSynthReceiptV2Schema = z.strictObject({
+	schemaVersion: z.literal(2),
+	...SealedSynthReceiptFields,
+	source: z.enum(["spec", "kb"]),
+	kbIndexHash: HashSchema.nullable(),
+});
+
+export const SealedSynthReceiptSchema = z.discriminatedUnion("schemaVersion", [
+	SealedSynthReceiptV1Schema,
+	SealedSynthReceiptV2Schema,
+]);
 export type SealedSynthReceipt = z.infer<typeof SealedSynthReceiptSchema>;
+
+/** Where one receipt's questions came from, in either schema version. */
+export function sealedSynthSource(receipt: SealedSynthReceipt): "spec" | "kb" {
+	return receipt.schemaVersion === 2 ? receipt.source : "spec";
+}
 
 /**
  * How a sealed exam came to exist, as far as a receipt can say. `null` is the
  * ordinary case: an exam the operator brought, whose provenance is theirs.
  */
-export type SealedExamOrigin = "judge-generated" | "judge-generated-reviewed";
+export type SealedExamOrigin =
+	| "judge-generated"
+	| "judge-generated-reviewed"
+	| "judge-generated-kb"
+	| "judge-generated-kb-reviewed";
+
+/**
+ * What the questions are written from. `spec` is the original path and stays
+ * the default, so every existing receipt, test and dialog is unchanged. `kb`
+ * writes each question from one passage of the Target's declared knowledge
+ * base, which is the only honest exam for an agent that answers from documents.
+ */
+export type SealedSynthSource = "spec" | "kb";
 
 export interface SealedSynthOptions {
 	targetDir: string;
@@ -156,6 +204,7 @@ export interface SealedSynthOptions {
 	name: string;
 	/** N: how many new cases the generator is asked for. */
 	count: number;
+	source?: SealedSynthSource | undefined;
 	seed?: string | undefined;
 	/** `--from`: an explicit Spec file. */
 	specPath?: string | undefined;
@@ -175,6 +224,16 @@ export interface SealedSynthOptions {
  * it is exactly the part of a sealed exam that is safe to show.
  */
 export interface SealedSynthPlan {
+	/** Where the questions come from: the Spec, or the knowledge base. */
+	source: SealedSynthSource;
+	/**
+	 * Identity of the chunk index the questions will be written from, or null on
+	 * the Spec source. Present in the approved subject, so a knowledge base that
+	 * changed between the dialog and the call is a stale decision.
+	 */
+	kbIndexHash: string | null;
+	/** Passages the generator will be shown, one per call. Empty on `spec`. */
+	kbChunkIds: string[];
 	/** `<provider>/<id>` of the judge that will write the exam. */
 	generatorModel: string;
 	generatorHash: string;
@@ -198,6 +257,8 @@ export interface SealedSynthPlan {
 export interface SealedSynthResult {
 	receipt: SealedSynthReceipt;
 	receiptPath: string;
+	/** Where the questions came from. */
+	source: SealedSynthSource;
 	/** Present on the sealing path. Metadata only — content is never loaded. */
 	corpus: CorpusMetadata | null;
 	/** Present on the review path. The operator's own path, echoed back. */
@@ -437,6 +498,110 @@ function generatorUserPrompt(input: {
 	return lines.join("\n");
 }
 
+// ---------- the knowledge-base prompt ----------
+
+/**
+ * The knowledge-base generator sees ONE passage and nothing else.
+ *
+ * Showing it the whole corpus would let it write a question no single passage
+ * answers, and the case's whole claim — this answer stands on THIS source — is
+ * only checkable when exactly one passage is the source. The Spec is not shown
+ * here at all: the questions come from the documents, and the Spec's job on
+ * this path is to say which project revision the exam belongs to, which the
+ * receipt records without the generator ever reading it.
+ */
+const KB_GENERATOR_SYSTEM = [
+	"You write held-out evaluation questions from a company's own documentation.",
+	"",
+	"You are shown ONE passage. Write one question a real user would ask, whose",
+	"complete answer is contained in that passage, and the answer itself.",
+	"",
+	"Rules:",
+	"- Answer with one JSON object and nothing else: {\"question\": \"...\", \"answer\": \"...\"}.",
+	"- No prose, no explanation, no markdown fence, no commentary.",
+	"- The question must be answerable from the passage ALONE. Do not ask about",
+	"  anything the passage does not state.",
+	"- The question is what a user asks, not what a document says: no \"according to",
+	"  the passage\", no reference to a document, a section, or an id.",
+	"- The answer is short, factual, and uses the passage's own numbers, names and",
+	"  terms exactly as written.",
+	"- Write both in the language of the passage.",
+].join("\n");
+
+function kbGeneratorUserPrompt(chunk: KbChunk): string {
+	return [
+		`# Passage ${chunk.id}`,
+		"",
+		chunk.text.trim(),
+		"",
+		"# Task",
+		"",
+		"Write one question and its answer from this passage.",
+		"Return only {\"question\": \"...\", \"answer\": \"...\"}.",
+	].join("\n");
+}
+
+function chunkKey(datasetHash: string, seed: string, chunkId: string): string {
+	return createHash("sha256").update(`${datasetHash} sealed-synth kb ${seed} ${chunkId}`).digest("hex");
+}
+
+/**
+ * N passages, drawn from (dataset hash, seed, chunk id) by the same rule the
+ * format-example draw uses: the same seed over the same knowledge base always
+ * asks about the same passages, and a different seed asks about others. The
+ * count is capped by the number of passages — a corpus of nine chunks cannot
+ * produce twenty independent questions, and pretending otherwise would produce
+ * twenty questions about nine passages.
+ */
+function drawChunks(chunks: readonly KbChunk[], datasetHash: string, count: number, seed: string): KbChunk[] {
+	const ordered = [...chunks].sort((left, right) => {
+		const a = chunkKey(datasetHash, seed, left.id);
+		const b = chunkKey(datasetHash, seed, right.id);
+		return a === b ? left.id.localeCompare(right.id) : a < b ? -1 : 1;
+	});
+	const chosen = new Set(ordered.slice(0, Math.min(count, chunks.length)).map((chunk) => chunk.id));
+	// Presented in document order: the draw decides which, never in what order.
+	return chunks.filter((chunk) => chosen.has(chunk.id));
+}
+
+/** The one question-and-answer a knowledge-base call is allowed to return. */
+function parseGeneratedPair(text: string): { question: string; answer: string } | null {
+	if (Buffer.byteLength(text, "utf8") > MAX_GENERATOR_RESPONSE_BYTES) return null;
+	const stripped = text.replace(/```(?:json)?/g, "").trim();
+	const start = stripped.indexOf("{");
+	const end = stripped.lastIndexOf("}");
+	if (start < 0 || end <= start) return null;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(stripped.slice(start, end + 1));
+	} catch {
+		return null;
+	}
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+	const { question, answer } = parsed as { question?: unknown; answer?: unknown };
+	if (typeof question !== "string" || question.trim().length === 0) return null;
+	if (typeof answer !== "string" || answer.trim().length === 0) return null;
+	return { question, answer };
+}
+
+/**
+ * The graders a knowledge-base case carries.
+ *
+ * Two deterministic checks, and no judge. `cites_source` asks the only question
+ * that distinguishes retrieval from recall — did the answer stand on the
+ * passage it was written from — and token F1 against the reference answer asks
+ * whether it said the right thing. A judge grader here would ask the model that
+ * wrote both the question and the reference answer to then mark the paper: the
+ * second opinion is not independent, and it would put a per-case model call on
+ * every sealed run for a verdict two free checks already decide.
+ */
+function kbCaseGraders(chunkId: string): GraderSpec[] {
+	return [
+		{ type: "cites_source", chunk: chunkId, minOverlap: 0.35 },
+		{ type: "similarity", metric: "token-f1", threshold: 0.5 },
+	];
+}
+
 // ---------- parsing the answer ----------
 
 /**
@@ -599,12 +764,22 @@ interface SealedSynthPreflight {
 	target: ResolvedTarget;
 	judge: JudgeModel;
 	projectId: string;
+	source: SealedSynthSource;
 	count: number;
 	drawn: CorpusTask[];
+	/** One prompt per drawn passage, in draw order. Empty on the Spec source. */
+	kbCalls: { chunk: KbChunk; user: string }[];
+	kbIndexHash: string | null;
 	spec: ResolvedSpec;
 	specSha256: string;
 	seed: string | null;
 	system: string;
+	/**
+	 * The exact question, whole. On the knowledge-base source that is every
+	 * per-passage prompt joined, because that is what will actually be sent —
+	 * split across one call each — so the hash covers the whole request and the
+	 * byte count prices it.
+	 */
 	user: string;
 	promptSha256: string;
 	promptBytes: number;
@@ -651,27 +826,73 @@ function preflight(options: SealedSynthOptions): SealedSynthPreflight {
 	const spec = resolveSpec(options, target);
 	const specSha256 = hashValue(spec.text);
 	const seed = options.seed ?? null;
-	const drawn = drawExamples(target, examples, seed ?? "");
-	const system = GENERATOR_SYSTEM;
-	const user = generatorUserPrompt({
-		specText: spec.text,
-		examples: drawn,
-		graderShapes: graderShapes(target),
-		count,
-	});
+	const source: SealedSynthSource = options.source ?? "spec";
+
+	// Refused before a token is spent, and before the human is asked anything: a
+	// Target with no declared knowledge base has no passages to write questions
+	// from, and an exam about nothing is worse than no exam.
+	let kbCalls: { chunk: KbChunk; user: string }[] = [];
+	let kbIndexHash: string | null = null;
+	if (source === "kb") {
+		if (!knowledgeBaseDeclared(target.manifest.data)) {
+			throw new SealedSynthRefusal(
+				"this Target declares no knowledge base, so there are no documents to write questions from",
+				`put the documents in ${join(target.dir, KB_DATA_DECLARATION)} and declare that directory in ` +
+					"the manifest's data list, then try again",
+			);
+		}
+		let chunks: KbChunk[];
+		try {
+			chunks = readKnowledgeBase(target.dir);
+		} catch (error) {
+			throw new SealedSynthRefusal(
+				`the declared knowledge base cannot be indexed: ${error instanceof Error ? error.message : String(error)}`,
+				"fix the documents under data/kb, then try again",
+			);
+		}
+		if (chunks.length === 0) {
+			throw new SealedSynthRefusal(
+				`the declared knowledge base holds no readable .md or .txt document: ${join(target.dir, KB_DATA_DECLARATION)}`,
+				"add the documents the agent answers from, then try again",
+			);
+		}
+		kbIndexHash = kbIndexHashOf(chunks);
+		kbCalls = drawChunks(chunks, target.datasetHash, count, seed ?? "")
+			.map((chunk) => ({ chunk, user: kbGeneratorUserPrompt(chunk) }));
+	}
+
+	const drawn = source === "kb" ? [] : drawExamples(target, examples, seed ?? "");
+	const system = source === "kb" ? KB_GENERATOR_SYSTEM : GENERATOR_SYSTEM;
+	const user = source === "kb"
+		? kbCalls.map((call) => call.user).join("\n\n")
+		: generatorUserPrompt({
+			specText: spec.text,
+			examples: drawn,
+			graderShapes: graderShapes(target),
+			count,
+		});
 	return {
 		target,
 		judge,
 		projectId,
-		count,
+		source,
+		// A corpus of nine passages cannot answer twenty independent questions, so
+		// the request is capped at the draw and the dialog prices what will
+		// actually be written rather than what was asked for.
+		count: source === "kb" ? kbCalls.length : count,
 		drawn,
+		kbCalls,
+		kbIndexHash,
 		spec,
 		specSha256,
 		seed,
 		system,
 		user,
 		promptSha256: hashValue({ system, user }),
-		promptBytes: Buffer.byteLength(system, "utf8") + Buffer.byteLength(user, "utf8"),
+		// One system prompt per call on the knowledge-base path, so the estimate
+		// counts it once per passage rather than once per generation.
+		promptBytes: Buffer.byteLength(system, "utf8") * Math.max(kbCalls.length, 1) +
+			Buffer.byteLength(user, "utf8"),
 		reviewPath,
 	};
 }
@@ -705,6 +926,9 @@ export function estimateSealedSynthCostUsd(judge: JudgeModel, promptBytes: numbe
 export function planSealedSynthesis(options: SealedSynthOptions): SealedSynthPlan {
 	const ready = preflight(options);
 	return {
+		source: ready.source,
+		kbIndexHash: ready.kbIndexHash,
+		kbChunkIds: ready.kbCalls.map((call) => call.chunk.id),
 		generatorModel: `${ready.judge.provider}/${ready.judge.id}`,
 		generatorHash: hashValue(modelFingerprint(ready.judge)),
 		promptSha256: ready.promptSha256,
@@ -722,8 +946,23 @@ export function planSealedSynthesis(options: SealedSynthOptions): SealedSynthPla
 }
 
 export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promise<SealedSynthResult> {
-	const { target, judge, projectId, count, drawn, spec, specSha256, seed, system, user, promptSha256, reviewPath } =
-		preflight(options);
+	const {
+		target,
+		judge,
+		projectId,
+		source,
+		count,
+		drawn,
+		kbCalls,
+		kbIndexHash,
+		spec,
+		specSha256,
+		seed,
+		system,
+		user,
+		promptSha256,
+		reviewPath,
+	} = preflight(options);
 
 	// The exact exchange lands on disk before anything is parsed, exactly as
 	// every other evaluator call does — but under a private directory this
@@ -736,19 +975,58 @@ export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promi
 	if (!receiptsDir) throw new Error("failed to create the sealed synthesis state directory");
 	const exchangeDir = join(receiptsDir, EXCHANGE_DIRECTORY, promptSha256.slice("sha256:".length, "sha256:".length + 16));
 
-	const called = await callEvaluatorModel({
-		label: "sealed synthesis",
-		model: judge,
-		system,
-		user,
-		sidecar: { dir: exchangeDir, stem: "generation" },
-		pinTemperature: true,
-		abortMessage: "sealed synthesis aborted",
-		...(options.signal ? { signal: options.signal } : {}),
-	});
+	// One call per passage on the knowledge-base path, in draw order. Each answer
+	// becomes exactly one candidate case, with the passage it was written from
+	// nailed to it by a grader — so a malformed answer costs one question, not
+	// the whole exam.
+	const generated: unknown[] = [];
+	let unparsedPairs = 0;
+	if (source === "kb") {
+		for (const [index, call] of kbCalls.entries()) {
+			const answered = await callEvaluatorModel({
+				label: "sealed synthesis",
+				model: judge,
+				system,
+				user: call.user,
+				sidecar: { dir: exchangeDir, stem: `generation-${index}` },
+				pinTemperature: true,
+				abortMessage: "sealed synthesis aborted",
+				...(options.signal ? { signal: options.signal } : {}),
+			});
+			const pair = parseGeneratedPair(answered.text);
+			if (!pair) {
+				unparsedPairs += 1;
+				continue;
+			}
+			generated.push({
+				input: pair.question,
+				expected: pair.answer,
+				metadata: { kbChunk: call.chunk.id },
+				graders: kbCaseGraders(call.chunk.id),
+			});
+		}
+	} else {
+		const called = await callEvaluatorModel({
+			label: "sealed synthesis",
+			model: judge,
+			system,
+			user,
+			sidecar: { dir: exchangeDir, stem: "generation" },
+			pinTemperature: true,
+			abortMessage: "sealed synthesis aborted",
+			...(options.signal ? { signal: options.signal } : {}),
+		});
+		generated.push(...parseGeneratedCases(called.text));
+	}
 
 	const seenNormalized = new Set(target.tasks.map((task) => normalizedCaseInput(task.input)));
-	const admitted = admitCases(parseGeneratedCases(called.text), specSha256, seenNormalized, count);
+	const admittedCases_ = admitCases(generated, specSha256, seenNormalized, count);
+	// A passage whose answer did not parse is a case that never existed, counted
+	// with the ones validation threw out so the shortfall arithmetic stays true.
+	const admitted = {
+		...admittedCases_,
+		droppedMalformed: admittedCases_.droppedMalformed + unparsedPairs,
+	};
 	if (admitted.tasks.length === 0) {
 		throw new Error(
 			`the generator produced no admissible new case (${admitted.droppedMalformed} malformed, ` +
@@ -782,7 +1060,9 @@ export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promi
 	}
 
 	const receipt = SealedSynthReceiptSchema.parse({
-		schemaVersion: 1,
+		schemaVersion: 2,
+		source,
+		kbIndexHash,
 		projectId,
 		targetId: target.manifest.id,
 		corpusName: options.name,
@@ -809,6 +1089,7 @@ export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promi
 	return {
 		receipt,
 		receiptPath,
+		source,
 		corpus,
 		reviewPath,
 		generatorModel: `${judge.provider}/${judge.id}`,
@@ -897,11 +1178,13 @@ export function sealedExamOrigin(
 	// A reviewed exam was also generated, so the more specific answer wins.
 	for (const receipt of receipts) {
 		if (receipt.outcome.kind === "review-imported" && receipt.outcome.corpusId === corpusId) {
-			return "judge-generated-reviewed";
+			return sealedSynthSource(receipt) === "kb" ? "judge-generated-kb-reviewed" : "judge-generated-reviewed";
 		}
 	}
 	for (const receipt of receipts) {
-		if (receipt.outcome.kind === "sealed" && receipt.outcome.corpusId === corpusId) return "judge-generated";
+		if (receipt.outcome.kind === "sealed" && receipt.outcome.corpusId === corpusId) {
+			return sealedSynthSource(receipt) === "kb" ? "judge-generated-kb" : "judge-generated";
+		}
 	}
 	return null;
 }
@@ -926,12 +1209,14 @@ export function renderSealedSynthOutput(result: SealedSynthResult): SealedSynthO
 		? [
 			`corpus        ${result.corpus.id}`,
 			`cases         ${result.corpus.taskCount}`,
+			`source        ${result.source}`,
 			`generator     ${result.generatorModel}`,
 			`prompt        ${result.promptSha256}`,
 		]
 		: [
 			`review        ${result.reviewPath ?? ""}`,
 			`cases         ${result.accepted}`,
+			`source        ${result.source}`,
 			`generator     ${result.generatorModel}`,
 			`prompt        ${result.promptSha256}`,
 			"",

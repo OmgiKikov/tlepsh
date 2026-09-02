@@ -8,6 +8,7 @@ import {
 	listSealedSynthReceipts,
 	renderSealedSynthOutput,
 	SealedSynthRefusal,
+	sealedSynthSource,
 	synthesizeSealedCorpus,
 } from "../src/application/sealed-synth.js";
 import { baseFixtureFiles, makeTargetFixture } from "./fixtures.js";
@@ -174,7 +175,9 @@ describe("sealed synthetic generation", () => {
 		});
 
 		const receipt = result.receipt;
-		expect(receipt.schemaVersion).toBe(1);
+		expect(receipt.schemaVersion).toBe(2);
+		expect(sealedSynthSource(receipt)).toBe("spec");
+		expect(receipt.schemaVersion === 2 && receipt.kbIndexHash).toBeNull();
 		expect(receipt.targetId).toBe("test-target");
 		expect(receipt.generator.provider).toBe("fixture-provider");
 		expect(receipt.generator.id).toBe("fixture-judge");

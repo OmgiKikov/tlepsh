@@ -287,7 +287,13 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 					cases: plural(cases, "case"),
 					generator: text(subject.generatorModel, 80),
 				}))}`,
-				`${paint.dim(t("label.source"))} ${examples > 0
+				`${paint.dim(t("label.source"))} ${subject.source === "kb"
+					// One passage per question, so the passage count is the case count
+					// and there is nothing else to say about what the judge is shown.
+					? t("generate-holdout.source-kb", {
+						chunks: plural(Array.isArray(subject.kbChunkIds) ? subject.kbChunkIds.length : 0, "passage"),
+					})
+					: examples > 0
 					? t("generate-holdout.source", { examples: plural(examples, "example") })
 					: t("generate-holdout.source-spec-only")}`,
 				paint.muted(t("generate-holdout.blind")),

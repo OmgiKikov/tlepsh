@@ -481,6 +481,9 @@ describe("generate-holdout: the exam the judge writes", () => {
 				planSealedSynthesis: (options) => {
 					calls += 1;
 					return {
+						source: options.source ?? ("spec" as const),
+						kbIndexHash: null,
+						kbChunkIds: [],
 						generatorModel: "fixture-provider/fixture-judge",
 						generatorHash: "sha256:".padEnd(71, "a"),
 						promptSha256: `sha256:${String(calls).padEnd(64, "b")}`,

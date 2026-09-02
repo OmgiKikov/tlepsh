@@ -346,6 +346,7 @@ function defaultDecision(input: WorkbenchDecisionInput): WorkbenchDecisionResult
 			return decision("generate-holdout", {
 				...(input.mode === "seal" ? { corpusId: `corpus-${"a".repeat(64)}` } : { reviewPath: "/private/state/sealed-synth/review-abc.jsonl" }),
 				cases: input.cases,
+				source: input.source ?? "spec",
 				requested: input.cases,
 				dropped: { malformed: 0, duplicate: 0 },
 				generator: "openrouter/anthropic/claude-sonnet-4.5",

@@ -173,7 +173,10 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 			const cases = result.result.cases;
 			const lines = [
 				`${section(t(result.result.reviewPath ? "panel.holdout-drafted" : "panel.holdout-generated"), paint)} ${
-					paint.bold(t("generate-holdout.by-judge", {
+					// An exam written from the agent's own documents is a different
+					// claim from one written from its description; the one line says
+					// which, because the operator paid for one of the two.
+					paint.bold(t(result.result.source === "kb" ? "generate-holdout.by-judge-kb" : "generate-holdout.by-judge", {
 						cases: plural(cases, "case"),
 						generator: oneLine(result.result.generator, 60),
 					}))

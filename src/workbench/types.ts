@@ -839,6 +839,19 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		/** Fixes which development cases are shown as format examples. */
 		seed: z.string().min(1).max(200).optional(),
 		mode: z.enum(["seal", "review"]),
+		/**
+		 * What the questions are written from. `spec` is the original path and the
+		 * default, so every receipt and dialog written before this is unchanged.
+		 * `kb` shows the judge one passage of the Target's declared knowledge base
+		 * at a time and keeps the passage nailed to the case it produced — the
+		 * only honest exam for an agent that answers from documents.
+		 *
+		 * Optional and never defaulted, for the reason the manifest's `harness`
+		 * field is: the decision subject is hashed for the confirmation and the
+		 * stale check, and a defaulted key would write itself into the canonical
+		 * JSON of a request nobody made differently. Absent means `spec`.
+		 */
+		source: z.enum(["spec", "kb"]).optional(),
 		reason: NonBlankSchema.max(4_000),
 	}),
 	z.strictObject({
@@ -1253,6 +1266,8 @@ export interface WorkbenchDecisionResultMap {
 	"generate-holdout": {
 		corpusId?: string;
 		cases: number;
+		/** Where the questions came from: the agent's description, or its documents. */
+		source: "spec" | "kb";
 		/** How many the operator asked for, and how many the judge's draft lost to validation. */
 		requested: number;
 		dropped: { malformed: number; duplicate: number };
