@@ -1,6 +1,7 @@
 import { chmodSync, mkdirSync, opendirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import { answerTokens, tokenF1 } from "./domain/tokens.js";
 import {
 	GraderSpec,
 	JudgeGrader,
@@ -171,32 +172,11 @@ function gradeExact(
 	};
 }
 
-/** Unicode word tokens: runs of letters or digits, case-folded. */
-export function answerTokens(text: string): string[] {
-	return text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
-}
-
-/** Multiset token F1, the standard span-answer overlap score. */
-export function tokenF1(a: string, b: string): number {
-	const left = answerTokens(a);
-	const right = answerTokens(b);
-	if (left.length === 0 && right.length === 0) return 1;
-	if (left.length === 0 || right.length === 0) return 0;
-	const remaining = new Map<string, number>();
-	for (const token of left) remaining.set(token, (remaining.get(token) ?? 0) + 1);
-	let overlap = 0;
-	for (const token of right) {
-		const available = remaining.get(token) ?? 0;
-		if (available > 0) {
-			remaining.set(token, available - 1);
-			overlap += 1;
-		}
-	}
-	if (overlap === 0) return 0;
-	const precision = overlap / left.length;
-	const recall = overlap / right.length;
-	return (2 * precision * recall) / (precision + recall);
-}
+// The tokenizer and the token-F1 score live in `domain/tokens.ts` so the Target
+// runtime's `kb_search` can rank with the same words these graders compare
+// with, without importing this module. Re-exported so every existing caller —
+// `ahde label`, the regrade path, the tests — keeps its import.
+export { answerTokens, tokenF1 };
 
 /** Levenshtein distance over unicode code points, one rolling row of cells. */
 function levenshteinDistance(a: readonly string[], b: readonly string[]): number {
