@@ -1221,7 +1221,7 @@ function judgeLines(judge: PassportJudge): string[] {
 		return ["judge not calibrated — no judge grader graded this evidence"];
 	}
 	if (!judge.stats) {
-		return ["judge not calibrated — this judge has no human labels; run `ahde label <evalRunId> --target <dir>`"];
+		return ["judge not calibrated — this judge has no human labels; /label in Builder Pi, or `ahde label <evalRunId> --target <dir>`"];
 	}
 	const baseline = judge.majorityClassBaseline;
 	const beside = baseline === null ? "" : ` · majority-class baseline ${trimmedPercent(baseline)}`;
@@ -1257,7 +1257,7 @@ function limitLines(limits: VersionPassport["limits"]): string[] {
 			? `- calibrated noise band: 95% CI ${formatPoints(limits.noiseBand.confidence95.low)} … ` +
 				`${formatPoints(limits.noiseBand.confidence95.high)} from an A/A run of ` +
 				`${limits.noiseBand.targetSha.slice(0, SHA_HEX)} on ${design(limits.noiseBand.design)}`
-			: "- calibrated noise band: not measured (`ahde calibrate --target <dir>`)",
+			: "- calibrated noise band: not measured (/calibrate in Builder Pi, or `ahde calibrate --target <dir>`)",
 	);
 	const development = limits.dataset.development;
 	const cases = development.cases === null ? "an unknown number of cases" : `${development.cases} cases`;

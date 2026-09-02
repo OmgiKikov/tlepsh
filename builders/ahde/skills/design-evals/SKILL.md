@@ -41,7 +41,7 @@ bar.
    decides, a tie fails. After the first run of a judge-graded basket, when the
    judge still reads as not calibrated, offer the blind check once:
    “оцени 20 ответов вслепую — 10 минут — и я буду знать, насколько верить судье”.
-   Name `ahde label <eval-run-id> --target .`, which the operator runs: it shows
+   Name `/label`, which the operator runs right here in this conversation: it shows
    them exactly what the judge was shown (the request or the goal, the answer or
    the whole conversation, the rubric, the reference answer) and asks the same
    question, assertion by assertion, before revealing the judge's verdict. A

@@ -1050,7 +1050,7 @@ describe("renderReview", () => {
 		expect(renderReview(makeCandidateReview(), plainPaint).join("\n")).not.toContain("Judge");
 
 		const uncalibrated = renderReview(makeCandidateReview({ judgeAgreement: null }), plainPaint).join("\n");
-		expect(uncalibrated).toContain("Judge not calibrated · ahde label");
+		expect(uncalibrated).toContain("Judge not calibrated · /label");
 
 		const calibrated = renderReview(
 			makeCandidateReview({ judgeAgreement: { agreement: 0.84, kappa: 0.62, labels: 50 } }),

@@ -379,8 +379,8 @@ const en = {
 	"prediction.passport-unmeasured": "Promised {predicted} · nothing comparable was measured",
 
 	"judge.not-calibrated": "not calibrated",
-	"judge.label-hint": "· ahde label",
-	"judge.label-hint-long": "· ahde label checks it against your own eyes",
+	"judge.label-hint": "· /label",
+	"judge.label-hint-long": "· /label checks it against your own eyes",
 	"judge.agreement": "agreement {rate}",
 	"judge.agrees-with-you": "agrees with you {rate}",
 
@@ -990,7 +990,7 @@ const en = {
 	"passport.sealed-shape": "on {tasks} × {repetitions} · contents stay evaluator-only",
 	"passport.sealed-none": "no promotion-grade sealed evidence on this record",
 	"passport.resources": "Resources",
-	"passport.judge-uncalibrated-hint": "· ahde label checks it against your own eyes",
+	"passport.judge-uncalibrated-hint": "· /label checks it against your own eyes",
 	"passport.known-limits": "Known limits",
 	"passport.unresolved": "Unresolved",
 	"passport.nothing-unresolved": "nothing this change targeted was left unresolved",
@@ -1503,8 +1503,8 @@ const ru: Record<MessageKey, string> = {
 	"prediction.passport-unmeasured": "Обещано {predicted} · сопоставимого измерения нет",
 
 	"judge.not-calibrated": "не откалиброван",
-	"judge.label-hint": "· ahde label",
-	"judge.label-hint-long": "· ahde label сверит его с твоими глазами",
+	"judge.label-hint": "· /label",
+	"judge.label-hint-long": "· /label сверит его с твоими глазами",
 	"judge.agreement": "согласие {rate}",
 	"judge.agrees-with-you": "согласен с тобой {rate}",
 
@@ -2085,7 +2085,7 @@ const ru: Record<MessageKey, string> = {
 	"passport.sealed-shape": "на {tasks} × {repetitions} · содержимое видит только оценщик",
 	"passport.sealed-none": "данных закрытого экзамена, годных для выката, в этой записи нет",
 	"passport.resources": "Ресурсы",
-	"passport.judge-uncalibrated-hint": "· ahde label сверит его с твоими глазами",
+	"passport.judge-uncalibrated-hint": "· /label сверит его с твоими глазами",
 	"passport.known-limits": "Чего мы не знаем",
 	"passport.unresolved": "Не закрыто",
 	"passport.nothing-unresolved": "всё, во что целились этой правкой, закрыто",

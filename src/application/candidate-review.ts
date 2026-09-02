@@ -1117,7 +1117,7 @@ function assertJudgeCalibrated(
 			: "";
 		throw new Error(
 			`promotion refused: ${refusal}.${legacy}${unbound}${mismatched}${repeats}${conflicts} ` +
-				"Run `ahde label <evalRunId> --target <dir>` and grade the judge before promoting.",
+				"Grade the judge before promoting: /label in Builder Pi, or `ahde label <evalRunId> --target <dir>` outside it.",
 		);
 	}
 }
