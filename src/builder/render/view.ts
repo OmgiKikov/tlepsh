@@ -11,6 +11,7 @@ import type {
 	WorkbenchTracesDetail,
 	WorkbenchView,
 } from "../../workbench/types.js";
+import { failureModeExcerpt, failureModeReading } from "../../application/run-explanation.js";
 import { formatResourceFragment } from "../../domain/comparison-gate.js";
 import { plural, t, verdictLabel } from "../../i18n.js";
 import { formatFlipRate, formatNoiseBand } from "./calibration.js";
@@ -495,20 +496,31 @@ export function renderReview(content: WorkbenchReviewDetail, paint: Paint, optio
 	}
 }
 
+/**
+ * One mode as the operator reads it: what it is, how much of the corpus it
+ * covers, what the traces show, and one raw excerpt underneath it. The
+ * suggestion is gone from the panel — it was the same two sentences under every
+ * mode; the excerpt is the thing a person can act on.
+ */
 function modeLines(brief: WorkbenchImprovementBriefProjection, paint: Paint): string[] {
 	const lines: string[] = [];
 	for (const mode of brief.modes) {
-		const scope = mode.scope === "systemic" ? paint.warning("systemic") : paint.muted("task-local");
+		const reading = failureModeReading(mode);
+		const scope = mode.scope === "systemic" ? paint.warning(t("mode.scope.systemic")) : paint.muted(t("mode.scope.task-local"));
 		const decision = mode.decision === "propose-harness-change"
-			? (mode.selectableForProposal ? paint.success("→ propose fix") : paint.muted("→ not selectable"))
-			: mode.decision === "stabilize-and-rerun" ? paint.warning("→ rerun to stabilize") : paint.error("→ repair evidence path");
-		lines.push(`  ${paint.bold(`${mode.ordinal}.`)} ${paint.bold(oneLine(mode.title, 90))} ${paint.dim("—")} ${pluralize(mode.impact.affectedTasks, "task")} ${paint.dim(`(${Math.round(mode.impact.taskCoverageBps / 100)}% · reproduces ${Math.round(mode.impact.reproductionBps / 100)}%)`)}`);
-		lines.push(`     ${scope} ${paint.dim("·")} ${mode.severity} ${paint.dim("·")} evidence ${mode.evidenceStrength} ${paint.dim("·")} ${decision}`);
-		lines.push(...wrap(`Hypothesis: ${mode.hypothesis}`, 92, "     "));
-		if (mode.suggestions[0]) lines.push(`     ${paint.dim("suggest:")} ${oneLine(mode.suggestions[0], 120)}`);
+			? (mode.selectableForProposal ? paint.success(t("mode.decision.propose")) : paint.muted(t("mode.decision.not-selectable")))
+			: mode.decision === "stabilize-and-rerun" ? paint.warning(t("mode.decision.stabilize")) : paint.error(t("mode.decision.repair"));
+		lines.push(`  ${paint.bold(`${mode.ordinal}.`)} ${paint.bold(oneLine(reading.title, 90))} ${paint.dim("—")} ${t("mode.tasks-affected", { affected: mode.impact.affectedTasks, total: mode.impact.totalTasks })} ${paint.dim(`(${t("mode.reproduces", { percent: Math.round(mode.impact.reproductionBps / 100) })})`)}`);
+		lines.push(`     ${scope} ${paint.dim("·")} ${decision}`);
+		lines.push(...wrap(reading.facts, 92, "     "));
+		const excerpt = mode.evidence[0];
+		const quoted = excerpt ? failureModeExcerpt(excerpt) : null;
+		if (excerpt && quoted) {
+			lines.push(...wrap(`${excerpt.runId} ${paint.dim("·")} ${quoted}`, 92, "       "));
+		}
 	}
 	const hidden = brief.conversationProjection.omittedModes;
-	if (hidden > 0) lines.push(`  ${paint.dim(`… +${hidden} more modes in the Evidence Explorer`)}`);
+	if (hidden > 0) lines.push(`  ${paint.dim(t("mode.more-in-explorer", { count: hidden }))}`);
 	return lines;
 }
 
@@ -528,21 +540,25 @@ export function renderTraces(content: WorkbenchTracesDetail, paint: Paint): stri
 		`${section(t("section.evaluation"), paint)} ${renderEvaluationSummary(content.evaluation, paint)}`,
 	];
 	const status = brief.status === "actionable"
-		? paint.success("actionable")
-		: brief.status === "healthy" ? paint.success("healthy") : paint.warning("inconclusive");
-	lines.push(`${paint.dim("Diagnosis")} ${status} ${paint.dim("·")} ${oneLine(brief.headline, 140)}`);
+		? paint.success(t("diagnosis.status.actionable"))
+		: brief.status === "healthy" ? paint.success(t("diagnosis.status.healthy")) : paint.warning(t("diagnosis.status.inconclusive"));
+	lines.push(`${paint.dim(t("label.diagnosis"))} ${status} ${paint.dim("·")} ${t("diagnosis.headline", {
+		pass: content.evaluation.summary.pass,
+		total: content.evaluation.summary.total,
+		modes: brief.summary.failureModeCount,
+		systemic: brief.summary.systemicFailureModeCount,
+	})}`);
 	if (brief.modes.length > 0) {
-		lines.push(`${paint.dim("Failure modes")} ${paint.dim(`${brief.summary.systemicFailureModeCount} systemic · ${brief.summary.taskLocalFailureModeCount} task-local`)}`);
 		lines.push(...modeLines(brief, paint));
 	} else if (brief.summary.infrastructureErrors > 0) {
-		lines.push(paint.warning(`  ${pluralize(brief.summary.infrastructureErrors, "infrastructure error")} made this run inconclusive; repair the evidence path and rerun.`));
+		lines.push(paint.warning(`  ${t("diagnosis.infrastructure", { errors: brief.summary.infrastructureErrors })}`));
 	} else {
-		lines.push(paint.success("  No failure modes: every development case passed."));
+		lines.push(paint.success(`  ${t("diagnosis.healthy")}`));
 	}
-	lines.push(`${paint.dim("Evidence")} ${content.evidence.available ? paint.link(content.evidence.url) : paint.muted("explorer link unavailable")}`);
-	if (brief.proposalEligible) lines.push(`${paint.dim("Next")} say “fix the first problem” (or name a mode) to prepare an exact proposal`);
-	else if (brief.status === "healthy") lines.push(`${paint.dim("Next")} add harder cases, or /run again to measure stability`);
-	else lines.push(`${paint.dim("Next")} repair the inconclusive evidence path, then /run again`);
+	lines.push(`${paint.dim(t("label.evidence"))} ${content.evidence.available ? paint.link(content.evidence.url) : paint.muted(t("diagnosis.no-explorer"))}`);
+	if (brief.proposalEligible) lines.push(`${paint.dim(t("label.next"))} ${t("diagnosis.next.fix")}`);
+	else if (brief.status === "healthy") lines.push(`${paint.dim(t("label.next"))} ${t("diagnosis.next.harder")}`);
+	else lines.push(`${paint.dim(t("label.next"))} ${t("diagnosis.next.repair")}`);
 	return lines;
 }
 

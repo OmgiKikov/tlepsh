@@ -3,9 +3,48 @@ import { existsSync } from "node:fs";
 import { z } from "zod";
 import { loadVerifiedEvalRun } from "./eval.js";
 import { HashSchema, hashValue } from "./provenance.js";
-import { openTrace, traceToolCalls } from "./trace.js";
+import { lastAssistantText, openTrace, redactTraceText, traceToolCalls, type TraceMessage } from "./trace.js";
 import { readJsonArtifact, writeJsonArtifact } from "./storage/artifacts.js";
 import { resolveContainedArtifactPath } from "./storage/paths.js";
+
+/** Written on every new diagnosis; version 1 predates the trace excerpts. */
+export const DIAGNOSIS_SCHEMA_VERSION = 2;
+
+const MAX_REPLY_CHARS = 240;
+const MAX_TOOL_NAMES = 8;
+const MAX_TOOL_NAME_CHARS = 100;
+const MAX_RUN_EXCERPTS = 2_000;
+
+/**
+ * What a trace shows without anyone interpreting it.
+ *
+ * These are the observations a machine can make about one Target turn and
+ * defend afterwards: it called nothing, it typed a tool call instead of making
+ * one, it handed the question back, it answered in a mix of scripts, it said
+ * nothing at all. None of them is a cause; together they are the difference
+ * between "a grader predicate was unsatisfied" and knowing what happened.
+ */
+export const TraceObservationSchema = z.enum([
+	"no-tool-call",
+	"tool-call-as-text",
+	"asks-a-question",
+	"mixed-script",
+	"empty-reply",
+]);
+export type TraceObservation = z.infer<typeof TraceObservationSchema>;
+
+export const RunExcerptSchema = z.strictObject({
+	toolNames: z.array(z.string().min(1).max(MAX_TOOL_NAME_CHARS)).max(MAX_TOOL_NAMES),
+	/** The last thing the Target said, redacted and bounded. Null when it said nothing. */
+	reply: z.string().min(1).max(MAX_REPLY_CHARS).nullable(),
+	observations: z.array(TraceObservationSchema).max(5),
+});
+export type RunExcerpt = z.infer<typeof RunExcerptSchema>;
+
+const RunEvidenceSchema = RunExcerptSchema.extend({
+	runId: z.string().min(1),
+	taskId: z.string().min(1),
+});
 
 export const DiagnosisCategorySchema = z.enum([
 	"infrastructure",
@@ -38,7 +77,7 @@ export const DiagnosisIssueSchema = z.strictObject({
 export type DiagnosisIssue = z.infer<typeof DiagnosisIssueSchema>;
 
 export const DiagnosisRecordSchema = z.strictObject({
-	schemaVersion: z.literal(1),
+	schemaVersion: z.union([z.literal(1), z.literal(DIAGNOSIS_SCHEMA_VERSION)]),
 	diagnosisId: z.string().min(1),
 	evalRunId: z.string().min(1),
 	targetId: z.string().min(1),
@@ -54,6 +93,13 @@ export const DiagnosisRecordSchema = z.strictObject({
 		issueCount: z.number().int().nonnegative(),
 	}),
 	issues: z.array(DiagnosisIssueSchema),
+	/**
+	 * What every trace of this run shows, read once, here, where the traces are
+	 * already opened and the result is persisted immutably. Every later reader —
+	 * the brief, the panel, the Evidence Explorer — quotes this instead of
+	 * re-opening protected evidence. Absent on version 1 records.
+	 */
+	runEvidence: z.array(RunEvidenceSchema).max(MAX_RUN_EXCERPTS).optional(),
 });
 export type DiagnosisRecord = z.infer<typeof DiagnosisRecordSchema>;
 
@@ -157,6 +203,40 @@ function issueFrom(aggregate: TaskAggregate, category: DiagnosisCategory): Diagn
 	};
 }
 
+/** An XML- or JSON-shaped tool call that was typed into the answer instead of made. */
+const TOOL_CALL_TEXT = /<\/?(?:function|tool_call|invoke|parameter)\b|"(?:name|tool)"\s*:[^]{0,200}?"(?:arguments|parameters|args)"\s*:/i;
+/** A line that hands the turn back to the user. */
+const QUESTION_LINE = /[?？]\s*$/;
+/** Scripts that never share a sentence with the Cyrillic or Latin the answer is in. */
+const FOREIGN_SCRIPT = /[぀-ヿ㐀-䶿一-鿿가-힯֐-׿؀-ۿ]/;
+const CYRILLIC_OR_LATIN = /[A-Za-zЀ-ӿ]/;
+
+/**
+ * Read one trace the way a person skims it: what was called, what was finally
+ * said, and the handful of things that are visibly wrong with it. Nothing here
+ * interprets — every observation is a predicate over the bytes.
+ */
+function excerptOf(messages: TraceMessage[]): z.infer<typeof RunExcerptSchema> {
+	const toolNames = [...new Set(traceToolCalls(messages).map((call) => call.name))]
+		.sort()
+		.slice(0, MAX_TOOL_NAMES)
+		.map((name) => redactTraceText(name).slice(0, MAX_TOOL_NAME_CHARS))
+		.filter((name) => name.length > 0);
+	const answer = lastAssistantText(messages) ?? "";
+	const reply = redactTraceText(answer).trim();
+	const observations: TraceObservation[] = [];
+	if (toolNames.length === 0) observations.push("no-tool-call");
+	if (TOOL_CALL_TEXT.test(reply)) observations.push("tool-call-as-text");
+	if (reply.split("\n").some((line) => QUESTION_LINE.test(line))) observations.push("asks-a-question");
+	if (FOREIGN_SCRIPT.test(reply) && CYRILLIC_OR_LATIN.test(reply)) observations.push("mixed-script");
+	if (reply.length === 0) observations.push("empty-reply");
+	return {
+		toolNames,
+		reply: reply.length === 0 ? null : reply.slice(0, MAX_REPLY_CHARS),
+		observations: observations.sort(),
+	};
+}
+
 export function diagnosisPath(runsRoot: string, evalRunId: string): string {
 	return resolveContainedArtifactPath(runsRoot, evalRunId, "diagnosis.json");
 }
@@ -167,6 +247,7 @@ export function diagnoseEvalRun(runsRoot: string, evalRunId: string, now = () =>
 	const verified = loadVerifiedEvalRun(runsRoot, evalRunId);
 	const evalRun = verified.record;
 	const aggregates = new Map<string, TaskAggregate>();
+	const runEvidence: z.infer<typeof RunEvidenceSchema>[] = [];
 	const sourceRuns = verified.runs;
 	for (const run of sourceRuns) {
 		const aggregate = aggregates.get(run.taskId) ?? {
@@ -182,7 +263,11 @@ export function diagnoseEvalRun(runsRoot: string, evalRunId: string, now = () =>
 		if (run.trace.sha256) {
 			const traceArtifact = resolveContainedArtifactPath(runsRoot, run.runId, run.trace.path);
 			const trace = openTrace(dirname(traceArtifact), basename(traceArtifact), run.trace.sha256);
-			toolNames = [...new Set(traceToolCalls(trace).map((call) => call.name))].sort();
+			const excerpt = excerptOf(trace);
+			toolNames = excerpt.toolNames;
+			if (runEvidence.length < MAX_RUN_EXCERPTS) {
+				runEvidence.push({ runId: run.runId, taskId: run.taskId, ...excerpt });
+			}
 		}
 		const failedGraders = run.evalResults?.graders.filter((grader) => !grader.passed) ?? [];
 		if (run.status === "error") aggregate.error += 1;
@@ -218,7 +303,7 @@ export function diagnoseEvalRun(runsRoot: string, evalRunId: string, now = () =>
 		return existing;
 	}
 	const record: DiagnosisRecord = {
-		schemaVersion: 1,
+		schemaVersion: DIAGNOSIS_SCHEMA_VERSION,
 		diagnosisId: `diagnosis-${inputHash.slice("sha256:".length, "sha256:".length + 20)}`,
 		evalRunId,
 		targetId: evalRun.target.id,
@@ -234,6 +319,7 @@ export function diagnoseEvalRun(runsRoot: string, evalRunId: string, now = () =>
 			issueCount: issues.length,
 		},
 		issues,
+		runEvidence,
 	};
 	writeJsonArtifact(outputPath, DiagnosisRecordSchema, record, { immutable: true });
 	return record;

@@ -87,6 +87,9 @@ description: Write and run the change in a bound workshop, close it into an evid
    назвать цифру». The prediction is hashed into the proposal the operator
    applies and the next verification is read against it: never restate it
    differently afterwards, and never edit a prediction once the result is in.
+   A construction close — the first harness, built from the Spec — names no
+   mode, and still states one: the grader families of the last run it expects
+   to move, and the delta it expects, in the same `prediction` field.
 5. **Close the workshop into the proposal.** Submit `kind: workshop-close` with
    the `source` tuple and `failureModeIds` selected above, a `summary`, a
    `validationPlan`, and the `prediction` from step 4a. The host compiles the

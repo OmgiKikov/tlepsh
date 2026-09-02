@@ -144,11 +144,14 @@ changed or dropped; this is simply no longer the front door.
     the canonical case, persists bounded hashes and ids rather than trace
     output, and rejects duplicates, infrastructure failures, passing runs,
     foreign evidence, candidate evidence, and all sealed evidence.
-29. A systemic failure mode requires the same exact typed grader signature on
-    at least two distinct tasks. Broad categories, names, free-form reasons,
-    and semantic similarity are not sufficient evidence. Infrastructure makes
-    a brief proposal-ineligible, and sealed evidence never enters a
-    Builder-visible brief.
+29. Failure modes cluster by exact typed grader family — the check code and,
+    where the check names one, its subject — never by the task-specific literal
+    a case carries. A systemic failure mode requires that family to fail on at
+    least two distinct tasks. Broad categories, names, free-form reasons, and
+    semantic similarity are not sufficient evidence. What a mode states about
+    itself is counted from the trace observations the diagnosis recorded, never
+    inferred. Infrastructure makes a brief proposal-ineligible, and sealed
+    evidence never enters a Builder-visible brief.
 30. Harness authoring context is read only from the exact clean Git commit
    selected by the host. It enumerates no ambient files and exposes only
    the complete non-secret execution policy and canonical manifest-declared

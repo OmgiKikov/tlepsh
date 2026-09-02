@@ -66,6 +66,9 @@ const CHECK_CODE_GRADER_TYPE: Record<GraderCheckCode, string> = {
 	"turn-budget": "turn_budget",
 };
 
+/** A check subject is a tool name, not prose; anything longer is not one. */
+export const MAX_CHECK_SUBJECT_CHARS = 200;
+
 export const GraderResultSchema = z
 	.strictObject({
 		name: NonEmptyStringSchema,
@@ -77,6 +80,14 @@ export const GraderResultSchema = z
 		specHash: HashSchema.optional(),
 		/** Typed systemic check category. Paired with specHash for new evidence. */
 		checkCode: GraderCheckCodeSchema.optional(),
+		/**
+		 * What the check is about, where the check names something: the tool a
+		 * required-tool check requires. The literal one case happens to carry —
+		 * the contract number, the keyword, the rubric prose — stays inside
+		 * `specHash`, which is per task; this is the part two tasks can share, and
+		 * it is what lets their failures be read as one failure.
+		 */
+		checkSubject: NonEmptyStringSchema.max(MAX_CHECK_SUBJECT_CHARS).optional(),
 		/**
 		 * Per-assertion outcome of an assertion rubric, by 1-based index. The
 		 * indexes are structure, the judge's evidence is prose: only these enter

@@ -1,7 +1,8 @@
-import { t } from "../i18n.js";
+import { noun, plural, t, type MessageKey } from "../i18n.js";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { z } from "zod";
+import type { TraceObservation } from "../diagnosis.js";
 import type { GraderResult, RunRecord } from "../provenance.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import {
@@ -38,6 +39,10 @@ export const MAX_INPUT_CHARS = 2_000;
 export const MAX_ANSWER_CHARS = 8_000;
 /** Distinct tasks whose input is resolved from a trace for one page. */
 export const MAX_INPUT_PREVIEW_TASKS = 500;
+/** Characters of a quoted reply shown beside a failure mode. */
+const MAX_EXCERPT_REPLY_CHARS = 240;
+/** Characters of a tool name shown inside a failure mode's title. */
+const MAX_NAMED_SUBJECT_CHARS = 100;
 /** Tool names named in one explanation. */
 const MAX_NAMED_TOOLS = 6;
 /** Characters of any single quoted fragment inside an explanation. */
@@ -658,15 +663,99 @@ function explainGrader(
 	return { ...base, expected: null, actual: reason };
 }
 
+/** The English canonical title of a check, said in the operator's language. */
+const CHECK_TITLE_KEY: Record<NonNullable<FailureMode["signature"]["checkCode"]>, MessageKey> = {
+	"required-tool": "mode.title.required-tool",
+	"output-contains": "mode.title.output-contract",
+	"output-matches": "mode.title.output-contract",
+	"reference-exact": "mode.title.reference-exact",
+	"no-secret": "mode.title.no-secret",
+	"semantic-rubric": "mode.title.semantic-rubric",
+	"reference-similarity": "mode.title.reference-similarity",
+	"turn-budget": "mode.title.turn-budget",
+};
+
+const OBSERVATION_KEY: Record<TraceObservation, MessageKey> = {
+	"no-tool-call": "mode.fact.no-tool-call",
+	"tool-call-as-text": "mode.fact.tool-call-as-text",
+	"asks-a-question": "mode.fact.asks-a-question",
+	"mixed-script": "mode.fact.mixed-script",
+	"empty-reply": "mode.fact.empty-reply",
+};
+
+/** What the host says about a mode: the same structure, in either language. */
+export interface FailureModeReading {
+	title: string;
+	facts: string;
+}
+
 /**
- * A failure mode this run is evidence for. `isHypothesis` is structural rather
- * than a rendering choice: every surface that shows `hypothesis` must say so.
+ * The screen-facing reading of one failure mode.
+ *
+ * The artifact carries canonical English — it is hashed into proposals — so
+ * the title and the fact sentence are rebuilt here from the mode's structure:
+ * the check, its subject, and the counted trace observations behind it. Both
+ * languages therefore say the same countable thing, and neither invents a
+ * cause the evidence did not show.
+ */
+export function failureModeReading(
+	mode: Pick<FailureMode, "signature" | "scope" | "observations" | "observedRuns" | "impact">,
+): FailureModeReading {
+	const signature = mode.signature;
+	const base = signature.kind === "outcome-instability"
+		? t("mode.title.instability")
+		: signature.kind === "infrastructure-error"
+			? t("mode.title.infrastructure")
+			: signature.checkCode === null
+				? t("mode.title.legacy")
+				: signature.checkCode === "required-tool" && signature.subject
+					? t("mode.title.required-tool-named", { tool: quote(signature.subject, MAX_NAMED_SUBJECT_CHARS) })
+					: t(CHECK_TITLE_KEY[signature.checkCode]);
+	const clauses = mode.observations.map((item) => t(OBSERVATION_KEY[item.code], {
+		runs: item.runs,
+		observed: mode.observedRuns,
+		runNoun: noun(mode.observedRuns, "failing run"),
+		replies: plural(item.runs, "reply"),
+	}));
+	const facts = signature.kind === "infrastructure-error"
+		? t("mode.fact.infrastructure")
+		: clauses.length === 0
+			? t(mode.observedRuns === 0 ? "mode.fact.unread" : "mode.fact.nothing-visible", {
+				failed: mode.impact.failedOccurrences,
+			})
+			: `${sentenceCase(clauses.join("; "))}.`;
+	// The scope is said once, by the surface that shows it as a chip or a pill.
+	// Saying it in the title too was the same two words twice in two lines.
+	return { title: base, facts };
+}
+
+function sentenceCase(value: string): string {
+	return value.length === 0 ? value : `${value.charAt(0).toUpperCase()}${value.slice(1)}`;
+}
+
+/**
+ * One cited run, quoted: what the Target called and what it finally said. The
+ * caller adds the identity it wants in front — a task id on a page, a run id in
+ * the terminal — because the excerpt itself is the same evidence either way.
+ */
+export function failureModeExcerpt(evidence: FailureMode["evidence"][number]): string | null {
+	const excerpt = evidence.excerpt;
+	if (!excerpt) return null;
+	const tools = excerpt.toolNames.length === 0
+		? t("mode.excerpt.no-tool")
+		: t("mode.excerpt.tools", { tools: excerpt.toolNames.join(", ") });
+	return `${tools} · ${excerpt.reply === null ? t("mode.excerpt.no-reply") : `“${quote(excerpt.reply, MAX_EXCERPT_REPLY_CHARS)}”`}`;
+}
+
+/**
+ * A failure mode this run is evidence for. `title` and `facts` are the host's
+ * reading of the mode in the operator's language, never the canonical English
+ * the artifact carries.
  */
 export interface FailureModeExplanation {
 	id: string;
 	title: string;
-	hypothesis: string;
-	isHypothesis: true;
+	facts: string;
 	scope: FailureMode["scope"];
 	severity: FailureMode["severity"];
 	decision: FailureMode["decision"];
@@ -716,11 +805,11 @@ export interface RunExplanation {
 }
 
 export function failureModeExplanation(mode: FailureMode): FailureModeExplanation {
+	const reading = failureModeReading(mode);
 	return {
 		id: mode.failureModeId,
-		title: mode.title,
-		hypothesis: mode.hypothesis,
-		isHypothesis: true,
+		title: reading.title,
+		facts: reading.facts,
 		scope: mode.scope,
 		severity: mode.severity,
 		decision: mode.decision,
@@ -831,7 +920,7 @@ function explanationSentences(explanation: Omit<RunExplanation, "sentences">): s
 			total: mode.totalTasks,
 			reproduction: Math.round(mode.reproductionBps / 100),
 		}));
-		lines.push(t("why.hypothesis", { hypothesis: mode.hypothesis }));
+		lines.push(t("why.facts", { facts: mode.facts }));
 	}
 	if (explanation.flip) {
 		const flip = explanation.flip;

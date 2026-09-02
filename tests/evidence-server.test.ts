@@ -924,7 +924,9 @@ describe("read-only evidence explorer", () => {
 		expect(html).toContain("output_contains ✗");
 		// Summary, failure modes and the filter box sit above the table.
 		expect(html).toContain("Pass rate");
-		expect(html).toContain("Hypothesis, not proof.");
+		// The mode says what the traces show, and quotes one of them.
+		expect(html).toContain("failing run");
+		expect(html).toContain("no tool call");
 		expect(html).toContain('id="filter"');
 		// No external resource of any kind.
 		expect(html).not.toMatch(/(?:src|href)="(?:https?:)?\/\//);
@@ -970,13 +972,13 @@ describe("read-only evidence explorer", () => {
 		expect(response.status).toBe(200);
 		const html = await response.text();
 
-		// Why: expectation, observation, the grader's own words, and a labelled hypothesis.
+		// Why: expectation, observation, the grader's own words, and the counted facts.
 		expect(html).toContain("task_001 repetition 0 failed: 1 of 1 grader(s) did not pass.");
 		expect(html).toContain(
 			"expected a call to `bash` with arguments containing `check_dbo`; the agent made 0 tool calls and answered directly.",
 		);
 		expect(html).toContain("The grader recorded: “never called bash with args containing &quot;check_dbo&quot;”.");
-		expect(html).toContain("<b>Hypothesis, not proof:</b>");
+		expect(html).toContain("What the traces show:");
 		expect(html).toContain("No model wrote it.");
 		// Verdict: every grader with its outcome and reason.
 		expect(html).toContain("task_001#0:tool_called:bash(check_dbo)");

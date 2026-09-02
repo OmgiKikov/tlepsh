@@ -65,9 +65,10 @@ human-confirmed Adoption fast-forwards it.
 - **Run** — one Target execution of one case, one repetition.
 - **Eval Run** — Runs under one Experiment Design: corpus, task ids,
   repetitions, execution and judge fingerprints, mode.
-- **Diagnosis** — failure modes derived from an Eval Run. A *systemic* mode
-  needs one exact typed grader signature on two distinct tasks; explanations are
-  hypotheses, the Eval Run stays the evidence.
+- **Diagnosis** — failure modes derived from an Eval Run, one per cause: the
+  grader family, not the task's own wording. A *systemic* mode needs that family
+  on two distinct tasks; what a mode says is counted from the traces it cites,
+  and the Eval Run stays the evidence.
 - **Proposal** — the immutable exact file-replacement set compiled from a branch
   diff, bound to an approved Spec, a baseline snapshot and its development
   evidence. Compiling one applies nothing.

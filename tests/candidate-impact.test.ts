@@ -50,7 +50,9 @@ const at = "2026-08-28T12:00:00.000Z";
 const targetId = "impact-target";
 const artifactHash = `sha256:${"d".repeat(64)}`;
 const primarySpecHash = hashValue({ type: "output_contains", text: "primary" });
-const secondarySpecHash = hashValue({ type: "output_contains", text: "secondary" });
+// Two different grader families, not two spellings of one: modes now cluster by
+// family, so a second `output_contains` check would be the same failure mode.
+const secondarySpecHash = hashValue({ type: "judge", rubric: "secondary" });
 
 interface GraderState {
 	primary: boolean;
@@ -63,6 +65,14 @@ interface FixtureOptions {
 	baseline?: GraderState[];
 	candidate?: GraderState[];
 	withHoldout?: boolean;
+	/** Tasks in the development corpus; every task repeats the same states. */
+	taskIds?: string[];
+	/**
+	 * A candidate the host cannot bind to a proposal basis: a manual one, or the
+	 * workshop construction close that builds the first harness. Either way
+	 * there is no diagnosis behind it and the families are the whole reading.
+	 */
+	unbound?: boolean;
 }
 
 function fileRef(path: string): { path: string; sha256: string } {
@@ -85,7 +95,7 @@ function grader(
 ) {
 	return {
 		name,
-		type: checkCode === "required-tool" ? "tool_called" : "output_contains",
+		type: checkCode === "required-tool" ? "tool_called" : checkCode === "semantic-rubric" ? "judge" : "output_contains",
 		passed,
 		score: passed ? 1 : 0,
 		reason: passed ? `${name} passed` : `${name} failed`,
@@ -152,7 +162,7 @@ function writeEvaluation(options: {
 			: `${options.evalRunId}-${taskId}-run-${repetitionIndex}`;
 		const graders = [
 			grader("primary", state.primary, "output-contains", primarySpecHash, state.legacy ?? false),
-			grader("secondary", state.secondary, "output-contains", secondarySpecHash, state.legacy ?? false),
+			grader("secondary", state.secondary, "semantic-rubric", secondarySpecHash, state.legacy ?? false),
 		];
 		const outcome = graders.every((item) => item.passed) ? "pass" as const : "fail" as const;
 		if (outcome === "pass") pass += 1;
@@ -262,6 +272,7 @@ function fixture(options: FixtureOptions = {}) {
 		gitSha: baselineSha,
 		baselineEvalRunId: null,
 		states: baselineStates,
+		...(options.taskIds ? { taskIds: options.taskIds } : {}),
 	});
 	const candidate = writeEvaluation({
 		runsRoot,
@@ -270,6 +281,7 @@ function fixture(options: FixtureOptions = {}) {
 		gitSha: candidateSha,
 		baselineEvalRunId: baseline.evalRunId,
 		states: candidateStates,
+		...(options.taskIds ? { taskIds: options.taskIds } : {}),
 	});
 	const diagnosis = diagnoseEvalRun(runsRoot, source.evalRunId, () => at);
 	const brief = compileImprovementBrief(runsRoot, diagnosis);
@@ -277,7 +289,7 @@ function fixture(options: FixtureOptions = {}) {
 		mode.signature.checkCode === "output-contains" &&
 		mode.signature.discriminatorHash === hashValue({
 			checkCode: "output-contains",
-			specHash: primarySpecHash,
+			subject: null,
 		}));
 	if (!primaryMode) throw new Error("fixture primary failure mode missing");
 	const selection = deriveEvidenceLinkedProposalSelection(brief, {
@@ -453,7 +465,7 @@ function fixture(options: FixtureOptions = {}) {
 		specId: spec.id,
 		proposalId: builderRunId,
 		diagnosisId: diagnosis.diagnosisId,
-		origin: {
+		origin: options.unbound ? { kind: "manual", reason: "Built from the Spec, with nothing diagnosed yet." } : {
 			kind: "applied-builder",
 			builderRunId,
 			builderRun: fileRef(builderRunPath),
@@ -660,6 +672,56 @@ describe("CandidateImpact", () => {
 		expect(impact.verdict).toBe(verdict);
 	});
 
+	it("says what moved per grader family, counted in tasks", () => {
+		const value = fixture({ taskIds: ["task-1", "task-2", "task-3"] });
+		const impact = inspectCandidateImpact(value);
+
+		// Ordered by how much they moved: the check that got fixed comes first.
+		expect(impact.families).toMatchObject([
+			{
+				signature: { checkCode: "output-contains", subject: null },
+				category: "output-contract",
+				tasks: 3,
+				baselinePassedTasks: 0,
+				candidatePassedTasks: 3,
+				fixedTaskIds: ["task-1", "task-2", "task-3"],
+				regressedTaskIds: [],
+			},
+			{
+				signature: { checkCode: "semantic-rubric" },
+				tasks: 3,
+				baselinePassedTasks: 3,
+				candidatePassedTasks: 3,
+				fixedTaskIds: [],
+				regressedTaskIds: [],
+			},
+		]);
+		expect(impact.omittedFamilyCount).toBe(0);
+	});
+
+	it("reads a candidate with no diagnosis behind it by what its families did", () => {
+		const improved = inspectCandidateImpact(fixture({ unbound: true, taskIds: ["task-1", "task-2"] }));
+
+		// The old panel said "inconclusive · Candidate has no exact proposal-basis
+		// failure modes" here — on the path that builds the first harness.
+		expect(improved.proposalBasis).toBeNull();
+		expect(improved.verdict).toBe("improved");
+		expect(improved.inconclusiveReasons).toEqual([]);
+		expect(improved.families).toMatchObject([
+			{ signature: { checkCode: "output-contains" }, baselinePassedTasks: 0, candidatePassedTasks: 2 },
+			{ signature: { checkCode: "semantic-rubric" }, baselinePassedTasks: 2, candidatePassedTasks: 2 },
+		]);
+
+		const regressed = inspectCandidateImpact(fixture({
+			unbound: true,
+			baseline: [{ primary: true, secondary: true }, { primary: true, secondary: true }],
+			candidate: [{ primary: true, secondary: false }, { primary: true, secondary: false }],
+		}));
+		expect(regressed.verdict).toBe("regressed");
+		expect(regressed.families.find((family) => family.signature.checkCode === "semantic-rubric"))
+			.toMatchObject({ baselinePassedTasks: 1, candidatePassedTasks: 0, regressedTaskIds: ["task-1"] });
+	});
+
 	it("reports exact new signatures and task regressions", () => {
 		const value = fixture({
 			baseline: [
@@ -676,7 +738,7 @@ describe("CandidateImpact", () => {
 		expect(impact.verdict).toBe("regressed");
 		expect(impact.newFailureModes).toHaveLength(1);
 		expect(impact.newFailureModes[0]).toMatchObject({
-			signature: { checkCode: "output-contains" },
+			signature: { checkCode: "semantic-rubric" },
 			baseline: { failedOccurrences: 0 },
 			candidate: { failedOccurrences: 2 },
 		});

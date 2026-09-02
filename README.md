@@ -131,7 +131,7 @@ failures first, filterable by outcome and failure mode — a page per run with
 the conversation as a chat transcript, every grader's verdict, the judge's
 answer to each assertion, and a plain-language **Why** the host assembles from
 recorded fields (what the grader expected, what happened, which failure mode it
-belongs to — labelled as a hypothesis — and whether a candidate flipped it), and
+belongs to and what that mode's traces show, and whether a candidate flipped it), and
 a per-task baseline-vs-candidate comparison. Builder Pi can show the same
 failure modes and link directly in conversation. Sealed runs never appear on
 any page.

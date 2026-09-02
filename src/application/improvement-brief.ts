@@ -1,12 +1,17 @@
 import { z } from "zod";
 import {
 	DiagnosisCategorySchema,
+	RunExcerptSchema,
+	TraceObservationSchema,
 	type DiagnosisRecord,
+	type RunExcerpt,
+	type TraceObservation,
 } from "../diagnosis.js";
 import { isSealedEvalRun, loadVerifiedEvalRun, readEvalRunIndex } from "../eval.js";
 import {
 	GraderCheckCodeSchema,
 	HashSchema,
+	MAX_CHECK_SUBJECT_CHARS,
 	canonicalJson,
 	hashValue,
 	type GraderCheckCode,
@@ -18,7 +23,6 @@ import { redactTraceText } from "../trace.js";
 export const IMPROVEMENT_BRIEF_ALGORITHM_ID = "exact-eval-signals-v1" as const;
 /** Failure share (basis points) below which a mode is noise to stabilize, not a harness defect to fix. */
 export const PROPOSAL_REPRODUCTION_FLOOR_BPS = 2_500;
-
 const MAX_FAILURE_MODES = 30;
 const MAX_TASK_IDS = 100;
 const MAX_EVIDENCE = 12;
@@ -40,6 +44,12 @@ const EvidenceSchema = z.strictObject({
 	taskId: z.string().min(1).max(MAX_ARTIFACT_ID_CHARS),
 	traceAvailable: z.boolean(),
 	graderNames: z.array(z.string().min(1).max(MAX_GRADER_NAME_CHARS)).max(MAX_GRADER_NAMES),
+	/**
+	 * The raw trace, bounded: what the Target actually called and actually said.
+	 * Null where the diagnosis read no trace for this run — an older diagnosis,
+	 * or a run that never produced one.
+	 */
+	excerpt: RunExcerptSchema.nullable().default(null),
 });
 
 export const FailureModeIdSchema = z.string().regex(/^failure-mode-[0-9a-f]{24}$/);
@@ -49,6 +59,8 @@ export const FailureModeSchema = z.strictObject({
 	signature: z.strictObject({
 		kind: z.enum(["grader-check", "outcome-instability", "infrastructure-error"]),
 		checkCode: GraderCheckCodeSchema.nullable(),
+		/** The tool a required-tool family names; null everywhere else. */
+		subject: z.string().min(1).max(MAX_CHECK_SUBJECT_CHARS).nullable().default(null),
 		discriminatorHash: HashSchema,
 	}),
 	category: DiagnosisCategorySchema,
@@ -62,7 +74,19 @@ export const FailureModeSchema = z.strictObject({
 	]),
 	title: z.string().min(1).max(500),
 	summary: z.string().min(1).max(1_000),
-	hypothesis: z.string().min(1).max(1_000),
+	/**
+	 * What the cited traces show, in one sentence. Not a hypothesis: every
+	 * clause is a count of a predicate over trace bytes, so a reader can check
+	 * it against the excerpts below it.
+	 */
+	facts: z.string().min(1).max(1_000),
+	/** The same sentence as structure, so a screen can say it in its own language. */
+	observations: z.array(z.strictObject({
+		code: TraceObservationSchema,
+		runs: z.number().int().positive(),
+	})).max(5),
+	/** Failing runs of this mode whose trace the diagnosis actually read. */
+	observedRuns: z.number().int().nonnegative(),
 	suggestions: z.array(z.string().min(1).max(MAX_SUGGESTION_CHARS)).min(1).max(MAX_SUGGESTIONS),
 	impact: z.strictObject({
 		affectedTasks: z.number().int().positive(),
@@ -199,7 +223,11 @@ type FailureModeDecision = FailureMode["decision"];
 type DiagnosticGraderResult = GraderResult & {
 	checkCode?: GraderCheckCode;
 	specHash?: string;
+	checkSubject?: string;
 };
+
+/** Trace excerpts the diagnosis already read, by run id. */
+type RunExcerpts = ReadonlyMap<string, RunExcerpt>;
 
 type DiagnosticEvalRecord = ReturnType<typeof loadVerifiedEvalRun>["record"] & {
 	evidenceVisibility?: "development" | "sealed";
@@ -254,6 +282,8 @@ function evidenceForRun(run: RunRecord, graderNames: string[] = [], notes: strin
 		rawTaskId: run.taskId,
 		traceAvailable: run.trace.sha256 !== null,
 		graderNames: [...new Set(graderNames.map(safeGraderName))].sort().slice(0, MAX_GRADER_NAMES),
+		// Attached once, at projection, from what the diagnosis already read.
+		excerpt: null,
 		notes: notes
 			.map((note) => boundedRedacted(note, MAX_EVIDENCE_NOTE_CHARS).trim())
 			.filter(Boolean),
@@ -301,6 +331,59 @@ const GRADER_CHECK_TITLES: Record<GraderCheckCode, string> = {
 	"turn-budget": "Turn budget check failed",
 };
 
+/**
+ * What makes two tasks' failures one failure.
+ *
+ * The key used to be the exact grader spec, so `check_dbo("ДБО-2345-678")` and
+ * `check_dbo("ДБО-1111-222")` were two unrelated defects, and a six-task corpus
+ * reported sixteen task-local modes for three causes. The literal a case
+ * happens to carry — the contract number, the keyword, the rubric prose — is
+ * the task. What repeats across tasks is the family: the check, plus the thing
+ * the check names when it names one.
+ */
+export interface GraderFamily {
+	checkCode: GraderCheckCode;
+	subject: string | null;
+}
+
+/** The family of an exact grader result, or null when the result is legacy. */
+export function graderFamilyOf(grader: {
+	checkCode?: GraderCheckCode;
+	specHash?: string;
+	checkSubject?: string;
+}): GraderFamily | null {
+	const exact = typeof grader.checkCode === "string" && grader.checkCode.length > 0 &&
+		typeof grader.specHash === "string" && HASH_PATTERN.test(grader.specHash);
+	if (!exact) return null;
+	const subject = grader.checkSubject;
+	return {
+		checkCode: grader.checkCode!,
+		subject: typeof subject === "string" && subject.length > 0 && subject.length <= MAX_CHECK_SUBJECT_CHARS
+			? subject
+			: null,
+	};
+}
+
+/** Canonical identity of one family; the same shape the mode id is hashed from. */
+function familyIdentity(family: GraderFamily): Record<string, unknown> {
+	return { kind: "grader-check", checkCode: family.checkCode, subject: family.subject };
+}
+
+export function graderFamilyDiscriminator(family: GraderFamily): string {
+	return hashValue({ checkCode: family.checkCode, subject: family.subject });
+}
+
+/**
+ * The failure-mode id one family always gets. Proposals hash these, so every
+ * reader — brief, impact, explorer — must derive them from this one function.
+ */
+export function graderFamilyModeId(family: GraderFamily): string {
+	return shortHashId("failure-mode", {
+		algorithmId: IMPROVEMENT_BRIEF_ALGORITHM_ID,
+		signature: familyIdentity(family),
+	});
+}
+
 function categoryForGrader(grader: DiagnosticGraderResult): FailureModeCategory {
 	const known = grader.checkCode ? GRADER_CHECK_CATEGORIES[grader.checkCode] : undefined;
 	if (known) return known;
@@ -318,23 +401,18 @@ function graderModeDescriptor(
 	taskId: string,
 	grader: DiagnosticGraderResult,
 ): Pick<ModeAccumulator, "identity" | "signature" | "category" | "legacy"> {
-	const exact =
-		typeof grader.checkCode === "string" && grader.checkCode.length > 0 && grader.checkCode.length <= 200 &&
-		typeof grader.specHash === "string" && HASH_PATTERN.test(grader.specHash);
-	const identity = exact
-		? { kind: "grader-check", checkCode: grader.checkCode, specHash: grader.specHash }
-		: { kind: "grader-check", legacy: true, taskId, type: grader.type, name: grader.name };
+	const family = graderFamilyOf(grader);
+	const legacyIdentity = { kind: "grader-check", legacy: true, taskId, type: grader.type, name: grader.name };
 	return {
-		identity,
+		identity: family ? familyIdentity(family) : legacyIdentity,
 		signature: {
 			kind: "grader-check",
-			checkCode: exact ? grader.checkCode! : null,
-			discriminatorHash: hashValue(exact
-				? { checkCode: grader.checkCode, specHash: grader.specHash }
-				: { legacy: true, taskId, type: grader.type, name: grader.name }),
+			checkCode: family ? family.checkCode : null,
+			subject: family ? family.subject : null,
+			discriminatorHash: family ? graderFamilyDiscriminator(family) : hashValue(legacyIdentity),
 		},
 		category: categoryForGrader(grader),
-		legacy: !exact,
+		legacy: family === null,
 	};
 }
 
@@ -397,9 +475,9 @@ function selectRepresentatives(values: Iterable<Observation>, limit: number): Ob
 	return selected;
 }
 
-function publicEvidence(observation: Observation): BriefEvidence {
+function publicEvidence(observation: Observation, excerpts: RunExcerpts): BriefEvidence {
 	const { notes: _notes, rawTaskId: _rawTaskId, ...evidence } = observation;
-	return evidence;
+	return { ...evidence, excerpt: excerpts.get(observation.runId) ?? null };
 }
 
 function evidenceNotes(mode: ModeAccumulator): string[] {
@@ -450,52 +528,111 @@ function suggestionsFor(category: FailureModeCategory, legacy: boolean): string[
 	}
 }
 
-function modeWords(mode: ModeAccumulator, scope: FailureMode["scope"]): {
-	title: string;
-	hypothesis: string;
-} {
-	if (mode.signature.kind === "outcome-instability") {
-		return {
-			title: "Task outcome instability",
-			hypothesis: "The same task both passed and behaviorally failed under matched repetitions. This is observed instability, not a proven harness root cause.",
-		};
-	}
-	if (mode.signature.kind === "infrastructure-error") {
-		return {
-			title: "Task-local evidence-path failure",
-			hypothesis: "Execution ended before comparable behavioral grading. The error is evidence about the evaluation path, not about Target behavior.",
-		};
-	}
-	if (mode.legacy) {
-		return {
-			title: "Task-local legacy grader failure",
-			hypothesis: "A grader predicate failed, but the legacy result lacks an exact check code and spec fingerprint. Cross-task attribution would be unsafe.",
-		};
-	}
-	const checkCode = mode.signature.kind === "grader-check" ? mode.signature.checkCode : null;
-	const exactTitle = (checkCode ? GRADER_CHECK_TITLES[checkCode] : undefined) ??
+/**
+ * The English title of a mode. The subject of a required-tool family is part
+ * of the name, because "the agent never calls check_dbo" and "the agent never
+ * calls search" are two different defects even under one check code.
+ */
+function modeTitle(mode: ModeAccumulator, scope: FailureMode["scope"]): string {
+	if (mode.signature.kind === "outcome-instability") return "Task outcome instability";
+	if (mode.signature.kind === "infrastructure-error") return "Task-local evidence-path failure";
+	if (mode.legacy) return "Task-local legacy grader failure";
+	const checkCode = mode.signature.checkCode;
+	const base = (checkCode ? GRADER_CHECK_TITLES[checkCode] : undefined) ??
 		(mode.category === "tool-selection"
 			? "Required tool check failed"
 			: mode.category === "output-contract"
 				? "Output contract check failed"
 				: "Semantic rubric check failed");
+	// A tool name is authored outside this module; it is redacted before it
+	// becomes prose, exactly as a task id is.
+	const subject = mode.signature.subject
+		? boundedRedacted(mode.signature.subject, MAX_CHECK_SUBJECT_CHARS).trim()
+		: "";
+	const named = subject ? `${base}: ${subject}` : base;
+	return scope === "systemic" ? `${named} across tasks` : named;
+}
+
+/** One clause per observation, always in this order, always with its count. */
+const OBSERVATION_ORDER: readonly TraceObservation[] = [
+	"no-tool-call",
+	"tool-call-as-text",
+	"asks-a-question",
+	"mixed-script",
+	"empty-reply",
+];
+
+const OBSERVATION_CLAUSES: Record<TraceObservation, string> = {
+	"no-tool-call": "no tool was called in {runs} of {observed} failing {runNoun}",
+	"tool-call-as-text": "{runs} {replyNoun} printed a tool call as text instead of making one",
+	"asks-a-question": "{runs} {replyNoun} asked the user a question instead of answering",
+	"mixed-script": "{runs} {replyNoun} mixed writing systems",
+	"empty-reply": "{runs} of {observed} failing {runNoun} ended with no reply at all",
+};
+
+/** Counts of every observation across the failing runs whose trace was read. */
+function modeObservations(
+	failures: readonly Observation[],
+	excerpts: RunExcerpts,
+): { observations: { code: TraceObservation; runs: number }[]; observedRuns: number } {
+	const counts = new Map<TraceObservation, number>();
+	let observedRuns = 0;
+	for (const failure of failures) {
+		const excerpt = excerpts.get(failure.runId);
+		if (!excerpt) continue;
+		observedRuns += 1;
+		for (const code of excerpt.observations) counts.set(code, (counts.get(code) ?? 0) + 1);
+	}
 	return {
-		title: scope === "systemic" ? `${exactTitle} across tasks` : exactTitle,
-		hypothesis: "The same deterministic grader predicate was unsatisfied in the cited runs. This identifies the failed predicate, not why the harness missed it.",
+		observations: OBSERVATION_ORDER
+			.filter((code) => (counts.get(code) ?? 0) > 0)
+			.map((code) => ({ code, runs: counts.get(code)! })),
+		observedRuns,
 	};
 }
 
-function finalizeMode(mode: ModeAccumulator, totalTasks: number): FailureMode {
+/**
+ * What the traces show, as a sentence. Every clause is a count of a predicate
+ * over trace bytes; when no trace was read there is nothing to say and the
+ * mode says exactly that instead of inventing a cause.
+ */
+function factsFor(
+	mode: ModeAccumulator,
+	observations: readonly { code: TraceObservation; runs: number }[],
+	observedRuns: number,
+	failedOccurrences: number,
+): string {
+	if (mode.signature.kind === "infrastructure-error") {
+		return "Execution ended before comparable behavioral grading; this is evidence about the evaluation path, not about Target behavior.";
+	}
+	if (observedRuns === 0 || observations.length === 0) {
+		const suffix = observedRuns === 0
+			? "no trace was read for them, so nothing beyond the failed check is known"
+			: "their traces show nothing else the host can read deterministically";
+		return `${failedOccurrences} matching observation(s) failed; ${suffix}.`;
+	}
+	const clauses = observations.map((item) =>
+		OBSERVATION_CLAUSES[item.code]
+			.replace("{runs}", String(item.runs))
+			.replace("{observed}", String(observedRuns))
+			.replace("{runNoun}", observedRuns === 1 ? "run" : "runs")
+			.replace("{replyNoun}", item.runs === 1 ? "reply" : "replies"));
+	const sentence = `${clauses[0]!.charAt(0).toUpperCase()}${clauses[0]!.slice(1)}`;
+	return `${[sentence, ...clauses.slice(1)].join("; ")}.`;
+}
+
+function finalizeMode(mode: ModeAccumulator, totalTasks: number, excerpts: RunExcerpts): FailureMode {
 	const failures = sortedObservations(mode.failures.values());
 	const passes = sortedObservations(mode.passes.values());
 	const affectedTaskIds = [...new Set(failures.map((item) => item.rawTaskId))].sort();
+	const coverageBps = totalTasks === 0 ? 0 : Math.floor(affectedTaskIds.length * 10_000 / totalTasks);
 	const scope: FailureMode["scope"] = affectedTaskIds.length >= 2 ? "systemic" : "task-local";
 	const failedOccurrences = failures.length;
 	const passedOccurrences = passes.length;
 	const occurrenceTotal = failedOccurrences + passedOccurrences;
 	const selectedEvidence = selectRepresentatives(failures, MAX_EVIDENCE);
 	const selectedCounterEvidence = selectRepresentatives(passes, MAX_COUNTER_EVIDENCE);
-	const words = modeWords(mode, scope);
+	const { observations, observedRuns } = modeObservations(failures, excerpts);
 	// A mode is a proposal target when it reproduces often enough that a
 	// harness change can plausibly move it. Counter-evidence (passes of the same
 	// exact signature) is kept and shown as the reproduction rate; it no longer
@@ -519,23 +656,27 @@ function finalizeMode(mode: ModeAccumulator, totalTasks: number): FailureMode {
 		severity: mode.signature.kind === "infrastructure-error" ? "blocking" : scope === "systemic" ? "major" : "minor",
 		evidenceStrength: evidenceStrength(scope, failedOccurrences, passedOccurrences),
 		decision,
-		title: words.title,
+		title: modeTitle(mode, scope),
 		summary:
 			`${affectedTaskIds.length}/${totalTasks} task(s) affected; ` +
 			`${failedOccurrences}/${occurrenceTotal} matching observation(s) failed.`,
-		hypothesis: words.hypothesis,
+		facts: factsFor(mode, observations, observedRuns, failedOccurrences),
+		observations,
+		observedRuns,
 		suggestions: suggestionsFor(mode.category, mode.legacy).slice(0, MAX_SUGGESTIONS),
 		impact: {
 			affectedTasks: affectedTaskIds.length,
 			totalTasks,
-			taskCoverageBps: totalTasks === 0 ? 0 : Math.floor(affectedTaskIds.length * 10_000 / totalTasks),
+			taskCoverageBps: coverageBps,
 			failedOccurrences,
 			passedOccurrences,
 			reproductionBps: Math.floor(failedOccurrences * 10_000 / occurrenceTotal),
 		},
 		taskIds: affectedTaskIds.slice(0, MAX_TASK_IDS).map(publicTaskId),
-		evidence: selectedEvidence.map(publicEvidence),
-		counterEvidence: selectedCounterEvidence.map(publicEvidence),
+		// Only the failing side carries an excerpt: a reader opens the raw trace
+		// of a failure, never of a pass that is only there for the rate.
+		evidence: selectedEvidence.map((item) => publicEvidence(item, excerpts)),
+		counterEvidence: selectedCounterEvidence.map((item) => publicEvidence(item, new Map())),
 		evidenceNotes: evidenceNotes(mode),
 		omittedEvidenceCount:
 			failures.length - selectedEvidence.length + passes.length - selectedCounterEvidence.length,
@@ -583,15 +724,20 @@ function addFlakyModes(
 	modes: Map<string, ModeAccumulator>,
 	outcomesByTask: ReadonlyMap<string, TaskOutcomes>,
 ): void {
-	for (const [taskId, outcomes] of [...outcomesByTask.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+	for (const [, outcomes] of [...outcomesByTask.entries()].sort(([a], [b]) => a.localeCompare(b))) {
 		if (outcomes.pass.length === 0 || outcomes.fail.length === 0) continue;
-		const identity = { kind: "outcome-instability", taskId };
+		// One mode, however many cases flip. A flip has one cause worth naming —
+		// the same revision does not decide the same case the same way twice —
+		// and three identical task-local rows say that three times instead of
+		// once, which is the noise this brief exists to remove.
+		const identity = { kind: "outcome-instability" };
 		const mode = accumulatorFor(modes, {
 			identity,
 			signature: {
 				kind: "outcome-instability",
 				checkCode: null,
-				discriminatorHash: hashValue({ taskId }),
+				subject: null,
+				discriminatorHash: hashValue(identity),
 			},
 			category: "flaky-behavior",
 			legacy: false,
@@ -615,6 +761,7 @@ function addInfrastructureModes(
 			signature: {
 				kind: "infrastructure-error",
 				checkCode: null,
+				subject: null,
 				discriminatorHash: hashValue({ code: "unknown", taskId }),
 			},
 			category: "infrastructure",
@@ -681,7 +828,7 @@ export function deriveEvidenceLinkedProposalSelection(
 	const diagnoses = selected.map((mode): EvidenceLinkedProposalDiagnosis => ({
 		failureIds: [mode.failureModeId],
 		evidence: mode.evidence.map((item) => `eval:${brief.evalRunId}/run:${item.runId}`),
-		rootCause: `Host-derived hypothesis (not proven): ${mode.hypothesis}`,
+		rootCause: `Host-derived from the cited traces (what happened, not why): ${mode.facts}`,
 	}));
 	return {
 		basis: ProposalBasisAttestationSchema.parse({
@@ -703,7 +850,8 @@ export function deriveEvidenceLinkedProposalSelection(
 /**
 	* Compile a bounded, deterministic improvement brief from one already-final
 	* diagnosis and its re-verified immutable EvalRun evidence. This performs no
-	* model or network calls and never reads trace content.
+	* model or network calls and opens no trace: the raw excerpts every mode
+	* carries were read once, by the diagnosis, and are quoted from it.
 	*/
 export function compileImprovementBrief(
 	runsRoot: string,
@@ -745,9 +893,15 @@ export function compileImprovementBrief(
 	addFlakyModes(accumulators, outcomesByTask);
 	addInfrastructureModes(accumulators, outcomesByTask);
 
+	const excerpts: RunExcerpts = new Map(
+		(diagnosis.runEvidence ?? []).map((item) => [
+			item.runId,
+			{ toolNames: item.toolNames, reply: item.reply, observations: item.observations },
+		]),
+	);
 	const allModes = [...accumulators.values()]
 		.filter((mode) => mode.failures.size > 0)
-		.map((mode) => finalizeMode(mode, tasks.length))
+		.map((mode) => finalizeMode(mode, tasks.length, excerpts))
 		.sort(compareModes);
 	const infrastructureErrors = verified.runs.filter((run) => run.status === "error").length;
 	const derivedStatus: ImprovementBrief["status"] = infrastructureErrors > 0

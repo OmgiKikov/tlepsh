@@ -183,7 +183,10 @@ function tracesDetail(): WorkbenchTracesDetail {
 					selectableForProposal: true,
 					title: "Missing evidence lookup instruction",
 					summary: "Two tasks answered without calling the lookup tool.",
-					hypothesis: "AGENTS.md never says when the lookup tool is mandatory.",
+					signature: { kind: "grader-check", checkCode: "required-tool", subject: "lookup", discriminatorHash: `sha256:${"d".repeat(64)}` },
+					facts: "No tool was called in 2 of 2 failing runs.",
+					observations: [{ code: "no-tool-call", runs: 2 }],
+					observedRuns: 2,
 					suggestions: ["Add a tool-selection rule to AGENTS.md."],
 					impact: {
 						affectedTasks: 2,
@@ -194,7 +197,13 @@ function tracesDetail(): WorkbenchTracesDetail {
 						reproductionBps: 10_000,
 					},
 					taskIds: ["task-routing", "task-lookup"],
-					evidence: [{ runId: "run-development-1", taskId: "task-routing", traceAvailable: true, graderNames: ["tool_called"] }],
+					evidence: [{
+						runId: "run-development-1",
+						taskId: "task-routing",
+						traceAvailable: true,
+						graderNames: ["tool_called"],
+						excerpt: { toolNames: [], reply: "I already know the answer.", observations: ["no-tool-call"] },
+					}],
 					omittedEvidenceCount: 0,
 				},
 				{
@@ -208,7 +217,10 @@ function tracesDetail(): WorkbenchTracesDetail {
 					selectableForProposal: false,
 					title: "Unstable output",
 					summary: "One task alternates between pass and fail.",
-					hypothesis: "The answer format is underspecified.",
+					signature: { kind: "outcome-instability", checkCode: null, subject: null, discriminatorHash: `sha256:${"e".repeat(64)}` },
+					facts: "1 replies asked the user a question instead of answering.",
+					observations: [{ code: "asks-a-question", runs: 1 }],
+					observedRuns: 1,
 					suggestions: ["Run A/A calibration before claiming an improvement."],
 					impact: {
 						affectedTasks: 1,
@@ -219,7 +231,13 @@ function tracesDetail(): WorkbenchTracesDetail {
 						reproductionBps: 5_000,
 					},
 					taskIds: ["task-format"],
-					evidence: [{ runId: "run-development-3", taskId: "task-format", traceAvailable: true, graderNames: ["output_contains"] }],
+					evidence: [{
+						runId: "run-development-3",
+						taskId: "task-format",
+						traceAvailable: true,
+						graderNames: ["output_contains"],
+						excerpt: { toolNames: ["lookup"], reply: "Done.", observations: [] },
+					}],
 					omittedEvidenceCount: 0,
 				},
 			],
@@ -952,8 +970,8 @@ describe("Builder Pi slash commands", () => {
 		const text = output.text();
 		expect(text).toContain("1/3 passed");
 		expect(text).toContain("2 failed");
-		expect(text).toContain("Missing evidence lookup instruction");
-		expect(text).toContain("Unstable output");
+		expect(text).toContain("lookup was never called");
+		expect(text).toContain("The same case flips between repetitions");
 		expect(text).toContain(`Live trace ${LIVE_URL} · retained for 15 minutes`);
 		expect(text).toContain("Next Say “fix the first problem”");
 		expect(text).not.toContain("schemaVersion");
@@ -1619,11 +1637,13 @@ describe("Builder Pi slash commands", () => {
 		expect(output.blocks.map((block) => [block.title, block.tone])).toEqual([["AHDE · Diagnosis", "info"]]);
 		const text = output.text();
 		expect(text).toContain("Evaluation 1/3 passed");
-		expect(text).toContain("Diagnosis actionable · 1/3 passed. Two exact failure modes found.");
-		expect(text).toContain("Failure modes 1 systemic · 1 task-local");
-		expect(text).toContain("1. Missing evidence lookup instruction — 2 tasks (67% · reproduces 100%)");
+		expect(text).toContain("Diagnosis actionable · 1/3 passed · 2 failure mode(s), 1 of them across tasks");
+		expect(text).toContain("1. lookup was never called — 2 of 3 tasks (reproduces 100%)");
+		expect(text).toContain("     No tool was called in 2 of 2 failing runs.");
+		// The panel quotes one raw excerpt per mode instead of a template hypothesis.
+		expect(text).toContain("run-development-1 · no tool call · “I already know the answer.”");
 		expect(text).toContain("→ propose fix");
-		expect(text).toContain("2. Unstable output — 1 task");
+		expect(text).toContain("2. The same case flips between repetitions — 1 of 3 tasks");
 		expect(text).toContain(`Evidence ${EVIDENCE_URL}`);
 		expect(text).toContain("Next say “fix the first problem”");
 		expect(text).not.toMatch(/[{}]|schemaVersion/);

@@ -16,7 +16,7 @@ import {
 } from "../domain/comparison-gate.js";
 import type { EvidenceVisibility, VerifiedEvalRun } from "../eval.js";
 import {
-	GraderCheckCodeSchema, HashSchema, canonicalJson, hashValue,
+	GraderCheckCodeSchema, HashSchema, MAX_CHECK_SUBJECT_CHARS, canonicalJson, hashValue,
 	type GraderCheckCode, type RunRecord,
 } from "../provenance.js";
 import { SpecSnapshotSchema } from "../spec.js";
@@ -28,7 +28,8 @@ import { corpusDatasetLabel } from "./corpus-target.js";
 import { compareUtf8, exactSnapshotIdentity, loadExactEvalSnapshot } from "./exact-eval-snapshot.js";
 import {
 	IMPROVEMENT_BRIEF_ALGORITHM_ID, FailureModeIdSchema,
-	compileImprovementBrief, publicTaskId,
+	compileImprovementBrief, graderFamilyDiscriminator, graderFamilyModeId, graderFamilyOf,
+	publicTaskId, type GraderFamily,
 } from "./improvement-brief.js";
 
 export const CANDIDATE_IMPACT_ALGORITHM_ID = "exact-candidate-impact-v1" as const;
@@ -36,6 +37,7 @@ export const CANDIDATE_IMPACT_ALGORITHM_ID = "exact-candidate-impact-v1" as cons
 const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 256 * 1024;
 const MAX_NEW_MODES = 10;
+const MAX_FAMILIES = 12;
 const MAX_TASK_REGRESSIONS = 20;
 const MAX_EVIDENCE_PER_ITEM = 3;
 const MAX_TASK_IDS_PER_MODE = 12;
@@ -66,6 +68,8 @@ export type CandidateImpactEvidenceHandle = z.infer<typeof EvidenceHandleSchema>
 const ExactSignatureSchema = z.strictObject({
 	kind: z.literal("grader-check"),
 	checkCode: GraderCheckCodeSchema,
+	/** The tool a required-tool family names; null everywhere else. */
+	subject: z.string().min(1).max(MAX_CHECK_SUBJECT_CHARS).nullable().default(null),
 	discriminatorHash: HashSchema,
 });
 
@@ -136,6 +140,36 @@ const NonTargetedModeImpactSchema = z.strictObject({
 	}
 });
 export type CandidateNewFailureMode = z.infer<typeof NonTargetedModeImpactSchema>;
+
+/**
+ * What one grader family did between the two arms, counted in tasks.
+ *
+ * This is the reading that does not need a diagnosis behind it. Every
+ * candidate has two matched arms, every arm's runs carry the same families, so
+ * "check_dbo: 0/3 → 3/3 tasks" is available for a construction candidate the
+ * Builder wrote from a Spec exactly as it is for one authored from a brief.
+ * A task counts as passing a family when every one of its observations of that
+ * family passed; anything else is a task the family still holds down.
+ */
+const FamilyImpactSchema = z.strictObject({
+	failureModeId: FailureModeIdSchema,
+	signature: ExactSignatureSchema,
+	category: DiagnosisCategorySchema,
+	/** Tasks whose cases carry this family in both arms. */
+	tasks: z.number().int().positive(),
+	baselinePassedTasks: z.number().int().nonnegative(),
+	candidatePassedTasks: z.number().int().nonnegative(),
+	/** Tasks the candidate fixed, and tasks it broke. Bounded projections. */
+	fixedTaskIds: z.array(z.string().min(1).max(200)).max(MAX_TASK_IDS_PER_MODE),
+	regressedTaskIds: z.array(z.string().min(1).max(200)).max(MAX_TASK_IDS_PER_MODE),
+}).superRefine((family, context) => {
+	for (const key of ["baselinePassedTasks", "candidatePassedTasks"] as const) {
+		if (family[key] > family.tasks) {
+			context.addIssue({ code: "custom", path: [key], message: "cannot exceed tasks" });
+		}
+	}
+});
+export type CandidateFamilyImpact = z.infer<typeof FamilyImpactSchema>;
 
 const TaskRegressionSchema = z.strictObject({
 	taskId: z.string().min(1).max(200),
@@ -225,6 +259,12 @@ const CandidateImpactBaseSchema = z.strictObject({
 			tokenRatio: z.number().nonnegative().nullable(),
 		}),
 	}),
+	/**
+	 * Before → after for every grader family on the development arm. Present
+	 * whenever both arms carry exact grader signatures, diagnosis or no diagnosis.
+	 */
+	families: z.array(FamilyImpactSchema).max(MAX_FAMILIES),
+	omittedFamilyCount: z.number().int().nonnegative(),
 	proposalBasis: z.strictObject({
 		algorithmId: z.literal(IMPROVEMENT_BRIEF_ALGORITHM_ID),
 		evalRunId: ArtifactIdSchema,
@@ -277,7 +317,7 @@ export interface InspectCandidateImpactOptions {
 
 interface ExactGraderSignature {
 	checkCode: GraderCheckCode;
-	specHash: string;
+	subject: string | null;
 	discriminatorHash: string;
 	failureModeId: string;
 	category: z.infer<typeof DiagnosisCategorySchema>;
@@ -346,18 +386,6 @@ function verifyArtifactRef(ref: CandidateArtifactRef, label: string, expectedPat
 	if (actual !== ref.sha256) throw new Error(`${label} hash mismatch: expected ${ref.sha256}, got ${actual}`);
 }
 
-function failureModeId(signature: Pick<ExactGraderSignature, "checkCode" | "specHash">): string {
-	const digest = hashValue({
-		algorithmId: IMPROVEMENT_BRIEF_ALGORITHM_ID,
-		signature: {
-			kind: "grader-check",
-			checkCode: signature.checkCode,
-			specHash: signature.specHash,
-		},
-	});
-	return `failure-mode-${digest.slice(HASH_HEX_OFFSET, HASH_HEX_OFFSET + 24)}`;
-}
-
 function categoryFor(checkCode: GraderCheckCode): z.infer<typeof DiagnosisCategorySchema> {
 	switch (checkCode) {
 		case "required-tool": return "tool-selection";
@@ -377,16 +405,17 @@ function collectEvaluationSignals(runs: readonly RunRecord[]): EvaluationSignals
 	for (const run of runs) {
 		if (run.status === "error" || !run.evalResults) continue;
 		for (const grader of run.evalResults.graders) {
-			if (!grader.checkCode || !grader.specHash) {
+			const family = graderFamilyOf(grader);
+			if (!family) {
 				missingExactSignatures = true;
 				continue;
 			}
 			const signature: ExactGraderSignature = {
-				checkCode: grader.checkCode,
-				specHash: grader.specHash,
-				discriminatorHash: hashValue({ checkCode: grader.checkCode, specHash: grader.specHash }),
-				failureModeId: failureModeId({ checkCode: grader.checkCode, specHash: grader.specHash }),
-				category: categoryFor(grader.checkCode),
+				checkCode: family.checkCode,
+				subject: family.subject,
+				discriminatorHash: graderFamilyDiscriminator(family),
+				failureModeId: graderFamilyModeId(family),
+				category: categoryFor(family.checkCode),
 			};
 			const aggregate = byModeId.get(signature.failureModeId) ?? {
 				signature,
@@ -479,6 +508,64 @@ function affectedTasks(aggregate: SignatureAggregate | undefined): { count: numb
 			.map((item) => publicTaskId(item.run.taskId)),
 	)].sort(compareUtf8);
 	return { count: taskIds.length, taskIds: taskIds.slice(0, MAX_TASK_IDS_PER_MODE) };
+}
+
+/** Tasks that carry this family, and whether each of them passed it. */
+function familyTaskOutcomes(aggregate: SignatureAggregate | undefined): Map<string, boolean> {
+	const byTask = new Map<string, boolean>();
+	for (const observation of aggregate?.observations.values() ?? []) {
+		const taskId = observation.run.taskId;
+		byTask.set(taskId, (byTask.get(taskId) ?? true) && observation.passed);
+	}
+	return byTask;
+}
+
+/** One family's before → after, in tasks, over the matched development arms. */
+function familyImpact(
+	failureModeId: string,
+	baseline: SignatureAggregate,
+	candidate: SignatureAggregate,
+): CandidateFamilyImpact | null {
+	const before = familyTaskOutcomes(baseline);
+	const after = familyTaskOutcomes(candidate);
+	const taskIds = [...new Set([...before.keys(), ...after.keys()])].sort(compareUtf8);
+	if (taskIds.length === 0) return null;
+	const fixed: string[] = [];
+	const regressed: string[] = [];
+	let baselinePassedTasks = 0;
+	let candidatePassedTasks = 0;
+	for (const taskId of taskIds) {
+		const passedBefore = before.get(taskId) ?? false;
+		const passedAfter = after.get(taskId) ?? false;
+		if (passedBefore) baselinePassedTasks += 1;
+		if (passedAfter) candidatePassedTasks += 1;
+		if (!passedBefore && passedAfter) fixed.push(publicTaskId(taskId));
+		if (passedBefore && !passedAfter) regressed.push(publicTaskId(taskId));
+	}
+	return FamilyImpactSchema.parse({
+		failureModeId,
+		signature: {
+			kind: "grader-check",
+			checkCode: candidate.signature.checkCode,
+			subject: candidate.signature.subject,
+			discriminatorHash: candidate.signature.discriminatorHash,
+		},
+		category: candidate.signature.category,
+		tasks: taskIds.length,
+		baselinePassedTasks,
+		candidatePassedTasks,
+		fixedTaskIds: fixed.slice(0, MAX_TASK_IDS_PER_MODE),
+		regressedTaskIds: regressed.slice(0, MAX_TASK_IDS_PER_MODE),
+	});
+}
+
+/** Families the operator reads first: the ones that moved, largest move first. */
+function compareFamilies(left: CandidateFamilyImpact, right: CandidateFamilyImpact): number {
+	const move = (family: CandidateFamilyImpact): number =>
+		Math.abs(family.candidatePassedTasks - family.baselinePassedTasks);
+	return move(right) - move(left) ||
+		right.tasks - left.tasks ||
+		compareUtf8(left.failureModeId, right.failureModeId);
 }
 
 function targetedOutcome(
@@ -755,8 +842,19 @@ function assertDevelopmentSource(
 	}
 }
 
+/**
+ * The verdict on what this candidate did.
+ *
+ * A candidate authored from a diagnosis is read against the modes it aimed at.
+ * One authored from a Spec — the workshop path, where the first harness is
+ * built and there is nothing diagnosed yet — is read against the grader
+ * families themselves: it aimed at nothing in particular, so the honest
+ * question is what moved. Only broken evidence is inconclusive; "nobody
+ * diagnosed this first" never was.
+ */
 function verdictFor(
 	targeted: readonly TargetedModeImpact[],
+	families: readonly CandidateFamilyImpact[],
 	newModes: readonly CandidateNewFailureMode[],
 	worsenedModes: readonly CandidateNewFailureMode[],
 	developmentVerdict: GateVerdict | null,
@@ -764,7 +862,7 @@ function verdictFor(
 	sealedVerdict: GateVerdict | null,
 	sealedExecuted: boolean,
 ): CandidateImpact["verdict"] {
-	if (issues.length > 0 || targeted.length === 0) return "inconclusive";
+	if (issues.length > 0) return "inconclusive";
 	// Per-task flips are flags for humans; only the gate verdicts and the
 	// exact failure-mode signals decide the impact verdict.
 	if (
@@ -774,10 +872,17 @@ function verdictFor(
 	) {
 		return "regressed";
 	}
-	const positive = targeted.filter((mode) => mode.outcome === "resolved" || mode.outcome === "improved").length;
-	if (positive === targeted.length) return "improved";
-	if (positive > 0) return "mixed";
-	return "no-change";
+	if (targeted.length > 0) {
+		const positive = targeted.filter((mode) => mode.outcome === "resolved" || mode.outcome === "improved").length;
+		if (positive === targeted.length) return "improved";
+		if (positive > 0) return "mixed";
+		return "no-change";
+	}
+	if (families.length === 0) return "inconclusive";
+	const improved = families.filter((family) => family.candidatePassedTasks > family.baselinePassedTasks).length;
+	const regressed = families.filter((family) => family.candidatePassedTasks < family.baselinePassedTasks).length;
+	if (regressed > 0) return improved > 0 ? "mixed" : "regressed";
+	return improved > 0 ? "improved" : "no-change";
 }
 
 function focusResult(
@@ -855,7 +960,6 @@ export function inspectCandidateImpact(options: InspectCandidateImpactOptions): 
 	const issues: string[] = [];
 	if (record.mode !== "candidate") issues.push("A/A calibration cannot establish Candidate impact");
 	const { basis, brief } = verifiedBuilderBasis(options.runsRoot, record);
-	if (!basis || !brief) issues.push("Candidate has no exact proposal-basis failure modes");
 	const developmentCorpus = evaluated.evaluation.development.corpus ?? null;
 	if (record.origin.kind === "applied-builder" && record.origin.source &&
 		canonicalJson(developmentCorpus) !== canonicalJson(record.origin.source.developmentCorpus)) {
@@ -917,6 +1021,7 @@ export function inspectCandidateImpact(options: InspectCandidateImpactOptions): 
 				signature: {
 					kind: "grader-check",
 					checkCode: sourceMode.signature.checkCode,
+					subject: sourceMode.signature.subject,
 					discriminatorHash: sourceMode.signature.discriminatorHash,
 				},
 				category: sourceMode.category,
@@ -942,6 +1047,19 @@ export function inspectCandidateImpact(options: InspectCandidateImpactOptions): 
 		...baselineSignals.byModeId.keys(),
 		...candidateSignals.byModeId.keys(),
 	])].sort(compareUtf8);
+	// What moved, per family, on the development arm. This is the reading a
+	// candidate without a diagnosis gets, and the one every candidate gets
+	// underneath the targeted modes.
+	const allFamilies: CandidateFamilyImpact[] = [];
+	for (const modeId of allModeIds) {
+		const baseline = baselineSignals.byModeId.get(modeId);
+		const candidate = candidateSignals.byModeId.get(modeId);
+		if (!baseline || !candidate || !sameObservationInventory(baseline, candidate)) continue;
+		const family = familyImpact(modeId, baseline, candidate);
+		if (family) allFamilies.push(family);
+	}
+	allFamilies.sort(compareFamilies);
+	const families = allFamilies.slice(0, MAX_FAMILIES);
 	const newFailureModes: CandidateNewFailureMode[] = [];
 	const worsenedFailureModes: CandidateNewFailureMode[] = [];
 	let newFailureModeCount = 0;
@@ -970,6 +1088,7 @@ export function inspectCandidateImpact(options: InspectCandidateImpactOptions): 
 			signature: {
 				kind: "grader-check",
 				checkCode: candidate.signature.checkCode,
+				subject: candidate.signature.subject,
 				discriminatorHash: candidate.signature.discriminatorHash,
 			},
 			category: candidate.signature.category,
@@ -1038,6 +1157,7 @@ export function inspectCandidateImpact(options: InspectCandidateImpactOptions): 
 	const uniqueIssues = [...new Set(issues)].sort(compareUtf8).slice(0, MAX_INCONCLUSIVE_REASONS);
 	const verdict = verdictFor(
 		targeted,
+		families,
 		newFailureModes,
 		worsenedFailureModes,
 		development.gateVerified ? development.compare.gate.verdict : null,
@@ -1046,7 +1166,7 @@ export function inspectCandidateImpact(options: InspectCandidateImpactOptions): 
 		sealedHoldout.executed,
 	);
 	if (verdict === "inconclusive" && uniqueIssues.length === 0) {
-		uniqueIssues.push("Candidate impact has no exact targeted failure-mode evidence");
+		uniqueIssues.push("Candidate impact has no matched grader-family evidence on the development arm");
 	}
 	const comparison = evaluated.evaluation.development.comparison;
 	if (!comparison) throw new Error("development comparison identity is missing");
@@ -1092,6 +1212,8 @@ export function inspectCandidateImpact(options: InspectCandidateImpactOptions): 
 				targetedFailureModes: targeted,
 			}
 			: null,
+		families,
+		omittedFamilyCount: allFamilies.length - families.length,
 		newFailureModes,
 		omittedNewFailureModeCount: newFailureModeCount - newFailureModes.length,
 		worsenedFailureModes,

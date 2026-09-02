@@ -193,15 +193,18 @@ function makeMode(overrides: Partial<WorkbenchFailureModeProjection> = {}): Work
 	return {
 		ordinal: 1,
 		failureModeId: FAILURE_MODE_ID,
+		signature: { kind: "grader-check", checkCode: "required-tool", subject: "lookup", discriminatorHash: HASH },
 		category: "tool-selection",
 		scope: "systemic",
 		severity: "major",
 		evidenceStrength: "high",
 		decision: "propose-harness-change",
 		selectableForProposal: true,
-		title: "Agent skips the lookup tool",
+		title: "Required tool check failed: lookup across tasks",
 		summary: "The agent answers from memory instead of calling lookup.",
-		hypothesis: "The instructions never mention the lookup tool.",
+		facts: "No tool was called in 8 of 8 failing runs.",
+		observations: [{ code: "no-tool-call", runs: 8 }],
+		observedRuns: 8,
 		suggestions: ["Mention the lookup tool in the instructions"],
 		impact: {
 			affectedTasks: 4,
@@ -212,7 +215,13 @@ function makeMode(overrides: Partial<WorkbenchFailureModeProjection> = {}): Work
 			reproductionBps: 8000,
 		},
 		taskIds: ["task-1"],
-		evidence: [],
+		evidence: [{
+			runId: "run-1",
+			taskId: "task-1",
+			traceAvailable: true,
+			graderNames: ["tool_called"],
+			excerpt: { toolNames: [], reply: "I can answer that from memory.", observations: ["no-tool-call"] },
+		}],
 		omittedEvidenceCount: 0,
 		...overrides,
 	};
@@ -404,7 +413,7 @@ function targetedMode(outcome: TargetedModeImpact["outcome"], overrides: Partial
 	return {
 		failureModeId: FAILURE_MODE_ID,
 		modeSha256: HASH,
-		signature: { kind: "grader-check", checkCode: "required-tool", discriminatorHash: HASH },
+		signature: { kind: "grader-check", checkCode: "required-tool", subject: "lookup", discriminatorHash: HASH },
 		category: "tool-selection",
 		outcome,
 		baseline: counts(4, 4),
@@ -421,7 +430,7 @@ function targetedMode(outcome: TargetedModeImpact["outcome"], overrides: Partial
 function nonTargetedMode(category: CandidateNewFailureMode["category"], overrides: Partial<CandidateNewFailureMode> = {}): CandidateNewFailureMode {
 	return {
 		failureModeId: `failure-mode-${"2".repeat(24)}`,
-		signature: { kind: "grader-check", checkCode: "output-contains", discriminatorHash: HASH },
+		signature: { kind: "grader-check", checkCode: "output-contains", subject: null, discriminatorHash: HASH },
 		category,
 		baseline: counts(0, 4),
 		candidate: counts(3, 4),
@@ -480,6 +489,8 @@ function makeImpact(overrides: Partial<CandidateImpact> = {}): CandidateImpact {
 			basisSha256: HASH,
 			targetedFailureModes: [targetedMode("resolved")],
 		},
+		families: [],
+		omittedFamilyCount: 0,
 		newFailureModes: [],
 		omittedNewFailureModeCount: 0,
 		worsenedFailureModes: [],
@@ -1077,15 +1088,14 @@ describe("renderTraces", () => {
 	it("summarises the evaluation with a pass bar and lists the diagnosis", () => {
 		const lines = renderTraces(makeTraces(), plainPaint);
 		expect(lines[0]).toBe("Evaluation 6/10 passed ██████████░░░░░░ 60% · 4 failed · 0 errors · 1 repetition · eval-1");
-		expect(lines[1]).toBe("Diagnosis actionable · One systemic failure mode blocks 4 of 10 cases");
-		expect(lines[2]).toBe("Failure modes 1 systemic · 0 task-local");
-		expect(lines[3]).toBe("  1. Agent skips the lookup tool — 4 tasks (40% · reproduces 80%)");
-		expect(lines[4]).toBe("     systemic · major · evidence high · → propose fix");
-		expect(lines[5]).toBe("     Hypothesis: The instructions never mention the lookup tool.");
-		expect(lines[6]).toBe("     suggest: Mention the lookup tool in the instructions");
-		expect(lines[7]).toBe("Evidence http://127.0.0.1:4310/evidence/eval-1");
-		expect(lines[8]).toBe("Next say “fix the first problem” (or name a mode) to prepare an exact proposal");
-		expect(lines).toHaveLength(9);
+		expect(lines[1]).toBe("Diagnosis actionable · 6/10 passed · 1 failure mode(s), 1 of them across tasks");
+		expect(lines[2]).toBe("  1. lookup was never called — 4 of 10 tasks (reproduces 80%)");
+		expect(lines[3]).toBe("     across tasks · → propose fix");
+		expect(lines[4]).toBe("     No tool was called in 8 of 8 failing runs.");
+		expect(lines[5]).toBe("       run-1 · no tool call · “I can answer that from memory.”");
+		expect(lines[6]).toBe("Evidence http://127.0.0.1:4310/evidence/eval-1");
+		expect(lines[7]).toBe("Next say “fix the first problem” (or name a mode) to prepare an exact proposal");
+		expect(lines).toHaveLength(8);
 	});
 
 	it("tones the summary by errors and failures", () => {
@@ -1108,18 +1118,28 @@ describe("renderTraces", () => {
 		const modes = [
 			makeMode({ ordinal: 1, decision: "propose-harness-change", selectableForProposal: true }),
 			makeMode({ ordinal: 2, decision: "propose-harness-change", selectableForProposal: false, title: "Second", scope: "task-local", severity: "minor", evidenceStrength: "low" }),
-			makeMode({ ordinal: 3, decision: "stabilize-and-rerun", title: "Flaky", suggestions: [] }),
-			makeMode({ ordinal: 4, decision: "repair-evidence-path", title: "Broken trace" }),
+			makeMode({
+				ordinal: 3,
+				decision: "stabilize-and-rerun",
+				signature: { kind: "outcome-instability", checkCode: null, subject: null, discriminatorHash: HASH },
+				suggestions: [],
+			}),
+			makeMode({
+				ordinal: 4,
+				decision: "repair-evidence-path",
+				signature: { kind: "infrastructure-error", checkCode: null, subject: null, discriminatorHash: HASH },
+			}),
 		];
 		const text = renderTraces(makeTraces({ modes, conversationProjection: { shownModes: 4, addressableModes: 1, omittedModes: 2, fullEvidence: "x" } }), tagPaint).join("\n");
-		expect(text).toContain("<warning>systemic</warning> <dim>·</dim> major <dim>·</dim> evidence high <dim>·</dim> <success>→ propose fix</success>");
-		expect(text).toContain("<muted>task-local</muted> <dim>·</dim> minor <dim>·</dim> evidence low <dim>·</dim> <muted>→ not selectable</muted>");
+		expect(text).toContain("<warning>across tasks</warning> <dim>·</dim> <success>→ propose fix</success>");
+		expect(text).toContain("<muted>one case</muted> <dim>·</dim> <muted>→ not selectable</muted>");
 		expect(text).toContain("<warning>→ rerun to stabilize</warning>");
 		expect(text).toContain("<error>→ repair evidence path</error>");
-		expect(text).toContain("<bold>3.</bold> <bold>Flaky</bold>");
+		expect(text).toContain("<bold>3.</bold> <bold>The same case flips between repetitions</bold>");
 		expect(text).toContain("  <dim>… +2 more modes in the Evidence Explorer</dim>");
-		const suggestLines = text.split("\n").filter((line) => line.includes("suggest:"));
-		expect(suggestLines).toHaveLength(3);
+		// One raw excerpt under every mode: the panel quotes evidence, not advice.
+		const excerptLines = text.split("\n").filter((line) => line.includes("no tool call"));
+		expect(excerptLines).toHaveLength(4);
 	});
 
 	it("explains inconclusive and healthy runs without modes", () => {
@@ -1129,8 +1149,8 @@ describe("renderTraces", () => {
 			modes: [],
 			summary: { tasks: 10, failedTasks: 0, infrastructureErrors: 3, failureModeCount: 0, systemicFailureModeCount: 0, taskLocalFailureModeCount: 0, omittedFailureModeCount: 0 },
 		}, { evidence: { available: false } }), plainPaint);
-		expect(inconclusive).toContain("Diagnosis inconclusive · One systemic failure mode blocks 4 of 10 cases");
-		expect(inconclusive).toContain("  3 infrastructure errors made this run inconclusive; repair the evidence path and rerun.");
+		expect(inconclusive).toContain("Diagnosis inconclusive · 6/10 passed · 0 failure mode(s), 0 of them across tasks");
+		expect(inconclusive).toContain("  3 infrastructure error(s) made this run inconclusive; repair the evidence path and rerun.");
 		expect(inconclusive).toContain("Evidence explorer link unavailable");
 		expect(inconclusive[inconclusive.length - 1]).toBe("Next repair the inconclusive evidence path, then /run again");
 		const healthy = renderTraces(makeTraces({
@@ -1219,11 +1239,11 @@ describe("renderImpact", () => {
 		const lines = renderImpact({ available: true, impact }, tagPaint);
 		expect(lines[0]).toBe("<dim>Impact</dim> <warning>mixed</warning> <dim>· cost ×1.4 · latency ×0.9 · tokens ×1.1</dim>");
 		expect(lines[1]).toBe("  <dim>Targeted 5 failure modes:</dim>");
-		expect(lines[2]).toBe("    <success>✓</success> <success>resolved</success> · tool-selection · baseline 4/4 failed → candidate 0/4 failed · 0/2 tasks still affected");
-		expect(lines[3]).toBe("    <success>↑</success> <success>improved</success> · output-contract · baseline 4/4 failed → candidate 1/4 failed · 1/2 tasks still affected");
-		expect(lines[4]).toBe("    <warning>=</warning> <warning>persisted</warning> · answer-quality · baseline 4/4 failed → candidate 4/4 failed · 2/2 tasks still affected");
-		expect(lines[5]).toBe("    <error>↓</error> <error>worsened</error> · flaky-behavior · baseline 2/4 failed → candidate 4/4 failed · 2/2 tasks still affected");
-		expect(lines[6]).toBe("    <warning>?</warning> <warning>not-reproduced</warning> · infrastructure · baseline 0/4 failed → candidate 0/4 failed · 0/2 tasks still affected");
+		expect(lines[2]).toBe("    <success>✓</success> <success>resolved</success> <dim>·</dim> tool-selection <dim>·</dim> baseline 4/4 failed → candidate 0/4 failed · 0/2 tasks still affected");
+		expect(lines[3]).toBe("    <success>↑</success> <success>improved</success> <dim>·</dim> output-contract <dim>·</dim> baseline 4/4 failed → candidate 1/4 failed · 1/2 tasks still affected");
+		expect(lines[4]).toBe("    <warning>=</warning> <warning>persisted</warning> <dim>·</dim> answer-quality <dim>·</dim> baseline 4/4 failed → candidate 4/4 failed · 2/2 tasks still affected");
+		expect(lines[5]).toBe("    <error>↓</error> <error>worsened</error> <dim>·</dim> flaky-behavior <dim>·</dim> baseline 2/4 failed → candidate 4/4 failed · 2/2 tasks still affected");
+		expect(lines[6]).toBe("    <warning>?</warning> <warning>not-reproduced</warning> <dim>·</dim> infrastructure <dim>·</dim> baseline 0/4 failed → candidate 0/4 failed · 0/2 tasks still affected");
 		expect(lines).toHaveLength(7);
 	});
 
@@ -1244,7 +1264,7 @@ describe("renderImpact", () => {
 		const lines = renderImpact({ available: true, impact: makeImpact({ verdict: "no-change", proposalBasis: null }) }, plainPaint);
 		expect(lines).toEqual([
 			"Impact no change · cost ×1.4 · latency ×0.9 · tokens ×1.1",
-			"  No targeted failure modes: this candidate was not authored from a diagnosis.",
+			"  Nothing was targeted: this candidate was built from the Spec, not from a diagnosis.",
 		]);
 	});
 
@@ -1941,13 +1961,33 @@ describe("sanitization", () => {
 	it("keeps terminal control sequences out of traces and targets", () => {
 		const traces = renderTraces(makeTraces({
 			headline: HOSTILE,
-			modes: [makeMode({ title: HOSTILE, hypothesis: HOSTILE, suggestions: [HOSTILE] })],
+			modes: [makeMode({
+				signature: { kind: "grader-check", checkCode: "required-tool", subject: HOSTILE, discriminatorHash: HASH },
+				evidence: [{
+					runId: "run-1",
+					taskId: "task-1",
+					traceAvailable: true,
+					graderNames: ["tool_called"],
+					excerpt: { toolNames: [HOSTILE], reply: HOSTILE, observations: [] },
+				}],
+			})],
 		}), plainPaint).join("\n");
 		expectClean(traces);
-		expect(traces).toContain("Diagnosis actionable · safetext more end");
-		expect(traces).toContain("  1. safetext more end — 4 tasks");
-		expect(traces).toContain("     Hypothesis: safetext\n     more end");
-		expect(traces).toContain("     suggest: safetext more end");
+		expect(traces).toContain("safetext more end was never called");
+		// A tool name is authored outside the host, so it is redacted like any
+		// other borrowed string before it becomes a title.
+		const credential = renderTraces(makeTraces({
+			modes: [makeMode({
+				signature: {
+					kind: "grader-check",
+					checkCode: "required-tool",
+					subject: "sk-toolnamesecret1234567890",
+					discriminatorHash: HASH,
+				},
+			})],
+		}), plainPaint).join("\n");
+		expect(credential).not.toContain("sk-toolnamesecret1234567890");
+		expect(credential).toContain("REDACTED_API_KEY");
 		const target = renderTarget({
 			...targetContext,
 			resources: [{ kind: "skill", name: "x", path: `skills/${OSC}x`, mode: "100644", bytes: 1, sha256: HASH }],

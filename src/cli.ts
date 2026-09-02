@@ -1275,7 +1275,7 @@ async function main(): Promise<void> {
 				// a diagnosis read at the terminal cannot be matched to the
 				// proposal Builder Pi prepared for it.
 				console.log(`    ${mode.failureModeId}`);
-				console.log(`    hypothesis: ${mode.hypothesis}`);
+				console.log(`    facts: ${mode.facts}`);
 			}
 			if (brief.modes.length > 0 && diagnosis.issues.length > 0) console.log("Task-level drill-down:");
 			for (const issue of diagnosis.issues.slice(0, 30)) {
