@@ -362,15 +362,31 @@ function drawExamples(target: ResolvedTarget, count: number, seed: string): Corp
 			...(task.expected !== undefined ? { expected: task.expected } : {}),
 			...(task.messages ? { messages: task.messages } : {}),
 			...(task.simulatedUser ? { simulatedUser: task.simulatedUser } : {}),
-			graders: task.effectiveGraders,
+			// A worlded case is only a format example if the generator can see the
+			// world it happens in; dropping it here would teach the exam a shape
+			// the development suite does not have.
+			...(task.world ? { world: task.world } : {}),
+			// The case's OWN graders: `effectiveGraders` also carries the one
+			// `world_state` grader each expectation is desugared into, and an
+			// example that stated the same expectation twice would teach the
+			// generator to write it twice.
+			graders: task.graders ?? task.effectiveGraders,
 		}));
 }
 
-/** Distinct grader shapes across the whole development suite, canonicalized. */
+/**
+ * Distinct grader shapes across the whole development suite, canonicalized.
+ *
+ * `world_state` is left out on purpose: the generator writes an input, an
+ * optional reference answer and graders, and has no way to write the world a
+ * world check would read. Offering the shape would be offering a check that
+ * can only ever report "case declares no world".
+ */
 function graderShapes(target: ResolvedTarget): string[] {
 	const shapes = new Map<string, GraderSpec>();
 	for (const task of target.tasks) {
 		for (const grader of task.effectiveGraders) {
+			if (grader.type === "world_state") continue;
 			const key = canonicalJson(grader);
 			if (!shapes.has(key)) shapes.set(key, grader);
 		}

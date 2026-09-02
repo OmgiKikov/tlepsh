@@ -13,6 +13,7 @@ import {
 	simulatedUserMeasurementIdentity,
 	type ResolvedTarget,
 	type TargetManifest,
+	worldExpectationGraders,
 } from "../manifest.js";
 import { hashValue } from "../provenance.js";
 
@@ -103,9 +104,14 @@ function targetWithCorpus(
 			...(task.expected !== undefined ? { expected: task.expected } : {}),
 			...(task.messages !== undefined ? { messages: task.messages } : {}),
 			...(task.simulatedUser !== undefined ? { simulatedUser: task.simulatedUser } : {}),
+			// The world a published case happens in travels with it: the runner
+			// writes it per run and its expectations are scored like any grader.
+			...(task.world !== undefined ? { world: task.world } : {}),
 			...(task.metadata !== undefined ? { metadata: task.metadata } : {}),
 			graders,
-			effectiveGraders: graders.map(cloneGrader),
+			// The same rule `resolveTaskGraders` applies to a manifest dataset: an
+			// expectation beside the state is a grader by the time anything scores.
+			effectiveGraders: [...graders.map(cloneGrader), ...worldExpectationGraders(task)],
 		};
 	});
 

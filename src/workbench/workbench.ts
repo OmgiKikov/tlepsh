@@ -654,6 +654,11 @@ function datasetGrader(grader: WorkbenchDatasetCase["graders"][number]): Workben
 		case "similarity":
 		case "turn_budget":
 			return { ...grader, ...named };
+		case "world_state":
+			// The path is bounded by its own schema; the value is authored data the
+			// card renders through the same bounded, redacted formatter the state
+			// itself goes through.
+			return { ...grader, ...named, path: datasetText(grader.path, 200) };
 	}
 }
 

@@ -393,6 +393,7 @@ function categoryFor(checkCode: GraderCheckCode): z.infer<typeof DiagnosisCatego
 		case "output-matches":
 		case "no-secret":
 		case "turn-budget":
+		case "world-state":
 		case "reference-exact": return "output-contract";
 		case "semantic-rubric":
 		case "reference-similarity": return "answer-quality";

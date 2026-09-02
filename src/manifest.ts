@@ -186,6 +186,25 @@ function worldValueIssue(op: WorldOp, hasValue: boolean): string | null {
 	return null;
 }
 
+/**
+ * What the world had to look like once the conversation ended.
+ *
+ * This is the scored form of `world.expect`: `resolveTaskGraders` appends one
+ * of these per expectation, so a world expectation and a hand-written grader
+ * travel the same scoring path, carry the same check code, and cluster into the
+ * same failure family.
+ */
+export const WorldStateGrader = z.strictObject({
+	type: z.literal("world_state"),
+	name: z.string().optional(),
+	path: WorldPathSchema,
+	op: WorldOpSchema,
+	value: z.unknown().optional(),
+}).superRefine((spec, context) => {
+	const issue = worldValueIssue(spec.op, spec.value !== undefined);
+	if (issue) context.addIssue({ code: "custom", path: ["value"], message: issue });
+});
+
 export const GraderSpec = z.discriminatedUnion("type", [
 	ToolCalledGrader,
 	OutputContainsGrader,
@@ -195,6 +214,7 @@ export const GraderSpec = z.discriminatedUnion("type", [
 	ExactGrader,
 	SimilarityGrader,
 	TurnBudgetGrader,
+	WorldStateGrader,
 ]);
 export type GraderSpec = z.infer<typeof GraderSpec>;
 
@@ -434,6 +454,23 @@ export interface ResolvedTask extends Task {
 }
 
 /**
+ * `world.expect` is sugar for graders, not a second scoring path.
+ *
+ * Every path that resolves a case's effective graders appends these, so an
+ * expectation an author wrote beside the state and a `world_state` grader an
+ * author wrote beside the other checks are the same object by the time
+ * anything scores, explains, clusters or renders it.
+ */
+export function worldExpectationGraders(task: Pick<Task, "world">): GraderSpec[] {
+	return (task.world?.expect ?? []).map((expectation) => ({
+		type: "world_state" as const,
+		path: expectation.path,
+		op: expectation.op,
+		...(expectation.value !== undefined ? { value: expectation.value } : {}),
+	}));
+}
+
+/**
  * Fill each case's effective graders and validate the resulting scoring
  * surface. A case's own graders always win; the suite defaults only fill in for
  * a case that declares none.
@@ -448,7 +485,10 @@ export function resolveTaskGraders(
 	simulatedUserConfigured = false,
 ): ResolvedTask[] {
 	const resolved: ResolvedTask[] = tasks.map((task) => {
-		const graders: GraderSpec[] = task.graders ?? [...defaults];
+		// The case's own graders, or the suite defaults, plus one grader per world
+		// expectation. A case whose only statement about the agent is what the
+		// world had to look like afterwards is a scored case, not an empty one.
+		const graders: GraderSpec[] = [...(task.graders ?? defaults), ...worldExpectationGraders(task)];
 		if (graders.length === 0) {
 			throw new Error(`task ${task.id}: no graders (no per-task graders and suite defaults are empty)`);
 		}
@@ -1322,6 +1362,10 @@ function graderDetail(spec: GraderSpec): string {
 			return `${spec.metric}>=${spec.threshold}`;
 		case "turn_budget":
 			return `<=${spec.max}turns`;
+		case "world_state":
+			return spec.op === "exists"
+				? `${spec.path}?`
+				: `${spec.path}${spec.op === "contains" ? "∋" : "="}${canonicalJson(spec.value).slice(0, 24)}`;
 	}
 }
 

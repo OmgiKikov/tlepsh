@@ -12,7 +12,10 @@ import {
 	type ResolvedTask,
 	type SimilarityMetric,
 	type TargetManifest,
+	type World,
 } from "./manifest.js";
+import { evaluateWorldExpectation, readWorldStateFile } from "./domain/world.js";
+import { worldStatePath } from "./target/world-state.js";
 import {
 	HashSchema,
 	modelFingerprint,
@@ -838,8 +841,12 @@ function graderCheckCode(type: GraderSpec["type"]): GraderCheckCode {
 		case "exact": return "reference-exact";
 		case "similarity": return "reference-similarity";
 		case "turn_budget": return "turn-budget";
+		case "world_state": return "world-state";
 	}
 }
+
+/** A `world_state` grader on a case that declares no world. */
+const NO_WORLD_REASON = "case declares no world";
 
 export interface GradedRun {
 	graders: GraderResult[];
@@ -877,6 +884,10 @@ export async function gradeRun(
 	const results: GraderResult[] = [];
 	const judgeSpend = { calls: 0, tokens: 0, costUsd: 0 };
 	let judgeCalled = false;
+	// Read once per run, not once per grader: every `world_state` check on one
+	// run is a question about the same end state, and reading it twice could
+	// answer two of them differently.
+	let finalWorld: World["state"] | undefined;
 	for (const [index, spec] of task.effectiveGraders.entries()) {
 		if (signal?.aborted) {
 			const error = signal.reason ?? new Error("grading aborted");
@@ -906,6 +917,25 @@ export async function gradeRun(
 			result = gradeNoSecret(output);
 		} else if (normalizedSpec.type === "turn_budget") {
 			result = gradeTurnBudget(normalizedSpec, agentTurnCount(traceMessages));
+		} else if (normalizedSpec.type === "world_state") {
+			if (!task.world) {
+				// The same rule a reference grader on a case with no reference answer
+				// gets: fail loudly rather than pass vacuously, and never touch disk.
+				result = { name: "", type: normalizedSpec.type, passed: false, score: 0, reason: NO_WORLD_REASON };
+			} else {
+				// A missing, unreadable or oversized world THROWS: `gradeRecordedRun`
+				// turns the run into an error, because a world nobody can read says
+				// nothing about the agent (invariant 9).
+				finalWorld ??= readWorldStateFile(worldStatePath(runDir));
+				const verdict = evaluateWorldExpectation(finalWorld, normalizedSpec);
+				result = {
+					name: "",
+					type: normalizedSpec.type,
+					passed: verdict.passed,
+					score: verdict.passed ? 1 : 0,
+					reason: verdict.reason,
+				};
+			}
 		} else if (graderNeedsExpected(normalizedSpec) && !hasReferenceAnswer(task)) {
 			// Checked before any judge call: a case with no reference answer costs
 			// no tokens and never passes on the strength of an empty comparison.
