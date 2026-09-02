@@ -671,7 +671,7 @@ describe("serve routine work", () => {
 			body: { kind: "run-eval", repetitions: 1, reason: "Measure the served basket" },
 		}));
 		expect(guarded).toMatchObject({ status: "awaiting-confirmation", kind: "run-eval", policy: "one-question" });
-		expect(guarded.question).toMatch(/unknown amount/);
+		expect(guarded.question).toMatch(/cannot be priced up front/);
 		expect(guarded.estimate).toMatchObject({ sampledRuns: 0 });
 		expect(evalRuns).toBe(0);
 		const ran = await call(started.url, `/v1/confirmations/${guarded.confirmationId}`, {

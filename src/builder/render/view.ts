@@ -334,7 +334,7 @@ export function renderCandidate(
 		}
 		if (candidate.proposalError) {
 			lines.push(paint.error(`Exact proposal unavailable — ${oneLine(candidate.proposalError, 180)}`));
-			lines.push(paint.muted("Promotion is blocked; rejection remains available."));
+			lines.push(paint.muted(t("view.promotion-blocked")));
 		}
 	}
 	if (candidate.development?.comparison) lines.push(...comparisonLines(candidate.development.comparison, candidate.development.gate, paint));
@@ -379,18 +379,18 @@ function renderSpec(content: Extract<WorkbenchReviewDetail, { kind: "spec-draft"
 		: [paint.dim(label), ...bullets(items, paint, { limit: 10, max: 140 })];
 	const lines = [
 		`${section(t("section.spec-draft"), paint)} ${paint.dim(content.id)}`,
-		labeled(paint.dim("Title"), paint.bold(oneLine(spec.title, 120)), 15),
-		paint.dim("Purpose"),
+		labeled(paint.dim(t("dialog.title")), paint.bold(oneLine(spec.title, 120)), 15),
+		paint.dim(t("view.purpose")),
 		...wrap(spec.purpose, 96, "  "),
-		...list("Users", spec.users),
-		...list("Jobs", spec.jobs),
-		...list("Inputs", spec.inputs),
-		...list("Allowed actions", spec.allowedActions),
-		...list("Success criteria", spec.successCriteria),
-		...list("Constraints", spec.constraints),
+		...list(t("dialog.users"), spec.users),
+		...list(t("dialog.jobs"), spec.jobs),
+		...list(t("view.inputs"), spec.inputs),
+		...list(t("view.allowed-actions"), spec.allowedActions),
+		...list(t("passport.success-criteria"), spec.successCriteria),
+		...list(t("passport.constraints"), spec.constraints),
 	];
-	if (spec.openQuestions.length > 0) lines.push(paint.warning("Open questions"), ...bullets(spec.openQuestions, paint, { limit: 10, max: 140 }));
-	lines.push(`${paint.dim("Snapshot")} ${paint.dim(shortHash(content.snapshotHash))}`);
+	if (spec.openQuestions.length > 0) lines.push(paint.warning(t("view.open-questions")), ...bullets(spec.openQuestions, paint, { limit: 10, max: 140 }));
+	lines.push(`${paint.dim(t("view.snapshot"))} ${paint.dim(shortHash(content.snapshotHash))}`);
 	return lines;
 }
 
@@ -425,18 +425,18 @@ function renderCorpusDraft(
 ): string[] {
 	const maxTasks = options.maxTasks ?? 25;
 	const lines = [
-		`${section(t("section.basket-draft"), paint)} ${paint.bold(oneLine(content.name, 80))} ${paint.dim("·")} ${pluralize(content.tasks.length, "case")} ${paint.dim(`· ${content.id}`)}`,
+		`${section(t("section.basket-draft"), paint)} ${paint.bold(oneLine(content.name, 80))} ${paint.dim("·")} ${plural(content.tasks.length, "case")} ${paint.dim(`· ${content.id}`)}`,
 	];
-	if (content.importSource) lines.push(`${paint.dim("Imported from")} ${oneLine(String((content.importSource as { path?: unknown }).path ?? "imports/"), 120)}`);
+	if (content.importSource) lines.push(`${paint.dim(t("view.imported-from"))} ${oneLine(String((content.importSource as { path?: unknown }).path ?? "imports/"), 120)}`);
 	content.tasks.slice(0, maxTasks).forEach((task, index) => {
 		const graders = (task.graders as ({ type: string } & Record<string, unknown>)[]).map(graderLabel).join(paint.dim(" · "));
 		lines.push(`  ${paint.dim(`${String(index + 1).padStart(2)}.`)} ${oneLine(task.input, 96)}`);
-		lines.push(`      ${paint.dim("graders:")} ${graders}`);
+		lines.push(`      ${paint.dim(t("view.graders"))} ${graders}`);
 	});
-	if (content.tasks.length > maxTasks) lines.push(`  ${paint.dim(`… +${content.tasks.length - maxTasks} more cases`)}`);
-	if (content.coverageNotes.length > 0) lines.push(paint.dim("Coverage notes"), ...bullets(content.coverageNotes, paint, { limit: 8, max: 140 }));
-	if (content.taskProvenance.length > 0) lines.push(`${paint.dim("Provenance")} ${pluralize(content.taskProvenance.length, "case")} bound to verified development failures`);
-	lines.push(`${paint.dim("Draft")} ${paint.dim(shortHash(content.draftHash))} ${paint.dim("· Spec")} ${paint.dim(content.approvedSpec.specId)}`);
+	if (content.tasks.length > maxTasks) lines.push(`  ${paint.dim(t("view.more-cases", { count: content.tasks.length - maxTasks }))}`);
+	if (content.coverageNotes.length > 0) lines.push(paint.dim(t("view.coverage-notes")), ...bullets(content.coverageNotes, paint, { limit: 8, max: 140 }));
+	if (content.taskProvenance.length > 0) lines.push(`${paint.dim(t("view.provenance"))} ${t("view.provenance-bound", { cases: plural(content.taskProvenance.length, "case") })}`);
+	lines.push(`${paint.dim(t("label.draft"))} ${paint.dim(shortHash(content.draftHash))} ${paint.dim(`· ${t("label.spec")}`)} ${paint.dim(content.approvedSpec.specId)}`);
 	return lines;
 }
 
@@ -559,32 +559,40 @@ function resourceKind(kind: string): string {
 /** Exact committed Target context: identity, execution policy, declared resources. */
 export function renderTarget(content: WorkbenchTargetDetail, paint: Paint): string[] {
 	if (!("target" in content)) {
-		return [`${section(t("section.target"), paint)} ${paint.muted("not created yet")}`, `${paint.dim("Next")} describe the agent; the Builder scaffolds it (or run ${paint.bold(content.launch)})`];
+		return [
+			`${section(t("section.target"), paint)} ${paint.muted(t("view.target-missing"))}`,
+			`${paint.dim(t("label.next"))} ${t("view.target-missing-next", { launch: paint.bold(content.launch) })}`,
+		];
 	}
 	const execution = content.target.execution;
 	const lines = [
 		`${section(t("section.target"), paint)} ${paint.bold(oneLine(content.target.id, 60))} ${paint.dim(`@ ${shortSha(content.target.gitSha)}`)}`,
-		`${paint.dim("Model")} ${oneLine(`${content.target.model.provider}/${content.target.model.id}`, 80)} ${paint.dim(`· thinking ${oneLine(content.target.model.thinkingLevel, 20)}`)}`,
-		`${paint.dim("Execution")} tools ${oneLine(execution.tools.join(", "), 60) || "none"} ${paint.dim("·")} network ${oneLine(execution.network, 10)} ${paint.dim("·")} sandbox ${oneLine(execution.sandbox, 20)} ${paint.dim("·")} env ${oneLine(execution.environmentAllowlist.join(", "), 80) || "none"}`,
-		paint.dim("Resources"),
+		`${paint.dim(t("label.model"))} ${oneLine(`${content.target.model.provider}/${content.target.model.id}`, 80)} ${paint.dim(`· ${t("view.thinking", { level: oneLine(content.target.model.thinkingLevel, 20) })}`)}`,
+		`${paint.dim(t("view.execution"))} ${t("view.execution-shape", {
+			tools: oneLine(execution.tools.join(", "), 60) || t("view.none"),
+			network: oneLine(execution.network, 10),
+			sandbox: oneLine(execution.sandbox, 20),
+			env: oneLine(execution.environmentAllowlist.join(", "), 80) || t("view.none"),
+		})}`,
+		paint.dim(t("passport.resources")),
 	];
 	for (const resource of content.resources) {
-		lines.push(`  ${paint.bold(oneLine(resource.path, 60).padEnd(40))} ${resourceKind(resource.kind).padEnd(16)} ${paint.dim(bytes(resource.bytes))}${resource.mode === "100755" ? paint.dim(" · executable") : ""}`);
+		lines.push(`  ${paint.bold(oneLine(resource.path, 60).padEnd(40))} ${resourceKind(resource.kind).padEnd(16)} ${paint.dim(bytes(resource.bytes))}${resource.mode === "100755" ? paint.dim(t("view.executable")) : ""}`);
 	}
 	if (content.resource) {
 		lines.push("", `${section(content.resource.path, paint)} ${paint.dim(`${resourceKind(content.resource.kind)} · ${bytes(content.resource.bytes)} · ${shortHash(content.resource.sha256)}`)}`);
 		lines.push(...clean(content.resource.content).split("\n").map((line) => `  ${line}`));
 	}
 	if (content.priorAttempts && content.priorAttempts.length > 0) {
-		lines.push("", paint.dim("Already tried"));
+		lines.push("", paint.dim(t("section.already-tried")));
 		for (const attempt of content.priorAttempts) {
 			lines.push(`  ${attemptLine(attempt.outcome, attempt.changedPaths, attempt.development, attempt.sealed, attempt.reason, paint)}`);
 		}
 		if (content.priorAttemptsOmitted) {
-			lines.push(`  ${paint.muted(`… and ${pluralize(content.priorAttemptsOmitted, "earlier attempt")} not shown`)}`);
+			lines.push(`  ${paint.muted(t("view.attempts-not-shown", { attempts: plural(content.priorAttemptsOmitted, "earlier attempt") }))}`);
 		}
 	}
-	lines.push(`${paint.dim("Launch")} ${paint.bold(content.launch)} ${paint.dim("· talk to the built agent in its own isolated Pi")}`);
+	lines.push(`${paint.dim(t("view.launch"))} ${paint.bold(content.launch)} ${paint.dim(t("view.launch-hint"))}`);
 	return lines;
 }
 
@@ -607,7 +615,7 @@ function attemptLine(
 		tone,
 		change,
 		oneLine(development, 40),
-		sealed ? `sealed ${oneLine(sealed, 20)}` : null,
+		sealed ? t("view.sealed-word", { verdict: oneLine(sealed, 20) }) : null,
 		reason ? paint.dim(`“${oneLine(reason, 90)}”`) : null,
 	], paint.dim(" · "));
 }
@@ -619,24 +627,24 @@ function attemptLine(
 export function renderHistory(content: WorkbenchHistoryDetail, paint: Paint): string[] {
 	if (content.attempts.length === 0) {
 		return [
-			`${section(t("section.already-tried"), paint)} ${paint.muted("nothing yet — this is the first change on this agent")}`,
+			`${section(t("section.already-tried"), paint)} ${paint.muted(t("view.history-empty"))}`,
 		];
 	}
 	const lines = [
-		`${section(t("section.already-tried"), paint)} ${pluralize(content.attempts.length, "attempt")}` +
-			(content.omitted > 0 ? paint.dim(` · ${content.omitted} older not shown`) : "") +
-			(content.unreadable > 0 ? paint.warning(` · ${pluralize(content.unreadable, "record")} unreadable`) : ""),
+		`${section(t("section.already-tried"), paint)} ${plural(content.attempts.length, "attempt")}` +
+			(content.omitted > 0 ? paint.dim(` ${t("view.older-not-shown", { count: content.omitted })}`) : "") +
+			(content.unreadable > 0 ? paint.warning(` ${t("view.records-unreadable", { records: plural(content.unreadable, "record") })}`) : ""),
 	];
 	for (const attempt of content.attempts) {
 		const development = attempt.development
 			? `${attempt.development.verdict}${attempt.development.scoreDelta === null ? "" : ` ${points(attempt.development.scoreDelta)}`}`
-			: "not evaluated";
+			: t("growth.not-evaluated");
 		lines.push(`  ${paint.dim(attempt.at.slice(0, 10))} ${attemptLine(attempt.outcome, attempt.changedPaths, development, attempt.sealed?.verdict ?? null, attempt.reason, paint)}`);
 		if (attempt.failureModeIds.length > 0) {
-			lines.push(`      ${paint.dim("aimed at")} ${oneLine(attempt.failureModeIds.join(", "), 90)}`);
+			lines.push(`      ${paint.dim(t("view.aimed-at"))} ${oneLine(attempt.failureModeIds.join(", "), 90)}`);
 		}
 	}
-	lines.push(paint.dim("Never re-run an experiment that already lost; change something else."));
+	lines.push(paint.dim(t("view.never-rerun")));
 	return lines;
 }
 
@@ -645,17 +653,17 @@ export function renderDataset(content: WorkbenchDatasetDetail, paint: Paint): st
 	const preview = content.preview;
 	const lines = [
 		`${section(t("section.dataset"), paint)} ${paint.bold(oneLine(content.sourcePath, 56))} ${paint.dim("·")} ${oneLine(preview.format, 16)} ${paint.dim(`· ${bytes(preview.bytes)}`)}`,
-		`${paint.dim("Rows")} ${pluralize(preview.rowCount, "row")} ${paint.dim("·")} ${pluralize(preview.columns.length, "column")}` +
+		`${paint.dim(t("view.rows"))} ${plural(preview.rowCount, "row")} ${paint.dim("·")} ${plural(preview.columns.length, "column")}` +
 			(preview.holdout
-				? ` ${paint.dim("·")} ${paint.warning(`${preview.holdout.reserved} reserved for the sealed exam`)}`
-				: ` ${paint.dim("· nothing sealed yet")}`),
-		paint.dim("Columns"),
+				? ` ${paint.dim("·")} ${paint.warning(t("view.reserved", { count: preview.holdout.reserved }))}`
+				: ` ${paint.dim(t("view.nothing-sealed"))}`),
+		paint.dim(t("view.columns")),
 	];
 	for (const column of preview.columns) {
 		const samples = oneLine(column.samples.map((sample) => oneLine(sample, 22)).join(" · "), 72);
 		lines.push(`  ${paint.bold(oneLine(column.name, 24).padEnd(24))} ${column.inferredType.padEnd(9)} ${samples || paint.muted("—")}`);
 	}
-	lines.push(paint.dim("Propose a recipe; the host compiles sample cases before anything is imported."));
+	lines.push(paint.dim(t("view.propose-recipe")));
 	return lines;
 }
 
@@ -664,23 +672,23 @@ export function renderDatasetCases(cases: readonly WorkbenchDatasetCase[], paint
 	const lines: string[] = [];
 	cases.forEach((sample, index) => {
 		lines.push(`  ${paint.dim(`${String(index + 1).padStart(2)}.`)} ${oneLine(sample.input, 92)}`);
-		if (sample.expected !== null) lines.push(`      ${paint.dim("expected:")} ${oneLine(sample.expected, 88)}`);
+		if (sample.expected !== null) lines.push(`      ${paint.dim(t("view.expected"))} ${oneLine(sample.expected, 88)}`);
 		if (sample.messages) {
 			const last = sample.messages[sample.messages.length - 1]?.content ?? "";
-			lines.push(`      ${paint.dim("dialogue:")} ${pluralize(sample.messages.length, "turn")} ${paint.dim(`ending in “${oneLine(last, 50)}”`)}`);
+			lines.push(`      ${paint.dim(t("view.dialogue"))} ${plural(sample.messages.length, "turn")} ${paint.dim(t("view.dialogue-ending", { last: oneLine(last, 50) }))}`);
 		}
 		if (sample.simulatedUser) {
-			const persona = sample.simulatedUser.persona ? ` as ${oneLine(sample.simulatedUser.persona, 40)}` : "";
+			const persona = sample.simulatedUser.persona ? t("view.live-user-as", { persona: oneLine(sample.simulatedUser.persona, 40) }) : "";
 			lines.push(
-				`      ${paint.dim("live user:")} ${oneLine(sample.simulatedUser.goal, 60)}${persona} ` +
-					paint.dim(`· up to ${pluralize(sample.simulatedUser.maxTurns, "turn")}`),
+				`      ${paint.dim(t("view.live-user"))} ${oneLine(sample.simulatedUser.goal, 60)}${persona} ` +
+					paint.dim(t("view.live-user-turns", { turns: plural(sample.simulatedUser.maxTurns, "turn") })),
 			);
 		}
 		if (sample.metadata) {
 			const pairs = Object.entries(sample.metadata).slice(0, 4).map(([key, value]) => `${oneLine(key, 20)}=${oneLine(value, 24)}`);
-			lines.push(`      ${paint.dim("metadata:")} ${oneLine(pairs.join(" · "), 88)}`);
+			lines.push(`      ${paint.dim(t("view.metadata"))} ${oneLine(pairs.join(" · "), 88)}`);
 		}
-		lines.push(`      ${paint.dim("graders:")} ${oneLine(sample.graders.map(graderLabel).join(" · "), 89)}`);
+		lines.push(`      ${paint.dim(t("view.graders"))} ${oneLine(sample.graders.map(graderLabel).join(" · "), 89)}`);
 	});
 	return lines;
 }

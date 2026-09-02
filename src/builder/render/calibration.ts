@@ -1,5 +1,6 @@
 import type { WorkbenchCalibrationProjection } from "../../workbench/types.js";
-import { percent, pluralize, points, section } from "./format.js";
+import { plural, t, verdictLabel } from "../../i18n.js";
+import { percent, points, section } from "./format.js";
 import type { Paint } from "./paint.js";
 
 /** Half-width of the 95% interval in pass-rate points: the noise band. */
@@ -23,14 +24,15 @@ export function formatFlipRate(calibration: Pick<WorkbenchCalibrationProjection,
  */
 export function renderCalibration(calibration: WorkbenchCalibrationProjection, paint: Paint): string[] {
 	const healthy = calibration.verdict === "inconclusive";
-	const verdict = healthy ? paint.success("inconclusive") : paint.warning(calibration.verdict);
+	const label = verdictLabel(calibration.verdict);
+	const verdict = healthy ? paint.success(label) : paint.warning(label);
 	return [
-		`${section("Noise calibration", paint)} ${paint.dim("A/A")} ${verdict} ${paint.dim(`· revision ${calibration.targetSha.slice(0, 10)}`)}`,
-		`${paint.dim("Design")} ${pluralize(calibration.taskCount, "case")} × ${pluralize(calibration.repetitions, "repetition")} ${paint.dim("· same revision on both arms · baseline")} ${percent(calibration.aaPassRate)}`,
-		`${paint.dim("Spread")} ${formatNoiseBand(calibration)} ${paint.dim(`(95% CI ${points(calibration.confidence95.low)} … ${points(calibration.confidence95.high)})`)} ${paint.dim("· flip")} ${formatFlipRate(calibration)}`,
-		`${paint.dim("Recommended")} ${paint.bold(pluralize(calibration.recommendedRepetitions, "repetition"))} ${paint.dim("per run to keep noise under 10 points")}`,
+		`${section(t("calibration.title"), paint)} ${paint.dim("A/A")} ${verdict} ${paint.dim(t("calibration.revision", { sha: calibration.targetSha.slice(0, 10) }))}`,
+		`${paint.dim(t("calibration.design"))} ${plural(calibration.taskCount, "case")} × ${plural(calibration.repetitions, "repetition")} ${paint.dim(t("calibration.same-revision"))} ${percent(calibration.aaPassRate)}`,
+		`${paint.dim(t("calibration.spread"))} ${formatNoiseBand(calibration)} ${paint.dim(`(${t("unit.ci")} ${points(calibration.confidence95.low)} … ${points(calibration.confidence95.high)})`)} ${paint.dim(`· ${t("noise.flip")}`)} ${formatFlipRate(calibration)}`,
+		`${paint.dim(t("calibration.recommended"))} ${paint.bold(plural(calibration.recommendedRepetitions, "repetition"))} ${paint.dim(t("calibration.per-run"))}`,
 		healthy
-			? paint.muted("A/A is measurement, never evidence: nothing is promoted by calibrating.")
-			: paint.warning("The harness disagrees with itself; treat smaller deltas as noise until this settles."),
+			? paint.muted(t("calibration.healthy"))
+			: paint.warning(t("calibration.unhealthy")),
 	];
 }

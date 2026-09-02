@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { language, plural, resolveLanguage, setLanguage, settingsPath, t, verdictLabel } from "../src/i18n.js";
 import { renderConfirmation } from "../src/builder/render/confirmation.js";
 import { renderDecision } from "../src/builder/render/decision.js";
-import { renderHeader, renderCandidate } from "../src/builder/render/view.js";
+import { renderHeader, renderCandidate, renderReview } from "../src/builder/render/view.js";
+import { renderCalibration } from "../src/builder/render/calibration.js";
 import { plainPaint } from "../src/builder/render/paint.js";
 import { stageLabel, nextStep } from "../src/builder/render/stage.js";
 import { renderRunDetailPage } from "../src/evidence/pages.js";
@@ -441,6 +442,44 @@ describe("ru renders", () => {
 		// The run and task ids stay exactly as recorded.
 		expect(explanation.runId).toBe("run-7");
 		expect(explanation.taskId).toBe("task-3");
+	});
+
+	it("draws the proposal under review and the noise panel in Russian", () => {
+		setLanguage("ru");
+		const review = renderReview({
+			kind: "proposal",
+			runId: "builder-proposal-1",
+			summary: "Научить агента звать инструмент поиска",
+			paths: ["AGENTS.md"],
+			baseTargetSha: SHA_A,
+			proposalHash: "c".repeat(64),
+			evidenceBasis: null,
+			prediction: null,
+			risks: ["Ответы станут длиннее"],
+			validationPlan: ["Прогнать тесты разработки"],
+			exactDiff: "--- a/AGENTS.md\n+++ b/AGENTS.md\n@@ -1 +1,2 @@\n context\n+lookup\n",
+		} as never, plainPaint);
+		expect(review[0]).toBe("Правка builder-proposal-1");
+		expect(review[2]).toBe("Изменения AGENTS.md (+1 -0)");
+		expect(review[3]).toBe("База aaaaaaaaaa · правка cccccccccccc…");
+		expect(review[4]).toBe("Данные ничего не привязано (правка только по описанию)");
+		expect(review).toContain("Риски");
+		expect(review).toContain("План проверки");
+		expect(review).toContain("Диф");
+
+		const noise = renderCalibration({
+			targetSha: SHA_A,
+			verdict: "inconclusive",
+			taskCount: 6,
+			repetitions: 3,
+			aaPassRate: 0.5,
+			flipRate: 0.1,
+			confidence95: { low: -0.06, high: 0.06 },
+			recommendedRepetitions: 3,
+		} as never, plainPaint);
+		expect(noise[0]).toBe("Калибровка шума A/A неубедительно · ревизия aaaaaaaaaa");
+		expect(noise[1]).toBe("Схема 6 кейсов × 3 повтора · одна и та же ревизия с обеих сторон · база 50%");
+		expect(noise.at(-1)).toBe("A/A — это замер, а не данные: калибровкой ничего не выкатывается.");
 	});
 
 	it("watches a running measurement in Russian, and counts the whole job", () => {

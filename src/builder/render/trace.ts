@@ -146,7 +146,7 @@ function renderEntry(entry: TranscriptEntry, paint: Paint): string[] {
 			return [`  ${paint.accent("‹")} ${head}`, ...body];
 		}
 		case "tool": {
-			const status = entry.isError ? paint.error("error") : paint.success("ok");
+			const status = entry.isError ? paint.error(t("trace.errored")) : paint.success(t("trace.tool-ok"));
 			const lines = [`  ${paint.accent("→")} ${paint.bold(entry.name)} · ${oneLine(entry.args, MAX_TOOL_ARGS_CHARS)} · ${duration(entry.durationMs)} · ${status}`];
 			if (entry.result !== null) {
 				lines.push(`    ${paint.dim(oneLine(entry.result, MAX_TOOL_RESULT_CHARS))}${entry.resultTruncated ? paint.dim(" …") : ""}`);

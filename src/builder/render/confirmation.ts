@@ -297,7 +297,7 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 				`${paint.dim(t("dialog.cases"))} ${paint.bold(plural(Number(subject.developmentCount ?? cases.length), "development case"))}` +
 					`${Number(subject.skippedRows ?? 0) > 0 ? ` ${paint.dim(t("card.skipped", { rows: plural(Number(subject.skippedRows), "row") }))}` : ""}`,
 				sealed
-					? `${paint.dim(t("label.sealed"))} ${t("dialog.sealed-drawn", { rows: paint.bold(plural(Number(sealed.count ?? 0), "row")), seed: paint.bold(text(sealed.seed, 24)) })}${sealed.stratifyBy ? paint.dim(t("dialog.stratified", { column: text(sealed.stratifyBy, 20) })) : ""}`
+					? `${paint.dim(t("label.sealed"))} ${t("dialog.sealed-drawn", { rows: paint.bold(plural(Number(sealed.count ?? 0), "row")), seed: paint.bold(text(sealed.seed, 24)) })}${sealed.stratifyBy ? ` ${paint.dim(t("dialog.stratified", { column: text(sealed.stratifyBy, 20) }))}` : ""}`
 					: `${paint.dim(t("label.sealed"))} ${paint.warning(t("dialog.none"))} ${paint.dim(t("dialog.sealed-none-note"))}`,
 			];
 			if (cases.length > 0) {

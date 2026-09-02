@@ -333,7 +333,7 @@ export function createWorkshopTools(
 					stdout?: string;
 					stderr?: string;
 				} | undefined;
-				if (!details) return card([paint.muted("workshop try")]);
+				if (!details) return card([paint.muted(`${t("card.workshop")} · ${t("card.try")}`)]);
 				const ok = details.exitCode === 0;
 				const headline = `${ok ? paint.success("✓") : paint.error("✗")} ${paint.bold(details.tool ?? "")} ` +
 					paint.dim(
