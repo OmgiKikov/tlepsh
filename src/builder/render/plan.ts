@@ -4,8 +4,7 @@ import type {
 	WorkbenchStage,
 	WorkbenchView,
 } from "../../workbench/types.js";
-import { joinNonEmpty, oneLine, percent } from "./format.js";
-import { examShortfall } from "./view.js";
+import { examShortfall, joinNonEmpty, oneLine, percent } from "./format.js";
 import type { Paint } from "./paint.js";
 import { stageLabel } from "./stage.js";
 

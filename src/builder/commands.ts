@@ -21,7 +21,7 @@ import type {
 	WorkbenchView,
 } from "../workbench/types.js";
 import { compileAgentLog } from "../application/agent-log.js";
-import { oneLine, pluralize } from "./render/format.js";
+import { examShortfall, oneLine, pluralize } from "./render/format.js";
 import { renderAgentLog, renderAgentLogChart } from "./render/agent-log.js";
 import { handoffLines } from "./render/handoff.js";
 import {
@@ -37,7 +37,7 @@ import { renderReceipt } from "./render/receipt.js";
 import { createBuilderJobs, type BuilderJobs, type JobAuthorization } from "./jobs.js";
 import type { BuilderSpendReader } from "./spend.js";
 import { nextStep, stageLabel } from "./render/stage.js";
-import { examShortfall, renderReview, renderStatus, renderTarget, renderTraces, viewTitle } from "./render/view.js";
+import { renderReview, renderStatus, renderTarget, renderTraces, viewTitle } from "./render/view.js";
 import {
 	DEFAULT_TRACE_TABLE_ROWS,
 	MAX_TRACE_TABLE_ROWS,

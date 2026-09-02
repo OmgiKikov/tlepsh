@@ -1,9 +1,25 @@
-import { t } from "../../i18n.js";
+import { plural, t } from "../../i18n.js";
 import { sanitizeTerminalText } from "../../trace.js";
 import { stripMarkers } from "./markers.js";
 import type { Paint } from "./paint.js";
 
 export const DEFAULT_LIST_LIMIT = 12;
+
+/**
+ * What the exam has, what the gate needs, and the difference — the three
+ * numbers every shortfall message states, so nobody has to subtract. Typed by
+ * shape so the header, the plan and /doctor all pass their own readiness.
+ */
+export function examShortfall(
+	readiness: { minimumTasks: number; sealedCases: number | null },
+): { cases: string; minimum: number; missing: number } {
+	const cases = readiness.sealedCases ?? 0;
+	return {
+		cases: plural(cases, "case"),
+		minimum: readiness.minimumTasks,
+		missing: Math.max(0, readiness.minimumTasks - cases),
+	};
+}
 const ELLIPSIS = "…";
 
 /**

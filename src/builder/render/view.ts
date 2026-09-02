@@ -21,6 +21,7 @@ import {
 	bullets,
 	bytes,
 	clean,
+	examShortfall,
 	joinNonEmpty,
 	labeled,
 	numbered,
@@ -124,21 +125,6 @@ function shippingReadinessLine(view: WorkbenchView, paint: Paint): string | null
 	return `${paint.dim(t("label.ship-gate"))} ${paint.warning(state)} ${paint.dim(t(hint, { minimum: readiness.minimumTasks }))}${
 		undersized === null ? "" : ` ${paint.muted(`· ${undersized}`)}`
 	}`;
-}
-
-/**
- * What the exam has, what the gate needs, and the difference — the three
- * numbers every shortfall message states, so nobody has to subtract.
- */
-export function examShortfall(
-	readiness: NonNullable<WorkbenchView["shippingReadiness"]>,
-): { cases: string; minimum: number; missing: number } {
-	const cases = readiness.sealedCases ?? 0;
-	return {
-		cases: plural(cases, "case"),
-		minimum: readiness.minimumTasks,
-		missing: Math.max(0, readiness.minimumTasks - cases),
-	};
 }
 
 /** Stages where an uncalibrated Target is worth one nudge, not a blocker. */
