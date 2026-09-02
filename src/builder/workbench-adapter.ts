@@ -31,6 +31,7 @@ import type {
 	WorkbenchViewInclude,
 } from "../workbench/types.js";
 import { workbenchGateClass } from "../workbench/transition-policy.js";
+import { workbenchNext } from "../workbench/next-actions.js";
 import {
 	evaluatorModelResolver,
 	hostModelCatalog,
@@ -254,11 +255,16 @@ function projectCredentialSafeVerbatim(value: unknown): unknown {
 }
 
 function projectWorkbenchView(view: Record<string, unknown>, options: ModelProjectionOptions): Record<string, unknown> {
-	const { selections, warnings, ...rest } = view as { selections: unknown[]; warnings: string[] } & Record<string, unknown>;
+	// `actions` is the host's loose stage hint list; the model gets `next`
+	// instead, derived from the same tables the Workbench refuses against. Two
+	// lists of what to do next is one list too many.
+	const { selections, warnings, actions: _hostHints, ...rest } = view as
+		{ selections: unknown[]; warnings: string[]; actions: unknown } & Record<string, unknown>;
 	const kept = warnings.slice(0, MODEL_WARNING_LIMIT);
 	const wanted = options.include?.includes("selections") ?? false;
 	return {
 		...projectForModel(rest, options) as Record<string, unknown>,
+		next: workbenchNext(view as unknown as WorkbenchView),
 		warnings: kept,
 		...(warnings.length > kept.length ? { omittedWarnings: warnings.length - kept.length } : {}),
 		...(wanted
@@ -374,7 +380,8 @@ export function createBuilderWorkbenchTools(
 			executionMode: "sequential",
 			label: "Inspect Builder Workbench",
 			description: [
-				"Read the AHDE Workbench: the current stage, legal next actions, the exact subject under review, the diagnosis, the committed Target, or what was already tried.",
+				"Read the AHDE Workbench: the current stage, the exact subject under review, the diagnosis, the committed Target, or what was already tried.",
+				"Every result carries next: { unblock, decide[], submit[], workshop? } — exactly the decisions and submissions that are legal right here, each with one sentence saying when it is the right move, and asks: true where the host will put a question to the operator. It is authoritative; never work from a remembered sequence of stages.",
 				"Arguments: { aspect?: \"summary\" | \"review\" | \"traces\" | \"target\" | \"history\" | \"dataset\", resourcePath?: string, include?: [\"selections\"] }.",
 				"aspect omitted/summary = stage + counts; review = the exact Spec draft, eval basket, proposal diff, or candidate awaiting a decision;",
 				"traces = evaluation summary, failure modes (improvementBrief.modes with ordinal + failureModeId), evidence link;",

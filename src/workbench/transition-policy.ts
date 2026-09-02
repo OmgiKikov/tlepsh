@@ -80,7 +80,7 @@ const LEGAL_DECISION_STAGES = {
  * The single thing the operator can do right now, in their words. An illegal
  * transition names it instead of explaining the rule that blocked it.
  */
-const UNBLOCKING_ACTION: Record<WorkbenchStage, string> = {
+export const UNBLOCKING_ACTION: Record<WorkbenchStage, string> = {
 	"target-setup": "create the agent and choose its model",
 	"spec-design": "describe the agent so the Builder can draft its Spec",
 	"spec-review": "review the Spec draft, then say “tests”",

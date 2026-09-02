@@ -2489,7 +2489,13 @@ export class AhdeWorkbench {
 	/** @internal — called by the decision handlers in ./decisions. */
 	async viewOf(inventory: WorkbenchInventory, queryValue: WorkbenchViewQuery = {}): Promise<WorkbenchView> {
 		const query = WorkbenchViewQuerySchema.parse(queryValue);
-		const view = deriveWorkbenchView(inventory);
+		// The stage is a pure function of durable artifacts; an open workshop is
+		// live host state, and the derived `next` block needs both to say which
+		// workshop submission is legal right now.
+		const view: WorkbenchView = {
+			...deriveWorkbenchView(inventory),
+			...(this.workshopOpen ? { workshopOpen: true } : {}),
+		};
 		const aspect = query.aspect ?? "summary";
 		if (aspect === "summary") return view;
 		if (aspect === "target") {

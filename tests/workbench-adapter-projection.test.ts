@@ -106,7 +106,24 @@ describe("model-facing projection", () => {
 		expect(projected.warnings).toHaveLength(3);
 		expect(projected.omittedWarnings).toBe(3);
 		expect(projected.stage).toBe("proposal-review");
-		expect(projected.actions).toEqual(view.actions);
+		// The host's loose `actions` hints are replaced by the derived `next`
+		// block: one list of what to do here, not two.
+		expect(projected.actions).toBeUndefined();
+		expect(projected.next).toEqual({
+			unblock: "review the diff, then say “apply” or “discard”",
+			decide: [
+				{ kind: "apply-proposal", asks: true, when: expect.stringContaining("apply") },
+				{ kind: "talk-to-agent", asks: false, when: expect.any(String) },
+				{ kind: "discard-proposal", asks: true, when: expect.any(String) },
+			],
+			submit: [
+				{ kind: "spec-draft", when: expect.any(String) },
+				{ kind: "corpus-draft", when: expect.any(String) },
+				{ kind: "corpus-revision", when: expect.any(String) },
+				{ kind: "corpus-import", when: expect.any(String) },
+				{ kind: "dataset-recipe", when: expect.any(String) },
+			],
+		});
 		expect(projected.counts).toEqual(view.counts);
 		expect((projected.target as { model: Record<string, unknown> }).model.apiKeyEnv).toBeUndefined();
 		expect(JSON.stringify(projected)).not.toMatch(/OPENAI_API_KEY|JUDGE_API_KEY|apiKeyEnv/);
@@ -130,6 +147,40 @@ describe("model-facing projection", () => {
 		expect(basis.briefSha256).toBeUndefined();
 		expect(basis.failureModes).toEqual([{ failureModeId: `failure-mode-${"4".repeat(24)}` }]);
 		expect(JSON.stringify(projected)).not.toContain('"proposalHash"');
+	});
+
+	it("derives the legal moves from the transition policy, never from a second table", () => {
+		const view = loadedView();
+		const improving: WorkbenchView = {
+			...view,
+			stage: "improvement-authoring",
+			workshopOpen: true,
+			shippingReadiness: { sealedHoldout: "missing", minimumTasks: 15 },
+		};
+		const next = (projectForModel(improving) as { next: {
+			unblock: string;
+			decide: { kind: string; asks: boolean }[];
+			submit: { kind: string }[];
+			workshop: { basis: string; open: boolean };
+		} }).next;
+		expect(next.unblock).toBe("look at the failures, then say “fix it”");
+		// `run-current` resolves to `run-eval` here, which is routine: no question.
+		expect(next.decide.find((entry) => entry.kind === "run-current")).toEqual({
+			kind: "run-current",
+			asks: false,
+			when: expect.any(String),
+		});
+		expect(next.decide.map((entry) => entry.kind)).toEqual([
+			"run-current", "talk-to-agent", "regrade", "generate-holdout",
+			"configure-evaluators", "calibrate", "improve", "run-eval",
+		]);
+		// A workshop is open, so closing or discarding it is legal and reopening is not.
+		expect(next.submit.map((entry) => entry.kind)).toEqual([
+			"spec-draft", "corpus-draft", "corpus-revision", "corpus-import",
+			"dataset-recipe", "structured-proposal", "workshop-close", "workshop-discard",
+		]);
+		expect(next.workshop).toEqual({ basis: "improvement", open: true });
+		console.log(`next block bytes: ${JSON.stringify(next).length}`);
 	});
 
 	it("returns the selection list only when the view asked for it", () => {
