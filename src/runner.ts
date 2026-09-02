@@ -14,7 +14,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { loadTarget, type ResolvedTarget, type ResolvedTask, type TargetManifest } from "./manifest.js";
+import {
+	executionKindOf,
+	loadTarget,
+	type ResolvedTarget,
+	type ResolvedTask,
+	type TargetManifest,
+} from "./manifest.js";
 import {
 	executionFingerprint,
 	hashFile,
@@ -24,6 +30,7 @@ import {
 	type RunRecord,
 } from "./provenance.js";
 import { writeJsonArtifact } from "./storage/artifacts.js";
+import { resolveContainedArtifactPath } from "./storage/paths.js";
 import { readTraceArtifact, traceToolErrors, type TranscriptTurn } from "./trace.js";
 import { EvaluatorModelError, type EvaluatorModelMetrics } from "./evaluator-model.js";
 import { nextSimulatedUserTurn, simulatedUserStop, type SimulatedUserStop } from "./simulated-user.js";
@@ -51,6 +58,7 @@ import {
 	type TargetToolRuntime,
 } from "./target/runtime.js";
 import { preparedToolHomeHash as hashPreparedToolHome } from "./target/tool-setup.js";
+import { createCommandTargetSession } from "./target/session-command.js";
 import { createPiTargetSession } from "./target/session-pi.js";
 import { FINAL_ANSWER_RECOVERY_PROMPT, type TargetSession } from "./target/session.js";
 
@@ -702,33 +710,60 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 		if (simulated && !userModel) {
 			throw new Error("simulated-user case without evalSuite.simulatedUser model config");
 		}
-		// Per-run isolation: fresh models.json + credentials + services.
-		const modelsPath = join(runtimeDir, "models.json");
-		writePrivateFile(modelsPath, `${JSON.stringify(generateModelsJson(model), null, "\t")}\n`);
 		const scopedApiKey = process.env[model.apiKeyEnv];
 		if (model.baseUrl.includes("openrouter.ai") && !scopedApiKey) {
 			throw new Error(`missing ${model.apiKeyEnv} for OpenRouter endpoint ${model.baseUrl}`);
 		}
-		session = await createPiTargetSession({
-			target,
-			cwd: executionCwd,
-			agentDir,
-			runDir,
-			modelsPath,
-			executionPolicy: policyResult,
-			targetTools: targetToolRuntime,
-			// This is the only secret value Target Pi receives. The credential is
-			// memory-only and is never written to models.json/session evidence.
-			apiKey: scopedApiKey ?? "unset",
-			seedMessages: seededTurns,
-			timeoutMs: model.timeoutMs,
-			// Counted the moment a recovery is decided, not when it succeeds: an
-			// attempt that then fails is still an attempt the error path records.
-			onRecoveryAttempt: () => {
-				recoveryAttempts += 1;
-			},
-			...(options.signal ? { signal: options.signal } : {}),
-		});
+		// Counted the moment a recovery is decided, not when it succeeds: an
+		// attempt that then fails is still an attempt the error path records.
+		const onRecoveryAttempt = () => {
+			recoveryAttempts += 1;
+		};
+		if (executionKindOf(target.manifest.execution) === "command") {
+			// Protocol v1 has one way to give the Target a message and it is a
+			// `user` line. A seeded dialogue would have to arrive as invented
+			// history, and history the agent never produced is not evidence.
+			if (seededTurns.length > 0) {
+				throw new Error("command Target cannot replay a dialogue case's seeded turns: protocol v1 carries no history");
+			}
+			session = (await createCommandTargetSession({
+				target,
+				workspaceDir: executionCwd,
+				scratchDir,
+				runDir,
+				targetTools: targetToolRuntime,
+				// The only secret the child receives, and it arrives in its
+				// environment under the manifest's own `apiKeyEnv` name.
+				apiKey: scopedApiKey ?? "unset",
+				timeoutMs: model.timeoutMs,
+				// This lane passes the path; the world lane writes the file.
+				worldPath: task.world
+					? resolveContainedArtifactPath(options.runsRoot, runId, "runtime", "world", "state.json")
+					: null,
+				onRecoveryAttempt,
+				...(options.signal ? { signal: options.signal } : {}),
+			})).session;
+		} else {
+			// Per-run isolation: fresh models.json + credentials + services.
+			const modelsPath = join(runtimeDir, "models.json");
+			writePrivateFile(modelsPath, `${JSON.stringify(generateModelsJson(model), null, "\t")}\n`);
+			session = await createPiTargetSession({
+				target,
+				cwd: executionCwd,
+				agentDir,
+				runDir,
+				modelsPath,
+				executionPolicy: policyResult,
+				targetTools: targetToolRuntime,
+				// This is the only secret value Target Pi receives. The credential is
+				// memory-only and is never written to models.json/session evidence.
+				apiKey: scopedApiKey ?? "unset",
+				seedMessages: seededTurns,
+				timeoutMs: model.timeoutMs,
+				onRecoveryAttempt,
+				...(options.signal ? { signal: options.signal } : {}),
+			});
+		}
 		if (options.signal) {
 			const abortSession = () => { session?.abort(); };
 			options.signal.addEventListener("abort", abortSession, { once: true });

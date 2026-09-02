@@ -1229,13 +1229,6 @@ export function loadTarget(dir: string, override?: { dataset?: string }): Resolv
 		throw new Error(`manifest.yaml: ${manifestResult.error.message}`);
 	}
 	const manifest = manifestResult.data;
-	// seam: removed by the command-adapter lane. The schema already admits
-	// `execution.kind: command` so four lanes can fork from one commit, but no
-	// backend reads it yet — refusing here is what stops a command Target from
-	// silently running as Pi and producing evidence attributed to the wrong agent.
-	if (executionKindOf(manifest.execution) === "command") {
-		throw new Error("manifest.yaml: command Target backend is not available in this build");
-	}
 	const manifestDataset = manifest.evalSuite.dataset;
 	if (override?.dataset) manifest.evalSuite.dataset = override.dataset;
 

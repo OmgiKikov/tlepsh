@@ -98,20 +98,25 @@ describe("execution.kind: the command Target seam", () => {
 		).toBe(false);
 	});
 
-	// seam: this expectation flips when the command-adapter lane lands a backend.
-	it("loadTarget refuses a command Target: no backend reads the block yet", () => {
+	// The command-adapter lane landed the backend, so this now resolves. The
+	// argv[0] rule is enforced at spawn, not at load: a manifest naming an
+	// executable this host does not have is still a readable manifest.
+	it("loadTarget resolves a command Target now that a backend reads the block", () => {
 		const dir = makeTargetFixture(
 			baseFixtureFiles({
 				"manifest.yaml": `${MANIFEST_HEAD}execution:
   kind: command
   command:
-    argv: ["./bin/agent"]
+    argv: ["python3", "agent.py"]
     protocolVersion: 1
 `,
 			}),
 		);
 		try {
-			expect(() => loadTarget(dir)).toThrow(/command Target backend is not available in this build/);
+			const target = loadTarget(dir);
+			expect(executionKindOf(target.manifest.execution)).toBe("command");
+			expect(target.manifest.execution.command?.argv).toEqual(["python3", "agent.py"]);
+			expect(target.manifest.execution.command?.startupTimeoutMs).toBe(30_000);
 		} finally {
 			cleanup(dir);
 		}
