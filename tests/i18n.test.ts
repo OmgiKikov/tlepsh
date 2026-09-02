@@ -608,6 +608,26 @@ describe("the dictionary itself", () => {
 	});
 });
 
+describe("ru: the recorded dataset", () => {
+	it("bends the noun to the count and says what the file does not contain", () => {
+		setLanguage("ru");
+		const line = (count: number): string =>
+			t("export.done", { count: plural(count, "dialogue"), path: "exports/erun_abc123.jsonl" });
+		expect(line(1)).toBe("выгружено 1 диалог → exports/erun_abc123.jsonl (без экзамена)");
+		expect(line(2)).toBe("выгружено 2 диалога → exports/erun_abc123.jsonl (без экзамена)");
+		expect(line(24)).toBe("выгружено 24 диалога → exports/erun_abc123.jsonl (без экзамена)");
+		expect(line(25)).toBe("выгружено 25 диалогов → exports/erun_abc123.jsonl (без экзамена)");
+		expect(line(11)).toBe("выгружено 11 диалогов → exports/erun_abc123.jsonl (без экзамена)");
+		// Only the path is Latin, and it is a path.
+		expect(leakedEnglish(line(24))).toEqual([]);
+		for (const key of ["export.none", "cmd.export", "panel.export"] as const) {
+			expect(leakedEnglish(t(key))).toEqual([]);
+		}
+		// The refusal names a flag, and a flag is a Latin token on purpose.
+		expect(t("cmd.err.export-arg")).toBe("/export принимает --all или ничего — тогда это последний прогон");
+	});
+});
+
 describe("ru refusals and notices", () => {
 	it("words an illegal transition as a next step, and keeps the machine line for the model", () => {
 		setLanguage("ru");

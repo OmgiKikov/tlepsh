@@ -3,14 +3,27 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-	DEFAULT_TRAINING_MIN_SCORE,
-	TRAINING_TRUNCATION_MARKER,
-	TrainingExportError,
-	exportTrainingData,
-	MAX_TRAINING_MESSAGE_CHARS,
-	type TrainingExportLine,
-} from "../src/application/export-training.js";
-import { CliInvocationError, parseCliInvocation } from "../src/cli-invocation.js";
+	DATASET_TRUNCATION_MARKER,
+	DEFAULT_DATASET_MIN_SCORE,
+	DatasetExportError,
+	corpusTaskLookup,
+	datasetExportOptionsFromFlags,
+	datasetLine,
+	exportDataset,
+	renderDatasetExportSummary,
+	runAgentKind,
+	MAX_DATASET_MESSAGE_CHARS,
+	type DatasetExportLine,
+	type DatasetTaskFacts,
+	type DatasetTaskLookup,
+} from "../src/application/export-dataset.js";
+import { corpusDatasetLabel } from "../src/application/corpus-target.js";
+import { createCorpus } from "../src/corpus.js";
+import {
+	CliInvocationError,
+	parseCliInvocation,
+	type ParsedCliInvocation,
+} from "../src/cli-invocation.js";
 import { EvalRunRecordSchema, type EvalRunRecord } from "../src/eval.js";
 import {
 	RunRecordSchema,
@@ -23,6 +36,7 @@ import {
 	type GraderResult,
 	type RunRecord,
 } from "../src/provenance.js";
+import { isPrivateWorkspacePath } from "../src/runner.js";
 import { writeJsonArtifact } from "../src/storage/artifacts.js";
 
 const roots: string[] = [];
@@ -110,6 +124,12 @@ interface RunSpec {
 	error?: string;
 	/** Drop the trace artifact reference to model a run that recorded none. */
 	traceless?: true;
+	/** What the world lane writes at runs/<runId>/runtime/world/state.json. */
+	finalWorld?: Record<string, unknown>;
+	/** Judge verdict sidecars by grader index, as eval.ts writes them. */
+	verdicts?: Record<number, Record<string, unknown>>;
+	/** What the conversation actually did, when a model played the user. */
+	conversation?: { turns: number; stop: "max-turns" | "sentinel" | "stop-when" };
 }
 
 interface EvalRunSpec {
@@ -119,9 +139,11 @@ interface EvalRunSpec {
 	purpose?: EvalRunRecord["purpose"];
 	visibility?: "development" | "sealed";
 	dataset?: string;
+	datasetHash?: string;
 	gitSha?: string;
 	baselineEvalRunId?: string;
 	candidateOf?: string;
+	finishedAt?: string;
 }
 
 const runtime = {
@@ -154,7 +176,7 @@ function writeEvalRun(runsRoot: string, spec: EvalRunSpec): void {
 		suiteId: "suite",
 		suiteHash: `sha256:${"d".repeat(64)}`,
 		dataset,
-		datasetHash: `sha256:${"e".repeat(64)}`,
+		datasetHash: spec.datasetHash ?? `sha256:${"e".repeat(64)}`,
 	};
 	const target = { id: "test-target", gitSha, workspaceHash: WORKSPACE_HASH };
 
@@ -168,6 +190,16 @@ function writeEvalRun(runsRoot: string, spec: EvalRunSpec): void {
 			writeFileSync(join(workspace, "manifest.yaml"), SNAPSHOT_MANIFEST);
 			writeFileSync(join(workspace, "AGENTS.md"), run.agentsMd ?? AGENTS_MD);
 			writeFileSync(join(workspace, "tools", "lookup.tool.yaml"), TOOL_DESCRIPTOR);
+		}
+		if (run.finalWorld) {
+			mkdirSync(join(runDir, "runtime", "world"), { recursive: true });
+			writeFileSync(join(runDir, "runtime", "world", "state.json"), `${JSON.stringify(run.finalWorld)}\n`);
+		}
+		if (run.verdicts) {
+			mkdirSync(join(runDir, "judge"), { recursive: true });
+			for (const [index, verdict] of Object.entries(run.verdicts)) {
+				writeFileSync(join(runDir, "judge", `${index}.verdict.json`), `${JSON.stringify(verdict)}\n`);
+			}
 		}
 		const status = run.status ?? "completed";
 		const graders = run.graders ?? passingGraders();
@@ -196,6 +228,9 @@ function writeEvalRun(runsRoot: string, spec: EvalRunSpec): void {
 				toolCalls: 1,
 				toolErrors: 0,
 				recoveryAttempts: 0,
+				...(run.conversation
+					? { conversationTurns: run.conversation.turns, conversationStop: run.conversation.stop }
+					: {}),
 			},
 			evalResults: status === "error"
 				? null
@@ -229,7 +264,7 @@ function writeEvalRun(runsRoot: string, spec: EvalRunSpec): void {
 		runIds: records.map((run) => run.runId),
 		runArtifacts: records.map((run) => ({ runId: run.runId, sha256: hashValue(run) })),
 		startedAt: "2026-08-31T10:00:00.000Z",
-		finishedAt: "2026-08-31T10:00:02.000Z",
+		finishedAt: spec.finishedAt ?? "2026-08-31T10:00:02.000Z",
 		summary: {
 			total: records.length,
 			pass,
@@ -242,24 +277,36 @@ function writeEvalRun(runsRoot: string, spec: EvalRunSpec): void {
 }
 
 function newRunsRoot(): string {
-	const runsRoot = mkdtempSync(join(tmpdir(), "ahde-export-training-"));
+	const runsRoot = mkdtempSync(join(tmpdir(), "ahde-export-dataset-"));
 	roots.push(runsRoot);
 	return runsRoot;
 }
 
-function readLines(path: string): TrainingExportLine[] {
+function readLines(path: string): DatasetExportLine[] {
 	const content = readFileSync(path, "utf8");
 	return content
 		.split("\n")
 		.filter((line) => line.trim().length > 0)
-		.map((line) => JSON.parse(line) as TrainingExportLine);
+		.map((line) => JSON.parse(line) as DatasetExportLine);
+}
+
+/** The flag map the CLI hands the export, produced by the real parser. */
+function commandFlags(argv: readonly string[]): ParsedCliInvocation["flags"] {
+	const parsed = parseCliInvocation(argv);
+	expect(parsed.kind).toBe("command");
+	return (parsed as ParsedCliInvocation).flags;
 }
 
 function totalSkipped(counts: { skipped: Record<string, number> }): number {
 	return Object.values(counts.skipped).reduce((sum, value) => sum + value, 0);
 }
 
-describe("ahde export --training: the exported line", () => {
+/** A hand-built lookup, for the world and the user a case declared. */
+function tasksNamed(entries: Record<string, DatasetTaskFacts>): DatasetTaskLookup {
+	return () => new Map(Object.entries(entries));
+}
+
+describe("ahde export: the exported line", () => {
 	it("carries the harness the run saw, the whole conversation, and its evidence", () => {
 		const runsRoot = newRunsRoot();
 		writeEvalRun(runsRoot, {
@@ -275,7 +322,7 @@ describe("ahde export --training: the exported line", () => {
 			}],
 		});
 
-		const result = exportTrainingData({ runsRoot, evalRunId: "erun_dev" });
+		const result = exportDataset({ runsRoot, evalRunId: "erun_dev" });
 		expect(result.counts.exported).toBe(1);
 		const [line] = readLines(result.path);
 		expect(line).toBeDefined();
@@ -329,10 +376,11 @@ describe("ahde export --training: the exported line", () => {
 			targetSha: DEVELOPMENT_SHA,
 			workspaceHash: WORKSPACE_HASH,
 			model: "qwen3.5-27b",
-			graders: [{ type: "output_contains", passed: true, score: 1 }],
+			graders: [{ name: "answer", type: "output_contains", passed: true, score: 1, reason: "ok" }],
 			score: 1,
 			passed: true,
 			repetition: 0,
+			execution: { agent: "pi-v1" },
 		});
 	});
 
@@ -355,7 +403,7 @@ describe("ahde export --training: the exported line", () => {
 		].join("\n");
 		writeEvalRun(runsRoot, { evalRunId: "erun_shape", runs: [{ runId: "run_shape", taskId: "task_shape", trace }] });
 
-		const [line] = readLines(exportTrainingData({ runsRoot, evalRunId: "erun_shape" }).path);
+		const [line] = readLines(exportDataset({ runsRoot, evalRunId: "erun_shape" }).path);
 		expect(line!.messages[2]).toEqual({
 			role: "assistant",
 			tool_calls: [{ id: "call_a", type: "function", function: { name: "lookup", arguments: "{}" } }],
@@ -366,22 +414,39 @@ describe("ahde export --training: the exported line", () => {
 
 	it("truncates oversized content with a marker instead of dropping the message", () => {
 		const runsRoot = newRunsRoot();
-		const flood = "п".repeat(MAX_TRAINING_MESSAGE_CHARS + 500);
+		const flood = "п".repeat(MAX_DATASET_MESSAGE_CHARS + 500);
 		const trace = [
 			JSON.stringify({ type: "message", message: { role: "user", content: flood } }),
 			JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "ok" }] } }),
 		].join("\n");
 		writeEvalRun(runsRoot, { evalRunId: "erun_big", runs: [{ runId: "run_big", taskId: "task_big", trace }] });
 
-		const [line] = readLines(exportTrainingData({ runsRoot, evalRunId: "erun_big" }).path);
+		const [line] = readLines(exportDataset({ runsRoot, evalRunId: "erun_big" }).path);
 		expect(line!.messages).toHaveLength(3);
-		expect(line!.messages[1]!.content).toHaveLength(MAX_TRAINING_MESSAGE_CHARS + TRAINING_TRUNCATION_MARKER.length);
-		expect(line!.messages[1]!.content?.endsWith(TRAINING_TRUNCATION_MARKER)).toBe(true);
+		expect(line!.messages[1]!.content).toHaveLength(MAX_DATASET_MESSAGE_CHARS + DATASET_TRUNCATION_MARKER.length);
+		expect(line!.messages[1]!.content?.endsWith(DATASET_TRUNCATION_MARKER)).toBe(true);
 		expect(line!.messages[2]).toEqual({ role: "assistant", content: "ok" });
+	});
+
+	it("never repeats a tool call or its result in meta: the conversation already carries both", () => {
+		const runsRoot = newRunsRoot();
+		writeEvalRun(runsRoot, {
+			evalRunId: "erun_tools",
+			runs: [{
+				runId: "run_tools",
+				taskId: "task_tools",
+				trace: conversationTrace({ question: "q", answer: "a", toolResult: "contract 42: active" }),
+			}],
+		});
+		const [line] = readLines(exportDataset({ runsRoot, evalRunId: "erun_tools" }).path);
+		expect(JSON.stringify(line!.messages)).toContain("contract 42: active");
+		expect(JSON.stringify(line!.meta)).not.toContain("contract 42: active");
+		expect(JSON.stringify(line!.meta)).not.toContain("call_1");
+		expect(Object.keys(line!.meta)).not.toContain("toolCalls");
 	});
 });
 
-describe("ahde export --training: sealed evidence never leaves", () => {
+describe("ahde export: sealed evidence never leaves", () => {
 	/**
 	 * The sentinel is a sealed holdout task's own input, repeated in every place
 	 * an export could plausibly read it from: the task id, the conversation, the
@@ -399,6 +464,7 @@ describe("ahde export --training: sealed evidence never leaves", () => {
 				runId: "run_sealed",
 				taskId: `holdout-${SENTINEL}`,
 				agentsMd: `# Holdout harness\n${SENTINEL}\n`,
+				finalWorld: { secret: SENTINEL },
 				trace: conversationTrace({
 					question: `Реши задачу ${SENTINEL}.`,
 					answer: `Ответ на ${SENTINEL}.`,
@@ -419,7 +485,7 @@ describe("ahde export --training: sealed evidence never leaves", () => {
 
 	it("never writes a sealed task's sentinel with --all, and counts the refusal", () => {
 		const runsRoot = sealedCorpusFixture();
-		const result = exportTrainingData({ runsRoot, all: true });
+		const result = exportDataset({ runsRoot, all: true });
 
 		expect(readFileSync(result.path, "utf8")).not.toContain(SENTINEL);
 		expect(result.counts.exported).toBe(1);
@@ -428,12 +494,39 @@ describe("ahde export --training: sealed evidence never leaves", () => {
 		expect(result.notes.some((note) => note.reason === "sealed")).toBe(true);
 	});
 
-	it("refuses a sealed eval run named explicitly", () => {
+	it("refuses a sealed eval run named explicitly, by --eval and by --run", () => {
 		const runsRoot = sealedCorpusFixture();
-		expect(() => exportTrainingData({ runsRoot, evalRunId: "erun_sealed" }))
-			.toThrow(TrainingExportError);
-		expect(() => exportTrainingData({ runsRoot, evalRunId: "erun_sealed" }))
+		expect(() => exportDataset({ runsRoot, evalRunId: "erun_sealed" }))
+			.toThrow(DatasetExportError);
+		expect(() => exportDataset({ runsRoot, evalRunId: "erun_sealed" }))
 			.toThrow(/sealed holdout evidence is never exported/);
+		// A sealed member run is not a way around the sealed eval run above it.
+		expect(() => exportDataset({ runsRoot, runId: "run_sealed" }))
+			.toThrow(/sealed holdout evidence is never exported/);
+	});
+
+	it("never lets --latest land on a sealed eval run, however recent it is", () => {
+		const runsRoot = newRunsRoot();
+		writeEvalRun(runsRoot, {
+			evalRunId: "erun_dev",
+			finishedAt: "2026-08-31T10:00:00.000Z",
+			runs: [{ runId: "run_dev", taskId: "task_dev", trace: conversationTrace({ question: "q", answer: "a", toolResult: "r" }) }],
+		});
+		writeEvalRun(runsRoot, {
+			evalRunId: "erun_sealed",
+			visibility: "sealed",
+			finishedAt: "2026-09-02T10:00:00.000Z",
+			runs: [{
+				runId: "run_sealed",
+				taskId: `holdout-${SENTINEL}`,
+				agentsMd: `# Holdout harness\n${SENTINEL}\n`,
+				trace: conversationTrace({ question: SENTINEL, answer: SENTINEL, toolResult: SENTINEL }),
+			}],
+		});
+
+		const result = exportDataset({ runsRoot, latest: true });
+		expect(result.evalRunIds).toEqual(["erun_dev"]);
+		expect(readFileSync(result.path, "utf8")).not.toContain(SENTINEL);
 	});
 
 	it("refuses a legacy sealed dataset hash the caller supplies", () => {
@@ -449,7 +542,7 @@ describe("ahde export --training: sealed evidence never leaves", () => {
 		delete record.evidenceVisibility;
 		writeFileSync(legacyPath, `${JSON.stringify(record)}\n`);
 
-		const result = exportTrainingData({
+		const result = exportDataset({
 			runsRoot,
 			all: true,
 			sealedDatasetHashes: new Set([`sha256:${"e".repeat(64)}`]),
@@ -460,7 +553,7 @@ describe("ahde export --training: sealed evidence never leaves", () => {
 	});
 });
 
-describe("ahde export --training: what is not evidence is not training data", () => {
+describe("ahde export: what is not evidence is not a dataset", () => {
 	it("refuses a cheap-check screen and an ambiguous legacy one-arm record", () => {
 		const runsRoot = newRunsRoot();
 		const trace = conversationTrace({ question: "q", answer: "a", toolResult: "r" });
@@ -476,11 +569,11 @@ describe("ahde export --training: what is not evidence is not training data", ()
 		});
 		writeEvalRun(runsRoot, { evalRunId: "erun_ok", runs: [{ runId: "run_ok", taskId: "task_ok", trace }] });
 
-		const result = exportTrainingData({ runsRoot, all: true });
+		const result = exportDataset({ runsRoot, all: true });
 		expect(result.counts.exported).toBe(1);
 		expect(result.counts.skipped.screen).toBe(2);
 		expect(readLines(result.path).map((line) => line.meta.runId)).toEqual(["run_ok"]);
-		expect(() => exportTrainingData({ runsRoot, evalRunId: "erun_screen" }))
+		expect(() => exportDataset({ runsRoot, evalRunId: "erun_screen" }))
 			.toThrow(/cheap-check screen is never evidence/);
 	});
 
@@ -507,12 +600,12 @@ describe("ahde export --training: what is not evidence is not training data", ()
 			runs: [{ runId: "run_b_cand", taskId: "task_b", trace }],
 		});
 
-		const excluded = exportTrainingData({ runsRoot, all: true });
+		const excluded = exportDataset({ runsRoot, all: true });
 		expect(excluded.counts.skipped.aa).toBe(2);
 		expect(new Set(readLines(excluded.path).map((line) => line.meta.runId)))
 			.toEqual(new Set(["run_b_base", "run_b_cand"]));
 
-		const included = exportTrainingData({ runsRoot, all: true, includeAa: true });
+		const included = exportDataset({ runsRoot, all: true, includeAa: true });
 		expect(included.counts.skipped.aa).toBe(0);
 		expect(included.counts.exported).toBe(4);
 	});
@@ -529,7 +622,7 @@ describe("ahde export --training: what is not evidence is not training data", ()
 			],
 		});
 
-		const result = exportTrainingData({ runsRoot, all: true });
+		const result = exportDataset({ runsRoot, all: true });
 		expect(result.counts.exported).toBe(1);
 		expect(result.counts.skipped.infra).toBe(2);
 		expect(readLines(result.path).map((line) => line.meta.runId)).toEqual(["run_ok"]);
@@ -541,14 +634,14 @@ describe("ahde export --training: what is not evidence is not training data", ()
 			evalRunId: "erun_pruned",
 			runs: [{ runId: "run_pruned", taskId: "task_pruned", trace, workspace: false }],
 		});
-		const prunedResult = exportTrainingData({ runsRoot: pruned, all: true });
+		const prunedResult = exportDataset({ runsRoot: pruned, all: true });
 		expect(prunedResult.counts.exported).toBe(0);
 		expect(prunedResult.counts.skipped.infra).toBe(1);
 		expect(prunedResult.notes[0]?.detail).toContain("workspace snapshot");
 	});
 });
 
-describe("ahde export --training: redaction", () => {
+describe("ahde export: redaction", () => {
 	it("redacts credentials in the instructions, the conversation, and the tool result", () => {
 		const runsRoot = newRunsRoot();
 		const trace = [
@@ -587,7 +680,7 @@ describe("ahde export --training: redaction", () => {
 			}],
 		});
 
-		const result = exportTrainingData({ runsRoot, evalRunId: "erun_secret" });
+		const result = exportDataset({ runsRoot, evalRunId: "erun_secret" });
 		const raw = readFileSync(result.path, "utf8");
 		for (const secret of [
 			"sk-usersecret1234567890",
@@ -608,7 +701,7 @@ describe("ahde export --training: redaction", () => {
 	});
 });
 
-describe("ahde export --training: the selection bar", () => {
+describe("ahde export: the selection bar", () => {
 	function scoredFixture(): string {
 		const runsRoot = newRunsRoot();
 		const trace = conversationTrace({ question: "q", answer: "a", toolResult: "r" });
@@ -638,8 +731,8 @@ describe("ahde export --training: the selection bar", () => {
 
 	it("defaults to only the runs whose graders were completely satisfied", () => {
 		const runsRoot = scoredFixture();
-		const result = exportTrainingData({ runsRoot, all: true });
-		expect(DEFAULT_TRAINING_MIN_SCORE).toBe(1);
+		const result = exportDataset({ runsRoot, all: true });
+		expect(DEFAULT_DATASET_MIN_SCORE).toBe(1);
 		expect(result.counts.exported).toBe(1);
 		expect(result.counts.skipped.failed).toBe(2);
 		expect(readLines(result.path).map((line) => line.meta.runId)).toEqual(["run_perfect"]);
@@ -647,7 +740,7 @@ describe("ahde export --training: the selection bar", () => {
 
 	it("lets --min-score take partial credit", () => {
 		const runsRoot = scoredFixture();
-		const result = exportTrainingData({ runsRoot, all: true, minScore: 0.5 });
+		const result = exportDataset({ runsRoot, all: true, minScore: 0.5 });
 		expect(result.counts.exported).toBe(2);
 		expect(result.counts.skipped.failed).toBe(1);
 		expect(readLines(result.path).map((line) => [line.meta.runId, line.meta.score, line.meta.passed]))
@@ -656,7 +749,7 @@ describe("ahde export --training: the selection bar", () => {
 
 	it("writes the rest with passed:false under --include-failed", () => {
 		const runsRoot = scoredFixture();
-		const result = exportTrainingData({ runsRoot, all: true, includeFailed: true });
+		const result = exportDataset({ runsRoot, all: true, includeFailed: true });
 		expect(result.counts.exported).toBe(3);
 		expect(result.counts.skipped.failed).toBe(0);
 		expect(readLines(result.path).map((line) => [line.meta.runId, line.meta.passed]))
@@ -665,14 +758,85 @@ describe("ahde export --training: the selection bar", () => {
 
 	it("refuses a --min-score outside [0,1]", () => {
 		const runsRoot = scoredFixture();
-		expect(() => exportTrainingData({ runsRoot, all: true, minScore: 1.5 }))
+		expect(() => exportDataset({ runsRoot, all: true, minScore: 1.5 }))
 			.toThrow(/--min-score must be between 0 and 1/);
 	});
 });
 
-describe("ahde export --training: output and refusals", () => {
-	it("defaults the output under <runs-root>/exports/ and counts every scanned run", () => {
+describe("ahde export: what is selected", () => {
+	function threeEvalRuns(): string {
 		const runsRoot = newRunsRoot();
+		const trace = conversationTrace({ question: "q", answer: "a", toolResult: "r" });
+		writeEvalRun(runsRoot, {
+			evalRunId: "erun_one",
+			finishedAt: "2026-08-30T10:00:00.000Z",
+			runs: [
+				{ runId: "run_one_a", taskId: "task_a", trace },
+				{ runId: "run_one_b", taskId: "task_b", trace },
+			],
+		});
+		writeEvalRun(runsRoot, {
+			evalRunId: "erun_two",
+			finishedAt: "2026-09-01T10:00:00.000Z",
+			runs: [{ runId: "run_two_a", taskId: "task_a", trace }],
+		});
+		return runsRoot;
+	}
+
+	it("--run exports exactly that run and names the file after it", () => {
+		const runsRoot = threeEvalRuns();
+		const result = exportDataset({ runsRoot, runId: "run_one_b" });
+		expect(result.path).toBe(join(runsRoot, "exports", "run_one_b.jsonl"));
+		expect(result.counts.runsScanned).toBe(1);
+		expect(readLines(result.path).map((line) => line.meta.runId)).toEqual(["run_one_b"]);
+		expect(result.evalRunIds).toEqual(["erun_one"]);
+	});
+
+	it("--eval exports one eval run's members and names the file after it", () => {
+		const runsRoot = threeEvalRuns();
+		const result = exportDataset({ runsRoot, evalRunId: "erun_one" });
+		expect(result.path).toBe(join(runsRoot, "exports", "erun_one.jsonl"));
+		expect(readLines(result.path).map((line) => line.meta.runId)).toEqual(["run_one_a", "run_one_b"]);
+	});
+
+	it("--all exports every exportable eval run under one timestamped name", () => {
+		const runsRoot = threeEvalRuns();
+		const result = exportDataset({ runsRoot, all: true, now: () => new Date("2026-09-03T12:34:56.789Z") });
+		expect(result.path).toBe(join(runsRoot, "exports", "all-2026-09-03T12-34-56-789Z.jsonl"));
+		expect(result.counts.exported).toBe(3);
+		expect([...result.evalRunIds].sort()).toEqual(["erun_one", "erun_two"]);
+	});
+
+	it("--latest picks the newest exportable eval run, which is what /export uses", () => {
+		const runsRoot = threeEvalRuns();
+		const result = exportDataset({ runsRoot, latest: true });
+		expect(result.path).toBe(join(runsRoot, "exports", "erun_two.jsonl"));
+		expect(readLines(result.path).map((line) => line.meta.runId)).toEqual(["run_two_a"]);
+	});
+
+	it("refuses a selection that is neither one subject nor all of them", () => {
+		const runsRoot = newRunsRoot();
+		expect(() => exportDataset({ runsRoot }))
+			.toThrow(/one --run <run-id>, one --eval <erun-id>, or --all/);
+		expect(() => exportDataset({ runsRoot, evalRunId: "erun_dev", all: true }))
+			.toThrow(/one --run <run-id>, one --eval <erun-id>, or --all/);
+		expect(() => exportDataset({ runsRoot, runId: "run_x", evalRunId: "erun_dev" }))
+			.toThrow(/one --run <run-id>, one --eval <erun-id>, or --all/);
+	});
+
+	it("refuses a run id no readable eval run owns, and an empty --latest", () => {
+		const runsRoot = newRunsRoot();
+		expect(() => exportDataset({ runsRoot, runId: "run_nowhere" }))
+			.toThrow(/run run_nowhere belongs to no readable eval run/);
+		expect(() => exportDataset({ runsRoot, latest: true }))
+			.toThrow(/no exportable development evidence has been recorded yet/);
+	});
+});
+
+describe("ahde export: output and refusals", () => {
+	it("defaults the output to exports/ under the Target and counts every scanned run", () => {
+		const runsRoot = newRunsRoot();
+		const targetDir = newRunsRoot();
 		const trace = conversationTrace({ question: "q", answer: "a", toolResult: "r" });
 		writeEvalRun(runsRoot, {
 			evalRunId: "erun_out",
@@ -687,42 +851,43 @@ describe("ahde export --training: output and refusals", () => {
 			runs: [{ runId: "run_out_sealed", taskId: "task_3", trace }],
 		});
 
-		const result = exportTrainingData({
+		const result = exportDataset({
 			runsRoot,
+			outRoot: targetDir,
 			all: true,
 			now: () => new Date("2026-09-01T12:34:56.789Z"),
 		});
-		expect(result.path).toBe(join(runsRoot, "exports", "training-2026-09-01T12-34-56-789Z.jsonl"));
+		expect(result.path).toBe(join(targetDir, "exports", "all-2026-09-01T12-34-56-789Z.jsonl"));
 		expect(result.counts.evalRunsScanned).toBe(2);
 		expect(result.counts.runsScanned).toBe(3);
 		expect(result.counts.exported + totalSkipped(result.counts)).toBe(result.counts.runsScanned);
 	});
 
-	it("honours an explicit --out", () => {
+	it("honours an explicit --out directory and keeps the subject's own name", () => {
 		const runsRoot = newRunsRoot();
 		writeEvalRun(runsRoot, {
 			evalRunId: "erun_explicit_out",
 			runs: [{ runId: "run_explicit_out", taskId: "task_1", trace: conversationTrace({ question: "q", answer: "a", toolResult: "r" }) }],
 		});
-		const outPath = join(runsRoot, "elsewhere", "corpus.jsonl");
-		const result = exportTrainingData({ runsRoot, all: true, outPath });
-		expect(result.path).toBe(outPath);
-		expect(readLines(outPath)).toHaveLength(1);
+		const outDir = join(runsRoot, "elsewhere");
+		const result = exportDataset({ runsRoot, evalRunId: "erun_explicit_out", outDir });
+		expect(result.path).toBe(join(outDir, "erun_explicit_out.jsonl"));
+		expect(readLines(result.path)).toHaveLength(1);
 	});
 
 	it("writes an empty file rather than a partial one when nothing qualifies", () => {
 		const runsRoot = newRunsRoot();
-		const result = exportTrainingData({ runsRoot, all: true });
+		const result = exportDataset({ runsRoot, all: true });
 		expect(result.counts.exported).toBe(0);
 		expect(readFileSync(result.path, "utf8")).toBe("");
 	});
 
-	/** cli.ts maps every TrainingExportError to exit 2. */
+	/** cli.ts maps every DatasetExportError to exit 2. */
 	it("refuses a missing eval run", () => {
 		const runsRoot = newRunsRoot();
-		expect(() => exportTrainingData({ runsRoot, evalRunId: "erun_missing" }))
-			.toThrow(TrainingExportError);
-		expect(() => exportTrainingData({ runsRoot, evalRunId: "erun_missing" }))
+		expect(() => exportDataset({ runsRoot, evalRunId: "erun_missing" }))
+			.toThrow(DatasetExportError);
+		expect(() => exportDataset({ runsRoot, evalRunId: "erun_missing" }))
 			.toThrow(/erun_missing is unavailable/);
 	});
 
@@ -733,57 +898,428 @@ describe("ahde export --training: output and refusals", () => {
 			runs: [{ runId: "run_broken", taskId: "task_1", trace: conversationTrace({ question: "q", answer: "a", toolResult: "r" }) }],
 		});
 		rmSync(join(runsRoot, "run_broken", "run.json"));
-		const result = exportTrainingData({ runsRoot, all: true });
+		const result = exportDataset({ runsRoot, all: true });
 		expect(result.counts.exported).toBe(0);
 		expect(result.counts.skipped.infra).toBe(1);
 	});
 
-	it("refuses a selection that is neither one eval run nor all of them", () => {
+	it("reports an eval run index it could not read instead of silently skipping it", () => {
 		const runsRoot = newRunsRoot();
-		expect(() => exportTrainingData({ runsRoot }))
-			.toThrow(/either one --eval <erun-id> or --all/);
-		expect(() => exportTrainingData({ runsRoot, evalRunId: "erun_dev", all: true }))
-			.toThrow(/either one --eval <erun-id> or --all/);
+		writeEvalRun(runsRoot, {
+			evalRunId: "erun_good",
+			runs: [{ runId: "run_good", taskId: "task_1", trace: conversationTrace({ question: "q", answer: "a", toolResult: "r" }) }],
+		});
+		mkdirSync(join(runsRoot, "erun_damaged"), { recursive: true });
+		writeFileSync(join(runsRoot, "erun_damaged", "eval_run.json"), "{ not json");
+
+		const result = exportDataset({ runsRoot, all: true });
+		expect(result.counts.exported).toBe(1);
+		expect(result.unreadableEvalRunIds).toEqual(["erun_damaged"]);
+		expect(renderDatasetExportSummary(result).join("\n")).toContain("could not be read and were not scanned");
 	});
 });
 
-describe("ahde export --training: invocation", () => {
+describe("ahde export: the world a case happens in", () => {
+	const trace = conversationTrace({ question: "Отмени заказ 7.", answer: "Отменил.", toolResult: "ok" });
+
+	it("carries the state the case started from and the state the run left behind", () => {
+		const runsRoot = newRunsRoot();
+		writeEvalRun(runsRoot, {
+			evalRunId: "erun_world",
+			runs: [{
+				runId: "run_world",
+				taskId: "task_world",
+				trace,
+				finalWorld: { order: { id: 7, status: "cancelled" } },
+			}],
+		});
+
+		const result = exportDataset({
+			runsRoot,
+			evalRunId: "erun_world",
+			tasks: tasksNamed({ task_world: { world: { state: { order: { id: 7, status: "open" } } } } }),
+		});
+		const [line] = readLines(result.path);
+		expect(line!.meta.world).toEqual({
+			initial: { order: { id: 7, status: "open" } },
+			final: { order: { id: 7, status: "cancelled" } },
+		});
+	});
+
+	it("leaves world absent entirely on a case that has none", () => {
+		const runsRoot = newRunsRoot();
+		writeEvalRun(runsRoot, {
+			evalRunId: "erun_no_world",
+			runs: [{ runId: "run_no_world", taskId: "task_plain", trace }],
+		});
+		const [line] = readLines(exportDataset({ runsRoot, evalRunId: "erun_no_world" }).path);
+		expect(line!.meta.world).toBeUndefined();
+		expect(Object.keys(line!.meta)).not.toContain("world");
+	});
+
+	it("keeps final null when the case had a world but the run wrote no state", () => {
+		const runsRoot = newRunsRoot();
+		writeEvalRun(runsRoot, {
+			evalRunId: "erun_world_only",
+			runs: [{ runId: "run_world_only", taskId: "task_world", trace }],
+		});
+		const [line] = readLines(exportDataset({
+			runsRoot,
+			evalRunId: "erun_world_only",
+			tasks: tasksNamed({ task_world: { world: { state: { order: { status: "open" } } } } }),
+		}).path);
+		expect(line!.meta.world).toEqual({ initial: { order: { status: "open" } }, final: null });
+	});
+
+	it("reads the case's world through the published corpus the eval run cites", () => {
+		const runsRoot = newRunsRoot();
+		const stateRoot = newRunsRoot();
+		const corpus = createCorpus({
+			stateRoot,
+			projectId: "demo",
+			name: "worlded",
+			visibility: "development",
+			tasks: [{
+				id: "task_world",
+				input: "Отмени заказ 7.",
+				world: { state: { order: { id: 7, status: "open" } } },
+				simulatedUser: { goal: "отменить заказ", persona: "торопится", maxTurns: 4 },
+				graders: [{ type: "output_contains", text: "Отменил" }],
+			}],
+		});
+		writeEvalRun(runsRoot, {
+			evalRunId: "erun_corpus",
+			dataset: corpusDatasetLabel("development", corpus.id),
+			datasetHash: corpus.hash,
+			runs: [{
+				runId: "run_corpus",
+				taskId: "task_world",
+				trace,
+				finalWorld: { order: { id: 7, status: "cancelled" } },
+				conversation: { turns: 3, stop: "stop-when" },
+			}],
+		});
+
+		const [line] = readLines(exportDataset({
+			runsRoot,
+			evalRunId: "erun_corpus",
+			tasks: corpusTaskLookup({ stateRoot, projectId: "demo" }),
+		}).path);
+		expect(line!.meta.world).toEqual({
+			initial: { order: { id: 7, status: "open" } },
+			final: { order: { id: 7, status: "cancelled" } },
+		});
+		expect(line!.meta.simulatedUser).toEqual({
+			goal: "отменить заказ",
+			persona: "торопится",
+			turns: 3,
+			stop: "stop-when",
+		});
+	});
+
+	it("carries the case's user but never invents turns the run did not record", () => {
+		const runsRoot = newRunsRoot();
+		writeEvalRun(runsRoot, {
+			evalRunId: "erun_user",
+			runs: [{ runId: "run_user", taskId: "task_user", trace }],
+		});
+		const [line] = readLines(exportDataset({
+			runsRoot,
+			evalRunId: "erun_user",
+			tasks: tasksNamed({ task_user: { simulatedUser: { goal: "отменить заказ" } } }),
+		}).path);
+		expect(line!.meta.simulatedUser).toEqual({ goal: "отменить заказ" });
+	});
+});
+
+describe("ahde export: graders, verdicts, and the agent kind", () => {
+	const trace = conversationTrace({ question: "q", answer: "a", toolResult: "r" });
+
+	it("carries every grader row run.json recorded, including an abstention the judge lane writes", () => {
+		const runsRoot = newRunsRoot();
+		const graders: GraderResult[] = [
+			{
+				name: "answers the question",
+				type: "judge",
+				passed: true,
+				score: 1,
+				reason: "the reply names the contract and its state",
+				specHash: `sha256:${"1".repeat(64)}`,
+				checkCode: "semantic-rubric",
+				assertions: { total: 2, failed: [] },
+			},
+			{
+				name: "calls lookup",
+				type: "tool_called",
+				passed: true,
+				score: 1,
+				reason: "lookup was called",
+				specHash: `sha256:${"2".repeat(64)}`,
+				checkCode: "required-tool",
+				checkSubject: "lookup",
+			},
+		];
+		writeEvalRun(runsRoot, {
+			evalRunId: "erun_graders",
+			runs: [{
+				runId: "run_graders",
+				taskId: "task_graders",
+				trace,
+				graders,
+				verdicts: {
+					0: {
+						passed: true,
+						score: 1,
+						choice: "A",
+						// A field the sidecar may grow that the line does not carry.
+						juror: 1,
+						assertions: [
+							{ index: 1, answer: "yes", evidence: "names the contract" },
+							{ index: 2, answer: "yes", evidence: "names its state" },
+						],
+					},
+				},
+			}],
+		});
+		const [line] = readLines(exportDataset({ runsRoot, evalRunId: "erun_graders" }).path);
+		expect(line!.meta.graders).toEqual([
+			{
+				name: "answers the question",
+				type: "judge",
+				passed: true,
+				score: 1,
+				reason: "the reply names the contract and its state",
+				checkCode: "semantic-rubric",
+				assertions: { total: 2, failed: [] },
+			},
+			{
+				name: "calls lookup",
+				type: "tool_called",
+				passed: true,
+				score: 1,
+				reason: "lookup was called",
+				checkCode: "required-tool",
+				checkSubject: "lookup",
+			},
+		]);
+		// The verdict is read from the sidecar and named by the grader it decided.
+		expect(line!.meta.judge).toEqual({
+			verdicts: [{
+				grader: 0,
+				passed: true,
+				score: 1,
+				choice: "A",
+				assertions: [
+					{ index: 1, answer: "yes", evidence: "names the contract" },
+					{ index: 2, answer: "yes", evidence: "names its state" },
+				],
+			}],
+		});
+		// `specHash` is grading configuration, not evidence about the answer, and
+		// a sidecar field the line does not name never leaks through.
+		expect(JSON.stringify(line!.meta.graders)).not.toContain("specHash");
+		expect(JSON.stringify(line!.meta.judge)).not.toContain("juror");
+	});
+
+	it("leaves judge absent when no judge graded the run", () => {
+		const runsRoot = newRunsRoot();
+		writeEvalRun(runsRoot, { evalRunId: "erun_local", runs: [{ runId: "run_local", taskId: "task_local", trace }] });
+		const [line] = readLines(exportDataset({ runsRoot, evalRunId: "erun_local" }).path);
+		expect(line!.meta.judge).toBeUndefined();
+	});
+
+	/**
+	 * `GraderResultSchema` is strict on master, so the judge lane's `abstained`
+	 * cannot travel through `run.json` yet — a record carrying it is refused on
+	 * read. The optional read path is exercised on a hand-written row instead,
+	 * which is exactly what that lane will hand this module once it lands.
+	 */
+	it("carries a judge abstention when the grader row has one, and nothing when it does not", () => {
+		const abstaining = datasetLine({
+			run: {
+				runId: "run_abstain",
+				taskId: "task_abstain",
+				repetitionIndex: 0,
+				target: { gitSha: DEVELOPMENT_SHA, workspaceHash: WORKSPACE_HASH },
+				model: { id: "qwen3.5-27b" },
+				execution: { tools: [] },
+				metrics: {},
+				evalResults: {
+					graders: [
+						{ name: "rubric", type: "judge", passed: false, score: 0, reason: "judge declined", abstained: true },
+						{ name: "plain", type: "output_contains", passed: true, score: 1, reason: "ok" },
+					],
+				},
+			},
+			evalRunId: "erun_abstain",
+			harness: { system: "S", tools: [] },
+			messages: [],
+			score: 0.5,
+			passed: false,
+		});
+
+		expect(abstaining.meta.graders[0]?.abstained).toBe(true);
+		expect(abstaining.meta.graders[1]).not.toHaveProperty("abstained");
+		// Only a boolean is carried: this module never decides what the field means.
+		const nonBoolean = datasetLine({
+			run: {
+				runId: "run_odd",
+				taskId: "task_odd",
+				repetitionIndex: 0,
+				target: { gitSha: DEVELOPMENT_SHA },
+				model: { id: "m" },
+				execution: { tools: [] },
+				metrics: {},
+				evalResults: {
+					graders: [{ name: "rubric", type: "judge", passed: true, score: 1, reason: "ok", abstained: "maybe" }],
+				},
+			},
+			evalRunId: "erun_odd",
+			harness: { system: "S", tools: [] },
+			messages: [],
+			score: 1,
+			passed: true,
+		});
+		expect(nonBoolean.meta.graders[0]).not.toHaveProperty("abstained");
+	});
+
+	/**
+	 * `RunMetricsSchema` still requires `tokens` and `costUsd` on master, and
+	 * `ExecutionFingerprintSchema` is strict, so a command-Target record cannot
+	 * be written through the schema yet. The optional read path is exercised on
+	 * a hand-written record instead — which is exactly what the adapter lane
+	 * will hand this module once it lands.
+	 */
+	it("reads the agent kind off the record and fabricates no metric the record lacks", () => {
+		const line = datasetLine({
+			run: {
+				runId: "run_cmd",
+				taskId: "task_cmd",
+				repetitionIndex: 0,
+				target: { gitSha: DEVELOPMENT_SHA },
+				model: { id: "local-command" },
+				execution: { workspace: "direct-v1", tools: [], agent: "command-v1" },
+				metrics: {},
+				evalResults: {
+					graders: [{ name: "a", type: "output_contains", passed: true, score: 1, reason: "ok" }],
+				},
+			},
+			evalRunId: "erun_cmd",
+			harness: { system: "S", tools: [] },
+			messages: [],
+			score: 1,
+			passed: true,
+		});
+
+		expect(line.meta.execution).toEqual({ agent: "command-v1" });
+		expect(line.meta.workspaceHash).toBeNull();
+		// No invented zero: a metric the record does not carry is simply absent.
+		const meta = JSON.stringify(line.meta);
+		for (const invented of ["tokens", "costUsd", "latencyMs", "toolCalls"]) {
+			expect(meta).not.toContain(invented);
+		}
+		expect(line.meta.simulatedUser).toBeUndefined();
+		expect(line.meta.world).toBeUndefined();
+
+		// And the default is a fact, not a fallback: every record written before
+		// the field existed was a Pi invocation.
+		expect(runAgentKind({ execution: { tools: [] } })).toBe("pi-v1");
+		expect(runAgentKind({ execution: { agent: "command-v1" } })).toBe("command-v1");
+		expect(runAgentKind({ execution: { agent: "something-else" } })).toBe("pi-v1");
+	});
+});
+
+describe("ahde export: where the file lands", () => {
+	/**
+	 * The dataset is compiled FROM evidence, so it must never be fed back into a
+	 * Target workspace snapshot: it would move the workspace hash every time an
+	 * operator exported, and hand the agent its own past conversations.
+	 */
+	it("keeps exports/ out of every model-visible workspace snapshot", () => {
+		const evaluationFiles = new Set(["evals/dataset.jsonl"]);
+		for (const path of ["exports/erun_abc.jsonl", "exports/nested/all-2026.jsonl", "exports"]) {
+			expect(isPrivateWorkspacePath(path, evaluationFiles, null, [])).toBe(true);
+		}
+		// Top-level only, exactly like `imports/`: a declared skill or tool whose
+		// own directory happens to be called `exports` is not the host's file.
+		expect(isPrivateWorkspacePath("skills/exports/SKILL.md", evaluationFiles, null, [])).toBe(false);
+		expect(isPrivateWorkspacePath("AGENTS.md", evaluationFiles, null, [])).toBe(false);
+	});
+});
+
+describe("ahde export: invocation", () => {
 	it("parses the documented forms", () => {
-		expect(parseCliInvocation(["export", "--training", "--target", "./agent", "--all"])).toEqual({
+		expect(parseCliInvocation(["export", "--target", "./agent", "--all"])).toEqual({
 			kind: "command",
 			command: "export",
 			action: null,
-			flags: { training: "true", target: "./agent", all: "true" },
+			flags: { target: "./agent", all: "true" },
 			positionals: [],
 		});
 		expect(parseCliInvocation([
-			"export", "--training", "--target", "./agent", "--project", "demo",
-			"--eval", "erun_1", "--out", "./training.jsonl", "--min-score", "0.8",
+			"export", "--target", "./agent", "--project", "demo",
+			"--eval", "erun_1", "--out", "./out", "--min-score", "0.8",
 			"--include-failed", "--include-aa",
 		])).toEqual({
 			kind: "command",
 			command: "export",
 			action: null,
 			flags: {
-				training: "true",
 				target: "./agent",
 				project: "demo",
 				eval: "erun_1",
-				out: "./training.jsonl",
+				out: "./out",
 				"min-score": "0.8",
 				"include-failed": "true",
 				"include-aa": "true",
 			},
 			positionals: [],
 		});
+		expect(parseCliInvocation(["export", "--run", "run_1"])).toEqual({
+			kind: "command",
+			command: "export",
+			action: null,
+			flags: { run: "run_1" },
+			positionals: [],
+		});
+	});
+
+	/**
+	 * The bug this pins: a value-less `--all` at the end of the line is invisible
+	 * to a helper that reads the token AFTER a flag, and `--all --include-failed`
+	 * makes one boolean swallow the next. The parser already resolved both into
+	 * `"true"`, so the mapping consumes its map and never re-reads argv.
+	 */
+	it("maps the parser's own flags, boolean flags included", () => {
+		const trailing = commandFlags(["export", "--target", "./agent", "--all"]);
+		expect(datasetExportOptionsFromFlags(trailing, { runsRoot: "/runs" }))
+			.toEqual({ runsRoot: "/runs", all: true });
+
+		const adjacent = commandFlags([
+			"export", "--target", "./agent", "--all", "--include-failed", "--include-aa",
+		]);
+		expect(datasetExportOptionsFromFlags(adjacent, { runsRoot: "/runs" }))
+			.toEqual({ runsRoot: "/runs", all: true, includeFailed: true, includeAa: true });
+
+		const named = commandFlags(["export", "--target", "./agent", "--eval", "erun_1", "--min-score", "80%"]);
+		expect(datasetExportOptionsFromFlags(named, { runsRoot: "/runs" }))
+			.toEqual({ runsRoot: "/runs", evalRunId: "erun_1", minScore: 0.8 });
+
+		const one = commandFlags(["export", "--run", "run_1"]);
+		expect(datasetExportOptionsFromFlags(one, { runsRoot: "/runs", outRoot: "/agent" }))
+			.toEqual({ runsRoot: "/runs", outRoot: "/agent", runId: "run_1" });
+
+		// Every mapped form must survive the module's own selection check.
+		expect(() => exportDataset({ ...datasetExportOptionsFromFlags(trailing, { runsRoot: newRunsRoot() }) }))
+			.not.toThrow();
 	});
 
 	it.each([
-		[["export", "--target", "./agent", "--all"], /missing required flag --training/],
-		[["export", "--training", "--all"], /missing required flag --target/],
-		[["export", "--training", "--target", "./agent"], /either --eval <erun-id> or --all/],
-		[["export", "--training", "--target", "./agent", "--eval", "erun_1", "--all"], /either --eval <erun-id> or --all/],
-		[["export", "--training", "--target", "./agent", "--all", "--min-score", "high"], /--min-score for export must be a pass rate/],
+		[["export", "--target", "./agent"], /exactly one of --run <run-id>, --eval <erun-id>, or --all/],
+		[["export", "--target", "./agent", "--eval", "erun_1", "--all"], /exactly one of --run <run-id>, --eval <erun-id>, or --all/],
+		[["export", "--run", "run_1", "--eval", "erun_1"], /exactly one of --run <run-id>, --eval <erun-id>, or --all/],
+		[["export", "--all", "--min-score", "high"], /--min-score for export must be a pass rate/],
+		[["export", "--all", "--training"], /unknown flag --training for export/],
 	] as const)("refuses %j", (argv, message) => {
 		expect(() => parseCliInvocation(argv)).toThrow(CliInvocationError);
 		expect(() => parseCliInvocation(argv)).toThrow(message);

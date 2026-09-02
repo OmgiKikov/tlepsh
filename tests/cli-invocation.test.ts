@@ -347,3 +347,50 @@ describe("ahde log and ahde watch", () => {
 		expect(() => parseCliInvocation(argv)).toThrow(message);
 	});
 });
+
+/**
+ * The recorded dataset takes exactly one subject. An export that guessed its
+ * own scope would write a file nobody asked for, and a dataset that was
+ * silently short is the failure whoever receives it cannot detect.
+ */
+describe("ahde export", () => {
+	it.each([
+		{
+			name: "one eval run, with every knob",
+			argv: [
+				"export", "--target", "./agent", "--project", "demo", "--eval", "erun_1",
+				"--out", "./out", "--min-score", "80%", "--include-failed", "--include-aa",
+			],
+			flags: {
+				target: "./agent",
+				project: "demo",
+				eval: "erun_1",
+				out: "./out",
+				"min-score": "80%",
+				"include-failed": "true",
+				"include-aa": "true",
+			},
+		},
+		{ name: "one run", argv: ["export", "--run", "run_1"], flags: { run: "run_1" } },
+		// A value-less boolean at the very end of the line still reads as chosen.
+		{ name: "everything", argv: ["export", "--target", "./agent", "--all"], flags: { target: "./agent", all: "true" } },
+	] as const)("parses $name", ({ argv, flags }) => {
+		const parsed = commandInvocation(argv);
+		expect(parsed.command).toBe("export");
+		expect(parsed.flags).toEqual(flags);
+		expect(parsed.positionals).toEqual([]);
+	});
+
+	it.each([
+		[["export", "--target", "./agent"], /export takes exactly one of --run <run-id>, --eval <erun-id>, or --all/],
+		[["export", "--all", "--eval", "erun_1"], /export takes exactly one of --run <run-id>, --eval <erun-id>, or --all/],
+		[["export", "--run", "run_1", "--all"], /export takes exactly one of --run <run-id>, --eval <erun-id>, or --all/],
+		[["export", "--all", "--min-score", "high"], /--min-score for export must be a pass rate such as 90% or 0.9/],
+		[["export", "--all", "--min-score", "120%"], /--min-score for export must be a pass rate such as 90% or 0.9/],
+		// The export is a read of one Target's evidence, not of a candidate.
+		[["export", "--all", "--candidate", "cand-1"], /unknown flag --candidate for export/],
+		[["export", "--all", "erun_1"], /export accepts 0 positional arguments; got 1/],
+	] as const)("rejects %j", (argv, message) => {
+		expect(() => parseCliInvocation(argv)).toThrow(message);
+	});
+});
