@@ -180,6 +180,35 @@ describe("model-facing projection", () => {
 		expect(decision.result.configured[0]?.credentialEnv).toBe("JUDGE_API_KEY");
 	});
 
+	it("hands the model the phrase for the exam, not a verdict it has to interpret", () => {
+		const projected = projectForModel({
+			kind: "verify-candidate",
+			result: {
+				candidate: {
+					sealedHoldout: {
+						executed: true,
+						gatePassed: true,
+						gate: {
+							verdict: "pass",
+							tasks: 15,
+							repetitions: 2,
+							confidence95: { low: -0.11, high: 0.15 },
+							outcome: "no-regression",
+							outcomeLine: "pass · no regression proven, not an improvement either",
+						},
+					},
+				},
+			},
+		}) as { result: { candidate: { sealedHoldout: { gate: Record<string, unknown> } } } };
+		// The one sentence the model may quote about the exam, beside the token
+		// it must not paraphrase.
+		expect(projected.result.candidate.sealedHoldout.gate).toMatchObject({
+			verdict: "pass",
+			outcome: "no-regression",
+			outcomeLine: "pass · no regression proven, not an improvement either",
+		});
+	});
+
 	it("removes credential references even inside otherwise-verbatim claims", () => {
 		const projected = projectForModel({
 			claim: {

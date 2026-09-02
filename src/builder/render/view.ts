@@ -108,10 +108,10 @@ function shippingReadinessLine(view: WorkbenchView, paint: Paint): string | null
 	const needed = view.calibration?.recommendedExamCases ?? null;
 	const cases = readiness.sealedCases;
 	const undersized = needed !== null && cases !== null && cases < needed
-		? ` ${paint.muted(t("exam.size-hint", { cases: plural(cases, "case"), needed: plural(needed, "case") }))}`
-		: "";
+		? t("exam.size-hint", { cases: plural(cases, "case"), needed: plural(needed, "case") })
+		: null;
 	if (readiness.sealedHoldout === "ready") {
-		return undersized === "" ? null : `${paint.dim(t("label.ship-gate"))} ${paint.dim(t("plan.exam.ready"))}${undersized}`;
+		return undersized === null ? null : `${paint.dim(t("label.ship-gate"))} ${paint.muted(undersized)}`;
 	}
 	const state = readiness.sealedHoldout === "missing"
 		? t("ship-gate.missing")
@@ -121,7 +121,9 @@ function shippingReadinessLine(view: WorkbenchView, paint: Paint): string | null
 	// With no exam at all the operator has two ways out and both are named; with
 	// a broken or too-small one they have exactly one, and it is not the judge.
 	const hint = readiness.sealedHoldout === "missing" ? "ship-gate.hint-none" : "ship-gate.hint";
-	return `${paint.dim(t("label.ship-gate"))} ${paint.warning(state)} ${paint.dim(t(hint, { minimum: readiness.minimumTasks }))}${undersized}`;
+	return `${paint.dim(t("label.ship-gate"))} ${paint.warning(state)} ${paint.dim(t(hint, { minimum: readiness.minimumTasks }))}${
+		undersized === null ? "" : ` ${paint.muted(`· ${undersized}`)}`
+	}`;
 }
 
 /**

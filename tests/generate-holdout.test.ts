@@ -122,6 +122,26 @@ function generated(count: number): string {
 	});
 }
 
+/**
+ * A judge that answers the count it was asked for, but loses cases on the way
+ * in: one repeats a development input, one has no input at all.
+ */
+function generatedWithLosses(count: number): string {
+	const cases: unknown[] = [
+		{ id: "dup", input: DEV_CASES[0]!.input, graders: [{ type: "output_contains", text: "срок" }] },
+		{ id: "broken", graders: [{ type: "output_contains", text: "срок" }] },
+	];
+	const good = count - cases.length;
+	for (let index = 0; index < good; index += 1) {
+		cases.push({
+			id: `model-chosen-${index}`,
+			input: `${SENTINEL} синтетический запрос ${index + 1}`,
+			graders: [{ type: "output_contains", text: "срок" }],
+		});
+	}
+	return JSON.stringify({ cases });
+}
+
 async function mockJudge(text: string): Promise<MockModelHandle> {
 	const mock = await startMockModel([{ match: () => true, steps: [{ text }] }]);
 	mocks.push(mock);
@@ -339,6 +359,32 @@ describe("generate-holdout: the exam the judge writes", () => {
 		expect(panel[1]).not.toContain(SENTINEL);
 		expect(panel[2]).toBe("Прочитай, вычисти лишнее, потом /holdout <путь к этому файлу> закроет его.");
 		expect(panel.join("\n")).not.toContain(SENTINEL);
+	});
+
+	it("says on the panel how many cases came back and what was dropped", async () => {
+		const mock = await mockJudge(generatedWithLosses(20));
+		const { workbench } = await project({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+		});
+
+		const result = await workbench.decide(
+			{ kind: "generate-holdout", cases: 20, mode: "seal", reason: "no data to hold out" },
+			gate(),
+		);
+		if (result.kind !== "generate-holdout") throw new Error("wrong kind");
+
+		// 20 asked for, two lost: an exam of 18 that must not read as "wrote 18".
+		expect(result.result).toMatchObject({ cases: 18, requested: 20, dropped: { malformed: 1, duplicate: 1 } });
+		const panel = renderDecision(result, plainPaint);
+		expect(panel[0]).toBe("Exam created 18 cases · written by the judge fixture-provider/fixture-judge");
+		expect(panel[1]).toBe("Exam 18 of 20 requested · 1 duplicate dropped · 1 malformed case dropped");
+		// The Builder reads the same arithmetic, never a rounder number.
+		expect(result.message).toContain("20 were asked for; 2 did not survive validation");
+		expect(panel.join("\n")).not.toContain(SENTINEL);
+
+		setLanguage("ru");
+		const russian = renderDecision(result, plainPaint);
+		expect(russian[1]).toBe("Экзамен 18 из 20 запрошенных · отброшено дубликатов: 1 · отброшено с ошибкой формы: 1");
 	});
 
 	it("records how the exam came to exist, and tells a sealed one from a reviewed one", async () => {

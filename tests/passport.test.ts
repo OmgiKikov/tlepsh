@@ -522,6 +522,22 @@ describe("version passport", () => {
 		expect(page).toContain("**pass · improved** on 18 tasks × 2 repetitions");
 	});
 
+	it("never lets a pass that proved nothing read as an improvement", () => {
+		const projection = passport();
+		const flat: VersionPassport = {
+			...projection,
+			measured: {
+				...projection.measured,
+				sealed: { verdict: "pass", design: { tasks: 18, repetitions: 2 }, outcome: "no-regression" },
+			},
+		};
+		// The same token, the same design, and the honest reading of the interval
+		// the verdict was decided on.
+		expect(renderVersionPassportMarkdown(flat)).toContain(
+			"- sealed guardrail: **pass · no regression proven, not an improvement either** on 18 tasks × 2 repetitions",
+		);
+	});
+
 	it("refuses with a next step when nothing is promoted and no candidate is named", () => {
 		const empty = makeTargetFixture(baseFixtureFiles());
 		mkdirSync(join(empty, "runs"), { recursive: true });

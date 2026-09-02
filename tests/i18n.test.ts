@@ -110,6 +110,8 @@ function makeCandidate(overrides: Partial<WorkbenchCandidateSummary> = {}): Work
 				reasons: [],
 				resources: { costRatio: null, latencyRatio: null, tokenRatio: null },
 				flags: { collapsedTasks: 0 },
+				outcome: "improved",
+				outcomeLine: "pass · лучше",
 			},
 		},
 		judgeAgreement: null,
@@ -367,13 +369,50 @@ describe("ru renders", () => {
 		expect(makeCandidate().status).toBe("evaluated");
 		expect(text).toContain("Разработка было 40% → кандидат 70% (+30 п.п.) · задач 10 · балл 40% → 70%");
 		expect(text).toContain("Вердикт стало лучше · +23 п.п. (95% ДИ +5 п.п. … +35 п.п.) · 10 × 3 · цена ×1.4 · задержка ×0.9");
-		expect(text).toContain("Экзамен пройден · +20 п.п. (95% ДИ +2 п.п. … +38 п.п.) · 20 × 3");
+		// The exam says which finding the pass was; the token `pass` is untouched.
+		expect(text).toContain("Экзамен пройден · лучше · +20 п.п. (95% ДИ +2 п.п. … +38 п.п.) · 20 × 3");
 		expect(text).toContain("Судья не откалиброван · /label");
 		// The tokens tests and scripts match on are untouched by the language.
 		expect(verdictLabel("improved")).toBe("стало лучше");
 		expect(makeCandidate().development?.gate?.verdict).toBe("improved");
 		expect(makeCandidate().sealedHoldout.gate?.verdict).toBe("pass");
 		expect(t("label.sealed-holdout")).toBe("Экзамен");
+	});
+
+	it("says the exam's outcome and its shortfall in Russian", () => {
+		setLanguage("ru");
+		expect(t("exam.outcome-improved")).toBe("лучше");
+		expect(t("exam.outcome-no-regression")).toBe("ухудшения не доказано, улучшения тоже");
+		// What the exam has, what the gate needs, and the difference.
+		expect(t("ship-gate.underpowered", { cases: plural(12, "case"), minimum: 15, missing: 3 }))
+			.toBe("в экзамене 12 кейсов; для выкатки нужно 15 — ещё 3");
+		expect(t("gate.exam-shortfall", { cases: plural(14, "case"), minimum: 15, missing: 1 }))
+			.toBe("в экзамене 14 кейсов; закрытому порогу нужно 15 — ещё 1");
+		expect(t("gate.repetition-shortfall", { minimum: 2, ran: 1, missing: 1 }))
+			.toBe("нужно повторов: 2, прогнали 1 — ещё 1");
+		expect(t("exam.size-for-noise", { cases: plural(35, "case") }))
+			.toBe("чтобы увидеть разницу ±10 п.п. на экзамене, нужно около 35 кейсов (по этому шуму)");
+		expect(t("exam.size-hint", { cases: plural(20, "case"), needed: plural(35, "case") }))
+			.toBe("экзамен 20 кейсов; при таком шуме для ±10 п.п. нужно около 35 кейсов");
+		expect(t("exam.of-requested", { cases: 19, requested: 20 })).toBe("19 из 20 запрошенных");
+		expect(t("exam.dropped-duplicate", { count: 1, dropped: plural(1, "duplicate") }))
+			.toBe("отброшено дубликатов: 1");
+		expect(t("exam.dropped-malformed", { count: 2, dropped: plural(2, "malformed case") }))
+			.toBe("отброшено с ошибкой формы: 2");
+		// Every one of them is Russian all the way through.
+		for (const key of [
+			"exam.outcome-improved",
+			"exam.outcome-no-regression",
+			"ship-gate.underpowered",
+			"gate.exam-shortfall",
+			"gate.repetition-shortfall",
+			"exam.size-for-noise",
+			"exam.size-hint",
+			"exam.of-requested",
+		] as const) {
+			expect(leakedEnglish(t(key, { cases: "", needed: "", minimum: "", missing: "", ran: "", requested: "" })))
+				.toEqual([]);
+		}
 	});
 
 	it("renders a decision result block in Russian", () => {
