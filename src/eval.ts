@@ -2,6 +2,7 @@ import { chmodSync, mkdirSync, opendirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { answerTokens, tokenF1 } from "./domain/tokens.js";
+import { findKbChunk } from "./target/kb-tool.js";
 import {
 	GraderSpec,
 	JudgeGrader,
@@ -229,6 +230,62 @@ function gradeTurnBudget(spec: { max: number }, turns: number): GraderResult {
 		passed,
 		score: passed ? 1 : 0,
 		reason: `agent took ${turns} turn(s), ${passed ? "within" : "over"} the budget of ${spec.max}`,
+	};
+}
+
+/**
+ * Did the answer stand on the source?
+ *
+ * Two ways to pass, and they are different claims. Naming the chunk id
+ * literally is an agent that cited its source; overlapping the chunk's own text
+ * by `minOverlap` is an agent that used it whether or not it said so. Either is
+ * evidence the answer came from the knowledge base rather than the model's
+ * memory, which is the one thing a retrieval case has to establish.
+ *
+ * The chunk text comes from the run's own workspace copy — `runs/<runId>/
+ * workspace/data/kb/**` — so a re-grade months later reads exactly the
+ * documents that run saw, and editing the operator's checkout cannot turn a
+ * recorded failure into a pass. A workspace that no longer carries the chunk
+ * fails with that said out loud rather than passing on an empty comparison.
+ */
+function gradeCitesSource(
+	spec: { chunk: string; minOverlap: number },
+	runDir: string,
+	output: string,
+): GraderResult {
+	const base = { name: "", type: "cites_source" as const };
+	if (output.includes(spec.chunk)) {
+		return { ...base, passed: true, score: 1, reason: `the answer cites ${spec.chunk} by id` };
+	}
+	let chunk;
+	try {
+		chunk = findKbChunk(join(runDir, "workspace"), spec.chunk);
+	} catch (error) {
+		return {
+			...base,
+			passed: false,
+			score: 0,
+			reason: `the run's knowledge base could not be read (${error instanceof Error ? error.message : String(error)})`,
+		};
+	}
+	if (!chunk) {
+		return {
+			...base,
+			passed: false,
+			score: 0,
+			reason: `the run's workspace carries no knowledge-base chunk ${spec.chunk}`,
+		};
+	}
+	const score = tokenF1(normalizeAnswer(output, "lower"), normalizeAnswer(chunk.text, "lower"));
+	const rounded = Math.round(score * 1000) / 1000;
+	const passed = score >= spec.minOverlap;
+	return {
+		...base,
+		passed,
+		score,
+		reason: passed
+			? `the answer overlaps ${spec.chunk} by token-f1 = ${rounded}, at or above ${spec.minOverlap}`
+			: `the answer neither cites ${spec.chunk} nor overlaps it: token-f1 = ${rounded}, below threshold ${spec.minOverlap}`,
 	};
 }
 
@@ -818,6 +875,7 @@ function graderCheckCode(type: GraderSpec["type"]): GraderCheckCode {
 		case "exact": return "reference-exact";
 		case "similarity": return "reference-similarity";
 		case "turn_budget": return "turn-budget";
+		case "cites_source": return "cites-source";
 	}
 }
 
@@ -886,6 +944,8 @@ export async function gradeRun(
 			result = gradeNoSecret(output);
 		} else if (normalizedSpec.type === "turn_budget") {
 			result = gradeTurnBudget(normalizedSpec, agentTurnCount(traceMessages));
+		} else if (normalizedSpec.type === "cites_source") {
+			result = gradeCitesSource(normalizedSpec, runDir, output ?? "");
 		} else if (graderNeedsExpected(normalizedSpec) && !hasReferenceAnswer(task)) {
 			// Checked before any judge call: a case with no reference answer costs
 			// no tokens and never passes on the strength of an empty comparison.

@@ -164,6 +164,7 @@ export function describeGrader(spec: GraderSpec): string {
 			case "exact": return spec.normalize;
 			case "similarity": return `${spec.metric} >= ${spec.threshold}`;
 			case "turn_budget": return `<= ${spec.max} turns`;
+			case "cites_source": return `${spec.chunk} >= ${spec.minOverlap}`;
 		}
 	})();
 	const text = redactTraceText(detail).replace(/\s+/gu, " ").trim();

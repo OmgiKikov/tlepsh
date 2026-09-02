@@ -395,6 +395,7 @@ function categoryFor(checkCode: GraderCheckCode): z.infer<typeof DiagnosisCatego
 		case "turn-budget":
 		case "reference-exact": return "output-contract";
 		case "semantic-rubric":
+		case "cites-source":
 		case "reference-similarity": return "answer-quality";
 	}
 }

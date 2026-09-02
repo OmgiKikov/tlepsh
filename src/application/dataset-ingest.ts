@@ -340,9 +340,11 @@ function substituteGrader(grader: GraderSpec, resolve: (name: string) => string)
 		case "exact":
 		case "similarity":
 		case "turn_budget":
+		case "cites_source":
 			// Reference graders carry no author text beyond their name; the answer
 			// they compare against is the case's own `expected` column. A turn
-			// budget carries a number, which no column can substitute into.
+			// budget carries a number, and a citation carries a chunk id — neither
+			// is prose a column can substitute into.
 			return { ...grader, ...named };
 	}
 }

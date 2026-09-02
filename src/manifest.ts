@@ -157,6 +157,26 @@ export const TurnBudgetGrader = z.strictObject({
 	max: z.number().int().min(1).max(MAX_SIMULATED_USER_TURNS),
 });
 
+/**
+ * Did the answer stand on the source it was supposed to stand on?
+ *
+ * A retrieval agent can be right by accident — it can also be wrong while
+ * quoting the right document. This is the only check that reads the knowledge
+ * base rather than the reference answer: it passes when the answer names the
+ * chunk id literally, or when the answer and the chunk's own text overlap by
+ * `minOverlap` under the same token F1 the similarity grader uses. The chunk is
+ * read from the workspace the graded run actually had, never from the
+ * operator's checkout, so a citation stays checkable after the documents move on.
+ */
+export const CitesSourceGrader = z.strictObject({
+	type: z.literal("cites_source"),
+	name: z.string().optional(),
+	/** `<path>#<ordinal>`, exactly as `kb_search` returns it. */
+	chunk: z.string().min(1).max(300),
+	/** Lowest token-F1 against the chunk text that still counts as standing on it. */
+	minOverlap: z.number().gt(0).lte(1).default(0.35),
+});
+
 export const GraderSpec = z.discriminatedUnion("type", [
 	ToolCalledGrader,
 	OutputContainsGrader,
@@ -166,6 +186,7 @@ export const GraderSpec = z.discriminatedUnion("type", [
 	ExactGrader,
 	SimilarityGrader,
 	TurnBudgetGrader,
+	CitesSourceGrader,
 ]);
 export type GraderSpec = z.infer<typeof GraderSpec>;
 
@@ -1309,6 +1330,8 @@ function graderDetail(spec: GraderSpec): string {
 			return `${spec.metric}>=${spec.threshold}`;
 		case "turn_budget":
 			return `<=${spec.max}turns`;
+		case "cites_source":
+			return `${spec.chunk}>=${spec.minOverlap}`;
 	}
 }
 
