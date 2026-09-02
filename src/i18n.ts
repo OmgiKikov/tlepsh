@@ -1486,6 +1486,11 @@ one would cost more than usual, and then you get a single yes/no.`,
 	// Worded around the count rather than after it: "1 file still carry" is not a
 	// sentence, and this line has to read for one file as well as for five.
 	"readiness.stand-ins": "The template's REPLACE-ME stand-ins are still in {files}: {names} — describe the agent and the Builder replaces them",
+	// lane: honest-judge — an instrument that may say "I cannot tell", and the
+	// four ways it can be missing, dependent, keyless or unreadable.
+	"judge.abstained": "judge unsure: {count}",
+	"mode.title.judge-abstained": "The judge could not tell",
+	"mode.fact.judge-abstained": "{failed} matching observation(s) were failed by a judge that said it could not decide, never by a check the agent missed",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2711,6 +2716,10 @@ const ru: Record<MessageKey, string> = {
 	// lane: template-placeholders
 	"blocker.target-stand-ins": "У агента ещё стоят подставные REPLACE-ME из шаблона в полях {fields} — выбери имя и модель.",
 	"readiness.stand-ins": "{files} ещё с подставными REPLACE-ME из шаблона: {names} — опиши агента, и Билдер их заменит",
+	// lane: honest-judge
+	"judge.abstained": "судья не уверен: {count}",
+	"mode.title.judge-abstained": "Судья не смог решить",
+	"mode.fact.judge-abstained": "совпадающих наблюдений провалено: {failed}, и все — судьёй, который сам сказал, что решить не может, а не проверкой, которую агент не прошёл",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

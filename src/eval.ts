@@ -17,6 +17,7 @@ import {
 	HashSchema,
 	modelFingerprint,
 	axisDifferences,
+	AHDE_EVALUATOR_ID,
 	canonicalJson,
 	hashValue,
 	MAX_CHECK_SUBJECT_CHARS,
@@ -315,17 +316,84 @@ const JUDGE_REFERENCE_SYSTEM =
 	'Ответь строго одной строкой JSON без markdown: {"choice": "A"|"B"|"C"|"D"|"E", "reason": "краткое обоснование"}';
 
 /**
+ * The same two protocols, with the third answer the assertion rubric has always
+ * had. A judge forced to choose between pass and fail on an answer it cannot
+ * read invents a verdict, and an invented verdict is worse than a missing one:
+ * it is indistinguishable from a decided one for everything downstream.
+ *
+ * They are separate constants rather than edits because the strings above
+ * produced every verdict on disk. Which pair a run asks is decided by the
+ * evaluator id and nothing else, so evidence graded under the old id stays
+ * comparable and a regrade of it asks exactly the old question.
+ */
+const JUDGE_SYSTEM_V2 =
+	'Ты — грейдер. Оцени ответ агента на обращение по критерию. ' +
+	'Ответь строго одной строкой JSON без markdown: ' +
+	'{"passed": true|false|"unknown", "reason": "краткое обоснование"}. ' +
+	'"unknown" — когда ответа недостаточно, чтобы решить; не догадывайся.';
+
+const JUDGE_REFERENCE_SYSTEM_V2 =
+	'Ты — грейдер. Сравни фактическое содержание ответа агента с эталонным ответом. ' +
+	'Игнорируй различия в стиле, грамматике, пунктуации и форматировании. ' +
+	'Ответь строго одной строкой JSON без markdown: ' +
+	'{"choice": "A"|"B"|"C"|"D"|"E"|"U", "reason": "краткое обоснование"}. ' +
+	'"U" — когда данных недостаточно, чтобы сравнить; не догадывайся.';
+
+/**
+ * The evaluator id that introduced the abstaining protocols. Under any other
+ * id the judge is asked the frozen questions above, byte for byte.
+ */
+export const JUDGE_ABSTAIN_EVALUATOR_ID = "ahde-evaluator-v3";
+
+/** One judge protocol set: what the three graders ask, under one evaluator id. */
+export interface JudgeProtocolPrompts {
+	rubric: string;
+	reference: string;
+	assertions: string;
+	/** Whether this set offers the judge a third answer. */
+	abstain: boolean;
+}
+
+/**
+ * The prompts one evaluator id asks with. The ONLY selector: nothing else in
+ * this file reads an id, and nothing else may hand a judge a prompt.
+ */
+export function judgePromptsFor(evaluatorId: string): JudgeProtocolPrompts {
+	return evaluatorId === JUDGE_ABSTAIN_EVALUATOR_ID
+		? {
+			rubric: JUDGE_SYSTEM_V2,
+			reference: JUDGE_REFERENCE_SYSTEM_V2,
+			// The assertion rubric has offered "unknown" since it existed, so its
+			// question does not move; only what the host records about it does.
+			assertions: JUDGE_ASSERTIONS_SYSTEM,
+			abstain: true,
+		}
+		: {
+			rubric: JUDGE_SYSTEM,
+			reference: JUDGE_REFERENCE_SYSTEM,
+			assertions: JUDGE_ASSERTIONS_SYSTEM,
+			abstain: false,
+		};
+}
+
+/**
  * The A–E factuality rubric, ported from vitest-evals' `FactualityJudge`:
  * only an outright disagreement with the reference is a failure, because a
  * narrower, a broader and a differently worded answer are all still correct.
+ *
+ * `U` is not part of that rubric: it is the abstention, scored 0 and failing,
+ * and it exists only under the abstaining protocol set.
  */
 const REFERENCE_CHOICE_SCORES = { A: 0.4, B: 0.6, C: 1, D: 0, E: 1 } as const;
-type ReferenceChoice = keyof typeof REFERENCE_CHOICE_SCORES;
+const REFERENCE_ABSTAIN_CHOICE = "U" as const;
+const REFERENCE_CHOICE_SCORES_V2 = { ...REFERENCE_CHOICE_SCORES, [REFERENCE_ABSTAIN_CHOICE]: 0 } as const;
+type ReferenceChoice = keyof typeof REFERENCE_CHOICE_SCORES_V2;
 const REFERENCE_FAILING_CHOICE: ReferenceChoice = "D";
 
-function isReferenceChoice(value: unknown): value is ReferenceChoice {
+function isReferenceChoice(value: unknown, abstain: boolean): value is ReferenceChoice {
 	// hasOwn, not `in`: an inherited key like "toString" is not a rubric choice.
-	return typeof value === "string" && Object.hasOwn(REFERENCE_CHOICE_SCORES, value);
+	return typeof value === "string" &&
+		Object.hasOwn(abstain ? REFERENCE_CHOICE_SCORES_V2 : REFERENCE_CHOICE_SCORES, value);
 }
 
 /**
@@ -436,7 +504,7 @@ function judgeAnswerBlock(subject: JudgeSubject): string[] {
 }
 
 /** Reference and rubric each get their own delimited block, verbatim. */
-function judgeReferencePrompt(subject: JudgeSubject): string {
+function judgeReferencePrompt(subject: JudgeSubject, abstain: boolean): string {
 	return [
 		"<критерий>", subject.rubric ?? "", "</критерий>",
 		"",
@@ -452,6 +520,7 @@ function judgeReferencePrompt(subject: JudgeSubject): string {
 		"C: ответ агента содержит те же фактические сведения, что и эталон.",
 		"D: ответ агента противоречит эталону.",
 		"E: ответы отличаются только в деталях, не влияющих на фактическую сторону.",
+		...(abstain ? ["U: недостаточно данных, чтобы сравнить."] : []),
 		"",
 		'Верни JSON ровно с этими полями: {"choice": "C", "reason": "краткое обоснование выбора"}',
 	].join("\n");
@@ -490,6 +559,23 @@ function judgeRubricPrompt(subject: JudgeSubject): string {
 		].join("\n");
 }
 
+/**
+ * Every message an unreadable judge verdict can carry starts with one of these,
+ * so `judgeVerdictUnreadable` reads a persisted run error rather than matching
+ * four sentences that could drift apart.
+ */
+const JUDGE_UNPARSEABLE = "judge returned unparseable verdict";
+const JUDGE_VERDICT_MISSING = "judge verdict missing";
+
+/**
+ * Did this run's recorded error come from a judge whose answer could not be
+ * read? A reading of evidence already written — never a new error path.
+ */
+export function judgeVerdictUnreadable(error: string | null | undefined): boolean {
+	return typeof error === "string" &&
+		(error.includes(JUDGE_UNPARSEABLE) || error.includes(JUDGE_VERDICT_MISSING));
+}
+
 function judgeJsonObject(text: string): Record<string, unknown> {
 	const stripped = text.replace(/```(?:json)?/g, "").trim();
 	const start = stripped.indexOf("{");
@@ -499,7 +585,7 @@ function judgeJsonObject(text: string): Record<string, unknown> {
 	try {
 		parsed = JSON.parse(raw);
 	} catch {
-		throw new Error(`judge returned unparseable verdict: ${text.slice(0, 120)}`);
+		throw new Error(`${JUDGE_UNPARSEABLE}: ${text.slice(0, 120)}`);
 	}
 	return parsed as Record<string, unknown>;
 }
@@ -511,8 +597,13 @@ function judgeReason(value: unknown): string {
 
 function parseVerdict(text: string): JudgeVerdict {
 	const verdict = judgeJsonObject(text);
+	// An abstention is a decision about the judge's own certainty, so it is
+	// recorded rather than retried: score 0, failing, and marked as unsure.
+	if (verdict.passed === "unknown") {
+		return { passed: false, score: 0, abstained: true, reason: judgeReason(verdict.reason) };
+	}
 	if (typeof verdict.passed !== "boolean") {
-		throw new Error(`judge verdict missing boolean passed: ${text.slice(0, 120)}`);
+		throw new Error(`${JUDGE_VERDICT_MISSING} boolean passed: ${text.slice(0, 120)}`);
 	}
 	return {
 		passed: verdict.passed,
@@ -541,7 +632,7 @@ function assertionAnswer(value: unknown): AssertionAnswer | null {
 function parseAssertionVerdicts(text: string, total: number): AssertionVerdict[] {
 	const body = judgeJsonObject(text);
 	if (!Array.isArray(body.verdicts)) {
-		throw new Error(`judge verdict missing a verdicts array: ${text.slice(0, 120)}`);
+		throw new Error(`${JUDGE_VERDICT_MISSING} a verdicts array: ${text.slice(0, 120)}`);
 	}
 	const byIndex = new Map<number, AssertionVerdict>();
 	for (const entry of body.verdicts) {
@@ -558,18 +649,20 @@ function parseAssertionVerdicts(text: string, total: number): AssertionVerdict[]
 			{ index: offset + 1, answer: "unknown" as const, evidence: "judge returned no verdict for this assertion" });
 }
 
-function parseReferenceVerdict(text: string): JudgeVerdict {
+function parseReferenceVerdict(text: string, abstain: boolean): JudgeVerdict {
 	const verdict = judgeJsonObject(text);
-	if (!isReferenceChoice(verdict.choice)) {
-		throw new Error(`judge verdict missing an A–E choice: ${text.slice(0, 120)}`);
+	if (!isReferenceChoice(verdict.choice, abstain)) {
+		throw new Error(`${JUDGE_VERDICT_MISSING} an A–E choice: ${text.slice(0, 120)}`);
 	}
 	const choice = verdict.choice;
+	const abstained = choice === REFERENCE_ABSTAIN_CHOICE;
 	return {
-		passed: choice !== REFERENCE_FAILING_CHOICE,
-		score: REFERENCE_CHOICE_SCORES[choice],
+		passed: !abstained && choice !== REFERENCE_FAILING_CHOICE,
+		score: REFERENCE_CHOICE_SCORES_V2[choice],
 		// The choice leads the reason so the rubric branch is visible in run.json.
 		reason: `${choice}: ${judgeReason(verdict.reason)}`,
 		choice,
+		...(abstained ? { abstained: true } : {}),
 	};
 }
 
@@ -602,6 +695,12 @@ interface JudgeVerdict {
 	passed: boolean;
 	score: number;
 	reason: string;
+	/**
+	 * The judge said it could not tell. Always failing and scored 0: an
+	 * unanswered check has not been passed. Present only when true, so a
+	 * decided verdict carries nothing extra.
+	 */
+	abstained?: boolean;
 	/** Present only for the A–E reference rubric. */
 	choice?: ReferenceChoice;
 	/** Present only for an assertion rubric, one entry per declared assertion. */
@@ -724,12 +823,17 @@ function foldJury(jurors: readonly JudgeVerdict[], assertionCount: number | null
 		const passed = majority(passedVotes, jury);
 		const spokesman = jurors.find((juror) => juror.passed === passed) ?? jurors[0]!;
 		const score = jurors.reduce((total, juror) => total + juror.score, 0) / jury;
+		// Abstention folds by the same strict majority every other answer does:
+		// one juror out of three who could not tell has been outvoted, and a
+		// jury that mostly could not tell has decided nothing.
+		const abstained = majority(jurors.filter((juror) => juror.abstained === true).length, jury);
 		return {
 			passed,
 			score,
 			reason: jury > 1
 				? `jury ${passedVotes}/${jury} passed · ${spokesman.reason}`
 				: spokesman.reason,
+			...(abstained ? { abstained: true } : {}),
 			...(spokesman.choice ? { choice: spokesman.choice } : {}),
 		};
 	}
@@ -747,6 +851,9 @@ function foldJury(jurors: readonly JudgeVerdict[], assertionCount: number | null
 		passed: failed.length === 0,
 		score: (assertionCount - failed.length) / assertionCount,
 		reason,
+		// One assertion nobody could answer makes the whole rubric's verdict a
+		// verdict the judge did not fully reach.
+		...(decided.some((entry) => entry.verdict.answer === "unknown") ? { abstained: true } : {}),
 		assertions: decided.map((entry) => entry.verdict),
 	};
 }
@@ -812,6 +919,9 @@ async function gradeJudge(
 			passed: verdict.passed,
 			score: verdict.score,
 			reason: verdict.reason,
+			// Absent, never false, when the judge decided: every run.json written
+			// before abstention existed re-validates exactly as it was written.
+			...(verdict.abstained ? { abstained: true } : {}),
 			...(verdict.assertions
 				? {
 					assertions: {
@@ -875,6 +985,9 @@ export async function gradeRun(
 		expected: task.expected,
 	};
 	const results: GraderResult[] = [];
+	// The protocol set this evaluator id asks with, resolved once per run: one
+	// grading never mixes two generations of the same question.
+	const prompts = judgePromptsFor(AHDE_EVALUATOR_ID);
 	const judgeSpend = { calls: 0, tokens: 0, costUsd: 0 };
 	let judgeCalled = false;
 	for (const [index, spec] of task.effectiveGraders.entries()) {
@@ -927,7 +1040,7 @@ export async function gradeRun(
 				judged = await gradeJudge(
 					assertions
 						? {
-							system: JUDGE_ASSERTIONS_SYSTEM,
+							system: prompts.assertions,
 							user: judgeAssertionsPrompt(subject, assertions),
 							// One juror folded alone is that juror's own verdict; the jury
 							// fold in gradeJudge then decides each assertion across jurors.
@@ -939,13 +1052,13 @@ export async function gradeRun(
 						}
 						: normalizedSpec.withReference
 						? {
-							system: JUDGE_REFERENCE_SYSTEM,
-							user: judgeReferencePrompt(subject),
-							parse: parseReferenceVerdict,
+							system: prompts.reference,
+							user: judgeReferencePrompt(subject, prompts.abstain),
+							parse: (text) => parseReferenceVerdict(text, prompts.abstain),
 							jury,
 						}
 						: {
-							system: JUDGE_SYSTEM,
+							system: prompts.rubric,
 							user: judgeRubricPrompt(subject),
 							parse: parseVerdict,
 							jury,

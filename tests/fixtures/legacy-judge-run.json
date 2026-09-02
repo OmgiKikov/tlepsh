@@ -1,0 +1,90 @@
+{
+	"schemaVersion": 1,
+	"runId": "run-legacy-judge",
+	"taskId": "task-refund-window",
+	"repetitionIndex": 0,
+	"label": "solo",
+	"status": "completed",
+	"error": null,
+	"startedAt": "2026-06-02T09:15:00.000Z",
+	"finishedAt": "2026-06-02T09:15:04.000Z",
+	"target": {
+		"id": "support-agent",
+		"gitSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	},
+	"runtime": {
+		"piVersion": "0.84.3",
+		"piSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		"ahdeVersion": "0.1.0",
+		"ahdeCodeHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	},
+	"model": {
+		"provider": "test",
+		"id": "test-model",
+		"api": "openai-completions",
+		"baseUrl": "https://example.invalid/v1",
+		"apiKeyEnv": "TEST_KEY",
+		"thinkingLevel": "off",
+		"params": {},
+		"spec": {}
+	},
+	"execution": {
+		"workspace": "isolated-copy-v1",
+		"tools": [
+			"read"
+		],
+		"environment": [],
+		"sandbox": "none",
+		"network": "deny",
+		"filesystem": "workspace-confined-v1",
+		"resources": {
+			"contextFiles": "disabled",
+			"extensions": "disabled",
+			"promptTemplates": "disabled",
+			"skills": "manifest-only"
+		}
+	},
+	"eval": {
+		"suiteId": "support-suite",
+		"suiteHash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+		"dataset": "development",
+		"datasetHash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	},
+	"trace": {
+		"path": "session.jsonl",
+		"sessionId": null,
+		"sha256": null
+	},
+	"metrics": {
+		"tokens": {
+			"input": 0,
+			"output": 0,
+			"cacheRead": 0,
+			"cacheWrite": 0,
+			"total": 0
+		},
+		"costUsd": 0,
+		"latencyMs": 1,
+		"toolCalls": 0,
+		"toolErrors": 0,
+		"recoveryAttempts": 0
+	},
+	"evalResults": {
+		"graders": [
+			{
+				"name": "rubric: полный и вежливый ответ",
+				"type": "judge",
+				"passed": false,
+				"score": 0,
+				"reason": "срок не назван",
+				"specHash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+				"checkCode": "semantic-rubric"
+			}
+		],
+		"outcome": "fail"
+	},
+	"parent": {
+		"evalRunId": "erun-legacy",
+		"candidateOf": null
+	}
+}

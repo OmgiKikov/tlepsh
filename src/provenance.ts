@@ -89,6 +89,14 @@ export const GraderResultSchema = z
 		 */
 		checkSubject: NonEmptyStringSchema.max(MAX_CHECK_SUBJECT_CHARS).optional(),
 		/**
+		 * The judge said it could not tell, on a protocol that let it say so.
+		 * Absent — never `false` — when the judge decided, so every run.json
+		 * written before this existed re-validates byte for byte and keeps its
+		 * canonical hash. An abstention is always a failure: an unanswered check
+		 * has not been passed, so guessing buys the answer nothing.
+		 */
+		abstained: z.boolean().optional(),
+		/**
 		 * Per-assertion outcome of an assertion rubric, by 1-based index. The
 		 * indexes are structure, the judge's evidence is prose: only these enter
 		 * a stable comparison, and only they belong in a persisted signal.
@@ -101,6 +109,9 @@ export const GraderResultSchema = z
 			.optional(),
 	})
 	.superRefine((result, context) => {
+		if (result.abstained === true && result.passed) {
+			context.addIssue({ code: "custom", path: ["passed"], message: "an abstained judge verdict cannot pass" });
+		}
 		if (result.assertions) {
 			const { total, failed } = result.assertions;
 			if (new Set(failed).size !== failed.length) {
@@ -392,8 +403,13 @@ export function executionFingerprint(
  * It replaces `ahdeCodeHash` as an axis on purpose: the source hash covers all
  * 1.3 MB of AHDE, so a README-adjacent edit used to invalidate every baseline.
  * The exact hash is still recorded in `runtime.ahdeCodeHash` of every record.
+ *
+ * v3: the rubric and reference judges may answer "I cannot tell". The prompts
+ * moved, so every verdict they produce is a verdict to a different question;
+ * `judgePromptsFor` in `eval.ts` keeps the v2 strings byte-identical for any
+ * earlier id, so a regrade of v2 evidence asks the v2 question.
  */
-export const AHDE_EVALUATOR_ID = "ahde-evaluator-v2";
+export const AHDE_EVALUATOR_ID = "ahde-evaluator-v3";
 
 /**
  * The provenance axes compared between two runs. The target git SHA is
