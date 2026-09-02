@@ -396,7 +396,8 @@ describe("background measurements", () => {
 
 		// A second consequential decision is refused with one sentence, and never reaches the Workbench.
 		await registered.get("approve")!.handler("", ctx);
-		expect(notify).toHaveBeenCalledWith("Wait — candidate verification is running (—)", "warning");
+		// The denominator is the whole job the gate priced, before a single run is graded.
+		expect(notify).toHaveBeenCalledWith("Wait — candidate verification is running (0/372)", "warning");
 		expect(decided).toEqual(["run-current"]);
 		await registered.get("jobs")!.handler("", ctx);
 		expect(blocks.at(-1)?.lines[0]).toContain("candidate verification");

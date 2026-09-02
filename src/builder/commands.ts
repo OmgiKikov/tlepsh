@@ -215,14 +215,14 @@ function parsePromote(args: string, command = "promote"): { version: string | nu
 /** Turn Workbench failures into one calm sentence; unknown errors keep their message. */
 export function humanizeCommandError(error: unknown): { message: string; tone: TranscriptTone } {
 	if (error instanceof WorkbenchDecisionDeclinedError) {
-		return { message: "Cancelled — nothing changed.", tone: "info" };
+		return { message: t("error.cancelled"), tone: "info" };
 	}
 	if (error instanceof WorkbenchStaleDecisionError) {
-		return { message: "The subject changed while you were reviewing it. Run the command again to review the current state.", tone: "warning" };
+		return { message: t("error.stale"), tone: "warning" };
 	}
 	if (error instanceof WorkbenchSelectionRequiredError) {
-		const choices = error.choices.length > 0 ? ` Choices: ${error.choices.slice(0, 8).join(", ")}.` : "";
-		return { message: `${error.message}. Ask the Builder to select one (for example “use the first one”).${choices}`, tone: "warning" };
+		const choices = error.choices.length > 0 ? t("error.selection-choices", { choices: error.choices.slice(0, 8).join(", ") }) : "";
+		return { message: `${t("error.selection-required", { message: error.message })}${choices}`, tone: "warning" };
 	}
 	const message = error instanceof Error ? error.message : String(error);
 	return { message: oneLine(message, 600), tone: "error" };
@@ -523,7 +523,7 @@ export function registerAhdeBuilderCommands(
 			lines.push(...handoffLines(result, markerPaint));
 			headline = decisionHeadline(result);
 		} catch {
-			lines = [oneLine(result.message, 600), ...(liveTraceUrl ? [`Live trace retained for 15 minutes: ${liveTraceUrl}`] : [])];
+			lines = [oneLine(result.message, 600), ...(liveTraceUrl ? [t("card.live-trace-retained", { url: liveTraceUrl })] : [])];
 			headline = oneLine(result.message, 200);
 		}
 		// What it cost, from the records the measurement wrote. A decision that
@@ -637,7 +637,12 @@ export function registerAhdeBuilderCommands(
 					try {
 						const result = await decide(ctx, command, input, jobSignal, {
 							onRunEvent: listener,
-							authorized,
+							// The moment the gate approved is the moment the whole job's
+							// planned executions are known, so both counters learn it there.
+							authorized: (authorization) => {
+								observation.plan(authorization.estimate?.executions ?? null);
+								authorized(authorization);
+							},
 						});
 						outcome = result ? "completed" : "aborted";
 						observation.finish(outcome);
@@ -647,7 +652,7 @@ export function registerAhdeBuilderCommands(
 						observation.finish(outcome);
 						if (observation.liveTraceUrl) {
 							try {
-								ctx.ui.notify(`Live trace retained for 15 minutes: ${observation.liveTraceUrl}`, "info");
+								ctx.ui.notify(t("card.live-trace-retained", { url: observation.liveTraceUrl }), "info");
 							} catch {
 								// Preserve the original run error when host notification fails.
 							}
@@ -663,7 +668,7 @@ export function registerAhdeBuilderCommands(
 	};
 
 	const askVersion = async (ctx: ExtensionCommandContext): Promise<string | null> => {
-		const value = await ctx.ui.input("Version to tag (semver, e.g. 0.2.0)", "0.1.0");
+		const value = await ctx.ui.input(t("intent.version-prompt"), "0.1.0");
 		if (value === undefined) return null;
 		return parseVersion(value.trim());
 	};
@@ -786,15 +791,13 @@ export function registerAhdeBuilderCommands(
 		if (refuseWhileBusy(ctx)) return;
 		let view = await workbench.view();
 		if (view.stage !== "candidate-review" && view.stage !== "release-decision") {
-			throw new Error(`/promote is not available during ${stageLabel(view.stage)}; ${nextStep(view)}`);
+			throw new Error(t("error.not-available", { command: "promote", stage: stageLabel(view.stage), next: nextStep(view) }));
 		}
 		const chosen = version ?? await askVersion(ctx);
 		if (!chosen) return;
 		const humanGate = intentGate(ctx, {
-			title: `Promote candidate as v${chosen}`,
-			summary: view.stage === "candidate-review"
-				? `This records your review (recommend promote) and tags the exact verified revision as v${chosen}. Both receipts are written; you confirm once.`
-				: `This tags the exact reviewed revision as v${chosen}.`,
+			title: t("intent.promote.title", { version: chosen }),
+			summary: t(view.stage === "candidate-review" ? "intent.promote.with-review" : "intent.promote.tag-only", { version: chosen }),
 			followUp: "promote-candidate",
 		});
 		if (view.stage === "candidate-review") {
@@ -810,13 +813,11 @@ export function registerAhdeBuilderCommands(
 		if (refuseWhileBusy(ctx)) return;
 		let view = await workbench.view();
 		if (view.stage !== "candidate-review" && view.stage !== "release-decision") {
-			throw new Error(`/reject is not available during ${stageLabel(view.stage)}; ${nextStep(view)}`);
+			throw new Error(t("error.not-available", { command: "reject", stage: stageLabel(view.stage), next: nextStep(view) }));
 		}
 		const humanGate = intentGate(ctx, {
-			title: "Reject candidate",
-			summary: view.stage === "candidate-review"
-				? "This records your review (recommend reject) and rejects the candidate durably. The Target stays at its baseline. Both receipts are written; you confirm once."
-				: "This rejects the reviewed candidate durably. The Target stays at its baseline.",
+			title: t("intent.reject.title"),
+			summary: t(view.stage === "candidate-review" ? "intent.reject.with-review" : "intent.reject.only"),
 			followUp: "reject-candidate",
 		});
 		if (view.stage === "candidate-review") {
@@ -843,55 +844,57 @@ export function registerAhdeBuilderCommands(
 	const offerReviewActions = async (ctx: ExtensionCommandContext, view: WorkbenchView, signal: AbortSignal | undefined): Promise<void> => {
 		if (typeof ctx.ui.select !== "function") return;
 		const detail = view.detail?.aspect === "review" ? view.detail.content : undefined;
+		const looking = t("review.just-looking");
+		const reason = t("review.reason");
 		const choose = async (title: string, choices: string[]): Promise<string | undefined> => {
-			const selected = await ctx.ui.select(title, [...choices, "Just looking"], { signal });
-			return selected === "Just looking" ? undefined : selected;
+			const selected = await ctx.ui.select(title, [...choices, looking], { signal });
+			return selected === looking ? undefined : selected;
 		};
 		switch (view.stage) {
 			case "spec-review": {
-				const choice = await choose("Spec draft", ["Approve this Spec", "Ask for changes"]);
-				if (choice === "Approve this Spec") await simpleDecision(ctx, "approve", { kind: "approve-spec", reason: "Approved from /review" }, signal);
-				else if (choice === "Ask for changes") ctx.ui.notify("Tell the Builder what to change; it will save a new draft for review.", "info");
+				const choice = await choose(t("section.spec-draft"), [t("review.approve-spec"), t("review.ask-changes")]);
+				if (choice === t("review.approve-spec")) await simpleDecision(ctx, "approve", { kind: "approve-spec", reason }, signal);
+				else if (choice === t("review.ask-changes")) ctx.ui.notify(t("review.spec-hint"), "info");
 				return;
 			}
 			case "corpus-review": {
-				const choice = await choose("Eval basket draft", ["Publish this basket", "Ask for changes"]);
-				if (choice === "Publish this basket") await simpleDecision(ctx, "publish", { kind: "publish-corpus", reason: "Published from /review" }, signal);
-				else if (choice === "Ask for changes") ctx.ui.notify("Tell the Builder which cases to add, replace, or regrade.", "info");
+				const choice = await choose(t("section.basket-draft"), [t("review.publish-basket"), t("review.ask-changes")]);
+				if (choice === t("review.publish-basket")) await simpleDecision(ctx, "publish", { kind: "publish-corpus", reason }, signal);
+				else if (choice === t("review.ask-changes")) ctx.ui.notify(t("review.basket-hint"), "info");
 				return;
 			}
 			case "proposal-review": {
-				const choice = await choose("Proposal", ["Apply to a candidate branch", "Discard"]);
+				const choice = await choose(t("panel.proposal-review"), [t("review.apply-branch"), t("review.discard")]);
 				const runId = detail?.kind === "proposal" ? detail.runId : undefined;
-				if (choice === "Apply to a candidate branch") await applyProposal(ctx, signal, null, "Applied from /review", runId, { showReview: false });
-				else if (choice === "Discard") await discardCurrent(ctx, signal, "Discarded from /review");
+				if (choice === t("review.apply-branch")) await applyProposal(ctx, signal, null, reason, runId, { showReview: false });
+				else if (choice === t("review.discard")) await discardCurrent(ctx, signal, reason);
 				return;
 			}
 			case "candidate-verification": {
 				if (detail?.kind === "interrupted-candidate") {
-					const choice = await choose("Interrupted candidate", ["Abandon this attempt"]);
-					if (choice) await discardCurrent(ctx, signal, "Abandoned from /review");
+					const choice = await choose(t("panel.interrupted-candidate"), [t("review.abandon-attempt")]);
+					if (choice) await discardCurrent(ctx, signal, reason);
 				} else {
-					const choice = await choose("Applied proposal", ["Verify the candidate now (/run)"]);
-					if (choice) await runObserved(ctx, "run", { kind: "run-current", repetitions: DEFAULT_REPETITIONS, reason: "Verification from /review" }, signal);
+					const choice = await choose(t("panel.applied-proposal"), [t("review.verify-now")]);
+					if (choice) await runObserved(ctx, "run", { kind: "run-current", repetitions: DEFAULT_REPETITIONS, reason }, signal);
 				}
 				return;
 			}
 			case "candidate-review":
 			case "release-decision": {
-				const choice = await choose("Candidate", ["Ship it…", "Reject"]);
-				if (choice === "Ship it…") await shipCurrent(ctx, signal, null, "Shipped from /review");
-				else if (choice === "Reject") await rejectCurrent(ctx, signal, "Rejected from /review");
+				const choice = await choose(t("candidate.title"), [t("review.ship"), t("review.reject")]);
+				if (choice === t("review.ship")) await shipCurrent(ctx, signal, null, reason);
+				else if (choice === t("review.reject")) await rejectCurrent(ctx, signal, reason);
 				return;
 			}
 			case "candidate-adoption": {
-				const choice = await choose("Promoted candidate", ["Adopt as the active Target"]);
-				if (choice) await simpleDecision(ctx, "adopt", { kind: "adopt-candidate", reason: "Adopted from /review" }, signal);
+				const choice = await choose(t("result.candidate-promoted"), [t("review.adopt")]);
+				if (choice) await simpleDecision(ctx, "adopt", { kind: "adopt-candidate", reason }, signal);
 				return;
 			}
 			case "complete": {
-				const choice = await choose("Cycle complete", ["Start the next cycle"]);
-				if (choice) await simpleDecision(ctx, "next", { kind: "continue-cycle", reason: "Continued from /review" }, signal);
+				const choice = await choose(t("stage.complete"), [t("review.next-cycle")]);
+				if (choice) await simpleDecision(ctx, "next", { kind: "continue-cycle", reason }, signal);
 				return;
 			}
 			default:

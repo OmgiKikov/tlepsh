@@ -7,7 +7,7 @@ import type {
 } from "../../workbench/types.js";
 import { plural, t } from "../../i18n.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
-import { bullets, clean, numbered, oneLine, pluralize, shortHash, shortSha, wrap } from "./format.js";
+import { bullets, clean, numbered, oneLine, shortHash, shortSha, wrap } from "./format.js";
 import type { Paint } from "./paint.js";
 import { renderToolPermissions, toolPermissionsFromDiff } from "./tool-permissions.js";
 import {
@@ -57,9 +57,9 @@ function describe(value: unknown, paint: Paint, indent = "  ", depth = 0): strin
 	for (const [key, item] of Object.entries(bag(value))) {
 		if (item === null || item === undefined) continue;
 		if (Array.isArray(item)) {
-			lines.push(`${indent}${paint.dim(key)} ${paint.dim(`(${pluralize(item.length, "item")})`)}`);
+			lines.push(`${indent}${paint.dim(key)} ${paint.dim(`(${plural(item.length, "item")})`)}`);
 			lines.push(...item.slice(0, 8).map((entry) => `${indent}  • ${text(entry, 120)}`));
-			if (item.length > 8) lines.push(`${indent}  ${paint.dim(`… +${item.length - 8} more`)}`);
+			if (item.length > 8) lines.push(`${indent}  ${paint.dim(t("dialog.more", { count: item.length - 8 }))}`);
 		} else if (typeof item === "object") {
 			if (depth >= 1) {
 				lines.push(`${indent}${paint.dim(key)} ${text(item, 120)}`);
@@ -77,11 +77,11 @@ function describe(value: unknown, paint: Paint, indent = "  ", depth = 0): strin
 function specLines(spec: unknown, paint: Paint): string[] {
 	const value = bag(spec);
 	return [
-		`${paint.dim("Title")} ${paint.bold(text(value.title, 120))}`,
+		`${paint.dim(t("dialog.title"))} ${paint.bold(text(value.title, 120))}`,
 		...wrap(typeof value.purpose === "string" ? value.purpose : "", 92, "  "),
-		`${paint.dim("Users")} ${strings(value.users).map((item) => oneLine(item, 40)).join(", ") || "—"}`,
-		`${paint.dim("Jobs")} ${pluralize(strings(value.jobs).length, "job")} ${paint.dim("·")} ${paint.dim("success criteria")} ${strings(value.successCriteria).length} ${paint.dim("·")} ${paint.dim("constraints")} ${strings(value.constraints).length}`,
-		...(strings(value.openQuestions).length > 0 ? [paint.warning(`Open questions: ${strings(value.openQuestions).length}`)] : []),
+		`${paint.dim(t("dialog.users"))} ${strings(value.users).map((item) => oneLine(item, 40)).join(", ") || "—"}`,
+		`${paint.dim(t("dialog.jobs"))} ${plural(strings(value.jobs).length, "job")} ${paint.dim("·")} ${paint.dim(t("dialog.success-criteria"))} ${strings(value.successCriteria).length} ${paint.dim("·")} ${paint.dim(t("dialog.constraints"))} ${strings(value.constraints).length}`,
+		...(strings(value.openQuestions).length > 0 ? [paint.warning(t("dialog.open-questions", { count: strings(value.openQuestions).length }))] : []),
 	];
 }
 
@@ -141,8 +141,8 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 		case "scaffold-target": {
 			const files = Array.isArray(subject.templateFiles) ? subject.templateFiles : [];
 			return [
-				`${paint.dim("Directory")} ${text(subject.targetPath, 120)}`,
-				`${paint.dim("Files")} ${pluralize(files.length, "file")} from the trusted starter template, plus a fresh Git repository with one commit`,
+				`${paint.dim(t("dialog.directory"))} ${text(subject.targetPath, 120)}`,
+				`${paint.dim(t("dialog.files"))} ${t("dialog.starter-template", { files: plural(files.length, "file") })}`,
 				...numbered(files.map((file) => text(bag(file).path ?? file, 80)), paint, { limit: 12 }),
 			];
 		}
@@ -150,15 +150,15 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			const next = bag(subject.next);
 			const model = bag(next.model ?? subject.model);
 			const lines = [
-				`${paint.dim("Target id")} ${paint.bold(text(next.targetId ?? subject.targetId, 80))}`,
-				`${paint.dim("Model")} ${text(model.provider)}/${text(model.id)} ${paint.dim(`· thinking ${text(model.thinkingLevel)} · timeout ${text(model.timeoutMs)} ms`)}`,
-				`${paint.dim("Credential env")} ${paint.bold(text(model.apiKeyEnv))} ${paint.dim("(name only; set the value in your shell)")}`,
+				`${paint.dim(t("dialog.target-id"))} ${paint.bold(text(next.targetId ?? subject.targetId, 80))}`,
+				`${paint.dim(t("label.model"))} ${text(model.provider)}/${text(model.id)} ${paint.dim(t("dialog.model-detail", { thinking: text(model.thinkingLevel), timeout: text(model.timeoutMs) }))}`,
+				`${paint.dim(t("dialog.credential-env"))} ${paint.bold(text(model.apiKeyEnv))} ${paint.dim(t("dialog.name-only"))}`,
 			];
 			const diff = typeof subject.unifiedDiff === "string"
 				? subject.unifiedDiff
 				: typeof next.manifestDiff === "string" ? next.manifestDiff : typeof subject.diff === "string" ? subject.diff : null;
-			if (diff) lines.push(paint.dim("manifest.yaml diff"), ...renderUnifiedDiff(diff, paint, { maxLines: 80 }));
-			else lines.push(paint.warning("manifest.yaml diff is not available in this subject"));
+			if (diff) lines.push(paint.dim(t("dialog.manifest-diff")), ...renderUnifiedDiff(diff, paint, { maxLines: 80 }));
+			else lines.push(paint.warning(t("dialog.manifest-diff-missing")));
 			return lines;
 		}
 		case "configure-evaluators": {
@@ -166,34 +166,34 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			const previous = bag(subject.previous);
 			const targetModel = bag(subject.targetModel);
 			const lines = [
-				`${paint.dim("Target model")} ${text(targetModel.provider)}/${text(targetModel.id)} ${
-					paint.dim("· the judge may not be this model")
+				`${paint.dim(t("dialog.target-model"))} ${text(targetModel.provider)}/${text(targetModel.id)} ${
+					paint.dim(t("dialog.judge-not-this-model"))
 				}`,
 			];
 			for (const role of ["judge", "simulatedUser"] as const) {
-				const label = role === "judge" ? "Judge" : "Simulated user";
+				const label = t(role === "judge" ? "label.judge-instrument" : "result.simulated-user");
 				const after = next[role];
 				if (!after) {
-					lines.push(`${paint.dim(label)} ${paint.muted("not configured")}`);
+					lines.push(`${paint.dim(label)} ${paint.muted(t("dialog.not-configured"))}`);
 					continue;
 				}
 				const model = bag(after);
 				const before = previous[role] ? bag(previous[role]) : null;
 				const change = before && `${text(before.provider)}/${text(before.id)}` !== `${text(model.provider)}/${text(model.id)}`
-					? ` ${paint.dim(`(was ${text(before.provider)}/${text(before.id)})`)}`
+					? ` ${paint.dim(t("dialog.was", { model: `${text(before.provider)}/${text(before.id)}` }))}`
 					: "";
 				lines.push(
 					`${paint.dim(label)} ${text(model.provider)}/${text(model.id)}${change} ${
-						paint.dim(`· thinking ${text(model.thinkingLevel)} · timeout ${text(model.timeoutMs)} ms`)
+						paint.dim(t("dialog.model-detail", { thinking: text(model.thinkingLevel), timeout: text(model.timeoutMs) }))
 					}`,
-					`${paint.dim("  Credential env")} ${paint.bold(text(model.apiKeyEnv))} ${
-						paint.dim("(name only; set the value in your shell)")
+					`${paint.dim(`  ${t("dialog.credential-env")}`)} ${paint.bold(text(model.apiKeyEnv))} ${
+						paint.dim(t("dialog.name-only"))
 					}`,
 				);
 			}
 			const diff = typeof subject.unifiedDiff === "string" ? subject.unifiedDiff : null;
-			if (diff) lines.push(paint.dim("manifest.yaml diff"), ...renderUnifiedDiff(diff, paint, { maxLines: 80 }));
-			else lines.push(paint.warning("manifest.yaml diff is not available in this subject"));
+			if (diff) lines.push(paint.dim(t("dialog.manifest-diff")), ...renderUnifiedDiff(diff, paint, { maxLines: 80 }));
+			else lines.push(paint.warning(t("dialog.manifest-diff-missing")));
 			return lines;
 		}
 		case "start-testing": {
@@ -242,17 +242,17 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 		}
 		case "approve-spec":
 			return [
-				`${paint.dim("Spec draft")} ${text(subject.draftSpecId)} ${paint.dim(`· ${shortHash(text(subject.draftSnapshotHash))}`)}`,
+				`${paint.dim(t("section.spec-draft"))} ${text(subject.draftSpecId)} ${paint.dim(`· ${shortHash(text(subject.draftSnapshotHash))}`)}`,
 				...specLines(subject.spec, paint),
-				paint.muted("Approval freezes this exact Spec; evaluation cases and proposals will cite it."),
+				paint.muted(t("dialog.approve-freezes")),
 			];
 		case "publish-corpus": {
 			const publication = bag(subject.publication);
 			const tasks = Array.isArray(subject.tasks) ? subject.tasks : [];
 			return [
-				`${paint.dim("Basket")} ${paint.bold(text(publication.name, 80))} ${paint.dim(`· ${pluralize(Number(publication.taskCount ?? tasks.length), "case")} · ${shortHash(text(publication.contentHash))}`)}`,
+				`${paint.dim(t("label.basket"))} ${paint.bold(text(publication.name, 80))} ${paint.dim(`· ${plural(Number(publication.taskCount ?? tasks.length), "case")} · ${shortHash(text(publication.contentHash))}`)}`,
 				...numbered(tasks.map((task) => text(bag(task).input ?? task, 96)), paint, { limit: 10 }),
-				paint.muted("Publishing makes these cases the development evidence for this Spec lineage."),
+				paint.muted(t("dialog.publish-note")),
 			];
 		}
 		/**
@@ -285,25 +285,25 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			const recipe = bag(subject.recipe);
 			const input = bag(recipe.input);
 			const mapping = [
-				`input ${input.column ? `← ${text(input.column, 40)}` : input.template ? `← template ${text(input.template, 60)}` : recipe.dialogue ? "← last user turn" : "—"}`,
+				`input ${input.column ? `← ${text(input.column, 40)}` : input.template ? `← ${t("dialog.template", { name: text(input.template, 60) })}` : recipe.dialogue ? `← ${t("dialog.last-user-turn")}` : "—"}`,
 				...(recipe.expected ? [`expected ← ${text(bag(recipe.expected).column, 40)}`] : []),
 				...(recipe.dialogue ? [`dialogue ← ${text(bag(recipe.dialogue).column, 40)}`] : []),
 				...(strings(recipe.metadata).length > 0 ? [`metadata ← ${strings(recipe.metadata).map((item) => oneLine(item, 24)).join(", ")}`] : []),
 			];
 			const cases = Array.isArray(subject.sampleCases) ? subject.sampleCases : [];
 			const lines = [
-				`${paint.dim("File")} ${paint.bold(text(subject.sourcePath, 60))} ${paint.dim("· basket")} ${text(subject.name, 30)}`,
-				`${paint.dim("Mapping")} ${oneLine(mapping.join(" · "), 100)}`,
-				`${paint.dim("Cases")} ${paint.bold(pluralize(Number(subject.developmentCount ?? cases.length), "development case"))}` +
-					`${Number(subject.skippedRows ?? 0) > 0 ? ` ${paint.dim("·")} ${pluralize(Number(subject.skippedRows), "row")} skipped` : ""}`,
+				`${paint.dim(t("dialog.file"))} ${paint.bold(text(subject.sourcePath, 60))} ${paint.dim(t("dialog.basket-inline"))} ${text(subject.name, 30)}`,
+				`${paint.dim(t("dialog.mapping"))} ${oneLine(mapping.join(" · "), 100)}`,
+				`${paint.dim(t("dialog.cases"))} ${paint.bold(plural(Number(subject.developmentCount ?? cases.length), "development case"))}` +
+					`${Number(subject.skippedRows ?? 0) > 0 ? ` ${paint.dim(t("card.skipped", { rows: plural(Number(subject.skippedRows), "row") }))}` : ""}`,
 				sealed
-					? `${paint.dim("Sealed")} ${paint.bold(pluralize(Number(sealed.count ?? 0), "row"))} drawn with seed ${paint.bold(text(sealed.seed, 24))}${sealed.stratifyBy ? paint.dim(` · stratified by ${text(sealed.stratifyBy, 20)}`) : ""}`
-					: `${paint.dim("Sealed")} ${paint.warning("none")} ${paint.dim("· without a holdout there is no exam for this file")}`,
+					? `${paint.dim(t("label.sealed"))} ${t("dialog.sealed-drawn", { rows: paint.bold(plural(Number(sealed.count ?? 0), "row")), seed: paint.bold(text(sealed.seed, 24)) })}${sealed.stratifyBy ? ` ${paint.dim(t("dialog.stratified", { column: text(sealed.stratifyBy, 20) }))}` : ""}`
+					: `${paint.dim(t("label.sealed"))} ${paint.warning(t("dialog.none"))} ${paint.dim(t("dialog.sealed-none-note"))}`,
 			];
 			if (cases.length > 0) {
-				lines.push(paint.dim("Sample cases"), ...renderDatasetCases(cases as WorkbenchDatasetCase[], paint));
+				lines.push(paint.dim(t("dialog.sample-cases")), ...renderDatasetCases(cases as WorkbenchDatasetCase[], paint));
 			}
-			lines.push(paint.muted("Sealed rows are compiled first and never enter a development case or your context."));
+			lines.push(paint.muted(t("dialog.sealed-first")));
 			return lines;
 		}
 		case "run-eval": {
@@ -312,8 +312,8 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			const tasks = Number(subject.taskCount ?? 0);
 			const repetitions = Number(subject.repetitions ?? 1);
 			return [
-				`${paint.dim("Run")} ${pluralize(tasks, "case")} × ${pluralize(repetitions, "repetition")} = ${paint.bold(`${tasks * repetitions} Target executions`)} ${paint.dim("· each one calls the Target model")}`,
-				`${paint.dim("Target")} ${text(target.id)} ${paint.dim(`@ ${shortSha(text(target.gitSha, 40))}`)} ${paint.dim("· basket")} ${text(corpus.id)} ${paint.dim(`(${pluralize(Number(corpus.taskCount ?? tasks), "case")})`)}`,
+				`${paint.dim(t("label.run"))} ${t("confirm.start-testing.run", { cases: plural(tasks, "case"), repetitions: plural(repetitions, "repetition"), executions: paint.bold(plural(tasks * repetitions, "execution")) })} ${paint.dim(t("dialog.each-calls-target"))}`,
+				`${paint.dim(t("section.target"))} ${text(target.id)} ${paint.dim(`@ ${shortSha(text(target.gitSha, 40))}`)} ${paint.dim(t("dialog.basket-inline"))} ${text(corpus.id)} ${paint.dim(`(${plural(Number(corpus.taskCount ?? tasks), "case")})`)}`,
 			];
 		}
 		case "calibrate": {
@@ -322,10 +322,10 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			const tasks = Number(corpus.taskCount ?? 0);
 			const repetitions = Number(subject.repetitions ?? 1);
 			return [
-				`${paint.dim("Calibrate noise")} run this exact revision twice ${paint.dim("· nothing is promoted")}`,
-				`${paint.dim("Cost")} ${pluralize(tasks, "case")} × ${pluralize(repetitions, "repetition")} = ${paint.bold(`${2 * tasks * repetitions} Target executions`)} ${paint.dim("· each one calls the Target model")}`,
-				`${paint.dim("Target")} ${text(target.id, 60)} ${paint.dim(`@ ${shortSha(text(target.gitSha, 40))}`)} ${paint.dim("· basket")} ${text(corpus.id, 60)}`,
-				paint.muted("A/A measures how much the agent disagrees with itself, so later deltas can be believed."),
+				`${paint.dim(t("dialog.calibrate-noise"))} ${t("dialog.calibrate-twice")} ${paint.dim(t("dialog.nothing-promoted"))}`,
+				`${paint.dim(t("label.cost"))} ${t("confirm.start-testing.run", { cases: plural(tasks, "case"), repetitions: plural(repetitions, "repetition"), executions: paint.bold(plural(2 * tasks * repetitions, "execution")) })} ${paint.dim(t("dialog.each-calls-target"))}`,
+				`${paint.dim(t("section.target"))} ${text(target.id, 60)} ${paint.dim(`@ ${shortSha(text(target.gitSha, 40))}`)} ${paint.dim(t("dialog.basket-inline"))} ${text(corpus.id, 60)}`,
+				paint.muted(t("dialog.aa-note")),
 			];
 		}
 		case "tool-authoring": {
@@ -343,7 +343,7 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 					environment: credentials.map((entry) => text(entry.environment, 60)),
 					...(subject.setup ? { setup: { network: bag(subject.setup).network === "allow" ? "allow" : "deny" } } : { setup: null }),
 				}], paint),
-				`${paint.dim(t("label.package"))} ${pluralize(strings(subject.files).length, "file")} ${paint.dim(`· ${t("label.contract-tests")}`)} ${strings(subject.contractTests).join(", ")}`,
+				`${paint.dim(t("label.package"))} ${plural(strings(subject.files).length, "file")} ${paint.dim(`· ${t("label.contract-tests")}`)} ${strings(subject.contractTests).join(", ")}`,
 				paint.muted(t("confirm.tool-authoring.secrets")),
 			];
 		}
@@ -374,21 +374,21 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			];
 		}
 		case "discard-proposal":
-			return [...describe(subject.subject ?? subject, paint), paint.muted("Discarding is durable; the same proposal cannot be applied later.")];
+			return [...describe(subject.subject ?? subject, paint), paint.muted(t("dialog.discard-note"))];
 		case "verify-candidate": {
 			const holdout = bag(subject.sealedHoldout);
 			const development = bag(subject.developmentCorpus);
 			const repetitions = Number(subject.repetitions ?? 1);
 			return [
-				`${paint.dim("Matched experiment")} baseline ${shortSha(text(subject.baseTargetSha, 40))} vs candidate ${paint.bold(shortSha(text(subject.candidateSha, 40)))} ${paint.dim(`· ${pluralize(repetitions, "repetition")}`)}`,
+				`${paint.dim(t("dialog.matched-experiment"))} ${t("dialog.matched-detail", { baseline: shortSha(text(subject.baseTargetSha, 40)), candidate: paint.bold(shortSha(text(subject.candidateSha, 40))) })} ${paint.dim(`· ${plural(repetitions, "repetition")}`)}`,
 				// The count first: this is the number of the operator's own cases both
 				// arms will run, and reading it here is how they catch a basket that is
 				// not the one they wrote.
-				`${paint.dim("Development basket")} ${development.id
-					? `${pluralize(Number(development.taskCount ?? 0), "case")} ${paint.dim(`· ${text(development.id)} (${shortHash(text(development.hash))})`)}`
-					: paint.muted("none")}`,
-				`${paint.dim("Sealed holdout")} ${pluralize(Number(holdout.taskCount ?? 0), "case")} ${paint.dim("· identity stays evaluator-only")}`,
-				paint.muted("Both revisions run every case; the Builder never sees sealed content."),
+				`${paint.dim(t("dialog.development-basket"))} ${development.id
+					? `${plural(Number(development.taskCount ?? 0), "case")} ${paint.dim(`· ${text(development.id)} (${shortHash(text(development.hash))})`)}`
+					: paint.muted(t("dialog.none"))}`,
+				`${paint.dim(t("label.sealed-holdout"))} ${plural(Number(holdout.taskCount ?? 0), "case")} ${paint.dim(t("dialog.sealed-identity"))}`,
+				paint.muted(t("dialog.both-revisions")),
 			];
 		}
 		case "abandon-candidate":
@@ -404,23 +404,23 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 				? renderCandidate({ ...subject.candidate, proposal }, paint)
 				: describe(subject.candidate, paint);
 			if (confirmation.kind === "review-candidate") lines.push(`${paint.dim(t("label.recommendation"))} ${paint.bold(text(subject.recommendation))}`);
-			if (confirmation.kind === "promote-candidate") lines.push(`${paint.dim(t("label.tag"))} ${paint.success(text(subject.tag))} ${paint.dim("· annotated tag on the exact candidate revision")}`);
+			if (confirmation.kind === "promote-candidate") lines.push(`${paint.dim(t("label.tag"))} ${paint.success(text(subject.tag))} ${paint.dim(t("dialog.annotated-tag"))}`);
 			if (confirmation.kind === "adopt-candidate") {
 				const adoption = bag(subject.adoption);
 				const branch = bag(adoption.branch);
 				const revision = bag(bag(adoption.candidate).revision);
 				const baseline = bag(bag(adoption.candidate).baseline);
 				const changed = strings(bag(adoption.candidate).changedFiles);
-				lines.push(`${paint.dim("Fast-forward")} branch ${paint.bold(text(branch.name))} ${shortSha(text(baseline.sha, 40))} → ${paint.success(shortSha(text(revision.sha, 40)))}`);
-				lines.push(`${paint.dim("Changed files")} ${changed.map((path) => oneLine(path, 60)).join(", ") || "—"}`);
-				lines.push(paint.muted("Only a clean worktree at the baseline is fast-forwarded; nothing is rebased or merged."));
+				lines.push(`${paint.dim(t("dialog.fast-forward"))} ${t("result.branch")} ${paint.bold(text(branch.name))} ${shortSha(text(baseline.sha, 40))} → ${paint.success(shortSha(text(revision.sha, 40)))}`);
+				lines.push(`${paint.dim(t("dialog.changed-files"))} ${changed.map((path) => oneLine(path, 60)).join(", ") || "—"}`);
+				lines.push(paint.muted(t("dialog.fast-forward-note")));
 			}
 			if (confirmation.kind === "continue-cycle") {
 				const continuation = bag(subject.continuation);
-				lines.push(`${paint.dim("Active Target")} ${shortSha(text(continuation.activeTargetSha, 40))} ${paint.dim("·")} ${text(continuation.branchRef)}`);
-				lines.push(paint.muted("Closing the cycle releases this candidate from focus; evidence stays immutable."));
+				lines.push(`${paint.dim(t("dialog.active-target"))} ${shortSha(text(continuation.activeTargetSha, 40))} ${paint.dim("·")} ${text(continuation.branchRef)}`);
+				lines.push(paint.muted(t("dialog.close-cycle-note")));
 			}
-			if (confirmation.kind === "abandon-candidate") lines.push(paint.muted("Abandoning records that this attempt produced no evidence; the applied proposal can be verified again."));
+			if (confirmation.kind === "abandon-candidate") lines.push(paint.muted(t("dialog.abandon-note")));
 			return lines;
 		}
 		default:

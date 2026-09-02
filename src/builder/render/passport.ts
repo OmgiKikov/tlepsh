@@ -4,7 +4,7 @@ import {
 	judgeSummaryLine,
 	type ShippedVersionPassport,
 } from "../../application/version-passport.js";
-import { plural, t } from "../../i18n.js";
+import { plural, t, verdictLabel } from "../../i18n.js";
 import { bullets, oneLine, section, shortHash, shortSha, wrap } from "./format.js";
 import { passportPredictionLine, predictionCalibrationLine } from "./prediction.js";
 import type { Paint } from "./paint.js";
@@ -34,26 +34,26 @@ function ratio(value: number | null): string {
 export function renderVersionPassport(passport: ShippedVersionPassport, paint: Paint): string[] {
 	const lines: string[] = [
 		`${section(`${passport.agent} ${passport.version}`, paint)} ${paint.dim(passport.at.slice(0, 10))}`,
-		`${paint.dim("Revisions")} ${shortSha(passport.baselineSha)} → ${paint.bold(shortSha(passport.candidateSha))} ${
+		`${paint.dim(t("passport.revisions"))} ${shortSha(passport.baselineSha)} → ${paint.bold(shortSha(passport.candidateSha))} ${
 			paint.dim("·")
-		} ${paint.dim("model")} ${passport.model ? oneLine(`${passport.model.provider}/${passport.model.id}`, 50) : "—"}`,
+		} ${paint.dim(t("passport.model"))} ${passport.model ? oneLine(`${passport.model.provider}/${passport.model.id}`, 50) : "—"}`,
 		"",
-		section("Promised", paint),
+		section(t("passport.promised"), paint),
 	];
 	if (!passport.promised) {
-		lines.push(paint.muted("No approved Spec is bound to this version."));
+		lines.push(paint.muted(t("passport.no-spec")));
 	} else {
 		lines.push(paint.bold(oneLine(passport.promised.title, LINE_WIDTH)));
 		lines.push(...wrap(passport.promised.purpose, 96, "  "));
-		lines.push(paint.dim("Success criteria"));
+		lines.push(paint.dim(t("passport.success-criteria")));
 		lines.push(...bullets(
-			passport.promised.successCriteria.length > 0 ? passport.promised.successCriteria : ["none stated"],
+			passport.promised.successCriteria.length > 0 ? passport.promised.successCriteria : [t("passport.none-stated")],
 			paint,
 			{ limit: 10, max: 100 },
 		));
-		lines.push(paint.dim("Constraints"));
+		lines.push(paint.dim(t("passport.constraints")));
 		lines.push(...bullets(
-			passport.promised.constraints.length > 0 ? passport.promised.constraints : ["none stated"],
+			passport.promised.constraints.length > 0 ? passport.promised.constraints : [t("passport.none-stated")],
 			paint,
 			{ limit: 10, max: 100 },
 		));
@@ -62,50 +62,60 @@ export function renderVersionPassport(passport: ShippedVersionPassport, paint: P
 	const development = passport.measured.development;
 	const sealed = passport.measured.sealed;
 	const resources = passport.measured.resources;
-	lines.push("", section("Measured", paint));
-	lines.push(`${paint.dim("Development")} ${oneLine(developmentSummaryLine(development), LINE_WIDTH - 12)}`);
+	lines.push("", section(t("passport.measured"), paint));
+	lines.push(`${paint.dim(t("label.development"))} ${oneLine(developmentSummaryLine(development), LINE_WIDTH - 12)}`);
 	if (development) {
-		lines.push(`${paint.dim("Design")} ${development.tasks} cases × ${development.repetitions} repetitions${
-			development.excludedTasks > 0 ? paint.warning(` · ${development.excludedTasks} excluded`) : ""
+		lines.push(`${paint.dim(t("calibration.design"))} ${t("passport.design", {
+			tasks: plural(development.tasks, "case"),
+			repetitions: plural(development.repetitions, "repetition"),
+		})}${
+			development.excludedTasks > 0 ? paint.warning(t("passport.excluded", { count: development.excludedTasks })) : ""
 		}`);
 	}
-	lines.push(`${paint.dim("Sealed exam")} ${sealed
-		? `${paint.bold(sealed.verdict)} ${paint.dim(`on ${sealed.tasks} × ${sealed.repetitions} · contents stay evaluator-only`)}`
-		: paint.warning("no promotion-grade sealed evidence on this record")}`);
+	lines.push(`${paint.dim(t("passport.sealed-exam"))} ${sealed
+		? `${paint.bold(verdictLabel(sealed.verdict))} ${paint.dim(t("passport.sealed-shape", { tasks: sealed.tasks, repetitions: sealed.repetitions }))}`
+		: paint.warning(t("passport.sealed-none"))}`);
 	const judgeSpend = judgeSpendLine(resources);
-	lines.push(`${paint.dim("Resources")} cost ${ratio(resources?.costRatio ?? null)} ${paint.dim("·")} latency ${
+	lines.push(`${paint.dim(t("passport.resources"))} ${t("unit.cost-ratio")} ${ratio(resources?.costRatio ?? null)} ${paint.dim("·")} ${t("unit.latency-ratio")} ${
 		ratio(resources?.latencyRatio ?? null)
-	} ${paint.dim("·")} tokens ${ratio(resources?.tokenRatio ?? null)}${
+	} ${paint.dim("·")} ${t("unit.token-ratio")} ${ratio(resources?.tokenRatio ?? null)}${
 		judgeSpend === null ? "" : ` ${paint.dim("·")} ${judgeSpend}`
 	}`);
 	// What this version promised before anyone measured it.
 	const predicted = passportPredictionLine(passport.measured.predicted, paint);
 	if (predicted) lines.push(predicted);
 
-	lines.push("", section("Judge", paint));
+	lines.push("", section(t("label.judge-instrument"), paint));
 	lines.push(passport.judge
-		? `${paint.dim("Judge")} ${oneLine(judgeSummaryLine(passport.judge), LINE_WIDTH - 8)}`
-		: `${paint.dim("Judge")} ${paint.warning("not calibrated")} ${paint.dim("· ahde label checks it against your own eyes")}`);
+		? `${paint.dim(t("label.judge-instrument"))} ${oneLine(judgeSummaryLine(passport.judge), LINE_WIDTH - 8)}`
+		: `${paint.dim(t("label.judge-instrument"))} ${paint.warning(t("judge.not-calibrated"))} ${paint.dim(t("passport.judge-uncalibrated-hint"))}`);
 
-	lines.push("", section("Known limits", paint));
+	lines.push("", section(t("passport.known-limits"), paint));
 	if (passport.limits.unresolvedModes.length === 0) {
-		lines.push(paint.dim("Unresolved"), ...bullets(["nothing this change targeted was left unresolved"], paint, { limit: 1 }));
+		lines.push(paint.dim(t("passport.unresolved")), ...bullets([t("passport.nothing-unresolved")], paint, { limit: 1 }));
 	} else {
-		lines.push(paint.warning("Still unresolved"));
+		lines.push(paint.warning(t("passport.still-unresolved")));
 		lines.push(...bullets(passport.limits.unresolvedModes, paint, { limit: 5, max: 100 }));
 		if (passport.limits.unresolvedOmitted > 0) {
-			lines.push(`  ${paint.dim(`… +${passport.limits.unresolvedOmitted} more`)}`);
+			lines.push(`  ${paint.dim(t("dialog.more", { count: passport.limits.unresolvedOmitted }))}`);
 		}
 	}
 	const noise = passport.limits.noise;
-	lines.push(`${paint.dim("Noise")} ${noise
-		? `A/A ${noise.verdict} ${paint.dim(`· 95% CI ${points(noise.confidence95.low)} … ${points(noise.confidence95.high)} · flip ${
-			percent(noise.flipRate)
-		} on ${noise.tasks} × ${noise.repetitions}`)}`
-		: paint.muted("never measured on this revision")}`);
-	lines.push(`${paint.dim("Data")} basket ${passport.limits.developmentCorpus
+	lines.push(`${paint.dim(t("label.noise"))} ${noise
+		? paint.dim(t("passport.noise-shape", {
+			verdict: verdictLabel(noise.verdict),
+			ci: t("unit.ci"),
+			low: points(noise.confidence95.low),
+			high: points(noise.confidence95.high),
+			flipWord: t("noise.flip"),
+			flip: percent(noise.flipRate),
+			tasks: noise.tasks,
+			repetitions: noise.repetitions,
+		}))
+		: paint.muted(t("passport.noise-never"))}`);
+	lines.push(`${paint.dim(t("passport.data"))} ${t("passport.data-basket")} ${passport.limits.developmentCorpus
 		? `${oneLine(passport.limits.developmentCorpus.id, 24)} ${paint.dim(`(${shortHash(passport.limits.developmentCorpus.hash)})`)}`
-		: "—"} ${paint.dim("·")} exam ${plural(passport.limits.sealedTasks, "case")}${
+		: "—"} ${paint.dim(t("passport.data-exam"))} ${plural(passport.limits.sealedTasks, "case")}${
 		// Who wrote the questions, when a receipt says so. It changes what the
 		// verdict is worth, so it belongs beside the count and not in a footnote.
 		passport.limits.sealedOrigin
@@ -113,28 +123,30 @@ export function renderVersionPassport(passport: ShippedVersionPassport, paint: P
 				? "passport.exam-generated-reviewed"
 				: "passport.exam-generated")}`)}`
 			: ""
-	} ${paint.dim("· identity evaluator-only")}`);
+	} ${paint.dim(t("passport.identity-evaluator-only"))}`);
 
 	const provenance = passport.provenance;
-	lines.push("", section("Provenance", paint));
-	lines.push(`${paint.dim("Candidate")} ${oneLine(provenance.candidateId, 40)} ${paint.dim("· experiment")} ${
+	lines.push("", section(t("passport.provenance"), paint));
+	lines.push(`${paint.dim(t("candidate.title"))} ${oneLine(provenance.candidateId, 40)} ${paint.dim(t("passport.experiment"))} ${
 		oneLine(provenance.experimentId, 40)
 	}`);
-	lines.push(`${paint.dim("Spec")} ${oneLine(provenance.approvedSpecId ?? "—", 24)} ${paint.dim("· proposal")} ${
+	lines.push(`${paint.dim(t("label.spec"))} ${oneLine(provenance.approvedSpecId ?? "—", 24)} ${paint.dim(`· ${t("result.proposal-word")}`)} ${
 		oneLine(provenance.proposalRunId ?? "—", 24)
 	} ${provenance.proposalSha256 ? paint.dim(`(${shortHash(provenance.proposalSha256)})`) : ""}`);
-	lines.push(`${paint.dim("Applied by")} ${oneLine(provenance.appliedBy ?? "—", 40)} ${
+	lines.push(`${paint.dim(t("passport.applied-by"))} ${oneLine(provenance.appliedBy ?? "—", 40)} ${
 		provenance.appliedVia
-			? paint.warning(`via the ${provenance.appliedVia.replace("-", " ")} — no diff was shown one by one`)
-			: paint.dim("who read the exact diff")
+			? paint.warning(t("passport.applied-via", {
+				via: t(provenance.appliedVia === "improvement-loop" ? "candidate.applied-by-loop" : "candidate.applied-by-search"),
+			}))
+			: paint.dim(t("passport.applied-read-diff"))
 	}`);
-	lines.push(`${paint.dim("Reviewed by")} ${oneLine(provenance.reviewedBy ?? "—", 40)} ${paint.dim("· promoted by")} ${
+	lines.push(`${paint.dim(t("passport.reviewed-by"))} ${oneLine(provenance.reviewedBy ?? "—", 40)} ${paint.dim(t("passport.promoted-by"))} ${
 		oneLine(provenance.promotedBy ?? "—", 40)
 	}`);
 	lines.push(predictionCalibrationLine(provenance.predictionCalibration, paint));
 	if (provenance.reason) lines.push(...wrap(`“${provenance.reason}”`, 96, "  "));
 	if (passport.warnings.length > 0) {
-		lines.push("", paint.warning("Could not be read"));
+		lines.push("", paint.warning(t("passport.unreadable")));
 		lines.push(...bullets(passport.warnings, paint, { limit: 6, max: 140 }));
 	}
 	return lines;

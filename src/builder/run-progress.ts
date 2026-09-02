@@ -1,19 +1,26 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { t, verdictLabel } from "../i18n.js";
 import type { RunEvent, RunEventListener } from "../run-events.js";
 import { sanitizeTerminalText } from "../trace.js";
 
 const UI_KEY = "ahde-run-progress";
-const HEADER = "AHDE · provisional development trace";
 // Pi renders at most ten entries from a string-array widget.
 const MAX_WIDGET_LINES = 10;
 const MAX_WIDGET_BYTES = 32 * 1024;
 const MAX_LINE_BYTES = 8 * 1024;
-const ASSISTANT_PREFIX = "assistant · ";
 
 type RunProgressUi = Pick<ExtensionUIContext, "setStatus" | "setWidget">;
 
 export interface RunProgressPresenter {
 	onRunEvent: RunEventListener;
+	/**
+	 * Planned Target executions for the whole job, as the estimate the human
+	 * gate priced states them: both arms over the development basket and the
+	 * sealed exam, plus the cheap-check screen when one runs. Without it the
+	 * denominator is one eval run's own total, which a two-arm verification
+	 * blows past — `graded 180/90`.
+	 */
+	plan(executions: number | null): void;
 	dispose(): void;
 }
 
@@ -82,9 +89,10 @@ export function createRunProgressPresenter(
 	ui: RunProgressUi,
 	options: RunProgressPresenterOptions = {},
 ): RunProgressPresenter {
+	const assistantPrefix = t("trace.prefix.assistant");
 	const frameHeader = [
-		HEADER,
-		...(options.liveTraceUrl ? [`open live trace · ${sanitizeTerminalText(options.liveTraceUrl)}`] : []),
+		t("trace.header"),
+		...(options.liveTraceUrl ? [t("trace.open-live", { url: sanitizeTerminalText(options.liveTraceUrl) })] : []),
 	];
 	const maxTraceLines = MAX_WIDGET_LINES - frameHeader.length;
 	const traceLines: string[] = [];
@@ -120,18 +128,18 @@ export function createRunProgressPresenter(
 	// Concurrent runs interleave, so an open assistant line may only be
 	// continued by the run that opened it; anything else starts its own line.
 	const appendAssistant = (runId: string, delta: string, truncated: boolean): void => {
-		const chunks = splitLines(`${delta}${truncated ? " …[truncated]" : ""}`);
+		const chunks = splitLines(`${delta}${truncated ? t("trace.truncated") : ""}`);
 		const first = chunks.shift() ?? "";
 		if (assistantOpen === runId && traceLines.length > 0) {
-			const previous = traceLines.at(-1) ?? ASSISTANT_PREFIX;
-			const previousBody = previous.startsWith(ASSISTANT_PREFIX)
-				? previous.slice(ASSISTANT_PREFIX.length)
+			const previous = traceLines.at(-1) ?? assistantPrefix;
+			const previousBody = previous.startsWith(assistantPrefix)
+				? previous.slice(assistantPrefix.length)
 				: previous;
-			traceLines[traceLines.length - 1] = fitLine(ASSISTANT_PREFIX, `${previousBody}${first}`, true);
+			traceLines[traceLines.length - 1] = fitLine(assistantPrefix, `${previousBody}${first}`, true);
 		} else {
-			traceLines.push(fitLine(ASSISTANT_PREFIX, first, true));
+			traceLines.push(fitLine(assistantPrefix, first, true));
 		}
-		for (const chunk of chunks) traceLines.push(fitLine(ASSISTANT_PREFIX, chunk, true));
+		for (const chunk of chunks) traceLines.push(fitLine(assistantPrefix, chunk, true));
 		assistantOpen = runId;
 		render();
 	};
@@ -141,6 +149,8 @@ export function createRunProgressPresenter(
 	// are still in flight — the ordinal of whichever run reported last is noise.
 	const running = new Set<string>();
 	let progress: { total: number; taskId: string } | null = null;
+	// The job's own planned total, once the gate that priced it approved.
+	let planned: number | null = null;
 	const progressBar = (done: number, total: number, width = 12): string => {
 		const ratio = total > 0 ? Math.min(1, Math.max(0, done / total)) : 0;
 		const filled = Math.round(ratio * width);
@@ -148,12 +158,21 @@ export function createRunProgressPresenter(
 	};
 	const tally = (): string => `✓${counts.pass} ✗${counts.fail}${counts.error > 0 ? ` !${counts.error}` : ""}`;
 	const progressLine = (): string => {
-		if (!progress) return "AHDE run · starting";
-		return `AHDE run graded ${counts.graded}/${progress.total} · running ${running.size} ` +
-			`${progressBar(counts.graded, progress.total)} · ${tally()} · ${progress.taskId}`;
+		if (!progress) return t("status.run-starting");
+		// Never claim fewer planned executions than have already been graded: an
+		// estimate that undercounts shrinks the bar, it does not lie about it.
+		const total = Math.max(planned ?? progress.total, counts.graded);
+		return t("status.run-progress", {
+			graded: counts.graded,
+			total,
+			running: running.size,
+			bar: progressBar(counts.graded, total),
+			tally: tally(),
+			task: progress.taskId,
+		});
 	};
 	const status = (activity: string): void => {
-		setStatus(`${progressLine()} · ${activity}`);
+		setStatus(t("status.activity", { line: progressLine(), activity }));
 	};
 	const position = (event: RunEvent): string => `${event.run.ordinal}/${event.run.total}`;
 	const onRunEvent: RunEventListener = (event) => {
@@ -163,52 +182,59 @@ export function createRunProgressPresenter(
 		switch (event.type) {
 			case "run_started":
 				running.add(event.run.runId);
-				status("started");
-				appendBlock("run · ", `started ${run} · ${event.run.taskId}`);
+				status(t("status.started"));
+				appendBlock(t("trace.prefix.run"), t("trace.started", { position: run, task: event.run.taskId }));
 				break;
 			case "assistant_delta":
-				status("assistant");
+				status(t("status.assistant"));
 				appendAssistant(event.run.runId, event.delta, event.truncated);
 				break;
 			case "tool_started":
-				status(`tool ${event.toolName}`);
+				status(t("status.tool", { tool: event.toolName }));
 				appendBlock(
-					`tool → ${event.toolName} · `,
-					`${event.arguments}${event.truncated ? " …[truncated]" : ""}`,
+					t("trace.prefix.tool-call", { tool: event.toolName }),
+					`${event.arguments}${event.truncated ? t("trace.truncated") : ""}`,
 				);
 				break;
 			case "tool_finished":
-				status(`tool ${event.toolName} ${event.isError ? "failed" : "done"}`);
+				status(t(event.isError ? "status.tool-failed" : "status.tool-done", { tool: event.toolName }));
 				appendBlock(
-					`tool ${event.isError ? "✗" : "✓"} ${event.toolName} · `,
-					`${event.output}${event.truncated ? " …[truncated]" : ""}`,
+					t(event.isError ? "trace.prefix.tool-failed" : "trace.prefix.tool-done", { tool: event.toolName }),
+					`${event.output}${event.truncated ? t("trace.truncated") : ""}`,
 				);
 				break;
-			case "execution_finished":
-				status(event.status);
-				appendBlock(
-					"run · ",
-					`${event.status}${event.error ? ` · ${event.error}` : ""}`,
-				);
+			case "execution_finished": {
+				const outcome = t(event.status === "error" ? "trace.errored" : "trace.completed");
+				status(outcome);
+				appendBlock(t("trace.prefix.run"), `${outcome}${event.error ? ` · ${event.error}` : ""}`);
 				break;
+			}
 			case "run_graded":
 				running.delete(event.run.runId);
 				counts.graded += 1;
 				counts[event.outcome] += 1;
-				status(`graded ${event.outcome}`);
+				status(t("status.graded", { outcome: verdictLabel(event.outcome) }));
 				appendBlock(
-					`grade ${event.outcome === "pass" ? "✓" : event.outcome === "fail" ? "✗" : "!"} · `,
-					`${event.outcome} · ${event.passedGraders}/${event.totalGraders} graders · ${tally()} so far`,
+					t("trace.prefix.grade", { mark: event.outcome === "pass" ? "✓" : event.outcome === "fail" ? "✗" : "!" }),
+					t("trace.graded", {
+						outcome: verdictLabel(event.outcome),
+						passed: event.passedGraders,
+						total: event.totalGraders,
+						tally: tally(),
+					}),
 				);
 				break;
 		}
 	};
 
-	setStatus("AHDE run · starting");
+	setStatus(t("status.run-starting"));
 	render();
 
 	return {
 		onRunEvent,
+		plan(executions) {
+			if (typeof executions === "number" && executions > 0) planned = Math.max(planned ?? 0, executions);
+		},
 		dispose() {
 			if (disposed) return;
 			disposed = true;

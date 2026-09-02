@@ -1,14 +1,16 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { language, plural, resolveLanguage, setLanguage, settingsPath, t, verdictLabel } from "../src/i18n.js";
 import { renderConfirmation } from "../src/builder/render/confirmation.js";
 import { renderDecision } from "../src/builder/render/decision.js";
-import { renderHeader, renderCandidate } from "../src/builder/render/view.js";
+import { renderHeader, renderCandidate, renderReview } from "../src/builder/render/view.js";
+import { renderCalibration } from "../src/builder/render/calibration.js";
 import { plainPaint } from "../src/builder/render/paint.js";
 import { stageLabel, nextStep } from "../src/builder/render/stage.js";
 import { renderRunDetailPage } from "../src/evidence/pages.js";
+import { createRunProgressPresenter } from "../src/builder/run-progress.js";
 import { explainRun } from "../src/application/run-explanation.js";
 import type { WorkbenchCandidateSummary, WorkbenchConfirmation, WorkbenchView } from "../src/workbench/types.js";
 
@@ -310,11 +312,59 @@ describe("ru renders", () => {
 		]);
 	});
 
+	it("renders the run and verify dialog bodies in Russian", () => {
+		setLanguage("ru");
+		const runEval: WorkbenchConfirmation = {
+			kind: "run-eval",
+			title: t("confirm.title.run-eval"),
+			reason: "оператор сказал «тесты»",
+			subject: {
+				operation: "run-development-evaluation",
+				taskCount: 6,
+				repetitions: 3,
+				target: { id: "support-bot", gitSha: SHA_A },
+				developmentCorpus: { id: "corpus-1", taskCount: 6 },
+			},
+			subjectHash: "e".repeat(64),
+			policy: "routine",
+			question: t("confirm.run-eval", { runs: plural(18, "execution") }),
+		};
+		const run = renderConfirmation(runEval, plainPaint);
+		expect(run[0]).toBe("Прогон 6 кейсов × 3 повтора = 18 запусков · каждый — вызов модели агента");
+		expect(run[1]).toBe("Агент support-bot @ aaaaaaaaaa · тесты corpus-1 (6 кейсов)");
+		expect(leakedEnglish(run.join("\n"))).toEqual([]);
+
+		const verify: WorkbenchConfirmation = {
+			kind: "verify-candidate",
+			title: t("confirm.title.verify-candidate"),
+			reason: "проверяю применённую правку",
+			subject: {
+				operation: "verify-applied-candidate",
+				baseTargetSha: SHA_A,
+				candidateSha: SHA_B,
+				repetitions: 3,
+				developmentCorpus: { id: "corpus-1", hash: "f".repeat(64) },
+				sealedHoldout: { id: "sealed-1", hash: "0".repeat(64), taskCount: 20 },
+			},
+			subjectHash: "e".repeat(64),
+			policy: "routine",
+			question: t("confirm.verify-candidate", { runs: plural(156, "execution") }),
+		};
+		const lines = renderConfirmation(verify, plainPaint);
+		expect(lines[0]).toBe("Парный эксперимент база aaaaaaaaaa против кандидата bbbbbbbbbb · 3 повтора");
+		expect(lines[2]).toBe("Экзамен 20 кейсов · что внутри — знает только оценщик");
+		expect(lines[3]).toBe("Обе ревизии прогоняются по всем кейсам; закрытого Билдер не видит.");
+		expect(verify.question).toBe("Сверить кандидата с базой (156 запусков)?");
+		expect(leakedEnglish(lines.join("\n"))).toEqual([]);
+	});
+
 	it("renders the verdict block in Russian and keeps the tokens intact", () => {
 		setLanguage("ru");
 		const lines = renderCandidate(makeCandidate(), plainPaint, t("candidate.verified"));
 		const text = lines.join("\n");
-		expect(lines[0]).toBe("Кандидат проверен candidate-1 · evaluated");
+		expect(lines[0]).toBe("Кандидат проверен candidate-1 · оценён");
+		// The status the record stores is a token; only its label bends.
+		expect(makeCandidate().status).toBe("evaluated");
 		expect(text).toContain("Разработка было 40% → кандидат 70% (+30 п.п.) · задач 10 · балл 40% → 70%");
 		expect(text).toContain("Вердикт стало лучше · +23 п.п. (95% ДИ +5 п.п. … +35 п.п.) · 10 × 3 · цена ×1.4 · задержка ×0.9");
 		expect(text).toContain("Экзамен пройден · +20 п.п. (95% ДИ +2 п.п. … +38 п.п.) · 20 × 3");
@@ -392,6 +442,74 @@ describe("ru renders", () => {
 		// The run and task ids stay exactly as recorded.
 		expect(explanation.runId).toBe("run-7");
 		expect(explanation.taskId).toBe("task-3");
+	});
+
+	it("draws the proposal under review and the noise panel in Russian", () => {
+		setLanguage("ru");
+		const review = renderReview({
+			kind: "proposal",
+			runId: "builder-proposal-1",
+			summary: "Научить агента звать инструмент поиска",
+			paths: ["AGENTS.md"],
+			baseTargetSha: SHA_A,
+			proposalHash: "c".repeat(64),
+			evidenceBasis: null,
+			prediction: null,
+			risks: ["Ответы станут длиннее"],
+			validationPlan: ["Прогнать тесты разработки"],
+			exactDiff: "--- a/AGENTS.md\n+++ b/AGENTS.md\n@@ -1 +1,2 @@\n context\n+lookup\n",
+		} as never, plainPaint);
+		expect(review[0]).toBe("Правка builder-proposal-1");
+		expect(review[2]).toBe("Изменения AGENTS.md (+1 -0)");
+		expect(review[3]).toBe("База aaaaaaaaaa · правка cccccccccccc…");
+		expect(review[4]).toBe("Данные ничего не привязано (правка только по описанию)");
+		expect(review).toContain("Риски");
+		expect(review).toContain("План проверки");
+		expect(review).toContain("Диф");
+
+		const noise = renderCalibration({
+			targetSha: SHA_A,
+			verdict: "inconclusive",
+			taskCount: 6,
+			repetitions: 3,
+			aaPassRate: 0.5,
+			flipRate: 0.1,
+			confidence95: { low: -0.06, high: 0.06 },
+			recommendedRepetitions: 3,
+		} as never, plainPaint);
+		expect(noise[0]).toBe("Калибровка шума A/A неубедительно · ревизия aaaaaaaaaa");
+		expect(noise[1]).toBe("Схема 6 кейсов × 3 повтора · одна и та же ревизия с обеих сторон · база 50%");
+		expect(noise.at(-1)).toBe("A/A — это замер, а не данные: калибровкой ничего не выкатывается.");
+	});
+
+	it("watches a running measurement in Russian, and counts the whole job", () => {
+		setLanguage("ru");
+		const setStatus = vi.fn();
+		const setWidget = vi.fn();
+		const progress = createRunProgressPresenter({ setStatus, setWidget }, { liveTraceUrl: "http://127.0.0.1:6333/live/abc" });
+		const run = { evalRunId: "erun-1", runId: "run-a", taskId: "task_001", repetitionIndex: 0, ordinal: 1, total: 90 };
+		const at = "2026-08-28T10:00:00.000Z";
+
+		progress.plan(372);
+		progress.onRunEvent({ type: "run_started", at, run } as never);
+		progress.onRunEvent({
+			type: "tool_finished", at, run,
+			toolCallId: "call-1", toolName: "bash", isError: false, output: "ok", truncated: false,
+		} as never);
+		progress.onRunEvent({
+			type: "run_graded", at, run, outcome: "fail", passedGraders: 0, totalGraders: 3,
+		} as never);
+
+		const status = String(setStatus.mock.calls.at(-1)?.[1]);
+		expect(status).toContain("AHDE прогон оценено 1/372 · идёт 0");
+		expect(status).toContain("· оценено провален");
+		const frame = (setWidget.mock.calls.at(-1)?.[1] ?? []) as string[];
+		expect(frame[0]).toBe("AHDE · черновой трейс прогона");
+		expect(frame[1]).toBe("открыть живой трейс · http://127.0.0.1:6333/live/abc");
+		expect(frame).toContain("прогон · старт 1/90 · task_001");
+		expect(frame).toContain("инструмент ✓ bash · ok");
+		expect(frame).toContain("оценка ✗ · провален · проверок 0/3 · пока ✓0 ✗1");
+		progress.dispose();
 	});
 
 	it("stamps the rendered page with the resolved language", () => {

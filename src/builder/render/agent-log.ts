@@ -8,6 +8,7 @@ import {
 	type AgentLogRow,
 	MAX_SPARKLINE_WIDTH,
 } from "../../application/agent-log.js";
+import { candidateStatusLabel, noun, plural, t, verdictLabel } from "../../i18n.js";
 import { joinNonEmpty, oneLine, section } from "./format.js";
 import { predictionCalibrationLine } from "./prediction.js";
 import type { Paint } from "./paint.js";
@@ -19,12 +20,12 @@ const INDENT = "        ";
 /** `improved · 40.0% → 90.0% (+50.0pp)`. The interval goes on its own line. */
 function developmentFragment(row: AgentLogRow): string {
 	const development = row.development;
-	if (!development) return "not evaluated";
+	if (!development) return t("growth.not-evaluated");
 	const scores = development.baselineScore === null || development.candidateScore === null
 		? null
 		: `${formatPercent(development.baselineScore)} → ${formatPercent(development.candidateScore)}`;
 	return joinNonEmpty([
-		development.verdict,
+		verdictLabel(development.verdict),
 		joinNonEmpty([
 			scores,
 			development.scoreDelta === null ? null : `(${formatScoreDelta(development.scoreDelta)})`,
@@ -35,13 +36,17 @@ function developmentFragment(row: AgentLogRow): string {
 /** The sealed surface: its verdict and its size, and not one case of it. */
 function sealedFragment(row: AgentLogRow): string | null {
 	if (!row.sealed) return null;
-	return `sealed ${row.sealed.verdict} on ${row.sealed.tasks}×${row.sealed.repetitions}`;
+	return t("growth.sealed", {
+		verdict: verdictLabel(row.sealed.verdict),
+		tasks: row.sealed.tasks,
+		repetitions: row.sealed.repetitions,
+	});
 }
 
 function headline(row: AgentLogRow): string {
 	return oneLine(
 		joinNonEmpty([
-			row.outcome === "promoted" ? (row.tag ?? "promoted") : "rejected",
+			row.outcome === "promoted" ? (row.tag ?? candidateStatusLabel("promoted")) : candidateStatusLabel("rejected"),
 			row.at.slice(0, 10),
 			developmentFragment(row),
 			sealedFragment(row),
@@ -59,7 +64,7 @@ function detailLines(row: AgentLogRow): string[] {
 	lines.push(oneLine(
 		joinNonEmpty([
 			`${row.baseline} → ${row.candidate ?? "—"}`,
-			interval ? `95% CI ${formatScoreDelta(interval.low)} … ${formatScoreDelta(interval.high)}` : null,
+			interval ? `${t("unit.ci")} ${formatScoreDelta(interval.low)} … ${formatScoreDelta(interval.high)}` : null,
 			row.development && row.development.tasks > 0
 				? `${row.development.tasks}×${row.development.repetitions}`
 				: null,
@@ -67,11 +72,11 @@ function detailLines(row: AgentLogRow): string[] {
 		width,
 	));
 	if (row.resolvedModes.count > 0) {
-		lines.push(oneLine(`resolved ${formatResolvedModes(row.resolvedModes)}`, width));
+		lines.push(oneLine(t("growth.resolved", { modes: formatResolvedModes(row.resolvedModes) }), width));
 	}
 	const tail = joinNonEmpty([
 		row.reason ? `“${row.reason}”` : null,
-		row.appliedByImprovementLoop ? "applied by the improvement loop" : null,
+		row.appliedByImprovementLoop ? t("candidate.applied-by-loop") : null,
 	]);
 	if (tail) lines.push(oneLine(tail, width));
 	return lines;
@@ -86,8 +91,8 @@ function detailLines(row: AgentLogRow): string[] {
 export function renderAgentLogChart(log: AgentLog, paint: Paint): string[] {
 	const scores = log.versions.map((version) => version.score);
 	const attempts = log.rows.length;
-	const cost = `${paint.dim("cost ")} ${formatCostUsd(log.cumulativeCostUsd)} ${paint.dim(
-		`cumulative over ${attempts} attempt${attempts === 1 ? "" : "s"}`,
+	const cost = `${paint.dim(`${t("growth.cost")} `)} ${formatCostUsd(log.cumulativeCostUsd)} ${paint.dim(
+		t("growth.cumulative", { attempts: plural(attempts, "attempt") }),
 	)}`;
 	if (scores.length === 0) return [cost];
 	const shown = Math.min(scores.length, MAX_SPARKLINE_WIDTH);
@@ -95,9 +100,12 @@ export function renderAgentLogChart(log: AgentLog, paint: Paint): string[] {
 	const last = scores[scores.length - 1] ?? 0;
 	const dropped = scores.length - shown;
 	return [
-		`${paint.dim("score")} ${paint.bold(sparkline(scores))} ${paint.dim(
-			`${formatPercent(first)} → ${formatPercent(last)} over ${shown} version${shown === 1 ? "" : "s"}` +
-				(dropped > 0 ? ` (+${dropped} earlier)` : ""),
+		`${paint.dim(t("growth.score"))} ${paint.bold(sparkline(scores))} ${paint.dim(
+			t("growth.over-versions", {
+				first: formatPercent(first),
+				last: formatPercent(last),
+				versions: plural(shown, "version"),
+			}) + (dropped > 0 ? t("growth.earlier", { count: dropped }) : ""),
 		)}`,
 		cost,
 	];
@@ -110,15 +118,15 @@ export function renderAgentLogChart(log: AgentLog, paint: Paint): string[] {
  */
 export function renderAgentLog(log: AgentLog, paint: Paint): string[] {
 	const promotions = log.rows.filter((row) => row.outcome === "promoted").length;
-	const title = `${section("Growth", paint)} ${paint.dim(
+	const title = `${section(t("panel.growth"), paint)} ${paint.dim(
 		joinNonEmpty([
 			log.targetId,
-			`${promotions} version${promotions === 1 ? "" : "s"}`,
-			`${log.rows.length} decided attempt${log.rows.length === 1 ? "" : "s"}`,
+			plural(promotions, "version"),
+			plural(log.rows.length, "decided attempt"),
 		]),
 	)}`;
 	if (log.rows.length === 0) {
-		return [title, paint.muted("Nothing has been promoted or rejected on this Target yet.")];
+		return [title, paint.muted(t("growth.empty"))];
 	}
 	const lines = [title, ""];
 	for (const row of log.rows) {
@@ -127,7 +135,7 @@ export function renderAgentLog(log: AgentLog, paint: Paint): string[] {
 		for (const detail of detailLines(row)) lines.push(paint.dim(`${INDENT}${detail}`));
 	}
 	if (log.omitted > 0) {
-		lines.push(paint.dim(`… and ${log.omitted} earlier decided attempt${log.omitted === 1 ? "" : "s"}`));
+		lines.push(paint.dim(t("growth.omitted", { count: log.omitted, attempts: noun(log.omitted, "decided attempt") })));
 	}
 	if (log.unreadable > 0) {
 		lines.push(paint.dim(`${log.unreadable} candidate record(s) could not be read and are not shown`));

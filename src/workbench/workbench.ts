@@ -518,15 +518,18 @@ function shortSha(sha: string): string {
 
 /** Money the human recognises, or an honest “unknown”. */
 function formatEstimatedCost(estimate: WorkbenchRunEstimate | undefined): string {
-	if (!estimate || estimate.costUsd === null) return "unknown — nothing comparable has run yet";
-	if (estimate.costUsd < 0.01) return "under $0.01";
-	return `about $${estimate.costUsd.toFixed(2)} (from ${estimate.sampledRuns} earlier run${estimate.sampledRuns === 1 ? "" : "s"})`;
+	if (!estimate || estimate.costUsd === null) return `${t("estimate.unknown")} ${t("estimate.nothing-comparable")}`;
+	if (estimate.costUsd < 0.01) return t("estimate.under-cent");
+	return `${t("estimate.about-cost", { cost: estimate.costUsd.toFixed(2) })} (${
+		t("estimate.from-earlier-runs", { runs: localizedCount(estimate.sampledRuns, "eval run") })
+	})`;
 }
 
 function formatEstimatedTime(estimate: WorkbenchRunEstimate | undefined): string {
-	if (!estimate || estimate.minutes === null) return "unknown — nothing comparable has run yet";
-	if (estimate.minutes < 1) return "under a minute";
-	return `about ${Math.ceil(estimate.minutes)} minute${Math.ceil(estimate.minutes) === 1 ? "" : "s"}`;
+	if (!estimate || estimate.minutes === null) return `${t("estimate.unknown")} ${t("estimate.nothing-comparable")}`;
+	if (estimate.minutes < 1) return t("estimate.under-minute");
+	const minutes = Math.ceil(estimate.minutes);
+	return t("estimate.about-minutes", { minutes: localizedCount(minutes, "minute"), count: minutes });
 }
 
 function plural(count: number, noun: string): string {
@@ -1250,14 +1253,18 @@ export class AhdeWorkbench {
 			operation: "start-testing",
 			steps: plan,
 			spec: specDraft
-				? `${specDraft.spec.title} — approve this draft`
-				: `${approved!.spec.title} — already approved`,
+				? t("confirm.start-testing.approve-draft", { title: specDraft.spec.title })
+				: t("confirm.start-testing.already-approved", { title: approved!.spec.title }),
 			basket: corpusDraft
-				? `${corpusDraft.name} · ${caseCount} case${caseCount === 1 ? "" : "s"}`
-				: "not drafted yet",
+				? t("confirm.start-testing.basket", { name: corpusDraft.name, cases: localizedCount(caseCount, "case") })
+				: t("confirm.start-testing.not-drafted"),
 			run: corpusDraft
-				? `${caseCount} × ${input.repetitions} = ${executions} Target executions`
-				: "not yet",
+				? t("confirm.start-testing.run", {
+					cases: caseCount,
+					repetitions: input.repetitions,
+					executions: localizedCount(executions, "execution"),
+				})
+				: t("confirm.start-testing.not-yet"),
 			estimatedCost: formatEstimatedCost(estimate),
 			estimatedTime: formatEstimatedTime(estimate),
 			exact: {
@@ -1301,11 +1308,10 @@ export class AhdeWorkbench {
 		}
 		// The basket is bound to an approved Spec, so it can only be drafted after
 		// this approval; saying so is more useful than an error.
-		const pending = evaluation ? null : "the test cases are not drafted yet";
+		const pending = evaluation ? null : t("result.tests-not-drafted");
 		return {
 			kind: input.kind,
-			message: message ||
-				"Spec approved. Next: draft the test cases, then “tests” publishes them and runs.",
+			message: message || t("message.spec-approved-next"),
 			result: { steps, approvedSpecId, developmentCorpus, evaluation, pending },
 			view,
 		};
@@ -1822,13 +1828,14 @@ export class AhdeWorkbench {
 		const status = workshop.status();
 		return {
 			kind: "workshop-open",
-			message:
-				`Workshop ${workshop.workshopId} is ${reattached ? "re-attached" : "open"} on ` +
-				`${authoringContext.target.id}@${shortSha(authoringContext.target.gitSha)} — ` +
-				(binding.basis === "construction"
-					? "building the first Harness against the approved Spec. "
-					: `improving the Harness against ${binding.source?.briefId ?? "its exact diagnosis"}. `) +
-				"Read, write, run, and try the tool there; closing compiles the diff into a proposal the operator still has to apply.",
+			message: t("message.workshop-open", {
+				workshop: workshop.workshopId,
+				state: t(reattached ? "message.workshop-state-reattached" : "message.workshop-state-open"),
+				target: `${authoringContext.target.id}@${shortSha(authoringContext.target.gitSha)}`,
+				basis: binding.basis === "construction"
+					? t("message.workshop-basis-construction")
+					: t("message.workshop-basis-improvement", { brief: binding.source?.briefId ?? t("message.workshop-basis-diagnosis") }),
+			}),
 			artifact: {
 				workshopId: workshop.workshopId,
 				basis: binding.basis,
@@ -1956,9 +1963,11 @@ export class AhdeWorkbench {
 		const settled = this.select("proposal", recorded.record.runId);
 		return {
 			kind: "workshop-close",
-			message: `Workshop ${workshopId} closed: ${plural(compiled.changes.length, "changed file")} compiled into an exact reviewable proposal` +
-				`${construction ? " from the approved Spec, with no evaluation evidence behind it" : ""}. ` +
-				"Nothing is applied until the operator says so.",
+			message: t("message.workshop-closed", {
+				workshop: workshopId,
+				changes: localizedCount(compiled.changes.length, "changed file"),
+				construction: construction ? t("message.workshop-closed-construction") : "",
+			}),
 			artifact: {
 				workshopId,
 				basis: workshop.basis,
@@ -2107,16 +2116,20 @@ export class AhdeWorkbench {
 		};
 		const confirmation: WorkbenchConfirmation = {
 			kind: "tool-authoring",
-			title: `Allow ${compiled.brief.name} capabilities and try its contract tests`,
-			reason: "the Builder compiled a complete tool package from the reviewed conversational brief",
+			title: t("confirm.tool-authoring.title", { tool: compiled.brief.name }),
+			reason: t("confirm.tool-authoring.reason"),
 			subject,
 			subjectHash: hashValue(subject),
 			policy: "consequential",
-			question:
-				`${compiled.brief.name} will run as a sandboxed process with ` +
-				`${compiled.capabilities.filesystem} filesystem and ${compiled.capabilities.network} network` +
-				`${compiled.capabilities.credentialSlots.length > 0 ? `, using ${compiled.capabilities.credentialSlots.length} host credential binding(s)` : ""}. ` +
-				`Create the package and run ${plural(compiled.fixtures.length, "contract test")}?`,
+			question: t("confirm.tool-authoring.question", {
+				tool: compiled.brief.name,
+				filesystem: compiled.capabilities.filesystem,
+				network: compiled.capabilities.network,
+				credentials: compiled.capabilities.credentialSlots.length > 0
+					? t("confirm.tool-authoring.credentials", { count: compiled.capabilities.credentialSlots.length })
+					: "",
+				tests: localizedCount(compiled.fixtures.length, "contract test"),
+			}),
 		};
 		const decision = await options.gate.confirm(confirmation, options.signal);
 		abortIfRequested(options.signal);
@@ -2605,7 +2618,7 @@ export class AhdeWorkbench {
 				now: this.dependencies.now,
 			});
 			const settled = this.select("spec-draft", draft.id);
-			return { kind: input.kind, message: "Spec draft saved. Review it before approval.", artifact: { id: draft.id, snapshotHash: hashValue(draft), status: draft.status }, view: await this.viewOf(settled) };
+			return { kind: input.kind, message: t("message.spec-draft-saved"), artifact: { id: draft.id, snapshotHash: hashValue(draft), status: draft.status }, view: await this.viewOf(settled) };
 		}
 		if (input.kind === "corpus-draft") {
 			const inventory = this.inventory();
@@ -2621,7 +2634,7 @@ export class AhdeWorkbench {
 				revisionSummary: input.revisionSummary,
 			}, { now: this.dependencies.now });
 			const settled = this.select("corpus-draft", result.draft.id);
-			return { kind: input.kind, message: "Corpus draft saved. Revise freely or publish it through the human gate.", artifact: { id: result.draft.id, draftHash: hashValue(result.draft), taskCount: result.draft.tasks.length, approvedSpecId: result.draft.approvedSpec.specId }, view: await this.viewOf(settled) };
+			return { kind: input.kind, message: t("message.corpus-draft-saved"), artifact: { id: result.draft.id, draftHash: hashValue(result.draft), taskCount: result.draft.tasks.length, approvedSpecId: result.draft.approvedSpec.specId }, view: await this.viewOf(settled) };
 		}
 		if (input.kind === "corpus-import") {
 			const inventory = this.inventory();
@@ -3121,7 +3134,7 @@ export class AhdeWorkbench {
 			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
 			const result = this.dependencies.approveSpecDraft({ stateRoot: this.stateRoot, projectId: this.projectId, draftSpecId: draft.id, expectedDraftSnapshotHash: beforeDescription.draftSnapshotHash, actor: { kind: "human", id: actor }, reason: input.reason }, { now: this.dependencies.now });
 			const settled = this.select("approved-spec", result.approved.id);
-			return { kind: input.kind, message: "Spec approved as an exact immutable snapshot.", result: { approvedSpecId: result.approved.id, receiptId: result.receipt.id }, view: await this.viewOf(settled) };
+			return { kind: input.kind, message: t("message.spec-approved"), result: { approvedSpecId: result.approved.id, receiptId: result.receipt.id }, view: await this.viewOf(settled) };
 		}
 
 		if (input.kind === "abandon-candidate") {
@@ -3211,7 +3224,7 @@ export class AhdeWorkbench {
 				: this.dependencies.publishDevelopmentCorpus({ stateRoot: this.stateRoot, projectId: this.projectId, name, tasks: reloaded.tasks, expectedSubjectHash: publication.subjectHash, actor: { kind: "human", id: actor }, reason: input.reason }, { now: this.dependencies.now });
 			const lineage = recordWorkbenchCorpusPublication({ stateRoot: this.stateRoot, draft: reloaded, publication: result });
 			const settled = this.select("development-corpus", result.corpus.id);
-			return { kind: input.kind, message: "Development corpus published with exact Spec and draft lineage.", result: { corpusId: result.corpus.id, corpusHash: result.corpus.hash, taskCount: result.corpus.taskCount, publicationReceiptId: result.receipt.id, lineageHash: lineage.linkHash }, view: await this.viewOf(settled) };
+			return { kind: input.kind, message: t("message.corpus-published"), result: { corpusId: result.corpus.id, corpusHash: result.corpus.hash, taskCount: result.corpus.taskCount, publicationReceiptId: result.receipt.id, lineageHash: lineage.linkHash }, view: await this.viewOf(settled) };
 		}
 
 		if (input.kind === "import-dataset") {
@@ -3357,11 +3370,9 @@ export class AhdeWorkbench {
 			const cases = generated.corpus?.taskCount ?? generated.accepted;
 			return {
 				kind: input.kind,
-				message: generated.corpus
-					? `The judge wrote a sealed exam of ${cases} case${cases === 1 ? "" : "s"}. ` +
-						"Its content is evaluator-only and never enters this conversation."
-					: `The judge wrote a draft exam of ${cases} case${cases === 1 ? "" : "s"} to a private file. ` +
-						"The operator reads and edits it, then imports it with /holdout; you never see it.",
+				message: t(generated.corpus ? "message.exam-sealed" : "message.exam-draft", {
+					cases: localizedCount(cases, "case"),
+				}),
 				result: {
 					...(generated.corpus ? { corpusId: generated.corpus.id } : {}),
 					cases,
@@ -3656,10 +3667,10 @@ export class AhdeWorkbench {
 			return {
 				kind: input.kind,
 				message: verified === undefined
-					? "Proposal applied to an exact candidate branch; verification is now required."
+					? t("message.proposal-applied")
 					: verified.outcome === "blocked"
-						? `Proposal applied; automatic verification is blocked: ${verified.reason}`
-						: "Proposal applied and automatic matched verification finished.",
+						? t("message.proposal-applied-blocked", { reason: verified.reason })
+						: t("message.proposal-applied-verified"),
 				result: {
 					runId: result.receipt.runId,
 					branch: result.receipt.branch,
@@ -3683,7 +3694,7 @@ export class AhdeWorkbench {
 			const after = this.dependencies.describeProposalDiscard(this.runsRoot, proposal.record.runId);
 			if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
 			const result = this.dependencies.discardProposal({ runsRoot: this.runsRoot, runId: proposal.record.runId, actor: { kind: "human", id: actor }, reason: input.reason, expectedSubjectHash: before.subjectHash }, { now: this.dependencies.now });
-			return { kind: input.kind, message: "Proposal discarded durably.", result: { runId: result.receipt.runId, receiptHash: hashValue(result.receipt) }, view: await this.view() };
+			return { kind: input.kind, message: t("message.proposal-discarded"), result: { runId: result.receipt.runId, receiptHash: hashValue(result.receipt) }, view: await this.view() };
 		}
 
 		if (input.kind === "verify-candidate") {
@@ -3783,8 +3794,8 @@ export class AhdeWorkbench {
 			const executions = 2 * (developmentTasks + selected.taskCount) * input.repetitions;
 			const actor = await this.confirm(input, gate, t("confirm.title.verify-candidate"), before.subject, options.signal, {
 				question: before.sourceEvalRunId
-					? `Screen the cases that already failed, then verify the candidate against its baseline (up to ${executions + developmentTasks} Target executions)?`
-					: `Verify the candidate against its baseline (${executions} Target executions)?`,
+					? t("confirm.verify-candidate.screened", { runs: localizedCount(executions + developmentTasks, "execution") })
+					: t("confirm.verify-candidate", { runs: localizedCount(executions, "execution") }),
 				estimate: this.runEstimate(executions + (before.sourceEvalRunId ? developmentTasks : 0), inventory.target),
 				authorized: before.authorized,
 			});
@@ -4016,7 +4027,7 @@ export class AhdeWorkbench {
 			if (hashValue(after) !== hashValue(candidate)) throw new WorkbenchStaleDecisionError(input.kind);
 			const reviewed = this.dependencies.reviewCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: before.candidateHash, ...(proposal ? { expectedProposalHash: proposal.proposalHash } : {}), recommendation: input.recommendation, reason: input.reason, actorId: actor, now: this.dependencies.now });
 			const settled = this.select("candidate", reviewed.candidateId);
-			return { kind: input.kind, message: "Human candidate review recorded.", result: candidateSummary(reviewed), view: await this.viewOf(settled) };
+			return { kind: input.kind, message: t("message.review-recorded"), result: candidateSummary(reviewed), view: await this.viewOf(settled) };
 		}
 
 		if (input.kind === "promote-candidate") {
@@ -4061,7 +4072,7 @@ export class AhdeWorkbench {
 				: candidate;
 			const rejected = this.dependencies.rejectCandidate({ runsRoot: this.runsRoot, candidateId: candidate.candidateId, expectedCandidateHash: hashValue(reviewedRecord), reason: input.reason, actorId: actor, now: this.dependencies.now });
 			const settled = this.select("candidate", rejected.candidateId);
-			return { kind: input.kind, message: "Candidate rejected durably. The Target stays at its baseline.", result: candidateSummary(rejected), view: await this.viewOf(settled) };
+			return { kind: input.kind, message: t("message.candidate-rejected"), result: candidateSummary(rejected), view: await this.viewOf(settled) };
 		}
 
 		if (input.kind === "adopt-candidate") {
