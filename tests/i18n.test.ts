@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { language, messageKeys, plural, resolveLanguage, setLanguage, settingsPath, t, verdictLabel } from "../src/i18n.js";
 import { renderConfirmation } from "../src/builder/render/confirmation.js";
 import { renderDecision } from "../src/builder/render/decision.js";
-import { blockerLines, renderHeader, renderCandidate, renderReview } from "../src/builder/render/view.js";
+import { blockerLines, renderDatasetCases, renderHeader, renderCandidate, renderReview } from "../src/builder/render/view.js";
+import { datasetCasePreview } from "../src/workbench/workbench.js";
+import { CorpusTaskSchema } from "../src/corpus.js";
 import { renderCalibration } from "../src/builder/render/calibration.js";
 import { plainPaint } from "../src/builder/render/paint.js";
 import { stageLabel, nextStep } from "../src/builder/render/stage.js";
@@ -248,6 +250,26 @@ describe("ru renders", () => {
 			"",
 		]);
 		expect(leakedEnglish(lines.join("\n"))).toEqual([]);
+	});
+
+	it("draws a worlded case as four Russian lines, and names its failure mode in Russian", () => {
+		setLanguage("ru");
+		const lines = renderDatasetCases([datasetCasePreview(CorpusTaskSchema.parse({
+			id: "task_001",
+			input: "Заблокируйте договор 42.",
+			world: {
+				state: { client: { name: "Иван Петров" }, accounts: { "42": { status: "ok" } } },
+				expect: [{ path: "accounts.42.status", op: "equals", value: "frozen" }],
+			},
+			graders: [{ type: "tool_called", tool: "check_account" }],
+		}))], plainPaint);
+		expect(lines).toEqual([
+			"   1. кто: Иван Петров",
+			"      что есть: accounts.42.status=ok · client.name=Иван Петров",
+			"      что хочет: Заблокируйте договор 42.",
+			'      что должно: accounts.42.status equals "frozen" · tool check_account',
+		]);
+		expect(t("mode.title.world-state")).toBe("Мир не пришёл в нужное состояние");
 	});
 
 	it("bends nouns for the count the way Russian does", () => {

@@ -283,6 +283,45 @@ describe("the host's plain-language account of one run", () => {
 		}
 	});
 
+	it("says what the world had to look like, and never quotes the answer about it", () => {
+		const runsRoot = root();
+		const cases: [{ reason: string }, string][] = [
+			[{
+				reason: 'world at accounts.42.status is "open", expected "frozen"',
+			}, 'world (world_state) expected the world at `accounts.42.status` to be `"frozen"`; it is `"open"`.'],
+			[{
+				reason: "world at accounts.42.frozenAt is not set",
+			}, "world (world_state) expected the conversation to set the world at `accounts.42.frozenAt`; the conversation left it unset."],
+			[{
+				reason: 'world at log is not set, expected contains "closed"',
+			}, 'world (world_state) expected the world at `log` to contains `"closed"`; the conversation left it unset.'],
+			[{
+				reason: 'world at log does not contain "closed"',
+			}, 'world (world_state) expected the world at `log` to contain `"closed"`; it does not.'],
+			[{
+				reason: 'world at count is 3, which cannot contain "x"',
+			}, 'world (world_state) expected the world at `count` to contain `"x"`; it is `3`, which contains nothing.'],
+			[{
+				reason: "case declares no world",
+			}, "world (world_state) expected the case to declare the world this check is about; it declares none, so the check could not pass."],
+		];
+		for (const [index, [extra, expected]] of cases.entries()) {
+			const run = writeRun(runsRoot, {
+				runId: `run-world-${index}`,
+				graders: [{
+					name: "world",
+					type: "world_state",
+					checkCode: "world-state",
+					specHash: `sha256:${"8".repeat(64)}`,
+					passed: false,
+					score: 0,
+					...extra,
+				}],
+			});
+			expect(explain(runsRoot, run)[1], extra.reason).toBe(expected);
+		}
+	});
+
 	it("quotes an unfamiliar grader reason instead of guessing what it wanted", () => {
 		const runsRoot = root();
 		const run = writeRun(runsRoot, {

@@ -37,6 +37,7 @@ const HEAVY = [
 	"tests/workbench.test.ts", // dozens of Workbench cycles over a real Git repo
 	"tests/workbench-composites.test.ts", // Git worktrees through the cycle fixtures
 	"tests/workshop.test.ts", // Git worktrees, sandbox-exec and an HTTP server
+	"tests/world-run.test.ts", // Git, sandbox-exec and a mock model over HTTP, one suite per world
 ];
 
 export default defineConfig({
