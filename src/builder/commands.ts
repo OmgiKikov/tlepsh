@@ -37,7 +37,7 @@ import { renderReceipt } from "./render/receipt.js";
 import { createBuilderJobs, type BuilderJobs, type JobAuthorization } from "./jobs.js";
 import type { BuilderSpendReader } from "./spend.js";
 import { nextStep, stageLabel } from "./render/stage.js";
-import { renderReview, renderStatus, renderTarget, renderTraces, viewTitle } from "./render/view.js";
+import { blockerLines, renderReview, renderStatus, renderTarget, renderTraces, viewTitle } from "./render/view.js";
 import {
 	DEFAULT_TRACE_TABLE_ROWS,
 	MAX_TRACE_TABLE_ROWS,
@@ -105,7 +105,7 @@ const builderHelp = (): string => t("help.body");
 
 function requireTui(ctx: ExtensionCommandContext, command: string): void {
 	if (!ctx.hasUI || ctx.mode !== "tui") {
-		throw new Error(`/${command} requires the local Builder Pi TUI`);
+		throw new Error(t("cmd.err.tui", { command }));
 	}
 }
 
@@ -122,15 +122,15 @@ async function awaitIdle(ctx: ExtensionCommandContext, command: string): Promise
 }
 
 function noArguments(command: string, args: string): void {
-	if (args.trim()) throw new Error(`/${command} does not accept arguments`);
+	if (args.trim()) throw new Error(t("cmd.err.no-args", { command }));
 }
 
 function reasonOrDefault(args: string, command: string): string {
-	return args.trim() || `Requested interactively via /${command}`;
+	return args.trim() || t("reason.interactive", { command });
 }
 
 function parseRepetitions(args: string, command: string): { repetitions: number; reason: string } {
-	const fallback = `Requested interactively via /${command}`;
+	const fallback = t("reason.interactive", { command });
 	const trimmed = args.trim();
 	if (!trimmed) return { repetitions: DEFAULT_REPETITIONS, reason: fallback };
 	const tokens = trimmed.split(/\s+/);
@@ -139,7 +139,7 @@ function parseRepetitions(args: string, command: string): { repetitions: number;
 	}
 	const repetitions = Number(tokens.shift());
 	if (!Number.isInteger(repetitions) || repetitions < 1 || repetitions > 10) {
-		throw new Error(`/${command} repetitions must be an integer between 1 and 10`);
+		throw new Error(t("cmd.err.repetitions", { command }));
 	}
 	return { repetitions, reason: tokens.join(" ") || fallback };
 }
@@ -159,11 +159,11 @@ export function parseRegrade(args: string): {
 	graders: "draft" | "target";
 	reason: string;
 } {
-	const fallback = "Requested interactively via /regrade";
+	const fallback = t("reason.interactive", { command: "regrade" });
 	const tokens = args.trim().split(/\s+/).filter(Boolean);
 	const named = tokens[0]?.startsWith("erun_") ? tokens.shift() ?? null : null;
 	if (named !== null && !EVAL_RUN_PATTERN.test(named)) {
-		throw new Error("/regrade takes the eval run id shown by /traces, for example /regrade erun_abc123");
+		throw new Error(t("cmd.err.regrade-id"));
 	}
 	const graders = tokens[0] === "draft" || tokens[0] === "target" ? tokens.shift() as "draft" | "target" : "draft";
 	return { evalRunId: named, graders, reason: tokens.join(" ") || fallback };
@@ -173,12 +173,12 @@ const BRANCH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
 const VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+$/;
 
 function parseBranch(value: string): string {
-	if (!BRANCH_PATTERN.test(value)) throw new Error("branch must be one bounded Git branch name");
+	if (!BRANCH_PATTERN.test(value)) throw new Error(t("cmd.err.branch"));
 	return value;
 }
 
 function parseVersion(value: string): string {
-	if (!VERSION_PATTERN.test(value)) throw new Error("version must be semver like 0.2.0");
+	if (!VERSION_PATTERN.test(value)) throw new Error(t("cmd.err.version"));
 	return value;
 }
 
@@ -190,7 +190,7 @@ function parseOrdinal(args: string, command: string): { ordinal: number | null; 
 	if (!/^\d+$/.test(tokens[0] ?? "")) return { ordinal: null, note: trimmed };
 	const ordinal = Number(tokens.shift());
 	if (!Number.isInteger(ordinal) || ordinal < 1 || ordinal > 100) {
-		throw new Error(`/${command} takes the problem number shown by /traces`);
+		throw new Error(t("cmd.err.ordinal", { command }));
 	}
 	return { ordinal, note: tokens.join(" ") };
 }
@@ -200,7 +200,7 @@ function parseApply(args: string): { branch: string | null; reason: string } {
 	const branch = tokens.shift();
 	return {
 		branch: branch ? parseBranch(branch) : null,
-		reason: tokens.join(" ") || "Requested interactively via /apply",
+		reason: tokens.join(" ") || t("reason.interactive", { command: "apply" }),
 	};
 }
 
@@ -209,7 +209,7 @@ function parsePromote(args: string, command = "promote"): { version: string | nu
 	const version = tokens.shift();
 	return {
 		version: version ? parseVersion(version) : null,
-		reason: tokens.join(" ") || `Requested interactively via /${command}`,
+		reason: tokens.join(" ") || t("reason.interactive", { command }),
 	};
 }
 
@@ -333,7 +333,7 @@ export function resolveTraceTarget(
 	rows: readonly EvalPageModel["rows"][number][],
 	cursor: number | null,
 ): { index: number; row: EvalPageModel["rows"][number] } | "end" {
-	if (rows.length === 0) throw new Error("This evaluation has no runs to open.");
+	if (rows.length === 0) throw new Error(t("cmd.err.no-runs"));
 	const at = (index: number) => ({ index, row: rows[index]! });
 	if (argument === "" || argument === "next") {
 		if (argument === "" && cursor === null) return at(0);
@@ -346,12 +346,12 @@ export function resolveTraceTarget(
 	}
 	if (/^\d{1,3}$/.test(argument)) {
 		const index = Number(argument) - 1;
-		if (index < 0 || index >= rows.length) throw new Error(`/trace ${argument}: the table has ${rows.length} row(s); say /traces to see them`);
+		if (index < 0 || index >= rows.length) throw new Error(t("cmd.err.trace-row", { argument, rows: pluralize(rows.length, "row") }));
 		return at(index);
 	}
 	const byId = rows.findIndex((row) => row.runId === argument || row.taskId === argument || `${row.taskId}#${row.repetitionIndex}` === argument);
 	if (byId >= 0) return at(byId);
-	throw new Error(`/trace needs a row number from /traces, “next”, “prev”, a task id, or a run id — not “${argument}”`);
+	throw new Error(t("cmd.err.trace-arg", { argument }));
 }
 
 export function registerAhdeBuilderCommands(
@@ -917,7 +917,7 @@ export function registerAhdeBuilderCommands(
 		const view = await workbench.view();
 		const shippable = ["candidate-review", "release-decision", "candidate-adoption", "complete"];
 		if (!shippable.includes(view.stage)) {
-			throw new Error(`/ship is not available during ${stageLabel(view.stage)}; ${nextStep(view)}`);
+			throw new Error(t("cmd.err.ship-stage", { stage: stageLabel(view.stage), next: nextStep(view) }));
 		}
 		const needsVersion = view.stage === "candidate-review" || view.stage === "release-decision";
 		const chosen = version ?? (needsVersion ? await askVersion(ctx) : null);
@@ -942,18 +942,18 @@ export function registerAhdeBuilderCommands(
 		const view = await workbench.view({ aspect: "traces" });
 		if (view.detail?.aspect !== "traces") {
 			presenter.show(ctx, { title: viewTitle(view), tone: "warning", lines: renderStatus(view, markerPaint) });
-			ctx.ui.notify(`Nothing to fix yet — ${nextStep(view)}`, "info");
+			ctx.ui.notify(t("cmd.nothing-to-fix", { next: nextStep(view) }), "info");
 			return;
 		}
 		presenter.show(ctx, { title: t("panel.title", { detail: t("panel.diagnosis") }), tone: "info", lines: renderTraces(view.detail.content, markerPaint) });
 		const modes = view.detail.content.improvementBrief.modes.filter((mode) => mode.selectableForProposal);
 		if (modes.length === 0) {
-			ctx.ui.notify("No failure mode has enough evidence to change the harness yet. Run again, or add cases.", "info");
+			ctx.ui.notify(t("cmd.nothing-fixable"), "info");
 			return;
 		}
 		const mode = ordinal === null ? modes[0]! : modes.find((candidate) => candidate.ordinal === ordinal);
 		if (!mode) {
-			throw new Error(`there is no problem ${ordinal} to fix; /traces lists ${pluralize(modes.length, "fixable problem")}`);
+			throw new Error(t("cmd.err.no-problem", { ordinal: ordinal ?? 1, count: pluralize(modes.length, "failure mode") }));
 		}
 		const request = t("traces.fix-message", {
 			ordinal: mode.ordinal,
@@ -961,14 +961,14 @@ export function registerAhdeBuilderCommands(
 			title: oneLine(failureModeReading(mode).title, 120),
 		});
 		if (!options.sendUserMessage) {
-			ctx.ui.notify(`Ask the Builder: “fix problem ${mode.ordinal}”.`, "info");
+			ctx.ui.notify(t("cmd.ask-fix", { ordinal: mode.ordinal }), "info");
 			return;
 		}
 		options.sendUserMessage(note ? `${request} ${note}` : request);
 	};
 
 	registerCommand("test", {
-		description: "Test the agent: publish and run whatever is pending, or verify the applied candidate: /test [repetitions] [reason]",
+		description: t("cmd.test"),
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "test");
 			const parsed = parseRepetitions(args, "test");
@@ -977,7 +977,7 @@ export function registerAhdeBuilderCommands(
 	});
 
 	registerCommand("fix", {
-		description: "Prepare the exact change for problem n from the current diagnosis: /fix [n] [reason]",
+		description: t("cmd.fix"),
 		async handler(args, ctx) {
 			await prepare(ctx, "fix");
 			const parsed = parseOrdinal(args, "fix");
@@ -986,7 +986,7 @@ export function registerAhdeBuilderCommands(
 	});
 
 	registerCommand("ship", {
-		description: "Ship the verified candidate — promote, adopt, next cycle: /ship [version] [reason]",
+		description: t("cmd.ship"),
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "ship");
 			const parsed = parsePromote(args, "ship");
@@ -995,7 +995,7 @@ export function registerAhdeBuilderCommands(
 	});
 
 	registerCommand("help", {
-		description: "Show the AHDE Builder workflow and shortcuts",
+		description: t("cmd.help"),
 		async handler(args, ctx) {
 			noArguments("help", args);
 			await prepare(ctx, "help");
@@ -1004,7 +1004,7 @@ export function registerAhdeBuilderCommands(
 	});
 
 	registerCommand("doctor", {
-		description: "Check Builder authentication, Target readiness, and recovery steps",
+		description: t("cmd.doctor"),
 		async handler(args, ctx) {
 			noArguments("doctor", args);
 			await prepare(ctx, "doctor");
@@ -1067,7 +1067,7 @@ export function registerAhdeBuilderCommands(
 				));
 			}
 			lines.push(`${p.dim(t("label.stage"))} ${stageLabel(view.stage)} · ${nextStep(view)}`);
-			for (const blocker of view.blockers) lines.push(warn(oneLine(blocker, 200)));
+			for (const blocker of blockerLines(view)) lines.push(warn(blocker));
 			for (const warning of view.warnings.slice(0, 6)) lines.push(p.muted(`· ${oneLine(warning, 200)}`));
 			const evaluatorsReady = (["judge", "simulatedUser"] as const).every((role) => {
 				const required = view.target.evaluatorRequirements?.[role] ?? evaluators[role] !== null;
@@ -1083,7 +1083,7 @@ export function registerAhdeBuilderCommands(
 	});
 
 	registerCommand("holdout", {
-		description: "Get a sealed exam: import an operator-owned JSONL file (/holdout <path>), or have the judge write one. Either way its content stays hidden from Builder Pi",
+		description: t("cmd.holdout"),
 		async handler(args, ctx) {
 			await prepare(ctx, "holdout");
 			const minimum = SEALED_GATE_POLICY.minTasks;
@@ -1115,7 +1115,7 @@ export function registerAhdeBuilderCommands(
 					}
 					const cases = Number(answer.trim());
 					if (!Number.isSafeInteger(cases)) {
-						throw new Error(`How many cases must be a whole number; got ${JSON.stringify(answer.trim())}`);
+						throw new Error(t("cmd.err.holdout-count", { answer: JSON.stringify(answer.trim()) }));
 					}
 					await simpleDecision(ctx, "holdout", {
 						kind: "generate-holdout",
@@ -1126,7 +1126,7 @@ export function registerAhdeBuilderCommands(
 					return;
 				}
 			}
-			if (!options.importSealedHoldout) throw new Error("sealed holdout import is unavailable in this host");
+			if (!options.importSealedHoldout) throw new Error(t("cmd.err.holdout-unavailable"));
 			const sourcePath = givenPath || await ctx.ui.input(t("holdout.path-prompt"), "./private-holdout.jsonl");
 			if (sourcePath === undefined || !sourcePath.trim()) {
 				ctx.ui.notify(t("error.cancelled"), "info");
@@ -1166,7 +1166,7 @@ export function registerAhdeBuilderCommands(
 	});
 
 	registerCommand("status", {
-		description: "Show where you are in the AHDE workflow and the next step",
+		description: t("cmd.status"),
 		async handler(args, ctx) {
 			noArguments("status", args);
 			await prepare(ctx, "status");
@@ -1176,7 +1176,7 @@ export function registerAhdeBuilderCommands(
 	});
 
 	registerCommand("run", {
-		description: "Run the development basket or verify the applied candidate: /run [repetitions] [reason]",
+		description: t("cmd.run"),
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "run");
 			const parsed = parseRepetitions(args, "run");
@@ -1185,7 +1185,7 @@ export function registerAhdeBuilderCommands(
 	});
 
 	registerCommand("calibrate", {
-		description: "Measure run-to-run noise by running this exact revision against itself: /calibrate [repetitions] [reason]",
+		description: t("cmd.calibrate"),
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "calibrate");
 			const parsed = parseRepetitions(args, "calibrate");
@@ -1199,7 +1199,7 @@ export function registerAhdeBuilderCommands(
 	 * difference — without buying one Target token a second time.
 	 */
 	registerCommand("regrade", {
-		description: "Re-score the recorded answers with the revised graders, without calling the agent again: /regrade [erun]",
+		description: t("cmd.regrade"),
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "regrade");
 			const parsed = parseRegrade(args);
@@ -1218,10 +1218,10 @@ export function registerAhdeBuilderCommands(
 	});
 
 	registerCommand("traces", {
-		description: "Show the diagnosis, failure modes, and the read-only evidence link",
+		description: t("cmd.traces"),
 		async handler(args, ctx) {
 			const rowsWanted = args.trim();
-			if (rowsWanted && !/^\d{1,2}$/.test(rowsWanted)) throw new Error("/traces accepts a row count, for example /traces 30");
+			if (rowsWanted && !/^\d{1,2}$/.test(rowsWanted)) throw new Error(t("cmd.err.traces-rows"));
 			const signal = await prepare(ctx, "traces");
 			const content = await tracesDetail(ctx);
 			if (!content) return;
@@ -1242,7 +1242,7 @@ export function registerAhdeBuilderCommands(
 	});
 
 	registerCommand("review", {
-		description: "Show the exact artifact awaiting your review and offer its decisions",
+		description: t("cmd.review"),
 		async handler(args, ctx) {
 			noArguments("review", args);
 			const signal = await prepare(ctx, "review");
@@ -1256,7 +1256,7 @@ export function registerAhdeBuilderCommands(
 	});
 
 	registerCommand("approve", {
-		description: "Approve the reviewed Spec draft: /approve [reason]",
+		description: t("cmd.approve"),
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "approve");
 			await simpleDecision(ctx, "approve", { kind: "approve-spec", reason: reasonOrDefault(args, "approve") }, signal);
@@ -1264,16 +1264,16 @@ export function registerAhdeBuilderCommands(
 	});
 
 	registerCommand("publish", {
-		description: "Publish the reviewed eval basket as development evidence: /publish [name]",
+		description: t("cmd.publish"),
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "publish");
 			const name = args.trim();
-			await simpleDecision(ctx, "publish", { kind: "publish-corpus", ...(name ? { name } : {}), reason: "Requested interactively via /publish" }, signal);
+			await simpleDecision(ctx, "publish", { kind: "publish-corpus", ...(name ? { name } : {}), reason: t("reason.interactive", { command: "publish" }) }, signal);
 		},
 	});
 
 	registerCommand("apply", {
-		description: "Apply the reviewed proposal to a candidate branch: /apply [branch] [reason]",
+		description: t("cmd.apply"),
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "apply");
 			const parsed = parseApply(args);
@@ -1282,7 +1282,7 @@ export function registerAhdeBuilderCommands(
 	});
 
 	registerCommand("discard", {
-		description: "Discard the reviewed proposal or abandon an interrupted candidate: /discard [reason]",
+		description: t("cmd.discard"),
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "discard");
 			await discardCurrent(ctx, signal, reasonOrDefault(args, "discard"));
@@ -1290,7 +1290,7 @@ export function registerAhdeBuilderCommands(
 	});
 
 	registerCommand("promote", {
-		description: "Promote the verified candidate: /promote <version> [reason]",
+		description: t("cmd.promote"),
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "promote");
 			const parsed = parsePromote(args);
@@ -1299,7 +1299,7 @@ export function registerAhdeBuilderCommands(
 	});
 
 	registerCommand("reject", {
-		description: "Reject the verified candidate: /reject [reason]",
+		description: t("cmd.reject"),
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "reject");
 			await rejectCurrent(ctx, signal, reasonOrDefault(args, "reject"));
@@ -1307,7 +1307,7 @@ export function registerAhdeBuilderCommands(
 	});
 
 	registerCommand("adopt", {
-		description: "Fast-forward the current branch to the promoted candidate: /adopt [reason]",
+		description: t("cmd.adopt"),
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "adopt");
 			await simpleDecision(ctx, "adopt", { kind: "adopt-candidate", reason: reasonOrDefault(args, "adopt") }, signal);
@@ -1315,7 +1315,7 @@ export function registerAhdeBuilderCommands(
 	});
 
 	registerCommand("next", {
-		description: "Close this improvement cycle and continue with the active Target: /next [reason]",
+		description: t("cmd.next"),
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "next");
 			await simpleDecision(ctx, "next", { kind: "continue-cycle", reason: reasonOrDefault(args, "next") }, signal);
@@ -1323,12 +1323,12 @@ export function registerAhdeBuilderCommands(
 	});
 
 	registerCommand("target", {
-		description: "Show the exact committed Target, or one declared resource: /target [resource-path]",
+		description: t("cmd.target"),
 		async handler(args, ctx) {
 			await prepare(ctx, "target");
 			const resourcePath = args.trim();
 			if (/\s/.test(resourcePath)) {
-				throw new Error("/target accepts at most one declared repository-relative resource path");
+				throw new Error(t("cmd.err.target-arg"));
 			}
 			const view = await workbench.view({ aspect: "target", ...(resourcePath ? { resourcePath } : {}) });
 			const lines = view.detail?.aspect === "target"
@@ -1346,12 +1346,23 @@ export function registerAhdeBuilderCommands(
 	 * who was not in the room.
 	 */
 	registerCommand("passport", {
-		description: "Show what a shipped version promised and measured, and write it beside the agent: /passport [version]",
+		description: t("cmd.passport"),
 		async handler(args, ctx) {
 			await prepare(ctx, "passport");
 			const version = args.trim();
-			if (/\s/.test(version)) throw new Error("/passport accepts at most one version, for example /passport 0.2.0");
-			const { passport, written } = await compileBuilderPassport(workbench, { ...(version ? { version } : {}), save: true });
+			if (/\s/.test(version)) throw new Error(t("cmd.err.passport-arg"));
+			// The passport compiler serves the CLI too, so its refusals are English
+			// sentences. The two an operator actually walks into are worded here.
+			let compiled: Awaited<ReturnType<typeof compileBuilderPassport>>;
+			try {
+				compiled = await compileBuilderPassport(workbench, { ...(version ? { version } : {}), save: true });
+			} catch (error) {
+				const reason = error instanceof Error ? error.message : String(error);
+				if (/^nothing has been promoted yet/.test(reason)) throw new Error(t("passport.none-yet"), { cause: error });
+				if (/^no promoted version /.test(reason)) throw new Error(t("passport.no-version", { version }), { cause: error });
+				throw error;
+			}
+			const { passport, written } = compiled;
 			presenter.show(ctx, {
 				title: t("panel.title", { detail: t("panel.passport") }),
 				tone: "info",
@@ -1360,7 +1371,7 @@ export function registerAhdeBuilderCommands(
 					"",
 					written
 						? `${markerPaint.dim(t("passport.written-to"))} ${oneLine(written, 100)}`
-						: markerPaint.warning("This directory is not writable, so nothing was saved beside the agent."),
+						: markerPaint.warning(t("cmd.passport-not-writable")),
 				],
 			});
 		},
@@ -1368,7 +1379,7 @@ export function registerAhdeBuilderCommands(
 
 	/** One run on screen — the host's facts and the conversation — then the Builder's own reading of it. */
 	registerCommand("trace", {
-		description: "Open one run: why it failed, every grader's verdict, the conversation: /trace <row|next|prev|task id|run id>",
+		description: t("cmd.trace"),
 		async handler(args, ctx) {
 			await prepare(ctx, "trace");
 			const content = await tracesDetail(ctx);
@@ -1414,11 +1425,11 @@ export function registerAhdeBuilderCommands(
 
 	/** The growth log: every decided attempt, newest first, and the curve under it. */
 	registerCommand("log", {
-		description: "Show how the agent grew: every promoted and rejected version: /log [rows]",
+		description: t("cmd.log"),
 		async handler(args, ctx) {
 			await prepare(ctx, "log");
 			const requested = args.trim();
-			if (requested && !/^\d{1,3}$/.test(requested)) throw new Error("/log accepts a row count, for example /log 10");
+			if (requested && !/^\d{1,3}$/.test(requested)) throw new Error(t("cmd.err.log-rows"));
 			const view = await workbench.view();
 			const log = compileAgentLog({
 				runsRoot: workbench.runsRoot,
@@ -1437,7 +1448,7 @@ export function registerAhdeBuilderCommands(
 	 * written, and the Builder is told nothing.
 	 */
 	registerCommand("plan", {
-		description: "Show the whole cycle as a checklist: what is done, what you are in, what is left",
+		description: t("cmd.plan"),
 		async handler(args, ctx) {
 			noArguments("plan", args);
 			await prepare(ctx, "plan");
@@ -1480,7 +1491,7 @@ export function registerAhdeBuilderCommands(
 
 	/** What is measuring right now, and how to stop it. */
 	registerCommand("jobs", {
-		description: "Show the background measurement that is running, if any",
+		description: t("cmd.jobs"),
 		async handler(args, ctx) {
 			noArguments("jobs", args);
 			await prepare(ctx, "jobs");
@@ -1494,7 +1505,7 @@ export function registerAhdeBuilderCommands(
 
 	/** Cancel the running measurement through the signal the Workbench honours. */
 	registerCommand("stop", {
-		description: "Stop the background measurement; nothing it measured is kept",
+		description: t("cmd.stop"),
 		async handler(args, ctx) {
 			noArguments("stop", args);
 			await prepare(ctx, "stop");
@@ -1511,15 +1522,15 @@ export function registerAhdeBuilderCommands(
 	 * anyone ever does it.
 	 */
 	registerCommand("label", {
-		description: `Check the judge: grade its answers blind, then see what it said: /label [n up to ${MAX_LABEL_SAMPLE}]`,
+		description: t("cmd.label", { max: MAX_LABEL_SAMPLE }),
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "label");
 			const requested = args.trim();
 			if (requested && !/^\d{1,2}$/.test(requested)) {
-				throw new Error(`/label takes how many answers to grade, for example /label 20 (1 to ${MAX_LABEL_SAMPLE})`);
+				throw new Error(t("cmd.err.label-count", { max: MAX_LABEL_SAMPLE }));
 			}
 			if (typeof ctx.ui.select !== "function") {
-				throw new Error("/label needs a host that can ask you a question; this one cannot");
+				throw new Error(t("cmd.err.label-host"));
 			}
 			const select = ctx.ui.select.bind(ctx.ui);
 			const view = await workbench.view();

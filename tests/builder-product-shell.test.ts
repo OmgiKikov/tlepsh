@@ -306,9 +306,9 @@ describe("AHDE Builder product shell", () => {
 		await start(handlers, h.ctx);
 
 		const warning = h.ui.notify!.mock.calls.find((call) => call[1] === "warning")?.[0] as string;
-		expect(warning).toContain("This folder is not empty");
+		expect(warning).toContain("This folder already holds");
 		expect(warning).toContain("package.json");
-		expect(warning).toContain("ahde init");
+		expect(warning).toContain("Open an empty folder");
 		expect(warning).not.toContain("target scaffold requires");
 	});
 
@@ -329,7 +329,7 @@ describe("AHDE Builder product shell", () => {
 			},
 		} as never, {} as never) as { message: { errorMessage?: string } };
 
-		expect(result.message.errorMessage).toContain("authentication was rejected");
+		expect(result.message.errorMessage).toContain("refused the key");
 		expect(result.message.errorMessage).not.toContain("SECRET_PROVIDER_JSON");
 	});
 });

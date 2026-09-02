@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { installAhdeBuilderProductShell } from "../src/builder/product-shell.js";
+import { candidateHeadline } from "../src/workbench/resolution.js";
 import { setLanguage } from "../src/i18n.js";
 import {
 	compilePlan,
@@ -65,7 +66,8 @@ function view(overrides: Partial<WorkbenchView> = {}): WorkbenchView {
 }
 
 function candidate(overrides: Partial<WorkbenchCandidateSummary> = {}): WorkbenchCandidateSummary {
-	return {
+	const summary: WorkbenchCandidateSummary = {
+		headline: "",
 		candidateId: "cand-1",
 		status: "evaluated",
 		projectId: "demo",
@@ -100,6 +102,9 @@ function candidate(overrides: Partial<WorkbenchCandidateSummary> = {}): Workbenc
 		rejection: null,
 		...overrides,
 	};
+	// The host composes the headline from the same evidence; a fixture that
+	// hand-wrote one could let a panel and its headline drift apart in a test.
+	return { ...summary, headline: summary.headline || candidateHeadline(summary.development, summary.sealedHoldout) };
 }
 
 /** The plan of a project standing at candidate verification, mid-cycle. */
@@ -191,7 +196,7 @@ describe("the cycle as a checklist", () => {
 		const plan = compilePlan(midCycle(), { harness: { tools: 3, skills: 2 } });
 		expect(plain(renderPlan(plan, markerPaint))).toBe([
 			"✓ Description · approved",
-			"✓ Harness · configured · 3 tools · 2 skills",
+			"✓ Agent · configured · 3 tools · 2 skills",
 			"✓ Tests · published · 24 cases",
 			"✓ Exam · ready for the ship gate",
 			"✓ Baseline · 18/24 · 75% passed",
@@ -209,7 +214,7 @@ describe("the cycle as a checklist", () => {
 		const plan = compilePlan(midCycle(), { harness: { tools: 3, skills: 2 } });
 		expect(plain(renderPlan(plan, markerPaint))).toBe([
 			"✓ Описание · одобрено",
-			"✓ Харнес · настроен · 3 инструмента · 2 скилла",
+			"✓ Агент · настроен · 3 инструмента · 2 скилла",
 			"✓ Тесты · опубликованы · 24 кейса",
 			"✓ Экзамен · готов к выкатке",
 			"✓ База · 18/24 · 75% проходит",

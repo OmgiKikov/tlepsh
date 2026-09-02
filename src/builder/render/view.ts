@@ -12,8 +12,8 @@ import type {
 	WorkbenchView,
 } from "../../workbench/types.js";
 import { failureModeExcerpt, failureModeReading } from "../../application/run-explanation.js";
-import { formatResourceFragment, sealedOutcomeLabel } from "../../domain/comparison-gate.js";
-import { candidateStatusLabel, plural, t, verdictLabel } from "../../i18n.js";
+import { formatResourceFragment } from "../../domain/comparison-gate.js";
+import { candidateStatusLabel, hasMessage, plural, t, verdictLabel } from "../../i18n.js";
 import { formatFlipRate, formatNoiseBand } from "./calibration.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
 import {
@@ -44,9 +44,10 @@ import {
 	predictionPromiseLine,
 } from "./prediction.js";
 import { measurementOf } from "../../application/prediction.js";
+import { examLine, measurementLine, measurementSurface } from "../../application/measurement-line.js";
 import type { Paint } from "./paint.js";
 import { planHeadline, type Plan } from "./plan.js";
-import { nextStep, stageLabel } from "./stage.js";
+import { nextStep, stageLabel, stageNextStep } from "./stage.js";
 
 export interface RenderReviewOptions {
 	maxDiffLines?: number;
@@ -85,14 +86,42 @@ function evaluatorLine(view: WorkbenchView, paint: Paint): string | null {
 	return parts.length === 0 ? null : `${paint.dim(t("label.evaluators"))} ${parts.join(paint.dim(" · "))}`;
 }
 
-function evidenceLine(view: WorkbenchView, paint: Paint): string {
+/**
+ * What this project already holds. Silent while it holds nothing: a first
+ * screen reading `0 runs · 0 open changes · 0 candidates` is a row of zeroes
+ * about words the operator has not met yet, and the next-step line above it
+ * already says the only thing there is to do.
+ */
+function evidenceLine(view: WorkbenchView, paint: Paint): string | null {
 	const counts = view.counts;
+	if (
+		counts.developmentEvals === 0 && counts.openProposals === 0 &&
+		counts.candidates === 0 && counts.sealedCorpora === 0
+	) return null;
 	return `${paint.dim(t("label.evidence"))} ${joinNonEmpty([
 		plural(counts.developmentEvals, "eval run"),
 		plural(counts.openProposals, "open proposal"),
 		plural(counts.candidates, "candidate"),
 		counts.sealedCorpora > 0 ? plural(counts.sealedCorpora, "sealed holdout") : null,
 	])}`;
+}
+
+/**
+ * The blockers in the operator's language. The Workbench mints each one twice
+ * — an English sentence for the model and scripts, and a typed reason — so the
+ * host renders the reason and falls back to the sentence only for a view that
+ * predates the reasons.
+ */
+export function blockerLines(view: Pick<WorkbenchView, "blockers" | "blockerReasons">): string[] {
+	const reasons = view.blockerReasons;
+	if (!reasons || reasons.length !== view.blockers.length) {
+		return view.blockers.map((item) => oneLine(item, 200));
+	}
+	return reasons.map((reason, index) => {
+		if (!hasMessage(reason.code)) return oneLine(view.blockers[index] ?? "", 200);
+		const text = t(reason.code, reason.params);
+		return oneLine(reason.detail ? `${text} ${reason.detail}` : text, 200);
+	});
 }
 
 /**
@@ -151,17 +180,18 @@ function calibrationLine(view: WorkbenchView, paint: Paint): string | null {
 export function renderStatus(view: WorkbenchView, paint: Paint): string[] {
 	const noise = calibrationLine(view, paint);
 	const evaluators = evaluatorLine(view, paint);
+	const evidence = evidenceLine(view, paint);
 	const shipping = shippingReadinessLine(view, paint);
 	const lines = [
 		`${paint.accent(paint.bold("AHDE"))} ${paint.dim("·")} ${paint.bold(stageLabel(view.stage))}`,
 		targetLine(view, paint),
 		...(evaluators ? [evaluators] : []),
-		evidenceLine(view, paint),
+		...(evidence ? [evidence] : []),
 		...(shipping ? [shipping] : []),
 		...(noise ? [noise] : []),
 		`${paint.dim(t("label.next"))} ${nextStep(view)}`,
 	];
-	if (view.blockers.length > 0) lines.push(`${paint.warning(t("label.blocked"))} ${view.blockers.map((item) => oneLine(item, 200)).join(" ")}`);
+	if (view.blockers.length > 0) lines.push(`${paint.warning(t("label.blocked"))} ${blockerLines(view).join(" ")}`);
 	if (view.warnings.length > 0) {
 		lines.push(`${paint.warning(t("label.warnings"))}`);
 		lines.push(...bullets(view.warnings, paint, { limit: 6, max: 200 }));
@@ -227,7 +257,8 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 	// The whole cycle, one line under the stage: how many phases are behind,
 	// and the one the operator is standing in. `/plan` opens the same compilation.
 	if (state.plan) lines.push(paint.dim(planHeadline(state.plan)));
-	lines.push(`${evidenceLine(view, paint)} ${paint.dim("·")} ${paint.dim(t("label.builder-model"))} ${builder}`);
+	const evidence = evidenceLine(view, paint);
+	lines.push(joinNonEmpty([evidence, `${paint.dim(t("label.builder-model"))} ${builder}`], ` ${paint.dim("·")} `));
 	const shipping = shippingReadinessLine(view, paint);
 	if (shipping) lines.push(shipping);
 	const noise = calibrationLine(view, paint);
@@ -237,7 +268,7 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 	const keys = toolCredentialLine(view, paint);
 	if (keys) lines.push(keys);
 	if (view.blockers.length > 0 && view.stage !== "target-setup") {
-		lines.push(`${paint.warning(t("label.blocked"))} ${oneLine(view.blockers.join(" "), 200)}`);
+		lines.push(`${paint.warning(t("label.blocked"))} ${oneLine(blockerLines(view).join(" "), 200)}`);
 	}
 	lines.push(paint.dim(t("header.help")));
 	lines.push("");
@@ -278,28 +309,34 @@ function resourceSuffix(gate: { resources: WorkbenchGateProjection["resources"] 
 	return fragment ? ` ${paint.dim(`· ${fragment}`)}` : "";
 }
 
-function gateLine(gate: NonNullable<NonNullable<WorkbenchCandidateSummary["development"]>["gate"]>, paint: Paint): string {
-	const tone = verdictTone(gate.verdict, paint);
-	return `  ${paint.dim(t("label.verdict"))} ${tone(verdictLabel(gate.verdict))} ${paint.dim("·")} ${points(gate.scoreDelta)} ${paint.dim(`(${t("unit.ci")} ${points(gate.confidence95.low)} … ${points(gate.confidence95.high)})`)} ${paint.dim(`· ${gate.tasks} × ${gate.repetitions}`)}` +
-		resourceSuffix(gate, paint) +
-		(gate.flags.collapsedTasks > 0 ? ` ${paint.error(t("development.collapsed", { tasks: plural(gate.flags.collapsedTasks, "task") }))}` : "");
-}
-
+/**
+ * The verification, in the one sentence the whole system prints, painted.
+ *
+ * The parts come from the composer, never from arithmetic here: the delta and
+ * its interval are both about the mean grader score the gate decided on, and
+ * the pass rate follows them named. Under it go the per-task counts, what the
+ * two arms cost, and — on a basket too small for the interval to settle
+ * anything — one muted line saying so.
+ */
 function comparisonLines(
 	summary: NonNullable<NonNullable<WorkbenchCandidateSummary["development"]>["comparison"]>,
 	gate: NonNullable<WorkbenchCandidateSummary["development"]>["gate"],
 	paint: Paint,
 ): string[] {
-	const delta = summary.delta;
-	const tone = delta > 0 ? paint.success : delta < 0 ? paint.error : paint.muted;
-	const score = gate
-		? ` ${paint.dim(t("development.score", { before: percent(gate.baselineScore), after: percent(gate.candidateScore) }))}`
-		: "";
+	const line = measurementLine({ development: measurementSurface({ ...summary, ...gate }) });
+	const shown = gate ? gate.scoreDelta : summary.delta;
+	const tone = shown > 0 ? paint.success : shown < 0 ? paint.error : paint.muted;
+	const verdict = line.verdict ? `${verdictTone(gate?.verdict ?? "", paint)(line.verdict)} ${paint.dim("·")} ` : "";
 	const lines = [
-		`${paint.dim(t("label.development"))} ${t("development.comparison", { baseline: percent(summary.baselinePassRate), candidate: percent(summary.candidatePassRate) })} ${tone(`(${points(delta)})`)} ${paint.dim(t("development.on-tasks", { tasks: plural(summary.taskCount, "task"), count: summary.taskCount }))}${score}`,
-		`  ${paint.success(t("development.improved", { count: summary.improved }))} ${paint.dim("·")} ${summary.regressed > 0 ? paint.warning(t("development.lower", { count: summary.regressed })) : paint.muted(t("development.lower", { count: 0 }))} ${paint.dim("·")} ${paint.muted(t("development.unchanged", { count: summary.unchanged }))} ${paint.dim(`· ${t("unit.ci")} ${points(summary.confidence95.low)} … ${points(summary.confidence95.high)}`)}`,
+		`${paint.dim(t("label.development"))} ${verdict}${line.metric} ${tone(line.delta)} ${paint.dim(line.design)}` +
+			(line.passRate ? ` ${paint.dim(`· ${line.passRate}`)}` : ""),
+		`  ${paint.success(t("development.improved", { count: summary.improved }))} ${paint.dim("·")} ${summary.regressed > 0 ? paint.warning(t("development.lower", { count: summary.regressed })) : paint.muted(t("development.lower", { count: 0 }))} ${paint.dim("·")} ${paint.muted(t("development.unchanged", { count: summary.unchanged }))}` +
+			(gate ? resourceSuffix(gate, paint) : "") +
+			(gate && gate.flags.collapsedTasks > 0
+				? ` ${paint.error(t("development.collapsed", { tasks: plural(gate.flags.collapsedTasks, "task") }))}`
+				: ""),
 	];
-	if (gate) lines.push(gateLine(gate, paint));
+	if (line.smallBasket) lines.push(`  ${paint.muted(line.smallBasket)}`);
 	return lines;
 }
 
@@ -362,14 +399,10 @@ export function renderCandidate(
 		lines.push(regradedDevelopmentLine(candidate.development.comparison, candidate.regraded, paint));
 	}
 	const sealedGate = candidate.sealedHoldout.gate;
-	// `pass` alone reads the same for a change that improved the exam and for one
-	// the exam merely could not convict; the outcome says which happened.
-	const sealedOutcomeSuffix = sealedGate?.outcome
-		? ` ${paint.dim("·")} ${sealedGate.outcome === "improved" ? paint.success(sealedOutcomeLabel(sealedGate.outcome)) : paint.muted(sealedOutcomeLabel(sealedGate.outcome))}`
-		: "";
+	const exam = examLine(sealedGate);
 	lines.push(`${paint.dim(t("label.sealed-holdout"))} ${candidate.sealedHoldout.executed
-		? (sealedGate
-			? `${verdictTone(sealedGate.verdict, paint)(verdictLabel(sealedGate.verdict))}${sealedOutcomeSuffix} ${paint.dim("·")} ${points(sealedGate.scoreDelta)} ${paint.dim(`(${t("unit.ci")} ${points(sealedGate.confidence95.low)} … ${points(sealedGate.confidence95.high)}) · ${sealedGate.tasks} × ${sealedGate.repetitions}`)}${resourceSuffix(sealedGate, paint)}`
+		? (sealedGate && exam
+			? `${verdictTone(sealedGate.verdict, paint)(exam.verdict)} ${exam.delta} ${paint.dim(exam.design)}${resourceSuffix(sealedGate, paint)}`
 			: (candidate.sealedHoldout.gatePassed ? paint.success(t("sealed.gate-passed")) : paint.error(t("sealed.legacy"))))
 		: paint.muted(t("sealed.not-executed"))}`);
 	if (sealedGate && sealedGate.verdict !== "pass") lines.push(`  ${paint.muted(oneLine(sealedGate.reasons[0] ?? "", 160))}`);
@@ -515,7 +548,10 @@ export function renderReview(content: WorkbenchReviewDetail, paint: Paint, optio
 			...renderCandidate(content, paint, t("candidate.interrupted")),
 			paint.warning(t("review.interrupted-warning")),
 		];
-		case "workflow": return [`${section(stageLabel(content.stage), paint)}`, ...wrap(content.headline, 96, "  ")];
+		// The headline is the model's sentence about this stage, in English by
+		// design. The operator gets the same fact in their own language, which is
+		// exactly what the next-step line already says.
+		case "workflow": return [`${section(stageLabel(content.stage), paint)}`, ...wrap(stageNextStep(content.stage, content.headline), 96, "  ")];
 	}
 }
 
@@ -598,13 +634,8 @@ export function renderTraces(content: WorkbenchTracesDetail, paint: Paint): stri
 }
 
 function resourceKind(kind: string): string {
-	switch (kind) {
-		case "instructions": return "instructions";
-		case "skill": return "skill";
-		case "tool-descriptor": return "tool descriptor";
-		case "tool-executable": return "tool executable";
-		default: return kind;
-	}
+	const key = `view.resource.${kind}`;
+	return hasMessage(key) ? t(key) : kind;
 }
 
 /** Exact committed Target context: identity, execution policy, declared resources. */
@@ -612,7 +643,7 @@ export function renderTarget(content: WorkbenchTargetDetail, paint: Paint): stri
 	if (!("target" in content)) {
 		return [
 			`${section(t("section.target"), paint)} ${paint.muted(t("view.target-missing"))}`,
-			`${paint.dim(t("label.next"))} ${t("view.target-missing-next", { launch: paint.bold(content.launch) })}`,
+			`${paint.dim(t("label.next"))} ${t("view.target-missing-next")}`,
 		];
 	}
 	const execution = content.target.execution;
@@ -627,8 +658,15 @@ export function renderTarget(content: WorkbenchTargetDetail, paint: Paint): stri
 		})}`,
 		paint.dim(t("passport.resources")),
 	];
+	// The kind column is as wide as the widest word in the operator's language,
+	// never a number chosen for English: a translated label that overflows a
+	// fixed pad shifts every size on the screen one row at a time.
+	const kindWidth = Math.max(
+		16,
+		...content.resources.map((resource) => resourceKind(resource.kind).length),
+	);
 	for (const resource of content.resources) {
-		lines.push(`  ${paint.bold(oneLine(resource.path, 60).padEnd(40))} ${resourceKind(resource.kind).padEnd(16)} ${paint.dim(bytes(resource.bytes))}${resource.mode === "100755" ? paint.dim(t("view.executable")) : ""}`);
+		lines.push(`  ${paint.bold(oneLine(resource.path, 60).padEnd(40))} ${resourceKind(resource.kind).padEnd(kindWidth)} ${paint.dim(bytes(resource.bytes))}${resource.mode === "100755" ? paint.dim(t("view.executable")) : ""}`);
 	}
 	if (content.resource) {
 		lines.push("", `${section(content.resource.path, paint)} ${paint.dim(`${resourceKind(content.resource.kind)} · ${bytes(content.resource.bytes)} · ${shortHash(content.resource.sha256)}`)}`);

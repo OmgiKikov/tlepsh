@@ -737,7 +737,7 @@ describe("re-scoring what a candidate is being judged on", () => {
 			setLanguage("en");
 			const english = renderCandidate(content, plainPaint);
 			// Beside the recorded verdict, never instead of it.
-			expect(english).toContain("Development baseline 0% → candidate 100% (+100 pts) on 15 tasks · score 0% → 100%");
+			expect(english.join("\n")).toContain("Development improved · score 0% → 100% (+100 pts, 95% CI +100 … +100) on 15 cases × 2 · pass rate 0% → 100%");
 			expect(english).toContain("On the new rubric development 0% → 100% became 0% → 0% (↑0 ↓1 =1) · exam unchanged");
 			setLanguage("ru");
 			expect(renderCandidate(content, plainPaint)).toContain(

@@ -61,7 +61,7 @@ import { judgeEvidenceCalibration } from "./judge-labels.js";
 import { detectPromotionFlips } from "./regression-guards.js";
 import {
 	calibrationStrip,
-	compilePredictionCalibration,
+	compileDecidedPredictionCalibration,
 	measurementOf,
 	predictedVersusActual,
 	readCandidatePrediction,
@@ -69,6 +69,7 @@ import {
 	type PredictedOverallOutcome,
 	type PredictionCalibration,
 } from "./prediction.js";
+import { measurementLine, measurementSurface, smallBasketNote } from "./measurement-line.js";
 
 /** Failure a passport cannot recover from, with the operator's next step. */
 export class VersionPassportError extends Error {
@@ -1091,22 +1092,11 @@ function compileShippedPassport(
  * worth reading.
  */
 function predictionCalibrationOf(input: VersionPassportInput, runsRoot: string): PredictionCalibration {
-	const entries = [];
-	for (const record of projectRecords(runsRoot, input.projectId)) {
-		if (input.targetId !== undefined && record.targetId !== input.targetId) continue;
-		if (record.mode === "aa-calibration") continue;
-		const decided = record.events.find((event) => event.type === "promoted" || event.type === "rejected");
-		if (!decided) continue;
-		const evaluated = record.events.find((event) => event.type === "evaluated");
-		const development = evaluated?.type === "evaluated" ? evaluated.evaluation.development.comparison : null;
-		entries.push({
-			candidateId: record.candidateId,
-			at: decided.at,
-			prediction: readCandidatePrediction(runsRoot, record),
-			measurement: measurementOf(isPromotionGradeGateEvidence(development) ? development.summary : null),
-		});
-	}
-	return compilePredictionCalibration(entries);
+	return compileDecidedPredictionCalibration({
+		runsRoot,
+		projectId: input.projectId,
+		...(input.targetId === undefined ? {} : { targetId: input.targetId }),
+	});
 }
 
 /**
@@ -1191,14 +1181,13 @@ export function judgeSummaryLine(judge: VersionPassportJudge | null): string {
 	}, ${judge.checks} check${judge.checks === 1 ? "" : "s"}${baseline}`;
 }
 
-/** The development line every surface shares. */
+/**
+ * The development line every surface shares — the composed sentence, so the
+ * passport, the panel and the Builder's own copy are the same string.
+ */
 export function developmentSummaryLine(development: VersionPassportDevelopment | null): string {
 	if (!development) return "no promotion-grade development evidence on this record";
-	return `${development.verdict} · pass ${percent(development.baselinePassRate)} → ${
-		percent(development.candidatePassRate)
-	} · score ${percent(development.baselineScore)} → ${percent(development.candidateScore)} (${
-		formatPoints(development.scoreDelta)
-	}, 95% CI ${formatPoints(development.confidence95.low)} … ${formatPoints(development.confidence95.high)})`;
+	return measurementLine({ development: measurementSurface(development) }).text;
 }
 
 /**
@@ -1222,15 +1211,23 @@ export function resourceSummaryLine(resources: VersionPassportResources | null):
 	return judge === null ? ratios : `${ratios} · ${judge}`;
 }
 
+/**
+ * `- development: **improved** — score 31% → 62% (+31 pts, 95% CI …) on 7
+ * cases × 3 · pass rate 17% → 58%`. The verdict is bold because a reader scans
+ * for it; everything after it is the composed sentence, unchanged.
+ */
 function developmentLine(measurement: PassportDevelopmentMeasurement): string {
-	const interval = measurement.confidence95
-		? `, 95% CI ${formatPoints(measurement.confidence95.low)} … ${formatPoints(measurement.confidence95.high)}`
-		: "";
-	const delta = measurement.scoreDelta === null ? "" : ` (${formatPoints(measurement.scoreDelta)}${interval})`;
-	return `- development: **${measurement.verdict}** — pass rate ` +
-		`${trimmedPercent(measurement.baselinePassRate)} → ${trimmedPercent(measurement.candidatePassRate)} · ` +
-		`mean score ${score(measurement.baselineScore)} → ${score(measurement.candidateScore)}${delta} ` +
-		`on ${design(measurement.design)}`;
+	const line = measurementLine({
+		development: measurementSurface({
+			...measurement,
+			tasks: measurement.design.tasks,
+			repetitions: measurement.design.repetitions,
+		}),
+	});
+	const body = [line.metric, line.delta, line.design].filter((part) => part.length > 0).join(" ");
+	return `- development: **${measurement.verdict}** — ${
+		[body, line.passRate, line.smallBasket].filter((part) => part !== null && part.length > 0).join(" · ")
+	}`;
 }
 
 function judgeLines(judge: PassportJudge): string[] {

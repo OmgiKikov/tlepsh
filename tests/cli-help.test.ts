@@ -145,10 +145,10 @@ describe("one Builder persona", () => {
 		// A report request is answered, not forwarded to a terminal.
 		expect(working).toContain("покажи как вырос");
 		expect(working).toContain("After Ship the host shows the Passport automatically");
-		expect(working).toContain("Never answer with a terminal or slash\n  command");
+		expect(working).toMatch(/Never answer with a terminal or slash\s+command/);
 		expect(working).toContain("Never answer “use /test” or “type /apply”");
 		// The stage machine is not the operator's vocabulary.
-		expect(working).toContain("Never\n  narrate stages");
+		expect(working).toMatch(/Never\s+narrate stages/);
 	});
 });
 

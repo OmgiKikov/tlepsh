@@ -185,6 +185,14 @@ export interface WorkbenchCandidateSummary {
 	 * manual candidate.
 	 */
 	appliedBy?: { actorId: string; via: "improvement-loop" | "proposal-search" | null; paths: string[] } | null;
+	/**
+	 * What this candidate measured, in the operator's language, as one sentence
+	 * the host composed: the score the gate decided on, its interval, the design
+	 * size, the pass rate behind it, and the sealed exam where one ran. Every
+	 * panel, the growth log, the passport and this field are the same string, so
+	 * the Builder quotes it instead of computing a delta of its own.
+	 */
+	headline: string;
 	development: {
 		baselineEvalRunId: string;
 		candidateEvalRunId: string;
@@ -368,6 +376,18 @@ export interface WorkbenchSelectionSummary {
 	selected: boolean;
 }
 
+/**
+ * One blocker as a code the host can localize, plus whatever detail only the
+ * raw text carries (an id, a path, an integrity failure). `params` holds the
+ * already-bent nouns and counts the message interpolates.
+ */
+export interface WorkbenchBlockerReason {
+	code: string;
+	params?: Record<string, string | number>;
+	/** Free text the code cannot carry, appended after the localized sentence. */
+	detail?: string;
+}
+
 export interface WorkbenchView {
 	schemaVersion: 1;
 	project: { id: string; directory: string };
@@ -404,8 +424,28 @@ export interface WorkbenchView {
 	};
 	focus: Partial<Record<WorkbenchSelectionKind, string>>;
 	selections: WorkbenchSelectionSummary[];
+	/**
+	 * Host-side stage hints in loose words. The model-facing projection replaces
+	 * this with the derived `next` block, so nothing outside the host reads it.
+	 */
 	actions: string[];
+	/**
+	 * True while the five workshop tools are legal. Not derived from the
+	 * inventory — the open workshop is live host state — so it is attached
+	 * where the view is rendered rather than where the stage is computed.
+	 */
+	workshopOpen?: boolean;
 	blockers: string[];
+	/**
+	 * The same blockers as a typed reason, index-aligned with {@link blockers}.
+	 *
+	 * `blockers` is the English sentence the Builder model reads and scripts
+	 * match on; the host draws the operator's language from the code instead, so
+	 * a Russian screen never has to print an English rule. Optional because a
+	 * view serialized before this field existed still parses — a host with no
+	 * reason simply renders the sentence it already had.
+	 */
+	blockerReasons?: readonly WorkbenchBlockerReason[];
 	warnings: string[];
 	/**
 	 * Coarse, model-safe release readiness. It never carries a holdout id, name,
@@ -1078,8 +1118,15 @@ export interface WorkbenchCheapCheckProjection {
 export type WorkbenchVerifyCandidateResult =
 	| {
 		outcome: "verified";
+		/** The candidate's own {@link WorkbenchCandidateSummary.headline}, hoisted. */
+		headline: string;
 		candidate: WorkbenchCandidateSummary;
-		development: { verdict: GateVerdict; delta: number; confidence95: { low: number; high: number } };
+		/**
+		 * The gate's own quantity: the mean paired score delta and the interval
+		 * that brackets it. This field used to carry the pass-rate delta beside
+		 * the score's interval, which is how the two came to be read as one.
+		 */
+		development: { verdict: GateVerdict; scoreDelta: number; confidence95: { low: number; high: number } };
 		sealedHoldout: { executed: boolean; gatePassed: boolean; verdict: GateVerdict | null };
 		/** The screen that let this verification start, when one ran. */
 		screen: WorkbenchCheapCheckProjection | null;
@@ -1125,6 +1172,8 @@ export interface WorkbenchRegressionGuardsProjection {
 /** Review · promote · adopt · continue, as far as the candidate allows. */
 export interface WorkbenchShipResult {
 	steps: WorkbenchCompositeStep[];
+	/** The candidate's own {@link WorkbenchCandidateSummary.headline}, hoisted. */
+	headline: string;
 	candidate: WorkbenchCandidateSummary;
 	tag: string | null;
 	adoption: { branch: string; fromSha: string; toSha: string } | null;

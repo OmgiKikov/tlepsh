@@ -223,7 +223,9 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			const diff = subject.diff === null || subject.diff === undefined ? null : bag(subject.diff);
 			const exactDiff = typeof diff?.exactDiff === "string" ? diff.exactDiff : "";
 			return [
-				`${paint.dim(t("label.development"))} ${text(subject.development, 96)}`,
+				// The measurement sentence the operator just read on the panel, whole:
+				// the last gate before a release is the worst place to cut a number.
+				`${paint.dim(t("label.development"))} ${text(subject.development, 200)}`,
 				// The last screen before a release says what the exam showed, not
 				// only that it passed: `pass` covers both findings.
 				`${paint.dim(t("label.sealed"))} ${text(subject.sealed, 96)}${sealedOutcomeSuffix(subject.sealedOutcome)}`,

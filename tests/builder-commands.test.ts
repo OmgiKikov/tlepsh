@@ -11,6 +11,7 @@ import {
 	type RegisterBuilderCommandsOptions,
 } from "../src/builder/commands.js";
 import { createRunProgressPresenter } from "../src/builder/run-progress.js";
+import { candidateHeadline } from "../src/workbench/resolution.js";
 import {
 	AHDE_MODEL_NOTE_TYPE,
 	AHDE_TRANSCRIPT_ENTRY_TYPE,
@@ -98,7 +99,8 @@ function viewAt(stage: WorkbenchStage, overrides: Partial<WorkbenchView> = {}): 
 }
 
 function candidateSummary(overrides: Partial<WorkbenchCandidateSummary> = {}): WorkbenchCandidateSummary {
-	return {
+	const summary: WorkbenchCandidateSummary = {
+		headline: "",
 		candidateId: "cand-1",
 		status: "evaluated",
 		projectId: "demo",
@@ -128,6 +130,9 @@ function candidateSummary(overrides: Partial<WorkbenchCandidateSummary> = {}): W
 		rejection: null,
 		...overrides,
 	};
+	// The host composes the headline from the same evidence; a fixture that
+	// hand-wrote one could let a panel and its headline drift apart in a test.
+	return { ...summary, headline: summary.headline || candidateHeadline(summary.development, summary.sealedHoldout) };
 }
 
 function tracesDetail(): WorkbenchTracesDetail {
@@ -405,6 +410,7 @@ function defaultDecision(input: WorkbenchDecisionInput): WorkbenchDecisionResult
 					{ kind: "adopt-candidate", message: "Branch main now points at the promoted candidate." },
 					{ kind: "continue-cycle", message: "Improvement cycle closed." },
 				],
+				headline: candidateSummary().headline,
 				candidate: candidateSummary({ status: "promoted", promotion: { tag: `v${input.version}`, reason: input.reason, at } }),
 				tag: `v${input.version}`,
 				adoption: { branch: "main", fromSha: SHA_A, toSha: SHA_B },
@@ -728,14 +734,16 @@ describe("Builder Pi slash commands", () => {
 		expect(text).toContain("Target target-demo @ aaaaaaaaaa · anthropic/claude-sonnet-4 ✓");
 		expect(text).toContain("Next Describe what the agent still needs built, or say “tests” to run them");
 		expect(text).toContain("Target not created yet");
-		expect(text).toContain("ahde init .");
+		// The way out of an empty folder is the conversation, not a second command.
+		expect(text).toContain("the Builder creates it right here");
+		expect(text).not.toContain("ahde init .");
 		expect(text).not.toContain("schemaVersion");
 		expect(text).not.toContain("{");
 		expect(host.notify).not.toHaveBeenCalled();
 		expect(host.select).not.toHaveBeenCalled();
 		expect(fixture.decide).not.toHaveBeenCalled();
 
-		await expectRefusal(commands, "target", "two paths", host.ctx, output, "/target accepts at most one");
+		await expectRefusal(commands, "target", "two paths", host.ctx, output, "/target takes at most one");
 		expect(fixture.view).toHaveBeenCalledTimes(5);
 	});
 
@@ -782,7 +790,7 @@ describe("Builder Pi slash commands", () => {
 		);
 		expect(output.blocks.map((block) => block.title)).toEqual(["Run complete", "Run complete"]);
 
-		await expectRefusal(commands, "run", "11 too many", host.ctx, output, "/run repetitions must be an integer between 1 and 10");
+		await expectRefusal(commands, "run", "11 too many", host.ctx, output, "/run takes how many repetitions");
 		expect(fixture.decide).toHaveBeenCalledTimes(2);
 	});
 
@@ -844,12 +852,12 @@ describe("Builder Pi slash commands", () => {
 		expect(explicit.decide.mock.calls.map(([input]) => input)).toEqual([
 			{ kind: "ship", version: "2.2.0", reason: "ship the reviewed fix" },
 		]);
-		await expectRefusal(second.commands, "ship", "v2", explicitHost.ctx, second.output, "version must be semver like 0.2.0");
+		await expectRefusal(second.commands, "ship", "v2", explicitHost.ctx, second.output, "a version looks like 0.2.0");
 
 		// Nothing to ship yet: the command says where the operator actually is.
 		const early = workbench({ view: async () => viewAt("improvement-authoring") });
 		const third = register(early.value);
-		await expectRefusal(third.commands, "ship", "", context().ctx, third.output, /\/ship is not available during Diagnosis/);
+		await expectRefusal(third.commands, "ship", "", context().ctx, third.output, /Shipping is not the next step here — Diagnosis/);
 		expect(early.decide).not.toHaveBeenCalled();
 	});
 
@@ -872,7 +880,7 @@ describe("Builder Pi slash commands", () => {
 		);
 
 		// An out-of-range ordinal is refused instead of guessed.
-		await expectRefusal(commands, "fix", "7", host.ctx, output, /there is no problem 7 to fix/);
+		await expectRefusal(commands, "fix", "7", host.ctx, output, /There is no problem 7 to fix/);
 		expect(sendUserMessage).toHaveBeenCalledTimes(1);
 
 		// Nothing measured yet: /fix explains where to start rather than failing.
@@ -931,7 +939,7 @@ describe("Builder Pi slash commands", () => {
 		expect(text).toContain("Recommended 3 repetitions per run to keep noise under 10 points");
 		expect(text).not.toContain("{");
 
-		await expectRefusal(commands, "calibrate", "11 too many", host.ctx, output, "/calibrate repetitions must be an integer between 1 and 10");
+		await expectRefusal(commands, "calibrate", "11 too many", host.ctx, output, "/calibrate takes how many repetitions");
 		expect(fixture.decide).toHaveBeenCalledTimes(2);
 	});
 
@@ -1300,7 +1308,7 @@ describe("Builder Pi slash commands", () => {
 		expect(String(output.note.mock.calls[0]?.[0])).toContain("candidate-verification (Candidate verification)");
 		expect(onWorkbenchChanged).toHaveBeenCalledTimes(1);
 
-		await expectRefusal(commands, "apply", "-invalid", host.ctx, output, "branch must be one bounded Git branch name");
+		await expectRefusal(commands, "apply", "-invalid", host.ctx, output, "a branch name may hold only");
 		expect(fixture.decide).toHaveBeenCalledTimes(1);
 
 		// Without a branch the proposal id names the candidate branch; nothing is asked.
@@ -1413,9 +1421,9 @@ describe("Builder Pi slash commands", () => {
 		expect(fixture.decide).toHaveBeenCalledTimes(2);
 		expect(cancelled.confirm).not.toHaveBeenCalled();
 
-		await expectRefusal(commands, "promote", "v1", host.ctx, output, "version must be semver like 0.2.0");
+		await expectRefusal(commands, "promote", "v1", host.ctx, output, "a version looks like 0.2.0");
 		const malformed = context({ confirm: async () => true, input: async () => "banana" });
-		await expectRefusal(commands, "promote", "", malformed.ctx, output, "version must be semver like 0.2.0");
+		await expectRefusal(commands, "promote", "", malformed.ctx, output, "a version looks like 0.2.0");
 		expect(fixture.decide).toHaveBeenCalledTimes(2);
 	});
 
@@ -1643,9 +1651,10 @@ describe("Builder Pi slash commands", () => {
 			decide: async () => decision("run-current", {
 				resolvedAs: "verify-candidate",
 				outcome: "verified" as const,
+				headline: candidateSummary().headline,
 				screen: null,
 				candidate: candidateSummary(),
-				development: { verdict: "improved", delta: 2 / 3, confidence95: { low: 0.1, high: 0.9 } },
+				development: { verdict: "improved", scoreDelta: 2 / 3, confidence95: { low: 0.1, high: 0.9 } },
 				sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" },
 			}, viewAt("candidate-review")),
 		});
@@ -1661,7 +1670,8 @@ describe("Builder Pi slash commands", () => {
 			["AHDE · Candidate verification", "info"],
 			["Candidate verified", "success"],
 		]);
-		expect(verification.output.text()).toContain("Development baseline 33% → candidate 100% (+66.7 pts) on 3 tasks");
+		expect(verification.output.text()).toContain("Development pass rate 33% → 100% (+66.7 pts, 95% CI +10 … +90) on 3 cases");
+		expect(verification.output.text()).toContain("3 cases is a small basket: read the interval as indicative, not decisive");
 		expect(verification.output.text()).toContain("Sealed holdout gate passed");
 		expect(verificationHost.setWidget).toHaveBeenLastCalledWith("ahde-run-progress", undefined);
 
@@ -1820,7 +1830,7 @@ describe("Builder Pi slash commands", () => {
 			failure = error;
 		}
 		expect(failure).toBeInstanceOf(Error);
-		expect((failure as Error).message).toBe("/approve requires the local Builder Pi TUI");
+		expect((failure as Error).message).toBe("/approve works only in the Builder window");
 	});
 
 	it("waits for the agent to become idle before reading or mutating Workbench state", async () => {
@@ -1876,7 +1886,7 @@ describe("Builder Pi slash commands", () => {
 
 		// A host refusal, an argument the operator mistyped, and a plain crash.
 		await expectRefusal(commands, "status", "", host.ctx, output, "No compatible development EvalRun is available");
-		await expectRefusal(commands, "run", "11", host.ctx, output, "/run repetitions must be an integer");
+		await expectRefusal(commands, "run", "11", host.ctx, output, "/run takes how many repetitions");
 		expect(output.blocks.map((block) => block.title)).toEqual(["AHDE · /status", "AHDE · /run"]);
 		expect(output.blocks.map((block) => block.tone)).toEqual(["warning", "error"]);
 
@@ -1912,7 +1922,7 @@ describe("Builder Pi slash commands", () => {
 			const host = context(settings);
 			for (const [name, args] of invocations) {
 				await expect(command(commands, name).handler(args, host.ctx))
-					.rejects.toThrow(`/${name} requires the local Builder Pi TUI`);
+					.rejects.toThrow(`/${name} works only in the Builder window`);
 			}
 			expect(host.waitForIdle).not.toHaveBeenCalled();
 			expect(host.notify).not.toHaveBeenCalled();
@@ -1931,7 +1941,7 @@ describe("Builder Pi slash commands", () => {
 		const { commands, output } = register(fixture.value);
 		const host = context();
 
-		await expectRefusal(commands, name, "unexpected", host.ctx, output, `/${name} does not accept arguments`);
+		await expectRefusal(commands, name, "unexpected", host.ctx, output, `/${name} takes no arguments`);
 		expect(host.waitForIdle).not.toHaveBeenCalled();
 		expect(fixture.view).not.toHaveBeenCalled();
 	});
@@ -1941,7 +1951,7 @@ describe("Builder Pi slash commands", () => {
 		const { commands, output } = register(fixture.value);
 		const host = context();
 
-		await expectRefusal(commands, "traces", "unexpected", host.ctx, output, "/traces accepts a row count, for example /traces 30");
+		await expectRefusal(commands, "traces", "unexpected", host.ctx, output, "/traces takes how many rows to show");
 		expect(host.waitForIdle).not.toHaveBeenCalled();
 		expect(fixture.view).not.toHaveBeenCalled();
 	});
@@ -2025,7 +2035,7 @@ describe("Builder Pi slash commands", () => {
 
 	it("/holdout <path> imports that file straight away, without the menu or the path prompt", async () => {
 		// The host's own next step after a judge-written draft is "/holdout <path>";
-		// it used to answer "/holdout does not accept arguments".
+		// it used to answer "/holdout takes no arguments".
 		const fixture = workbench();
 		const importSealedHoldout = vi.fn(() => ({ taskCount: 20 }));
 		const { commands, output } = register(fixture.value, { importSealedHoldout });

@@ -5,6 +5,7 @@ import type {
 	WorkbenchView,
 } from "../../workbench/types.js";
 import { examShortfall, joinNonEmpty, oneLine, percent } from "./format.js";
+import { blockerLines } from "./view.js";
 import type { Paint } from "./paint.js";
 import { stageLabel } from "./stage.js";
 
@@ -262,7 +263,7 @@ export function compilePlan(view: WorkbenchView, facts: PlanFacts = {}): Plan {
 	return {
 		stage: view.stage,
 		steps,
-		blockers: view.blockers.map((blocker) => oneLine(blocker, 160)),
+		blockers: blockerLines(view).map((blocker) => oneLine(blocker, 160)),
 	};
 }
 

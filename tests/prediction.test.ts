@@ -343,10 +343,10 @@ function applyConfirmation(predicted: unknown): WorkbenchConfirmation {
 describe("the promise on screen", () => {
 	it("states it on the review panel, in English and in Russian", () => {
 		const english = renderReview(proposalReview(), plainPaint);
-		expect(english).toContain("Prediction Expecting mode «aaaaaaaa» 26/26 → ≤3/26 · overall +40 pts");
+		expect(english).toContain("Prediction Expecting failure mode «aaaaaaaa» 26/26 → ≤3/26 · overall +40 pts");
 		setLanguage("ru");
 		const russian = renderReview(proposalReview(), plainPaint);
-		expect(russian).toContain("Прогноз Ожидаю mode «aaaaaaaa» 26/26 → ≤3/26 · итог +40 п.п.");
+		expect(russian).toContain("Прогноз Ожидаю тип сбоя «aaaaaaaa» 26/26 → ≤3/26 · итог +40 п.п.");
 	});
 
 	it("says so plainly when a proposal promised nothing, and quotes the reason when it gave one", () => {
@@ -360,10 +360,10 @@ describe("the promise on screen", () => {
 
 	it("shows the promise on the screen where the operator says yes", () => {
 		const english = renderConfirmation(applyConfirmation(prediction()), plainPaint);
-		expect(english[3]).toBe("Prediction Expecting mode «aaaaaaaa» 26/26 → ≤3/26 · overall +40 pts");
+		expect(english[3]).toBe("Prediction Expecting failure mode «aaaaaaaa» 26/26 → ≤3/26 · overall +40 pts");
 		setLanguage("ru");
 		const russian = renderConfirmation(applyConfirmation(prediction()), plainPaint);
-		expect(russian[3]).toBe("Прогноз Ожидаю mode «aaaaaaaa» 26/26 → ≤3/26 · итог +40 п.п.");
+		expect(russian[3]).toBe("Прогноз Ожидаю тип сбоя «aaaaaaaa» 26/26 → ≤3/26 · итог +40 п.п.");
 		// A subject that carries something the schema will not accept renders as silence.
 		expect(renderConfirmation(applyConfirmation({ modes: "everything" }), plainPaint)[3])
 			.toBe("Прогноз не заявлен");
@@ -456,7 +456,8 @@ describe("the promise beside the result", () => {
 			plainPaint,
 			{ prediction: prediction(), measurement },
 		);
-		expect(lines).toContain("  Прогноз предсказано +40 п.п. · получено +50 п.п. (ДИ +35 … +64) ✓");
+		// Which quantity was promised is named where the two numbers meet.
+		expect(lines).toContain("  Прогноз предсказано +40 п.п. (балл) · получено +50 п.п. (ДИ +35 … +64) ✓");
 		expect(lines).toContain("      предсказано ≤3/26 · получено 1/26 ✓");
 		// A targeted mode nobody promised anything about reads as neither win nor loss.
 		expect(lines).toContain("      без прогноза · получено 1/26 ~");
@@ -471,7 +472,7 @@ describe("the promise beside the result", () => {
 				measurement: { scoreDeltaPp: 12, confidence95Pp: { low: 4, high: 20 }, passRateDeltaPp: 12 },
 			},
 		);
-		expect(lines).toContain("  Prediction predicted +40 pts · got +12 pts (CI +4 … +20) ✗");
+		expect(lines).toContain("  Prediction predicted +40 pts (score) · got +12 pts (CI +4 … +20) ✗");
 		expect(lines).toContain("      predicted ≤3/26 · got 9/26 ✗");
 	});
 
@@ -815,7 +816,7 @@ describe("the durable record", () => {
 		expect(passport.provenance.predictionCalibration).toMatchObject({ scored: 5, hits: 4 });
 		setLanguage("ru");
 		const lines = renderVersionPassport(passport, plainPaint);
-		expect(lines).toContain("Обещано +5 п.п. · получено +9 п.п. ✓");
+		expect(lines).toContain("Обещано +5 п.п. (балл) · получено +9 п.п. ✓");
 		expect(lines).toContain("Builder предсказывает: попаданий 4/5 · ошибка ±9.2 п.п. · ✓✓✗✓✓");
 	});
 });
@@ -834,6 +835,33 @@ describe("the persona predicts on the construction path too", () => {
 		expect(loop).toContain("it is still a promise, so it\n   still carries `prediction`");
 		expect(loop).toContain("expectedPassRateDeltaPp");
 		expect(loop).toContain("A construction proposal names no mode; it may still state the delta");
+	});
+
+	/**
+	 * Live session 5: `/log` said "nothing decided has carried a prediction yet"
+	 * while the passport of the same version said "hits 0/1 · error ±8.3 pp".
+	 * The log's own surface carried no pass rate, so a construction promise —
+	 * which is always about the pass rate — could not be scored on that screen
+	 * and could on the other. One function over one source, or neither is true.
+	 */
+	it("reads the same calibration on /log and on the passport for a construction promise", () => {
+		const root = runsRoot();
+		writeCandidate(root, "cand-construction", {
+			at: "2026-09-02T00:00:00.000Z",
+			outcome: "promoted",
+			scoreDelta: 0.3,
+			prediction: prediction({ modes: [], expectedScoreDeltaPp: null, expectedPassRateDeltaPp: 35 }),
+			tag: "v0.1.0",
+		});
+		const log = compileAgentLog({ runsRoot: root, targetId: "agent-1", projectId: "project-1" });
+		const passport = compileVersionPassport(
+			{ runsRoot: root, stateRoot: join(root, "state"), projectId: "project-1", version: "v0.1.0" },
+			{},
+		);
+		expect(log.calibration.scored).toBe(1);
+		expect(log.calibration).toEqual(passport.provenance.predictionCalibration);
+		// The fixture's arms move the pass rate +50pp against a promised +35pp.
+		expect(log.calibration).toMatchObject({ scored: 1, hits: 1, meanAbsoluteErrorPp: 15 });
 	});
 
 	it("accepts exactly that prediction: a delta, no mode", () => {

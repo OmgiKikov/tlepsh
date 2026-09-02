@@ -151,7 +151,9 @@ it("uses the real typed Builder Pi to inspect exact Target context and stop at p
 			{
 				match: ({ firstUser, system, toolCount }) =>
 					firstUser.includes("Исправь первую проблему") &&
-					system.includes("Before authoring, inspect the fresh Target overview") &&
+					// The same rule the persona used to open with “Before authoring,
+					// inspect the fresh Target overview”, in the words it kept.
+					system.includes("read every resource a change replaces first") &&
 					system.includes("resourcePath") &&
 					toolCount === 8,
 				steps: [],

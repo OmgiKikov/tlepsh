@@ -6,6 +6,7 @@ import {
 	type PersistedBuilderRun,
 } from "../application/builder-proposal.js";
 import type { BuilderCorpusDraft } from "../application/builder-corpus-draft.js";
+import { measurementLine, measurementSurface, type MeasurementLine } from "../application/measurement-line.js";
 import type { CorpusMetadata } from "../corpus.js";
 import type { DiagnosisRecord } from "../diagnosis.js";
 import {
@@ -160,6 +161,31 @@ export function diagnosisSummary(record: DiagnosisRecord): WorkbenchDiagnosisSum
 	};
 }
 
+/**
+ * The one sentence a candidate carries, from the evidence it carries. The v4
+ * gate wins over the stored summary where both spell a field, which is what
+ * makes the interval the score's rather than the pass rate's.
+ */
+export function candidateMeasurement(
+	development: WorkbenchCandidateSummary["development"],
+	sealedHoldout: WorkbenchCandidateSummary["sealedHoldout"],
+): MeasurementLine {
+	return measurementLine({
+		development: development && (development.comparison || development.gate)
+			? measurementSurface({ ...development.comparison, ...development.gate })
+			: null,
+		exam: sealedHoldout.gate,
+	});
+}
+
+/** That measurement as the one sentence every surface prints. */
+export function candidateHeadline(
+	development: WorkbenchCandidateSummary["development"],
+	sealedHoldout: WorkbenchCandidateSummary["sealedHoldout"],
+): string {
+	return candidateMeasurement(development, sealedHoldout).text;
+}
+
 export function candidateSummary(
 	record: CandidateRecord,
 	/** Judge calibration for the evidence this candidate rests on, when it uses one. */
@@ -172,7 +198,23 @@ export function candidateSummary(
 	const built = record.events.find((event) => event.type === "built");
 	const promoted = record.events.find((event) => event.type === "promoted");
 	const rejected = record.events.find((event) => event.type === "rejected");
+	const development = evaluated?.type === "evaluated"
+		? {
+			baselineEvalRunId: evaluated.evaluation.development.baseline.evalRunId,
+			candidateEvalRunId: evaluated.evaluation.development.candidate.evalRunId,
+			comparison: evaluated.evaluation.development.comparison?.summary ?? null,
+			gate: gateProjection(evaluated.evaluation.development.comparison),
+		}
+		: null;
+	const sealedHoldout = evaluated?.type === "evaluated"
+		? {
+			executed: evaluated.evaluation.sealedHoldout !== undefined,
+			gatePassed: promotionGradeVerdictOf(evaluated.evaluation.sealedHoldout?.comparison) === "pass",
+			gate: gateProjection(evaluated.evaluation.sealedHoldout?.comparison),
+		}
+		: { executed: false, gatePassed: false, gate: null };
 	return {
+		headline: candidateHeadline(development, sealedHoldout),
 		candidateId: record.candidateId,
 		status: candidateStatus(record),
 		projectId: record.projectId,
@@ -191,21 +233,8 @@ export function candidateSummary(
 				paths: [...(record.events.find((event) => event.type === "validated")?.scope.changedFiles ?? [])].sort(),
 			}
 			: null,
-		development: evaluated?.type === "evaluated"
-			? {
-				baselineEvalRunId: evaluated.evaluation.development.baseline.evalRunId,
-				candidateEvalRunId: evaluated.evaluation.development.candidate.evalRunId,
-				comparison: evaluated.evaluation.development.comparison?.summary ?? null,
-				gate: gateProjection(evaluated.evaluation.development.comparison),
-			}
-			: null,
-		sealedHoldout: evaluated?.type === "evaluated"
-			? {
-				executed: evaluated.evaluation.sealedHoldout !== undefined,
-				gatePassed: promotionGradeVerdictOf(evaluated.evaluation.sealedHoldout?.comparison) === "pass",
-				gate: gateProjection(evaluated.evaluation.sealedHoldout?.comparison),
-			}
-			: { executed: false, gatePassed: false, gate: null },
+		development,
+		sealedHoldout,
 		...(judgeAgreement === undefined ? {} : { judgeAgreement }),
 		...(regraded === undefined || regraded === null ? {} : { regraded }),
 		review: reviewed?.type === "reviewed" ? reviewed.review : null,

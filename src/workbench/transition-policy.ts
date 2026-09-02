@@ -80,7 +80,7 @@ const LEGAL_DECISION_STAGES = {
  * The single thing the operator can do right now, in their words. An illegal
  * transition names it instead of explaining the rule that blocked it.
  */
-const UNBLOCKING_ACTION: Record<WorkbenchStage, string> = {
+export const UNBLOCKING_ACTION: Record<WorkbenchStage, string> = {
 	"target-setup": "create the agent and choose its model",
 	"spec-design": "describe the agent so the Builder can draft its Spec",
 	"spec-review": "review the Spec draft, then say “tests”",
@@ -97,6 +97,21 @@ const UNBLOCKING_ACTION: Record<WorkbenchStage, string> = {
 	"selection-required": "select the artifact to continue with",
 };
 
+/**
+ * The refusal as the operator reads it, on its own first line.
+ *
+ * A refusal card shows the first line of the error and nothing else, so the
+ * operator's language goes first and the machine sentence — the one the model
+ * reads, scripts match on and tests pin — follows on the next line. Neither
+ * half has to bend for the other.
+ */
+function humanRefusal(stage: WorkbenchStage): string {
+	return t("refusal.not-now", {
+		stage: t(`stage.${stage}` as Parameters<typeof t>[0]),
+		next: t(`next.${stage}` as Parameters<typeof t>[0]),
+	});
+}
+
 /** One exhaustive transition boundary for every consequential Workbench decision. */
 export function assertWorkbenchDecisionStage(
 	kind: DirectDecisionKind,
@@ -111,10 +126,12 @@ export function assertWorkbenchDecisionStage(
 		// ship” — true, and useless to someone arguing with the judge.
 		if (kind === "publish-corpus" && stage === "candidate-review") {
 			throw new Error(
+				`${t("refuse.publish-at-candidate-review")}\n` +
 				`${kind} is not legal during ${stage}. ${t("refuse.publish-at-candidate-review")}`,
 			);
 		}
 		throw new Error(
+			`${humanRefusal(stage)}\n` +
 			`${kind} is not legal during ${stage}; expected ${legal.join(" or ")}. ` +
 			`Do this first: ${UNBLOCKING_ACTION[stage]}.`,
 		);
@@ -158,6 +175,7 @@ export function assertWorkshopStage(stage: WorkbenchStage): WorkshopBasis {
 	const basis = workshopBasisForStage(stage);
 	if (!basis) {
 		throw new Error(
+			`${humanRefusal(stage)}\n` +
 			`a workshop opens at ${[...LEGAL_WORKSHOP_STAGES.construction, ...LEGAL_WORKSHOP_STAGES.improvement].join(", ")}, not during ${stage}. ` +
 			`Do this first: ${UNBLOCKING_ACTION[stage]}.`,
 		);

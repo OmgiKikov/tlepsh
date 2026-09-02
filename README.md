@@ -87,12 +87,12 @@ Target (`openrouter/qwen/qwen3.5-9b`), a GLM judge — took a bank ombudsman
 from one sentence to a shipped `v0.1.0`: the Builder wrote the Spec and six
 cases, ran them (3/18), read the traces, built a `check_dbo` tool package in a
 workshop, applied it, had the judge write a sealed exam, verified the candidate
-(`development 22% → 61%, +38.9pp, 95% CI +25.0 … +47.2 on 6 tasks × 3`; `exam
-passed, +30.3pp on 20 × 3`), let the operator grade the judge blind, re-scored
-both arms under a stricter rubric, and shipped. About forty minutes and under
-four dollars per session; the Builder's own prediction on the last one (+60pp)
-landed within 1.1pp of the measurement. The fixes were rediscovered from raw
-traces, not remembered.
+(`improved · score 49% → 85% (+38.9 pts, 95% CI +25 … +47.2) on 6 cases × 3 ·
+pass rate 22% → 61% · exam: pass (+30.3 pts) on 20 cases × 3`), let the operator
+grade the judge blind, re-scored both arms under a stricter rubric, and shipped.
+About forty minutes and under four dollars per session; the Builder's own
+prediction on the last one (+60pp) landed within 1.1pp of the measurement. The
+fixes were rediscovered from raw traces, not remembered.
 
 ## The passport it wrote
 
@@ -111,8 +111,9 @@ Success criteria
 
 ## Measured
 
-- development: **improved** — pass rate 22% → 61% · score 0.49 → 0.85
-  (+38.9pp, 95% CI +25.0pp … +47.2pp) on 6 tasks × 3 repetitions
+- development: **improved** — score 49% → 85% (+38.9 pts, 95% CI +25 … +47.2)
+  on 6 cases × 3 · pass rate 22% → 61% · 6 cases is a small basket: read the
+  interval as indicative, not decisive
 - sealed guardrail: **pass** on 20 tasks × 3 repetitions
 - per answer, candidate over baseline: cost ×1.1 · latency ×1.3
 - judge agreement 60% · κ 0.00 · n=5 — /label checks it against your own eyes

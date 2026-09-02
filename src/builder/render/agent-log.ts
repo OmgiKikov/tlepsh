@@ -1,13 +1,13 @@
 import {
 	formatCostUsd,
 	formatPercent,
-	formatScoreDelta,
 	formatResolvedModes,
 	sparkline,
 	type AgentLog,
 	type AgentLogRow,
 	MAX_SPARKLINE_WIDTH,
 } from "../../application/agent-log.js";
+import { measurementLine, measurementSurface, smallBasketNote } from "../../application/measurement-line.js";
 import { candidateStatusLabel, noun, plural, t, verdictLabel } from "../../i18n.js";
 import { joinNonEmpty, oneLine, section } from "./format.js";
 import { predictionCalibrationLine } from "./prediction.js";
@@ -15,22 +15,22 @@ import type { Paint } from "./paint.js";
 
 /** One-line renderings share the 110-column budget every AHDE panel uses. */
 const LINE_WIDTH = 110;
+/**
+ * The row headline carries the whole measurement sentence, and that sentence
+ * is one string on every surface. A cut through the middle of an interval is
+ * the exact defect this budget exists to prevent, so the headline gets its own.
+ */
+const HEADLINE_WIDTH = 160;
 const INDENT = "        ";
 
-/** `improved · 40.0% → 90.0% (+50.0pp)`. The interval goes on its own line. */
+/**
+ * `improved · score 40% → 90% (+50 pts, 95% CI +35 … +64) on 30 cases × 3 ·
+ * pass rate 33% → 83%` — the same sentence the verification panel, the
+ * passport and the Builder's own copy carry, composed once.
+ */
 function developmentFragment(row: AgentLogRow): string {
-	const development = row.development;
-	if (!development) return t("growth.not-evaluated");
-	const scores = development.baselineScore === null || development.candidateScore === null
-		? null
-		: `${formatPercent(development.baselineScore)} → ${formatPercent(development.candidateScore)}`;
-	return joinNonEmpty([
-		verdictLabel(development.verdict),
-		joinNonEmpty([
-			scores,
-			development.scoreDelta === null ? null : `(${formatScoreDelta(development.scoreDelta)})`,
-		], " "),
-	]);
+	if (!row.development) return t("growth.not-evaluated");
+	return measurementLine({ development: measurementSurface(row.development) }).numbers;
 }
 
 /** The sealed surface: its verdict and its size, and not one case of it. */
@@ -53,24 +53,18 @@ function headline(row: AgentLogRow): string {
 			row.costRatio === null ? null : `×${row.costRatio.toFixed(2)}`,
 			formatCostUsd(row.costUsd),
 		]),
-		LINE_WIDTH,
+		HEADLINE_WIDTH,
 	);
 }
 
 function detailLines(row: AgentLogRow): string[] {
 	const width = LINE_WIDTH - INDENT.length;
 	const lines: string[] = [];
-	const interval = row.development?.confidence95;
-	lines.push(oneLine(
-		joinNonEmpty([
-			`${row.baseline} → ${row.candidate ?? "—"}`,
-			interval ? `${t("unit.ci")} ${formatScoreDelta(interval.low)} … ${formatScoreDelta(interval.high)}` : null,
-			row.development && row.development.tasks > 0
-				? `${row.development.tasks}×${row.development.repetitions}`
-				: null,
-		]),
-		width,
-	));
+	// The interval and the design size moved up into the sentence; what is left
+	// down here is what the sentence cannot say — which revisions, and why.
+	lines.push(oneLine(`${row.baseline} → ${row.candidate ?? "—"}`, width));
+	const smallBasket = row.development ? smallBasketNote(row.development.tasks) : null;
+	if (smallBasket) lines.push(oneLine(smallBasket, width));
 	if (row.resolvedModes.count > 0) {
 		lines.push(oneLine(t("growth.resolved", { modes: formatResolvedModes(row.resolvedModes) }), width));
 	}
@@ -138,7 +132,7 @@ export function renderAgentLog(log: AgentLog, paint: Paint): string[] {
 		lines.push(paint.dim(t("growth.omitted", { count: log.omitted, attempts: noun(log.omitted, "decided attempt") })));
 	}
 	if (log.unreadable > 0) {
-		lines.push(paint.dim(`${log.unreadable} candidate record(s) could not be read and are not shown`));
+		lines.push(paint.dim(t("growth.unreadable", { count: plural(log.unreadable, "record") })));
 	}
 	lines.push("", ...renderAgentLogChart(log, paint));
 	// Under the growth curve: how well this Builder predicted its own results.

@@ -1,4 +1,5 @@
 import { userInfo } from "node:os";
+import { t } from "../i18n.js";
 import { resolve } from "node:path";
 import type {
 	ExtensionAPI,
@@ -209,7 +210,7 @@ export function createAhdeBuilderExtension(options: BuilderExtensionOptions): Ex
 	return (pi: ExtensionAPI) => {
 		pi.on("user_bash", () => ({
 			result: {
-				output: "AHDE Builder disables interactive shell execution; use a bounded ahde_* tool.\n",
+				output: `${t("extension.no-shell")}\n`,
 				exitCode: 126,
 				cancelled: false,
 				truncated: false,

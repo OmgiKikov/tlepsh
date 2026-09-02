@@ -84,7 +84,7 @@ import {
 } from "../application/tool-contract-cases.js";
 import { missingEnvNames } from "../env.js";
 import { runAppliedBuilderCandidate } from "../application/builder-candidate.js";
-import { formatPoints, SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
+import { SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
 import {
 	configureTargetBootstrap,
 	describeTargetBootstrap,
@@ -219,6 +219,7 @@ import {
 } from "./inventory.js";
 import {
 	candidateProposalReview,
+	candidateMeasurement,
 	candidateSummary,
 	compatibleDevelopmentEvals,
 	diagnosisSummary,
@@ -1401,9 +1402,11 @@ export class AhdeWorkbench {
 			operation: "ship",
 			steps: plan,
 			candidateId,
-			development: summary.development?.gate
-				? `${summary.development.gate.verdict} · ${formatPoints(summary.development.gate.scoreDelta)}`
-				: "no development verdict",
+			// The exact sentence the panel, the log and the passport print. The
+			// last gate before a release quotes the measurement, never a digest
+			// of it that could differ from the screen the operator just read.
+			// The exam has its own line below, so it is not repeated here.
+			development: candidateMeasurement(summary.development, summary.sealedHoldout).development,
 			sealed: summary.sealedHoldout.gate
 				? `${summary.sealedHoldout.gate.verdict} · ${summary.sealedHoldout.gate.tasks} × ${summary.sealedHoldout.gate.repetitions}`
 				: summary.sealedHoldout.executed ? "executed, no verdict" : "not run",
@@ -1475,7 +1478,7 @@ export class AhdeWorkbench {
 				...(guards?.warning ? [guards.warning] : []),
 				...(continuation ? [`The next cycle starts at ${continuation.nextStage}.`] : []),
 			].join(" "),
-			result: { steps, candidate: shipped, tag, adoption, continuation, guards },
+			result: { steps, headline: shipped.headline, candidate: shipped, tag, adoption, continuation, guards },
 			view,
 		};
 	}
@@ -2492,7 +2495,13 @@ export class AhdeWorkbench {
 	/** @internal — called by the decision handlers in ./decisions. */
 	async viewOf(inventory: WorkbenchInventory, queryValue: WorkbenchViewQuery = {}): Promise<WorkbenchView> {
 		const query = WorkbenchViewQuerySchema.parse(queryValue);
-		const view = deriveWorkbenchView(inventory);
+		// The stage is a pure function of durable artifacts; an open workshop is
+		// live host state, and the derived `next` block needs both to say which
+		// workshop submission is legal right now.
+		const view: WorkbenchView = {
+			...deriveWorkbenchView(inventory),
+			...(this.workshopOpen ? { workshopOpen: true } : {}),
+		};
 		const aspect = query.aspect ?? "summary";
 		if (aspect === "summary") return view;
 		if (aspect === "target") {
