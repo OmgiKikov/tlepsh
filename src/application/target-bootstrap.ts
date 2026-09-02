@@ -22,6 +22,7 @@ import { parseDocument, parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { loadTarget, ModelBlock, TargetManifest, type TargetManifest as TargetManifestValue } from "../manifest.js";
 import { canonicalJson, hashValue } from "../provenance.js";
+import { isStandIn, isStandInModel, standInManifestFields } from "../target/placeholders.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
 
 const BUILTIN_TARGET_ID = "my-agent";
@@ -269,6 +270,12 @@ function parseFullModel(value: unknown): TargetManifestValue["model"] {
 	const endpoint = new URL(model.baseUrl);
 	if (endpoint.username || endpoint.password) throw new Error("model.baseUrl cannot contain credentials");
 	if (model.id === BUILTIN_MODEL_ID) throw new Error("Target bootstrap model id must replace the built-in placeholder");
+	// The chosen model comes from the trusted host catalog, so a stand-in here
+	// would be a bug upstream rather than an operator's choice; say so instead of
+	// committing a manifest that reads as unconfigured the moment it is written.
+	if (isStandInModel(model) || isStandIn(model.apiKeyEnv)) {
+		throw new Error("Target bootstrap model must replace the template's REPLACE-ME stand-ins");
+	}
 	return model;
 }
 
@@ -285,14 +292,26 @@ function parseManifestText(content: string, label: string): TargetManifestValue 
 	return result.data;
 }
 
+/**
+ * Two manifests are "nobody has configured this yet", and bootstrap accepts
+ * exactly those two.
+ *
+ * The first is the built-in scaffold, byte for byte. The second is a template
+ * that still writes `REPLACE-ME` where its identity or its model belongs — the
+ * support-agent scaffold and anything shaped like it. Admitting the second
+ * costs nothing the guarantee cares about: what this check protects is that a
+ * one-time bootstrap can never silently reconfigure a REAL model out from under
+ * an operator, and a `REPLACE-ME` model is not one. It cannot be called, it was
+ * never chosen, and leaving it out is what used to force the operator into
+ * manifest.yaml by hand.
+ */
 function assertBuiltInPlaceholder(manifest: TargetManifestValue): void {
-	if (
-		manifest.id !== BUILTIN_TARGET_ID ||
-		manifest.evalSuite.id !== BUILTIN_EVAL_SUITE_ID ||
-		canonicalJson(manifest.model) !== canonicalJson(BUILTIN_PLACEHOLDER_MODEL)
-	) {
-		throw new Error("Target bootstrap requires the untouched built-in id/model placeholders");
-	}
+	const builtIn =
+		manifest.id === BUILTIN_TARGET_ID &&
+		manifest.evalSuite.id === BUILTIN_EVAL_SUITE_ID &&
+		canonicalJson(manifest.model) === canonicalJson(BUILTIN_PLACEHOLDER_MODEL);
+	if (builtIn || standInManifestFields(manifest).length > 0) return;
+	throw new Error("Target bootstrap requires the untouched built-in id/model placeholders");
 }
 
 function renderConfiguredManifest(

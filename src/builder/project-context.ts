@@ -9,6 +9,8 @@ import {
 } from "../eval.js";
 import { loadTarget } from "../manifest.js";
 import { listSpecSnapshots } from "../spec.js";
+import { targetBootstrapRequired } from "../target/readiness.js";
+import { standInFilesLine } from "../target/placeholders.js";
 
 const MAX_STATUS_ITEMS = 30;
 const DEFAULT_COMPAT_READ_BYTES = 32 * 1024;
@@ -131,7 +133,7 @@ export function buildProjectStatus(context: BuilderProjectContext): Record<strin
 	try {
 		const resolved = loadTarget(context.projectDir);
 		targetId = resolved.manifest.id;
-		const bootstrapRequired = resolved.manifest.id === "my-agent" || resolved.manifest.model.id === "replace-with-model-id";
+		const bootstrapRequired = targetBootstrapRequired(resolved.manifest);
 		target = {
 			status: bootstrapRequired ? "bootstrap-required" : "ready",
 			id: resolved.manifest.id,
@@ -150,6 +152,10 @@ export function buildProjectStatus(context: BuilderProjectContext): Record<strin
 		} catch (error) {
 			warnings.push(`target authoring context: ${errorMessage(error)}`);
 		}
+		// The same one line the view and /doctor carry: what the Builder is
+		// looking at is a template's placeholder prose, not a described agent.
+		const standIns = standInFilesLine(resolved.dir);
+		if (standIns) warnings.push(standIns);
 	} catch (error) {
 		target = { status: "not-ready", error: errorMessage(error) };
 	}

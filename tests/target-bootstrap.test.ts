@@ -83,6 +83,13 @@ function options(value: Fixture, overrides: Partial<ConfigureTargetBootstrapOpti
 	};
 }
 
+/** Rewrite the scaffold's manifest and keep the one-commit clean scaffold shape. */
+function amendManifest(value: Fixture, content: string): void {
+	writeFileSync(join(value.targetDir, "manifest.yaml"), content);
+	git(value.targetDir, "add", "manifest.yaml");
+	git(value.targetDir, "-c", "user.name=Manual", "-c", "user.email=manual@example.test", "commit", "--amend", "--no-edit", "--no-gpg-sign");
+}
+
 function configured(value: Fixture, overrides: Partial<ConfigureTargetBootstrapOptions> = {}) {
 	const request = options(value, overrides);
 	const subject = describeTargetBootstrap(request);
@@ -180,11 +187,56 @@ describe("Target bootstrap application service", () => {
 			.replace("id: my-agent", "id: manual-agent")
 			.replace("id: replace-with-model-id", "id: manual-model")
 			.replace("id: my-agent-development", "id: manual-agent-development");
-		writeFileSync(join(value.targetDir, "manifest.yaml"), manuallyEdited);
-		git(value.targetDir, "add", "manifest.yaml");
-		git(value.targetDir, "-c", "user.name=Manual", "-c", "user.email=manual@example.test", "commit", "--amend", "--no-edit", "--no-gpg-sign");
+		amendManifest(value, manuallyEdited);
 
 		expect(() => describeTargetBootstrap(options(value))).toThrow(/built-in id\/model placeholders/);
+	});
+
+	it("accepts a template that still writes REPLACE-ME where its identity and model belong", () => {
+		// The RU support-agent shape: not the built-in block byte for byte, and
+		// just as much "nobody has chosen a model yet". Refusing it is what used to
+		// send the operator into manifest.yaml by hand.
+		const value = fixture();
+		amendManifest(value, value.baseManifest
+			.replace("id: my-agent\n", "id: replace-me-agent\n")
+			.replace("id: my-agent-development", "id: replace-me-agent-development")
+			.replace("provider: openai-compatible", "provider: REPLACE-ME-provider")
+			.replace("id: replace-with-model-id", "id: REPLACE-ME-model-id")
+			.replace("baseUrl: http://127.0.0.1:1234/v1", "baseUrl: https://REPLACE-ME/api/v1")
+			.replace("apiKeyEnv: AHDE_MODEL_API_KEY", "apiKeyEnv: REPLACE_ME_API_KEY"));
+
+		const subject = describeTargetBootstrap(options(value));
+		expect(subject.previous).toMatchObject({
+			targetId: "replace-me-agent",
+			evalSuiteId: "replace-me-agent-development",
+		});
+
+		configureTargetBootstrap(
+			{ ...options(value), expectedSubjectHash: subject.subjectHash },
+			{ now: () => NOW },
+		);
+		const after = loadTarget(value.targetDir).manifest;
+		expect(after.id).toBe("support-agent");
+		expect(after.model).toEqual(fullModel());
+		expect(after.evalSuite.id).toBe("support-agent-development");
+		expect(git(value.targetDir, "status", "--porcelain=v1", "--untracked-files=all")).toBe("");
+	});
+
+	it("refuses a stand-in as the model it is about to write", () => {
+		// The chosen model comes from the host catalog: a REPLACE-ME here would be
+		// a bug upstream, and committing it writes a manifest that is unconfigured
+		// the moment it lands.
+		const value = fixture();
+		for (const override of [
+			{ provider: "REPLACE-ME-provider" },
+			{ id: "REPLACE-ME-model-id" },
+			{ baseUrl: "https://REPLACE-ME/api/v1" },
+			{ apiKeyEnv: "REPLACE_ME_API_KEY" },
+		]) {
+			expect(() => describeTargetBootstrap(options(value, { model: fullModel(override) })), JSON.stringify(override))
+				.toThrow(/REPLACE-ME stand-ins/);
+		}
+		expect(git(value.targetDir, "rev-parse", "HEAD")).toBe(value.baseSha);
 	});
 
 	it("refuses dirty repositories before producing an approval subject", () => {

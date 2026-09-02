@@ -1,9 +1,13 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	RegisteredCommand,
 } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { standInFilesLine } from "../src/target/placeholders.js";
 import {
 	AHDE_BUILDER_COMMAND_NAMES,
 	humanizeCommandError,
@@ -579,9 +583,18 @@ function runEvent(event: RunEventInput<RunEvent>, run: Partial<RunEventIdentity>
 	} as RunEvent;
 }
 
+/** Real harness directories the stand-in scan reads; removed after each test. */
+const standInDirs: string[] = [];
+
+afterEach(() => {
+	for (const path of standInDirs.splice(0)) rmSync(path, { recursive: true, force: true });
+});
+
 function workbench(options: {
 	view?: (query: Parameters<CommandWorkbench["view"]>[0]) => Promise<WorkbenchView>;
 	decide?: DecideFake;
+	/** Commands that read the harness itself (/doctor's stand-in scan) need a real path. */
+	projectDir?: string;
 } = {}): {
 	value: CommandWorkbench;
 	view: ReturnType<typeof vi.fn>;
@@ -589,7 +602,8 @@ function workbench(options: {
 } {
 	const view = vi.fn(options.view ?? (async () => baseView));
 	const decide = vi.fn(options.decide ?? (async (input: WorkbenchDecisionInput) => defaultDecision(input)));
-	return { value: { view, decide } as unknown as CommandWorkbench, view, decide };
+	const projectDir = options.projectDir ?? join(tmpdir(), "ahde-commands-no-such-target");
+	return { value: { view, decide, projectDir } as unknown as CommandWorkbench, view, decide };
 }
 
 /**
@@ -2176,6 +2190,40 @@ describe("Builder Pi slash commands", () => {
 		await command(modelless.commands, "doctor").handler("", modellessHost.ctx);
 		expect(modellessHost.hasConfiguredAuth).not.toHaveBeenCalled();
 		expect(modelless.output.text()).toContain("! No Builder model selected — /login to connect a provider, then /model");
+	});
+
+	it("says the template stand-in line once in /doctor, as a readiness line and not again as a warning", async () => {
+		const targetDir = mkdtempSync(join(tmpdir(), "ahde-doctor-stand-ins-"));
+		standInDirs.push(targetDir);
+		mkdirSync(join(targetDir, "evals"), { recursive: true });
+		writeFileSync(join(targetDir, "AGENTS.md"), "# Agent\n<REPLACE-ME: what this agent does>\n", "utf8");
+		writeFileSync(join(targetDir, "evals", "development.jsonl"), '{"id":"task_001","input":"REPLACE-ME"}\n', "utf8");
+		const line = standInFilesLine(targetDir);
+		expect(line).toContain("AGENTS.md, evals/development.jsonl");
+
+		// The Workbench carries the same sentence in `warnings` for the Builder to
+		// read; /doctor states it itself, so printing both would read as two problems.
+		const fixture = workbench({
+			projectDir: targetDir,
+			view: async () => viewAt("ready-to-evaluate", { warnings: [line as string, "Sealed holdout has only 2 cases"] }),
+		});
+		const { commands, output } = register(fixture.value);
+
+		await command(commands, "doctor").handler("", context().ctx);
+
+		const text = output.text();
+		expect(text).toContain(`! ${line}`);
+		expect(text.split(line as string)).toHaveLength(2);
+		expect(text).toContain("· Sealed holdout has only 2 cases");
+	});
+
+	it("says nothing about stand-ins for a harness that has none", async () => {
+		const fixture = workbench();
+		const { commands, output } = register(fixture.value);
+
+		await command(commands, "doctor").handler("", context().ctx);
+
+		expect(output.text()).not.toContain("REPLACE-ME");
 	});
 
 	it("falls back to plain notifications when the host has no transcript entries", async () => {
