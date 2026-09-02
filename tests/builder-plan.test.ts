@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { installAhdeBuilderProductShell } from "../src/builder/product-shell.js";
+import { candidateHeadline } from "../src/workbench/resolution.js";
 import { setLanguage } from "../src/i18n.js";
 import {
 	compilePlan,
@@ -65,7 +66,8 @@ function view(overrides: Partial<WorkbenchView> = {}): WorkbenchView {
 }
 
 function candidate(overrides: Partial<WorkbenchCandidateSummary> = {}): WorkbenchCandidateSummary {
-	return {
+	const summary: WorkbenchCandidateSummary = {
+		headline: "",
 		candidateId: "cand-1",
 		status: "evaluated",
 		projectId: "demo",
@@ -100,6 +102,9 @@ function candidate(overrides: Partial<WorkbenchCandidateSummary> = {}): Workbenc
 		rejection: null,
 		...overrides,
 	};
+	// The host composes the headline from the same evidence; a fixture that
+	// hand-wrote one could let a panel and its headline drift apart in a test.
+	return { ...summary, headline: summary.headline || candidateHeadline(summary.development, summary.sealedHoldout) };
 }
 
 /** The plan of a project standing at candidate verification, mid-cycle. */

@@ -63,6 +63,7 @@ import {
 	type TranscriptHost,
 } from "../src/builder/transcript.js";
 import type { AgentSpec } from "../src/spec.js";
+import { candidateHeadline } from "../src/workbench/resolution.js";
 import {
 	WorkbenchStageSchema,
 	type WorkbenchCalibrationProjection,
@@ -160,7 +161,8 @@ function makeView(overrides: Partial<WorkbenchView> = {}): WorkbenchView {
 }
 
 function makeCandidate(overrides: Partial<WorkbenchCandidateSummary> = {}): WorkbenchCandidateSummary {
-	return {
+	const summary: WorkbenchCandidateSummary = {
+		headline: "",
 		candidateId: "candidate-1",
 		status: "evaluated",
 		projectId: "proj",
@@ -190,6 +192,9 @@ function makeCandidate(overrides: Partial<WorkbenchCandidateSummary> = {}): Work
 		rejection: null,
 		...overrides,
 	};
+	// The host composes the headline from the same evidence; a fixture that
+	// hand-wrote one could let a panel and its headline drift apart in a test.
+	return { ...summary, headline: summary.headline || candidateHeadline(summary.development, summary.sealedHoldout) };
 }
 
 function makeMode(overrides: Partial<WorkbenchFailureModeProjection> = {}): WorkbenchFailureModeProjection {
@@ -950,8 +955,10 @@ describe("renderReview", () => {
 		}), tagPaint);
 		expect(lines[0]).toBe("<heading>Candidate</heading> <dim>candidate-1</dim> <dim>·</dim> <accent>evaluated</accent>");
 		expect(lines[1]).toBe("<dim>Revision</dim> main@aaaaaaaaaa → ahde/candidate-1@bbbbbbbbbb");
-		expect(lines[2]).toBe("<dim>Development</dim> baseline 60% → candidate 80% <success>(+20 pts)</success> <dim>on 10 tasks</dim>");
-		expect(lines[3]).toBe("  <success>↑ 3 improved</success> <dim>·</dim> <warning>↓ 1 lower</warning> <dim>·</dim> <muted>= 6 unchanged</muted> <dim>· 95% CI +5 pts … +35 pts</dim>");
+		// Legacy (v1–v3) evidence recorded no score, so the pass rate is named as
+		// the metric and its own interval is printed beside its own delta.
+		expect(lines[2]).toBe("<dim>Development</dim> pass rate 60% → 80% <success>(+20 pts, 95% CI +5 … +35)</success> <dim>on 10 cases</dim>");
+		expect(lines[3]).toBe("  <success>↑ 3 improved</success> <dim>·</dim> <warning>↓ 1 lower</warning> <dim>·</dim> <muted>= 6 unchanged</muted>");
 		expect(lines[4]).toBe("<dim>Sealed holdout</dim> <success>gate passed</success>");
 		expect(lines[5]).toBe("<dim>Review</dim> <success>promote</success> <dim>—</dim> Clear improvement on the basket");
 		expect(lines).toHaveLength(6);
@@ -983,9 +990,9 @@ describe("renderReview", () => {
 			sealedHoldout: { executed: true, gatePassed: true, gate: gate("sealed") },
 		});
 		const lines = renderReview(candidate, plainPaint);
-		expect(lines[2]).toBe("Development baseline 60% → candidate 80% (+20 pts) on 10 tasks · score 62% → 85%");
-		expect(lines[4]).toBe("  Verdict improved · +23 pts (95% CI +5 pts … +35 pts) · 30 × 3 · cost ×1.4 · latency ×0.9");
-		expect(lines[5]).toBe("Sealed holdout pass · +23 pts (95% CI +5 pts … +35 pts) · 30 × 3 · cost ×1.4 · latency ×0.9");
+		expect(lines[2]).toBe("Development improved · score 62% → 85% (+23 pts, 95% CI +5 … +35) on 30 cases × 3 · pass rate 60% → 80%");
+		expect(lines[3]).toBe("  ↑ 3 improved · ↓ 1 lower · = 6 unchanged · cost ×1.4 · latency ×0.9");
+		expect(lines[4]).toBe("Sealed holdout pass (+23 pts, 95% CI +5 … +35) on 30 cases × 3 · cost ×1.4 · latency ×0.9");
 		for (const line of lines) expect(line.length).toBeLessThanOrEqual(110);
 		// Nothing about a sealed task ever reaches the screen.
 		expect(lines.join("\n")).not.toContain("task-");
@@ -997,7 +1004,7 @@ describe("renderReview", () => {
 				gate: { ...gate("sealed"), resources: { costRatio: null, latencyRatio: null, tokenRatio: null } },
 			},
 		}), plainPaint);
-		expect(unmeasured[4]).toBe("Sealed holdout pass · +23 pts (95% CI +5 pts … +35 pts) · 30 × 3");
+		expect(unmeasured[4]).toBe("Sealed holdout pass (+23 pts, 95% CI +5 … +35) on 30 cases × 3");
 	});
 
 	it("renders promotion, adoption, and continuation lines, or the /adopt hint", () => {
@@ -1390,14 +1397,14 @@ describe("renderDecision", () => {
 		expect(asEval[0]).toContain("Evaluation 6/10 passed");
 		expect(asEval).toContain("Live trace http://127.0.0.1:4310/live/abc · retained for 15 minutes");
 		expect(asEval[asEval.length - 1]).toBe(nextLine("improvement-authoring"));
-		const asVerify = renderDecision(decision("run-current", { resolvedAs: "verify-candidate", outcome: "verified" as const, screen: null, candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"), plainPaint);
+		const asVerify = renderDecision(decision("run-current", { resolvedAs: "verify-candidate", outcome: "verified" as const, headline: candidateHeadline(makeCandidate().development, makeCandidate().sealedHoldout), screen: null, candidate: makeCandidate(), development: { verdict: "improved", scoreDelta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"), plainPaint);
 		expect(asVerify[0]).toBe("Candidate verified candidate-1 · evaluated");
 		expect(asVerify[asVerify.length - 1]).toBe(nextLine("candidate-review"));
 		expect(asVerify.join("\n")).not.toContain("Live trace");
 	});
 
 	it("renders verification, apply, discard, and abandon decisions", () => {
-		const verified = renderDecision(decision("verify-candidate", { outcome: "verified" as const, screen: null, candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"), plainPaint);
+		const verified = renderDecision(decision("verify-candidate", { outcome: "verified" as const, headline: candidateHeadline(makeCandidate().development, makeCandidate().sealedHoldout), screen: null, candidate: makeCandidate(), development: { verdict: "improved", scoreDelta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"), plainPaint);
 		expect(verified[0]).toBe("Candidate verified candidate-1 · evaluated");
 		expect(verified).toContain("Sealed holdout gate passed");
 		expect(verified[verified.length - 1]).toBe(nextLine("candidate-review"));
@@ -1474,10 +1481,10 @@ describe("renderDecision", () => {
 			decision("publish-corpus", { corpusId: "c", corpusHash: HASH, taskCount: 1, publicationReceiptId: "r", lineageHash: HASH }, "ready-to-evaluate"),
 			decision("run-eval", makeTraces(), "improvement-authoring"),
 			decision("run-current", { resolvedAs: "run-eval", ...makeTraces() }, "improvement-authoring"),
-			decision("run-current", { resolvedAs: "verify-candidate", outcome: "verified" as const, screen: null, candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: false, gatePassed: false, verdict: null } }, "candidate-review"),
+			decision("run-current", { resolvedAs: "verify-candidate", outcome: "verified" as const, headline: candidateHeadline(makeCandidate().development, makeCandidate().sealedHoldout), screen: null, candidate: makeCandidate(), development: { verdict: "improved", scoreDelta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: false, gatePassed: false, verdict: null } }, "candidate-review"),
 			decision("apply-proposal", { runId: "r", branch: "b", candidateSha: SHA_B, proposalHash: HASH }, "candidate-verification"),
 			decision("discard-proposal", { runId: "r", receiptHash: HASH }, "improvement-authoring"),
-			decision("verify-candidate", { outcome: "verified" as const, screen: null, candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: false, verdict: "fail" } }, "candidate-review"),
+			decision("verify-candidate", { outcome: "verified" as const, headline: candidateHeadline(makeCandidate().development, makeCandidate().sealedHoldout), screen: null, candidate: makeCandidate(), development: { verdict: "improved", scoreDelta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: false, verdict: "fail" } }, "candidate-review"),
 			decision("abandon-candidate", { candidateId: "c", interruptedStatus: "proposed", receiptHash: HASH }, "candidate-verification"),
 			decision("review-candidate", makeCandidate(), "release-decision"),
 			decision("promote-candidate", { candidate: makeCandidate(), tag: "v1.0.0", candidateSha: SHA_B, guards: { draftId: null, cases: 0, taskIds: [], warning: null } }, "candidate-adoption"),
@@ -1515,9 +1522,9 @@ describe("decisionHeadline", () => {
 	it("summarises runs, verifications, and falls back to the one-line message", () => {
 		expect(decisionHeadline(decision("run-eval", makeTraces(), "improvement-authoring"))).toBe("6/10 passed · 1 failure mode");
 		expect(decisionHeadline(decision("run-current", { resolvedAs: "run-eval", ...makeTraces() }, "improvement-authoring"))).toBe("6/10 passed · 1 failure mode");
-		expect(decisionHeadline(decision("run-current", { resolvedAs: "verify-candidate", outcome: "verified" as const, screen: null, candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"))).toBe("candidate evaluated");
-		expect(decisionHeadline(decision("verify-candidate", { outcome: "verified" as const, screen: null, candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"))).toBe("candidate evaluated · development improved · sealed pass");
-		expect(decisionHeadline(decision("verify-candidate", { outcome: "verified" as const, screen: null, candidate: makeCandidate(), development: { verdict: "improved", delta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: false, gatePassed: false, verdict: null } }, "candidate-review"))).toBe("candidate evaluated · development improved · sealed not run");
+		expect(decisionHeadline(decision("run-current", { resolvedAs: "verify-candidate", outcome: "verified" as const, headline: candidateHeadline(makeCandidate().development, makeCandidate().sealedHoldout), screen: null, candidate: makeCandidate(), development: { verdict: "improved", scoreDelta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"))).toBe("candidate evaluated · pass rate 60% → 80% (+20 pts, 95% CI +5 … +35) on 10 cases");
+		expect(decisionHeadline(decision("verify-candidate", { outcome: "verified" as const, headline: candidateHeadline(makeCandidate().development, makeCandidate().sealedHoldout), screen: null, candidate: makeCandidate(), development: { verdict: "improved", scoreDelta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"))).toBe("candidate evaluated · pass rate 60% → 80% (+20 pts, 95% CI +5 … +35) on 10 cases");
+		expect(decisionHeadline(decision("verify-candidate", { outcome: "verified" as const, headline: candidateHeadline(makeCandidate().development, makeCandidate().sealedHoldout), screen: null, candidate: makeCandidate(), development: { verdict: "improved", scoreDelta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: false, gatePassed: false, verdict: null } }, "candidate-review"))).toBe("candidate evaluated · pass rate 60% → 80% (+20 pts, 95% CI +5 … +35) on 10 cases");
 		expect(decisionHeadline(decision("approve-spec", { approvedSpecId: "s", receiptId: "r" }, "corpus-design", `Spec approved${OSC}\n  as an exact\tsnapshot`))).toBe("Spec approved as an exact snapshot");
 		expect(decisionHeadline(decision("discard-proposal", { runId: "r", receiptHash: HASH }, "improvement-authoring", "x".repeat(200)))).toBe(`${"x".repeat(119)}…`);
 	});
@@ -1837,7 +1844,7 @@ describe("renderConfirmation", () => {
 			}),
 			tag: "v1.2.0",
 		}), plainPaint);
-		expect(priced).toContain("Sealed holdout pass · +23 pts (95% CI +5 pts … +35 pts) · 15 × 3 · cost ×1.4 · latency ×0.9");
+		expect(priced).toContain("Sealed holdout pass (+23 pts, 95% CI +5 … +35) on 15 cases × 3 · cost ×1.4 · latency ×0.9");
 		const reject = renderConfirmation(makeConfirmation("reject-candidate", { operation: "reject-candidate", candidateHash: HASH, candidate }), plainPaint);
 		expect(reject[0]).toBe("Candidate candidate-1 · reviewed");
 		expect(reject).toContain("Review promote — good");

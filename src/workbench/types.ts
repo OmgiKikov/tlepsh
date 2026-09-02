@@ -172,6 +172,14 @@ export interface WorkbenchCandidateSummary {
 	 * manual candidate.
 	 */
 	appliedBy?: { actorId: string; via: "improvement-loop" | "proposal-search" | null; paths: string[] } | null;
+	/**
+	 * What this candidate measured, in the operator's language, as one sentence
+	 * the host composed: the score the gate decided on, its interval, the design
+	 * size, the pass rate behind it, and the sealed exam where one ran. Every
+	 * panel, the growth log, the passport and this field are the same string, so
+	 * the Builder quotes it instead of computing a delta of its own.
+	 */
+	headline: string;
 	development: {
 		baselineEvalRunId: string;
 		candidateEvalRunId: string;
@@ -1069,8 +1077,15 @@ export interface WorkbenchCheapCheckProjection {
 export type WorkbenchVerifyCandidateResult =
 	| {
 		outcome: "verified";
+		/** The candidate's own {@link WorkbenchCandidateSummary.headline}, hoisted. */
+		headline: string;
 		candidate: WorkbenchCandidateSummary;
-		development: { verdict: GateVerdict; delta: number; confidence95: { low: number; high: number } };
+		/**
+		 * The gate's own quantity: the mean paired score delta and the interval
+		 * that brackets it. This field used to carry the pass-rate delta beside
+		 * the score's interval, which is how the two came to be read as one.
+		 */
+		development: { verdict: GateVerdict; scoreDelta: number; confidence95: { low: number; high: number } };
 		sealedHoldout: { executed: boolean; gatePassed: boolean; verdict: GateVerdict | null };
 		/** The screen that let this verification start, when one ran. */
 		screen: WorkbenchCheapCheckProjection | null;
@@ -1116,6 +1131,8 @@ export interface WorkbenchRegressionGuardsProjection {
 /** Review · promote · adopt · continue, as far as the candidate allows. */
 export interface WorkbenchShipResult {
 	steps: WorkbenchCompositeStep[];
+	/** The candidate's own {@link WorkbenchCandidateSummary.headline}, hoisted. */
+	headline: string;
 	candidate: WorkbenchCandidateSummary;
 	tag: string | null;
 	adoption: { branch: string; fromSha: string; toSha: string } | null;

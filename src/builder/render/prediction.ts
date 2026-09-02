@@ -42,6 +42,15 @@ export function shortModeId(failureModeId: string): string {
 	return body.length > 8 ? body.slice(0, 8) : body;
 }
 
+/**
+ * Which quantity the promise was about. A pass-rate promise is compared to the
+ * pass rate and a score promise to the score the gate decided on, so the line
+ * that shows the two numbers has to say which one it is comparing.
+ */
+function metricOf(outcome: PredictedOverallOutcome): string {
+	return t(outcome.kind === "score" ? "measurement.metric-score" : "measurement.metric-pass-rate");
+}
+
 function toneOf(verdict: PredictionVerdict, paint: Paint): (value: string) => string {
 	return verdict === "hit" ? paint.success : verdict === "miss" ? paint.error : paint.muted;
 }
@@ -109,7 +118,7 @@ export function predictedOverallLine(
 	const tone = toneOf(outcome.verdict, paint);
 	if (outcome.actualPp === null) {
 		return `${paint.dim(t("label.prediction"))} ${
-			t("prediction.overall-unmeasured", { predicted: pointsOf(outcome.predictedPp) })
+			t("prediction.overall-unmeasured", { predicted: pointsOf(outcome.predictedPp), metric: metricOf(outcome) })
 		}`;
 	}
 	const interval = outcome.confidence95Pp
@@ -121,6 +130,7 @@ export function predictedOverallLine(
 	return `${paint.dim(t("label.prediction"))} ${
 		t("prediction.overall-outcome", {
 			predicted: pointsOf(outcome.predictedPp),
+			metric: metricOf(outcome),
 			actual: pointsOf(outcome.actualPp),
 		})
 	}${interval} ${tone(PREDICTION_GLYPH[outcome.verdict])}`;
@@ -153,10 +163,13 @@ export function passportPredictionLine(
 	if (!outcome) return null;
 	const tone = toneOf(outcome.verdict, paint);
 	if (outcome.actualPp === null) {
-		return paint.muted(t("prediction.passport-unmeasured", { predicted: pointsOf(outcome.predictedPp) }));
+		return paint.muted(
+			t("prediction.passport-unmeasured", { predicted: pointsOf(outcome.predictedPp), metric: metricOf(outcome) }),
+		);
 	}
 	return `${t("prediction.passport", {
 		predicted: pointsOf(outcome.predictedPp),
+		metric: metricOf(outcome),
 		actual: pointsOf(outcome.actualPp),
 	})} ${tone(PREDICTION_GLYPH[outcome.verdict])}`;
 }

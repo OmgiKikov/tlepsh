@@ -8,8 +8,7 @@ import { readJsonArtifact } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import { hashFile } from "../provenance.js";
 import {
-	compilePredictionCalibration,
-	measurementOf,
+	compileDecidedPredictionCalibration,
 	readCandidatePrediction,
 	type PredictionCalibration,
 } from "./prediction.js";
@@ -64,6 +63,9 @@ export interface AgentLogSurface {
 	candidateScore: number | null;
 	scoreDelta: number | null;
 	confidence95: { low: number; high: number } | null;
+	/** Pass rate of each arm, in [0,1] — the secondary metric, named on screen. */
+	baselinePassRate: number | null;
+	candidatePassRate: number | null;
 	tasks: number;
 	repetitions: number;
 }
@@ -179,12 +181,17 @@ function developmentSurfaceOf(evidence: ComparisonEvidence | null | undefined): 
 	if (!evidence || verdict === null) return null;
 	const v4 = isPromotionGradeGateEvidence(evidence) ? evidence : null;
 	const design = "design" in evidence ? evidence.design : null;
+	const summary = "summary" in evidence ? evidence.summary : null;
 	return {
 		verdict,
 		baselineScore: v4 ? v4.summary.baselineScore : null,
 		candidateScore: v4 ? v4.summary.candidateScore : null,
 		scoreDelta: v4 ? v4.summary.scoreDelta : null,
 		confidence95: v4 ? { ...v4.summary.confidence95 } : null,
+		// The pass rate travels with the score so the row can name both, and so
+		// a pass-rate promise can be scored against the row it is printed beside.
+		baselinePassRate: summary ? summary.baselinePassRate : null,
+		candidatePassRate: summary ? summary.candidatePassRate : null,
 		tasks: design ? design.tasks : 0,
 		repetitions: design ? design.repetitions : 0,
 	};
@@ -413,13 +420,14 @@ export function compileAgentLog(
 		versions,
 		cumulativeCostUsd: kept.reduce((total, row) => total + row.costUsd, 0),
 		// Rejections count exactly as promotions do: a track record drawn only
-		// from the attempts that landed would flatter the Builder.
-		calibration: compilePredictionCalibration(kept.map((row) => ({
-			candidateId: row.candidateId,
-			at: row.at,
-			prediction: row.prediction,
-			measurement: measurementOf(row.development),
-		}))),
+		// from the attempts that landed would flatter the Builder. It is compiled
+		// over every decided candidate, not over this page, and by the same
+		// function the passport calls — the two surfaces cannot disagree.
+		calibration: compileDecidedPredictionCalibration({
+			runsRoot,
+			...(input.targetId === undefined ? {} : { targetId: input.targetId }),
+			...(input.projectId === undefined ? {} : { projectId: input.projectId }),
+		}),
 	};
 }
 
@@ -448,12 +456,6 @@ export function sparkline(values: readonly number[], width = MAX_SPARKLINE_WIDTH
 
 export function formatPercent(value: number | null): string {
 	return value === null || !Number.isFinite(value) ? "—" : `${(value * 100).toFixed(1)}%`;
-}
-
-export function formatScoreDelta(value: number | null): string {
-	if (value === null || !Number.isFinite(value)) return "—";
-	const rounded = Math.round(value * 1000) / 10;
-	return `${rounded > 0 ? "+" : ""}${rounded.toFixed(1)}pp`;
 }
 
 export function formatCostUsd(value: number): string {

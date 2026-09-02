@@ -1,3 +1,4 @@
+import { bareDelta, points } from "../application/measurement-line.js";
 import { language, t } from "../i18n.js";
 import {
 	flipSubject,
@@ -588,17 +589,13 @@ function ratio(value: number | null): string {
 	return value === null ? "—" : `×${value.toFixed(2)}`;
 }
 
-function points(value: number): string {
-	return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}pp`;
-}
-
 export function renderComparePage(model: ComparePageModel): string {
 	const rows = model.rows.map((row) => `<tr>
 <td class="mono">${h(row.taskId)}</td>
 <td>${row.baselineRunId ? `<a href="/runs/${encodeURIComponent(row.baselineRunId)}">${h(row.flip.before)}</a>` : h(row.flip.before)} <span class="count">${row.flip.baselinePass}/${row.flip.baselineTotal}</span></td>
 <td>${row.candidateRunId ? `<a href="/runs/${encodeURIComponent(row.candidateRunId)}">${h(row.flip.after)}</a>` : h(row.flip.after)} <span class="count">${row.flip.candidatePass}/${row.flip.candidateTotal}</span></td>
 <td class="num">${(row.baselineScore * 100).toFixed(0)}% → ${(row.candidateScore * 100).toFixed(0)}%</td>
-<td class="num ${row.scoreDelta > 0 ? "up" : row.scoreDelta < 0 ? "down" : "same"}">${points(row.scoreDelta)}</td>
+<td class="num ${row.scoreDelta > 0 ? "up" : row.scoreDelta < 0 ? "down" : "same"}">${h(points(row.scoreDelta))}</td>
 <td class="${row.flip.direction === "improved" ? "up" : row.flip.direction === "regressed" ? "down" : "same"}">${h(row.flip.badge)} ${h(row.flip.direction)}</td>
 </tr>`).join("");
 	const body = `
@@ -619,7 +616,7 @@ export function renderComparePage(model: ComparePageModel): string {
 </div>
 <section class="prose">
 	<p class="why">${h(model.developmentLine)}</p>
-	${model.confidence ? `<p class="note">95% CI ${points(model.confidence.low)} … ${points(model.confidence.high)}</p>` : ""}
+	${model.confidence ? `<p class="note">${h(t("unit.ci"))} ${bareDelta(model.confidence.low)} … ${bareDelta(model.confidence.high)}</p>` : ""}
 	${model.developmentReasons.map((reason) => `<p class="note">${h(reason)}</p>`).join("")}
 	${model.sealed
 		? `<p class="why">Sealed verdict: <b>${h(model.sealed.verdict)}</b> on ${model.sealed.tasks} × ${model.sealed.repetitions}${model.sealed.excludedTasks > 0 ? ` · ${model.sealed.excludedTasks} excluded` : ""}. Sealed cases, identifiers, and traces are never rendered here.</p>`

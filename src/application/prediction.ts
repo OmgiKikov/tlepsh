@@ -1,6 +1,9 @@
+import { existsSync, readdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { ProposalPrediction } from "../builders/adapters.js";
-import type { CandidateRecord } from "../domain/candidate.js";
+import { isPromotionGradeGateEvidence, type CandidateRecord } from "../domain/candidate.js";
 import { loadBuilderProposalRunEnvelope } from "./builder-proposal.js";
+import { loadCandidateRecord } from "./candidate-review.js";
 
 /**
  * Predicted impact: the number a change is judged against.
@@ -342,4 +345,74 @@ export function readCandidatePrediction(
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * One decided candidate as a calibration entry, read from the record itself.
+ *
+ * This is the only definition of "what this attempt promised and what came
+ * back". `/log` and the passport used to derive it separately, from projections
+ * that carried different fields — the log's surface knew no pass rate, so a
+ * construction proposal's pass-rate promise scored as "no prediction" on one
+ * screen and as a hit-or-miss on the other, for the same candidate. Both now
+ * read the record's own comparison summary through this function.
+ *
+ * Null for a candidate no human has decided, and for A/A calibration, which
+ * measures noise and is never a version of the agent.
+ */
+export function calibrationEntryOf(
+	runsRoot: string,
+	record: CandidateRecord,
+): PredictionCalibrationEntry | null {
+	if (record.mode === "aa-calibration") return null;
+	const decided = record.events.find((event) => event.type === "promoted" || event.type === "rejected");
+	if (!decided) return null;
+	const evaluated = record.events.find((event) => event.type === "evaluated");
+	const development = evaluated?.type === "evaluated" ? evaluated.evaluation.development.comparison : null;
+	return {
+		candidateId: record.candidateId,
+		at: decided.at,
+		prediction: readCandidatePrediction(runsRoot, record),
+		measurement: measurementOf(isPromotionGradeGateEvidence(development) ? development.summary : null),
+	};
+}
+
+/**
+ * The Builder's track record over every decided candidate of one project or
+ * Target — the same set, in the same order, for every surface that prints it.
+ * A display cap on rows is a display cap; a track record drawn from the newest
+ * page only would flatter or damn the Builder by accident.
+ */
+export function compileDecidedPredictionCalibration(input: {
+	runsRoot: string;
+	targetId?: string;
+	projectId?: string;
+}): PredictionCalibration {
+	const runsRoot = resolve(input.runsRoot);
+	const root = join(runsRoot, "candidates");
+	if (!existsSync(root)) return compilePredictionCalibration([]);
+	let names: string[];
+	try {
+		names = readdirSync(root, { withFileTypes: true })
+			.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+			.map((entry) => entry.name)
+			.sort();
+	} catch {
+		return compilePredictionCalibration([]);
+	}
+	const entries: PredictionCalibrationEntry[] = [];
+	for (const candidateId of names) {
+		let record: CandidateRecord;
+		try {
+			record = loadCandidateRecord(runsRoot, candidateId);
+		} catch {
+			// An unreadable sibling narrows the record, exactly as it does in the log.
+			continue;
+		}
+		if (input.targetId !== undefined && record.targetId !== input.targetId) continue;
+		if (input.projectId !== undefined && record.projectId !== input.projectId) continue;
+		const entry = calibrationEntryOf(runsRoot, record);
+		if (entry) entries.push(entry);
+	}
+	return compilePredictionCalibration(entries);
 }

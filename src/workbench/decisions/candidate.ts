@@ -231,6 +231,7 @@ export async function decideVerifyCandidate(
 	}
 	const settled = host.select("candidate", result.record.candidateId);
 	const sealedVerdict = result.sealedHoldout?.compare.gate.verdict ?? null;
+	const summary = candidateSummary(result.record);
 	return {
 		kind: input.kind,
 		message: sealedVerdict === "pass"
@@ -240,8 +241,9 @@ export async function decideVerifyCandidate(
 				: `Candidate verification completed; the sealed guardrail verdict is ${sealedVerdict}, so this candidate cannot be promoted.`,
 		result: {
 			outcome: "verified",
-			candidate: candidateSummary(result.record),
-			development: { verdict: result.compare.gate.verdict, delta: result.compare.summary.delta, confidence95: result.compare.summary.confidence95 },
+			headline: summary.headline,
+			candidate: summary,
+			development: { verdict: result.compare.gate.verdict, scoreDelta: result.compare.summary.scoreDelta, confidence95: result.compare.summary.confidence95 },
 			sealedHoldout: { executed: result.sealedHoldout !== null, gatePassed: sealedVerdict === "pass", verdict: sealedVerdict },
 			screen: screen ? host.screenProjection(screen) : null,
 		},

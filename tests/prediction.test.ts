@@ -456,7 +456,8 @@ describe("the promise beside the result", () => {
 			plainPaint,
 			{ prediction: prediction(), measurement },
 		);
-		expect(lines).toContain("  Прогноз предсказано +40 п.п. · получено +50 п.п. (ДИ +35 … +64) ✓");
+		// Which quantity was promised is named where the two numbers meet.
+		expect(lines).toContain("  Прогноз предсказано +40 п.п. (балл) · получено +50 п.п. (ДИ +35 … +64) ✓");
 		expect(lines).toContain("      предсказано ≤3/26 · получено 1/26 ✓");
 		// A targeted mode nobody promised anything about reads as neither win nor loss.
 		expect(lines).toContain("      без прогноза · получено 1/26 ~");
@@ -471,7 +472,7 @@ describe("the promise beside the result", () => {
 				measurement: { scoreDeltaPp: 12, confidence95Pp: { low: 4, high: 20 }, passRateDeltaPp: 12 },
 			},
 		);
-		expect(lines).toContain("  Prediction predicted +40 pts · got +12 pts (CI +4 … +20) ✗");
+		expect(lines).toContain("  Prediction predicted +40 pts (score) · got +12 pts (CI +4 … +20) ✗");
 		expect(lines).toContain("      predicted ≤3/26 · got 9/26 ✗");
 	});
 
@@ -815,7 +816,7 @@ describe("the durable record", () => {
 		expect(passport.provenance.predictionCalibration).toMatchObject({ scored: 5, hits: 4 });
 		setLanguage("ru");
 		const lines = renderVersionPassport(passport, plainPaint);
-		expect(lines).toContain("Обещано +5 п.п. · получено +9 п.п. ✓");
+		expect(lines).toContain("Обещано +5 п.п. (балл) · получено +9 п.п. ✓");
 		expect(lines).toContain("Builder предсказывает: попаданий 4/5 · ошибка ±9.2 п.п. · ✓✓✗✓✓");
 	});
 });
@@ -834,6 +835,33 @@ describe("the persona predicts on the construction path too", () => {
 		expect(loop).toContain("it is still a promise, so it\n   still carries `prediction`");
 		expect(loop).toContain("expectedPassRateDeltaPp");
 		expect(loop).toContain("A construction proposal names no mode; it may still state the delta");
+	});
+
+	/**
+	 * Live session 5: `/log` said "nothing decided has carried a prediction yet"
+	 * while the passport of the same version said "hits 0/1 · error ±8.3 pp".
+	 * The log's own surface carried no pass rate, so a construction promise —
+	 * which is always about the pass rate — could not be scored on that screen
+	 * and could on the other. One function over one source, or neither is true.
+	 */
+	it("reads the same calibration on /log and on the passport for a construction promise", () => {
+		const root = runsRoot();
+		writeCandidate(root, "cand-construction", {
+			at: "2026-09-02T00:00:00.000Z",
+			outcome: "promoted",
+			scoreDelta: 0.3,
+			prediction: prediction({ modes: [], expectedScoreDeltaPp: null, expectedPassRateDeltaPp: 35 }),
+			tag: "v0.1.0",
+		});
+		const log = compileAgentLog({ runsRoot: root, targetId: "agent-1", projectId: "project-1" });
+		const passport = compileVersionPassport(
+			{ runsRoot: root, stateRoot: join(root, "state"), projectId: "project-1", version: "v0.1.0" },
+			{},
+		);
+		expect(log.calibration.scored).toBe(1);
+		expect(log.calibration).toEqual(passport.provenance.predictionCalibration);
+		// The fixture's arms move the pass rate +50pp against a promised +35pp.
+		expect(log.calibration).toMatchObject({ scored: 1, hits: 1, meanAbsoluteErrorPp: 15 });
 	});
 
 	it("accepts exactly that prediction: a delta, no mode", () => {

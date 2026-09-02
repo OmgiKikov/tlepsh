@@ -4,6 +4,7 @@ import {
 	judgeSummaryLine,
 	type ShippedVersionPassport,
 } from "../../application/version-passport.js";
+import { measurementLine, measurementSurface } from "../../application/measurement-line.js";
 import { plural, t, verdictLabel } from "../../i18n.js";
 import { bullets, oneLine, section, shortHash, shortSha, wrap } from "./format.js";
 import { passportPredictionLine, predictionCalibrationLine } from "./prediction.js";
@@ -63,7 +64,13 @@ export function renderVersionPassport(passport: ShippedVersionPassport, paint: P
 	const sealed = passport.measured.sealed;
 	const resources = passport.measured.resources;
 	lines.push("", section(t("passport.measured"), paint));
-	lines.push(`${paint.dim(t("label.development"))} ${oneLine(developmentSummaryLine(development), LINE_WIDTH - 12)}`);
+	// The same sentence the panel and the Builder read, with the small-basket
+	// caveat lifted out so a 110-column line cannot swallow it.
+	const measured = development
+		? measurementLine({ development: measurementSurface(development) })
+		: null;
+	lines.push(`${paint.dim(t("label.development"))} ${oneLine(measured ? measured.numbers : developmentSummaryLine(null), LINE_WIDTH - 12)}`);
+	if (measured?.smallBasket) lines.push(`  ${paint.muted(measured.smallBasket)}`);
 	if (development) {
 		lines.push(`${paint.dim(t("calibration.design"))} ${t("passport.design", {
 			tasks: plural(development.tasks, "case"),
