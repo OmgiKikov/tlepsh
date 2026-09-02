@@ -219,6 +219,10 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 				`${paint.dim(t("label.sealed"))} ${text(subject.sealed, 96)}`,
 				// The diff summary belongs BEFORE the yes: a loop-applied candidate was
 				// never shown file by file, and this is the last chance to see what it is.
+				// Bounded like the apply dialog, though: an eleven-file diff drawn in
+				// full made the dialog taller than the terminal, and the TUI repainted
+				// the whole transcript every frame until the operator pressed Escape.
+				// /review shows the exact remainder.
 				...(diff
 					? [
 						`${paint.dim(t("label.diff"))} ${paint.bold(plural(Number(diff.files ?? 0), "file"))} ${paint.dim("·")} ` +
@@ -227,7 +231,7 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 							? `${paint.dim(t("label.applied"))} ${paint.warning(t(diff.via === "improvement-loop" ? "candidate.applied-by-loop" : "candidate.applied-by-search"))} ${paint.dim(t("candidate.applied-automated", { actor: text(diff.appliedBy, 40) }))}`
 							: `${paint.dim(t("label.applied"))} ${paint.dim(t("candidate.applied-reviewed", { actor: text(diff.appliedBy, 40) }))}`,
 						...(exactDiff
-							? [paint.dim(t("confirm.ship.exact-diff", { hash: shortHash(text(diff.proposalHash, 80)) })), ...renderUnifiedDiff(exactDiff, paint, { maxLines: Number.MAX_SAFE_INTEGER })]
+							? [paint.dim(t("confirm.ship.exact-diff", { hash: shortHash(text(diff.proposalHash, 80)) })), ...renderUnifiedDiff(exactDiff, paint, { maxLines: APPLY_PROPOSAL_DIFF_LINES, remainder: t("confirm.apply-remainder") })]
 							: [paint.warning(t("confirm.ship.no-exact-diff"))]),
 					]
 					: []),
