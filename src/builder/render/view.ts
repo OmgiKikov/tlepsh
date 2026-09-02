@@ -12,7 +12,7 @@ import type {
 	WorkbenchView,
 } from "../../workbench/types.js";
 import { failureModeExcerpt, failureModeReading } from "../../application/run-explanation.js";
-import { formatResourceFragment } from "../../domain/comparison-gate.js";
+import { formatResourceFragment, sealedOutcomeLabel } from "../../domain/comparison-gate.js";
 import { candidateStatusLabel, plural, t, verdictLabel } from "../../i18n.js";
 import { formatFlipRate, formatNoiseBand } from "./calibration.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
@@ -101,16 +101,42 @@ function evidenceLine(view: WorkbenchView, paint: Paint): string {
  */
 function shippingReadinessLine(view: WorkbenchView, paint: Paint): string | null {
 	const readiness = view.shippingReadiness;
-	if (!readiness || view.counts.approvedSpecs === 0 || readiness.sealedHoldout === "ready") return null;
+	if (!readiness || view.counts.approvedSpecs === 0) return null;
+	// An exam over the minimum still answers nothing if this Target's own noise
+	// is wider than the difference it is meant to see. Muted, and never a
+	// blocker: it is advice about the next exam, not a refusal of this one.
+	const needed = view.calibration?.recommendedExamCases ?? null;
+	const cases = readiness.sealedCases;
+	const undersized = needed !== null && cases !== null && cases < needed
+		? ` ${paint.muted(t("exam.size-hint", { cases: plural(cases, "case"), needed: plural(needed, "case") }))}`
+		: "";
+	if (readiness.sealedHoldout === "ready") {
+		return undersized === "" ? null : `${paint.dim(t("label.ship-gate"))} ${paint.dim(t("plan.exam.ready"))}${undersized}`;
+	}
 	const state = readiness.sealedHoldout === "missing"
 		? t("ship-gate.missing")
 		: readiness.sealedHoldout === "underpowered"
-			? t("ship-gate.underpowered", { minimum: readiness.minimumTasks })
+			? t("ship-gate.underpowered", examShortfall(readiness))
 			: t("ship-gate.unavailable");
 	// With no exam at all the operator has two ways out and both are named; with
 	// a broken or too-small one they have exactly one, and it is not the judge.
 	const hint = readiness.sealedHoldout === "missing" ? "ship-gate.hint-none" : "ship-gate.hint";
-	return `${paint.dim(t("label.ship-gate"))} ${paint.warning(state)} ${paint.dim(t(hint, { minimum: readiness.minimumTasks }))}`;
+	return `${paint.dim(t("label.ship-gate"))} ${paint.warning(state)} ${paint.dim(t(hint, { minimum: readiness.minimumTasks }))}${undersized}`;
+}
+
+/**
+ * What the exam has, what the gate needs, and the difference — the three
+ * numbers every shortfall message states, so nobody has to subtract.
+ */
+export function examShortfall(
+	readiness: NonNullable<WorkbenchView["shippingReadiness"]>,
+): { cases: string; minimum: number; missing: number } {
+	const cases = readiness.sealedCases ?? 0;
+	return {
+		cases: plural(cases, "case"),
+		minimum: readiness.minimumTasks,
+		missing: Math.max(0, readiness.minimumTasks - cases),
+	};
 }
 
 /** Stages where an uncalibrated Target is worth one nudge, not a blocker. */
@@ -348,9 +374,14 @@ export function renderCandidate(
 		lines.push(regradedDevelopmentLine(candidate.development.comparison, candidate.regraded, paint));
 	}
 	const sealedGate = candidate.sealedHoldout.gate;
+	// `pass` alone reads the same for a change that improved the exam and for one
+	// the exam merely could not convict; the outcome says which happened.
+	const sealedOutcomeSuffix = sealedGate?.outcome
+		? ` ${paint.dim("·")} ${sealedGate.outcome === "improved" ? paint.success(sealedOutcomeLabel(sealedGate.outcome)) : paint.muted(sealedOutcomeLabel(sealedGate.outcome))}`
+		: "";
 	lines.push(`${paint.dim(t("label.sealed-holdout"))} ${candidate.sealedHoldout.executed
 		? (sealedGate
-			? `${verdictTone(sealedGate.verdict, paint)(verdictLabel(sealedGate.verdict))} ${paint.dim("·")} ${points(sealedGate.scoreDelta)} ${paint.dim(`(${t("unit.ci")} ${points(sealedGate.confidence95.low)} … ${points(sealedGate.confidence95.high)}) · ${sealedGate.tasks} × ${sealedGate.repetitions}`)}${resourceSuffix(sealedGate, paint)}`
+			? `${verdictTone(sealedGate.verdict, paint)(verdictLabel(sealedGate.verdict))}${sealedOutcomeSuffix} ${paint.dim("·")} ${points(sealedGate.scoreDelta)} ${paint.dim(`(${t("unit.ci")} ${points(sealedGate.confidence95.low)} … ${points(sealedGate.confidence95.high)}) · ${sealedGate.tasks} × ${sealedGate.repetitions}`)}${resourceSuffix(sealedGate, paint)}`
 			: (candidate.sealedHoldout.gatePassed ? paint.success(t("sealed.gate-passed")) : paint.error(t("sealed.legacy"))))
 		: paint.muted(t("sealed.not-executed"))}`);
 	if (sealedGate && sealedGate.verdict !== "pass") lines.push(`  ${paint.muted(oneLine(sealedGate.reasons[0] ?? "", 160))}`);

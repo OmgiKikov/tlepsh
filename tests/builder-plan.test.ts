@@ -47,7 +47,7 @@ function view(overrides: Partial<WorkbenchView> = {}): WorkbenchView {
 		actions: [],
 		blockers: [],
 		warnings: [],
-		shippingReadiness: { sealedHoldout: "ready", minimumTasks: 30 },
+		shippingReadiness: { sealedHoldout: "ready", minimumTasks: 30, sealedCases: 40 },
 		calibration: null,
 		counts: {
 			specDrafts: 1,
@@ -173,10 +173,10 @@ describe("the cycle as a checklist", () => {
 	});
 
 	it("says what is missing instead of naming the exam", () => {
-		const plan = compilePlan(view({ shippingReadiness: { sealedHoldout: "underpowered", minimumTasks: 30 } }));
+		const plan = compilePlan(view({ shippingReadiness: { sealedHoldout: "underpowered", minimumTasks: 30, sealedCases: 12 } }));
 		const exam = plan.steps.find((step) => step.id === "exam");
 		expect(exam?.marker).toBe("ahead");
-		expect(exam?.detail).toBe("sealed holdout has fewer than 30 cases");
+		expect(exam?.detail).toBe("exam has 12 cases; the gate needs 30 — 18 more");
 		expect(plain(renderPlan(plan, markerPaint))).not.toContain("holdout-");
 	});
 

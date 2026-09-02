@@ -566,6 +566,7 @@ function makeCalibration(overrides: Partial<WorkbenchCalibrationProjection> = {}
 		confidence95: { low: -0.06, high: 0.06 },
 		flipRate: 0.1,
 		recommendedRepetitions: 3,
+		recommendedExamCases: 15,
 		verdict: "inconclusive",
 		at: AT,
 		...overrides,
@@ -674,21 +675,21 @@ describe("renderStatus", () => {
 
 	it("surfaces the future ship blocker before a candidate is applied", () => {
 		const lines = renderStatus(makeView({
-			shippingReadiness: { sealedHoldout: "missing", minimumTasks: 15 },
+			shippingReadiness: { sealedHoldout: "missing", minimumTasks: 15, sealedCases: null },
 		}), plainPaint);
 		expect(lines).toContain("Ship gate no sealed holdout · /holdout imports your JSONL exam (minimum 15) · or lets the judge write one");
 
 		const ready = renderStatus(makeView({
-			shippingReadiness: { sealedHoldout: "ready", minimumTasks: 15 },
+			shippingReadiness: { sealedHoldout: "ready", minimumTasks: 15, sealedCases: 20 },
 		}), plainPaint);
 		expect(ready.join("\n")).not.toContain("Ship gate");
 
 		const unavailableView = makeView({
-			shippingReadiness: { sealedHoldout: "unavailable", minimumTasks: 15 },
+			shippingReadiness: { sealedHoldout: "unavailable", minimumTasks: 15, sealedCases: null },
 		});
 		const unavailable = renderStatus(unavailableView, plainPaint);
 		// A broken exam is repaired, not replaced by one the judge guesses at.
-		expect(unavailable).toContain("Ship gate sealed holdout is unavailable or failed integrity checks · /holdout imports an operator-owned JSONL exam (minimum 15)");
+		expect(unavailable).toContain("Ship gate sealed holdout is unavailable or failed integrity checks · /holdout imports an operator-owned JSONL exam");
 		const header = renderHeader(
 			{ view: unavailableView, builderModel: { label: "openai/gpt-5", credentialPresent: true } },
 			plainPaint,
@@ -746,6 +747,9 @@ describe("renderCalibration", () => {
 			"Design 30 cases × 3 repetitions · same revision on both arms · baseline 70%",
 			"Spread ±6.0pp (95% CI -6 pts … +6 pts) · flip 10%",
 			"Recommended 3 repetitions per run to keep noise under 10 points",
+			// The noise also sizes the exam: this A/A cannot see under ±6 pp on 30
+			// cases, so an exam has to be at least the guardrail's own minimum.
+			"Exam size to see a ±10 pp difference on the exam you need about 15 cases (from this noise)",
 			"A/A is measurement, never evidence: nothing is promoted by calibrating.",
 		]);
 		for (const line of lines) expect(line.length).toBeLessThanOrEqual(110);
@@ -1507,7 +1511,7 @@ describe("renderDecision · calibrate", () => {
 
 	it("summarises the calibration in one headline", () => {
 		expect(decisionHeadline(decision("calibrate", { candidateId: "calibration-1", calibration: makeCalibration() }, "ready-to-evaluate")))
-			.toBe("A/A inconclusive · ±6.0pp · flip 10% · 3 repetitions recommended");
+			.toBe("A/A inconclusive · ±6.0pp · flip 10% · 3 repetitions recommended · exam ≈ 15 cases for ±10 pp");
 	});
 });
 

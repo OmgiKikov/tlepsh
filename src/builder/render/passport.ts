@@ -5,6 +5,7 @@ import {
 	type ShippedVersionPassport,
 } from "../../application/version-passport.js";
 import { plural, t, verdictLabel } from "../../i18n.js";
+import { sealedOutcomeLabel } from "../../domain/comparison-gate.js";
 import { bullets, oneLine, section, shortHash, shortSha, wrap } from "./format.js";
 import { passportPredictionLine, predictionCalibrationLine } from "./prediction.js";
 import type { Paint } from "./paint.js";
@@ -72,8 +73,12 @@ export function renderVersionPassport(passport: ShippedVersionPassport, paint: P
 			development.excludedTasks > 0 ? paint.warning(t("passport.excluded", { count: development.excludedTasks })) : ""
 		}`);
 	}
+	// A shipped version's exam line says which finding the `pass` was; the page
+	// is read months later, when nobody remembers the interval.
 	lines.push(`${paint.dim(t("passport.sealed-exam"))} ${sealed
-		? `${paint.bold(verdictLabel(sealed.verdict))} ${paint.dim(t("passport.sealed-shape", { tasks: sealed.tasks, repetitions: sealed.repetitions }))}`
+		? `${paint.bold(verdictLabel(sealed.verdict))}${
+			sealed.outcome ? ` ${paint.dim("·")} ${paint.bold(sealedOutcomeLabel(sealed.outcome))}` : ""
+		} ${paint.dim(t("passport.sealed-shape", { tasks: sealed.tasks, repetitions: sealed.repetitions }))}`
 		: paint.warning(t("passport.sealed-none"))}`);
 	const judgeSpend = judgeSpendLine(resources);
 	lines.push(`${paint.dim(t("passport.resources"))} ${t("unit.cost-ratio")} ${ratio(resources?.costRatio ?? null)} ${paint.dim("·")} ${t("unit.latency-ratio")} ${

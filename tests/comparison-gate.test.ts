@@ -194,9 +194,21 @@ describe("comparison gate — exact-comparison-gate-v4", () => {
 		const random = prng(7);
 		const small = judgeComparison(simulatedRows(random, 14, 3, 0.5, 1), { surface: "sealed", repetitions: 3, seed: "small" });
 		expect(small.gate.verdict).toBe("underpowered");
-		expect(small.gate.reasons[0]).toContain(`at least ${SEALED_GATE_POLICY.minTasks} tasks`);
+		// The shortfall is arithmetic, not "fewer than 15": what is there, what is
+		// needed, and the difference.
+		expect(small.gate.reasons[0]).toBe(
+			`the exam has 14 cases; the sealed guardrail needs ${SEALED_GATE_POLICY.minTasks} — 1 more`,
+		);
 		const shallow = judgeComparison(simulatedRows(random, 30, 1, 0.5, 1), { surface: "sealed", repetitions: 1, seed: "shallow" });
 		expect(shallow.gate.verdict).toBe("underpowered");
+		expect(shallow.gate.reasons[0]).toBe(
+			`${SEALED_GATE_POLICY.minRepetitions} repetitions needed, 1 ran — 1 more`,
+		);
+		// Both short at once says both, and never leaves the operator subtracting.
+		const bothShort = judgeComparison(simulatedRows(random, 10, 1, 0.5, 1), { surface: "sealed", repetitions: 1, seed: "both" });
+		expect(bothShort.gate.reasons[0]).toBe(
+			"the exam has 10 cases; the sealed guardrail needs 15 — 5 more · 2 repetitions needed, 1 ran — 1 more",
+		);
 		const enough = judgeComparison(simulatedRows(random, 15, 2, 0.5, 1), { surface: "sealed", repetitions: 2, seed: "enough" });
 		expect(enough.gate.verdict).toBe("pass");
 		expect(DEVELOPMENT_GATE_POLICY.minTasks).toBe(1);

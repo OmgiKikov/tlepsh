@@ -146,6 +146,9 @@ describe("calibration projection", () => {
 			confidence95: { low: -0.06, high: 0.06 },
 			flipRate: 3 / 30,
 			recommendedRepetitions: 3,
+			// ±6 pp on 30 tasks scales to 11 tasks for ±10 pp, and the guardrail's
+			// own minimum is the floor: no exam may be smaller than 15.
+			recommendedExamCases: 15,
 			verdict: "inconclusive",
 			at: LATER,
 		});

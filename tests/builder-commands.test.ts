@@ -261,6 +261,7 @@ function calibration(overrides: Partial<WorkbenchCalibrationProjection> = {}): W
 		confidence95: { low: -0.06, high: 0.06 },
 		flipRate: 0.1,
 		recommendedRepetitions: 3,
+		recommendedExamCases: 15,
 		verdict: "inconclusive",
 		at: "2026-08-28T10:05:00.000Z",
 		...overrides,
@@ -1970,7 +1971,7 @@ describe("Builder Pi slash commands", () => {
 	it("reports an unavailable sealed holdout generically in /doctor", async () => {
 		const fixture = workbench({
 			view: async () => viewAt("ready-to-evaluate", {
-				shippingReadiness: { sealedHoldout: "unavailable", minimumTasks: 15 },
+				shippingReadiness: { sealedHoldout: "unavailable", minimumTasks: 15, sealedCases: null },
 			}),
 		});
 		const { commands, output } = register(fixture.value);

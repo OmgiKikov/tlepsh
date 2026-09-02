@@ -1407,6 +1407,9 @@ export class AhdeWorkbench {
 			sealed: summary.sealedHoldout.gate
 				? `${summary.sealedHoldout.gate.verdict} · ${summary.sealedHoldout.gate.tasks} × ${summary.sealedHoldout.gate.repetitions}`
 				: summary.sealedHoldout.executed ? "executed, no verdict" : "not run",
+			// A token, not a sentence: the subject the human approves is the same
+			// bytes in every language, and the dialog renders the phrase from it.
+			sealedOutcome: summary.sealedHoldout.gate?.outcome ?? null,
 			version: version ?? null,
 			tag: version ? `v${version}` : null,
 			fastForward: plan.includes("adopt-candidate")

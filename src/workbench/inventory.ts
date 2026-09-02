@@ -123,6 +123,8 @@ export interface WorkbenchInventory {
 	 * never cross the Workbench view boundary.
 	 */
 	sealedHoldoutReadiness: NonNullable<WorkbenchView["shippingReadiness"]>["sealedHoldout"];
+	/** Cases in the largest verified exam; null when none verified. Host-computed. */
+	sealedHoldoutCases: number | null;
 	focus: WorkbenchFocus;
 	validFocus: Partial<Record<WorkbenchSelectionKind, WorkbenchFocusEntry>>;
 	warnings: string[];
@@ -603,6 +605,7 @@ export function loadWorkbenchInventory(options: {
 	}
 	let corpora: CorpusMetadata[] = [];
 	let sealedHoldoutReadiness: WorkbenchInventory["sealedHoldoutReadiness"] = "missing";
+	let sealedHoldoutCases: number | null = null;
 	try {
 		corpora = listCorpora({ stateRoot: options.stateRoot, projectId: options.projectId });
 		const sealed = corpora.filter((corpus) => corpus.visibility === "sealed");
@@ -631,6 +634,9 @@ export function loadWorkbenchInventory(options: {
 			sealedHoldoutReadiness = verifiedCorpora === 0
 				? "unavailable"
 				: largestVerifiedCorpus >= SEALED_GATE_POLICY.minTasks ? "ready" : "underpowered";
+			// The count of the exam the gate would actually use, so a shortfall can
+			// be stated as arithmetic. Nothing else about that corpus travels.
+			sealedHoldoutCases = verifiedCorpora === 0 ? null : largestVerifiedCorpus;
 		}
 	} catch {
 		sealedHoldoutReadiness = "unavailable";
@@ -921,6 +927,7 @@ export function loadWorkbenchInventory(options: {
 		adoptedCandidates,
 		continuedCandidates,
 		sealedHoldoutReadiness,
+		sealedHoldoutCases,
 		focus,
 		warnings,
 		integrityBlockers,
@@ -1378,6 +1385,7 @@ export function deriveWorkbenchView(
 		shippingReadiness: {
 			sealedHoldout: inventory.sealedHoldoutReadiness,
 			minimumTasks: SEALED_GATE_POLICY.minTasks,
+			sealedCases: inventory.sealedHoldoutCases,
 		},
 		calibration: calibrationOf(inventory),
 		counts: {

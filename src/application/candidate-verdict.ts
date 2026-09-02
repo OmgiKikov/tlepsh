@@ -1,5 +1,5 @@
 import type { CandidateRecord } from "../domain/candidate.js";
-import { formatPoints } from "../domain/comparison-gate.js";
+import { formatPoints, sealedOutcome, sealedOutcomeLabel } from "../domain/comparison-gate.js";
 import { comparisonSurfaceOf, type AttemptSurface } from "./experiment-history.js";
 
 /**
@@ -74,9 +74,12 @@ export function renderCandidateVerdictLines(record: CandidateRecord): string[] {
 	);
 	if (verdicts.sealed) {
 		const why = verdicts.sealed.reasons[0];
+		// `pass` is two findings under one token; the line that decides a ship
+		// says which one the interval actually supports.
+		const outcome = sealedOutcome(verdicts.sealed);
 		lines.push(
-			`sealed guardrail: ${verdicts.sealed.verdict} on ${design(verdicts.sealed)}` +
-			`${why ? ` — ${why}` : ""}`,
+			`sealed guardrail: ${verdicts.sealed.verdict}${outcome ? ` · ${sealedOutcomeLabel(outcome)}` : ""} ` +
+			`on ${design(verdicts.sealed)}${why ? ` — ${why}` : ""}`,
 		);
 	} else {
 		lines.push("sealed guardrail: not run (promotion stays locked)");

@@ -15,6 +15,7 @@ import {
 	promotionGradeVerdictOf,
 	type ComparisonGateEvidence,
 } from "../domain/candidate.js";
+import { sealedOutcome, sealedOutcomeLine } from "../domain/comparison-gate.js";
 import type { EvalRunRecord } from "../eval.js";
 import type { SpecSnapshot } from "../spec.js";
 import { redactTraceText } from "../trace.js";
@@ -222,6 +223,11 @@ function gateProjection(
 	evidence: ComparisonGateEvidence | null | undefined,
 ): WorkbenchGateProjection | null {
 	if (!isPromotionGradeGateEvidence(evidence)) return null;
+	// A sealed `pass` says one of two different things; the projection carries
+	// which, so the model reads it instead of inferring it from the interval.
+	const decided = { verdict: evidence.verdict, confidence95: evidence.summary.confidence95 };
+	const outcome = sealedOutcome(decided);
+	const outcomeLine = sealedOutcomeLine(decided);
 	return {
 		verdict: evidence.verdict,
 		surface: evidence.surface,
@@ -240,6 +246,8 @@ function gateProjection(
 			tokenRatio: evidence.resources.tokenRatio,
 		},
 		reasons: [...evidence.reasons],
+		...(outcome ? { outcome } : {}),
+		...(outcomeLine ? { outcomeLine } : {}),
 	};
 }
 

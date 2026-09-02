@@ -1,4 +1,5 @@
 import type { CandidateRecord } from "../domain/candidate.js";
+import { examCasesForMeasuredBand } from "../domain/power.js";
 import type { WorkbenchCalibrationProjection } from "./types.js";
 
 /**
@@ -61,6 +62,12 @@ export function calibrationProjection(record: CandidateRecord): WorkbenchCalibra
 		confidence95: { ...summary.confidence95 },
 		flipRate: taskCount > 0 ? (summary.improved + summary.regressed) / taskCount : 0,
 		recommendedRepetitions: recommendedRepetitions(summary.baselinePassRate, taskCount),
+		// The same noise answers a second question the operator has no other way
+		// to ask: how big an exam has to be before it can see a real difference.
+		recommendedExamCases: examCasesForMeasuredBand(
+			(summary.confidence95.high - summary.confidence95.low) / 2,
+			taskCount,
+		),
 		verdict: evidence.verdict,
 		at: evaluated.at,
 	};

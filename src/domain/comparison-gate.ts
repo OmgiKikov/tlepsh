@@ -1,4 +1,4 @@
-import { t } from "../i18n.js";
+import { plural, t, verdictLabel } from "../i18n.js";
 import { sha256Hex } from "../provenance.js";
 
 /**
@@ -18,6 +18,8 @@ import { sha256Hex } from "../provenance.js";
  *   development: improved iff lo > 0 · regressed iff hi < 0 · else inconclusive
  *   sealed:      underpowered iff tasks < 15 or repetitions < 2
  *                fail iff hi < 0 · else pass
+ * A sealed `pass` is two different findings under one token, so every surface
+ * says which one it is: see {@link sealedOutcome}.
  * Pass rates stay computed and rendered next to the scores; with binary
  * graders the two coincide, so v3 verdicts are reproduced exactly.
  * Per-task drops are flags for humans; they never gate. Cost, latency, and
@@ -358,14 +360,25 @@ function decide(policy: GatePolicy, summary: CompareSummary, design: ComparisonD
 		// The minimum applies to the designed holdout; the error budget above
 		// already bounds how many of its tasks may drop out of the statistics.
 		if (total < policy.minTasks || design.repetitions < policy.minRepetitions) {
-			return {
-				...base,
-				verdict: "underpowered",
-				reasons: [
-					`${size}; the sealed guardrail needs at least ${policy.minTasks} tasks × ${policy.minRepetitions} repetitions`,
-					...excluded,
-				],
-			};
+			// What exists and what is missing, in the numbers the operator can act
+			// on: "fewer than 15" leaves them to do the subtraction themselves.
+			const shortfalls = [
+				total < policy.minTasks
+					? t("gate.exam-shortfall", {
+						cases: plural(total, "case"),
+						minimum: policy.minTasks,
+						missing: policy.minTasks - total,
+					})
+					: null,
+				design.repetitions < policy.minRepetitions
+					? t("gate.repetition-shortfall", {
+						minimum: policy.minRepetitions,
+						ran: design.repetitions,
+						missing: policy.minRepetitions - design.repetitions,
+					})
+					: null,
+			].filter((shortfall): shortfall is string => shortfall !== null);
+			return { ...base, verdict: "underpowered", reasons: [shortfalls.join(" · "), ...excluded] };
 		}
 		if (high < 0) {
 			return { ...base, verdict: "fail", reasons: [`regressed: ${interval} lies entirely below zero on ${size}`, ...excluded] };
@@ -378,6 +391,41 @@ function decide(policy: GatePolicy, summary: CompareSummary, design: ComparisonD
 	if (low > 0) return { ...base, verdict: "improved", reasons: [`${interval} lies entirely above zero on ${size}`, ...excluded] };
 	if (high < 0) return { ...base, verdict: "regressed", reasons: [`${interval} lies entirely below zero on ${size}`, ...excluded] };
 	return { ...base, verdict: "inconclusive", reasons: [`${interval} spans zero on ${size}`, ...excluded] };
+}
+
+/**
+ * What a sealed `pass` actually showed. The token is the same either way — the
+ * exam proved no regression — but a change that overfitted the development
+ * cases and landed flat on the exam passes exactly like one that improved it,
+ * and on the policy minimum the interval is wide enough that this is the
+ * common case. The interval already knows the difference, so every surface
+ * that renders the verdict says which of the two it is.
+ *
+ * `null` for anything that is not a sealed `pass`: `fail` and `underpowered`
+ * carry their own reason line.
+ */
+export type SealedOutcome = "improved" | "no-regression";
+
+export interface SealedOutcomeInput {
+	verdict: string;
+	confidence95: { low: number; high: number } | null;
+}
+
+/** Pure. `improved` iff the whole interval is above zero; else `no-regression`. */
+export function sealedOutcome(gate: SealedOutcomeInput | null | undefined): SealedOutcome | null {
+	if (!gate || gate.verdict !== "pass" || !gate.confidence95) return null;
+	return gate.confidence95.low > 0 ? "improved" : "no-regression";
+}
+
+/** The operator-facing phrase for one outcome; the verdict token is untouched. */
+export function sealedOutcomeLabel(outcome: SealedOutcome): string {
+	return t(outcome === "improved" ? "exam.outcome-improved" : "exam.outcome-no-regression");
+}
+
+/** `pass · improved`: the verdict as rendered, with what it showed. Null off a sealed pass. */
+export function sealedOutcomeLine(gate: SealedOutcomeInput | null | undefined): string | null {
+	const outcome = sealedOutcome(gate);
+	return outcome === null ? null : `${verdictLabel("pass")} · ${sealedOutcomeLabel(outcome)}`;
 }
 
 /** A candidate is promotable only when both surfaces carry a favourable verdict. */

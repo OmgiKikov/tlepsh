@@ -423,7 +423,7 @@ describe("version passport", () => {
 			"- development: **improved** — pass rate 0% → 100% · mean score 0.00 → 1.00 " +
 				"(+100.0pp, 95% CI +42.0pp … +86.0pp) on 6 tasks × 2 repetitions",
 		);
-		expect(page).toContain("- sealed guardrail: **pass** on 18 tasks × 2 repetitions");
+		expect(page).toContain("- sealed guardrail: **pass · improved** on 18 tasks × 2 repetitions");
 		expect(page).toContain("- per answer, candidate over baseline: cost ×1.25 · latency ×0.87 · tokens ×1.10");
 
 		// The A/A record of the same revision is the noise band.
@@ -499,7 +499,7 @@ describe("version passport", () => {
 			reason: APPLY_REASON,
 			at: "2026-08-30T09:00:00.000Z",
 		});
-		expect(projection.measured.sealed).toEqual({ verdict: "pass", design: { tasks: 18, repetitions: 2 } });
+		expect(projection.measured.sealed).toEqual({ verdict: "pass", design: { tasks: 18, repetitions: 2 }, outcome: "improved" });
 		expect(projection.limits.dataset.sealed).toEqual({ cases: 18, origin: null });
 		expect(projection.judge).toMatchObject({ stats: null, majorityClassBaseline: null });
 		// The projection is JSON, exactly as `--json` prints it.
@@ -517,8 +517,9 @@ describe("version passport", () => {
 			expect(text).not.toContain(fixture.sealedCorpus.hash);
 			expect(text).not.toContain("sealed-1");
 		}
-		// The verdict and the design size are the whole of what may be said.
-		expect(page).toContain("**pass** on 18 tasks × 2 repetitions");
+		// The verdict, what that verdict showed, and the design size are the whole
+		// of what may be said.
+		expect(page).toContain("**pass · improved** on 18 tasks × 2 repetitions");
 	});
 
 	it("refuses with a next step when nothing is promoted and no candidate is named", () => {

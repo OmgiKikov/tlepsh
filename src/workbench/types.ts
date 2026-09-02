@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ProposalPredictionSchema, type ProposalPrediction } from "../builders/adapters.js";
-import type { GateSurface, GateVerdict } from "../domain/comparison-gate.js";
+import type { GateSurface, GateVerdict, SealedOutcome } from "../domain/comparison-gate.js";
 import {
 	BuilderCorpusDraftCoverageNotesSchema,
 	BuilderCorpusDraftTasksInputSchema,
@@ -130,6 +130,14 @@ export interface WorkbenchGateProjection {
 	/** Cost/latency/token ratios of candidate over baseline. Rendered, never gating. */
 	resources: { costRatio: number | null; latencyRatio: number | null; tokenRatio: number | null };
 	reasons: string[];
+	/**
+	 * What a sealed `pass` showed: `improved` when the whole interval is above
+	 * zero, `no-regression` when it spans it. Absent on every other verdict and
+	 * on the development surface. `outcomeLine` is the phrase every surface
+	 * renders, so the Builder quotes it instead of saying "the exam passed".
+	 */
+	outcome?: SealedOutcome;
+	outcomeLine?: string;
 }
 
 /**
@@ -151,6 +159,11 @@ export interface WorkbenchCalibrationProjection {
 	flipRate: number;
 	/** Smallest k ∈ 1..5 whose expected noise band is at most 10 points. */
 	recommendedRepetitions: number;
+	/**
+	 * Cases an exam would need before a ±10 pp difference could show through
+	 * this much noise. Null when too few tasks measured it.
+	 */
+	recommendedExamCases: number | null;
 	/** Development verdict; `inconclusive` is the healthy A/A result. */
 	verdict: GateVerdict;
 	at: string;
@@ -402,6 +415,12 @@ export interface WorkbenchView {
 	shippingReadiness?: {
 		sealedHoldout: "missing" | "underpowered" | "ready" | "unavailable";
 		minimumTasks: number;
+		/**
+		 * Cases in the largest verified exam, so a shortfall can say how many are
+		 * missing instead of "fewer than the minimum". A count, never content:
+		 * every other surface already prints it beside the verdict.
+		 */
+		sealedCases: number | null;
 	};
 	/** Newest A/A calibration of the exact active Target revision, if any. */
 	calibration: WorkbenchCalibrationProjection | null;
