@@ -391,7 +391,17 @@ export interface WorkbenchView {
 	};
 	focus: Partial<Record<WorkbenchSelectionKind, string>>;
 	selections: WorkbenchSelectionSummary[];
+	/**
+	 * Host-side stage hints in loose words. The model-facing projection replaces
+	 * this with the derived `next` block, so nothing outside the host reads it.
+	 */
 	actions: string[];
+	/**
+	 * True while the five workshop tools are legal. Not derived from the
+	 * inventory — the open workshop is live host state — so it is attached
+	 * where the view is rendered rather than where the stage is computed.
+	 */
+	workshopOpen?: boolean;
 	blockers: string[];
 	warnings: string[];
 	/**
