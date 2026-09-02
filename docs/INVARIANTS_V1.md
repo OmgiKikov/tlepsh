@@ -266,3 +266,22 @@ it decides.
     the Git refs so a crash cannot make a branch name reusable. The loop stops at
     the first verified candidate: compounding before a full-stack matched and
     sealed baseline exists would overstate what the evidence proved.
+44. A case's world is part of the dataset's identity and lives outside the
+    workspace snapshot; only sandboxed tools read and write it; an unreadable
+    world is an infrastructure error, never a behavioural failure. The state a
+    case declares is written once per Run under `runs/<id>/runtime/world/`,
+    never into `workspace/`, so two cases that differ only in the world they
+    happen in still materialize one hash-checked snapshot (invariant 19) and
+    stay comparable. Its absolute path reaches every declared tool as
+    `AHDE_WORLD`, host-owned exactly as `AHDE_TOOL_HOME` is: a declared
+    environment allowlist can neither define it nor take it away, and the
+    world's directory is a write root only for a tool whose descriptor already
+    declares `workspace-write`. Neither the Builder nor the simulated user ever
+    receives it — the Builder reads a bounded, redacted projection, and facts
+    the person in the conversation genuinely knows belong in `goal` or
+    `persona`. `world.expect` is sugar: every path that resolves a case's
+    effective graders desugars each expectation into one `world_state` grader,
+    so a world expectation is scored, explained and clustered as exactly one
+    kind of check. A missing, oversized, malformed or symlinked world file
+    makes the Run an error (invariant 9); a `world_state` check on a case that
+    declares no world fails loudly rather than passing on nothing.
