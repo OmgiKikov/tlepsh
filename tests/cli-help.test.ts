@@ -72,12 +72,6 @@ describe("one Builder persona", () => {
 		expect(section).toContain("Never the value, and never the variable name: the NAME is the\n  host's own question");
 		expect(section).toContain("`fixtures/*.json`");
 		expect(section).toContain("one deterministic error fixture");
-		// The same rule the two authoring skills restate.
-		const design = readFileSync(new URL("../builders/ahde/skills/design-agent/SKILL.md", import.meta.url), "utf8");
-		const improve = readFileSync(new URL("../builders/ahde/skills/improve-harness/SKILL.md", import.meta.url), "utf8");
-		for (const skill of [design, improve]) {
-			expect(skill).toContain("belongs in a\n   tool");
-		}
 		expect(persona).toContain("belongs in a\n  tool");
 	});
 
@@ -105,12 +99,7 @@ describe("one Builder persona", () => {
 		expect(loop).toContain("never bring it up again");
 		// The same one-offer shape as the noise measurement it mirrors.
 		expect(loop).toContain("offer that measurement once for this revision");
-		const evals = readFileSync(
-			new URL("../builders/ahde/skills/design-evals/SKILL.md", import.meta.url),
-			"utf8",
-		);
-		expect(evals).toContain("оцени 20 ответов вслепую");
-		expect(evals).toContain("exactly once per revision");
+		expect(loop).toContain("exactly once per revision");
 	});
 
 	it("offers the judge's exam once, with both modes in the sentence, and never authors one", () => {
@@ -125,14 +114,9 @@ describe("one Builder persona", () => {
 		const rules = persona.split("## Rules that keep evidence honest")[1]?.split("\n## ")[0] ?? "";
 		expect(rules).toContain("`generate-holdout`");
 		expect(rules).toContain("you still never author, read, edit, or guess a sealed case");
-		const evals = readFileSync(
-			new URL("../builders/ahde/skills/design-evals/SKILL.md", import.meta.url),
-			"utf8",
-		);
-		expect(evals).toContain("kind: generate-holdout");
-		expect(evals).toContain("A model that writes the holdout has read the\n   holdout");
-		expect(evals).toContain("recommend that one for a first exam");
-		expect(evals).toContain("never a case, and never ask for\n   one");
+		expect(rules).toContain("A model that writes the holdout has\n  read the holdout");
+		expect(rules).toContain("never a case, and never\n  ask for one");
+		expect(loop).toContain("recommend\n   the draft for a first exam");
 		// The word the operator hears for it is on the left of the table.
 		expect(vocabulary().map((row) => row.say).join("\n")).toContain("экзамен от судьи");
 	});
@@ -144,15 +128,9 @@ describe("one Builder persona", () => {
 		expect(rules).toContain("only deletes and\n  comes back flat is worth keeping");
 		expect(rules).toContain("A tie is a discard");
 		expect(rules).toContain("Never re-propose the same files for the same failure mode after a loss");
-		const improve = readFileSync(
-			new URL("../builders/ahde/skills/improve-harness/SKILL.md", import.meta.url),
-			"utf8",
-		);
-		expect(improve).toContain("Loop discipline");
-		expect(improve).toContain("about four changed files");
-		expect(improve).toContain("A tie is a discard");
+		expect(rules).toContain("**Loop discipline.**");
 		// The rule this one restates has to still be there to restate.
-		expect(improve).toContain("already tried");
+		expect(persona).toContain("already tried");
 	});
 
 	it("names the three question kinds without promising a false fixed count", () => {

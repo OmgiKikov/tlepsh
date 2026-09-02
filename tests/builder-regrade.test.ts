@@ -519,7 +519,6 @@ describe("the re-score as a Builder decision", () => {
 
 describe("the persona knows what to do when the judge is disputed", () => {
 	const persona = readFileSync(new URL("../builders/ahde/AGENTS.md", import.meta.url), "utf8");
-	const evals = readFileSync(new URL("../builders/ahde/skills/design-evals/SKILL.md", import.meta.url), "utf8");
 
 	it("fixes the rubric and re-scores instead of re-running the agent", () => {
 		const loop = persona.split("## Typical loop")[1] ?? "";
@@ -529,9 +528,7 @@ describe("the persona knows what to do when the judge is disputed", () => {
 		expect(loop).toContain("the agent was not called again and only the\n   judge was paid");
 		expect(loop).toContain("ask whether to publish the\n   revised graders");
 		expect(loop).toContain("Never present a re-score as a new baseline");
-		expect(evals).toContain("kind: regrade");
-		expect(evals).toContain("fix the rubric, do not re-run the\n   agent");
-		expect(evals).toContain("A re-score is never a new baseline");
+		expect(loop).toContain('`kind: "regrade", graders: "draft"`');
 	});
 
 	it("gives the operator a word for it", () => {

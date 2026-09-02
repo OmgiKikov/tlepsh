@@ -225,7 +225,7 @@ brought records nothing: its provenance is theirs.
 
 ## The Builder's own rule
 
-`builders/ahde/AGENTS.md` and `builders/ahde/skills/design-evals/SKILL.md` carry
+`builders/ahde/AGENTS.md` carries
 it. The short form: when the operator has no real cases to hold out, the Builder
 offers the judge once, in one sentence, with both modes in it — «Экзамена нет.
 Могу попросить судью сгенерировать 20 закрытых кейсов из описания (я их не

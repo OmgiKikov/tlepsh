@@ -50,10 +50,6 @@ try {
 	const packedPaths = new Set(metadata.files.map((file) => file.path));
 	for (const required of [
 		"builders/ahde/AGENTS.md",
-		"builders/ahde/skills/design-agent/SKILL.md",
-		"builders/ahde/skills/design-evals/SKILL.md",
-		"builders/ahde/skills/run-diagnose/SKILL.md",
-		"builders/ahde/skills/improve-harness/SKILL.md",
 		"dist/application/builder-corpus-import-contract.js",
 		"dist/application/builder-corpus-import.js",
 		"dist/application/builder-regression-case.js",
@@ -347,7 +343,7 @@ for (const [name, value] of Object.entries({
 }
 
 const assets = resolveBuilderAssets();
-if (!assets.systemPrompt.includes("AHDE") || assets.skillPaths.length !== 4) {
+if (!assets.systemPrompt.includes("AHDE") || assets.skillPaths.length !== 0) {
   throw new Error("packaged Builder assets did not resolve completely");
 }
 
@@ -507,7 +503,7 @@ await launchBuilderPi({
       .map((value, index) => value === "--skill" ? args[index + 1] : undefined)
       .filter(Boolean);
     if (JSON.stringify(suppliedSkills) !== JSON.stringify(assets.skillPaths)) {
-      throw new Error("Builder Pi did not receive the exact four packaged skills");
+      throw new Error("Builder Pi did not receive exactly the packaged skills (none)");
     }
     const agentDir = process.env.PI_CODING_AGENT_DIR ?? "";
     const sessionDir = process.env.PI_CODING_AGENT_SESSION_DIR ?? "";

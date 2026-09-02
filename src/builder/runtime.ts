@@ -11,7 +11,11 @@ import { assertTargetReadyToRun } from "../target/readiness.js";
 import { createAhdeBuilderExtension, type BuilderExtensionDependencies } from "./extension.js";
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const BUILDER_SKILLS = ["design-agent", "design-evals", "run-diagnose", "improve-harness"] as const;
+// The persona is one file. The four "workflow skills" it used to inline were
+// its own typical loop restated, and the live sessions showed the two copies
+// drifting apart (the skill still sent the operator to a terminal for the
+// judge check the persona had already moved into the conversation).
+const BUILDER_SKILLS: readonly string[] = [];
 /** Per-project Builder files worth carrying into the user-level home. */
 const MIGRATED_BUILDER_CONFIG_FILES = ["auth.json", "models.json"] as const;
 export const AHDE_BUILDER_BUILTIN_COMMANDS = [

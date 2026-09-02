@@ -827,14 +827,13 @@ describe("the durable record", () => {
  */
 describe("the persona predicts on the construction path too", () => {
 	const persona = readFileSync(new URL("../builders/ahde/AGENTS.md", import.meta.url), "utf8");
-	const workshop = readFileSync(new URL("../builders/ahde/skills/improve-harness/SKILL.md", import.meta.url), "utf8");
 
 	it("asks for the families and the delta when the first harness is closed", () => {
 		const loop = persona.split("## Typical loop")[1] ?? "";
 		expect(loop).toContain("State the prediction when you close a construction workshop too");
 		expect(loop).toContain("it is still a promise, so it\n   still carries `prediction`");
 		expect(loop).toContain("expectedPassRateDeltaPp");
-		expect(workshop).toContain("A construction close — the first harness, built from the Spec — names no\n   mode, and still states one");
+		expect(loop).toContain("A construction proposal names no mode; it may still state the delta");
 	});
 
 	it("accepts exactly that prediction: a delta, no mode", () => {

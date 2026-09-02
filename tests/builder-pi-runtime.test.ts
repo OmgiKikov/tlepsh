@@ -53,16 +53,12 @@ afterEach(() => {
 });
 
 describe("Builder Pi runtime", () => {
-	it("uses only the packaged prompt and four explicit Builder skills", () => {
+	it("uses only the packaged prompt: one persona file, no separate skills", () => {
 		const assets = resolveBuilderAssets();
 		expect(assets.systemPrompt).toContain("Builder Pi and Target Pi are separate trust domains");
-		expect(assets.skillPaths).toHaveLength(4);
-		expect(assets.skillPaths.map((path) => path.split("/").at(-2))).toEqual([
-			"design-agent",
-			"design-evals",
-			"run-diagnose",
-			"improve-harness",
-		]);
+		expect(assets.systemPrompt).toContain("## Typical loop");
+		expect(assets.systemPrompt).not.toContain("# Workflow skills");
+		expect(assets.skillPaths).toHaveLength(0);
 		const args = buildBuilderPiArgs({ assets, sessionDir: "/private/sessions", piArgs: ["--thinking", "high"] });
 		expect(args).toEqual(expect.arrayContaining([
 			"--no-builtin-tools",
@@ -75,7 +71,7 @@ describe("Builder Pi runtime", () => {
 			"--thinking",
 			"high",
 		]));
-		expect(args.filter((value) => value === "--skill")).toHaveLength(4);
+		expect(args.filter((value) => value === "--skill")).toHaveLength(0);
 		expect(args).not.toEqual(expect.arrayContaining(["bash", "edit", "write", "read"]));
 	});
 
