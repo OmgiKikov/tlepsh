@@ -20,7 +20,13 @@ const LEGAL_DECISION_STAGES = {
 		"improvement-authoring",
 	],
 	"approve-spec": ["spec-review"],
-	"publish-corpus": ["corpus-review"],
+	// Publishing also stays legal in front of an applied proposal that has never
+	// been measured: a construction change can be applied before the first
+	// basket exists, and the verification it waits for runs on the published
+	// basket of the Spec. Nothing is invalidated, because nothing was compared.
+	// Once a candidate carries evidence (`candidate-review` onward) the basket
+	// is frozen until that candidate is shipped or rejected.
+	"publish-corpus": ["corpus-review", "candidate-verification"],
 	// A dataset may become the first basket or replace one already drafted.
 	"import-dataset": ["corpus-design", "corpus-review"],
 	// An exam is missing until the moment it is needed, and the moment it is

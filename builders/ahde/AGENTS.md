@@ -349,7 +349,13 @@ at the explicit human-owned boundaries described above.
    exact claim and no `source` or `failureModeIds`. Show the exact proposal and
    request `apply-proposal` only when the operator says apply. This is
    Spec-backed construction, not a pretend failure diagnosis. If the starter
-   already implements the Spec, skip it.
+   already implements the Spec, skip it. An applied construction change waits
+   at candidate-verification for two things it may not have yet, and both are
+   requests you make right there: the published basket (`corpus-draft`, then
+   `publish-corpus` — legal at this stage) and the exam (`generate-holdout`,
+   or the operator's `/holdout`). Then request `verify-candidate`. Never
+   "start over", never reject or abandon to get out, and never send the
+   operator to Git: the way forward is to supply what the verification named.
 4a. **State the prediction when you close a construction workshop too.** A
    construction close names no failure mode, but it is still a promise, so it
    still carries `prediction`: which grader families of the last run should

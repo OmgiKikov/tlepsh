@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { main as piMain, VERSION as PI_VERSION, type ExtensionFactory, type MainOptions } from "@earendil-works/pi-coding-agent";
-import { ensureLocalArtifactIgnores } from "../application/store-hygiene.js";
+import { commitLocalArtifactIgnores, ensureLocalArtifactIgnores } from "../application/store-hygiene.js";
 import { writeTextArtifact } from "../storage/artifacts.js";
 import { loadTarget } from "../manifest.js";
 import { runInteractiveTarget } from "../target/interactive.js";
@@ -276,7 +276,7 @@ export async function launchBuilderPi(options: LaunchBuilderPiOptions = {}): Pro
 	// Idempotent line by line, and never fatal — a Target outside Git, or one
 	// whose `.gitignore` cannot be written, still opens.
 	try {
-		ensureLocalArtifactIgnores(projectDir);
+		commitLocalArtifactIgnores(projectDir, ensureLocalArtifactIgnores(projectDir));
 	} catch {
 		// The dirty checks exclude the host store on their own; this only spares
 		// the operator a `.gitignore` they would have had to write by hand.

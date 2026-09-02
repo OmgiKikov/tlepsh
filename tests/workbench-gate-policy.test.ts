@@ -624,7 +624,7 @@ describe("the development arm of a verification", () => {
 			kind: "verify-candidate",
 			repetitions: SEALED_VERIFICATION_REPETITIONS,
 			reason: "Check the applied candidate",
-		}, human)).rejects.toThrow(/No compatible development corpus is available/);
+		}, human)).rejects.toThrow(/No compatible development corpus is available.*publish-corpus — legal at this stage/);
 		expect(measured).not.toHaveBeenCalled();
 	}, 60_000);
 });

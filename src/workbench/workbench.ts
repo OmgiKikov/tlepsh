@@ -1623,6 +1623,11 @@ export class AhdeWorkbench {
 
 	// -- the Builder workshop ------------------------------------------------
 
+	/** Refuse, with the exact reason, unless a workshop is open. */
+	assertWorkshopOpen(): void {
+		this.requireWorkshop();
+	}
+
 	/** The open workshop, or the exact reason there is none. */
 	private requireWorkshop(): BuilderWorkshop {
 		if (!this.workshop?.open) {
@@ -3709,13 +3714,34 @@ export class AhdeWorkbench {
 				);
 			}
 			const proposal = requireProposal(inventory, "applied", input.builderRunId);
+			// A construction change can be applied before the first basket or the
+			// exam exists, and this is where that is found out. Each refusal names
+			// the request that supplies what is missing: the exit is forward, never
+			// a retreat — nothing here can be discarded or abandoned, only completed.
+			const verifiedSpecId = proposal.record.request.approvedSpec?.specId;
+			if (verifiedSpecId) {
+				try {
+					requireDevelopmentCorpus(inventory, undefined, verifiedSpecId);
+				} catch (error) {
+					throw new Error(
+						`${error instanceof Error ? error.message : String(error)}. The candidate is measured on the published ` +
+						"basket of its Spec: write the cases (corpus-draft) and publish them (publish-corpus — legal at this stage), " +
+						"or import a dataset; then verify again.",
+					);
+				}
+			}
 			let sealed: CorpusMetadata[];
 			try {
 				sealed = listCorpora({ stateRoot: this.stateRoot, projectId: this.projectId }).filter((corpus) => corpus.visibility === "sealed");
 			} catch {
 				throw new Error("evaluator-owned sealed holdout inventory is unavailable; identities remain hidden");
 			}
-			if (sealed.length === 0) throw new Error("Candidate verification requires an evaluator-owned sealed holdout corpus");
+			if (sealed.length === 0) {
+				throw new Error(
+					"Candidate verification requires an evaluator-owned sealed holdout corpus. Get one first: request generate-holdout " +
+					"(the Target's judge writes it from the Spec; the operator's /holdout does the same) or import a sealed JSONL; then verify again.",
+				);
+			}
 			const choice = await gate.selectSealed({ title: "Select evaluator-only sealed holdout", options: sealed.map((corpus, index) => ({ label: `Holdout ${index + 1} · ${corpus.name}`, taskCount: corpus.taskCount })) }, options.signal);
 			abortIfRequested(options.signal);
 			if (!choice.approved) throw new WorkbenchDecisionDeclinedError(input.kind);

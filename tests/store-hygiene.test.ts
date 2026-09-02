@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -7,6 +7,7 @@ import {
 	assertScaffoldableTargetLocation,
 	assertUntrackedEngineStore,
 	DirtyTargetTreeError,
+	commitLocalArtifactIgnores,
 	ensureLocalArtifactIgnores,
 	operatorDirtyPaths,
 	renderLocalArtifactIgnoreLine,
@@ -98,6 +99,39 @@ describe("ensureLocalArtifactIgnores", () => {
 		} finally {
 			cleanup(template);
 			cleanup(dest);
+		}
+	});
+});
+
+describe("commitLocalArtifactIgnores", () => {
+	it("commits the lines it appended and nothing else, so the host never dirties the Target", () => {
+		// The fixture is a committed repository already; only the operator's own
+		// unfinished file is added on top of it.
+		const dir = repoFixture();
+		try {
+			writeFileSync(join(dir, "notes.md"), "the operator's own unfinished work\n");
+			const added = ensureLocalArtifactIgnores(dir);
+			expect(commitLocalArtifactIgnores(dir, added)).toBe(true);
+			expect(git(dir, "status", "--porcelain=v1", "--untracked-files=all")).toBe("?? notes.md");
+			expect(git(dir, "log", "--format=%s", "-1")).toBe("chore(ahde): ignore the host's local state");
+			expect(git(dir, "show", "--stat", "--format=", "HEAD")).toContain(".gitignore");
+			expect(git(dir, "show", "--stat", "--format=", "HEAD")).not.toContain("notes.md");
+			// Idempotent: nothing to add, nothing to commit.
+			expect(commitLocalArtifactIgnores(dir, ensureLocalArtifactIgnores(dir))).toBe(false);
+			expect(git(dir, "rev-list", "--count", "HEAD")).toBe("2");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("leaves a Target outside Git as it is", () => {
+		const dir = repoFixture();
+		try {
+			rmSync(join(dir, ".git"), { recursive: true, force: true });
+			expect(commitLocalArtifactIgnores(dir, ensureLocalArtifactIgnores(dir))).toBe(false);
+			expect(readFileSync(join(dir, ".gitignore"), "utf8")).toContain("/.ahde/");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 });

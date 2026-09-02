@@ -237,6 +237,8 @@ export function createWorkshopTools(
 			prepareArguments: (args) => WorkshopAuthorToolSchema.prepare(args),
 			async execute(_id, params, signal, _update, ctx) {
 				abortIfRequested(signal);
+				// The workshop binds the hands before the host UI is even asked for.
+				workbench.assertWorkshopOpen();
 				if (!ctx.hasUI || ctx.mode !== "tui") {
 					throw new Error("Tool authoring needs the local host UI for credentials and capabilities; RPC, print, and JSON execution fail closed");
 				}

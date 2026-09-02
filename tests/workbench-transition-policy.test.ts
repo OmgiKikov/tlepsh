@@ -5,7 +5,9 @@ describe("Workbench transition policy", () => {
 	it("admits every consequential decision only at its declared stage", () => {
 		for (const [kind, stages] of [
 			["approve-spec", ["spec-review"]],
-			["publish-corpus", ["corpus-review"]],
+			// An applied proposal that was never measured invalidates nothing, so
+			// the basket it will be measured on can still be published there.
+			["publish-corpus", ["corpus-review", "candidate-verification"]],
 			["run-eval", ["ready-to-evaluate", "improvement-authoring"]],
 			["calibrate", ["ready-to-evaluate", "improvement-authoring"]],
 			["apply-proposal", ["proposal-review"]],

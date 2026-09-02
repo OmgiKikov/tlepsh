@@ -95,7 +95,7 @@ export function refusalCard(
 /** The two refusals the host words itself, bent into the operator's language. */
 function hostRefusal(reason: string): string {
 	if (/ was declined by the human operator$/.test(reason)) return t("refusal.declined");
-	if (/^No compatible .+ is available$/.test(reason)) return t("refusal.nothing-yet");
+	if (/^No compatible development EvalRun is available/.test(reason)) return t("refusal.nothing-yet");
 	return reason;
 }
 

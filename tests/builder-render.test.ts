@@ -1686,7 +1686,7 @@ describe("renderConfirmation", () => {
 			"Branch ahde/fix-lookup · base aaaaaaaaaa",
 			"  Tell the agent to call lookup before answering.",
 			"Changes AGENTS.md (+2 -1)",
-			"Prediction no prediction stated",
+			"Prediction not stated",
 			"Verification about $0.42 · about 4 minutes — approving this change also approves that measurement",
 			"Risks",
 			"  • May slow down simple replies",

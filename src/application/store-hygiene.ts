@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 /**
@@ -72,6 +72,41 @@ export function ensureLocalArtifactIgnores(targetDir: string): string[] {
 	const separator = existing.length === 0 ? "" : existing.endsWith("\n") ? "\n" : "\n\n";
 	writeFileSync(path, `${existing}${separator}${LOCAL_ARTIFACT_IGNORE_HEADER}\n${missing.join("\n")}\n`);
 	return missing;
+}
+
+/**
+ * Commit the lines `ensureLocalArtifactIgnores` just appended, and nothing
+ * else. A `.gitignore` the host wrote and left uncommitted is the host making
+ * the Target dirty by its own hand: the first workshop then refuses on
+ * "uncommitted changes: .gitignore" and the operator is sent to Git for a
+ * file they never touched. Only that one path is committed, so the operator's
+ * own uncommitted work is never swept into a host commit; a Target outside
+ * Git, or one whose commit fails, is left as it is and the caller carries on.
+ */
+export function commitLocalArtifactIgnores(targetDir: string, added: readonly string[]): boolean {
+	if (added.length === 0) return false;
+	const git = (...args: string[]): string =>
+		execFileSync("git", ["-C", targetDir, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+	try {
+		// The Target must be the root of its own repository: a checkout nested in
+		// some other repository would otherwise receive a host commit it never
+		// asked for, in a history that is not the Target's.
+		if (git("rev-parse", "--is-inside-work-tree") !== "true") return false;
+		if (realpathSync(git("rev-parse", "--show-toplevel")) !== realpathSync(targetDir)) return false;
+		// The operator's identity when Git has one; the host's own otherwise.
+		const identity = (() => {
+			try {
+				return git("config", "user.name") && git("config", "user.email") ? [] : null;
+			} catch {
+				return null;
+			}
+		})() ?? ["-c", "user.name=ahde", "-c", "user.email=ahde@local"];
+		git("add", "--", ".gitignore");
+		git(...identity, "commit", "-q", "-m", "chore(ahde): ignore the host's local state", "--", ".gitignore");
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /** One line for the terminal, or null when the file already covered everything. */
