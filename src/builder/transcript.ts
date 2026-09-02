@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { sanitizeTerminalText } from "../trace.js";
+import { headline } from "./render/format.js";
 import { MARKER_CLOSE, MARKER_CODES, MARKER_OPEN, stripMarkers } from "./render/markers.js";
 import { themePaint, type Paint } from "./render/paint.js";
 
@@ -164,7 +165,9 @@ export function createTranscriptPresenter(pi: TranscriptHost): TranscriptPresent
 		show(ctx, block) {
 			const tone = block.tone ?? "info";
 			const lines = boundedLines(block.lines);
-			const title = stripMarkers(sanitizeTerminalText(block.title)).slice(0, 200);
+			// The `◆` line is a sentence, so it ends on a word and never on the
+			// separator a cut orphaned. Whatever it drops is in `lines` below it.
+			const title = headline(stripMarkers(sanitizeTerminalText(block.title)), 200);
 			if (typeof pi.appendEntry === "function") {
 				try {
 					const entry: TranscriptEntry = { schemaVersion: 1, title, tone, lines };

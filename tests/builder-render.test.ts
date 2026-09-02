@@ -17,6 +17,7 @@ import {
 	bullets,
 	bytes,
 	clean,
+	headline,
 	joinNonEmpty,
 	labeled,
 	numbered,
@@ -2324,6 +2325,19 @@ describe("format helpers", () => {
 		expect(oneLine("😀😀😀😀", 3)).toBe("😀😀…");
 		expect(oneLine("日本語テキスト", 4)).toBe("日本語…");
 		expect(oneLine(`a${OSC}b`)).toBe("ab");
+	});
+
+	// The `◆` line is prose a person reads, so it ends on a word — never
+	// `sealed hol…` — and never on the separator the cut orphaned.
+	it("cuts a headline at a word boundary and drops the separator it orphaned", () => {
+		expect(headline("verification requires a sealed holdout corpus", 20)).toBe("verification…");
+		expect(headline("verification requires a sealed holdout corpus", 20)).not.toContain("requ…");
+		expect(headline("score 45% → 67% · pass rate 25% → 29% · exam passed", 40)).toBe("score 45% → 67% · pass rate 25% → 29%…");
+		expect(headline("short enough", 40)).toBe("short enough");
+		expect(headline("already dangling · ", 40)).toBe("already dangling");
+		// An unbroken run — an id, a hash — has no boundary to respect and still ends.
+		expect(headline("candidate-c23cbcc05b2d43728e413b90b47daaf2", 12)).toBe("candidate-c…");
+		expect(headline("anything", 0)).toBe("");
 	});
 
 	it("draws bars, percentages, and point deltas", () => {

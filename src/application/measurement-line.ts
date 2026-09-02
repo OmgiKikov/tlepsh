@@ -24,6 +24,18 @@ import { plural, t, verdictLabel } from "../i18n.js";
 /** Below this many included cases an interval is indicative, not decisive. */
 export const SMALL_BASKET_CASES = 10;
 
+/**
+ * A separator with nothing left to put after it. The sentence is a ` · `-joined
+ * list, so an empty part — or a cut made downstream by a renderer with a width
+ * to respect — used to leave the dot hanging at the end of the line.
+ */
+const DANGLING_SEPARATOR = /[\s·,;:—–-]+$/u;
+
+/** Drop a separator left dangling at the end of a joined sentence. */
+export function trimSeparator(text: string): string {
+	return text.replace(DANGLING_SEPARATOR, "");
+}
+
 /** `31%`. Scores and pass rates are percentages of 1.0 on every screen. */
 export function percent(fraction: number): string {
 	if (!Number.isFinite(fraction)) return "—";
@@ -174,7 +186,7 @@ export function examLine(exam: ExamSurface | null | undefined): ExamLine | null 
 	const verdict = exam.outcome ? `${verdictLabel(exam.verdict)} · ${sealedOutcomeLabel(exam.outcome)}` : verdictLabel(exam.verdict);
 	const delta = deltaOf(exam.scoreDelta, exam.confidence95);
 	const design = designOf(exam.tasks, exam.repetitions);
-	return { verdict, delta, design, text: [verdict, delta, design].filter((part) => part.length > 0).join(" ") };
+	return { verdict, delta, design, text: trimSeparator([verdict, delta, design].filter((part) => part.length > 0).join(" ")) };
 }
 
 /** The caveat a basket under {@link SMALL_BASKET_CASES} cases has earned. */
@@ -241,7 +253,7 @@ export function measurementLine(input: {
 	const smallBasket = smallBasketNote(development.tasks);
 	const head = [metric, delta, design].filter((part) => part.length > 0).join(" ");
 	const join = (parts: readonly (string | null)[]): string =>
-		parts.filter((part): part is string => typeof part === "string" && part.length > 0).join(" · ");
+		trimSeparator(parts.filter((part): part is string => typeof part === "string" && part.length > 0).join(" · "));
 	const numbers = join([verdict, head, passRate, exam]);
 	return {
 		verdict,

@@ -1,4 +1,5 @@
 import { plural, t } from "../../i18n.js";
+import { trimSeparator } from "../../application/measurement-line.js";
 import { sanitizeTerminalText } from "../../trace.js";
 import { stripMarkers } from "./markers.js";
 import type { Paint } from "./paint.js";
@@ -41,6 +42,30 @@ export function oneLine(text: string, max = 100): string {
 	return `${[...collapsed].slice(0, Math.max(0, max - 1)).join("")}${ELLIPSIS}`;
 }
 
+/**
+ * The one-line form of a sentence a person reads: collapsed, cut at a word
+ * boundary rather than inside a word, and never ending on the separator the
+ * cut orphaned.
+ *
+ * `oneLine` stays as it is for ids, paths and labels, where there is no word
+ * to respect and the extra characters are worth more than the boundary. This
+ * is for prose — the `◆` headline above all, where `sealed hol…` was both
+ * unreadable and, being the operator's only account of a blocker, wrong.
+ */
+export function headline(text: string, max = 120): string {
+	const collapsed = clean(text).replace(/\s+/g, " ").trim();
+	if (max < 1) return "";
+	const chars = [...collapsed];
+	if (chars.length <= max) return trimSeparator(collapsed);
+	const budget = Math.max(0, max - 1);
+	const cut = chars.slice(0, budget).join("");
+	const boundary = cut.lastIndexOf(" ");
+	// A boundary in the last half of the budget is a word break worth taking; an
+	// unbroken run that long is an id or a hash, and it still has to end.
+	const body = boundary > Math.floor(budget / 2) ? cut.slice(0, boundary) : cut;
+	return `${trimSeparator(body)}${ELLIPSIS}`;
+}
+
 export function shortSha(sha: string | null | undefined, length = 10): string {
 	if (!sha) return "—";
 	return sha.slice(0, length);
@@ -56,7 +81,7 @@ export function shortHash(hash: string | null | undefined, length = 12): string 
 // the growth log, the passport and the sentence the Builder quotes all read
 // them from the composer, so a rate can never be a percentage on one screen
 // and a fraction on the next.
-export { percent, points } from "../../application/measurement-line.js";
+export { percent, points, trimSeparator } from "../../application/measurement-line.js";
 
 export function bar(ratio: number, width = 20): string {
 	const clamped = Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : 0;

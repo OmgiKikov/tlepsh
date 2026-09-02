@@ -4,6 +4,7 @@ import {
 	measurementLine,
 	measurementSurface,
 	smallBasketNote,
+	trimSeparator,
 	SMALL_BASKET_CASES,
 } from "../src/application/measurement-line.js";
 import type { AgentLog } from "../src/application/agent-log.js";
@@ -219,5 +220,34 @@ describe("four surfaces, one number", () => {
 		expect(summary.headline).toContain(` · ${caveat}`);
 		expect(renderCandidate(summary, plainPaint)).toContain(`  ${caveat}`);
 		expect(renderAgentLog(log(), plainPaint).join("\n")).toContain(caveat);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// No separator with nothing after it. The `◆` headline is this sentence cut to
+// the width a title has, and the cut used to land on the ` · ` before the
+// small-basket caveat — a dot at the end of the line, pointing at nothing.
+// ---------------------------------------------------------------------------
+
+describe("the joiner never leaves a dangling separator", () => {
+	it("ends the sentence, the exam line and the numbers on a word", () => {
+		for (const language of ["en", "ru"] as const) {
+			setLanguage(language);
+			const line = measurementLine({
+				development: measurementSurface({ ...SUMMARY, ...GATE }),
+				exam: { verdict: "pass", scoreDelta: 0.303, confidence95: { low: 0.12, high: 0.48 }, tasks: 19, repetitions: 3 },
+			});
+			for (const part of [line.text, line.numbers, line.development, line.exam!]) {
+				expect(part).not.toMatch(/[\s·,;:—–-]$/);
+			}
+			expect(examLine({ verdict: "pass", scoreDelta: null, confidence95: null, tasks: 19, repetitions: 3 })!.text)
+				.not.toMatch(/[\s·,;:—–-]$/);
+		}
+	});
+
+	it("trims a separator a caller's own cut orphaned", () => {
+		expect(trimSeparator("score 45% → 67% on 19 cases × 3 · ")).toBe("score 45% → 67% on 19 cases × 3");
+		expect(trimSeparator("nothing to trim")).toBe("nothing to trim");
+		expect(trimSeparator("")).toBe("");
 	});
 });
