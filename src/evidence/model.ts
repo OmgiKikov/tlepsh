@@ -16,7 +16,8 @@ import {
 	type CandidateFlip,
 	type RunRow,
 } from "../application/run-explanation.js";
-import { compareVerifiedEvalRuns, renderGateLine, type CompareResult } from "../compare.js";
+import { compareVerifiedEvalRuns, type CompareResult } from "../compare.js";
+import { measurementLine, measurementSurface } from "../application/measurement-line.js";
 import { diagnosisPath, loadDiagnosis } from "../diagnosis.js";
 import type { CandidateRecord, EvaluationEvidence } from "../domain/candidate.js";
 import { gateVerdictOf } from "../domain/candidate.js";
@@ -449,7 +450,15 @@ export function collectComparePage(runsRoot: string, candidateId: string): Compa
 		candidateId,
 		targetId: record.targetId,
 		status: record.events.at(-1)?.type ?? "proposed",
-		developmentLine: renderGateLine(comparison),
+		// The same sentence the panel, the log and the passport print.
+		developmentLine: measurementLine({
+			development: measurementSurface({
+				...comparison.summary,
+				verdict: comparison.gate.verdict,
+				tasks: comparison.design.tasks,
+				repetitions: comparison.design.repetitions,
+			}),
+		}).text,
 		developmentReasons: recordedReasons(evaluation.development.comparison).length > 0
 			? recordedReasons(evaluation.development.comparison)
 			: comparison.gate.reasons,

@@ -43,6 +43,7 @@ import {
 	predictionPromiseLine,
 } from "./prediction.js";
 import { measurementOf } from "../../application/prediction.js";
+import { examLine, measurementLine, measurementSurface } from "../../application/measurement-line.js";
 import type { Paint } from "./paint.js";
 import { planHeadline, type Plan } from "./plan.js";
 import { nextStep, stageLabel } from "./stage.js";
@@ -264,28 +265,34 @@ function resourceSuffix(gate: { resources: WorkbenchGateProjection["resources"] 
 	return fragment ? ` ${paint.dim(`· ${fragment}`)}` : "";
 }
 
-function gateLine(gate: NonNullable<NonNullable<WorkbenchCandidateSummary["development"]>["gate"]>, paint: Paint): string {
-	const tone = verdictTone(gate.verdict, paint);
-	return `  ${paint.dim(t("label.verdict"))} ${tone(verdictLabel(gate.verdict))} ${paint.dim("·")} ${points(gate.scoreDelta)} ${paint.dim(`(${t("unit.ci")} ${points(gate.confidence95.low)} … ${points(gate.confidence95.high)})`)} ${paint.dim(`· ${gate.tasks} × ${gate.repetitions}`)}` +
-		resourceSuffix(gate, paint) +
-		(gate.flags.collapsedTasks > 0 ? ` ${paint.error(t("development.collapsed", { tasks: plural(gate.flags.collapsedTasks, "task") }))}` : "");
-}
-
+/**
+ * The verification, in the one sentence the whole system prints, painted.
+ *
+ * The parts come from the composer, never from arithmetic here: the delta and
+ * its interval are both about the mean grader score the gate decided on, and
+ * the pass rate follows them named. Under it go the per-task counts, what the
+ * two arms cost, and — on a basket too small for the interval to settle
+ * anything — one muted line saying so.
+ */
 function comparisonLines(
 	summary: NonNullable<NonNullable<WorkbenchCandidateSummary["development"]>["comparison"]>,
 	gate: NonNullable<WorkbenchCandidateSummary["development"]>["gate"],
 	paint: Paint,
 ): string[] {
-	const delta = summary.delta;
-	const tone = delta > 0 ? paint.success : delta < 0 ? paint.error : paint.muted;
-	const score = gate
-		? ` ${paint.dim(t("development.score", { before: percent(gate.baselineScore), after: percent(gate.candidateScore) }))}`
-		: "";
+	const line = measurementLine({ development: measurementSurface({ ...summary, ...gate }) });
+	const shown = gate ? gate.scoreDelta : summary.delta;
+	const tone = shown > 0 ? paint.success : shown < 0 ? paint.error : paint.muted;
+	const verdict = line.verdict ? `${verdictTone(gate?.verdict ?? "", paint)(line.verdict)} ${paint.dim("·")} ` : "";
 	const lines = [
-		`${paint.dim(t("label.development"))} ${t("development.comparison", { baseline: percent(summary.baselinePassRate), candidate: percent(summary.candidatePassRate) })} ${tone(`(${points(delta)})`)} ${paint.dim(t("development.on-tasks", { tasks: plural(summary.taskCount, "task"), count: summary.taskCount }))}${score}`,
-		`  ${paint.success(t("development.improved", { count: summary.improved }))} ${paint.dim("·")} ${summary.regressed > 0 ? paint.warning(t("development.lower", { count: summary.regressed })) : paint.muted(t("development.lower", { count: 0 }))} ${paint.dim("·")} ${paint.muted(t("development.unchanged", { count: summary.unchanged }))} ${paint.dim(`· ${t("unit.ci")} ${points(summary.confidence95.low)} … ${points(summary.confidence95.high)}`)}`,
+		`${paint.dim(t("label.development"))} ${verdict}${line.metric} ${tone(line.delta)} ${paint.dim(line.design)}` +
+			(line.passRate ? ` ${paint.dim(`· ${line.passRate}`)}` : ""),
+		`  ${paint.success(t("development.improved", { count: summary.improved }))} ${paint.dim("·")} ${summary.regressed > 0 ? paint.warning(t("development.lower", { count: summary.regressed })) : paint.muted(t("development.lower", { count: 0 }))} ${paint.dim("·")} ${paint.muted(t("development.unchanged", { count: summary.unchanged }))}` +
+			(gate ? resourceSuffix(gate, paint) : "") +
+			(gate && gate.flags.collapsedTasks > 0
+				? ` ${paint.error(t("development.collapsed", { tasks: plural(gate.flags.collapsedTasks, "task") }))}`
+				: ""),
 	];
-	if (gate) lines.push(gateLine(gate, paint));
+	if (line.smallBasket) lines.push(`  ${paint.muted(line.smallBasket)}`);
 	return lines;
 }
 
@@ -348,9 +355,10 @@ export function renderCandidate(
 		lines.push(regradedDevelopmentLine(candidate.development.comparison, candidate.regraded, paint));
 	}
 	const sealedGate = candidate.sealedHoldout.gate;
+	const exam = examLine(sealedGate);
 	lines.push(`${paint.dim(t("label.sealed-holdout"))} ${candidate.sealedHoldout.executed
-		? (sealedGate
-			? `${verdictTone(sealedGate.verdict, paint)(verdictLabel(sealedGate.verdict))} ${paint.dim("·")} ${points(sealedGate.scoreDelta)} ${paint.dim(`(${t("unit.ci")} ${points(sealedGate.confidence95.low)} … ${points(sealedGate.confidence95.high)}) · ${sealedGate.tasks} × ${sealedGate.repetitions}`)}${resourceSuffix(sealedGate, paint)}`
+		? (sealedGate && exam
+			? `${verdictTone(sealedGate.verdict, paint)(exam.verdict)} ${exam.delta} ${paint.dim(exam.design)}${resourceSuffix(sealedGate, paint)}`
 			: (candidate.sealedHoldout.gatePassed ? paint.success(t("sealed.gate-passed")) : paint.error(t("sealed.legacy"))))
 		: paint.muted(t("sealed.not-executed"))}`);
 	if (sealedGate && sealedGate.verdict !== "pass") lines.push(`  ${paint.muted(oneLine(sealedGate.reasons[0] ?? "", 160))}`);

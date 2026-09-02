@@ -6,6 +6,7 @@ import {
 	type PersistedBuilderRun,
 } from "../application/builder-proposal.js";
 import type { BuilderCorpusDraft } from "../application/builder-corpus-draft.js";
+import { measurementLine, measurementSurface } from "../application/measurement-line.js";
 import type { CorpusMetadata } from "../corpus.js";
 import type { DiagnosisRecord } from "../diagnosis.js";
 import {
@@ -171,7 +172,26 @@ export function candidateSummary(
 	const built = record.events.find((event) => event.type === "built");
 	const promoted = record.events.find((event) => event.type === "promoted");
 	const rejected = record.events.find((event) => event.type === "rejected");
+	const development = evaluated?.type === "evaluated"
+		? {
+			comparison: evaluated.evaluation.development.comparison?.summary ?? null,
+			gate: gateProjection(evaluated.evaluation.development.comparison),
+		}
+		: null;
+	const sealedGate = evaluated?.type === "evaluated"
+		? gateProjection(evaluated.evaluation.sealedHoldout?.comparison)
+		: null;
 	return {
+		// One sentence, composed once. The v4 gate wins over the stored summary
+		// where both carry a field, which is what makes the interval the score's.
+		headline: measurementLine({
+			development: measurementSurface(
+				development && (development.comparison || development.gate)
+					? { ...development.comparison, ...development.gate }
+					: null,
+			),
+			exam: sealedGate,
+		}).text,
 		candidateId: record.candidateId,
 		status: candidateStatus(record),
 		projectId: record.projectId,
@@ -190,19 +210,19 @@ export function candidateSummary(
 				paths: [...(record.events.find((event) => event.type === "validated")?.scope.changedFiles ?? [])].sort(),
 			}
 			: null,
-		development: evaluated?.type === "evaluated"
+		development: evaluated?.type === "evaluated" && development
 			? {
 				baselineEvalRunId: evaluated.evaluation.development.baseline.evalRunId,
 				candidateEvalRunId: evaluated.evaluation.development.candidate.evalRunId,
-				comparison: evaluated.evaluation.development.comparison?.summary ?? null,
-				gate: gateProjection(evaluated.evaluation.development.comparison),
+				comparison: development.comparison,
+				gate: development.gate,
 			}
 			: null,
 		sealedHoldout: evaluated?.type === "evaluated"
 			? {
 				executed: evaluated.evaluation.sealedHoldout !== undefined,
 				gatePassed: promotionGradeVerdictOf(evaluated.evaluation.sealedHoldout?.comparison) === "pass",
-				gate: gateProjection(evaluated.evaluation.sealedHoldout?.comparison),
+				gate: sealedGate,
 			}
 			: { executed: false, gatePassed: false, gate: null },
 		...(judgeAgreement === undefined ? {} : { judgeAgreement }),

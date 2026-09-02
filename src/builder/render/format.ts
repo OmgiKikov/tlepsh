@@ -1,4 +1,3 @@
-import { t } from "../../i18n.js";
 import { sanitizeTerminalText } from "../../trace.js";
 import { stripMarkers } from "./markers.js";
 import type { Paint } from "./paint.js";
@@ -36,16 +35,11 @@ export function shortHash(hash: string | null | undefined, length = 12): string 
 	return body.length > length ? `${body.slice(0, length)}${ELLIPSIS}` : body;
 }
 
-export function percent(rate: number): string {
-	if (!Number.isFinite(rate)) return "—";
-	return `${Math.round(rate * 100)}%`;
-}
-
-export function points(delta: number): string {
-	if (!Number.isFinite(delta)) return "—";
-	const value = Math.round(delta * 1000) / 10;
-	return `${value > 0 ? "+" : ""}${value} ${t("unit.points")}`;
-}
+// One implementation of the two numbers this system argues about. The panel,
+// the growth log, the passport and the sentence the Builder quotes all read
+// them from the composer, so a rate can never be a percentage on one screen
+// and a fraction on the next.
+export { percent, points } from "../../application/measurement-line.js";
 
 export function bar(ratio: number, width = 20): string {
 	const clamped = Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : 0;

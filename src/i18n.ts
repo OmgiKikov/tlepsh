@@ -138,6 +138,9 @@ const NOUNS = {
 		item: ["item", "items"],
 		example: ["example", "examples"],
 		minute: ["minute", "minutes"],
+		// lane: one-number — the same noun after "on"/"на", where Russian wants
+		// the prepositional case: "на 7 кейсах", never "на 7 кейсов".
+		"case measured on": ["case", "cases"],
 	},
 	ru: {
 		case: ["кейс", "кейса", "кейсов"],
@@ -177,6 +180,8 @@ const NOUNS = {
 		item: ["элемент", "элемента", "элементов"],
 		example: ["пример", "примера", "примеров"],
 		minute: ["минута", "минуты", "минут"],
+		// lane: one-number
+		"case measured on": ["кейсе", "кейсах", "кейсах"],
 	},
 } as const;
 
@@ -370,13 +375,13 @@ const en = {
 	"prediction.none": "not stated",
 	"prediction.mode-outcome": "predicted ≤{expected}/{of} · got {actual}/{of}",
 	"prediction.mode-unpredicted": "no prediction · got {actual}/{of}",
-	"prediction.overall-outcome": "predicted {predicted} · got {actual}",
-	"prediction.overall-unmeasured": "predicted {predicted} · nothing comparable measured yet",
+	"prediction.overall-outcome": "predicted {predicted} ({metric}) · got {actual}",
+	"prediction.overall-unmeasured": "predicted {predicted} ({metric}) · nothing comparable measured yet",
 	"prediction.interval": "(CI {low} … {high})",
 	"prediction.calibration": "Builder predicts: {hits}/{total} hit · error ±{error} · {strip}",
 	"prediction.calibration-none": "Builder predicts: nothing decided has carried a prediction yet",
-	"prediction.passport": "Promised {predicted} · got {actual}",
-	"prediction.passport-unmeasured": "Promised {predicted} · nothing comparable was measured",
+	"prediction.passport": "Promised {predicted} ({metric}) · got {actual}",
+	"prediction.passport-unmeasured": "Promised {predicted} ({metric}) · nothing comparable was measured",
 
 	"judge.not-calibrated": "not calibrated",
 	"judge.label-hint": "· /label",
@@ -854,7 +859,7 @@ const en = {
 	"headline.candidate": "candidate {status}",
 	"headline.cheap-check-flat": "cheap check flat · verification not spent",
 	"headline.cheap-check-shape": "cheap check flat · {improved}/{tasks} improved · verification not spent",
-	"headline.verify": "candidate {status} · development {development} · sealed {sealed}",
+	"headline.verify": "candidate {status} · {measurement}",
 	"headline.not-run": "not run",
 	"headline.nothing-to-do": "nothing to do",
 	"headline.no-new-tag": "no new tag",
@@ -1333,6 +1338,19 @@ Pi's own built-ins configure the Builder's model, not the agent's:
 Every consequential step shows the exact subject and asks you once: starting
 the tests, applying a diff, and shipping. Runs and checks just happen — unless
 one would cost more than usual, and then you get a single yes/no.`,
+
+	// lane: one-number — the one sentence every surface prints about a
+	// verification. It is composed in application/measurement-line.ts; nothing
+	// else may assemble a delta out of these pieces.
+	"measurement.score": "score {before} → {after}",
+	"measurement.pass-rate": "pass rate {before} → {after}",
+	"measurement.on-cases": "on {cases} × {repetitions}",
+	"measurement.exam": "exam: {body}",
+	"measurement.small-basket": "{cases} is a small basket: read the interval as indicative, not decisive",
+	"measurement.none": "no development evidence on this candidate",
+	"measurement.metric-unrecorded": "nothing comparable was recorded",
+	"measurement.metric-score": "score",
+	"measurement.metric-pass-rate": "pass rate",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -1500,13 +1518,13 @@ const ru: Record<MessageKey, string> = {
 	"prediction.none": "не заявлен",
 	"prediction.mode-outcome": "предсказано ≤{expected}/{of} · получено {actual}/{of}",
 	"prediction.mode-unpredicted": "без прогноза · получено {actual}/{of}",
-	"prediction.overall-outcome": "предсказано {predicted} · получено {actual}",
-	"prediction.overall-unmeasured": "предсказано {predicted} · сопоставимого измерения ещё нет",
+	"prediction.overall-outcome": "предсказано {predicted} ({metric}) · получено {actual}",
+	"prediction.overall-unmeasured": "предсказано {predicted} ({metric}) · сопоставимого измерения ещё нет",
 	"prediction.interval": "(ДИ {low} … {high})",
 	"prediction.calibration": "Builder предсказывает: попаданий {hits}/{total} · ошибка ±{error} · {strip}",
 	"prediction.calibration-none": "Builder предсказывает: пока ни одно решение не несло прогноза",
-	"prediction.passport": "Обещано {predicted} · получено {actual}",
-	"prediction.passport-unmeasured": "Обещано {predicted} · сопоставимого измерения нет",
+	"prediction.passport": "Обещано {predicted} ({metric}) · получено {actual}",
+	"prediction.passport-unmeasured": "Обещано {predicted} ({metric}) · сопоставимого измерения нет",
 
 	"judge.not-calibrated": "не откалиброван",
 	"judge.label-hint": "· /label",
@@ -1960,7 +1978,7 @@ const ru: Record<MessageKey, string> = {
 	"headline.candidate": "кандидат {status}",
 	"headline.cheap-check-flat": "быстрая проба пустая · проверку не тратили",
 	"headline.cheap-check-shape": "быстрая проба пустая · лучше {improved}/{tasks} · проверку не тратили",
-	"headline.verify": "кандидат {status} · разработка {development} · экзамен {sealed}",
+	"headline.verify": "кандидат {status} · {measurement}",
 	"headline.not-run": "не прогонялся",
 	"headline.nothing-to-do": "делать нечего",
 	"headline.no-new-tag": "новых тегов нет",
@@ -2432,6 +2450,17 @@ const ru: Record<MessageKey, string> = {
 Каждый серьёзный шаг показывает точный предмет и спрашивает один раз: начать
 тесты, применить диф, выкатить. Прогоны и проверки просто происходят — если
 только один не выйдет дороже обычного, тогда будет один да/нет.`,
+
+	// lane: one-number
+	"measurement.score": "балл {before} → {after}",
+	"measurement.pass-rate": "пасс-рейт {before} → {after}",
+	"measurement.on-cases": "на {cases} × {repetitions}",
+	"measurement.exam": "экзамен: {body}",
+	"measurement.small-basket": "{cases} — маленькая корзина: интервал ориентировочный, не решающий",
+	"measurement.none": "по кейсам разработки у этого кандидата измерений нет",
+	"measurement.metric-unrecorded": "сопоставимого измерения не записано",
+	"measurement.metric-score": "балл",
+	"measurement.metric-pass-rate": "пасс-рейт",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

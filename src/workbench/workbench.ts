@@ -84,7 +84,7 @@ import {
 } from "../application/tool-contract-cases.js";
 import { missingEnvNames } from "../env.js";
 import { runAppliedBuilderCandidate } from "../application/builder-candidate.js";
-import { formatPoints, SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
+import { SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
 import {
 	configureTargetBootstrap,
 	describeTargetBootstrap,
@@ -1401,9 +1401,10 @@ export class AhdeWorkbench {
 			operation: "ship",
 			steps: plan,
 			candidateId,
-			development: summary.development?.gate
-				? `${summary.development.gate.verdict} · ${formatPoints(summary.development.gate.scoreDelta)}`
-				: "no development verdict",
+			// The exact sentence the panel, the log and the passport print. The
+			// last gate before a release quotes the measurement, never a digest
+			// of it that could differ from the screen the operator just read.
+			development: summary.headline,
 			sealed: summary.sealedHoldout.gate
 				? `${summary.sealedHoldout.gate.verdict} · ${summary.sealedHoldout.gate.tasks} × ${summary.sealedHoldout.gate.repetitions}`
 				: summary.sealedHoldout.executed ? "executed, no verdict" : "not run",
@@ -1472,7 +1473,7 @@ export class AhdeWorkbench {
 				...(guards?.warning ? [guards.warning] : []),
 				...(continuation ? [`The next cycle starts at ${continuation.nextStage}.`] : []),
 			].join(" "),
-			result: { steps, candidate: shipped, tag, adoption, continuation, guards },
+			result: { steps, headline: shipped.headline, candidate: shipped, tag, adoption, continuation, guards },
 			view,
 		};
 	}

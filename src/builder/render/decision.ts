@@ -312,10 +312,12 @@ function verifyHeadline(result: WorkbenchVerifyCandidateResult): string {
 	if (result.outcome === "stopped-by-screen") {
 		return t("headline.cheap-check-shape", { improved: result.screen.improved, tasks: result.screen.tasks });
 	}
+	// The headline the host composed, not a second summary of the same numbers:
+	// a status bar that rounds differently from the panel under it is the whole
+	// defect this lane exists to remove.
 	return t("headline.verify", {
 		status: candidateStatusLabel(result.candidate.status),
-		development: verdictLabel(result.development.verdict),
-		sealed: result.sealedHoldout.verdict ? verdictLabel(result.sealedHoldout.verdict) : t("headline.not-run"),
+		measurement: result.headline,
 	});
 }
 

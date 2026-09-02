@@ -215,7 +215,9 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			const diff = subject.diff === null || subject.diff === undefined ? null : bag(subject.diff);
 			const exactDiff = typeof diff?.exactDiff === "string" ? diff.exactDiff : "";
 			return [
-				`${paint.dim(t("label.development"))} ${text(subject.development, 96)}`,
+				// The measurement sentence the operator just read on the panel, whole:
+				// the last gate before a release is the worst place to cut a number.
+				`${paint.dim(t("label.development"))} ${text(subject.development, 200)}`,
 				`${paint.dim(t("label.sealed"))} ${text(subject.sealed, 96)}`,
 				// The diff summary belongs BEFORE the yes: a loop-applied candidate was
 				// never shown file by file, and this is the last chance to see what it is.
