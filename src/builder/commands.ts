@@ -1153,7 +1153,14 @@ export function registerAhdeBuilderCommands(
 				tone: result.taskCount >= minimum ? "success" : "warning",
 				lines: result.taskCount >= minimum
 					? [t("holdout.imported", { count: result.taskCount }), t("holdout.hidden")]
-					: [t("holdout.imported-short", { count: result.taskCount, minimum }), t("holdout.import-more")],
+					: [
+						t("holdout.imported-short", {
+							count: result.taskCount,
+							minimum,
+							missing: minimum - result.taskCount,
+						}),
+						t("holdout.import-more"),
+					],
 			});
 		},
 	});

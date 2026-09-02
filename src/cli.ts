@@ -1621,6 +1621,9 @@ async function main(): Promise<void> {
 				actorId: arg("actor"),
 			});
 			console.log(`reviewed candidate ${record.candidateId}: ${recommendation}`);
+			// The two verdicts the recommendation rests on, printed where the
+			// decision is made: a sealed `pass` says which finding it was.
+			for (const line of renderCandidateVerdictLines(record)) console.log(line);
 			break;
 		}
 		case "promote": {

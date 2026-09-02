@@ -1983,6 +1983,21 @@ describe("Builder Pi slash commands", () => {
 		expect(text).not.toMatch(/corpus-[0-9a-f]{64}|sha256:|corpus\.jsonl|PRIVATE/);
 	});
 
+	it("does the subtraction for the operator when the exam is too small", async () => {
+		const fixture = workbench({
+			view: async () => viewAt("ready-to-evaluate", {
+				shippingReadiness: { sealedHoldout: "underpowered", minimumTasks: 15, sealedCases: 12 },
+			}),
+		});
+		const { commands, output } = register(fixture.value);
+
+		await command(commands, "doctor").handler("", context().ctx);
+
+		expect(output.text()).toContain(
+			"! Ship gate: the exam has 12 cases; the gate needs 15 — 3 more — /holdout privately imports a separate exam",
+		);
+	});
+
 	it("imports a sealed holdout through host UI without putting its path or identity in the Builder transcript", async () => {
 		const fixture = workbench();
 		const importSealedHoldout = vi.fn(() => ({ taskCount: 20 }));
