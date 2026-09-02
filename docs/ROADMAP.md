@@ -40,7 +40,16 @@ machine surface and nothing more.
 6. **Three splits.** Development, validation, sealed: the validation split
    is what the autoloop may optimise against, so the development basket
    stops being both the training signal and the report card.
-7. **Transfer and continued reporting.** A passport per version already
+7. **Cases from live traffic.** Today feedback reaches AHDE only through
+   `ahde target` (`/good`, `/bad`) or a file in `imports/`. A local
+   OpenAI-compatible endpoint that serves the built agent, records every
+   interaction with a receipt, and accepts a score against that receipt
+   would turn production traffic into cases without anyone retyping a
+   conversation — the one thing Reef (Human-Agent-Society/reef, a
+   serving-side continual-learning proxy) does that AHDE does not. The
+   gate stays exactly where it is: recorded traffic becomes a draft basket,
+   never evidence.
+8. **Transfer and continued reporting.** A passport per version already
    exists; the next report is across versions and across Targets — what a
    harness change did on one model and whether it held on another.
 
