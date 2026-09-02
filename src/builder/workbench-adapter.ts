@@ -34,6 +34,7 @@ import { workbenchGateClass } from "../workbench/transition-policy.js";
 import { workbenchNext } from "../workbench/next-actions.js";
 import {
 	evaluatorModelResolver,
+	hostDefaultJudge,
 	hostModelCatalog,
 	selectEvaluatorCredentialEnvironment,
 	selectTargetCredentialEnvironment,
@@ -512,7 +513,7 @@ export function createBuilderWorkbenchTools(
 				"Also available: { kind: \"start-testing\", repetitions } explicitly; { kind: \"calibrate\", repetitions } measures noise once per Target revision (no question); { kind: \"discard-proposal\" } and { kind: \"reject-candidate\" } and { kind: \"abandon-candidate\" } are one short yes/no.",
 				"• { kind: \"improve\", until (0..1 pass rate), maxCycles, repetitions, candidates?, jobs?, developmentCorpusId?, baselineMaxAgeMs?, resumeLoopId?, abandonLoopId? } — the autoloop: reuse or run → diagnose → apply the next matching open proposal → cheap check on the cases that already failed → verify what looks promising. One full confirmation up front authorizes automated applies only on throwaway branches. It stops at the first verified candidate because the exact diff, sealed guardrail and release remain human decisions; it never promotes, adopts, publishes or approves.",
 				"  candidates: 2..4 turns each cycle into a search instead of one guess: it takes that many open proposals for the top failure mode, screens and verifies each on its own branch, and returns a Pareto table (score delta with its interval, cost and latency ratios, which candidates are dominated). It picks nothing — show the table and let the operator choose, then apply or ship the one they name. It also refuses to re-apply a change whose files and failure mode match an attempt that already lost.",
-				"• { kind: \"configure-evaluators\", judge?: { provider, modelId, thinkingLevel?, timeoutMs?, params? }, simulatedUser?: same, reason } — the two models a measurement uses BESIDES the agent: the judge that grades an answer and the model that plays the user. Request it before writing a basket that needs judge graders or simulated-user cases, and never write those blocks into manifest.yaml yourself. Pick from the same host catalog as configure-target; the host resolves the endpoint and pricing, asks the operator which environment variable holds the key, shows the exact manifest diff, and commits. The judge may not be the Target's own model.",
+				"• { kind: \"configure-evaluators\", judge?: { provider, modelId, thinkingLevel?, timeoutMs?, params? }, simulatedUser?: same, reason } — the two models a measurement uses BESIDES the agent: the judge that grades an answer and the model that plays the user. You do not have to ask for a judge before writing judge graders: start-testing pre-fills the first host model that is not the agent's own and puts it inside the same dialog. Request this when a basket needs a simulated user, or when the operator wants a different judge, and never write those blocks into manifest.yaml yourself. Pick from the same host catalog as configure-target; the host resolves the endpoint and pricing, asks the operator which environment variable holds the key, shows the exact manifest diff, and commits. The judge may not be the Target's own model.",
 				"• { kind: \"generate-holdout\", cases (15..200, default 20), seed?, mode: \"seal\" | \"review\", reason } — the exam, when the operator has no data to hold out. The Target's JUDGE writes it from the approved Spec and a seeded draw of published development cases shown for their shape; you never author, read, or guess a case, and none comes back. Offer it once when the header says the ship gate has no sealed holdout, with both modes in one sentence, and never as a substitute for real cases the operator does have. `seal` writes the sealed corpus; `review` writes a draft to a private file the operator edits and imports with /holdout, which is the honest default for a first exam. You learn the case count, the generator's name and the prompt hash — nothing else, ever.",
 				"The fine-grained decisions still exist for scripts and for recovery, each with its own dialog: target-setup → { kind: \"scaffold-target\" } then { kind: \"configure-target\", targetId (kebab-case), model: { provider, modelId, thinkingLevel?, timeoutMs?, params? } };",
 				"spec-review → { kind: \"approve-spec\", draftSpecId? }; corpus-review → { kind: \"publish-corpus\", draftId?, name? };",
@@ -594,6 +595,14 @@ export function createBuilderWorkbenchTools(
 					const resolveEvaluatorModel = params.kind === "configure-evaluators"
 						? evaluatorModelResolver(ctx, evaluatorCredentialEnvironment)
 						: undefined;
+					// The composite that starts testing may need a judge the manifest
+					// does not have yet. Only the host can choose one — it holds the
+					// catalog and the credential names — so it answers on demand,
+					// inside the one dialog, instead of sending the operator away to
+					// configure evaluators first.
+					const defaultJudge = params.kind === "start-testing" || params.kind === "run-current"
+						? (target: { provider: string; id: string }) => hostDefaultJudge(ctx, target)
+						: undefined;
 					// Every confirmation passes through the gate, routine ones included,
 					// so this is where the live counter learns what the whole job plans
 					// to execute rather than what one eval run does.
@@ -616,6 +625,7 @@ export function createBuilderWorkbenchTools(
 							...(observation ? { onRunEvent: observation.onRunEvent } : {}),
 							...(resolveTargetModel ? { resolveTargetModel } : {}),
 							...(resolveEvaluatorModel ? { resolveEvaluatorModel } : {}),
+							...(defaultJudge ? { defaultJudge } : {}),
 						},
 					);
 					outcome = "completed";

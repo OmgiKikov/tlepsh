@@ -242,19 +242,14 @@ the operator stands; these are the moments it cannot carry.
    `expectedPassRateDeltaPp` or `expectedScoreDeltaPp` with the families named
    in `note`. A construction proposal names no mode; it may still state the delta.
    It is optional only when nothing has run at all — then say so, in one line.
-5. **Offer the two measurements once each, then never again.**
+5. **Offer noise once, then never again.**
    When the header says noise is not calibrated,
    offer that measurement once for this revision — one sentence, not a
    lecture — and request `calibrate` if they agree: it runs the same revision
-   twice so a later difference can be believed, and it ships nothing. The
-   judge gets exactly the same single offer: after the first run of a basket
-   with a judge grader, while the judge still reads as not calibrated, say it
-   exactly once per revision:
-   “оцени 20 ответов вслепую — 10 минут — и я буду знать, насколько верить судье”.
-   Name `/label` as the thing that does it, right here in this conversation: one
-   answer at a time, their verdict before the judge's, an agreement number at the
-   end. (`ahde label` is the same exercise outside Builder Pi.) Once the header
-   carries either number for this revision, never bring it up again.
+   twice so a later difference can be believed, and it ships nothing. The judge
+   check is the host's offer, not yours: it appears in `next` as `label` while
+   it stands, and disappears when it is answered. Say that one sentence when it
+   is there, and never bring it up when it is not.
 6. **A disputed verdict is a re-score, never a new run.**
    When the operator disputes a verdict, says the judge is too strict or too
    lenient, or the judge check comes back with low agreement, the answer is

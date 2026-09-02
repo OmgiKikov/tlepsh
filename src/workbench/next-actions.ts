@@ -71,7 +71,8 @@ const DECIDE_WHEN = {
 	regrade: "the operator disputes a verdict or you revised graders; re-scores recorded answers, no agent call",
 	"generate-holdout": "no exam yet and the operator has no data to hold out; seal or draft",
 	"publish-corpus": "the operator approved the cases; at candidate-verification it is the forward exit",
-	"configure-evaluators": "before a basket that needs a judge grader or a simulated-user case",
+	"configure-evaluators": "a basket needs a simulated user, or the operator wants a different judge; " +
+		"start-testing pre-fills the judge on its own",
 	calibrate: "the operator wants to know how noisy the numbers are; the same revision against itself",
 	"discard-proposal": "the operator throws the prepared change away",
 	"reject-candidate": "the operator rejects the checked change; the agent stays as it was",

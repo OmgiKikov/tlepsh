@@ -57,15 +57,23 @@ describe("corpus grader validation against the current Target", () => {
 		expect((await workbench.view()).counts.corpusDrafts).toBe(0);
 	});
 
-	it("rejects judge graders when the Target has no judge model, and accepts runnable graders", async () => {
+	it("takes a judge grader into a draft and refuses it at publication, where the judge is chosen", async () => {
 		const workbench = await approvedWorkbench();
-		await expect(workbench.submit({
+		// Authoring a case that needs a judge is HOW the host learns one is
+		// needed: `start-testing` pre-fills an independent model inside the same
+		// dialog that publishes and runs the basket.
+		const judged = await workbench.submit({
 			kind: "corpus-draft",
 			name: "Digest basket",
 			tasks: [{ input: "Digest for Notion", graders: [{ type: "judge", rubric: "Mentions pricing" }] }],
 			coverageNotes: [],
 			revisionSummary: "initial",
-		})).rejects.toThrow(/judge graders need a judge model configured in the Target manifest/);
+		});
+		// Nothing runs against a judge that does not exist: publication is strict.
+		await expect(workbench.decide(
+			{ kind: "publish-corpus", draftId: String(judged.artifact?.id), reason: "publish" },
+			gate,
+		)).rejects.toThrow(/judge graders need a judge model configured in the Target manifest/);
 
 		const accepted = await workbench.submit({
 			kind: "corpus-draft",
@@ -82,9 +90,14 @@ describe("corpus grader validation against the current Target", () => {
 			operations: [{ type: "add", task: { input: "Digest for Linear", graders: [{ type: "output_matches", pattern: "(?i)linear" }] } }],
 			revisionSummary: "add a broken case",
 		})).rejects.toThrow(/corpus revision cannot run on the current Target/);
-		expect((await workbench.view()).counts.corpusDrafts).toBe(1);
+		// The judge-graded draft and the runnable one; the broken revision wrote
+		// nothing, which is the whole point of validating before persisting.
+		expect((await workbench.view()).counts.corpusDrafts).toBe(2);
 
-		const published = await workbench.decide({ kind: "publish-corpus", reason: "publish" }, gate);
+		const published = await workbench.decide(
+			{ kind: "publish-corpus", draftId: String(accepted.artifact?.id), reason: "publish" },
+			gate,
+		);
 		expect(published.view.stage).toBe("ready-to-evaluate");
 		expect(published.view.blockers).toEqual([]);
 	});

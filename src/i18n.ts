@@ -1490,6 +1490,10 @@ one would cost more than usual, and then you get a single yes/no.`,
 	// four ways it can be missing, dependent, keyless or unreadable.
 	"judge.abstained": "judge unsure: {count}",
 	"judge.uncalibrated": "judge not calibrated · /label",
+	"judge.no-candidate": "No key is exported for any model but the agent's own — export a second model's key, or configure a judge by hand.",
+	"blocker.judge-missing": "The cases are graded by a judge and none is configured: this needs a judge that is not the agent's own model.",
+	"confirm.start-testing.part.judge": "choose the judge",
+	"confirm.start-testing.judge": "{model} (not the agent's model) · key {env}",
 	"mode.title.judge-abstained": "The judge could not tell",
 	"mode.fact.judge-abstained": "{failed} matching observation(s) were failed by a judge that said it could not decide, never by a check the agent missed",
 } as const;
@@ -2720,6 +2724,10 @@ const ru: Record<MessageKey, string> = {
 	// lane: honest-judge
 	"judge.abstained": "судья не уверен: {count}",
 	"judge.uncalibrated": "судья не калиброван · /label",
+	"judge.no-candidate": "Нет ключа ни для одной другой модели — экспортируй ключ второй модели или настрой судью вручную.",
+	"blocker.judge-missing": "Кейсы судит судья, а он не выбран: нужен судья не на модели агента.",
+	"confirm.start-testing.part.judge": "выбрать судью",
+	"confirm.start-testing.judge": "{model} (не модель агента) · ключ {env}",
 	"mode.title.judge-abstained": "Судья не смог решить",
 	"mode.fact.judge-abstained": "совпадающих наблюдений провалено: {failed}, и все — судьёй, который сам сказал, что решить не может, а не проверкой, которую агент не прошёл",
 };

@@ -1019,6 +1019,20 @@ export interface WorkbenchDecisionExecutionOptions {
 		role: "judge" | "simulatedUser",
 		selection: TargetModelSelection,
 	) => TargetManifest["model"];
+	/**
+	 * The judge a pending basket needs when the manifest has none, chosen by the
+	 * host: a bounded catalog selection plus the model it resolves to, under a
+	 * credential variable NAME the operator has already exported.
+	 *
+	 * Only the host holds the catalog, so only the host can answer this; the
+	 * Workbench asks exactly when the basket about to be published grades with a
+	 * judge and none is configured, and treats null as "this machine cannot
+	 * offer one" — which is a blocker, never a guess.
+	 */
+	defaultJudge?: (target: { provider: string; id: string }) => {
+		selection: TargetModelSelection;
+		model: TargetManifest["model"];
+	} | null;
 }
 
 /**

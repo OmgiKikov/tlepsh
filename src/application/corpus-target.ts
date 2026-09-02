@@ -281,6 +281,16 @@ export function assertGradersRunnable(
 	}[],
 	manifest: Pick<TargetManifest, "evalSuite">,
 	label = "corpus draft",
+	options: {
+		/**
+		 * A missing judge is not this draft's problem. Authoring a case that needs
+		 * a judge is how the host learns one is needed: `start-testing` then
+		 * pre-fills an independent model inside the one dialog that publishes and
+		 * runs the basket. Publication and composition stay strict, so nothing
+		 * ever runs against a judge that does not exist.
+		 */
+		judgeChosenLater?: boolean;
+	} = {},
 ): void {
 	const problems: string[] = [];
 	tasks.forEach((task, taskIndex) => {
@@ -303,7 +313,7 @@ export function assertGradersRunnable(
 					);
 				}
 			}
-			if (grader.type === "judge" && !manifest.evalSuite.judge) {
+			if (grader.type === "judge" && !manifest.evalSuite.judge && options.judgeChosenLater !== true) {
 				problems.push(
 					`${where}: judge graders need a judge model configured in the Target manifest (evalSuite.judge), and this Target has none.` +
 					" Use output_contains, output_matches, or tool_called instead, or ask the operator to configure a judge model first.",
