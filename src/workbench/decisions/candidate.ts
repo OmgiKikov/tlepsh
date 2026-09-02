@@ -4,7 +4,7 @@
 import { plural as localizedCount, t } from "../../i18n.js";
 import { loadDevelopmentCorpusPublicationReceipt } from "../../application/builder-authoring.js";
 import { runAppliedBuilderCandidate } from "../../application/builder-candidate.js";
-import { SEALED_GATE_POLICY } from "../../domain/comparison-gate.js";
+import { SEALED_GATE_POLICY, sealedOutcome, sealedOutcomeLine } from "../../domain/comparison-gate.js";
 import { type CheapCheckResult } from "../../application/cheap-check.js";
 import { loadBuilderApplyReceipt } from "../../application/builder-proposal.js";
 import { listCorpora, loadCorpus, type CorpusMetadata, type CorpusRef } from "../../corpus.js";
@@ -231,10 +231,22 @@ export async function decideVerifyCandidate(
 	}
 	const settled = host.select("candidate", result.record.candidateId);
 	const sealedVerdict = result.sealedHoldout?.compare.gate.verdict ?? null;
+	// `pass` alone is what the model paraphrases as "the exam passed", and half
+	// the time that is false: the interval spanned zero and the exam convicted
+	// nobody. The result hands over the exact phrase, and what it means.
+	const sealedDecided = {
+		verdict: sealedVerdict ?? "",
+		confidence95: result.sealedHoldout?.compare.summary.confidence95 ?? null,
+	};
+	const outcomeLine = sealedOutcomeLine(sealedDecided);
 	return {
 		kind: input.kind,
 		message: sealedVerdict === "pass"
-			? "Candidate verification completed: development compared and the sealed guardrail passed."
+			? `Candidate verification completed: development compared, and the sealed exam is “${outcomeLine}”. ${
+				sealedOutcome(sealedDecided) === "improved"
+					? "Say the exam proved an improvement — never only that it passed."
+					: "The exam proved no regression and no improvement: say both halves, and never call it an improvement."
+			}`
 			: sealedVerdict === null
 				? "Candidate verification completed on development evidence; no sealed holdout ran."
 				: `Candidate verification completed; the sealed guardrail verdict is ${sealedVerdict}, so this candidate cannot be promoted.`,
