@@ -150,7 +150,7 @@ describe("renderCandidateVerdictLines", () => {
 		const lines = renderCandidateVerdictLines(evaluatedRecord(true));
 		expect(lines).toEqual([
 			"development verdict: improved +100.0pp (95% CI +90.0pp … +100.0pp) on 2 tasks × 2 repetitions",
-			"sealed guardrail: pass on 15 tasks × 2 repetitions — no regression: 0 of 15 tasks regressed",
+			"sealed guardrail: pass · improved on 15 tasks × 2 repetitions — no regression: 0 of 15 tasks regressed",
 		]);
 	});
 

@@ -155,7 +155,7 @@ describe("model-facing projection", () => {
 			...view,
 			stage: "improvement-authoring",
 			workshopOpen: true,
-			shippingReadiness: { sealedHoldout: "missing", minimumTasks: 15 },
+			shippingReadiness: { sealedHoldout: "missing", minimumTasks: 15, sealedCases: null },
 		};
 		const next = (projectForModel(improving) as { next: {
 			unblock: string;
@@ -229,6 +229,35 @@ describe("model-facing projection", () => {
 		const projected = projectForModel(decision) as { result: { configured: Record<string, unknown>[] } };
 		expect(projected.result.configured[0]).toEqual({ role: "judge", model: "anthropic/judge-test" });
 		expect(decision.result.configured[0]?.credentialEnv).toBe("JUDGE_API_KEY");
+	});
+
+	it("hands the model the phrase for the exam, not a verdict it has to interpret", () => {
+		const projected = projectForModel({
+			kind: "verify-candidate",
+			result: {
+				candidate: {
+					sealedHoldout: {
+						executed: true,
+						gatePassed: true,
+						gate: {
+							verdict: "pass",
+							tasks: 15,
+							repetitions: 2,
+							confidence95: { low: -0.11, high: 0.15 },
+							outcome: "no-regression",
+							outcomeLine: "pass · no regression proven, not an improvement either",
+						},
+					},
+				},
+			},
+		}) as { result: { candidate: { sealedHoldout: { gate: Record<string, unknown> } } } };
+		// The one sentence the model may quote about the exam, beside the token
+		// it must not paraphrase.
+		expect(projected.result.candidate.sealedHoldout.gate).toMatchObject({
+			verdict: "pass",
+			outcome: "no-regression",
+			outcomeLine: "pass · no regression proven, not an improvement either",
+		});
 	});
 
 	it("removes credential references even inside otherwise-verbatim claims", () => {

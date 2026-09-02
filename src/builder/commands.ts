@@ -21,7 +21,7 @@ import type {
 	WorkbenchView,
 } from "../workbench/types.js";
 import { compileAgentLog } from "../application/agent-log.js";
-import { oneLine, pluralize } from "./render/format.js";
+import { examShortfall, oneLine, pluralize } from "./render/format.js";
 import { renderAgentLog, renderAgentLogChart } from "./render/agent-log.js";
 import { handoffLines } from "./render/handoff.js";
 import {
@@ -1062,7 +1062,7 @@ export function registerAhdeBuilderCommands(
 					shipping.sealedHoldout === "missing"
 						? t("doctor.gate-missing", { minimum: shipping.minimumTasks })
 						: shipping.sealedHoldout === "underpowered"
-							? t("doctor.gate-underpowered", { minimum: shipping.minimumTasks })
+							? t("doctor.gate-underpowered", examShortfall(shipping))
 							: t("doctor.gate-unavailable"),
 				));
 			}
@@ -1153,7 +1153,14 @@ export function registerAhdeBuilderCommands(
 				tone: result.taskCount >= minimum ? "success" : "warning",
 				lines: result.taskCount >= minimum
 					? [t("holdout.imported", { count: result.taskCount }), t("holdout.hidden")]
-					: [t("holdout.imported-short", { count: result.taskCount, minimum }), t("holdout.import-more")],
+					: [
+						t("holdout.imported-short", {
+							count: result.taskCount,
+							minimum,
+							missing: minimum - result.taskCount,
+						}),
+						t("holdout.import-more"),
+					],
 			});
 		},
 	});

@@ -179,6 +179,23 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 					}))
 				}`,
 			];
+			// An exam that came back short says so on the panel, with what was
+			// dropped and why: "20 cases" for 19 delivered is the lie this fixes.
+			if (cases < result.result.requested) {
+				const dropped = result.result.dropped;
+				lines.push(`${paint.dim(t("label.exam"))} ${paint.warning(t("exam.of-requested", {
+					cases,
+					requested: result.result.requested,
+				}))}${
+					dropped.duplicate > 0
+						? ` ${paint.dim("·")} ${paint.dim(t("exam.dropped-duplicate", { count: dropped.duplicate, dropped: plural(dropped.duplicate, "duplicate") }))}`
+						: ""
+				}${
+					dropped.malformed > 0
+						? ` ${paint.dim("·")} ${paint.dim(t("exam.dropped-malformed", { count: dropped.malformed, dropped: plural(dropped.malformed, "malformed case") }))}`
+						: ""
+				}`);
+			}
 			if (result.result.reviewPath) {
 				lines.push(
 					// The one line here that has to survive being copied out of a
@@ -193,6 +210,7 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 				lines.push(paint.warning(t("generate-holdout.underpowered", {
 					cases: plural(cases, "case"),
 					minimum: SEALED_GATE_POLICY.minTasks,
+					missing: SEALED_GATE_POLICY.minTasks - cases,
 				})));
 			}
 			lines.push(nextLine(view, paint));
@@ -352,12 +370,17 @@ export function decisionHeadline(result: WorkbenchDecisionResult): string {
 			});
 		case "calibrate": {
 			const calibration = result.result.calibration;
+			// The noise, and the one thing it decides that the operator cannot
+			// otherwise know: how big an exam has to be to see past it.
+			const exam = calibration.recommendedExamCases === null
+				? ""
+				: ` ${t("headline.calibrate-exam", { cases: plural(calibration.recommendedExamCases, "case") })}`;
 			return t("headline.calibrate", {
 				verdict: verdictLabel(calibration.verdict),
 				band: formatNoiseBand(calibration),
 				flip: formatFlipRate(calibration),
 				reps: plural(calibration.recommendedRepetitions, "repetition"),
-			});
+			}) + exam;
 		}
 		case "regrade":
 			return regradeHeadline(result.result);

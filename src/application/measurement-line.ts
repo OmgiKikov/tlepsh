@@ -1,3 +1,4 @@
+import { sealedOutcomeLabel, type SealedOutcome } from "../domain/comparison-gate.js";
 import { plural, t, verdictLabel } from "../i18n.js";
 
 /**
@@ -97,6 +98,8 @@ export function measurementSurface(
 /** The sealed exam as the sentence may carry it: a verdict and a size. */
 export interface ExamSurface {
 	verdict: string;
+	/** What a sealed `pass` showed, when the projection knows; folded into the verdict word. */
+	outcome?: SealedOutcome | null;
 	scoreDelta: number | null;
 	confidence95: { low: number; high: number } | null;
 	tasks: number;
@@ -166,7 +169,9 @@ export interface ExamLine {
  */
 export function examLine(exam: ExamSurface | null | undefined): ExamLine | null {
 	if (!exam) return null;
-	const verdict = verdictLabel(exam.verdict);
+	// `pass` alone reads the same for a change that improved the exam and for
+	// one the exam merely could not convict; the outcome word says which.
+	const verdict = exam.outcome ? `${verdictLabel(exam.verdict)} · ${sealedOutcomeLabel(exam.outcome)}` : verdictLabel(exam.verdict);
 	const delta = deltaOf(exam.scoreDelta, exam.confidence95);
 	const design = designOf(exam.tasks, exam.repetitions);
 	return { verdict, delta, design, text: [verdict, delta, design].filter((part) => part.length > 0).join(" ") };

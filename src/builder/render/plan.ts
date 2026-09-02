@@ -4,7 +4,7 @@ import type {
 	WorkbenchStage,
 	WorkbenchView,
 } from "../../workbench/types.js";
-import { joinNonEmpty, oneLine, percent } from "./format.js";
+import { examShortfall, joinNonEmpty, oneLine, percent } from "./format.js";
 import { blockerLines } from "./view.js";
 import type { Paint } from "./paint.js";
 import { stageLabel } from "./stage.js";
@@ -170,7 +170,7 @@ function examStep(view: WorkbenchView): { done: boolean; detail: string } {
 		detail: readiness.sealedHoldout === "missing"
 			? t("ship-gate.missing")
 			: readiness.sealedHoldout === "underpowered"
-				? t("ship-gate.underpowered", { minimum: readiness.minimumTasks })
+				? t("ship-gate.underpowered", examShortfall(readiness))
 				: t("ship-gate.unavailable"),
 	};
 }

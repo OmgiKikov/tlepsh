@@ -138,6 +138,9 @@ const NOUNS = {
 		item: ["item", "items"],
 		example: ["example", "examples"],
 		minute: ["minute", "minutes"],
+		// lane: exam-honesty
+		duplicate: ["duplicate", "duplicates"],
+		"malformed case": ["malformed case", "malformed cases"],
 		// lane: one-number — the same noun after "on"/"на", where Russian wants
 		// the prepositional case: "на 7 кейсах", never "на 7 кейсов".
 		"case measured on": ["case", "cases"],
@@ -186,6 +189,9 @@ const NOUNS = {
 		item: ["элемент", "элемента", "элементов"],
 		example: ["пример", "примера", "примеров"],
 		minute: ["минута", "минуты", "минут"],
+		// lane: exam-honesty
+		duplicate: ["дубликат", "дубликата", "дубликатов"],
+		"malformed case": ["кейс с ошибкой формы", "кейса с ошибкой формы", "кейсов с ошибкой формы"],
 		// lane: one-number
 		"case measured on": ["кейсе", "кейсах", "кейсах"],
 		// lane: stranger-sweep
@@ -312,9 +318,9 @@ const en = {
 	"target.credential-missing": "({env} missing)",
 
 	"ship-gate.missing": "no sealed holdout",
-	"ship-gate.underpowered": "sealed holdout has fewer than {minimum} cases",
+	"ship-gate.underpowered": "exam has {cases}; the gate needs {minimum} — {missing} more",
 	"ship-gate.unavailable": "sealed holdout is unavailable or failed integrity checks",
-	"ship-gate.hint": "· /holdout imports an operator-owned JSONL exam (minimum {minimum})",
+	"ship-gate.hint": "· /holdout imports an operator-owned JSONL exam",
 	// Only where there is no exam at all is “have one written” the right next
 	// move: an underpowered or broken one is repaired, not replaced by a guess.
 	"ship-gate.hint-none": "· /holdout imports your JSONL exam (minimum {minimum}) · or lets the judge write one",
@@ -589,7 +595,7 @@ const en = {
 	"generate-holdout.draft": "Draft — to a file outside the repo; you edit it and import it with /holdout <path>",
 	"generate-holdout.sealed-note": "Nobody in the improvement loop reads these cases; the exam stays evaluator-only.",
 	"generate-holdout.draft-next": "Read it, edit out what is wrong, then /holdout <path to that file> seals it.",
-	"generate-holdout.underpowered": "An exam of {cases} can only ever say “underpowered”; the ship gate needs at least {minimum}.",
+	"generate-holdout.underpowered": "The exam has {cases}; the ship gate needs {minimum} — {missing} more, or it can only ever say “underpowered”.",
 	"holdout.choose": "Where should the sealed exam come from?",
 	"holdout.import-file": "Import a file",
 	"traces.prepare": "Prepare a change?",
@@ -603,7 +609,7 @@ const en = {
 	"holdout.import-question": "Import {path} as an evaluator-only exam? Builder Pi will see only whether it is large enough to ship.",
 	"holdout.imported": "{count} evaluator-only cases are ready for the ship gate.",
 	"holdout.hidden": "Builder Pi never receives their content or identity.",
-	"holdout.imported-short": "{count} evaluator-only cases were imported; the ship gate needs at least {minimum}.",
+	"holdout.imported-short": "{count} evaluator-only cases were imported; the ship gate needs {minimum} — {missing} more.",
 	"holdout.import-more": "Import a sufficiently large, separate holdout before applying a candidate.",
 	"holdout.generate-seal": "Generate with the judge",
 	"holdout.generate-review": "Generate a draft to review",
@@ -776,7 +782,7 @@ const en = {
 	"doctor.gate-ready": "Ship gate has a sufficiently large evaluator-only sealed holdout",
 	"doctor.gate-missing": "Ship gate has no sealed holdout — /holdout privately imports one (minimum {minimum} cases)",
 	"doctor.gate-underpowered":
-		"Ship gate holdout is underpowered — /holdout privately imports a separate exam with at least {minimum} cases",
+		"Ship gate: the exam has {cases}; the gate needs {minimum} — {missing} more — /holdout privately imports a separate exam",
 	"doctor.gate-unavailable":
 		"Ship gate holdout is unavailable or failed integrity checks — repair private corpus storage or /holdout privately imports a replacement",
 	"doctor.ready": "Ready: everything needed for /run is in place",
@@ -1349,6 +1355,18 @@ Every consequential step shows the exact subject and asks you once: starting
 the tests, applying a diff, and shipping. Runs and checks just happen — unless
 one would cost more than usual, and then you get a single yes/no.`,
 
+	// lane: exam-honesty
+	"exam.outcome-improved": "improved",
+	"exam.outcome-no-regression": "no regression proven, not an improvement either",
+	"gate.exam-shortfall": "the exam has {cases}; the sealed guardrail needs {minimum} — {missing} more",
+	"gate.repetition-shortfall": "{minimum} repetitions needed, {ran} ran — {missing} more",
+	"exam.size-for-noise": "to see a ±10 pp difference on the exam you need about {cases} (from this noise)",
+	"exam.size-hint": "exam {cases}; this noise needs about {needed} for ±10 pp",
+	"exam.of-requested": "{cases} of {requested} requested",
+	"exam.dropped-duplicate": "{dropped} dropped",
+	"exam.dropped-malformed": "{dropped} dropped",
+	"calibration.exam-size": "Exam size",
+	"headline.calibrate-exam": "· exam ≈ {cases} for ±10 pp",
 	// lane: one-number — the one sentence every surface prints about a
 	// verification. It is composed in application/measurement-line.ts; nothing
 	// else may assemble a delta out of these pieces.
@@ -1559,9 +1577,9 @@ const ru: Record<MessageKey, string> = {
 	"target.credential-missing": "({env} не задан)",
 
 	"ship-gate.missing": "нет закрытого экзамена",
-	"ship-gate.underpowered": "в закрытом экзамене меньше {minimum} кейсов",
+	"ship-gate.underpowered": "в экзамене {cases}; для выкатки нужно {minimum} — ещё {missing}",
 	"ship-gate.unavailable": "закрытый экзамен недоступен или не прошёл проверку целостности",
-	"ship-gate.hint": "· /holdout загрузит твой JSONL-экзамен (минимум {minimum})",
+	"ship-gate.hint": "· /holdout загрузит твой JSONL-экзамен",
 	"ship-gate.hint-none": "· /holdout загрузит твой JSONL-экзамен (мин. {minimum}) · или его напишет судья",
 
 	"noise.not-calibrated": "не измерен",
@@ -1815,7 +1833,7 @@ const ru: Record<MessageKey, string> = {
 	"generate-holdout.draft": "Черновик — в файл вне репо; правишь и загружаешь командой /holdout <путь>",
 	"generate-holdout.sealed-note": "Эти кейсы не читает никто в цикле улучшений; экзамен остаётся только для оценщика.",
 	"generate-holdout.draft-next": "Прочитай, вычисти лишнее, потом /holdout <путь к этому файлу> закроет его.",
-	"generate-holdout.underpowered": "Экзамен из {cases} всегда даст только «underpowered»; для выката нужно хотя бы {minimum}.",
+	"generate-holdout.underpowered": "В экзамене {cases}; для выката нужно {minimum} — ещё {missing}, иначе он всегда даст только «underpowered».",
 	"holdout.choose": "Откуда взять закрытый экзамен?",
 	"holdout.import-file": "Загрузить файл",
 	"traces.prepare": "Готовить правку?",
@@ -1829,7 +1847,7 @@ const ru: Record<MessageKey, string> = {
 	"holdout.import-question": "Загрузить {path} как экзамен только для оценщика? Билдер узнает лишь, хватает ли его для выкатки.",
 	"holdout.imported": "Кейсов только для оценщика: {count} — порог выкатки готов.",
 	"holdout.hidden": "Билдер не получает ни их содержимого, ни их идентичности.",
-	"holdout.imported-short": "Загружено кейсов только для оценщика: {count}; порогу выкатки нужно минимум {minimum}.",
+	"holdout.imported-short": "Загружено кейсов только для оценщика: {count}; для выкатки нужно {minimum} — ещё {missing}.",
 	"holdout.import-more": "Загрузи достаточно большой отдельный экзамен до того, как применять кандидата.",
 	"holdout.generate-seal": "Пусть напишет судья",
 	"holdout.generate-review": "Черновик от судьи мне на правку",
@@ -2002,7 +2020,7 @@ const ru: Record<MessageKey, string> = {
 	"doctor.gate-ready": "У порога выкатки есть достаточно большой закрытый экзамен",
 	"doctor.gate-missing": "У порога выкатки нет закрытого экзамена — /holdout загрузит его приватно (минимум {minimum} кейсов)",
 	"doctor.gate-underpowered":
-		"Закрытый экзамен слишком мал — /holdout загрузит приватно отдельный экзамен минимум на {minimum} кейсов",
+		"Порог выкатки: в экзамене {cases}, нужно {minimum} — ещё {missing} — /holdout загрузит приватно отдельный экзамен",
 	"doctor.gate-unavailable":
 		"Закрытый экзамен недоступен или не прошёл проверку целостности — починить приватное хранилище или /holdout загрузит замену",
 	"doctor.ready": "Готово: всё для /run на месте",
@@ -2561,6 +2579,18 @@ const ru: Record<MessageKey, string> = {
 тесты, применить диф, выкатить. Прогоны и проверки просто происходят — если
 только один не выйдет дороже обычного, тогда будет один да/нет.`,
 
+	// lane: exam-honesty
+	"exam.outcome-improved": "лучше",
+	"exam.outcome-no-regression": "ухудшения не доказано, улучшения тоже",
+	"gate.exam-shortfall": "в экзамене {cases}; закрытому порогу нужно {minimum} — ещё {missing}",
+	"gate.repetition-shortfall": "нужно повторов: {minimum}, прогнали {ran} — ещё {missing}",
+	"exam.size-for-noise": "чтобы увидеть разницу ±10 п.п. на экзамене, нужно около {cases} (по этому шуму)",
+	"exam.size-hint": "экзамен {cases}; при таком шуме для ±10 п.п. нужно около {needed}",
+	"exam.of-requested": "{cases} из {requested} запрошенных",
+	"exam.dropped-duplicate": "отброшено дубликатов: {count}",
+	"exam.dropped-malformed": "отброшено с ошибкой формы: {count}",
+	"calibration.exam-size": "Размер экзамена",
+	"headline.calibrate-exam": "· экзамен ≈ {cases} для ±10 п.п.",
 	// lane: one-number
 	"measurement.score": "балл {before} → {after}",
 	"measurement.pass-rate": "пасс-рейт {before} → {after}",

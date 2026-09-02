@@ -11,6 +11,7 @@ import {
 	calibrationProjection,
 	recommendedRepetitions,
 } from "../src/workbench/calibration.js";
+import { examCasesForMeasuredBand, examCasesForTenPoints } from "../src/domain/power.js";
 
 const NOW = "2026-08-29T09:00:00.000Z";
 const LATER = "2026-08-29T09:30:00.000Z";
@@ -146,6 +147,9 @@ describe("calibration projection", () => {
 			confidence95: { low: -0.06, high: 0.06 },
 			flipRate: 3 / 30,
 			recommendedRepetitions: 3,
+			// ±6 pp on 30 tasks scales to 11 tasks for ±10 pp, and the guardrail's
+			// own minimum is the floor: no exam may be smaller than 15.
+			recommendedExamCases: 15,
 			verdict: "inconclusive",
 			at: LATER,
 		});
@@ -200,5 +204,46 @@ describe("calibration projection", () => {
 
 	it("defaults human runs to three repetitions", () => {
 		expect(DEFAULT_REPETITIONS).toBe(3);
+	});
+});
+
+/**
+ * How big an exam has to be, from the noise the A/A actually measured. The
+ * deltas form is the definition; the band form is what a recorded calibration
+ * can still answer with, and the two must never disagree.
+ */
+describe("exam size from measured noise", () => {
+	/** `count` deltas with mean 0 and exactly this sample standard deviation. */
+	function deltasWithSpread(spread: number, count = 20): number[] {
+		return Array.from({ length: count }, (_, index) => (index % 2 === 0 ? spread : -spread))
+			// The ±spread alternation has sample sd `spread·√(n/(n−1))`; scale it back.
+			.map((delta) => delta * Math.sqrt((count - 1) / count));
+	}
+
+	it("sizes the exam from the spread of the per-task deltas", () => {
+		// (1.96 · 0.3 / 0.10)² = 34.6 → 35 cases.
+		expect(examCasesForTenPoints(deltasWithSpread(0.3))).toBe(35);
+		// (1.96 · 0.1 / 0.10)² = 3.9 → 4, and the guardrail's own floor is 15.
+		expect(examCasesForTenPoints(deltasWithSpread(0.1))).toBe(15);
+		// A Target that disagrees with itself wildly is capped, not extrapolated.
+		expect(examCasesForTenPoints(deltasWithSpread(2))).toBe(200);
+	});
+
+	it("refuses to describe noise it has not seen", () => {
+		expect(examCasesForTenPoints([])).toBeNull();
+		expect(examCasesForTenPoints([0.1, -0.1])).toBeNull();
+		expect(examCasesForTenPoints([0.1, -0.1, Number.NaN])).toBeNull();
+		expect(examCasesForMeasuredBand(0.06, 2)).toBeNull();
+		expect(examCasesForMeasuredBand(0, 30)).toBeNull();
+		expect(examCasesForMeasuredBand(Number.NaN, 30)).toBeNull();
+	});
+
+	it("recovers the same size from the interval a recorded A/A kept", () => {
+		for (const spread of [0.15, 0.3, 0.5]) {
+			const deltas = deltasWithSpread(spread, 40);
+			// The half-width a bootstrap over those deltas approximates: 1.96·sd/√n.
+			const band = (1.96 * spread) / Math.sqrt(40);
+			expect(examCasesForMeasuredBand(band, 40)).toBe(examCasesForTenPoints(deltas));
+		}
 	});
 });

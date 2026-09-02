@@ -88,7 +88,7 @@ describe("version passport", () => {
 			candidatePassRate: 1,
 			scoreDelta: 1,
 		});
-		expect(passport.measured.sealed).toEqual({ verdict: "pass", tasks: 15, repetitions: 2 });
+		expect(passport.measured.sealed).toEqual({ verdict: "pass", tasks: 15, repetitions: 2, outcome: "improved" });
 		expect(passport.measured.resources).toMatchObject({ costRatio: 1.4, latencyRatio: 0.9, tokenRatio: 1.125 });
 		// Nobody has labelled anything, so the judge is honestly unknown.
 		expect(passport.judge).toBeNull();
@@ -119,8 +119,8 @@ describe("version passport", () => {
 			expect(surface).not.toContain("erun_cycle_sealed_baseline");
 			expect(surface).not.toContain("erun_cycle_sealed_candidate");
 		}
-		expect(markdown).toContain("- Sealed exam: pass on 15 × 2 (contents evaluator-only)");
-		expect(panel).toContain("Sealed exam pass on 15 × 2 · contents stay evaluator-only");
+		expect(markdown).toContain("- Sealed exam: pass · improved on 15 × 2 (contents evaluator-only)");
+		expect(panel).toContain("Sealed exam pass · improved on 15 × 2 · contents stay evaluator-only");
 		// Every panel line stays inside the terminal budget.
 		for (const line of renderVersionPassport(passport, plainPaint)) {
 			expect(line.length).toBeLessThanOrEqual(120);

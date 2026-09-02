@@ -571,6 +571,7 @@ function makeCalibration(overrides: Partial<WorkbenchCalibrationProjection> = {}
 		confidence95: { low: -0.06, high: 0.06 },
 		flipRate: 0.1,
 		recommendedRepetitions: 3,
+		recommendedExamCases: 15,
 		verdict: "inconclusive",
 		at: AT,
 		...overrides,
@@ -681,27 +682,50 @@ describe("renderStatus", () => {
 
 	it("surfaces the future ship blocker before a candidate is applied", () => {
 		const lines = renderStatus(makeView({
-			shippingReadiness: { sealedHoldout: "missing", minimumTasks: 15 },
+			shippingReadiness: { sealedHoldout: "missing", minimumTasks: 15, sealedCases: null },
 		}), plainPaint);
 		expect(lines).toContain("Ship gate no sealed holdout · /holdout imports your JSONL exam (minimum 15) · or lets the judge write one");
 
 		const ready = renderStatus(makeView({
-			shippingReadiness: { sealedHoldout: "ready", minimumTasks: 15 },
+			shippingReadiness: { sealedHoldout: "ready", minimumTasks: 15, sealedCases: 20 },
 		}), plainPaint);
 		expect(ready.join("\n")).not.toContain("Ship gate");
 
 		const unavailableView = makeView({
-			shippingReadiness: { sealedHoldout: "unavailable", minimumTasks: 15 },
+			shippingReadiness: { sealedHoldout: "unavailable", minimumTasks: 15, sealedCases: null },
 		});
 		const unavailable = renderStatus(unavailableView, plainPaint);
 		// A broken exam is repaired, not replaced by one the judge guesses at.
-		expect(unavailable).toContain("Ship gate sealed holdout is unavailable or failed integrity checks · /holdout imports an operator-owned JSONL exam (minimum 15)");
+		expect(unavailable).toContain("Ship gate sealed holdout is unavailable or failed integrity checks · /holdout imports an operator-owned JSONL exam");
 		const header = renderHeader(
 			{ view: unavailableView, builderModel: { label: "openai/gpt-5", credentialPresent: true } },
 			plainPaint,
 		).join("\n");
 		expect(header).toContain("Ship gate sealed holdout is unavailable or failed integrity checks");
 		expect(header).not.toMatch(/corpus-[0-9a-f]{64}|sha256:|corpus\.jsonl|PRIVATE/);
+	});
+
+	it("states the shortfall as arithmetic, and sizes the exam against measured noise", () => {
+		const short = renderStatus(makeView({
+			shippingReadiness: { sealedHoldout: "underpowered", minimumTasks: 15, sealedCases: 12 },
+		}), plainPaint);
+		expect(short).toContain("Ship gate exam has 12 cases; the gate needs 15 — 3 more · /holdout imports an operator-owned JSONL exam");
+
+		// Large enough for a verdict, too small for this Target's noise: a muted
+		// line about the next exam, never a blocker on this one.
+		const undersized = renderStatus(makeView({
+			shippingReadiness: { sealedHoldout: "ready", minimumTasks: 15, sealedCases: 20 },
+			calibration: makeCalibration({ recommendedExamCases: 35 }),
+		}), plainPaint);
+		expect(undersized).toContain("Ship gate exam 20 cases; this noise needs about 35 cases for ±10 pp");
+		expect(undersized.join("\n")).not.toContain("blocked");
+
+		// An exam that already clears the noise says nothing at all.
+		const enough = renderStatus(makeView({
+			shippingReadiness: { sealedHoldout: "ready", minimumTasks: 15, sealedCases: 40 },
+			calibration: makeCalibration({ recommendedExamCases: 35 }),
+		}), plainPaint);
+		expect(enough.join("\n")).not.toContain("Ship gate");
 	});
 
 	it("describes missing, bootstrap-required, and credential-less targets", () => {
@@ -753,6 +777,9 @@ describe("renderCalibration", () => {
 			"Design 30 cases × 3 repetitions · same revision on both arms · baseline 70%",
 			"Spread ±6.0pp (95% CI -6 pts … +6 pts) · flip 10%",
 			"Recommended 3 repetitions per run to keep noise under 10 points",
+			// The noise also sizes the exam: this A/A cannot see under ±6 pp on 30
+			// cases, so an exam has to be at least the guardrail's own minimum.
+			"Exam size to see a ±10 pp difference on the exam you need about 15 cases (from this noise)",
 			"A/A is measurement, never evidence: nothing is promoted by calibrating.",
 		]);
 		for (const line of lines) expect(line.length).toBeLessThanOrEqual(110);
@@ -1007,6 +1034,41 @@ describe("renderReview", () => {
 			},
 		}), plainPaint);
 		expect(unmeasured[4]).toBe("Sealed holdout pass (+23 pts, 95% CI +5 … +35) on 30 cases × 3");
+	});
+
+	it("says which of the two findings a sealed pass was", () => {
+		const sealedGate = (outcome: "improved" | "no-regression"): WorkbenchGateProjection => ({
+			verdict: "pass",
+			surface: "sealed",
+			delta: 0.2,
+			baselineScore: 0.62,
+			candidateScore: 0.85,
+			scoreDelta: outcome === "improved" ? 0.23 : 0.02,
+			confidence95: outcome === "improved" ? { low: 0.05, high: 0.35 } : { low: -0.11, high: 0.15 },
+			tasks: 15,
+			repetitions: 2,
+			excludedTasks: 0,
+			flags: { regressedTasks: 1, improvedTasks: 3, collapsedTasks: 0 },
+			resources: { costRatio: null, latencyRatio: null, tokenRatio: null },
+			reasons: ["no regression: 95% CI -11.0pp … +15.0pp is not entirely below zero on 15 tasks × 2 repetitions"],
+			outcome,
+			outcomeLine: outcome === "improved" ? "pass · improved" : "pass · no regression proven, not an improvement either",
+		});
+		const improved = renderReview(makeCandidateReview({
+			sealedHoldout: { executed: true, gatePassed: true, gate: sealedGate("improved") },
+		}), plainPaint);
+		expect(improved).toContain("Sealed holdout pass · improved (+23 pts, 95% CI +5 … +35) on 15 cases × 2");
+
+		// The wide interval on the policy minimum: the exam convicted nobody, and
+		// the line says so instead of reading like a win.
+		const flat = renderReview(makeCandidateReview({
+			sealedHoldout: { executed: true, gatePassed: true, gate: sealedGate("no-regression") },
+		}), plainPaint);
+		expect(flat).toContain(
+			"Sealed holdout pass · no regression proven, not an improvement either (+2 pts, 95% CI -11 … +15) on 15 cases × 2",
+		);
+		// The token itself never moved: scripts and the gate still read `pass`.
+		expect(sealedGate("no-regression").verdict).toBe("pass");
 	});
 
 	it("renders promotion, adoption, and continuation lines, or the /adopt hint", () => {
@@ -1516,7 +1578,7 @@ describe("renderDecision · calibrate", () => {
 
 	it("summarises the calibration in one headline", () => {
 		expect(decisionHeadline(decision("calibrate", { candidateId: "calibration-1", calibration: makeCalibration() }, "ready-to-evaluate")))
-			.toBe("A/A inconclusive · ±6.0pp · flip 10% · 3 repetitions recommended");
+			.toBe("A/A inconclusive · ±6.0pp · flip 10% · 3 repetitions recommended · exam ≈ 15 cases for ±10 pp");
 	});
 });
 
@@ -1852,6 +1914,26 @@ describe("renderConfirmation", () => {
 		expect(reject).toContain("Review promote — good");
 		expect(reject.join("\n")).not.toContain("Tag");
 		tail(reject);
+	});
+
+	it("puts what the exam showed on the last screen before a release", () => {
+		const ship = (sealedOutcome: string | null) => renderConfirmation(makeConfirmation("ship", {
+			operation: "ship",
+			steps: ["promote-candidate", "adopt-candidate", "continue-cycle"],
+			candidateId: "candidate-1",
+			development: "improved · +23.0pp",
+			sealed: "pass · 15 × 2",
+			sealedOutcome,
+			version: "1.2.0",
+			tag: "v1.2.0",
+			fastForward: "main aaaaaaaaaa → bbbbbbbbbb",
+			diff: null,
+			candidate: makeCandidate(),
+		}), plainPaint);
+		expect(ship("improved")).toContain("Sealed pass · 15 × 2 · improved");
+		expect(ship("no-regression")).toContain("Sealed pass · 15 × 2 · no regression proven, not an improvement either");
+		// Legacy evidence carries no outcome, and the line simply says less.
+		expect(ship(null)).toContain("Sealed pass · 15 × 2");
 	});
 
 	it("renders the fast-forward and changed files for adopt-candidate", () => {

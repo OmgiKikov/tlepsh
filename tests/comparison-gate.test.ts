@@ -11,6 +11,9 @@ import {
 	promotableVerdicts,
 	resourceRatios,
 	resourceTotals,
+	sealedOutcome,
+	sealedOutcomeLabel,
+	sealedOutcomeLine,
 	type CompareRow,
 } from "../src/domain/comparison-gate.js";
 import {
@@ -194,9 +197,21 @@ describe("comparison gate — exact-comparison-gate-v4", () => {
 		const random = prng(7);
 		const small = judgeComparison(simulatedRows(random, 14, 3, 0.5, 1), { surface: "sealed", repetitions: 3, seed: "small" });
 		expect(small.gate.verdict).toBe("underpowered");
-		expect(small.gate.reasons[0]).toContain(`at least ${SEALED_GATE_POLICY.minTasks} tasks`);
+		// The shortfall is arithmetic, not "fewer than 15": what is there, what is
+		// needed, and the difference.
+		expect(small.gate.reasons[0]).toBe(
+			`the exam has 14 cases; the sealed guardrail needs ${SEALED_GATE_POLICY.minTasks} — 1 more`,
+		);
 		const shallow = judgeComparison(simulatedRows(random, 30, 1, 0.5, 1), { surface: "sealed", repetitions: 1, seed: "shallow" });
 		expect(shallow.gate.verdict).toBe("underpowered");
+		expect(shallow.gate.reasons[0]).toBe(
+			`${SEALED_GATE_POLICY.minRepetitions} repetitions needed, 1 ran — 1 more`,
+		);
+		// Both short at once says both, and never leaves the operator subtracting.
+		const bothShort = judgeComparison(simulatedRows(random, 10, 1, 0.5, 1), { surface: "sealed", repetitions: 1, seed: "both" });
+		expect(bothShort.gate.reasons[0]).toBe(
+			"the exam has 10 cases; the sealed guardrail needs 15 — 5 more · 2 repetitions needed, 1 ran — 1 more",
+		);
 		const enough = judgeComparison(simulatedRows(random, 15, 2, 0.5, 1), { surface: "sealed", repetitions: 2, seed: "enough" });
 		expect(enough.gate.verdict).toBe("pass");
 		expect(DEVELOPMENT_GATE_POLICY.minTasks).toBe(1);
@@ -432,5 +447,66 @@ describe("gate evidence versions", () => {
 			...v4,
 			summary: { ...v4.summary, scoreDelta: 2 },
 		})).toThrow();
+	});
+});
+
+/**
+ * The exam's own honesty: `pass` is one token over two different findings, and
+ * on the policy minimum the second one is the common case. The classification
+ * is pure, reads only the interval the verdict was decided on, and never
+ * touches the token itself.
+ */
+describe("sealed outcome", () => {
+	it("separates a proven improvement from an unproven regression", () => {
+		expect(sealedOutcome({ verdict: "pass", confidence95: { low: 0.02, high: 0.38 } })).toBe("improved");
+		expect(sealedOutcome({ verdict: "pass", confidence95: { low: -0.12, high: 0.2 } })).toBe("no-regression");
+		// Exactly zero is not above zero: an interval that touches it proves nothing.
+		expect(sealedOutcome({ verdict: "pass", confidence95: { low: 0, high: 0.4 } })).toBe("no-regression");
+	});
+
+	it("says nothing where the verdict already carries its own reason", () => {
+		expect(sealedOutcome({ verdict: "fail", confidence95: { low: -0.4, high: -0.1 } })).toBeNull();
+		expect(sealedOutcome({ verdict: "underpowered", confidence95: { low: -0.4, high: 0.4 } })).toBeNull();
+		expect(sealedOutcome({ verdict: "improved", confidence95: { low: 0.1, high: 0.4 } })).toBeNull();
+		expect(sealedOutcome({ verdict: "pass", confidence95: null })).toBeNull();
+		expect(sealedOutcome(null)).toBeNull();
+	});
+
+	it("renders the verdict token with the phrase every surface shares", () => {
+		expect(sealedOutcomeLine({ verdict: "pass", confidence95: { low: 0.02, high: 0.38 } })).toBe("pass · improved");
+		expect(sealedOutcomeLine({ verdict: "pass", confidence95: { low: -0.12, high: 0.2 } }))
+			.toBe("pass · no regression proven, not an improvement either");
+		expect(sealedOutcomeLine({ verdict: "fail", confidence95: { low: -0.4, high: -0.1 } })).toBeNull();
+		expect(sealedOutcomeLabel("improved")).toBe("improved");
+	});
+
+	it("classifies the verdict the gate itself decided, on both sides of zero", () => {
+		const flat = judgeComparison(
+			Array.from({ length: 15 }, (_, index) => scoredRow({
+				taskId: `task-${index}`,
+				k: 2,
+				aPass: 1,
+				bPass: 1,
+				aScore: 0.5,
+				bScore: index % 2 === 0 ? 0.6 : 0.4,
+			})),
+			{ surface: "sealed", repetitions: 2, seed: "flat" },
+		);
+		expect(flat.gate.verdict).toBe("pass");
+		expect(sealedOutcome({ verdict: flat.gate.verdict, confidence95: flat.summary.confidence95 })).toBe("no-regression");
+
+		const better = judgeComparison(
+			Array.from({ length: 15 }, (_, index) => scoredRow({
+				taskId: `task-${index}`,
+				k: 2,
+				aPass: 0,
+				bPass: 2,
+				aScore: 0.2,
+				bScore: 0.8,
+			})),
+			{ surface: "sealed", repetitions: 2, seed: "better" },
+		);
+		expect(better.gate.verdict).toBe("pass");
+		expect(sealedOutcome({ verdict: better.gate.verdict, confidence95: better.summary.confidence95 })).toBe("improved");
 	});
 });

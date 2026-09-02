@@ -424,7 +424,7 @@ describe("version passport", () => {
 			"- development: **improved** — score 0% → 100% (+100 pts, 95% CI +42 … +86) on 6 cases × 2 · " +
 				"pass rate 0% → 100% · 6 cases is a small basket: read the interval as indicative, not decisive",
 		);
-		expect(page).toContain("- sealed guardrail: **pass** on 18 tasks × 2 repetitions");
+		expect(page).toContain("- sealed guardrail: **pass · improved** on 18 tasks × 2 repetitions");
 		expect(page).toContain("- per answer, candidate over baseline: cost ×1.25 · latency ×0.87 · tokens ×1.10");
 
 		// The A/A record of the same revision is the noise band.
@@ -500,7 +500,7 @@ describe("version passport", () => {
 			reason: APPLY_REASON,
 			at: "2026-08-30T09:00:00.000Z",
 		});
-		expect(projection.measured.sealed).toEqual({ verdict: "pass", design: { tasks: 18, repetitions: 2 } });
+		expect(projection.measured.sealed).toEqual({ verdict: "pass", design: { tasks: 18, repetitions: 2 }, outcome: "improved" });
 		expect(projection.limits.dataset.sealed).toEqual({ cases: 18, origin: null });
 		expect(projection.judge).toMatchObject({ stats: null, majorityClassBaseline: null });
 		// The projection is JSON, exactly as `--json` prints it.
@@ -518,8 +518,25 @@ describe("version passport", () => {
 			expect(text).not.toContain(fixture.sealedCorpus.hash);
 			expect(text).not.toContain("sealed-1");
 		}
-		// The verdict and the design size are the whole of what may be said.
-		expect(page).toContain("**pass** on 18 tasks × 2 repetitions");
+		// The verdict, what that verdict showed, and the design size are the whole
+		// of what may be said.
+		expect(page).toContain("**pass · improved** on 18 tasks × 2 repetitions");
+	});
+
+	it("never lets a pass that proved nothing read as an improvement", () => {
+		const projection = passport();
+		const flat: VersionPassport = {
+			...projection,
+			measured: {
+				...projection.measured,
+				sealed: { verdict: "pass", design: { tasks: 18, repetitions: 2 }, outcome: "no-regression" },
+			},
+		};
+		// The same token, the same design, and the honest reading of the interval
+		// the verdict was decided on.
+		expect(renderVersionPassportMarkdown(flat)).toContain(
+			"- sealed guardrail: **pass · no regression proven, not an improvement either** on 18 tasks × 2 repetitions",
+		);
 	});
 
 	it("refuses with a next step when nothing is promoted and no candidate is named", () => {

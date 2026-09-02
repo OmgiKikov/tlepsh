@@ -6,6 +6,7 @@ import type {
 	WorkbenchProposalReview,
 } from "../../workbench/types.js";
 import { plural, t } from "../../i18n.js";
+import { sealedOutcomeLabel } from "../../domain/comparison-gate.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
 import { bullets, clean, numbered, oneLine, shortHash, shortSha, wrap } from "./format.js";
 import type { Paint } from "./paint.js";
@@ -29,6 +30,13 @@ function predictionOf(value: unknown): ProposalPrediction | null {
 	if (value === null || value === undefined) return null;
 	const parsed = ProposalPredictionSchema.safeParse(value);
 	return parsed.success ? parsed.data : null;
+}
+
+/** ` · improved`, from the outcome token the ship subject carries. */
+function sealedOutcomeSuffix(value: unknown): string {
+	if (value === "improved") return ` · ${sealedOutcomeLabel("improved")}`;
+	if (value === "no-regression") return ` · ${sealedOutcomeLabel("no-regression")}`;
+	return "";
 }
 
 function bag(value: unknown): Bag {
@@ -218,7 +226,9 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 				// The measurement sentence the operator just read on the panel, whole:
 				// the last gate before a release is the worst place to cut a number.
 				`${paint.dim(t("label.development"))} ${text(subject.development, 200)}`,
-				`${paint.dim(t("label.sealed"))} ${text(subject.sealed, 96)}`,
+				// The last screen before a release says what the exam showed, not
+				// only that it passed: `pass` covers both findings.
+				`${paint.dim(t("label.sealed"))} ${text(subject.sealed, 96)}${sealedOutcomeSuffix(subject.sealedOutcome)}`,
 				// The diff summary belongs BEFORE the yes: a loop-applied candidate was
 				// never shown file by file, and this is the last chance to see what it is.
 				// Bounded like the apply dialog, though: an eleven-file diff drawn in

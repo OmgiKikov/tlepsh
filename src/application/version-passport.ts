@@ -31,7 +31,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { formatJudgeAgreement, type JudgeAgreementStats } from "../domain/judge-agreement.js";
-import { formatPoints } from "../domain/comparison-gate.js";
+import { formatPoints, sealedOutcome, sealedOutcomeLabel, type SealedOutcome } from "../domain/comparison-gate.js";
 import { isPromotionGradeGateEvidence, type CandidateRecord } from "../domain/candidate.js";
 import { loadDiagnosis } from "../diagnosis.js";
 import { loadTarget } from "../manifest.js";
@@ -181,6 +181,12 @@ export interface PassportDevelopmentMeasurement {
 export interface PassportSealedMeasurement {
 	verdict: string;
 	design: PassportDesign;
+	/**
+	 * Which of the two findings a `pass` was: the interval wholly above zero, or
+	 * merely not below it. Derived from the verdict's own interval, so it says
+	 * nothing about the exam that the verdict did not already say.
+	 */
+	outcome: SealedOutcome | null;
 }
 
 export interface PassportResourceRatios {
@@ -610,7 +616,11 @@ function compileTargetPassport(options: CompileVersionPassportOptions): VersionP
 		measured: {
 			development: gateMeasurement(development.comparison),
 			sealed: sealedComparison
-				? { verdict: sealedComparison.verdict, design: sealedComparison.design }
+				? {
+					verdict: sealedComparison.verdict,
+					design: sealedComparison.design,
+					outcome: sealedOutcome(sealedComparison),
+				}
 				: null,
 			resources: resourceRatios(
 				development.comparison,
@@ -696,6 +706,8 @@ export interface VersionPassportSealed {
 	verdict: string;
 	tasks: number;
 	repetitions: number;
+	/** What a `pass` showed, from its own interval; null on every other verdict. */
+	outcome: SealedOutcome | null;
 }
 
 export interface VersionPassportResources {
@@ -1019,7 +1031,12 @@ function compileShippedPassport(
 				}
 				: null,
 			sealed: isPromotionGradeGateEvidence(sealed)
-				? { verdict: sealed.verdict, tasks: sealed.design.tasks, repetitions: sealed.design.repetitions }
+				? {
+					verdict: sealed.verdict,
+					tasks: sealed.design.tasks,
+					repetitions: sealed.design.repetitions,
+					outcome: sealedOutcome({ verdict: sealed.verdict, confidence95: sealed.summary.confidence95 }),
+				}
 				: null,
 			resources: isPromotionGradeGateEvidence(development)
 				? {
@@ -1307,7 +1324,9 @@ function renderTargetPassportMarkdown(passport: VersionPassport): string {
 	);
 	lines.push(
 		passport.measured.sealed
-			? `- sealed guardrail: **${passport.measured.sealed.verdict}** on ${design(passport.measured.sealed.design)}`
+			? `- sealed guardrail: **${passport.measured.sealed.verdict}${
+				passport.measured.sealed.outcome ? ` · ${sealedOutcomeLabel(passport.measured.sealed.outcome)}` : ""
+			}** on ${design(passport.measured.sealed.design)}`
 			: "- sealed guardrail: not run (promotion stays locked)",
 	);
 	const ratios = passport.measured.resources;
@@ -1379,7 +1398,9 @@ function renderShippedPassportMarkdown(passport: ShippedVersionPassport): string
 		}`);
 	}
 	lines.push(`- Sealed exam: ${passport.measured.sealed
-		? `${passport.measured.sealed.verdict} on ${passport.measured.sealed.tasks} × ${passport.measured.sealed.repetitions} (contents evaluator-only)`
+		? `${passport.measured.sealed.verdict}${
+			passport.measured.sealed.outcome ? ` · ${sealedOutcomeLabel(passport.measured.sealed.outcome)}` : ""
+		} on ${passport.measured.sealed.tasks} × ${passport.measured.sealed.repetitions} (contents evaluator-only)`
 		: "no promotion-grade sealed evidence on this record"}`);
 	lines.push(`- Resources: ${passport.measured.resources ? resourceSummaryLine(passport.measured.resources) : "—"}`);
 	lines.push(`- Predicted: ${predictedVersusActual(passport.measured.predicted) ?? "no prediction was stated for this version"}`);

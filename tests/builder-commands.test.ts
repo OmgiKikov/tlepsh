@@ -266,6 +266,7 @@ function calibration(overrides: Partial<WorkbenchCalibrationProjection> = {}): W
 		confidence95: { low: -0.06, high: 0.06 },
 		flipRate: 0.1,
 		recommendedRepetitions: 3,
+		recommendedExamCases: 15,
 		verdict: "inconclusive",
 		at: "2026-08-28T10:05:00.000Z",
 		...overrides,
@@ -1980,7 +1981,7 @@ describe("Builder Pi slash commands", () => {
 	it("reports an unavailable sealed holdout generically in /doctor", async () => {
 		const fixture = workbench({
 			view: async () => viewAt("ready-to-evaluate", {
-				shippingReadiness: { sealedHoldout: "unavailable", minimumTasks: 15 },
+				shippingReadiness: { sealedHoldout: "unavailable", minimumTasks: 15, sealedCases: null },
 			}),
 		});
 		const { commands, output } = register(fixture.value);
@@ -1990,6 +1991,21 @@ describe("Builder Pi slash commands", () => {
 		const text = output.text();
 		expect(text).toContain("! Ship gate holdout is unavailable or failed integrity checks — repair private corpus storage or /holdout privately imports a replacement");
 		expect(text).not.toMatch(/corpus-[0-9a-f]{64}|sha256:|corpus\.jsonl|PRIVATE/);
+	});
+
+	it("does the subtraction for the operator when the exam is too small", async () => {
+		const fixture = workbench({
+			view: async () => viewAt("ready-to-evaluate", {
+				shippingReadiness: { sealedHoldout: "underpowered", minimumTasks: 15, sealedCases: 12 },
+			}),
+		});
+		const { commands, output } = register(fixture.value);
+
+		await command(commands, "doctor").handler("", context().ctx);
+
+		expect(output.text()).toContain(
+			"! Ship gate: the exam has 12 cases; the gate needs 15 — 3 more — /holdout privately imports a separate exam",
+		);
 	});
 
 	it("imports a sealed holdout through host UI without putting its path or identity in the Builder transcript", async () => {

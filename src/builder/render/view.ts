@@ -21,6 +21,7 @@ import {
 	bullets,
 	bytes,
 	clean,
+	examShortfall,
 	joinNonEmpty,
 	labeled,
 	numbered,
@@ -130,16 +131,29 @@ export function blockerLines(view: Pick<WorkbenchView, "blockers" | "blockerReas
  */
 function shippingReadinessLine(view: WorkbenchView, paint: Paint): string | null {
 	const readiness = view.shippingReadiness;
-	if (!readiness || view.counts.approvedSpecs === 0 || readiness.sealedHoldout === "ready") return null;
+	if (!readiness || view.counts.approvedSpecs === 0) return null;
+	// An exam over the minimum still answers nothing if this Target's own noise
+	// is wider than the difference it is meant to see. Muted, and never a
+	// blocker: it is advice about the next exam, not a refusal of this one.
+	const needed = view.calibration?.recommendedExamCases ?? null;
+	const cases = readiness.sealedCases;
+	const undersized = needed !== null && cases !== null && cases < needed
+		? t("exam.size-hint", { cases: plural(cases, "case"), needed: plural(needed, "case") })
+		: null;
+	if (readiness.sealedHoldout === "ready") {
+		return undersized === null ? null : `${paint.dim(t("label.ship-gate"))} ${paint.muted(undersized)}`;
+	}
 	const state = readiness.sealedHoldout === "missing"
 		? t("ship-gate.missing")
 		: readiness.sealedHoldout === "underpowered"
-			? t("ship-gate.underpowered", { minimum: readiness.minimumTasks })
+			? t("ship-gate.underpowered", examShortfall(readiness))
 			: t("ship-gate.unavailable");
 	// With no exam at all the operator has two ways out and both are named; with
 	// a broken or too-small one they have exactly one, and it is not the judge.
 	const hint = readiness.sealedHoldout === "missing" ? "ship-gate.hint-none" : "ship-gate.hint";
-	return `${paint.dim(t("label.ship-gate"))} ${paint.warning(state)} ${paint.dim(t(hint, { minimum: readiness.minimumTasks }))}`;
+	return `${paint.dim(t("label.ship-gate"))} ${paint.warning(state)} ${paint.dim(t(hint, { minimum: readiness.minimumTasks }))}${
+		undersized === null ? "" : ` ${paint.muted(`· ${undersized}`)}`
+	}`;
 }
 
 /** Stages where an uncalibrated Target is worth one nudge, not a blocker. */
