@@ -243,7 +243,7 @@ export async function decideVerifyCandidate(
 			outcome: "verified",
 			headline: summary.headline,
 			candidate: summary,
-			development: { verdict: result.compare.gate.verdict, delta: result.compare.summary.delta, confidence95: result.compare.summary.confidence95 },
+			development: { verdict: result.compare.gate.verdict, scoreDelta: result.compare.summary.scoreDelta, confidence95: result.compare.summary.confidence95 },
 			sealedHoldout: { executed: result.sealedHoldout !== null, gatePassed: sealedVerdict === "pass", verdict: sealedVerdict },
 			screen: screen ? host.screenProjection(screen) : null,
 		},

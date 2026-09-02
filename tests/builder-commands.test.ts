@@ -1651,7 +1651,7 @@ describe("Builder Pi slash commands", () => {
 				headline: candidateSummary().headline,
 				screen: null,
 				candidate: candidateSummary(),
-				development: { verdict: "improved", delta: 2 / 3, confidence95: { low: 0.1, high: 0.9 } },
+				development: { verdict: "improved", scoreDelta: 2 / 3, confidence95: { low: 0.1, high: 0.9 } },
 				sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" },
 			}, viewAt("candidate-review")),
 		});

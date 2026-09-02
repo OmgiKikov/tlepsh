@@ -1070,7 +1070,12 @@ export type WorkbenchVerifyCandidateResult =
 		/** The candidate's own {@link WorkbenchCandidateSummary.headline}, hoisted. */
 		headline: string;
 		candidate: WorkbenchCandidateSummary;
-		development: { verdict: GateVerdict; delta: number; confidence95: { low: number; high: number } };
+		/**
+		 * The gate's own quantity: the mean paired score delta and the interval
+		 * that brackets it. This field used to carry the pass-rate delta beside
+		 * the score's interval, which is how the two came to be read as one.
+		 */
+		development: { verdict: GateVerdict; scoreDelta: number; confidence95: { low: number; high: number } };
 		sealedHoldout: { executed: boolean; gatePassed: boolean; verdict: GateVerdict | null };
 		/** The screen that let this verification start, when one ran. */
 		screen: WorkbenchCheapCheckProjection | null;
