@@ -11,13 +11,16 @@ nothing on its own authority.
 
 ## Install
 
-Node.js ≥ 22.19 and Git. The package carries its pinned Pi runtime.
+Node.js ≥ 22.19 and Git. The package carries its pinned Pi runtime and is
+not on the npm registry yet, so install it from a checkout:
 
 ```bash
-npm install --global ahde
+git clone <this repository> ahde && cd ahde
+npm ci --ignore-scripts && npm run build && npm link   # `ahde` on PATH
 ```
 
-From a checkout: `npm ci --ignore-scripts && npm run build` → `dist/cli.js`.
+`npm pack` produces the tarball `npm install --global ./ahde-*.tgz` accepts;
+`npm run verify:package` proves that tarball works in an empty consumer.
 
 ## Use it
 
@@ -82,7 +85,7 @@ floor the loop does not close; the Target can be as small as a 9B model.
 
 ## Evidence
 
-Four live first-user sessions on real models — a Sonnet-class Builder, a 9B
+Five live first-user sessions on real models — a Sonnet-class Builder, a 9B
 Target (`openrouter/qwen/qwen3.5-9b`), a GLM judge — took a bank ombudsman
 from one sentence to a shipped `v0.1.0`: the Builder wrote the Spec and six
 cases, ran them (3/18), read the traces, built a `check_dbo` tool package in a
@@ -230,10 +233,16 @@ hash. A transport for the human gate, never an exemption.
 ahde init my-agent --template templates/support-agent
 ```
 
-A Russian first-line support agent, `REPLACE-ME` where the model, spec, tool
-and 30–50 cases go. Its `AGENTS.md` carries the two load-bearing sections —
-call the tool first, name the request type on line one — and its `.gitignore`
-lists `.ahde/`, `runs/`, `imports/`, so `git add -A` cannot commit the exam.
+A Russian first-line support agent as starting material: the manifest carries
+the same one-time placeholders a fresh scaffold does, so the first `ahde` in
+that directory asks for the agent's name and model in its own dialog, and the
+Builder asks for a judge the moment a case needs one. The `REPLACE-ME` text in
+its Spec, `AGENTS.md`, example cases and tool descriptor is what you describe
+over; `ahde validate` and `/doctor` list the files that still carry it, and
+nothing ever asks you to open `manifest.yaml`. Its `AGENTS.md` carries the two
+load-bearing sections — call the tool first, name the request type on line
+one — and its `.gitignore` lists `.ahde/`, `runs/`, `imports/`, so
+`git add -A` cannot commit the exam.
 
 ## Verify the package
 
