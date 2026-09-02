@@ -1066,6 +1066,11 @@ const EvalRunRecordFields = {
 		workspaceHash: HashSchema.optional(),
 		/** Exact shared prepared tool-home snapshot. Legacy indexes may omit it. */
 		preparedToolHomeHash: HashSchema.optional(),
+		/**
+		 * sha256 of a command Target's entry executable. Absent on every Pi
+		 * eval and on every eval written before command Targets existed.
+		 */
+		agentEntryHash: HashSchema.optional(),
 	}),
 	/**
 	 * `regrade` marks an eval that re-scored recorded traces instead of calling
@@ -1525,12 +1530,19 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 	if (!preparedToolHomeHash || workspaceSnapshot.preparedToolHomeHash !== preparedToolHomeHash) {
 		throw new Error("evaluation produced no matching prepared tool-home attestation");
 	}
+	// A command Target's entry bytes are Target identity (invariant 17), so one
+	// eval run is one entry executable — an interpreter replaced mid-suite would
+	// split the evidence across two agents under one hash.
+	const agentEntryHash = completed[0]?.record.target.agentEntryHash;
 	for (const slot of completed) {
 		if (canonicalJson(slot.record.execution) !== canonicalJson(effectiveExecution)) {
 			throw new Error("execution policy changed within one eval run");
 		}
 		if (slot.record.target.preparedToolHomeHash !== preparedToolHomeHash) {
 			throw new Error("prepared tool home changed within one eval run");
+		}
+		if (slot.record.target.agentEntryHash !== agentEntryHash) {
+			throw new Error("command Target entry executable changed within one eval run");
 		}
 	}
 	const total = runIds.length;
@@ -1554,6 +1566,7 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 			toolsetHash: target.toolsetHash,
 			workspaceHash: workspaceSnapshot.sha256,
 			preparedToolHomeHash,
+			...(agentEntryHash ? { agentEntryHash } : {}),
 		},
 		label: options.label,
 		baselineEvalRunId: options.baselineEvalRunId ?? null,

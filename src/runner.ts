@@ -158,10 +158,16 @@ export function generateModelsJson(model: TargetManifest["model"]): Record<strin
 	};
 }
 
-function emptyMetrics(): RunRecord["metrics"] {
+/**
+ * The metrics a record starts with. A command Target begins with usage ABSENT
+ * rather than zero: if the run then fails before the agent reports anything,
+ * the record must say nobody measured, not that the run was free.
+ */
+function emptyMetrics(agent: RunRecord["execution"]["agent"] = "pi-v1"): RunRecord["metrics"] {
 	return {
-		tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		costUsd: 0,
+		...(agent === "command-v1"
+			? {}
+			: { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, costUsd: 0 }),
 		latencyMs: 0,
 		toolCalls: 0,
 		toolErrors: 0,
@@ -617,6 +623,8 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 	});
 
 	const model = target.manifest.model;
+	/** Which backend answers. Recorded so a Pi arm and a command arm never compare. */
+	const agent = executionKindOf(target.manifest.execution) === "command" ? "command-v1" : "pi-v1";
 	const preparedToolHomeHash = targetToolRuntime?.preparedToolHomeHash
 		?? options.workspaceSnapshot?.preparedToolHomeHash
 		?? undefined;
@@ -655,6 +663,7 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			sandbox: effectiveSandbox,
 			network: target.manifest.execution.network,
 			filesystem: effectiveFilesystem,
+			agent,
 		}),
 		eval: {
 			suiteId: target.manifest.evalSuite.id,
@@ -663,7 +672,7 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			datasetHash: target.datasetHash,
 		},
 		trace: { path: "session.jsonl", sessionId: null, sha256: null },
-		metrics: { ...emptyMetrics(), ...(task.messages ? { seededTurns: seededTurns.length } : {}) },
+		metrics: { ...emptyMetrics(agent), ...(task.messages ? { seededTurns: seededTurns.length } : {}) },
 		evalResults: null,
 		parent: options.evalRunId
 			? { evalRunId: options.evalRunId, candidateOf: options.candidateOf }
@@ -719,14 +728,14 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 		const onRecoveryAttempt = () => {
 			recoveryAttempts += 1;
 		};
-		if (executionKindOf(target.manifest.execution) === "command") {
+		if (agent === "command-v1") {
 			// Protocol v1 has one way to give the Target a message and it is a
 			// `user` line. A seeded dialogue would have to arrive as invented
 			// history, and history the agent never produced is not evidence.
 			if (seededTurns.length > 0) {
 				throw new Error("command Target cannot replay a dialogue case's seeded turns: protocol v1 carries no history");
 			}
-			session = (await createCommandTargetSession({
+			const command = await createCommandTargetSession({
 				target,
 				workspaceDir: executionCwd,
 				scratchDir,
@@ -742,7 +751,11 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 					: null,
 				onRecoveryAttempt,
 				...(options.signal ? { signal: options.signal } : {}),
-			})).session;
+			});
+			session = command.session;
+			// Rehashed at spawn, exactly as a declared tool's executable is: the
+			// bytes that ran are the identity, not the bytes resolution saw.
+			record.target = { ...record.target, agentEntryHash: command.agentEntryHash };
 		} else {
 			// Per-run isolation: fresh models.json + credentials + services.
 			const modelsPath = join(runtimeDir, "models.json");
@@ -829,8 +842,10 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			sha256: hashFile(sessionContent),
 		};
 		record.metrics = {
-			tokens: stats.tokens ? { ...stats.tokens } : emptyMetrics().tokens,
-			costUsd: stats.costUsd ?? 0,
+			// Spread, never defaulted: a backend that reported no usage records
+			// ABSENT. Zero would say the run was free.
+			...(stats.tokens ? { tokens: { ...stats.tokens } } : {}),
+			...(stats.costUsd === null ? {} : { costUsd: stats.costUsd }),
 			latencyMs: Date.now() - startedMs,
 			toolCalls: stats.toolCalls,
 			toolErrors,

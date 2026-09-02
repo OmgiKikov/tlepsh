@@ -1,4 +1,5 @@
 import { plural, t } from "../i18n.js";
+import { runCost } from "../compare.js";
 import { isSealedEvalRun, listEvalRunIndexesLenient, loadRun } from "../eval.js";
 import type { WorkbenchDecisionInput, WorkbenchStage } from "./types.js";
 
@@ -317,7 +318,7 @@ export function estimateRunCost(input: EstimateRunCostInput): WorkbenchRunEstima
 			// Every model an evaluation pays for: the Target, the judge that graded
 			// it, and the user model that talked to it. Missing one makes the guard
 			// wave through a run that costs several times its estimate.
-			costUsd += run.metrics.costUsd
+			costUsd += runCost(run) ?? 0
 				+ (run.metrics.judge?.costUsd ?? 0)
 				+ (run.metrics.simulatedUser?.costUsd ?? 0);
 			milliseconds += elapsed;

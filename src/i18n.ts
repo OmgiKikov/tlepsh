@@ -1098,6 +1098,11 @@ const en = {
 	"fixtures.failed": "{passed}/{total} — {fixture}: {reason}",
 	"fixtures.none": "declares no contract tests",
 	"tool-key.missing": "{tools} needs {names} — export it in the shell that runs ahde",
+	/**
+	 * What a number looks like when the Target never reported one. Absent is not
+	 * zero: `$0.00` would say the run was free, and this says nobody said.
+	 */
+	"metrics.not-reported": "—",
 	"onboarding.connect-in-tui": "Connect a Builder model in this local TUI before continuing.",
 	"onboarding.connect-then-continue": "Connect the Builder, then AHDE will continue with what you just wrote",
 	"onboarding.connect-first": "Connect the Builder to a model first: /login, or /model to pick one with a credential.",
@@ -2327,6 +2332,7 @@ const ru: Record<MessageKey, string> = {
 	"fixtures.failed": "{passed}/{total} — {fixture}: {reason}",
 	"fixtures.none": "не объявляет контрактных тестов",
 	"tool-key.missing": "{tools} нужен {names} — экспортируй его в той оболочке, где запущен ahde",
+	"metrics.not-reported": "—",
 	"onboarding.connect-in-tui": "Подключи модель Билдера в этом локальном TUI, прежде чем продолжать.",
 	"onboarding.connect-then-continue": "Подключи Билдера — и AHDE продолжит с того, что ты только что написал",
 	"onboarding.connect-first": "Сначала подключи Билдера к модели: /login, или /model — выбрать ту, у которой есть ключ.",

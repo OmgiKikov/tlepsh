@@ -171,8 +171,17 @@ export const SimulatedUserMetricsSchema = JudgeMetricsSchema;
 export type SimulatedUserMetrics = z.infer<typeof SimulatedUserMetricsSchema>;
 
 export const RunMetricsSchema = z.strictObject({
-	tokens: TokenMetricsSchema,
-	costUsd: z.number().nonnegative(),
+	/**
+	 * What the Target spent. OPTIONAL because a command Target may report no
+	 * usage at all, and an unreported spend has to be ABSENT: a zero would make
+	 * a run that measured nothing look like a run that cost nothing, and every
+	 * cost ratio downstream would quietly believe it.
+	 *
+	 * Optional and never defaulted, so every run.json written before a command
+	 * Target existed keeps the exact bytes — and the exact hash — it has.
+	 */
+	tokens: TokenMetricsSchema.optional(),
+	costUsd: z.number().nonnegative().optional(),
 	latencyMs: z.number().nonnegative(),
 	toolCalls: z.number().int().nonnegative(),
 	toolErrors: z.number().int().nonnegative(),
@@ -215,6 +224,17 @@ export const ContainerSandboxFingerprintSchema = z
 	.regex(/^container:(?:docker|gondolin)@sha256:[0-9a-f]{64}:config:[0-9a-f]{64}$/);
 
 export const ExecutionFingerprintSchema = z.strictObject({
+	/**
+	 * Which backend produced the answer. A Pi arm and a command arm are
+	 * therefore never comparable, which is correct: the same prompt through two
+	 * different agents is two different measurements.
+	 *
+	 * Optional and never defaulted — a default would write the key into the
+	 * canonical JSON of every existing fingerprint and move every
+	 * `provenanceKey` in every runs store. Absent means the run predates the
+	 * field; new runs always carry it.
+	 */
+	agent: z.enum(["pi-v1", "command-v1"]).optional(),
 	workspace: z.enum(["isolated-copy-v1", "direct-v1"]),
 	tools: z.array(NonEmptyStringSchema),
 	environment: z.array(NonEmptyStringSchema),
@@ -262,6 +282,13 @@ export const RunRecordSchema = z
 			workspaceHash: HashSchema.optional(),
 			/** Exact prepared tool-home paths, bytes, and executable modes. Legacy runs may omit it. */
 			preparedToolHomeHash: HashSchema.optional(),
+			/**
+			 * sha256 of a command Target's entry executable, hashed at spawn.
+			 * Target identity on the same terms as a declared tool's bytes
+			 * (invariant 17). Absent on every Pi run, and on every run written
+			 * before command Targets existed.
+			 */
+			agentEntryHash: HashSchema.optional(),
 		}),
 		runtime: z.strictObject({
 			piVersion: NonEmptyStringSchema,
@@ -315,6 +342,21 @@ export const RunRecordSchema = z
 		if (record.label === "regrade" && record.derivedFrom === undefined) {
 			context.addIssue({ code: "custom", path: ["derivedFrom"], message: "a regrade run must name the execution it re-scored" });
 		}
+		// Only a command Target is allowed to have measured nothing. Every other
+		// backend reports usage, so a missing number there is a lost one rather
+		// than an honest absence. A command Target that reports tokens but no
+		// cost is fine: its endpoint may publish no rates.
+		if (record.execution.agent !== "command-v1") {
+			for (const field of ["tokens", "costUsd"] as const) {
+				if (record.metrics[field] === undefined) {
+					context.addIssue({
+						code: "custom",
+						path: ["metrics", field],
+						message: "only a command-v1 agent may record absent usage",
+					});
+				}
+			}
+		}
 		if (record.derivedFrom?.runId === record.runId) {
 			context.addIssue({ code: "custom", path: ["derivedFrom", "runId"], message: "a run cannot be derived from itself" });
 		}
@@ -362,9 +404,13 @@ export function executionFingerprint(
 		sandbox: ExecutionFingerprint["sandbox"];
 		network: ExecutionFingerprint["network"];
 		filesystem?: ExecutionFingerprint["filesystem"];
+		agent?: ExecutionFingerprint["agent"];
 	},
 ): ExecutionFingerprint {
 	return {
+		// Spread, not assigned: canonical JSON drops an absent key, so a caller
+		// that names no agent produces exactly the fingerprint it always did.
+		...(effective?.agent ? { agent: effective.agent } : {}),
 		workspace: workspace === "direct" ? "direct-v1" : "isolated-copy-v1",
 		tools: effective?.tools ?? ["read", "bash", "edit", "write"],
 		environment: effective?.environment ?? ["process-env"],

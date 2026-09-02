@@ -580,6 +580,8 @@ const IDENTICAL_BY_DESIGN = new Set([
 	"fixtures.failed",
 	"why.grader-expected",
 	"why.grader-plain",
+	// A dash is a dash in both languages.
+	"metrics.not-reported",
 ]);
 
 describe("the dictionary itself", () => {

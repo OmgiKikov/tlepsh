@@ -208,11 +208,11 @@ describe("run event projection", () => {
 		const events: RunEvent[] = [];
 		emitExecutionFinished((event) => {
 			events.push(event);
-			if (event.type === "execution_finished") event.metrics.tokens.input = 999;
+			if (event.type === "execution_finished" && event.metrics.tokens) event.metrics.tokens.input = 999;
 		}, run, record);
 		emitRunGraded((event) => events.push(event), run, "error", [], 2);
 
-		expect(record.metrics.tokens.input).toBe(1);
+		expect(record.metrics.tokens?.input).toBe(1);
 		const execution = events[0];
 		expect(execution?.type).toBe("execution_finished");
 		if (execution?.type === "execution_finished") {

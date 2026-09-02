@@ -260,7 +260,7 @@ export function emitExecutionFinished(
 		error: projectedError,
 		metrics: {
 			...record.metrics,
-			tokens: { ...record.metrics.tokens },
+			...(record.metrics.tokens ? { tokens: { ...record.metrics.tokens } } : {}),
 		},
 	});
 }

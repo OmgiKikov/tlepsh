@@ -27,7 +27,7 @@ import {
 	withExperimentWorktrees,
 	type ExperimentWorktreePair,
 } from "../git/experiment-worktree.js";
-import { loadTarget, type ResolvedTarget } from "../manifest.js";
+import { executionKindOf, loadTarget, type ResolvedTarget } from "../manifest.js";
 import {
 	axisDifferences,
 	executionFingerprint,
@@ -286,6 +286,10 @@ export function effectiveProvenance(target: ResolvedTarget): ProvenanceAxes {
 				sandbox,
 				network: target.manifest.execution.network,
 				filesystem: targetFilesystemConfinement({ workspaceMode: "isolated", toolNames: processCapableTools, sandbox }),
+				// Which backend will answer. The reconstruction has to name it for
+				// the same reason it names the sandbox: a baseline produced by a
+				// different agent is not this experiment's baseline.
+				agent: executionKindOf(target.manifest.execution) === "command" ? "command-v1" : "pi-v1",
 			}),
 			eval: { suiteHash: target.suiteHash, datasetHash: target.datasetHash },
 		});

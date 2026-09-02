@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { compareVerifiedEvalRuns } from "../compare.js";
+import { compareVerifiedEvalRuns, runCost } from "../compare.js";
 import {
 	isSealedEvalRun,
 	listEvalRunIndexesLenient,
@@ -165,7 +165,7 @@ export function meanGraderScore(runs: readonly RunRecord[]): number {
 export function evalRunCostUsd(runs: readonly RunRecord[]): number {
 	return runs.reduce(
 		(total, run) =>
-			total + run.metrics.costUsd + (run.metrics.judge?.costUsd ?? 0) + (run.metrics.simulatedUser?.costUsd ?? 0),
+			total + (runCost(run) ?? 0) + (run.metrics.judge?.costUsd ?? 0) + (run.metrics.simulatedUser?.costUsd ?? 0),
 		0,
 	);
 }
