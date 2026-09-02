@@ -24,6 +24,8 @@ export const CLI_COMMANDS = [
 	"diagnose",
 	"regrade",
 	"report",
+	// The recorded dataset: every emulated conversation out, sealed evidence never.
+	"export",
 	"label",
 	"candidate",
 	"calibrate",
@@ -119,6 +121,13 @@ const COMMAND_SPECS = {
 		positionals: 1,
 	},
 	report: { flags: ["target", "out", "project"], positionals: 1 },
+	// The recorded dataset. One subject — a run, an eval run, or everything —
+	// and `--out` names the directory that receives `<subject>.jsonl`.
+	export: {
+		flags: ["target", "project", "run", "eval", "all", "out", "min-score", "include-failed", "include-aa"],
+		booleanFlags: ["all", "include-failed", "include-aa"],
+		positionals: 0,
+	},
 	label: {
 		flags: ["target", "project", "spec", "sample", "seed", "file"],
 		requiredFlags: ["target"],
@@ -379,6 +388,8 @@ function validateSharedFlagValues(flags: Readonly<Record<string, string>>, conte
 	assertIntegerFlag(flags, "max-cycles", context, { minimum: 1, maximum: 10 });
 	assertIntegerFlag(flags, "budget", context, { minimum: 1 });
 	assertPassRateFlag(flags, "until", context);
+	// The dataset export's selection bar is the same kind of number as `--until`.
+	assertPassRateFlag(flags, "min-score", context);
 	// 0 days means "never reuse a baseline"; every run measures its own.
 	assertIntegerFlag(flags, "baseline-max-age", context, { minimum: 0, maximum: 3_650 });
 	// `ahde log` and `ahde watch`: bounded rows and a bounded schedule.
@@ -618,6 +629,16 @@ function validateCommandRelationships(command: CliCommand, flags: Readonly<Recor
 			if (value !== undefined && !/^loop_[a-z0-9]{6,32}$/.test(value)) {
 				cliError(`--${name} for improve must be a loop id such as loop_m1k2j3abcd; got ${JSON.stringify(value)}`);
 			}
+		}
+	}
+	// One run, one eval run, or every compatible one — never two, and never
+	// none: an export that guessed its own scope would write a file nobody
+	// asked for, and a dataset that was silently short is exactly the failure
+	// whoever receives it cannot detect.
+	if (command === "export") {
+		const chosen = (["run", "eval", "all"] as const).filter((name) => flags[name] !== undefined);
+		if (chosen.length !== 1) {
+			cliError("export takes exactly one of --run <run-id>, --eval <erun-id>, or --all");
 		}
 	}
 	if (command === "search") {

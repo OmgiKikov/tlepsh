@@ -1,4 +1,5 @@
-import { t } from "../i18n.js";
+import { relative, sep } from "node:path";
+import { plural, t } from "../i18n.js";
 import { failureModeReading } from "../application/run-explanation.js";
 import type {
 	ExtensionAPI,
@@ -22,6 +23,12 @@ import type {
 	WorkbenchView,
 } from "../workbench/types.js";
 import { compileAgentLog } from "../application/agent-log.js";
+import {
+	corpusTaskLookup,
+	DatasetExportError,
+	exportDataset,
+	sealedDatasetHashesFor,
+} from "../application/export-dataset.js";
 import { examShortfall, oneLine, pluralize } from "./render/format.js";
 import { renderAgentLog, renderAgentLogChart } from "./render/agent-log.js";
 import { handoffLines } from "./render/handoff.js";
@@ -95,6 +102,7 @@ export const AHDE_BUILDER_COMMAND_NAMES = [
 	"passport",
 	"trace",
 	"log",
+	"export",
 	"plan",
 	"jobs",
 	"stop",
@@ -120,6 +128,16 @@ async function awaitIdle(ctx: ExtensionCommandContext, command: string): Promise
 	await ctx.waitForIdle();
 	abortIfRequested(signal);
 	return signal;
+}
+
+/**
+ * A path the operator can read: `exports/erun_….jsonl` when the file landed
+ * beside the agent, the whole path when it did not. Never a path that climbs
+ * out of the project with `../`.
+ */
+function besideTarget(projectDir: string, path: string): string {
+	const rel = relative(projectDir, path);
+	return rel && !rel.startsWith("..") && !rel.startsWith(sep) ? rel : path;
 }
 
 function noArguments(command: string, args: string): void {
@@ -1446,6 +1464,56 @@ export function registerAhdeBuilderCommands(
 				...(requested ? { limit: Number(requested) } : {}),
 			});
 			presenter.show(ctx, { title: t("panel.title", { detail: t("panel.growth") }), tone: "info", lines: renderAgentLog(log, markerPaint) });
+		},
+	});
+
+	/**
+	 * The recorded dataset: every emulated conversation this Target has already
+	 * had, written beside the agent as one JSONL file the operator can hand on.
+	 *
+	 * A read of durable evidence — nothing runs, spends, or decides — through
+	 * the same application function `ahde export` uses, so the boundary is the
+	 * same boundary: the sealed exam is refused on the bounded index before a
+	 * single trace is opened, and the one line says so.
+	 */
+	registerCommand("export", {
+		description: t("cmd.export"),
+		async handler(args, ctx) {
+			await prepare(ctx, "export");
+			const requested = args.trim();
+			if (requested && requested !== "--all") throw new Error(t("cmd.err.export-arg"));
+			const scope = { stateRoot: workbench.stateRoot, projectId: workbench.projectId };
+			let result;
+			try {
+				result = exportDataset({
+					runsRoot: workbench.runsRoot,
+					outRoot: workbench.projectDir,
+					...(requested === "--all" ? { all: true } : { latest: true }),
+					sealedDatasetHashes: sealedDatasetHashesFor(scope),
+					tasks: corpusTaskLookup(scope),
+				});
+			} catch (error) {
+				// The only refusal this command can walk into: nothing exportable
+				// has been recorded yet. Everything else is a real fault.
+				if (!(error instanceof DatasetExportError)) throw error;
+				throw new Error(t("export.none"), { cause: error });
+			}
+			if (result.counts.exported === 0) {
+				presenter.show(ctx, {
+					title: t("panel.title", { detail: t("panel.export") }),
+					tone: "warning",
+					lines: [t("export.none")],
+				});
+				return;
+			}
+			presenter.show(ctx, {
+				title: t("panel.title", { detail: t("panel.export") }),
+				tone: "info",
+				lines: [t("export.done", {
+					count: plural(result.counts.exported, "dialogue"),
+					path: oneLine(besideTarget(workbench.projectDir, result.path), 100),
+				})],
+			});
 		},
 	});
 

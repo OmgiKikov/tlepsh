@@ -168,6 +168,10 @@ describe("CLI help", () => {
 		expect(help).not.toContain("ahde improve --target");
 		expect(help).not.toContain("ahde search --target");
 		expect(help).toContain("check  improve  search  review  promote  reject  log  watch  passport");
+		// The recorded dataset joins the pure reads at the end of the block, so
+		// the wrapping of every line above it is byte-for-byte what it was.
+		expect(help).toContain("log  watch  passport  export");
+		expect(help).toContain("ahde export --target <dir> --all             every emulated conversation as JSONL");
 		expect(help).toContain("ahde serve --target <dir> [--port N]         drive the Workbench over a local");
 		expect(help).toContain("AHDE_HOME       user-level Builder credentials and settings (default: ~/.ahde)");
 	});
@@ -253,6 +257,16 @@ describe("CLI help", () => {
 		expect(serve).toContain("Binds 127.0.0.1 only.");
 		expect(serve).toContain("printed once to\nstderr");
 		expect(serve).toContain("--allow-concurrent");
+		const dataset = cliHelp(["export", "--help"]);
+		expect(dataset).toContain("Usage: ahde export [--target <dir>] [--project <id>]");
+		expect(dataset).toContain("(--run <run-id> | --eval <erun-id> | --all)");
+		expect(dataset).toContain("WHAT IT NEVER CONTAINS: sealed holdout anything.");
+		expect(dataset).toContain("read from the run's own workspace snapshot — never re-read from your current\ncheckout");
+		expect(dataset).toContain("read from the sidecars, never re-derived");
+		expect(dataset).toContain("Tool calls and their\nresults are already in `messages`; nothing repeats them.");
+		expect(dataset).toContain("A/A calibration arms are excluded unless --include-aa");
+		expect(dataset).toContain("Infrastructure errors are never exported");
+		expect(dataset).toContain("defaults to\n`<target>/exports/`");
 		const regrade = cliHelp(["regrade", "--help"]);
 		expect(regrade).toContain("Usage: ahde regrade <evalRunId> --target <dir>");
 		expect(regrade).toContain("without calling the\nTarget model again");

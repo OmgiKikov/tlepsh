@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -15,6 +15,19 @@ import {
 	type RegisterBuilderCommandsOptions,
 } from "../src/builder/commands.js";
 import { createRunProgressPresenter } from "../src/builder/run-progress.js";
+import { setLanguage } from "../src/i18n.js";
+import { EvalRunRecordSchema } from "../src/eval.js";
+import {
+	RunRecordSchema,
+	executionFingerprint,
+	hashFile,
+	hashValue,
+	modelFingerprint,
+	provenanceAxes,
+	provenanceKey,
+	type RunRecord,
+} from "../src/provenance.js";
+import { writeJsonArtifact } from "../src/storage/artifacts.js";
 import { candidateHeadline } from "../src/workbench/resolution.js";
 import {
 	AHDE_MODEL_NOTE_TYPE,
@@ -595,6 +608,10 @@ function workbench(options: {
 	decide?: DecideFake;
 	/** Commands that read the harness itself (/doctor's stand-in scan) need a real path. */
 	projectDir?: string;
+	/** Commands that read durable evidence off disk (/export) need real roots. */
+	runsRoot?: string;
+	stateRoot?: string;
+	projectId?: string;
 } = {}): {
 	value: CommandWorkbench;
 	view: ReturnType<typeof vi.fn>;
@@ -603,7 +620,18 @@ function workbench(options: {
 	const view = vi.fn(options.view ?? (async () => baseView));
 	const decide = vi.fn(options.decide ?? (async (input: WorkbenchDecisionInput) => defaultDecision(input)));
 	const projectDir = options.projectDir ?? join(tmpdir(), "ahde-commands-no-such-target");
-	return { value: { view, decide, projectDir } as unknown as CommandWorkbench, view, decide };
+	return {
+		value: {
+			view,
+			decide,
+			projectDir,
+			runsRoot: options.runsRoot ?? join(projectDir, "runs"),
+			stateRoot: options.stateRoot ?? join(projectDir, ".ahde"),
+			projectId: options.projectId ?? "demo",
+		} as unknown as CommandWorkbench,
+		view,
+		decide,
+	};
 }
 
 /**
@@ -698,6 +726,8 @@ describe("Builder Pi slash commands", () => {
 			"passport",
 			"trace",
 			"log",
+			// The conversations the agent already had, as one file to hand on.
+			"export",
 			// What is happening without asking: the cycle, the background
 			// measurement, and the way to stop it.
 			"plan",
@@ -707,7 +737,7 @@ describe("Builder Pi slash commands", () => {
 			"label",
 		]);
 		expect(registered.map(({ name }) => name)).toEqual([...AHDE_BUILDER_COMMAND_NAMES]);
-		expect(registered).toHaveLength(28);
+		expect(registered).toHaveLength(29);
 		expect(registered.every(({ options }) => options.description && options.handler)).toBe(true);
 	});
 
@@ -1925,7 +1955,7 @@ describe("Builder Pi slash commands", () => {
 			name,
 			name === "apply" ? "candidate/fix" : name === "promote" ? "1.0.0" : "",
 		]);
-		expect(invocations).toHaveLength(28);
+		expect(invocations).toHaveLength(29);
 
 		for (const settings of [
 			{ hasUI: false, mode: "print" as const },
@@ -2387,5 +2417,171 @@ describe("Builder Pi slash commands", () => {
 		await command(cancelledFixture.commands, "run").handler("", cancelledHost.ctx);
 		expect(cancelled).toEqual([{ approved: false }]);
 		expect(cancelledActor).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * The recorded dataset, from inside the Builder. The application function is
+ * the one `ahde export` calls, so this pins only what the command owns: the
+ * argument it accepts, and the one Russian line the operator reads.
+ */
+describe("/export", () => {
+	const SHA = "a".repeat(40);
+	const TRACE = [
+		JSON.stringify({ type: "message", message: { role: "user", content: "Проверь договор 42." } }),
+		JSON.stringify({
+			type: "message",
+			message: { role: "assistant", content: [{ type: "text", text: "Договор 42 действует." }] },
+		}),
+	].join("\n");
+
+	/** One Target directory with one exportable eval run under its own runs/. */
+	function targetWithEvidence(runCount = 2): string {
+		const projectDir = mkdtempSync(join(tmpdir(), "ahde-export-command-"));
+		standInDirs.push(projectDir);
+		const runsRoot = join(projectDir, "runs");
+		const evaluation = {
+			suiteId: "suite",
+			suiteHash: `sha256:${"d".repeat(64)}`,
+			dataset: "development",
+			datasetHash: `sha256:${"e".repeat(64)}`,
+		};
+		const target = { id: "demo", gitSha: SHA, workspaceHash: `sha256:${"9".repeat(64)}` };
+		const runtime = {
+			piVersion: "0.84.3",
+			piSha: "b".repeat(40),
+			ahdeVersion: "0.1.0",
+			ahdeCodeHash: `sha256:${"c".repeat(64)}`,
+		};
+		const model = modelFingerprint({
+			provider: "local",
+			id: "qwen3.5-27b",
+			api: "openai-completions",
+			baseUrl: "http://127.0.0.1:9901/v1",
+			apiKeyEnv: "TEST_MODEL_KEY",
+			thinkingLevel: "off",
+			params: {},
+			spec: {},
+		});
+		const execution = executionFingerprint("isolated");
+		const records = Array.from({ length: runCount }, (_, index): RunRecord => {
+			const runId = `run_export_${index}`;
+			const runDir = join(runsRoot, runId);
+			const workspace = join(runDir, "workspace");
+			mkdirSync(workspace, { recursive: true });
+			writeFileSync(join(runDir, "session.jsonl"), `${TRACE}\n`);
+			writeFileSync(join(workspace, "manifest.yaml"), "id: demo\ninstructions:\n  agentsMd: AGENTS.md\n");
+			writeFileSync(join(workspace, "AGENTS.md"), "# Demo\n");
+			const record: RunRecord = {
+				schemaVersion: 1,
+				runId,
+				taskId: `task_${index}`,
+				repetitionIndex: 0,
+				label: "solo",
+				status: "completed",
+				error: null,
+				startedAt: "2026-08-31T10:00:00.000Z",
+				finishedAt: "2026-08-31T10:00:01.000Z",
+				target,
+				runtime,
+				model,
+				execution,
+				eval: evaluation,
+				trace: { path: "session.jsonl", sessionId: runId, sha256: hashFile(`${TRACE}\n`) },
+				metrics: {
+					tokens: { input: 2, output: 3, cacheRead: 0, cacheWrite: 0, total: 5 },
+					costUsd: 0,
+					latencyMs: 10,
+					toolCalls: 0,
+					toolErrors: 0,
+					recoveryAttempts: 0,
+				},
+				evalResults: {
+					graders: [{ name: "answer", type: "output_contains", passed: true, score: 1, reason: "ok" }],
+					outcome: "pass",
+				},
+				parent: { evalRunId: "erun_export", candidateOf: null },
+			};
+			writeJsonArtifact(join(runDir, "run.json"), RunRecordSchema, record);
+			return record;
+		});
+		const evidence = { runtime, model, judge: null, execution, eval: evaluation };
+		writeJsonArtifact(join(runsRoot, "erun_export", "eval_run.json"), EvalRunRecordSchema, {
+			schemaVersion: 3,
+			purpose: "evidence",
+			evalRunId: "erun_export",
+			target,
+			label: "solo",
+			baselineEvalRunId: null,
+			provenance: provenanceAxes(evidence),
+			provenanceKey: provenanceKey(evidence),
+			suiteId: evaluation.suiteId,
+			suiteHash: evaluation.suiteHash,
+			dataset: evaluation.dataset,
+			datasetHash: evaluation.datasetHash,
+			evidenceVisibility: "development",
+			taskIds: records.map((run) => run.taskId),
+			repetitions: 1,
+			runIds: records.map((run) => run.runId),
+			runArtifacts: records.map((run) => ({ runId: run.runId, sha256: hashValue(run) })),
+			startedAt: "2026-08-31T10:00:00.000Z",
+			finishedAt: "2026-08-31T10:00:02.000Z",
+			summary: { total: records.length, pass: records.length, fail: 0, error: 0, allPassRate: 1 },
+		});
+		return projectDir;
+	}
+
+	afterEach(() => {
+		setLanguage(null);
+	});
+
+	it("writes the last test run's conversations beside the agent and says so in one line", async () => {
+		setLanguage("ru");
+		const projectDir = targetWithEvidence();
+		const fixture = workbench({ projectDir });
+		const { commands, output } = register(fixture.value);
+		const host = context();
+
+		await command(commands, "export").handler("", host.ctx);
+
+		expect(output.blocks).toHaveLength(1);
+		expect(output.blocks[0]?.title).toBe("AHDE · Записанные диалоги");
+		expect(output.blocks[0]?.lines).toEqual([
+			"выгружено 2 диалога → exports/erun_export.jsonl (без экзамена)",
+		]);
+		// The file is real, and every line of it is one conversation.
+		const written = readFileSync(join(projectDir, "exports", "erun_export.jsonl"), "utf8");
+		expect(written.trimEnd().split("\n")).toHaveLength(2);
+		expect(written).toContain("Договор 42 действует.");
+		// Nothing ran and nothing was decided: this is a read.
+		expect(fixture.decide).not.toHaveBeenCalled();
+	});
+
+	it("bends the noun to the count, the way every other Russian line does", async () => {
+		setLanguage("ru");
+		const fixture = workbench({ projectDir: targetWithEvidence(1) });
+		const { commands, output } = register(fixture.value);
+		await command(commands, "export").handler("--all", context().ctx);
+		expect(output.blocks[0]?.lines[0]).toMatch(/^выгружено 1 диалог → exports\/all-.*\.jsonl \(без экзамена\)$/);
+	});
+
+	it("says plainly that there is nothing recorded yet, and refuses an argument it does not know", async () => {
+		setLanguage("ru");
+		const empty = mkdtempSync(join(tmpdir(), "ahde-export-empty-"));
+		standInDirs.push(empty);
+		const fixture = workbench({ projectDir: empty });
+		const { commands, output } = register(fixture.value);
+
+		await command(commands, "export").handler("", context().ctx);
+		expect(output.blocks[0]?.lines).toEqual(["выгружать пока нечего — сначала прогони тесты"]);
+
+		await expectRefusal(
+			commands,
+			"export",
+			"--everything",
+			context().ctx,
+			output,
+			"/export принимает --all или ничего — тогда это последний прогон",
+		);
 	});
 });

@@ -30,6 +30,13 @@ import {
 	regradeEvalRun,
 	renderRegradeSummary,
 } from "./regrade.js";
+import {
+	corpusTaskLookup,
+	DatasetExportError,
+	datasetExportOptionsFromFlags,
+	exportDataset,
+	renderDatasetExportSummary,
+} from "./application/export-dataset.js";
 import { runCandidateExperiment } from "./application/candidate-experiment.js";
 import {
 	renderCheapCheckLine,
@@ -464,6 +471,36 @@ async function targetPi(): Promise<void> {
  * Labels live under a project, and a report is asked for by eval run alone.
  * The eval run's own Target id is the same default every other command uses.
  */
+/**
+ * The recorded dataset. A pure read over durable development evidence: no
+ * model call, no Target execution, and the only thing written is the JSONL.
+ *
+ * Missing or unexportable artifacts exit 2 rather than 1: a dataset that was
+ * silently short but looked like success is exactly the failure whoever
+ * receives it cannot detect.
+ */
+function exportRecordedDataset(flags: Readonly<Record<string, string>>): void {
+	const targetDir = resolve(flags.target ?? process.cwd());
+	const projectId = flags.project ?? loadTarget(targetDir).manifest.id;
+	let result;
+	try {
+		// The parser's own flag map, not process.argv: `arg()` reads the token
+		// after a flag, which is nothing at all for a value-less `--all`.
+		result = exportDataset(datasetExportOptionsFromFlags(flags, {
+			runsRoot: runsRootForTarget(flags.target),
+			outRoot: targetDir,
+			sealedDatasetHashes: sealedCorpusHashes(projectId),
+			tasks: corpusTaskLookup({ stateRoot: stateRoot(), projectId }),
+		}));
+	} catch (error) {
+		if (!(error instanceof DatasetExportError)) throw error;
+		console.error(`error: ${error.message}`);
+		process.exitCode = 2;
+		return;
+	}
+	for (const line of renderDatasetExportSummary(result)) console.log(line);
+}
+
 function reportProjectId(evalRunId: string): string {
 	const explicit = arg("project");
 	if (explicit) return explicit;
@@ -1254,6 +1291,10 @@ async function main(): Promise<void> {
 			for (const grader of report.judgeCalibration) {
 				console.log(`${grader.line}  ${grader.graderNames.join(", ")}`);
 			}
+			break;
+		}
+		case "export": {
+			exportRecordedDataset(invocation.flags);
 			break;
 		}
 		case "label": {

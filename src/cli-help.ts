@@ -37,6 +37,7 @@ Inspect and run:
   ahde calibrate --target <dir>                measure run-to-run noise (A/A)
   ahde log --target <dir> [--project <id>]     the agent's growth, version by version
   ahde watch --target <dir> [--every 1d]       the basket on a schedule; drift vs noise
+  ahde export --target <dir> --all             every emulated conversation as JSONL
   ahde evidence [--port N] [--project <id>]    open the read-only trace explorer
   ahde serve --target <dir> [--port N]         drive the Workbench over a local
                                                HTTP/JSON API; your UI is the gate
@@ -57,7 +58,7 @@ ${builderCommandLines()}
 
 Use \`ahde <command> --help\` for focused help. Advanced automation commands:
   list  corpus  feedback  diagnose  regrade  report  label  candidate  calibrate
-  check  improve  search  review  promote  reject  log  watch  passport
+  check  improve  search  review  promote  reject  log  watch  passport  export
 
 Wherever a command takes both, --project defaults to the Target's manifest id;
 an explicit --project still wins.
@@ -231,6 +232,47 @@ Build a static, bounded HTML evidence report for one development EvalRun.
 eval run's own recorded Target id when you do not.
 Judge graders carry one line each: \`judge agreement 84% · κ 0.62 · n=50\` from
 this project's labels, or \`judge not calibrated\` when nobody has checked yet.`,
+	export: `Usage: ahde export [--target <dir>] [--project <id>] \\
+                   (--run <run-id> | --eval <erun-id> | --all) \\
+                   [--out <dir>] [--min-score <0..1>] [--include-failed] [--include-aa]
+
+The recorded dataset: every emulated conversation this Target has already had,
+as JSONL somebody else can read. One line per exported run, in the standard
+chat-tuning shape — \`messages\` (system, user, assistant with content or
+tool_calls, tool), \`tools\` (what the harness declared), and \`meta\`.
+
+\`meta\` names the evidence behind the line: task, run, eval run, revision,
+workspace hash, model, score, passed, repetition, and every grader row as
+run.json recorded it. Where the run has them it also carries \`world\` (the state
+the case started from, and the state the run left behind), \`judge.verdicts\`
+(read from the sidecars, never re-derived), \`simulatedUser\` (the person's goal
+and persona, the turns the conversation took, why it stopped) and \`execution\`
+(which kind of agent produced it). Every one of those is optional, so a file
+written before them is still a valid file of this shape. Tool calls and their
+results are already in \`messages\`; nothing repeats them.
+
+The system message is the Target's effective instructions AS THAT RUN SAW THEM,
+read from the run's own workspace snapshot — never re-read from your current
+checkout. Everything else is derived through the one session.jsonl parser, with
+its hash check, and every string passes the credential redactor.
+
+WHAT IT NEVER CONTAINS: sealed holdout anything. Visibility is checked on the
+bounded EvalRun index before a single trace is opened, exactly as \`report\` and
+\`diagnose\` check it, and again on the verified record. Cheap-check screens
+(\`purpose: screen\`) and ambiguous legacy one-arm records are refused the same
+way. A/A calibration arms are excluded unless --include-aa, because they measure
+noise rather than behaviour. Candidate arms are ordinary development evidence
+and are included.
+
+--min-score is the bar on the mean grader score (default 1.0 — only runs whose
+graders were completely satisfied). --include-failed also writes the runs below
+it, marked \`"passed": false\`, for preference or contrastive data.
+Infrastructure errors are never exported: they are inconclusive evidence.
+
+--out is the directory that receives \`<subject>.jsonl\`, and defaults to
+\`<target>/exports/\`. The summary prints runs scanned, exported, and skipped by
+reason (sealed / screen / failed / infra / aa). Exit 2 = the named evidence is
+missing or not exportable.`,
 	label: `Usage:
   ahde label <evalRunId> --target <dir> [--project <id>] [--spec <approvedSpecId>] [--sample N] [--seed <text>]
   (--project defaults to the Target's manifest id)
