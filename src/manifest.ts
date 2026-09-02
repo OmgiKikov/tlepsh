@@ -157,6 +157,35 @@ export const TurnBudgetGrader = z.strictObject({
 	max: z.number().int().min(1).max(MAX_SIMULATED_USER_TURNS),
 });
 
+/** Dotted path: `order.items.0.status`. No wildcards — an expectation names one place. */
+const WORLD_PATH = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
+
+/** One place in a world state, named the same way by an expectation and a grader. */
+export const WorldPathSchema = z
+	.string()
+	.min(1)
+	.max(200)
+	.regex(WORLD_PATH, "world expectation path is a dotted path with no wildcards");
+
+/** The three operations `domain/world.ts` decides. Nothing else may be asked. */
+export const WorldOpSchema = z.enum(["equals", "exists", "contains"]);
+export type WorldOp = z.infer<typeof WorldOpSchema>;
+
+/**
+ * `exists` only asks whether the path is there, so carrying a value would be a
+ * promise nothing reads; `equals` and `contains` compare against one, so
+ * omitting it would be a check with nothing on the other side.
+ */
+function worldValueIssue(op: WorldOp, hasValue: boolean): string | null {
+	if (op === "exists" && hasValue) {
+		return "an exists expectation asks only whether the path is there; it takes no value";
+	}
+	if (op !== "exists" && !hasValue) {
+		return `a ${op} expectation compares against a value and must carry one`;
+	}
+	return null;
+}
+
 export const GraderSpec = z.discriminatedUnion("type", [
 	ToolCalledGrader,
 	OutputContainsGrader,
@@ -252,17 +281,14 @@ export const MAX_WORLD_DEPTH = 5;
 /** The names that turn a plain object literal into prototype pollution. */
 const DANGEROUS_WORLD_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
-/** Dotted path: `order.items.0.status`. No wildcards — an expectation names one place. */
-const WORLD_PATH = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
-
 /**
  * One assertion about the world after the agent has acted. `equals` and
  * `contains` compare against `value`; `exists` only asks whether the path is
  * there, so carrying a value would be a promise nothing reads.
  */
 export const WorldExpectationSchema = z.strictObject({
-	path: z.string().min(1).max(200).regex(WORLD_PATH, "world expectation path is a dotted path with no wildcards"),
-	op: z.enum(["equals", "exists", "contains"]),
+	path: WorldPathSchema,
+	op: WorldOpSchema,
 	value: z.unknown().optional(),
 });
 export type WorldExpectation = z.infer<typeof WorldExpectationSchema>;
@@ -325,21 +351,8 @@ const WorldObjectSchema = z
 		const structure = worldStateIssue(world.state, 1, "state");
 		if (structure) context.addIssue({ code: "custom", path: ["state"], message: structure });
 		for (const [index, expectation] of (world.expect ?? []).entries()) {
-			const hasValue = expectation.value !== undefined;
-			if (expectation.op === "exists" && hasValue) {
-				context.addIssue({
-					code: "custom",
-					path: ["expect", index, "value"],
-					message: "an exists expectation asks only whether the path is there; it takes no value",
-				});
-			}
-			if (expectation.op !== "exists" && !hasValue) {
-				context.addIssue({
-					code: "custom",
-					path: ["expect", index, "value"],
-					message: `a ${expectation.op} expectation compares against a value and must carry one`,
-				});
-			}
+			const issue = worldValueIssue(expectation.op, expectation.value !== undefined);
+			if (issue) context.addIssue({ code: "custom", path: ["expect", index, "value"], message: issue });
 		}
 	});
 
