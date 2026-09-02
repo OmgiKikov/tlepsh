@@ -50,7 +50,7 @@ user has to learn.
 /log [rows]             how the agent grew: every version, what it scored, what it cost
 /label [n]              check the judge: grade n answers blind, then see what it said
 /doctor                 model, evaluator, run, and future ship readiness
-/holdout                privately import the operator-owned sealed JSONL exam
+/holdout [file]         privately import the operator-owned sealed JSONL exam, or have the judge write one
 /help                   this reference
 
 /run [repetitions]      alias of /test

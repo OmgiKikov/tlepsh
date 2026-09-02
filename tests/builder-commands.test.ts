@@ -1922,7 +1922,7 @@ describe("Builder Pi slash commands", () => {
 		expect(output.show).not.toHaveBeenCalled();
 	});
 
-	it.each(["help", "doctor", "holdout", "status", "review"])("rejects arguments to /%s before touching the host", async (name) => {
+	it.each(["help", "doctor", "status", "review"])("rejects arguments to /%s before touching the host", async (name) => {
 		const fixture = workbench();
 		const { commands, output } = register(fixture.value);
 		const host = context();
@@ -2002,6 +2002,31 @@ describe("Builder Pi slash commands", () => {
 		expect(output.text()).toContain("20 evaluator-only cases are ready for the ship gate");
 		expect(output.text()).not.toContain("customer-secrets");
 		expect(output.text()).not.toContain("Private promotion exam");
+	});
+
+	it("/holdout <path> imports that file straight away, without the menu or the path prompt", async () => {
+		// The host's own next step after a judge-written draft is "/holdout <path>";
+		// it used to answer "/holdout does not accept arguments".
+		const fixture = workbench();
+		const importSealedHoldout = vi.fn(() => ({ taskCount: 20 }));
+		const { commands, output } = register(fixture.value, { importSealedHoldout });
+		const select = vi.fn(async () => undefined);
+		const answers = ["Private promotion exam"];
+		const host = context({
+			confirm: async () => true,
+			select,
+			input: async () => answers.shift(),
+		});
+
+		await command(commands, "holdout").handler("  /private/evals/customer-secrets.jsonl ", host.ctx);
+
+		expect(select).not.toHaveBeenCalled();
+		expect(importSealedHoldout).toHaveBeenCalledWith({
+			sourcePath: "/private/evals/customer-secrets.jsonl",
+			name: "Private promotion exam",
+		});
+		expect(output.text()).toContain("20 evaluator-only cases are ready for the ship gate");
+		expect(output.text()).not.toContain("customer-secrets");
 	});
 
 	it("routes /holdout's other two answers into the generate-holdout decision", async () => {

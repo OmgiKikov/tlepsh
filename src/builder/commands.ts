@@ -1079,15 +1079,18 @@ export function registerAhdeBuilderCommands(
 	});
 
 	registerCommand("holdout", {
-		description: "Get a sealed exam: import an operator-owned JSONL file, or have the judge write one. Either way its content stays hidden from Builder Pi",
+		description: "Get a sealed exam: import an operator-owned JSONL file (/holdout <path>), or have the judge write one. Either way its content stays hidden from Builder Pi",
 		async handler(args, ctx) {
-			noArguments("holdout", args);
 			await prepare(ctx, "holdout");
 			const minimum = SEALED_GATE_POLICY.minTasks;
-			// Three ways to end up with an exam, and one question that names all
-			// three. The two generated ones are Workbench decisions with their own
-			// dialog; the import is this command's own host UI, as it always was.
-			if (typeof ctx.ui.select === "function") {
+			// A path on the command line is the import, straight away: the host's
+			// own "run /holdout on that file" used to lead to "/holdout does not
+			// accept arguments". Without one, three ways to end up with an exam and
+			// one question that names all three. The two generated ones are
+			// Workbench decisions with their own dialog; the import is this
+			// command's own host UI, as it always was.
+			const givenPath = args.trim();
+			if (!givenPath && typeof ctx.ui.select === "function") {
 				const importChoice = t("holdout.import-file");
 				const sealChoice = t("holdout.generate-seal");
 				const reviewChoice = t("holdout.generate-review");
@@ -1097,13 +1100,13 @@ export function registerAhdeBuilderCommands(
 					{ signal: ctx.signal },
 				);
 				if (chosen === undefined) {
-					ctx.ui.notify("Cancelled — nothing changed.", "info");
+					ctx.ui.notify(t("error.cancelled"), "info");
 					return;
 				}
 				if (chosen === sealChoice || chosen === reviewChoice) {
 					const answer = await ctx.ui.input(t("holdout.how-many", { minimum }), String(minimum + 5));
 					if (answer === undefined || !answer.trim()) {
-						ctx.ui.notify("Cancelled — nothing changed.", "info");
+						ctx.ui.notify(t("error.cancelled"), "info");
 						return;
 					}
 					const cases = Number(answer.trim());
@@ -1120,26 +1123,23 @@ export function registerAhdeBuilderCommands(
 				}
 			}
 			if (!options.importSealedHoldout) throw new Error("sealed holdout import is unavailable in this host");
-			const sourcePath = await ctx.ui.input(
-				"Path to the private sealed JSONL corpus",
-				"./private-holdout.jsonl",
-			);
+			const sourcePath = givenPath || await ctx.ui.input(t("holdout.path-prompt"), "./private-holdout.jsonl");
 			if (sourcePath === undefined || !sourcePath.trim()) {
-				ctx.ui.notify("Cancelled — nothing changed.", "info");
+				ctx.ui.notify(t("error.cancelled"), "info");
 				return;
 			}
-			const name = await ctx.ui.input("Name for this immutable exam", "Promotion holdout");
+			const name = await ctx.ui.input(t("holdout.name-prompt"), t("holdout.name-default"));
 			if (name === undefined || !name.trim()) {
-				ctx.ui.notify("Cancelled — nothing changed.", "info");
+				ctx.ui.notify(t("error.cancelled"), "info");
 				return;
 			}
 			const approved = await ctx.ui.confirm(
-				"Import sealed holdout",
-				`Import ${sourcePath.trim()} as an evaluator-only exam? Builder Pi will see only whether it is large enough to ship.`,
+				t("holdout.import-title"),
+				t("holdout.import-question", { path: sourcePath.trim() }),
 				{ signal: ctx.signal },
 			);
 			if (!approved) {
-				ctx.ui.notify("Cancelled — nothing changed.", "info");
+				ctx.ui.notify(t("error.cancelled"), "info");
 				return;
 			}
 			const result = options.importSealedHoldout({ sourcePath: sourcePath.trim(), name: name.trim() });
@@ -1148,8 +1148,8 @@ export function registerAhdeBuilderCommands(
 				title: t("panel.holdout-imported"),
 				tone: result.taskCount >= minimum ? "success" : "warning",
 				lines: result.taskCount >= minimum
-					? [`${result.taskCount} evaluator-only cases are ready for the ship gate.`, "Builder Pi never receives their content or identity."]
-					: [`${result.taskCount} evaluator-only cases were imported; the ship gate needs at least ${minimum}.`, "Import a sufficiently large, separate holdout before applying a candidate."],
+					? [t("holdout.imported", { count: result.taskCount }), t("holdout.hidden")]
+					: [t("holdout.imported-short", { count: result.taskCount, minimum }), t("holdout.import-more")],
 			});
 		},
 	});
