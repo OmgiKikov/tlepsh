@@ -1,16 +1,19 @@
-# RU support-agent template. Replace every REPLACE-ME before the first run.
-# `ahde validate --target .` tells you what is still missing.
-id: support-agent
+# RU support-agent scaffold. The id and the model below are the starter
+# placeholders every AHDE template ships with: run `ahde` in this directory and
+# the first-run dialog asks which model the agent should use, then writes this
+# file for you through a reviewed commit. The judge, when a case needs one, is
+# asked the same way. Nothing here has to be edited by hand.
+id: my-agent
 model:
   # The Target's own model. Small, cheap models work here — the template's
   # instructions are written to survive one.
-  provider: REPLACE-ME-provider          # e.g. openrouter
-  id: REPLACE-ME-model-id                # e.g. vendor/model-9b
+  provider: openai-compatible
+  id: replace-with-model-id
   api: openai-completions
-  baseUrl: https://REPLACE-ME/api/v1
-  apiKeyEnv: REPLACE_ME_API_KEY          # name of the env var, never the key
-  thinkingLevel: "low"
-  timeoutMs: 600000
+  baseUrl: http://127.0.0.1:1234/v1
+  apiKeyEnv: AHDE_MODEL_API_KEY
+  thinkingLevel: "off"
+  timeoutMs: 300000
 execution:
   # `bash` is what lets the agent call bin/<tool>. Drop it only if the agent
   # answers from instructions alone.
@@ -23,16 +26,9 @@ instructions:
 skills: []
 tools: [tools/check_account.tool.yaml]
 evalSuite:
-  id: support-agent-development
+  # No `judge:` block on purpose: no case here uses a `judge` grader yet. The
+  # Builder asks for one through the same reviewed setup the moment it writes a
+  # case that needs it.
+  id: my-agent-development
   dataset: evals/development.jsonl
   graders: evals/graders.yaml
-  judge:
-    # The judge must not be the Target's own model. Leave this block out
-    # entirely if no case uses a `judge` grader.
-    provider: REPLACE-ME-provider
-    id: REPLACE-ME-judge-model-id
-    api: openai-completions
-    baseUrl: https://REPLACE-ME/api/v1
-    apiKeyEnv: REPLACE_ME_API_KEY
-    thinkingLevel: "high"
-    timeoutMs: 600000
