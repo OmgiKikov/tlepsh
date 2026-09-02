@@ -50,7 +50,10 @@ export function nextStep(view: Pick<WorkbenchView, "stage" | "headline" | "block
 	if (view.stage === "candidate-verification" && view.detail?.aspect === "review" && view.detail.content.kind === "interrupted-candidate") {
 		return t("next.interrupted");
 	}
-	if (view.stage === "target-setup" && view.blockers.some((blocker) => /placeholder/i.test(blocker))) {
+	// Both shapes of "nobody has chosen a model yet": the built-in scaffold's
+	// placeholders, and a template that still says REPLACE-ME. Either way the
+	// next sentence is about the model, not about describing the agent.
+	if (view.stage === "target-setup" && view.blockers.some((blocker) => /placeholder|stand-in/i.test(blocker))) {
 		return t("next.model-required");
 	}
 	return STAGES.includes(view.stage) ? t(`next.${view.stage}`) : view.headline;

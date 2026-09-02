@@ -1,7 +1,23 @@
 import type { ResolvedTarget } from "../manifest.js";
+import { standInManifestFields } from "./placeholders.js";
 
 export const STARTER_TARGET_ID = "my-agent";
 export const STARTER_MODEL_ID = "replace-with-model-id";
+
+/**
+ * Whether this manifest is still a template's starting material rather than a
+ * configured agent. Two shapes say so, and both mean "nobody has chosen yet":
+ * the built-in scaffold's exact id/model, and any template that still writes
+ * `REPLACE-ME` where the identity or the model belongs. Every surface that
+ * offers to configure the Target asks this one question.
+ */
+export function targetBootstrapRequired(
+	manifest: Pick<ResolvedTarget["manifest"], "id" | "model">,
+): boolean {
+	return manifest.id === STARTER_TARGET_ID ||
+		manifest.model.id === STARTER_MODEL_ID ||
+		standInManifestFields(manifest).length > 0;
+}
 
 export interface TargetReadiness {
 	ready: boolean;
@@ -22,9 +38,7 @@ export function inspectTargetReadiness(
 	target: Pick<ResolvedTarget, "manifest">,
 	environment: NodeJS.ProcessEnv = process.env,
 ): TargetReadiness {
-	const bootstrapRequired =
-		target.manifest.id === STARTER_TARGET_ID ||
-		target.manifest.model.id === STARTER_MODEL_ID;
+	const bootstrapRequired = targetBootstrapRequired(target.manifest);
 	const environmentName = target.manifest.model.apiKeyEnv;
 	const credentialPresent = Boolean(environment[environmentName]?.trim());
 	const issues: string[] = [];

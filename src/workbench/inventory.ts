@@ -34,7 +34,8 @@ import {
 	loadCycleContinuationReceipt,
 	type CycleContinuationReceipt,
 } from "./cycle-continuation.js";
-import { toolCredentialReadiness } from "../target/readiness.js";
+import { targetBootstrapRequired, toolCredentialReadiness } from "../target/readiness.js";
+import { standInFilesLine, standInManifestFields } from "../target/placeholders.js";
 import { listCorpora, loadCorpus, type CorpusMetadata } from "../corpus.js";
 import {
 	candidateStatus,
@@ -1007,12 +1008,22 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 			blockers: [blocked("Target harness is missing.", "blocker.target-missing")],
 		};
 	}
-	if (target.manifest.id === "my-agent" || target.manifest.model.id === "replace-with-model-id") {
+	if (targetBootstrapRequired(target.manifest)) {
+		// Which fields are still stand-ins is the whole answer to "why am I being
+		// asked this again", and a template that says REPLACE-ME in four places
+		// deserves to have them named rather than described.
+		const standIns = standInManifestFields(target.manifest);
 		return {
 			stage: "target-setup",
 			headline: "Choose the Target identity and model before authoring evidence.",
 			actions: ["configure-target"],
-			blockers: [blocked("Target still contains its one-time identity/model placeholders.", "blocker.target-placeholder")],
+			blockers: [standIns.length > 0
+				? blocked(
+					`Target still contains the template's REPLACE-ME stand-ins in ${standIns.join(", ")}.`,
+					"blocker.target-stand-ins",
+					{ fields: standIns.join(", ") },
+				)
+				: blocked("Target still contains its one-time identity/model placeholders.", "blocker.target-placeholder")],
 		};
 	}
 
@@ -1347,7 +1358,7 @@ export function deriveWorkbenchView(
 		headline: state.headline,
 		target: inventory.target
 			? {
-				status: inventory.target.manifest.id === "my-agent" || inventory.target.manifest.model.id === "replace-with-model-id" ? "bootstrap-required" : "ready",
+				status: targetBootstrapRequired(inventory.target.manifest) ? "bootstrap-required" : "ready",
 				id: inventory.target.manifest.id,
 				gitSha: inventory.target.gitSha,
 				model: targetModelSummary(inventory, env),

@@ -1463,6 +1463,11 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"label.case-input": "Case",
 	"passport.none-yet": "Nothing has been shipped yet, so there is no version to describe.",
 	"passport.no-version": "No shipped version {version} exists for this agent.",
+	// lane: template-placeholders
+	"blocker.target-stand-ins": "The agent still carries the template's REPLACE-ME stand-ins in {fields} — pick its name and model.",
+	// Worded around the count rather than after it: "1 file still carry" is not a
+	// sentence, and this line has to read for one file as well as for five.
+	"readiness.stand-ins": "The template's REPLACE-ME stand-ins are still in {files}: {names} — describe the agent and the Builder replaces them",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2673,6 +2678,9 @@ const ru: Record<MessageKey, string> = {
 	"label.case-input": "Кейс",
 	"passport.none-yet": "Пока ничего не выкачено, так что описывать нечего.",
 	"passport.no-version": "Выкаченной версии {version} у этого агента нет.",
+	// lane: template-placeholders
+	"blocker.target-stand-ins": "У агента ещё стоят подставные REPLACE-ME из шаблона в полях {fields} — выбери имя и модель.",
+	"readiness.stand-ins": "{files} ещё с подставными REPLACE-ME из шаблона: {names} — опиши агента, и Билдер их заменит",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };
