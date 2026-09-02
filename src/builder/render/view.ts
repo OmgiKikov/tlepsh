@@ -13,7 +13,7 @@ import type {
 } from "../../workbench/types.js";
 import { failureModeExcerpt, failureModeReading } from "../../application/run-explanation.js";
 import { formatResourceFragment } from "../../domain/comparison-gate.js";
-import { candidateStatusLabel, plural, t, verdictLabel } from "../../i18n.js";
+import { candidateStatusLabel, hasMessage, plural, t, verdictLabel } from "../../i18n.js";
 import { formatFlipRate, formatNoiseBand } from "./calibration.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
 import {
@@ -46,7 +46,7 @@ import { measurementOf } from "../../application/prediction.js";
 import { examLine, measurementLine, measurementSurface } from "../../application/measurement-line.js";
 import type { Paint } from "./paint.js";
 import { planHeadline, type Plan } from "./plan.js";
-import { nextStep, stageLabel } from "./stage.js";
+import { nextStep, stageLabel, stageNextStep } from "./stage.js";
 
 export interface RenderReviewOptions {
 	maxDiffLines?: number;
@@ -85,14 +85,42 @@ function evaluatorLine(view: WorkbenchView, paint: Paint): string | null {
 	return parts.length === 0 ? null : `${paint.dim(t("label.evaluators"))} ${parts.join(paint.dim(" · "))}`;
 }
 
-function evidenceLine(view: WorkbenchView, paint: Paint): string {
+/**
+ * What this project already holds. Silent while it holds nothing: a first
+ * screen reading `0 runs · 0 open changes · 0 candidates` is a row of zeroes
+ * about words the operator has not met yet, and the next-step line above it
+ * already says the only thing there is to do.
+ */
+function evidenceLine(view: WorkbenchView, paint: Paint): string | null {
 	const counts = view.counts;
+	if (
+		counts.developmentEvals === 0 && counts.openProposals === 0 &&
+		counts.candidates === 0 && counts.sealedCorpora === 0
+	) return null;
 	return `${paint.dim(t("label.evidence"))} ${joinNonEmpty([
 		plural(counts.developmentEvals, "eval run"),
 		plural(counts.openProposals, "open proposal"),
 		plural(counts.candidates, "candidate"),
 		counts.sealedCorpora > 0 ? plural(counts.sealedCorpora, "sealed holdout") : null,
 	])}`;
+}
+
+/**
+ * The blockers in the operator's language. The Workbench mints each one twice
+ * — an English sentence for the model and scripts, and a typed reason — so the
+ * host renders the reason and falls back to the sentence only for a view that
+ * predates the reasons.
+ */
+export function blockerLines(view: Pick<WorkbenchView, "blockers" | "blockerReasons">): string[] {
+	const reasons = view.blockerReasons;
+	if (!reasons || reasons.length !== view.blockers.length) {
+		return view.blockers.map((item) => oneLine(item, 200));
+	}
+	return reasons.map((reason, index) => {
+		if (!hasMessage(reason.code)) return oneLine(view.blockers[index] ?? "", 200);
+		const text = t(reason.code, reason.params);
+		return oneLine(reason.detail ? `${text} ${reason.detail}` : text, 200);
+	});
 }
 
 /**
@@ -138,17 +166,18 @@ function calibrationLine(view: WorkbenchView, paint: Paint): string | null {
 export function renderStatus(view: WorkbenchView, paint: Paint): string[] {
 	const noise = calibrationLine(view, paint);
 	const evaluators = evaluatorLine(view, paint);
+	const evidence = evidenceLine(view, paint);
 	const shipping = shippingReadinessLine(view, paint);
 	const lines = [
 		`${paint.accent(paint.bold("AHDE"))} ${paint.dim("·")} ${paint.bold(stageLabel(view.stage))}`,
 		targetLine(view, paint),
 		...(evaluators ? [evaluators] : []),
-		evidenceLine(view, paint),
+		...(evidence ? [evidence] : []),
 		...(shipping ? [shipping] : []),
 		...(noise ? [noise] : []),
 		`${paint.dim(t("label.next"))} ${nextStep(view)}`,
 	];
-	if (view.blockers.length > 0) lines.push(`${paint.warning(t("label.blocked"))} ${view.blockers.map((item) => oneLine(item, 200)).join(" ")}`);
+	if (view.blockers.length > 0) lines.push(`${paint.warning(t("label.blocked"))} ${blockerLines(view).join(" ")}`);
 	if (view.warnings.length > 0) {
 		lines.push(`${paint.warning(t("label.warnings"))}`);
 		lines.push(...bullets(view.warnings, paint, { limit: 6, max: 200 }));
@@ -214,7 +243,8 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 	// The whole cycle, one line under the stage: how many phases are behind,
 	// and the one the operator is standing in. `/plan` opens the same compilation.
 	if (state.plan) lines.push(paint.dim(planHeadline(state.plan)));
-	lines.push(`${evidenceLine(view, paint)} ${paint.dim("·")} ${paint.dim(t("label.builder-model"))} ${builder}`);
+	const evidence = evidenceLine(view, paint);
+	lines.push(joinNonEmpty([evidence, `${paint.dim(t("label.builder-model"))} ${builder}`], ` ${paint.dim("·")} `));
 	const shipping = shippingReadinessLine(view, paint);
 	if (shipping) lines.push(shipping);
 	const noise = calibrationLine(view, paint);
@@ -224,7 +254,7 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 	const keys = toolCredentialLine(view, paint);
 	if (keys) lines.push(keys);
 	if (view.blockers.length > 0 && view.stage !== "target-setup") {
-		lines.push(`${paint.warning(t("label.blocked"))} ${oneLine(view.blockers.join(" "), 200)}`);
+		lines.push(`${paint.warning(t("label.blocked"))} ${oneLine(blockerLines(view).join(" "), 200)}`);
 	}
 	lines.push(paint.dim(t("header.help")));
 	lines.push("");
@@ -504,7 +534,10 @@ export function renderReview(content: WorkbenchReviewDetail, paint: Paint, optio
 			...renderCandidate(content, paint, t("candidate.interrupted")),
 			paint.warning(t("review.interrupted-warning")),
 		];
-		case "workflow": return [`${section(stageLabel(content.stage), paint)}`, ...wrap(content.headline, 96, "  ")];
+		// The headline is the model's sentence about this stage, in English by
+		// design. The operator gets the same fact in their own language, which is
+		// exactly what the next-step line already says.
+		case "workflow": return [`${section(stageLabel(content.stage), paint)}`, ...wrap(stageNextStep(content.stage, content.headline), 96, "  ")];
 	}
 }
 
@@ -587,13 +620,8 @@ export function renderTraces(content: WorkbenchTracesDetail, paint: Paint): stri
 }
 
 function resourceKind(kind: string): string {
-	switch (kind) {
-		case "instructions": return "instructions";
-		case "skill": return "skill";
-		case "tool-descriptor": return "tool descriptor";
-		case "tool-executable": return "tool executable";
-		default: return kind;
-	}
+	const key = `view.resource.${kind}`;
+	return hasMessage(key) ? t(key) : kind;
 }
 
 /** Exact committed Target context: identity, execution policy, declared resources. */
@@ -601,7 +629,7 @@ export function renderTarget(content: WorkbenchTargetDetail, paint: Paint): stri
 	if (!("target" in content)) {
 		return [
 			`${section(t("section.target"), paint)} ${paint.muted(t("view.target-missing"))}`,
-			`${paint.dim(t("label.next"))} ${t("view.target-missing-next", { launch: paint.bold(content.launch) })}`,
+			`${paint.dim(t("label.next"))} ${t("view.target-missing-next")}`,
 		];
 	}
 	const execution = content.target.execution;
@@ -616,8 +644,15 @@ export function renderTarget(content: WorkbenchTargetDetail, paint: Paint): stri
 		})}`,
 		paint.dim(t("passport.resources")),
 	];
+	// The kind column is as wide as the widest word in the operator's language,
+	// never a number chosen for English: a translated label that overflows a
+	// fixed pad shifts every size on the screen one row at a time.
+	const kindWidth = Math.max(
+		16,
+		...content.resources.map((resource) => resourceKind(resource.kind).length),
+	);
 	for (const resource of content.resources) {
-		lines.push(`  ${paint.bold(oneLine(resource.path, 60).padEnd(40))} ${resourceKind(resource.kind).padEnd(16)} ${paint.dim(bytes(resource.bytes))}${resource.mode === "100755" ? paint.dim(t("view.executable")) : ""}`);
+		lines.push(`  ${paint.bold(oneLine(resource.path, 60).padEnd(40))} ${resourceKind(resource.kind).padEnd(kindWidth)} ${paint.dim(bytes(resource.bytes))}${resource.mode === "100755" ? paint.dim(t("view.executable")) : ""}`);
 	}
 	if (content.resource) {
 		lines.push("", `${section(content.resource.path, paint)} ${paint.dim(`${resourceKind(content.resource.kind)} · ${bytes(content.resource.bytes)} · ${shortHash(content.resource.sha256)}`)}`);

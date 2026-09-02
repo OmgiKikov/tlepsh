@@ -107,15 +107,15 @@ function builderModelStatus(ctx: Pick<ExtensionContext, "model" | "modelRegistry
 function safeProviderFailure(message: string | undefined): string {
 	const source = message ?? "";
 	if (/\b40[13]\b|unauthori[sz]ed|invalid (?:bearer|api key|token)|authentication/i.test(source)) {
-		return "Builder model authentication was rejected. Say “connect model” to reopen connection setup, then retry.";
+		return t("model.auth-rejected");
 	}
 	if (/\b429\b|rate.?limit|too many requests/i.test(source)) {
-		return "Builder model is rate-limited. Wait and retry, or say “connect model” to choose another one.";
+		return t("model.rate-limited");
 	}
 	if (/fetch failed|ECONNREFUSED|ENOTFOUND|network|socket|connection/i.test(source)) {
-		return "Builder model is unreachable. Check network access or say “connect model” to choose another one.";
+		return t("model.unreachable");
 	}
-	return "Builder model request failed. Retry, or say “connect model” to reopen setup.";
+	return t("model.failed");
 }
 
 const LOGIN_CHOICE = (): string => t("onboarding.login-choice");
@@ -154,6 +154,11 @@ export function installAhdeBuilderProductShell(
 		const evaluators = view.target.evaluators;
 		const judged = view.target.evaluatorRequirements?.judge === true || Boolean(evaluators?.judge);
 		if (!judged) return undefined;
+		// …but only once a judged basket has actually run. A template that
+		// declares a judge has judged nothing yet, so "judge not calibrated" on a
+		// newcomer's first screen is machinery noise about an instrument that has
+		// not been used.
+		if (view.counts.developmentEvals === 0) return undefined;
 		try {
 			const pooled = loadJudgeCalibration(stateRoot, projectId).pooled;
 			return pooled.n === 0
@@ -221,7 +226,7 @@ export function installAhdeBuilderProductShell(
 				"ahde",
 				view ? renderStatusBar(statusFacts(view)) : state.error ? "AHDE · blocked" : "AHDE",
 			);
-			host.ui.setStatus("ahde-auth", state.builderModel.credentialPresent ? undefined : "Builder model not connected");
+			host.ui.setStatus("ahde-auth", state.builderModel.credentialPresent ? undefined : t("header.model-not-connected"));
 		} catch {
 			// Status is cosmetic.
 		}

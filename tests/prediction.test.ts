@@ -343,10 +343,10 @@ function applyConfirmation(predicted: unknown): WorkbenchConfirmation {
 describe("the promise on screen", () => {
 	it("states it on the review panel, in English and in Russian", () => {
 		const english = renderReview(proposalReview(), plainPaint);
-		expect(english).toContain("Prediction Expecting mode «aaaaaaaa» 26/26 → ≤3/26 · overall +40 pts");
+		expect(english).toContain("Prediction Expecting failure mode «aaaaaaaa» 26/26 → ≤3/26 · overall +40 pts");
 		setLanguage("ru");
 		const russian = renderReview(proposalReview(), plainPaint);
-		expect(russian).toContain("Прогноз Ожидаю mode «aaaaaaaa» 26/26 → ≤3/26 · итог +40 п.п.");
+		expect(russian).toContain("Прогноз Ожидаю тип сбоя «aaaaaaaa» 26/26 → ≤3/26 · итог +40 п.п.");
 	});
 
 	it("says so plainly when a proposal promised nothing, and quotes the reason when it gave one", () => {
@@ -360,10 +360,10 @@ describe("the promise on screen", () => {
 
 	it("shows the promise on the screen where the operator says yes", () => {
 		const english = renderConfirmation(applyConfirmation(prediction()), plainPaint);
-		expect(english[3]).toBe("Prediction Expecting mode «aaaaaaaa» 26/26 → ≤3/26 · overall +40 pts");
+		expect(english[3]).toBe("Prediction Expecting failure mode «aaaaaaaa» 26/26 → ≤3/26 · overall +40 pts");
 		setLanguage("ru");
 		const russian = renderConfirmation(applyConfirmation(prediction()), plainPaint);
-		expect(russian[3]).toBe("Прогноз Ожидаю mode «aaaaaaaa» 26/26 → ≤3/26 · итог +40 п.п.");
+		expect(russian[3]).toBe("Прогноз Ожидаю тип сбоя «aaaaaaaa» 26/26 → ≤3/26 · итог +40 п.п.");
 		// A subject that carries something the schema will not accept renders as silence.
 		expect(renderConfirmation(applyConfirmation({ modes: "everything" }), plainPaint)[3])
 			.toBe("Прогноз не заявлен");

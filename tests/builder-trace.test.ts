@@ -240,8 +240,8 @@ describe("traces in the TUI", () => {
 		expect(resolveTraceTarget("task_001", rows, null)).toMatchObject({ index: 2 });
 		expect(resolveTraceTarget("task_009#1", rows, null)).toMatchObject({ index: 1 });
 		expect(resolveTraceTarget("run_pass1", rows, null)).toMatchObject({ index: 2 });
-		expect(() => resolveTraceTarget("9", rows, null)).toThrow(/the table has 3 row\(s\)/);
-		expect(() => resolveTraceTarget("nonsense", rows, null)).toThrow(/needs a row number/);
+		expect(() => resolveTraceTarget("9", rows, null)).toThrow(/the table has 3 rows/);
+		expect(() => resolveTraceTarget("nonsense", rows, null)).toThrow(/takes a row number/);
 	});
 
 	it("/trace opens a run as a panel and hands the Builder the facts with a turn", async () => {
@@ -272,7 +272,7 @@ describe("traces in the TUI", () => {
 		// `Extension "command:trace" error:` with a stack under it.
 		await h.command("trace").handler("what", h.ctx);
 		expect(h.blocks.at(-1)?.title).toBe("AHDE · /trace");
-		expect(stripMarkers(h.blocks.at(-1)!.lines.join("\n"))).toMatch(/needs a row number/);
+		expect(stripMarkers(h.blocks.at(-1)!.lines.join("\n"))).toMatch(/takes a row number/);
 	});
 
 	it("refuses a run the Explorer refuses, without a note to the Builder", async () => {

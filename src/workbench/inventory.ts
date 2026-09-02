@@ -71,7 +71,9 @@ import {
 	type CandidateAbandonmentReceipt,
 } from "./candidate-abandonment.js";
 import { calibrationProjection } from "./calibration.js";
+import { plural } from "../i18n.js";
 import type {
+	WorkbenchBlockerReason,
 	WorkbenchCalibrationProjection,
 	WorkbenchSelectionKind,
 	WorkbenchSelectionSummary,
@@ -563,7 +565,12 @@ export function loadWorkbenchInventory(options: {
 	try {
 		target = loadTarget(options.projectDir);
 	} catch (error) {
-		warnings.push(`target: ${errorMessage(error)}`);
+		// "There is no manifest here" is the whole state of a fresh directory, and
+		// the stage already says it as a blocker. Repeating it as a raw ENOENT
+		// with an absolute path is the first thing a newcomer reads, and it reads
+		// like a crash. Anything else that stops a manifest from loading — bad
+		// YAML, a broken field — is still a warning, because it IS a surprise.
+		if (!/\bENOENT\b/.test(errorMessage(error))) warnings.push(`target: ${errorMessage(error)}`);
 	}
 	let specs: SpecSnapshot[] = [];
 	try {
@@ -963,13 +970,32 @@ export function openTerminalCandidatesOf(inventory: WorkbenchInventory): Candida
 	);
 }
 
-function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headline: string; actions: string[]; blockers: string[] } {
+/**
+ * One blocker, twice: the English sentence the Builder model reads and scripts
+ * match on, and the typed reason the host renders in the operator's language.
+ * They are built together so the two can never drift apart.
+ */
+interface StageBlocker {
+	text: string;
+	reason: WorkbenchBlockerReason;
+}
+
+function blocked(
+	text: string,
+	code: string,
+	params?: Record<string, string | number>,
+	detail?: string,
+): StageBlocker {
+	return { text, reason: { code, ...(params ? { params } : {}), ...(detail ? { detail } : {}) } };
+}
+
+function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headline: string; actions: string[]; blockers: StageBlocker[] } {
 	if (inventory.integrityBlockers.length > 0) {
 		return {
 			stage: "selection-required",
 			headline: "Workbench authority is blocked until artifact integrity is restored.",
 			actions: [],
-			blockers: [...new Set(inventory.integrityBlockers)],
+			blockers: [...new Set(inventory.integrityBlockers)].map((text) => blocked(text, "blocker.integrity", undefined, text)),
 		};
 	}
 	const target = inventory.target;
@@ -978,7 +1004,7 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 			stage: "target-setup",
 			headline: "Create the Target harness before authoring evidence.",
 			actions: ["scaffold-target"],
-			blockers: ["Target harness is missing."],
+			blockers: [blocked("Target harness is missing.", "blocker.target-missing")],
 		};
 	}
 	if (target.manifest.id === "my-agent" || target.manifest.model.id === "replace-with-model-id") {
@@ -986,7 +1012,7 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 			stage: "target-setup",
 			headline: "Choose the Target identity and model before authoring evidence.",
 			actions: ["configure-target"],
-			blockers: ["Target still contains its one-time identity/model placeholders."],
+			blockers: [blocked("Target still contains its one-time identity/model placeholders.", "blocker.target-placeholder")],
 		};
 	}
 
@@ -1005,7 +1031,7 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 			stage: "selection-required",
 			headline: "Choose the candidate lineage to continue.",
 			actions: ["select candidate"],
-			blockers: [`${activeCandidates.length} active candidates are compatible with this project.`],
+			blockers: [blocked(`${activeCandidates.length} active candidates are compatible with this project.`, "blocker.candidates-ambiguous", { candidates: plural(activeCandidates.length, "candidate") })],
 		};
 	}
 	if (candidateChoice) {
@@ -1016,7 +1042,7 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 				stage: "candidate-verification",
 				headline: `Candidate verification was interrupted at ${status}; review its durable checkpoint.`,
 				actions: ["review", "abandon-candidate"],
-				blockers: ["A human must explicitly abandon the interrupted attempt before retrying."],
+				blockers: [blocked("A human must explicitly abandon the interrupted attempt before retrying.", "blocker.interrupted-candidate")],
 			};
 		}
 		if (status === "evaluated") return { stage: "candidate-review", headline: "Candidate evidence is ready for human review.", actions: ["review", "ship"], blockers: [] };
@@ -1037,7 +1063,7 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 			stage: "selection-required",
 			headline: "Choose which finished candidate to adopt or close before continuing.",
 			actions: ["select candidate"],
-			blockers: [`${openTerminalCandidates.length} finished candidates still need adoption or cycle closure.`],
+			blockers: [blocked(`${openTerminalCandidates.length} finished candidates still need adoption or cycle closure.`, "blocker.terminal-candidates", { candidates: plural(openTerminalCandidates.length, "candidate") })],
 		};
 	}
 	if (terminalChoice) {
@@ -1075,7 +1101,7 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 		(proposal) => proposal.record.runId,
 	);
 	if (appliedChoice === "ambiguous") {
-		return { stage: "selection-required", headline: "Choose the applied proposal to verify.", actions: ["select proposal"], blockers: [`${appliedWithoutCandidate.length} applied proposals have no candidate evidence.`] };
+		return { stage: "selection-required", headline: "Choose the applied proposal to verify.", actions: ["select proposal"], blockers: [blocked(`${appliedWithoutCandidate.length} applied proposals have no candidate evidence.`, "blocker.applied-without-evidence", { proposals: plural(appliedWithoutCandidate.length, "applied change") })] };
 	}
 	if (appliedChoice) return { stage: "candidate-verification", headline: "The proposal is applied; verify its exact candidate revision.", actions: ["run"], blockers: [] };
 
@@ -1084,7 +1110,7 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 	);
 	const proposalChoice = selectedOrUniqueId(reviewable, inventory.validFocus.proposal?.id, (proposal) => proposal.record.runId);
 	if (proposalChoice === "ambiguous") {
-		return { stage: "selection-required", headline: "Choose the proposal to review.", actions: ["select proposal"], blockers: [`${reviewable.length} proposals await a decision or recovery.`] };
+		return { stage: "selection-required", headline: "Choose the proposal to review.", actions: ["select proposal"], blockers: [blocked(`${reviewable.length} proposals await a decision or recovery.`, "blocker.proposals-await", { proposals: plural(reviewable.length, "open proposal") })] };
 	}
 	if (proposalChoice) {
 		const proposal = reviewable.find((item) => item.record.runId === proposalChoice)!;
@@ -1104,7 +1130,7 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 	if (unapprovedDrafts.length > 0) {
 		const draftChoice = selectedOrUniqueId(unapprovedDrafts, inventory.validFocus["spec-draft"]?.id, (spec) => spec.id);
 		if (draftChoice === "ambiguous") {
-			return { stage: "selection-required", headline: "Choose the Spec draft to review.", actions: ["select spec-draft"], blockers: [`${unapprovedDrafts.length} Spec drafts await review.`] };
+			return { stage: "selection-required", headline: "Choose the Spec draft to review.", actions: ["select spec-draft"], blockers: [blocked(`${unapprovedDrafts.length} Spec drafts await review.`, "blocker.spec-drafts", { drafts: plural(unapprovedDrafts.length, "description draft") })] };
 		}
 		return {
 			stage: "spec-review",
@@ -1123,7 +1149,7 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 	}
 	const approvedChoice = selectedOrUniqueId(approved, inventory.validFocus["approved-spec"]?.id, (spec) => spec.id);
 	if (approvedChoice === "ambiguous") {
-		return { stage: "selection-required", headline: "Choose the approved Spec lineage to continue.", actions: ["select approved-spec"], blockers: [`${approved.length} approved Specs exist.`] };
+		return { stage: "selection-required", headline: "Choose the approved Spec lineage to continue.", actions: ["select approved-spec"], blockers: [blocked(`${approved.length} approved Specs exist.`, "blocker.approved-specs", { specs: plural(approved.length, "approved description") })] };
 	}
 
 	const compatibleDrafts = inventory.corpusDrafts.filter((draft) => draft.approvedSpec.specId === approvedChoice);
@@ -1144,7 +1170,7 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 			};
 		}
 		const draftChoice = selectedOrUniqueId(reviewableDrafts, focusedDraft, (draft) => draft.id);
-		if (draftChoice === "ambiguous") return { stage: "selection-required", headline: "Choose the corpus draft revision to publish.", actions: ["select corpus-draft"], blockers: [`${reviewableDrafts.length} unpublished corpus drafts match the approved Spec.`] };
+		if (draftChoice === "ambiguous") return { stage: "selection-required", headline: "Choose the corpus draft revision to publish.", actions: ["select corpus-draft"], blockers: [blocked(`${reviewableDrafts.length} unpublished corpus drafts match the approved Spec.`, "blocker.corpus-drafts", { drafts: plural(reviewableDrafts.length, "test-case draft") })] };
 		return {
 			stage: "corpus-review",
 			headline: "Review the exact development corpus draft before publishing it; configure any evaluator model its cases require.",
@@ -1153,7 +1179,7 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 		};
 	}
 	const corpusChoice = selectedOrUniqueId(development, inventory.validFocus["development-corpus"]?.id, (corpus) => corpus.id);
-	if (corpusChoice === "ambiguous") return { stage: "selection-required", headline: "Choose the development corpus for this loop.", actions: ["select development-corpus"], blockers: [`${development.length} development corpora exist.`] };
+	if (corpusChoice === "ambiguous") return { stage: "selection-required", headline: "Choose the development corpus for this loop.", actions: ["select development-corpus"], blockers: [blocked(`${development.length} development corpora exist.`, "blocker.development-corpora", { baskets: plural(development.length, "test basket") })] };
 
 	const selectedCorpus = development.find((corpus) => corpus.id === corpusChoice)!;
 	const lineage = inventory.developmentLineage.get(selectedCorpus.id)!;
@@ -1162,7 +1188,7 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 			stage: "corpus-design",
 			headline: "The published development basket cannot run on the current Target; configure its evaluator models or revise the cases.",
 			actions: ["workshop-open", "configure-evaluators", "submit corpus-draft"],
-			blockers: ["The selected development basket is not runnable on the current Target."],
+			blockers: [blocked("The selected development basket is not runnable on the current Target.", "blocker.basket-not-runnable")],
 		};
 	}
 	const compatibleEvals = inventory.developmentEvals.filter((run) =>
@@ -1373,7 +1399,8 @@ export function deriveWorkbenchView(
 				workbenchDecisionStages("generate-holdout").includes(state.stage)
 			? [...state.actions, "generate-holdout"]
 			: state.actions,
-		blockers: state.blockers,
+		blockers: state.blockers.map((entry) => entry.text),
+		blockerReasons: state.blockers.map((entry) => entry.reason),
 		warnings: [...inventory.warnings, ...sealedExposureWarnings(inventory)],
 		shippingReadiness: {
 			sealedHoldout: inventory.sealedHoldoutReadiness,

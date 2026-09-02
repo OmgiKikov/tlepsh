@@ -658,7 +658,7 @@ describe("/label as a Builder command", () => {
 			{ hasUI: false, mode: "tui" as const },
 		]) {
 			const host = labelContext(settings);
-			await expect(command.handler("3", host.ctx)).rejects.toThrow("/label requires the local Builder Pi TUI");
+			await expect(command.handler("3", host.ctx)).rejects.toThrow("/label works only in the Builder window");
 			expect(host.notify).not.toHaveBeenCalled();
 		}
 	});
@@ -668,7 +668,7 @@ describe("/label as a Builder command", () => {
 		const selectless = labelContext({ withoutSelect: true });
 		await withoutSelect.command.handler("", selectless.ctx);
 		expect(withoutSelect.show).toHaveBeenLastCalledWith(selectless.ctx, expect.objectContaining({
-			lines: [expect.stringContaining("/label needs a host that can ask you a question")],
+			lines: [expect.stringContaining("/label needs a window that can ask you questions")],
 		}));
 
 		setLanguage("ru");

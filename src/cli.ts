@@ -803,7 +803,7 @@ async function main(): Promise<void> {
 			// The engine store lives inside the Target and holds the sealed exam:
 			// say which rules were written rather than leaving it to be discovered.
 			if (ignoreLine) console.log(ignoreLine);
-			console.log("next: открой Builder Pi — он покажет exact one-time Target/model diff перед commit:");
+			console.log("next: open Builder Pi; it shows the exact one-time Target/model diff before committing it:");
 			console.log(`      cd ${resolve(dir)} && ahde`);
 			break;
 		}

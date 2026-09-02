@@ -200,7 +200,7 @@ describe("/passport and /log", () => {
 		// `Extension "command:log" error:` with a stack under it.
 		await host.run("log", "not-a-number");
 		expect(host.blocks.at(-1)).toMatchObject({ title: "AHDE · /log" });
-		expect(host.text()).toMatch(/accepts a row count/);
+		expect(host.text()).toMatch(/takes how many rows to show/);
 		await host.run("passport", "1.0.0 extra");
 		expect(host.blocks.at(-1)).toMatchObject({ title: "AHDE · /passport" });
 		expect(host.text()).toMatch(/at most one version/);

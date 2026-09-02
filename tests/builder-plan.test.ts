@@ -196,7 +196,7 @@ describe("the cycle as a checklist", () => {
 		const plan = compilePlan(midCycle(), { harness: { tools: 3, skills: 2 } });
 		expect(plain(renderPlan(plan, markerPaint))).toBe([
 			"✓ Description · approved",
-			"✓ Harness · configured · 3 tools · 2 skills",
+			"✓ Agent · configured · 3 tools · 2 skills",
 			"✓ Tests · published · 24 cases",
 			"✓ Exam · ready for the ship gate",
 			"✓ Baseline · 18/24 · 75% passed",
@@ -214,7 +214,7 @@ describe("the cycle as a checklist", () => {
 		const plan = compilePlan(midCycle(), { harness: { tools: 3, skills: 2 } });
 		expect(plain(renderPlan(plan, markerPaint))).toBe([
 			"✓ Описание · одобрено",
-			"✓ Харнес · настроен · 3 инструмента · 2 скилла",
+			"✓ Агент · настроен · 3 инструмента · 2 скилла",
 			"✓ Тесты · опубликованы · 24 кейса",
 			"✓ Экзамен · готов к выкатке",
 			"✓ База · 18/24 · 75% проходит",

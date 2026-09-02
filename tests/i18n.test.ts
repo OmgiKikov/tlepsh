@@ -2,16 +2,17 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { language, plural, resolveLanguage, setLanguage, settingsPath, t, verdictLabel } from "../src/i18n.js";
+import { language, messageKeys, plural, resolveLanguage, setLanguage, settingsPath, t, verdictLabel } from "../src/i18n.js";
 import { renderConfirmation } from "../src/builder/render/confirmation.js";
 import { renderDecision } from "../src/builder/render/decision.js";
-import { renderHeader, renderCandidate, renderReview } from "../src/builder/render/view.js";
+import { blockerLines, renderHeader, renderCandidate, renderReview } from "../src/builder/render/view.js";
 import { renderCalibration } from "../src/builder/render/calibration.js";
 import { plainPaint } from "../src/builder/render/paint.js";
 import { stageLabel, nextStep } from "../src/builder/render/stage.js";
 import { renderRunDetailPage } from "../src/evidence/pages.js";
 import { createRunProgressPresenter } from "../src/builder/run-progress.js";
 import { explainRun } from "../src/application/run-explanation.js";
+import { assertWorkbenchDecisionStage } from "../src/workbench/transition-policy.js";
 import type { WorkbenchCandidateSummary, WorkbenchConfirmation, WorkbenchView } from "../src/workbench/types.js";
 
 const SHA_A = "a".repeat(40);
@@ -517,5 +518,101 @@ describe("ru renders", () => {
 		setLanguage("ru");
 		expect(t("panel.title", { detail: t("panel.diagnosis") })).toBe("AHDE · Разбор");
 		expect(typeof renderRunDetailPage).toBe("function");
+	});
+});
+
+/**
+ * Keys whose Russian form is identical to their English one on purpose: every
+ * one of them is a layout template made of placeholders, separators and
+ * digits, with no word in it to bend. Anything else that reads the same in both
+ * languages is an untranslated string, not a format.
+ */
+const IDENTICAL_BY_DESIGN = new Set([
+	"judge.label-hint",
+	"label.ask-assertion",
+	"confirm.start-testing.basket",
+	"confirm.start-testing.run",
+	"confirm.question",
+	"result.screen-shape",
+	"panel.title",
+	"card.entries",
+	"headline.run",
+	"status.activity",
+	"passport.design",
+	"fixtures.failed",
+	"why.grader-expected",
+	"why.grader-plain",
+]);
+
+describe("the dictionary itself", () => {
+	it("gives every key a Russian form that is not just the English one", () => {
+		const leaked: string[] = [];
+		for (const key of messageKeys()) {
+			setLanguage("en");
+			const english = t(key);
+			setLanguage("ru");
+			if (t(key) === english && !IDENTICAL_BY_DESIGN.has(key)) leaked.push(key);
+		}
+		expect(leaked).toEqual([]);
+	});
+
+	it("keeps the allowlist honest: every entry is a template with no word in it", () => {
+		for (const key of IDENTICAL_BY_DESIGN) {
+			setLanguage("ru");
+			// Placeholders, the AHDE name and slash commands out; nothing may remain
+			// but separators, digits and punctuation.
+			const bare = t(key as never)
+				.replace(/\{\w+\}/g, "")
+				.replace(/\/[a-z-]+/g, "")
+				.replace(/\bAHDE\b/g, "");
+			expect(bare, key).not.toMatch(/[A-Za-z]{2,}/);
+		}
+	});
+});
+
+describe("ru refusals and notices", () => {
+	it("words an illegal transition as a next step, and keeps the machine line for the model", () => {
+		setLanguage("ru");
+		let message = "";
+		try {
+			assertWorkbenchDecisionStage("apply-proposal", "spec-review");
+		} catch (error) {
+			message = error instanceof Error ? error.message : String(error);
+		}
+		const [human, machine] = message.split("\n");
+		expect(human).toBe("Сейчас это не следующий шаг — Проверка описания. Скажи «ок» или что поправить");
+		// The model, scripts and tests still get the exact English rule underneath.
+		expect(machine).toContain("apply-proposal is not legal during spec-review");
+		expect(leakedEnglish(human ?? "")).toEqual([]);
+	});
+
+	it("says what is blocking in Russian, from the typed reason rather than the English sentence", () => {
+		setLanguage("ru");
+		expect(blockerLines({
+			blockers: ["Target harness is missing."],
+			blockerReasons: [{ code: "blocker.target-missing" }],
+		})).toEqual(["Агент ещё не создан."]);
+		expect(blockerLines({
+			blockers: ["3 active candidates are compatible with this project."],
+			blockerReasons: [{ code: "blocker.candidates-ambiguous", params: { candidates: "3 кандидата" } }],
+		})).toEqual(["Этому проекту подходят 3 кандидата — выбери одного."]);
+		// A view from before the reasons existed still renders its own sentence.
+		expect(blockerLines({ blockers: ["something older"] })).toEqual(["something older"]);
+	});
+
+	it("hides the evidence counts until there is any evidence, and the judge until it has judged", () => {
+		setLanguage("ru");
+		const empty = makeView({
+			stage: "target-setup",
+			counts: {
+				specDrafts: 0, approvedSpecs: 0, corpusDrafts: 0, developmentCorpora: 0,
+				sealedCorpora: 0, developmentEvals: 0, openProposals: 0, candidates: 0, calibrations: 0,
+			},
+		});
+		const lines = renderHeader({ view: empty, builderModel: { label: null, credentialPresent: false } }, plainPaint)
+			.join("\n");
+		expect(lines).not.toContain("0 прогонов");
+		expect(lines).not.toContain("Судья");
+		expect(leakedEnglish(lines)).toEqual([]);
 	});
 });
