@@ -14,7 +14,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { loadTarget, type ResolvedTarget, type ResolvedTask, type TargetManifest } from "./manifest.js";
 import {
 	executionFingerprint,
@@ -46,13 +45,14 @@ import {
 	type RunEventListener,
 } from "./run-events.js";
 import {
-	createTargetAgentSession,
 	createTargetToolRuntime,
 	effectiveTargetSandbox,
 	targetFilesystemConfinement,
 	type TargetToolRuntime,
 } from "./target/runtime.js";
 import { preparedToolHomeHash as hashPreparedToolHome } from "./target/tool-setup.js";
+import { createPiTargetSession } from "./target/session-pi.js";
+import { FINAL_ANSWER_RECOVERY_PROMPT, type TargetSession } from "./target/session.js";
 
 /**
  * Task orchestration around the single Target Pi construction seam in
@@ -105,9 +105,8 @@ export interface TargetWorkspaceSnapshot {
 const trustedWorkspaceSnapshots = new WeakSet<TargetWorkspaceSnapshot>();
 const workspaceSnapshotRoots = new WeakMap<TargetWorkspaceSnapshot, string>();
 
-export const FINAL_ANSWER_RECOVERY_PROMPT =
-	"Сформируй итоговый ответ пользователю сейчас, используя уже полученные результаты инструментов. " +
-	"Не вызывай инструменты. Выполни требования target harness к финальному ответу.";
+/** Re-exported from the session seam, where both backends now send it. */
+export { FINAL_ANSWER_RECOVERY_PROMPT };
 
 /**
  * Concurrent runs routinely start inside the same millisecond, and two runs
@@ -676,7 +675,7 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 	emitRunStarted(options.onRunEvent, eventRun);
 
 	const startedMs = Date.now();
-	let session: AgentSession | undefined;
+	let session: TargetSession | undefined;
 	let unsubscribeSessionEvents: (() => void) | undefined;
 	let removeAbortListener: (() => void) | undefined;
 	let recoveryAttempts = 0;
@@ -710,7 +709,7 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 		if (model.baseUrl.includes("openrouter.ai") && !scopedApiKey) {
 			throw new Error(`missing ${model.apiKeyEnv} for OpenRouter endpoint ${model.baseUrl}`);
 		}
-		const created = await createTargetAgentSession({
+		session = await createPiTargetSession({
 			target,
 			cwd: executionCwd,
 			agentDir,
@@ -722,82 +721,28 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			// memory-only and is never written to models.json/session evidence.
 			apiKey: scopedApiKey ?? "unset",
 			seedMessages: seededTurns,
+			timeoutMs: model.timeoutMs,
+			// Counted the moment a recovery is decided, not when it succeeds: an
+			// attempt that then fails is still an attempt the error path records.
+			onRecoveryAttempt: () => {
+				recoveryAttempts += 1;
+			},
+			...(options.signal ? { signal: options.signal } : {}),
 		});
-		session = created.session;
 		if (options.signal) {
-			const abortSession = () => { void session?.abort(); };
+			const abortSession = () => { session?.abort(); };
 			options.signal.addEventListener("abort", abortSession, { once: true });
 			removeAbortListener = () => options.signal?.removeEventListener("abort", abortSession);
 			if (options.signal.aborted) abortSession();
 		}
-		const sessionManager = created.sessionManager;
 		unsubscribeSessionEvents = session.subscribe(
 			(event) => observeRunSessionEvent(options.onRunEvent, eventRun, event),
 		);
 
-		/**
-		 * One agent turn: send a user message and return what the agent said back.
-		 * Each turn gets its own watchdog — `model.timeoutMs` bounds a reply, not a
-		 * whole conversation — and its own recovery attempt, because an empty reply
-		 * mid-dialogue is exactly as useless to the simulated user as a final one is
-		 * to a grader.
-		 */
-		const takeTurn = async (prompt: string): Promise<string> => {
-			const active = session;
-			if (!active) throw new Error("agent session is unavailable");
-			// Watchdog: prompt() has no deadline of its own.
-			let timedOut = false;
-			const watchdog = setTimeout(() => {
-				timedOut = true;
-				void active.abort();
-			}, model.timeoutMs);
-
-			let finalAssistant;
-			try {
-				await active.prompt(prompt);
-				if (options.signal?.aborted) throw options.signal.reason ?? new Error("run aborted");
-				if (timedOut) throw new Error(`run timed out after ${model.timeoutMs}ms`);
-
-				finalAssistant = [...active.messages].reverse().find((message) => message.role === "assistant");
-				const hasToolResults = active.messages.some((message) => message.role === "toolResult");
-				if (finalAssistant?.stopReason === "stop" && !active.getLastAssistantText()?.trim() && hasToolResults) {
-					recoveryAttempts += 1;
-					const activeTools = active.agent.state.tools;
-					active.agent.state.tools = [];
-					try {
-						await active.prompt(FINAL_ANSWER_RECOVERY_PROMPT);
-					} finally {
-						active.agent.state.tools = activeTools;
-					}
-					if (options.signal?.aborted) throw options.signal.reason ?? new Error("run aborted");
-					if (timedOut) throw new Error(`run timed out after ${model.timeoutMs}ms`);
-					finalAssistant = [...active.messages].reverse().find((message) => message.role === "assistant");
-				}
-			} finally {
-				clearTimeout(watchdog);
-			}
-
-			if (!finalAssistant) throw new Error("agent run completed without an assistant message");
-			if (finalAssistant.stopReason !== "stop") {
-				throw new Error(
-					finalAssistant.errorMessage ?? `agent run ended with unexpected stop reason: ${finalAssistant.stopReason}`,
-				);
-			}
-			// The answer must be text in the final assistant message. Reusing text
-			// from an earlier pre-tool turn would turn an incomplete run into false
-			// evidence.
-			const turnText = finalAssistant.content
-				.filter((content): content is { type: "text"; text: string } => content.type === "text")
-				.map((content) => content.text)
-				.join("");
-			if (!turnText) throw new Error("agent run produced no assistant text");
-			return turnText;
-		};
-
 		let prompt = task.input;
 		for (let turn = 1; turn <= maxTurns; turn += 1) {
 			transcript.push({ role: "user", text: prompt });
-			const turnText = await takeTurn(prompt);
+			const { text: turnText } = await session.takeTurn(prompt);
 			conversationTurns = turn;
 			transcript.push({ role: "assistant", text: turnText });
 			// The last turn needs no next question: asking for one would spend a
@@ -830,14 +775,9 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			prompt = next.reply.message;
 		}
 
-		// Pin the session file to its canonical name inside the run dir.
-		const sessionFile = sessionManager.getSessionFile();
-		if (sessionFile) {
-			renameSync(sessionFile, join(runDir, "session.jsonl"));
-			chmodSync(join(runDir, "session.jsonl"), 0o600);
-		}
+		session.finalizeTrace(runDir);
 
-		const stats = session.getSessionStats();
+		const stats = session.stats();
 			const sessionContent = readTraceArtifact(runDir);
 			const sessionError = extractSessionError(sessionContent);
 			if (sessionError) throw new Error(sessionError);
@@ -854,14 +794,8 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			sha256: hashFile(sessionContent),
 		};
 		record.metrics = {
-			tokens: {
-				input: stats.tokens.input,
-				output: stats.tokens.output,
-				cacheRead: stats.tokens.cacheRead,
-				cacheWrite: stats.tokens.cacheWrite,
-				total: stats.tokens.total,
-			},
-			costUsd: stats.cost,
+			tokens: stats.tokens ? { ...stats.tokens } : emptyMetrics().tokens,
+			costUsd: stats.costUsd ?? 0,
 			latencyMs: Date.now() - startedMs,
 			toolCalls: stats.toolCalls,
 			toolErrors,
@@ -912,9 +846,9 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			// Listener teardown during error paths is best-effort.
 		}
 		try {
-			session?.dispose();
+			await session?.close();
 		} catch {
-			// dispose during error paths is best-effort
+			// close during error paths is best-effort
 		}
 	}
 
