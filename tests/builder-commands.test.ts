@@ -11,6 +11,7 @@ import {
 	type RegisterBuilderCommandsOptions,
 } from "../src/builder/commands.js";
 import { createRunProgressPresenter } from "../src/builder/run-progress.js";
+import { candidateHeadline } from "../src/workbench/resolution.js";
 import {
 	AHDE_MODEL_NOTE_TYPE,
 	AHDE_TRANSCRIPT_ENTRY_TYPE,
@@ -98,7 +99,8 @@ function viewAt(stage: WorkbenchStage, overrides: Partial<WorkbenchView> = {}): 
 }
 
 function candidateSummary(overrides: Partial<WorkbenchCandidateSummary> = {}): WorkbenchCandidateSummary {
-	return {
+	const summary: WorkbenchCandidateSummary = {
+		headline: "",
 		candidateId: "cand-1",
 		status: "evaluated",
 		projectId: "demo",
@@ -128,6 +130,9 @@ function candidateSummary(overrides: Partial<WorkbenchCandidateSummary> = {}): W
 		rejection: null,
 		...overrides,
 	};
+	// The host composes the headline from the same evidence; a fixture that
+	// hand-wrote one could let a panel and its headline drift apart in a test.
+	return { ...summary, headline: summary.headline || candidateHeadline(summary.development, summary.sealedHoldout) };
 }
 
 function tracesDetail(): WorkbenchTracesDetail {
@@ -404,6 +409,7 @@ function defaultDecision(input: WorkbenchDecisionInput): WorkbenchDecisionResult
 					{ kind: "adopt-candidate", message: "Branch main now points at the promoted candidate." },
 					{ kind: "continue-cycle", message: "Improvement cycle closed." },
 				],
+				headline: candidateSummary().headline,
 				candidate: candidateSummary({ status: "promoted", promotion: { tag: `v${input.version}`, reason: input.reason, at } }),
 				tag: `v${input.version}`,
 				adoption: { branch: "main", fromSha: SHA_A, toSha: SHA_B },
@@ -1642,6 +1648,7 @@ describe("Builder Pi slash commands", () => {
 			decide: async () => decision("run-current", {
 				resolvedAs: "verify-candidate",
 				outcome: "verified" as const,
+				headline: candidateSummary().headline,
 				screen: null,
 				candidate: candidateSummary(),
 				development: { verdict: "improved", delta: 2 / 3, confidence95: { low: 0.1, high: 0.9 } },
@@ -1660,7 +1667,8 @@ describe("Builder Pi slash commands", () => {
 			["AHDE · Candidate verification", "info"],
 			["Candidate verified", "success"],
 		]);
-		expect(verification.output.text()).toContain("Development baseline 33% → candidate 100% (+66.7 pts) on 3 tasks");
+		expect(verification.output.text()).toContain("Development pass rate 33% → 100% (+66.7 pts, 95% CI +10 … +90) on 3 cases");
+		expect(verification.output.text()).toContain("3 cases is a small basket: read the interval as indicative, not decisive");
 		expect(verification.output.text()).toContain("Sealed holdout gate passed");
 		expect(verificationHost.setWidget).toHaveBeenLastCalledWith("ahde-run-progress", undefined);
 

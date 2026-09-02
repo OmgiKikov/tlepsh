@@ -160,6 +160,23 @@ export function diagnosisSummary(record: DiagnosisRecord): WorkbenchDiagnosisSum
 	};
 }
 
+/**
+ * The one sentence a candidate carries, from the evidence it carries. The v4
+ * gate wins over the stored summary where both spell a field, which is what
+ * makes the interval the score's rather than the pass rate's.
+ */
+export function candidateHeadline(
+	development: WorkbenchCandidateSummary["development"],
+	sealedHoldout: WorkbenchCandidateSummary["sealedHoldout"],
+): string {
+	return measurementLine({
+		development: development && (development.comparison || development.gate)
+			? measurementSurface({ ...development.comparison, ...development.gate })
+			: null,
+		exam: sealedHoldout.gate,
+	}).text;
+}
+
 export function candidateSummary(
 	record: CandidateRecord,
 	/** Judge calibration for the evidence this candidate rests on, when it uses one. */
@@ -174,24 +191,21 @@ export function candidateSummary(
 	const rejected = record.events.find((event) => event.type === "rejected");
 	const development = evaluated?.type === "evaluated"
 		? {
+			baselineEvalRunId: evaluated.evaluation.development.baseline.evalRunId,
+			candidateEvalRunId: evaluated.evaluation.development.candidate.evalRunId,
 			comparison: evaluated.evaluation.development.comparison?.summary ?? null,
 			gate: gateProjection(evaluated.evaluation.development.comparison),
 		}
 		: null;
-	const sealedGate = evaluated?.type === "evaluated"
-		? gateProjection(evaluated.evaluation.sealedHoldout?.comparison)
-		: null;
+	const sealedHoldout = evaluated?.type === "evaluated"
+		? {
+			executed: evaluated.evaluation.sealedHoldout !== undefined,
+			gatePassed: promotionGradeVerdictOf(evaluated.evaluation.sealedHoldout?.comparison) === "pass",
+			gate: gateProjection(evaluated.evaluation.sealedHoldout?.comparison),
+		}
+		: { executed: false, gatePassed: false, gate: null };
 	return {
-		// One sentence, composed once. The v4 gate wins over the stored summary
-		// where both carry a field, which is what makes the interval the score's.
-		headline: measurementLine({
-			development: measurementSurface(
-				development && (development.comparison || development.gate)
-					? { ...development.comparison, ...development.gate }
-					: null,
-			),
-			exam: sealedGate,
-		}).text,
+		headline: candidateHeadline(development, sealedHoldout),
 		candidateId: record.candidateId,
 		status: candidateStatus(record),
 		projectId: record.projectId,
@@ -210,21 +224,8 @@ export function candidateSummary(
 				paths: [...(record.events.find((event) => event.type === "validated")?.scope.changedFiles ?? [])].sort(),
 			}
 			: null,
-		development: evaluated?.type === "evaluated" && development
-			? {
-				baselineEvalRunId: evaluated.evaluation.development.baseline.evalRunId,
-				candidateEvalRunId: evaluated.evaluation.development.candidate.evalRunId,
-				comparison: development.comparison,
-				gate: development.gate,
-			}
-			: null,
-		sealedHoldout: evaluated?.type === "evaluated"
-			? {
-				executed: evaluated.evaluation.sealedHoldout !== undefined,
-				gatePassed: promotionGradeVerdictOf(evaluated.evaluation.sealedHoldout?.comparison) === "pass",
-				gate: sealedGate,
-			}
-			: { executed: false, gatePassed: false, gate: null },
+		development,
+		sealedHoldout,
 		...(judgeAgreement === undefined ? {} : { judgeAgreement }),
 		...(regraded === undefined || regraded === null ? {} : { regraded }),
 		review: reviewed?.type === "reviewed" ? reviewed.review : null,

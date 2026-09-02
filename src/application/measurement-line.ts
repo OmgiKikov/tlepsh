@@ -139,7 +139,10 @@ function deltaOf(delta: number | null, confidence95: { low: number; high: number
 }
 
 function designOf(tasks: number, repetitions: number): string {
-	return t("measurement.on-cases", { cases: plural(tasks, "case measured on"), repetitions });
+	const cases = plural(tasks, "case measured on");
+	// Legacy evidence recorded a task count and no repetition count. "× 0" is a
+	// worse answer than saying only what was recorded.
+	return repetitions > 0 ? t("measurement.on-cases", { cases, repetitions }) : t("measurement.on-cases-only", { cases });
 }
 
 /** The sealed guardrail's own parts, so a panel can paint its verdict. */

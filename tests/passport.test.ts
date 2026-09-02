@@ -418,10 +418,11 @@ describe("version passport", () => {
 		expect(page).toContain("- срок возврата — 30 дней с даты доставки");
 		expect(page).toContain("- без сети");
 
-		// Measured: pass rate, mean score, the interval, and the design.
+		// Measured: the score the gate decided on, its interval, the design, the
+		// pass rate behind it, and — on six cases — that six is not many.
 		expect(page).toContain(
-			"- development: **improved** — pass rate 0% → 100% · mean score 0.00 → 1.00 " +
-				"(+100.0pp, 95% CI +42.0pp … +86.0pp) on 6 tasks × 2 repetitions",
+			"- development: **improved** — score 0% → 100% (+100 pts, 95% CI +42 … +86) on 6 cases × 2 · " +
+				"pass rate 0% → 100% · 6 cases is a small basket: read the interval as indicative, not decisive",
 		);
 		expect(page).toContain("- sealed guardrail: **pass** on 18 tasks × 2 repetitions");
 		expect(page).toContain("- per answer, candidate over baseline: cost ×1.25 · latency ×0.87 · tokens ×1.10");

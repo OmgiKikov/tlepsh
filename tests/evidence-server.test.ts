@@ -1017,7 +1017,8 @@ describe("read-only evidence explorer", () => {
 		expect(html).toContain("<th>Task</th><th>Baseline</th><th>Candidate</th><th>Score</th><th>Delta</th><th>Flip</th>");
 		expect(html).toContain("↑ improved");
 		expect(html).toContain("Cost ratio");
-		expect(html).toContain("development verdict:");
+		// The compare page prints the same sentence the panel and the passport do.
+		expect(html).toContain("inconclusive · score 0% → 100% (+100 pts, 95% CI +100 … +100) on 2 cases × 1 · pass rate 0% → 100%");
 		// The sealed arm contributes a verdict and a design size and nothing else.
 		expect(html).toContain("Sealed verdict: <b>pass</b> on 2 × 1");
 		expect(html).toContain("Sealed cases, identifiers, and traces are never rendered here.");
