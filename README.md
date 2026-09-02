@@ -88,12 +88,11 @@ from one sentence to a shipped `v0.1.0`: the Builder wrote the Spec and six
 cases, ran them (3/18), read the traces, built a `check_dbo` tool package in a
 workshop, applied it, had the judge write a sealed exam, verified the candidate
 (`improved · score 49% → 85% (+38.9 pts, 95% CI +25 … +47.2) on 6 cases × 3 ·
-pass rate 22% → 61% · exam: pass (+30.3 pts) on 20 cases × 3`), let the
-operator grade the judge blind, re-scored
-both arms under a stricter rubric, and shipped. About forty minutes and under
-four dollars per session; the Builder's own prediction on the last one (+60pp)
-landed within 1.1pp of the measurement. The fixes were rediscovered from raw
-traces, not remembered.
+pass rate 22% → 61% · exam: pass (+30.3 pts) on 20 cases × 3`), let the operator
+grade the judge blind, re-scored both arms under a stricter rubric, and shipped.
+About forty minutes and under four dollars per session; the Builder's own
+prediction on the last one (+60pp) landed within 1.1pp of the measurement. The
+fixes were rediscovered from raw traces, not remembered.
 
 ## The passport it wrote
 
