@@ -135,7 +135,13 @@ export function macosProfile(
 		"(allow file-read-metadata)",
 		`(allow file-read* (literal "/") ${reads})`,
 		`(allow file-write* ${writes})`,
-		confinement.network === "deny" ? "(deny network*)" : "(allow network*)",
+		// A route socket (PF_ROUTE) is what getaddrinfo's RFC 6724 sort consults
+		// to learn the machine has no global IPv6 route. Denied, the sort puts
+		// the AAAA records first and every connect() sits in SYN_SENT until the
+		// kernel gives up — ~75 s per call, which is how a Python agent spent a
+		// whole 300 s turn budget on two HTTP requests (live session 7). With the
+		// network denied there is nothing to sort, so the socket stays denied.
+		confinement.network === "deny" ? "(deny network*)" : "(allow network*) (allow system-socket)",
 	].join(" ");
 }
 

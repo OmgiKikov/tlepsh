@@ -330,7 +330,9 @@ describe("declared tool setup", () => {
 		const denied = { network: "deny" as const, readRoots: [], writeRoots: [] };
 		const allowed = { network: "allow" as const, readRoots: [], writeRoots: [] };
 		expect(macosProfile("/w", "/s", denied)).toContain("(deny network*)");
-		expect(macosProfile("/w", "/s", allowed)).toContain("(allow network*)");
+		expect(macosProfile("/w", "/s", allowed)).toContain("(allow network*) (allow system-socket)");
+		// No route to sort without a network: the route socket stays denied.
+		expect(macosProfile("/w", "/s", denied)).not.toContain("system-socket");
 		const bwrapDenied = bwrapArguments({
 			workspaceDir: "/w", scratchDir: "/s", environment: {}, confinement: denied, cwd: "/w", argv: ["/bin/true"],
 		});

@@ -302,7 +302,9 @@ function macosProfile(workspaceDir: string, scratchDir: string, network: "deny" 
 		"(allow file-read-metadata)",
 		`(allow file-read* (literal "/") ${reads})`,
 		`(allow file-write* (literal "/dev/null") (subpath ${sandboxString(workspaceDir)}) (subpath ${sandboxString(scratchDir)}))`,
-		network === "deny" ? "(deny network*)" : "(allow network*)",
+		// The route socket lets getaddrinfo sort IPv4 first on a machine with no
+		// global IPv6 route (see macosProfile in target/tool-broker.ts).
+		network === "deny" ? "(deny network*)" : "(allow network*) (allow system-socket)",
 	].join(" ");
 }
 
