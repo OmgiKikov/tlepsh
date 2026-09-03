@@ -66,8 +66,9 @@ const DECIDE_WHEN = {
 	"apply-proposal": "the operator says apply; send branch candidate/<proposal run id> and verify: { repetitions: 3 }",
 	ship: "the operator says ship / выкати; review, tag, fast-forward and next cycle in one question",
 	"talk-to-agent": "the operator wants to open, try, or talk to the built agent",
-	label: "a judge has graded a run and nobody has checked it; offer it once, in one sentence — " +
-		"«10 минут: разметь 10 ответов, чтобы знать, можно ли верить судье»",
+	label: "not a call — something to SAY: a judge has graded a run and nobody has checked it, " +
+		"so offer it once in one sentence («10 минут: разметь 10 ответов, чтобы знать, можно ли верить судье») " +
+		"and the operator answers with /label",
 	regrade: "the operator disputes a verdict or you revised graders; re-scores recorded answers, no agent call",
 	"generate-holdout": "no exam yet and the operator has no data to hold out; seal or draft",
 	"publish-corpus": "the operator approved the cases; at candidate-verification it is the forward exit",

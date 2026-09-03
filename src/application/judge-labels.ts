@@ -200,8 +200,10 @@ const JudgeCalibrationOfferSchema = z.strictObject({
 export function judgeCalibrationOfferPath(stateRoot: string, projectId: string): string {
 	const root = labelsRoot(stateRoot, projectId, true);
 	if (!root) throw new Error("failed to create the label state layout");
-	return join(root, "calibration-offer.json");
+	return join(root, JUDGE_CALIBRATION_OFFER_FILE);
 }
+
+const JUDGE_CALIBRATION_OFFER_FILE = "calibration-offer.json";
 
 /**
  * Make the offer once. Returns true exactly on the call that made it: a second
@@ -233,13 +235,15 @@ export function judgeCalibrationOffer(
 	stateRoot: string,
 	projectId: string,
 ): { labelled: number; offered: boolean } | null {
-	let path: string;
+	// Reading never creates: a view is rendered constantly, and a project that
+	// has never labelled anything must not grow a directory for being looked at.
+	let root: string | null;
 	try {
-		path = judgeCalibrationOfferPath(stateRoot, projectId);
+		root = labelsRoot(stateRoot, projectId, false);
 	} catch {
 		return null;
 	}
-	if (!existsSync(path)) return null;
+	if (!root || !existsSync(join(root, JUDGE_CALIBRATION_OFFER_FILE))) return null;
 	let labelled = 0;
 	try {
 		labelled = readProjectJudgeLabels(stateRoot, projectId).length;
