@@ -293,10 +293,22 @@ describe("a command Target speaks protocol v1", () => {
 		for (const name of record.execution.environment) expect(reported, name).toContain(name);
 	});
 
-	it("drops AHDE_WORLD from the receipt for a case that declares no world", async () => {
-		const { record } = await runOnce("env");
-		expect(record.execution.environment).toEqual([
+	it("lists AHDE_WORLD for a case without a world too: the fingerprint is the run's, not the case's", async () => {
+		// Live session 8: a worlded and a worldless case in one eval run produced
+		// two execution fingerprints, and runSuite refused the run as "execution
+		// policy changed within one eval run". The name is what the child MAY
+		// receive; whether this case hands it a world is dataset identity.
+		const withWorld = JSON.stringify({
+			id: "task_env",
+			input: "Что в окружении?",
+			world: { state: { balance: 100 } },
+			graders: [{ type: "output_contains", text: "env=" }],
+		});
+		const worlded = await runOnce("env", { dataset: withWorld });
+		const worldless = await runOnce("env");
+		expect(worldless.record.execution.environment).toEqual([
 			"AHDE_PROTOCOL",
+			"AHDE_WORLD",
 			"FAKE_AGENT_MODE",
 			"HOME",
 			"LANG",
@@ -304,6 +316,7 @@ describe("a command Target speaks protocol v1", () => {
 			"PATH",
 			"TMPDIR",
 		]);
+		expect(worldless.record.execution).toEqual(worlded.record.execution);
 	});
 
 	it("binds the entry executable's bytes to the run, and a different argv[0] is a different hash", async () => {

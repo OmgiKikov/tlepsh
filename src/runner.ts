@@ -699,14 +699,15 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			// What the process that answers actually receives. A command Target's
 			// child is not the Pi execution policy's process: it gets the fixed
 			// four, the readable half of the manifest allowlist, the credential
-			// under its own name, `AHDE_PROTOCOL`, and `AHDE_WORLD` when the case
-			// has a world. Recording the policy's list there under-reported the
-			// receipt by three names (session 7, defect 19).
+			// under its own name, `AHDE_PROTOCOL`, and `AHDE_WORLD`. The list is
+			// the eval run's, so it never depends on the case (a worlded and a
+			// worldless case in one run must share one fingerprint). Recording
+			// the policy's list there under-reported the receipt (session 7,
+			// defect 19).
 			environment: agent === "command-v1"
 				? commandTargetEnvironmentNames({
 					environmentAllowlist: target.manifest.execution.environmentAllowlist,
 					apiKeyEnv: model.apiKeyEnv,
-					hasWorld: Boolean(worldPath),
 				})
 				: policyResult
 					? [...policyResult.effectiveEnvironmentNames].sort()

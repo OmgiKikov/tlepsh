@@ -479,8 +479,13 @@ class CommandTargetSession implements TargetSession {
  * policy's environment, which is a different process's environment entirely.
  * The child gets the fixed four, whatever the manifest allowlisted AND the
  * host could actually read, the credential under the manifest's own
- * `apiKeyEnv` name, `AHDE_PROTOCOL`, and `AHDE_WORLD` when the case has a
- * world. Names only — a value never leaves this function (invariant 18).
+ * `apiKeyEnv` name, `AHDE_PROTOCOL`, and `AHDE_WORLD`. The last is listed
+ * whether or not this particular case hands the child a world: the fingerprint
+ * is the EXECUTION POLICY of the whole eval run, shared by every case in it
+ * (live session 8 — listing it per case split one eval run into two policies
+ * and `runSuite` refused the run), while which case carries a world is
+ * dataset identity. Names only — a value never leaves this function
+ * (invariant 18).
  *
  * Derived, not observed, because the fingerprint is written to disk BEFORE the
  * child is spawned; `createCommandTargetSession` builds the environment from
@@ -490,7 +495,6 @@ class CommandTargetSession implements TargetSession {
 export function commandTargetEnvironmentNames(options: {
 	environmentAllowlist: readonly string[];
 	apiKeyEnv: string;
-	hasWorld: boolean;
 	sourceEnvironment?: NodeJS.ProcessEnv;
 }): string[] {
 	const source = options.sourceEnvironment ?? process.env;
@@ -503,7 +507,7 @@ export function commandTargetEnvironmentNames(options: {
 	}
 	names.add(options.apiKeyEnv);
 	names.add("AHDE_PROTOCOL");
-	if (options.hasWorld) names.add(AHDE_WORLD_ENVIRONMENT);
+	names.add(AHDE_WORLD_ENVIRONMENT);
 	return [...names].sort();
 }
 

@@ -309,7 +309,6 @@ describe("the environment a command Target's child receives", () => {
 		expect(commandTargetEnvironmentNames({
 			environmentAllowlist: ["KEEP", "ALSO"],
 			apiKeyEnv: "OPENROUTER_API_KEY",
-			hasWorld: true,
 			sourceEnvironment: source,
 		})).toEqual([
 			"AHDE_PROTOCOL",
@@ -324,20 +323,21 @@ describe("the environment a command Target's child receives", () => {
 		]);
 	});
 
-	it("drops AHDE_WORLD for a case without one, and a name the host cannot read", () => {
+	it("drops a name the host cannot read, and never depends on the case", () => {
+		// The fingerprint is the eval run's execution policy: a worlded and a
+		// worldless case in one run share it, so AHDE_WORLD is always listed
+		// (live session 8: listing it per case split one eval run in two).
 		expect(commandTargetEnvironmentNames({
 			environmentAllowlist: ["KEEP", "NEVER_SET"],
 			apiKeyEnv: "OPENROUTER_API_KEY",
-			hasWorld: false,
 			sourceEnvironment: source,
-		})).toEqual(["AHDE_PROTOCOL", "HOME", "KEEP", "LANG", "OPENROUTER_API_KEY", "PATH", "TMPDIR"]);
+		})).toEqual(["AHDE_PROTOCOL", "AHDE_WORLD", "HOME", "KEEP", "LANG", "OPENROUTER_API_KEY", "PATH", "TMPDIR"]);
 	});
 
 	it("never lets an allowlist duplicate a host-owned name into the receipt twice", () => {
 		const names = commandTargetEnvironmentNames({
 			environmentAllowlist: ["PATH", "AHDE_WORLD", "AHDE_TOOL_HOME", "OPENROUTER_API_KEY"],
 			apiKeyEnv: "OPENROUTER_API_KEY",
-			hasWorld: true,
 			sourceEnvironment: { ...source, AHDE_WORLD: "/x", AHDE_TOOL_HOME: "/y", OPENROUTER_API_KEY: "k" },
 		});
 		expect(names).toEqual([...new Set(names)]);
