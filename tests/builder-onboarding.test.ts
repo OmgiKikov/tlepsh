@@ -11,6 +11,7 @@ import {
 	defaultJudgeSelection,
 	describeHostModelCatalog,
 	selectToolCredentialEnvironments,
+	evaluatorsNotConfigured,
 	evaluatorsStillUnchosen,
 	hostDefaultJudge,
 	hostModelCatalog,
@@ -122,6 +123,52 @@ describe("the default judge", () => {
 			catalog([{ provider: "anthropic", id: "claude-opus" }, { provider: "anthropic", id: "claude-haiku" }]),
 			{ provider: "anthropic", id: "claude-opus" },
 		)).toMatchObject({ provider: "anthropic", modelId: "claude-haiku" });
+	});
+
+	/**
+	 * Session 7 got `openrouter/aion-labs/aion-2.0` for the judge AND for the
+	 * client — the first row of an alphabetical list, chosen by nobody, paid
+	 * for twice out of the same run. The catalog is ordered by whether this
+	 * machine can authenticate a model, never by whether it can judge.
+	 */
+	it("prefers a judge-class id over the first row of the alphabet", () => {
+		const alphabetical = catalog([
+			{ provider: "openrouter", id: "aion-labs/aion-2.0" },
+			{ provider: "openrouter", id: "amazon/nova-lite-v1" },
+			{ provider: "openrouter", id: "deepseek/deepseek-v4" },
+			{ provider: "openrouter", id: "qwen/qwen3.5-9b" },
+		]);
+		expect(defaultJudgeSelection(alphabetical, { provider: "openrouter", id: "qwen/qwen3.5-9b" }))
+			.toMatchObject({ provider: "openrouter", modelId: "deepseek/deepseek-v4" });
+	});
+
+	it("holds one preference order: glm, claude, gpt, deepseek, a large qwen", () => {
+		const all = [
+			{ provider: "openrouter", id: "aion-labs/aion-2.0" },
+			{ provider: "openrouter", id: "qwen/qwen3.5-235b" },
+			{ provider: "openrouter", id: "deepseek/deepseek-v4" },
+			{ provider: "openai", id: "gpt-5" },
+			{ provider: "anthropic", id: "claude-opus" },
+			{ provider: "openrouter", id: "z-ai/glm-5.3" },
+		];
+		const target = { provider: "openrouter", id: "moonshotai/kimi-k2.6" };
+		const preferred = ["z-ai/glm-5.3", "claude-opus", "gpt-5", "deepseek/deepseek-v4", "qwen/qwen3.5-235b"];
+		for (const [index, expected] of preferred.entries()) {
+			// Drop the winners one at a time; the next preference takes over, and
+			// the alphabet's first row never does while any of them is present.
+			const remaining = all.filter((model) => !preferred.slice(0, index).includes(model.id));
+			expect(defaultJudgeSelection(catalog(remaining), target)?.modelId).toBe(expected);
+		}
+		// With none of them left, the first independent entry is still a judge.
+		expect(defaultJudgeSelection(catalog([all[0]!]), target)?.modelId).toBe("aion-labs/aion-2.0");
+	});
+
+	it("keeps the independence rule above the preference", () => {
+		// The Target's own model is judge-class; the judge must still not be it.
+		expect(defaultJudgeSelection(
+			catalog([{ provider: "anthropic", id: "claude-opus" }, { provider: "openrouter", id: "aion-labs/aion-2.0" }]),
+			{ provider: "anthropic", id: "claude-opus" },
+		)).toMatchObject({ modelId: "aion-labs/aion-2.0" });
 	});
 
 	it("offers nothing when every other model is uncredentialed, or there is no other model", () => {
@@ -495,6 +542,22 @@ describe("the evaluators the first run does not ask about", () => {
 		expect(evaluatorsStillUnchosen({ target: {} } as unknown as WorkbenchView)).toBe(false);
 	});
 
+	/**
+	 * An adopted folder's dataset is the one-line placeholder the adoption
+	 * wrote, so nothing declares that it needs a judge until the Builder writes
+	 * the cases that do — and session 7 therefore never saw the line at all.
+	 */
+	it("reads only what is configured when the requirement cannot be known yet", () => {
+		expect(evaluatorsNotConfigured(view({ evaluatorRequirements: { judge: false, simulatedUser: false } }))).toBe(true);
+		expect(evaluatorsNotConfigured(view({
+			evaluators: {
+				judge: { provider: "openrouter", id: "glm-5.3", apiKeyEnv: "OPENROUTER_API_KEY", credentialPresent: true },
+				simulatedUser: { provider: "openrouter", id: "glm-5.3", apiKeyEnv: "OPENROUTER_API_KEY", credentialPresent: true },
+			},
+		}))).toBe(false);
+		expect(evaluatorsNotConfigured({ target: {} } as unknown as WorkbenchView)).toBe(false);
+	});
+
 	it("says the line once, after the model is chosen, and adds no dialog", async () => {
 		process.env.OPENROUTER_API_KEY = "sk-test";
 		const notes: { message: string; tone: string }[] = [];
@@ -694,4 +757,25 @@ describe("the questions after the door closes", () => {
 		delete process.env.OPENROUTER_API_KEY;
 	});
 
+	it("promises the judge question after an adoption, where no case declares one yet", async () => {
+		process.env.OPENROUTER_API_KEY = "sk-test";
+		const dir = agentDir();
+		const machinery = machine({
+			adopted: true,
+			dir,
+			answers: [
+				t("onboarding.wrap.accept"),
+				t("onboarding.wrap.accept"),
+				"AGENTS.md",
+				t("onboarding.other-model"),
+				"openrouter/qwen/qwen3.5-9b",
+			],
+		});
+		const result = await runFirstRunOnboarding(machinery.ctx, machinery.host, machinery.start);
+		expect(result).toBe(machinery.settled);
+		expect(machinery.decided.map((entry) => entry.kind)).toEqual(["wrap-target", "configure-target"]);
+		// The line session 7 never printed.
+		expect(machinery.notes).toEqual([{ message: t("onboarding.evaluators-later"), tone: "info" }]);
+		delete process.env.OPENROUTER_API_KEY;
+	});
 });
