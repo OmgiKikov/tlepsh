@@ -1453,6 +1453,29 @@ describe("renderTarget", () => {
 		expect(renderTarget(targetContext, plainPaint)).not.toContain("Files the harness declares");
 	});
 
+	/**
+	 * Session 7's `/target` listed `AGENTS.md`, both `bin/*` and both
+	 * `tools/*.tool.yaml`, and said nothing at all about the three
+	 * `data/kb/*.md` the manifest declares — the files half the agent's
+	 * specification («про тарифы и правила отвечает по базе знаний») rests on.
+	 */
+	it("lists the declared data directories under their own heading, by shape", () => {
+		const lines = renderTarget({
+			...targetContext,
+			data: [
+				{ path: "data/kb", files: 3, bytes: 12_288, entries: ["blocking.md", "rules.md", "tariffs.md"], entriesTruncated: false },
+				{ path: "data/corpus", files: 412, bytes: 3_250_586, entries: ["a.md", "b.md", "c.md", "d.md"], entriesTruncated: true },
+			],
+		}, plainPaint);
+		expect(lines[7]).toBe("Data");
+		expect(lines[8]).toBe(`  ${"data/kb".padEnd(40)} ${"3 files".padEnd(16)} 12.0 KB · blocking.md, rules.md, tariffs.md`);
+		expect(lines[9]).toBe(`  ${"data/corpus".padEnd(40)} ${"412 files".padEnd(16)} 3.1 MB · a.md, b.md, c.md …`);
+		// The bytes themselves are never here: a knowledge base is shape only.
+		expect(lines.join("\n")).not.toContain("Тарифы");
+		// A Target that declares no data grows no empty heading.
+		expect(renderTarget(targetContext, plainPaint)).not.toContain("Data");
+	});
+
 	it("prints a requested resource verbatim and indented", () => {
 		const lines = renderTarget({
 			...targetContext,
