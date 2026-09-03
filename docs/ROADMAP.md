@@ -4,18 +4,26 @@ What is ahead, and why in this order. What is already true is in the README;
 what may never change is in `INVARIANTS_V1.md`. This file is not a changelog:
 when an item lands it leaves this page.
 
-## Where we stand (2026-09-02, evening)
+## Where we stand (2026-09-04, night)
 
-Builder Pi is the front door and the only human interface. Five live
-first-user sessions on a real model (Sonnet-class Builder, a 9B Target, a
-GLM judge) closed the loop from a one-sentence description to a shipped
-`v0.1.0` in about twenty minutes and under two dollars. Today's product wave
-landed on top: one measurement sentence composed once and printed on every
-surface, with the Builder quoting it verbatim; a sealed `pass` that says
-which of its two findings it was; a 300-line persona with the stage rules
-moved into the `next` block of every tool result; Russian on every screen a
-stranger meets, with typed blockers and refusals; the support-agent template
-configured from the conversation instead of by hand.
+Builder Pi is the front door and the only human interface. Stage 1 of the
+plan below landed in one day and was accepted live on 2026-09-03/04: a plain
+folder holding a Python agent (internet-provider support: a tariff, a
+balance, a block, a technician ticket) was adopted with one question, the
+Builder wrote fifteen cases nine of which carry the client's state, the
+agent ran forty-five executions in eight minutes inside the sandbox, the
+Builder measured the noise itself, rewrote `prompts/system.md` in a
+workshop, and the verification read «стало лучше · балл 73 % → 85 % (+12,4
+п.п., 95 % ДИ +4,8 … +20,2) на 14 кейсах × 5 · экзамен: пройден · ухудшения
+не доказано, улучшения тоже»; `v0.1.0` was shipped, the passport said
+«обещано +8,9 · получено +10 ✓», and `/dataset` wrote fifty conversations
+with the world before and after and the judge's verdicts. Three defects were
+fixed in the code during the session (the sandbox denied the route socket
+address selection needs, the environment fingerprint depended on the case,
+an empty answer was an infrastructure error) and one outside it: the
+OpenRouter catalog now routes Anthropic models through a path the pinned Pi
+cannot reach, so the Builder ran on `openai/gpt-5.4`. The session reports
+live beside the earlier five.
 
 The work sync of the same day set the real order: agents written in Python,
 a dialogue emulator over a test basket with client state and tool mocks, a

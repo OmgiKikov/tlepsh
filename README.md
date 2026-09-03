@@ -98,6 +98,18 @@ About forty minutes and under four dollars per session; the Builder's own
 prediction on the last one (+60pp) landed within 1.1pp of the measurement. The
 fixes were rediscovered from raw traces, not remembered.
 
+A sixth session took a Target that is not Pi at all: a plain folder with a
+Python agent (internet-provider support, two tools, a three-file knowledge
+base) and no manifest. The door adopted it with one question; the Builder
+wrote fifteen cases, nine of them carrying the client's state that the tools
+read and write; forty-five executions ran in eight minutes inside the
+sandbox; the Builder measured the noise, rewrote `prompts/system.md` in a
+workshop, and the verification read `стало лучше · балл 73% → 85% (+12.4 п.п.,
+95% ДИ +4.8 … +20.2) на 14 кейсах × 5 · экзамен: пройден · ухудшения не
+доказано, улучшения тоже`; `v0.1.0` shipped, the passport said «обещано +8.9
+· получено +10 ✓», and `/dataset` wrote fifty conversations with the world
+before and after and the judge's verdicts. Under two dollars for the cycle.
+
 ## The passport it wrote
 
 From durable artifacts, never from memory. Trimmed.
