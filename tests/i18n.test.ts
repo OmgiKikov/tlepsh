@@ -13,7 +13,9 @@ import { plainPaint } from "../src/builder/render/paint.js";
 import { stageLabel, nextStep } from "../src/builder/render/stage.js";
 import { renderRunDetailPage } from "../src/evidence/pages.js";
 import { createRunProgressPresenter } from "../src/builder/run-progress.js";
-import { explainRun } from "../src/application/run-explanation.js";
+import { explainRun, failureModeReading, runErrorReading } from "../src/application/run-explanation.js";
+import { receiptLines } from "../src/builder/render/trace.js";
+import { turnBudgetLine } from "../src/workbench/workbench.js";
 import { assertWorkbenchDecisionStage } from "../src/workbench/transition-policy.js";
 import type { WorkbenchCandidateSummary, WorkbenchConfirmation, WorkbenchView } from "../src/workbench/types.js";
 
@@ -844,5 +846,87 @@ describe("ru: the knowledge base", () => {
 		expect(t("message.exam-sealed-kb", { cases: plural(16, "case") })).toContain("по базе знаний");
 		expect(t("holdout.reason-kb")).toContain("по базе знаний");
 		expect(t("cmd.holdout")).toContain("из базы знаний");
+	});
+});
+
+/**
+ * Session 7: the host read a hung network call off the shape of a trace and
+ * announced `вызвал get_account · без ответа` on the same screen as
+ * `get_account · 930ms · ок`. In Russian, the run says what its record says.
+ */
+describe("ru: what ended a run", () => {
+	it("names the typed cause of every stem this host writes", () => {
+		setLanguage("ru");
+		expect(runErrorReading("run timed out after 300000ms")).toEqual({
+			code: "timeout",
+			sentence: "агент не ответил за 300 с — таймаут модели",
+			detail: "run timed out after 300000ms",
+		});
+		expect(runErrorReading("command Target exited with 3: agent gave up")?.sentence)
+			.toBe("процесс агента завершился, не ответив");
+		expect(runErrorReading("command Target did not start within 5000ms")?.sentence)
+			.toBe("агент так и не запустился");
+		// The sentence is Russian; the raw stem beside it stays exactly as recorded.
+		expect(leakedEnglish(runErrorReading("run timed out after 300000ms")!.sentence)).toEqual([]);
+	});
+
+	it("reads one infrastructure mode as one cause counted in runs", () => {
+		setLanguage("ru");
+		const reading = failureModeReading({
+			signature: { kind: "infrastructure-error", checkCode: null, subject: "timeout", discriminatorHash: `sha256:${"a".repeat(64)}` },
+			scope: "systemic",
+			observations: [],
+			observedRuns: 0,
+			impact: {
+				affectedTasks: 7,
+				totalTasks: 8,
+				taskCoverageBps: 8750,
+				failedOccurrences: 21,
+				passedOccurrences: 3,
+				reproductionBps: 8750,
+			},
+		});
+		expect(reading.title).toBe("инфраструктура: таймаут модели");
+		expect(reading.facts).toBe(
+			"здесь оборвалось 21 из 24 запусков, причина — таймаут модели; "
+			+ "это свидетельство о тракте оценки, а не о поведении агента",
+		);
+		expect(leakedEnglish(`${reading.title} ${reading.facts}`)).toEqual([]);
+	});
+
+	it("says what the run receipt actually holds, one fact per clause", () => {
+		setLanguage("ru");
+		const lines = receiptLines({
+			worldKeys: 3,
+			judge: null,
+			simulatedUser: null,
+			tokens: null,
+			costUsd: null,
+			incomplete: true,
+		}, plainPaint);
+		expect(lines).toEqual([
+			"Квитанция мир: есть (3 ключа) · судья: не запускался — прогон упал · "
+			+ "собеседник: не запускался — прогон упал · токены: не сообщены",
+		]);
+		expect(leakedEnglish(lines.join("\n"))).toEqual([]);
+		const spent = receiptLines({
+			worldKeys: null,
+			judge: { calls: 2, costUsd: 0 },
+			simulatedUser: { calls: 5, costUsd: 0.01 },
+			tokens: 640,
+			costUsd: 0.0015,
+			incomplete: false,
+		}, plainPaint);
+		expect(spent).toEqual(["Квитанция мир: нет · судья: 2 вызова, $0.00 · собеседник: 5 вызовов, $0.01 · токены: 640, $0.00"]);
+	});
+
+	it("says the run budget is per turn, in Russian", () => {
+		setLanguage("ru");
+		expect(turnBudgetLine(300_000, [{ simulatedUser: { maxTurns: 6 } }])).toBe("таймаут 300 с на ход · до 6 ходов");
+		expect(turnBudgetLine(300_000, [{}])).toBe("таймаут 300 с на ход");
+		expect(plural(1, "agent turn")).toBe("1 ход");
+		expect(plural(3, "agent turn")).toBe("3 хода");
+		expect(plural(11, "agent turn")).toBe("11 ходов");
+		expect(leakedEnglish(turnBudgetLine(300_000, [{ simulatedUser: { maxTurns: 6 } }]))).toEqual([]);
 	});
 });

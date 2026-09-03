@@ -443,12 +443,22 @@ describe("deterministic improvement brief", () => {
 			.toEqual([["flaky"]]);
 
 		const infrastructure = brief.modes.find((mode) => mode.signature.kind === "infrastructure-error");
+		// An error stem this host does not write is `other`, and its rate is
+		// counted against every run that did NOT end this way — the whole
+		// evaluation, because "one of eight executions ended here" is the fact a
+		// reader needs. A per-task denominator made a fully-failed task reproduce
+		// at 100% no matter how rare the cause was.
 		expect(infrastructure).toMatchObject({
 			scope: "task-local",
 			severity: "blocking",
 			decision: "repair-evidence-path",
-			impact: { failedOccurrences: 1, passedOccurrences: 1, reproductionBps: 5_000 },
+			signature: { kind: "infrastructure-error", subject: "other" },
+			title: "Evidence-path failure: an interrupted run",
+			impact: { failedOccurrences: 1, passedOccurrences: 7, reproductionBps: 1_250 },
 		});
+		expect(infrastructure?.facts).toBe(
+			"1 of 8 run(s) ended at an interrupted run; this is evidence about the evaluation path, not about Target behavior.",
+		);
 		expect(JSON.stringify(brief)).not.toContain(secret);
 		expect(infrastructure?.evidenceNotes.join(" ")).toContain("REDACTED_API_KEY");
 		expect(brief.status).toBe("inconclusive");
@@ -933,6 +943,50 @@ describe("the diagnosis a person would have written", () => {
 		// A mode that is not about tools still quotes what the agent said.
 		const rubric = brief.modes.find((mode) => mode.signature.checkCode === "semantic-rubric")!;
 		expect(rubric.evidence.some((item) => item.excerpt?.toolNames.includes("bash"))).toBe(true);
+	});
+
+	// Session 7: a hung network read timed out 21 of 24 executions, and the panel
+	// reported `7 типов сбоя` — the same sentence seven times, one per task.
+	it("makes one infrastructure mode per cause, not one per case", () => {
+		const runs: RunInput[] = [];
+		for (const taskId of ["a", "b", "c", "d", "e", "f", "g"]) {
+			for (const repetitionIndex of [0, 1, 2]) {
+				runs.push({ taskId, repetitionIndex, status: "error", error: "run timed out after 300000ms" });
+			}
+		}
+		// One case survived, and one execution died a different death.
+		runs.push({ taskId: "h", repetitionIndex: 0, graders: [legacyGrader(true, "ok")] });
+		runs.push({ taskId: "h", repetitionIndex: 1, graders: [legacyGrader(true, "ok")] });
+		runs.push({
+			taskId: "h",
+			repetitionIndex: 2,
+			status: "error",
+			error: "command Target exited with 7: agent gave up",
+		});
+		const value = fixture({ repetitions: 3, evidenceVisibility: "development", runs });
+		const brief = compileImprovementBrief(value.runsRoot, value.diagnosis);
+		const infrastructure = brief.modes.filter((mode) => mode.signature.kind === "infrastructure-error");
+
+		// Two causes, two modes — not twenty-two rows, and not one merged blob.
+		expect(infrastructure.map((mode) => [mode.signature.subject, mode.title, mode.impact.failedOccurrences]))
+			.toEqual([
+				["timeout", "Evidence-path failure: model timeout", 21],
+				["exit", "Evidence-path failure: the agent process ended", 1],
+			]);
+		const timeout = infrastructure[0]!;
+		// Counted in runs against the whole evaluation: 21 of 24 ended this way.
+		expect(timeout.impact).toMatchObject({ failedOccurrences: 21, passedOccurrences: 2, affectedTasks: 7, totalTasks: 8 });
+		expect(timeout.facts).toBe(
+			"21 of 23 run(s) ended at model timeout; this is evidence about the evaluation path, not about Target behavior.",
+		);
+		// The tasks it hit are the list INSIDE the one mode.
+		expect(timeout.taskIds).toEqual(["a", "b", "c", "d", "e", "f", "g"]);
+		expect(timeout.scope).toBe("systemic");
+		// Never a harness change: an infrastructure mode is stabilize-and-rerun.
+		expect(infrastructure.every((mode) => mode.decision === "repair-evidence-path")).toBe(true);
+		expect(brief.proposalEligible).toBe(false);
+		// One mode id per cause, and the two causes are not the same mode.
+		expect(new Set(infrastructure.map((mode) => mode.failureModeId)).size).toBe(2);
 	});
 
 	it("keeps the failure mode id a stable function of the family alone", () => {

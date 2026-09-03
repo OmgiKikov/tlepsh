@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { commandTargetEnvironmentNames } from "../src/target/session-command.js";
 import {
 	AHDE_EVALUATOR_ID,
 	axisDifferences,
@@ -291,5 +292,56 @@ describe("a run whose agent is not Pi", () => {
 		expect(comparable(pi, command)).toBe(false);
 		expect(axisDifferences(pi, command)).toEqual(["execution"]);
 		expect(hashValue(pi)).not.toBe(hashValue(command));
+	});
+});
+
+/**
+ * Session 7, defect 19: the receipt of a command run listed `["HOME", "LANG",
+ * "PATH", "TMPDIR"]` — the Pi execution policy's environment, which belongs to
+ * a different process entirely — while the child had also been handed
+ * `AHDE_WORLD`, `AHDE_PROTOCOL` and the credential name. A receipt that
+ * under-reports what was given is the one thing a receipt may not do.
+ */
+describe("the environment a command Target's child receives", () => {
+	const source = { PATH: "/usr/bin", LANG: "C.UTF-8", KEEP: "yes", ALSO: "yes" };
+
+	it("lists the fixed four, the readable allowlist, the credential, the protocol, and the world", () => {
+		expect(commandTargetEnvironmentNames({
+			environmentAllowlist: ["KEEP", "ALSO"],
+			apiKeyEnv: "OPENROUTER_API_KEY",
+			hasWorld: true,
+			sourceEnvironment: source,
+		})).toEqual([
+			"AHDE_PROTOCOL",
+			"AHDE_WORLD",
+			"ALSO",
+			"HOME",
+			"KEEP",
+			"LANG",
+			"OPENROUTER_API_KEY",
+			"PATH",
+			"TMPDIR",
+		]);
+	});
+
+	it("drops AHDE_WORLD for a case without one, and a name the host cannot read", () => {
+		expect(commandTargetEnvironmentNames({
+			environmentAllowlist: ["KEEP", "NEVER_SET"],
+			apiKeyEnv: "OPENROUTER_API_KEY",
+			hasWorld: false,
+			sourceEnvironment: source,
+		})).toEqual(["AHDE_PROTOCOL", "HOME", "KEEP", "LANG", "OPENROUTER_API_KEY", "PATH", "TMPDIR"]);
+	});
+
+	it("never lets an allowlist duplicate a host-owned name into the receipt twice", () => {
+		const names = commandTargetEnvironmentNames({
+			environmentAllowlist: ["PATH", "AHDE_WORLD", "AHDE_TOOL_HOME", "OPENROUTER_API_KEY"],
+			apiKeyEnv: "OPENROUTER_API_KEY",
+			hasWorld: true,
+			sourceEnvironment: { ...source, AHDE_WORLD: "/x", AHDE_TOOL_HOME: "/y", OPENROUTER_API_KEY: "k" },
+		});
+		expect(names).toEqual([...new Set(names)]);
+		// The tool-home variable belongs to a declared tool's process, not the agent's.
+		expect(names).not.toContain("AHDE_TOOL_HOME");
 	});
 });

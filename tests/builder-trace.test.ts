@@ -218,6 +218,80 @@ describe("traces in the TUI", () => {
 		for (const line of lines) expect([...line].length).toBeLessThanOrEqual(120);
 	});
 
+	/**
+	 * Session 7, defects 2 and 6. The panel of a timed-out run printed the raw
+	 * stem and nothing else, and the receipt beside it was three `null`s and a
+	 * missing `usage` key on a case whose world the tool had answered from.
+	 */
+	it("reads an errored run from its error and prints a receipt that says what is true", () => {
+		const model = detail("run_err", "task_004", 0, "error");
+		const errored = {
+			...model,
+			run: { ...model.run, status: "error", error: "run timed out after 300000ms" },
+			explanation: {
+				...model.explanation,
+				outcome: "error",
+				error: {
+					code: "timeout",
+					sentence: "the agent did not answer within 300s — the model timed out",
+					detail: "run timed out after 300000ms",
+				},
+			},
+			receipt: {
+				worldKeys: 3,
+				judge: null,
+				simulatedUser: null,
+				tokens: null,
+				costUsd: null,
+				incomplete: true,
+			},
+		} as unknown as RunDetailPageModel;
+		const text = renderTracePanel(errored, plainPaint).map(stripMarkers).join("\n");
+		expect(text).toContain("Error the agent did not answer within 300s — the model timed out run timed out after 300000ms");
+		// Each of the four is its own statement, and none of them is "null".
+		expect(text).toContain("Receipt world: yes (3 keys)");
+		expect(text).toContain("judge: never ran — the run failed");
+		expect(text).toContain("user model: never ran — the run failed");
+		expect(text).toContain("tokens: not reported");
+	});
+
+	it("says what an instrument actually spent on a run that finished", () => {
+		const model = detail("run_ok", "task_004", 0, "pass");
+		const spent = {
+			...model,
+			receipt: {
+				worldKeys: null,
+				judge: { calls: 2, costUsd: 0 },
+				simulatedUser: { calls: 5, costUsd: 0.01 },
+				tokens: 640,
+				costUsd: 0.0015,
+				incomplete: false,
+			},
+		} as unknown as RunDetailPageModel;
+		const text = renderTracePanel(spent, plainPaint).map(stripMarkers).join("\n");
+		expect(text).toContain("Receipt world: none · judge: 2 calls, $0.00 · user model: 5 calls, $0.01 · tokens: 640, $0.00");
+	});
+
+	it("tells the Builder what ended an errored run and forbids reading a cause off the trace", () => {
+		const model = detail("run_err", "task_004", 0, "error");
+		const note = traceNoteForModel({
+			...model,
+			run: { ...model.run, status: "error", error: "run timed out after 300000ms" },
+			explanation: {
+				...model.explanation,
+				error: {
+					code: "timeout",
+					sentence: "the agent did not answer within 300s — the model timed out",
+					detail: "run timed out after 300000ms",
+				},
+			},
+		} as unknown as RunDetailPageModel);
+		expect(note).toContain("The run recorded this error, and it is the ONLY statement about why it ended: run timed out after 300000ms");
+		expect(note).toContain("Never infer a cause from its shape");
+		expect(note).toContain("stabilize the path and run again, never a harness change");
+		expect(note).not.toContain("Call it your hypothesis");
+	});
+
 	it("tells the Builder the facts and asks for its own hypothesis, within the note bound", () => {
 		const note = traceNoteForModel(detail("run_fail1", "task_006", 0, "fail"));
 		expect(note).toContain("Operator opened /trace for run run_fail1 — task_006#0, fail");
