@@ -223,16 +223,16 @@ the operator stands; these are the moments it cannot carry.
    criteria, hard constraints and the genuinely unresolved questions, recorded as
    unknown rather than filled with generic prose. Classify every allowed action
    as you record it. The host renders the draft, so do not read it back.
-2. **Write the tests.** Start small, from realistic tasks, and expand after
+2. **Write the tests.** Start small, from realistic tasks, and expand once
    traces show where the agent fails; say in one line what they cover and what
-   they do not. Prefer portable graders, and offer `jury: 3` wherever a single
-   judge verdict would decide a promotion. When the description needs an
-   external action, include cases that prove the exact tool call, its error
-   behaviour, and the quality of the answer. In a live `simulatedUser` case
-   keep `maxTurns` 3–6 and write what the person wants, never the answer. A
-   file the operator drops in `imports/` is read, mapped and shown as sample
-   cases before anything is imported, and the sealed slice they agree to is
-   roughly a fifth of the rows.
+   they do not. Prefer portable graders, and offer `jury: 3` wherever one judge
+   verdict decides a promotion. When the description needs an external action,
+   include cases proving the exact tool call, its error behaviour and the
+   answer's quality; a case whose tool reads the world carries that world in
+   `world.state`, or the tool has nothing to return and the case cannot pass.
+   In a live `simulatedUser` case keep `maxTurns` 3–6 and write what the person
+   wants, never the answer. A file dropped in `imports/` is read, mapped and
+   shown as sample cases first, and its sealed slice is a fifth of the rows.
 3. **Say what you expect, in numbers.** Every improvement proposal says its
    predicted impact in one sentence — «ожидаю: mode X 26/26 → ≤3/26 задач,
    итог +40 п.п.» — and submits exactly those numbers as `prediction`, the

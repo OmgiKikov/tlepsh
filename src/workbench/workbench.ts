@@ -135,6 +135,7 @@ import {
 } from "../application/candidate-review.js";
 import {
 	assertGradersRunnable,
+	draftWorldWarnings,
 	resolveScoredCasesForEval,
 	targetToolContext,
 	targetWithDevelopmentCorpus,
@@ -2905,7 +2906,19 @@ export class AhdeWorkbench {
 				revisionSummary: input.revisionSummary,
 			}, { now: this.dependencies.now });
 			const settled = this.select("corpus-draft", result.draft.id);
-			return { kind: input.kind, message: t("message.corpus-draft-saved"), artifact: { id: result.draft.id, draftHash: hashValue(result.draft), taskCount: result.draft.tasks.length, approvedSpecId: result.draft.approvedSpec.specId }, view: await this.viewOf(settled) };
+			// A case that requires a world-reading tool and carries no world is
+			// unpassable by construction — the tool answers "no world for this run"
+			// and the grader can never fire. It is a warning and not a refusal: only
+			// the author knows whether the call itself is the whole measurement.
+			const warnings = inventory.target
+				? draftWorldWarnings(input.tasks, targetToolContext(inventory.target))
+				: [];
+			return {
+				kind: input.kind,
+				message: [t("message.corpus-draft-saved"), ...warnings].join("\n"),
+				artifact: { id: result.draft.id, draftHash: hashValue(result.draft), taskCount: result.draft.tasks.length, approvedSpecId: result.draft.approvedSpec.specId },
+				view: await this.viewOf(settled),
+			};
 		}
 		if (input.kind === "corpus-import") {
 			const inventory = this.inventory();

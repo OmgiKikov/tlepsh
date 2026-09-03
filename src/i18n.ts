@@ -1593,6 +1593,7 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"exam.short-of-requested": "(short of the {requested} that were ordered)",
 	// lane: dataset
 	"draft.tool-parameter-unknown": "tool {tool} has no parameter {parameter}; it has: {parameters}",
+	"draft.world-missing": "case {case} expects a call to {tool} but carries no world — the tool has nothing to return",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2908,6 +2909,7 @@ const ru: Record<MessageKey, string> = {
 	"exam.short-of-requested": "(заказано было {requested})",
 	// lane: dataset
 	"draft.tool-parameter-unknown": "у инструмента {tool} нет параметра {parameter}; есть: {parameters}",
+	"draft.world-missing": "кейс {case} ждёт вызов {tool}, но не несёт мир — инструменту нечего вернуть",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

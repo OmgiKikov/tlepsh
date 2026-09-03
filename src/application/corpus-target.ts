@@ -323,6 +323,19 @@ function declaredParameterNames(tool: DeclaredToolShape): string[] {
 }
 
 /**
+ * Whether this tool reads the case's world.
+ *
+ * Two ways to know, and both are declarations rather than guesses: the broker
+ * hands `AHDE_WORLD` to a tool that asks for it, and a command Target reaches
+ * every one of its tools through that same broker, so for a command agent any
+ * declared tool may consult the world.
+ */
+function toolConsultsWorld(tool: DeclaredToolShape, commandAgent: boolean): boolean {
+	if (commandAgent) return true;
+	return (tool.permissions?.environment ?? []).includes("AHDE_WORLD");
+}
+
+/**
  * What the two draft checks need from the committed Target: its declared
  * tools, and whether it is a command agent (every one of whose tools reaches
  * the world through the broker).
@@ -431,3 +444,47 @@ export function assertGradersRunnable(
 	}
 }
 
+/**
+ * Cases that ask a tool to read the world and then hand it no world.
+ *
+ * Session 7 wrote three of them: the grader required `get_account`, the tool
+ * answered `{"error":"нет данных о мире прогона"}`, and the case was
+ * unpassable by construction — nothing said so at authoring, at publication or
+ * on the run. This is a warning and not a refusal on purpose: a case may
+ * legitimately require a tool call and grade only the call, and the operator
+ * is the one who knows which.
+ */
+export function draftWorldWarnings(
+	tasks: readonly {
+		graders?: readonly GraderSpec[];
+		world?: unknown;
+		metadata?: Record<string, string> | undefined;
+	}[],
+	options: {
+		tools?: readonly DeclaredToolShape[];
+		/**
+		 * A command Target reaches every declared tool through the same broker
+		 * that hands the world over, so any of its tools may consult one.
+		 */
+		commandAgent?: boolean;
+	} = {},
+): string[] {
+	const declared = new Map((options.tools ?? []).map((tool) => [tool.name, tool]));
+	const warnings: string[] = [];
+	tasks.forEach((task, index) => {
+		if (task.world !== undefined && task.world !== null) return;
+		const worldReader = (task.graders ?? []).find((grader) =>
+			grader.type === "tool_called" &&
+			(() => {
+				const tool = declared.get(grader.tool);
+				return tool !== undefined && toolConsultsWorld(tool, options.commandAgent === true);
+			})());
+		if (!worldReader || worldReader.type !== "tool_called") return;
+		const named = task.metadata?.name ?? task.metadata?.id ?? "";
+		warnings.push(t("draft.world-missing", {
+			case: named.trim().length > 0 ? named : `#${index + 1}`,
+			tool: worldReader.tool,
+		}));
+	});
+	return warnings;
+}
