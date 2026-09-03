@@ -4,6 +4,7 @@ import {
 	TargetModelSelectionSchema,
 	type TargetModelSelection,
 } from "../application/target-model-selection.js";
+import { sameModelAsTarget } from "../application/configure-evaluators.js";
 import { t } from "../i18n.js";
 import type { TargetManifest } from "../manifest.js";
 import type { ToolCredentialSlot } from "../application/tool-authoring.js";
@@ -85,6 +86,51 @@ export function hostModelCatalog(ctx: Pick<ExtensionContext, "modelRegistry">): 
 		models: entries.slice(0, MAX_CATALOG_ENTRIES),
 		omittedModels: Math.max(0, entries.length - MAX_CATALOG_ENTRIES),
 	};
+}
+
+/**
+ * The judge this machine would pick for a basket that needs one: the first
+ * catalog entry it can authenticate whose model is not the Target's own.
+ *
+ * The predicate is exactly the one `configure-evaluators` enforces after the
+ * fact — a judge grading a copy of the model under test is not a second
+ * opinion — applied before the question instead of after it, so the operator
+ * reads one dialog with an answer already in it rather than two.
+ */
+export function defaultJudgeSelection(
+	catalog: HostModelCatalog,
+	target: { provider: string; id: string },
+): TargetModelSelection | null {
+	const entry = catalog.models.find((model) =>
+		model.credentialPresent &&
+		!sameModelAsTarget(target, { provider: model.provider, id: model.modelId }));
+	return entry
+		? TargetModelSelectionSchema.parse({ provider: entry.provider, modelId: entry.modelId })
+		: null;
+}
+
+/**
+ * That selection, resolved: the endpoint and pricing from the trusted host
+ * catalog, under a credential variable NAME the host chose and the operator
+ * has already exported. Null when this machine cannot offer an independent
+ * judge — the Workbench then says so and blocks, rather than guessing one.
+ *
+ * The exported-key condition is what keeps this silent: a name the operator
+ * has not exported is a question, and a question belongs in the one dialog
+ * `configure-evaluators` already asks, never ahead of it.
+ */
+export function hostDefaultJudge(
+	ctx: Pick<ExtensionContext, "modelRegistry">,
+	target: { provider: string; id: string },
+	env: NodeJS.ProcessEnv = process.env,
+): { selection: TargetModelSelection; model: TargetManifest["model"] } | null {
+	const selection = defaultJudgeSelection(hostModelCatalog(ctx), target);
+	if (!selection) return null;
+	const apiKeyEnv = credentialPlaceholder(selection.provider);
+	if (!env[apiKeyEnv]?.trim()) return null;
+	const resolved = ctx.modelRegistry.find(selection.provider, selection.modelId);
+	if (!resolved) return null;
+	return { selection, model: resolveTargetModelSelection(selection, resolved, { apiKeyEnv }) };
 }
 
 /** One line the model can copy a `{ provider, modelId }` out of. */

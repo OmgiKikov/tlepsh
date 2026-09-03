@@ -1515,6 +1515,19 @@ one would cost more than usual, and then you get a single yes/no.`,
 	// Worded around the count rather than after it: "1 file still carry" is not a
 	// sentence, and this line has to read for one file as well as for five.
 	"readiness.stand-ins": "The template's REPLACE-ME stand-ins are still in {files}: {names} — describe the agent and the Builder replaces them",
+	// lane: honest-judge — an instrument that may say "I cannot tell", and the
+	// four ways it can be missing, dependent, keyless or unreadable.
+	"judge.abstained": "judge unsure: {count}",
+	"judge.uncalibrated": "judge not calibrated · /label",
+	"judge.no-candidate": "No key is exported for any model but the agent's own — export a second model's key, or configure a judge by hand.",
+	"blocker.judge-missing": "The cases are graded by a judge and none is configured: this needs a judge that is not the agent's own model.",
+	"blocker.judge-not-independent": "The judge is {model} — the agent's own model. A model grading a copy of itself is not a second opinion.",
+	"blocker.judge-credential-missing": "The judge's key is not exported: nothing here holds {env}.",
+	"blocker.judge-unreadable": "The judge returned an unreadable verdict on {count} of {total} runs, so the last measurement is about the evaluation path, not the agent.",
+	"confirm.start-testing.part.judge": "choose the judge",
+	"confirm.start-testing.judge": "{model} (not the agent's model) · key {env}",
+	"mode.title.judge-abstained": "The judge could not tell",
+	"mode.fact.judge-abstained": "{failed} matching observation(s) were failed by a judge that said it could not decide, never by a check the agent missed",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2761,6 +2774,18 @@ const ru: Record<MessageKey, string> = {
 	// lane: template-placeholders
 	"blocker.target-stand-ins": "У агента ещё стоят подставные REPLACE-ME из шаблона в полях {fields} — выбери имя и модель.",
 	"readiness.stand-ins": "{files} ещё с подставными REPLACE-ME из шаблона: {names} — опиши агента, и Билдер их заменит",
+	// lane: honest-judge
+	"judge.abstained": "судья не уверен: {count}",
+	"judge.uncalibrated": "судья не калиброван · /label",
+	"judge.no-candidate": "Нет ключа ни для одной другой модели — экспортируй ключ второй модели или настрой судью вручную.",
+	"blocker.judge-missing": "Кейсы судит судья, а он не выбран: нужен судья не на модели агента.",
+	"blocker.judge-not-independent": "Судья — {model}, то есть сама модель агента. Модель, проверяющая свою же копию, — это не второе мнение.",
+	"blocker.judge-credential-missing": "Ключ судьи не экспортирован: переменной {env} здесь нет.",
+	"blocker.judge-unreadable": "Судья вернул нечитаемый вердикт в {count} прогонах из {total} — последнее измерение говорит о тракте оценки, а не об агенте.",
+	"confirm.start-testing.part.judge": "выбрать судью",
+	"confirm.start-testing.judge": "{model} (не модель агента) · ключ {env}",
+	"mode.title.judge-abstained": "Судья не смог решить",
+	"mode.fact.judge-abstained": "совпадающих наблюдений провалено: {failed}, и все — судьёй, который сам сказал, что решить не может, а не проверкой, которую агент не прошёл",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	calmSetupFailure,
 	confirmDeclaredToolCredentials,
+	defaultJudgeSelection,
 	describeHostModelCatalog,
+	hostDefaultJudge,
 	hostModelCatalog,
 	targetIdFromDirectory,
 	targetModelResolver,
@@ -74,6 +76,80 @@ describe("host model catalog", () => {
 		expect(() => resolve({ provider: "openai", modelId: "gpt-9-turbo" })).toThrow(
 			/openai\/gpt-9-turbo is not available in the trusted host catalog\. Choose one of: openai\/gpt-5, anthropic\/claude-opus \(no credential\)\./,
 		);
+	});
+});
+
+/**
+ * The judge the host would pick for a basket that needs one. The predicate is
+ * the one `configure-evaluators` enforces after the fact — a model grading a
+ * copy of itself is not a second opinion — applied before the question.
+ */
+describe("the default judge", () => {
+	const catalog = (models: { provider: string; id: string; credentialed?: boolean }[]) =>
+		hostModelCatalog(registry({
+			available: models,
+			credentialed: (model) => models.find((entry) =>
+				entry.provider === model.provider && entry.id === model.id)?.credentialed !== false,
+		}));
+
+	it("takes the first credentialed model that is not the agent's own", () => {
+		expect(defaultJudgeSelection(
+			catalog([
+				{ provider: "qwen-internal", id: "qwen3.5-27b" },
+				{ provider: "openrouter", id: "glm-5.3" },
+			]),
+			{ provider: "qwen-internal", id: "qwen3.5-27b" },
+		)).toMatchObject({ provider: "openrouter", modelId: "glm-5.3" });
+	});
+
+	it("takes another model from the same provider: the comparison is provider+id", () => {
+		expect(defaultJudgeSelection(
+			catalog([{ provider: "anthropic", id: "claude-opus" }, { provider: "anthropic", id: "claude-haiku" }]),
+			{ provider: "anthropic", id: "claude-opus" },
+		)).toMatchObject({ provider: "anthropic", modelId: "claude-haiku" });
+	});
+
+	it("offers nothing when every other model is uncredentialed, or there is no other model", () => {
+		expect(defaultJudgeSelection(
+			catalog([
+				{ provider: "qwen-internal", id: "qwen3.5-27b" },
+				{ provider: "openrouter", id: "glm-5.3", credentialed: false },
+			]),
+			{ provider: "qwen-internal", id: "qwen3.5-27b" },
+		)).toBeNull();
+		expect(defaultJudgeSelection(
+			catalog([{ provider: "qwen-internal", id: "qwen3.5-27b" }]),
+			{ provider: "qwen-internal", id: "qwen3.5-27b" },
+		)).toBeNull();
+	});
+
+	it("pre-fills nothing unless the operator has already exported the key's variable", () => {
+		const ctx = registry({
+			available: [{ provider: "qwen-internal", id: "qwen3.5-27b" }, { provider: "openrouter", id: "glm-5.3" }],
+			find: (provider, modelId) => ({
+				provider,
+				id: modelId,
+				name: modelId,
+				api: "openai-completions",
+				baseUrl: "https://openrouter.invalid/api/v1",
+				reasoning: false,
+				thinkingLevelMap: { off: null },
+				input: ["text"],
+				cost: { input: 0.2, output: 0.8, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 200_000,
+				maxTokens: 32_000,
+			}),
+		});
+		const target = { provider: "qwen-internal", id: "qwen3.5-27b" };
+		// A name the operator has not exported is a question, and a question
+		// belongs in the dialog `configure-evaluators` already asks.
+		expect(hostDefaultJudge(ctx, target, {})).toBeNull();
+		const chosen = hostDefaultJudge(ctx, target, { OPENROUTER_API_KEY: "sk-live" });
+		expect(chosen?.model).toMatchObject({
+			provider: "openrouter",
+			id: "glm-5.3",
+			apiKeyEnv: "OPENROUTER_API_KEY",
+		});
 	});
 });
 

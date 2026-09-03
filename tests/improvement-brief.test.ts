@@ -14,6 +14,7 @@ import {
 	graderFamilyDiscriminator,
 	graderFamilyModeId,
 } from "../src/application/improvement-brief.js";
+import { failureModeReading } from "../src/application/run-explanation.js";
 import {
 	RunRecordSchema,
 	canonicalJson,
@@ -318,6 +319,70 @@ describe("deterministic improvement brief", () => {
 		expect(brief.modes.every((mode) => mode.decision === "propose-harness-change")).toBe(true);
 		expect(brief.proposalEligible).toBe(true);
 		expect(brief.headline).toContain("0/1 passed.");
+	});
+
+	/**
+	 * A judge that said it could not tell has failed the check, but there is no
+	 * agent behaviour under that failure to change. The family, the id and the
+	 * counts are untouched — modes cluster by the exact typed grader family and
+	 * nothing else — and only the decision and the reading move.
+	 */
+	it("reads a mode failed only by an unsure judge as stabilize-and-rerun", () => {
+		const semanticHash = hashValue({ type: "judge", rubric: "correct" });
+		const abstained = {
+			...exactGrader({
+				passed: false,
+				specHash: semanticHash,
+				checkCode: "semantic-rubric",
+				type: "judge",
+				name: "quality",
+				reason: "судить не о чем",
+			}),
+			abstained: true,
+		};
+		const value = fixture({
+			repetitions: 1,
+			evidenceVisibility: "development",
+			runs: [
+				{ taskId: "task-a", repetitionIndex: 0, graders: [abstained] },
+				{ taskId: "task-b", repetitionIndex: 0, graders: [abstained] },
+			],
+		});
+		const brief = compileImprovementBrief(value.runsRoot, value.diagnosis);
+		const [mode] = brief.modes;
+		expect(mode?.abstained).toBe(true);
+		expect(mode?.decision).toBe("stabilize-and-rerun");
+		// The family is unchanged: the same id the same check would get anyway.
+		expect(mode?.failureModeId).toBe(graderFamilyModeId({ checkCode: "semantic-rubric", subject: null }));
+		expect(failureModeReading(mode!)).toEqual({
+			title: "The judge could not tell",
+			facts: "2 matching observation(s) were failed by a judge that said it could not decide, " +
+				"never by a check the agent missed",
+		});
+
+		// One decided failure in the same run and it is evidence about the agent
+		// again, so the mode goes back to being something to propose against.
+		const mixed = fixture({
+			repetitions: 1,
+			evidenceVisibility: "development",
+			runs: [
+				{ taskId: "task-a", repetitionIndex: 0, graders: [abstained] },
+				{
+					taskId: "task-b",
+					repetitionIndex: 0,
+					graders: [exactGrader({
+						passed: false,
+						specHash: semanticHash,
+						checkCode: "semantic-rubric",
+						type: "judge",
+						name: "quality",
+					})],
+				},
+			],
+		});
+		const second = compileImprovementBrief(mixed.runsRoot, mixed.diagnosis);
+		expect(second.modes[0]?.abstained).toBeUndefined();
+		expect(second.modes[0]?.decision).toBe("propose-harness-change");
 	});
 
 	it("gives every check code its own title and category, reference graders included", () => {

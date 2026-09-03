@@ -92,14 +92,16 @@ describe("one Builder persona", () => {
 		}
 	});
 
-	it("offers the judge check exactly once, the way noise calibration is offered", () => {
+	it("offers noise once itself, and leaves the judge check to the host", () => {
 		const loop = persona.split("## Typical loop")[1] ?? "";
-		expect(loop).toContain("оцени 20 ответов вслепую — 10 минут — и я буду знать, насколько верить судье");
-		expect(loop).toContain("ahde label");
-		expect(loop).toContain("never bring it up again");
-		// The same one-offer shape as the noise measurement it mirrors.
+		// Noise is still the persona's own single offer.
 		expect(loop).toContain("offer that measurement once for this revision");
-		expect(loop).toContain("exactly once per revision");
+		expect(loop).toContain("it ships nothing");
+		// The judge check is not: the host decides when it stands and says so in
+		// `next`, so the persona carries no remembered rule about when to ask.
+		expect(loop).toContain("The judge\n   check is the host's offer, not yours");
+		expect(loop).toContain("appears in `next` as `label`");
+		expect(loop).not.toContain("exactly once per revision");
 	});
 
 	it("offers the judge's exam once, with both modes in the sentence, and never authors one", () => {

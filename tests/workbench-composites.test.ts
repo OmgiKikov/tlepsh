@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { listCorpora } from "../src/corpus.js";
+import { loadTarget, ModelBlock } from "../src/manifest.js";
 import { loadTargetAdoptionReceipt } from "../src/application/target-adoption.js";
 import { loadCycleContinuationReceipt } from "../src/workbench/cycle-continuation.js";
 import {
@@ -40,6 +41,26 @@ const SPEC = {
 	successCriteria: ["Answer contains the applicable policy"],
 	constraints: ["Never invent policy"],
 	openQuestions: [],
+};
+
+/** A basket that cannot be published, let alone run, without a judge. */
+const JUDGE_TASKS = [
+	{ input: "What is the refund window?", graders: [{ type: "judge" as const, rubric: "Names the 30-day window" }] },
+	{ input: "When does the warranty start?", graders: [{ type: "output_contains" as const, text: "delivery" }] },
+];
+
+/** What the host would pre-fill: a catalog model that is not the agent's own. */
+const HOST_JUDGE = {
+	selection: { provider: "openrouter", modelId: "glm-5.3" },
+	model: ModelBlock.parse({
+		provider: "openrouter",
+		id: "glm-5.3",
+		api: "openai-completions",
+		baseUrl: "https://openrouter.invalid/api/v1",
+		apiKeyEnv: "OPENROUTER_API_KEY",
+		thinkingLevel: "off",
+		timeoutMs: 300_000,
+	}),
 };
 
 const TASKS = [
@@ -122,11 +143,14 @@ async function drafted(
 	return workbench;
 }
 
-async function addCorpusDraft(workbench: AhdeWorkbench): Promise<void> {
+async function addCorpusDraft(
+	workbench: AhdeWorkbench,
+	tasks: typeof TASKS | typeof JUDGE_TASKS = TASKS,
+): Promise<void> {
 	await workbench.submit({
 		kind: "corpus-draft",
 		name: "Reviewed development basket",
-		tasks: TASKS,
+		tasks,
 		coverageNotes: ["Two independent policy questions."],
 		revisionSummary: "Initial development basket",
 	});
@@ -247,6 +271,88 @@ describe("start-testing composite", () => {
 		} finally {
 			cleanup(composite.projectDir);
 			cleanup(separate.projectDir);
+		}
+	});
+
+	/**
+	 * A basket that grades with a judge needs one before it can be published.
+	 * Asking for that in a second dialog is two questions for one intention, so
+	 * the host pre-fills the answer and the operator reads it in the question
+	 * they already have — with the model named, and the variable its key comes
+	 * from, because that is the part they are approving.
+	 */
+	it("chooses the judge inside the one dialog when the basket needs one", async () => {
+		const fixture = paths();
+		try {
+			const workbench = await drafted(fixture);
+			const human = gate();
+			await workbench.decide({ kind: "start-testing", repetitions: 1, reason: REASON }, human);
+			await addCorpusDraft(workbench, JUDGE_TASKS);
+			const ran = await workbench.decide(
+				{ kind: "start-testing", repetitions: 1, reason: REASON },
+				human,
+				{ defaultJudge: () => HOST_JUDGE },
+			);
+
+			expect(ran.result.steps.map((step) => step.kind))
+				.toEqual(["configure-evaluators", "publish-corpus", "run-eval"]);
+			// One question, not two: the sub-decisions never reach the human.
+			expect(human.confirm).toHaveBeenCalledTimes(2);
+			const subject = human.confirm.mock.calls[1]?.[0]?.subject as { judge?: string; steps?: string[] };
+			expect(subject.judge).toBe("openrouter/glm-5.3 (not the agent's model) · key OPENROUTER_API_KEY");
+			expect(subject.steps?.[0]).toBe("configure-evaluators");
+			// And it is a reviewed commit on manifest.yaml like any other.
+			expect(loadTarget(fixture.projectDir).manifest.evalSuite.judge).toMatchObject({
+				provider: "openrouter",
+				id: "glm-5.3",
+				apiKeyEnv: "OPENROUTER_API_KEY",
+			});
+			expect(ran.result.evaluation?.evaluation.evalRunId).toBe(EVAL_RUN_ID);
+		} finally {
+			cleanup(fixture.projectDir);
+		}
+	});
+
+	it("leaves the plan alone when no case is graded by a judge", async () => {
+		const fixture = paths();
+		try {
+			const workbench = await drafted(fixture);
+			const human = gate();
+			await workbench.decide({ kind: "start-testing", repetitions: 1, reason: REASON }, human);
+			await addCorpusDraft(workbench);
+			const ran = await workbench.decide(
+				{ kind: "start-testing", repetitions: 1, reason: REASON },
+				human,
+				{ defaultJudge: () => HOST_JUDGE },
+			);
+			expect(ran.result.steps.map((step) => step.kind)).toEqual(["publish-corpus", "run-eval"]);
+			expect((human.confirm.mock.calls[1]?.[0]?.subject as { judge?: string }).judge).toBeUndefined();
+			expect(loadTarget(fixture.projectDir).manifest.evalSuite.judge).toBeUndefined();
+		} finally {
+			cleanup(fixture.projectDir);
+		}
+	});
+
+	it("carries the pre-filled judge through run-current, which resolves here", async () => {
+		const fixture = paths();
+		try {
+			const workbench = await drafted(fixture);
+			const human = gate();
+			await workbench.decide({ kind: "start-testing", repetitions: 1, reason: REASON }, human);
+			await addCorpusDraft(workbench, JUDGE_TASKS);
+			const ran = await workbench.decide(
+				{ kind: "run-current", repetitions: 1, reason: REASON },
+				human,
+				{ defaultJudge: () => HOST_JUDGE },
+			);
+			expect(ran.kind).toBe("run-current");
+			const resolved = ran.result as { resolvedAs: string; steps: { kind: string }[] };
+			expect(resolved.resolvedAs).toBe("start-testing");
+			expect(resolved.steps.map((step) => step.kind))
+				.toEqual(["configure-evaluators", "publish-corpus", "run-eval"]);
+			expect(loadTarget(fixture.projectDir).manifest.evalSuite.judge?.id).toBe("glm-5.3");
+		} finally {
+			cleanup(fixture.projectDir);
 		}
 	});
 

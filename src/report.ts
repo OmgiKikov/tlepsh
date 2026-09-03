@@ -21,6 +21,7 @@ import { openTrace, redactTraceText, type TraceMessage } from "./trace.js";
 import {
 	explainRun,
 	graderFindings,
+	judgeAbstentions,
 	runsTable,
 	taskInputPreviews,
 	traceFacts,
@@ -241,6 +242,13 @@ export interface EvalReportData {
 	runs: ReportRun[];
 	/** Empty when no judge grader ran; one row per judge grader spec otherwise. */
 	judgeCalibration: ReportJudgeCalibration[];
+	/**
+	 * Grader results this eval lost to a judge that said it could not tell.
+	 * Counted separately from the pass/fail tally it is already inside: an
+	 * abstention fails the check, and reading it as the agent's failure is the
+	 * one mistake this number exists to prevent.
+	 */
+	judgeAbstained: number;
 	/**
 	 * The agent's growth for this Target — the same bounded projection
 	 * `ahde log` prints. Null when no project is known, because a log is asked
@@ -831,6 +839,7 @@ export function collectEvalReportData(
 		comparisonGateLine: comparison ? renderGateLine(comparison) : "",
 		runs,
 		judgeCalibration: judgeCalibrationRows(verified.runs, calibration, options.labels !== undefined),
+		judgeAbstained: judgeAbstentions(verified.runs),
 		agentLog,
 		rows: tableRows,
 		explanations,
@@ -945,7 +954,8 @@ const modeCards=b.modes.map(m=>{
 });
 q('#failure-modes').innerHTML=modeCards.length?modeCards.join(''):'<article class="issue"><h3>No actionable failure modes</h3><p>The verified diagnosis does not support a harness change.</p></article>';
 q('#issues').innerHTML=d.issues.length?d.issues.map(i=>'<article class="issue"><div class="issue-head"><div><h3>'+esc(i.taskId)+' · '+esc(i.category)+'</h3><span class="pill '+esc(i.severity)+'">'+esc(i.confidence)+' confidence</span></div><span class="pill '+esc(i.severity)+'">'+esc(i.severity)+'</span></div><p>'+esc(i.rootCause)+'</p><ul>'+i.suggestions.map(s=>'<li>'+esc(s)+'</li>').join('')+'</ul></article>').join(''):'<article class="issue"><h3>No actionable failures</h3><p>All recorded tasks completed and passed.</p></article>';
-if(DATA.judgeCalibration.length){q('#judge-calibration').hidden=false;q('#judge-calibration').textContent=DATA.judgeCalibration.map(c=>c.line+' — '+c.graderNames.join(', ')).join(' · ')}
+const judgeUnsure=DATA.judgeAbstained?${embeddedJson(t("judge.abstained", { count: "{count}" }))}.replace('{count}',String(DATA.judgeAbstained)):'';
+if(DATA.judgeCalibration.length||judgeUnsure){q('#judge-calibration').hidden=false;q('#judge-calibration').textContent=[DATA.judgeCalibration.map(c=>c.line+' — '+c.graderNames.join(', ')).join(' · '),judgeUnsure].filter(Boolean).join(' · ')}
 q('#run-nav').innerHTML=DATA.runs.map(r=>'<button class="run-link" data-run="'+esc(r.runId)+'"><span class="dot '+(r.outcome==='pass'?'pass':'')+'"></span>'+esc(r.taskId)+' · '+r.repetitionIndex+'</button>').join('');
 if(DATA.comparison&&DATA.comparison.status==='comparable'){const c=DATA.comparison;q('#comparison-section').hidden=false;q('#comparison-verdict').textContent=c.gate.surface+' '+c.gate.verdict;q('#comparison-gate').textContent=DATA.comparisonGateLine;q('#comparison').innerHTML=c.rows.map(r=>'<tr><td>'+esc(r.taskId)+'</td><td>'+r.aPass+'/'+r.aTotal+'</td><td>'+r.bPass+'/'+r.bTotal+'</td><td>'+Math.round(r.aScore*100)+'% → '+Math.round(r.bScore*100)+'%</td><td class="'+(r.scoreDelta>0?'delta':'')+'">'+(r.scoreDelta>0?'+':'')+Math.round(r.scoreDelta*100)+' pp</td></tr>').join('')}
 	function runIdFromHash(){try{return new URLSearchParams(window.location.hash.slice(1)).get('run')}catch{return null}}

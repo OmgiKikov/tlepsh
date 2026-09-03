@@ -22,7 +22,7 @@ import { isSealedEvalRun, judgeSubjectFor, loadVerifiedEvalRun, readEvalRunIndex
 import { GraderSpec, type ResolvedTask } from "../manifest.js";
 import { AHDE_EVALUATOR_ID, hashValue, type RunRecord } from "../provenance.js";
 import { ApprovedSpecReferenceSchema, type ApprovedSpecReference } from "../spec.js";
-import { appendJsonlArtifact, readJsonlArtifact } from "../storage/artifacts.js";
+import { appendJsonlArtifact, readJsonlArtifact, writeJsonArtifact } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import { lastAssistantText, openTrace, redactTraceText } from "../trace.js";
 
@@ -175,6 +175,83 @@ export function judgeLabelFilePath(stateRoot: string, projectId: string, evalRun
 	const root = labelsRoot(stateRoot, projectId, true);
 	if (!root) throw new Error("failed to create the label state layout");
 	return join(root, `${EvalRunIdSchema.parse(evalRunId)}.jsonl`);
+}
+
+/**
+ * Labels behind which the host stops asking. Not a gate and never one: below
+ * it the offer stands, above it the operator has answered the question the
+ * offer exists to ask. `requireCalibration` is the only thing that can refuse.
+ */
+export const JUDGE_CALIBRATION_PROMPT_LABELS = 10;
+
+const JudgeCalibrationOfferSchema = z.strictObject({
+	schemaVersion: z.literal(1),
+	/** The eval run that made the judge worth checking. Provenance, not a key. */
+	evalRunId: z.string().regex(ARTIFACT_ID_PATTERN),
+	offeredAt: z.string().min(1),
+});
+
+/**
+ * The marker that says the one-time offer was made. It lives beside the labels
+ * themselves — not under `.jsonl`, so nothing reads it as one — because "have
+ * we asked yet" is a fact about this project's labelling, and a session that
+ * restarts must not ask again.
+ */
+export function judgeCalibrationOfferPath(stateRoot: string, projectId: string): string {
+	const root = labelsRoot(stateRoot, projectId, true);
+	if (!root) throw new Error("failed to create the label state layout");
+	return join(root, JUDGE_CALIBRATION_OFFER_FILE);
+}
+
+const JUDGE_CALIBRATION_OFFER_FILE = "calibration-offer.json";
+
+/**
+ * Make the offer once. Returns true exactly on the call that made it: a second
+ * run of a judge-graded basket does not ask again, in this session or the next.
+ */
+export function recordJudgeCalibrationOffer(
+	stateRoot: string,
+	projectId: string,
+	evalRunId: string,
+	now = () => new Date().toISOString(),
+): boolean {
+	const path = judgeCalibrationOfferPath(stateRoot, projectId);
+	if (existsSync(path)) return false;
+	writeJsonArtifact(path, JudgeCalibrationOfferSchema, {
+		schemaVersion: 1,
+		evalRunId: EvalRunIdSchema.parse(evalRunId),
+		offeredAt: now(),
+	});
+	return true;
+}
+
+/**
+ * Whether the offer stands right now: it was made, and the operator has not
+ * yet written the labels it asked for. `labelled` counts what this project has
+ * actually written, which is the number the prompt threshold is about; how far
+ * one judge instrument is checked stays with `judgeEvidenceCalibration`.
+ */
+export function judgeCalibrationOffer(
+	stateRoot: string,
+	projectId: string,
+): { labelled: number; offered: boolean } | null {
+	// Reading never creates: a view is rendered constantly, and a project that
+	// has never labelled anything must not grow a directory for being looked at.
+	let root: string | null;
+	try {
+		root = labelsRoot(stateRoot, projectId, false);
+	} catch {
+		return null;
+	}
+	if (!root || !existsSync(join(root, JUDGE_CALIBRATION_OFFER_FILE))) return null;
+	let labelled = 0;
+	try {
+		labelled = readProjectJudgeLabels(stateRoot, projectId).length;
+	} catch {
+		// An unreadable label store is not a reason to stop offering the exercise.
+		labelled = 0;
+	}
+	return { labelled, offered: labelled < JUDGE_CALIBRATION_PROMPT_LABELS };
 }
 
 /** Append labels for one eval run. Rows are validated before the file is opened. */

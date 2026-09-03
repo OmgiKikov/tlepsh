@@ -266,7 +266,7 @@ describe("one judge subject, four frozen prompts", () => {
 		].join("\n"));
 	});
 
-	it("renders the reference prompt exactly as it always has", async () => {
+	it("renders the reference prompt with the abstention the current evaluator id offers", async () => {
 		const { runsRoot } = await grade(
 			[{ ...RUBRIC, withReference: true }],
 			"Тридцать дней",
@@ -288,6 +288,9 @@ describe("one judge subject, four frozen prompts", () => {
 			"C: ответ агента содержит те же фактические сведения, что и эталон.",
 			"D: ответ агента противоречит эталону.",
 			"E: ответы отличаются только в деталях, не влияющих на фактическую сторону.",
+			// The one line the abstaining protocol set adds. Under any earlier
+			// evaluator id the choices stop at E; `judge-abstain.test.ts` pins that.
+			"U: недостаточно данных, чтобы сравнить.",
 			"",
 			'Верни JSON ровно с этими полями: {"choice": "C", "reason": "краткое обоснование выбора"}',
 		].join("\n"));

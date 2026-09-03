@@ -42,12 +42,15 @@ import {
 	type CandidateArtifactRef,
 	type CandidateRecord,
 } from "../domain/candidate.js";
-import { SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
+import { SEALED_GATE_POLICY, withinInfrastructureBudget } from "../domain/comparison-gate.js";
+import { sameModelAsTarget } from "../application/configure-evaluators.js";
 import { workbenchDecisionStages } from "./transition-policy.js";
 import {
 	isSealedEvalRun,
+	judgeVerdictUnreadable,
 	listEvalRunIndexesLenient,
 	loadEvalRun,
+	loadVerifiedEvalRun,
 	type EvalRunRecord,
 } from "../eval.js";
 import { loadTarget, type ResolvedTarget } from "../manifest.js";
@@ -1004,7 +1007,87 @@ function blocked(
 	return { text, reason: { code, ...(params ? { params } : {}), ...(detail ? { detail } : {}) } };
 }
 
-function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headline: string; actions: string[]; blockers: StageBlocker[] } {
+/**
+ * The newest evidence run's judge failures, read rather than re-derived.
+ *
+ * A verdict that could not be parsed already became an `EvaluatorModelError`
+ * and turned its run into an error; nothing new happens here. The read costs
+ * no I/O until that run has already spent the infrastructure error budget,
+ * because an unreadable verdict is one of those errors and cannot outnumber
+ * them — so a healthy run never opens a file.
+ */
+function unreadableJudgeVerdicts(inventory: WorkbenchInventory): { count: number; total: number } | null {
+	const newest = inventory.developmentEvals[0];
+	if (!newest || withinInfrastructureBudget(newest.summary.error, newest.summary.total)) return null;
+	let count: number;
+	try {
+		count = loadVerifiedEvalRun(inventory.runsRoot, newest.evalRunId).runs
+			.filter((run) => run.status === "error" && judgeVerdictUnreadable(run.error)).length;
+	} catch {
+		// Unreadable evidence is already an integrity blocker of its own.
+		return null;
+	}
+	return withinInfrastructureBudget(count, newest.summary.total)
+		? null
+		: { count, total: newest.summary.total };
+}
+
+/**
+ * Everything wrong with the instrument the selected surface would measure
+ * WITH, as typed reasons rather than a run that fails later for a reason
+ * nobody reads. Empty when nothing here grades with a judge.
+ *
+ * `includeMissing` is false at exactly one stage: `start-testing` pre-fills a
+ * judge inside the dialog that publishes and runs the basket, so a missing one
+ * there is a question already being asked, not a blocker.
+ */
+function judgeBlockers(
+	inventory: WorkbenchInventory,
+	env: NodeJS.ProcessEnv,
+	options: { includeMissing: boolean },
+): StageBlocker[] {
+	const target = inventory.target;
+	if (!target || !evaluatorRequirementsOf(inventory).judge) return [];
+	const judge = target.manifest.evalSuite.judge;
+	if (!judge) {
+		return options.includeMissing
+			? [blocked(
+				"The development cases are graded by a judge and this Target has none configured.",
+				"blocker.judge-missing",
+			)]
+			: [];
+	}
+	const blockers: StageBlocker[] = [];
+	const model = `${judge.provider}/${judge.id}`;
+	if (sameModelAsTarget(target.manifest.model, judge)) {
+		blockers.push(blocked(
+			`The judge is ${model}, which is the Target's own model; a model cannot be a second opinion on itself.`,
+			"blocker.judge-not-independent",
+			{ model },
+		));
+	}
+	if (!env[judge.apiKeyEnv]?.trim()) {
+		blockers.push(blocked(
+			`The judge credential variable ${judge.apiKeyEnv} is not exported in this environment.`,
+			"blocker.judge-credential-missing",
+			{ env: judge.apiKeyEnv },
+		));
+	}
+	const unreadable = unreadableJudgeVerdicts(inventory);
+	if (unreadable) {
+		blockers.push(blocked(
+			`The judge returned an unreadable verdict on ${unreadable.count} of ${unreadable.total} runs of the last evaluation.`,
+			"blocker.judge-unreadable",
+			{ count: unreadable.count, total: unreadable.total },
+		));
+	}
+	return blockers;
+}
+
+function stageFor(
+	inventory: WorkbenchInventory,
+	env: NodeJS.ProcessEnv,
+): { stage: WorkbenchStage; headline: string; actions: string[]; blockers: StageBlocker[] } {
 	if (inventory.integrityBlockers.length > 0) {
 		return {
 			stage: "selection-required",
@@ -1200,7 +1283,7 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 			stage: "corpus-review",
 			headline: "Review the exact development corpus draft before publishing it; configure any evaluator model its cases require.",
 			actions: ["review", "publish-corpus", "configure-evaluators"],
-			blockers: [],
+			blockers: judgeBlockers(inventory, env, { includeMissing: false }),
 		};
 	}
 	const corpusChoice = selectedOrUniqueId(development, inventory.validFocus["development-corpus"]?.id, (corpus) => corpus.id);
@@ -1209,11 +1292,17 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 	const selectedCorpus = development.find((corpus) => corpus.id === corpusChoice)!;
 	const lineage = inventory.developmentLineage.get(selectedCorpus.id)!;
 	if (lineage.currentSuiteHash === null || lineage.currentTargetGitSha === null) {
+		// Why it cannot run, when the why is the instrument: a typed judge reason
+		// says what to do, where the generic sentence only says that something is
+		// wrong with a basket the operator already reviewed.
+		const judge = judgeBlockers(inventory, env, { includeMissing: true });
 		return {
 			stage: "corpus-design",
 			headline: "The published development basket cannot run on the current Target; configure its evaluator models or revise the cases.",
 			actions: ["workshop-open", "configure-evaluators", "submit corpus-draft"],
-			blockers: [blocked("The selected development basket is not runnable on the current Target.", "blocker.basket-not-runnable")],
+			blockers: judge.length > 0
+				? judge
+				: [blocked("The selected development basket is not runnable on the current Target.", "blocker.basket-not-runnable")],
 		};
 	}
 	const compatibleEvals = inventory.developmentEvals.filter((run) =>
@@ -1228,14 +1317,14 @@ function stageFor(inventory: WorkbenchInventory): { stage: WorkbenchStage; headl
 			stage: "ready-to-evaluate",
 			headline: "The approved development surface is ready; run it, or finish the first harness in a construction workshop before measuring.",
 			actions: ["workshop-open", "run", "configure-evaluators"],
-			blockers: [],
+			blockers: judgeBlockers(inventory, env, { includeMissing: true }),
 		};
 	}
 	return {
 		stage: "improvement-authoring",
 		headline: "Use the diagnosis to improve the harness in a workshop or with a structured proposal.",
 		actions: ["workshop-open", "traces", "submit structured-proposal", "configure-evaluators"],
-		blockers: [],
+		blockers: judgeBlockers(inventory, env, { includeMissing: true }),
 	};
 }
 
@@ -1363,7 +1452,7 @@ export function deriveWorkbenchView(
 	const evals = inventory.developmentEvals.slice(0, MAX_VIEW_ITEMS);
 	const proposals = inventory.proposals.slice(0, MAX_VIEW_ITEMS);
 	const candidates = inventory.candidates.slice(0, MAX_VIEW_ITEMS);
-	const state = stageFor(inventory);
+	const state = stageFor(inventory, env);
 	const evaluatorRequirements = evaluatorRequirementsOf(inventory);
 	return {
 		schemaVersion: 1,

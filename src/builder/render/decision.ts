@@ -92,6 +92,14 @@ function startTestingLines(
 		if (step.kind === "approve-spec") {
 			lines.push(`${section(t("result.spec-approved"), paint)} ${paint.dim(result.approvedSpecId ?? "")}`);
 		}
+		// The judge the operator approved inside this same dialog, named with the
+		// variable its key came from: what was configured, not that something was.
+		const configured = view.target.evaluators?.judge;
+		if (step.kind === "configure-evaluators" && configured) {
+			const judge = configured;
+			lines.push(`${section(t("result.evaluators-configured"), paint)} ${paint.dim(t("label.judge"))} ` +
+				`${oneLine(`${judge.provider}/${judge.id}`, 60)} ${paint.dim(`· ${judge.apiKeyEnv}`)}`);
+		}
 		if (step.kind === "publish-corpus" && result.developmentCorpus) {
 			lines.push(`${section(t("result.tests-published"), paint)} ${plural(result.developmentCorpus.taskCount, "case")} ${paint.dim(`· ${result.developmentCorpus.id}`)}`);
 		}

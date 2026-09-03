@@ -183,7 +183,8 @@ import {
 	type BuilderProjectContext,
 } from "../builder/project-context.js";
 import { inspectCandidateImpact } from "../application/candidate-impact.js";
-import { judgeEvidenceCalibration } from "../application/judge-labels.js";
+import { judgeCalibrationOffer, judgeEvidenceCalibration } from "../application/judge-labels.js";
+import { formatJudgeAgreementSummary } from "../domain/judge-agreement.js";
 import {
 	adoptTargetCandidate,
 	describeTargetAdoption,
@@ -288,7 +289,7 @@ import {
 import type { CandidateRecord } from "../domain/candidate.js";
 import { decideScaffoldTarget, decideConfigureTarget, decideConfigureEvaluators } from "./decisions/setup.js";
 import { decideApproveSpec, decidePublishCorpus, decideImportDataset, decideGenerateHoldout } from "./decisions/corpus.js";
-import { decideRunEval, decideCalibrate, decideRegrade } from "./decisions/evaluation.js";
+import { decideRunEval, decideCalibrate, decideRegrade, judgeAgreementOfEval } from "./decisions/evaluation.js";
 import { decideApplyProposal, decideDiscardProposal } from "./decisions/proposal.js";
 import { decideVerifyCandidate, decideAbandonCandidate } from "./decisions/candidate.js";
 import { decideReviewCandidate, decidePromoteCandidate, decideRejectCandidate, decideAdoptCandidate, decideContinueCycle } from "./decisions/release.js";
@@ -715,6 +716,7 @@ export function conversationalImprovementBrief(brief: ImprovementBrief): Workben
 		severity: mode.severity,
 		evidenceStrength: mode.evidenceStrength,
 		decision: mode.decision,
+		...(mode.abstained ? { abstained: true } : {}),
 		selectableForProposal: brief.proposalEligible && mode.decision === "propose-harness-change",
 		title: mode.title.slice(0, 500),
 		summary: mode.summary.slice(0, 1_000),
@@ -1272,6 +1274,28 @@ export class AhdeWorkbench {
 			plan.push("approve-spec");
 			planned.set("approve-spec", (subject) => (subject as { draftSpecId?: unknown }).draftSpecId === specDraft.id);
 		}
+		// A basket that grades with a judge cannot be published, let alone run,
+		// until one is configured. Asking for that in its own dialog after this
+		// one is two questions for a single intention, so the host pre-fills the
+		// answer and the operator reads it inside the question they already have.
+		// It goes FIRST: it is a reviewed commit on manifest.yaml, and the
+		// publication that follows must bind to the revision that carries it.
+		const target = inventory.target;
+		const needsJudge = corpusDraft !== null && target !== null &&
+			target.manifest.evalSuite.judge === undefined &&
+			corpusDraft.tasks.some((task) => task.graders.some((grader) => grader.type === "judge"));
+		const judge = needsJudge ? options.defaultJudge?.(target!.manifest.model) ?? null : null;
+		// The cases grade with a judge, and this machine has no independent model
+		// to be one. Said here, in the operator's language, rather than as a
+		// publication failure four steps later about a manifest field.
+		if (needsJudge && !judge) throw new Error(`${t("blocker.judge-missing")} ${t("judge.no-candidate")}`);
+		if (judge) {
+			plan.push("configure-evaluators");
+			planned.set("configure-evaluators", (subject) =>
+				(subject as { next?: { judge?: { provider?: unknown; id?: unknown } } }).next?.judge?.provider ===
+					judge.model.provider &&
+				(subject as { next?: { judge?: { id?: unknown } } }).next?.judge?.id === judge.model.id);
+		}
 		if (corpusDraft) {
 			plan.push("publish-corpus", "run-eval");
 			planned.set("publish-corpus", (subject) => (subject as { draftId?: unknown }).draftId === corpusDraft.id);
@@ -1285,6 +1309,7 @@ export class AhdeWorkbench {
 		const estimate = corpusDraft ? this.runEstimate(executions, inventory.target) : undefined;
 		const parts: string[] = [];
 		if (specDraft) parts.push(t("confirm.start-testing.part.approve-spec"));
+		if (judge) parts.push(t("confirm.start-testing.part.judge"));
 		if (corpusDraft) {
 			parts.push(
 				t("confirm.start-testing.part.publish-corpus", { cases: localizedCount(caseCount, "case") }),
@@ -1301,6 +1326,16 @@ export class AhdeWorkbench {
 			basket: corpusDraft
 				? t("confirm.start-testing.basket", { name: corpusDraft.name, cases: localizedCount(caseCount, "case") })
 				: t("confirm.start-testing.not-drafted"),
+			// The model, and the variable NAME its key is read from — invariant 18:
+			// the name is what the operator approves, and the value never appears.
+			...(judge
+				? {
+					judge: t("confirm.start-testing.judge", {
+						model: `${judge.model.provider}/${judge.model.id}`,
+						env: judge.model.apiKeyEnv,
+					}),
+				}
+				: {}),
 			run: corpusDraft
 				? t("confirm.start-testing.run", {
 					cases: caseCount,
@@ -1311,6 +1346,7 @@ export class AhdeWorkbench {
 			estimatedCost: formatEstimatedCost(estimate),
 			estimatedTime: formatEstimatedTime(estimate),
 			exact: {
+				judge: judge ? `${judge.model.provider}/${judge.model.id}` : null,
 				specDraftId: specDraft?.id ?? null,
 				specSnapshotHash: specDraft ? hashValue(specDraft) : null,
 				approvedSpecId: approved?.id ?? null,
@@ -1334,6 +1370,29 @@ export class AhdeWorkbench {
 			if (step === "approve-spec") {
 				const done = await this.decide({ kind: "approve-spec", draftSpecId: specDraft!.id, reason: input.reason }, scoped, options);
 				approvedSpecId = done.result.approvedSpecId;
+				steps.push({ kind: step, message: done.message });
+				view = done.view;
+			} else if (step === "configure-evaluators") {
+				const done = await this.decide(
+					{ kind: "configure-evaluators", judge: judge!.selection, reason: input.reason },
+					scoped,
+					{
+						...options,
+						// The host already resolved this exact selection against its
+						// trusted catalog; the composite may configure that judge and
+						// nothing else, whatever else asks on the way through.
+						resolveEvaluatorModel: (role, selection) => {
+							if (
+								role !== "judge" ||
+								selection.provider !== judge!.selection.provider ||
+								selection.modelId !== judge!.selection.modelId
+							) {
+								throw new Error("start-testing may configure only the judge the host pre-filled");
+							}
+							return judge!.model;
+						},
+					},
+				);
 				steps.push({ kind: step, message: done.message });
 				view = done.view;
 			} else if (step === "publish-corpus") {
@@ -1431,6 +1490,18 @@ export class AhdeWorkbench {
 			// A token, not a sentence: the subject the human approves is the same
 			// bytes in every language, and the dialog renders the phrase from it.
 			sealedOutcome: summary.sealedHoldout.gate?.outcome ?? null,
+			// How far the instrument behind those verdicts has been checked. Said
+			// here because this is the last moment before a release, and "nobody has
+			// ever checked this judge" is exactly the kind of thing an operator
+			// should read before approving rather than after. Absent when no judge
+			// graded the evidence: there is then no instrument to report on.
+			...(summary.judgeAgreement === undefined
+				? {}
+				: {
+					judge: summary.judgeAgreement
+						? formatJudgeAgreementSummary(summary.judgeAgreement)
+						: t("judge.uncalibrated"),
+				}),
 			version: version ?? null,
 			tag: version ? `v${version}` : null,
 			fastForward: plan.includes("adopt-candidate")
@@ -2516,9 +2587,14 @@ export class AhdeWorkbench {
 		// The stage is a pure function of durable artifacts; an open workshop is
 		// live host state, and the derived `next` block needs both to say which
 		// workshop submission is legal right now.
+		// The stage is a pure function of durable artifacts; the standing offer to
+		// check the judge is a fact about this project's label store, which the
+		// stage never reads. Both are attached here, where the view is rendered.
+		const judgeCalibration = judgeCalibrationOffer(this.stateRoot, this.projectId);
 		const view: WorkbenchView = {
 			...deriveWorkbenchView(inventory),
 			...(this.workshopOpen ? { workshopOpen: true } : {}),
+			...(judgeCalibration ? { judgeCalibration } : {}),
 		};
 		const aspect = query.aspect ?? "summary";
 		if (aspect === "summary") return view;
@@ -2569,6 +2645,11 @@ export class AhdeWorkbench {
 						diagnosis: diagnosisSummary(diagnosis),
 						improvementBrief: conversationalImprovementBrief(improvementBrief),
 						evidence: link ? { available: true, ...link } : { available: false },
+						// The same instrument reading the run panel carries, so /traces
+						// and the panel after a run cannot say different things about
+						// the judge that decided the numbers above them. The offer this
+						// records was already made by the run itself.
+						...judgeAgreementOfEval(this, run.evalRunId),
 					},
 				},
 			};
@@ -2685,7 +2766,9 @@ export class AhdeWorkbench {
 			const inventory = this.inventory();
 			const approved = requireApprovedSpec(inventory, input.approvedSpecId);
 			const exact = loadApprovedSpec({ stateRoot: this.stateRoot, projectId: this.projectId, specId: approved.id });
-			if (inventory.target) assertGradersRunnable(input.tasks, inventory.target.manifest);
+			if (inventory.target) {
+				assertGradersRunnable(input.tasks, inventory.target.manifest, "corpus draft", { judgeChosenLater: true });
+			}
 			const result = this.dependencies.createCorpusDraft({
 				stateRoot: this.stateRoot,
 				approvedSpec: exact.reference,
@@ -2714,7 +2797,7 @@ export class AhdeWorkbench {
 			const settled = this.select("corpus-draft", result.draft.id);
 			if (inventory.target) {
 				try {
-					assertGradersRunnable(result.draft.tasks, inventory.target.manifest, "imported corpus draft");
+					assertGradersRunnable(result.draft.tasks, inventory.target.manifest, "imported corpus draft", { judgeChosenLater: true });
 				} catch (error) {
 					throw new Error(
 						`${error instanceof Error ? error.message : String(error)}\nThe import was saved as draft ${result.draft.id}; revise those graders with kind: corpus-revision before publishing.`,
@@ -2762,7 +2845,7 @@ export class AhdeWorkbench {
 					`${MAX_BUILDER_CORPUS_DRAFT_TASKS}. Add sample: { limit, seed } to the recipe to thin the development side.`,
 				);
 			}
-			if (inventory.target) assertGradersRunnable(compiled.tasks, inventory.target.manifest, "dataset recipe");
+			if (inventory.target) assertGradersRunnable(compiled.tasks, inventory.target.manifest, "dataset recipe", { judgeChosenLater: true });
 			const saved = this.dependencies.saveDatasetRecipe({
 				stateRoot: this.stateRoot,
 				approvedSpec: exact.reference,
@@ -2804,7 +2887,7 @@ export class AhdeWorkbench {
 					if ("grader" in operation && operation.grader) return [{ graders: [operation.grader] }];
 					return [];
 				});
-				assertGradersRunnable(carried, inventory.target.manifest, "corpus revision");
+				assertGradersRunnable(carried, inventory.target.manifest, "corpus revision", { judgeChosenLater: true });
 			}
 			let operations: readonly unknown[] = input.operations;
 			let verifiedTaskProvenance: readonly unknown[] = [];

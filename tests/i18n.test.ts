@@ -688,6 +688,34 @@ describe("ru refusals and notices", () => {
 		expect(blockerLines({ blockers: ["something older"] })).toEqual(["something older"]);
 	});
 
+	it("says what is wrong with the judge in Russian, with the model, the variable and the count", () => {
+		setLanguage("ru");
+		expect(blockerLines({
+			blockers: ["The development cases are graded by a judge and this Target has none configured."],
+			blockerReasons: [{ code: "blocker.judge-missing" }],
+		})).toEqual(["Кейсы судит судья, а он не выбран: нужен судья не на модели агента."]);
+		// Model ids and environment-variable names are machine text: they stay
+		// exactly as they are inside a Russian sentence.
+		expect(blockerLines({
+			blockers: ["The judge is the Target's own model."],
+			blockerReasons: [{ code: "blocker.judge-not-independent", params: { model: "qwen-internal/qwen3.5-27b" } }],
+		})).toEqual([
+			"Судья — qwen-internal/qwen3.5-27b, то есть сама модель агента. " +
+			"Модель, проверяющая свою же копию, — это не второе мнение.",
+		]);
+		expect(blockerLines({
+			blockers: ["The judge credential variable is not exported."],
+			blockerReasons: [{ code: "blocker.judge-credential-missing", params: { env: "OPENROUTER_API_KEY" } }],
+		})).toEqual(["Ключ судьи не экспортирован: переменной OPENROUTER_API_KEY здесь нет."]);
+		expect(blockerLines({
+			blockers: ["The judge returned an unreadable verdict."],
+			blockerReasons: [{ code: "blocker.judge-unreadable", params: { count: 3, total: 10 } }],
+		})).toEqual([
+			"Судья вернул нечитаемый вердикт в 3 прогонах из 10 — " +
+			"последнее измерение говорит о тракте оценки, а не об агенте.",
+		]);
+	});
+
 	it("says the stand-in readiness line in Russian, with the count bent and the file names left alone", () => {
 		setLanguage("ru");
 		expect(t("readiness.stand-ins", { files: plural(1, "file"), names: "AGENTS.md" }))

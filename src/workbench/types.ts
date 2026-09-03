@@ -246,6 +246,8 @@ export interface WorkbenchFailureModeProjection {
 	severity: ImprovementBrief["modes"][number]["severity"];
 	evidenceStrength: ImprovementBrief["modes"][number]["evidenceStrength"];
 	decision: ImprovementBrief["modes"][number]["decision"];
+	/** Every failure here was a judge that could not tell. Absent otherwise. */
+	abstained?: boolean;
 	selectableForProposal: boolean;
 	title: string;
 	summary: string;
@@ -333,6 +335,14 @@ export interface WorkbenchTracesDetail {
 	diagnosis: WorkbenchDiagnosisSummary;
 	improvementBrief: WorkbenchImprovementBriefProjection;
 	evidence: WorkbenchEvidenceLinkProjection;
+	/**
+	 * How far the judge that graded THIS run has been checked against a human.
+	 * Absent when no judge graded it, so the panel stays silent; null when one
+	 * did and nobody has labelled it — which is a statement, never a blocker.
+	 */
+	judgeAgreement?: WorkbenchCandidateSummary["judgeAgreement"];
+	/** Grader results this run lost to a judge that said it could not tell. */
+	judgeAbstained?: number;
 }
 
 export type WorkbenchTargetDetail = TargetAuthoringContext | { launch: "ahde init ." };
@@ -435,6 +445,13 @@ export interface WorkbenchView {
 	 * where the view is rendered rather than where the stage is computed.
 	 */
 	workshopOpen?: boolean;
+	/**
+	 * The standing offer to check the judge by hand, once one has graded
+	 * something. Live host state like `workshopOpen`: the marker and the label
+	 * count live under the state root, not in the artifacts the stage is
+	 * derived from. Absent means the offer was never made.
+	 */
+	judgeCalibration?: { labelled: number; offered: boolean };
 	blockers: string[];
 	/**
 	 * The same blockers as a typed reason, index-aligned with {@link blockers}.
@@ -1015,6 +1032,20 @@ export interface WorkbenchDecisionExecutionOptions {
 		role: "judge" | "simulatedUser",
 		selection: TargetModelSelection,
 	) => TargetManifest["model"];
+	/**
+	 * The judge a pending basket needs when the manifest has none, chosen by the
+	 * host: a bounded catalog selection plus the model it resolves to, under a
+	 * credential variable NAME the operator has already exported.
+	 *
+	 * Only the host holds the catalog, so only the host can answer this; the
+	 * Workbench asks exactly when the basket about to be published grades with a
+	 * judge and none is configured, and treats null as "this machine cannot
+	 * offer one" — which is a blocker, never a guess.
+	 */
+	defaultJudge?: (target: { provider: string; id: string }) => {
+		selection: TargetModelSelection;
+		model: TargetManifest["model"];
+	} | null;
 }
 
 /**
@@ -1118,6 +1149,15 @@ export interface WorkbenchRunEvalResult {
 	diagnosis: WorkbenchDiagnosisSummary;
 	improvementBrief: WorkbenchImprovementBriefProjection;
 	evidence: WorkbenchEvidenceLinkProjection;
+	/** The same two judge readings the traces screen carries. */
+	judgeAgreement?: WorkbenchCandidateSummary["judgeAgreement"];
+	judgeAbstained?: number;
+	/**
+	 * The one-time offer to check this judge by hand, present only on a run a
+	 * judge graded: how many labels exist, and whether THIS run is the one that
+	 * made the offer. Ten labels is a prompt threshold, not a gate.
+	 */
+	judgeCalibration?: { labelled: number; offered: boolean };
 }
 
 /**

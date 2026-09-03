@@ -72,6 +72,14 @@ export const FailureModeSchema = z.strictObject({
 		"stabilize-and-rerun",
 		"repair-evidence-path",
 	]),
+	/**
+	 * Every failure in this family was a judge that said it could not tell.
+	 * The family is unchanged — invariant 29 clusters by the exact typed grader
+	 * family and nothing else — but the reading is: there is no observed agent
+	 * behaviour here to propose a change against, only an unsure instrument.
+	 * Absent, never `false`, so a brief with no abstention hashes as before.
+	 */
+	abstained: z.boolean().optional(),
 	title: z.string().min(1).max(500),
 	summary: z.string().min(1).max(1_000),
 	/**
@@ -246,6 +254,12 @@ interface ModeAccumulator {
 	legacy: boolean;
 	failures: Map<string, Observation>;
 	passes: Map<string, Observation>;
+	/**
+	 * Per failing run: whether EVERY matching grader that failed it was an
+	 * abstention. One decided failure in the same run is enough to make the run
+	 * evidence about the agent again.
+	 */
+	abstained: Map<string, boolean>;
 }
 
 interface TaskOutcomes {
@@ -440,6 +454,7 @@ function accumulatorFor(
 		...descriptor,
 		failures: new Map(),
 		passes: new Map(),
+		abstained: new Map(),
 	};
 	modes.set(key, created);
 	return created;
@@ -454,6 +469,7 @@ function recordObservation(mode: ModeAccumulator, run: RunRecord, grader: Diagno
 		return;
 	}
 	mode.passes.delete(run.runId);
+	mode.abstained.set(run.runId, (mode.abstained.get(run.runId) ?? true) && grader.abstained === true);
 	mode.failures.set(run.runId, mergeObservation(mode.failures.get(run.runId), observation));
 }
 
@@ -648,9 +664,14 @@ function finalizeMode(mode: ModeAccumulator, totalTasks: number, excerpts: RunEx
 	// real weakness passes sometimes. Below the floor the honest advice is more
 	// repetitions or calibration, not a harness change.
 	const reproductionBps = occurrenceTotal === 0 ? 0 : Math.floor(failedOccurrences * 10_000 / occurrenceTotal);
+	// Every failure here is a judge that declined to decide. There is no agent
+	// behaviour under it to change, so the honest move is a steadier instrument
+	// or another run — never a harness proposal aimed at a shrug.
+	const abstained = failures.length > 0 && failures.every((item) => mode.abstained.get(item.runId) === true);
 	const decision: FailureModeDecision = mode.signature.kind === "infrastructure-error"
 		? "repair-evidence-path"
-		: mode.signature.kind === "outcome-instability" || mode.legacy || reproductionBps < PROPOSAL_REPRODUCTION_FLOOR_BPS
+		: mode.signature.kind === "outcome-instability" || mode.legacy || abstained ||
+				reproductionBps < PROPOSAL_REPRODUCTION_FLOOR_BPS
 			? "stabilize-and-rerun"
 			: "propose-harness-change";
 	return FailureModeSchema.parse({
@@ -664,6 +685,7 @@ function finalizeMode(mode: ModeAccumulator, totalTasks: number, excerpts: RunEx
 		severity: mode.signature.kind === "infrastructure-error" ? "blocking" : scope === "systemic" ? "major" : "minor",
 		evidenceStrength: evidenceStrength(scope, failedOccurrences, passedOccurrences),
 		decision,
+		...(abstained ? { abstained: true } : {}),
 		title: modeTitle(mode, scope),
 		summary:
 			`${affectedTaskIds.length}/${totalTasks} task(s) affected; ` +

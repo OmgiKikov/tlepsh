@@ -180,6 +180,19 @@ export function readJudgeVerdict(
 	};
 }
 
+/**
+ * Grader results in these runs whose judge declined to decide. Counted apart
+ * from the pass/fail tally they are already inside: an abstention fails the
+ * check, and reading it as the agent's failure is the mistake it exists to
+ * prevent.
+ */
+export function judgeAbstentions(runs: readonly Pick<RunRecord, "evalResults">[]): number {
+	return runs.reduce(
+		(total, run) => total + (run.evalResults?.graders ?? []).filter((grader) => grader.abstained === true).length,
+		0,
+	);
+}
+
 // ---------- Verdict: one row per grader ----------
 
 export interface GraderFinding {
@@ -190,6 +203,8 @@ export interface GraderFinding {
 	score: number;
 	/** The grader's own recorded reason. */
 	reason: string;
+	/** The judge said it could not tell. Always paired with `passed: false`. */
+	abstained: boolean;
 	/** Assertion tally recorded in the RunRecord, when the rubric had assertions. */
 	assertions: { total: number; passed: number; failed: number[] } | null;
 	/** Per-assertion answers with the judge's evidence, when the sidecar agrees. */
@@ -231,6 +246,7 @@ export function graderFindings(
 			passed: grader.passed,
 			score: grader.score,
 			reason: quote(grader.reason, 1_000),
+			abstained: grader.abstained === true,
 			assertions,
 			assertionVerdicts: verdict && verdict.assertions.length > 0 ? verdict.assertions : null,
 			choice: verdict?.choice ?? null,
@@ -546,6 +562,8 @@ export interface GraderExplanation {
 	actual: string;
 	/** The grader's own recorded reason, always shown. */
 	reason: string;
+	/** The judge declined to decide this check rather than deciding it wrongly. */
+	abstained: boolean;
 	/** Judge assertions that did not hold, with the judge's evidence. */
 	assertions: AssertionVerdict[];
 	/** Juror votes, when a jury decided this grader. */
@@ -578,6 +596,7 @@ function explainGrader(
 		graderName: grader.name,
 		graderType: grader.type,
 		reason: grader.reason,
+		abstained: grader.abstained,
 		assertions: (grader.assertionVerdicts ?? []).filter((assertion) => assertion.answer !== "yes"),
 		jury: grader.jury,
 	};
@@ -755,9 +774,17 @@ export interface FailureModeReading {
  * cause the evidence did not show.
  */
 export function failureModeReading(
-	mode: Pick<FailureMode, "signature" | "scope" | "observations" | "observedRuns" | "impact">,
+	mode: Pick<FailureMode, "signature" | "scope" | "observations" | "observedRuns" | "impact" | "abstained">,
 ): FailureModeReading {
 	const signature = mode.signature;
+	// An unsure judge is its own reading: the family, the counts and the mode id
+	// are unchanged, but nothing here is a thing the agent did.
+	if (mode.abstained === true) {
+		return {
+			title: t("mode.title.judge-abstained"),
+			facts: t("mode.fact.judge-abstained", { failed: mode.impact.failedOccurrences }),
+		};
+	}
 	const base = signature.kind === "outcome-instability"
 		? t("mode.title.instability")
 		: signature.kind === "infrastructure-error"
@@ -854,6 +881,12 @@ export interface RunExplanation {
 	graders: GraderExplanation[];
 	/** Failure modes this run is evidence for. */
 	failureModes: FailureModeExplanation[];
+	/**
+	 * Graders of this run whose judge said it could not tell. They are failures
+	 * like any other — but failures of the instrument's certainty, not of the
+	 * agent, and a screen that hides the difference is reading a guess.
+	 */
+	judgeAbstained: number;
 	/** Baseline → candidate movement for this task, when a candidate covers it. */
 	flip: CandidateFlip | null;
 	/** The whole explanation as plain language, one sentence per line. */
@@ -947,6 +980,7 @@ export function explainRun(input: {
 		headline,
 		graders: failed.map((grader) => explainGrader(grader, run, facts)),
 		failureModes: input.modes.map(failureModeExplanation),
+		judgeAbstained: graders.filter((grader) => grader.abstained).length,
 		flip: input.flip,
 	};
 	return { ...explanation, sentences: explanationSentences(explanation) };
@@ -954,6 +988,11 @@ export function explainRun(input: {
 
 function explanationSentences(explanation: Omit<RunExplanation, "sentences">): string[] {
 	const lines: string[] = [explanation.headline];
+	// Said once, before the graders: how much of this verdict is the judge
+	// declining to decide rather than the agent failing a check.
+	if (explanation.judgeAbstained > 0) {
+		lines.push(t("judge.abstained", { count: explanation.judgeAbstained }));
+	}
 	for (const grader of explanation.graders) {
 		lines.push(grader.expected
 			? t("why.grader-expected", { name: grader.graderName, type: grader.graderType, expected: grader.expected, actual: grader.actual })
