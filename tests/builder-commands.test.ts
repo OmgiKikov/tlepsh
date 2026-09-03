@@ -10,6 +10,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { standInFilesLine } from "../src/target/placeholders.js";
 import {
 	AHDE_BUILDER_COMMAND_NAMES,
+	PI_BUILTIN_COMMAND_NAMES,
+	assertRegistrableCommandName,
 	humanizeCommandError,
 	registerAhdeBuilderCommands,
 	type RegisterBuilderCommandsOptions,
@@ -744,6 +746,7 @@ describe("Builder Pi slash commands", () => {
 			"trace",
 			"log",
 			// The conversations the agent already had, as one file to hand on.
+			// Never "export": Pi owns that name (see the built-in guard below).
 			"dataset",
 			// What is happening without asking: the cycle, the background
 			// measurement, and the way to stop it.
@@ -756,6 +759,58 @@ describe("Builder Pi slash commands", () => {
 		expect(registered.map(({ name }) => name)).toEqual([...AHDE_BUILDER_COMMAND_NAMES]);
 		expect(registered).toHaveLength(29);
 		expect(registered.every(({ options }) => options.description && options.handler)).toBe(true);
+	});
+
+	/**
+	 * Session 7's blocking defect, as an invariant.
+	 *
+	 * `/export` collided with Pi's own built-in, so the host answered it first
+	 * and — because AHDE's `allowedBuiltinCommands` does not admit `export` —
+	 * answered `Warning: /export is disabled by this host.` The only notice was
+	 * an English `[Extension issues]` block printed once, forty minutes earlier.
+	 */
+	describe("a registered command may not shadow a Pi built-in", () => {
+		it("registers nothing whose name Pi already owns", () => {
+			const registered = register(workbench().value).registered.map(({ name }) => name);
+			const collisions = registered.filter((name) => PI_BUILTIN_COMMAND_NAMES.has(name));
+			expect(collisions).toEqual([]);
+			// The public list and what is actually registered are the same list,
+			// so neither can drift into a built-in behind the other's back.
+			expect([...AHDE_BUILDER_COMMAND_NAMES].filter((name) => PI_BUILTIN_COMMAND_NAMES.has(name))).toEqual([]);
+		});
+
+		it("refuses a colliding name outright, naming the command and what to do instead", () => {
+			// The guard the shared registration wrapper calls for every command,
+			// so this is the code path the real registration takes.
+			expect(() => assertRegistrableCommandName("export")).toThrow(
+				/^\/export is one of Pi's own built-in commands, so the host would answer it before this extension ever saw it\./,
+			);
+			expect(() => assertRegistrableCommandName("model")).toThrow(/preferredExtensionCommands/);
+			// A name Pi does not own is nobody's business but AHDE's.
+			expect(() => assertRegistrableCommandName("dataset")).not.toThrow();
+			expect(() => assertRegistrableCommandName("traces")).not.toThrow();
+			// `/help` reads like an override and is not one: Pi has no built-in
+			// `/help`, which is exactly why session 7 saw no warning for it while
+			// `/export` got one.
+			expect(PI_BUILTIN_COMMAND_NAMES.has("help")).toBe(false);
+			expect(() => assertRegistrableCommandName("help")).not.toThrow();
+		});
+
+		/**
+		 * The pinned set is a copy, because Pi's `exports` map does not publish
+		 * `core/slash-commands.js`. A copy that nobody checks is how the next
+		 * collision arrives silently, so this reads the real file of the pinned
+		 * runtime and fails the day a Pi bump adds or drops a built-in.
+		 */
+		it("matches the built-in list of the pinned Pi, name for name", () => {
+			const source = readFileSync(
+				new URL("../node_modules/@earendil-works/pi-coding-agent/dist/core/slash-commands.js", import.meta.url),
+				"utf8",
+			);
+			const names = [...source.matchAll(/\{\s*name:\s*"([a-z-]+)"/g)].map((match) => match[1] as string);
+			expect(names.length).toBeGreaterThan(15);
+			expect([...names].sort()).toEqual([...PI_BUILTIN_COMMAND_NAMES].sort());
+		});
 	});
 
 	it("maps read-only commands to their exact Workbench view aspects and renders humans, not JSON", async () => {

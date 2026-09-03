@@ -109,6 +109,52 @@ export const AHDE_BUILDER_COMMAND_NAMES = [
 	"label",
 ] as const;
 
+/**
+ * Pi's own interactive slash commands, pinned.
+ *
+ * Pi does not export `BUILTIN_SLASH_COMMANDS` (it lives behind
+ * `dist/core/slash-commands.js`, which the package's `exports` map does not
+ * publish), so the only honest way to know the names is to copy them and let a
+ * test fail when the pinned runtime moves.
+ *
+ * They matter because a built-in name never reaches an extension: Pi's submit
+ * handler resolves the name against this set FIRST, so a Builder command that
+ * shares one is either shadowed by the built-in or — when the host's
+ * `allowedBuiltinCommands` does not admit it, which is AHDE's case — refused
+ * outright with `… is disabled by this host.` Session 7 lost `/export` that
+ * way, and the only warning was an English `[Extension issues]` block on a
+ * screen nobody reads twice.
+ */
+export const PI_BUILTIN_COMMAND_NAMES: ReadonlySet<string> = new Set([
+	"settings", "model", "tree", "thinking", "scoped-models", "export", "import",
+	"share", "copy", "name", "session", "changelog", "hotkeys", "fork", "clone",
+	"trust", "login", "logout", "new", "compact", "resume", "reload", "quit",
+]);
+
+/**
+ * Built-in names AHDE deliberately serves itself.
+ *
+ * Empty, and that is the point: an override only works when the host also
+ * lists the name in `preferredExtensionCommands`, so adding one here without
+ * adding it there re-creates the `/export` defect. `/help` is not a Pi
+ * built-in at all (Pi has no `/help`), and `/model` is a built-in AHDE never
+ * registers — neither is an override.
+ */
+const AHDE_BUILTIN_OVERRIDES: ReadonlySet<string> = new Set<string>();
+
+/**
+ * The guard every Builder command passes before Pi hears about it: a name the
+ * host already owns is not a command with a warning, it is a command that
+ * never runs.
+ */
+export function assertRegistrableCommandName(name: string): void {
+	if (!PI_BUILTIN_COMMAND_NAMES.has(name) || AHDE_BUILTIN_OVERRIDES.has(name)) return;
+	throw new Error(
+		`/${name} is one of Pi's own built-in commands, so the host would answer it before this extension ever saw it. ` +
+		"Rename the Builder command, or add it to both AHDE_BUILTIN_OVERRIDES and preferredExtensionCommands.",
+	);
+}
+
 /** The `/help` reference, in the operator's language. */
 const builderHelp = (): string => t("help.body");
 
@@ -495,6 +541,10 @@ export function registerAhdeBuilderCommands(
 		name: string,
 		definition: { description: string; handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> },
 	): void => {
+		// Refusing here turns the class of defect into a startup failure a test
+		// catches, instead of a slash command the operator discovers is dead on
+		// the day they need it.
+		assertRegistrableCommandName(name);
 		pi.registerCommand(name, {
 			description: definition.description,
 			handler: async (args, ctx) => {
