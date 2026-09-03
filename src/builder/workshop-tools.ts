@@ -33,7 +33,14 @@ export const AHDE_WORKSHOP_TOOL_NAMES = [
 	"ahde_workshop_try",
 ] as const;
 
-const SCOPE = BUILDER_WORKSHOP_SCOPE.join(", ");
+/**
+ * These descriptions are built once, when the extension registers its tools,
+ * and a workshop's real scope is only known when one opens over a Target whose
+ * manifest may declare `harness.files`. So they name the Pi layout as what it
+ * is — the default — and point at the one place that always tells the truth:
+ * the scope the workshop reports when it opens.
+ */
+const SCOPE = `the workshop's own scope (reported when it opens; ${BUILDER_WORKSHOP_SCOPE.join(", ")} unless the manifest declares harness.files)`;
 
 /** What a write did, as the workshop recorded it; an unknown verb reads as a plain update. */
 function writeAction(action: string | undefined): MessageKey {

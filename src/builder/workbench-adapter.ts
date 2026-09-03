@@ -126,6 +126,10 @@ function hostRefusal(reason: string): string {
 	if (/^workshop scope refuses .*: a workshop addresses AGENTS\.md/.test(reason)) {
 		return t("refusal.workshop-out-of-scope", { scope: WORKSHOP_SCOPE_WORDS });
 	}
+	// A Target that declares `harness.files` is refused in the words of its own
+	// declaration; the scope the sentence names is the only one that helps.
+	const declaredScope = /^workshop scope refuses .*: this Target's harness declares (.+?); a workshop addresses/.exec(reason);
+	if (declaredScope) return t("refusal.workshop-declared-scope", { scope: declaredScope[1] ?? "" });
 	if (/^workshop scope refuses .*: a workshop path is a safe relative POSIX path/.test(reason)) {
 		return t("refusal.workshop-unsafe-path");
 	}

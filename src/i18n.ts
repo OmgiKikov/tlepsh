@@ -1553,6 +1553,7 @@ one would cost more than usual, and then you get a single yes/no.`,
 	// lane: smoke-fixes
 	"blocker.sealed-exam-missing": "Verification did not start: the agent has no sealed exam. Say “generate an exam” and the judge writes one, or import a sealed JSONL.",
 	"refusal.workshop-out-of-scope": "There is no such path in the workshop. It holds AGENTS.md and whatever is inside {scope} — name a file, for example bin/check_dbo.",
+	"refusal.workshop-declared-scope": "There is no such path in the workshop. This harness declares {scope}, and the workshop holds only that — name a file inside it.",
 	"refusal.workshop-unsafe-path": "That is not a path the workshop can take: a plain relative path, no “..”, no drive letter, no backslashes.",
 	"refusal.submission-invalid": "Did not pass validation: {kind}. Fields at fault: {fields}",
 	// The focus line's own lexicon: short nouns, because they sit six to a line.
@@ -2843,6 +2844,7 @@ const ru: Record<MessageKey, string> = {
 	// lane: smoke-fixes
 	"blocker.sealed-exam-missing": "Проверка не запустилась: у агента нет закрытого экзамена. Скажи «сгенерируй экзамен» — его напишет судья, или импортируй закрытый JSONL.",
 	"refusal.workshop-out-of-scope": "Такого пути в мастерской нет. В ней лежат AGENTS.md и всё, что внутри {scope} — назови файл, например bin/check_dbo.",
+	"refusal.workshop-declared-scope": "Такого пути в мастерской нет. Харнесс объявляет {scope}, и в мастерской лежит только это — назови файл внутри.",
 	"refusal.workshop-unsafe-path": "Такой путь мастерская не примет: только обычный относительный путь, без «..», без буквы диска и без обратных слэшей.",
 	"refusal.submission-invalid": "Не прошло проверку: {kind}. Ошибок в полях: {fields}",
 	"selection.spec-draft": "черновик",

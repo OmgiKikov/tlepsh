@@ -1991,7 +1991,10 @@ export class AhdeWorkbench {
 				target: { id: workshop.targetId, gitSha: workshop.baseTargetSha },
 				scope: [...status.scope],
 				mounted:
-					"only AGENTS.md, skills/**, tools/**, bin/**, data/** and the host-rendered manifest.yaml exist inside; " +
+					// The scope is this Target's own, not the Pi layout: a command
+					// Target's workshop holds prompts/, and saying otherwise sent the
+					// Builder looking for skills that do not exist.
+					`only ${status.scope.join(", ")} and the host-rendered manifest.yaml exist inside; ` +
 					"there is no network, no Target credential, and no evals/, imports/, runs/, .git or .env to read",
 				resources: authoringContext.resources.map((resource) => resource.path),
 				data: authoringContext.data.map((directory) => `${directory.path} · ${plural(directory.files, "file")}`),
