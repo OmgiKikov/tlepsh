@@ -42,7 +42,6 @@ import {
 } from "../manifest.js";
 import {
 	axisDifferences,
-	canonicalJson,
 	executionFingerprint,
 	hashValue,
 	modelFingerprint,
