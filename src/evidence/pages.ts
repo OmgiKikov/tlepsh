@@ -17,6 +17,7 @@ import {
 	type CandidateFlip,
 	type GraderFinding,
 	type RunExplanation,
+	type RunReceipt,
 	type RunRow,
 	type Transcript,
 } from "../application/run-explanation.js";
@@ -442,6 +443,8 @@ export interface RunDetailPageModel {
 		metrics: RunRow["metrics"];
 	};
 	input: string | null;
+	/** What this run was given and what it spent, each said as its own fact. */
+	receipt: RunReceipt;
 	transcript: Transcript | null;
 	traceNotice: string;
 	graders: GraderFinding[];

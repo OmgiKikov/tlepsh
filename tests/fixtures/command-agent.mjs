@@ -59,6 +59,10 @@ function onUser(message) {
 			return say(turn, `world=${process.env.AHDE_WORLD ?? "none"} hello=${hello?.world ?? "none"}`);
 		case "protocol":
 			return say(turn, `protocol=${process.env.AHDE_PROTOCOL ?? "none"} key=${process.env.MOCK_MODEL_KEY ?? "none"}`);
+		// Names only, never values: the provenance receipt claims to list exactly
+		// what the child received, and this is the child saying what it received.
+		case "env":
+			return say(turn, `env=${Object.keys(process.env).sort().join(",")}`);
 		case "tool":
 			return send({ v: 1, type: "tool_call", id: `call-${turn}`, name: "check_dbo", arguments: { id: "42" } });
 		case "note":

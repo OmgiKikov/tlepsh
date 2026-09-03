@@ -4,13 +4,17 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	candidateFlip,
+	classifyRunError,
 	explainRun,
 	graderFindings,
 	renderRunExplanationText,
+	runErrorReading,
+	runReceipt,
 	runTranscript,
 	runsTable,
 	traceFacts,
 	type GraderFinding,
+	type RunErrorClass,
 } from "../src/application/run-explanation.js";
 import { compileImprovementBrief } from "../src/application/improvement-brief.js";
 import { diagnoseEvalRun } from "../src/diagnosis.js";
@@ -430,6 +434,91 @@ describe("the host's plain-language account of one run", () => {
 		);
 	});
 
+	/**
+	 * Session 7, defect 2. The trace of a timed-out run ends on a tool call that
+	 * SUCCEEDED — `get_account · 930ms · ok` — because the run stopped waiting
+	 * for the model's next reply. Reading a cause off that shape produced
+	 * `called get_account · no reply` on the same screen as the ok.
+	 */
+	it("reads an errored run from its recorded error, never from the shape of the trace", () => {
+		const runsRoot = root();
+		const run = writeRun(runsRoot, {
+			runId: "run-timeout",
+			status: "error",
+			error: "run timed out after 300000ms",
+			graders: [],
+		});
+		const explanation = explainRun({
+			run,
+			graders: findings(runsRoot, run),
+			facts: traceFacts(parseSessionJsonl(`${TRACE_LINES.join("\n")}\n`)),
+			modes: [],
+			flip: null,
+		});
+		expect(explanation.error).toEqual({
+			code: "timeout",
+			sentence: "the agent did not answer within 300s — the model timed out",
+			detail: "run timed out after 300000ms",
+		});
+		// The sentence lands second, right under the headline, before anything a
+		// trace could suggest.
+		expect(renderRunExplanationText(explanation)[1])
+			.toBe("the agent did not answer within 300s — the model timed out (run timed out after 300000ms)");
+	});
+
+	it("classifies every error stem this host writes, and quotes the rest verbatim", () => {
+		const cases: [string, RunErrorClass, string][] = [
+			["run timed out after 45000ms", "timeout", "the agent did not answer within 45s — the model timed out"],
+			["command Target exited with 7: agent gave up", "exit", "the agent process ended before it answered"],
+			["command Target protocol violation at line 3", "protocol", "the agent broke the protocol the host speaks"],
+			["command Target did not start within 5000ms", "startup", "the agent never started"],
+			["evaluation infrastructure: world state file is not JSON", "evaluation", "the evaluation path failed before any grading"],
+			["missing OPENROUTER_API_KEY for OpenRouter endpoint https://openrouter.ai/api/v1", "other", "the run ended before the model answered"],
+			["something nobody wrote a stem for", "other", "the run ended before the model answered"],
+		];
+		for (const [stem, code, sentence] of cases) {
+			expect(classifyRunError(stem), stem).toBe(code);
+			expect(runErrorReading(stem), stem).toEqual({ code, sentence, detail: stem });
+		}
+		// A run that recorded nothing gets no sentence at all rather than a guess.
+		expect(runErrorReading(null)).toBeNull();
+		expect(runErrorReading("   ")).toBeNull();
+	});
+
+	it("tells a grader of an errored run what ended it instead of what it saw", () => {
+		const runsRoot = root();
+		const run = writeRun(runsRoot, {
+			runId: "run-exit",
+			status: "error",
+			error: "command Target exited with 7: agent gave up",
+			graders: [],
+		});
+		const explanation = explainRun({
+			run: { ...run, status: "error" },
+			graders: [{
+				name: "contains",
+				type: "output_contains",
+				checkCode: "output-contains",
+				passed: false,
+				score: 0,
+				reason: 'output does not contain "договор"',
+				abstained: false,
+				assertions: null,
+				assertionVerdicts: null,
+				choice: null,
+				jury: null,
+				chip: "✗",
+			}],
+			facts: null,
+			modes: [],
+			flip: null,
+		});
+		expect(explanation.graders[0]!.actual).toBe(
+			"the run never completed, so nothing was graded — the agent process ended before it answered "
+			+ "(command Target exited with 7: agent gave up)",
+		);
+	});
+
 	it("labels a failure mode as a hypothesis and names an A/A calibration for what it is", () => {
 		const runsRoot = root();
 		const run = writeRun(runsRoot, {
@@ -597,5 +686,71 @@ describe("the transcript projection", () => {
 		const text = JSON.stringify(transcript);
 		expect(text).not.toContain("sk-abcdefghijklmnop");
 		expect(text).toContain("REDACTED");
+	});
+});
+
+/**
+ * Session 7, defect 6: the receipt of a worlded run read `world: null · judge:
+ * null · simulatedUser: null` with no `usage` key at all, on a case whose world
+ * the tool had answered from thirty lines above. Four absent JSON keys are four
+ * different statements and the receipt makes each of them.
+ */
+describe("the run receipt", () => {
+	it("says a world was there, an instrument never ran, and a spend was never reported", () => {
+		const runsRoot = root();
+		const run = writeRun(runsRoot, {
+			runId: "run-receipt",
+			status: "error",
+			error: "run timed out after 300000ms",
+			graders: [],
+		});
+		mkdirSync(join(runsRoot, "run-receipt", "runtime", "world"), { recursive: true });
+		writeFileSync(
+			join(runsRoot, "run-receipt", "runtime", "world", "state.json"),
+			JSON.stringify({ accounts: { "33333": { balance: -500 } }, tickets: [], client: { name: "Пётр" } }),
+		);
+		const noUsage: RunRecord = {
+			...run,
+			execution: { ...run.execution, agent: "command-v1" },
+			metrics: { latencyMs: 300_012, toolCalls: 2, toolErrors: 0, recoveryAttempts: 0 },
+		};
+		expect(runReceipt(runsRoot, noUsage)).toEqual({
+			worldKeys: 3,
+			judge: null,
+			simulatedUser: null,
+			tokens: null,
+			costUsd: null,
+			incomplete: true,
+		});
+	});
+
+	it("counts what the judge and the user model actually spent on a completed run", () => {
+		const runsRoot = root();
+		const run = writeRun(runsRoot, { runId: "run-spent", graders: [] });
+		const spent: RunRecord = {
+			...run,
+			metrics: {
+				...run.metrics,
+				judge: { calls: 2, tokens: 900, costUsd: 0.004 },
+				simulatedUser: { calls: 5, tokens: 1_200, costUsd: 0.01 },
+			},
+		};
+		expect(runReceipt(runsRoot, spent)).toEqual({
+			// This case declared no world, and "none" is a fact, not a missing one.
+			worldKeys: null,
+			judge: { calls: 2, costUsd: 0.004 },
+			simulatedUser: { calls: 5, costUsd: 0.01 },
+			tokens: 2,
+			costUsd: 0.001,
+			incomplete: false,
+		});
+	});
+
+	it("treats an unreadable world as none rather than throwing at render time", () => {
+		const runsRoot = root();
+		const run = writeRun(runsRoot, { runId: "run-badworld", graders: [] });
+		mkdirSync(join(runsRoot, "run-badworld", "runtime", "world"), { recursive: true });
+		writeFileSync(join(runsRoot, "run-badworld", "runtime", "world", "state.json"), "{ not json");
+		expect(runReceipt(runsRoot, run).worldKeys).toBeNull();
 	});
 });

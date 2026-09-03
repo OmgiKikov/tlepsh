@@ -39,7 +39,7 @@ import { renderImpact } from "../src/builder/render/impact.js";
 import { renderToolPermissions, toolPermissionsFromDiff } from "../src/builder/render/tool-permissions.js";
 import { fixtureLines, renderWorkshopCloseReview } from "../src/builder/render/workshop-close.js";
 import { createWorkshopTools } from "../src/builder/workshop-tools.js";
-import type { AhdeWorkbench } from "../src/workbench/workbench.js";
+import { turnBudgetLine, type AhdeWorkbench } from "../src/workbench/workbench.js";
 import type { ToolFixtureRunResult } from "../src/application/tool-workshop.js";
 import { plainPaint, type Paint } from "../src/builder/render/paint.js";
 import { STAGE_LABELS, nextStep, stageLabel } from "../src/builder/render/stage.js";
@@ -1370,9 +1370,16 @@ describe("renderTraces", () => {
 		expect(text).toContain("<error>→ repair evidence path</error>");
 		expect(text).toContain("<bold>3.</bold> <bold>The same case flips between repetitions</bold>");
 		expect(text).toContain("  <dim>… +2 more modes in the Evidence Explorer</dim>");
-		// One raw excerpt under every mode: the panel quotes evidence, not advice.
+		// One raw excerpt under every BEHAVIOURAL mode: the panel quotes evidence,
+		// not advice. An infrastructure mode gets none — its runs never reached
+		// grading, so the shape of the trace that survived them says nothing about
+		// why they ended, and quoting it is exactly how session 7 announced
+		// `called get_account · no reply` about a tool that answered in 930 ms.
 		const excerptLines = text.split("\n").filter((line) => line.includes("no tool call"));
-		expect(excerptLines).toHaveLength(4);
+		expect(excerptLines).toHaveLength(3);
+		// It says the cases it hit instead, and counts itself in runs.
+		expect(text).toContain("cases: task-1");
+		expect(text).toContain("8 of 10 runs");
 	});
 
 	/**
@@ -1932,7 +1939,7 @@ describe("renderConfirmation", () => {
 			subjectHash: HASH,
 		}), tagPaint);
 		expect(withDiff[0]).toBe("<dim>Target id</dim> <bold>support-bot</bold>");
-		expect(withDiff[1]).toBe("<dim>Model</dim> openai/gpt-5 <dim>· thinking medium · timeout 300000 ms</dim>");
+		expect(withDiff[1]).toBe("<dim>Model</dim> openai/gpt-5 <dim>· thinking medium · timeout 300s per turn</dim>");
 		expect(withDiff[2]).toBe("<dim>Credential env</dim> <bold>OPENAI_API_KEY</bold> <dim>(name only; set the value in your shell)</dim>");
 		expect(withDiff[3]).toBe("<dim>manifest.yaml diff</dim>");
 		expect(withDiff.join("\n")).toContain("<removed>-id: target</removed>\n<added>+id: support-bot</added>");
@@ -2039,6 +2046,35 @@ describe("renderConfirmation", () => {
 		setLanguage("ru");
 		try {
 			expect(estimate(nothing(), nothing())).toBe("Оценка сравнимых прогонов ещё не было");
+		} finally {
+			setLanguage(null);
+		}
+	});
+
+	/**
+	 * Session 7, defect 18: dialogue cases ran 618–635 s against a budget the
+	 * dialog printed as `таймаут 300000 мс`, and the operator read a broken
+	 * timeout. The number was right; the unit was missing. `model.timeoutMs`
+	 * bounds ONE reply, so a six-turn conversation is allowed six of them.
+	 */
+	it("says the run budget is per turn, and how many turns a dialogue may take", () => {
+		const lines = renderConfirmation(makeConfirmation("start-testing", {
+			operation: "start-testing",
+			steps: ["publish-corpus", "run-eval"],
+			spec: "Bank ombudsman — already approved",
+			basket: "ombudsman-main · 8 cases",
+			run: "8 × 3 = 24 executions",
+			budget: turnBudgetLine(300_000, [{}, { simulatedUser: { maxTurns: 6 } }]),
+			estimatedCost: "about $0.42",
+			estimatedTime: "about 4 minutes",
+		}), plainPaint);
+		expect(lines.find((line) => line.startsWith("Budget"))).toBe("Budget timeout 300s per turn · up to 6 turns");
+		// A basket with no conversation in it says only the per-reply bound.
+		expect(turnBudgetLine(300_000, [{}])).toBe("timeout 300s per turn");
+		setLanguage("ru");
+		try {
+			expect(turnBudgetLine(300_000, [{ simulatedUser: { maxTurns: 6 } }]))
+				.toBe("таймаут 300 с на ход · до 6 ходов");
 		} finally {
 			setLanguage(null);
 		}

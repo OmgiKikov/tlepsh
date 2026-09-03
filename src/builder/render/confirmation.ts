@@ -51,6 +51,19 @@ function text(value: unknown, max = 160): string {
 }
 
 /**
+ * `model.timeoutMs` in seconds, because it is read next to a run that lasts
+ * minutes. It bounds ONE reply, never a whole conversation — a dialogue case of
+ * six turns is allowed six of these — so the sentence around it says "per turn"
+ * (invariant 9's other half: a budget nobody can read is a budget nobody can
+ * check).
+ */
+function timeoutSeconds(value: unknown): string {
+	const milliseconds = typeof value === "number" ? value : Number(value);
+	if (!Number.isFinite(milliseconds) || milliseconds <= 0) return "—";
+	return String(Math.round(milliseconds / 1_000));
+}
+
+/**
  * What the run will cost and how long it will take — or, once, that nothing
  * comparable has run yet.
  *
@@ -192,7 +205,7 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			const model = bag(next.model ?? subject.model);
 			const lines = [
 				`${paint.dim(t("dialog.target-id"))} ${paint.bold(text(next.targetId ?? subject.targetId, 80))}`,
-				`${paint.dim(t("label.model"))} ${text(model.provider)}/${text(model.id)} ${paint.dim(t("dialog.model-detail", { thinking: text(model.thinkingLevel), timeout: text(model.timeoutMs) }))}`,
+				`${paint.dim(t("label.model"))} ${text(model.provider)}/${text(model.id)} ${paint.dim(t("dialog.model-detail", { thinking: text(model.thinkingLevel), seconds: timeoutSeconds(model.timeoutMs) }))}`,
 				`${paint.dim(t("dialog.credential-env"))} ${paint.bold(text(model.apiKeyEnv))} ${paint.dim(t("dialog.name-only"))}`,
 			];
 			const diff = typeof subject.unifiedDiff === "string"
@@ -225,7 +238,7 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 					: "";
 				lines.push(
 					`${paint.dim(label)} ${text(model.provider)}/${text(model.id)}${change} ${
-						paint.dim(t("dialog.model-detail", { thinking: text(model.thinkingLevel), timeout: text(model.timeoutMs) }))
+						paint.dim(t("dialog.model-detail", { thinking: text(model.thinkingLevel), seconds: timeoutSeconds(model.timeoutMs) }))
 					}`,
 					`${paint.dim(`  ${t("dialog.credential-env")}`)} ${paint.bold(text(model.apiKeyEnv))} ${
 						paint.dim(t("dialog.name-only"))
@@ -249,6 +262,8 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 				...(subject.judge === undefined ? [] : [`${paint.dim(t("label.judge-instrument"))} ${text(subject.judge, 96)}`]),
 				...(subject.user === undefined ? [] : [`${paint.dim(t("label.user-instrument"))} ${text(subject.user, 96)}`]),
 				`${paint.dim(t("label.run"))} ${text(subject.run, 96)}`,
+				// The per-turn budget, where the run it bounds is approved.
+				...(typeof subject.budget === "string" ? [`${paint.dim(t("label.budget"))} ${text(subject.budget, 96)}`] : []),
 				estimateLine(subject.estimatedCost, subject.estimatedTime, paint),
 				"",
 				paint.dim(t("confirm.covers")),

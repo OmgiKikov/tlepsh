@@ -19,6 +19,7 @@ import {
 	type RunRecord,
 } from "../provenance.js";
 import { redactTraceText } from "../trace.js";
+import { classifyRunError, type RunErrorClass } from "./run-error.js";
 
 export const IMPROVEMENT_BRIEF_ALGORITHM_ID = "exact-eval-signals-v1" as const;
 /** Failure share (basis points) below which a mode is noise to stabilize, not a harness defect to fix. */
@@ -339,6 +340,20 @@ const GRADER_CHECK_CATEGORIES: Record<GraderCheckCode, FailureModeCategory> = {
 	"cites-source": "answer-quality",
 };
 
+/**
+ * The canonical English name of one infrastructure cause. It is hashed into
+ * proposals and read by scripts, so it never bends to the operator's language;
+ * `run-error.ts` owns the sentence a screen says instead.
+ */
+const INFRASTRUCTURE_CAUSE_TITLES: Record<RunErrorClass, string> = {
+	timeout: "model timeout",
+	exit: "the agent process ended",
+	protocol: "protocol violation",
+	startup: "the agent did not start",
+	evaluation: "the evaluation path",
+	other: "an interrupted run",
+};
+
 /** Title of an exact (non-legacy) grader failure mode. */
 const GRADER_CHECK_TITLES: Record<GraderCheckCode, string> = {
 	"required-tool": "Required tool check failed",
@@ -559,7 +574,11 @@ function suggestionsFor(category: FailureModeCategory, legacy: boolean): string[
  */
 function modeTitle(mode: ModeAccumulator, scope: FailureMode["scope"]): string {
 	if (mode.signature.kind === "outcome-instability") return "Task outcome instability";
-	if (mode.signature.kind === "infrastructure-error") return "Task-local evidence-path failure";
+	if (mode.signature.kind === "infrastructure-error") {
+		const cause = INFRASTRUCTURE_CAUSE_TITLES[(mode.signature.subject ?? "other") as RunErrorClass] ??
+			INFRASTRUCTURE_CAUSE_TITLES.other;
+		return `Evidence-path failure: ${cause}`;
+	}
 	if (mode.legacy) return "Task-local legacy grader failure";
 	const checkCode = mode.signature.checkCode;
 	const base = (checkCode ? GRADER_CHECK_TITLES[checkCode] : undefined) ??
@@ -625,9 +644,15 @@ function factsFor(
 	observations: readonly { code: TraceObservation; runs: number }[],
 	observedRuns: number,
 	failedOccurrences: number,
+	totalOccurrences: number,
 ): string {
 	if (mode.signature.kind === "infrastructure-error") {
-		return "Execution ended before comparable behavioral grading; this is evidence about the evaluation path, not about Target behavior.";
+		const cause = INFRASTRUCTURE_CAUSE_TITLES[(mode.signature.subject ?? "other") as RunErrorClass] ??
+			INFRASTRUCTURE_CAUSE_TITLES.other;
+		// The cause and the rate, not the trace: the runs counted here never
+		// produced a graded answer, so nothing in their traces explains the end.
+		return `${failedOccurrences} of ${totalOccurrences} run(s) ended at ${cause}; ` +
+			"this is evidence about the evaluation path, not about Target behavior.";
 	}
 	if (observedRuns === 0 || observations.length === 0) {
 		const suffix = observedRuns === 0
@@ -690,7 +715,7 @@ function finalizeMode(mode: ModeAccumulator, totalTasks: number, excerpts: RunEx
 		summary:
 			`${affectedTaskIds.length}/${totalTasks} task(s) affected; ` +
 			`${failedOccurrences}/${occurrenceTotal} matching observation(s) failed.`,
-		facts: factsFor(mode, observations, observedRuns, failedOccurrences),
+		facts: factsFor(mode, observations, observedRuns, failedOccurrences, occurrenceTotal),
 		observations,
 		observedRuns,
 		suggestions: suggestionsFor(mode.category, mode.legacy).slice(0, MAX_SUGGESTIONS),
@@ -777,32 +802,56 @@ function addFlakyModes(
 	}
 }
 
+/**
+ * One infrastructure mode per CAUSE, never one per task.
+ *
+ * Session 7 printed `7 типов сбоя` over seven identical sentences that
+ * differed only by a run id: one hung network read, split into seven rows,
+ * read as seven problems. The cause is typed — `run timed out after …`,
+ * `command Target exited with …` — so runs that ended the same way are one
+ * mode with the tasks it hit listed inside it.
+ *
+ * Invariant 29 is untouched: it clusters BEHAVIOURAL modes by exact typed
+ * grader family, and an infrastructure mode has no grader family at all. The
+ * counter-evidence is every non-error run of the whole evaluation, because
+ * "the run timed out in 21 of 24 executions" is the rate a reader needs — a
+ * per-task denominator made every fully-failed task reproduce at 100%.
+ */
 function addInfrastructureModes(
 	modes: Map<string, ModeAccumulator>,
 	outcomesByTask: ReadonlyMap<string, TaskOutcomes>,
 ): void {
-	for (const [taskId, outcomes] of [...outcomesByTask.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-		if (outcomes.error.length === 0) continue;
-		// RunRecord currently has no stable structured infrastructure code. Keep
-		// unknown failures task-local instead of merging unrelated errors.
-		const identity = { kind: "infrastructure-error", code: "unknown", taskId };
+	const byCause = new Map<RunErrorClass, RunRecord[]>();
+	const survivors: RunRecord[] = [];
+	for (const [, outcomes] of [...outcomesByTask.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+		for (const run of outcomes.error) {
+			const cause = classifyRunError(run.error);
+			const bucket = byCause.get(cause) ?? [];
+			bucket.push(run);
+			byCause.set(cause, bucket);
+		}
+		survivors.push(...outcomes.pass, ...outcomes.fail);
+	}
+	for (const cause of [...byCause.keys()].sort()) {
+		const errors = byCause.get(cause)!;
+		const identity = { kind: "infrastructure-error", code: cause };
 		const mode = accumulatorFor(modes, {
 			identity,
 			signature: {
 				kind: "infrastructure-error",
 				checkCode: null,
-				subject: null,
-				discriminatorHash: hashValue({ code: "unknown", taskId }),
+				// The cause is the thing this family names, exactly as a tool name is
+				// the thing a required-tool family names.
+				subject: cause,
+				discriminatorHash: hashValue({ code: cause }),
 			},
 			category: "infrastructure",
 			legacy: false,
 		});
-		for (const run of outcomes.error) {
+		for (const run of errors) {
 			mode.failures.set(run.runId, evidenceForRun(run, [], run.error ? [run.error] : []));
 		}
-		for (const run of [...outcomes.pass, ...outcomes.fail]) {
-			mode.passes.set(run.runId, evidenceForRun(run));
-		}
+		for (const run of survivors) mode.passes.set(run.runId, evidenceForRun(run));
 	}
 }
 

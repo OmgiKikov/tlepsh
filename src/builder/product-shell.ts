@@ -85,7 +85,19 @@ export interface ProductShellOptions {
 	spend?: BuilderSpendReader;
 	/** Wall clock, injected so a test can pin the elapsed segment. */
 	now?: () => number;
+	/**
+	 * The footer clock's timer. Injected for tests; the real one is unref'd so
+	 * a cosmetic repaint can never hold the process open.
+	 */
+	setInterval?: (handler: () => void, ms: number) => { unref?(): void };
 }
+
+/**
+ * How often the footer re-reads the wall clock. Coarse on purpose: the segment
+ * is minutes (`41м`), so a second-by-second repaint would be churn nobody can
+ * see.
+ */
+const STATUS_CLOCK_MS = 5_000;
 
 /**
  * What the operator can say next, in their words. The header names an action,
@@ -177,6 +189,11 @@ export function installAhdeBuilderProductShell(
 	/** Declared tool keys already asked about; one question per name per session. */
 	const askedToolKeys = new Set<string>();
 	const now = options.now ?? (() => Date.now());
+	const startTicker = options.setInterval ?? ((handler, ms) => {
+		const handle = setInterval(handler, ms);
+		handle.unref?.();
+		return handle;
+	});
 	const sessionStartedAt = now();
 
 	/** Candidate stages are the only ones where a branch is worth a footer segment. */
@@ -230,6 +247,29 @@ export function installAhdeBuilderProductShell(
 			host.ui.setStatus("ahde-auth", state.builderModel.credentialPresent ? undefined : t("header.model-not-connected"));
 		} catch {
 			// Status is cosmetic.
+		}
+	};
+
+	/**
+	 * The footer clock, re-read on a wall-clock tick.
+	 *
+	 * `statusFacts` has always computed the elapsed time from `now()`, but it
+	 * only ran when the Workbench was re-read — and a run is exactly the stretch
+	 * during which nothing re-reads it. Session 7 watched `7м` stand for
+	 * forty-one minutes and jump to `40м` the instant the run ended: the only
+	 * clock on the screen was stopped for precisely as long as the operator
+	 * needed it. Nothing here reads the disk or the Workbench; it repaints one
+	 * cosmetic segment from state that is already in memory.
+	 */
+	let clock: { unref?(): void } | null = null;
+	const startClock = (): void => {
+		if (clock) return;
+		try {
+			clock = startTicker(() => applyStatus(), STATUS_CLOCK_MS);
+			clock.unref?.();
+		} catch {
+			// A host without timers keeps the status it last painted.
+			clock = null;
 		}
 	};
 
@@ -369,6 +409,7 @@ export function installAhdeBuilderProductShell(
 	pi.on("session_start", async (event, ctx) => {
 		if (ctx.mode !== "tui") return;
 		host = ctx;
+		startClock();
 		// Pi rebuilds the palette on every session start and drops extension
 		// wrappers with it, so the ordering is asked for here, not once at load.
 		try {

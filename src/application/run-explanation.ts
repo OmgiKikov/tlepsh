@@ -6,6 +6,8 @@ import type { TraceObservation } from "../diagnosis.js";
 import { runCost, runTokens } from "../compare.js";
 import type { GraderResult, RunRecord } from "../provenance.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
+import { readWorldStateFile } from "../domain/world.js";
+import { WORLD_STATE_SEGMENTS } from "../target/world-state.js";
 import {
 	lastAssistantText,
 	openTrace,
@@ -14,6 +16,21 @@ import {
 	type TraceMessage,
 } from "../trace.js";
 import { publicTaskId, type FailureMode, type ImprovementBrief } from "./improvement-brief.js";
+import {
+	infrastructureClassOf,
+	runErrorCause,
+	runErrorReading,
+	type RunErrorReading,
+} from "./run-error.js";
+
+export {
+	classifyRunError,
+	infrastructureClassOf,
+	runErrorCause,
+	runErrorReading,
+	type RunErrorClass,
+	type RunErrorReading,
+} from "./run-error.js";
 
 /**
  * The host's own words about one run, and the table projection of an eval.
@@ -284,6 +301,56 @@ export function traceFacts(messages: readonly TraceMessage[]): RunTraceFacts {
 		answer: answer === undefined ? null : quote(answer, MAX_ANSWER_CHARS),
 		toolNames: names,
 		toolCalls: calls.length,
+	};
+}
+
+// ---------- The run's receipt ----------
+
+/**
+ * What this run was actually given and what it actually spent.
+ *
+ * Session 7 read `world: null · judge: null · simulatedUser: null` and no
+ * `usage` key at all off a run.json whose case HAD a world the tool answered
+ * from — three absent keys read as three absent things. They are four
+ * different statements and the receipt makes each of them: a world that was
+ * there, an instrument that never ran because the run died before grading, and
+ * a spend nobody reported (which is not the same as a spend of zero).
+ */
+export interface RunReceipt {
+	/** Top-level keys of the world file this run kept; null when it had none. */
+	worldKeys: number | null;
+	judge: { calls: number; costUsd: number } | null;
+	simulatedUser: { calls: number; costUsd: number } | null;
+	/** Target tokens, when the backend reported any. */
+	tokens: number | null;
+	costUsd: number | null;
+	/** The run ended before grading, so an absent instrument never got to run. */
+	incomplete: boolean;
+}
+
+/**
+ * The receipt of one run. The world is read from the run's own state file —
+ * the same bounded, validated reader grading uses — and its KEYS are counted,
+ * never its values: a receipt says a world was there, not what was in it.
+ */
+export function runReceipt(runsRoot: string, run: Pick<RunRecord, "runId" | "status" | "metrics">): RunReceipt {
+	let worldKeys: number | null = null;
+	try {
+		const path = resolveContainedArtifactPath(runsRoot, run.runId, ...WORLD_STATE_SEGMENTS);
+		if (existsSync(path)) worldKeys = Object.keys(readWorldStateFile(path)).length;
+	} catch {
+		// An unreadable world says nothing about this run; it stays "none".
+		worldKeys = null;
+	}
+	const judge = run.metrics.judge;
+	const user = run.metrics.simulatedUser;
+	return {
+		worldKeys,
+		judge: judge ? { calls: judge.calls, costUsd: judge.costUsd } : null,
+		simulatedUser: user ? { calls: user.calls, costUsd: user.costUsd } : null,
+		tokens: runTokens(run)?.total ?? null,
+		costUsd: runCost(run),
+		incomplete: run.status !== "completed",
 	};
 }
 
@@ -602,10 +669,15 @@ function explainGrader(
 		jury: grader.jury,
 	};
 	if (run.status !== "completed") {
+		// Read from the recorded error, never from the trace: this grader saw
+		// nothing at all, and the run's own stem is the only thing that knows why.
+		const reading = runErrorReading(run.error);
 		return {
 			...base,
 			expected: null,
-			actual: `the run never completed, so nothing was graded${run.error ? `: ${quote(run.error, 300)}` : ""}`,
+			actual: reading
+				? `the run never completed, so nothing was graded — ${reading.sentence} (${reading.detail})`
+				: "the run never completed, so nothing was graded",
 		};
 	}
 	const reason = grader.reason;
@@ -786,11 +858,27 @@ export function failureModeReading(
 			facts: t("mode.fact.judge-abstained", { failed: mode.impact.failedOccurrences }),
 		};
 	}
+	// An infrastructure mode is one CAUSE, and its cause is the typed class of
+	// the error its runs recorded — carried on the signature, never re-derived
+	// from a trace. A mode with no class is evidence written before this lane.
+	if (signature.kind === "infrastructure-error") {
+		const code = infrastructureClassOf(signature.subject);
+		return {
+			title: code === null
+				? t("mode.title.infrastructure")
+				: t("mode.title.infrastructure-named", { cause: runErrorCause(code) }),
+			facts: code === null
+				? t("mode.fact.infrastructure")
+				: t("mode.fact.infrastructure-named", {
+					failed: mode.impact.failedOccurrences,
+					total: mode.impact.failedOccurrences + mode.impact.passedOccurrences,
+					cause: runErrorCause(code),
+				}),
+		};
+	}
 	const base = signature.kind === "outcome-instability"
 		? t("mode.title.instability")
-		: signature.kind === "infrastructure-error"
-			? t("mode.title.infrastructure")
-			: signature.checkCode === null
+		: signature.checkCode === null
 				? t("mode.title.legacy")
 				: signature.checkCode === "required-tool" && signature.subject
 					? t("mode.title.required-tool-named", { tool: quote(signature.subject, MAX_NAMED_SUBJECT_CHARS) })
@@ -801,13 +889,11 @@ export function failureModeReading(
 		runNoun: noun(mode.observedRuns, "failing run"),
 		replies: plural(item.runs, "reply"),
 	}));
-	const facts = signature.kind === "infrastructure-error"
-		? t("mode.fact.infrastructure")
-		: clauses.length === 0
-			? t(mode.observedRuns === 0 ? "mode.fact.unread" : "mode.fact.nothing-visible", {
-				failed: mode.impact.failedOccurrences,
-			})
-			: `${sentenceCase(clauses.join("; "))}.`;
+	const facts = clauses.length === 0
+		? t(mode.observedRuns === 0 ? "mode.fact.unread" : "mode.fact.nothing-visible", {
+			failed: mode.impact.failedOccurrences,
+		})
+		: `${sentenceCase(clauses.join("; "))}.`;
 	// The scope is said once, by the surface that shows it as a chip or a pill.
 	// Saying it in the title too was the same two words twice in two lines.
 	return { title: base, facts };
@@ -878,6 +964,12 @@ export interface RunExplanation {
 	outcome: RunOutcome;
 	/** One sentence naming the outcome and the grader tally. */
 	headline: string;
+	/**
+	 * What the record says ended this run, typed. Present exactly when the run
+	 * recorded an error, and it — never the trace — is what every surface says
+	 * about a run that never reached grading.
+	 */
+	error: RunErrorReading | null;
 	/** One entry per failed grader, in recorded order. */
 	graders: GraderExplanation[];
 	/** Failure modes this run is evidence for. */
@@ -979,6 +1071,7 @@ export function explainRun(input: {
 		repetitionIndex: run.repetitionIndex,
 		outcome,
 		headline,
+		error: runErrorReading(run.error),
 		graders: failed.map((grader) => explainGrader(grader, run, facts)),
 		failureModes: input.modes.map(failureModeExplanation),
 		judgeAbstained: graders.filter((grader) => grader.abstained).length,
@@ -989,6 +1082,13 @@ export function explainRun(input: {
 
 function explanationSentences(explanation: Omit<RunExplanation, "sentences">): string[] {
 	const lines: string[] = [explanation.headline];
+	// Said second, before anything read off a trace: what the record says ended
+	// this run. The trace stops where the run stopped, so its last record is a
+	// timestamp, not a cause — reading one off it is how session 7 announced
+	// `called get_account · no reply` about a tool that answered in 930 ms.
+	if (explanation.error) {
+		lines.push(`${explanation.error.sentence} (${explanation.error.detail})`);
+	}
 	// Said once, before the graders: how much of this verdict is the judge
 	// declining to decide rather than the agent failing a check.
 	if (explanation.judgeAbstained > 0) {

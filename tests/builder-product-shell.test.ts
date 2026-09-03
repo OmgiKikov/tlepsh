@@ -43,6 +43,7 @@ type Handler = (...args: never[]) => unknown;
 function install(
 	workbenchView: () => Promise<WorkbenchView>,
 	decide?: (input: { kind: string }) => Promise<unknown>,
+	extra: Record<string, unknown> = {},
 ): {
 	handlers: Map<string, Handler>;
 	registerEntryRenderer: ReturnType<typeof vi.fn>;
@@ -61,7 +62,7 @@ function install(
 			sendUserMessage,
 		} as unknown as ExtensionAPI,
 		workbench as never,
-		decide ? { actorId: () => "local:test-operator" } : {},
+		{ ...(decide ? { actorId: () => "local:test-operator" } : {}), ...extra } as never,
 	);
 	return { handlers, registerEntryRenderer, sendUserMessage, controller };
 }
@@ -335,6 +336,44 @@ describe("AHDE Builder product shell", () => {
 
 		expect(result.message.errorMessage).toContain("refused the key");
 		expect(result.message.errorMessage).not.toContain("SECRET_PROVIDER_JSON");
+	});
+
+	/**
+	 * Session 7, defect 17: the footer read `AHDE · Проверка тестов · 7м` for
+	 * the whole forty-one minutes of a run and jumped to `40м` the instant it
+	 * ended. The elapsed segment was always computed from the wall clock — but
+	 * only when the Workbench was re-read, and a run is exactly the stretch
+	 * during which nothing re-reads it. The only clock on the screen was stopped
+	 * for precisely as long as the operator needed it.
+	 */
+	it("keeps the footer clock running while nothing re-reads the Workbench", async () => {
+		let clock = Date.parse("2026-09-03T10:20:00.000Z");
+		const ticks: Array<() => void> = [];
+		const spend = {
+			ofEvalRun: () => null,
+			ofCandidate: () => [],
+			cycle: () => ({ costUsd: 0, judgeCostUsd: 0, evals: 1, firstAt: "2026-09-03T10:13:00.000Z", sinceAt: null }),
+			branchOf: () => null,
+		};
+		const { handlers } = install(async () => view({ stage: "corpus-review" }), undefined, {
+			now: () => clock,
+			spend,
+			setInterval: (handler: () => void) => {
+				ticks.push(handler);
+				return { unref: () => undefined };
+			},
+		});
+		const h = host({ credentialPresent: true });
+		await start(handlers, h.ctx);
+		expect(h.ui.setStatus).toHaveBeenCalledWith("ahde", "AHDE · Eval review · 7m · $0.00");
+
+		// Thirty-four more minutes pass with no tool call, no agent turn, and no
+		// Workbench read — exactly what a long run looks like from here.
+		clock += 34 * 60_000;
+		expect(ticks).toHaveLength(1);
+		for (const tick of ticks) tick();
+		expect(h.ui.setStatus).toHaveBeenLastCalledWith("ahde-auth", undefined);
+		expect(h.ui.setStatus).toHaveBeenCalledWith("ahde", "AHDE · Eval review · 41m · $0.00");
 	});
 });
 

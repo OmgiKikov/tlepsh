@@ -550,6 +550,26 @@ export function formatEstimatedCost(estimate: WorkbenchRunEstimate | undefined):
 	})`;
 }
 
+/**
+ * The budget the run dialog is actually approving.
+ *
+ * `model.timeoutMs` bounds ONE reply, never a whole conversation: a case with a
+ * simulated user gets that budget per turn, so a six-turn dialogue may legally
+ * take six times it. Session 7 read `таймаут 300000 мс` beside dialogue cases
+ * that ran 618 s and called the timeout broken; the number was right and the
+ * unit was missing.
+ */
+export function turnBudgetLine(
+	timeoutMs: number,
+	tasks: readonly { simulatedUser?: { maxTurns: number } | undefined }[],
+): string {
+	const seconds = Math.max(1, Math.round(timeoutMs / 1_000));
+	const turns = tasks.reduce((most, task) => Math.max(most, task.simulatedUser?.maxTurns ?? 1), 1);
+	return turns > 1
+		? t("confirm.start-testing.budget-turns", { seconds, turns: localizedCount(turns, "agent turn") })
+		: t("confirm.start-testing.budget", { seconds });
+}
+
 export function formatEstimatedTime(estimate: WorkbenchRunEstimate | undefined): string {
 	if (!estimate || estimate.minutes === null) return `${t("estimate.unknown")} ${t("estimate.nothing-comparable")}`;
 	if (estimate.minutes < 1) return t("estimate.under-minute");
@@ -1474,6 +1494,11 @@ export class AhdeWorkbench {
 					executions: localizedCount(executions, "execution"),
 				})
 				: t("confirm.start-testing.not-yet"),
+			// The budget the operator is approving, said in the unit it actually
+			// bounds. `model.timeoutMs` bounds ONE reply, so a six-turn dialogue
+			// case is allowed six of them: session 7 watched dialogue cases run
+			// 618 s against a "300 000 ms" budget and read it as a broken timeout.
+			...(corpusDraft && target ? { budget: turnBudgetLine(target.manifest.model.timeoutMs, corpusDraft.tasks) } : {}),
 			estimatedCost: formatEstimatedCost(estimate),
 			estimatedTime: formatEstimatedTime(estimate),
 			exact: {

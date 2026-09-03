@@ -187,6 +187,8 @@ describe("a command Target speaks protocol v1", () => {
 	it("records a tool_note the host never ran so a tool_called grader still sees it", async () => {
 		const { record, runDir } = await runOnce("note");
 		expect(record.status).toBe("completed");
+		// A note is a call the agent made: counted, exactly like a brokered one.
+		expect(record.metrics.toolCalls).toBe(1);
 		const messages = openTrace(runDir);
 		expect(messages[1]?.toolCalls?.[0]?.name).toBe("internal_lookup");
 		expect(messages[2]?.toolResult?.text).toBe("limits: none");
@@ -259,6 +261,51 @@ describe("a command Target speaks protocol v1", () => {
 		expect(messages[5]?.text).toContain("Ход 3");
 	});
 
+	/**
+	 * Session 7, defect 19: the receipt listed `["HOME", "LANG", "PATH",
+	 * "TMPDIR"]` while the child had also been handed `AHDE_WORLD`,
+	 * `AHDE_PROTOCOL` and the credential name — four names out of seven, from a
+	 * record whose whole job is to say what the agent was given. The child
+	 * itself is the witness here.
+	 */
+	it("records every environment name the child actually received, and nothing else", async () => {
+		const withWorld = JSON.stringify({
+			id: "task_env",
+			input: "Что в окружении?",
+			world: { state: { balance: 100 } },
+			graders: [{ type: "output_contains", text: "env=" }],
+		});
+		const { record, runDir } = await runOnce("env", { dataset: withWorld });
+		expect(record.status).toBe("completed");
+		expect(record.execution.agent).toBe("command-v1");
+		expect(record.execution.environment).toEqual([
+			"AHDE_PROTOCOL",
+			"AHDE_WORLD",
+			"FAKE_AGENT_MODE",
+			"HOME",
+			"LANG",
+			"MOCK_MODEL_KEY",
+			"PATH",
+			"TMPDIR",
+		]);
+		// And every recorded name is one the child confirms it was handed.
+		const reported = (openTrace(runDir)[1]?.text ?? "").replace(/^env=/, "").split(",");
+		for (const name of record.execution.environment) expect(reported, name).toContain(name);
+	});
+
+	it("drops AHDE_WORLD from the receipt for a case that declares no world", async () => {
+		const { record } = await runOnce("env");
+		expect(record.execution.environment).toEqual([
+			"AHDE_PROTOCOL",
+			"FAKE_AGENT_MODE",
+			"HOME",
+			"LANG",
+			"MOCK_MODEL_KEY",
+			"PATH",
+			"TMPDIR",
+		]);
+	});
+
 	it("binds the entry executable's bytes to the run, and a different argv[0] is a different hash", async () => {
 		const direct = await runOnce("plain");
 		expect(direct.record.target.agentEntryHash).toMatch(/^sha256:[0-9a-f]{64}$/);
@@ -290,6 +337,23 @@ describe("every way the wire can fail is infrastructure, never a behavioural fai
 
 	it("reports a non-zero exit mid-dialogue with the child's bounded stderr", async () => {
 		await errorCase("die-after-tool", /command Target exited with 3: agent gave up/);
+	});
+
+	/**
+	 * Session 7, defect 7: `metrics.toolCalls` stayed at the zero the record was
+	 * born with whenever the run ended in an error, so `/traces`, the trace
+	 * header and `run.json` all read `0` about a run whose trace — on the same
+	 * screen — showed `get_account · 930ms · ok`. A run that brokered a call
+	 * brokered it, however the run then ended.
+	 */
+	it("counts the tool calls a run made before it failed", async () => {
+		const { record, runDir } = await runOnce("die-after-tool");
+		expect(record.status).toBe("error");
+		expect(record.metrics.toolCalls).toBe(1);
+		// And the trace it is counting agrees: one call, answered without error.
+		const messages = openTrace(runDir);
+		expect(messages[1]?.toolCalls?.[0]?.name).toBe("check_dbo");
+		expect(messages[2]?.toolResult?.isError).toBe(false);
 	});
 
 	it("names the line of a protocol violation and never quotes its body", async () => {

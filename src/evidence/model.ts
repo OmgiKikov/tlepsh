@@ -9,6 +9,7 @@ import {
 	failureModeReading,
 	graderFindings,
 	openRunTrace,
+	runReceipt,
 	runScore,
 	runTranscript,
 	runsTable,
@@ -217,7 +218,12 @@ export function collectEvalPage(
 	const modes: EvalPageMode[] = brief.modes.map((mode) => {
 		const reading = failureModeReading(mode);
 		const first = mode.evidence[0];
-		const excerpt = first ? failureModeExcerpt(first) : null;
+		// An infrastructure mode quotes nothing: its runs never reached grading,
+		// so the trace that survived them ends where the run stopped and says
+		// nothing about why. The TUI panel follows the same rule.
+		const excerpt = first && mode.signature.kind !== "infrastructure-error"
+			? failureModeExcerpt(first)
+			: null;
 		return {
 		id: mode.failureModeId,
 		title: reading.title,
@@ -379,6 +385,7 @@ export function collectRunDetailPage(runsRoot: string, runId: string): RunDetail
 			},
 		},
 		input: facts?.input ?? null,
+		receipt: runReceipt(runsRoot, run),
 		transcript,
 		traceNotice,
 		graders,
