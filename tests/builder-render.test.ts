@@ -2839,7 +2839,7 @@ describe("a refusal on screen", () => {
 		setLanguage("ru");
 		try {
 			expect(refusal("No compatible corpus draft is available"))
-				.toContain("Пока нет ни одного объекта: черновик тестов.");
+				.toContain("Сначала нужно вот что: черновик тестов — этого пока нет.");
 			expect(refusal("Several compatible development corpus artifacts exist; select one before continuing"))
 				.toContain("Подходит несколько: набор тестов — скажи, какой брать.");
 			expect(refusal("promote-candidate subject changed after confirmation; the decision is stale"))
@@ -2847,6 +2847,39 @@ describe("a refusal on screen", () => {
 			// An illegal transition arrives as two lines; the card shows the human one.
 			expect(refusal("Сейчас это не следующий шаг — Проверка описания. Скажи «ок» или что поправить\napply-proposal is not legal during spec-review; expected proposal-review."))
 				.toBe("<error>✗</error> Сейчас это не следующий шаг — Проверка описания. Скажи «ок» или что поправить");
+		} finally {
+			setLanguage(null);
+		}
+	});
+
+	/**
+	 * A rejected submission is a schema failure the model repairs, so every JSON
+	 * pointer survives — but the operator's half was the whole pointer list on
+	 * one line, cut at `/tasks/3/gr…`, in English.
+	 */
+	it("leads a rejected submission with a sentence and keeps every pointer on its own line", () => {
+		setLanguage("ru");
+		try {
+			const lines = refusalCard(
+				{
+					content: [{
+						type: "text",
+						text: "corpus-draft is invalid — /tasks/1/graders/0/argsContains: must be a string; " +
+							"/tasks/2/graders/0/argsContains: must be a string; /tasks/3/graders/0/argsContains: must be a string. " +
+							"Nested objects and arrays must be JSON values, not strings.",
+					}],
+					details: {},
+				} as unknown as Parameters<typeof refusalCard>[0],
+				fakeTheme as unknown as Theme,
+			).render(200).join("\n").split("\n").map((line) => line.replace(/<[^>]+>/g, "").trim()).filter(Boolean);
+			expect(lines[0]).toBe("✗ Не прошло проверку: черновик тестов. Ошибок в полях: 3");
+			expect(lines.slice(1)).toEqual([
+				"/tasks/1/graders/0/argsContains: must be a string",
+				"/tasks/2/graders/0/argsContains: must be a string",
+				"/tasks/3/graders/0/argsContains: must be a string",
+			]);
+			// Every pointer is here, whole: nothing ends in an ellipsis.
+			expect(lines.join(" ")).not.toContain("…");
 		} finally {
 			setLanguage(null);
 		}

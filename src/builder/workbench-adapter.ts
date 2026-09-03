@@ -93,7 +93,9 @@ export function refusalCard(
 	// A refusal is the operator's whole account of what did not happen, so it
 	// wraps instead of being cut: `name a file, for example bi…` is not advice,
 	// and a validation error cut at `/tasks/3/gr…` is not a repair instruction.
-	const [head, ...rest] = wrap(oneLine(hostRefusal(reason), 600), 120);
+	// Line breaks the host put in survive, so a list stays a list.
+	const said = hostRefusal(reason);
+	const [head, ...rest] = wrap([...said].length > 600 ? `${[...said].slice(0, 599).join("")}…` : said, 120);
 	return card([`${paint.error("✗")} ${named}${head ?? ""}`, ...rest.map((line) => `  ${line}`)]);
 }
 
@@ -125,6 +127,18 @@ function hostRefusal(reason: string): string {
 	}
 	if (/^workshop scope refuses .*: a workshop path is a safe relative POSIX path/.test(reason)) {
 		return t("refusal.workshop-unsafe-path");
+	}
+	// A rejected submission is a schema failure the MODEL repairs, so the
+	// JSON pointers stay exactly as they are — one per line, all of them. What
+	// the operator gets is the sentence in front of them: which artifact, and
+	// how many fields, instead of a pointer list cut at `/tasks/3/gr…`.
+	const invalid = /^(\S+) is invalid — ([\s\S]+?)\. Nested objects and arrays must be JSON values, not strings\.$/.exec(reason);
+	if (invalid) {
+		const pointers = (invalid[2] ?? "").split(";").map((item) => item.trim()).filter((item) => item.length > 0);
+		return [
+			t("refusal.submission-invalid", { kind: artifactLabel(invalid[1] ?? ""), fields: pointers.length }),
+			...pointers,
+		].join("\n");
 	}
 	return reason;
 }
