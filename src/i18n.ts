@@ -154,6 +154,14 @@ const NOUNS = {
 		dialogue: ["dialogue", "dialogues"],
 		// lane: knowledge
 		passage: ["passage", "passages"],
+		// lane: explain
+		run: ["run", "runs"],
+		// An agent turn — one exchange of the conversation, not one spoken line;
+		// Russian counts those as "ходы", and "реплики" is the wrong word for a
+		// budget that bounds how far a dialogue may go.
+		"agent turn": ["turn", "turns"],
+		key: ["key", "keys"],
+		call: ["call", "calls"],
 	},
 	ru: {
 		case: ["кейс", "кейса", "кейсов"],
@@ -208,6 +216,11 @@ const NOUNS = {
 		dialogue: ["диалог", "диалога", "диалогов"],
 		// lane: knowledge
 		passage: ["фрагмент", "фрагмента", "фрагментов"],
+		// lane: explain
+		run: ["запуск", "запуска", "запусков"],
+		"agent turn": ["ход", "хода", "ходов"],
+		key: ["ключ", "ключа", "ключей"],
+		call: ["вызов", "вызова", "вызовов"],
 	},
 } as const;
 
@@ -958,7 +971,7 @@ const en = {
 	"dialog.files": "Files",
 	"dialog.starter-template": "{files} from the trusted starter template, plus a fresh Git repository with one commit",
 	"dialog.target-id": "Target id",
-	"dialog.model-detail": "· thinking {thinking} · timeout {timeout} ms",
+	"dialog.model-detail": "· thinking {thinking} · timeout {seconds}s per turn",
 	"dialog.credential-env": "Credential env",
 	"dialog.name-only": "(name only; set the value in your shell)",
 	"dialog.manifest-diff": "manifest.yaml diff",
@@ -1591,6 +1604,38 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"result.screen-inconclusive-over-budget": "· {count} inconclusive — over the infrastructure error budget",
 	"exam.dropped-at-generation": "({dropped} dropped when it was generated)",
 	"exam.short-of-requested": "(short of the {requested} that were ordered)",
+	// lane: explain — an errored run is read from its recorded error, never
+	// from the shape of the trace that survived it.
+	"run.error.timeout": "the agent did not answer within {seconds}s — the model timed out",
+	"run.error.exit": "the agent process ended before it answered",
+	"run.error.protocol": "the agent broke the protocol the host speaks",
+	"run.error.startup": "the agent never started",
+	"run.error.evaluation": "the evaluation path failed before any grading",
+	"run.error.other": "the run ended before the model answered",
+	"run.cause.timeout": "model timeout",
+	"run.cause.exit": "the agent process ended",
+	"run.cause.protocol": "protocol violation",
+	"run.cause.startup": "the agent did not start",
+	"run.cause.evaluation": "the evaluation path",
+	"run.cause.other": "an interrupted run",
+	"mode.title.infrastructure-named": "infrastructure: {cause}",
+	"mode.fact.infrastructure-named": "{failed} of {total} runs ended at {cause}; this is evidence about the evaluation path, not about the agent",
+	"mode.runs-affected": "{failed} of {total} runs",
+	"mode.tasks-inside": "cases: {tasks}",
+	"receipt.section": "Receipt",
+	"receipt.world-present": "world: yes ({keys})",
+	"receipt.world-absent": "world: none",
+	"receipt.judge-spent": "judge: {calls}, {cost}",
+	"receipt.judge-none": "judge: never ran",
+	"receipt.judge-none-error": "judge: never ran — the run failed",
+	"receipt.user-spent": "user model: {calls}, {cost}",
+	"receipt.user-none": "user model: never ran",
+	"receipt.user-none-error": "user model: never ran — the run failed",
+	"receipt.tokens": "tokens: {tokens}",
+	"receipt.tokens-unreported": "tokens: not reported",
+	"label.budget": "Budget",
+	"confirm.start-testing.budget": "timeout {seconds}s per turn",
+	"confirm.start-testing.budget-turns": "timeout {seconds}s per turn · up to {turns}",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2288,7 +2333,7 @@ const ru: Record<MessageKey, string> = {
 	"dialog.files": "Файлы",
 	"dialog.starter-template": "{files} из доверенного шаблона плюс свежий Git-репозиторий с одним коммитом",
 	"dialog.target-id": "Имя агента",
-	"dialog.model-detail": "· мышление {thinking} · таймаут {timeout} мс",
+	"dialog.model-detail": "· мышление {thinking} · таймаут {seconds} с на ход",
 	"dialog.credential-env": "Переменная с ключом",
 	"dialog.name-only": "(только имя; значение задаёшь у себя в оболочке)",
 	"dialog.manifest-diff": "диф manifest.yaml",
@@ -2904,6 +2949,37 @@ const ru: Record<MessageKey, string> = {
 	"result.screen-inconclusive-over-budget": "· {count} неубедительно — превышен бюджет инфраструктурных ошибок",
 	"exam.dropped-at-generation": "(при генерации отброшено: {dropped})",
 	"exam.short-of-requested": "(заказано было {requested})",
+	// lane: explain
+	"run.error.timeout": "агент не ответил за {seconds} с — таймаут модели",
+	"run.error.exit": "процесс агента завершился, не ответив",
+	"run.error.protocol": "агент нарушил протокол, на котором говорит хост",
+	"run.error.startup": "агент так и не запустился",
+	"run.error.evaluation": "тракт оценки упал ещё до проверки",
+	"run.error.other": "прогон оборвался до ответа модели",
+	"run.cause.timeout": "таймаут модели",
+	"run.cause.exit": "процесс агента завершился",
+	"run.cause.protocol": "нарушение протокола",
+	"run.cause.startup": "агент не запустился",
+	"run.cause.evaluation": "тракт оценки",
+	"run.cause.other": "оборванный прогон",
+	"mode.title.infrastructure-named": "инфраструктура: {cause}",
+	"mode.fact.infrastructure-named": "здесь оборвалось {failed} из {total} запусков, причина — {cause}; это свидетельство о тракте оценки, а не о поведении агента",
+	"mode.runs-affected": "запусков: {failed} из {total}",
+	"mode.tasks-inside": "кейсы: {tasks}",
+	"receipt.section": "Квитанция",
+	"receipt.world-present": "мир: есть ({keys})",
+	"receipt.world-absent": "мир: нет",
+	"receipt.judge-spent": "судья: {calls}, {cost}",
+	"receipt.judge-none": "судья: не запускался",
+	"receipt.judge-none-error": "судья: не запускался — прогон упал",
+	"receipt.user-spent": "собеседник: {calls}, {cost}",
+	"receipt.user-none": "собеседник: не запускался",
+	"receipt.user-none-error": "собеседник: не запускался — прогон упал",
+	"receipt.tokens": "токены: {tokens}",
+	"receipt.tokens-unreported": "токены: не сообщены",
+	"label.budget": "Бюджет",
+	"confirm.start-testing.budget": "таймаут {seconds} с на ход",
+	"confirm.start-testing.budget-turns": "таймаут {seconds} с на ход · до {turns}",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

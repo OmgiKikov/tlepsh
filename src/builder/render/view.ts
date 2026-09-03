@@ -621,13 +621,31 @@ function modeLines(brief: WorkbenchImprovementBriefProjection, paint: Paint): st
 	const lines: string[] = [];
 	for (const mode of brief.modes) {
 		const reading = failureModeReading(mode);
+		// An infrastructure mode is counted in RUNS, because it is one cause and
+		// the tasks it hit are the list inside it, not the unit it reproduces in.
+		const infrastructure = mode.signature.kind === "infrastructure-error";
+		const counted = infrastructure
+			? t("mode.runs-affected", {
+				failed: mode.impact.failedOccurrences,
+				total: mode.impact.failedOccurrences + mode.impact.passedOccurrences,
+			})
+			: t("mode.tasks-affected", { affected: mode.impact.affectedTasks, total: mode.impact.totalTasks });
 		const scope = mode.scope === "systemic" ? paint.warning(t("mode.scope.systemic")) : paint.muted(t("mode.scope.task-local"));
 		const decision = mode.decision === "propose-harness-change"
 			? (mode.selectableForProposal ? paint.success(t("mode.decision.propose")) : paint.muted(t("mode.decision.not-selectable")))
 			: mode.decision === "stabilize-and-rerun" ? paint.warning(t("mode.decision.stabilize")) : paint.error(t("mode.decision.repair"));
-		lines.push(`  ${paint.bold(`${mode.ordinal}.`)} ${paint.bold(oneLine(reading.title, 90))} ${paint.dim("—")} ${t("mode.tasks-affected", { affected: mode.impact.affectedTasks, total: mode.impact.totalTasks })} ${paint.dim(`(${t("mode.reproduces", { percent: Math.round(mode.impact.reproductionBps / 100) })})`)}`);
+		lines.push(`  ${paint.bold(`${mode.ordinal}.`)} ${paint.bold(oneLine(reading.title, 90))} ${paint.dim("—")} ${counted} ${paint.dim(`(${t("mode.reproduces", { percent: Math.round(mode.impact.reproductionBps / 100) })})`)}`);
 		lines.push(`     ${scope} ${paint.dim("·")} ${decision}`);
 		lines.push(...wrap(reading.facts, 92, "     "));
+		if (infrastructure) {
+			// The cases it hit, once, inside the one mode. Never an excerpt: these
+			// runs never reached grading, so the last thing in their trace is where
+			// the run stopped and not why — reading a cause off it is defect №2.
+			if (mode.taskIds.length > 0) {
+				lines.push(...wrap(t("mode.tasks-inside", { tasks: mode.taskIds.join(", ") }), 92, "       "));
+			}
+			continue;
+		}
 		const excerpt = mode.evidence[0];
 		const quoted = excerpt ? failureModeExcerpt(excerpt) : null;
 		if (excerpt && quoted) {

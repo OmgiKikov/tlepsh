@@ -167,7 +167,17 @@ export function renderTracePanel(model: RunDetailPageModel, paint: Paint): strin
 		`${paint.heading(t("trace.run"))} ${run.taskId}#${run.repetitionIndex} · ${paintOutcome(run.outcome, outcomeWord(run.outcome), paint)}` +
 			`${score === null ? "" : ` · ${t("table.col.score")} ${pct(score)}`} · ${duration(run.metrics.latencyMs)} · ${t("trace.toolCalls", { n: run.metrics.toolCalls })} · ${paint.dim(run.runId)}`,
 	];
-	if (run.error) lines.push(`${paint.heading(t("trace.error"))} ${oneLine(run.error, 200)}`);
+	// The recorded stem, read as the host's own sentence rather than left as a
+	// raw string a reader has to decode — and never re-derived from the trace.
+	if (model.explanation.error) {
+		lines.push(
+			`${paint.heading(t("trace.error"))} ${model.explanation.error.sentence} ${
+				paint.muted(oneLine(model.explanation.error.detail, 200))
+			}`,
+		);
+	} else if (run.error) {
+		lines.push(`${paint.heading(t("trace.error"))} ${oneLine(run.error, 200)}`);
+	}
 	lines.push("", paint.heading(t("trace.why")));
 	for (const sentence of model.explanation.sentences) {
 		for (const line of wrapSentence(sentence)) lines.push(`  ${line}`);
@@ -212,14 +222,28 @@ export function traceNoteForModel(model: RunDetailPageModel): string {
 	const finalAnswer = [...entries].reverse().find((entry) => entry.kind === "assistant" && entry.final) ??
 		[...entries].reverse().find((entry) => entry.kind === "assistant");
 	const tools = entries.filter((entry) => entry.kind === "tool").map((entry) => (entry.kind === "tool" ? `${entry.name}${entry.isError ? " (error)" : ""}` : ""));
+	const failure = model.explanation.error;
 	const parts = [
 		`Operator opened /trace for run ${run.runId} — ${run.taskId}#${run.repetitionIndex}, ${outcomeWord(run.outcome)} — of eval ${model.evalRunId}.`,
 		`Host facts (assembled from recorded fields, not by a model): ${model.explanation.sentences.join(" ")}`,
+		// Said before anything read off the trace, because the trace stops where
+		// the run stopped: its last record is a timestamp, never a cause. Session 7
+		// let the Builder infer "the tool did not answer" from a trace whose tool
+		// answered in 930 ms, and send the operator to export a variable that was
+		// already exported.
+		...(failure
+			? [
+				`The run recorded this error, and it is the ONLY statement about why it ended: ${failure.detail} (typed cause: ${failure.code}).`,
+				"The trace below stops where the run stopped, so nothing in it — a last tool call, a missing reply — says why. Never infer a cause from its shape, and never claim a tool failed when its recorded result says ok.",
+			]
+			: []),
 		graders ? `Graders: ${graders}.` : "Graders: none recorded.",
 		firstUser && firstUser.kind === "user" ? `Case input: ${oneLine(firstUser.text, 300)}` : "Case input: not in the recorded trace.",
 		finalAnswer && finalAnswer.kind === "assistant" ? `Agent's answer: ${oneLine(finalAnswer.text, 400)}` : "Agent's answer: not in the recorded trace.",
 		tools.length > 0 ? `Tool calls, in order: ${tools.join(", ")}.` : "Tool calls: none.",
-		"Now tell the operator, in their language and in at most four sentences, why the harness let this happen and what you would change in the instructions, a skill or a tool. Call it your hypothesis. Use only the facts above; never quote or infer sealed content; do not invent numbers or ids.",
+		failure
+			? "Now tell the operator, in their language and in at most four sentences, what ended this run — quote the typed cause above — and that it is infrastructure, so the honest next step is to stabilize the path and run again, never a harness change. Do not send the operator to a shell; do not invent a missing credential; use only the facts above."
+			: "Now tell the operator, in their language and in at most four sentences, why the harness let this happen and what you would change in the instructions, a skill or a tool. Call it your hypothesis. Use only the facts above; never quote or infer sealed content; do not invent numbers or ids.",
 	];
 	return parts.join("\n").slice(0, MAX_NOTE_CHARS);
 }
