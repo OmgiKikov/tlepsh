@@ -4,7 +4,14 @@ import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import { TargetManifest, type ContainerBlock } from "../manifest.js";
+import { DEFAULT_PI_HARNESS_FILES, harnessFilesOf, TargetManifest, type ContainerBlock } from "../manifest.js";
+import {
+	declaredHarnessRoots,
+	isDefaultPiHarness,
+	reservedHarnessPath,
+	safeHarnessPath,
+	withinDeclaredHarness,
+} from "../domain/harness-surface.js";
 import { canonicalJson, hashValue } from "../provenance.js";
 // Type-only: the memory of what was already tried is compiled by the caller, so
 // this module stays a reader of Git and nothing else.
@@ -31,6 +38,7 @@ export const TARGET_AUTHORING_LIMITS = Object.freeze({
 	projectionBytes: 512 * 1024,
 	maxSkills: 64,
 	maxTools: 64,
+	maxHarnessFiles: 64,
 });
 const MAX_MANIFEST_BYTES = TARGET_AUTHORING_LIMITS.manifestBytes;
 const MAX_RESOURCE_BYTES = TARGET_AUTHORING_LIMITS.resourceBytes;
@@ -38,7 +46,9 @@ const MAX_CONTEXT_BYTES = TARGET_AUTHORING_LIMITS.aggregateBytes;
 const MAX_CONTEXT_PROJECTION_BYTES = TARGET_AUTHORING_LIMITS.projectionBytes;
 const MAX_SKILLS = TARGET_AUTHORING_LIMITS.maxSkills;
 const MAX_TOOLS = TARGET_AUTHORING_LIMITS.maxTools;
-const MAX_RESOURCES = 1 + MAX_SKILLS + (MAX_TOOLS * MAX_TOOL_DIRECTORY_FILES);
+/** A declared surface is bounded like the skill list: enough, and countable. */
+const MAX_HARNESS_FILES = TARGET_AUTHORING_LIMITS.maxHarnessFiles;
+const MAX_RESOURCES = 1 + MAX_SKILLS + (MAX_TOOLS * MAX_TOOL_DIRECTORY_FILES) + MAX_HARNESS_FILES;
 /** How many data file names one bounded listing may name. */
 const MAX_DATA_ENTRY_SAMPLE = 32;
 /**
@@ -75,7 +85,14 @@ export type TargetAuthoringResourceKind =
 	| "tool-descriptor"
 	| "tool-executable"
 	/** Any other file inside a multi-file `tools/<name>/` directory. */
-	| "tool-file";
+	| "tool-file"
+	/**
+	 * A file the manifest's `harness.files` declares and the canonical Pi layout
+	 * does not name — `prompts/system.md` for a command Target. Its `name` is its
+	 * own path: the surface is declared by glob, so there is nothing else to call
+	 * it, and the Builder addresses it by exactly the path it will edit.
+	 */
+	| "harness-file";
 
 export interface TargetAuthoringResource {
 	kind: TargetAuthoringResourceKind;
@@ -190,6 +207,10 @@ export interface TargetAuthoringSurfacePolicyInput {
 	skillCount: number;
 	tools: readonly TargetAuthoringToolDeclaration[];
 	data?: readonly TargetAuthoringDataDirectory[];
+	/** The manifest's `harness.files`. Absent means the Pi layout. */
+	harnessFiles?: readonly string[];
+	/** How many resources the declared surface contributes beyond the canonical layout. */
+	harnessFileCount?: number;
 	target: TargetAuthoringContext["target"];
 	resources: readonly TargetAuthoringResource[];
 }
@@ -283,14 +304,16 @@ function safeRequestedPath(path: string): string {
 	return path;
 }
 
-/** Every blob under one declared directory, with Git-reported sizes. */
-function treeEntriesRecursive(
-	repositoryDir: string,
-	revision: string,
-	directory: string,
-): Array<{ mode: string; type: string; bytes: number; path: string }> {
-	const output = gitRaw(repositoryDir, ["ls-tree", "-r", "-l", "-z", revision, "--", `${directory}/`]).toString("utf8");
-	const entries: Array<{ mode: string; type: string; bytes: number; path: string }> = [];
+interface TreeListingEntry {
+	mode: string;
+	type: string;
+	bytes: number;
+	path: string;
+}
+
+/** Every blob one `ls-tree -r -l -z` listing names, sorted by path. */
+function parseTreeListing(output: string): TreeListingEntry[] {
+	const entries: TreeListingEntry[] = [];
 	for (const record of output.split("\0").filter(Boolean)) {
 		const tab = record.indexOf("\t");
 		if (tab < 0) contextError("TARGET_CONTEXT_INVALID", "Target Git tree metadata is invalid.");
@@ -305,6 +328,36 @@ function treeEntriesRecursive(
 		entries.push({ mode: mode as string, type: type as string, bytes: size, path });
 	}
 	return entries.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+/** Every blob under one declared directory, with Git-reported sizes. */
+function treeEntriesRecursive(
+	repositoryDir: string,
+	revision: string,
+	directory: string,
+): TreeListingEntry[] {
+	return parseTreeListing(
+		gitRaw(repositoryDir, ["ls-tree", "-r", "-l", "-z", revision, "--", `${directory}/`]).toString("utf8"),
+	);
+}
+
+/**
+ * Every file of the exact revision the declared surface names.
+ *
+ * The listing is narrowed to the declared roots — `prompts` for `prompts/**` —
+ * and only widened to the whole tree when a glob's very first segment is a
+ * wildcard, which `HarnessGlob` makes rare. What the roots return is then
+ * filtered by the same matcher the write side uses, so a root that also holds
+ * undeclared files contributes none of them.
+ */
+function declaredHarnessEntries(
+	repositoryDir: string,
+	revision: string,
+	declared: readonly string[],
+): TreeListingEntry[] {
+	const roots = declaredHarnessRoots(declared);
+	const output = gitRaw(repositoryDir, ["ls-tree", "-r", "-l", "-z", revision, "--", ...roots]).toString("utf8");
+	return parseTreeListing(output).filter((entry) => withinDeclaredHarness(entry.path, declared));
 }
 
 function treeEntry(repositoryDir: string, revision: string, path: string): GitTreeEntry | null {
@@ -405,8 +458,30 @@ function exactResource(
 	};
 }
 
-/** Canonical resource identity shared by inspection and semantic compilation. */
-export function classifyTargetAuthoringResourcePath(path: string): {
+/**
+ * Is this path one the declared surface adds on top of the canonical layout?
+ *
+ * The Pi default is deliberately excluded: under it, every path that is not
+ * canonical is noncanonical, exactly as it has always been. Hidden files, the
+ * host-owned manifest, evaluation inputs and the shape-only `data/` tree are
+ * never harness files, whatever the manifest globs over.
+ */
+function isDeclaredHarnessFile(path: string, declared: readonly string[]): boolean {
+	if (isDefaultPiHarness(declared)) return false;
+	if (!safeHarnessPath(path) || reservedHarnessPath(path)) return false;
+	if (path.split("/").some((segment) => segment.startsWith("."))) return false;
+	return withinDeclaredHarness(path, declared);
+}
+
+/**
+ * Canonical resource identity shared by inspection and semantic compilation.
+ *
+ * `declared` is the manifest's `harness.files`. It is threaded in rather than
+ * read here because every caller already holds the exact manifest of the exact
+ * revision being classified, and a classifier that guessed would be the one
+ * place read and write could disagree.
+ */
+export function classifyTargetAuthoringResourcePath(path: string, declared: readonly string[] = DEFAULT_PI_HARNESS_FILES): {
 	kind: TargetAuthoringResourceKind;
 	name: string | null;
 	/** Every Git mode this canonical path may legally carry. */
@@ -426,6 +501,9 @@ export function classifyTargetAuthoringResourcePath(path: string): {
 	}
 	const executable = /^bin\/([a-z][a-z0-9_]{0,63})$/.exec(path)?.[1];
 	if (executable) return { kind: "tool-executable", name: executable, modes: ["100755"] };
+	// Canonical identity always wins, so a hybrid manifest that declares both a
+	// skill and `prompts/**` reads exactly as it did before for the skill.
+	if (isDeclaredHarnessFile(path, declared)) return { kind: "harness-file", name: path, modes: ["100644"] };
 	return null;
 }
 
@@ -436,7 +514,10 @@ export function classifyTargetAuthoringResourcePath(path: string): {
  * ("noncanonical resource: skills/bank_knowledge/SKILL.md") leaves the Builder
  * guessing, and the guess that followed the live one deleted the file.
  */
-export function explainTargetAuthoringResourcePath(path: string): string {
+export function explainTargetAuthoringResourcePath(
+	path: string,
+	declared: readonly string[] = DEFAULT_PI_HARNESS_FILES,
+): string {
 	if (path.startsWith("skills/")) {
 		const suggested = (path.split("/")[1] ?? "")
 			.toLowerCase()
@@ -455,6 +536,13 @@ export function explainTargetAuthoringResourcePath(path: string): string {
 			"and holding only lowercase letters, digits, `.`, `-` or `_`";
 	}
 	if (path.toLowerCase() === "agents.md") return "the instructions file is spelled exactly AGENTS.md";
+	// A Target that declares its own surface is refused in the words of that
+	// declaration: "a Harness holds only AGENTS.md, skills/…" is true of the Pi
+	// layout and useless to an agent whose behaviour lives in prompts/.
+	if (!isDefaultPiHarness(declared)) {
+		return `the harness declares ${declared.join(", ")}; a Harness also holds AGENTS.md, ` +
+			"skills/<name>/SKILL.md, tools/<name>/…, bin/<name> and data/<name>/…";
+	}
 	return "a Harness holds only AGENTS.md, skills/<name>/SKILL.md, tools/<name>/…, bin/<name> and data/<name>/…";
 }
 
@@ -472,13 +560,19 @@ export function assertTargetAuthoringSurfaceWithinLimits(
 	if (!Number.isSafeInteger(input.manifestBytes) || input.manifestBytes < 0 || input.manifestBytes > MAX_MANIFEST_BYTES) {
 		contextError("TARGET_RESOURCE_TOO_LARGE", "Target manifest exceeds the authoring context limit.");
 	}
+	const declared = input.harnessFiles ?? DEFAULT_PI_HARNESS_FILES;
+	const harnessFileCount = input.harnessFileCount ?? 0;
 	if (
 		!Number.isSafeInteger(input.skillCount) || input.skillCount < 0 || input.skillCount > MAX_SKILLS ||
-		input.tools.length > MAX_TOOLS
+		input.tools.length > MAX_TOOLS ||
+		!Number.isSafeInteger(harnessFileCount) || harnessFileCount < 0 || harnessFileCount > MAX_HARNESS_FILES
 	) {
 		contextError("TARGET_RESOURCE_TOO_LARGE", "Target declares too many authoring resources for one bounded context.");
 	}
-	const expectedResources = 1 + input.skillCount +
+	// The exact-count rule still holds; a declared surface simply adds one
+	// resource per declared file, which is why it is counted rather than
+	// inferred from the list being checked.
+	const expectedResources = 1 + input.skillCount + harnessFileCount +
 		input.tools.reduce((total, tool) => total + expectedToolResourceCount(tool), 0);
 	if (input.resources.length !== expectedResources || input.resources.length > MAX_RESOURCES) {
 		contextError("TARGET_CONTEXT_INVALID", "Target authoring resources do not match its canonical declarations.");
@@ -486,7 +580,7 @@ export function assertTargetAuthoringSurfaceWithinLimits(
 	const declaredToolNames = new Set(input.tools.map((tool) => tool.name));
 	const seen = new Set<string>();
 	for (const resource of input.resources) {
-		const identity = classifyTargetAuthoringResourcePath(resource.path);
+		const identity = classifyTargetAuthoringResourcePath(resource.path, declared);
 		if (
 			!identity || seen.has(resource.path) || identity.kind !== resource.kind ||
 			identity.name !== resource.name || !identity.modes.includes(resource.mode) ||
@@ -697,6 +791,41 @@ export function inspectTargetAuthoringContext(
 		toolDeclarations.push({ name, layout: "directory", fileCount: listed.length });
 	}
 
+	// The surface the manifest declares, beyond the canonical layout above. A Pi
+	// Target enumerates nothing here and its context is byte for byte unchanged.
+	const declaredHarness = harnessFilesOf(manifest);
+	const harnessFilePaths: string[] = [];
+	if (!isDefaultPiHarness(declaredHarness)) {
+		for (const entry of declaredHarnessEntries(repositoryDir, request.expectedTarget.gitSha, declaredHarness)) {
+			// A path the canonical layout already owns is read by its own
+			// declaration, or is not a resource at all. Either way it is not one of
+			// these, and a declared glob may not smuggle it in a second time.
+			if (classifyTargetAuthoringResourcePath(entry.path)) continue;
+			// Host-owned configuration, evaluation inputs, the shape-only data tree
+			// and hidden files are never readable, whatever the manifest globs over.
+			if (reservedHarnessPath(entry.path) || !safeHarnessPath(entry.path)) continue;
+			if (entry.path.split("/").some((segment) => segment.startsWith("."))) continue;
+			if (entry.mode === "120000") {
+				contextError("TARGET_RESOURCE_SYMLINK", "A declared harness file is a Git symlink.");
+			}
+			if (entry.type !== "blob") {
+				contextError("TARGET_CONTEXT_INVALID", "A declared harness file is not a regular file.");
+			}
+			harnessFilePaths.push(entry.path);
+		}
+		if (harnessFilePaths.length > MAX_HARNESS_FILES) {
+			contextError("TARGET_RESOURCE_TOO_LARGE", "Target declares too many authoring resources for one bounded context.");
+		}
+		for (const path of harnessFilePaths) {
+			add(exactResource(
+				readBlob(repositoryDir, request.expectedTarget.gitSha, path, MAX_RESOURCE_BYTES, ["100644"]),
+				"harness-file",
+				path,
+				path,
+			));
+		}
+	}
+
 	const data: TargetAuthoringDataDirectory[] = manifest.data.map((declaration) => {
 		if (!DATA_DIRECTORY.test(declaration)) {
 			contextError("TARGET_CONTEXT_INVALID", "Target declares a noncanonical data directory.");
@@ -751,6 +880,8 @@ export function inspectTargetAuthoringContext(
 		skillCount: manifest.skills.length,
 		tools: toolDeclarations,
 		data,
+		harnessFiles: declaredHarness,
+		harnessFileCount: harnessFilePaths.length,
 		target,
 		resources: summaries,
 	});

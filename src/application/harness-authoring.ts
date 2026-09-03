@@ -14,6 +14,7 @@ import {
 import {
 	ContainerBlock,
 	ExecutionPolicyBlock,
+	harnessFilesOf,
 	loadTarget,
 	TargetManifest,
 	type ContainerBlock as ContainerPolicy,
@@ -27,6 +28,7 @@ import {
 	type TargetToolDescriptor,
 } from "../target/tool-manifest.js";
 import { canonicalJson } from "../provenance.js";
+import { isDefaultPiHarness, PI_HARNESS_SCOPE_PATHS } from "../domain/harness-surface.js";
 import {
 	assertTargetAuthoringSurfaceWithinLimits,
 	classifyTargetAuthoringResourcePath,
@@ -51,15 +53,15 @@ const MAX_METADATA_TEXT_BYTES = 64 * 1024;
 const GIT_MAX_BUFFER = 8 * 1024 * 1024;
 const MAX_METADATA_ITEMS = 64;
 
-/** The only path scope emitted by structured harness authoring. */
-export const HARNESS_AUTHORING_ALLOWED_PATHS = [
-	"AGENTS.md",
-	"manifest.yaml",
-	"skills/**",
-	"bin/**",
-	"tools/**",
-	"data/**",
-] as const;
+/**
+ * The only path scope emitted by structured harness authoring.
+ *
+ * Structured authoring speaks the canonical Pi vocabulary — instructions, a
+ * skill, a tool — so its scope is the Pi scope, and a Target that declares its
+ * own surface is refused before it ever compiles (see below) rather than
+ * quietly authored on the wrong files.
+ */
+export const HARNESS_AUTHORING_ALLOWED_PATHS = PI_HARNESS_SCOPE_PATHS;
 
 function utf8Bytes(value: string): number {
 	return Buffer.byteLength(value, "utf8");
@@ -669,6 +671,17 @@ export function compileHarnessAuthoringProposal(
 	if (target.gitSha !== baseTargetSha) throw new Error("resolved Target does not match the clean repository HEAD");
 	const manifest = TargetManifest.parse(target.manifest);
 	assertCanonicalDeclarations(manifest);
+	// Every intent this module compiles names a canonical Pi resource. On a
+	// Target whose manifest declares its own surface those words mean nothing —
+	// `instructions.replace` would rewrite an AGENTS.md the improvement loop is
+	// not allowed to change — so the refusal points at the tool that can.
+	const declaredHarness = harnessFilesOf(manifest);
+	if (!isDefaultPiHarness(declaredHarness)) {
+		throw new Error(
+			`this Target declares its own harness surface (${declaredHarness.join(", ")}); ` +
+			"structured authoring only speaks the canonical AGENTS.md/skills/tools layout — open a workshop instead",
+		);
+	}
 	const baseAuthoringContext = inspectTargetAuthoringContext({
 		repositoryDir,
 		expectedTarget: { id: manifest.id, gitSha: baseTargetSha },
