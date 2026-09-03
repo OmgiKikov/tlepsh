@@ -503,6 +503,20 @@ async function chooseModel(ctx: ExtensionContext, host: OnboardingHost, view: Wo
 }
 
 /**
+ * Whether the Target's own cases already call an evaluator this Target has not
+ * got. True for `templates/python-agent` straight after the model is chosen —
+ * one case is judged by prose and two are conversations — and false for a
+ * template whose cases need neither, which must not be told about a question it
+ * will never be asked.
+ */
+export function evaluatorsStillUnchosen(view: WorkbenchView): boolean {
+	const required = view.target.evaluatorRequirements;
+	const configured = view.target.evaluators;
+	if (!required || !configured) return false;
+	return (["judge", "simulatedUser"] as const).some((role) => required[role] && configured[role] === null);
+}
+
+/**
  * Walk a brand-new project to the point where describing the agent is the
  * only thing left. Returns the latest view, or null when the operator deferred.
  * Any cancellation leaves durable state untouched.
@@ -522,6 +536,13 @@ export async function runFirstRunOnboarding(
 		if (view.stage === "target-setup" && view.target.status === "bootstrap-required") {
 			view = await chooseModel(ctx, host, view);
 			if (!view) return null;
+			// A template ships its judge and simulated-user blocks on the same
+			// built-in placeholder the model block carries, and the operator has
+			// just replaced one of the three. Saying who picks the other two — and
+			// when — is one line; asking for them here would be two more dialogs
+			// before the agent has been described, and the answer would be a guess
+			// about cases nobody has written yet.
+			if (evaluatorsStillUnchosen(view)) ctx.ui.notify(t("onboarding.evaluators-later"), "info");
 		}
 		return view;
 	} catch (error) {
