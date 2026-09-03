@@ -1496,8 +1496,10 @@ export function deriveWorkbenchView(
 				inventory,
 				spec.status === "approved" && !inventory.verifiedApprovedSpecIds.has(spec.id) ? "unverified" : spec.status,
 			)),
-			...drafts.map((draft) => selection("corpus-draft", draft.id, `${draft.name} · ${draft.tasks.length} tasks`, inventory, draft.parentDraftId ? "revision" : "initial")),
-			...development.map((corpus) => selection("development-corpus", corpus.id, `${corpus.name} · ${corpus.taskCount} tasks`, inventory, inventory.developmentLineage.has(corpus.id) ? "reviewed" : "unbound")),
+			// The count bends with the operator's language: this label is read on
+			// the focus line, where `8 tasks` was one of seven English words.
+			...drafts.map((draft) => selection("corpus-draft", draft.id, `${draft.name} · ${plural(draft.tasks.length, "task")}`, inventory, draft.parentDraftId ? "revision" : "initial")),
+			...development.map((corpus) => selection("development-corpus", corpus.id, `${corpus.name} · ${plural(corpus.taskCount, "task")}`, inventory, inventory.developmentLineage.has(corpus.id) ? "reviewed" : "unbound")),
 			...evals.map((run) => selection("eval-run", run.evalRunId, `${run.summary.pass}/${run.summary.total} passed`, inventory, run.summary.error > 0 ? "inconclusive" : "complete")),
 			...proposals.map((proposal) => selection("proposal", proposal.record.runId, proposal.record.result.proposal?.summary ?? proposal.record.runId, inventory, proposal.status)),
 			...candidates.map((candidate) => selection(

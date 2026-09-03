@@ -336,6 +336,15 @@ describe("a workshop refuses every path outside the Harness scope", () => {
 			workshop.write({ path: "AGENTS.md", content: "# Workshop Target\n\nAnswer READY.\n" });
 			expect(() => workshop.compile({ summary: "Out of scope" }))
 				.toThrow(/workshop scope refuses evals\/extra\.jsonl/);
+
+			// And the refusal says the rule it actually enforces. A bare directory
+			// name is refused as surely as `evals/` is, so a sentence that listed
+			// `bin/**` among the allowed while refusing `bin` was a lie the
+			// operator read in English.
+			expect(() => workshop.read("bin")).toThrow(
+				/a workshop addresses AGENTS\.md and files inside skills\/, tools\/, bin\/, data\/ — name a file inside one of them/,
+			);
+			expect(() => workshop.read("bin")).not.toThrow(/bin\*\*/);
 		} finally {
 			workshop.dispose();
 		}

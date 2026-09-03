@@ -50,6 +50,25 @@ function text(value: unknown, max = 160): string {
 	return oneLine(JSON.stringify(value), max);
 }
 
+/**
+ * What the run will cost and how long it will take — or, once, that nothing
+ * comparable has run yet.
+ *
+ * Money and time are estimated apart and say "unknown" in the same words, so
+ * the first run of a project drew `Оценка неизвестно · сравнимых прогонов ещё
+ * не … · неизвестно · сравнимых прогонов ещё не …`: the same sentence twice,
+ * both halves overflowing the line. When neither is known there is one fact,
+ * and it is said once.
+ */
+function estimateLine(cost: unknown, time: unknown, paint: Paint): string {
+	const unknown = `${t("estimate.unknown")} ${t("estimate.nothing-comparable")}`;
+	const label = paint.dim(t("label.estimate"));
+	if (typeof cost === "string" && typeof time === "string" && cost === unknown && time === unknown) {
+		return `${label} ${paint.muted(t("estimate.nothing-comparable-alone"))}`;
+	}
+	return `${label} ${text(cost, 60)} ${paint.dim("·")} ${text(time, 60)}`;
+}
+
 function strings(value: unknown): string[] {
 	return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
@@ -224,7 +243,7 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 				`${paint.dim(t("label.spec"))} ${text(subject.spec, 96)}`,
 				`${paint.dim(t("label.basket"))} ${text(subject.basket, 96)}`,
 				`${paint.dim(t("label.run"))} ${text(subject.run, 96)}`,
-				`${paint.dim(t("label.estimate"))} ${text(subject.estimatedCost, 40)} ${paint.dim("·")} ${text(subject.estimatedTime, 40)}`,
+				estimateLine(subject.estimatedCost, subject.estimatedTime, paint),
 				"",
 				paint.dim(t("confirm.covers")),
 				...bullets(steps.map((step) => stepLabel(step)), paint),

@@ -455,6 +455,40 @@ describe("ru renders", () => {
 		expect(leakedEnglish(lines.join("\n"))).toEqual([]);
 	});
 
+	// The typed blocker, whole and in Russian, inside the one sentence the
+	// operator reads about a verification that did not run.
+	it("says why the verification did not start in Russian, whole", () => {
+		setLanguage("ru");
+		const view = makeView({ stage: "candidate-verification", headline: "Проверка кандидата" });
+		const lines = renderDecision({
+			kind: "apply-proposal",
+			message: "Proposal applied; automatic verification is blocked",
+			result: {
+				runId: "run-1",
+				branch: "ahde/candidate-1",
+				candidateSha: SHA_B,
+				proposalHash: "d".repeat(64),
+				verification: {
+					outcome: "blocked",
+					reason: "Candidate verification requires an evaluator-owned sealed holdout corpus. Get one first: request generate-holdout.",
+					reasonCode: { code: "blocker.sealed-exam-missing" },
+				},
+			},
+			view,
+		}, plainPaint);
+		// Whole, across as many lines as it needs; nothing about it is cut.
+		const said = lines.slice(2, -1).join(" ").replace(/\s+/g, " ").trim();
+		expect(said).toBe(
+			"Проверка не запустилась: у агента нет закрытого экзамена. " +
+				"Скажи «сгенерируй экзамен» — его напишет судья, или импортируй закрытый JSONL.",
+		);
+		const text = lines.join("\n");
+		expect(text).not.toContain("sealed holdout corpus");
+		// The typed refusal says it did not start; the label would say it twice.
+		expect(text).not.toContain("Автоматическая проверка не запустилась Проверка");
+		expect(leakedEnglish(text)).toEqual([]);
+	});
+
 	it("labels the Evidence Explorer table headers in Russian", () => {
 		setLanguage("ru");
 		expect([

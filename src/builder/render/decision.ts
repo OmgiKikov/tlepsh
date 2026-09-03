@@ -11,7 +11,8 @@ import { SEALED_GATE_POLICY } from "../../domain/comparison-gate.js";
 import { candidateStatusLabel, plural, t, verdictLabel } from "../../i18n.js";
 import { formatFlipRate, formatNoiseBand, renderCalibration } from "./calibration.js";
 import { regradeHeadline, renderRegrade } from "./regrade.js";
-import { oneLine, section, shortHash, shortSha } from "./format.js";
+import { oneLine, section, shortHash, shortSha, wrap } from "./format.js";
+import { blockedReasonText } from "../../workbench/errors.js";
 import type { Paint } from "./paint.js";
 import { nextStep, stageLabel } from "./stage.js";
 import { renderCandidate, renderTraces } from "./view.js";
@@ -287,8 +288,18 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 			}
 			const verification = result.result.verification;
 			if (verification?.outcome === "blocked") {
+				// Whole, wrapped, and in the operator's language where the refusal
+				// carries a code: this is the only account they get of why the
+				// verification the same confirmation funded did not run. A typed
+				// refusal opens by saying verification did not start, so the label
+				// belongs only to the raw sentence, which says only what is missing.
+				const reason = wrap(blockedReasonText(verification), 120, "  ");
+				const head = reason[0]?.trim() ?? "";
 				lines.push(
-					`${paint.warning(t("result.verification-blocked"))} ${oneLine(verification.reason, 240)}`,
+					verification.reasonCode
+						? paint.warning(head)
+						: `${paint.warning(t("result.verification-blocked"))} ${head}`,
+					...reason.slice(1),
 					nextLine(view, paint),
 				);
 				return lines;
@@ -332,15 +343,14 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 	}
 }
 
-function runHeadline(result: { evaluation: { summary: { pass: number; total: number } }; improvementBrief: { summary: { failureModeCount: number } } }): string {
-	return t("headline.run", {
-		passed: t("run.passed", { pass: result.evaluation.summary.pass, total: result.evaluation.summary.total }),
-		modes: plural(result.improvementBrief.summary.failureModeCount, "failure mode"),
-	});
+// The headline the host composed, not a second summary of the same numbers —
+// the same rule the candidate verdict has followed since the one-number lane.
+function runHeadline(result: { headline: string }): string {
+	return result.headline;
 }
 
 function startTestingHeadline(result: WorkbenchStartTestingResult): string {
-	if (result.evaluation) return runHeadline(result.evaluation);
+	if (result.headline) return result.headline;
 	return result.steps.map((step) => step.kind.replace(/-/g, " ")).join(" · ") || t("headline.nothing-to-do");
 }
 

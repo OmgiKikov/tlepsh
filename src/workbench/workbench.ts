@@ -1424,7 +1424,9 @@ export class AhdeWorkbench {
 		return {
 			kind: input.kind,
 			message: message || t("message.spec-approved-next"),
-			result: { steps, approvedSpecId, developmentCorpus, evaluation, pending },
+			// The run's own sentence, hoisted the way a ship hoists the candidate's:
+			// the Builder quotes one field whichever door the run came through.
+			result: { steps, headline: evaluation?.headline ?? null, approvedSpecId, developmentCorpus, evaluation, pending },
 			view,
 		};
 	}

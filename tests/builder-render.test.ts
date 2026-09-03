@@ -17,6 +17,7 @@ import {
 	bullets,
 	bytes,
 	clean,
+	headline,
 	joinNonEmpty,
 	labeled,
 	numbered,
@@ -31,7 +32,8 @@ import {
 } from "../src/builder/render/format.js";
 import { handoffLines } from "../src/builder/render/handoff.js";
 import { refusalCard } from "../src/builder/workbench-adapter.js";
-import { setLanguage } from "../src/i18n.js";
+import { setLanguage, t } from "../src/i18n.js";
+import { runResultLine } from "../src/application/measurement-line.js";
 import { renderImpact } from "../src/builder/render/impact.js";
 import { renderToolPermissions, toolPermissionsFromDiff } from "../src/builder/render/tool-permissions.js";
 import { fixtureLines, renderWorkshopCloseReview } from "../src/builder/render/workshop-close.js";
@@ -60,6 +62,8 @@ import {
 	applyPaint,
 	createTranscriptPresenter,
 	markerPaint,
+	continuationPrefix,
+	hangingWrap,
 	registerAhdeTranscriptRenderer,
 	renderTranscriptEntry,
 	stripMarkers,
@@ -81,6 +85,7 @@ import {
 	type WorkbenchReviewDetail,
 	type WorkbenchStage,
 	type WorkbenchTargetDetail,
+	type WorkbenchRunEvalResult,
 	type WorkbenchTracesDetail,
 	type WorkbenchView,
 } from "../src/workbench/types.js";
@@ -294,6 +299,22 @@ function makeTraces(
 		improvementBrief: makeBrief(brief),
 		evidence: { available: true, url: "http://127.0.0.1:4310/evidence/eval-1" },
 		...overrides,
+	};
+}
+
+/** The run-eval result: the traces the operator reads plus the host's own sentence. */
+function makeRun(
+	brief: Partial<WorkbenchImprovementBriefProjection> = {},
+	overrides: Partial<WorkbenchTracesDetail> = {},
+): WorkbenchRunEvalResult {
+	const traces = makeTraces(brief, overrides);
+	return {
+		headline: runResultLine({
+			pass: traces.evaluation.summary.pass,
+			total: traces.evaluation.summary.total,
+			failureModes: traces.improvementBrief.summary.failureModeCount,
+		}),
+		...traces,
 	};
 }
 
@@ -682,6 +703,45 @@ describe("renderStatus", () => {
 		expect(text).toContain("Warnings\n  • Credential missing\n  • Worktree dirty");
 		expect(text).toContain("Selected candidate candidate-1 · evaluated");
 		expect(text).not.toContain("run-2");
+	});
+
+	/**
+	 * The focus line used to print schema names — `approved-spec`,
+	 * `development-corpus`, `eval-run`, `proposal`, `candidate` — and, worse, the
+	 * focused run's own `0/24 passed` beside a panel that had just measured
+	 * 45 % → 67 %. The focus IS the baseline: the run an improvement is written
+	 * against, and choosing another clears the proposal and the candidate under
+	 * it. So the run is named, never measured; the measurement is the panel's.
+	 */
+	it("names each focused artifact with a noun, and the run without a number", () => {
+		const selections = [
+			{ kind: "approved-spec" as const, id: "spec-1", label: "Bank ombudsman", selected: true },
+			{ kind: "development-corpus" as const, id: "corpus-1", label: "ombudsman-main · 8 tasks", selected: true },
+			{ kind: "eval-run" as const, id: "erun_mtkpb3raquos69", label: "0/24 passed", selected: true },
+			{ kind: "proposal" as const, id: "run-9", label: "Added instructions", selected: true },
+			{ kind: "candidate" as const, id: "candidate-9", label: "run-9", selected: true },
+		];
+		const focus = renderStatus(makeView({ selections }), plainPaint).find((line) => line.startsWith("Selected"))!;
+		expect(focus).toBe(
+			"Selected description Bank ombudsman · basket ombudsman-main · 8 tasks · run erun_mtkpb3raquos69 · " +
+				"change Added instructions · candidate run-9",
+		);
+		// The stale number is gone, and no schema name reaches the operator.
+		expect(focus).not.toContain("0/24");
+		for (const name of ["approved-spec", "development-corpus", "eval-run", "proposal "]) {
+			expect(focus).not.toContain(name);
+		}
+
+		setLanguage("ru");
+		try {
+			const russian = renderStatus(makeView({ selections }), plainPaint).find((line) => line.startsWith("Выбрано"))!;
+			expect(russian).toBe(
+				"Выбрано описание Bank ombudsman · корзина ombudsman-main · 8 tasks · прогон erun_mtkpb3raquos69 · " +
+					"правка Added instructions · кандидат run-9",
+			);
+		} finally {
+			setLanguage(null);
+		}
 	});
 
 	it("surfaces the future ship blocker before a candidate is applied", () => {
@@ -1450,7 +1510,7 @@ describe("renderDecision", () => {
 	});
 
 	it("renders eval runs with the live trace link", () => {
-		const traces = makeTraces();
+		const traces = makeRun();
 		const lines = renderDecision(decision("run-eval", traces, "improvement-authoring"), tagPaint, { liveTraceUrl: "http://127.0.0.1:4310/live/abc" });
 		const text = lines.join("\n");
 		expect(lines[0]).toContain("<heading>Evaluation</heading>");
@@ -1461,7 +1521,7 @@ describe("renderDecision", () => {
 	});
 
 	it("renders both run-current resolutions", () => {
-		const asEval = renderDecision(decision("run-current", { resolvedAs: "run-eval", ...makeTraces() }, "improvement-authoring"), plainPaint, { liveTraceUrl: "http://127.0.0.1:4310/live/abc" });
+		const asEval = renderDecision(decision("run-current", { resolvedAs: "run-eval", ...makeRun() }, "improvement-authoring"), plainPaint, { liveTraceUrl: "http://127.0.0.1:4310/live/abc" });
 		expect(asEval[0]).toContain("Evaluation 6/10 passed");
 		expect(asEval).toContain("Live trace http://127.0.0.1:4310/live/abc · retained for 15 minutes");
 		expect(asEval[asEval.length - 1]).toBe(nextLine("improvement-authoring"));
@@ -1547,8 +1607,8 @@ describe("renderDecision", () => {
 			decision("configure-target", { targetId: "t", targetGitSha: SHA_A, receiptId: "r", credentialEnv: "K" }, "spec-design"),
 			decision("approve-spec", { approvedSpecId: "s", receiptId: "r" }, "corpus-design"),
 			decision("publish-corpus", { corpusId: "c", corpusHash: HASH, taskCount: 1, publicationReceiptId: "r", lineageHash: HASH }, "ready-to-evaluate"),
-			decision("run-eval", makeTraces(), "improvement-authoring"),
-			decision("run-current", { resolvedAs: "run-eval", ...makeTraces() }, "improvement-authoring"),
+			decision("run-eval", makeRun(), "improvement-authoring"),
+			decision("run-current", { resolvedAs: "run-eval", ...makeRun() }, "improvement-authoring"),
 			decision("run-current", { resolvedAs: "verify-candidate", outcome: "verified" as const, headline: candidateHeadline(makeCandidate().development, makeCandidate().sealedHoldout), screen: null, candidate: makeCandidate(), development: { verdict: "improved", scoreDelta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: false, gatePassed: false, verdict: null } }, "candidate-review"),
 			decision("apply-proposal", { runId: "r", branch: "b", candidateSha: SHA_B, proposalHash: HASH }, "candidate-verification"),
 			decision("discard-proposal", { runId: "r", receiptHash: HASH }, "improvement-authoring"),
@@ -1588,8 +1648,8 @@ describe("renderDecision · calibrate", () => {
 
 describe("decisionHeadline", () => {
 	it("summarises runs, verifications, and falls back to the one-line message", () => {
-		expect(decisionHeadline(decision("run-eval", makeTraces(), "improvement-authoring"))).toBe("6/10 passed · 1 failure mode");
-		expect(decisionHeadline(decision("run-current", { resolvedAs: "run-eval", ...makeTraces() }, "improvement-authoring"))).toBe("6/10 passed · 1 failure mode");
+		expect(decisionHeadline(decision("run-eval", makeRun(), "improvement-authoring"))).toBe("6/10 passed · 1 failure mode");
+		expect(decisionHeadline(decision("run-current", { resolvedAs: "run-eval", ...makeRun() }, "improvement-authoring"))).toBe("6/10 passed · 1 failure mode");
 		expect(decisionHeadline(decision("run-current", { resolvedAs: "verify-candidate", outcome: "verified" as const, headline: candidateHeadline(makeCandidate().development, makeCandidate().sealedHoldout), screen: null, candidate: makeCandidate(), development: { verdict: "improved", scoreDelta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"))).toBe("candidate evaluated · pass rate 60% → 80% (+20 pts, 95% CI +5 … +35) on 10 cases");
 		expect(decisionHeadline(decision("verify-candidate", { outcome: "verified" as const, headline: candidateHeadline(makeCandidate().development, makeCandidate().sealedHoldout), screen: null, candidate: makeCandidate(), development: { verdict: "improved", scoreDelta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"))).toBe("candidate evaluated · pass rate 60% → 80% (+20 pts, 95% CI +5 … +35) on 10 cases");
 		expect(decisionHeadline(decision("verify-candidate", { outcome: "verified" as const, headline: candidateHeadline(makeCandidate().development, makeCandidate().sealedHoldout), screen: null, candidate: makeCandidate(), development: { verdict: "improved", scoreDelta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: false, gatePassed: false, verdict: null } }, "candidate-review"))).toBe("candidate evaluated · pass rate 60% → 80% (+20 pts, 95% CI +5 … +35) on 10 cases");
@@ -1725,6 +1785,42 @@ describe("renderConfirmation", () => {
 		ephemeralTail(lines);
 		const single = renderConfirmation(makeConfirmation("run-eval", { taskCount: 1, target: {}, developmentCorpus: {} }), plainPaint);
 		expect(single[0]).toBe("Run 1 case × 1 repetition = 1 Target execution · each one calls the Target model");
+	});
+
+	/**
+	 * Money and time are estimated apart and say "unknown" in the same words,
+	 * so a project's first run drew `Оценка неизвестно · сравнимых прогонов ещё
+	 * не … · неизвестно · сравнимых прогонов ещё не …` — one sentence twice,
+	 * both halves overflowing the line.
+	 */
+	it("says once that nothing comparable has run, and keeps both halves when they are known", () => {
+		// The host words both halves in the operator's language, so the test asks
+		// for the same words `formatEstimatedCost`/`formatEstimatedTime` produce.
+		const estimate = (cost: string, time: string): string =>
+			renderConfirmation(makeConfirmation("start-testing", {
+				operation: "start-testing",
+				steps: ["publish-corpus", "run-eval"],
+				spec: "Bank ombudsman — already approved",
+				basket: "ombudsman-main · 8 cases",
+				run: "8 × 3 = 24 executions",
+				estimatedCost: cost,
+				estimatedTime: time,
+			}), plainPaint).find((line) => line.startsWith(t("label.estimate")))!;
+		const nothing = (): string => `${t("estimate.unknown")} ${t("estimate.nothing-comparable")}`;
+
+		expect(estimate(nothing(), nothing())).toBe("Estimate no comparable run yet");
+		expect(estimate("about $0.42 (based on 3 eval runs)", "about 4 minutes"))
+			.toBe("Estimate about $0.42 (based on 3 eval runs) · about 4 minutes");
+		// One half known is still two halves: only a pair of unknowns collapses.
+		expect(estimate("about $0.42 (based on 3 eval runs)", nothing()))
+			.toBe("Estimate about $0.42 (based on 3 eval runs) · unknown · nothing comparable has run yet");
+
+		setLanguage("ru");
+		try {
+			expect(estimate(nothing(), nothing())).toBe("Оценка сравнимых прогонов ещё не было");
+		} finally {
+			setLanguage(null);
+		}
 	});
 
 	it("prices the A/A calibration and says nothing is promoted", () => {
@@ -2168,6 +2264,56 @@ describe("transcript markers", () => {
 		expect(stripMarkers("plain")).toBe("plain");
 	});
 
+	/**
+	 * Pi wraps a long line at column 0. In a diff that eats the leading `+`, so
+	 * the tail of an added line reads as context and the whole change looks
+	 * corrupt; in a panel line it puts the continuation left of the label it
+	 * belongs to. Live session 6 read exactly that, four times.
+	 */
+	it("wraps with a hanging indent that keeps the diff marker column", () => {
+		const added = `  +${"слово ".repeat(20).trim()}`;
+		const wrapped = hangingWrap(added, 40);
+		expect(wrapped.length).toBeGreaterThan(1);
+		for (const line of wrapped) {
+			expect(line.startsWith("  +")).toBe(true);
+			expect(line.length).toBeLessThanOrEqual(40);
+		}
+		// Nothing is lost to the wrap: the words are all still there, in order.
+		expect(wrapped.map((line) => line.slice(3).trim()).join(" ")).toBe("слово ".repeat(20).trim());
+
+		const removed = hangingWrap(`  -${"x ".repeat(40).trim()}`, 40);
+		for (const line of removed) expect(line.startsWith("  -")).toBe(true);
+
+		// A line with no marker keeps its own indent and hangs under it.
+		const plain = hangingWrap(`    Дальше ${"слово ".repeat(20).trim()}`, 40);
+		expect(plain.length).toBeGreaterThan(1);
+		expect(plain[0]!.startsWith("    Дальше")).toBe(true);
+		for (const line of plain.slice(1)) expect(line.startsWith("      ")).toBe(true);
+		expect(continuationPrefix("  +added")).toBe("  +");
+		expect(continuationPrefix("  Дальше")).toBe("    ");
+		// A line that fits is left exactly as it is.
+		expect(hangingWrap("  +short", 40)).toEqual(["  +short"]);
+	});
+
+	it("wraps every persisted line at the width it is drawn at", () => {
+		const entry: TranscriptEntry = {
+			schemaVersion: 1,
+			title: "Diff",
+			tone: "info",
+			lines: [markerPaint.added(`+${"слово ".repeat(20).trim()}`)],
+		};
+		// A theme that adds no visible characters, which is what a real ANSI theme
+		// looks like once `stripTerminalSequences` has done its work.
+		const bare: Pick<Theme, "fg" | "bold"> = { fg: (_color, text) => text, bold: (text) => text };
+		const drawn = renderTranscriptEntry(entry, bare).render(48)
+			.map((line) => line.trimEnd())
+			.filter((line) => line.length > 0);
+		// The body is indented by two, so every continuation of the `+` line
+		// starts at the same three columns the first one did.
+		for (const line of drawn.slice(1)) expect(line.startsWith("  +")).toBe(true);
+		expect(drawn.length).toBeGreaterThan(2);
+	});
+
 	it("renders a persisted entry as a themed Text component", () => {
 		const entry: TranscriptEntry = {
 			schemaVersion: 1,
@@ -2176,7 +2322,6 @@ describe("transcript markers", () => {
 			lines: [markerPaint.bold("Title line"), "plain body"],
 		};
 		const component = renderTranscriptEntry(entry, fakeTheme);
-		expect(component).toBeInstanceOf(Text);
 		const rendered = component.render(200).join("\n");
 		expect(rendered).toContain("◆ Spec review");
 		expect(rendered).toContain("<b><accent>◆ Spec review</accent></b>");
@@ -2287,8 +2432,7 @@ describe("registerAhdeTranscriptRenderer", () => {
 		const renderer = registrations[0]?.renderer;
 		if (!renderer) throw new Error("renderer was not registered");
 		const component = invoke(renderer, { schemaVersion: 1, title: "Diagnosis", tone: "info", lines: [markerPaint.dim("Next"), "line"] });
-		expect(component).toBeInstanceOf(Text);
-		expect((component as Text).render(120).join("\n")).toContain("◆ Diagnosis");
+		expect(component?.render(120).join("\n")).toContain("◆ Diagnosis");
 	});
 
 	it("returns undefined for malformed entry data", () => {
@@ -2328,6 +2472,19 @@ describe("format helpers", () => {
 		expect(oneLine("😀😀😀😀", 3)).toBe("😀😀…");
 		expect(oneLine("日本語テキスト", 4)).toBe("日本語…");
 		expect(oneLine(`a${OSC}b`)).toBe("ab");
+	});
+
+	// The `◆` line is prose a person reads, so it ends on a word — never
+	// `sealed hol…` — and never on the separator the cut orphaned.
+	it("cuts a headline at a word boundary and drops the separator it orphaned", () => {
+		expect(headline("verification requires a sealed holdout corpus", 20)).toBe("verification…");
+		expect(headline("verification requires a sealed holdout corpus", 20)).not.toContain("requ…");
+		expect(headline("score 45% → 67% · pass rate 25% → 29% · exam passed", 40)).toBe("score 45% → 67% · pass rate 25% → 29%…");
+		expect(headline("short enough", 40)).toBe("short enough");
+		expect(headline("already dangling · ", 40)).toBe("already dangling");
+		// An unbroken run — an id, a hash — has no boundary to respect and still ends.
+		expect(headline("candidate-c23cbcc05b2d43728e413b90b47daaf2", 12)).toBe("candidate-c…");
+		expect(headline("anything", 0)).toBe("");
 	});
 
 	it("draws bars, percentages, and point deltas", () => {
@@ -2709,14 +2866,26 @@ describe("the workshop tool cards", () => {
 		expect(authored).not.toContain("0/0");
 		expect(authored).not.toContain("second line is not shown");
 
-		// A write refused by scope is a refusal, not a green “✓ wrote”.
+		// A write refused by scope is a refusal, not a green “✓ wrote”. The path
+		// is named once, by the card; the sentence beside it says the real rule,
+		// which is not "these five names exist" — `bin` was refused by a sentence
+		// that listed `bin/**` among the allowed.
 		const written = render(
 			"ahde_workshop_write",
-			thrown("workshop scope refuses evals/development.jsonl: only AGENTS.md, skills/**, tools/**, bin/**, data/** exist in a workshop"),
+			thrown(
+				"workshop scope refuses evals/development.jsonl: a workshop addresses AGENTS.md and files inside " +
+					"skills/, tools/, bin/, data/ — name a file inside one of them, not the directory itself",
+			),
 			{ path: "evals/development.jsonl" },
 			{ isError: true },
 		);
-		expect(written).toContain("workshop scope refuses evals/development.jsonl");
+		const said = written.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+		expect(said).toBe(
+			"✗ evals/development.jsonl There is no such path in the workshop. " +
+				"It holds AGENTS.md and whatever is inside skills/, tools/, bin/, data/ — name a file, for example bin/check_dbo.",
+		);
+		// The path is on the card once, never repeated by the sentence.
+		expect(written).not.toContain("workshop scope refuses");
 		expect(written).not.toContain("✓");
 	});
 
@@ -2760,13 +2929,22 @@ describe("a refusal on screen", () => {
 		).render(200).join("\n").trimEnd();
 	}
 
-	it("shows the first line of the reason the host gave, bounded", () => {
+	it("shows the reason the host gave, whole, wrapped, and bounded", () => {
 		expect(refusal("Target has uncommitted changes: notes.md. Commit them, then author.\n    at openWorkshop"))
 			.toBe("<error>✗</error> Target has uncommitted changes: notes.md. Commit them, then author.");
-		// Bounded: a runaway reason cannot push the transcript around.
-		const long = refusal(`${"x".repeat(400)}`);
-		expect([...long.split("</error> ")[1]!].length).toBe(140);
+		// A long reason wraps instead of losing its tail mid-word: `/tasks/3/gr…`
+		// is not a repair instruction and `for example bi…` is not advice.
+		const wordy = refusal(Array.from({ length: 40 }, (_, index) => `word${index}`).join(" "));
+		const lines = wordy.split("\n").map((line) => line.replace(/<[^>]+>/g, "").trimEnd());
+		expect(lines.length).toBeGreaterThan(1);
+		expect(wordy).toContain("word39");
+		expect(wordy).not.toContain("…");
+		for (const line of lines) expect(line.length).toBeLessThanOrEqual(124);
+		// Bounded: a runaway reason cannot push the transcript around, and an
+		// unbroken run with no word boundary in it still has to end.
+		const long = refusal("x".repeat(900));
 		expect(long).toContain("…");
+		expect(long.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim().length).toBeLessThanOrEqual(605);
 		// Nothing to say is still a card, never a crash.
 		expect(refusal("")).toBe("<error>✗</error>");
 	});
@@ -2783,6 +2961,17 @@ describe("a refusal on screen", () => {
 			// A message the host did not word itself is shown exactly as it came.
 			expect(refusal("tools/check_dbo is outside the declared Harness scope"))
 				.toContain("tools/check_dbo is outside the declared Harness scope");
+			// The workshop scope refusal, in Russian and true: it used to refuse
+			// `bin` in English while listing `bin/**` among the allowed.
+			const scope = refusal(
+				"workshop scope refuses bin: a workshop addresses AGENTS.md and files inside " +
+					"skills/, tools/, bin/, data/ — name a file inside one of them, not the directory itself",
+			).replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+			expect(scope).toBe(
+				"✗ Такого пути в мастерской нет. В ней лежат AGENTS.md и всё, что внутри skills/, tools/, bin/, data/ — " +
+					"назови файл, например bin/check_dbo.",
+			);
+			expect(scope).not.toContain("refuses bin");
 		} finally {
 			setLanguage(null);
 		}
@@ -2797,7 +2986,7 @@ describe("a refusal on screen", () => {
 		setLanguage("ru");
 		try {
 			expect(refusal("No compatible corpus draft is available"))
-				.toContain("Пока нет ни одного объекта: черновик тестов.");
+				.toContain("Сначала нужно вот что: черновик тестов — этого пока нет.");
 			expect(refusal("Several compatible development corpus artifacts exist; select one before continuing"))
 				.toContain("Подходит несколько: набор тестов — скажи, какой брать.");
 			expect(refusal("promote-candidate subject changed after confirmation; the decision is stale"))
@@ -2805,6 +2994,39 @@ describe("a refusal on screen", () => {
 			// An illegal transition arrives as two lines; the card shows the human one.
 			expect(refusal("Сейчас это не следующий шаг — Проверка описания. Скажи «ок» или что поправить\napply-proposal is not legal during spec-review; expected proposal-review."))
 				.toBe("<error>✗</error> Сейчас это не следующий шаг — Проверка описания. Скажи «ок» или что поправить");
+		} finally {
+			setLanguage(null);
+		}
+	});
+
+	/**
+	 * A rejected submission is a schema failure the model repairs, so every JSON
+	 * pointer survives — but the operator's half was the whole pointer list on
+	 * one line, cut at `/tasks/3/gr…`, in English.
+	 */
+	it("leads a rejected submission with a sentence and keeps every pointer on its own line", () => {
+		setLanguage("ru");
+		try {
+			const lines = refusalCard(
+				{
+					content: [{
+						type: "text",
+						text: "corpus-draft is invalid — /tasks/1/graders/0/argsContains: must be a string; " +
+							"/tasks/2/graders/0/argsContains: must be a string; /tasks/3/graders/0/argsContains: must be a string. " +
+							"Nested objects and arrays must be JSON values, not strings.",
+					}],
+					details: {},
+				} as unknown as Parameters<typeof refusalCard>[0],
+				fakeTheme as unknown as Theme,
+			).render(200).join("\n").split("\n").map((line) => line.replace(/<[^>]+>/g, "").trim()).filter(Boolean);
+			expect(lines[0]).toBe("✗ Не прошло проверку: черновик тестов. Ошибок в полях: 3");
+			expect(lines.slice(1)).toEqual([
+				"/tasks/1/graders/0/argsContains: must be a string",
+				"/tasks/2/graders/0/argsContains: must be a string",
+				"/tasks/3/graders/0/argsContains: must be a string",
+			]);
+			// Every pointer is here, whole: nothing ends in an ellipsis.
+			expect(lines.join(" ")).not.toContain("…");
 		} finally {
 			setLanguage(null);
 		}

@@ -9,7 +9,7 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import { decisionHeadline, renderDecision } from "./render/decision.js";
-import { oneLine } from "./render/format.js";
+import { oneLine, wrap } from "./render/format.js";
 import { themePaint } from "./render/paint.js";
 import { nextStep, stageLabel } from "./render/stage.js";
 import { renderDatasetCases, renderReview, renderView, viewTitle } from "./render/view.js";
@@ -91,7 +91,13 @@ export function refusalCard(
 		.map((line) => line.trim())
 		.find((line) => line.length > 0) ?? "";
 	const named = subject ? `${paint.bold(subject)} ` : "";
-	return card([`${paint.error("✗")} ${named}${oneLine(hostRefusal(reason), 140)}`]);
+	// A refusal is the operator's whole account of what did not happen, so it
+	// wraps instead of being cut: `name a file, for example bi…` is not advice,
+	// and a validation error cut at `/tasks/3/gr…` is not a repair instruction.
+	// Line breaks the host put in survive, so a list stays a list.
+	const said = hostRefusal(reason);
+	const [head, ...rest] = wrap([...said].length > 600 ? `${[...said].slice(0, 599).join("")}…` : said, 120);
+	return card([`${paint.error("✗")} ${named}${head ?? ""}`, ...rest.map((line) => `  ${line}`)]);
 }
 
 /**
@@ -115,8 +121,31 @@ function hostRefusal(reason: string): string {
 	}
 	const running = /^running is not possible during ([a-z-]+)/.exec(reason);
 	if (running) return stageRefusal(running[1] ?? "");
+	// A workshop refusal already has the offending path bolded beside it on the
+	// card, so the operator's half never repeats it.
+	if (/^workshop scope refuses .*: a workshop addresses AGENTS\.md/.test(reason)) {
+		return t("refusal.workshop-out-of-scope", { scope: WORKSHOP_SCOPE_WORDS });
+	}
+	if (/^workshop scope refuses .*: a workshop path is a safe relative POSIX path/.test(reason)) {
+		return t("refusal.workshop-unsafe-path");
+	}
+	// A rejected submission is a schema failure the MODEL repairs, so the
+	// JSON pointers stay exactly as they are — one per line, all of them. What
+	// the operator gets is the sentence in front of them: which artifact, and
+	// how many fields, instead of a pointer list cut at `/tasks/3/gr…`.
+	const invalid = /^(\S+) is invalid — ([\s\S]+?)\. Nested objects and arrays must be JSON values, not strings\.$/.exec(reason);
+	if (invalid) {
+		const pointers = (invalid[2] ?? "").split(";").map((item) => item.trim()).filter((item) => item.length > 0);
+		return [
+			t("refusal.submission-invalid", { kind: artifactLabel(invalid[1] ?? ""), fields: pointers.length }),
+			...pointers,
+		].join("\n");
+	}
 	return reason;
 }
+
+/** The four directories a workshop addresses, as one phrase for the refusal. */
+const WORKSHOP_SCOPE_WORDS = "skills/, tools/, bin/, data/";
 
 /** The Workbench's own artifact words, in the operator's vocabulary. */
 function artifactLabel(kind: string): string {

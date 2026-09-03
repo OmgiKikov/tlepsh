@@ -29,6 +29,7 @@ import {
 } from "../src/provenance.js";
 import { writeJsonArtifact } from "../src/storage/artifacts.js";
 import { candidateHeadline } from "../src/workbench/resolution.js";
+import { runResultLine } from "../src/application/measurement-line.js";
 import {
 	AHDE_MODEL_NOTE_TYPE,
 	AHDE_TRANSCRIPT_ENTRY_TYPE,
@@ -56,6 +57,7 @@ import type {
 	WorkbenchReviewDetail,
 	WorkbenchSealedChoice,
 	WorkbenchStage,
+	WorkbenchRunEvalResult,
 	WorkbenchTracesDetail,
 	WorkbenchView,
 } from "../src/workbench/types.js";
@@ -150,6 +152,19 @@ function candidateSummary(overrides: Partial<WorkbenchCandidateSummary> = {}): W
 	// The host composes the headline from the same evidence; a fixture that
 	// hand-wrote one could let a panel and its headline drift apart in a test.
 	return { ...summary, headline: summary.headline || candidateHeadline(summary.development, summary.sealedHoldout) };
+}
+
+/** The run-eval result: the traces the operator reads plus the host's own sentence. */
+function runResult(): WorkbenchRunEvalResult {
+	const traces = tracesDetail();
+	return {
+		headline: runResultLine({
+			pass: traces.evaluation.summary.pass,
+			total: traces.evaluation.summary.total,
+			failureModes: traces.improvementBrief.summary.failureModeCount,
+		}),
+		...traces,
+	};
 }
 
 function tracesDetail(): WorkbenchTracesDetail {
@@ -347,7 +362,7 @@ function defaultDecision(input: WorkbenchDecisionInput): WorkbenchDecisionResult
 	const at = "2026-08-28T10:05:00.000Z";
 	switch (input.kind) {
 		case "run-current":
-			return decision("run-current", { resolvedAs: "run-eval", ...tracesDetail() }, viewAt("improvement-authoring"));
+			return decision("run-current", { resolvedAs: "run-eval", ...runResult() }, viewAt("improvement-authoring"));
 		case "calibrate":
 			return decision("calibrate", {
 				candidateId: "calibration-1",
@@ -443,7 +458,8 @@ function defaultDecision(input: WorkbenchDecisionInput): WorkbenchDecisionResult
 				],
 				approvedSpecId: "spec-1",
 				developmentCorpus: { id: "corpus-1", taskCount: 3 },
-				evaluation: tracesDetail(),
+				headline: runResult().headline,
+				evaluation: runResult(),
 				pending: null,
 			}, viewAt("improvement-authoring"));
 		default:
@@ -775,7 +791,9 @@ describe("Builder Pi slash commands", () => {
 			["AHDE · AGENTS.md", "info"],
 		]);
 		const text = output.text();
-		expect(text).toContain("AHDE · Ready to run");
+		// The panel already carries `AHDE · Ready to run` as its title; the body
+		// under it used to say the same words again, one line lower.
+		expect(text).not.toContain("AHDE · Ready to run");
 		expect(text).toContain("Target target-demo @ aaaaaaaaaa · anthropic/claude-sonnet-4 ✓");
 		expect(text).toContain("Next Describe what the agent still needs built, or say “tests” to run them");
 		expect(text).toContain("Target not created yet");
@@ -865,7 +883,8 @@ describe("Builder Pi slash commands", () => {
 				],
 				approvedSpecId: "spec-1",
 				developmentCorpus: { id: "corpus-1", taskCount: 3 },
-				evaluation: tracesDetail(),
+				headline: runResult().headline,
+				evaluation: runResult(),
 				pending: null,
 			}, viewAt("improvement-authoring")),
 		});

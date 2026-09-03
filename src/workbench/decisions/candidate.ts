@@ -11,7 +11,7 @@ import { listCorpora, loadCorpus, type CorpusMetadata, type CorpusRef } from "..
 import { candidateStatus } from "../../domain/candidate.js";
 import { hashValue } from "../../provenance.js";
 import { recordCandidateAbandonment } from "../candidate-abandonment.js";
-import { WorkbenchDecisionDeclinedError, WorkbenchStaleDecisionError } from "../errors.js";
+import { WorkbenchDecisionDeclinedError, WorkbenchStaleDecisionError, WorkbenchTypedRefusalError } from "../errors.js";
 import { candidateSummary, requireCandidate, requireDevelopmentCorpus, requireProposal, resolveOne } from "../resolution.js";
 import { abortIfRequested, actorId, exactSame } from "../workbench.js";
 import { CandidateExperimentError } from "../../application/candidate-experiment.js";
@@ -58,9 +58,13 @@ export async function decideVerifyCandidate(
 		throw new Error("evaluator-owned sealed holdout inventory is unavailable; identities remain hidden");
 	}
 	if (sealed.length === 0) {
-		throw new Error(
+		// Minted twice: the English sentence is what the model reads and what
+		// scripts match on; the code is what the operator reads, in their own
+		// language, whole — this refusal used to reach them as `sealed hol…`.
+		throw new WorkbenchTypedRefusalError(
 			"Candidate verification requires an evaluator-owned sealed holdout corpus. Get one first: request generate-holdout " +
 			"(the Target's judge writes it from the Spec; the operator's /holdout does the same) or import a sealed JSONL; then verify again.",
+			{ code: "blocker.sealed-exam-missing" },
 		);
 	}
 	const choice = await gate.selectSealed({ title: "Select evaluator-only sealed holdout", options: sealed.map((corpus, index) => ({ label: `Holdout ${index + 1} · ${corpus.name}`, taskCount: corpus.taskCount })) }, options.signal);

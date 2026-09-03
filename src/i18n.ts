@@ -1509,7 +1509,7 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"blocker.development-corpora": "{baskets} exist — pick the one this cycle uses.",
 	"blocker.basket-not-runnable": "The published test cases cannot run on the agent as it is now.",
 	"blocker.integrity": "Something on disk no longer matches its record, so nothing can be decided until it is repaired.",
-	"refusal.nothing-of-kind": "There is no {kind} to work with yet.",
+	"refusal.nothing-of-kind": "Nothing to work with yet: there is no {kind}.",
 	"refusal.pick-one": "Several {kind} fit — say which one to use.",
 	"refusal.stale": "What you confirmed changed while you were reading it. Look again, then repeat.",
 	"refusal.not-now": "Not the next step here — {stage}. {next}",
@@ -1550,6 +1550,20 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"confirm.start-testing.judge": "{model} (not the agent's model) · key {env}",
 	"mode.title.judge-abstained": "The judge could not tell",
 	"mode.fact.judge-abstained": "{failed} matching observation(s) were failed by a judge that said it could not decide, never by a check the agent missed",
+	// lane: smoke-fixes
+	"blocker.sealed-exam-missing": "Verification did not start: the agent has no sealed exam. Say “generate an exam” and the judge writes one, or import a sealed JSONL.",
+	"refusal.workshop-out-of-scope": "There is no such path in the workshop. It holds AGENTS.md and whatever is inside {scope} — name a file, for example bin/check_dbo.",
+	"refusal.workshop-unsafe-path": "That is not a path the workshop can take: a plain relative path, no “..”, no drive letter, no backslashes.",
+	"refusal.submission-invalid": "Did not pass validation: {kind}. Fields at fault: {fields}",
+	// The focus line's own lexicon: short nouns, because they sit six to a line.
+	"selection.spec-draft": "draft",
+	"selection.approved-spec": "description",
+	"selection.corpus-draft": "draft basket",
+	"selection.development-corpus": "basket",
+	"selection.eval-run": "run",
+	"selection.proposal": "change",
+	"selection.candidate": "candidate",
+	"estimate.nothing-comparable-alone": "no comparable run yet",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2788,7 +2802,7 @@ const ru: Record<MessageKey, string> = {
 	"blocker.development-corpora": "Есть {baskets} — выбери, какой берём в этот цикл.",
 	"blocker.basket-not-runnable": "Опубликованные тесты не прогоняются на агенте в его нынешнем виде.",
 	"blocker.integrity": "Что-то на диске больше не сходится со своей записью — пока это не починено, решать ничего нельзя.",
-	"refusal.nothing-of-kind": "Пока нет ни одного объекта: {kind}.",
+	"refusal.nothing-of-kind": "Сначала нужно вот что: {kind} — этого пока нет.",
 	"refusal.pick-one": "Подходит несколько: {kind} — скажи, какой брать.",
 	"refusal.stale": "То, что ты подтвердил, изменилось, пока ты читал. Посмотри заново и повтори.",
 	"refusal.not-now": "Сейчас это не следующий шаг — {stage}. {next}",
@@ -2826,6 +2840,19 @@ const ru: Record<MessageKey, string> = {
 	"confirm.start-testing.judge": "{model} (не модель агента) · ключ {env}",
 	"mode.title.judge-abstained": "Судья не смог решить",
 	"mode.fact.judge-abstained": "совпадающих наблюдений провалено: {failed}, и все — судьёй, который сам сказал, что решить не может, а не проверкой, которую агент не прошёл",
+	// lane: smoke-fixes
+	"blocker.sealed-exam-missing": "Проверка не запустилась: у агента нет закрытого экзамена. Скажи «сгенерируй экзамен» — его напишет судья, или импортируй закрытый JSONL.",
+	"refusal.workshop-out-of-scope": "Такого пути в мастерской нет. В ней лежат AGENTS.md и всё, что внутри {scope} — назови файл, например bin/check_dbo.",
+	"refusal.workshop-unsafe-path": "Такой путь мастерская не примет: только обычный относительный путь, без «..», без буквы диска и без обратных слэшей.",
+	"refusal.submission-invalid": "Не прошло проверку: {kind}. Ошибок в полях: {fields}",
+	"selection.spec-draft": "черновик",
+	"selection.approved-spec": "описание",
+	"selection.corpus-draft": "черновик корзины",
+	"selection.development-corpus": "корзина",
+	"selection.eval-run": "прогон",
+	"selection.proposal": "правка",
+	"selection.candidate": "кандидат",
+	"estimate.nothing-comparable-alone": "сравнимых прогонов ещё не было",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

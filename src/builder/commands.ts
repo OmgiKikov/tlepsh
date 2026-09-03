@@ -474,7 +474,7 @@ export function registerAhdeBuilderCommands(
 			return null;
 		}
 		if (view.detail?.aspect !== "traces") {
-			presenter.show(ctx, { title: viewTitle(view), tone: "warning", lines: renderStatus(view, markerPaint) });
+			presenter.show(ctx, { title: viewTitle(view), tone: "warning", lines: renderStatus(view, markerPaint, { heading: false }) });
 			return null;
 		}
 		return view.detail.content;
@@ -986,7 +986,7 @@ export function registerAhdeBuilderCommands(
 	): Promise<void> => {
 		const view = await workbench.view({ aspect: "traces" });
 		if (view.detail?.aspect !== "traces") {
-			presenter.show(ctx, { title: viewTitle(view), tone: "warning", lines: renderStatus(view, markerPaint) });
+			presenter.show(ctx, { title: viewTitle(view), tone: "warning", lines: renderStatus(view, markerPaint, { heading: false }) });
 			ctx.ui.notify(t("cmd.nothing-to-fix", { next: nextStep(view) }), "info");
 			return;
 		}
@@ -1238,7 +1238,7 @@ export function registerAhdeBuilderCommands(
 			noArguments("status", args);
 			await prepare(ctx, "status");
 			const view = await workbench.view({ aspect: "summary" });
-			presenter.show(ctx, { title: viewTitle(view), tone: view.blockers.length > 0 ? "warning" : "info", lines: renderStatus(view, markerPaint) });
+			presenter.show(ctx, { title: viewTitle(view), tone: view.blockers.length > 0 ? "warning" : "info", lines: renderStatus(view, markerPaint, { heading: false }) });
 		},
 	});
 
@@ -1316,7 +1316,7 @@ export function registerAhdeBuilderCommands(
 			const view = await workbench.view({ aspect: "review" });
 			const lines = view.detail?.aspect === "review"
 				? renderReview(view.detail.content, markerPaint)
-				: renderStatus(view, markerPaint);
+				: renderStatus(view, markerPaint, { heading: false });
 			presenter.show(ctx, { title: viewTitle(view), tone: view.blockers.length > 0 ? "warning" : "info", lines });
 			await offerReviewActions(ctx, view, signal);
 		},
@@ -1400,7 +1400,7 @@ export function registerAhdeBuilderCommands(
 			const view = await workbench.view({ aspect: "target", ...(resourcePath ? { resourcePath } : {}) });
 			const lines = view.detail?.aspect === "target"
 				? renderTarget(view.detail.content, markerPaint)
-				: renderStatus(view, markerPaint);
+				: renderStatus(view, markerPaint, { heading: false });
 			presenter.show(ctx, { title: t("panel.title", { detail: resourcePath ? oneLine(resourcePath, 60) : t("panel.target") }), tone: "info", lines });
 		},
 	});
