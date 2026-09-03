@@ -38,6 +38,8 @@ export * from "./diagnosis.js";
 export * from "./domain/candidate.js";
 export * from "./domain/comparison-gate.js";
 export * from "./domain/judge-agreement.js";
+export * from "./domain/kb.js";
+export * from "./domain/tokens.js";
 export * from "./eval.js";
 export * from "./evidence/server.js";
 export * from "./execution-policy.js";
@@ -52,6 +54,7 @@ export * from "./serve/index.js";
 export * from "./storage/artifacts.js";
 export * from "./spec.js";
 export * from "./target/container-backend.js";
+export * from "./target/kb-tool.js";
 export * from "./target/runtime.js";
 export {
 	TARGET_FEEDBACK_SHORTCUTS,

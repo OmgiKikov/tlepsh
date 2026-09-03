@@ -103,6 +103,12 @@ it decides.
    reproduce before cache reuse, baseline reuse, exact snapshot selection, or
    promotion. Setup failure or attestation drift is an infrastructure error.
    Missing confinement is recorded honestly and is never promotable.
+   A declared `data/kb` turns on the host's in-process `kb_search`, whose only
+   readable bytes are the run's own workspace copy of that directory. Its chunk
+   index is setup-derived in exactly this sense — built once per runtime
+   creation from the snapshot, by a versioned chunker whose geometry is part of
+   the hash — so the index hash is folded into the same prepared-home identity.
+   A Target with no knowledge base folds in nothing and its hash is unchanged.
 18. Initial Target id/model configuration is a one-time host-confirmed bootstrap
     commit over an exact clean scaffold. Builder receives only the credential
     variable name; the host injects the selected value into a memory-only Target
