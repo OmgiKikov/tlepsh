@@ -1573,6 +1573,27 @@ describe("renderDecision", () => {
 		expect(noLive).not.toContain("Live trace");
 	});
 
+	it("ends a run with one next step, in one wording", () => {
+		// Session 6 printed two: `Дальше скажи «почини первую проблему» (или
+		// назови режим) …` from the diagnosis panel, then `Дальше Скажи «исправь
+		// первую проблему» (Разбор)` from the decision — one act, two verbs.
+		const run = decision("run-eval", makeRun(), "improvement-authoring");
+		const lines = renderDecision(run, plainPaint, { liveTraceUrl: "http://127.0.0.1:4310/live/abc" });
+		expect(lines.filter((line) => line.startsWith("Next"))).toHaveLength(1);
+		expect(lines[lines.length - 1]).toBe(nextLine("improvement-authoring"));
+		// The status block already carries one, so the traces panel under it does not.
+		const viewed = renderView({ ...makeView({ stage: "improvement-authoring" }), detail: { aspect: "traces", content: makeRun() } }, plainPaint);
+		expect(viewed.filter((line) => line.startsWith("Next"))).toHaveLength(1);
+		// Opened on its own, the diagnosis panel is the only thing on screen and
+		// keeps its own — in the same words the stage's next step uses.
+		const alone = renderTraces(makeRun(), plainPaint);
+		expect(alone.filter((line) => line.startsWith("Next"))).toHaveLength(1);
+		setLanguage("ru");
+		expect(renderTraces(makeRun(), plainPaint).at(-1)).toContain("исправь первую проблему");
+		expect(nextStep(makeView({ stage: "improvement-authoring" }))).toContain("исправь первую проблему");
+		setLanguage(null);
+	});
+
 	it("renders both run-current resolutions", () => {
 		const asEval = renderDecision(decision("run-current", { resolvedAs: "run-eval", ...makeRun() }, "improvement-authoring"), plainPaint, { liveTraceUrl: "http://127.0.0.1:4310/live/abc" });
 		expect(asEval[0]).toContain("Evaluation 6/10 passed");

@@ -658,7 +658,20 @@ export function renderEvaluationSummary(
 }
 
 /** Diagnosis screen shared by /traces and the post-run summary. */
-export function renderTraces(content: WorkbenchTracesDetail, paint: Paint): string[] {
+export interface RenderTracesOptions {
+	/**
+	 * Whether the panel closes with its own `Next` line.
+	 *
+	 * False wherever the surface around it already prints one: a decision ends
+	 * with the stage's next step, and `renderView` puts the status block above
+	 * this one. Session 6 showed both at once — `Дальше скажи «исправь первую
+	 * проблему» (или назови режим) — подготовлю точную правку` and, two lines
+	 * later, `Дальше Скажи «исправь первую проблему» (Разбор)`.
+	 */
+	next?: boolean;
+}
+
+export function renderTraces(content: WorkbenchTracesDetail, paint: Paint, options: RenderTracesOptions = {}): string[] {
 	const brief = content.improvementBrief;
 	const evaluation = content.evaluation;
 	const lines = [
@@ -697,9 +710,12 @@ export function renderTraces(content: WorkbenchTracesDetail, paint: Paint): stri
 		lines.push(paint.success(`  ${t("diagnosis.healthy")}`));
 	}
 	lines.push(`${paint.dim(t("label.evidence"))} ${content.evidence.available ? paint.link(content.evidence.url) : paint.muted(t("diagnosis.no-explorer"))}`);
-	if (brief.proposalEligible) lines.push(`${paint.dim(t("label.next"))} ${t("diagnosis.next.fix")}`);
-	else if (brief.status === "healthy") lines.push(`${paint.dim(t("label.next"))} ${t("diagnosis.next.harder")}`);
-	else lines.push(`${paint.dim(t("label.next"))} ${t("diagnosis.next.repair")}`);
+	if (options.next !== false) {
+		const next = brief.proposalEligible
+			? "diagnosis.next.fix"
+			: brief.status === "healthy" ? "diagnosis.next.harder" : "diagnosis.next.repair";
+		lines.push(`${paint.dim(t("label.next"))} ${t(next)}`);
+	}
 	return lines;
 }
 
@@ -961,7 +977,8 @@ export function renderView(view: WorkbenchView, paint: Paint, options: RenderRev
 	const detail = view.detail.aspect === "review"
 		? renderReview(view.detail.content, paint, options)
 		: view.detail.aspect === "traces"
-		? renderTraces(view.detail.content, paint)
+		// The status block above already ends with the next step.
+		? renderTraces(view.detail.content, paint, { next: false })
 		: view.detail.aspect === "dataset"
 		? renderDataset(view.detail.content, paint)
 		: view.detail.aspect === "history"

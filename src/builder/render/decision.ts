@@ -27,7 +27,8 @@ function nextLine(view: WorkbenchView, paint: Paint): string {
 }
 
 function runLines(result: Extract<WorkbenchDecisionResult, { kind: "run-eval" }>["result"], paint: Paint, options: RenderDecisionOptions): string[] {
-	const lines = renderTraces(result, paint);
+	// One `Next` per screen: `renderDecision` closes with the stage's own.
+	const lines = renderTraces(result, paint, { next: false });
 	if (options.liveTraceUrl) lines.push(`${paint.dim(t("label.live-trace"))} ${paint.link(options.liveTraceUrl)} ${paint.dim(t("result.retained"))}`);
 	return lines;
 }
