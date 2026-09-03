@@ -501,6 +501,49 @@ async function createTarget(ctx: ExtensionContext, host: OnboardingHost, view: W
 	return result.view;
 }
 
+/**
+ * A model id the operator typed, resolved against the trusted host catalog.
+ *
+ * The selector shows nine rows of a catalog that holds hundreds, alphabetically,
+ * with no filter and no scroll — Pi's `ui.select` has neither — so in session 7
+ * `qwen/qwen3.5-9b` was unreachable and the operator had to leave the dialog and
+ * dictate the name to the Builder, which cost a turn and a second question about
+ * the id. Typing it is now an answer the host itself resolves.
+ *
+ * Two readings of one string, in order: `openrouter/qwen/qwen3.5-9b` is a
+ * provider and an id, and `qwen/qwen3.5-9b` is one id under a provider this
+ * machine already has. Null means the catalog does not hold it; the host says so
+ * and nothing is written.
+ */
+export function resolveTypedModel(
+	ctx: Pick<ExtensionContext, "model" | "modelRegistry">,
+	typed: string,
+): TargetModelSelection | null {
+	const text = typed.trim().replace(/^\/+|\/+$/g, "").trim();
+	if (!text) return null;
+	const candidates: { provider: string; modelId: string }[] = [];
+	const slash = text.indexOf("/");
+	if (slash > 0) candidates.push({ provider: text.slice(0, slash), modelId: text.slice(slash + 1) });
+	const providers = [ctx.model?.provider, ...hostModelCatalog(ctx).models.map((entry) => entry.provider)];
+	for (const provider of providers) {
+		if (provider) candidates.push({ provider, modelId: text });
+	}
+	for (const candidate of candidates) {
+		if (!candidate.provider || !candidate.modelId) continue;
+		let resolved;
+		try {
+			resolved = ctx.modelRegistry.find(candidate.provider, candidate.modelId);
+		} catch {
+			resolved = undefined;
+		}
+		if (resolved) {
+			const parsed = TargetModelSelectionSchema.safeParse(candidate);
+			if (parsed.success) return parsed.data;
+		}
+	}
+	return null;
+}
+
 async function chooseModel(ctx: ExtensionContext, host: OnboardingHost, view: WorkbenchView): Promise<WorkbenchView | null> {
 	const choices = modelChoices(ctx);
 	if (choices.length === 0) return null;
@@ -509,8 +552,17 @@ async function chooseModel(ctx: ExtensionContext, host: OnboardingHost, view: Wo
 		[...choices.map((choice) => choice.label), OTHER_MODEL()],
 	);
 	const choice = choices.find((item) => item.label === selected);
-	if (!choice) return null;
-	const selection = TargetModelSelectionSchema.parse(choice.selection);
+	let selection: TargetModelSelection | null = choice ? TargetModelSelectionSchema.parse(choice.selection) : null;
+	if (!choice && selected === OTHER_MODEL()) {
+		const typed = await ctx.ui.input(t("onboarding.model-id-ask"));
+		if (typed === undefined) return null;
+		selection = resolveTypedModel(ctx, typed);
+		if (!selection) {
+			ctx.ui.notify(t("onboarding.model-unknown", { model: oneLine(typed.trim(), 80) }), "warning");
+			return null;
+		}
+	}
+	if (!selection) return null;
 	const apiKeyEnv = await selectTargetCredentialEnvironment(ctx, selection);
 	const result = await host.workbench.decide(
 		{

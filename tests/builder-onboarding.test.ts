@@ -14,6 +14,7 @@ import {
 	evaluatorsStillUnchosen,
 	hostDefaultJudge,
 	hostModelCatalog,
+	resolveTypedModel,
 	targetIdFromDirectory,
 	runFirstRunOnboarding,
 	targetModelResolver,
@@ -164,6 +165,48 @@ describe("the default judge", () => {
 			id: "glm-5.3",
 			apiKeyEnv: "OPENROUTER_API_KEY",
 		});
+	});
+});
+
+/**
+ * Pi's `ui.select` has neither a filter nor a scroll, so the nine rows it
+ * shows are the whole reachable catalog. In session 7 `qwen/qwen3.5-9b` was
+ * not among them and the operator had to leave the dialog and dictate the name
+ * to the Builder — a turn, and a second question about the id.
+ */
+describe("a model id the operator types", () => {
+	const catalogRegistry = (known: { provider: string; id: string }[], builder?: { provider: string; id: string }) => ({
+		...registry({
+			available: known,
+			find: (provider, modelId) =>
+				known.find((entry) => entry.provider === provider && entry.id === modelId),
+		}),
+		...(builder ? { model: builder } : {}),
+	} as unknown as Pick<ExtensionContext, "model" | "modelRegistry">);
+
+	it("reads a fully qualified id as a provider and an id", () => {
+		const ctx = catalogRegistry([{ provider: "openrouter", id: "qwen/qwen3.5-9b" }]);
+		expect(resolveTypedModel(ctx, "openrouter/qwen/qwen3.5-9b"))
+			.toEqual({ provider: "openrouter", modelId: "qwen/qwen3.5-9b" });
+	});
+
+	it("reads a bare id under a provider this machine already has", () => {
+		const ctx = catalogRegistry(
+			[{ provider: "openrouter", id: "qwen/qwen3.5-9b" }],
+			{ provider: "openrouter", id: "moonshotai/kimi-k2.6" },
+		);
+		// `qwen/` is not a provider here; the whole string is one id.
+		expect(resolveTypedModel(ctx, "qwen/qwen3.5-9b"))
+			.toEqual({ provider: "openrouter", modelId: "qwen/qwen3.5-9b" });
+		expect(resolveTypedModel(ctx, "  openrouter/qwen/qwen3.5-9b  "))
+			.toEqual({ provider: "openrouter", modelId: "qwen/qwen3.5-9b" });
+	});
+
+	it("resolves nothing the catalog does not hold, and never guesses", () => {
+		const ctx = catalogRegistry([{ provider: "openrouter", id: "qwen/qwen3.5-9b" }]);
+		expect(resolveTypedModel(ctx, "openrouter/qwen/qwen4")).toBeNull();
+		expect(resolveTypedModel(ctx, "")).toBeNull();
+		expect(resolveTypedModel(ctx, "   /  ")).toBeNull();
 	});
 });
 
@@ -509,4 +552,146 @@ describe("the evaluators the first run does not ask about", () => {
 		expect(notes).toEqual([{ message: t("onboarding.evaluators-later"), tone: "info" }]);
 		delete process.env.OPENROUTER_API_KEY;
 	});
+});
+
+/**
+ * The two things that must be true right after the door closes: the operator
+ * can reach a model the nine-row selector never shows, and the sentence that
+ * promises the judge question is actually said.
+ */
+describe("the questions after the door closes", () => {
+	function machine(options: { answers: (string | undefined)[]; adopted: boolean; dir: string }) {
+		const asked: { question: string; choices?: string[] }[] = [];
+		const notes: { message: string; tone: string }[] = [];
+		const decided: { kind: string; [key: string]: unknown }[] = [];
+		const queue = [...options.answers];
+		const known = [{ provider: "openrouter", id: "moonshotai/kimi-k2.6" }, { provider: "openrouter", id: "qwen/qwen3.5-9b" }];
+		const ctx = {
+			model: { provider: "openrouter", id: "moonshotai/kimi-k2.6" },
+			modelRegistry: {
+				getAvailable: () => known,
+				hasConfiguredAuth: () => true,
+				find: (provider: string, modelId: string) => {
+					const found = known.find((entry) => entry.provider === provider && entry.id === modelId);
+					return found ? { ...found, baseUrl: "https://openrouter.invalid/api/v1" } : undefined;
+				},
+			},
+			ui: {
+				select: vi.fn(async (question: string, choices: string[]) => {
+					asked.push({ question, choices });
+					return queue.shift();
+				}),
+				input: vi.fn(async (question: string) => {
+					asked.push({ question });
+					return queue.shift();
+				}),
+				notify: vi.fn((message: string, tone: string) => {
+					notes.push({ message, tone });
+				}),
+			},
+		} as unknown as ExtensionContext;
+		const bootstrap = {
+			stage: "target-setup",
+			target: { status: "bootstrap-required" },
+			project: { directory: "agent" },
+			blockers: [],
+			warnings: [],
+			headline: "",
+		} as unknown as WorkbenchView;
+		// What an adopted Target's view says: no judge, no simulated user, and no
+		// case declaring that it needs either — the dataset is still the
+		// placeholder the adoption wrote.
+		const settled = {
+			stage: "spec-design",
+			target: {
+				status: "ready",
+				id: "isp-support",
+				gitSha: "a".repeat(40),
+				model: { provider: "openrouter", id: "qwen/qwen3.5-9b", apiKeyEnv: "OPENROUTER_API_KEY", credentialPresent: true },
+				evaluators: { judge: null, simulatedUser: null },
+				evaluatorRequirements: { judge: false, simulatedUser: false },
+			},
+			project: { directory: "agent" },
+			blockers: [],
+			warnings: [],
+			headline: "",
+		} as unknown as WorkbenchView;
+		const host = {
+			workbench: {
+				view: async () => bootstrap,
+				decide: vi.fn(async (input: { kind: string }) => {
+					decided.push(input as { kind: string });
+					return {
+						kind: input.kind,
+						message: "",
+						result: {
+							targetId: "isp-support",
+							targetGitSha: "a".repeat(40),
+							receiptId: "r",
+							entry: "agent.py",
+							credentialEnv: "OPENROUTER_API_KEY",
+						},
+						view: input.kind === "wrap-target" ? bootstrap : settled,
+					};
+				}),
+			},
+			actorId: () => "operator",
+			presenter: { show: vi.fn() },
+			projectDir: options.dir,
+		} as unknown as Parameters<typeof runFirstRunOnboarding>[1];
+		const start = options.adopted
+			? ({
+				stage: "target-setup",
+				target: { status: "missing" },
+				project: { directory: "agent" },
+				blockers: [],
+				warnings: [],
+				headline: "",
+			} as unknown as WorkbenchView)
+			: bootstrap;
+		return { ctx, host, asked, notes, decided, start, settled };
+	}
+
+	function agentDir(): string {
+		const dir = mkdtempSync(join(tmpdir(), "ahde-after-door-"));
+		onboardingRoots.push(dir);
+		writeFileSync(join(dir, "agent.py"), "import openai\n", "utf8");
+		return dir;
+	}
+
+	it("takes a model id the selector never showed and configures the agent with it", async () => {
+		process.env.OPENROUTER_API_KEY = "sk-test";
+		const machinery = machine({
+			adopted: false,
+			dir: agentDir(),
+			answers: [t("onboarding.other-model"), "openrouter/qwen/qwen3.5-9b"],
+		});
+		await runFirstRunOnboarding(machinery.ctx, machinery.host, machinery.start);
+		expect(machinery.asked.map((entry) => entry.question)).toEqual([
+			t("onboarding.which-model"),
+			t("onboarding.model-id-ask"),
+		]);
+		expect(machinery.decided).toEqual([expect.objectContaining({
+			kind: "configure-target",
+			model: { provider: "openrouter", modelId: "qwen/qwen3.5-9b" },
+		})]);
+		delete process.env.OPENROUTER_API_KEY;
+	});
+
+	it("says so, and writes nothing, when the typed id is not in the catalog", async () => {
+		process.env.OPENROUTER_API_KEY = "sk-test";
+		const machinery = machine({
+			adopted: false,
+			dir: agentDir(),
+			answers: [t("onboarding.other-model"), "openrouter/qwen/qwen4"],
+		});
+		expect(await runFirstRunOnboarding(machinery.ctx, machinery.host, machinery.start)).toBeNull();
+		expect(machinery.decided).toEqual([]);
+		expect(machinery.notes).toEqual([{
+			message: t("onboarding.model-unknown", { model: "openrouter/qwen/qwen4" }),
+			tone: "warning",
+		}]);
+		delete process.env.OPENROUTER_API_KEY;
+	});
+
 });
