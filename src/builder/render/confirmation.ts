@@ -242,6 +242,12 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			return [
 				`${paint.dim(t("label.spec"))} ${text(subject.spec, 96)}`,
 				`${paint.dim(t("label.basket"))} ${text(subject.basket, 96)}`,
+				// The evaluator models the host pre-filled, named where the operator
+				// approves them. Absent lines mean this basket needs neither, or the
+				// Target already carries one — invariant 40 either way: the model and
+				// the variable NAME are what is being approved, never a key value.
+				...(subject.judge === undefined ? [] : [`${paint.dim(t("label.judge-instrument"))} ${text(subject.judge, 96)}`]),
+				...(subject.user === undefined ? [] : [`${paint.dim(t("label.user-instrument"))} ${text(subject.user, 96)}`]),
 				`${paint.dim(t("label.run"))} ${text(subject.run, 96)}`,
 				estimateLine(subject.estimatedCost, subject.estimatedTime, paint),
 				"",
