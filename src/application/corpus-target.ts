@@ -16,6 +16,7 @@ import {
 	worldExpectationGraders,
 } from "../manifest.js";
 import { hashValue } from "../provenance.js";
+import { knowledgeBaseDeclared } from "../target/kb-tool.js";
 
 function cloneGrader(grader: GraderSpec): GraderSpec {
 	return { ...grader };
@@ -285,7 +286,9 @@ export function assertGradersRunnable(
 		graders?: readonly GraderSpec[];
 		simulatedUser?: unknown;
 	}[],
-	manifest: Pick<TargetManifest, "evalSuite">,
+	// `data` is optional so a caller holding only the eval suite still type-checks;
+	// when it is absent the knowledge-base check simply has nothing to say.
+	manifest: Pick<TargetManifest, "evalSuite"> & Partial<Pick<TargetManifest, "data">>,
 	label = "corpus draft",
 ): void {
 	const problems: string[] = [];
@@ -313,6 +316,12 @@ export function assertGradersRunnable(
 				problems.push(
 					`${where}: judge graders need a judge model configured in the Target manifest (evalSuite.judge), and this Target has none.` +
 					" Use output_contains, output_matches, or tool_called instead, or ask the operator to configure a judge model first.",
+				);
+			}
+			if (grader.type === "cites_source" && manifest.data !== undefined && !knowledgeBaseDeclared(manifest.data)) {
+				problems.push(
+					`${where}: cites_source graders read the Target's knowledge base, and this Target declares no data/kb.` +
+					" Declare it in the manifest's data list, or use similarity or output_contains instead.",
 				);
 			}
 			if (graderNeedsExpected(grader) && !hasReferenceAnswer(task)) {

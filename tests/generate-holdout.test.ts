@@ -76,7 +76,37 @@ const DEV_CASES = [
 	{ id: "task_003", input: "Объясни клиенту сроки рассмотрения.", graders: [{ type: "output_contains", text: "срок" }] },
 ];
 
-function manifest(judge: { provider: string; id: string; baseUrl: string } | null): string {
+/**
+ * Sixteen one-paragraph documents, so every file is exactly one passage and a
+ * decision can ask for the guardrail's minimum without the draw capping it.
+ */
+const KB_PRICES = [450, 470, 490, 510, 530, 550, 570, 590, 610, 630, 650, 670, 690, 710, 730, 750];
+const KB_DOCS: Record<string, string> = Object.fromEntries(
+	KB_PRICES.map((price, index) => [
+		`data/kb/doc-${String(index).padStart(2, "0")}.md`,
+		`# Тариф ${index}\n\nТариф номер ${index} стоит ${price} рублей в месяц.\n`,
+	]),
+);
+const KB_CHUNK_IDS = KB_PRICES.map((_price, index) => `doc-${String(index).padStart(2, "0")}.md#0`);
+
+/** A judge that answers each passage with its own question-and-answer pair. */
+async function mockKbJudge(): Promise<MockModelHandle> {
+	const mock = await startMockModel(
+		KB_CHUNK_IDS.map((chunkId, index) => ({
+			match: ({ firstUser }: { firstUser: string }) => firstUser.includes(`# Passage ${chunkId}`),
+			steps: [{
+				text: JSON.stringify({
+					question: `${SENTINEL} Сколько стоит тариф номер ${index}?`,
+					answer: `${KB_PRICES[index]} рублей в месяц`,
+				}),
+			}],
+		})),
+	);
+	mocks.push(mock);
+	return mock;
+}
+
+function manifest(judge: { provider: string; id: string; baseUrl: string } | null, declareKb = false): string {
 	return `id: ${PROJECT}
 model:
   provider: qwen-internal
@@ -89,7 +119,7 @@ model:
 instructions:
   agentsMd: AGENTS.md
 skills: [skills/check-dbo]
-evalSuite:
+${declareKb ? "data: [data/kb]\n" : ""}evalSuite:
   id: test-suite
   dataset: evals/development.jsonl
   graders: evals/graders.yaml
@@ -158,11 +188,13 @@ interface Project {
 async function project(options: {
 	judge?: { provider: string; id: string; baseUrl: string } | null;
 	approveSpec?: boolean;
+	kb?: boolean;
 } = {}): Promise<Project> {
 	const projectDir = makeTargetFixture(baseFixtureFiles({
-		"manifest.yaml": manifest(options.judge ?? null),
+		"manifest.yaml": manifest(options.judge ?? null, options.kb === true),
 		"evals/development.jsonl": `${DEV_CASES.map((task) => JSON.stringify(task)).join("\n")}\n`,
 		".gitignore": ".ahde/\nruns/\n",
+		...(options.kb === true ? KB_DOCS : {}),
 	}));
 	roots.push(projectDir);
 	const paths = { projectDir, stateRoot: join(projectDir, ".ahde"), runsRoot: join(projectDir, "runs") };
@@ -481,6 +513,9 @@ describe("generate-holdout: the exam the judge writes", () => {
 				planSealedSynthesis: (options) => {
 					calls += 1;
 					return {
+						source: options.source ?? ("spec" as const),
+						kbIndexHash: null,
+						kbChunkIds: [],
 						generatorModel: "fixture-provider/fixture-judge",
 						generatorHash: "sha256:".padEnd(71, "a"),
 						promptSha256: `sha256:${String(calls).padEnd(64, "b")}`,
@@ -503,5 +538,100 @@ describe("generate-holdout: the exam the judge writes", () => {
 			gate(),
 		)).rejects.toThrow(/changed|stale/i);
 		expect(calls).toBe(2);
+	});
+});
+
+describe("generate-holdout: the exam the judge writes from the knowledge base", () => {
+	it("seals a knowledge-base exam, names the source, and says so on every surface", async () => {
+		const mock = await mockKbJudge();
+		const { workbench, stateRoot } = await project({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+			kb: true,
+		});
+		const human = gate();
+
+		const result = await workbench.decide(
+			{ kind: "generate-holdout", cases: 16, mode: "seal", source: "kb", reason: "the agent answers from documents" },
+			human,
+		);
+		if (result.kind !== "generate-holdout") throw new Error("wrong kind");
+		expect(result.result.source).toBe("kb");
+		expect(result.result.cases).toBe(16);
+		expect(result.result.corpusId).toMatch(/^corpus-[0-9a-f]{64}$/);
+		expect(result.message).toContain("from the knowledge base");
+		expect(result.message).not.toContain(SENTINEL);
+
+		// The confirmation priced the knowledge base, and named nothing else.
+		const subject = human.confirmations[0]!.subject as Record<string, unknown>;
+		expect(subject.source).toBe("kb");
+		expect(subject.kbIndexHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+		expect(subject.kbChunkIds).toHaveLength(16);
+		const dialog = renderConfirmation(human.confirmations[0]!, plainPaint).join("\n");
+		expect(dialog).toContain("the knowledge base — 16 passages");
+		expect(dialog).not.toContain(SENTINEL);
+
+		const panel = renderDecision(result, plainPaint).join("\n");
+		expect(panel).toContain("16 cases from the knowledge base");
+		expect(panel).not.toContain(SENTINEL);
+
+		// The exam is sealed, holds one case per passage, and every case carries
+		// the passage it was written from.
+		const sealed = listCorpora({ stateRoot, projectId: PROJECT }).filter((corpus) => corpus.visibility === "sealed");
+		expect(sealed).toHaveLength(1);
+		const loaded = loadCorpus({ stateRoot, projectId: PROJECT, corpusId: sealed[0]!.id });
+		expect(loaded.tasks).toHaveLength(16);
+		expect(new Set(loaded.tasks.map((task) => task.metadata?.kbChunk)).size).toBe(16);
+		for (const task of loaded.tasks) {
+			expect(KB_CHUNK_IDS).toContain(task.metadata?.kbChunk);
+			expect(task.expected).toMatch(/\d+ рублей в месяц/);
+			expect(task.graders?.[0]).toEqual({
+				type: "cites_source",
+				chunk: task.metadata!.kbChunk,
+				minOverlap: 0.35,
+			});
+		}
+
+		// The passport's one word about the exam's provenance.
+		expect(sealedExamOrigin(stateRoot, PROJECT, sealed[0]!.id)).toBe("judge-generated-kb");
+		const receipt = listSealedSynthReceipts(stateRoot, PROJECT)[0]!;
+		expect(receipt.schemaVersion).toBe(2);
+		expect(receipt.schemaVersion === 2 && receipt.source).toBe("kb");
+		expect(JSON.stringify(receipt)).not.toContain(SENTINEL);
+	});
+
+	it("refuses the knowledge-base source on a Target that declares none, before any spend", async () => {
+		const mock = await mockKbJudge();
+		const { workbench, stateRoot } = await project({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+		});
+		const human = gate();
+		await expect(workbench.decide(
+			{ kind: "generate-holdout", cases: 16, mode: "seal", source: "kb", reason: "no documents here" },
+			human,
+		)).rejects.toThrow(/declares no knowledge base/);
+		// The refusal happens in the plan, so the human was never asked and no
+		// corpus or receipt exists.
+		expect(human.confirmations).toHaveLength(0);
+		expect(listCorpora({ stateRoot, projectId: PROJECT })).toEqual([]);
+		expect(listSealedSynthReceipts(stateRoot, PROJECT)).toEqual([]);
+	});
+
+	it("says «по базе знаний» in Russian", async () => {
+		const mock = await mockKbJudge();
+		const { workbench } = await project({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+			kb: true,
+		});
+		const human = gate();
+		setLanguage("ru");
+		const result = await workbench.decide(
+			{ kind: "generate-holdout", cases: 16, mode: "seal", source: "kb", reason: "агент отвечает по документам" },
+			human,
+		);
+		if (result.kind !== "generate-holdout") throw new Error("wrong kind");
+		expect(result.message).toContain("по базе знаний");
+		expect(renderConfirmation(human.confirmations[0]!, plainPaint).join("\n"))
+			.toContain("база знаний — 16 фрагментов");
+		expect(renderDecision(result, plainPaint).join("\n")).toContain("16 кейсов по базе знаний");
 	});
 });

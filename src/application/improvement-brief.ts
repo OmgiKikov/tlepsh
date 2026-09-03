@@ -320,6 +320,9 @@ const GRADER_CHECK_CATEGORIES: Record<GraderCheckCode, FailureModeCategory> = {
 	// The world is the contract the agent had to leave behind, not a judgement
 	// about how the answer read.
 	"world-state": "output-contract",
+	// An answer that does not stand on its source is an answer-quality failure,
+	// not a contract one: the shape was fine, the grounding was not.
+	"cites-source": "answer-quality",
 };
 
 /** Title of an exact (non-legacy) grader failure mode. */
@@ -333,6 +336,7 @@ const GRADER_CHECK_TITLES: Record<GraderCheckCode, string> = {
 	"reference-similarity": "Reference similarity check failed",
 	"turn-budget": "Turn budget check failed",
 	"world-state": "World state check failed",
+	"cites-source": "The answer did not stand on the cited source",
 };
 
 /**

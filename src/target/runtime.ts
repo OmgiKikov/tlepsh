@@ -27,7 +27,7 @@ import { InMemoryCredentialStore, type AssistantMessage, type Message } from "@e
 import type { ExecutionPolicyResult } from "../execution-policy.js";
 import { EXECUTION_POLICY_SESSION_OPTIONS } from "../execution-policy.js";
 import type { DialogueMessage, ResolvedTarget } from "../manifest.js";
-import { ExecutionFingerprintSchema, type ExecutionFingerprint } from "../provenance.js";
+import { ExecutionFingerprintSchema, hashValue, type ExecutionFingerprint } from "../provenance.js";
 import {
 	isContainerSandboxFingerprint,
 	resolveExecutionBackend,
@@ -41,6 +41,13 @@ import {
 	type ToolSetupOutcome,
 } from "./tool-setup.js";
 import { loadTargetTools, type ResolvedTargetTool } from "./tool-manifest.js";
+import {
+	createKbSearchTool,
+	knowledgeBaseDeclared,
+	readKnowledgeBase,
+	KB_SEARCH_TOOL_NAME,
+} from "./kb-tool.js";
+import { kbIndexHash } from "../domain/kb.js";
 import {
 	createTargetFeedbackExtension,
 	TARGET_FEEDBACK_EXTENSION_NAME,
@@ -68,10 +75,39 @@ export interface TargetToolRuntime {
 	toolNames: string[];
 	/** Prepared home for multi-file tools, or null when none are declared. */
 	toolHomeRoot: string | null;
-	/** Exact paths, bytes, and executable modes in the prepared home. */
+	/**
+	 * The setup-derived tool identity: the prepared home's tree attestation,
+	 * folded with the knowledge-base index hash when one exists. See
+	 * {@link composeSetupDerivedToolHash}.
+	 */
 	preparedToolHomeHash: string;
+	/**
+	 * Identity of the `kb_search` index this runtime serves, or null when no
+	 * `data/kb` is declared. Null is not a hash of nothing: it is the fact that
+	 * this Target has no knowledge base, and it keeps the composed hash
+	 * byte-identical to what a Target without one has always recorded.
+	 */
+	kbIndexHash: string | null;
 	/** One entry per multi-file tool; `ran` is false when it declares no setup. */
 	toolSetups: ToolSetupOutcome[];
+}
+
+/**
+ * The one place the setup-derived tool identity is assembled.
+ *
+ * A knowledge base changes what `kb_search` answers, so it changes the Target.
+ * Its bytes already travel in `workspaceHash`; what a chunk index adds is the
+ * *chunker* — the same documents cut differently are a different tool — and
+ * that is a setup-derived fact, built once from the snapshot exactly like a
+ * prepared tool home. `toolsetHash` is resolved from the operator's checkout
+ * before a snapshot exists and deliberately never reads declared data
+ * contents, so this is the honest home.
+ *
+ * Without a knowledge base the tree hash passes through unchanged, so every
+ * hash recorded before this existed still reproduces.
+ */
+export function composeSetupDerivedToolHash(toolHomeHash: string, kbIndexHash: string | null): string {
+	return kbIndexHash === null ? toolHomeHash : hashValue({ toolHome: toolHomeHash, kbIndex: kbIndexHash });
 }
 
 /**
@@ -237,7 +273,11 @@ export function targetFilesystemConfinement(options: {
 	if (options.workspaceMode === "direct") return "direct-unconfined-v1";
 	const sandbox = ExecutionFingerprintSchema.shape.sandbox.parse(options.sandbox);
 	if (isContainerSandboxFingerprint(sandbox)) return "workspace-confined-v1";
-	const processCapable = options.toolNames.some((tool) => !["read", "edit", "write"].includes(tool));
+	// `kb_search` joins the built-in file tools here: it starts no process, takes
+	// no path, and reads only the workspace copy it was built from, so it cannot
+	// be the reason a run is recorded as unconfined.
+	const inProcess = ["read", "edit", "write", KB_SEARCH_TOOL_NAME];
+	const processCapable = options.toolNames.some((tool) => !inProcess.includes(tool));
 	return processCapable && (sandbox === "none" || sandbox === "unavailable")
 		? "isolated-copy-unconfined-v1"
 		: "workspace-confined-v1";
@@ -304,17 +344,40 @@ function definition(tool: ResolvedTargetTool, broker: TargetToolBroker): ToolDef
 	};
 }
 
+/**
+ * The knowledge base this workspace serves, built once per runtime creation and
+ * held for the life of the returned runtime. Null when the manifest declares no
+ * `data/kb`: an agent that answers from nothing gets no retrieval tool, and the
+ * absence stays out of the identity hash.
+ */
+function knowledgeBaseOf(
+	target: ResolvedTarget,
+	workspaceDir: string,
+): { tool: ToolDefinition<any, any, any>; indexHash: string } | null {
+	if (!knowledgeBaseDeclared(target.manifest.data)) return null;
+	const chunks = readKnowledgeBase(workspaceDir);
+	return { tool: createKbSearchTool(chunks), indexHash: kbIndexHash(chunks) };
+}
+
 export function createTargetToolRuntime(options: CreateTargetToolRuntimeOptions): TargetToolRuntime {
 	if (options.target.tools.length === 0) {
+		// A knowledge base is a whole Target surface on its own: an agent that only
+		// answers from documents declares no subprocess tool at all, so the
+		// no-declared-tools path has to be able to carry `kb_search`.
+		const knowledge = knowledgeBaseOf(options.target, realpathSync(resolve(options.workspaceDir)));
 		return {
-			customTools: [],
+			customTools: knowledge ? [knowledge.tool] : [],
 			sandboxBackend: null,
 			sandboxFingerprint: "unavailable",
 			sandboxWarnings: [],
 			effectiveEnvironmentNames: [],
-			toolNames: [],
+			toolNames: knowledge ? [KB_SEARCH_TOOL_NAME] : [],
 			toolHomeRoot: null,
-			preparedToolHomeHash: EMPTY_PREPARED_TOOL_HOME_HASH,
+			preparedToolHomeHash: composeSetupDerivedToolHash(
+				EMPTY_PREPARED_TOOL_HOME_HASH,
+				knowledge?.indexHash ?? null,
+			),
+			kbIndexHash: knowledge?.indexHash ?? null,
 			toolSetups: [],
 		};
 	}
@@ -380,15 +443,29 @@ export function createTargetToolRuntime(options: CreateTargetToolRuntimeOptions)
 	for (const tool of reloaded.tools) {
 		for (const name of broker.effectiveEnvironmentNames(tool)) environmentNames.add(name);
 	}
+	// The host tool joins the declared ones on one list, so the guard extension's
+	// allowed-tool set, the capability names a run records, and whatever a future
+	// adapter brokers all see the same surface without a second registration.
+	const knowledge = knowledgeBaseOf(options.target, workspaceDir);
 	return {
-		customTools: reloaded.tools.map((tool) => definition(tool, broker)),
+		customTools: [
+			...reloaded.tools.map((tool) => definition(tool, broker)),
+			...(knowledge ? [knowledge.tool] : []),
+		],
 		sandboxBackend: broker.sandboxBackend === "container" ? null : broker.sandboxBackend,
 		sandboxFingerprint: choice?.sandboxFingerprint ?? broker.sandboxBackend,
 		sandboxWarnings: choice?.warnings ?? [],
 		effectiveEnvironmentNames: [...environmentNames].sort(),
-		toolNames: reloaded.tools.map((tool) => tool.descriptor.name),
+		toolNames: [
+			...reloaded.tools.map((tool) => tool.descriptor.name),
+			...(knowledge ? [KB_SEARCH_TOOL_NAME] : []),
+		],
 		toolHomeRoot: prepared?.root ?? null,
-		preparedToolHomeHash: prepared?.sha256 ?? EMPTY_PREPARED_TOOL_HOME_HASH,
+		preparedToolHomeHash: composeSetupDerivedToolHash(
+			prepared?.sha256 ?? EMPTY_PREPARED_TOOL_HOME_HASH,
+			knowledge?.indexHash ?? null,
+		),
+		kbIndexHash: knowledge?.indexHash ?? null,
 		toolSetups: prepared?.setups ?? [],
 	};
 }

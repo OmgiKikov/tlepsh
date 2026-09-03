@@ -48,6 +48,7 @@ export const GraderCheckCodeSchema = z.enum([
 	"reference-similarity",
 	"turn-budget",
 	"world-state",
+	"cites-source",
 ]);
 export type GraderCheckCode = z.infer<typeof GraderCheckCodeSchema>;
 
@@ -66,6 +67,7 @@ const CHECK_CODE_GRADER_TYPE: Record<GraderCheckCode, string> = {
 	"reference-similarity": "similarity",
 	"turn-budget": "turn_budget",
 	"world-state": "world_state",
+	"cites-source": "cites_source",
 };
 
 /** A check subject is a tool name, not prose; anything longer is not one. */

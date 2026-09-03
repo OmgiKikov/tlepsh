@@ -359,6 +359,7 @@ function defaultDecision(input: WorkbenchDecisionInput): WorkbenchDecisionResult
 			return decision("generate-holdout", {
 				...(input.mode === "seal" ? { corpusId: `corpus-${"a".repeat(64)}` } : { reviewPath: "/private/state/sealed-synth/review-abc.jsonl" }),
 				cases: input.cases,
+				source: input.source ?? "spec",
 				requested: input.cases,
 				dropped: { malformed: 0, duplicate: 0 },
 				generator: "openrouter/anthropic/claude-sonnet-4.5",
@@ -2130,6 +2131,56 @@ describe("Builder Pi slash commands", () => {
 			expect(text).toContain("24 cases · written by the judge openrouter/anthropic/claude-sonnet-4.5");
 			expect(text).toContain(mode === "seal" ? "Exam created" : "Exam draft ready");
 		}
+	});
+
+	it("reads «из базы знаний» as a request to write the exam from the documents", async () => {
+		for (const [args, expected] of [
+			["20 из базы знаний", { cases: 20, mode: "seal" }],
+			["из базы знаний", { cases: 20, mode: "seal" }],
+			["--from-kb 24", { cases: 24, mode: "seal" }],
+			["16 по базе знаний черновик", { cases: 16, mode: "review" }],
+			["30 from the knowledge base", { cases: 30, mode: "seal" }],
+		] as const) {
+			const fixture = workbench();
+			const importSealedHoldout = vi.fn(() => ({ taskCount: 20 }));
+			const { commands, output } = register(fixture.value, { importSealedHoldout });
+			const select = vi.fn(async () => undefined);
+			const host = context({ select, input: async () => undefined });
+
+			await command(commands, "holdout").handler(args, host.ctx);
+
+			// No menu, no path prompt, and the file import stays untouched: the
+			// phrase already said which of the three answers this is.
+			expect(select).not.toHaveBeenCalled();
+			expect(importSealedHoldout).not.toHaveBeenCalled();
+			expect(fixture.decide).toHaveBeenCalledTimes(1);
+			expect(fixture.decide.mock.calls[0]?.[0]).toMatchObject({
+				kind: "generate-holdout",
+				source: "kb",
+				...expected,
+			});
+			expect(output.text()).toContain("from the knowledge base");
+		}
+	});
+
+	it("still treats a path as a path, even one with kb in its name", async () => {
+		const fixture = workbench();
+		const importSealedHoldout = vi.fn(() => ({ taskCount: 20 }));
+		const { commands } = register(fixture.value, { importSealedHoldout });
+		const answers = ["Private promotion exam"];
+		const host = context({
+			confirm: async () => true,
+			select: vi.fn(async () => undefined),
+			input: async () => answers.shift(),
+		});
+
+		await command(commands, "holdout").handler("/private/evals/kb-holdout.jsonl", host.ctx);
+
+		expect(fixture.decide).not.toHaveBeenCalled();
+		expect(importSealedHoldout).toHaveBeenCalledWith({
+			sourcePath: "/private/evals/kb-holdout.jsonl",
+			name: "Private promotion exam",
+		});
 	});
 
 	it("refuses a case count that is not a number, before asking the Workbench anything", async () => {

@@ -396,6 +396,7 @@ function categoryFor(checkCode: GraderCheckCode): z.infer<typeof DiagnosisCatego
 		case "world-state":
 		case "reference-exact": return "output-contract";
 		case "semantic-rubric":
+		case "cites-source":
 		case "reference-similarity": return "answer-quality";
 	}
 }

@@ -682,6 +682,15 @@ function explainGrader(
 			};
 		}
 	}
+	const citation = /^the answer neither cites (\S+) nor overlaps it: token-f1 = ([0-9.]+), below threshold ([0-9.]+)$/
+		.exec(reason);
+	if (grader.checkCode === "cites-source" && citation) {
+		return {
+			...base,
+			expected: `expected the answer to stand on ${citation[1]} — cite its id, or overlap it by ${citation[3]}`,
+			actual: `it did neither; the overlap was ${citation[2]}`,
+		};
+	}
 	if (reason === "case has no expected answer") {
 		return {
 			...base,
@@ -719,6 +728,7 @@ const CHECK_TITLE_KEY: Record<NonNullable<FailureMode["signature"]["checkCode"]>
 	"reference-similarity": "mode.title.reference-similarity",
 	"turn-budget": "mode.title.turn-budget",
 	"world-state": "mode.title.world-state",
+	"cites-source": "mode.title.cites-source",
 };
 
 const OBSERVATION_KEY: Record<TraceObservation, MessageKey> = {

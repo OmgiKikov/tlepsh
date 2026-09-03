@@ -211,6 +211,7 @@ export async function decideGenerateHoldout(
 		projectId: host.projectId,
 		name: GENERATED_HOLDOUT_NAME,
 		count: input.cases,
+		source: input.source ?? "spec",
 		...(input.seed ? { seed: input.seed } : {}),
 		...(reviewPath ? { reviewPath } : {}),
 	};
@@ -245,14 +246,20 @@ export async function decideGenerateHoldout(
 			duplicate: generated.droppedDuplicate,
 		})}`
 		: "";
+	// The one sentence names the source: an exam written from the agent's own
+	// documents is a different claim from one written from its description, and
+	// the operator is the person who has to know which they just paid for.
+	const sealedKey = generated.source === "kb" ? "message.exam-sealed-kb" : "message.exam-sealed";
+	const draftKey = generated.source === "kb" ? "message.exam-draft-kb" : "message.exam-draft";
 	return {
 		kind: input.kind,
-		message: `${t(generated.corpus ? "message.exam-sealed" : "message.exam-draft", {
+		message: `${t(generated.corpus ? sealedKey : draftKey, {
 			cases: localizedCount(cases, "case"),
 		})}${shortfall}`,
 		result: {
 			...(generated.corpus ? { corpusId: generated.corpus.id } : {}),
 			cases,
+			source: generated.source,
 			requested: generated.requested,
 			dropped: { malformed: generated.droppedMalformed, duplicate: generated.droppedDuplicate },
 			generator: generated.generatorModel,

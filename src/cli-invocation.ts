@@ -267,8 +267,11 @@ const CORPUS_ACTION_SPECS = {
 	// `corpus`; `--seed` fixes which development cases are shown as format
 	// examples and is not the row draw the other actions mean by that name.
 	synth: {
-		flags: ["target", "project", "sealed", "name", "seed", "from", "examples", "review"],
+		flags: ["target", "project", "sealed", "name", "seed", "from", "examples", "review", "from-kb"],
 		requiredFlags: ["target", "sealed", "name"],
+		// `--from-kb` names no value: it says which SOURCE the questions come
+		// from, and the documents are already declared by the manifest.
+		booleanFlags: ["from-kb"],
 		positionals: 0,
 	},
 } as const satisfies Record<"import" | "list" | "inspect" | "ingest" | "synth", InvocationSpec>;

@@ -47,6 +47,7 @@ const GRADER_TYPE_OF_CHECK: Record<CandidateFamilyImpact["signature"]["checkCode
 	"reference-similarity": "similarity",
 	"turn-budget": "turn_budget",
 	"world-state": "world_state",
+	"cites-source": "cites_source",
 };
 
 function verdictText(verdict: CandidateImpact["verdict"], paint: Paint): string {

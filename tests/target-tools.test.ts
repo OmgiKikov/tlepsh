@@ -24,6 +24,7 @@ import {
 } from "../src/target/tool-broker.js";
 import { containerSandboxFingerprint } from "../src/target/container-backend.js";
 import { validateTargetToolArguments } from "../src/target/tool-manifest.js";
+import { EMPTY_PREPARED_TOOL_HOME_HASH } from "../src/target/tool-setup.js";
 import { openTrace, traceToolCalls } from "../src/trace.js";
 import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 
@@ -589,4 +590,185 @@ describe("the case's world reaches a declared tool", () => {
 			writeRoots: [],
 		});
 	});
+});
+
+// ---------- the knowledge base ----------
+
+const KB_TARIFFS = `# Тарифы
+
+Тариф «Река»: 500 Мбит/с, 750 рублей в месяц. Роутер в аренду — 90 рублей в месяц.
+
+Тариф «Ручей»: 100 Мбит/с, 450 рублей в месяц.
+`;
+
+const KB_VISITS = `# Выезд мастера
+
+Выезд бесплатный, если неисправность на стороне провайдера.
+
+Выезд платный, если причина внутри квартиры: 600 рублей.
+`;
+
+function kbManifest(options: { declareKb: boolean; baseUrl?: string }): string {
+	return `id: kb-target
+model:
+  provider: test
+  id: test-model
+  api: openai-completions
+  baseUrl: ${options.baseUrl ?? "http://127.0.0.1:1/v1"}
+  apiKeyEnv: TEST_MODEL_KEY
+  thinkingLevel: "off"
+  timeoutMs: ${options.baseUrl ? 60_000 : 1_000}
+execution:
+  tools: [read]
+  environmentAllowlist: []
+  network: deny
+  sandbox: best-effort
+instructions:
+  agentsMd: AGENTS.md
+skills: []
+tools: []
+${options.declareKb ? "data: [data/kb]\n" : ""}evalSuite:
+  id: kb-suite
+  dataset: evals/development.jsonl
+  graders: evals/graders.yaml
+`;
+}
+
+function kbFixture(options: { declareKb: boolean; baseUrl?: string; tariffs?: string; dataset?: string }): string {
+	return makeTargetFixture(
+		baseFixtureFiles({
+			"manifest.yaml": kbManifest(options),
+			"data/kb/tariffs.md": options.tariffs ?? KB_TARIFFS,
+			"data/kb/visits.md": KB_VISITS,
+			// Not knowledge, and the tool must not pretend otherwise.
+			"data/kb/notes.pdf": "%PDF-1.4 не знание",
+			...(options.dataset ? { "evals/development.jsonl": options.dataset } : {}),
+		}),
+	);
+}
+
+describe("the knowledge base as a Target surface", () => {
+	it("turns kb_search on for a declared data/kb and leaves it off otherwise", () => {
+		const withKb = kbFixture({ declareKb: true });
+		const withoutKb = kbFixture({ declareKb: false });
+		try {
+			const on = createTargetToolRuntime({
+				target: loadTarget(withKb),
+				workspaceDir: withKb,
+				scratchDir: join(withKb, ".scratch-on"),
+			});
+			expect(on.toolNames).toEqual(["kb_search"]);
+			expect(on.customTools.map((tool) => tool.name)).toEqual(["kb_search"]);
+			expect(on.kbIndexHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+			// A retrieval tool starts no process, so it must not turn a confined
+			// run into an unconfined one.
+			expect(targetFilesystemConfinement({
+				workspaceMode: "isolated",
+				toolNames: on.toolNames,
+				sandbox: "none",
+			})).toBe("workspace-confined-v1");
+
+			const off = createTargetToolRuntime({
+				target: loadTarget(withoutKb),
+				workspaceDir: withoutKb,
+				scratchDir: join(withoutKb, ".scratch-off"),
+			});
+			expect(off.toolNames).toEqual([]);
+			expect(off.customTools).toEqual([]);
+			expect(off.kbIndexHash).toBeNull();
+			// Absent means absent: the composed identity is byte-identical to what
+			// a Target with no prepared tool home has always recorded.
+			expect(off.preparedToolHomeHash).toBe(EMPTY_PREPARED_TOOL_HOME_HASH);
+			expect(on.preparedToolHomeHash).not.toBe(off.preparedToolHomeHash);
+		} finally {
+			cleanup(withKb);
+			cleanup(withoutKb);
+		}
+	});
+
+	it("makes two different knowledge bases two different Targets", () => {
+		const first = kbFixture({ declareKb: true });
+		const second = kbFixture({
+			declareKb: true,
+			tariffs: KB_TARIFFS.replace("750 рублей", "770 рублей"),
+		});
+		try {
+			const a = createTargetToolRuntime({
+				target: loadTarget(first),
+				workspaceDir: first,
+				scratchDir: join(first, ".scratch"),
+			});
+			const b = createTargetToolRuntime({
+				target: loadTarget(second),
+				workspaceDir: second,
+				scratchDir: join(second, ".scratch"),
+			});
+			expect(a.kbIndexHash).not.toBe(b.kbIndexHash);
+			expect(a.preparedToolHomeHash).not.toBe(b.preparedToolHomeHash);
+			// Two runs over the same bytes agree, so a rebuild is not a new Target.
+			const again = createTargetToolRuntime({
+				target: loadTarget(first),
+				workspaceDir: first,
+				scratchDir: join(first, ".scratch-again"),
+			});
+			expect(again.preparedToolHomeHash).toBe(a.preparedToolHomeHash);
+		} finally {
+			cleanup(first);
+			cleanup(second);
+		}
+	});
+
+	it("lets Target Pi search the knowledge base during an eval and records the call", async () => {
+		const mock = await startMockModel([
+			{
+				match: ({ firstUser }) => firstUser.includes("Река"),
+				steps: [
+					{ toolCall: { name: "kb_search", arguments: { query: "тариф Река рублей", k: 2 } } },
+					{ text: "Тариф «Река» стоит 750 рублей в месяц. Источник: tariffs.md#0" },
+				],
+			},
+		]);
+		const dir = kbFixture({
+			declareKb: true,
+			baseUrl: mock.url,
+			dataset: `${JSON.stringify({
+				id: "kb-call",
+				input: "Сколько стоит тариф «Река»?",
+				expected: "750 рублей в месяц",
+				graders: [
+					{ type: "tool_called", tool: "kb_search" },
+					{ type: "cites_source", chunk: "tariffs.md#0" },
+				],
+			})}\n`,
+		});
+		const runsRoot = mkdtempSync(join(tmpdir(), "ahde-kb-runs-"));
+		process.env.TEST_MODEL_KEY = "test-key";
+		try {
+			const target = loadTarget(dir);
+			const evaluation = await runSuite(target, { runsRoot, label: "solo", repetitions: 1 });
+			expect(evaluation.summary).toMatchObject({ total: 1, pass: 1, fail: 0, error: 0 });
+			const runId = evaluation.runIds[0];
+			if (!runId) throw new Error("evaluation did not create a run");
+			const calls = traceToolCalls(openTrace(join(runsRoot, runId)));
+			expect(calls).toContainEqual(
+				expect.objectContaining({ name: "kb_search", arguments: { query: "тариф Река рублей", k: 2 } }),
+			);
+			const returned = calls.find((call) => call.name === "kb_search");
+			expect(returned).toBeDefined();
+			const record = JSON.parse(readFileSync(join(runsRoot, runId, "run.json"), "utf8"));
+			// The index identity travels with the run, and the run's own workspace
+			// copy is what the citation grader read.
+			expect(record.target.preparedToolHomeHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+			expect(record.target.preparedToolHomeHash).not.toBe(EMPTY_PREPARED_TOOL_HOME_HASH);
+			expect(readFileSync(join(runsRoot, runId, "workspace", "data", "kb", "tariffs.md"), "utf8"))
+				.toContain("750 рублей");
+			expect(record.evalResults.graders.map((grader: { checkCode: string }) => grader.checkCode))
+				.toContain("cites-source");
+		} finally {
+			delete process.env.TEST_MODEL_KEY;
+			cleanup(dir);
+			cleanup(runsRoot);
+			await mock.close();
+		}
+	}, 60_000);
 });

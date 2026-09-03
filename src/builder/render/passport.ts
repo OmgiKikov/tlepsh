@@ -5,7 +5,8 @@ import {
 	type ShippedVersionPassport,
 } from "../../application/version-passport.js";
 import { measurementLine, measurementSurface } from "../../application/measurement-line.js";
-import { plural, t, verdictLabel } from "../../i18n.js";
+import { plural, t, verdictLabel, type MessageKey } from "../../i18n.js";
+import type { SealedExamOrigin } from "../../application/sealed-synth.js";
 import { sealedOutcomeLabel } from "../../domain/comparison-gate.js";
 import { bullets, oneLine, section, shortHash, shortSha, wrap } from "./format.js";
 import { passportPredictionLine, predictionCalibrationLine } from "./prediction.js";
@@ -13,6 +14,19 @@ import type { Paint } from "./paint.js";
 
 /** One-line renderings share the 110-column budget every AHDE panel uses. */
 const LINE_WIDTH = 110;
+
+/**
+ * Who wrote the exam's questions, in the operator's language. A table rather
+ * than a ternary: there are four answers now, and a reader of this page needs
+ * the right one — an exam written from the agent's own documents is worth
+ * something different from one written from its description.
+ */
+const EXAM_ORIGIN_KEY: Record<SealedExamOrigin, MessageKey> = {
+	"judge-generated": "passport.exam-generated",
+	"judge-generated-reviewed": "passport.exam-generated-reviewed",
+	"judge-generated-kb": "passport.exam-generated-kb",
+	"judge-generated-kb-reviewed": "passport.exam-generated-kb-reviewed",
+};
 
 function percent(value: number): string {
 	return `${(value * 100).toFixed(1)}%`;
@@ -131,9 +145,7 @@ export function renderVersionPassport(passport: ShippedVersionPassport, paint: P
 		// Who wrote the questions, when a receipt says so. It changes what the
 		// verdict is worth, so it belongs beside the count and not in a footnote.
 		passport.limits.sealedOrigin
-			? ` ${paint.dim(`· ${t(passport.limits.sealedOrigin === "judge-generated-reviewed"
-				? "passport.exam-generated-reviewed"
-				: "passport.exam-generated")}`)}`
+			? ` ${paint.dim(`· ${t(EXAM_ORIGIN_KEY[passport.limits.sealedOrigin])}`)}`
 			: ""
 	} ${paint.dim(t("passport.identity-evaluator-only"))}`);
 

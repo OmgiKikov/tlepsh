@@ -1025,6 +1025,7 @@ async function main(): Promise<void> {
 						projectId,
 						name: requireArg("name"),
 						count: Number(requireArg("sealed")),
+						...(arg("from-kb") ? { source: "kb" as const } : {}),
 						...(arg("seed") ? { seed: arg("seed")! } : {}),
 						...(arg("from") ? { specPath: resolve(arg("from")!) } : {}),
 						...(arg("examples") ? { examples: Number(arg("examples")!) } : {}),

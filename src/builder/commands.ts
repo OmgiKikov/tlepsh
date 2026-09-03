@@ -214,6 +214,31 @@ function parseOrdinal(args: string, command: string): { ordinal: number | null; 
 	return { ordinal, note: tokens.join(" ") };
 }
 
+/**
+ * `/holdout 20 из базы знаний`, and the four other ways an operator says it.
+ *
+ * Deliberately narrow: only an unmistakable phrase turns `/holdout` from "here
+ * is my exam file" into "write me one from the documents", because the argument
+ * this command has always taken is a path, and a path that accidentally reads
+ * as an instruction would spend money. `--from-kb` is the same request as a
+ * flag, for a script or a keyboard in a hurry.
+ */
+const KNOWLEDGE_BASE_PHRASE = /--from-kb\b|(?:из|по)\s+баз[аеы]\s+знаний|баз[аеы]\s+знаний|knowledge\s+base/iu;
+const HOLDOUT_DRAFT_PHRASE = /--review\b|черновик|draft/iu;
+
+export function parseKnowledgeBaseHoldout(
+	args: string,
+): { cases: number | null; mode: "seal" | "review" } | null {
+	const trimmed = args.trim();
+	if (!trimmed || !KNOWLEDGE_BASE_PHRASE.test(trimmed)) return null;
+	const digits = /\d+/.exec(trimmed);
+	const cases = digits ? Number(digits[0]) : null;
+	if (cases !== null && (!Number.isSafeInteger(cases) || cases < 1)) {
+		throw new Error(t("cmd.err.holdout-count", { answer: JSON.stringify(digits?.[0] ?? "") }));
+	}
+	return { cases, mode: HOLDOUT_DRAFT_PHRASE.test(trimmed) ? "review" : "seal" };
+}
+
 function parseApply(args: string): { branch: string | null; reason: string } {
 	const tokens = args.trim().split(/\s+/).filter(Boolean);
 	const branch = tokens.shift();
@@ -1120,6 +1145,21 @@ export function registerAhdeBuilderCommands(
 			// Workbench decisions with their own dialog; the import is this
 			// command's own host UI, as it always was.
 			const givenPath = args.trim();
+			// `/holdout 20 из базы знаний` — the one thing this command could not
+			// say before. It is a phrase and not a fourth menu entry because the
+			// menu cannot know whether this Target has a knowledge base, and an
+			// option that always refuses is worse than one nobody found.
+			const fromKnowledgeBase = parseKnowledgeBaseHoldout(givenPath);
+			if (fromKnowledgeBase) {
+				await simpleDecision(ctx, "holdout", {
+					kind: "generate-holdout",
+					cases: fromKnowledgeBase.cases ?? minimum + 5,
+					mode: fromKnowledgeBase.mode,
+					source: "kb",
+					reason: t("holdout.reason-kb"),
+				}, ctx.signal);
+				return;
+			}
 			if (!givenPath && typeof ctx.ui.select === "function") {
 				const importChoice = t("holdout.import-file");
 				const sealChoice = t("holdout.generate-seal");

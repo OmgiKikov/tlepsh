@@ -49,6 +49,7 @@ import {
 } from "./run-events.js";
 import {
 	createTargetAgentSession,
+	composeSetupDerivedToolHash,
 	createTargetToolRuntime,
 	effectiveTargetSandbox,
 	targetFilesystemConfinement,
@@ -100,8 +101,19 @@ export interface TargetWorkspaceSnapshot {
 	 * EvalRun; nothing it produces re-enters the hashed workspace.
 	 */
 	readonly toolHomeDir: string;
-	/** Null only when a caller requested a source-only snapshot. */
+	/**
+	 * The setup-derived tool identity: the prepared home's tree attestation
+	 * folded with `kbIndexHash`. Null only when a caller requested a source-only
+	 * snapshot.
+	 */
 	readonly preparedToolHomeHash: string | null;
+	/**
+	 * Identity of the knowledge-base index this snapshot serves, or null when it
+	 * declares none. Held beside the tree hash because re-verifying the
+	 * attestation means recomposing it, and the chunk index is not a file in the
+	 * prepared home.
+	 */
+	readonly kbIndexHash: string | null;
 }
 
 const trustedWorkspaceSnapshots = new WeakSet<TargetWorkspaceSnapshot>();
@@ -426,17 +438,19 @@ export function materializeTargetWorkspaceSnapshot(
 		const toolHomeDir = join(temporaryRoot, "tool-home");
 		privateDirectory(toolHomeDir);
 		let preparedToolHomeHash: string | null = null;
+		let kbIndexHash: string | null = null;
 		if (options.prepareToolHome) {
 			const preparationScratch = join(temporaryRoot, "preparation-sandbox");
 			try {
-				const runtimeHash = createTargetToolRuntime({
+				const runtime = createTargetToolRuntime({
 					target,
 					workspaceDir: destination,
 					scratchDir: preparationScratch,
 					toolHomeRoot: toolHomeDir,
-				}).preparedToolHomeHash;
-				preparedToolHomeHash = hashPreparedToolHome(toolHomeDir);
-				if (preparedToolHomeHash !== runtimeHash) {
+				});
+				kbIndexHash = runtime.kbIndexHash;
+				preparedToolHomeHash = composeSetupDerivedToolHash(hashPreparedToolHome(toolHomeDir), kbIndexHash);
+				if (preparedToolHomeHash !== runtime.preparedToolHomeHash) {
 					throw new Error("prepared tool-home attestation does not match its materialized bytes");
 				}
 			} finally {
@@ -450,6 +464,7 @@ export function materializeTargetWorkspaceSnapshot(
 			targetIdentity: targetSnapshotIdentity(target),
 			toolHomeDir: realpathSync(toolHomeDir),
 			preparedToolHomeHash,
+			kbIndexHash,
 		});
 		trustedWorkspaceSnapshots.add(snapshot);
 		workspaceSnapshotRoots.set(snapshot, temporaryRoot);
@@ -471,7 +486,8 @@ export function disposeTargetWorkspaceSnapshot(snapshot: TargetWorkspaceSnapshot
 	try {
 		if (
 			snapshot.preparedToolHomeHash !== null &&
-			hashPreparedToolHome(snapshot.toolHomeDir) !== snapshot.preparedToolHomeHash
+			composeSetupDerivedToolHash(hashPreparedToolHome(snapshot.toolHomeDir), snapshot.kbIndexHash) !==
+				snapshot.preparedToolHomeHash
 		) {
 			verificationError = new Error("prepared tool-home snapshot changed before cleanup");
 		}
@@ -544,7 +560,8 @@ function prepareWorkspace(
 	}
 	if (
 		snapshot.preparedToolHomeHash !== null &&
-		hashPreparedToolHome(snapshot.toolHomeDir) !== snapshot.preparedToolHomeHash
+		composeSetupDerivedToolHash(hashPreparedToolHome(snapshot.toolHomeDir), snapshot.kbIndexHash) !==
+			snapshot.preparedToolHomeHash
 	) {
 		throw new Error("prepared tool-home snapshot changed before task materialization");
 	}

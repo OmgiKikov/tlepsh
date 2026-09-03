@@ -717,3 +717,29 @@ describe("ru refusals and notices", () => {
 		expect(leakedEnglish(lines)).toEqual([]);
 	});
 });
+
+describe("ru: the knowledge base", () => {
+	it("names the citation failure mode and the knowledge-base exam in Russian", () => {
+		setLanguage("ru");
+		// The new grader's failure mode is a title an operator reads, not a code.
+		expect(t("mode.title.cites-source")).toBe("Ответ не опирается на источник");
+		expect(leakedEnglish(t("mode.title.cites-source"))).toEqual([]);
+
+		// The passport's one word about where an exam's questions came from.
+		expect(t("passport.exam-generated-kb")).toContain("по базе знаний");
+		expect(t("passport.exam-generated-kb-reviewed")).toContain("по базе знаний");
+		expect(leakedEnglish(t("passport.exam-generated-kb"))).toEqual([]);
+
+		// The dialog, the result line, and the sentence the Builder is told.
+		expect(t("generate-holdout.source-kb", { chunks: plural(16, "passage") }))
+			.toBe("база знаний — 16 фрагментов, по одному вопросу на каждый");
+		expect(plural(1, "passage")).toBe("1 фрагмент");
+		expect(plural(3, "passage")).toBe("3 фрагмента");
+		expect(plural(11, "passage")).toBe("11 фрагментов");
+		expect(t("generate-holdout.by-judge-kb", { cases: plural(16, "case"), generator: "x/y" }))
+			.toBe("16 кейсов по базе знаний · генерирует судья x/y");
+		expect(t("message.exam-sealed-kb", { cases: plural(16, "case") })).toContain("по базе знаний");
+		expect(t("holdout.reason-kb")).toContain("по базе знаний");
+		expect(t("cmd.holdout")).toContain("из базы знаний");
+	});
+});

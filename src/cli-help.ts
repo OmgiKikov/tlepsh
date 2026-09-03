@@ -583,7 +583,7 @@ evalSuite.simulatedUser model. Optional "maxTurns" (1..12, default 6) and
 "stopWhen" bound the conversation. A recipe maps "dialogue" or "simulatedUser",
 never both.`,
 	"corpus synth": `Usage: ahde corpus synth --target <dir> [--project <id>] --sealed <N> --name "<exam name>" \\
-                  [--seed <s>] [--from <spec.md>] [--examples <K>] [--review <path>]
+                  [--seed <s>] [--from <spec.md>] [--examples <K>] [--review <path>] [--from-kb]
 
 Write a sealed exam when there is no real one to import. The generator is this
 Target's configured JUDGE model — never the Builder, and never the Target's own
@@ -612,9 +612,19 @@ that file (mode 0600, refused inside the Target tree, refused when it already
 exists) for you to read and edit. Seal them yourself afterwards:
   ahde corpus import --project <id> --visibility sealed --name <name> --file <path>
 
+--from-kb writes the exam from the Target's KNOWLEDGE BASE instead of its Spec,
+for an agent that answers from documents. The declared data/kb tree is chunked
+deterministically, N passages are drawn from the dataset hash, the seed and the
+chunk id, and the judge is shown ONE passage per call — a question no single
+passage answers is not checkable. Each case carries the answer as its reference,
+the chunk id in metadata, and two graders: cites_source against that chunk and
+token-f1 against the reference. N is capped by the number of passages. Refused,
+exit 2, when the manifest declares no data/kb or it holds no .md or .txt file.
+
 A receipt lands in <state-root>/projects/<id>/sealed-synth/<hash>.json: the
 generator fingerprint, the prompt hash, the Spec hash, the development example
-ids, N, the seed, the counts, and the timestamp. No case content, ever.
+ids, the source, the knowledge-base index hash, N, the seed, the counts, and the
+timestamp. No case content, ever.
 
 Below 15 cases the sealed guardrail can only ever say \`underpowered\`, and the
 command says so.`,
