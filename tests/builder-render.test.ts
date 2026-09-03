@@ -1344,6 +1344,26 @@ describe("renderTarget", () => {
 		expect(text).toContain("Execution tools none · network allow · sandbox off · env none");
 	});
 
+	it("gives the files the manifest declares their own group", () => {
+		const lines = renderTarget({
+			...targetContext,
+			resources: [
+				...targetContext.resources,
+				{ kind: "harness-file", name: "prompts/system.md", path: "prompts/system.md", mode: "100644", bytes: 1592, sha256: HASH },
+				{ kind: "harness-file", name: "prompts/ru/tone.md", path: "prompts/ru/tone.md", mode: "100644", bytes: 240, sha256: HASH },
+			],
+		}, plainPaint);
+		// The canonical list is untouched, and the declared surface follows it
+		// under its own heading — for a command Target these ARE the harness.
+		expect(lines[3]).toBe("Resources");
+		expect(lines[6]).toBe(`  ${"tools/lookup".padEnd(40)} ${"tool program".padEnd(16)} 1.5 KB · executable`);
+		expect(lines[7]).toBe("Files the harness declares");
+		expect(lines[8]).toBe(`  ${"prompts/system.md".padEnd(40)} ${"harness file".padEnd(16)} 1.6 KB`);
+		expect(lines[9]).toBe(`  ${"prompts/ru/tone.md".padEnd(40)} ${"harness file".padEnd(16)} 240 B`);
+		// And a Target with no declared surface grows no empty heading.
+		expect(renderTarget(targetContext, plainPaint)).not.toContain("Files the harness declares");
+	});
+
 	it("prints a requested resource verbatim and indented", () => {
 		const lines = renderTarget({
 			...targetContext,

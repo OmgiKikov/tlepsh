@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	chmodSync,
+	cpSync,
 	mkdirSync,
 	mkdtempSync,
 	rmSync,
@@ -10,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	classifyTargetAuthoringResourcePath,
@@ -19,6 +21,7 @@ import {
 	type TargetAuthoringContextErrorCode,
 } from "../src/application/target-authoring-context.js";
 import { createAhdeWorkbench } from "../src/workbench/workbench.js";
+import { loadTarget } from "../src/manifest.js";
 
 const roots: string[] = [];
 const CONTAINER_DIGEST = "a".repeat(64);
@@ -368,6 +371,92 @@ describe("Target Authoring Context", () => {
 	});
 });
 
+/**
+ * The shipped command Target: a Python agent whose manifest declares
+ * `harness: { files: [prompts/**] }`. Its editable surface is a prompt file,
+ * not `AGENTS.md`, and until the read side learned to say so its Builder was
+ * being asked to fix a file it could not open.
+ */
+const PYTHON_AGENT = fileURLToPath(new URL("../templates/python-agent", import.meta.url));
+
+function commandTargetFixture(): { repositoryDir: string; gitSha: string; id: string } {
+	const repositoryDir = root("ahde-declared-harness-");
+	cpSync(PYTHON_AGENT, repositoryDir, { recursive: true });
+	git(repositoryDir, "init", "-q");
+	git(repositoryDir, "config", "user.name", "Declared Fixture");
+	git(repositoryDir, "config", "user.email", "declared@example.test");
+	git(repositoryDir, "add", "-A");
+	git(repositoryDir, "commit", "-qm", "the shipped python agent");
+	const target = loadTarget(repositoryDir);
+	return { repositoryDir, gitSha: target.gitSha, id: target.manifest.id };
+}
+
+describe("a Target that declares its own harness surface", () => {
+	it("exposes the declared prompt as a resource the Builder can read", () => {
+		const fixture = commandTargetFixture();
+		const overview = inspectTargetAuthoringContext({
+			repositoryDir: fixture.repositoryDir,
+			expectedTarget: { id: fixture.id, gitSha: fixture.gitSha },
+		});
+		expect(overview.resources.map(({ kind, path, mode }) => ({ kind, path, mode }))).toEqual([
+			{ kind: "instructions", path: "AGENTS.md", mode: "100644" },
+			{ kind: "tool-executable", path: "bin/create_ticket", mode: "100755" },
+			{ kind: "tool-executable", path: "bin/get_account", mode: "100755" },
+			{ kind: "harness-file", path: "prompts/system.md", mode: "100644" },
+			{ kind: "tool-descriptor", path: "tools/create_ticket.tool.yaml", mode: "100644" },
+			{ kind: "tool-descriptor", path: "tools/get_account.tool.yaml", mode: "100644" },
+		]);
+		// A declared file is named by its own path: the surface is declared by
+		// glob, so the path is the only name it has.
+		expect(overview.resources.find((resource) => resource.kind === "harness-file")?.name).toBe("prompts/system.md");
+		// Declared data stays shape-only, exactly as for a Pi Target.
+		expect(overview.data.map((directory) => directory.path)).toEqual(["data/kb"]);
+
+		const exact = inspectTargetAuthoringContext({
+			repositoryDir: fixture.repositoryDir,
+			expectedTarget: { id: fixture.id, gitSha: fixture.gitSha },
+			resourcePath: "prompts/system.md",
+		});
+		expect(exact.contextHash).toBe(overview.contextHash);
+		expect(exact.resource).toMatchObject({ kind: "harness-file", path: "prompts/system.md" });
+		expect(exact.resource?.content).toContain("Волна");
+	});
+
+	it("still refuses the operator's own code, the evidence, and the manifest", () => {
+		const fixture = commandTargetFixture();
+		const read = (resourcePath: string) => () => inspectTargetAuthoringContext({
+			repositoryDir: fixture.repositoryDir,
+			expectedTarget: { id: fixture.id, gitSha: fixture.gitSha },
+			resourcePath,
+		});
+		// `agent.py` is the operator's program, not the harness — that is the
+		// whole point of a declared surface.
+		for (const path of [
+			"agent.py",
+			"README.md",
+			"manifest.yaml",
+			"evals/development.jsonl",
+			"data/kb/tariffs.md",
+			"prompts/../agent.py",
+		]) expectCode(read(path), "TARGET_RESOURCE_DENIED");
+	});
+
+	it("refuses a declared file the surface cannot hold in one bounded context", () => {
+		const fixture = commandTargetFixture();
+		writeFileSync(join(fixture.repositoryDir, "prompts", "huge.md"), "x".repeat(513 * 1024));
+		git(fixture.repositoryDir, "add", "-A");
+		git(fixture.repositoryDir, "commit", "-qm", "an oversize declared file");
+		const gitSha = git(fixture.repositoryDir, "rev-parse", "HEAD");
+		expectCode(
+			() => inspectTargetAuthoringContext({
+				repositoryDir: fixture.repositoryDir,
+				expectedTarget: { id: fixture.id, gitSha },
+			}),
+			"TARGET_RESOURCE_TOO_LARGE",
+		);
+	});
+});
+
 describe("the canonical resource rules say themselves", () => {
 	it("explains every shape a refusal can be about, and only for paths that are refused", () => {
 		// Each sentence names the rule the path broke. They live next to the
@@ -392,5 +481,34 @@ describe("the canonical resource rules say themselves", () => {
 		]) expect(classifyTargetAuthoringResourcePath(path)).toBeNull();
 		expect(classifyTargetAuthoringResourcePath("skills/bank-knowledge/SKILL.md")).toMatchObject({ kind: "skill", name: "bank-knowledge" });
 		expect(classifyTargetAuthoringResourcePath("bin/check_dbo")).toMatchObject({ kind: "tool-executable", name: "check_dbo" });
+	});
+
+	it("refuses a declared surface in the words of its own declaration", () => {
+		const declared = ["prompts/**"];
+		// The Pi sentence is true of the Pi layout and useless to an agent whose
+		// behaviour lives in prompts/, so the refusal names what this one declares.
+		expect(explainTargetAuthoringResourcePath("README.md", declared))
+			.toBe("the harness declares prompts/**; a Harness also holds AGENTS.md, skills/<name>/SKILL.md, tools/<name>/…, bin/<name> and data/<name>/…");
+		// A canonical shape still gets the precise canonical sentence.
+		expect(explainTargetAuthoringResourcePath("bin/Check-DBO", declared))
+			.toBe("a tool executable is bin/<name>, where <name> matches [a-z][a-z0-9_]*");
+		// And the Pi default is byte for byte the sentence it always was.
+		expect(explainTargetAuthoringResourcePath("README.md"))
+			.toBe(explainTargetAuthoringResourcePath("README.md", ["AGENTS.md", "skills/**", "tools/**", "bin/**"]));
+	});
+
+	it("classifies a declared file, and only for a Target that declares one", () => {
+		expect(classifyTargetAuthoringResourcePath("prompts/system.md", ["prompts/**"]))
+			.toEqual({ kind: "harness-file", name: "prompts/system.md", modes: ["100644"] });
+		// The Pi default adds nothing: under it, a noncanonical path stays refused.
+		expect(classifyTargetAuthoringResourcePath("prompts/system.md")).toBeNull();
+		expect(classifyTargetAuthoringResourcePath("skills/x/notes.md", ["AGENTS.md", "skills/**", "tools/**", "bin/**"])).toBeNull();
+		// Canonical identity wins over a declaration that also covers the path.
+		expect(classifyTargetAuthoringResourcePath("AGENTS.md", ["AGENTS.md", "prompts/**"]))
+			.toMatchObject({ kind: "instructions", name: null });
+		// Host-owned, evidence, traversal and hidden paths are never harness files.
+		for (const path of ["manifest.yaml", "evals/development.jsonl", "data/kb/x.md", "prompts/../agent.py", "prompts/.env"]) {
+			expect(classifyTargetAuthoringResourcePath(path, ["**"]), path).toBeNull();
+		}
 	});
 });
