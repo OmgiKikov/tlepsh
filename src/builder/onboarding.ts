@@ -11,6 +11,7 @@ import { plural, t } from "../i18n.js";
 import { detectAgentFolder, type DetectedAgentFolder } from "../application/agent-folder-detect.js";
 import type { TargetManifest } from "../manifest.js";
 import type { ToolCredentialSlot } from "../application/tool-authoring.js";
+import { HOST_OWNED_TOOL_ENVIRONMENT } from "../target/tool-manifest.js";
 import type { AhdeWorkbench } from "../workbench/workbench.js";
 import type { WorkbenchHumanGate, WorkbenchView } from "../workbench/types.js";
 import { WorkbenchDecisionDeclinedError } from "../workbench/errors.js";
@@ -188,6 +189,12 @@ export async function selectEvaluatorCredentialEnvironment(
 /**
  * Resolve logical tool credential slots in host UI. Builder Pi supplies only
  * purpose (`api_token`); the concrete environment name never appears in chat.
+ *
+ * A host-owned name is refused rather than bound: the broker sets
+ * `AHDE_TOOL_HOME` and `AHDE_WORLD` on the tool process itself, so binding a
+ * slot to one would promise the operator a variable they neither own nor can
+ * change, and would make a key that is always present look like a key they
+ * forgot to export.
  */
 export async function selectToolCredentialEnvironments(
 	ctx: Pick<ExtensionContext, "ui">,
@@ -206,6 +213,9 @@ export async function selectToolCredentialEnvironments(
 		if (!ENVIRONMENT_NAME.test(name)) {
 			throw new Error("Tool credential binding must be one environment-variable name; never paste the credential value");
 		}
+		if (HOST_OWNED_TOOL_ENVIRONMENT.has(name)) {
+			throw new Error(`${name} is set by the host on every tool process; it cannot hold a tool credential`);
+		}
 		bindings[slot.id] = name;
 	}
 	return bindings;
@@ -220,6 +230,12 @@ export async function selectToolCredentialEnvironments(
  * descriptor already declares, in which case the operator is told to export it,
  * or a different name, in which case the descriptor is what has to change and
  * saying so is the whole answer.
+ *
+ * A host-owned name is skipped outright. `toolCredentialReadiness` already
+ * drops those, so nothing should reach here; the filter stays because being
+ * sent to a terminal to export `AHDE_WORLD` is the exact failure this pair of
+ * functions caused in session 7, and it must not come back through a second
+ * caller.
  */
 export async function confirmDeclaredToolCredentials(
 	ctx: Pick<ExtensionContext, "ui">,
@@ -228,6 +244,7 @@ export async function confirmDeclaredToolCredentials(
 	if (typeof ctx.ui.input !== "function") return;
 	const asked = new Set<string>();
 	for (const entry of missing) {
+		if (HOST_OWNED_TOOL_ENVIRONMENT.has(entry.environment)) continue;
 		if (asked.has(entry.environment)) continue;
 		asked.add(entry.environment);
 		const answered = await ctx.ui.input(

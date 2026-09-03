@@ -10,6 +10,7 @@ import {
 	confirmDeclaredToolCredentials,
 	defaultJudgeSelection,
 	describeHostModelCatalog,
+	selectToolCredentialEnvironments,
 	evaluatorsStillUnchosen,
 	hostDefaultJudge,
 	hostModelCatalog,
@@ -226,6 +227,26 @@ describe("a declared tool key nobody exported", () => {
 			message: "Nothing is stored here. Export WEATHER_API_KEY in the shell that runs ahde, then try the tool again.",
 			tone: "info",
 		}]);
+	});
+
+	/**
+	 * The broker sets `AHDE_WORLD` and `AHDE_TOOL_HOME` on the tool process
+	 * itself. Session 7 asked the operator to export one of them anyway.
+	 */
+	it("never asks about a name the host sets itself", async () => {
+		const host = uiContext([]);
+		await confirmDeclaredToolCredentials(host.ctx, [
+			{ tool: "get_account", environment: "AHDE_WORLD" },
+			{ tool: "create_ticket", environment: "AHDE_TOOL_HOME" },
+		]);
+		expect(host.asked).toEqual([]);
+		expect(host.notes).toEqual([]);
+	});
+
+	it("refuses to bind a new tool's credential slot to a host-owned name", async () => {
+		const host = uiContext(["AHDE_WORLD"]);
+		await expect(selectToolCredentialEnvironments(host.ctx, "weather", [{ id: "token", purpose: "api_token", required: true }]))
+			.rejects.toThrow(/set by the host on every tool process/);
 	});
 
 	it("says a different variable is a change to the tool, and refuses a pasted value", async () => {
