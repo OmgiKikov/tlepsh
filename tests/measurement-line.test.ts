@@ -94,6 +94,32 @@ describe("the composed sentence", () => {
 		expect(measurementLine({ development: measurementSurface({ ...SUMMARY, ...GATE }) }).exam).toBeNull();
 	});
 
+	it("says why a generated exam is smaller than the one that was ordered", () => {
+		// Session 6 ordered 20 cases and the exam ran on 19; no screen said why.
+		const short = {
+			...EXAM,
+			tasks: 19,
+			generation: { requested: 20, accepted: 19, droppedDuplicate: 1, droppedMalformed: 0 },
+		};
+		expect(examLine(short)!.text)
+			.toBe("pass (+30.3 pts, 95% CI +12 … +48) on 19 cases × 3 (1 duplicate dropped when it was generated)");
+		expect(examLine(short)!.shortfall).toBe("(1 duplicate dropped when it was generated)");
+		setLanguage("ru");
+		expect(examLine(short)!.text).toContain("на 19 кейсах × 3 (при генерации отброшено: 1 дубликат)");
+		setLanguage(null);
+		// Both reasons, when both dropped something.
+		expect(examLine({ ...short, tasks: 17, generation: { requested: 20, accepted: 17, droppedDuplicate: 1, droppedMalformed: 2 } })!.shortfall)
+			.toBe("(1 duplicate, 2 malformed cases dropped when it was generated)");
+		// A short exam whose receipt blames nothing still admits the shortfall.
+		expect(examLine({ ...short, generation: { requested: 20, accepted: 19, droppedDuplicate: 0, droppedMalformed: 0 } })!.shortfall)
+			.toBe("(short of the 20 that were ordered)");
+		// An exam that delivered what was ordered, and one the operator brought,
+		// say nothing at all.
+		expect(examLine({ ...EXAM, generation: { requested: 20, accepted: 20, droppedDuplicate: 0, droppedMalformed: 0 } })!.shortfall).toBe("");
+		expect(examLine(EXAM)!.shortfall).toBe("");
+		expect(examLine(EXAM)!.text).toBe("pass (+30.3 pts, 95% CI +12 … +48) on 20 cases × 3");
+	});
+
 	it("names the pass rate as the metric when pre-v4 evidence recorded no score", () => {
 		const line = measurementLine({ development: measurementSurface({ ...SUMMARY, tasks: 7, repetitions: 3 }) });
 		// The interval on legacy evidence brackets the pass-rate delta, and that

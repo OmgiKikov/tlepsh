@@ -8,6 +8,7 @@ import {
 	listSealedSynthReceipts,
 	planSealedSynthesis,
 	renderSealedSynthOutput,
+	sealedExamGeneration,
 	sealedExamOrigin,
 	SealedSynthRefusal,
 	sealedSynthSource,
@@ -373,6 +374,14 @@ describe("sealed synthetic generation", () => {
 		expect(result.droppedDuplicate).toBe(2);
 		expect(result.droppedMalformed).toBe(2);
 		expect(result.corpus?.taskCount).toBe(1);
+		// The exam ran smaller than it was ordered, and the receipt is the only
+		// place that difference is written down. Every screen that explains it
+		// reads it from here rather than inferring it from a count.
+		expect(sealedExamGeneration(stateRoot, "project", result.corpus!.id))
+			.toEqual({ requested: 5, accepted: 1, droppedDuplicate: 2, droppedMalformed: 2 });
+		// An exam the operator brought has no receipt here, and no answer.
+		expect(sealedExamGeneration(stateRoot, "project", `corpus-${"f".repeat(64)}`)).toBeNull();
+		expect(sealedExamGeneration(stateRoot, "project", null)).toBeNull();
 		const warnings = renderSealedSynthOutput(result).warnings.join("\n");
 		expect(warnings).toContain("2 generated case(s) repeated a development input");
 		expect(warnings).toContain("2 generated case(s) did not match the case schema");

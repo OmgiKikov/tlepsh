@@ -1568,6 +1568,8 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"plan.progress": "step {done} of {total}",
 	"prediction.mode-named": "failure mode «{mode}» {hash} {from}/{of} → ≤{to}/{of}",
 	"result.screen-inconclusive-over-budget": "· {count} inconclusive — over the infrastructure error budget",
+	"exam.dropped-at-generation": "({dropped} dropped when it was generated)",
+	"exam.short-of-requested": "(short of the {requested} that were ordered)",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2861,6 +2863,8 @@ const ru: Record<MessageKey, string> = {
 	"plan.progress": "шаг {done} из {total}",
 	"prediction.mode-named": "тип сбоя «{mode}» {hash} {from}/{of} → ≤{to}/{of}",
 	"result.screen-inconclusive-over-budget": "· {count} неубедительно — превышен бюджет инфраструктурных ошибок",
+	"exam.dropped-at-generation": "(при генерации отброшено: {dropped})",
+	"exam.short-of-requested": "(заказано было {requested})",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

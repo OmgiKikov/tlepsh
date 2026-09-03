@@ -200,7 +200,18 @@ export interface WorkbenchCandidateSummary {
 		/** v4 gate verdict; null for legacy (v1–v3) evidence. */
 		gate: WorkbenchGateProjection | null;
 	} | null;
-	sealedHoldout: { executed: boolean; gatePassed: boolean; gate: WorkbenchGateProjection | null };
+	sealedHoldout: {
+		executed: boolean;
+		gatePassed: boolean;
+		gate: WorkbenchGateProjection | null;
+		/**
+		 * What the judge was asked for and what survived, for an exam this
+		 * project generated. Read off the sealed-synthesis receipt so a screen
+		 * can say why an exam ordered at 20 cases ran on 19; absent for an exam
+		 * the operator brought, whose provenance is theirs.
+		 */
+		generation?: { requested: number; accepted: number; droppedDuplicate: number; droppedMalformed: number } | null;
+	};
 	/**
 	 * How far the judge behind this evidence has been checked against a human.
 	 * Absent when the evidence leans on no judge grader; null when it does and

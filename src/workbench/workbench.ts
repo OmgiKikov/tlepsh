@@ -39,6 +39,7 @@ import {
 } from "../application/dataset-recipe.js";
 import {
 	planSealedSynthesis,
+	sealedExamGeneration,
 	sealedSynthReviewPath,
 	synthesizeSealedCorpus,
 } from "../application/sealed-synth.js";
@@ -829,6 +830,16 @@ export class AhdeWorkbench {
 		const evaluated = candidate.events.find((event) => event.type === "evaluated");
 		if (evaluated?.type !== "evaluated") return candidateSummary(candidate);
 		const regraded = this.candidateRegrade(evaluated.evaluation.development, developmentEvals);
+		// Why the exam is the size it is: 20 cases ordered, one a duplicate of a
+		// development case, 19 sealed. Read off the receipt this project wrote,
+		// and null for an exam the operator brought.
+		const generation = sealedExamGeneration(
+			this.stateRoot,
+			candidate.projectId,
+			evaluated.evaluation.sealedHoldout?.corpus?.id ?? null,
+		);
+		const withExam = (summary: WorkbenchCandidateSummary): WorkbenchCandidateSummary =>
+			generation === null ? summary : { ...summary, sealedHoldout: { ...summary.sealedHoldout, generation } };
 		try {
 			const approvedSpec = candidate.origin.kind === "applied-builder"
 				? {
@@ -848,8 +859,8 @@ export class AhdeWorkbench {
 				requireBoundLineage: true,
 				...(approvedSpec ? { approvedSpec } : {}),
 			});
-			if (calibration.specHashes.length === 0) return candidateSummary(candidate, undefined, regraded);
-			return candidateSummary(
+			if (calibration.specHashes.length === 0) return withExam(candidateSummary(candidate, undefined, regraded));
+			return withExam(candidateSummary(
 				candidate,
 				calibration.stats
 					? {
@@ -859,9 +870,9 @@ export class AhdeWorkbench {
 					}
 					: null,
 				regraded,
-			);
+			));
 		} catch {
-			return candidateSummary(candidate, undefined, regraded);
+			return withExam(candidateSummary(candidate, undefined, regraded));
 		}
 	}
 

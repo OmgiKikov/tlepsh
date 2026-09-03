@@ -174,7 +174,11 @@ export function candidateMeasurement(
 		development: development && (development.comparison || development.gate)
 			? measurementSurface({ ...development.comparison, ...development.gate })
 			: null,
-		exam: sealedHoldout.gate,
+		// The gate says what the exam decided; the receipt says why it was the
+		// size it was. Both belong to the same sentence.
+		exam: sealedHoldout.gate
+			? { ...sealedHoldout.gate, generation: sealedHoldout.generation ?? null }
+			: null,
 	});
 }
 

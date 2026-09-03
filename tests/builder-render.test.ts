@@ -1140,6 +1140,17 @@ describe("renderReview", () => {
 		expect(lines[3]).toBe("  ↑ 3 improved · ↓ 1 lower · = 6 unchanged · cost ×1.4 · latency ×0.9");
 		expect(lines[4]).toBe("Sealed holdout pass (+23 pts, 95% CI +5 … +35) on 30 cases × 3 · cost ×1.4 · latency ×0.9");
 		for (const line of lines) expect(line.length).toBeLessThanOrEqual(110);
+		// Session 6 ordered 20 cases and the exam ran on 19; the panel said only
+		// "19". The receipt says why, so the size fragment does too.
+		const short = renderReview(makeCandidateReview({
+			sealedHoldout: {
+				executed: true,
+				gatePassed: true,
+				gate: { ...gate("sealed"), tasks: 19 },
+				generation: { requested: 20, accepted: 19, droppedDuplicate: 1, droppedMalformed: 0 },
+			},
+		}), plainPaint);
+		expect(short[4]).toContain("on 19 cases × 3 (1 duplicate dropped when it was generated)");
 		// Nothing about a sealed task ever reaches the screen.
 		expect(lines.join("\n")).not.toContain("task-");
 		// An unmeasured pair simply drops the fragment.

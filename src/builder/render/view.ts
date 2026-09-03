@@ -448,10 +448,14 @@ export function renderCandidate(
 		lines.push(regradedDevelopmentLine(candidate.development.comparison, candidate.regraded, paint));
 	}
 	const sealedGate = candidate.sealedHoldout.gate;
-	const exam = examLine(sealedGate);
+	// The gate says what the exam decided; the receipt behind it says why it was
+	// the size it was — 19 cases for the 20 that were ordered.
+	const exam = examLine(sealedGate && { ...sealedGate, generation: candidate.sealedHoldout.generation ?? null });
 	lines.push(`${paint.dim(t("label.sealed-holdout"))} ${candidate.sealedHoldout.executed
 		? (sealedGate && exam
-			? `${verdictTone(sealedGate.verdict, paint)(exam.verdict)} ${exam.delta} ${paint.dim(exam.design)}${resourceSuffix(sealedGate, paint)}`
+			? `${verdictTone(sealedGate.verdict, paint)(exam.verdict)} ${exam.delta} ${paint.dim(exam.design)}${
+				exam.shortfall ? ` ${paint.muted(exam.shortfall)}` : ""
+			}${resourceSuffix(sealedGate, paint)}`
 			: (candidate.sealedHoldout.gatePassed ? paint.success(t("sealed.gate-passed")) : paint.error(t("sealed.legacy"))))
 		: paint.muted(t("sealed.not-executed"))}`);
 	if (sealedGate && sealedGate.verdict !== "pass") lines.push(`  ${paint.muted(oneLine(sealedGate.reasons[0] ?? "", 160))}`);

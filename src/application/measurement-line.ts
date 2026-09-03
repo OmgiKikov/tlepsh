@@ -116,6 +116,12 @@ export interface ExamSurface {
 	confidence95: { low: number; high: number } | null;
 	tasks: number;
 	repetitions: number;
+	/**
+	 * What the judge was asked for and what survived, for an exam generated
+	 * here. Read off the sealed-synthesis receipt; absent for an exam the
+	 * operator brought, and for evidence recorded before receipts existed.
+	 */
+	generation?: { requested: number; accepted: number; droppedDuplicate: number; droppedMalformed: number } | null;
 }
 
 /**
@@ -166,11 +172,30 @@ function designOf(tasks: number, repetitions: number): string {
 	return repetitions > 0 ? t("measurement.on-cases", { cases, repetitions }) : t("measurement.on-cases-only", { cases });
 }
 
+/**
+ * Why an exam is smaller than the one that was ordered.
+ *
+ * A generated exam is a request and a yield: 20 cases were asked for, one
+ * repeated a development case and was dropped, and the exam ran on 19. Silent
+ * whenever the yield was the whole request, so the ordinary exam says nothing.
+ */
+export function examShortfallNote(generation: ExamSurface["generation"]): string {
+	if (!generation || generation.accepted >= generation.requested) return "";
+	const dropped = [
+		generation.droppedDuplicate > 0 ? plural(generation.droppedDuplicate, "duplicate") : null,
+		generation.droppedMalformed > 0 ? plural(generation.droppedMalformed, "malformed case") : null,
+	].filter((part): part is string => part !== null);
+	if (dropped.length === 0) return t("exam.short-of-requested", { requested: generation.requested });
+	return t("exam.dropped-at-generation", { dropped: dropped.join(", ") });
+}
+
 /** The sealed guardrail's own parts, so a panel can paint its verdict. */
 export interface ExamLine {
 	verdict: string;
 	delta: string;
 	design: string;
+	/** `(1 duplicate dropped when it was generated)`, or "" for a whole exam. */
+	shortfall: string;
 	/** `pass (+30 pts, 95% CI +12 … +48) on 20 cases × 3`. */
 	text: string;
 }
@@ -186,7 +211,16 @@ export function examLine(exam: ExamSurface | null | undefined): ExamLine | null 
 	const verdict = exam.outcome ? `${verdictLabel(exam.verdict)} · ${sealedOutcomeLabel(exam.outcome)}` : verdictLabel(exam.verdict);
 	const delta = deltaOf(exam.scoreDelta, exam.confidence95);
 	const design = designOf(exam.tasks, exam.repetitions);
-	return { verdict, delta, design, text: trimSeparator([verdict, delta, design].filter((part) => part.length > 0).join(" ")) };
+	// The exam ran on 19 cases because one of the 20 was a duplicate. The size
+	// is where that belongs: right behind the number it explains.
+	const shortfall = examShortfallNote(exam.generation);
+	return {
+		verdict,
+		delta,
+		design,
+		shortfall,
+		text: trimSeparator([verdict, delta, design, shortfall].filter((part) => part.length > 0).join(" ")),
+	};
 }
 
 /**
