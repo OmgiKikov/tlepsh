@@ -103,7 +103,10 @@ it decides.
    and mode-aware, plus its declared lockfile bytes. A command Target's entry
    executable is Target identity on the same terms: `argv[0]` is resolved and
    hashed at spawn, not at resolution, and persisted as `agentEntryHash` on
-   every Run and EvalRun. One eval run is one entry executable. A declared setup step runs
+   every Run and EvalRun. One eval run is one entry executable. The files the
+   manifest declares in `harness.files` are Target identity on the same terms:
+   they are part of the hashed model-visible workspace, so a rewritten prompt is
+   a different Target and never a reusable baseline. A declared setup step runs
    once in a private per-tool staging home and scratch directory inside the
    same sandbox; it never receives write access to the shared final tool home.
    The staged directory is attested and atomically promoted into that home.
@@ -190,8 +193,13 @@ it decides.
 30. Harness authoring context is read only from the exact clean Git commit
    selected by the host. It enumerates no ambient files and exposes only
    the complete non-secret execution policy and canonical manifest-declared
-   `AGENTS.md`, skill `SKILL.md`, and tool descriptor/executable resources.
-   Dirty or stale revisions, undeclared or
+   `AGENTS.md`, skill `SKILL.md`, and tool descriptor/executable resources —
+   plus, when the manifest declares `harness.files`, exactly the files that
+   surface names, bounded like a skill and counted one per file in the same
+   closure rule. Host-owned configuration, the evaluation inputs, a declared
+   `data/` tree and hidden files are never readable, whatever that surface
+   globs over; a workshop over such a Target holds the declared surface and
+   nothing else. Dirty or stale revisions, undeclared or
     private paths, traversal, symlinks, unsafe modes, malformed UTF-8, and
     oversized context fail closed before Proposal compilation. Git replacement
     refs are ignored. Structured authoring must echo the host-minted context
