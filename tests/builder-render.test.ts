@@ -1584,6 +1584,36 @@ describe("renderDecision", () => {
 		expect(asVerify.join("\n")).not.toContain("Live trace");
 	});
 
+	it("says “inconclusive” once on the cheap-check line", () => {
+		const screen = {
+			verdict: "promising" as const,
+			tasks: 8,
+			improved: 1,
+			unchanged: 4,
+			regressed: 0,
+			inconclusive: 3,
+			withinErrorBudget: false,
+			screenEvalRunId: "erun-screen",
+			sourceEvalRunId: "erun-source",
+		};
+		const verified = (over: typeof screen): string[] => renderDecision(
+			decision("verify-candidate", { outcome: "verified" as const, headline: candidateHeadline(makeCandidate().development, makeCandidate().sealedHoldout), screen: over, candidate: makeCandidate(), development: { verdict: "improved", scoreDelta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"),
+			plainPaint,
+		);
+		// Session 6 printed the verdict twice: the count, and the reason with the
+		// word attached to it again.
+		const line = verified(screen)[0]!;
+		expect(line).toBe("Cheap check promising · 8 previously failing cases × 1 · 1 improved · 4 unchanged · 0 regressed · 3 inconclusive — over the infrastructure error budget");
+		expect(line.match(/inconclusive/g)).toHaveLength(1);
+		// A budget blown with nothing left inconclusive still says why.
+		const noCount = verified({ ...screen, inconclusive: 0 })[0]!;
+		expect(noCount).toContain("· over the infrastructure error budget, so inconclusive");
+		expect(noCount.match(/inconclusive/g)).toHaveLength(1);
+		// And a screen inside its budget reads exactly as it always did.
+		expect(verified({ ...screen, withinErrorBudget: true })[0])
+			.toBe("Cheap check promising · 8 previously failing cases × 1 · 1 improved · 4 unchanged · 0 regressed · 3 inconclusive");
+	});
+
 	it("renders verification, apply, discard, and abandon decisions", () => {
 		const verified = renderDecision(decision("verify-candidate", { outcome: "verified" as const, headline: candidateHeadline(makeCandidate().development, makeCandidate().sealedHoldout), screen: null, candidate: makeCandidate(), development: { verdict: "improved", scoreDelta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"), plainPaint);
 		expect(verified[0]).toBe("Candidate verified candidate-1 · evaluated");

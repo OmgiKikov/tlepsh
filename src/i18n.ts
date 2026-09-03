@@ -1567,6 +1567,7 @@ one would cost more than usual, and then you get a single yes/no.`,
 	// lane: polish
 	"plan.progress": "step {done} of {total}",
 	"prediction.mode-named": "failure mode «{mode}» {hash} {from}/{of} → ≤{to}/{of}",
+	"result.screen-inconclusive-over-budget": "· {count} inconclusive — over the infrastructure error budget",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2859,6 +2860,7 @@ const ru: Record<MessageKey, string> = {
 	// lane: polish
 	"plan.progress": "шаг {done} из {total}",
 	"prediction.mode-named": "тип сбоя «{mode}» {hash} {from}/{of} → ≤{to}/{of}",
+	"result.screen-inconclusive-over-budget": "· {count} неубедительно — превышен бюджет инфраструктурных ошибок",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };
