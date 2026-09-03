@@ -4,9 +4,9 @@
 import { t } from "../../i18n.js";
 import { redactTraceText } from "../../trace.js";
 import { hashValue } from "../../provenance.js";
-import { WorkbenchStaleDecisionError } from "../errors.js";
+import { blockedReasonText, typedRefusalReason, WorkbenchStaleDecisionError } from "../errors.js";
 import { requireProposal, proposalReview } from "../resolution.js";
-import { type WorkbenchVerifyCandidateResult, type WorkbenchDecisionResult } from "../types.js";
+import { type WorkbenchVerificationBlocked, type WorkbenchVerifyCandidateResult, type WorkbenchDecisionResult } from "../types.js";
 import { exactSame } from "../workbench.js";
 import type { DecisionContext, DecisionHost, DecisionInputOf } from "./shared.js";
 
@@ -36,7 +36,7 @@ export async function decideApplyProposal(
 	const contractCases = host.draftToolContractCases(after.exactDiff);
 	const settled = host.select("proposal", proposal.record.runId);
 	let view = await host.viewOf(settled);
-	let verified: WorkbenchVerifyCandidateResult | { outcome: "blocked"; reason: string } | undefined;
+	let verified: WorkbenchVerifyCandidateResult | WorkbenchVerificationBlocked | undefined;
 	if (input.verify) {
 		try {
 			const check = await host.decide({
@@ -51,9 +51,11 @@ export async function decideApplyProposal(
 		} catch (error) {
 			// Apply is already durable. A missing/declined exam or runtime failure is
 			// an explicit verification blocker, never a lie that Apply rolled back.
+			const reasonCode = typedRefusalReason(error);
 			verified = {
 				outcome: "blocked",
 				reason: redactTraceText(error instanceof Error ? error.message : String(error)).slice(0, 500),
+				...(reasonCode ? { reasonCode } : {}),
 			};
 			view = await host.viewOf(host.select("proposal", proposal.record.runId));
 		}
@@ -63,7 +65,7 @@ export async function decideApplyProposal(
 		message: verified === undefined
 			? t("message.proposal-applied")
 			: verified.outcome === "blocked"
-				? t("message.proposal-applied-blocked", { reason: verified.reason })
+				? t("message.proposal-applied-blocked", { reason: blockedReasonText(verified) })
 				: t("message.proposal-applied-verified"),
 		result: {
 			runId: result.receipt.runId,

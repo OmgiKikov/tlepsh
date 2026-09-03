@@ -1486,6 +1486,8 @@ one would cost more than usual, and then you get a single yes/no.`,
 	// Worded around the count rather than after it: "1 file still carry" is not a
 	// sentence, and this line has to read for one file as well as for five.
 	"readiness.stand-ins": "The template's REPLACE-ME stand-ins are still in {files}: {names} — describe the agent and the Builder replaces them",
+	// lane: smoke-fixes
+	"blocker.sealed-exam-missing": "Verification did not start: the agent has no sealed exam. Say “generate an exam” and the judge writes one, or import a sealed JSONL.",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2711,6 +2713,8 @@ const ru: Record<MessageKey, string> = {
 	// lane: template-placeholders
 	"blocker.target-stand-ins": "У агента ещё стоят подставные REPLACE-ME из шаблона в полях {fields} — выбери имя и модель.",
 	"readiness.stand-ins": "{files} ещё с подставными REPLACE-ME из шаблона: {names} — опиши агента, и Билдер их заменит",
+	// lane: smoke-fixes
+	"blocker.sealed-exam-missing": "Проверка не запустилась: у агента нет закрытого экзамена. Скажи «сгенерируй экзамен» — его напишет судья, или импортируй закрытый JSONL.",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

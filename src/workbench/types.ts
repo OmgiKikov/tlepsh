@@ -388,6 +388,20 @@ export interface WorkbenchBlockerReason {
 	detail?: string;
 }
 
+/**
+ * Apply is durable; the verification funded by the same confirmation is not.
+ * A missing exam, a declined holdout or a runtime failure stops it, and the
+ * refusal is minted twice for the same reason blockers are: `reason` is the
+ * English sentence the model reads, `reasonCode` the typed form the host
+ * renders in the operator's language. The English used to be the only form,
+ * and it reached the operator inside the `◆` headline, cut mid-word.
+ */
+export interface WorkbenchVerificationBlocked {
+	outcome: "blocked";
+	reason: string;
+	reasonCode?: WorkbenchBlockerReason;
+}
+
 export interface WorkbenchView {
 	schemaVersion: 1;
 	project: { id: string; directory: string };
@@ -1278,7 +1292,7 @@ export interface WorkbenchDecisionResultMap {
 		candidateSha: string;
 		proposalHash: string;
 		/** Present on the product Apply path; omitted by low-level recovery callers. */
-		verification?: WorkbenchVerifyCandidateResult | { outcome: "blocked"; reason: string };
+		verification?: WorkbenchVerifyCandidateResult | WorkbenchVerificationBlocked;
 		/**
 		 * Development cases the host drafted for every tool this proposal created
 		 * or changed. A draft, never a publication: what the agent does with a new
