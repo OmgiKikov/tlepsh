@@ -428,8 +428,15 @@ async function wrapTarget(
 	projectDir: string,
 	found: DetectedAgentFolder,
 ): Promise<WrapOutcome> {
+	// The first sentence a new operator reads. It counts what the adoption will
+	// declare — the descriptors on disk — and names the knowledge base, because
+	// half of what such an agent knows lives in `data/kb` and a sentence that
+	// leaves it out understates the agent to the person who wrote it.
 	const choice = await ctx.ui.select(
-		t("onboarding.wrap.seen", { entry: found.entry, tools: plural(found.toolCount, "tool") }),
+		t(found.knowledgeBase ? "onboarding.wrap.seen-kb" : "onboarding.wrap.seen", {
+			entry: found.entry,
+			tools: plural(found.toolCount, "tool"),
+		}),
 		[ADOPT(), CREATE_NEW(), LATER()],
 	);
 	if (choice === LATER() || choice === undefined) return "deferred";

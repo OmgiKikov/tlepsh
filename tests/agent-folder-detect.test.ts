@@ -38,8 +38,48 @@ describe("what counts as an agent folder", () => {
 			entry: "agent.py",
 			language: "python",
 			toolCount: 2,
+			knowledgeBase: false,
 			filesScanned: 2,
 		});
+	});
+
+	/**
+	 * Session 7 opened with «Вижу агента (agent.py, 0 инструментов)» over a
+	 * folder holding two valid descriptors, which the same product listed by
+	 * name half a minute later. The first sentence a new operator reads must
+	 * count the things the adoption is about to declare.
+	 */
+	it("counts the tool descriptors on disk, not the tool-ish shapes in the Python", () => {
+		const dir = folder({
+			"agent.py": "import openai\n",
+			"tools/get_account.tool.yaml": "name: get_account\n",
+			"tools/create_ticket.tool.yaml": "name: create_ticket\n",
+			// The operator's own code under tools/ is not a descriptor.
+			"tools/helpers.py": "def lookup(): ...\n",
+		});
+		expect(detectAgentFolder(dir)?.toolCount).toBe(2);
+	});
+
+	it("prefers the descriptors when the Python also decorates its own tools", () => {
+		const dir = folder({
+			"agent.py": "import openai\n@tool\ndef a(): ...\n@tool\ndef b(): ...\n@tool\ndef c(): ...\n",
+			"tools/get_account.tool.yaml": "name: get_account\n",
+		});
+		// One descriptor and three decorators are not four tools: the manifest
+		// will declare exactly the descriptor, so that is the number said out loud.
+		expect(detectAgentFolder(dir)?.toolCount).toBe(1);
+	});
+
+	it("sees the knowledge base, and only under its own name", () => {
+		expect(detectAgentFolder(folder({
+			"agent.py": "import openai\n",
+			"data/kb/tariffs.md": "# Тарифы\n",
+		}))?.knowledgeBase).toBe(true);
+		expect(detectAgentFolder(folder({
+			"agent.py": "import openai\n",
+			"data/fixtures/x.json": "{}\n",
+		}))?.knowledgeBase).toBe(false);
+		expect(detectAgentFolder(folder({ "agent.py": "import openai\n" }))?.knowledgeBase).toBe(false);
 	});
 
 	it("prefers agent.py over main.py, and main.py over app.py", () => {

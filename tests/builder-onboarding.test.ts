@@ -345,6 +345,23 @@ describe("adopting the agent already in the folder", () => {
 		}]);
 	});
 
+	/**
+	 * The first sentence a new operator reads. Session 7's said «0
+	 * инструментов» over two valid descriptors and said nothing about the
+	 * knowledge base half the agent's answers came out of.
+	 */
+	it("counts the descriptors and names the knowledge base in the first sentence", async () => {
+		const dir = agentDir({
+			"agent.py": "import openai\n",
+			"tools/get_account.tool.yaml": "name: get_account\n",
+			"tools/create_ticket.tool.yaml": "name: create_ticket\n",
+			"data/kb/tariffs.md": "# Тарифы\n",
+		});
+		const { ctx, host, asked } = harness([t("onboarding.later-choice")]);
+		await runFirstRunOnboarding(ctx, { ...host, projectDir: dir }, (await host.workbench.view()) as WorkbenchView);
+		expect(asked[0]).toBe(t("onboarding.wrap.seen-kb", { entry: "agent.py", tools: plural(2, "tool") }));
+	});
+
 	it("takes the operator's own command and file list when they type one", async () => {
 		const dir = agentDir();
 		const { ctx, host, decided } = harness([

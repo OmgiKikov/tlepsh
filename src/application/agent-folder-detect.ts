@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 
 /**
@@ -52,12 +52,65 @@ const MODEL_IMPORT = /^\s*(?:from|import)\s+(openai|anthropic|httpx|requests)\b/
 /** Shapes that read as "a tool the agent can call". Counted for a sentence, never for a decision. */
 const TOOL_SHAPES = [/^\s*@\w*\.?tool\b/gm, /^\s*(?:TOOLS|tools)\s*=\s*\[/gm, /^\s*def\s+tool_\w+/gm];
 
+const ADOPTED_TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/;
+const ADOPTED_DATA_NAME = /^[a-z0-9][a-z0-9._-]*$/;
+/** The one data directory the host knows by name: it is what turns `kb_search` on. */
+export const KNOWLEDGE_BASE_DIRECTORY = "data/kb";
+
+/**
+ * What the folder already carries in the two shapes the manifest can declare:
+ * tool descriptors (`tools/<name>.tool.yaml` or `tools/<name>/tool.yaml`) and
+ * data directories (`data/<name>`). An adopted agent whose tools the host does
+ * not declare is an agent whose tools the host will never broker and whose
+ * knowledge base never turns `kb_search` on — so the adoption declares exactly
+ * what is on disk, sorted, and leaves anything else under those directories
+ * (a `tools/foo.py`, a `data/Bad Name`) to the operator's own code.
+ *
+ * It lives here, beside the detector, because the door's very first sentence
+ * counts the same things the manifest will declare. Session 7 opened with
+ * «Вижу агента (agent.py, 0 инструментов)» over a folder holding two valid
+ * descriptors, which the same product then listed by name half a minute later.
+ * `target-scaffold.ts` re-exports it, so every existing importer is unmoved.
+ */
+export function discoverAdoptedDeclarations(projectDir: string): { tools: string[]; data: string[] } {
+	const entries = (directory: string): { name: string; file: boolean; directory: boolean }[] => {
+		const absolute = join(projectDir, directory);
+		if (!existsSync(absolute) || lstatSync(absolute).isSymbolicLink() || !statSync(absolute).isDirectory()) return [];
+		return readdirSync(absolute)
+			.map((name) => {
+				const entry = lstatSync(join(absolute, name));
+				return { name, file: entry.isFile(), directory: entry.isDirectory() };
+			})
+			.sort((a, b) => a.name.localeCompare(b.name));
+	};
+	const tools: string[] = [];
+	for (const entry of entries("tools")) {
+		const single = /^(.+)\.tool\.yaml$/.exec(entry.name)?.[1];
+		if (entry.file && single && ADOPTED_TOOL_NAME.test(single)) tools.push(`tools/${entry.name}`);
+		if (entry.directory && ADOPTED_TOOL_NAME.test(entry.name)) {
+			const descriptor = join(projectDir, "tools", entry.name, "tool.yaml");
+			if (existsSync(descriptor) && lstatSync(descriptor).isFile()) tools.push(`tools/${entry.name}/tool.yaml`);
+		}
+	}
+	const data = entries("data")
+		.filter((entry) => entry.directory && ADOPTED_DATA_NAME.test(entry.name))
+		.map((entry) => `data/${entry.name}`);
+	return { tools, data };
+}
+
 export interface DetectedAgentFolder {
 	/** Repository-relative path of the entry point, with `/` separators. */
 	entry: string;
 	language: "python";
-	/** How many tool-ish declarations were seen. For the sentence, not the decision. */
+	/**
+	 * How many tools the sentence should name. Descriptors when the folder has
+	 * any — they are exactly what the adoption will declare and the host will
+	 * broker — and otherwise the tool-ish shapes read out of the Python. For the
+	 * sentence, not the decision.
+	 */
 	toolCount: number;
+	/** Whether the folder carries a `data/kb` the host would search. */
+	knowledgeBase: boolean;
 	filesScanned: number;
 }
 
@@ -166,5 +219,17 @@ export function detectAgentFolder(directory: string): DetectedAgentFolder | null
 		const body = readIfSmall(join(root, file));
 		if (body !== null) toolCount += countTools(body);
 	}
-	return { entry, language: "python", toolCount, filesScanned: files.length };
+	// A declared descriptor beats a guess at Python. The two are not additive:
+	// a `tools/get_account.tool.yaml` and a `@tool` decorator in the operator's
+	// own code are the same tool seen twice, and the number the sentence should
+	// say is the number the manifest is about to declare.
+	const declared = discoverAdoptedDeclarations(root);
+	if (declared.tools.length > 0) toolCount = declared.tools.length;
+	return {
+		entry,
+		language: "python",
+		toolCount,
+		knowledgeBase: declared.data.includes(KNOWLEDGE_BASE_DIRECTORY),
+		filesScanned: files.length,
+	};
 }
