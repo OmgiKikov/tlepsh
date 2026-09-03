@@ -609,9 +609,14 @@ function assertWorkshopScope(requested: string): void {
 	const inScope = requested === "AGENTS.md" ||
 		WORKSHOP_SCOPE_PREFIXES.some((prefix) => requested.startsWith(prefix) && requested.length > prefix.length);
 	if (!inScope) {
+		// The rule is not "these five names exist" — `bin` was refused while the
+		// same sentence listed `bin/**` as allowed. A workshop addresses
+		// `AGENTS.md` and files INSIDE the four directories; the directories
+		// themselves are not paths a workshop may name.
 		throw new BuilderWorkshopScopeError(
 			[requested],
-			`only ${BUILDER_WORKSHOP_SCOPE.join(", ")} exist in a workshop`,
+			`a workshop addresses AGENTS.md and files inside ${WORKSHOP_SCOPE_DIRECTORIES.join("/, ")}/ — ` +
+			"name a file inside one of them, not the directory itself",
 		);
 	}
 }

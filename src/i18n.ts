@@ -1488,6 +1488,8 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"readiness.stand-ins": "The template's REPLACE-ME stand-ins are still in {files}: {names} — describe the agent and the Builder replaces them",
 	// lane: smoke-fixes
 	"blocker.sealed-exam-missing": "Verification did not start: the agent has no sealed exam. Say “generate an exam” and the judge writes one, or import a sealed JSONL.",
+	"refusal.workshop-out-of-scope": "There is no such path in the workshop. It holds AGENTS.md and whatever is inside {scope} — name a file, for example bin/check_dbo.",
+	"refusal.workshop-unsafe-path": "That is not a path the workshop can take: a plain relative path, no “..”, no drive letter, no backslashes.",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2715,6 +2717,8 @@ const ru: Record<MessageKey, string> = {
 	"readiness.stand-ins": "{files} ещё с подставными REPLACE-ME из шаблона: {names} — опиши агента, и Билдер их заменит",
 	// lane: smoke-fixes
 	"blocker.sealed-exam-missing": "Проверка не запустилась: у агента нет закрытого экзамена. Скажи «сгенерируй экзамен» — его напишет судья, или импортируй закрытый JSONL.",
+	"refusal.workshop-out-of-scope": "Такого пути в мастерской нет. В ней лежат AGENTS.md и всё, что внутри {scope} — назови файл, например bin/check_dbo.",
+	"refusal.workshop-unsafe-path": "Такой путь мастерская не примет: только обычный относительный путь, без «..», без буквы диска и без обратных слэшей.",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

@@ -2719,14 +2719,26 @@ describe("the workshop tool cards", () => {
 		expect(authored).not.toContain("0/0");
 		expect(authored).not.toContain("second line is not shown");
 
-		// A write refused by scope is a refusal, not a green “✓ wrote”.
+		// A write refused by scope is a refusal, not a green “✓ wrote”. The path
+		// is named once, by the card; the sentence beside it says the real rule,
+		// which is not "these five names exist" — `bin` was refused by a sentence
+		// that listed `bin/**` among the allowed.
 		const written = render(
 			"ahde_workshop_write",
-			thrown("workshop scope refuses evals/development.jsonl: only AGENTS.md, skills/**, tools/**, bin/**, data/** exist in a workshop"),
+			thrown(
+				"workshop scope refuses evals/development.jsonl: a workshop addresses AGENTS.md and files inside " +
+					"skills/, tools/, bin/, data/ — name a file inside one of them, not the directory itself",
+			),
 			{ path: "evals/development.jsonl" },
 			{ isError: true },
 		);
-		expect(written).toContain("workshop scope refuses evals/development.jsonl");
+		const said = written.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+		expect(said).toBe(
+			"✗ evals/development.jsonl There is no such path in the workshop. " +
+				"It holds AGENTS.md and whatever is inside skills/, tools/, bin/, data/ — name a file, for example bin/check_dbo.",
+		);
+		// The path is on the card once, never repeated by the sentence.
+		expect(written).not.toContain("workshop scope refuses");
 		expect(written).not.toContain("✓");
 	});
 
@@ -2770,13 +2782,22 @@ describe("a refusal on screen", () => {
 		).render(200).join("\n").trimEnd();
 	}
 
-	it("shows the first line of the reason the host gave, bounded", () => {
+	it("shows the reason the host gave, whole, wrapped, and bounded", () => {
 		expect(refusal("Target has uncommitted changes: notes.md. Commit them, then author.\n    at openWorkshop"))
 			.toBe("<error>✗</error> Target has uncommitted changes: notes.md. Commit them, then author.");
-		// Bounded: a runaway reason cannot push the transcript around.
-		const long = refusal(`${"x".repeat(400)}`);
-		expect([...long.split("</error> ")[1]!].length).toBe(140);
+		// A long reason wraps instead of losing its tail mid-word: `/tasks/3/gr…`
+		// is not a repair instruction and `for example bi…` is not advice.
+		const wordy = refusal(Array.from({ length: 40 }, (_, index) => `word${index}`).join(" "));
+		const lines = wordy.split("\n").map((line) => line.replace(/<[^>]+>/g, "").trimEnd());
+		expect(lines.length).toBeGreaterThan(1);
+		expect(wordy).toContain("word39");
+		expect(wordy).not.toContain("…");
+		for (const line of lines) expect(line.length).toBeLessThanOrEqual(124);
+		// Bounded: a runaway reason cannot push the transcript around, and an
+		// unbroken run with no word boundary in it still has to end.
+		const long = refusal("x".repeat(900));
 		expect(long).toContain("…");
+		expect(long.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim().length).toBeLessThanOrEqual(605);
 		// Nothing to say is still a card, never a crash.
 		expect(refusal("")).toBe("<error>✗</error>");
 	});
@@ -2793,6 +2814,17 @@ describe("a refusal on screen", () => {
 			// A message the host did not word itself is shown exactly as it came.
 			expect(refusal("tools/check_dbo is outside the declared Harness scope"))
 				.toContain("tools/check_dbo is outside the declared Harness scope");
+			// The workshop scope refusal, in Russian and true: it used to refuse
+			// `bin` in English while listing `bin/**` among the allowed.
+			const scope = refusal(
+				"workshop scope refuses bin: a workshop addresses AGENTS.md and files inside " +
+					"skills/, tools/, bin/, data/ — name a file inside one of them, not the directory itself",
+			).replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+			expect(scope).toBe(
+				"✗ Такого пути в мастерской нет. В ней лежат AGENTS.md и всё, что внутри skills/, tools/, bin/, data/ — " +
+					"назови файл, например bin/check_dbo.",
+			);
+			expect(scope).not.toContain("refuses bin");
 		} finally {
 			setLanguage(null);
 		}

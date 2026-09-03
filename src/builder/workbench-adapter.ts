@@ -9,7 +9,7 @@ import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import { decisionHeadline, renderDecision } from "./render/decision.js";
-import { oneLine } from "./render/format.js";
+import { oneLine, wrap } from "./render/format.js";
 import { themePaint } from "./render/paint.js";
 import { nextStep, stageLabel } from "./render/stage.js";
 import { renderDatasetCases, renderReview, renderView, viewTitle } from "./render/view.js";
@@ -90,7 +90,11 @@ export function refusalCard(
 		.map((line) => line.trim())
 		.find((line) => line.length > 0) ?? "";
 	const named = subject ? `${paint.bold(subject)} ` : "";
-	return card([`${paint.error("✗")} ${named}${oneLine(hostRefusal(reason), 140)}`]);
+	// A refusal is the operator's whole account of what did not happen, so it
+	// wraps instead of being cut: `name a file, for example bi…` is not advice,
+	// and a validation error cut at `/tasks/3/gr…` is not a repair instruction.
+	const [head, ...rest] = wrap(oneLine(hostRefusal(reason), 600), 120);
+	return card([`${paint.error("✗")} ${named}${head ?? ""}`, ...rest.map((line) => `  ${line}`)]);
 }
 
 /**
@@ -114,8 +118,19 @@ function hostRefusal(reason: string): string {
 	}
 	const running = /^running is not possible during ([a-z-]+)/.exec(reason);
 	if (running) return stageRefusal(running[1] ?? "");
+	// A workshop refusal already has the offending path bolded beside it on the
+	// card, so the operator's half never repeats it.
+	if (/^workshop scope refuses .*: a workshop addresses AGENTS\.md/.test(reason)) {
+		return t("refusal.workshop-out-of-scope", { scope: WORKSHOP_SCOPE_WORDS });
+	}
+	if (/^workshop scope refuses .*: a workshop path is a safe relative POSIX path/.test(reason)) {
+		return t("refusal.workshop-unsafe-path");
+	}
 	return reason;
 }
+
+/** The four directories a workshop addresses, as one phrase for the refusal. */
+const WORKSHOP_SCOPE_WORDS = "skills/, tools/, bin/, data/";
 
 /** The Workbench's own artifact words, in the operator's vocabulary. */
 function artifactLabel(kind: string): string {
