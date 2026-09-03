@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	chmodSync,
+	cpSync,
 	existsSync,
 	lstatSync,
 	mkdirSync,
@@ -16,6 +17,7 @@ import { createServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	BuilderWorkshopEmptyError,
@@ -25,7 +27,7 @@ import {
 	type BuilderWorkshop,
 } from "../src/application/tool-workshop.js";
 import { inspectTargetAuthoringContext } from "../src/application/target-authoring-context.js";
-import { CANDIDATE_SCOPE_POLICY } from "../src/application/candidate-experiment.js";
+import { CANDIDATE_SCOPE_POLICY, candidateScopeFor } from "../src/application/candidate-experiment.js";
 import { recordBuilderAuthoredProposal } from "../src/application/builder-authoring.js";
 import {
 	applyBuilderProposal,
@@ -1688,4 +1690,83 @@ permissions:
 			workshop.dispose();
 		}
 	}, 180_000);
+});
+
+/**
+ * The other kind of Target: a program whose manifest declares
+ * `harness: { files: [prompts/**] }`. Its workshop must hold the prompt and
+ * nothing of the operator's code — the whole point of a declared surface.
+ */
+const PYTHON_AGENT = fileURLToPath(new URL("../templates/python-agent", import.meta.url));
+
+function commandFixture(): string {
+	const dir = mkdtempSync(join(tmpdir(), "ahde-declared-workshop-"));
+	created.push(dir);
+	cpSync(PYTHON_AGENT, dir, { recursive: true });
+	execFileSync("git", ["-C", dir, "init", "-q"]);
+	execFileSync("git", ["-C", dir, "add", "-A"]);
+	execFileSync("git", [
+		"-C", dir, "-c", "user.name=test", "-c", "user.email=test@test", "commit", "-qm", "the shipped python agent",
+	]);
+	return dir;
+}
+
+describe("a workshop over a declared harness surface", () => {
+	it("holds the declared prompt, refuses the operator's code, and compiles only what it changed", () => {
+		const dir = commandFixture();
+		const workshop = open(dir);
+		try {
+			expect(workshop.status().scope).toEqual(["data/**", "prompts/**"]);
+
+			const before = workshop.read("prompts/system.md");
+			expect(before.kind).toBe("file");
+			expect(before.content).toContain("Волна");
+
+			// The operator's program, its README and its evidence are not the
+			// harness, and the refusal names the declaration rather than a layout
+			// this Target has never had.
+			for (const path of ["agent.py", "README.md", "AGENTS.md", "evals/development.jsonl"]) {
+				expect(() => workshop.read(path)).toThrow(BuilderWorkshopScopeError);
+				expect(() => workshop.write({ path, content: "no\n" })).toThrow(/this Target's harness declares prompts\/\*\*/);
+			}
+
+			workshop.write({
+				path: "prompts/system.md",
+				oldText: "## Что делать",
+				newText: "## Что делать\n\n0. Здоровайся по имени, если оно есть в обращении.",
+			});
+			expect(workshop.changes()).toEqual([
+				{ path: "prompts/system.md", status: "modified", bytes: expect.any(Number) },
+			]);
+
+			const compiled = workshop.compile({ summary: "Greet the customer by name when the ticket carries one" });
+			expect(compiled.proposal.changes.map((change) => change.path)).toEqual(["prompts/system.md"]);
+			expect(compiled.manifestChangePolicy).toBe("resources-only");
+			// The proposal is admissible under the scope the experiment will
+			// enforce, and under no wider one.
+			expect(() => validateCandidateProposal(compiled.proposal, {
+				baseTargetSha: compiled.baseTargetSha,
+				allowedPaths: candidateScopeFor(loadTarget(dir).manifest).allowed,
+			})).not.toThrow();
+			expect(() => validateCandidateProposal(compiled.proposal, {
+				baseTargetSha: compiled.baseTargetSha,
+				allowedPaths: [...CANDIDATE_SCOPE_POLICY.allowed],
+			})).toThrow(/outside the allowed scope: prompts\/system\.md/);
+		} finally {
+			workshop.dispose();
+		}
+	}, 120_000);
+
+	it("leaves the operator's checkout untouched, prompt included", () => {
+		const dir = commandFixture();
+		const digest = checkoutDigest(dir);
+		const workshop = open(dir);
+		try {
+			workshop.write({ path: "prompts/system.md", content: "Совсем другой промпт.\n" });
+			expect(workshop.compile({ summary: "Rewrite the system prompt" }).changes).toHaveLength(1);
+		} finally {
+			workshop.dispose();
+		}
+		expect(checkoutDigest(dir)).toBe(digest);
+	}, 120_000);
 });

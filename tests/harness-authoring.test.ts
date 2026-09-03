@@ -456,6 +456,29 @@ describe("structured harness authoring", () => {
 		})).toThrow(/changed since the Target authoring context was inspected/);
 	});
 
+	it("refuses a Target whose manifest declares its own harness surface", () => {
+		const declared = initTarget();
+		const manifestPath = join(declared.repositoryDir, "manifest.yaml");
+		writeFileSync(
+			manifestPath,
+			readFileSync(manifestPath, "utf8").replace("skills: []", "harness:\n  files: [prompts/**]\nskills: []"),
+		);
+		mkdirSync(join(declared.repositoryDir, "prompts"), { recursive: true });
+		writeFileSync(join(declared.repositoryDir, "prompts", "system.md"), "Отвечай коротко.\n");
+		git(declared.repositoryDir, ["add", "-A"]);
+		git(declared.repositoryDir, ["commit", "-m", "declare the editable surface"]);
+
+		// Every intent this module speaks names a canonical Pi resource, and
+		// `instructions.replace` on a Target whose loop may only rewrite prompts/
+		// would author a file the experiment then refuses. The refusal points at
+		// the tool that can do the job.
+		expect(() => compileHarnessAuthoringProposal({
+			repositoryDir: declared.repositoryDir,
+			summary: "Rewrite the instructions of an agent whose harness is a prompt file",
+			intents: [{ type: "instructions.replace", content: "# New instructions\n" }],
+		})).toThrow(/declares its own harness surface \(prompts\/\*\*\).*open a workshop instead/s);
+	});
+
 	it("keeps compiler output closed under the exact Target context policy", () => {
 		const countBound = initTarget();
 		declareSkills(countBound.repositoryDir, 64, 128);

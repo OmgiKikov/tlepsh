@@ -7,6 +7,12 @@ import { compareEvalRuns, type CompareResult } from "../compare.js";
 import { loadCorpus, type CorpusRef, type LoadedCorpus } from "../corpus.js";
 import { EXACT_COMPARISON_GATE_ALGORITHM_ID_V4, INFRASTRUCTURE_ERROR_BUDGET, withinInfrastructureBudget } from "../domain/comparison-gate.js";
 import {
+	harnessScopePaths,
+	isDefaultPiHarness,
+	matchesHarnessGlob,
+	PI_HARNESS_SCOPE_PATHS,
+} from "../domain/harness-surface.js";
+import {
 	CandidateRecordSchema,
 	ComparisonGateEvidenceSchema,
 	candidateStatus,
@@ -36,7 +42,6 @@ import {
 } from "../manifest.js";
 import {
 	axisDifferences,
-	canonicalJson,
 	executionFingerprint,
 	hashValue,
 	modelFingerprint,
@@ -62,7 +67,7 @@ import {
 
 export const CANDIDATE_SCOPE_POLICY = {
 	id: "candidate-harness-resources-v3",
-	allowed: ["AGENTS.md", "manifest.yaml", "skills/**", "bin/**", "tools/**", "data/**"],
+	allowed: PI_HARNESS_SCOPE_PATHS,
 } as const;
 
 /**
@@ -83,12 +88,9 @@ export function candidateScopeFor(
 	manifest: Pick<ResolvedTarget["manifest"], "harness">,
 ): { id: string; allowed: string[] } {
 	const declared = harnessFilesOf(manifest);
-	if (canonicalJson(declared) === canonicalJson(DEFAULT_PI_HARNESS_FILES)) {
-		return { id: CANDIDATE_SCOPE_POLICY.id, allowed: [...CANDIDATE_SCOPE_POLICY.allowed] };
-	}
 	return {
-		id: "candidate-declared-harness-v1",
-		allowed: ["manifest.yaml", "data/**", ...declared],
+		id: isDefaultPiHarness(declared) ? CANDIDATE_SCOPE_POLICY.id : "candidate-declared-harness-v1",
+		allowed: harnessScopePaths(declared),
 	};
 }
 
@@ -207,13 +209,27 @@ function changedFiles(repositoryDir: string, baselineSha: string, candidateSha: 
 	return output.split("\0").filter(Boolean).sort();
 }
 
-function isAllowedCandidatePath(path: string): boolean {
-	return path === "AGENTS.md" || path === "manifest.yaml" ||
-		["skills/", "bin/", "tools/", "data/"].some((prefix) => path.startsWith(prefix));
+/**
+ * The declared surface of one worktree, for the scope check that runs before
+ * anything is loaded. An unreadable manifest is not decided here: it falls back
+ * to the Pi layout and fails a few lines later, loudly, in `loadTarget`.
+ */
+function declaredHarnessAt(worktreePath: string): readonly string[] {
+	try {
+		return harnessFilesOf(
+			parseStrictTargetManifest(readFileSync(join(worktreePath, "manifest.yaml")), "baseline manifest.yaml"),
+		);
+	} catch {
+		return DEFAULT_PI_HARNESS_FILES;
+	}
 }
 
-function validateScope(mode: ExperimentMode, files: string[]): void {
-	const violations = files.filter((path) => !isAllowedCandidatePath(path));
+function validateScope(mode: ExperimentMode, files: string[], declared: readonly string[]): void {
+	// The same scope the proposal was authored under, read through the same
+	// matcher. A Target whose harness is `prompts/**` would otherwise be
+	// measured only to have its own declared change refused here.
+	const allowed = harnessScopePaths(declared);
+	const violations = files.filter((path) => !allowed.some((glob) => matchesHarnessGlob(path, glob)));
 	if (violations.length > 0) {
 		throw new Error(`candidate scope violation: ${violations.join(", ")}`);
 	}
@@ -648,7 +664,7 @@ export async function runCandidateExperiment(
 			// Pure preflight first: no evaluator may run until scope, both target
 			// identities, and any sealed in-memory target clones are validated.
 			const files = changedFiles(worktrees.repositoryDir, worktrees.baseline.sha, worktrees.candidate.sha);
-			validateScope(options.mode, files);
+			validateScope(options.mode, files, declaredHarnessAt(worktrees.baseline.path));
 			if (files.includes("manifest.yaml")) {
 				assertManifestChangePolicy(
 					parseStrictTargetManifest(

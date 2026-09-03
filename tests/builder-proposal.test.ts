@@ -42,6 +42,7 @@ import {
 } from "../src/application/builder-discard.js";
 import { runSuite } from "../src/eval.js";
 import { loadTarget } from "../src/manifest.js";
+import { CANDIDATE_SCOPE_POLICY, candidateScopeFor } from "../src/application/candidate-experiment.js";
 import { saveSpecSnapshot, type AgentSpec } from "../src/spec.js";
 import { readJsonArtifact } from "../src/storage/artifacts.js";
 
@@ -267,13 +268,14 @@ async function persistProposal(input: {
 	baseSha: string;
 	runId: string;
 	proposal?: CandidateProposal;
+	allowedPaths?: string[];
 }) {
 	const runsRoot = root("ahde-builder-runs-");
 	const value = input.proposal ?? proposal(input.baseSha);
 	return runBuilderProposal({
 		adapter: adapter((request) => completedRecord(request, value)),
 		baseTargetSha: input.baseSha,
-		allowedPaths: ALLOWED_PATHS,
+		allowedPaths: input.allowedPaths ?? ALLOWED_PATHS,
 		failureBundle: "# Exact failure evidence\n",
 		runsRoot,
 		timeoutMs: 1_000,
@@ -877,6 +879,52 @@ describe("runBuilderProposal", () => {
 });
 
 describe("applyBuilderProposal", () => {
+	it("applies on the file the manifest declares as the harness, and refuses it under the Pi scope", async () => {
+		const repositoryDir = root("ahde-builder-declared-repo-");
+		git(repositoryDir, ["init", "-b", "main"]);
+		git(repositoryDir, ["config", "user.name", "Fixture"]);
+		git(repositoryDir, ["config", "user.email", "fixture@example.test"]);
+		mkdirSync(join(repositoryDir, "prompts"), { recursive: true });
+		writeFileSync(join(repositoryDir, "prompts", "system.md"), "old\n");
+		git(repositoryDir, ["add", "-A"]);
+		git(repositoryDir, ["commit", "-m", "base"]);
+		const baseSha = git(repositoryDir, ["rev-parse", "HEAD"]);
+		const declared = candidateScopeFor({ harness: { files: ["prompts/**"] } });
+		const change = proposal(baseSha, { path: "prompts/system.md" });
+
+		// The Pi scope has never held prompts/, and a proposal that pretends
+		// otherwise is rejected where every other out-of-scope path is.
+		const refused = await persistProposal({
+			repositoryDir,
+			baseSha,
+			runId: "builder-apply-declared-refused",
+			proposal: change,
+			allowedPaths: [...CANDIDATE_SCOPE_POLICY.allowed],
+		});
+		expect(refused.record.result.status).toBe("failed");
+		expect(refused.record.result.error?.message).toMatch(/outside the allowed scope: prompts\/system\.md/);
+
+		const persisted = await persistProposal({
+			repositoryDir,
+			baseSha,
+			runId: "builder-apply-declared",
+			proposal: change,
+			allowedPaths: declared.allowed,
+		});
+		const result = applyBuilderProposal({
+			repoDir: repositoryDir,
+			runsRoot: dirname(dirname(persisted.runDir)),
+			runId: "builder-apply-declared",
+			requestedBranch: "candidate/builder-apply-declared",
+			actor: { kind: "human", id: "reviewer-1" },
+			reason: "The declared surface is what this Target's loop may rewrite",
+		}, { now: () => NOW });
+		expect(result.receipt.paths).toEqual(["prompts/system.md"]);
+		expect(git(repositoryDir, ["show", "candidate/builder-apply-declared:prompts/system.md"])).toBe("new");
+		// Applying is still the operator's move; the checkout has not moved.
+		expect(git(repositoryDir, ["rev-parse", "HEAD"])).toBe(baseSha);
+	});
+
 	it("rejects a stale host-confirmed Builder hash before creating a branch or receipt", async () => {
 		const { repositoryDir, baseSha } = initRepository();
 		const persisted = await persistProposal({ repositoryDir, baseSha, runId: "builder-apply-stale-confirmation" });

@@ -26,11 +26,17 @@ import {
 } from "../builders/adapters.js";
 import {
 	ExecutionPolicyBlock,
+	harnessFilesOf,
 	loadTarget,
 	TargetManifest,
 	type ResolvedTarget,
 	type TargetManifest as TargetManifestValue,
 } from "../manifest.js";
+import {
+	harnessScopePaths,
+	isDefaultPiHarness,
+	withinDeclaredHarness,
+} from "../domain/harness-surface.js";
 import { redactTraceText } from "../trace.js";
 import {
 	openDetachedWorktree,
@@ -497,15 +503,83 @@ async function runDeclaredToolInDirectory(options: {
 // only writable surface Builder Pi ever receives, and closing it compiles the
 // proposal from what is actually on disk rather than from stated intent.
 
-/** The only paths a workshop may read, create, change, or remove. */
+/** The only paths a Pi Target's workshop may read, create, change, or remove. */
 export const BUILDER_WORKSHOP_SCOPE = ["AGENTS.md", "skills/**", "tools/**", "bin/**", "data/**"] as const;
-const WORKSHOP_SCOPE_PREFIXES = ["skills/", "tools/", "bin/", "data/"] as const;
 const WORKSHOP_SCOPE_DIRECTORIES = ["skills", "tools", "bin", "data"] as const;
 const WORKSHOP_PATH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
 /** `manifest.yaml` is host-owned: the workshop derives its declarations. */
 const WORKSHOP_MANIFEST = "manifest.yaml";
-/** The whole surface workshop-authored code may see. Host policy stays outside. */
+/** The whole surface a Pi Target's workshop-authored code may see. */
 export const BUILDER_WORKSHOP_MOUNTED_PATHS = [...BUILDER_WORKSHOP_SCOPE] as const;
+
+/**
+ * What ONE workshop may touch, derived from the Target's own manifest.
+ *
+ * A Pi Target's scope is the four canonical directories and `AGENTS.md`, which
+ * is what every workshop has always been; a Target that declares
+ * `harness.files` gets exactly that surface plus its declared data. The two
+ * cases go through the same matcher the candidate scope and the authoring
+ * context use, so what a Builder may open, write and propose is one decision
+ * made once.
+ */
+export interface WorkshopScope {
+	/** The globs, as a proposal and a status line name them. */
+	globs: string[];
+	/** Directories that exist even when empty, and are walked for content. */
+	directories: string[];
+	/** Exact declared files that are not inside any scope directory. */
+	files: string[];
+	/** Does the workshop own this path? */
+	holds(path: string): boolean;
+	/** The sentence a refusal ends with. */
+	refusal: string;
+}
+
+function workshopScopeFor(declared: readonly string[]): WorkshopScope {
+	if (isDefaultPiHarness(declared)) {
+		return {
+			globs: [...BUILDER_WORKSHOP_SCOPE],
+			directories: [...WORKSHOP_SCOPE_DIRECTORIES],
+			files: ["AGENTS.md"],
+			holds: (path) => path === "AGENTS.md" ||
+				WORKSHOP_SCOPE_DIRECTORIES.some((directory) => path.startsWith(`${directory}/`) && path.length > directory.length + 1),
+			// The rule is not "these five names exist" — `bin` was refused while
+			// the same sentence listed `bin/**` as allowed. A workshop addresses
+			// `AGENTS.md` and files INSIDE the four directories; the directories
+			// themselves are not paths a workshop may name.
+			refusal: `a workshop addresses AGENTS.md and files inside ${WORKSHOP_SCOPE_DIRECTORIES.join("/, ")}/ — ` +
+				"name a file inside one of them, not the directory itself",
+		};
+	}
+	// `manifest.yaml` is never in a workshop's hands: the host renders it from
+	// the declarations the workshop's own files imply.
+	const globs = harnessScopePaths(declared).filter((glob) => glob !== WORKSHOP_MANIFEST);
+	const directories: string[] = [];
+	const files: string[] = [];
+	for (const glob of globs) {
+		const segments = glob.split("/");
+		const wildcard = segments.findIndex((segment) => segment.includes("*"));
+		if (wildcard < 0) {
+			files.push(glob);
+			continue;
+		}
+		if (wildcard === 0) {
+			throw new ToolWorkshopError(
+				`a workshop needs a declared surface rooted at a real directory; ${glob} is rooted at a wildcard`,
+			);
+		}
+		directories.push(segments.slice(0, wildcard).join("/"));
+	}
+	const roots = [...new Set(directories)].sort((left, right) => left.localeCompare(right));
+	return {
+		globs,
+		directories: roots.filter((root) => !roots.some((other) => other !== root && root.startsWith(`${other}/`))),
+		files: [...new Set(files)].sort((left, right) => left.localeCompare(right)),
+		holds: (path) => withinDeclaredHarness(path, globs),
+		refusal: `this Target's harness declares ${declared.join(", ")}; a workshop addresses ` +
+			`${globs.join(", ")} — name a declared file, not the directory itself`,
+	};
+}
 
 export const MAX_WORKSHOP_FILE_BYTES = TARGET_AUTHORING_LIMITS.resourceBytes;
 export const MAX_WORKSHOP_CHANGES = 256;
@@ -593,7 +667,7 @@ function workshopScratchRoot(input: string): string {
 	return root;
 }
 
-function assertWorkshopScope(requested: string): void {
+function assertWorkshopScope(requested: string, scope: WorkshopScope): void {
 	if (
 		typeof requested !== "string" ||
 		!WORKSHOP_PATH.test(requested) ||
@@ -606,19 +680,7 @@ function assertWorkshopScope(requested: string): void {
 	) {
 		throw new BuilderWorkshopScopeError([requested], "a workshop path is a safe relative POSIX path with no traversal");
 	}
-	const inScope = requested === "AGENTS.md" ||
-		WORKSHOP_SCOPE_PREFIXES.some((prefix) => requested.startsWith(prefix) && requested.length > prefix.length);
-	if (!inScope) {
-		// The rule is not "these five names exist" — `bin` was refused while the
-		// same sentence listed `bin/**` as allowed. A workshop addresses
-		// `AGENTS.md` and files INSIDE the four directories; the directories
-		// themselves are not paths a workshop may name.
-		throw new BuilderWorkshopScopeError(
-			[requested],
-			`a workshop addresses AGENTS.md and files inside ${WORKSHOP_SCOPE_DIRECTORIES.join("/, ")}/ — ` +
-			"name a file inside one of them, not the directory itself",
-		);
-	}
+	if (!scope.holds(requested)) throw new BuilderWorkshopScopeError([requested], scope.refusal);
 }
 
 /**
@@ -626,8 +688,8 @@ function assertWorkshopScope(requested: string): void {
  * Every existing ancestor must be a regular directory; the leaf must be a
  * regular file or directory; a symlink anywhere fails closed by its own path.
  */
-function resolveWorkshopPath(root: string, requested: string): string {
-	assertWorkshopScope(requested);
+function resolveWorkshopPath(root: string, requested: string, scope: WorkshopScope): string {
+	assertWorkshopScope(requested, scope);
 	const segments = requested.split("/");
 	let cursor = root;
 	for (const [index, segment] of segments.entries()) {
@@ -1077,6 +1139,8 @@ export class BuilderWorkshop {
 	private readonly scratchRoot: string;
 	private readonly baseManifestText: string;
 	private readonly baseManifest: TargetManifestValue;
+	/** What this Target's manifest says a workshop may touch. */
+	private readonly scope: WorkshopScope;
 	private readonly written = new Set<string>();
 	/** Written and then deliberately taken back; the diff owes nothing for these. */
 	private readonly removed = new Set<string>();
@@ -1124,6 +1188,7 @@ export class BuilderWorkshop {
 		this.fromProposalRunId = options.fromProposalRunId ?? null;
 		this.baseManifestText = options.baseManifestText;
 		this.baseManifest = options.baseManifest;
+		this.scope = workshopScopeFor(harnessFilesOf(options.baseManifest));
 		this.toolAuthoringPolicy = options.toolAuthoringPolicy
 			? {
 				network: options.toolAuthoringPolicy.network,
@@ -1158,7 +1223,7 @@ export class BuilderWorkshop {
 
 	read(requested: string): WorkshopReadResult {
 		this.assertOpen();
-		const absolute = resolveWorkshopPath(this.path, requested);
+		const absolute = resolveWorkshopPath(this.path, requested, this.scope);
 		if (!existsSync(absolute)) throw new ToolWorkshopError(`the workshop has no ${requested}`);
 		const info = lstatSync(absolute);
 		if (info.isDirectory()) {
@@ -1223,7 +1288,7 @@ export class BuilderWorkshop {
 		if (forms !== 1) {
 			throw new ToolWorkshopError("a workshop write is exactly one of content, oldText+newText, or remove");
 		}
-		const absolute = resolveWorkshopPath(this.path, request.path);
+		const absolute = resolveWorkshopPath(this.path, request.path, this.scope);
 		const existed = existsSync(absolute);
 		if (existed && lstatSync(absolute).isDirectory()) {
 			throw new BuilderWorkshopScopeError([request.path], "a workshop write targets a file, not a directory");
@@ -1338,7 +1403,7 @@ export class BuilderWorkshop {
 		const paths = new Set<string>();
 		for (const file of files) {
 			const requested = `tools/${tool}/${file.path}`;
-			assertWorkshopScope(requested);
+			assertWorkshopScope(requested, this.scope);
 			if (!requested.startsWith(`tools/${tool}/`) || paths.has(requested)) {
 				throw new ToolWorkshopError(`duplicate or escaping generated tool path ${requested}`);
 			}
@@ -1351,7 +1416,7 @@ export class BuilderWorkshop {
 			}
 		}
 		const directory = `tools/${tool}`;
-		const absolute = resolveWorkshopPath(this.path, directory);
+		const absolute = resolveWorkshopPath(this.path, directory, this.scope);
 		const old = new Map<string, WorkshopFileState>();
 		const symlinks: string[] = [];
 		collectWorkshopFiles(this.path, directory, old, symlinks);
@@ -1366,7 +1431,7 @@ export class BuilderWorkshop {
 		mkdirSync(absolute, { recursive: true, mode: 0o755 });
 		for (const file of files) {
 			const requested = `tools/${tool}/${file.path}`;
-			const destination = resolveWorkshopPath(this.path, requested);
+			const destination = resolveWorkshopPath(this.path, requested, this.scope);
 			mkdirSync(dirname(destination), { recursive: true, mode: 0o755 });
 			writeFileSync(destination, file.content, "utf8");
 			chmodSync(destination, file.mode === "100755" ? 0o755 : 0o644);
@@ -1420,7 +1485,7 @@ export class BuilderWorkshop {
 		}
 		const requestedCwd = request.cwd;
 		if (requestedCwd !== undefined) {
-			const inWorktree = resolveWorkshopPath(this.path, requestedCwd);
+			const inWorktree = resolveWorkshopPath(this.path, requestedCwd, this.scope);
 			if (!existsSync(inWorktree) || !statSync(inWorktree).isDirectory()) {
 				throw new ToolWorkshopError(`the workshop has no directory ${String(requestedCwd)}`);
 			}
@@ -1517,7 +1582,7 @@ export class BuilderWorkshop {
 				sandbox: sandboxBackend,
 				network: confinement.network,
 				environment: names,
-				mounted: BUILDER_WORKSHOP_MOUNTED_PATHS,
+				mounted: this.scope.globs,
 				limits: invocation.limits,
 				note: resourceLimitNote(invocation.limits),
 				exitCode,
@@ -1562,7 +1627,7 @@ export class BuilderWorkshop {
 		}
 		// The scope directories exist even when empty, so a command can write into
 		// them without first guessing that it has to create them.
-		for (const name of WORKSHOP_SCOPE_DIRECTORIES) {
+		for (const name of this.scope.directories) {
 			mkdirSync(join(surface, name), { recursive: true, mode: 0o755 });
 		}
 		// The OS sandbox profiles name real paths; a `/var` → `/private/var`
@@ -1572,9 +1637,11 @@ export class BuilderWorkshop {
 
 	/** Every directory of the mounted surface the sandbox may write into. */
 	private surfaceWriteRoots(surface: string): string[] {
-		const roots = WORKSHOP_SCOPE_DIRECTORIES.map((name) => join(surface, name));
-		const instructions = join(surface, "AGENTS.md");
-		if (existsSync(instructions) && lstatSync(instructions).isFile()) roots.push(instructions);
+		const roots = this.scope.directories.map((name) => join(surface, name));
+		for (const file of this.scope.files) {
+			const absolute = join(surface, file);
+			if (existsSync(absolute) && lstatSync(absolute).isFile()) roots.push(absolute);
+		}
 		return roots;
 	}
 
@@ -1591,20 +1658,20 @@ export class BuilderWorkshop {
 		const produced = new Map<string, WorkshopFileState>();
 		const symlinks: string[] = [];
 		const offending: string[] = [];
-		for (const root of [...WORKSHOP_SCOPE_DIRECTORIES, "AGENTS.md"]) {
+		for (const root of [...this.scope.directories, ...this.scope.files]) {
 			collectWorkshopFiles(surface, root, produced, symlinks);
 		}
 		if (symlinks.length > 0) {
 			throw new BuilderWorkshopScopeError(symlinks, "a workshop command may not create a symlink");
 		}
 		for (const [path, file] of produced) {
-			if (!inWorkshopScope(path)) offending.push(path);
+			if (!this.scope.holds(path)) offending.push(path);
 			else if (file.content.byteLength > MAX_WORKSHOP_FILE_BYTES) offending.push(path);
 		}
 		if (offending.length > 0) {
 			throw new BuilderWorkshopScopeError(
 				offending,
-				`a workshop command writes only inside ${BUILDER_WORKSHOP_SCOPE.join(", ")}, at most ${MAX_WORKSHOP_FILE_BYTES} bytes per file`,
+				`a workshop command writes only inside ${this.scope.globs.join(", ")}, at most ${MAX_WORKSHOP_FILE_BYTES} bytes per file`,
 			);
 		}
 		// Two produced paths that differ only in case are one file on a
@@ -1659,7 +1726,7 @@ export class BuilderWorkshop {
 	private walkAuthoringScope(): { entries: Map<string, WorkshopFileState>; symlinks: string[] } {
 		const entries = new Map<string, WorkshopFileState>();
 		const symlinks: string[] = [];
-		for (const root of [...WORKSHOP_SCOPE_DIRECTORIES, "AGENTS.md", WORKSHOP_MANIFEST]) {
+		for (const root of [...this.scope.directories, ...this.scope.files, WORKSHOP_MANIFEST]) {
 			collectWorkshopFiles(this.path, root, entries, symlinks);
 		}
 		return { entries, symlinks };
@@ -2122,7 +2189,7 @@ export class BuilderWorkshop {
 		);
 		return raw.split("\0")
 			.filter(Boolean)
-			.filter((path) => path === WORKSHOP_MANIFEST || inWorkshopScope(path));
+			.filter((path) => path === WORKSHOP_MANIFEST || this.scope.holds(path));
 	}
 
 	/**
@@ -2144,7 +2211,7 @@ export class BuilderWorkshop {
 			"--exclude-standard",
 		]);
 		for (const path of listed.split("\0").filter(Boolean)) {
-			if (inWorkshopScope(path)) ignored.push(path);
+			if (this.scope.holds(path)) ignored.push(path);
 		}
 		const status = gitWorkshopRaw(this.path, [
 			"status",
@@ -2162,11 +2229,11 @@ export class BuilderWorkshop {
 				const inside = new Map<string, WorkshopFileState>();
 				collectWorkshopFiles(this.path, path.slice(0, -1), inside, []);
 				for (const child of inside.keys()) {
-					if (inWorkshopScope(child)) ignored.push(child);
+					if (this.scope.holds(child)) ignored.push(child);
 				}
 				continue;
 			}
-			if (inWorkshopScope(path)) ignored.push(path);
+			if (this.scope.holds(path)) ignored.push(path);
 		}
 		return [...new Set(ignored)].sort((left, right) => left.localeCompare(right));
 	}
@@ -2301,7 +2368,7 @@ export class BuilderWorkshop {
 			commands: this.commands,
 			tries: this.tries,
 			changes: this.disposed ? [] : this.changes(),
-			scope: BUILDER_WORKSHOP_SCOPE,
+			scope: this.scope.globs,
 			snapshotHash: this.disposed ? "" : this.snapshotHash(),
 			grants,
 			tryHistory: this.tryHistory.map((entry) => ({ ...entry })),
@@ -2366,11 +2433,11 @@ export class BuilderWorkshop {
 		const offending = [
 			...changes.map((change) => change.path),
 			...this.dirtyOutsideScope(),
-		].filter((path) => path !== WORKSHOP_MANIFEST && !inWorkshopScope(path));
+		].filter((path) => path !== WORKSHOP_MANIFEST && !this.scope.holds(path));
 		if (offending.length > 0) {
 			throw new BuilderWorkshopScopeError(
 				offending,
-				`a proposal may change only ${BUILDER_WORKSHOP_SCOPE.join(", ")} and the manifest's declared resource lists`,
+				`a proposal may change only ${this.scope.globs.join(", ")} and the manifest's declared resource lists`,
 			);
 		}
 		// Nothing inside the scope may vanish from the diff behind a .gitignore —
@@ -2462,7 +2529,10 @@ export class BuilderWorkshop {
 		});
 		validateCandidateProposal(proposal, {
 			baseTargetSha: this.baseTargetSha,
-			allowedPaths: [...HARNESS_AUTHORING_ALLOWED_PATHS],
+			// The scope the candidate will be measured under, not the Pi layout: a
+			// proposal a workshop is allowed to write must be one the experiment is
+			// allowed to apply.
+			allowedPaths: harnessScopePaths(harnessFilesOf(this.baseManifest)),
 		});
 		const patch = `${proposal.changes.map((change) => change.unifiedDiff.trimEnd()).join("\n")}\n`;
 		gitWorkshop(this.repositoryDir, ["apply", "--check", "--index", "-"], patch);
@@ -2487,7 +2557,7 @@ export class BuilderWorkshop {
 		const paths = new Set<string>();
 		for (const record of raw.split("\0").filter((entry) => entry.length > 3)) {
 			const path = record.slice(3);
-			if (path !== WORKSHOP_MANIFEST && !inWorkshopScope(path)) paths.add(path);
+			if (path !== WORKSHOP_MANIFEST && !this.scope.holds(path)) paths.add(path);
 		}
 		return [...paths].sort((left, right) => left.localeCompare(right));
 	}
@@ -2533,13 +2603,14 @@ export class BuilderWorkshop {
 
 	/** Invariant 30's closure check, over the Harness this proposal would create. */
 	private assertResultingHarnessReadable(resulting: ResolvedTarget): void {
+		const declared = harnessFilesOf(resulting.manifest);
 		const resources: TargetAuthoringResource[] = [];
 		const add = (path: string): void => {
-			const identity = classifyTargetAuthoringResourcePath(path);
+			const identity = classifyTargetAuthoringResourcePath(path, declared);
 			if (!identity) {
 				throw new ToolWorkshopError(
 					`the resulting Harness declares a noncanonical resource: ${path} — ` +
-					explainTargetAuthoringResourcePath(path),
+					explainTargetAuthoringResourcePath(path, declared),
 				);
 			}
 			const info = lstatSync(join(this.path, path));
@@ -2562,9 +2633,25 @@ export class BuilderWorkshop {
 			}
 			for (const file of tool.files) add(`${tool.directoryPath as string}/${file.path}`);
 		}
+		// The declared surface is part of the Harness the Builder must still be
+		// able to read afterwards: a proposal that filled prompts/ with a
+		// megabyte would author its own Builder out of context.
+		let harnessFileCount = 0;
+		if (!isDefaultPiHarness(declared)) {
+			const walked = [...this.walkAuthoringScope().entries.keys()].sort((left, right) => left.localeCompare(right));
+			for (const path of walked) {
+				if (path === WORKSHOP_MANIFEST) continue;
+				if (classifyTargetAuthoringResourcePath(path)?.kind) continue;
+				if (classifyTargetAuthoringResourcePath(path, declared)?.kind !== "harness-file") continue;
+				add(path);
+				harnessFileCount += 1;
+			}
+		}
 		assertTargetAuthoringSurfaceWithinLimits({
 			manifestBytes: statSync(join(this.path, WORKSHOP_MANIFEST)).size,
 			skillCount: resulting.manifest.skills.length,
+			harnessFiles: declared,
+			harnessFileCount,
 			tools: resulting.tools.map((tool) => ({
 				name: tool.descriptor.name,
 				layout: tool.layout,
@@ -2634,15 +2721,6 @@ function grantRisk(grant: WorkshopGrant | WorkshopGrantAuditEvent): string {
 	return `The operator allowed ${grant.tool} ${grant.wants.join(" and ")} for one exact try ` +
 		`of ${grant.toolDigest} at ${grant.snapshotHash} (${grant.actorId}, ${grant.grantedAt}); ` +
 		`the exception was ${grant.used ? "consumed" : "not consumed"}.`;
-}
-
-function inWorkshopScope(path: string): boolean {
-	try {
-		assertWorkshopScope(path);
-		return true;
-	} catch {
-		return false;
-	}
 }
 
 /**

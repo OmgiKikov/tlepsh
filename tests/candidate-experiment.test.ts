@@ -83,8 +83,8 @@ function git(dir: string, ...args: string[]): string {
 	}).trim();
 }
 
-function writeFixtureFiles(dir: string): void {
-	for (const file of baseFixtureFiles()) {
+function writeFixtureFiles(dir: string, overrides: Record<string, string> = {}): void {
+	for (const file of baseFixtureFiles(overrides)) {
 		const path = join(dir, file.path);
 		mkdirSync(join(path, ".."), { recursive: true });
 		writeFileSync(path, file.content);
@@ -97,7 +97,10 @@ interface RepositoryChange {
 	mode?: number;
 }
 
-function createRepository(change?: RepositoryChange | RepositoryChange[]): RepositoryFixture {
+function createRepository(
+	change?: RepositoryChange | RepositoryChange[],
+	baseline: Record<string, string> = {},
+): RepositoryFixture {
 	const dir = mkdtempSync(join(tmpdir(), "ahde-candidate-experiment-"));
 	const runsRoot = mkdtempSync(join(tmpdir(), "ahde-candidate-runs-"));
 	cleanupPaths.push(dir, runsRoot);
@@ -105,7 +108,7 @@ function createRepository(change?: RepositoryChange | RepositoryChange[]): Repos
 	git(dir, "config", "user.name", "AHDE Test");
 	git(dir, "config", "user.email", "ahde-test@example.invalid");
 	git(dir, "branch", "-M", "main");
-	writeFixtureFiles(dir);
+	writeFixtureFiles(dir, baseline);
 	git(dir, "add", ".");
 	git(dir, "commit", "-qm", "baseline");
 	const baselineSha = git(dir, "rev-parse", "HEAD");
@@ -500,6 +503,63 @@ describe("Candidate Experiment application service", () => {
 		expect(runtime.suiteCalls).toHaveLength(0);
 		expect(existsSync(join(repository.runsRoot, "candidates", "scope-failure", "candidate.json"))).toBe(false);
 		assertCheckoutUnchanged(repository);
+	});
+
+	it("measures a declared harness surface, and only a Target that declares one", async () => {
+		const piManifest = baseFixtureFiles().find((file) => file.path === "manifest.yaml")?.content;
+		if (!piManifest) throw new Error("missing manifest fixture");
+		const prompt = { path: "prompts/system.md", content: "Отвечай коротко и по делу.\n" };
+
+		// A Pi Target has never been allowed to change prompts/, and is not now.
+		const pi = createRepository(prompt);
+		await expect(
+			runCandidateExperiment(
+				{
+					repositoryDir: pi.dir,
+					runsRoot: pi.runsRoot,
+					baselineRef: pi.baselineSha,
+					candidateRef: pi.candidateSha,
+					mode: "candidate",
+					repetitions: 1,
+					candidateId: "undeclared-prompt",
+				},
+				fakeRuntime().dependencies,
+			),
+		).rejects.toThrow(/scope violation.*prompts\/system\.md/);
+
+		// The same diff, on a Target whose manifest declares that surface, is the
+		// candidate the whole improvement loop exists to measure.
+		const declared = createRepository(
+			{ path: "prompts/system.md", content: "Отвечай коротко, по делу, и здоровайся.\n" },
+			{
+				"manifest.yaml": piManifest.replace(
+					"skills: [skills/check-dbo]",
+					"harness:\n  files: [prompts/**]\nskills: [skills/check-dbo]",
+				),
+				"prompts/system.md": prompt.content,
+			},
+		);
+		const runtime = fakeRuntime();
+		const result = await runCandidateExperiment(
+			{
+				repositoryDir: declared.dir,
+				runsRoot: declared.runsRoot,
+				baselineRef: declared.baselineSha,
+				candidateRef: declared.candidateSha,
+				mode: "candidate",
+				repetitions: 1,
+				candidateId: "declared-prompt",
+			},
+			runtime.dependencies,
+		);
+		expect(result.changedFiles).toEqual(["prompts/system.md"]);
+		// A second policy id, so no existing evidence moves and a reader of the
+		// record can see which rule this candidate was measured under.
+		const validated = result.record.events.find((event) => event.type === "validated");
+		expect(validated).toMatchObject({
+			scope: { policyId: "candidate-declared-harness-v1", passed: true, changedFiles: ["prompts/system.md"] },
+		});
+		assertCheckoutUnchanged(declared);
 	});
 
 	it("accepts a bounded skill/tool manifest diff as a comparable candidate", async () => {
