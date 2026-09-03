@@ -301,6 +301,21 @@ export type WorkbenchCandidateImpactProjection =
 	| { available: true; impact: CandidateImpact }
 	| { available: false; reason: string };
 
+/**
+ * The failure modes a proposal promised about, named the way the diagnosis
+ * panel names them.
+ *
+ * The attestation inside the proposal carries ids and content hashes — the
+ * right thing to hash, the wrong thing to show: the forecast read `Ожидаю тип
+ * сбоя «fb9f2a97» 4/4 → ≤0/4` while the diagnosis above it had already said
+ * "check_dbo was never called". This is read off the brief the attestation
+ * names and travels with the VIEW only; nothing here enters the bytes a human
+ * approves, so a language never changes a decision subject.
+ */
+export interface WorkbenchTargetedModeTitles {
+	targetedModes?: { failureModeId: string; title: string }[];
+}
+
 export type WorkbenchReviewDetail =
 	| { kind: "spec-draft"; id: string; snapshotHash: string; spec: AgentSpec }
 	| {
@@ -314,8 +329,8 @@ export type WorkbenchReviewDetail =
 		tasks: BuilderCorpusDraft["tasks"];
 		taskProvenance: NonNullable<BuilderCorpusDraft["taskProvenance"]>;
 	}
-	| ({ kind: "proposal" } & WorkbenchProposalReview)
-	| ({ kind: "applied-proposal" } & WorkbenchProposalReview & {
+	| ({ kind: "proposal" } & WorkbenchProposalReview & WorkbenchTargetedModeTitles)
+	| ({ kind: "applied-proposal" } & WorkbenchProposalReview & WorkbenchTargetedModeTitles & {
 		application: { branch: string; baseTargetSha: string; candidateSha: string; appliedAt: string };
 	})
 	| ({ kind: "candidate" } & WorkbenchCandidateSummary & {

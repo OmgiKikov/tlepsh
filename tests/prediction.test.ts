@@ -349,6 +349,26 @@ describe("the promise on screen", () => {
 		expect(russian).toContain("Прогноз Ожидаю тип сбоя «aaaaaaaa» 26/26 → ≤3/26 · итог +40 п.п.");
 	});
 
+	it("names the mode the way the diagnosis named it, and mutes the id behind it", () => {
+		// Session 6: `Ожидаю тип сбоя «fb9f2a97» 4/4 → ≤0/4` sat under a diagnosis
+		// that had just said “check_dbo was never called”.
+		const named = proposalReview({
+			targetedModes: [{ failureModeId: `failure-mode-${"a".repeat(24)}`, title: "The tool “check_dbo” was never called" }],
+		});
+		expect(renderReview(named, plainPaint))
+			.toContain("Prediction Expecting failure mode «The tool “check_dbo” was never called» aaaaaaaa 26/26 → ≤3/26 · overall +40 pts");
+		setLanguage("ru");
+		expect(renderReview(named, plainPaint))
+			.toContain("Прогноз Ожидаю тип сбоя «The tool “check_dbo” was never called» aaaaaaaa 26/26 → ≤3/26 · итог +40 п.п.");
+		// The id is muted, never dropped: it is still what matches this promise
+		// to the brief that carries the evidence.
+		const mutedPaint = { ...plainPaint, muted: (text: string) => `<muted>${text}</muted>` };
+		expect(renderReview(named, mutedPaint).join("\n")).toContain("<muted>aaaaaaaa</muted>");
+		// A title nobody could read leaves the line exactly as it was.
+		expect(renderReview(proposalReview({ targetedModes: [] }), plainPaint))
+			.toContain("Прогноз Ожидаю тип сбоя «aaaaaaaa» 26/26 → ≤3/26 · итог +40 п.п.");
+	});
+
 	it("says so plainly when a proposal promised nothing, and quotes the reason when it gave one", () => {
 		expect(renderReview(proposalReview({ prediction: null }), plainPaint))
 			.toContain("Prediction not stated");

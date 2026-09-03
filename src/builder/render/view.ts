@@ -569,8 +569,10 @@ function renderProposal(
 	} else {
 		lines.push(`${paint.dim(t("label.evidence"))} ${paint.muted(t("review.evidence-none"))}`);
 	}
-	// The promise, on the same screen as the diff it is a promise about.
-	lines.push(predictionPromiseLine(content.prediction, paint) ?? predictionAbsentLine(paint));
+	// The promise, on the same screen as the diff it is a promise about — and in
+	// the same words the diagnosis used, when the brief behind it could be read.
+	const modeTitles = new Map((content.targetedModes ?? []).map((mode) => [mode.failureModeId, mode.title]));
+	lines.push(predictionPromiseLine(content.prediction, paint, modeTitles) ?? predictionAbsentLine(paint));
 	const predictionNote = predictionNoteLine(content.prediction, paint);
 	if (predictionNote) lines.push(predictionNote);
 	if (content.risks.length > 0) lines.push(paint.warning(t("label.risks")), ...bullets(content.risks, paint, { limit: 6, max: 160 }));

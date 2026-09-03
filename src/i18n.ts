@@ -1566,6 +1566,7 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"estimate.nothing-comparable-alone": "no comparable run yet",
 	// lane: polish
 	"plan.progress": "step {done} of {total}",
+	"prediction.mode-named": "failure mode «{mode}» {hash} {from}/{of} → ≤{to}/{of}",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2857,6 +2858,7 @@ const ru: Record<MessageKey, string> = {
 	"estimate.nothing-comparable-alone": "сравнимых прогонов ещё не было",
 	// lane: polish
 	"plan.progress": "шаг {done} из {total}",
+	"prediction.mode-named": "тип сбоя «{mode}» {hash} {from}/{of} → ≤{to}/{of}",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

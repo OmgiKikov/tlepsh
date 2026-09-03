@@ -1381,7 +1381,8 @@ describe("AHDE Workbench", () => {
 		expect(view.selections).toEqual(expect.arrayContaining([
 			expect.objectContaining({ kind: "proposal", id: proposalId, status: "open" }),
 		]));
-		expect((await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view({ aspect: "review" })).detail?.content)
+		const reviewed = (await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view({ aspect: "review" })).detail?.content;
+		expect(reviewed)
 			.toMatchObject({
 				evidenceBasis: {
 					evalRunId: evaluation.evalRunId,
@@ -1389,6 +1390,12 @@ describe("AHDE Workbench", () => {
 					failureModes: [{ failureModeId: selection.failureModeIds[0] }],
 				},
 	});
+		// The attestation hashes an id; the panel has to say what it was. The
+		// title is read off the brief that id names, never invented.
+		const targeted = (reviewed as { targetedModes?: { failureModeId: string; title: string }[] }).targetedModes;
+		expect(targeted).toEqual([{ failureModeId: selection.failureModeIds[0], title: expect.any(String) }]);
+		expect(targeted![0]!.title.length).toBeGreaterThan(0);
+		expect(targeted![0]!.title).not.toContain(selection.failureModeIds[0]);
 
 		const runDir = join(paths.runsRoot, "builders", proposalId);
 		const inputPath = join(runDir, "builder_input.txt");
