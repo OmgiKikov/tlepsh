@@ -15,6 +15,7 @@ editable surface, объявленный в manifest.yaml (`harness.files`). У�
 
 import json
 import os
+import socket
 import sys
 import urllib.error
 import urllib.request
@@ -75,6 +76,26 @@ def openai_tools(declared):
         }
         for tool in declared
     ]
+
+
+def prefer_ipv4(getaddrinfo):
+    """IPv4-адреса вперёд.
+
+    Внутри песочницы хост может отдавать IPv6-адрес первым, а маршрута в
+    глобальный IPv6 у машины нет: соединение зависает в SYN_SENT до таймаута
+    ядра (~75 с) на каждый вызов и съедает весь бюджет хода. Снаружи то же
+    соединение падает мгновенно и urllib берёт IPv4. Порядок адресов — не
+    политика агента, поэтому меняем только его, не список.
+    """
+
+    def ordered(*args, **kwargs):
+        results = getaddrinfo(*args, **kwargs)
+        return sorted(results, key=lambda entry: 0 if entry[0] == socket.AF_INET else 1)
+
+    return ordered
+
+
+socket.getaddrinfo = prefer_ipv4(socket.getaddrinfo)
 
 
 def complete(model, tools, messages):
