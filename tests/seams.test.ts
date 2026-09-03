@@ -154,6 +154,16 @@ describe("harness: the declared editable surface", () => {
 		}
 	});
 
+	it("refuses a surface that reaches the dataset, the graders or the manifest", () => {
+		// The fixture's dataset is `d.jsonl` and its graders `g.yaml`, at the root.
+		for (const glob of ["d.jsonl", "g.yaml", "manifest.yaml", "**", "*"]) {
+			const result = manifestWithHarness(glob) as { success: boolean; error?: { issues: { message: string }[] } };
+			expect(result.success, glob).toBe(false);
+			expect(result.error?.issues.some((issue) => /harness\.files reaches/.test(issue.message)), glob).toBe(true);
+		}
+		expect((manifestWithHarness("prompts/**") as { success: boolean }).success).toBe(true);
+	});
+
 	it("answers the Pi default when the manifest declares nothing", () => {
 		expect(harnessFilesOf({})).toEqual(DEFAULT_PI_HARNESS_FILES);
 		const dir = makeTargetFixture(baseFixtureFiles());

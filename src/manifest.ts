@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import { DEFAULT_PI_HARNESS_FILES } from "./domain/harness-surface.js";
+import { DEFAULT_PI_HARNESS_FILES, withinDeclaredHarness } from "./domain/harness-surface.js";
 import { plural } from "./i18n.js";
 import { canonicalJson, hashValue } from "./provenance.js";
 import {
@@ -1016,6 +1016,25 @@ const TargetManifestShape = z.strictObject({
 		/** User model for simulated-user cases; required when any task uses one. */
 		simulatedUser: SimulatedUserModelBlock.optional(),
 	}),
+}).superRefine((manifest, context) => {
+	// The editable surface may never reach the evidence: a proposal that could
+	// rewrite the dataset, the graders or the manifest itself would be grading
+	// its own homework (invariant 6). The Pi default names none of these.
+	if (!manifest.harness) return;
+	const protectedPaths: [string, string][] = [
+		["evalSuite.dataset", manifest.evalSuite.dataset],
+		["evalSuite.graders", manifest.evalSuite.graders],
+		["manifest.yaml", "manifest.yaml"],
+	];
+	for (const [label, path] of protectedPaths) {
+		if (withinDeclaredHarness(path, manifest.harness.files)) {
+			context.addIssue({
+				code: "custom",
+				path: ["harness", "files"],
+				message: `harness.files reaches ${label} (${path}); the editable surface may not include the dataset, the graders or the manifest`,
+			});
+		}
+	}
 });
 
 type TargetManifestValue = z.infer<typeof TargetManifestShape>;
