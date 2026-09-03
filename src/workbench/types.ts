@@ -1115,6 +1115,12 @@ export interface WorkbenchTurn {
 }
 
 export interface WorkbenchRunEvalResult {
+	/**
+	 * The host's own sentence about this run — the pass count and the number of
+	 * diagnosed failure modes — for the Builder to quote verbatim, exactly as a
+	 * candidate's `headline` is quoted.
+	 */
+	headline: string;
 	evaluation: WorkbenchEvaluationProjection;
 	diagnosis: WorkbenchDiagnosisSummary;
 	improvementBrief: WorkbenchImprovementBriefProjection;
@@ -1174,6 +1180,8 @@ export interface WorkbenchCompositeStep {
 /** Approve · publish · run, as far as the reviewed drafts allow. */
 export interface WorkbenchStartTestingResult {
 	steps: WorkbenchCompositeStep[];
+	/** The run's own {@link WorkbenchRunEvalResult.headline}, hoisted; null before a run. */
+	headline: string | null;
 	approvedSpecId: string | null;
 	developmentCorpus: { id: string; taskCount: number } | null;
 	evaluation: WorkbenchRunEvalResult | null;

@@ -189,6 +189,25 @@ export function examLine(exam: ExamSurface | null | undefined): ExamLine | null 
 	return { verdict, delta, design, text: trimSeparator([verdict, delta, design].filter((part) => part.length > 0).join(" ")) };
 }
 
+/**
+ * What one run showed, in the sentence the operator reads: how many executions
+ * passed, and how many distinct failure modes were diagnosed behind the ones
+ * that did not.
+ *
+ * A candidate's verdict has been quotable since the panel and the Builder were
+ * made to say the same digits; a run's was not. The host drew
+ * `прошли 0/24 · 3 типа сбоя` and the Builder, given only the brief's English
+ * headline, wrote `0/24 passed. Три системные проблемы:` — the same numbers,
+ * its own words, in the wrong language. Composed here so the panel, the status
+ * bar and the sentence the Builder quotes are one string.
+ */
+export function runResultLine(input: { pass: number; total: number; failureModes: number }): string {
+	return t("headline.run", {
+		passed: t("run.passed", { pass: input.pass, total: input.total }),
+		modes: plural(input.failureModes, "failure mode"),
+	});
+}
+
 /** The caveat a basket under {@link SMALL_BASKET_CASES} cases has earned. */
 export function smallBasketNote(tasks: number): string | null {
 	if (tasks <= 0 || tasks >= SMALL_BASKET_CASES) return null;

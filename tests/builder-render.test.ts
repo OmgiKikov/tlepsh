@@ -33,6 +33,7 @@ import {
 import { handoffLines } from "../src/builder/render/handoff.js";
 import { refusalCard } from "../src/builder/workbench-adapter.js";
 import { setLanguage } from "../src/i18n.js";
+import { runResultLine } from "../src/application/measurement-line.js";
 import { renderImpact } from "../src/builder/render/impact.js";
 import { renderToolPermissions, toolPermissionsFromDiff } from "../src/builder/render/tool-permissions.js";
 import { fixtureLines, renderWorkshopCloseReview } from "../src/builder/render/workshop-close.js";
@@ -78,6 +79,7 @@ import {
 	type WorkbenchReviewDetail,
 	type WorkbenchStage,
 	type WorkbenchTargetDetail,
+	type WorkbenchRunEvalResult,
 	type WorkbenchTracesDetail,
 	type WorkbenchView,
 } from "../src/workbench/types.js";
@@ -291,6 +293,22 @@ function makeTraces(
 		improvementBrief: makeBrief(brief),
 		evidence: { available: true, url: "http://127.0.0.1:4310/evidence/eval-1" },
 		...overrides,
+	};
+}
+
+/** The run-eval result: the traces the operator reads plus the host's own sentence. */
+function makeRun(
+	brief: Partial<WorkbenchImprovementBriefProjection> = {},
+	overrides: Partial<WorkbenchTracesDetail> = {},
+): WorkbenchRunEvalResult {
+	const traces = makeTraces(brief, overrides);
+	return {
+		headline: runResultLine({
+			pass: traces.evaluation.summary.pass,
+			total: traces.evaluation.summary.total,
+			failureModes: traces.improvementBrief.summary.failureModeCount,
+		}),
+		...traces,
 	};
 }
 
@@ -1486,7 +1504,7 @@ describe("renderDecision", () => {
 	});
 
 	it("renders eval runs with the live trace link", () => {
-		const traces = makeTraces();
+		const traces = makeRun();
 		const lines = renderDecision(decision("run-eval", traces, "improvement-authoring"), tagPaint, { liveTraceUrl: "http://127.0.0.1:4310/live/abc" });
 		const text = lines.join("\n");
 		expect(lines[0]).toContain("<heading>Evaluation</heading>");
@@ -1497,7 +1515,7 @@ describe("renderDecision", () => {
 	});
 
 	it("renders both run-current resolutions", () => {
-		const asEval = renderDecision(decision("run-current", { resolvedAs: "run-eval", ...makeTraces() }, "improvement-authoring"), plainPaint, { liveTraceUrl: "http://127.0.0.1:4310/live/abc" });
+		const asEval = renderDecision(decision("run-current", { resolvedAs: "run-eval", ...makeRun() }, "improvement-authoring"), plainPaint, { liveTraceUrl: "http://127.0.0.1:4310/live/abc" });
 		expect(asEval[0]).toContain("Evaluation 6/10 passed");
 		expect(asEval).toContain("Live trace http://127.0.0.1:4310/live/abc · retained for 15 minutes");
 		expect(asEval[asEval.length - 1]).toBe(nextLine("improvement-authoring"));
@@ -1583,8 +1601,8 @@ describe("renderDecision", () => {
 			decision("configure-target", { targetId: "t", targetGitSha: SHA_A, receiptId: "r", credentialEnv: "K" }, "spec-design"),
 			decision("approve-spec", { approvedSpecId: "s", receiptId: "r" }, "corpus-design"),
 			decision("publish-corpus", { corpusId: "c", corpusHash: HASH, taskCount: 1, publicationReceiptId: "r", lineageHash: HASH }, "ready-to-evaluate"),
-			decision("run-eval", makeTraces(), "improvement-authoring"),
-			decision("run-current", { resolvedAs: "run-eval", ...makeTraces() }, "improvement-authoring"),
+			decision("run-eval", makeRun(), "improvement-authoring"),
+			decision("run-current", { resolvedAs: "run-eval", ...makeRun() }, "improvement-authoring"),
 			decision("run-current", { resolvedAs: "verify-candidate", outcome: "verified" as const, headline: candidateHeadline(makeCandidate().development, makeCandidate().sealedHoldout), screen: null, candidate: makeCandidate(), development: { verdict: "improved", scoreDelta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: false, gatePassed: false, verdict: null } }, "candidate-review"),
 			decision("apply-proposal", { runId: "r", branch: "b", candidateSha: SHA_B, proposalHash: HASH }, "candidate-verification"),
 			decision("discard-proposal", { runId: "r", receiptHash: HASH }, "improvement-authoring"),
@@ -1624,8 +1642,8 @@ describe("renderDecision · calibrate", () => {
 
 describe("decisionHeadline", () => {
 	it("summarises runs, verifications, and falls back to the one-line message", () => {
-		expect(decisionHeadline(decision("run-eval", makeTraces(), "improvement-authoring"))).toBe("6/10 passed · 1 failure mode");
-		expect(decisionHeadline(decision("run-current", { resolvedAs: "run-eval", ...makeTraces() }, "improvement-authoring"))).toBe("6/10 passed · 1 failure mode");
+		expect(decisionHeadline(decision("run-eval", makeRun(), "improvement-authoring"))).toBe("6/10 passed · 1 failure mode");
+		expect(decisionHeadline(decision("run-current", { resolvedAs: "run-eval", ...makeRun() }, "improvement-authoring"))).toBe("6/10 passed · 1 failure mode");
 		expect(decisionHeadline(decision("run-current", { resolvedAs: "verify-candidate", outcome: "verified" as const, headline: candidateHeadline(makeCandidate().development, makeCandidate().sealedHoldout), screen: null, candidate: makeCandidate(), development: { verdict: "improved", scoreDelta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"))).toBe("candidate evaluated · pass rate 60% → 80% (+20 pts, 95% CI +5 … +35) on 10 cases");
 		expect(decisionHeadline(decision("verify-candidate", { outcome: "verified" as const, headline: candidateHeadline(makeCandidate().development, makeCandidate().sealedHoldout), screen: null, candidate: makeCandidate(), development: { verdict: "improved", scoreDelta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"))).toBe("candidate evaluated · pass rate 60% → 80% (+20 pts, 95% CI +5 … +35) on 10 cases");
 		expect(decisionHeadline(decision("verify-candidate", { outcome: "verified" as const, headline: candidateHeadline(makeCandidate().development, makeCandidate().sealedHoldout), screen: null, candidate: makeCandidate(), development: { verdict: "improved", scoreDelta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: false, gatePassed: false, verdict: null } }, "candidate-review"))).toBe("candidate evaluated · pass rate 60% → 80% (+20 pts, 95% CI +5 … +35) on 10 cases");

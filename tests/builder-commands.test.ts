@@ -16,6 +16,7 @@ import {
 } from "../src/builder/commands.js";
 import { createRunProgressPresenter } from "../src/builder/run-progress.js";
 import { candidateHeadline } from "../src/workbench/resolution.js";
+import { runResultLine } from "../src/application/measurement-line.js";
 import {
 	AHDE_MODEL_NOTE_TYPE,
 	AHDE_TRANSCRIPT_ENTRY_TYPE,
@@ -43,6 +44,7 @@ import type {
 	WorkbenchReviewDetail,
 	WorkbenchSealedChoice,
 	WorkbenchStage,
+	WorkbenchRunEvalResult,
 	WorkbenchTracesDetail,
 	WorkbenchView,
 } from "../src/workbench/types.js";
@@ -137,6 +139,19 @@ function candidateSummary(overrides: Partial<WorkbenchCandidateSummary> = {}): W
 	// The host composes the headline from the same evidence; a fixture that
 	// hand-wrote one could let a panel and its headline drift apart in a test.
 	return { ...summary, headline: summary.headline || candidateHeadline(summary.development, summary.sealedHoldout) };
+}
+
+/** The run-eval result: the traces the operator reads plus the host's own sentence. */
+function runResult(): WorkbenchRunEvalResult {
+	const traces = tracesDetail();
+	return {
+		headline: runResultLine({
+			pass: traces.evaluation.summary.pass,
+			total: traces.evaluation.summary.total,
+			failureModes: traces.improvementBrief.summary.failureModeCount,
+		}),
+		...traces,
+	};
 }
 
 function tracesDetail(): WorkbenchTracesDetail {
@@ -334,7 +349,7 @@ function defaultDecision(input: WorkbenchDecisionInput): WorkbenchDecisionResult
 	const at = "2026-08-28T10:05:00.000Z";
 	switch (input.kind) {
 		case "run-current":
-			return decision("run-current", { resolvedAs: "run-eval", ...tracesDetail() }, viewAt("improvement-authoring"));
+			return decision("run-current", { resolvedAs: "run-eval", ...runResult() }, viewAt("improvement-authoring"));
 		case "calibrate":
 			return decision("calibrate", {
 				candidateId: "calibration-1",
@@ -429,7 +444,8 @@ function defaultDecision(input: WorkbenchDecisionInput): WorkbenchDecisionResult
 				],
 				approvedSpecId: "spec-1",
 				developmentCorpus: { id: "corpus-1", taskCount: 3 },
-				evaluation: tracesDetail(),
+				headline: runResult().headline,
+				evaluation: runResult(),
 				pending: null,
 			}, viewAt("improvement-authoring"));
 		default:
@@ -836,7 +852,8 @@ describe("Builder Pi slash commands", () => {
 				],
 				approvedSpecId: "spec-1",
 				developmentCorpus: { id: "corpus-1", taskCount: 3 },
-				evaluation: tracesDetail(),
+				headline: runResult().headline,
+				evaluation: runResult(),
 				pending: null,
 			}, viewAt("improvement-authoring")),
 		});

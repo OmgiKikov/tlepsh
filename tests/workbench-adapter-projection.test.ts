@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { projectForModel } from "../src/builder/workbench-adapter.js";
 import type { WorkbenchSelectionSummary, WorkbenchView } from "../src/workbench/types.js";
+import { runResultLine } from "../src/application/measurement-line.js";
+import { setLanguage } from "../src/i18n.js";
 
 /** A loaded but ordinary project: 30 development evals, 5 candidates, 5 proposals. */
 function loadedView(): WorkbenchView {
@@ -258,6 +260,36 @@ describe("model-facing projection", () => {
 			outcome: "no-regression",
 			outcomeLine: "pass · no regression proven, not an improvement either",
 		});
+	});
+
+	/**
+	 * The candidate's verdict has been quotable since the panel and the Builder
+	 * were made to say the same digits. A run's was not: the host drew
+	 * `прошли 0/24 · 3 типа сбоя` and the Builder wrote `0/24 passed. Три
+	 * системные проблемы:` — the same numbers, its own words, in the wrong
+	 * language. The projection now carries the host's sentence for it to quote.
+	 */
+	it("hands the model the host's own sentence about a run", () => {
+		setLanguage("ru");
+		try {
+			const headline = runResultLine({ pass: 0, total: 24, failureModes: 3 });
+			expect(headline).toBe("прошли 0/24 · 3 типа сбоя");
+			const projected = projectForModel({
+				kind: "run-eval",
+				result: { headline, evaluation: { summary: { pass: 0, total: 24 } } },
+			}) as { result: { headline: string } };
+			expect(projected.result.headline).toBe(headline);
+			// And the composite that runs it hoists the same string, so the field
+			// is in the same place whichever door the run came through.
+			const composite = projectForModel({
+				kind: "start-testing",
+				result: { headline, evaluation: { headline } },
+			}) as { result: { headline: string; evaluation: { headline: string } } };
+			expect(composite.result.headline).toBe(headline);
+			expect(composite.result.evaluation.headline).toBe(headline);
+		} finally {
+			setLanguage(null);
+		}
 	});
 
 	it("removes credential references even inside otherwise-verbatim claims", () => {

@@ -325,15 +325,14 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 	}
 }
 
-function runHeadline(result: { evaluation: { summary: { pass: number; total: number } }; improvementBrief: { summary: { failureModeCount: number } } }): string {
-	return t("headline.run", {
-		passed: t("run.passed", { pass: result.evaluation.summary.pass, total: result.evaluation.summary.total }),
-		modes: plural(result.improvementBrief.summary.failureModeCount, "failure mode"),
-	});
+// The headline the host composed, not a second summary of the same numbers —
+// the same rule the candidate verdict has followed since the one-number lane.
+function runHeadline(result: { headline: string }): string {
+	return result.headline;
 }
 
 function startTestingHeadline(result: WorkbenchStartTestingResult): string {
-	if (result.evaluation) return runHeadline(result.evaluation);
+	if (result.headline) return result.headline;
 	return result.steps.map((step) => step.kind.replace(/-/g, " ")).join(" · ") || t("headline.nothing-to-do");
 }
 

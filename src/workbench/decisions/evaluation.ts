@@ -12,6 +12,7 @@ import { hashValue } from "../../provenance.js";
 import { WorkbenchStaleDecisionError } from "../errors.js";
 import { diagnosisSummary, requireApprovedSpec, evaluationProjection, requireCorpusDraft, requireDevelopmentCorpus } from "../resolution.js";
 import { calibrationProjection } from "../calibration.js";
+import { runResultLine } from "../../application/measurement-line.js";
 import { abortIfRequested, actorId, exactSame, boundedEvidenceLink, conversationalImprovementBrief } from "../workbench.js";
 import type { DecisionContext, DecisionHost, DecisionInputOf } from "./shared.js";
 import type { WorkbenchDecisionResult } from "../types.js";
@@ -61,7 +62,16 @@ export async function decideRunEval(
 	const improvementBrief = host.dependencies.compileImprovementBrief(host.runsRoot, diagnosis);
 	const link = boundedEvidenceLink(await host.dependencies.evidenceLink(record));
 	const settled = host.select("eval-run", record.evalRunId);
-	return { kind: input.kind, message: improvementBrief.headline, result: { evaluation: evaluationProjection(record, inventory.corpora), diagnosis: diagnosisSummary(diagnosis), improvementBrief: conversationalImprovementBrief(improvementBrief), evidence: link ? { available: true, ...link } : { available: false } }, view: await host.viewOf(settled) };
+	const projection = evaluationProjection(record, inventory.corpora);
+	const brief = conversationalImprovementBrief(improvementBrief);
+	// The one sentence about this run, composed once by the host, so the panel,
+	// the status bar and the sentence the Builder quotes are the same string.
+	const headline = runResultLine({
+		pass: projection.summary.pass,
+		total: projection.summary.total,
+		failureModes: brief.summary.failureModeCount,
+	});
+	return { kind: input.kind, message: improvementBrief.headline, result: { headline, evaluation: projection, diagnosis: diagnosisSummary(diagnosis), improvementBrief: brief, evidence: link ? { available: true, ...link } : { available: false } }, view: await host.viewOf(settled) };
 }
 
 export async function decideCalibrate(
