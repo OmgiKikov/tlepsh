@@ -744,8 +744,22 @@ function modeRank(mode: FailureMode): number {
 	return 2;
 }
 
+/**
+ * A mode a proposal can address comes before every reading that only says
+ * "run it again": «чини первую» must land on something a harness change can
+ * fix. Live session 8: the one proposal-eligible mode (the world left wrong,
+ * reproduced 67%) sat fourth behind three stabilize-and-rerun readings, past
+ * the model's projection, and the Builder could not bind its edit to it.
+ */
+function decisionRank(mode: FailureMode): number {
+	if (mode.decision === "propose-harness-change") return 0;
+	if (mode.decision === "stabilize-and-rerun") return 1;
+	return 2;
+}
+
 function compareModes(a: FailureMode, b: FailureMode): number {
-	return modeRank(a) - modeRank(b) ||
+	return decisionRank(a) - decisionRank(b) ||
+		modeRank(a) - modeRank(b) ||
 		b.impact.affectedTasks - a.impact.affectedTasks ||
 		b.impact.failedOccurrences - a.impact.failedOccurrences ||
 		b.impact.reproductionBps - a.impact.reproductionBps ||

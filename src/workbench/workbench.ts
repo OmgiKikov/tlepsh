@@ -306,7 +306,10 @@ import { decideImprove } from "./decisions/improve.js";
 import type { DecisionContext } from "./decisions/shared.js";
 
 const MAX_REVIEW_BYTES = 5 * 1024 * 1024;
-const MAX_CONVERSATION_MODES = 3;
+// Six, not three: with the proposal-eligible modes sorted first this is the
+// whole short list a Builder can act on, and the panel says how many more the
+// explorer holds.
+const MAX_CONVERSATION_MODES = 6;
 /** Enough compiled cases to argue about; never enough to be the dataset. */
 /**
  * Every generated exam is called the same thing. A name is the one part of a
