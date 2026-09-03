@@ -637,6 +637,51 @@ function explainGrader(
 			actual: `the agent took ${turns[1]}`,
 		};
 	}
+	if (grader.checkCode === "world-state") {
+		// A world check is about the state the conversation left behind, not about
+		// what the agent said, so its `actual` never quotes the answer.
+		const unset = /^world at (\S+) is not set(?:, expected (equals|contains) ([\s\S]*))?$/.exec(reason);
+		if (unset) {
+			return {
+				...base,
+				expected: unset[2]
+					? `expected the world at \`${unset[1]}\` to ${unset[2]} \`${unset[3]}\``
+					: `expected the conversation to set the world at \`${unset[1]}\``,
+				actual: "the conversation left it unset",
+			};
+		}
+		const unusable = /^world at (\S+) is ([\s\S]*), which cannot contain ([\s\S]*)$/.exec(reason);
+		if (unusable) {
+			return {
+				...base,
+				expected: `expected the world at \`${unusable[1]}\` to contain \`${unusable[3]}\``,
+				actual: `it is \`${unusable[2]}\`, which contains nothing`,
+			};
+		}
+		const differs = /^world at (\S+) is ([\s\S]*), expected ([\s\S]*)$/.exec(reason);
+		if (differs) {
+			return {
+				...base,
+				expected: `expected the world at \`${differs[1]}\` to be \`${differs[3]}\``,
+				actual: `it is \`${differs[2]}\``,
+			};
+		}
+		const lacks = /^world at (\S+) does not contain ([\s\S]*)$/.exec(reason);
+		if (lacks) {
+			return {
+				...base,
+				expected: `expected the world at \`${lacks[1]}\` to contain \`${lacks[2]}\``,
+				actual: "it does not",
+			};
+		}
+		if (reason === "case declares no world") {
+			return {
+				...base,
+				expected: "expected the case to declare the world this check is about",
+				actual: "it declares none, so the check could not pass",
+			};
+		}
+	}
 	if (reason === "case has no expected answer") {
 		return {
 			...base,
@@ -673,6 +718,7 @@ const CHECK_TITLE_KEY: Record<NonNullable<FailureMode["signature"]["checkCode"]>
 	"semantic-rubric": "mode.title.semantic-rubric",
 	"reference-similarity": "mode.title.reference-similarity",
 	"turn-budget": "mode.title.turn-budget",
+	"world-state": "mode.title.world-state",
 };
 
 const OBSERVATION_KEY: Record<TraceObservation, MessageKey> = {

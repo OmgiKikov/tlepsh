@@ -13,6 +13,7 @@ import type {
 } from "../../workbench/types.js";
 import { failureModeExcerpt, failureModeReading } from "../../application/run-explanation.js";
 import { formatResourceFragment } from "../../domain/comparison-gate.js";
+import { resolveWorldPath } from "../../domain/world.js";
 import { candidateStatusLabel, hasMessage, plural, t, verdictLabel } from "../../i18n.js";
 import { formatFlipRate, formatNoiseBand } from "./calibration.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
@@ -756,11 +757,63 @@ export function renderDataset(content: WorkbenchDatasetDetail, paint: Paint): st
 	return lines;
 }
 
-/** The cases one proposed recipe produces, so a human argues with cases, not JSON. */
-export function renderDatasetCases(cases: readonly WorkbenchDatasetCase[], paint: Paint): string[] {
-	const lines: string[] = [];
-	cases.forEach((sample, index) => {
-		lines.push(`  ${paint.dim(`${String(index + 1).padStart(2)}.`)} ${oneLine(sample.input, 92)}`);
+/** Leaf facts one card shows, and how wide a card line may get. */
+const MAX_WORLD_FACTS = 3;
+const WORLD_LINE_COLUMNS = 88;
+
+/**
+ * The world's state as an object again. `datasetCasePreview` hands it over as
+ * bounded, redacted canonical JSON — a string, deliberately, because that is
+ * what a human is shown — so a truncated one simply has no facts to read, and
+ * the card says so instead of throwing at render time.
+ */
+function worldStateOf(sample: WorkbenchDatasetCase): Record<string, unknown> | null {
+	if (!sample.world) return null;
+	try {
+		const parsed: unknown = JSON.parse(sample.world.state);
+		return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+			? (parsed as Record<string, unknown>)
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+/** `dotted.path=value` for the first few leaves, in the state's canonical order. */
+function worldFacts(state: Record<string, unknown>): string[] {
+	const facts: string[] = [];
+	const walk = (value: unknown, path: string): void => {
+		if (facts.length >= MAX_WORLD_FACTS) return;
+		if (value !== null && typeof value === "object") {
+			const entries: [string, unknown][] = Array.isArray(value)
+				? value.map((item, index) => [String(index), item])
+				: Object.entries(value);
+			for (const [key, child] of entries) walk(child, path ? `${path}.${key}` : key);
+			return;
+		}
+		facts.push(`${path}=${typeof value === "string" ? value : JSON.stringify(value)}`);
+	};
+	walk(state, "");
+	return facts;
+}
+
+/** One expectation as a clause: `accounts.42.status equals "frozen"`. */
+function worldClause(path: string, op: string, value: string | null): string {
+	return op === "exists" ? `${path} exists` : `${path} ${op} ${value ?? "—"}`;
+}
+
+/**
+ * One case as four lines: who is in the world, what is already true of it, what
+ * they want, and what must be true when the conversation ends.
+ *
+ * A case without a world keeps exactly the lines it has always had — the world
+ * card is a different reading of a different kind of case, not a redesign of
+ * the old one. The first line carries no indent: `renderDatasetCases` puts the
+ * case number in front of it.
+ */
+export function worldCardLines(sample: WorkbenchDatasetCase, paint: Paint): string[] {
+	if (!sample.world) {
+		const lines = [oneLine(sample.input, 92)];
 		if (sample.expected !== null) lines.push(`      ${paint.dim(t("view.expected"))} ${oneLine(sample.expected, 88)}`);
 		if (sample.messages) {
 			const last = sample.messages[sample.messages.length - 1]?.content ?? "";
@@ -778,6 +831,56 @@ export function renderDatasetCases(cases: readonly WorkbenchDatasetCase[], paint
 			lines.push(`      ${paint.dim(t("view.metadata"))} ${oneLine(pairs.join(" · "), 88)}`);
 		}
 		lines.push(`      ${paint.dim(t("view.graders"))} ${oneLine(sample.graders.map(graderLabel).join(" · "), 89)}`);
+		return lines;
+	}
+	const state = worldStateOf(sample);
+	// The person in the world, then the person the case describes, then nobody.
+	const named = state ? resolveWorldPath(state, "client.name") : { found: false, value: undefined };
+	const who = typeof named.value === "string" && named.value.trim().length > 0
+		? named.value
+		: sample.simulatedUser?.persona ?? "—";
+	const facts = state ? worldFacts(state) : [];
+	const has = facts.length > 0 ? facts.join(" · ") : oneLine(sample.world.state, WORLD_LINE_COLUMNS);
+	const wants = sample.simulatedUser?.goal ?? sample.input;
+	// An expectation and the `world_state` grader it desugars into are the same
+	// statement, so the card states each once, expectations first.
+	const stated = new Set<string>();
+	const must: string[] = [];
+	for (const expectation of sample.world.expect ?? []) {
+		const clause = worldClause(expectation.path, expectation.op, expectation.value);
+		if (stated.has(clause)) continue;
+		stated.add(clause);
+		must.push(clause);
+	}
+	for (const grader of sample.graders) {
+		if (grader.type !== "world_state") continue;
+		const clause = worldClause(
+			grader.path,
+			grader.op,
+			grader.value === undefined ? null : oneLine(JSON.stringify(grader.value) ?? "", 40),
+		);
+		if (stated.has(clause)) continue;
+		stated.add(clause);
+		must.push(clause);
+	}
+	for (const grader of sample.graders) {
+		if (grader.type !== "world_state") must.push(graderLabel(grader));
+	}
+	return [
+		`${paint.dim(t("view.world.who"))} ${oneLine(who, WORLD_LINE_COLUMNS)}`,
+		`      ${paint.dim(t("view.world.has"))} ${oneLine(has, WORLD_LINE_COLUMNS)}`,
+		`      ${paint.dim(t("view.world.wants"))} ${oneLine(wants, WORLD_LINE_COLUMNS)}`,
+		`      ${paint.dim(t("view.world.must"))} ${oneLine(must.join(" · "), WORLD_LINE_COLUMNS)}`,
+	];
+}
+
+/** The cases one proposed recipe produces, so a human argues with cases, not JSON. */
+export function renderDatasetCases(cases: readonly WorkbenchDatasetCase[], paint: Paint): string[] {
+	const lines: string[] = [];
+	cases.forEach((sample, index) => {
+		const [first, ...rest] = worldCardLines(sample, paint);
+		lines.push(`  ${paint.dim(`${String(index + 1).padStart(2)}.`)} ${first ?? ""}`);
+		lines.push(...rest);
 	});
 	return lines;
 }

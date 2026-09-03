@@ -67,6 +67,8 @@ export interface ContainerPolicy {
 export const CONTAINER_WORKSPACE = "/workspace";
 export const CONTAINER_SCRATCH = "/scratch";
 export const CONTAINER_TOOL_HOME = "/tools";
+/** The case's world, mounted only for a run whose case declares one. */
+export const CONTAINER_WORLD = "/world";
 export const CONTAINER_TMP = "/tmp";
 
 /**
@@ -81,6 +83,7 @@ const CONTAINER_ROOTS = [
 	CONTAINER_WORKSPACE,
 	CONTAINER_SCRATCH,
 	CONTAINER_TOOL_HOME,
+	CONTAINER_WORLD,
 	CONTAINER_TMP,
 	"/bin",
 	"/sbin",
@@ -433,6 +436,10 @@ export interface ContainerMountPlan {
 	 * step populates the home it is about to be locked out of.
 	 */
 	toolHomeMode?: "ro" | "rw";
+	/** The case's world directory, mounted at `/world`. Omitted when the case has none. */
+	worldDir?: string;
+	/** `rw` for a `workspace-write` tool that may change the world; `ro` otherwise. */
+	worldMode?: "ro" | "rw";
 }
 
 export interface ContainerInvocationRequest {
@@ -518,6 +525,7 @@ function mountTable(mounts: ContainerMountPlan): { host: string; container: stri
 		{ host: mounts.scratchDir, container: CONTAINER_SCRATCH },
 	];
 	if (mounts.toolHomeRoot) table.push({ host: mounts.toolHomeRoot, container: CONTAINER_TOOL_HOME });
+	if (mounts.worldDir) table.push({ host: mounts.worldDir, container: CONTAINER_WORLD });
 	// Longest host prefix first: a tool home nested inside scratch must resolve
 	// to /tools, not to /scratch/<…>.
 	return table.sort((a, b) => b.host.length - a.host.length);
@@ -780,6 +788,7 @@ function dockerArguments(
 	if (mounts.toolHomeRoot) {
 		args.push("-v", `${mounts.toolHomeRoot}:${CONTAINER_TOOL_HOME}:${mounts.toolHomeMode ?? "ro"}`);
 	}
+	if (mounts.worldDir) args.push("-v", `${mounts.worldDir}:${CONTAINER_WORLD}:${mounts.worldMode ?? "ro"}`);
 
 	args.push("--env-file", environmentFile);
 	args.push("-w", containerPath(request.cwd, table, "cwd"));

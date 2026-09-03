@@ -81,11 +81,15 @@ interface Fixture {
 }
 
 /** A Target whose judge is the mock, plus a private state root and a scratch dir. */
-function fixture(options: { judge?: { provider: string; id: string; baseUrl: string } | null; spec?: boolean } = {}): Fixture {
+function fixture(options: {
+	judge?: { provider: string; id: string; baseUrl: string } | null;
+	spec?: boolean;
+	cases?: readonly unknown[];
+} = {}): Fixture {
 	const targetDir = makeTargetFixture(
 		baseFixtureFiles({
 			"manifest.yaml": manifestYaml(options.judge === undefined ? null : options.judge),
-			"evals/development.jsonl": `${DEV_CASES.map((task) => JSON.stringify(task)).join("\n")}\n`,
+			"evals/development.jsonl": `${(options.cases ?? DEV_CASES).map((task) => JSON.stringify(task)).join("\n")}\n`,
 			...(options.spec === false ? {} : { "spec.md": SPEC_MD }),
 		}),
 	);
@@ -242,6 +246,53 @@ describe("sealed synthetic generation", () => {
 			now: () => at,
 		});
 		expect(runThree.receipt.developmentExampleIds).not.toEqual(runOne.receipt.developmentExampleIds);
+	});
+
+	it("shows the generator the world a development case happens in, and states it once", async () => {
+		const prompts: string[] = [];
+		const mock = await startMockModel([{
+			match: ({ firstUser }) => {
+				prompts.push(firstUser);
+				return true;
+			},
+			steps: [{ text: generated(2) }],
+		}]);
+		mocks.push(mock);
+		const worlded = fixture({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+			cases: [
+				...DEV_CASES,
+				{
+					id: "dev-world",
+					input: "Заблокируй договор 42.",
+					world: {
+						state: { accounts: { "42": { status: "ok" } } },
+						expect: [{ path: "accounts.42.status", op: "equals", value: "frozen" }],
+					},
+					graders: [{ type: "output_contains", text: "готово" }],
+				},
+			],
+		});
+		await synthesizeSealedCorpus({
+			targetDir: worlded.targetDir,
+			stateRoot: worlded.stateRoot,
+			projectId: "project",
+			name: "exam with a world",
+			count: 2,
+			seed: "s1",
+			examples: 5,
+			now: () => at,
+		});
+
+		const prompt = prompts[0] ?? "";
+		// Without this the exam would be written against a case shape the
+		// development suite does not have.
+		expect(prompt).toContain('"world"');
+		expect(prompt).toContain('"accounts"');
+		expect(prompt).toContain('"frozen"');
+		// The expectation and the grader it desugars into are one statement; an
+		// example that showed both would teach the generator to write it twice.
+		expect(prompt).not.toContain("world_state");
 	});
 
 	it("drops generated copies of development inputs and counts them", async () => {

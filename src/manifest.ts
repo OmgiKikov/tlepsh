@@ -157,6 +157,54 @@ export const TurnBudgetGrader = z.strictObject({
 	max: z.number().int().min(1).max(MAX_SIMULATED_USER_TURNS),
 });
 
+/** Dotted path: `order.items.0.status`. No wildcards — an expectation names one place. */
+const WORLD_PATH = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
+
+/** One place in a world state, named the same way by an expectation and a grader. */
+export const WorldPathSchema = z
+	.string()
+	.min(1)
+	.max(200)
+	.regex(WORLD_PATH, "world expectation path is a dotted path with no wildcards");
+
+/** The three operations `domain/world.ts` decides. Nothing else may be asked. */
+export const WorldOpSchema = z.enum(["equals", "exists", "contains"]);
+export type WorldOp = z.infer<typeof WorldOpSchema>;
+
+/**
+ * `exists` only asks whether the path is there, so carrying a value would be a
+ * promise nothing reads; `equals` and `contains` compare against one, so
+ * omitting it would be a check with nothing on the other side.
+ */
+function worldValueIssue(op: WorldOp, hasValue: boolean): string | null {
+	if (op === "exists" && hasValue) {
+		return "an exists expectation asks only whether the path is there; it takes no value";
+	}
+	if (op !== "exists" && !hasValue) {
+		return `a ${op} expectation compares against a value and must carry one`;
+	}
+	return null;
+}
+
+/**
+ * What the world had to look like once the conversation ended.
+ *
+ * This is the scored form of `world.expect`: `resolveTaskGraders` appends one
+ * of these per expectation, so a world expectation and a hand-written grader
+ * travel the same scoring path, carry the same check code, and cluster into the
+ * same failure family.
+ */
+export const WorldStateGrader = z.strictObject({
+	type: z.literal("world_state"),
+	name: z.string().optional(),
+	path: WorldPathSchema,
+	op: WorldOpSchema,
+	value: z.unknown().optional(),
+}).superRefine((spec, context) => {
+	const issue = worldValueIssue(spec.op, spec.value !== undefined);
+	if (issue) context.addIssue({ code: "custom", path: ["value"], message: issue });
+});
+
 export const GraderSpec = z.discriminatedUnion("type", [
 	ToolCalledGrader,
 	OutputContainsGrader,
@@ -166,6 +214,7 @@ export const GraderSpec = z.discriminatedUnion("type", [
 	ExactGrader,
 	SimilarityGrader,
 	TurnBudgetGrader,
+	WorldStateGrader,
 ]);
 export type GraderSpec = z.infer<typeof GraderSpec>;
 
@@ -252,17 +301,14 @@ export const MAX_WORLD_DEPTH = 5;
 /** The names that turn a plain object literal into prototype pollution. */
 const DANGEROUS_WORLD_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
-/** Dotted path: `order.items.0.status`. No wildcards — an expectation names one place. */
-const WORLD_PATH = /^[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/;
-
 /**
  * One assertion about the world after the agent has acted. `equals` and
  * `contains` compare against `value`; `exists` only asks whether the path is
  * there, so carrying a value would be a promise nothing reads.
  */
 export const WorldExpectationSchema = z.strictObject({
-	path: z.string().min(1).max(200).regex(WORLD_PATH, "world expectation path is a dotted path with no wildcards"),
-	op: z.enum(["equals", "exists", "contains"]),
+	path: WorldPathSchema,
+	op: WorldOpSchema,
 	value: z.unknown().optional(),
 });
 export type WorldExpectation = z.infer<typeof WorldExpectationSchema>;
@@ -325,21 +371,8 @@ const WorldObjectSchema = z
 		const structure = worldStateIssue(world.state, 1, "state");
 		if (structure) context.addIssue({ code: "custom", path: ["state"], message: structure });
 		for (const [index, expectation] of (world.expect ?? []).entries()) {
-			const hasValue = expectation.value !== undefined;
-			if (expectation.op === "exists" && hasValue) {
-				context.addIssue({
-					code: "custom",
-					path: ["expect", index, "value"],
-					message: "an exists expectation asks only whether the path is there; it takes no value",
-				});
-			}
-			if (expectation.op !== "exists" && !hasValue) {
-				context.addIssue({
-					code: "custom",
-					path: ["expect", index, "value"],
-					message: `a ${expectation.op} expectation compares against a value and must carry one`,
-				});
-			}
+			const issue = worldValueIssue(expectation.op, expectation.value !== undefined);
+			if (issue) context.addIssue({ code: "custom", path: ["expect", index, "value"], message: issue });
 		}
 	});
 
@@ -421,6 +454,23 @@ export interface ResolvedTask extends Task {
 }
 
 /**
+ * `world.expect` is sugar for graders, not a second scoring path.
+ *
+ * Every path that resolves a case's effective graders appends these, so an
+ * expectation an author wrote beside the state and a `world_state` grader an
+ * author wrote beside the other checks are the same object by the time
+ * anything scores, explains, clusters or renders it.
+ */
+export function worldExpectationGraders(task: Pick<Task, "world">): GraderSpec[] {
+	return (task.world?.expect ?? []).map((expectation) => ({
+		type: "world_state" as const,
+		path: expectation.path,
+		op: expectation.op,
+		...(expectation.value !== undefined ? { value: expectation.value } : {}),
+	}));
+}
+
+/**
  * Fill each case's effective graders and validate the resulting scoring
  * surface. A case's own graders always win; the suite defaults only fill in for
  * a case that declares none.
@@ -435,7 +485,10 @@ export function resolveTaskGraders(
 	simulatedUserConfigured = false,
 ): ResolvedTask[] {
 	const resolved: ResolvedTask[] = tasks.map((task) => {
-		const graders: GraderSpec[] = task.graders ?? [...defaults];
+		// The case's own graders, or the suite defaults, plus one grader per world
+		// expectation. A case whose only statement about the agent is what the
+		// world had to look like afterwards is a scored case, not an empty one.
+		const graders: GraderSpec[] = [...(task.graders ?? defaults), ...worldExpectationGraders(task)];
 		if (graders.length === 0) {
 			throw new Error(`task ${task.id}: no graders (no per-task graders and suite defaults are empty)`);
 		}
@@ -1309,6 +1362,10 @@ function graderDetail(spec: GraderSpec): string {
 			return `${spec.metric}>=${spec.threshold}`;
 		case "turn_budget":
 			return `<=${spec.max}turns`;
+		case "world_state":
+			return spec.op === "exists"
+				? `${spec.path}?`
+				: `${spec.path}${spec.op === "contains" ? "∋" : "="}${canonicalJson(spec.value).slice(0, 24)}`;
 	}
 }
 

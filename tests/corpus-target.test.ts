@@ -149,6 +149,39 @@ ${judgeBlock}${calibration}`;
 		expect(resolved.target.manifest.evalSuite.dataset).toBe(`development-${metadata.id}.jsonl`);
 	});
 
+	it("carries a published case's world, and desugars its expectations exactly as the manifest path does", () => {
+		const value = fixture();
+		const metadata = createCorpus({
+			stateRoot: value.stateRoot,
+			projectId: value.projectId,
+			name: "worlded development set",
+			visibility: "development",
+			tasks: [{
+				id: "dev-world",
+				input: "заблокируй договор 42",
+				world: {
+					state: { accounts: { "42": { status: "ok" } } },
+					expect: [{ path: "accounts.42.status", op: "equals", value: "frozen" }],
+				},
+				graders: [{ type: "output_contains", text: "готово" }],
+			}],
+		});
+		const resolved = targetWithDevelopmentCorpus(
+			value.target,
+			loadCorpus({ stateRoot: value.stateRoot, projectId: value.projectId, corpusId: metadata.id }),
+		);
+		const task = resolved.tasks[0];
+
+		// Without this the world would be dropped between corpus and run, and the
+		// case would be answered in an empty world nobody declared.
+		expect(task?.world?.state).toEqual({ accounts: { "42": { status: "ok" } } });
+		expect(task?.graders).toEqual([{ type: "output_contains", text: "готово", caseSensitive: false }]);
+		expect(task?.effectiveGraders).toEqual([
+			{ type: "output_contains", text: "готово", caseSensitive: false },
+			{ type: "world_state", path: "accounts.42.status", op: "equals", value: "frozen" },
+		]);
+	});
+
 	it("fails closed when canonical corpus metadata is missing or has the wrong visibility", () => {
 		const value = fixture();
 		const sealed = createCorpus({

@@ -42,6 +42,7 @@ import { plainPaint, type Paint } from "../src/builder/render/paint.js";
 import { STAGE_LABELS, nextStep, stageLabel } from "../src/builder/render/stage.js";
 import { workbenchGateClass } from "../src/workbench/transition-policy.js";
 import {
+	renderDatasetCases,
 	renderHeader,
 	renderReview,
 	renderStatus,
@@ -49,7 +50,10 @@ import {
 	renderTraces,
 	renderView,
 	viewTitle,
+	worldCardLines,
 } from "../src/builder/render/view.js";
+import { datasetCasePreview } from "../src/workbench/workbench.js";
+import { CorpusTaskSchema } from "../src/corpus.js";
 import {
 	AHDE_MODEL_NOTE_TYPE,
 	AHDE_TRANSCRIPT_ENTRY_TYPE,
@@ -2804,5 +2808,47 @@ describe("a refusal on screen", () => {
 		} finally {
 			setLanguage(null);
 		}
+	});
+});
+
+describe("dataset case cards", () => {
+	const preview = (task: Record<string, unknown>) => datasetCasePreview(CorpusTaskSchema.parse(task));
+	const PLAIN = {
+		id: "task_001",
+		input: "Классифицируй обращение: жалоба на списание.",
+		expected: "жалоба",
+		graders: [{ type: "output_contains", text: "жалоба" }],
+	};
+	const WORLDED = {
+		id: "task_002",
+		input: "Заблокируйте договор 42.",
+		world: {
+			state: { accounts: { "42": { status: "ok" } } },
+			expect: [{ path: "accounts.42.status", op: "equals", value: "frozen" }],
+		},
+		graders: [{ type: "tool_called", tool: "check_account" }],
+	};
+
+	it("numbers the first line of every card, worlded or not, and folds nothing else in", () => {
+		const lines = renderDatasetCases([preview(PLAIN), preview(WORLDED)], plainPaint);
+		expect(lines).toEqual([
+			"   1. Классифицируй обращение: жалоба на списание.",
+			"      expected: жалоба",
+			"      graders: contains “жалоба”",
+			"   2. who: —",
+			"      has: accounts.42.status=ok",
+			"      wants: Заблокируйте договор 42.",
+			'      must: accounts.42.status equals "frozen" · tool check_account',
+		]);
+	});
+
+	it("leaves a case with no world exactly as it renders today", () => {
+		// The card is a different reading of a different kind of case, not a
+		// redesign of the old one.
+		expect(worldCardLines(preview(PLAIN), plainPaint)).toEqual([
+			"Классифицируй обращение: жалоба на списание.",
+			"      expected: жалоба",
+			"      graders: contains “жалоба”",
+		]);
 	});
 });

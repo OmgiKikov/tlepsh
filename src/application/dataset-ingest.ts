@@ -340,9 +340,11 @@ function substituteGrader(grader: GraderSpec, resolve: (name: string) => string)
 		case "exact":
 		case "similarity":
 		case "turn_budget":
+		case "world_state":
 			// Reference graders carry no author text beyond their name; the answer
 			// they compare against is the case's own `expected` column. A turn
-			// budget carries a number, which no column can substitute into.
+			// budget carries a number, and a world-state check names a place in the
+			// case's own world — neither is text a column can substitute into.
 			return { ...grader, ...named };
 	}
 }

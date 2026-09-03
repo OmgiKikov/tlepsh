@@ -16,6 +16,12 @@ import { loadTarget } from "../src/manifest.js";
 import { loadVerifiedEvalRun, runSuite } from "../src/eval.js";
 import { startMockModel } from "../src/mock-model.js";
 import { createTargetToolRuntime, targetFilesystemConfinement } from "../src/target/runtime.js";
+import {
+	AHDE_TOOL_HOME_ENVIRONMENT,
+	AHDE_WORLD_ENVIRONMENT,
+	buildToolEnvironment,
+	toolConfinement,
+} from "../src/target/tool-broker.js";
 import { containerSandboxFingerprint } from "../src/target/container-backend.js";
 import { validateTargetToolArguments } from "../src/target/tool-manifest.js";
 import { openTrace, traceToolCalls } from "../src/trace.js";
@@ -520,4 +526,67 @@ describe("Target tool broker and Pi registration", () => {
 			await mock.close();
 		}
 	}, 60_000);
+});
+
+describe("the case's world reaches a declared tool", () => {
+	function toolWith(filesystem: "read-only" | "workspace-write") {
+		return {
+			descriptor: { name: "world_tool", permissions: { network: "deny" as const, filesystem, environment: [] } },
+		} as unknown as Parameters<typeof toolConfinement>[0];
+	}
+
+	it("exports AHDE_WORLD beside AHDE_TOOL_HOME, and lets no allowlist redefine either", () => {
+		const scratch = mkdtempSync(join(tmpdir(), "ahde-world-env-"));
+		try {
+			const withWorld = buildToolEnvironment({
+				label: "world_tool",
+				scratchDir: scratch,
+				environmentAllowlist: [AHDE_WORLD_ENVIRONMENT, AHDE_TOOL_HOME_ENVIRONMENT, "TICKET_TOKEN"],
+				sourceEnvironment: {
+					PATH: "/usr/bin:/bin",
+					AHDE_WORLD: "/somewhere/else/state.json",
+					AHDE_TOOL_HOME: "/somewhere/else/tools",
+					TICKET_TOKEN: "t-1",
+				},
+				worldPath: "/runs/run_1/runtime/world/state.json",
+			});
+			// The host's value wins: a tool that could be pointed at another run's
+			// world would be reading someone else's evidence.
+			expect(withWorld.environment[AHDE_WORLD_ENVIRONMENT]).toBe("/runs/run_1/runtime/world/state.json");
+			expect(withWorld.environment.TICKET_TOKEN).toBe("t-1");
+			expect(withWorld.names).toContain(AHDE_WORLD_ENVIRONMENT);
+			// And a case with no world exports nothing at all, so an un-worlded run
+			// cannot be told apart from one written before worlds existed.
+			const withoutWorld = buildToolEnvironment({
+				label: "world_tool",
+				scratchDir: scratch,
+				environmentAllowlist: [AHDE_WORLD_ENVIRONMENT],
+				sourceEnvironment: { PATH: "/usr/bin:/bin", AHDE_WORLD: "/somewhere/else/state.json" },
+			});
+			expect(withoutWorld.environment[AHDE_WORLD_ENVIRONMENT]).toBeUndefined();
+			expect(withoutWorld.names).not.toContain(AHDE_WORLD_ENVIRONMENT);
+		} finally {
+			cleanup(scratch);
+		}
+	});
+
+	it("confines the world by the tool's own declared filesystem permission", () => {
+		const world = "/runs/run_1/runtime/world";
+		const readOnly = toolConfinement(toolWith("read-only"), "/ws", undefined, world);
+		expect(readOnly.readRoots).toEqual([world]);
+		expect(readOnly.writeRoots).toEqual([]);
+
+		// A writable world is on BOTH lists: sandbox-exec grants read and write
+		// separately, so a write root alone could not even be read back.
+		const writable = toolConfinement(toolWith("workspace-write"), "/ws", undefined, world);
+		expect(writable.readRoots).toEqual([world]);
+		expect(writable.writeRoots).toEqual(["/ws", world]);
+
+		// Without a world nothing changes, and the prepared tool home keeps its place.
+		expect(toolConfinement(toolWith("read-only"), "/ws", "/tools")).toEqual({
+			network: "deny",
+			readRoots: ["/tools"],
+			writeRoots: [],
+		});
+	});
 });

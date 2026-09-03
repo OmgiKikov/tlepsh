@@ -16,6 +16,12 @@ import { renderDialogueTranscript, type TranscriptTurn } from "./trace.js";
  * would let it write the turn that makes a grader pass instead of the turn a
  * person would write. A user model that knows the answer is not a user.
  *
+ * The case's `world` is on that list too. It is what the agent's tools can
+ * look up, not what the person walked in knowing: a user who could read the
+ * account behind the counter would quote it instead of asking, and the case
+ * would stop measuring whether the agent looked. Facts the person genuinely
+ * knows belong in `goal` or `persona`, written the way they would say them.
+ *
  * Its failures are infrastructure (invariant 9): a 500 from the user endpoint
  * says nothing about the agent, so it must never be recorded as a behavioural
  * failure.

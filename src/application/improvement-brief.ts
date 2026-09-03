@@ -317,6 +317,9 @@ const GRADER_CHECK_CATEGORIES: Record<GraderCheckCode, FailureModeCategory> = {
 	"semantic-rubric": "answer-quality",
 	"reference-similarity": "answer-quality",
 	"turn-budget": "output-contract",
+	// The world is the contract the agent had to leave behind, not a judgement
+	// about how the answer read.
+	"world-state": "output-contract",
 };
 
 /** Title of an exact (non-legacy) grader failure mode. */
@@ -329,6 +332,7 @@ const GRADER_CHECK_TITLES: Record<GraderCheckCode, string> = {
 	"semantic-rubric": "Semantic rubric check failed",
 	"reference-similarity": "Reference similarity check failed",
 	"turn-budget": "Turn budget check failed",
+	"world-state": "World state check failed",
 };
 
 /**

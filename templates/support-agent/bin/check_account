@@ -4,17 +4,56 @@
 # Two calling conventions, both supported here on purpose:
 #   * declared tool  — one line of JSON arrives on stdin  ({"id":"42"})
 #   * bash bin/check_account --id 42 — the agent runs it directly
+#
+# AHDE_WORLD is set by the host on a DECLARED tool call whose case declares a
+# world: it is the absolute path of this run's world file, a JSON object with
+# an `accounts` map. It is the state this one conversation happens in, so
+# reading it is how the tool answers about a real account, and writing it back
+# is how an action the client asked for actually happens. Without it — a plain
+# `bash bin/check_account`, or a case with no world — nothing here changes:
+# the same fixed stub answer comes back, byte for byte.
 set -euo pipefail
 id=""
+action=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --id) id="${2:-}"; shift 2 ;;
+    --action) action="${2:-}"; shift 2 ;;
     *) shift ;;
   esac
 done
 if [ -z "$id" ] && [ ! -t 0 ]; then
   payload="$(cat || true)"
   id="$(printf '%s' "$payload" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\{0,1\}\([^",}]*\).*/\1/p')"
+  action="$(printf '%s' "$payload" | sed -n 's/.*"action"[[:space:]]*:[[:space:]]*"\{0,1\}\([^",}]*\).*/\1/p')"
+fi
+if [ -n "${AHDE_WORLD:-}" ] && [ -f "${AHDE_WORLD}" ]; then
+  # REPLACE-ME: настоящий запрос к системе. Здесь — тот же ответ, но из мира кейса.
+  # Node is a hard requirement of ahde, so it is always here; a mutating action
+  # writes the world back through a temporary file in the same directory and a
+  # rename, so a crash mid-write can never leave half a world behind.
+  exec node -e '
+const fs = require("fs");
+const [file, id, action] = process.argv.slice(1);
+const world = JSON.parse(fs.readFileSync(file, "utf8"));
+const accounts = (world && typeof world === "object" && world.accounts) || {};
+const account = Object.prototype.hasOwnProperty.call(accounts, id) ? accounts[id] : null;
+if (!account || typeof account !== "object") {
+  process.stdout.write("account_status: unknown\nlimits: none\nid: " + (id || "unknown") + "\n");
+  process.exit(0);
+}
+if (action === "freeze" || action === "unfreeze") {
+  account.status = action === "freeze" ? "frozen" : "ok";
+  const temporary = file + ".tmp";
+  fs.writeFileSync(temporary, JSON.stringify(world, null, "\t") + "\n", { mode: 0o600 });
+  fs.renameSync(temporary, file);
+}
+process.stdout.write(
+  "account_status: " + (account.status || "unknown") +
+  "\nlimits: " + (account.limits || "none") +
+  "\nid: " + id + "\n",
+);
+' "$AHDE_WORLD" "${id:-unknown}" "$action"
 fi
 # REPLACE-ME: настоящий запрос. Заглушка отвечает одинаково на любой id.
 printf 'account_status: ok\nlimits: none\nid: %s\n' "${id:-unknown}"

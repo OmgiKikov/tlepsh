@@ -8,6 +8,7 @@ import {
 	defaultEvalJobs,
 	findReusableBaseline,
 	answerTokens,
+	gradeRecordedRun,
 	gradeRun,
 	isLoopbackModelEndpoint,
 	levenshteinRatio,
@@ -27,6 +28,7 @@ import {
 } from "../src/eval.js";
 import { loadTarget } from "../src/manifest.js";
 import { startMockModel } from "../src/mock-model.js";
+import { worldStatePath } from "../src/target/world-state.js";
 import { baseFixtureFiles, makeTargetFixture } from "./fixtures.js";
 import { GraderSpec, type ResolvedTask } from "../src/manifest.js";
 import {
@@ -207,6 +209,92 @@ describe("typed grader evidence", () => {
 		expect(results.map((result) => result.specHash)).toEqual(
 			rawSpecs.map((spec) => hashValue(GraderSpec.parse(spec))),
 		);
+	});
+});
+
+describe("the world_state grader", () => {
+	/** Grade one run whose world file is exactly these bytes. */
+	async function grade(
+		graders: unknown[],
+		world: { state: Record<string, unknown> } | null,
+		finalWorld?: string,
+	): Promise<{ record: RunRecord; graders: GraderResult[] }> {
+		const runsRoot = mkdtempSync(join(tmpdir(), "ahde-world-grade-"));
+		cleanupPaths.push(runsRoot);
+		const trace = `${[
+			{ type: "message", message: { role: "user", content: [{ type: "text", text: "question" }] } },
+			{ type: "message", message: { role: "assistant", content: [{ type: "text", text: "готово" }] } },
+		].map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+		mkdirSync(join(runsRoot, "run-a"), { recursive: true });
+		writeFileSync(join(runsRoot, "run-a", "session.jsonl"), trace);
+		if (finalWorld !== undefined) {
+			mkdirSync(join(runsRoot, "run-a", "runtime", "world"), { recursive: true });
+			writeFileSync(worldStatePath(join(runsRoot, "run-a")), finalWorld);
+		}
+		const task = {
+			id: "task-a",
+			input: "question",
+			...(world ? { world } : {}),
+			effectiveGraders: graders as ResolvedTask["effectiveGraders"],
+		} as ResolvedTask;
+		const record = baseRun({ trace: { path: "session.jsonl", sessionId: null, sha256: hashFile(trace) } });
+		const outcome = await gradeRecordedRun(task, record, runsRoot);
+		return { record: outcome.record, graders: outcome.graded?.graders ?? [] };
+	}
+
+	it("reads the world the conversation left behind, not the one the case declared", async () => {
+		const { graders } = await grade(
+			[{ type: "world_state", path: "accounts.42.status", op: "equals", value: "frozen" }],
+			{ state: { accounts: { "42": { status: "ok" } } } },
+			JSON.stringify({ accounts: { "42": { status: "frozen" } } }),
+		);
+		expect(graders[0]).toMatchObject({
+			type: "world_state",
+			checkCode: "world-state",
+			passed: true,
+			score: 1,
+			reason: 'world at accounts.42.status equals "frozen"',
+		});
+		expect(graders[0]?.specHash).toBe(
+			hashValue(GraderSpec.parse({ type: "world_state", path: "accounts.42.status", op: "equals", value: "frozen" })),
+		);
+	});
+
+	it("fails loudly on a case that declares no world, and spends no read on it", async () => {
+		const { record, graders } = await grade(
+			[{ type: "world_state", path: "status", op: "exists" }],
+			null,
+		);
+		expect(record.status).toBe("completed");
+		expect(graders[0]).toMatchObject({ passed: false, score: 0, reason: "case declares no world" });
+	});
+
+	it("turns an unreadable world into an infrastructure error, never a behavioural failure", async () => {
+		for (const [label, bytes] of [["missing", undefined], ["malformed", "{ nope"]] as const) {
+			const { record, graders } = await grade(
+				[{ type: "output_contains", text: "готово" }, { type: "world_state", path: "status", op: "exists" }],
+				{ state: { status: "open" } },
+				bytes,
+			);
+			expect(record.status, label).toBe("error");
+			expect(record.evalResults, label).toBeNull();
+			expect(record.error, label).toMatch(/evaluation infrastructure: world state file/);
+			expect(graders, label).toEqual([]);
+		}
+	});
+
+	it("reads the file once for a run, however many checks ask about it", async () => {
+		const { graders } = await grade(
+			[
+				{ type: "world_state", path: "status", op: "equals", value: "closed" },
+				{ type: "world_state", path: "closedBy", op: "exists" },
+				{ type: "world_state", path: "log", op: "contains", value: "closed by agent" },
+			],
+			{ state: { status: "open" } },
+			JSON.stringify({ status: "closed", closedBy: "agent", log: ["opened", "closed by agent"] }),
+		);
+		expect(graders.map((grader) => grader.passed)).toEqual([true, true, true]);
+		expect(graders.map((grader) => grader.checkCode)).toEqual(["world-state", "world-state", "world-state"]);
 	});
 });
 
