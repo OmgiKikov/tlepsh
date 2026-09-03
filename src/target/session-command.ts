@@ -7,6 +7,8 @@ import { hashFile, type TokenMetrics } from "../provenance.js";
 import { MAX_TRACE_ARTIFACT_BYTES, redactSensitiveText } from "../trace.js";
 import { resolveExecutionBackend } from "./container-backend.js";
 import {
+	AHDE_TOOL_HOME_ENVIRONMENT,
+	AHDE_WORLD_ENVIRONMENT,
 	buildToolEnvironment,
 	detectTargetToolSandbox,
 	sandboxInvocation,
@@ -467,6 +469,42 @@ class CommandTargetSession implements TargetSession {
 			} catch {}
 		}
 	}
+}
+
+/**
+ * Every environment name the child of a command Target actually receives.
+ *
+ * The provenance receipt exists to record what was handed to the agent, and
+ * session 7 caught it listing four of seven: it was reporting the Pi execution
+ * policy's environment, which is a different process's environment entirely.
+ * The child gets the fixed four, whatever the manifest allowlisted AND the
+ * host could actually read, the credential under the manifest's own
+ * `apiKeyEnv` name, `AHDE_PROTOCOL`, and `AHDE_WORLD` when the case has a
+ * world. Names only — a value never leaves this function (invariant 18).
+ *
+ * Derived, not observed, because the fingerprint is written to disk BEFORE the
+ * child is spawned; `createCommandTargetSession` builds the environment from
+ * the same three inputs, and `tests/target-command-run.test.ts` pins the two
+ * against what the child itself reports.
+ */
+export function commandTargetEnvironmentNames(options: {
+	environmentAllowlist: readonly string[];
+	apiKeyEnv: string;
+	hasWorld: boolean;
+	sourceEnvironment?: NodeJS.ProcessEnv;
+}): string[] {
+	const source = options.sourceEnvironment ?? process.env;
+	const names = new Set(["PATH", "LANG", "HOME", "TMPDIR"]);
+	for (const name of options.environmentAllowlist) {
+		// The same rule `buildToolEnvironment` applies: a name the host cannot
+		// read is a name the child never gets, so it is not recorded either.
+		if (names.has(name) || name === AHDE_TOOL_HOME_ENVIRONMENT || name === AHDE_WORLD_ENVIRONMENT) continue;
+		if (source[name] !== undefined) names.add(name);
+	}
+	names.add(options.apiKeyEnv);
+	names.add("AHDE_PROTOCOL");
+	if (options.hasWorld) names.add(AHDE_WORLD_ENVIRONMENT);
+	return [...names].sort();
 }
 
 export interface CommandTargetSessionHandle {
