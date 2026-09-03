@@ -123,7 +123,8 @@ function migrateLegacyBuilderConfig(legacyConfigDir: string, agentDir: string): 
 
 /**
  * Pi is an embedded engine here, so its own startup chatter stays out of the
- * Builder. quietStartup drops the model-scope banner. lastChangelogVersion is
+ * Builder. quietStartup drops the model-scope banner; hideThinkingBlock keeps
+ * the Builder's reasoning off the transcript. lastChangelogVersion is
  * pinned to the vendored Pi version: a missing key already shows nothing (Pi
  * records it as a fresh install and reports that install to pi.dev), but after
  * an AHDE upgrade Pi would render its own "What's New" for every entry newer
@@ -147,6 +148,13 @@ function seedBuilderSettings(agentDir: string): void {
 	let changed = false;
 	if (!("quietStartup" in settings)) {
 		settings = { ...settings, quietStartup: true };
+		changed = true;
+	}
+	// The Builder's reasoning is not for the operator: the persona talks about
+	// their agent, and a reasoning model's stream (live session 8, kimi) wrapped
+	// one character per line for minutes. An explicit false is kept.
+	if (!("hideThinkingBlock" in settings)) {
+		settings = { ...settings, hideThinkingBlock: true };
 		changed = true;
 	}
 	if (settings.lastChangelogVersion !== PI_VERSION) {

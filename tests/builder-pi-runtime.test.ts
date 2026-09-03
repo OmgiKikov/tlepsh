@@ -302,15 +302,18 @@ describe("Builder Pi runtime", () => {
 		await launchBuilderPi({ projectDir, builderHome, main: silentMain });
 		expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({
 			quietStartup: true,
+			hideThinkingBlock: true,
 			lastChangelogVersion: PI_VERSION,
 		});
 		expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
 
-		writeFileSync(settingsPath, JSON.stringify({ theme: "dark", quietStartup: false, lastChangelogVersion: "0.0.1" }));
+		// Explicit choices survive: a false stays false, a missing key is seeded.
+		writeFileSync(settingsPath, JSON.stringify({ theme: "dark", quietStartup: false, hideThinkingBlock: false, lastChangelogVersion: "0.0.1" }));
 		await launchBuilderPi({ projectDir, builderHome, main: silentMain });
 		expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({
 			theme: "dark",
 			quietStartup: false,
+			hideThinkingBlock: false,
 			lastChangelogVersion: PI_VERSION,
 		});
 
@@ -319,6 +322,7 @@ describe("Builder Pi runtime", () => {
 		expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({
 			theme: "light",
 			quietStartup: true,
+			hideThinkingBlock: true,
 			lastChangelogVersion: PI_VERSION,
 		});
 
