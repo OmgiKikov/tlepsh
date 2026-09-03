@@ -2058,9 +2058,9 @@ const ru: Record<MessageKey, string> = {
 	"unit.minute-short": "м",
 	"unit.second-short": "с",
 
-	"note.decision": "Builder получил: результат /{command} ({detail})",
-	"note.trace": "Builder получил: разбор прогона {run}",
-	"note.job": "Builder получил: фоновую задачу — {label} ({detail})",
+	"note.decision": "Билдер получил: результат /{command} ({detail})",
+	"note.trace": "Билдер получил: разбор прогона {run}",
+	"note.job": "Билдер получил: фоновую задачу — {label} ({detail})",
 
 	"job.started": "Запущено в фоне",
 	"job.finished": "Фоновая задача завершена",

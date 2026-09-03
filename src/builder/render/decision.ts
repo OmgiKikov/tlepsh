@@ -162,7 +162,7 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 			const model = view.target.model;
 			return [
 				`${section(t("result.target-configured"), paint)} ${paint.bold(result.result.targetId)} ${paint.dim(`@ ${shortSha(result.result.targetGitSha)}`)}`,
-				`${paint.dim(t("label.model"))} ${model ? oneLine(`${model.provider}/${model.id}`, 80) : "—"} ${paint.dim("· credential env")} ${paint.bold(oneLine(result.result.credentialEnv, 60))} ${model?.credentialPresent ? paint.success(t("result.credential-present")) : paint.warning(t("result.credential-missing", { env: oneLine(result.result.credentialEnv, 60) }))}`,
+				`${paint.dim(t("label.model"))} ${model ? oneLine(`${model.provider}/${model.id}`, 80) : "—"} ${paint.dim(`· ${t("label.credential-env")}`)} ${paint.bold(oneLine(result.result.credentialEnv, 60))} ${model?.credentialPresent ? paint.success(t("result.credential-present")) : paint.warning(t("result.credential-missing", { env: oneLine(result.result.credentialEnv, 60) }))}`,
 				nextLine(view, paint),
 			];
 		}
@@ -174,7 +174,7 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 				const present = Boolean(process.env[entry.credentialEnv]?.trim());
 				lines.push(
 					`${paint.dim(entry.role === "judge" ? t("label.judge-instrument") : t("result.simulated-user"))} ${oneLine(entry.model, 60)} ` +
-						`${paint.dim("· credential env")} ${paint.bold(oneLine(entry.credentialEnv, 60))} ` +
+						`${paint.dim(`· ${t("label.credential-env")}`)} ${paint.bold(oneLine(entry.credentialEnv, 60))} ` +
 						`${present ? paint.success(t("result.credential-present")) : paint.warning(t("result.credential-missing", { env: oneLine(entry.credentialEnv, 60) }))}`,
 				);
 			}

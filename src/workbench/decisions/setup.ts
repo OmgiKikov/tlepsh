@@ -39,7 +39,7 @@ export async function decideScaffoldTarget(
 	});
 	return {
 		kind: input.kind,
-		message: "Target harness created. Choose its identity and model next.",
+		message: t("message.target-created"),
 		result: {
 			targetId: result.target.manifest.id,
 			targetGitSha: result.target.gitSha,
@@ -84,7 +84,7 @@ export async function decideConfigureTarget(
 	});
 	return {
 		kind: input.kind,
-		message: "Target identity and model configured in a one-time reviewed commit.",
+		message: t("message.target-configured"),
 		result: {
 			targetId: result.manifest.id,
 			targetGitSha: result.receipt.configuredTargetSha,
@@ -140,7 +140,7 @@ export async function decideConfigureEvaluators(
 	}
 	return {
 		kind: input.kind,
-		message: "Evaluator models configured in a reviewed commit. Export their key variables before the next run.",
+		message: t("message.evaluators-configured"),
 		result: {
 			targetGitSha: result.receipt.configuredTargetSha,
 			receiptId: result.receipt.id,
@@ -196,7 +196,7 @@ export async function decideWrapTarget(
 	});
 	return {
 		kind: input.kind,
-		message: "Existing agent adopted. Choose its identity and model next.",
+		message: t("message.target-adopted"),
 		result: {
 			targetId: result.target.manifest.id,
 			targetGitSha: result.target.gitSha,

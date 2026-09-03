@@ -1008,10 +1008,13 @@ function explanationSentences(explanation: Omit<RunExplanation, "sentences">): s
 		}
 	}
 	for (const mode of explanation.failureModes) {
+		// `scope` and `severity` are typed tokens, and the two of them were the
+		// only Latin left inside this Russian sentence: «(task-local, blocking,
+		// задач: 1 из 8…)». They are read here, never matched on, so they bend.
 		lines.push(t("why.failure-mode", {
 			title: mode.title,
-			scope: mode.scope,
-			severity: mode.severity,
+			scope: t(`mode.scope.${mode.scope}`),
+			severity: t(`mode.severity.${mode.severity}`),
 			affected: mode.affectedTasks,
 			total: mode.totalTasks,
 			reproduction: Math.round(mode.reproductionBps / 100),

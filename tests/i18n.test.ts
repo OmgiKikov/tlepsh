@@ -494,6 +494,35 @@ describe("ru renders", () => {
 		expect(leakedEnglish(lines.join("\n"))).toEqual([]);
 	});
 
+	/**
+	 * The `◆` headline after the one-time bootstrap. Session 7 read
+	 * `Target identity and model configured in a one-time reviewed commit.`
+	 * twice — once as the transition line, once as the headline — with the
+	 * Russian «Агент настроен isp-support @ 78c763d5de» directly underneath,
+	 * and `credential env` inside the Russian line below that.
+	 */
+	it("says what the bootstrap did, and names the key's variable, in Russian", () => {
+		setLanguage("ru");
+		const view = makeView({ stage: "spec-design", headline: "Опиши агента" });
+		for (const key of ["message.target-created", "message.target-adopted", "message.target-configured", "message.evaluators-configured"] as const) {
+			expect(leakedEnglish(t(key))).toEqual([]);
+		}
+		const lines = renderDecision({
+			kind: "configure-target",
+			message: t("message.target-configured"),
+			result: {
+				targetId: "isp-support",
+				targetGitSha: SHA_A,
+				receiptId: "configure-target-1",
+				credentialEnv: "OPENROUTER_API_KEY",
+			},
+			view,
+		}, plainPaint);
+		expect(lines.join("\n")).not.toContain("credential env");
+		expect(lines[1]).toContain("ключ в переменной OPENROUTER_API_KEY");
+		expect(leakedEnglish(lines.join("\n").replace(/OPENROUTER_API_KEY|isp-support/g, ""))).toEqual([]);
+	});
+
 	// The typed blocker, whole and in Russian, inside the one sentence the
 	// operator reads about a verification that did not run.
 	it("says why the verification did not start in Russian, whole", () => {
