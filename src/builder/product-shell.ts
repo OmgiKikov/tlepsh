@@ -116,15 +116,31 @@ function builderModelStatus(ctx: Pick<ExtensionContext, "model" | "modelRegistry
 	return { label: `${ctx.model.provider}/${ctx.model.id}`, credentialPresent };
 }
 
-function safeProviderFailure(message: string | undefined): string {
-	const source = message ?? "";
-	if (/\b40[13]\b|unauthori[sz]ed|invalid (?:bearer|api key|token)|authentication/i.test(source)) {
+/**
+ * One stable sentence for a provider failure, decided by the status code when
+ * the message leads with one, and only then by words — and never by words
+ * inside an HTML body. Live session 8: OpenRouter answered a wrong URL with a
+ * 404 and its whole web page, the page happened to contain "authentication",
+ * and the operator was told the key was refused while the key was fine.
+ */
+export function safeProviderFailure(message: string | undefined): string {
+	const source = (message ?? "").trim();
+	const status = /^(?:HTTP\s*)?(\d{3})\b/.exec(source)?.[1];
+	if (status === "401" || status === "403") return t("model.auth-rejected");
+	if (status === "404") return t("model.not-found");
+	if (status === "429") return t("model.rate-limited");
+	if (status && status >= "500") return t("model.failed");
+	// Words are consulted only on a message that is not a document: an HTML
+	// page says nothing about the key, the limit or the network.
+	const prose = /<html|<!doctype/i.test(source) ? "" : source.slice(0, 400);
+	if (/\b40[13]\b|unauthori[sz]ed|invalid (?:bearer|api key|token)|authentication/i.test(prose)) {
 		return t("model.auth-rejected");
 	}
-	if (/\b429\b|rate.?limit|too many requests/i.test(source)) {
+	if (/\b404\b|not found/i.test(prose)) return t("model.not-found");
+	if (/\b429\b|rate.?limit|too many requests/i.test(prose)) {
 		return t("model.rate-limited");
 	}
-	if (/fetch failed|ECONNREFUSED|ENOTFOUND|network|socket|connection/i.test(source)) {
+	if (/fetch failed|ECONNREFUSED|ENOTFOUND|network|socket|connection/i.test(prose)) {
 		return t("model.unreachable");
 	}
 	return t("model.failed");
