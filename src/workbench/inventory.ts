@@ -1085,6 +1085,40 @@ function judgeBlockers(
 	return blockers;
 }
 
+/**
+ * The other half of the instrument: a basket whose cases are conversations
+ * needs a model to be the person on the other side.
+ *
+ * Same shape and same `includeMissing` rule as the judge — `start-testing`
+ * pre-fills this one in the same dialog, so at corpus-review a missing user
+ * model is a question already being asked. Only the missing case is a blocker
+ * here: independence does not apply (the client may be any model, including the
+ * judge) and a keyless user model is already said by the credential line.
+ */
+function userModelBlockers(
+	inventory: WorkbenchInventory,
+	options: { includeMissing: boolean },
+): StageBlocker[] {
+	const target = inventory.target;
+	if (!target || !options.includeMissing) return [];
+	const requirements = evaluatorRequirementsOf(inventory);
+	if (!requirements.simulatedUser || target.manifest.evalSuite.simulatedUser) return [];
+	return [blocked(
+		"The development cases include conversations and this Target has no simulated-user model configured.",
+		"blocker.user-model-missing",
+		{ dialogues: plural(requirements.dialogueCases, "dialogue") },
+	)];
+}
+
+/** Everything wrong with either evaluator, in the order the operator meets them. */
+function evaluatorBlockers(
+	inventory: WorkbenchInventory,
+	env: NodeJS.ProcessEnv,
+	options: { includeMissing: boolean },
+): StageBlocker[] {
+	return [...judgeBlockers(inventory, env, options), ...userModelBlockers(inventory, options)];
+}
+
 function stageFor(
 	inventory: WorkbenchInventory,
 	env: NodeJS.ProcessEnv,
@@ -1291,7 +1325,7 @@ function stageFor(
 			stage: "corpus-review",
 			headline: "Review the exact development corpus draft before publishing it; configure any evaluator model its cases require.",
 			actions: ["review", "publish-corpus", "configure-evaluators"],
-			blockers: judgeBlockers(inventory, env, { includeMissing: false }),
+			blockers: evaluatorBlockers(inventory, env, { includeMissing: false }),
 		};
 	}
 	const corpusChoice = selectedOrUniqueId(development, inventory.validFocus["development-corpus"]?.id, (corpus) => corpus.id);
@@ -1303,13 +1337,13 @@ function stageFor(
 		// Why it cannot run, when the why is the instrument: a typed judge reason
 		// says what to do, where the generic sentence only says that something is
 		// wrong with a basket the operator already reviewed.
-		const judge = judgeBlockers(inventory, env, { includeMissing: true });
+		const evaluators = evaluatorBlockers(inventory, env, { includeMissing: true });
 		return {
 			stage: "corpus-design",
 			headline: "The published development basket cannot run on the current Target; configure its evaluator models or revise the cases.",
 			actions: ["workshop-open", "configure-evaluators", "submit corpus-draft"],
-			blockers: judge.length > 0
-				? judge
+			blockers: evaluators.length > 0
+				? evaluators
 				: [blocked("The selected development basket is not runnable on the current Target.", "blocker.basket-not-runnable")],
 		};
 	}
@@ -1325,14 +1359,14 @@ function stageFor(
 			stage: "ready-to-evaluate",
 			headline: "The approved development surface is ready; run it, or finish the first harness in a construction workshop before measuring.",
 			actions: ["workshop-open", "run", "configure-evaluators"],
-			blockers: judgeBlockers(inventory, env, { includeMissing: true }),
+			blockers: evaluatorBlockers(inventory, env, { includeMissing: true }),
 		};
 	}
 	return {
 		stage: "improvement-authoring",
 		headline: "Use the diagnosis to improve the harness in a workshop or with a structured proposal.",
 		actions: ["workshop-open", "traces", "submit structured-proposal", "configure-evaluators"],
-		blockers: judgeBlockers(inventory, env, { includeMissing: true }),
+		blockers: evaluatorBlockers(inventory, env, { includeMissing: true }),
 	};
 }
 
@@ -1349,7 +1383,12 @@ function modelSummary(
 	};
 }
 
-type EvaluatorRequirements = { judge: boolean; simulatedUser: boolean };
+/**
+ * Which evaluator roles the selected surface calls, and how many of its cases
+ * are conversations — the count is what lets the blocker say "two of the cases
+ * are dialogues" instead of "some case somewhere".
+ */
+type EvaluatorRequirements = { judge: boolean; simulatedUser: boolean; dialogueCases: number };
 type EvaluatorRequirementTask = {
 	graders?: readonly { type: string }[] | undefined;
 	effectiveGraders?: readonly { type: string }[] | undefined;
@@ -1359,9 +1398,11 @@ type EvaluatorRequirementTask = {
 function requirementsOf(
 	tasks: readonly EvaluatorRequirementTask[],
 ): EvaluatorRequirements {
+	const dialogueCases = tasks.filter((task) => task.simulatedUser !== undefined).length;
 	return {
 		judge: tasks.some((task) => (task.effectiveGraders ?? task.graders ?? []).some((grader) => grader.type === "judge")),
-		simulatedUser: tasks.some((task) => task.simulatedUser !== undefined),
+		simulatedUser: dialogueCases > 0,
+		dialogueCases,
 	};
 }
 
@@ -1474,7 +1515,12 @@ export function deriveWorkbenchView(
 				gitSha: inventory.target.gitSha,
 				model: targetModelSummary(inventory, env),
 				evaluators: evaluatorSummaries(inventory, env),
-				evaluatorRequirements,
+				// The projection stays the two booleans it always was; the case count
+				// beside them is a blocker's business, not a screen's.
+				evaluatorRequirements: {
+					judge: evaluatorRequirements.judge,
+					simulatedUser: evaluatorRequirements.simulatedUser,
+				},
 				toolCredentials: toolCredentialReadiness(inventory.target, env)
 					.map((entry) => ({ tool: entry.tool, environment: entry.environmentName, present: entry.present })),
 			}

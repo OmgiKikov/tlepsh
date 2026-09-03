@@ -1548,6 +1548,24 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"blocker.judge-unreadable": "The judge returned an unreadable verdict on {count} of {total} runs, so the last measurement is about the evaluation path, not the agent.",
 	"confirm.start-testing.part.judge": "choose the judge",
 	"confirm.start-testing.judge": "{model} (not the agent's model) · key {env}",
+	// lane: evaluator-placeholders — the other model a measurement needs, asked
+	// in the same question and blocked by the same rules as the judge.
+	"label.user-instrument": "Client",
+	"blocker.user-model-missing":
+		"{dialogues} among the cases, and no model is chosen to play the client: this needs a model that will be the customer.",
+	"blocker.evaluators-missing":
+		"This basket needs both evaluators and has neither: a judge that is not the agent's own model, and a model to play the client.",
+	"confirm.start-testing.part.user": "choose the client's model",
+	"confirm.start-testing.user": "{model} · key {env}",
+	"onboarding.evaluators-later": "The judge and the client's model are chosen in the question before the first run.",
+	// `ahde validate` names each evaluator by its manifest field in English —
+	// scripts read that — and by the operator's word for it in Russian.
+	"readiness.role.judge": "judge",
+	"readiness.role.simulated-user": "simulatedUser",
+	"readiness.evaluator.not-configured": "{label}: not configured",
+	"readiness.evaluator.configured": "{label}: configured · {model} · key {env} {state}",
+	"readiness.key.set": "set",
+	"readiness.key.missing": "MISSING",
 	"mode.title.judge-abstained": "The judge could not tell",
 	"mode.fact.judge-abstained": "{failed} matching observation(s) were failed by a judge that said it could not decide, never by a check the agent missed",
 	// lane: smoke-fixes
@@ -2838,6 +2856,21 @@ const ru: Record<MessageKey, string> = {
 	"blocker.judge-unreadable": "Судья вернул нечитаемый вердикт в {count} прогонах из {total} — последнее измерение говорит о тракте оценки, а не об агенте.",
 	"confirm.start-testing.part.judge": "выбрать судью",
 	"confirm.start-testing.judge": "{model} (не модель агента) · ключ {env}",
+	// lane: evaluator-placeholders
+	"label.user-instrument": "Собеседник",
+	"blocker.user-model-missing":
+		"{dialogues} среди кейсов, а модель собеседника не выбрана: нужна модель, которая сыграет клиента.",
+	"blocker.evaluators-missing":
+		"Этим тестам нужны оба оценщика, и нет ни одного: судья не на модели агента и модель, которая сыграет клиента.",
+	"confirm.start-testing.part.user": "выбрать собеседника",
+	"confirm.start-testing.user": "{model} · ключ {env}",
+	"onboarding.evaluators-later": "Судью и собеседника выберем в вопросе перед первым прогоном.",
+	"readiness.role.judge": "Судья",
+	"readiness.role.simulated-user": "Собеседник",
+	"readiness.evaluator.not-configured": "{label}: не настроен",
+	"readiness.evaluator.configured": "{label}: настроен · {model} · ключ {env} {state}",
+	"readiness.key.set": "задан",
+	"readiness.key.missing": "НЕ ЗАДАН",
 	"mode.title.judge-abstained": "Судья не смог решить",
 	"mode.fact.judge-abstained": "совпадающих наблюдений провалено: {failed}, и все — судьёй, который сам сказал, что решить не может, а не проверкой, которую агент не прошёл",
 	// lane: smoke-fixes

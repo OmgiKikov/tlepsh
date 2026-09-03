@@ -6,6 +6,7 @@ import { findKbChunk } from "./target/kb-tool.js";
 import {
 	GraderSpec,
 	JudgeGrader,
+	assertEvaluatorsConfigured,
 	graderName,
 	graderNeedsExpected,
 	hasReferenceAnswer,
@@ -1616,10 +1617,16 @@ export async function runSuite(target: ResolvedTarget, options: RunSuiteOptions)
 	if (!Number.isInteger(options.repetitions) || options.repetitions < 1) {
 		throw new Error(`repetitions must be a positive integer, got ${options.repetitions}`);
 	}
-	mkdirSync(options.runsRoot, { recursive: true });
-	const evalRunId = newEvalRunId();
 	const tasks = options.taskId ? target.tasks.filter((t) => t.id === options.taskId) : target.tasks;
 	if (tasks.length === 0) throw new Error(`task not found: ${options.taskId}`);
+	// Before the runs directory exists, let alone a run.json: a suite that names
+	// an evaluator this Target has not configured cannot be measured at all, and
+	// discovering that per execution would spend six of eight cases to learn it.
+	// `runTask` still refuses its own case — this is the cheap statement of the
+	// same rule over the whole design.
+	assertEvaluatorsConfigured(tasks, target.manifest.evalSuite);
+	mkdirSync(options.runsRoot, { recursive: true });
+	const evalRunId = newEvalRunId();
 
 	const jobs = options.jobs ?? defaultEvalJobs(target.manifest.model);
 	if (!Number.isInteger(jobs) || jobs < 1) {
