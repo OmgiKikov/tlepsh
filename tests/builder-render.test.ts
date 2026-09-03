@@ -58,6 +58,8 @@ import {
 	applyPaint,
 	createTranscriptPresenter,
 	markerPaint,
+	continuationPrefix,
+	hangingWrap,
 	registerAhdeTranscriptRenderer,
 	renderTranscriptEntry,
 	stripMarkers,
@@ -2258,6 +2260,56 @@ describe("transcript markers", () => {
 		expect(stripMarkers("plain")).toBe("plain");
 	});
 
+	/**
+	 * Pi wraps a long line at column 0. In a diff that eats the leading `+`, so
+	 * the tail of an added line reads as context and the whole change looks
+	 * corrupt; in a panel line it puts the continuation left of the label it
+	 * belongs to. Live session 6 read exactly that, four times.
+	 */
+	it("wraps with a hanging indent that keeps the diff marker column", () => {
+		const added = `  +${"слово ".repeat(20).trim()}`;
+		const wrapped = hangingWrap(added, 40);
+		expect(wrapped.length).toBeGreaterThan(1);
+		for (const line of wrapped) {
+			expect(line.startsWith("  +")).toBe(true);
+			expect(line.length).toBeLessThanOrEqual(40);
+		}
+		// Nothing is lost to the wrap: the words are all still there, in order.
+		expect(wrapped.map((line) => line.slice(3).trim()).join(" ")).toBe("слово ".repeat(20).trim());
+
+		const removed = hangingWrap(`  -${"x ".repeat(40).trim()}`, 40);
+		for (const line of removed) expect(line.startsWith("  -")).toBe(true);
+
+		// A line with no marker keeps its own indent and hangs under it.
+		const plain = hangingWrap(`    Дальше ${"слово ".repeat(20).trim()}`, 40);
+		expect(plain.length).toBeGreaterThan(1);
+		expect(plain[0]!.startsWith("    Дальше")).toBe(true);
+		for (const line of plain.slice(1)) expect(line.startsWith("      ")).toBe(true);
+		expect(continuationPrefix("  +added")).toBe("  +");
+		expect(continuationPrefix("  Дальше")).toBe("    ");
+		// A line that fits is left exactly as it is.
+		expect(hangingWrap("  +short", 40)).toEqual(["  +short"]);
+	});
+
+	it("wraps every persisted line at the width it is drawn at", () => {
+		const entry: TranscriptEntry = {
+			schemaVersion: 1,
+			title: "Diff",
+			tone: "info",
+			lines: [markerPaint.added(`+${"слово ".repeat(20).trim()}`)],
+		};
+		// A theme that adds no visible characters, which is what a real ANSI theme
+		// looks like once `stripTerminalSequences` has done its work.
+		const bare: Pick<Theme, "fg" | "bold"> = { fg: (_color, text) => text, bold: (text) => text };
+		const drawn = renderTranscriptEntry(entry, bare).render(48)
+			.map((line) => line.trimEnd())
+			.filter((line) => line.length > 0);
+		// The body is indented by two, so every continuation of the `+` line
+		// starts at the same three columns the first one did.
+		for (const line of drawn.slice(1)) expect(line.startsWith("  +")).toBe(true);
+		expect(drawn.length).toBeGreaterThan(2);
+	});
+
 	it("renders a persisted entry as a themed Text component", () => {
 		const entry: TranscriptEntry = {
 			schemaVersion: 1,
@@ -2266,7 +2318,6 @@ describe("transcript markers", () => {
 			lines: [markerPaint.bold("Title line"), "plain body"],
 		};
 		const component = renderTranscriptEntry(entry, fakeTheme);
-		expect(component).toBeInstanceOf(Text);
 		const rendered = component.render(200).join("\n");
 		expect(rendered).toContain("◆ Spec review");
 		expect(rendered).toContain("<b><accent>◆ Spec review</accent></b>");
@@ -2377,8 +2428,7 @@ describe("registerAhdeTranscriptRenderer", () => {
 		const renderer = registrations[0]?.renderer;
 		if (!renderer) throw new Error("renderer was not registered");
 		const component = invoke(renderer, { schemaVersion: 1, title: "Diagnosis", tone: "info", lines: [markerPaint.dim("Next"), "line"] });
-		expect(component).toBeInstanceOf(Text);
-		expect((component as Text).render(120).join("\n")).toContain("◆ Diagnosis");
+		expect(component?.render(120).join("\n")).toContain("◆ Diagnosis");
 	});
 
 	it("returns undefined for malformed entry data", () => {

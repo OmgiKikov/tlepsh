@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { Text, stripTerminalSequences, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { sanitizeTerminalText } from "../trace.js";
 import { headline } from "./render/format.js";
 import { MARKER_CLOSE, MARKER_CODES, MARKER_OPEN, stripMarkers } from "./render/markers.js";
@@ -111,14 +111,60 @@ function toneFor(paint: Paint, tone: TranscriptTone): (text: string) => string {
 	}
 }
 
+/**
+ * The prefix a wrapped continuation keeps.
+ *
+ * Pi wraps a long line at column 0. In a diff that eats the leading `+`, so
+ * the tail of an added line reads as context and the change looks corrupt; in
+ * a plain panel line it puts the continuation left of the label it belongs to.
+ * The continuation therefore keeps the line's own indent, and under a `+`/`-`
+ * it keeps that marker column too.
+ */
+export function continuationPrefix(line: string): string {
+	const visible = stripTerminalSequences(stripMarkers(line));
+	const indent = /^[ ]*/.exec(visible)?.[0] ?? "";
+	const marker = visible.slice(indent.length, indent.length + 1);
+	return marker === "+" || marker === "-" ? `${indent}${marker}` : `${indent}  `;
+}
+
+/** One line wrapped to `width`, every continuation under its own marker column. */
+export function hangingWrap(line: string, width: number): string[] {
+	if (width <= 1 || visibleWidth(line) <= width) return [line];
+	const prefix = continuationPrefix(line);
+	const inner = wrapTextWithAnsi(line, Math.max(1, width - visibleWidth(prefix)));
+	return inner.map((wrapped, index) => (index === 0 ? wrapped : `${prefix}${wrapped}`));
+}
+
+/**
+ * One persisted AHDE transcript entry, wrapped for the width it is drawn at.
+ *
+ * The width is only known at render time, which is why this is a component
+ * rather than a pre-wrapped string: the same persisted entry is redrawn on
+ * every resize and every theme change.
+ */
+class TranscriptBlock implements Component {
+	private readonly inner = new Text("", 0, 0);
+
+	constructor(private readonly lines: readonly string[]) {}
+
+	render(width: number): string[] {
+		this.inner.setText(this.lines.flatMap((line) => hangingWrap(line, width)).join("\n"));
+		return this.inner.render(width);
+	}
+
+	invalidate(): void {
+		this.inner.invalidate();
+	}
+}
+
 /** Theme-aware component for one persisted AHDE transcript entry. */
-export function renderTranscriptEntry(entry: TranscriptEntry, theme: Pick<Theme, "fg" | "bold">): Text {
+export function renderTranscriptEntry(entry: TranscriptEntry, theme: Pick<Theme, "fg" | "bold">): Component {
 	const paint = themePaint(theme);
 	const body = entry.lines.map((line) => `  ${applyPaint(line, paint)}`);
 	// A titleless entry is the one-line form: an injection notice, not a panel.
-	if (entry.title === "") return new Text(body.join("\n"), 0, 0);
+	if (entry.title === "") return new TranscriptBlock(body);
 	const title = paint.bold(toneFor(paint, entry.tone)(`◆ ${entry.title}`));
-	return new Text([title, ...body].join("\n"), 0, 0);
+	return new TranscriptBlock([title, ...body]);
 }
 
 function isTranscriptEntry(value: unknown): value is TranscriptEntry {
