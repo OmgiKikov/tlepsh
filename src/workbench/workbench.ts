@@ -136,6 +136,7 @@ import {
 import {
 	assertGradersRunnable,
 	resolveScoredCasesForEval,
+	targetToolContext,
 	targetWithDevelopmentCorpus,
 } from "../application/corpus-target.js";
 import {
@@ -2584,7 +2585,7 @@ export class AhdeWorkbench {
 					graders: entry.graders,
 					metadata: entry.metadata,
 				}));
-				assertGradersRunnable(tasks, inventory.target.manifest, `contract cases for ${name}`);
+				assertGradersRunnable(tasks, inventory.target.manifest, `contract cases for ${name}`, targetToolContext(inventory.target));
 				// Revise the open draft when there is one, so the operator keeps one
 				// editable surface instead of collecting a draft per applied tool.
 				const open = inventory.corpusDrafts.filter((draft) => draft.approvedSpec.specId === approved.id);
@@ -2893,7 +2894,7 @@ export class AhdeWorkbench {
 			const approved = requireApprovedSpec(inventory, input.approvedSpecId);
 			const exact = loadApprovedSpec({ stateRoot: this.stateRoot, projectId: this.projectId, specId: approved.id });
 			if (inventory.target) {
-				assertGradersRunnable(input.tasks, inventory.target.manifest, "corpus draft", { evaluatorsChosenLater: true });
+				assertGradersRunnable(input.tasks, inventory.target.manifest, "corpus draft", { evaluatorsChosenLater: true, ...targetToolContext(inventory.target) });
 			}
 			const result = this.dependencies.createCorpusDraft({
 				stateRoot: this.stateRoot,
@@ -2923,7 +2924,7 @@ export class AhdeWorkbench {
 			const settled = this.select("corpus-draft", result.draft.id);
 			if (inventory.target) {
 				try {
-					assertGradersRunnable(result.draft.tasks, inventory.target.manifest, "imported corpus draft", { evaluatorsChosenLater: true });
+					assertGradersRunnable(result.draft.tasks, inventory.target.manifest, "imported corpus draft", { evaluatorsChosenLater: true, ...targetToolContext(inventory.target) });
 				} catch (error) {
 					throw new Error(
 						`${error instanceof Error ? error.message : String(error)}\nThe import was saved as draft ${result.draft.id}; revise those graders with kind: corpus-revision before publishing.`,
@@ -2971,7 +2972,7 @@ export class AhdeWorkbench {
 					`${MAX_BUILDER_CORPUS_DRAFT_TASKS}. Add sample: { limit, seed } to the recipe to thin the development side.`,
 				);
 			}
-			if (inventory.target) assertGradersRunnable(compiled.tasks, inventory.target.manifest, "dataset recipe", { evaluatorsChosenLater: true });
+			if (inventory.target) assertGradersRunnable(compiled.tasks, inventory.target.manifest, "dataset recipe", { evaluatorsChosenLater: true, ...targetToolContext(inventory.target) });
 			const saved = this.dependencies.saveDatasetRecipe({
 				stateRoot: this.stateRoot,
 				approvedSpec: exact.reference,
@@ -3013,7 +3014,7 @@ export class AhdeWorkbench {
 					if ("grader" in operation && operation.grader) return [{ graders: [operation.grader] }];
 					return [];
 				});
-				assertGradersRunnable(carried, inventory.target.manifest, "corpus revision", { evaluatorsChosenLater: true });
+				assertGradersRunnable(carried, inventory.target.manifest, "corpus revision", { evaluatorsChosenLater: true, ...targetToolContext(inventory.target) });
 			}
 			let operations: readonly unknown[] = input.operations;
 			let verifiedTaskProvenance: readonly unknown[] = [];

@@ -234,10 +234,74 @@ describe("corpus grader validation against the current Target", () => {
 });
 
 /**
- * The judge is an instrument, and an instrument can be missing, dependent,
- * keyless or unreadable. Each of those is one typed blocker with its own
- * sentence, at the stages where it is the answer to "why can nothing move".
+ * Session 7 wrote `argsContains: {"contractId":"12345"}` against a tool whose
+ * only parameter is `account`, on three cases, and every layer accepted it.
+ * The check could not fire under any circumstance — a grader that can only
+ * fail is not a measurement, it is a hole in one.
  */
+describe("a tool grader names a parameter the tool has", () => {
+	const manifest = { evalSuite: { id: "s", dataset: "d", graders: "g" } } as never;
+	const getAccount = {
+		name: "get_account",
+		parameters: {
+			type: "object",
+			properties: { account: { type: "string" }, action: { type: "string" } },
+		},
+	};
+
+	it("refuses a parameter the descriptor does not declare, and names the ones it does", () => {
+		setLanguage("ru");
+		expect(() => assertGradersRunnable(
+			[{ graders: [{ type: "tool_called", tool: "get_account", argsContains: "contractId" }] }],
+			manifest,
+			"basket",
+			{ tools: [getAccount] },
+		)).toThrow("task 1 grader 1: у инструмента get_account нет параметра contractId; есть: account, action");
+	});
+
+	it("reads the arguments object the Builder actually wrote, key by key", () => {
+		setLanguage("ru");
+		expect(() => assertGradersRunnable(
+			[{ graders: [{ type: "tool_called", tool: "get_account", argsContains: '{"contractId":"12345"}' }] }],
+			manifest,
+			"basket",
+			{ tools: [getAccount] },
+		)).toThrow("нет параметра contractId; есть: account, action");
+		// A declared parameter passes, value and all.
+		expect(() => assertGradersRunnable(
+			[{ graders: [{ type: "tool_called", tool: "get_account", argsContains: '{"account":"12345"}' }] }],
+			manifest,
+			"basket",
+			{ tools: [getAccount] },
+		)).not.toThrow();
+	});
+
+	it("leaves free text alone: it may be a value, and values are the author's business", () => {
+		for (const argsContains of ["12345", "Домашний 100", "account 42", "{not json"]) {
+			expect(() => assertGradersRunnable(
+				[{ graders: [{ type: "tool_called", tool: "get_account", argsContains }] }],
+				manifest,
+				"basket",
+				{ tools: [getAccount] },
+			), argsContains).not.toThrow();
+		}
+	});
+
+	it("says nothing about a tool the Target does not declare, or when no tools are known", () => {
+		expect(() => assertGradersRunnable(
+			[{ graders: [{ type: "tool_called", tool: "unknown_tool", argsContains: "contractId" }] }],
+			manifest,
+			"basket",
+			{ tools: [getAccount] },
+		)).not.toThrow();
+		expect(() => assertGradersRunnable(
+			[{ graders: [{ type: "tool_called", tool: "get_account", argsContains: "contractId" }] }],
+			manifest,
+			"basket",
+		)).not.toThrow();
+	});
+});
+
 describe("typed blockers for the judge", () => {
 	const JUDGE_TASK = {
 		input: "Digest for Notion",

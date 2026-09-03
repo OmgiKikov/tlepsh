@@ -7,6 +7,7 @@ import {
 import type { EvalRunRecord } from "../eval.js";
 import {
 	assertEvaluatorsConfigured,
+	executionKindOf,
 	graderNeedsExpected,
 	type GraderSpec,
 	hasReferenceAnswer,
@@ -18,6 +19,7 @@ import {
 } from "../manifest.js";
 import { hashValue } from "../provenance.js";
 import { knowledgeBaseDeclared } from "../target/kb-tool.js";
+import { t } from "../i18n.js";
 
 function cloneGrader(grader: GraderSpec): GraderSpec {
 	return { ...grader };
@@ -273,6 +275,67 @@ export function resolveScoredCasesForEval(options: {
  * the same checks later; this earlier, model-readable failure keeps a bad
  * regex or an unsupported judge grader from blocking a reviewed basket.
  */
+/**
+ * A declared tool, as the draft checks read it: its name and the parameter
+ * names its JSON-Schema `parameters` block actually declares.
+ *
+ * `ResolvedTargetTool["descriptor"]` satisfies it structurally, so a caller
+ * hands over `target.tools.map((tool) => tool.descriptor)` and nothing has to
+ * be re-derived.
+ */
+export interface DeclaredToolShape {
+	name: string;
+	parameters: Record<string, unknown>;
+	permissions?: { environment?: readonly string[] } | undefined;
+}
+
+/** An identifier, which is what a parameter name looks like and a value does not. */
+const PARAMETER_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * The parameter names an `argsContains` claims, or none.
+ *
+ * `tool_called.argsContains` is a substring test over the serialized call, so
+ * most of what may be written there is a VALUE and none of the host's
+ * business. Exactly two shapes name parameters and can be checked: a bare
+ * identifier, and a JSON object whose keys are the arguments — which is the
+ * shape session 7 wrote (`{"contractId":"12345"}` against a tool whose only
+ * parameter is `account`). Anything else is left alone.
+ */
+function namedParameters(argsContains: string): string[] {
+	const text = argsContains.trim();
+	if (PARAMETER_NAME.test(text)) return [text];
+	if (!text.startsWith("{")) return [];
+	try {
+		const parsed: unknown = JSON.parse(text);
+		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+		return Object.keys(parsed as Record<string, unknown>).filter((key) => PARAMETER_NAME.test(key));
+	} catch {
+		return [];
+	}
+}
+
+/** The parameter names a descriptor's JSON Schema declares, in schema order. */
+function declaredParameterNames(tool: DeclaredToolShape): string[] {
+	const properties = (tool.parameters as { properties?: unknown }).properties;
+	if (properties === null || typeof properties !== "object" || Array.isArray(properties)) return [];
+	return Object.keys(properties as Record<string, unknown>);
+}
+
+/**
+ * What the two draft checks need from the committed Target: its declared
+ * tools, and whether it is a command agent (every one of whose tools reaches
+ * the world through the broker).
+ */
+export function targetToolContext(
+	target: Pick<ResolvedTarget, "tools" | "manifest">,
+): { tools: DeclaredToolShape[]; commandAgent: boolean } {
+	return {
+		tools: target.tools.map((tool) => tool.descriptor),
+		commandAgent: executionKindOf(target.manifest.execution) === "command",
+	};
+}
+
 export function assertGradersRunnable(
 	tasks: readonly {
 		expected?: string | undefined;
@@ -293,9 +356,16 @@ export function assertGradersRunnable(
 		 * evaluator that does not exist.
 		 */
 		evaluatorsChosenLater?: boolean;
+		/**
+		 * The Target's declared tools. Without them a `tool_called` grader can
+		 * only be checked for shape; with them it can be checked against the tool
+		 * it actually names.
+		 */
+		tools?: readonly DeclaredToolShape[];
 	} = {},
 ): void {
 	const problems: string[] = [];
+	const declared = new Map((options.tools ?? []).map((tool) => [tool.name, tool]));
 	tasks.forEach((task, taskIndex) => {
 		if (task.simulatedUser !== undefined && !manifest.evalSuite.simulatedUser && options.evaluatorsChosenLater !== true) {
 			problems.push(
@@ -334,9 +404,30 @@ export function assertGradersRunnable(
 					" Give the case an expected answer, or use output_contains, output_matches, or tool_called instead.",
 				);
 			}
+			// Session 7: three cases asked `argsContains: "contractId"` of a tool
+			// whose one parameter is `account`. The checks could not fire under any
+			// circumstance, and nothing said so — not at draft, not at publication,
+			// not on the run. A bare identifier is a parameter name and can be
+			// checked against the descriptor; anything else may be a value the
+			// agent passes, and stays the operator's business.
+			if (grader.type === "tool_called" && grader.argsContains !== undefined) {
+				const tool = declared.get(grader.tool);
+				const names = tool ? declaredParameterNames(tool) : [];
+				const unknown = tool && names.length > 0
+					? namedParameters(grader.argsContains).find((name) => !names.includes(name))
+					: undefined;
+				if (unknown !== undefined) {
+					problems.push(`${where}: ${t("draft.tool-parameter-unknown", {
+						tool: grader.tool,
+						parameter: unknown,
+						parameters: names.join(", "),
+					})}`);
+				}
+			}
 		});
 	});
 	if (problems.length > 0) {
 		throw new Error(`${label} cannot run on the current Target:\n- ${problems.slice(0, 8).join("\n- ")}`);
 	}
 }
+

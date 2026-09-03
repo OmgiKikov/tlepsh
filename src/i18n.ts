@@ -1591,6 +1591,8 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"result.screen-inconclusive-over-budget": "· {count} inconclusive — over the infrastructure error budget",
 	"exam.dropped-at-generation": "({dropped} dropped when it was generated)",
 	"exam.short-of-requested": "(short of the {requested} that were ordered)",
+	// lane: dataset
+	"draft.tool-parameter-unknown": "tool {tool} has no parameter {parameter}; it has: {parameters}",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2904,6 +2906,8 @@ const ru: Record<MessageKey, string> = {
 	"result.screen-inconclusive-over-budget": "· {count} неубедительно — превышен бюджет инфраструктурных ошибок",
 	"exam.dropped-at-generation": "(при генерации отброшено: {dropped})",
 	"exam.short-of-requested": "(заказано было {requested})",
+	// lane: dataset
+	"draft.tool-parameter-unknown": "у инструмента {tool} нет параметра {parameter}; есть: {parameters}",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };
