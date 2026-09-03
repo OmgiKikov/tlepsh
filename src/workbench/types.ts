@@ -369,6 +369,17 @@ export interface WorkbenchTracesDetail {
 	judgeAgreement?: WorkbenchCandidateSummary["judgeAgreement"];
 	/** Grader results this run lost to a judge that said it could not tell. */
 	judgeAbstained?: number;
+	/**
+	 * The worlded cases of the basket this run scored, bounded, each keyed by
+	 * the task it belongs to.
+	 *
+	 * A case with a world is not a question with an answer: it is a person, a
+	 * state, a want and an obligation, and reading it as a row of a table loses
+	 * three of the four. `/traces` shows these as the same four-line card the
+	 * dataset view uses, and `/trace` joins on `taskId` to say what the world
+	 * held before the conversation.
+	 */
+	worldCases?: Array<WorkbenchDatasetCase & { taskId: string }>;
 }
 
 export type WorkbenchTargetDetail = TargetAuthoringContext | { launch: "ahde init ." };

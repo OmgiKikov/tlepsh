@@ -1350,6 +1350,44 @@ describe("renderTraces", () => {
 		expect(excerptLines).toHaveLength(4);
 	});
 
+	/**
+	 * Session 7 opened `/traces` on a basket of eight, three of them worlded,
+	 * and met a table of 64-character ids: not one line said who was in a case,
+	 * what was already true of it, what they wanted, or what had to be true at
+	 * the end. The table is still below; this is the half it cannot hold.
+	 */
+	it("draws a worlded case as the same four-line card the dataset view draws", () => {
+		const lines = renderTraces(makeTraces({}, {
+			worldCases: [{
+				taskId: "task_002",
+				...datasetCasePreview(CorpusTaskSchema.parse({
+					id: "task_002",
+					input: "Заблокируйте договор 42.",
+					world: {
+						state: { accounts: { "42": { status: "ok" } } },
+						expect: [{ path: "accounts.42.status", op: "equals", value: "frozen" }],
+					},
+					graders: [{ type: "tool_called", tool: "check_account" }],
+				})),
+			}],
+		}), plainPaint);
+		const at = lines.indexOf("Worlded cases");
+		expect(at).toBeGreaterThan(0);
+		expect(lines.slice(at + 1, at + 5)).toEqual([
+			"   1. who: —",
+			"      has: accounts.42.status=ok",
+			"      wants: Заблокируйте договор 42.",
+			'      must: accounts.42.status equals "frozen" · tool check_account',
+		]);
+		// It sits above the evidence link, so the panel still ends where it did.
+		expect(lines[at + 5]).toBe("Evidence http://127.0.0.1:4310/evidence/eval-1");
+	});
+
+	it("says nothing about worlds when no case has one", () => {
+		expect(renderTraces(makeTraces(), plainPaint).join("\n")).not.toContain("Worlded cases");
+		expect(renderTraces(makeTraces({}, { worldCases: [] }), plainPaint).join("\n")).not.toContain("Worlded cases");
+	});
+
 	it("explains inconclusive and healthy runs without modes", () => {
 		const inconclusive = renderTraces(makeTraces({
 			status: "inconclusive",

@@ -679,6 +679,38 @@ function datasetGrader(grader: WorkbenchDatasetCase["graders"][number]): Workben
 	}
 }
 
+/** How many worlded cases the traces panel carries; the Explorer has the rest. */
+const MAX_TRACES_WORLD_CASES = 8;
+
+/**
+ * The worlded cases of the basket an eval scored.
+ *
+ * Keyed by task id, because the traces panel draws them and `/trace` joins on
+ * that id to say what the world held before one conversation. Reading the
+ * corpus is best-effort: a basket that has been deleted, or an eval that ran
+ * off the manifest dataset instead of a published corpus, simply leaves the
+ * panel as it was.
+ */
+function worldCasesOf(
+	workbench: { stateRoot: string; projectId: string },
+	inventory: WorkbenchInventory,
+	datasetHash: string,
+): { worldCases?: Array<WorkbenchDatasetCase & { taskId: string }> } {
+	const metadata = inventory.corpora.find((item) => item.hash === datasetHash);
+	if (!metadata) return {};
+	let tasks: readonly CorpusTask[];
+	try {
+		tasks = loadCorpus({ stateRoot: workbench.stateRoot, projectId: workbench.projectId, corpusId: metadata.id }).tasks;
+	} catch {
+		return {};
+	}
+	const worlded = tasks
+		.filter((task) => task.world !== undefined)
+		.slice(0, MAX_TRACES_WORLD_CASES)
+		.map((task) => ({ taskId: task.id, ...datasetCasePreview(task) }));
+	return worlded.length > 0 ? { worldCases: worlded } : {};
+}
+
 /**
  * One compiled case as a human reads it: bounded, credential-redacted, and
  * carrying no derived id, so a sample can never be mistaken for the corpus.
@@ -2768,6 +2800,11 @@ export class AhdeWorkbench {
 						diagnosis: diagnosisSummary(diagnosis),
 						improvementBrief: conversationalImprovementBrief(improvementBrief),
 						evidence: link ? { available: true, ...link } : { available: false },
+						// The worlded cases behind the numbers above. A worlded case
+						// read as a table row loses who is in it, what is already true
+						// and what must be true afterwards, so the panel carries the
+						// same four-line card the dataset view draws.
+						...worldCasesOf(this, inventory, run.datasetHash),
 						// The same instrument reading the run panel carries, so /traces
 						// and the panel after a run cannot say different things about
 						// the judge that decided the numbers above them. The offer this

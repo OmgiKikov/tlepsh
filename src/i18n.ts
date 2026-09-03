@@ -1594,6 +1594,10 @@ one would cost more than usual, and then you get a single yes/no.`,
 	// lane: dataset
 	"draft.tool-parameter-unknown": "tool {tool} has no parameter {parameter}; it has: {parameters}",
 	"draft.world-missing": "case {case} expects a call to {tool} but carries no world — the tool has nothing to return",
+	"traces.world-cases": "Worlded cases",
+	"trace.world-before": "World before",
+	"trace.world-after": "World after",
+	"trace.world-unread": "could not be read",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2910,6 +2914,10 @@ const ru: Record<MessageKey, string> = {
 	// lane: dataset
 	"draft.tool-parameter-unknown": "у инструмента {tool} нет параметра {parameter}; есть: {parameters}",
 	"draft.world-missing": "кейс {case} ждёт вызов {tool}, но не несёт мир — инструменту нечего вернуть",
+	"traces.world-cases": "Кейсы с миром",
+	"trace.world-before": "Мир до",
+	"trace.world-after": "Мир после",
+	"trace.world-unread": "прочитать не удалось",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

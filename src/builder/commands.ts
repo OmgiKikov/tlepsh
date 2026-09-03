@@ -1,4 +1,4 @@
-import { relative, sep } from "node:path";
+import { join, relative, sep } from "node:path";
 import { plural, t } from "../i18n.js";
 import { failureModeReading } from "../application/run-explanation.js";
 import type {
@@ -52,7 +52,9 @@ import {
 	renderRunsTable,
 	renderTracePanel,
 	traceNoteForModel,
+	type TraceWorld,
 } from "./render/trace.js";
+import { readFinalWorldState } from "../target/world-state.js";
 import { collectEvalPage, collectRunDetailPage, EvidenceNotFound } from "../evidence/model.js";
 import type { EvalPageModel, RunDetailPageModel } from "../evidence/pages.js";
 import {
@@ -416,6 +418,34 @@ export interface RegisterBuilderCommandsOptions {
 
 function describeError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The world one run happened in, or null when its case declared none.
+ *
+ * `before` is the case's own starting state, as the traces view already
+ * bounded and redacted it; `after` is what the conversation left behind. A
+ * world file that will not parse is reported as unreadable rather than as an
+ * empty world: it says nothing about the agent, and a caller that treated it
+ * as an answer would be inventing one.
+ *
+ * The join is the task id on both sides — the corpus case's own id, and the
+ * public form of it the evidence layer prints. An id that ever needed
+ * redacting would simply not match, and the panel would show no world rather
+ * than the wrong one.
+ */
+function worldOfRun(
+	content: WorkbenchTracesDetail,
+	detail: RunDetailPageModel,
+	runsRoot: string,
+): TraceWorld | null {
+	const declared = content.worldCases?.find((item) => item.taskId === detail.run.taskId);
+	if (!declared?.world) return null;
+	try {
+		return { before: declared.world.state, after: readFinalWorldState(join(runsRoot, detail.run.runId)) };
+	} catch {
+		return { before: declared.world.state, after: null, unreadable: true };
+	}
 }
 
 /** Which row `/trace <arg>` means: a 1-based row, next/prev from the cursor, a task id, or a run id. */
@@ -1529,7 +1559,7 @@ export function registerAhdeBuilderCommands(
 			presenter.show(ctx, {
 				title: t("panel.title", { detail: t("panel.trace", { run: `${oneLine(detail.run.taskId, 40)}#${detail.run.repetitionIndex}` }) }),
 				tone: detail.run.outcome === "pass" ? "info" : "warning",
-				lines: renderTracePanel(detail, markerPaint),
+				lines: renderTracePanel(detail, markerPaint, { world: worldOfRun(content, detail, workbench.runsRoot) }),
 			});
 			// The one thing the host cannot write: a reading of the trace. The
 			// Builder gets the same bounded facts and answers in the operator's words.

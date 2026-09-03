@@ -218,6 +218,43 @@ describe("traces in the TUI", () => {
 		for (const line of lines) expect([...line].length).toBeLessThanOrEqual(120);
 	});
 
+	/**
+	 * A worlded case is graded on what the world holds afterwards, so a trace
+	 * that shows only the conversation shows half the evidence. Session 7 opened
+	 * the trace of a worlded case and found neither state on the screen.
+	 */
+	it("prints the world before and after, as two short lines under the run", () => {
+		const lines = renderTracePanel(detail("run_fail1", "task_006", 0, "fail"), plainPaint, {
+			world: {
+				before: '{"accounts":{"42":{"status":"ok"}}}',
+				after: { accounts: { "42": { status: "frozen" } } },
+			},
+		}).map(stripMarkers);
+		expect(lines[1]).toBe('World before {"accounts":{"42":{"status":"ok"}}}');
+		expect(lines[2]).toBe('World after {"accounts":{"42":{"status":"frozen"}}}');
+		// Everything the panel said before still comes after them, in order.
+		expect(lines[0]).toContain("Run task_006#0");
+		expect(lines.join("\n")).toContain("Why");
+	});
+
+	it("says a world it cannot read is unread, and never invents an empty one", () => {
+		const unreadable = renderTracePanel(detail("run_fail1", "task_006", 0, "fail"), plainPaint, {
+			world: { before: '{"accounts":{}}', after: null, unreadable: true },
+		}).map(stripMarkers);
+		expect(unreadable[2]).toBe("World after could not be read");
+		// A run that wrote no world file at all: a dash, not an empty object.
+		const absent = renderTracePanel(detail("run_fail1", "task_006", 0, "fail"), plainPaint, {
+			world: { before: '{"accounts":{}}', after: null },
+		}).map(stripMarkers);
+		expect(absent[2]).toBe("World after —");
+	});
+
+	it("keeps a worldless case exactly as it renders today", () => {
+		const lines = renderTracePanel(detail("run_fail1", "task_006", 0, "fail"), plainPaint).map(stripMarkers);
+		expect(lines.join("\n")).not.toContain("World before");
+		expect(lines.join("\n")).not.toContain("World after");
+	});
+
 	it("tells the Builder the facts and asks for its own hypothesis, within the note bound", () => {
 		const note = traceNoteForModel(detail("run_fail1", "task_006", 0, "fail"));
 		expect(note).toContain("Operator opened /trace for run run_fail1 — task_006#0, fail");
