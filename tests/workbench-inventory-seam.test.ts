@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createAhdeWorkbench } from "../src/workbench/workbench.js";
 import { loadWorkbenchInventory, type WorkbenchInventory } from "../src/workbench/inventory.js";
 import type { SpecSnapshot } from "../src/spec.js";
+import { setLanguage } from "../src/i18n.js";
 
 const roots: string[] = [];
 
@@ -84,5 +85,31 @@ describe("Workbench inventory read behind the seam", () => {
 		expect(loads()).toBe(1);
 		expect(turn.view.focus["spec-draft"]).toBe(spec.id);
 		expect(turn.view.selections.some((selection) => selection.id === spec.id && selection.selected)).toBe(true);
+	});
+
+	// The basket's own label is read on the focus line, where `8 tasks` was one
+	// of seven English words in a Russian sentence.
+	it("bends the case count in a basket label with the operator's language", async () => {
+		const projectDir = root();
+		const corpus = {
+			id: "corpus-1",
+			name: "ombudsman-main",
+			visibility: "development" as const,
+			taskCount: 8,
+			hash: `sha256:${"a".repeat(64)}`,
+			createdAt: "2026-08-29T00:00:00.000Z",
+		};
+		const { workbench } = workbenchOver(projectDir, (base) => ({
+			...base,
+			corpora: [corpus as unknown as WorkbenchInventory["corpora"][number]],
+		}));
+		setLanguage("ru");
+		try {
+			const view = await workbench.view();
+			const basket = view.selections.find((selection) => selection.kind === "development-corpus");
+			expect(basket?.label).toBe("ombudsman-main · 8 задач");
+		} finally {
+			setLanguage(null);
+		}
 	});
 });

@@ -1491,6 +1491,14 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"refusal.workshop-out-of-scope": "There is no such path in the workshop. It holds AGENTS.md and whatever is inside {scope} — name a file, for example bin/check_dbo.",
 	"refusal.workshop-unsafe-path": "That is not a path the workshop can take: a plain relative path, no “..”, no drive letter, no backslashes.",
 	"refusal.submission-invalid": "Did not pass validation: {kind}. Fields at fault: {fields}",
+	// The focus line's own lexicon: short nouns, because they sit six to a line.
+	"selection.spec-draft": "draft",
+	"selection.approved-spec": "description",
+	"selection.corpus-draft": "draft basket",
+	"selection.development-corpus": "basket",
+	"selection.eval-run": "run",
+	"selection.proposal": "change",
+	"selection.candidate": "candidate",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2721,6 +2729,13 @@ const ru: Record<MessageKey, string> = {
 	"refusal.workshop-out-of-scope": "Такого пути в мастерской нет. В ней лежат AGENTS.md и всё, что внутри {scope} — назови файл, например bin/check_dbo.",
 	"refusal.workshop-unsafe-path": "Такой путь мастерская не примет: только обычный относительный путь, без «..», без буквы диска и без обратных слэшей.",
 	"refusal.submission-invalid": "Не прошло проверку: {kind}. Ошибок в полях: {fields}",
+	"selection.spec-draft": "черновик",
+	"selection.approved-spec": "описание",
+	"selection.corpus-draft": "черновик корзины",
+	"selection.development-corpus": "корзина",
+	"selection.eval-run": "прогон",
+	"selection.proposal": "правка",
+	"selection.candidate": "кандидат",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

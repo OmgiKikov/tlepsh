@@ -7,6 +7,7 @@ import type {
 	WorkbenchImprovementBriefProjection,
 	WorkbenchProposalReview,
 	WorkbenchReviewDetail,
+	WorkbenchSelectionSummary,
 	WorkbenchTargetDetail,
 	WorkbenchTracesDetail,
 	WorkbenchView,
@@ -176,14 +177,41 @@ function calibrationLine(view: WorkbenchView, paint: Paint): string | null {
 	return `${paint.dim(t("label.noise"))} ${paint.muted(t("noise.not-calibrated"))} ${paint.dim(t("noise.hint"))}`;
 }
 
+/**
+ * One focused artifact, as a noun rather than as its schema name.
+ *
+ * The eval run is named, never measured. The focus IS the baseline: it is the
+ * run an improvement is written against, and choosing another one clears the
+ * proposal and the candidate beneath it. Its own pass count is therefore not
+ * the current measurement, and printing it here put a stale `0/24 passed`
+ * three lines under a live `45 % → 67 %`. The panel says the measurement; this
+ * line says which artifact the next decision will act on.
+ */
+function selectionLabel(item: WorkbenchSelectionSummary, paint: Paint): string {
+	const key = `selection.${item.kind}`;
+	const kind = hasMessage(key) ? t(key) : item.kind;
+	return `${paint.dim(kind)} ${oneLine(item.kind === "eval-run" ? item.id : item.label, 40)}`;
+}
+
+export interface RenderStatusOptions {
+	/**
+	 * Draw the `AHDE · stage` heading. Off for a caller that prints its own
+	 * title over the block — the panel did, and the operator read the same
+	 * words twice, once with a `◆` and once without.
+	 */
+	heading?: boolean;
+}
+
 /** Compact status block used by /status and as the fallback for every panel. */
-export function renderStatus(view: WorkbenchView, paint: Paint): string[] {
+export function renderStatus(view: WorkbenchView, paint: Paint, options: RenderStatusOptions = {}): string[] {
 	const noise = calibrationLine(view, paint);
 	const evaluators = evaluatorLine(view, paint);
 	const evidence = evidenceLine(view, paint);
 	const shipping = shippingReadinessLine(view, paint);
 	const lines = [
-		`${paint.accent(paint.bold("AHDE"))} ${paint.dim("·")} ${paint.bold(stageLabel(view.stage))}`,
+		...(options.heading === false
+			? []
+			: [`${paint.accent(paint.bold("AHDE"))} ${paint.dim("·")} ${paint.bold(stageLabel(view.stage))}`]),
 		targetLine(view, paint),
 		...(evaluators ? [evaluators] : []),
 		...(evidence ? [evidence] : []),
@@ -198,7 +226,7 @@ export function renderStatus(view: WorkbenchView, paint: Paint): string[] {
 	}
 	const selected = view.selections.filter((item) => item.selected);
 	if (selected.length > 0) {
-		lines.push(`${paint.dim(t("label.selected"))} ${selected.map((item) => `${item.kind} ${oneLine(item.label, 40)}`).join(paint.dim(" · "))}`);
+		lines.push(`${paint.dim(t("label.selected"))} ${selected.map((item) => selectionLabel(item, paint)).join(paint.dim(" · "))}`);
 	}
 	return lines;
 }

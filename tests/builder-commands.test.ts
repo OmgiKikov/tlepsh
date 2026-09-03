@@ -744,7 +744,9 @@ describe("Builder Pi slash commands", () => {
 			["AHDE · AGENTS.md", "info"],
 		]);
 		const text = output.text();
-		expect(text).toContain("AHDE · Ready to run");
+		// The panel already carries `AHDE · Ready to run` as its title; the body
+		// under it used to say the same words again, one line lower.
+		expect(text).not.toContain("AHDE · Ready to run");
 		expect(text).toContain("Target target-demo @ aaaaaaaaaa · anthropic/claude-sonnet-4 ✓");
 		expect(text).toContain("Next Describe what the agent still needs built, or say “tests” to run them");
 		expect(text).toContain("Target not created yet");

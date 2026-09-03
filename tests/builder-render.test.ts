@@ -681,6 +681,45 @@ describe("renderStatus", () => {
 		expect(text).not.toContain("run-2");
 	});
 
+	/**
+	 * The focus line used to print schema names — `approved-spec`,
+	 * `development-corpus`, `eval-run`, `proposal`, `candidate` — and, worse, the
+	 * focused run's own `0/24 passed` beside a panel that had just measured
+	 * 45 % → 67 %. The focus IS the baseline: the run an improvement is written
+	 * against, and choosing another clears the proposal and the candidate under
+	 * it. So the run is named, never measured; the measurement is the panel's.
+	 */
+	it("names each focused artifact with a noun, and the run without a number", () => {
+		const selections = [
+			{ kind: "approved-spec" as const, id: "spec-1", label: "Bank ombudsman", selected: true },
+			{ kind: "development-corpus" as const, id: "corpus-1", label: "ombudsman-main · 8 tasks", selected: true },
+			{ kind: "eval-run" as const, id: "erun_mtkpb3raquos69", label: "0/24 passed", selected: true },
+			{ kind: "proposal" as const, id: "run-9", label: "Added instructions", selected: true },
+			{ kind: "candidate" as const, id: "candidate-9", label: "run-9", selected: true },
+		];
+		const focus = renderStatus(makeView({ selections }), plainPaint).find((line) => line.startsWith("Selected"))!;
+		expect(focus).toBe(
+			"Selected description Bank ombudsman · basket ombudsman-main · 8 tasks · run erun_mtkpb3raquos69 · " +
+				"change Added instructions · candidate run-9",
+		);
+		// The stale number is gone, and no schema name reaches the operator.
+		expect(focus).not.toContain("0/24");
+		for (const name of ["approved-spec", "development-corpus", "eval-run", "proposal "]) {
+			expect(focus).not.toContain(name);
+		}
+
+		setLanguage("ru");
+		try {
+			const russian = renderStatus(makeView({ selections }), plainPaint).find((line) => line.startsWith("Выбрано"))!;
+			expect(russian).toBe(
+				"Выбрано описание Bank ombudsman · корзина ombudsman-main · 8 tasks · прогон erun_mtkpb3raquos69 · " +
+					"правка Added instructions · кандидат run-9",
+			);
+		} finally {
+			setLanguage(null);
+		}
+	});
+
 	it("surfaces the future ship blocker before a candidate is applied", () => {
 		const lines = renderStatus(makeView({
 			shippingReadiness: { sealedHoldout: "missing", minimumTasks: 15, sealedCases: null },
