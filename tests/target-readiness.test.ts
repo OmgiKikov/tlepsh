@@ -85,4 +85,28 @@ describe("declared tool credentials", () => {
 			.every((line) => line.present)).toBe(true);
 		expect(toolCredentialReadiness({ tools }, {}).some((line) => line.tool === "clock")).toBe(false);
 	});
+
+	/**
+	 * Session 7: 21 of 24 runs failed on a network timeout, and the product
+	 * explained it as a missing `AHDE_WORLD` — a variable the broker sets on
+	 * every tool process itself and which was in the child's environment the
+	 * whole time. The header repeated it, the Builder repeated it, and the
+	 * operator was sent to a terminal to export it.
+	 */
+	it("never calls a host-owned name a credential the operator has to export", () => {
+		const worlded = [
+			{ descriptor: { name: "get_account", permissions: { environment: ["AHDE_WORLD"] } } },
+			{ descriptor: { name: "create_ticket", permissions: { environment: ["AHDE_WORLD", "AHDE_TOOL_HOME"] } } },
+			{ descriptor: { name: "crm", permissions: { environment: ["AHDE_WORLD", "CRM_TOKEN"] } } },
+		] as unknown as ResolvedTarget["tools"];
+		// An empty environment is exactly the shell `ahde` ran in when the child
+		// still had AHDE_WORLD: the two host-owned names are simply not questions.
+		expect(toolCredentialReadiness({ tools: worlded }, {})).toEqual([{
+			tool: "crm",
+			environmentName: "CRM_TOKEN",
+			present: false,
+			line: "tool crm: key CRM_TOKEN MISSING",
+		}]);
+		expect(JSON.stringify(toolCredentialReadiness({ tools: worlded }, {}))).not.toContain("AHDE_");
+	});
 });

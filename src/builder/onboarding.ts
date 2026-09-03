@@ -11,6 +11,7 @@ import { plural, t } from "../i18n.js";
 import { detectAgentFolder, type DetectedAgentFolder } from "../application/agent-folder-detect.js";
 import type { TargetManifest } from "../manifest.js";
 import type { ToolCredentialSlot } from "../application/tool-authoring.js";
+import { HOST_OWNED_TOOL_ENVIRONMENT } from "../target/tool-manifest.js";
 import type { AhdeWorkbench } from "../workbench/workbench.js";
 import type { WorkbenchHumanGate, WorkbenchView } from "../workbench/types.js";
 import { WorkbenchDecisionDeclinedError } from "../workbench/errors.js";
@@ -92,21 +93,43 @@ export function hostModelCatalog(ctx: Pick<ExtensionContext, "modelRegistry">): 
 }
 
 /**
- * The judge this machine would pick for a basket that needs one: the first
- * catalog entry it can authenticate whose model is not the Target's own.
+ * Ids that read as judge-class, best first.
  *
- * The predicate is exactly the one `configure-evaluators` enforces after the
- * fact — a judge grading a copy of the model under test is not a second
- * opinion — applied before the question instead of after it, so the operator
- * reads one dialog with an answer already in it rather than two.
+ * A judge is an instrument: it reads a rubric, weighs prose against it, and
+ * says why. The catalog is sorted by whether this machine can authenticate a
+ * model, not by whether it can do that, so "the first credentialed entry" meant
+ * "the first model in the alphabet" — in session 7, `aion-labs/aion-2.0` for
+ * both the judge and the client, chosen by nobody, both paid for out of the
+ * same run.
+ *
+ * The list is a preference, never a requirement: nothing here is refused, and a
+ * catalog holding none of these still gets the first independent model rather
+ * than no judge at all. Matched as a substring of the id, so
+ * `anthropic/claude-opus` and `openrouter/anthropic/claude-opus` are the same
+ * answer.
+ */
+const JUDGE_CLASS_IDS = ["glm", "claude", "gpt", "deepseek", "qwen3.5-72b", "qwen3.5-235b"] as const;
+
+/**
+ * The judge this machine would pick for a basket that needs one: the first
+ * judge-class catalog entry it can authenticate whose model is not the
+ * Target's own, and otherwise the first independent entry of any kind.
+ *
+ * The independence predicate is exactly the one `configure-evaluators`
+ * enforces after the fact — a judge grading a copy of the model under test is
+ * not a second opinion — applied before the question instead of after it, so
+ * the operator reads one dialog with an answer already in it rather than two.
  */
 export function defaultJudgeSelection(
 	catalog: HostModelCatalog,
 	target: { provider: string; id: string },
 ): TargetModelSelection | null {
-	const entry = catalog.models.find((model) =>
+	const independent = catalog.models.filter((model) =>
 		model.credentialPresent &&
 		!sameModelAsTarget(target, { provider: model.provider, id: model.modelId }));
+	const entry = JUDGE_CLASS_IDS
+		.map((marker) => independent.find((model) => model.modelId.toLowerCase().includes(marker)))
+		.find((match) => match !== undefined) ?? independent[0];
 	return entry
 		? TargetModelSelectionSchema.parse({ provider: entry.provider, modelId: entry.modelId })
 		: null;
@@ -188,6 +211,12 @@ export async function selectEvaluatorCredentialEnvironment(
 /**
  * Resolve logical tool credential slots in host UI. Builder Pi supplies only
  * purpose (`api_token`); the concrete environment name never appears in chat.
+ *
+ * A host-owned name is refused rather than bound: the broker sets
+ * `AHDE_TOOL_HOME` and `AHDE_WORLD` on the tool process itself, so binding a
+ * slot to one would promise the operator a variable they neither own nor can
+ * change, and would make a key that is always present look like a key they
+ * forgot to export.
  */
 export async function selectToolCredentialEnvironments(
 	ctx: Pick<ExtensionContext, "ui">,
@@ -206,6 +235,9 @@ export async function selectToolCredentialEnvironments(
 		if (!ENVIRONMENT_NAME.test(name)) {
 			throw new Error("Tool credential binding must be one environment-variable name; never paste the credential value");
 		}
+		if (HOST_OWNED_TOOL_ENVIRONMENT.has(name)) {
+			throw new Error(`${name} is set by the host on every tool process; it cannot hold a tool credential`);
+		}
 		bindings[slot.id] = name;
 	}
 	return bindings;
@@ -220,6 +252,12 @@ export async function selectToolCredentialEnvironments(
  * descriptor already declares, in which case the operator is told to export it,
  * or a different name, in which case the descriptor is what has to change and
  * saying so is the whole answer.
+ *
+ * A host-owned name is skipped outright. `toolCredentialReadiness` already
+ * drops those, so nothing should reach here; the filter stays because being
+ * sent to a terminal to export `AHDE_WORLD` is the exact failure this pair of
+ * functions caused in session 7, and it must not come back through a second
+ * caller.
  */
 export async function confirmDeclaredToolCredentials(
 	ctx: Pick<ExtensionContext, "ui">,
@@ -228,6 +266,7 @@ export async function confirmDeclaredToolCredentials(
 	if (typeof ctx.ui.input !== "function") return;
 	const asked = new Set<string>();
 	for (const entry of missing) {
+		if (HOST_OWNED_TOOL_ENVIRONMENT.has(entry.environment)) continue;
 		if (asked.has(entry.environment)) continue;
 		asked.add(entry.environment);
 		const answered = await ctx.ui.input(
@@ -411,8 +450,15 @@ async function wrapTarget(
 	projectDir: string,
 	found: DetectedAgentFolder,
 ): Promise<WrapOutcome> {
+	// The first sentence a new operator reads. It counts what the adoption will
+	// declare — the descriptors on disk — and names the knowledge base, because
+	// half of what such an agent knows lives in `data/kb` and a sentence that
+	// leaves it out understates the agent to the person who wrote it.
 	const choice = await ctx.ui.select(
-		t("onboarding.wrap.seen", { entry: found.entry, tools: plural(found.toolCount, "tool") }),
+		t(found.knowledgeBase ? "onboarding.wrap.seen-kb" : "onboarding.wrap.seen", {
+			entry: found.entry,
+			tools: plural(found.toolCount, "tool"),
+		}),
 		[ADOPT(), CREATE_NEW(), LATER()],
 	);
 	if (choice === LATER() || choice === undefined) return "deferred";
@@ -454,7 +500,10 @@ async function wrapTarget(
 	return result.view;
 }
 
-async function createTarget(ctx: ExtensionContext, host: OnboardingHost, view: WorkbenchView): Promise<WorkbenchView | null> {
+/** How the Target came to exist, so the lines after it can say the right thing. */
+type CreatedTarget = { view: WorkbenchView; adopted: boolean };
+
+async function createTarget(ctx: ExtensionContext, host: OnboardingHost, view: WorkbenchView): Promise<CreatedTarget | null> {
 	// A folder that already holds an agent gets the better offer first. The
 	// operator can still say "create a new one", which falls through to exactly
 	// the dialog that existed before adoption did.
@@ -462,7 +511,7 @@ async function createTarget(ctx: ExtensionContext, host: OnboardingHost, view: W
 	if (found && host.projectDir) {
 		const wrapped = await wrapTarget(ctx, host, host.projectDir, found);
 		if (wrapped === "deferred") return null;
-		if (wrapped !== "create-new") return wrapped;
+		if (wrapped !== "create-new") return { view: wrapped, adopted: true };
 	}
 	const choice = await ctx.ui.select(
 		t("onboarding.no-agent-here", { directory: oneLine(view.project.directory, 60) }),
@@ -474,7 +523,50 @@ async function createTarget(ctx: ExtensionContext, host: OnboardingHost, view: W
 		answeredGate(host.actorId),
 	);
 	host.presenter.show(ctx, { title: t("panel.agent-created"), tone: "success", lines: renderDecision(result, markerPaint) });
-	return result.view;
+	return { view: result.view, adopted: false };
+}
+
+/**
+ * A model id the operator typed, resolved against the trusted host catalog.
+ *
+ * The selector shows nine rows of a catalog that holds hundreds, alphabetically,
+ * with no filter and no scroll — Pi's `ui.select` has neither — so in session 7
+ * `qwen/qwen3.5-9b` was unreachable and the operator had to leave the dialog and
+ * dictate the name to the Builder, which cost a turn and a second question about
+ * the id. Typing it is now an answer the host itself resolves.
+ *
+ * Two readings of one string, in order: `openrouter/qwen/qwen3.5-9b` is a
+ * provider and an id, and `qwen/qwen3.5-9b` is one id under a provider this
+ * machine already has. Null means the catalog does not hold it; the host says so
+ * and nothing is written.
+ */
+export function resolveTypedModel(
+	ctx: Pick<ExtensionContext, "model" | "modelRegistry">,
+	typed: string,
+): TargetModelSelection | null {
+	const text = typed.trim().replace(/^\/+|\/+$/g, "").trim();
+	if (!text) return null;
+	const candidates: { provider: string; modelId: string }[] = [];
+	const slash = text.indexOf("/");
+	if (slash > 0) candidates.push({ provider: text.slice(0, slash), modelId: text.slice(slash + 1) });
+	const providers = [ctx.model?.provider, ...hostModelCatalog(ctx).models.map((entry) => entry.provider)];
+	for (const provider of providers) {
+		if (provider) candidates.push({ provider, modelId: text });
+	}
+	for (const candidate of candidates) {
+		if (!candidate.provider || !candidate.modelId) continue;
+		let resolved;
+		try {
+			resolved = ctx.modelRegistry.find(candidate.provider, candidate.modelId);
+		} catch {
+			resolved = undefined;
+		}
+		if (resolved) {
+			const parsed = TargetModelSelectionSchema.safeParse(candidate);
+			if (parsed.success) return parsed.data;
+		}
+	}
+	return null;
 }
 
 async function chooseModel(ctx: ExtensionContext, host: OnboardingHost, view: WorkbenchView): Promise<WorkbenchView | null> {
@@ -485,8 +577,17 @@ async function chooseModel(ctx: ExtensionContext, host: OnboardingHost, view: Wo
 		[...choices.map((choice) => choice.label), OTHER_MODEL()],
 	);
 	const choice = choices.find((item) => item.label === selected);
-	if (!choice) return null;
-	const selection = TargetModelSelectionSchema.parse(choice.selection);
+	let selection: TargetModelSelection | null = choice ? TargetModelSelectionSchema.parse(choice.selection) : null;
+	if (!choice && selected === OTHER_MODEL()) {
+		const typed = await ctx.ui.input(t("onboarding.model-id-ask"));
+		if (typed === undefined) return null;
+		selection = resolveTypedModel(ctx, typed);
+		if (!selection) {
+			ctx.ui.notify(t("onboarding.model-unknown", { model: oneLine(typed.trim(), 80) }), "warning");
+			return null;
+		}
+	}
+	if (!selection) return null;
 	const apiKeyEnv = await selectTargetCredentialEnvironment(ctx, selection);
 	const result = await host.workbench.decide(
 		{
@@ -517,6 +618,23 @@ export function evaluatorsStillUnchosen(view: WorkbenchView): boolean {
 }
 
 /**
+ * The same question for a folder that was just adopted.
+ *
+ * An adopted agent's dataset is the one-line placeholder the adoption wrote,
+ * so `evaluatorRequirements` reads false for both roles and
+ * {@link evaluatorsStillUnchosen} says nothing — which is why session 7 never
+ * saw «Судью и собеседника выберем в вопросе перед первым прогоном» at all.
+ * The requirement is not knowable yet: the cases that will need a judge are
+ * the ones the Builder is about to write. What IS knowable is that neither
+ * role is configured, and that is the whole content of the line.
+ */
+export function evaluatorsNotConfigured(view: WorkbenchView): boolean {
+	const configured = view.target.evaluators;
+	if (!configured) return false;
+	return (["judge", "simulatedUser"] as const).some((role) => configured[role] === null);
+}
+
+/**
  * Walk a brand-new project to the point where describing the agent is the
  * only thing left. Returns the latest view, or null when the operator deferred.
  * Any cancellation leaves durable state untouched.
@@ -528,10 +646,13 @@ export async function runFirstRunOnboarding(
 ): Promise<WorkbenchView | null> {
 	if (typeof ctx.ui.select !== "function") return null;
 	let view: WorkbenchView | null = initialView;
+	let adopted = false;
 	try {
 		if (view.stage === "target-setup" && view.target.status === "missing") {
-			view = await createTarget(ctx, host, view);
-			if (!view) return null;
+			const created = await createTarget(ctx, host, view);
+			if (!created) return null;
+			view = created.view;
+			adopted = created.adopted;
 		}
 		if (view.stage === "target-setup" && view.target.status === "bootstrap-required") {
 			view = await chooseModel(ctx, host, view);
@@ -542,7 +663,13 @@ export async function runFirstRunOnboarding(
 			// when — is one line; asking for them here would be two more dialogs
 			// before the agent has been described, and the answer would be a guess
 			// about cases nobody has written yet.
-			if (evaluatorsStillUnchosen(view)) ctx.ui.notify(t("onboarding.evaluators-later"), "info");
+			//
+			// An adopted folder gets the line on the weaker condition, because the
+			// stronger one cannot be true yet: its dataset is the placeholder the
+			// adoption wrote, so nothing declares that it needs a judge until the
+			// Builder writes the cases that do.
+			const say = adopted ? evaluatorsNotConfigured(view) : evaluatorsStillUnchosen(view);
+			if (say) ctx.ui.notify(t("onboarding.evaluators-later"), "info");
 		}
 		return view;
 	} catch (error) {

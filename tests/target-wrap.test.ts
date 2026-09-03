@@ -11,6 +11,7 @@ import {
 	TargetScaffoldReceiptSchema,
 } from "../src/application/target-scaffold.js";
 import { executionKindOf, harnessFilesOf } from "../src/manifest.js";
+import { standInFilesLine, standInTargetFiles } from "../src/target/placeholders.js";
 import { hashValue } from "../src/provenance.js";
 
 /**
@@ -160,6 +161,34 @@ describe("adopting a folder that already holds an agent", () => {
 		const dir = agentFolder({ extra: { "evals/development.jsonl": "{}\n" } });
 		expect(() => describeTargetWrap(wrapOptions(dir))).toThrow(/would overwrite an existing evals\/development\.jsonl/);
 		expect(existsSync(join(dir, "manifest.yaml"))).toBe(false);
+	});
+
+	/**
+	 * Session 7 carried «1 файл ещё с подставными REPLACE-ME из шаблона:
+	 * evals/development.jsonl» from the moment the folder was adopted until the
+	 * end of the session — through the Spec, through eight published cases, and
+	 * through a finished run. Nothing AHDE writes into somebody else's folder
+	 * may raise a warning about AHDE's own placeholder text.
+	 */
+	it("writes no stand-ins into a folder it adopts", () => {
+		const dir = agentFolder();
+		const subject = describeTargetWrap(wrapOptions(dir));
+		for (const file of subject.templateFiles) {
+			expect(file.path).not.toMatch(/replace[-_]me/i);
+		}
+		applyTargetWrap({
+			...wrapOptions(dir),
+			stateRoot: stateRoot(),
+			expectedSubjectHash: hashValue(subject),
+			actor: { kind: "human", id: "operator" },
+			reason: "adopted the existing agent in this folder",
+		});
+		for (const path of ["AGENTS.md", "evals/development.jsonl", "evals/graders.yaml", "manifest.yaml"]) {
+			expect(readFileSync(join(dir, path), "utf8")).not.toMatch(/replace[-_]me/i);
+		}
+		// The one line the readiness surfaces read, from the same directory.
+		expect(standInTargetFiles(dir)).toEqual([]);
+		expect(standInFilesLine(dir)).toBeNull();
 	});
 
 	it("keeps an AGENTS.md the operator already wrote", () => {

@@ -493,9 +493,13 @@ describe("the host's plain-language account of one run", () => {
 				candidateTotal: 2,
 			}),
 		});
+		// The scope and the severity are words, not the typed tokens: session 7
+		// read «(task-local, blocking, задач: 1 из 8…)» — two Latin tokens inside
+		// a Russian sentence, where nothing matches on them.
 		expect(explanation.sentences).toContain(
-			'This run is evidence for the failure mode “The answer missed a required element” (task-local, major, 1 of 4 task(s), 50% reproduction).',
+			'This run is evidence for the failure mode “The answer missed a required element” (one case, major, 1 of 4 task(s), 50% reproduction).',
 		);
+		expect(explanation.sentences.join(" ")).not.toContain("task-local");
 		// The host says what the traces show, counted, instead of a template hypothesis.
 		expect(explanation.sentences).toContain(
 			"What the traces show: No tool was called in 1 of 1 failing run.",

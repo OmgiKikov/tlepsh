@@ -1152,7 +1152,7 @@ const en = {
 	"onboarding.create-here": "Create the agent here",
 	"onboarding.which-model": "Which model should the agent itself use?",
 	"onboarding.same-as-builder": " (same as the Builder)",
-	"onboarding.other-model": "Another model — I will tell the Builder",
+	"onboarding.other-model": "Another model — I will type its id",
 	"onboarding.credential-env": "Environment variable holding the {provider} key for {subject}",
 	"onboarding.subject-agent": "the agent",
 	"onboarding.subject-judge": "the judge",
@@ -1598,6 +1598,20 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"trace.world-before": "World before",
 	"trace.world-after": "World after",
 	"trace.world-unread": "could not be read",
+
+	// lane: door
+	"onboarding.wrap.seen-kb": "I see an agent here ({entry}, {tools}, a knowledge base)",
+	"onboarding.model-id-ask": "The model id, as the catalog spells it (for example openrouter/qwen/qwen3.5-9b)",
+	"onboarding.model-unknown": "{model} is not in this machine's model catalog. Tell the Builder which model you mean and it will look again.",
+	"message.target-created": "Target harness created. Choose its identity and model next.",
+	"message.target-adopted": "Existing agent adopted. Choose its identity and model next.",
+	"message.target-configured": "Target identity and model configured in a one-time reviewed commit.",
+	"message.evaluators-configured": "Evaluator models configured in a reviewed commit.",
+	"label.credential-env": "credential env",
+	"view.target.data": "Data",
+	"mode.severity.blocking": "blocking",
+	"mode.severity.major": "major",
+	"mode.severity.minor": "minor",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2051,9 +2065,9 @@ const ru: Record<MessageKey, string> = {
 	"unit.minute-short": "м",
 	"unit.second-short": "с",
 
-	"note.decision": "Builder получил: результат /{command} ({detail})",
-	"note.trace": "Builder получил: разбор прогона {run}",
-	"note.job": "Builder получил: фоновую задачу — {label} ({detail})",
+	"note.decision": "Билдер получил: результат /{command} ({detail})",
+	"note.trace": "Билдер получил: разбор прогона {run}",
+	"note.job": "Билдер получил: фоновую задачу — {label} ({detail})",
 
 	"job.started": "Запущено в фоне",
 	"job.finished": "Фоновая задача завершена",
@@ -2481,7 +2495,7 @@ const ru: Record<MessageKey, string> = {
 	"onboarding.create-here": "Создать агента здесь",
 	"onboarding.which-model": "Какую модель должен использовать сам агент?",
 	"onboarding.same-as-builder": " (та же, что у Билдера)",
-	"onboarding.other-model": "Другую модель — скажу Билдеру",
+	"onboarding.other-model": "Другую модель — введу id",
 	"onboarding.credential-env": "Переменная окружения с ключом {provider} для {subject}",
 	"onboarding.subject-agent": "агента",
 	"onboarding.subject-judge": "судьи",
@@ -2918,6 +2932,20 @@ const ru: Record<MessageKey, string> = {
 	"trace.world-before": "Мир до",
 	"trace.world-after": "Мир после",
 	"trace.world-unread": "прочитать не удалось",
+
+	// lane: door
+	"onboarding.wrap.seen-kb": "Вижу агента ({entry}, {tools}, база знаний)",
+	"onboarding.model-id-ask": "Id модели, как он записан в каталоге (например openrouter/qwen/qwen3.5-9b)",
+	"onboarding.model-unknown": "{model} нет в каталоге моделей этой машины. Скажи Билдеру, какую модель имеешь в виду, — он поищет ещё раз.",
+	"message.target-created": "Каркас агента создан. Дальше — выбрать имя и модель.",
+	"message.target-adopted": "Существующий агент принят. Дальше — выбрать имя и модель.",
+	"message.target-configured": "Имя и модель агента записаны одним ревьюируемым коммитом.",
+	"message.evaluators-configured": "Модели судьи и собеседника записаны ревьюируемым коммитом.",
+	"label.credential-env": "ключ в переменной",
+	"view.target.data": "Данные",
+	"mode.severity.blocking": "блокирует",
+	"mode.severity.major": "крупный",
+	"mode.severity.minor": "мелкий",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

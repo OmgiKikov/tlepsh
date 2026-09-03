@@ -21,7 +21,13 @@ import { z } from "zod";
 import { loadTarget, scaffoldTarget, TargetManifest, type ResolvedTarget } from "../manifest.js";
 import { canonicalJson, hashValue } from "../provenance.js";
 import { writeJsonArtifact } from "../storage/artifacts.js";
+import { discoverAdoptedDeclarations } from "./agent-folder-detect.js";
 import { ensureLocalArtifactIgnores, missingLocalArtifactIgnores } from "./store-hygiene.js";
+
+// The adoption declares what the detector already counted for the door's first
+// sentence, so the discovery lives beside the detector and is re-exported here
+// for every reader that learned the name from this module.
+export { discoverAdoptedDeclarations };
 
 const MAX_SCAFFOLD_FILES = 200;
 const MAX_SCAFFOLD_BYTES = 2 * 1024 * 1024;
@@ -74,6 +80,12 @@ export const TargetAdoptionFindingSchema = z.strictObject({
 	entry: NonBlankSchema.max(4_096),
 	language: z.literal("python"),
 	toolCount: z.number().int().nonnegative(),
+	/**
+	 * Whether the folder carried a `data/kb`. Optional because receipts written
+	 * before the door counted it say nothing about one; every new receipt does,
+	 * because the sentence the operator said yes to now names it.
+	 */
+	knowledgeBase: z.boolean().optional(),
 	filesScanned: z.number().int().nonnegative(),
 });
 export type TargetAdoptionFinding = z.infer<typeof TargetAdoptionFindingSchema>;
@@ -379,44 +391,6 @@ function yamlList(values: readonly string[]): string {
 	return `[${values.map((value) => JSON.stringify(value)).join(", ")}]`;
 }
 
-const ADOPTED_TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/;
-const ADOPTED_DATA_NAME = /^[a-z0-9][a-z0-9._-]*$/;
-
-/**
- * What the folder already carries in the two shapes the manifest can declare:
- * tool descriptors (`tools/<name>.tool.yaml` or `tools/<name>/tool.yaml`) and
- * data directories (`data/<name>`). An adopted agent whose tools the host does
- * not declare is an agent whose tools the host will never broker and whose
- * knowledge base never turns `kb_search` on — so the adoption declares exactly
- * what is on disk, sorted, and leaves anything else under those directories
- * (a `tools/foo.py`, a `data/Bad Name`) to the operator's own code.
- */
-export function discoverAdoptedDeclarations(projectDir: string): { tools: string[]; data: string[] } {
-	const entries = (directory: string): { name: string; file: boolean; directory: boolean }[] => {
-		const absolute = join(projectDir, directory);
-		if (!existsSync(absolute) || lstatSync(absolute).isSymbolicLink() || !statSync(absolute).isDirectory()) return [];
-		return readdirSync(absolute)
-			.map((name) => {
-				const entry = lstatSync(join(absolute, name));
-				return { name, file: entry.isFile(), directory: entry.isDirectory() };
-			})
-			.sort((a, b) => a.name.localeCompare(b.name));
-	};
-	const tools: string[] = [];
-	for (const entry of entries("tools")) {
-		const single = /^(.+)\.tool\.yaml$/.exec(entry.name)?.[1];
-		if (entry.file && single && ADOPTED_TOOL_NAME.test(single)) tools.push(`tools/${entry.name}`);
-		if (entry.directory && ADOPTED_TOOL_NAME.test(entry.name)) {
-			const descriptor = join(projectDir, "tools", entry.name, "tool.yaml");
-			if (existsSync(descriptor) && lstatSync(descriptor).isFile()) tools.push(`tools/${entry.name}/tool.yaml`);
-		}
-	}
-	const data = entries("data")
-		.filter((entry) => entry.directory && ADOPTED_DATA_NAME.test(entry.name))
-		.map((entry) => `data/${entry.name}`);
-	return { tools, data };
-}
-
 /**
  * The manifest an adopted folder gets. Identity and model are the same
  * one-time placeholders every template ships, so the adopted Target lands in
@@ -473,10 +447,25 @@ const ADOPTED_AGENTS_MD = `# Агент
 \`harness.files\`: именно их правит цикл улучшения.
 `;
 
+/**
+ * The one case an adopted folder starts with.
+ *
+ * A dataset with no cases is not a dataset — `loadTarget` refuses one — so the
+ * adoption has to write something, and what it used to write was two
+ * `REPLACE-ME` stand-ins. Those are the marker `standInTargetFiles` looks for,
+ * so the adopted Target was born carrying the warning «1 файл ещё с
+ * подставными REPLACE-ME из шаблона», and in session 7 it was still on the
+ * screen after the agent had been described, eight real cases had been written
+ * and published, and a run had finished on them.
+ *
+ * What goes here instead is a real case with a real check: it says nothing
+ * about the operator's agent, and it is honestly either passed or failed.
+ * The Builder replaces the file wholesale when it publishes a corpus.
+ */
 const ADOPTED_DATASET = `${JSON.stringify({
 	id: "example-001",
-	input: "REPLACE-ME: реальное обращение пользователя, слово в слово.",
-	graders: [{ type: "output_contains", text: "REPLACE-ME" }],
+	input: "Ответь одним словом: готов.",
+	graders: [{ type: "output_contains", text: "готов" }],
 })}\n`;
 
 const ADOPTED_GRADERS = `# Грейдеры для каждого кейса в evals/development.jsonl.

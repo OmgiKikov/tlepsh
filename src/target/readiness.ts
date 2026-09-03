@@ -1,5 +1,6 @@
 import type { ResolvedTarget } from "../manifest.js";
 import { STARTER_MODEL_ID, standInManifestFields } from "./placeholders.js";
+import { HOST_OWNED_TOOL_ENVIRONMENT } from "./tool-manifest.js";
 
 export const STARTER_TARGET_ID = "my-agent";
 // The starter model id lives in `placeholders.ts` — `isStandInModel` needs it
@@ -76,6 +77,15 @@ export interface ToolCredentialReadinessLine {
  * sandbox, at the first call, as whatever the tool's own code prints — unless
  * it is stated here beside the model keys. The value is never read: only
  * whether something non-empty is exported under that name.
+ *
+ * `AHDE_TOOL_HOME` and `AHDE_WORLD` are not credentials and are never counted
+ * here. The broker sets them on the tool process itself — that is why the
+ * descriptor validator exempts them from the allowlist — so they exist in the
+ * child whatever the operator's own shell holds, and reading them out of
+ * `process.env` answers a question nobody asked. Session 7 is what this line
+ * is for: the header told the operator to export `AHDE_WORLD`, the Builder
+ * repeated it as the cause of 21 failed runs, and the variable had been in the
+ * child's environment the whole time.
  */
 export function toolCredentialReadiness(
 	target: Pick<ResolvedTarget, "tools">,
@@ -84,6 +94,7 @@ export function toolCredentialReadiness(
 	const lines: ToolCredentialReadinessLine[] = [];
 	for (const tool of target.tools) {
 		for (const environmentName of tool.descriptor.permissions.environment) {
+			if (HOST_OWNED_TOOL_ENVIRONMENT.has(environmentName)) continue;
 			const present = Boolean(environment[environmentName]?.trim());
 			lines.push({
 				tool: tool.descriptor.name,

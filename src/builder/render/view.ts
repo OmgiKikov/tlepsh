@@ -299,7 +299,15 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 	// in full, so it is not drawn at all.
 	const next = nextStep(view);
 	const duplicated = typeof state.hint === "string" && state.hint === next;
-	if (!duplicated) {
+	// Before there is an agent at all, the header does not know what happens
+	// next and must not guess. Session 7's first screen was five lines and the
+	// third said `Дальше Опиши агента, которого хочешь собрать` while the door
+	// was open over it, asking whether to adopt the `agent.py` already in the
+	// folder — the next action was answering that question. The line above says
+	// «Агент ещё не создан», the dialog or the hint says what to do about it,
+	// and this line has nothing left that is both true and its own.
+	const unknowable = view.stage === "target-setup" && view.target.status === "missing";
+	if (!duplicated && !unknowable) {
 		const progress = state.plan ? planProgress(state.plan) : null;
 		lines.push(joinNonEmpty([
 			`${paint.dim(t("label.stage"))} ${paint.bold(stageLabel(view.stage))}`,
@@ -778,6 +786,25 @@ export function renderTarget(content: WorkbenchTargetDetail, paint: Paint): stri
 	if (harnessFiles.length > 0) {
 		lines.push(paint.dim(t("view.target.harness-files")));
 		for (const resource of harnessFiles) lines.push(resourceLine(resource));
+	}
+	// The knowledge base is not a resource — its bytes are never authored and
+	// never read here — but it is half of what an agent like session 7's knows,
+	// and `/target` listed `AGENTS.md`, both `bin/*` and both `tools/*` while
+	// saying nothing at all about the three `data/kb/*.md` the manifest
+	// declares. Shape only: how many files, how large, and a few of their names.
+	if (content.data.length > 0) {
+		lines.push(paint.dim(t("view.target.data")));
+		for (const directory of content.data) {
+			const sample = directory.entries.slice(0, 3).join(", ");
+			const named = sample
+				? ` ${paint.dim(`· ${oneLine(sample, 60)}${directory.entriesTruncated || directory.entries.length > 3 ? " …" : ""}`)}`
+				: "";
+			lines.push(
+				`  ${paint.bold(oneLine(directory.path, 60).padEnd(40))} ${
+					plural(directory.files, "file").padEnd(kindWidth)
+				} ${paint.dim(bytes(directory.bytes))}${named}`,
+			);
+		}
 	}
 	if (content.resource) {
 		lines.push("", `${section(content.resource.path, paint)} ${paint.dim(`${resourceKind(content.resource.kind)} · ${bytes(content.resource.bytes)} · ${shortHash(content.resource.sha256)}`)}`);
