@@ -447,10 +447,25 @@ const ADOPTED_AGENTS_MD = `# Агент
 \`harness.files\`: именно их правит цикл улучшения.
 `;
 
+/**
+ * The one case an adopted folder starts with.
+ *
+ * A dataset with no cases is not a dataset — `loadTarget` refuses one — so the
+ * adoption has to write something, and what it used to write was two
+ * `REPLACE-ME` stand-ins. Those are the marker `standInTargetFiles` looks for,
+ * so the adopted Target was born carrying the warning «1 файл ещё с
+ * подставными REPLACE-ME из шаблона», and in session 7 it was still on the
+ * screen after the agent had been described, eight real cases had been written
+ * and published, and a run had finished on them.
+ *
+ * What goes here instead is a real case with a real check: it says nothing
+ * about the operator's agent, and it is honestly either passed or failed.
+ * The Builder replaces the file wholesale when it publishes a corpus.
+ */
 const ADOPTED_DATASET = `${JSON.stringify({
 	id: "example-001",
-	input: "REPLACE-ME: реальное обращение пользователя, слово в слово.",
-	graders: [{ type: "output_contains", text: "REPLACE-ME" }],
+	input: "Ответь одним словом: готов.",
+	graders: [{ type: "output_contains", text: "готов" }],
 })}\n`;
 
 const ADOPTED_GRADERS = `# Грейдеры для каждого кейса в evals/development.jsonl.
