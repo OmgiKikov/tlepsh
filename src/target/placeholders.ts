@@ -25,9 +25,30 @@ export function isStandIn(text: string): boolean {
 	return STAND_IN.test(text);
 }
 
-/** Whether a model block names a stand-in provider, model or endpoint. */
+/**
+ * The model id every built-in template ships with.
+ *
+ * It is a stand-in that does not say `REPLACE-ME`: the templates spell it out
+ * so the YAML reads like a sentence, and the one-time bootstrap dialog replaces
+ * it. It lives here, beside the regex, because it is the same fact — nobody has
+ * chosen yet — and `readiness.ts` re-exports it so every existing importer keeps
+ * working without this module having to import that one back.
+ */
+export const STARTER_MODEL_ID = "replace-with-model-id";
+
+/**
+ * Whether a model block names a stand-in provider, model or endpoint.
+ *
+ * The built-in starter id counts. A template's `judge:` and `simulatedUser:`
+ * blocks carry exactly the block the Target's own `model:` carries, pointed at
+ * `http://127.0.0.1:1234/v1`; reading that as a configured evaluator turns "no
+ * judge yet" into a connection error against a dead port, several minutes and
+ * one operator's worth of confusion after the question that should have been
+ * asked.
+ */
 export function isStandInModel(model: { provider: string; id: string; baseUrl: string }): boolean {
-	return isStandIn(model.provider) || isStandIn(model.id) || isStandIn(model.baseUrl);
+	return model.id === STARTER_MODEL_ID ||
+		isStandIn(model.provider) || isStandIn(model.id) || isStandIn(model.baseUrl);
 }
 
 /**
