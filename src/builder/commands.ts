@@ -271,6 +271,7 @@ function decisionTitle(result: WorkbenchDecisionResult): { title: string; tone: 
 				tone: result.result.nowPassing + result.result.nowFailing > 0 ? "success" : "info",
 			};
 		case "scaffold-target": return { title: t("panel.target-created"), tone: "success" };
+		case "wrap-target": return { title: t("panel.agent-wrapped"), tone: "success" };
 		case "configure-target": return { title: t("panel.target-configured"), tone: "success" };
 		case "configure-evaluators":
 			return {

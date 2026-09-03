@@ -78,7 +78,7 @@ describe("Workbench tool argument preparation", () => {
 		expect(() => WorkbenchSubmitToolSchema.prepare({ kind: "spec-brief", spec }))
 			.toThrow(/kind "spec-brief" is not supported; use one of: select, spec-draft, corpus-draft/);
 		expect(() => WorkbenchDecisionToolSchema.prepare({ reason: "no kind" }))
-			.toThrow(/kind is required; use one of: scaffold-target, configure-target/);
+			.toThrow(/kind is required; use one of: scaffold-target, wrap-target, configure-target/);
 	});
 
 	it("keeps the view query small and rejects a resourcePath outside the Target view", () => {

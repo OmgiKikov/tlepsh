@@ -56,7 +56,7 @@ import {
 } from "./builder-proposal.js";
 import { assertBuilderProposalNotDiscarded } from "./builder-discard.js";
 import { assertCleanTargetTree } from "./store-hygiene.js";
-import { CANDIDATE_SCOPE_POLICY, effectiveProvenance } from "./candidate-experiment.js";
+import { candidateScopeFor, effectiveProvenance } from "./candidate-experiment.js";
 import { runCheapCheck, type CheapCheckResult } from "./cheap-check.js";
 import { targetWithDevelopmentCorpus } from "./corpus-target.js";
 import {
@@ -254,6 +254,7 @@ export function abandonImprovementLoop(
  */
 export const IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS: readonly WorkbenchDecisionInput["kind"][] = [
 	"scaffold-target",
+	"wrap-target",
 	"configure-target",
 	"approve-spec",
 	"publish-corpus",
@@ -1121,7 +1122,7 @@ export async function runImprovementLoop(
 			const recorded = await dependencies.recordProposal({
 				proposal: decision.proposal,
 				targetDir: repositoryDir,
-				allowedPaths: [...CANDIDATE_SCOPE_POLICY.allowed],
+				allowedPaths: candidateScopeFor(target.manifest).allowed,
 				approvedSpec: { stateRoot, projectId: options.projectId, specId: options.approvedSpecId },
 				runsRoot,
 				timeoutMs: 30_000,

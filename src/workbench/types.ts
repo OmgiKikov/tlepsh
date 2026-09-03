@@ -770,6 +770,20 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		kind: z.literal("scaffold-target"),
 		reason: NonBlankSchema.max(4_000),
 	}),
+	/**
+	 * Adopt the agent that is already in this folder. Deliberately NOT called
+	 * `adopt-*`: that name belongs to candidate adoption, which fast-forwards a
+	 * Target onto a promoted revision. This wraps an operator's existing
+	 * program in a Target manifest and touches none of their sources.
+	 */
+	z.strictObject({
+		kind: z.literal("wrap-target"),
+		/** The exact command, as argv. argv[0] is absolute or a bare PATH name. */
+		argv: z.array(z.string().min(1).max(4_096)).min(1).max(32),
+		/** The editable surface: which files a proposal may rewrite. */
+		harnessFiles: z.array(z.string().min(1).max(200)).min(1).max(64),
+		reason: NonBlankSchema.max(4_000),
+	}),
 	z.strictObject({
 		kind: z.literal("configure-target"),
 		targetId: z.string().max(100).regex(/^[a-z0-9][a-z0-9-]*$/),
@@ -1215,6 +1229,7 @@ export interface WorkbenchImproveResult {
 /** Typed payload of every consequential decision, keyed by its decision kind. */
 export interface WorkbenchDecisionResultMap {
 	"scaffold-target": { targetId: string; targetGitSha: string; receiptId: string };
+	"wrap-target": { targetId: string; targetGitSha: string; receiptId: string; entry: string };
 	"configure-target": { targetId: string; targetGitSha: string; receiptId: string; credentialEnv: string };
 	"configure-evaluators": {
 		targetGitSha: string;

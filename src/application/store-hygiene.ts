@@ -55,19 +55,31 @@ function ignoreToken(line: string): string | null {
  * report exactly the lines that were appended. Idempotent line by line: a
  * Target that already ignores `runs/` its own way keeps its own spelling.
  */
-export function ensureLocalArtifactIgnores(targetDir: string): string[] {
+function readIgnoreFile(targetDir: string): string {
 	const path = join(targetDir, ".gitignore");
-	let existing = "";
-	if (existsSync(path)) {
-		if (!lstatSync(path).isFile()) throw new Error("target .gitignore must be a regular file");
-		existing = readFileSync(path, "utf8");
-	}
+	if (!existsSync(path)) return "";
+	if (!lstatSync(path).isFile()) throw new Error("target .gitignore must be a regular file");
+	return readFileSync(path, "utf8");
+}
+
+/**
+ * Which lines `ensureLocalArtifactIgnores` WOULD add, without adding them. The
+ * adopt path has to show the operator this list before it writes anything, and
+ * computing it twice in two places is how the two would drift apart.
+ */
+export function missingLocalArtifactIgnores(targetDir: string): string[] {
 	const present = new Set(
-		existing.split("\n").map(ignoreToken).filter((token): token is string => token !== null),
+		readIgnoreFile(targetDir).split("\n").map(ignoreToken).filter((token): token is string => token !== null),
 	);
-	const missing = LOCAL_ARTIFACT_IGNORES
+	return LOCAL_ARTIFACT_IGNORES
 		.filter((entry) => !present.has(entry.token))
 		.flatMap((entry) => entry.lines);
+}
+
+export function ensureLocalArtifactIgnores(targetDir: string): string[] {
+	const path = join(targetDir, ".gitignore");
+	const existing = readIgnoreFile(targetDir);
+	const missing = missingLocalArtifactIgnores(targetDir);
 	if (missing.length === 0) return [];
 	const separator = existing.length === 0 ? "" : existing.endsWith("\n") ? "\n" : "\n\n";
 	writeFileSync(path, `${existing}${separator}${LOCAL_ARTIFACT_IGNORE_HEADER}\n${missing.join("\n")}\n`);

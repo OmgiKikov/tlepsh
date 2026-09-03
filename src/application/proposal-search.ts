@@ -62,6 +62,7 @@ export function newProposalSearchId(): string {
  */
 export const PROPOSAL_SEARCH_FORBIDDEN_DECISIONS: readonly WorkbenchDecisionInput["kind"][] = [
 	"scaffold-target",
+	"wrap-target",
 	"configure-target",
 	"approve-spec",
 	"publish-corpus",

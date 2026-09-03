@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { plural, setLanguage, t } from "../src/i18n.js";
-import { loadTarget, scaffoldTarget, TargetManifest } from "../src/manifest.js";
+import { executionKindOf, harnessFilesOf, loadTarget, scaffoldTarget, TargetManifest } from "../src/manifest.js";
 import {
 	isStandIn,
 	isStandInModel,
@@ -18,6 +18,7 @@ import { deriveWorkbenchView, loadWorkbenchInventory } from "../src/workbench/in
 import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 
 const SUPPORT_TEMPLATE = resolve("templates/support-agent");
+const PYTHON_TEMPLATE = resolve("templates/python-agent");
 /** Exactly the files the shipped RU template still leaves for the Builder. */
 const SUPPORT_TEMPLATE_STAND_INS = [
 	"AGENTS.md",
@@ -345,6 +346,27 @@ describe("a template harness is not a configured agent", () => {
 			apiKeyEnv: "AHDE_MODEL_API_KEY",
 		});
 		expect(target.manifest.evalSuite.judge).toBeUndefined();
+		expect(targetBootstrapRequired(target.manifest)).toBe(true);
+	});
+
+	it("reads the shipped python-agent template as a command Target with a declared harness", () => {
+		const parent = mkdtempSync(join(tmpdir(), "ahde-python-scaffold-"));
+		roots.push(parent);
+		const scaffolded = scaffoldTarget(PYTHON_TEMPLATE, join(parent, "agent"));
+		const target = loadTarget(scaffolded);
+		expect(executionKindOf(target.manifest.execution)).toBe("command");
+		expect(target.manifest.execution.command?.argv).toEqual(["python3", "agent.py"]);
+		// The editable surface is the prompt, not the program: a proposal may
+		// rewrite what the agent is told, never how it runs.
+		expect(harnessFilesOf(target.manifest)).toEqual(["prompts/**"]);
+		expect(target.tools.map((tool) => tool.descriptor.name)).toEqual(["create_ticket", "get_account"]);
+		expect(target.tasks).toHaveLength(8);
+		expect(target.tasks.filter((task) => task.world)).toHaveLength(4);
+		expect(target.tasks.filter((task) => task.simulatedUser)).toHaveLength(2);
+		expect(target.data.map((directory) => directory.path)).toEqual(["data/kb"]);
+		// It ships with placeholders like every template, so the first-run dialog
+		// still asks which models this agent, its judge and its user model use.
+		expect(target.manifest.id).toBe("my-agent");
 		expect(targetBootstrapRequired(target.manifest)).toBe(true);
 	});
 

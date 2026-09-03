@@ -130,6 +130,13 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 				`${paint.dim(t("label.receipt"))} ${paint.dim(result.result.receiptId)}`,
 				nextLine(view, paint),
 			];
+		case "wrap-target":
+			return [
+				`${section(t("result.target-wrapped"), paint)} ${paint.bold(result.result.targetId)} ${paint.dim(`@ ${shortSha(result.result.targetGitSha)}`)}`,
+				`${paint.dim(t("result.agent-entry"))} ${oneLine(result.result.entry, 80)}`,
+				`${paint.dim(t("label.receipt"))} ${paint.dim(result.result.receiptId)}`,
+				nextLine(view, paint),
+			];
 		case "configure-target": {
 			const model = view.target.model;
 			return [

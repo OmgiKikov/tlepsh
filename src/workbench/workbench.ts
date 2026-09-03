@@ -95,14 +95,18 @@ import {
 } from "../application/configure-evaluators.js";
 import {
 	applyTargetScaffold,
+	applyTargetWrap,
 	describeTargetScaffold,
+	describeTargetWrap,
 } from "../application/target-scaffold.js";
+import { detectAgentFolder } from "../application/agent-folder-detect.js";
 import {
 	describeBuilderProposalDiscard,
 	discardBuilderProposal,
 } from "../application/builder-discard.js";
 import {
 	CANDIDATE_SCOPE_POLICY,
+	candidateScopeFor,
 	runCandidateExperiment,
 } from "../application/candidate-experiment.js";
 import {
@@ -286,7 +290,7 @@ import {
 	type PersistedWorkbenchWorkshop,
 } from "./types.js";
 import type { CandidateRecord } from "../domain/candidate.js";
-import { decideScaffoldTarget, decideConfigureTarget, decideConfigureEvaluators } from "./decisions/setup.js";
+import { decideScaffoldTarget, decideWrapTarget, decideConfigureTarget, decideConfigureEvaluators } from "./decisions/setup.js";
 import { decideApproveSpec, decidePublishCorpus, decideImportDataset, decideGenerateHoldout } from "./decisions/corpus.js";
 import { decideRunEval, decideCalibrate, decideRegrade } from "./decisions/evaluation.js";
 import { decideApplyProposal, decideDiscardProposal } from "./decisions/proposal.js";
@@ -358,6 +362,9 @@ export interface AhdeWorkbenchDependencies {
 	loadInventory: typeof loadWorkbenchInventory;
 	describeTargetScaffold: typeof describeTargetScaffold;
 	applyTargetScaffold: typeof applyTargetScaffold;
+	describeTargetWrap: typeof describeTargetWrap;
+	applyTargetWrap: typeof applyTargetWrap;
+	detectAgentFolder: typeof detectAgentFolder;
 	describeTargetBootstrap: typeof describeTargetBootstrap;
 	configureTargetBootstrap: typeof configureTargetBootstrap;
 	describeEvaluatorConfiguration: typeof describeEvaluatorConfiguration;
@@ -437,6 +444,9 @@ const DEFAULT_DEPENDENCIES: AhdeWorkbenchDependencies = {
 	loadInventory: loadWorkbenchInventory,
 	describeTargetScaffold,
 	applyTargetScaffold,
+	describeTargetWrap,
+	applyTargetWrap,
+	detectAgentFolder,
 	describeTargetBootstrap,
 	configureTargetBootstrap,
 	describeEvaluatorConfiguration,
@@ -1636,10 +1646,18 @@ export class AhdeWorkbench {
 		label: string;
 		signal?: AbortSignal;
 	}): Promise<Awaited<ReturnType<AhdeWorkbenchDependencies["recordProposal"]>>> {
+		// The Target's own declared surface, so a proposal against a command
+		// Target is scoped to the files that Target says are editable.
+		const scoped = this.dependencies.loadInventory({
+			projectDir: this.projectDir,
+			stateRoot: this.stateRoot,
+			runsRoot: this.runsRoot,
+			projectId: this.projectId,
+		}).target;
 		const result = await this.dependencies.recordProposal({
 			proposal: input.proposal,
 			targetDir: this.projectDir,
-			allowedPaths: [...CANDIDATE_SCOPE_POLICY.allowed],
+			allowedPaths: scoped ? candidateScopeFor(scoped.manifest).allowed : [...CANDIDATE_SCOPE_POLICY.allowed],
 			...(input.manifestChangePolicy === undefined
 				? {}
 				: { manifestChangePolicy: input.manifestChangePolicy }),
@@ -3053,6 +3071,8 @@ export class AhdeWorkbench {
 		if (input.kind === "ship") return await this.ship(input, gate, options, inventory, stage);
 
 		if (input.kind === "scaffold-target") return decideScaffoldTarget(this, input, ctx);
+
+		if (input.kind === "wrap-target") return decideWrapTarget(this, input, ctx);
 
 		if (input.kind === "configure-target") return decideConfigureTarget(this, input, ctx);
 

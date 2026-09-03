@@ -66,7 +66,7 @@ export function ahdeCommandsFirst(current: AutocompleteProvider): AutocompletePr
 
 type ProductWorkbench =
 	& Pick<AhdeWorkbench, "view">
-	& Partial<Pick<AhdeWorkbench, "decide" | "stateRoot" | "projectId" | "runsRoot">>;
+	& Partial<Pick<AhdeWorkbench, "decide" | "stateRoot" | "projectId" | "runsRoot" | "projectDir">>;
 
 export interface ProductShellController {
 	/** Re-read Workbench state and redraw the header/status; never throws. */
@@ -305,6 +305,9 @@ export function installAhdeBuilderProductShell(
 					workbench: { view: (query) => workbench.view(query), decide: workbench.decide.bind(workbench) },
 					actorId: options.actorId,
 					presenter,
+					// The one thing onboarding needs the filesystem for: whether this
+					// folder already holds an agent worth adopting.
+					...(workbench.projectDir ? { projectDir: workbench.projectDir } : {}),
 				}, view);
 				await refresh();
 			}

@@ -164,6 +164,7 @@ describe("Workbench gate policy", () => {
 		expect(WORKBENCH_GATE_POLICY).toEqual({
 			// One-time bootstrap of a real repository.
 			"scaffold-target": "consequential",
+			"wrap-target": "consequential",
 			"configure-target": "consequential",
 			// The judge and the user model commit to manifest.yaml too, and they
 			// decide what every later measurement is measured with.
