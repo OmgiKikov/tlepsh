@@ -299,7 +299,15 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 	// in full, so it is not drawn at all.
 	const next = nextStep(view);
 	const duplicated = typeof state.hint === "string" && state.hint === next;
-	if (!duplicated) {
+	// Before there is an agent at all, the header does not know what happens
+	// next and must not guess. Session 7's first screen was five lines and the
+	// third said `Дальше Опиши агента, которого хочешь собрать` while the door
+	// was open over it, asking whether to adopt the `agent.py` already in the
+	// folder — the next action was answering that question. The line above says
+	// «Агент ещё не создан», the dialog or the hint says what to do about it,
+	// and this line has nothing left that is both true and its own.
+	const unknowable = view.stage === "target-setup" && view.target.status === "missing";
+	if (!duplicated && !unknowable) {
 		const progress = state.plan ? planProgress(state.plan) : null;
 		lines.push(joinNonEmpty([
 			`${paint.dim(t("label.stage"))} ${paint.bold(stageLabel(view.stage))}`,

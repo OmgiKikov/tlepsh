@@ -135,7 +135,11 @@ describe("AHDE Builder product shell", () => {
 
 		const rendered = h.renderHeader().join("\n");
 		expect(rendered).toContain("AHDE Builder");
-		expect(rendered).toContain("Target setup");
+		// Before there is an agent the header says so and stops: the stage is in
+		// the footer (`AHDE · Target setup`, asserted above) and the next action
+		// belongs to whatever dialog or hint is on screen.
+		expect(rendered).toContain("Target not created yet");
+		expect(rendered).not.toContain("Next ");
 		expect(rendered).toContain("openai/gpt-test");
 		expect(rendered).toContain("Describe what you want");
 		expect(rendered).not.toMatch(/Pi coding agent|run bash|!!|schemaVersion|\{/i);
@@ -186,7 +190,7 @@ describe("AHDE Builder product shell", () => {
 		const { handlers, controller } = install(async () => current);
 		const h = host({ credentialPresent: true });
 		await start(handlers, h.ctx);
-		expect(h.renderHeader().join("\n")).toContain("Target setup");
+		expect(h.renderHeader().join("\n")).toContain("Target not created yet");
 
 		current = view({
 			stage: "spec-review",

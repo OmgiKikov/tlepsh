@@ -969,11 +969,36 @@ describe("renderHeader", () => {
 		expect(different[3]).toBe("Stage Spec design · step 1 of 8 · Next Describe the agent you want");
 	});
 
-	it("keeps the stage line while the agent is still being set up, and mid-cycle carries the progress", () => {
-		const setup = makeView({ stage: "target-setup", counts: FIRST_SCREEN_COUNTS, target: { status: "missing", id: null, gitSha: null, model: null } });
-		const setupLines = renderHeader({ view: setup, plan: compilePlan(setup), builderModel: { label: "x", credentialPresent: true } }, plainPaint);
-		expect(setupLines[2]).toBe("Target not created yet");
-		expect(setupLines[3]).toBe("Stage Target setup · step 0 of 8 · Next Describe the agent you want to build");
+	/**
+	 * Session 7's very first screen was five lines, and the third said
+	 * `Дальше Опиши агента, которого хочешь собрать` while the door was open
+	 * over it asking whether to adopt the `agent.py` in the folder. Before
+	 * there is an agent, the header does not know what happens next: the door's
+	 * own question does, or the hint under the transcript does.
+	 */
+	it("is four lines before the agent exists, and drops the next step it cannot know", () => {
+		const setup = makeView({ stage: "target-setup", blockers: [], counts: FIRST_SCREEN_COUNTS, target: { status: "missing", id: null, gitSha: null, model: null } });
+		const setupLines = renderHeader({ view: setup, plan: compilePlan(setup), builderModel: { label: "moonshotai/kimi", credentialPresent: true } }, plainPaint);
+		expect(setupLines).toEqual([
+			"",
+			"AHDE Builder · build, evaluate, and improve another agent through evidence",
+			"Target not created yet",
+			"Builder model moonshotai/kimi ✓",
+			"Describe what you want in plain language",
+			"",
+		]);
+	});
+
+	it("keeps the stage line once the agent exists and only its model is missing, and mid-cycle carries the progress", () => {
+		// After the door closes, `Next` is true and useful: name the model.
+		const bootstrap = makeView({
+			stage: "target-setup",
+			blockers: ["The agent still carries the template's stand-in name and model."],
+			counts: FIRST_SCREEN_COUNTS,
+			target: { status: "bootstrap-required", id: "isp-support", gitSha: SHA_A, model: null },
+		});
+		const bootstrapLines = renderHeader({ view: bootstrap, plan: compilePlan(bootstrap), builderModel: { label: "x", credentialPresent: true } }, plainPaint);
+		expect(bootstrapLines[3]).toBe("Stage Target setup · step 0 of 8 · Next Tell the Builder which model the agent should use");
 		const mid = makeView({ stage: "candidate-verification" });
 		const midLines = renderHeader({ view: mid, plan: compilePlan(mid), builderModel: { label: "x", credentialPresent: true } }, plainPaint);
 		expect(midLines[3]).toBe("Stage Candidate verification · step 5 of 8 · Next Say “check” to verify the change");
