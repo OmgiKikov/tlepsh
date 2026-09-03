@@ -227,7 +227,7 @@ const expectedCommandNames = [
 	"test", "fix", "ship",
 	"help", "doctor", "holdout", "status", "run", "calibrate", "regrade", "traces", "review",
 	"approve", "publish", "apply", "discard", "promote", "reject", "adopt", "next",
-	"target", "passport", "trace", "log", "export", "plan", "jobs", "stop", "label",
+	"target", "passport", "trace", "log", "dataset", "plan", "jobs", "stop", "label",
 ];
 // The CLI command surface the installed package registers. serve is the
 // platform seam: the Workbench behind a loopback HTTP/JSON API; log and watch

@@ -807,7 +807,7 @@ describe("ahde export: what is selected", () => {
 		expect([...result.evalRunIds].sort()).toEqual(["erun_one", "erun_two"]);
 	});
 
-	it("--latest picks the newest exportable eval run, which is what /export uses", () => {
+	it("--latest picks the newest exportable eval run, which is what /dataset uses", () => {
 		const runsRoot = threeEvalRuns();
 		const result = exportDataset({ runsRoot, latest: true });
 		expect(result.path).toBe(join(runsRoot, "exports", "erun_two.jsonl"));

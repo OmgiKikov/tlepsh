@@ -1,10 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { plural, setLanguage, t } from "../src/i18n.js";
 import { createAhdeWorkbench, type WorkbenchHumanGate } from "../src/workbench/index.js";
-import { assertGradersRunnable } from "../src/application/corpus-target.js";
+import { assertGradersRunnable, draftWorldWarnings } from "../src/application/corpus-target.js";
 import { deriveWorkbenchView, loadWorkbenchInventory } from "../src/workbench/inventory.js";
 import { writeEvalRun } from "../src/eval.js";
 import { hashValue, modelFingerprint, provenanceAxes, RunRecordSchema } from "../src/provenance.js";
@@ -36,9 +36,18 @@ const gate: WorkbenchHumanGate = {
 	selectSealed: async () => ({ approved: false }),
 };
 
-async function approvedWorkbench() {
-	const projectDir = makeTargetFixture(baseFixtureFiles({ ".gitignore": ".ahde/\nruns/\n" }));
+async function approvedWorkbench(files: Record<string, string> = {}, executables: readonly string[] = []) {
+	const projectDir = makeTargetFixture(baseFixtureFiles({ ".gitignore": ".ahde/\nruns/\n", ...files }));
 	roots.push(projectDir);
+	// A declared tool is only resolvable when its executable really is one, and
+	// the mode has to reach the commit the Workbench reads the Target from.
+	for (const path of executables) chmodSync(join(projectDir, path), 0o755);
+	if (executables.length > 0) {
+		execFileSync("git", ["-C", projectDir, "add", "."]);
+		execFileSync("git", [
+			"-C", projectDir, "-c", "user.name=test", "-c", "user.email=test@test", "commit", "--amend", "--no-edit", "-q",
+		]);
+	}
 	const workbench = createAhdeWorkbench({
 		projectDir,
 		stateRoot: join(projectDir, ".ahde"),
@@ -230,6 +239,231 @@ describe("corpus grader validation against the current Target", () => {
 			manifest,
 			"basket",
 		)).not.toThrow();
+	});
+});
+
+/**
+ * Session 7 wrote `argsContains: {"contractId":"12345"}` against a tool whose
+ * only parameter is `account`, on three cases, and every layer accepted it.
+ * The check could not fire under any circumstance — a grader that can only
+ * fail is not a measurement, it is a hole in one.
+ */
+describe("a tool grader names a parameter the tool has", () => {
+	const manifest = { evalSuite: { id: "s", dataset: "d", graders: "g" } } as never;
+	const getAccount = {
+		name: "get_account",
+		parameters: {
+			type: "object",
+			properties: { account: { type: "string" }, action: { type: "string" } },
+		},
+	};
+
+	it("refuses a parameter the descriptor does not declare, and names the ones it does", () => {
+		setLanguage("ru");
+		expect(() => assertGradersRunnable(
+			[{ graders: [{ type: "tool_called", tool: "get_account", argsContains: "contractId" }] }],
+			manifest,
+			"basket",
+			{ tools: [getAccount] },
+		)).toThrow("task 1 grader 1: у инструмента get_account нет параметра contractId; есть: account, action");
+	});
+
+	it("reads the arguments object the Builder actually wrote, key by key", () => {
+		setLanguage("ru");
+		expect(() => assertGradersRunnable(
+			[{ graders: [{ type: "tool_called", tool: "get_account", argsContains: '{"contractId":"12345"}' }] }],
+			manifest,
+			"basket",
+			{ tools: [getAccount] },
+		)).toThrow("нет параметра contractId; есть: account, action");
+		// A declared parameter passes, value and all.
+		expect(() => assertGradersRunnable(
+			[{ graders: [{ type: "tool_called", tool: "get_account", argsContains: '{"account":"12345"}' }] }],
+			manifest,
+			"basket",
+			{ tools: [getAccount] },
+		)).not.toThrow();
+	});
+
+	it("leaves free text alone: it may be a value, and values are the author's business", () => {
+		for (const argsContains of ["12345", "Домашний 100", "account 42", "{not json"]) {
+			expect(() => assertGradersRunnable(
+				[{ graders: [{ type: "tool_called", tool: "get_account", argsContains }] }],
+				manifest,
+				"basket",
+				{ tools: [getAccount] },
+			), argsContains).not.toThrow();
+		}
+	});
+
+	it("says nothing about a tool the Target does not declare, or when no tools are known", () => {
+		expect(() => assertGradersRunnable(
+			[{ graders: [{ type: "tool_called", tool: "unknown_tool", argsContains: "contractId" }] }],
+			manifest,
+			"basket",
+			{ tools: [getAccount] },
+		)).not.toThrow();
+		expect(() => assertGradersRunnable(
+			[{ graders: [{ type: "tool_called", tool: "get_account", argsContains: "contractId" }] }],
+			manifest,
+			"basket",
+		)).not.toThrow();
+	});
+});
+
+/**
+ * Session 7's three unpassable cases: the grader required `get_account`, the
+ * case carried no world, the tool answered «нет данных о мире прогона», and
+ * nobody was told — not at authoring, not at publication, not on the run.
+ */
+describe("a case that reads the world carries one", () => {
+	const worldTool = {
+		name: "get_account",
+		parameters: { type: "object", properties: { account: { type: "string" } } },
+		permissions: { environment: ["AHDE_WORLD"] },
+	};
+	const plainTool = {
+		name: "send_email",
+		parameters: { type: "object", properties: { to: { type: "string" } } },
+		permissions: { environment: ["SMTP_URL"] },
+	};
+
+	afterEach(() => setLanguage(null));
+
+	it("warns, in the operator's language, naming the case and the tool", () => {
+		setLanguage("ru");
+		expect(draftWorldWarnings(
+			[{ metadata: { name: "tariff-lookup" }, graders: [{ type: "tool_called", tool: "get_account" }] }],
+			{ tools: [worldTool] },
+		)).toEqual(["кейс tariff-lookup ждёт вызов get_account, но не несёт мир — инструменту нечего вернуть"]);
+	});
+
+	it("falls back to the case's position when it has no name of its own", () => {
+		setLanguage("ru");
+		const warnings = draftWorldWarnings(
+			[
+				{ world: { state: { accounts: {} } }, graders: [{ type: "tool_called", tool: "get_account" }] },
+				{ graders: [{ type: "tool_called", tool: "get_account" }] },
+			],
+			{ tools: [worldTool] },
+		);
+		expect(warnings).toEqual(["кейс #2 ждёт вызов get_account, но не несёт мир — инструменту нечего вернуть"]);
+	});
+
+	it("stays silent for a tool that never reads the world, and speaks for every tool of a command agent", () => {
+		const tasks = [{ graders: [{ type: "tool_called" as const, tool: "send_email" }] }];
+		expect(draftWorldWarnings(tasks, { tools: [plainTool] })).toEqual([]);
+		expect(draftWorldWarnings(tasks, { tools: [plainTool], commandAgent: true })).toHaveLength(1);
+	});
+
+	/** A Target that declares one real world-reading tool, descriptor and all. */
+	const WORLD_TOOL_FILES = {
+		"manifest.yaml": `id: test-target
+model:
+  provider: qwen-internal
+  id: qwen3.5-27b
+  api: openai-completions
+  baseUrl: http://127.0.0.1:9901/v1
+  apiKeyEnv: TEST_MODEL_KEY
+  thinkingLevel: "off"
+  timeoutMs: 300000
+execution:
+  tools: [read]
+  environmentAllowlist: []
+  network: deny
+  sandbox: best-effort
+instructions:
+  agentsMd: AGENTS.md
+skills: [skills/check-dbo]
+tools: [tools/get_account.tool.yaml]
+evalSuite:
+  id: test-suite
+  dataset: evals/development.jsonl
+  graders: evals/graders.yaml
+`,
+		"tools/get_account.tool.yaml": `schemaVersion: 1
+name: get_account
+description: Read one subscriber account out of the run's world.
+parameters:
+  type: object
+  properties:
+    account:
+      type: string
+      minLength: 1
+      maxLength: 64
+  required: [account]
+  additionalProperties: false
+command:
+  argv: [bin/get_account]
+timeoutMs: 10000
+maxOutputBytes: 8192
+output: json
+permissions:
+  environment: [AHDE_WORLD]
+  network: deny
+  filesystem: read-only
+`,
+		"bin/get_account": "#!/usr/bin/env bash\necho '{}'\n",
+	};
+
+	it("warns on the saved draft instead of refusing it, through the whole Workbench", async () => {
+		setLanguage("ru");
+		const workbench = await approvedWorkbench(WORLD_TOOL_FILES, ["bin/get_account"]);
+		const turn = await workbench.submit({
+			kind: "corpus-draft",
+			name: "Digest basket",
+			tasks: [
+				{
+					input: "Баланс по счёту 33333?",
+					metadata: { name: "tariff-lookup" },
+					graders: [{ type: "tool_called", tool: "get_account", argsContains: '{"account":"33333"}' }],
+				},
+			],
+			coverageNotes: [],
+			revisionSummary: "initial",
+		});
+		expect(turn.message).toContain("кейс tariff-lookup ждёт вызов get_account, но не несёт мир — инструменту нечего вернуть");
+		// A warning, not a refusal: the draft is on disk and selectable.
+		expect(turn.artifact?.id).toMatch(/^corpus-draft-/);
+		expect((await workbench.view()).counts.corpusDrafts).toBe(1);
+	});
+
+	it("says nothing once the case carries the world the tool will read", async () => {
+		setLanguage("ru");
+		const workbench = await approvedWorkbench(WORLD_TOOL_FILES, ["bin/get_account"]);
+		const turn = await workbench.submit({
+			kind: "corpus-draft",
+			name: "Digest basket",
+			tasks: [
+				{
+					input: "Баланс по счёту 33333?",
+					world: { state: { accounts: { "33333": { balance: -500 } } } },
+					graders: [{ type: "tool_called", tool: "get_account", argsContains: '{"account":"33333"}' }],
+				},
+			],
+			coverageNotes: [],
+			revisionSummary: "initial",
+		});
+		expect(turn.message).not.toContain("не несёт мир");
+	});
+
+	it("refuses that same draft when the grader names a parameter get_account does not have", async () => {
+		setLanguage("ru");
+		const workbench = await approvedWorkbench(WORLD_TOOL_FILES, ["bin/get_account"]);
+		await expect(workbench.submit({
+			kind: "corpus-draft",
+			name: "Digest basket",
+			tasks: [
+				{
+					input: "Баланс по договору 12345?",
+					world: { state: { accounts: {} } },
+					graders: [{ type: "tool_called", tool: "get_account", argsContains: '{"contractId":"12345"}' }],
+				},
+			],
+			coverageNotes: [],
+			revisionSummary: "initial",
+		})).rejects.toThrow("у инструмента get_account нет параметра contractId; есть: account");
+		expect((await workbench.view()).counts.corpusDrafts).toBe(0);
 	});
 });
 

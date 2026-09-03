@@ -1374,7 +1374,7 @@ Looking around:
   /target [resource]    the exact committed Target, or one declared resource
   /passport [version]   what the newest shipped version promised and measured
   /log [n]              how the agent grew: every version and what it scored
-  /export [--all]       every recorded conversation as one dataset file, saved
+  /dataset [--all]      every recorded conversation as one dataset file, saved
                         beside the agent; the sealed exam is never in it
   /label [n]            check the judge: grade n answers blind, then see what
                         it said — about ten minutes, and nothing runs
@@ -1454,7 +1454,7 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"cmd.passport": "What a shipped version promised and measured",
 	"cmd.trace": "One run: why it failed, every verdict, the conversation",
 	"cmd.log": "How the agent grew: every version and what it scored",
-	"cmd.export": "Every recorded conversation as one dataset file",
+	"cmd.dataset": "Every recorded conversation as one dataset file",
 	"cmd.plan": "The whole cycle as a checklist",
 	"cmd.jobs": "The background measurement, if one is running",
 	"cmd.stop": "Stop the background measurement",
@@ -1467,7 +1467,7 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"cmd.err.version": "a version looks like 0.2.0",
 	"cmd.err.ordinal": "/{command} takes the problem number /traces shows",
 	"cmd.err.no-runs": "This test run has nothing to open.",
-	"cmd.err.export-arg": "/export takes --all, or nothing for the last test run",
+	"cmd.err.dataset-arg": "/dataset takes --all, or nothing for the last test run",
 	"cmd.err.trace-row": "/trace {argument}: the table has {rows}; say /traces to see them",
 	"cmd.err.trace-arg": "/trace takes a row number from /traces, “next”, “prev”, a case id or a run id — not “{argument}”",
 	"cmd.err.ship-stage": "Shipping is not the next step here — {stage}. {next}",
@@ -1591,6 +1591,13 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"result.screen-inconclusive-over-budget": "· {count} inconclusive — over the infrastructure error budget",
 	"exam.dropped-at-generation": "({dropped} dropped when it was generated)",
 	"exam.short-of-requested": "(short of the {requested} that were ordered)",
+	// lane: dataset
+	"draft.tool-parameter-unknown": "tool {tool} has no parameter {parameter}; it has: {parameters}",
+	"draft.world-missing": "case {case} expects a call to {tool} but carries no world — the tool has nothing to return",
+	"traces.world-cases": "Worlded cases",
+	"trace.world-before": "World before",
+	"trace.world-after": "World after",
+	"trace.world-unread": "could not be read",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2696,7 +2703,7 @@ const ru: Record<MessageKey, string> = {
   /target [ресурс]      точный закоммиченный агент или один его ресурс
   /passport [версия]    что обещала и что измерила последняя выкаченная версия
   /log [n]              как агент рос: каждая версия и её результат
-  /export [--all]       все записанные диалоги одним файлом-датасетом рядом
+  /dataset [--all]      все записанные диалоги одним файлом-датасетом рядом
                         с агентом; закрытого экзамена в нём нет никогда
   /label [n]            проверить судью: оценить n ответов вслепую и увидеть,
                         что сказал он — минут десять, ничего не прогоняется
@@ -2774,7 +2781,7 @@ const ru: Record<MessageKey, string> = {
 	"cmd.passport": "Что обещала и что измерила выкаченная версия",
 	"cmd.trace": "Один прогон: почему провал, все вердикты и диалог",
 	"cmd.log": "Как агент рос: каждая версия и её результат",
-	"cmd.export": "Все записанные диалоги одним файлом-датасетом",
+	"cmd.dataset": "Все записанные диалоги одним файлом-датасетом",
 	"cmd.plan": "Весь цикл списком",
 	"cmd.jobs": "Фоновое измерение, если оно идёт",
 	"cmd.stop": "Остановить фоновое измерение",
@@ -2787,7 +2794,7 @@ const ru: Record<MessageKey, string> = {
 	"cmd.err.version": "версия выглядит как 0.2.0",
 	"cmd.err.ordinal": "/{command} принимает номер проблемы из /traces",
 	"cmd.err.no-runs": "В этом прогоне нечего открыть.",
-	"cmd.err.export-arg": "/export принимает --all или ничего — тогда это последний прогон",
+	"cmd.err.dataset-arg": "/dataset принимает --all или ничего — тогда это последний прогон",
 	"cmd.err.trace-row": "/trace {argument}: в таблице {rows}; скажи /traces, чтобы их увидеть",
 	"cmd.err.trace-arg": "/trace принимает номер строки из /traces, «next», «prev», id кейса или id прогона — а не «{argument}»",
 	"cmd.err.ship-stage": "Выкатывать сейчас рано — {stage}. {next}",
@@ -2904,6 +2911,13 @@ const ru: Record<MessageKey, string> = {
 	"result.screen-inconclusive-over-budget": "· {count} неубедительно — превышен бюджет инфраструктурных ошибок",
 	"exam.dropped-at-generation": "(при генерации отброшено: {dropped})",
 	"exam.short-of-requested": "(заказано было {requested})",
+	// lane: dataset
+	"draft.tool-parameter-unknown": "у инструмента {tool} нет параметра {parameter}; есть: {parameters}",
+	"draft.world-missing": "кейс {case} ждёт вызов {tool}, но не несёт мир — инструменту нечего вернуть",
+	"traces.world-cases": "Кейсы с миром",
+	"trace.world-before": "Мир до",
+	"trace.world-after": "Мир после",
+	"trace.world-unread": "прочитать не удалось",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

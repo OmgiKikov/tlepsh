@@ -714,6 +714,15 @@ export function renderTraces(content: WorkbenchTracesDetail, paint: Paint, optio
 	} else {
 		lines.push(paint.success(`  ${t("diagnosis.healthy")}`));
 	}
+	// The cases that happen somewhere, as the four lines that say where.
+	//
+	// Session 7 read `/traces` for a basket of eight and met a table of ids:
+	// three of those cases carried a world and not one line said who was in it,
+	// what was already true, what they wanted or what had to be true at the end.
+	// The table is still below; this is the half a table cannot hold.
+	if (content.worldCases && content.worldCases.length > 0) {
+		lines.push(paint.dim(t("traces.world-cases")), ...renderDatasetCases(content.worldCases, paint));
+	}
 	lines.push(`${paint.dim(t("label.evidence"))} ${content.evidence.available ? paint.link(content.evidence.url) : paint.muted(t("diagnosis.no-explorer"))}`);
 	if (options.next !== false) {
 		const next = brief.proposalEligible

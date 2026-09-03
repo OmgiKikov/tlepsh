@@ -1,4 +1,4 @@
-import { relative, sep } from "node:path";
+import { join, relative, sep } from "node:path";
 import { plural, t } from "../i18n.js";
 import { failureModeReading } from "../application/run-explanation.js";
 import type {
@@ -52,7 +52,9 @@ import {
 	renderRunsTable,
 	renderTracePanel,
 	traceNoteForModel,
+	type TraceWorld,
 } from "./render/trace.js";
+import { readFinalWorldState } from "../target/world-state.js";
 import { collectEvalPage, collectRunDetailPage, EvidenceNotFound } from "../evidence/model.js";
 import type { EvalPageModel, RunDetailPageModel } from "../evidence/pages.js";
 import {
@@ -102,12 +104,58 @@ export const AHDE_BUILDER_COMMAND_NAMES = [
 	"passport",
 	"trace",
 	"log",
-	"export",
+	"dataset",
 	"plan",
 	"jobs",
 	"stop",
 	"label",
 ] as const;
+
+/**
+ * Pi's own interactive slash commands, pinned.
+ *
+ * Pi does not export `BUILTIN_SLASH_COMMANDS` (it lives behind
+ * `dist/core/slash-commands.js`, which the package's `exports` map does not
+ * publish), so the only honest way to know the names is to copy them and let a
+ * test fail when the pinned runtime moves.
+ *
+ * They matter because a built-in name never reaches an extension: Pi's submit
+ * handler resolves the name against this set FIRST, so a Builder command that
+ * shares one is either shadowed by the built-in or — when the host's
+ * `allowedBuiltinCommands` does not admit it, which is AHDE's case — refused
+ * outright with `… is disabled by this host.` Session 7 lost `/export` that
+ * way, and the only warning was an English `[Extension issues]` block on a
+ * screen nobody reads twice.
+ */
+export const PI_BUILTIN_COMMAND_NAMES: ReadonlySet<string> = new Set([
+	"settings", "model", "tree", "thinking", "scoped-models", "export", "import",
+	"share", "copy", "name", "session", "changelog", "hotkeys", "fork", "clone",
+	"trust", "login", "logout", "new", "compact", "resume", "reload", "quit",
+]);
+
+/**
+ * Built-in names AHDE deliberately serves itself.
+ *
+ * Empty, and that is the point: an override only works when the host also
+ * lists the name in `preferredExtensionCommands`, so adding one here without
+ * adding it there re-creates the `/export` defect. `/help` is not a Pi
+ * built-in at all (Pi has no `/help`), and `/model` is a built-in AHDE never
+ * registers — neither is an override.
+ */
+const AHDE_BUILTIN_OVERRIDES: ReadonlySet<string> = new Set<string>();
+
+/**
+ * The guard every Builder command passes before Pi hears about it: a name the
+ * host already owns is not a command with a warning, it is a command that
+ * never runs.
+ */
+export function assertRegistrableCommandName(name: string): void {
+	if (!PI_BUILTIN_COMMAND_NAMES.has(name) || AHDE_BUILTIN_OVERRIDES.has(name)) return;
+	throw new Error(
+		`/${name} is one of Pi's own built-in commands, so the host would answer it before this extension ever saw it. ` +
+		"Rename the Builder command, or add it to both AHDE_BUILTIN_OVERRIDES and preferredExtensionCommands.",
+	);
+}
 
 /** The `/help` reference, in the operator's language. */
 const builderHelp = (): string => t("help.body");
@@ -372,6 +420,34 @@ function describeError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * The world one run happened in, or null when its case declared none.
+ *
+ * `before` is the case's own starting state, as the traces view already
+ * bounded and redacted it; `after` is what the conversation left behind. A
+ * world file that will not parse is reported as unreadable rather than as an
+ * empty world: it says nothing about the agent, and a caller that treated it
+ * as an answer would be inventing one.
+ *
+ * The join is the task id on both sides — the corpus case's own id, and the
+ * public form of it the evidence layer prints. An id that ever needed
+ * redacting would simply not match, and the panel would show no world rather
+ * than the wrong one.
+ */
+function worldOfRun(
+	content: WorkbenchTracesDetail,
+	detail: RunDetailPageModel,
+	runsRoot: string,
+): TraceWorld | null {
+	const declared = content.worldCases?.find((item) => item.taskId === detail.run.taskId);
+	if (!declared?.world) return null;
+	try {
+		return { before: declared.world.state, after: readFinalWorldState(join(runsRoot, detail.run.runId)) };
+	} catch {
+		return { before: declared.world.state, after: null, unreadable: true };
+	}
+}
+
 /** Which row `/trace <arg>` means: a 1-based row, next/prev from the cursor, a task id, or a run id. */
 export function resolveTraceTarget(
 	argument: string,
@@ -495,6 +571,10 @@ export function registerAhdeBuilderCommands(
 		name: string,
 		definition: { description: string; handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> },
 	): void => {
+		// Refusing here turns the class of defect into a startup failure a test
+		// catches, instead of a slash command the operator discovers is dead on
+		// the day they need it.
+		assertRegistrableCommandName(name);
 		pi.registerCommand(name, {
 			description: definition.description,
 			handler: async (args, ctx) => {
@@ -1479,7 +1559,7 @@ export function registerAhdeBuilderCommands(
 			presenter.show(ctx, {
 				title: t("panel.title", { detail: t("panel.trace", { run: `${oneLine(detail.run.taskId, 40)}#${detail.run.repetitionIndex}` }) }),
 				tone: detail.run.outcome === "pass" ? "info" : "warning",
-				lines: renderTracePanel(detail, markerPaint),
+				lines: renderTracePanel(detail, markerPaint, { world: worldOfRun(content, detail, workbench.runsRoot) }),
 			});
 			// The one thing the host cannot write: a reading of the trace. The
 			// Builder gets the same bounded facts and answers in the operator's words.
@@ -1516,13 +1596,19 @@ export function registerAhdeBuilderCommands(
 	 * the same application function `ahde export` uses, so the boundary is the
 	 * same boundary: the sealed exam is refused on the bounded index before a
 	 * single trace is opened, and the one line says so.
+	 *
+	 * It is `/dataset` and not `/export` because Pi owns `/export` — its own
+	 * built-in writes the session out — and a built-in name never reaches an
+	 * extension: session 7 met `Warning: /export is disabled by this host.` and
+	 * the operator had no way to read the dataset at all. The CLI verb stays
+	 * `ahde export`; only the slash command moved.
 	 */
-	registerCommand("export", {
-		description: t("cmd.export"),
+	registerCommand("dataset", {
+		description: t("cmd.dataset"),
 		async handler(args, ctx) {
-			await prepare(ctx, "export");
+			await prepare(ctx, "dataset");
 			const requested = args.trim();
-			if (requested && requested !== "--all") throw new Error(t("cmd.err.export-arg"));
+			if (requested && requested !== "--all") throw new Error(t("cmd.err.dataset-arg"));
 			const scope = { stateRoot: workbench.stateRoot, projectId: workbench.projectId };
 			let result;
 			try {

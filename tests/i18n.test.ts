@@ -717,11 +717,11 @@ describe("ru: the recorded dataset", () => {
 		expect(line(11)).toBe("выгружено 11 диалогов → exports/erun_abc123.jsonl (без экзамена)");
 		// Only the path is Latin, and it is a path.
 		expect(leakedEnglish(line(24))).toEqual([]);
-		for (const key of ["export.none", "cmd.export", "panel.export"] as const) {
+		for (const key of ["export.none", "cmd.dataset", "panel.export"] as const) {
 			expect(leakedEnglish(t(key))).toEqual([]);
 		}
 		// The refusal names a flag, and a flag is a Latin token on purpose.
-		expect(t("cmd.err.export-arg")).toBe("/export принимает --all или ничего — тогда это последний прогон");
+		expect(t("cmd.err.dataset-arg")).toBe("/dataset принимает --all или ничего — тогда это последний прогон");
 	});
 });
 

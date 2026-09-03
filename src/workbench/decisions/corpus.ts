@@ -5,7 +5,7 @@ import { plural as localizedCount, t } from "../../i18n.js";
 import { loadDevelopmentCorpusPublicationReceipt } from "../../application/builder-authoring.js";
 import { MAX_BUILDER_CORPUS_DRAFT_TASKS } from "../../application/builder-corpus-draft.js";
 import { type DatasetHoldoutSpec } from "../../application/dataset-ingest.js";
-import { assertGradersRunnable } from "../../application/corpus-target.js";
+import { assertGradersRunnable, targetToolContext } from "../../application/corpus-target.js";
 import { listCorpora, type CorpusMetadata } from "../../corpus.js";
 import { hashValue } from "../../provenance.js";
 import { loadApprovedSpec } from "../../spec.js";
@@ -44,7 +44,7 @@ export async function decidePublishCorpus(
 	const { inventory, gate, options } = ctx;
 	const approved = requireApprovedSpec(inventory);
 	const draft = requireCorpusDraft(inventory, input.draftId, approved.id, true);
-	if (inventory.target) assertGradersRunnable(draft.tasks, inventory.target.manifest, `corpus draft ${draft.id}`);
+	if (inventory.target) assertGradersRunnable(draft.tasks, inventory.target.manifest, `corpus draft ${draft.id}`, targetToolContext(inventory.target));
 	const name = input.name ?? draft.name;
 	const publication = host.dependencies.describeCorpusPublication({ projectId: host.projectId, name, tasks: draft.tasks });
 	const before = { operation: "publish-development-corpus", draftId: draft.id, draftHash: hashValue(draft), approvedSpec: draft.approvedSpec, publication, tasks: draft.tasks };

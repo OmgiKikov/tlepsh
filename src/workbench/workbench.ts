@@ -135,7 +135,9 @@ import {
 } from "../application/candidate-review.js";
 import {
 	assertGradersRunnable,
+	draftWorldWarnings,
 	resolveScoredCasesForEval,
+	targetToolContext,
 	targetWithDevelopmentCorpus,
 } from "../application/corpus-target.js";
 import {
@@ -675,6 +677,38 @@ function datasetGrader(grader: WorkbenchDatasetCase["graders"][number]): Workben
 			// itself goes through.
 			return { ...grader, ...named, path: datasetText(grader.path, 200) };
 	}
+}
+
+/** How many worlded cases the traces panel carries; the Explorer has the rest. */
+const MAX_TRACES_WORLD_CASES = 8;
+
+/**
+ * The worlded cases of the basket an eval scored.
+ *
+ * Keyed by task id, because the traces panel draws them and `/trace` joins on
+ * that id to say what the world held before one conversation. Reading the
+ * corpus is best-effort: a basket that has been deleted, or an eval that ran
+ * off the manifest dataset instead of a published corpus, simply leaves the
+ * panel as it was.
+ */
+function worldCasesOf(
+	workbench: { stateRoot: string; projectId: string },
+	inventory: WorkbenchInventory,
+	datasetHash: string,
+): { worldCases?: Array<WorkbenchDatasetCase & { taskId: string }> } {
+	const metadata = inventory.corpora.find((item) => item.hash === datasetHash);
+	if (!metadata) return {};
+	let tasks: readonly CorpusTask[];
+	try {
+		tasks = loadCorpus({ stateRoot: workbench.stateRoot, projectId: workbench.projectId, corpusId: metadata.id }).tasks;
+	} catch {
+		return {};
+	}
+	const worlded = tasks
+		.filter((task) => task.world !== undefined)
+		.slice(0, MAX_TRACES_WORLD_CASES)
+		.map((task) => ({ taskId: task.id, ...datasetCasePreview(task) }));
+	return worlded.length > 0 ? { worldCases: worlded } : {};
 }
 
 /**
@@ -2584,7 +2618,7 @@ export class AhdeWorkbench {
 					graders: entry.graders,
 					metadata: entry.metadata,
 				}));
-				assertGradersRunnable(tasks, inventory.target.manifest, `contract cases for ${name}`);
+				assertGradersRunnable(tasks, inventory.target.manifest, `contract cases for ${name}`, targetToolContext(inventory.target));
 				// Revise the open draft when there is one, so the operator keeps one
 				// editable surface instead of collecting a draft per applied tool.
 				const open = inventory.corpusDrafts.filter((draft) => draft.approvedSpec.specId === approved.id);
@@ -2766,6 +2800,11 @@ export class AhdeWorkbench {
 						diagnosis: diagnosisSummary(diagnosis),
 						improvementBrief: conversationalImprovementBrief(improvementBrief),
 						evidence: link ? { available: true, ...link } : { available: false },
+						// The worlded cases behind the numbers above. A worlded case
+						// read as a table row loses who is in it, what is already true
+						// and what must be true afterwards, so the panel carries the
+						// same four-line card the dataset view draws.
+						...worldCasesOf(this, inventory, run.datasetHash),
 						// The same instrument reading the run panel carries, so /traces
 						// and the panel after a run cannot say different things about
 						// the judge that decided the numbers above them. The offer this
@@ -2893,7 +2932,7 @@ export class AhdeWorkbench {
 			const approved = requireApprovedSpec(inventory, input.approvedSpecId);
 			const exact = loadApprovedSpec({ stateRoot: this.stateRoot, projectId: this.projectId, specId: approved.id });
 			if (inventory.target) {
-				assertGradersRunnable(input.tasks, inventory.target.manifest, "corpus draft", { evaluatorsChosenLater: true });
+				assertGradersRunnable(input.tasks, inventory.target.manifest, "corpus draft", { evaluatorsChosenLater: true, ...targetToolContext(inventory.target) });
 			}
 			const result = this.dependencies.createCorpusDraft({
 				stateRoot: this.stateRoot,
@@ -2904,7 +2943,19 @@ export class AhdeWorkbench {
 				revisionSummary: input.revisionSummary,
 			}, { now: this.dependencies.now });
 			const settled = this.select("corpus-draft", result.draft.id);
-			return { kind: input.kind, message: t("message.corpus-draft-saved"), artifact: { id: result.draft.id, draftHash: hashValue(result.draft), taskCount: result.draft.tasks.length, approvedSpecId: result.draft.approvedSpec.specId }, view: await this.viewOf(settled) };
+			// A case that requires a world-reading tool and carries no world is
+			// unpassable by construction — the tool answers "no world for this run"
+			// and the grader can never fire. It is a warning and not a refusal: only
+			// the author knows whether the call itself is the whole measurement.
+			const warnings = inventory.target
+				? draftWorldWarnings(input.tasks, targetToolContext(inventory.target))
+				: [];
+			return {
+				kind: input.kind,
+				message: [t("message.corpus-draft-saved"), ...warnings].join("\n"),
+				artifact: { id: result.draft.id, draftHash: hashValue(result.draft), taskCount: result.draft.tasks.length, approvedSpecId: result.draft.approvedSpec.specId },
+				view: await this.viewOf(settled),
+			};
 		}
 		if (input.kind === "corpus-import") {
 			const inventory = this.inventory();
@@ -2923,7 +2974,7 @@ export class AhdeWorkbench {
 			const settled = this.select("corpus-draft", result.draft.id);
 			if (inventory.target) {
 				try {
-					assertGradersRunnable(result.draft.tasks, inventory.target.manifest, "imported corpus draft", { evaluatorsChosenLater: true });
+					assertGradersRunnable(result.draft.tasks, inventory.target.manifest, "imported corpus draft", { evaluatorsChosenLater: true, ...targetToolContext(inventory.target) });
 				} catch (error) {
 					throw new Error(
 						`${error instanceof Error ? error.message : String(error)}\nThe import was saved as draft ${result.draft.id}; revise those graders with kind: corpus-revision before publishing.`,
@@ -2971,7 +3022,7 @@ export class AhdeWorkbench {
 					`${MAX_BUILDER_CORPUS_DRAFT_TASKS}. Add sample: { limit, seed } to the recipe to thin the development side.`,
 				);
 			}
-			if (inventory.target) assertGradersRunnable(compiled.tasks, inventory.target.manifest, "dataset recipe", { evaluatorsChosenLater: true });
+			if (inventory.target) assertGradersRunnable(compiled.tasks, inventory.target.manifest, "dataset recipe", { evaluatorsChosenLater: true, ...targetToolContext(inventory.target) });
 			const saved = this.dependencies.saveDatasetRecipe({
 				stateRoot: this.stateRoot,
 				approvedSpec: exact.reference,
@@ -3013,7 +3064,7 @@ export class AhdeWorkbench {
 					if ("grader" in operation && operation.grader) return [{ graders: [operation.grader] }];
 					return [];
 				});
-				assertGradersRunnable(carried, inventory.target.manifest, "corpus revision", { evaluatorsChosenLater: true });
+				assertGradersRunnable(carried, inventory.target.manifest, "corpus revision", { evaluatorsChosenLater: true, ...targetToolContext(inventory.target) });
 			}
 			let operations: readonly unknown[] = input.operations;
 			let verifiedTaskProvenance: readonly unknown[] = [];

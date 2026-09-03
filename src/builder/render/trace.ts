@@ -157,10 +157,44 @@ function renderEntry(entry: TranscriptEntry, paint: Paint): string[] {
 }
 
 /**
+ * The world this run happened in, if it had one.
+ *
+ * `before` is the case's own starting state; `after` is what the conversation
+ * left behind, or `null` when the run wrote no world file. `unreadable` is the
+ * third answer, and the honest one: a world file that will not parse says
+ * nothing about the agent, so the panel reports that rather than inventing an
+ * empty state.
+ */
+export interface TraceWorld {
+	before: unknown;
+	after: unknown;
+	unreadable?: boolean;
+}
+
+/** `{"accounts":{"33333":{"balance":-500}}}`, bounded to one line. */
+function worldLine(state: unknown): string {
+	if (state === undefined || state === null) return "—";
+	// A case preview hands the state over as bounded, redacted canonical JSON
+	// already — a string, deliberately, because that is what a human is shown.
+	if (typeof state === "string") return oneLine(state, MAX_WORLD_LINE_CHARS);
+	try {
+		return oneLine(JSON.stringify(state) ?? "—", MAX_WORLD_LINE_CHARS);
+	} catch {
+		return "—";
+	}
+}
+
+const MAX_WORLD_LINE_CHARS = 160;
+
+/**
  * One run, whole: why it failed in the host's words, every grader's verdict,
  * then the conversation. Bounded to `MAX_TRACE_PANEL_LINES`.
  */
-export function renderTracePanel(model: RunDetailPageModel, paint: Paint): string[] {
+export function renderTracePanel(
+	model: RunDetailPageModel,
+	paint: Paint,
+	options: { world?: TraceWorld | null } = {},
+): string[] {
 	const run = model.run;
 	const score = meanGraderScore(model.graders);
 	const lines: string[] = [
@@ -168,6 +202,15 @@ export function renderTracePanel(model: RunDetailPageModel, paint: Paint): strin
 			`${score === null ? "" : ` · ${t("table.col.score")} ${pct(score)}`} · ${duration(run.metrics.latencyMs)} · ${t("trace.toolCalls", { n: run.metrics.toolCalls })} · ${paint.dim(run.runId)}`,
 	];
 	if (run.error) lines.push(`${paint.heading(t("trace.error"))} ${oneLine(run.error, 200)}`);
+	// A worlded case is graded on what the world holds afterwards, so a trace
+	// that shows only the conversation shows half the evidence. Session 7 opened
+	// the trace of a worlded case and found neither state on the screen.
+	if (options.world) {
+		lines.push(`${paint.dim(t("trace.world-before"))} ${worldLine(options.world.before)}`);
+		lines.push(`${paint.dim(t("trace.world-after"))} ${
+			options.world.unreadable ? paint.warning(t("trace.world-unread")) : worldLine(options.world.after)
+		}`);
+	}
 	lines.push("", paint.heading(t("trace.why")));
 	for (const sentence of model.explanation.sentences) {
 		for (const line of wrapSentence(sentence)) lines.push(`  ${line}`);
