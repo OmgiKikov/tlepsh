@@ -48,7 +48,7 @@ import {
 import { measurementOf } from "../../application/prediction.js";
 import { examLine, measurementLine, measurementSurface } from "../../application/measurement-line.js";
 import type { Paint } from "./paint.js";
-import { planHeadline, type Plan } from "./plan.js";
+import { planProgress, type Plan } from "./plan.js";
 import { nextStep, stageLabel, stageNextStep } from "./stage.js";
 
 export interface RenderReviewOptions {
@@ -245,6 +245,13 @@ export interface HeaderState {
 	 * silent; null means one does and nobody has checked it.
 	 */
 	judge?: { agreement: number; kappa: number | null; labels: number } | null | undefined;
+	/**
+	 * The sentence the shell has already put in front of the operator as the
+	 * hint under the transcript. When it is the same sentence the stage line
+	 * would print after `Next`, the stage line has nothing left to add — see
+	 * {@link renderHeader}.
+	 */
+	hint?: string | null;
 }
 
 /**
@@ -282,10 +289,23 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 		return lines;
 	}
 	lines.push(targetLine(view, paint));
-	lines.push(`${paint.dim(t("label.stage"))} ${paint.bold(stageLabel(view.stage))} ${paint.dim("·")} ${paint.dim(t("label.next"))} ${nextStep(view)}`);
-	// The whole cycle, one line under the stage: how many phases are behind,
-	// and the one the operator is standing in. `/plan` opens the same compilation.
-	if (state.plan) lines.push(paint.dim(planHeadline(state.plan)));
+	// The stage, the cycle progress and the next step are one line, not three.
+	// `План 1/8 · ▸ Описание агента` said the stage a second time under a line
+	// that had just said it, and `Дальше <шаг>` said, word for word, the hint
+	// the shell had put two lines lower. What survives here is what the other
+	// two do not already carry — and when the next step is that same hint,
+	// nothing does: the line is the stage's own name and a count `/plan` opens
+	// in full, so it is not drawn at all.
+	const next = nextStep(view);
+	const duplicated = typeof state.hint === "string" && state.hint === next;
+	if (!duplicated) {
+		const progress = state.plan ? planProgress(state.plan) : null;
+		lines.push(joinNonEmpty([
+			`${paint.dim(t("label.stage"))} ${paint.bold(stageLabel(view.stage))}`,
+			progress ? paint.dim(t("plan.progress", { done: progress.done, total: progress.total })) : null,
+			`${paint.dim(t("label.next"))} ${next}`,
+		], ` ${paint.dim("·")} `));
+	}
 	const evidence = evidenceLine(view, paint);
 	lines.push(joinNonEmpty([evidence, `${paint.dim(t("label.builder-model"))} ${builder}`], ` ${paint.dim("·")} `));
 	const shipping = shippingReadinessLine(view, paint);

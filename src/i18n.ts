@@ -1564,6 +1564,8 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"selection.proposal": "change",
 	"selection.candidate": "candidate",
 	"estimate.nothing-comparable-alone": "no comparable run yet",
+	// lane: polish
+	"plan.progress": "step {done} of {total}",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2853,6 +2855,8 @@ const ru: Record<MessageKey, string> = {
 	"selection.proposal": "правка",
 	"selection.candidate": "кандидат",
 	"estimate.nothing-comparable-alone": "сравнимых прогонов ещё не было",
+	// lane: polish
+	"plan.progress": "шаг {done} из {total}",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

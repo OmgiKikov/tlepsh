@@ -195,6 +195,9 @@ describe("the cycle as a checklist", () => {
 	it("renders the panel and the header line in English", () => {
 		const plan = compilePlan(midCycle(), { harness: { tools: 3, skills: 2 } });
 		expect(plain(renderPlan(plan, markerPaint))).toBe([
+			// The header dropped this line when it folded the count into its stage
+			// line; the panel is where the whole cycle is named in full.
+			"Plan 6/8 · ▸ Candidate verification",
 			"✓ Description · approved",
 			"✓ Agent · configured · 3 tools · 2 skills",
 			"✓ Tests · published · 24 cases",
@@ -213,6 +216,7 @@ describe("the cycle as a checklist", () => {
 		setLanguage("ru");
 		const plan = compilePlan(midCycle(), { harness: { tools: 3, skills: 2 } });
 		expect(plain(renderPlan(plan, markerPaint))).toBe([
+			"План 6/8 · ▸ Проверка кандидата",
 			"✓ Описание · одобрено",
 			"✓ Агент · настроен · 3 инструмента · 2 скилла",
 			"✓ Тесты · опубликованы · 24 кейса",
@@ -319,7 +323,7 @@ describe("the receipt", () => {
 });
 
 describe("the live header", () => {
-	it("carries the plan line and the cycle's own footer segments", async () => {
+	it("folds the cycle count into the stage line and never repeats the shell's own hint", async () => {
 		const handlers = new Map<string, (...args: never[]) => unknown>();
 		let header: ((tui: unknown, theme: Theme) => { render(width: number): string[] }) | undefined;
 		const setStatus = vi.fn();
@@ -362,7 +366,14 @@ describe("the live header", () => {
 
 		const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as unknown as Theme;
 		const lines = header?.({ requestRender: vi.fn() }, theme).render(200).map(stripMarkers) ?? [];
-		expect(lines.some((line) => line === "Plan 6/8 · ▸ Candidate verification")).toBe(true);
+		// The count reaches the header folded into the stage line, never as a
+		// second line that names the same stage again.
+		expect(lines.some((line) => line.startsWith("Plan 6/8"))).toBe(false);
+		// …and here not even that: the shell has just printed this exact sentence
+		// under the transcript, so the header has nothing left to add.
+		expect(ui.notify).toHaveBeenCalledWith("Say “check” to verify the change", "info");
+		expect(lines.some((line) => line.includes("Say “check” to verify the change"))).toBe(false);
+		expect(lines.some((line) => line.startsWith("Stage"))).toBe(false);
 		expect(setStatus).toHaveBeenCalledWith("ahde", "AHDE · Candidate verification · 12m · $1.32 · candidate/routing");
 	});
 });

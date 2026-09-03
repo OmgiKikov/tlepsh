@@ -31,6 +31,7 @@ import {
 	wrap,
 } from "../src/builder/render/format.js";
 import { handoffLines } from "../src/builder/render/handoff.js";
+import { compilePlan } from "../src/builder/render/plan.js";
 import { refusalCard } from "../src/builder/workbench-adapter.js";
 import { setLanguage, t } from "../src/i18n.js";
 import { runResultLine } from "../src/application/measurement-line.js";
@@ -857,6 +858,19 @@ describe("renderCalibration", () => {
 	});
 });
 
+/** A project on its very first screen: an agent, and nothing built on it yet. */
+const FIRST_SCREEN_COUNTS: WorkbenchView["counts"] = {
+	specDrafts: 0,
+	approvedSpecs: 0,
+	corpusDrafts: 0,
+	developmentCorpora: 0,
+	sealedCorpora: 0,
+	developmentEvals: 0,
+	openProposals: 0,
+	candidates: 0,
+	calibrations: 1,
+};
+
 describe("renderHeader", () => {
 	it("renders the connected builder with stage, next step, and evidence", () => {
 		const lines = renderHeader({ view: makeView(), builderModel: { label: "anthropic/claude-opus", credentialPresent: true } }, plainPaint);
@@ -924,6 +938,45 @@ describe("renderHeader", () => {
 		});
 		expect(renderHeader({ view: satisfied, builderModel: { label: "x", credentialPresent: true } }, plainPaint).join("\n"))
 			.not.toContain("Tool key");
+	});
+
+	it("is four lines on a first screen: what this is, the agent, the stage, the Builder, the invitation", () => {
+		const view = makeView({ stage: "spec-design", blockers: [], counts: FIRST_SCREEN_COUNTS });
+		const plan = compilePlan(view);
+		const lines = renderHeader({ view, plan, builderModel: { label: "moonshotai/kimi", credentialPresent: true } }, plainPaint);
+		expect(lines).toEqual([
+			"",
+			"AHDE Builder · build, evaluate, and improve another agent through evidence",
+			"Target support-bot @ aaaaaaaaaa · openai/gpt-5 ✓",
+			"Stage Spec design · step 1 of 8 · Next Describe the agent you want",
+			"Builder model moonshotai/kimi ✓",
+			"Describe what you want in plain language",
+			"",
+		]);
+		// The count no longer has a line of its own; the panel keeps the whole cycle.
+		expect(lines.join("\n")).not.toContain("Plan 0/8");
+	});
+
+	it("drops its own next step when the shell already printed that exact sentence", () => {
+		const view = makeView({ stage: "spec-design", counts: FIRST_SCREEN_COUNTS });
+		const state = { view, plan: compilePlan(view), builderModel: { label: "moonshotai/kimi", credentialPresent: true } };
+		const echoed = renderHeader({ ...state, hint: "Describe the agent you want" }, plainPaint);
+		expect(echoed.join("\n")).not.toContain("Next");
+		expect(echoed.join("\n")).not.toContain("Stage");
+		expect(echoed).toHaveLength(6);
+		// A hint about something else leaves the stage line exactly where it was.
+		const different = renderHeader({ ...state, hint: "No agent yet. Tell me what you want to build." }, plainPaint);
+		expect(different[3]).toBe("Stage Spec design · step 1 of 8 · Next Describe the agent you want");
+	});
+
+	it("keeps the stage line while the agent is still being set up, and mid-cycle carries the progress", () => {
+		const setup = makeView({ stage: "target-setup", counts: FIRST_SCREEN_COUNTS, target: { status: "missing", id: null, gitSha: null, model: null } });
+		const setupLines = renderHeader({ view: setup, plan: compilePlan(setup), builderModel: { label: "x", credentialPresent: true } }, plainPaint);
+		expect(setupLines[2]).toBe("Target not created yet");
+		expect(setupLines[3]).toBe("Stage Target setup · step 0 of 8 · Next Describe the agent you want to build");
+		const mid = makeView({ stage: "candidate-verification" });
+		const midLines = renderHeader({ view: mid, plan: compilePlan(mid), builderModel: { label: "x", credentialPresent: true } }, plainPaint);
+		expect(midLines[3]).toBe("Stage Candidate verification · step 5 of 8 · Next Say “check” to verify the change");
 	});
 
 	it("shows blockers except during target setup", () => {
