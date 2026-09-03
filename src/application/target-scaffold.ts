@@ -379,12 +379,51 @@ function yamlList(values: readonly string[]): string {
 	return `[${values.map((value) => JSON.stringify(value)).join(", ")}]`;
 }
 
+const ADOPTED_TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/;
+const ADOPTED_DATA_NAME = /^[a-z0-9][a-z0-9._-]*$/;
+
+/**
+ * What the folder already carries in the two shapes the manifest can declare:
+ * tool descriptors (`tools/<name>.tool.yaml` or `tools/<name>/tool.yaml`) and
+ * data directories (`data/<name>`). An adopted agent whose tools the host does
+ * not declare is an agent whose tools the host will never broker and whose
+ * knowledge base never turns `kb_search` on — so the adoption declares exactly
+ * what is on disk, sorted, and leaves anything else under those directories
+ * (a `tools/foo.py`, a `data/Bad Name`) to the operator's own code.
+ */
+export function discoverAdoptedDeclarations(projectDir: string): { tools: string[]; data: string[] } {
+	const entries = (directory: string): { name: string; file: boolean; directory: boolean }[] => {
+		const absolute = join(projectDir, directory);
+		if (!existsSync(absolute) || lstatSync(absolute).isSymbolicLink() || !statSync(absolute).isDirectory()) return [];
+		return readdirSync(absolute)
+			.map((name) => {
+				const entry = lstatSync(join(absolute, name));
+				return { name, file: entry.isFile(), directory: entry.isDirectory() };
+			})
+			.sort((a, b) => a.name.localeCompare(b.name));
+	};
+	const tools: string[] = [];
+	for (const entry of entries("tools")) {
+		const single = /^(.+)\.tool\.yaml$/.exec(entry.name)?.[1];
+		if (entry.file && single && ADOPTED_TOOL_NAME.test(single)) tools.push(`tools/${entry.name}`);
+		if (entry.directory && ADOPTED_TOOL_NAME.test(entry.name)) {
+			const descriptor = join(projectDir, "tools", entry.name, "tool.yaml");
+			if (existsSync(descriptor) && lstatSync(descriptor).isFile()) tools.push(`tools/${entry.name}/tool.yaml`);
+		}
+	}
+	const data = entries("data")
+		.filter((entry) => entry.directory && ADOPTED_DATA_NAME.test(entry.name))
+		.map((entry) => `data/${entry.name}`);
+	return { tools, data };
+}
+
 /**
  * The manifest an adopted folder gets. Identity and model are the same
  * one-time placeholders every template ships, so the adopted Target lands in
  * exactly the state `configure-target` already knows how to finish.
  */
 function adoptedManifestText(options: DescribeTargetWrapOptions): string {
+	const declared = discoverAdoptedDeclarations(options.projectDir);
 	return `# Этот файл написал AHDE, когда принял папку как агента. Всё остальное
 # в папке — ваше и не тронуто.
 #
@@ -416,7 +455,9 @@ instructions:
 harness:
   files: ${yamlList(options.harnessFiles)}
 skills: []
-tools: []
+# Инструменты и данные, которые уже лежали в папке: хост брокерует ровно их.
+tools: ${yamlList(declared.tools)}
+data: ${yamlList(declared.data)}
 evalSuite:
   id: my-agent-development
   dataset: evals/development.jsonl

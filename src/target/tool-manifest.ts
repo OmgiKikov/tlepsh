@@ -6,6 +6,9 @@ import { canonicalJson, hashFile, hashValue } from "../provenance.js";
 import type { ContainerPolicy } from "./container-backend.js";
 
 const TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/;
+
+/** Names the broker sets on every tool process itself (see tool-broker.ts). */
+export const HOST_OWNED_TOOL_ENVIRONMENT: ReadonlySet<string> = new Set(["AHDE_TOOL_HOME", "AHDE_WORLD"]);
 const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const TOOL_DESCRIPTOR_PATH = /^tools\/([a-z][a-z0-9_]{0,63})\.tool\.yaml$/;
 /** Multi-file tools live in one directory whose descriptor is always tool.yaml. */
@@ -371,7 +374,10 @@ export function validateTargetToolDescriptor(
 	}
 	const globalEnvironment = new Set(policy.environmentAllowlist);
 	for (const name of descriptor.permissions.environment) {
-		if (!globalEnvironment.has(name)) {
+		// AHDE_TOOL_HOME and AHDE_WORLD are host-owned: the broker sets them itself
+		// and no allowlist can define or withhold them, so a descriptor that names
+		// one is stating a dependency, not asking for a secret.
+		if (!globalEnvironment.has(name) && !HOST_OWNED_TOOL_ENVIRONMENT.has(name)) {
 			throw new Error(`${descriptorPath}: environment ${name} is not allowed by execution.environmentAllowlist`);
 		}
 	}

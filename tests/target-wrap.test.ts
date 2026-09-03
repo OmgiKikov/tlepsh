@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -257,5 +257,43 @@ describe("bootstrapping an adopted Target", () => {
 		execFileSync("git", ["-C", dir, "checkout", "-q", "--", "README.md"]);
 		execFileSync("git", ["-C", dir, "checkout", "-q", "--detach", "HEAD"]);
 		expect(() => assertAdoptableRepository(resolve(dir), result.target.gitSha)).toThrow(/detached HEAD|local branch/);
+	});
+});
+
+describe("what the adopted folder already carries", () => {
+	it("declares the tool descriptors and data directories found on disk, and nothing else", () => {
+		const dir = agentFolder({
+			git: false,
+			extra: {
+				"tools/get_account.tool.yaml": readFileSync("templates/python-agent/tools/get_account.tool.yaml", "utf8"),
+				"bin/get_account": readFileSync("templates/python-agent/bin/get_account", "utf8"),
+				// A tool written in the agent's own language is the operator's code, not a descriptor.
+				"tools/helpers.py": "def lookup(): ...\n",
+				"tools/lookup/tool.yaml": readFileSync("templates/python-agent/tools/get_account.tool.yaml", "utf8")
+					.replace("name: get_account", "name: lookup")
+					.replace("argv: [bin/get_account]", "argv: [tools/lookup/run]"),
+				"tools/lookup/run": readFileSync("templates/python-agent/bin/get_account", "utf8"),
+				"data/kb/tariffs.md": "# Тарифы\n",
+				"data/Bad Name/x.md": "not a declarable directory\n",
+			},
+		});
+		for (const executable of ["bin/get_account", "tools/lookup/run"]) chmodSync(join(dir, executable), 0o755);
+		execFileSync("git", ["-C", dir, "init", "-q"]);
+		execFileSync("git", ["-C", dir, "add", "."]);
+		execFileSync("git", ["-C", dir, "-c", "user.name=test", "-c", "user.email=test@test", "commit", "-qm", "the operator's agent"]);
+
+		const subject = describeTargetWrap(wrapOptions(dir));
+		const manifestText = subject.templateFiles.find((file) => file.path === "manifest.yaml");
+		expect(manifestText).toBeDefined();
+		const result = applyTargetWrap({
+			...wrapOptions(dir),
+			stateRoot: stateRoot(),
+			expectedSubjectHash: hashValue(subject),
+			actor: { kind: "human", id: "operator" },
+			reason: "adopted the existing agent in this folder",
+		});
+		expect(result.target.manifest.tools).toEqual(["tools/get_account.tool.yaml", "tools/lookup/tool.yaml"]);
+		expect(result.target.manifest.data).toEqual(["data/kb"]);
+		expect(result.target.tools.map((tool) => tool.descriptor.name).sort()).toEqual(["get_account", "lookup"]);
 	});
 });
