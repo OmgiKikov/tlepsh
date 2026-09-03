@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { matchesHarnessGlob } from "../domain/harness-surface.js";
 
 /**
  * The Builder proposal contract: the durable proposal/run schemas, the trust
@@ -257,8 +258,9 @@ export interface BuilderAdapter {
 	run(request: BuilderRequest): Promise<BuilderResult>;
 }
 
+/** One scope entry, decided by the single declared-surface matcher. */
 function matchesAllowedPath(path: string, allowed: string): boolean {
-	return allowed.endsWith("/**") ? path.startsWith(allowed.slice(0, -2)) : path === allowed;
+	return matchesHarnessGlob(path, allowed);
 }
 
 function diffTargetsPath(diff: string, path: string): boolean {

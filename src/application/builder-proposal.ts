@@ -36,6 +36,7 @@ import {
 import { compileFailureBundle } from "../bundle.js";
 import { listCorpora } from "../corpus.js";
 import { DiagnosisRecordSchema, diagnoseEvalRun } from "../diagnosis.js";
+import { matchesHarnessGlob } from "../domain/harness-surface.js";
 import { isSealedEvalRun, loadVerifiedEvalRun, readEvalRunIndex } from "../eval.js";
 import { loadTarget, TargetManifest, type TargetManifest as TargetManifestValue } from "../manifest.js";
 import { canonicalJson, hashValue } from "../provenance.js";
@@ -1564,8 +1565,9 @@ function canonicalBuilderRunDirectory(runsRoot: string, runId: string): string {
 	return runDir;
 }
 
+/** One scope entry, decided by the single declared-surface matcher. */
 function matchesAllowedPath(path: string, allowed: string): boolean {
-	return allowed.endsWith("/**") ? path.startsWith(allowed.slice(0, -2)) : path === allowed;
+	return matchesHarnessGlob(path, allowed);
 }
 
 function validateChangePath(path: string, allowedPaths: string[]): void {

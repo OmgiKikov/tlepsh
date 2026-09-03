@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
+import { DEFAULT_PI_HARNESS_FILES } from "./domain/harness-surface.js";
 import { canonicalJson, hashValue } from "./provenance.js";
 import {
 	CONTAINER_IMAGE_REFERENCE,
@@ -840,9 +841,10 @@ const HarnessGlob = z
 
 /**
  * What a Pi Target's harness is when the manifest does not say. Exactly the
- * surface `ahde` has always been willing to rewrite.
+ * surface `ahde` has always been willing to rewrite. Defined beside the matcher
+ * that reads it, and re-exported here because this is where every caller looks.
  */
-export const DEFAULT_PI_HARNESS_FILES = ["AGENTS.md", "skills/**", "tools/**", "bin/**"] as const;
+export { DEFAULT_PI_HARNESS_FILES };
 
 const TargetManifestShape = z.strictObject({
 	id: z
