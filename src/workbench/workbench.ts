@@ -1299,12 +1299,48 @@ export class AhdeWorkbench {
 		// to be one. Said here, in the operator's language, rather than as a
 		// publication failure four steps later about a manifest field.
 		if (needsJudge && !judge) throw new Error(`${t("blocker.judge-missing")} ${t("judge.no-candidate")}`);
-		if (judge) {
+		// And the other half of the same instrument. A basket whose cases are
+		// conversations needs somebody to be the customer, and asking for that in a
+		// second dialog after this one is the same two-questions-for-one-intention
+		// the judge already fixed.
+		//
+		// The default is the selection `defaultJudgeSelection` returns, for two
+		// reasons. A judge-class model plays a support customer well enough — this
+		// is a role, not a verdict — and the one model it must NOT be is the
+		// agent's own: a model talking to a copy of itself writes the customer the
+		// agent is best at answering, which is exactly the conversation that
+		// measures nothing. It may equal the judge; those two never grade each
+		// other, so there is no echo to avoid between them.
+		const dialogueCases = corpusDraft?.tasks.filter((task) => task.simulatedUser !== undefined).length ?? 0;
+		const needsUser = corpusDraft !== null && target !== null &&
+			target.manifest.evalSuite.simulatedUser === undefined && dialogueCases > 0;
+		const user = needsUser ? options.defaultJudge?.(target!.manifest.model) ?? null : null;
+		if (needsUser && !user) {
+			throw new Error(
+				`${t("blocker.user-model-missing", { dialogues: localizedCount(dialogueCases, "dialogue") })} ${
+					t("judge.no-candidate")
+				}`,
+			);
+		}
+		if (judge || user) {
 			plan.push("configure-evaluators");
-			planned.set("configure-evaluators", (subject) =>
-				(subject as { next?: { judge?: { provider?: unknown; id?: unknown } } }).next?.judge?.provider ===
-					judge.model.provider &&
-				(subject as { next?: { judge?: { id?: unknown } } }).next?.judge?.id === judge.model.id);
+			planned.set("configure-evaluators", (subject) => {
+				const next = (subject as {
+					next?: {
+						judge?: { provider?: unknown; id?: unknown } | null;
+						simulatedUser?: { provider?: unknown; id?: unknown } | null;
+					};
+				}).next;
+				// Each role the host pre-filled must be exactly the model the operator
+				// read; a role it did not pre-fill is not this dialog's business.
+				const matches = (
+					expected: { model: { provider: string; id: string } } | null,
+					actual: { provider?: unknown; id?: unknown } | null | undefined,
+				): boolean =>
+					expected === null ||
+					(actual?.provider === expected.model.provider && actual?.id === expected.model.id);
+				return matches(judge, next?.judge) && matches(user, next?.simulatedUser);
+			});
 		}
 		if (corpusDraft) {
 			plan.push("publish-corpus", "run-eval");
@@ -1320,6 +1356,7 @@ export class AhdeWorkbench {
 		const parts: string[] = [];
 		if (specDraft) parts.push(t("confirm.start-testing.part.approve-spec"));
 		if (judge) parts.push(t("confirm.start-testing.part.judge"));
+		if (user) parts.push(t("confirm.start-testing.part.user"));
 		if (corpusDraft) {
 			parts.push(
 				t("confirm.start-testing.part.publish-corpus", { cases: localizedCount(caseCount, "case") }),
@@ -1346,6 +1383,17 @@ export class AhdeWorkbench {
 					}),
 				}
 				: {}),
+			// The same for the model that will play the person the agent talks to.
+			// It carries no "(not the agent's model)" note: the judge's independence
+			// is a grading rule, while this one is only a casting choice.
+			...(user
+				? {
+					user: t("confirm.start-testing.user", {
+						model: `${user.model.provider}/${user.model.id}`,
+						env: user.model.apiKeyEnv,
+					}),
+				}
+				: {}),
 			run: corpusDraft
 				? t("confirm.start-testing.run", {
 					cases: caseCount,
@@ -1357,6 +1405,7 @@ export class AhdeWorkbench {
 			estimatedTime: formatEstimatedTime(estimate),
 			exact: {
 				judge: judge ? `${judge.model.provider}/${judge.model.id}` : null,
+				user: user ? `${user.model.provider}/${user.model.id}` : null,
 				specDraftId: specDraft?.id ?? null,
 				specSnapshotHash: specDraft ? hashValue(specDraft) : null,
 				approvedSpecId: approved?.id ?? null,
@@ -1383,23 +1432,33 @@ export class AhdeWorkbench {
 				steps.push({ kind: step, message: done.message });
 				view = done.view;
 			} else if (step === "configure-evaluators") {
+				// Both roles in one commit: the operator read one dialog naming both,
+				// and two reviewed commits for one answer is exactly what this
+				// composite exists to avoid.
+				const prefilled = { judge, simulatedUser: user } as const;
 				const done = await this.decide(
-					{ kind: "configure-evaluators", judge: judge!.selection, reason: input.reason },
+					{
+						kind: "configure-evaluators",
+						...(judge ? { judge: judge.selection } : {}),
+						...(user ? { simulatedUser: user.selection } : {}),
+						reason: input.reason,
+					},
 					scoped,
 					{
 						...options,
-						// The host already resolved this exact selection against its
-						// trusted catalog; the composite may configure that judge and
+						// The host already resolved these exact selections against its
+						// trusted catalog; the composite may configure those models and
 						// nothing else, whatever else asks on the way through.
 						resolveEvaluatorModel: (role, selection) => {
+							const expected = prefilled[role];
 							if (
-								role !== "judge" ||
-								selection.provider !== judge!.selection.provider ||
-								selection.modelId !== judge!.selection.modelId
+								!expected ||
+								selection.provider !== expected.selection.provider ||
+								selection.modelId !== expected.selection.modelId
 							) {
-								throw new Error("start-testing may configure only the judge the host pre-filled");
+								throw new Error("start-testing may configure only the evaluator models the host pre-filled");
 							}
-							return judge!.model;
+							return expected.model;
 						},
 					},
 				);
@@ -2790,7 +2849,7 @@ export class AhdeWorkbench {
 			const approved = requireApprovedSpec(inventory, input.approvedSpecId);
 			const exact = loadApprovedSpec({ stateRoot: this.stateRoot, projectId: this.projectId, specId: approved.id });
 			if (inventory.target) {
-				assertGradersRunnable(input.tasks, inventory.target.manifest, "corpus draft", { judgeChosenLater: true });
+				assertGradersRunnable(input.tasks, inventory.target.manifest, "corpus draft", { evaluatorsChosenLater: true });
 			}
 			const result = this.dependencies.createCorpusDraft({
 				stateRoot: this.stateRoot,
@@ -2820,7 +2879,7 @@ export class AhdeWorkbench {
 			const settled = this.select("corpus-draft", result.draft.id);
 			if (inventory.target) {
 				try {
-					assertGradersRunnable(result.draft.tasks, inventory.target.manifest, "imported corpus draft", { judgeChosenLater: true });
+					assertGradersRunnable(result.draft.tasks, inventory.target.manifest, "imported corpus draft", { evaluatorsChosenLater: true });
 				} catch (error) {
 					throw new Error(
 						`${error instanceof Error ? error.message : String(error)}\nThe import was saved as draft ${result.draft.id}; revise those graders with kind: corpus-revision before publishing.`,
@@ -2868,7 +2927,7 @@ export class AhdeWorkbench {
 					`${MAX_BUILDER_CORPUS_DRAFT_TASKS}. Add sample: { limit, seed } to the recipe to thin the development side.`,
 				);
 			}
-			if (inventory.target) assertGradersRunnable(compiled.tasks, inventory.target.manifest, "dataset recipe", { judgeChosenLater: true });
+			if (inventory.target) assertGradersRunnable(compiled.tasks, inventory.target.manifest, "dataset recipe", { evaluatorsChosenLater: true });
 			const saved = this.dependencies.saveDatasetRecipe({
 				stateRoot: this.stateRoot,
 				approvedSpec: exact.reference,
@@ -2910,7 +2969,7 @@ export class AhdeWorkbench {
 					if ("grader" in operation && operation.grader) return [{ graders: [operation.grader] }];
 					return [];
 				});
-				assertGradersRunnable(carried, inventory.target.manifest, "corpus revision", { judgeChosenLater: true });
+				assertGradersRunnable(carried, inventory.target.manifest, "corpus revision", { evaluatorsChosenLater: true });
 			}
 			let operations: readonly unknown[] = input.operations;
 			let verifiedTaskProvenance: readonly unknown[] = [];

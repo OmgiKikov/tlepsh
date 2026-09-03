@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { setLanguage } from "../src/i18n.js";
 import {
 	configureEvaluators,
 	describeEvaluatorConfiguration,
@@ -21,6 +22,7 @@ const NOW = "2026-08-31T09:00:00.000Z";
 const cleanupPaths: string[] = [];
 
 afterEach(() => {
+	setLanguage(null);
 	for (const path of cleanupPaths.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
@@ -421,5 +423,41 @@ describe("ahde validate evaluator readiness", () => {
 		expect(evaluatorReadiness(manifest, {})[0]?.line)
 			.toBe("judge: configured · fixture-provider/fixture-judge · key TEST_JUDGE_KEY MISSING");
 		expect(evaluatorReadiness(manifest, {})[0]?.credentialPresent).toBe(false);
+	});
+
+	/**
+	 * The line the first-run operator actually reads. English names the manifest
+	 * field, because a script greps for it; Russian names the person, because
+	 * that is who the operator is being asked to choose.
+	 */
+	it("says who is not configured in the operator's own language", () => {
+		const value = fixture();
+		const manifest = loadTarget(value.targetDir).manifest;
+		setLanguage("ru");
+		try {
+			expect(evaluatorReadiness(manifest, {}).map((entry) => entry.line)).toEqual([
+				"Судья: не настроен",
+				"Собеседник: не настроен",
+			]);
+		} finally {
+			setLanguage(null);
+		}
+	});
+
+	/**
+	 * A template ships both blocks on the built-in placeholder pointed at
+	 * http://127.0.0.1:1234/v1. Reading those as configured is what made a first
+	 * run fail as a connection error instead of asking a question.
+	 */
+	it("reads a template's placeholder evaluators as configured by nobody", () => {
+		const parent = mkdtempSync(join(tmpdir(), "ahde-validate-template-"));
+		cleanupPaths.push(parent);
+		const scaffolded = scaffoldTarget(resolve("templates/python-agent"), join(parent, "agent"));
+		const lines = evaluatorReadiness(loadTarget(scaffolded).manifest, { AHDE_JUDGE_API_KEY: "sk", AHDE_USER_API_KEY: "sk" });
+		expect(lines.map((entry) => entry.line)).toEqual([
+			"judge: not configured",
+			"simulatedUser: not configured",
+		]);
+		expect(lines.every((entry) => entry.configured)).toBe(false);
 	});
 });

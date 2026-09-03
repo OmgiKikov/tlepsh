@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { DEFAULT_PI_HARNESS_FILES } from "./domain/harness-surface.js";
+import { plural } from "./i18n.js";
 import { canonicalJson, hashValue } from "./provenance.js";
 import {
 	CONTAINER_IMAGE_REFERENCE,
@@ -505,6 +506,18 @@ export function resolveTaskGraders(
 	defaults: readonly GraderSpec[],
 	judgeConfigured: boolean,
 	simulatedUserConfigured = false,
+	options: {
+		/**
+		 * Whether a missing evaluator is a readiness fact rather than a broken
+		 * file. `loadTarget` says yes: a template ships a judge grader and two
+		 * dialogue cases with both evaluator blocks still on the built-in
+		 * placeholder, and refusing to LOAD that Target leaves the operator with a
+		 * YAML error instead of the question the Workbench exists to ask. Nothing
+		 * runs on it either way — `missingEvaluatorCases` refuses before the first
+		 * execution, publication refuses, and `runTask` refuses again.
+		 */
+		evaluatorsChosenLater?: boolean;
+	} = {},
 ): ResolvedTask[] {
 	const resolved: ResolvedTask[] = tasks.map((task) => {
 		// The case's own graders, or the suite defaults, plus one grader per world
@@ -532,6 +545,7 @@ export function resolveTaskGraders(
 			}
 		}
 	}
+	if (options.evaluatorsChosenLater === true) return resolved;
 	if (resolved.some((t) => t.effectiveGraders.some((g) => g.type === "judge")) && !judgeConfigured) {
 		throw new Error("dataset uses judge graders but evalSuite.judge model is not configured");
 	}
@@ -545,6 +559,109 @@ export function resolveTaskGraders(
 		);
 	}
 	return resolved;
+}
+
+/** Which cases name an evaluator this suite has not configured, by role. */
+export interface MissingEvaluatorCases {
+	/** Case ids graded by a judge grader when `evalSuite.judge` is absent. */
+	judge: string[];
+	/** Case ids that are conversations when `evalSuite.simulatedUser` is absent. */
+	simulatedUser: string[];
+}
+
+/** Whether either list has anything in it. */
+export function anyEvaluatorMissing(missing: MissingEvaluatorCases): boolean {
+	return missing.judge.length > 0 || missing.simulatedUser.length > 0;
+}
+
+/**
+ * The cases a run would not be able to measure, named before it starts.
+ *
+ * Loading a Target with a missing evaluator is allowed (the operator is about
+ * to be asked for one); running it is not. This is the question the run path
+ * asks, and it asks it over the WHOLE design rather than per execution, so an
+ * eight-case basket refuses as one sentence instead of paying for six runs and
+ * erroring on the last two.
+ */
+export function missingEvaluatorCases(
+	tasks: readonly {
+		id: string;
+		simulatedUser?: unknown;
+		graders?: readonly GraderSpec[] | undefined;
+		effectiveGraders?: readonly GraderSpec[];
+	}[],
+	evalSuite: { judge?: unknown; simulatedUser?: unknown },
+): MissingEvaluatorCases {
+	const missing: MissingEvaluatorCases = { judge: [], simulatedUser: [] };
+	for (const task of tasks) {
+		const graders = task.effectiveGraders ?? task.graders ?? [];
+		if (!evalSuite.judge && graders.some((grader) => grader.type === "judge")) missing.judge.push(task.id);
+		if (!evalSuite.simulatedUser && task.simulatedUser !== undefined) missing.simulatedUser.push(task.id);
+	}
+	return missing;
+}
+
+/** How many case ids one refusal sentence names before it stops listing them. */
+const NAMED_MISSING_EVALUATOR_CASES = 8;
+
+function namedCases(ids: readonly string[]): string {
+	const shown = ids.slice(0, NAMED_MISSING_EVALUATOR_CASES).join(", ");
+	return ids.length > NAMED_MISSING_EVALUATOR_CASES
+		? `${shown}, +${ids.length - NAMED_MISSING_EVALUATOR_CASES} more`
+		: shown;
+}
+
+/**
+ * A run refused because the instrument it would measure with does not exist.
+ *
+ * Typed, and it carries the case ids: the host renders `reason.code` in the
+ * operator's language and the English `message` is what the Builder reads and
+ * what scripts match on — the same pairing every other typed refusal uses.
+ */
+export class EvaluatorsNotConfiguredError extends Error {
+	readonly missing: MissingEvaluatorCases;
+	readonly reason: { code: string; params: Record<string, string | number> };
+
+	constructor(missing: MissingEvaluatorCases) {
+		const parts: string[] = [];
+		if (missing.judge.length > 0) {
+			parts.push(
+				`${missing.judge.length} case(s) are graded by a judge and evalSuite.judge is not configured (${namedCases(missing.judge)})`,
+			);
+		}
+		if (missing.simulatedUser.length > 0) {
+			parts.push(
+				`${missing.simulatedUser.length} case(s) are conversations and evalSuite.simulatedUser is not configured (${
+					namedCases(missing.simulatedUser)
+				})`,
+			);
+		}
+		super(`this basket cannot be measured yet: ${parts.join("; ")}`);
+		this.name = "EvaluatorsNotConfiguredError";
+		this.missing = { judge: [...missing.judge], simulatedUser: [...missing.simulatedUser] };
+		this.reason = {
+			code: missing.judge.length > 0 && missing.simulatedUser.length > 0
+				? "blocker.evaluators-missing"
+				: missing.judge.length > 0
+					? "blocker.judge-missing"
+					: "blocker.user-model-missing",
+			// The count bends with the noun, so the Russian form reads "2 диалога"
+			// and the English one "1 dialogue" — the sentence has to work for both.
+			params: { dialogues: plural(missing.simulatedUser.length, "dialogue") },
+		};
+	}
+}
+
+/**
+ * Refuse a run whose suite names an evaluator the Target has not configured.
+ * A no-op when everything the cases need exists.
+ */
+export function assertEvaluatorsConfigured(
+	tasks: readonly { id: string; simulatedUser?: unknown; effectiveGraders?: readonly GraderSpec[] }[],
+	evalSuite: { judge?: unknown; simulatedUser?: unknown },
+): void {
+	const missing = missingEvaluatorCases(tasks, evalSuite);
+	if (anyEvaluatorMissing(missing)) throw new EvaluatorsNotConfiguredError(missing);
 }
 
 // ---------- Target manifest ----------
@@ -920,9 +1037,27 @@ function placeholderJudgeIsNoJudge(manifest: TargetManifestValue): TargetManifes
 	return { ...manifest, evalSuite };
 }
 
+/**
+ * And the same for the model that plays the person talking to the agent.
+ *
+ * `templates/python-agent` ships both blocks on the built-in starter model —
+ * the very block the bootstrap dialog replaces on `model:` — so without this a
+ * freshly configured template would run its two dialogue cases against
+ * `http://127.0.0.1:1234/v1` and report an infrastructure error where the
+ * honest answer is "nobody has chosen a simulated user yet".
+ */
+function placeholderUserIsNoUser(manifest: TargetManifestValue): TargetManifestValue {
+	const user = manifest.evalSuite.simulatedUser;
+	if (!user || !isStandInModel(user)) return manifest;
+	const { simulatedUser: _placeholder, ...evalSuite } = manifest.evalSuite;
+	return { ...manifest, evalSuite };
+}
+
 // `overwrite`, not `transform`: this normalization has to survive encoding as
 // well as parsing — receipts write manifests back out through the same schema.
-export const TargetManifest = TargetManifestShape.overwrite(placeholderJudgeIsNoJudge);
+export const TargetManifest = TargetManifestShape.overwrite((manifest) =>
+	placeholderUserIsNoUser(placeholderJudgeIsNoJudge(manifest))
+);
 export type TargetManifest = TargetManifestValue;
 
 /**
@@ -1325,11 +1460,16 @@ export function loadTarget(dir: string, override?: { dataset?: string }): Resolv
 	const dataBudget = { files: 0, bytes: 0, maxBytes: dataMaxBytes() };
 	const data = manifest.data.map((declaration) => measureDataDirectory(dir, declaration, dataBudget));
 
+	// Loadable, never runnable: a Target whose cases name an evaluator it has
+	// not configured is exactly the Target the operator is about to be asked
+	// about, and a load error there would replace that question with a YAML
+	// complaint. The refusal lives on the run path instead.
 	const resolved = resolveTaskGraders(
 		tasks,
 		defaults,
 		manifest.evalSuite.judge !== undefined,
 		manifest.evalSuite.simulatedUser !== undefined,
+		{ evaluatorsChosenLater: true },
 	);
 
 	const datasetHash = hashValue(tasks.map(datasetIdentity));

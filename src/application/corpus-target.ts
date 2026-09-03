@@ -6,6 +6,7 @@ import {
 } from "../corpus.js";
 import type { EvalRunRecord } from "../eval.js";
 import {
+	assertEvaluatorsConfigured,
 	graderNeedsExpected,
 	type GraderSpec,
 	hasReferenceAnswer,
@@ -116,20 +117,12 @@ function targetWithCorpus(
 		};
 	});
 
-	if (
-		tasks.some((task) => task.effectiveGraders.some((grader) => grader.type === "judge")) &&
-		!target.manifest.evalSuite.judge
-	) {
-		throw new Error(`${visibility} corpus ${corpus.metadata.id} uses judge graders but the target has no judge model`);
-	}
-	// The same fail-closed rule the manifest dataset gets: a published corpus can
-	// carry simulated-user cases, and running them without a user model would
-	// silently measure a one-turn conversation instead.
-	if (tasks.some((task) => task.simulatedUser) && !target.manifest.evalSuite.simulatedUser) {
-		throw new Error(
-			`${visibility} corpus ${corpus.metadata.id} uses simulated-user cases but the target has no simulatedUser model`,
-		);
-	}
+	// Fail closed, and say which cases: a published corpus can grade with a judge
+	// and carry conversations, and running either without its evaluator would
+	// measure something that did not happen. One typed refusal for both roles, so
+	// the host can put it to the operator in their own language instead of
+	// handing them a sentence about a manifest field.
+	assertEvaluatorsConfigured(tasks, target.manifest.evalSuite);
 
 	return {
 		...target,
@@ -292,18 +285,19 @@ export function assertGradersRunnable(
 	label = "corpus draft",
 	options: {
 		/**
-		 * A missing judge is not this draft's problem. Authoring a case that needs
-		 * a judge is how the host learns one is needed: `start-testing` then
-		 * pre-fills an independent model inside the one dialog that publishes and
-		 * runs the basket. Publication and composition stay strict, so nothing
-		 * ever runs against a judge that does not exist.
+		 * A missing evaluator is not this draft's problem. Authoring a case that
+		 * needs a judge — or a case that is a conversation — is how the host learns
+		 * one is needed: `start-testing` then pre-fills an independent model for
+		 * both roles inside the one dialog that publishes and runs the basket.
+		 * Publication and composition stay strict, so nothing ever runs against an
+		 * evaluator that does not exist.
 		 */
-		judgeChosenLater?: boolean;
+		evaluatorsChosenLater?: boolean;
 	} = {},
 ): void {
 	const problems: string[] = [];
 	tasks.forEach((task, taskIndex) => {
-		if (task.simulatedUser !== undefined && !manifest.evalSuite.simulatedUser) {
+		if (task.simulatedUser !== undefined && !manifest.evalSuite.simulatedUser && options.evaluatorsChosenLater !== true) {
 			problems.push(
 				`task ${taskIndex + 1}: simulated-user cases need a user model configured in the Target manifest ` +
 				"(evalSuite.simulatedUser), and this Target has none. Ask the operator to configure the simulated-user model first.",
@@ -322,7 +316,7 @@ export function assertGradersRunnable(
 					);
 				}
 			}
-			if (grader.type === "judge" && !manifest.evalSuite.judge && options.judgeChosenLater !== true) {
+			if (grader.type === "judge" && !manifest.evalSuite.judge && options.evaluatorsChosenLater !== true) {
 				problems.push(
 					`${where}: judge graders need a judge model configured in the Target manifest (evalSuite.judge), and this Target has none.` +
 					" Use output_contains, output_matches, or tool_called instead, or ask the operator to configure a judge model first.",

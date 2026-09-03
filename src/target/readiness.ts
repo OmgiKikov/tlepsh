@@ -1,8 +1,11 @@
 import type { ResolvedTarget } from "../manifest.js";
-import { standInManifestFields } from "./placeholders.js";
+import { STARTER_MODEL_ID, standInManifestFields } from "./placeholders.js";
 
 export const STARTER_TARGET_ID = "my-agent";
-export const STARTER_MODEL_ID = "replace-with-model-id";
+// The starter model id lives in `placeholders.ts` — `isStandInModel` needs it
+// and this module already imports that one. Re-exported so every reader that
+// learned the name here keeps it.
+export { STARTER_MODEL_ID };
 
 /**
  * Whether this manifest is still a template's starting material rather than a

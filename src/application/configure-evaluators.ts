@@ -43,6 +43,7 @@ import {
 	TargetManifest,
 	type TargetManifest as TargetManifestValue,
 } from "../manifest.js";
+import { t } from "../i18n.js";
 import { canonicalJson, hashValue } from "../provenance.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
 import { sha256 } from "./target-bootstrap.js";
@@ -578,6 +579,12 @@ export function evaluatorReadiness(
 		role: "judge" | "simulatedUser",
 		model: { provider: string; id: string; apiKeyEnv: string } | undefined,
 	): EvaluatorReadinessLine => {
+		// English names the manifest field, because that is what a script greps
+		// for; Russian names the person — «Судья», «Собеседник» — because that is
+		// what the operator is being asked about. A placeholder block never
+		// reaches here: the manifest schema already read it as no evaluator, so
+		// this line says "not configured" instead of naming a dead endpoint.
+		const label = t(role === "judge" ? "readiness.role.judge" : "readiness.role.simulated-user");
 		if (!model) {
 			return {
 				role,
@@ -585,7 +592,7 @@ export function evaluatorReadiness(
 				model: null,
 				apiKeyEnv: null,
 				credentialPresent: false,
-				line: `${role}: not configured`,
+				line: t("readiness.evaluator.not-configured", { label }),
 			};
 		}
 		const credentialPresent = Boolean(environment[model.apiKeyEnv]?.trim());
@@ -595,9 +602,12 @@ export function evaluatorReadiness(
 			model: `${model.provider}/${model.id}`,
 			apiKeyEnv: model.apiKeyEnv,
 			credentialPresent,
-			line: `${role}: configured · ${model.provider}/${model.id} · key ${model.apiKeyEnv} ${
-				credentialPresent ? "set" : "MISSING"
-			}`,
+			line: t("readiness.evaluator.configured", {
+				label,
+				model: `${model.provider}/${model.id}`,
+				env: model.apiKeyEnv,
+				state: t(credentialPresent ? "readiness.key.set" : "readiness.key.missing"),
+			}),
 		};
 	};
 	return [

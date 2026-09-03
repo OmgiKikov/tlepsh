@@ -2042,6 +2042,38 @@ describe("Builder Pi slash commands", () => {
 		expect(text).not.toMatch(/[{}]|schemaVersion/);
 	});
 
+	/**
+	 * The template ships both evaluator blocks on the built-in placeholder, so
+	 * once the schema reads those as no evaluator, /doctor has to say the
+	 * required ones are missing rather than showing a model on a dead port.
+	 */
+	it("names each evaluator the current basket needs and has not got in /doctor", async () => {
+		const fixture = workbench({
+			view: async () => viewAt("ready-to-evaluate", {
+				target: {
+					status: "ready",
+					id: "target-demo",
+					gitSha: SHA_A,
+					model: { ...TARGET_MODEL },
+					evaluators: { judge: null, simulatedUser: null },
+					evaluatorRequirements: { judge: true, simulatedUser: true },
+				},
+			}),
+		});
+		const { commands, output } = register(fixture.value);
+
+		await command(commands, "doctor").handler("", context().ctx);
+
+		const text = output.text();
+		expect(text).toContain("! Judge model is required by the current basket but not configured");
+		expect(text).toContain("! Simulated-user model is required by the current basket but not configured");
+		// Not "ready": two of the three models a measurement needs are missing.
+		expect(text).toContain("! Action required before the next run");
+		// Nothing about a placeholder endpoint reaches the operator.
+		expect(text).not.toContain("replace-with-model-id");
+		expect(text).not.toContain("127.0.0.1:1234");
+	});
+
 	it("reports an unavailable sealed holdout generically in /doctor", async () => {
 		const fixture = workbench({
 			view: async () => viewAt("ready-to-evaluate", {

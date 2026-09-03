@@ -49,6 +49,40 @@ const JUDGE_TASKS = [
 	{ input: "When does the warranty start?", graders: [{ type: "output_contains" as const, text: "delivery" }] },
 ];
 
+/** A basket that needs both: one case is judged, two are conversations. */
+const BOTH_EVALUATOR_TASKS = [
+	{ input: "What is the refund window?", graders: [{ type: "judge" as const, rubric: "Names the 30-day window" }] },
+	{
+		input: "Something is wrong with my order.",
+		simulatedUser: { goal: "get the order replaced", maxTurns: 3 },
+		graders: [{ type: "turn_budget" as const, max: 3 }],
+	},
+	{
+		input: "I was charged twice.",
+		simulatedUser: { goal: "get the second charge refunded", maxTurns: 3 },
+		graders: [{ type: "turn_budget" as const, max: 3 }],
+	},
+];
+
+/** Both evaluator blocks already written, as a reviewed commit would leave them. */
+const CONFIGURED_EVALUATORS = `  judge:
+    provider: openrouter
+    id: glm-5.3
+    api: openai-completions
+    baseUrl: https://openrouter.invalid/api/v1
+    apiKeyEnv: OPENROUTER_API_KEY
+    thinkingLevel: "off"
+    timeoutMs: 300000
+  simulatedUser:
+    provider: openrouter
+    id: glm-5.3
+    api: openai-completions
+    baseUrl: https://openrouter.invalid/api/v1
+    apiKeyEnv: OPENROUTER_API_KEY
+    thinkingLevel: "off"
+    timeoutMs: 300000
+`;
+
 /** What the host would pre-fill: a catalog model that is not the agent's own. */
 const HOST_JUDGE = {
 	selection: { provider: "openrouter", modelId: "glm-5.3" },
@@ -68,8 +102,17 @@ const TASKS = [
 	{ input: "When does the warranty start?", graders: [{ type: "output_contains" as const, text: "delivery" }] },
 ];
 
-function paths(): FixturePaths {
-	const projectDir = makeTargetFixture(baseFixtureFiles({ ".gitignore": ".ahde/\nruns/\n" }));
+function paths(options: { evaluators?: boolean } = {}): FixturePaths {
+	const files = baseFixtureFiles({ ".gitignore": ".ahde/\nruns/\n" });
+	if (options.evaluators) {
+		const manifest = files.find((file) => file.path === "manifest.yaml");
+		if (!manifest) throw new Error("fixture manifest missing");
+		manifest.content = manifest.content.replace(
+			"  graders: evals/graders.yaml\n",
+			`  graders: evals/graders.yaml\n${CONFIGURED_EVALUATORS}`,
+		);
+	}
+	const projectDir = makeTargetFixture(files);
 	return { projectDir, stateRoot: join(projectDir, ".ahde"), runsRoot: join(projectDir, "runs") };
 }
 
@@ -145,7 +188,7 @@ async function drafted(
 
 async function addCorpusDraft(
 	workbench: AhdeWorkbench,
-	tasks: typeof TASKS | typeof JUDGE_TASKS = TASKS,
+	tasks: typeof TASKS | typeof JUDGE_TASKS | typeof BOTH_EVALUATOR_TASKS = TASKS,
 ): Promise<void> {
 	await workbench.submit({
 		kind: "corpus-draft",
@@ -308,6 +351,100 @@ describe("start-testing composite", () => {
 				apiKeyEnv: "OPENROUTER_API_KEY",
 			});
 			expect(ran.result.evaluation?.evaluation.evalRunId).toBe(EVAL_RUN_ID);
+		} finally {
+			cleanup(fixture.projectDir);
+		}
+	});
+
+	/**
+	 * A basket that grades with a judge AND holds conversations needs two models
+	 * that are not the agent's own. Both are pre-filled in the same dialog and
+	 * written by the same reviewed commit: one intention, one question, one
+	 * change to manifest.yaml.
+	 */
+	it("chooses the judge and the client's model in the one dialog when the basket needs both", async () => {
+		const fixture = paths();
+		try {
+			const workbench = await drafted(fixture);
+			const human = gate();
+			await workbench.decide({ kind: "start-testing", repetitions: 1, reason: REASON }, human);
+			await addCorpusDraft(workbench, BOTH_EVALUATOR_TASKS);
+			const ran = await workbench.decide(
+				{ kind: "start-testing", repetitions: 1, reason: REASON },
+				human,
+				{ defaultJudge: () => HOST_JUDGE },
+			);
+
+			expect(ran.result.steps.map((step) => step.kind))
+				.toEqual(["configure-evaluators", "publish-corpus", "run-eval"]);
+			expect(human.confirm).toHaveBeenCalledTimes(2);
+			const subject = human.confirm.mock.calls[1]?.[0]?.subject as {
+				judge?: string;
+				user?: string;
+				steps?: string[];
+			};
+			expect(subject.judge).toBe("openrouter/glm-5.3 (not the agent's model) · key OPENROUTER_API_KEY");
+			// The client's line carries no independence note: playing the customer
+			// is casting, not grading, so the same model may do both.
+			expect(subject.user).toBe("openrouter/glm-5.3 · key OPENROUTER_API_KEY");
+			expect(subject.steps?.[0]).toBe("configure-evaluators");
+			expect(human.confirm.mock.calls[1]?.[0]?.title)
+				.toContain("choose the judge, choose the client's model");
+
+			// One reviewed commit on manifest.yaml carries both blocks.
+			const manifest = loadTarget(fixture.projectDir).manifest;
+			expect(manifest.evalSuite.judge).toMatchObject({ provider: "openrouter", id: "glm-5.3", apiKeyEnv: "OPENROUTER_API_KEY" });
+			expect(manifest.evalSuite.simulatedUser).toMatchObject({ provider: "openrouter", id: "glm-5.3", apiKeyEnv: "OPENROUTER_API_KEY" });
+			expect(ran.result.evaluation?.evaluation.evalRunId).toBe(EVAL_RUN_ID);
+		} finally {
+			cleanup(fixture.projectDir);
+		}
+	});
+
+	it("carries both pre-filled evaluators through run-current, which resolves here", async () => {
+		const fixture = paths();
+		try {
+			const workbench = await drafted(fixture);
+			const human = gate();
+			await workbench.decide({ kind: "start-testing", repetitions: 1, reason: REASON }, human);
+			await addCorpusDraft(workbench, BOTH_EVALUATOR_TASKS);
+			const ran = await workbench.decide(
+				{ kind: "run-current", repetitions: 1, reason: REASON },
+				human,
+				{ defaultJudge: () => HOST_JUDGE },
+			);
+			const resolved = ran.result as { resolvedAs: string; steps: { kind: string }[] };
+			expect(resolved.resolvedAs).toBe("start-testing");
+			expect(resolved.steps.map((step) => step.kind))
+				.toEqual(["configure-evaluators", "publish-corpus", "run-eval"]);
+			const manifest = loadTarget(fixture.projectDir).manifest;
+			expect(manifest.evalSuite.judge?.id).toBe("glm-5.3");
+			expect(manifest.evalSuite.simulatedUser?.id).toBe("glm-5.3");
+		} finally {
+			cleanup(fixture.projectDir);
+		}
+	});
+
+	it("asks for neither evaluator when the Target already carries both", async () => {
+		const fixture = paths({ evaluators: true });
+		try {
+			const workbench = await drafted(fixture);
+			const human = gate();
+			await workbench.decide({ kind: "start-testing", repetitions: 1, reason: REASON }, human);
+			await addCorpusDraft(workbench, BOTH_EVALUATOR_TASKS);
+			const ran = await workbench.decide(
+				{ kind: "start-testing", repetitions: 1, reason: REASON },
+				human,
+				{ defaultJudge: () => HOST_JUDGE },
+			);
+			expect(ran.result.steps.map((step) => step.kind)).toEqual(["publish-corpus", "run-eval"]);
+			const subject = human.confirm.mock.calls[1]?.[0]?.subject as { judge?: string; user?: string };
+			expect(subject.judge).toBeUndefined();
+			expect(subject.user).toBeUndefined();
+			// And nothing rewrote the manifest the operator already reviewed.
+			const manifest = loadTarget(fixture.projectDir).manifest;
+			expect(manifest.evalSuite.judge?.apiKeyEnv).toBe("OPENROUTER_API_KEY");
+			expect(manifest.evalSuite.simulatedUser?.apiKeyEnv).toBe("OPENROUTER_API_KEY");
 		} finally {
 			cleanup(fixture.projectDir);
 		}

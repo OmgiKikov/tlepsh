@@ -1,4 +1,5 @@
 import { hasMessage, t } from "../i18n.js";
+import { EvaluatorsNotConfiguredError } from "../manifest.js";
 import type { WorkbenchVerificationBlocked } from "./types.js";
 
 export class WorkbenchSelectionRequiredError extends Error {
@@ -50,9 +51,16 @@ export class WorkbenchTypedRefusalError extends Error {
 	}
 }
 
-/** The typed reason of a refusal that carries one, or null for every other error. */
+/**
+ * The typed reason of a refusal that carries one, or null for every other
+ * error. A run refused for a missing evaluator is minted deeper than the
+ * Workbench — the suite refuses before it spends anything — but it carries the
+ * same pair, so the host renders it the same way.
+ */
 export function typedRefusalReason(error: unknown): { code: string; params?: Record<string, string | number> } | null {
-	return error instanceof WorkbenchTypedRefusalError ? error.reason : null;
+	if (error instanceof WorkbenchTypedRefusalError) return error.reason;
+	if (error instanceof EvaluatorsNotConfiguredError) return error.reason;
+	return null;
 }
 
 /**

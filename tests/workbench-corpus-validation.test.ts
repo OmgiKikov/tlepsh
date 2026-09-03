@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { plural, setLanguage, t } from "../src/i18n.js";
 import { createAhdeWorkbench, type WorkbenchHumanGate } from "../src/workbench/index.js";
 import { assertGradersRunnable } from "../src/application/corpus-target.js";
 import { deriveWorkbenchView, loadWorkbenchInventory } from "../src/workbench/inventory.js";
@@ -107,9 +108,16 @@ describe("corpus grader validation against the current Target", () => {
 		expect(published.view.blockers).toEqual([]);
 	});
 
-	it("rejects simulated-user drafts without a user model", async () => {
+	/**
+	 * Writing a conversation is how the host learns a user model is needed, so
+	 * the draft is accepted and the question is asked in the one dialog that
+	 * publishes and runs it — exactly the rule a judge grader already gets.
+	 * Publication stays strict, so nothing ever runs against a user model that
+	 * does not exist.
+	 */
+	it("accepts a simulated-user draft without a user model and refuses to publish it", async () => {
 		const workbench = await approvedWorkbench();
-		await expect(workbench.submit({
+		const accepted = await workbench.submit({
 			kind: "corpus-draft",
 			name: "Conversation basket",
 			tasks: [{
@@ -119,8 +127,15 @@ describe("corpus grader validation against the current Target", () => {
 			}],
 			coverageNotes: [],
 			revisionSummary: "initial",
-		})).rejects.toThrow(/task 1: simulated-user cases need a user model configured in the Target manifest/);
-		expect((await workbench.view()).counts.corpusDrafts).toBe(0);
+		});
+		expect((await workbench.view()).counts.corpusDrafts).toBe(1);
+		// At corpus-review the missing user model is a question already being
+		// asked, not a blocker — start-testing pre-fills it.
+		expect((await workbench.view()).blockers).toEqual([]);
+		await expect(workbench.decide(
+			{ kind: "publish-corpus", draftId: String(accepted.artifact?.id), reason: "publish" },
+			gate,
+		)).rejects.toThrow(/task 1: simulated-user cases need a user model configured in the Target manifest/);
 	});
 
 	it("never reports a published simulated-user basket as ready after its user model is removed", async () => {
@@ -179,7 +194,12 @@ describe("corpus grader validation against the current Target", () => {
 		expect(view.stage).toBe("corpus-design");
 		expect(view.stage).not.toBe("ready-to-evaluate");
 		expect(view.actions).toContain("configure-evaluators");
-		expect(view.blockers).toContain("The selected development basket is not runnable on the current Target.");
+		// Why it cannot run, not only that it cannot: the typed reason names the
+		// missing instrument and points at the action that supplies it.
+		expect(view.blockers).toContain(
+			"The development cases include conversations and this Target has no simulated-user model configured.",
+		);
+		expect(view.blockerReasons?.map((reason) => reason.code)).toContain("blocker.user-model-missing");
 		expect(view.target.evaluatorRequirements).toEqual({ judge: false, simulatedUser: true });
 	});
 
@@ -434,5 +454,66 @@ describe("typed blockers for the judge", () => {
 		const { stage, codes } = reasons(options, {});
 		expect(stage).toBe("corpus-review");
 		expect(codes).toEqual([]);
+	});
+});
+
+/**
+ * The other half of the instrument. A basket whose cases are conversations
+ * needs somebody to play the customer, and the blocker fires at exactly the
+ * stages the judge's does — never at corpus-review, where the one question that
+ * starts testing pre-fills it.
+ */
+describe("typed blockers for the client's model", () => {
+	const DIALOGUE_TASK = {
+		input: "I need to change my subscription.",
+		simulatedUser: { goal: "change the subscription", maxTurns: 3 },
+		graders: [{ type: "turn_budget" as const, max: 3 }],
+	};
+
+	async function draftedDialogueBasket() {
+		const projectDir = makeTargetFixture(baseFixtureFiles({ ".gitignore": ".ahde/\nruns/\n" }));
+		roots.push(projectDir);
+		const options = {
+			projectDir,
+			stateRoot: join(projectDir, ".ahde"),
+			runsRoot: join(projectDir, "runs"),
+			projectId: "test-target",
+		};
+		const workbench = createAhdeWorkbench(options);
+		const draft = await workbench.submit({ kind: "spec-draft", spec });
+		await workbench.decide({ kind: "approve-spec", draftSpecId: String(draft.artifact?.id), reason: "approve" }, gate);
+		await workbench.submit({
+			kind: "corpus-draft",
+			name: "Conversation basket",
+			tasks: [
+				DIALOGUE_TASK,
+				{ ...DIALOGUE_TASK, input: "I want to cancel my subscription." },
+			],
+			coverageNotes: [],
+			revisionSummary: "initial",
+		});
+		return options;
+	}
+
+	it("stays silent at corpus-review, where the one question pre-fills the client's model", async () => {
+		const options = await draftedDialogueBasket();
+		const view = deriveWorkbenchView(loadWorkbenchInventory(options), {});
+		expect(view.stage).toBe("corpus-review");
+		expect(view.blockerReasons ?? []).toEqual([]);
+		// The requirement is still read off the draft — it is the question the
+		// dialog is about to ask, not a thing nobody noticed.
+		expect(view.target.evaluatorRequirements).toEqual({ judge: false, simulatedUser: true });
+	});
+
+	it("says how many cases are dialogues, in the operator's language", () => {
+		setLanguage("ru");
+		try {
+			expect(t("blocker.user-model-missing", { dialogues: plural(2, "dialogue") })).toBe(
+				"2 диалога среди кейсов, а модель собеседника не выбрана: нужна модель, которая сыграет клиента.",
+			);
+			expect(t("blocker.user-model-missing", { dialogues: plural(1, "dialogue") })).toContain("1 диалог среди");
+		} finally {
+			setLanguage(null);
+		}
 	});
 });
