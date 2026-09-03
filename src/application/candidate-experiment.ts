@@ -27,9 +27,16 @@ import {
 	withExperimentWorktrees,
 	type ExperimentWorktreePair,
 } from "../git/experiment-worktree.js";
-import { loadTarget, type ResolvedTarget } from "../manifest.js";
+import {
+	DEFAULT_PI_HARNESS_FILES,
+	executionKindOf,
+	harnessFilesOf,
+	loadTarget,
+	type ResolvedTarget,
+} from "../manifest.js";
 import {
 	axisDifferences,
+	canonicalJson,
 	executionFingerprint,
 	hashValue,
 	modelFingerprint,
@@ -57,6 +64,33 @@ export const CANDIDATE_SCOPE_POLICY = {
 	id: "candidate-harness-resources-v3",
 	allowed: ["AGENTS.md", "manifest.yaml", "skills/**", "bin/**", "tools/**", "data/**"],
 } as const;
+
+/**
+ * What a candidate may change, for THIS Target.
+ *
+ * The Pi layout used to be the answer everywhere, and for a Pi Target it still
+ * is — byte for byte, same policy id, same order, so no existing evidence
+ * moves. A Target that declares its own `harness.files` gets that surface
+ * instead, under its own policy id: an agent whose behaviour lives in a prompt
+ * file cannot be improved by a loop that is only allowed to rewrite `skills/`,
+ * and a scope that quietly widened to cover the operator's source code would
+ * be a much worse fix than a second policy id.
+ *
+ * `manifest.yaml` and `data/**` stay in both: the manifest is host-owned and
+ * the data directories are declared resources, not the agent's program.
+ */
+export function candidateScopeFor(
+	manifest: Pick<ResolvedTarget["manifest"], "harness">,
+): { id: string; allowed: string[] } {
+	const declared = harnessFilesOf(manifest);
+	if (canonicalJson(declared) === canonicalJson(DEFAULT_PI_HARNESS_FILES)) {
+		return { id: CANDIDATE_SCOPE_POLICY.id, allowed: [...CANDIDATE_SCOPE_POLICY.allowed] };
+	}
+	return {
+		id: "candidate-declared-harness-v1",
+		allowed: ["manifest.yaml", "data/**", ...declared],
+	};
+}
 
 
 export interface CandidateExperimentOptions {
@@ -286,6 +320,10 @@ export function effectiveProvenance(target: ResolvedTarget): ProvenanceAxes {
 				sandbox,
 				network: target.manifest.execution.network,
 				filesystem: targetFilesystemConfinement({ workspaceMode: "isolated", toolNames: processCapableTools, sandbox }),
+				// Which backend will answer. The reconstruction has to name it for
+				// the same reason it names the sandbox: a baseline produced by a
+				// different agent is not this experiment's baseline.
+				agent: executionKindOf(target.manifest.execution) === "command" ? "command-v1" : "pi-v1",
 			}),
 			eval: { suiteHash: target.suiteHash, datasetHash: target.datasetHash },
 		});
@@ -337,7 +375,7 @@ function designHash(
 		mode: options.mode,
 		repetitions: options.repetitions,
 		dataset: target.manifest.evalSuite.dataset,
-		scopePolicy: CANDIDATE_SCOPE_POLICY,
+		scopePolicy: candidateScopeFor(target.manifest),
 		...(developmentCorpus
 			? { developmentCorpus: { id: developmentCorpus.metadata.id, hash: developmentCorpus.metadata.hash } }
 			: {}),
@@ -703,7 +741,7 @@ export async function runCandidateExperiment(
 					relation: options.mode === "candidate" ? "descendant" : "same",
 				},
 				scope: {
-					policyId: CANDIDATE_SCOPE_POLICY.id,
+					policyId: candidateScopeFor(resolvedBaselineTarget.manifest).id,
 					baselineSha: worktrees.baseline.sha,
 					candidateSha: worktrees.candidate.sha,
 					passed: true,

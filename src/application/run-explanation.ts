@@ -3,6 +3,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { z } from "zod";
 import type { TraceObservation } from "../diagnosis.js";
+import { runCost, runTokens } from "../compare.js";
 import type { GraderResult, RunRecord } from "../provenance.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import {
@@ -464,8 +465,8 @@ export interface RunRow {
 		latencyMs: number;
 		toolCalls: number;
 		toolErrors: number;
-		tokens: number;
-		costUsd: number;
+		tokens: number | null;
+		costUsd: number | null;
 	};
 	traceAvailable: boolean;
 }
@@ -534,8 +535,8 @@ export function runsTable(
 				latencyMs: run.metrics.latencyMs,
 				toolCalls: run.metrics.toolCalls,
 				toolErrors: run.metrics.toolErrors,
-				tokens: run.metrics.tokens.total,
-				costUsd: run.metrics.costUsd,
+				tokens: runTokens(run)?.total ?? null,
+				costUsd: runCost(run),
 			},
 			traceAvailable: run.trace.sha256 !== null,
 		};

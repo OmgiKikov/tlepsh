@@ -24,6 +24,7 @@ import { loadTarget, ModelBlock, TargetManifest, type TargetManifest as TargetMa
 import { canonicalJson, hashValue } from "../provenance.js";
 import { isStandIn, isStandInModel, standInManifestFields } from "../target/placeholders.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
+import { TargetScaffoldReceiptSchema } from "./target-scaffold.js";
 
 const BUILTIN_TARGET_ID = "my-agent";
 const BUILTIN_EVAL_SUITE_ID = "my-agent-development";
@@ -155,6 +156,61 @@ function repositoryRoot(input: string): string {
 	const top = realpathSync(gitText(canonical, ["rev-parse", "--show-toplevel"]));
 	if (top !== canonical) throw new Error(`targetDir must be the Git worktree root: ${canonical}`);
 	return canonical;
+}
+
+/**
+ * The revision an adoption receipt named, or null when this Target was
+ * scaffolded (or has no receipt yet). Invariant 18 admits a one-time bootstrap
+ * over an exact clean scaffold OR an exact clean adopted revision recorded in
+ * the receipt, and this is the one place that reads which of the two happened.
+ */
+function adoptedRevision(stateRootInput: string): string | null {
+	const path = join(resolve(stateRootInput), "target-scaffold.json");
+	if (!existsSync(path)) return null;
+	let receipt;
+	try {
+		receipt = readJsonArtifact(path, TargetScaffoldReceiptSchema);
+	} catch {
+		// An unreadable scaffold receipt is not an adoption claim. The scaffold
+		// rule below then applies and fails closed on its own terms.
+		return null;
+	}
+	return receipt.subject.operation === "adopt-current-directory" ? receipt.targetGitSha : null;
+}
+
+/**
+ * The sibling of `assertCleanScaffoldRepository` for a Target that was
+ * adopted rather than scaffolded.
+ *
+ * Everything the scaffold rule asks for is still asked: a clean tree, a local
+ * branch, and `manifest.yaml` as one tracked regular file. The one requirement
+ * that is dropped is "exactly one commit" — an existing agent has a history,
+ * and demanding it have none is demanding it not exist. What replaces it is
+ * stricter than a count: HEAD must be the EXACT revision the adoption receipt
+ * recorded, so a bootstrap can only ever run over the tree a human approved.
+ */
+export function assertAdoptableRepository(
+	repositoryDir: string,
+	adoptedSha: string,
+): { baseTargetSha: string; headRef: string } {
+	const status = gitText(repositoryDir, ["status", "--porcelain=v1", "--untracked-files=all"]);
+	if (status !== "") throw new Error("Target bootstrap requires a clean repository");
+	const baseTargetSha = GitShaSchema.parse(gitText(repositoryDir, ["rev-parse", "HEAD"]));
+	if (baseTargetSha !== adoptedSha) {
+		throw new Error("Target bootstrap is allowed only on the exact adopted revision the receipt recorded");
+	}
+	let headRef: string;
+	try {
+		headRef = gitText(repositoryDir, ["symbolic-ref", "-q", "HEAD"]);
+	} catch (error) {
+		throw new Error("Target bootstrap requires a branch, not a detached HEAD", { cause: error });
+	}
+	if (!headRef.startsWith("refs/heads/")) throw new Error("Target bootstrap requires a local branch");
+	const manifestEntry = gitText(repositoryDir, ["ls-files", "-s", "--", "manifest.yaml"]);
+	if (!/^100644 [0-9a-f]{40} 0\tmanifest\.yaml$/.test(manifestEntry)) {
+		throw new Error("Adopted manifest.yaml must be one tracked regular 100644 file");
+	}
+	return { baseTargetSha, headRef };
 }
 
 function assertCleanScaffoldRepository(repositoryDir: string): { baseTargetSha: string; headRef: string } {
@@ -425,7 +481,12 @@ interface PreparedBootstrap {
 function prepareBootstrap(options: DescribeTargetBootstrapOptions): PreparedBootstrap {
 	const repositoryDir = repositoryRoot(options.targetDir);
 	assertNoReceipt(options.stateRoot);
-	const { baseTargetSha, headRef } = assertCleanScaffoldRepository(repositoryDir);
+	// Scaffolded or adopted: the same one-time bootstrap, over whichever exact
+	// clean revision the receipt says a human already approved.
+	const adopted = adoptedRevision(options.stateRoot);
+	const { baseTargetSha, headRef } = adopted
+		? assertAdoptableRepository(repositoryDir, adopted)
+		: assertCleanScaffoldRepository(repositoryDir);
 	const target = loadTarget(repositoryDir);
 	if (target.gitSha !== baseTargetSha) throw new Error("Target bootstrap requires the exact clean HEAD target");
 	assertBuiltInPlaceholder(target.manifest);

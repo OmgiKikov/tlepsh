@@ -16,7 +16,7 @@ import {
 	type CandidateFlip,
 	type RunRow,
 } from "../application/run-explanation.js";
-import { compareVerifiedEvalRuns, type CompareResult } from "../compare.js";
+import { compareVerifiedEvalRuns, runCost, runTokens, type CompareResult } from "../compare.js";
 import { measurementLine, measurementSurface } from "../application/measurement-line.js";
 import { diagnosisPath, loadDiagnosis } from "../diagnosis.js";
 import type { CandidateRecord, EvaluationEvidence } from "../domain/candidate.js";
@@ -90,7 +90,7 @@ function requireDiagnosis(runsRoot: string, evalRunId: string): ImprovementBrief
 function armCostUsd(runs: readonly RunRecord[]): number {
 	return runs.reduce(
 		(total, run) =>
-			total + run.metrics.costUsd + (run.metrics.judge?.costUsd ?? 0) + (run.metrics.simulatedUser?.costUsd ?? 0),
+			total + (runCost(run) ?? 0) + (run.metrics.judge?.costUsd ?? 0) + (run.metrics.simulatedUser?.costUsd ?? 0),
 		0,
 	);
 }
@@ -295,7 +295,7 @@ export function collectEvalPage(
 		summary: record.summary,
 		meanScore,
 		costUsd: armCostUsd(verified.runs),
-		tokens: verified.runs.reduce((total, run) => total + run.metrics.tokens.total, 0),
+		tokens: verified.runs.reduce((total, run) => total + (runTokens(run)?.total ?? 0), 0),
 		judgeCalibration: judgeCalibrationRows(verified.runs, null, options.labels !== undefined)
 			.map((row) => `${row.line} — ${row.graderNames.join(", ")}`),
 		briefStatus: brief.status,
@@ -374,8 +374,8 @@ export function collectRunDetailPage(runsRoot: string, runId: string): RunDetail
 				latencyMs: run.metrics.latencyMs,
 				toolCalls: run.metrics.toolCalls,
 				toolErrors: run.metrics.toolErrors,
-				tokens: run.metrics.tokens.total,
-				costUsd: run.metrics.costUsd,
+				tokens: runTokens(run)?.total ?? null,
+				costUsd: runCost(run),
 			},
 		},
 		input: facts?.input ?? null,

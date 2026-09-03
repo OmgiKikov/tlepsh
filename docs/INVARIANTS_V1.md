@@ -1,6 +1,6 @@
 # AHDE invariants — the exhaustive statement
 
-These 42 invariants are the exhaustive statement behind the five guarantees
+These 44 invariants are the exhaustive statement behind the five guarantees
 in the [README](../README.md). Nothing here is dropped when the product
 surface changes; when a rule genuinely changes, its number keeps its place
 and the text says what changed and why.
@@ -46,7 +46,14 @@ it decides.
 2. Evidence always points at immutable snapshots; renderers never reread the current checkout.
 3. Candidate and baseline revisions differ, except in explicit A/A calibration mode.
 4. Comparability excludes the changing Harness revision but includes every other effective execution and grading input.
-5. The Target sees one holdout input at a time, never the holdout corpus, graders, expected answers, or future cases.
+5. The Target sees one holdout input at a time, never the holdout corpus,
+   graders, expected answers, or future cases. This holds whatever backend runs
+   it: an in-process Pi session receives the input as one user message, and a
+   command Target receives it as one `user` line of the versioned protocol and
+   nothing else — no case list, no grader, no reference answer, no world it was
+   not given. What a Builder may rewrite about that Target is the surface the
+   manifest declares in `harness.files`; absent, that is the Pi layout it has
+   always been.
 6. A Proposal cannot modify corpus or model configuration and cannot be applied
    without explicit human authority. An interactive apply means the human read
    THIS diff. Improve and proposal search instead authorize automated trials on
@@ -93,7 +100,10 @@ it decides.
     a one-operation receipt; non-interactive calls fail closed.
 17. Declarative Target tool descriptors and executable bytes are part of Target
    identity: for a multi-file tool that is every file in its directory, sorted
-   and mode-aware, plus its declared lockfile bytes. A declared setup step runs
+   and mode-aware, plus its declared lockfile bytes. A command Target's entry
+   executable is Target identity on the same terms: `argv[0]` is resolved and
+   hashed at spawn, not at resolution, and persisted as `agentEntryHash` on
+   every Run and EvalRun. One eval run is one entry executable. A declared setup step runs
    once in a private per-tool staging home and scratch directory inside the
    same sandbox; it never receives write access to the shared final tool home.
    The staged directory is attested and atomically promoted into that home.
@@ -110,11 +120,14 @@ it decides.
    the hash — so the index hash is folded into the same prepared-home identity.
    A Target with no knowledge base folds in nothing and its hash is unchanged.
 18. Initial Target id/model configuration is a one-time host-confirmed bootstrap
-    commit over an exact clean scaffold. Builder receives only the credential
+    commit over an exact clean scaffold **or an exact clean adopted revision
+    recorded in the receipt**. Builder receives only the credential
     variable name; the host injects the selected value into a memory-only Target
     credential store.
 19. Every Run in one Eval Run is materialized from the same hash-checked source
-    snapshot. Its exact workspace hash is persisted in the EvalRun and member
+    snapshot — including a command Target's child process, which is spawned
+    with that snapshot copy as its working directory and never with the
+    operator's checkout. Its exact workspace hash is persisted in the EvalRun and member
     Runs, participates in baseline reuse, and is mandatory promotion evidence.
     Changes to the live Target cannot be attributed only to an unchanged Git SHA.
 20. Apply and Discard are durable, mutually exclusive terminal decisions for one
@@ -137,12 +150,15 @@ it decides.
 23. Every consequential Workbench decision is legal only in its derived stage.
     `/run` cannot skip Spec or corpus review, and inconclusive execution cannot
     advance the workflow.
-24. Interactive Target Pi runs in a dedicated child over a hash-checked
-    workspace snapshot with frozen Harness resources and an in-memory session.
-    The Node loader starts without inherited environment; credential,
-    allowlisted runtime values, and fixed display/locale values arrive only over
-    post-startup IPC. Shell escapes, undeclared tools, and ambient resume/import
-    switching are denied.
+24. A Target child process — interactive Pi, or a command Target — runs over a
+    hash-checked workspace snapshot with frozen Harness resources and an
+    in-memory session. The Node loader starts without inherited environment;
+    credential, allowlisted runtime values, and fixed display/locale values
+    arrive only over post-startup IPC. A command Target receives the same
+    scrubbed environment a declared tool receives, plus its credential under
+    the manifest's own `apiKeyEnv` name, the protocol version, and its case's
+    world path; loader environment is refused by name. Shell escapes, undeclared
+    tools, and ambient resume/import switching are denied.
 25. An interrupted candidate is neither failed nor retryable by omission. A
     human must write an exact immutable abandonment receipt before Workbench
     may start a replacement verification attempt.
@@ -272,6 +288,12 @@ it decides.
     the Git refs so a crash cannot make a branch name reusable. The loop stops at
     the first verified candidate: compounding before a full-stack matched and
     sealed baseline exists would overstate what the evidence proved.
+43. A command Target speaks exactly one versioned JSON-lines protocol. A
+    protocol violation, an undeclared tool call or a non-zero exit is an
+    infrastructure error, never a behavioural failure. Its transcript is written
+    as canonical session JSONL and re-parsed by the canonical parser before the
+    run may complete.
+
 44. A case's world is part of the dataset's identity and lives outside the
     workspace snapshot; only sandboxed tools read and write it; an unreadable
     world is an infrastructure error, never a behavioural failure. The state a

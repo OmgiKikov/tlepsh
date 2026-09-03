@@ -149,3 +149,60 @@ export async function decideConfigureEvaluators(
 		view: await host.view(),
 	};
 }
+
+/**
+ * Adopt the agent that is already in this folder.
+ *
+ * The same describe → confirm → re-describe → `exactSame` → apply shape
+ * `scaffold-target` uses, and for the same reason: the operator approves an
+ * exact set of files with exact bytes, and anything that moved between the
+ * question and the answer invalidates the answer.
+ *
+ * What differs is what is at stake. A scaffold writes into an empty folder; an
+ * adoption writes beside code somebody else owns. So the detector runs again
+ * here — if the folder stopped looking like an agent while the dialog was
+ * open, there is nothing to adopt.
+ */
+export async function decideWrapTarget(
+	host: DecisionHost,
+	input: DecisionInputOf<"wrap-target">,
+	ctx: DecisionContext,
+): Promise<WorkbenchDecisionResult> {
+	const { inventory, gate, options } = ctx;
+	if (inventory.target) throw new WorkbenchStaleDecisionError(input.kind);
+	const found = host.dependencies.detectAgentFolder(host.projectDir);
+	if (!found) throw new Error("no agent was found in this folder to adopt");
+	const describe = () => host.dependencies.describeTargetWrap({
+		projectDir: host.projectDir,
+		found,
+		argv: [...input.argv],
+		harnessFiles: [...input.harnessFiles],
+	});
+	const before = describe();
+	const actor = await host.confirm(input, gate, t("confirm.title.wrap-target"), before, options.signal);
+	const current = host.decisionInventory(input.kind);
+	if (current.target) throw new WorkbenchStaleDecisionError(input.kind);
+	const after = describe();
+	if (!exactSame(before, after)) throw new WorkbenchStaleDecisionError(input.kind);
+	const result = host.dependencies.applyTargetWrap({
+		projectDir: host.projectDir,
+		stateRoot: host.stateRoot,
+		found,
+		argv: [...input.argv],
+		harnessFiles: [...input.harnessFiles],
+		expectedSubjectHash: hashValue(before),
+		actor: { kind: "human", id: actor },
+		reason: input.reason,
+	});
+	return {
+		kind: input.kind,
+		message: "Existing agent adopted. Choose its identity and model next.",
+		result: {
+			targetId: result.target.manifest.id,
+			targetGitSha: result.target.gitSha,
+			receiptId: result.receipt.id,
+			entry: found.entry,
+		},
+		view: await host.view(),
+	};
+}

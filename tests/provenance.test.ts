@@ -221,3 +221,75 @@ describe("RunRecordSchema artifact paths", () => {
 		})).toThrow();
 	});
 });
+
+/**
+ * The three facts that stopped being universally true when a Target could be a
+ * child process: which agent answered, what its entry bytes were, and whether
+ * it reported any spend at all.
+ */
+describe("a run whose agent is not Pi", () => {
+	/** A record the schema actually admits, unlike the axis-only fixture above. */
+	function valid(overrides: Partial<RunRecord> = {}): RunRecord {
+		const base = record();
+		return {
+			...base,
+			runId: "run_0001",
+			target: { id: "ombudsman", gitSha: "a".repeat(40) },
+			runtime: { ...base.runtime, piSha: "b".repeat(40), ahdeCodeHash: hashValue("code") },
+			eval: { ...base.eval, suiteHash: hashValue("suite"), datasetHash: hashValue("dataset") },
+			trace: { path: "session.jsonl", sessionId: null, sha256: null },
+			...overrides,
+		};
+	}
+
+	it("leaves every record written before the field existed byte-for-byte valid", () => {
+		// The exact shape a run.json on disk has today: no `agent`, no
+		// `agentEntryHash`. A default on either would have moved every
+		// provenanceKey in every runs store.
+		const legacy = valid();
+		expect(legacy.execution.agent).toBeUndefined();
+		expect(canonicalJson(RunRecordSchema.parse(legacy))).toBe(canonicalJson(legacy));
+		expect(canonicalJson(legacy.execution)).not.toContain("agent");
+		expect(canonicalJson(legacy.target)).not.toContain("agentEntryHash");
+	});
+
+	it("records absent usage only for a command-v1 agent", () => {
+		const { tokens: _tokens, costUsd: _costUsd, ...spentNothing } = valid().metrics;
+		const command = valid({
+			execution: { ...valid().execution, agent: "command-v1" },
+			target: { ...valid().target, agentEntryHash: hashValue("python3") },
+			metrics: spentNothing,
+		});
+		const parsed = RunRecordSchema.parse(command);
+		expect(parsed.metrics.tokens).toBeUndefined();
+		expect(parsed.metrics.costUsd).toBeUndefined();
+		expect(parsed.target.agentEntryHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+
+		// Every other backend reports usage; a missing number there is a lost
+		// one, not an honest absence.
+		for (const agent of [undefined, "pi-v1"] as const) {
+			const result = RunRecordSchema.safeParse(valid({
+				execution: { ...valid().execution, ...(agent ? { agent } : {}) },
+				metrics: spentNothing,
+			}));
+			expect(result.success).toBe(false);
+			expect(JSON.stringify(result.error?.issues)).toContain("only a command-v1 agent may record absent usage");
+		}
+	});
+
+	it("makes a Pi arm and a command arm incomparable, which is the point", () => {
+		const base = valid();
+		const armOf = (agent: "pi-v1" | "command-v1") => provenanceAxes({
+			runtime: base.runtime,
+			model: base.model,
+			judge: null,
+			execution: { ...base.execution, agent },
+			eval: { suiteHash: base.eval.suiteHash, datasetHash: base.eval.datasetHash },
+		});
+		const pi = armOf("pi-v1");
+		const command = armOf("command-v1");
+		expect(comparable(pi, command)).toBe(false);
+		expect(axisDifferences(pi, command)).toEqual(["execution"]);
+		expect(hashValue(pi)).not.toBe(hashValue(command));
+	});
+});

@@ -154,6 +154,20 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 				...numbered(files.map((file) => text(bag(file).path ?? file, 80)), paint, { limit: 12 }),
 			];
 		}
+		case "wrap-target": {
+			const files = Array.isArray(subject.templateFiles) ? subject.templateFiles : [];
+			const found = bag(subject.found);
+			const command = Array.isArray(bag(subject.manifest).execution)
+				? []
+				: bag(bag(bag(subject.manifest).execution).command).argv;
+			return [
+				`${paint.dim(t("dialog.directory"))} ${text(subject.targetPath, 120)}`,
+				`${paint.dim(t("result.agent-entry"))} ${text(found.entry, 80)}${Array.isArray(command) ? ` · ${text(command.join(" "), 80)}` : ""}`,
+				`${paint.dim(t("result.agent-harness"))} ${text((bag(bag(subject.manifest).harness).files as string[] | undefined)?.join(", "), 80)}`,
+				`${paint.dim(t("dialog.files"))} ${plural(files.length, "file")}`,
+				...numbered(files.map((file) => text(bag(file).path ?? file, 80)), paint, { limit: 12 }),
+			];
+		}
 		case "configure-target": {
 			const next = bag(subject.next);
 			const model = bag(next.model ?? subject.model);

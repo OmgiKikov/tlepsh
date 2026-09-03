@@ -34,6 +34,7 @@ import {
 	loadCycleContinuationReceipt,
 	type CycleContinuationReceipt,
 } from "./cycle-continuation.js";
+import { detectAgentFolder } from "../application/agent-folder-detect.js";
 import { targetBootstrapRequired, toolCredentialReadiness } from "../target/readiness.js";
 import { standInFilesLine, standInManifestFields } from "../target/placeholders.js";
 import { listCorpora, loadCorpus, type CorpusMetadata } from "../corpus.js";
@@ -1098,10 +1099,17 @@ function stageFor(
 	}
 	const target = inventory.target;
 	if (!target) {
+		// A folder that already holds an agent gets a second, better offer. The
+		// detector is read-only and never executes what it finds, so asking it
+		// here costs a directory walk and buys the operator the difference
+		// between "move your code into an empty folder" and "shall I adopt it".
+		const found = detectAgentFolder(inventory.projectDir);
 		return {
 			stage: "target-setup",
-			headline: "Create the Target harness before authoring evidence.",
-			actions: ["scaffold-target"],
+			headline: found
+				? "Adopt the agent already in this folder, or create a new Target harness."
+				: "Create the Target harness before authoring evidence.",
+			actions: found ? ["wrap-target", "scaffold-target"] : ["scaffold-target"],
 			blockers: [blocked("Target harness is missing.", "blocker.target-missing")],
 		};
 	}

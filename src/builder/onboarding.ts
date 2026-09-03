@@ -5,7 +5,10 @@ import {
 	type TargetModelSelection,
 } from "../application/target-model-selection.js";
 import { sameModelAsTarget } from "../application/configure-evaluators.js";
-import { t } from "../i18n.js";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { plural, t } from "../i18n.js";
+import { detectAgentFolder, type DetectedAgentFolder } from "../application/agent-folder-detect.js";
 import type { TargetManifest } from "../manifest.js";
 import type { ToolCredentialSlot } from "../application/tool-authoring.js";
 import type { AhdeWorkbench } from "../workbench/workbench.js";
@@ -290,6 +293,12 @@ export interface OnboardingHost {
 	workbench: Pick<AhdeWorkbench, "view" | "decide">;
 	actorId: () => string;
 	presenter: TranscriptPresenter;
+	/**
+	 * The project directory, so the first screen can ask whether to adopt the
+	 * agent already in it. Omitted by hosts that have no filesystem view; the
+	 * dialog then offers only "create a new one", exactly as it always did.
+	 */
+	projectDir?: string;
 }
 
 /** The selector already asked the human; the gate must not ask a second time. */
@@ -348,8 +357,113 @@ export function calmSetupFailure(error: unknown): string {
 const CREATE_HERE = (): string => t("onboarding.create-here");
 const LATER = (): string => t("onboarding.later-choice");
 const OTHER_MODEL = (): string => t("onboarding.other-model");
+const ADOPT = (): string => t("onboarding.wrap.accept");
+const CREATE_NEW = (): string => t("onboarding.wrap.create-new");
+const OTHER_COMMAND = (): string => t("onboarding.wrap.command-edit");
+const OTHER_FILES = (): string => t("onboarding.wrap.files-edit");
+
+/**
+ * The command that will start the agent, in the operator's words.
+ *
+ * The default is a guess from the entry point; the operator either takes it or
+ * types the real one. `argv[0]` stays absolute-or-bare because the manifest is
+ * not a shell: a relative argv[0] means something different per cwd, and the
+ * spawn refuses it later anyway.
+ */
+function defaultCommand(entry: string): string[] {
+	return ["python3", entry];
+}
+
+/**
+ * The editable surface, guessed the way an operator would guess it: the prompts
+ * directory if there is one, otherwise the markdown beside the entry point.
+ * Wrong is fine here — it is a default in an editable field, and the manifest
+ * it writes is one line to change.
+ */
+function defaultHarnessFiles(projectDir: string, entry: string): string[] {
+	if (existsSync(join(projectDir, "prompts"))) return ["prompts/**"];
+	const directory = entry.includes("/") ? entry.slice(0, entry.lastIndexOf("/")) : "";
+	// A declared harness path is relative and rooted: a bare `*.md` is not a
+	// legal one, so a root-level agent falls back to the instructions file the
+	// manifest already names.
+	return [directory ? `${directory}/*.md` : "AGENTS.md"];
+}
+
+/** Split an operator-typed command into argv. Quotes are not a manifest feature. */
+function parseCommand(text: string): string[] {
+	return text.trim().split(/\s+/).filter(Boolean);
+}
+
+function parseFiles(text: string): string[] {
+	return text.split(",").map((part) => part.trim()).filter(Boolean);
+}
+
+/**
+ * The three questions an adoption is worth: is this your agent, how is it
+ * started, and what may I edit. Everything else — the manifest, the eval
+ * skeleton, the Git commit — the host decides, shows in the dialog, and writes.
+ */
+type WrapOutcome = WorkbenchView | "deferred" | "create-new";
+
+async function wrapTarget(
+	ctx: ExtensionContext,
+	host: OnboardingHost,
+	projectDir: string,
+	found: DetectedAgentFolder,
+): Promise<WrapOutcome> {
+	const choice = await ctx.ui.select(
+		t("onboarding.wrap.seen", { entry: found.entry, tools: plural(found.toolCount, "tool") }),
+		[ADOPT(), CREATE_NEW(), LATER()],
+	);
+	if (choice === LATER() || choice === undefined) return "deferred";
+	if (choice !== ADOPT()) return "create-new";
+
+	const suggestedCommand = defaultCommand(found.entry);
+	const commandChoice = await ctx.ui.select(
+		t("onboarding.wrap.command", { command: suggestedCommand.join(" ") }),
+		[t("onboarding.wrap.accept"), OTHER_COMMAND(), LATER()],
+	);
+	if (commandChoice === LATER() || commandChoice === undefined) return "deferred";
+	let argv = suggestedCommand;
+	if (commandChoice === OTHER_COMMAND()) {
+		const typed = await ctx.ui.input(t("onboarding.wrap.command-ask"), suggestedCommand.join(" "));
+		if (typed === undefined) return "deferred";
+		argv = parseCommand(typed);
+		if (argv.length === 0) argv = suggestedCommand;
+	}
+
+	const suggestedFiles = defaultHarnessFiles(projectDir, found.entry);
+	const filesChoice = await ctx.ui.select(
+		t("onboarding.wrap.files"),
+		[suggestedFiles.join(", "), OTHER_FILES(), LATER()],
+	);
+	if (filesChoice === LATER() || filesChoice === undefined) return "deferred";
+	let harnessFiles = suggestedFiles;
+	if (filesChoice === OTHER_FILES()) {
+		const typed = await ctx.ui.input(t("onboarding.wrap.files-ask"), suggestedFiles.join(", "));
+		if (typed === undefined) return "deferred";
+		harnessFiles = parseFiles(typed);
+		if (harnessFiles.length === 0) harnessFiles = suggestedFiles;
+	}
+
+	const result = await host.workbench.decide(
+		{ kind: "wrap-target", argv, harnessFiles, reason: t("onboarding.wrap.reason") },
+		answeredGate(host.actorId),
+	);
+	host.presenter.show(ctx, { title: t("panel.agent-wrapped"), tone: "success", lines: renderDecision(result, markerPaint) });
+	return result.view;
+}
 
 async function createTarget(ctx: ExtensionContext, host: OnboardingHost, view: WorkbenchView): Promise<WorkbenchView | null> {
+	// A folder that already holds an agent gets the better offer first. The
+	// operator can still say "create a new one", which falls through to exactly
+	// the dialog that existed before adoption did.
+	const found = host.projectDir ? detectAgentFolder(host.projectDir) : null;
+	if (found && host.projectDir) {
+		const wrapped = await wrapTarget(ctx, host, host.projectDir, found);
+		if (wrapped === "deferred") return null;
+		if (wrapped !== "create-new") return wrapped;
+	}
 	const choice = await ctx.ui.select(
 		t("onboarding.no-agent-here", { directory: oneLine(view.project.directory, 60) }),
 		[CREATE_HERE(), LATER()],

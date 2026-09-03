@@ -1,4 +1,5 @@
 import { loadCandidateRecord } from "../application/candidate-review.js";
+import { runCost } from "../compare.js";
 import { isSealedEvalRun, listEvalRunIndexes, loadRun, readEvalRunIndex } from "../eval.js";
 
 /**
@@ -70,7 +71,7 @@ function sumMembers(runsRoot: string, runIds: readonly string[]): { costUsd: num
 	for (const runId of runIds.slice(0, MAX_MEMBER_RUNS)) {
 		try {
 			const run = loadRun(runsRoot, runId);
-			costUsd += run.metrics.costUsd + (run.metrics.simulatedUser?.costUsd ?? 0);
+			costUsd += (runCost(run) ?? 0) + (run.metrics.simulatedUser?.costUsd ?? 0);
 			judgeCostUsd += run.metrics.judge?.costUsd ?? 0;
 			read += 1;
 		} catch {

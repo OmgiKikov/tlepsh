@@ -1,0 +1,15 @@
+# Грейдеры, которые применяются к каждому кейсу в evals/development.jsonl.
+# Грейдеры конкретного кейса живут в его собственном массиве `graders` и
+# добавляются к этим.
+#
+# Сначала детерминированные — они ничего не стоят и не плывут:
+#   {"type": "output_contains", "text": "500"}
+#   {"type": "output_matches",  "pattern": "^Заявка W-"}
+#   {"type": "tool_called",     "tool": "get_account"}
+#   {"type": "world_state",     "path": "tickets.0.status", "op": "equals", "value": "open"}
+#
+# `judge` — только там, где судить приходится прозу. Нужен блок judge в
+# manifest.yaml, судья не может быть моделью самого агента, а некалиброванный
+# судья так и помечается в паспорте, пока не выполнено
+# `ahde label <evalRunId> --target .`.
+defaults: []

@@ -1,4 +1,5 @@
 import { plural, t } from "../i18n.js";
+import { runCost } from "../compare.js";
 import { isSealedEvalRun, listEvalRunIndexesLenient, loadRun } from "../eval.js";
 import type { WorkbenchDecisionInput, WorkbenchStage } from "./types.js";
 
@@ -6,6 +7,9 @@ type DirectDecisionKind = Exclude<WorkbenchDecisionInput["kind"], "run-current">
 
 const LEGAL_DECISION_STAGES = {
 	"scaffold-target": ["target-setup"],
+	// The same moment as `scaffold-target` and the same one-way door: there is
+	// no Target yet, and after this there is one.
+	"wrap-target": ["target-setup"],
 	"configure-target": ["target-setup"],
 	// The judge and the user model are needed the moment a basket wants a
 	// judge grader or a simulated-user case — which is while the cases are
@@ -201,6 +205,7 @@ export type WorkbenchGateClass = "consequential" | "one-question" | "routine";
 export const WORKBENCH_GATE_POLICY = {
 	// Consequential: one-time bootstrap of a real repository.
 	"scaffold-target": "consequential",
+	"wrap-target": "consequential",
 	"configure-target": "consequential",
 	// The same class as the Target's own model, for the same reason: it commits
 	// a reviewed change to manifest.yaml and it decides what the evidence is
@@ -317,7 +322,7 @@ export function estimateRunCost(input: EstimateRunCostInput): WorkbenchRunEstima
 			// Every model an evaluation pays for: the Target, the judge that graded
 			// it, and the user model that talked to it. Missing one makes the guard
 			// wave through a run that costs several times its estimate.
-			costUsd += run.metrics.costUsd
+			costUsd += runCost(run) ?? 0
 				+ (run.metrics.judge?.costUsd ?? 0)
 				+ (run.metrics.simulatedUser?.costUsd ?? 0);
 			milliseconds += elapsed;

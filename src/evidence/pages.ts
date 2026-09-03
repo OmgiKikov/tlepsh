@@ -1,5 +1,17 @@
 import { bareDelta, points } from "../application/measurement-line.js";
 import { language, t } from "../i18n.js";
+
+/**
+ * A number the Target never reported renders as a dash, never as zero. `$0.00`
+ * beside a run that measured nothing is a claim; the dash is the truth.
+ */
+function money(value: number | null, digits: number): string {
+	return value === null ? t("metrics.not-reported") : `$${value.toFixed(digits)}`;
+}
+
+function count(value: number | null): string {
+	return value === null ? t("metrics.not-reported") : value.toLocaleString("en-US");
+}
 import {
 	flipSubject,
 	type CandidateFlip,
@@ -250,8 +262,8 @@ export function renderRunsTable(rows: readonly RunRow[], options: RunsTableOptio
 		+ `<td class="wrapcell">${modeCell(row, options)}</td>`
 		+ `<td class="num">${row.metrics.toolCalls}${row.metrics.toolErrors > 0 ? ` / ${row.metrics.toolErrors} err` : ""}</td>`
 		+ `<td class="num">${(row.metrics.latencyMs / 1000).toFixed(1)}s</td>`
-		+ `<td class="num">$${row.metrics.costUsd.toFixed(5)}</td>`
-		+ `<td class="num">${row.metrics.tokens.toLocaleString("en-US")}</td>`
+		+ `<td class="num">${money(row.metrics.costUsd, 5)}</td>`
+		+ `<td class="num">${count(row.metrics.tokens)}</td>`
 		+ `</tr>`).join("");
 	return `<div class="scroll"><table><thead><tr>`
 		+ `<th>${h(t("explorer.th.task"))}</th><th>${h(t("explorer.th.rep"))}</th><th>${h(t("explorer.th.input"))}</th>`
@@ -527,8 +539,8 @@ export function renderRunDetailPage(model: RunDetailPageModel): string {
 	<div class="stat"><b>${(run.metrics.latencyMs / 1000).toFixed(1)}s</b><span>Latency</span></div>
 	<div class="stat"><b>${run.metrics.toolCalls}</b><span>Tool calls</span></div>
 	<div class="stat"><b>${run.metrics.toolErrors}</b><span>Tool errors</span></div>
-	<div class="stat"><b>${run.metrics.tokens.toLocaleString("en-US")}</b><span>Tokens</span></div>
-	<div class="stat"><b>$${run.metrics.costUsd.toFixed(5)}</b><span>Cost</span></div>
+	<div class="stat"><b>${count(run.metrics.tokens)}</b><span>Tokens</span></div>
+	<div class="stat"><b>${money(run.metrics.costUsd, 5)}</b><span>Cost</span></div>
 </div>
 <section><h2>${h(t("explorer.h2.why"))}</h2>${renderWhy(model.explanation)}</section>
 ${run.error ? `<section><h2>${h(t("explorer.h2.run-error"))}</h2><div class="card"><pre class="errpre">${h(run.error)}</pre></div></section>` : ""}

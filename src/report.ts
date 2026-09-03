@@ -6,7 +6,7 @@ import {
 	publicTaskId,
 	type ImprovementBrief,
 } from "./application/improvement-brief.js";
-import { compareEvalRuns, renderGateLine, type CompareResult } from "./compare.js";
+import { compareEvalRuns, renderGateLine, runCost, runTokens, type CompareResult } from "./compare.js";
 import { diagnoseEvalRun, loadDiagnosis, type DiagnosisRecord } from "./diagnosis.js";
 import {
 	isSealedEvalRun,
@@ -180,7 +180,7 @@ export interface ReportRun {
 	error: string | null;
 	graders: Array<{ name: string; type: string; passed: boolean; reason: string }>;
 	graderProjection: z.infer<typeof ProjectionCountSchema>;
-	metrics: { latencyMs: number; toolCalls: number; toolErrors: number; tokens: number; costUsd: number };
+	metrics: { latencyMs: number; toolCalls: number; toolErrors: number; tokens: number | null; costUsd: number | null };
 	trace: ReportTraceMessage[];
 	traceProjection: z.infer<typeof ProjectionCountSchema> | null;
 }
@@ -713,8 +713,8 @@ export function collectEvalReportData(
 				latencyMs: run.metrics.latencyMs,
 				toolCalls: run.metrics.toolCalls,
 				toolErrors: run.metrics.toolErrors,
-				tokens: run.metrics.tokens.total,
-				costUsd: run.metrics.costUsd,
+				tokens: runTokens(run)?.total ?? null,
+				costUsd: runCost(run),
 			},
 			trace,
 			traceProjection,

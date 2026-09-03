@@ -81,6 +81,7 @@ const DECIDE_WHEN = {
 	improve: "the operator asks for the automatic loop; it stops at the first verified candidate",
 	"import-dataset": "the operator confirmed the sample cases a dataset-recipe compiled",
 	"scaffold-target": "there is no agent directory yet",
+	"wrap-target": "the folder already holds an agent and no manifest",
 	"configure-target": "the agent still carries its placeholder id or model",
 	"approve-spec": "explicit approval of the description; run-current covers it here",
 	"start-testing": "explicit approve + publish + run; run-current resolves to this here",

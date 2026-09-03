@@ -1,6 +1,6 @@
 import { axisDifferences } from "./provenance.js";
 import { loadVerifiedEvalRun, type EvalRunRecord, type VerifiedEvalRun } from "./eval.js";
-import type { RunRecord } from "./provenance.js";
+import type { RunRecord, TokenMetrics } from "./provenance.js";
 import type { ExperimentMode } from "./domain/candidate.js";
 import { oneLine } from "./builder/render/format.js";
 import {
@@ -86,6 +86,22 @@ function perTask(records: readonly RunRecord[]): Map<string, TaskAggregate> {
 }
 
 /**
+ * What the Target reported spending, or null when it reported nothing.
+ *
+ * A command Target may send no `usage` at all, and the answer to "what did it
+ * cost" is then "it did not say" — not "nothing". Every reader goes through
+ * these two so no projection can turn an absence into a zero on the way to a
+ * human, and so a renderer has something to draw a dash for.
+ */
+export function runTokens(record: Pick<RunRecord, "metrics">): TokenMetrics | null {
+	return record.metrics.tokens ?? null;
+}
+
+export function runCost(record: Pick<RunRecord, "metrics">): number | null {
+	return record.metrics.costUsd ?? null;
+}
+
+/**
  * Cost, latency and token aggregate of one arm. Cost is what the arm actually
  * spent — the Target's tokens, the judge calls that graded them, and the user
  * model that held up the other end of a simulated conversation — so a
@@ -94,11 +110,13 @@ function perTask(records: readonly RunRecord[]): Map<string, TaskAggregate> {
  */
 function armResources(records: readonly RunRecord[]) {
 	return resourceTotals(records.map((record) => ({
-		costUsd: record.metrics.costUsd +
+		// An arm that reported nothing totals to nothing, which makes its ratio
+		// null rather than a number, which is what keeps the fragment silent.
+		costUsd: (runCost(record) ?? 0) +
 			(record.metrics.judge?.costUsd ?? 0) +
 			(record.metrics.simulatedUser?.costUsd ?? 0),
 		latencyMs: record.metrics.latencyMs,
-		tokens: record.metrics.tokens.total,
+		tokens: runTokens(record)?.total ?? 0,
 	})));
 }
 
