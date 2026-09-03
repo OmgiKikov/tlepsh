@@ -1205,6 +1205,42 @@ export function sealedExamOrigin(
 	return null;
 }
 
+/**
+ * What the judge was asked for and what survived, for a sealed corpus this
+ * project generated.
+ *
+ * Session 6 ordered 20 cases and the exam ran on 19; no screen said why. The
+ * receipt has recorded it all along — `requested`, `accepted`, and the two
+ * reasons a case is dropped — so the difference is read, never inferred. An
+ * exam the operator brought has no receipt here and the answer is null.
+ */
+export function sealedExamGeneration(
+	stateRoot: string,
+	projectId: string,
+	corpusId: string | null,
+): { requested: number; accepted: number; droppedDuplicate: number; droppedMalformed: number } | null {
+	if (!corpusId) return null;
+	let receipts: SealedSynthReceipt[];
+	try {
+		receipts = listSealedSynthReceipts(stateRoot, projectId);
+	} catch {
+		// Unreadable provenance narrows the line; it never fails the screen.
+		return null;
+	}
+	for (const receipt of receipts) {
+		const sealedHere = (receipt.outcome.kind === "sealed" || receipt.outcome.kind === "review-imported") &&
+			receipt.outcome.corpusId === corpusId;
+		if (!sealedHere) continue;
+		return {
+			requested: receipt.requested,
+			accepted: receipt.accepted,
+			droppedDuplicate: receipt.droppedDuplicate,
+			droppedMalformed: receipt.droppedMalformed,
+		};
+	}
+	return null;
+}
+
 // ---------- rendering ----------
 
 export interface SealedSynthOutput {

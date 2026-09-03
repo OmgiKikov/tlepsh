@@ -31,6 +31,7 @@ import {
 	wrap,
 } from "../src/builder/render/format.js";
 import { handoffLines } from "../src/builder/render/handoff.js";
+import { compilePlan } from "../src/builder/render/plan.js";
 import { refusalCard } from "../src/builder/workbench-adapter.js";
 import { setLanguage, t } from "../src/i18n.js";
 import { runResultLine } from "../src/application/measurement-line.js";
@@ -857,6 +858,19 @@ describe("renderCalibration", () => {
 	});
 });
 
+/** A project on its very first screen: an agent, and nothing built on it yet. */
+const FIRST_SCREEN_COUNTS: WorkbenchView["counts"] = {
+	specDrafts: 0,
+	approvedSpecs: 0,
+	corpusDrafts: 0,
+	developmentCorpora: 0,
+	sealedCorpora: 0,
+	developmentEvals: 0,
+	openProposals: 0,
+	candidates: 0,
+	calibrations: 1,
+};
+
 describe("renderHeader", () => {
 	it("renders the connected builder with stage, next step, and evidence", () => {
 		const lines = renderHeader({ view: makeView(), builderModel: { label: "anthropic/claude-opus", credentialPresent: true } }, plainPaint);
@@ -924,6 +938,45 @@ describe("renderHeader", () => {
 		});
 		expect(renderHeader({ view: satisfied, builderModel: { label: "x", credentialPresent: true } }, plainPaint).join("\n"))
 			.not.toContain("Tool key");
+	});
+
+	it("is four lines on a first screen: what this is, the agent, the stage, the Builder, the invitation", () => {
+		const view = makeView({ stage: "spec-design", blockers: [], counts: FIRST_SCREEN_COUNTS });
+		const plan = compilePlan(view);
+		const lines = renderHeader({ view, plan, builderModel: { label: "moonshotai/kimi", credentialPresent: true } }, plainPaint);
+		expect(lines).toEqual([
+			"",
+			"AHDE Builder · build, evaluate, and improve another agent through evidence",
+			"Target support-bot @ aaaaaaaaaa · openai/gpt-5 ✓",
+			"Stage Spec design · step 1 of 8 · Next Describe the agent you want",
+			"Builder model moonshotai/kimi ✓",
+			"Describe what you want in plain language",
+			"",
+		]);
+		// The count no longer has a line of its own; the panel keeps the whole cycle.
+		expect(lines.join("\n")).not.toContain("Plan 0/8");
+	});
+
+	it("drops its own next step when the shell already printed that exact sentence", () => {
+		const view = makeView({ stage: "spec-design", counts: FIRST_SCREEN_COUNTS });
+		const state = { view, plan: compilePlan(view), builderModel: { label: "moonshotai/kimi", credentialPresent: true } };
+		const echoed = renderHeader({ ...state, hint: "Describe the agent you want" }, plainPaint);
+		expect(echoed.join("\n")).not.toContain("Next");
+		expect(echoed.join("\n")).not.toContain("Stage");
+		expect(echoed).toHaveLength(6);
+		// A hint about something else leaves the stage line exactly where it was.
+		const different = renderHeader({ ...state, hint: "No agent yet. Tell me what you want to build." }, plainPaint);
+		expect(different[3]).toBe("Stage Spec design · step 1 of 8 · Next Describe the agent you want");
+	});
+
+	it("keeps the stage line while the agent is still being set up, and mid-cycle carries the progress", () => {
+		const setup = makeView({ stage: "target-setup", counts: FIRST_SCREEN_COUNTS, target: { status: "missing", id: null, gitSha: null, model: null } });
+		const setupLines = renderHeader({ view: setup, plan: compilePlan(setup), builderModel: { label: "x", credentialPresent: true } }, plainPaint);
+		expect(setupLines[2]).toBe("Target not created yet");
+		expect(setupLines[3]).toBe("Stage Target setup · step 0 of 8 · Next Describe the agent you want to build");
+		const mid = makeView({ stage: "candidate-verification" });
+		const midLines = renderHeader({ view: mid, plan: compilePlan(mid), builderModel: { label: "x", credentialPresent: true } }, plainPaint);
+		expect(midLines[3]).toBe("Stage Candidate verification · step 5 of 8 · Next Say “check” to verify the change");
 	});
 
 	it("shows blockers except during target setup", () => {
@@ -1087,6 +1140,17 @@ describe("renderReview", () => {
 		expect(lines[3]).toBe("  ↑ 3 improved · ↓ 1 lower · = 6 unchanged · cost ×1.4 · latency ×0.9");
 		expect(lines[4]).toBe("Sealed holdout pass (+23 pts, 95% CI +5 … +35) on 30 cases × 3 · cost ×1.4 · latency ×0.9");
 		for (const line of lines) expect(line.length).toBeLessThanOrEqual(110);
+		// Session 6 ordered 20 cases and the exam ran on 19; the panel said only
+		// "19". The receipt says why, so the size fragment does too.
+		const short = renderReview(makeCandidateReview({
+			sealedHoldout: {
+				executed: true,
+				gatePassed: true,
+				gate: { ...gate("sealed"), tasks: 19 },
+				generation: { requested: 20, accepted: 19, droppedDuplicate: 1, droppedMalformed: 0 },
+			},
+		}), plainPaint);
+		expect(short[4]).toContain("on 19 cases × 3 (1 duplicate dropped when it was generated)");
 		// Nothing about a sealed task ever reaches the screen.
 		expect(lines.join("\n")).not.toContain("task-");
 		// An unmeasured pair simply drops the fragment.
@@ -1540,6 +1604,27 @@ describe("renderDecision", () => {
 		expect(noLive).not.toContain("Live trace");
 	});
 
+	it("ends a run with one next step, in one wording", () => {
+		// Session 6 printed two: `Дальше скажи «почини первую проблему» (или
+		// назови режим) …` from the diagnosis panel, then `Дальше Скажи «исправь
+		// первую проблему» (Разбор)` from the decision — one act, two verbs.
+		const run = decision("run-eval", makeRun(), "improvement-authoring");
+		const lines = renderDecision(run, plainPaint, { liveTraceUrl: "http://127.0.0.1:4310/live/abc" });
+		expect(lines.filter((line) => line.startsWith("Next"))).toHaveLength(1);
+		expect(lines[lines.length - 1]).toBe(nextLine("improvement-authoring"));
+		// The status block already carries one, so the traces panel under it does not.
+		const viewed = renderView({ ...makeView({ stage: "improvement-authoring" }), detail: { aspect: "traces", content: makeRun() } }, plainPaint);
+		expect(viewed.filter((line) => line.startsWith("Next"))).toHaveLength(1);
+		// Opened on its own, the diagnosis panel is the only thing on screen and
+		// keeps its own — in the same words the stage's next step uses.
+		const alone = renderTraces(makeRun(), plainPaint);
+		expect(alone.filter((line) => line.startsWith("Next"))).toHaveLength(1);
+		setLanguage("ru");
+		expect(renderTraces(makeRun(), plainPaint).at(-1)).toContain("исправь первую проблему");
+		expect(nextStep(makeView({ stage: "improvement-authoring" }))).toContain("исправь первую проблему");
+		setLanguage(null);
+	});
+
 	it("renders both run-current resolutions", () => {
 		const asEval = renderDecision(decision("run-current", { resolvedAs: "run-eval", ...makeRun() }, "improvement-authoring"), plainPaint, { liveTraceUrl: "http://127.0.0.1:4310/live/abc" });
 		expect(asEval[0]).toContain("Evaluation 6/10 passed");
@@ -1549,6 +1634,36 @@ describe("renderDecision", () => {
 		expect(asVerify[0]).toBe("Candidate verified candidate-1 · evaluated");
 		expect(asVerify[asVerify.length - 1]).toBe(nextLine("candidate-review"));
 		expect(asVerify.join("\n")).not.toContain("Live trace");
+	});
+
+	it("says “inconclusive” once on the cheap-check line", () => {
+		const screen = {
+			verdict: "promising" as const,
+			tasks: 8,
+			improved: 1,
+			unchanged: 4,
+			regressed: 0,
+			inconclusive: 3,
+			withinErrorBudget: false,
+			screenEvalRunId: "erun-screen",
+			sourceEvalRunId: "erun-source",
+		};
+		const verified = (over: typeof screen): string[] => renderDecision(
+			decision("verify-candidate", { outcome: "verified" as const, headline: candidateHeadline(makeCandidate().development, makeCandidate().sealedHoldout), screen: over, candidate: makeCandidate(), development: { verdict: "improved", scoreDelta: 0.2, confidence95: { low: 0.05, high: 0.35 } }, sealedHoldout: { executed: true, gatePassed: true, verdict: "pass" } }, "candidate-review"),
+			plainPaint,
+		);
+		// Session 6 printed the verdict twice: the count, and the reason with the
+		// word attached to it again.
+		const line = verified(screen)[0]!;
+		expect(line).toBe("Cheap check promising · 8 previously failing cases × 1 · 1 improved · 4 unchanged · 0 regressed · 3 inconclusive — over the infrastructure error budget");
+		expect(line.match(/inconclusive/g)).toHaveLength(1);
+		// A budget blown with nothing left inconclusive still says why.
+		const noCount = verified({ ...screen, inconclusive: 0 })[0]!;
+		expect(noCount).toContain("· over the infrastructure error budget, so inconclusive");
+		expect(noCount.match(/inconclusive/g)).toHaveLength(1);
+		// And a screen inside its budget reads exactly as it always did.
+		expect(verified({ ...screen, withinErrorBudget: true })[0])
+			.toBe("Cheap check promising · 8 previously failing cases × 1 · 1 improved · 4 unchanged · 0 regressed · 3 inconclusive");
 	});
 
 	it("renders verification, apply, discard, and abandon decisions", () => {

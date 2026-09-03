@@ -68,14 +68,18 @@ export function predictionPromiseLine(
 	labels: ReadonlyMap<string, string> = new Map(),
 ): string | null {
 	if (!prediction) return null;
-	const parts = prediction.modes.map((mode) =>
-		t("prediction.mode", {
-			mode: oneLine(labels.get(mode.failureModeId) ?? shortModeId(mode.failureModeId), 60),
+	const parts = prediction.modes.map((mode) => {
+		// The words first, the id after them and muted: the operator matches the
+		// forecast to the diagnosis by reading it, not by comparing hashes.
+		const named = labels.get(mode.failureModeId);
+		return t(named ? "prediction.mode-named" : "prediction.mode", {
+			mode: oneLine(named ?? shortModeId(mode.failureModeId), 60),
+			hash: paint.muted(shortModeId(mode.failureModeId)),
 			from: mode.ofTasks,
 			of: mode.ofTasks,
 			to: mode.expectedFailingTasks,
-		})
-	);
+		});
+	});
 	const delta = prediction.expectedScoreDeltaPp ?? prediction.expectedPassRateDeltaPp;
 	if (delta !== null && delta !== undefined) parts.push(t("prediction.overall", { delta: pointsOf(delta) }));
 	if (parts.length === 0) return null;

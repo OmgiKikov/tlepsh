@@ -54,6 +54,20 @@ describe("one Builder persona", () => {
 			.map((cells) => ({ say: cells[1] ?? "", means: cells[2] ?? "" }));
 	}
 
+	it("forbids narrating the machinery and pins the quote to the host's headline", () => {
+		// Session 6 printed `вызову ahde_workbench_view`, `next говорит что
+		// run-current …` and the English bullets of this very file at the
+		// operator. Rule #1 is the block every message is written against, so
+		// both rules live there rather than four screens down.
+		const ruleOne = persona.split("## Rule #1")[1]?.split("\n## ")[0] ?? "";
+		expect(ruleOne).toContain("Never retell the machinery to the operator");
+		expect(ruleOne).toContain("«вызову ahde_workbench_view»");
+		expect(ruleOne).toContain("`headline`");
+		expect(ruleOne).toContain("quote it word for word");
+		// The whole persona still fits the budget the host reads it under.
+		expect(persona.trimEnd().split("\n").length).toBeLessThanOrEqual(300);
+	});
+
 	it("keeps slash commands out of the model-facing tool instructions", () => {
 		const listed = slashNames(persona.split("## Tools")[1]?.split("\n## ")[0] ?? "");
 		expect(listed).toEqual([]);

@@ -27,18 +27,30 @@ function nextLine(view: WorkbenchView, paint: Paint): string {
 }
 
 function runLines(result: Extract<WorkbenchDecisionResult, { kind: "run-eval" }>["result"], paint: Paint, options: RenderDecisionOptions): string[] {
-	const lines = renderTraces(result, paint);
+	// One `Next` per screen: `renderDecision` closes with the stage's own.
+	const lines = renderTraces(result, paint, { next: false });
 	if (options.liveTraceUrl) lines.push(`${paint.dim(t("label.live-trace"))} ${paint.link(options.liveTraceUrl)} ${paint.dim(t("result.retained"))}`);
 	return lines;
 }
 
-/** The screen in one line: what it cost, what it found, what it is not. */
+/**
+ * The screen in one line: what it cost, what it found, what it is not.
+ *
+ * “Inconclusive” is said once. The line used to carry both `3 неубедительно`
+ * and `превышен бюджет инфраструктурных ошибок, поэтому неубедительно`, which
+ * is the same verdict twice with the count and the reason split across it. When
+ * there is a count, the reason joins it; when there is none, the reason carries
+ * the word alone.
+ */
 function screenLine(screen: WorkbenchCheapCheckProjection, paint: Paint): string {
+	const overBudget = !screen.withinErrorBudget;
 	const detail = t("result.screen-detail", { improved: screen.improved, unchanged: screen.unchanged, regressed: screen.regressed }) +
-		(screen.inconclusive > 0 ? ` ${t("result.screen-inconclusive", { count: screen.inconclusive })}` : "");
+		(screen.inconclusive > 0
+			? ` ${t(overBudget ? "result.screen-inconclusive-over-budget" : "result.screen-inconclusive", { count: screen.inconclusive })}`
+			: "");
 	return `${paint.dim(t("label.cheap-check"))} ${screen.verdict === "promising" ? paint.success(verdictLabel("promising")) : paint.muted(verdictLabel("flat"))} ` +
 		`${paint.dim(t("result.screen-shape", { cases: plural(screen.tasks, "previously failing case"), detail }))}` +
-		(screen.withinErrorBudget ? "" : ` ${paint.muted(t("result.screen-over-budget"))}`);
+		(overBudget && screen.inconclusive === 0 ? ` ${paint.muted(t("result.screen-over-budget"))}` : "");
 }
 
 function verificationLines(result: WorkbenchVerifyCandidateResult, paint: Paint, view: WorkbenchView): string[] {

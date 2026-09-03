@@ -49,7 +49,7 @@ import {
 import { measurementOf } from "../../application/prediction.js";
 import { examLine, measurementLine, measurementSurface } from "../../application/measurement-line.js";
 import type { Paint } from "./paint.js";
-import { planHeadline, type Plan } from "./plan.js";
+import { planProgress, type Plan } from "./plan.js";
 import { nextStep, stageLabel, stageNextStep } from "./stage.js";
 
 export interface RenderReviewOptions {
@@ -246,6 +246,13 @@ export interface HeaderState {
 	 * silent; null means one does and nobody has checked it.
 	 */
 	judge?: { agreement: number; kappa: number | null; labels: number } | null | undefined;
+	/**
+	 * The sentence the shell has already put in front of the operator as the
+	 * hint under the transcript. When it is the same sentence the stage line
+	 * would print after `Next`, the stage line has nothing left to add — see
+	 * {@link renderHeader}.
+	 */
+	hint?: string | null;
 }
 
 /**
@@ -283,10 +290,23 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 		return lines;
 	}
 	lines.push(targetLine(view, paint));
-	lines.push(`${paint.dim(t("label.stage"))} ${paint.bold(stageLabel(view.stage))} ${paint.dim("·")} ${paint.dim(t("label.next"))} ${nextStep(view)}`);
-	// The whole cycle, one line under the stage: how many phases are behind,
-	// and the one the operator is standing in. `/plan` opens the same compilation.
-	if (state.plan) lines.push(paint.dim(planHeadline(state.plan)));
+	// The stage, the cycle progress and the next step are one line, not three.
+	// `План 1/8 · ▸ Описание агента` said the stage a second time under a line
+	// that had just said it, and `Дальше <шаг>` said, word for word, the hint
+	// the shell had put two lines lower. What survives here is what the other
+	// two do not already carry — and when the next step is that same hint,
+	// nothing does: the line is the stage's own name and a count `/plan` opens
+	// in full, so it is not drawn at all.
+	const next = nextStep(view);
+	const duplicated = typeof state.hint === "string" && state.hint === next;
+	if (!duplicated) {
+		const progress = state.plan ? planProgress(state.plan) : null;
+		lines.push(joinNonEmpty([
+			`${paint.dim(t("label.stage"))} ${paint.bold(stageLabel(view.stage))}`,
+			progress ? paint.dim(t("plan.progress", { done: progress.done, total: progress.total })) : null,
+			`${paint.dim(t("label.next"))} ${next}`,
+		], ` ${paint.dim("·")} `));
+	}
 	const evidence = evidenceLine(view, paint);
 	lines.push(joinNonEmpty([evidence, `${paint.dim(t("label.builder-model"))} ${builder}`], ` ${paint.dim("·")} `));
 	const shipping = shippingReadinessLine(view, paint);
@@ -429,10 +449,14 @@ export function renderCandidate(
 		lines.push(regradedDevelopmentLine(candidate.development.comparison, candidate.regraded, paint));
 	}
 	const sealedGate = candidate.sealedHoldout.gate;
-	const exam = examLine(sealedGate);
+	// The gate says what the exam decided; the receipt behind it says why it was
+	// the size it was — 19 cases for the 20 that were ordered.
+	const exam = examLine(sealedGate && { ...sealedGate, generation: candidate.sealedHoldout.generation ?? null });
 	lines.push(`${paint.dim(t("label.sealed-holdout"))} ${candidate.sealedHoldout.executed
 		? (sealedGate && exam
-			? `${verdictTone(sealedGate.verdict, paint)(exam.verdict)} ${exam.delta} ${paint.dim(exam.design)}${resourceSuffix(sealedGate, paint)}`
+			? `${verdictTone(sealedGate.verdict, paint)(exam.verdict)} ${exam.delta} ${paint.dim(exam.design)}${
+				exam.shortfall ? ` ${paint.muted(exam.shortfall)}` : ""
+			}${resourceSuffix(sealedGate, paint)}`
 			: (candidate.sealedHoldout.gatePassed ? paint.success(t("sealed.gate-passed")) : paint.error(t("sealed.legacy"))))
 		: paint.muted(t("sealed.not-executed"))}`);
 	if (sealedGate && sealedGate.verdict !== "pass") lines.push(`  ${paint.muted(oneLine(sealedGate.reasons[0] ?? "", 160))}`);
@@ -550,8 +574,10 @@ function renderProposal(
 	} else {
 		lines.push(`${paint.dim(t("label.evidence"))} ${paint.muted(t("review.evidence-none"))}`);
 	}
-	// The promise, on the same screen as the diff it is a promise about.
-	lines.push(predictionPromiseLine(content.prediction, paint) ?? predictionAbsentLine(paint));
+	// The promise, on the same screen as the diff it is a promise about — and in
+	// the same words the diagnosis used, when the brief behind it could be read.
+	const modeTitles = new Map((content.targetedModes ?? []).map((mode) => [mode.failureModeId, mode.title]));
+	lines.push(predictionPromiseLine(content.prediction, paint, modeTitles) ?? predictionAbsentLine(paint));
 	const predictionNote = predictionNoteLine(content.prediction, paint);
 	if (predictionNote) lines.push(predictionNote);
 	if (content.risks.length > 0) lines.push(paint.warning(t("label.risks")), ...bullets(content.risks, paint, { limit: 6, max: 160 }));
@@ -637,7 +663,20 @@ export function renderEvaluationSummary(
 }
 
 /** Diagnosis screen shared by /traces and the post-run summary. */
-export function renderTraces(content: WorkbenchTracesDetail, paint: Paint): string[] {
+export interface RenderTracesOptions {
+	/**
+	 * Whether the panel closes with its own `Next` line.
+	 *
+	 * False wherever the surface around it already prints one: a decision ends
+	 * with the stage's next step, and `renderView` puts the status block above
+	 * this one. Session 6 showed both at once — `Дальше скажи «исправь первую
+	 * проблему» (или назови режим) — подготовлю точную правку` and, two lines
+	 * later, `Дальше Скажи «исправь первую проблему» (Разбор)`.
+	 */
+	next?: boolean;
+}
+
+export function renderTraces(content: WorkbenchTracesDetail, paint: Paint, options: RenderTracesOptions = {}): string[] {
 	const brief = content.improvementBrief;
 	const evaluation = content.evaluation;
 	const lines = [
@@ -676,9 +715,12 @@ export function renderTraces(content: WorkbenchTracesDetail, paint: Paint): stri
 		lines.push(paint.success(`  ${t("diagnosis.healthy")}`));
 	}
 	lines.push(`${paint.dim(t("label.evidence"))} ${content.evidence.available ? paint.link(content.evidence.url) : paint.muted(t("diagnosis.no-explorer"))}`);
-	if (brief.proposalEligible) lines.push(`${paint.dim(t("label.next"))} ${t("diagnosis.next.fix")}`);
-	else if (brief.status === "healthy") lines.push(`${paint.dim(t("label.next"))} ${t("diagnosis.next.harder")}`);
-	else lines.push(`${paint.dim(t("label.next"))} ${t("diagnosis.next.repair")}`);
+	if (options.next !== false) {
+		const next = brief.proposalEligible
+			? "diagnosis.next.fix"
+			: brief.status === "healthy" ? "diagnosis.next.harder" : "diagnosis.next.repair";
+		lines.push(`${paint.dim(t("label.next"))} ${t(next)}`);
+	}
 	return lines;
 }
 
@@ -951,7 +993,8 @@ export function renderView(view: WorkbenchView, paint: Paint, options: RenderRev
 	const detail = view.detail.aspect === "review"
 		? renderReview(view.detail.content, paint, options)
 		: view.detail.aspect === "traces"
-		? renderTraces(view.detail.content, paint)
+		// The status block above already ends with the next step.
+		? renderTraces(view.detail.content, paint, { next: false })
 		: view.detail.aspect === "dataset"
 		? renderDataset(view.detail.content, paint)
 		: view.detail.aspect === "history"

@@ -39,6 +39,7 @@ import {
 } from "../application/dataset-recipe.js";
 import {
 	planSealedSynthesis,
+	sealedExamGeneration,
 	sealedSynthReviewPath,
 	synthesizeSealedCorpus,
 } from "../application/sealed-synth.js";
@@ -157,6 +158,7 @@ import {
 	deriveEvidenceLinkedProposalSelection,
 	type ImprovementBrief,
 } from "../application/improvement-brief.js";
+import { failureModeReading } from "../application/run-explanation.js";
 import type { CandidateProposal, ProposalPredictionInput } from "../builders/adapters.js";
 import {
 	listCorpora,
@@ -282,6 +284,7 @@ import {
 	type WorkbenchStage,
 	type WorkbenchSubmitInput,
 	type WorkbenchTargetDetail,
+	type WorkbenchTargetedModeTitles,
 	type WorkbenchTurn,
 	type WorkbenchView,
 	type WorkbenchViewQuery,
@@ -827,6 +830,16 @@ export class AhdeWorkbench {
 		const evaluated = candidate.events.find((event) => event.type === "evaluated");
 		if (evaluated?.type !== "evaluated") return candidateSummary(candidate);
 		const regraded = this.candidateRegrade(evaluated.evaluation.development, developmentEvals);
+		// Why the exam is the size it is: 20 cases ordered, one a duplicate of a
+		// development case, 19 sealed. Read off the receipt this project wrote,
+		// and null for an exam the operator brought.
+		const generation = sealedExamGeneration(
+			this.stateRoot,
+			candidate.projectId,
+			evaluated.evaluation.sealedHoldout?.corpus?.id ?? null,
+		);
+		const withExam = (summary: WorkbenchCandidateSummary): WorkbenchCandidateSummary =>
+			generation === null ? summary : { ...summary, sealedHoldout: { ...summary.sealedHoldout, generation } };
 		try {
 			const approvedSpec = candidate.origin.kind === "applied-builder"
 				? {
@@ -846,8 +859,8 @@ export class AhdeWorkbench {
 				requireBoundLineage: true,
 				...(approvedSpec ? { approvedSpec } : {}),
 			});
-			if (calibration.specHashes.length === 0) return candidateSummary(candidate, undefined, regraded);
-			return candidateSummary(
+			if (calibration.specHashes.length === 0) return withExam(candidateSummary(candidate, undefined, regraded));
+			return withExam(candidateSummary(
 				candidate,
 				calibration.stats
 					? {
@@ -857,9 +870,9 @@ export class AhdeWorkbench {
 					}
 					: null,
 				regraded,
-			);
+			));
 		} catch {
-			return candidateSummary(candidate, undefined, regraded);
+			return withExam(candidateSummary(candidate, undefined, regraded));
 		}
 	}
 
@@ -903,6 +916,32 @@ export class AhdeWorkbench {
 				proposal: null,
 				proposalError: error instanceof Error ? error.message : String(error),
 			};
+		}
+	}
+
+	/**
+	 * The words for the failure modes one proposal promised about.
+	 *
+	 * The attestation carries ids and content hashes, so the forecast could only
+	 * print `тип сбоя «fb9f2a97»` under a diagnosis that had just named the same
+	 * thing in words. The brief the attestation names is recompiled from the
+	 * exact eval run it cites — the same deterministic compilation `/traces`
+	 * reads — and the titles are read off it. Evidence that cannot be read is
+	 * simply no title: the id still prints, and no panel ever guesses one.
+	 */
+	private targetedModeTitles(review: WorkbenchProposalReview): WorkbenchTargetedModeTitles {
+		const basis = review.evidenceBasis;
+		if (!basis) return {};
+		try {
+			const diagnosis = this.dependencies.diagnoseEval(this.runsRoot, basis.evalRunId);
+			const brief = this.dependencies.compileImprovementBrief(this.runsRoot, diagnosis);
+			const wanted = new Set(basis.failureModes.map((mode) => mode.failureModeId));
+			const targetedModes = brief.modes
+				.filter((mode) => wanted.has(mode.failureModeId))
+				.map((mode) => ({ failureModeId: mode.failureModeId, title: failureModeReading(mode).title.slice(0, 200) }));
+			return targetedModes.length === 0 ? {} : { targetedModes };
+		} catch {
+			return {};
 		}
 	}
 
@@ -2770,8 +2809,11 @@ export class AhdeWorkbench {
 				break;
 			}
 			case "proposal-review":
-				content = { kind: "proposal", ...proposalReview(requireProposal(inventory, ["open", "apply-pending", "discard-pending"]).record) };
+			{
+				const review = proposalReview(requireProposal(inventory, ["open", "apply-pending", "discard-pending"]).record);
+				content = { kind: "proposal", ...review, ...this.targetedModeTitles(review) };
 				break;
+			}
 			case "candidate-review":
 			case "release-decision": {
 				const candidate = requireCandidate(inventory, ["proposed", "built", "validated", "evaluated", "reviewed"]);
@@ -2804,9 +2846,11 @@ export class AhdeWorkbench {
 				}
 				const proposal = requireProposal(inventory, "applied");
 				const receipt = loadBuilderApplyReceipt(this.runsRoot, proposal.record.runId);
+				const review = proposalReview(proposal.record);
 				content = {
 					kind: "applied-proposal",
-					...proposalReview(proposal.record),
+					...review,
+					...this.targetedModeTitles(review),
 					application: {
 						branch: receipt.branch,
 						baseTargetSha: receipt.baseTargetSha,

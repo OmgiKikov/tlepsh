@@ -200,7 +200,18 @@ export interface WorkbenchCandidateSummary {
 		/** v4 gate verdict; null for legacy (v1–v3) evidence. */
 		gate: WorkbenchGateProjection | null;
 	} | null;
-	sealedHoldout: { executed: boolean; gatePassed: boolean; gate: WorkbenchGateProjection | null };
+	sealedHoldout: {
+		executed: boolean;
+		gatePassed: boolean;
+		gate: WorkbenchGateProjection | null;
+		/**
+		 * What the judge was asked for and what survived, for an exam this
+		 * project generated. Read off the sealed-synthesis receipt so a screen
+		 * can say why an exam ordered at 20 cases ran on 19; absent for an exam
+		 * the operator brought, whose provenance is theirs.
+		 */
+		generation?: { requested: number; accepted: number; droppedDuplicate: number; droppedMalformed: number } | null;
+	};
 	/**
 	 * How far the judge behind this evidence has been checked against a human.
 	 * Absent when the evidence leans on no judge grader; null when it does and
@@ -301,6 +312,21 @@ export type WorkbenchCandidateImpactProjection =
 	| { available: true; impact: CandidateImpact }
 	| { available: false; reason: string };
 
+/**
+ * The failure modes a proposal promised about, named the way the diagnosis
+ * panel names them.
+ *
+ * The attestation inside the proposal carries ids and content hashes — the
+ * right thing to hash, the wrong thing to show: the forecast read `Ожидаю тип
+ * сбоя «fb9f2a97» 4/4 → ≤0/4` while the diagnosis above it had already said
+ * "check_dbo was never called". This is read off the brief the attestation
+ * names and travels with the VIEW only; nothing here enters the bytes a human
+ * approves, so a language never changes a decision subject.
+ */
+export interface WorkbenchTargetedModeTitles {
+	targetedModes?: { failureModeId: string; title: string }[];
+}
+
 export type WorkbenchReviewDetail =
 	| { kind: "spec-draft"; id: string; snapshotHash: string; spec: AgentSpec }
 	| {
@@ -314,8 +340,8 @@ export type WorkbenchReviewDetail =
 		tasks: BuilderCorpusDraft["tasks"];
 		taskProvenance: NonNullable<BuilderCorpusDraft["taskProvenance"]>;
 	}
-	| ({ kind: "proposal" } & WorkbenchProposalReview)
-	| ({ kind: "applied-proposal" } & WorkbenchProposalReview & {
+	| ({ kind: "proposal" } & WorkbenchProposalReview & WorkbenchTargetedModeTitles)
+	| ({ kind: "applied-proposal" } & WorkbenchProposalReview & WorkbenchTargetedModeTitles & {
 		application: { branch: string; baseTargetSha: string; candidateSha: string; appliedAt: string };
 	})
 	| ({ kind: "candidate" } & WorkbenchCandidateSummary & {

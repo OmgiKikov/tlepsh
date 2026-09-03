@@ -136,6 +136,7 @@ export function installAhdeBuilderProductShell(
 		builderModel: { label: null, credentialPresent: false },
 		error: null,
 		plan: null,
+		hint: null,
 	};
 
 	/**
@@ -276,6 +277,24 @@ export function installAhdeBuilderProductShell(
 		return inFlight;
 	};
 
+	/**
+	 * The one sentence the shell leaves standing under the transcript.
+	 *
+	 * It is remembered as it is printed, because the header's `Next` says the
+	 * same kind of sentence and the first screen printed both: `Дальше Опиши,
+	 * какой агент тебе нужен` two lines above `Опиши, какой агент тебе нужен`.
+	 * {@link renderHeader} drops its own line when the two are the same string.
+	 */
+	const showHint = (ctx: ExtensionContext, hint: string): void => {
+		state.hint = hint;
+		ctx.ui.notify(hint, "info");
+		try {
+			tui?.requestRender();
+		} catch {
+			// Rendering is best-effort; the hint is printed either way.
+		}
+	};
+
 	const onboard = async (ctx: ExtensionContext, view: WorkbenchView | null): Promise<void> => {
 		if (!state.builderModel.credentialPresent) {
 			if (typeof ctx.ui.select !== "function") {
@@ -312,14 +331,14 @@ export function installAhdeBuilderProductShell(
 				await refresh();
 			}
 			if (current && current.stage !== "target-setup") {
-				ctx.ui.notify(t("onboarding.describe-now"), "info");
+				showHint(ctx, t("onboarding.describe-now"));
 				return;
 			}
-			ctx.ui.notify(
+			showHint(
+				ctx,
 				(current ?? view).target.status === "missing"
 					? t("onboarding.no-agent-yet")
 					: t("onboarding.agent-no-model"),
-				"info",
 			);
 		} else {
 			// A tool that declares a key nobody exported is the host's question, not
@@ -328,7 +347,7 @@ export function installAhdeBuilderProductShell(
 				.filter((entry) => !entry.present && !askedToolKeys.has(entry.environment));
 			for (const entry of missing) askedToolKeys.add(entry.environment);
 			if (missing.length > 0) await confirmDeclaredToolCredentials(ctx, missing);
-			ctx.ui.notify(nextStep(view), "info");
+			showHint(ctx, nextStep(view));
 		}
 	};
 

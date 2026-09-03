@@ -279,7 +279,7 @@ function paintMarker(marker: PlanMarker, paint: Paint): string {
 
 /** The `/plan` panel: every step, its state, and whatever hangs under it. */
 export function renderPlan(plan: Plan, paint: Paint): string[] {
-	const lines: string[] = [];
+	const lines: string[] = [paint.dim(planHeadline(plan))];
 	for (const step of plan.steps) {
 		const title = step.marker === "ahead" ? paint.muted(step.title) : paint.bold(step.title);
 		lines.push(`${paintMarker(step.marker, paint)} ${title}${step.detail ? ` ${paint.dim("·")} ${paint.dim(step.detail)}` : ""}`);
@@ -300,9 +300,10 @@ export function planProgress(plan: Plan): { done: number; total: number } {
 }
 
 /**
- * `Plan 3/8 · ▸ Candidate verification` — the whole cycle in the one line the
- * persistent header can afford. It is the same compilation the `/plan` panel
- * renders, folded to a count and the phase the operator is standing in.
+ * `Plan 3/8 · ▸ Candidate verification` — the whole cycle in one line, at the
+ * top of the `/plan` panel. The persistent header used to carry it too, under
+ * a stage line that had just named the same stage; the header now folds the
+ * count into that line and leaves the marker and the phase name to the panel.
  */
 export function planHeadline(plan: Plan): string {
 	const progress = planProgress(plan);
