@@ -13,6 +13,7 @@ import type {
 	WorkbenchView,
 } from "../../workbench/types.js";
 import { failureModeExcerpt, failureModeReading } from "../../application/run-explanation.js";
+import type { TargetAuthoringResource } from "../../application/target-authoring-context.js";
 import { formatResourceFragment } from "../../domain/comparison-gate.js";
 import { resolveWorldPath } from "../../domain/world.js";
 import { candidateStatusLabel, hasMessage, plural, t, verdictLabel } from "../../i18n.js";
@@ -713,8 +714,19 @@ export function renderTarget(content: WorkbenchTargetDetail, paint: Paint): stri
 		16,
 		...content.resources.map((resource) => resourceKind(resource.kind).length),
 	);
+	const resourceLine = (resource: TargetAuthoringResource): string =>
+		`  ${paint.bold(oneLine(resource.path, 60).padEnd(40))} ${resourceKind(resource.kind).padEnd(kindWidth)} ${paint.dim(bytes(resource.bytes))}${resource.mode === "100755" ? paint.dim(t("view.executable")) : ""}`;
 	for (const resource of content.resources) {
-		lines.push(`  ${paint.bold(oneLine(resource.path, 60).padEnd(40))} ${resourceKind(resource.kind).padEnd(kindWidth)} ${paint.dim(bytes(resource.bytes))}${resource.mode === "100755" ? paint.dim(t("view.executable")) : ""}`);
+		if (resource.kind === "harness-file") continue;
+		lines.push(resourceLine(resource));
+	}
+	// The files the manifest declares as the editable surface get their own
+	// group: for a command Target they ARE the harness, and reading them mixed
+	// into the canonical list left the Builder guessing which file it may edit.
+	const harnessFiles = content.resources.filter((resource) => resource.kind === "harness-file");
+	if (harnessFiles.length > 0) {
+		lines.push(paint.dim(t("view.target.harness-files")));
+		for (const resource of harnessFiles) lines.push(resourceLine(resource));
 	}
 	if (content.resource) {
 		lines.push("", `${section(content.resource.path, paint)} ${paint.dim(`${resourceKind(content.resource.kind)} · ${bytes(content.resource.bytes)} · ${shortHash(content.resource.sha256)}`)}`);
