@@ -599,17 +599,33 @@ describe("the user model is a measurement input", () => {
 		}
 	}, 180_000);
 
-	it("fails closed when a suite has simulated-user cases and no user model", () => {
+	/**
+	 * Loadable, never runnable. Refusing to LOAD such a Target would leave the
+	 * operator of a shipped template with a YAML error where the question "which
+	 * model plays the customer?" belongs. The refusal moved onto the run path,
+	 * where it lands before the first execution and names the case.
+	 */
+	it("fails closed on the run, not on the load, when a suite has no user model", async () => {
 		const dir = makeTargetFixture(baseFixtureFiles({
 			"manifest.yaml": manifestYaml({ targetUrl: targetMock.url }),
 			"evals/development.jsonl": datasetOf([SENTINEL_CASE]),
 		}));
+		const runsRoot = join(dir, "..", `no-user-runs-${Date.now()}`);
 		try {
-			expect(() => loadTarget(dir)).toThrow(
-				/sim_sentinel: dataset uses simulated-user cases but evalSuite\.simulatedUser model is not configured/,
-			);
+			const target = loadTarget(dir);
+			expect(target.manifest.evalSuite.simulatedUser).toBeUndefined();
+			expect(target.tasks.map((task) => task.id)).toContain("sim_sentinel");
+
+			const userCalls = userMock.requests();
+			await expect(runSuite(target, { runsRoot, label: "solo", repetitions: 1 }))
+				.rejects.toThrow(/conversations and evalSuite\.simulatedUser is not configured \(sim_sentinel\)/);
+			// Refused before the runs root existed, so nothing was spent on either
+			// the Target or the user model.
+			expect(existsSync(runsRoot)).toBe(false);
+			expect(userMock.requests()).toBe(userCalls);
 		} finally {
 			cleanup(dir);
+			cleanup(runsRoot);
 		}
 	});
 

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -26,7 +26,7 @@ import {
 	type EvalRunRecord,
 	type ReusableBaselineQuery,
 } from "../src/eval.js";
-import { loadTarget } from "../src/manifest.js";
+import { EvaluatorsNotConfiguredError, loadTarget, SimulatedUserModelBlock } from "../src/manifest.js";
 import { startMockModel } from "../src/mock-model.js";
 import { worldStatePath } from "../src/target/world-state.js";
 import { baseFixtureFiles, makeTargetFixture } from "./fixtures.js";
@@ -974,5 +974,112 @@ describe("eval run purpose", () => {
 			purpose: "screen",
 			label: "solo",
 		}).success).toBe(true);
+	});
+});
+
+/**
+ * A suite the Target cannot measure yet.
+ *
+ * Loading it is allowed — the operator is about to be asked which models play
+ * judge and client — but running it is refused before the first execution, over
+ * the whole design rather than per case. An eight-case basket that burns six
+ * runs and then errors on two has spent the operator's money to tell them
+ * something a string comparison knew for free.
+ */
+describe("a suite whose evaluators do not exist", () => {
+	function unmeasurableFixture(): string {
+		const plain = Array.from({ length: 5 }, (_, index) => ({
+			id: `plain_${index + 1}`,
+			input: "какой у меня тариф?",
+			graders: [{ type: "output_contains", text: "тариф" }],
+		}));
+		return makeTargetFixture(baseFixtureFiles({
+			"manifest.yaml": `id: unmeasurable-target
+model:
+  provider: qwen-mock
+  id: mock
+  api: openai-completions
+  baseUrl: http://127.0.0.1:9/v1
+  apiKeyEnv: MOCK_MODEL_KEY
+  thinkingLevel: "off"
+  timeoutMs: 60000
+instructions:
+  agentsMd: AGENTS.md
+skills: []
+evalSuite:
+  id: unmeasurable-suite
+  dataset: evals/development.jsonl
+  graders: evals/graders.yaml
+`,
+			"evals/development.jsonl": [
+				...plain,
+				{ id: "judged", input: "объясни отказ", graders: [{ type: "judge", rubric: "по существу" }] },
+				{
+					id: "vague",
+					input: "у меня всё плохо",
+					simulatedUser: { goal: "объяснить, что не работает интернет", maxTurns: 3 },
+					graders: [{ type: "turn_budget", max: 3 }],
+				},
+				{
+					id: "angry",
+					input: "почему списали деньги",
+					simulatedUser: { goal: "вернуть списание", maxTurns: 3 },
+					graders: [{ type: "turn_budget", max: 3 }],
+				},
+			].map((task) => JSON.stringify(task)).join("\n"),
+			"evals/graders.yaml": "defaults: []\n",
+		}));
+	}
+
+	it("refuses before the first execution, names every case, and writes nothing", async () => {
+		const dir = unmeasurableFixture();
+		const runsRoot = join(dir, "..", `unmeasurable-runs-${Date.now()}`);
+		cleanupPaths.push(dir, runsRoot);
+
+		// It loaded: eight cases, and both evaluator blocks simply absent.
+		const target = loadTarget(dir);
+		expect(target.tasks).toHaveLength(8);
+
+		const error = await runSuite(target, { runsRoot, label: "solo", repetitions: 1 })
+			.then(() => null, (reason: unknown) => reason);
+		expect(error).toBeInstanceOf(EvaluatorsNotConfiguredError);
+		const typed = error as EvaluatorsNotConfiguredError;
+		expect(typed.missing).toEqual({ judge: ["judged"], simulatedUser: ["vague", "angry"] });
+		expect(typed.message).toContain("judged");
+		expect(typed.message).toContain("vague, angry");
+		expect(typed.reason.code).toBe("blocker.evaluators-missing");
+		// Nothing was spent and nothing was recorded: the runs root never appeared,
+		// so there is no run.json for six cases that would have run first.
+		expect(existsSync(runsRoot)).toBe(false);
+	});
+
+	it("names only the role that is missing when the other one is configured", async () => {
+		const dir = unmeasurableFixture();
+		const runsRoot = join(dir, "..", `judge-only-runs-${Date.now()}`);
+		cleanupPaths.push(dir, runsRoot);
+		const target = loadTarget(dir);
+		const withUser = {
+			...target,
+			manifest: {
+				...target.manifest,
+				evalSuite: {
+					...target.manifest.evalSuite,
+					simulatedUser: SimulatedUserModelBlock.parse({
+						provider: "openrouter",
+						id: "glm-5.3",
+						api: "openai-completions",
+						baseUrl: "https://openrouter.invalid/api/v1",
+						apiKeyEnv: "OPENROUTER_API_KEY",
+						thinkingLevel: "off",
+						timeoutMs: 300_000,
+					}),
+				},
+			},
+		};
+		const error = await runSuite(withUser, { runsRoot, label: "solo", repetitions: 1 })
+			.then(() => null, (reason: unknown) => reason);
+		expect((error as EvaluatorsNotConfiguredError).missing).toEqual({ judge: ["judged"], simulatedUser: [] });
+		expect((error as EvaluatorsNotConfiguredError).reason.code).toBe("blocker.judge-missing");
+		expect(existsSync(runsRoot)).toBe(false);
 	});
 });

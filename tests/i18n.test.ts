@@ -337,6 +337,45 @@ describe("ru renders", () => {
 		]);
 	});
 
+	/**
+	 * The one question that starts testing names both models a measurement uses
+	 * besides the agent — and the variable each key is read from, never a value.
+	 */
+	it("names the judge and the client's model in the start-testing dialog, in Russian", () => {
+		setLanguage("ru");
+		const parts = [
+			t("confirm.start-testing.part.judge"),
+			t("confirm.start-testing.part.user"),
+			t("confirm.start-testing.part.publish-corpus", { cases: plural(3, "case") }),
+			t("confirm.start-testing.part.run", { runs: plural(3, "execution") }),
+		];
+		const confirmation: WorkbenchConfirmation = {
+			kind: "start-testing",
+			title: t("confirm.start-testing.title", { parts: parts.join(", ") }),
+			reason: "оператор сказал «тесты»",
+			subject: {
+				operation: "start-testing",
+				steps: ["configure-evaluators", "publish-corpus", "run-eval"],
+				spec: t("confirm.start-testing.already-approved", { title: "Поддержка тарифов" }),
+				basket: t("confirm.start-testing.basket", { name: "Корзина разработки", cases: plural(3, "case") }),
+				judge: t("confirm.start-testing.judge", { model: "openrouter/glm-5.3", env: "OPENROUTER_API_KEY" }),
+				user: t("confirm.start-testing.user", { model: "openrouter/glm-5.3", env: "OPENROUTER_API_KEY" }),
+				run: t("confirm.start-testing.run", { cases: 3, repetitions: 1, executions: plural(3, "execution") }),
+				estimatedCost: t("estimate.nothing-comparable-alone"),
+				estimatedTime: t("estimate.nothing-comparable-alone"),
+			},
+			subjectHash: "d".repeat(64),
+			policy: "consequential",
+			question: t("confirm.question", { title: t("confirm.start-testing.title", { parts: parts.join(", ") }) }),
+		};
+		const lines = renderConfirmation(confirmation, plainPaint);
+		expect(lines).toContain("Судья openrouter/glm-5.3 (не модель агента) · ключ OPENROUTER_API_KEY");
+		expect(lines).toContain("Собеседник openrouter/glm-5.3 · ключ OPENROUTER_API_KEY");
+		expect(confirmation.question).toBe(
+			"Начать тесты — выбрать судью, выбрать собеседника, опубликовать 3 кейса, прогнать 3 запуска?",
+		);
+	});
+
 	it("renders the run and verify dialog bodies in Russian", () => {
 		setLanguage("ru");
 		const runEval: WorkbenchConfirmation = {

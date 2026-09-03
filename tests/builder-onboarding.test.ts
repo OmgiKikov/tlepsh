@@ -10,6 +10,7 @@ import {
 	confirmDeclaredToolCredentials,
 	defaultJudgeSelection,
 	describeHostModelCatalog,
+	evaluatorsStillUnchosen,
 	hostDefaultJudge,
 	hostModelCatalog,
 	targetIdFromDirectory,
@@ -368,5 +369,106 @@ describe("adopting the agent already in the folder", () => {
 			(await plain.host.workbench.view()) as WorkbenchView,
 		);
 		expect(plain.asked[0]).toBe(t("onboarding.no-agent-here", { directory: "agent" }));
+	});
+});
+
+/**
+ * After the one question the first run asks — which model should the agent use
+ * — the template's judge and simulated-user blocks are still the built-in
+ * placeholder. Saying who chooses them, and when, is one line; asking here
+ * would be two more dialogs about cases nobody has written yet.
+ */
+describe("the evaluators the first run does not ask about", () => {
+	function view(overrides: Partial<WorkbenchView["target"]> = {}): WorkbenchView {
+		return {
+			stage: "spec-design",
+			target: {
+				status: "ready",
+				id: "my-agent",
+				gitSha: "a".repeat(40),
+				model: { provider: "openrouter", id: "glm-5.3", apiKeyEnv: "OPENROUTER_API_KEY", credentialPresent: true },
+				evaluators: { judge: null, simulatedUser: null },
+				evaluatorRequirements: { judge: true, simulatedUser: true },
+				...overrides,
+			},
+		} as unknown as WorkbenchView;
+	}
+
+	it("reads the template's own cases, not a guess", () => {
+		// The python-agent template: one judged case, two conversations, neither
+		// evaluator configured.
+		expect(evaluatorsStillUnchosen(view())).toBe(true);
+		// Only the conversations.
+		expect(evaluatorsStillUnchosen(view({ evaluatorRequirements: { judge: false, simulatedUser: true } }))).toBe(true);
+		// A template whose cases need neither is never told about a question it
+		// will not be asked.
+		expect(evaluatorsStillUnchosen(view({ evaluatorRequirements: { judge: false, simulatedUser: false } }))).toBe(false);
+		// And a Target that already carries both says nothing either.
+		expect(evaluatorsStillUnchosen(view({
+			evaluators: {
+				judge: { provider: "openrouter", id: "glm-5.3", apiKeyEnv: "OPENROUTER_API_KEY", credentialPresent: true },
+				simulatedUser: { provider: "openrouter", id: "glm-5.3", apiKeyEnv: "OPENROUTER_API_KEY", credentialPresent: true },
+			},
+		}))).toBe(false);
+		// A view written before evaluator setup existed carries neither field.
+		expect(evaluatorsStillUnchosen({ target: {} } as unknown as WorkbenchView)).toBe(false);
+	});
+
+	it("says the line once, after the model is chosen, and adds no dialog", async () => {
+		process.env.OPENROUTER_API_KEY = "sk-test";
+		const notes: { message: string; tone: string }[] = [];
+		const asked: string[] = [];
+		const ctx = {
+			model: { provider: "openrouter", id: "glm-5.3" },
+			modelRegistry: {
+				getAvailable: () => [{ provider: "openrouter", id: "glm-5.3" }],
+				hasConfiguredAuth: () => true,
+				find: () => ({ provider: "openrouter", id: "glm-5.3", baseUrl: "https://openrouter.invalid/api/v1" }),
+			},
+			ui: {
+				select: vi.fn(async (question: string, choices: string[]) => {
+					asked.push(question);
+					return choices[0];
+				}),
+				input: vi.fn(async (_question: string, preset?: string) => preset),
+				notify: vi.fn((message: string, tone: string) => {
+					notes.push({ message, tone });
+				}),
+			},
+		} as unknown as ExtensionContext;
+		const configured = view();
+		const host = {
+			workbench: {
+				view: async () => configured,
+				decide: vi.fn(async () => ({
+					kind: "configure-target",
+					message: "",
+					result: {
+						targetId: "my-agent",
+						targetGitSha: "a".repeat(40),
+						receiptId: "configure-target-1",
+						credentialEnv: "OPENROUTER_API_KEY",
+					},
+					view: configured,
+				})),
+			},
+			actorId: () => "operator",
+			presenter: { show: vi.fn() },
+			projectDir: mkdtempSync(join(tmpdir(), "ahde-evaluators-later-")),
+		} as unknown as Parameters<typeof runFirstRunOnboarding>[1];
+		onboardingRoots.push(String((host as { projectDir?: string }).projectDir));
+
+		const before = {
+			stage: "target-setup",
+			target: { status: "bootstrap-required" },
+			project: { directory: "agent" },
+		} as unknown as WorkbenchView;
+		const result = await runFirstRunOnboarding(ctx, host, before);
+
+		expect(result).toBe(configured);
+		// One question — which model — and then one statement, not a third dialog.
+		expect(asked).toEqual([t("onboarding.which-model")]);
+		expect(notes).toEqual([{ message: t("onboarding.evaluators-later"), tone: "info" }]);
+		delete process.env.OPENROUTER_API_KEY;
 	});
 });

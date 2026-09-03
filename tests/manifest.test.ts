@@ -2,7 +2,14 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { GraderSpec, graderName, loadTarget, scaffoldTarget } from "../src/manifest.js";
+import {
+	assertEvaluatorsConfigured,
+	GraderSpec,
+	graderName,
+	loadTarget,
+	missingEvaluatorCases,
+	scaffoldTarget,
+} from "../src/manifest.js";
 import { canonicalJson, hashValue } from "../src/provenance.js";
 import { AGENTS_MD, baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 
@@ -144,7 +151,13 @@ describe("loadTarget", () => {
 			cleanup(dirB);
 		}
 	});
-	it("rejects judge graders when evalSuite.judge is not configured", () => {
+	/**
+	 * Loadable, never runnable. A Target whose cases need a judge it has not got
+	 * is exactly the Target the operator is about to be asked about; refusing to
+	 * load it replaces that question with a YAML complaint. The refusal lives on
+	 * the run path, where it names the cases.
+	 */
+	it("loads judge graders with no judge configured, and refuses to run them", () => {
 		const dir = makeTargetFixture(
 			baseFixtureFiles({
 				"evals/development.jsonl": `${JSON.stringify({
@@ -155,7 +168,36 @@ describe("loadTarget", () => {
 			}),
 		);
 		try {
-			expect(() => loadTarget(dir)).toThrow(/judge/);
+			const target = loadTarget(dir);
+			expect(target.manifest.evalSuite.judge).toBeUndefined();
+			expect(target.tasks).toHaveLength(1);
+			expect(missingEvaluatorCases(target.tasks, target.manifest.evalSuite))
+				.toEqual({ judge: ["task_001"], simulatedUser: [] });
+			expect(() => assertEvaluatorsConfigured(target.tasks, target.manifest.evalSuite))
+				.toThrow(/graded by a judge and evalSuite\.judge is not configured \(task_001\)/);
+		} finally {
+			cleanup(dir);
+		}
+	});
+
+	it("loads simulated-user cases with no user model, and refuses to run them", () => {
+		const dir = makeTargetFixture(
+			baseFixtureFiles({
+				"evals/development.jsonl": `${JSON.stringify({
+					id: "sim_001",
+					input: "x",
+					simulatedUser: { goal: "поменять тариф", maxTurns: 3 },
+					graders: [{ type: "turn_budget", max: 3 }],
+				})}\n`,
+			}),
+		);
+		try {
+			const target = loadTarget(dir);
+			expect(target.manifest.evalSuite.simulatedUser).toBeUndefined();
+			expect(missingEvaluatorCases(target.tasks, target.manifest.evalSuite))
+				.toEqual({ judge: [], simulatedUser: ["sim_001"] });
+			expect(() => assertEvaluatorsConfigured(target.tasks, target.manifest.evalSuite))
+				.toThrow(/conversations and evalSuite\.simulatedUser is not configured \(sim_001\)/);
 		} finally {
 			cleanup(dir);
 		}

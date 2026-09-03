@@ -4,7 +4,15 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { plural, setLanguage, t } from "../src/i18n.js";
-import { executionKindOf, harnessFilesOf, loadTarget, scaffoldTarget, TargetManifest } from "../src/manifest.js";
+import {
+	assertEvaluatorsConfigured,
+	executionKindOf,
+	harnessFilesOf,
+	loadTarget,
+	missingEvaluatorCases,
+	scaffoldTarget,
+	TargetManifest,
+} from "../src/manifest.js";
 import {
 	isStandIn,
 	isStandInModel,
@@ -13,7 +21,7 @@ import {
 	standInManifestFields,
 	standInTargetFiles,
 } from "../src/target/placeholders.js";
-import { inspectTargetReadiness, targetBootstrapRequired } from "../src/target/readiness.js";
+import { inspectTargetReadiness, STARTER_MODEL_ID, targetBootstrapRequired } from "../src/target/readiness.js";
 import { deriveWorkbenchView, loadWorkbenchInventory } from "../src/workbench/inventory.js";
 import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 
@@ -82,6 +90,19 @@ const STAND_IN_JUDGE = {
 
 const REAL_JUDGE = { ...STAND_IN_JUDGE, provider: "anthropic", id: "claude-judge", baseUrl: "https://api.anthropic.com/v1", apiKeyEnv: "JUDGE_API_KEY" } as const;
 
+/** Exactly the `simulatedUser:` block every shipped template writes. */
+const PLACEHOLDER_USER = {
+	provider: "openai-compatible",
+	id: "replace-with-model-id",
+	api: "openai-completions",
+	baseUrl: "http://127.0.0.1:1234/v1",
+	apiKeyEnv: "AHDE_USER_API_KEY",
+	thinkingLevel: "off",
+	timeoutMs: 300_000,
+} as const;
+
+const REAL_USER = { ...PLACEHOLDER_USER, provider: "openrouter", id: "glm-5.3", baseUrl: "https://openrouter.ai/api/v1", apiKeyEnv: "OPENROUTER_API_KEY" } as const;
+
 function manifestInput(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
 		id: "support-agent",
@@ -135,6 +156,25 @@ describe("recognising a template stand-in", () => {
 		// is not part of this question; `standInManifestFields` still reports it.
 		const standInKeyName: TargetManifest["model"] = { ...REAL_MODEL, apiKeyEnv: "REPLACE_ME_API_KEY" };
 		expect(isStandInModel(standInKeyName)).toBe(false);
+	});
+
+	/**
+	 * The built-in starter id is a stand-in that never says REPLACE-ME. Every
+	 * shipped template writes it on the Target's model AND, where it declares
+	 * them, on the judge and the simulated user — so a reader that only knows the
+	 * regex sees two configured evaluators pointed at a dead local port.
+	 */
+	it("reads the built-in starter model id as a stand-in too", () => {
+		expect(STARTER_MODEL_ID).toBe("replace-with-model-id");
+		expect(isStandInModel({ ...REAL_ENDPOINT, id: STARTER_MODEL_ID })).toBe(true);
+		// Exactly the block every template ships on `judge:` and `simulatedUser:`.
+		expect(isStandInModel({
+			provider: "openai-compatible",
+			id: STARTER_MODEL_ID,
+			baseUrl: "http://127.0.0.1:1234/v1",
+		})).toBe(true);
+		// And nothing near it: a real id that merely mentions the word is a model.
+		expect(isStandInModel({ ...REAL_ENDPOINT, id: "replace-with-model-id-v2" })).toBe(false);
 	});
 
 	it("names the manifest fields exactly as the manifest names them, identity first", () => {
@@ -307,7 +347,12 @@ evalSuite:
 			})}\n`,
 		}));
 		fixtures.push(dir);
-		expect(() => loadTarget(dir)).toThrow(/evalSuite\.judge model is not configured/);
+		const target = loadTarget(dir);
+		expect(target.manifest.evalSuite.judge).toBeUndefined();
+		// Loadable, never runnable, and the refusal names the case rather than a
+		// manifest field the operator never typed.
+		expect(() => assertEvaluatorsConfigured(target.tasks, target.manifest.evalSuite))
+			.toThrow(/graded by a judge and evalSuite\.judge is not configured \(task_001\)/);
 	});
 
 	it("still encodes, because receipts write manifests back out through this schema", () => {
@@ -368,6 +413,63 @@ describe("a template harness is not a configured agent", () => {
 		// still asks which models this agent, its judge and its user model use.
 		expect(target.manifest.id).toBe("my-agent");
 		expect(targetBootstrapRequired(target.manifest)).toBe(true);
+		// Both evaluator blocks are the built-in placeholder the bootstrap dialog
+		// replaces on `model:`, so both read as unconfigured rather than as models
+		// pointed at http://127.0.0.1:1234/v1.
+		expect(target.manifest.evalSuite.judge).toBeUndefined();
+		expect(target.manifest.evalSuite.simulatedUser).toBeUndefined();
+	});
+
+	/**
+	 * The whole point of the split: this template's cases need both evaluators
+	 * and it must still LOAD, or the operator's first run of `ahde` in the folder
+	 * dies on a manifest error instead of asking which models to use.
+	 */
+	it("loads the python-agent template and refuses to run it, naming the cases", () => {
+		const parent = mkdtempSync(join(tmpdir(), "ahde-python-evaluators-"));
+		roots.push(parent);
+		const target = loadTarget(scaffoldTarget(PYTHON_TEMPLATE, join(parent, "agent")));
+		expect(missingEvaluatorCases(target.tasks, target.manifest.evalSuite)).toEqual({
+			judge: ["technician-price"],
+			simulatedUser: ["vague-complaint", "angry-about-money"],
+		});
+		expect(() => assertEvaluatorsConfigured(target.tasks, target.manifest.evalSuite)).toThrow(
+			/1 case\(s\) are graded by a judge .*\(technician-price\); 2 case\(s\) are conversations .*\(vague-complaint, angry-about-money\)/,
+		);
+	});
+
+	/**
+	 * The other half of the rule: a real block is a real evaluator. A shipped
+	 * template is starting material, but a manifest the operator's reviewed
+	 * commit wrote must survive the same schema untouched.
+	 */
+	it("leaves a configured judge and simulated user exactly as written", () => {
+		const manifest = TargetManifest.parse(manifestInput({
+			evalSuite: {
+				id: "support-agent-development",
+				dataset: "evals/development.jsonl",
+				graders: "evals/graders.yaml",
+				judge: { ...REAL_JUDGE },
+				simulatedUser: { ...REAL_USER },
+			},
+		}));
+		expect(manifest.evalSuite.judge).toMatchObject({ provider: "anthropic", id: "claude-judge" });
+		expect(manifest.evalSuite.simulatedUser).toMatchObject({ provider: "openrouter", id: "glm-5.3" });
+	});
+
+	it("drops a simulated user on the built-in placeholder and survives re-encoding", () => {
+		const manifest = TargetManifest.parse(manifestInput({
+			evalSuite: {
+				id: "support-agent-development",
+				dataset: "evals/development.jsonl",
+				graders: "evals/graders.yaml",
+				simulatedUser: { ...PLACEHOLDER_USER },
+			},
+		}));
+		expect(manifest.evalSuite.simulatedUser).toBeUndefined();
+		const encoded = z.safeEncode(TargetManifest, manifest);
+		expect(encoded.success).toBe(true);
+		expect((encoded.data as typeof manifest).evalSuite.simulatedUser).toBeUndefined();
 	});
 
 	it("asks for bootstrap for both shapes, and for neither once they are replaced", () => {
