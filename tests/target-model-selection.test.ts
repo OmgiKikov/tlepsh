@@ -219,3 +219,27 @@ describe("Target model selection", () => {
 		expect(first.spec.compat).toEqual({ alpha: { first: 1, second: 2 }, zeta: true });
 	});
 });
+
+describe("the route a host-catalog model takes", () => {
+	it("pins OpenRouter to its chat-completions API whatever the host would use", () => {
+		// Live session 8: the host's catalog mapped an Anthropic model to an
+		// anthropic-messages route at /api, and every judge call got a 404 page.
+		const model = hostModel({
+			provider: "openrouter",
+			id: "anthropic/claude-3-haiku",
+			api: "anthropic-messages",
+			baseUrl: "https://openrouter.ai/api",
+		});
+		const result = resolveTargetModelSelection(
+			selection({ provider: "openrouter", modelId: "anthropic/claude-3-haiku" }),
+			model,
+			{ apiKeyEnv: "OPENROUTER_API_KEY" },
+		);
+		expect(result.api).toBe("openai-completions");
+		expect(result.baseUrl).toBe("https://openrouter.ai/api/v1");
+	});
+
+	it("leaves every other provider's route alone", () => {
+		expect(resolveSelection(selection()).baseUrl).toBe(hostModel().baseUrl);
+	});
+});

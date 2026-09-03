@@ -271,6 +271,22 @@ function defaultThinkingLevel(levels: readonly ModelThinkingLevel[]): ModelThink
  * Materialize a complete AHDE model definition from a tiny Builder selection and
  * one exact, host-resolved Pi catalog model. This function performs no I/O.
  */
+/**
+ * The route AHDE itself will use for a host-catalog model, which is not always
+ * the route the host's own client would take. OpenRouter serves every model
+ * over its chat-completions API at `/api/v1`; the host catalog can also map an
+ * Anthropic model to an `anthropic-messages` route at `/api`, which the pinned
+ * Pi cannot reach (live session 8: a judge written from that entry answered
+ * every grading call with a 404 web page). A Target manifest, a judge and a
+ * user model are AHDE's clients, so they take the one route that works.
+ */
+export function canonicalRoute(provider: string, api: string, baseUrl: string): { api: string; baseUrl: string } {
+	if (provider === "openrouter" && /^https:\/\/openrouter\.ai\/api(?:\/v1)?\/?$/.test(baseUrl)) {
+		return { api: "openai-completions", baseUrl: "https://openrouter.ai/api/v1" };
+	}
+	return { api, baseUrl };
+}
+
 export function resolveTargetModelSelection(
 	selectionInput: unknown,
 	resolvedModelInput: Model<Api>,
@@ -286,8 +302,11 @@ export function resolveTargetModelSelection(
 	if (selection.provider !== provider) throw new Error("selected provider does not match the host-resolved model");
 	if (selection.modelId !== id) throw new Error("selected modelId does not match the host-resolved model");
 
-	const api = hostIdentity(resolvedModel.api, "resolved model api");
-	const baseUrl = hostBaseUrl(resolvedModel.baseUrl);
+	const { api, baseUrl } = canonicalRoute(
+		provider,
+		hostIdentity(resolvedModel.api, "resolved model api"),
+		hostBaseUrl(resolvedModel.baseUrl),
+	);
 	const reasoning = z.boolean().parse(resolvedModel.reasoning);
 	const input = z.array(z.enum(["text", "image"])).min(1).max(2)
 		.refine((items) => new Set(items).size === items.length, "resolved model input modalities must be unique")

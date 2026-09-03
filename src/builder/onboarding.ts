@@ -69,7 +69,11 @@ function credentialPresent(ctx: Pick<ExtensionContext, "modelRegistry">, model: 
  * chooser wants it: models this machine can actually authenticate first. Builder
  * Pi has no other way to learn which ids exist, so it otherwise guesses.
  */
-export function hostModelCatalog(ctx: Pick<ExtensionContext, "modelRegistry">): HostModelCatalog {
+export function hostModelCatalog(
+	ctx: Pick<ExtensionContext, "modelRegistry">,
+	options: { limit?: number } = {},
+): HostModelCatalog {
+	const limit = options.limit ?? MAX_CATALOG_ENTRIES;
 	let available: HostModel[] = [];
 	try {
 		available = ctx.modelRegistry.getAvailable();
@@ -87,8 +91,8 @@ export function hostModelCatalog(ctx: Pick<ExtensionContext, "modelRegistry">): 
 	// Stable sort keeps the host's own ordering inside each group.
 	entries.sort((left, right) => Number(right.credentialPresent) - Number(left.credentialPresent));
 	return {
-		models: entries.slice(0, MAX_CATALOG_ENTRIES),
-		omittedModels: Math.max(0, entries.length - MAX_CATALOG_ENTRIES),
+		models: entries.slice(0, limit),
+		omittedModels: Math.max(0, entries.length - limit),
 	};
 }
 
@@ -150,7 +154,10 @@ export function hostDefaultJudge(
 	target: { provider: string; id: string },
 	env: NodeJS.ProcessEnv = process.env,
 ): { selection: TargetModelSelection; model: TargetManifest["model"] } | null {
-	const selection = defaultJudgeSelection(hostModelCatalog(ctx), target);
+	// The whole catalog, not the forty-entry correction aid: the judge-class
+	// ids live past the alphabet's first page (session 8 picked claude-3-haiku
+	// because glm sat beyond the cut).
+	const selection = defaultJudgeSelection(hostModelCatalog(ctx, { limit: Number.POSITIVE_INFINITY }), target);
 	if (!selection) return null;
 	const apiKeyEnv = credentialPlaceholder(selection.provider);
 	if (!env[apiKeyEnv]?.trim()) return null;
