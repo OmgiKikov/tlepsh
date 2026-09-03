@@ -625,7 +625,7 @@ function workbench(options: {
 	decide?: DecideFake;
 	/** Commands that read the harness itself (/doctor's stand-in scan) need a real path. */
 	projectDir?: string;
-	/** Commands that read durable evidence off disk (/export) need real roots. */
+	/** Commands that read durable evidence off disk (/dataset) need real roots. */
 	runsRoot?: string;
 	stateRoot?: string;
 	projectId?: string;
@@ -744,7 +744,7 @@ describe("Builder Pi slash commands", () => {
 			"trace",
 			"log",
 			// The conversations the agent already had, as one file to hand on.
-			"export",
+			"dataset",
 			// What is happening without asking: the cycle, the background
 			// measurement, and the way to stop it.
 			"plan",
@@ -2527,7 +2527,7 @@ describe("Builder Pi slash commands", () => {
  * the one `ahde export` calls, so this pins only what the command owns: the
  * argument it accepts, and the one Russian line the operator reads.
  */
-describe("/export", () => {
+describe("/dataset", () => {
 	const SHA = "a".repeat(40);
 	const TRACE = [
 		JSON.stringify({ type: "message", message: { role: "user", content: "Проверь договор 42." } }),
@@ -2644,7 +2644,7 @@ describe("/export", () => {
 		const { commands, output } = register(fixture.value);
 		const host = context();
 
-		await command(commands, "export").handler("", host.ctx);
+		await command(commands, "dataset").handler("", host.ctx);
 
 		expect(output.blocks).toHaveLength(1);
 		expect(output.blocks[0]?.title).toBe("AHDE · Записанные диалоги");
@@ -2663,7 +2663,7 @@ describe("/export", () => {
 		setLanguage("ru");
 		const fixture = workbench({ projectDir: targetWithEvidence(1) });
 		const { commands, output } = register(fixture.value);
-		await command(commands, "export").handler("--all", context().ctx);
+		await command(commands, "dataset").handler("--all", context().ctx);
 		expect(output.blocks[0]?.lines[0]).toMatch(/^выгружено 1 диалог → exports\/all-.*\.jsonl \(без экзамена\)$/);
 	});
 
@@ -2674,16 +2674,16 @@ describe("/export", () => {
 		const fixture = workbench({ projectDir: empty });
 		const { commands, output } = register(fixture.value);
 
-		await command(commands, "export").handler("", context().ctx);
+		await command(commands, "dataset").handler("", context().ctx);
 		expect(output.blocks[0]?.lines).toEqual(["выгружать пока нечего — сначала прогони тесты"]);
 
 		await expectRefusal(
 			commands,
-			"export",
+			"dataset",
 			"--everything",
 			context().ctx,
 			output,
-			"/export принимает --all или ничего — тогда это последний прогон",
+			"/dataset принимает --all или ничего — тогда это последний прогон",
 		);
 	});
 });

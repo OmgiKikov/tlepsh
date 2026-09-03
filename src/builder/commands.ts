@@ -102,7 +102,7 @@ export const AHDE_BUILDER_COMMAND_NAMES = [
 	"passport",
 	"trace",
 	"log",
-	"export",
+	"dataset",
 	"plan",
 	"jobs",
 	"stop",
@@ -1516,13 +1516,19 @@ export function registerAhdeBuilderCommands(
 	 * the same application function `ahde export` uses, so the boundary is the
 	 * same boundary: the sealed exam is refused on the bounded index before a
 	 * single trace is opened, and the one line says so.
+	 *
+	 * It is `/dataset` and not `/export` because Pi owns `/export` — its own
+	 * built-in writes the session out — and a built-in name never reaches an
+	 * extension: session 7 met `Warning: /export is disabled by this host.` and
+	 * the operator had no way to read the dataset at all. The CLI verb stays
+	 * `ahde export`; only the slash command moved.
 	 */
-	registerCommand("export", {
-		description: t("cmd.export"),
+	registerCommand("dataset", {
+		description: t("cmd.dataset"),
 		async handler(args, ctx) {
-			await prepare(ctx, "export");
+			await prepare(ctx, "dataset");
 			const requested = args.trim();
-			if (requested && requested !== "--all") throw new Error(t("cmd.err.export-arg"));
+			if (requested && requested !== "--all") throw new Error(t("cmd.err.dataset-arg"));
 			const scope = { stateRoot: workbench.stateRoot, projectId: workbench.projectId };
 			let result;
 			try {

@@ -98,7 +98,7 @@ those words only if the operator asks how something works.
 | noise | an A/A run of the same revision against itself; never evidence for shipping |
 | пересчитать · re-score | grade the recorded answers again with revised graders — a decision you submit (`ahde_workbench_decide`, `kind: "regrade"`), and the operator's `/regrade` in this same TUI: no agent call, only the judge, and never a new baseline |
 | экзамен от судьи · an exam from the judge | a sealed holdout the Target's judge model writes from the Spec (`generate-holdout`); you never see a case of it either |
-| выгрузить диалоги · export the conversations | one JSONL file of every recorded conversation, written beside the agent (`/export`); sealed holdout evidence is never in it |
+| выгрузить диалоги · export the conversations | one JSONL file of every recorded conversation, written beside the agent (`/dataset`); sealed holdout evidence is never in it |
 | throw it away | discard a prepared change, or reject a checked one |
 
 ## Tools
