@@ -20,6 +20,13 @@ import type { TokenMetrics } from "../provenance.js";
 export interface TurnResult {
 	text: string;
 	recovered: boolean;
+	/**
+	 * The agent answered nothing, twice — once to the prompt and once to the
+	 * recovery prompt. That is what the agent did, not what the host failed to
+	 * do (invariant 9), so the turn completes with an empty answer and the
+	 * graders read the silence; it is never an infrastructure error.
+	 */
+	silent?: boolean;
 }
 
 /**

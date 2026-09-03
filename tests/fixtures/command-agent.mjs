@@ -52,6 +52,10 @@ function onUser(message) {
 			return say(turn, `Тариф «Домашний» стоит 500 рублей. Вопрос: ${message.text.slice(0, 24)}`);
 		case "no-usage":
 			return say(turn, "Ответ без отчёта о расходе.");
+		case "empty":
+			// An empty answer, twice: the recovery prompt gets the same nothing.
+			// (`silent` — no answer at all — stays the timeout case.)
+			return say(turn, "");
 		case "multi":
 			usage(turn);
 			return say(turn, `Ход ${turn}: ${message.text.slice(0, 20)}`);

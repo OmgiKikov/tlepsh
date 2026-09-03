@@ -318,7 +318,9 @@ class CommandTargetSession implements TargetSession {
 		// The same second ask an empty Pi answer earns, in this protocol's terms.
 		this.options.onRecoveryAttempt?.();
 		const recoveredText = await this.ask(FINAL_ANSWER_RECOVERY_PROMPT, true);
-		if (!recoveredText.trim()) throw new Error("agent run produced no assistant text");
+		// Silence twice is the agent's answer, not the host's failure: the turn
+		// completes empty and the graders fail it (see session-pi.ts).
+		if (!recoveredText.trim()) return { text: "", recovered: true, silent: true };
 		return { text: recoveredText, recovered: true };
 	}
 

@@ -216,7 +216,7 @@ export const RunMetricsSchema = z.strictObject({
 	 */
 	conversationTurns: z.number().int().positive().optional(),
 	/** Why the conversation ended. Absent on every run without a simulated user. */
-	conversationStop: z.enum(["max-turns", "sentinel", "stop-when"]).optional(),
+	conversationStop: z.enum(["max-turns", "sentinel", "stop-when", "silent"]).optional(),
 });
 export type RunMetrics = z.infer<typeof RunMetricsSchema>;
 

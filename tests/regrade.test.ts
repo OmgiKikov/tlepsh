@@ -391,8 +391,9 @@ describe("regrade and infrastructure errors", () => {
 		process.env.MOCK_MODEL_KEY = "test-key";
 		const mock = await startMockModel([
 			{ match: ({ firstUser }) => firstUser.includes("alpha"), steps: [{ text: "ответ alpha" }] },
-			// An empty final answer is an infrastructure failure, not a wrong answer.
-			{ match: () => true, steps: [{ text: "" }] },
+			// A model that answers 500 is an infrastructure failure; an empty answer
+			// would be a wrong answer the graders fail (the run completes).
+			{ match: () => true, steps: [{ httpError: { status: 500, message: "model exploded" } }] },
 		]);
 		const targetDir = defaultsFixture(mock.url);
 		const runsRoot = join(targetDir, "..", `regrade-error-runs-${Date.now()}`);

@@ -96,7 +96,11 @@ class PiTargetSession implements TargetSession {
 			.filter((content): content is { type: "text"; text: string } => content.type === "text")
 			.map((content) => content.text)
 			.join("");
-		if (!turnText) throw new Error("agent run produced no assistant text");
+		// Silence after the recovery prompt is the agent's answer, not a fault
+		// of the run: the graders read an empty reply and fail it (session 8:
+		// a 9B model went quiet after two tool calls, and three verifications
+		// stopped as "inconclusive" over what was plainly a bad answer).
+		if (!turnText) return { text: "", recovered, silent: true };
 		return { text: turnText, recovered };
 	}
 

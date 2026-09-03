@@ -849,9 +849,15 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 		let prompt = task.input;
 		for (let turn = 1; turn <= maxTurns; turn += 1) {
 			transcript.push({ role: "user", text: prompt });
-			const { text: turnText } = await session.takeTurn(prompt);
+			const { text: turnText, silent } = await session.takeTurn(prompt);
 			conversationTurns = turn;
 			transcript.push({ role: "assistant", text: turnText });
+			// An agent that answered nothing twice has ended the conversation on
+			// its own terms: the run completes and is graded on the silence.
+			if (silent) {
+				if (simulated && userModel) conversationStop = "silent";
+				break;
+			}
 			// The last turn needs no next question: asking for one would spend a
 			// user-model call on a message no agent will ever read.
 			if (!simulated || !userModel || turn === maxTurns) break;

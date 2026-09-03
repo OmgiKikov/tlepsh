@@ -48,7 +48,8 @@ export interface SimulatedUserReply {
 }
 
 /** Why a simulated conversation ended. Recorded in `metrics.conversationStop`. */
-export type SimulatedUserStop = "max-turns" | "sentinel" | "stop-when";
+/** `silent`: the agent answered nothing twice and the host ended the dialogue. */
+export type SimulatedUserStop = "max-turns" | "sentinel" | "stop-when" | "silent";
 
 /** The next user turn is a person's sentence, not a document. */
 export const MAX_SIMULATED_USER_MESSAGE_CHARS = 2_000;

@@ -924,7 +924,13 @@ evalSuite:
 });
 
 describe("run completion contract", () => {
-	it("records a run error when the model stops without final assistant text", async () => {
+	/**
+	 * Silence is the agent's answer, not the host's failure (invariant 9): the
+	 * run completes with an empty reply and the grader fails it. Live session 8
+	 * saw a 9B model go quiet after two tool calls, and three verifications
+	 * stopped as "inconclusive" over what was plainly a bad answer.
+	 */
+	it("completes the run with an empty answer the grader fails when the model says nothing", async () => {
 		const emptyMock = await startMockModel([{ steps: [{ text: "" }] }]);
 		const dir = makeTargetFixture(
 			baseFixtureFiles({
@@ -968,14 +974,15 @@ evalSuite:
 					}
 				},
 			});
-			expect(result.summary.error).toBe(1);
+			expect(result.summary).toMatchObject({ total: 1, pass: 0, fail: 1, error: 0 });
 			const record = JSON.parse(readFileSync(join(emptyRuns, result.runIds[0] ?? "", "run.json"), "utf8"));
-			expect(record.error).toContain("no assistant text");
+			expect(record.status).toBe("completed");
+			expect(record.error).toBeNull();
 			expect(errorEvents.find((event) => event.type === "execution_finished"))
-				.toMatchObject({ type: "execution_finished", status: "error" });
+				.toMatchObject({ type: "execution_finished", status: "completed" });
 			expect(errorEvents.find((event) => event.type === "run_graded"))
-				.toMatchObject({ type: "run_graded", outcome: "error", passedGraders: 0, totalGraders: 1 });
-			expect(durableErrorStates).toEqual(["execution_finished:error", "run_graded:error"]);
+				.toMatchObject({ type: "run_graded", outcome: "fail", passedGraders: 0, totalGraders: 1 });
+			expect(durableErrorStates).toEqual(["execution_finished:completed", "run_graded:completed"]);
 		} finally {
 			cleanup(dir);
 			cleanup(emptyRuns);

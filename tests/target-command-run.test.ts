@@ -405,3 +405,28 @@ describe("every way the wire can fail is infrastructure, never a behavioural fai
 		await errorCase("too-many-tools", /command Target made more than 64 tool calls in one turn/);
 	});
 });
+
+describe("an agent that answers nothing", () => {
+	/**
+	 * Live session 8: a 9B model went quiet after two tool calls, three times
+	 * across two verifications, and each time the host called it an
+	 * infrastructure error and stopped the comparison as "inconclusive". The
+	 * silence is the agent's answer: the run completes, the graders read an
+	 * empty reply and fail it, and the recovery prompt is counted once.
+	 */
+	it("completes the run with an empty answer that the graders fail, never an error", async () => {
+		const silentCase = JSON.stringify({
+			id: "task_silent",
+			input: "Какой у меня тариф?",
+			graders: [{ type: "output_contains", text: "Тариф" }],
+		});
+		const { record, runDir } = await runOnce("empty", { dataset: silentCase });
+		expect(record.status).toBe("completed");
+		expect(record.error).toBeNull();
+		expect(record.metrics.recoveryAttempts).toBe(1);
+		expect(record.evalResults?.outcome).toBe("fail");
+		const trace = openTrace(runDir);
+		const lastAssistant = [...trace].reverse().find((message) => message.role === "assistant");
+		expect(lastAssistant?.text ?? "").toBe("");
+	});
+});
