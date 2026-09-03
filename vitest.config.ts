@@ -21,13 +21,16 @@ const HEAVY = [
 	"tests/cycle-continuation.test.ts", // Git repos, one per interrupted cycle
 	"tests/harness-authoring.test.ts", // Git repos for the authoring round trip
 	"tests/improvement-brief.test.ts", // spawns nothing: writes and re-reads hundreds of eval artifacts
-	"tests/proposal-search.test.ts", // Git-backed improve fixtures, one repo per search round
+	"tests/proposal-search.test.ts",
+	"tests/python-agent.test.ts", // spawns the shipped python-agent against a stub HTTP endpoint // Git-backed improve fixtures, one repo per search round
 	"tests/regression-guards.test.ts", // Git improve fixtures plus the sealed-holdout repetitions
 	"tests/report.test.ts", // spawns nothing: projects hundreds of eval artifacts and traces off disk
 	"tests/runner.integration.test.ts", // Git, and a mock model over HTTP per case
 	"tests/serve.test.ts", // boots the loopback HTTP server over a Git cycle fixture
 	"tests/simulated-user.test.ts", // Git, and a mock model over HTTP, per simulated session
-	"tests/target-adoption.test.ts", // Git repos, four of them, to adopt an existing Target
+	"tests/target-command-run.test.ts", // spawns a real command Target child per case, sandboxed
+	"tests/target-adoption.test.ts",
+	"tests/target-wrap.test.ts", // Git repos, one per adopted folder // Git repos, four of them, to adopt an existing Target
 	"tests/target-authoring-context.test.ts", // Git repos, and the sandbox the authoring context reports on
 	"tests/target-tools.test.ts", // Git, sandbox-exec and a mock model over HTTP
 	"tests/tool-authoring.test.ts", // runs a tool package's own fixtures through the sandbox backend

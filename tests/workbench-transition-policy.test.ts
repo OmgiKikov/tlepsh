@@ -27,6 +27,16 @@ describe("Workbench transition policy", () => {
 		}
 	});
 
+	it("admits adoption exactly where a scaffold is admitted, and nowhere else", () => {
+		expect(() => assertWorkbenchDecisionStage("wrap-target", "target-setup")).not.toThrow();
+		expect(() => assertWorkbenchDecisionStage("scaffold-target", "target-setup")).not.toThrow();
+		// The same one-way door as a scaffold: after it, there is a Target.
+		expect(() => assertWorkbenchDecisionStage("wrap-target", "spec-design"))
+			.toThrow(/wrap-target is not legal during spec-design/);
+		expect(() => assertWorkbenchDecisionStage("wrap-target", "candidate-review"))
+			.toThrow(/wrap-target is not legal during candidate-review/);
+	});
+
 	it("fails closed before a decision handler can run at another stage", () => {
 		expect(() => assertWorkbenchDecisionStage("apply-proposal", "spec-review"))
 			.toThrow(/apply-proposal is not legal during spec-review/);

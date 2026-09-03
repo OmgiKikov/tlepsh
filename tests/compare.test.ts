@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterAll, describe, expect, it } from "vitest";
-import { compareEvalRuns, renderCompareMarkdown, renderGateLine } from "../src/compare.js";
+import { compareEvalRuns, renderCompareMarkdown, renderGateLine, runCost, runTokens } from "../src/compare.js";
 import type { EvalRunRecord } from "../src/eval.js";
 import { AHDE_EVALUATOR_ID, hashValue, type ProvenanceAxes, type RunRecord } from "../src/provenance.js";
 
@@ -418,5 +418,34 @@ describe("compare table", () => {
 			},
 		}));
 		expect(() => compareEvalRuns(runsRoot, "erun_integrity_a", "erun_integrity_c", { mode: "candidate" })).toThrow(/hash does not match/);
+	});
+});
+
+/**
+ * The one way to read a Target's spend. A command Target may report none, and
+ * an absence has to survive every projection between the record and a human —
+ * `$0.00` beside a run that measured nothing is a claim nobody made.
+ */
+describe("what the Target reported spending", () => {
+	const spent = {
+		tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 },
+		costUsd: 0.5,
+		latencyMs: 100,
+		toolCalls: 0,
+		toolErrors: 0,
+		recoveryAttempts: 0,
+	};
+
+	it("returns the numbers when the backend reported them", () => {
+		expect(runTokens({ metrics: spent })).toEqual(spent.tokens);
+		expect(runCost({ metrics: spent })).toBe(0.5);
+	});
+
+	it("returns null — never zero — when it reported nothing", () => {
+		const { tokens: _tokens, costUsd: _costUsd, ...silent } = spent;
+		expect(runTokens({ metrics: silent })).toBeNull();
+		expect(runCost({ metrics: silent })).toBeNull();
+		// The distinction that matters: a genuinely free run is not the same fact.
+		expect(runCost({ metrics: { ...spent, costUsd: 0 } })).toBe(0);
 	});
 });

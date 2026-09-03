@@ -1,13 +1,25 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { plural, t } from "../src/i18n.js";
+import type { WorkbenchView } from "../src/workbench/types.js";
 import {
 	calmSetupFailure,
 	confirmDeclaredToolCredentials,
 	describeHostModelCatalog,
 	hostModelCatalog,
 	targetIdFromDirectory,
+	runFirstRunOnboarding,
 	targetModelResolver,
 } from "../src/builder/onboarding.js";
+
+const onboardingRoots: string[] = [];
+
+afterEach(() => {
+	for (const path of onboardingRoots.splice(0)) rmSync(path, { recursive: true, force: true });
+});
 
 function registry(options: {
 	available?: { provider: string; id: string }[];
@@ -155,5 +167,130 @@ describe("a declared tool key nobody exported", () => {
 		}]);
 		// Whatever was typed is never echoed back or kept.
 		expect(JSON.stringify(pasted.notes)).not.toContain("sk-live");
+	});
+});
+
+/**
+ * The first screen for a folder that already holds an agent. Nothing here
+ * touches Git or the Workbench: what is under test is the DIALOG — the
+ * questions asked, the defaults offered, and the exact decision it submits.
+ */
+describe("adopting the agent already in the folder", () => {
+	function agentDir(files: Record<string, string> = { "agent.py": "import openai\n@tool\ndef a(): ...\n" }): string {
+		const dir = mkdtempSync(join(tmpdir(), "ahde-onboard-"));
+		onboardingRoots.push(dir);
+		for (const [path, content] of Object.entries(files)) {
+			const absolute = join(dir, path);
+			mkdirSync(join(absolute, ".."), { recursive: true });
+			writeFileSync(absolute, content, "utf8");
+		}
+		return dir;
+	}
+
+	function harness(answers: string[]) {
+		const asked: string[] = [];
+		const decided: unknown[] = [];
+		const ctx = {
+			ui: {
+				select: vi.fn(async (question: string) => {
+					asked.push(question);
+					return answers.shift();
+				}),
+				input: vi.fn(async (question: string, initial?: string) => {
+					asked.push(question);
+					return answers.shift() ?? initial;
+				}),
+				notify: vi.fn(),
+			},
+		} as unknown as ExtensionContext;
+		const view = {
+			stage: "target-setup",
+			target: { status: "missing" },
+			project: { directory: "agent" },
+			next: { say: "", why: "" },
+		} as unknown as WorkbenchView;
+		const host = {
+			workbench: {
+				view: async () => view,
+				decide: vi.fn(async (input: unknown) => {
+					decided.push(input);
+					return {
+						kind: "wrap-target",
+						message: "",
+						result: { targetId: "my-agent", targetGitSha: "a".repeat(40), receiptId: "r", entry: "agent.py" },
+						view: { ...view, stage: "target-setup", target: { status: "bootstrap-required" } },
+					};
+				}),
+			},
+			actorId: () => "operator",
+			presenter: { show: vi.fn() },
+		} as unknown as Parameters<typeof runFirstRunOnboarding>[1];
+		return { ctx, host, asked, decided, view };
+	}
+
+	it("asks three questions and submits exactly what the operator answered", async () => {
+		const dir = agentDir({ "agent.py": "import openai\n@tool\ndef a(): ...\n", "prompts/system.md": "x\n" });
+		const { ctx, host, asked, decided } = harness([
+			t("onboarding.wrap.accept"),
+			t("onboarding.wrap.accept"),
+			"prompts/**",
+		]);
+		await runFirstRunOnboarding(ctx, { ...host, projectDir: dir }, (await host.workbench.view()) as WorkbenchView);
+		expect(asked[0]).toBe(t("onboarding.wrap.seen", { entry: "agent.py", tools: plural(1, "tool") }));
+		expect(asked[1]).toBe(t("onboarding.wrap.command", { command: "python3 agent.py" }));
+		expect(asked[2]).toBe(t("onboarding.wrap.files"));
+		expect(decided).toEqual([{
+			kind: "wrap-target",
+			argv: ["python3", "agent.py"],
+			harnessFiles: ["prompts/**"],
+			reason: t("onboarding.wrap.reason"),
+		}]);
+	});
+
+	it("takes the operator's own command and file list when they type one", async () => {
+		const dir = agentDir();
+		const { ctx, host, decided } = harness([
+			t("onboarding.wrap.accept"),
+			t("onboarding.wrap.command-edit"),
+			"node server.js --agent",
+			t("onboarding.wrap.files-edit"),
+			"config/*.md, AGENTS.md",
+		]);
+		await runFirstRunOnboarding(ctx, { ...host, projectDir: dir }, (await host.workbench.view()) as WorkbenchView);
+		expect(decided).toEqual([{
+			kind: "wrap-target",
+			argv: ["node", "server.js", "--agent"],
+			harnessFiles: ["config/*.md", "AGENTS.md"],
+			reason: t("onboarding.wrap.reason"),
+		}]);
+	});
+
+	it("falls through to the ordinary create dialog when the operator wants a new agent", async () => {
+		const dir = agentDir();
+		const { ctx, host, decided } = harness([t("onboarding.wrap.create-new"), t("onboarding.later-choice")]);
+		await runFirstRunOnboarding(ctx, { ...host, projectDir: dir }, (await host.workbench.view()) as WorkbenchView);
+		expect(decided).toEqual([]);
+	});
+
+	it("writes nothing when the operator defers, and never asks at all in an ordinary empty folder", async () => {
+		const dir = agentDir();
+		const deferred = harness([t("onboarding.later-choice")]);
+		await runFirstRunOnboarding(
+			deferred.ctx,
+			{ ...deferred.host, projectDir: dir },
+			(await deferred.host.workbench.view()) as WorkbenchView,
+		);
+		expect(deferred.decided).toEqual([]);
+		expect(deferred.asked).toHaveLength(1);
+
+		const empty = mkdtempSync(join(tmpdir(), "ahde-onboard-empty-"));
+		onboardingRoots.push(empty);
+		const plain = harness([t("onboarding.later-choice")]);
+		await runFirstRunOnboarding(
+			plain.ctx,
+			{ ...plain.host, projectDir: empty },
+			(await plain.host.workbench.view()) as WorkbenchView,
+		);
+		expect(plain.asked[0]).toBe(t("onboarding.no-agent-here", { directory: "agent" }));
 	});
 });

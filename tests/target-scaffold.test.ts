@@ -17,6 +17,7 @@ import {
 	applyTargetScaffold,
 	describeTargetScaffold,
 	TargetScaffoldReceiptSchema,
+	TargetScaffoldSubjectV1Schema,
 	type ApplyTargetScaffoldOptions,
 } from "../src/application/target-scaffold.js";
 import { hashValue } from "../src/provenance.js";
@@ -154,5 +155,51 @@ describe("Target scaffold application service", () => {
 		expect(() => describeTargetScaffold(value)).toThrow(/otherwise empty current directory; found notes\.txt/);
 		expect(readFileSync(userFile, "utf8")).toBe("user-owned work\n");
 		expect(readdirSync(value.stateRoot)).toEqual([]);
+	});
+});
+
+/**
+ * The subject went to v2 when adoption gave `operation` a second value. Every
+ * receipt already on disk was written at v1, and a schema bump that made old
+ * evidence unreadable would be a worse bug than the one it fixed.
+ */
+describe("the v1 reader", () => {
+	it("still validates a receipt written before adoption existed", () => {
+		const value = fixture();
+		const subject = describeTargetScaffold(value);
+		// The same subject, downgraded to exactly the v1 shape.
+		const v1Subject = {
+			...subject,
+			schemaVersion: 1 as const,
+			operation: "initialize-current-directory" as const,
+			generated: {
+				gitRepository: "fresh repository with one scaffold commit" as const,
+				localArtifactIgnores: ["/.ahde/", "/imports/", "/runs/", "/.env", "/.env.*", "!/.env.example"],
+			},
+		};
+		expect(TargetScaffoldSubjectV1Schema.parse(v1Subject)).toEqual(v1Subject);
+		const identity = {
+			schemaVersion: 1 as const,
+			subject: v1Subject,
+			subjectHash: hashValue(v1Subject),
+			targetGitSha: "a".repeat(40),
+			actor: { kind: "human" as const, id: "operator" },
+			reason: "created the agent in the current directory",
+			scaffoldedAt: "2026-09-03T00:00:00.000Z",
+		};
+		const receipt = TargetScaffoldReceiptSchema.parse({
+			...identity,
+			id: `target-scaffold-${hashValue(identity).slice("sha256:".length)}`,
+		});
+		expect(receipt.subject.schemaVersion).toBe(1);
+		expect(receipt.subject.operation).toBe("initialize-current-directory");
+	});
+
+	it("writes new scaffolds at v2, with the operation named as one of two", () => {
+		const subject = describeTargetScaffold(fixture());
+		expect(subject.schemaVersion).toBe(2);
+		expect(subject.operation).toBe("initialize-current-directory");
+		// An initialize has nothing to find; only an adopt records a finding.
+		expect(subject.found).toBeUndefined();
 	});
 });
