@@ -6,6 +6,8 @@ import type { TraceObservation } from "../diagnosis.js";
 import { runCost, runTokens } from "../compare.js";
 import type { GraderResult, RunRecord } from "../provenance.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
+import { readWorldStateFile } from "../domain/world.js";
+import { WORLD_STATE_SEGMENTS } from "../target/world-state.js";
 import {
 	lastAssistantText,
 	openTrace,
@@ -299,6 +301,56 @@ export function traceFacts(messages: readonly TraceMessage[]): RunTraceFacts {
 		answer: answer === undefined ? null : quote(answer, MAX_ANSWER_CHARS),
 		toolNames: names,
 		toolCalls: calls.length,
+	};
+}
+
+// ---------- The run's receipt ----------
+
+/**
+ * What this run was actually given and what it actually spent.
+ *
+ * Session 7 read `world: null · judge: null · simulatedUser: null` and no
+ * `usage` key at all off a run.json whose case HAD a world the tool answered
+ * from — three absent keys read as three absent things. They are four
+ * different statements and the receipt makes each of them: a world that was
+ * there, an instrument that never ran because the run died before grading, and
+ * a spend nobody reported (which is not the same as a spend of zero).
+ */
+export interface RunReceipt {
+	/** Top-level keys of the world file this run kept; null when it had none. */
+	worldKeys: number | null;
+	judge: { calls: number; costUsd: number } | null;
+	simulatedUser: { calls: number; costUsd: number } | null;
+	/** Target tokens, when the backend reported any. */
+	tokens: number | null;
+	costUsd: number | null;
+	/** The run ended before grading, so an absent instrument never got to run. */
+	incomplete: boolean;
+}
+
+/**
+ * The receipt of one run. The world is read from the run's own state file —
+ * the same bounded, validated reader grading uses — and its KEYS are counted,
+ * never its values: a receipt says a world was there, not what was in it.
+ */
+export function runReceipt(runsRoot: string, run: Pick<RunRecord, "runId" | "status" | "metrics">): RunReceipt {
+	let worldKeys: number | null = null;
+	try {
+		const path = resolveContainedArtifactPath(runsRoot, run.runId, ...WORLD_STATE_SEGMENTS);
+		if (existsSync(path)) worldKeys = Object.keys(readWorldStateFile(path)).length;
+	} catch {
+		// An unreadable world says nothing about this run; it stays "none".
+		worldKeys = null;
+	}
+	const judge = run.metrics.judge;
+	const user = run.metrics.simulatedUser;
+	return {
+		worldKeys,
+		judge: judge ? { calls: judge.calls, costUsd: judge.costUsd } : null,
+		simulatedUser: user ? { calls: user.calls, costUsd: user.costUsd } : null,
+		tokens: runTokens(run)?.total ?? null,
+		costUsd: runCost(run),
+		incomplete: run.status !== "completed",
 	};
 }
 

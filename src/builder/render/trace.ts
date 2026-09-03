@@ -1,8 +1,8 @@
-import type { GraderFinding, RunRow, TranscriptEntry } from "../../application/run-explanation.js";
+import type { GraderFinding, RunReceipt, RunRow, TranscriptEntry } from "../../application/run-explanation.js";
 import type { EvalPageMode, RunDetailPageModel } from "../../evidence/pages.js";
 import { oneLine } from "./format.js";
 import type { Paint } from "./paint.js";
-import { t } from "../../i18n.js";
+import { plural, t } from "../../i18n.js";
 
 /**
  * Traces inside the TUI. The same pure projections the Evidence Explorer
@@ -157,6 +157,39 @@ function renderEntry(entry: TranscriptEntry, paint: Paint): string[] {
 }
 
 /**
+ * What this run was handed and what it spent, one fact per clause.
+ *
+ * Four absent JSON keys are not four absent things: a world can be there, an
+ * instrument can have never run BECAUSE the run died before grading, and a
+ * spend can simply not have been reported. Each of those gets its own words,
+ * so a reader never has to guess which `null` they are looking at.
+ */
+export function receiptLines(receipt: RunReceipt, paint: Paint): string[] {
+	const money = (costUsd: number): string => `$${costUsd.toFixed(2)}`;
+	const instrument = (
+		spend: { calls: number; costUsd: number } | null,
+		keys: { spent: "receipt.judge-spent" | "receipt.user-spent"; none: "receipt.judge-none" | "receipt.user-none"; failed: "receipt.judge-none-error" | "receipt.user-none-error" },
+	): string =>
+		spend && spend.calls > 0
+			? t(keys.spent, { calls: plural(spend.calls, "call"), cost: money(spend.costUsd) })
+			: t(receipt.incomplete ? keys.failed : keys.none);
+	return [
+		`${paint.dim(t("receipt.section"))} ${
+			[
+				receipt.worldKeys === null
+					? t("receipt.world-absent")
+					: t("receipt.world-present", { keys: plural(receipt.worldKeys, "key") }),
+				instrument(receipt.judge, { spent: "receipt.judge-spent", none: "receipt.judge-none", failed: "receipt.judge-none-error" }),
+				instrument(receipt.simulatedUser, { spent: "receipt.user-spent", none: "receipt.user-none", failed: "receipt.user-none-error" }),
+				receipt.tokens === null
+					? t("receipt.tokens-unreported")
+					: `${t("receipt.tokens", { tokens: receipt.tokens })}${receipt.costUsd === null ? "" : `, ${money(receipt.costUsd)}`}`,
+			].join(paint.dim(" · "))
+		}`,
+	];
+}
+
+/**
  * One run, whole: why it failed in the host's words, every grader's verdict,
  * then the conversation. Bounded to `MAX_TRACE_PANEL_LINES`.
  */
@@ -178,6 +211,7 @@ export function renderTracePanel(model: RunDetailPageModel, paint: Paint): strin
 	} else if (run.error) {
 		lines.push(`${paint.heading(t("trace.error"))} ${oneLine(run.error, 200)}`);
 	}
+	if (model.receipt) lines.push(...receiptLines(model.receipt, paint));
 	lines.push("", paint.heading(t("trace.why")));
 	for (const sentence of model.explanation.sentences) {
 		for (const line of wrapSentence(sentence)) lines.push(`  ${line}`);
