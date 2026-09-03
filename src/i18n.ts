@@ -1499,6 +1499,7 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"selection.eval-run": "run",
 	"selection.proposal": "change",
 	"selection.candidate": "candidate",
+	"estimate.nothing-comparable-alone": "no comparable run yet",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2736,6 +2737,7 @@ const ru: Record<MessageKey, string> = {
 	"selection.eval-run": "прогон",
 	"selection.proposal": "правка",
 	"selection.candidate": "кандидат",
+	"estimate.nothing-comparable-alone": "сравнимых прогонов ещё не было",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

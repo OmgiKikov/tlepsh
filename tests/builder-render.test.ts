@@ -32,7 +32,7 @@ import {
 } from "../src/builder/render/format.js";
 import { handoffLines } from "../src/builder/render/handoff.js";
 import { refusalCard } from "../src/builder/workbench-adapter.js";
-import { setLanguage } from "../src/i18n.js";
+import { setLanguage, t } from "../src/i18n.js";
 import { runResultLine } from "../src/application/measurement-line.js";
 import { renderImpact } from "../src/builder/render/impact.js";
 import { renderToolPermissions, toolPermissionsFromDiff } from "../src/builder/render/tool-permissions.js";
@@ -1779,6 +1779,42 @@ describe("renderConfirmation", () => {
 		ephemeralTail(lines);
 		const single = renderConfirmation(makeConfirmation("run-eval", { taskCount: 1, target: {}, developmentCorpus: {} }), plainPaint);
 		expect(single[0]).toBe("Run 1 case × 1 repetition = 1 Target execution · each one calls the Target model");
+	});
+
+	/**
+	 * Money and time are estimated apart and say "unknown" in the same words,
+	 * so a project's first run drew `Оценка неизвестно · сравнимых прогонов ещё
+	 * не … · неизвестно · сравнимых прогонов ещё не …` — one sentence twice,
+	 * both halves overflowing the line.
+	 */
+	it("says once that nothing comparable has run, and keeps both halves when they are known", () => {
+		// The host words both halves in the operator's language, so the test asks
+		// for the same words `formatEstimatedCost`/`formatEstimatedTime` produce.
+		const estimate = (cost: string, time: string): string =>
+			renderConfirmation(makeConfirmation("start-testing", {
+				operation: "start-testing",
+				steps: ["publish-corpus", "run-eval"],
+				spec: "Bank ombudsman — already approved",
+				basket: "ombudsman-main · 8 cases",
+				run: "8 × 3 = 24 executions",
+				estimatedCost: cost,
+				estimatedTime: time,
+			}), plainPaint).find((line) => line.startsWith(t("label.estimate")))!;
+		const nothing = (): string => `${t("estimate.unknown")} ${t("estimate.nothing-comparable")}`;
+
+		expect(estimate(nothing(), nothing())).toBe("Estimate no comparable run yet");
+		expect(estimate("about $0.42 (based on 3 eval runs)", "about 4 minutes"))
+			.toBe("Estimate about $0.42 (based on 3 eval runs) · about 4 minutes");
+		// One half known is still two halves: only a pair of unknowns collapses.
+		expect(estimate("about $0.42 (based on 3 eval runs)", nothing()))
+			.toBe("Estimate about $0.42 (based on 3 eval runs) · unknown · nothing comparable has run yet");
+
+		setLanguage("ru");
+		try {
+			expect(estimate(nothing(), nothing())).toBe("Оценка сравнимых прогонов ещё не было");
+		} finally {
+			setLanguage(null);
+		}
 	});
 
 	it("prices the A/A calibration and says nothing is promoted", () => {
