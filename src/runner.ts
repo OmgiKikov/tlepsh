@@ -62,7 +62,7 @@ import {
 import { preparedToolHomeHash as hashPreparedToolHome } from "./target/tool-setup.js";
 import { createCommandTargetSession } from "./target/session-command.js";
 import { createPiTargetSession } from "./target/session-pi.js";
-import { FINAL_ANSWER_RECOVERY_PROMPT, type TargetSession } from "./target/session.js";
+import { FINAL_ANSWER_RECOVERY_PROMPT, type TargetSession, type TargetSessionStats } from "./target/session.js";
 
 /**
  * Task orchestration around the single Target Pi construction seam in
@@ -912,9 +912,24 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 		record.status = "error";
 		record.finishedAt = new Date().toISOString();
 		record.error = error instanceof Error ? error.message : String(error);
+		// What the session actually did before it ended. A run that timed out
+		// after brokering two tool calls made two tool calls: leaving the record
+		// at zero made `/traces`, the trace header and `run.json` all say "0"
+		// while the trace beside them showed the calls (session 7, defect 7).
+		let observed: TargetSessionStats | null = null;
+		try {
+			observed = session?.stats() ?? null;
+		} catch {
+			// A backend that cannot report is a backend that reports nothing.
+		}
 		record.metrics = {
 			...record.metrics,
+			// Usage the backend did report before it failed is real spend, and an
+			// absent one stays ABSENT: zero would say the run was free.
+			...(observed?.tokens ? { tokens: { ...observed.tokens } } : {}),
+			...(observed && observed.costUsd !== null ? { costUsd: observed.costUsd } : {}),
 			latencyMs: Date.now() - startedMs,
+			toolCalls: observed?.toolCalls ?? record.metrics.toolCalls,
 			recoveryAttempts,
 			// Spend already incurred is spend, even on a run that then failed.
 			...(simulated ? { simulatedUser: { ...simulatedUserSpend } } : {}),
