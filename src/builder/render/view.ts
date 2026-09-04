@@ -218,12 +218,30 @@ export interface RenderStatusOptions {
 	heading?: boolean;
 }
 
+/**
+ * The workshop that outlived the process which opened it.
+ *
+ * A live workshop is not news — the transcript said so when it opened and the
+ * five tools are in the Builder's hands. What nobody could see was the one left
+ * in a worktree by a Builder that has since restarted: the screen said nothing,
+ * so the operator was told the harness had to be written again.
+ */
+function workshopLine(view: WorkbenchView, paint: Paint): string | null {
+	const workshop = view.workshop;
+	if (!workshop || workshop.state === "live") return null;
+	if (workshop.state === "stale") {
+		return `${paint.dim(t("label.workshop"))} ${paint.warning(t(`workshop.stale-${workshop.reason}`))}`;
+	}
+	return `${paint.dim(t("label.workshop"))} ${t("workshop.recorded")} ${paint.dim(workshop.workshopId)}`;
+}
+
 /** Compact status block used by /status and as the fallback for every panel. */
 export function renderStatus(view: WorkbenchView, paint: Paint, options: RenderStatusOptions = {}): string[] {
 	const noise = calibrationLine(view, paint);
 	const evaluators = evaluatorLine(view, paint);
 	const evidence = evidenceLine(view, paint);
 	const shipping = shippingReadinessLine(view, paint);
+	const workshop = workshopLine(view, paint);
 	const lines = [
 		...(options.heading === false
 			? []
@@ -233,6 +251,7 @@ export function renderStatus(view: WorkbenchView, paint: Paint, options: RenderS
 		...(evidence ? [evidence] : []),
 		...(shipping ? [shipping] : []),
 		...(noise ? [noise] : []),
+		...(workshop ? [workshop] : []),
 		`${paint.dim(t("label.next"))} ${nextStep(view)}`,
 	];
 	if (view.blockers.length > 0) lines.push(`${paint.warning(t("label.blocked"))} ${blockerLines(view).join(" ")}`);
@@ -335,6 +354,8 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 	if (shipping) lines.push(shipping);
 	const noise = calibrationLine(view, paint);
 	if (noise) lines.push(noise);
+	const workshop = workshopLine(view, paint);
+	if (workshop) lines.push(workshop);
 	const judge = headerJudgeLine(state, paint);
 	if (judge) lines.push(judge);
 	const keys = toolCredentialLine(view, paint);

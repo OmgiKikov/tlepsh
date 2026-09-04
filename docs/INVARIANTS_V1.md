@@ -39,7 +39,8 @@ it decides.
    shutdown suspends the exact worktree and host note for reattachment, while
    deleting runtime scratch and all live grants; explicit discard removes the
    worktree. Reattachment re-derives the exact Spec, basis, source, and snapshot
-   before restoring authoring access.
+   before restoring authoring access, and the view reports the suspended
+   workshop from that note, so the next process is told it is there.
    A capability exception is one-shot and host-owned, bound to the exact
    workshop snapshot, tool digest, phase, network mode, and env names; it is
    consumed before execution and is never restored after restart.

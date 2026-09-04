@@ -1795,6 +1795,11 @@ one would cost more than usual, and then you get a single question.`,
 	"sealed-synth.kb-too-small-next":
 		"add documents to data/kb, or ask for the exam from the description instead",
 	"ship-gate.kb-ceiling": "the knowledge base gives at most {max}",
+	// lane: workshop-restart
+	"label.workshop": "Workshop",
+	"workshop.recorded": "still open from an earlier session — the Builder continues in it, it does not start over",
+	"workshop.stale-worktree-gone": "the one from an earlier session is gone: its working copy no longer exists, so a new one has to be opened",
+	"workshop.stale-unreadable-note": "the note about an earlier session's workshop cannot be read, so a new one has to be opened",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -3260,6 +3265,11 @@ const ru: Record<MessageKey, string> = {
 		"В базе {chunks} — из неё выходит не больше {max}, экзамену нужно {min}. Могу написать экзамен из описания ({count}) — делаем?",
 	"sealed-synth.kb-too-small-next": "добавь документы в data/kb или закажи экзамен из описания",
 	"ship-gate.kb-ceiling": "база знаний даёт не больше {max}",
+	// lane: workshop-restart
+	"label.workshop": "Мастерская",
+	"workshop.recorded": "осталась открыта с прошлой сессии — Билдер продолжит в ней, а не начнёт заново",
+	"workshop.stale-worktree-gone": "с прошлой сессии потеряна: её рабочей копии больше нет, нужно открыть новую",
+	"workshop.stale-unreadable-note": "заметку о мастерской с прошлой сессии не прочитать, нужно открыть новую",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };
