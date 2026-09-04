@@ -3201,7 +3201,7 @@ const ru: Record<MessageKey, string> = {
 	"passport.md.warning-diagnosis":
 		"диагноз, под который писалась эта правка, прочитать не удалось — какие типы сбоя остались, неизвестно",
 	"passport.md.category.infrastructure": "инфраструктура",
-	"passport.md.category.flaky-behavior": "нестабильное поведение",
+	"passport.md.category.flaky-behavior": "поведение скачет между повторами",
 	"passport.md.category.tool-selection": "выбор инструмента",
 	"passport.md.category.output-contract": "форма ответа",
 	"passport.md.category.answer-quality": "качество ответа",
