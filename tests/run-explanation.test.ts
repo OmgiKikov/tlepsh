@@ -189,6 +189,38 @@ function explain(runsRoot: string, run: RunRecord): string[] {
 }
 
 describe("the host's plain-language account of one run", () => {
+	it("projects a stable source label and leaves legacy evidence unknown", () => {
+		const runsRoot = root();
+		const labelled = writeRun(runsRoot, {
+			runId: "run-source-labelled",
+			graders: [{
+				name: "source",
+				type: "cites_source",
+				checkCode: "cites-source",
+				checkSubject: "blocking.md#0",
+				specHash: `sha256:${"0".repeat(64)}`,
+				passed: true,
+				score: 1,
+				reason: "the answer cites blocking.md#0 by id",
+			}],
+		});
+		expect(findings(runsRoot, labelled)[0]?.checkSubject).toBe("blocking.md#0");
+
+		const legacy = writeRun(runsRoot, {
+			runId: "run-source-legacy",
+			graders: [{
+				name: "source",
+				type: "cites_source",
+				checkCode: "cites-source",
+				specHash: `sha256:${"1".repeat(64)}`,
+				passed: false,
+				score: 0,
+				reason: "legacy source result",
+			}],
+		});
+		expect(findings(runsRoot, legacy)[0]?.checkSubject).toBeNull();
+	});
+
 	it("names the expected tool and what the agent did instead", () => {
 		const runsRoot = root();
 		const run = writeRun(runsRoot, {

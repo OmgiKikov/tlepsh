@@ -21,6 +21,7 @@ export * from "./application/export-dataset.js";
 export * from "./application/improvement-brief.js";
 export * from "./application/improvement-author.js";
 export * from "./application/proposal-search.js";
+export * from "./application/rag-xray.js";
 export * from "./application/judge-labels.js";
 export * from "./application/target-bootstrap.js";
 export * from "./application/target-authoring-context.js";

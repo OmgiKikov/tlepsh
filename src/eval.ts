@@ -1177,11 +1177,14 @@ export async function gradeRun(
 			name: graderName(normalizedSpec, task, index),
 			specHash: hashValue(normalizedSpec),
 			checkCode: graderCheckCode(normalizedSpec.type),
-			// The one part of a required-tool check that is not task wording: two
-			// tasks asking for the same tool are asking for the same behaviour.
+			// The stable thing this check names. It is optional for compatibility
+			// and absent rather than truncated when an old or unusually long source
+			// id cannot fit the existing evidence field.
 			...(normalizedSpec.type === "tool_called" && normalizedSpec.tool.length <= MAX_CHECK_SUBJECT_CHARS
 				? { checkSubject: normalizedSpec.tool }
-				: {}),
+				: normalizedSpec.type === "cites_source" && normalizedSpec.chunk.length <= MAX_CHECK_SUBJECT_CHARS
+					? { checkSubject: normalizedSpec.chunk }
+					: {}),
 		});
 	}
 	// A safety-only basket must not reward silence. Append, so judge sidecar

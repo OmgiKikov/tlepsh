@@ -201,6 +201,8 @@ export interface GraderFinding {
 	name: string;
 	type: string;
 	checkCode: string | null;
+	/** Stable tool/source identity when new evidence recorded one; absent/null for legacy evidence. */
+	checkSubject?: string | null;
 	passed: boolean;
 	score: number;
 	/** The grader's own recorded reason. */
@@ -248,6 +250,7 @@ export function graderFindings(
 			name: quote(grader.name, 200),
 			type: quote(grader.type, 100),
 			checkCode: grader.checkCode ?? null,
+			checkSubject: grader.checkSubject ? quote(grader.checkSubject, 200) : null,
 			passed: grader.passed,
 			score: grader.score,
 			reason: quote(grader.reason, 1_000),

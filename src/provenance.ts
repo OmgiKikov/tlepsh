@@ -72,7 +72,7 @@ const CHECK_CODE_GRADER_TYPE: Record<GraderCheckCode, string> = {
 	"final-answer": "final_answer",
 };
 
-/** A check subject is a tool name, not prose; anything longer is not one. */
+/** A check subject is a stable tool or source id, not prose; anything longer is not one. */
 export const MAX_CHECK_SUBJECT_CHARS = 200;
 
 export const GraderResultSchema = z
@@ -88,7 +88,8 @@ export const GraderResultSchema = z
 		checkCode: GraderCheckCodeSchema.optional(),
 		/**
 		 * What the check is about, where the check names something: the tool a
-		 * required-tool check requires. The literal one case happens to carry —
+		 * required-tool check requires, or the stable chunk a cites-source check
+		 * expects. The literal one case happens to carry —
 		 * the contract number, the keyword, the rubric prose — stays inside
 		 * `specHash`, which is per task; this is the part two tasks can share, and
 		 * it is what lets their failures be read as one failure.
