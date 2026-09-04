@@ -162,6 +162,11 @@ const NOUNS = {
 		"agent turn": ["turn", "turns"],
 		key: ["key", "keys"],
 		call: ["call", "calls"],
+		// lane: compare-honesty
+		// The three below are read after "of"/"из", where Russian wants the
+		// genitive and the ordinary nominative forms above would be wrong.
+		"case of": ["case", "cases"],
+		"excluded case": ["excluded", "excluded"],
 	},
 	ru: {
 		case: ["кейс", "кейса", "кейсов"],
@@ -221,6 +226,12 @@ const NOUNS = {
 		"agent turn": ["ход", "хода", "ходов"],
 		key: ["ключ", "ключа", "ключей"],
 		call: ["вызов", "вызова", "вызовов"],
+		// lane: compare-honesty
+		// Genitive: «из 1 кейса», «из 15 кейсов» — the nominative «15 кейсов»
+		// happens to coincide, «из 2 кейсов» does not.
+		"case of": ["кейса", "кейсов", "кейсов"],
+		// A short participle, bent by the count it follows: «1 исключён», «2 исключены».
+		"excluded case": ["исключён", "исключены", "исключены"],
 	},
 } as const;
 
@@ -1658,6 +1669,14 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"label.budget": "Budget",
 	"confirm.start-testing.budget": "timeout {seconds}s per turn",
 	"confirm.start-testing.budget-turns": "timeout {seconds}s per turn · up to {turns}",
+
+	// lane: compare-honesty
+	"measurement.on-cases-of": "on {measured} of {cases} × {repetitions}",
+	"measurement.on-cases-of-only": "on {measured} of {cases}",
+	"measurement.excluded": "{excluded} for {reason}",
+	"measurement.excluded-infrastructure": "infrastructure",
+	"measurement.excluded-incomplete": "incomplete repetitions",
+	"measurement.excluded-mixed": "infrastructure, incomplete repetitions",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -3024,6 +3043,14 @@ const ru: Record<MessageKey, string> = {
 	"label.budget": "Бюджет",
 	"confirm.start-testing.budget": "таймаут {seconds} с на ход",
 	"confirm.start-testing.budget-turns": "таймаут {seconds} с на ход · до {turns}",
+
+	// lane: compare-honesty
+	"measurement.on-cases-of": "на {measured} из {cases} × {repetitions}",
+	"measurement.on-cases-of-only": "на {measured} из {cases}",
+	"measurement.excluded": "{excluded}: {reason}",
+	"measurement.excluded-infrastructure": "инфраструктура",
+	"measurement.excluded-incomplete": "неполные повторы",
+	"measurement.excluded-mixed": "инфраструктура, неполные повторы",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };
