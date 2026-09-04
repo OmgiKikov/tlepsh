@@ -1658,6 +1658,11 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"label.budget": "Budget",
 	"confirm.start-testing.budget": "timeout {seconds}s per turn",
 	"confirm.start-testing.budget-turns": "timeout {seconds}s per turn · up to {turns}",
+	// lane: workshop-restart
+	"label.workshop": "Workshop",
+	"workshop.recorded": "still open from an earlier session — the Builder continues in it, it does not start over",
+	"workshop.stale-worktree-gone": "the one from an earlier session is gone: its working copy no longer exists, so a new one has to be opened",
+	"workshop.stale-unreadable-note": "the note about an earlier session's workshop cannot be read, so a new one has to be opened",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -3024,6 +3029,11 @@ const ru: Record<MessageKey, string> = {
 	"label.budget": "Бюджет",
 	"confirm.start-testing.budget": "таймаут {seconds} с на ход",
 	"confirm.start-testing.budget-turns": "таймаут {seconds} с на ход · до {turns}",
+	// lane: workshop-restart
+	"label.workshop": "Мастерская",
+	"workshop.recorded": "осталась открыта с прошлой сессии — Билдер продолжит в ней, а не начнёт заново",
+	"workshop.stale-worktree-gone": "с прошлой сессии потеряна: её рабочей копии больше нет, нужно открыть новую",
+	"workshop.stale-unreadable-note": "заметку о мастерской с прошлой сессии не прочитать, нужно открыть новую",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

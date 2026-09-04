@@ -449,6 +449,34 @@ export interface WorkbenchVerificationBlocked {
 	reasonCode?: WorkbenchBlockerReason;
 }
 
+/**
+ * The one workshop a project can have, as the view reports it.
+ *
+ * `live` is this process's own open handle — the same fact `workshopOpen`
+ * carries for the tool gate. `recorded` is the note a previous Builder process
+ * left under the state root with its worktree still on disk: exactly what
+ * `{ kind: "workshop-open", workshopId }` re-attaches to, and the only state
+ * that is offered as a place to continue. `stale` is a note that re-attaches to
+ * nothing any more, so it is reported as a dead end rather than as work waiting.
+ */
+export type WorkbenchWorkshopSummary =
+	| {
+		state: "live" | "recorded";
+		workshopId: string;
+		/** What the workshop is bound to: an approved Spec, or a diagnosis. */
+		basis: "construction" | "improvement";
+		/** The improvement brief it aims at; null for a construction workshop. */
+		briefId: string | null;
+		openedAt: string;
+	}
+	| {
+		state: "stale";
+		/** What a re-attach would refuse on. Both are dead ends, for different reasons. */
+		reason: "worktree-gone" | "unreadable-note";
+		/** Null when the note itself cannot be read, so it names no workshop. */
+		workshopId: string | null;
+	};
+
 export interface WorkbenchView {
 	schemaVersion: 1;
 	project: { id: string; directory: string };
@@ -496,6 +524,18 @@ export interface WorkbenchView {
 	 * where the view is rendered rather than where the stage is computed.
 	 */
 	workshopOpen?: boolean;
+	/**
+	 * The one workshop this project has, live or on disk. Absent means there is
+	 * none of either.
+	 *
+	 * {@link workshopOpen} is process memory and answers one question: are the
+	 * five workshop tools legal right now. It says nothing after a restart,
+	 * which is how a Builder that had a half-written harness in a worktree read
+	 * “no open workshop” and wrote the whole prompt a second time. This field is
+	 * read from the durable note instead, so a fresh process is told the
+	 * workshop is still there and which id re-attaches to it.
+	 */
+	workshop?: WorkbenchWorkshopSummary;
 	/**
 	 * The standing offer to check the judge by hand, once one has graded
 	 * something. Live host state like `workshopOpen`: the marker and the label

@@ -42,7 +42,16 @@ export interface WorkbenchNext {
 	decide: WorkbenchNextDecision[];
 	submit: WorkbenchNextSubmission[];
 	/** Present only where a workshop is legal; `basis` says what it is bound to. */
-	workshop?: { basis: WorkshopBasis; open: boolean };
+	workshop?: {
+		basis: WorkshopBasis;
+		open: boolean;
+		/**
+		 * A workshop a previous Builder process left on disk, when this one holds
+		 * none. `{ kind: "workshop-open", workshopId }` re-attaches to exactly
+		 * this one; opening a fresh workshop abandons it and everything it holds.
+		 */
+		recorded?: { workshopId: string; openedAt: string };
+	};
 }
 
 /**
@@ -108,7 +117,21 @@ const SUBMIT_WHEN = {
 } as const satisfies Record<WorkbenchSubmitInput["kind"], string>;
 
 type NextView = Pick<WorkbenchView, "stage" | "counts"> &
-	Partial<Pick<WorkbenchView, "target" | "shippingReadiness" | "workshopOpen" | "judgeCalibration">>;
+	Partial<Pick<WorkbenchView, "target" | "shippingReadiness" | "workshopOpen" | "workshop" | "judgeCalibration">>;
+
+/**
+ * The workshop a dead Builder process left open, when this one holds none.
+ *
+ * Only a `recorded` note qualifies: it is the one state `workshop-open` can
+ * re-attach to. Without this the model saw `workshopOpen` absent, read it as
+ * “no workshop”, and wrote from scratch what was already in the worktree.
+ */
+function reattachableWorkshop(view: NextView): { workshopId: string; openedAt: string } | null {
+	if (view.workshopOpen === true) return null;
+	const workshop = view.workshop;
+	if (!workshop || workshop.state !== "recorded") return null;
+	return { workshopId: workshop.workshopId, openedAt: workshop.openedAt };
+}
 
 function decisionLegal(kind: NextDecisionKind, view: NextView): boolean {
 	// The one decision with no stage table: the host refuses it until the
@@ -169,9 +192,27 @@ function submitLegal(kind: WorkbenchSubmitInput["kind"], view: NextView): boolea
 	}
 }
 
+/**
+ * The one sentence that is not fixed: after a restart `workshop-open` is not a
+ * blank surface but the exact workshop still on disk, and it carries the id
+ * that re-attaches to it.
+ */
+function submitWhen(kind: WorkbenchSubmitInput["kind"], view: NextView): string {
+	if (kind === "workshop-open") {
+		const recorded = reattachableWorkshop(view);
+		if (recorded) {
+			return "a workshop you opened before is still on disk with everything you wrote in it — " +
+				`continue there with workshopId: "${recorded.workshopId}" instead of writing it again; ` +
+				"opening a new one abandons it";
+		}
+	}
+	return SUBMIT_WHEN[kind];
+}
+
 /** The legal moves at this exact moment, for the model-facing projection. */
 export function workbenchNext(view: NextView): WorkbenchNext {
 	const basis = workshopBasisForStage(view.stage);
+	const recorded = reattachableWorkshop(view);
 	return {
 		unblock: UNBLOCKING_ACTION[view.stage],
 		decide: (Object.keys(DECIDE_WHEN) as NextDecisionKind[])
@@ -179,7 +220,9 @@ export function workbenchNext(view: NextView): WorkbenchNext {
 			.map((kind) => ({ kind, asks: decisionAsks(kind, view.stage), when: DECIDE_WHEN[kind] })),
 		submit: (Object.keys(SUBMIT_WHEN) as WorkbenchSubmitInput["kind"][])
 			.filter((kind) => submitLegal(kind, view))
-			.map((kind) => ({ kind, when: SUBMIT_WHEN[kind] })),
-		...(basis ? { workshop: { basis, open: view.workshopOpen === true } } : {}),
+			.map((kind) => ({ kind, when: submitWhen(kind, view) })),
+		...(basis
+			? { workshop: { basis, open: view.workshopOpen === true, ...(recorded ? { recorded } : {}) } }
+			: {}),
 	};
 }

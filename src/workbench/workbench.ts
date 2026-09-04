@@ -294,6 +294,7 @@ import {
 	type WorkbenchRegressionGuardsProjection,
 	type WorkbenchVerifyCandidateResult,
 	type PersistedWorkbenchWorkshop,
+	type WorkbenchWorkshopSummary,
 } from "./types.js";
 import type { CandidateRecord } from "../domain/candidate.js";
 import { decideScaffoldTarget, decideWrapTarget, decideConfigureTarget, decideConfigureEvaluators } from "./decisions/setup.js";
@@ -2750,6 +2751,50 @@ export class AhdeWorkbench {
 		return this.workshop?.open === true;
 	}
 
+	/**
+	 * The one workshop this project has, live or on disk.
+	 *
+	 * `workshopOpen` above is this process's memory. A restarted TUI has none,
+	 * and the Builder that read “no workshop is open” with a half-written
+	 * harness still sitting in its worktree wrote the whole prompt again. The
+	 * durable note is the fact that survives, so it — not the handle — is what
+	 * the view reports.
+	 */
+	private workshopSummary(): WorkbenchWorkshopSummary | null {
+		const live = this.workshop;
+		if (live?.open) {
+			return {
+				state: "live",
+				workshopId: live.workshopId,
+				basis: live.basis,
+				briefId: live.source?.briefId ?? null,
+				openedAt: live.openedAt,
+			};
+		}
+		let recorded: PersistedWorkbenchWorkshop | null;
+		try {
+			recorded = this.recordedWorkshop();
+		} catch {
+			// A note nobody can parse names no workshop to continue in, and
+			// rendering a view is not the place to refuse: `workshop-open` still
+			// says exactly that, with its cause, to whoever asks for one.
+			return { state: "stale", reason: "unreadable-note", workshopId: null };
+		}
+		if (!recorded) return null;
+		// The first thing `reattachBuilderWorkshop` checks. A note whose worktree
+		// is gone re-attaches to nothing, so it is never offered as work waiting.
+		if (!existsSync(recorded.worktreePath)) {
+			return { state: "stale", reason: "worktree-gone", workshopId: recorded.workshopId };
+		}
+		return {
+			state: "recorded",
+			workshopId: recorded.workshopId,
+			basis: recorded.basis,
+			briefId: recorded.source?.briefId ?? null,
+			openedAt: recorded.openedAt,
+		};
+	}
+
 	/** Explicit host cleanup for discard/abandon and tests. Session shutdown suspends. */
 	closeWorkshop(): void {
 		this.disposeWorkshop();
@@ -2774,9 +2819,11 @@ export class AhdeWorkbench {
 		// check the judge is a fact about this project's label store, which the
 		// stage never reads. Both are attached here, where the view is rendered.
 		const judgeCalibration = judgeCalibrationOffer(this.stateRoot, this.projectId);
+		const workshop = this.workshopSummary();
 		const view: WorkbenchView = {
 			...deriveWorkbenchView(inventory),
 			...(this.workshopOpen ? { workshopOpen: true } : {}),
+			...(workshop ? { workshop } : {}),
 			...(judgeCalibration ? { judgeCalibration } : {}),
 		};
 		const aspect = query.aspect ?? "summary";

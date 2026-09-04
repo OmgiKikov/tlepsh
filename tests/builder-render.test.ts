@@ -834,6 +834,54 @@ describe("calibration line", () => {
 	});
 });
 
+describe("workshop line", () => {
+	const recorded = {
+		state: "recorded",
+		workshopId: "workshop_0123456789abcdef",
+		basis: "construction",
+		briefId: null,
+		openedAt: "2026-09-03T10:00:00.000Z",
+	} as const;
+
+	it("says nothing about a workshop this process is holding open", () => {
+		const live = renderStatus(makeView({ workshopOpen: true, workshop: { ...recorded, state: "live" } }), plainPaint);
+		expect(live.join("\n")).not.toContain("Workshop");
+		expect(renderStatus(makeView(), plainPaint).join("\n")).not.toContain("Workshop");
+	});
+
+	it("says a workshop outlived the session that opened it, with the id that reopens it", () => {
+		const lines = renderStatus(makeView({ workshop: recorded }), plainPaint);
+		expect(lines).toContain(
+			"Workshop still open from an earlier session — the Builder continues in it, it does not start over " +
+				"workshop_0123456789abcdef",
+		);
+		const header = renderHeader(
+			{ view: makeView({ workshop: recorded }), builderModel: { label: "x", credentialPresent: true } },
+			plainPaint,
+		);
+		expect(header.join("\n")).toContain("workshop_0123456789abcdef");
+		setLanguage("ru");
+		try {
+			expect(renderStatus(makeView({ workshop: recorded }), plainPaint).join("\n"))
+				.toContain("Мастерская осталась открыта с прошлой сессии");
+		} finally {
+			setLanguage(null);
+		}
+	});
+
+	it("calls a note that re-attaches to nothing a dead end, not work waiting", () => {
+		const lines = renderStatus(makeView({
+			workshop: { state: "stale", reason: "worktree-gone", workshopId: recorded.workshopId },
+		}), tagPaint);
+		expect(lines).toContain(
+			"<dim>Workshop</dim> <warning>the one from an earlier session is gone: its working copy no longer exists, " +
+				"so a new one has to be opened</warning>",
+		);
+		// A dead end names no id: there is nothing for the Builder to reopen.
+		expect(lines.join("\n")).not.toContain(recorded.workshopId);
+	});
+});
+
 describe("renderCalibration", () => {
 	it("renders the A/A design, spread, and recommendation without JSON", () => {
 		const lines = renderCalibration(makeCalibration(), plainPaint);
