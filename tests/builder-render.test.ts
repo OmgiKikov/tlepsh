@@ -1891,6 +1891,46 @@ describe("renderDecision", () => {
 			expect(text, result.kind).toContain("Next ");
 		}
 	});
+
+	/**
+	 * Session 8 was told `Правка применена, автоматическая проверка не
+	 * запустилась: Проверка не запустилась: у агента нет закрытого экзамена…` —
+	 * the same clause twice, and the half that said what to do about it cut off
+	 * the end of the line. The reason already opens with its own headline, so
+	 * the applied clause never says it again.
+	 */
+	it("says the applied change and the blocked verification once each", () => {
+		setLanguage("ru");
+		try {
+			const blocked = decision(
+				"apply-proposal",
+				{
+					runId: "r",
+					branch: "b",
+					candidateSha: SHA_B,
+					proposalHash: HASH,
+					verification: { outcome: "blocked", reason: "verification requires a sealed holdout corpus", reasonCode: { code: "blocker.sealed-exam-missing" } },
+				},
+				"candidate-verification",
+				`Правка применена, автоматическая проверка не запустилась: ${t("blocker.sealed-exam-missing")}`,
+			);
+			const line = decisionHeadline(blocked);
+			expect(line.startsWith("Правка применена · Проверка не запустилась:")).toBe(true);
+			expect(line.split("Проверка не запустилась").length - 1).toBe(1);
+			// Prose, so it ends on a word and an ellipsis, never mid-word.
+			expect(line).toMatch(/(?:^|\s)\S+…$|[^…]$/);
+			expect([...line].length).toBeLessThanOrEqual(120);
+			// An untyped failure keeps the label, because the raw sentence has none.
+			const raw = decision(
+				"apply-proposal",
+				{ runId: "r", branch: "b", candidateSha: SHA_B, proposalHash: HASH, verification: { outcome: "blocked", reason: "the worktree vanished" } },
+				"candidate-verification",
+			);
+			expect(decisionHeadline(raw)).toBe("Правка применена · Автоматическая проверка не запустилась: the worktree vanished");
+		} finally {
+			setLanguage(null);
+		}
+	});
 });
 
 describe("renderDecision · calibrate", () => {

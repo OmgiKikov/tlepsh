@@ -123,13 +123,15 @@ function evidenceLine(view: WorkbenchView, paint: Paint): string | null {
  */
 export function blockerLines(view: Pick<WorkbenchView, "blockers" | "blockerReasons">): string[] {
 	const reasons = view.blockerReasons;
+	// A blocker is a sentence, and the operator's only account of why nothing
+	// moves: it ends on a word — session 6 was told `sealed hol…`.
 	if (!reasons || reasons.length !== view.blockers.length) {
-		return view.blockers.map((item) => oneLine(item, 200));
+		return view.blockers.map((item) => headline(item, 200));
 	}
 	return reasons.map((reason, index) => {
-		if (!hasMessage(reason.code)) return oneLine(view.blockers[index] ?? "", 200);
+		if (!hasMessage(reason.code)) return headline(view.blockers[index] ?? "", 200);
 		const text = t(reason.code, reason.params);
-		return oneLine(reason.detail ? `${text} ${reason.detail}` : text, 200);
+		return headline(reason.detail ? `${text} ${reason.detail}` : text, 200);
 	});
 }
 
@@ -332,7 +334,7 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 	const keys = toolCredentialLine(view, paint);
 	if (keys) lines.push(keys);
 	if (view.blockers.length > 0 && view.stage !== "target-setup") {
-		lines.push(`${paint.warning(t("label.blocked"))} ${oneLine(blockerLines(view).join(" "), 200)}`);
+		lines.push(`${paint.warning(t("label.blocked"))} ${headline(blockerLines(view).join(" "), 200)}`);
 	}
 	lines.push(paint.dim(t("header.help")));
 	lines.push("");
@@ -473,7 +475,7 @@ export function renderCandidate(
 			}${resourceSuffix(sealedGate, paint)}`
 			: (candidate.sealedHoldout.gatePassed ? paint.success(t("sealed.gate-passed")) : paint.error(t("sealed.legacy"))))
 		: paint.muted(t("sealed.not-executed"))}`);
-	if (sealedGate && sealedGate.verdict !== "pass") lines.push(`  ${paint.muted(oneLine(sealedGate.reasons[0] ?? "", 160))}`);
+	if (sealedGate && sealedGate.verdict !== "pass") lines.push(`  ${paint.muted(headline(sealedGate.reasons[0] ?? "", 160))}`);
 	if (candidate.judgeAgreement !== undefined) lines.push(judgeAgreementLine(candidate.judgeAgreement, paint));
 	// The verdict is read beside the questions the tool cases answer, so the
 	// gate's "better" is never mistaken for "it calls the tool correctly", and
@@ -489,10 +491,10 @@ export function renderCandidate(
 	}));
 	if (candidate.review) {
 		const tone = candidate.review.recommendation === "promote" ? paint.success : paint.error;
-		lines.push(`${paint.dim(t("label.review"))} ${tone(candidate.review.recommendation)} ${paint.dim("—")} ${oneLine(candidate.review.reason, 160)}`);
+		lines.push(`${paint.dim(t("label.review"))} ${tone(candidate.review.recommendation)} ${paint.dim("—")} ${headline(candidate.review.reason, 160)}`);
 	}
-	if (candidate.promotion) lines.push(`${paint.dim(t("label.promoted"))} ${paint.success(candidate.promotion.tag)} ${paint.dim(when(candidate.promotion.at))} ${paint.dim("—")} ${oneLine(candidate.promotion.reason, 120)}`);
-	if (candidate.rejection) lines.push(`${paint.dim(t("label.rejected"))} ${paint.dim(when(candidate.rejection.at))} ${paint.dim("—")} ${oneLine(candidate.rejection.reason, 120)}`);
+	if (candidate.promotion) lines.push(`${paint.dim(t("label.promoted"))} ${paint.success(candidate.promotion.tag)} ${paint.dim(when(candidate.promotion.at))} ${paint.dim("—")} ${headline(candidate.promotion.reason, 120)}`);
+	if (candidate.rejection) lines.push(`${paint.dim(t("label.rejected"))} ${paint.dim(when(candidate.rejection.at))} ${paint.dim("—")} ${headline(candidate.rejection.reason, 120)}`);
 	if (candidate.adoption) lines.push(`${paint.dim(t("label.adopted"))} ${t("result.branch")} ${paint.bold(candidate.adoption.branch)} ${paint.dim(when(candidate.adoption.adoptedAt))}`);
 	else if (candidate.status === "promoted") lines.push(`${paint.dim(t("label.adopted"))} ${paint.warning(t("candidate.not-adopted"))}`);
 	if (candidate.continuation) lines.push(`${paint.dim(t("label.cycle"))} ${t("candidate.cycle-closed", { when: paint.dim(when(candidate.continuation.continuedAt)) })}`);
@@ -869,7 +871,7 @@ function attemptLine(
 		change,
 		oneLine(development, 40),
 		sealed ? t("view.sealed-word", { verdict: oneLine(sealed, 20) }) : null,
-		reason ? paint.dim(`“${oneLine(reason, 90)}”`) : null,
+		reason ? paint.dim(`“${headline(reason, 90)}”`) : null,
 	], paint.dim(" · "));
 }
 
