@@ -304,6 +304,7 @@ import { decideApplyProposal, decideDiscardProposal } from "./decisions/proposal
 import { decideVerifyCandidate, decideAbandonCandidate } from "./decisions/candidate.js";
 import { decideReviewCandidate, decidePromoteCandidate, decideRejectCandidate, decideAdoptCandidate, decideContinueCycle } from "./decisions/release.js";
 import { decideImprove } from "./decisions/improve.js";
+import { decideRunCurrent } from "./decisions/run-current.js";
 import type { DecisionContext } from "./decisions/shared.js";
 
 const MAX_REVIEW_BYTES = 5 * 1024 * 1024;
@@ -3322,70 +3323,10 @@ export class AhdeWorkbench {
 		const inventory = this.inventory();
 		const stage = deriveWorkbenchView(inventory).stage;
 		const ctx: DecisionContext = { inventory, stage, gate, options };
-		if (input.kind === "run-current") {
-			const partialCandidate = inventory.candidates.find((candidate) =>
-				candidate.projectId === this.projectId &&
-				["proposed", "built", "validated"].includes(candidateStatus(candidate)) &&
-				!inventory.abandonedCandidates.has(candidate.candidateId),
-			);
-			if (partialCandidate) {
-				throw new Error(
-					`candidate ${partialCandidate.candidateId} stopped at ${candidateStatus(partialCandidate)}; ` +
-					"review and explicitly abandon or recover it before starting another run",
-				);
-			}
-			let resolved: WorkbenchDecisionResult;
-			if (stage === "ready-to-evaluate" || stage === "improvement-authoring") {
-				resolved = await this.decide({ kind: "run-eval", repetitions: input.repetitions, reason: input.reason }, gate, options);
-			} else if (stage === "spec-review" || stage === "corpus-review") {
-				// “Run the tests” with a review still pending is not an error: the
-				// composite does the pending reviews and the run behind one dialog.
-				resolved = await this.decide({ kind: "start-testing", repetitions: input.repetitions, reason: input.reason }, gate, options);
-			} else if (stage === "candidate-verification") {
-				const appliedWithoutCandidate = inventory.proposals.filter((proposal) =>
-					proposal.status === "applied" && !inventory.candidates.some((candidate) =>
-						candidate.origin.kind === "applied-builder" &&
-						candidate.origin.builderRunId === proposal.record.runId &&
-						!inventory.abandonedCandidates.has(candidate.candidateId),
-					),
-				);
-				const proposal = resolveOne({
-					items: appliedWithoutCandidate,
-					focusId: inventory.validFocus.proposal?.id,
-					id: (item) => item.record.runId,
-					label: "applied proposal",
-				});
-				resolved = await this.decide({ kind: "verify-candidate", builderRunId: proposal.record.runId, repetitions: input.repetitions, reason: input.reason }, gate, options);
-			} else {
-				assertWorkbenchDecisionStage("run-eval", stage);
-				throw new Error(`running is not possible during ${stage}`);
-			}
-			if (resolved.kind === "start-testing") {
-				return {
-					kind: "run-current",
-					message: resolved.message,
-					result: { resolvedAs: "start-testing", ...resolved.result },
-					view: resolved.view,
-				};
-			}
-			if (resolved.kind === "run-eval") {
-				return {
-					kind: "run-current",
-					message: resolved.message,
-					result: { resolvedAs: "run-eval", ...resolved.result },
-					view: resolved.view,
-				};
-			}
-			if (resolved.kind === "verify-candidate") {
-				return {
-					kind: "run-current",
-					message: resolved.message,
-					result: { resolvedAs: "verify-candidate", ...resolved.result },
-					view: resolved.view,
-				};
-			}
-			throw new Error(`run-current resolved to an unexpected decision ${String((resolved as { kind?: unknown }).kind)}`);
-		}
+		// The one decision with no stage table of its own: it resolves to one of
+		// three that have, and each is guarded by the assertion below when this
+		// re-enters with the resolved kind.
+		if (input.kind === "run-current") return decideRunCurrent(this, input, ctx);
 		assertWorkbenchDecisionStage(input.kind, stage);
 
 		// The two composites: one operator intent, one dialog, the same
