@@ -162,6 +162,11 @@ const NOUNS = {
 		"agent turn": ["turn", "turns"],
 		key: ["key", "keys"],
 		call: ["call", "calls"],
+		// lane: i18n-reasons — the size of a recorded answer, in the sentence
+		// that says the answer did not contain what the check wanted, and the
+		// tool calls a required-tool check counts.
+		character: ["character", "characters"],
+		"tool call": ["tool call", "tool calls"],
 	},
 	ru: {
 		case: ["кейс", "кейса", "кейсов"],
@@ -221,6 +226,9 @@ const NOUNS = {
 		"agent turn": ["ход", "хода", "ходов"],
 		key: ["ключ", "ключа", "ключей"],
 		call: ["вызов", "вызова", "вызовов"],
+		// lane: i18n-reasons
+		character: ["символ", "символа", "символов"],
+		"tool call": ["вызов инструмента", "вызова инструмента", "вызовов инструментов"],
 	},
 } as const;
 
@@ -1658,6 +1666,67 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"label.budget": "Budget",
 	"confirm.start-testing.budget": "timeout {seconds}s per turn",
 	"confirm.start-testing.budget-turns": "timeout {seconds}s per turn · up to {turns}",
+
+	// lane: i18n-reasons
+	// What one check wanted and what the record shows instead. The grader's own
+	// `reason` stays exactly as it was written — it is evidence — and these are
+	// the host's rebuilt sentences about it, one pair per check code, keyed the
+	// way the check TITLES already are. A phrasing no pair matches yields no
+	// expectation at all and the reason is quoted verbatim: guessing is the one
+	// thing this surface may not do.
+	"why.actual.run-incomplete": "the run never completed, so nothing was graded",
+	"why.actual.run-incomplete-cause": "the run never completed, so nothing was graded — {cause} ({detail})",
+	"why.expected.required-tool": "expected a call to {tool}",
+	"why.expected.required-tool-args": "expected a call to {tool} with arguments containing “{arguments}”",
+	"why.actual.required-tool-none": "the agent made no tool calls and answered directly",
+	"why.actual.required-tool-named": "the agent made {calls}, to {tools}",
+	"why.actual.required-tool-calls": "the agent made {calls}",
+	"why.actual.tool-more": "{tools} and {count} more",
+	"why.expected.no-secret": "expected the answer to carry nothing shaped like a credential",
+	"why.actual.no-secret": "the recorded answer carries a credential-shaped string",
+	"why.expected.output-contains": "expected the final answer to contain “{text}”",
+	"why.expected.output-matches": "expected the final answer to match /{pattern}/",
+	"why.expected.reference-exact": "expected the final answer to equal the case's reference answer",
+	"why.answer.recorded": "the recorded final answer",
+	"why.answer.recorded-sized": "the recorded final answer ({size})",
+	"why.actual.answer-lacks": "{answer} does not contain it",
+	"why.actual.answer-unmatched": "{answer} does not match it",
+	"why.actual.answer-differs": "{answer} differs from it",
+	"why.expected.reference-similarity": "expected {metric} against the reference answer to reach {threshold}",
+	"why.actual.reference-similarity": "it reached {value}",
+	"why.expected.turn-budget": "expected at most {turns}",
+	"why.actual.turn-budget": "the agent took {turns}",
+	"why.expected.world-state": "expected the conversation to set the world at {path}",
+	"why.expected.world-state-equals": "expected the world at {path} to equal {value}",
+	"why.expected.world-state-contains": "expected the world at {path} to contain {value}",
+	"why.expected.world-state-declared": "expected the case to declare the world this check is about",
+	"why.actual.world-state-unset": "the conversation left it unset",
+	"why.actual.world-state-value": "it is {value}",
+	"why.actual.world-state-uncontainable": "it is {value}, which can contain nothing",
+	"why.actual.world-state-lacks": "it does not",
+	"why.actual.world-state-undeclared": "the case declares none, so the check could not pass",
+	"why.expected.cites-source": "expected the answer to stand on {source} — cite its id, or overlap it by {threshold}",
+	"why.actual.cites-source": "it did neither; the overlap was {overlap}",
+	"why.expected.reference-missing": "expected the case to carry a reference answer to compare against",
+	"why.actual.reference-missing": "the case carries none, so the check could not pass",
+	"why.expected.semantic-rubric": "expected the answer to satisfy the judge's rubric",
+	"why.actual.semantic-rubric": "the judge decided it did not",
+	"why.actual.semantic-rubric-choice": "the judge decided it did not (choice {choice})",
+	"why.expected.semantic-rubric-assertions": "expected every one of the {total} rubric assertions to hold",
+	"why.actual.semantic-rubric-assertions":
+		"the judge answered yes to {passed} of {total}; assertions {failed} did not hold",
+	// A phrasing no pair above recognizes: the record itself, quoted whole and
+	// unchanged. There is nothing here to bend, in either language.
+	"why.actual.reason": "{reason}",
+	// Refusals a person is meant to act on: minted twice, the English sentence
+	// for the model and the code for the operator.
+	"refusal.sealed-exam-too-small": "The chosen exam has {tasks}; a sealed verdict needs at least {minimum}. Add exam cases, then check again.",
+	"refusal.repetitions-too-few": "A sealed verdict needs at least {minimum} repetitions of every case.",
+	"refusal.check-stopped-before-exam": "The check stopped before the exam, so nothing was decided. Drop the interrupted attempt (/discard) and check again.",
+	"refusal.check-failed-in-exam": "The check failed during the sealed exam. Drop the interrupted attempt (/discard) and check again.",
+	"refusal.brief-not-proposable": "This evidence carries no failure mode a harness change can answer, so there is nothing to propose. Run the check again, or add cases.",
+	"refusal.mode-not-proposable": "This failure mode is not one a harness change can answer, so nothing can be proposed for it. Pick a mode whose decision is a harness change.",
+	"message.candidate-abandoned": "The interrupted attempt is dropped and recorded; the same applied change can be checked again.",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -3024,17 +3093,70 @@ const ru: Record<MessageKey, string> = {
 	"label.budget": "Бюджет",
 	"confirm.start-testing.budget": "таймаут {seconds} с на ход",
 	"confirm.start-testing.budget-turns": "таймаут {seconds} с на ход · до {turns}",
+
+	// lane: i18n-reasons
+	"why.actual.run-incomplete": "прогон не завершился, поэтому ничего не оценивалось",
+	"why.actual.run-incomplete-cause": "прогон не завершился, поэтому ничего не оценивалось — {cause} ({detail})",
+	"why.expected.required-tool": "ожидался вызов {tool}",
+	"why.expected.required-tool-args": "ожидался вызов {tool} с аргументами, содержащими «{arguments}»",
+	"why.actual.required-tool-none": "агент не вызвал ни одного инструмента и ответил сразу",
+	"why.actual.required-tool-named": "агент сделал {calls} — {tools}",
+	"why.actual.required-tool-calls": "агент сделал {calls}",
+	"why.actual.tool-more": "{tools} и ещё {count}",
+	"why.expected.no-secret": "ожидалось: в ответе нет ничего похожего на ключ или пароль",
+	"why.actual.no-secret": "в записанном ответе есть строка, похожая на ключ",
+	"why.expected.output-contains": "ожидалось: итоговый ответ содержит «{text}»",
+	"why.expected.output-matches": "ожидалось: итоговый ответ подходит под /{pattern}/",
+	"why.expected.reference-exact": "ожидалось: итоговый ответ совпадает с эталонным ответом кейса",
+	"why.answer.recorded": "записанный итоговый ответ",
+	"why.answer.recorded-sized": "записанный итоговый ответ ({size})",
+	"why.actual.answer-lacks": "{answer} его не содержит",
+	"why.actual.answer-unmatched": "{answer} под него не подходит",
+	"why.actual.answer-differs": "{answer} от него отличается",
+	"why.expected.reference-similarity": "ожидалось: {metric} к эталонному ответу дойдёт до {threshold}",
+	"why.actual.reference-similarity": "вышло {value}",
+	"why.expected.turn-budget": "ожидалось: не больше {turns}",
+	"why.actual.turn-budget": "агент сделал {turns}",
+	"why.expected.world-state": "ожидалось: разговор выставит мир по пути {path}",
+	"why.expected.world-state-equals": "ожидалось: мир по пути {path} равен {value}",
+	"why.expected.world-state-contains": "ожидалось: мир по пути {path} содержит {value}",
+	"why.expected.world-state-declared": "ожидалось: кейс объявляет мир, о котором эта проверка",
+	"why.actual.world-state-unset": "разговор его так и не выставил",
+	"why.actual.world-state-value": "там {value}",
+	"why.actual.world-state-uncontainable": "там {value} — в таком значении ничего не содержится",
+	"why.actual.world-state-lacks": "не содержит",
+	"why.actual.world-state-undeclared": "кейс мира не объявляет, поэтому проверка пройти не могла",
+	"why.expected.cites-source": "ожидалось: ответ опирается на {source} — со ссылкой на его id или пересечением {threshold}",
+	"why.actual.cites-source": "не сделано ни того, ни другого; пересечение — {overlap}",
+	"why.expected.reference-missing": "ожидалось: у кейса есть эталонный ответ для сравнения",
+	"why.actual.reference-missing": "у кейса его нет, поэтому проверка пройти не могла",
+	"why.expected.semantic-rubric": "ожидалось: ответ удовлетворяет рубрике судьи",
+	"why.actual.semantic-rubric": "судья решил, что не удовлетворяет",
+	"why.actual.semantic-rubric-choice": "судья решил, что не удовлетворяет (выбор {choice})",
+	"why.expected.semantic-rubric-assertions": "ожидалось: выполнены все утверждения рубрики, все {total}",
+	"why.actual.semantic-rubric-assertions":
+		"судья ответил «да» на {passed} из {total}; не выполнены утверждения {failed}",
+	"why.actual.reason": "{reason}",
+	"refusal.sealed-exam-too-small": "В выбранном экзамене {tasks}; для закрытого вердикта нужно хотя бы {minimum}. Добавь кейсы в экзамен и проверь снова.",
+	"refusal.repetitions-too-few": "Для закрытого вердикта нужно хотя бы {minimum} повторов каждого кейса.",
+	"refusal.check-stopped-before-exam": "Проверка остановилась до экзамена, ничего не решено. Сбрось прерванную попытку (/discard) и проверь снова.",
+	"refusal.check-failed-in-exam": "Проверка сорвалась на закрытом экзамене. Сбрось прерванную попытку (/discard) и проверь снова.",
+	"refusal.brief-not-proposable": "В этом свидетельстве нет ни одного типа сбоя, который лечится правкой харнесса, — предлагать нечего. Прогони проверку заново или добавь кейсов.",
+	"refusal.mode-not-proposable": "Этот тип сбоя правкой харнесса не лечится, поэтому по нему нечего предлагать. Возьми тип сбоя, у которого решение — правка харнесса.",
+	"message.candidate-abandoned": "Прерванная попытка сброшена и записана; ту же применённую правку можно проверить заново.",
 };
 
-const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };
-
 /**
- * One localized string. A key with no form in the active language falls back
- * to English rather than to its own id: an operator reading a familiar English
- * label is a smaller failure than one reading `label.sealed-holdout`.
+ * Both tables, total in both directions. `ru` is declared
+ * `Record<MessageKey, string>`, so a key with no Russian form is a type error
+ * rather than a silent English leak — writing `Partial` here said the opposite
+ * and made every lookup look like it could come back empty.
  */
+const TABLES: Record<Language, Record<MessageKey, string>> = { en, ru };
+
+/** One localized string, in the language this process resolved once. */
 export function t(key: MessageKey, params?: MessageParams): string {
-	return interpolate(TABLES[language()][key] ?? en[key], params);
+	return interpolate(TABLES[language()][key], params);
 }
 
 /** Every key in the dictionary. The i18n test walks it; nothing else should. */
@@ -3050,14 +3172,26 @@ export function hasMessage(key: string): key is MessageKey {
 	return key in en;
 }
 
+/**
+ * The human label for one runtime token, looked up under its namespace.
+ *
+ * A status, a verdict and a blocker code are all the same shape: a token the
+ * record keeps exactly as it is, and a sentence the operator reads instead.
+ * The membership test is `hasMessage`, so the key is narrowed rather than
+ * asserted — a token with no form in the dictionary reads as itself, which is
+ * how a verdict this host has never heard of still prints.
+ */
+export function tokenLabel(namespace: string, token: string): string {
+	const key = `${namespace}.${token}`;
+	return hasMessage(key) ? t(key) : token;
+}
+
 /** The human label for a candidate's lifecycle status; the stored token never changes. */
 export function candidateStatusLabel(status: string): string {
-	const key = `candidate.status.${status}` as MessageKey;
-	return key in en ? t(key) : status;
+	return tokenLabel("candidate.status", status);
 }
 
 /** The human label for a verdict token; the token itself never changes. */
 export function verdictLabel(verdict: string): string {
-	const key = `verdict.${verdict}` as MessageKey;
-	return key in en ? t(key) : verdict;
+	return tokenLabel("verdict", verdict);
 }
