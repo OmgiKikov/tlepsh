@@ -564,6 +564,6 @@ evalSuite:
 
 		expect(view.target.status).toBe("bootstrap-required");
 		expect(view.blockerReasons).toEqual([{ code: "blocker.target-placeholder" }]);
-		expect(view.blockers).toEqual(["Target still contains its one-time identity/model placeholders."]);
+		expect(view.blockers).toEqual([t("blocker.target-placeholder")]);
 	});
 });

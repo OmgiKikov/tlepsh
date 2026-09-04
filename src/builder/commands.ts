@@ -1,5 +1,5 @@
 import { join, relative, sep } from "node:path";
-import { plural, t } from "../i18n.js";
+import { hasMessage, plural, t } from "../i18n.js";
 import { failureModeReading } from "../application/run-explanation.js";
 import type {
 	ExtensionAPI,
@@ -10,6 +10,7 @@ import { SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
 import { standInFilesLine } from "../target/placeholders.js";
 import { DEFAULT_REPETITIONS } from "../workbench/calibration.js";
 import {
+	typedRefusalReason,
 	WorkbenchDecisionDeclinedError,
 	WorkbenchSelectionRequiredError,
 	WorkbenchStaleDecisionError,
@@ -316,6 +317,14 @@ export function humanizeCommandError(error: unknown): { message: string; tone: T
 	if (error instanceof WorkbenchSelectionRequiredError) {
 		const choices = error.choices.length > 0 ? t("error.selection-choices", { choices: error.choices.slice(0, 8).join(", ") }) : "";
 		return { message: `${t("error.selection-required", { message: error.message })}${choices}`, tone: "warning" };
+	}
+	// A refusal that carries a code was written to be read by a person: it is
+	// said in their language, and whatever machine text the code cannot carry
+	// follows it, exactly the way a blocker's `detail` does.
+	const refusal = typedRefusalReason(error);
+	if (refusal && hasMessage(refusal.code)) {
+		const sentence = t(refusal.code, refusal.params);
+		return { message: refusal.detail ? `${sentence} ${refusal.detail}` : sentence, tone: "warning" };
 	}
 	const message = error instanceof Error ? error.message : String(error);
 	return { message: oneLine(message, 600), tone: "error" };
