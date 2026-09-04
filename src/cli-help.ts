@@ -1,11 +1,11 @@
-import { AHDE_BUILDER_COMMAND_NAMES } from "./builder/commands.js";
+import { builderCommandsOfTier, type BuilderCommandTier } from "./builder/commands.js";
 import { SEALED_GATE_POLICY } from "./domain/comparison-gate.js";
 
-/** One command list: the slash commands Builder Pi actually registers, wrapped for the terminal. */
-function builderCommandLines(width = 72, indent = "  "): string {
+/** One command list, wrapped for the terminal. */
+function wrapCommandNames(names: readonly string[], width = 72, indent = "  "): string {
 	const lines: string[] = [];
 	let current = "";
-	for (const name of AHDE_BUILDER_COMMAND_NAMES) {
+	for (const name of names) {
 		const next = current ? `${current}  /${name}` : `/${name}`;
 		if (next.length + indent.length > width && current) {
 			lines.push(indent + current);
@@ -16,6 +16,23 @@ function builderCommandLines(width = 72, indent = "  "): string {
 	}
 	if (current) lines.push(indent + current);
 	return lines.join("\n");
+}
+
+/**
+ * The slash commands Builder Pi actually registers, in the two groups `/help`
+ * itself draws: the nine an operator uses, then everything `/help all` holds —
+ * the expert shortcuts and the decisions AHDE offers on screen by itself.
+ */
+function builderCommandLines(): string {
+	const namesOf = (tier: BuilderCommandTier): string[] =>
+		builderCommandsOfTier(tier).map((command) => command.name);
+	return [
+		// The nine hold one line; the rest wrap at the usual width.
+		wrapCommandNames(namesOf("core"), 76),
+		"  everything else is an expert shortcut or a decision AHDE asks itself;",
+		"  /help all lists them:",
+		wrapCommandNames([...namesOf("expert"), ...namesOf("host-decision")]),
+	].join("\n");
 }
 
 const CORE = `ahde — Agent Harness Development Environment

@@ -223,11 +223,13 @@ const expectedWorkshopToolNames = [
 	"ahde_workshop_try",
 ];
 const expectedRegisteredToolNames = [...expectedToolNames, ...expectedWorkshopToolNames];
+// The public order is the `/help` order: the nine the product is made of, the
+// twelve expert shortcuts, then the eight decisions AHDE asks for itself.
 const expectedCommandNames = [
-	"test", "fix", "ship",
-	"help", "doctor", "holdout", "status", "run", "calibrate", "regrade", "traces", "review",
+	"test", "fix", "ship", "status", "traces", "trace", "passport", "dataset", "help",
+	"run", "plan", "review", "jobs", "stop", "target", "log", "doctor", "label",
+	"holdout", "calibrate", "regrade",
 	"approve", "publish", "apply", "discard", "promote", "reject", "adopt", "next",
-	"target", "passport", "trace", "log", "dataset", "plan", "jobs", "stop", "label",
 ];
 // The CLI command surface the installed package registers. serve is the
 // platform seam: the Workbench behind a loopback HTTP/JSON API; log and watch
@@ -559,8 +561,10 @@ await launchBuilderPi({
     if (workshopGuard?.({ toolName: "write" })?.terminate !== true) {
       throw new Error("installed Builder still allows a generic write tool");
     }
-    const actualCommands = registeredCommands.map(({ name }) => name);
-    if (JSON.stringify(actualCommands) !== JSON.stringify(expectedCommandNames)) {
+    // Membership, not order: where each handler sits in the source file is not
+    // the order `/help` prints them in.
+    const actualCommands = registeredCommands.map(({ name }) => name).sort();
+    if (JSON.stringify(actualCommands) !== JSON.stringify([...expectedCommandNames].sort())) {
       throw new Error(\`Builder extension registered an unexpected command surface: \${actualCommands.join(", ")}\`);
     }
     const viewTool = registeredTools.find((tool) => tool.name === "ahde_workbench_view");
