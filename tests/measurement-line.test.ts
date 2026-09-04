@@ -1,3 +1,5 @@
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	designPhrase,
@@ -9,14 +11,55 @@ import {
 	trimSeparator,
 	SMALL_BASKET_CASES,
 } from "../src/application/measurement-line.js";
+import {
+	band,
+	bar,
+	bareDelta,
+	coarseElapsed,
+	duration,
+	elapsed,
+	interval,
+	isSubCent,
+	kappa,
+	kappaValue,
+	money,
+	percent,
+	points,
+	ratio,
+} from "../src/measurement.js";
 import type { AgentLog } from "../src/application/agent-log.js";
+import { formatJudgeAgreementSummary } from "../src/domain/judge-agreement.js";
+import { renderCalibration } from "../src/builder/render/calibration.js";
+import { judgeAgreementSummary } from "../src/builder/render/label.js";
 import { developmentSummaryLine, type VersionPassportDevelopment } from "../src/application/version-passport.js";
 import { renderAgentLog } from "../src/builder/render/agent-log.js";
 import { plainPaint } from "../src/builder/render/paint.js";
-import { renderCandidate } from "../src/builder/render/view.js";
+import { renderCandidate, renderHeader } from "../src/builder/render/view.js";
 import { candidateHeadline } from "../src/workbench/resolution.js";
 import { setLanguage } from "../src/i18n.js";
-import type { WorkbenchCandidateSummary, WorkbenchGateProjection } from "../src/workbench/types.js";
+import type {
+	WorkbenchCalibrationProjection,
+	WorkbenchCandidateSummary,
+	WorkbenchGateProjection,
+} from "../src/workbench/types.js";
+
+/** The A/A noise the calibration panel, the status line and the headline share. */
+function makeCalibrationProjection(): WorkbenchCalibrationProjection {
+	return {
+		candidateId: "calibration-1",
+		targetSha: SHA_A,
+		taskCount: 30,
+		repetitions: 3,
+		aaPassRate: 0.7,
+		delta: 0,
+		confidence95: { low: -0.06, high: 0.06 },
+		flipRate: 0.1,
+		recommendedRepetitions: 3,
+		recommendedExamCases: 15,
+		verdict: "inconclusive",
+		at: "2026-09-02T10:00:00.000Z",
+	};
+}
 
 /**
  * One number, everywhere.
@@ -333,5 +376,175 @@ describe("the joiner never leaves a dangling separator", () => {
 		expect(trimSeparator("score 45% → 67% on 19 cases × 3 · ")).toBe("score 45% → 67% on 19 cases × 3");
 		expect(trimSeparator("nothing to trim")).toBe("nothing to trim");
 		expect(trimSeparator("")).toBe("");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// One module writes every number.
+//
+// The composer above was already the one sentence; the numbers inside it were
+// not. A percentage was whole in the composer, carried one decimal on the
+// passport panel and was re-clamped in the trace; the same delta was `+3.1 pts`
+// in the sentence and `+3.1pp` in the four files that formatted it themselves,
+// so a Russian screen printed an English unit; a spend under a cent was
+// `<$0.01` on one screen and `$0.00` on two others; and κ with nothing behind
+// it had three different words for the same absence.
+// ---------------------------------------------------------------------------
+
+describe("one module, one number", () => {
+	it("gives each quantity one precision and one word for what was never measured", () => {
+		expect(percent(0.315)).toBe("32%");
+		expect(percent(0.315, { digits: 1 })).toBe("31.5%");
+		// A rate outside [0,1] is not a rate: `140%` on a screen is worth less
+		// than the bug it hides.
+		expect(percent(1.4)).toBe("100%");
+		expect(percent(null)).toBe("—");
+		expect(points(0.031)).toBe("+3.1 pts");
+		expect(points(0.03)).toBe("+3 pts");
+		expect(points(-0.031)).toBe("-3.1 pts");
+		expect(points(Number.NaN)).toBe("—");
+		expect(bareDelta(0.031)).toBe("+3.1");
+		expect(band(-0.06)).toBe("±6 pts");
+		expect(ratio(1.44)).toBe("×1.4");
+		expect(ratio(12.4)).toBe("×12");
+		expect(ratio(null)).toBe("—");
+		expect(kappa(0.618)).toBe("κ 0.62");
+		expect(kappa(null)).toBe("κ —");
+		expect(kappaValue(null)).toBe("—");
+		expect(duration(1_440)).toBe("1.4s");
+		expect(duration(340)).toBe("340ms");
+		expect(duration(null)).toBe("—");
+		expect(elapsed(252_000)).toBe("4m12s");
+		expect(coarseElapsed(252_000)).toBe("4m");
+		expect(bar(0.5, 4)).toBe("██░░");
+	});
+
+	it("prints the unit once: on the delta, never on both ends of its interval", () => {
+		expect(interval(0.09, 0.41)).toBe("95% CI +9 … +41");
+		// The one shape that stands alone in a sentence names the quantity
+		// behind the high end, and still only once.
+		expect(interval(0.05, 0.35, { form: "machine", unit: "after" })).toBe("95% CI +5.0 … +35.0pp");
+		const spread = renderCalibration(makeCalibrationProjection(), plainPaint).join("\n");
+		expect(spread).toContain("Spread ±6 pts (95% CI -6 … +6)");
+		expect(spread).not.toMatch(/-6 pts … \+6 pts/);
+	});
+
+	it("names the unit from the dictionary, so a Russian screen never says pp", () => {
+		setLanguage("ru");
+		expect(points(0.031)).toBe("+3.1 п.п.");
+		expect(band(0.06)).toBe("±6 п.п.");
+		const panel = renderCalibration(makeCalibrationProjection(), plainPaint).join("\n");
+		expect(panel).toContain("±6 п.п.");
+		expect(panel).not.toMatch(/\dpp\b/);
+		expect(measurementLine({ development: measurementSurface({ ...SUMMARY, ...GATE }) }).text)
+			.not.toMatch(/\dpp\b/);
+		// English by design, and only there: the machine form is what the
+		// markdown report and the Builder's own compact history are read as.
+		expect(points(0.031, "machine")).toBe("+3.1pp");
+	});
+
+	it("never rounds a bill under half a cent down to $0.00", () => {
+		expect(money(0)).toBe("$0.00");
+		expect(money(0.0015)).toBe("<$0.01");
+		expect(money(0.005)).toBe("$0.01");
+		expect(money(1.404)).toBe("$1.40");
+		expect(isSubCent(0.004999)).toBe(true);
+		expect(isSubCent(0.005)).toBe(false);
+	});
+});
+
+describe("four surfaces, one κ", () => {
+	it("says the same thing about a judge nobody has checked, on every screen that shows one", () => {
+		const uncalibrated = { agreement: 1, kappa: null, labels: 4 };
+		const panel = renderCandidate(
+			{ ...candidate(), judgeAgreement: uncalibrated },
+			plainPaint,
+		).join("\n");
+		const header = renderHeader({
+			view: null,
+			builderModel: { label: "x", credentialPresent: true },
+		}, plainPaint).join("\n");
+		const surfaces = [
+			panel,
+			judgeAgreementSummary({
+				...uncalibrated,
+				n: 4,
+				nChecks: 4,
+				duplicateLabels: 0,
+				conflictedSubjects: 0,
+				falsePass: 0,
+				falseFail: 0,
+				truePass: 4,
+				trueFail: 0,
+			}),
+			formatJudgeAgreementSummary(uncalibrated),
+		];
+		for (const surface of surfaces) {
+			expect(surface).toContain("κ —");
+			expect(surface).not.toContain("n/a");
+		}
+		expect(header).not.toContain("n/a");
+	});
+});
+
+/**
+ * Copy twenty-six cannot land.
+ *
+ * The canonical module existed before this lane and was bypassed roughly
+ * twenty-five times, because nothing stopped a renderer from spelling `pp`
+ * itself. This is what stops it: one module owns the units, and every other
+ * file under `src/` has to call it.
+ */
+describe("only one module spells a measurement unit", () => {
+	const FORBIDDEN: readonly { name: string; pattern: RegExp; instead: string }[] = [
+		{ name: "a unit welded onto a template", pattern: /\}\s*(?:pp|pts)\b/, instead: "points()" },
+		{ name: "a bare unit literal", pattern: /["'`](?:pp|pts)["'`]/, instead: "t(\"unit.points\") through points()" },
+		{ name: "an inline percentage", pattern: /Math\.round\((?:[^()]|\([^()]*\))*\*\s*100\s*\)/, instead: "percent()" },
+		{ name: "an inline percentage", pattern: /\*\s*100\s*\)\s*\.toFixed\(/, instead: "percent()" },
+		{ name: "a second word for an unmeasured κ", pattern: /κ\s*n\/a/, instead: "kappa()" },
+		{ name: "a second sub-cent threshold", pattern: /<\$0\.01/, instead: "money()" },
+	];
+
+	/** Code only: prose is allowed to name a unit, and does. */
+	function code(source: string): { line: number; text: string }[] {
+		const rows: { line: number; text: string }[] = [];
+		let inBlock = false;
+		source.split("\n").forEach((raw, index) => {
+			const trimmed = raw.trim();
+			if (inBlock) {
+				if (trimmed.includes("*/")) inBlock = false;
+				return;
+			}
+			if (trimmed.startsWith("/*")) {
+				if (!trimmed.includes("*/")) inBlock = true;
+				return;
+			}
+			if (trimmed.startsWith("//") || trimmed.startsWith("*")) return;
+			rows.push({ line: index + 1, text: raw.replace(/\/\/.*$/, "") });
+		});
+		return rows;
+	}
+
+	function sources(dir: string): string[] {
+		return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+			const path = join(dir, entry.name);
+			return entry.isDirectory() ? sources(path) : path.endsWith(".ts") ? [path] : [];
+		});
+	}
+
+	it("finds no unit, no inline percentage and no second threshold outside src/measurement.ts", () => {
+		// `i18n.ts` is where a unit is *defined*: `pts`, `п.п.` and `<$0.01` are
+		// dictionary values, and the module above reads them from there.
+		const exempt = new Set(["src/measurement.ts", "src/i18n.ts"]);
+		const offences: string[] = [];
+		for (const file of sources("src")) {
+			if (exempt.has(file)) continue;
+			for (const { line, text } of code(readFileSync(file, "utf8"))) {
+				for (const rule of FORBIDDEN) {
+					if (rule.pattern.test(text)) offences.push(`${file}:${line} — ${rule.name}; call ${rule.instead}`);
+				}
+			}
+		}
+		expect(offences).toEqual([]);
 	});
 });
