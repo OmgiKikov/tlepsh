@@ -416,7 +416,7 @@ describe("generate-holdout: the exam the judge writes", () => {
 
 		setLanguage("ru");
 		const russian = renderDecision(result, plainPaint);
-		expect(russian[1]).toBe("Экзамен 18 из 20 запрошенных · отброшено дубликатов: 1 · отброшено с ошибкой формы: 1");
+		expect(russian[1]).toBe("Экзамен 18 из 20 запрошенных · отброшено: 1 дубликат · отброшено: 1 кейс с ошибкой формы");
 	});
 
 	it("records how the exam came to exist, and tells a sealed one from a reviewed one", async () => {

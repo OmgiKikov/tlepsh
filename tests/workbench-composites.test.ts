@@ -265,7 +265,7 @@ describe("start-testing composite", () => {
 			expect(confirmation).toMatchObject({
 				kind: "start-testing",
 				policy: "consequential",
-				title: "Start testing — publish the eval basket, run 6 Target executions",
+				title: "Start testing — publish the eval basket (2 cases), run 6 Target executions",
 				subject: {
 					operation: "start-testing",
 					steps: ["publish-corpus", "run-eval"],

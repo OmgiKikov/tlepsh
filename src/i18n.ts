@@ -167,6 +167,9 @@ const NOUNS = {
 		// tool calls a required-tool check counts.
 		character: ["character", "characters"],
 		"tool call": ["tool call", "tool calls"],
+		// The noun after "about"/«около», where Russian wants the genitive:
+		// «около 4 минут», never «около 4 минуты».
+		"estimated minute": ["minute", "minutes"],
 	},
 	ru: {
 		case: ["кейс", "кейса", "кейсов"],
@@ -229,6 +232,7 @@ const NOUNS = {
 		// lane: i18n-reasons
 		character: ["символ", "символа", "символов"],
 		"tool call": ["вызов инструмента", "вызова инструмента", "вызовов инструментов"],
+		"estimated minute": ["минуты", "минут", "минут"],
 	},
 } as const;
 
@@ -479,7 +483,7 @@ const en = {
 
 	"confirm.start-testing.title": "Start testing — {parts}",
 	"confirm.start-testing.part.approve-spec": "approve the Spec",
-	"confirm.start-testing.part.publish-corpus": "publish the eval basket",
+	"confirm.start-testing.part.publish-corpus": "publish the eval basket ({cases})",
 	"confirm.start-testing.part.run": "run {runs}",
 	// The composite's subject block: what exactly is approved, published and run.
 	"confirm.start-testing.approve-draft": "{title} — approve this draft",
@@ -1718,6 +1722,11 @@ one would cost more than usual, and then you get a single yes/no.`,
 	// A phrasing no pair above recognizes: the record itself, quoted whole and
 	// unchanged. There is nothing here to bend, in either language.
 	"why.actual.reason": "{reason}",
+	// The judge's three protocol answers. The sidecar keeps the token; the
+	// sentence around it is read by a person, so it bends.
+	"assertion.answer.yes": "yes",
+	"assertion.answer.no": "no",
+	"assertion.answer.unknown": "unknown",
 	// Refusals a person is meant to act on: minted twice, the English sentence
 	// for the model and the code for the operator.
 	"refusal.sealed-exam-too-small": "The chosen exam has {tasks}; a sealed verdict needs at least {minimum}. Add exam cases, then check again.",
@@ -1875,7 +1884,7 @@ const ru: Record<MessageKey, string> = {
 	"candidate.regraded": "разработка {recorded} стало {revised} ({moved})",
 
 	"development.comparison": "было {baseline} → кандидат {candidate}",
-	"development.on-tasks": "· задач {count}",
+	"development.on-tasks": "· задач {tasks}",
 	"development.score": "· балл {before} → {after}",
 	"development.improved": "↑ {count} лучше",
 	"development.lower": "↓ {count} хуже",
@@ -1987,7 +1996,7 @@ const ru: Record<MessageKey, string> = {
 	"estimate.about-cost": "около ${cost}",
 	"estimate.from-earlier-runs": "уже было {runs}",
 	"estimate.under-minute": "меньше минуты",
-	"estimate.about-minutes": "около {count} мин",
+	"estimate.about-minutes": "около {minutes}",
 
 	"result.target-created": "Агент создан",
 	"result.target-wrapped": "Агент принят",
@@ -2870,8 +2879,8 @@ const ru: Record<MessageKey, string> = {
 	"exam.size-for-noise": "чтобы увидеть разницу ±10 п.п. на экзамене, нужно около {cases} (по этому шуму)",
 	"exam.size-hint": "экзамен {cases}; при таком шуме для ±10 п.п. нужно около {needed}",
 	"exam.of-requested": "{cases} из {requested} запрошенных",
-	"exam.dropped-duplicate": "отброшено дубликатов: {count}",
-	"exam.dropped-malformed": "отброшено с ошибкой формы: {count}",
+	"exam.dropped-duplicate": "отброшено: {dropped}",
+	"exam.dropped-malformed": "отброшено: {dropped}",
 	"calibration.exam-size": "Размер экзамена",
 	"headline.calibrate-exam": "· экзамен ≈ {cases} для ±10 п.п.",
 	// lane: one-number
@@ -3137,6 +3146,9 @@ const ru: Record<MessageKey, string> = {
 	"why.actual.semantic-rubric-assertions":
 		"судья ответил «да» на {passed} из {total}; не выполнены утверждения {failed}",
 	"why.actual.reason": "{reason}",
+	"assertion.answer.yes": "да",
+	"assertion.answer.no": "нет",
+	"assertion.answer.unknown": "не знаю",
 	"refusal.sealed-exam-too-small": "В выбранном экзамене {tasks}; для закрытого вердикта нужно хотя бы {minimum}. Добавь кейсы в экзамен и проверь снова.",
 	"refusal.repetitions-too-few": "Для закрытого вердикта нужно хотя бы {minimum} повторов каждого кейса.",
 	"refusal.check-stopped-before-exam": "Проверка остановилась до экзамена, ничего не решено. Сбрось прерванную попытку (/discard) и проверь снова.",

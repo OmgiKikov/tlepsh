@@ -1,4 +1,4 @@
-import { noun, plural, t, type MessageKey, type MessageParams } from "../i18n.js";
+import { noun, plural, t, tokenLabel, type MessageKey, type MessageParams } from "../i18n.js";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { z } from "zod";
@@ -1164,7 +1164,12 @@ function explanationSentences(explanation: Omit<RunExplanation, "sentences">): s
 			: t("why.grader-plain", { name: grader.graderName, type: grader.graderType, actual: grader.actual }));
 		lines.push(t("why.grader-reason", { reason: grader.reason }));
 		for (const assertion of grader.assertions) {
-			lines.push(t("why.assertion", { index: assertion.index, answer: assertion.answer, evidence: assertion.evidence }));
+			lines.push(t("why.assertion", {
+				index: assertion.index,
+				// The stored answer is a protocol token; the sentence quoting it is read.
+				answer: tokenLabel("assertion.answer", assertion.answer),
+				evidence: assertion.evidence,
+			}));
 		}
 		if (grader.jury) {
 			const passed = grader.jury.filter((vote) => vote.passed).length;
