@@ -1,4 +1,4 @@
-import { bareDelta, points } from "../application/measurement-line.js";
+import { bareDelta, percent, points, ratio } from "../measurement.js";
 import { language, t } from "../i18n.js";
 
 /**
@@ -222,7 +222,7 @@ function outcomeChip(outcome: RunRow["outcome"]): string {
 }
 
 function scoreCell(row: RunRow): string {
-	return `${(row.score * 100).toFixed(0)}%`;
+	return percent(row.score);
 }
 
 function graderChips(row: RunRow): string {
@@ -345,16 +345,12 @@ export interface EvalPageModel {
 	notices: string[];
 }
 
-function pct(value: number): string {
-	return `${(value * 100).toFixed(0)}%`;
-}
-
 export function renderEvalPage(model: EvalPageModel): string {
 	const modeLabels = new Map(model.modes.map((mode) => [mode.id, mode.title]));
 	const stats = [
-		["Pass rate", pct(model.summary.allPassRate)],
+		["Pass rate", percent(model.summary.allPassRate)],
 		["Passed", `${model.summary.pass}/${model.summary.total}`],
-		["Mean score", pct(model.meanScore)],
+		["Mean score", percent(model.meanScore)],
 		["Errors", String(model.summary.error)],
 		["Failure modes", String(model.modes.length)],
 		["Cost", `$${model.costUsd.toFixed(4)}`],
@@ -600,16 +596,12 @@ export interface ComparePageModel {
 	notices: string[];
 }
 
-function ratio(value: number | null): string {
-	return value === null ? "—" : `×${value.toFixed(2)}`;
-}
-
 export function renderComparePage(model: ComparePageModel): string {
 	const rows = model.rows.map((row) => `<tr>
 <td class="mono">${h(row.taskId)}</td>
 <td>${row.baselineRunId ? `<a href="/runs/${encodeURIComponent(row.baselineRunId)}">${h(row.flip.before)}</a>` : h(row.flip.before)} <span class="count">${row.flip.baselinePass}/${row.flip.baselineTotal}</span></td>
 <td>${row.candidateRunId ? `<a href="/runs/${encodeURIComponent(row.candidateRunId)}">${h(row.flip.after)}</a>` : h(row.flip.after)} <span class="count">${row.flip.candidatePass}/${row.flip.candidateTotal}</span></td>
-<td class="num">${(row.baselineScore * 100).toFixed(0)}% → ${(row.candidateScore * 100).toFixed(0)}%</td>
+<td class="num">${percent(row.baselineScore)} → ${percent(row.candidateScore)}</td>
 <td class="num ${row.scoreDelta > 0 ? "up" : row.scoreDelta < 0 ? "down" : "same"}">${h(points(row.scoreDelta))}</td>
 <td class="${row.flip.direction === "improved" ? "up" : row.flip.direction === "regressed" ? "down" : "same"}">${h(row.flip.badge)} ${h(row.flip.direction)}</td>
 </tr>`).join("");
@@ -623,7 +615,7 @@ export function renderComparePage(model: ComparePageModel): string {
 	<div class="pills"><span class="tag">${h(model.status)}</span></div>
 </div>
 <div class="stats">
-	<div class="stat"><b>${pct(model.baseline.passRate)} → ${pct(model.candidate.passRate)}</b><span>All-pass rate</span></div>
+	<div class="stat"><b>${percent(model.baseline.passRate)} → ${percent(model.candidate.passRate)}</b><span>All-pass rate</span></div>
 	<div class="stat"><b>${model.counts.improved} ↑ / ${model.counts.regressed} ↓ / ${model.counts.unchanged} =</b><span>Task flips</span></div>
 	<div class="stat"><b>${ratio(model.resources.costRatio)}</b><span>Cost ratio</span></div>
 	<div class="stat"><b>${ratio(model.resources.latencyRatio)}</b><span>Latency ratio</span></div>

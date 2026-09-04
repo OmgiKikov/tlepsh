@@ -1,3 +1,4 @@
+import { percent } from "../measurement.js";
 import { language } from "../i18n.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { existsSync } from "node:fs";
@@ -92,11 +93,11 @@ function renderIndexRow(record: PublicEvalRunIndexEntry): {
 	fieldsTruncated: boolean;
 	fieldsRedacted: boolean;
 } {
-	const rate = Math.round(record.allPassRate * 100);
+	const rate = percent(record.allPassRate);
 	return {
 		html: `<tr><td class="mono"><a href="/evals/${encodeURIComponent(record.evalRunId)}">${h(record.evalRunId)}</a></td>`
 			+ `<td>${h(record.targetId)}</td><td>${h(record.label)}</td>`
-			+ `<td class="mono">${h(record.startedAt)}</td><td class="num">${rate}%</td></tr>`,
+			+ `<td class="mono">${h(record.startedAt)}</td><td class="num">${rate}</td></tr>`,
 		fieldsTruncated: record.fieldsTruncated,
 		fieldsRedacted: record.fieldsRedacted,
 	};
