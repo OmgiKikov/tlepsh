@@ -166,6 +166,7 @@ const NOUNS = {
 		// The three below are read after "of"/"из", where Russian wants the
 		// genitive and the ordinary nominative forms above would be wrong.
 		"case of": ["case", "cases"],
+		"dialogue of": ["dialogue", "dialogues"],
 		"excluded case": ["excluded", "excluded"],
 	},
 	ru: {
@@ -230,6 +231,7 @@ const NOUNS = {
 		// Genitive: «из 1 кейса», «из 15 кейсов» — the nominative «15 кейсов»
 		// happens to coincide, «из 2 кейсов» does not.
 		"case of": ["кейса", "кейсов", "кейсов"],
+		"dialogue of": ["диалога", "диалогов", "диалогов"],
 		// A short participle, bent by the count it follows: «1 исключён», «2 исключены».
 		"excluded case": ["исключён", "исключены", "исключены"],
 	},
@@ -1064,7 +1066,7 @@ const en = {
 	"passport.known-limits": "Known limits",
 	"passport.written-to": "Written to",
 	// lane: recorded dataset — one line, and it says what is NOT in the file.
-	"export.done": "exported {count} → {path} (no exam)",
+	"export.done": "exported {count} of {total} → {path}",
 	"export.none": "nothing recorded to export yet — run the tests first",
 	"passport.unresolved": "Unresolved",
 	"passport.nothing-unresolved": "nothing this change targeted was left unresolved",
@@ -1684,6 +1686,12 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"run.noise-unmeasured": "1 repetition — noise was not measured",
 	"run.noise-advice": "{repetitions} would measure it (A/A)",
 	"table.col.every-repetition": "passed",
+	"export.left-out": "left out: {count} ({reasons})",
+	"export.reason-sealed": "the exam",
+	"export.reason-screen": "cheap checks",
+	"export.reason-failed": "failed runs",
+	"export.reason-infra": "run errors",
+	"export.reason-aa": "A/A calibration",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2461,7 +2469,7 @@ const ru: Record<MessageKey, string> = {
 	"passport.known-limits": "Чего мы не знаем",
 	"passport.written-to": "Записано в",
 	// lane: recorded dataset
-	"export.done": "выгружено {count} → {path} (без экзамена)",
+	"export.done": "выгружено {count} из {total} → {path}",
 	"export.none": "выгружать пока нечего — сначала прогони тесты",
 	"passport.unresolved": "Не закрыто",
 	"passport.nothing-unresolved": "всё, во что целились этой правкой, закрыто",
@@ -3065,6 +3073,12 @@ const ru: Record<MessageKey, string> = {
 	"run.noise-unmeasured": "повторов 1 — шум не измерен",
 	"run.noise-advice": "нужно {repetitions} — прогони A/A",
 	"table.col.every-repetition": "прошло",
+	"export.left-out": "не вошли: {count} ({reasons})",
+	"export.reason-sealed": "экзамен",
+	"export.reason-screen": "дешёвые проверки",
+	"export.reason-failed": "провалы",
+	"export.reason-infra": "ошибки прогона",
+	"export.reason-aa": "калибровка A/A",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

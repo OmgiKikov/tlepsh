@@ -2705,7 +2705,7 @@ describe("/dataset", () => {
 		expect(output.blocks).toHaveLength(1);
 		expect(output.blocks[0]?.title).toBe("AHDE · Записанные диалоги");
 		expect(output.blocks[0]?.lines).toEqual([
-			"выгружено 2 диалога → exports/erun_export.jsonl (без экзамена)",
+			"выгружено 2 из 2 диалогов → exports/erun_export.jsonl",
 		]);
 		// The file is real, and every line of it is one conversation.
 		const written = readFileSync(join(projectDir, "exports", "erun_export.jsonl"), "utf8");
@@ -2720,7 +2720,7 @@ describe("/dataset", () => {
 		const fixture = workbench({ projectDir: targetWithEvidence(1) });
 		const { commands, output } = register(fixture.value);
 		await command(commands, "dataset").handler("--all", context().ctx);
-		expect(output.blocks[0]?.lines[0]).toMatch(/^выгружено 1 диалог → exports\/all-.*\.jsonl \(без экзамена\)$/);
+		expect(output.blocks[0]?.lines[0]).toMatch(/^выгружено 1 из 1 диалога → exports\/all-.*\.jsonl$/);
 	});
 
 	it("says plainly that there is nothing recorded yet, and refuses an argument it does not know", async () => {

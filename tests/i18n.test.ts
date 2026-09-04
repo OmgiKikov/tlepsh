@@ -737,15 +737,17 @@ describe("the dictionary itself", () => {
 });
 
 describe("ru: the recorded dataset", () => {
-	it("bends the noun to the count and says what the file does not contain", () => {
+	it("bends the noun to the count and gives the count a denominator", () => {
 		setLanguage("ru");
+		// The genitive after «из»: «из 1 диалога», «из 2 диалогов», never the
+		// nominative «2 диалога» the plain count would bend to.
 		const line = (count: number): string =>
-			t("export.done", { count: plural(count, "dialogue"), path: "exports/erun_abc123.jsonl" });
-		expect(line(1)).toBe("выгружено 1 диалог → exports/erun_abc123.jsonl (без экзамена)");
-		expect(line(2)).toBe("выгружено 2 диалога → exports/erun_abc123.jsonl (без экзамена)");
-		expect(line(24)).toBe("выгружено 24 диалога → exports/erun_abc123.jsonl (без экзамена)");
-		expect(line(25)).toBe("выгружено 25 диалогов → exports/erun_abc123.jsonl (без экзамена)");
-		expect(line(11)).toBe("выгружено 11 диалогов → exports/erun_abc123.jsonl (без экзамена)");
+			t("export.done", { count, total: plural(count, "dialogue of"), path: "exports/erun_abc123.jsonl" });
+		expect(line(1)).toBe("выгружено 1 из 1 диалога → exports/erun_abc123.jsonl");
+		expect(line(2)).toBe("выгружено 2 из 2 диалогов → exports/erun_abc123.jsonl");
+		expect(line(24)).toBe("выгружено 24 из 24 диалогов → exports/erun_abc123.jsonl");
+		expect(line(25)).toBe("выгружено 25 из 25 диалогов → exports/erun_abc123.jsonl");
+		expect(line(11)).toBe("выгружено 11 из 11 диалогов → exports/erun_abc123.jsonl");
 		// Only the path is Latin, and it is a path.
 		expect(leakedEnglish(line(24))).toEqual([]);
 		for (const key of ["export.none", "cmd.dataset", "panel.export"] as const) {
