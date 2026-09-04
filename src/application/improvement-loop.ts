@@ -42,10 +42,7 @@ import { computeTargetSnapshotHashes } from "../runner.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import type { RunEventListener } from "../run-events.js";
-import type {
-	WorkbenchDecisionInput,
-	WorkbenchHumanGate,
-} from "../workbench/types.js";
+import type { WorkbenchHumanGate } from "../workbench/types.js";
 import { recordBuilderAuthoredProposal } from "./builder-authoring.js";
 import { runAppliedBuilderCandidate } from "./builder-candidate.js";
 import {
@@ -72,6 +69,13 @@ import {
 	runProposalSearch,
 	type ProposalSearchResult,
 } from "./proposal-search.js";
+import {
+	assertRestrictedGate,
+	restrictedGate,
+	RESTRICTED_DECISIONS,
+	RestrictedGateDecisionError,
+	type GateRestriction,
+} from "./restricted-gate.js";
 import {
 	compileImprovementBrief,
 	deriveEvidenceLinkedProposalSelection,
@@ -251,54 +255,37 @@ export function abandonImprovementLoop(
  * Every decision that creates release authority or asks for human judgement.
  * The loop refuses all of them; `apply-proposal` is deliberately absent
  * because applying on `candidate/auto-<loopId>-<n>` is the work the operator asked for.
+ *
+ * One list, shared with the proposal search: two copies of the same fifteen
+ * kinds is how the two front doors drifted apart in the first place.
  */
-export const IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS: readonly WorkbenchDecisionInput["kind"][] = [
-	"scaffold-target",
-	"wrap-target",
-	"configure-target",
-	"approve-spec",
-	"publish-corpus",
-	"import-dataset",
-	"start-testing",
-	"review-candidate",
-	"promote-candidate",
-	"reject-candidate",
-	"adopt-candidate",
-	"continue-cycle",
-	"abandon-candidate",
-	"discard-proposal",
-	"ship",
-];
+export const IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS = RESTRICTED_DECISIONS;
 
-export class ImprovementLoopForbiddenDecisionError extends Error {
-	constructor(readonly decision: string) {
-		super(
-			`the improvement loop may not decide ${decision}; that stays with the human. ` +
-			"Stop the loop and make it yourself.",
-		);
-		this.name = "ImprovementLoopForbiddenDecisionError";
-	}
-}
+export { RestrictedGateDecisionError as ImprovementLoopForbiddenDecisionError };
+
+/** What the loop is, and what the operator does instead when it refuses. */
+const IMPROVEMENT_LOOP_RESTRICTION: GateRestriction = {
+	id: "improvement-loop",
+	advice: "gate.restricted.advice.stop-loop",
+};
 
 /**
  * The gate the loop hands to anything it calls. A forbidden decision is not
- * declined, it throws: a loop that reaches one is a bug, not a request.
+ * declined, it throws: a loop that reaches one is a bug, not a request. The
+ * sealed holdout answers one question — may this ship — and the loop never
+ * asks it.
  */
 export function improvementLoopGate(gate: WorkbenchHumanGate): WorkbenchHumanGate {
-	const forbidden = new Set<string>(IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS);
-	return {
-		async confirm(confirmation, signal) {
-			if (forbidden.has(confirmation.kind)) {
-				throw new ImprovementLoopForbiddenDecisionError(confirmation.kind);
-			}
-			return gate.confirm(confirmation, signal);
-		},
-		async selectSealed() {
-			// The sealed holdout answers one question — may this ship — and the
-			// loop never asks it.
-			throw new ImprovementLoopForbiddenDecisionError("sealed holdout selection");
-		},
-	};
+	return restrictedGate(gate, IMPROVEMENT_LOOP_RESTRICTION);
+}
+
+/**
+ * A caller that hands the loop a gate which could still approve a promotion is
+ * a bug, and the loop refuses before it spends anything — the same refusal the
+ * search has always made.
+ */
+export function assertImprovementLoopGate(gate: WorkbenchHumanGate | undefined): void {
+	assertRestrictedGate(gate, "improvement-loop");
 }
 
 export type ImprovementLoopStopReason =
@@ -821,6 +808,9 @@ export async function runImprovementLoop(
 	if (candidatesPerCycle < 1 || candidatesPerCycle > MAX_SEARCH_CANDIDATES) {
 		throw new Error(`--candidates must be between 1 and ${MAX_SEARCH_CANDIDATES}, got ${options.candidates}`);
 	}
+	// Before anything is resolved, read or spent: a gate that could still approve
+	// a promotion is not a gate this loop may hold.
+	assertImprovementLoopGate(options.gate);
 	// The loop id is this invocation's identity, and it is in every branch name:
 	// two loops on one project can never write the same ref, and `--resume` puts
 	// a continuation back on the series it left.

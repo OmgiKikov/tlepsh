@@ -29,6 +29,7 @@ import {
 	exportDataset,
 	sealedDatasetHashesFor,
 } from "../application/export-dataset.js";
+import { choose, confirmChoice, type DialogChoice } from "./dialog.js";
 import { examShortfall, oneLine, pluralize } from "./render/format.js";
 import { renderAgentLog, renderAgentLogChart } from "./render/agent-log.js";
 import { handoffLines } from "./render/handoff.js";
@@ -238,6 +239,13 @@ export function parseRegrade(args: string): {
 
 const BRANCH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
 const VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+$/;
+
+/**
+ * The offers that decide nothing. Ids, so a dialog is dispatched on what the
+ * operator picked rather than on the sentence that was drawn for them.
+ */
+const JUST_LOOKING = "just-looking";
+const NOT_NOW = "not-now";
 
 function parseBranch(value: string): string {
 	if (!BRANCH_PATTERN.test(value)) throw new Error(t("cmd.err.branch"));
@@ -970,57 +978,75 @@ export function registerAhdeBuilderCommands(
 	const offerReviewActions = async (ctx: ExtensionCommandContext, view: WorkbenchView, signal: AbortSignal | undefined): Promise<void> => {
 		if (typeof ctx.ui.select !== "function") return;
 		const detail = view.detail?.aspect === "review" ? view.detail.content : undefined;
-		const looking = t("review.just-looking");
 		const reason = t("review.reason");
-		const choose = async (title: string, choices: string[]): Promise<string | undefined> => {
-			const selected = await ctx.ui.select(title, [...choices, looking], { signal });
-			return selected === looking ? undefined : selected;
-		};
+		/**
+		 * The stage's actions, plus the way out that decides nothing. What comes
+		 * back is the id of the action, never the sentence the host drew.
+		 */
+		const offer = <T extends string>(title: string, actions: readonly DialogChoice<T>[]) =>
+			choose<T | typeof JUST_LOOKING>(
+				ctx,
+				title,
+				[...actions, { id: JUST_LOOKING, label: () => t("review.just-looking") }],
+				{ signal },
+			);
 		switch (view.stage) {
 			case "spec-review": {
-				const choice = await choose(t("section.spec-draft"), [t("review.approve-spec"), t("review.ask-changes")]);
-				if (choice === t("review.approve-spec")) await simpleDecision(ctx, "approve", { kind: "approve-spec", reason }, signal);
-				else if (choice === t("review.ask-changes")) ctx.ui.notify(t("review.spec-hint"), "info");
+				const choice = await offer(t("section.spec-draft"), [
+					{ id: "approve", label: () => t("review.approve-spec") },
+					{ id: "ask-changes", label: () => t("review.ask-changes") },
+				]);
+				if (choice === "approve") await simpleDecision(ctx, "approve", { kind: "approve-spec", reason }, signal);
+				else if (choice === "ask-changes") ctx.ui.notify(t("review.spec-hint"), "info");
 				return;
 			}
 			case "corpus-review": {
-				const choice = await choose(t("section.basket-draft"), [t("review.publish-basket"), t("review.ask-changes")]);
-				if (choice === t("review.publish-basket")) await simpleDecision(ctx, "publish", { kind: "publish-corpus", reason }, signal);
-				else if (choice === t("review.ask-changes")) ctx.ui.notify(t("review.basket-hint"), "info");
+				const choice = await offer(t("section.basket-draft"), [
+					{ id: "publish", label: () => t("review.publish-basket") },
+					{ id: "ask-changes", label: () => t("review.ask-changes") },
+				]);
+				if (choice === "publish") await simpleDecision(ctx, "publish", { kind: "publish-corpus", reason }, signal);
+				else if (choice === "ask-changes") ctx.ui.notify(t("review.basket-hint"), "info");
 				return;
 			}
 			case "proposal-review": {
-				const choice = await choose(t("panel.proposal-review"), [t("review.apply-branch"), t("review.discard")]);
+				const choice = await offer(t("panel.proposal-review"), [
+					{ id: "apply", label: () => t("review.apply-branch") },
+					{ id: "discard", label: () => t("review.discard") },
+				]);
 				const runId = detail?.kind === "proposal" ? detail.runId : undefined;
-				if (choice === t("review.apply-branch")) await applyProposal(ctx, signal, null, reason, runId, { showReview: false });
-				else if (choice === t("review.discard")) await discardCurrent(ctx, signal, reason);
+				if (choice === "apply") await applyProposal(ctx, signal, null, reason, runId, { showReview: false });
+				else if (choice === "discard") await discardCurrent(ctx, signal, reason);
 				return;
 			}
 			case "candidate-verification": {
 				if (detail?.kind === "interrupted-candidate") {
-					const choice = await choose(t("panel.interrupted-candidate"), [t("review.abandon-attempt")]);
-					if (choice) await discardCurrent(ctx, signal, reason);
+					const abandon = await confirmChoice(ctx, t("panel.interrupted-candidate"), "review.abandon-attempt", "review.just-looking", { signal });
+					if (abandon) await discardCurrent(ctx, signal, reason);
 				} else {
-					const choice = await choose(t("panel.applied-proposal"), [t("review.verify-now")]);
-					if (choice) await runObserved(ctx, "run", { kind: "run-current", repetitions: DEFAULT_REPETITIONS, reason }, signal);
+					const verify = await confirmChoice(ctx, t("panel.applied-proposal"), "review.verify-now", "review.just-looking", { signal });
+					if (verify) await runObserved(ctx, "run", { kind: "run-current", repetitions: DEFAULT_REPETITIONS, reason }, signal);
 				}
 				return;
 			}
 			case "candidate-review":
 			case "release-decision": {
-				const choice = await choose(t("candidate.title"), [t("review.ship"), t("review.reject")]);
-				if (choice === t("review.ship")) await shipCurrent(ctx, signal, null, reason);
-				else if (choice === t("review.reject")) await rejectCurrent(ctx, signal, reason);
+				const choice = await offer(t("candidate.title"), [
+					{ id: "ship", label: () => t("review.ship") },
+					{ id: "reject", label: () => t("review.reject") },
+				]);
+				if (choice === "ship") await shipCurrent(ctx, signal, null, reason);
+				else if (choice === "reject") await rejectCurrent(ctx, signal, reason);
 				return;
 			}
 			case "candidate-adoption": {
-				const choice = await choose(t("result.candidate-promoted"), [t("review.adopt")]);
-				if (choice) await simpleDecision(ctx, "adopt", { kind: "adopt-candidate", reason }, signal);
+				const adopt = await confirmChoice(ctx, t("result.candidate-promoted"), "review.adopt", "review.just-looking", { signal });
+				if (adopt) await simpleDecision(ctx, "adopt", { kind: "adopt-candidate", reason }, signal);
 				return;
 			}
 			case "complete": {
-				const choice = await choose(t("stage.complete"), [t("review.next-cycle")]);
-				if (choice) await simpleDecision(ctx, "next", { kind: "continue-cycle", reason }, signal);
+				const next = await confirmChoice(ctx, t("stage.complete"), "review.next-cycle", "review.just-looking", { signal });
+				if (next) await simpleDecision(ctx, "next", { kind: "continue-cycle", reason }, signal);
 				return;
 			}
 			default:
@@ -1242,19 +1268,16 @@ export function registerAhdeBuilderCommands(
 				return;
 			}
 			if (!givenPath && typeof ctx.ui.select === "function") {
-				const importChoice = t("holdout.import-file");
-				const sealChoice = t("holdout.generate-seal");
-				const reviewChoice = t("holdout.generate-review");
-				const chosen = await ctx.ui.select(
-					t("holdout.choose"),
-					[importChoice, sealChoice, reviewChoice],
-					{ signal: ctx.signal },
-				);
-				if (chosen === undefined) {
+				const chosen = await choose(ctx, t("holdout.choose"), [
+					{ id: "import", label: () => t("holdout.import-file") },
+					{ id: "seal", label: () => t("holdout.generate-seal") },
+					{ id: "review", label: () => t("holdout.generate-review") },
+				], { signal: ctx.signal });
+				if (chosen === null) {
 					ctx.ui.notify(t("error.cancelled"), "info");
 					return;
 				}
-				if (chosen === sealChoice || chosen === reviewChoice) {
+				if (chosen === "seal" || chosen === "review") {
 					const answer = await ctx.ui.input(t("holdout.how-many", { minimum }), String(minimum + 5));
 					if (answer === undefined || !answer.trim()) {
 						ctx.ui.notify(t("error.cancelled"), "info");
@@ -1267,7 +1290,7 @@ export function registerAhdeBuilderCommands(
 					await simpleDecision(ctx, "holdout", {
 						kind: "generate-holdout",
 						cases,
-						mode: chosen === sealChoice ? "seal" : "review",
+						mode: chosen === "seal" ? "seal" : "review",
 						reason: t("holdout.reason"),
 					}, ctx.signal);
 					return;
@@ -1377,11 +1400,19 @@ export function registerAhdeBuilderCommands(
 			const modes = content.improvementBrief.modes.filter((mode) => mode.selectableForProposal);
 			if (modes.length > 0 && options.sendUserMessage && typeof ctx.ui.select === "function") {
 				const titleOf = (mode: (typeof modes)[number]): string => oneLine(failureModeReading(mode).title, 60);
-				const choices = modes.slice(0, 5).map((mode) => t("traces.fix-choice", { ordinal: mode.ordinal, title: titleOf(mode) }));
-				const selected = await ctx.ui.select(t("traces.prepare"), [...choices, t("traces.not-now")], { signal });
-				const index = choices.indexOf(selected ?? "");
-				if (index >= 0) {
-					const mode = modes[index]!;
+				// The failure mode's own id decides which change is prepared. Two
+				// modes whose titles read alike after `oneLine(…, 60)` used to send
+				// `/fix` to whichever came first in the list.
+				const offered = modes.slice(0, 5);
+				const picked = await choose(ctx, t("traces.prepare"), [
+					...offered.map((mode) => ({
+						id: mode.failureModeId,
+						label: () => t("traces.fix-choice", { ordinal: mode.ordinal, title: titleOf(mode) }),
+					})),
+					{ id: NOT_NOW, label: () => t("traces.not-now") },
+				], { signal });
+				const mode = offered.find((candidate) => candidate.failureModeId === picked);
+				if (mode) {
 					options.sendUserMessage(t("traces.fix-message", { ordinal: mode.ordinal, id: mode.failureModeId, title: titleOf(mode) }));
 				}
 			}
