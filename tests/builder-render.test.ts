@@ -1232,7 +1232,7 @@ describe("renderReview", () => {
 		});
 		const pending = renderReview(promoted, plainPaint);
 		expect(pending).toContain("Promoted v1.2.0 2026-08-28 10:00:00Z — Solid gains");
-		expect(pending).toContain("Adopted not yet — /adopt fast-forwards the current branch");
+		expect(pending).toContain("Adopted not yet — say “ship it” to make it the active agent");
 		const adopted = renderReview(makeCandidateReview(promoted, {
 			adoption: { receiptId: "adopt-1", adoptedAt: LATER, branch: "main" },
 			continuation: { receiptId: "cont-1", continuedAt: EVEN_LATER },
@@ -2315,7 +2315,7 @@ describe("renderConfirmation", () => {
 			},
 		}), plainPaint);
 		const text = lines.join("\n");
-		expect(text).toContain("Adopted not yet — /adopt fast-forwards the current branch");
+		expect(text).toContain("Adopted not yet — say “ship it” to make it the active agent");
 		expect(text).toContain("Fast-forward branch main aaaaaaaaaa → bbbbbbbbbb\nChanged files AGENTS.md, tools/lookup\nOnly a clean worktree at the baseline is fast-forwarded; nothing is rebased or merged.");
 		tail(lines);
 	});

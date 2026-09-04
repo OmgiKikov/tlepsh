@@ -388,7 +388,7 @@ const en = {
 	"candidate.applied-by-search": "applied by the proposal search",
 	"candidate.applied-automated": "— {actor} authorized the automated trial, not this individual diff",
 	"candidate.applied-reviewed": "by {actor}, who read this diff",
-	"candidate.not-adopted": "not yet — /adopt fast-forwards the current branch",
+	"candidate.not-adopted": "not yet — say “ship it” to make it the active agent",
 	"candidate.cycle-closed": "closed {when}",
 	// Both arms re-scored with one revised rubric, beside the recorded verdict
 	// and never instead of it: a re-score is not a new baseline.
@@ -1772,7 +1772,7 @@ const ru: Record<MessageKey, string> = {
 	"candidate.applied-by-search": "применено поиском правок",
 	"candidate.applied-automated": "— {actor} разрешил автоматический прогон, а не именно этот диф",
 	"candidate.applied-reviewed": "{actor}, который прочитал этот диф",
-	"candidate.not-adopted": "ещё нет — /adopt переведёт текущую ветку",
+	"candidate.not-adopted": "ещё нет — скажи «выкатывай», сделаю активным агентом",
 	"candidate.cycle-closed": "закрыт {when}",
 	"candidate.regraded": "разработка {recorded} стало {revised} ({moved})",
 
