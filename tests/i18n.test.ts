@@ -706,6 +706,9 @@ const IDENTICAL_BY_DESIGN = new Set([
 	"fixtures.failed",
 	"why.grader-expected",
 	"why.grader-plain",
+	// A grader phrasing the host does not recognize is quoted whole; the quote
+	// is the record, and a record has no second language.
+	"why.actual.reason",
 	// A dash is a dash in both languages.
 	"metrics.not-reported",
 ]);
