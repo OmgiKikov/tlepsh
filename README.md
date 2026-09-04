@@ -112,33 +112,39 @@ before and after and the judge's verdicts. Under two dollars for the cycle.
 
 ## The passport it wrote
 
-From durable artifacts, never from memory. Trimmed.
+From durable artifacts, never from memory. It is the one page that leaves the
+machine — the operator sends it to whoever paid for the agent — so it is
+written in the operator's language, not the engine's, and no hash sits above
+the fold: identifiers appear cut to twelve characters on the face and whole in
+a footer. The reason somebody typed when shipping is quoted, never translated.
+Trimmed.
 
 ```markdown
-# Version passport — ombudsman v0.1.0
+# Паспорт версии — ombudsman v0.1.0
 
-- agent: ombudsman · version: v0.1.0 · date: 2026-09-02
-- revision: bf871326a2 → 7ce2841615 · model: openrouter/qwen/qwen3.5-9b
+- агент: ombudsman · версия: v0.1.0 · дата: 2026-09-02
+- ревизия: bf871326a2 → 7ce2841615 · модель: openrouter/qwen/qwen3.5-9b
 
-## Promised — spec-d05e0d0fed44…
+## Обещано — spec-d05e0d0fed44…
 
-Success criteria
-- при наличии номера договора вызван check_dbo […3 more]
+Критерии успеха
+- при наличии номера договора вызван check_dbo […ещё 3]
 
-## Measured
+## Измерено
 
-- development: **improved** — score 49% → 85% (+38.9 pts, 95% CI +25 … +47.2)
-  on 6 cases × 3 · pass rate 22% → 61% · 6 cases is a small basket: read the
-  interval as indicative, not decisive
-- sealed guardrail: **pass** on 20 tasks × 3 repetitions
-- per answer, candidate over baseline: cost ×1.1 · latency ×1.3
-- judge agreement 60% · κ 0.00 · n=5 — /label checks it against your own eyes
+- разработка: **стало лучше** — балл 49% → 85% (+38.9 п.п., 95% ДИ +25 … +47.2)
+  на 6 кейсах × 3 · пасс-рейт 22% → 61% · 6 кейсов — маленькая корзина:
+  интервал ориентировочный, не решающий
+- закрытый экзамен: **пройден** на 20 кейсах × 3 повтора
+- на один ответ, кандидат к базе: цена ×1.1 · задержка ×1.3
+- судья не откалиброван — человеческих отметок у него нет: /label сверит его
+  с твоими глазами
 
-## Provenance
+## Откуда взялось
 
-- spec: spec-d05e0d0fed44… · proposal: builder-b0b78260…
-- gate policies: development-ci-v4, sealed-guardrail-v4
-- reviewed by: local:kikov · shipped by: local:kikov
+- описание: spec-d05e0d0fed44… · правка: builder-b0b78260…
+- политики гейта: development-ci-v4, sealed-guardrail-v4
+- применил: local:kikov · причина: “Ставлю системный промпт из мастерской”
 ```
 
 ## Traces
