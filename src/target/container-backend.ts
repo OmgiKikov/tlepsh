@@ -146,6 +146,43 @@ export interface ContainerRuntimeIdentity {
 	contextHash: string;
 }
 
+/** Every field of `ContainerRuntimeIdentity`, so a parsed one can be checked whole. */
+const RUNTIME_IDENTITY_FIELDS: readonly (keyof ContainerRuntimeIdentity)[] = [
+	"version",
+	"os",
+	"arch",
+	"daemonId",
+	"kernelVersion",
+	"driver",
+	"cgroupDriver",
+	"cgroupVersion",
+	"securityOptionsHash",
+	"contextHash",
+];
+
+/** A daemon that answers with a blank or unbounded field has not identified itself. */
+const RUNTIME_IDENTITY_FIELD_MAX = 256;
+
+/**
+ * The one rule for "this runtime identified its server exactly".
+ *
+ * Two call sites used to answer this question with two different rules — the
+ * fingerprint path required a non-blank trimmed value under 256 characters,
+ * the binding-assertion path accepted any non-empty string — so a daemon whose
+ * id was a single space could authorize a run it could not identify. The
+ * strict rule wins because it is the one guarding the evidence: a fingerprint
+ * built from `" "` names nothing, and an identity that cannot name a daemon
+ * cannot prove daemon A is still daemon A.
+ */
+function isExactRuntimeIdentity(candidate: unknown): candidate is ContainerRuntimeIdentity {
+	if (typeof candidate !== "object" || candidate === null) return false;
+	const fields = candidate as Record<string, unknown>;
+	return RUNTIME_IDENTITY_FIELDS.every((field) => {
+		const value = fields[field];
+		return typeof value === "string" && value.trim().length > 0 && value.length <= RUNTIME_IDENTITY_FIELD_MAX;
+	});
+}
+
 /**
  * Host-owned execution capability produced by the same successful probe that
  * minted container provenance. Every later CLI call uses this absolute client
@@ -191,24 +228,34 @@ export function isContainerSandboxFingerprint(value: string): boolean {
 
 // ---------- runtime detection ----------
 
-export interface ContainerRuntimeStatus {
+/** A runtime that answered the probe and named its server exactly. */
+export interface ContainerRuntimeAvailable {
 	runtime: ContainerRuntimeName;
-	available: boolean;
-	/** Server version reported by the runtime, when it answered. */
-	version?: string;
-	/** Server OS and architecture; both affect container execution semantics. */
-	os?: string;
-	arch?: string;
-	daemonId?: string;
-	kernelVersion?: string;
-	driver?: string;
-	cgroupDriver?: string;
-	cgroupVersion?: string;
-	securityOptionsHash?: string;
-	contextHash?: string;
-	/** Exact reason the runtime is unusable. Present iff `available` is false. */
-	reason?: string;
+	available: true;
+	/**
+	 * Server version, OS/arch, daemon, kernel, driver, cgroup and context. Minted
+	 * once by the probe that reached the daemon, so no later caller has to guess
+	 * which subset of it is present.
+	 */
+	identity: ContainerRuntimeIdentity;
 }
+
+/** A runtime that cannot confine a run, and why. */
+export interface ContainerRuntimeUnavailable {
+	runtime: ContainerRuntimeName;
+	available: false;
+	/** Exact reason the runtime is unusable. */
+	reason: string;
+}
+
+/**
+ * The outcome of one runtime probe.
+ *
+ * `available` is the discriminant the old flat shape only described in a
+ * comment: an available runtime carries a whole identity, an unavailable one
+ * carries a reason, and neither can carry the other's fields.
+ */
+export type ContainerRuntimeStatus = ContainerRuntimeAvailable | ContainerRuntimeUnavailable;
 
 export interface DetectContainerRuntimeOptions {
 	/** Environment the runtime binary is looked up in. Defaults to `process.env`. */
@@ -308,9 +355,9 @@ function probeDocker(binary: string, timeoutMs: number, hostEnvironment: NodeJS.
 				: probe.error.message,
 		};
 	}
-	const identity = firstLine(probe.stdout).split("|");
-	const [version, os, arch] = identity;
-	if (probe.status !== 0 || !version || !os || !arch || identity.length !== 3) {
+	const serverFields = firstLine(probe.stdout).split("|");
+	const [version, os, arch] = serverFields;
+	if (probe.status !== 0 || !version || !os || !arch || serverFields.length !== 3) {
 		const detail = firstLine(probe.stderr) || firstLine(probe.stdout) || `exit ${probe.status}`;
 		return { runtime: "docker", available: false, reason: `docker daemon is not reachable: ${detail}` };
 	}
@@ -340,21 +387,9 @@ function probeDocker(binary: string, timeoutMs: number, hostEnvironment: NodeJS.
 	const securityOptions = Array.isArray(parsed.SecurityOptions)
 		? parsed.SecurityOptions.filter((value): value is string => typeof value === "string").sort()
 		: [];
-	if (!daemonId || !kernelVersion || !driver || !cgroupDriver || !cgroupVersion) {
-		return { runtime: "docker", available: false, reason: "docker daemon identity is incomplete" };
-	}
-	let clientAfter: RuntimeClientIdentity;
-	try {
-		clientAfter = runtimeClientIdentity(clientBefore.path);
-	} catch (error) {
-		return { runtime: "docker", available: false, reason: `docker executable identity is unavailable: ${(error as Error).message}` };
-	}
-	if (JSON.stringify(clientBefore) !== JSON.stringify(clientAfter)) {
-		return { runtime: "docker", available: false, reason: "docker executable changed during identity probe" };
-	}
-	const status: ContainerRuntimeStatus = {
-		runtime: "docker",
-		available: true,
+	// The identity is built once, here, and validated by the one rule every
+	// later reader relies on. Nothing downstream re-derives it from loose fields.
+	const identity: ContainerRuntimeIdentity = {
 		version,
 		os,
 		arch,
@@ -366,22 +401,24 @@ function probeDocker(binary: string, timeoutMs: number, hostEnvironment: NodeJS.
 		securityOptionsHash: createHash("sha256").update(JSON.stringify(securityOptions)).digest("hex"),
 		contextHash: runtimeContextHash(clientBefore, hostEnvironment),
 	};
+	if (!isExactRuntimeIdentity(identity)) {
+		return { runtime: "docker", available: false, reason: "docker daemon identity is incomplete" };
+	}
+	let clientAfter: RuntimeClientIdentity;
+	try {
+		clientAfter = runtimeClientIdentity(clientBefore.path);
+	} catch (error) {
+		return { runtime: "docker", available: false, reason: `docker executable identity is unavailable: ${(error as Error).message}` };
+	}
+	if (JSON.stringify(clientBefore) !== JSON.stringify(clientAfter)) {
+		return { runtime: "docker", available: false, reason: "docker executable changed during identity probe" };
+	}
+	const status: ContainerRuntimeStatus = { runtime: "docker", available: true, identity };
 	runtimeBindings.set(status, Object.freeze({
 		runtime: "docker",
 		executable: clientBefore.path,
 		spawnEnvironment: Object.freeze({ ...runtimeCliEnvironment(hostEnvironment) }),
-		identity: Object.freeze({
-			version,
-			os,
-			arch,
-			daemonId,
-			kernelVersion,
-			driver,
-			cgroupDriver,
-			cgroupVersion,
-			securityOptionsHash: status.securityOptionsHash as string,
-			contextHash: status.contextHash as string,
-		}),
+		identity: Object.freeze({ ...identity }),
 		probeTimeoutMs: timeoutMs,
 	}));
 	return status;
@@ -408,11 +445,11 @@ export function detectContainerRuntime(
 	}
 	const pathValue = environment.PATH ?? "";
 	const binary = runtime === "docker" ? executableOnPath("docker", pathValue) : undefined;
-	const status = runtime === "gondolin"
+	const status: ContainerRuntimeStatus = runtime === "gondolin"
 		? gondolinBackend.unavailable()
-		: (() => {
+		: ((): ContainerRuntimeStatus => {
 			if (!binary) {
-				return { runtime: "docker" as const, available: false, reason: "docker executable not found on PATH" };
+				return { runtime: "docker", available: false, reason: "docker executable not found on PATH" };
 			}
 			return probeDocker(binary, options.timeoutMs ?? DETECTION_TIMEOUT_MS, environment);
 		})();
@@ -641,32 +678,16 @@ interface DockerLifecycleRecord {
 	identity: ContainerRuntimeIdentity;
 }
 
+/**
+ * The identity a status may be trusted with, or null.
+ *
+ * A probed status always carries an exact identity, but `detect` is an
+ * injection seam: a caller-supplied status is re-checked by the same rule the
+ * probe used, so the fingerprint path and the binding-assertion path can no
+ * longer disagree about what counts as an identified daemon.
+ */
 function runtimeIdentity(status: ContainerRuntimeStatus): ContainerRuntimeIdentity | null {
-	const values = [
-		status.version,
-		status.os,
-		status.arch,
-		status.daemonId,
-		status.kernelVersion,
-		status.driver,
-		status.cgroupDriver,
-		status.cgroupVersion,
-		status.securityOptionsHash,
-		status.contextHash,
-	];
-	if (!status.available || !values.every((value) => typeof value === "string" && value.length > 0)) return null;
-	return {
-		version: status.version as string,
-		os: status.os as string,
-		arch: status.arch as string,
-		daemonId: status.daemonId as string,
-		kernelVersion: status.kernelVersion as string,
-		driver: status.driver as string,
-		cgroupDriver: status.cgroupDriver as string,
-		cgroupVersion: status.cgroupVersion as string,
-		securityOptionsHash: status.securityOptionsHash as string,
-		contextHash: status.contextHash as string,
-	};
+	return status.available && isExactRuntimeIdentity(status.identity) ? status.identity : null;
 }
 
 function sameRuntimeIdentity(left: ContainerRuntimeIdentity, right: ContainerRuntimeIdentity): boolean {
@@ -690,7 +711,9 @@ export function assertContainerRuntimeBinding(binding: ContainerRuntimeBinding):
 	if (!identity || !sameRuntimeIdentity(binding.identity, identity)) {
 		const actual = identity
 			? `${identity.daemonId}/${identity.contextHash}`
-			: current.reason ?? "runtime identity unavailable";
+			: current.available
+			? "runtime identity unavailable"
+			: current.reason;
 		throw new Error(
 			`container runtime changed after resolution; expected ${binding.identity.daemonId}/${binding.identity.contextHash}, got ${actual}`,
 		);
@@ -821,7 +844,7 @@ function privateRecoveryRecord(directory: string): DockerLifecycleRecord | null 
 			typeof parsed.ownerId !== "string" || !/^[0-9a-f]{64}$/.test(parsed.ownerId) ||
 			typeof parsed.createdAtMs !== "number" || !Number.isSafeInteger(parsed.createdAtMs) ||
 			(parsed.expiresAtMs !== null && (typeof parsed.expiresAtMs !== "number" || !Number.isSafeInteger(parsed.expiresAtMs))) ||
-			!parsed.identity || runtimeIdentity({ runtime: "docker", available: true, ...parsed.identity }) === null
+			!isExactRuntimeIdentity(parsed.identity)
 		) return null;
 		return parsed as DockerLifecycleRecord;
 	} catch {
@@ -1099,22 +1122,31 @@ export function containerBackendFor(runtime: ContainerRuntimeName): ContainerBac
 
 export type ContainerSandboxMode = "container" | "fallback";
 
-export interface ContainerSandboxDecision {
-	/** `container` runs inside the runtime; `fallback` hands the run back to the OS sandbox. */
-	mode: ContainerSandboxMode;
-	status: ContainerRuntimeStatus;
-	/** Non-fatal findings the run records, such as a best-effort fallback. */
+/** The run is confined by the runtime, which therefore named itself exactly. */
+export interface ContainerSandboxConfined {
+	mode: "container";
+	status: ContainerRuntimeAvailable;
+	/** Non-fatal findings the run records. Empty for a confined run. */
 	warnings: string[];
-	/**
-	 * The provenance `sandbox` value for this decision. Present only for
-	 * `container`; a fallback deliberately reports the OS backend that
-	 * actually confined the run, so it can never masquerade as container
-	 * evidence.
-	 */
-	fingerprint?: string;
+	/** The provenance `sandbox` value for this decision. */
+	fingerprint: string;
 	/** Exact executable/environment/daemon capability backing this decision. */
 	runtimeBinding?: ContainerRuntimeBinding;
 }
+
+/**
+ * The run is handed back to the OS sandbox. It deliberately carries no
+ * fingerprint: a fallback reports the OS backend that actually confined it, so
+ * it can never masquerade as container evidence.
+ */
+export interface ContainerSandboxFallback {
+	mode: "fallback";
+	status: ContainerRuntimeStatus;
+	/** Why this run is not container evidence. */
+	warnings: string[];
+}
+
+export type ContainerSandboxDecision = ContainerSandboxConfined | ContainerSandboxFallback;
 
 export interface ResolveContainerSandboxOptions {
 	policy: ContainerPolicy;
@@ -1150,37 +1182,10 @@ export function resolveContainerSandbox(options: ResolveContainerSandboxOptions)
 	const detect = options.detect
 		?? ((runtime: ContainerRuntimeName) => detectContainerRuntime(runtime, options.detectOptions ?? {}));
 	const status = detect(policy.runtime);
-	const identityValues = [
-		status.version,
-		status.os,
-		status.arch,
-		status.daemonId,
-		status.kernelVersion,
-		status.driver,
-		status.cgroupDriver,
-		status.cgroupVersion,
-		status.securityOptionsHash,
-		status.contextHash,
-	];
-	const identity = status.available && identityValues.every(
-		(value) => typeof value === "string" && value.trim().length > 0 && value.length <= 256,
-	)
-		? {
-			version: status.version as string,
-			os: status.os as string,
-			arch: status.arch as string,
-			daemonId: status.daemonId as string,
-			kernelVersion: status.kernelVersion as string,
-			driver: status.driver as string,
-			cgroupDriver: status.cgroupDriver as string,
-			cgroupVersion: status.cgroupVersion as string,
-			securityOptionsHash: status.securityOptionsHash as string,
-			contextHash: status.contextHash as string,
-		}
-		: null;
+	const identity = runtimeIdentity(status);
 	if (!status.available || !identity) {
 		const reason = !status.available
-			? status.reason ?? `${policy.runtime} runtime is unavailable`
+			? status.reason
 			: `${policy.runtime} did not report an exact daemon, context, kernel, cgroup, and server identity`;
 		if (sandbox === "required") {
 			throw new Error(
@@ -1243,7 +1248,7 @@ export function resolveExecutionBackend<T extends string>(options: {
 	if (decision.mode === "container") {
 		return {
 			backend: "container",
-			sandboxFingerprint: decision.fingerprint as string,
+			sandboxFingerprint: decision.fingerprint,
 			warnings: decision.warnings,
 			status: decision.status,
 			...(decision.runtimeBinding ? { containerRuntime: decision.runtimeBinding } : {}),
@@ -1290,13 +1295,12 @@ export function describeSandboxReadiness(execution: {
 			failClosed: false,
 		};
 	}
-	const version = decision.status.version ? ` ${decision.status.version}` : "";
-	const server = decision.status.os && decision.status.arch
-		? `, server ${decision.status.os}/${decision.status.arch}`
-		: "";
+	// A confined decision carries a whole identity, so every part of this line
+	// is present — the old optional-field conditionals could not be reached.
+	const { version, os, arch } = decision.status.identity;
 	return {
 		line:
-			`sandbox: container (${execution.container.runtime}${version}${server}, ` +
+			`sandbox: container (${execution.container.runtime} ${version}, server ${os}/${arch}, ` +
 			`target ${execution.container.platform}, image pinned)`,
 		failClosed: false,
 	};

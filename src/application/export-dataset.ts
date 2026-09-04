@@ -1083,7 +1083,7 @@ export function sealedDatasetHashesFor(options: { stateRoot: string; projectId: 
 export function corpusTaskLookup(options: { stateRoot: string; projectId: string }): DatasetTaskLookup {
 	const cache = new Map<string, ReadonlyMap<string, DatasetTaskFacts>>();
 	return (record) => {
-		const key = `${record.dataset} ${record.datasetHash}`;
+		const key = `${record.dataset}\x00${record.datasetHash}`;
 		const cached = cache.get(key);
 		if (cached) return cached;
 		const facts = new Map<string, DatasetTaskFacts>();
