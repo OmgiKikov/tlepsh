@@ -374,7 +374,7 @@ describe("generate-holdout: the exam the judge writes", () => {
 		const body = renderConfirmation(confirmation, plainPaint);
 		expect(body.slice(0, 4)).toEqual([
 			"Exam 20 cases · written by the judge fixture-provider/fixture-judge",
-			"Source the agent's description + 3 examples from the tests (shape only)",
+			"Source the agent's description alone (no examples)",
 			"The Builder never sees the content; only the case count reaches the conversation",
 			expect.stringMatching(/^Cost (~\$\d+\.\d\d|<\$0\.01)$/),
 		]);
@@ -408,7 +408,7 @@ describe("generate-holdout: the exam the judge writes", () => {
 		const body = renderConfirmation(human.confirmations[0]!, plainPaint);
 		expect(body.slice(0, 3)).toEqual([
 			"Экзамен 20 кейсов · генерирует судья openrouter/anthropic/claude-sonnet-4.5",
-			"Источник описание агента + 3 примера из тестов (только форма)",
+			"Источник только описание агента (без примеров)",
 			"Builder содержимого не увидит; в разговор попадёт только число кейсов",
 		]);
 		expect(body[3]).toMatch(/^Стоимость (~\$\d+\.\d\d|<\$0\.01)$/);

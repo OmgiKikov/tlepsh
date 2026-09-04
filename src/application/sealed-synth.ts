@@ -67,7 +67,15 @@ import { sameModelAsTarget } from "./configure-evaluators.js";
 export const MAX_SEALED_SYNTH_CASES = 200;
 /** Format examples. More than a handful teaches imitation, not format. */
 export const MAX_SEALED_SYNTH_EXAMPLES = 20;
-export const DEFAULT_SEALED_SYNTH_EXAMPLES = 5;
+/**
+ * None, by default.
+ *
+ * A held-out exam exists to ask something the development suite did not, and
+ * every example shown is a case a Builder wrote pulling the generator back
+ * towards it. The option stays — a suite with an unusual case shape can still
+ * show a handful — but the default is an exam nothing in the loop shaped.
+ */
+export const DEFAULT_SEALED_SYNTH_EXAMPLES = 0;
 /**
  * How many questions one passage may be asked for.
  *

@@ -593,9 +593,10 @@ the Target model: refused, exit 2.
 
 The prompt carries the Spec (--from <file>, else spec.md in the Target, else the
 project's approved Spec snapshot; refused when there is none), K development
-cases as FORMAT examples (default 5, drawn deterministically from the dataset
-hash, the seed and the case id), and the development suite's grader shapes. It
-asks for N new cases in the same case schema, novel and diverse.
+cases as FORMAT examples (default 0 — an exam nothing in the improvement loop
+shaped; drawn deterministically from the dataset hash, the seed and the case id
+when you ask for some), and the development suite's grader shapes. It asks for N
+new cases in the same case schema, novel and diverse.
 
 The answer is validated case by case against the case schema; malformed cases
 are dropped and counted, ids are derived host-side from the Spec hash and the
