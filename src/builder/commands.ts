@@ -1,3 +1,4 @@
+import { percent } from "../measurement.js";
 import { join, relative, sep } from "node:path";
 import { hasMessage, plural, t, type MessageKey, type MessageParams } from "../i18n.js";
 import { failureModeReading } from "../application/run-explanation.js";
@@ -1937,7 +1938,7 @@ export function registerAhdeBuilderCommands(
 			presenter.note(
 				`Operator ran /label on eval run ${result.evalRunId}: ${result.labelled} answer(s) graded blind` +
 				(stats
-					? `, judge agreement now ${Math.round(stats.agreement * 100)}% over ${stats.n} independent subject(s)` +
+					? `, judge agreement now ${percent(stats.agreement)} over ${stats.n} independent subject(s)` +
 						` (false-pass ${stats.falsePass}, false-fail ${stats.falseFail}).`
 					: ".") +
 				" Do not offer the judge check again for this revision. Never quote an individual label back to them.",

@@ -1,4 +1,4 @@
-import { formatEvaluatorSpend } from "../../evaluator-model.js";
+import { money } from "../../measurement.js";
 import { plural, t } from "../../i18n.js";
 import type {
 	CandidateRegradeProjection,
@@ -85,7 +85,7 @@ export function renderRegrade(diff: RegradeDiff, paint: Paint): string[] {
 		t("regrade.was-now", { before: percent(diff.passRateBefore), after: percent(diff.passRateAfter) }),
 		plural(diff.cases, "case"),
 		t("regrade.no-target"),
-		t("receipt.judge", { cost: formatEvaluatorSpend(diff.judge.costUsd) }),
+		t("receipt.judge", { cost: money(diff.judge.costUsd) }),
 	]);
 	const lines = [`${section(t("result.regraded"), paint)} ${headline}`];
 
@@ -140,5 +140,5 @@ export function renderRegrade(diff: RegradeDiff, paint: Paint): string[] {
 export function regradeHeadline(diff: RegradeDiff): string {
 	return `${percent(diff.passRateBefore)} → ${percent(diff.passRateAfter)} · ` +
 		`↑${diff.nowPassing} ↓${diff.nowFailing} · ` +
-		`no Target call · judge ${formatEvaluatorSpend(diff.judge.costUsd)}`;
+		`no Target call · judge ${money(diff.judge.costUsd)}`;
 }

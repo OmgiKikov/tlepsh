@@ -1261,7 +1261,9 @@ describe("ru: what ended a run", () => {
 			costUsd: 0.0015,
 			incomplete: false,
 		}, plainPaint);
-		expect(spent).toEqual(["Квитанция мир: нет · судья: 2 вызова, $0.00 · собеседник: 5 вызовов, $0.01 · токены: 640, $0.00"]);
+		// 640 tokens that cost fifteen hundredths of a cent are not free: two
+		// decimals used to print this bill as `$0.00` on three screens out of five.
+		expect(spent).toEqual(["Квитанция мир: нет · судья: 2 вызова, $0.00 · собеседник: 5 вызовов, $0.01 · токены: 640, <$0.01"]);
 	});
 
 	it("says the run budget is per turn, in Russian", () => {

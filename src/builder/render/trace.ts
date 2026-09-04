@@ -1,6 +1,6 @@
 import type { GraderFinding, RunReceipt, RunRow, TranscriptEntry } from "../../application/run-explanation.js";
 import type { EvalPageMode, RunDetailPageModel } from "../../evidence/pages.js";
-import { oneLine, shortTaskId } from "./format.js";
+import { duration, money, oneLine, percent, shortTaskId } from "./format.js";
 import type { Paint } from "./paint.js";
 import { plural, t } from "../../i18n.js";
 
@@ -21,15 +21,6 @@ const MAX_TURN_CHARS = 1_200;
 const MAX_TOOL_ARGS_CHARS = 160;
 const MAX_TOOL_RESULT_CHARS = 300;
 const MAX_NOTE_CHARS = 3_800;
-
-function pct(score: number): string {
-	return `${Math.round(Math.max(0, Math.min(1, score)) * 100)}%`;
-}
-
-function duration(ms: number | null): string {
-	if (ms === null || !Number.isFinite(ms)) return "—";
-	return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
-}
 
 function pad(text: string, width: number): string {
 	const chars = [...text];
@@ -131,7 +122,7 @@ export function renderRunsTable(
 			pad(String(row.repetitionIndex), columns.rep),
 			pad(`${task.pass}/${task.total}`, columns.passed),
 			paintOutcome(row.outcome, outcome, paint),
-			pad(pct(row.score), columns.score),
+			pad(percent(row.score), columns.score),
 			pad(oneLine(graderChips(row.graders), columns.graders), columns.graders),
 			pad(oneLine(mode, columns.mode), columns.mode),
 			pad(String(row.metrics.toolCalls), columns.tools),
@@ -224,7 +215,6 @@ const MAX_WORLD_LINE_CHARS = 160;
  * so a reader never has to guess which `null` they are looking at.
  */
 export function receiptLines(receipt: RunReceipt, paint: Paint): string[] {
-	const money = (costUsd: number): string => `$${costUsd.toFixed(2)}`;
 	const instrument = (
 		spend: { calls: number; costUsd: number } | null,
 		keys: { spent: "receipt.judge-spent" | "receipt.user-spent"; none: "receipt.judge-none" | "receipt.user-none"; failed: "receipt.judge-none-error" | "receipt.user-none-error" },
@@ -261,7 +251,7 @@ export function renderTracePanel(
 	const score = meanGraderScore(model.graders);
 	const lines: string[] = [
 		`${paint.heading(t("trace.run"))} ${run.taskId}#${run.repetitionIndex} · ${paintOutcome(run.outcome, outcomeWord(run.outcome), paint)}` +
-			`${score === null ? "" : ` · ${t("table.col.score")} ${pct(score)}`} · ${duration(run.metrics.latencyMs)} · ${t("trace.toolCalls", { n: run.metrics.toolCalls })} · ${paint.dim(run.runId)}`,
+			`${score === null ? "" : ` · ${t("table.col.score")} ${percent(score)}`} · ${duration(run.metrics.latencyMs)} · ${t("trace.toolCalls", { n: run.metrics.toolCalls })} · ${paint.dim(run.runId)}`,
 	];
 	// The recorded stem, read as the host's own sentence rather than left as a
 	// raw string a reader has to decode — and never re-derived from the trace.

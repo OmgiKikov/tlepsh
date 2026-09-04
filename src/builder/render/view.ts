@@ -31,6 +31,7 @@ import {
 	examShortfall,
 	headline,
 	joinNonEmpty,
+	kappa,
 	labeled,
 	numbered,
 	oneLine,
@@ -300,9 +301,8 @@ function headerJudgeLine(state: HeaderState, paint: Paint): string | null {
 	if (state.judge === null) {
 		return `${paint.dim(t("label.judge-instrument"))} ${paint.warning(t("judge.not-calibrated"))} ${paint.dim(t("judge.label-hint"))}`;
 	}
-	const kappa = state.judge.kappa === null ? "κ n/a" : `κ ${state.judge.kappa.toFixed(2)}`;
 	return `${paint.dim(t("label.judge-instrument"))} ${t("judge.agrees-with-you", { rate: percent(state.judge.agreement) })} ` +
-		`${paint.dim("·")} ${kappa} ${paint.dim(`· n=${state.judge.labels}`)}`;
+		`${paint.dim("·")} ${kappa(state.judge.kappa)} ${paint.dim(`· n=${state.judge.labels}`)}`;
 }
 
 /** Persistent header: identity, live stage, next step, evidence, and readiness. */
@@ -439,8 +439,7 @@ export function judgeAgreementLine(
 	paint: Paint,
 ): string {
 	if (!calibration) return `${paint.dim(t("label.judge-instrument"))} ${paint.warning(t("judge.not-calibrated"))} ${paint.dim(t("judge.label-hint"))}`;
-	const kappa = calibration.kappa === null ? "κ n/a" : `κ ${calibration.kappa.toFixed(2)}`;
-	return `${paint.dim(t("label.judge-instrument"))} ${t("judge.agreement", { rate: percent(calibration.agreement) })} ${paint.dim("·")} ${kappa} ${paint.dim(`· n=${calibration.labels}`)}`;
+	return `${paint.dim(t("label.judge-instrument"))} ${t("judge.agreement", { rate: percent(calibration.agreement) })} ${paint.dim("·")} ${kappa(calibration.kappa)} ${paint.dim(`· n=${calibration.labels}`)}`;
 }
 
 export function renderCandidate(

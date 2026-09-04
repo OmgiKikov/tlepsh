@@ -12,7 +12,7 @@ import { SEALED_GATE_POLICY } from "../../domain/comparison-gate.js";
 import { candidateStatusLabel, plural, t, verdictLabel } from "../../i18n.js";
 import { formatFlipRate, formatNoiseBand, renderCalibration } from "./calibration.js";
 import { regradeHeadline, renderRegrade } from "./regrade.js";
-import { headline, joinNonEmpty, oneLine, section, shortHash, shortSha, trimSeparator, wrap } from "./format.js";
+import { headline, joinNonEmpty, oneLine, percent, points, section, shortHash, shortSha, trimSeparator, wrap } from "./format.js";
 import { blockedReasonText } from "../../workbench/errors.js";
 import type { Paint } from "./paint.js";
 import { nextStep, stageLabel } from "./stage.js";
@@ -72,12 +72,12 @@ function verificationLines(result: WorkbenchVerifyCandidateResult, paint: Paint,
 function improveLines(result: WorkbenchImproveResult, paint: Paint, view: WorkbenchView): string[] {
 	const lines = [
 		`${section(t("result.improvement-cycles"), paint)} ${plural(result.cycles.length, "cycle")} ` +
-			`${paint.dim(t("result.pass-rate", { executions: plural(result.executions, "execution"), rate: Math.round(result.finalPassRate * 100) }))}`,
+			`${paint.dim(t("result.pass-rate", { executions: plural(result.executions, "execution"), rate: percent(result.finalPassRate) }))}`,
 	];
 	for (const cycle of result.cycles) {
 		const screen = cycle.screen ? `screen ${cycle.screen.verdict} ${cycle.screen.improved}/${cycle.screen.tasks}` : "no screen";
 		const verification = cycle.verification
-			? `verify ${cycle.verification.verdict} ${cycle.verification.scoreDelta >= 0 ? "+" : ""}${(cycle.verification.scoreDelta * 100).toFixed(1)}pp`
+			? `verify ${cycle.verification.verdict} ${points(cycle.verification.scoreDelta)}`
 			: "no verification";
 		// A cycle that recorded no note ends at its verification, not at a
 		// dangling separator with nothing after it.
@@ -439,7 +439,7 @@ export function decisionHeadline(result: WorkbenchDecisionResult): string {
 		case "improve":
 			return t("headline.improve", {
 				cycles: plural(result.result.cycles.length, "cycle"),
-				rate: Math.round(result.result.finalPassRate * 100),
+				rate: percent(result.result.finalPassRate),
 				reason: result.result.stopReason,
 			});
 		case "calibrate": {

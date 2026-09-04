@@ -8,7 +8,7 @@ import {
 import { measurementLine, measurementSurface } from "../../application/measurement-line.js";
 import { plural, t, verdictLabel } from "../../i18n.js";
 import { sealedOutcomeLabel } from "../../domain/comparison-gate.js";
-import { bullets, oneLine, section, shortHash, shortSha, wrap } from "./format.js";
+import { bareDelta, bullets, oneLine, percent, ratio, section, shortHash, shortSha, wrap } from "./format.js";
 import { passportPredictionLine, predictionCalibrationLine } from "./prediction.js";
 import type { Paint } from "./paint.js";
 
@@ -17,19 +17,6 @@ const LINE_WIDTH = 110;
 
 // Who wrote the exam's questions is `EXAM_ORIGIN_KEY`, and it lives beside the
 // projection so this panel and the markdown page cannot drift apart.
-
-function percent(value: number): string {
-	return `${(value * 100).toFixed(1)}%`;
-}
-
-function points(value: number): string {
-	const rounded = Math.round(value * 1000) / 10;
-	return `${rounded > 0 ? "+" : ""}${rounded.toFixed(1)}pp`;
-}
-
-function ratio(value: number | null): string {
-	return value === null || !Number.isFinite(value) ? "—" : `×${value.toFixed(2)}`;
-}
 
 /**
  * The passport as a terminal panel: what this version promised, what it
@@ -121,8 +108,11 @@ export function renderVersionPassport(passport: ShippedVersionPassport, paint: P
 		? paint.dim(t("passport.noise-shape", {
 			verdict: verdictLabel(noise.verdict),
 			ci: t("unit.ci"),
-			low: points(noise.confidence95.low),
-			high: points(noise.confidence95.high),
+			// The two ends of one interval, bare: the unit belongs to the
+			// quantity the interval brackets, and printing it twice inside one
+			// bracket says "points" three times about one measurement.
+			low: bareDelta(noise.confidence95.low),
+			high: bareDelta(noise.confidence95.high),
 			flipWord: t("noise.flip"),
 			flip: percent(noise.flipRate),
 			tasks: noise.tasks,

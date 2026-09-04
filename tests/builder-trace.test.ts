@@ -308,7 +308,9 @@ describe("traces in the TUI", () => {
 			},
 		} as unknown as RunDetailPageModel;
 		const text = renderTracePanel(spent, plainPaint).map(stripMarkers).join("\n");
-		expect(text).toContain("Receipt world: none · judge: 2 calls, $0.00 · user model: 5 calls, $0.01 · tokens: 640, $0.00");
+		// A run that cost $0.0015 is not a free run: below half a cent the amount
+		// says so rather than rounding itself away.
+		expect(text).toContain("Receipt world: none · judge: 2 calls, $0.00 · user model: 5 calls, $0.01 · tokens: 640, <$0.01");
 	});
 
 	it("tells the Builder what ended an errored run and forbids reading a cause off the trace", () => {

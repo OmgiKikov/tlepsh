@@ -8,7 +8,7 @@ import type { ProposalPrediction } from "../../builders/adapters.js";
 import { formatResourceFragment } from "../../domain/comparison-gate.js";
 import { plural, t, verdictLabel } from "../../i18n.js";
 import type { WorkbenchCandidateImpactProjection } from "../../workbench/types.js";
-import { oneLine } from "./format.js";
+import { oneLine, percent } from "./format.js";
 import { predictedModeFragment, predictedOverallLine } from "./prediction.js";
 import type { Paint } from "./paint.js";
 
@@ -190,7 +190,7 @@ export function renderImpact(
 	if (impact.taskRegressions.length > 0) {
 		lines.push(`  ${paint.error(t("impact.task-regressions", { regressions: plural(impact.taskRegressions.length, "regression") }))}`);
 		for (const regression of impact.taskRegressions.slice(0, 8)) {
-			lines.push(`    ↓ ${oneLine(regression.taskId, 60)} · ${Math.round(regression.baselinePassRate * 100)}% → ${Math.round(regression.candidatePassRate * 100)}%`);
+			lines.push(`    ↓ ${oneLine(regression.taskId, 60)} · ${percent(regression.baselinePassRate)} → ${percent(regression.candidatePassRate)}`);
 		}
 		const hidden = impact.taskRegressions.length - 8 + impact.omittedTaskRegressionCount;
 		if (hidden > 0) lines.push(`    ${paint.dim(t("impact.omitted", { count: hidden }))}`);
