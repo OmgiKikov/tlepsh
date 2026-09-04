@@ -19,7 +19,6 @@
 
 import { createHash } from "node:crypto";
 import {
-	chmodSync,
 	existsSync,
 	lstatSync,
 	mkdirSync,
@@ -313,6 +312,12 @@ export interface SealedSynthResult {
 	corpus: CorpusMetadata | null;
 	/** Present on the review path. The operator's own path, echoed back. */
 	reviewPath: string | null;
+	/**
+	 * The private directory holding the raw generator exchange, when it could not
+	 * be removed after the cases were sealed. A path, never a case — and a fact
+	 * the operator has to be told, because it is a second copy of the exam.
+	 */
+	exchangeRetained: string | null;
 	/** `<provider>/<id>` of the judge that wrote the exam. */
 	generatorModel: string;
 	promptSha256: string;
@@ -913,12 +918,14 @@ export function sealedSynthReviewPath(stateRoot: string, projectId: string, disc
 }
 
 function writeReviewFile(path: string, tasks: readonly CorpusTask[]): void {
+	// `writeTextArtifact` creates the file with this mode and publishes that
+	// exact inode by link or rename, so the draft is 0600 on disk — a umask can
+	// only clear bits, and 0600 has none an ordinary one clears. The chmod that
+	// used to follow this call restored nothing it had not already got.
 	writeTextArtifact(path, `${tasks.map((task) => canonicalJson(task)).join("\n")}\n`, {
 		mode: 0o600,
 		immutable: true,
 	});
-	// The mode argument is masked by umask; a sealed draft is 0600 exactly.
-	chmodSync(path, 0o600);
 }
 
 // ---------- the command ----------
@@ -1261,15 +1268,14 @@ export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promi
 		});
 		outcome = { kind: "sealed", corpusId: corpus.id, corpusHash: corpus.hash, taskCount: corpus.taskCount };
 	}
-	// The cases have a home; the raw exchange is now only a duplicate of them.
-	rmSync(exchangeDir, { recursive: true, force: true });
-	try {
-		rmdirSync(join(receiptsDir, EXCHANGE_DIRECTORY));
-	} catch {
-		// A concurrent generation still holds its own exchange, or there never was
-		// a directory. Either way the receipts directory holds only receipts.
-	}
 
+	// Three durable effects, in the order that survives a crash between any two
+	// of them. The corpus first, because the receipt names it. The receipt next,
+	// because a sealed exam whose receipt was never written is an exam the
+	// passport renders as operator-supplied — the one claim it must never make
+	// about a judge-written one. Deleting the raw exchange comes last: until the
+	// receipt exists, that exchange is the only surviving proof of where the
+	// questions came from.
 	const receipt = SealedSynthReceiptSchema.parse({
 		schemaVersion: 3,
 		source,
@@ -1298,12 +1304,30 @@ export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promi
 		writeJsonArtifact(receiptPath, SealedSynthReceiptSchema, receipt, { immutable: true });
 	}
 
+	// The cases have a home and their origin is written down; the raw exchange is
+	// now only a second copy of holdout content. A cleanup that cannot happen is
+	// reported rather than thrown: the exam exists either way, and the operator
+	// is the one who has to know a copy of it is still on disk.
+	let exchangeRetained: string | null = null;
+	try {
+		rmSync(exchangeDir, { recursive: true, force: true });
+	} catch {
+		exchangeRetained = exchangeDir;
+	}
+	try {
+		rmdirSync(join(receiptsDir, EXCHANGE_DIRECTORY));
+	} catch {
+		// A concurrent generation still holds its own exchange, or there never was
+		// a directory. Either way the receipts directory holds only receipts.
+	}
+
 	return {
 		receipt,
 		receiptPath,
 		source,
 		corpus,
 		reviewPath,
+		exchangeRetained,
 		generatorModel: `${judge.provider}/${judge.id}`,
 		promptSha256,
 		requested: count,
@@ -1474,6 +1498,12 @@ export function renderSealedSynthOutput(result: SealedSynthResult): SealedSynthO
 		];
 
 	const warnings: string[] = [`receipt ${result.receiptPath}`];
+	if (result.exchangeRetained) {
+		warnings.push(
+			`warning: the raw generator exchange could not be removed and still holds a copy of the exam: ` +
+				`${result.exchangeRetained}`,
+		);
+	}
 	if (result.droppedMalformed > 0) {
 		warnings.push(`warning: ${result.droppedMalformed} generated case(s) did not match the case schema and were dropped`);
 	}

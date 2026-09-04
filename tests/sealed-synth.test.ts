@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -605,6 +605,49 @@ describe("sealed synthetic generation cleanup", () => {
 		const entries = readdirSync(synthRoot, { withFileTypes: true });
 		expect(entries).not.toHaveLength(0);
 		expect(entries.every((entry) => entry.isFile() && /^[0-9a-f]{64}\.json$/.test(entry.name))).toBe(true);
+	});
+
+	it("writes the receipt before the exchange is deleted, so a sealed exam always has one", async () => {
+		// Deleting the exchange is made to fail by holding one of its files in a
+		// directory nothing may unlink from. Root ignores the mode, so a run as
+		// root would prove nothing.
+		if (process.getuid?.() === 0) return;
+		const mock = await mockJudge(generated(3));
+		const { targetDir, stateRoot } = fixture({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+		});
+		const request = { targetDir, stateRoot, projectId: "project", name: "exam", count: 3 };
+		// The exchange directory is a pure function of the prompt hash, which the
+		// plan states before a token is spent.
+		const promptSha256 = planSealedSynthesis(request).promptSha256;
+		const exchangeDir = join(
+			stateRoot,
+			"projects",
+			"project",
+			"sealed-synth",
+			"exchanges",
+			promptSha256.slice("sha256:".length, "sha256:".length + 16),
+		);
+		const held = join(exchangeDir, "held");
+		mkdirSync(held, { recursive: true });
+		writeFileSync(join(held, "exchange.json"), "{}\n");
+		chmodSync(held, 0o500);
+
+		try {
+			const result = await synthesizeSealedCorpus({ ...request, now: () => at });
+			// The exam is sealed AND its origin is written down, which is the whole
+			// point of the order: a corpus with no receipt reads as operator-supplied
+			// on the passport, and the exchange that would prove otherwise is gone.
+			expect(result.corpus?.taskCount).toBe(3);
+			expect(existsSync(result.receiptPath)).toBe(true);
+			expect(listSealedSynthReceipts(stateRoot, "project")).toEqual([result.receipt]);
+			// And the copy that could not be removed is named rather than hidden.
+			expect(result.exchangeRetained).toBe(exchangeDir);
+			expect(renderSealedSynthOutput(result).warnings.join("\n"))
+				.toContain("the raw generator exchange could not be removed");
+		} finally {
+			chmodSync(held, 0o700);
+		}
 	});
 });
 
