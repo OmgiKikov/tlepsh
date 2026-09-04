@@ -10,6 +10,7 @@ import { registerAhdeBuilderCommands } from "../src/builder/commands.js";
 import { renderVersionPassport } from "../src/builder/render/passport.js";
 import { plainPaint } from "../src/builder/render/paint.js";
 import { stripMarkers, type TranscriptPresenter, type TranscriptTone } from "../src/builder/transcript.js";
+import { setLanguage } from "../src/i18n.js";
 import { cleanupPaths, terminalCandidateFixture, type CycleFixture } from "./helpers/cycle-fixtures.js";
 
 let fixture: CycleFixture | undefined;
@@ -17,6 +18,7 @@ let fixture: CycleFixture | undefined;
 afterEach(() => {
 	cleanupPaths(fixture);
 	fixture = undefined;
+	setLanguage(null);
 });
 
 /** The registered command plus everything it showed the operator. */
@@ -119,7 +121,7 @@ describe("version passport", () => {
 			expect(surface).not.toContain("erun_cycle_sealed_baseline");
 			expect(surface).not.toContain("erun_cycle_sealed_candidate");
 		}
-		expect(markdown).toContain("- Sealed exam: pass · improved on 15 × 2 (contents evaluator-only)");
+		expect(markdown).toContain("- Sealed exam: pass · improved on 15 × 2 · contents stay evaluator-only");
 		expect(panel).toContain("Sealed exam pass · improved on 15 × 2 · contents stay evaluator-only");
 		// Every panel line stays inside the terminal budget.
 		for (const line of renderVersionPassport(passport, plainPaint)) {
@@ -144,6 +146,47 @@ describe("version passport", () => {
 		expect(markdown).toContain("judge not calibrated — nobody has checked it against a human");
 		expect(markdown).toContain("- Noise: never measured on this revision");
 		expect(markdown).toContain("who read the exact diff");
+		// The whole identifier is in the footer and nowhere above it.
+		expect(markdown).toContain("## Identifiers");
+	}, 60_000);
+
+	/**
+	 * The passport is the one artifact that leaves the machine, and the person
+	 * who reads it is the operator's client. Live session 8 shipped them an
+	 * English page out of a Russian session (defect 16), so the page is checked
+	 * in the language it is written in: the headings, the units and the fold.
+	 */
+	it("writes the page the operator sends onward in the operator's language", async () => {
+		fixture = await terminalCandidateFixture("promoted");
+		setLanguage("ru");
+		const passport = compileVersionPassport({
+			runsRoot: fixture.runsRoot,
+			stateRoot: fixture.stateRoot,
+			projectId: fixture.projectId,
+			model: { provider: "mock", id: "model" },
+		});
+		const markdown = renderVersionPassportMarkdown(passport);
+		for (
+			const heading of ["## Обещано", "## Измерено", "## Судья", "## Чего мы не знаем", "## Откуда взялось", "## Происхождение"]
+		) {
+			expect(markdown).toContain(heading);
+		}
+		expect(markdown).toContain("- Разработка:");
+		expect(markdown).toContain("- Закрытый экзамен:");
+		// The unit is the dictionary's; `pp` is never written on a Russian page.
+		expect(markdown).not.toMatch(/\d\s?pp\b/);
+		// The reason is whatever was typed when the version shipped: quoted,
+		// labelled as a quote, and never translated.
+		expect(markdown).toContain("причина, как её назвал Билдер: “Promote the sealed-evaluated candidate.”");
+		// Nothing above the fold is a hash: the short form on the face, the whole
+		// identifier in the footer.
+		const corpus = passport.limits.developmentCorpus;
+		expect(corpus).not.toBeNull();
+		const [face, footer] = markdown.split("## Происхождение");
+		expect(face).not.toContain(corpus!.id);
+		expect(face).toContain(`${corpus!.id.slice(0, "corpus-".length + 12)}…`);
+		expect(footer).toContain(corpus!.id);
+		expect(footer).toContain(corpus!.hash);
 	}, 60_000);
 
 	it("refuses to invent a version that was never shipped", async () => {

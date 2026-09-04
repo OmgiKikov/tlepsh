@@ -706,6 +706,9 @@ const IDENTICAL_BY_DESIGN = new Set([
 	"headline.run",
 	"status.activity",
 	"passport.design",
+	// lane: passport-ru — two layout templates on the markdown page.
+	"passport.md.design",
+	"passport.md.promised-title",
 	"fixtures.failed",
 	"why.grader-expected",
 	"why.grader-plain",

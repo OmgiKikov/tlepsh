@@ -93,12 +93,17 @@ export function renderAgentLogChart(log: AgentLog, paint: Paint): string[] {
 	const first = scores[scores.length - shown] ?? 0;
 	const last = scores[scores.length - 1] ?? 0;
 	const dropped = scores.length - shown;
+	// One version has nothing behind it. `85% → 85% over 1 version` is an arrow
+	// between a number and itself: it looks like a measurement and is not one.
+	if (shown === 1) {
+		return [paint.dim(t("growth.first-version", { score: formatPercent(last) })), cost];
+	}
 	return [
 		`${paint.dim(t("growth.score"))} ${paint.bold(sparkline(scores))} ${paint.dim(
 			t("growth.over-versions", {
 				first: formatPercent(first),
 				last: formatPercent(last),
-				versions: plural(shown, "version"),
+				versions: plural(shown, "version measured over"),
 			}) + (dropped > 0 ? t("growth.earlier", { count: dropped }) : ""),
 		)}`,
 		cost,

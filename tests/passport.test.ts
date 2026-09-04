@@ -424,13 +424,13 @@ describe("version passport", () => {
 			"- development: **improved** — score 0% → 100% (+100 pts, 95% CI +42 … +86) on 6 cases × 2 · " +
 				"pass rate 0% → 100% · 6 cases is a small basket: read the interval as indicative, not decisive",
 		);
-		expect(page).toContain("- sealed guardrail: **pass · improved** on 18 tasks × 2 repetitions");
+		expect(page).toContain("- sealed guardrail: **pass · improved** on 18 cases × 2 repetitions");
 		expect(page).toContain("- per answer, candidate over baseline: cost ×1.25 · latency ×0.87 · tokens ×1.10");
 
 		// The A/A record of the same revision is the noise band.
 		expect(page).toContain(
-			`- calibrated noise band: 95% CI -8.0pp … +8.0pp from an A/A run of ${BASE_SHA.slice(0, 10)} ` +
-				"on 6 tasks × 3 repetitions",
+			`- calibrated noise band: 95% CI -8 … +8 from an A/A run of ${BASE_SHA.slice(0, 10)} ` +
+				"on 6 cases × 3 repetitions",
 		);
 		expect(page).toContain("- data: development “Возвраты — development”");
 		expect(page).toContain("sealed exam (18 cases)");
@@ -439,7 +439,7 @@ describe("version passport", () => {
 		expect(page).toContain(`- proposal: sha256:${"d".repeat(12)}…`);
 		expect(page).toContain("- gate policies: development-ci-v4, sealed-guardrail-v4");
 		expect(page).toContain("- eval runs: development erun-dev-baseline → erun-dev-candidate");
-		expect(page).toContain(`- applied by: local-user — ${APPLY_REASON}`);
+		expect(page).toContain(`- applied by: local-user · reason: “${APPLY_REASON}”`);
 	});
 
 	it("says the judge is not calibrated when no human label covers the evidence", () => {
@@ -520,7 +520,7 @@ describe("version passport", () => {
 		}
 		// The verdict, what that verdict showed, and the design size are the whole
 		// of what may be said.
-		expect(page).toContain("**pass · improved** on 18 tasks × 2 repetitions");
+		expect(page).toContain("**pass · improved** on 18 cases × 2 repetitions");
 	});
 
 	it("never lets a pass that proved nothing read as an improvement", () => {
@@ -535,7 +535,7 @@ describe("version passport", () => {
 		// The same token, the same design, and the honest reading of the interval
 		// the verdict was decided on.
 		expect(renderVersionPassportMarkdown(flat)).toContain(
-			"- sealed guardrail: **pass · no regression proven, not an improvement either** on 18 tasks × 2 repetitions",
+			"- sealed guardrail: **pass · no regression proven, not an improvement either** on 18 cases × 2 repetitions",
 		);
 	});
 
