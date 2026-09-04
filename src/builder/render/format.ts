@@ -66,6 +66,49 @@ export function headline(text: string, max = 120): string {
 	return `${trimSeparator(body)}${ELLIPSIS}`;
 }
 
+/** How much of a case's own words is enough to recognise it by. */
+const MAX_CASE_TITLE_CHARS = 40;
+
+/**
+ * `task-3f2a1b9c…` — enough of a case id to match two screens by eye.
+ *
+ * A Builder-published case is identified by the content hash of the whole
+ * task, so its id is 69 characters and a column of them is a wall nobody
+ * reads: sessions 6 and 7 both ended up counting characters to tell two cases
+ * apart. Only that hash is folded — an id somebody wrote, like `task-routing`,
+ * is already a name and is printed whole.
+ */
+export function shortTaskId(taskId: string, length = 8): string {
+	const hashed = /^task-([0-9a-f]{32,})$/.exec(taskId);
+	const body = hashed?.[1];
+	return body === undefined ? taskId : `task-${body.slice(0, length)}${ELLIPSIS}`;
+}
+
+/** The fields a case is named from. Never its id: an id is not a name. */
+export interface TitledCase {
+	input: string;
+	metadata?: Readonly<Record<string, string>> | null | undefined;
+}
+
+/**
+ * The name a person would give this case: the title it carries, or its own
+ * opening words in quotes — `«где мой платёж…»`.
+ *
+ * The quotes are the whole point of the second form: they say these are the
+ * case's words, not a name somebody wrote for it. Nothing is invented, and a
+ * case that carries a real title is printed bare, because it already has one.
+ */
+export function caseTitle(task: TitledCase, max = MAX_CASE_TITLE_CHARS): string {
+	const named = task.metadata?.title ?? task.metadata?.name ?? "";
+	if (named.trim().length > 0) return oneLine(named, max);
+	const collapsed = clean(task.input).replace(/\s+/g, " ").trim();
+	if (collapsed.length === 0) return t("view.case-unnamed");
+	// The first clause, when the input has one: a case that opens with a
+	// sentence is named by that sentence, not by the paragraph behind it.
+	const clause = /^[\s\S]*?[.!?…](?=\s|$)/.exec(collapsed)?.[0] ?? collapsed;
+	return t("view.case-quoted", { text: headline(clause.replace(/\.$/, ""), max) });
+}
+
 export function shortSha(sha: string | null | undefined, length = 10): string {
 	if (!sha) return "—";
 	return sha.slice(0, length);

@@ -1,6 +1,7 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { t, verdictLabel } from "../i18n.js";
 import type { RunEvent, RunEventListener } from "../run-events.js";
+import { shortTaskId } from "./render/format.js";
 import { sanitizeTerminalText } from "../trace.js";
 
 const UI_KEY = "ahde-run-progress";
@@ -168,7 +169,7 @@ export function createRunProgressPresenter(
 			running: running.size,
 			bar: progressBar(counts.graded, total),
 			tally: tally(),
-			task: progress.taskId,
+			task: shortTaskId(progress.taskId),
 		});
 	};
 	const status = (activity: string): void => {
@@ -183,7 +184,7 @@ export function createRunProgressPresenter(
 			case "run_started":
 				running.add(event.run.runId);
 				status(t("status.started"));
-				appendBlock(t("trace.prefix.run"), t("trace.started", { position: run, task: event.run.taskId }));
+				appendBlock(t("trace.prefix.run"), t("trace.started", { position: run, task: shortTaskId(event.run.taskId) }));
 				break;
 			case "assistant_delta":
 				status(t("status.assistant"));

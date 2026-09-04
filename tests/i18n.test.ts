@@ -266,7 +266,8 @@ describe("ru renders", () => {
 			graders: [{ type: "tool_called", tool: "check_account" }],
 		}))], plainPaint);
 		expect(lines).toEqual([
-			"   1. кто: Иван Петров",
+			"   1. «Заблокируйте договор 42»",
+			"      кто: Иван Петров",
 			"      что есть: accounts.42.status=ok · client.name=Иван Петров",
 			"      что хочет: Заблокируйте договор 42.",
 			'      что должно: accounts.42.status equals "frozen" · tool check_account',

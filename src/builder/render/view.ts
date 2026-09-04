@@ -16,15 +16,19 @@ import { failureModeExcerpt, failureModeReading } from "../../application/run-ex
 import type { TargetAuthoringResource } from "../../application/target-authoring-context.js";
 import { formatResourceFragment } from "../../domain/comparison-gate.js";
 import { resolveWorldPath } from "../../domain/world.js";
-import { candidateStatusLabel, hasMessage, plural, t, verdictLabel } from "../../i18n.js";
+import { candidateStatusLabel, hasMessage, type MessageKey, plural, t, verdictLabel } from "../../i18n.js";
+import { redactTraceText } from "../../trace.js";
+import { datasetCasePreview } from "../../workbench/workbench.js";
 import { formatFlipRate, formatNoiseBand } from "./calibration.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
 import {
 	bar,
 	bullets,
 	bytes,
+	caseTitle,
 	clean,
 	examShortfall,
+	headline,
 	joinNonEmpty,
 	labeled,
 	numbered,
@@ -35,6 +39,7 @@ import {
 	section,
 	shortHash,
 	shortSha,
+	shortTaskId,
 	when,
 	wrap,
 } from "./format.js";
@@ -45,6 +50,7 @@ import {
 	predictionAbsentLine,
 	predictionNoteLine,
 	predictionPromiseLine,
+	shortModeId,
 } from "./prediction.js";
 import { measurementOf } from "../../application/prediction.js";
 import { examLine, measurementLine, measurementSurface } from "../../application/measurement-line.js";
@@ -886,7 +892,9 @@ export function renderHistory(content: WorkbenchHistoryDetail, paint: Paint): st
 			: t("growth.not-evaluated");
 		lines.push(`  ${paint.dim(attempt.at.slice(0, 10))} ${attemptLine(attempt.outcome, attempt.changedPaths, development, attempt.sealed?.verdict ?? null, attempt.reason, paint)}`);
 		if (attempt.failureModeIds.length > 0) {
-			lines.push(`      ${paint.dim(t("view.aimed-at"))} ${oneLine(attempt.failureModeIds.join(", "), 90)}`);
+			// The history has no brief behind it, so it cannot name these modes —
+			// but a row of 64-character ids is not provenance either, it is a wall.
+			lines.push(`      ${paint.dim(t("view.aimed-at"))} ${oneLine(attempt.failureModeIds.map(shortModeId).join(", "), 90)}`);
 		}
 	}
 	lines.push(paint.dim(t("view.never-rerun")));
@@ -915,6 +923,82 @@ export function renderDataset(content: WorkbenchDatasetDetail, paint: Paint): st
 /** Leaf facts one card shows, and how wide a card line may get. */
 const MAX_WORLD_FACTS = 3;
 const WORLD_LINE_COLUMNS = 88;
+// The checks get a wider bound than the rest of the card: they are the thing a
+// person approves on the draft screen, and a basket review that cut
+// `judge “Polite and…”` off the end asked for a yes about a hidden grader.
+const CARD_GRADER_COLUMNS = 140;
+
+/**
+ * The only world paths a card may name a person from, in the order it tries
+ * them, and the sentence each one is read as.
+ *
+ * An allowlist rather than a search: a world is authored data and the card is
+ * printed unmasked, so a screen that hunted for "something that looks like a
+ * name" would eventually print `client.pin`. Names come first because a name
+ * is what a person is called; a number is the fallback, said as the sentence
+ * an operator would say — «клиент по договору 1003» — rather than as a bare
+ * value nobody can place.
+ *
+ * Session 8's worlds keyed the customer under an account number, so the single
+ * `client.name` lookup ran out and every worlded case read `кто: —`.
+ */
+const WORLD_IDENTITY_PATHS: readonly (readonly [string, MessageKey | null])[] = [
+	["client.name", null],
+	["customer.name", null],
+	["user.name", null],
+	["account.holder", null],
+	["client.id", "view.world.who-by-id"],
+	["customer.id", "view.world.who-by-id"],
+	["account.id", "view.world.who-by-account"],
+	["contract.id", "view.world.who-by-contract"],
+	["account.number", "view.world.who-by-account"],
+	["contract", "view.world.who-by-contract"],
+	["account", "view.world.who-by-account"],
+];
+
+/**
+ * Leaf keys a card never prints, whatever a world holds under them.
+ *
+ * `redactTraceText` already scrubs the shapes it knows on the way in, but it
+ * has never heard of `pin`, and a world is authored by hand: the card is the
+ * one surface that shows raw state to a room, so the denylist is here too.
+ */
+const SECRET_WORLD_KEY = /^(?:token|pin|passcode|password|secret|otp|cvv|cvc|api[_-]?key|access[_-]?token|private[_-]?key)$/i;
+
+/** The scalar a world path holds, as text, or null for anything else. */
+function worldScalar(value: unknown): string | null {
+	if (typeof value === "string") return value.trim().length > 0 ? value.trim() : null;
+	if (typeof value === "number" && Number.isFinite(value)) return String(value);
+	return null;
+}
+
+/**
+ * Who this case is about, read only from {@link WORLD_IDENTITY_PATHS}.
+ *
+ * The chosen value goes through `redactTraceText` even though it came from an
+ * allowlisted path: an author can put anything in a name field, and this is
+ * the same scrubber every trace line passes.
+ */
+function worldWho(state: Record<string, unknown> | null): string | null {
+	if (!state) return null;
+	for (const [path, sentence] of WORLD_IDENTITY_PATHS) {
+		const found = resolveWorldPath(state, path);
+		if (!found.found) continue;
+		const scalar = worldScalar(found.value);
+		if (scalar === null) continue;
+		const shown = redactTraceText(scalar);
+		return sentence === null ? shown : t(sentence, { id: shown });
+	}
+	return null;
+}
+
+/**
+ * One case as a card, plus the id it is known by wherever it has one.
+ *
+ * A recipe's sample case has no id yet — it has not been published — so the id
+ * is optional and the card simply carries no provenance chip for it.
+ */
+export type TitledDatasetCase = WorkbenchDatasetCase & { taskId?: string };
 
 /**
  * The world's state as an object again. `datasetCasePreview` hands it over as
@@ -937,18 +1021,21 @@ function worldStateOf(sample: WorkbenchDatasetCase): Record<string, unknown> | n
 /** `dotted.path=value` for the first few leaves, in the state's canonical order. */
 function worldFacts(state: Record<string, unknown>): string[] {
 	const facts: string[] = [];
-	const walk = (value: unknown, path: string): void => {
+	const walk = (value: unknown, path: string, key: string): void => {
 		if (facts.length >= MAX_WORLD_FACTS) return;
 		if (value !== null && typeof value === "object") {
 			const entries: [string, unknown][] = Array.isArray(value)
 				? value.map((item, index) => [String(index), item])
 				: Object.entries(value);
-			for (const [key, child] of entries) walk(child, path ? `${path}.${key}` : key);
+			for (const [child, item] of entries) walk(item, path ? `${path}.${child}` : child, child);
 			return;
 		}
+		// A secret is skipped rather than counted: the card shows the next three
+		// facts a person can act on, not two facts and a hole.
+		if (SECRET_WORLD_KEY.test(key)) return;
 		facts.push(`${path}=${typeof value === "string" ? value : JSON.stringify(value)}`);
 	};
-	walk(state, "");
+	walk(state, "", "");
 	return facts;
 }
 
@@ -958,15 +1045,16 @@ function worldClause(path: string, op: string, value: string | null): string {
 }
 
 /**
- * One case as four lines: who is in the world, what is already true of it, what
- * they want, and what must be true when the conversation ends.
+ * One case as a card: its own name, then who is in the world, what is already
+ * true of it, what they want, and what must be true when the conversation ends.
  *
  * A case without a world keeps exactly the lines it has always had — the world
  * card is a different reading of a different kind of case, not a redesign of
- * the old one. The first line carries no indent: `renderDatasetCases` puts the
- * case number in front of it.
+ * the old one, and its own first line is already the case's words. The first
+ * line carries no indent either way: `renderDatasetCases` puts the case number
+ * in front of it.
  */
-export function worldCardLines(sample: WorkbenchDatasetCase, paint: Paint): string[] {
+export function worldCardLines(sample: TitledDatasetCase, paint: Paint): string[] {
 	if (!sample.world) {
 		const lines = [oneLine(sample.input, 92)];
 		if (sample.expected !== null) lines.push(`      ${paint.dim(t("view.expected"))} ${oneLine(sample.expected, 88)}`);
@@ -985,17 +1073,22 @@ export function worldCardLines(sample: WorkbenchDatasetCase, paint: Paint): stri
 			const pairs = Object.entries(sample.metadata).slice(0, 4).map(([key, value]) => `${oneLine(key, 20)}=${oneLine(value, 24)}`);
 			lines.push(`      ${paint.dim(t("view.metadata"))} ${oneLine(pairs.join(" · "), 88)}`);
 		}
-		lines.push(`      ${paint.dim(t("view.graders"))} ${oneLine(sample.graders.map(graderLabel).join(" · "), 89)}`);
+		lines.push(`      ${paint.dim(t("view.graders"))} ${oneLine(sample.graders.map(graderLabel).join(" · "), CARD_GRADER_COLUMNS)}`);
 		return lines;
 	}
 	const state = worldStateOf(sample);
-	// The person in the world, then the person the case describes, then nobody.
-	const named = state ? resolveWorldPath(state, "client.name") : { found: false, value: undefined };
-	const who = typeof named.value === "string" && named.value.trim().length > 0
-		? named.value
-		: sample.simulatedUser?.persona ?? "—";
+	// The person in the world, then the person the case describes, then the
+	// unnamed one. Never a dash: a case that happens somewhere happens to
+	// somebody, and `кто: —` was session 8's most-reported line.
+	const who = worldWho(state)
+		?? (sample.simulatedUser?.persona?.trim() || null)
+		?? t("view.world.who-unnamed");
 	const facts = state ? worldFacts(state) : [];
-	const has = facts.length > 0 ? facts.join(" · ") : oneLine(sample.world.state, WORLD_LINE_COLUMNS);
+	const has = facts.length > 0
+		? facts.join(" · ")
+		: state
+			? "—"
+			: oneLine(sample.world.state, WORLD_LINE_COLUMNS);
 	const wants = sample.simulatedUser?.goal ?? sample.input;
 	// An expectation and the `world_state` grader it desugars into are the same
 	// statement, so the card states each once, expectations first.
@@ -1021,16 +1114,21 @@ export function worldCardLines(sample: WorkbenchDatasetCase, paint: Paint): stri
 	for (const grader of sample.graders) {
 		if (grader.type !== "world_state") must.push(graderLabel(grader));
 	}
+	// The card is headed by the case's own name, because a worlded card's first
+	// line used to be `кто:` and nothing on the screen said which case it was.
+	// The short id stays beside it, dimmed: the name is for the person, the id
+	// is the thing that matches this card to the evidence.
 	return [
-		`${paint.dim(t("view.world.who"))} ${oneLine(who, WORLD_LINE_COLUMNS)}`,
+		joinNonEmpty([caseTitle(sample), sample.taskId ? paint.dim(shortTaskId(sample.taskId)) : null], "  "),
+		`      ${paint.dim(t("view.world.who"))} ${oneLine(who, WORLD_LINE_COLUMNS)}`,
 		`      ${paint.dim(t("view.world.has"))} ${oneLine(has, WORLD_LINE_COLUMNS)}`,
 		`      ${paint.dim(t("view.world.wants"))} ${oneLine(wants, WORLD_LINE_COLUMNS)}`,
-		`      ${paint.dim(t("view.world.must"))} ${oneLine(must.join(" · "), WORLD_LINE_COLUMNS)}`,
+		`      ${paint.dim(t("view.world.must"))} ${oneLine(must.join(" · "), WORLD_LINE_COLUMNS) || "—"}`,
 	];
 }
 
 /** The cases one proposed recipe produces, so a human argues with cases, not JSON. */
-export function renderDatasetCases(cases: readonly WorkbenchDatasetCase[], paint: Paint): string[] {
+export function renderDatasetCases(cases: readonly TitledDatasetCase[], paint: Paint): string[] {
 	const lines: string[] = [];
 	cases.forEach((sample, index) => {
 		const [first, ...rest] = worldCardLines(sample, paint);

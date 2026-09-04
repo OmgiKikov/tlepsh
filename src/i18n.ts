@@ -1658,6 +1658,14 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"label.budget": "Budget",
 	"confirm.start-testing.budget": "timeout {seconds}s per turn",
 	"confirm.start-testing.budget-turns": "timeout {seconds}s per turn · up to {turns}",
+	// lane: render-names
+	"view.case-quoted": "“{text}”",
+	"view.case-unnamed": "case with no words",
+	"view.world.who-by-id": "customer {id}",
+	"view.world.who-by-account": "customer on account {id}",
+	"view.world.who-by-contract": "customer on contract {id}",
+	"view.world.who-unnamed": "the person in this world",
+	"headline.proposal-applied": "Change applied",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -3024,6 +3032,14 @@ const ru: Record<MessageKey, string> = {
 	"label.budget": "Бюджет",
 	"confirm.start-testing.budget": "таймаут {seconds} с на ход",
 	"confirm.start-testing.budget-turns": "таймаут {seconds} с на ход · до {turns}",
+	// lane: render-names
+	"view.case-quoted": "«{text}»",
+	"view.case-unnamed": "кейс без слов",
+	"view.world.who-by-id": "клиент {id}",
+	"view.world.who-by-account": "клиент по счёту {id}",
+	"view.world.who-by-contract": "клиент по договору {id}",
+	"view.world.who-unnamed": "человек в этом мире",
+	"headline.proposal-applied": "Правка применена",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

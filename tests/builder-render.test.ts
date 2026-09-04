@@ -16,6 +16,7 @@ import {
 	bar,
 	bullets,
 	bytes,
+	caseTitle,
 	clean,
 	headline,
 	joinNonEmpty,
@@ -27,6 +28,7 @@ import {
 	points,
 	shortHash,
 	shortSha,
+	shortTaskId,
 	when,
 	wrap,
 } from "../src/builder/render/format.js";
@@ -1405,14 +1407,15 @@ describe("renderTraces", () => {
 		}), plainPaint);
 		const at = lines.indexOf("Worlded cases");
 		expect(at).toBeGreaterThan(0);
-		expect(lines.slice(at + 1, at + 5)).toEqual([
-			"   1. who: —",
+		expect(lines.slice(at + 1, at + 6)).toEqual([
+			"   1. “Заблокируйте договор 42”  task_002",
+			"      who: the person in this world",
 			"      has: accounts.42.status=ok",
 			"      wants: Заблокируйте договор 42.",
 			'      must: accounts.42.status equals "frozen" · tool check_account',
 		]);
 		// It sits above the evidence link, so the panel still ends where it did.
-		expect(lines[at + 5]).toBe("Evidence http://127.0.0.1:4310/evidence/eval-1");
+		expect(lines[at + 6]).toBe("Evidence http://127.0.0.1:4310/evidence/eval-1");
 	});
 
 	it("says nothing about worlds when no case has one", () => {
@@ -2744,6 +2747,37 @@ describe("format helpers", () => {
 		expect(headline("anything", 0)).toBe("");
 	});
 
+	/**
+	 * Session 7 read a table of `task-<64 hex>` and session 6 read the same ids
+	 * in the progress bar. An id is what a case IS; a name is what it is called,
+	 * and the case's own opening words are the only name nobody had to invent.
+	 */
+	it("names a case by its own words, and folds only a hashed id", () => {
+		setLanguage("ru");
+		try {
+			expect(caseTitle({ input: "Где мой платёж? Он не пришёл третий день." })).toBe("«Где мой платёж?»");
+			expect(caseTitle({ input: "Заблокируйте договор 42." })).toBe("«Заблокируйте договор 42»");
+			// A long first clause is cut at a word, never inside one.
+			expect(caseTitle({ input: "Клиент просит вернуть деньги за подписку, оформленную в прошлом месяце" }))
+				.toBe("«Клиент просит вернуть деньги за…»");
+			expect(caseTitle({ input: "   " })).toBe("кейс без слов");
+		} finally {
+			setLanguage(null);
+		}
+		// A case that carries a title of its own is printed bare: it already has
+		// a name, and quotes would claim these were the case's words.
+		expect(caseTitle({ input: "anything at all", metadata: { title: "Refund window" } })).toBe("Refund window");
+		expect(caseTitle({ input: "anything at all", metadata: { name: "Shipping status" } })).toBe("Shipping status");
+		expect(caseTitle({ input: "Freeze account 42 please." })).toBe("“Freeze account 42 please”");
+	});
+
+	it("folds a content-hashed case id and leaves a written one whole", () => {
+		expect(shortTaskId(`task-${"3f2a1b9c".repeat(8)}`)).toBe("task-3f2a1b9c…");
+		expect(shortTaskId("task_006")).toBe("task_006");
+		// `task-routing` is a name somebody wrote, and cutting it renames a case.
+		expect(shortTaskId("task-routing")).toBe("task-routing");
+	});
+
 	it("draws bars, percentages, and point deltas", () => {
 		expect(bar(0.5, 10)).toBe("█████░░░░░");
 		expect(bar(1)).toBe("█".repeat(20));
@@ -3314,11 +3348,60 @@ describe("dataset case cards", () => {
 			"   1. Классифицируй обращение: жалоба на списание.",
 			"      expected: жалоба",
 			"      graders: contains “жалоба”",
-			"   2. who: —",
+			"   2. “Заблокируйте договор 42”",
+			"      who: the person in this world",
 			"      has: accounts.42.status=ok",
 			"      wants: Заблокируйте договор 42.",
 			'      must: accounts.42.status equals "frozen" · tool check_account',
 		]);
+	});
+
+	/**
+	 * Session 8's worlds keyed the customer under an account or contract number,
+	 * so the one `client.name` lookup ran out and every worlded case read
+	 * `кто: —`. The card now probes an ordered allowlist of identifier paths and,
+	 * where only a number exists, says the sentence an operator would say.
+	 */
+	it("names the person from an allowlisted path, or says who the number belongs to", () => {
+		const who = (state: Record<string, unknown>): string =>
+			worldCardLines(preview({ id: "task_010", input: "Где мой платёж?", world: { state }, graders: [{ type: "output_contains", text: "x" }] }), plainPaint)[1] ?? "";
+		expect(who({ client: { name: "Иван Петров" } })).toBe("      who: Иван Петров");
+		expect(who({ customer: { name: "Anna Fox" } })).toBe("      who: Anna Fox");
+		expect(who({ account: { holder: "Иван Петров" } })).toBe("      who: Иван Петров");
+		// A number is read as the sentence, with the noun the path chose.
+		expect(who({ contract: { id: "1003" } })).toBe("      who: customer on contract 1003");
+		expect(who({ account: { id: 33333 } })).toBe("      who: customer on account 33333");
+		expect(who({ account: { number: "33333" } })).toBe("      who: customer on account 33333");
+		expect(who({ contract: "1003" })).toBe("      who: customer on contract 1003");
+		expect(who({ client: { id: "c-9" } })).toBe("      who: customer c-9");
+		// A name wins over a number, whatever order the JSON was written in.
+		expect(who({ account: { id: "33333" }, client: { name: "Иван Петров" } })).toBe("      who: Иван Петров");
+		// A world with no identifier at all still happens to somebody.
+		expect(who({ shipment: { status: "late" } })).toBe("      who: the person in this world");
+	});
+
+	/**
+	 * The card is the one surface that prints raw authored state to a room, so
+	 * the person it names may only come from the allowlist — a world that keys
+	 * its customer under `pin` gets no name from it, and no secret leaves on any
+	 * line of the card.
+	 */
+	it("never prints a secret, whichever line it was written on", () => {
+		const lines = worldCardLines(preview({
+			id: "task_011",
+			input: "Проверьте платёж.",
+			world: {
+				state: { pin: "4321", token: "t0ps3cr3t", password: "hunter2", account: { id: "33333" } },
+			},
+			graders: [{ type: "output_contains", text: "ok" }],
+		}), plainPaint);
+		const text = lines.join("\n");
+		expect(lines[1]).toBe("      who: customer on account 33333");
+		expect(text).not.toContain("4321");
+		expect(text).not.toContain("t0ps3cr3t");
+		expect(text).not.toContain("hunter2");
+		// The facts it does show are the next ones a person can act on.
+		expect(lines[2]).toBe("      has: account.id=33333");
 	});
 
 	it("leaves a case with no world exactly as it renders today", () => {
