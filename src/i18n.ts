@@ -1658,6 +1658,19 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"label.budget": "Budget",
 	"confirm.start-testing.budget": "timeout {seconds}s per turn",
 	"confirm.start-testing.budget-turns": "timeout {seconds}s per turn · up to {turns}",
+
+	// lane: gate-dialog
+	// What an unattended operation refuses to decide, and the dialog choices a
+	// host renders by id rather than by the string it happened to draw.
+	"gate.restricted.improvement-loop": "improvement loop",
+	"gate.restricted.proposal-search": "proposal search",
+	"gate.restricted.refusal": "the {operation} may not decide {decision}; that stays with the human. {advice}",
+	"gate.restricted.advice.stop-loop": "Stop the loop and make it yourself.",
+	"gate.restricted.advice.pick-candidate": "Read the table, pick a candidate, and decide it yourself.",
+	"gate.restricted.sealed-selection": "sealed holdout selection",
+	"gate.restricted.unwrapped":
+		"a {operation} may only be handed a gate wrapped by {wrapper}; " +
+		"an unwrapped gate could approve a release the {operation} must never ask for",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -3024,6 +3037,17 @@ const ru: Record<MessageKey, string> = {
 	"label.budget": "Бюджет",
 	"confirm.start-testing.budget": "таймаут {seconds} с на ход",
 	"confirm.start-testing.budget-turns": "таймаут {seconds} с на ход · до {turns}",
+
+	// lane: gate-dialog
+	"gate.restricted.improvement-loop": "автоматический цикл правок",
+	"gate.restricted.proposal-search": "перебор гипотез",
+	"gate.restricted.refusal": "{operation} не принимает решение {decision} — оно остаётся человеку. {advice}",
+	"gate.restricted.advice.stop-loop": "Останови цикл и прими его сам.",
+	"gate.restricted.advice.pick-candidate": "Прочитай таблицу, выбери кандидата и реши сам.",
+	"gate.restricted.sealed-selection": "выбор закрытого экзамена",
+	"gate.restricted.unwrapped":
+		"{operation} можно передать только гейт, обёрнутый через {wrapper}: " +
+		"необёрнутый гейт мог бы одобрить выкатку, о которой {operation} не имеет права спрашивать",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

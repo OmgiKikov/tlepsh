@@ -154,7 +154,9 @@ describe("autoloop — one cycle, inside the gates", () => {
 	beforeAll(async () => {
 		fixture = await improveFixture();
 		gate = refusingGate();
-		result = await runImprovementLoop(loopOptions(fixture, { gate }));
+		// The loop only takes a gate that already refuses release decisions; the
+		// raw one underneath still records everything it was asked.
+		result = await runImprovementLoop(loopOptions(fixture, { gate: improvementLoopGate(gate) }));
 	}, 600_000);
 
 	afterAll(async () => {
@@ -473,7 +475,7 @@ describe("--candidates turns a cycle into a search", () => {
 		try {
 			const gate = refusingGate();
 			const result = await runImprovementLoop(loopOptions(fixture, {
-				gate,
+				gate: improvementLoopGate(gate),
 				candidates: 2,
 				author: variantAuthor([READY_INSTRUCTION, NO_OP_INSTRUCTION]),
 			}));
