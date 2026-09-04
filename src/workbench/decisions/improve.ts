@@ -1,6 +1,7 @@
 // One family of Workbench decisions, moved out of `AhdeWorkbench.decide()`
 // unchanged: the gate, the stale check and the receipts are still the
 // workbench's own; these functions only hold the branch bodies.
+import { percent } from "../../measurement.js";
 import { abandonImprovementLoop, IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE, improvementLoopGate, listUnfinishedImprovementLoops, plannedImprovementExecutions, recordedBuilderProposalAuthor, renderImprovementLoopTable, UnfinishedImprovementLoopError, IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS } from "../../application/improvement-loop.js";
 import { requireApprovedSpec, requireDevelopmentCorpus } from "../resolution.js";
 import { formatEstimatedCost, formatEstimatedTime, actorId } from "../workbench.js";
@@ -47,7 +48,7 @@ export async function decideImprove(
 		candidates,
 	});
 	const estimate = host.runEstimate(plannedExecutions, inventory.target);
-	const target = `${Math.round(input.until * 100)}%`;
+	const target = percent(input.until);
 	const subject = {
 		operation: "improve",
 		approvedSpecId: approved.id,

@@ -55,7 +55,7 @@ export const EXAM_ORIGIN_KEY: Record<SealedExamOrigin, MessageKey> = {
 	"judge-generated-kb-reviewed": "passport.exam-generated-kb-reviewed",
 };
 import { readEvalRunIndex } from "../eval.js";
-import { formatEvaluatorSpend } from "../evaluator-model.js";
+
 import { loadApprovedSpec, loadSpecSnapshot } from "../spec.js";
 import { calibrationProjection } from "../workbench/calibration.js";
 import { loadCandidateRecord } from "./candidate-review.js";
@@ -73,7 +73,8 @@ import {
 	type PredictedOverallOutcome,
 	type PredictionCalibration,
 } from "./prediction.js";
-import { bareDelta, measurementLine, measurementSurface, percent, points } from "./measurement-line.js";
+import { measurementLine, measurementSurface } from "./measurement-line.js";
+import { bareDelta, fromPoints, kappa, money, percent, points, ratio } from "../measurement.js";
 
 /** Failure a passport cannot recover from, with the operator's next step. */
 export class VersionPassportError extends Error {
@@ -1150,11 +1151,7 @@ function shortSha(value: string): string {
 }
 
 function ratioOrNull(value: number | null): string | null {
-	return value === null ? null : `×${value.toFixed(2)}`;
-}
-
-function ratio(value: number | null): string {
-	return value === null || !Number.isFinite(value) ? "—" : `×${value.toFixed(2)}`;
+	return value === null ? null : ratio(value);
 }
 
 /** `6 cases × 2 repetitions` / `6 кейсах × 2 повтора`: the design, counted. */
@@ -1204,7 +1201,7 @@ export function judgeSummaryLine(judge: VersionPassportJudge | null): string {
 	if (!judge) return t("passport.md.judge-not-calibrated");
 	return t("passport.md.judge-line", {
 		agreement: percent(judge.agreement),
-		kappa: judge.kappa === null ? "κ n/a" : `κ ${judge.kappa.toFixed(2)}`,
+		kappa: kappa(judge.kappa),
 		subjects: plural(judge.subjects, "labelled subject"),
 		checks: plural(judge.checks, "check"),
 		// The majority-class baseline travels with agreement wherever agreement
@@ -1232,7 +1229,7 @@ export function judgeSpendLine(
 	resources: VersionPassportResources | PassportResourceRatios | null,
 ): string | null {
 	return resources && resources.judgeCostUsd > 0
-		? t("passport.md.judge-spend", { cost: formatEvaluatorSpend(resources.judgeCostUsd) })
+		? t("passport.md.judge-spend", { cost: money(resources.judgeCostUsd) })
 		: null;
 }
 
@@ -1254,10 +1251,10 @@ function predictionLine(outcome: PredictedOverallOutcome | null): string {
 	if (!outcome) return `${t("label.prediction")}: ${t("passport.md.no-prediction")}`;
 	const metric = t(outcome.kind === "score" ? "measurement.metric-score" : "measurement.metric-pass-rate");
 	// `points` reads a [0,1] fraction; a stated prediction is already in points.
-	const predicted = points(outcome.predictedPp / 100);
+	const predicted = points(fromPoints(outcome.predictedPp));
 	return outcome.actualPp === null
 		? t("prediction.passport-unmeasured", { predicted, metric })
-		: t("prediction.passport", { predicted, metric, actual: points(outcome.actualPp / 100) });
+		: t("prediction.passport", { predicted, metric, actual: points(fromPoints(outcome.actualPp)) });
 }
 
 /** The Builder's whole predicted-against-actual record, unpainted. */

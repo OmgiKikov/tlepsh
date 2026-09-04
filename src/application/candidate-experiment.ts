@@ -1,3 +1,4 @@
+import { percent } from "../measurement.js";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -520,7 +521,7 @@ function infrastructureError(evalRun: EvalRunRecord): string | null {
 	const { error, total } = evalRun.summary;
 	return withinInfrastructureBudget(error, total)
 		? null
-		: `${evalRun.label} eval ${evalRun.evalRunId} has ${error} infrastructure error(s) in ${total} runs, over the ${Math.round(INFRASTRUCTURE_ERROR_BUDGET * 100)}% budget`;
+		: `${evalRun.label} eval ${evalRun.evalRunId} has ${error} infrastructure error(s) in ${total} runs, over the ${percent(INFRASTRUCTURE_ERROR_BUDGET)} budget`;
 }
 
 /** A comparison is usable evidence when it is comparable, or inconclusive only within the error budget. */

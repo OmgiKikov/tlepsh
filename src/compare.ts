@@ -1,3 +1,4 @@
+import { interval, percent } from "./measurement.js";
 import { axisDifferences } from "./provenance.js";
 import { loadVerifiedEvalRun, type EvalRunRecord, type VerifiedEvalRun } from "./eval.js";
 import type { RunRecord, TokenMetrics } from "./provenance.js";
@@ -318,7 +319,7 @@ export function renderGateLine(
 	// the pass rate sits on its own line so this one keeps its 110-column budget.
 	return oneLine(
 		`${gate.surface} verdict: ${gate.verdict} — ${formatPoints(summary.scoreDelta)} ` +
-			`(95% CI ${formatPoints(summary.confidence95.low)} … ${formatPoints(summary.confidence95.high)}) ` +
+			`(${interval(summary.confidence95.low, summary.confidence95.high, { form: "machine" })}) ` +
 			// The exclusions come before the resource ratios: the line is cut to
 			// 110 columns, and how many cases the number was measured on belongs
 			// to the number, while cost and latency never gated anything.
@@ -348,10 +349,10 @@ export function renderCompareMarkdown(result: CompareResult): string {
 	lines.push(`- target: ${a.target.id} (${a.target.gitSha.slice(0, 8)} → ${b.target.gitSha.slice(0, 8)})`);
 	lines.push(`- suite: ${a.suiteId} (${a.datasetHash.slice(0, 16)}…)`);
 	lines.push(
-		`- all-pass rate: ${(a.summary.allPassRate * 100).toFixed(0)}% (${a.summary.pass}/${a.summary.total}) → ${(b.summary.allPassRate * 100).toFixed(0)}% (${b.summary.pass}/${b.summary.total})`,
+		`- all-pass rate: ${percent(a.summary.allPassRate)} (${a.summary.pass}/${a.summary.total}) → ${percent(b.summary.allPassRate)} (${b.summary.pass}/${b.summary.total})`,
 	);
 	lines.push(
-		`- mean score: ${(result.summary.baselineScore * 100).toFixed(1)}% → ${(result.summary.candidateScore * 100).toFixed(1)}% ` +
+		`- mean score: ${percent(result.summary.baselineScore, { digits: 1 })} → ${percent(result.summary.candidateScore, { digits: 1 })} ` +
 			`(${formatPoints(result.summary.scoreDelta)}) · pass rate ${formatPoints(result.summary.delta)}`,
 	);
 	const resourceFragment = formatResourceFragment(result.resources, { tokens: true });
@@ -368,10 +369,10 @@ export function renderCompareMarkdown(result: CompareResult): string {
 	lines.push("| task | baseline | candidate | score | delta |", "|---|---|---|---|---|");
 	for (const row of rows) {
 		const fmt = (rate: number, status: string, pass: number, total: number) =>
-			status === "missing" ? "—" : `${(rate * 100).toFixed(0)}% (${pass}/${total})${status === "error" ? " ⚠️" : ""}`;
+			status === "missing" ? "—" : `${percent(rate)} (${pass}/${total})${status === "error" ? " ⚠️" : ""}`;
 		lines.push(
 			`| ${row.taskId} | ${fmt(row.aPassRate, row.aStatus, row.aPass, row.aTotal)} | ${fmt(row.bPassRate, row.bStatus, row.bPass, row.bTotal)} ` +
-				`| ${(row.aScore * 100).toFixed(0)}% → ${(row.bScore * 100).toFixed(0)}% | ${row.scoreDelta >= 0 ? "+" : ""}${(row.scoreDelta * 100).toFixed(0)}pp |`,
+				`| ${percent(row.aScore)} → ${percent(row.bScore)} | ${formatPoints(row.scoreDelta)} |`,
 		);
 	}
 	const flags = result.flags;

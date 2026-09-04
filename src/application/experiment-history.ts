@@ -10,6 +10,7 @@ import {
 	readCandidatePrediction,
 	scorePredictedOverall,
 } from "./prediction.js";
+import { points as formatPoints } from "../measurement.js";
 import { canonicalJson } from "../provenance.js";
 
 /**
@@ -302,9 +303,11 @@ export function renderExperimentHistory(history: ExperimentHistory): string[] {
 	return lines;
 }
 
+// The compact history is the Builder's own record of what it tried, read back
+// before it authors again: the machine form, where the digit count never bends
+// and two attempts differ in the number rather than in its width.
 function points(value: number): string {
-	const rounded = Math.round(value * 1000) / 10;
-	return `${rounded > 0 ? "+" : ""}${rounded.toFixed(1)}pp`;
+	return formatPoints(value, "machine");
 }
 
 // ---------------------------------------------------------------------------

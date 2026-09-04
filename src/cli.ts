@@ -13,7 +13,7 @@ import {
 	runSuite,
 } from "./eval.js";
 import { judgeAgreement } from "./domain/judge-agreement.js";
-import { formatEvaluatorSpend } from "./evaluator-model.js";
+import { kappaValue, money, percent } from "./measurement.js";
 import { evaluatorReadiness } from "./application/configure-evaluators.js";
 import {
 	importJudgeLabels,
@@ -715,8 +715,8 @@ function printJudgeAgreement(projectId: string, evalRunId?: string): void {
 	for (const grader of [...report.byGrader, { graderSpecHash: "pooled", ...report.pooled }]) {
 		console.log(
 			`${grader.graderSpecHash.replace("sha256:", "").slice(0, 20).padEnd(20)}  ` +
-				`${`${Math.round(grader.agreement * 100)}%`.padStart(8)}  ` +
-				`${(grader.kappa === null ? "n/a" : grader.kappa.toFixed(2)).padStart(6)}  ` +
+				`${percent(grader.agreement).padStart(8)}  ` +
+				`${kappaValue(grader.kappa).padStart(6)}  ` +
 				`${String(grader.n).padStart(8)}  ${String(grader.nChecks).padStart(6)}  ` +
 				`${String(grader.duplicateLabels).padStart(7)}  ${String(grader.conflictedSubjects).padStart(9)}  ` +
 				`${String(grader.falsePass).padStart(10)}  ${String(grader.falseFail).padStart(10)}`,
@@ -899,7 +899,7 @@ async function main(): Promise<void> {
 			console.log(
 				`eval run ${record.evalRunId}: ${record.summary.pass}/${record.summary.total} all-pass ` +
 					`(${record.summary.fail} fail, ${record.summary.error} error)` +
-					`${judgeSpend > 0 ? ` · judge ${formatEvaluatorSpend(judgeSpend)}` : ""}`,
+					`${judgeSpend > 0 ? ` · judge ${money(judgeSpend)}` : ""}`,
 			);
 			for (const runId of record.runIds) {
 				// How long the conversation ran is the first thing an operator wants

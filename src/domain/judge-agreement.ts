@@ -1,3 +1,5 @@
+import { kappa, percent } from "../measurement.js";
+
 /**
  * How well a judge agrees with the humans who checked it.
  *
@@ -261,19 +263,19 @@ export function judgeCalibrationRefusal(
 		const coverage = insufficient
 			.map(({ graderSpecHash, judgeFingerprintHash, stats }) =>
 				`${graderSpecHash.slice(0, 15)}…${judgeFingerprintHash ? ` / judge ${judgeFingerprintHash.slice(0, 15)}…` : ""}: ` +
-				`${stats?.n ?? 0} subject(s) at ${Math.round((stats?.agreement ?? 0) * 100)}%`
+				`${stats?.n ?? 0} subject(s) at ${percent(stats?.agreement ?? 0)}`
 			)
 			.join(", ");
 		return `this evidence is graded by ${evidence.judgeGraderSpecs} judge grader spec(s), but each spec ` +
-			`requires at least ${requirement.minLabels} independent subject(s) at ${Math.round(requirement.minAgreement * 100)}%; ` +
+			`requires at least ${requirement.minLabels} independent subject(s) at ${percent(requirement.minAgreement)}; ` +
 			`insufficient coverage: ${coverage || "unreported grader spec"}`;
 	}
 	const labels = evidence.stats?.n ?? 0;
 	const agreement = evidence.stats?.agreement ?? 0;
 	if (labels >= requirement.minLabels && agreement >= requirement.minAgreement) return null;
 	return `this evidence is graded by ${evidence.judgeGraderSpecs} judge grader spec(s) ` +
-		`with ${labels} human label(s) at ${Math.round(agreement * 100)}% agreement; ` +
-		`the Target requires at least ${requirement.minLabels} label(s) at ${Math.round(requirement.minAgreement * 100)}%`;
+		`with ${labels} human label(s) at ${percent(agreement)} agreement; ` +
+		`the Target requires at least ${requirement.minLabels} label(s) at ${percent(requirement.minAgreement)}`;
 }
 
 /**
@@ -283,13 +285,11 @@ export function judgeCalibrationRefusal(
 export function formatJudgeAgreementSummary(
 	stats: { agreement: number; kappa: number | null; labels: number },
 ): string {
-	const kappa = stats.kappa === null ? "κ n/a" : `κ ${stats.kappa.toFixed(2)}`;
-	return `${Math.round(stats.agreement * 100)}% · ${kappa} · n=${stats.labels}`;
+	return `${percent(stats.agreement)} · ${kappa(stats.kappa)} · n=${stats.labels}`;
 }
 
 /** `84% · κ 0.62 · n=50`, the one line every screen shows. */
 export function formatJudgeAgreement(stats: JudgeAgreementStats): string {
-	const kappa = stats.kappa === null ? "κ n/a" : `κ ${stats.kappa.toFixed(2)}`;
 	const checks = stats.nChecks === stats.n ? "" : ` · checks=${stats.nChecks}`;
 	const duplicates = stats.duplicateLabels === 0 ? "" : ` · duplicates=${stats.duplicateLabels}`;
 	const conflicts = stats.conflictedSubjects === 0 ? "" : ` · conflicts=${stats.conflictedSubjects}`;
