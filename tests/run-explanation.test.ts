@@ -205,8 +205,8 @@ describe("the host's plain-language account of one run", () => {
 		const lines = explain(runsRoot, run);
 		expect(lines[0]).toBe("task-1 repetition 0 failed: 1 of 1 grader(s) did not pass.");
 		expect(lines[1]).toBe(
-			"task-1#0:tool_called:bash(check_dbo) (tool_called) expected a call to `bash` with arguments containing `check_dbo`; " +
-			"the agent made 1 tool call(s), to read.",
+			"task-1#0:tool_called:bash(check_dbo) (tool_called) expected a call to bash with arguments containing “check_dbo”; " +
+			"the agent made 1 tool call, to read.",
 		);
 		expect(lines[2]).toBe('The grader recorded: “never called bash with args containing "check_dbo"”.');
 	});
@@ -228,7 +228,7 @@ describe("the host's plain-language account of one run", () => {
 			}],
 		});
 		expect(explain(runsRoot, run)[1]).toBe(
-			"needs-tool (tool_called) expected a call to `check_dbo`; the agent made 0 tool calls and answered directly.",
+			"needs-tool (tool_called) expected a call to check_dbo; the agent made no tool calls and answered directly.",
 		);
 	});
 
@@ -243,7 +243,7 @@ describe("the host's plain-language account of one run", () => {
 				passed: false,
 				score: 0,
 				reason: 'output does not contain "договор"',
-			}, "contains (output_contains) expected the final answer to contain `договор`; the recorded final answer (21 characters) does not contain it."],
+			}, "contains (output_contains) expected the final answer to contain “договор”; the recorded final answer (21 characters) does not contain it."],
 			[{
 				name: "matches",
 				type: "output_matches",
@@ -252,7 +252,7 @@ describe("the host's plain-language account of one run", () => {
 				passed: false,
 				score: 0,
 				reason: "output does not match /^ИТОГ/",
-			}, "matches (output_matches) expected the final answer to match `/^ИТОГ/`; the recorded final answer (21 characters) does not match it."],
+			}, "matches (output_matches) expected the final answer to match /^ИТОГ/; the recorded final answer (21 characters) does not match it."],
 			[{
 				name: "exact",
 				type: "exact",
@@ -279,7 +279,7 @@ describe("the host's plain-language account of one run", () => {
 				passed: false,
 				score: 0,
 				reason: "agent took 7 turn(s), over the budget of 3",
-			}, "turns (turn_budget) expected at most 3 agent turn(s); the agent took 7."],
+			}, "turns (turn_budget) expected at most 3 turns; the agent took 7 turns."],
 		];
 		for (const [grader, expected] of cases) {
 			const run = writeRun(runsRoot, { runId: `run-${grader.name}`, graders: [grader] });
@@ -292,22 +292,22 @@ describe("the host's plain-language account of one run", () => {
 		const cases: [{ reason: string }, string][] = [
 			[{
 				reason: 'world at accounts.42.status is "open", expected "frozen"',
-			}, 'world (world_state) expected the world at `accounts.42.status` to be `"frozen"`; it is `"open"`.'],
+			}, 'world (world_state) expected the world at accounts.42.status to equal "frozen"; it is "open".'],
 			[{
 				reason: "world at accounts.42.frozenAt is not set",
-			}, "world (world_state) expected the conversation to set the world at `accounts.42.frozenAt`; the conversation left it unset."],
+			}, "world (world_state) expected the conversation to set the world at accounts.42.frozenAt; the conversation left it unset."],
 			[{
 				reason: 'world at log is not set, expected contains "closed"',
-			}, 'world (world_state) expected the world at `log` to contains `"closed"`; the conversation left it unset.'],
+			}, 'world (world_state) expected the world at log to contain "closed"; the conversation left it unset.'],
 			[{
 				reason: 'world at log does not contain "closed"',
-			}, 'world (world_state) expected the world at `log` to contain `"closed"`; it does not.'],
+			}, 'world (world_state) expected the world at log to contain "closed"; it does not.'],
 			[{
 				reason: 'world at count is 3, which cannot contain "x"',
-			}, 'world (world_state) expected the world at `count` to contain `"x"`; it is `3`, which contains nothing.'],
+			}, 'world (world_state) expected the world at count to contain "x"; it is 3, which can contain nothing.'],
 			[{
 				reason: "case declares no world",
-			}, "world (world_state) expected the case to declare the world this check is about; it declares none, so the check could not pass."],
+			}, "world (world_state) expected the case to declare the world this check is about; the case declares none, so the check could not pass."],
 		];
 		for (const [index, [extra, expected]] of cases.entries()) {
 			const run = writeRun(runsRoot, {
@@ -379,7 +379,7 @@ describe("the host's plain-language account of one run", () => {
 		);
 		const lines = explain(runsRoot, run);
 		expect(lines[1]).toBe(
-			"rubric (judge) expected all 4 rubric assertion(s) to hold; the judge answered 2 of 4 with yes; assertion(s) 2, 4 did not hold.",
+			"rubric (judge) expected every one of the 4 rubric assertions to hold; the judge answered yes to 2 of 4; assertions 2, 4 did not hold.",
 		);
 		expect(lines).toContain("Assertion 2 was answered “no”; the judge's evidence: “не назван срок”.");
 		expect(lines).toContain("Assertion 4 was answered “unknown”; the judge's evidence: “ответа недостаточно”.");

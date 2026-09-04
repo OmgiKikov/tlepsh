@@ -885,6 +885,26 @@ function headlineFor(
 }
 
 /**
+ * A refusal about what a harness change can and cannot answer.
+ *
+ * Minted twice, the way every refusal a person is meant to act on is: the
+ * English `message` is what the model reads and what scripts match on, and
+ * `reason` is the pair the host draws in the operator's language. Session 8
+ * met the earlier plain `Error` verbatim on the transcript, could not parse
+ * it, and asked the operator to "открыть пункт в панели" — which is not a
+ * thing this product has.
+ */
+export class ProposalIneligibleError extends Error {
+	readonly reason: { code: string; detail?: string };
+
+	constructor(message: string, reason: { code: string; detail?: string }) {
+		super(message);
+		this.name = "ProposalIneligibleError";
+		this.reason = reason;
+	}
+}
+
+/**
  * Resolve model-selected failure-mode handles inside one exact canonical brief.
  * The returned diagnoses are entirely host-derived; callers can select modes
  * but cannot author failure identity, evidence references, or causal claims.
@@ -904,7 +924,10 @@ export function deriveEvidenceLinkedProposalSelection(
 		throw new Error("proposal basis does not match the exact improvement brief");
 	}
 	if (brief.status !== "actionable" || !brief.proposalEligible) {
-		throw new Error("improvement evidence is not eligible for a harness proposal");
+		throw new ProposalIneligibleError(
+			"improvement evidence is not eligible for a harness proposal",
+			{ code: "refusal.brief-not-proposable" },
+		);
 	}
 
 	const requested = new Set(selection.failureModeIds);
@@ -914,7 +937,10 @@ export function deriveEvidenceLinkedProposalSelection(
 	}
 	for (const mode of selected) {
 		if (mode.decision !== "propose-harness-change") {
-			throw new Error(`failure mode ${mode.failureModeId} is not eligible for a harness proposal`);
+			throw new ProposalIneligibleError(
+				`failure mode ${mode.failureModeId} is not eligible for a harness proposal`,
+				{ code: "refusal.mode-not-proposable", detail: mode.failureModeId },
+			);
 		}
 	}
 

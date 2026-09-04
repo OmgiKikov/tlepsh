@@ -222,11 +222,11 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 					requested: result.result.requested,
 				}))}${
 					dropped.duplicate > 0
-						? ` ${paint.dim("·")} ${paint.dim(t("exam.dropped-duplicate", { count: dropped.duplicate, dropped: plural(dropped.duplicate, "duplicate") }))}`
+						? ` ${paint.dim("·")} ${paint.dim(t("exam.dropped-duplicate", { dropped: plural(dropped.duplicate, "duplicate") }))}`
 						: ""
 				}${
 					dropped.malformed > 0
-						? ` ${paint.dim("·")} ${paint.dim(t("exam.dropped-malformed", { count: dropped.malformed, dropped: plural(dropped.malformed, "malformed case") }))}`
+						? ` ${paint.dim("·")} ${paint.dim(t("exam.dropped-malformed", { dropped: plural(dropped.malformed, "malformed case") }))}`
 						: ""
 				}`);
 			}

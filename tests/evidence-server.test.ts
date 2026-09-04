@@ -975,7 +975,7 @@ describe("read-only evidence explorer", () => {
 		// Why: expectation, observation, the grader's own words, and the counted facts.
 		expect(html).toContain("task_001 repetition 0 failed: 1 of 1 grader(s) did not pass.");
 		expect(html).toContain(
-			"expected a call to `bash` with arguments containing `check_dbo`; the agent made 0 tool calls and answered directly.",
+			"expected a call to bash with arguments containing “check_dbo”; the agent made no tool calls and answered directly.",
 		);
 		expect(html).toContain("The grader recorded: “never called bash with args containing &quot;check_dbo&quot;”.");
 		expect(html).toContain("What the traces show:");

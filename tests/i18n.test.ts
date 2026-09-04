@@ -14,7 +14,18 @@ import { stageLabel, nextStep } from "../src/builder/render/stage.js";
 import { renderRunDetailPage } from "../src/evidence/pages.js";
 import { createRunProgressPresenter } from "../src/builder/run-progress.js";
 import { renderBuilderHelp } from "../src/builder/commands.js";
-import { explainRun, failureModeReading, runErrorReading } from "../src/application/run-explanation.js";
+import {
+	explainRun,
+	failureModeReading,
+	runErrorReading,
+	type GraderFinding,
+	type RunExplanation,
+	type RunTraceFacts,
+} from "../src/application/run-explanation.js";
+import { humanizeCommandError } from "../src/builder/commands.js";
+import { WorkbenchTypedRefusalError } from "../src/workbench/errors.js";
+import { ProposalIneligibleError } from "../src/application/improvement-brief.js";
+import { SEALED_GATE_POLICY } from "../src/domain/comparison-gate.js";
 import { receiptLines } from "../src/builder/render/trace.js";
 import { turnBudgetLine } from "../src/workbench/workbench.js";
 import { assertWorkbenchDecisionStage } from "../src/workbench/transition-policy.js";
@@ -143,6 +154,25 @@ const ALLOWED_LATIN = new Set([
 	"repetition", "sub", "mono", "errpre", "cards", "card", "count", "row", "outcome", "score",
 	// The argument of `/help all`: a word the operator types, not one they read.
 	"all",
+]);
+
+/**
+ * The only Latin a Russian DICTIONARY FORM may carry, one reason each. Nothing
+ * here is a word: they are the two product names, the CLI and the things an
+ * operator types or reads off a file — command and flag names, id prefixes,
+ * field names, formats, a key on the keyboard, and the two verdict tokens the
+ * sentences quote. A word that is not one of these is an English leak, and the
+ * fix is a Russian form, never a new entry here.
+ */
+const MACHINE_LATIN = new Set([
+	// The products and the binary.
+	"AHDE", "ahde", "Builder", "Pi", "Target", "Git", "OAuth",
+	// Commands, subcommands, flags and argument values the operator types.
+	"target", "regrade", "next", "prev", "all", "trace", "traces", "run", "discard",
+	// Ids, prefixes and field names read off records and screens.
+	"id", "Id", "erun", "judge", "ME", "md", "manifest", "yaml", "semver", "Enter",
+	// Verdict tokens quoted inside a sentence; scripts match on them.
+	"underpowered",
 ]);
 
 function leakedEnglish(text: string): string[] {
@@ -329,7 +359,7 @@ describe("ru renders", () => {
 			"  Добавить упоминание инструмента поиска в инструкции",
 			"Изменения AGENTS.md (+1 -0)",
 			"Прогноз не заявлен",
-			"Проверка около $0.42 · около 4 мин — одобряя правку, ты одобряешь и эту проверку",
+			"Проверка около $0.42 · около 4 минут — одобряя правку, ты одобряешь и эту проверку",
 			"Диф",
 			"--- a/AGENTS.md",
 			"+++ b/AGENTS.md",
@@ -463,10 +493,10 @@ describe("ru renders", () => {
 		expect(t("exam.size-hint", { cases: plural(20, "case"), needed: plural(35, "case") }))
 			.toBe("экзамен 20 кейсов; при таком шуме для ±10 п.п. нужно около 35 кейсов");
 		expect(t("exam.of-requested", { cases: 19, requested: 20 })).toBe("19 из 20 запрошенных");
-		expect(t("exam.dropped-duplicate", { count: 1, dropped: plural(1, "duplicate") }))
-			.toBe("отброшено дубликатов: 1");
-		expect(t("exam.dropped-malformed", { count: 2, dropped: plural(2, "malformed case") }))
-			.toBe("отброшено с ошибкой формы: 2");
+		expect(t("exam.dropped-duplicate", { dropped: plural(1, "duplicate") }))
+			.toBe("отброшено: 1 дубликат");
+		expect(t("exam.dropped-malformed", { dropped: plural(2, "malformed case") }))
+			.toBe("отброшено: 2 кейса с ошибкой формы");
 		// Every one of them is Russian all the way through.
 		for (const key of [
 			"exam.outcome-improved",
@@ -713,6 +743,9 @@ const IDENTICAL_BY_DESIGN = new Set([
 	"fixtures.failed",
 	"why.grader-expected",
 	"why.grader-plain",
+	// A grader phrasing the host does not recognize is quoted whole; the quote
+	// is the record, and a record has no second language.
+	"why.actual.reason",
 	// A dash is a dash in both languages.
 	"metrics.not-reported",
 	// lane: gate-dialog — an ordinal in brackets after a label the caller wrote.
@@ -742,6 +775,232 @@ describe("the dictionary itself", () => {
 				.replace(/\bAHDE\b/g, "");
 			expect(bare, key).not.toMatch(/[A-Za-z]{2,}/);
 		}
+	});
+
+	/**
+	 * "The Russian form differs from the English one" was the whole guard, and
+	 * every English literal that reached a Russian screen for three sessions
+	 * running passed it: a sentence built OUTSIDE the dictionary never had a
+	 * key to compare. This reads the forms themselves.
+	 */
+	it("leaves nothing but machine text Latin in any Russian form", () => {
+		setLanguage("ru");
+		const leaked = new Map<string, string[]>();
+		for (const key of messageKeys()) {
+			const found = leakedEnglish(t(key).replace(/\{\w+\}/g, " "))
+				.filter((word) => !MACHINE_LATIN.has(word));
+			if (found.length > 0) leaked.set(key, found);
+		}
+		expect([...leaked.entries()].map(([key, words]) => `${key}: ${words.join(" ")}`)).toEqual([]);
+	});
+
+	/**
+	 * A name one form interpolates and the other does not is a name nobody
+	 * passes: the screen prints `{count}` verbatim, or silently drops the
+	 * number the sentence was about. Five keys were in that state.
+	 */
+	it("interpolates exactly the same names in both languages", () => {
+		const names = (text: string): string => [...new Set(text.match(/\{\w+\}/g) ?? [])].sort().join(" ");
+		const mismatched: string[] = [];
+		for (const key of messageKeys()) {
+			setLanguage("en");
+			const english = names(t(key));
+			setLanguage("ru");
+			const russian = names(t(key));
+			if (english !== russian) mismatched.push(`${key}: en(${english}) ru(${russian})`);
+		}
+		expect(mismatched).toEqual([]);
+	});
+});
+
+/**
+ * Session 8, the third session in a row: the one screen that explains a failed
+ * check spoke English on the Russian path. The dictionary guard above could
+ * not see it, because those sentences were built from literals OUTSIDE the
+ * dictionary and so had no key to compare. These read the finished screen.
+ */
+describe("ru: what a failed check wanted", () => {
+	/**
+	 * Everything the host WROTE about one run, with everything it QUOTED taken
+	 * out: the grader's own recorded reason — canonical English on disk, quoted
+	 * verbatim on purpose, exactly as the transition policy keeps its machine
+	 * line — and the machine text the sentences interpolate, which is grader
+	 * names, grader type names, tool names, world paths and canonical JSON.
+	 */
+	function hostWritten(sentences: readonly string[], quoted: readonly string[]): string {
+		let text = sentences.join("\n");
+		for (const item of quoted) text = text.split(item).join(" ");
+		return text;
+	}
+
+	function finding(overrides: Partial<GraderFinding>): GraderFinding {
+		return {
+			name: "grader",
+			type: "judge",
+			checkCode: null,
+			passed: false,
+			score: 0,
+			reason: "",
+			abstained: false,
+			assertions: null,
+			assertionVerdicts: null,
+			choice: null,
+			jury: null,
+			chip: "✗",
+			...overrides,
+		};
+	}
+
+	function explain(graders: GraderFinding[], facts: RunTraceFacts | null): RunExplanation {
+		return explainRun({
+			run: {
+				runId: "run-9",
+				taskId: "task-3",
+				repetitionIndex: 0,
+				status: "completed",
+				error: null,
+				metrics: { toolCalls: 2 },
+			} as never,
+			graders,
+			facts,
+			modes: [],
+			flip: null,
+		});
+	}
+
+	it("says what a world check wanted, and what the conversation left instead", () => {
+		setLanguage("ru");
+		const explanation = explain([finding({
+			name: "task-3#0:world_state:accounts.42.status",
+			type: "world_state",
+			checkCode: "world-state",
+			reason: 'world at accounts.42.status is "open", expected "frozen"',
+		})], null);
+		expect(explanation.sentences[1]).toBe(
+			"task-3#0:world_state:accounts.42.status (world_state) "
+			+ 'ожидалось: мир по пути accounts.42.status равен "frozen"; там "open".',
+		);
+		expect(leakedEnglish(hostWritten(explanation.sentences, [
+			'world at accounts.42.status is "open", expected "frozen"',
+			"task-3#0:world_state:accounts.42.status",
+			"world_state",
+			"accounts.42.status",
+			'"frozen"',
+			'"open"',
+		]))).toEqual([]);
+	});
+
+	it("says which tool the case wanted called, and what the agent called instead", () => {
+		setLanguage("ru");
+		const explanation = explain([finding({
+			name: "task-3#0:tool_called:check_dbo",
+			type: "tool_called",
+			checkCode: "required-tool",
+			reason: 'never called check_dbo with args containing "1003"',
+		})], { input: null, answer: null, toolNames: ["read_file"], toolCalls: 2 });
+		expect(explanation.sentences[1]).toBe(
+			"task-3#0:tool_called:check_dbo (tool_called) "
+			+ "ожидался вызов check_dbo с аргументами, содержащими «1003»; "
+			+ "агент сделал 2 вызова инструмента — read_file.",
+		);
+		expect(leakedEnglish(hostWritten(explanation.sentences, [
+			'never called check_dbo with args containing "1003"',
+			"task-3#0:tool_called:check_dbo",
+			"tool_called",
+			"check_dbo",
+			"read_file",
+		]))).toEqual([]);
+	});
+
+	it("says what the judge's rubric wanted, and answers its assertions in Russian", () => {
+		setLanguage("ru");
+		const explanation = explain([finding({
+			name: "task-3#0:judge",
+			type: "judge",
+			checkCode: "semantic-rubric",
+			reason: "assertion 2 failed (2/4 yes): не назван срок",
+			assertions: { total: 4, passed: 2, failed: [2, 4] },
+			assertionVerdicts: [
+				{ index: 1, answer: "yes", evidence: "срок указан" },
+				{ index: 2, answer: "no", evidence: "не назван срок" },
+				{ index: 4, answer: "unknown", evidence: "ответа недостаточно" },
+			],
+			jury: [
+				{ juror: 1, passed: false, choice: null, answers: null },
+				{ juror: 2, passed: true, choice: null, answers: null },
+			],
+		})], null);
+		expect(explanation.sentences[1]).toBe(
+			"task-3#0:judge (judge) ожидалось: выполнены все утверждения рубрики, все 4; "
+			+ "судья ответил «да» на 2 из 4; не выполнены утверждения 2, 4.",
+		);
+		// The judge's three protocol answers are read here, never matched on.
+		expect(explanation.sentences).toContain(
+			"На утверждение 2 ответ «нет»; обоснование судьи: «не назван срок».",
+		);
+		expect(explanation.sentences).toContain(
+			"На утверждение 4 ответ «не знаю»; обоснование судьи: «ответа недостаточно».",
+		);
+		expect(leakedEnglish(hostWritten(explanation.sentences, [
+			"assertion 2 failed (2/4 yes): не назван срок",
+			"task-3#0:judge",
+			"judge",
+		]))).toEqual([]);
+	});
+});
+
+/**
+ * Session 8, defect 5: the Builder met `failure mode … is not eligible for a
+ * harness proposal` on the transcript, could not parse it, and asked the
+ * operator to "открыть пункт в панели".
+ */
+describe("ru: a refusal a person has to act on", () => {
+	it("reaches the operator in Russian, whole, through the one place errors are humanized", () => {
+		setLanguage("ru");
+		const refusals = [
+			new WorkbenchTypedRefusalError("The selected sealed holdout has 4 tasks", {
+				code: "refusal.sealed-exam-too-small",
+				params: { tasks: plural(4, "case"), minimum: SEALED_GATE_POLICY.minTasks },
+			}),
+			new WorkbenchTypedRefusalError("Candidate verification needs at least 3 repetitions", {
+				code: "refusal.repetitions-too-few",
+				params: { minimum: SEALED_GATE_POLICY.minRepetitions },
+			}),
+			new WorkbenchTypedRefusalError("candidate verification failed during the sealed exam", {
+				code: "refusal.check-failed-in-exam",
+			}),
+			new ProposalIneligibleError("improvement evidence is not eligible for a harness proposal", {
+				code: "refusal.brief-not-proposable",
+			}),
+			new ProposalIneligibleError("failure mode fm-4c1d9e is not eligible for a harness proposal", {
+				code: "refusal.mode-not-proposable",
+				detail: "fm-4c1d9e",
+			}),
+		];
+		for (const error of refusals) {
+			const human = humanizeCommandError(error);
+			expect(human.tone, error.reason.code).toBe("warning");
+			expect(leakedEnglish(human.message), error.reason.code).toEqual([]);
+			// The English sentence underneath is untouched: the model still reads it.
+			expect(human.message).not.toBe(error.message);
+		}
+	});
+
+	it("keeps the evaluator's own stem beside the sentence rather than inside it", () => {
+		setLanguage("ru");
+		const stopped = new WorkbenchTypedRefusalError("the check stopped before the exam", {
+			code: "refusal.check-stopped-before-exam",
+			detail: "target exited with 3",
+		});
+		const human = humanizeCommandError(stopped);
+		expect(human.message).toBe(`${t("refusal.check-stopped-before-exam")} target exited with 3`);
+		expect(leakedEnglish(t("refusal.check-stopped-before-exam"))).toEqual([]);
+	});
+
+	it("says the abandoned attempt in Russian", () => {
+		setLanguage("ru");
+		expect(leakedEnglish(t("message.candidate-abandoned"))).toEqual([]);
+		expect(t("message.candidate-abandoned")).toContain("Прерванная попытка");
 	});
 });
 

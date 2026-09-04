@@ -580,7 +580,7 @@ export function formatEstimatedTime(estimate: WorkbenchRunEstimate | undefined):
 	if (!estimate || estimate.minutes === null) return `${t("estimate.unknown")} ${t("estimate.nothing-comparable")}`;
 	if (estimate.minutes < 1) return t("estimate.under-minute");
 	const minutes = Math.ceil(estimate.minutes);
-	return t("estimate.about-minutes", { minutes: localizedCount(minutes, "minute"), count: minutes });
+	return t("estimate.about-minutes", { minutes: localizedCount(minutes, "estimated minute") });
 }
 
 function plural(count: number, noun: string): string {

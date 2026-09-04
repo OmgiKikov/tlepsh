@@ -1,5 +1,4 @@
 import { hasMessage, t } from "../i18n.js";
-import { EvaluatorsNotConfiguredError } from "../manifest.js";
 import type { WorkbenchVerificationBlocked } from "./types.js";
 
 export class WorkbenchSelectionRequiredError extends Error {
@@ -41,26 +40,52 @@ export class WorkbenchStaleDecisionError extends Error {
  * same pairing `WorkbenchView.blockers` / `blockerReasons` already uses. The
  * English sentence stays the `message`; `reason` is what the host draws.
  */
-export class WorkbenchTypedRefusalError extends Error {
-	readonly reason: { code: string; params?: Record<string, string | number> };
+export interface TypedRefusalReason {
+	code: string;
+	params?: Record<string, string | number>;
+	/** Machine text the code cannot carry, appended after the localized sentence. */
+	detail?: string;
+}
 
-	constructor(message: string, reason: { code: string; params?: Record<string, string | number> }) {
+export class WorkbenchTypedRefusalError extends Error {
+	readonly reason: TypedRefusalReason;
+
+	constructor(message: string, reason: TypedRefusalReason) {
 		super(message);
 		this.name = "WorkbenchTypedRefusalError";
 		this.reason = reason;
 	}
 }
 
+function isRefusalParams(value: unknown): value is Record<string, string | number> {
+	if (typeof value !== "object" || value === null) return false;
+	return Object.values(value).every((item) => typeof item === "string" || typeof item === "number");
+}
+
 /**
  * The typed reason of a refusal that carries one, or null for every other
- * error. A run refused for a missing evaluator is minted deeper than the
- * Workbench — the suite refuses before it spends anything — but it carries the
- * same pair, so the host renders it the same way.
+ * error.
+ *
+ * The test is the shape, not the class: a refusal a person is meant to act on
+ * is minted wherever the rule it breaks lives — the Workbench, the suite that
+ * refuses before it spends anything, the brief that knows what a harness
+ * change can answer — and every one of those carries the same pair. An error
+ * whose `reason` is free text (a stopped experiment quotes one) carries no
+ * code and is not one of these.
  */
-export function typedRefusalReason(error: unknown): { code: string; params?: Record<string, string | number> } | null {
-	if (error instanceof WorkbenchTypedRefusalError) return error.reason;
-	if (error instanceof EvaluatorsNotConfiguredError) return error.reason;
-	return null;
+export function typedRefusalReason(error: unknown): TypedRefusalReason | null {
+	if (!(error instanceof Error) || !("reason" in error)) return null;
+	const reason: unknown = error.reason;
+	if (typeof reason !== "object" || reason === null || !("code" in reason)) return null;
+	const code: unknown = reason.code;
+	if (typeof code !== "string" || code.length === 0) return null;
+	const params: unknown = "params" in reason ? reason.params : undefined;
+	const detail: unknown = "detail" in reason ? reason.detail : undefined;
+	return {
+		code,
+		...(isRefusalParams(params) ? { params } : {}),
+		...(typeof detail === "string" && detail.length > 0 ? { detail } : {}),
+	};
 }
 
 /**

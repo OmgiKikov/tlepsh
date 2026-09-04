@@ -328,7 +328,7 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 			"Create exact Target harness",
 			"Configure exact Target identity and model",
 			"Start testing — approve the Spec",
-			"Start testing — publish the eval basket, run 2 Target executions",
+			"Start testing — publish the eval basket (2 cases), run 2 Target executions",
 			"Apply exact Builder proposal",
 			"Ship candidate as v0.1.0",
 		]);

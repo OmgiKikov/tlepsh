@@ -171,7 +171,7 @@ function verificationLine(estimate: WorkbenchRunEstimate | undefined, paint: Pai
 	}
 	const cost = estimate.costUsd < 0.01 ? t("estimate.under-cent") : t("estimate.about-cost", { cost: estimate.costUsd.toFixed(2) });
 	const minutes = Math.ceil(estimate.minutes);
-	const time = estimate.minutes < 1 ? t("estimate.under-minute") : t("estimate.about-minutes", { minutes: plural(minutes, "minute"), count: minutes });
+	const time = estimate.minutes < 1 ? t("estimate.under-minute") : t("estimate.about-minutes", { minutes: plural(minutes, "estimated minute") });
 	return `${paint.dim(t("label.verification"))} ${cost} ${paint.dim("·")} ${time} ${covenant}`;
 }
 
