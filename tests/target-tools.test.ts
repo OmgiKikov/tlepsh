@@ -276,7 +276,7 @@ describe("Target tool broker and Pi registration", () => {
 				detectContainerRuntime: () => ({
 					runtime: "docker",
 					available: true,
-					...runtimeIdentity,
+					identity: runtimeIdentity,
 				}),
 			});
 			const container = target.manifest.execution.container;

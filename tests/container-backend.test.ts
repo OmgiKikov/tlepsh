@@ -7,6 +7,7 @@ import { buildExecutionPolicy } from "../src/execution-policy.js";
 import { loadTarget } from "../src/manifest.js";
 import { hashFile } from "../src/provenance.js";
 import {
+	assertContainerRuntimeBinding,
 	CONTAINER_PATH,
 	containerImageDigest,
 	containerSandboxFingerprint,
@@ -47,6 +48,10 @@ const RUNTIME_IDENTITY = {
 	securityOptionsHash: "b".repeat(64),
 	contextHash: "c".repeat(64),
 } as const;
+/** One probed runtime that named its server exactly. */
+function availableStatus(identity: ContainerRuntimeIdentity = RUNTIME_IDENTITY): ContainerRuntimeStatus {
+	return { runtime: "docker", available: true, identity };
+}
 const EXPECTED_CONTAINER_USER = typeof process.getuid === "function" && process.getuid() !== 0
 	? `${process.getuid()}:${typeof process.getgid === "function" ? process.getgid() : 0}`
 	: "65534:65534";
@@ -687,7 +692,9 @@ describe("gondolin", () => {
 			cwd: "/w",
 			argv: ["/bin/true"],
 		})).toThrow(GONDOLIN_UNAVAILABLE);
-		expect(detectContainerRuntime("gondolin", { force: true }).reason).toBe(GONDOLIN_UNAVAILABLE);
+		const gondolin = detectContainerRuntime("gondolin", { force: true });
+		if (gondolin.available) throw new Error("gondolin is not vendored and can never be available");
+		expect(gondolin.reason).toBe(GONDOLIN_UNAVAILABLE);
 		expect(() =>
 			resolveContainerSandbox({ policy: policy({ runtime: "gondolin" }), sandbox: "required" })
 		).toThrow(new RegExp(GONDOLIN_UNAVAILABLE));
@@ -702,16 +709,18 @@ describe("container runtime detection", () => {
 		expect(first).toMatchObject({
 			runtime: "docker",
 			available: true,
-			version: RUNTIME_IDENTITY.version,
-			os: RUNTIME_IDENTITY.os,
-			arch: RUNTIME_IDENTITY.arch,
-			daemonId: RUNTIME_IDENTITY.daemonId,
-			kernelVersion: RUNTIME_IDENTITY.kernelVersion,
-			driver: RUNTIME_IDENTITY.driver,
-			cgroupDriver: RUNTIME_IDENTITY.cgroupDriver,
-			cgroupVersion: RUNTIME_IDENTITY.cgroupVersion,
-			contextHash: expect.stringMatching(/^[0-9a-f]{64}$/),
-			securityOptionsHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+			identity: {
+				version: RUNTIME_IDENTITY.version,
+				os: RUNTIME_IDENTITY.os,
+				arch: RUNTIME_IDENTITY.arch,
+				daemonId: RUNTIME_IDENTITY.daemonId,
+				kernelVersion: RUNTIME_IDENTITY.kernelVersion,
+				driver: RUNTIME_IDENTITY.driver,
+				cgroupDriver: RUNTIME_IDENTITY.cgroupDriver,
+				cgroupVersion: RUNTIME_IDENTITY.cgroupVersion,
+				contextHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+				securityOptionsHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+			},
 		});
 
 		// Delete the binary: a second call must answer from the memo, never probe.
@@ -728,11 +737,10 @@ describe("container runtime detection", () => {
 		const second = detectContainerRuntime("docker", {
 			environment: { PATH: fake.binDir, DOCKER_CONTEXT: "review-b" },
 		});
-		expect(first.available).toBe(true);
-		expect(second.available).toBe(true);
-		expect(first.contextHash).not.toBe(second.contextHash);
-		expect(containerSandboxFingerprint(policy(), first as ContainerRuntimeIdentity))
-			.not.toBe(containerSandboxFingerprint(policy(), second as ContainerRuntimeIdentity));
+		if (!first.available || !second.available) throw new Error("the fake Docker probe reported no runtime");
+		expect(first.identity.contextHash).not.toBe(second.identity.contextHash);
+		expect(containerSandboxFingerprint(policy(), first.identity))
+			.not.toBe(containerSandboxFingerprint(policy(), second.identity));
 	});
 
 	it("reports a missing binary and an unreachable daemon as distinct, exact reasons", () => {
@@ -746,20 +754,39 @@ describe("container runtime detection", () => {
 
 		const broken = fakeDocker({ failReason: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock" });
 		const status = detectContainerRuntime("docker", { environment: { PATH: broken.binDir } });
-		expect(status.available).toBe(false);
+		if (status.available) throw new Error("a broken daemon must not report an available runtime");
 		expect(status.reason).toBe(
 			"docker daemon is not reachable: Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
 		);
 	});
+
+	it("refuses a blank daemon id at the probe, so no identity is ever minted from it", () => {
+		const infoFile = join(scratchRoot("blank-daemon"), "info.json");
+		writeFileSync(
+			infoFile,
+			`${JSON.stringify({
+				ID: "   ",
+				KernelVersion: RUNTIME_IDENTITY.kernelVersion,
+				Driver: RUNTIME_IDENTITY.driver,
+				CgroupDriver: RUNTIME_IDENTITY.cgroupDriver,
+				CgroupVersion: RUNTIME_IDENTITY.cgroupVersion,
+				SecurityOptions: ["name=seccomp,profile=builtin"],
+			})}\n`,
+		);
+		const blank = fakeDocker({ infoFile });
+		const status = detectContainerRuntime("docker", { environment: { PATH: blank.binDir }, force: true });
+		if (status.available) throw new Error("a whitespace-only daemon id must not be an available runtime");
+		expect(status.reason).toBe("docker daemon identity is incomplete");
+	});
 });
 
 describe("required / best-effort / off matrix", () => {
-	const available: ContainerRuntimeStatus = { runtime: "docker", available: true, ...RUNTIME_IDENTITY };
+	const available: ContainerRuntimeStatus = availableStatus();
 	const missing: ContainerRuntimeStatus = { runtime: "docker", available: false, reason: "docker executable not found on PATH" };
 
 	it("required + usable runtime + pinned digest runs in the container", () => {
 		const decision = resolveContainerSandbox({ policy: policy(), sandbox: "required", detect: () => available });
-		expect(decision.mode).toBe("container");
+		if (decision.mode !== "container") throw new Error("a usable runtime must confine the run");
 		expect(decision.warnings).toEqual([]);
 		expect(decision.fingerprint).toBe(containerSandboxFingerprint(policy(), RUNTIME_IDENTITY));
 	});
@@ -789,7 +816,9 @@ describe("required / best-effort / off matrix", () => {
 	it("best-effort falls back to the OS sandbox with a warning and a different fingerprint", () => {
 		const decision = resolveContainerSandbox({ policy: policy(), sandbox: "best-effort", detect: () => missing });
 		expect(decision.mode).toBe("fallback");
-		expect(decision.fingerprint).toBeUndefined();
+		// A fallback carries no fingerprint field at all: the type says so, and
+		// so does the object, which is what keeps it out of container evidence.
+		expect(decision).not.toHaveProperty("fingerprint");
 		expect(decision.warnings[0]).toContain("falling back to the host OS sandbox");
 		expect(decision.warnings[0]).toContain("NOT container evidence");
 
@@ -804,12 +833,36 @@ describe("required / best-effort / off matrix", () => {
 	});
 
 	it("refuses container evidence when the runtime cannot identify its server exactly", () => {
-		const incomplete: ContainerRuntimeStatus = { runtime: "docker", available: true, version: "27.1.0" };
-		expect(() => resolveContainerSandbox({ policy: policy(), sandbox: "required", detect: () => incomplete }))
+		const blank = availableStatus({ ...RUNTIME_IDENTITY, daemonId: "   " });
+		expect(() => resolveContainerSandbox({ policy: policy(), sandbox: "required", detect: () => blank }))
 			.toThrow(/did not report an exact daemon, context, kernel, cgroup, and server identity/);
-		const relaxed = resolveContainerSandbox({ policy: policy(), sandbox: "best-effort", detect: () => incomplete });
+		const relaxed = resolveContainerSandbox({ policy: policy(), sandbox: "best-effort", detect: () => blank });
 		expect(relaxed.mode).toBe("fallback");
 		expect(relaxed.warnings[0]).toContain("falling back to the host OS sandbox");
+	});
+
+	it("refuses a whitespace-only daemon id on the evidence path and the binding path alike", () => {
+		// These two used to disagree: the fingerprint path required a non-blank
+		// trimmed value, the binding assertion accepted any non-empty string.
+		const blank = availableStatus({ ...RUNTIME_IDENTITY, daemonId: " " });
+		expect(() => resolveContainerSandbox({ policy: policy(), sandbox: "required", detect: () => blank }))
+			.toThrow(/did not report an exact daemon, context, kernel, cgroup, and server identity/);
+
+		const infoFile = join(scratchRoot("blanked-daemon"), "info.json");
+		const info = (id: string): string => `${JSON.stringify({
+			ID: id,
+			KernelVersion: RUNTIME_IDENTITY.kernelVersion,
+			Driver: RUNTIME_IDENTITY.driver,
+			CgroupDriver: RUNTIME_IDENTITY.cgroupDriver,
+			CgroupVersion: RUNTIME_IDENTITY.cgroupVersion,
+			SecurityOptions: ["name=seccomp,profile=builtin"],
+		})}\n`;
+		writeFileSync(infoFile, info(RUNTIME_IDENTITY.daemonId));
+		const binding = boundFakeDocker(fakeDocker({ infoFile }));
+		// The same socket now answers with a daemon that cannot name itself.
+		writeFileSync(infoFile, info(" "));
+		expect(() => assertContainerRuntimeBinding(binding))
+			.toThrow(/container runtime changed after resolution.*docker daemon identity is incomplete/);
 	});
 
 	it("sandbox: off cannot declare containment", () => {
@@ -964,7 +1017,7 @@ describe("the built-in bash under the container backend", () => {
 	it("records the container fingerprint and never claims a host OS sandbox", () => {
 		const result = fixture({
 			sandbox: "required",
-			detect: () => ({ runtime: "docker", available: true, ...RUNTIME_IDENTITY }),
+			detect: () => availableStatus(),
 		});
 		const fingerprint = containerSandboxFingerprint(policy(), RUNTIME_IDENTITY);
 		expect(result.sandboxFingerprint).toBe(fingerprint);
@@ -1114,7 +1167,7 @@ describe("the built-in bash under the container backend", () => {
 		try {
 			const result = fixture({
 				sandbox: "required",
-				detect: () => ({ runtime: "docker", available: true, ...RUNTIME_IDENTITY }),
+				detect: () => availableStatus(),
 			});
 			const bash = result.customTools.find((tool) => tool.name === "bash");
 			if (!bash) throw new Error("bash tool was not registered");
@@ -1326,8 +1379,8 @@ function pinnedIntegrationImage(): string | null {
 	return inspect.status === 0 && isPinnedContainerImage(reference) ? reference : null;
 }
 const integrationPinnedImage = pinnedIntegrationImage();
-const integrationPlatform = dockerStatus.available && dockerStatus.os && dockerStatus.arch
-	? `${dockerStatus.os}/${dockerStatus.arch}`
+const integrationPlatform = dockerStatus.available
+	? `${dockerStatus.identity.os}/${dockerStatus.identity.arch}`
 	: null;
 const integrationRuntimeBinding = dockerStatus.available
 	? resolveExecutionBackend({
@@ -1339,7 +1392,7 @@ const integrationRuntimeBinding = dockerStatus.available
 const skipReason = dockerStatus.available
 	? (integrationPinnedImage && integrationPlatform
 		? ""
-		: ` — SKIPPED: docker ${dockerStatus.version} is up but no pinned image/platform was resolved`)
+		: ` — SKIPPED: docker ${dockerStatus.identity.version} is up but no pinned image/platform was resolved`)
 	: ` — SKIPPED: ${dockerStatus.reason}`;
 if (skipReason) console.warn(`[container-backend integration]${skipReason}`);
 
@@ -1465,11 +1518,7 @@ describe.skipIf(!integrationPinnedImage || !integrationPlatform || !integrationR
 			},
 			sourceEnvironment: { ALLOWED_VALUE: "visible", [HOST_SECRET]: "must-not-leak" },
 		});
-		if (!dockerStatus.version || !dockerStatus.os || !dockerStatus.arch || !dockerStatus.daemonId ||
-			!dockerStatus.kernelVersion || !dockerStatus.driver || !dockerStatus.cgroupDriver ||
-			!dockerStatus.cgroupVersion || !dockerStatus.securityOptionsHash || !dockerStatus.contextHash) {
-			throw new Error("real Docker probe returned no exact runtime identity");
-		}
+		if (!dockerStatus.available) throw new Error("real Docker probe returned no exact runtime identity");
 		expect(built.sandboxFingerprint).toBe(containerSandboxFingerprint(
 			policy({
 				image: integrationPinnedImage as string,
@@ -1477,18 +1526,7 @@ describe.skipIf(!integrationPinnedImage || !integrationPlatform || !integrationR
 				memoryMb: 256,
 				pidsLimit: 64,
 			}),
-			{
-				version: dockerStatus.version,
-				os: dockerStatus.os,
-				arch: dockerStatus.arch,
-				daemonId: dockerStatus.daemonId,
-				kernelVersion: dockerStatus.kernelVersion,
-				driver: dockerStatus.driver,
-				cgroupDriver: dockerStatus.cgroupDriver,
-				cgroupVersion: dockerStatus.cgroupVersion,
-				securityOptionsHash: dockerStatus.securityOptionsHash,
-				contextHash: dockerStatus.contextHash,
-			},
+			dockerStatus.identity,
 		));
 
 		const bash = built.customTools.find((tool) => tool.name === "bash");
