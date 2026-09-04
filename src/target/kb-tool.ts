@@ -158,7 +158,17 @@ export function createKbSearchTool(chunks: readonly KbChunk[]): ToolDefinition<a
 			}
 			const hits = bm25Search(chunks, bag.query, typeof bag.k === "number" ? bag.k : DEFAULT_KB_SEARCH_RESULTS);
 			const text = JSON.stringify({
-				chunks: hits.map((hit) => ({ id: hit.chunk.id, path: hit.chunk.path, text: hit.chunk.text })),
+				// Additive, versioned retrieval evidence. Existing agents that only
+				// read id/path/text keep working; evidence projections can now show
+				// the exact order and score the agent saw without rerunning an index.
+				schemaVersion: 1,
+				chunks: hits.map((hit, index) => ({
+					rank: index + 1,
+					id: hit.chunk.id,
+					path: hit.chunk.path,
+					score: hit.score,
+					text: hit.chunk.text,
+				})),
 			});
 			return {
 				content: [{ type: "text" as const, text }],

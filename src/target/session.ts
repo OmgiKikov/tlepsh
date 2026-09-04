@@ -50,7 +50,10 @@ export interface TargetSessionStats {
 	sessionId: string | null;
 	tokens: TokenMetrics | null;
 	costUsd: number | null;
+	/** Tool executions observed and brokered by the host. */
 	toolCalls: number;
+	/** Agent self-reports, kept separate from execution evidence. */
+	reportedToolCalls?: number;
 }
 
 export interface TargetSession {

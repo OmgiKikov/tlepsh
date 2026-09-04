@@ -32,6 +32,8 @@ import {
 	type RunRecord,
 } from "./provenance.js";
 import { newRunId } from "./runner.js";
+import { verifiedRunArtifacts } from "./run-evidence.js";
+import { WORLD_STATE_SEGMENTS } from "./target/world-state.js";
 import { readJsonArtifact, writeJsonArtifact, writeTextArtifact } from "./storage/artifacts.js";
 import { resolveContainedArtifactPath } from "./storage/paths.js";
 import { readTraceArtifact, redactTraceText } from "./trace.js";
@@ -274,6 +276,13 @@ export async function regradeEvalRun(options: RegradeOptions): Promise<RegradeRe
 		if (!task) {
 			throw new Error(`eval run ${sourceRecord.evalRunId} scored task ${run.taskId}, which the resolved Target no longer has`);
 		}
+		if (run.status === "completed" && run.metrics.finalAnswer === undefined) {
+			throw new Error(`run ${run.runId} predates host-observed completion; run the case again before regrading it under evaluator v4`);
+		}
+		const artifacts = verifiedRunArtifacts(runsRoot, run);
+		if (run.status === "completed" && task.world && artifacts.world === null) {
+			throw new Error(`run ${run.runId} has no attested final world; run the case again before regrading it`);
+		}
 		const record: RunRecord = {
 			...run,
 			runId: newRunId(),
@@ -281,6 +290,8 @@ export async function regradeEvalRun(options: RegradeOptions): Promise<RegradeRe
 			eval: { ...run.eval, suiteHash },
 			metrics: derivedMetrics(run.metrics),
 			evalResults: null,
+			// Judge evidence is re-earned below, never inherited from the source.
+			evidenceArtifacts: { world: run.evidenceArtifacts?.world ?? null, judge: {} },
 			// A regrade is never a candidate arm: the revision lineage it re-scores
 			// stays reachable through derivedFrom, not through candidateOf.
 			parent: { evalRunId, candidateOf: null },
@@ -288,6 +299,13 @@ export async function regradeEvalRun(options: RegradeOptions): Promise<RegradeRe
 		};
 		privateRunDirectory(runsRoot, record.runId);
 		copyRecordedTrace(runsRoot, run, record.runId);
+		if (artifacts.world !== null) {
+			writeTextArtifact(
+				resolveContainedArtifactPath(runsRoot, record.runId, ...WORLD_STATE_SEGMENTS),
+				canonicalJson(artifacts.world),
+				{ mode: 0o600, immutable: true },
+			);
+		}
 		writeJsonArtifact(
 			resolveContainedArtifactPath(runsRoot, record.runId, "run.json"),
 			RunRecordSchema,

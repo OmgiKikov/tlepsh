@@ -25,6 +25,10 @@ import {
 	loadSpecApprovalReceipt,
 } from "../application/builder-authoring.js";
 import { loadCandidateRecord } from "../application/candidate-review.js";
+import {
+	improvementExperimentDesignPath,
+	loadImprovementExperimentDesign,
+} from "../application/improvement-experiment-design.js";
 import { targetWithDevelopmentCorpus } from "../application/corpus-target.js";
 import {
 	loadTargetAdoptionReceiptIfPresent,
@@ -219,6 +223,7 @@ function listProposals(
 	approvedSpecs: Map<string, ApprovedSpecReference>,
 	lineages: Map<string, WorkbenchDevelopmentLineage>,
 	developmentEvals: EvalRunRecord[],
+	candidates: CandidateRecord[],
 	warnings: string[],
 	blockers: string[],
 ): WorkbenchProposalInventory[] {
@@ -257,7 +262,7 @@ function listProposals(
 				const development = source.developmentCorpus;
 				const lineage = development ? lineages.get(development.id) : undefined;
 				const evalRun = developmentEvals.find((run) => run.evalRunId === source.evalRunId);
-				if (
+				const ordinarySource = Boolean(
 					!development || !lineage ||
 					lineage.publication.approvedSpecId !== approvedSpec.specId ||
 					lineage.datasetHash !== development.hash ||
@@ -269,7 +274,42 @@ function listProposals(
 					evalRun.dataset !== source.dataset ||
 					evalRun.datasetHash !== source.datasetHash ||
 					evalRun.suiteHash !== source.suiteHash
-				) throw new Error("proposal source does not bind its approved Spec to one reviewed corpus and conclusive EvalRun");
+				) === false;
+				let blindSource = false;
+				if (!ordinarySource && development && evalRun) {
+					const experiment = candidates.find((candidate) =>
+						candidate.origin.kind === "applied-builder" &&
+						candidate.origin.source?.evalRunId === source.evalRunId &&
+						candidate.origin.experimentDesign !== undefined
+					);
+					if (experiment?.origin.kind === "applied-builder" && experiment.origin.experimentDesign) {
+						const design = loadImprovementExperimentDesign(experiment.origin.experimentDesign.path);
+						verifyCandidateArtifact(
+							experiment.origin.experimentDesign,
+							improvementExperimentDesignPath(runsRoot, design.loopId),
+						);
+						const sourceLineage = lineages.get(design.sourceCorpus.id);
+						blindSource = Boolean(
+							sourceLineage &&
+							design.projectId === projectId &&
+							sourceLineage.publication.approvedSpecId === approvedSpec.specId &&
+							sourceLineage.datasetHash === design.sourceCorpus.hash &&
+							development.id === design.authoringCorpus.id &&
+							development.hash === design.authoringCorpus.hash &&
+							source.datasetHash === design.authoringCorpus.hash &&
+							JSON.stringify(evalRun.taskIds ?? []) === JSON.stringify(design.authoringTaskIds) &&
+							evalRun.summary.error === 0 &&
+							record.request.baseTargetSha === source.targetGitSha &&
+							evalRun.target.id === source.targetId &&
+							evalRun.target.gitSha === source.targetGitSha &&
+							evalRun.dataset === source.dataset &&
+							evalRun.suiteHash === source.suiteHash
+						);
+					}
+				}
+				if (!ordinarySource && !blindSource) {
+					throw new Error("proposal source does not bind its approved Spec to one reviewed corpus and conclusive EvalRun");
+				}
 			}
 			const applyPath = resolveContainedArtifactPath(runsRoot, "builders", runId, "apply_receipt.json");
 			const discardPath = builderDiscardReceiptPath(runsRoot, runId);
@@ -457,6 +497,7 @@ function validateProjectCandidates(options: {
 				const receipt = loadBuilderApplyReceipt(options.runsRoot, record.runId);
 				if (canonicalJson(origin.application) !== canonicalJson({
 					actor: receipt.actor,
+					...(receipt.via ? { via: receipt.via } : {}),
 					reason: receipt.reason,
 					appliedAt: receipt.appliedAt,
 					baseTargetSha: receipt.baseTargetSha,
@@ -494,6 +535,19 @@ function validateProjectCandidates(options: {
 						join(resolve(options.runsRoot), source.evalRunId, "diagnosis.json"),
 						source.diagnosisSha256,
 					);
+				}
+				if (origin.experimentDesign) {
+					const design = loadImprovementExperimentDesign(origin.experimentDesign.path);
+					verifyCandidateArtifact(
+						origin.experimentDesign,
+						improvementExperimentDesignPath(options.runsRoot, design.loopId),
+					);
+					if (
+						design.projectId !== options.projectId ||
+						!origin.source?.developmentCorpus ||
+						design.authoringCorpus.id !== origin.source.developmentCorpus.id ||
+						design.authoringCorpus.hash !== origin.source.developmentCorpus.hash
+					) throw new Error("candidate blind design does not match its Builder authoring source");
 				}
 			}
 			valid.push(candidate);
@@ -827,6 +881,7 @@ export function loadWorkbenchInventory(options: {
 		);
 	}
 	const focus = loadWorkbenchFocus(options.stateRoot, options.projectId, options.now);
+	const listedCandidates = listCandidates(options.runsRoot, warnings, integrityBlockers);
 	const proposals = listProposals(
 		options.stateRoot,
 		options.runsRoot,
@@ -834,13 +889,13 @@ export function loadWorkbenchInventory(options: {
 		verifiedApprovedSpecReferences,
 		developmentLineage,
 		developmentEvals,
+		listedCandidates,
 		warnings,
 		integrityBlockers,
 	);
 	// A/A calibration records are measurement, not workflow: they are split off
 	// before admission so they can never become a candidate to review, an
 	// interrupted attempt to abandon, or a selectable artifact.
-	const listedCandidates = listCandidates(options.runsRoot, warnings, integrityBlockers);
 	const calibrations = listedCandidates.filter((record) =>
 		record.mode === "aa-calibration" && record.projectId === options.projectId
 	);
@@ -988,6 +1043,18 @@ export function openTerminalCandidatesOf(inventory: WorkbenchInventory): Candida
 		["promoted", "rejected"].includes(candidateStatus(candidate)) &&
 		!inventory.continuedCandidates.has(candidate.candidateId)
 	);
+}
+
+/**
+ * A loop/search measurement is evidence for choosing what to verify, not yet a
+ * release candidate. Keeping it out of the release state machine prevents an
+ * `evaluated` preview from advertising promotion before the sealed exam ran.
+ */
+export function isAutomatedDevelopmentCandidate(candidate: CandidateRecord): boolean {
+	if (candidateStatus(candidate) !== "evaluated" || candidate.origin.kind !== "applied-builder") return false;
+	if (!candidate.origin.application.via) return false;
+	const evaluated = candidate.events.find((event) => event.type === "evaluated");
+	return evaluated?.type === "evaluated" && evaluated.evaluation.sealedHoldout == null;
 }
 
 /**
@@ -1174,10 +1241,51 @@ function stageFor(
 	}
 
 	const projectCandidates = inventory.candidates.filter((candidate) => candidate.projectId === inventory.projectId);
+	const releaseLineages = new Set(projectCandidates
+		.filter((candidate) => !isAutomatedDevelopmentCandidate(candidate) && candidate.origin.kind === "applied-builder")
+		.map((candidate) => candidate.origin.kind === "applied-builder" && candidate.origin.experimentDesign
+			? `design:${candidate.origin.experimentDesign.sha256}`
+			: candidate.origin.kind === "applied-builder" ? `builder:${candidate.origin.builderRunId}` : ""));
+	const automatedDevelopmentCandidates = projectCandidates.filter((candidate) =>
+		isAutomatedDevelopmentCandidate(candidate) &&
+		!inventory.abandonedCandidates.has(candidate.candidateId) &&
+		candidate.origin.kind === "applied-builder" &&
+		!releaseLineages.has(candidate.origin.experimentDesign
+			? `design:${candidate.origin.experimentDesign.sha256}`
+			: `builder:${candidate.origin.builderRunId}`)
+	);
 	const activeCandidates = projectCandidates.filter((candidate) =>
 		!["promoted", "rejected"].includes(candidateStatus(candidate)) &&
-		!inventory.abandonedCandidates.has(candidate.candidateId)
+		!inventory.abandonedCandidates.has(candidate.candidateId) &&
+		!isAutomatedDevelopmentCandidate(candidate)
 	);
+	if (activeCandidates.length === 0) {
+		const automatedChoice = selectedOrUniqueId(
+			automatedDevelopmentCandidates,
+			inventory.validFocus.candidate?.id,
+			(candidate) => candidate.candidateId,
+		);
+		if (automatedChoice === "ambiguous") {
+			return {
+				stage: "selection-required",
+				headline: "Choose which measured hypothesis should enter release verification.",
+				actions: ["select candidate"],
+				blockers: [blocked(
+					`${automatedDevelopmentCandidates.length} automated hypotheses have development evidence; only the selected one may open the sealed exam.`,
+					"blocker.candidates-ambiguous",
+					{ candidates: plural(automatedDevelopmentCandidates.length, "candidate") },
+				)],
+			};
+		}
+		if (automatedChoice) {
+			return {
+				stage: "candidate-verification",
+				headline: "The selected hypothesis passed development evidence; run the sealed release verification.",
+				actions: ["run", "ship", "traces"],
+				blockers: [],
+			};
+		}
+	}
 	const candidateChoice = selectedOrUniqueId(
 		activeCandidates,
 		inventory.validFocus.candidate?.id,
@@ -1247,11 +1355,14 @@ function stageFor(
 	}
 
 	const applied = inventory.proposals.filter((proposal) => proposal.status === "applied");
-	const appliedWithoutCandidate = applied.filter((proposal) => !projectCandidates.some((candidate) =>
-		candidate.origin.kind === "applied-builder" &&
-		candidate.origin.builderRunId === proposal.record.runId &&
-		!inventory.abandonedCandidates.has(candidate.candidateId),
-	));
+	const appliedWithoutCandidate = applied.filter((proposal) =>
+		loadBuilderApplyReceipt(inventory.runsRoot, proposal.record.runId).via !== "proposal-search" &&
+		!projectCandidates.some((candidate) =>
+			candidate.origin.kind === "applied-builder" &&
+			candidate.origin.builderRunId === proposal.record.runId &&
+			!inventory.abandonedCandidates.has(candidate.candidateId),
+		)
+	);
 	const appliedChoice = selectedOrUniqueId(
 		appliedWithoutCandidate,
 		inventory.validFocus.proposal?.id,

@@ -77,7 +77,7 @@ const LEGAL_DECISION_STAGES = {
 	"continue-cycle": ["complete"],
 	// The composite that closes a verified candidate: review, promote, adopt,
 	// continue. Legal from wherever that sequence still has a step left.
-	ship: ["candidate-review", "release-decision", "candidate-adoption", "complete"],
+	ship: ["candidate-verification", "candidate-review", "release-decision", "candidate-adoption", "complete"],
 } as const satisfies Record<DirectDecisionKind, readonly WorkbenchStage[]>;
 
 /**
@@ -322,7 +322,7 @@ export function estimateRunCost(input: EstimateRunCostInput): WorkbenchRunEstima
 			// Every model an evaluation pays for: the Target, the judge that graded
 			// it, and the user model that talked to it. Missing one makes the guard
 			// wave through a run that costs several times its estimate.
-			costUsd += runCost(run) ?? 0
+			costUsd += (runCost(run) ?? 0)
 				+ (run.metrics.judge?.costUsd ?? 0)
 				+ (run.metrics.simulatedUser?.costUsd ?? 0);
 			milliseconds += elapsed;

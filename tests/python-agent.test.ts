@@ -177,6 +177,9 @@ describe.skipIf(!PYTHON)("the shipped python-agent template", () => {
 		const agent = start(stub.url);
 		try {
 			agent.send({ v: 1, type: "user", turn: 1, text: "Договор 4412, какой у меня тариф?" });
+			const toolSelectionUsage = await agent.next();
+			expect(toolSelectionUsage.type).toBe("usage");
+			expect(toolSelectionUsage.tokens).toEqual({ input: 31, output: 9, cacheRead: 0, cacheWrite: 0, total: 40 });
 			const call = await agent.next();
 			expect(call.type).toBe("tool_call");
 			expect(call.name).toBe("get_account");

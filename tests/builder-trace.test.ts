@@ -40,7 +40,7 @@ function row(over: Partial<RunRow> & Pick<RunRow, "runId" | "taskId" | "outcome"
 		graders: [{ type: "tool_called", passed, chip: passed ? "✓" : "✗", name: "tool check_dbo" }],
 		failureModeIds: passed ? [] : ["failure-mode-aaaaaaaaaaaaaaaaaaaaaaaa"],
 		error: null,
-		metrics: { latencyMs: 1234, toolCalls: passed ? 1 : 0, toolErrors: 0, tokens: 512, costUsd: 0.0012 },
+		metrics: { latencyMs: 1234, toolCalls: passed ? 1 : 0, reportedToolCalls: 0, toolErrors: 0, tokens: 512, costUsd: 0.0012 },
 		traceAvailable: true,
 		...over,
 	};
@@ -85,7 +85,7 @@ function detail(runId: string, taskId: string, repetitionIndex: number, outcome:
 			startedAt: "2026-09-01T09:00:00.000Z",
 			finishedAt: "2026-09-01T09:00:07.000Z",
 			error: null,
-			metrics: { latencyMs: 7100, toolCalls: 0, toolErrors: 0, tokens: 640, costUsd: 0.0015 },
+			metrics: { latencyMs: 7100, toolCalls: 0, reportedToolCalls: 0, toolErrors: 0, tokens: 640, costUsd: 0.0015 },
 		},
 		input: "Обращение: проверь договор №42 и ограничения ДБО по нему.",
 		transcript: {

@@ -1,7 +1,10 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { runSuite } from "../src/eval.js";
+import { loadVerifiedEvalRun, runSuite } from "../src/eval.js";
+import { hashValue } from "../src/provenance.js";
+import { regradeEvalRun } from "../src/regrade.js";
+import { runTranscript } from "../src/application/run-explanation.js";
 import { loadTarget } from "../src/manifest.js";
 import { startMockModel, type MockModelHandle } from "../src/mock-model.js";
 import { openTrace } from "../src/trace.js";
@@ -154,10 +157,37 @@ async function runOnce(mode: string, options: TargetOptions = {}) {
 	const evalRun = await runSuite(target, { runsRoot, label: "solo", repetitions: 1, jobs: 1 });
 	const runId = evalRun.runIds[0] as string;
 	const record = JSON.parse(readFileSync(join(runsRoot, runId, "run.json"), "utf8"));
-	return { record, runDir: join(runsRoot, runId), evalRun, targetDir };
+	return { record, runDir: join(runsRoot, runId), evalRun, targetDir, runsRoot };
 }
 
 describe("a command Target speaks protocol v1", () => {
+	it("adds every model request within a turn, including tool selection", async () => {
+		const { record } = await runOnce("two-usage");
+		expect(record.status).toBe("completed");
+		expect(record.metrics.tokens.total).toBe(36);
+		expect(record.metrics.costUsd).toBeCloseTo(0.5);
+	});
+
+	it("preserves a Cyrillic character split across stdout chunks", async () => {
+		const { record, runDir } = await runOnce("split-utf8");
+		expect(record.status).toBe("completed");
+		expect(openTrace(runDir)[1]?.text).toBe("Привет 👋");
+	});
+
+	it.each(["invalid-utf8", "wrong-turn", "wrong-usage-turn"])("rejects %s as infrastructure, not an answer", async (mode) => {
+		const { record } = await runOnce(mode);
+		expect(record.status).toBe("error");
+	});
+
+	it("does not pass a silent agent merely because it leaked no secret", async () => {
+		const { record } = await runOnce("empty", {
+			dataset: JSON.stringify({ id: "silent", input: "Ответь", graders: [{ type: "no_secret" }] }),
+		});
+		expect(record.status).toBe("completed");
+		expect(record.metrics.finalAnswer).toBe("silent");
+		expect(record.evalResults.outcome).toBe("fail");
+	});
+
 	it("answers a plain question, records usage, and writes a canonical trace", async () => {
 		const { record, runDir } = await runOnce("plain");
 		expect(record.status).toBe("completed");
@@ -184,15 +214,34 @@ describe("a command Target speaks protocol v1", () => {
 		expect(messages[3]?.text).toContain("limits: none");
 	});
 
-	it("records a tool_note the host never ran so a tool_called grader still sees it", async () => {
-		const { record, runDir } = await runOnce("note");
+	it("keeps a tool_note visible but never treats it as host-verified execution", async () => {
+		const { record, runDir } = await runOnce("note", {
+			dataset: JSON.stringify({ id: "reported", input: "Проверь", graders: [{ type: "tool_called", tool: "internal_lookup" }] }),
+		});
 		expect(record.status).toBe("completed");
-		// A note is a call the agent made: counted, exactly like a brokered one.
-		expect(record.metrics.toolCalls).toBe(1);
+		// Keep reported activity separate; only a brokered call is execution proof.
+		expect(record.metrics.toolCalls).toBe(0);
+		expect(record.metrics.reportedToolCalls).toBe(1);
 		const messages = openTrace(runDir);
 		expect(messages[1]?.toolCalls?.[0]?.name).toBe("internal_lookup");
+		expect(messages[1]?.toolCalls?.[0]?.evidence).toBe("reported");
+		expect(runTranscript(messages).entries.find((entry) => entry.kind === "tool")).toMatchObject({ evidence: "reported" });
+		expect(record.evalResults.outcome).toBe("fail");
 		expect(messages[2]?.toolResult?.text).toBe("limits: none");
 		expect(messages[2]?.toolResult?.isError).toBe(false);
+	});
+
+	it("counts reported and host-executed tools independently in a mixed run", async () => {
+		const { record, runDir } = await runOnce("mixed-tools");
+		expect(record.status).toBe("completed");
+		expect(record.metrics.toolCalls).toBe(1);
+		expect(record.metrics.reportedToolCalls).toBe(2);
+		expect(record.metrics.toolErrors).toBe(0);
+		const calls = openTrace(runDir).flatMap((message) => message.toolCalls ?? []);
+		expect(calls.filter((call) => call.evidence === "reported").map((call) => call.name))
+			.toEqual(["memory_lookup", "policy_lookup"]);
+		expect(calls.filter((call) => call.evidence !== "reported").map((call) => call.name))
+			.toEqual(["check_dbo"]);
 	});
 
 	it("records usage as ABSENT when the agent reported none", async () => {
@@ -240,6 +289,33 @@ describe("a command Target speaks protocol v1", () => {
 		expect(openTrace(absent.runDir)[1]?.text).toBe("world=none hello=none");
 	});
 
+	it("pins the final world and copies it into a regrade without launching the agent", async () => {
+		const source = await runOnce("world", { dataset: JSON.stringify({
+			id: "task_world", input: "Что в мире?", world: { state: { balance: 100 } },
+			graders: [{ type: "world_state", path: "balance", op: "equals", value: 100 }],
+		}) });
+		expect(source.record.evidenceArtifacts).toEqual({ world: hashValue({ balance: 100 }), judge: {} });
+		process.env.FAKE_AGENT_MODE = "crash";
+		const target = loadTarget(source.targetDir);
+		const result = await regradeEvalRun({ runsRoot: source.runsRoot, evalRunId: source.evalRun.evalRunId, target });
+		expect(result.record.summary).toMatchObject({ pass: 1, error: 0 });
+		const derived = loadVerifiedEvalRun(source.runsRoot, result.record.evalRunId).runs[0]!;
+		expect(derived.evidenceArtifacts).toEqual(source.record.evidenceArtifacts);
+		writeFileSync(join(source.runDir, "runtime/world/state.json"), JSON.stringify({ balance: 0 }));
+		expect(() => loadVerifiedEvalRun(source.runsRoot, source.evalRun.evalRunId)).toThrow(/world artifact hash mismatch/);
+		await expect(regradeEvalRun({ runsRoot: source.runsRoot, evalRunId: source.evalRun.evalRunId, target })).rejects.toThrow(/world artifact hash mismatch/);
+	});
+
+	it("does not relabel legacy completion evidence as evaluator v4 through regrading", async () => {
+		const source = await runOnce("answer");
+		delete source.record.metrics.finalAnswer;
+		writeFileSync(join(source.runDir, "run.json"), JSON.stringify(source.record));
+		const index = { ...source.evalRun, runArtifacts: [{ runId: source.record.runId, sha256: hashValue(source.record) }] };
+		writeFileSync(join(source.runsRoot, index.evalRunId, "eval_run.json"), JSON.stringify(index));
+		await expect(regradeEvalRun({ runsRoot: source.runsRoot, evalRunId: index.evalRunId, target: loadTarget(source.targetDir) }))
+			.rejects.toThrow(/predates host-observed completion/);
+	});
+
 	it("holds up its end of a simulated conversation, one Run and one trace", async () => {
 		const dialogue = JSON.stringify({
 			id: "task_multi",
@@ -253,6 +329,8 @@ describe("a command Target speaks protocol v1", () => {
 		});
 		expect(record.status).toBe("completed");
 		expect(record.metrics.conversationTurns).toBe(3);
+		expect(record.metrics.tokens).toEqual({ input: 33, output: 21, cacheRead: 0, cacheWrite: 0, total: 54 });
+		expect(record.metrics.costUsd).toBeCloseTo(0.75);
 		expect(record.metrics.conversationStop).toBe("max-turns");
 		const messages = openTrace(runDir);
 		expect(messages.map((message) => message.role)).toEqual([

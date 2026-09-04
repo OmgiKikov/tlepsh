@@ -373,10 +373,11 @@ Run improvement cycles inside the gates. One cycle is: reuse or run -> diagnose
 \`candidate/auto-<loopId>-<n>\` -> cheap check -> full development verification
 when the screen is promising.
 
-WHAT THE LOOP AUTHORS: nothing. It applies proposals the Builder has already
-prepared in \`ahde\` (say "fix it"), screens them and verifies them. A headless
-proposal author is NOT shipped yet — it is the next milestone. Without a
-prepared proposal the loop measures, diagnoses, and stops saying so.
+WHO AUTHORS THE PROPOSALS: Builder Pi can attach its bounded proposal author and
+create 2–4 hypotheses before this loop screens and verifies them. The standalone
+\`ahde improve\` command has no model host to author with, so it consumes proposals
+the Builder already prepared in \`ahde\` (say "fix it"). Without a prepared proposal
+or an attached author the loop measures, diagnoses, and stops saying so.
 
 WHICH PROPOSAL MATCHES: the one whose attested basis still describes this
 cycle's development SURFACE — same dataset label and hash, same suite hash, same

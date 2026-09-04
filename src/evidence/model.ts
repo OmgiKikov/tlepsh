@@ -346,7 +346,11 @@ export function collectRunDetailPage(runsRoot: string, runId: string): RunDetail
 	const messages = openRunTrace(runsRoot, run);
 	const facts = messages ? traceFacts(messages) : null;
 	const transcript = messages ? runTranscript(messages) : null;
-	const graders = graderFindings(runsRoot, run, { includeJudgeVerdicts: true });
+	const artifacts = verified.artifacts.get(run.runId);
+	const graders = graderFindings(run, {
+		includeJudgeVerdicts: true,
+		judgeArtifacts: artifacts?.judge,
+	});
 	const modes = brief.modes.filter((mode) => mode.evidence.some((evidence) => evidence.runId === runId));
 	// A real candidate experiment answers "did the change help?"; an A/A
 	// calibration answers "how noisy is this suite?". Prefer the former when both
@@ -379,13 +383,14 @@ export function collectRunDetailPage(runsRoot: string, runId: string): RunDetail
 			metrics: {
 				latencyMs: run.metrics.latencyMs,
 				toolCalls: run.metrics.toolCalls,
+				reportedToolCalls: run.metrics.reportedToolCalls ?? 0,
 				toolErrors: run.metrics.toolErrors,
 				tokens: runTokens(run)?.total ?? null,
 				costUsd: runCost(run),
 			},
 		},
 		input: facts?.input ?? null,
-		receipt: runReceipt(runsRoot, run),
+		receipt: runReceipt(run, artifacts),
 		transcript,
 		traceNotice,
 		graders,

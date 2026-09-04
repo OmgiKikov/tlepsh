@@ -47,6 +47,23 @@ function onUser(message) {
 	const turn = message.turn;
 	lastTurn = turn;
 	switch (mode) {
+		case "two-usage":
+			usage(turn);
+			usage(turn);
+			return say(turn, "Два запроса модели.");
+		case "split-utf8": {
+			const bytes = Buffer.from(JSON.stringify({ v: 1, type: "assistant", turn, text: "Привет 👋" }) + "\n");
+			const split = bytes.indexOf(Buffer.from("П")) + 1;
+			process.stdout.write(bytes.subarray(0, split));
+			return setTimeout(() => process.stdout.write(bytes.subarray(split)), 50);
+		}
+		case "invalid-utf8":
+			return process.stdout.write(Buffer.concat([Buffer.from(`{"v":1,"type":"assistant","turn":${turn},"text":"`), Buffer.from([0xff]), Buffer.from('"}\n')]));
+		case "wrong-turn":
+			return say(turn + 1, "Ответ на другой ход");
+		case "wrong-usage-turn":
+			usage(turn + 1);
+			return say(turn, "Ответ");
 		case "plain":
 			usage(turn);
 			return say(turn, `Тариф «Домашний» стоит 500 рублей. Вопрос: ${message.text.slice(0, 24)}`);
@@ -72,6 +89,10 @@ function onUser(message) {
 		case "note":
 			send({ v: 1, type: "tool_note", name: "internal_lookup", arguments: { id: "42" }, result: "limits: none" });
 			return say(turn, "Ограничений нет, договор 42 действующий.");
+		case "mixed-tools":
+			send({ v: 1, type: "tool_note", name: "memory_lookup", arguments: { id: "42" }, result: "customer found" });
+			send({ v: 1, type: "tool_note", name: "policy_lookup", arguments: { id: "42" }, result: "limits: none" });
+			return send({ v: 1, type: "tool_call", id: `call-${turn}`, name: "check_dbo", arguments: { id: "42" } });
 		case "undeclared":
 			return send({ v: 1, type: "tool_call", id: `call-${turn}`, name: "definitely_not_declared", arguments: {} });
 		case "invalid-json":

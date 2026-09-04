@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	AgentMessageDecoder,
 	CommandProtocolError,
 	COMMAND_PROTOCOL_VERSION,
 	encodeHostMessage,
@@ -36,6 +37,22 @@ afterEach(() => {
 });
 
 describe("protocol v1 codecs", () => {
+	it("bounds each line, not the combined transport chunk", () => {
+		const decoder = new AgentMessageDecoder();
+		const line = JSON.stringify({ v: 1, type: "assistant", turn: 1, text: "x".repeat(600_000) }) + "\n";
+		expect(decoder.push(Buffer.from(line + line))).toHaveLength(2);
+		expect(() => decoder.finish()).not.toThrow();
+	});
+
+	it("rejects unfinished UTF-8 and unterminated JSON at EOF", () => {
+		const unicode = new AgentMessageDecoder();
+		unicode.push(Buffer.from([0xd0]));
+		expect(() => unicode.finish()).toThrow(CommandProtocolError);
+		const json = new AgentMessageDecoder();
+		json.push(Buffer.from('{"v":1'));
+		expect(() => json.finish()).toThrow(CommandProtocolError);
+	});
+
 	it("round-trips every host message the adapter can send", () => {
 		const messages = [
 			{

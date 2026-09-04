@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -170,7 +170,11 @@ function writeRun(
 }
 
 function findings(runsRoot: string, run: RunRecord): GraderFinding[] {
-	return graderFindings(runsRoot, run, { includeJudgeVerdicts: true });
+	const path = join(runsRoot, run.runId, "judge", "0.verdict.json");
+	const judgeArtifacts: Record<string, Record<string, unknown>> = existsSync(path)
+		? { "0": JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown> }
+		: {};
+	return graderFindings(run, { includeJudgeVerdicts: true, judgeArtifacts });
 }
 
 function explain(runsRoot: string, run: RunRecord): string[] {
@@ -185,6 +189,38 @@ function explain(runsRoot: string, run: RunRecord): string[] {
 }
 
 describe("the host's plain-language account of one run", () => {
+	it("projects a stable source label and leaves legacy evidence unknown", () => {
+		const runsRoot = root();
+		const labelled = writeRun(runsRoot, {
+			runId: "run-source-labelled",
+			graders: [{
+				name: "source",
+				type: "cites_source",
+				checkCode: "cites-source",
+				checkSubject: "blocking.md#0",
+				specHash: `sha256:${"0".repeat(64)}`,
+				passed: true,
+				score: 1,
+				reason: "the answer cites blocking.md#0 by id",
+			}],
+		});
+		expect(findings(runsRoot, labelled)[0]?.checkSubject).toBe("blocking.md#0");
+
+		const legacy = writeRun(runsRoot, {
+			runId: "run-source-legacy",
+			graders: [{
+				name: "source",
+				type: "cites_source",
+				checkCode: "cites-source",
+				specHash: `sha256:${"1".repeat(64)}`,
+				passed: false,
+				score: 0,
+				reason: "legacy source result",
+			}],
+		});
+		expect(findings(runsRoot, legacy)[0]?.checkSubject).toBeNull();
+	});
+
 	it("names the expected tool and what the agent did instead", () => {
 		const runsRoot = root();
 		const run = writeRun(runsRoot, {
@@ -714,7 +750,9 @@ describe("the run receipt", () => {
 			execution: { ...run.execution, agent: "command-v1" },
 			metrics: { latencyMs: 300_012, toolCalls: 2, toolErrors: 0, recoveryAttempts: 0 },
 		};
-		expect(runReceipt(runsRoot, noUsage)).toEqual({
+		expect(runReceipt(noUsage, {
+			world: { accounts: { "33333": { balance: -500 } }, tickets: [], client: { name: "Пётр" } },
+		})).toEqual({
 			worldKeys: 3,
 			judge: null,
 			simulatedUser: null,
@@ -735,7 +773,7 @@ describe("the run receipt", () => {
 				simulatedUser: { calls: 5, tokens: 1_200, costUsd: 0.01 },
 			},
 		};
-		expect(runReceipt(runsRoot, spent)).toEqual({
+		expect(runReceipt(spent, { world: null })).toEqual({
 			// This case declared no world, and "none" is a fact, not a missing one.
 			worldKeys: null,
 			judge: { calls: 2, costUsd: 0.004 },
@@ -746,11 +784,11 @@ describe("the run receipt", () => {
 		});
 	});
 
-	it("treats an unreadable world as none rather than throwing at render time", () => {
+	it("never promotes an unattested world file into a rendered receipt", () => {
 		const runsRoot = root();
 		const run = writeRun(runsRoot, { runId: "run-badworld", graders: [] });
 		mkdirSync(join(runsRoot, "run-badworld", "runtime", "world"), { recursive: true });
 		writeFileSync(join(runsRoot, "run-badworld", "runtime", "world", "state.json"), "{ not json");
-		expect(runReceipt(runsRoot, run).worldKeys).toBeNull();
+		expect(runReceipt(run, undefined).worldKeys).toBeNull();
 	});
 });

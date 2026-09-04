@@ -196,6 +196,8 @@ export interface ProposalSearchRow {
 export interface ProposalSearchResult {
 	failureModeId: string;
 	sourceEvalRunId: string;
+	/** Host-opened only after authoring; null for legacy same-surface searches. */
+	validationEvalRunId: string | null;
 	baseTargetSha: string;
 	rows: ProposalSearchRow[];
 	/** Non-dominated verified ordinals, best first. Empty when nothing verified. */
@@ -222,6 +224,12 @@ export interface ProposalSearchOptions {
 	proposalRunIds: readonly string[];
 	/** The published development corpus every arm measures on. */
 	developmentCorpus?: CorpusRef;
+	/** Unseen development arm used to screen and rank already-authored hypotheses. */
+	validationCorpus?: CorpusRef;
+	/** Baseline on validationCorpus, created only after every hypothesis was authored. */
+	validationSourceEvalRunId?: string;
+	/** Exact persisted split design attached to every verified candidate. */
+	experimentDesignPath?: string;
 	/** Cases one arm runs. The manifest surface is the fallback. */
 	developmentTasks?: number;
 	repetitions: number;
@@ -438,6 +446,12 @@ export async function runProposalSearch(
 	if (!Number.isInteger(options.repetitions) || options.repetitions < 1) {
 		throw new ProposalSearchError(`repetitions must be a positive integer, got ${options.repetitions}`);
 	}
+	if (
+		(options.validationCorpus === undefined) !== (options.validationSourceEvalRunId === undefined) ||
+		(options.validationCorpus === undefined) !== (options.experimentDesignPath === undefined)
+	) {
+		throw new ProposalSearchError("validation corpus, validation baseline and experiment design must be supplied together");
+	}
 	assertProposalSearchGate(options.gate);
 
 	const plans = proposalRunIds.map((proposalRunId) =>
@@ -517,8 +531,12 @@ export async function runProposalSearch(
 				runsRoot,
 				candidateRef: applied.receipt.candidateSha,
 				baselineRef: applied.receipt.baseTargetSha,
-				sourceEvalRunId: plan.sourceEvalRunId,
-				...(options.developmentCorpus ? { developmentCorpus: options.developmentCorpus } : {}),
+				sourceEvalRunId: options.validationSourceEvalRunId ?? plan.sourceEvalRunId,
+				...(options.validationCorpus
+					? { developmentCorpus: options.validationCorpus }
+					: options.developmentCorpus
+						? { developmentCorpus: options.developmentCorpus }
+						: {}),
 				...(options.jobs === undefined ? {} : { jobs: options.jobs }),
 				...(options.signal ? { signal: options.signal } : {}),
 				...(options.now ? { now: options.now } : {}),
@@ -567,6 +585,8 @@ export async function runProposalSearch(
 				approvedSpec: { stateRoot, specId: options.approvedSpecId },
 				repetitions: options.repetitions,
 				...(options.developmentCorpus ? { developmentCorpus: options.developmentCorpus } : {}),
+				...(options.validationCorpus ? { validationCorpus: options.validationCorpus } : {}),
+				...(options.experimentDesignPath ? { experimentDesignPath: options.experimentDesignPath } : {}),
 				// No sealed corpus, ever. The sealed guardrail answers one question —
 				// may this ship — and a search never asks it.
 				actorId,
@@ -609,6 +629,7 @@ export async function runProposalSearch(
 	return {
 		failureModeId: options.failureModeId,
 		sourceEvalRunId,
+		validationEvalRunId: options.validationSourceEvalRunId ?? null,
 		baseTargetSha,
 		rows,
 		frontier,

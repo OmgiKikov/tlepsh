@@ -45,14 +45,22 @@ function toolText(result: { content: Array<{ type: string; text?: string }> }): 
 async function callKbSearch(
 	chunks: ReturnType<typeof chunkKnowledge>,
 	params: unknown,
-): Promise<{ text: string; chunks: { id: string; path: string; text: string }[] | null }> {
+): Promise<{
+	text: string;
+	schemaVersion: number | null;
+	chunks: { rank: number; id: string; path: string; score: number; text: string }[] | null;
+}> {
 	const tool = createKbSearchTool(chunks);
 	const result = await tool.execute("call-1", params, undefined, undefined, undefined as never);
 	const text = toolText(result);
 	try {
-		return { text, chunks: (JSON.parse(text) as { chunks: { id: string; path: string; text: string }[] }).chunks };
+		const parsed = JSON.parse(text) as {
+			schemaVersion?: number;
+			chunks: { rank: number; id: string; path: string; score: number; text: string }[];
+		};
+		return { text, schemaVersion: parsed.schemaVersion ?? null, chunks: parsed.chunks };
 	} catch {
-		return { text, chunks: null };
+		return { text, schemaVersion: null, chunks: null };
 	}
 }
 
@@ -266,11 +274,14 @@ describe("the kb_search host tool", () => {
 			// Lexical, not stemmed: the query has to use the documents' own word
 			// forms, which is exactly the contract `answerTokens` states.
 			const hit = await callKbSearch(chunks, { query: "роутер в аренду", k: 2 });
+			expect(hit.schemaVersion).toBe(1);
 			expect(hit.chunks).not.toBeNull();
 			expect(hit.chunks!.length).toBeGreaterThan(0);
 			expect(hit.chunks!.length).toBeLessThanOrEqual(2);
-			for (const chunk of hit.chunks!) {
-				expect(Object.keys(chunk).sort()).toEqual(["id", "path", "text"]);
+			for (const [index, chunk] of hit.chunks!.entries()) {
+				expect(Object.keys(chunk).sort()).toEqual(["id", "path", "rank", "score", "text"]);
+				expect(chunk.rank).toBe(index + 1);
+				expect(chunk.score).toBeGreaterThan(0);
 				expect(findKbChunk(workspace, chunk.id)?.text).toBe(chunk.text);
 			}
 
@@ -359,7 +370,7 @@ async function citesSourceResult(
 	answer: string,
 	spec: Record<string, unknown>,
 	options: { withWorkspace?: boolean } = {},
-): Promise<{ passed: boolean; reason: string; checkCode?: string }> {
+): Promise<{ passed: boolean; reason: string; checkCode?: string; checkSubject?: string }> {
 	const record = writeGradedRun(runsRoot, answer, options);
 	const graded = await gradeRun(
 		{
@@ -371,7 +382,12 @@ async function citesSourceResult(
 		runsRoot,
 	);
 	const result = graded.graders[0]!;
-	return { passed: result.passed, reason: result.reason, ...(result.checkCode ? { checkCode: result.checkCode } : {}) };
+	return {
+		passed: result.passed,
+		reason: result.reason,
+		...(result.checkCode ? { checkCode: result.checkCode } : {}),
+		...(result.checkSubject ? { checkSubject: result.checkSubject } : {}),
+	};
 }
 
 describe("the cites_source grader", () => {
@@ -388,6 +404,24 @@ describe("the cites_source grader", () => {
 			expect(result.passed).toBe(true);
 			expect(result.reason).toContain("cites tariffs.md#0 by id");
 			expect(result.checkCode).toBe("cites-source");
+			expect(result.checkSubject).toBe(chunkId);
+		} finally {
+			rmSync(runsRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("leaves an overlong source label absent instead of truncating its identity", async () => {
+		const runsRoot = mkdtempSync(join(tmpdir(), "ahde-kb-runs-"));
+		const chunk = `${"nested/".repeat(29)}source.md#0`;
+		expect(chunk.length).toBeGreaterThan(200);
+		try {
+			const result = await citesSourceResult(
+				runsRoot,
+				"Ответ без источника.",
+				{ type: "cites_source", chunk },
+			);
+			expect(result.checkCode).toBe("cites-source");
+			expect(result.checkSubject).toBeUndefined();
 		} finally {
 			rmSync(runsRoot, { recursive: true, force: true });
 		}

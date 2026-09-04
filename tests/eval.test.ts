@@ -482,6 +482,27 @@ describe("typed eval evidence", () => {
 		expect(loadVerifiedEvalRun(legacy.runsRoot, legacy.record.evalRunId).record.taskIds).toBeUndefined();
 	});
 
+	it("returns one verified sidecar snapshot and never reopens changed world bytes", () => {
+		const fixture = writeEvalFixture(["task-a", "task-b"]);
+		const runId = fixture.record.runIds[0]!;
+		const original = { balance: 100, status: "active" };
+		const worldPath = join(fixture.runsRoot, runId, "runtime", "world", "state.json");
+		mkdirSync(join(worldPath, ".."), { recursive: true });
+		writeFileSync(worldPath, `${JSON.stringify(original)}\n`, "utf8");
+		const run = loadRun(fixture.runsRoot, runId);
+		writeJsonArtifact(join(fixture.runsRoot, runId, "run.json"), RunRecordSchema, {
+			...run,
+			evidenceArtifacts: { world: hashValue(original), judge: {} },
+		});
+		const verified = loadVerifiedEvalRun(fixture.runsRoot, fixture.record.evalRunId);
+		expect(verified.artifacts.get(runId)?.world).toEqual(original);
+
+		writeFileSync(worldPath, `${JSON.stringify({ balance: 0, status: "blocked" })}\n`, "utf8");
+		expect(verified.artifacts.get(runId)?.world).toEqual(original);
+		expect(() => loadVerifiedEvalRun(fixture.runsRoot, fixture.record.evalRunId))
+			.toThrow(/world artifact hash mismatch/);
+	});
+
 	it("verifies one exact prepared tool-home identity across every member run", () => {
 		const fixture = writeEvalFixture(["task-a", "task-b"]);
 		const preparedToolHomeHash = hash("9");

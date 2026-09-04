@@ -49,6 +49,7 @@ export const GraderCheckCodeSchema = z.enum([
 	"turn-budget",
 	"world-state",
 	"cites-source",
+	"final-answer",
 ]);
 export type GraderCheckCode = z.infer<typeof GraderCheckCodeSchema>;
 
@@ -68,9 +69,10 @@ const CHECK_CODE_GRADER_TYPE: Record<GraderCheckCode, string> = {
 	"turn-budget": "turn_budget",
 	"world-state": "world_state",
 	"cites-source": "cites_source",
+	"final-answer": "final_answer",
 };
 
-/** A check subject is a tool name, not prose; anything longer is not one. */
+/** A check subject is a stable tool or source id, not prose; anything longer is not one. */
 export const MAX_CHECK_SUBJECT_CHARS = 200;
 
 export const GraderResultSchema = z
@@ -86,7 +88,8 @@ export const GraderResultSchema = z
 		checkCode: GraderCheckCodeSchema.optional(),
 		/**
 		 * What the check is about, where the check names something: the tool a
-		 * required-tool check requires. The literal one case happens to carry —
+		 * required-tool check requires, or the stable chunk a cites-source check
+		 * expects. The literal one case happens to carry —
 		 * the contract number, the keyword, the rubric prose — stays inside
 		 * `specHash`, which is per task; this is the part two tasks can share, and
 		 * it is what lets their failures be read as one failure.
@@ -198,9 +201,14 @@ export const RunMetricsSchema = z.strictObject({
 	tokens: TokenMetricsSchema.optional(),
 	costUsd: z.number().nonnegative().optional(),
 	latencyMs: z.number().nonnegative(),
+	/** Host-observed executions. Agent self-reports never increment this number. */
 	toolCalls: z.number().int().nonnegative(),
+	/** Command-target tool_note messages: trace context, not proof of execution. */
+	reportedToolCalls: z.number().int().nonnegative().optional(),
 	toolErrors: z.number().int().nonnegative(),
 	recoveryAttempts: z.number().int().nonnegative(),
+	/** Host-observed completion after the shared final-answer recovery, not a model claim. */
+	finalAnswer: z.enum(["present", "silent"]).optional(),
 	judge: JudgeMetricsSchema.nullable().optional(),
 	/** What the user model spent. Absent on every run without a simulated user. */
 	simulatedUser: SimulatedUserMetricsSchema.nullable().optional(),
@@ -325,6 +333,11 @@ export const RunRecordSchema = z
 			sha256: HashSchema.nullable(),
 		}),
 		metrics: RunMetricsSchema,
+		/** Canonical hashes of the world graded and judge verdicts, absent on legacy evidence. */
+		evidenceArtifacts: z.strictObject({
+			world: HashSchema.nullable(),
+			judge: z.record(z.string().regex(/^\d{1,3}$/), HashSchema),
+		}).optional(),
 		evalResults: z
 			.strictObject({ graders: z.array(GraderResultSchema), outcome: EvalOutcomeSchema })
 			.nullable(),
@@ -459,7 +472,9 @@ export function executionFingerprint(
  * `judgePromptsFor` in `eval.ts` keeps the v2 strings byte-identical for any
  * earlier id, so a regrade of v2 evidence asks the v2 question.
  */
-export const AHDE_EVALUATOR_ID = "ahde-evaluator-v3";
+// v4: host-observed final answers are required; agent-reported tool notes
+// cannot satisfy tool_called. Older outcomes are not comparable to these.
+export const AHDE_EVALUATOR_ID = "ahde-evaluator-v4";
 
 /**
  * The provenance axes compared between two runs. The target git SHA is

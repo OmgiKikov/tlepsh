@@ -17,13 +17,11 @@ import {
 } from "./tool-broker.js";
 import {
 	CANCEL_GRACE_MS,
-	CommandProtocolError,
+	AgentMessageDecoder,
 	COMMAND_PROTOCOL_VERSION,
 	encodeHostMessage,
 	MAX_CAPTURED_STDERR_BYTES,
-	MAX_PROTOCOL_LINE_BYTES,
 	MAX_TOOL_CALLS_PER_TURN,
-	parseAgentLine,
 	type AgentMessage,
 	type HelloMessage,
 	type HelloTool,
@@ -151,8 +149,7 @@ class CommandTargetSession implements TargetSession {
 	private waiter: (() => void) | undefined;
 	/** Set once and never cleared: the first fatal condition owns the run. */
 	private fatal: Error | undefined;
-	private buffer = "";
-	private stdoutLines = 0;
+	private readonly decoder = new AgentMessageDecoder();
 	private stdoutBytes = 0;
 	private stderrBytes = 0;
 	private readonly stderrChunks: Buffer[] = [];
@@ -160,6 +157,7 @@ class CommandTargetSession implements TargetSession {
 	private sawOutput = false;
 	private turn = 0;
 	private toolCalls = 0;
+	private reportedToolCalls = 0;
 	private tokens: TokenMetrics | null = null;
 	private costUsd: number | null = null;
 	private killed = false;
@@ -174,6 +172,9 @@ class CommandTargetSession implements TargetSession {
 	) {
 		for (const tool of tools) this.tools.set(tool.name, tool);
 		this.child.stdout?.on("data", (chunk: Buffer) => this.readStdout(chunk));
+		this.child.stdout?.on("end", () => {
+			try { this.decoder.finish(); } catch (error) { this.fail(error as Error); }
+		});
 		this.child.stderr?.on("data", (chunk: Buffer) => this.readStderr(chunk));
 		this.child.on("error", (error) => this.fail(new Error(`command Target could not run: ${error.message}`)));
 		this.child.on("close", (code, signal) => {
@@ -191,26 +192,13 @@ class CommandTargetSession implements TargetSession {
 			this.fail(new Error(`command Target exceeded ${MAX_TRACE_ARTIFACT_BYTES} output bytes`));
 			return;
 		}
-		this.buffer += chunk.toString("utf8");
-		if (Buffer.byteLength(this.buffer, "utf8") > MAX_PROTOCOL_LINE_BYTES) {
-			this.fail(new CommandProtocolError(this.stdoutLines + 1));
+		try {
+			const messages = this.decoder.push(chunk);
+			this.sawOutput ||= messages.length > 0;
+			this.pending.push(...messages);
+		} catch (error) {
+			this.fail(error as Error);
 			return;
-		}
-		let newline = this.buffer.indexOf("\n");
-		while (newline >= 0) {
-			const raw = this.buffer.slice(0, newline);
-			this.buffer = this.buffer.slice(newline + 1);
-			this.stdoutLines += 1;
-			if (raw.trim()) {
-				this.sawOutput = true;
-				try {
-					this.pending.push(parseAgentLine(raw, this.stdoutLines));
-				} catch (error) {
-					this.fail(error instanceof Error ? error : new Error(String(error)));
-					return;
-				}
-			}
-			newline = this.buffer.indexOf("\n");
 		}
 		this.wake();
 	}
@@ -337,6 +325,9 @@ class CommandTargetSession implements TargetSession {
 		let callsThisTurn = 0;
 		for (;;) {
 			const message = await this.next(deadline);
+			if ("turn" in message && message.turn !== this.turn) {
+				throw new Error(`command Target ${message.type} refers to turn ${message.turn}, expected ${this.turn}`);
+			}
 			if (message.type === "assistant") {
 				this.writer.assistant({
 					...(message.text ? { text: message.text } : {}),
@@ -352,7 +343,10 @@ class CommandTargetSession implements TargetSession {
 				return message.text;
 			}
 			if (message.type === "usage") {
-				this.tokens = { ...message.tokens };
+				this.tokens ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+				for (const key of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) {
+					this.tokens[key] += message.tokens[key];
+				}
 				if (message.costUsd !== undefined) this.costUsd = (this.costUsd ?? 0) + message.costUsd;
 				continue;
 			}
@@ -372,14 +366,13 @@ class CommandTargetSession implements TargetSession {
 	}
 
 	/**
-	 * A call the agent already made on its own. Recorded exactly like a brokered
-	 * one so a `tool_called` grader sees it, and brokered exactly never: nothing
-	 * ran here, so nothing was confined and nothing may claim it was.
+	 * A self-report is trace context, not proof of execution. The marker survives
+	 * parsing/export so neither a grader nor a reader mistakes it for a brokered call.
 	 */
 	private note(name: string, args: Record<string, unknown>, result: string, ordinal: number): void {
 		const id = `note-${this.turn}-${ordinal}`;
-		this.toolCalls += 1;
-		this.writer.assistant({ toolCalls: [{ id, name, arguments: args }] });
+		this.reportedToolCalls += 1;
+		this.writer.assistant({ toolCalls: [{ id, name, arguments: args, evidence: "reported" }] });
 		this.writer.toolResult({ toolCallId: id, toolName: name, text: result, isError: false });
 	}
 
@@ -425,6 +418,7 @@ class CommandTargetSession implements TargetSession {
 			tokens: this.tokens,
 			costUsd: this.costUsd,
 			toolCalls: this.toolCalls,
+			...(this.reportedToolCalls > 0 ? { reportedToolCalls: this.reportedToolCalls } : {}),
 		};
 	}
 

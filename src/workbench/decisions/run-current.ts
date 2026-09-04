@@ -2,6 +2,8 @@
 // unchanged: the gate, the stale check and the receipts are still the
 // workbench's own; these functions only hold the branch bodies.
 import { candidateStatus } from "../../domain/candidate.js";
+import { loadBuilderApplyReceipt } from "../../application/builder-proposal.js";
+import { isAutomatedDevelopmentCandidate } from "../inventory.js";
 import { resolveOne } from "../resolution.js";
 import { assertWorkbenchDecisionStage } from "../transition-policy.js";
 import type { DecisionContext, DecisionHost, DecisionInputOf } from "./shared.js";
@@ -72,8 +74,29 @@ export async function decideRunCurrent(
 		return asRunCurrent(await host.decide({ kind: "start-testing", ...forwarded }, gate, options));
 	}
 	if (stage === "candidate-verification") {
+		const automated = inventory.candidates.filter((candidate) =>
+			candidate.projectId === host.projectId && isAutomatedDevelopmentCandidate(candidate)
+		);
+		if (automated.length > 0) {
+			const candidate = resolveOne({
+				items: automated,
+				focusId: inventory.validFocus.candidate?.id,
+				id: (item) => item.candidateId,
+				label: "automated hypothesis",
+			});
+			if (candidate.origin.kind !== "applied-builder") {
+				throw new Error("automated hypothesis lost Builder provenance");
+			}
+			return asRunCurrent(await host.decide({
+				kind: "verify-candidate",
+				builderRunId: candidate.origin.builderRunId,
+				...forwarded,
+			}, gate, options));
+		}
 		const appliedWithoutCandidate = inventory.proposals.filter((proposal) =>
-			proposal.status === "applied" && !inventory.candidates.some((candidate) =>
+			proposal.status === "applied" &&
+			loadBuilderApplyReceipt(host.runsRoot, proposal.record.runId).via !== "proposal-search" &&
+			!inventory.candidates.some((candidate) =>
 				candidate.origin.kind === "applied-builder" &&
 				candidate.origin.builderRunId === proposal.record.runId &&
 				!inventory.abandonedCandidates.has(candidate.candidateId),

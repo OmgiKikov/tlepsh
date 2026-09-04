@@ -14,6 +14,7 @@ import {
 	BuilderCorpusImportSourceSchema,
 	type BuilderCorpusImportSource,
 } from "./builder-corpus-import-contract.js";
+import { ProductionFailureProvenanceSourceSchema } from "./failure-intake.js";
 
 /** A draft stays small enough for a human to read every case before publishing. */
 export const MAX_BUILDER_CORPUS_DRAFT_TASKS = 100;
@@ -133,7 +134,7 @@ export const BuilderCorpusDraftRevisionOperationSchema = z.discriminatedUnion("t
 ]);
 export type BuilderCorpusDraftRevisionOperation = z.infer<typeof BuilderCorpusDraftRevisionOperationSchema>;
 
-export const BuilderCorpusDraftTaskProvenanceSchema = z.strictObject({
+export const BuilderCorpusDraftDevelopmentFailureTaskProvenanceSchema = z.strictObject({
 	kind: z.literal("development-failure"),
 	taskId: TaskIdSchema,
 	source: z.strictObject({
@@ -149,6 +150,29 @@ export const BuilderCorpusDraftTaskProvenanceSchema = z.strictObject({
 		sourceTaskHash: HashSchema,
 	}),
 });
+export const BuilderCorpusDraftProductionFailureTaskProvenanceSchema = z.strictObject({
+	kind: z.literal("production-failure"),
+	taskId: TaskIdSchema,
+	// Optional-never legacy keys keep source inspection type-compatible for
+	// callers that already narrow `kind` at runtime. The strict schema still
+	// refuses every one of them on a production provenance record.
+	source: ProductionFailureProvenanceSourceSchema.extend({
+		corpusId: z.never().optional(),
+		corpusHash: z.never().optional(),
+		evalRunId: z.never().optional(),
+		evalRunHash: z.never().optional(),
+		runId: z.never().optional(),
+		runHash: z.never().optional(),
+		tracePath: z.never().optional(),
+		traceSha256: z.never().optional(),
+		sourceTaskId: z.never().optional(),
+		sourceTaskHash: z.never().optional(),
+	}),
+});
+export const BuilderCorpusDraftTaskProvenanceSchema = z.discriminatedUnion("kind", [
+	BuilderCorpusDraftDevelopmentFailureTaskProvenanceSchema,
+	BuilderCorpusDraftProductionFailureTaskProvenanceSchema,
+]);
 export type BuilderCorpusDraftTaskProvenance = z.infer<typeof BuilderCorpusDraftTaskProvenanceSchema>;
 
 export const BuilderCorpusDraftVerifiedProvenanceBindingSchema = z.strictObject({
@@ -173,7 +197,7 @@ export const BuilderCorpusDraftRevisionOperationsSchema = z
 	});
 
 interface BuilderCorpusDraftIdentity {
-	schemaVersion: 2;
+	schemaVersion: 2 | 3;
 	kind: "builder-corpus-draft";
 	projectId: string;
 	approvedSpec: ApprovedSpecReference;
@@ -214,7 +238,7 @@ function draftIdentity(record: BuilderCorpusDraftIdentity): string {
 }
 
 export const BuilderCorpusDraftSchema = z.strictObject({
-	schemaVersion: z.literal(2),
+	schemaVersion: z.union([z.literal(2), z.literal(3)]),
 	kind: z.literal("builder-corpus-draft"),
 	id: DraftIdSchema,
 	projectId: ProjectIdSchema,
@@ -229,6 +253,13 @@ export const BuilderCorpusDraftSchema = z.strictObject({
 	source: z.literal("builder-pi"),
 	createdAt: z.iso.datetime({ offset: true }),
 }).superRefine((draft, context) => {
+	if (draft.schemaVersion === 2 && draft.taskProvenance?.some((entry) => entry.kind === "production-failure")) {
+		context.addIssue({
+			code: "custom",
+			path: ["taskProvenance"],
+			message: "production-failure provenance requires Builder corpus draft schemaVersion 3",
+		});
+	}
 	if (draft.projectId !== draft.approvedSpec.projectId) {
 		context.addIssue({
 			code: "custom",
@@ -270,7 +301,7 @@ export const BuilderCorpusDraftSchema = z.strictObject({
 			context.addIssue({
 				code: "custom",
 				path: ["taskProvenance", index, "taskId"],
-				message: "each task may have only one development-failure provenance record",
+				message: "each task may have only one failure provenance record",
 			});
 		}
 		provenanceTaskIds.add(provenance.taskId);
@@ -524,14 +555,14 @@ export function reviseBuilderCorpusDraft(
 	for (const binding of z.array(BuilderCorpusDraftVerifiedProvenanceBindingSchema).max(MAX_DRAFT_TASKS)
 		.parse(options.verifiedTaskProvenance ?? [])) {
 		if (pendingVerifiedProvenance.has(binding.operationIndex)) {
-			throw new Error(`revision operation ${binding.operationIndex} has duplicate verified development-failure provenance`);
+			throw new Error(`revision operation ${binding.operationIndex} has duplicate verified failure provenance`);
 		}
 		pendingVerifiedProvenance.set(binding.operationIndex, binding.provenance);
 	}
 	for (const [operationIndex, operation] of operations.entries()) {
 		const verifiedProvenance = pendingVerifiedProvenance.get(operationIndex);
 		if (verifiedProvenance && operation.type !== "add") {
-			throw new Error(`verified development-failure provenance must bind an add operation, not ${operation.type}`);
+			throw new Error(`verified failure provenance must bind an add operation, not ${operation.type}`);
 		}
 		switch (operation.type) {
 			case "add": {
@@ -540,10 +571,10 @@ export function reviseBuilderCorpusDraft(
 				tasks.push(normalized);
 				if (verifiedProvenance) {
 					if (verifiedProvenance.taskId !== normalized.id) {
-						throw new Error(`verified development-failure provenance does not match task added by operation ${operationIndex}`);
+						throw new Error(`verified failure provenance does not match task added by operation ${operationIndex}`);
 					}
 					if (taskProvenance.has(normalized.id)) {
-						throw new Error(`task ${normalized.id} already has development-failure provenance`);
+						throw new Error(`task ${normalized.id} already has failure provenance`);
 					}
 					taskProvenance.set(normalized.id, verifiedProvenance);
 					knownTaskProvenance.set(normalized.id, verifiedProvenance);
@@ -599,7 +630,7 @@ export function reviseBuilderCorpusDraft(
 	}
 	if (pendingVerifiedProvenance.size > 0) {
 		throw new Error(
-			`verified development-failure provenance was not consumed by operation(s): ${[
+			`verified failure provenance was not consumed by operation(s): ${[
 				...pendingVerifiedProvenance.keys(),
 			].join(", ")}`,
 		);
@@ -610,7 +641,10 @@ export function reviseBuilderCorpusDraft(
 	}
 
 	const identity: BuilderCorpusDraftIdentity = {
-		schemaVersion: 2,
+		schemaVersion: parent.schemaVersion === 3 || [...taskProvenance.values()]
+			.some((provenance) => provenance.kind === "production-failure")
+			? 3
+			: 2,
 		kind: "builder-corpus-draft",
 		projectId: approvedSpec.projectId,
 		approvedSpec,

@@ -1,8 +1,8 @@
 # AHDE — build, benchmark, and improve Pi agent harnesses
 
 `ahde` opens **Builder Pi**: you describe the agent in plain language; the
-Builder structures the Spec, assembles the benchmark, reserves a sealed exam no
-model ever reads, builds and tries the harness in a bound workshop, runs matched
+Builder structures the Spec, assembles the benchmark, reserves a sealed exam the
+Builder never reads, builds and tries the harness in a bound workshop, runs matched
 baseline-vs-candidate experiments, decides the verdict under a named gate policy
 and keeps consequential choices in explicit host-owned review. The same
 engine is a Unix-style CLI for scripts, CI and platforms (`ahde serve`). It
@@ -34,6 +34,13 @@ Free text is the complete product interface: ask the Builder to test, fix,
 apply, open the built agent, or ship, and it performs the matching operation.
 The compact Pi commands below are optional expert shortcuts, not vocabulary a
 user has to learn.
+
+Opening a detected agent folder presents one editable setup review: the command,
+the files AHDE may change, and the effect of accepting. After a development run,
+the conversation shows the result, up to three problems, and an evidence link;
+full traces remain available on request. The Builder is instructed to prepare
+one actionable change for review without waiting for “fix the first problem”.
+This is a prepared diff, not an automatic apply or ship.
 
 Nine of them are the product; `/help` shows exactly these and nothing else.
 
@@ -101,7 +108,42 @@ estimate and approves it; verify asks again only above 1.5× that amount or when
 nothing was authorized. Give the Builder a Sonnet/Opus-class model — below that
 floor the loop does not close; the Target can be as small as a 9B model.
 
+For “try a few approaches”, Builder Pi can author and compare 2–4 small
+hypotheses through the existing `improve` action. At least four reviewed cases
+are required. Before any model call AHDE persists a deterministic split: the
+Builder sees only the authoring arm, while cheap screens, matched comparisons
+and the Pareto frontier use the unseen validation arm. The exact split seed,
+task membership, derived immutable corpora and design hash are durable evidence.
+One host confirmation names
+the selected Builder model and authoring limits, and authorizes candidate-branch
+applies and development tests. Each isolated author has at most 8 model turns,
+2,048 output tokens per turn, 32 tool calls and 2 minutes; each proposal changes
+at most four files. It has no shell, exam reader, release tools or capability
+grants. Changed tools need passing contract fixtures; expanded permissions need
+a separate human-reviewed Workshop. The checkout remains unchanged.
+
+The confirmation combines the historical Target estimate with a conservative
+Builder authoring ceiling and itemizes both. If either price is unavailable,
+the total is shown as unknown instead of presenting the Target subtotal as the
+whole operation. The result lists author requests, reported tokens and cost separately;
+`runs/improvement-authors/` preserves per-attempt receipts, including failures
+and cancellation (unknown cost is not zero). The operator picks a candidate
+from the independently validated comparison and reviews it before shipping.
+The evaluator-only sealed exam still answers the separate release question, so
+validation does not automatically prove the best production agent. The standalone `ahde improve` command still consumes recorded proposals
+unless its host attaches an author; automatic authoring uses the live Builder
+Pi model. Integration tests cover this path with scripted local models; this
+new automatic-author path has not yet been tested in a paid live session.
+
 ## Evidence
+
+Evaluator v4 requires a final answer and does not treat a command agent's
+`tool_note` self-report as proof that a tool executed. Completion is a prerequisite,
+not a free point in the average score. Old results remain readable but are not
+comparable to v4; runs without host-observed completion must be rerun before
+regrading. Eval verification and export hash-check new final-world and judge-verdict sidecars;
+legacy unattested sidecars are omitted from dataset exports. Command adapters
+report incremental usage for **each model request**, before its assistant frame.
 
 Five live first-user sessions on real models — a Sonnet-class Builder, a 9B
 Target (`openrouter/qwen/qwen3.5-9b`), a GLM judge — took a bank ombudsman
@@ -180,7 +222,7 @@ on any page.
 
 ## What the engine guarantees
 
-1. **No model can read the sealed exam** — reserved at ingest before anyone sees the data, or written by the judge model from the Spec; the engine prints counts, design size and verdict, not content.
+1. **The Builder cannot read the sealed exam** — reserved at ingest before the Builder sees the data, or written by the judge model from the Spec; the engine prints counts, design size and verdict, not content.
 2. **Nothing ships without evidence and a human** — promotion needs a development verdict that is not `regressed`, a sealed `pass` on ≥15 tasks × ≥2 reps, an applied proposal with its receipt, and a person confirming the exact subject on screen.
 3. **Every number traces to an immutable artifact** — verdicts come from hash-pinned snapshots under a named gate policy; promotion rehashes the chain.
 4. **The agent runs only declared tools, sandboxed** — descriptors and executable bytes are Target identity and must rehash before reuse; missing confinement is not promotable.
@@ -266,19 +308,15 @@ hash. A transport for the human gate, never an exemption.
 ## Templates
 
 ```bash
-ahde init my-agent --template templates/support-agent
+ahde init my-agent --template templates/python-agent
 ```
 
-A Russian first-line support agent as starting material: the manifest carries
-the same one-time placeholders a fresh scaffold does, so the first `ahde` in
-that directory asks for the agent's name and model in its own dialog, and the
-Builder asks for a judge the moment a case needs one. The `REPLACE-ME` text in
-its Spec, `AGENTS.md`, example cases and tool descriptor is what you describe
-over; `ahde validate` and `/doctor` list the files that still carry it, and
-nothing ever asks you to open `manifest.yaml`. Its `AGENTS.md` carries the two
-load-bearing sections — call the tool first, name the request type on line
-one — and its `.gitignore` lists `.ahde/`, `runs/`, `imports/`, so
-`git add -A` cannot commit the exam.
+The primary starter is an ordinary Python support agent: a stdlib JSONL process,
+two sandboxed tools, a small knowledge base, world-state cases and an editable
+`prompts/system.md`. The first `ahde` in that directory asks for the agent,
+judge and simulated-user models. `templates/support-agent` remains the smaller
+Pi-native example. Both templates ignore `.ahde/`, `runs/` and `imports/`, so
+`git add -A` cannot commit the sealed exam.
 
 ## Verify the package
 

@@ -435,9 +435,70 @@ function defaultHarnessFiles(projectDir: string, entry: string): string[] {
 	return [directory ? `${directory}/*.md` : "AGENTS.md"];
 }
 
-/** Split an operator-typed command into argv. Quotes are not a manifest feature. */
-function parseCommand(text: string): string[] {
-	return text.trim().split(/\s+/).filter(Boolean);
+/**
+ * Render argv as a shell-like string that this module can parse losslessly.
+ * Single-quoted segments have no expansion; an embedded quote is represented
+ * by closing the segment, escaping one quote, then reopening it.
+ */
+export function renderCommand(argv: readonly string[]): string {
+	return argv.map((argument) => `'${argument.replaceAll("'", `'\\''`)}'`).join(" ");
+}
+
+/**
+ * Parse only argv quoting. There is deliberately no variable expansion,
+ * command substitution, globbing, redirection, or pipe syntax: the manifest
+ * is passed straight to spawn and is never a shell program.
+ */
+export function parseCommand(text: string): string[] {
+	const argv: string[] = [];
+	let value = "";
+	let token = false;
+	let quote: "'" | '"' | null = null;
+	let escaped = false;
+	for (const character of text) {
+		if (escaped) {
+			value += character;
+			token = true;
+			escaped = false;
+			continue;
+		}
+		if (quote === "'") {
+			if (character === "'") quote = null;
+			else value += character;
+			token = true;
+			continue;
+		}
+		if (character === "\\") {
+			escaped = true;
+			token = true;
+			continue;
+		}
+		if (quote === '"') {
+			if (character === '"') quote = null;
+			else value += character;
+			token = true;
+			continue;
+		}
+		if (character === "'" || character === '"') {
+			quote = character;
+			token = true;
+			continue;
+		}
+		if (/\s/u.test(character)) {
+			if (token) {
+				argv.push(value);
+				value = "";
+				token = false;
+			}
+			continue;
+		}
+		value += character;
+		token = true;
+	}
+	if (escaped) throw new Error("the command ends with an unfinished escape");
+	if (quote) throw new Error(`the command has an unclosed ${quote} quote`);
+	if (token) argv.push(value);
+	return argv;
 }
 
 function parseFiles(text: string): string[] {
@@ -445,9 +506,8 @@ function parseFiles(text: string): string[] {
 }
 
 /**
- * The three questions an adoption is worth: is this your agent, how is it
- * started, and what may I edit. Everything else — the manifest, the eval
- * skeleton, the Git commit — the host decides, shows in the dialog, and writes.
+ * One review of the proposed setup. Command and editable files stay visible
+ * and editable, but accepting the defaults is one decision, not three.
  */
 type WrapOutcome = WorkbenchView | "deferred" | "create-new";
 
@@ -461,42 +521,39 @@ async function wrapTarget(
 	// declare — the descriptors on disk — and names the knowledge base, because
 	// half of what such an agent knows lives in `data/kb` and a sentence that
 	// leaves it out understates the agent to the person who wrote it.
-	const choice = await ctx.ui.select(
-		t(found.knowledgeBase ? "onboarding.wrap.seen-kb" : "onboarding.wrap.seen", {
-			entry: found.entry,
-			tools: plural(found.toolCount, "tool"),
-		}),
-		[ADOPT(), CREATE_NEW(), LATER()],
-	);
-	if (choice === LATER() || choice === undefined) return "deferred";
-	if (choice !== ADOPT()) return "create-new";
-
 	const suggestedCommand = defaultCommand(found.entry);
-	const commandChoice = await ctx.ui.select(
-		t("onboarding.wrap.command", { command: suggestedCommand.join(" ") }),
-		[t("onboarding.wrap.accept"), OTHER_COMMAND(), LATER()],
-	);
-	if (commandChoice === LATER() || commandChoice === undefined) return "deferred";
 	let argv = suggestedCommand;
-	if (commandChoice === OTHER_COMMAND()) {
-		const typed = await ctx.ui.input(t("onboarding.wrap.command-ask"), suggestedCommand.join(" "));
-		if (typed === undefined) return "deferred";
-		argv = parseCommand(typed);
-		if (argv.length === 0) argv = suggestedCommand;
-	}
-
 	const suggestedFiles = defaultHarnessFiles(projectDir, found.entry);
-	const filesChoice = await ctx.ui.select(
-		t("onboarding.wrap.files"),
-		[suggestedFiles.join(", "), OTHER_FILES(), LATER()],
-	);
-	if (filesChoice === LATER() || filesChoice === undefined) return "deferred";
 	let harnessFiles = suggestedFiles;
-	if (filesChoice === OTHER_FILES()) {
-		const typed = await ctx.ui.input(t("onboarding.wrap.files-ask"), suggestedFiles.join(", "));
+	for (;;) {
+		const choice = await ctx.ui.select([
+			t(found.knowledgeBase ? "onboarding.wrap.seen-kb" : "onboarding.wrap.seen", { entry: found.entry, tools: plural(found.toolCount, "tool") }),
+			t("onboarding.wrap.command", { command: renderCommand(argv) }),
+			t("onboarding.wrap.editable", { files: harnessFiles.join(", ") }),
+			t("onboarding.wrap.effect"),
+		].join("\n"), [ADOPT(), OTHER_COMMAND(), OTHER_FILES(), CREATE_NEW(), LATER()]);
+		if (choice === ADOPT()) break;
+		if (choice === CREATE_NEW()) return "create-new";
+		if (choice !== OTHER_COMMAND() && choice !== OTHER_FILES()) return "deferred";
+		const command = choice === OTHER_COMMAND();
+		const typed = await ctx.ui.input(
+			t(command ? "onboarding.wrap.command-ask" : "onboarding.wrap.files-ask"),
+			command ? renderCommand(argv) : harnessFiles.join(", "),
+		);
 		if (typed === undefined) return "deferred";
-		harnessFiles = parseFiles(typed);
-		if (harnessFiles.length === 0) harnessFiles = suggestedFiles;
+		let parsed: string[];
+		try {
+			parsed = command ? parseCommand(typed) : parseFiles(typed);
+		} catch (error) {
+			ctx.ui.notify(t("onboarding.wrap.command-invalid", {
+				reason: error instanceof Error ? error.message : String(error),
+			}), "warning");
+			continue;
+		}
+		if (parsed.length > 0) {
+			if (command) argv = parsed;
+			else harnessFiles = parsed;
+		}
 	}
 
 	const result = await host.workbench.decide(

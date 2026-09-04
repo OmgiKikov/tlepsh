@@ -754,6 +754,8 @@ export function renderEvaluationSummary(
 
 /** Diagnosis screen shared by /traces and the post-run summary. */
 export interface RenderTracesOptions {
+	/** Post-run conversation: three problems, no raw excerpts or world cards. */
+	compact?: boolean;
 	/**
 	 * Whether the panel closes with its own `Next` line.
 	 *
@@ -785,6 +787,29 @@ export function renderTraces(content: WorkbenchTracesDetail, paint: Paint, optio
 			}`,
 		)}`,
 	];
+	if (options.compact) {
+		// The headline already identifies the run. Detailed timestamps, world
+		// cards and evidence excerpts stay in the explicitly opened trace view.
+		lines.splice(1);
+		if (content.judgeAgreement !== undefined) lines.push(judgeRunAgreementLine(content.judgeAgreement, paint));
+		if (brief.status === "inconclusive") lines.push(paint.warning(t("diagnosis.status.inconclusive")));
+		for (const mode of brief.modes.slice(0, 3)) {
+			lines.push(`  ${mode.ordinal}. ${oneLine(failureModeReading(mode).title, 80)} ${paint.dim("·")} ${t("diagnosis.mode-count", {
+				failed: mode.impact.failedOccurrences, total: mode.impact.failedOccurrences + mode.impact.passedOccurrences,
+			})}`);
+		}
+		if (brief.modes.length === 0) {
+			lines.push(brief.status === "healthy" ? paint.success(t("diagnosis.healthy")) : paint.warning(t("diagnosis.next.repair")));
+		}
+		const hidden = Math.max(0, brief.summary.failureModeCount - Math.min(brief.modes.length, 3));
+		if (hidden > 0) lines.push(paint.dim(t("mode.more-in-explorer", { count: hidden })));
+		lines.push(`${paint.dim(t("label.evidence"))} ${content.evidence.available ? paint.link(content.evidence.url) : paint.muted(t("diagnosis.details-on-request"))}`);
+		if (options.next !== false) {
+			const next = brief.proposalEligible ? "diagnosis.next.fix" : brief.status === "healthy" ? "diagnosis.next.harder" : "diagnosis.next.repair";
+			lines.push(`${paint.dim(t("label.next"))} ${t(next)}`);
+		}
+		return lines;
+	}
 	const status = brief.status === "actionable"
 		? paint.success(t("diagnosis.status.actionable"))
 		: brief.status === "healthy" ? paint.success(t("diagnosis.status.healthy")) : paint.warning(t("diagnosis.status.inconclusive"));

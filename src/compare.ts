@@ -71,7 +71,10 @@ export interface CompareOptions {
  * here, the training export's `--min-score` bar — must mean the same number.
  */
 export function runGraderScore(record: Pick<RunRecord, "evalResults">): number {
-	const graders = record.evalResults?.graders ?? [];
+	const results = record.evalResults?.graders ?? [];
+	// Completion is a prerequisite, not a free point that dilutes the rubric.
+	if (results.some((grader) => grader.checkCode === "final-answer" && !grader.passed)) return 0;
+	const graders = results.filter((grader) => grader.checkCode !== "final-answer");
 	if (graders.length === 0) return record.evalResults?.outcome === "pass" ? 1 : 0;
 	const average = graders.reduce((sum, grader) => sum + grader.score, 0) / graders.length;
 	return Math.min(1, Math.max(0, average));

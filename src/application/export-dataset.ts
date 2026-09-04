@@ -17,6 +17,7 @@ import {
 	type EvalRunRecord,
 } from "../eval.js";
 import type { RunRecord } from "../provenance.js";
+import { verifiedRunArtifacts } from "../run-evidence.js";
 import { writeTextArtifact } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath, safeArtifactSegment } from "../storage/paths.js";
 import { openTrace, redactTraceText, type TraceMessage } from "../trace.js";
@@ -75,10 +76,6 @@ export const MAX_DATASET_EXPORT_NOTES = 20;
 const MAX_SNAPSHOT_MANIFEST_BYTES = 256 * 1024;
 const MAX_SNAPSHOT_INSTRUCTIONS_BYTES = 4 * 1024 * 1024;
 const MAX_SNAPSHOT_TOOL_DESCRIPTOR_BYTES = 256 * 1024;
-/** The world a case happens in is bounded at 16 KiB by the manifest; four times that is generous. */
-const MAX_WORLD_STATE_BYTES = 64 * 1024;
-/** One judge verdict sidecar. Bounded the way every other evidence read is. */
-const MAX_JUDGE_VERDICT_BYTES = 256 * 1024;
 
 /** Appended wherever content was cut. Nothing is ever silently shortened. */
 export const DATASET_TRUNCATION_MARKER = "…[truncated by ahde export]";
@@ -97,6 +94,7 @@ export class DatasetExportError extends Error {
 
 export interface DatasetToolCall {
 	id: string;
+	evidence?: "reported";
 	type: "function";
 	function: { name: string; arguments: string };
 }
@@ -303,6 +301,24 @@ function boundedText(value: string, maxChars: number): string {
 	return `${redacted.slice(0, maxChars)}${DATASET_TRUNCATION_MARKER}`;
 }
 
+/** Redact structured data without string-replacing serialized JSON (which can corrupt it). */
+function redactedObject(value: Record<string, unknown>): Record<string, unknown> {
+	const visit = (entry: unknown, depth: number): unknown => {
+		if (depth > 32) return DATASET_TRUNCATION_MARKER;
+		if (typeof entry === "string") return boundedText(entry, MAX_DATASET_MESSAGE_CHARS);
+		if (Array.isArray(entry)) return entry.map((item) => visit(item, depth + 1));
+		if (entry === null || typeof entry !== "object") return entry;
+		return Object.fromEntries(Object.entries(entry).map(([key, child]) => [
+			boundedText(key, MAX_DATASET_NAME_CHARS),
+			// Reuse the canonical redactor's sensitive-field vocabulary, including
+			// custom credential names, but redact the WHOLE value, even an object.
+			redactTraceText(`${JSON.stringify(key)}: "credential-probe"`).includes("[REDACTED]")
+				? "[REDACTED]" : visit(child, depth + 1),
+		]));
+	};
+	return visit(value, 0) as Record<string, unknown>;
+}
+
 // ---------- Workspace snapshot reads ----------
 
 function snapshotPathParts(relativePath: string): string[] {
@@ -475,6 +491,7 @@ export function datasetMessages(system: string, messages: readonly TraceMessage[
 			const text = boundedText(message.text, MAX_DATASET_MESSAGE_CHARS);
 			const calls = (message.toolCalls ?? []).map((call): DatasetToolCall => ({
 				id: boundedText(call.id, MAX_DATASET_NAME_CHARS),
+				...(call.evidence ? { evidence: call.evidence } : {}),
 				type: "function",
 				function: {
 					name: boundedText(call.name, MAX_DATASET_NAME_CHARS),
@@ -505,51 +522,6 @@ export function datasetMessages(system: string, messages: readonly TraceMessage[
 
 const JsonObjectSchema = z.record(z.string(), z.unknown());
 
-/**
- * Read one bounded JSON object out of a run's own directory by convention.
- * Every rule the workspace snapshot reader applies applies here: the resolver
- * refuses traversal and symlinked ancestors, the size is checked before the
- * bytes are read, and anything that is not a JSON object is nothing.
- */
-function readContainedJsonObject(
-	runsRoot: string,
-	runId: string,
-	descendants: readonly string[],
-	maxBytes: number,
-): Record<string, unknown> | null {
-	let path: string;
-	try {
-		path = resolveContainedArtifactPath(runsRoot, runId, ...descendants);
-	} catch {
-		return null;
-	}
-	let entry;
-	try {
-		entry = lstatSync(path);
-	} catch {
-		return null;
-	}
-	if (!entry.isFile() || entry.isSymbolicLink() || entry.size > maxBytes) return null;
-	let value: unknown;
-	try {
-		value = JSON.parse(readFileSync(path, "utf8"));
-	} catch {
-		return null;
-	}
-	const parsed = JsonObjectSchema.safeParse(value);
-	return parsed.success ? parsed.data : null;
-}
-
-/**
- * The world the run left behind, written by the world lane at
- * `runs/<runId>/runtime/world/state.json`. Absent is the ordinary case — a case
- * with no world, or evidence recorded before worlds were persisted — and is
- * `null`, never an invented empty state.
- */
-export function runFinalWorld(runsRoot: string, runId: string): Record<string, unknown> | null {
-	return readContainedJsonObject(runsRoot, runId, ["runtime", "world", "state.json"], MAX_WORLD_STATE_BYTES);
-}
-
 /** Lenient on purpose: the sidecar is read, never re-derived, and its shape belongs to `eval.ts`. */
 const JudgeVerdictSidecarSchema = z.object({
 	passed: z.boolean(),
@@ -572,20 +544,10 @@ const JudgeVerdictSidecarSchema = z.object({
  * own position, so a verdict always names the grader it decided. A grader that
  * called no judge has no sidecar and contributes nothing.
  */
-export function runJudgeVerdicts(
-	runsRoot: string,
-	runId: string,
-	graderCount: number,
-): DatasetJudgeVerdict[] {
+function projectedJudgeVerdicts(artifacts: Record<string, Record<string, unknown>>): DatasetJudgeVerdict[] {
 	const verdicts: DatasetJudgeVerdict[] = [];
-	for (let index = 0; index < Math.min(graderCount, MAX_DATASET_GRADERS); index += 1) {
-		const value = readContainedJsonObject(
-			runsRoot,
-			runId,
-			["judge", `${index}.verdict.json`],
-			MAX_JUDGE_VERDICT_BYTES,
-		);
-		if (!value) continue;
+	for (const [key, value] of Object.entries(artifacts).slice(0, MAX_DATASET_GRADERS)) {
+		const index = Number(key);
 		const parsed = JudgeVerdictSidecarSchema.safeParse(value);
 		if (!parsed.success) continue;
 		verdicts.push({
@@ -602,7 +564,7 @@ export function runJudgeVerdicts(
 					})),
 				}
 				: {}),
-			...(parsed.data.jury ? { jury: parsed.data.jury } : {}),
+			...(parsed.data.jury ? { jury: parsed.data.jury.map(redactedObject) } : {}),
 		});
 	}
 	return verdicts;
@@ -845,13 +807,21 @@ export function exportDataset(options: ExportDatasetOptions): DatasetExportResul
 		}
 
 		// The cases the eval cited, read once per eval run rather than per run.
-		// A lookup that cannot find the corpus contributes an empty map, and the
-		// lines simply carry no world and no simulated user.
+		// When a caller supplied a corpus lookup, failure is an evidence failure:
+		// exporting the final world without its initial world/persona would
+		// silently create a different training example.
 		let taskFacts: ReadonlyMap<string, DatasetTaskFacts>;
 		try {
 			taskFacts = options.tasks?.(index) ?? new Map();
-		} catch {
-			taskFacts = new Map();
+		} catch (error) {
+			tally.counts.skipped.infra += members.length;
+			note(tally, {
+				evalRunId: index.evalRunId,
+				runId: null,
+				reason: "infra",
+				detail: `the cited case facts are unavailable: ${errorDetail(error)}`,
+			});
+			continue;
 		}
 
 		let contributedHere = false;
@@ -890,9 +860,11 @@ export function exportDataset(options: ExportDatasetOptions): DatasetExportResul
 			}
 
 			let messages: TraceMessage[];
+			let artifacts: ReturnType<typeof verifiedRunArtifacts>;
 			try {
 				const traceArtifact = resolveContainedArtifactPath(runsRoot, run.runId, run.trace.path);
 				messages = openTrace(dirname(traceArtifact), basename(traceArtifact), run.trace.sha256);
+				artifacts = verifiedRunArtifacts(runsRoot, run);
 			} catch (error) {
 				tally.counts.skipped.infra += 1;
 				note(tally, { evalRunId: index.evalRunId, runId: run.runId, reason: "infra", detail: errorDetail(error) });
@@ -907,8 +879,8 @@ export function exportDataset(options: ExportDatasetOptions): DatasetExportResul
 				score,
 				passed,
 				task: taskFacts.get(run.taskId),
-				finalWorld: runFinalWorld(runsRoot, run.runId),
-				verdicts: runJudgeVerdicts(runsRoot, run.runId, run.evalResults.graders.length),
+				finalWorld: artifacts.world,
+				verdicts: projectedJudgeVerdicts(artifacts.judge),
 			})));
 			tally.counts.exported += 1;
 			contributedHere = true;
@@ -1031,9 +1003,12 @@ export function datasetLine(input: DatasetLineInput): DatasetExportLine {
 			// A case with neither a recorded starting world nor a recorded final
 			// one had no world; the key is absent rather than two nulls.
 			...(initialWorld !== null || finalWorld !== null
-				? { world: { initial: initialWorld, final: finalWorld } }
+				? { world: { initial: initialWorld === null ? null : redactedObject(initialWorld), final: finalWorld === null ? null : redactedObject(finalWorld) } }
 				: {}),
-			...(verdicts.length > 0 ? { judge: { verdicts: [...verdicts] } } : {}),
+			...(verdicts.length > 0 ? { judge: { verdicts: verdicts.map((verdict) => ({
+				...verdict,
+				...(verdict.jury ? { jury: verdict.jury.map(redactedObject) } : {}),
+			})) } } : {}),
 			...(simulatedUser
 				? {
 					simulatedUser: {
@@ -1084,37 +1059,37 @@ export function sealedDatasetHashesFor(options: { stateRoot: string; projectId: 
 export function corpusTaskLookup(options: { stateRoot: string; projectId: string }): DatasetTaskLookup {
 	const cache = new Map<string, ReadonlyMap<string, DatasetTaskFacts>>();
 	return (record) => {
-		const key = `${record.dataset}\x00${record.datasetHash}`;
+		const key = `${record.dataset}\u0000${record.datasetHash}`;
 		const cached = cache.get(key);
 		if (cached) return cached;
 		const facts = new Map<string, DatasetTaskFacts>();
-		try {
-			const match = listCorpora({ stateRoot: options.stateRoot, projectId: options.projectId }).find(
-				(metadata) =>
-					corpusDatasetLabel(metadata.visibility as CorpusVisibility, metadata.id) === record.dataset &&
-					metadata.hash === record.datasetHash,
+		// A manifest-backed legacy dataset has no published corpus facts by design.
+		if (!record.dataset.startsWith("development-corpus-")) {
+			cache.set(key, facts);
+			return facts;
+		}
+		const match = listCorpora({ stateRoot: options.stateRoot, projectId: options.projectId }).find(
+			(metadata) =>
+				corpusDatasetLabel(metadata.visibility as CorpusVisibility, metadata.id) === record.dataset &&
+				metadata.hash === record.datasetHash,
+		);
+		if (!match || match.visibility !== "development") {
+			throw new DatasetExportError(
+				`development corpus ${record.dataset} with hash ${record.datasetHash} is unavailable`,
 			);
-			// A sealed corpus never reaches here — the export refused the eval run
-			// long before — but the visibility check is stated rather than assumed.
-			if (match && match.visibility === "development") {
-				for (const task of loadCorpus({ ...options, corpusId: match.id }).tasks) {
-					facts.set(task.id, {
-						...(task.world ? { world: { state: task.world.state } } : {}),
-						...(task.simulatedUser
-							? {
-								simulatedUser: {
-									goal: task.simulatedUser.goal,
-									...(task.simulatedUser.persona !== undefined ? { persona: task.simulatedUser.persona } : {}),
-								},
-							}
-							: {}),
-					});
-				}
-			}
-		} catch {
-			// A corpus that will not load contributes nothing. The conversation,
-			// the graders and the verdicts are unaffected, and a line without a
-			// world is honest about the one thing that could not be read.
+		}
+		for (const task of loadCorpus({ ...options, corpusId: match.id }).tasks) {
+			facts.set(task.id, {
+				...(task.world ? { world: { state: task.world.state } } : {}),
+				...(task.simulatedUser
+					? {
+						simulatedUser: {
+							goal: task.simulatedUser.goal,
+							...(task.simulatedUser.persona !== undefined ? { persona: task.simulatedUser.persona } : {}),
+						},
+					}
+					: {}),
+			});
 		}
 		cache.set(key, facts);
 		return facts;

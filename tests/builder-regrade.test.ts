@@ -521,13 +521,13 @@ describe("the persona knows what to do when the judge is disputed", () => {
 	const persona = readFileSync(new URL("../builders/ahde/AGENTS.md", import.meta.url), "utf8");
 
 	it("fixes the rubric and re-scores instead of re-running the agent", () => {
-		const loop = persona.split("## Typical loop")[1] ?? "";
-		expect(loop).toContain("says the judge is too strict or too\n   lenient");
-		expect(loop).toContain("the answer is\n   never a new run");
-		expect(loop).toContain("request `regrade`");
-		expect(loop).toContain("the agent was not called again and only the\n   judge was paid");
-		expect(loop).toContain("ask whether to publish the\n   revised graders");
-		expect(loop).toContain("Never present a re-score as a new baseline");
+		const loop = (persona.split("## Typical loop")[1] ?? "").replace(/\s+/g, " ");
+		expect(loop).toContain("A disputed verdict is a re-score, never a new run");
+		expect(loop).toContain("A disputed verdict or low judge agreement means revise the draft rubric");
+		expect(loop).toContain("submit `ahde_workbench_decide`");
+		expect(loop).toContain("no Target call, only judge spend");
+		expect(loop).toContain("offer publication after showing the result");
+		expect(loop).toContain("Never call a re-score a new baseline");
 		expect(loop).toContain('`kind: "regrade", graders: "draft"`');
 	});
 
@@ -542,12 +542,13 @@ describe("the persona knows what to do when the judge is disputed", () => {
 	});
 
 	it("knows the re-score is its own to submit, and that a candidate needs both arms", () => {
-		const loop = persona.split("## Typical loop")[1] ?? "";
+		const loop = (persona.split("## Typical loop")[1] ?? "").replace(/\s+/g, " ");
 		expect(loop).toContain("`kind: \"regrade\", graders: \"draft\"`");
-		expect(loop).toContain("It is never “outside Builder Pi”.");
-		expect(loop).toContain("re-scores both\n   development arms with the one revised rubric");
+		expect(loop).toContain("`/regrade` is the same action inside this TUI, not outside it");
+		expect(loop).toContain("comparisons need the same rubric on both arms");
+		expect(loop).toContain("both development arms are re-scored");
 		expect(loop).toContain("the sealed exam is untouched");
-		expect(loop).toContain("Never reject a candidate to unblock\n   a re-score, and never publish in order to read one");
+		expect(loop).toContain("Never reject a candidate or publish a draft to unblock re-scoring");
 	});
 });
 

@@ -100,7 +100,7 @@ export async function startImproveMockModel(): Promise<MockModelHandle> {
  */
 export async function improveFixture(
 	dependencies: Partial<AhdeWorkbenchDependencies> = {},
-	options: { repetitions?: number } = {},
+	options: { repetitions?: number; developmentCases?: number } = {},
 ): Promise<ImproveFixture> {
 	const mock = await startImproveMockModel();
 	const root = mkdtempSync(join(tmpdir(), "ahde-improve-"));
@@ -153,7 +153,10 @@ export async function improveFixture(
 	await workbench.submit({
 		kind: "corpus-draft",
 		name: "Improve fixture development basket",
-		tasks: DEVELOPMENT_CASES,
+		tasks: Array.from({ length: options.developmentCases ?? DEVELOPMENT_CASES.length }, (_, index) => ({
+			input: `Answer reviewed request ${index + 1}.`,
+			graders: [{ type: "output_contains" as const, text: "READY" }],
+		})),
 		coverageNotes: ["Both cases expose the same missing instruction."],
 		revisionSummary: "Initial development basket",
 	});

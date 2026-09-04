@@ -204,7 +204,7 @@ describe("assertion rubrics", () => {
 		expect(verdict.assertions.map((entry) => entry.answer)).toEqual(["yes", "unknown", "unknown"]);
 	});
 
-	it("leaves a rubric-only judge byte-identical: same prompt, same names, no verdict sidecar", async () => {
+	it("keeps the rubric-only prompt unchanged and records the decided verdict", async () => {
 		const { results, runsRoot } = await grade(
 			[RUBRIC],
 			"Ответ",
@@ -218,7 +218,8 @@ describe("assertion rubrics", () => {
 		expect(sidecar.request.body.messages[1]!.content)
 			.toBe("Критерий: Ответ полный и вежливый\n\nОбращение: вопрос\n\nОтвет агента: Ответ");
 		expect(sidecar.request.body.temperature).toBe(0);
-		expect(() => readFileSync(join(runsRoot, "run-a", "judge", "0.verdict.json"), "utf8")).toThrow();
+		expect(JSON.parse(readFileSync(join(runsRoot, "run-a", "judge", "0.verdict.json"), "utf8")))
+			.toMatchObject({ passed: true, score: 1 });
 	});
 });
 

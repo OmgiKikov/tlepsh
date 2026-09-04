@@ -3,9 +3,11 @@ import { t } from "../i18n.js";
 import { resolve } from "node:path";
 import type {
 	ExtensionAPI,
+	ExtensionContext,
 	ExtensionFactory,
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { createPiImprovementAuthor, type PreparedImprovementAuthor } from "../application/improvement-author.js";
 import { type TSchema } from "typebox";
 import {
 	approveBuilderSpecDraft,
@@ -85,6 +87,7 @@ export interface EvidenceLink {
 }
 
 export interface BuilderExtensionDependencies {
+	prepareImprovementAuthor?: () => PreparedImprovementAuthor | null | Promise<PreparedImprovementAuthor | null>;
 	listSpecs: typeof listSpecSnapshots;
 	loadSpec: typeof loadSpecSnapshot;
 	saveSpecDraft: typeof saveBuilderSpecDraft;
@@ -204,10 +207,22 @@ export const AHDE_BUILDER_REGISTERED_TOOL_NAMES = [
 /** The sole trusted extension factory loaded into Builder Pi. */
 export function createAhdeBuilderExtension(options: BuilderExtensionOptions): ExtensionFactory {
 	const dependencies = { ...DEFAULT_DEPENDENCIES, ...options.dependencies };
-	const workbench = createBuilderWorkbench(options, dependencies);
+	let authorContext: ExtensionContext | undefined;
+	const workbench = createBuilderWorkbench(options, {
+		...dependencies,
+		prepareImprovementAuthor: dependencies.prepareImprovementAuthor ?? (() => {
+			const model = authorContext?.model;
+			const registry = authorContext?.modelRegistry;
+			if (!model || !registry) return null;
+			// Freeze the selected model before the host dialog; keys stay in Pi's registry.
+			return createPiImprovementAuthor({ model, complete: (context, request) => registry.complete(model, context, request) });
+		}),
+	});
 	const allowedTools = new Set<string>(AHDE_BUILDER_TOOL_NAMES);
 	const workshopTools = new Set<string>(AHDE_WORKSHOP_TOOL_NAMES);
 	return (pi: ExtensionAPI) => {
+		pi.on("session_start", (_event, ctx) => { authorContext = ctx; });
+		pi.on("model_select", (_event, ctx) => { authorContext = ctx; });
 		pi.on("user_bash", () => ({
 			result: {
 				output: `${t("extension.no-shell")}\n`,
@@ -219,7 +234,8 @@ export function createAhdeBuilderExtension(options: BuilderExtensionOptions): Ex
 		// Invariant 1: no generic edit/write outside a bound workshop worktree. The
 		// five workshop tools are legal exactly while one is open; a closed
 		// workshop is a recoverable mistake, an unknown tool is not.
-		pi.on("tool_call", (event) => {
+		pi.on("tool_call", (event, ctx) => {
+			authorContext = ctx;
 			if (allowedTools.has(event.toolName)) return undefined;
 			if (workshopTools.has(event.toolName)) {
 				return workbench.workshopOpen

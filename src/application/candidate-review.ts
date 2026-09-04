@@ -14,6 +14,11 @@ import {
 } from "./candidate-experiment.js";
 import { screenExclusion } from "./cheap-check.js";
 import { corpusDatasetLabel } from "./corpus-target.js";
+import {
+	improvementExperimentDesignPath,
+	loadImprovementExperimentDesign,
+	type ImprovementExperimentDesign,
+} from "./improvement-experiment-design.js";
 import { compareEvalRuns, type CompareResult } from "../compare.js";
 import { promotableVerdicts, withinInfrastructureBudget, type GateSurface } from "../domain/comparison-gate.js";
 import { CandidateProposalSchema } from "../builders/adapters.js";
@@ -748,7 +753,10 @@ function verifyArtifact(
 	}
 }
 
-function verifyAppliedBuilderOrigin(record: CandidateRecord, runsRootInput: string): EvalRunRecord | null {
+function verifyAppliedBuilderOrigin(
+	record: CandidateRecord,
+	runsRootInput: string,
+): { sourceEval: EvalRunRecord | null; experimentDesign: ImprovementExperimentDesign | null } {
 	if (record.origin.kind !== "applied-builder") {
 		throw new Error("production promotion requires reconstructable applied-Builder provenance");
 	}
@@ -769,6 +777,12 @@ function verifyAppliedBuilderOrigin(record: CandidateRecord, runsRootInput: stri
 			origin.source.diagnosis,
 			"Builder diagnosis",
 			resolveContainedArtifactPath(runsRoot, origin.source.evalRunId, "diagnosis.json"),
+		);
+	}
+	if (origin.experimentDesign) {
+		verifyArtifact(
+			origin.experimentDesign,
+			"blind improvement experiment design",
 		);
 	}
 	verifyArtifact(origin.approvedSpec.artifact, "approved Spec");
@@ -795,6 +809,16 @@ function verifyAppliedBuilderOrigin(record: CandidateRecord, runsRootInput: stri
 		? readJsonArtifact(origin.source.diagnosis.path, DiagnosisRecordSchema)
 		: null;
 	const spec = readJsonArtifact(origin.approvedSpec.artifact.path, SpecSnapshotSchema);
+	const experimentDesign = origin.experimentDesign
+		? loadImprovementExperimentDesign(origin.experimentDesign.path)
+		: null;
+	if (origin.experimentDesign && experimentDesign) {
+		verifyArtifact(
+			origin.experimentDesign,
+			"blind improvement experiment design",
+			improvementExperimentDesignPath(runsRoot, experimentDesign.loopId),
+		);
+	}
 
 	if (
 		builderRun.runId !== origin.builderRunId ||
@@ -900,7 +924,20 @@ function verifyAppliedBuilderOrigin(record: CandidateRecord, runsRootInput: stri
 		hashValue(spec.spec) !== origin.approvedSpec.specContentHash ||
 		hashValue(spec) !== origin.approvedSpec.snapshotHash
 	) throw new Error("approved Spec identity or status no longer matches CandidateRecord provenance");
-	return sourceEval;
+	if (experimentDesign) {
+		if (!origin.source || !sourceEval || !origin.source.developmentCorpus) {
+			throw new Error("blind improvement design requires exact Builder authoring evidence");
+		}
+		if (
+			experimentDesign.projectId !== origin.approvedSpec.projectId ||
+			experimentDesign.authoringCorpus.id !== origin.source.developmentCorpus.id ||
+			experimentDesign.authoringCorpus.hash !== origin.source.developmentCorpus.hash ||
+			JSON.stringify(experimentDesign.authoringTaskIds) !== JSON.stringify(sourceEval.taskIds ?? [])
+		) {
+			throw new Error("blind improvement design no longer matches the exact Builder authoring evidence");
+		}
+	}
+	return { sourceEval, experimentDesign };
 }
 
 /** Re-read referenced eval/run artifacts before any promotion side effect. */
@@ -949,11 +986,11 @@ function assertNoScreenEvidence(record: CandidateRecord, runsRoot: string): void
 
 function verifyPromotionEvidence(record: CandidateRecord, runsRoot: string): void {
 	assertNoScreenEvidence(record, runsRoot);
-	const sourceEval = verifyAppliedBuilderOrigin(record, runsRoot);
+	const { sourceEval, experimentDesign } = verifyAppliedBuilderOrigin(record, runsRoot);
 	const evaluated = record.events.find((event) => event.type === "evaluated");
 	if (!evaluated || evaluated.type !== "evaluated") throw new Error("candidate has no evaluated evidence");
 	const development = verifyEvaluationPair(runsRoot, record, evaluated.evaluation.development, "development", "development");
-	if (sourceEval && (
+	if (!experimentDesign && sourceEval && (
 		development.a.dataset !== sourceEval.dataset ||
 		development.b.dataset !== sourceEval.dataset ||
 		development.a.datasetHash !== sourceEval.datasetHash ||
@@ -967,12 +1004,28 @@ function verifyPromotionEvidence(record: CandidateRecord, runsRoot: string): voi
 		);
 	}
 	const developmentCorpus = evaluated.evaluation.development.corpus ?? null;
+	const expectedDevelopmentCorpus = experimentDesign
+		? { id: experimentDesign.validationCorpus.id, hash: experimentDesign.validationCorpus.hash }
+		: record.origin.kind === "applied-builder" && record.origin.source
+			? record.origin.source.developmentCorpus
+			: null;
 	if (
 		record.origin.kind === "applied-builder" &&
 		record.origin.source &&
-		canonicalJson(developmentCorpus) !== canonicalJson(record.origin.source.developmentCorpus)
+		canonicalJson(developmentCorpus) !== canonicalJson(expectedDevelopmentCorpus)
 	) {
-		throw new Error("development corpus identity no longer matches the canonical Builder source attestation");
+		throw new Error(
+			experimentDesign
+				? "development corpus identity no longer matches the blind validation design"
+				: "development corpus identity no longer matches the canonical Builder source attestation",
+		);
+	}
+	if (experimentDesign) {
+		for (const run of [development.a, development.b]) {
+			if (JSON.stringify(run.taskIds ?? []) !== JSON.stringify(experimentDesign.validationTaskIds)) {
+				throw new Error("development eval task ids no longer match the blind validation design");
+			}
+		}
 	}
 	if (developmentCorpus) {
 		const expectedDataset = corpusDatasetLabel("development", developmentCorpus.id);

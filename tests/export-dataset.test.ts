@@ -131,6 +131,8 @@ interface RunSpec {
 	finalWorld?: Record<string, unknown>;
 	/** Judge verdict sidecars by grader index, as eval.ts writes them. */
 	verdicts?: Record<number, Record<string, unknown>>;
+	/** Old records have no hashes for these sidecars. */
+	legacyArtifacts?: true;
 	/** What the conversation actually did, when a model played the user. */
 	conversation?: { turns: number; stop: "max-turns" | "sentinel" | "stop-when" };
 }
@@ -235,6 +237,10 @@ function writeEvalRun(runsRoot: string, spec: EvalRunSpec): void {
 					? { conversationTurns: run.conversation.turns, conversationStop: run.conversation.stop }
 					: {}),
 			},
+			...(run.legacyArtifacts ? {} : { evidenceArtifacts: {
+				world: run.finalWorld ? hashValue(run.finalWorld) : null,
+				judge: Object.fromEntries(Object.entries(run.verdicts ?? {}).map(([index, verdict]) => [index, hashValue(verdict)])),
+			} }),
 			evalResults: status === "error"
 				? null
 				: { graders, outcome: graders.every((grader) => grader.passed) ? "pass" : "fail" },
@@ -645,6 +651,60 @@ describe("ahde export: what is not evidence is not a dataset", () => {
 });
 
 describe("ahde export: redaction", () => {
+	it("keeps legacy conversations readable without promoting unattested sidecars to evidence", () => {
+		const runsRoot = newRunsRoot();
+		writeEvalRun(runsRoot, { evalRunId: "erun_legacy", runs: [{
+			runId: "run_legacy", taskId: "t", legacyArtifacts: true,
+			trace: conversationTrace({ question: "Q", answer: "A", toolResult: "ok" }),
+			finalWorld: { balance: 999 }, verdicts: { 0: { passed: true, score: 1 } },
+		}] });
+		const result = exportDataset({ runsRoot, evalRunId: "erun_legacy" });
+		expect(result.counts.exported).toBe(1);
+		const line = readLines(result.path)[0]!;
+		expect(line.meta.world).toBeUndefined();
+		expect(line.meta.judge).toBeUndefined();
+	});
+
+	it.each(["world", "judge"])("refuses a %s artifact modified after grading", (kind) => {
+		const runsRoot = newRunsRoot();
+		writeEvalRun(runsRoot, {
+			evalRunId: "erun_tamper", runs: [{ runId: "run_tamper", taskId: "t",
+				trace: conversationTrace({ question: "Q", answer: "A", toolResult: "ok" }),
+				finalWorld: { balance: 10 }, verdicts: { 0: { passed: true, score: 1 } },
+			}],
+		});
+		const path = kind === "world"
+			? join(runsRoot, "run_tamper", "runtime", "world", "state.json")
+			: join(runsRoot, "run_tamper", "judge", "0.verdict.json");
+		writeFileSync(path, JSON.stringify(kind === "world" ? { balance: 999 } : { passed: false, score: 0 }));
+		const result = exportDataset({ runsRoot, evalRunId: "erun_tamper" });
+		expect(result.counts.exported).toBe(0);
+		expect(result.counts.skipped.infra).toBe(1);
+		expect(result.notes[0]?.detail).toContain("hash mismatch");
+	});
+
+	it("redacts nested world and jury secrets without changing protected evidence", () => {
+		const runsRoot = newRunsRoot();
+		writeEvalRun(runsRoot, {
+			evalRunId: "erun_nested",
+			runs: [{
+				runId: "run_nested", taskId: "nested",
+				trace: conversationTrace({ question: "Q", answer: "A", toolResult: "ok" }),
+				finalWorld: { accounts: [{ api_key: "world-secret", balance: 10 }], token: { value: "nested-secret" } },
+				verdicts: { 0: { passed: true, score: 1, jury: [{ secret: "jury-secret", evidence: "Bearer abcdefghijklmnop" }] } },
+			}],
+		});
+		const initial = { credentials: { password: "initial-secret" }, active: true };
+		const result = exportDataset({ runsRoot, evalRunId: "erun_nested", tasks: tasksNamed({ nested: { world: { state: initial } } }) });
+		const raw = readFileSync(result.path, "utf8");
+		for (const secret of ["world-secret", "nested-secret", "jury-secret", "initial-secret", "abcdefghijklmnop"]) {
+			expect(raw).not.toContain(secret);
+		}
+		expect(readLines(result.path)[0]?.meta.world?.final).toEqual({ accounts: [{ api_key: "[REDACTED]", balance: 10 }], token: "[REDACTED]" });
+		expect(initial.credentials.password).toBe("initial-secret");
+		expect(readFileSync(join(runsRoot, "run_nested", "runtime", "world", "state.json"), "utf8")).toContain("world-secret");
+	});
+
 	it("redacts credentials in the instructions, the conversation, and the tool result", () => {
 		const runsRoot = newRunsRoot();
 		const trace = [
@@ -1086,6 +1146,47 @@ describe("ahde export: the world a case happens in", () => {
 			turns: 3,
 			stop: "stop-when",
 		});
+	});
+
+	it("fails closed when the published corpus facts no longer verify", () => {
+		const runsRoot = newRunsRoot();
+		const stateRoot = newRunsRoot();
+		const corpus = createCorpus({
+			stateRoot,
+			projectId: "demo",
+			name: "damaged-world",
+			visibility: "development",
+			tasks: [{
+				id: "task_world",
+				input: "Отмени заказ 7.",
+				world: { state: { order: { id: 7, status: "open" } } },
+				graders: [{ type: "output_contains", text: "Отменил" }],
+			}],
+		});
+		writeEvalRun(runsRoot, {
+			evalRunId: "erun_damaged_corpus",
+			dataset: corpusDatasetLabel("development", corpus.id),
+			datasetHash: corpus.hash,
+			runs: [{
+				runId: "run_damaged_corpus",
+				taskId: "task_world",
+				trace,
+				finalWorld: { order: { id: 7, status: "cancelled" } },
+			}],
+		});
+		writeFileSync(
+			join(stateRoot, "projects", "demo", "corpora", corpus.id, "corpus.jsonl"),
+			"corrupt\n",
+		);
+
+		const result = exportDataset({
+			runsRoot,
+			evalRunId: "erun_damaged_corpus",
+			tasks: corpusTaskLookup({ stateRoot, projectId: "demo" }),
+		});
+		expect(readLines(result.path)).toEqual([]);
+		expect(result.counts.skipped.infra).toBe(1);
+		expect(result.notes[0]?.detail).toContain("cited case facts are unavailable");
 	});
 
 	it("carries the case's user but never invents turns the run did not record", () => {

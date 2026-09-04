@@ -1191,7 +1191,7 @@ describe("Builder Pi slash commands", () => {
 		expect(text).toContain("lookup was never called");
 		expect(text).toContain("The same case flips between repetitions");
 		expect(text).toContain(`Live trace ${LIVE_URL} · retained for 15 minutes`);
-		expect(text).toContain("Next Say “fix the first problem”");
+		expect(text).toContain("Next Prepare a change for the first actionable problem");
 		expect(text).not.toContain("schemaVersion");
 		expect(text).not.toContain("{");
 		expect(output.note).toHaveBeenCalledTimes(1);
@@ -1905,7 +1905,7 @@ describe("Builder Pi slash commands", () => {
 		expect(text).toContain("→ propose fix");
 		expect(text).toContain("2. The same case flips between repetitions — 1 of 3 tasks");
 		expect(text).toContain(`Evidence ${EVIDENCE_URL}`);
-		expect(text).toContain("Next say “fix the first problem”");
+		expect(text).toContain("Next prepare a change for the first actionable problem");
 		expect(text).not.toMatch(/[{}]|schemaVersion/);
 		expect(text).not.toContain(FIRST_MODE);
 

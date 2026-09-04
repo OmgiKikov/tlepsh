@@ -142,12 +142,13 @@ def take_turn(state, message):
     state["history"].append({"role": "user", "content": message["text"]})
     for _ in range(MAX_STEPS):
         body = complete(state["model"], state["tools"], state["history"])
+        # Каждый запрос оплачивается, включая запросы выбора инструмента.
+        usage = usage_of(body, turn)
+        if usage:
+            send(usage)
         choice = (body.get("choices") or [{}])[0].get("message") or {}
         calls = choice.get("tool_calls") or []
         if not calls:
-            usage = usage_of(body, turn)
-            if usage:
-                send(usage)
             text = choice.get("content") or ""
             state["history"].append({"role": "assistant", "content": text})
             send({"type": "assistant", "turn": turn, "text": text})

@@ -125,7 +125,9 @@ export function renderRunsTable(
 			pad(percent(row.score), columns.score),
 			pad(oneLine(graderChips(row.graders), columns.graders), columns.graders),
 			pad(oneLine(mode, columns.mode), columns.mode),
-			pad(String(row.metrics.toolCalls), columns.tools),
+			pad(row.metrics.reportedToolCalls > 0
+				? `${row.metrics.toolCalls}+${row.metrics.reportedToolCalls}r`
+				: String(row.metrics.toolCalls), columns.tools),
 			duration(row.metrics.latencyMs),
 		].join(" "));
 	});
@@ -166,7 +168,9 @@ function renderEntry(entry: TranscriptEntry, paint: Paint): string[] {
 			return [`  ${paint.accent("‹")} ${head}`, ...body];
 		}
 		case "tool": {
-			const status = entry.isError ? paint.error(t("trace.errored")) : paint.success(t("trace.tool-ok"));
+			const status = entry.evidence === "reported" ? paint.warning(t("trace.tool-reported"))
+				: entry.result === null ? paint.warning(t("trace.no-result"))
+					: entry.isError ? paint.error(t("trace.errored")) : paint.success(t("trace.tool-ok"));
 			const lines = [`  ${paint.accent("→")} ${paint.bold(entry.name)} · ${oneLine(entry.args, MAX_TOOL_ARGS_CHARS)} · ${duration(entry.durationMs)} · ${status}`];
 			if (entry.result !== null) {
 				lines.push(`    ${paint.dim(oneLine(entry.result, MAX_TOOL_RESULT_CHARS))}${entry.resultTruncated ? paint.dim(" …") : ""}`);
@@ -251,7 +255,8 @@ export function renderTracePanel(
 	const score = meanGraderScore(model.graders);
 	const lines: string[] = [
 		`${paint.heading(t("trace.run"))} ${run.taskId}#${run.repetitionIndex} · ${paintOutcome(run.outcome, outcomeWord(run.outcome), paint)}` +
-			`${score === null ? "" : ` · ${t("table.col.score")} ${percent(score)}`} · ${duration(run.metrics.latencyMs)} · ${t("trace.toolCalls", { n: run.metrics.toolCalls })} · ${paint.dim(run.runId)}`,
+			`${score === null ? "" : ` · ${t("table.col.score")} ${percent(score)}`} · ${duration(run.metrics.latencyMs)} · ${t("trace.toolCalls", { n: run.metrics.toolCalls })}` +
+			`${run.metrics.reportedToolCalls > 0 ? ` · ${t("trace.reportedToolCalls", { n: run.metrics.reportedToolCalls })}` : ""} · ${paint.dim(run.runId)}`,
 	];
 	// The recorded stem, read as the host's own sentence rather than left as a
 	// raw string a reader has to decode — and never re-derived from the trace.
@@ -317,7 +322,7 @@ export function traceNoteForModel(model: RunDetailPageModel): string {
 	const firstUser = entries.find((entry) => entry.kind === "user");
 	const finalAnswer = [...entries].reverse().find((entry) => entry.kind === "assistant" && entry.final) ??
 		[...entries].reverse().find((entry) => entry.kind === "assistant");
-	const tools = entries.filter((entry) => entry.kind === "tool").map((entry) => (entry.kind === "tool" ? `${entry.name}${entry.isError ? " (error)" : ""}` : ""));
+	const tools = entries.filter((entry) => entry.kind === "tool").map((entry) => (entry.kind === "tool" ? `${entry.name}${entry.evidence === "reported" ? " (agent-reported, not host-verified)" : ""}${entry.isError ? " (error)" : ""}` : ""));
 	const failure = model.explanation.error;
 	const parts = [
 		`Operator opened /trace for run ${run.runId} — ${run.taskId}#${run.repetitionIndex}, ${outcomeWord(run.outcome)} — of eval ${model.evalRunId}.`,

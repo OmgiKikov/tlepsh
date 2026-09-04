@@ -15,6 +15,11 @@ import { WorkbenchDecisionDeclinedError, WorkbenchStaleDecisionError, WorkbenchT
 import { candidateSummary, requireCandidate, requireDevelopmentCorpus, requireProposal, resolveOne } from "../resolution.js";
 import { abortIfRequested, actorId, exactSame } from "../workbench.js";
 import { CandidateExperimentError } from "../../application/candidate-experiment.js";
+import {
+	improvementDesignCorpusRefs,
+	loadImprovementExperimentDesign,
+} from "../../application/improvement-experiment-design.js";
+import { isAutomatedDevelopmentCandidate } from "../inventory.js";
 import type { DecisionContext, DecisionHost, DecisionInputOf } from "./shared.js";
 import type { WorkbenchDecisionResult } from "../types.js";
 
@@ -35,6 +40,22 @@ export async function decideVerifyCandidate(
 		);
 	}
 	const proposal = requireProposal(inventory, "applied", input.builderRunId);
+	const sourceExperiments = inventory.candidates.filter((candidate) =>
+		candidate.projectId === host.projectId &&
+		isAutomatedDevelopmentCandidate(candidate) &&
+		candidate.origin.kind === "applied-builder" &&
+		candidate.origin.builderRunId === proposal.record.runId
+	);
+	const sourceExperiment = sourceExperiments.length === 0 ? null : resolveOne({
+		items: sourceExperiments,
+		focusId: inventory.validFocus.candidate?.id,
+		id: (candidate) => candidate.candidateId,
+		label: "automated hypothesis",
+	});
+	const sourceExperimentHash = sourceExperiment ? hashValue(sourceExperiment) : null;
+	const blindDesign = sourceExperiment?.origin.kind === "applied-builder" && sourceExperiment.origin.experimentDesign
+		? loadImprovementExperimentDesign(sourceExperiment.origin.experimentDesign.path)
+		: null;
 	// A construction change can be applied before the first basket or the
 	// exam exists, and this is where that is found out. Each refusal names
 	// the request that supplies what is missing: the exit is forward, never
@@ -100,6 +121,12 @@ export async function decideVerifyCandidate(
 		if (partial) throw new WorkbenchStaleDecisionError(input.kind);
 		const currentProposal = requireProposal(current, "applied", proposal.record.runId);
 		const builderRun = currentProposal.record;
+		if (sourceExperiment) {
+			const currentExperiment = requireCandidate(current, ["evaluated"], sourceExperiment.candidateId);
+			if (!isAutomatedDevelopmentCandidate(currentExperiment) || hashValue(currentExperiment) !== sourceExperimentHash) {
+				throw new WorkbenchStaleDecisionError(input.kind);
+			}
+		}
 		const applyReceipt = loadBuilderApplyReceipt(host.runsRoot, proposal.record.runId);
 		if (builderRun.request.approvedSpec?.projectId !== host.projectId) throw new Error("Builder proposal is not bound to this project approved Spec");
 		let sealedLoaded: ReturnType<typeof loadCorpus>;
@@ -129,16 +156,70 @@ export async function decideVerifyCandidate(
 		// An improvement proposal names the basket it was measured on. It has to
 		// be that same one, or before and after would compare two different exams.
 		const attested = builderRun.request.sourceAttestation?.developmentCorpus;
-		if (attested && (attested.id !== loaded.metadata.id || attested.hash !== loaded.metadata.hash)) {
+		let measured = loaded;
+		let developmentCorpus: CorpusRef = {
+			stateRoot: host.stateRoot,
+			projectId: host.projectId,
+			corpusId: loaded.metadata.id,
+		};
+		let validationCorpus: CorpusRef | undefined;
+		let experimentDesignPath: string | undefined;
+		if (blindDesign) {
+			if (
+				blindDesign.projectId !== host.projectId ||
+				blindDesign.sourceCorpus.id !== loaded.metadata.id ||
+				blindDesign.sourceCorpus.hash !== loaded.metadata.hash
+			) {
+				throw new Error("blind improvement design no longer belongs to the published source corpus");
+			}
+			const refs = improvementDesignCorpusRefs(blindDesign, host.stateRoot);
+			const authoring = loadCorpus(refs.authoring);
+			const validation = loadCorpus(refs.validation);
+			if (
+				!attested ||
+				attested.id !== authoring.metadata.id ||
+				attested.hash !== authoring.metadata.hash ||
+				JSON.stringify(authoring.tasks.map((task) => task.id)) !== JSON.stringify(blindDesign.authoringTaskIds) ||
+				JSON.stringify(validation.tasks.map((task) => task.id)) !== JSON.stringify(blindDesign.validationTaskIds)
+			) {
+				throw new Error("blind improvement corpora no longer match the selected hypothesis provenance");
+			}
+			developmentCorpus = refs.authoring;
+			validationCorpus = refs.validation;
+			experimentDesignPath = sourceExperiment!.origin.kind === "applied-builder"
+				? sourceExperiment!.origin.experimentDesign!.path
+				: undefined;
+			measured = validation;
+		} else if (attested && (attested.id !== loaded.metadata.id || attested.hash !== loaded.metadata.hash)) {
 			throw new Error(
 				"the Builder measured a development corpus that is not the published one of this Spec; " +
 				"publish the corpus it used, or author against the published one",
 			);
 		}
-		const development = { id: loaded.metadata.id, hash: loaded.metadata.hash, taskCount: loaded.metadata.taskCount };
-		const developmentCorpus: CorpusRef = { stateRoot: host.stateRoot, projectId: host.projectId, corpusId: loaded.metadata.id };
+		const development = {
+			id: measured.metadata.id,
+			hash: measured.metadata.hash,
+			taskCount: measured.metadata.taskCount,
+		};
 		return {
-			subject: { operation: "verify-applied-candidate", builderRunId: builderRun.runId, builderRunHash: hashValue(builderRun), applyReceiptHash: hashValue(applyReceipt), proposalHash: builderRun.artifacts.proposal?.sha256 ?? null, baseTargetSha: applyReceipt.baseTargetSha, candidateSha: applyReceipt.candidateSha, approvedSpec: builderRun.request.approvedSpec, developmentCorpus: development, sealedHoldout: { id: selected.id, hash: selected.hash, taskCount: selected.taskCount }, repetitions: input.repetitions, screen: builderRun.request.source?.evalRunId ?? null, force: input.force === true },
+			subject: {
+				operation: "verify-applied-candidate",
+				builderRunId: builderRun.runId,
+				builderRunHash: hashValue(builderRun),
+				applyReceiptHash: hashValue(applyReceipt),
+				proposalHash: builderRun.artifacts.proposal?.sha256 ?? null,
+				baseTargetSha: applyReceipt.baseTargetSha,
+				candidateSha: applyReceipt.candidateSha,
+				approvedSpec: builderRun.request.approvedSpec,
+				developmentCorpus: development,
+				blindDesign: blindDesign
+					? { id: blindDesign.designId, hash: blindDesign.designHash, sourceCandidateHash: sourceExperimentHash }
+					: null,
+				sealedHoldout: { id: selected.id, hash: selected.hash, taskCount: selected.taskCount },
+				repetitions: input.repetitions,
+				screen: builderRun.request.source?.evalRunId ?? null,
+				force: input.force === true,
+			},
 			approvedSpecId: builderRun.request.approvedSpec.specId,
 			sourceEvalRunId: builderRun.request.source?.evalRunId ?? null,
 			// The receipt of this exact candidate is the authorization: it says
@@ -146,6 +227,8 @@ export async function decideVerifyCandidate(
 			// A candidate applied outside that dialog carries none.
 			authorized: applyReceipt.verificationAuthorization ?? null,
 			developmentCorpus,
+			validationCorpus,
+			experimentDesignPath,
 			sealedCorpus: { stateRoot: host.stateRoot, projectId: host.projectId, corpusId: selected.id } satisfies CorpusRef,
 		};
 	};
@@ -223,6 +306,8 @@ export async function decideVerifyCandidate(
 			approvedSpec: { stateRoot: host.stateRoot, specId: after.approvedSpecId },
 			repetitions: input.repetitions,
 			developmentCorpus: after.developmentCorpus,
+			...(after.validationCorpus ? { validationCorpus: after.validationCorpus } : {}),
+			...(after.experimentDesignPath ? { experimentDesignPath: after.experimentDesignPath } : {}),
 			sealedCorpus: after.sealedCorpus,
 			actorId: actor,
 			...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),

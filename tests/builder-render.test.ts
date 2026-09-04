@@ -636,7 +636,7 @@ describe("stage labels and next steps", () => {
 			"corpus-design": "Describe what the agent still needs built, or say “tests” to write the cases",
 			"corpus-review": "Say “tests” to publish them and run",
 			"ready-to-evaluate": "Describe what the agent still needs built, or say “tests” to run them",
-			"improvement-authoring": "Say “fix the first problem”",
+			"improvement-authoring": "Prepare a change for the first actionable problem",
 			"proposal-review": "Say “apply” after reading the diff, or “discard”",
 			"candidate-verification": "Say “check” to verify the change",
 			"candidate-review": "Say “ship it” — or “reject”",
@@ -1417,7 +1417,7 @@ describe("renderTraces", () => {
 		expect(lines[5]).toBe("     No tool was called in 8 of 8 failing runs.");
 		expect(lines[6]).toBe("       run-1 · no tool call · “I can answer that from memory.”");
 		expect(lines[7]).toBe("Evidence http://127.0.0.1:4310/evidence/eval-1");
-		expect(lines[8]).toBe("Next say “fix the first problem” (or name a mode) to prepare an exact proposal");
+		expect(lines[8]).toBe("Next prepare a change for the first actionable problem, or choose another");
 		expect(lines).toHaveLength(9);
 	});
 
@@ -1512,6 +1512,21 @@ describe("renderTraces", () => {
 		expect(renderTraces(makeTraces({}, { worldCases: [] }), plainPaint).join("\n")).not.toContain("Worlded cases");
 	});
 
+	it("keeps a compact run to three problems without hiding inconclusive evidence", () => {
+		const modes = Array.from({ length: 5 }, (_, index) => makeMode({ ordinal: index + 1 }));
+		const detail = makeTraces({ status: "inconclusive", proposalEligible: false, modes });
+		const lines = renderTraces(detail, plainPaint, { compact: true, next: false });
+		expect(lines.filter((line) => /^  \d\./.test(line))).toHaveLength(3);
+		expect(lines.join("\n")).toContain("inconclusive");
+		expect(lines.join("\n")).toContain("8/10 executions failed");
+		expect(lines.join("\n")).toContain("+2 more modes");
+		expect(lines.join("\n")).not.toContain("I can answer that from memory");
+		expect(lines.at(-1)).toBe("Evidence http://127.0.0.1:4310/evidence/eval-1");
+		const result = renderDecision(decision("run-eval", makeRun({ status: "inconclusive", proposalEligible: false, modes: [] }), "improvement-authoring"), plainPaint);
+		expect(result.at(-1)).toBe("Next resolve the measurement problem, then run again");
+		expect(result.join("\n")).not.toContain("Prepare a change");
+	});
+
 	it("explains inconclusive and healthy runs without modes", () => {
 		const inconclusive = renderTraces(makeTraces({
 			status: "inconclusive",
@@ -1522,7 +1537,7 @@ describe("renderTraces", () => {
 		expect(inconclusive).toContain("Diagnosis inconclusive · 6/10 passed · 0 failure mode(s), 0 of them across tasks");
 		expect(inconclusive).toContain("  3 infrastructure error(s) made this run inconclusive; repair the evidence path and rerun.");
 		expect(inconclusive).toContain("Evidence explorer link unavailable");
-		expect(inconclusive[inconclusive.length - 1]).toBe("Next repair the inconclusive evidence path, then /run again");
+		expect(inconclusive[inconclusive.length - 1]).toBe("Next resolve the measurement problem, then run again");
 		const healthy = renderTraces(makeTraces({
 			status: "healthy",
 			proposalEligible: false,
@@ -1530,7 +1545,7 @@ describe("renderTraces", () => {
 			summary: { tasks: 10, failedTasks: 0, infrastructureErrors: 0, failureModeCount: 0, systemicFailureModeCount: 0, taskLocalFailureModeCount: 0, omittedFailureModeCount: 0 },
 		}), tagPaint);
 		expect(healthy).toContain("<success>  No failure modes: every development case passed.</success>");
-		expect(healthy[healthy.length - 1]).toBe("<dim>Next</dim> add harder cases, or /run again to measure stability");
+		expect(healthy[healthy.length - 1]).toBe("<dim>Next</dim> add harder cases, or run again to measure stability");
 		expect(healthy.join("\n")).toContain("<dim>Diagnosis</dim> <success>healthy</success>");
 		expect(healthy.join("\n")).toContain("<link>http://127.0.0.1:4310/evidence/eval-1</link>");
 	});
@@ -1747,7 +1762,7 @@ describe("renderImpact", () => {
 // ---------------------------------------------------------------------------
 
 describe("renderDecision", () => {
-	const nextLine = (stage: WorkbenchStage): string => `Next ${nextStep(makeView({ stage }))} (${stageLabel(stage)})`;
+	const nextLine = (stage: WorkbenchStage): string => `Next ${nextStep(makeView({ stage }))}`;
 
 	it("renders scaffold, configure, approve, and publish decisions", () => {
 		expect(renderDecision(decision("scaffold-target", { targetId: "support-bot", targetGitSha: SHA_A, receiptId: "receipt-1" }, "target-setup"), plainPaint)).toEqual([
@@ -1784,7 +1799,10 @@ describe("renderDecision", () => {
 		const text = lines.join("\n");
 		expect(lines[0]).toContain("<heading>Evaluation</heading>");
 		expect(text).toContain("<dim>Live trace</dim> <link>http://127.0.0.1:4310/live/abc</link> <dim>· retained for 15 minutes</dim>");
-		expect(lines[lines.length - 1]).toBe(`<dim>Next</dim> ${nextStep(makeView({ stage: "improvement-authoring" }))} <dim>(Diagnosis)</dim>`);
+		expect(lines[lines.length - 1]).toBe(`<dim>Next</dim> ${nextStep(makeView({ stage: "improvement-authoring" }))}`);
+		expect(lines.length).toBeLessThanOrEqual(7);
+		expect(text).not.toContain("I can answer that from memory");
+		expect(text).toContain("lookup was never called");
 		const noLive = renderDecision(decision("run-eval", traces, "improvement-authoring"), plainPaint).join("\n");
 		expect(noLive).not.toContain("Live trace");
 	});
@@ -1805,8 +1823,8 @@ describe("renderDecision", () => {
 		const alone = renderTraces(makeRun(), plainPaint);
 		expect(alone.filter((line) => line.startsWith("Next"))).toHaveLength(1);
 		setLanguage("ru");
-		expect(renderTraces(makeRun(), plainPaint).at(-1)).toContain("исправь первую проблему");
-		expect(nextStep(makeView({ stage: "improvement-authoring" }))).toContain("исправь первую проблему");
+		expect(renderTraces(makeRun(), plainPaint).at(-1)).toContain("подготовить правку");
+		expect(nextStep(makeView({ stage: "improvement-authoring" }))).toContain("Подготовить правку");
 		setLanguage(null);
 	});
 
@@ -1880,7 +1898,7 @@ describe("renderDecision", () => {
 		expect(renderDecision(decision("promote-candidate", { candidate: makeCandidate({ status: "promoted" }), tag: "v1.2.0", candidateSha: SHA_B, guards: { draftId: null, cases: 0, taskIds: [], warning: null } }, "candidate-adoption"), tagPaint)).toEqual([
 			"<heading>Candidate promoted</heading> <success>v1.2.0</success> <dim>· bbbbbbbbbb</dim>",
 			"<muted>The tag records the exact reviewed revision. The active agent is unchanged until you ask to adopt it.</muted>",
-			`<dim>Next</dim> ${nextStep(makeView({ stage: "candidate-adoption" }))} <dim>(Adopt candidate)</dim>`,
+			`<dim>Next</dim> ${nextStep(makeView({ stage: "candidate-adoption" }))}`,
 		]);
 		const rejected = renderDecision(decision("reject-candidate", makeCandidate({ status: "rejected", rejection: { reason: "worse", at: AT } }), "complete"), plainPaint);
 		expect(rejected[0]).toBe("Candidate rejected candidate-1 · rejected");
@@ -1995,7 +2013,7 @@ describe("renderDecision · calibrate", () => {
 		const lines = renderDecision(result, plainPaint);
 		expect(lines[0]).toBe("Noise calibrated calibration-1");
 		expect(lines).toContain("Recommended 3 repetitions per run to keep noise under 10 points");
-		expect(lines[lines.length - 1]).toBe(`Next ${nextStep(makeView({ stage: "ready-to-evaluate" }))} (${stageLabel("ready-to-evaluate")})`);
+		expect(lines[lines.length - 1]).toBe(`Next ${nextStep(makeView({ stage: "ready-to-evaluate" }))}`);
 		const withTrace = renderDecision(result, plainPaint, { liveTraceUrl: "http://127.0.0.1:4312/live/abc" });
 		expect(withTrace.join("\n")).toContain("Live trace http://127.0.0.1:4312/live/abc");
 	});
@@ -2207,6 +2225,41 @@ describe("renderConfirmation", () => {
 		try {
 			expect(turnBudgetLine(300_000, [{ simulatedUser: { maxTurns: 6 } }]))
 				.toBe("таймаут 300 с на ход · до 6 ходов");
+		} finally {
+			setLanguage(null);
+		}
+	});
+
+	it("itemizes Target, Builder, and total spend on the improve confirmation", () => {
+		const lines = renderConfirmation(makeConfirmation("improve", {
+			targetEstimatedCost: "about $0.42 (based on 3 eval runs)",
+			estimatedCost: "about $1.68",
+			estimatedTime: "about 7 minutes",
+			authoringBudget: {
+				maxVariants: 2,
+				maxRequests: 16,
+				maxOutputTokens: 32_768,
+				maxCostUsd: 1.26,
+				maxMinutes: 4,
+			},
+			authoring: "Builder writes each variant in a private Workshop and has no release authority.",
+		}), plainPaint);
+		expect(lines.slice(0, 4)).toEqual([
+			"Target subtotal about $0.42 (based on 3 eval runs)",
+			"Builder ceiling about $1.26 · variants: 2 · requests: ≤16 · output tokens: ≤32768",
+			"Total operation about $1.68 · about 7 minutes",
+			"  Builder writes each variant in a private Workshop and has no release authority.",
+		]);
+		setLanguage("ru");
+		try {
+			const russian = renderConfirmation(makeConfirmation("improve", {
+				targetEstimatedCost: "около $0,42",
+				estimatedCost: "неизвестно",
+				estimatedTime: "около 7 минут",
+				authoringBudget: { maxVariants: 2, maxRequests: null, maxOutputTokens: null, maxCostUsd: null },
+			}), plainPaint).join("\n");
+			expect(russian).toContain("Подытог агента около $0,42");
+			expect(russian).toContain("Лимит Билдера неизвестно · вариантов: 2 · лимиты запросов и токенов неизвестны");
 		} finally {
 			setLanguage(null);
 		}

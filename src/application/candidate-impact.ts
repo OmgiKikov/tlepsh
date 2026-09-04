@@ -27,6 +27,11 @@ import { comparisonGateEvidence } from "./candidate-experiment.js";
 import { corpusDatasetLabel } from "./corpus-target.js";
 import { compareUtf8, exactSnapshotIdentity, loadExactEvalSnapshot } from "./exact-eval-snapshot.js";
 import {
+	improvementExperimentDesignPath,
+	loadImprovementExperimentDesign,
+	type ImprovementExperimentDesign,
+} from "./improvement-experiment-design.js";
+import {
 	IMPROVEMENT_BRIEF_ALGORITHM_ID, FailureModeIdSchema,
 	compileImprovementBrief, graderFamilyDiscriminator, graderFamilyModeId, graderFamilyOf,
 	publicTaskId, type GraderFamily,
@@ -394,6 +399,7 @@ function categoryFor(checkCode: GraderCheckCode): z.infer<typeof DiagnosisCatego
 		case "no-secret":
 		case "turn-budget":
 		case "world-state":
+		case "final-answer":
 		case "reference-exact": return "output-contract";
 		case "semantic-rubric":
 		case "cites-source":
@@ -701,8 +707,9 @@ function verifiedBuilderBasis(
 ): {
 	basis: NonNullable<ReturnType<typeof loadBuilderProposalRun>["request"]["proposalBasis"]> | null;
 	brief: ReturnType<typeof compileImprovementBrief> | null;
+	experimentDesign: ImprovementExperimentDesign | null;
 } {
-	if (record.origin.kind !== "applied-builder") return { basis: null, brief: null };
+	if (record.origin.kind !== "applied-builder") return { basis: null, brief: null, experimentDesign: null };
 	const origin = record.origin;
 	const builderDir = resolveContainedArtifactPath(runsRoot, "builders", origin.builderRunId);
 	verifyArtifactRef(origin.builderRun, "Builder run", resolveContainedArtifactPath(builderDir, "builder_run.json"));
@@ -710,11 +717,24 @@ function verifiedBuilderBasis(
 	verifyArtifactRef(origin.proposal, "Builder proposal", resolveContainedArtifactPath(builderDir, "proposal.json"));
 	verifyArtifactRef(origin.applyReceipt, "Builder apply receipt", resolveContainedArtifactPath(builderDir, "apply_receipt.json"));
 	verifyArtifactRef(origin.approvedSpec.artifact, "approved Spec");
+	if (origin.experimentDesign) {
+		verifyArtifactRef(origin.experimentDesign, "blind improvement experiment design");
+	}
 
 	const builder = loadBuilderProposalRun(runsRoot, origin.builderRunId);
 	const proposal = readJsonArtifact(origin.proposal.path, CandidateProposalSchema);
 	const receipt = readJsonArtifact(origin.applyReceipt.path, BuilderApplyReceiptSchema);
 	const spec = readJsonArtifact(origin.approvedSpec.artifact.path, SpecSnapshotSchema);
+	const experimentDesign = origin.experimentDesign
+		? loadImprovementExperimentDesign(origin.experimentDesign.path)
+		: null;
+	if (origin.experimentDesign && experimentDesign) {
+		verifyArtifactRef(
+			origin.experimentDesign,
+			"blind improvement experiment design",
+			improvementExperimentDesignPath(runsRoot, experimentDesign.loopId),
+		);
+	}
 	const validated = record.events.find((event) => event.type === "validated");
 	if (
 		builder.runId !== origin.builderRunId ||
@@ -772,7 +792,8 @@ function verifiedBuilderBasis(
 		if (builder.request.source || builder.request.sourceAttestation || basis) {
 			throw new Error("Candidate source provenance disappeared from its Builder origin");
 		}
-		return { basis: null, brief: null };
+		if (experimentDesign) throw new Error("blind improvement design requires Builder source evidence");
+		return { basis: null, brief: null, experimentDesign: null };
 	}
 	verifyArtifactRef(
 		origin.source.evalRun,
@@ -814,7 +835,18 @@ function verifiedBuilderBasis(
 		throw new Error("Candidate Builder source is misattributed");
 	}
 	const brief = compileImprovementBrief(runsRoot, diagnosis);
-	if (!basis) return { basis: null, brief };
+	if (experimentDesign) {
+		if (
+			experimentDesign.projectId !== origin.approvedSpec.projectId ||
+			!origin.source.developmentCorpus ||
+			experimentDesign.authoringCorpus.id !== origin.source.developmentCorpus.id ||
+			experimentDesign.authoringCorpus.hash !== origin.source.developmentCorpus.hash ||
+			JSON.stringify(experimentDesign.authoringTaskIds) !== JSON.stringify(source.record.taskIds ?? [])
+		) {
+			throw new Error("blind improvement design no longer matches the exact Builder authoring evidence");
+		}
+	}
+	if (!basis) return { basis: null, brief, experimentDesign };
 	if (basis.briefSha256 !== hashValue(brief)) {
 		throw new Error("Candidate proposal basis no longer matches its exact improvement brief");
 	}
@@ -824,14 +856,27 @@ function verifiedBuilderBasis(
 			throw new Error("Candidate targeted failure mode no longer matches its proposal basis");
 		}
 	}
-	return { basis, brief };
+	return { basis, brief, experimentDesign };
 }
 
 function assertDevelopmentSource(
 	record: CandidateRecord,
 	verified: VerifiedPair,
+	experimentDesign: ImprovementExperimentDesign | null,
 ): void {
 	if (record.origin.kind !== "applied-builder" || !record.origin.source) return;
+	if (experimentDesign) {
+		for (const run of [verified.baseline.record, verified.candidate.record]) {
+			if (
+				run.dataset !== corpusDatasetLabel("development", experimentDesign.validationCorpus.id) ||
+				run.datasetHash !== experimentDesign.validationCorpus.hash ||
+				JSON.stringify(run.taskIds ?? []) !== JSON.stringify(experimentDesign.validationTaskIds)
+			) {
+				throw new Error("development comparison does not match the exact blind validation surface");
+			}
+		}
+		return;
+	}
 	const source = record.origin.source;
 	for (const run of [verified.baseline.record, verified.candidate.record]) {
 		if (
@@ -961,11 +1006,18 @@ export function inspectCandidateImpact(options: InspectCandidateImpactOptions): 
 
 	const issues: string[] = [];
 	if (record.mode !== "candidate") issues.push("A/A calibration cannot establish Candidate impact");
-	const { basis, brief } = verifiedBuilderBasis(options.runsRoot, record);
+	const { basis, brief, experimentDesign } = verifiedBuilderBasis(options.runsRoot, record);
 	const developmentCorpus = evaluated.evaluation.development.corpus ?? null;
+	const expectedDevelopmentCorpus = experimentDesign
+		? { id: experimentDesign.validationCorpus.id, hash: experimentDesign.validationCorpus.hash }
+		: record.origin.kind === "applied-builder" && record.origin.source
+			? record.origin.source.developmentCorpus
+			: null;
 	if (record.origin.kind === "applied-builder" && record.origin.source &&
-		canonicalJson(developmentCorpus) !== canonicalJson(record.origin.source.developmentCorpus)) {
-		throw new Error("development corpus identity no longer matches the Builder source");
+		canonicalJson(developmentCorpus) !== canonicalJson(expectedDevelopmentCorpus)) {
+		throw new Error(experimentDesign
+			? "development corpus identity no longer matches the blind validation design"
+			: "development corpus identity no longer matches the Builder source");
 	}
 	const developmentContext = developmentCorpus
 		? { corpusId: developmentCorpus.id, corpusHash: developmentCorpus.hash }
@@ -978,7 +1030,7 @@ export function inspectCandidateImpact(options: InspectCandidateImpactOptions): 
 		developmentContext,
 		issues,
 	);
-	assertDevelopmentSource(record, development);
+	assertDevelopmentSource(record, development, experimentDesign);
 	if (developmentCorpus) {
 		const expectedDataset = corpusDatasetLabel("development", developmentCorpus.id);
 		for (const run of [development.baseline.record, development.candidate.record]) {

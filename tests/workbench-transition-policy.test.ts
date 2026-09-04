@@ -50,8 +50,8 @@ describe("Workbench transition policy", () => {
 			.toThrow(/calibrate is not legal during candidate-verification/);
 		expect(() => assertWorkbenchDecisionStage("start-testing", "ready-to-evaluate"))
 			.toThrow(/start-testing is not legal during ready-to-evaluate/);
-		expect(() => assertWorkbenchDecisionStage("ship", "candidate-verification"))
-			.toThrow(/ship is not legal during candidate-verification/);
+		expect(() => assertWorkbenchDecisionStage("ship", "ready-to-evaluate"))
+			.toThrow(/ship is not legal during ready-to-evaluate/);
 	});
 
 	it("names the single unblocking action instead of the rule that blocked it", () => {

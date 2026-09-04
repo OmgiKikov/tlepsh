@@ -766,6 +766,7 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 	// Reaching the budget is the default ending; the user model can end it sooner.
 	let conversationStop: SimulatedUserStop = "max-turns";
 	let conversationTurns = 0;
+	let finalAnswer: "present" | "silent" = "present";
 	try {
 		if (!policyResult || !targetToolRuntime) {
 			throw new Error(
@@ -855,6 +856,7 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			// An agent that answered nothing twice has ended the conversation on
 			// its own terms: the run completes and is graded on the silence.
 			if (silent) {
+				finalAnswer = "silent";
 				if (simulated && userModel) conversationStop = "silent";
 				break;
 			}
@@ -913,8 +915,10 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			...(stats.costUsd === null ? {} : { costUsd: stats.costUsd }),
 			latencyMs: Date.now() - startedMs,
 			toolCalls: stats.toolCalls,
+			...(stats.reportedToolCalls ? { reportedToolCalls: stats.reportedToolCalls } : {}),
 			toolErrors,
 			recoveryAttempts,
+			finalAnswer,
 			...(task.messages ? { seededTurns: seededTurns.length } : {}),
 			// Absent on every case without a simulated user, so their run.json
 			// stays byte-for-byte what it was before simulated users existed.
@@ -948,6 +952,7 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			...(observed && observed.costUsd !== null ? { costUsd: observed.costUsd } : {}),
 			latencyMs: Date.now() - startedMs,
 			toolCalls: observed?.toolCalls ?? record.metrics.toolCalls,
+			...(observed?.reportedToolCalls ? { reportedToolCalls: observed.reportedToolCalls } : {}),
 			recoveryAttempts,
 			// Spend already incurred is spend, even on a run that then failed.
 			...(simulated ? { simulatedUser: { ...simulatedUserSpend } } : {}),

@@ -21,6 +21,7 @@ const HEAVY = [
 	"tests/cycle-continuation.test.ts", // Git repos, one per interrupted cycle
 	"tests/harness-authoring.test.ts", // Git repos for the authoring round trip
 	"tests/improvement-brief.test.ts", // spawns nothing: writes and re-reads hundreds of eval artifacts
+	"tests/improvement-author.test.ts", // real Pi author loop and Git-backed hypothesis search
 	"tests/proposal-search.test.ts",
 	"tests/python-agent.test.ts", // spawns the shipped python-agent against a stub HTTP endpoint // Git-backed improve fixtures, one repo per search round
 	"tests/regression-guards.test.ts", // Git improve fixtures plus the sealed-holdout repetitions

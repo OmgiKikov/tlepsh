@@ -21,6 +21,11 @@ import {
 import { evaluateWorldExpectation, readWorldStateFile } from "./domain/world.js";
 import { worldStatePath } from "./target/world-state.js";
 import {
+	readRunJudgeVerdict,
+	verifiedRunArtifacts,
+	type VerifiedRunArtifacts,
+} from "./run-evidence.js";
+import {
 	HashSchema,
 	modelFingerprint,
 	axisDifferences,
@@ -75,6 +80,7 @@ function gradeToolCalled(
 ): GraderResult {
 	const matching = toolCalls.filter(
 		(call) =>
+			call.evidence !== "reported" &&
 			call.name === spec.tool &&
 			(!spec.argsContains || JSON.stringify(call.arguments).includes(spec.argsContains)),
 	);
@@ -383,7 +389,8 @@ const JUDGE_REFERENCE_SYSTEM_V2 =
 
 /**
  * The evaluator id that introduced the abstaining protocols. Under any other
- * id the judge is asked the frozen questions above, byte for byte.
+ * earlier id the judge is asked the frozen questions above, byte for byte.
+ * v4 changes completion/tool evidence, but keeps the v3 judge prompts exactly.
  */
 export const JUDGE_ABSTAIN_EVALUATOR_ID = "ahde-evaluator-v3";
 
@@ -401,7 +408,7 @@ export interface JudgeProtocolPrompts {
  * this file reads an id, and nothing else may hand a judge a prompt.
  */
 export function judgePromptsFor(evaluatorId: string): JudgeProtocolPrompts {
-	return evaluatorId === JUDGE_ABSTAIN_EVALUATOR_ID
+	return evaluatorId === JUDGE_ABSTAIN_EVALUATOR_ID || evaluatorId === "ahde-evaluator-v4"
 		? {
 			rubric: JUDGE_SYSTEM_V2,
 			reference: JUDGE_REFERENCE_SYSTEM_V2,
@@ -951,9 +958,7 @@ async function gradeJudge(
 		metrics.costUsd += attempt.metrics.costUsd;
 	}
 	const verdict = foldJury(jurors, assertionCount);
-	if (verdict.choice || verdict.assertions || jury > 1) {
-		writeJudgeVerdictEvidence(sidecar, verdict, jurors);
-	}
+	writeJudgeVerdictEvidence(sidecar, verdict, jurors);
 	return {
 		result: {
 			name: "",
@@ -1000,6 +1005,7 @@ const NO_WORLD_REASON = "case declares no world";
 
 export interface GradedRun {
 	graders: GraderResult[];
+	evidenceArtifacts: NonNullable<RunRecord["evidenceArtifacts"]>;
 	/** Aggregate judge cost for this run; null when no judge grader ran. */
 	judge: JudgeMetrics | null;
 }
@@ -1172,14 +1178,42 @@ export async function gradeRun(
 			name: graderName(normalizedSpec, task, index),
 			specHash: hashValue(normalizedSpec),
 			checkCode: graderCheckCode(normalizedSpec.type),
-			// The one part of a required-tool check that is not task wording: two
-			// tasks asking for the same tool are asking for the same behaviour.
+			// The stable thing this check names. It is optional for compatibility
+			// and absent rather than truncated when an old or unusually long source
+			// id cannot fit the existing evidence field.
 			...(normalizedSpec.type === "tool_called" && normalizedSpec.tool.length <= MAX_CHECK_SUBJECT_CHARS
 				? { checkSubject: normalizedSpec.tool }
-				: {}),
+				: normalizedSpec.type === "cites_source" && normalizedSpec.chunk.length <= MAX_CHECK_SUBJECT_CHARS
+					? { checkSubject: normalizedSpec.chunk }
+					: {}),
 		});
 	}
-	return { graders: results, judge: judgeCalled ? judgeSpend : null };
+	// A safety-only basket must not reward silence. Append, so judge sidecar
+	// indexes still refer to the task's declared graders. Legacy runs carry no
+	// host observation and are not retroactively reinterpreted.
+	if (record.metrics.finalAnswer !== undefined) {
+		const passed = record.metrics.finalAnswer === "present";
+		results.push({
+			name: "final_answer", type: "final_answer", passed, score: passed ? 1 : 0,
+			reason: passed ? "agent returned a final answer" : "agent returned no final answer after recovery",
+			specHash: hashValue({ type: "final_answer", required: true }), checkCode: "final-answer",
+		});
+	}
+	try {
+		const world = task.world && record.status === "completed"
+			? finalWorld ?? readWorldStateFile(worldStatePath(runDir)) : null;
+		const judgeArtifacts = Object.fromEntries(task.effectiveGraders.flatMap((spec, index) =>
+			spec.type === "judge" && judgeCalled
+				? [[String(index), hashValue(readRunJudgeVerdict(runsRoot, record.runId, String(index)))]] : []));
+		return {
+			graders: results, judge: judgeCalled ? judgeSpend : null,
+			evidenceArtifacts: { world: world === null ? null : hashValue(world), judge: judgeArtifacts },
+		};
+	} catch (error) {
+		// An artifact failure invalidates the verdict, not the spend already incurred.
+		if (judgeSpend.calls > 0) throw new EvaluatorModelError(error instanceof Error ? error.message : String(error), judgeSpend);
+		throw error;
+	}
 }
 
 // ---------- Eval run aggregation ----------
@@ -1409,6 +1443,8 @@ export function isSealedEvalRun(
 export interface VerifiedEvalRun {
 	record: EvalRunRecord;
 	runs: RunRecord[];
+	/** Hash-verified world and judge values, keyed by Run id. */
+	artifacts: ReadonlyMap<string, VerifiedRunArtifacts>;
 	hasRunHashes: boolean;
 }
 
@@ -1524,6 +1560,7 @@ export async function gradeRecordedRun(
 		}
 	}
 	if (graded) {
+		record.evidenceArtifacts = graded.evidenceArtifacts;
 		record.evalResults = {
 			graders: graded.graders,
 			outcome: graded.graders.every((grader) => grader.passed) ? "pass" : "fail",
@@ -1558,7 +1595,7 @@ async function gradeAndFinalize(
 		eventRun,
 		finalized.outcome,
 		finalized.graded?.graders ?? [],
-		task.effectiveGraders.length,
+		finalized.graded?.graders.length ?? task.effectiveGraders.length,
 	);
 	return { record: finalized.record, outcome: finalized.outcome };
 }
@@ -2042,6 +2079,7 @@ function sameJson(a: unknown, b: unknown): boolean {
 export function loadVerifiedEvalRun(runsRoot: string, evalRunId: string): VerifiedEvalRun {
 	const record = readEvalRunIndex(runsRoot, evalRunId);
 	const expectedHashes = new Map(record.runArtifacts?.map((artifact) => [artifact.runId, artifact.sha256]) ?? []);
+	const artifacts = new Map<string, VerifiedRunArtifacts>();
 	const runs = record.runIds.map((runId) => {
 		const run = loadRun(runsRoot, runId);
 		if (run.runId !== runId) evidenceMismatch(evalRunId, `run path ${runId} contains record ${run.runId}`);
@@ -2049,6 +2087,7 @@ export function loadVerifiedEvalRun(runsRoot: string, evalRunId: string): Verifi
 		if (expectedHash && hashValue(run) !== expectedHash) {
 			evidenceMismatch(evalRunId, `run ${runId} hash does not match the final eval index`);
 		}
+		artifacts.set(runId, verifiedRunArtifacts(runsRoot, run));
 		if (run.parent?.evalRunId !== record.evalRunId) {
 			evidenceMismatch(evalRunId, `run ${runId} parent does not reference this eval`);
 		}
@@ -2141,7 +2180,7 @@ export function loadVerifiedEvalRun(runsRoot: string, evalRunId: string): Verifi
 			: runs.filter((run) => run.status === "completed" && run.evalResults?.outcome === "pass").length / runs.length,
 	};
 	if (!sameJson(summary, record.summary)) evidenceMismatch(evalRunId, "summary does not match verified runs");
-	return { record, runs, hasRunHashes: record.runArtifacts !== undefined };
+	return { record, runs, artifacts, hasRunHashes: record.runArtifacts !== undefined };
 }
 
 export function loadEvalRun(runsRoot: string, evalRunId: string): EvalRunRecord {

@@ -63,7 +63,7 @@ afterEach(() => {
 });
 
 function runsRootWith(
-	runs: readonly { costUsd: number; seconds: number }[],
+	runs: readonly { costUsd: number; seconds: number; judgeCostUsd?: number; simulatedUserCostUsd?: number }[],
 	targetId = TARGET_ID,
 	into?: string,
 ): string {
@@ -119,6 +119,10 @@ function runsRootWith(
 			metrics: {
 				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 				costUsd: sample.costUsd,
+				...(sample.judgeCostUsd === undefined
+					? {} : { judge: { calls: 1, tokens: 1, costUsd: sample.judgeCostUsd } }),
+				...(sample.simulatedUserCostUsd === undefined
+					? {} : { simulatedUser: { calls: 1, tokens: 1, costUsd: sample.simulatedUserCostUsd } }),
 				latencyMs: sample.seconds * 1_000,
 				toolCalls: 0,
 				toolErrors: 0,
@@ -205,6 +209,7 @@ describe("Workbench gate policy", () => {
 	it("admits the composites exactly where a step of them is still pending", () => {
 		expect(workbenchDecisionStages("start-testing")).toEqual(["spec-review", "corpus-review"]);
 		expect(workbenchDecisionStages("ship")).toEqual([
+			"candidate-verification",
 			"candidate-review",
 			"release-decision",
 			"candidate-adoption",
@@ -213,7 +218,7 @@ describe("Workbench gate policy", () => {
 		for (const stage of ["spec-review", "corpus-review"] as const) {
 			expect(() => assertWorkbenchDecisionStage("start-testing", stage)).not.toThrow();
 		}
-		for (const stage of ["candidate-review", "release-decision", "candidate-adoption", "complete"] as const) {
+		for (const stage of ["candidate-verification", "candidate-review", "release-decision", "candidate-adoption", "complete"] as const) {
 			expect(() => assertWorkbenchDecisionStage("ship", stage)).not.toThrow();
 		}
 	});
@@ -321,6 +326,17 @@ describe("routine cost guard", () => {
 		expect(estimate.costUsd).toBeCloseTo(0.012, 10);
 		expect(estimate.minutes).toBeCloseTo(0.1, 10);
 		expect(routineCostGuard(estimate)).toBeNull();
+	});
+
+	it("includes judge and simulated-user spend in the operation estimate", () => {
+		const runsRoot = runsRootWith([{
+			costUsd: 0.01,
+			judgeCostUsd: 0.02,
+			simulatedUserCostUsd: 0.03,
+			seconds: 2,
+		}]);
+		const estimate = estimateRunCost({ runsRoot, targetId: TARGET_ID, executions: 10, jobs: 1 });
+		expect(estimate.costUsd).toBeCloseTo(0.6, 10);
 	});
 
 	it("asks when nothing comparable has ever finished", () => {

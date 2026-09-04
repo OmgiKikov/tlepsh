@@ -20,12 +20,13 @@ export interface WrittenToolCall {
 	id: string;
 	name: string;
 	arguments: Record<string, unknown>;
+	evidence?: "reported";
 }
 
 type ContentPart =
 	| { type: "text"; text: string }
 	| { type: "thinking"; thinking: string }
-	| { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> };
+	| ({ type: "toolCall" } & WrittenToolCall);
 
 export class SessionJsonlWriter {
 	private readonly path: string;
@@ -69,7 +70,7 @@ export class SessionJsonlWriter {
 		if (options.thinking) content.push({ type: "thinking", thinking: options.thinking });
 		if (options.text) content.push({ type: "text", text: options.text });
 		for (const call of options.toolCalls ?? []) {
-			content.push({ type: "toolCall", id: call.id, name: call.name, arguments: call.arguments });
+			content.push({ type: "toolCall", ...call });
 		}
 		this.message({ role: "assistant", content, timestamp: Date.now() });
 	}
