@@ -750,6 +750,9 @@ const IDENTICAL_BY_DESIGN = new Set([
 	"metrics.not-reported",
 	// lane: gate-dialog — an ordinal in brackets after a label the caller wrote.
 	"dialog.choice-ordinal",
+	// lane: measurement — `<$0.01` is a currency amount, and the product prices
+	// in dollars in both languages.
+	"unit.under-cent",
 ]);
 
 describe("the dictionary itself", () => {

@@ -120,17 +120,29 @@ export function shortHash(hash: string | null | undefined, length = 12): string 
 	return body.length > length ? `${body.slice(0, length)}${ELLIPSIS}` : body;
 }
 
-// One implementation of the two numbers this system argues about. The panel,
-// the growth log, the passport and the sentence the Builder quotes all read
-// them from the composer, so a rate can never be a percentage on one screen
-// and a fraction on the next.
-export { percent, points, trimSeparator } from "../../application/measurement-line.js";
-
-export function bar(ratio: number, width = 20): string {
-	const clamped = Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : 0;
-	const filled = Math.round(clamped * width);
-	return `${"█".repeat(filled)}${"░".repeat(Math.max(0, width - filled))}`;
-}
+// Every number this system argues about, from the one module that formats
+// them. The panel, the growth log, the passport, the progress bar and the
+// sentence the Builder quotes all read them from here, so a rate can never be
+// a percentage on one screen and a fraction on the next, and `pp` can never be
+// spelled twice with two precisions.
+export {
+	band,
+	bar,
+	bareDelta,
+	coarseElapsed,
+	duration,
+	elapsed,
+	fromPoints,
+	interval,
+	isSubCent,
+	kappa,
+	kappaValue,
+	money,
+	percent,
+	points,
+	ratio,
+} from "../../measurement.js";
+export { trimSeparator } from "../../application/measurement-line.js";
 
 export function pluralize(count: number, singular: string, plural = `${singular}s`): string {
 	return `${count} ${count === 1 ? singular : plural}`;

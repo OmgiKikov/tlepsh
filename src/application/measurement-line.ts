@@ -1,5 +1,6 @@
 import { sealedOutcomeLabel, type ExclusionReason, type SealedOutcome } from "../domain/comparison-gate.js";
 import type { SealedExamOrigin } from "./sealed-synth.js";
+import { interval, percent, points } from "../measurement.js";
 import { plural, t, verdictLabel } from "../i18n.js";
 
 /**
@@ -37,25 +38,11 @@ export function trimSeparator(text: string): string {
 	return text.replace(DANGLING_SEPARATOR, "");
 }
 
-/** `31%`. Scores and pass rates are percentages of 1.0 on every screen. */
-export function percent(fraction: number): string {
-	if (!Number.isFinite(fraction)) return "—";
-	return `${Math.round(fraction * 100)}%`;
-}
-
-/** A `[0,1]` delta as signed percentage points with its unit: `+31 pts`. */
-export function points(delta: number): string {
-	if (!Number.isFinite(delta)) return "—";
-	const value = Math.round(delta * 1000) / 10;
-	return `${value > 0 ? "+" : ""}${value} ${t("unit.points")}`;
-}
-
-/** The same number without its unit, for the two ends of one interval. */
-export function bareDelta(delta: number): string {
-	if (!Number.isFinite(delta)) return "—";
-	const value = Math.round(delta * 1000) / 10;
-	return `${value > 0 ? "+" : ""}${value}`;
-}
+// The numbers themselves live in `measurement.ts`: one percent, one point, one
+// interval, one κ, one dollar, for the twenty-odd surfaces that print them.
+// This file composes the sentence they go into, and re-exports them so the
+// composer and its renderers cannot read two different modules.
+export { bareDelta, interval, percent, points } from "../measurement.js";
 
 /** One comparison surface, normalized. Every field is a `[0,1]` fraction. */
 export interface MeasurementSurface {
@@ -218,7 +205,7 @@ export interface MeasurementLine {
 
 function intervalOf(confidence95: { low: number; high: number } | null): string {
 	if (!confidence95) return "";
-	return `, ${t("unit.ci")} ${bareDelta(confidence95.low)} … ${bareDelta(confidence95.high)}`;
+	return `, ${interval(confidence95.low, confidence95.high)}`;
 }
 
 /** `(+31 pts, 95% CI +9 … +41)` — the delta and the interval that brackets it. */
