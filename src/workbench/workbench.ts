@@ -178,6 +178,7 @@ import {
 	defaultEvalJobs,
 	isSealedEvalRun,
 	loadEvalRun,
+	loadVerifiedEvalRun,
 	readEvalRunIndex,
 	runSuite,
 	type EvalRunRecord,
@@ -296,6 +297,7 @@ import {
 	type WorkbenchRegressionGuardsProjection,
 	type WorkbenchVerifyCandidateResult,
 	type PersistedWorkbenchWorkshop,
+	type WorkbenchWorkshopSummary,
 } from "./types.js";
 import type { CandidateRecord } from "../domain/candidate.js";
 import { decideScaffoldTarget, decideWrapTarget, decideConfigureTarget, decideConfigureEvaluators } from "./decisions/setup.js";
@@ -305,6 +307,7 @@ import { decideApplyProposal, decideDiscardProposal } from "./decisions/proposal
 import { decideVerifyCandidate, decideAbandonCandidate } from "./decisions/candidate.js";
 import { decideReviewCandidate, decidePromoteCandidate, decideRejectCandidate, decideAdoptCandidate, decideContinueCycle } from "./decisions/release.js";
 import { decideImprove } from "./decisions/improve.js";
+import { decideRunCurrent } from "./decisions/run-current.js";
 import type { DecisionContext } from "./decisions/shared.js";
 
 const MAX_REVIEW_BYTES = 5 * 1024 * 1024;
@@ -581,7 +584,7 @@ export function formatEstimatedTime(estimate: WorkbenchRunEstimate | undefined):
 	if (!estimate || estimate.minutes === null) return `${t("estimate.unknown")} ${t("estimate.nothing-comparable")}`;
 	if (estimate.minutes < 1) return t("estimate.under-minute");
 	const minutes = Math.ceil(estimate.minutes);
-	return t("estimate.about-minutes", { minutes: localizedCount(minutes, "minute"), count: minutes });
+	return t("estimate.about-minutes", { minutes: localizedCount(minutes, "estimated minute") });
 }
 
 function plural(count: number, noun: string): string {
@@ -2792,6 +2795,50 @@ export class AhdeWorkbench {
 		return this.workshop?.open === true;
 	}
 
+	/**
+	 * The one workshop this project has, live or on disk.
+	 *
+	 * `workshopOpen` above is this process's memory. A restarted TUI has none,
+	 * and the Builder that read “no workshop is open” with a half-written
+	 * harness still sitting in its worktree wrote the whole prompt again. The
+	 * durable note is the fact that survives, so it — not the handle — is what
+	 * the view reports.
+	 */
+	private workshopSummary(): WorkbenchWorkshopSummary | null {
+		const live = this.workshop;
+		if (live?.open) {
+			return {
+				state: "live",
+				workshopId: live.workshopId,
+				basis: live.basis,
+				briefId: live.source?.briefId ?? null,
+				openedAt: live.openedAt,
+			};
+		}
+		let recorded: PersistedWorkbenchWorkshop | null;
+		try {
+			recorded = this.recordedWorkshop();
+		} catch {
+			// A note nobody can parse names no workshop to continue in, and
+			// rendering a view is not the place to refuse: `workshop-open` still
+			// says exactly that, with its cause, to whoever asks for one.
+			return { state: "stale", reason: "unreadable-note", workshopId: null };
+		}
+		if (!recorded) return null;
+		// The first thing `reattachBuilderWorkshop` checks. A note whose worktree
+		// is gone re-attaches to nothing, so it is never offered as work waiting.
+		if (!existsSync(recorded.worktreePath)) {
+			return { state: "stale", reason: "worktree-gone", workshopId: recorded.workshopId };
+		}
+		return {
+			state: "recorded",
+			workshopId: recorded.workshopId,
+			basis: recorded.basis,
+			briefId: recorded.source?.briefId ?? null,
+			openedAt: recorded.openedAt,
+		};
+	}
+
 	/** Explicit host cleanup for discard/abandon and tests. Session shutdown suspends. */
 	closeWorkshop(): void {
 		this.disposeWorkshop();
@@ -2816,9 +2863,11 @@ export class AhdeWorkbench {
 		// check the judge is a fact about this project's label store, which the
 		// stage never reads. Both are attached here, where the view is rendered.
 		const judgeCalibration = judgeCalibrationOffer(this.stateRoot, this.projectId);
+		const workshop = this.workshopSummary();
 		const view: WorkbenchView = {
 			...deriveWorkbenchView(inventory),
 			...(this.workshopOpen ? { workshopOpen: true } : {}),
+			...(workshop ? { workshop } : {}),
 			...(judgeCalibration ? { judgeCalibration } : {}),
 		};
 		const aspect = query.aspect ?? "summary";
@@ -2866,7 +2915,7 @@ export class AhdeWorkbench {
 				detail: {
 					aspect,
 					content: {
-						evaluation: evaluationProjection(run, inventory.corpora),
+						evaluation: evaluationProjection(run, inventory.corpora, loadVerifiedEvalRun(this.runsRoot, run.evalRunId).runs),
 						diagnosis: diagnosisSummary(diagnosis),
 						improvementBrief: conversationalImprovementBrief(improvementBrief),
 						evidence: link ? { available: true, ...link } : { available: false },
@@ -3337,91 +3386,10 @@ export class AhdeWorkbench {
 		const inventory = this.inventory();
 		const stage = deriveWorkbenchView(inventory).stage;
 		const ctx: DecisionContext = { inventory, stage, gate, options };
-		if (input.kind === "run-current") {
-			const partialCandidate = inventory.candidates.find((candidate) =>
-				candidate.projectId === this.projectId &&
-				["proposed", "built", "validated"].includes(candidateStatus(candidate)) &&
-				!inventory.abandonedCandidates.has(candidate.candidateId),
-			);
-			if (partialCandidate) {
-				throw new Error(
-					`candidate ${partialCandidate.candidateId} stopped at ${candidateStatus(partialCandidate)}; ` +
-					"review and explicitly abandon or recover it before starting another run",
-				);
-			}
-			let resolved: WorkbenchDecisionResult;
-			if (stage === "ready-to-evaluate" || stage === "improvement-authoring") {
-				resolved = await this.decide({ kind: "run-eval", repetitions: input.repetitions, reason: input.reason }, gate, options);
-			} else if (stage === "spec-review" || stage === "corpus-review") {
-				// “Run the tests” with a review still pending is not an error: the
-				// composite does the pending reviews and the run behind one dialog.
-				resolved = await this.decide({ kind: "start-testing", repetitions: input.repetitions, reason: input.reason }, gate, options);
-			} else if (stage === "candidate-verification") {
-				const automated = inventory.candidates.filter((candidate) =>
-					candidate.projectId === this.projectId && isAutomatedDevelopmentCandidate(candidate)
-				);
-				if (automated.length > 0) {
-					const candidate = resolveOne({
-						items: automated,
-						focusId: inventory.validFocus.candidate?.id,
-						id: (item) => item.candidateId,
-						label: "automated hypothesis",
-					});
-					if (candidate.origin.kind !== "applied-builder") throw new Error("automated hypothesis lost Builder provenance");
-					resolved = await this.decide({
-						kind: "verify-candidate",
-						builderRunId: candidate.origin.builderRunId,
-						repetitions: input.repetitions,
-						reason: input.reason,
-					}, gate, options);
-				} else {
-				const appliedWithoutCandidate = inventory.proposals.filter((proposal) =>
-					proposal.status === "applied" &&
-					loadBuilderApplyReceipt(this.runsRoot, proposal.record.runId).via !== "proposal-search" &&
-					!inventory.candidates.some((candidate) =>
-						candidate.origin.kind === "applied-builder" &&
-						candidate.origin.builderRunId === proposal.record.runId &&
-						!inventory.abandonedCandidates.has(candidate.candidateId),
-					),
-				);
-				const proposal = resolveOne({
-					items: appliedWithoutCandidate,
-					focusId: inventory.validFocus.proposal?.id,
-					id: (item) => item.record.runId,
-					label: "applied proposal",
-				});
-				resolved = await this.decide({ kind: "verify-candidate", builderRunId: proposal.record.runId, repetitions: input.repetitions, reason: input.reason }, gate, options);
-				}
-			} else {
-				assertWorkbenchDecisionStage("run-eval", stage);
-				throw new Error(`running is not possible during ${stage}`);
-			}
-			if (resolved.kind === "start-testing") {
-				return {
-					kind: "run-current",
-					message: resolved.message,
-					result: { resolvedAs: "start-testing", ...resolved.result },
-					view: resolved.view,
-				};
-			}
-			if (resolved.kind === "run-eval") {
-				return {
-					kind: "run-current",
-					message: resolved.message,
-					result: { resolvedAs: "run-eval", ...resolved.result },
-					view: resolved.view,
-				};
-			}
-			if (resolved.kind === "verify-candidate") {
-				return {
-					kind: "run-current",
-					message: resolved.message,
-					result: { resolvedAs: "verify-candidate", ...resolved.result },
-					view: resolved.view,
-				};
-			}
-			throw new Error(`run-current resolved to an unexpected decision ${String((resolved as { kind?: unknown }).kind)}`);
-		}
+		// The one decision with no stage table of its own: it resolves to one of
+		// three that have, and each is guarded by the assertion below when this
+		// re-enters with the resolved kind.
+		if (input.kind === "run-current") return decideRunCurrent(this, input, ctx);
 		assertWorkbenchDecisionStage(input.kind, stage);
 
 		// The two composites: one operator intent, one dialog, the same

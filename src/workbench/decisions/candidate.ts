@@ -94,13 +94,23 @@ export async function decideVerifyCandidate(
 	if (choice.selectedIndex === undefined || !sealed[choice.selectedIndex]) throw new Error("human gate returned an invalid sealed holdout selection");
 	const selected = sealed[choice.selectedIndex]!;
 	if (selected.taskCount < SEALED_GATE_POLICY.minTasks) {
-		throw new Error(
+		throw new WorkbenchTypedRefusalError(
 			`The selected sealed holdout has ${selected.taskCount} task${selected.taskCount === 1 ? "" : "s"}; ` +
 			`a sealed verdict needs at least ${SEALED_GATE_POLICY.minTasks}. Add holdout cases before verifying.`,
+			{
+				code: "refusal.sealed-exam-too-small",
+				params: {
+					tasks: localizedCount(selected.taskCount, "case"),
+					minimum: SEALED_GATE_POLICY.minTasks,
+				},
+			},
 		);
 	}
 	if (input.repetitions < SEALED_GATE_POLICY.minRepetitions) {
-		throw new Error(`Candidate verification needs at least ${SEALED_GATE_POLICY.minRepetitions} repetitions for a sealed verdict.`);
+		throw new WorkbenchTypedRefusalError(
+			`Candidate verification needs at least ${SEALED_GATE_POLICY.minRepetitions} repetitions for a sealed verdict.`,
+			{ code: "refusal.repetitions-too-few", params: { minimum: SEALED_GATE_POLICY.minRepetitions } },
+		);
 	}
 	const build = () => {
 		const current = host.decisionInventory(input.kind);
@@ -311,12 +321,20 @@ export async function decideVerifyCandidate(
 		// the operator needs the reason: a run that errored is an infrastructure
 		// failure, not a verdict, and the way out is to abandon and verify again.
 		if (error instanceof CandidateExperimentError && error.phase === "development") {
-			throw new Error(
-				`the check stopped before the exam: ${error.reason.replace(/^candidate experiment stopped at validated: /, "")}. ` +
+			// The evaluator's own wording is machine text — it names a phase and a
+			// stem, not a thing to do — so it rides beside the sentence as a detail
+			// rather than inside it.
+			const detail = error.reason.replace(/^candidate experiment stopped at validated: /, "");
+			throw new WorkbenchTypedRefusalError(
+				`the check stopped before the exam: ${detail}. ` +
 				"Nothing was decided — abandon the interrupted attempt (/discard) and verify again.",
+				{ code: "refusal.check-stopped-before-exam", detail },
 			);
 		}
-		throw new Error("candidate verification failed during the sealed exam; sealed identities and contents remain hidden. Abandon the interrupted attempt (/discard) and verify again.");
+		throw new WorkbenchTypedRefusalError(
+			"candidate verification failed during the sealed exam; sealed identities and contents remain hidden. Abandon the interrupted attempt (/discard) and verify again.",
+			{ code: "refusal.check-failed-in-exam" },
+		);
 	}
 	const settled = host.select("candidate", result.record.candidateId);
 	const sealedVerdict = result.sealedHoldout?.compare.gate.verdict ?? null;
@@ -400,7 +418,7 @@ export async function decideAbandonCandidate(
 		: host.inventory();
 	return {
 		kind: input.kind,
-		message: "Interrupted candidate attempt abandoned durably; the exact applied proposal can be retried.",
+		message: t("message.candidate-abandoned"),
 		result: { candidateId: candidate.candidateId, interruptedStatus: status, receiptHash: receipt.receiptHash },
 		view: await host.viewOf(settled),
 	};

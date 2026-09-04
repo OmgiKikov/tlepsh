@@ -1,5 +1,5 @@
-import { noun, plural, t, type MessageKey } from "../i18n.js";
-import { existsSync } from "node:fs";
+import { noun, plural, t, tokenLabel, type MessageKey, type MessageParams } from "../i18n.js";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { z } from "zod";
 import type { TraceObservation } from "../diagnosis.js";
@@ -606,16 +606,16 @@ export function runsTable(
  * What one grader wanted and what the record shows instead.
  *
  * The expectation is recovered from the exact reason strings this repository's
- * graders emit, keyed by the typed `checkCode` that named the check. An
- * unrecognized phrasing yields a null expectation and the reason is quoted
- * as-is.
+ * graders emit, keyed by the typed `checkCode` that named the check, and said
+ * in the operator's language. An unrecognized phrasing yields a null
+ * expectation and the reason is quoted as-is.
  */
 export interface GraderExplanation {
 	graderName: string;
 	graderType: string;
-	/** "expected a call to `bash` with arguments containing `check_dbo`" */
+	/** «ожидался вызов bash с аргументами, содержащими «check_dbo»» */
 	expected: string | null;
-	/** "the agent made 0 tool calls and answered directly" */
+	/** «агент не вызвал ни одного инструмента и ответил сразу» */
 	actual: string;
 	/** The grader's own recorded reason, always shown. */
 	reason: string;
@@ -627,46 +627,70 @@ export interface GraderExplanation {
 	jury: JuryVote[] | null;
 }
 
-function toolActual(facts: RunTraceFacts | null, recordedToolCalls: number): string {
+/**
+ * One clause of an explanation before it is said: the key that words it, and
+ * the machine values it interpolates.
+ *
+ * The clause is built as a key rather than as a sentence because the same
+ * evidence is read by an operator in Russian and by a script in English, and a
+ * literal here would have made the first of those impossible. Everything
+ * inside `params` — a tool name, a path, a rounded score, a bent noun — is
+ * either machine text or already localized.
+ */
+interface Phrase {
+	key: MessageKey;
+	params?: MessageParams;
+}
+
+function say(phrase: Phrase): string {
+	return t(phrase.key, phrase.params);
+}
+
+function toolActual(facts: RunTraceFacts | null, recordedToolCalls: number): Phrase {
 	const total = facts ? facts.toolCalls : recordedToolCalls;
-	if (total === 0) return "the agent made 0 tool calls and answered directly";
+	if (total === 0) return { key: "why.actual.required-tool-none" };
+	const calls = plural(total, "tool call");
 	const names = facts?.toolNames.slice(0, MAX_NAMED_TOOLS) ?? [];
-	const more = facts && facts.toolNames.length > MAX_NAMED_TOOLS
-		? ` and ${facts.toolNames.length - MAX_NAMED_TOOLS} more`
-		: "";
-	return names.length > 0
-		? `the agent made ${total} tool call(s), to ${names.join(", ")}${more}`
-		: `the agent made ${total} tool call(s)`;
+	if (names.length === 0) return { key: "why.actual.required-tool-calls", params: { calls } };
+	const listed = names.join(", ");
+	const hidden = facts ? facts.toolNames.length - MAX_NAMED_TOOLS : 0;
+	const tools = hidden > 0 ? t("why.actual.tool-more", { tools: listed, count: hidden }) : listed;
+	return { key: "why.actual.required-tool-named", params: { calls, tools } };
 }
 
-function answerActual(facts: RunTraceFacts | null, verb: string): string {
-	if (!facts || facts.answer === null) return `the recorded final answer ${verb}`;
-	return `the recorded final answer (${facts.answer.length} characters) ${verb}`;
+type AnswerVerbKey = "why.actual.answer-lacks" | "why.actual.answer-unmatched" | "why.actual.answer-differs";
+
+function answerActual(facts: RunTraceFacts | null, key: AnswerVerbKey): Phrase {
+	const answer = !facts || facts.answer === null
+		? t("why.answer.recorded")
+		: t("why.answer.recorded-sized", { size: plural(facts.answer.length, "character") });
+	return { key, params: { answer } };
 }
 
-function explainGrader(
+/**
+ * What one grader wanted and what the record shows instead, as keys.
+ *
+ * The grader's own `reason` is the record — canonical English, hashed into
+ * proposals, quoted verbatim beside this — and these are the host's rebuilt
+ * sentences about it, one pair per check code and per recognized phrasing of
+ * that check's reason. A phrasing nothing here matches yields no expectation
+ * at all and the reason stands alone: guessing is the one thing this surface
+ * may not do.
+ */
+function graderExpectation(
 	grader: GraderFinding,
 	run: Pick<RunRecord, "status" | "error" | "metrics">,
 	facts: RunTraceFacts | null,
-): GraderExplanation {
-	const base = {
-		graderName: grader.name,
-		graderType: grader.type,
-		reason: grader.reason,
-		abstained: grader.abstained,
-		assertions: (grader.assertionVerdicts ?? []).filter((assertion) => assertion.answer !== "yes"),
-		jury: grader.jury,
-	};
+): { expected: Phrase | null; actual: Phrase } {
 	if (run.status !== "completed") {
 		// Read from the recorded error, never from the trace: this grader saw
 		// nothing at all, and the run's own stem is the only thing that knows why.
 		const reading = runErrorReading(run.error);
 		return {
-			...base,
 			expected: null,
 			actual: reading
-				? `the run never completed, so nothing was graded — ${reading.sentence} (${reading.detail})`
-				: "the run never completed, so nothing was graded",
+				? { key: "why.actual.run-incomplete-cause", params: { cause: reading.sentence, detail: reading.detail } }
+				: { key: "why.actual.run-incomplete" },
 		};
 	}
 	const reason = grader.reason;
@@ -674,92 +698,105 @@ function explainGrader(
 	if (grader.checkCode === "required-tool" && tool) {
 		const argument = tool[2];
 		return {
-			...base,
-			expected: `expected a call to \`${tool[1]}\`${argument ? ` with arguments containing \`${argument}\`` : ""}`,
+			expected: argument === undefined
+				? { key: "why.expected.required-tool", params: { tool: tool[1] ?? "" } }
+				: { key: "why.expected.required-tool-args", params: { tool: tool[1] ?? "", arguments: argument } },
 			actual: toolActual(facts, run.metrics.toolCalls),
 		};
+	}
+	if (grader.checkCode === "no-secret" && reason === "the answer contains a string shaped like a credential") {
+		return { expected: { key: "why.expected.no-secret" }, actual: { key: "why.actual.no-secret" } };
 	}
 	const contains = /^output does not contain "([\s\S]*)"$/.exec(reason);
 	if (grader.checkCode === "output-contains" && contains) {
 		return {
-			...base,
-			expected: `expected the final answer to contain \`${contains[1]}\``,
-			actual: answerActual(facts, "does not contain it"),
+			expected: { key: "why.expected.output-contains", params: { text: contains[1] ?? "" } },
+			actual: answerActual(facts, "why.actual.answer-lacks"),
 		};
 	}
 	const matches = /^output does not match \/([\s\S]*)\/$/.exec(reason);
 	if (grader.checkCode === "output-matches" && matches) {
 		return {
-			...base,
-			expected: `expected the final answer to match \`/${matches[1]}/\``,
-			actual: answerActual(facts, "does not match it"),
+			expected: { key: "why.expected.output-matches", params: { pattern: matches[1] ?? "" } },
+			actual: answerActual(facts, "why.actual.answer-unmatched"),
 		};
 	}
 	if (grader.checkCode === "reference-exact" && reason.startsWith("output differs from the expected answer")) {
 		return {
-			...base,
-			expected: "expected the final answer to equal the case's reference answer",
-			actual: answerActual(facts, "differs from it"),
+			expected: { key: "why.expected.reference-exact" },
+			actual: answerActual(facts, "why.actual.answer-differs"),
 		};
 	}
 	const similarity = /^(\S+) [=≤] ([0-9.]+).*below threshold ([0-9.]+)/.exec(reason);
 	if (grader.checkCode === "reference-similarity" && similarity) {
 		return {
-			...base,
-			expected: `expected ${similarity[1]} against the reference answer to reach ${similarity[3]}`,
-			actual: `it reached ${similarity[2]}`,
+			expected: {
+				key: "why.expected.reference-similarity",
+				params: { metric: similarity[1] ?? "", threshold: similarity[3] ?? "" },
+			},
+			actual: { key: "why.actual.reference-similarity", params: { value: similarity[2] ?? "" } },
 		};
 	}
 	const turns = /^agent took (\d+) turn\(s\), over the budget of (\d+)$/.exec(reason);
 	if (grader.checkCode === "turn-budget" && turns) {
 		return {
-			...base,
-			expected: `expected at most ${turns[2]} agent turn(s)`,
-			actual: `the agent took ${turns[1]}`,
+			expected: { key: "why.expected.turn-budget", params: { turns: plural(Number(turns[2]), "agent turn") } },
+			actual: { key: "why.actual.turn-budget", params: { turns: plural(Number(turns[1]), "agent turn") } },
 		};
 	}
 	if (grader.checkCode === "world-state") {
 		// A world check is about the state the conversation left behind, not about
-		// what the agent said, so its `actual` never quotes the answer.
+		// what the agent said, so its `actual` never quotes the answer. The world's
+		// own reason is neutral by construction — a path, an operator and a
+		// canonical-JSON value — so the sentence is rebuilt around those three and
+		// nothing of the English wording survives into the render.
 		const unset = /^world at (\S+) is not set(?:, expected (equals|contains) ([\s\S]*))?$/.exec(reason);
 		if (unset) {
+			const operator = unset[2];
 			return {
-				...base,
-				expected: unset[2]
-					? `expected the world at \`${unset[1]}\` to ${unset[2]} \`${unset[3]}\``
-					: `expected the conversation to set the world at \`${unset[1]}\``,
-				actual: "the conversation left it unset",
+				expected: operator === undefined
+					? { key: "why.expected.world-state", params: { path: unset[1] ?? "" } }
+					: {
+						key: operator === "equals" ? "why.expected.world-state-equals" : "why.expected.world-state-contains",
+						params: { path: unset[1] ?? "", value: unset[3] ?? "" },
+					},
+				actual: { key: "why.actual.world-state-unset" },
 			};
 		}
 		const unusable = /^world at (\S+) is ([\s\S]*), which cannot contain ([\s\S]*)$/.exec(reason);
 		if (unusable) {
 			return {
-				...base,
-				expected: `expected the world at \`${unusable[1]}\` to contain \`${unusable[3]}\``,
-				actual: `it is \`${unusable[2]}\`, which contains nothing`,
+				expected: {
+					key: "why.expected.world-state-contains",
+					params: { path: unusable[1] ?? "", value: unusable[3] ?? "" },
+				},
+				actual: { key: "why.actual.world-state-uncontainable", params: { value: unusable[2] ?? "" } },
 			};
 		}
 		const differs = /^world at (\S+) is ([\s\S]*), expected ([\s\S]*)$/.exec(reason);
 		if (differs) {
 			return {
-				...base,
-				expected: `expected the world at \`${differs[1]}\` to be \`${differs[3]}\``,
-				actual: `it is \`${differs[2]}\``,
+				expected: {
+					key: "why.expected.world-state-equals",
+					params: { path: differs[1] ?? "", value: differs[3] ?? "" },
+				},
+				actual: { key: "why.actual.world-state-value", params: { value: differs[2] ?? "" } },
 			};
 		}
 		const lacks = /^world at (\S+) does not contain ([\s\S]*)$/.exec(reason);
 		if (lacks) {
 			return {
-				...base,
-				expected: `expected the world at \`${lacks[1]}\` to contain \`${lacks[2]}\``,
-				actual: "it does not",
+				expected: {
+					key: "why.expected.world-state-contains",
+					params: { path: lacks[1] ?? "", value: lacks[2] ?? "" },
+				},
+				actual: { key: "why.actual.world-state-lacks" },
 			};
 		}
 		if (reason === "case declares no world") {
 			return {
-				...base,
-				expected: "expected the case to declare the world this check is about",
-				actual: "it declares none, so the check could not pass",
+				expected: { key: "why.expected.world-state-declared" },
+				actual: { key: "why.actual.world-state-undeclared" },
 			};
 		}
 	}
@@ -767,35 +804,62 @@ function explainGrader(
 		.exec(reason);
 	if (grader.checkCode === "cites-source" && citation) {
 		return {
-			...base,
-			expected: `expected the answer to stand on ${citation[1]} — cite its id, or overlap it by ${citation[3]}`,
-			actual: `it did neither; the overlap was ${citation[2]}`,
+			expected: {
+				key: "why.expected.cites-source",
+				params: { source: citation[1] ?? "", threshold: citation[3] ?? "" },
+			},
+			actual: { key: "why.actual.cites-source", params: { overlap: citation[2] ?? "" } },
 		};
 	}
 	if (reason === "case has no expected answer") {
 		return {
-			...base,
-			expected: "expected the case to carry a reference answer to compare against",
-			actual: "the case carries none, so the check could not pass",
+			expected: { key: "why.expected.reference-missing" },
+			actual: { key: "why.actual.reference-missing" },
 		};
 	}
 	if (grader.checkCode === "semantic-rubric") {
 		if (grader.assertions) {
 			return {
-				...base,
-				expected: `expected all ${grader.assertions.total} rubric assertion(s) to hold`,
-				actual:
-					`the judge answered ${grader.assertions.passed} of ${grader.assertions.total} with yes; ` +
-					`assertion(s) ${grader.assertions.failed.join(", ")} did not hold`,
+				expected: {
+					key: "why.expected.semantic-rubric-assertions",
+					params: { total: grader.assertions.total },
+				},
+				actual: {
+					key: "why.actual.semantic-rubric-assertions",
+					params: {
+						passed: grader.assertions.passed,
+						total: grader.assertions.total,
+						failed: grader.assertions.failed.join(", "),
+					},
+				},
 			};
 		}
 		return {
-			...base,
-			expected: "expected the answer to satisfy the judge's rubric",
-			actual: `the judge decided it did not${grader.choice ? ` (choice ${grader.choice})` : ""}`,
+			expected: { key: "why.expected.semantic-rubric" },
+			actual: grader.choice
+				? { key: "why.actual.semantic-rubric-choice", params: { choice: grader.choice } }
+				: { key: "why.actual.semantic-rubric" },
 		};
 	}
-	return { ...base, expected: null, actual: reason };
+	return { expected: null, actual: { key: "why.actual.reason", params: { reason } } };
+}
+
+function explainGrader(
+	grader: GraderFinding,
+	run: Pick<RunRecord, "status" | "error" | "metrics">,
+	facts: RunTraceFacts | null,
+): GraderExplanation {
+	const { expected, actual } = graderExpectation(grader, run, facts);
+	return {
+		graderName: grader.name,
+		graderType: grader.type,
+		reason: grader.reason,
+		abstained: grader.abstained,
+		assertions: (grader.assertionVerdicts ?? []).filter((assertion) => assertion.answer !== "yes"),
+		jury: grader.jury,
+		expected: expected === null ? null : say(expected),
+		actual: say(actual),
+	};
 }
 
 /** The English canonical title of a check, said in the operator's language. */
@@ -1090,7 +1154,12 @@ function explanationSentences(explanation: Omit<RunExplanation, "sentences">): s
 			: t("why.grader-plain", { name: grader.graderName, type: grader.graderType, actual: grader.actual }));
 		lines.push(t("why.grader-reason", { reason: grader.reason }));
 		for (const assertion of grader.assertions) {
-			lines.push(t("why.assertion", { index: assertion.index, answer: assertion.answer, evidence: assertion.evidence }));
+			lines.push(t("why.assertion", {
+				index: assertion.index,
+				// The stored answer is a protocol token; the sentence quoting it is read.
+				answer: tokenLabel("assertion.answer", assertion.answer),
+				evidence: assertion.evidence,
+			}));
 		}
 		if (grader.jury) {
 			const passed = grader.jury.filter((vote) => vote.passed).length;

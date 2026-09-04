@@ -39,6 +39,7 @@ import {
 	type CycleContinuationReceipt,
 } from "./cycle-continuation.js";
 import { detectAgentFolder } from "../application/agent-folder-detect.js";
+import { maxKbExamQuestions } from "../application/sealed-synth.js";
 import { targetBootstrapRequired, toolCredentialReadiness } from "../target/readiness.js";
 import { standInFilesLine, standInManifestFields } from "../target/placeholders.js";
 import { listCorpora, loadCorpus, type CorpusMetadata } from "../corpus.js";
@@ -80,7 +81,7 @@ import {
 	type CandidateAbandonmentReceipt,
 } from "./candidate-abandonment.js";
 import { calibrationProjection } from "./calibration.js";
-import { plural } from "../i18n.js";
+import { plural, t } from "../i18n.js";
 import type {
 	WorkbenchBlockerReason,
 	WorkbenchCalibrationProjection,
@@ -1066,6 +1067,12 @@ interface StageBlocker {
 	reason: WorkbenchBlockerReason;
 }
 
+/**
+ * `text` carries whatever the code cannot: an id, a count, a path. Where the
+ * code already says the whole sentence, `text` is `t(code)` — one wording,
+ * said once, in the language of whoever is reading. Nothing matches on these
+ * sentences: `nextStep` reads the codes.
+ */
 function blocked(
 	text: string,
 	code: string,
@@ -1211,7 +1218,7 @@ function stageFor(
 				? "Adopt the agent already in this folder, or create a new Target harness."
 				: "Create the Target harness before authoring evidence.",
 			actions: found ? ["wrap-target", "scaffold-target"] : ["scaffold-target"],
-			blockers: [blocked("Target harness is missing.", "blocker.target-missing")],
+			blockers: [blocked(t("blocker.target-missing"), "blocker.target-missing")],
 		};
 	}
 	if (targetBootstrapRequired(target.manifest)) {
@@ -1229,7 +1236,7 @@ function stageFor(
 					"blocker.target-stand-ins",
 					{ fields: standIns.join(", ") },
 				)
-				: blocked("Target still contains its one-time identity/model placeholders.", "blocker.target-placeholder")],
+				: blocked(t("blocker.target-placeholder"), "blocker.target-placeholder")],
 		};
 	}
 
@@ -1300,7 +1307,7 @@ function stageFor(
 				stage: "candidate-verification",
 				headline: `Candidate verification was interrupted at ${status}; review its durable checkpoint.`,
 				actions: ["review", "abandon-candidate"],
-				blockers: [blocked("A human must explicitly abandon the interrupted attempt before retrying.", "blocker.interrupted-candidate")],
+				blockers: [blocked(t("blocker.interrupted-candidate"), "blocker.interrupted-candidate")],
 			};
 		}
 		if (status === "evaluated") return { stage: "candidate-review", headline: "Candidate evidence is ready for human review.", actions: ["review", "ship"], blockers: [] };
@@ -1455,7 +1462,7 @@ function stageFor(
 			actions: ["workshop-open", "configure-evaluators", "submit corpus-draft"],
 			blockers: evaluators.length > 0
 				? evaluators
-				: [blocked("The selected development basket is not runnable on the current Target.", "blocker.basket-not-runnable")],
+				: [blocked(t("blocker.basket-not-runnable"), "blocker.basket-not-runnable")],
 		};
 	}
 	const compatibleEvals = inventory.developmentEvals.filter((run) =>
@@ -1614,6 +1621,10 @@ export function deriveWorkbenchView(
 	const candidates = inventory.candidates.slice(0, MAX_VIEW_ITEMS);
 	const state = stageFor(inventory, env);
 	const evaluatorRequirements = evaluatorRequirementsOf(inventory);
+	// The ceiling a knowledge base puts on a generated exam. Read only when one
+	// is declared, and never allowed to fail a view: an unreadable base narrows
+	// the screen to what it was before this field existed.
+	const kbCeiling = inventory.target === null ? null : maxKbExamQuestions(inventory.target);
 	return {
 		schemaVersion: 1,
 		project: { id: inventory.projectId, directory: basename(inventory.projectDir) },
@@ -1687,6 +1698,9 @@ export function deriveWorkbenchView(
 			sealedHoldout: inventory.sealedHoldoutReadiness,
 			minimumTasks: SEALED_GATE_POLICY.minTasks,
 			sealedCases: inventory.sealedHoldoutCases,
+			// Only when there is a knowledge base to have a ceiling: an absent key
+			// is "the question does not apply", which is not the same claim as 0.
+			...(kbCeiling === null ? {} : { maxKbQuestions: kbCeiling }),
 		},
 		calibration: calibrationOf(inventory),
 		counts: {

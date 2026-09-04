@@ -42,32 +42,47 @@ full traces remain available on request. The Builder is instructed to prepare
 one actionable change for review without waiting for “fix the first problem”.
 This is a prepared diff, not an automatic apply or ship.
 
+Nine of them are the product; `/help` shows exactly these and nothing else.
+
 ```text
-/test [repetitions]     test the agent: approve and publish whatever is pending,
-                        run the basket, or verify the applied candidate
-/fix [n]                fix problem n: refresh the traces, prepare the exact
-                        change, show the diff
-/ship <version>         ship the verified candidate: promote, adopt, next cycle
-
+/test                   test the agent: publish whatever is pending, run the
+                        basket, or check the candidate you just applied
+/fix 2                  fix the second problem: refresh the traces, prepare the
+                        exact change, show the diff
+/ship 0.1.0             ship the checked candidate, and start the next round
 /status                 where you are and what to say next
-/plan                   the whole cycle as a checklist: done, current, still ahead
-/jobs  /stop            the background measurement, and how to cancel it
-/review                 the exact Spec, eval basket, diff, or candidate — with its actions
-/traces [rows]          diagnosis, failure modes, the evidence link, and the runs table
-/trace <n|next|prev>    one run: why it failed, every verdict, and the conversation
-/target [resource]      the exact committed Target or one declared resource
-/passport [version]     what a shipped version promised and measured, saved beside the agent
-/log [rows]             how the agent grew: every version, what it scored, what it cost
-/dataset [--all]        every recorded conversation as one dataset file beside the agent
-/label [n]              check the judge: grade n answers blind, then see what it said
-/doctor                 model, evaluator, run, and future ship readiness
-/holdout [file]         privately import the operator-owned sealed JSONL exam, or have the judge write one
-/help                   this reference
+/traces                 diagnosis, failure modes, the evidence link, the runs table
+/trace 3                one run in full: why it failed, every verdict, the conversation
+/passport               what the shipped version promised and measured
+/dataset                every recorded conversation as one file beside the agent
+/help all               every command, shortcuts included
+```
 
-/run [repetitions]      alias of /test
+<details>
+<summary>Expert shortcuts, and the decisions AHDE asks for itself — <code>/help all</code></summary>
+
+The same work, one step at a time, plus the inspections:
+
+```text
+/run [repetitions]      another name for the test verb above
+/plan                   the whole cycle as a checklist: done, current, still ahead
+/review                 the exact Spec, eval basket, diff, or candidate — with its actions
+/jobs  /stop            the background measurement, and how to cancel it
+/target [resource]      the exact committed Target or one declared resource
+/log [rows]             how the agent grew: every version, what it scored, what it cost
+/doctor                 model, evaluator, run, and future ship readiness
+/label [n]              check the judge: grade n answers blind, then see what it said
+/holdout [file]         privately import the operator-owned sealed JSONL exam, or have the judge write one
 /calibrate [reps]       measure run-to-run noise: the same revision against itself
 /regrade [erun]         re-score the recorded answers with the graders you just
                         revised: no agent call, only the judge
+```
+
+AHDE asks each of these on screen with the exact subject, so nobody has to
+type them. They stay registered because a decision offered has to be
+answerable from the keyboard too:
+
+```text
 /approve  /publish      approve the Spec · publish the eval basket, one at a time
 /apply <branch>         apply the reviewed proposal to a candidate branch
 /discard                discard a proposal or abandon an interrupted candidate
@@ -76,6 +91,8 @@ This is a prepared diff, not an automatic apply or ship.
 /adopt                  fast-forward the current branch to the promoted candidate
 /next                   close the cycle and continue from the active Target
 ```
+
+</details>
 
 Builder Pi has no ambient shell and no arbitrary file access: it works through
 a narrow typed Workbench API and five temporary tools inside a bound workshop.
@@ -154,33 +171,39 @@ before and after and the judge's verdicts. Under two dollars for the cycle.
 
 ## The passport it wrote
 
-From durable artifacts, never from memory. Trimmed.
+From durable artifacts, never from memory. It is the one page that leaves the
+machine — the operator sends it to whoever paid for the agent — so it is
+written in the operator's language, not the engine's, and no hash sits above
+the fold: identifiers appear cut to twelve characters on the face and whole in
+a footer. The reason somebody typed when shipping is quoted, never translated.
+Trimmed.
 
 ```markdown
-# Version passport — ombudsman v0.1.0
+# Паспорт версии — ombudsman v0.1.0
 
-- agent: ombudsman · version: v0.1.0 · date: 2026-09-02
-- revision: bf871326a2 → 7ce2841615 · model: openrouter/qwen/qwen3.5-9b
+- агент: ombudsman · версия: v0.1.0 · дата: 2026-09-02
+- ревизия: bf871326a2 → 7ce2841615 · модель: openrouter/qwen/qwen3.5-9b
 
-## Promised — spec-d05e0d0fed44…
+## Обещано — spec-d05e0d0fed44…
 
-Success criteria
-- при наличии номера договора вызван check_dbo […3 more]
+Критерии успеха
+- при наличии номера договора вызван check_dbo […ещё 3]
 
-## Measured
+## Измерено
 
-- development: **improved** — score 49% → 85% (+38.9 pts, 95% CI +25 … +47.2)
-  on 6 cases × 3 · pass rate 22% → 61% · 6 cases is a small basket: read the
-  interval as indicative, not decisive
-- sealed guardrail: **pass** on 20 tasks × 3 repetitions
-- per answer, candidate over baseline: cost ×1.1 · latency ×1.3
-- judge agreement 60% · κ 0.00 · n=5 — /label checks it against your own eyes
+- разработка: **стало лучше** — балл 49% → 85% (+38.9 п.п., 95% ДИ +25 … +47.2)
+  на 6 кейсах × 3 · пасс-рейт 22% → 61% · 6 кейсов — маленькая корзина:
+  интервал ориентировочный, не решающий
+- закрытый экзамен: **пройден** на 20 кейсах × 3 повтора
+- на один ответ, кандидат к базе: цена ×1.1 · задержка ×1.3
+- судья не откалиброван — человеческих отметок у него нет: /label сверит его
+  с твоими глазами
 
-## Provenance
+## Откуда взялось
 
-- spec: spec-d05e0d0fed44… · proposal: builder-b0b78260…
-- gate policies: development-ci-v4, sealed-guardrail-v4
-- reviewed by: local:kikov · shipped by: local:kikov
+- описание: spec-d05e0d0fed44… · правка: builder-b0b78260…
+- политики гейта: development-ci-v4, sealed-guardrail-v4
+- применил: local:kikov · причина: “Ставлю системный промпт из мастерской”
 ```
 
 ## Traces

@@ -54,6 +54,7 @@ import {
 } from "./application/version-passport.js";
 import {
 	abandonImprovementLoop,
+	improvementLoopGate,
 	listUnfinishedImprovementLoops,
 	MAX_IMPROVEMENT_CYCLES,
 	plannedImprovementExecutions,
@@ -64,9 +65,11 @@ import {
 } from "./application/improvement-loop.js";
 import {
 	MAX_SEARCH_CANDIDATES,
+	proposalSearchGate,
 	renderProposalSearchTable,
 	runProposalSearch,
 } from "./application/proposal-search.js";
+import { unattendedGate } from "./application/restricted-gate.js";
 
 import { runAppliedBuilderCandidate } from "./application/builder-candidate.js";
 import { diagnoseEvalRun } from "./diagnosis.js";
@@ -1540,6 +1543,10 @@ async function main(): Promise<void> {
 				...(arg("baseline-max-age") ? { baselineMaxAgeMs: Number(arg("baseline-max-age")) } : {}),
 				...(arg("jobs") ? { jobs: Number(arg("jobs")) } : {}),
 				author: recordedBuilderProposalAuthor({ stateRoot: stateRoot(), runsRoot: runsRoot(), projectId }),
+				// Invariant 6, on this front door too: nobody is at this terminal
+				// past the authorization above, so every release decision throws
+				// before it is asked and every other question fails closed.
+				gate: improvementLoopGate(unattendedGate()),
 				onCycle: (line) => process.stderr.write(`${line}\n`),
 				onRunEvent: cliRunProgress(),
 			});
@@ -1592,6 +1599,9 @@ async function main(): Promise<void> {
 				repetitions,
 				...(arg("budget") ? { executionBudget: Number(arg("budget")) } : {}),
 				...(arg("jobs") ? { jobs: Number(arg("jobs")) } : {}),
+				// The same restricted gate the Workbench hands a search: promotion,
+				// adoption and the sealed guardrail stay with the human.
+				gate: proposalSearchGate(unattendedGate()),
 				onCandidate: (line) => process.stderr.write(`${line}\n`),
 				onRunEvent: cliRunProgress(),
 			});

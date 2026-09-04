@@ -39,7 +39,8 @@ it decides.
    shutdown suspends the exact worktree and host note for reattachment, while
    deleting runtime scratch and all live grants; explicit discard removes the
    worktree. Reattachment re-derives the exact Spec, basis, source, and snapshot
-   before restoring authoring access.
+   before restoring authoring access, and the view reports the suspended
+   workshop from that note, so the next process is told it is there.
    A capability exception is one-shot and host-owned, bound to the exact
    workshop snapshot, tool digest, phase, network mode, and env names; it is
    consumed before execution and is never restored after restart.
@@ -122,6 +123,11 @@ it decides.
    creation from the snapshot, by a versioned chunker whose geometry is part of
    the hash — so the index hash is folded into the same prepared-home identity.
    A Target with no knowledge base folds in nothing and its hash is unchanged.
+   The exam generator may read the same snapshot at a finer geometry when the
+   base is too small to fill an exam, but only as its own passages: the runtime
+   index and every chunk id an agent can be handed or cite are unchanged, each
+   generated case cites the runtime chunk its passage lies inside, and the
+   receipt records the passage length that was read beside the index hash.
 18. Initial Target id/model configuration is a one-time host-confirmed bootstrap
     commit over an exact clean scaffold **or an exact clean adopted revision
     recorded in the receipt**. Builder receives only the credential

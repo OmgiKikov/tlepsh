@@ -171,7 +171,7 @@ function verificationLine(estimate: WorkbenchRunEstimate | undefined, paint: Pai
 	}
 	const cost = estimate.costUsd < 0.01 ? t("estimate.under-cent") : t("estimate.about-cost", { cost: estimate.costUsd.toFixed(2) });
 	const minutes = Math.ceil(estimate.minutes);
-	const time = estimate.minutes < 1 ? t("estimate.under-minute") : t("estimate.about-minutes", { minutes: plural(minutes, "minute"), count: minutes });
+	const time = estimate.minutes < 1 ? t("estimate.under-minute") : t("estimate.about-minutes", { minutes: plural(minutes, "estimated minute") });
 	return `${paint.dim(t("label.verification"))} ${cost} ${paint.dim("·")} ${time} ${covenant}`;
 }
 
@@ -367,8 +367,8 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 					generator: text(subject.generatorModel, 80),
 				}))}`,
 				`${paint.dim(t("label.source"))} ${subject.source === "kb"
-					// One passage per question, so the passage count is the case count
-					// and there is nothing else to say about what the judge is shown.
+					// How many passages the judge is shown; the line above already
+					// carries how many questions come back out of them.
 					? t("generate-holdout.source-kb", {
 						chunks: plural(Array.isArray(subject.kbChunkIds) ? subject.kbChunkIds.length : 0, "passage"),
 					})

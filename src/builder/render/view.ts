@@ -16,15 +16,20 @@ import { failureModeExcerpt, failureModeReading } from "../../application/run-ex
 import type { TargetAuthoringResource } from "../../application/target-authoring-context.js";
 import { formatResourceFragment } from "../../domain/comparison-gate.js";
 import { resolveWorldPath } from "../../domain/world.js";
-import { candidateStatusLabel, hasMessage, plural, t, verdictLabel } from "../../i18n.js";
+import { candidateStatusLabel, hasMessage, type MessageKey, plural, t, verdictLabel } from "../../i18n.js";
+import { redactTraceText } from "../../trace.js";
+import { datasetCasePreview } from "../../workbench/workbench.js";
+import { recommendedRepetitions } from "../../workbench/calibration.js";
 import { formatFlipRate, formatNoiseBand } from "./calibration.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
 import {
 	bar,
 	bullets,
 	bytes,
+	caseTitle,
 	clean,
 	examShortfall,
+	headline,
 	joinNonEmpty,
 	labeled,
 	numbered,
@@ -35,6 +40,7 @@ import {
 	section,
 	shortHash,
 	shortSha,
+	shortTaskId,
 	when,
 	wrap,
 } from "./format.js";
@@ -45,6 +51,7 @@ import {
 	predictionAbsentLine,
 	predictionNoteLine,
 	predictionPromiseLine,
+	shortModeId,
 } from "./prediction.js";
 import { measurementOf } from "../../application/prediction.js";
 import { examLine, measurementLine, measurementSurface } from "../../application/measurement-line.js";
@@ -117,13 +124,15 @@ function evidenceLine(view: WorkbenchView, paint: Paint): string | null {
  */
 export function blockerLines(view: Pick<WorkbenchView, "blockers" | "blockerReasons">): string[] {
 	const reasons = view.blockerReasons;
+	// A blocker is a sentence, and the operator's only account of why nothing
+	// moves: it ends on a word — session 6 was told `sealed hol…`.
 	if (!reasons || reasons.length !== view.blockers.length) {
-		return view.blockers.map((item) => oneLine(item, 200));
+		return view.blockers.map((item) => headline(item, 200));
 	}
 	return reasons.map((reason, index) => {
-		if (!hasMessage(reason.code)) return oneLine(view.blockers[index] ?? "", 200);
+		if (!hasMessage(reason.code)) return headline(view.blockers[index] ?? "", 200);
 		const text = t(reason.code, reason.params);
-		return oneLine(reason.detail ? `${text} ${reason.detail}` : text, 200);
+		return headline(reason.detail ? `${text} ${reason.detail}` : text, 200);
 	});
 }
 
@@ -154,7 +163,12 @@ function shippingReadinessLine(view: WorkbenchView, paint: Paint): string | null
 	// With no exam at all the operator has two ways out and both are named; with
 	// a broken or too-small one they have exactly one, and it is not the judge.
 	const hint = readiness.sealedHoldout === "missing" ? "ship-gate.hint-none" : "ship-gate.hint";
-	return `${paint.dim(t("label.ship-gate"))} ${paint.warning(state)} ${paint.dim(t(hint, { minimum: readiness.minimumTasks }))}${
+	// What the documents can actually give, wherever the judge is an option.
+	// Nobody — operator or Builder — should propose an exam the base cannot fill.
+	const ceiling = readiness.maxKbQuestions === undefined
+		? ""
+		: ` ${paint.muted(`· ${t("ship-gate.kb-ceiling", { max: plural(readiness.maxKbQuestions, "question") })}`)}`;
+	return `${paint.dim(t("label.ship-gate"))} ${paint.warning(state)} ${paint.dim(t(hint, { minimum: readiness.minimumTasks }))}${ceiling}${
 		undersized === null ? "" : ` ${paint.muted(`· ${undersized}`)}`
 	}`;
 }
@@ -204,12 +218,30 @@ export interface RenderStatusOptions {
 	heading?: boolean;
 }
 
+/**
+ * The workshop that outlived the process which opened it.
+ *
+ * A live workshop is not news — the transcript said so when it opened and the
+ * five tools are in the Builder's hands. What nobody could see was the one left
+ * in a worktree by a Builder that has since restarted: the screen said nothing,
+ * so the operator was told the harness had to be written again.
+ */
+function workshopLine(view: WorkbenchView, paint: Paint): string | null {
+	const workshop = view.workshop;
+	if (!workshop || workshop.state === "live") return null;
+	if (workshop.state === "stale") {
+		return `${paint.dim(t("label.workshop"))} ${paint.warning(t(`workshop.stale-${workshop.reason}`))}`;
+	}
+	return `${paint.dim(t("label.workshop"))} ${t("workshop.recorded")} ${paint.dim(workshop.workshopId)}`;
+}
+
 /** Compact status block used by /status and as the fallback for every panel. */
 export function renderStatus(view: WorkbenchView, paint: Paint, options: RenderStatusOptions = {}): string[] {
 	const noise = calibrationLine(view, paint);
 	const evaluators = evaluatorLine(view, paint);
 	const evidence = evidenceLine(view, paint);
 	const shipping = shippingReadinessLine(view, paint);
+	const workshop = workshopLine(view, paint);
 	const lines = [
 		...(options.heading === false
 			? []
@@ -219,6 +251,7 @@ export function renderStatus(view: WorkbenchView, paint: Paint, options: RenderS
 		...(evidence ? [evidence] : []),
 		...(shipping ? [shipping] : []),
 		...(noise ? [noise] : []),
+		...(workshop ? [workshop] : []),
 		`${paint.dim(t("label.next"))} ${nextStep(view)}`,
 	];
 	if (view.blockers.length > 0) lines.push(`${paint.warning(t("label.blocked"))} ${blockerLines(view).join(" ")}`);
@@ -321,12 +354,14 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 	if (shipping) lines.push(shipping);
 	const noise = calibrationLine(view, paint);
 	if (noise) lines.push(noise);
+	const workshop = workshopLine(view, paint);
+	if (workshop) lines.push(workshop);
 	const judge = headerJudgeLine(state, paint);
 	if (judge) lines.push(judge);
 	const keys = toolCredentialLine(view, paint);
 	if (keys) lines.push(keys);
 	if (view.blockers.length > 0 && view.stage !== "target-setup") {
-		lines.push(`${paint.warning(t("label.blocked"))} ${oneLine(blockerLines(view).join(" "), 200)}`);
+		lines.push(`${paint.warning(t("label.blocked"))} ${headline(blockerLines(view).join(" "), 200)}`);
 	}
 	lines.push(paint.dim(t("header.help")));
 	lines.push("");
@@ -467,7 +502,7 @@ export function renderCandidate(
 			}${resourceSuffix(sealedGate, paint)}`
 			: (candidate.sealedHoldout.gatePassed ? paint.success(t("sealed.gate-passed")) : paint.error(t("sealed.legacy"))))
 		: paint.muted(t("sealed.not-executed"))}`);
-	if (sealedGate && sealedGate.verdict !== "pass") lines.push(`  ${paint.muted(oneLine(sealedGate.reasons[0] ?? "", 160))}`);
+	if (sealedGate && sealedGate.verdict !== "pass") lines.push(`  ${paint.muted(headline(sealedGate.reasons[0] ?? "", 160))}`);
 	if (candidate.judgeAgreement !== undefined) lines.push(judgeAgreementLine(candidate.judgeAgreement, paint));
 	// The verdict is read beside the questions the tool cases answer, so the
 	// gate's "better" is never mistaken for "it calls the tool correctly", and
@@ -483,10 +518,10 @@ export function renderCandidate(
 	}));
 	if (candidate.review) {
 		const tone = candidate.review.recommendation === "promote" ? paint.success : paint.error;
-		lines.push(`${paint.dim(t("label.review"))} ${tone(candidate.review.recommendation)} ${paint.dim("—")} ${oneLine(candidate.review.reason, 160)}`);
+		lines.push(`${paint.dim(t("label.review"))} ${tone(candidate.review.recommendation)} ${paint.dim("—")} ${headline(candidate.review.reason, 160)}`);
 	}
-	if (candidate.promotion) lines.push(`${paint.dim(t("label.promoted"))} ${paint.success(candidate.promotion.tag)} ${paint.dim(when(candidate.promotion.at))} ${paint.dim("—")} ${oneLine(candidate.promotion.reason, 120)}`);
-	if (candidate.rejection) lines.push(`${paint.dim(t("label.rejected"))} ${paint.dim(when(candidate.rejection.at))} ${paint.dim("—")} ${oneLine(candidate.rejection.reason, 120)}`);
+	if (candidate.promotion) lines.push(`${paint.dim(t("label.promoted"))} ${paint.success(candidate.promotion.tag)} ${paint.dim(when(candidate.promotion.at))} ${paint.dim("—")} ${headline(candidate.promotion.reason, 120)}`);
+	if (candidate.rejection) lines.push(`${paint.dim(t("label.rejected"))} ${paint.dim(when(candidate.rejection.at))} ${paint.dim("—")} ${headline(candidate.rejection.reason, 120)}`);
 	if (candidate.adoption) lines.push(`${paint.dim(t("label.adopted"))} ${t("result.branch")} ${paint.bold(candidate.adoption.branch)} ${paint.dim(when(candidate.adoption.adoptedAt))}`);
 	else if (candidate.status === "promoted") lines.push(`${paint.dim(t("label.adopted"))} ${paint.warning(t("candidate.not-adopted"))}`);
 	if (candidate.continuation) lines.push(`${paint.dim(t("label.cycle"))} ${t("candidate.cycle-closed", { when: paint.dim(when(candidate.continuation.continuedAt)) })}`);
@@ -549,11 +584,13 @@ function renderCorpusDraft(
 		`${section(t("section.basket-draft"), paint)} ${paint.bold(oneLine(content.name, 80))} ${paint.dim("·")} ${plural(content.tasks.length, "case")} ${paint.dim(`· ${content.id}`)}`,
 	];
 	if (content.importSource) lines.push(`${paint.dim(t("view.imported-from"))} ${oneLine(String((content.importSource as { path?: unknown }).path ?? "imports/"), 120)}`);
-	content.tasks.slice(0, maxTasks).forEach((task, index) => {
-		const graders = (task.graders as ({ type: string } & Record<string, unknown>)[]).map(graderLabel).join(paint.dim(" · "));
-		lines.push(`  ${paint.dim(`${String(index + 1).padStart(2)}.`)} ${oneLine(task.input, 96)}`);
-		lines.push(`      ${paint.dim(t("view.graders"))} ${graders}`);
-	});
+	// The same cards `/traces` draws, from the same two functions. A draft used
+	// to print input and graders and nothing else, so a case with a world was
+	// reviewed — and approved — with the world invisible.
+	lines.push(...renderDatasetCases(
+		content.tasks.slice(0, maxTasks).map((task) => ({ ...datasetCasePreview(task), taskId: task.id })),
+		paint,
+	));
 	if (content.tasks.length > maxTasks) lines.push(`  ${paint.dim(t("view.more-cases", { count: content.tasks.length - maxTasks }))}`);
 	if (content.coverageNotes.length > 0) lines.push(paint.dim(t("view.coverage-notes")), ...bullets(content.coverageNotes, paint, { limit: 8, max: 140 }));
 	if (content.taskProvenance.length > 0) lines.push(`${paint.dim(t("view.provenance"))} ${t("view.provenance-bound", { cases: plural(content.taskProvenance.length, "case") })}`);
@@ -677,6 +714,34 @@ export function judgeRunAgreementLine(
 	return calibration ? judgeAgreementLine(calibration, paint) : paint.warning(t("judge.uncalibrated"));
 }
 
+/**
+ * What repetition bought, beside the pass rate it hides inside.
+ *
+ * `5/12 passed` over three repetitions is two very different runs: twelve
+ * cases that each pass a bit less than half the time, and five cases that pass
+ * every single time next to seven that never do. Only the second is something
+ * to build on, and until now nothing on the screen separated them. So the
+ * summary says how many cases came back right in EVERY repetition.
+ *
+ * With one repetition there is no such number to say — every measured case
+ * trivially passed "all" of its one run — and a claim about run-to-run
+ * behaviour off a single sample is exactly the claim this product refuses to
+ * make. There the line says the noise was not measured, and, when the
+ * calibrated design would need more samples than were taken, what would
+ * measure it.
+ */
+function repetitionNote(evaluation: WorkbenchTracesDetail["evaluation"], paint: Paint): string {
+	const { stable, measured } = evaluation.stableTasks;
+	if (evaluation.repetitions > 1) return paint.dim(t("run.every-repetition", { count: stable }));
+	const advised = measured > 0
+		? recommendedRepetitions(evaluation.summary.allPassRate, measured)
+		: evaluation.repetitions;
+	const advice = advised > evaluation.repetitions
+		? `, ${t("run.noise-advice", { repetitions: plural(advised, "repetition") })}`
+		: "";
+	return paint.warning(`${t("run.noise-unmeasured")}${advice}`);
+}
+
 export function renderEvaluationSummary(
 	evaluation: WorkbenchTracesDetail["evaluation"],
 	paint: Paint,
@@ -685,7 +750,7 @@ export function renderEvaluationSummary(
 	const tone = summary.error > 0 ? paint.warning : summary.fail === 0 ? paint.success : paint.accent;
 	const failed = t("run.failed", { count: summary.fail });
 	const errors = plural(summary.error, "error");
-	return `${tone(paint.bold(t("run.passed", { pass: summary.pass, total: summary.total })))} ${paint.dim(bar(summary.allPassRate, 16))} ${paint.dim(percent(summary.allPassRate))} ${paint.dim("·")} ${summary.fail > 0 ? paint.error(failed) : paint.muted(failed)} ${paint.dim("·")} ${summary.error > 0 ? paint.warning(errors) : paint.muted(errors)} ${paint.dim(`· ${plural(evaluation.repetitions, "repetition")} · ${evaluation.evalRunId}`)}`;
+	return `${tone(paint.bold(t("run.passed", { pass: summary.pass, total: summary.total })))} ${paint.dim(bar(summary.allPassRate, 16))} ${paint.dim(percent(summary.allPassRate))} ${paint.dim("·")} ${repetitionNote(evaluation, paint)} ${paint.dim("·")} ${summary.fail > 0 ? paint.error(failed) : paint.muted(failed)} ${paint.dim("·")} ${summary.error > 0 ? paint.warning(errors) : paint.muted(errors)} ${paint.dim(`· ${plural(evaluation.repetitions, "repetition")} · ${evaluation.evalRunId}`)}`;
 }
 
 /** Diagnosis screen shared by /traces and the post-run summary. */
@@ -886,7 +951,7 @@ function attemptLine(
 		change,
 		oneLine(development, 40),
 		sealed ? t("view.sealed-word", { verdict: oneLine(sealed, 20) }) : null,
-		reason ? paint.dim(`“${oneLine(reason, 90)}”`) : null,
+		reason ? paint.dim(`“${headline(reason, 90)}”`) : null,
 	], paint.dim(" · "));
 }
 
@@ -911,7 +976,9 @@ export function renderHistory(content: WorkbenchHistoryDetail, paint: Paint): st
 			: t("growth.not-evaluated");
 		lines.push(`  ${paint.dim(attempt.at.slice(0, 10))} ${attemptLine(attempt.outcome, attempt.changedPaths, development, attempt.sealed?.verdict ?? null, attempt.reason, paint)}`);
 		if (attempt.failureModeIds.length > 0) {
-			lines.push(`      ${paint.dim(t("view.aimed-at"))} ${oneLine(attempt.failureModeIds.join(", "), 90)}`);
+			// The history has no brief behind it, so it cannot name these modes —
+			// but a row of 64-character ids is not provenance either, it is a wall.
+			lines.push(`      ${paint.dim(t("view.aimed-at"))} ${oneLine(attempt.failureModeIds.map(shortModeId).join(", "), 90)}`);
 		}
 	}
 	lines.push(paint.dim(t("view.never-rerun")));
@@ -940,6 +1007,106 @@ export function renderDataset(content: WorkbenchDatasetDetail, paint: Paint): st
 /** Leaf facts one card shows, and how wide a card line may get. */
 const MAX_WORLD_FACTS = 3;
 const WORLD_LINE_COLUMNS = 88;
+// The checks get a wider bound than the rest of the card: they are the thing a
+// person approves on the draft screen, and a basket review that cut
+// `judge “Polite and…”` off the end asked for a yes about a hidden grader.
+const CARD_GRADER_COLUMNS = 140;
+
+/**
+ * The only world paths a card may name a person from, in the order it tries
+ * them, and the sentence each one is read as.
+ *
+ * An allowlist rather than a search: a world is authored data and the card is
+ * printed unmasked, so a screen that hunted for "something that looks like a
+ * name" would eventually print `client.pin`. Names come first because a name
+ * is what a person is called; a number is the fallback, said as the sentence
+ * an operator would say — «клиент по договору 1003» — rather than as a bare
+ * value nobody can place.
+ *
+ * Session 8's worlds keyed the customer under an account number, so the single
+ * `client.name` lookup ran out and every worlded case read `кто: —`.
+ */
+const WORLD_IDENTITY_PATHS: readonly (readonly [string, MessageKey | null])[] = [
+	["client.name", null],
+	["customer.name", null],
+	["user.name", null],
+	["account.holder", null],
+	["client.id", "view.world.who-by-id"],
+	["customer.id", "view.world.who-by-id"],
+	["account.id", "view.world.who-by-account"],
+	["contract.id", "view.world.who-by-contract"],
+	["account.number", "view.world.who-by-account"],
+	["contract", "view.world.who-by-contract"],
+	["account", "view.world.who-by-account"],
+];
+
+/**
+ * Leaf keys a card never prints, whatever a world holds under them.
+ *
+ * `redactTraceText` already scrubs the shapes it knows on the way in, but it
+ * has never heard of `pin`, and a world is authored by hand: the card is the
+ * one surface that shows raw state to a room, so the denylist is here too.
+ */
+const SECRET_WORLD_KEY = /^(?:token|pin|passcode|password|secret|otp|cvv|cvc|api[_-]?key|access[_-]?token|private[_-]?key)$/i;
+
+/** The scalar a world path holds, as text, or null for anything else. */
+function worldScalar(value: unknown): string | null {
+	if (typeof value === "string") return value.trim().length > 0 ? value.trim() : null;
+	if (typeof value === "number" && Number.isFinite(value)) return String(value);
+	return null;
+}
+
+/**
+ * Who this case is about, read only from {@link WORLD_IDENTITY_PATHS}.
+ *
+ * The chosen value goes through `redactTraceText` even though it came from an
+ * allowlisted path: an author can put anything in a name field, and this is
+ * the same scrubber every trace line passes.
+ */
+function worldWho(state: Record<string, unknown> | null): string | null {
+	if (!state) return null;
+	for (const [path, sentence] of WORLD_IDENTITY_PATHS) {
+		const found = resolveWorldPath(state, path);
+		if (!found.found) continue;
+		const scalar = worldScalar(found.value);
+		if (scalar === null) continue;
+		const shown = redactTraceText(scalar);
+		return sentence === null ? shown : t(sentence, { id: shown });
+	}
+	for (const [root, sentence] of WORLD_IDENTITY_MAPS) {
+		const id = worldMapKey(state[root]);
+		if (id !== null) return t(sentence, { id: redactTraceText(id) });
+	}
+	return null;
+}
+
+/**
+ * Worlds that hold several customers key them by identifier — session 8's
+ * `accounts.1003.balance` — so the person is the key, not a value. Only the
+ * first key of such a map names the case; a card is about one person.
+ */
+const WORLD_IDENTITY_MAPS: readonly (readonly [string, MessageKey])[] = [
+	["contracts", "view.world.who-by-contract"],
+	["accounts", "view.world.who-by-account"],
+	["clients", "view.world.who-by-id"],
+	["customers", "view.world.who-by-id"],
+];
+
+/** An identifier-shaped first key of a map of customers, or null. */
+function worldMapKey(value: unknown): string | null {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+	const [first] = Object.keys(value);
+	if (first === undefined || SECRET_WORLD_KEY.test(first)) return null;
+	return /^[\p{L}\p{N}_-]{1,32}$/u.test(first) ? first : null;
+}
+
+/**
+ * One case as a card, plus the id it is known by wherever it has one.
+ *
+ * A recipe's sample case has no id yet — it has not been published — so the id
+ * is optional and the card simply carries no provenance chip for it.
+ */
+export type TitledDatasetCase = WorkbenchDatasetCase & { taskId?: string };
 
 /**
  * The world's state as an object again. `datasetCasePreview` hands it over as
@@ -962,18 +1129,21 @@ function worldStateOf(sample: WorkbenchDatasetCase): Record<string, unknown> | n
 /** `dotted.path=value` for the first few leaves, in the state's canonical order. */
 function worldFacts(state: Record<string, unknown>): string[] {
 	const facts: string[] = [];
-	const walk = (value: unknown, path: string): void => {
+	const walk = (value: unknown, path: string, key: string): void => {
 		if (facts.length >= MAX_WORLD_FACTS) return;
 		if (value !== null && typeof value === "object") {
 			const entries: [string, unknown][] = Array.isArray(value)
 				? value.map((item, index) => [String(index), item])
 				: Object.entries(value);
-			for (const [key, child] of entries) walk(child, path ? `${path}.${key}` : key);
+			for (const [child, item] of entries) walk(item, path ? `${path}.${child}` : child, child);
 			return;
 		}
+		// A secret is skipped rather than counted: the card shows the next three
+		// facts a person can act on, not two facts and a hole.
+		if (SECRET_WORLD_KEY.test(key)) return;
 		facts.push(`${path}=${typeof value === "string" ? value : JSON.stringify(value)}`);
 	};
-	walk(state, "");
+	walk(state, "", "");
 	return facts;
 }
 
@@ -983,15 +1153,16 @@ function worldClause(path: string, op: string, value: string | null): string {
 }
 
 /**
- * One case as four lines: who is in the world, what is already true of it, what
- * they want, and what must be true when the conversation ends.
+ * One case as a card: its own name, then who is in the world, what is already
+ * true of it, what they want, and what must be true when the conversation ends.
  *
  * A case without a world keeps exactly the lines it has always had — the world
  * card is a different reading of a different kind of case, not a redesign of
- * the old one. The first line carries no indent: `renderDatasetCases` puts the
- * case number in front of it.
+ * the old one, and its own first line is already the case's words. The first
+ * line carries no indent either way: `renderDatasetCases` puts the case number
+ * in front of it.
  */
-export function worldCardLines(sample: WorkbenchDatasetCase, paint: Paint): string[] {
+export function worldCardLines(sample: TitledDatasetCase, paint: Paint): string[] {
 	if (!sample.world) {
 		const lines = [oneLine(sample.input, 92)];
 		if (sample.expected !== null) lines.push(`      ${paint.dim(t("view.expected"))} ${oneLine(sample.expected, 88)}`);
@@ -1010,17 +1181,22 @@ export function worldCardLines(sample: WorkbenchDatasetCase, paint: Paint): stri
 			const pairs = Object.entries(sample.metadata).slice(0, 4).map(([key, value]) => `${oneLine(key, 20)}=${oneLine(value, 24)}`);
 			lines.push(`      ${paint.dim(t("view.metadata"))} ${oneLine(pairs.join(" · "), 88)}`);
 		}
-		lines.push(`      ${paint.dim(t("view.graders"))} ${oneLine(sample.graders.map(graderLabel).join(" · "), 89)}`);
+		lines.push(`      ${paint.dim(t("view.graders"))} ${oneLine(sample.graders.map(graderLabel).join(" · "), CARD_GRADER_COLUMNS)}`);
 		return lines;
 	}
 	const state = worldStateOf(sample);
-	// The person in the world, then the person the case describes, then nobody.
-	const named = state ? resolveWorldPath(state, "client.name") : { found: false, value: undefined };
-	const who = typeof named.value === "string" && named.value.trim().length > 0
-		? named.value
-		: sample.simulatedUser?.persona ?? "—";
+	// The person in the world, then the person the case describes, then the
+	// unnamed one. Never a dash: a case that happens somewhere happens to
+	// somebody, and `кто: —` was session 8's most-reported line.
+	const who = worldWho(state)
+		?? (sample.simulatedUser?.persona?.trim() || null)
+		?? t("view.world.who-unnamed");
 	const facts = state ? worldFacts(state) : [];
-	const has = facts.length > 0 ? facts.join(" · ") : oneLine(sample.world.state, WORLD_LINE_COLUMNS);
+	const has = facts.length > 0
+		? facts.join(" · ")
+		: state
+			? "—"
+			: oneLine(sample.world.state, WORLD_LINE_COLUMNS);
 	const wants = sample.simulatedUser?.goal ?? sample.input;
 	// An expectation and the `world_state` grader it desugars into are the same
 	// statement, so the card states each once, expectations first.
@@ -1046,16 +1222,21 @@ export function worldCardLines(sample: WorkbenchDatasetCase, paint: Paint): stri
 	for (const grader of sample.graders) {
 		if (grader.type !== "world_state") must.push(graderLabel(grader));
 	}
+	// The card is headed by the case's own name, because a worlded card's first
+	// line used to be `кто:` and nothing on the screen said which case it was.
+	// The short id stays beside it, dimmed: the name is for the person, the id
+	// is the thing that matches this card to the evidence.
 	return [
-		`${paint.dim(t("view.world.who"))} ${oneLine(who, WORLD_LINE_COLUMNS)}`,
+		joinNonEmpty([caseTitle(sample), sample.taskId ? paint.dim(shortTaskId(sample.taskId)) : null], "  "),
+		`      ${paint.dim(t("view.world.who"))} ${oneLine(who, WORLD_LINE_COLUMNS)}`,
 		`      ${paint.dim(t("view.world.has"))} ${oneLine(has, WORLD_LINE_COLUMNS)}`,
 		`      ${paint.dim(t("view.world.wants"))} ${oneLine(wants, WORLD_LINE_COLUMNS)}`,
-		`      ${paint.dim(t("view.world.must"))} ${oneLine(must.join(" · "), WORLD_LINE_COLUMNS)}`,
+		`      ${paint.dim(t("view.world.must"))} ${oneLine(must.join(" · "), WORLD_LINE_COLUMNS) || "—"}`,
 	];
 }
 
 /** The cases one proposed recipe produces, so a human argues with cases, not JSON. */
-export function renderDatasetCases(cases: readonly WorkbenchDatasetCase[], paint: Paint): string[] {
+export function renderDatasetCases(cases: readonly TitledDatasetCase[], paint: Paint): string[] {
 	const lines: string[] = [];
 	cases.forEach((sample, index) => {
 		const [first, ...rest] = worldCardLines(sample, paint);

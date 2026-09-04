@@ -6,6 +6,7 @@ import { parsePassRateFlag } from "../cli-invocation.js";
 import { runGraderScore } from "../compare.js";
 import { isScreenEvalRun } from "./cheap-check.js";
 import { corpusDatasetLabel } from "./corpus-target.js";
+import { plural, t, type MessageKey } from "../i18n.js";
 import { publicTaskId } from "./improvement-brief.js";
 import { listCorpora, loadCorpus, type CorpusVisibility } from "../corpus.js";
 import {
@@ -1132,6 +1133,39 @@ export function datasetExportOptionsFromFlags(
 		...(flags["include-failed"] === "true" ? { includeFailed: true } : {}),
 		...(flags["include-aa"] === "true" ? { includeAa: true } : {}),
 	};
+}
+
+/** The skip reasons, in the order the line names them, with their words. */
+const DATASET_SKIP_LABELS: readonly (readonly [DatasetSkipReason, MessageKey])[] = [
+	["infra", "export.reason-infra"],
+	["failed", "export.reason-failed"],
+	["screen", "export.reason-screen"],
+	["sealed", "export.reason-sealed"],
+	["aa", "export.reason-aa"],
+];
+
+/**
+ * The one sentence `/dataset` ends on: how many dialogues went into the file,
+ * out of how many were there, and what the difference was.
+ *
+ * `выгружено 50 → …` is a number with no denominator, and it was the last
+ * thing session 8 saw before handing the file on. A denominator and the
+ * reasons behind it are the difference between "the export worked" and "the
+ * export left twenty runs out and here is why".
+ */
+export function datasetExportDoneLine(result: DatasetExportResult, path: string): string {
+	const { counts } = result;
+	const skipped = Object.values(counts.skipped).reduce((sum, value) => sum + value, 0);
+	const done = t("export.done", {
+		count: counts.exported,
+		total: plural(counts.runsScanned, "dialogue of"),
+		path,
+	});
+	if (skipped <= 0) return done;
+	const reasons = DATASET_SKIP_LABELS
+		.filter(([reason]) => counts.skipped[reason] > 0)
+		.map(([, key]) => t(key));
+	return `${done} · ${t("export.left-out", { count: skipped, reasons: reasons.join(", ") })}`;
 }
 
 /** One operator-facing summary; the counts always add up to `runsScanned`. */

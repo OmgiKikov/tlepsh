@@ -122,6 +122,8 @@ const NOUNS = {
 		version: ["version", "versions"],
 		"decided attempt": ["decided attempt", "decided attempts"],
 		attempt: ["attempt", "attempts"],
+		// After "over"/«за» the noun is in the accusative: «за 1 попытку», never «за 1 попытка».
+		"attempt spent over": ["attempt", "attempts"],
 		column: ["column", "columns"],
 		"earlier attempt": ["earlier attempt", "earlier attempts"],
 		record: ["record", "records"],
@@ -162,6 +164,28 @@ const NOUNS = {
 		"agent turn": ["turn", "turns"],
 		key: ["key", "keys"],
 		call: ["call", "calls"],
+		// lane: passport-ru — the passport's own counted nouns. "version measured
+		// over" is the same word after "over"/"за", where Russian wants the
+		// accusative: "за 1 версию", never "за 1 версия".
+		"labelled subject": ["subject", "subjects"],
+		check: ["check", "checks"],
+		"version measured over": ["version", "versions"],
+		// lane: compare-honesty
+		// The three below are read after "of"/"из", where Russian wants the
+		// genitive and the ordinary nominative forms above would be wrong.
+		"case of": ["case", "cases"],
+		"dialogue of": ["dialogue", "dialogues"],
+		"excluded case": ["excluded", "excluded"],
+		// lane: exam-kb
+		question: ["question", "questions"],
+		// lane: i18n-reasons — the size of a recorded answer, in the sentence
+		// that says the answer did not contain what the check wanted, and the
+		// tool calls a required-tool check counts.
+		character: ["character", "characters"],
+		"tool call": ["tool call", "tool calls"],
+		// The noun after "about"/«около», where Russian wants the genitive:
+		// «около 4 минут», never «около 4 минуты».
+		"estimated minute": ["minute", "minutes"],
 	},
 	ru: {
 		case: ["кейс", "кейса", "кейсов"],
@@ -185,6 +209,7 @@ const NOUNS = {
 		version: ["версия", "версии", "версий"],
 		"decided attempt": ["решённая попытка", "решённые попытки", "решённых попыток"],
 		attempt: ["попытка", "попытки", "попыток"],
+		"attempt spent over": ["попытку", "попытки", "попыток"],
 		column: ["колонка", "колонки", "колонок"],
 		"earlier attempt": ["прошлая попытка", "прошлые попытки", "прошлых попыток"],
 		record: ["запись", "записи", "записей"],
@@ -221,6 +246,23 @@ const NOUNS = {
 		"agent turn": ["ход", "хода", "ходов"],
 		key: ["ключ", "ключа", "ключей"],
 		call: ["вызов", "вызова", "вызовов"],
+		// lane: passport-ru
+		"labelled subject": ["размеченный кейс", "размеченных кейса", "размеченных кейсов"],
+		check: ["проверка", "проверки", "проверок"],
+		"version measured over": ["версию", "версии", "версий"],
+		// lane: compare-honesty
+		// Genitive: «из 1 кейса», «из 15 кейсов» — the nominative «15 кейсов»
+		// happens to coincide, «из 2 кейсов» does not.
+		"case of": ["кейса", "кейсов", "кейсов"],
+		"dialogue of": ["диалога", "диалогов", "диалогов"],
+		// A short participle, bent by the count it follows: «1 исключён», «2 исключены».
+		"excluded case": ["исключён", "исключены", "исключены"],
+		// lane: exam-kb
+		question: ["вопрос", "вопроса", "вопросов"],
+		// lane: i18n-reasons
+		character: ["символ", "символа", "символов"],
+		"tool call": ["вызов инструмента", "вызова инструмента", "вызовов инструментов"],
+		"estimated minute": ["минуты", "минут", "минут"],
 	},
 } as const;
 
@@ -388,7 +430,7 @@ const en = {
 	"candidate.applied-by-search": "applied by the proposal search",
 	"candidate.applied-automated": "— {actor} authorized the automated trial, not this individual diff",
 	"candidate.applied-reviewed": "by {actor}, who read this diff",
-	"candidate.not-adopted": "not yet — /adopt fast-forwards the current branch",
+	"candidate.not-adopted": "not yet — say “ship it” to make it the active agent",
 	"candidate.cycle-closed": "closed {when}",
 	// Both arms re-scored with one revised rubric, beside the recorded verdict
 	// and never instead of it: a re-score is not a new baseline.
@@ -471,7 +513,7 @@ const en = {
 
 	"confirm.start-testing.title": "Start testing — {parts}",
 	"confirm.start-testing.part.approve-spec": "approve the Spec",
-	"confirm.start-testing.part.publish-corpus": "publish the eval basket",
+	"confirm.start-testing.part.publish-corpus": "publish the eval basket ({cases})",
 	"confirm.start-testing.part.run": "run {runs}",
 	// The composite's subject block: what exactly is approved, published and run.
 	"confirm.start-testing.approve-draft": "{title} — approve this draft",
@@ -618,7 +660,7 @@ const en = {
 	"generate-holdout.by-judge-kb": "{cases} from the knowledge base · written by the judge {generator}",
 	"generate-holdout.source": "the agent's description + {examples} from the tests (shape only)",
 	"generate-holdout.source-spec-only": "the agent's description alone (no examples)",
-	"generate-holdout.source-kb": "the knowledge base — {chunks}, one question each",
+	"generate-holdout.source-kb": "the knowledge base — {chunks} the judge writes the questions from",
 	"generate-holdout.blind": "The Builder never sees the content; only the case count reaches the conversation",
 	"generate-holdout.draft": "Draft — to a file outside the repo; you edit it and import it with /holdout <path>",
 	"generate-holdout.sealed-note": "Nobody in the improvement loop reads these cases; the exam stays evaluator-only.",
@@ -1054,7 +1096,7 @@ const en = {
 	"passport.known-limits": "Known limits",
 	"passport.written-to": "Written to",
 	// lane: recorded dataset — one line, and it says what is NOT in the file.
-	"export.done": "exported {count} → {path} (no exam)",
+	"export.done": "exported {count} of {total} → {path}",
 	"export.none": "nothing recorded to export yet — run the tests first",
 	"passport.unresolved": "Unresolved",
 	"passport.nothing-unresolved": "nothing this change targeted was left unresolved",
@@ -1368,63 +1410,6 @@ const en = {
 	"report.th.cost": "Cost",
 	"report.th.resolved-modes": "Resolved modes",
 	"report.th.reason": "Reason",
-	"help.body": `AHDE Builder
-
-Talk normally: describe the agent you want, answer one useful question at a time,
-and AHDE turns the conversation into a reviewed Spec, evaluation cases, runs,
-diagnosis, and exact harness changes. Slash commands are shortcuts, not a
-requirement.
-
-Workflow:  idea → Spec → eval basket → run → diagnosis → proposal → diff review
-           → apply → candidate verification → promote/reject → adopt → next cycle
-
-Commands: three verbs do the work.
-  /test [N] [reason]    test the agent — approve, publish and run whatever is
-                        pending, or verify the candidate you just changed
-  /fix [n] [reason]     fix problem n (the first one by default): refresh the
-                        traces, prepare the change, and show you the diff
-  /ship [version]       ship the verified candidate: promote, adopt, next cycle
-
-Looking around:
-  /status               where you are and the next step
-  /plan                 the whole cycle as a checklist: done, current, still ahead
-  /jobs                 the background measurement that is running, if any
-  /stop                 cancel it; nothing it measured is kept
-  /review               the exact artifact awaiting your review, with actions
-  /traces [rows]        diagnosis, failure modes, the evidence link, and the runs table
-  /trace <n|next|prev>  one run: why it failed, every verdict, and the conversation
-  /target [resource]    the exact committed Target, or one declared resource
-  /passport [version]   what the newest shipped version promised and measured
-  /log [n]              how the agent grew: every version and what it scored
-  /dataset [--all]      every recorded conversation as one dataset file, saved
-                        beside the agent; the sealed exam is never in it
-  /label [n]            check the judge: grade n answers blind, then see what
-                        it said — about ten minutes, and nothing runs
-  /doctor               model auth, Target readiness, and recovery steps
-  /holdout              privately import the operator-owned sealed JSONL exam
-  /help                 this reference
-
-One step at a time (the same decisions, taken separately):
-  /run [N] [reason]     alias of /test
-  /calibrate [N]        measure run-to-run noise: the same revision against itself
-  /regrade [erun]       re-score the recorded answers with the graders you just
-                        revised — the agent is not called again, only the judge
-  /approve [reason]     approve the reviewed Spec draft
-  /publish [name]       publish the reviewed eval basket
-  /apply <branch>       apply the reviewed proposal to a candidate branch
-  /discard [reason]     discard a proposal or abandon an interrupted candidate
-  /promote <version>    promote the verified candidate (records the review first)
-  /reject [reason]      reject the verified candidate
-  /adopt [reason]       fast-forward the current branch to the promoted candidate
-  /next [reason]        close this cycle and continue with the active Target
-
-Pi's own built-ins configure the Builder's model, not the agent's:
-  /login                connect a provider (OAuth or API key), once per machine
-  /model                pick a Builder model that already has a credential
-
-Every consequential step shows the exact subject and asks you once: starting
-the tests, applying a diff, and shipping. Runs and checks just happen — unless
-one would cost more than usual, and then you get a single yes/no.`,
 
 	// lane: exam-honesty
 	"exam.outcome-improved": "improved",
@@ -1672,6 +1657,245 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"confirm.improve.builder-budget": "variants: {variants} · requests: ≤{requests} · output tokens: ≤{tokens}",
 	"confirm.improve.builder-budget-unknown": "variants: {variants} · request and token ceilings unknown",
 	"confirm.improve.total": "Total operation",
+
+	// lane: gate-dialog
+	// What an unattended operation refuses to decide, and the dialog choices a
+	// host renders by id rather than by the string it happened to draw.
+	"gate.restricted.improvement-loop": "improvement loop",
+	"gate.restricted.proposal-search": "proposal search",
+	"gate.restricted.refusal": "the {operation} may not decide {decision}; that stays with the human. {advice}",
+	"gate.restricted.advice.stop-loop": "Stop the loop and make it yourself.",
+	"gate.restricted.advice.pick-candidate": "Read the table, pick a candidate, and decide it yourself.",
+	"gate.restricted.sealed-selection": "sealed holdout selection",
+	"gate.restricted.unwrapped":
+		"a {operation} may only be handed a gate wrapped by {wrapper}; " +
+		"an unwrapped gate could approve a release the {operation} must never ask for",
+	"dialog.choice-ordinal": "{label} ({ordinal})",
+	// lane: help-slim
+	"panel.help-all": "AHDE Builder · every command",
+	"help.intro": `Talk normally: describe the agent you want, answer one useful question at a
+time, and AHDE turns the conversation into a description, test cases, runs, a
+diagnosis and exact changes. The commands below are shortcuts, not vocabulary
+you have to learn.`,
+	"help.gate": `Every consequential step shows the exact subject and asks you once: starting
+the tests, applying a change, shipping. Runs and checks just happen — unless
+one would cost more than usual, and then you get a single question.`,
+	"help.workflow": `The round:  idea → description → test cases → run → diagnosis → change
+            → read the diff → apply → check the candidate → ship or reject`,
+	"help.h.core": "Every day:",
+	"help.h.expert": "Expert shortcuts — the same work, one step at a time:",
+	"help.h.host": "AHDE's own decisions — it asks them on screen; typing them is never needed:",
+	"help.h.builtin": "Pi's own built-ins configure the Builder's model, not the agent's:",
+	"help.cmd.test": "run the tests: publish what is pending, or check the change",
+	"help.cmd.fix": "fix the second problem: refresh the traces, show the diff",
+	"help.cmd.ship": "ship the checked candidate, and start the next round",
+	"help.cmd.status": "where you are and what to say next",
+	"help.cmd.traces": "the diagnosis: failure modes, evidence link, runs table",
+	"help.cmd.trace": "one run in full: why it failed, the verdicts, the talk",
+	"help.cmd.passport": "what the shipped version promised and what it measured",
+	"help.cmd.dataset": "every recorded conversation as one file beside the agent",
+	"help.cmd.help": "every command, shortcuts included",
+	"help.cmd.login": "connect a provider (OAuth or API key), once per machine",
+	"help.cmd.model": "pick a Builder model that already has a credential",
+	"cmd.err.help-arg": "/help takes nothing, or the word all for the whole list",
+	// lane: passport-ru — the passport markdown file. It is not a panel: it is
+	// the one document the operator sends to whoever paid for the agent, so it
+	// is rendered in the operator's language, every sentence of it. Identifiers
+	// and hashes are the exception, and they are cut to twelve characters on the
+	// face and printed whole in the footer.
+	"passport.md.title": "Version passport — {agent} {version}",
+	"passport.md.verified-only": "(verified only)",
+	"passport.md.not-promoted": "not promoted — verified only",
+	"passport.md.agent": "agent",
+	"passport.md.version": "version",
+	"passport.md.date": "date",
+	"passport.md.revision": "revision",
+	"passport.md.shipped": "Shipped",
+	"passport.md.promised-spec": "Promised — {spec}",
+	"passport.md.promised-title": "**{title}** — {purpose}",
+	"passport.md.design": "{cases} × {repetitions}",
+	"passport.md.development": "development: **{verdict}** — {body}",
+	"passport.md.development-none": "development: no comparison evidence recorded",
+	"passport.md.no-development-evidence": "no promotion-grade development evidence on this record",
+	"passport.md.sealed-guardrail": "sealed guardrail: **{verdict}** on {design}",
+	"passport.md.sealed-guardrail-none": "sealed guardrail: not run (promotion stays locked)",
+	"passport.md.per-answer": "per answer, candidate over baseline: {parts}",
+	"passport.md.per-answer-none": "per answer, candidate over baseline: not recorded",
+	"passport.md.judge-spend": "judge {cost} total",
+	"passport.md.judge-not-calibrated": "judge not calibrated — nobody has checked it against a human",
+	"passport.md.judge-uncalibrated": "judge not calibrated — {reason}",
+	"passport.md.judge-runs-unreadable": "the graded runs behind this evidence are no longer readable",
+	"passport.md.judge-no-grader": "no judge grader graded this evidence",
+	"passport.md.judge-no-labels": "this judge has no human labels: /label checks it against your own eyes",
+	"passport.md.judge-agreement": "judge agreement {agreement}{baseline}",
+	"passport.md.judge-line": "agreement {agreement} · {kappa} · {subjects}, {checks}{baseline}",
+	"passport.md.judge-baseline": " · majority-class baseline {rate}",
+	"passport.md.judge-agreement-note": "Agreement is the share of checks where the judge and the human said the same thing.",
+	"passport.md.judge-baseline-note":
+		"An instrument that always answered with the more common human label would score {rate}; " +
+		"only the distance above that line is agreement the judge earned.",
+	"passport.md.not-diagnosis-bound": "not diagnosis-bound (construction)",
+	"passport.md.unresolved-mode": "{outcome}: {mode} ({category}) — failure rate {before} → {after}",
+	"passport.md.limits-none": "none recorded — {note}",
+	"passport.md.note-impact-unreadable":
+		"not derivable — the candidate impact could not be recomputed from the recorded evidence",
+	"passport.md.note-no-basis": "not derivable — the proposal carries no attested failure-mode basis",
+	"passport.md.note-all-resolved": "every targeted failure mode the proposal named was resolved",
+	"passport.md.note-none-remained": "no targeted failure mode remained",
+	"passport.md.noise-band": "calibrated noise band: {ci} {low} … {high} from an A/A run of {sha} on {design}",
+	"passport.md.noise-band-none": "calibrated noise band: not measured — /calibrate measures it",
+	"passport.md.data": "data: {development}; {sealed}",
+	"passport.md.data-development": "development “{name}” ({corpus}, {cases})",
+	"passport.md.data-development-unnamed": "development ({corpus}, {cases})",
+	"passport.md.data-development-no-corpus": "development evidence (no published corpus, {cases})",
+	"passport.md.data-sealed": "sealed exam ({cases}{origin})",
+	"passport.md.data-sealed-none": "sealed exam (not run)",
+	"passport.md.cases-unknown": "an unknown number of cases",
+	"passport.md.spec": "spec: {value}",
+	"passport.md.proposal": "proposal: {value}",
+	"passport.md.gate-policies": "gate policies: {value}",
+	"passport.md.eval-runs": "eval runs: development {baseline} → {candidate}",
+	"passport.md.applied-by": "applied by: {actor} · {reason}",
+	"passport.md.applied-by-none": "applied by: not recorded (manual candidate)",
+	"passport.md.candidate-record": "candidate record: {id}",
+	"passport.md.none": "none",
+	"passport.md.reason-quoted": "reason, in the Builder's own words: “{reason}”",
+	"passport.md.reason-plain": "reason: “{reason}”",
+	"passport.md.modes-none": "Targeted failure modes: none left unresolved by this change, or none were targeted",
+	"passport.md.modes-unresolved": "Targeted failure modes still unresolved:",
+	"passport.md.no-prediction": "no prediction was stated for this version",
+	"passport.md.identifiers": "Identifiers",
+	"passport.md.id-candidate": "candidate: {candidate} · experiment: {experiment}",
+	"passport.md.id-spec": "approved description: {spec}",
+	"passport.md.id-proposal": "proposal: {run} · {hash}",
+	"passport.md.id-corpus": "development basket: {corpus} · {hash}",
+	"passport.md.id-eval-runs": "development evidence: {baseline} vs {candidate}",
+	"passport.md.warning-records-unreadable": "{records} could not be read and were skipped",
+	"passport.md.warning-spec-unreadable":
+		"the approved Spec this version was built against could not be read, so its promise is not quoted here",
+	"passport.md.warning-no-spec": "this version is not bound to an approved Spec, so it promised nothing in writing",
+	"passport.md.warning-judge-labels": "judge labels could not be read, so the judge reads as not calibrated here",
+	"passport.md.warning-diagnosis":
+		"the diagnosis this change was authored against could not be read, so unresolved failure modes are unknown",
+	"passport.md.category.infrastructure": "infrastructure",
+	"passport.md.category.flaky-behavior": "flaky behaviour",
+	"passport.md.category.tool-selection": "tool selection",
+	"passport.md.category.output-contract": "output contract",
+	"passport.md.category.answer-quality": "answer quality",
+	"passport.md.mode-improved": "improved, not resolved",
+	"passport.md.mode-persisted": "still failing",
+	"passport.md.mode-worsened": "worse than before",
+	"passport.md.mode-not-reproduced": "did not reproduce",
+	// A first version has nothing behind it, so an arrow between two identical
+	// numbers is not a measurement — it is a shape that reads like one.
+	"growth.first-version": "first version · score {score}",
+	// lane: render-names
+	"view.case-quoted": "“{text}”",
+	"view.case-unnamed": "case with no words",
+	"view.world.who-by-id": "customer {id}",
+	"view.world.who-by-account": "customer on account {id}",
+	"view.world.who-by-contract": "customer on contract {id}",
+	"view.world.who-unnamed": "the person in this world",
+	"headline.proposal-applied": "Change applied",
+	// lane: compare-honesty
+	"measurement.on-cases-of": "on {measured} of {cases} × {repetitions}",
+	"measurement.on-cases-of-only": "on {measured} of {cases}",
+	"measurement.excluded": "{excluded} for {reason}",
+	"measurement.excluded-infrastructure": "infrastructure",
+	"measurement.excluded-incomplete": "incomplete repetitions",
+	"measurement.excluded-mixed": "infrastructure, incomplete repetitions",
+	"exam.origin-kb": "written by the judge from the knowledge base",
+	"exam.origin-spec": "written by the judge from the description",
+	"exam.origin-operator": "brought by the operator",
+	"run.every-repetition": "{count} in every repetition",
+	"run.noise-unmeasured": "1 repetition — noise was not measured",
+	"run.noise-advice": "{repetitions} would measure it (A/A)",
+	"table.col.every-repetition": "passed",
+	"export.left-out": "left out: {count} ({reasons})",
+	"export.reason-sealed": "the exam",
+	"export.reason-screen": "cheap checks",
+	"export.reason-failed": "failed runs",
+	"export.reason-infra": "run errors",
+	"export.reason-aa": "A/A calibration",
+	// lane: exam-kb — a base too small to fill an exam, said with the number
+	// before anything is spent, and with the one alternative that exists.
+	"sealed-synth.kb-too-small":
+		"The knowledge base holds {chunks} — no more than {max} come out of it, and the exam needs {min}. I can write the exam from the description instead ({count}) — shall I?",
+	"sealed-synth.kb-too-small-next":
+		"add documents to data/kb, or ask for the exam from the description instead",
+	"ship-gate.kb-ceiling": "the knowledge base gives at most {max}",
+	// lane: workshop-restart
+	"label.workshop": "Workshop",
+	// lane: smoke-a — the dirty-tree refusal a person has to act on
+	"target.dirty": "The agent folder has uncommitted changes: {paths}. Commit them, and we continue.",
+	"workshop.recorded": "still open from an earlier session — the Builder continues in it, it does not start over",
+	"workshop.stale-worktree-gone": "the one from an earlier session is gone: its working copy no longer exists, so a new one has to be opened",
+	"workshop.stale-unreadable-note": "the note about an earlier session's workshop cannot be read, so a new one has to be opened",
+	// lane: i18n-reasons
+	// What one check wanted and what the record shows instead. The grader's own
+	// `reason` stays exactly as it was written — it is evidence — and these are
+	// the host's rebuilt sentences about it, one pair per check code, keyed the
+	// way the check TITLES already are. A phrasing no pair matches yields no
+	// expectation at all and the reason is quoted verbatim: guessing is the one
+	// thing this surface may not do.
+	"why.actual.run-incomplete": "the run never completed, so nothing was graded",
+	"why.actual.run-incomplete-cause": "the run never completed, so nothing was graded — {cause} ({detail})",
+	"why.expected.required-tool": "expected a call to {tool}",
+	"why.expected.required-tool-args": "expected a call to {tool} with arguments containing “{arguments}”",
+	"why.actual.required-tool-none": "the agent made no tool calls and answered directly",
+	"why.actual.required-tool-named": "the agent made {calls}, to {tools}",
+	"why.actual.required-tool-calls": "the agent made {calls}",
+	"why.actual.tool-more": "{tools} and {count} more",
+	"why.expected.no-secret": "expected the answer to carry nothing shaped like a credential",
+	"why.actual.no-secret": "the recorded answer carries a credential-shaped string",
+	"why.expected.output-contains": "expected the final answer to contain “{text}”",
+	"why.expected.output-matches": "expected the final answer to match /{pattern}/",
+	"why.expected.reference-exact": "expected the final answer to equal the case's reference answer",
+	"why.answer.recorded": "the recorded final answer",
+	"why.answer.recorded-sized": "the recorded final answer ({size})",
+	"why.actual.answer-lacks": "{answer} does not contain it",
+	"why.actual.answer-unmatched": "{answer} does not match it",
+	"why.actual.answer-differs": "{answer} differs from it",
+	"why.expected.reference-similarity": "expected {metric} against the reference answer to reach {threshold}",
+	"why.actual.reference-similarity": "it reached {value}",
+	"why.expected.turn-budget": "expected at most {turns}",
+	"why.actual.turn-budget": "the agent took {turns}",
+	"why.expected.world-state": "expected the conversation to set the world at {path}",
+	"why.expected.world-state-equals": "expected the world at {path} to equal {value}",
+	"why.expected.world-state-contains": "expected the world at {path} to contain {value}",
+	"why.expected.world-state-declared": "expected the case to declare the world this check is about",
+	"why.actual.world-state-unset": "the conversation left it unset",
+	"why.actual.world-state-value": "it is {value}",
+	"why.actual.world-state-uncontainable": "it is {value}, which can contain nothing",
+	"why.actual.world-state-lacks": "it does not",
+	"why.actual.world-state-undeclared": "the case declares none, so the check could not pass",
+	"why.expected.cites-source": "expected the answer to stand on {source} — cite its id, or overlap it by {threshold}",
+	"why.actual.cites-source": "it did neither; the overlap was {overlap}",
+	"why.expected.reference-missing": "expected the case to carry a reference answer to compare against",
+	"why.actual.reference-missing": "the case carries none, so the check could not pass",
+	"why.expected.semantic-rubric": "expected the answer to satisfy the judge's rubric",
+	"why.actual.semantic-rubric": "the judge decided it did not",
+	"why.actual.semantic-rubric-choice": "the judge decided it did not (choice {choice})",
+	"why.expected.semantic-rubric-assertions": "expected every one of the {total} rubric assertions to hold",
+	"why.actual.semantic-rubric-assertions":
+		"the judge answered yes to {passed} of {total}; assertions {failed} did not hold",
+	// A phrasing no pair above recognizes: the record itself, quoted whole and
+	// unchanged. There is nothing here to bend, in either language.
+	"why.actual.reason": "{reason}",
+	// The judge's three protocol answers. The sidecar keeps the token; the
+	// sentence around it is read by a person, so it bends.
+	"assertion.answer.yes": "yes",
+	"assertion.answer.no": "no",
+	"assertion.answer.unknown": "unknown",
+	// Refusals a person is meant to act on: minted twice, the English sentence
+	// for the model and the code for the operator.
+	"refusal.sealed-exam-too-small": "The chosen exam has {tasks}; a sealed verdict needs at least {minimum}. Add exam cases, then check again.",
+	"refusal.repetitions-too-few": "A sealed verdict needs at least {minimum} repetitions of every case.",
+	"refusal.check-stopped-before-exam": "The check stopped before the exam, so nothing was decided. Drop the interrupted attempt (/discard) and check again.",
+	"refusal.check-failed-in-exam": "The check failed during the sealed exam. Drop the interrupted attempt (/discard) and check again.",
+	"refusal.brief-not-proposable": "This evidence carries no failure mode a harness change can answer, so there is nothing to propose. Run the check again, or add cases.",
+	"refusal.mode-not-proposable": "This failure mode is not one a harness change can answer, so nothing can be proposed for it. Pick a mode whose decision is a harness change.",
+	"message.candidate-abandoned": "The interrupted attempt is dropped and recorded; the same applied change can be checked again.",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -1815,12 +2039,12 @@ const ru: Record<MessageKey, string> = {
 	"candidate.applied-by-search": "применено поиском правок",
 	"candidate.applied-automated": "— {actor} разрешил автоматический прогон, а не именно этот диф",
 	"candidate.applied-reviewed": "{actor}, который прочитал этот диф",
-	"candidate.not-adopted": "ещё нет — /adopt переведёт текущую ветку",
+	"candidate.not-adopted": "ещё нет — скажи «выкатывай», сделаю активным агентом",
 	"candidate.cycle-closed": "закрыт {when}",
 	"candidate.regraded": "разработка {recorded} стало {revised} ({moved})",
 
 	"development.comparison": "было {baseline} → кандидат {candidate}",
-	"development.on-tasks": "· задач {count}",
+	"development.on-tasks": "· задач {tasks}",
 	"development.score": "· балл {before} → {after}",
 	"development.improved": "↑ {count} лучше",
 	"development.lower": "↓ {count} хуже",
@@ -1932,7 +2156,7 @@ const ru: Record<MessageKey, string> = {
 	"estimate.about-cost": "около ${cost}",
 	"estimate.from-earlier-runs": "уже было {runs}",
 	"estimate.under-minute": "меньше минуты",
-	"estimate.about-minutes": "около {count} мин",
+	"estimate.about-minutes": "около {minutes}",
 
 	"result.target-created": "Агент создан",
 	"result.target-wrapped": "Агент принят",
@@ -2026,7 +2250,7 @@ const ru: Record<MessageKey, string> = {
 	"generate-holdout.by-judge-kb": "{cases} по базе знаний · генерирует судья {generator}",
 	"generate-holdout.source": "описание агента + {examples} из тестов (только форма)",
 	"generate-holdout.source-spec-only": "только описание агента (без примеров)",
-	"generate-holdout.source-kb": "база знаний — {chunks}, по одному вопросу на каждый",
+	"generate-holdout.source-kb": "база знаний — {chunks}, по ним судья и пишет вопросы",
 	"generate-holdout.blind": "Builder содержимого не увидит; в разговор попадёт только число кейсов",
 	"generate-holdout.draft": "Черновик — в файл вне репо; правишь и загружаешь командой /holdout <путь>",
 	"generate-holdout.sealed-note": "Эти кейсы не читает никто в цикле улучшений; экзамен остаётся только для оценщика.",
@@ -2450,7 +2674,7 @@ const ru: Record<MessageKey, string> = {
 	"passport.known-limits": "Чего мы не знаем",
 	"passport.written-to": "Записано в",
 	// lane: recorded dataset
-	"export.done": "выгружено {count} → {path} (без экзамена)",
+	"export.done": "выгружено {count} из {total} → {path}",
 	"export.none": "выгружать пока нечего — сначала прогони тесты",
 	"passport.unresolved": "Не закрыто",
 	"passport.nothing-unresolved": "всё, во что целились этой правкой, закрыто",
@@ -2758,63 +2982,6 @@ const ru: Record<MessageKey, string> = {
 	"report.th.cost": "Цена",
 	"report.th.resolved-modes": "Закрытые сбои",
 	"report.th.reason": "Причина",
-	"help.body": `AHDE Билдер
-
-Говори обычными словами: опиши агента, который тебе нужен, отвечай по одному
-полезному вопросу за раз — AHDE превратит разговор в проверенное описание,
-тестовые кейсы, прогоны, разбор и точные правки агента. Слэш-команды —
-сокращения, а не обязанность.
-
-Путь:  идея → описание → тесты → прогон → разбор → правка → чтение дифа
-       → применить → проверка кандидата → выкатить/отклонить → принять → новый цикл
-
-Команды: работу делают три глагола.
-  /test [N] [причина]   проверить агента — одобрю, опубликую и прогоню всё,
-                        что ждёт, или проверю правку, которую ты только сделал
-  /fix [n] [причина]    исправить проблему n (по умолчанию первую): обновлю
-                        трейсы, подготовлю правку и покажу диф
-  /ship [версия]        выкатить проверенного кандидата: выкатка, принятие, новый цикл
-
-Посмотреть:
-  /status               где ты и что дальше
-  /plan                 весь цикл списком: что сделано, где ты, что осталось
-  /jobs                 фоновое измерение, если оно идёт
-  /stop                 остановить его; измеренное не сохраняется
-  /review               то, что ждёт твоей проверки, вместе с действиями
-  /traces [строк]       разбор, типы сбоев, ссылка на данные и таблица прогонов
-  /trace <n|next|prev>  один прогон: почему провал, все вердикты и диалог
-  /target [ресурс]      точный закоммиченный агент или один его ресурс
-  /passport [версия]    что обещала и что измерила последняя выкаченная версия
-  /log [n]              как агент рос: каждая версия и её результат
-  /dataset [--all]      все записанные диалоги одним файлом-датасетом рядом
-                        с агентом; закрытого экзамена в нём нет никогда
-  /label [n]            проверить судью: оценить n ответов вслепую и увидеть,
-                        что сказал он — минут десять, ничего не прогоняется
-  /doctor               ключи моделей, готовность агента и как починить
-  /holdout              приватно загрузить твой закрытый JSONL-экзамен
-  /help                 эта справка
-
-По одному шагу (те же решения, но по отдельности):
-  /run [N] [причина]    то же, что /test
-  /calibrate [N]        измерить шум: та же ревизия против себя же
-  /regrade [erun]       пересчитать записанные ответы новыми грейдерами —
-                        агента заново не зовём, платим только судье
-  /approve [причина]    одобрить проверенное описание
-  /publish [имя]        опубликовать проверенные тесты
-  /apply <ветка>        применить проверенную правку на ветку кандидата
-  /discard [причина]    выбросить правку или сбросить прерванного кандидата
-  /promote <версия>     выкатить проверенного кандидата (сначала запишет обзор)
-  /reject [причина]     отклонить проверенного кандидата
-  /adopt [причина]      перевести текущую ветку на выкаченного кандидата
-  /next [причина]       закрыть цикл и продолжить с активным агентом
-
-Встроенные команды Pi настраивают модель Билдера, а не агента:
-  /login                подключить провайдера (OAuth или API-ключ), раз на машину
-  /model                выбрать модель Билдера, у которой уже есть ключ
-
-Каждый серьёзный шаг показывает точный предмет и спрашивает один раз: начать
-тесты, применить диф, выкатить. Прогоны и проверки просто происходят — если
-только один не выйдет дороже обычного, тогда будет один да/нет.`,
 
 	// lane: exam-honesty
 	"exam.outcome-improved": "лучше",
@@ -2824,8 +2991,8 @@ const ru: Record<MessageKey, string> = {
 	"exam.size-for-noise": "чтобы увидеть разницу ±10 п.п. на экзамене, нужно около {cases} (по этому шуму)",
 	"exam.size-hint": "экзамен {cases}; при таком шуме для ±10 п.п. нужно около {needed}",
 	"exam.of-requested": "{cases} из {requested} запрошенных",
-	"exam.dropped-duplicate": "отброшено дубликатов: {count}",
-	"exam.dropped-malformed": "отброшено с ошибкой формы: {count}",
+	"exam.dropped-duplicate": "отброшено: {dropped}",
+	"exam.dropped-malformed": "отброшено: {dropped}",
 	"calibration.exam-size": "Размер экзамена",
 	"headline.calibrate-exam": "· экзамен ≈ {cases} для ±10 п.п.",
 	// lane: one-number
@@ -3052,17 +3219,235 @@ const ru: Record<MessageKey, string> = {
 	"confirm.improve.builder-budget": "вариантов: {variants} · запросов: ≤{requests} · выходных токенов: ≤{tokens}",
 	"confirm.improve.builder-budget-unknown": "вариантов: {variants} · лимиты запросов и токенов неизвестны",
 	"confirm.improve.total": "Вся операция",
+
+	// lane: gate-dialog
+	"gate.restricted.improvement-loop": "автоматический цикл правок",
+	"gate.restricted.proposal-search": "перебор гипотез",
+	"gate.restricted.refusal": "{operation} не принимает решение {decision} — оно остаётся человеку. {advice}",
+	"gate.restricted.advice.stop-loop": "Останови цикл и прими его сам.",
+	"gate.restricted.advice.pick-candidate": "Прочитай таблицу, выбери кандидата и реши сам.",
+	"gate.restricted.sealed-selection": "выбор закрытого экзамена",
+	"gate.restricted.unwrapped":
+		"{operation} можно передать только гейт, обёрнутый через {wrapper}: " +
+		"необёрнутый гейт мог бы одобрить выкатку, о которой {operation} не имеет права спрашивать",
+	"dialog.choice-ordinal": "{label} ({ordinal})",
+	// lane: help-slim
+	"panel.help-all": "Справка AHDE Билдера · все команды",
+	"help.intro": `Говори обычными словами: опиши агента, отвечай по одному полезному вопросу
+за раз — AHDE сам превратит разговор в описание, тесты, прогоны, разбор
+и точные правки. Команды ниже — сокращения, а не обязанность.`,
+	"help.gate": `Каждый серьёзный шаг показывает точный предмет и спрашивает один раз: начать
+тесты, применить правку, выкатить. Прогоны и проверки просто происходят — если
+только один не выйдет дороже обычного, тогда будет один да/нет.`,
+	"help.workflow": `Круг:  идея → описание → тесты → прогон → разбор → правка → чтение дифа
+       → применить → проверка кандидата → выкатить или отклонить`,
+	"help.h.core": "Каждый день:",
+	"help.h.expert": "Экспертные сокращения — та же работа, но по одному шагу:",
+	"help.h.host": "Решения хоста — их задаёт сам AHDE, набирать не нужно:",
+	"help.h.builtin": "Встроенные команды Pi настраивают модель Билдера, а не агента:",
+	"help.cmd.test": "прогони тесты: опубликую всё, что ждёт, или проверю правку",
+	"help.cmd.fix": "почини вторую проблему: обновлю трейсы и покажу диф",
+	"help.cmd.ship": "выкати проверенного кандидата и начни новый круг",
+	"help.cmd.status": "где ты и что сказать дальше",
+	"help.cmd.traces": "разбор: типы сбоев, ссылка на данные и таблица прогонов",
+	"help.cmd.trace": "один прогон целиком: почему провал, вердикты и диалог",
+	"help.cmd.passport": "что обещала и что измерила выкаченная версия",
+	"help.cmd.dataset": "все записанные диалоги одним файлом рядом с агентом",
+	"help.cmd.help": "все команды, вместе с сокращениями",
+	"help.cmd.login": "подключить провайдера (OAuth или API-ключ), раз на машину",
+	"help.cmd.model": "выбрать модель Билдера, у которой уже есть ключ",
+	"cmd.err.help-arg": "/help принимает слово all — или ничего",
+	// lane: passport-ru
+	"passport.md.title": "Паспорт версии — {agent} {version}",
+	"passport.md.verified-only": "(только проверено)",
+	"passport.md.not-promoted": "не выкачено — только проверено",
+	"passport.md.agent": "агент",
+	"passport.md.version": "версия",
+	"passport.md.date": "дата",
+	"passport.md.revision": "ревизия",
+	"passport.md.shipped": "Выкачено",
+	"passport.md.promised-spec": "Обещано — {spec}",
+	"passport.md.promised-title": "**{title}** — {purpose}",
+	"passport.md.design": "{cases} × {repetitions}",
+	"passport.md.development": "разработка: **{verdict}** — {body}",
+	"passport.md.development-none": "разработка: сравнения не записано",
+	"passport.md.no-development-evidence": "в этой записи нет данных разработки, годных для выката",
+	"passport.md.sealed-guardrail": "закрытый экзамен: **{verdict}** на {design}",
+	"passport.md.sealed-guardrail-none": "закрытый экзамен: не запускался (выкатка закрыта)",
+	"passport.md.per-answer": "на один ответ, кандидат к базе: {parts}",
+	"passport.md.per-answer-none": "на один ответ, кандидат к базе: не записано",
+	"passport.md.judge-spend": "судья {cost} всего",
+	"passport.md.judge-not-calibrated": "судья не откалиброван — его никто не сверял с человеком",
+	"passport.md.judge-uncalibrated": "судья не откалиброван — {reason}",
+	"passport.md.judge-runs-unreadable": "прогоны с оценками, на которых стоит это свидетельство, больше не читаются",
+	"passport.md.judge-no-grader": "это свидетельство не оценивал ни один судья",
+	"passport.md.judge-no-labels": "человеческих отметок у него нет: /label сверит его с твоими глазами",
+	"passport.md.judge-agreement": "согласие судьи {agreement}{baseline}",
+	"passport.md.judge-line": "согласие {agreement} · {kappa} · {subjects}, {checks}{baseline}",
+	"passport.md.judge-baseline": " · база самого частого ответа {rate}",
+	"passport.md.judge-agreement-note": "Согласие — это доля проверок, где судья и человек сказали одно и то же.",
+	"passport.md.judge-baseline-note":
+		"Инструмент, который всегда отвечал бы самой частой человеческой отметкой, набрал бы {rate}; " +
+		"согласие судьи — только то, что выше этой черты.",
+	"passport.md.not-diagnosis-bound": "к диагнозу не привязано (конструирование)",
+	"passport.md.unresolved-mode": "{outcome}: {mode} ({category}) — доля сбоев {before} → {after}",
+	"passport.md.limits-none": "ничего не записано — {note}",
+	"passport.md.note-impact-unreadable":
+		"вывести нельзя — влияние кандидата не пересчитывается по записанному свидетельству",
+	"passport.md.note-no-basis": "вывести нельзя — у правки нет заверенного основания по типам сбоя",
+	"passport.md.note-all-resolved": "каждый тип сбоя, названный правкой, закрыт",
+	"passport.md.note-none-remained": "ни одного типа сбоя, в который целились, не осталось",
+	"passport.md.noise-band": "откалиброванный коридор шума: {ci} {low} … {high} по A/A-прогону {sha} на {design}",
+	"passport.md.noise-band-none": "откалиброванный коридор шума: не мерили — его меряет /calibrate",
+	"passport.md.data": "данные: {development}; {sealed}",
+	"passport.md.data-development": "разработка «{name}» ({corpus}, {cases})",
+	"passport.md.data-development-unnamed": "разработка ({corpus}, {cases})",
+	"passport.md.data-development-no-corpus": "данные разработки (корзина не опубликована, {cases})",
+	"passport.md.data-sealed": "закрытый экзамен ({cases}{origin})",
+	"passport.md.data-sealed-none": "закрытый экзамен (не запускался)",
+	"passport.md.cases-unknown": "неизвестно сколько кейсов",
+	"passport.md.spec": "описание: {value}",
+	"passport.md.proposal": "правка: {value}",
+	"passport.md.gate-policies": "политики гейта: {value}",
+	"passport.md.eval-runs": "прогоны: разработка {baseline} → {candidate}",
+	"passport.md.applied-by": "применил: {actor} · {reason}",
+	"passport.md.applied-by-none": "применил: не записано (кандидат собран руками)",
+	"passport.md.candidate-record": "запись кандидата: {id}",
+	"passport.md.none": "нет",
+	"passport.md.reason-quoted": "причина, как её назвал Билдер: “{reason}”",
+	"passport.md.reason-plain": "причина: “{reason}”",
+	"passport.md.modes-none": "Типы сбоя, в которые целились: незакрытых нет — или не целились ни в один",
+	"passport.md.modes-unresolved": "Типы сбоя, в которые целились, но не закрыли:",
+	"passport.md.no-prediction": "прогноза на эту версию никто не заявлял",
+	"passport.md.identifiers": "Происхождение",
+	"passport.md.id-candidate": "кандидат: {candidate} · эксперимент: {experiment}",
+	"passport.md.id-spec": "одобренное описание: {spec}",
+	"passport.md.id-proposal": "правка: {run} · {hash}",
+	"passport.md.id-corpus": "корзина разработки: {corpus} · {hash}",
+	"passport.md.id-eval-runs": "данные разработки: {baseline} против {candidate}",
+	"passport.md.warning-records-unreadable": "{records} прочитать не удалось, они пропущены",
+	"passport.md.warning-spec-unreadable":
+		"одобренное описание, под которое собрана эта версия, прочитать не удалось — обещание здесь не приведено",
+	"passport.md.warning-no-spec": "эта версия не привязана к одобренному описанию, так что письменно она ничего не обещала",
+	"passport.md.warning-judge-labels": "человеческие отметки судьи прочитать не удалось, поэтому здесь он не откалиброван",
+	"passport.md.warning-diagnosis":
+		"диагноз, под который писалась эта правка, прочитать не удалось — какие типы сбоя остались, неизвестно",
+	"passport.md.category.infrastructure": "инфраструктура",
+	"passport.md.category.flaky-behavior": "поведение скачет между повторами",
+	"passport.md.category.tool-selection": "выбор инструмента",
+	"passport.md.category.output-contract": "форма ответа",
+	"passport.md.category.answer-quality": "качество ответа",
+	"passport.md.mode-improved": "стало лучше, но не закрыто",
+	"passport.md.mode-persisted": "падает по-прежнему",
+	"passport.md.mode-worsened": "стало хуже, чем было",
+	"passport.md.mode-not-reproduced": "не воспроизвелось",
+	"growth.first-version": "первая версия · балл {score}",
+	// lane: render-names
+	"view.case-quoted": "«{text}»",
+	"view.case-unnamed": "кейс без слов",
+	"view.world.who-by-id": "клиент {id}",
+	"view.world.who-by-account": "клиент по счёту {id}",
+	"view.world.who-by-contract": "клиент по договору {id}",
+	"view.world.who-unnamed": "человек в этом мире",
+	"headline.proposal-applied": "Правка применена",
+	// lane: compare-honesty
+	"measurement.on-cases-of": "на {measured} из {cases} × {repetitions}",
+	"measurement.on-cases-of-only": "на {measured} из {cases}",
+	"measurement.excluded": "{excluded}: {reason}",
+	"measurement.excluded-infrastructure": "инфраструктура",
+	"measurement.excluded-incomplete": "неполные повторы",
+	"measurement.excluded-mixed": "инфраструктура, неполные повторы",
+	"exam.origin-kb": "написан судьёй по базе знаний",
+	"exam.origin-spec": "написан судьёй из описания",
+	"exam.origin-operator": "загружен оператором",
+	"run.every-repetition": "во всех повторах {count}",
+	"run.noise-unmeasured": "повторов 1 — шум не измерен",
+	"run.noise-advice": "нужно {repetitions} — прогони A/A",
+	"table.col.every-repetition": "прошло",
+	"export.left-out": "не вошли: {count} ({reasons})",
+	"export.reason-sealed": "экзамен",
+	"export.reason-screen": "дешёвые проверки",
+	"export.reason-failed": "провалы",
+	"export.reason-infra": "ошибки прогона",
+	"export.reason-aa": "калибровка A/A",
+	// lane: exam-kb
+	"sealed-synth.kb-too-small":
+		"В базе {chunks} — из неё выходит не больше {max}, экзамену нужно {min}. Могу написать экзамен из описания ({count}) — делаем?",
+	"sealed-synth.kb-too-small-next": "добавь документы в data/kb или закажи экзамен из описания",
+	"ship-gate.kb-ceiling": "база знаний даёт не больше {max}",
+	// lane: workshop-restart
+	"label.workshop": "Мастерская",
+	// lane: smoke-a
+	"target.dirty": "В папке агента есть незакоммиченные изменения: {paths}. Закоммить их — и продолжим.",
+	"workshop.recorded": "осталась открыта с прошлой сессии — Билдер продолжит в ней, а не начнёт заново",
+	"workshop.stale-worktree-gone": "с прошлой сессии потеряна: её рабочей копии больше нет, нужно открыть новую",
+	"workshop.stale-unreadable-note": "заметку о мастерской с прошлой сессии не прочитать, нужно открыть новую",
+	// lane: i18n-reasons
+	"why.actual.run-incomplete": "прогон не завершился, поэтому ничего не оценивалось",
+	"why.actual.run-incomplete-cause": "прогон не завершился, поэтому ничего не оценивалось — {cause} ({detail})",
+	"why.expected.required-tool": "ожидался вызов {tool}",
+	"why.expected.required-tool-args": "ожидался вызов {tool} с аргументами, содержащими «{arguments}»",
+	"why.actual.required-tool-none": "агент не вызвал ни одного инструмента и ответил сразу",
+	"why.actual.required-tool-named": "агент сделал {calls} — {tools}",
+	"why.actual.required-tool-calls": "агент сделал {calls}",
+	"why.actual.tool-more": "{tools} и ещё {count}",
+	"why.expected.no-secret": "ожидалось: в ответе нет ничего похожего на ключ или пароль",
+	"why.actual.no-secret": "в записанном ответе есть строка, похожая на ключ",
+	"why.expected.output-contains": "ожидалось: итоговый ответ содержит «{text}»",
+	"why.expected.output-matches": "ожидалось: итоговый ответ подходит под /{pattern}/",
+	"why.expected.reference-exact": "ожидалось: итоговый ответ совпадает с эталонным ответом кейса",
+	"why.answer.recorded": "записанный итоговый ответ",
+	"why.answer.recorded-sized": "записанный итоговый ответ ({size})",
+	"why.actual.answer-lacks": "{answer} его не содержит",
+	"why.actual.answer-unmatched": "{answer} под него не подходит",
+	"why.actual.answer-differs": "{answer} от него отличается",
+	"why.expected.reference-similarity": "ожидалось: {metric} к эталонному ответу дойдёт до {threshold}",
+	"why.actual.reference-similarity": "вышло {value}",
+	"why.expected.turn-budget": "ожидалось: не больше {turns}",
+	"why.actual.turn-budget": "агент сделал {turns}",
+	"why.expected.world-state": "ожидалось: разговор выставит мир по пути {path}",
+	"why.expected.world-state-equals": "ожидалось: мир по пути {path} равен {value}",
+	"why.expected.world-state-contains": "ожидалось: мир по пути {path} содержит {value}",
+	"why.expected.world-state-declared": "ожидалось: кейс объявляет мир, о котором эта проверка",
+	"why.actual.world-state-unset": "разговор его так и не выставил",
+	"why.actual.world-state-value": "там {value}",
+	"why.actual.world-state-uncontainable": "там {value} — в таком значении ничего не содержится",
+	"why.actual.world-state-lacks": "не содержит",
+	"why.actual.world-state-undeclared": "кейс мира не объявляет, поэтому проверка пройти не могла",
+	"why.expected.cites-source": "ожидалось: ответ опирается на {source} — со ссылкой на его id или пересечением {threshold}",
+	"why.actual.cites-source": "не сделано ни того, ни другого; пересечение — {overlap}",
+	"why.expected.reference-missing": "ожидалось: у кейса есть эталонный ответ для сравнения",
+	"why.actual.reference-missing": "у кейса его нет, поэтому проверка пройти не могла",
+	"why.expected.semantic-rubric": "ожидалось: ответ удовлетворяет рубрике судьи",
+	"why.actual.semantic-rubric": "судья решил, что не удовлетворяет",
+	"why.actual.semantic-rubric-choice": "судья решил, что не удовлетворяет (выбор {choice})",
+	"why.expected.semantic-rubric-assertions": "ожидалось: выполнены все утверждения рубрики, все {total}",
+	"why.actual.semantic-rubric-assertions":
+		"судья ответил «да» на {passed} из {total}; не выполнены утверждения {failed}",
+	"why.actual.reason": "{reason}",
+	"assertion.answer.yes": "да",
+	"assertion.answer.no": "нет",
+	"assertion.answer.unknown": "не знаю",
+	"refusal.sealed-exam-too-small": "В выбранном экзамене {tasks}; для закрытого вердикта нужно хотя бы {minimum}. Добавь кейсы в экзамен и проверь снова.",
+	"refusal.repetitions-too-few": "Для закрытого вердикта нужно хотя бы {minimum} повторов каждого кейса.",
+	"refusal.check-stopped-before-exam": "Проверка остановилась до экзамена, ничего не решено. Сбрось прерванную попытку (/discard) и проверь снова.",
+	"refusal.check-failed-in-exam": "Проверка сорвалась на закрытом экзамене. Сбрось прерванную попытку (/discard) и проверь снова.",
+	"refusal.brief-not-proposable": "В этом свидетельстве нет ни одного типа сбоя, который лечится правкой харнесса, — предлагать нечего. Прогони проверку заново или добавь кейсов.",
+	"refusal.mode-not-proposable": "Этот тип сбоя правкой харнесса не лечится, поэтому по нему нечего предлагать. Возьми тип сбоя, у которого решение — правка харнесса.",
+	"message.candidate-abandoned": "Прерванная попытка сброшена и записана; ту же применённую правку можно проверить заново.",
 };
 
-const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };
-
 /**
- * One localized string. A key with no form in the active language falls back
- * to English rather than to its own id: an operator reading a familiar English
- * label is a smaller failure than one reading `label.sealed-holdout`.
+ * Both tables, total in both directions. `ru` is declared
+ * `Record<MessageKey, string>`, so a key with no Russian form is a type error
+ * rather than a silent English leak — writing `Partial` here said the opposite
+ * and made every lookup look like it could come back empty.
  */
+const TABLES: Record<Language, Record<MessageKey, string>> = { en, ru };
+
+/** One localized string, in the language this process resolved once. */
 export function t(key: MessageKey, params?: MessageParams): string {
-	return interpolate(TABLES[language()][key] ?? en[key], params);
+	return interpolate(TABLES[language()][key], params);
 }
 
 /** Every key in the dictionary. The i18n test walks it; nothing else should. */
@@ -3078,14 +3463,26 @@ export function hasMessage(key: string): key is MessageKey {
 	return key in en;
 }
 
+/**
+ * The human label for one runtime token, looked up under its namespace.
+ *
+ * A status, a verdict and a blocker code are all the same shape: a token the
+ * record keeps exactly as it is, and a sentence the operator reads instead.
+ * The membership test is `hasMessage`, so the key is narrowed rather than
+ * asserted — a token with no form in the dictionary reads as itself, which is
+ * how a verdict this host has never heard of still prints.
+ */
+export function tokenLabel(namespace: string, token: string): string {
+	const key = `${namespace}.${token}`;
+	return hasMessage(key) ? t(key) : token;
+}
+
 /** The human label for a candidate's lifecycle status; the stored token never changes. */
 export function candidateStatusLabel(status: string): string {
-	const key = `candidate.status.${status}` as MessageKey;
-	return key in en ? t(key) : status;
+	return tokenLabel("candidate.status", status);
 }
 
 /** The human label for a verdict token; the token itself never changes. */
 export function verdictLabel(verdict: string): string {
-	const key = `verdict.${verdict}` as MessageKey;
-	return key in en ? t(key) : verdict;
+	return tokenLabel("verdict", verdict);
 }

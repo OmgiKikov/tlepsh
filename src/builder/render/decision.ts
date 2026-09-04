@@ -4,6 +4,7 @@ import type {
 	WorkbenchImproveResult,
 	WorkbenchShipResult,
 	WorkbenchStartTestingResult,
+	WorkbenchVerificationBlocked,
 	WorkbenchVerifyCandidateResult,
 	WorkbenchView,
 } from "../../workbench/types.js";
@@ -13,7 +14,7 @@ import { searchCandidateLine } from "../../application/proposal-search.js";
 import { candidateStatusLabel, plural, t, verdictLabel } from "../../i18n.js";
 import { formatFlipRate, formatNoiseBand, renderCalibration } from "./calibration.js";
 import { regradeHeadline, renderRegrade } from "./regrade.js";
-import { oneLine, section, shortHash, shortSha, wrap } from "./format.js";
+import { headline, joinNonEmpty, oneLine, section, shortHash, shortSha, trimSeparator, wrap } from "./format.js";
 import { blockedReasonText } from "../../workbench/errors.js";
 import type { Paint } from "./paint.js";
 import { nextStep, stageLabel } from "./stage.js";
@@ -86,9 +87,11 @@ function improveLines(result: WorkbenchImproveResult, paint: Paint, view: Workbe
 		const verification = cycle.verification
 			? `verify ${cycle.verification.verdict} ${cycle.verification.scoreDelta >= 0 ? "+" : ""}${(cycle.verification.scoreDelta * 100).toFixed(1)}pp`
 			: "no verification";
-		lines.push(paint.dim(
+		// A cycle that recorded no note ends at its verification, not at a
+		// dangling separator with nothing after it.
+		lines.push(paint.dim(trimSeparator(
 			`  ${cycle.cycle}. ${cycle.pass}/${cycle.total} · ${screen} · ${verification} · ${cycle.note}`,
-		));
+		)));
 	}
 	for (const row of result.search?.rows ?? []) lines.push(paint.dim(searchCandidateLine(row)));
 	const authorSpend = improvementAuthorSpendLine(result.cycles);
@@ -230,11 +233,11 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 					requested: result.result.requested,
 				}))}${
 					dropped.duplicate > 0
-						? ` ${paint.dim("·")} ${paint.dim(t("exam.dropped-duplicate", { count: dropped.duplicate, dropped: plural(dropped.duplicate, "duplicate") }))}`
+						? ` ${paint.dim("·")} ${paint.dim(t("exam.dropped-duplicate", { dropped: plural(dropped.duplicate, "duplicate") }))}`
 						: ""
 				}${
 					dropped.malformed > 0
-						? ` ${paint.dim("·")} ${paint.dim(t("exam.dropped-malformed", { count: dropped.malformed, dropped: plural(dropped.malformed, "malformed case") }))}`
+						? ` ${paint.dim("·")} ${paint.dim(t("exam.dropped-malformed", { dropped: plural(dropped.malformed, "malformed case") }))}`
 						: ""
 				}`);
 			}
@@ -377,6 +380,37 @@ function startTestingHeadline(result: WorkbenchStartTestingResult): string {
 	return result.steps.map((step) => step.kind.replace(/-/g, " ")).join(" · ") || t("headline.nothing-to-do");
 }
 
+/**
+ * Why the verification did not start, as one clause.
+ *
+ * A typed refusal opens by saying verification did not start, so the label is
+ * only put in front of the raw English sentence, which says only what is
+ * missing. This is the same rule the panel follows two hundred lines up.
+ */
+function blockedHeadline(blocked: WorkbenchVerificationBlocked): string {
+	const text = blockedReasonText(blocked);
+	return blocked.reasonCode ? text : `${t("result.verification-blocked")}: ${text}`;
+}
+
+/**
+ * Applied, and then what happened to the verification the same yes funded.
+ *
+ * Composed here rather than read off `result.message`, because that sentence
+ * prefixes its reason with a headline the reason already carries: session 8
+ * read `Правка применена, автоматическая проверка не запустилась: Проверка не
+ * запустилась: у агента нет закрытого экзамена…` — the same clause twice, and
+ * the half that mattered cut off the end of the line.
+ */
+function applyProposalHeadline(
+	result: Extract<WorkbenchDecisionResult, { kind: "apply-proposal" }>,
+): string {
+	const verification = result.result.verification;
+	if (verification && verification.outcome === "blocked") {
+		return headline(joinNonEmpty([t("headline.proposal-applied"), blockedHeadline(verification)]), 120);
+	}
+	return headline(result.message, 120);
+}
+
 function verifyHeadline(result: WorkbenchVerifyCandidateResult): string {
 	if (result.outcome === "stopped-by-screen") {
 		return t("headline.cheap-check-shape", { improved: result.screen.improved, tasks: result.screen.tasks });
@@ -435,7 +469,11 @@ export function decisionHeadline(result: WorkbenchDecisionResult): string {
 		}
 		case "regrade":
 			return regradeHeadline(result.result);
+		case "apply-proposal":
+			return applyProposalHeadline(result);
 		default:
-			return oneLine(result.message, 120);
+			// A headline a person reads is cut at a word, never mid-word: session 6
+			// was told `sealed hol…` and that was its whole account of a blocker.
+			return headline(result.message, 120);
 	}
 }

@@ -50,6 +50,7 @@ import {
 	createAhdeWorkbench,
 	type WorkbenchHumanGate,
 } from "../src/workbench/index.js";
+import { workbenchNext } from "../src/workbench/next-actions.js";
 import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 
 const roots: string[] = [];
@@ -674,6 +675,61 @@ describe("AHDE Workbench", () => {
 		const afterSecondRestart = createAhdeWorkbench({ ...paths, projectId: "test-target" });
 		expect((await afterSecondRestart.view()).focus["development-corpus"]).toBe(corpusId);
 	});
+
+	it("reports the workshop a restart left on disk, and offers the id that re-attaches to it", async () => {
+		const paths = target();
+		const first = createAhdeWorkbench({ ...paths, projectId: "test-target" });
+		await first.submit({ kind: "spec-draft", spec: spec() });
+		await first.decide({ kind: "approve-spec", reason: "Approve so the harness can be built" }, gate());
+		const opened = await first.submit({ kind: "workshop-open" });
+		const workshopId = String(opened.artifact?.workshopId);
+		first.workshopWrite({ path: "AGENTS.md", content: "# Test Agent\n\nHalf-written by the previous session.\n" });
+		expect(opened.view.workshop).toMatchObject({ state: "live", workshopId, basis: "construction", briefId: null });
+
+		// The TUI shuts down: the note and the worktree outlive it, the handle
+		// does not. A second process over the same state root is the restart.
+		first.suspendWorkshop();
+		const notePath = join(paths.stateRoot, "projects", "test-target", "workbench", "workshop.json");
+		const note = JSON.parse(readFileSync(notePath, "utf8")) as { worktreePath: string };
+		const restarted = createAhdeWorkbench({ ...paths, projectId: "test-target" });
+		expect(restarted.workshopOpen).toBe(false);
+		const view = await restarted.view();
+		expect(view.workshopOpen).toBeUndefined();
+		expect(view.workshop).toEqual({
+			state: "recorded",
+			workshopId,
+			basis: "construction",
+			briefId: null,
+			openedAt: expect.stringMatching(/^\d{4}-/),
+		});
+		// `next` is what the Builder reads, and it now carries the exact id
+		// instead of leaving “no open workshop” to be read as “nothing written”.
+		const next = workbenchNext(view);
+		expect(next.workshop).toEqual({
+			basis: "construction",
+			open: false,
+			recorded: { workshopId, openedAt: expect.stringMatching(/^\d{4}-/) },
+		});
+		const reopen = next.submit.find((entry) => entry.kind === "workshop-open");
+		expect(reopen?.when).toContain(workshopId);
+
+		const reattached = await restarted.submit({ kind: "workshop-open", workshopId });
+		expect(reattached.artifact?.reattached).toBe(true);
+		expect(restarted.workshopRead({ path: "AGENTS.md" }).content).toContain("Half-written by the previous session");
+		expect(reattached.view.workshop).toMatchObject({ state: "live", workshopId });
+		expect(workbenchNext(reattached.view).workshop).toEqual({ basis: "construction", open: true });
+
+		// A note whose worktree is gone re-attaches to nothing, and saying
+		// “still open” about it would send the Builder at a door with no room
+		// behind it.
+		restarted.suspendWorkshop();
+		rmSync(note.worktreePath, { recursive: true, force: true });
+		const afterLoss = await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view();
+		expect(afterLoss.workshop).toEqual({ state: "stale", reason: "worktree-gone", workshopId });
+		expect(workbenchNext(afterLoss).workshop).toEqual({ basis: "construction", open: false });
+		expect(workbenchNext(afterLoss).submit.find((entry) => entry.kind === "workshop-open")?.when)
+			.not.toContain(workshopId);
+	}, 120_000);
 
 	it("builds a pinned network container from an approved Spec before the first eval", async () => {
 		const paths = target();

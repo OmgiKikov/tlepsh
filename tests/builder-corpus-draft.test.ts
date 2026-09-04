@@ -126,6 +126,61 @@ describe("Builder Corpus Draft V2", () => {
 		)).toThrow(/immutable write refused/);
 	});
 
+	/**
+	 * A case's id is the content hash of the whole task under its approved Spec,
+	 * and every screen, receipt and provenance row is addressed by it. Nothing
+	 * time-shaped may ever enter that hash: a `createdAt`, an ordinal or an
+	 * author would make the same case a different case on every publish and
+	 * break the deduplication the draft depends on. This is the regression test
+	 * that has to fail before anyone adds a field to the task schema.
+	 */
+	it("gives byte-identical task input the same id, whenever and wherever it is published", () => {
+		const stateRoot = root();
+		const approvedSpec = approved(stateRoot);
+		const cases = [task("What is the refund window?", "30 days")];
+		const first = createBuilderCorpusDraft({
+			stateRoot,
+			approvedSpec,
+			name: "Policy cases",
+			tasks: cases,
+			revisionSummary: "Initial draft",
+		}, { now: () => NOW });
+		// A second draft, an hour later, under a different name and different
+		// notes: nothing about a case but the case itself decides its id.
+		const later = createBuilderCorpusDraft({
+			stateRoot,
+			approvedSpec,
+			name: "Policy cases, second look",
+			tasks: cases,
+			coverageNotes: ["Written again from scratch"],
+			revisionSummary: "Republished from the same words",
+		}, { now: () => LATER });
+		const id = first.draft.tasks[0]?.id;
+		expect(id).toMatch(/^task-[0-9a-f]{64}$/);
+		expect(later.draft.tasks[0]?.id).toBe(id);
+		expect(later.draft.id).not.toBe(first.draft.id);
+		// The published id is exactly what the host-side function computes, so a
+		// caller can address a case before it has ever been written down.
+		expect(builderCorpusDraftTaskId(approvedSpec, BuilderCorpusDraftTaskInputSchema.parse(cases[0]))).toBe(id);
+		// Removed and written again, word for word, it comes back as the same case.
+		const withoutIt = reviseBuilderCorpusDraft({
+			stateRoot,
+			approvedSpec,
+			parentDraftId: first.draft.id,
+			operations: [{ type: "add", task: task("Question B", "B") }, { type: "remove", taskId: id ?? "" }],
+			revisionSummary: "Drop the refund case",
+		}, { now: () => LATER });
+		expect(withoutIt.draft.tasks.map(({ id: each }) => each)).not.toContain(id);
+		const readded = reviseBuilderCorpusDraft({
+			stateRoot,
+			approvedSpec,
+			parentDraftId: withoutIt.draft.id,
+			operations: [{ type: "add", task: cases[0] }],
+			revisionSummary: "Put the refund case back",
+		}, { now: () => "2026-08-26T18:00:00.000Z" });
+		expect(readded.draft.tasks.map(({ id: each }) => each)).toContain(id);
+	});
+
 	it("publishes revisions through add, replace, remove, rename, and set-notes operations", () => {
 		const stateRoot = root();
 		const approvedSpec = approved(stateRoot);

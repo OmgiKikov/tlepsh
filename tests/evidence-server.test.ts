@@ -975,7 +975,7 @@ describe("read-only evidence explorer", () => {
 		// Why: expectation, observation, the grader's own words, and the counted facts.
 		expect(html).toContain("task_001 repetition 0 failed: 1 of 1 grader(s) did not pass.");
 		expect(html).toContain(
-			"expected a call to `bash` with arguments containing `check_dbo`; the agent made 0 tool calls and answered directly.",
+			"expected a call to bash with arguments containing “check_dbo”; the agent made no tool calls and answered directly.",
 		);
 		expect(html).toContain("The grader recorded: “never called bash with args containing &quot;check_dbo&quot;”.");
 		expect(html).toContain("What the traces show:");
@@ -1017,8 +1017,13 @@ describe("read-only evidence explorer", () => {
 		expect(html).toContain("<th>Task</th><th>Baseline</th><th>Candidate</th><th>Score</th><th>Delta</th><th>Flip</th>");
 		expect(html).toContain("↑ improved");
 		expect(html).toContain("Cost ratio");
-		// The compare page prints the same sentence the panel and the passport do.
-		expect(html).toContain("inconclusive · score 0% → 100% (+100 pts, 95% CI +100 … +100) on 2 cases × 1 · pass rate 0% → 100%");
+		// The compare page prints the same sentence the panel and the passport do —
+		// and the sentence now says where the third case went instead of quietly
+		// measuring two.
+		expect(html).toContain(
+			"inconclusive · score 0% → 100% (+100 pts, 95% CI +100 … +100) on 2 of 3 cases × 1 · " +
+				"1 excluded for infrastructure · pass rate 0% → 100%",
+		);
 		// The sealed arm contributes a verdict and a design size and nothing else.
 		expect(html).toContain("Sealed verdict: <b>pass</b> on 2 × 1");
 		expect(html).toContain("Sealed cases, identifiers, and traces are never rendered here.");

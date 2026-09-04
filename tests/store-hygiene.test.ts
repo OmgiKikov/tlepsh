@@ -250,6 +250,9 @@ describe("assertCleanTargetTree", () => {
 	 */
 	it("reads the operator's paths out of a porcelain status, host store excluded", () => {
 		expect(operatorDirtyPaths("?? .ahde/\0?? runs/erun_1/eval_run.json\0")).toEqual([]);
+		// What AHDE wrote beside the agent for a person — the dataset, the passport — is not the operator's dirt.
+		expect(operatorDirtyPaths("?? exports/erun_1.jsonl\0?? passport-v0.1.0.md\0?? exports/\0")).toEqual([]);
+		expect(operatorDirtyPaths("?? passport-v0.1.0.md\0?? notes/passport-v0.1.0.md\0")).toEqual(["notes/passport-v0.1.0.md"]);
 		expect(operatorDirtyPaths(" M AGENTS.md\0?? runs/x\0?? tools/check_dbo/\0"))
 			.toEqual(["AGENTS.md", "tools/check_dbo/"]);
 		// A rename contributes both paths, so moving a real file into the store counts.

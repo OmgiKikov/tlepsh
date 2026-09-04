@@ -16,6 +16,7 @@ import {
 	bar,
 	bullets,
 	bytes,
+	caseTitle,
 	clean,
 	headline,
 	joinNonEmpty,
@@ -27,6 +28,7 @@ import {
 	points,
 	shortHash,
 	shortSha,
+	shortTaskId,
 	when,
 	wrap,
 } from "../src/builder/render/format.js";
@@ -285,6 +287,7 @@ function makeTraces(
 			evalRunId: "eval-1",
 			summary: { total: 10, pass: 6, fail: 4, error: 0, allPassRate: 0.6 },
 			repetitions: 1,
+			stableTasks: { stable: 6, measured: 10 },
 			finishedAt: "2026-09-01T09:00:07.000Z",
 			targetGitSha: "4d533f07030f0a4b1c2d3e4f5a6b7c8d9e0f1a2b",
 			corpus: { name: "Ombudsman basket", taskCount: 10 },
@@ -834,6 +837,54 @@ describe("calibration line", () => {
 	});
 });
 
+describe("workshop line", () => {
+	const recorded = {
+		state: "recorded",
+		workshopId: "workshop_0123456789abcdef",
+		basis: "construction",
+		briefId: null,
+		openedAt: "2026-09-03T10:00:00.000Z",
+	} as const;
+
+	it("says nothing about a workshop this process is holding open", () => {
+		const live = renderStatus(makeView({ workshopOpen: true, workshop: { ...recorded, state: "live" } }), plainPaint);
+		expect(live.join("\n")).not.toContain("Workshop");
+		expect(renderStatus(makeView(), plainPaint).join("\n")).not.toContain("Workshop");
+	});
+
+	it("says a workshop outlived the session that opened it, with the id that reopens it", () => {
+		const lines = renderStatus(makeView({ workshop: recorded }), plainPaint);
+		expect(lines).toContain(
+			"Workshop still open from an earlier session — the Builder continues in it, it does not start over " +
+				"workshop_0123456789abcdef",
+		);
+		const header = renderHeader(
+			{ view: makeView({ workshop: recorded }), builderModel: { label: "x", credentialPresent: true } },
+			plainPaint,
+		);
+		expect(header.join("\n")).toContain("workshop_0123456789abcdef");
+		setLanguage("ru");
+		try {
+			expect(renderStatus(makeView({ workshop: recorded }), plainPaint).join("\n"))
+				.toContain("Мастерская осталась открыта с прошлой сессии");
+		} finally {
+			setLanguage(null);
+		}
+	});
+
+	it("calls a note that re-attaches to nothing a dead end, not work waiting", () => {
+		const lines = renderStatus(makeView({
+			workshop: { state: "stale", reason: "worktree-gone", workshopId: recorded.workshopId },
+		}), tagPaint);
+		expect(lines).toContain(
+			"<dim>Workshop</dim> <warning>the one from an earlier session is gone: its working copy no longer exists, " +
+				"so a new one has to be opened</warning>",
+		);
+		// A dead end names no id: there is nothing for the Builder to reopen.
+		expect(lines.join("\n")).not.toContain(recorded.workshopId);
+	});
+});
+
 describe("renderCalibration", () => {
 	it("renders the A/A design, spread, and recommendation without JSON", () => {
 		const lines = renderCalibration(makeCalibration(), plainPaint);
@@ -1053,6 +1104,39 @@ describe("renderReview", () => {
 		expect(lines[lines.length - 1]).toBe("Draft cccccccccccc… · Spec spec-1");
 	});
 
+	/**
+	 * `/review` on a draft is where a basket is approved. It used to print input
+	 * and graders and nothing else, so a case with a world was approved with the
+	 * world invisible — the four lines `/traces` draws for the same case were
+	 * two screens away. One projection, one card, both screens.
+	 */
+	it("draws the same card a worlded case gets in /traces", () => {
+		const draft = makeCorpusDraft({
+			tasks: [{
+				id: taskId(4),
+				input: "Заблокируйте договор 1003.",
+				world: {
+					state: { contract: { id: "1003" }, accounts: { "42": { status: "ok" } } },
+					expect: [{ path: "accounts.42.status", op: "equals", value: "frozen" }],
+				},
+				graders: [{ type: "tool_called", tool: "check_account" }],
+			}],
+		});
+		const lines = renderReview(draft, plainPaint);
+		const traces = renderDatasetCases(
+			[{ ...datasetCasePreview(CorpusTaskSchema.parse(draft.tasks[0])), taskId: taskId(4) }],
+			plainPaint,
+		);
+		expect(lines.slice(1, 6)).toEqual(traces);
+		expect(lines.slice(1, 6)).toEqual([
+			"   1. “Заблокируйте договор 1003”  task-00000000…",
+			"      who: customer on contract 1003",
+			"      has: accounts.42.status=ok · contract.id=1003",
+			"      wants: Заблокируйте договор 1003.",
+			'      must: accounts.42.status equals "frozen" · tool check_account',
+		]);
+	});
+
 	it("folds cases beyond maxTasks and shows the import source and provenance", () => {
 		const draft = makeCorpusDraft({
 			importSource: { path: "imports/tier-one.jsonl", sha256: HASH, bytes: 1024, taskCount: 3 },
@@ -1232,7 +1316,7 @@ describe("renderReview", () => {
 		});
 		const pending = renderReview(promoted, plainPaint);
 		expect(pending).toContain("Promoted v1.2.0 2026-08-28 10:00:00Z — Solid gains");
-		expect(pending).toContain("Adopted not yet — /adopt fast-forwards the current branch");
+		expect(pending).toContain("Adopted not yet — say “ship it” to make it the active agent");
 		const adopted = renderReview(makeCandidateReview(promoted, {
 			adoption: { receiptId: "adopt-1", adoptedAt: LATER, branch: "main" },
 			continuation: { receiptId: "cont-1", continuedAt: EVEN_LATER },
@@ -1317,7 +1401,10 @@ describe("renderReview", () => {
 describe("renderTraces", () => {
 	it("summarises the evaluation with a pass bar and lists the diagnosis", () => {
 		const lines = renderTraces(makeTraces(), plainPaint);
-		expect(lines[0]).toBe("Evaluation 6/10 passed ██████████░░░░░░ 60% · 4 failed · 0 errors · 1 repetition · eval-1");
+		expect(lines[0]).toBe(
+			"Evaluation 6/10 passed ██████████░░░░░░ 60% · 1 repetition — noise was not measured, " +
+				"5 repetitions would measure it (A/A) · 4 failed · 0 errors · 1 repetition · eval-1",
+		);
 		// Which run the operator is reading: id, when, the revision it measured, the basket.
 		expect(lines[1]).toBe("Showing eval-1 · 2026-09-01 09:00:07Z · revision 4d533f0703 · Ombudsman basket · 10 cases");
 		expect(lines[2]).toBe("Diagnosis actionable · 6/10 passed · 1 failure mode(s), 1 of them across tasks");
@@ -1332,14 +1419,14 @@ describe("renderTraces", () => {
 
 	it("tones the summary by errors and failures", () => {
 		const errors = renderTraces(makeTraces({}, {
-			evaluation: { evalRunId: "eval-2", summary: { total: 10, pass: 7, fail: 2, error: 1, allPassRate: 0.7 }, repetitions: 2, finishedAt: "2026-09-01T09:00:07.000Z", targetGitSha: "4d533f07030f0a4b1c2d3e4f5a6b7c8d9e0f1a2b", corpus: null },
+			evaluation: { evalRunId: "eval-2", summary: { total: 10, pass: 7, fail: 2, error: 1, allPassRate: 0.7 }, repetitions: 2, stableTasks: { stable: 3, measured: 5 }, finishedAt: "2026-09-01T09:00:07.000Z", targetGitSha: "4d533f07030f0a4b1c2d3e4f5a6b7c8d9e0f1a2b", corpus: null },
 		}), tagPaint);
 		expect(errors[0]).toContain("<warning><bold>7/10 passed</bold></warning>");
 		expect(errors[0]).toContain("<error>2 failed</error>");
 		expect(errors[0]).toContain("<warning>1 error</warning>");
 		expect(errors[0]).toContain("<dim>· 2 repetitions · eval-2</dim>");
 		const perfect = renderTraces(makeTraces({}, {
-			evaluation: { evalRunId: "eval-3", summary: { total: 4, pass: 4, fail: 0, error: 0, allPassRate: 1 }, repetitions: 1, finishedAt: "2026-09-01T09:00:07.000Z", targetGitSha: "4d533f07030f0a4b1c2d3e4f5a6b7c8d9e0f1a2b", corpus: null },
+			evaluation: { evalRunId: "eval-3", summary: { total: 4, pass: 4, fail: 0, error: 0, allPassRate: 1 }, repetitions: 1, stableTasks: { stable: 4, measured: 4 }, finishedAt: "2026-09-01T09:00:07.000Z", targetGitSha: "4d533f07030f0a4b1c2d3e4f5a6b7c8d9e0f1a2b", corpus: null },
 		}), tagPaint);
 		expect(perfect[1]).toContain("its basket is no longer published");
 		expect(perfect[0]).toContain("<success><bold>4/4 passed</bold></success>");
@@ -1405,14 +1492,15 @@ describe("renderTraces", () => {
 		}), plainPaint);
 		const at = lines.indexOf("Worlded cases");
 		expect(at).toBeGreaterThan(0);
-		expect(lines.slice(at + 1, at + 5)).toEqual([
-			"   1. who: —",
+		expect(lines.slice(at + 1, at + 6)).toEqual([
+			"   1. “Заблокируйте договор 42”  task_002",
+			"      who: customer on account 42",
 			"      has: accounts.42.status=ok",
 			"      wants: Заблокируйте договор 42.",
 			'      must: accounts.42.status equals "frozen" · tool check_account',
 		]);
 		// It sits above the evidence link, so the panel still ends where it did.
-		expect(lines[at + 5]).toBe("Evidence http://127.0.0.1:4310/evidence/eval-1");
+		expect(lines[at + 6]).toBe("Evidence http://127.0.0.1:4310/evidence/eval-1");
 	});
 
 	it("says nothing about worlds when no case has one", () => {
@@ -1871,6 +1959,46 @@ describe("renderDecision", () => {
 			expect(text.length, result.kind).toBeGreaterThan(0);
 			expect(text, result.kind).not.toContain("{");
 			expect(text, result.kind).toContain("Next ");
+		}
+	});
+
+	/**
+	 * Session 8 was told `Правка применена, автоматическая проверка не
+	 * запустилась: Проверка не запустилась: у агента нет закрытого экзамена…` —
+	 * the same clause twice, and the half that said what to do about it cut off
+	 * the end of the line. The reason already opens with its own headline, so
+	 * the applied clause never says it again.
+	 */
+	it("says the applied change and the blocked verification once each", () => {
+		setLanguage("ru");
+		try {
+			const blocked = decision(
+				"apply-proposal",
+				{
+					runId: "r",
+					branch: "b",
+					candidateSha: SHA_B,
+					proposalHash: HASH,
+					verification: { outcome: "blocked", reason: "verification requires a sealed holdout corpus", reasonCode: { code: "blocker.sealed-exam-missing" } },
+				},
+				"candidate-verification",
+				`Правка применена, автоматическая проверка не запустилась: ${t("blocker.sealed-exam-missing")}`,
+			);
+			const line = decisionHeadline(blocked);
+			expect(line.startsWith("Правка применена · Проверка не запустилась:")).toBe(true);
+			expect(line.split("Проверка не запустилась").length - 1).toBe(1);
+			// Prose, so it ends on a word and an ellipsis, never mid-word.
+			expect(line).toMatch(/(?:^|\s)\S+…$|[^…]$/);
+			expect([...line].length).toBeLessThanOrEqual(120);
+			// An untyped failure keeps the label, because the raw sentence has none.
+			const raw = decision(
+				"apply-proposal",
+				{ runId: "r", branch: "b", candidateSha: SHA_B, proposalHash: HASH, verification: { outcome: "blocked", reason: "the worktree vanished" } },
+				"candidate-verification",
+			);
+			expect(decisionHeadline(raw)).toBe("Правка применена · Автоматическая проверка не запустилась: the worktree vanished");
+		} finally {
+			setLanguage(null);
 		}
 	});
 });
@@ -2368,7 +2496,7 @@ describe("renderConfirmation", () => {
 			},
 		}), plainPaint);
 		const text = lines.join("\n");
-		expect(text).toContain("Adopted not yet — /adopt fast-forwards the current branch");
+		expect(text).toContain("Adopted not yet — say “ship it” to make it the active agent");
 		expect(text).toContain("Fast-forward branch main aaaaaaaaaa → bbbbbbbbbb\nChanged files AGENTS.md, tools/lookup\nOnly a clean worktree at the baseline is fast-forwarded; nothing is rebased or merged.");
 		tail(lines);
 	});
@@ -2795,6 +2923,37 @@ describe("format helpers", () => {
 		// An unbroken run — an id, a hash — has no boundary to respect and still ends.
 		expect(headline("candidate-c23cbcc05b2d43728e413b90b47daaf2", 12)).toBe("candidate-c…");
 		expect(headline("anything", 0)).toBe("");
+	});
+
+	/**
+	 * Session 7 read a table of `task-<64 hex>` and session 6 read the same ids
+	 * in the progress bar. An id is what a case IS; a name is what it is called,
+	 * and the case's own opening words are the only name nobody had to invent.
+	 */
+	it("names a case by its own words, and folds only a hashed id", () => {
+		setLanguage("ru");
+		try {
+			expect(caseTitle({ input: "Где мой платёж? Он не пришёл третий день." })).toBe("«Где мой платёж?»");
+			expect(caseTitle({ input: "Заблокируйте договор 42." })).toBe("«Заблокируйте договор 42»");
+			// A long first clause is cut at a word, never inside one.
+			expect(caseTitle({ input: "Клиент просит вернуть деньги за подписку, оформленную в прошлом месяце" }))
+				.toBe("«Клиент просит вернуть деньги за…»");
+			expect(caseTitle({ input: "   " })).toBe("кейс без слов");
+		} finally {
+			setLanguage(null);
+		}
+		// A case that carries a title of its own is printed bare: it already has
+		// a name, and quotes would claim these were the case's words.
+		expect(caseTitle({ input: "anything at all", metadata: { title: "Refund window" } })).toBe("Refund window");
+		expect(caseTitle({ input: "anything at all", metadata: { name: "Shipping status" } })).toBe("Shipping status");
+		expect(caseTitle({ input: "Freeze account 42 please." })).toBe("“Freeze account 42 please”");
+	});
+
+	it("folds a content-hashed case id and leaves a written one whole", () => {
+		expect(shortTaskId(`task-${"3f2a1b9c".repeat(8)}`)).toBe("task-3f2a1b9c…");
+		expect(shortTaskId("task_006")).toBe("task_006");
+		// `task-routing` is a name somebody wrote, and cutting it renames a case.
+		expect(shortTaskId("task-routing")).toBe("task-routing");
 	});
 
 	it("draws bars, percentages, and point deltas", () => {
@@ -3367,11 +3526,65 @@ describe("dataset case cards", () => {
 			"   1. Классифицируй обращение: жалоба на списание.",
 			"      expected: жалоба",
 			"      graders: contains “жалоба”",
-			"   2. who: —",
+			"   2. “Заблокируйте договор 42”",
+			"      who: customer on account 42",
 			"      has: accounts.42.status=ok",
 			"      wants: Заблокируйте договор 42.",
 			'      must: accounts.42.status equals "frozen" · tool check_account',
 		]);
+	});
+
+	/**
+	 * Session 8's worlds keyed the customer under an account or contract number,
+	 * so the one `client.name` lookup ran out and every worlded case read
+	 * `кто: —`. The card now probes an ordered allowlist of identifier paths and,
+	 * where only a number exists, says the sentence an operator would say.
+	 */
+	it("names the person from an allowlisted path, or says who the number belongs to", () => {
+		const who = (state: Record<string, unknown>): string =>
+			worldCardLines(preview({ id: "task_010", input: "Где мой платёж?", world: { state }, graders: [{ type: "output_contains", text: "x" }] }), plainPaint)[1] ?? "";
+		expect(who({ client: { name: "Иван Петров" } })).toBe("      who: Иван Петров");
+		expect(who({ customer: { name: "Anna Fox" } })).toBe("      who: Anna Fox");
+		expect(who({ account: { holder: "Иван Петров" } })).toBe("      who: Иван Петров");
+		// A number is read as the sentence, with the noun the path chose.
+		expect(who({ contract: { id: "1003" } })).toBe("      who: customer on contract 1003");
+		expect(who({ account: { id: 33333 } })).toBe("      who: customer on account 33333");
+		expect(who({ account: { number: "33333" } })).toBe("      who: customer on account 33333");
+		expect(who({ contract: "1003" })).toBe("      who: customer on contract 1003");
+		expect(who({ client: { id: "c-9" } })).toBe("      who: customer c-9");
+		// A name wins over a number, whatever order the JSON was written in.
+		expect(who({ account: { id: "33333" }, client: { name: "Иван Петров" } })).toBe("      who: Иван Петров");
+		// A world with no identifier at all still happens to somebody.
+		expect(who({ shipment: { status: "late" } })).toBe("      who: the person in this world");
+		// Session 8 keyed its customers by number under `accounts`: the key is the person.
+		expect(who({ accounts: { "1003": { balance: 800, status: "active" } } })).toBe("      who: customer on account 1003");
+		expect(who({ contracts: { "1004": { status: "blocked" } }, accounts: { "9": {} } })).toBe("      who: customer on contract 1004");
+		// A map keyed by something secret-shaped names nobody.
+		expect(who({ accounts: { pin: { value: "4321" } } })).toBe("      who: the person in this world");
+	});
+
+	/**
+	 * The card is the one surface that prints raw authored state to a room, so
+	 * the person it names may only come from the allowlist — a world that keys
+	 * its customer under `pin` gets no name from it, and no secret leaves on any
+	 * line of the card.
+	 */
+	it("never prints a secret, whichever line it was written on", () => {
+		const lines = worldCardLines(preview({
+			id: "task_011",
+			input: "Проверьте платёж.",
+			world: {
+				state: { pin: "4321", token: "t0ps3cr3t", password: "hunter2", account: { id: "33333" } },
+			},
+			graders: [{ type: "output_contains", text: "ok" }],
+		}), plainPaint);
+		const text = lines.join("\n");
+		expect(lines[1]).toBe("      who: customer on account 33333");
+		expect(text).not.toContain("4321");
+		expect(text).not.toContain("t0ps3cr3t");
+		expect(text).not.toContain("hunter2");
+		// The facts it does show are the next ones a person can act on.
+		expect(lines[2]).toBe("      has: account.id=33333");
 	});
 
 	it("leaves a case with no world exactly as it renders today", () => {

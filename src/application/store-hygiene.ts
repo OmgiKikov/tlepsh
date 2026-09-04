@@ -155,8 +155,18 @@ export function operatorDirtyPaths(porcelain: string): string[] {
 		.filter((field) => field.length > 0)
 		// A rename's second field carries no `XY ` status prefix; it is a bare path.
 		.map((field) => (/^[ MADRCU?!]{2} /.test(field) ? field.slice(3) : field))
-		.filter((path) => !inEngineStore(path));
+		.filter((path) => !inEngineStore(path) && !isHostOutput(path));
 	return [...new Set(paths)].sort();
+}
+
+/**
+ * What AHDE itself writes beside the agent for a person to hand on — the
+ * recorded dataset under `exports/` and the shipped passport — is the host's
+ * output, not the operator's unfinished work. Session 8 shipped, exported,
+ * and was then refused `/target` for the two files it had just been given.
+ */
+function isHostOutput(path: string): boolean {
+	return path === "exports" || path.startsWith("exports/") || /^passport-[^/]+\.md$/.test(path);
 }
 
 /** Git's exclusion of the same two roots, for commands that read the tree rather than its status. */

@@ -249,13 +249,16 @@ describe("the four-line card", () => {
 			simulatedUser: { goal: "добиться блокировки договора", maxTurns: 4 },
 			graders: [{ type: "tool_called", tool: "check_account" }],
 		});
-		expect(lines).toHaveLength(4);
-		expect(lines[0]).toBe("кто: Иван Петров");
+		expect(lines).toHaveLength(5);
+		// The card is headed by the case's own words, so a screen of cards says
+		// which case each one is before it says who is inside it.
+		expect(lines[0]).toBe("«Обращение: заблокируйте договор 42»");
+		expect(lines[1]).toBe("      кто: Иван Петров");
 		// Canonical order, so the facts a card shows never depend on how the JSON
 		// happened to be written.
-		expect(lines[1]).toBe("      что есть: accounts.42.limits=none · accounts.42.status=ok · client.name=Иван Петров");
-		expect(lines[2]).toBe("      что хочет: добиться блокировки договора");
-		expect(lines[3]).toBe('      что должно: accounts.42.status equals "frozen" · tool check_account');
+		expect(lines[2]).toBe("      что есть: accounts.42.limits=none · accounts.42.status=ok · client.name=Иван Петров");
+		expect(lines[3]).toBe("      что хочет: добиться блокировки договора");
+		expect(lines[4]).toBe('      что должно: accounts.42.status equals "frozen" · tool check_account');
 	});
 
 	it("falls back to the persona and to the case input, and says English the same way", () => {
@@ -266,9 +269,11 @@ describe("the four-line card", () => {
 			world: { state: { accounts: { "42": { status: "ok" } } } },
 			graders: [{ type: "world_state", path: "accounts.42.status", op: "exists" }],
 		});
-		expect(lines[0]).toBe("who: —");
-		expect(lines[2]).toBe("      wants: Freeze account 42 please.");
-		expect(lines[3]).toBe("      must: accounts.42.status exists");
+		expect(lines[0]).toBe("“Freeze account 42 please”");
+		// A world that keys its customers by number names the case by that key: never a dash.
+		expect(lines[1]).toBe("      who: customer on account 42");
+		expect(lines[3]).toBe("      wants: Freeze account 42 please.");
+		expect(lines[4]).toBe("      must: accounts.42.status exists");
 	});
 
 	it("states an expectation once, even when its grader is written out beside it", () => {
@@ -279,7 +284,7 @@ describe("the four-line card", () => {
 			world: { state: { status: "open" }, expect: [{ path: "status", op: "equals", value: "closed" }] },
 			graders: [{ type: "world_state", path: "status", op: "equals", value: "closed" }],
 		});
-		expect(lines[3]).toBe('      must: status equals "closed"');
+		expect(lines[4]).toBe('      must: status equals "closed"');
 	});
 
 	it("renders a case without a world exactly as it always has", () => {

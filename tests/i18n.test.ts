@@ -13,7 +13,19 @@ import { plainPaint } from "../src/builder/render/paint.js";
 import { stageLabel, nextStep } from "../src/builder/render/stage.js";
 import { renderRunDetailPage } from "../src/evidence/pages.js";
 import { createRunProgressPresenter } from "../src/builder/run-progress.js";
-import { explainRun, failureModeReading, runErrorReading } from "../src/application/run-explanation.js";
+import { renderBuilderHelp } from "../src/builder/commands.js";
+import {
+	explainRun,
+	failureModeReading,
+	runErrorReading,
+	type GraderFinding,
+	type RunExplanation,
+	type RunTraceFacts,
+} from "../src/application/run-explanation.js";
+import { humanizeCommandError } from "../src/builder/commands.js";
+import { WorkbenchTypedRefusalError } from "../src/workbench/errors.js";
+import { ProposalIneligibleError } from "../src/application/improvement-brief.js";
+import { SEALED_GATE_POLICY } from "../src/domain/comparison-gate.js";
 import { receiptLines } from "../src/builder/render/trace.js";
 import { turnBudgetLine } from "../src/workbench/workbench.js";
 import { assertWorkbenchDecisionStage } from "../src/workbench/transition-policy.js";
@@ -140,6 +152,27 @@ const ALLOWED_LATIN = new Set([
 	"jsonl", "JSONL", "OAuth", "Pi", "Enter", "id", "th", "tr", "td", "class", "span", "num", "chip",
 	"href", "div", "table", "thead", "tbody", "scroll", "wrapcell", "h", "a", "p", "pre", "section",
 	"repetition", "sub", "mono", "errpre", "cards", "card", "count", "row", "outcome", "score",
+	// The argument of `/help all`: a word the operator types, not one they read.
+	"all",
+]);
+
+/**
+ * The only Latin a Russian DICTIONARY FORM may carry, one reason each. Nothing
+ * here is a word: they are the two product names, the CLI and the things an
+ * operator types or reads off a file — command and flag names, id prefixes,
+ * field names, formats, a key on the keyboard, and the two verdict tokens the
+ * sentences quote. A word that is not one of these is an English leak, and the
+ * fix is a Russian form, never a new entry here.
+ */
+const MACHINE_LATIN = new Set([
+	// The products and the binary.
+	"AHDE", "ahde", "Builder", "Pi", "Target", "Git", "OAuth",
+	// Commands, subcommands, flags and argument values the operator types.
+	"target", "regrade", "next", "prev", "all", "trace", "traces", "run", "discard",
+	// Ids, prefixes and field names read off records and screens.
+	"id", "Id", "erun", "judge", "ME", "md", "manifest", "yaml", "semver", "Enter",
+	// Verdict tokens quoted inside a sentence; scripts match on them.
+	"underpowered",
 ]);
 
 function leakedEnglish(text: string): string[] {
@@ -266,7 +299,8 @@ describe("ru renders", () => {
 			graders: [{ type: "tool_called", tool: "check_account" }],
 		}))], plainPaint);
 		expect(lines).toEqual([
-			"   1. кто: Иван Петров",
+			"   1. «Заблокируйте договор 42»",
+			"      кто: Иван Петров",
 			"      что есть: accounts.42.status=ok · client.name=Иван Петров",
 			"      что хочет: Заблокируйте договор 42.",
 			'      что должно: accounts.42.status equals "frozen" · tool check_account',
@@ -325,7 +359,7 @@ describe("ru renders", () => {
 			"  Добавить упоминание инструмента поиска в инструкции",
 			"Изменения AGENTS.md (+1 -0)",
 			"Прогноз не заявлен",
-			"Проверка около $0.42 · около 4 мин — одобряя правку, ты одобряешь и эту проверку",
+			"Проверка около $0.42 · около 4 минут — одобряя правку, ты одобряешь и эту проверку",
 			"Диф",
 			"--- a/AGENTS.md",
 			"+++ b/AGENTS.md",
@@ -459,10 +493,10 @@ describe("ru renders", () => {
 		expect(t("exam.size-hint", { cases: plural(20, "case"), needed: plural(35, "case") }))
 			.toBe("экзамен 20 кейсов; при таком шуме для ±10 п.п. нужно около 35 кейсов");
 		expect(t("exam.of-requested", { cases: 19, requested: 20 })).toBe("19 из 20 запрошенных");
-		expect(t("exam.dropped-duplicate", { count: 1, dropped: plural(1, "duplicate") }))
-			.toBe("отброшено дубликатов: 1");
-		expect(t("exam.dropped-malformed", { count: 2, dropped: plural(2, "malformed case") }))
-			.toBe("отброшено с ошибкой формы: 2");
+		expect(t("exam.dropped-duplicate", { dropped: plural(1, "duplicate") }))
+			.toBe("отброшено: 1 дубликат");
+		expect(t("exam.dropped-malformed", { dropped: plural(2, "malformed case") }))
+			.toBe("отброшено: 2 кейса с ошибкой формы");
 		// Every one of them is Russian all the way through.
 		for (const key of [
 			"exam.outcome-improved",
@@ -703,11 +737,19 @@ const IDENTICAL_BY_DESIGN = new Set([
 	"headline.run",
 	"status.activity",
 	"passport.design",
+	// lane: passport-ru — two layout templates on the markdown page.
+	"passport.md.design",
+	"passport.md.promised-title",
 	"fixtures.failed",
 	"why.grader-expected",
 	"why.grader-plain",
+	// A grader phrasing the host does not recognize is quoted whole; the quote
+	// is the record, and a record has no second language.
+	"why.actual.reason",
 	// A dash is a dash in both languages.
 	"metrics.not-reported",
+	// lane: gate-dialog — an ordinal in brackets after a label the caller wrote.
+	"dialog.choice-ordinal",
 ]);
 
 describe("the dictionary itself", () => {
@@ -734,18 +776,266 @@ describe("the dictionary itself", () => {
 			expect(bare, key).not.toMatch(/[A-Za-z]{2,}/);
 		}
 	});
+
+	/**
+	 * "The Russian form differs from the English one" was the whole guard, and
+	 * every English literal that reached a Russian screen for three sessions
+	 * running passed it: a sentence built OUTSIDE the dictionary never had a
+	 * key to compare. This reads the forms themselves.
+	 */
+	it("leaves nothing but machine text Latin in any Russian form", () => {
+		setLanguage("ru");
+		const leaked = new Map<string, string[]>();
+		for (const key of messageKeys()) {
+			const found = leakedEnglish(t(key).replace(/\{\w+\}/g, " "))
+				.filter((word) => !MACHINE_LATIN.has(word));
+			if (found.length > 0) leaked.set(key, found);
+		}
+		expect([...leaked.entries()].map(([key, words]) => `${key}: ${words.join(" ")}`)).toEqual([]);
+	});
+
+	/**
+	 * A name one form interpolates and the other does not is a name nobody
+	 * passes: the screen prints `{count}` verbatim, or silently drops the
+	 * number the sentence was about. Five keys were in that state.
+	 */
+	it("interpolates exactly the same names in both languages", () => {
+		const names = (text: string): string => [...new Set(text.match(/\{\w+\}/g) ?? [])].sort().join(" ");
+		const mismatched: string[] = [];
+		for (const key of messageKeys()) {
+			setLanguage("en");
+			const english = names(t(key));
+			setLanguage("ru");
+			const russian = names(t(key));
+			if (english !== russian) mismatched.push(`${key}: en(${english}) ru(${russian})`);
+		}
+		expect(mismatched).toEqual([]);
+	});
+});
+
+/**
+ * Session 8, the third session in a row: the one screen that explains a failed
+ * check spoke English on the Russian path. The dictionary guard above could
+ * not see it, because those sentences were built from literals OUTSIDE the
+ * dictionary and so had no key to compare. These read the finished screen.
+ */
+describe("ru: what a failed check wanted", () => {
+	/**
+	 * Everything the host WROTE about one run, with everything it QUOTED taken
+	 * out: the grader's own recorded reason — canonical English on disk, quoted
+	 * verbatim on purpose, exactly as the transition policy keeps its machine
+	 * line — and the machine text the sentences interpolate, which is grader
+	 * names, grader type names, tool names, world paths and canonical JSON.
+	 */
+	function hostWritten(sentences: readonly string[], quoted: readonly string[]): string {
+		let text = sentences.join("\n");
+		for (const item of quoted) text = text.split(item).join(" ");
+		return text;
+	}
+
+	function finding(overrides: Partial<GraderFinding>): GraderFinding {
+		return {
+			name: "grader",
+			type: "judge",
+			checkCode: null,
+			passed: false,
+			score: 0,
+			reason: "",
+			abstained: false,
+			assertions: null,
+			assertionVerdicts: null,
+			choice: null,
+			jury: null,
+			chip: "✗",
+			...overrides,
+		};
+	}
+
+	function explain(graders: GraderFinding[], facts: RunTraceFacts | null): RunExplanation {
+		return explainRun({
+			run: {
+				runId: "run-9",
+				taskId: "task-3",
+				repetitionIndex: 0,
+				status: "completed",
+				error: null,
+				metrics: { toolCalls: 2 },
+			} as never,
+			graders,
+			facts,
+			modes: [],
+			flip: null,
+		});
+	}
+
+	it("says what a world check wanted, and what the conversation left instead", () => {
+		setLanguage("ru");
+		const explanation = explain([finding({
+			name: "task-3#0:world_state:accounts.42.status",
+			type: "world_state",
+			checkCode: "world-state",
+			reason: 'world at accounts.42.status is "open", expected "frozen"',
+		})], null);
+		expect(explanation.sentences[1]).toBe(
+			"task-3#0:world_state:accounts.42.status (world_state) "
+			+ 'ожидалось: мир по пути accounts.42.status равен "frozen"; там "open".',
+		);
+		expect(leakedEnglish(hostWritten(explanation.sentences, [
+			'world at accounts.42.status is "open", expected "frozen"',
+			"task-3#0:world_state:accounts.42.status",
+			"world_state",
+			"accounts.42.status",
+			'"frozen"',
+			'"open"',
+		]))).toEqual([]);
+	});
+
+	it("says which tool the case wanted called, and what the agent called instead", () => {
+		setLanguage("ru");
+		const explanation = explain([finding({
+			name: "task-3#0:tool_called:check_dbo",
+			type: "tool_called",
+			checkCode: "required-tool",
+			reason: 'never called check_dbo with args containing "1003"',
+		})], { input: null, answer: null, toolNames: ["read_file"], toolCalls: 2 });
+		expect(explanation.sentences[1]).toBe(
+			"task-3#0:tool_called:check_dbo (tool_called) "
+			+ "ожидался вызов check_dbo с аргументами, содержащими «1003»; "
+			+ "агент сделал 2 вызова инструмента — read_file.",
+		);
+		expect(leakedEnglish(hostWritten(explanation.sentences, [
+			'never called check_dbo with args containing "1003"',
+			"task-3#0:tool_called:check_dbo",
+			"tool_called",
+			"check_dbo",
+			"read_file",
+		]))).toEqual([]);
+	});
+
+	it("says what the judge's rubric wanted, and answers its assertions in Russian", () => {
+		setLanguage("ru");
+		const explanation = explain([finding({
+			name: "task-3#0:judge",
+			type: "judge",
+			checkCode: "semantic-rubric",
+			reason: "assertion 2 failed (2/4 yes): не назван срок",
+			assertions: { total: 4, passed: 2, failed: [2, 4] },
+			assertionVerdicts: [
+				{ index: 1, answer: "yes", evidence: "срок указан" },
+				{ index: 2, answer: "no", evidence: "не назван срок" },
+				{ index: 4, answer: "unknown", evidence: "ответа недостаточно" },
+			],
+			jury: [
+				{ juror: 1, passed: false, choice: null, answers: null },
+				{ juror: 2, passed: true, choice: null, answers: null },
+			],
+		})], null);
+		expect(explanation.sentences[1]).toBe(
+			"task-3#0:judge (judge) ожидалось: выполнены все утверждения рубрики, все 4; "
+			+ "судья ответил «да» на 2 из 4; не выполнены утверждения 2, 4.",
+		);
+		// The judge's three protocol answers are read here, never matched on.
+		expect(explanation.sentences).toContain(
+			"На утверждение 2 ответ «нет»; обоснование судьи: «не назван срок».",
+		);
+		expect(explanation.sentences).toContain(
+			"На утверждение 4 ответ «не знаю»; обоснование судьи: «ответа недостаточно».",
+		);
+		expect(leakedEnglish(hostWritten(explanation.sentences, [
+			"assertion 2 failed (2/4 yes): не назван срок",
+			"task-3#0:judge",
+			"judge",
+		]))).toEqual([]);
+	});
+});
+
+/**
+ * Session 8, defect 5: the Builder met `failure mode … is not eligible for a
+ * harness proposal` on the transcript, could not parse it, and asked the
+ * operator to "открыть пункт в панели".
+ */
+describe("ru: a refusal a person has to act on", () => {
+	it("reaches the operator in Russian, whole, through the one place errors are humanized", () => {
+		setLanguage("ru");
+		const refusals = [
+			new WorkbenchTypedRefusalError("The selected sealed holdout has 4 tasks", {
+				code: "refusal.sealed-exam-too-small",
+				params: { tasks: plural(4, "case"), minimum: SEALED_GATE_POLICY.minTasks },
+			}),
+			new WorkbenchTypedRefusalError("Candidate verification needs at least 3 repetitions", {
+				code: "refusal.repetitions-too-few",
+				params: { minimum: SEALED_GATE_POLICY.minRepetitions },
+			}),
+			new WorkbenchTypedRefusalError("candidate verification failed during the sealed exam", {
+				code: "refusal.check-failed-in-exam",
+			}),
+			new ProposalIneligibleError("improvement evidence is not eligible for a harness proposal", {
+				code: "refusal.brief-not-proposable",
+			}),
+			new ProposalIneligibleError("failure mode fm-4c1d9e is not eligible for a harness proposal", {
+				code: "refusal.mode-not-proposable",
+				detail: "fm-4c1d9e",
+			}),
+		];
+		for (const error of refusals) {
+			const human = humanizeCommandError(error);
+			expect(human.tone, error.reason.code).toBe("warning");
+			expect(leakedEnglish(human.message), error.reason.code).toEqual([]);
+			// The English sentence underneath is untouched: the model still reads it.
+			expect(human.message).not.toBe(error.message);
+		}
+	});
+
+	it("keeps the evaluator's own stem beside the sentence rather than inside it", () => {
+		setLanguage("ru");
+		const stopped = new WorkbenchTypedRefusalError("the check stopped before the exam", {
+			code: "refusal.check-stopped-before-exam",
+			detail: "target exited with 3",
+		});
+		const human = humanizeCommandError(stopped);
+		expect(human.message).toBe(`${t("refusal.check-stopped-before-exam")} target exited with 3`);
+		expect(leakedEnglish(t("refusal.check-stopped-before-exam"))).toEqual([]);
+	});
+
+	it("says the abandoned attempt in Russian", () => {
+		setLanguage("ru");
+		expect(leakedEnglish(t("message.candidate-abandoned"))).toEqual([]);
+		expect(t("message.candidate-abandoned")).toContain("Прерванная попытка");
+	});
+});
+
+describe("ru: the /help screen", () => {
+	it("says the nine in Russian, and the whole table in Russian too", () => {
+		setLanguage("ru");
+		const core = renderBuilderHelp();
+		const all = renderBuilderHelp(true);
+		// The Latin that survives is what the operator types: the command names
+		// themselves, the word `all`, `AHDE`, `Pi`, and the two credential words.
+		expect(leakedEnglish(core.join("\n"))).toEqual([]);
+		expect(leakedEnglish(all.join("\n"))).toEqual([]);
+		// Nine lines, one sentence each, and the last one is the way to the rest.
+		expect(core.filter((line) => line.startsWith("  /"))).toHaveLength(9);
+		expect(core.at(-1)).not.toBe("");
+		expect(core.some((line) => line.startsWith("  /help all  "))).toBe(true);
+		expect(core.join("\n")).toContain("почини вторую проблему");
+		// The eight AHDE asks itself are named as that, and nowhere else.
+		expect(all.join("\n")).toContain("Решения хоста — их задаёт сам AHDE, набирать не нужно:");
+		for (const line of core) expect(line).not.toContain("/approve");
+	});
 });
 
 describe("ru: the recorded dataset", () => {
-	it("bends the noun to the count and says what the file does not contain", () => {
+	it("bends the noun to the count and gives the count a denominator", () => {
 		setLanguage("ru");
+		// The genitive after «из»: «из 1 диалога», «из 2 диалогов», never the
+		// nominative «2 диалога» the plain count would bend to.
 		const line = (count: number): string =>
-			t("export.done", { count: plural(count, "dialogue"), path: "exports/erun_abc123.jsonl" });
-		expect(line(1)).toBe("выгружено 1 диалог → exports/erun_abc123.jsonl (без экзамена)");
-		expect(line(2)).toBe("выгружено 2 диалога → exports/erun_abc123.jsonl (без экзамена)");
-		expect(line(24)).toBe("выгружено 24 диалога → exports/erun_abc123.jsonl (без экзамена)");
-		expect(line(25)).toBe("выгружено 25 диалогов → exports/erun_abc123.jsonl (без экзамена)");
-		expect(line(11)).toBe("выгружено 11 диалогов → exports/erun_abc123.jsonl (без экзамена)");
+			t("export.done", { count, total: plural(count, "dialogue of"), path: "exports/erun_abc123.jsonl" });
+		expect(line(1)).toBe("выгружено 1 из 1 диалога → exports/erun_abc123.jsonl");
+		expect(line(2)).toBe("выгружено 2 из 2 диалогов → exports/erun_abc123.jsonl");
+		expect(line(24)).toBe("выгружено 24 из 24 диалогов → exports/erun_abc123.jsonl");
+		expect(line(25)).toBe("выгружено 25 из 25 диалогов → exports/erun_abc123.jsonl");
+		expect(line(11)).toBe("выгружено 11 из 11 диалогов → exports/erun_abc123.jsonl");
 		// Only the path is Latin, and it is a path.
 		expect(leakedEnglish(line(24))).toEqual([]);
 		for (const key of ["export.none", "cmd.dataset", "panel.export"] as const) {
@@ -866,10 +1156,32 @@ describe("ru: the knowledge base", () => {
 
 		// The dialog, the result line, and the sentence the Builder is told.
 		expect(t("generate-holdout.source-kb", { chunks: plural(16, "passage") }))
-			.toBe("база знаний — 16 фрагментов, по одному вопросу на каждый");
+			.toBe("база знаний — 16 фрагментов, по ним судья и пишет вопросы");
 		expect(plural(1, "passage")).toBe("1 фрагмент");
 		expect(plural(3, "passage")).toBe("3 фрагмента");
 		expect(plural(11, "passage")).toBe("11 фрагментов");
+		expect(plural(1, "question")).toBe("1 вопрос");
+		expect(plural(3, "question")).toBe("3 вопроса");
+		expect(plural(15, "question")).toBe("15 вопросов");
+		// lane: exam-kb — a base too small for an exam is refused in one Russian
+		// sentence, with the number it can give and the alternative.
+		expect(t("sealed-synth.kb-too-small", {
+			chunks: plural(3, "passage"),
+			max: plural(9, "question"),
+			min: plural(15, "case"),
+			count: plural(20, "case"),
+		})).toBe(
+			"В базе 3 фрагмента — из неё выходит не больше 9 вопросов, экзамену нужно 15 кейсов. " +
+				"Могу написать экзамен из описания (20 кейсов) — делаем?",
+		);
+		expect(leakedEnglish(t("sealed-synth.kb-too-small", {
+			chunks: plural(3, "passage"),
+			max: plural(9, "question"),
+			min: plural(15, "case"),
+			count: plural(20, "case"),
+		}))).toEqual([]);
+		expect(t("ship-gate.kb-ceiling", { max: plural(18, "question") }))
+			.toBe("база знаний даёт не больше 18 вопросов");
 		expect(t("generate-holdout.by-judge-kb", { cases: plural(16, "case"), generator: "x/y" }))
 			.toBe("16 кейсов по базе знаний · генерирует судья x/y");
 		expect(t("message.exam-sealed-kb", { cases: plural(16, "case") })).toContain("по базе знаний");
@@ -957,5 +1269,22 @@ describe("ru: what ended a run", () => {
 		expect(plural(3, "agent turn")).toBe("3 хода");
 		expect(plural(11, "agent turn")).toBe("11 ходов");
 		expect(leakedEnglish(turnBudgetLine(300_000, [{ simulatedUser: { maxTurns: 6 } }]))).toEqual([]);
+	});
+});
+
+describe("ru: a dirty agent folder", () => {
+	it("is refused in the operator's language, naming the files", async () => {
+		const { TargetAuthoringContextError } = await import("../src/application/target-authoring-context.js");
+		setLanguage("ru");
+		const error = new TargetAuthoringContextError(
+			"TARGET_CONTEXT_DIRTY",
+			"Target has uncommitted changes: notes.md. Commit them, then author.",
+			undefined,
+			{ code: "target.dirty", params: { paths: "notes.md" } },
+		);
+		const human = humanizeCommandError(error);
+		expect(human.message).toBe("В папке агента есть незакоммиченные изменения: notes.md. Закоммить их — и продолжим.");
+		// The file name is the operator's, not the host's: it is not a leak.
+		expect(leakedEnglish(human.message.replace("notes.md", ""))).toEqual([]);
 	});
 });

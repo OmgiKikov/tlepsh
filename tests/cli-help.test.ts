@@ -2,8 +2,14 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { cliHelp } from "../src/cli-help.js";
 import { SEALED_GATE_POLICY } from "../src/domain/comparison-gate.js";
-import { AHDE_BUILDER_COMMAND_NAMES } from "../src/builder/commands.js";
-import { setLanguage, t } from "../src/i18n.js";
+import {
+	AHDE_BUILDER_COMMAND_NAMES,
+	AHDE_BUILDER_COMMANDS,
+	builderCommandsOfTier,
+	renderBuilderHelp,
+	type BuilderCommandTier,
+} from "../src/builder/commands.js";
+import { setLanguage } from "../src/i18n.js";
 
 /** Every `/name` mentioned inside one fenced block or help section. */
 function slashNames(text: string): string[] {
@@ -16,17 +22,23 @@ describe("one Builder command list", () => {
 		expect(slashNames(section)).toEqual([...AHDE_BUILDER_COMMAND_NAMES, "login", "model"]);
 	});
 
-	// The reference is a localized string now, so the invariant has to hold in
-	// every language: a translation that quietly drops a command is a bug.
-	it("keeps the in-Builder /help reference equal to the registered commands", () => {
+	// The reference is rendered from the same table now, so the invariant has to
+	// hold in every language: a translation that quietly drops a command is a bug.
+	it("keeps the in-Builder /help all reference equal to the registered commands", () => {
 		try {
 			for (const lang of ["en", "ru"] as const) {
 				setLanguage(lang);
-				const reference = t("help.body");
+				const reference = renderBuilderHelp(true).join("\n");
 				expect(reference).not.toBe("");
 				for (const name of AHDE_BUILDER_COMMAND_NAMES) expect(reference).toContain(`/${name}`);
 				expect(reference).toContain("/login");
 				expect(reference).toContain("/model");
+				// And the default screen is the nine, never the twenty behind them.
+				const core = renderBuilderHelp().join("\n");
+				for (const command of AHDE_BUILDER_COMMANDS) {
+					if (command.tier === "core") expect(core).toContain(`/${command.name}`);
+					else expect(core).not.toContain(`/${command.name}`);
+				}
 			}
 		} finally {
 			setLanguage(null);
@@ -35,9 +47,20 @@ describe("one Builder command list", () => {
 
 	it("keeps the README slash block equal to the registered commands", () => {
 		const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
-		const block = readme.split("The compact Pi commands below are optional expert shortcuts")[1]?.split("```")[1] ?? "";
+		const after = readme.split("The compact Pi commands below are optional expert shortcuts")[1] ?? "";
+		const block = after.split("```")[1] ?? "";
 		expect(block).not.toBe("");
-		expect(slashNames(block).sort()).toEqual([...AHDE_BUILDER_COMMAND_NAMES].sort());
+		// The block a reader meets is the product: the same nine `/help` prints.
+		const named = (tier: BuilderCommandTier): string[] =>
+			builderCommandsOfTier(tier).map((command) => command.name).sort();
+		expect(slashNames(block).sort()).toEqual(named("core"));
+		// The rest is still documented, one fold down, and together they are
+		// still every command AHDE registers.
+		const folded = after.split("</summary>")[1]?.split("</details>")[0] ?? "";
+		expect(folded).not.toBe("");
+		expect(slashNames(folded).sort()).toEqual([...named("expert"), ...named("host-decision")].sort());
+		expect([...slashNames(block), ...slashNames(folded)].sort())
+			.toEqual([...AHDE_BUILDER_COMMAND_NAMES].sort());
 	});
 });
 

@@ -5,8 +5,10 @@ import type { ExperimentMode } from "./domain/candidate.js";
 import { oneLine } from "./builder/render/format.js";
 import {
 	compareUtf8,
+	comparisonPowered,
 	formatPoints,
 	formatResourceFragment,
+	gatePolicyFor,
 	judgeComparison,
 	resourceTotals,
 	type CompareRow,
@@ -14,11 +16,12 @@ import {
 	type ComparisonDesign,
 	type ComparisonFlags,
 	type ComparisonResources,
+	type ExcludedTask,
 	type GateDecision,
 	type GateSurface,
 } from "./domain/comparison-gate.js";
 
-export type { CompareRow, CompareSummary } from "./domain/comparison-gate.js";
+export type { CompareRow, CompareSummary, ExcludedTask } from "./domain/comparison-gate.js";
 
 /** One-line renderings live in a 110-column budget shared with the TUI header. */
 const GATE_LINE_WIDTH = 110;
@@ -30,6 +33,14 @@ export interface CompareResult {
 	rows: CompareRow[];
 	status: "comparable" | "inconclusive" | "invalid";
 	issues: string[];
+	/**
+	 * Tasks left out of the paired statistics, named with the reason and the
+	 * arm that lost them. One errored repetition costs its task, never the
+	 * whole verification: the comparison stays `comparable` while the excluded
+	 * share is inside the gate's infrastructure budget and the remaining design
+	 * still meets the surface's policy.
+	 */
+	excluded: ExcludedTask[];
 	summary: CompareSummary;
 	design: ComparisonDesign;
 	flags: ComparisonFlags;
@@ -72,20 +83,70 @@ interface TaskAggregate {
 	pass: number;
 	score: number;
 	total: number;
+	errors: number;
 	status: string;
 }
 
-function perTask(records: readonly RunRecord[]): Map<string, TaskAggregate> {
+/**
+ * The three fields a per-task aggregate reads. Narrower than a whole
+ * RunRecord so a reader — and a test — can hand over what it actually has.
+ */
+export type TaskRun = Pick<RunRecord, "taskId" | "status" | "evalResults">;
+
+function perTask(records: readonly TaskRun[]): Map<string, TaskAggregate> {
 	const byTask = new Map<string, TaskAggregate>();
 	for (const record of records) {
-		const entry = byTask.get(record.taskId) ?? { pass: 0, score: 0, total: 0, status: record.status };
+		const entry = byTask.get(record.taskId) ?? { pass: 0, score: 0, total: 0, errors: 0, status: record.status };
 		entry.total += 1;
-		if (record.evalResults?.outcome === "pass") entry.pass += 1;
+		// An errored repetition never counts as a pass. The run stopped before
+		// grading; whatever outcome the record carries is the harness's, not the
+		// agent's, and counting it would put a task the engine lost into the
+		// column that says the agent got it right every time.
+		if (record.status === "error") entry.errors += 1;
+		else if (record.evalResults?.outcome === "pass") entry.pass += 1;
 		entry.score += runGraderScore(record);
 		if (record.status === "error") entry.status = "error";
 		byTask.set(record.taskId, entry);
 	}
 	return byTask;
+}
+
+/**
+ * How many of an eval run's cases the agent got right in EVERY repetition, and
+ * how many cases were measured at all.
+ *
+ * Read at display time off the same aggregate the comparison pairs — no
+ * EvalRun field, nothing durable. `3/3` is a different fact from `60% passed`:
+ * a basket where every case passes two of three repetitions and a basket where
+ * two thirds of the cases pass all three print the same pass rate and mean
+ * very different things, and only this number separates them. An errored
+ * repetition is never a pass, so a case the engine lost is never `3/3`.
+ *
+ * With one repetition the answer is arithmetically the pass count and says
+ * nothing about repetition at all; the renderer says so rather than claiming
+ * it did.
+ */
+export interface StableTasks {
+	/** Cases that passed in every repetition. */
+	stable: number;
+	/** Cases with at least one recorded repetition. */
+	measured: number;
+	/** Passes over repetitions, per case, in task-id order. */
+	perTask: { taskId: string; pass: number; total: number }[];
+}
+
+export function stableTasks(records: readonly TaskRun[]): StableTasks {
+	const byTask = perTask(records);
+	const ids = [...byTask.keys()].sort(compareUtf8);
+	const rows = ids.map((taskId) => {
+		const entry = byTask.get(taskId)!;
+		return { taskId, pass: entry.pass, total: entry.total };
+	});
+	return {
+		stable: rows.filter((row) => row.total > 0 && row.pass === row.total).length,
+		measured: rows.length,
+		perTask: rows,
+	};
 }
 
 /**
@@ -205,29 +266,39 @@ export function compareVerifiedEvalRuns(
 	const aIds = [...aTasks.keys()].sort(compareUtf8);
 	const bIds = [...bTasks.keys()].sort(compareUtf8);
 	if (JSON.stringify(aIds) !== JSON.stringify(bIds)) invalid.push("task sets differ");
-	for (const row of rows) {
-		if (row.aTotal !== a.repetitions || row.bTotal !== b.repetitions) {
-			invalid.push(
-				`task ${row.taskId} has incomplete repetitions: ${row.aTotal}/${a.repetitions} vs ${row.bTotal}/${b.repetitions}`,
-			);
-		}
-	}
-	const infrastructure = [
-		...rows.filter((row) => row.aStatus === "error").map((row) => `baseline task ${row.taskId} errored`),
-		...rows.filter((row) => row.bStatus === "error").map((row) => `candidate task ${row.taskId} errored`),
-	];
+	const surface = options.surface ?? "development";
 	const statistics = judgeComparison(rows, {
-		surface: options.surface ?? "development",
+		surface,
 		repetitions: a.repetitions,
 		seed: `${a.evalRunId}:${b.evalRunId}`,
 		resources: { baseline: armResources(aVerified.runs), candidate: armResources(bVerified.runs) },
 		...(options.resamples !== undefined ? { resamples: options.resamples } : {}),
 	});
-	const issues = [...invalid, ...infrastructure];
-	const status = invalid.length > 0 ? "invalid" : infrastructure.length > 0 ? "inconclusive" : "comparable";
+	// One lost repetition costs its task, not the run. The gate has always
+	// declared a 10% infrastructure budget and excluded the tasks that spend
+	// it; this used to declare every one of them fatal before the budget was
+	// ever consulted, and two live verifications of 150 executions each were
+	// thrown away over an error rate of 2.7% with the difference already
+	// visible in the rows. The excluded tasks are named on the result, the
+	// remaining ones are paired, and the surface is `comparable` for exactly as
+	// long as its own policy says the design still carries a verdict.
+	const armName = { baseline: "baseline", candidate: "candidate", both: "baseline and candidate" } as const;
+	const excluded = statistics.excluded.map((task) => {
+		const row = rows.find((candidate) => candidate.taskId === task.taskId);
+		return task.reason === "infrastructure"
+			? `${armName[task.arm]} task ${task.taskId} errored`
+			: `task ${task.taskId} has incomplete repetitions: ${row?.aTotal ?? 0}/${a.repetitions} vs ${row?.bTotal ?? 0}/${b.repetitions}`;
+	});
+	const issues = [...invalid, ...excluded];
+	const status = invalid.length > 0
+		? "invalid"
+		: comparisonPowered(gatePolicyFor(surface), statistics.design) ? "comparable" : "inconclusive";
+	// An inconclusive surface always says why: the excluded tasks when there
+	// are any, and otherwise the gate's own sentence about the design.
+	const reasons = issues.length > 0 ? issues : statistics.gate.reasons;
 	const error = status === "comparable"
 		? null
-		: `${status === "invalid" ? "not comparable" : "inconclusive"}: ${issues.join("; ")} (baseline=${a.evalRunId}, candidate=${b.evalRunId})`;
+		: `${status === "invalid" ? "not comparable" : "inconclusive"}: ${reasons.join("; ")} (baseline=${a.evalRunId}, candidate=${b.evalRunId})`;
 	return { a, b, rows, status, issues, ...statistics, error };
 }
 
@@ -251,9 +322,12 @@ export function renderGateLine(
 	return oneLine(
 		`${gate.surface} verdict: ${gate.verdict} — ${formatPoints(summary.scoreDelta)} ` +
 			`(95% CI ${formatPoints(summary.confidence95.low)} … ${formatPoints(summary.confidence95.high)}) ` +
+			// The exclusions come before the resource ratios: the line is cut to
+			// 110 columns, and how many cases the number was measured on belongs
+			// to the number, while cost and latency never gated anything.
 			`on ${design.tasks} × ${design.repetitions}` +
-			(fragment ? ` · ${fragment}` : "") +
-			(design.excludedTasks > 0 ? ` · ${design.excludedTasks} excluded` : ""),
+			(design.excludedTasks > 0 ? ` · ${design.excludedTasks} excluded` : "") +
+			(fragment ? ` · ${fragment}` : ""),
 		GATE_LINE_WIDTH,
 	);
 }

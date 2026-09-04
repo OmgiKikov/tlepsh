@@ -4,11 +4,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderConfirmation } from "../src/builder/render/confirmation.js";
 import { renderDecision } from "../src/builder/render/decision.js";
 import { plainPaint } from "../src/builder/render/paint.js";
+import { renderHeader } from "../src/builder/render/view.js";
 import { importCorpus, listCorpora, loadCorpus } from "../src/corpus.js";
 import { setLanguage } from "../src/i18n.js";
 import { startMockModel, type MockModelHandle } from "../src/mock-model.js";
+import { readKnowledgeBase } from "../src/target/kb-tool.js";
 import {
 	listSealedSynthReceipts,
+	normalizedCaseInput,
 	recordSealedSynthReviewImport,
 	sealedExamOrigin,
 } from "../src/application/sealed-synth.js";
@@ -89,19 +92,46 @@ const KB_DOCS: Record<string, string> = Object.fromEntries(
 );
 const KB_CHUNK_IDS = KB_PRICES.map((_price, index) => `doc-${String(index).padStart(2, "0")}.md#0`);
 
-/** A judge that answers each passage with its own question-and-answer pair. */
+/**
+ * Three documents of two long paragraphs each — the shape of a real template's
+ * knowledge base. One runtime chunk apiece; two passages apiece once the exam
+ * generator halves the geometry, which is what turns three questions into the
+ * fifteen the ship gate needs.
+ */
+const SMALL_KB_DOCS: Record<string, string> = Object.fromEntries(
+	["tariffs", "blocking", "visits"].map((name) => [
+		`data/kb/${name}.md`,
+		`# Раздел ${name}\n\n${`Первый пункт раздела ${name}: ${"слово ".repeat(50)}`.trim()}\n\n` +
+			`${`Второй пункт раздела ${name}: ${"буква ".repeat(50)}`.trim()}\n`,
+	]),
+);
+
+/** One document, one short line: a base nothing can turn into an exam. */
+const TINY_KB_DOCS: Record<string, string> = { "data/kb/one.md": "# Тариф\n\nТариф «Река» стоит 750 рублей.\n" };
+
+/**
+ * A judge that answers every passage with as many distinct pairs as the prompt
+ * asked it for, each carrying the sentinel.
+ */
 async function mockKbJudge(): Promise<MockModelHandle> {
-	const mock = await startMockModel(
-		KB_CHUNK_IDS.map((chunkId, index) => ({
-			match: ({ firstUser }: { firstUser: string }) => firstUser.includes(`# Passage ${chunkId}`),
-			steps: [{
-				text: JSON.stringify({
-					question: `${SENTINEL} Сколько стоит тариф номер ${index}?`,
-					answer: `${KB_PRICES[index]} рублей в месяц`,
-				}),
-			}],
-		})),
-	);
+	const mock = await startMockModel([{
+		match: () => true,
+		resolve: ({ firstUser }) => {
+			const passageId = /# Passage (\S+)/.exec(firstUser)?.[1] ?? "";
+			const asked = Number(/Write (\d+) different/.exec(firstUser)?.[1] ?? "1");
+			const index = KB_CHUNK_IDS.indexOf(passageId);
+			const questions = Array.from({ length: asked }, (_value, question) => ({
+				question: index >= 0 && question === 0
+					? `${SENTINEL} Сколько стоит тариф номер ${index}?`
+					: `${SENTINEL} Что сказано в отрывке ${passageId}? Факт ${question}.`,
+				answer: index >= 0 && question === 0
+					? `${KB_PRICES[index]} рублей в месяц`
+					: `Факт ${question} отрывка ${passageId}`,
+			}));
+			return { text: JSON.stringify({ questions }) };
+		},
+		steps: [],
+	}]);
 	mocks.push(mock);
 	return mock;
 }
@@ -188,13 +218,16 @@ interface Project {
 async function project(options: {
 	judge?: { provider: string; id: string; baseUrl: string } | null;
 	approveSpec?: boolean;
-	kb?: boolean;
+	/** `true` is sixteen one-paragraph documents; `"small"` three; `"tiny"` one line. */
+	kb?: boolean | "small" | "tiny";
 } = {}): Promise<Project> {
 	const projectDir = makeTargetFixture(baseFixtureFiles({
-		"manifest.yaml": manifest(options.judge ?? null, options.kb === true),
+		"manifest.yaml": manifest(options.judge ?? null, options.kb !== undefined && options.kb !== false),
 		"evals/development.jsonl": `${DEV_CASES.map((task) => JSON.stringify(task)).join("\n")}\n`,
 		".gitignore": ".ahde/\nruns/\n",
 		...(options.kb === true ? KB_DOCS : {}),
+		...(options.kb === "small" ? SMALL_KB_DOCS : {}),
+		...(options.kb === "tiny" ? TINY_KB_DOCS : {}),
 	}));
 	roots.push(projectDir);
 	const paths = { projectDir, stateRoot: join(projectDir, ".ahde"), runsRoot: join(projectDir, "runs") };
@@ -341,7 +374,7 @@ describe("generate-holdout: the exam the judge writes", () => {
 		const body = renderConfirmation(confirmation, plainPaint);
 		expect(body.slice(0, 4)).toEqual([
 			"Exam 20 cases · written by the judge fixture-provider/fixture-judge",
-			"Source the agent's description + 3 examples from the tests (shape only)",
+			"Source the agent's description alone (no examples)",
 			"The Builder never sees the content; only the case count reaches the conversation",
 			expect.stringMatching(/^Cost (~\$\d+\.\d\d|<\$0\.01)$/),
 		]);
@@ -375,7 +408,7 @@ describe("generate-holdout: the exam the judge writes", () => {
 		const body = renderConfirmation(human.confirmations[0]!, plainPaint);
 		expect(body.slice(0, 3)).toEqual([
 			"Экзамен 20 кейсов · генерирует судья openrouter/anthropic/claude-sonnet-4.5",
-			"Источник описание агента + 3 примера из тестов (только форма)",
+			"Источник только описание агента (без примеров)",
 			"Builder содержимого не увидит; в разговор попадёт только число кейсов",
 		]);
 		expect(body[3]).toMatch(/^Стоимость (~\$\d+\.\d\d|<\$0\.01)$/);
@@ -416,7 +449,7 @@ describe("generate-holdout: the exam the judge writes", () => {
 
 		setLanguage("ru");
 		const russian = renderDecision(result, plainPaint);
-		expect(russian[1]).toBe("Экзамен 18 из 20 запрошенных · отброшено дубликатов: 1 · отброшено с ошибкой формы: 1");
+		expect(russian[1]).toBe("Экзамен 18 из 20 запрошенных · отброшено: 1 дубликат · отброшено: 1 кейс с ошибкой формы");
 	});
 
 	it("records how the exam came to exist, and tells a sealed one from a reviewed one", async () => {
@@ -515,6 +548,7 @@ describe("generate-holdout: the exam the judge writes", () => {
 					return {
 						source: options.source ?? ("spec" as const),
 						kbIndexHash: null,
+						kbChunkChars: null,
 						kbChunkIds: [],
 						generatorModel: "fixture-provider/fixture-judge",
 						generatorHash: "sha256:".padEnd(71, "a"),
@@ -594,8 +628,8 @@ describe("generate-holdout: the exam the judge writes from the knowledge base", 
 		// The passport's one word about the exam's provenance.
 		expect(sealedExamOrigin(stateRoot, PROJECT, sealed[0]!.id)).toBe("judge-generated-kb");
 		const receipt = listSealedSynthReceipts(stateRoot, PROJECT)[0]!;
-		expect(receipt.schemaVersion).toBe(2);
-		expect(receipt.schemaVersion === 2 && receipt.source).toBe("kb");
+		expect(receipt.schemaVersion).toBe(3);
+		expect(receipt.schemaVersion === 3 && receipt.source).toBe("kb");
 		expect(JSON.stringify(receipt)).not.toContain(SENTINEL);
 	});
 
@@ -614,6 +648,126 @@ describe("generate-holdout: the exam the judge writes from the knowledge base", 
 		expect(human.confirmations).toHaveLength(0);
 		expect(listCorpora({ stateRoot, projectId: PROJECT })).toEqual([]);
 		expect(listSealedSynthReceipts(stateRoot, PROJECT)).toEqual([]);
+	});
+
+	it("turns a base of three documents into a full exam, every case citing its own chunk", async () => {
+		const mock = await mockKbJudge();
+		const { workbench, projectDir, stateRoot } = await project({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+			kb: "small",
+		});
+		const human = gate();
+
+		// The exact shape session 8 gave up on: three documents, three passages,
+		// three questions — and a ship gate that needs fifteen.
+		const result = await workbench.decide(
+			{ kind: "generate-holdout", cases: 15, mode: "seal", source: "kb", reason: "агент отвечает по документам" },
+			human,
+		);
+		if (result.kind !== "generate-holdout") throw new Error("wrong kind");
+		expect(result.result.cases).toBe(15);
+		expect(result.result.source).toBe("kb");
+		expect(result.result.dropped).toEqual({ malformed: 0, duplicate: 0 });
+
+		const sealed = listCorpora({ stateRoot, projectId: PROJECT }).filter((corpus) => corpus.visibility === "sealed");
+		const loaded = loadCorpus({ stateRoot, projectId: PROJECT, corpusId: sealed[0]!.id });
+		expect(loaded.tasks).toHaveLength(15);
+		// Fifteen different questions: an exam of one question asked fifteen times
+		// measures nothing, so the admission dedup is the load-bearing assertion.
+		expect(new Set(loaded.tasks.map((task) => normalizedCaseInput(task.input))).size).toBe(15);
+
+		// Every case cites a chunk the RUNTIME index really serves — the only ids
+		// `kb_search` can hand the agent, and the only ones `cites_source` checks.
+		const runtimeIds = new Set(readKnowledgeBase(projectDir).map((chunk) => chunk.id));
+		expect(runtimeIds.size).toBe(3);
+		const perChunk = new Map<string, number>();
+		for (const task of loaded.tasks) {
+			const chunk = String(task.metadata?.kbChunk);
+			expect(runtimeIds.has(chunk)).toBe(true);
+			expect(task.graders?.[0]).toEqual({ type: "cites_source", chunk, minOverlap: 0.35 });
+			perChunk.set(chunk, (perChunk.get(chunk) ?? 0) + 1);
+		}
+		// Three chunks, six finer passages, at most three questions each.
+		expect([...perChunk.values()].sort()).toEqual([5, 5, 5]);
+		expect(new Set(loaded.tasks.map((task) => task.metadata?.kbPassage)).size).toBe(6);
+		expect(JSON.stringify(result)).not.toContain(SENTINEL);
+
+		// The same seed over the same base writes the same exam.
+		const twin = await mockKbJudge();
+		const second = await project({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: twin.url },
+			kb: "small",
+		});
+		const again = await second.workbench.decide(
+			{ kind: "generate-holdout", cases: 15, mode: "seal", source: "kb", reason: "тот же экзамен" },
+			gate(),
+		);
+		if (again.kind !== "generate-holdout") throw new Error("wrong kind");
+		const twinTasks = loadCorpus({
+			stateRoot: second.stateRoot,
+			projectId: PROJECT,
+			corpusId: again.result.corpusId!,
+		}).tasks;
+		expect(twinTasks.map((task) => task.id)).toEqual(loaded.tasks.map((task) => task.id));
+	});
+
+	it("refuses a base that cannot fill the exam, in Russian, with the number and the alternative", async () => {
+		const mock = await mockKbJudge();
+		const { workbench, stateRoot } = await project({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+			kb: "tiny",
+		});
+		const human = gate();
+		setLanguage("ru");
+
+		await expect(workbench.decide(
+			{ kind: "generate-holdout", cases: 15, mode: "seal", source: "kb", reason: "по документам" },
+			human,
+		)).rejects.toThrow(
+			"В базе 1 фрагмент — из неё выходит не больше 3 вопроса, экзамену нужно 15 кейсов. " +
+				"Могу написать экзамен из описания (15 кейсов) — делаем?",
+		);
+		// Refused before the human was asked anything and before a token was spent.
+		expect(human.confirmations).toEqual([]);
+		expect(mock.requests()).toBe(0);
+		expect(listCorpora({ stateRoot, projectId: PROJECT })).toEqual([]);
+		expect(listSealedSynthReceipts(stateRoot, PROJECT)).toEqual([]);
+	});
+
+	it("tells the Builder the ceiling the knowledge base puts on an exam", async () => {
+		const mock = await mockKbJudge();
+		const small = await project({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+			kb: "small",
+		});
+		// Three documents, six passages at the finest cut, three questions each.
+		expect((await small.workbench.view()).shippingReadiness?.maxKbQuestions).toBe(18);
+
+		const tiny = await project({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+			kb: "tiny",
+		});
+		expect((await tiny.workbench.view()).shippingReadiness?.maxKbQuestions).toBe(3);
+
+		// No knowledge base, no ceiling: an absent key is "the question does not
+		// apply", which is a different claim from a number.
+		const none = await project({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+		});
+		const view = await none.workbench.view();
+		expect(view.shippingReadiness?.maxKbQuestions).toBeUndefined();
+
+		// And the operator reads it on the same line that offers the exam.
+		setLanguage("ru");
+		const header = renderHeader({
+			view: {
+				...view,
+				counts: { ...view.counts, approvedSpecs: 1 },
+				shippingReadiness: { sealedHoldout: "missing", minimumTasks: 15, sealedCases: null, maxKbQuestions: 18 },
+			},
+			builderModel: { label: "anthropic/claude-opus", credentialPresent: true },
+		}, plainPaint).join("\n");
+		expect(header).toContain("база знаний даёт не больше 18 вопросов");
 	});
 
 	it("says «по базе знаний» in Russian", async () => {

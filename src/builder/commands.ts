@@ -1,5 +1,5 @@
 import { join, relative, sep } from "node:path";
-import { plural, t } from "../i18n.js";
+import { hasMessage, plural, t, type MessageKey, type MessageParams } from "../i18n.js";
 import { failureModeReading } from "../application/run-explanation.js";
 import type {
 	ExtensionAPI,
@@ -10,6 +10,7 @@ import { SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
 import { standInFilesLine } from "../target/placeholders.js";
 import { DEFAULT_REPETITIONS } from "../workbench/calibration.js";
 import {
+	typedRefusalReason,
 	WorkbenchDecisionDeclinedError,
 	WorkbenchSelectionRequiredError,
 	WorkbenchStaleDecisionError,
@@ -26,9 +27,11 @@ import { compileAgentLog } from "../application/agent-log.js";
 import {
 	corpusTaskLookup,
 	DatasetExportError,
+	datasetExportDoneLine,
 	exportDataset,
 	sealedDatasetHashesFor,
 } from "../application/export-dataset.js";
+import { choose, confirmChoice, type DialogChoice } from "./dialog.js";
 import { examShortfall, oneLine, pluralize } from "./render/format.js";
 import { renderAgentLog, renderAgentLogChart } from "./render/agent-log.js";
 import { handoffLines } from "./render/handoff.js";
@@ -77,39 +80,97 @@ type CommandWorkbench = Pick<
 	"view" | "decide" | "projectDir" | "stateRoot" | "runsRoot" | "projectId"
 >;
 
-export const AHDE_BUILDER_COMMAND_NAMES = [
-	// The three verbs the operator actually says; everything below is a shortcut
-	// or an inspection, and several are aliases of these.
-	"test",
-	"fix",
-	"ship",
-	"help",
-	"doctor",
-	"holdout",
-	"status",
-	"run",
-	"calibrate",
-	"regrade",
-	"traces",
-	"review",
-	"approve",
-	"publish",
-	"apply",
-	"discard",
-	"promote",
-	"reject",
-	"adopt",
-	"next",
-	"target",
-	"passport",
-	"trace",
-	"log",
-	"dataset",
-	"plan",
-	"jobs",
-	"stop",
-	"label",
-] as const;
+/**
+ * Which screen a slash command belongs on.
+ *
+ * `core` is the product: the eight things an operator does — the three verbs,
+ * the two ways to see what actually happened, the two deliverables, and the
+ * way back to this list. Nothing else appears on `/help`.
+ *
+ * `expert` is the same work taken one step at a time, or an inspection someone
+ * who already knows the loop reaches for. It is registered, it works, and it
+ * is one `/help all` away.
+ *
+ * `host-decision` is the eight decisions AHDE itself puts on screen with the
+ * exact subject and a single yes/no. They stay registered because a decision
+ * the host offers has to be answerable from the keyboard too, and because
+ * nothing here is removed until a real order runs end to end — but they are
+ * never vocabulary the operator is taught: the Builder's persona is forbidden
+ * from naming them at all, so `/help` must not teach them either.
+ */
+export type BuilderCommandTier = "core" | "expert" | "host-decision";
+
+/** One row of the command table: what it is called, where it shows, what it says. */
+export interface BuilderCommandListing {
+	readonly name: string;
+	readonly tier: BuilderCommandTier;
+	/**
+	 * Exactly what to type. The example argument is part of it — `/fix 2` reads
+	 * as a sentence where `/fix [n]` reads as a manual — and it is machinery,
+	 * not language: a command name and a digit bend in no language.
+	 */
+	readonly usage: string;
+	/** The one line `/help` prints beside it. */
+	readonly help: MessageKey;
+	/** Constants that line interpolates; a number is not language either. */
+	readonly helpParams?: MessageParams;
+}
+
+/**
+ * Every Builder command, in the order the operator meets it.
+ *
+ * This is the one table: registration reads it (a command absent from it does
+ * not register at all), `/help` renders it, and the CLI tour and the README
+ * list it. Twenty-nine commands with one job each, of which nine are the
+ * product and twenty are shortcuts and host decisions.
+ */
+export const AHDE_BUILDER_COMMANDS: readonly BuilderCommandListing[] = [
+	// The whole product, in the order the work happens; `/help all` closes it.
+	{ name: "test", tier: "core", usage: "/test", help: "help.cmd.test" },
+	{ name: "fix", tier: "core", usage: "/fix 2", help: "help.cmd.fix" },
+	{ name: "ship", tier: "core", usage: "/ship 0.1.0", help: "help.cmd.ship" },
+	{ name: "status", tier: "core", usage: "/status", help: "help.cmd.status" },
+	{ name: "traces", tier: "core", usage: "/traces", help: "help.cmd.traces" },
+	{ name: "trace", tier: "core", usage: "/trace 3", help: "help.cmd.trace" },
+	{ name: "passport", tier: "core", usage: "/passport", help: "help.cmd.passport" },
+	{ name: "dataset", tier: "core", usage: "/dataset", help: "help.cmd.dataset" },
+	{ name: "help", tier: "core", usage: "/help all", help: "help.cmd.help" },
+	// The same work, one step at a time, plus the inspections. The sentence is
+	// the one the palette already shows: a command has one description, not two.
+	{ name: "run", tier: "expert", usage: "/run", help: "cmd.run" },
+	{ name: "plan", tier: "expert", usage: "/plan", help: "cmd.plan" },
+	{ name: "review", tier: "expert", usage: "/review", help: "cmd.review" },
+	{ name: "jobs", tier: "expert", usage: "/jobs", help: "cmd.jobs" },
+	{ name: "stop", tier: "expert", usage: "/stop", help: "cmd.stop" },
+	{ name: "target", tier: "expert", usage: "/target", help: "cmd.target" },
+	{ name: "log", tier: "expert", usage: "/log", help: "cmd.log" },
+	{ name: "doctor", tier: "expert", usage: "/doctor", help: "cmd.doctor" },
+	{ name: "label", tier: "expert", usage: "/label 20", help: "cmd.label", helpParams: { max: MAX_LABEL_SAMPLE } },
+	{ name: "holdout", tier: "expert", usage: "/holdout", help: "cmd.holdout" },
+	{ name: "calibrate", tier: "expert", usage: "/calibrate", help: "cmd.calibrate" },
+	{ name: "regrade", tier: "expert", usage: "/regrade", help: "cmd.regrade" },
+	// AHDE's own decisions. The operator answers them where they are asked.
+	{ name: "approve", tier: "host-decision", usage: "/approve", help: "cmd.approve" },
+	{ name: "publish", tier: "host-decision", usage: "/publish", help: "cmd.publish" },
+	{ name: "apply", tier: "host-decision", usage: "/apply", help: "cmd.apply" },
+	{ name: "discard", tier: "host-decision", usage: "/discard", help: "cmd.discard" },
+	{ name: "promote", tier: "host-decision", usage: "/promote", help: "cmd.promote" },
+	{ name: "reject", tier: "host-decision", usage: "/reject", help: "cmd.reject" },
+	{ name: "adopt", tier: "host-decision", usage: "/adopt", help: "cmd.adopt" },
+	{ name: "next", tier: "host-decision", usage: "/next", help: "cmd.next" },
+];
+
+/** The same table, as names: the public order every command list follows. */
+export const AHDE_BUILDER_COMMAND_NAMES: readonly string[] =
+	AHDE_BUILDER_COMMANDS.map((command) => command.name);
+
+const LISTED_COMMANDS: ReadonlyMap<string, BuilderCommandListing> =
+	new Map(AHDE_BUILDER_COMMANDS.map((command) => [command.name, command]));
+
+/** Commands of one tier, in table order, as `/help` prints them. */
+export function builderCommandsOfTier(tier: BuilderCommandTier): readonly BuilderCommandListing[] {
+	return AHDE_BUILDER_COMMANDS.filter((command) => command.tier === tier);
+}
 
 /**
  * Pi's own interactive slash commands, pinned.
@@ -157,8 +218,73 @@ export function assertRegistrableCommandName(name: string): void {
 	);
 }
 
-/** The `/help` reference, in the operator's language. */
-const builderHelp = (): string => t("help.body");
+/**
+ * The second guard: a command with no row in the table has no tier, so `/help`
+ * could not say which screen it belongs on — and the honest failure for that is
+ * a startup error, not a command that quietly exists and is documented nowhere.
+ */
+export function assertListedCommandName(name: string): void {
+	if (LISTED_COMMANDS.has(name)) return;
+	throw new Error(
+		`/${name} is registered without a row in AHDE_BUILDER_COMMANDS, so /help cannot place it. ` +
+		"Add it there with its tier and its one-line description.",
+	);
+}
+
+/** The column the sentences start in: the widest thing anyone has to type. */
+const HELP_USAGE_COLUMN = Math.max(...AHDE_BUILDER_COMMANDS.map((command) => command.usage.length));
+
+function helpLine(usage: string, sentence: string): string {
+	return `  ${usage.padEnd(HELP_USAGE_COLUMN)}  ${sentence}`;
+}
+
+function helpLinesOfTier(tier: BuilderCommandTier): string[] {
+	return builderCommandsOfTier(tier).map((command) => helpLine(command.usage, t(command.help, command.helpParams)));
+}
+
+/**
+ * The `/help` reference, in the operator's language.
+ *
+ * Thirty-one registrations over forty-five lines taught the operator the
+ * machine instead of the product — including the eight decisions AHDE asks
+ * itself, which the Builder is forbidden to name and which nobody should ever
+ * have to type. So the default screen is the nine core commands and nothing
+ * else, and `/help all` is the whole table under headings that say what each
+ * group is. Both are rendered from the one command table: a command cannot be
+ * registered without a tier, so nothing can go missing from `all`.
+ */
+export function renderBuilderHelp(all = false): string[] {
+	const paragraph = (key: MessageKey): string[] => t(key).split("\n");
+	if (!all) {
+		return [...paragraph("help.intro"), "", ...helpLinesOfTier("core"), "", ...paragraph("help.gate")];
+	}
+	return [
+		...paragraph("help.workflow"),
+		"",
+		t("help.h.core"),
+		...helpLinesOfTier("core"),
+		"",
+		t("help.h.expert"),
+		...helpLinesOfTier("expert"),
+		"",
+		t("help.h.host"),
+		...helpLinesOfTier("host-decision"),
+		"",
+		t("help.h.builtin"),
+		helpLine("/login", t("help.cmd.login")),
+		helpLine("/model", t("help.cmd.model")),
+		"",
+		...paragraph("help.gate"),
+	];
+}
+
+/** `/help` takes nothing, or the one word that opens the rest of the table. */
+function parseHelpScope(args: string): boolean {
+	const rest = args.trim();
+	if (!rest) return false;
+	if (rest === "all") return true;
+	throw new Error(t("cmd.err.help-arg"));
+}
 
 function requireTui(ctx: ExtensionCommandContext, command: string): void {
 	if (!ctx.hasUI || ctx.mode !== "tui") {
@@ -239,6 +365,13 @@ export function parseRegrade(args: string): {
 const BRANCH_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
 const VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+$/;
 
+/**
+ * The offers that decide nothing. Ids, so a dialog is dispatched on what the
+ * operator picked rather than on the sentence that was drawn for them.
+ */
+const JUST_LOOKING = "just-looking";
+const NOT_NOW = "not-now";
+
 function parseBranch(value: string): string {
 	if (!BRANCH_PATTERN.test(value)) throw new Error(t("cmd.err.branch"));
 	return value;
@@ -316,6 +449,14 @@ export function humanizeCommandError(error: unknown): { message: string; tone: T
 	if (error instanceof WorkbenchSelectionRequiredError) {
 		const choices = error.choices.length > 0 ? t("error.selection-choices", { choices: error.choices.slice(0, 8).join(", ") }) : "";
 		return { message: `${t("error.selection-required", { message: error.message })}${choices}`, tone: "warning" };
+	}
+	// A refusal that carries a code was written to be read by a person: it is
+	// said in their language, and whatever machine text the code cannot carry
+	// follows it, exactly the way a blocker's `detail` does.
+	const refusal = typedRefusalReason(error);
+	if (refusal && hasMessage(refusal.code)) {
+		const sentence = t(refusal.code, refusal.params);
+		return { message: refusal.detail ? `${sentence} ${refusal.detail}` : sentence, tone: "warning" };
 	}
 	const message = error instanceof Error ? error.message : String(error);
 	return { message: oneLine(message, 600), tone: "error" };
@@ -575,6 +716,7 @@ export function registerAhdeBuilderCommands(
 		// catches, instead of a slash command the operator discovers is dead on
 		// the day they need it.
 		assertRegistrableCommandName(name);
+		assertListedCommandName(name);
 		pi.registerCommand(name, {
 			description: definition.description,
 			handler: async (args, ctx) => {
@@ -970,57 +1112,75 @@ export function registerAhdeBuilderCommands(
 	const offerReviewActions = async (ctx: ExtensionCommandContext, view: WorkbenchView, signal: AbortSignal | undefined): Promise<void> => {
 		if (typeof ctx.ui.select !== "function") return;
 		const detail = view.detail?.aspect === "review" ? view.detail.content : undefined;
-		const looking = t("review.just-looking");
 		const reason = t("review.reason");
-		const choose = async (title: string, choices: string[]): Promise<string | undefined> => {
-			const selected = await ctx.ui.select(title, [...choices, looking], { signal });
-			return selected === looking ? undefined : selected;
-		};
+		/**
+		 * The stage's actions, plus the way out that decides nothing. What comes
+		 * back is the id of the action, never the sentence the host drew.
+		 */
+		const offer = <T extends string>(title: string, actions: readonly DialogChoice<T>[]) =>
+			choose<T | typeof JUST_LOOKING>(
+				ctx,
+				title,
+				[...actions, { id: JUST_LOOKING, label: () => t("review.just-looking") }],
+				{ signal },
+			);
 		switch (view.stage) {
 			case "spec-review": {
-				const choice = await choose(t("section.spec-draft"), [t("review.approve-spec"), t("review.ask-changes")]);
-				if (choice === t("review.approve-spec")) await simpleDecision(ctx, "approve", { kind: "approve-spec", reason }, signal);
-				else if (choice === t("review.ask-changes")) ctx.ui.notify(t("review.spec-hint"), "info");
+				const choice = await offer(t("section.spec-draft"), [
+					{ id: "approve", label: () => t("review.approve-spec") },
+					{ id: "ask-changes", label: () => t("review.ask-changes") },
+				]);
+				if (choice === "approve") await simpleDecision(ctx, "approve", { kind: "approve-spec", reason }, signal);
+				else if (choice === "ask-changes") ctx.ui.notify(t("review.spec-hint"), "info");
 				return;
 			}
 			case "corpus-review": {
-				const choice = await choose(t("section.basket-draft"), [t("review.publish-basket"), t("review.ask-changes")]);
-				if (choice === t("review.publish-basket")) await simpleDecision(ctx, "publish", { kind: "publish-corpus", reason }, signal);
-				else if (choice === t("review.ask-changes")) ctx.ui.notify(t("review.basket-hint"), "info");
+				const choice = await offer(t("section.basket-draft"), [
+					{ id: "publish", label: () => t("review.publish-basket") },
+					{ id: "ask-changes", label: () => t("review.ask-changes") },
+				]);
+				if (choice === "publish") await simpleDecision(ctx, "publish", { kind: "publish-corpus", reason }, signal);
+				else if (choice === "ask-changes") ctx.ui.notify(t("review.basket-hint"), "info");
 				return;
 			}
 			case "proposal-review": {
-				const choice = await choose(t("panel.proposal-review"), [t("review.apply-branch"), t("review.discard")]);
+				const choice = await offer(t("panel.proposal-review"), [
+					{ id: "apply", label: () => t("review.apply-branch") },
+					{ id: "discard", label: () => t("review.discard") },
+				]);
 				const runId = detail?.kind === "proposal" ? detail.runId : undefined;
-				if (choice === t("review.apply-branch")) await applyProposal(ctx, signal, null, reason, runId, { showReview: false });
-				else if (choice === t("review.discard")) await discardCurrent(ctx, signal, reason);
+				if (choice === "apply") await applyProposal(ctx, signal, null, reason, runId, { showReview: false });
+				else if (choice === "discard") await discardCurrent(ctx, signal, reason);
 				return;
 			}
 			case "candidate-verification": {
 				if (detail?.kind === "interrupted-candidate") {
-					const choice = await choose(t("panel.interrupted-candidate"), [t("review.abandon-attempt")]);
-					if (choice) await discardCurrent(ctx, signal, reason);
+					const abandon = await confirmChoice(ctx, t("panel.interrupted-candidate"), "review.abandon-attempt", "review.just-looking", { signal });
+					if (abandon) await discardCurrent(ctx, signal, reason);
 				} else {
-					const choice = await choose(t("panel.applied-proposal"), [t("review.verify-now")]);
-					if (choice) await runObserved(ctx, "run", { kind: "run-current", repetitions: DEFAULT_REPETITIONS, reason }, signal);
+					const verify = await confirmChoice(ctx, t("panel.applied-proposal"), "review.verify-now", "review.just-looking", { signal });
+					if (verify) await runObserved(ctx, "run", { kind: "run-current", repetitions: DEFAULT_REPETITIONS, reason }, signal);
 				}
 				return;
 			}
 			case "candidate-review":
 			case "release-decision": {
-				const choice = await choose(t("candidate.title"), [t("review.ship"), t("review.reject")]);
-				if (choice === t("review.ship")) await shipCurrent(ctx, signal, null, reason);
-				else if (choice === t("review.reject")) await rejectCurrent(ctx, signal, reason);
+				const choice = await offer(t("candidate.title"), [
+					{ id: "ship", label: () => t("review.ship") },
+					{ id: "reject", label: () => t("review.reject") },
+				]);
+				if (choice === "ship") await shipCurrent(ctx, signal, null, reason);
+				else if (choice === "reject") await rejectCurrent(ctx, signal, reason);
 				return;
 			}
 			case "candidate-adoption": {
-				const choice = await choose(t("result.candidate-promoted"), [t("review.adopt")]);
-				if (choice) await simpleDecision(ctx, "adopt", { kind: "adopt-candidate", reason }, signal);
+				const adopt = await confirmChoice(ctx, t("result.candidate-promoted"), "review.adopt", "review.just-looking", { signal });
+				if (adopt) await simpleDecision(ctx, "adopt", { kind: "adopt-candidate", reason }, signal);
 				return;
 			}
 			case "complete": {
-				const choice = await choose(t("stage.complete"), [t("review.next-cycle")]);
-				if (choice) await simpleDecision(ctx, "next", { kind: "continue-cycle", reason }, signal);
+				const next = await confirmChoice(ctx, t("stage.complete"), "review.next-cycle", "review.just-looking", { signal });
+				if (next) await simpleDecision(ctx, "next", { kind: "continue-cycle", reason }, signal);
 				return;
 			}
 			default:
@@ -1122,9 +1282,13 @@ export function registerAhdeBuilderCommands(
 	registerCommand("help", {
 		description: t("cmd.help"),
 		async handler(args, ctx) {
-			noArguments("help", args);
+			const all = parseHelpScope(args);
 			await prepare(ctx, "help");
-			presenter.show(ctx, { title: t("panel.help"), tone: "info", lines: builderHelp().split("\n").slice(2) });
+			presenter.show(ctx, {
+				title: all ? t("panel.help-all") : t("panel.help"),
+				tone: "info",
+				lines: renderBuilderHelp(all),
+			});
 		},
 	});
 
@@ -1242,19 +1406,16 @@ export function registerAhdeBuilderCommands(
 				return;
 			}
 			if (!givenPath && typeof ctx.ui.select === "function") {
-				const importChoice = t("holdout.import-file");
-				const sealChoice = t("holdout.generate-seal");
-				const reviewChoice = t("holdout.generate-review");
-				const chosen = await ctx.ui.select(
-					t("holdout.choose"),
-					[importChoice, sealChoice, reviewChoice],
-					{ signal: ctx.signal },
-				);
-				if (chosen === undefined) {
+				const chosen = await choose(ctx, t("holdout.choose"), [
+					{ id: "import", label: () => t("holdout.import-file") },
+					{ id: "seal", label: () => t("holdout.generate-seal") },
+					{ id: "review", label: () => t("holdout.generate-review") },
+				], { signal: ctx.signal });
+				if (chosen === null) {
 					ctx.ui.notify(t("error.cancelled"), "info");
 					return;
 				}
-				if (chosen === sealChoice || chosen === reviewChoice) {
+				if (chosen === "seal" || chosen === "review") {
 					const answer = await ctx.ui.input(t("holdout.how-many", { minimum }), String(minimum + 5));
 					if (answer === undefined || !answer.trim()) {
 						ctx.ui.notify(t("error.cancelled"), "info");
@@ -1267,7 +1428,7 @@ export function registerAhdeBuilderCommands(
 					await simpleDecision(ctx, "holdout", {
 						kind: "generate-holdout",
 						cases,
-						mode: chosen === sealChoice ? "seal" : "review",
+						mode: chosen === "seal" ? "seal" : "review",
 						reason: t("holdout.reason"),
 					}, ctx.signal);
 					return;
@@ -1377,11 +1538,19 @@ export function registerAhdeBuilderCommands(
 			const modes = content.improvementBrief.modes.filter((mode) => mode.selectableForProposal);
 			if (modes.length > 0 && options.sendUserMessage && typeof ctx.ui.select === "function") {
 				const titleOf = (mode: (typeof modes)[number]): string => oneLine(failureModeReading(mode).title, 60);
-				const choices = modes.slice(0, 5).map((mode) => t("traces.fix-choice", { ordinal: mode.ordinal, title: titleOf(mode) }));
-				const selected = await ctx.ui.select(t("traces.prepare"), [...choices, t("traces.not-now")], { signal });
-				const index = choices.indexOf(selected ?? "");
-				if (index >= 0) {
-					const mode = modes[index]!;
+				// The failure mode's own id decides which change is prepared. Two
+				// modes whose titles read alike after `oneLine(…, 60)` used to send
+				// `/fix` to whichever came first in the list.
+				const offered = modes.slice(0, 5);
+				const picked = await choose(ctx, t("traces.prepare"), [
+					...offered.map((mode) => ({
+						id: mode.failureModeId,
+						label: () => t("traces.fix-choice", { ordinal: mode.ordinal, title: titleOf(mode) }),
+					})),
+					{ id: NOT_NOW, label: () => t("traces.not-now") },
+				], { signal });
+				const mode = offered.find((candidate) => candidate.failureModeId === picked);
+				if (mode) {
 					options.sendUserMessage(t("traces.fix-message", { ordinal: mode.ordinal, id: mode.failureModeId, title: titleOf(mode) }));
 				}
 			}
@@ -1636,10 +1805,7 @@ export function registerAhdeBuilderCommands(
 			presenter.show(ctx, {
 				title: t("panel.title", { detail: t("panel.export") }),
 				tone: "info",
-				lines: [t("export.done", {
-					count: plural(result.counts.exported, "dialogue"),
-					path: oneLine(besideTarget(workbench.projectDir, result.path), 100),
-				})],
+				lines: [datasetExportDoneLine(result, oneLine(besideTarget(workbench.projectDir, result.path), 100))],
 			});
 		},
 	});

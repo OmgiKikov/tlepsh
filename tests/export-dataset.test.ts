@@ -7,6 +7,7 @@ import {
 	DEFAULT_DATASET_MIN_SCORE,
 	DatasetExportError,
 	corpusTaskLookup,
+	datasetExportDoneLine,
 	datasetExportOptionsFromFlags,
 	datasetLine,
 	exportDataset,
@@ -14,10 +15,12 @@ import {
 	runAgentKind,
 	MAX_DATASET_MESSAGE_CHARS,
 	type DatasetExportLine,
+	type DatasetExportResult,
 	type DatasetTaskFacts,
 	type DatasetTaskLookup,
 } from "../src/application/export-dataset.js";
 import { corpusDatasetLabel } from "../src/application/corpus-target.js";
+import { setLanguage } from "../src/i18n.js";
 import { createCorpus } from "../src/corpus.js";
 import {
 	CliInvocationError,
@@ -976,6 +979,74 @@ describe("ahde export: output and refusals", () => {
 		expect(result.counts.exported).toBe(1);
 		expect(result.unreadableEvalRunIds).toEqual(["erun_damaged"]);
 		expect(renderDatasetExportSummary(result).join("\n")).toContain("could not be read and were not scanned");
+	});
+});
+
+/**
+ * The last thing an operator sees before they hand the file to somebody else.
+ *
+ * `выгружено 50 → exports/…` is a number with no denominator: it cannot be
+ * wrong and it cannot be checked. Session 8 read exactly that and had no way
+ * to tell whether the export had covered the run or half of it. So the line
+ * carries what it was counted out of, and what the difference was spent on.
+ */
+describe("the /dataset line", () => {
+	const result = (counts: Partial<DatasetExportResult["counts"]>): DatasetExportResult => ({
+		path: "/agent/exports/erun_abc.jsonl",
+		counts: {
+			evalRunsScanned: 1,
+			runsScanned: 70,
+			exported: 50,
+			skipped: { sealed: 0, screen: 0, failed: 0, infra: 0, aa: 0 },
+			...counts,
+		},
+		notes: [],
+		notesTruncated: false,
+		unreadableEvalRunIds: [],
+		evalRunIds: ["erun_abc"],
+	});
+
+	afterEach(() => setLanguage(null));
+
+	it("gives the count a denominator and names what did not make it", () => {
+		setLanguage("ru");
+		const line = datasetExportDoneLine(
+			result({ skipped: { sealed: 5, screen: 0, failed: 0, infra: 15, aa: 0 } }),
+			"exports/erun_abc.jsonl",
+		);
+		expect(line).toBe("выгружено 50 из 70 диалогов → exports/erun_abc.jsonl · не вошли: 20 (ошибки прогона, экзамен)");
+		setLanguage("en");
+		expect(datasetExportDoneLine(
+			result({ skipped: { sealed: 5, screen: 0, failed: 0, infra: 15, aa: 0 } }),
+			"exports/erun_abc.jsonl",
+		)).toBe("exported 50 of 70 dialogues → exports/erun_abc.jsonl · left out: 20 (run errors, the exam)");
+	});
+
+	it("names every reason that actually cost something, and no others", () => {
+		setLanguage("ru");
+		expect(datasetExportDoneLine(
+			result({ runsScanned: 12, exported: 7, skipped: { sealed: 1, screen: 1, failed: 1, infra: 1, aa: 1 } }),
+			"exports/all.jsonl",
+		)).toBe(
+			"выгружено 7 из 12 диалогов → exports/all.jsonl · " +
+				"не вошли: 5 (ошибки прогона, провалы, дешёвые проверки, экзамен, калибровка A/A)",
+		);
+	});
+
+	it("stops at the denominator when nothing was left out", () => {
+		setLanguage("ru");
+		expect(datasetExportDoneLine(result({ runsScanned: 50 }), "exports/erun_abc.jsonl"))
+			.toBe("выгружено 50 из 50 диалогов → exports/erun_abc.jsonl");
+		// Genitive after «из», bent to the count: «из 1 диалога», never «1 диалог».
+		expect(datasetExportDoneLine(result({ runsScanned: 1, exported: 1 }), "exports/one.jsonl"))
+			.toBe("выгружено 1 из 1 диалога → exports/one.jsonl");
+	});
+
+	it("agrees with the counts the CLI summary prints from the same result", () => {
+		const exported = result({ skipped: { sealed: 5, screen: 0, failed: 0, infra: 15, aa: 0 } });
+		setLanguage("en");
+		expect(datasetExportDoneLine(exported, exported.path)).toContain("50 of 70");
+		expect(renderDatasetExportSummary(exported).join("\n")).toContain("70 run(s) · exported 50");
 	});
 });
 

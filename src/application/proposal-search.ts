@@ -35,7 +35,7 @@ import type { CorpusRef } from "../corpus.js";
 import type { GateVerdict } from "../domain/comparison-gate.js";
 import { loadTarget } from "../manifest.js";
 import type { RunEventListener } from "../run-events.js";
-import type { WorkbenchDecisionInput, WorkbenchHumanGate } from "../workbench/types.js";
+import type { WorkbenchHumanGate } from "../workbench/types.js";
 import { runAppliedBuilderCandidate } from "./builder-candidate.js";
 import {
 	applyBuilderProposal,
@@ -44,6 +44,13 @@ import {
 } from "./builder-proposal.js";
 import { assertBuilderProposalNotDiscarded } from "./builder-discard.js";
 import { runCheapCheck } from "./cheap-check.js";
+import {
+	assertRestrictedGate,
+	restrictedGate,
+	RESTRICTED_DECISIONS,
+	RestrictedGateDecisionError,
+	type GateRestriction,
+} from "./restricted-gate.js";
 
 /** Hypotheses one search may compare. Fewer is a guess; more is a budget hole. */
 export const MIN_SEARCH_CANDIDATES = 2;
@@ -59,34 +66,12 @@ export function newProposalSearchId(): string {
  * The search refuses all of them. `apply-proposal` is deliberately absent: the
  * search applies each hypothesis on its own throwaway branch, which is the work
  * the operator asked for, and touches no branch the operator stands on.
+ *
+ * One list, shared with the improvement loop.
  */
-export const PROPOSAL_SEARCH_FORBIDDEN_DECISIONS: readonly WorkbenchDecisionInput["kind"][] = [
-	"scaffold-target",
-	"wrap-target",
-	"configure-target",
-	"approve-spec",
-	"publish-corpus",
-	"import-dataset",
-	"start-testing",
-	"review-candidate",
-	"promote-candidate",
-	"reject-candidate",
-	"adopt-candidate",
-	"continue-cycle",
-	"abandon-candidate",
-	"discard-proposal",
-	"ship",
-];
+export const PROPOSAL_SEARCH_FORBIDDEN_DECISIONS = RESTRICTED_DECISIONS;
 
-export class ProposalSearchForbiddenDecisionError extends Error {
-	constructor(readonly decision: string) {
-		super(
-			`the proposal search may not decide ${decision}; that stays with the human. ` +
-			"Read the table, pick a candidate, and decide it yourself.",
-		);
-		this.name = "ProposalSearchForbiddenDecisionError";
-	}
-}
+export { RestrictedGateDecisionError as ProposalSearchForbiddenDecisionError };
 
 export class ProposalSearchError extends Error {
 	constructor(message: string, options?: ErrorOptions) {
@@ -95,29 +80,20 @@ export class ProposalSearchError extends Error {
 	}
 }
 
-/** Brand proving one gate went through {@link proposalSearchGate}. */
-const SEARCH_GATE = Symbol.for("ahde.proposal-search.gate");
+/** What the search is, and what the operator does instead when it refuses. */
+const PROPOSAL_SEARCH_RESTRICTION: GateRestriction = {
+	id: "proposal-search",
+	advice: "gate.restricted.advice.pick-candidate",
+};
 
 /**
  * The gate the search hands to anything it calls. A forbidden decision is not
  * declined, it throws: a search that reaches one is a bug, not a request.
+ * Sealed verification is not part of a search — the human picks one candidate
+ * and that one meets the unchanged sealed gate.
  */
 export function proposalSearchGate(gate: WorkbenchHumanGate): WorkbenchHumanGate {
-	const forbidden = new Set<string>(PROPOSAL_SEARCH_FORBIDDEN_DECISIONS);
-	return {
-		[SEARCH_GATE]: true,
-		async confirm(confirmation, signal) {
-			if (forbidden.has(confirmation.kind)) {
-				throw new ProposalSearchForbiddenDecisionError(confirmation.kind);
-			}
-			return gate.confirm(confirmation, signal);
-		},
-		async selectSealed() {
-			// Sealed verification is not part of a search. The human picks one
-			// candidate and that one meets the unchanged sealed gate.
-			throw new ProposalSearchForbiddenDecisionError("sealed holdout selection");
-		},
-	} as WorkbenchHumanGate;
+	return restrictedGate(gate, PROPOSAL_SEARCH_RESTRICTION);
 }
 
 /**
@@ -127,12 +103,7 @@ export function proposalSearchGate(gate: WorkbenchHumanGate): WorkbenchHumanGate
  * starts a refusal instead of an approval.
  */
 export function assertProposalSearchGate(gate: WorkbenchHumanGate | undefined): void {
-	if (gate && !(SEARCH_GATE in (gate as object))) {
-		throw new ProposalSearchError(
-			"a search may only be handed a gate wrapped by proposalSearchGate; " +
-			"an unwrapped gate could approve a promotion the search must never ask for",
-		);
-	}
+	assertRestrictedGate(gate, "proposal-search");
 }
 
 /** Why one hypothesis did not reach a matched verification. Never a call-site string. */

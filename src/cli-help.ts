@@ -1,11 +1,11 @@
-import { AHDE_BUILDER_COMMAND_NAMES } from "./builder/commands.js";
+import { builderCommandsOfTier, type BuilderCommandTier } from "./builder/commands.js";
 import { SEALED_GATE_POLICY } from "./domain/comparison-gate.js";
 
-/** One command list: the slash commands Builder Pi actually registers, wrapped for the terminal. */
-function builderCommandLines(width = 72, indent = "  "): string {
+/** One command list, wrapped for the terminal. */
+function wrapCommandNames(names: readonly string[], width = 72, indent = "  "): string {
 	const lines: string[] = [];
 	let current = "";
-	for (const name of AHDE_BUILDER_COMMAND_NAMES) {
+	for (const name of names) {
 		const next = current ? `${current}  /${name}` : `/${name}`;
 		if (next.length + indent.length > width && current) {
 			lines.push(indent + current);
@@ -16,6 +16,23 @@ function builderCommandLines(width = 72, indent = "  "): string {
 	}
 	if (current) lines.push(indent + current);
 	return lines.join("\n");
+}
+
+/**
+ * The slash commands Builder Pi actually registers, in the two groups `/help`
+ * itself draws: the nine an operator uses, then everything `/help all` holds —
+ * the expert shortcuts and the decisions AHDE offers on screen by itself.
+ */
+function builderCommandLines(): string {
+	const namesOf = (tier: BuilderCommandTier): string[] =>
+		builderCommandsOfTier(tier).map((command) => command.name);
+	return [
+		// The nine hold one line; the rest wrap at the usual width.
+		wrapCommandNames(namesOf("core"), 76),
+		"  everything else is an expert shortcut or a decision AHDE asks itself;",
+		"  /help all lists them:",
+		wrapCommandNames([...namesOf("expert"), ...namesOf("host-decision")]),
+	].join("\n");
 }
 
 const CORE = `ahde — Agent Harness Development Environment
@@ -594,9 +611,10 @@ the Target model: refused, exit 2.
 
 The prompt carries the Spec (--from <file>, else spec.md in the Target, else the
 project's approved Spec snapshot; refused when there is none), K development
-cases as FORMAT examples (default 5, drawn deterministically from the dataset
-hash, the seed and the case id), and the development suite's grader shapes. It
-asks for N new cases in the same case schema, novel and diverse.
+cases as FORMAT examples (default 0 — an exam nothing in the improvement loop
+shaped; drawn deterministically from the dataset hash, the seed and the case id
+when you ask for some), and the development suite's grader shapes. It asks for N
+new cases in the same case schema, novel and diverse.
 
 The answer is validated case by case against the case schema; malformed cases
 are dropped and counted, ids are derived host-side from the Spec hash and the
@@ -615,17 +633,22 @@ exists) for you to read and edit. Seal them yourself afterwards:
 
 --from-kb writes the exam from the Target's KNOWLEDGE BASE instead of its Spec,
 for an agent that answers from documents. The declared data/kb tree is chunked
-deterministically, N passages are drawn from the dataset hash, the seed and the
-chunk id, and the judge is shown ONE passage per call — a question no single
-passage answers is not checkable. Each case carries the answer as its reference,
-the chunk id in metadata, and two graders: cites_source against that chunk and
-token-f1 against the reference. N is capped by the number of passages. Refused,
-exit 2, when the manifest declares no data/kb or it holds no .md or .txt file.
+deterministically, passages are drawn from the dataset hash, the seed and the
+passage id, and the judge is shown ONE passage per call — a question no single
+passage answers is not checkable — and asked for up to 3 DIFFERENT questions
+from it. A base too small to reach the sealed guardrail's minimum is re-cut
+finer for the generator only, down to 200 characters a passage; the runtime
+kb_search index never moves, and the receipt records the length that was read.
+Each case carries the answer as its reference, the RUNTIME chunk id in metadata,
+and two graders: cites_source against that chunk and token-f1 against the
+reference. N is capped at three questions per passage. Refused, exit 2, when the
+manifest declares no data/kb, it holds no .md or .txt file, or even at the
+finest cut the base cannot answer as many questions as the exam needs.
 
 A receipt lands in <state-root>/projects/<id>/sealed-synth/<hash>.json: the
 generator fingerprint, the prompt hash, the Spec hash, the development example
-ids, the source, the knowledge-base index hash, N, the seed, the counts, and the
-timestamp. No case content, ever.
+ids, the source, the knowledge-base index hash and the passage length read, N,
+the seed, the counts, and the timestamp. No case content, ever.
 
 Below 15 cases the sealed guardrail can only ever say \`underpowered\`, and the
 command says so.`,
