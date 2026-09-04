@@ -342,8 +342,8 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 					generator: text(subject.generatorModel, 80),
 				}))}`,
 				`${paint.dim(t("label.source"))} ${subject.source === "kb"
-					// One passage per question, so the passage count is the case count
-					// and there is nothing else to say about what the judge is shown.
+					// How many passages the judge is shown; the line above already
+					// carries how many questions come back out of them.
 					? t("generate-holdout.source-kb", {
 						chunks: plural(Array.isArray(subject.kbChunkIds) ? subject.kbChunkIds.length : 0, "passage"),
 					})

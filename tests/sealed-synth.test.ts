@@ -3,9 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadCorpus, listCorpora, CorpusTaskSchema } from "../src/corpus.js";
+import { chunkKnowledge, kbIndexHash, KB_CHUNK_CHARS } from "../src/domain/kb.js";
+import { setLanguage } from "../src/i18n.js";
+import { loadTarget } from "../src/manifest.js";
 import { startMockModel, type MockModelHandle } from "../src/mock-model.js";
 import {
 	listSealedSynthReceipts,
+	maxKbExamQuestions,
+	normalizedCaseInput,
 	planSealedSynthesis,
 	renderSealedSynthOutput,
 	sealedExamGeneration,
@@ -97,14 +102,45 @@ const KB_ANSWERS: Record<string, { question: string; answer: string }> = {
 	"c.md#0": { question: "Сколько стоит выезд мастера?", answer: "600 рублей, если причина внутри квартиры" },
 };
 
-/** A judge that answers each passage with its own question-and-answer pair. */
+/**
+ * Three documents of two long paragraphs each: one runtime chunk apiece at the
+ * 800-character geometry, two passages apiece once the generator halves it.
+ * Six passages carry the guardrail's fifteen questions; three cannot.
+ */
+const LONG_KB_DOCS: Record<string, string> = Object.fromEntries(
+	["a", "b", "c"].map((name) => [
+		`data/kb/${name}.md`,
+		`# Раздел ${name}\n\n${`Первый пункт раздела ${name}: ${"слово ".repeat(50)}`.trim()}\n\n` +
+			`${`Второй пункт раздела ${name}: ${"буква ".repeat(50)}`.trim()}\n`,
+	]),
+);
+
+/** What the judge answers for one passage when it is asked for `asked` questions. */
+function kbPairs(passageId: string, asked: number): { question: string; answer: string }[] {
+	const known = KB_ANSWERS[passageId];
+	return Array.from({ length: asked }, (_value, index) =>
+		index === 0 && known ? known : {
+			question: `Что ещё сказано в отрывке ${passageId}? Факт ${index}.`,
+			answer: `Факт ${index} отрывка ${passageId}`,
+		});
+}
+
+/**
+ * A judge that answers every passage with exactly as many distinct
+ * question-and-answer pairs as the prompt asked it for.
+ */
 async function mockKbJudge(overrides: Record<string, string> = {}): Promise<MockModelHandle> {
-	const mock = await startMockModel(
-		Object.entries(KB_ANSWERS).map(([chunkId, pair]) => ({
-			match: ({ firstUser }: { firstUser: string }) => firstUser.includes(`# Passage ${chunkId}`),
-			steps: [{ text: overrides[chunkId] ?? JSON.stringify(pair) }],
-		})),
-	);
+	const mock = await startMockModel([{
+		match: () => true,
+		resolve: ({ firstUser }) => {
+			const passageId = /# Passage (\S+)/.exec(firstUser)?.[1] ?? "";
+			const override = overrides[passageId];
+			if (override !== undefined) return { text: override };
+			const asked = Number(/Write (\d+) different/.exec(firstUser)?.[1] ?? "1");
+			return { text: JSON.stringify({ questions: kbPairs(passageId, asked) }) };
+		},
+		steps: [],
+	}]);
 	mocks.push(mock);
 	return mock;
 }
@@ -121,8 +157,12 @@ function fixture(
 		judge?: { provider: string; id: string; baseUrl: string } | null;
 		spec?: boolean;
 		cases?: readonly unknown[];
-		/** `true` declares and populates data/kb; `"empty"` declares an empty one. */
-		kb?: boolean | "empty";
+		/**
+		 * `true` declares and populates data/kb with three one-line documents;
+		 * `"long"` with three that split when the geometry is halved; `"empty"`
+		 * declares one holding nothing readable.
+		 */
+		kb?: boolean | "empty" | "long";
 	} = {},
 ): Fixture {
 	const targetDir = makeTargetFixture(
@@ -131,6 +171,7 @@ function fixture(
 			"evals/development.jsonl": `${(options.cases ?? DEV_CASES).map((task) => JSON.stringify(task)).join("\n")}\n`,
 			...(options.spec === false ? {} : { "spec.md": SPEC_MD }),
 			...(options.kb === true ? KB_DOCS : {}),
+			...(options.kb === "long" ? LONG_KB_DOCS : {}),
 			...(options.kb === "empty" ? { "data/kb/README.pdf": "%PDF-1.4 не знание" } : {}),
 		}),
 	);
@@ -219,9 +260,10 @@ describe("sealed synthetic generation", () => {
 		});
 
 		const receipt = result.receipt;
-		expect(receipt.schemaVersion).toBe(2);
+		expect(receipt.schemaVersion).toBe(3);
 		expect(sealedSynthSource(receipt)).toBe("spec");
-		expect(receipt.schemaVersion === 2 && receipt.kbIndexHash).toBeNull();
+		expect(receipt.schemaVersion === 3 && receipt.kbIndexHash).toBeNull();
+		expect(receipt.schemaVersion === 3 && receipt.kbChunkChars).toBeNull();
 		expect(receipt.targetId).toBe("test-target");
 		expect(receipt.generator.provider).toBe("fixture-provider");
 		expect(receipt.generator.id).toBe("fixture-judge");
@@ -579,9 +621,9 @@ describe("an exam written from the knowledge base", () => {
 			stateRoot,
 			projectId: "project",
 			name: "KB exam",
-			// Five asked for, three passages available: an exam cannot ask more
-			// independent questions than it has sources.
-			count: 5,
+			// Three asked for over three passages: one question each, and the ids
+			// a test can read.
+			count: 3,
 			source: "kb",
 			seed: "s1",
 			now: () => at,
@@ -612,9 +654,12 @@ describe("an exam written from the knowledge base", () => {
 		}
 
 		const receipt = result.receipt;
-		expect(receipt.schemaVersion).toBe(2);
+		expect(receipt.schemaVersion).toBe(3);
 		expect(sealedSynthSource(receipt)).toBe("kb");
-		expect(receipt.schemaVersion === 2 && receipt.kbIndexHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+		expect(receipt.schemaVersion === 3 && receipt.kbIndexHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+		// Three questions fit in three runtime passages, so the base was read at
+		// the runtime geometry and the receipt says so.
+		expect(receipt.schemaVersion === 3 && receipt.kbChunkChars).toBe(KB_CHUNK_CHARS);
 		expect(receipt.requested).toBe(3);
 		// Nothing about a case reaches the receipt or anything an operator reads.
 		const visible = JSON.stringify(receipt) + renderSealedSynthOutput(result).stdout.join("\n");
@@ -717,6 +762,168 @@ describe("an exam written from the knowledge base", () => {
 		expect(result.droppedMalformed).toBe(1);
 		expect(renderSealedSynthOutput(result).warnings.join("\n"))
 			.toContain("1 generated case(s) did not match the case schema");
+	});
+
+	it("asks one passage for up to three questions, and never a fourth", async () => {
+		const mock = await mockKbJudge();
+		const { targetDir, stateRoot } = fixture({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+			kb: true,
+		});
+		const plan = planSealedSynthesis({
+			targetDir,
+			stateRoot,
+			projectId: "project",
+			name: "KB exam",
+			count: 9,
+			source: "kb",
+			seed: "s1",
+		});
+		// Three passages, three questions each: the ceiling, and one call per
+		// passage rather than one per question.
+		expect(plan.kbChunkIds.sort()).toEqual(["a.md#0", "b.md#0", "c.md#0"]);
+		expect(plan.requested).toBe(9);
+		expect(plan.kbChunkChars).toBe(KB_CHUNK_CHARS);
+
+		const result = await synthesizeSealedCorpus({
+			targetDir,
+			stateRoot,
+			projectId: "project",
+			name: "KB exam",
+			count: 9,
+			source: "kb",
+			seed: "s1",
+			now: () => at,
+		});
+		expect(result.accepted).toBe(9);
+		expect(mock.requests()).toBe(3);
+		const loaded = loadCorpus({ stateRoot, projectId: "project", corpusId: result.corpus!.id });
+		// Nine distinct questions, three per passage, every one citing its chunk.
+		expect(new Set(loaded.tasks.map((task) => task.input)).size).toBe(9);
+		const perChunk = new Map<string, number>();
+		for (const task of loaded.tasks) {
+			const chunk = String(task.metadata?.kbChunk);
+			expect(["a.md#0", "b.md#0", "c.md#0"]).toContain(chunk);
+			expect(task.graders?.[0]).toEqual({ type: "cites_source", chunk, minOverlap: 0.35 });
+			perChunk.set(chunk, (perChunk.get(chunk) ?? 0) + 1);
+		}
+		expect([...perChunk.values()]).toEqual([3, 3, 3]);
+	});
+
+	it("reads a base too small for the exam at a finer geometry, and records the length", async () => {
+		const mock = await mockKbJudge();
+		const { targetDir, stateRoot } = fixture({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+			kb: "long",
+		});
+		const result = await synthesizeSealedCorpus({
+			targetDir,
+			stateRoot,
+			projectId: "project",
+			name: "KB exam",
+			// Three documents, three runtime chunks: nine questions at the runtime
+			// geometry, and the sealed guardrail needs fifteen.
+			count: 15,
+			source: "kb",
+			seed: "s1",
+			now: () => at,
+		});
+		expect(result.accepted).toBe(15);
+		expect(result.droppedDuplicate).toBe(0);
+		expect(result.droppedMalformed).toBe(0);
+
+		const receipt = result.receipt;
+		expect(receipt.schemaVersion === 3 && receipt.kbChunkChars).toBe(KB_CHUNK_CHARS / 2);
+		// The index hash still describes the RUNTIME index: the finer read is the
+		// generator's, and the receipt's chunk length is what makes it readable.
+		expect(receipt.schemaVersion === 3 && receipt.kbIndexHash)
+			.toBe(kbIndexHash(chunkKnowledge(
+				Object.entries(LONG_KB_DOCS).map(([path, text]) => ({ path: path.slice("data/kb/".length), text })),
+			)));
+
+		const loaded = loadCorpus({ stateRoot, projectId: "project", corpusId: result.corpus!.id });
+		expect(loaded.tasks).toHaveLength(15);
+		// Fifteen different questions, and every citation is a chunk id the
+		// runtime `kb_search` can actually hand the agent.
+		expect(new Set(loaded.tasks.map((task) => normalizedCaseInput(task.input))).size).toBe(15);
+		const runtimeIds = new Set(
+			chunkKnowledge(Object.entries(LONG_KB_DOCS).map(([path, text]) => ({ path: path.slice("data/kb/".length), text })))
+				.map((chunk) => chunk.id),
+		);
+		for (const task of loaded.tasks) {
+			const chunk = String(task.metadata?.kbChunk);
+			expect(runtimeIds.has(chunk)).toBe(true);
+			expect(task.graders?.[0]).toEqual({ type: "cites_source", chunk, minOverlap: 0.35 });
+			// The finer passage is recorded beside it: which part of the chunk the
+			// question stands on is evidence, not a secret.
+			expect(String(task.metadata?.kbPassage).startsWith(`${chunk}/`)).toBe(true);
+		}
+	});
+
+	it("refuses a base that cannot reach the exam, naming the maximum, before any spend", async () => {
+		const mock = await mockKbJudge();
+		const { targetDir, stateRoot } = fixture({
+			judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+			kb: true,
+		});
+		const request = {
+			targetDir,
+			stateRoot,
+			projectId: "project",
+			name: "KB exam",
+			count: 20,
+			source: "kb" as const,
+		};
+		// Three one-line documents do not split further, whatever the geometry:
+		// nine questions is everything this base has.
+		expect(maxKbExamQuestions(loadTarget(targetDir))).toBe(9);
+		expect(() => planSealedSynthesis(request)).toThrow(SealedSynthRefusal);
+		expect(() => planSealedSynthesis(request)).toThrow(
+			/The knowledge base holds 3 passages — no more than 9 questions come out of it, and the exam needs 15 cases\. I can write the exam from the description instead \(20 cases\) — shall I\?/,
+		);
+		await expect(synthesizeSealedCorpus({ ...request, now: () => at })).rejects.toMatchObject({
+			name: "SealedSynthRefusal",
+			next: expect.stringContaining("data/kb"),
+		});
+		// A refusal is a decision, not a wasted call.
+		expect(mock.requests()).toBe(0);
+		expect(listCorpora({ stateRoot, projectId: "project" })).toEqual([]);
+		expect(listSealedSynthReceipts(stateRoot, "project")).toEqual([]);
+
+		setLanguage("ru");
+		try {
+			expect(() => planSealedSynthesis(request)).toThrow(
+				/В базе 3 фрагмента — из неё выходит не больше 9 вопросов, экзамену нужно 15 кейсов\. Могу написать экзамен из описания \(20 кейсов\) — делаем\?/,
+			);
+		} finally {
+			setLanguage("en");
+		}
+	});
+
+	it("writes the same exam twice for the same dataset hash and seed", async () => {
+		const runs = [];
+		for (const seed of ["s1", "s1", "s2"]) {
+			const mock = await mockKbJudge();
+			const { targetDir, stateRoot } = fixture({
+				judge: { provider: "fixture-provider", id: "fixture-judge", baseUrl: mock.url },
+				kb: "long",
+			});
+			const result = await synthesizeSealedCorpus({
+				targetDir,
+				stateRoot,
+				projectId: "project",
+				name: "KB exam",
+				count: 15,
+				source: "kb",
+				seed,
+				now: () => at,
+			});
+			runs.push(loadCorpus({ stateRoot, projectId: "project", corpusId: result.corpus!.id }).tasks.map((task) => task.id));
+		}
+		// Same dataset hash, same seed, same questions — down to the host-derived
+		// case ids, which are a function of the Spec hash and the question.
+		expect(runs[1]).toEqual(runs[0]);
+		expect(runs[2]).not.toEqual(runs[0]);
 	});
 
 	it("drops a passage that asks the question another passage already asked", async () => {

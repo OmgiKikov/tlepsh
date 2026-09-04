@@ -154,7 +154,12 @@ function shippingReadinessLine(view: WorkbenchView, paint: Paint): string | null
 	// With no exam at all the operator has two ways out and both are named; with
 	// a broken or too-small one they have exactly one, and it is not the judge.
 	const hint = readiness.sealedHoldout === "missing" ? "ship-gate.hint-none" : "ship-gate.hint";
-	return `${paint.dim(t("label.ship-gate"))} ${paint.warning(state)} ${paint.dim(t(hint, { minimum: readiness.minimumTasks }))}${
+	// What the documents can actually give, wherever the judge is an option.
+	// Nobody — operator or Builder — should propose an exam the base cannot fill.
+	const ceiling = readiness.maxKbQuestions === undefined
+		? ""
+		: ` ${paint.muted(`· ${t("ship-gate.kb-ceiling", { max: plural(readiness.maxKbQuestions, "question") })}`)}`;
+	return `${paint.dim(t("label.ship-gate"))} ${paint.warning(state)} ${paint.dim(t(hint, { minimum: readiness.minimumTasks }))}${ceiling}${
 		undersized === null ? "" : ` ${paint.muted(`· ${undersized}`)}`
 	}`;
 }

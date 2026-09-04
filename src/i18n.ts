@@ -162,6 +162,8 @@ const NOUNS = {
 		"agent turn": ["turn", "turns"],
 		key: ["key", "keys"],
 		call: ["call", "calls"],
+		// lane: exam-kb
+		question: ["question", "questions"],
 	},
 	ru: {
 		case: ["кейс", "кейса", "кейсов"],
@@ -221,6 +223,8 @@ const NOUNS = {
 		"agent turn": ["ход", "хода", "ходов"],
 		key: ["ключ", "ключа", "ключей"],
 		call: ["вызов", "вызова", "вызовов"],
+		// lane: exam-kb
+		question: ["вопрос", "вопроса", "вопросов"],
 	},
 } as const;
 
@@ -618,7 +622,7 @@ const en = {
 	"generate-holdout.by-judge-kb": "{cases} from the knowledge base · written by the judge {generator}",
 	"generate-holdout.source": "the agent's description + {examples} from the tests (shape only)",
 	"generate-holdout.source-spec-only": "the agent's description alone (no examples)",
-	"generate-holdout.source-kb": "the knowledge base — {chunks}, one question each",
+	"generate-holdout.source-kb": "the knowledge base — {chunks} the judge writes the questions from",
 	"generate-holdout.blind": "The Builder never sees the content; only the case count reaches the conversation",
 	"generate-holdout.draft": "Draft — to a file outside the repo; you edit it and import it with /holdout <path>",
 	"generate-holdout.sealed-note": "Nobody in the improvement loop reads these cases; the exam stays evaluator-only.",
@@ -1658,6 +1662,13 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"label.budget": "Budget",
 	"confirm.start-testing.budget": "timeout {seconds}s per turn",
 	"confirm.start-testing.budget-turns": "timeout {seconds}s per turn · up to {turns}",
+	// lane: exam-kb — a base too small to fill an exam, said with the number
+	// before anything is spent, and with the one alternative that exists.
+	"sealed-synth.kb-too-small":
+		"The knowledge base holds {chunks} — no more than {max} come out of it, and the exam needs {min}. I can write the exam from the description instead ({count}) — shall I?",
+	"sealed-synth.kb-too-small-next":
+		"add documents to data/kb, or ask for the exam from the description instead",
+	"ship-gate.kb-ceiling": "the knowledge base gives at most {max}",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2012,7 +2023,7 @@ const ru: Record<MessageKey, string> = {
 	"generate-holdout.by-judge-kb": "{cases} по базе знаний · генерирует судья {generator}",
 	"generate-holdout.source": "описание агента + {examples} из тестов (только форма)",
 	"generate-holdout.source-spec-only": "только описание агента (без примеров)",
-	"generate-holdout.source-kb": "база знаний — {chunks}, по одному вопросу на каждый",
+	"generate-holdout.source-kb": "база знаний — {chunks}, по ним судья и пишет вопросы",
 	"generate-holdout.blind": "Builder содержимого не увидит; в разговор попадёт только число кейсов",
 	"generate-holdout.draft": "Черновик — в файл вне репо; правишь и загружаешь командой /holdout <путь>",
 	"generate-holdout.sealed-note": "Эти кейсы не читает никто в цикле улучшений; экзамен остаётся только для оценщика.",
@@ -3024,6 +3035,11 @@ const ru: Record<MessageKey, string> = {
 	"label.budget": "Бюджет",
 	"confirm.start-testing.budget": "таймаут {seconds} с на ход",
 	"confirm.start-testing.budget-turns": "таймаут {seconds} с на ход · до {turns}",
+	// lane: exam-kb
+	"sealed-synth.kb-too-small":
+		"В базе {chunks} — из неё выходит не больше {max}, экзамену нужно {min}. Могу написать экзамен из описания ({count}) — делаем?",
+	"sealed-synth.kb-too-small-next": "добавь документы в data/kb или закажи экзамен из описания",
+	"ship-gate.kb-ceiling": "база знаний даёт не больше {max}",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

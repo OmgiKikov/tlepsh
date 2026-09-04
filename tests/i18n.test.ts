@@ -866,10 +866,32 @@ describe("ru: the knowledge base", () => {
 
 		// The dialog, the result line, and the sentence the Builder is told.
 		expect(t("generate-holdout.source-kb", { chunks: plural(16, "passage") }))
-			.toBe("база знаний — 16 фрагментов, по одному вопросу на каждый");
+			.toBe("база знаний — 16 фрагментов, по ним судья и пишет вопросы");
 		expect(plural(1, "passage")).toBe("1 фрагмент");
 		expect(plural(3, "passage")).toBe("3 фрагмента");
 		expect(plural(11, "passage")).toBe("11 фрагментов");
+		expect(plural(1, "question")).toBe("1 вопрос");
+		expect(plural(3, "question")).toBe("3 вопроса");
+		expect(plural(15, "question")).toBe("15 вопросов");
+		// lane: exam-kb — a base too small for an exam is refused in one Russian
+		// sentence, with the number it can give and the alternative.
+		expect(t("sealed-synth.kb-too-small", {
+			chunks: plural(3, "passage"),
+			max: plural(9, "question"),
+			min: plural(15, "case"),
+			count: plural(20, "case"),
+		})).toBe(
+			"В базе 3 фрагмента — из неё выходит не больше 9 вопросов, экзамену нужно 15 кейсов. " +
+				"Могу написать экзамен из описания (20 кейсов) — делаем?",
+		);
+		expect(leakedEnglish(t("sealed-synth.kb-too-small", {
+			chunks: plural(3, "passage"),
+			max: plural(9, "question"),
+			min: plural(15, "case"),
+			count: plural(20, "case"),
+		}))).toEqual([]);
+		expect(t("ship-gate.kb-ceiling", { max: plural(18, "question") }))
+			.toBe("база знаний даёт не больше 18 вопросов");
 		expect(t("generate-holdout.by-judge-kb", { cases: plural(16, "case"), generator: "x/y" }))
 			.toBe("16 кейсов по базе знаний · генерирует судья x/y");
 		expect(t("message.exam-sealed-kb", { cases: plural(16, "case") })).toContain("по базе знаний");

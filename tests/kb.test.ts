@@ -5,12 +5,17 @@ import { describe, expect, it } from "vitest";
 import {
 	bm25Search,
 	chunkKnowledge,
+	finerGeometry,
 	kbIndexHash,
+	kbPassages,
 	KB_CHUNK_CHARS,
 	KB_CHUNK_OVERLAP_CHARS,
+	KB_GEOMETRY,
 	KnowledgeBaseError,
 	MAX_KB_FILES,
 	MAX_KB_SEARCH_RESULTS,
+	MIN_KB_CHUNK_CHARS,
+	type KbGeometry,
 } from "../src/domain/kb.js";
 import { answerTokens, tokenF1 } from "../src/domain/tokens.js";
 import {
@@ -132,6 +137,60 @@ describe("knowledge-base chunking", () => {
 				: file
 		);
 		expect(kbIndexHash(chunkKnowledge(edited))).not.toBe(base);
+	});
+});
+
+describe("the passages an exam is written from", () => {
+	it("is every runtime chunk, unchanged, at the runtime geometry", () => {
+		const chunks = chunkKnowledge(fixtureFiles());
+		const passages = kbPassages(chunks);
+		expect(passages).toEqual(chunks.map((chunk) => ({ id: chunk.id, source: chunk.id, text: chunk.text })));
+		// The default is the runtime geometry, and it is the one the index hash
+		// and the prepared-home identity are built from.
+		expect(kbPassages(chunks, KB_GEOMETRY)).toEqual(passages);
+	});
+
+	it("cuts finer on demand, deterministically, and never past the floor", () => {
+		const chunks = chunkKnowledge(fixtureFiles());
+		const half = finerGeometry(KB_GEOMETRY)!;
+		expect(half).toEqual({ chars: KB_CHUNK_CHARS / 2, overlap: KB_CHUNK_OVERLAP_CHARS / 2 });
+
+		const finer = kbPassages(chunks, half);
+		// Same bytes, same geometry, same passages — down to the id.
+		expect(kbPassages(chunks, half)).toEqual(finer);
+		expect(finer.length).toBeGreaterThan(chunks.length);
+		const runtimeIds = new Set(chunks.map((chunk) => chunk.id));
+		for (const passage of finer) {
+			expect(passage.text.length).toBeLessThanOrEqual(half.chars);
+			// The citation is always a chunk the runtime index really serves: a
+			// finer passage is read from its source, never instead of it.
+			expect(runtimeIds.has(passage.source)).toBe(true);
+			expect(passage.id === passage.source || passage.id.startsWith(`${passage.source}/`)).toBe(true);
+		}
+		// Every source is still represented, and no passage id is used twice.
+		expect(new Set(finer.map((passage) => passage.source))).toEqual(runtimeIds);
+		expect(new Set(finer.map((passage) => passage.id)).size).toBe(finer.length);
+
+		// Halving stops at the floor rather than shredding a document into words.
+		let geometry: KbGeometry | null = KB_GEOMETRY;
+		const seen: number[] = [];
+		while (geometry) {
+			seen.push(geometry.chars);
+			geometry = finerGeometry(geometry);
+		}
+		expect(seen).toEqual([800, 400, 200]);
+		expect(seen.at(-1)).toBe(MIN_KB_CHUNK_CHARS);
+	});
+
+	it("leaves the runtime index hash alone however finely a generator reads it", () => {
+		const chunks = chunkKnowledge(fixtureFiles());
+		const before = kbIndexHash(chunks);
+		kbPassages(chunks, finerGeometry(KB_GEOMETRY)!);
+		kbPassages(chunks, { chars: MIN_KB_CHUNK_CHARS, overlap: 25 });
+		// The prepared-home identity is a fact about the Target's retrieval, and
+		// the exam generator is not allowed to be one of its inputs.
+		expect(kbIndexHash(chunks)).toBe(before);
+		expect(chunkKnowledge(fixtureFiles())).toEqual(chunks);
 	});
 });
 

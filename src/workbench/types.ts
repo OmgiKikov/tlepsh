@@ -529,6 +529,14 @@ export interface WorkbenchView {
 		 * every other surface already prints it beside the verdict.
 		 */
 		sealedCases: number | null;
+		/**
+		 * The most questions this Target's knowledge base could ever answer, when
+		 * it declares one. A ceiling, not an offer: without it the Builder read a
+		 * three-question exam and proposed loading twelve more from a base that
+		 * did not have them (live session 8). Absent when no knowledge base is
+		 * declared, or when it cannot be read.
+		 */
+		maxKbQuestions?: number;
 	};
 	/** Newest A/A calibration of the exact active Target revision, if any. */
 	calibration: WorkbenchCalibrationProjection | null;
