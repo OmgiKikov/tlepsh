@@ -26,6 +26,7 @@ import { compileAgentLog } from "../application/agent-log.js";
 import {
 	corpusTaskLookup,
 	DatasetExportError,
+	datasetExportDoneLine,
 	exportDataset,
 	sealedDatasetHashesFor,
 } from "../application/export-dataset.js";
@@ -1795,10 +1796,7 @@ export function registerAhdeBuilderCommands(
 			presenter.show(ctx, {
 				title: t("panel.title", { detail: t("panel.export") }),
 				tone: "info",
-				lines: [t("export.done", {
-					count: plural(result.counts.exported, "dialogue"),
-					path: oneLine(besideTarget(workbench.projectDir, result.path), 100),
-				})],
+				lines: [datasetExportDoneLine(result, oneLine(besideTarget(workbench.projectDir, result.path), 100))],
 			});
 		},
 	});

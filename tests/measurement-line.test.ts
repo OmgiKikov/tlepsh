@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	designPhrase,
 	examLine,
+	exclusionReasonOf,
 	measurementLine,
 	measurementSurface,
 	smallBasketNote,
@@ -133,6 +135,62 @@ describe("the composed sentence", () => {
 		expect(measurementLine({ development: null }).text).toBe("no development evidence on this candidate");
 		expect(measurementLine({ development: null, exam: EXAM }).text)
 			.toBe("no development evidence on this candidate · exam: pass (+30.3 pts, 95% CI +12 … +48) on 20 cases × 3");
+	});
+
+	it("says how many cases were excluded and why, not only how many were measured", () => {
+		// Session 8 read `на 14 кейсах × 5` for a basket designed as fifteen and
+		// no line said where the fifteenth went. The size now carries its own
+		// provenance: what was designed, what was measured, and what became of
+		// the difference.
+		const lost = measurementSurface({ ...SUMMARY, ...GATE, tasks: 14, repetitions: 5, excludedTasks: 1 });
+		expect(designPhrase({ tasks: 14, repetitions: 5, excludedTasks: 1 }))
+			.toBe("on 14 of 15 cases × 5 · 1 excluded for infrastructure");
+		expect(measurementLine({ development: lost }).design)
+			.toBe("on 14 of 15 cases × 5 · 1 excluded for infrastructure");
+		expect(measurementLine({ development: lost }).text).toContain("on 14 of 15 cases × 5 · 1 excluded for infrastructure");
+		setLanguage("ru");
+		expect(measurementLine({ development: lost }).design).toBe("на 14 из 15 кейсов × 5 · 1 исключён: инфраструктура");
+		// The participle bends to the count, and «из 2 кейсов» is genitive.
+		expect(designPhrase({ tasks: 1, repetitions: 5, excludedTasks: 2 })).toBe("на 1 из 3 кейсов × 5 · 2 исключены: инфраструктура");
+		// The narrower reason, when the exclusions know it.
+		expect(designPhrase({ tasks: 14, repetitions: 5, excludedTasks: 1, excludedReason: "incomplete" }))
+			.toBe("на 14 из 15 кейсов × 5 · 1 исключён: неполные повторы");
+		expect(designPhrase({ tasks: 14, repetitions: 5, excludedTasks: 2, excludedReason: "mixed" }))
+			.toBe("на 14 из 16 кейсов × 5 · 2 исключены: инфраструктура, неполные повторы");
+		setLanguage(null);
+		// A whole basket says none of it: nothing was lost, so nothing is named.
+		expect(measurementLine({ development: measurementSurface({ ...SUMMARY, ...GATE }) }).design).toBe("on 7 cases × 3");
+	});
+
+	it("collapses per-task exclusion reasons into the one word the line prints", () => {
+		expect(exclusionReasonOf([])).toBe("infrastructure");
+		expect(exclusionReasonOf([{ reason: "infrastructure" }])).toBe("infrastructure");
+		expect(exclusionReasonOf([{ reason: "incomplete" }, { reason: "incomplete" }])).toBe("incomplete");
+		expect(exclusionReasonOf([{ reason: "incomplete" }, { reason: "infrastructure" }])).toBe("mixed");
+	});
+
+	it("carries the exam's origin, and says nothing when nobody read the receipt", () => {
+		// `pass` is worth what the exam is worth. "The judge wrote it from the
+		// documents" and "the operator brought it" are different claims about
+		// the same word, so the exam line makes the claim it can support.
+		expect(examLine({ ...EXAM, origin: "judge-generated-kb" })!.text)
+			.toBe("pass (+30.3 pts, 95% CI +12 … +48) on 20 cases × 3 · written by the judge from the knowledge base");
+		expect(examLine({ ...EXAM, origin: "judge-generated-kb-reviewed" })!.origin)
+			.toBe("written by the judge from the knowledge base");
+		expect(examLine({ ...EXAM, origin: "judge-generated" })!.origin).toBe("written by the judge from the description");
+		expect(examLine({ ...EXAM, origin: "judge-generated-reviewed" })!.origin)
+			.toBe("written by the judge from the description");
+		// `null` is a finding — the receipts were read and none claims this exam.
+		expect(examLine({ ...EXAM, origin: null })!.origin).toBe("brought by the operator");
+		// An absent field is not a finding, and crediting the operator with an
+		// exam the judge may have written would be inventing one.
+		expect(examLine(EXAM)!.origin).toBe("");
+		expect(examLine(EXAM)!.text).toBe("pass (+30.3 pts, 95% CI +12 … +48) on 20 cases × 3");
+		setLanguage("ru");
+		expect(examLine({ ...EXAM, origin: "judge-generated-kb" })!.text)
+			.toContain("на 20 кейсах × 3 · написан судьёй по базе знаний");
+		expect(examLine({ ...EXAM, origin: "judge-generated" })!.origin).toBe("написан судьёй из описания");
+		expect(examLine({ ...EXAM, origin: null })!.origin).toBe("загружен оператором");
 	});
 
 	it("calls a basket small below ten included cases, and never above", () => {

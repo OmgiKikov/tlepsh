@@ -18,7 +18,7 @@ import {
 	type RunRow,
 } from "../application/run-explanation.js";
 import { compareVerifiedEvalRuns, runCost, runTokens, type CompareResult } from "../compare.js";
-import { measurementLine, measurementSurface } from "../application/measurement-line.js";
+import { exclusionReasonOf, measurementLine, measurementSurface } from "../application/measurement-line.js";
 import { diagnosisPath, loadDiagnosis } from "../diagnosis.js";
 import type { CandidateRecord, EvaluationEvidence } from "../domain/candidate.js";
 import { gateVerdictOf } from "../domain/candidate.js";
@@ -464,6 +464,10 @@ export function collectComparePage(runsRoot: string, candidateId: string): Compa
 				verdict: comparison.gate.verdict,
 				tasks: comparison.design.tasks,
 				repetitions: comparison.design.repetitions,
+				// The cases this basket lost, so the size on screen says what it
+				// was designed as and not only what survived.
+				excludedTasks: comparison.design.excludedTasks,
+				excludedReason: exclusionReasonOf(comparison.excluded),
 			}),
 		}).text,
 		developmentReasons: recordedReasons(evaluation.development.comparison).length > 0

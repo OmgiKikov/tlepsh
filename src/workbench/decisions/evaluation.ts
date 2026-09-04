@@ -143,7 +143,7 @@ export async function decideRunEval(
 	const improvementBrief = host.dependencies.compileImprovementBrief(host.runsRoot, diagnosis);
 	const link = boundedEvidenceLink(await host.dependencies.evidenceLink(record));
 	const settled = host.select("eval-run", record.evalRunId);
-	const projection = evaluationProjection(record, inventory.corpora);
+	const projection = evaluationProjection(record, inventory.corpora, loadVerifiedEvalRun(host.runsRoot, record.evalRunId).runs);
 	const brief = conversationalImprovementBrief(improvementBrief);
 	// The one sentence about this run, composed once by the host, so the panel,
 	// the status bar and the sentence the Builder quotes are the same string.

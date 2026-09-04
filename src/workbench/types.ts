@@ -301,6 +301,13 @@ export interface WorkbenchEvaluationProjection {
 	evalRunId: string;
 	summary: EvalRunSummary;
 	repetitions: number;
+	/**
+	 * Cases the agent got right in EVERY repetition, and how many were measured
+	 * at all. Derived at read time from the run records — nothing durable — so
+	 * the panel can say `5 of 12 passed · 3 in every repetition` instead of
+	 * leaving a pass rate to stand for two very different baskets.
+	 */
+	stableTasks: { stable: number; measured: number };
 	/** When it finished, the exact revision it measured, and the basket it ran. */
 	finishedAt: string;
 	targetGitSha: string;

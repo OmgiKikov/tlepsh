@@ -287,6 +287,7 @@ function makeTraces(
 			evalRunId: "eval-1",
 			summary: { total: 10, pass: 6, fail: 4, error: 0, allPassRate: 0.6 },
 			repetitions: 1,
+			stableTasks: { stable: 6, measured: 10 },
 			finishedAt: "2026-09-01T09:00:07.000Z",
 			targetGitSha: "4d533f07030f0a4b1c2d3e4f5a6b7c8d9e0f1a2b",
 			corpus: { name: "Ombudsman basket", taskCount: 10 },
@@ -1352,7 +1353,10 @@ describe("renderReview", () => {
 describe("renderTraces", () => {
 	it("summarises the evaluation with a pass bar and lists the diagnosis", () => {
 		const lines = renderTraces(makeTraces(), plainPaint);
-		expect(lines[0]).toBe("Evaluation 6/10 passed ██████████░░░░░░ 60% · 4 failed · 0 errors · 1 repetition · eval-1");
+		expect(lines[0]).toBe(
+			"Evaluation 6/10 passed ██████████░░░░░░ 60% · 1 repetition — noise was not measured, " +
+				"5 repetitions would measure it (A/A) · 4 failed · 0 errors · 1 repetition · eval-1",
+		);
 		// Which run the operator is reading: id, when, the revision it measured, the basket.
 		expect(lines[1]).toBe("Showing eval-1 · 2026-09-01 09:00:07Z · revision 4d533f0703 · Ombudsman basket · 10 cases");
 		expect(lines[2]).toBe("Diagnosis actionable · 6/10 passed · 1 failure mode(s), 1 of them across tasks");
@@ -1367,14 +1371,14 @@ describe("renderTraces", () => {
 
 	it("tones the summary by errors and failures", () => {
 		const errors = renderTraces(makeTraces({}, {
-			evaluation: { evalRunId: "eval-2", summary: { total: 10, pass: 7, fail: 2, error: 1, allPassRate: 0.7 }, repetitions: 2, finishedAt: "2026-09-01T09:00:07.000Z", targetGitSha: "4d533f07030f0a4b1c2d3e4f5a6b7c8d9e0f1a2b", corpus: null },
+			evaluation: { evalRunId: "eval-2", summary: { total: 10, pass: 7, fail: 2, error: 1, allPassRate: 0.7 }, repetitions: 2, stableTasks: { stable: 3, measured: 5 }, finishedAt: "2026-09-01T09:00:07.000Z", targetGitSha: "4d533f07030f0a4b1c2d3e4f5a6b7c8d9e0f1a2b", corpus: null },
 		}), tagPaint);
 		expect(errors[0]).toContain("<warning><bold>7/10 passed</bold></warning>");
 		expect(errors[0]).toContain("<error>2 failed</error>");
 		expect(errors[0]).toContain("<warning>1 error</warning>");
 		expect(errors[0]).toContain("<dim>· 2 repetitions · eval-2</dim>");
 		const perfect = renderTraces(makeTraces({}, {
-			evaluation: { evalRunId: "eval-3", summary: { total: 4, pass: 4, fail: 0, error: 0, allPassRate: 1 }, repetitions: 1, finishedAt: "2026-09-01T09:00:07.000Z", targetGitSha: "4d533f07030f0a4b1c2d3e4f5a6b7c8d9e0f1a2b", corpus: null },
+			evaluation: { evalRunId: "eval-3", summary: { total: 4, pass: 4, fail: 0, error: 0, allPassRate: 1 }, repetitions: 1, stableTasks: { stable: 4, measured: 4 }, finishedAt: "2026-09-01T09:00:07.000Z", targetGitSha: "4d533f07030f0a4b1c2d3e4f5a6b7c8d9e0f1a2b", corpus: null },
 		}), tagPaint);
 		expect(perfect[1]).toContain("its basket is no longer published");
 		expect(perfect[0]).toContain("<success><bold>4/4 passed</bold></success>");

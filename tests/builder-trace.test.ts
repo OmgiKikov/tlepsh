@@ -190,7 +190,7 @@ describe("traces in the TUI", () => {
 
 	it("renders the runs table failures first, width-bounded, with the failure mode named", () => {
 		const lines = renderRunsTable(rows, page.modes, plainPaint, { limit: 2 }).map(stripMarkers);
-		expect(lines[0]).toMatch(/^#\s+task\s+rep\s+outcome\s+score\s+graders\s+failure mode\s+tools\s+latency$/);
+		expect(lines[0]).toMatch(/^#\s+task\s+rep\s+passed\s+outcome\s+score\s+graders\s+failure mode\s+tools\s+latency$/);
 		expect(lines[1]).toContain("task_006");
 		expect(lines[1]).toContain("fail");
 		expect(lines[1]).toContain("✗tool check_dbo");
@@ -469,7 +469,7 @@ describe("traces resolve as history", () => {
 	it("names the run it shows: id, when, revision, basket", () => {
 		const projection = evaluationProjection(evalRun("erun_2"), [
 			{ id: "corpus-1", name: "Ombudsman basket", visibility: "development", taskCount: 6, hash: "sha256:dataset" },
-		] as unknown as CorpusMetadata[]);
+		] as unknown as CorpusMetadata[], []);
 		expect(projection).toMatchObject({
 			evalRunId: "erun_2",
 			finishedAt: "2026-09-01T09:02:07.000Z",

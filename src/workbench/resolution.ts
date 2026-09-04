@@ -17,10 +17,11 @@ import {
 	type ComparisonGateEvidence,
 } from "../domain/candidate.js";
 import { sealedOutcome, sealedOutcomeLine } from "../domain/comparison-gate.js";
+import { stableTasks } from "../compare.js";
 import type { EvalRunRecord } from "../eval.js";
 import type { SpecSnapshot } from "../spec.js";
 import { redactTraceText } from "../trace.js";
-import { canonicalJson } from "../provenance.js";
+import { canonicalJson, type RunRecord } from "../provenance.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import { WorkbenchSelectionRequiredError } from "./errors.js";
 import type {
@@ -477,12 +478,15 @@ export function requireReadableDevelopmentEval(
 export function evaluationProjection(
 	run: EvalRunRecord,
 	corpora: readonly CorpusMetadata[],
+	runs: readonly RunRecord[],
 ): WorkbenchEvaluationProjection {
 	const corpus = corpora.find((item) => item.hash === run.datasetHash);
+	const stable = stableTasks(runs);
 	return {
 		evalRunId: run.evalRunId,
 		summary: run.summary,
 		repetitions: run.repetitions,
+		stableTasks: { stable: stable.stable, measured: stable.measured },
 		finishedAt: run.finishedAt,
 		targetGitSha: run.target.gitSha,
 		corpus: corpus ? { name: corpus.name, taskCount: corpus.taskCount } : null,

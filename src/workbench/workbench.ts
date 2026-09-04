@@ -177,6 +177,7 @@ import {
 	defaultEvalJobs,
 	isSealedEvalRun,
 	loadEvalRun,
+	loadVerifiedEvalRun,
 	readEvalRunIndex,
 	runSuite,
 	type EvalRunRecord,
@@ -2824,7 +2825,7 @@ export class AhdeWorkbench {
 				detail: {
 					aspect,
 					content: {
-						evaluation: evaluationProjection(run, inventory.corpora),
+						evaluation: evaluationProjection(run, inventory.corpora, loadVerifiedEvalRun(this.runsRoot, run.evalRunId).runs),
 						diagnosis: diagnosisSummary(diagnosis),
 						improvementBrief: conversationalImprovementBrief(improvementBrief),
 						evidence: link ? { available: true, ...link } : { available: false },

@@ -1,4 +1,5 @@
-import { sealedOutcomeLabel, type SealedOutcome } from "../domain/comparison-gate.js";
+import { sealedOutcomeLabel, type ExclusionReason, type SealedOutcome } from "../domain/comparison-gate.js";
+import type { SealedExamOrigin } from "./sealed-synth.js";
 import { plural, t, verdictLabel } from "../i18n.js";
 
 /**
@@ -69,6 +70,37 @@ export interface MeasurementSurface {
 	candidatePassRate: number | null;
 	tasks: number;
 	repetitions: number;
+	/** Cases the paired statistics left out. `0` for a whole basket. */
+	excludedTasks: number;
+	/** Why they were left out, when the projection knows; infrastructure otherwise. */
+	excludedReason: ExclusionSummaryReason;
+}
+
+/**
+ * Why cases are missing from a measurement, as one word for the operator.
+ *
+ * `infrastructure` is the default because it is what the error budget spends:
+ * a repetition that never produced a record is the engine's failure, not the
+ * agent's. `incomplete` is the narrower word for a task that ran but did not
+ * deliver every repetition it was designed for.
+ */
+export type ExclusionSummaryReason = ExclusionReason | "mixed";
+
+/** Collapse per-task exclusion reasons into the one word the line prints. */
+export function exclusionReasonOf(
+	excluded: readonly { reason: ExclusionReason }[],
+): ExclusionSummaryReason {
+	const reasons = new Set(excluded.map((task) => task.reason));
+	if (reasons.size > 1) return "mixed";
+	return reasons.has("incomplete") ? "incomplete" : "infrastructure";
+}
+
+function exclusionReasonLabel(reason: ExclusionSummaryReason): string {
+	return t(
+		reason === "incomplete"
+			? "measurement.excluded-incomplete"
+			: reason === "mixed" ? "measurement.excluded-mixed" : "measurement.excluded-infrastructure",
+	);
 }
 
 /**
@@ -89,12 +121,16 @@ export function measurementSurface(
 		tasks?: number | null;
 		taskCount?: number | null;
 		repetitions?: number | null;
+		excludedTasks?: number | null;
+		excludedReason?: ExclusionSummaryReason | null;
 	} | null | undefined,
 ): MeasurementSurface | null {
 	if (!input) return null;
 	const number = (value: number | null | undefined): number | null =>
 		typeof value === "number" && Number.isFinite(value) ? value : null;
 	return {
+		excludedTasks: Math.max(0, number(input.excludedTasks) ?? 0),
+		excludedReason: input.excludedReason ?? "infrastructure",
 		verdict: typeof input.verdict === "string" ? input.verdict : null,
 		baselineScore: number(input.baselineScore),
 		candidateScore: number(input.candidateScore),
@@ -116,12 +152,37 @@ export interface ExamSurface {
 	confidence95: { low: number; high: number } | null;
 	tasks: number;
 	repetitions: number;
+	/** Cases the exam lost to the error budget, and why. */
+	excludedTasks?: number;
+	excludedReason?: ExclusionSummaryReason;
 	/**
 	 * What the judge was asked for and what survived, for an exam generated
 	 * here. Read off the sealed-synthesis receipt; absent for an exam the
 	 * operator brought, and for evidence recorded before receipts existed.
 	 */
 	generation?: { requested: number; accepted: number; droppedDuplicate: number; droppedMalformed: number } | null;
+	/**
+	 * Who wrote the questions, off the sealed-synthesis receipt. `null` and
+	 * `undefined` both mean the receipt says nothing, which is the ordinary
+	 * shape of an exam the operator brought.
+	 */
+	origin?: SealedExamOrigin | null;
+}
+
+/**
+ * Where the exam's questions came from, in the operator's words.
+ *
+ * `null` is a finding: the sealed-synthesis receipts were read and none of
+ * them claims this corpus, so the exam is the operator's own. `undefined` is
+ * the absence of a finding — a caller that never looked — and there the line
+ * says nothing rather than crediting the operator with an exam the judge may
+ * well have written.
+ */
+export function examOriginLabel(origin: SealedExamOrigin | null | undefined): string {
+	if (origin === undefined) return "";
+	if (origin === "judge-generated-kb" || origin === "judge-generated-kb-reviewed") return t("exam.origin-kb");
+	if (origin === "judge-generated" || origin === "judge-generated-reviewed") return t("exam.origin-spec");
+	return t("exam.origin-operator");
 }
 
 /**
@@ -165,11 +226,41 @@ function deltaOf(delta: number | null, confidence95: { low: number; high: number
 	return delta === null ? "" : `(${points(delta)}${intervalOf(confidence95)})`;
 }
 
-function designOf(tasks: number, repetitions: number): string {
-	const cases = plural(tasks, "case measured on");
+/**
+ * `on 7 cases × 3`, and — when the basket lost cases — what it was designed as
+ * and what became of the difference: `on 14 of 15 cases × 5 · 1 excluded for
+ * infrastructure`.
+ *
+ * Session 8 read `на 14 кейсах × 5` for an exam of fifteen and no line said
+ * where the fifteenth went, which is the whole difference between a number
+ * with a provenance and a number to be taken on faith. Exported because every
+ * surface that prints a measured size prints this one — the panel and the
+ * headline through {@link measurementLine}, the exam through
+ * {@link examLine}, and the passport by calling it directly.
+ */
+export function designPhrase(input: {
+	tasks: number;
+	repetitions: number;
+	excludedTasks?: number;
+	excludedReason?: ExclusionSummaryReason;
+}): string {
+	const excluded = Math.max(0, input.excludedTasks ?? 0);
+	const designed = input.tasks + excluded;
+	const cases = plural(excluded > 0 ? designed : input.tasks, excluded > 0 ? "case of" : "case measured on");
 	// Legacy evidence recorded a task count and no repetition count. "× 0" is a
 	// worse answer than saying only what was recorded.
-	return repetitions > 0 ? t("measurement.on-cases", { cases, repetitions }) : t("measurement.on-cases-only", { cases });
+	const size = excluded > 0
+		? input.repetitions > 0
+			? t("measurement.on-cases-of", { measured: input.tasks, cases, repetitions: input.repetitions })
+			: t("measurement.on-cases-of-only", { measured: input.tasks, cases })
+		: input.repetitions > 0
+			? t("measurement.on-cases", { cases, repetitions: input.repetitions })
+			: t("measurement.on-cases-only", { cases });
+	if (excluded === 0) return size;
+	return `${size} · ${t("measurement.excluded", {
+		excluded: plural(excluded, "excluded case"),
+		reason: exclusionReasonLabel(input.excludedReason ?? "infrastructure"),
+	})}`;
 }
 
 /**
@@ -196,6 +287,8 @@ export interface ExamLine {
 	design: string;
 	/** `(1 duplicate dropped when it was generated)`, or "" for a whole exam. */
 	shortfall: string;
+	/** `written by the judge from the knowledge base`, or "" when unread. */
+	origin: string;
 	/** `pass (+30 pts, 95% CI +12 … +48) on 20 cases × 3`. */
 	text: string;
 }
@@ -210,16 +303,29 @@ export function examLine(exam: ExamSurface | null | undefined): ExamLine | null 
 	// one the exam merely could not convict; the outcome word says which.
 	const verdict = exam.outcome ? `${verdictLabel(exam.verdict)} · ${sealedOutcomeLabel(exam.outcome)}` : verdictLabel(exam.verdict);
 	const delta = deltaOf(exam.scoreDelta, exam.confidence95);
-	const design = designOf(exam.tasks, exam.repetitions);
+	const design = designPhrase({
+		tasks: exam.tasks,
+		repetitions: exam.repetitions,
+		...(exam.excludedTasks !== undefined ? { excludedTasks: exam.excludedTasks } : {}),
+		...(exam.excludedReason !== undefined ? { excludedReason: exam.excludedReason } : {}),
+	});
 	// The exam ran on 19 cases because one of the 20 was a duplicate. The size
 	// is where that belongs: right behind the number it explains.
 	const shortfall = examShortfallNote(exam.generation);
+	// Who wrote the questions. A verdict on an exam is worth what the exam is
+	// worth, and "the judge wrote it from the documents" and "the operator
+	// brought it" are different claims about the same word `pass`.
+	const origin = examOriginLabel(exam.origin);
 	return {
 		verdict,
 		delta,
 		design,
 		shortfall,
-		text: trimSeparator([verdict, delta, design, shortfall].filter((part) => part.length > 0).join(" ")),
+		origin,
+		text: trimSeparator([
+			[verdict, delta, design, shortfall].filter((part) => part.length > 0).join(" "),
+			origin,
+		].filter((part) => part.length > 0).join(" · ")),
 	};
 }
 
@@ -295,7 +401,12 @@ export function measurementLine(input: {
 		? development.scoreDelta
 		: passRateKnown ? development.candidatePassRate! - development.baselinePassRate! : null;
 	const delta = deltaOf(shown, development.confidence95);
-	const design = designOf(development.tasks, development.repetitions);
+	const design = designPhrase({
+		tasks: development.tasks,
+		repetitions: development.repetitions,
+		excludedTasks: development.excludedTasks,
+		excludedReason: development.excludedReason,
+	});
 	const passRate = scored && passRateKnown
 		? t("measurement.pass-rate", {
 			before: percent(development.baselinePassRate!),

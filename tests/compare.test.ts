@@ -2,8 +2,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterAll, describe, expect, it } from "vitest";
-import { compareEvalRuns, renderCompareMarkdown, renderGateLine, runCost, runTokens } from "../src/compare.js";
-import type { EvalRunRecord } from "../src/eval.js";
+import { compareEvalRuns, compareVerifiedEvalRuns, renderCompareMarkdown, renderGateLine, runCost, runTokens } from "../src/compare.js";
+import { loadVerifiedEvalRun, type EvalRunRecord, type VerifiedEvalRun } from "../src/eval.js";
 import { AHDE_EVALUATOR_ID, hashValue, type ProvenanceAxes, type RunRecord } from "../src/provenance.js";
 
 function hash(char: string): string {
@@ -418,6 +418,244 @@ describe("compare table", () => {
 			},
 		}));
 		expect(() => compareEvalRuns(runsRoot, "erun_integrity_a", "erun_integrity_c", { mode: "candidate" })).toThrow(/hash does not match/);
+	});
+});
+
+/**
+ * One lost repetition costs its case, never the whole verification.
+ *
+ * The gate has declared a 10% infrastructure budget since it was written, and
+ * has always excluded the cases that spend it from the paired statistics. This
+ * module ignored the budget: any errored arm made the comparison
+ * `inconclusive`, and a case short one repetition made it `invalid` outright.
+ * Session 8 paid for that twice in one sitting — two verifications of 150
+ * executions each, thrown away over an error rate of 2.7%, with the difference
+ * between the arms (39/75 against 50/75) already sitting in the rows.
+ *
+ * Now both spellings of the rule are one function in the gate: the excluded
+ * cases are named on the result, the rest are paired, and the surface says
+ * `comparable` for exactly as long as its own policy can carry a verdict.
+ */
+describe("the infrastructure budget", () => {
+	/**
+	 * One run, written where the loader will find it. An errored run carries no
+	 * `evalResults` at all, exactly as the runner records one: it stopped before
+	 * grading, so there is no outcome to record and none is invented.
+	 */
+	const writeRun = (input: {
+		evalRunId: string;
+		arm: "a" | "b";
+		taskId: string;
+		repetition: number;
+		outcome: "pass" | "fail";
+		errored?: boolean;
+	}): RunRecord => {
+		const runId = `run_${input.evalRunId}_${input.taskId}_${input.repetition}`;
+		const record: RunRecord = {
+			schemaVersion: 1,
+			runId,
+			taskId: input.taskId,
+			repetitionIndex: input.repetition,
+			label: input.arm === "a" ? "baseline" : "candidate",
+			status: input.errored ? "error" : "completed",
+			error: input.errored ? "provider 503" : null,
+			startedAt: "2026-08-25T10:00:00Z",
+			finishedAt: "2026-08-25T10:01:00Z",
+			target: { id: "ombudsman", gitSha: (input.arm === "a" ? "a" : "b").repeat(40) },
+			runtime: { piVersion: "0.84.3", piSha: "a".repeat(40), ahdeVersion: "0.1.0", ahdeCodeHash: hash("a") },
+			model: {
+				provider: "qwen-internal",
+				id: "qwen3.5-27b",
+				api: "openai-completions",
+				baseUrl: "http://mock/v1",
+				apiKeyEnv: "TEST_KEY",
+				thinkingLevel: "off",
+				params: {},
+				spec: {},
+			},
+			execution: axes().execution,
+			eval: { suiteId: "s", suiteHash: hash("b"), dataset: "development", datasetHash: hash("d") },
+			trace: { path: "session.jsonl", sessionId: null, sha256: null },
+			metrics: {
+				tokens: { input: 100, output: 100, cacheRead: 0, cacheWrite: 0, total: 200 },
+				costUsd: 0.01,
+				latencyMs: 1_000,
+				toolCalls: 0,
+				toolErrors: 0,
+				recoveryAttempts: 0,
+			},
+			evalResults: input.errored ? null : {
+				graders: [{
+					name: "fixture",
+					type: "output_contains",
+					passed: input.outcome === "pass",
+					score: input.outcome === "pass" ? 1 : 0,
+					reason: input.outcome,
+				}],
+				outcome: input.outcome,
+			},
+			parent: {
+				evalRunId: `${input.evalRunId}`,
+				candidateOf: input.arm === "b" ? "a".repeat(40) : null,
+			},
+		};
+		mkdirSync(join(runsRoot, runId), { recursive: true });
+		writeFileSync(join(runsRoot, runId, "run.json"), JSON.stringify(record));
+		return record;
+	};
+
+	/** The EvalRun index over exactly those runs, summarised the way `runSuite` does. */
+	const writeIndex = (evalRunId: string, arm: "a" | "b", repetitions: number, runs: RunRecord[]): EvalRunRecord => {
+		const pass = runs.filter((run) => run.evalResults?.outcome === "pass").length;
+		const fail = runs.filter((run) => run.evalResults?.outcome === "fail").length;
+		const error = runs.filter((run) => run.status === "error").length;
+		const record: EvalRunRecord = {
+			schemaVersion: 3,
+			purpose: "evidence",
+			evalRunId,
+			target: { id: "ombudsman", gitSha: (arm === "a" ? "a" : "b").repeat(40) },
+			label: arm === "a" ? "baseline" : "candidate",
+			baselineEvalRunId: arm === "b" ? evalRunId.replace(/_b$/, "_a") : null,
+			provenance: axes(),
+			provenanceKey: hashValue(axes()),
+			suiteId: "s",
+			suiteHash: hash("b"),
+			dataset: "development",
+			datasetHash: hash("d"),
+			repetitions,
+			runIds: runs.map((run) => run.runId),
+			runArtifacts: runs.map((run) => ({ runId: run.runId, sha256: hashValue(run) })),
+			startedAt: "2026-08-25T10:00:00Z",
+			finishedAt: "2026-08-25T10:01:00Z",
+			summary: { total: runs.length, pass, fail, error, allPassRate: runs.length === 0 ? 0 : pass / runs.length },
+		};
+		mkdirSync(join(runsRoot, evalRunId), { recursive: true });
+		writeFileSync(join(runsRoot, evalRunId, "eval_run.json"), JSON.stringify(record));
+		return record;
+	};
+
+	/**
+	 * A matched pair of `tasks` cases × `repetitions`. `errored` names the one
+	 * repetition that came back as an infrastructure failure.
+	 */
+	const pair = (id: string, design: {
+		tasks: number;
+		repetitions: number;
+		baselinePasses: number;
+		candidatePasses: number;
+		errored?: { arm: "a" | "b"; task: number; repetition: number };
+	}): void => {
+		for (const arm of ["a", "b"] as const) {
+			const runs: RunRecord[] = [];
+			for (let task = 1; task <= design.tasks; task += 1) {
+				const passes = arm === "a" ? design.baselinePasses : design.candidatePasses;
+				for (let repetition = 0; repetition < design.repetitions; repetition += 1) {
+					const lost = design.errored;
+					runs.push(writeRun({
+						evalRunId: `${id}_${arm}`,
+						arm,
+						taskId: `task_${String(task).padStart(3, "0")}`,
+						repetition,
+						outcome: repetition < passes ? "pass" : "fail",
+						...(lost && lost.arm === arm && lost.task === task && lost.repetition === repetition
+							? { errored: true }
+							: {}),
+					}));
+				}
+			}
+			writeIndex(`${id}_${arm}`, arm, design.repetitions, runs);
+		}
+	};
+
+	it("excludes the case that errored, names it, and still compares the rest", () => {
+		pair("erun_budget", {
+			tasks: 15,
+			repetitions: 3,
+			baselinePasses: 1,
+			candidatePasses: 3,
+			errored: { arm: "b", task: 4, repetition: 1 },
+		});
+		const result = compareEvalRuns(runsRoot, "erun_budget_a", "erun_budget_b", { mode: "candidate" });
+		expect(result.status).toBe("comparable");
+		expect(result.error).toBeNull();
+		// One case in fifteen is 6.7%, inside the 10% budget the gate declares.
+		expect(result.excluded).toEqual([{ taskId: "task_004", reason: "infrastructure", arm: "candidate" }]);
+		expect(result.design).toEqual({ tasks: 14, repetitions: 3, excludedTasks: 1 });
+		// It leaves BOTH arms, so the pairing the bootstrap resamples stays
+		// matched — and it is still named where a reader can find it.
+		expect(result.summary.taskCount).toBe(14);
+		expect(result.issues).toEqual(["candidate task task_004 errored"]);
+		expect(result.gate.verdict).toBe("improved");
+		expect(renderGateLine(result)).toContain("1 excluded");
+	});
+
+	it("goes inconclusive once the exclusions leave the budget, and says by how much", () => {
+		pair("erun_overbudget", {
+			tasks: 8,
+			repetitions: 3,
+			baselinePasses: 1,
+			candidatePasses: 3,
+			errored: { arm: "a", task: 2, repetition: 0 },
+		});
+		// One case of eight is 12.5%: over the budget, and no verdict is owed.
+		const result = compareEvalRuns(runsRoot, "erun_overbudget_a", "erun_overbudget_b", { mode: "candidate" });
+		expect(result.status).toBe("inconclusive");
+		expect(result.error).toContain("baseline task task_002 errored");
+		expect(result.gate.verdict).toBe("inconclusive");
+		expect(result.gate.reasons[0]).toContain("exceeds the 10% budget");
+	});
+
+	it("excludes a case short one repetition instead of voiding the verification", () => {
+		// The loader refuses an index whose task count and repetitions disagree,
+		// so this shape only reaches the comparison through already-verified
+		// evidence. It is still the rule that used to make a whole pair
+		// `invalid` over one lost run, and it is still the gate's to make.
+		pair("erun_short", { tasks: 15, repetitions: 3, baselinePasses: 1, candidatePasses: 3 });
+		const verified = (id: string): VerifiedEvalRun => loadVerifiedEvalRun(runsRoot, id);
+		const baseline = verified("erun_short_a");
+		const short: VerifiedEvalRun = {
+			...baseline,
+			runs: baseline.runs.filter((run) => !(run.taskId === "task_007" && run.repetitionIndex === 2)),
+		};
+		const result = compareVerifiedEvalRuns(short, verified("erun_short_b"), { mode: "candidate" });
+		expect(result.status).toBe("comparable");
+		expect(result.excluded).toEqual([{ taskId: "task_007", reason: "incomplete", arm: "baseline" }]);
+		expect(result.issues).toEqual(["task task_007 has incomplete repetitions: 2/3 vs 3/3"]);
+		expect(result.summary.taskCount).toBe(14);
+	});
+
+	it("keeps a mismatched task set invalid: that is not an error budget question", () => {
+		pair("erun_sets", { tasks: 3, repetitions: 1, baselinePasses: 1, candidatePasses: 1 });
+		const extra = writeRun({
+			evalRunId: "erun_sets_b",
+			arm: "b",
+			taskId: "task_009",
+			repetition: 0,
+			outcome: "pass",
+		});
+		const index = JSON.parse(readFileSync(join(runsRoot, "erun_sets_b", "eval_run.json"), "utf8")) as EvalRunRecord;
+		const runs = index.runIds.map((runId) =>
+			JSON.parse(readFileSync(join(runsRoot, runId, "run.json"), "utf8")) as RunRecord);
+		writeIndex("erun_sets_b", "b", 1, [...runs, extra]);
+		const result = compareEvalRuns(runsRoot, "erun_sets_a", "erun_sets_b", { mode: "candidate" });
+		expect(result.status).toBe("invalid");
+		expect(result.error).toContain("task sets differ");
+	});
+
+	it("refuses a sealed surface whose exam was designed under the policy minimum", () => {
+		// The minimum applies to the exam as designed; the budget above bounds
+		// how many of its cases may then drop out. Fourteen is not an exam.
+		pair("erun_small_exam", { tasks: 14, repetitions: 3, baselinePasses: 1, candidatePasses: 3 });
+		const result = compareEvalRuns(runsRoot, "erun_small_exam_a", "erun_small_exam_b", {
+			mode: "candidate",
+			surface: "sealed",
+		});
+		expect(result.status).toBe("inconclusive");
+		expect(result.gate.verdict).toBe("underpowered");
+		expect(result.error).toContain("the sealed guardrail needs 15");
+		// The same rows are a perfectly good development comparison.
+		expect(compareEvalRuns(runsRoot, "erun_small_exam_a", "erun_small_exam_b", { mode: "candidate" }).status)
+			.toBe("comparable");
 	});
 });
 
