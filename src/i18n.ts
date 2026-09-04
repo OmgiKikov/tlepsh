@@ -1671,6 +1671,7 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"gate.restricted.unwrapped":
 		"a {operation} may only be handed a gate wrapped by {wrapper}; " +
 		"an unwrapped gate could approve a release the {operation} must never ask for",
+	"dialog.choice-ordinal": "{label} ({ordinal})",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -3048,6 +3049,7 @@ const ru: Record<MessageKey, string> = {
 	"gate.restricted.unwrapped":
 		"{operation} можно передать только гейт, обёрнутый через {wrapper}: " +
 		"необёрнутый гейт мог бы одобрить выкатку, о которой {operation} не имеет права спрашивать",
+	"dialog.choice-ordinal": "{label} ({ordinal})",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

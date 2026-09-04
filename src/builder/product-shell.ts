@@ -8,6 +8,7 @@ import type { AhdeWorkbench } from "../workbench/workbench.js";
 import type { WorkbenchStage, WorkbenchView } from "../workbench/types.js";
 import { loadJudgeCalibration } from "../application/judge-labels.js";
 import { themePaint } from "./render/paint.js";
+import { choose } from "./dialog.js";
 import { AHDE_BUILDER_COMMAND_NAMES } from "./commands.js";
 import { compilePlan } from "./render/plan.js";
 import { nextStep, stageLabel } from "./render/stage.js";
@@ -146,9 +147,15 @@ export function safeProviderFailure(message: string | undefined): string {
 	return t("model.failed");
 }
 
-const LOGIN_CHOICE = (): string => t("onboarding.login-choice");
-const MODEL_CHOICE = (): string => t("onboarding.model-choice");
-const LATER_CHOICE = (): string => t("onboarding.later-choice");
+/**
+ * How the operator connects a Builder model. The id is what the shell acts on;
+ * the label is drawn when the dialog opens, in whatever language is current.
+ */
+const CONNECT_CHOICES = [
+	{ id: "login", label: () => t("onboarding.login-choice") },
+	{ id: "model", label: () => t("onboarding.model-choice") },
+	{ id: "later", label: () => t("onboarding.later-choice") },
+] as const;
 
 /** Install the AHDE-owned visual/product identity over the embedded Pi host. */
 export function installAhdeBuilderProductShell(
@@ -357,14 +364,11 @@ export function installAhdeBuilderProductShell(
 				ctx.ui.notify(t("onboarding.connect-first"), "warning");
 				return;
 			}
-			const choice = await ctx.ui.select(
-				t("onboarding.builder-needs-model"),
-				[LOGIN_CHOICE(), MODEL_CHOICE(), LATER_CHOICE()],
-			);
-			if (choice === LOGIN_CHOICE()) {
+			const choice = await choose(ctx, t("onboarding.builder-needs-model"), CONNECT_CHOICES);
+			if (choice === "login") {
 				ctx.ui.setEditorText("/login");
 				ctx.ui.notify(t("onboarding.login-hint"), "info");
-			} else if (choice === MODEL_CHOICE()) {
+			} else if (choice === "model") {
 				ctx.ui.setEditorText("/model");
 				ctx.ui.notify(t("onboarding.model-hint"), "info");
 			} else {
@@ -468,12 +472,9 @@ export function installAhdeBuilderProductShell(
 			return { action: "handled" as const };
 		}
 		pendingFirstMessage = event.text;
-		const choice = await ctx.ui.select(
-			t("onboarding.connect-then-continue"),
-			[LOGIN_CHOICE(), MODEL_CHOICE(), LATER_CHOICE()],
-		);
-		if (choice === LOGIN_CHOICE()) return { action: "transform" as const, text: "/login", images: event.images };
-		if (choice === MODEL_CHOICE()) return { action: "transform" as const, text: "/model", images: event.images };
+		const choice = await choose(ctx, t("onboarding.connect-then-continue"), CONNECT_CHOICES);
+		if (choice === "login") return { action: "transform" as const, text: "/login", images: event.images };
+		if (choice === "model") return { action: "transform" as const, text: "/model", images: event.images };
 		pendingFirstMessage = null;
 		ctx.ui.setEditorText(event.text);
 		return { action: "handled" as const };

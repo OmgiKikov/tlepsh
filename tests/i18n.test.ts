@@ -708,6 +708,8 @@ const IDENTICAL_BY_DESIGN = new Set([
 	"why.grader-plain",
 	// A dash is a dash in both languages.
 	"metrics.not-reported",
+	// lane: gate-dialog — an ordinal in brackets after a label the caller wrote.
+	"dialog.choice-ordinal",
 ]);
 
 describe("the dictionary itself", () => {
