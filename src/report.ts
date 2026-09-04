@@ -505,6 +505,12 @@ function projectComparison(
 			...row,
 			taskId: publicTaskId(row.taskId),
 		})),
+		// Excluded tasks carry ids like every other row and are redacted like
+		// every other row: a task the engine lost is still a task of the corpus.
+		excluded: result.excluded.slice(0, MAX_REPORT_COMPARISON_ROWS).map((task) => ({
+			...task,
+			taskId: publicTaskId(task.taskId),
+		})),
 		issues: result.issues.slice(0, MAX_REPORT_COMPARISON_ISSUES).map((issue) =>
 			reportMetadataText(issue, 2_000)
 		),

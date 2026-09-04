@@ -40,8 +40,12 @@ export type GateSurface = "development" | "sealed";
  */
 export const INFRASTRUCTURE_ERROR_BUDGET = 0.1;
 
-export function withinInfrastructureBudget(errors: number, total: number): boolean {
-	return total <= 0 ? errors === 0 : errors / total <= INFRASTRUCTURE_ERROR_BUDGET;
+export function withinInfrastructureBudget(
+	errors: number,
+	total: number,
+	budget: number = INFRASTRUCTURE_ERROR_BUDGET,
+): boolean {
+	return total <= 0 ? errors === 0 : errors / total <= budget;
 }
 
 export interface GatePolicy {
@@ -218,6 +222,50 @@ export interface ComparisonDesign {
 	excludedTasks: number;
 }
 
+/** Why one task could not enter the paired statistics. */
+export type ExclusionReason = "infrastructure" | "incomplete";
+
+/** Which arm lost the task. `both` when neither arm delivered it. */
+export type ExclusionArm = "baseline" | "candidate" | "both";
+
+export interface ExcludedTask {
+	taskId: string;
+	reason: ExclusionReason;
+	arm: ExclusionArm;
+}
+
+function armOf(baseline: boolean, candidate: boolean): ExclusionArm {
+	return baseline && candidate ? "both" : baseline ? "baseline" : "candidate";
+}
+
+/**
+ * The one rule for leaving a task out of the paired statistics.
+ *
+ * A task is excluded when either arm errored, or when either arm did not
+ * deliver every repetition the design ordered — and it leaves BOTH arms, so
+ * the pairing the bootstrap resamples stays matched. Everything that reports
+ * an exclusion reads this: the gate, which counts them into
+ * {@link ComparisonDesign.excludedTasks}, and `compare.ts`, which names them
+ * on the result. Two spellings of this rule is exactly how the comparison and
+ * the gate came to disagree.
+ *
+ * `repetitions` is the design's own repetition count; `0` (evidence that
+ * recorded none) asks only that both arms delivered something.
+ */
+export function taskExclusion(row: CompareRow, repetitions: number): ExcludedTask | null {
+	const baselineErrored = row.aStatus === "error";
+	const candidateErrored = row.bStatus === "error";
+	if (baselineErrored || candidateErrored) {
+		return { taskId: row.taskId, reason: "infrastructure", arm: armOf(baselineErrored, candidateErrored) };
+	}
+	const baselineShort = row.aTotal <= 0 || (repetitions > 0 && row.aTotal !== repetitions);
+	const candidateShort = row.bTotal <= 0 || (repetitions > 0 && row.bTotal !== repetitions);
+	if (baselineShort || candidateShort) {
+		return { taskId: row.taskId, reason: "incomplete", arm: armOf(baselineShort, candidateShort) };
+	}
+	return null;
+}
+
 export interface ComparisonFlags {
 	/** Tasks whose mean score dropped. */
 	regressedTasks: number;
@@ -241,6 +289,12 @@ export interface ComparisonStatistics {
 	flags: ComparisonFlags;
 	resources: ComparisonResources;
 	gate: GateDecision;
+	/**
+	 * The tasks {@link ComparisonDesign.excludedTasks} counts, named. The
+	 * comparison hands this straight to its readers rather than deriving a
+	 * second list of its own.
+	 */
+	excluded: ExcludedTask[];
 }
 
 export interface JudgeComparisonOptions {
@@ -299,14 +353,30 @@ export function formatPoints(value: number): string {
 	return `${rounded > 0 ? "+" : ""}${rounded.toFixed(1)}pp`;
 }
 
-function includedRow(row: CompareRow): boolean {
-	return row.aStatus !== "error" && row.bStatus !== "error" && row.aTotal > 0 && row.bTotal > 0;
+/**
+ * Whether this design can carry a verdict at all: the exclusions stayed inside
+ * the policy's budget, the holdout was designed at the policy minimum, and
+ * something is left to compare. `decide` refuses on exactly these, and
+ * `compare.ts` calls the same predicate to say whether the comparison is
+ * `comparable` — so a surface and its verdict can never disagree about it.
+ */
+export function comparisonPowered(policy: GatePolicy, design: ComparisonDesign): boolean {
+	const total = design.tasks + design.excludedTasks;
+	return withinInfrastructureBudget(design.excludedTasks, total, policy.maxExcludedShare) &&
+		total >= policy.minTasks &&
+		design.repetitions >= policy.minRepetitions &&
+		design.tasks >= 1;
 }
 
 /** Pure. Computes the paired statistics and the one gate decision for a surface. */
 export function judgeComparison(rows: readonly CompareRow[], options: JudgeComparisonOptions): ComparisonStatistics {
 	const policy = gatePolicyFor(options.surface);
-	const included = rows.filter(includedRow);
+	const exclusions = new Map<string, ExcludedTask>();
+	for (const row of rows) {
+		const exclusion = taskExclusion(row, options.repetitions);
+		if (exclusion) exclusions.set(row.taskId, exclusion);
+	}
+	const included = rows.filter((row) => !exclusions.has(row.taskId));
 	// Partial credit: the paired quantity is the mean grader score, not the
 	// pass rate. Binary graders make the two identical, so v3 verdicts survive.
 	const deltas = included.map((row) => row.scoreDelta);
@@ -338,7 +408,7 @@ export function judgeComparison(rows: readonly CompareRow[], options: JudgeCompa
 	const resources = options.resources
 		? resourceRatios(options.resources.baseline, options.resources.candidate)
 		: EMPTY_COMPARISON_RESOURCES;
-	return { summary, design, flags, resources, gate: decide(policy, summary, design) };
+	return { summary, design, flags, resources, gate: decide(policy, summary, design), excluded: [...exclusions.values()] };
 }
 
 function decide(policy: GatePolicy, summary: CompareSummary, design: ComparisonDesign): GateDecision {
@@ -350,7 +420,7 @@ function decide(policy: GatePolicy, summary: CompareSummary, design: ComparisonD
 		: [];
 	const base = { policyId: policy.id, surface: policy.surface };
 	const total = design.tasks + design.excludedTasks;
-	if (total > 0 && design.excludedTasks / total > policy.maxExcludedShare) {
+	if (!withinInfrastructureBudget(design.excludedTasks, total, policy.maxExcludedShare)) {
 		const overBudget = `${design.excludedTasks} of ${total} tasks excluded for infrastructure errors exceeds the ${Math.round(policy.maxExcludedShare * 100)}% budget`;
 		return policy.surface === "sealed"
 			? { ...base, verdict: "underpowered", reasons: [overBudget] }
