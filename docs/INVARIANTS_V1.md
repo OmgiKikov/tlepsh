@@ -122,6 +122,11 @@ it decides.
    creation from the snapshot, by a versioned chunker whose geometry is part of
    the hash — so the index hash is folded into the same prepared-home identity.
    A Target with no knowledge base folds in nothing and its hash is unchanged.
+   The exam generator may read the same snapshot at a finer geometry when the
+   base is too small to fill an exam, but only as its own passages: the runtime
+   index and every chunk id an agent can be handed or cite are unchanged, each
+   generated case cites the runtime chunk its passage lies inside, and the
+   receipt records the passage length that was read beside the index hash.
 18. Initial Target id/model configuration is a one-time host-confirmed bootstrap
     commit over an exact clean scaffold **or an exact clean adopted revision
     recorded in the receipt**. Builder receives only the credential

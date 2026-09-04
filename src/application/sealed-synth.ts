@@ -19,7 +19,6 @@
 
 import { createHash } from "node:crypto";
 import {
-	chmodSync,
 	existsSync,
 	lstatSync,
 	mkdirSync,
@@ -38,7 +37,15 @@ import {
 	type CorpusTask,
 } from "../corpus.js";
 import { SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
-import { kbIndexHash as kbIndexHashOf, type KbChunk } from "../domain/kb.js";
+import {
+	finerGeometry,
+	KB_GEOMETRY,
+	kbIndexHash as kbIndexHashOf,
+	kbPassages,
+	type KbChunk,
+	type KbGeometry,
+	type KbPassage,
+} from "../domain/kb.js";
 import { knowledgeBaseDeclared, readKnowledgeBase, KB_DATA_DECLARATION } from "../target/kb-tool.js";
 import { callEvaluatorModel, evaluatorCostUsd } from "../evaluator-model.js";
 import { loadTarget, taskDialogueIssue, type GraderSpec, type ResolvedTarget } from "../manifest.js";
@@ -52,13 +59,30 @@ import {
 } from "../provenance.js";
 import { AgentSpecSchema, listSpecSnapshots, type AgentSpec } from "../spec.js";
 import { readJsonArtifact, writeJsonArtifact, writeTextArtifact } from "../storage/artifacts.js";
+import { plural, t } from "../i18n.js";
 import { sameModelAsTarget } from "./configure-evaluators.js";
 
 /** A generated exam stays something a human could still read in one sitting. */
 export const MAX_SEALED_SYNTH_CASES = 200;
 /** Format examples. More than a handful teaches imitation, not format. */
 export const MAX_SEALED_SYNTH_EXAMPLES = 20;
-export const DEFAULT_SEALED_SYNTH_EXAMPLES = 5;
+/**
+ * None, by default.
+ *
+ * A held-out exam exists to ask something the development suite did not, and
+ * every example shown is a case a Builder wrote pulling the generator back
+ * towards it. The option stays — a suite with an unusual case shape can still
+ * show a handful — but the default is an exam nothing in the loop shaped.
+ */
+export const DEFAULT_SEALED_SYNTH_EXAMPLES = 0;
+/**
+ * How many questions one passage may be asked for.
+ *
+ * A passage states a few facts; the fourth question about it is the first one
+ * rephrased. Three is the point where the exam is still about the documents
+ * rather than about the generator's patience.
+ */
+export const MAX_KB_QUESTIONS_PER_PASSAGE = 3;
 const MAX_SPEC_BYTES = 64 * 1024;
 const MAX_GENERATOR_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_GRADER_SHAPES = 16;
@@ -167,15 +191,33 @@ export const SealedSynthReceiptV2Schema = z.strictObject({
 	kbIndexHash: HashSchema.nullable(),
 });
 
+/**
+ * Version 3 adds the one fact a small knowledge base makes necessary: the
+ * chunk length the generator actually read the base at. The runtime index is
+ * always cut at {@link KB_GEOMETRY} — invariant 17 folds that geometry into
+ * the prepared-home hash — but a base too small to fill an exam is re-cut
+ * finer *for the generator only*, and without this number `kbIndexHash` would
+ * describe an index the questions were not written from.
+ */
+export const SealedSynthReceiptV3Schema = z.strictObject({
+	schemaVersion: z.literal(3),
+	...SealedSynthReceiptFields,
+	source: z.enum(["spec", "kb"]),
+	kbIndexHash: HashSchema.nullable(),
+	/** Characters per generator passage; null on the Spec source. */
+	kbChunkChars: z.number().int().positive().nullable(),
+});
+
 export const SealedSynthReceiptSchema = z.discriminatedUnion("schemaVersion", [
 	SealedSynthReceiptV1Schema,
 	SealedSynthReceiptV2Schema,
+	SealedSynthReceiptV3Schema,
 ]);
 export type SealedSynthReceipt = z.infer<typeof SealedSynthReceiptSchema>;
 
-/** Where one receipt's questions came from, in either schema version. */
+/** Where one receipt's questions came from, in any schema version. */
 export function sealedSynthSource(receipt: SealedSynthReceipt): "spec" | "kb" {
-	return receipt.schemaVersion === 2 ? receipt.source : "spec";
+	return receipt.schemaVersion === 1 ? "spec" : receipt.source;
 }
 
 /**
@@ -232,6 +274,13 @@ export interface SealedSynthPlan {
 	 * changed between the dialog and the call is a stale decision.
 	 */
 	kbIndexHash: string | null;
+	/**
+	 * Characters per generator passage, or null on the Spec source. The runtime
+	 * index never moves; this is how finely the exam generator reads it, and it
+	 * belongs in the approved subject because it decides what the questions are
+	 * written from.
+	 */
+	kbChunkChars: number | null;
 	/** Passages the generator will be shown, one per call. Empty on `spec`. */
 	kbChunkIds: string[];
 	/** `<provider>/<id>` of the judge that will write the exam. */
@@ -263,6 +312,12 @@ export interface SealedSynthResult {
 	corpus: CorpusMetadata | null;
 	/** Present on the review path. The operator's own path, echoed back. */
 	reviewPath: string | null;
+	/**
+	 * The private directory holding the raw generator exchange, when it could not
+	 * be removed after the cases were sealed. A path, never a case — and a fact
+	 * the operator has to be told, because it is a second copy of the exam.
+	 */
+	exchangeRetained: string | null;
 	/** `<provider>/<id>` of the judge that wrote the exam. */
 	generatorModel: string;
 	promptSha256: string;
@@ -529,13 +584,19 @@ function generatorUserPrompt(input: {
 const KB_GENERATOR_SYSTEM = [
 	"You write held-out evaluation questions from a company's own documentation.",
 	"",
-	"You are shown ONE passage. Write one question a real user would ask, whose",
-	"complete answer is contained in that passage, and the answer itself.",
+	"You are shown ONE passage and told how many questions to write from it.",
+	"Each question is one a real user would ask, whose complete answer is",
+	"contained in that passage, and you write the answer too.",
 	"",
 	"Rules:",
-	"- Answer with one JSON object and nothing else: {\"question\": \"...\", \"answer\": \"...\"}.",
+	"- Answer with one JSON object and nothing else:",
+	"  {\"questions\": [{\"question\": \"...\", \"answer\": \"...\"}]}.",
 	"- No prose, no explanation, no markdown fence, no commentary.",
-	"- The question must be answerable from the passage ALONE. Do not ask about",
+	"- Write exactly as many questions as you are asked for, and make them",
+	"  DIFFERENT from one another: a different fact of the passage each time,",
+	"  never the same fact reworded. If the passage does not hold that many",
+	"  separate facts, write fewer rather than repeating one.",
+	"- Every question must be answerable from the passage ALONE. Do not ask about",
 	"  anything the passage does not state.",
 	"- The question is what a user asks, not what a document says: no \"according to",
 	"  the passage\", no reference to a document, a section, or an id.",
@@ -544,16 +605,16 @@ const KB_GENERATOR_SYSTEM = [
 	"- Write both in the language of the passage.",
 ].join("\n");
 
-function kbGeneratorUserPrompt(chunk: KbChunk): string {
+function kbGeneratorUserPrompt(passage: KbPassage, questions: number): string {
 	return [
-		`# Passage ${chunk.id}`,
+		`# Passage ${passage.id}`,
 		"",
-		chunk.text.trim(),
+		passage.text.trim(),
 		"",
 		"# Task",
 		"",
-		"Write one question and its answer from this passage.",
-		"Return only {\"question\": \"...\", \"answer\": \"...\"}.",
+		`Write ${questions} different question(s) and their answers from this passage.`,
+		"Return only {\"questions\": [{\"question\": \"...\", \"answer\": \"...\"}]}.",
 	].join("\n");
 }
 
@@ -561,43 +622,86 @@ function chunkKey(datasetHash: string, seed: string, chunkId: string): string {
 	return createHash("sha256").update(`${datasetHash} sealed-synth kb ${seed} ${chunkId}`).digest("hex");
 }
 
+/** One passage and how many questions this exam asks of it. */
+interface KbQuestionShare {
+	passage: KbPassage;
+	questions: number;
+}
+
 /**
- * N passages, drawn from (dataset hash, seed, chunk id) by the same rule the
- * format-example draw uses: the same seed over the same knowledge base always
- * asks about the same passages, and a different seed asks about others. The
- * count is capped by the number of passages — a corpus of nine chunks cannot
- * produce twenty independent questions, and pretending otherwise would produce
- * twenty questions about nine passages.
+ * Which passages the exam is written from, and how many questions each carries.
+ *
+ * Passages are drawn from (dataset hash, seed, passage id) by the same rule the
+ * format-example draw uses, so the same seed over the same knowledge base
+ * always asks about the same passages. The questions are then spread over the
+ * drawn passages as evenly as they divide, and the remainder goes to the
+ * passages the seed ranked first — so `count` is reproducible from
+ * `(datasetHash, seed)` down to which passage carries the extra question.
+ *
+ * Nothing here can exceed {@link MAX_KB_QUESTIONS_PER_PASSAGE}: the caller has
+ * already capped `count` at the number of passages times that bound.
  */
-function drawChunks(chunks: readonly KbChunk[], datasetHash: string, count: number, seed: string): KbChunk[] {
-	const ordered = [...chunks].sort((left, right) => {
+function drawKbQuestions(
+	passages: readonly KbPassage[],
+	datasetHash: string,
+	count: number,
+	seed: string,
+): KbQuestionShare[] {
+	const ranked = [...passages].sort((left, right) => {
 		const a = chunkKey(datasetHash, seed, left.id);
 		const b = chunkKey(datasetHash, seed, right.id);
 		return a === b ? left.id.localeCompare(right.id) : a < b ? -1 : 1;
 	});
-	const chosen = new Set(ordered.slice(0, Math.min(count, chunks.length)).map((chunk) => chunk.id));
+	const drawn = ranked.slice(0, Math.min(count, ranked.length));
+	if (drawn.length === 0) return [];
+	const base = Math.floor(count / drawn.length);
+	const extra = count % drawn.length;
+	const shares = new Map(drawn.map((passage, rank) => [passage.id, base + (rank < extra ? 1 : 0)]));
 	// Presented in document order: the draw decides which, never in what order.
-	return chunks.filter((chunk) => chosen.has(chunk.id));
+	return passages
+		.filter((passage) => shares.has(passage.id))
+		.map((passage) => ({ passage, questions: shares.get(passage.id) ?? 0 }));
 }
 
-/** The one question-and-answer a knowledge-base call is allowed to return. */
-function parseGeneratedPair(text: string): { question: string; answer: string } | null {
-	if (Buffer.byteLength(text, "utf8") > MAX_GENERATOR_RESPONSE_BYTES) return null;
+/** One question-and-answer, or null when the shape is not one. */
+function readPair(value: unknown): { question: string; answer: string } | null {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+	const { question, answer } = value as { question?: unknown; answer?: unknown };
+	if (typeof question !== "string" || question.trim().length === 0) return null;
+	if (typeof answer !== "string" || answer.trim().length === 0) return null;
+	return { question, answer };
+}
+
+/**
+ * The questions one knowledge-base call is allowed to return, at most `limit`.
+ *
+ * Both shapes are read: `{ "questions": [ ... ] }` is what the prompt asks for,
+ * and a bare `{ "question", "answer" }` is one question written the older way —
+ * a generator that answers a request for one question with one question has
+ * done what was asked, and refusing its shape would throw a paid case away.
+ */
+function parseGeneratedPairs(text: string, limit: number): { question: string; answer: string }[] {
+	if (Buffer.byteLength(text, "utf8") > MAX_GENERATOR_RESPONSE_BYTES) return [];
 	const stripped = text.replace(/```(?:json)?/g, "").trim();
 	const start = stripped.indexOf("{");
 	const end = stripped.lastIndexOf("}");
-	if (start < 0 || end <= start) return null;
+	if (start < 0 || end <= start) return [];
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(stripped.slice(start, end + 1));
 	} catch {
-		return null;
+		return [];
 	}
-	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
-	const { question, answer } = parsed as { question?: unknown; answer?: unknown };
-	if (typeof question !== "string" || question.trim().length === 0) return null;
-	if (typeof answer !== "string" || answer.trim().length === 0) return null;
-	return { question, answer };
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return [];
+	const listed = (parsed as { questions?: unknown }).questions;
+	const values = Array.isArray(listed) ? listed : [parsed];
+	const pairs: { question: string; answer: string }[] = [];
+	for (const value of values) {
+		if (pairs.length >= limit) break;
+		const pair = readPair(value);
+		if (pair) pairs.push(pair);
+	}
+	return pairs;
 }
 
 /**
@@ -616,6 +720,61 @@ function kbCaseGraders(chunkId: string): GraderSpec[] {
 		{ type: "cites_source", chunk: chunkId, minOverlap: 0.35 },
 		{ type: "similarity", metric: "token-f1", threshold: 0.5 },
 	];
+}
+
+/**
+ * How finely the generator reads the base, and the passages that come out.
+ *
+ * The runtime geometry is the honest default: a passage the agent can actually
+ * be handed by `kb_search` is a passage a question can fairly be asked about.
+ * It is halved only when the base cannot otherwise fill the exam — session 8
+ * had three documents, three chunks and three questions where the guardrail
+ * needed fifteen, and generated the exam from the description instead. Halving
+ * stops at {@link MIN_KB_CHUNK_CHARS}, and stops early when a finer cut yields
+ * no more passages: a base of three one-line documents is at its floor whatever
+ * the number says.
+ */
+function kbExamPassages(
+	chunks: readonly KbChunk[],
+	needed: number,
+): { passages: KbPassage[]; geometry: KbGeometry } {
+	let geometry = KB_GEOMETRY;
+	let passages = kbPassages(chunks, geometry);
+	while (passages.length * MAX_KB_QUESTIONS_PER_PASSAGE < needed) {
+		const finer = finerGeometry(geometry);
+		if (!finer) break;
+		const cut = kbPassages(chunks, finer);
+		if (cut.length <= passages.length) break;
+		geometry = finer;
+		passages = cut;
+	}
+	return { passages, geometry };
+}
+
+/**
+ * The most questions this Target's knowledge base can ever produce, or null
+ * when it declares none and the question does not apply.
+ *
+ * The Builder reads this so it never offers what the documents cannot give:
+ * live session 8 answered a three-question exam by offering to "load twelve
+ * more from the knowledge base", because nothing had ever told it the ceiling.
+ * An unreadable base answers null rather than a number — a screen narrows, it
+ * does not fail, on provenance it cannot read.
+ */
+export function maxKbExamQuestions(target: ResolvedTarget): number | null {
+	if (!knowledgeBaseDeclared(target.manifest.data)) return null;
+	let chunks: KbChunk[];
+	try {
+		chunks = readKnowledgeBase(target.dir);
+	} catch {
+		return null;
+	}
+	if (chunks.length === 0) return 0;
+	// The finest cut this engine ever uses, and therefore the most questions it
+	// will ever write: a generation never chunks finer than the guardrail's own
+	// minimum asks for, however many cases were ordered.
+	const cut = kbExamPassages(chunks, SEALED_GATE_POLICY.minTasks);
+	return cut.passages.length * MAX_KB_QUESTIONS_PER_PASSAGE;
 }
 
 // ---------- parsing the answer ----------
@@ -759,12 +918,14 @@ export function sealedSynthReviewPath(stateRoot: string, projectId: string, disc
 }
 
 function writeReviewFile(path: string, tasks: readonly CorpusTask[]): void {
+	// `writeTextArtifact` creates the file with this mode and publishes that
+	// exact inode by link or rename, so the draft is 0600 on disk — a umask can
+	// only clear bits, and 0600 has none an ordinary one clears. The chmod that
+	// used to follow this call restored nothing it had not already got.
 	writeTextArtifact(path, `${tasks.map((task) => canonicalJson(task)).join("\n")}\n`, {
 		mode: 0o600,
 		immutable: true,
 	});
-	// The mode argument is masked by umask; a sealed draft is 0600 exactly.
-	chmodSync(path, 0o600);
 }
 
 // ---------- the command ----------
@@ -784,8 +945,10 @@ interface SealedSynthPreflight {
 	count: number;
 	drawn: CorpusTask[];
 	/** One prompt per drawn passage, in draw order. Empty on the Spec source. */
-	kbCalls: { chunk: KbChunk; user: string }[];
+	kbCalls: { passage: KbPassage; questions: number; user: string }[];
 	kbIndexHash: string | null;
+	/** Characters per generator passage; null on the Spec source. */
+	kbChunkChars: number | null;
 	spec: ResolvedSpec;
 	specSha256: string;
 	seed: string | null;
@@ -847,8 +1010,10 @@ function preflight(options: SealedSynthOptions): SealedSynthPreflight {
 	// Refused before a token is spent, and before the human is asked anything: a
 	// Target with no declared knowledge base has no passages to write questions
 	// from, and an exam about nothing is worse than no exam.
-	let kbCalls: { chunk: KbChunk; user: string }[] = [];
+	let kbCalls: { passage: KbPassage; questions: number; user: string }[] = [];
 	let kbIndexHash: string | null = null;
+	let kbChunkChars: number | null = null;
+	let kbQuestions = count;
 	if (source === "kb") {
 		if (!knowledgeBaseDeclared(target.manifest.data)) {
 			throw new SealedSynthRefusal(
@@ -873,8 +1038,35 @@ function preflight(options: SealedSynthOptions): SealedSynthPreflight {
 			);
 		}
 		kbIndexHash = kbIndexHashOf(chunks);
-		kbCalls = drawChunks(chunks, target.datasetHash, count, seed ?? "")
-			.map((chunk) => ({ chunk, user: kbGeneratorUserPrompt(chunk) }));
+		// What the exam has to reach: what was asked for, but never more than the
+		// sealed guardrail's own minimum. An operator who deliberately orders a
+		// five-question exam gets one; nobody gets a base cut finer than the
+		// questions actually need.
+		const needed = Math.min(count, SEALED_GATE_POLICY.minTasks);
+		const exam = kbExamPassages(chunks, needed);
+		const ceiling = exam.passages.length * MAX_KB_QUESTIONS_PER_PASSAGE;
+		if (ceiling < needed) {
+			// Refused here, with the number, before the human is asked anything and
+			// before a token is spent — and with the one alternative that exists,
+			// because "the base is too small" is only half an answer.
+			throw new SealedSynthRefusal(
+				t("sealed-synth.kb-too-small", {
+					chunks: plural(exam.passages.length, "passage"),
+					max: plural(ceiling, "question"),
+					min: plural(needed, "case"),
+					count: plural(count, "case"),
+				}),
+				t("sealed-synth.kb-too-small-next"),
+			);
+		}
+		kbChunkChars = exam.geometry.chars;
+		kbQuestions = Math.min(count, ceiling);
+		kbCalls = drawKbQuestions(exam.passages, target.datasetHash, kbQuestions, seed ?? "")
+			.map((share) => ({
+				passage: share.passage,
+				questions: share.questions,
+				user: kbGeneratorUserPrompt(share.passage, share.questions),
+			}));
 	}
 
 	const drawn = source === "kb" ? [] : drawExamples(target, examples, seed ?? "");
@@ -892,13 +1084,14 @@ function preflight(options: SealedSynthOptions): SealedSynthPreflight {
 		judge,
 		projectId,
 		source,
-		// A corpus of nine passages cannot answer twenty independent questions, so
-		// the request is capped at the draw and the dialog prices what will
-		// actually be written rather than what was asked for.
-		count: source === "kb" ? kbCalls.length : count,
+		// A base of six passages cannot answer twenty independent questions, so
+		// the request is capped at three per passage and the dialog prices what
+		// will actually be written rather than what was asked for.
+		count: source === "kb" ? kbQuestions : count,
 		drawn,
 		kbCalls,
 		kbIndexHash,
+		kbChunkChars,
 		spec,
 		specSha256,
 		seed,
@@ -944,7 +1137,8 @@ export function planSealedSynthesis(options: SealedSynthOptions): SealedSynthPla
 	return {
 		source: ready.source,
 		kbIndexHash: ready.kbIndexHash,
-		kbChunkIds: ready.kbCalls.map((call) => call.chunk.id),
+		kbChunkChars: ready.kbChunkChars,
+		kbChunkIds: ready.kbCalls.map((call) => call.passage.id),
 		generatorModel: `${ready.judge.provider}/${ready.judge.id}`,
 		generatorHash: hashValue(modelFingerprint(ready.judge)),
 		promptSha256: ready.promptSha256,
@@ -971,6 +1165,7 @@ export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promi
 		drawn,
 		kbCalls,
 		kbIndexHash,
+		kbChunkChars,
 		spec,
 		specSha256,
 		seed,
@@ -991,10 +1186,12 @@ export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promi
 	if (!receiptsDir) throw new Error("failed to create the sealed synthesis state directory");
 	const exchangeDir = join(receiptsDir, EXCHANGE_DIRECTORY, promptSha256.slice("sha256:".length, "sha256:".length + 16));
 
-	// One call per passage on the knowledge-base path, in draw order. Each answer
-	// becomes exactly one candidate case, with the passage it was written from
-	// nailed to it by a grader — so a malformed answer costs one question, not
-	// the whole exam.
+	// One call per drawn passage on the knowledge-base path, in draw order, each
+	// asked for that passage's share of the questions. Every answer becomes a
+	// candidate case with the RUNTIME chunk it was written from nailed to it by
+	// a grader — the only id `kb_search` can hand the agent, and therefore the
+	// only id `cites_source` can check. A passage that answers with fewer
+	// questions than it was asked for costs those questions, not the exam.
 	const generated: unknown[] = [];
 	let unparsedPairs = 0;
 	if (source === "kb") {
@@ -1009,17 +1206,22 @@ export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promi
 				abortMessage: "sealed synthesis aborted",
 				...(options.signal ? { signal: options.signal } : {}),
 			});
-			const pair = parseGeneratedPair(answered.text);
-			if (!pair) {
-				unparsedPairs += 1;
-				continue;
+			const pairs = parseGeneratedPairs(answered.text, call.questions);
+			unparsedPairs += call.questions - pairs.length;
+			for (const pair of pairs) {
+				generated.push({
+					input: pair.question,
+					expected: pair.answer,
+					metadata: {
+						kbChunk: call.passage.source,
+						// The finer passage the question was actually written from, when
+						// it is not the whole chunk. An id, and evidence: it says which
+						// part of the source the question stands on.
+						...(call.passage.id === call.passage.source ? {} : { kbPassage: call.passage.id }),
+					},
+					graders: kbCaseGraders(call.passage.source),
+				});
 			}
-			generated.push({
-				input: pair.question,
-				expected: pair.answer,
-				metadata: { kbChunk: call.chunk.id },
-				graders: kbCaseGraders(call.chunk.id),
-			});
 		}
 	} else {
 		const called = await callEvaluatorModel({
@@ -1066,19 +1268,19 @@ export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promi
 		});
 		outcome = { kind: "sealed", corpusId: corpus.id, corpusHash: corpus.hash, taskCount: corpus.taskCount };
 	}
-	// The cases have a home; the raw exchange is now only a duplicate of them.
-	rmSync(exchangeDir, { recursive: true, force: true });
-	try {
-		rmdirSync(join(receiptsDir, EXCHANGE_DIRECTORY));
-	} catch {
-		// A concurrent generation still holds its own exchange, or there never was
-		// a directory. Either way the receipts directory holds only receipts.
-	}
 
+	// Three durable effects, in the order that survives a crash between any two
+	// of them. The corpus first, because the receipt names it. The receipt next,
+	// because a sealed exam whose receipt was never written is an exam the
+	// passport renders as operator-supplied — the one claim it must never make
+	// about a judge-written one. Deleting the raw exchange comes last: until the
+	// receipt exists, that exchange is the only surviving proof of where the
+	// questions came from.
 	const receipt = SealedSynthReceiptSchema.parse({
-		schemaVersion: 2,
+		schemaVersion: 3,
 		source,
 		kbIndexHash,
+		kbChunkChars,
 		projectId,
 		targetId: target.manifest.id,
 		corpusName: options.name,
@@ -1102,12 +1304,30 @@ export async function synthesizeSealedCorpus(options: SealedSynthOptions): Promi
 		writeJsonArtifact(receiptPath, SealedSynthReceiptSchema, receipt, { immutable: true });
 	}
 
+	// The cases have a home and their origin is written down; the raw exchange is
+	// now only a second copy of holdout content. A cleanup that cannot happen is
+	// reported rather than thrown: the exam exists either way, and the operator
+	// is the one who has to know a copy of it is still on disk.
+	let exchangeRetained: string | null = null;
+	try {
+		rmSync(exchangeDir, { recursive: true, force: true });
+	} catch {
+		exchangeRetained = exchangeDir;
+	}
+	try {
+		rmdirSync(join(receiptsDir, EXCHANGE_DIRECTORY));
+	} catch {
+		// A concurrent generation still holds its own exchange, or there never was
+		// a directory. Either way the receipts directory holds only receipts.
+	}
+
 	return {
 		receipt,
 		receiptPath,
 		source,
 		corpus,
 		reviewPath,
+		exchangeRetained,
 		generatorModel: `${judge.provider}/${judge.id}`,
 		promptSha256,
 		requested: count,
@@ -1278,6 +1498,12 @@ export function renderSealedSynthOutput(result: SealedSynthResult): SealedSynthO
 		];
 
 	const warnings: string[] = [`receipt ${result.receiptPath}`];
+	if (result.exchangeRetained) {
+		warnings.push(
+			`warning: the raw generator exchange could not be removed and still holds a copy of the exam: ` +
+				`${result.exchangeRetained}`,
+		);
+	}
 	if (result.droppedMalformed > 0) {
 		warnings.push(`warning: ${result.droppedMalformed} generated case(s) did not match the case schema and were dropped`);
 	}
