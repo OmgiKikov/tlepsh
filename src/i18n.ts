@@ -1677,6 +1677,10 @@ one would cost more than usual, and then you get a single yes/no.`,
 	"measurement.excluded-infrastructure": "infrastructure",
 	"measurement.excluded-incomplete": "incomplete repetitions",
 	"measurement.excluded-mixed": "infrastructure, incomplete repetitions",
+	"run.every-repetition": "{count} in every repetition",
+	"run.noise-unmeasured": "1 repetition — noise was not measured",
+	"run.noise-advice": "{repetitions} would measure it (A/A)",
+	"table.col.every-repetition": "passed",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -3051,6 +3055,10 @@ const ru: Record<MessageKey, string> = {
 	"measurement.excluded-infrastructure": "инфраструктура",
 	"measurement.excluded-incomplete": "неполные повторы",
 	"measurement.excluded-mixed": "инфраструктура, неполные повторы",
+	"run.every-repetition": "во всех повторах {count}",
+	"run.noise-unmeasured": "повторов 1 — шум не измерен",
+	"run.noise-advice": "нужно {repetitions} — прогони A/A",
+	"table.col.every-repetition": "прошло",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

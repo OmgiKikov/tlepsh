@@ -67,6 +67,26 @@ function graderChips(graders: RunRow["graders"]): string {
 }
 
 /**
+ * How often each case came back right, over the rows given.
+ *
+ * A row is one repetition; the fraction beside it is the whole case: `3/3`
+ * says the agent got this one right every time it was asked, `2/3` says the
+ * answer moves. An errored repetition is counted in the denominator and never
+ * in the numerator — the run stopped before grading, and calling that a pass
+ * would turn a case the engine lost into a case the agent aced.
+ */
+function repetitionsPassed(rows: readonly RunRow[]): Map<string, { pass: number; total: number }> {
+	const byTask = new Map<string, { pass: number; total: number }>();
+	for (const row of rows) {
+		const entry = byTask.get(row.taskId) ?? { pass: 0, total: 0 };
+		entry.total += 1;
+		if (row.outcome === "pass") entry.pass += 1;
+		byTask.set(row.taskId, entry);
+	}
+	return byTask;
+}
+
+/**
  * The compact runs table under the diagnosis: failures first (the rows come
  * already ordered by `runsTable`), one line per case × repetition.
  */
@@ -80,11 +100,18 @@ export function renderRunsTable(
 	if (rows.length === 0) return [paint.dim(t("table.none"))];
 	const titles = new Map(modes.map((mode) => [mode.id, mode.title]));
 	const shown = rows.slice(0, limit);
-	const columns = { index: 3, task: 18, rep: 3, outcome: 7, score: 5, graders: 24, mode: 24, tools: 5 };
+	// Counted over every row handed in, not the page's own slice: a fraction
+	// whose denominator is however many rows happened to fit is not a fraction.
+	const passed = repetitionsPassed(rows);
+	// The `passed` column is paid for out of the two widest neighbours: the
+	// panel's 110 columns are the budget, and a fraction that says whether a
+	// case is reliable outweighs five more characters of grader chip.
+	const columns = { index: 3, task: 18, rep: 3, passed: 6, outcome: 7, score: 5, graders: 18, mode: 23, tools: 5 };
 	const header = [
 		pad("#", columns.index),
 		pad(t("table.col.task"), columns.task),
 		pad(t("table.col.rep"), columns.rep),
+		pad(t("table.col.every-repetition"), columns.passed),
 		pad(t("table.col.outcome"), columns.outcome),
 		pad(t("table.col.score"), columns.score),
 		pad(t("table.col.graders"), columns.graders),
@@ -97,10 +124,12 @@ export function renderRunsTable(
 		const modeId = row.failureModeIds[0];
 		const mode = modeId ? titles.get(modeId) ?? modeId : "—";
 		const outcome = pad(outcomeWord(row.outcome), columns.outcome);
+		const task = passed.get(row.taskId) ?? { pass: 0, total: 0 };
 		lines.push([
 			pad(String(position + 1), columns.index),
 			pad(oneLine(row.taskId, columns.task), columns.task),
 			pad(String(row.repetitionIndex), columns.rep),
+			pad(`${task.pass}/${task.total}`, columns.passed),
 			paintOutcome(row.outcome, outcome, paint),
 			pad(pct(row.score), columns.score),
 			pad(oneLine(graderChips(row.graders), columns.graders), columns.graders),

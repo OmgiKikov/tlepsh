@@ -16,6 +16,7 @@ import { failureModeExcerpt, failureModeReading } from "../../application/run-ex
 import type { TargetAuthoringResource } from "../../application/target-authoring-context.js";
 import { formatResourceFragment } from "../../domain/comparison-gate.js";
 import { resolveWorldPath } from "../../domain/world.js";
+import { recommendedRepetitions } from "../../workbench/calibration.js";
 import { candidateStatusLabel, hasMessage, plural, t, verdictLabel } from "../../i18n.js";
 import { formatFlipRate, formatNoiseBand } from "./calibration.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
@@ -677,6 +678,34 @@ export function judgeRunAgreementLine(
 	return calibration ? judgeAgreementLine(calibration, paint) : paint.warning(t("judge.uncalibrated"));
 }
 
+/**
+ * What repetition bought, beside the pass rate it hides inside.
+ *
+ * `5/12 passed` over three repetitions is two very different runs: twelve
+ * cases that each pass a bit less than half the time, and five cases that pass
+ * every single time next to seven that never do. Only the second is something
+ * to build on, and until now nothing on the screen separated them. So the
+ * summary says how many cases came back right in EVERY repetition.
+ *
+ * With one repetition there is no such number to say — every measured case
+ * trivially passed "all" of its one run — and a claim about run-to-run
+ * behaviour off a single sample is exactly the claim this product refuses to
+ * make. There the line says the noise was not measured, and, when the
+ * calibrated design would need more samples than were taken, what would
+ * measure it.
+ */
+function repetitionNote(evaluation: WorkbenchTracesDetail["evaluation"], paint: Paint): string {
+	const { stable, measured } = evaluation.stableTasks;
+	if (evaluation.repetitions > 1) return paint.dim(t("run.every-repetition", { count: stable }));
+	const advised = measured > 0
+		? recommendedRepetitions(evaluation.summary.allPassRate, measured)
+		: evaluation.repetitions;
+	const advice = advised > evaluation.repetitions
+		? `, ${t("run.noise-advice", { repetitions: plural(advised, "repetition") })}`
+		: "";
+	return paint.warning(`${t("run.noise-unmeasured")}${advice}`);
+}
+
 export function renderEvaluationSummary(
 	evaluation: WorkbenchTracesDetail["evaluation"],
 	paint: Paint,
@@ -685,7 +714,7 @@ export function renderEvaluationSummary(
 	const tone = summary.error > 0 ? paint.warning : summary.fail === 0 ? paint.success : paint.accent;
 	const failed = t("run.failed", { count: summary.fail });
 	const errors = plural(summary.error, "error");
-	return `${tone(paint.bold(t("run.passed", { pass: summary.pass, total: summary.total })))} ${paint.dim(bar(summary.allPassRate, 16))} ${paint.dim(percent(summary.allPassRate))} ${paint.dim("·")} ${summary.fail > 0 ? paint.error(failed) : paint.muted(failed)} ${paint.dim("·")} ${summary.error > 0 ? paint.warning(errors) : paint.muted(errors)} ${paint.dim(`· ${plural(evaluation.repetitions, "repetition")} · ${evaluation.evalRunId}`)}`;
+	return `${tone(paint.bold(t("run.passed", { pass: summary.pass, total: summary.total })))} ${paint.dim(bar(summary.allPassRate, 16))} ${paint.dim(percent(summary.allPassRate))} ${paint.dim("·")} ${repetitionNote(evaluation, paint)} ${paint.dim("·")} ${summary.fail > 0 ? paint.error(failed) : paint.muted(failed)} ${paint.dim("·")} ${summary.error > 0 ? paint.warning(errors) : paint.muted(errors)} ${paint.dim(`· ${plural(evaluation.repetitions, "repetition")} · ${evaluation.evalRunId}`)}`;
 }
 
 /** Diagnosis screen shared by /traces and the post-run summary. */

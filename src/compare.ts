@@ -69,7 +69,7 @@ export interface CompareOptions {
  * surface that ranks or selects a run by "how well it scored" — the comparison
  * here, the training export's `--min-score` bar — must mean the same number.
  */
-export function runGraderScore(record: RunRecord): number {
+export function runGraderScore(record: Pick<RunRecord, "evalResults">): number {
 	const graders = record.evalResults?.graders ?? [];
 	if (graders.length === 0) return record.evalResults?.outcome === "pass" ? 1 : 0;
 	const average = graders.reduce((sum, grader) => sum + grader.score, 0) / graders.length;
@@ -80,20 +80,70 @@ interface TaskAggregate {
 	pass: number;
 	score: number;
 	total: number;
+	errors: number;
 	status: string;
 }
 
-function perTask(records: readonly RunRecord[]): Map<string, TaskAggregate> {
+/**
+ * The three fields a per-task aggregate reads. Narrower than a whole
+ * RunRecord so a reader — and a test — can hand over what it actually has.
+ */
+export type TaskRun = Pick<RunRecord, "taskId" | "status" | "evalResults">;
+
+function perTask(records: readonly TaskRun[]): Map<string, TaskAggregate> {
 	const byTask = new Map<string, TaskAggregate>();
 	for (const record of records) {
-		const entry = byTask.get(record.taskId) ?? { pass: 0, score: 0, total: 0, status: record.status };
+		const entry = byTask.get(record.taskId) ?? { pass: 0, score: 0, total: 0, errors: 0, status: record.status };
 		entry.total += 1;
-		if (record.evalResults?.outcome === "pass") entry.pass += 1;
+		// An errored repetition never counts as a pass. The run stopped before
+		// grading; whatever outcome the record carries is the harness's, not the
+		// agent's, and counting it would put a task the engine lost into the
+		// column that says the agent got it right every time.
+		if (record.status === "error") entry.errors += 1;
+		else if (record.evalResults?.outcome === "pass") entry.pass += 1;
 		entry.score += runGraderScore(record);
 		if (record.status === "error") entry.status = "error";
 		byTask.set(record.taskId, entry);
 	}
 	return byTask;
+}
+
+/**
+ * How many of an eval run's cases the agent got right in EVERY repetition, and
+ * how many cases were measured at all.
+ *
+ * Read at display time off the same aggregate the comparison pairs — no
+ * EvalRun field, nothing durable. `3/3` is a different fact from `60% passed`:
+ * a basket where every case passes two of three repetitions and a basket where
+ * two thirds of the cases pass all three print the same pass rate and mean
+ * very different things, and only this number separates them. An errored
+ * repetition is never a pass, so a case the engine lost is never `3/3`.
+ *
+ * With one repetition the answer is arithmetically the pass count and says
+ * nothing about repetition at all; the renderer says so rather than claiming
+ * it did.
+ */
+export interface StableTasks {
+	/** Cases that passed in every repetition. */
+	stable: number;
+	/** Cases with at least one recorded repetition. */
+	measured: number;
+	/** Passes over repetitions, per case, in task-id order. */
+	perTask: { taskId: string; pass: number; total: number }[];
+}
+
+export function stableTasks(records: readonly TaskRun[]): StableTasks {
+	const byTask = perTask(records);
+	const ids = [...byTask.keys()].sort(compareUtf8);
+	const rows = ids.map((taskId) => {
+		const entry = byTask.get(taskId)!;
+		return { taskId, pass: entry.pass, total: entry.total };
+	});
+	return {
+		stable: rows.filter((row) => row.total > 0 && row.pass === row.total).length,
+		measured: rows.length,
+		perTask: rows,
+	};
 }
 
 /**

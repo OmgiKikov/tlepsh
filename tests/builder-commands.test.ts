@@ -175,6 +175,7 @@ function tracesDetail(): WorkbenchTracesDetail {
 			evalRunId: "erun-current",
 			summary: { total: 3, pass: 1, fail: 2, error: 0, allPassRate: 1 / 3 },
 			repetitions: 1,
+			stableTasks: { stable: 1, measured: 3 },
 			finishedAt: "2026-09-01T09:00:07.000Z",
 			targetGitSha: "4d533f07030f0a4b1c2d3e4f5a6b7c8d9e0f1a2b",
 			corpus: { name: "Ombudsman basket", taskCount: 3 },
