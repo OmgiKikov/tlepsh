@@ -1271,3 +1271,20 @@ describe("ru: what ended a run", () => {
 		expect(leakedEnglish(turnBudgetLine(300_000, [{ simulatedUser: { maxTurns: 6 } }]))).toEqual([]);
 	});
 });
+
+describe("ru: a dirty agent folder", () => {
+	it("is refused in the operator's language, naming the files", async () => {
+		const { TargetAuthoringContextError } = await import("../src/application/target-authoring-context.js");
+		setLanguage("ru");
+		const error = new TargetAuthoringContextError(
+			"TARGET_CONTEXT_DIRTY",
+			"Target has uncommitted changes: notes.md. Commit them, then author.",
+			undefined,
+			{ code: "target.dirty", params: { paths: "notes.md" } },
+		);
+		const human = humanizeCommandError(error);
+		expect(human.message).toBe("В папке агента есть незакоммиченные изменения: notes.md. Закоммить их — и продолжим.");
+		// The file name is the operator's, not the host's: it is not a leak.
+		expect(leakedEnglish(human.message.replace("notes.md", ""))).toEqual([]);
+	});
+});

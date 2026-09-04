@@ -86,7 +86,7 @@ export function renderAgentLogChart(log: AgentLog, paint: Paint): string[] {
 	const scores = log.versions.map((version) => version.score);
 	const attempts = log.rows.length;
 	const cost = `${paint.dim(`${t("growth.cost")} `)} ${formatCostUsd(log.cumulativeCostUsd)} ${paint.dim(
-		t("growth.cumulative", { attempts: plural(attempts, "attempt") }),
+		t("growth.cumulative", { attempts: plural(attempts, "attempt spent over") }),
 	)}`;
 	if (scores.length === 0) return [cost];
 	const shown = Math.min(scores.length, MAX_SPARKLINE_WIDTH);

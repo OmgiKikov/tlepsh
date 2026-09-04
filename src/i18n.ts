@@ -122,6 +122,8 @@ const NOUNS = {
 		version: ["version", "versions"],
 		"decided attempt": ["decided attempt", "decided attempts"],
 		attempt: ["attempt", "attempts"],
+		// After "over"/«за» the noun is in the accusative: «за 1 попытку», never «за 1 попытка».
+		"attempt spent over": ["attempt", "attempts"],
 		column: ["column", "columns"],
 		"earlier attempt": ["earlier attempt", "earlier attempts"],
 		record: ["record", "records"],
@@ -207,6 +209,7 @@ const NOUNS = {
 		version: ["версия", "версии", "версий"],
 		"decided attempt": ["решённая попытка", "решённые попытки", "решённых попыток"],
 		attempt: ["попытка", "попытки", "попыток"],
+		"attempt spent over": ["попытку", "попытки", "попыток"],
 		column: ["колонка", "колонки", "колонок"],
 		"earlier attempt": ["прошлая попытка", "прошлые попытки", "прошлых попыток"],
 		record: ["запись", "записи", "записей"],
@@ -1809,6 +1812,8 @@ one would cost more than usual, and then you get a single question.`,
 	"ship-gate.kb-ceiling": "the knowledge base gives at most {max}",
 	// lane: workshop-restart
 	"label.workshop": "Workshop",
+	// lane: smoke-a — the dirty-tree refusal a person has to act on
+	"target.dirty": "The agent folder has uncommitted changes: {paths}. Commit them, and we continue.",
 	"workshop.recorded": "still open from an earlier session — the Builder continues in it, it does not start over",
 	"workshop.stale-worktree-gone": "the one from an earlier session is gone: its working copy no longer exists, so a new one has to be opened",
 	"workshop.stale-unreadable-note": "the note about an earlier session's workshop cannot be read, so a new one has to be opened",
@@ -3344,6 +3349,8 @@ const ru: Record<MessageKey, string> = {
 	"ship-gate.kb-ceiling": "база знаний даёт не больше {max}",
 	// lane: workshop-restart
 	"label.workshop": "Мастерская",
+	// lane: smoke-a
+	"target.dirty": "В папке агента есть незакоммиченные изменения: {paths}. Закоммить их — и продолжим.",
 	"workshop.recorded": "осталась открыта с прошлой сессии — Билдер продолжит в ней, а не начнёт заново",
 	"workshop.stale-worktree-gone": "с прошлой сессии потеряна: её рабочей копии больше нет, нужно открыть новую",
 	"workshop.stale-unreadable-note": "заметку о мастерской с прошлой сессии не прочитать, нужно открыть новую",

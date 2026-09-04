@@ -71,11 +71,19 @@ export type TargetAuthoringContextErrorCode =
 /** A bounded model-safe failure. Host-only subprocess details remain in `cause`. */
 export class TargetAuthoringContextError extends Error {
 	readonly code: TargetAuthoringContextErrorCode;
+	/** The same refusal as a message key with its parameters, for a screen that speaks the operator's language. */
+	readonly reason?: { code: string; params?: Record<string, string> };
 
-	constructor(code: TargetAuthoringContextErrorCode, message: string, cause?: unknown) {
+	constructor(
+		code: TargetAuthoringContextErrorCode,
+		message: string,
+		cause?: unknown,
+		reason?: { code: string; params?: Record<string, string> },
+	) {
 		super(message, cause === undefined ? undefined : { cause });
 		this.name = "TargetAuthoringContextError";
 		this.code = code;
+		if (reason) this.reason = reason;
 	}
 }
 
@@ -272,9 +280,11 @@ function assertCleanRevision(repositoryDir: string, expectedRevision: string): v
 		gitRaw(repositoryDir, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).toString("utf8"),
 	);
 	if (dirty.length > 0) {
-		contextError(
+		throw new TargetAuthoringContextError(
 			"TARGET_CONTEXT_DIRTY",
 			`Target has uncommitted changes: ${namedDirtyPaths(dirty)}. Commit them, then author.`,
+			undefined,
+			{ code: "target.dirty", params: { paths: namedDirtyPaths(dirty) } },
 		);
 	}
 	if (!GIT_SHA.test(expectedRevision)) {
