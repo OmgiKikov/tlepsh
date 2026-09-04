@@ -223,7 +223,7 @@ const expectedWorkshopToolNames = [
 	"ahde_workshop_try",
 ];
 const expectedRegisteredToolNames = [...expectedToolNames, ...expectedWorkshopToolNames];
-// The public order is the `/help` order: the nine the product is made of, the
+// The public order is the /help order: the nine the product is made of, the
 // twelve expert shortcuts, then the eight decisions AHDE asks for itself.
 const expectedCommandNames = [
 	"test", "fix", "ship", "status", "traces", "trace", "passport", "dataset", "help",
@@ -562,7 +562,7 @@ await launchBuilderPi({
       throw new Error("installed Builder still allows a generic write tool");
     }
     // Membership, not order: where each handler sits in the source file is not
-    // the order `/help` prints them in.
+    // the order /help prints them in.
     const actualCommands = registeredCommands.map(({ name }) => name).sort();
     if (JSON.stringify(actualCommands) !== JSON.stringify([...expectedCommandNames].sort())) {
       throw new Error(\`Builder extension registered an unexpected command surface: \${actualCommands.join(", ")}\`);
