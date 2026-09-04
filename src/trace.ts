@@ -16,6 +16,8 @@ export interface TraceToolCall {
 	id: string;
 	name: string;
 	arguments: Record<string, unknown>;
+	/** Only the host may mark a call as agent-reported rather than executed. */
+	evidence?: "reported";
 }
 
 export interface TraceToolResult {
@@ -144,6 +146,7 @@ function assertContent(content: unknown): void {
 			throw new Error(`message.content[${index}].thinking must be string`);
 		}
 		if (part.type === "toolCall") {
+			if (part.evidence !== undefined && part.evidence !== "reported") throw new Error("invalid toolCall evidence");
 			if (typeof part.id !== "string" || typeof part.name !== "string" || !isRecord(part.arguments)) {
 				throw new Error(`message.content[${index}] toolCall requires string id/name and object arguments`);
 			}
@@ -196,11 +199,11 @@ function blockThinking(content: unknown): string | undefined {
 function blockToolCalls(content: unknown): TraceToolCall[] | undefined {
 	if (!Array.isArray(content)) return undefined;
 	const calls = content.filter(
-		(part): part is { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> } =>
+		(part): part is TraceToolCall & { type: "toolCall" } =>
 			typeof part === "object" && part !== null && (part as { type?: string }).type === "toolCall",
 	);
 	if (calls.length === 0) return undefined;
-	return calls.map((call) => ({ id: call.id, name: call.name, arguments: call.arguments }));
+	return calls.map((call) => ({ id: call.id, name: call.name, arguments: call.arguments, ...(call.evidence ? { evidence: call.evidence } : {}) }));
 }
 
 function assertTraceContentBounds(content: string): void {
@@ -426,7 +429,7 @@ export function renderTraceMarkdown(messages: TraceMessage[], maxResultChars = 6
 			}
 			if (message.toolCalls) {
 				for (const call of message.toolCalls) {
-					lines.push(`**tool_call:** \`${call.name}\`(${JSON.stringify(call.arguments)})`, "");
+					lines.push(`**tool_call${call.evidence === "reported" ? " (agent-reported, not host-verified)" : ""}:** \`${call.name}\`(${JSON.stringify(call.arguments)})`, "");
 				}
 			}
 		} else if (message.role === "toolResult" && message.toolResult) {

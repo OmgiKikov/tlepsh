@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { compareVerifiedEvalRuns, runCost } from "../compare.js";
+import { compareVerifiedEvalRuns, runCost, runGraderScore } from "../compare.js";
 import {
 	isSealedEvalRun,
 	listEvalRunIndexesLenient,
@@ -140,10 +140,7 @@ export interface WatchLoopOptions extends WatchTickOptions {
  * `compare.ts` uses, so a tick's own number and the gate's agree.
  */
 function runScore(record: RunRecord): number {
-	const graders = record.evalResults?.graders ?? [];
-	if (graders.length === 0) return record.evalResults?.outcome === "pass" ? 1 : 0;
-	const average = graders.reduce((sum, grader) => sum + grader.score, 0) / graders.length;
-	return Math.min(1, Math.max(0, average));
+	return runGraderScore(record);
 }
 
 /** Per-task mean over repetitions, then the mean over tasks. */

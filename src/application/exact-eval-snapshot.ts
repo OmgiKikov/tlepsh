@@ -6,6 +6,7 @@ import {
 	type VerifiedEvalRun,
 } from "../eval.js";
 import { axisDifferences, canonicalJson, hashValue, provenanceAxes } from "../provenance.js";
+import { verifiedRunArtifacts, type VerifiedRunArtifacts } from "../run-evidence.js";
 
 export { compareUtf8 } from "../domain/comparison-gate.js";
 
@@ -31,6 +32,7 @@ export function loadExactEvalSnapshot(
 		throw new Error(`eval run ${evalRunId} lacks explicit ${expectedVisibility} visibility`);
 	}
 	const expectedHashes = new Map(record.runArtifacts?.map((artifact) => [artifact.runId, artifact.sha256]) ?? []);
+	const artifacts = new Map<string, VerifiedRunArtifacts>();
 	const runs = record.runIds.map((runId) => {
 		const run = loadRun(runsRoot, runId);
 		if (run.runId !== runId) mismatch(evalRunId, `run path ${runId} contains record ${run.runId}`);
@@ -38,6 +40,7 @@ export function loadExactEvalSnapshot(
 		if (expectedHash && hashValue(run) !== expectedHash) {
 			mismatch(evalRunId, `run ${runId} hash does not match the final eval index`);
 		}
+		artifacts.set(runId, verifiedRunArtifacts(runsRoot, run));
 		if (run.parent?.evalRunId !== record.evalRunId) mismatch(evalRunId, `run ${runId} parent does not reference this eval`);
 		if (
 			run.target.id !== record.target.id ||
@@ -104,7 +107,7 @@ export function loadExactEvalSnapshot(
 		allPassRate: runs.length === 0 ? 0 : pass / runs.length,
 	};
 	if (!sameJson(summary, record.summary)) mismatch(evalRunId, "summary does not match verified runs");
-	return { record, runs, hasRunHashes: record.runArtifacts !== undefined };
+	return { record, runs, artifacts, hasRunHashes: record.runArtifacts !== undefined };
 }
 /** Hashes exact grader-result arrays without projecting reason text into public DTOs. */
 export function exactSignalDigest(snapshot: VerifiedEvalRun): string {

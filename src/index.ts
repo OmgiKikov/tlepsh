@@ -19,6 +19,7 @@ export * from "./application/harness-authoring.js";
 export * from "./application/experiment-history.js";
 export * from "./application/export-dataset.js";
 export * from "./application/improvement-brief.js";
+export * from "./application/improvement-author.js";
 export * from "./application/proposal-search.js";
 export * from "./application/judge-labels.js";
 export * from "./application/target-bootstrap.js";

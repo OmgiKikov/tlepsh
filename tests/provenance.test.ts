@@ -162,11 +162,10 @@ describe("axisDifferences (table-driven: each axis must be caught)", () => {
 			.toEqual(["runtime.evaluatorId"]);
 	});
 
-	it("names the exact evaluator generation, so an abstaining judge is a new axis value", () => {
-		// The prompts moved when the judge learned to say "I cannot tell", so the
-		// id had to move with them. Pinned by value: a silent bump would make old
-		// evidence comparable with evidence answering a different question.
-		expect(AHDE_EVALUATOR_ID).toBe("ahde-evaluator-v3");
+	it("names the generation that requires completion and host-observed tool calls", () => {
+		// v3 allowed silence and tool self-reports to pass these checks. Keep
+		// that evidence readable, but never compare its outcomes to v4's.
+		expect(AHDE_EVALUATOR_ID).toBe("ahde-evaluator-v4");
 	});
 
 	it("catches changed judge configuration", () => {

@@ -8,6 +8,8 @@ import type {
 	WorkbenchView,
 } from "../../workbench/types.js";
 import { SEALED_GATE_POLICY } from "../../domain/comparison-gate.js";
+import { improvementAuthorSpendLine } from "../../application/improvement-loop.js";
+import { searchCandidateLine } from "../../application/proposal-search.js";
 import { candidateStatusLabel, plural, t, verdictLabel } from "../../i18n.js";
 import { formatFlipRate, formatNoiseBand, renderCalibration } from "./calibration.js";
 import { regradeHeadline, renderRegrade } from "./regrade.js";
@@ -23,12 +25,18 @@ export interface RenderDecisionOptions {
 }
 
 function nextLine(view: WorkbenchView, paint: Paint): string {
-	return `${paint.dim(t("label.next"))} ${nextStep(view)} ${paint.dim(`(${stageLabel(view.stage)})`)}`;
+	return `${paint.dim(t("label.next"))} ${nextStep(view)}`;
+}
+
+function runNextLine(result: Extract<WorkbenchDecisionResult, { kind: "run-eval" }>["result"], view: WorkbenchView, paint: Paint): string {
+	const brief = result.improvementBrief;
+	if (brief.proposalEligible) return nextLine(view, paint);
+	return `${paint.dim(t("label.next"))} ${t(brief.status === "healthy" ? "diagnosis.next.harder" : "diagnosis.next.repair")}`;
 }
 
 function runLines(result: Extract<WorkbenchDecisionResult, { kind: "run-eval" }>["result"], paint: Paint, options: RenderDecisionOptions): string[] {
 	// One `Next` per screen: `renderDecision` closes with the stage's own.
-	const lines = renderTraces(result, paint, { next: false });
+	const lines = renderTraces(result, paint, { next: false, compact: true });
 	if (options.liveTraceUrl) lines.push(`${paint.dim(t("label.live-trace"))} ${paint.link(options.liveTraceUrl)} ${paint.dim(t("result.retained"))}`);
 	return lines;
 }
@@ -82,6 +90,9 @@ function improveLines(result: WorkbenchImproveResult, paint: Paint, view: Workbe
 			`  ${cycle.cycle}. ${cycle.pass}/${cycle.total} · ${screen} · ${verification} · ${cycle.note}`,
 		));
 	}
+	for (const row of result.search?.rows ?? []) lines.push(paint.dim(searchCandidateLine(row)));
+	const authorSpend = improvementAuthorSpendLine(result.cycles);
+	if (authorSpend) lines.push(paint.muted(authorSpend));
 	lines.push(paint.muted(t("result.stopped", { reason: result.stopMessage })));
 	if (result.candidateId) {
 		lines.push(paint.muted(t("result.promotion-yours")));
@@ -261,7 +272,7 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 			return lines;
 		}
 		case "run-eval":
-			return [...runLines(result.result, paint, options), nextLine(view, paint)];
+			return [...runLines(result.result, paint, options), runNextLine(result.result, view, paint)];
 		case "calibrate": {
 			const lines = [
 				`${section(t("result.noise-calibrated"), paint)} ${paint.dim(result.result.candidateId)}`,
@@ -274,7 +285,7 @@ export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, op
 		case "regrade":
 			return [...renderRegrade(result.result, paint), nextLine(view, paint)];
 		case "run-current":
-			if (result.result.resolvedAs === "run-eval") return [...runLines(result.result, paint, options), nextLine(view, paint)];
+			if (result.result.resolvedAs === "run-eval") return [...runLines(result.result, paint, options), runNextLine(result.result, view, paint)];
 			if (result.result.resolvedAs === "start-testing") return startTestingLines(result.result, paint, view, options);
 			return verificationLines(result.result, paint, view);
 		case "start-testing":

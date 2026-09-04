@@ -20,6 +20,7 @@
  */
 
 import { randomBytes } from "node:crypto";
+import type { ImprovementAuthorUsage } from "./improvement-author.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -79,19 +80,23 @@ import {
 	type FailureMode,
 	type ImprovementBrief,
 } from "./improvement-brief.js";
+import {
+	improvementDesignCorpusRefs,
+	improvementExperimentDesignPath,
+	materializeImprovementExperimentDesign,
+	planImprovementExperiment,
+	type ImprovementExperimentDesign,
+} from "./improvement-experiment-design.js";
 
 /** Bounds a single `ahde improve` invocation. */
 export const MAX_IMPROVEMENT_CYCLES = 10;
 
 /**
- * What the operator is told, everywhere the loop describes itself. The loop
- * does not write harness text: it applies proposals Builder Pi already wrote,
- * screens them and verifies them. A headless author is the next milestone and
- * is not shipped, and no surface pretends otherwise.
+ * Fallback disclosure for hosts without an attached model author.
  */
 export const IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE =
 	"The loop applies proposals the Builder has already prepared in `ahde`; it does not write them. " +
-	"A headless proposal author is not shipped yet — it is the next milestone.";
+	"Open Builder Pi to generate new hypotheses automatically.";
 
 // ---------------------------------------------------------------------------
 // One invocation's ledger: unique branches, and a second `improve` that knows.
@@ -107,6 +112,8 @@ const ImprovementLoopConfigurationSchema = z.strictObject({
 	targetGitSha: z.string().regex(/^[0-9a-f]{40}$/),
 	developmentCorpusId: ArtifactIdSchema.nullable(),
 	developmentCorpusHash: z.string().regex(/^sha256:[0-9a-f]{64}$/).nullable(),
+	experimentDesignId: z.string().regex(/^idesign_[0-9a-f]{24}$/).nullable().default(null),
+	experimentDesignHash: z.string().regex(/^sha256:[0-9a-f]{64}$/).nullable().default(null),
 	until: z.number().min(0).max(1),
 	maxCycles: z.number().int().min(1).max(MAX_IMPROVEMENT_CYCLES),
 	repetitions: z.number().int().positive(),
@@ -449,13 +456,14 @@ export interface ImprovementProposalRequest {
 	signal?: AbortSignal;
 }
 
-export type ImprovementProposalDecision =
+export type ImprovementProposalDecision = (
 	/** A proposal to record through the canonical Builder chain. */
 	| { kind: "propose"; proposal: CandidateProposal }
 	/** An already-recorded, still-open Builder proposal to apply. */
 	| { kind: "recorded"; builderRunId: string }
 	/** Nothing to try this cycle, and — where it is one — the typed reason. */
-	| { kind: "no-change"; reason: string; staleness?: RecordedProposalStaleReason };
+	| { kind: "no-change"; reason: string; staleness?: RecordedProposalStaleReason }
+) & { authoring?: ImprovementAuthorUsage };
 
 export type ImprovementProposalAuthor = (
 	request: ImprovementProposalRequest,
@@ -482,6 +490,8 @@ export interface ImprovementLoopVerification {
 
 export interface ImprovementLoopCycle {
 	cycle: number;
+	/** Model-author attempts, including attempts that produced no proposal. */
+	authoring?: ImprovementAuthorUsage[];
 	evalRunId: string;
 	/**
 	 * True when this cycle did not pay for its own measurement: either an earlier
@@ -521,6 +531,8 @@ export interface ImprovementLoopResult {
 	loopId: string;
 	finalPassRate: number;
 	executions: number;
+	/** Persisted blind authoring/validation split used by a hypothesis search. */
+	experimentDesign: ImprovementExperimentDesign | null;
 }
 
 export interface ImprovementLoopOptions {
@@ -593,6 +605,8 @@ export interface ImprovementLoopDependencies {
 	computeTargetSnapshotHashes: typeof computeTargetSnapshotHashes;
 	/** The provenance a run of this Target would carry, probed without running. */
 	effectiveProvenance: typeof effectiveProvenance;
+	/** Persist the immutable authoring/validation split before any model sees it. */
+	materializeExperimentDesign: typeof materializeImprovementExperimentDesign;
 }
 
 const DEFAULT_DEPENDENCIES: ImprovementLoopDependencies = {
@@ -611,6 +625,7 @@ const DEFAULT_DEPENDENCIES: ImprovementLoopDependencies = {
 	findReusableBaseline,
 	computeTargetSnapshotHashes,
 	effectiveProvenance,
+	materializeExperimentDesign: materializeImprovementExperimentDesign,
 };
 
 function abortIfRequested(signal?: AbortSignal): void {
@@ -669,8 +684,20 @@ export function improvementCycleLine(cycle: ImprovementLoopCycle, maxCycles: num
 	return parts.join(" · ");
 }
 
+/** The same separate author bill in the terminal and the machine-readable table. */
+export function improvementAuthorSpendLine(cycles: readonly ImprovementLoopCycle[]): string | null {
+	const attempts = cycles.flatMap((cycle) => cycle.authoring ?? []);
+	if (attempts.length === 0) return null;
+	const cost = attempts.every((attempt) => attempt.costUsd !== null)
+		? `$${attempts.reduce((sum, attempt) => sum + attempt.costUsd!, 0).toFixed(4)}`
+		: "unknown (one or more interrupted/failed requests)";
+	const requests = attempts.reduce((sum, attempt) => sum + attempt.requests, 0);
+	const tokens = attempts.reduce((sum, attempt) => sum + attempt.tokens, 0);
+	return `Builder author: ${attempts.length} attempts, ${requests} requests, ${tokens} reported tokens, ${cost}. Receipts: improvement-authors/.`;
+}
+
 /** The compact per-cycle table the loop hands back. */
-export function renderImprovementLoopTable(result: ImprovementLoopResult): string {
+export function renderImprovementLoopTable(result: ImprovementLoopResult, authoringDisclosure = IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE): string {
 	const header = "| cycle | pass rate | failure mode | branch | changed paths | screen | verification |";
 	const divider = "|---|---|---|---|---|---|---|";
 	const rows = result.cycles.map((cycle) => {
@@ -697,6 +724,7 @@ export function renderImprovementLoopTable(result: ImprovementLoopResult): strin
 		cycle.skipped
 			? [`Cycle ${cycle.cycle} refused ${cycle.skipped.proposalRunId}: ${IMPROVEMENT_CYCLE_SKIP_MESSAGES[cycle.skipped.reason]}.`]
 			: []);
+	const authorSpend = improvementAuthorSpendLine(result.cycles);
 	return [
 		header,
 		divider,
@@ -704,15 +732,22 @@ export function renderImprovementLoopTable(result: ImprovementLoopResult): strin
 		...searches,
 		"",
 		...refusals,
+		...(result.experimentDesign ? [
+			`Blind split ${result.experimentDesign.designId}: ` +
+			`${result.experimentDesign.authoringTaskIds.length} authoring, ` +
+			`${result.experimentDesign.validationTaskIds.length} unseen validation ` +
+			`(${result.experimentDesign.designHash}).`,
+		] : []),
 		`Stopped: ${result.stopMessage}.`,
 		`Target executions spent: ${result.executions}.`,
+		...(authorSpend ? [authorSpend] : []),
 		result.candidateId
 			? `Candidate ${result.candidateId} is verified · awaiting your decision. Promotion is yours: ` +
 				"`ship it` runs the sealed guardrail and the release decisions."
 			: latestSearch && latestSearch.frontier.length > 0
 				? "Several hypotheses were compared; pick one from the table above, then ship it."
 				: "No improved candidate is waiting on a release decision.",
-		IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE,
+		authoringDisclosure,
 	].join("\n");
 }
 
@@ -829,10 +864,14 @@ export async function runImprovementLoop(
 	const searchBranchPrefix = options.searchBranchPrefix ?? `candidate/search-${loopId}-`;
 
 	const developmentCorpus = options.developmentCorpus ? dependencies.loadCorpus(options.developmentCorpus) : null;
-	const resolveTarget = (dir: string): ResolvedTarget => {
-		const base = dependencies.loadTarget(dir);
-		return developmentCorpus ? targetWithDevelopmentCorpus(base, developmentCorpus) : base;
-	};
+	if (candidatesPerCycle > 1 && !developmentCorpus) {
+		throw new Error("blind hypothesis search requires one reviewed development corpus");
+	}
+	// This pure preflight rejects an underpowered basket before a split artifact,
+	// branch, evaluator or Builder request exists.
+	if (candidatesPerCycle > 1 && developmentCorpus) {
+		planImprovementExperiment(developmentCorpus, loopId);
+	}
 	// Every branch this loop cuts and every candidate it verifies is bound to one
 	// exact revision, so a dirty tree has nothing to bind to. Said here, in the
 	// operator's words, rather than as a regex failure on `<sha>-dirty-<hash>` —
@@ -842,12 +881,31 @@ export async function runImprovementLoop(
 		because: "an improvement loop cuts every branch from one clean committed baseline",
 		next: "commit or stash them (a run log written inside the Target counts), then run ahde improve again",
 	});
+	const experimentDesign = candidatesPerCycle > 1 && developmentCorpus
+		? dependencies.materializeExperimentDesign({
+			runsRoot,
+			stateRoot,
+			projectId: options.projectId,
+			loopId,
+			corpus: developmentCorpus,
+			now,
+		})
+		: null;
+	const splitRefs = experimentDesign ? improvementDesignCorpusRefs(experimentDesign, stateRoot) : null;
+	const authoringCorpus = splitRefs ? dependencies.loadCorpus(splitRefs.authoring) : developmentCorpus;
+	const validationCorpus = splitRefs ? dependencies.loadCorpus(splitRefs.validation) : null;
+	const resolveTarget = (dir: string): ResolvedTarget => {
+		const base = dependencies.loadTarget(dir);
+		return authoringCorpus ? targetWithDevelopmentCorpus(base, authoringCorpus) : base;
+	};
 	const rootTarget = resolveTarget(repositoryDir);
 	const configuration = ImprovementLoopConfigurationSchema.parse({
 		approvedSpecId: options.approvedSpecId,
 		targetGitSha: rootTarget.gitSha,
 		developmentCorpusId: developmentCorpus?.metadata.id ?? null,
 		developmentCorpusHash: developmentCorpus?.metadata.hash ?? null,
+		experimentDesignId: experimentDesign?.designId ?? null,
+		experimentDesignHash: experimentDesign?.designHash ?? null,
 		until: options.until,
 		maxCycles: options.maxCycles,
 		repetitions: options.repetitions,
@@ -924,7 +982,10 @@ export async function runImprovementLoop(
 	 * evidence`, and fresh enough. Reading one is the difference between a cycle
 	 * that costs a full suite and a cycle that costs nothing.
 	 */
-	const reusableEvidence = (target: ResolvedTarget): EvalRunRecord | null => {
+	const reusableEvidence = (
+		target: ResolvedTarget,
+		label: "baseline" | "solo" = "solo",
+	): EvalRunRecord | null => {
 		try {
 			const snapshot = dependencies.computeTargetSnapshotHashes(target, runsRoot);
 			const query: ReusableBaselineQuery = {
@@ -935,7 +996,7 @@ export async function runImprovementLoop(
 				preparedToolHomeHash: snapshot.preparedToolHomeHash,
 				provenance: dependencies.effectiveProvenance(target),
 				evidenceVisibility: "development",
-				label: "solo",
+				label,
 				purpose: "evidence",
 				repetitions: options.repetitions,
 				...(options.baselineMaxAgeMs === undefined ? {} : { maxAgeMs: options.baselineMaxAgeMs }),
@@ -968,6 +1029,7 @@ export async function runImprovementLoop(
 			loopId,
 			finalPassRate,
 			executions,
+			experimentDesign,
 		};
 	};
 	if (candidateId) {
@@ -1088,7 +1150,7 @@ export async function runImprovementLoop(
 		// mode `candidates` times and expects a different hypothesis each time.
 		const failureBundlePath = dependencies.compileFailureBundle(target, evaluation.record, runsRoot);
 		const proposalRunIds: string[] = [];
-		let exhaustedAuthor: string | null = null;
+		const authorRefusals: string[] = [];
 		for (let variant = 1; variant <= candidatesPerCycle; variant += 1) {
 			const decision = await options.author({
 				...(options.gate ? { gate: improvementLoopGate(options.gate) } : {}),
@@ -1110,10 +1172,11 @@ export async function runImprovementLoop(
 				failureBundlePath,
 				...(options.signal ? { signal: options.signal } : {}),
 			});
+			if (decision.authoring) (cycle.authoring ??= []).push(decision.authoring);
 			abortIfRequested(options.signal);
 			if (decision.kind === "no-change") {
-				exhaustedAuthor = decision.reason;
-				break;
+				authorRefusals.push(decision.reason);
+				continue;
 			}
 			if (decision.kind === "recorded") {
 				proposalRunIds.push(decision.builderRunId);
@@ -1131,15 +1194,17 @@ export async function runImprovementLoop(
 				...(options.signal ? { signal: options.signal } : {}),
 			});
 			if (recorded.record.result.status !== "completed" || recorded.record.result.proposal?.decision !== "propose") {
-				exhaustedAuthor = "the recorded proposal carries no change";
-				break;
+				authorRefusals.push("the recorded proposal carries no change");
+				continue;
 			}
 			proposalRunIds.push(recorded.record.runId);
 		}
 		if (proposalRunIds.length === 0) {
 			return { kind: "stop", result: finish(
 				"no-change-proposed",
-				`${exhaustedAuthor ?? "the proposal author produced no change"}. ${IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE}`,
+				authorRefusals.length > 0
+					? authorRefusals.map((reason, index) => `variant ${index + 1}: ${reason}`).join("; ").slice(0, 2_000)
+					: "the proposal author produced no change",
 				cycle,
 			) };
 		}
@@ -1156,9 +1221,44 @@ export async function runImprovementLoop(
 				};
 				return { kind: "stop", result: finish(
 					"no-change-proposed",
-					exhaustedAuthor ?? IMPROVEMENT_CYCLE_SKIP_MESSAGES["too-few-hypotheses"],
+					authorRefusals.length > 0
+						? `${IMPROVEMENT_CYCLE_SKIP_MESSAGES["too-few-hypotheses"]}: ${authorRefusals.join("; ").slice(0, 1_500)}`
+						: IMPROVEMENT_CYCLE_SKIP_MESSAGES["too-few-hypotheses"],
 					cycle,
 				) };
+			}
+			// The Builder has finished authoring. Only now may the host open the
+			// validation arm. Its baseline is useful twice: it supplies failed cases
+			// to the cheap screen and is reused by every matched candidate pair.
+			let validationSourceEvalRunId: string | undefined;
+			if (splitRefs && validationCorpus) {
+				const validationTarget = targetWithDevelopmentCorpus(
+					dependencies.loadTarget(repositoryDir),
+					validationCorpus,
+				);
+				let validationBaseline = reusableEvidence(validationTarget, "baseline");
+				if (!validationBaseline) {
+					validationBaseline = await dependencies.runSuite(validationTarget, {
+						runsRoot,
+						label: "baseline",
+						repetitions: options.repetitions,
+						evidenceVisibility: "development",
+						...(options.jobs === undefined ? {} : { jobs: options.jobs }),
+						...(options.signal ? { signal: options.signal } : {}),
+						...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
+					});
+					executions += validationBaseline.summary.total;
+					cycle.executions += validationBaseline.summary.total;
+					ledger("running", null);
+				}
+				if (!withinInfrastructureBudget(validationBaseline.summary.error, validationBaseline.summary.total)) {
+					return { kind: "stop", result: finish(
+						"infrastructure-errors",
+						`validation baseline has ${validationBaseline.summary.error} infrastructure error(s) in ${validationBaseline.summary.total} runs`,
+						cycle,
+					) };
+				}
+				validationSourceEvalRunId = validationBaseline.evalRunId;
 			}
 			const search = await dependencies.runProposalSearch({
 				repositoryDir,
@@ -1168,8 +1268,14 @@ export async function runImprovementLoop(
 				approvedSpecId: options.approvedSpecId,
 				failureModeId: mode.failureModeId,
 				proposalRunIds,
-				...(options.developmentCorpus ? { developmentCorpus: options.developmentCorpus } : {}),
-				developmentTasks: Math.round(evaluation.record.summary.total / options.repetitions),
+				...(validationSourceEvalRunId ? { validationSourceEvalRunId } : {}),
+				...(experimentDesign ? { experimentDesignPath: improvementExperimentDesignPath(runsRoot, loopId) } : {}),
+				...(splitRefs
+					? { developmentCorpus: splitRefs.authoring, validationCorpus: splitRefs.validation }
+					: options.developmentCorpus
+						? { developmentCorpus: options.developmentCorpus }
+						: {}),
+				developmentTasks: validationCorpus?.metadata.taskCount ?? Math.round(evaluation.record.summary.total / options.repetitions),
 				repetitions: options.repetitions,
 				...(options.jobs === undefined ? {} : { jobs: options.jobs }),
 				branchPrefix: `${searchBranchPrefix}${cycleIndex}-`,
@@ -1235,6 +1341,7 @@ export async function runImprovementLoop(
 					loopId,
 					finalPassRate,
 					executions,
+					experimentDesign,
 				} };
 			}
 			ledger("running", null);
@@ -1309,6 +1416,7 @@ export async function runImprovementLoop(
 					loopId,
 					finalPassRate,
 					executions,
+					experimentDesign,
 				} };
 			}
 			ledger("running", null);
@@ -1390,6 +1498,7 @@ export async function runImprovementLoop(
 		loopId,
 		finalPassRate,
 		executions,
+		experimentDesign,
 	};
 }
 
@@ -1413,11 +1522,9 @@ export interface RecordedProposalAuthorOptions {
  * (dataset label + hash), the eval suite hash, and the failure mode it attests
  * to. Those are compared here; the eval run id is not.
  *
- * A host does not author harness text. Authoring stays with Builder Pi; the
- * loop applies, screens and verifies what the Builder wrote. Wiring a headless
- * Builder into the {@link ImprovementProposalAuthor} seam is what turns this
- * into a hands-free loop, and it is not shipped
- * ({@link IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE}).
+ * This fallback reads recorded proposals without making model requests.
+ * Builder Pi instead attaches its bounded author through the same
+ * {@link ImprovementProposalAuthor} seam; both use the canonical apply path.
  */
 export function recordedBuilderProposalAuthor(
 	options: RecordedProposalAuthorOptions,
@@ -1529,11 +1636,22 @@ export function recordedBuilderProposalAuthor(
  */
 export function plannedImprovementExecutions(input: {
 	developmentTasks: number;
+	/** Used by blind multi-hypothesis search; omitted preserves single-surface pricing. */
+	authoringTasks?: number;
+	validationTasks?: number;
 	repetitions: number;
 	maxCycles: number;
 	candidates?: number;
 }): number {
 	const candidates = Math.max(1, Math.trunc(input.candidates ?? 1));
+	if (candidates > 1 && input.authoringTasks !== undefined && input.validationTasks !== undefined) {
+		const authoring = Math.max(0, Math.trunc(input.authoringTasks));
+		const validation = Math.max(0, Math.trunc(input.validationTasks));
+		const authoringRun = authoring * input.repetitions;
+		const validationBaseline = validation * input.repetitions;
+		const candidateSearch = candidates * (validation + 2 * validation * input.repetitions);
+		return Math.max(0, Math.trunc(input.maxCycles)) * (authoringRun + validationBaseline + candidateSearch);
+	}
 	const run = input.developmentTasks * input.repetitions;
 	const screen = input.developmentTasks;
 	const verification = 2 * input.developmentTasks * input.repetitions;

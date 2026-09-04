@@ -180,7 +180,7 @@ export interface ReportRun {
 	error: string | null;
 	graders: Array<{ name: string; type: string; passed: boolean; reason: string }>;
 	graderProjection: z.infer<typeof ProjectionCountSchema>;
-	metrics: { latencyMs: number; toolCalls: number; toolErrors: number; tokens: number | null; costUsd: number | null };
+	metrics: { latencyMs: number; toolCalls: number; reportedToolCalls: number; toolErrors: number; tokens: number | null; costUsd: number | null };
 	trace: ReportTraceMessage[];
 	traceProjection: z.infer<typeof ProjectionCountSchema> | null;
 }
@@ -712,6 +712,7 @@ export function collectEvalReportData(
 			metrics: {
 				latencyMs: run.metrics.latencyMs,
 				toolCalls: run.metrics.toolCalls,
+				reportedToolCalls: run.metrics.reportedToolCalls ?? 0,
 				toolErrors: run.metrics.toolErrors,
 				tokens: runTokens(run)?.total ?? null,
 				costUsd: runCost(run),
@@ -823,7 +824,10 @@ export function collectEvalReportData(
 				: null;
 			return explainRun({
 				run: sourceRun,
-				graders: graderFindings(runsRoot, sourceRun, { includeJudgeVerdicts: true }),
+				graders: graderFindings(sourceRun, {
+					includeJudgeVerdicts: true,
+					judgeArtifacts: verified.artifacts.get(sourceRun.runId)?.judge,
+				}),
 				facts: messages ? traceFacts(messages) : null,
 				modes: improvementBrief.modes.filter((mode) =>
 					mode.evidence.some((evidence) => evidence.runId === row.runId)),

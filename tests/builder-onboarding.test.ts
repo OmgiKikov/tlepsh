@@ -15,6 +15,8 @@ import {
 	evaluatorsStillUnchosen,
 	hostDefaultJudge,
 	hostModelCatalog,
+	parseCommand,
+	renderCommand,
 	resolveTypedModel,
 	targetIdFromDirectory,
 	runFirstRunOnboarding,
@@ -416,17 +418,17 @@ describe("adopting the agent already in the folder", () => {
 		return { ctx, host, asked, decided, view };
 	}
 
-	it("asks three questions and submits exactly what the operator answered", async () => {
+	it("reviews command and editable files in one question before adopting", async () => {
 		const dir = agentDir({ "agent.py": "import openai\n@tool\ndef a(): ...\n", "prompts/system.md": "x\n" });
 		const { ctx, host, asked, decided } = harness([
 			t("onboarding.wrap.accept"),
-			t("onboarding.wrap.accept"),
-			"prompts/**",
 		]);
 		await runFirstRunOnboarding(ctx, { ...host, projectDir: dir }, (await host.workbench.view()) as WorkbenchView);
-		expect(asked[0]).toBe(t("onboarding.wrap.seen", { entry: "agent.py", tools: plural(1, "tool") }));
-		expect(asked[1]).toBe(t("onboarding.wrap.command", { command: "python3 agent.py" }));
-		expect(asked[2]).toBe(t("onboarding.wrap.files"));
+		expect(asked).toHaveLength(1);
+		expect(asked[0]).toContain(t("onboarding.wrap.seen", { entry: "agent.py", tools: plural(1, "tool") }));
+		expect(asked[0]).toContain(t("onboarding.wrap.command", { command: "'python3' 'agent.py'" }));
+		expect(asked[0]).toContain("prompts/**");
+		expect(asked[0]).toContain(t("onboarding.wrap.effect"));
 		expect(decided).toEqual([{
 			kind: "wrap-target",
 			argv: ["python3", "agent.py"],
@@ -449,17 +451,17 @@ describe("adopting the agent already in the folder", () => {
 		});
 		const { ctx, host, asked } = harness([t("onboarding.later-choice")]);
 		await runFirstRunOnboarding(ctx, { ...host, projectDir: dir }, (await host.workbench.view()) as WorkbenchView);
-		expect(asked[0]).toBe(t("onboarding.wrap.seen-kb", { entry: "agent.py", tools: plural(2, "tool") }));
+		expect(asked[0]).toContain(t("onboarding.wrap.seen-kb", { entry: "agent.py", tools: plural(2, "tool") }));
 	});
 
 	it("takes the operator's own command and file list when they type one", async () => {
 		const dir = agentDir();
 		const { ctx, host, decided } = harness([
-			t("onboarding.wrap.accept"),
 			t("onboarding.wrap.command-edit"),
 			"node server.js --agent",
 			t("onboarding.wrap.files-edit"),
 			"config/*.md, AGENTS.md",
+			t("onboarding.wrap.accept"),
 		]);
 		await runFirstRunOnboarding(ctx, { ...host, projectDir: dir }, (await host.workbench.view()) as WorkbenchView);
 		expect(decided).toEqual([{
@@ -475,6 +477,45 @@ describe("adopting the agent already in the folder", () => {
 		const { ctx, host, decided } = harness([t("onboarding.wrap.create-new"), t("onboarding.later-choice")]);
 		await runFirstRunOnboarding(ctx, { ...host, projectDir: dir }, (await host.workbench.view()) as WorkbenchView);
 		expect(decided).toEqual([]);
+	});
+
+	it("requires acceptance of edited setup and writes nothing if the final review is cancelled", async () => {
+		const dir = agentDir();
+		const { ctx, host, asked, decided } = harness([
+			t("onboarding.wrap.command-edit"), "node custom.js", t("onboarding.later-choice"),
+		]);
+		await runFirstRunOnboarding(ctx, { ...host, projectDir: dir }, (await host.workbench.view()) as WorkbenchView);
+		expect(asked.at(-1)).toContain("'node' 'custom.js'");
+		expect(decided).toEqual([]);
+	});
+
+	it("parses quoted argv without shell expansion and round-trips every argument", () => {
+		const argv = ["python3", "agent path.py", "", "a'b", 'say "hello"', "C:\\agent\\main.py"];
+		expect(parseCommand(renderCommand(argv))).toEqual(argv);
+		expect(parseCommand(`python3 "agent path.py" --json '{"x": 1}'`)).toEqual([
+			"python3", "agent path.py", "--json", '{"x": 1}',
+		]);
+		expect(() => parseCommand(`python3 "agent.py`)).toThrow(/unclosed/);
+		expect(() => parseCommand("python3 agent.py \\")).toThrow(/unfinished escape/);
+	});
+
+	it("rejects malformed edited argv and adopts only the last reviewed command", async () => {
+		const dir = agentDir();
+		const setup = harness([
+			t("onboarding.wrap.command-edit"),
+			`python3 "agent.py`,
+			t("onboarding.wrap.accept"),
+		]);
+		await runFirstRunOnboarding(
+			setup.ctx,
+			{ ...setup.host, projectDir: dir },
+			(await setup.host.workbench.view()) as WorkbenchView,
+		);
+		expect(setup.ctx.ui.notify).toHaveBeenCalledWith(
+			expect.stringContaining("unclosed"),
+			"warning",
+		);
+		expect(setup.decided).toEqual([expect.objectContaining({ argv: ["python3", "agent.py"] })]);
 	});
 
 	it("writes nothing when the operator defers, and never asks at all in an ordinary empty folder", async () => {
@@ -765,8 +806,6 @@ describe("the questions after the door closes", () => {
 			dir,
 			answers: [
 				t("onboarding.wrap.accept"),
-				t("onboarding.wrap.accept"),
-				"AGENTS.md",
 				t("onboarding.other-model"),
 				"openrouter/qwen/qwen3.5-9b",
 			],

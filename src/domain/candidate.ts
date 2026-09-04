@@ -85,6 +85,8 @@ const AppliedBuilderOriginSchema = z.strictObject({
 		suiteHash: FingerprintSchema,
 		developmentCorpus: CorpusIdentitySchema.nullable(),
 	}).nullable(),
+	/** Immutable blind authoring/validation design, when a search used one. */
+	experimentDesign: CandidateArtifactRefSchema.optional(),
 	approvedSpec: z.strictObject({
 		specId: IdSchema,
 		projectId: IdSchema,

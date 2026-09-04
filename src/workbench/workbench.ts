@@ -128,6 +128,7 @@ import {
 	UnfinishedImprovementLoopError,
 	type ImprovementProposalAuthor,
 } from "../application/improvement-loop.js";
+import type { PreparedImprovementAuthor } from "../application/improvement-author.js";
 import {
 	decideCandidateRejection,
 	promoteReviewedCandidate,
@@ -220,6 +221,7 @@ import {
 } from "./errors.js";
 import {
 	deriveWorkbenchView,
+	isAutomatedDevelopmentCandidate,
 	loadWorkbenchInventory,
 	withWorkbenchFocus,
 	openTerminalCandidatesOf,
@@ -426,6 +428,8 @@ export interface AhdeWorkbenchDependencies {
 	 * open Builder proposal already recorded against this cycle's evidence.
 	 */
 	authorImprovementProposal?: ImprovementProposalAuthor;
+	/** Resolve/freeze a host-owned model before consent; preparation must not run inference. */
+	prepareImprovementAuthor?: () => PreparedImprovementAuthor | null | Promise<PreparedImprovementAuthor | null>;
 	reviewCandidate: typeof reviewCandidate;
 	promoteCandidate: typeof promoteReviewedCandidate;
 	rejectCandidate: typeof decideCandidateRejection;
@@ -1603,6 +1607,44 @@ export class AhdeWorkbench {
 		inventory: WorkbenchInventory,
 		stage: WorkbenchStage,
 	): Promise<Extract<WorkbenchDecisionResult, { kind: "ship" }>> {
+		if (stage === "candidate-verification") {
+			if (!input.version) {
+				throw new Error("shipping tags an exact version; say for example “ship 0.2.0”");
+			}
+			const source = requireCandidate(inventory, ["evaluated"], input.candidateId);
+			if (!isAutomatedDevelopmentCandidate(source) || source.origin.kind !== "applied-builder") {
+				throw new Error("this applied change still needs an explicit candidate check before it can ship");
+			}
+			const verified = await this.decide({
+				kind: "verify-candidate",
+				builderRunId: source.origin.builderRunId,
+				repetitions: SEALED_GATE_POLICY.minRepetitions,
+				reason: input.reason,
+			}, gate, options);
+			if (verified.result.outcome !== "verified") {
+				throw new Error("shipping stopped because the cheap check did not justify opening the sealed release exam");
+			}
+			const refreshed = this.inventory();
+			const refreshedStage = deriveWorkbenchView(refreshed).stage;
+			if (refreshedStage !== "candidate-review") {
+				throw new Error(`sealed verification finished at unexpected stage ${refreshedStage}`);
+			}
+			const shipped = await this.ship(
+				{ ...input, candidateId: verified.result.candidate.candidateId },
+				gate,
+				options,
+				refreshed,
+				refreshedStage,
+			);
+			return {
+				...shipped,
+				message: `${verified.message} ${shipped.message}`,
+				result: {
+					...shipped.result,
+					steps: [{ kind: "verify-candidate", message: verified.message }, ...shipped.result.steps],
+				},
+			};
+		}
 		const plan: WorkbenchCompositeStep["kind"][] = [];
 		let candidate: CandidateRecord;
 		if (stage === "candidate-review") {
@@ -2911,6 +2953,26 @@ export class AhdeWorkbench {
 					content = { kind: "interrupted-candidate", ...candidateSummary(candidate) };
 					break;
 				}
+				const automated = inventory.candidates.filter((candidate) =>
+					candidate.projectId === this.projectId && isAutomatedDevelopmentCandidate(candidate)
+				);
+				if (automated.length > 0) {
+					const candidate = resolveOne({
+						items: automated,
+						focusId: inventory.validFocus.candidate?.id,
+						id: (item) => item.candidateId,
+						label: "automated hypothesis",
+					});
+					content = {
+						kind: "candidate",
+						...this.candidateView(candidate, inventory.developmentEvals),
+						...this.candidateProposalProjection(candidate),
+						adoption: null,
+						continuation: null,
+						impact: this.candidateImpact(candidate),
+					};
+					break;
+				}
 				const proposal = requireProposal(inventory, "applied");
 				const receipt = loadBuilderApplyReceipt(this.runsRoot, proposal.record.runId);
 				const review = proposalReview(proposal.record);
@@ -3295,8 +3357,28 @@ export class AhdeWorkbench {
 				// composite does the pending reviews and the run behind one dialog.
 				resolved = await this.decide({ kind: "start-testing", repetitions: input.repetitions, reason: input.reason }, gate, options);
 			} else if (stage === "candidate-verification") {
+				const automated = inventory.candidates.filter((candidate) =>
+					candidate.projectId === this.projectId && isAutomatedDevelopmentCandidate(candidate)
+				);
+				if (automated.length > 0) {
+					const candidate = resolveOne({
+						items: automated,
+						focusId: inventory.validFocus.candidate?.id,
+						id: (item) => item.candidateId,
+						label: "automated hypothesis",
+					});
+					if (candidate.origin.kind !== "applied-builder") throw new Error("automated hypothesis lost Builder provenance");
+					resolved = await this.decide({
+						kind: "verify-candidate",
+						builderRunId: candidate.origin.builderRunId,
+						repetitions: input.repetitions,
+						reason: input.reason,
+					}, gate, options);
+				} else {
 				const appliedWithoutCandidate = inventory.proposals.filter((proposal) =>
-					proposal.status === "applied" && !inventory.candidates.some((candidate) =>
+					proposal.status === "applied" &&
+					loadBuilderApplyReceipt(this.runsRoot, proposal.record.runId).via !== "proposal-search" &&
+					!inventory.candidates.some((candidate) =>
 						candidate.origin.kind === "applied-builder" &&
 						candidate.origin.builderRunId === proposal.record.runId &&
 						!inventory.abandonedCandidates.has(candidate.candidateId),
@@ -3309,6 +3391,7 @@ export class AhdeWorkbench {
 					label: "applied proposal",
 				});
 				resolved = await this.decide({ kind: "verify-candidate", builderRunId: proposal.record.runId, repetitions: input.repetitions, reason: input.reason }, gate, options);
+				}
 			} else {
 				assertWorkbenchDecisionStage("run-eval", stage);
 				throw new Error(`running is not possible during ${stage}`);

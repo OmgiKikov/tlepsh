@@ -1,7 +1,9 @@
 // One family of Workbench decisions, moved out of `AhdeWorkbench.decide()`
 // unchanged: the gate, the stale check and the receipts are still the
 // workbench's own; these functions only hold the branch bodies.
-import { abandonImprovementLoop, IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE, improvementLoopGate, listUnfinishedImprovementLoops, plannedImprovementExecutions, recordedBuilderProposalAuthor, renderImprovementLoopTable, UnfinishedImprovementLoopError, IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS } from "../../application/improvement-loop.js";
+import { abandonImprovementLoop, IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE, improvementLoopGate, listUnfinishedImprovementLoops, newImprovementLoopId, plannedImprovementExecutions, recordedBuilderProposalAuthor, renderImprovementLoopTable, UnfinishedImprovementLoopError, IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS } from "../../application/improvement-loop.js";
+import { planImprovementExperiment } from "../../application/improvement-experiment-design.js";
+import { loadCorpus } from "../../corpus.js";
 import { requireApprovedSpec, requireDevelopmentCorpus } from "../resolution.js";
 import { formatEstimatedCost, formatEstimatedTime, actorId } from "../workbench.js";
 import type { DecisionContext, DecisionHost, DecisionInputOf } from "./shared.js";
@@ -40,13 +42,62 @@ export async function decideImprove(
 	if (blocking.length > 0 || unfinished.unreadable.length > 0) {
 		throw new UnfinishedImprovementLoopError(blocking, unfinished.unreadable);
 	}
+	const loopId = resumed?.loopId ?? newImprovementLoopId();
+	// Pure and model-free. A four-case minimum and the exact split are known
+	// before provider preparation, confirmation, branches, or spend.
+	const blindPlan = candidates > 1
+		? planImprovementExperiment(loadCorpus({
+			stateRoot: host.stateRoot,
+			projectId: host.projectId,
+			corpusId: corpus.id,
+		}), loopId)
+		: null;
 	const plannedExecutions = plannedImprovementExecutions({
 		developmentTasks: corpus.taskCount,
+		...(blindPlan
+			? {
+				authoringTasks: blindPlan.authoringTaskIds.length,
+				validationTasks: blindPlan.validationTaskIds.length,
+			}
+			: {}),
 		repetitions: input.repetitions,
 		maxCycles: input.maxCycles - (resumed?.lastCycle ?? 0),
 		candidates,
 	});
-	const estimate = host.runEstimate(plannedExecutions, inventory.target);
+	const targetEstimate = host.runEstimate(plannedExecutions, inventory.target);
+	const prepared = host.dependencies.authorImprovementProposal
+		? null : await host.dependencies.prepareImprovementAuthor?.();
+	const author = host.dependencies.authorImprovementProposal ?? prepared?.author ?? recordedBuilderProposalAuthor({
+		stateRoot: host.stateRoot, runsRoot: host.runsRoot, projectId: host.projectId,
+	});
+	const disclosure = prepared?.disclosure ?? (host.dependencies.authorImprovementProposal
+		? "A host-provided proposal author prepares the variants; release decisions remain human-owned."
+		: IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE);
+	const authorVariants = (input.maxCycles - (resumed?.lastCycle ?? 0)) * candidates;
+	const authoring = prepared?.budget
+		? {
+			maxVariants: authorVariants,
+			maxRequests: authorVariants * prepared.budget.maxRequestsPerVariant,
+			maxOutputTokens: authorVariants * prepared.budget.maxRequestsPerVariant * prepared.budget.maxOutputTokensPerRequest,
+			maxCostUsd: prepared.budget.maxCostUsdPerVariant === null
+				? null : authorVariants * prepared.budget.maxCostUsdPerVariant,
+			maxMinutes: authorVariants * prepared.budget.maxMinutesPerVariant,
+		}
+		: host.dependencies.authorImprovementProposal
+			? { maxVariants: authorVariants, maxRequests: null, maxOutputTokens: null, maxCostUsd: null, maxMinutes: null }
+			: { maxVariants: 0, maxRequests: 0, maxOutputTokens: 0, maxCostUsd: 0, maxMinutes: 0 };
+	const estimate = {
+		...targetEstimate,
+		costUsd: targetEstimate.costUsd === null || authoring.maxCostUsd === null
+			? null : targetEstimate.costUsd + authoring.maxCostUsd,
+		minutes: targetEstimate.minutes === null || authoring.maxMinutes === null
+			? null : targetEstimate.minutes + authoring.maxMinutes,
+	};
+	const authorBudgetLine = authoring.maxRequests === null
+		? "Builder request count and total cost are unknown for the attached author."
+		: `The Builder may make at most ${authoring.maxRequests} model request${authoring.maxRequests === 1 ? "" : "s"} ` +
+			`across ${authoring.maxVariants} variant${authoring.maxVariants === 1 ? "" : "s"}` +
+			` (${authoring.maxOutputTokens} output tokens; authoring ceiling ${authoring.maxCostUsd === null ? "unknown" : `$${authoring.maxCostUsd.toFixed(2)}`}).`;
 	const target = `${Math.round(input.until * 100)}%`;
 	const subject = {
 		operation: "improve",
@@ -60,14 +111,21 @@ export async function decideImprove(
 		abandoningLoopId: abandoned?.loopId ?? null,
 		plannedExecutions,
 		estimatedCost: formatEstimatedCost(estimate),
+		targetEstimatedCost: formatEstimatedCost(targetEstimate),
+		authoringBudget: authoring,
 		estimatedTime: formatEstimatedTime(estimate),
 		// The one confirmation is also the one disclosure. What the operator is
 		// approving is a loop that APPLIES diffs without showing each of them.
 		applies: "on throwaway candidate/auto-<loopId>-<n> branches, without showing each diff",
 		touchesYourBranch: false,
 		diffsVisibleIn: ["changed paths in the cycle table", "the exact diff in /review", "the exact diff in the ship dialog"],
-		authoring: IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE,
+		authoring: disclosure,
 		neverDecides: [...IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS],
+		blindValidation: blindPlan ? {
+			authoringTasks: blindPlan.authoringTaskIds.length,
+			validationTasks: blindPlan.validationTaskIds.length,
+			seed: blindPlan.seed,
+		} : null,
 	};
 	const actor = await host.confirm(input, gate, `Improve until ${target}`, subject, options.signal, {
 		question:
@@ -80,7 +138,12 @@ export async function decideImprove(
 			"Nothing touches your branch or your working tree. Changed paths are listed in the cycle " +
 			"table; the exact diff is shown in /review and bound by hash to the ship dialog. " +
 			"The loop never promotes, adopts, publishes or approves anything. " +
-			IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE,
+			(blindPlan
+				? `The Builder sees ${blindPlan.authoringTaskIds.length} authoring cases; ` +
+					`all hypotheses are ranked on ${blindPlan.validationTaskIds.length} unseen validation cases. `
+				: "") +
+			authorBudgetLine + " " +
+			disclosure,
 		estimate,
 	});
 	// Abandoning is itself state-changing. Do it only after the human approved
@@ -99,27 +162,23 @@ export async function decideImprove(
 		maxCycles: input.maxCycles,
 		repetitions: input.repetitions,
 		candidates,
-		...(resumed ? { loopId: resumed.loopId } : {}),
+		loopId,
 		...(input.baselineMaxAgeMs === undefined ? {} : { baselineMaxAgeMs: input.baselineMaxAgeMs }),
 		...(input.jobs === undefined ? {} : { jobs: input.jobs }),
-		author: host.dependencies.authorImprovementProposal ?? recordedBuilderProposalAuthor({
-			stateRoot: host.stateRoot,
-			runsRoot: host.runsRoot,
-			projectId: host.projectId,
-		}),
+		author,
 		gate: improvementLoopGate(gate),
 		actorId: actor,
 		...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
 		...(options.signal ? { signal: options.signal } : {}),
 		now: host.dependencies.now,
 	});
-	const table = renderImprovementLoopTable(loop);
+	const table = renderImprovementLoopTable(loop, disclosure);
 	const search = [...loop.cycles].reverse().find((cycle) => cycle.search)?.search ?? null;
 	return {
 		kind: input.kind,
 		message:
 			`${loop.cycles.length} improvement cycle${loop.cycles.length === 1 ? "" : "s"} ran. ` +
-			`Stopped because ${loop.stopMessage}. ${IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE}`,
+			`Stopped because ${loop.stopMessage}.`,
 		result: {
 			cycles: loop.cycles,
 			stopReason: loop.stopReason,

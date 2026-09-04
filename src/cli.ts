@@ -1154,7 +1154,7 @@ async function main(): Promise<void> {
 				throw new Error("usage: ahde tool try --target <dir> --tool <name> (--input <json|@path> | --fixtures)");
 			}
 			const branch = arg("branch");
-			if (arg("fixtures") !== undefined) {
+			if (flagPresent("fixtures")) {
 				const run = await runToolFixtures({
 					repositoryDir: resolve(requireArg("target")),
 					tool: requireArg("tool"),

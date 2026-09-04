@@ -1,13 +1,12 @@
 import { noun, plural, t, type MessageKey } from "../i18n.js";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { z } from "zod";
 import type { TraceObservation } from "../diagnosis.js";
-import { runCost, runTokens } from "../compare.js";
+import { runCost, runTokens, runGraderScore } from "../compare.js";
 import type { GraderResult, RunRecord } from "../provenance.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
-import { readWorldStateFile } from "../domain/world.js";
-import { WORLD_STATE_SEGMENTS } from "../target/world-state.js";
+import type { VerifiedRunArtifacts } from "../run-evidence.js";
 import {
 	lastAssistantText,
 	openTrace,
@@ -67,8 +66,6 @@ const MAX_NAMED_TOOLS = 6;
 const MAX_QUOTE_CHARS = 200;
 /** Judge assertions projected from a verdict sidecar. */
 const MAX_ASSERTIONS = 64;
-/** Bytes a judge verdict sidecar may occupy before it is ignored. */
-const MAX_VERDICT_SIDECAR_BYTES = 256 * 1024;
 
 export type RunOutcome = "pass" | "fail" | "error";
 
@@ -78,10 +75,7 @@ export type RunOutcome = "pass" | "fail" | "error";
  * the comparison gate cannot disagree about what a run was worth.
  */
 export function runScore(record: Pick<RunRecord, "evalResults">): number {
-	const graders = record.evalResults?.graders ?? [];
-	if (graders.length === 0) return record.evalResults?.outcome === "pass" ? 1 : 0;
-	const average = graders.reduce((sum, grader) => sum + grader.score, 0) / graders.length;
-	return Math.min(1, Math.max(0, average));
+	return runGraderScore(record);
 }
 
 export function runOutcome(record: Pick<RunRecord, "status" | "evalResults">): RunOutcome {
@@ -153,23 +147,13 @@ export interface JudgeVerdict {
  * nothing.
  */
 export function readJudgeVerdict(
-	runsRoot: string,
-	runId: string,
-	graderIndex: number,
+	artifact: Record<string, unknown> | undefined,
 	grader: Pick<GraderResult, "assertions" | "passed">,
 ): JudgeVerdict | null {
-	let path: string;
-	try {
-		path = resolveContainedArtifactPath(runsRoot, runId, "judge", `${graderIndex}.verdict.json`);
-	} catch {
-		return null;
-	}
-	if (!existsSync(path)) return null;
+	if (!artifact) return null;
 	let parsed: z.infer<typeof JudgeVerdictSidecarSchema>;
 	try {
-		const entry = statSync(path);
-		if (!entry.isFile() || entry.size > MAX_VERDICT_SIDECAR_BYTES) return null;
-		parsed = JudgeVerdictSidecarSchema.parse(JSON.parse(readFileSync(path, "utf8")) as unknown);
+		parsed = JudgeVerdictSidecarSchema.parse(artifact);
 	} catch {
 		return null;
 	}
@@ -241,9 +225,12 @@ function assertionChip(assertions: { total: number; passed: number }): string {
 
 /** Every grader of one run, with the judge detail its evidence supports. */
 export function graderFindings(
-	runsRoot: string,
 	run: Pick<RunRecord, "runId" | "evalResults">,
-	options: { includeJudgeVerdicts?: boolean } = {},
+	options: {
+		includeJudgeVerdicts?: boolean;
+		/** Values previously verified by the Run evidence module. */
+		judgeArtifacts?: Readonly<Record<string, Record<string, unknown>>>;
+	} = {},
 ): GraderFinding[] {
 	const graders = run.evalResults?.graders ?? [];
 	return graders.map((grader, index): GraderFinding => {
@@ -255,7 +242,7 @@ export function graderFindings(
 			}
 			: null;
 		const verdict = options.includeJudgeVerdicts === true && grader.type === "judge"
-			? readJudgeVerdict(runsRoot, run.runId, index, grader)
+			? readJudgeVerdict(options.judgeArtifacts?.[String(index)], grader)
 			: null;
 		return {
 			name: quote(grader.name, 200),
@@ -333,15 +320,13 @@ export interface RunReceipt {
  * the same bounded, validated reader grading uses — and its KEYS are counted,
  * never its values: a receipt says a world was there, not what was in it.
  */
-export function runReceipt(runsRoot: string, run: Pick<RunRecord, "runId" | "status" | "metrics">): RunReceipt {
-	let worldKeys: number | null = null;
-	try {
-		const path = resolveContainedArtifactPath(runsRoot, run.runId, ...WORLD_STATE_SEGMENTS);
-		if (existsSync(path)) worldKeys = Object.keys(readWorldStateFile(path)).length;
-	} catch {
-		// An unreadable world says nothing about this run; it stays "none".
-		worldKeys = null;
-	}
+export function runReceipt(
+	run: Pick<RunRecord, "runId" | "status" | "metrics">,
+	artifacts: Pick<VerifiedRunArtifacts, "world"> | undefined,
+): RunReceipt {
+	const worldKeys = artifacts?.world === null || artifacts?.world === undefined
+		? null
+		: Object.keys(artifacts.world).length;
 	const judge = run.metrics.judge;
 	const user = run.metrics.simulatedUser;
 	return {
@@ -406,6 +391,7 @@ export type TranscriptEntry =
 	| { kind: "assistant"; text: string; thinking: string | null; at: number | null; final: boolean }
 	| {
 		kind: "tool";
+		evidence?: "reported";
 		name: string;
 		args: string;
 		result: string | null;
@@ -498,6 +484,7 @@ export function runTranscript(messages: readonly TraceMessage[]): Transcript {
 			truncated ||= name.clipped || args.clipped || (result?.clipped ?? false);
 			entries.push({
 				kind: "tool",
+				...(call.evidence ? { evidence: call.evidence } : {}),
 				name: name.text,
 				args: args.text,
 				result: result ? result.text : null,
@@ -531,6 +518,7 @@ export interface RunRow {
 	metrics: {
 		latencyMs: number;
 		toolCalls: number;
+		reportedToolCalls: number;
 		toolErrors: number;
 		tokens: number | null;
 		costUsd: number | null;
@@ -601,6 +589,7 @@ export function runsTable(
 			metrics: {
 				latencyMs: run.metrics.latencyMs,
 				toolCalls: run.metrics.toolCalls,
+				reportedToolCalls: run.metrics.reportedToolCalls ?? 0,
 				toolErrors: run.metrics.toolErrors,
 				tokens: runTokens(run)?.total ?? null,
 				costUsd: runCost(run),
@@ -820,6 +809,7 @@ const CHECK_TITLE_KEY: Record<NonNullable<FailureMode["signature"]["checkCode"]>
 	"reference-similarity": "mode.title.reference-similarity",
 	"turn-budget": "mode.title.turn-budget",
 	"world-state": "mode.title.world-state",
+	"final-answer": "mode.title.final-answer",
 	"cites-source": "mode.title.cites-source",
 };
 

@@ -261,7 +261,7 @@ export function renderRunsTable(rows: readonly RunRow[], options: RunsTableOptio
 		+ `<td class="num">${scoreCell(row)}</td>`
 		+ `<td class="wrapcell">${graderChips(row)}</td>`
 		+ `<td class="wrapcell">${modeCell(row, options)}</td>`
-		+ `<td class="num">${row.metrics.toolCalls}${row.metrics.toolErrors > 0 ? ` / ${row.metrics.toolErrors} err` : ""}</td>`
+		+ `<td class="num">${row.metrics.toolCalls} executed${row.metrics.reportedToolCalls > 0 ? ` / ${row.metrics.reportedToolCalls} reported` : ""}${row.metrics.toolErrors > 0 ? ` / ${row.metrics.toolErrors} err` : ""}</td>`
 		+ `<td class="num">${(row.metrics.latencyMs / 1000).toFixed(1)}s</td>`
 		+ `<td class="num">${money(row.metrics.costUsd, 5)}</td>`
 		+ `<td class="num">${count(row.metrics.tokens)}</td>`
@@ -471,7 +471,8 @@ function renderTranscript(model: RunDetailPageModel): string {
 				+ `</article>`;
 		}
 		const duration = entry.durationMs === null ? "" : ` · ${(entry.durationMs / 1000).toFixed(2)}s`;
-		const status = entry.result === null ? "no result recorded" : entry.isError ? "error" : "ok";
+		const status = entry.evidence === "reported" ? "agent-reported, not host-verified"
+			: entry.result === null ? "no result recorded" : entry.isError ? "error" : "ok";
 		return `<article class="turn${entry.isError ? " toolerr" : ""}"><div class="who"><span>tool · ${h(entry.name)}</span><span>${h(status)}${h(duration)}</span></div>`
 			+ `<details><summary>arguments</summary><pre>${h(entry.args)}</pre></details>`
 			+ (entry.result === null
@@ -540,7 +541,8 @@ export function renderRunDetailPage(model: RunDetailPageModel): string {
 </div>
 <div class="stats">
 	<div class="stat"><b>${(run.metrics.latencyMs / 1000).toFixed(1)}s</b><span>Latency</span></div>
-	<div class="stat"><b>${run.metrics.toolCalls}</b><span>Tool calls</span></div>
+	<div class="stat"><b>${run.metrics.toolCalls}</b><span>Executed tools</span></div>
+	${run.metrics.reportedToolCalls > 0 ? `<div class="stat"><b>${run.metrics.reportedToolCalls}</b><span>Agent-reported tools</span></div>` : ""}
 	<div class="stat"><b>${run.metrics.toolErrors}</b><span>Tool errors</span></div>
 	<div class="stat"><b>${count(run.metrics.tokens)}</b><span>Tokens</span></div>
 	<div class="stat"><b>${money(run.metrics.costUsd, 5)}</b><span>Cost</span></div>

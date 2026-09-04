@@ -130,9 +130,8 @@ export type ToolCallMessage = z.infer<typeof ToolCallMessageSchema>;
 /**
  * A call the agent already made on its own. The host did NOT run it, never
  * sandboxes it and never counts it against `execution.tools` — it is recorded
- * in the trace as a toolCall/toolResult pair purely so a `tool_called` grader
- * sees what the agent actually did. An agent that lies here lies about itself,
- * which is exactly the behaviour under test.
+ * in the trace as an explicitly agent-reported toolCall/toolResult pair. It
+ * cannot satisfy `tool_called`: that check requires host-observed execution.
  */
 export const ToolNoteMessageSchema = z.strictObject({
 	v: Version,
@@ -143,6 +142,7 @@ export const ToolNoteMessageSchema = z.strictObject({
 });
 export type ToolNoteMessage = z.infer<typeof ToolNoteMessageSchema>;
 
+/** Incremental usage for ONE model request. Send before the turn's assistant frame. */
 export const UsageMessageSchema = z.strictObject({
 	v: Version,
 	type: z.literal("usage"),
@@ -206,6 +206,42 @@ export function parseAgentLine(raw: string, line: number): AgentMessage {
 	const parsed = AgentMessageSchema.safeParse(value);
 	if (!parsed.success) throw new CommandProtocolError(line);
 	return parsed.data;
+}
+
+/** Streaming UTF-8 framing: chunk boundaries are not character or line boundaries. */
+export class AgentMessageDecoder {
+	private readonly decoder = new TextDecoder("utf-8", { fatal: true });
+	private buffer = "";
+	private lines = 0;
+
+	push(chunk: Uint8Array): AgentMessage[] {
+		try {
+			this.buffer += this.decoder.decode(chunk, { stream: true });
+		} catch {
+			throw new CommandProtocolError(this.lines + 1);
+		}
+		const messages: AgentMessage[] = [];
+		let newline = this.buffer.indexOf("\n");
+		while (newline >= 0) {
+			const raw = this.buffer.slice(0, newline);
+			this.buffer = this.buffer.slice(newline + 1);
+			this.lines += 1;
+			if (Buffer.byteLength(raw, "utf8") > MAX_PROTOCOL_LINE_BYTES) throw new CommandProtocolError(this.lines);
+			if (raw.trim()) messages.push(parseAgentLine(raw, this.lines));
+			newline = this.buffer.indexOf("\n");
+		}
+		if (Buffer.byteLength(this.buffer, "utf8") > MAX_PROTOCOL_LINE_BYTES) throw new CommandProtocolError(this.lines + 1);
+		return messages;
+	}
+
+	finish(): void {
+		try {
+			this.buffer += this.decoder.decode();
+		} catch {
+			throw new CommandProtocolError(this.lines + 1);
+		}
+		if (this.buffer.trim()) throw new CommandProtocolError(this.lines + 1);
+	}
 }
 
 /** Encode one host message as the exact bytes written to the child's stdin. */

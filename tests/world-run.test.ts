@@ -223,7 +223,7 @@ describe("a case's world, through the real runner", () => {
 			const world = worlded.evalResults?.graders.find((grader) => grader.checkCode === "world-state");
 			expect(world).toMatchObject({ type: "world_state", passed: true, reason: 'world at status equals "closed"' });
 			// The un-worlded case is graded exactly as it always was.
-			expect(plain.evalResults?.graders.map((grader) => grader.checkCode)).toEqual(["output-contains"]);
+			expect(plain.evalResults?.graders.map((grader) => grader.checkCode)).toEqual(["output-contains", "final-answer"]);
 		} finally {
 			await mock.close();
 		}

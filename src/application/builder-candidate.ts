@@ -9,6 +9,7 @@ import type { RunEventListener } from "../run-events.js";
 import { loadApprovedSpec } from "../spec.js";
 import { hashValue } from "../provenance.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
+import { loadImprovementExperimentDesign } from "./improvement-experiment-design.js";
 import type { CandidateExperimentResult } from "./candidate-experiment.js";
 import { runCandidateExperiment } from "./candidate-experiment.js";
 import {
@@ -30,6 +31,13 @@ export interface RunAppliedBuilderCandidateOptions {
 	repetitions: number;
 	dataset?: string;
 	developmentCorpus?: CorpusRef;
+	/**
+	 * Optional unseen arm for an automatic hypothesis search. The Builder source
+	 * remains bound to developmentCorpus; the matched experiment runs here.
+	 */
+	validationCorpus?: CorpusRef;
+	/** Immutable host design proving how authoring and validation were separated. */
+	experimentDesignPath?: string;
 	sealedCorpus?: CorpusRef;
 	candidateId?: string;
 	actorId?: string;
@@ -72,6 +80,19 @@ export async function runAppliedBuilderCandidate(
 		throw new Error("an applied Builder candidate requires an exact approved Spec snapshot");
 	}
 	const runsRoot = resolve(options.runsRoot);
+	const validationCorpus = options.validationCorpus ? loadCorpus(options.validationCorpus) : null;
+	if (validationCorpus && validationCorpus.metadata.visibility !== "development") {
+		throw new Error("candidate validation requires a development corpus");
+	}
+	if ((validationCorpus === null) !== (options.experimentDesignPath === undefined)) {
+		throw new Error("blind validation corpus and experiment design must be supplied together");
+	}
+	const experimentDesign = options.experimentDesignPath
+		? loadImprovementExperimentDesign(options.experimentDesignPath)
+		: null;
+	const experimentDesignArtifact = options.experimentDesignPath
+		? artifactRef(options.experimentDesignPath)
+		: null;
 	const builderArtifact = (name: string) => resolveContainedArtifactPath(
 		runsRoot,
 		"builders",
@@ -193,6 +214,33 @@ export async function runAppliedBuilderCandidate(
 		} else if (options.developmentCorpus) {
 			throw new Error("candidate cannot replace the Builder's manifest development surface with a corpus");
 		}
+		if (validationCorpus) {
+			if (!attestation.developmentCorpus) {
+				throw new Error("blind validation requires a corpus-backed Builder source");
+			}
+			if (validationCorpus.metadata.id === attestation.developmentCorpus.id) {
+				throw new Error("blind validation cannot reuse the Builder's authoring corpus");
+			}
+			const authoringTaskIds = new Set(sourceEval.taskIds ?? []);
+			if (authoringTaskIds.size === 0) {
+				throw new Error("blind validation requires exact authoring task ids in the source eval");
+			}
+			if (validationCorpus.tasks.some((task) => authoringTaskIds.has(task.id))) {
+				throw new Error("blind validation cases overlap the Builder's authoring evidence");
+			}
+			if (
+				!experimentDesign ||
+				experimentDesign.projectId !== options.projectId ||
+				experimentDesign.authoringCorpus.id !== attestation.developmentCorpus.id ||
+				experimentDesign.authoringCorpus.hash !== attestation.developmentCorpus.hash ||
+				experimentDesign.validationCorpus.id !== validationCorpus.metadata.id ||
+				experimentDesign.validationCorpus.hash !== validationCorpus.metadata.hash ||
+				JSON.stringify(experimentDesign.authoringTaskIds) !== JSON.stringify(sourceEval.taskIds) ||
+				JSON.stringify(experimentDesign.validationTaskIds) !== JSON.stringify(validationCorpus.tasks.map((task) => task.id))
+			) {
+				throw new Error("blind validation corpora do not match the immutable experiment design");
+			}
+		}
 		source = {
 			evalRunId: sourceEval.evalRunId,
 			evalRun: evalRunArtifact,
@@ -203,11 +251,13 @@ export async function runAppliedBuilderCandidate(
 			suiteHash: attestation.suiteHash,
 			developmentCorpus: attestation.developmentCorpus,
 		};
-		expectedDevelopmentSource = {
-			dataset: sourceEval.dataset,
-			datasetHash: sourceEval.datasetHash,
-			suiteHash: sourceEval.suiteHash,
-		};
+		if (!validationCorpus) {
+			expectedDevelopmentSource = {
+				dataset: sourceEval.dataset,
+				datasetHash: sourceEval.datasetHash,
+				suiteHash: sourceEval.suiteHash,
+			};
+		}
 	} else if (builderRun.request.sourceAttestation !== null) {
 		throw new Error("canonical Spec-only Builder run unexpectedly contains source attestation evidence");
 	}
@@ -247,6 +297,7 @@ export async function runAppliedBuilderCandidate(
 			proposalSha256: receipt.proposalSha256,
 		},
 		source,
+		...(experimentDesignArtifact ? { experimentDesign: experimentDesignArtifact } : {}),
 		approvedSpec: {
 			specId: spec.id,
 			projectId: spec.projectId,
@@ -263,7 +314,7 @@ export async function runAppliedBuilderCandidate(
 		mode: "candidate",
 		repetitions: options.repetitions,
 		dataset: options.dataset,
-		developmentCorpus: options.developmentCorpus,
+		developmentCorpus: options.validationCorpus ?? options.developmentCorpus,
 		expectedDevelopmentSource,
 		candidateId: options.candidateId,
 		projectId: options.projectId,

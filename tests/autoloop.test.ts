@@ -1,7 +1,11 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { compileHarnessAuthoringProposal } from "../src/application/harness-authoring.js";
+import {
+	improvementExperimentDesignPath,
+} from "../src/application/improvement-experiment-design.js";
 import {
 	abandonImprovementLoop,
 	IMPROVEMENT_CYCLE_SKIP_MESSAGES,
@@ -27,7 +31,10 @@ import {
 } from "../src/application/improvement-loop.js";
 import { loadBuilderApplyReceipt } from "../src/application/builder-proposal.js";
 import { loadEvalRun } from "../src/eval.js";
-import { loadCandidateRecord } from "../src/application/candidate-review.js";
+import {
+	loadCandidateRecord,
+} from "../src/application/candidate-review.js";
+import { inspectCandidateImpact } from "../src/application/candidate-impact.js";
 import { compileImprovementBrief } from "../src/application/improvement-brief.js";
 import { diagnoseEvalRun } from "../src/diagnosis.js";
 import { candidateStatus } from "../src/domain/candidate.js";
@@ -469,7 +476,7 @@ function variantAuthor(instructions: readonly string[]): ImprovementProposalAuth
 
 describe("--candidates turns a cycle into a search", () => {
 	it("authors several hypotheses for the top mode and hands back a table", async () => {
-		const fixture = await improveFixture();
+		const fixture = await improveFixture({}, { developmentCases: 4 });
 		try {
 			const gate = refusingGate();
 			const result = await runImprovementLoop(loopOptions(fixture, {
@@ -482,6 +489,34 @@ describe("--candidates turns a cycle into a search", () => {
 			const search = result.cycles[0]!.search;
 			expect(search).not.toBeNull();
 			expect(search!.failureModeId).toBe(result.cycles[0]!.failureModeId);
+			const design = result.experimentDesign!;
+			expect(design.authoringTaskIds).toHaveLength(2);
+			expect(design.validationTaskIds).toHaveLength(2);
+			expect(design.authoringTaskIds.some((id) => design.validationTaskIds.includes(id))).toBe(false);
+			expect(loadEvalRun(fixture.runsRoot, result.cycles[0]!.evalRunId).taskIds)
+				.toEqual(design.authoringTaskIds);
+			expect(search!.validationEvalRunId).toMatch(/^erun_/);
+			expect(loadEvalRun(fixture.runsRoot, search!.validationEvalRunId!).taskIds)
+				.toEqual(design.validationTaskIds);
+			const searchedCandidate = loadCandidateRecord(fixture.runsRoot, search!.rows[0]!.candidateId!);
+			expect(searchedCandidate.origin.kind).toBe("applied-builder");
+			expect(searchedCandidate.origin.kind === "applied-builder" && searchedCandidate.origin.experimentDesign?.path)
+				.toBe(improvementExperimentDesignPath(fixture.runsRoot, result.loopId));
+			const impact = inspectCandidateImpact({
+				runsRoot: fixture.runsRoot,
+				candidateId: searchedCandidate.candidateId,
+			});
+			expect(impact.development.summary.taskCount).toBe(design.validationTaskIds.length);
+			expect(impact.verdict).toBe("improved");
+			const designPath = improvementExperimentDesignPath(fixture.runsRoot, result.loopId);
+			const exactDesignBytes = readFileSync(designPath);
+			writeFileSync(designPath, Buffer.concat([exactDesignBytes, Buffer.from("\n")]));
+			expect(() => inspectCandidateImpact({
+				runsRoot: fixture.runsRoot,
+				candidateId: searchedCandidate.candidateId,
+			})).toThrow(/experiment design|artifact hash/i);
+			writeFileSync(designPath, exactDesignBytes);
+
 			expect(search!.rows.map((row) => row.branch)).toEqual([
 				`candidate/search-${result.loopId}-1-1`,
 				`candidate/search-${result.loopId}-1-2`,
@@ -499,14 +534,78 @@ describe("--candidates turns a cycle into a search", () => {
 			expect(gate.calls).toEqual([]);
 			expect(tags(fixture.projectDir)).toEqual([]);
 			expect(renderImprovementLoopTable(result)).toContain("Pick one: candidate 1.");
+			expect(renderImprovementLoopTable(result)).toContain(`Blind split ${design.designId}`);
 			expect(improvementCycleLine(result.cycles[0]!, 3)).toContain("search 1/2 verified");
+
+			// The actual product path: select one Pareto arm and say ship once. The
+			// Workbench runs validation + sealed, reviews, tags, adopts and closes.
+			const selected = await fixture.workbench.submit({
+				kind: "select",
+				entity: "candidate",
+				id: searchedCandidate.candidateId,
+			});
+			expect(selected.view.stage).toBe("candidate-verification");
+			const shipGate: WorkbenchHumanGate = {
+				async confirm() { return { approved: true, actorId: "local-user" }; },
+				async selectSealed() { return { approved: true, actorId: "local-user", selectedIndex: 0 }; },
+			};
+			const shipped = await fixture.workbench.decide({
+				kind: "ship",
+				candidateId: searchedCandidate.candidateId,
+				version: "0.1.0",
+				reason: "Release the independently verified winner",
+			}, shipGate);
+			expect(shipped.result.steps.map((step) => step.kind)).toEqual([
+				"verify-candidate",
+				"review-candidate",
+				"promote-candidate",
+				"adopt-candidate",
+				"continue-cycle",
+			]);
+			expect(shipped.result.tag).toBe("v0.1.0");
+			expect(tags(fixture.projectDir)).toEqual(["v0.1.0"]);
+			expect(shipped.view.stage).toBe("ready-to-evaluate");
+		} finally {
+			await fixture.close();
+		}
+	}, 900_000);
+
+	it("refuses an underpowered basket before asking the author", async () => {
+		const fixture = await improveFixture();
+		try {
+			const author = vi.fn<ImprovementProposalAuthor>(() => ({ kind: "no-change", reason: "must not run" }));
+			await expect(runImprovementLoop(loopOptions(fixture, { candidates: 2, author })))
+				.rejects.toThrow(/at least 4 reviewed cases/);
+			expect(author).not.toHaveBeenCalled();
+			expect(branches(fixture.projectDir).filter((name) => name.startsWith("candidate/"))).toEqual([]);
+		} finally {
+			await fixture.close();
+		}
+	}, 600_000);
+
+	it("keeps collecting independent hypotheses after one variant declines", async () => {
+		const fixture = await improveFixture({}, { developmentCases: 4 });
+		try {
+			const proposals = variantAuthor([READY_INSTRUCTION, NO_OP_INSTRUCTION]);
+			const author = vi.fn<ImprovementProposalAuthor>((request) => {
+				if (request.variant === 2) return { kind: "no-change", reason: "this hypothesis was unsafe" };
+				return proposals({ ...request, variant: request.variant === 1 ? 1 : 2 });
+			});
+			const result = await runImprovementLoop(loopOptions(fixture, {
+				candidates: 3,
+				author,
+			}));
+
+			expect(author).toHaveBeenCalledTimes(3);
+			expect(result.cycles[0]!.search?.rows).toHaveLength(2);
+			expect(result.cycles[0]!.skipped).toBeNull();
 		} finally {
 			await fixture.close();
 		}
 	}, 900_000);
 
 	it("stops honestly when fewer hypotheses come back than a search needs", async () => {
-		const fixture = await improveFixture();
+		const fixture = await improveFixture({}, { developmentCases: 4 });
 		try {
 			const result = await runImprovementLoop(loopOptions(fixture, {
 				candidates: 3,
@@ -590,6 +689,7 @@ describe("the improve decision", () => {
 				loopId: "loop_observed01",
 				finalPassRate: 0,
 				executions: 0,
+				experimentDesign: null,
 			};
 			let received: Record<string, unknown> | null = null;
 			const workbench = createAhdeWorkbench({
@@ -657,8 +757,28 @@ describe("the improve decision", () => {
 		}
 	}, 600_000);
 
+	it("rejects an underpowered blind search before provider preparation or confirmation", async () => {
+		const prepare = vi.fn(async () => null);
+		const fixture = await improveFixture({ prepareImprovementAuthor: prepare });
+		try {
+			const gate = recordingApprovingGate();
+			await expect(fixture.workbench.decide({
+				kind: "improve",
+				until: 1,
+				maxCycles: 1,
+				repetitions: SEALED_VERIFICATION_REPETITIONS,
+				candidates: 2,
+				reason: "Compare two hypotheses",
+			}, gate)).rejects.toThrow(/at least 4 reviewed cases/);
+			expect(prepare).not.toHaveBeenCalled();
+			expect(gate.calls).toEqual([]);
+		} finally {
+			await fixture.close();
+		}
+	}, 600_000);
+
 	it("renders the Pareto table under the same full confirmation when it is asked for several changes", async () => {
-		const fixture = await improveFixture();
+		const fixture = await improveFixture({}, { developmentCases: 4 });
 		try {
 			const gate = recordingApprovingGate();
 			const workbench = createAhdeWorkbench({
@@ -684,7 +804,9 @@ describe("the improve decision", () => {
 			expect(gate.calls).toHaveLength(1);
 			expect(gate.calls[0]!.policy).toBe("consequential");
 			expect(gate.calls[0]!.estimate?.executions).toBe(plannedImprovementExecutions({
-				developmentTasks: 2,
+				developmentTasks: 4,
+				authoringTasks: 2,
+				validationTasks: 2,
 				repetitions: SEALED_VERIFICATION_REPETITIONS,
 				maxCycles: 1,
 				candidates: 2,
@@ -843,8 +965,8 @@ describe("the shipped proposal author binds by surface, not by eval-run id", () 
 			expect(empty).toMatchObject({ kind: "no-change", staleness: "no-recorded-proposal" });
 			expect(empty.kind === "no-change" && empty.reason)
 				.toContain(RECORDED_PROPOSAL_STALE_MESSAGES["no-recorded-proposal"]);
-			// No pretending: the stop names the missing milestone.
-			expect(empty.kind === "no-change" && empty.reason).toContain("headless proposal author is not shipped yet");
+			// A recorded-only host directs the operator to the model-equipped Builder.
+			expect(empty.kind === "no-change" && empty.reason).toContain("Open Builder Pi to generate new hypotheses automatically");
 
 			// The Builder writes one, in the conversation, before `ahde improve` runs.
 			const recorded = await recordFixtureProposal(fixture, READY_INSTRUCTION);

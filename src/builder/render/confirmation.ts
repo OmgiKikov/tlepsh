@@ -271,6 +271,31 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 				paint.muted(t("confirm.step-record")),
 			];
 		}
+		case "improve": {
+			const authoring = bag(subject.authoringBudget);
+			const maxVariants = Number(authoring.maxVariants ?? 0);
+			const maxRequests = typeof authoring.maxRequests === "number" ? authoring.maxRequests : null;
+			const maxOutputTokens = typeof authoring.maxOutputTokens === "number" ? authoring.maxOutputTokens : null;
+			const maxCostUsd = typeof authoring.maxCostUsd === "number" ? authoring.maxCostUsd : null;
+			const authorCost = maxCostUsd === null
+				? t("estimate.unknown")
+				: maxCostUsd < 0.01
+					? t("estimate.under-cent")
+					: t("estimate.about-cost", { cost: maxCostUsd.toFixed(2) });
+			const authorBudget = maxRequests === null || maxOutputTokens === null
+				? t("confirm.improve.builder-budget-unknown", { variants: maxVariants })
+				: t("confirm.improve.builder-budget", {
+					variants: maxVariants,
+					requests: maxRequests,
+					tokens: maxOutputTokens,
+				});
+			return [
+				`${paint.dim(t("confirm.improve.target-subtotal"))} ${text(subject.targetEstimatedCost, 100)}`,
+				`${paint.dim(t("confirm.improve.builder-ceiling"))} ${authorCost} ${paint.dim(`· ${authorBudget}`)}`,
+				`${paint.dim(t("confirm.improve.total"))} ${text(subject.estimatedCost, 100)} ${paint.dim("·")} ${text(subject.estimatedTime, 80)}`,
+				...wrap(text(subject.authoring, 500), 92, "  ").map((line) => paint.muted(line)),
+			];
+		}
 		case "ship": {
 			const steps = strings(subject.steps);
 			const candidate = subject.candidate;

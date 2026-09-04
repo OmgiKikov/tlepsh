@@ -241,10 +241,10 @@ describe("CLI help", () => {
 		expect(improve).toContain("the sealed guardrail and the promotion are\nalways yours");
 		expect(improve).toContain("--candidates N (1..4, default 1) makes each cycle a search instead of one guess");
 		expect(improve).toContain("already ended rejected or not `improved`");
-		// No pretending about who writes the changes, and no pretending the
-		// operator will see each diff before it lands.
-		expect(improve).toContain("WHAT THE LOOP AUTHORS: nothing.");
-		expect(improve).toContain("A headless\nproposal author is NOT shipped yet");
+		// Builder Pi authors bounded variants; the standalone command consumes
+		// prepared proposals. Neither path pretends every diff was shown first.
+		expect(improve).toContain("WHO AUTHORS THE PROPOSALS: Builder Pi can attach its bounded proposal author");
+		expect(improve).toContain("The standalone\n`ahde improve` command has no model host to author with");
 		expect(improve).toContain("WITHOUT showing you each diff");
 		expect(improve).toContain("`via: improvement-loop`");
 		expect(improve).toContain("WHICH PROPOSAL MATCHES");

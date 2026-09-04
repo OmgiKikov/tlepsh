@@ -597,7 +597,7 @@ ${options.judgeParams ?? ""}`,
 			expect(rubricOnly.messages[1].content).toBe(
 				"Критерий: ответ по существу сроков\n\nОбращение: Вопрос про сроки\n\nОтвет агента: Тридцать дней.",
 			);
-			expect(existsSync(join(judgeRuns, byTask.rubric_only.runId, "judge", "0.verdict.json"))).toBe(false);
+			expect(existsSync(join(judgeRuns, byTask.rubric_only.runId, "judge", "0.verdict.json"))).toBe(true);
 		} finally {
 			cleanup(dir);
 			cleanup(judgeRuns);
@@ -683,7 +683,7 @@ evalSuite:
 
 			// Graded on the reply alone: the seeded turn's text is not the output.
 			expect(byTask.dialog_001.evalResults.graders.map((grader: { type: string; passed: boolean }) =>
-				[grader.type, grader.passed])).toEqual([["exact", true], ["output_contains", false]]);
+				[grader.type, grader.passed])).toEqual([["exact", true], ["output_contains", false], ["final_answer", true]]);
 			expect(byTask.dialog_001.evalResults.graders[0].checkCode).toBe("reference-exact");
 
 			// The seeded turns are counted in metrics and present in the trace.
@@ -981,7 +981,7 @@ evalSuite:
 			expect(errorEvents.find((event) => event.type === "execution_finished"))
 				.toMatchObject({ type: "execution_finished", status: "completed" });
 			expect(errorEvents.find((event) => event.type === "run_graded"))
-				.toMatchObject({ type: "run_graded", outcome: "fail", passedGraders: 0, totalGraders: 1 });
+				.toMatchObject({ type: "run_graded", outcome: "fail", passedGraders: 0, totalGraders: 2 });
 			expect(durableErrorStates).toEqual(["execution_finished:completed", "run_graded:completed"]);
 		} finally {
 			cleanup(dir);
