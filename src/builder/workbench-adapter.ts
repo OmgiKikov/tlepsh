@@ -15,6 +15,7 @@ import { nextStep, stageLabel } from "./render/stage.js";
 import { renderDatasetCases, renderReview, renderView, viewTitle } from "./render/view.js";
 import { hasMessage, plural, t } from "../i18n.js";
 import { renderVersionPassport } from "./render/passport.js";
+import { renderExecutiveVersionCard } from "./render/version-card.js";
 import { renderAgentLogChart } from "./render/agent-log.js";
 import { handoffLines } from "./render/handoff.js";
 import { compileAgentLog } from "../application/agent-log.js";
@@ -491,6 +492,7 @@ export function createBuilderWorkbenchTools(
 					"A case whose expected behaviour reads a tool that consults the world — any declared tool naming AHDE_WORLD in its descriptor environment, and every declared tool when the Target is a command agent — must carry world.state holding the data that tool will find, or the tool answers that the run has no world and the case is unpassable by construction.",
 				"• { kind: \"corpus-revision\", parentDraftId?, operations: [{ type: \"add\", task } | { type: \"replace\", taskId, task } | { type: \"remove\", taskId } | { type: \"set-graders\", taskId, graders } | { type: \"grader.add\", taskId, grader } | { type: \"grader.update\", taskId, graderIndex, grader } | { type: \"grader.remove\", taskId, graderIndex } | { type: \"add-case-from-run\", evalRunId, runId, task } | { type: \"rename\", name } | { type: \"set-notes\", coverageNotes }], revisionSummary }",
 				"• { kind: \"corpus-import\", sourcePath: \"imports/<file>.jsonl\", name, revisionSummary, coverageNotes? }",
+				"• { kind: \"production-failure\", sourcePath: \"imports/<one-trace>.json|jsonl|ndjson\", sourceKind: \"real\" | \"synthetic\", targetClaim?: { id, gitSha }, classification: { kind: \"wrong-answer\" | \"missed-tool-call\" | \"incorrect-tool-call\" | \"unsupported-claim\" | \"unsafe-action\" | \"conversation-failure\" | \"other\", summary }, case: { expected?, world?, graders: [grader, …] }, draftName?, coverageNotes?, revisionSummary, approvedSpecId?, parentDraftId? } — turn exactly one production conversation into an editable regression. The host derives input/messages from the credential-redacted trace, stamps the current Target id/SHA, keeps any external target claim separate, and treats imported tool names as reported rather than executed evidence. This submission asks nothing; /test is the single review that publishes the revised basket and runs it. Never claim this generic scrubber made arbitrary PII safe.",
 				"• { kind: \"dataset-recipe\", sourcePath: \"imports/<file>\", recipe, name, revisionSummary, approvedSpecId? } — how to read any other data file (csv/tsv/json/jsonl/markdown/text/chat export) as cases. Write the recipe from aspect: \"dataset\" alone; the host re-validates it against the real columns and answers with the first compiled sample cases plus a submissionId. Nothing is imported until the operator confirms { kind: \"import-dataset\" }.",
 					"recipe = { schemaVersion: 1, input?: { column } | { template: \"…{{column}}…\" }, expected?: { column }, dialogue?: { column }, simulatedUser?: { goalColumn, personaColumn?, maxTurns?, stopWhen? }, metadata?: [column, …], filters?: [{ column, equals } | { column, matches }], sample?: { limit, seed, stratifyBy? }, graders: [grader, …], idPrefix? } — needs input or dialogue; a simulatedUser recipe needs input and cannot carry dialogue; grader text may use {{column}} and {{expected}}.",
 				"• { kind: \"select\", entity: \"spec-draft\" | \"approved-spec\" | \"corpus-draft\" | \"development-corpus\" | \"eval-run\" | \"proposal\" | \"candidate\", id }",
@@ -672,8 +674,14 @@ export function createBuilderWorkbenchTools(
 							// before it.
 							if (result.kind === "ship") {
 								try {
-									const { passport } = await compileBuilderPassport(workbench, { view: result.view });
-									lines.push("", ...renderVersionPassport(passport, markerPaint));
+									const { passport, card, reportWritten } = await compileBuilderPassport(workbench, { view: result.view, save: true });
+									lines.push(
+										"",
+										...renderExecutiveVersionCard(card, markerPaint),
+										reportWritten ? t("release.html.saved", { path: reportWritten }) : markerPaint.warning(t("release.html.not-saved")),
+										"",
+										...renderVersionPassport(passport, markerPaint),
+									);
 								} catch (error) {
 									lines.push("", markerPaint.warning(t("result.passport-unavailable", {
 										reason: oneLine(error instanceof Error ? error.message : String(error), 180),

@@ -44,6 +44,7 @@ import {
 	synthesizeSealedCorpus,
 } from "../application/sealed-synth.js";
 import { resolveDevelopmentFailureOperations } from "../application/builder-regression-case.js";
+import { addProductionFailureCase } from "../application/production-failure-case.js";
 import {
 	compileHarnessAuthoringProposal,
 	type HarnessAuthoringIntent,
@@ -391,6 +392,7 @@ export interface AhdeWorkbenchDependencies {
 	createCorpusDraft: typeof createBuilderCorpusDraft;
 	importCorpusDraft: typeof importBuilderCorpusDraft;
 	reviseCorpusDraft: typeof reviseBuilderCorpusDraft;
+	addProductionFailureCase: typeof addProductionFailureCase;
 	/** The host reads `imports/`; the Builder only ever reads what these return. */
 	inspectDataset: typeof inspectDatasetFile;
 	compileDatasetCases: typeof compileDatasetCases;
@@ -475,6 +477,7 @@ const DEFAULT_DEPENDENCIES: AhdeWorkbenchDependencies = {
 	createCorpusDraft: createBuilderCorpusDraft,
 	importCorpusDraft: importBuilderCorpusDraft,
 	reviseCorpusDraft: reviseBuilderCorpusDraft,
+	addProductionFailureCase,
 	inspectDataset: inspectDatasetFile,
 	compileDatasetCases,
 	saveDatasetRecipe: saveDatasetRecipeSubmission,
@@ -3188,6 +3191,67 @@ export class AhdeWorkbench {
 					"Show the samples, then ask for the import decision.",
 				artifact,
 				view: await this.viewOf(inventory),
+			};
+		}
+		if (input.kind === "production-failure") {
+			const inventory = this.inventory();
+			const approved = requireApprovedSpec(inventory, input.approvedSpecId);
+			const exact = loadApprovedSpec({
+				stateRoot: this.stateRoot,
+				projectId: this.projectId,
+				specId: approved.id,
+			});
+			if (!inventory.target) throw new Error("production failure intake requires one exact Target");
+			// Reject an unrunnable measurement before importing or writing either
+			// immutable artifact. The conversation is host-derived later; grader
+			// readiness depends only on the reviewed expected/world/graders surface.
+			assertGradersRunnable([{
+				...(input.case.expected !== undefined ? { expected: input.case.expected } : {}),
+				graders: input.case.graders,
+			}], inventory.target.manifest, "production failure regression", {
+				evaluatorsChosenLater: true,
+				...targetToolContext(inventory.target),
+			});
+			const matchingDrafts = inventory.corpusDrafts.filter((draft) =>
+				draft.approvedSpec.specId === approved.id
+			);
+			const parent = input.parentDraftId !== undefined || matchingDrafts.length > 0
+				? requireCorpusDraft(inventory, input.parentDraftId, approved.id)
+				: null;
+			const result = this.dependencies.addProductionFailureCase({
+				projectDir: this.projectDir,
+				stateRoot: this.stateRoot,
+				approvedSpec: exact.reference,
+				...(parent ? { parentDraftId: parent.id } : {}),
+				submission: {
+					sourcePath: input.sourcePath,
+					sourceKind: input.sourceKind,
+					...(input.targetClaim !== undefined ? { targetClaim: input.targetClaim } : {}),
+					classification: input.classification,
+					case: input.case,
+					draftName: input.draftName,
+					coverageNotes: input.coverageNotes,
+					revisionSummary: input.revisionSummary,
+				},
+			}, { now: this.dependencies.now });
+			const settled = this.select("corpus-draft", result.draft.id);
+			return {
+				kind: input.kind,
+				message: "One redacted production failure is now an editable regression case. Review the basket, then use /test for the single publish-and-run decision.",
+				artifact: {
+					failureId: result.failure.id,
+					failureSource: result.failure.source.path,
+					importedAgainst: result.failure.importedAgainst,
+					classification: result.classification,
+					draftId: result.draft.id,
+					parentDraftId: result.draft.parentDraftId,
+					draftHash: hashValue(result.draft),
+					taskId: result.draft.tasks.find((task) =>
+						task.metadata?.production_failure_id === result.failure.id
+					)?.id ?? null,
+					taskCount: result.draft.tasks.length,
+				},
+				view: await this.viewOf(settled),
 			};
 		}
 		if (input.kind === "corpus-revision") {

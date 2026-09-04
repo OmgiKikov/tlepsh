@@ -42,6 +42,7 @@ import {
 	type LabelScreen,
 } from "./label-session.js";
 import { renderVersionPassport } from "./render/passport.js";
+import { renderExecutiveVersionCard } from "./render/version-card.js";
 import { decisionHeadline, renderDecision } from "./render/decision.js";
 import { compilePlan, renderPlan, type PlanFacts } from "./render/plan.js";
 import { renderReceipt } from "./render/receipt.js";
@@ -768,8 +769,11 @@ export function registerAhdeBuilderCommands(
 			lines = renderDecision(result, markerPaint, { liveTraceUrl });
 			if (result.kind === "ship") {
 				try {
-					const { passport } = await compileBuilderPassport(workbench, { view: result.view });
+					const { passport, card, reportWritten } = await compileBuilderPassport(workbench, { view: result.view, save: true });
 					lines.push(
+						"",
+						...renderExecutiveVersionCard(card, markerPaint),
+						reportWritten ? t("release.html.saved", { path: reportWritten }) : markerPaint.warning(t("release.html.not-saved")),
 						"",
 						...renderVersionPassport(passport, markerPaint),
 					);
@@ -1678,11 +1682,14 @@ export function registerAhdeBuilderCommands(
 				if (/^no promoted version /.test(reason)) throw new Error(t("passport.no-version", { version }), { cause: error });
 				throw error;
 			}
-			const { passport, written } = compiled;
+			const { passport, card, written, reportWritten } = compiled;
 			presenter.show(ctx, {
 				title: t("panel.title", { detail: t("panel.passport") }),
 				tone: "info",
 				lines: [
+					...renderExecutiveVersionCard(card, markerPaint),
+					reportWritten ? t("release.html.saved", { path: reportWritten }) : markerPaint.warning(t("release.html.not-saved")),
+					"",
 					...renderVersionPassport(passport, markerPaint),
 					"",
 					written

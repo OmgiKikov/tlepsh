@@ -21,6 +21,7 @@ import {
 	runErrorReading,
 	type RunErrorReading,
 } from "./run-error.js";
+import { projectRagRunXray, type RagRunXray } from "./rag-xray.js";
 
 export {
 	classifyRunError,
@@ -1039,6 +1040,12 @@ export interface RunExplanation {
 	judgeAbstained: number;
 	/** Baseline → candidate movement for this task, when a candidate covers it. */
 	flip: CandidateFlip | null;
+	/**
+	 * Retrieval evidence projected from this run's verified record and canonical
+	 * trace. Null for runs that neither executed `kb_search` nor carried a
+	 * `cites_source` label. Chunk bodies never cross this projection seam.
+	 */
+	rag: RagRunXray | null;
 	/** The whole explanation as plain language, one sentence per line. */
 	sentences: string[];
 }
@@ -1110,6 +1117,8 @@ export function explainRun(input: {
 	run: RunRecord;
 	graders: GraderFinding[];
 	facts: RunTraceFacts | null;
+	/** Canonical messages opened only after the run artifact was verified. */
+	messages?: readonly TraceMessage[] | null;
 	modes: readonly FailureMode[];
 	flip: CandidateFlip | null;
 }): RunExplanation {
@@ -1133,6 +1142,7 @@ export function explainRun(input: {
 		failureModes: input.modes.map(failureModeExplanation),
 		judgeAbstained: graders.filter((grader) => grader.abstained).length,
 		flip: input.flip,
+		rag: input.messages ? projectRagRunXray(run, input.messages) : null,
 	};
 	return { ...explanation, sentences: explanationSentences(explanation) };
 }

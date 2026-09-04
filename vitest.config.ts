@@ -42,10 +42,15 @@ const HEAVY = [
 	"tests/workbench-composites.test.ts", // Git worktrees through the cycle fixtures
 	"tests/workshop.test.ts", // Git worktrees, sandbox-exec and an HTTP server
 	"tests/world-run.test.ts", // Git, sandbox-exec and a mock model over HTTP, one suite per world
+	"tests/workbench-production-failure.test.ts", // Git-backed Workbench publication and failure intake
+	"tests/passport-presentation.test.ts", // Git-backed released candidates and saved report artifacts
 ];
 
 export default defineConfig({
 	test: {
+		// The real Git/process suites saturate the host and starve worker RPC at
+		// CPU-count concurrency. Four workers keep the complete gate responsive.
+		maxWorkers: 4,
 		testTimeout: 120_000,
 		// Cycle fixtures drive a real Workbench through Git; a loaded machine must not flake them.
 		hookTimeout: 120_000,

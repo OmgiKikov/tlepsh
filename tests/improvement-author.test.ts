@@ -179,6 +179,22 @@ describe("bounded Pi improvement author", () => {
 		expect(budget.maxCostUsdPerVariant).toBeCloseTo(1.261568, 12);
 	});
 
+	it("answers inventory discovery without exposing undeclared files or consuming the hypothesis on guessed paths", async () => {
+		const complete = scripted([reply(call("workshop_read", { path: "." })), ...steps()]);
+		const result = await createPiImprovementAuthor({ model, complete }).author(request);
+		expect(result.kind).toBe("propose");
+		const inventory = complete.mock.calls[1]![0].messages.find(message => message.role === "toolResult");
+		expect(inventory).toMatchObject({ isError: false });
+		const text = JSON.stringify(inventory);
+		expect(text).toContain("AGENTS.md");
+		expect(text).toContain("echo_json");
+		expect(text).toContain("targetTools");
+		expect(text).not.toContain("evals/");
+		expect(text).not.toContain(".env");
+		expect(text).not.toContain("kb_search"); // No declared knowledge base in this fixture.
+		expect(text).not.toContain(fixture.projectDir);
+	});
+
 	it("refuses private/undeclared reads, unread writes and fake release tools", async () => {
 		const complete = scripted([
 			reply(
@@ -198,6 +214,8 @@ describe("bounded Pi improvement author", () => {
 		const errors = complete.mock.calls[1]![0].messages.filter((item) => item.role === "toolResult");
 		expect(errors).toHaveLength(5);
 		expect(errors.every((item) => item.role === "toolResult" && item.isError)).toBe(true);
+		expect(result.kind === "no-change" && result.reason).toContain("Last tool error: ship");
+		expect(receipt(result.authoring!.receiptId).reason).toContain("ship");
 		expect(readFileSync(join(fixture.projectDir, "AGENTS.md"), "utf8")).toContain(BASELINE_INSTRUCTION);
 	});
 

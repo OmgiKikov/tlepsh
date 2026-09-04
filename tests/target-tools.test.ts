@@ -27,6 +27,8 @@ import { validateTargetToolArguments } from "../src/target/tool-manifest.js";
 import { EMPTY_PREPARED_TOOL_HOME_HASH } from "../src/target/tool-setup.js";
 import { openTrace, traceToolCalls } from "../src/trace.js";
 import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
+import { collectRunDetailPage } from "../src/evidence/model.js";
+import { diagnoseEvalRun } from "../src/diagnosis.js";
 
 const VALID_DESCRIPTOR = `schemaVersion: 1
 name: echo_json
@@ -764,6 +766,15 @@ describe("the knowledge base as a Target surface", () => {
 				.toContain("750 рублей");
 			expect(record.evalResults.graders.map((grader: { checkCode: string }) => grader.checkCode))
 				.toContain("cites-source");
+			// Read the same saved Run through the user-facing Evidence seam.
+			diagnoseEvalRun(runsRoot, evaluation.evalRunId);
+			expect(collectRunDetailPage(runsRoot, runId).explanation.rag).toMatchObject({
+				diagnosis: "retrieved-and-cited",
+				hitAtK: 1,
+				mrr: 1,
+				citationRate: 1,
+				retrievedChunkIds: expect.arrayContaining(["tariffs.md#0"]),
+			});
 		} finally {
 			delete process.env.TEST_MODEL_KEY;
 			cleanup(dir);

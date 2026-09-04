@@ -1,8 +1,9 @@
 import type { GraderFinding, RunReceipt, RunRow, TranscriptEntry } from "../../application/run-explanation.js";
+import type { RagRunXray } from "../../application/rag-xray.js";
 import type { EvalPageMode, RunDetailPageModel } from "../../evidence/pages.js";
 import { oneLine, shortTaskId } from "./format.js";
 import type { Paint } from "./paint.js";
-import { plural, t } from "../../i18n.js";
+import { plural, t, tokenLabel } from "../../i18n.js";
 
 /**
  * Traces inside the TUI. The same pure projections the Evidence Explorer
@@ -21,6 +22,9 @@ const MAX_TURN_CHARS = 1_200;
 const MAX_TOOL_ARGS_CHARS = 160;
 const MAX_TOOL_RESULT_CHARS = 300;
 const MAX_NOTE_CHARS = 3_800;
+const MAX_RAG_PANEL_SEARCHES = 4;
+const MAX_RAG_PANEL_HITS = 5;
+const MAX_RAG_PANEL_SOURCE_IDS = 6;
 
 function pct(score: number): string {
 	return `${Math.round(Math.max(0, Math.min(1, score)) * 100)}%`;
@@ -252,6 +256,64 @@ export function receiptLines(receipt: RunReceipt, paint: Paint): string[] {
 	];
 }
 
+function optionalRate(value: number | null): string {
+	return value === null ? "—" : pct(value);
+}
+
+function sourceIds(ids: readonly string[]): string {
+	if (ids.length === 0) return t("rag.none");
+	const shown = ids.slice(0, MAX_RAG_PANEL_SOURCE_IDS).map((id) => oneLine(id, 28));
+	return `${shown.join(", ")}${ids.length > shown.length ? `, ${t("rag.more", { count: ids.length - shown.length })}` : ""}`;
+}
+
+/** Bounded retrieval evidence for Builder `/trace`; chunk bodies never enter this DTO. */
+export function renderRagXrayLines(rag: RagRunXray, paint: Paint): string[] {
+	const lines = [
+		paint.heading(t("rag.title")),
+		`  ${oneLine(t("rag.diagnosis-line", { diagnosis: tokenLabel("rag.diagnosis", rag.diagnosis) }), 112)}`,
+		`  ${oneLine(t("rag.summary", {
+			searches: plural(rag.searchCount, "search"),
+			hitAtK: optionalRate(rag.hitAtK),
+			mrr: rag.mrr === null ? t("metrics.not-reported") : rag.mrr.toFixed(3),
+			citation: optionalRate(rag.citationRate),
+			grounding: optionalRate(rag.groundingPassRate),
+		}), 112)}`,
+		`  ${paint.dim(oneLine(`${t("rag.resources", {
+			latency: rag.retrievalLatencyMs === null ? t("metrics.not-reported") : `${Math.round(rag.retrievalLatencyMs)}ms`,
+			cost: rag.retrievalCostUsd === null ? t("metrics.not-reported") : "$0.00",
+			coverage: optionalRate(rag.scoreCoverage),
+		})} · ${t("rag.faithfulness-note")}`, 112))}`,
+		`  ${paint.dim(t("rag.source.expected"))} ${oneLine(sourceIds(rag.expectedChunkIds), 98)}`,
+		`  ${paint.dim(t("rag.source.retrieved"))} ${oneLine(sourceIds(rag.retrievedChunkIds), 97)}`,
+		`  ${paint.dim(t("rag.source.cited"))} ${oneLine(sourceIds(rag.citedChunkIds), 100)}`,
+	];
+	const shownSearches = rag.searches.slice(0, MAX_RAG_PANEL_SEARCHES);
+	for (const [index, search] of shownSearches.entries()) {
+		lines.push(`  ${paint.accent(`#${index + 1}`)} ${oneLine(t("rag.search-summary", {
+			index: index + 1,
+			status: tokenLabel("rag.search-status", search.status),
+			k: search.requestedK ?? t("metrics.not-reported"),
+			duration: duration(search.durationMs),
+		}), 112)}`);
+		lines.push(`    ${paint.dim(t("rag.query"))}: ${oneLine(search.query ?? t("rag.query-not-recorded"), 98)}`);
+		for (const hit of search.hits.slice(0, MAX_RAG_PANEL_HITS)) {
+			const flags = [
+				hit.expected ? tokenLabel("rag.flag", "expected") : "",
+				hit.cited ? tokenLabel("rag.flag", "cited") : "",
+			].filter(Boolean).join(",") || t("rag.flags.other");
+			const score = hit.score === null ? t("metrics.not-reported") : hit.score.toFixed(3);
+			lines.push(`    ${oneLine(`${hit.rank}. ${oneLine(hit.chunkId, 28)} · ${oneLine(hit.path ?? t("rag.path-missing"), 28)} · ${t("rag.score-inline", { score })} · ${flags} · ${t("rag.overlap-inline", { overlap: optionalRate(hit.answerOverlap) })}`, 112)}`);
+		}
+		if (search.hits.length > MAX_RAG_PANEL_HITS) {
+			lines.push(`    ${paint.dim(t("rag.hits-omitted", { count: search.hits.length - MAX_RAG_PANEL_HITS }))}`);
+		}
+	}
+	const omitted = Math.max(0, rag.searchCount - shownSearches.length);
+	if (omitted > 0) lines.push(`  ${paint.dim(t("rag.searches-omitted", { searches: plural(omitted, "search") }))}`);
+	lines.push(`  ${paint.dim(t("rag.overlap-note"))}`);
+	return lines;
+}
+
 /**
  * One run, whole: why it failed in the host's words, every grader's verdict,
  * then the conversation. Bounded to `MAX_TRACE_PANEL_LINES`.
@@ -293,6 +355,7 @@ export function renderTracePanel(
 	for (const sentence of model.explanation.sentences) {
 		for (const line of wrapSentence(sentence)) lines.push(`  ${line}`);
 	}
+	if (model.explanation.rag) lines.push("", ...renderRagXrayLines(model.explanation.rag, paint));
 	lines.push("", paint.heading(t("trace.verdict")));
 	if (model.graders.length === 0) lines.push(`  ${paint.dim(t("trace.noGraders"))}`);
 	for (const grader of model.graders) lines.push(...renderGrader(grader, paint));

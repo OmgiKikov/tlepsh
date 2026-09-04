@@ -139,7 +139,7 @@ function row(taskId: string, repetitionIndex: number, outcome: RunRow["outcome"]
 		graders: [],
 		failureModeIds: [],
 		error: null,
-		metrics: { latencyMs: 1_000, toolCalls: 0, toolErrors: 0, tokens: null, costUsd: null },
+		metrics: { latencyMs: 1_000, toolCalls: 0, reportedToolCalls: 0, toolErrors: 0, tokens: null, costUsd: null },
 		traceAvailable: false,
 	};
 }

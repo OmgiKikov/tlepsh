@@ -341,6 +341,8 @@ export interface CreateBuilderCorpusDraftOptions {
 	coverageNotes?: readonly string[];
 	/** Trusted host-derived import provenance; model-facing draft schemas cannot populate it. */
 	verifiedImportSource?: unknown;
+	/** Trusted host-derived task provenance; model-facing draft schemas cannot populate it. */
+	verifiedTaskProvenance?: readonly unknown[];
 	revisionSummary: string;
 }
 
@@ -477,17 +479,21 @@ export function createBuilderCorpusDraft(
 	dependencies: Partial<BuilderCorpusDraftDependencies> = {},
 ): BuilderCorpusDraftResult {
 	const approvedSpec = exactApprovedSpec(options.stateRoot, options.approvedSpec);
+	const tasks = normalizeTasks(approvedSpec, options.tasks);
+	const taskProvenance = z.array(BuilderCorpusDraftTaskProvenanceSchema).max(MAX_DRAFT_TASKS)
+		.parse(options.verifiedTaskProvenance ?? []);
 	const identity: BuilderCorpusDraftIdentity = {
-		schemaVersion: 2,
+		schemaVersion: taskProvenance.some((provenance) => provenance.kind === "production-failure") ? 3 : 2,
 		kind: "builder-corpus-draft",
 		projectId: approvedSpec.projectId,
 		approvedSpec,
 		parentDraftId: null,
 		name: DraftNameSchema.parse(options.name),
-		tasks: normalizeTasks(approvedSpec, options.tasks),
+		tasks,
 		...(options.verifiedImportSource !== undefined
 			? { importSource: BuilderCorpusImportSourceSchema.parse(options.verifiedImportSource) }
 			: {}),
+		...(taskProvenance.length > 0 ? { taskProvenance } : {}),
 		coverageNotes: BuilderCorpusDraftCoverageNotesSchema.parse(options.coverageNotes ?? []),
 		revisionSummary: RevisionSummarySchema.parse(options.revisionSummary),
 		source: "builder-pi",

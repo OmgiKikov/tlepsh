@@ -124,6 +124,7 @@ describe("model-facing projection", () => {
 				{ kind: "corpus-revision", when: expect.any(String) },
 				{ kind: "corpus-import", when: expect.any(String) },
 				{ kind: "dataset-recipe", when: expect.any(String) },
+				{ kind: "production-failure", when: expect.any(String) },
 			],
 		});
 		expect(projected.counts).toEqual(view.counts);
@@ -179,7 +180,7 @@ describe("model-facing projection", () => {
 		// A workshop is open, so closing or discarding it is legal and reopening is not.
 		expect(next.submit.map((entry) => entry.kind)).toEqual([
 			"spec-draft", "corpus-draft", "corpus-revision", "corpus-import",
-			"dataset-recipe", "structured-proposal", "workshop-close", "workshop-discard",
+			"dataset-recipe", "production-failure", "structured-proposal", "workshop-close", "workshop-discard",
 		]);
 		expect(next.workshop).toEqual({ basis: "improvement", open: true });
 		console.log(`next block bytes: ${JSON.stringify(next).length}`);

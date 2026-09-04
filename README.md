@@ -42,6 +42,14 @@ full traces remain available on request. The Builder is instructed to prepare
 one actionable change for review without waiting for “fix the first problem”.
 This is a prepared diff, not an automatic apply or ship.
 
+A production miss can enter the same loop without rebuilding the case by hand.
+Put one JSON/JSONL conversation under `imports/` and tell the Builder to turn it
+into a regression. The host binds it to the exact current Target, removes
+credential-shaped values, stores only reported tool names rather than arguments
+or results, and creates an immutable corpus revision. `/test` is the single
+review that publishes that revision and runs it. The record deliberately does
+not claim that arbitrary PII has been removed.
+
 Nine of them are the product; `/help` shows exactly these and nothing else.
 
 ```text
@@ -133,7 +141,30 @@ The evaluator-only sealed exam still answers the separate release question, so
 validation does not automatically prove the best production agent. The standalone `ahde improve` command still consumes recorded proposals
 unless its host attaches an author; automatic authoring uses the live Builder
 Pi model. Integration tests cover this path with scripted local models; this
-new automatic-author path has not yet been tested in a paid live session.
+automatic-author path has also completed a paid synthetic support pilot with
+Claude Sonnet 4.6 writing two hypotheses and Qwen 3.5 9B running the agent.
+The operator driver approved the Spec, selected the independently measured
+candidate and released it through the ordinary Workbench decisions. Neither
+the diff nor the Target answers were scripted. The initial live attempt also
+exposed incomplete author resource discovery; the author now receives the
+declared data inventory and built-in tool contracts, and can rediscover this
+bounded inventory without guessing filesystem paths.
+
+To repeat that acceptance from a checkout with `OPENROUTER_API_KEY` configured:
+
+```bash
+npm run acceptance:live -- --live
+```
+
+The explicit `--live` flag enables paid calls. It runs in a separate synthetic
+repository under `.ahde/live-pilots/`, saves results and author receipts, keeps
+the Builder under a $2 request ceiling, and stops after 15 minutes. Target
+calls are priced separately. It also replays an observed failure after restart
+and probes a changed knowledge base without modifying the released instructions.
+This is a small acceptance scenario; its scores are not a claim about arbitrary
+agents or production traffic. The [full acceptance record](docs/reviews/2026-09-05-live-improvement-acceptance.md)
+keeps both successful releases, the initial failed attempt and the remaining
+Target errors. `npm run acceptance:pilot` remains offline.
 
 ## Evidence
 
@@ -169,14 +200,24 @@ workshop, and the verification read `стало лучше · балл 73% → 8
 · получено +10 ✓», and `/dataset` wrote fifty conversations with the world
 before and after and the judge's verdicts. Under two dollars for the cycle.
 
-## The passport it wrote
+## The version card and passport it wrote
 
 From durable artifacts, never from memory. It is the one page that leaves the
 machine — the operator sends it to whoever paid for the agent — so it is
 written in the operator's language, not the engine's, and no hash sits above
 the fold: identifiers appear cut to twelve characters on the face and whole in
-a footer. The reason somebody typed when shipping is quoted, never translated.
-Trimmed.
+a footer. Immediately after shipping, Builder first shows a compact version
+card: blind-validation and sealed conclusions, capability movement,
+regressions, resources, the exact reviewed change, and the hashes of the
+exported artifacts. A fact the evidence cannot prove is printed as `unknown`.
+Both `/ship` and `/passport` also save `exports/version-v<version>.html`: a
+portable release report with before/after scores, uncertainty, the separate
+sealed conclusion, regressions, cost and latency, and an expandable exact diff.
+It opens offline without scripts or external assets and prints to PDF from the
+browser. Passport and dataset download links work while the report stays in
+its original project layout; the report itself can be sent as one HTML file.
+The fuller passport follows it. The reason somebody typed when shipping is
+quoted, never translated. Trimmed.
 
 ```markdown
 # Паспорт версии — ombudsman v0.1.0
@@ -219,6 +260,14 @@ belongs to and what that mode's traces show, and whether a candidate flipped
 it), and a per-task baseline-vs-candidate comparison. Builder Pi can show the
 same failure modes and link directly in conversation. Sealed runs never appear
 on any page.
+
+When a run called `kb_search`, the run page and `/trace` also show a **RAG
+X-ray** assembled from the verified trace: query, top-k chunk ids, ranks and
+scores when the retriever supplied them, expected-chunk hit@k and MRR,
+retrieved-vs-cited evidence, token overlap, latency, and the precise diagnosis
+(`retrieval missed`, `retrieved but not cited`, or `retrieval supported the
+answer`). It never prints chunk text. Semantic faithfulness remains explicitly
+`not measured` until a dedicated grader exists.
 
 ## What the engine guarantees
 
@@ -323,7 +372,8 @@ Pi-native example. Both templates ignore `.ahde/`, `runs/` and `imports/`, so
 ```bash
 npm run check            # types, test types, the vitest suite
 npm run check:quick      # the same, minus the files that spawn Git, sandboxes and servers
-npm run demo             # the full loop on a scripted local model, free
+npm run acceptance:pilot # release loop, RAG, tool/world, production regression, and report checks
+npm run demo             # refund-support RAG: wrong answer → retrieval fix → sealed exam → release report
 npm run verify:package   # pack, install into an empty consumer, drive it
 ```
 
@@ -332,6 +382,11 @@ commit. `verify:package` needs a real `node_modules` directory: a worktree
 whose `node_modules` is a symlink under-bundles the tarball. The heavy test
 files are named, with the reason each is heavy, at the top of
 `vitest.config.ts`.
+
+The free demo uses a scripted local model with the real runner and knowledge
+search. It leaves a release report, a RAG X-ray page, a passport, and an exported
+dataset at the paths printed on completion. Its canned answers prove wiring
+and repeatability; they do not measure the quality of a live model.
 
 ## Deliberately out of scope
 

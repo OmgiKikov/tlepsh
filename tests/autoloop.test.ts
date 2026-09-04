@@ -338,6 +338,7 @@ describe("autoloop — the stop conditions", () => {
 			expect(result.stopReason).toBe("no-change-proposed");
 			expect(result.cycles).toHaveLength(1);
 			expect(result.cycles[0]!.note).toContain("ran out of proposals");
+			expect(renderImprovementLoopTable(result)).toContain("ran out of proposals");
 		} finally {
 			await fixture.close();
 		}

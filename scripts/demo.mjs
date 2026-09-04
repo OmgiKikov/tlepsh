@@ -3,7 +3,7 @@
 // It spends no tokens and keeps the resulting evidence directory for inspection.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,12 +24,23 @@ import { loadTarget } from "../dist/manifest.js";
 import { startMockModel } from "../dist/mock-model.js";
 import { buildEvalReport } from "../dist/report.js";
 import { saveSpecSnapshot } from "../dist/spec.js";
+import { collectRunDetailPage } from "../dist/evidence/model.js";
+import { renderRunDetailPage } from "../dist/evidence/pages.js";
+import { setLanguage } from "../dist/i18n.js";
+import { compileBuilderPassport } from "../dist/builder/passport-presentation.js";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const step = (title) => console.log(`\n\x1b[1m=== ${title} ===\x1b[0m`);
 const now = () => new Date().toISOString();
-const oldInstructions = "# Demo agent\n\nReturn the word pending.\n";
-const newInstructions = "# Demo agent\n\nReturn the exact uppercase word READY.\n";
+const oldInstructions = "# Refund support agent\n\nAlways say refunds are available for 7 days.\n";
+const newInstructions = "# Refund support agent\n\nSearch the refund policy with kb_search before answering. Cite the returned source id.\n";
+const correctAnswer = "Возврат возможен в течение 30 дней после покупки. Источник: refunds.md#0";
+const graders = [
+	{ type: "output_contains", text: "30 дней" },
+	{ type: "tool_called", tool: "kb_search" },
+	{ type: "cites_source", chunk: "refunds.md#0" },
+];
+setLanguage(process.env.AHDE_LANG === "en" ? "en" : "ru");
 const capabilities = {
 	eventStream: true,
 	structuredOutput: true,
@@ -43,10 +54,13 @@ const hash = (value) => `sha256:${createHash("sha256").update(value).digest("hex
 
 const mock = await startMockModel([
 	{
-		match: ({ system }) => system.includes("Return the exact uppercase word READY."),
-		steps: [{ text: "READY" }],
+		match: ({ system }) => system.includes("Search the refund policy with kb_search before answering."),
+		steps: [
+			{ toolCall: { name: "kb_search", arguments: { query: "возврат покупки дней", k: 3 } } },
+			{ text: correctAnswer },
+		],
 	},
-	{ match: () => true, steps: [{ text: "pending" }] },
+	{ match: () => true, steps: [{ text: "Возврат возможен в течение 7 дней." }] },
 ]);
 const root = mkdtempSync(join(tmpdir(), "ahde-demo-"));
 const targetDir = join(root, "target");
@@ -57,16 +71,21 @@ const git = (...args) => execFileSync("git", ["-C", targetDir, ...args], { encod
 try {
 	cpSync(join(REPO, "templates", "basic-agent"), targetDir, { recursive: true });
 	writeFileSync(join(targetDir, "AGENTS.md"), oldInstructions);
+	mkdirSync(join(targetDir, "data", "kb"), { recursive: true });
+	writeFileSync(join(targetDir, "data", "kb", "refunds.md"), "# Возврат покупки\n\nВозврат возможен в течение 30 дней после покупки. Сохраните чек.\n");
 	writeFileSync(join(targetDir, "evals", "development.jsonl"), [
-		JSON.stringify({ id: "dev-1", input: "Answer case one.", graders: [{ type: "output_contains", text: "READY" }] }),
-		JSON.stringify({ id: "dev-2", input: "Answer case two.", graders: [{ type: "output_contains", text: "READY" }] }),
+		JSON.stringify({ id: "dev-1", input: "Сколько дней у меня есть на возврат покупки?", graders }),
+		JSON.stringify({ id: "dev-2", input: "Можно ли вернуть покупку через 20 дней?", graders }),
 	].join("\n") + "\n");
 	const manifestPath = join(targetDir, "manifest.yaml");
 	writeFileSync(
 		manifestPath,
 		readFileSync(manifestPath, "utf8")
 			.replace("baseUrl: http://127.0.0.1:1234/v1", `baseUrl: ${mock.url}`)
-			.replace("apiKeyEnv: AHDE_MODEL_API_KEY", "apiKeyEnv: AHDE_DEMO_KEY"),
+			.replace("apiKeyEnv: AHDE_MODEL_API_KEY", "apiKeyEnv: AHDE_DEMO_KEY")
+			.replace("id: my-agent", "id: refund-support")
+			.replace("tools: [read, bash]", "tools: [read]")
+			.replace("tools: [tools/echo_json.tool.yaml]", "tools: []\ndata: [data/kb]"),
 	);
 	git("init", "-b", "main");
 	git("config", "user.name", "AHDE demo");
@@ -81,13 +100,13 @@ try {
 		status: "approved",
 		spec: {
 			schemaVersion: 1,
-			title: "Demo answer agent",
-			purpose: "Return a deterministic reviewed answer.",
+			title: "Поддержка возвратов",
+			purpose: "Отвечать о возврате покупки по проверенной политике.",
 			users: ["demo reviewer"],
-			jobs: ["answer one request"],
+			jobs: ["Объяснить срок возврата"],
 			inputs: ["text request"],
-			allowedActions: ["return text"],
-			successCriteria: ["answer contains READY"],
+			allowedActions: ["Искать в локальной базе знаний", "Ссылаться на политику"],
+			successCriteria: ["Правильный срок возврата и ссылка на источник"],
 			constraints: ["no network"],
 			openQuestions: [],
 		},
@@ -117,7 +136,7 @@ try {
 		schemaVersion: 1,
 		decision: "propose",
 		baseTargetSha: baseSha,
-		summary: "Correct the final-answer contract.",
+		summary: "Агент проверяет политику возврата и указывает источник вместо ответа по памяти.",
 		diagnoses: selectedEvidence.diagnoses,
 		changes: [{
 			path: "AGENTS.md",
@@ -127,12 +146,12 @@ try {
 				"--- a/AGENTS.md",
 				"+++ b/AGENTS.md",
 				"@@ -1,3 +1,3 @@",
-				" # Demo agent",
+				" # Refund support agent",
 				" ",
-				"-Return the word pending.",
-				"+Return the exact uppercase word READY.",
+				"-Always say refunds are available for 7 days.",
+				"+Search the refund policy with kb_search before answering. Cite the returned source id.",
 			].join("\n"),
-			rationale: "Match the reviewed output contract.",
+			rationale: "Use the approved knowledge base instead of the stale seven-day policy.",
 			evidenceRefs,
 		}],
 		risks: ["Narrow demo contract"],
@@ -199,8 +218,8 @@ try {
 		// The sealed guardrail needs at least 15 tasks × 2 repetitions for a verdict.
 		tasks: Array.from({ length: 15 }, (_, index) => ({
 			id: `holdout-${index + 1}`,
-			input: `PRIVATE HOLDOUT ${index + 1}`,
-			graders: [{ type: "output_contains", text: "READY" }],
+			input: `PRIVATE HOLDOUT ${index + 1}: Какой срок возврата покупки?`,
+			graders,
 		})),
 	});
 	const experiment = await runAppliedBuilderCandidate({
@@ -234,8 +253,39 @@ try {
 	});
 	diagnoseEvalRun(runsRoot, experiment.candidate.evalRunId);
 	const reportPath = buildEvalReport(runsRoot, experiment.candidate.evalRunId).path;
+	const releaseArtifacts = await compileBuilderPassport({
+		async view() { throw new Error("demo passes the release view explicitly"); },
+		projectDir: targetDir,
+		stateRoot,
+		runsRoot,
+		projectId: "demo",
+	}, {
+		save: true,
+		view: {
+			target: {
+				id: baselineTarget.manifest.id,
+				model: {
+					provider: baselineTarget.manifest.model.provider,
+					id: baselineTarget.manifest.model.id,
+				},
+			},
+		},
+	});
+	if (releaseArtifacts.card.artifacts.dataset.status !== "known") {
+		throw new Error(`release dataset is unknown: ${releaseArtifacts.card.artifacts.dataset.reason}`);
+	}
 	console.log(`tag ${promotion.tag} → ${promotion.candidateSha.slice(0, 12)}`);
 	console.log(`report: ${reportPath}`);
+	const rag = collectRunDetailPage(runsRoot, experiment.candidate.runIds[0]);
+	if (rag.explanation.rag?.diagnosis !== "retrieved-and-cited") throw new Error("RAG X-ray did not verify retrieval and citation");
+	const ragReportPath = join(targetDir, "exports", "rag-xray.html");
+	writeFileSync(ragReportPath, renderRunDetailPage(rag));
+	console.log(`RAG X-ray: ${ragReportPath} (Hit@k ${rag.explanation.rag.hitAtK}, MRR ${rag.explanation.rag.mrr})`);
+	console.log(`version card: ${releaseArtifacts.card.decision.headline}`);
+	if (!releaseArtifacts.reportWritten) throw new Error("shareable release report was not saved");
+	console.log(`shareable report: ${join(targetDir, releaseArtifacts.reportWritten)}`);
+	console.log(`passport: ${releaseArtifacts.written}`);
+	console.log(`dataset: ${releaseArtifacts.card.artifacts.dataset.value.path} (${releaseArtifacts.card.artifacts.dataset.value.dialogues} dialogues)`);
 
 	step("6. Adopt the promoted candidate and close the cycle");
 	const adoptionSubject = describeTargetAdoption({ repositoryDir: targetDir, runsRoot, candidateId: experiment.record.candidateId });

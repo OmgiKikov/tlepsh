@@ -726,6 +726,7 @@ export function renderImprovementLoopTable(result: ImprovementLoopResult, author
 			`(${result.experimentDesign.designHash}).`,
 		] : []),
 		`Stopped: ${result.stopMessage}.`,
+		...(result.cycles.at(-1)?.note ? [`Reason: ${result.cycles.at(-1)!.note}`] : []),
 		`Target executions spent: ${result.executions}.`,
 		...(authorSpend ? [authorSpend] : []),
 		result.candidateId

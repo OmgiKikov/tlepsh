@@ -577,6 +577,10 @@ describe("static evidence report", () => {
 		// Every projected run failed here, so each one is explained.
 		expect(data.explanations).toHaveLength(2);
 		expect(data.explanations.every((explanation) => explanation.sentences.length > 0)).toBe(true);
+		// The shared explanation DTO carries the RAG projection into the offline
+		// report too; legacy non-RAG runs say null instead of losing the field.
+		expect(data.explanations.every((explanation) => "rag" in explanation)).toBe(true);
+		expect(JSON.stringify(data.explanations)).toContain('"rag":null');
 		expect(JSON.stringify(data.explanations)).not.toContain(GRADER_METADATA_SECRET);
 		expect(JSON.stringify(data.explanations)).not.toContain(RUN_ERROR_SECRET);
 		expect(JSON.stringify(data.explanations)).not.toContain(TASK_ID_SECRET);

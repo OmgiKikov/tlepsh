@@ -1,3 +1,4 @@
+import { operatorDirtyPaths } from "../src/application/store-hygiene.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -456,7 +457,7 @@ it("writes a tool in the workshop, tries it, closes, applies, verifies and ships
 		// The workshop died with its proposal: no worktree, no scratch, no dirt.
 		expect(execFileSync("git", ["-C", projectDir, "worktree", "list"], { encoding: "utf8" }).trim().split("\n"))
 			.toHaveLength(1);
-		expect(execFileSync("git", ["-C", projectDir, "status", "--porcelain"], { encoding: "utf8" })).toBe("");
+		expect(operatorDirtyPaths(execFileSync("git", ["-C", projectDir, "status", "--porcelain=v1", "-z"], { encoding: "utf8" }))).toEqual([]);
 		// Six questions: the two setup dialogs, two start-testing, the diff, the ship.
 		expect(host.confirmations.map((entry) => entry.title)).toEqual([
 			"Create exact Target harness",
@@ -882,7 +883,7 @@ it("builds the first harness from the Spec, ships it, then improves it from its 
 		// No workshop outlived its proposal.
 		expect(execFileSync("git", ["-C", projectDir, "worktree", "list"], { encoding: "utf8" }).trim().split("\n"))
 			.toHaveLength(1);
-		expect(execFileSync("git", ["-C", projectDir, "status", "--porcelain"], { encoding: "utf8" })).toBe("");
+		expect(operatorDirtyPaths(execFileSync("git", ["-C", projectDir, "status", "--porcelain=v1", "-z"], { encoding: "utf8" }))).toEqual([]);
 		// Nothing the sealed exam holds ever reached the model.
 		const everythingTheModelSaw = JSON.stringify(observed);
 		for (const secret of [SEALED_INPUT, SEALED_NAME, "holdout-1"]) {

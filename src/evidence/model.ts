@@ -394,7 +394,7 @@ export function collectRunDetailPage(runsRoot: string, runId: string): RunDetail
 		transcript,
 		traceNotice,
 		graders,
-		explanation: explainRun({ run, graders, facts, modes, flip }),
+		explanation: explainRun({ run, graders, facts, messages, modes, flip }),
 		prev: link(neighbour(-1)),
 		next: link(neighbour(1)),
 	};
