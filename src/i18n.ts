@@ -1743,6 +1743,14 @@ one would cost more than usual, and then you get a single question.`,
 	// A first version has nothing behind it, so an arrow between two identical
 	// numbers is not a measurement — it is a shape that reads like one.
 	"growth.first-version": "first version · score {score}",
+	// lane: render-names
+	"view.case-quoted": "“{text}”",
+	"view.case-unnamed": "case with no words",
+	"view.world.who-by-id": "customer {id}",
+	"view.world.who-by-account": "customer on account {id}",
+	"view.world.who-by-contract": "customer on contract {id}",
+	"view.world.who-unnamed": "the person in this world",
+	"headline.proposal-applied": "Change applied",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -3175,6 +3183,14 @@ const ru: Record<MessageKey, string> = {
 	"passport.md.mode-worsened": "стало хуже, чем было",
 	"passport.md.mode-not-reproduced": "не воспроизвелось",
 	"growth.first-version": "первая версия · балл {score}",
+	// lane: render-names
+	"view.case-quoted": "«{text}»",
+	"view.case-unnamed": "кейс без слов",
+	"view.world.who-by-id": "клиент {id}",
+	"view.world.who-by-account": "клиент по счёту {id}",
+	"view.world.who-by-contract": "клиент по договору {id}",
+	"view.world.who-unnamed": "человек в этом мире",
+	"headline.proposal-applied": "Правка применена",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };

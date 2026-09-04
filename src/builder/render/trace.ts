@@ -1,6 +1,6 @@
 import type { GraderFinding, RunReceipt, RunRow, TranscriptEntry } from "../../application/run-explanation.js";
 import type { EvalPageMode, RunDetailPageModel } from "../../evidence/pages.js";
-import { oneLine } from "./format.js";
+import { oneLine, shortTaskId } from "./format.js";
 import type { Paint } from "./paint.js";
 import { plural, t } from "../../i18n.js";
 
@@ -99,7 +99,7 @@ export function renderRunsTable(
 		const outcome = pad(outcomeWord(row.outcome), columns.outcome);
 		lines.push([
 			pad(String(position + 1), columns.index),
-			pad(oneLine(row.taskId, columns.task), columns.task),
+			pad(oneLine(shortTaskId(row.taskId), columns.task), columns.task),
 			pad(String(row.repetitionIndex), columns.rep),
 			paintOutcome(row.outcome, outcome, paint),
 			pad(pct(row.score), columns.score),
