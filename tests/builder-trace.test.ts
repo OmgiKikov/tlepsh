@@ -183,7 +183,9 @@ describe("traces in the TUI", () => {
 	it("registers /trace beside the other read-only inspections", () => {
 		const names = [...AHDE_BUILDER_COMMAND_NAMES];
 		expect(names).toContain("trace");
-		expect(names.indexOf("trace")).toBe(names.indexOf("passport") + 1);
+		// One run is where the runs table sends you, so it is the next line of
+		// `/help` and the next name in the public list.
+		expect(names.indexOf("trace")).toBe(names.indexOf("traces") + 1);
 	});
 
 	it("renders the runs table failures first, width-bounded, with the failure mode named", () => {

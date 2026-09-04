@@ -388,7 +388,7 @@ const en = {
 	"candidate.applied-by-search": "applied by the proposal search",
 	"candidate.applied-automated": "— {actor} authorized the automated trial, not this individual diff",
 	"candidate.applied-reviewed": "by {actor}, who read this diff",
-	"candidate.not-adopted": "not yet — /adopt fast-forwards the current branch",
+	"candidate.not-adopted": "not yet — say “ship it” to make it the active agent",
 	"candidate.cycle-closed": "closed {when}",
 	// Both arms re-scored with one revised rubric, beside the recorded verdict
 	// and never instead of it: a re-score is not a new baseline.
@@ -1359,63 +1359,6 @@ const en = {
 	"report.th.cost": "Cost",
 	"report.th.resolved-modes": "Resolved modes",
 	"report.th.reason": "Reason",
-	"help.body": `AHDE Builder
-
-Talk normally: describe the agent you want, answer one useful question at a time,
-and AHDE turns the conversation into a reviewed Spec, evaluation cases, runs,
-diagnosis, and exact harness changes. Slash commands are shortcuts, not a
-requirement.
-
-Workflow:  idea → Spec → eval basket → run → diagnosis → proposal → diff review
-           → apply → candidate verification → promote/reject → adopt → next cycle
-
-Commands: three verbs do the work.
-  /test [N] [reason]    test the agent — approve, publish and run whatever is
-                        pending, or verify the candidate you just changed
-  /fix [n] [reason]     fix problem n (the first one by default): refresh the
-                        traces, prepare the change, and show you the diff
-  /ship [version]       ship the verified candidate: promote, adopt, next cycle
-
-Looking around:
-  /status               where you are and the next step
-  /plan                 the whole cycle as a checklist: done, current, still ahead
-  /jobs                 the background measurement that is running, if any
-  /stop                 cancel it; nothing it measured is kept
-  /review               the exact artifact awaiting your review, with actions
-  /traces [rows]        diagnosis, failure modes, the evidence link, and the runs table
-  /trace <n|next|prev>  one run: why it failed, every verdict, and the conversation
-  /target [resource]    the exact committed Target, or one declared resource
-  /passport [version]   what the newest shipped version promised and measured
-  /log [n]              how the agent grew: every version and what it scored
-  /dataset [--all]      every recorded conversation as one dataset file, saved
-                        beside the agent; the sealed exam is never in it
-  /label [n]            check the judge: grade n answers blind, then see what
-                        it said — about ten minutes, and nothing runs
-  /doctor               model auth, Target readiness, and recovery steps
-  /holdout              privately import the operator-owned sealed JSONL exam
-  /help                 this reference
-
-One step at a time (the same decisions, taken separately):
-  /run [N] [reason]     alias of /test
-  /calibrate [N]        measure run-to-run noise: the same revision against itself
-  /regrade [erun]       re-score the recorded answers with the graders you just
-                        revised — the agent is not called again, only the judge
-  /approve [reason]     approve the reviewed Spec draft
-  /publish [name]       publish the reviewed eval basket
-  /apply <branch>       apply the reviewed proposal to a candidate branch
-  /discard [reason]     discard a proposal or abandon an interrupted candidate
-  /promote <version>    promote the verified candidate (records the review first)
-  /reject [reason]      reject the verified candidate
-  /adopt [reason]       fast-forward the current branch to the promoted candidate
-  /next [reason]        close this cycle and continue with the active Target
-
-Pi's own built-ins configure the Builder's model, not the agent's:
-  /login                connect a provider (OAuth or API key), once per machine
-  /model                pick a Builder model that already has a credential
-
-Every consequential step shows the exact subject and asks you once: starting
-the tests, applying a diff, and shipping. Runs and checks just happen — unless
-one would cost more than usual, and then you get a single yes/no.`,
 
 	// lane: exam-honesty
 	"exam.outcome-improved": "improved",
@@ -1672,6 +1615,33 @@ one would cost more than usual, and then you get a single yes/no.`,
 		"a {operation} may only be handed a gate wrapped by {wrapper}; " +
 		"an unwrapped gate could approve a release the {operation} must never ask for",
 	"dialog.choice-ordinal": "{label} ({ordinal})",
+	// lane: help-slim
+	"panel.help-all": "AHDE Builder · every command",
+	"help.intro": `Talk normally: describe the agent you want, answer one useful question at a
+time, and AHDE turns the conversation into a description, test cases, runs, a
+diagnosis and exact changes. The commands below are shortcuts, not vocabulary
+you have to learn.`,
+	"help.gate": `Every consequential step shows the exact subject and asks you once: starting
+the tests, applying a change, shipping. Runs and checks just happen — unless
+one would cost more than usual, and then you get a single question.`,
+	"help.workflow": `The round:  idea → description → test cases → run → diagnosis → change
+            → read the diff → apply → check the candidate → ship or reject`,
+	"help.h.core": "Every day:",
+	"help.h.expert": "Expert shortcuts — the same work, one step at a time:",
+	"help.h.host": "AHDE's own decisions — it asks them on screen; typing them is never needed:",
+	"help.h.builtin": "Pi's own built-ins configure the Builder's model, not the agent's:",
+	"help.cmd.test": "run the tests: publish what is pending, or check the change",
+	"help.cmd.fix": "fix the second problem: refresh the traces, show the diff",
+	"help.cmd.ship": "ship the checked candidate, and start the next round",
+	"help.cmd.status": "where you are and what to say next",
+	"help.cmd.traces": "the diagnosis: failure modes, evidence link, runs table",
+	"help.cmd.trace": "one run in full: why it failed, the verdicts, the talk",
+	"help.cmd.passport": "what the shipped version promised and what it measured",
+	"help.cmd.dataset": "every recorded conversation as one file beside the agent",
+	"help.cmd.help": "every command, shortcuts included",
+	"help.cmd.login": "connect a provider (OAuth or API key), once per machine",
+	"help.cmd.model": "pick a Builder model that already has a credential",
+	"cmd.err.help-arg": "/help takes nothing, or the word all for the whole list",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -1815,7 +1785,7 @@ const ru: Record<MessageKey, string> = {
 	"candidate.applied-by-search": "применено поиском правок",
 	"candidate.applied-automated": "— {actor} разрешил автоматический прогон, а не именно этот диф",
 	"candidate.applied-reviewed": "{actor}, который прочитал этот диф",
-	"candidate.not-adopted": "ещё нет — /adopt переведёт текущую ветку",
+	"candidate.not-adopted": "ещё нет — скажи «выкатывай», сделаю активным агентом",
 	"candidate.cycle-closed": "закрыт {when}",
 	"candidate.regraded": "разработка {recorded} стало {revised} ({moved})",
 
@@ -2749,63 +2719,6 @@ const ru: Record<MessageKey, string> = {
 	"report.th.cost": "Цена",
 	"report.th.resolved-modes": "Закрытые сбои",
 	"report.th.reason": "Причина",
-	"help.body": `AHDE Билдер
-
-Говори обычными словами: опиши агента, который тебе нужен, отвечай по одному
-полезному вопросу за раз — AHDE превратит разговор в проверенное описание,
-тестовые кейсы, прогоны, разбор и точные правки агента. Слэш-команды —
-сокращения, а не обязанность.
-
-Путь:  идея → описание → тесты → прогон → разбор → правка → чтение дифа
-       → применить → проверка кандидата → выкатить/отклонить → принять → новый цикл
-
-Команды: работу делают три глагола.
-  /test [N] [причина]   проверить агента — одобрю, опубликую и прогоню всё,
-                        что ждёт, или проверю правку, которую ты только сделал
-  /fix [n] [причина]    исправить проблему n (по умолчанию первую): обновлю
-                        трейсы, подготовлю правку и покажу диф
-  /ship [версия]        выкатить проверенного кандидата: выкатка, принятие, новый цикл
-
-Посмотреть:
-  /status               где ты и что дальше
-  /plan                 весь цикл списком: что сделано, где ты, что осталось
-  /jobs                 фоновое измерение, если оно идёт
-  /stop                 остановить его; измеренное не сохраняется
-  /review               то, что ждёт твоей проверки, вместе с действиями
-  /traces [строк]       разбор, типы сбоев, ссылка на данные и таблица прогонов
-  /trace <n|next|prev>  один прогон: почему провал, все вердикты и диалог
-  /target [ресурс]      точный закоммиченный агент или один его ресурс
-  /passport [версия]    что обещала и что измерила последняя выкаченная версия
-  /log [n]              как агент рос: каждая версия и её результат
-  /dataset [--all]      все записанные диалоги одним файлом-датасетом рядом
-                        с агентом; закрытого экзамена в нём нет никогда
-  /label [n]            проверить судью: оценить n ответов вслепую и увидеть,
-                        что сказал он — минут десять, ничего не прогоняется
-  /doctor               ключи моделей, готовность агента и как починить
-  /holdout              приватно загрузить твой закрытый JSONL-экзамен
-  /help                 эта справка
-
-По одному шагу (те же решения, но по отдельности):
-  /run [N] [причина]    то же, что /test
-  /calibrate [N]        измерить шум: та же ревизия против себя же
-  /regrade [erun]       пересчитать записанные ответы новыми грейдерами —
-                        агента заново не зовём, платим только судье
-  /approve [причина]    одобрить проверенное описание
-  /publish [имя]        опубликовать проверенные тесты
-  /apply <ветка>        применить проверенную правку на ветку кандидата
-  /discard [причина]    выбросить правку или сбросить прерванного кандидата
-  /promote <версия>     выкатить проверенного кандидата (сначала запишет обзор)
-  /reject [причина]     отклонить проверенного кандидата
-  /adopt [причина]      перевести текущую ветку на выкаченного кандидата
-  /next [причина]       закрыть цикл и продолжить с активным агентом
-
-Встроенные команды Pi настраивают модель Билдера, а не агента:
-  /login                подключить провайдера (OAuth или API-ключ), раз на машину
-  /model                выбрать модель Билдера, у которой уже есть ключ
-
-Каждый серьёзный шаг показывает точный предмет и спрашивает один раз: начать
-тесты, применить диф, выкатить. Прогоны и проверки просто происходят — если
-только один не выйдет дороже обычного, тогда будет один да/нет.`,
 
 	// lane: exam-honesty
 	"exam.outcome-improved": "лучше",
@@ -3050,6 +2963,32 @@ const ru: Record<MessageKey, string> = {
 		"{operation} можно передать только гейт, обёрнутый через {wrapper}: " +
 		"необёрнутый гейт мог бы одобрить выкатку, о которой {operation} не имеет права спрашивать",
 	"dialog.choice-ordinal": "{label} ({ordinal})",
+	// lane: help-slim
+	"panel.help-all": "Справка AHDE Билдера · все команды",
+	"help.intro": `Говори обычными словами: опиши агента, отвечай по одному полезному вопросу
+за раз — AHDE сам превратит разговор в описание, тесты, прогоны, разбор
+и точные правки. Команды ниже — сокращения, а не обязанность.`,
+	"help.gate": `Каждый серьёзный шаг показывает точный предмет и спрашивает один раз: начать
+тесты, применить правку, выкатить. Прогоны и проверки просто происходят — если
+только один не выйдет дороже обычного, тогда будет один да/нет.`,
+	"help.workflow": `Круг:  идея → описание → тесты → прогон → разбор → правка → чтение дифа
+       → применить → проверка кандидата → выкатить или отклонить`,
+	"help.h.core": "Каждый день:",
+	"help.h.expert": "Экспертные сокращения — та же работа, но по одному шагу:",
+	"help.h.host": "Решения хоста — их задаёт сам AHDE, набирать не нужно:",
+	"help.h.builtin": "Встроенные команды Pi настраивают модель Билдера, а не агента:",
+	"help.cmd.test": "прогони тесты: опубликую всё, что ждёт, или проверю правку",
+	"help.cmd.fix": "почини вторую проблему: обновлю трейсы и покажу диф",
+	"help.cmd.ship": "выкати проверенного кандидата и начни новый круг",
+	"help.cmd.status": "где ты и что сказать дальше",
+	"help.cmd.traces": "разбор: типы сбоев, ссылка на данные и таблица прогонов",
+	"help.cmd.trace": "один прогон целиком: почему провал, вердикты и диалог",
+	"help.cmd.passport": "что обещала и что измерила выкаченная версия",
+	"help.cmd.dataset": "все записанные диалоги одним файлом рядом с агентом",
+	"help.cmd.help": "все команды, вместе с сокращениями",
+	"help.cmd.login": "подключить провайдера (OAuth или API-ключ), раз на машину",
+	"help.cmd.model": "выбрать модель Билдера, у которой уже есть ключ",
+	"cmd.err.help-arg": "/help принимает слово all — или ничего",
 };
 
 const TABLES: Record<Language, Partial<Record<MessageKey, string>>> = { en, ru };
