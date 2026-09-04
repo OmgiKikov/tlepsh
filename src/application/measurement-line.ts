@@ -1,4 +1,5 @@
 import { sealedOutcomeLabel, type ExclusionReason, type SealedOutcome } from "../domain/comparison-gate.js";
+import type { SealedExamOrigin } from "./sealed-synth.js";
 import { plural, t, verdictLabel } from "../i18n.js";
 
 /**
@@ -160,6 +161,28 @@ export interface ExamSurface {
 	 * operator brought, and for evidence recorded before receipts existed.
 	 */
 	generation?: { requested: number; accepted: number; droppedDuplicate: number; droppedMalformed: number } | null;
+	/**
+	 * Who wrote the questions, off the sealed-synthesis receipt. `null` and
+	 * `undefined` both mean the receipt says nothing, which is the ordinary
+	 * shape of an exam the operator brought.
+	 */
+	origin?: SealedExamOrigin | null;
+}
+
+/**
+ * Where the exam's questions came from, in the operator's words.
+ *
+ * `null` is a finding: the sealed-synthesis receipts were read and none of
+ * them claims this corpus, so the exam is the operator's own. `undefined` is
+ * the absence of a finding — a caller that never looked — and there the line
+ * says nothing rather than crediting the operator with an exam the judge may
+ * well have written.
+ */
+export function examOriginLabel(origin: SealedExamOrigin | null | undefined): string {
+	if (origin === undefined) return "";
+	if (origin === "judge-generated-kb" || origin === "judge-generated-kb-reviewed") return t("exam.origin-kb");
+	if (origin === "judge-generated" || origin === "judge-generated-reviewed") return t("exam.origin-spec");
+	return t("exam.origin-operator");
 }
 
 /**
@@ -264,6 +287,8 @@ export interface ExamLine {
 	design: string;
 	/** `(1 duplicate dropped when it was generated)`, or "" for a whole exam. */
 	shortfall: string;
+	/** `written by the judge from the knowledge base`, or "" when unread. */
+	origin: string;
 	/** `pass (+30 pts, 95% CI +12 … +48) on 20 cases × 3`. */
 	text: string;
 }
@@ -287,12 +312,20 @@ export function examLine(exam: ExamSurface | null | undefined): ExamLine | null 
 	// The exam ran on 19 cases because one of the 20 was a duplicate. The size
 	// is where that belongs: right behind the number it explains.
 	const shortfall = examShortfallNote(exam.generation);
+	// Who wrote the questions. A verdict on an exam is worth what the exam is
+	// worth, and "the judge wrote it from the documents" and "the operator
+	// brought it" are different claims about the same word `pass`.
+	const origin = examOriginLabel(exam.origin);
 	return {
 		verdict,
 		delta,
 		design,
 		shortfall,
-		text: trimSeparator([verdict, delta, design, shortfall].filter((part) => part.length > 0).join(" ")),
+		origin,
+		text: trimSeparator([
+			[verdict, delta, design, shortfall].filter((part) => part.length > 0).join(" "),
+			origin,
+		].filter((part) => part.length > 0).join(" · ")),
 	};
 }
 

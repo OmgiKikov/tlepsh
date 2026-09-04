@@ -169,6 +169,30 @@ describe("the composed sentence", () => {
 		expect(exclusionReasonOf([{ reason: "incomplete" }, { reason: "infrastructure" }])).toBe("mixed");
 	});
 
+	it("carries the exam's origin, and says nothing when nobody read the receipt", () => {
+		// `pass` is worth what the exam is worth. "The judge wrote it from the
+		// documents" and "the operator brought it" are different claims about
+		// the same word, so the exam line makes the claim it can support.
+		expect(examLine({ ...EXAM, origin: "judge-generated-kb" })!.text)
+			.toBe("pass (+30.3 pts, 95% CI +12 … +48) on 20 cases × 3 · written by the judge from the knowledge base");
+		expect(examLine({ ...EXAM, origin: "judge-generated-kb-reviewed" })!.origin)
+			.toBe("written by the judge from the knowledge base");
+		expect(examLine({ ...EXAM, origin: "judge-generated" })!.origin).toBe("written by the judge from the description");
+		expect(examLine({ ...EXAM, origin: "judge-generated-reviewed" })!.origin)
+			.toBe("written by the judge from the description");
+		// `null` is a finding — the receipts were read and none claims this exam.
+		expect(examLine({ ...EXAM, origin: null })!.origin).toBe("brought by the operator");
+		// An absent field is not a finding, and crediting the operator with an
+		// exam the judge may have written would be inventing one.
+		expect(examLine(EXAM)!.origin).toBe("");
+		expect(examLine(EXAM)!.text).toBe("pass (+30.3 pts, 95% CI +12 … +48) on 20 cases × 3");
+		setLanguage("ru");
+		expect(examLine({ ...EXAM, origin: "judge-generated-kb" })!.text)
+			.toContain("на 20 кейсах × 3 · написан судьёй по базе знаний");
+		expect(examLine({ ...EXAM, origin: "judge-generated" })!.origin).toBe("написан судьёй из описания");
+		expect(examLine({ ...EXAM, origin: null })!.origin).toBe("загружен оператором");
+	});
+
 	it("calls a basket small below ten included cases, and never above", () => {
 		expect(SMALL_BASKET_CASES).toBe(10);
 		expect(smallBasketNote(6)).toBe("6 cases is a small basket: read the interval as indicative, not decisive");
