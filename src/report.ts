@@ -37,7 +37,8 @@ import {
 import { writeTextArtifact } from "./storage/artifacts.js";
 import { resolveContainedArtifactPath } from "./storage/paths.js";
 // The optional growth section: the same projection `ahde log` prints.
-import { compileAgentLog, sparkline, type AgentLog } from "./application/agent-log.js";
+import { compileAgentLog, formatResolvedModes, sparkline, type AgentLog } from "./application/agent-log.js";
+import { interval, money, percent, points, ratio } from "./measurement.js";
 
 const MAX_MESSAGE_CHARS = 20_000;
 const MAX_TRACE_MESSAGES = 500;
@@ -864,6 +865,51 @@ function embeddedJson(value: unknown): string {
 	return JSON.stringify(value).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 }
 
+/**
+ * The two tables the report draws from projections rather than from run rows —
+ * the comparison and the growth log — rendered here rather than in the page's
+ * own script.
+ *
+ * The script cannot import `measurement.ts`, so every number it formatted was
+ * a copy: a percent with no decimal beside a percent with one, a delta spelled
+ * `pp` where every other surface says `п.п.`, and a cost that rounded a real
+ * bill down to `$0.00`. Formatting them on this side of the wire is what makes
+ * the offline report and the served Explorer print the same digits.
+ */
+function comparisonRowsHtml(comparison: ReportComparison | null): string {
+	if (!comparison || comparison.status !== "comparable") return "";
+	return comparison.rows
+		.map((row) =>
+			`<tr><td>${htmlText(row.taskId)}</td><td>${row.aPass}/${row.aTotal}</td><td>${row.bPass}/${row.bTotal}</td>` +
+			`<td>${htmlText(percent(row.aScore))} → ${htmlText(percent(row.bScore))}</td>` +
+			`<td class="${row.scoreDelta > 0 ? "delta" : ""}">${htmlText(points(row.scoreDelta))}</td></tr>`
+		)
+		.join("");
+}
+
+function growthRowsHtml(log: AgentLog | null): string {
+	if (!log) return "";
+	return log.rows
+		.map((row) => {
+			const development = row.development
+				? `${htmlText(row.development.verdict)} · ${htmlText(percent(row.development.baselineScore, { digits: 1 }))} → ` +
+					`${htmlText(percent(row.development.candidateScore, { digits: 1 }))} (${htmlText(points(row.development.scoreDelta))}` +
+					`${row.development.confidence95 ? `, ${htmlText(interval(row.development.confidence95.low, row.development.confidence95.high))}` : ""})`
+				: htmlText(t("growth.not-evaluated"));
+			const sealed = row.sealed
+				? `${htmlText(row.sealed.verdict)} on ${row.sealed.tasks}×${row.sealed.repetitions}`
+				: "—";
+			const modes = htmlText(formatResolvedModes(row.resolvedModes));
+			const loop = row.appliedByImprovementLoop ? ' <span class="pill">improvement loop</span>' : "";
+			const cost = `${htmlText(money(row.costUsd))}${row.costRatio === null ? "" : ` · ${htmlText(ratio(row.costRatio))}`}`;
+			return `<tr class="${row.outcome === "promoted" ? "version" : "attempt"}"><td>${htmlText(row.tag ?? "rejected")}</td>` +
+				`<td>${htmlText(row.at.slice(0, 10))}</td><td>${htmlText(row.baseline)} → ${htmlText(row.candidate ?? "—")}</td>` +
+				`<td>${development}</td><td>${sealed}</td><td>${cost}</td><td>${modes}</td>` +
+				`<td>${htmlText(row.reason ?? "")}${loop}</td></tr>`;
+		})
+		.join("");
+}
+
 function htmlText(value: string): string {
 	return value.replace(/[&<>"']/g, (character) => ({
 		"&": "&amp;",
@@ -944,9 +990,10 @@ tr.attempt td{color:var(--muted)}tr.version td:first-child{font-weight:700}
 <p class="notice" id="notice"></p>
 </main></div>
 <script>const DATA=${embeddedJson(data)};
+const COMPARISON_ROWS=${embeddedJson(comparisonRowsHtml(data.comparison))};
 const q=(s)=>document.querySelector(s), esc=(v)=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const e=DATA.evalRun,d=DATA.diagnosis,b=DATA.improvementBrief;q('#title').textContent=e.target.id;q('#subtitle').textContent=e.evalRunId+' · '+e.label+' · '+e.startedAt;q('#revision').textContent=e.target.gitSha.slice(0,12);q('#status-badge').textContent=b.status;q('#failure-mode-status').textContent=b.summary.failureModeCount+' modes'+(b.summary.omittedFailureModeCount?' · '+b.summary.omittedFailureModeCount+' omitted':'');q('#diagnosis-status').textContent=d.summary.issueCount+' issues'+(DATA.projection.diagnosis.issues.omittedCount?' · '+DATA.projection.diagnosis.issues.omittedCount+' omitted':'');q('#brief-headline').textContent=b.headline;q('#proposal-gate').textContent=b.proposalEligible?'Proposal gate: eligible for an exact human-reviewed harness proposal.':'Proposal gate: blocked. Mode-level suggestions are diagnostic guidance only until the global evidence gate is satisfied.';q('#notice').textContent=DATA.redactionNotice;
-const pct=Math.round(e.summary.allPassRate*100);q('#stats').innerHTML=[[${embeddedJson(t("report.stat.pass-rate"))},pct+'%'],[${embeddedJson(t("report.stat.passed"))},e.summary.pass+'/'+e.summary.total],[${embeddedJson(t("report.stat.errors"))},e.summary.error],[${embeddedJson(t("report.stat.failure-modes"))},b.summary.failureModeCount]].map(([l,v])=>'<div class="stat"><strong>'+esc(v)+'</strong><span>'+esc(l)+'</span></div>').join('');
+q('#stats').innerHTML=[[${embeddedJson(t("report.stat.pass-rate"))},${embeddedJson(percent(data.evalRun.summary.allPassRate))}],[${embeddedJson(t("report.stat.passed"))},e.summary.pass+'/'+e.summary.total],[${embeddedJson(t("report.stat.errors"))},e.summary.error],[${embeddedJson(t("report.stat.failure-modes"))},b.summary.failureModeCount]].map(([l,v])=>'<div class="stat"><strong>'+esc(v)+'</strong><span>'+esc(l)+'</span></div>').join('');
 const includedRunIds=new Set(DATA.runs.map(r=>r.runId));
 const evidenceRow=(item,label)=>'<li><strong>'+esc(label)+'</strong> · '+esc(item.taskId)+(item.graderNames.length?' · graders: '+item.graderNames.map(esc).join(', '):'')+(item.traceAvailable&&includedRunIds.has(item.runId)?' <button class="trace-link" data-run="'+esc(item.runId)+'">Open trace</button>':'')+'</li>';
 const modeCards=b.modes.map(m=>{
@@ -963,7 +1010,7 @@ q('#issues').innerHTML=d.issues.length?d.issues.map(i=>'<article class="issue"><
 const judgeUnsure=DATA.judgeAbstained?${embeddedJson(t("judge.abstained", { count: "{count}" }))}.replace('{count}',String(DATA.judgeAbstained)):'';
 if(DATA.judgeCalibration.length||judgeUnsure){q('#judge-calibration').hidden=false;q('#judge-calibration').textContent=[DATA.judgeCalibration.map(c=>c.line+' — '+c.graderNames.join(', ')).join(' · '),judgeUnsure].filter(Boolean).join(' · ')}
 q('#run-nav').innerHTML=DATA.runs.map(r=>'<button class="run-link" data-run="'+esc(r.runId)+'"><span class="dot '+(r.outcome==='pass'?'pass':'')+'"></span>'+esc(r.taskId)+' · '+r.repetitionIndex+'</button>').join('');
-if(DATA.comparison&&DATA.comparison.status==='comparable'){const c=DATA.comparison;q('#comparison-section').hidden=false;q('#comparison-verdict').textContent=c.gate.surface+' '+c.gate.verdict;q('#comparison-gate').textContent=DATA.comparisonGateLine;q('#comparison').innerHTML=c.rows.map(r=>'<tr><td>'+esc(r.taskId)+'</td><td>'+r.aPass+'/'+r.aTotal+'</td><td>'+r.bPass+'/'+r.bTotal+'</td><td>'+Math.round(r.aScore*100)+'% → '+Math.round(r.bScore*100)+'%</td><td class="'+(r.scoreDelta>0?'delta':'')+'">'+(r.scoreDelta>0?'+':'')+Math.round(r.scoreDelta*100)+' pp</td></tr>').join('')}
+if(DATA.comparison&&DATA.comparison.status==='comparable'){const c=DATA.comparison;q('#comparison-section').hidden=false;q('#comparison-verdict').textContent=c.gate.surface+' '+c.gate.verdict;q('#comparison-gate').textContent=DATA.comparisonGateLine;q('#comparison').innerHTML=COMPARISON_ROWS}
 	function runIdFromHash(){try{return new URLSearchParams(window.location.hash.slice(1)).get('run')}catch{return null}}
 	function showRun(id,scroll=true,syncHash=true){if(typeof id!=='string')return false;const r=DATA.runs.find(x=>x.runId===id);if(!r)return false;document.querySelectorAll('[data-run]').forEach(n=>n.classList.toggle('active',n instanceof HTMLElement&&n.dataset.run===id));q('#trace-id').textContent=r.runId;const traceOmission=r.traceProjection&&r.traceProjection.omittedCount?'<div class="message"><div class="message-label">Projection</div><p class="sub">'+esc(r.traceProjection.omittedCount)+' trace message(s) omitted.</p></div>':(!r.traceProjection&&DATA.projection.truncatedTraceRunIds.includes(id)?'<div class="message"><div class="message-label">Projection</div><p class="sub">Trace omitted after a global projection budget was exhausted.</p></div>':'');const grader='<div class="message"><div class="message-label">Graders</div>'+r.graders.map(g=>'<div class="tool '+(g.passed?'':'error')+'"><strong>'+esc(g.passed?'PASS':'FAIL')+' · '+esc(g.name)+'</strong><pre>'+esc(g.reason)+'</pre></div>').join('')+(r.graderProjection.omittedCount?'<p class="sub">'+esc(r.graderProjection.omittedCount)+' grader(s) omitted.</p>':'')+'</div>';const ex=DATA.explanations.find(x=>x.runId===id);const why=ex?'<div class="message"><div class="message-label">Why</div>'+ex.sentences.map(s=>'<p class="sub">'+esc(s)+'</p>').join('')+'</div>':'';q('#trace').innerHTML=why+(r.error?'<div class="message"><div class="message-label">Run error</div><pre>'+esc(r.error)+'</pre></div>':'')+r.trace.map(m=>'<div class="message"><div class="message-label">'+esc(m.role)+'</div>'+(m.text?'<pre>'+esc(m.text)+'</pre>':'')+m.toolCalls.map(t=>'<div class="tool"><strong>call · '+esc(t.name)+'</strong><pre>'+esc(t.arguments)+'</pre></div>').join('')+(m.omittedToolCallCount?'<p class="sub">'+esc(m.omittedToolCallCount)+' tool call(s) omitted.</p>':'')+(m.toolResult?'<div class="tool '+(m.toolResult.isError?'error':'')+'"><strong>result · '+esc(m.toolResult.name)+'</strong><pre>'+esc(m.toolResult.text)+'</pre></div>':'')+'</div>').join('')+traceOmission+grader;if(syncHash){const params=new URLSearchParams(window.location.hash.slice(1));params.set('run',id);const next='#'+params.toString();if(window.location.hash!==next)window.location.hash=next}if(scroll)q('#trace').scrollIntoView({behavior:'smooth',block:'start'});return true}
 document.addEventListener('click',ev=>{const target=ev.target;const node=target instanceof Element?target.closest('[data-run]'):null;if(node instanceof HTMLElement)showRun(node.dataset.run)});
@@ -974,19 +1021,12 @@ ${RUNS_TABLE_FILTER_SCRIPT}
 // rejections dimmed between them, and a sealed cell that is a verdict and a
 // size and nothing else.
 const GROWTH_SPARKLINE=${embeddedJson(data.agentLog ? sparkline(data.agentLog.versions.map((version) => version.score)) : "")};
+const GROWTH_ROWS=${embeddedJson(growthRowsHtml(data.agentLog))};
 if(DATA.agentLog&&DATA.agentLog.rows.length){const g=DATA.agentLog;const versions=g.rows.filter(r=>r.outcome==='promoted').length;
 	q('#growth-section').hidden=false;
 	q('#growth-status').textContent=versions+' version'+(versions===1?'':'s')+' · '+g.rows.length+' decided attempt'+(g.rows.length===1?'':'s')+(g.omitted?' · '+g.omitted+' earlier omitted':'');
 	q('#growth-chart').textContent='score '+GROWTH_SPARKLINE+' · $'+g.cumulativeCostUsd.toFixed(2)+' cumulative over '+g.rows.length+' attempt'+(g.rows.length===1?'':'s');
-	const pp=(v)=>v===null||v===undefined?'—':(v>0?'+':'')+(Math.round(v*1000)/10).toFixed(1)+'pp';
-	const rate=(v)=>v===null||v===undefined?'—':(v*100).toFixed(1)+'%';
-	q('#growth').innerHTML=g.rows.map(r=>{
-		const dev=r.development?esc(r.development.verdict)+' · '+esc(rate(r.development.baselineScore))+' → '+esc(rate(r.development.candidateScore))+' ('+esc(pp(r.development.scoreDelta))+(r.development.confidence95?', CI '+esc(pp(r.development.confidence95.low))+' … '+esc(pp(r.development.confidence95.high)):'')+')':'not evaluated';
-		const sealed=r.sealed?esc(r.sealed.verdict)+' on '+esc(r.sealed.tasks)+'×'+esc(r.sealed.repetitions):'—';
-		const modes=r.resolvedModes.count?esc(r.resolvedModes.count)+' mode'+(r.resolvedModes.count===1?'':'s')+(r.resolvedModes.examples.length?', e.g. '+r.resolvedModes.examples.map(esc).join('; '):''):'—';
-		const loop=r.appliedByImprovementLoop?' <span class="pill">improvement loop</span>':'';
-		return '<tr class="'+(r.outcome==='promoted'?'version':'attempt')+'"><td>'+esc(r.tag??'rejected')+'</td><td>'+esc(r.at.slice(0,10))+'</td><td>'+esc(r.baseline)+' → '+esc(r.candidate??'—')+'</td><td>'+dev+'</td><td>'+sealed+'</td><td>$'+r.costUsd.toFixed(2)+(r.costRatio===null?'':' · ×'+r.costRatio.toFixed(2))+'</td><td>'+modes+'</td><td>'+esc(r.reason??'')+loop+'</td></tr>';
-	}).join('')}
+	q('#growth').innerHTML=GROWTH_ROWS}
 </script></body></html>`;
 	if (Buffer.byteLength(html, "utf8") > MAX_REPORT_HTML_BYTES) {
 		throw new Error(`rendered report exceeds the ${MAX_REPORT_HTML_BYTES}-byte safety limit`);

@@ -4,6 +4,7 @@ import type { ProposalPrediction } from "../builders/adapters.js";
 import { isPromotionGradeGateEvidence, type CandidateRecord } from "../domain/candidate.js";
 import { loadBuilderProposalRunEnvelope } from "./builder-proposal.js";
 import { loadCandidateRecord } from "./candidate-review.js";
+import { fromPoints, points } from "../measurement.js";
 
 /**
  * Predicted impact: the number a change is judged against.
@@ -321,10 +322,14 @@ export function predictedVersusActual(outcome: PredictedOverallOutcome | null): 
 	return outcome.actualPp === null ? aimed : `${aimed}, got ${formatPoints(outcome.actualPp)}`;
 }
 
-/** `+40.0pp` / `-2.0pp`. Digits never bend; this is the machine-readable form. */
+/**
+ * `+40.0pp` / `-2.0pp`. Digits never bend; this is the machine-readable form
+ * the proposer reads back in its own history. A prediction is stored already
+ * counted in points, so it is converted once and formatted by the function
+ * every other delta goes through.
+ */
 export function formatPoints(value: number): string {
-	const rounded = Math.round(value * 10) / 10;
-	return `${rounded > 0 ? "+" : ""}${rounded.toFixed(1)}pp`;
+	return points(fromPoints(value), "machine");
 }
 
 /**

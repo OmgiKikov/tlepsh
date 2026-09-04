@@ -15,7 +15,7 @@ import type {
 	JudgeLabelSubject,
 	LabelAssertionAnswer,
 } from "../../application/judge-labels.js";
-import { oneLine, percent, section, wrap } from "./format.js";
+import { kappaValue, oneLine, percent, section, wrap } from "./format.js";
 import type { Paint } from "./paint.js";
 
 /** One field of the judge's own subject: its name, then its text, indented. */
@@ -152,7 +152,7 @@ export function judgeNextStep(stats: JudgeAgreementStats): string {
 export function judgeAgreementSummary(stats: JudgeAgreementStats): string {
 	return t("label.summary", {
 		rate: percent(stats.agreement),
-		kappa: stats.kappa === null ? "n/a" : stats.kappa.toFixed(2),
+		kappa: kappaValue(stats.kappa),
 		n: stats.n,
 	});
 }

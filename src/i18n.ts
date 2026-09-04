@@ -700,7 +700,7 @@ const en = {
 	"result.screen-inconclusive": "· {count} inconclusive",
 	"result.screen-over-budget": "· over the infrastructure error budget, so inconclusive",
 	"result.screen-shape": "· {cases} × 1 · {detail}",
-	"result.pass-rate": "· {executions} · {rate}% pass rate",
+	"result.pass-rate": "· {executions} · {rate} pass rate",
 	"result.still-needed": "Still needed: {pending}",
 
 	"panel.title": "AHDE · {detail}",
@@ -956,7 +956,7 @@ const en = {
 	"headline.no-new-tag": "no new tag",
 	"headline.fast-forwarded": "{branch} fast-forwarded",
 	"headline.next-stage": "next {stage}",
-	"headline.improve": "{cycles} · {rate}% · stopped: {reason}",
+	"headline.improve": "{cycles} · {rate} · stopped: {reason}",
 	"headline.calibrate": "A/A {verdict} · {band} · flip {flip} · {reps} recommended",
 	"candidate.status.proposed": "proposed",
 	"candidate.status.built": "built",
@@ -1882,6 +1882,13 @@ one would cost more than usual, and then you get a single question.`,
 	"refusal.brief-not-proposable": "This evidence carries no failure mode a harness change can answer, so there is nothing to propose. Run the check again, or add cases.",
 	"refusal.mode-not-proposable": "This failure mode is not one a harness change can answer, so nothing can be proposed for it. Pick a mode whose decision is a harness change.",
 	"message.candidate-abandoned": "The interrupted attempt is dropped and recorded; the same applied change can be checked again.",
+
+	// lane: measurement
+	// A bill two decimals would round down to `$0.00`. The dollar sign is
+	// arithmetic, not language — every screen in this product prices in USD —
+	// but the string lives here so `money()` is the only place that decides
+	// what a spend under half a cent looks like.
+	"unit.under-cent": "<$0.01",
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -2276,7 +2283,7 @@ const ru: Record<MessageKey, string> = {
 	"result.screen-inconclusive": "· {count} неубедительно",
 	"result.screen-over-budget": "· превышен бюджет инфраструктурных ошибок, поэтому неубедительно",
 	"result.screen-shape": "· {cases} × 1 · {detail}",
-	"result.pass-rate": "· {executions} · {rate}% проходит",
+	"result.pass-rate": "· {executions} · {rate} проходит",
 	"result.still-needed": "Ещё нужно: {pending}",
 
 	"panel.title": "AHDE · {detail}",
@@ -2525,7 +2532,7 @@ const ru: Record<MessageKey, string> = {
 	"headline.no-new-tag": "новых тегов нет",
 	"headline.fast-forwarded": "{branch} перемотана",
 	"headline.next-stage": "дальше {stage}",
-	"headline.improve": "{cycles} · {rate}% · остановка: {reason}",
+	"headline.improve": "{cycles} · {rate} · остановка: {reason}",
 	"headline.calibrate": "A/A {verdict} · {band} · переворотов {flip} · советую {reps}",
 	"candidate.status.proposed": "предложен",
 	"candidate.status.built": "собран",
@@ -3407,6 +3414,9 @@ const ru: Record<MessageKey, string> = {
 	"refusal.brief-not-proposable": "В этом свидетельстве нет ни одного типа сбоя, который лечится правкой харнесса, — предлагать нечего. Прогони проверку заново или добавь кейсов.",
 	"refusal.mode-not-proposable": "Этот тип сбоя правкой харнесса не лечится, поэтому по нему нечего предлагать. Возьми тип сбоя, у которого решение — правка харнесса.",
 	"message.candidate-abandoned": "Прерванная попытка сброшена и записана; ту же применённую правку можно проверить заново.",
+
+	// lane: measurement
+	"unit.under-cent": "<$0.01",
 };
 
 /**

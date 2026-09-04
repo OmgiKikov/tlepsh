@@ -1,4 +1,4 @@
-import { formatEvaluatorSpend } from "../../evaluator-model.js";
+import { money } from "../../measurement.js";
 import type { WorkbenchStage } from "../../workbench/types.js";
 import { joinNonEmpty, oneLine } from "./format.js";
 import { coarseElapsed } from "./receipt.js";
@@ -31,7 +31,7 @@ export function renderStatusBar(facts: StatusBarFacts): string {
 	return oneLine(joinNonEmpty([
 		`AHDE · ${stageLabel(facts.stage)}`,
 		typeof facts.elapsedMs === "number" && facts.elapsedMs >= 0 ? coarseElapsed(facts.elapsedMs) : null,
-		typeof facts.costUsd === "number" ? formatEvaluatorSpend(facts.costUsd) : null,
+		typeof facts.costUsd === "number" ? money(facts.costUsd) : null,
 		facts.branch ? oneLine(facts.branch, MAX_BRANCH) : null,
 	]), MAX_STATUS_WIDTH);
 }

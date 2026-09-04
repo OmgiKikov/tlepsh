@@ -1,5 +1,5 @@
 import { plural, t } from "../../i18n.js";
-import { formatEvaluatorSpend } from "../../evaluator-model.js";
+import { elapsed as elapsedOf, money } from "../../measurement.js";
 import type { WorkbenchDecisionResult } from "../../workbench/types.js";
 import type { EvalRunSpend } from "../spend.js";
 import { joinNonEmpty } from "./format.js";
@@ -137,38 +137,19 @@ export function clockOf(iso: string): string | null {
 	return `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
 }
 
-/** `4м12с` / `4m12s`; never rounded up to a unit that did not elapse. */
-export function elapsed(milliseconds: number): string {
-	const total = Math.max(0, Math.round(milliseconds / 1_000));
-	const hours = Math.floor(total / 3_600);
-	const minutes = Math.floor((total % 3_600) / 60);
-	const seconds = total % 60;
-	if (hours > 0) return `${hours}${t("unit.hour-short")}${String(minutes).padStart(2, "0")}${t("unit.minute-short")}`;
-	if (minutes > 0) return `${minutes}${t("unit.minute-short")}${String(seconds).padStart(2, "0")}${t("unit.second-short")}`;
-	return `${seconds}${t("unit.second-short")}`;
-}
-
-/**
- * `12m` / `1h04m` / `47s` — the same clock without the seconds, for the two
- * places that are re-read constantly and only need the magnitude.
- */
-export function coarseElapsed(milliseconds: number): string {
-	const total = Math.max(0, Math.round(milliseconds / 1_000));
-	const hours = Math.floor(total / 3_600);
-	const minutes = Math.floor((total % 3_600) / 60);
-	if (hours > 0) return `${hours}${t("unit.hour-short")}${String(minutes).padStart(2, "0")}${t("unit.minute-short")}`;
-	if (minutes > 0) return `${minutes}${t("unit.minute-short")}`;
-	return `${total}${t("unit.second-short")}`;
-}
+// The two clocks — `4м12с` and the coarse `12м` — are measured quantities
+// like any other, so they are formatted where every measured quantity is.
+// Re-exported here because the receipt is where every caller looks for them.
+export { coarseElapsed, elapsed } from "../../measurement.js";
 
 /** One dim line from measured facts, or nothing when there is nothing measured. */
 export function renderReceiptFacts(facts: ReceiptFacts, paint: Paint): string | null {
 	const parts = joinNonEmpty([
 		clockOf(facts.at),
 		facts.runs > 0 ? plural(facts.runs, "execution") : null,
-		facts.costUsd === null ? null : formatEvaluatorSpend(facts.costUsd),
-		facts.durationMs === null ? null : elapsed(facts.durationMs),
-		facts.judgeCostUsd > 0 ? t("receipt.judge", { cost: formatEvaluatorSpend(facts.judgeCostUsd) }) : null,
+		facts.costUsd === null ? null : money(facts.costUsd),
+		facts.durationMs === null ? null : elapsedOf(facts.durationMs),
+		facts.judgeCostUsd > 0 ? t("receipt.judge", { cost: money(facts.judgeCostUsd) }) : null,
 	]);
 	return parts ? paint.dim(parts) : null;
 }

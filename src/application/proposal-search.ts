@@ -34,6 +34,7 @@ import { resolve } from "node:path";
 import type { CorpusRef } from "../corpus.js";
 import type { GateVerdict } from "../domain/comparison-gate.js";
 import { loadTarget } from "../manifest.js";
+import { points as formatPoints, ratio } from "../measurement.js";
 import type { RunEventListener } from "../run-events.js";
 import type { WorkbenchHumanGate } from "../workbench/types.js";
 import { runAppliedBuilderCandidate } from "./builder-candidate.js";
@@ -643,13 +644,10 @@ function developmentTaskCount(
 	}
 }
 
+// The Pareto table and the stderr progress lines are machine-readable English
+// by design, so the delta keeps the fixed digit a column needs.
 function points(value: number): string {
-	const rounded = Math.round(value * 1000) / 10;
-	return `${rounded > 0 ? "+" : ""}${rounded.toFixed(1)}pp`;
-}
-
-function ratio(value: number | null): string {
-	return value === null ? "—" : `×${value >= 10 ? value.toFixed(0) : value.toFixed(1)}`;
+	return formatPoints(value, "machine");
 }
 
 /** One progress line per hypothesis, in the shape the autoloop writes on stderr. */

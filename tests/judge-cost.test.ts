@@ -2,7 +2,8 @@ import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { readEvalRunIndex, runSuite } from "../src/eval.js";
-import { evaluatorCostUsd, formatEvaluatorSpend } from "../src/evaluator-model.js";
+import { evaluatorCostUsd } from "../src/evaluator-model.js";
+import { money } from "../src/measurement.js";
 import { loadTarget } from "../src/manifest.js";
 import { startMockModel, type MockModelHandle } from "../src/mock-model.js";
 import type { RunRecord } from "../src/provenance.js";
@@ -161,10 +162,10 @@ describe("what a judge bill is allowed to look like on a terminal", () => {
 	});
 
 	it("never rounds a real bill down to $0.00", () => {
-		expect(formatEvaluatorSpend(0)).toBe("$0.00");
-		expect(formatEvaluatorSpend(0.000378)).toBe("<$0.01");
-		expect(formatEvaluatorSpend(0.004999)).toBe("<$0.01");
-		expect(formatEvaluatorSpend(0.005)).toBe("$0.01");
-		expect(formatEvaluatorSpend(0.1885)).toBe("$0.19");
+		expect(money(0)).toBe("$0.00");
+		expect(money(0.000378)).toBe("<$0.01");
+		expect(money(0.004999)).toBe("<$0.01");
+		expect(money(0.005)).toBe("$0.01");
+		expect(money(0.1885)).toBe("$0.19");
 	});
 });

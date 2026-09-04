@@ -2,6 +2,7 @@ import { chmodSync, mkdirSync, opendirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { answerTokens, tokenF1 } from "./domain/tokens.js";
+import { percent } from "./measurement.js";
 import { findKbChunk } from "./target/kb-tool.js";
 import {
 	GraderSpec,
@@ -1804,7 +1805,7 @@ export function writeEvalRun(runsRoot: string, record: EvalRunRecord): void {
  */
 export function renderEvalRunListLine(record: EvalRunRecord): string {
 	return `${record.evalRunId}  ${record.label.padEnd(9)} ${record.target.id.padEnd(16)} ` +
-		`${(record.summary.allPassRate * 100).toFixed(0).padStart(3)}% ` +
+		`${percent(record.summary.allPassRate).padStart(4)} ` +
 		`(${record.summary.pass}/${record.summary.total})  ${record.startedAt}` +
 		(record.regradeOf ? `  regrade of ${record.regradeOf}` : "");
 }

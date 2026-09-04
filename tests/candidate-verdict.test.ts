@@ -149,7 +149,10 @@ describe("renderCandidateVerdictLines", () => {
 	it("says both verdicts with their design, and the gate's own first reason", () => {
 		const lines = renderCandidateVerdictLines(evaluatedRecord(true));
 		expect(lines).toEqual([
-			"development verdict: improved +100.0pp (95% CI +90.0pp … +100.0pp) on 2 tasks × 2 repetitions",
+			// The unit belongs to the delta the interval brackets, and is printed
+			// once: `+100.0pp (95% CI +90.0pp … +100.0pp)` said "points" three
+			// times about one measurement.
+			"development verdict: improved +100.0pp (95% CI +90.0 … +100.0) on 2 tasks × 2 repetitions",
 			"sealed guardrail: pass · improved on 15 tasks × 2 repetitions — no regression: 0 of 15 tasks regressed",
 		]);
 	});

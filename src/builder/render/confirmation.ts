@@ -8,7 +8,7 @@ import type {
 import { plural, t } from "../../i18n.js";
 import { sealedOutcomeLabel } from "../../domain/comparison-gate.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
-import { bullets, clean, numbered, oneLine, shortHash, shortSha, wrap } from "./format.js";
+import { bullets, clean, isSubCent, kappa as formatKappa, money, numbered, oneLine, percent, shortHash, shortSha, wrap } from "./format.js";
 import type { Paint } from "./paint.js";
 import { renderToolPermissions, toolPermissionsFromDiff } from "./tool-permissions.js";
 import {
@@ -150,8 +150,7 @@ function judgeCalibrationLines(candidate: WorkbenchCandidateSummary, paint: Pain
 		return [`${paint.dim(t("label.judge-instrument"))} ${paint.warning(t("judge.not-calibrated"))} ${paint.dim(t("judge.label-hint-long"))}`];
 	}
 	const { agreement, kappa, labels } = candidate.judgeAgreement;
-	const kappaText = kappa === null ? "κ —" : `κ ${kappa.toFixed(2)}`;
-	return [`${paint.dim(t("label.judge-instrument"))} ${t("judge.agreement", { rate: `${Math.round(agreement * 100)}%` })} ${paint.dim(`· ${kappaText} · n=${labels}`)}`];
+	return [`${paint.dim(t("label.judge-instrument"))} ${t("judge.agreement", { rate: percent(agreement) })} ${paint.dim(`· ${formatKappa(kappa)} · n=${labels}`)}`];
 }
 
 /**
@@ -169,7 +168,11 @@ function verificationLine(estimate: WorkbenchRunEstimate | undefined, paint: Pai
 			paint.dim(t("estimate.nothing-comparable"))
 		} ${covenant}`;
 	}
-	const cost = estimate.costUsd < 0.01 ? t("estimate.under-cent") : t("estimate.about-cost", { cost: estimate.costUsd.toFixed(2) });
+	// One threshold for the whole product: below half a cent, two decimals
+	// would print a real bill as free.
+	const cost = isSubCent(estimate.costUsd)
+		? t("estimate.under-cent")
+		: t("estimate.about-cost", { cost: estimate.costUsd.toFixed(2) });
 	const minutes = Math.ceil(estimate.minutes);
 	const time = estimate.minutes < 1 ? t("estimate.under-minute") : t("estimate.about-minutes", { minutes: plural(minutes, "estimated minute") });
 	return `${paint.dim(t("label.verification"))} ${cost} ${paint.dim("·")} ${time} ${covenant}`;
@@ -351,7 +354,7 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 					? t("generate-holdout.source", { examples: plural(examples, "example") })
 					: t("generate-holdout.source-spec-only")}`,
 				paint.muted(t("generate-holdout.blind")),
-				`${paint.dim(t("label.cost"))} ${cost >= 0.005 ? `~$${cost.toFixed(2)}` : "<$0.01"}`,
+				`${paint.dim(t("label.cost"))} ${isSubCent(cost) ? money(cost) : `~${money(cost)}`}`,
 			];
 			if (subject.mode === "review") lines.push(paint.warning(t("generate-holdout.draft")));
 			return lines;

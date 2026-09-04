@@ -425,7 +425,9 @@ describe("version passport", () => {
 				"pass rate 0% → 100% · 6 cases is a small basket: read the interval as indicative, not decisive",
 		);
 		expect(page).toContain("- sealed guardrail: **pass · improved** on 18 cases × 2 repetitions");
-		expect(page).toContain("- per answer, candidate over baseline: cost ×1.25 · latency ×0.87 · tokens ×1.10");
+		// One decimal: the second digit of a cost ratio is a precision nobody
+		// measured, and the gate line beside it has always printed one.
+		expect(page).toContain("- per answer, candidate over baseline: cost ×1.3 · latency ×0.9 · tokens ×1.1");
 
 		// The A/A record of the same revision is the noise band.
 		expect(page).toContain(

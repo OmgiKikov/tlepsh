@@ -9,7 +9,7 @@ import {
 } from "../../application/agent-log.js";
 import { measurementLine, measurementSurface, smallBasketNote } from "../../application/measurement-line.js";
 import { candidateStatusLabel, noun, plural, t, verdictLabel } from "../../i18n.js";
-import { joinNonEmpty, oneLine, section } from "./format.js";
+import { joinNonEmpty, oneLine, ratio, section } from "./format.js";
 import { predictionCalibrationLine } from "./prediction.js";
 import type { Paint } from "./paint.js";
 
@@ -50,7 +50,7 @@ function headline(row: AgentLogRow): string {
 			row.at.slice(0, 10),
 			developmentFragment(row),
 			sealedFragment(row),
-			row.costRatio === null ? null : `×${row.costRatio.toFixed(2)}`,
+			row.costRatio === null ? null : ratio(row.costRatio),
 			formatCostUsd(row.costUsd),
 		]),
 		HEADLINE_WIDTH,

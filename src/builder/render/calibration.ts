@@ -1,6 +1,6 @@
 import type { WorkbenchCalibrationProjection } from "../../workbench/types.js";
 import { plural, t, verdictLabel } from "../../i18n.js";
-import { percent, points, section } from "./format.js";
+import { band, interval, percent, section } from "./format.js";
 import type { Paint } from "./paint.js";
 
 /** Half-width of the 95% interval in pass-rate points: the noise band. */
@@ -9,12 +9,11 @@ export function noiseBand(calibration: Pick<WorkbenchCalibrationProjection, "con
 }
 
 export function formatNoiseBand(calibration: Pick<WorkbenchCalibrationProjection, "confidence95">): string {
-	const band = noiseBand(calibration);
-	return `±${(Number.isFinite(band) ? Math.abs(band) * 100 : 0).toFixed(1)}pp`;
+	return band(noiseBand(calibration));
 }
 
 export function formatFlipRate(calibration: Pick<WorkbenchCalibrationProjection, "flipRate">): string {
-	return `${Math.round((Number.isFinite(calibration.flipRate) ? calibration.flipRate : 0) * 100)}%`;
+	return percent(calibration.flipRate);
 }
 
 /**
@@ -29,7 +28,7 @@ export function renderCalibration(calibration: WorkbenchCalibrationProjection, p
 	return [
 		`${section(t("calibration.title"), paint)} ${paint.dim("A/A")} ${verdict} ${paint.dim(t("calibration.revision", { sha: calibration.targetSha.slice(0, 10) }))}`,
 		`${paint.dim(t("calibration.design"))} ${plural(calibration.taskCount, "case")} × ${plural(calibration.repetitions, "repetition")} ${paint.dim(t("calibration.same-revision"))} ${percent(calibration.aaPassRate)}`,
-		`${paint.dim(t("calibration.spread"))} ${formatNoiseBand(calibration)} ${paint.dim(`(${t("unit.ci")} ${points(calibration.confidence95.low)} … ${points(calibration.confidence95.high)})`)} ${paint.dim(`· ${t("noise.flip")}`)} ${formatFlipRate(calibration)}`,
+		`${paint.dim(t("calibration.spread"))} ${formatNoiseBand(calibration)} ${paint.dim(`(${interval(calibration.confidence95.low, calibration.confidence95.high)})`)} ${paint.dim(`· ${t("noise.flip")}`)} ${formatFlipRate(calibration)}`,
 		`${paint.dim(t("calibration.recommended"))} ${paint.bold(plural(calibration.recommendedRepetitions, "repetition"))} ${paint.dim(t("calibration.per-run"))}`,
 		// The same measurement sizes the exam: an exam smaller than this cannot
 		// separate a ten-point gain from this Target's own noise.

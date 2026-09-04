@@ -811,20 +811,22 @@ describe("renderStatus", () => {
 describe("calibration line", () => {
 	it("shows the measured noise on the current revision", () => {
 		const lines = renderStatus(makeView({ calibration: makeCalibration() }), plainPaint);
-		expect(lines[3]).toBe("Noise A/A inconclusive · ±6.0pp · flip 10% · 3 reps recommended");
+		// The unit is the dictionary's — `pts` here, `п.п.` under `ru` — and never
+		// a hardcoded `pp` inside a sentence the operator reads.
+		expect(lines[3]).toBe("Noise A/A inconclusive · ±6 pts · flip 10% · 3 reps recommended");
 		expect(lines[3]!.length).toBeLessThanOrEqual(110);
 		const header = renderHeader(
 			{ view: makeView({ calibration: makeCalibration() }), builderModel: { label: "x", credentialPresent: true } },
 			plainPaint,
 		);
-		expect(header).toContain("Noise A/A inconclusive · ±6.0pp · flip 10% · 3 reps recommended");
+		expect(header).toContain("Noise A/A inconclusive · ±6 pts · flip 10% · 3 reps recommended");
 	});
 
 	it("warns when the harness disagrees with itself and keeps the paint", () => {
 		const lines = renderStatus(makeView({
 			calibration: makeCalibration({ verdict: "regressed", confidence95: { low: -0.2, high: -0.04 }, flipRate: 0.42, recommendedRepetitions: 5 }),
 		}), tagPaint);
-		expect(lines[3]).toBe("<dim>Noise</dim> A/A <warning>regressed</warning> <dim>·</dim> ±8.0pp <dim>·</dim> flip 42% <dim>·</dim> 5 reps recommended");
+		expect(lines[3]).toBe("<dim>Noise</dim> A/A <warning>regressed</warning> <dim>·</dim> ±8 pts <dim>·</dim> flip 42% <dim>·</dim> 5 reps recommended");
 	});
 
 	it("offers calibration only where the operator can act on it", () => {
@@ -891,7 +893,9 @@ describe("renderCalibration", () => {
 		expect(lines).toEqual([
 			"Noise calibration A/A inconclusive · revision aaaaaaaaaa",
 			"Design 30 cases × 3 repetitions · same revision on both arms · baseline 70%",
-			"Spread ±6.0pp (95% CI -6 pts … +6 pts) · flip 10%",
+			// One unit for one measurement: the band names it, and the interval that
+			// brackets the same quantity does not name it twice more.
+			"Spread ±6 pts (95% CI -6 … +6) · flip 10%",
 			"Recommended 3 repetitions per run to keep noise under 10 points",
 			// The noise also sizes the exam: this A/A cannot see under ±6 pp on 30
 			// cases, so an exam has to be at least the guardrail's own minimum.
@@ -1370,7 +1374,7 @@ describe("renderReview", () => {
 			makeCandidateReview({ judgeAgreement: { agreement: 1, kappa: null, labels: 4 } }),
 			plainPaint,
 		).join("\n");
-		expect(noKappa).toContain("Judge agreement 100% · κ n/a · n=4");
+		expect(noKappa).toContain("Judge agreement 100% · κ — · n=4");
 	});
 
 	it("includes the impact projection inside a candidate review", () => {
@@ -1998,7 +2002,7 @@ describe("renderDecision · calibrate", () => {
 
 	it("summarises the calibration in one headline", () => {
 		expect(decisionHeadline(decision("calibrate", { candidateId: "calibration-1", calibration: makeCalibration() }, "ready-to-evaluate")))
-			.toBe("A/A inconclusive · ±6.0pp · flip 10% · 3 repetitions recommended · exam ≈ 15 cases for ±10 pp");
+			.toBe("A/A inconclusive · ±6 pts · flip 10% · 3 repetitions recommended · exam ≈ 15 cases for ±10 pp");
 	});
 });
 

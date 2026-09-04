@@ -1,5 +1,6 @@
 import type { CandidateRecord } from "../domain/candidate.js";
 import { formatPoints, sealedOutcome, sealedOutcomeLabel } from "../domain/comparison-gate.js";
+import { interval } from "../measurement.js";
 import { comparisonSurfaceOf, type AttemptSurface } from "./experiment-history.js";
 
 /**
@@ -54,10 +55,12 @@ function design(surface: CandidateSurfaceVerdict): string {
 
 function delta(surface: CandidateSurfaceVerdict): string {
 	if (surface.scoreDelta === null) return "";
-	const interval = surface.confidence95
-		? ` (95% CI ${formatPoints(surface.confidence95.low)} … ${formatPoints(surface.confidence95.high)})`
+	// The unit is on the delta; the interval that brackets the same quantity
+	// does not repeat it on both of its ends.
+	const bracket = surface.confidence95
+		? ` (${interval(surface.confidence95.low, surface.confidence95.high, { form: "machine" })})`
 		: "";
-	return ` ${formatPoints(surface.scoreDelta)}${interval}`;
+	return ` ${formatPoints(surface.scoreDelta)}${bracket}`;
 }
 
 /**

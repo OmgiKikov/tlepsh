@@ -4,6 +4,7 @@ import { loadCandidateRecord } from "./candidate-review.js";
 import { detectPromotionFlips } from "./regression-guards.js";
 import { compileImprovementBrief, publicTaskId } from "./improvement-brief.js";
 import { loadDiagnosis } from "../diagnosis.js";
+import { money, percent } from "../measurement.js";
 import { readJsonArtifact } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import { hashFile } from "../provenance.js";
@@ -454,12 +455,17 @@ export function sparkline(values: readonly number[], width = MAX_SPARKLINE_WIDTH
 		.join("");
 }
 
+/**
+ * The growth chart's score, to one decimal: it is a *series* — this version
+ * beside the last — and rounding two measurements to the same whole percent
+ * would claim they are equal.
+ */
 export function formatPercent(value: number | null): string {
-	return value === null || !Number.isFinite(value) ? "—" : `${(value * 100).toFixed(1)}%`;
+	return percent(value, { digits: 1 });
 }
 
 export function formatCostUsd(value: number): string {
-	return `$${(Number.isFinite(value) ? Math.max(0, value) : 0).toFixed(2)}`;
+	return money(value);
 }
 
 /** `2 modes, e.g. Required tool check failed across tasks` — or `—`. */

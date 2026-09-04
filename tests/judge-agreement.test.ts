@@ -159,7 +159,7 @@ describe("per-grader agreement", () => {
 		]);
 		expect(formatJudgeAgreement(report.pooled)).toBe("70% · κ 0.40 · n=50");
 		expect(formatJudgeAgreement(judgeAgreement(cell(SPEC_A, "pass", "pass", 4)).pooled))
-			.toBe("100% · κ n/a · n=4");
+			.toBe("100% · κ — · n=4");
 	});
 });
 
@@ -180,7 +180,9 @@ describe("one agreement line, two carriers", () => {
 			.toBe("83% · κ 0.57 · n=12");
 	});
 
-	it("says κ n/a rather than inventing one when it is undefined", () => {
-		expect(formatJudgeAgreementSummary({ agreement: 1, kappa: null, labels: 4 })).toBe("100% · κ n/a · n=4");
+	it("says κ — rather than inventing one when it is undefined", () => {
+		// `n/a` is an English abbreviation on a Russian screen; the dash is what
+		// every other table in this product prints for a number nobody measured.
+		expect(formatJudgeAgreementSummary({ agreement: 1, kappa: null, labels: 4 })).toBe("100% · κ — · n=4");
 	});
 });

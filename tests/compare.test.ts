@@ -371,7 +371,9 @@ describe("compare table", () => {
 
 		const markdown = renderCompareMarkdown(result);
 		expect(markdown).toContain("| task | baseline | candidate | score | delta |");
-		expect(markdown).toContain("| task_001 | 0% (0/1) | 0% (0/1) | 30% → 85% | +55pp |");
+		// One table, one precision: the per-task delta used to drop the decimal
+		// the summary line above it kept.
+		expect(markdown).toContain("| task_001 | 0% (0/1) | 0% (0/1) | 30% → 85% | +55.0pp |");
 		expect(markdown).toContain("- mean score: 30.0% → 85.0% (+55.0pp) · pass rate 0.0pp");
 		expect(markdown).toContain("- resources: cost ×1.4 · latency ×0.9 · tokens ×1.0");
 		expect(markdown).toContain("$0.1600");

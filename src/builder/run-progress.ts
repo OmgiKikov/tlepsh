@@ -1,7 +1,7 @@
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import { t, verdictLabel } from "../i18n.js";
 import type { RunEvent, RunEventListener } from "../run-events.js";
-import { shortTaskId } from "./render/format.js";
+import { bar, percent, shortTaskId } from "./render/format.js";
 import { sanitizeTerminalText } from "../trace.js";
 
 const UI_KEY = "ahde-run-progress";
@@ -153,9 +153,8 @@ export function createRunProgressPresenter(
 	// The job's own planned total, once the gate that priced it approved.
 	let planned: number | null = null;
 	const progressBar = (done: number, total: number, width = 12): string => {
-		const ratio = total > 0 ? Math.min(1, Math.max(0, done / total)) : 0;
-		const filled = Math.round(ratio * width);
-		return `${"█".repeat(filled)}${"░".repeat(width - filled)} ${Math.round(ratio * 100)}%`;
+		const share = total > 0 ? done / total : 0;
+		return `${bar(share, width)} ${percent(share)}`;
 	};
 	const tally = (): string => `✓${counts.pass} ✗${counts.fail}${counts.error > 0 ? ` !${counts.error}` : ""}`;
 	const progressLine = (): string => {

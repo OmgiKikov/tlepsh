@@ -1,3 +1,4 @@
+import { isSubCent } from "../measurement.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync, rmSync } from "node:fs";
 import { userInfo } from "node:os";
@@ -550,7 +551,8 @@ function shortSha(sha: string): string {
 /** Money the human recognises, or an honest “unknown”. */
 export function formatEstimatedCost(estimate: WorkbenchRunEstimate | undefined): string {
 	if (!estimate || estimate.costUsd === null) return `${t("estimate.unknown")} ${t("estimate.nothing-comparable")}`;
-	if (estimate.costUsd < 0.01) return t("estimate.under-cent");
+	// One threshold for the whole product; `measurement.ts` owns it.
+	if (isSubCent(estimate.costUsd)) return t("estimate.under-cent");
 	return `${t("estimate.about-cost", { cost: estimate.costUsd.toFixed(2) })} (${
 		t("estimate.from-earlier-runs", { runs: localizedCount(estimate.sampledRuns, "eval run") })
 	})`;

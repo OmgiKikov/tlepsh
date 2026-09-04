@@ -1,19 +1,22 @@
 import type { WatchTick } from "../../application/watch.js";
-import { joinNonEmpty, oneLine } from "./format.js";
+import { joinNonEmpty, money, oneLine, percent } from "./format.js";
 import type { Paint } from "./paint.js";
 
 /** One-line renderings share the 110-column budget every AHDE panel uses. */
 const LINE_WIDTH = 110;
 
-function percent(value: number | null): string {
-	return value === null || !Number.isFinite(value) ? "—" : `${(value * 100).toFixed(1)}%`;
-}
-
-/** `88.9% vs 90.0%` — this tick first, the tick it was compared with second. */
+/**
+ * `88.9% vs 90.0%` — this tick first, the tick it was compared with second.
+ *
+ * A watch is a series, and the decimal is the whole point of it: two ticks
+ * rounded to the same whole percent would read as "nothing moved" on the
+ * screen whose only job is to notice that something did.
+ */
 function scoreFragment(tick: WatchTick): string {
+	const rate = (value: number | null): string => percent(value, { digits: 1 });
 	return tick.previousScore === null
-		? percent(tick.score)
-		: `${percent(tick.score)} vs ${percent(tick.previousScore)}`;
+		? rate(tick.score)
+		: `${rate(tick.score)} vs ${rate(tick.previousScore)}`;
 }
 
 function verdictFragment(tick: WatchTick): string {
@@ -36,7 +39,7 @@ function verdictFragment(tick: WatchTick): string {
  */
 export function calibrationFragment(tick: WatchTick): string {
 	if (!tick.calibration) return "noise not calibrated";
-	return `flip ${Math.round(Math.max(0, tick.calibration.flipRate) * 100)}% (calibrated)`;
+	return `flip ${percent(tick.calibration.flipRate)} (calibrated)`;
 }
 
 /** The one line a tick prints. */
@@ -52,7 +55,7 @@ export function renderWatchTick(tick: WatchTick, paint: Paint): string {
 			scoreFragment(tick),
 			style(verdictFragment(tick)),
 			calibrationFragment(tick),
-			`$${tick.costUsd.toFixed(2)}`,
+			money(tick.costUsd),
 		]),
 		LINE_WIDTH,
 	);

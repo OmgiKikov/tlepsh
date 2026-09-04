@@ -1,4 +1,5 @@
 import { plural, t, verdictLabel } from "../i18n.js";
+import { interval, percent, points, ratio as formatRatio } from "../measurement.js";
 import { sha256Hex } from "../provenance.js";
 
 /**
@@ -193,10 +194,6 @@ export function resourceRatios(baseline: ResourceTotals, candidate: ResourceTota
 	};
 }
 
-function formatRatio(value: number): string {
-	return `×${value >= 10 ? value.toFixed(0) : value.toFixed(1)}`;
-}
-
 /**
  * The compact `cost ×1.4 · latency ×0.9` fragment shown beside every verdict.
  * Empty when nothing was measured, so callers can join it unconditionally.
@@ -347,10 +344,12 @@ export function bootstrap95(
 	};
 }
 
+/**
+ * `+55.0pp` — the machine form, for the gate's own English reasons and the
+ * markdown comparison report that quotes them.
+ */
 export function formatPoints(value: number): string {
-	const points = value * 100;
-	const rounded = Math.round(points * 10) / 10;
-	return `${rounded > 0 ? "+" : ""}${rounded.toFixed(1)}pp`;
+	return points(value, "machine");
 }
 
 /**
@@ -413,7 +412,9 @@ export function judgeComparison(rows: readonly CompareRow[], options: JudgeCompa
 
 function decide(policy: GatePolicy, summary: CompareSummary, design: ComparisonDesign): GateDecision {
 	const { low, high } = summary.confidence95;
-	const interval = `95% CI ${formatPoints(low)} … ${formatPoints(high)}`;
+	// One unit for one measurement: the interval names its quantity once,
+	// behind the high end, instead of twice inside its own brackets.
+	const ci = interval(low, high, { form: "machine", unit: "after" });
 	const size = `${design.tasks} task${design.tasks === 1 ? "" : "s"} × ${design.repetitions} repetition${design.repetitions === 1 ? "" : "s"}`;
 	const excluded = design.excludedTasks > 0
 		? [`${design.excludedTasks} task${design.excludedTasks === 1 ? "" : "s"} excluded for infrastructure errors`]
@@ -421,7 +422,7 @@ function decide(policy: GatePolicy, summary: CompareSummary, design: ComparisonD
 	const base = { policyId: policy.id, surface: policy.surface };
 	const total = design.tasks + design.excludedTasks;
 	if (!withinInfrastructureBudget(design.excludedTasks, total, policy.maxExcludedShare)) {
-		const overBudget = `${design.excludedTasks} of ${total} tasks excluded for infrastructure errors exceeds the ${Math.round(policy.maxExcludedShare * 100)}% budget`;
+		const overBudget = `${design.excludedTasks} of ${total} tasks excluded for infrastructure errors exceeds the ${percent(policy.maxExcludedShare)} budget`;
 		return policy.surface === "sealed"
 			? { ...base, verdict: "underpowered", reasons: [overBudget] }
 			: { ...base, verdict: "inconclusive", reasons: [overBudget] };
@@ -451,16 +452,16 @@ function decide(policy: GatePolicy, summary: CompareSummary, design: ComparisonD
 			return { ...base, verdict: "underpowered", reasons: [shortfalls.join(" · "), ...excluded] };
 		}
 		if (high < 0) {
-			return { ...base, verdict: "fail", reasons: [`regressed: ${interval} lies entirely below zero on ${size}`, ...excluded] };
+			return { ...base, verdict: "fail", reasons: [`regressed: ${ci} lies entirely below zero on ${size}`, ...excluded] };
 		}
-		return { ...base, verdict: "pass", reasons: [`no regression: ${interval} is not entirely below zero on ${size}`, ...excluded] };
+		return { ...base, verdict: "pass", reasons: [`no regression: ${ci} is not entirely below zero on ${size}`, ...excluded] };
 	}
 	if (design.tasks < 1) {
 		return { ...base, verdict: "inconclusive", reasons: ["no comparable tasks", ...excluded] };
 	}
-	if (low > 0) return { ...base, verdict: "improved", reasons: [`${interval} lies entirely above zero on ${size}`, ...excluded] };
-	if (high < 0) return { ...base, verdict: "regressed", reasons: [`${interval} lies entirely below zero on ${size}`, ...excluded] };
-	return { ...base, verdict: "inconclusive", reasons: [`${interval} spans zero on ${size}`, ...excluded] };
+	if (low > 0) return { ...base, verdict: "improved", reasons: [`${ci} lies entirely above zero on ${size}`, ...excluded] };
+	if (high < 0) return { ...base, verdict: "regressed", reasons: [`${ci} lies entirely below zero on ${size}`, ...excluded] };
+	return { ...base, verdict: "inconclusive", reasons: [`${ci} spans zero on ${size}`, ...excluded] };
 }
 
 /**

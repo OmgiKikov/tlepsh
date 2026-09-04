@@ -8,7 +8,7 @@ import {
 	type PredictionVerdict,
 } from "../../application/prediction.js";
 import { t } from "../../i18n.js";
-import { oneLine } from "./format.js";
+import { bareDelta, fromPoints, oneLine, points } from "./format.js";
 import type { Paint } from "./paint.js";
 
 /**
@@ -21,19 +21,18 @@ import type { Paint } from "./paint.js";
  * that a change did or did not do what it said it would.
  */
 
-/** Percentage points, already in pp. `+40 п.п.` / `+40 pts`. */
+/**
+ * `+40 п.п.` / `+40 pts` — a prediction is stored already counted in points,
+ * so it is converted once, here, and formatted by the same function every
+ * other delta on every other screen goes through.
+ */
 export function pointsOf(value: number): string {
-	if (!Number.isFinite(value)) return "—";
-	const rounded = Math.round(value * 10) / 10;
-	const digits = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
-	return `${rounded > 0 ? "+" : ""}${digits} ${t("unit.points")}`;
+	return points(fromPoints(value));
 }
 
 /** The bare signed number an interval is drawn from, without its unit. */
 function bare(value: number): string {
-	const rounded = Math.round(value * 10) / 10;
-	const digits = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
-	return `${rounded > 0 ? "+" : ""}${digits}`;
+	return bareDelta(fromPoints(value));
 }
 
 /** `failure-mode-1a2b…` shortened to something a human can match by eye. */

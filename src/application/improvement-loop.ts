@@ -31,6 +31,7 @@ import { loadCorpus } from "../corpus.js";
 import { diagnoseEvalRun } from "../diagnosis.js";
 import type { GateVerdict } from "../domain/comparison-gate.js";
 import { withinInfrastructureBudget } from "../domain/comparison-gate.js";
+import { percent, points } from "../measurement.js";
 import {
 	findReusableBaseline,
 	runSuite,
@@ -625,10 +626,6 @@ export function topProposableFailureMode(
 	)[0]!;
 }
 
-function percent(value: number): string {
-	return `${Math.round(value * 100)}%`;
-}
-
 /** One progress line per cycle, in the shape `run-progress.ts` uses on stderr. */
 export function improvementCycleLine(cycle: ImprovementLoopCycle, maxCycles: number): string {
 	const parts = [
@@ -646,7 +643,7 @@ export function improvementCycleLine(cycle: ImprovementLoopCycle, maxCycles: num
 	}
 	if (cycle.verification) {
 		const delta = cycle.verification.scoreDelta;
-		parts.push(`verify ${cycle.verification.verdict} ${delta >= 0 ? "+" : ""}${(delta * 100).toFixed(1)}pp`);
+		parts.push(`verify ${cycle.verification.verdict} ${points(delta, "machine")}`);
 	}
 	if (cycle.search) {
 		parts.push(`search ${cycle.search.rows.filter((row) => row.status === "verified").length}/${cycle.search.rows.length} verified`);
@@ -666,8 +663,7 @@ export function renderImprovementLoopTable(result: ImprovementLoopResult): strin
 				(cycle.screen.withinErrorBudget ? "" : " · inconclusive")
 			: "—";
 		const verification = cycle.verification
-			? `${cycle.verification.verdict} ${cycle.verification.scoreDelta >= 0 ? "+" : ""}` +
-				`${(cycle.verification.scoreDelta * 100).toFixed(1)}pp`
+			? `${cycle.verification.verdict} ${points(cycle.verification.scoreDelta, "machine")}`
 			: cycle.search
 				? `search of ${cycle.search.rows.length}`
 				: cycle.skipped

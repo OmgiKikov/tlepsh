@@ -1,6 +1,7 @@
 // One family of Workbench decisions, moved out of `AhdeWorkbench.decide()`
 // unchanged: the gate, the stale check and the receipts are still the
 // workbench's own; these functions only hold the branch bodies.
+import { percent } from "../../measurement.js";
 import { plural as localizedCount, t } from "../../i18n.js";
 import { loadDevelopmentCorpusPublicationReceipt } from "../../application/builder-authoring.js";
 import { resolveScoredCasesForEval, targetWithDevelopmentCorpus } from "../../application/corpus-target.js";
@@ -344,7 +345,7 @@ export async function decideRegrade(
 	// measured against.
 	const baselineDiff = paired ? diffs[0]! : null;
 	const diff = diffs[diffs.length - 1]!;
-	const rate = (value: number): string => `${Math.round(value * 100)}%`;
+	const rate = percent;
 	return {
 		kind: input.kind,
 		message: baselineDiff
