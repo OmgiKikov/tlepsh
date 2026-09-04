@@ -1,5 +1,5 @@
 import { join, relative, sep } from "node:path";
-import { plural, t } from "../i18n.js";
+import { plural, t, type MessageKey, type MessageParams } from "../i18n.js";
 import { failureModeReading } from "../application/run-explanation.js";
 import type {
 	ExtensionAPI,
@@ -77,39 +77,97 @@ type CommandWorkbench = Pick<
 	"view" | "decide" | "projectDir" | "stateRoot" | "runsRoot" | "projectId"
 >;
 
-export const AHDE_BUILDER_COMMAND_NAMES = [
-	// The three verbs the operator actually says; everything below is a shortcut
-	// or an inspection, and several are aliases of these.
-	"test",
-	"fix",
-	"ship",
-	"help",
-	"doctor",
-	"holdout",
-	"status",
-	"run",
-	"calibrate",
-	"regrade",
-	"traces",
-	"review",
-	"approve",
-	"publish",
-	"apply",
-	"discard",
-	"promote",
-	"reject",
-	"adopt",
-	"next",
-	"target",
-	"passport",
-	"trace",
-	"log",
-	"dataset",
-	"plan",
-	"jobs",
-	"stop",
-	"label",
-] as const;
+/**
+ * Which screen a slash command belongs on.
+ *
+ * `core` is the product: the eight things an operator does — the three verbs,
+ * the two ways to see what actually happened, the two deliverables, and the
+ * way back to this list. Nothing else appears on `/help`.
+ *
+ * `expert` is the same work taken one step at a time, or an inspection someone
+ * who already knows the loop reaches for. It is registered, it works, and it
+ * is one `/help all` away.
+ *
+ * `host-decision` is the eight decisions AHDE itself puts on screen with the
+ * exact subject and a single yes/no. They stay registered because a decision
+ * the host offers has to be answerable from the keyboard too, and because
+ * nothing here is removed until a real order runs end to end — but they are
+ * never vocabulary the operator is taught: the Builder's persona is forbidden
+ * from naming them at all, so `/help` must not teach them either.
+ */
+export type BuilderCommandTier = "core" | "expert" | "host-decision";
+
+/** One row of the command table: what it is called, where it shows, what it says. */
+export interface BuilderCommandListing {
+	readonly name: string;
+	readonly tier: BuilderCommandTier;
+	/**
+	 * Exactly what to type. The example argument is part of it — `/fix 2` reads
+	 * as a sentence where `/fix [n]` reads as a manual — and it is machinery,
+	 * not language: a command name and a digit bend in no language.
+	 */
+	readonly usage: string;
+	/** The one line `/help` prints beside it. */
+	readonly help: MessageKey;
+	/** Constants that line interpolates; a number is not language either. */
+	readonly helpParams?: MessageParams;
+}
+
+/**
+ * Every Builder command, in the order the operator meets it.
+ *
+ * This is the one table: registration reads it (a command absent from it does
+ * not register at all), `/help` renders it, and the CLI tour and the README
+ * list it. Twenty-nine commands with one job each, of which nine are the
+ * product and twenty are shortcuts and host decisions.
+ */
+export const AHDE_BUILDER_COMMANDS: readonly BuilderCommandListing[] = [
+	// The whole product, in the order the work happens; `/help all` closes it.
+	{ name: "test", tier: "core", usage: "/test", help: "help.cmd.test" },
+	{ name: "fix", tier: "core", usage: "/fix 2", help: "help.cmd.fix" },
+	{ name: "ship", tier: "core", usage: "/ship 0.1.0", help: "help.cmd.ship" },
+	{ name: "status", tier: "core", usage: "/status", help: "help.cmd.status" },
+	{ name: "traces", tier: "core", usage: "/traces", help: "help.cmd.traces" },
+	{ name: "trace", tier: "core", usage: "/trace 3", help: "help.cmd.trace" },
+	{ name: "passport", tier: "core", usage: "/passport", help: "help.cmd.passport" },
+	{ name: "dataset", tier: "core", usage: "/dataset", help: "help.cmd.dataset" },
+	{ name: "help", tier: "core", usage: "/help all", help: "help.cmd.help" },
+	// The same work, one step at a time, plus the inspections. The sentence is
+	// the one the palette already shows: a command has one description, not two.
+	{ name: "run", tier: "expert", usage: "/run", help: "cmd.run" },
+	{ name: "plan", tier: "expert", usage: "/plan", help: "cmd.plan" },
+	{ name: "review", tier: "expert", usage: "/review", help: "cmd.review" },
+	{ name: "jobs", tier: "expert", usage: "/jobs", help: "cmd.jobs" },
+	{ name: "stop", tier: "expert", usage: "/stop", help: "cmd.stop" },
+	{ name: "target", tier: "expert", usage: "/target", help: "cmd.target" },
+	{ name: "log", tier: "expert", usage: "/log", help: "cmd.log" },
+	{ name: "doctor", tier: "expert", usage: "/doctor", help: "cmd.doctor" },
+	{ name: "label", tier: "expert", usage: "/label 20", help: "cmd.label", helpParams: { max: MAX_LABEL_SAMPLE } },
+	{ name: "holdout", tier: "expert", usage: "/holdout", help: "cmd.holdout" },
+	{ name: "calibrate", tier: "expert", usage: "/calibrate", help: "cmd.calibrate" },
+	{ name: "regrade", tier: "expert", usage: "/regrade", help: "cmd.regrade" },
+	// AHDE's own decisions. The operator answers them where they are asked.
+	{ name: "approve", tier: "host-decision", usage: "/approve", help: "cmd.approve" },
+	{ name: "publish", tier: "host-decision", usage: "/publish", help: "cmd.publish" },
+	{ name: "apply", tier: "host-decision", usage: "/apply", help: "cmd.apply" },
+	{ name: "discard", tier: "host-decision", usage: "/discard", help: "cmd.discard" },
+	{ name: "promote", tier: "host-decision", usage: "/promote", help: "cmd.promote" },
+	{ name: "reject", tier: "host-decision", usage: "/reject", help: "cmd.reject" },
+	{ name: "adopt", tier: "host-decision", usage: "/adopt", help: "cmd.adopt" },
+	{ name: "next", tier: "host-decision", usage: "/next", help: "cmd.next" },
+];
+
+/** The same table, as names: the public order every command list follows. */
+export const AHDE_BUILDER_COMMAND_NAMES: readonly string[] =
+	AHDE_BUILDER_COMMANDS.map((command) => command.name);
+
+const LISTED_COMMANDS: ReadonlyMap<string, BuilderCommandListing> =
+	new Map(AHDE_BUILDER_COMMANDS.map((command) => [command.name, command]));
+
+/** Commands of one tier, in table order, as `/help` prints them. */
+export function builderCommandsOfTier(tier: BuilderCommandTier): readonly BuilderCommandListing[] {
+	return AHDE_BUILDER_COMMANDS.filter((command) => command.tier === tier);
+}
 
 /**
  * Pi's own interactive slash commands, pinned.
@@ -157,8 +215,73 @@ export function assertRegistrableCommandName(name: string): void {
 	);
 }
 
-/** The `/help` reference, in the operator's language. */
-const builderHelp = (): string => t("help.body");
+/**
+ * The second guard: a command with no row in the table has no tier, so `/help`
+ * could not say which screen it belongs on — and the honest failure for that is
+ * a startup error, not a command that quietly exists and is documented nowhere.
+ */
+export function assertListedCommandName(name: string): void {
+	if (LISTED_COMMANDS.has(name)) return;
+	throw new Error(
+		`/${name} is registered without a row in AHDE_BUILDER_COMMANDS, so /help cannot place it. ` +
+		"Add it there with its tier and its one-line description.",
+	);
+}
+
+/** The column the sentences start in: the widest thing anyone has to type. */
+const HELP_USAGE_COLUMN = Math.max(...AHDE_BUILDER_COMMANDS.map((command) => command.usage.length));
+
+function helpLine(usage: string, sentence: string): string {
+	return `  ${usage.padEnd(HELP_USAGE_COLUMN)}  ${sentence}`;
+}
+
+function helpLinesOfTier(tier: BuilderCommandTier): string[] {
+	return builderCommandsOfTier(tier).map((command) => helpLine(command.usage, t(command.help, command.helpParams)));
+}
+
+/**
+ * The `/help` reference, in the operator's language.
+ *
+ * Thirty-one registrations over forty-five lines taught the operator the
+ * machine instead of the product — including the eight decisions AHDE asks
+ * itself, which the Builder is forbidden to name and which nobody should ever
+ * have to type. So the default screen is the nine core commands and nothing
+ * else, and `/help all` is the whole table under headings that say what each
+ * group is. Both are rendered from the one command table: a command cannot be
+ * registered without a tier, so nothing can go missing from `all`.
+ */
+export function renderBuilderHelp(all = false): string[] {
+	const paragraph = (key: MessageKey): string[] => t(key).split("\n");
+	if (!all) {
+		return [...paragraph("help.intro"), "", ...helpLinesOfTier("core"), "", ...paragraph("help.gate")];
+	}
+	return [
+		...paragraph("help.workflow"),
+		"",
+		t("help.h.core"),
+		...helpLinesOfTier("core"),
+		"",
+		t("help.h.expert"),
+		...helpLinesOfTier("expert"),
+		"",
+		t("help.h.host"),
+		...helpLinesOfTier("host-decision"),
+		"",
+		t("help.h.builtin"),
+		helpLine("/login", t("help.cmd.login")),
+		helpLine("/model", t("help.cmd.model")),
+		"",
+		...paragraph("help.gate"),
+	];
+}
+
+/** `/help` takes nothing, or the one word that opens the rest of the table. */
+function parseHelpScope(args: string): boolean {
+	const rest = args.trim();
+	if (!rest) return false;
+	if (rest === "all") return true;
+	throw new Error(t("cmd.err.help-arg"));
+}
 
 function requireTui(ctx: ExtensionCommandContext, command: string): void {
 	if (!ctx.hasUI || ctx.mode !== "tui") {
@@ -575,6 +698,7 @@ export function registerAhdeBuilderCommands(
 		// catches, instead of a slash command the operator discovers is dead on
 		// the day they need it.
 		assertRegistrableCommandName(name);
+		assertListedCommandName(name);
 		pi.registerCommand(name, {
 			description: definition.description,
 			handler: async (args, ctx) => {
@@ -1122,9 +1246,13 @@ export function registerAhdeBuilderCommands(
 	registerCommand("help", {
 		description: t("cmd.help"),
 		async handler(args, ctx) {
-			noArguments("help", args);
+			const all = parseHelpScope(args);
 			await prepare(ctx, "help");
-			presenter.show(ctx, { title: t("panel.help"), tone: "info", lines: builderHelp().split("\n").slice(2) });
+			presenter.show(ctx, {
+				title: all ? t("panel.help-all") : t("panel.help"),
+				tone: "info",
+				lines: renderBuilderHelp(all),
+			});
 		},
 	});
 

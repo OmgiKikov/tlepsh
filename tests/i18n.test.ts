@@ -13,6 +13,7 @@ import { plainPaint } from "../src/builder/render/paint.js";
 import { stageLabel, nextStep } from "../src/builder/render/stage.js";
 import { renderRunDetailPage } from "../src/evidence/pages.js";
 import { createRunProgressPresenter } from "../src/builder/run-progress.js";
+import { renderBuilderHelp } from "../src/builder/commands.js";
 import { explainRun, failureModeReading, runErrorReading } from "../src/application/run-explanation.js";
 import { receiptLines } from "../src/builder/render/trace.js";
 import { turnBudgetLine } from "../src/workbench/workbench.js";
@@ -140,6 +141,8 @@ const ALLOWED_LATIN = new Set([
 	"jsonl", "JSONL", "OAuth", "Pi", "Enter", "id", "th", "tr", "td", "class", "span", "num", "chip",
 	"href", "div", "table", "thead", "tbody", "scroll", "wrapcell", "h", "a", "p", "pre", "section",
 	"repetition", "sub", "mono", "errpre", "cards", "card", "count", "row", "outcome", "score",
+	// The argument of `/help all`: a word the operator types, not one they read.
+	"all",
 ]);
 
 function leakedEnglish(text: string): string[] {
@@ -733,6 +736,26 @@ describe("the dictionary itself", () => {
 				.replace(/\bAHDE\b/g, "");
 			expect(bare, key).not.toMatch(/[A-Za-z]{2,}/);
 		}
+	});
+});
+
+describe("ru: the /help screen", () => {
+	it("says the nine in Russian, and the whole table in Russian too", () => {
+		setLanguage("ru");
+		const core = renderBuilderHelp();
+		const all = renderBuilderHelp(true);
+		// The Latin that survives is what the operator types: the command names
+		// themselves, the word `all`, `AHDE`, `Pi`, and the two credential words.
+		expect(leakedEnglish(core.join("\n"))).toEqual([]);
+		expect(leakedEnglish(all.join("\n"))).toEqual([]);
+		// Nine lines, one sentence each, and the last one is the way to the rest.
+		expect(core.filter((line) => line.startsWith("  /"))).toHaveLength(9);
+		expect(core.at(-1)).not.toBe("");
+		expect(core.some((line) => line.startsWith("  /help all  "))).toBe(true);
+		expect(core.join("\n")).toContain("почини вторую проблему");
+		// The eight AHDE asks itself are named as that, and nowhere else.
+		expect(all.join("\n")).toContain("Решения хоста — их задаёт сам AHDE, набирать не нужно:");
+		for (const line of core) expect(line).not.toContain("/approve");
 	});
 });
 

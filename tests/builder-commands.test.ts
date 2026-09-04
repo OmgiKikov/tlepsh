@@ -10,10 +10,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { standInFilesLine } from "../src/target/placeholders.js";
 import {
 	AHDE_BUILDER_COMMAND_NAMES,
+	AHDE_BUILDER_COMMANDS,
 	PI_BUILTIN_COMMAND_NAMES,
+	assertListedCommandName,
 	assertRegistrableCommandName,
+	builderCommandsOfTier,
 	humanizeCommandError,
 	registerAhdeBuilderCommands,
+	renderBuilderHelp,
+	type BuilderCommandTier,
 	type RegisterBuilderCommandsOptions,
 } from "../src/builder/commands.js";
 import { createRunProgressPresenter } from "../src/builder/run-progress.js";
@@ -720,19 +725,32 @@ describe("Builder Pi slash commands", () => {
 		const registered = register(fixture.value).registered;
 
 		expect([...AHDE_BUILDER_COMMAND_NAMES]).toEqual([
-			// The three verbs the operator actually says, then the shortcuts.
+			// Core: the whole product on one screen, in the order the work
+			// happens. Never "export" for the dataset: Pi owns that name (see
+			// the built-in guard below).
 			"test",
 			"fix",
 			"ship",
-			"help",
-			"doctor",
-			"holdout",
 			"status",
+			"traces",
+			"trace",
+			"passport",
+			"dataset",
+			"help",
+			// Expert: the same work one step at a time, plus the inspections.
 			"run",
+			"plan",
+			"review",
+			"jobs",
+			"stop",
+			"target",
+			"log",
+			"doctor",
+			"label",
+			"holdout",
 			"calibrate",
 			"regrade",
-			"traces",
-			"review",
+			// AHDE's own decisions, in the order it asks them.
 			"approve",
 			"publish",
 			"apply",
@@ -741,24 +759,28 @@ describe("Builder Pi slash commands", () => {
 			"reject",
 			"adopt",
 			"next",
-			"target",
-			"passport",
-			"trace",
-			"log",
-			// The conversations the agent already had, as one file to hand on.
-			// Never "export": Pi owns that name (see the built-in guard below).
-			"dataset",
-			// What is happening without asking: the cycle, the background
-			// measurement, and the way to stop it.
-			"plan",
-			"jobs",
-			"stop",
-			// Checking the instrument the evidence leans on.
-			"label",
 		]);
-		expect(registered.map(({ name }) => name)).toEqual([...AHDE_BUILDER_COMMAND_NAMES]);
+		// The public order is the help order now, so the file's registration
+		// order is only where the handlers happen to sit. What may never drift
+		// is membership: a command registered off the table, or a table row
+		// nobody registers, is a command documented nowhere or dead on arrival.
+		expect(registered.map(({ name }) => name).sort()).toEqual([...AHDE_BUILDER_COMMAND_NAMES].sort());
 		expect(registered).toHaveLength(29);
 		expect(registered.every(({ options }) => options.description && options.handler)).toBe(true);
+	});
+
+	it("gives every registered command a tier, and refuses one that has none", () => {
+		const registered = register(workbench().value).registered.map(({ name }) => name);
+		const tiered = new Map(AHDE_BUILDER_COMMANDS.map((command) => [command.name, command.tier]));
+		expect(registered.filter((name) => !tiered.has(name))).toEqual([]);
+		// Nine the product is made of, twelve shortcuts, eight decisions AHDE
+		// asks itself — 29 registrations, and `/help` shows nine of them.
+		const count = (tier: BuilderCommandTier): number => builderCommandsOfTier(tier).length;
+		expect([count("core"), count("expert"), count("host-decision")]).toEqual([9, 12, 8]);
+		expect(() => assertListedCommandName("traces")).not.toThrow();
+		expect(() => assertListedCommandName("summarise")).toThrow(
+			/^\/summarise is registered without a row in AHDE_BUILDER_COMMANDS, so \/help cannot place it\./,
+		);
 	});
 
 	/**
@@ -865,7 +887,12 @@ describe("Builder Pi slash commands", () => {
 		expect(fixture.view).toHaveBeenCalledTimes(5);
 	});
 
-	it("shows the workflow reference for /help", async () => {
+	/** Every `/name` the screen names, in the order it names them. */
+	function slashNames(text: string): string[] {
+		return [...new Set([...text.matchAll(/\/([a-z][a-z-]*)/g)].map((match) => match[1] as string))];
+	}
+
+	it("shows the nine commands the product is made of for /help, and nothing else", async () => {
 		const fixture = workbench();
 		const { commands, output } = register(fixture.value);
 
@@ -874,15 +901,52 @@ describe("Builder Pi slash commands", () => {
 		expect(fixture.view).not.toHaveBeenCalled();
 		expect(output.blocks.map((block) => [block.title, block.tone])).toEqual([["AHDE Builder help", "info"]]);
 		const text = output.text();
+		// Exactly the core tier, in the order the work happens, and the last
+		// line is the way to the rest.
+		expect(slashNames(text)).toEqual(builderCommandsOfTier("core").map((entry) => entry.name));
+		expect(text.trimEnd().split("\n").filter((line) => line.startsWith("  /"))).toHaveLength(9);
+		expect(text).toContain("/help all    every command, shortcuts included");
+		// Session 8's screen taught the machine: thirty-one commands over
+		// forty-five lines, eight of them decisions AHDE asks itself and the
+		// Builder is forbidden to name. None of those eight is here.
+		for (const decision of builderCommandsOfTier("host-decision")) {
+			expect(text).not.toContain(`/${decision.name}`);
+		}
+		for (const shortcut of builderCommandsOfTier("expert")) {
+			expect(text).not.toContain(`/${shortcut.name}`);
+		}
 		expect(text).toContain("Talk normally");
-		expect(text).toContain("/promote <version>");
-		// The three verbs come first, and the gate policy is stated in the operator's words.
-		expect(text.indexOf("/test")).toBeGreaterThan(-1);
-		expect(text.indexOf("/test")).toBeLessThan(text.indexOf("/status"));
-		expect(text.indexOf("/fix")).toBeLessThan(text.indexOf("/status"));
-		expect(text.indexOf("/ship")).toBeLessThan(text.indexOf("/status"));
 		expect(text).toContain("Every consequential step shows the exact subject and asks you once: starting");
 		expect(text).toContain("Runs and checks just happen");
+	});
+
+	it("shows every registered command exactly once for /help all, under a heading that says what it is", async () => {
+		const fixture = workbench();
+		const { commands, output } = register(fixture.value);
+
+		await command(commands, "help").handler("all", context().ctx);
+
+		expect(fixture.view).not.toHaveBeenCalled();
+		expect(output.blocks.map((block) => [block.title, block.tone])).toEqual([["AHDE Builder · every command", "info"]]);
+		const text = output.text();
+		const usages = text.split("\n").filter((line) => line.startsWith("  /"));
+		expect(usages).toHaveLength(AHDE_BUILDER_COMMANDS.length + 2); // + the two Pi built-ins
+		expect(slashNames(usages.join("\n"))).toEqual([...AHDE_BUILDER_COMMAND_NAMES, "login", "model"]);
+		expect(text).toContain("Expert shortcuts — the same work, one step at a time:");
+		// The eight are listed under what they actually are, so nobody reads
+		// them as vocabulary they were supposed to learn.
+		expect(text).toContain("AHDE's own decisions — it asks them on screen; typing them is never needed:");
+		expect(text.indexOf("/approve")).toBeGreaterThan(text.indexOf("AHDE's own decisions"));
+	});
+
+	it("takes nothing but all, and says so before touching the host", async () => {
+		const fixture = workbench();
+		const { commands, output } = register(fixture.value);
+		const host = context();
+
+		await expectRefusal(commands, "help", "everything", host.ctx, output, "/help takes nothing, or the word all");
+		expect(host.waitForIdle).not.toHaveBeenCalled();
+		expect(fixture.view).not.toHaveBeenCalled();
 	});
 
 	it("routes /run to run-current and parses repetitions plus a human-readable reason", async () => {
@@ -2055,7 +2119,7 @@ describe("Builder Pi slash commands", () => {
 		expect(output.show).not.toHaveBeenCalled();
 	});
 
-	it.each(["help", "doctor", "status", "review"])("rejects arguments to /%s before touching the host", async (name) => {
+	it.each(["doctor", "status", "review"])("rejects arguments to /%s before touching the host", async (name) => {
 		const fixture = workbench();
 		const { commands, output } = register(fixture.value);
 		const host = context();
