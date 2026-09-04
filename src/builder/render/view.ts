@@ -555,11 +555,13 @@ function renderCorpusDraft(
 		`${section(t("section.basket-draft"), paint)} ${paint.bold(oneLine(content.name, 80))} ${paint.dim("·")} ${plural(content.tasks.length, "case")} ${paint.dim(`· ${content.id}`)}`,
 	];
 	if (content.importSource) lines.push(`${paint.dim(t("view.imported-from"))} ${oneLine(String((content.importSource as { path?: unknown }).path ?? "imports/"), 120)}`);
-	content.tasks.slice(0, maxTasks).forEach((task, index) => {
-		const graders = (task.graders as ({ type: string } & Record<string, unknown>)[]).map(graderLabel).join(paint.dim(" · "));
-		lines.push(`  ${paint.dim(`${String(index + 1).padStart(2)}.`)} ${oneLine(task.input, 96)}`);
-		lines.push(`      ${paint.dim(t("view.graders"))} ${graders}`);
-	});
+	// The same cards `/traces` draws, from the same two functions. A draft used
+	// to print input and graders and nothing else, so a case with a world was
+	// reviewed — and approved — with the world invisible.
+	lines.push(...renderDatasetCases(
+		content.tasks.slice(0, maxTasks).map((task) => ({ ...datasetCasePreview(task), taskId: task.id })),
+		paint,
+	));
 	if (content.tasks.length > maxTasks) lines.push(`  ${paint.dim(t("view.more-cases", { count: content.tasks.length - maxTasks }))}`);
 	if (content.coverageNotes.length > 0) lines.push(paint.dim(t("view.coverage-notes")), ...bullets(content.coverageNotes, paint, { limit: 8, max: 140 }));
 	if (content.taskProvenance.length > 0) lines.push(`${paint.dim(t("view.provenance"))} ${t("view.provenance-bound", { cases: plural(content.taskProvenance.length, "case") })}`);

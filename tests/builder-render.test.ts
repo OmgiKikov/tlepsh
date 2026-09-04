@@ -1055,6 +1055,39 @@ describe("renderReview", () => {
 		expect(lines[lines.length - 1]).toBe("Draft cccccccccccc… · Spec spec-1");
 	});
 
+	/**
+	 * `/review` on a draft is where a basket is approved. It used to print input
+	 * and graders and nothing else, so a case with a world was approved with the
+	 * world invisible — the four lines `/traces` draws for the same case were
+	 * two screens away. One projection, one card, both screens.
+	 */
+	it("draws the same card a worlded case gets in /traces", () => {
+		const draft = makeCorpusDraft({
+			tasks: [{
+				id: taskId(4),
+				input: "Заблокируйте договор 1003.",
+				world: {
+					state: { contract: { id: "1003" }, accounts: { "42": { status: "ok" } } },
+					expect: [{ path: "accounts.42.status", op: "equals", value: "frozen" }],
+				},
+				graders: [{ type: "tool_called", tool: "check_account" }],
+			}],
+		});
+		const lines = renderReview(draft, plainPaint);
+		const traces = renderDatasetCases(
+			[{ ...datasetCasePreview(CorpusTaskSchema.parse(draft.tasks[0])), taskId: taskId(4) }],
+			plainPaint,
+		);
+		expect(lines.slice(1, 6)).toEqual(traces);
+		expect(lines.slice(1, 6)).toEqual([
+			"   1. “Заблокируйте договор 1003”  task-00000000…",
+			"      who: customer on contract 1003",
+			"      has: accounts.42.status=ok · contract.id=1003",
+			"      wants: Заблокируйте договор 1003.",
+			'      must: accounts.42.status equals "frozen" · tool check_account',
+		]);
+	});
+
 	it("folds cases beyond maxTasks and shows the import source and provenance", () => {
 		const draft = makeCorpusDraft({
 			importSource: { path: "imports/tier-one.jsonl", sha256: HASH, bytes: 1024, taskCount: 3 },
