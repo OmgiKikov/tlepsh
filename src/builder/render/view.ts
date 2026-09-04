@@ -1048,7 +1048,31 @@ function worldWho(state: Record<string, unknown> | null): string | null {
 		const shown = redactTraceText(scalar);
 		return sentence === null ? shown : t(sentence, { id: shown });
 	}
+	for (const [root, sentence] of WORLD_IDENTITY_MAPS) {
+		const id = worldMapKey(state[root]);
+		if (id !== null) return t(sentence, { id: redactTraceText(id) });
+	}
 	return null;
+}
+
+/**
+ * Worlds that hold several customers key them by identifier — session 8's
+ * `accounts.1003.balance` — so the person is the key, not a value. Only the
+ * first key of such a map names the case; a card is about one person.
+ */
+const WORLD_IDENTITY_MAPS: readonly (readonly [string, MessageKey])[] = [
+	["contracts", "view.world.who-by-contract"],
+	["accounts", "view.world.who-by-account"],
+	["clients", "view.world.who-by-id"],
+	["customers", "view.world.who-by-id"],
+];
+
+/** An identifier-shaped first key of a map of customers, or null. */
+function worldMapKey(value: unknown): string | null {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+	const [first] = Object.keys(value);
+	if (first === undefined || SECRET_WORLD_KEY.test(first)) return null;
+	return /^[\p{L}\p{N}_-]{1,32}$/u.test(first) ? first : null;
 }
 
 /**

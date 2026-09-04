@@ -1494,7 +1494,7 @@ describe("renderTraces", () => {
 		expect(at).toBeGreaterThan(0);
 		expect(lines.slice(at + 1, at + 6)).toEqual([
 			"   1. “Заблокируйте договор 42”  task_002",
-			"      who: the person in this world",
+			"      who: customer on account 42",
 			"      has: accounts.42.status=ok",
 			"      wants: Заблокируйте договор 42.",
 			'      must: accounts.42.status equals "frozen" · tool check_account',
@@ -3474,7 +3474,7 @@ describe("dataset case cards", () => {
 			"      expected: жалоба",
 			"      graders: contains “жалоба”",
 			"   2. “Заблокируйте договор 42”",
-			"      who: the person in this world",
+			"      who: customer on account 42",
 			"      has: accounts.42.status=ok",
 			"      wants: Заблокируйте договор 42.",
 			'      must: accounts.42.status equals "frozen" · tool check_account',
@@ -3503,6 +3503,11 @@ describe("dataset case cards", () => {
 		expect(who({ account: { id: "33333" }, client: { name: "Иван Петров" } })).toBe("      who: Иван Петров");
 		// A world with no identifier at all still happens to somebody.
 		expect(who({ shipment: { status: "late" } })).toBe("      who: the person in this world");
+		// Session 8 keyed its customers by number under `accounts`: the key is the person.
+		expect(who({ accounts: { "1003": { balance: 800, status: "active" } } })).toBe("      who: customer on account 1003");
+		expect(who({ contracts: { "1004": { status: "blocked" } }, accounts: { "9": {} } })).toBe("      who: customer on contract 1004");
+		// A map keyed by something secret-shaped names nobody.
+		expect(who({ accounts: { pin: { value: "4321" } } })).toBe("      who: the person in this world");
 	});
 
 	/**

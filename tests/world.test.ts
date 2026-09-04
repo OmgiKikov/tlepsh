@@ -270,8 +270,8 @@ describe("the four-line card", () => {
 			graders: [{ type: "world_state", path: "accounts.42.status", op: "exists" }],
 		});
 		expect(lines[0]).toBe("“Freeze account 42 please”");
-		// A world nobody is named in still happens to somebody: never a dash.
-		expect(lines[1]).toBe("      who: the person in this world");
+		// A world that keys its customers by number names the case by that key: never a dash.
+		expect(lines[1]).toBe("      who: customer on account 42");
 		expect(lines[3]).toBe("      wants: Freeze account 42 please.");
 		expect(lines[4]).toBe("      must: accounts.42.status exists");
 	});
