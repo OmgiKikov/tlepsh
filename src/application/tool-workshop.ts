@@ -40,6 +40,7 @@ import {
 import { redactTraceText } from "../trace.js";
 import {
 	openDetachedWorktree,
+	reattachDetachedWorktree,
 	withDetachedWorktree,
 	type DetachedWorktreeHandle,
 } from "../git/experiment-worktree.js";
@@ -2811,7 +2812,14 @@ export function reattachBuilderWorkshop(options: {
 	if (!existsSync(descriptor.worktreePath)) {
 		throw new ToolWorkshopError("the recorded workshop worktree is gone; open a new one");
 	}
-	const worktree = reattachDetachedWorktree(repositoryDir, descriptor.worktreePath, descriptor.baseTargetSha);
+	// The worktree module owns the names it creates, so it owns recognizing them
+	// again; the workshop only says how a refusal reads to its caller.
+	const worktree = reattachDetachedWorktree({
+		repositoryDir,
+		path: descriptor.worktreePath,
+		sha: descriptor.baseTargetSha,
+		refuse: (message, errorOptions) => new ToolWorkshopError(message, errorOptions),
+	});
 	try {
 		const scratchRoot = workshopScratchRoot(descriptor.scratchRoot);
 		if (descriptor.baseTargetSha !== options.expectedTarget.gitSha || descriptor.targetId !== options.expectedTarget.id) {
@@ -2866,55 +2874,3 @@ export function reattachBuilderWorkshop(options: {
 	}
 }
 
-/**
- * The same handle `openDetachedWorktree` hands out, for a worktree this process
- * did not create. It re-validates every fact it needs and keeps the identical
- * cleanup, including the temporary-root safety check, so a re-attached workshop
- * still disposes without a trace.
- */
-function reattachDetachedWorktree(repositoryDir: string, pathInput: string, sha: string): DetachedWorktreeHandle {
-	const path = realpathSync(resolve(pathInput));
-	const temporaryRoot = dirname(path);
-	if (basename(path) !== "detached" || !basename(temporaryRoot).startsWith("ahde-experiment-")) {
-		throw new ToolWorkshopError(`refusing to re-attach an unexpected workshop worktree: ${path}`);
-	}
-	const commonDir = realpathSync(gitWorkshop(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]));
-	if (commonDir !== realpathSync(join(repositoryDir, ".git"))) {
-		throw new ToolWorkshopError("the recorded workshop worktree does not belong to this repository");
-	}
-	if (gitWorkshop(path, ["rev-parse", "--verify", "HEAD^{commit}"]) !== sha) {
-		throw new ToolWorkshopError("the recorded workshop worktree is no longer at its baseline commit");
-	}
-	let closed = false;
-	return {
-		ref: sha,
-		sha,
-		path,
-		get open() {
-			return !closed;
-		},
-		close() {
-			if (closed) return;
-			closed = true;
-			const errors: unknown[] = [];
-			try {
-				execFileSync("git", ["-C", repositoryDir, "worktree", "remove", "--force", path], { stdio: "ignore" });
-			} catch (error) {
-				errors.push(error);
-			}
-			try {
-				execFileSync("git", ["-C", repositoryDir, "worktree", "prune"], { stdio: "ignore" });
-			} catch (error) {
-				errors.push(error);
-			}
-			try {
-				rmSync(temporaryRoot, { recursive: true, force: true });
-			} catch (error) {
-				errors.push(error);
-			}
-			if (errors.length > 0 && existsSync(path)) {
-				throw new AggregateError(errors, "failed to clean the re-attached workshop worktree");
-			}
-		},
-	};
-}

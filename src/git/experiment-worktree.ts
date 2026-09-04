@@ -6,10 +6,19 @@ import {
 	rmSync,
 	statSync,
 } from "node:fs";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
+/**
+ * The two halves of every name this module creates: a temporary root under the
+ * OS temp directory, and the fixed leaf a worktree is checked out into. They
+ * live here because re-attaching to a worktree another process opened has to
+ * recognize the same names — a convention invented in one module and re-spelled
+ * in another is a convention that drifts.
+ */
 const TEMP_PREFIX = "ahde-experiment-";
+const DETACHED_WORKTREE_NAME = "detached";
+const WORKTREE_NAMES = ["baseline", "candidate", DETACHED_WORKTREE_NAME];
 const COMMIT_SHA = /^[0-9a-f]{40}$/;
 
 export type ExperimentWorktreeMode = "candidate" | "aa-calibration";
@@ -135,7 +144,7 @@ function assertSafeTemporaryRoot(root: string): void {
 function assertSafeWorktreePath(root: string, path: string): void {
 	assertSafeTemporaryRoot(root);
 	const child = relative(resolve(root), resolve(path));
-	if ((child !== "baseline" && child !== "candidate" && child !== "detached") || isAbsolute(child)) {
+	if (!WORKTREE_NAMES.includes(child) || isAbsolute(child)) {
 		throw new Error(`refusing to clean unsafe worktree path: ${resolve(path)}`);
 	}
 }
@@ -281,7 +290,7 @@ export function openDetachedWorktree(options: DetachedWorktreeOptions): Detached
 	const sha = resolveCommitRef(repositoryDir, options.ref);
 	const temporaryRoot = mkdtempSync(join(tmpdir(), TEMP_PREFIX));
 	assertSafeTemporaryRoot(temporaryRoot);
-	const path = join(temporaryRoot, "detached");
+	const path = join(temporaryRoot, DETACHED_WORKTREE_NAME);
 	let added = false;
 	let closed = false;
 
@@ -325,6 +334,98 @@ export function openDetachedWorktree(options: DetachedWorktreeOptions): Detached
 		close,
 		get open() {
 			return !closed;
+		},
+	};
+}
+
+export interface ReattachDetachedWorktreeOptions {
+	repositoryDir: string;
+	/** The recorded worktree path. Resolved and re-validated; never trusted. */
+	path: string;
+	/** The commit the worktree must still be detached at. */
+	sha: string;
+	/**
+	 * Wraps every refusal, so a caller that reports its own error class keeps
+	 * reporting it. Defaults to a plain `Error`.
+	 */
+	refuse?: (message: string, errorOptions?: ErrorOptions) => Error;
+}
+
+/**
+ * The same handle `openDetachedWorktree` hands out, for a worktree this process
+ * did not create — a Builder workshop a dead process left behind.
+ *
+ * Nothing recorded is trusted: the path must still carry the names this module
+ * creates, the worktree must still belong to this repository, and it must still
+ * be detached at the exact baseline commit. `--no-replace-objects` is not
+ * decoration — a replace ref could make a different commit answer to that SHA.
+ */
+export function reattachDetachedWorktree(options: ReattachDetachedWorktreeOptions): DetachedWorktreeHandle {
+	const refuse = options.refuse
+		?? ((message: string, errorOptions?: ErrorOptions) => new Error(message, errorOptions));
+	const repositoryDir = options.repositoryDir;
+	const sha = options.sha;
+	const path = realpathSync(resolve(options.path));
+	const temporaryRoot = dirname(path);
+	if (basename(path) !== DETACHED_WORKTREE_NAME || !basename(temporaryRoot).startsWith(TEMP_PREFIX)) {
+		throw refuse(`refusing to re-attach an unexpected workshop worktree: ${path}`);
+	}
+	const read = (args: string[]): string => {
+		try {
+			return execFileSync("git", ["--no-replace-objects", "-C", path, ...args], {
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "pipe"],
+			}).trim();
+		} catch (error) {
+			const stderr = typeof error === "object" && error !== null && "stderr" in error
+				? String((error as { stderr?: unknown }).stderr).trim()
+				: "";
+			throw refuse(`git ${args.join(" ")} failed${stderr ? `: ${stderr}` : ""}`, { cause: error });
+		}
+	};
+	const commonDir = realpathSync(read(["rev-parse", "--path-format=absolute", "--git-common-dir"]));
+	if (commonDir !== realpathSync(join(repositoryDir, ".git"))) {
+		throw refuse("the recorded workshop worktree does not belong to this repository");
+	}
+	if (read(["rev-parse", "--verify", "HEAD^{commit}"]) !== sha) {
+		throw refuse("the recorded workshop worktree is no longer at its baseline commit");
+	}
+	let closed = false;
+	return {
+		ref: sha,
+		sha,
+		path,
+		get open() {
+			return !closed;
+		},
+		// Deliberately not `cleanupWorktree`: that path asserts the temporary root
+		// is under `tmpdir()` as spelled, and a re-attached path has been through
+		// `realpathSync` — on macOS `/var/…` becomes `/private/var/…` and the
+		// assertion would refuse a root it created itself. The names were already
+		// checked above. A refusal here is also softer: an error is only raised
+		// when the worktree is still on disk afterwards.
+		close() {
+			if (closed) return;
+			closed = true;
+			const errors: unknown[] = [];
+			try {
+				execFileSync("git", ["-C", repositoryDir, "worktree", "remove", "--force", path], { stdio: "ignore" });
+			} catch (error) {
+				errors.push(error);
+			}
+			try {
+				execFileSync("git", ["-C", repositoryDir, "worktree", "prune"], { stdio: "ignore" });
+			} catch (error) {
+				errors.push(error);
+			}
+			try {
+				rmSync(temporaryRoot, { recursive: true, force: true });
+			} catch (error) {
+				errors.push(error);
+			}
+			if (errors.length > 0 && existsSync(path)) {
+				throw new AggregateError(errors, "failed to clean the re-attached workshop worktree");
+			}
 		},
 	};
 }
