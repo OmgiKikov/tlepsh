@@ -15,11 +15,11 @@ model:
   timeoutMs: 300000
 execution:
   # Агент — не Pi, а обычная программа: AHDE запускает её и говорит по
-  # протоколу v1. `python3` берётся из PATH; относительный путь запрещён.
+  # протоколу v2. `python3` берётся из PATH; относительный путь запрещён.
   kind: command
   command:
     argv: [python3, agent.py]
-    protocolVersion: 1
+    protocolVersion: 2
     startupTimeoutMs: 30000
   # Для command-агента этот список задаёт не инструменты Pi, а границы
   # песочницы: read означает, что рабочую копию менять нельзя.

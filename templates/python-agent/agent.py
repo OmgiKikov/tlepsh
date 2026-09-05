@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Агент первой линии поддержки интернет-провайдера. Протокол AHDE v1.
+"""Агент первой линии поддержки интернет-провайдера. Протокол AHDE v2.
 
 Одна программа на стандартной библиотеке. AHDE запускает её один раз на прогон,
 присылает `hello` с описанием инструментов и модели, а дальше — по одной реплике
@@ -14,13 +14,14 @@ editable surface, объявленный в manifest.yaml (`harness.files`). У�
 """
 
 import json
+import math
 import os
 import socket
 import sys
 import urllib.error
 import urllib.request
 
-PROTOCOL = 1
+PROTOCOL = 2
 MAX_STEPS = 8  # столько раз за один ход агент может сходить в инструмент
 
 
@@ -39,7 +40,12 @@ def read_message():
     if not line:
         return None
     line = line.strip()
-    return read_message() if not line else json.loads(line)
+    if not line:
+        return read_message()
+    message = json.loads(line)
+    if message.get("v") != PROTOCOL:
+        raise ValueError("ожидается протокол AHDE v{}".format(PROTOCOL))
+    return message
 
 
 def system_prompt():
@@ -108,7 +114,7 @@ def usage_of(body, turn):
         # Эндпоинт ничего не сообщил. Ноль — это утверждение, поэтому молчим:
         # AHDE запишет расход как ОТСУТСТВУЮЩИЙ, а не как бесплатный прогон.
         return None
-    return {
+    usage = {
         "type": "usage",
         "turn": turn,
         "tokens": {
@@ -119,6 +125,13 @@ def usage_of(body, turn):
             "total": total,
         },
     }
+    cost = raw.get("cost")
+    # OpenRouter-style request cost, when actually reported. Booleans are
+    # numbers in Python but never prices; strings and non-finite values are
+    # equally unsuitable evidence. Do not derive a price from token counts.
+    if type(cost) in (int, float) and math.isfinite(cost) and cost >= 0:
+        usage["costUsd"] = cost
+    return usage
 
 
 def take_turn(state, message):
@@ -160,8 +173,8 @@ def main():
     while True:
         try:
             message = read_message()
-        except json.JSONDecodeError as error:
-            send({"type": "error", "message": "хост прислал не JSON: {}".format(error)})
+        except ValueError as error:
+            send({"type": "error", "message": "неверный протокол хоста: {}".format(error)})
             return 1
         if message is None or message.get("type") == "cancel":
             return 0
