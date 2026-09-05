@@ -60,7 +60,14 @@ if (resumePath) {
 	assert.equal(result.status, "failed", "Only a failed attempt can resume");
 	assert.ok(result.stages.some(stage => stage.name === "selected"), "Resume only the already selected exact change");
 	const previousAttempt = result.attempt ?? 1;
-	writeFileSync(join(root, `attempt-${previousAttempt}.json`), JSON.stringify(result, null, 2), { flag: "wx" });
+	const snapshotPath = join(root, `attempt-${previousAttempt}.json`);
+	const snapshot = JSON.stringify(result, null, 2);
+	try { writeFileSync(snapshotPath, snapshot, { flag: "wx" }); }
+	catch (error) {
+		// A failed bind leaves results.json unchanged. Retrying that same failed
+		// attempt may reuse its exact archive, never replace a different history.
+		if (error.code !== "EEXIST" || readFileSync(snapshotPath, "utf8") !== snapshot) throw error;
+	}
 	result.attempt = previousAttempt + 1; result.resumedAt = new Date().toISOString();
 	result.status = "running"; delete result.error; delete result.finishedAt;
 }

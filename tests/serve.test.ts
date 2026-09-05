@@ -898,6 +898,9 @@ describe("serve full cycle", () => {
 		gitIn(paths.projectDir, "init", "-b", "main");
 		gitIn(paths.projectDir, "config", "user.name", "AHDE serve fixture");
 		gitIn(paths.projectDir, "config", "user.email", "serve@ahde.local");
+		// Forks copy the entire Git directory immediately after commands return.
+		// Detached maintenance can still remove objects/maintenance.lock mid-copy.
+		gitIn(paths.projectDir, "config", "maintenance.auto", "false");
 		gitIn(paths.projectDir, "add", ".");
 		gitIn(paths.projectDir, "commit", "-q", "-m", "baseline");
 	});
