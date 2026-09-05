@@ -1,3 +1,4 @@
+import type { CheckObservation } from "./run-reading.js";
 import { noun, plural, t, tokenLabel, type MessageKey, type MessageParams } from "../i18n.js";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
@@ -602,6 +603,8 @@ export function runsTable(
  * expectation and the reason is quoted as-is.
  */
 export interface GraderExplanation {
+	/** Optional typed observation; absent for unrecognized or legacy reason grammar. */
+	observation?: CheckObservation;
 	graderName: string;
 	graderType: string;
 	/** «ожидался вызов bash с аргументами, содержащими «check_dbo»» */
@@ -672,7 +675,7 @@ function graderExpectation(
 	grader: GraderFinding,
 	run: Pick<RunRecord, "status" | "error" | "metrics">,
 	facts: RunTraceFacts | null,
-): { expected: Phrase | null; actual: Phrase } {
+): { expected: Phrase | null; actual: Phrase; observation?: CheckObservation } {
 	if (run.status !== "completed") {
 		// Read from the recorded error, never from the trace: this grader saw
 		// nothing at all, and the run's own stem is the only thing that knows why.
@@ -693,6 +696,7 @@ function graderExpectation(
 				? { key: "why.expected.required-tool", params: { tool: tool[1] ?? "" } }
 				: { key: "why.expected.required-tool-args", params: { tool: tool[1] ?? "", arguments: argument } },
 			actual: toolActual(facts, run.metrics.toolCalls),
+			observation: { kind: "required-tool", name: tool[1] ?? "", arguments: argument ?? null, recordedCalls: facts?.toolCalls ?? run.metrics.toolCalls },
 		};
 	}
 	if (grader.checkCode === "no-secret" && reason === "the answer contains a string shaped like a credential") {
@@ -752,6 +756,7 @@ function graderExpectation(
 						params: { path: unset[1] ?? "", value: unset[3] ?? "" },
 					},
 				actual: { key: "why.actual.world-state-unset" },
+				observation: { kind: "world-state", path: unset[1] ?? "", state: "missing", expected: unset[3] ?? null, actual: null },
 			};
 		}
 		const unusable = /^world at (\S+) is ([\s\S]*), which cannot contain ([\s\S]*)$/.exec(reason);
@@ -762,6 +767,7 @@ function graderExpectation(
 					params: { path: unusable[1] ?? "", value: unusable[3] ?? "" },
 				},
 				actual: { key: "why.actual.world-state-uncontainable", params: { value: unusable[2] ?? "" } },
+				observation: { kind: "world-state", path: unusable[1] ?? "", state: "different", expected: unusable[3] ?? null, actual: unusable[2] ?? null },
 			};
 		}
 		const differs = /^world at (\S+) is ([\s\S]*), expected ([\s\S]*)$/.exec(reason);
@@ -772,6 +778,7 @@ function graderExpectation(
 					params: { path: differs[1] ?? "", value: differs[3] ?? "" },
 				},
 				actual: { key: "why.actual.world-state-value", params: { value: differs[2] ?? "" } },
+				observation: { kind: "world-state", path: differs[1] ?? "", state: "different", expected: differs[3] ?? null, actual: differs[2] ?? null },
 			};
 		}
 		const lacks = /^world at (\S+) does not contain ([\s\S]*)$/.exec(reason);
@@ -782,12 +789,14 @@ function graderExpectation(
 					params: { path: lacks[1] ?? "", value: lacks[2] ?? "" },
 				},
 				actual: { key: "why.actual.world-state-lacks" },
+				observation: { kind: "world-state", path: lacks[1] ?? "", state: "missing-value", expected: lacks[2] ?? null, actual: null },
 			};
 		}
 		if (reason === "case declares no world") {
 			return {
 				expected: { key: "why.expected.world-state-declared" },
 				actual: { key: "why.actual.world-state-undeclared" },
+				observation: { kind: "world-state", path: null, state: "undeclared", expected: null, actual: null },
 			};
 		}
 	}
@@ -800,6 +809,7 @@ function graderExpectation(
 				params: { source: citation[1] ?? "", threshold: citation[3] ?? "" },
 			},
 			actual: { key: "why.actual.cites-source", params: { overlap: citation[2] ?? "" } },
+			observation: { kind: "source", source: citation[1] ?? "" },
 		};
 	}
 	if (reason === "case has no expected answer") {
@@ -840,10 +850,11 @@ function explainGrader(
 	run: Pick<RunRecord, "status" | "error" | "metrics">,
 	facts: RunTraceFacts | null,
 ): GraderExplanation {
-	const { expected, actual } = graderExpectation(grader, run, facts);
+	const { expected, actual, observation } = graderExpectation(grader, run, facts);
 	return {
 		graderName: grader.name,
 		graderType: grader.type,
+		...(observation ? { observation } : {}),
 		reason: grader.reason,
 		abstained: grader.abstained,
 		assertions: (grader.assertionVerdicts ?? []).filter((assertion) => assertion.answer !== "yes"),

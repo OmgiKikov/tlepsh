@@ -1,3 +1,4 @@
+import { humanFailureModeTitle, readRunOutcome } from "../application/run-reading.js";
 import { t } from "../i18n.js";
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -230,6 +231,7 @@ export function collectEvalPage(
 		return {
 		id: mode.failureModeId,
 		title: reading.title,
+		humanTitle: humanFailureModeTitle(mode),
 		scope: mode.scope,
 		severity: mode.severity,
 		decision: mode.decision,
@@ -382,7 +384,9 @@ export function collectRunDetailPage(runsRoot: string, runId: string): RunDetail
 		omitted: transcript.omittedCount > 0 ? t("evidence.traceOmitted", { count: transcript.omittedCount }) : "",
 	});
 
+	const explanation = explainRun({ run, graders, facts, messages, modes, flip });
 	return {
+		reading: readRunOutcome(explanation, transcript),
 		evalRunId,
 		targetId: verified.record.target.id,
 		revision: verified.record.target.gitSha,
@@ -410,7 +414,7 @@ export function collectRunDetailPage(runsRoot: string, runId: string): RunDetail
 		transcript,
 		traceNotice,
 		graders,
-		explanation: explainRun({ run, graders, facts, messages, modes, flip }),
+		explanation,
 		prev: link(neighbour(-1)),
 		next: link(neighbour(1)),
 	};

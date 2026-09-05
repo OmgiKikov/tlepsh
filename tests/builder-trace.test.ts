@@ -116,7 +116,13 @@ function detail(runId: string, taskId: string, repetitionIndex: number, outcome:
 			repetitionIndex,
 			outcome,
 			headline: `${taskId} repetition ${repetitionIndex} failed: 1 of 1 grader(s) did not pass.`,
-			graders: [],
+			graders: outcome === "pass" ? [] : [{
+				graderName: `${taskId}#${repetitionIndex}:tool_called`, type: "tool_called", checkCode: "required-tool", abstained: false,
+				reason: "tool bash with check_dbo was never called",
+				expected: "expected a call to `bash` with arguments containing `check_dbo`",
+				actual: "the agent made 0 tool call(s)",
+				observation: { kind: "required-tool", name: "bash", arguments: "check_dbo", recordedCalls: 0 },
+			}],
 			failureModes: [],
 			flip: null,
 			sentences: [
@@ -201,13 +207,31 @@ describe("traces in the TUI", () => {
 		for (const line of lines) expect([...line].length).toBeLessThanOrEqual(110);
 	});
 
+	it.each([
+		{ rubric: 0, completed: true, expected: 0 },
+		{ rubric: 0.5, completed: true, expected: 50 },
+		{ rubric: 1, completed: false, expected: 0 },
+	])("uses the canonical score with rubric $rubric and completion $completed", ({ rubric, completed, expected }) => {
+		const model = detail("run_completion", "task_006", 0, "fail");
+		model.graders[0]!.score = rubric;
+		model.graders[0]!.passed = rubric === 1;
+		model.graders.push({
+			...model.graders[0]!, name: "final_answer", type: "final_answer", checkCode: "final-answer",
+			passed: completed, score: completed ? 1 : 0, reason: "completion prerequisite",
+		});
+		const lines = renderTracePanel(model, plainPaint).map(stripMarkers);
+		expect(lines[0]).toContain(`score ${expected}%`);
+		expect(lines.join("\n")).toContain("final_answer (final_answer)");
+	});
+
 	it("renders one run: the host's Why, every verdict, the conversation, and where to walk next", () => {
 		const lines = renderTracePanel(detail("run_fail1", "task_006", 0, "fail"), plainPaint).map(stripMarkers);
 		const text = lines.join("\n");
 		expect(lines[0]).toContain("Run task_006#0 · fail · score 0% · 7.1s · 0 tool call(s) · run_fail1");
 		expect(text).toContain("Why");
 		expect(text).toContain("expected a call to `bash` with arguments containing `check_dbo`");
-		expect(text).toContain("Hypothesis, not proof");
+		expect(text).toContain("The required action bash is not recorded");
+		expect(text.replace(/\s+/g, " ")).toContain("does not establish the final business state or why the action was missed");
 		expect(text).toContain("Verdict");
 		expect(text).toContain("✗ task_006#0:tool_called (tool_called) — tool bash with check_dbo was never called");
 		expect(text).toContain("Conversation");

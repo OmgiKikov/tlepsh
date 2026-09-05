@@ -1,3 +1,4 @@
+import { resolveCandidateArtifact } from "../../application/candidate-artifacts.js";
 // One family of Workbench decisions, moved out of `AhdeWorkbench.decide()`
 // unchanged: the gate, the stale check and the receipts are still the
 // workbench's own; these functions only hold the branch bodies.
@@ -54,7 +55,7 @@ export async function decideVerifyCandidate(
 	});
 	const sourceExperimentHash = sourceExperiment ? hashValue(sourceExperiment) : null;
 	const blindDesign = sourceExperiment?.origin.kind === "applied-builder" && sourceExperiment.origin.experimentDesign
-		? loadImprovementExperimentDesign(sourceExperiment.origin.experimentDesign.path)
+		? loadImprovementExperimentDesign(resolveCandidateArtifact(host.runsRoot, sourceExperiment.origin, "experimentDesign"))
 		: null;
 	// A construction change can be applied before the first basket or the
 	// exam exists, and this is where that is found out. Each refusal names
@@ -187,7 +188,7 @@ export async function decideVerifyCandidate(
 			developmentCorpus = refs.authoring;
 			validationCorpus = refs.validation;
 			experimentDesignPath = sourceExperiment!.origin.kind === "applied-builder"
-				? sourceExperiment!.origin.experimentDesign!.path
+				? resolveCandidateArtifact(host.runsRoot, sourceExperiment!.origin, "experimentDesign")
 				: undefined;
 			measured = validation;
 		} else if (attested && (attested.id !== loaded.metadata.id || attested.hash !== loaded.metadata.hash)) {

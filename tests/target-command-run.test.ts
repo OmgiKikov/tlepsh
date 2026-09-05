@@ -1,11 +1,13 @@
 import { chmodSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { loadVerifiedEvalRun, runSuite } from "../src/eval.js";
+import { findReusableBaseline, loadVerifiedEvalRun, runSuite } from "../src/eval.js";
+import { compareVerifiedEvalRuns } from "../src/compare.js";
+import { effectiveProvenance } from "../src/application/candidate-experiment.js";
 import { hashValue } from "../src/provenance.js";
 import { regradeEvalRun } from "../src/regrade.js";
 import { classifyRunError, runTranscript } from "../src/application/run-explanation.js";
-import { loadTarget } from "../src/manifest.js";
+import { CommandBackendBlock, loadTarget } from "../src/manifest.js";
 import { startMockModel, type MockModelHandle } from "../src/mock-model.js";
 import { openTrace } from "../src/trace.js";
 import { createTargetToolRuntime } from "../src/target/runtime.js";
@@ -48,6 +50,7 @@ permissions:
 
 interface TargetOptions {
 	agentSource?: string;
+	protocolVersion?: 1 | 2;
 	argv?: string[];
 	timeoutMs?: number;
 	startupTimeoutMs?: number;
@@ -70,7 +73,7 @@ execution:
   kind: command
   command:
     argv: [${argv.map((part) => JSON.stringify(part)).join(", ")}]
-    protocolVersion: 1
+    protocolVersion: ${options.protocolVersion ?? 1}
     startupTimeoutMs: ${options.startupTimeoutMs ?? 10000}
   tools: [read, bash]
   environmentAllowlist: [FAKE_AGENT_MODE]
@@ -163,7 +166,7 @@ async function runOnce(mode: string, options: TargetOptions = {}) {
 	return { record, runDir: join(runsRoot, runId), evalRun, targetDir, runsRoot };
 }
 
-describe("a command Target speaks protocol v1", () => {
+describe("a command Target speaks its selected protocol", () => {
 	it("runs through aliased workspace, scratch and world paths with the same sandbox boundaries", async () => {
 		const { targetDir, runsRoot } = fixture({ agentSource: `
 import { readFileSync, realpathSync, writeFileSync } from "node:fs";
@@ -226,10 +229,70 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 	});
 
 	it("adds every model request within a turn, including tool selection", async () => {
-		const { record } = await runOnce("two-usage");
+		const { record } = await runOnce("two-usage", { protocolVersion: 2 });
 		expect(record.status).toBe("completed");
 		expect(record.metrics.tokens.total).toBe(36);
 		expect(record.metrics.costUsd).toBeCloseTo(0.5);
+	});
+
+	it("preserves v1 cumulative token snapshots instead of silently summing them", async () => {
+		const { record } = await runOnce("cumulative-usage");
+		expect(record.status).toBe("completed");
+		// The child reports cumulative token snapshots 18 then 36; summing would falsely report 54.
+		expect(record.metrics.tokens.total).toBe(36);
+		// This odd historical v1 cost rule is intentionally preserved, explicitly documented.
+		expect(record.metrics.costUsd).toBeCloseTo(0.5);
+		expect(record.execution.commandProtocol).toEqual({ version: 1, usageSemantics: "session-token-snapshot-additive-cost-v1" });
+		expect(CommandBackendBlock.parse({ argv: ["agent"] }).protocolVersion).toBe(1);
+	});
+
+	it.each([1, 2] as const)("reconstructs the exact protocol-v%s command provenance before baseline reuse", async (protocolVersion) => {
+		const source = await runOnce("plain", { protocolVersion });
+		expect(effectiveProvenance(loadTarget(source.targetDir))).toEqual(source.evalRun.provenance);
+	});
+
+	it("keeps v2 partially reported cost unknown instead of reporting the known subtotal", async () => {
+		const { record } = await runOnce("partial-cost", { protocolVersion: 2 });
+		expect(record.status).toBe("completed");
+		expect(record.metrics.tokens.total).toBe(36);
+		expect(record.metrics.costUsd).toBeUndefined();
+		expect(record.execution.commandProtocol).toEqual({ version: 2, usageSemantics: "request-incremental-v2" });
+	});
+
+	it("rejects a v1 response during a v2 session before treating it as an answer", async () => {
+		const { record } = await runOnce("bad-version", { protocolVersion: 2 });
+		expect(record.status).toBe("error");
+		expect(record.error).toMatch(/protocol violation/);
+	});
+
+	it("reads historical unmarked accounting but never compares or reuses ambiguous usage", async () => {
+		const source = await runOnce("plain");
+		const fresh = loadVerifiedEvalRun(source.runsRoot, source.evalRun.evalRunId);
+		const oldRecord = structuredClone(source.record);
+		delete oldRecord.execution.commandProtocol;
+		const oldIndex = structuredClone(source.evalRun);
+		delete oldIndex.provenance.execution.commandProtocol;
+		oldIndex.provenanceKey = hashValue(oldIndex.provenance);
+		oldIndex.runArtifacts = [{ runId: oldRecord.runId, sha256: hashValue(oldRecord) }];
+		writeFileSync(join(source.runDir, "run.json"), JSON.stringify(oldRecord));
+		writeFileSync(join(source.runsRoot, oldIndex.evalRunId, "eval_run.json"), JSON.stringify(oldIndex));
+		const legacy = loadVerifiedEvalRun(source.runsRoot, oldIndex.evalRunId);
+		expect(legacy.record.provenance.execution.commandProtocol).toBeUndefined();
+		expect(legacy.runs[0]!.metrics.tokens!.total).toBe(18);
+		const query = {
+			targetId: fresh.record.target.id, targetGitSha: fresh.record.target.gitSha,
+			toolsetHash: fresh.record.target.toolsetHash!, workspaceHash: fresh.record.target.workspaceHash!,
+			preparedToolHomeHash: fresh.record.target.preparedToolHomeHash!, provenance: fresh.record.provenance,
+			evidenceVisibility: "development" as const, label: "solo" as const, repetitions: 1,
+		};
+		expect(findReusableBaseline(source.runsRoot, query)).toBeNull();
+		expect(findReusableBaseline(source.runsRoot, { ...query, provenance: legacy.record.provenance })).toBeNull();
+		const comparison = compareVerifiedEvalRuns(legacy, fresh, { mode: "exploratory" });
+		expect(comparison.status).toBe("invalid");
+		expect(comparison.error).toContain("differing axes");
+		const unmarkedPair = compareVerifiedEvalRuns(legacy, legacy, { mode: "exploratory" });
+		expect(unmarkedPair.status).toBe("invalid");
+		expect(unmarkedPair.error).toContain("unversioned command usage semantics");
 	});
 
 	it("preserves a Cyrillic character split across stdout chunks", async () => {
@@ -390,6 +453,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 		const { record, runDir } = await runOnce("multi", {
 			dataset: dialogue,
 			simulatedUserUrl: userModel.url,
+			protocolVersion: 2,
 		});
 		expect(record.status).toBe("completed");
 		expect(record.metrics.conversationTurns).toBe(3);

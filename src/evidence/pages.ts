@@ -1,3 +1,4 @@
+import type { RunReading } from "../application/run-reading.js";
 import { duration, percent, points, ratio } from "../measurement.js";
 import { candidateStatusLabel, language, plural, t, tokenLabel, verdictLabel } from "../i18n.js";
 import { sealedOutcomeLabel, type SealedOutcome, type ExcludedTask } from "../domain/comparison-gate.js";
@@ -335,6 +336,7 @@ apply();
 // ---------- Eval page ----------
 
 export interface EvalPageMode {
+	humanTitle?: string | null;
 	id: string;
 	title: string;
 	scope: string;
@@ -385,6 +387,7 @@ export interface EvalPageModel {
 // ---------- Run detail page ----------
 
 export interface RunDetailPageModel {
+	reading?: RunReading;
 	evalRunId: string;
 	targetId: string;
 	revision: string;

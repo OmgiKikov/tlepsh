@@ -33,14 +33,16 @@ import { loadBuilderApplyReceipt } from "../src/application/builder-proposal.js"
 import { loadEvalRun } from "../src/eval.js";
 import {
 	loadCandidateRecord,
+	candidateRecordPath,
 } from "../src/application/candidate-review.js";
 import { inspectCandidateImpact } from "../src/application/candidate-impact.js";
 import { compileImprovementBrief } from "../src/application/improvement-brief.js";
 import { diagnoseEvalRun } from "../src/diagnosis.js";
-import { candidateStatus } from "../src/domain/candidate.js";
+import { CandidateRecordSchema, candidateStatus } from "../src/domain/candidate.js";
+import { writeJsonArtifact } from "../src/storage/artifacts.js";
 import { listCorpora } from "../src/corpus.js";
 import { createBuilderWorkbenchTools } from "../src/builder/workbench-adapter.js";
-import { createAhdeWorkbench } from "../src/workbench/index.js";
+import { createAhdeWorkbench, WorkbenchDecisionDeclinedError } from "../src/workbench/index.js";
 import type { WorkbenchConfirmation, WorkbenchHumanGate } from "../src/workbench/types.js";
 import { SEALED_VERIFICATION_REPETITIONS } from "./helpers/sealed-holdout.js";
 import {
@@ -504,7 +506,7 @@ describe("--candidates turns a cycle into a search", () => {
 			const searchedCandidate = loadCandidateRecord(fixture.runsRoot, search!.rows[0]!.candidateId!);
 			expect(searchedCandidate.origin.kind).toBe("applied-builder");
 			expect(searchedCandidate.origin.kind === "applied-builder" && searchedCandidate.origin.experimentDesign?.path)
-				.toBe(improvementExperimentDesignPath(fixture.runsRoot, result.loopId));
+				.toBe(`improvement-designs/${result.loopId}.json`);
 			const impact = inspectCandidateImpact({
 				runsRoot: fixture.runsRoot,
 				candidateId: searchedCandidate.candidateId,
@@ -568,10 +570,60 @@ describe("--candidates turns a cycle into a search", () => {
 			expect(shipped.result.tag).toBe("v0.1.0");
 			expect(tags(fixture.projectDir)).toEqual(["v0.1.0"]);
 			expect(shipped.view.stage).toBe("ready-to-evaluate");
+			// Completed release authority still consumes the design: selecting an
+			// old measured hypothesis must not reopen the same private exam.
+			const completed = await fixture.workbench.submit({ kind: "select", entity: "candidate", id: searchedCandidate.candidateId });
+			expect(completed.view.stage).toBe("ready-to-evaluate");
+			expect(completed.view.guidance?.decide.map((entry) => entry.kind)).not.toContain("verify-candidate");
 		} finally {
 			await fixture.close();
 		}
 	}, 900_000);
+
+	it("reopens the measured hypothesis after its interrupted release verification is explicitly abandoned", async () => {
+		const fixture = await improveFixture({}, { developmentCases: 4 });
+		try {
+			const measured = await runImprovementLoop(loopOptions(fixture, {
+				candidates: 2, author: variantAuthor([READY_INSTRUCTION, NO_OP_INSTRUCTION]),
+			}));
+			const original = loadCandidateRecord(fixture.runsRoot, measured.cycles[0]!.search!.rows[0]!.candidateId!);
+			expect(candidateStatus(original)).toBe("evaluated");
+			const selected = await fixture.workbench.submit({ kind: "select", entity: "candidate", id: original.candidateId });
+			expect(selected.view.stage).toBe("candidate-verification");
+			// The real authoring/apply/design chain is retained. This is the durable
+			// checkpoint a separate release attempt leaves before its sealed pair
+			// can append Evaluated (for example, when its provider times out).
+			const interrupted = CandidateRecordSchema.parse({
+				...original,
+				candidateId: "candidate-interrupted-release",
+				events: original.events.filter((event) => event.type !== "evaluated"),
+			});
+			expect(candidateStatus(interrupted)).toBe("validated");
+			writeJsonArtifact(candidateRecordPath(fixture.runsRoot, interrupted.candidateId), CandidateRecordSchema, interrupted);
+			const active = await fixture.workbench.submit({ kind: "select", entity: "candidate", id: original.candidateId });
+			expect(active.view.guidance?.recovery).toEqual({ kind: "inspect-candidate", candidateId: interrupted.candidateId });
+			expect(active.view.guidance?.decide.map((entry) => entry.kind)).not.toContain("verify-candidate");
+			const abandoned = await fixture.workbench.decide({
+				kind: "abandon-candidate", candidateId: interrupted.candidateId,
+				reason: "The exam timed out; retry the same measured hypothesis",
+			}, approvingGate());
+			expect(abandoned.result.candidateId).toBe(interrupted.candidateId);
+			const resumed = await fixture.workbench.submit({ kind: "select", entity: "candidate", id: original.candidateId });
+			expect(resumed.view.stage).toBe("candidate-verification");
+			expect(resumed.view.guidance?.decide.map((entry) => entry.kind)).toContain("verify-candidate");
+			// Go through the public execution boundary up to the new human consent.
+			// No authority from the abandoned attempt is silently reused.
+			const review = approvingGate();
+			review.confirm.mockResolvedValue({ approved: false });
+			await expect(fixture.workbench.decide({
+				kind: "verify-candidate", repetitions: SEALED_VERIFICATION_REPETITIONS, reason: "Review the retry before spending again",
+			}, review)).rejects.toBeInstanceOf(WorkbenchDecisionDeclinedError);
+			expect(review.confirm.mock.calls.map(([confirmation]) => confirmation.kind)).toEqual(["verify-candidate"]);
+			expect(loadCandidateRecord(fixture.runsRoot, original.candidateId)).toEqual(original);
+			expect(git(fixture.projectDir, "rev-parse", "HEAD")).toBe(fixture.baselineSha);
+			expect(tags(fixture.projectDir)).toEqual([]);
+		} finally { await fixture.close(); }
+	}, 600_000);
 
 	it("refuses an underpowered basket before asking the author", async () => {
 		const fixture = await improveFixture();

@@ -1,3 +1,4 @@
+import { runReadingEnglish, runReadingRussian } from "./application/run-reading-copy.js";
 import { evidenceEnglish, evidenceRussian } from "./evidence/copy.js";
 import { modelExperimentEnglish, modelExperimentRussian } from "./builder/model-experiment-copy.js";
 import { existsSync, readFileSync } from "node:fs";
@@ -295,6 +296,7 @@ export function plural(count: number, key: NounKey): string {
 
 const en = {
 	...evidenceEnglish,
+	...runReadingEnglish,
 	...modelExperimentEnglish,
 	"stage.target-setup": "Target setup",
 	"stage.spec-design": "Spec design",
@@ -405,6 +407,8 @@ const en = {
 	"header.not-connected": "not connected — connect a model to continue",
 	"header.not-connected-suffix": "· not connected",
 	"header.help": "Describe what you want in plain language",
+	"header.finding": "Recorded on this revision:",
+	"header.finding-case": "Case {task} · /trace {run}",
 
 	"verdict.improved": "improved",
 	"verdict.mixed": "mixed",
@@ -2051,6 +2055,7 @@ export type MessageKey = keyof typeof en;
 
 const ru: Record<MessageKey, string> = {
 	...evidenceRussian,
+	...runReadingRussian,
 	...modelExperimentRussian,
 	"stage.target-setup": "Настройка агента",
 	"stage.spec-design": "Описание агента",
@@ -2159,6 +2164,8 @@ const ru: Record<MessageKey, string> = {
 	"header.not-connected": "не подключена — подключи модель, чтобы продолжить",
 	"header.not-connected-suffix": "· не подключена",
 	"header.help": "Просто скажи, что нужно",
+	"header.finding": "В проверке текущей версии:",
+	"header.finding-case": "Кейс {task} · /trace {run}",
 
 	"verdict.improved": "стало лучше",
 	"verdict.mixed": "смешанно",

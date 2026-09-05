@@ -32,6 +32,7 @@ import {
 	AHDE_EVALUATOR_ID,
 	canonicalJson,
 	hashValue,
+	hasKnownCommandUsageSemantics,
 	MAX_CHECK_SUBJECT_CHARS,
 	provenanceAxes,
 	provenanceKey,
@@ -2252,6 +2253,9 @@ export function findReusableBaseline(runsRoot: string, query: ReusableBaselineQu
 		// resurrect a baseline the freshness guard had retired and pair a fresh
 		// candidate against months-old Target behaviour.
 		if (record.regradeOf !== undefined) continue;
+		// Before wire v2, two incompatible token contracts shared the same v1
+		// fingerprint. Even another unmarked query cannot make that evidence reusable.
+		if (!hasKnownCommandUsageSemantics(record.provenance.execution)) continue;
 		// An unreadable timestamp cannot prove freshness, so it is not fresh.
 		const finishedAtMs = Date.parse(record.finishedAt);
 		if (!Number.isFinite(finishedAtMs) || finishedAtMs < oldestUsableMs) continue;

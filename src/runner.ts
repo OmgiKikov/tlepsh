@@ -23,6 +23,7 @@ import {
 } from "./manifest.js";
 import {
 	executionFingerprint,
+	commandProtocolFingerprint,
 	hashFile,
 	hashValue,
 	modelFingerprint,
@@ -716,6 +717,7 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			network: target.manifest.execution.network,
 			filesystem: effectiveFilesystem,
 			agent,
+			...(agent === "command-v1" ? { commandProtocol: commandProtocolFingerprint(target.manifest.execution.command!.protocolVersion) } : {}),
 		}),
 		eval: {
 			suiteId: target.manifest.evalSuite.id,

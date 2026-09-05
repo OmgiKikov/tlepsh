@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-import { lstatSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadCorpus, type CorpusRef } from "../corpus.js";
 import { loadDiagnosis } from "../diagnosis.js";
@@ -9,6 +8,8 @@ import type { RunEventListener } from "../run-events.js";
 import { loadApprovedSpec } from "../spec.js";
 import { hashValue } from "../provenance.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
+import { writeTextArtifact } from "../storage/artifacts.js";
+import { portableCandidateArtifact } from "./candidate-artifacts.js";
 import { loadImprovementExperimentDesign } from "./improvement-experiment-design.js";
 import type { CandidateExperimentResult } from "./candidate-experiment.js";
 import { runCandidateExperiment } from "./candidate-experiment.js";
@@ -53,24 +54,6 @@ export interface RunAppliedBuilderCandidateOptions {
 	pinnedDevelopmentBaseline?: { evalRunId: string; hash: string };
 }
 
-const MAX_PROVENANCE_ARTIFACT_BYTES = 16 * 1024 * 1024;
-
-function artifactRef(pathInput: string): CandidateArtifactRef {
-	const path = resolve(pathInput);
-	const entry = lstatSync(path);
-	if (entry.isSymbolicLink() || !entry.isFile()) {
-		throw new Error(`candidate provenance artifact must be a regular non-symlink file: ${path}`);
-	}
-	if (entry.size > MAX_PROVENANCE_ARTIFACT_BYTES) {
-		throw new Error(`candidate provenance artifact exceeds ${MAX_PROVENANCE_ARTIFACT_BYTES} bytes: ${path}`);
-	}
-	const bytes = readFileSync(path);
-	return {
-		path,
-		sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
-	};
-}
-
 /**
  * Close the provenance chain from an immutable Builder run and human apply
  * receipt into the canonical exact-ref Candidate Experiment.
@@ -82,6 +65,7 @@ export async function runAppliedBuilderCandidate(
 		throw new Error("an applied Builder candidate requires an exact approved Spec snapshot");
 	}
 	const runsRoot = resolve(options.runsRoot);
+	const artifactRef = (path: string): CandidateArtifactRef => portableCandidateArtifact(runsRoot, path);
 	const validationCorpus = options.validationCorpus ? loadCorpus(options.validationCorpus) : null;
 	if (validationCorpus && validationCorpus.metadata.visibility !== "development") {
 		throw new Error("candidate validation requires a development corpus");
@@ -273,13 +257,18 @@ export async function runAppliedBuilderCandidate(
 	if (JSON.stringify(loadedSpec.reference) !== JSON.stringify(builderRun.request.approvedSpec)) {
 		throw new Error("candidate approved Spec differs from the exact Spec supplied to the Builder");
 	}
-	const specArtifact = artifactRef(join(
-		resolve(options.approvedSpec.stateRoot),
+	const sourceSpecPath = resolveContainedArtifactPath(
+		options.approvedSpec.stateRoot,
 		"projects",
 		options.projectId,
 		"specs",
 		`${spec.id}.json`,
-	));
+	);
+	const specPath = builderArtifact("approved_spec.json");
+	const specBytes = readFileSync(sourceSpecPath);
+	if (!existsSync(specPath)) writeTextArtifact(specPath, specBytes.toString("utf8"), { immutable: true });
+	const specArtifact = artifactRef(specPath);
+	if (!readFileSync(specPath).equals(specBytes)) throw new Error("candidate approved Spec copy differs from the exact approved snapshot");
 	const origin = CandidateOriginSchema.parse({
 		kind: "applied-builder",
 		builderRunId: builderRun.runId,

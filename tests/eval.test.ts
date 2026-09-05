@@ -41,7 +41,7 @@ import {
 	type RunRecord,
 } from "../src/provenance.js";
 import { writeJsonArtifact } from "../src/storage/artifacts.js";
-import { compareVerifiedEvalRuns } from "../src/compare.js";
+import { compareVerifiedEvalRuns, runGraderScore } from "../src/compare.js";
 
 const cleanupPaths: string[] = [];
 
@@ -209,6 +209,41 @@ describe("typed grader evidence", () => {
 		expect(results.map((result) => result.specHash)).toEqual(
 			rawSpecs.map((spec) => hashValue(GraderSpec.parse(spec))),
 		);
+	});
+});
+
+describe("host completion and canonical grader score", () => {
+	async function completedScore(answer: string, finalAnswer: "present" | "silent" | undefined, specs: ResolvedTask["effectiveGraders"]): Promise<RunRecord> {
+		const runsRoot = mkdtempSync(join(tmpdir(), "ahde-completion-score-"));
+		cleanupPaths.push(runsRoot);
+		const trace = `${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: answer }] } })}\n`;
+		mkdirSync(join(runsRoot, "run-a"));
+		writeFileSync(join(runsRoot, "run-a", "session.jsonl"), trace);
+		const before = baseRun();
+		return (await gradeRecordedRun({ id: "task-a", input: "answer the question", effectiveGraders: specs }, {
+			...before, trace: { path: "session.jsonl", sessionId: null, sha256: hashFile(trace) },
+			metrics: { ...before.metrics, ...(finalAnswer ? { finalAnswer } : {}) },
+		}, runsRoot)).record;
+	}
+
+	it("does not award a free score point for answering while the declared quality check fails", async () => {
+		const run = await completedScore("wrong answer", "present", [{ type: "output_contains", text: "READY", caseSensitive: true }]);
+		expect(run.evalResults!.graders.map((grader) => [grader.type, grader.score])).toEqual([["output_contains", 0], ["final_answer", 1]]);
+		expect(runGraderScore(run)).toBe(0); // A naive average incorrectly yields 0.5.
+	});
+
+	it("keeps partial rubric credit undiluted by the successful completion check", async () => {
+		const run = await completedScore("wrong answer", "present", [{ type: "no_secret" }, { type: "output_contains", text: "READY", caseSensitive: true }]);
+		expect(runGraderScore(run)).toBe(0.5); // Two rubric checks, not three equal-weight points.
+	});
+
+	it("scores a silent safety-only run zero while preserving historical unobserved-completion scores", async () => {
+		const silent = await completedScore("", "silent", [{ type: "no_secret" }]);
+		expect(silent.evalResults!.outcome).toBe("fail");
+		expect(runGraderScore(silent)).toBe(0);
+		const legacy = await completedScore("", undefined, [{ type: "no_secret" }]);
+		expect(legacy.evalResults!.graders).toHaveLength(1);
+		expect(runGraderScore(legacy)).toBe(1);
 	});
 });
 

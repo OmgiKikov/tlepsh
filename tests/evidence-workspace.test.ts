@@ -60,6 +60,19 @@ describe("evaluation workspace", () => {
 		expect(() => Function(html.match(/<script>([\s\S]*?)<\/script>/)?.[1] ?? "throw new Error('missing script')")).not.toThrow();
 	});
 
+	it("heads the selected conversation with the bounded actual input and keeps its task id in metadata", () => {
+		const f = fixture();
+		const model = collectEvalPage(f.runsRoot, f.baselineEvalRunId, { query: { run: f.failingRunId } });
+		const selected = model.selectedRun!;
+		const html = renderEvalPage(model);
+		expect(html).toContain(`<h2 id="inspector-title">${selected.input} <small>`);
+		expect(html).toContain(`<pre>${selected.run.taskId}\n${selected.run.runId}`);
+		const longInput = renderEvalPage({ ...model, selectedRun: { ...selected, input: "x".repeat(300) } });
+		expect(longInput).toContain(`<h2 id="inspector-title">${"x".repeat(160)}… <small>`);
+		const noInput = renderEvalPage({ ...model, selectedRun: { ...selected, input: null } });
+		expect(noInput).toContain(`<h2 id="inspector-title">${selected.run.taskId} <small>`);
+	});
+
 	it("filters affected runs by the actual diagnosis and preserves a linked run outside filters explicitly", () => {
 		const f = fixture();
 		const all = collectEvalPage(f.runsRoot, f.baselineEvalRunId);

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { categoryForGrader, DiagnosisClassificationMismatch } from "./diagnosis-category.js";
 import {
 	DiagnosisCategorySchema,
 	RunExcerptSchema,
@@ -319,29 +320,6 @@ function mergeObservation(existing: Observation | undefined, incoming: Observati
 }
 
 /**
- * What a failed check says about the harness. An exact match against a
- * reference answer is a contract on the output; a similarity threshold and a
- * rubric are both statements about how good the answer was.
- */
-const GRADER_CHECK_CATEGORIES: Record<GraderCheckCode, FailureModeCategory> = {
-	"required-tool": "tool-selection",
-	"output-contains": "output-contract",
-	"output-matches": "output-contract",
-	"reference-exact": "output-contract",
-	"no-secret": "output-contract",
-	"semantic-rubric": "answer-quality",
-	"reference-similarity": "answer-quality",
-	"turn-budget": "output-contract",
-	// The world is the contract the agent had to leave behind, not a judgement
-	// about how the answer read.
-	"world-state": "output-contract",
-	"final-answer": "output-contract",
-	// An answer that does not stand on its source is an answer-quality failure,
-	// not a contract one: the shape was fine, the grounding was not.
-	"cites-source": "answer-quality",
-};
-
-/**
  * The canonical English name of one infrastructure cause. It is hashed into
  * proposals and read by scripts, so it never bends to the operator's language;
  * `run-error.ts` owns the sentence a screen says instead.
@@ -422,19 +400,6 @@ export function graderFamilyModeId(family: GraderFamily): string {
 
 function failureModeId(identity: Record<string, unknown>): string {
 	return shortHashId("failure-mode", { algorithmId: IMPROVEMENT_BRIEF_ALGORITHM_ID, signature: identity });
-}
-
-function categoryForGrader(grader: DiagnosticGraderResult): FailureModeCategory {
-	const known = grader.checkCode ? GRADER_CHECK_CATEGORIES[grader.checkCode] : undefined;
-	if (known) return known;
-	if (grader.type === "tool_called") return "tool-selection";
-	if (
-		grader.type === "output_contains" || grader.type === "output_matches" ||
-		grader.type === "exact" || grader.type === "no_secret"
-	) {
-		return "output-contract";
-	}
-	return "answer-quality";
 }
 
 function graderModeDescriptor(
@@ -1054,7 +1019,7 @@ export function compileImprovementBrief(
 		? "inconclusive"
 		: allModes.length > 0 ? "actionable" : "healthy";
 	if (diagnosis.status !== derivedStatus) {
-		throw new Error("diagnosis does not match the verified evaluation evidence");
+		throw new DiagnosisClassificationMismatch();
 	}
 	const failedTasks = [...outcomesByTask.values()]
 		.filter((outcomes) => outcomes.fail.length > 0 || outcomes.error.length > 0)

@@ -258,6 +258,11 @@ export const ExecutionFingerprintSchema = z.strictObject({
 	 * field; new runs always carry it.
 	 */
 	agent: z.enum(["pi-v1", "command-v1"]).optional(),
+	/** Explicit only on new command runs; historical unversioned accounting stays readable. */
+	commandProtocol: z.discriminatedUnion("version", [
+		z.strictObject({ version: z.literal(1), usageSemantics: z.literal("session-token-snapshot-additive-cost-v1") }),
+		z.strictObject({ version: z.literal(2), usageSemantics: z.literal("request-incremental-v2") }),
+	]).optional(),
 	workspace: z.enum(["isolated-copy-v1", "direct-v1"]),
 	tools: z.array(NonEmptyStringSchema),
 	environment: z.array(NonEmptyStringSchema),
@@ -423,6 +428,18 @@ export function modelFingerprint(model: {
 	};
 }
 
+/** A protocol version changes usage interpretation, so it belongs in comparison/reuse identity. */
+export function commandProtocolFingerprint(version: 1 | 2): NonNullable<ExecutionFingerprint["commandProtocol"]> {
+	return version === 1
+		? { version, usageSemantics: "session-token-snapshot-additive-cost-v1" }
+		: { version, usageSemantics: "request-incremental-v2" };
+}
+
+/** Unmarked command artifacts span two incompatible interpretations of v1 usage. */
+export function hasKnownCommandUsageSemantics(execution: ExecutionFingerprint): boolean {
+	return execution.agent !== "command-v1" || execution.commandProtocol !== undefined;
+}
+
 /** Build a complete execution fingerprint; defaults exist only for fixture compatibility. */
 export function executionFingerprint(
 	workspace: "isolated" | "direct" = "isolated",
@@ -433,12 +450,14 @@ export function executionFingerprint(
 		network: ExecutionFingerprint["network"];
 		filesystem?: ExecutionFingerprint["filesystem"];
 		agent?: ExecutionFingerprint["agent"];
+		commandProtocol?: ExecutionFingerprint["commandProtocol"];
 	},
 ): ExecutionFingerprint {
 	return {
 		// Spread, not assigned: canonical JSON drops an absent key, so a caller
 		// that names no agent produces exactly the fingerprint it always did.
 		...(effective?.agent ? { agent: effective.agent } : {}),
+		...(effective?.commandProtocol ? { commandProtocol: effective.commandProtocol } : {}),
 		workspace: workspace === "direct" ? "direct-v1" : "isolated-copy-v1",
 		tools: effective?.tools ?? ["read", "bash", "edit", "write"],
 		environment: effective?.environment ?? ["process-env"],
@@ -578,5 +597,5 @@ export function axisDifferences(a: ProvenanceAxes, b: ProvenanceAxes): string[] 
 }
 
 export function comparable(a: ProvenanceAxes, b: ProvenanceAxes): boolean {
-	return axisDifferences(a, b).length === 0;
+	return hasKnownCommandUsageSemantics(a.execution) && hasKnownCommandUsageSemantics(b.execution) && axisDifferences(a, b).length === 0;
 }

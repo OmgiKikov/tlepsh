@@ -1,3 +1,4 @@
+import { CommandProtocolVersionSchema } from "./target/command-protocol.js";
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -773,8 +774,8 @@ export type ContainerBlock = z.infer<typeof ContainerBlock>;
  */
 export const CommandBackendBlock = z.strictObject({
 	argv: z.array(z.string().min(1).max(4_096)).min(1).max(32),
-	/** The wire contract AHDE speaks. A literal so an old adapter fails loudly. */
-	protocolVersion: z.literal(1),
+	/** Exact wire/usage contract; absent preserves the legacy v1 adapter. */
+	protocolVersion: CommandProtocolVersionSchema.default(1),
 	startupTimeoutMs: z.number().int().min(1_000).max(120_000).default(30_000),
 });
 export type CommandBackendBlock = z.infer<typeof CommandBackendBlock>;

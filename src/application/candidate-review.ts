@@ -1,6 +1,7 @@
+import { resolveCandidateArtifact, type CandidateArtifactKind } from "./candidate-artifacts.js";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
@@ -15,7 +16,6 @@ import {
 import { screenExclusion } from "./cheap-check.js";
 import { corpusDatasetLabel } from "./corpus-target.js";
 import {
-	improvementExperimentDesignPath,
 	loadImprovementExperimentDesign,
 	type ImprovementExperimentDesign,
 } from "./improvement-experiment-design.js";
@@ -25,7 +25,6 @@ import { CandidateProposalSchema } from "../builders/adapters.js";
 import { DiagnosisRecordSchema } from "../diagnosis.js";
 import {
 	CandidateRecordSchema,
-	type CandidateArtifactRef,
 	type ComparisonGateEvidence,
 	candidateStatus,
 	isPromotionGradeGateEvidence,
@@ -43,6 +42,7 @@ import { resolveContainedArtifactPath } from "../storage/paths.js";
 
 export interface ReviewCandidateOptions {
 	runsRoot: string;
+	stateRoot?: string;
 	candidateId: string;
 	/** Exact Candidate aggregate reviewed by a host confirmation, when one exists. */
 	expectedCandidateHash?: string;
@@ -60,6 +60,7 @@ export interface ReviewCandidateOptions {
 
 export interface DecideCandidateOptions {
 	runsRoot: string;
+	stateRoot?: string;
 	candidateId: string;
 	/** Exact Candidate aggregate reviewed by a host confirmation, when one exists. */
 	expectedCandidateHash?: string;
@@ -79,8 +80,8 @@ export interface PromoteReviewedCandidateOptions {
 	reason: string;
 	actorId?: string;
 	/**
-	 * Where this project's human judge labels live. Required only by a Target
-	 * whose manifest sets `evalSuite.judge.requireCalibration`: without it that
+	 * Current project state store for legacy Spec provenance and human judge labels.
+	 * Required for a legacy non-sibling Spec layout or a Target whose manifest sets `evalSuite.judge.requireCalibration`: without it that
 	 * policy cannot be evaluated, and an unevaluable promotion policy refuses.
 	 */
 	stateRoot?: string;
@@ -446,7 +447,7 @@ export function decideCandidatePromotion(
 	if (candidateStatus(record) !== "reviewed") {
 		throw new Error(`candidate ${record.candidateId} must be reviewed before promotion`);
 	}
-	verifyPromotionEvidence(record, options.runsRoot);
+	verifyPromotionEvidence(record, options.runsRoot, options.stateRoot);
 	const promoted = previewPromotion(record, {
 		tag: options.tag,
 		reason: options.reason,
@@ -728,76 +729,37 @@ function legacyEvidenceMessage(surface: GateSurface, evidence: ComparisonGateEvi
 		"re-verify the candidate to record exact-comparison-gate-v4 evidence";
 }
 
-const MAX_PROVENANCE_ARTIFACT_BYTES = 16 * 1024 * 1024;
-
-function verifyArtifact(
-	ref: CandidateArtifactRef,
-	label: string,
-	expectedPath?: string,
-): void {
-	const path = resolve(ref.path);
-	const entry = lstatSync(path);
-	if (entry.isSymbolicLink() || !entry.isFile()) {
-		throw new Error(`${label} must remain a regular non-symlink artifact`);
-	}
-	const canonicalPath = realpathSync(path);
-	if (expectedPath && canonicalPath !== realpathSync(resolve(expectedPath))) {
-		throw new Error(`${label} path mismatch: expected ${resolve(expectedPath)}, recorded ${path}`);
-	}
-	if (entry.size > MAX_PROVENANCE_ARTIFACT_BYTES) {
-		throw new Error(`${label} exceeds the provenance verification limit`);
-	}
-	const actual = `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
-	if (actual !== ref.sha256) {
-		throw new Error(`${label} hash mismatch: expected ${ref.sha256}, got ${actual}`);
-	}
-}
-
 function verifyAppliedBuilderOrigin(
 	record: CandidateRecord,
 	runsRootInput: string,
+	stateRoot?: string,
 ): { sourceEval: EvalRunRecord | null; experimentDesign: ImprovementExperimentDesign | null } {
 	if (record.origin.kind !== "applied-builder") {
 		throw new Error("production promotion requires reconstructable applied-Builder provenance");
 	}
 	const runsRoot = resolve(runsRootInput);
 	const origin = record.origin;
-	const builderArtifact = (name: string) => resolveContainedArtifactPath(runsRoot, "builders", origin.builderRunId, name);
-	verifyArtifact(origin.builderRun, "Builder run", builderArtifact("builder_run.json"));
-	verifyArtifact(origin.builderInput, "Builder input", builderArtifact("builder_input.txt"));
-	verifyArtifact(origin.proposal, "Builder proposal", builderArtifact("proposal.json"));
-	verifyArtifact(origin.applyReceipt, "Builder apply receipt", builderArtifact("apply_receipt.json"));
-	if (origin.source) {
-		verifyArtifact(
-			origin.source.evalRun,
-			"Builder source eval",
-			resolveContainedArtifactPath(runsRoot, origin.source.evalRunId, "eval_run.json"),
-		);
-		verifyArtifact(
-			origin.source.diagnosis,
-			"Builder diagnosis",
-			resolveContainedArtifactPath(runsRoot, origin.source.evalRunId, "diagnosis.json"),
-		);
-	}
-	if (origin.experimentDesign) {
-		verifyArtifact(
-			origin.experimentDesign,
-			"blind improvement experiment design",
-		);
-	}
-	verifyArtifact(origin.approvedSpec.artifact, "approved Spec");
+	const artifact = (kind: CandidateArtifactKind) => resolveCandidateArtifact(runsRoot, origin, kind, { stateRoot });
+	const builderRunPath = artifact("builderRun");
+	const builderInputPath = artifact("builderInput");
+	const proposalPath = artifact("proposal");
+	const receiptPath = artifact("applyReceipt");
+	const specPath = artifact("approvedSpec");
+	if (origin.source) artifact("sourceEval");
+	const diagnosisPath = origin.source ? artifact("sourceDiagnosis") : null;
+	const designPath = origin.experimentDesign ? artifact("experimentDesign") : null;
 
-	const builderRun = readJsonArtifact(origin.builderRun.path, PersistedBuilderRunSchema);
+	const builderRun = readJsonArtifact(builderRunPath, PersistedBuilderRunSchema);
 	let builderInput: ReturnType<typeof ApprovedSpecBuilderInputSchema.parse>;
 	try {
 		builderInput = ApprovedSpecBuilderInputSchema.parse(
-			JSON.parse(readFileSync(origin.builderInput.path, "utf8")) as unknown,
+			JSON.parse(readFileSync(builderInputPath, "utf8")) as unknown,
 		);
 	} catch (error) {
 		throw new Error("Builder input is not reconstructable typed approved-Spec evidence", { cause: error });
 	}
-	const proposal = readJsonArtifact(origin.proposal.path, CandidateProposalSchema);
-	const receipt = readJsonArtifact(origin.applyReceipt.path, BuilderApplyReceiptSchema);
+	const proposal = readJsonArtifact(proposalPath, CandidateProposalSchema);
+	const receipt = readJsonArtifact(receiptPath, BuilderApplyReceiptSchema);
 	const verifiedSourceEval = origin.source
 		? loadVerifiedEvalRun(runsRoot, origin.source.evalRunId)
 		: null;
@@ -806,18 +768,14 @@ function verifyAppliedBuilderOrigin(
 	}
 	const sourceEval = verifiedSourceEval?.record ?? null;
 	const diagnosis = origin.source
-		? readJsonArtifact(origin.source.diagnosis.path, DiagnosisRecordSchema)
+		? readJsonArtifact(diagnosisPath!, DiagnosisRecordSchema)
 		: null;
-	const spec = readJsonArtifact(origin.approvedSpec.artifact.path, SpecSnapshotSchema);
+	const spec = readJsonArtifact(specPath, SpecSnapshotSchema);
 	const experimentDesign = origin.experimentDesign
-		? loadImprovementExperimentDesign(origin.experimentDesign.path)
+		? loadImprovementExperimentDesign(designPath!)
 		: null;
-	if (origin.experimentDesign && experimentDesign) {
-		verifyArtifact(
-			origin.experimentDesign,
-			"blind improvement experiment design",
-			improvementExperimentDesignPath(runsRoot, experimentDesign.loopId),
-		);
+	if (experimentDesign && designPath !== resolveContainedArtifactPath(runsRoot, "improvement-designs", `${experimentDesign.loopId}.json`)) {
+		throw new Error("candidate blind experiment design path does not match its identity");
 	}
 
 	if (
@@ -849,7 +807,7 @@ function verifyAppliedBuilderOrigin(
 	if (
 		failureBundleHash !== builderRun.request.failureBundleSha256 ||
 		failureBundleBytes !== builderRun.request.failureBundleBytes ||
-		Buffer.byteLength(readFileSync(origin.builderInput.path)) !== builderRun.request.builderInputBytes
+		Buffer.byteLength(readFileSync(builderInputPath)) !== builderRun.request.builderInputBytes
 	) throw new Error("typed Builder input no longer matches its recorded evidence bytes");
 	if (
 		builderRun.result.proposal === null ||
@@ -984,9 +942,9 @@ function assertNoScreenEvidence(record: CandidateRecord, runsRoot: string): void
 	}
 }
 
-function verifyPromotionEvidence(record: CandidateRecord, runsRoot: string): void {
+function verifyPromotionEvidence(record: CandidateRecord, runsRoot: string, stateRoot?: string): void {
 	assertNoScreenEvidence(record, runsRoot);
-	const { sourceEval, experimentDesign } = verifyAppliedBuilderOrigin(record, runsRoot);
+	const { sourceEval, experimentDesign } = verifyAppliedBuilderOrigin(record, runsRoot, stateRoot);
 	const evaluated = record.events.find((event) => event.type === "evaluated");
 	if (!evaluated || evaluated.type !== "evaluated") throw new Error("candidate has no evaluated evidence");
 	const development = verifyEvaluationPair(runsRoot, record, evaluated.evaluation.development, "development", "development");
@@ -1242,7 +1200,7 @@ export function promoteReviewedCandidate(
 			`candidate target mismatch: record=${record.targetId}, commit=${manifestResult.data.id}`,
 		);
 	}
-	verifyPromotionEvidence(record, options.runsRoot);
+	verifyPromotionEvidence(record, options.runsRoot, options.stateRoot);
 	assertJudgeCalibrated(manifestResult.data.evalSuite.judge?.requireCalibration, record, {
 		runsRoot: options.runsRoot,
 		...(options.stateRoot ? { stateRoot: options.stateRoot } : {}),

@@ -26,13 +26,14 @@ const LOCAL_ARTIFACT_IGNORE_HEADER =
 	"# AHDE local state, Builder imports, run evidence, and secrets";
 
 /**
- * The three the skill names — `.ahde/`, `runs/`, `imports/` — plus the dotenv
- * files a Target's credential lands in. Order is the order they are appended.
+ * The host's state, evidence, imports and exports, plus the dotenv files a
+ * Target's credential lands in. Order is the order they are appended.
  */
 const LOCAL_ARTIFACT_IGNORES: readonly LocalIgnoreEntry[] = [
 	{ token: ".ahde", lines: ["/.ahde/"] },
 	{ token: "imports", lines: ["/imports/"] },
 	{ token: "runs", lines: ["/runs/"] },
+	{ token: "exports", lines: ["/exports/"] },
 	{ token: ".env", lines: ["/.env"] },
 	// The negation belongs to the pattern it carves out, so they are added together.
 	{ token: ".env.*", lines: ["/.env.*", "!/.env.example"] },

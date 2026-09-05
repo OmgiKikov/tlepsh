@@ -37,6 +37,8 @@ const ActorSchema = z.strictObject({
 });
 const HumanActorSchema = z.strictObject({ kind: z.literal("human"), id: VerbatimIdSchema });
 
+/** New paths are POSIX relative to runsRoot; legacy absolute hints stay byte-for-byte
+ * readable and are resolved only through the owned-store candidate-artifacts boundary. */
 export const CandidateArtifactRefSchema = z.strictObject({
 	path: z.string().min(1).max(4_096).refine((value) => value.trim().length > 0, "expected non-blank path"),
 	sha256: FingerprintSchema,

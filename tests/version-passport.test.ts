@@ -227,7 +227,7 @@ describe("/passport and /log", () => {
 		const file = join(fixture.projectDir, `passport-${fixture.tag}.md`);
 		expect(existsSync(file)).toBe(true);
 		expect(readFileSync(file, "utf8")).toContain("## Measured");
-		expect(shown).toContain(`Written to passport-${fixture.tag}.md`);
+		expect(shown).toContain(`Written to ${file}`);
 	}, 60_000);
 
 	it("shows the growth log for the agent", async () => {

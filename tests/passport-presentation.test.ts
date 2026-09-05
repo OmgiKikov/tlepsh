@@ -48,13 +48,14 @@ describe("Builder passport presentation", () => {
 		const name = `passport-${fixture.tag}.md`;
 		const path = join(fixture.projectDir, name);
 		const content = readFileSync(path);
-		expect(compiled.written).toBe(name);
+		expect(compiled.written).toBe(path);
+		expect(readFileSync(compiled.written!, "utf8")).toBe(content.toString("utf8"));
 		expect(compiled.card.artifacts.passport).toEqual({
 			status: "known",
 			value: { path: name, sha256: digest(content), bytes: content.length },
 		});
-		expect(compiled.reportWritten).toBe(`exports/version-${fixture.tag}.html`);
-		const report = readFileSync(join(fixture.projectDir, compiled.reportWritten!), "utf8");
+		expect(compiled.reportWritten).toBe(join(fixture.projectDir, "exports", `version-${fixture.tag}.html`));
+		const report = readFileSync(compiled.reportWritten!, "utf8");
 		expect(report).toContain(fixture.candidateSha);
 		expect(report).toContain(fixture.baselineSha);
 		expect(report).toContain(`href="../${name}"`);

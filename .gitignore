@@ -1,6 +1,7 @@
 node_modules/
 dist/
 runs/
+/exports/
 .ahde/
 *.tsbuildinfo
 .DS_Store

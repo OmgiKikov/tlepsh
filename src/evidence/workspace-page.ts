@@ -1,3 +1,4 @@
+import { renderRunReading } from "./workspace-reading.js";
 import type { RunRow } from "../application/run-explanation.js";
 import { duration, money, percent } from "../measurement.js";
 import { t, tokenLabel } from "../i18n.js";
@@ -22,7 +23,7 @@ function renderIssues(model: EvalPageModel): string {
 <a class="w-all${all ? " selected" : ""}" href="${h(workspaceHref(model, { mode: null, outcome: null, q: null }))}"${all ? ' aria-current="true"' : ""}>${h(t("workspace.allIssues"))}<span>${model.summary.total}</span></a>
 <ul class="w-issue-list">${model.modes.map((mode) => `<li>
 <a class="w-issue${model.filter.mode === mode.id ? " selected" : ""}" href="${h(workspaceHref(model, { mode: mode.id }))}"${model.filter.mode === mode.id ? ' aria-current="true"' : ""}>
-<span class="w-issue-title">${h(mode.title)}</span>
+<span class="w-issue-title">${h(mode.humanTitle ?? mode.title)}</span>
 <span class="w-issue-impact">${h(t("workspace.impact", { affected: mode.affectedTasks, total: mode.totalTasks, runs: mode.runCount }))}</span>
 <span class="w-issue-rate">${h(t("workspace.reproduction", { ...mode.observations, rate: percent(mode.reproductionBps / 10_000) }))}</span>
 <span class="w-issue-severity">${h(tokenLabel("mode.severity", mode.severity))} · ${h(tokenLabel("mode.scope", mode.scope))}</span>
@@ -55,7 +56,7 @@ function renderRuns(model: EvalPageModel): string {
 </tr>`).join("");
 	return `<section class="w-runs" aria-labelledby="runs-title" id="runs" tabindex="-1">
 <div class="w-panel-title"><h2 id="runs-title">${h(t("workspace.runs"))}</h2><span class="w-count">${h(t("workspace.shown", { shown: model.rows.length, total: model.summary.total }))}</span></div>
-${mode ? `<div class="w-finding"><h3>${h(mode.title)}</h3><p>${h(mode.facts)}</p>${mode.excerpt ? `<details><summary>${h(t("workspace.observed"))}</summary><p class="mono">${h(mode.excerpt)}</p></details>` : ""}</div>` : ""}
+${mode ? `<div class="w-finding"><h3>${h(mode.humanTitle ?? mode.title)}</h3><p>${h(mode.facts)}</p>${mode.excerpt ? `<details><summary>${h(t("workspace.observed"))}</summary><p class="mono">${h(mode.excerpt)}</p></details>` : ""}</div>` : ""}
 <div class="w-run-controls"><form method="get" action="/evals/${encodeURIComponent(model.evalRunId)}" class="w-search" role="search">
 ${model.filter.mode ? `<input type="hidden" name="mode" value="${h(model.filter.mode)}">` : ""}${model.filter.outcome ? `<input type="hidden" name="outcome" value="${h(model.filter.outcome)}">` : ""}
 <input type="search" id="filter" name="q" value="${h(model.search ?? "")}" maxlength="160" placeholder="${h(t("evidence.filterPlaceholder"))}" aria-label="${h(t("evidence.filterLabel"))}" title="${h(t("workspace.searchNote"))}"><button type="submit">${h(t("workspace.search"))}</button></form>
@@ -82,12 +83,15 @@ function renderInspector(model: EvalPageModel): string {
 	const position = model.rows.findIndex((row) => row.runId === run.runId);
 	const previous = position > 0 ? model.rows[position - 1] : undefined;
 	const next = position >= 0 ? model.rows[position + 1] : undefined;
+	const input = selected.input?.trim().replace(/\s+/g, " ") || run.taskId;
+	const heading = input.length > 160 ? `${input.slice(0, 160)}…` : input;
 	return `<section class="w-inspector" id="inspector" tabindex="-1" aria-labelledby="inspector-title" data-selected-run="${h(run.runId)}">
-<div class="w-inspector-head"><div><p class="w-eyebrow">${h(t("workspace.inspector"))}</p><h2 id="inspector-title">${h(run.taskId)} <small>${h(t("explorer.repetition", { index: run.repetitionIndex + 1 }))}</small></h2></div>${outcomeChip(run.outcome)}</div>
+<div class="w-inspector-head"><div><p class="w-eyebrow">${h(t("workspace.inspector"))}</p><h2 id="inspector-title">${h(heading)} <small>${h(t("explorer.repetition", { index: run.repetitionIndex + 1 }))}</small></h2></div>${outcomeChip(run.outcome)}</div>
 <nav class="w-trace-nav" aria-label="${h(t("workspace.inspect"))}"><a href="${h(workspaceHref(model, { run: run.runId }))}#inspector">${h(t("workspace.permalink"))}</a><a href="/runs/${encodeURIComponent(run.runId)}">${h(t("workspace.complete"))} ↗</a><span class="w-run-arrows">${previous ? `<a href="${h(workspaceHref(model, { run: previous.runId }))}#inspector" aria-label="${h(t("workspace.previous"))}">←</a>` : ""}${next ? `<a href="${h(workspaceHref(model, { run: next.runId }))}#inspector" aria-label="${h(t("workspace.next"))}">→</a>` : ""}</span></nav>
 ${position < 0 ? `<p class="w-note">${h(t("workspace.outsideFilter"))}</p>` : ""}
 <dl class="w-run-metrics"><div><dt>${h(t("explorer.th.latency"))}</dt><dd>${h(duration(run.metrics.latencyMs))}</dd></div><div><dt>${h(t("explorer.th.cost"))}</dt><dd>${h(money(run.metrics.costUsd))}</dd></div><div><dt>${h(t("explorer.th.tokens"))}</dt><dd>${run.metrics.tokens ?? "—"}</dd></div><div><dt>${h(t("evidence.executedTools"))}</dt><dd>${run.metrics.toolCalls}</dd></div></dl>
 <div class="w-inspector-body">
+${selected.reading ? renderRunReading(selected.reading) : ""}
 ${run.error ? `<div class="w-run-error"><h3>${h(t("explorer.h2.run-error"))}</h3><pre>${h(run.error)}</pre></div>` : ""}
 <details class="w-checks"><summary>${h(t("workspace.checks"))} <span>${selected.graders.filter((grader) => grader.passed).length}/${selected.graders.length}</span></summary>${renderVerdict(selected.graders)}${renderWhy(selected.explanation, { omitSummary: true })}</details>
 ${selected.explanation.rag ? `<details class="w-checks"><summary>${h(t("rag.title"))}</summary>${renderRagXray(selected.explanation.rag)}</details>` : ""}
@@ -96,7 +100,7 @@ ${renderSequence(selected)}
 ${selected.transcript?.entries.some((entry) => entry.kind === "user") || selected.input === null ? "" : `<article class="turn"><div class="who">${h(t("evidence.caseInput"))}</div><pre>${h(selected.input)}</pre></article>`}
 ${renderTranscript(selected, "trace-step-")}
 <p class="w-note">${h(selected.traceNotice)}</p>
-<details class="w-checks"><summary>${h(t("evidence.metadata"))}</summary><pre>${h(run.runId)}\n${h(model.evalRunId)}\n${h(run.startedAt)}${run.finishedAt ? ` → ${h(run.finishedAt)}` : ""}</pre><p class="w-note">${h(t("evidence.systemUnavailable"))}</p></details>
+<details class="w-checks"><summary>${h(t("evidence.metadata"))}</summary><pre>${h(run.taskId)}\n${h(run.runId)}\n${h(model.evalRunId)}\n${h(run.startedAt)}${run.finishedAt ? ` → ${h(run.finishedAt)}` : ""}</pre><p class="w-note">${h(t("evidence.systemUnavailable"))}</p></details>
 </div></section>`;
 }
 

@@ -117,7 +117,7 @@ export const TargetScaffoldSubjectSchema = z.strictObject({
 			"fresh repository with one scaffold commit",
 			"the existing clean repository, at its current HEAD",
 		]),
-		localArtifactIgnores: z.array(NonBlankSchema.max(200)).max(6),
+		localArtifactIgnores: z.array(NonBlankSchema.max(200)).max(7),
 	}),
 }).superRefine((subject, context) => {
 	if ((subject.operation === "adopt-current-directory") !== (subject.found !== undefined)) {
@@ -263,7 +263,7 @@ export function describeTargetScaffold(options: DescribeTargetScaffoldOptions): 
 		manifest,
 		generated: {
 			gitRepository: "fresh repository with one scaffold commit",
-			localArtifactIgnores: ["/.ahde/", "/imports/", "/runs/", "/.env", "/.env.*", "!/.env.example"],
+			localArtifactIgnores: ["/.ahde/", "/imports/", "/runs/", "/exports/", "/.env", "/.env.*", "!/.env.example"],
 		},
 	});
 }

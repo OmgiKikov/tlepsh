@@ -1,5 +1,6 @@
+import { resolveCandidateArtifact } from "./candidate-artifacts.js";
 /** Durable measured selection for the existing improvement loop. No release authority. */
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { z } from "zod";
 import { DEVELOPMENT_VERDICTS } from "../domain/comparison-gate.js";
 import { compareEvalRuns } from "../compare.js";
@@ -129,7 +130,7 @@ export function readImprovementMeasurement(
 	if (record.projectId !== scope.projectId || origin?.kind !== "applied-builder" ||
 		origin.approvedSpec.specId !== scope.approvedSpecId || origin.application.baseTargetSha !== scope.baseTargetSha ||
 		origin.source?.evalRunId !== scope.authoringBaseline.evalRunId ||
-		origin.experimentDesign?.path !== scope.experimentDesignPath || origin.application.via !== "proposal-search") {
+		(!origin.experimentDesign || resolveCandidateArtifact(runsRoot, origin, "experimentDesign") !== realpathSync(scope.experimentDesignPath)) || origin.application.via !== "proposal-search") {
 		throw new Error("improvement candidate is outside its fixed original experiment");
 	}
 	const event = record.events.find((entry) => entry.type === "evaluated");

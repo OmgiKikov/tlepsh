@@ -2,7 +2,8 @@ import { percent } from "../measurement.js";
 import { collectCandidateReplayPage } from "./replay-model.js";
 import { renderEvalPage } from "./workspace-page.js";
 import { renderCandidateReplayPage } from "./replay-page.js";
-import { language } from "../i18n.js";
+import { language, t } from "../i18n.js";
+import { DiagnosisClassificationMismatch } from "../application/diagnosis-category.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
@@ -169,6 +170,12 @@ function sendCollectionFailure(response: ServerResponse, error: unknown, headOnl
 	}
 	if (error instanceof EvidenceNotDiagnosed) {
 		send(response, 409, "text/plain; charset=utf-8", NOT_DIAGNOSED_BODY, headOnly);
+		return;
+	}
+	if (error instanceof DiagnosisClassificationMismatch) {
+		const title = t("reading.diagnosisIncompatible");
+		const body = `<!doctype html><html lang="${language()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${h(title)}</title><style>${EVIDENCE_STYLESHEET}</style></head><body><main class="wrap"><h1>${h(title)}</h1><p>${h(t("reading.diagnosisRecovery"))}</p><a href="/">${h(t("evidence.brand"))} →</a></main></body></html>`;
+		send(response, 409, "text/html; charset=utf-8", body, headOnly);
 		return;
 	}
 	send(response, 422, "text/plain; charset=utf-8", COLLECTION_FAILURE_BODY, headOnly);
@@ -555,11 +562,7 @@ export function createEvidenceExplorer(options: EvidenceExplorerOptions): Eviden
 					query: evalPageQuery(url),
 				}));
 			} catch (error) {
-				if (error instanceof EvidenceNotFound) {
-					sendCollectionFailure(response, error, headOnly);
-					return;
-				}
-				send(response, 422, "text/plain; charset=utf-8", "Evidence report failed integrity or visibility checks.\n", headOnly);
+				sendCollectionFailure(response, error, headOnly);
 				return;
 			}
 			// The workspace's search is a same-origin GET; every other surface keeps forms disabled.

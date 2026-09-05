@@ -46,6 +46,7 @@ import {
 import {
 	axisDifferences,
 	executionFingerprint,
+	commandProtocolFingerprint,
 	hashValue,
 	modelFingerprint,
 	provenanceAxes,
@@ -55,6 +56,7 @@ import { writeJsonArtifact } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import { buildExecutionPolicy } from "../execution-policy.js";
 import { createTargetToolRuntime, effectiveTargetSandbox, targetFilesystemConfinement } from "../target/runtime.js";
+import { commandTargetEnvironmentNames } from "../target/session-command.js";
 import { computeTargetSnapshotHashes } from "../runner.js";
 import type { RunEventListener } from "../run-events.js";
 import {
@@ -337,7 +339,9 @@ export function effectiveProvenance(target: ResolvedTarget): ProvenanceAxes {
 				// Target-owned tool identity is target revision/toolset provenance,
 				// not an execution axis: adding a candidate tool must remain comparable.
 				tools: [...target.manifest.execution.tools],
-				environment: [...policy.effectiveEnvironmentNames],
+				environment: executionKindOf(target.manifest.execution) === "command"
+					? commandTargetEnvironmentNames({ environmentAllowlist: target.manifest.execution.environmentAllowlist, apiKeyEnv: target.manifest.model.apiKeyEnv })
+					: [...policy.effectiveEnvironmentNames],
 				sandbox,
 				network: target.manifest.execution.network,
 				filesystem: targetFilesystemConfinement({ workspaceMode: "isolated", toolNames: processCapableTools, sandbox }),
@@ -345,6 +349,7 @@ export function effectiveProvenance(target: ResolvedTarget): ProvenanceAxes {
 				// the same reason it names the sandbox: a baseline produced by a
 				// different agent is not this experiment's baseline.
 				agent: executionKindOf(target.manifest.execution) === "command" ? "command-v1" : "pi-v1",
+				...(executionKindOf(target.manifest.execution) === "command" ? { commandProtocol: commandProtocolFingerprint(target.manifest.execution.command!.protocolVersion) } : {}),
 			}),
 			eval: { suiteHash: target.suiteHash, datasetHash: target.datasetHash },
 		});

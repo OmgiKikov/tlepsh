@@ -289,6 +289,8 @@ export interface HeaderState {
 	 * {@link renderHeader}.
 	 */
 	hint?: string | null;
+	/** Already verified by Workbench; rendering performs no artifact reads. */
+	finding?: WorkbenchView["finding"] | null;
 }
 
 /**
@@ -325,6 +327,12 @@ export function renderHeader(state: HeaderState, paint: Paint): string[] {
 		return lines;
 	}
 	lines.push(targetLine(view, paint));
+	if (state.finding && view.blockers.length === 0) {
+		const { reading } = state.finding;
+		const observation = reading.observations[0];
+		lines.push(`${paint.dim(t("header.finding"))} ${oneLine(reading.title, 100)}${observation ? ` ${oneLine(observation, 140)}` : ""}`);
+		lines.push(paint.dim(t("header.finding-case", { task: oneLine(reading.taskId, 60), run: oneLine(reading.runId, 80) })));
+	}
 	// The stage, the cycle progress and the next step are one line, not three.
 	// `План 1/8 · ▸ Описание агента` said the stage a second time under a line
 	// that had just said it, and `Дальше <шаг>` said, word for word, the hint

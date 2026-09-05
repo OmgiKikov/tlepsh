@@ -27,7 +27,7 @@ import { AGENTS_MD, cleanup, makeTargetFixture } from "./fixtures.js";
  * to an exact commit has none when the tree is dirty.
  */
 
-const ALL_IGNORE_LINES = ["/.ahde/", "/imports/", "/runs/", "/.env", "/.env.*", "!/.env.example"];
+const ALL_IGNORE_LINES = ["/.ahde/", "/imports/", "/runs/", "/exports/", "/.env", "/.env.*", "!/.env.example"];
 
 function git(dir: string, ...args: string[]): string {
 	return execFileSync("git", ["-C", dir, ...args], { encoding: "utf8" }).trim();
@@ -60,7 +60,7 @@ describe("ensureLocalArtifactIgnores", () => {
 		// `runs/` and `.ahde` without slashes are the same rules, differently written.
 		const dir = repoFixture("runs/\n.ahde\nattempts.tsv\n");
 		try {
-			expect(ensureLocalArtifactIgnores(dir)).toEqual(["/imports/", "/.env", "/.env.*", "!/.env.example"]);
+			expect(ensureLocalArtifactIgnores(dir)).toEqual(["/imports/", "/exports/", "/.env", "/.env.*", "!/.env.example"]);
 			const written = readFileSync(join(dir, ".gitignore"), "utf8");
 			expect(written.startsWith("runs/\n.ahde\nattempts.tsv\n")).toBe(true);
 			expect(written).not.toContain("/runs/");
@@ -96,6 +96,10 @@ describe("ensureLocalArtifactIgnores", () => {
 			expect(added).toEqual(ALL_IGNORE_LINES);
 			// The rules are in the scaffold commit, not merely in the working tree.
 			expect(git(dest, "ls-files", "--", ".gitignore")).toBe(".gitignore");
+			mkdirSync(join(dest, "exports", "nested"), { recursive: true });
+			writeFileSync(join(dest, "exports", "nested", "recorded.jsonl"), "PRIVATE_EXPORTED_DIALOGUE\n");
+			expect(git(dest, "check-ignore", "--", "exports/nested/recorded.jsonl")).toBe("exports/nested/recorded.jsonl");
+			expect(git(dest, "status", "--porcelain=v1", "--untracked-files=all")).toBe("");
 		} finally {
 			cleanup(template);
 			cleanup(dest);

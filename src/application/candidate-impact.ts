@@ -1,5 +1,4 @@
-import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { resolveCandidateArtifact, type CandidateArtifactKind } from "./candidate-artifacts.js";
 import { resolve } from "node:path";
 import { z } from "zod";
 import { CandidateProposalSchema } from "../builders/adapters.js";
@@ -7,7 +6,7 @@ import { compareVerifiedEvalRuns, type CompareResult } from "../compare.js";
 import { DiagnosisCategorySchema, DiagnosisRecordSchema } from "../diagnosis.js";
 import {
 	CandidateRecordSchema, EXACT_COMPARISON_GATE_ALGORITHM_ID, gateVerdictOf,
-	type CandidateArtifactRef, type CandidateRecord,
+	type CandidateRecord,
 } from "../domain/candidate.js";
 import {
 	DEVELOPMENT_VERDICTS, EXACT_COMPARISON_GATE_ALGORITHM_ID_V3, EXACT_COMPARISON_GATE_ALGORITHM_ID_V4,
@@ -27,7 +26,6 @@ import { comparisonGateEvidence } from "./candidate-experiment.js";
 import { corpusDatasetLabel } from "./corpus-target.js";
 import { compareUtf8, exactSnapshotIdentity, loadExactEvalSnapshot } from "./exact-eval-snapshot.js";
 import {
-	improvementExperimentDesignPath,
 	loadImprovementExperimentDesign,
 	type ImprovementExperimentDesign,
 } from "./improvement-experiment-design.js";
@@ -39,7 +37,6 @@ import {
 
 export const CANDIDATE_IMPACT_ALGORITHM_ID = "exact-candidate-impact-v1" as const;
 
-const MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 256 * 1024;
 const MAX_NEW_MODES = 10;
 const MAX_FAMILIES = 12;
@@ -314,6 +311,7 @@ export type CandidateImpact = z.infer<typeof CandidateImpactSchema>;
 
 export interface InspectCandidateImpactOptions {
 	runsRoot: string;
+	stateRoot?: string;
 	candidateId: string;
 	/** Exact Candidate aggregate presented by the caller, when one exists. */
 	expectedCandidateHash?: string;
@@ -348,47 +346,6 @@ interface VerifiedPair {
 	candidate: VerifiedEvalRun;
 	compare: CompareResult;
 	gateVerified: boolean;
-}
-
-function sha256(content: Buffer): string {
-	return `sha256:${createHash("sha256").update(content).digest("hex")}`;
-}
-
-function readBoundedRegularFile(path: string, label: string): Buffer {
-	const entry = lstatSync(path);
-	if (!entry.isFile() || entry.isSymbolicLink()) {
-		throw new Error(`${label} must remain a regular non-symlink artifact`);
-	}
-	if (entry.size > MAX_ARTIFACT_BYTES) throw new Error(`${label} exceeds the verification limit`);
-	const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-	try {
-		const opened = fstatSync(descriptor);
-		if (!opened.isFile() || opened.size > MAX_ARTIFACT_BYTES) {
-			throw new Error(`${label} must remain a bounded regular artifact`);
-		}
-		const chunks: Buffer[] = [];
-		let total = 0;
-		while (total <= MAX_ARTIFACT_BYTES) {
-			const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, MAX_ARTIFACT_BYTES + 1 - total));
-			const bytesRead = readSync(descriptor, chunk, 0, chunk.length, null);
-			if (bytesRead === 0) break;
-			chunks.push(chunk.subarray(0, bytesRead));
-			total += bytesRead;
-		}
-		if (total > MAX_ARTIFACT_BYTES) throw new Error(`${label} exceeds the verification limit`);
-		return Buffer.concat(chunks, total);
-	} finally {
-		closeSync(descriptor);
-	}
-}
-
-function verifyArtifactRef(ref: CandidateArtifactRef, label: string, expectedPath?: string): void {
-	const path = resolve(ref.path);
-	if (expectedPath && realpathSync(path) !== realpathSync(resolve(expectedPath))) {
-		throw new Error(`${label} path no longer matches its canonical artifact`);
-	}
-	const actual = sha256(readBoundedRegularFile(path, label));
-	if (actual !== ref.sha256) throw new Error(`${label} hash mismatch: expected ${ref.sha256}, got ${actual}`);
 }
 
 function categoryFor(checkCode: GraderCheckCode): z.infer<typeof DiagnosisCategorySchema> {
@@ -704,6 +661,7 @@ function verifyPair(
 function verifiedBuilderBasis(
 	runsRoot: string,
 	record: CandidateRecord,
+	stateRoot?: string,
 ): {
 	basis: NonNullable<ReturnType<typeof loadBuilderProposalRun>["request"]["proposalBasis"]> | null;
 	brief: ReturnType<typeof compileImprovementBrief> | null;
@@ -711,29 +669,20 @@ function verifiedBuilderBasis(
 } {
 	if (record.origin.kind !== "applied-builder") return { basis: null, brief: null, experimentDesign: null };
 	const origin = record.origin;
-	const builderDir = resolveContainedArtifactPath(runsRoot, "builders", origin.builderRunId);
-	verifyArtifactRef(origin.builderRun, "Builder run", resolveContainedArtifactPath(builderDir, "builder_run.json"));
-	verifyArtifactRef(origin.builderInput, "Builder input", resolveContainedArtifactPath(builderDir, "builder_input.txt"));
-	verifyArtifactRef(origin.proposal, "Builder proposal", resolveContainedArtifactPath(builderDir, "proposal.json"));
-	verifyArtifactRef(origin.applyReceipt, "Builder apply receipt", resolveContainedArtifactPath(builderDir, "apply_receipt.json"));
-	verifyArtifactRef(origin.approvedSpec.artifact, "approved Spec");
-	if (origin.experimentDesign) {
-		verifyArtifactRef(origin.experimentDesign, "blind improvement experiment design");
-	}
-
+	const artifact = (kind: CandidateArtifactKind) => resolveCandidateArtifact(runsRoot, origin, kind, { stateRoot });
+	artifact("builderRun");
+	artifact("builderInput");
+	const proposalPath = artifact("proposal");
+	const receiptPath = artifact("applyReceipt");
+	const specPath = artifact("approvedSpec");
+	const designPath = origin.experimentDesign ? artifact("experimentDesign") : null;
 	const builder = loadBuilderProposalRun(runsRoot, origin.builderRunId);
-	const proposal = readJsonArtifact(origin.proposal.path, CandidateProposalSchema);
-	const receipt = readJsonArtifact(origin.applyReceipt.path, BuilderApplyReceiptSchema);
-	const spec = readJsonArtifact(origin.approvedSpec.artifact.path, SpecSnapshotSchema);
-	const experimentDesign = origin.experimentDesign
-		? loadImprovementExperimentDesign(origin.experimentDesign.path)
-		: null;
-	if (origin.experimentDesign && experimentDesign) {
-		verifyArtifactRef(
-			origin.experimentDesign,
-			"blind improvement experiment design",
-			improvementExperimentDesignPath(runsRoot, experimentDesign.loopId),
-		);
+	const proposal = readJsonArtifact(proposalPath, CandidateProposalSchema);
+	const receipt = readJsonArtifact(receiptPath, BuilderApplyReceiptSchema);
+	const spec = readJsonArtifact(specPath, SpecSnapshotSchema);
+	const experimentDesign = designPath ? loadImprovementExperimentDesign(designPath) : null;
+	if (experimentDesign && designPath !== resolveContainedArtifactPath(runsRoot, "improvement-designs", `${experimentDesign.loopId}.json`)) {
+		throw new Error("candidate blind experiment design path does not match its identity");
 	}
 	const validated = record.events.find((event) => event.type === "validated");
 	if (
@@ -795,20 +744,12 @@ function verifiedBuilderBasis(
 		if (experimentDesign) throw new Error("blind improvement design requires Builder source evidence");
 		return { basis: null, brief: null, experimentDesign: null };
 	}
-	verifyArtifactRef(
-		origin.source.evalRun,
-		"Builder source EvalRun",
-		resolveContainedArtifactPath(runsRoot, origin.source.evalRunId, "eval_run.json"),
-	);
-	verifyArtifactRef(
-		origin.source.diagnosis,
-		"Builder source diagnosis",
-		resolveContainedArtifactPath(runsRoot, origin.source.evalRunId, "diagnosis.json"),
-	);
+	artifact("sourceEval");
+	const diagnosisPath = artifact("sourceDiagnosis");
 	// Only explicit development evidence may seed a proposal; sealed or legacy
 	// indexes without a disclosure class fail closed before any run is opened.
 	const source = loadExactEvalSnapshot(runsRoot, origin.source.evalRunId, "development");
-	const diagnosis = readJsonArtifact(origin.source.diagnosis.path, DiagnosisRecordSchema);
+	const diagnosis = readJsonArtifact(diagnosisPath, DiagnosisRecordSchema);
 	const attestation = builder.request.sourceAttestation;
 	if (
 		!builder.request.source || !attestation ||
@@ -1006,7 +947,7 @@ export function inspectCandidateImpact(options: InspectCandidateImpactOptions): 
 
 	const issues: string[] = [];
 	if (record.mode !== "candidate") issues.push("A/A calibration cannot establish Candidate impact");
-	const { basis, brief, experimentDesign } = verifiedBuilderBasis(options.runsRoot, record);
+	const { basis, brief, experimentDesign } = verifiedBuilderBasis(options.runsRoot, record, options.stateRoot);
 	const developmentCorpus = evaluated.evaluation.development.corpus ?? null;
 	const expectedDevelopmentCorpus = experimentDesign
 		? { id: experimentDesign.validationCorpus.id, hash: experimentDesign.validationCorpus.hash }

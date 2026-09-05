@@ -1264,11 +1264,12 @@ export function registerAhdeBuilderCommands(
 				// `/fix` to whichever came first in the list.
 				const offered = modes.slice(0, 5);
 				const picked = await choose(ctx, t("traces.prepare"), [
+					// Reading traces must stay free when Enter accepts the default.
+					{ id: NOT_NOW, label: () => t("traces.not-now") },
 					...offered.map((mode) => ({
 						id: mode.failureModeId,
 						label: () => t("traces.fix-choice", { ordinal: mode.ordinal, title: titleOf(mode) }),
 					})),
-					{ id: NOT_NOW, label: () => t("traces.not-now") },
 				], { signal });
 				const mode = offered.find((candidate) => candidate.failureModeId === picked);
 				if (mode) {

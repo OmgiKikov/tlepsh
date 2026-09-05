@@ -1,5 +1,5 @@
 import { interval, percent } from "./measurement.js";
-import { axisDifferences } from "./provenance.js";
+import { axisDifferences, hasKnownCommandUsageSemantics } from "./provenance.js";
 import { loadVerifiedEvalRun, type EvalRunRecord, type VerifiedEvalRun } from "./eval.js";
 import type { RunRecord, TokenMetrics } from "./provenance.js";
 import type { ExperimentMode } from "./domain/candidate.js";
@@ -70,7 +70,12 @@ export interface CompareOptions {
  * surface that ranks or selects a run by "how well it scored" — the comparison
  * here, the training export's `--min-score` bar — must mean the same number.
  */
-export function runGraderScore(record: Pick<RunRecord, "evalResults">): number {
+export function runGraderScore(record: {
+	evalResults?: {
+		graders: readonly { passed: boolean; score: number; checkCode?: string | null }[];
+		outcome: string;
+	} | null;
+}): number {
 	const results = record.evalResults?.graders ?? [];
 	// Completion is a prerequisite, not a free point that dilutes the rubric.
 	if (results.some((grader) => grader.checkCode === "final-answer" && !grader.passed)) return 0;
@@ -233,6 +238,11 @@ export function compareVerifiedEvalRuns(
 	const b = bVerified.record;
 	const mode = options.mode;
 	const invalid: string[] = [];
+	for (const [role, record] of [["baseline", a], ["candidate", b]] as const) {
+		if (!hasKnownCommandUsageSemantics(record.provenance.execution)) {
+			invalid.push(`${role} eval ${record.evalRunId} has unversioned command usage semantics; rerun it`);
+		}
+	}
 	// A screen is a one-repetition, candidate-only re-run of what already failed.
 	// Reading it beside a baseline would dress a screen up as a measurement, so
 	// every comparison but the explicitly exploratory one refuses it — from the

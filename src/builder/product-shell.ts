@@ -318,10 +318,12 @@ export function installAhdeBuilderProductShell(
 			// read, no artifact, nothing the model is told.
 			state.plan = compilePlan(state.view);
 			state.judge = judgeState(state.view);
+			state.finding = state.view.finding ?? null;
 		} catch (error) {
 			state.view = null;
 			state.plan = null;
 			state.judge = undefined;
+			state.finding = null;
 			state.error = error instanceof Error ? error.message : String(error);
 		}
 		applyStatus();

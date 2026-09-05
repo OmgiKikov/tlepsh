@@ -6,6 +6,7 @@ import { HashSchema, hashValue } from "./provenance.js";
 import { lastAssistantText, openTrace, redactTraceText, traceToolCalls, type TraceMessage } from "./trace.js";
 import { readJsonArtifact, writeJsonArtifact } from "./storage/artifacts.js";
 import { resolveContainedArtifactPath } from "./storage/paths.js";
+import { categoryForGrader } from "./application/diagnosis-category.js";
 
 /** Written on every new diagnosis; version 1 predates the trace excerpts. */
 export const DIAGNOSIS_SCHEMA_VERSION = 2;
@@ -109,7 +110,7 @@ interface TaskAggregate {
 	fail: number;
 	error: number;
 	evidence: z.infer<typeof EvidenceRefSchema>[];
-	failedGraderTypes: Set<string>;
+	failedGraderCategories: Set<DiagnosisCategory>;
 	failedReasons: string[];
 }
 
@@ -117,17 +118,9 @@ function categoryFor(aggregate: TaskAggregate): DiagnosisCategory[] {
 	const categories: DiagnosisCategory[] = [];
 	if (aggregate.error > 0) categories.push("infrastructure");
 	if (aggregate.pass > 0 && aggregate.fail + aggregate.error > 0) categories.push("flaky-behavior");
-	if (aggregate.failedGraderTypes.has("tool_called")) categories.push("tool-selection");
-	if (
-		aggregate.failedGraderTypes.has("output_contains") ||
-		aggregate.failedGraderTypes.has("output_matches") ||
-		aggregate.failedGraderTypes.has("exact") ||
-		aggregate.failedGraderTypes.has("no_secret")
-	) categories.push("output-contract");
-	if (
-		aggregate.failedGraderTypes.has("judge") ||
-		aggregate.failedGraderTypes.has("similarity")
-	) categories.push("answer-quality");
+	for (const category of ["tool-selection", "output-contract", "answer-quality"] as const) {
+		if (aggregate.failedGraderCategories.has(category)) categories.push(category);
+	}
 	return categories;
 }
 
@@ -256,7 +249,7 @@ export function diagnoseEvalRun(runsRoot: string, evalRunId: string, now = () =>
 			fail: 0,
 			error: 0,
 			evidence: [],
-			failedGraderTypes: new Set<string>(),
+			failedGraderCategories: new Set<DiagnosisCategory>(),
 			failedReasons: [],
 		};
 		let toolNames: string[] = [];
@@ -274,7 +267,7 @@ export function diagnoseEvalRun(runsRoot: string, evalRunId: string, now = () =>
 		else if (run.evalResults?.outcome === "pass") aggregate.pass += 1;
 		else aggregate.fail += 1;
 		for (const grader of failedGraders) {
-			aggregate.failedGraderTypes.add(grader.type);
+			aggregate.failedGraderCategories.add(categoryForGrader(grader));
 			aggregate.failedReasons.push(grader.reason);
 		}
 		aggregate.evidence.push({

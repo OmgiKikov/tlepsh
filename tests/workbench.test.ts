@@ -1745,7 +1745,7 @@ describe("AHDE Workbench", () => {
 		const view = await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view();
 		expect(view.stage).toBe("selection-required");
 		expect(view.actions).toEqual([]);
-		expect(view.blockers).toEqual(expect.arrayContaining([expect.stringContaining("candidate provenance artifact hash")]));
+		expect(view.blockers).toEqual(expect.arrayContaining([expect.stringContaining("provenance artifact hash mismatch")]));
 		expect(view.selections.some((item) => item.id === candidate.candidateId)).toBe(false);
 	});
 

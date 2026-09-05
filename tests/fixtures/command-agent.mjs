@@ -6,11 +6,12 @@
  * clock — so a test that fails here failed because the host changed.
  */
 
+const VERSION = Number(process.env.AHDE_PROTOCOL ?? "1");
 const mode = process.env.FAKE_AGENT_MODE ?? "plain";
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
-const say = (turn, text) => send({ v: 1, type: "assistant", turn, text });
+const say = (turn, text) => send({ v: VERSION, type: "assistant", turn, text });
 const usage = (turn) =>
-	send({ v: 1, type: "usage", turn, tokens: { input: 11, output: 7, cacheRead: 0, cacheWrite: 0, total: 18 }, costUsd: 0.25 });
+	send({ v: VERSION, type: "usage", turn, tokens: { input: 11, output: 7, cacheRead: 0, cacheWrite: 0, total: 18 }, costUsd: 0.25 });
 
 let hello = null;
 let buffer = "";
@@ -47,12 +48,20 @@ function onUser(message) {
 	const turn = message.turn;
 	lastTurn = turn;
 	switch (mode) {
+		case "cumulative-usage":
+			usage(turn);
+			send({ v: VERSION, type: "usage", turn, tokens: { input: 22, output: 14, cacheRead: 0, cacheWrite: 0, total: 36 }, costUsd: 0.25 });
+			return say(turn, "Cumulative token snapshots.");
+		case "partial-cost":
+			usage(turn);
+			send({ v: VERSION, type: "usage", turn, tokens: { input: 11, output: 7, cacheRead: 0, cacheWrite: 0, total: 18 } });
+			return say(turn, "One request has unknown cost.");
 		case "two-usage":
 			usage(turn);
 			usage(turn);
 			return say(turn, "Два запроса модели.");
 		case "split-utf8": {
-			const bytes = Buffer.from(JSON.stringify({ v: 1, type: "assistant", turn, text: "Привет 👋" }) + "\n");
+			const bytes = Buffer.from(JSON.stringify({ v: VERSION, type: "assistant", turn, text: "Привет 👋" }) + "\n");
 			const split = bytes.indexOf(Buffer.from("П")) + 1;
 			process.stdout.write(bytes.subarray(0, split));
 			return setTimeout(() => process.stdout.write(bytes.subarray(split)), 50);
@@ -85,28 +94,28 @@ function onUser(message) {
 		case "env":
 			return say(turn, `env=${Object.keys(process.env).sort().join(",")}`);
 		case "tool":
-			return send({ v: 1, type: "tool_call", id: `call-${turn}`, name: "check_dbo", arguments: { id: "42" } });
+			return send({ v: VERSION, type: "tool_call", id: `call-${turn}`, name: "check_dbo", arguments: { id: "42" } });
 		case "note":
-			send({ v: 1, type: "tool_note", name: "internal_lookup", arguments: { id: "42" }, result: "limits: none" });
+			send({ v: VERSION, type: "tool_note", name: "internal_lookup", arguments: { id: "42" }, result: "limits: none" });
 			return say(turn, "Ограничений нет, договор 42 действующий.");
 		case "mixed-tools":
-			send({ v: 1, type: "tool_note", name: "memory_lookup", arguments: { id: "42" }, result: "customer found" });
-			send({ v: 1, type: "tool_note", name: "policy_lookup", arguments: { id: "42" }, result: "limits: none" });
-			return send({ v: 1, type: "tool_call", id: `call-${turn}`, name: "check_dbo", arguments: { id: "42" } });
+			send({ v: VERSION, type: "tool_note", name: "memory_lookup", arguments: { id: "42" }, result: "customer found" });
+			send({ v: VERSION, type: "tool_note", name: "policy_lookup", arguments: { id: "42" }, result: "limits: none" });
+			return send({ v: VERSION, type: "tool_call", id: `call-${turn}`, name: "check_dbo", arguments: { id: "42" } });
 		case "undeclared":
-			return send({ v: 1, type: "tool_call", id: `call-${turn}`, name: "definitely_not_declared", arguments: {} });
+			return send({ v: VERSION, type: "tool_call", id: `call-${turn}`, name: "definitely_not_declared", arguments: {} });
 		case "invalid-json":
 			return process.stdout.write("this is not json at all\n");
 		case "unknown-type":
-			return send({ v: 1, type: "sing", turn });
+			return send({ v: VERSION, type: "sing", turn });
 		case "bad-version":
-			return send({ v: 2, type: "assistant", turn, text: "from the future" });
+			return send({ v: VERSION === 1 ? 2 : 1, type: "assistant", turn, text: "from the future" });
 		case "agent-error":
-			return send({ v: 1, type: "error", message: "внутренняя ошибка агента" });
+			return send({ v: VERSION, type: "error", message: "внутренняя ошибка агента" });
 		case "silent":
 			return undefined;
 		case "die-after-tool":
-			return send({ v: 1, type: "tool_call", id: `call-${turn}`, name: "check_dbo", arguments: { id: "42" } });
+			return send({ v: VERSION, type: "tool_call", id: `call-${turn}`, name: "check_dbo", arguments: { id: "42" } });
 		case "empty-then-recover":
 			if (message.recovery) return say(turn, "Итог: договор 42 действующий.");
 			return say(turn, "");
@@ -115,7 +124,7 @@ function onUser(message) {
 		case "overflow":
 			return process.stdout.write(`${"o".repeat(2 * 1024 * 1024)}\n`);
 		case "too-many-tools":
-			return send({ v: 1, type: "tool_call", id: `call-${turn}-${seenTurns}`, name: "check_dbo", arguments: { id: "42" } });
+			return send({ v: VERSION, type: "tool_call", id: `call-${turn}-${seenTurns}`, name: "check_dbo", arguments: { id: "42" } });
 		default:
 			return say(turn, `unknown mode ${mode}`);
 	}
@@ -130,7 +139,7 @@ function onToolResult(message) {
 	}
 	if (mode === "too-many-tools") {
 		brokered += 1;
-		return send({ v: 1, type: "tool_call", id: `call-${brokered}`, name: "check_dbo", arguments: { id: "42" } });
+		return send({ v: VERSION, type: "tool_call", id: `call-${brokered}`, name: "check_dbo", arguments: { id: "42" } });
 	}
 	return say(lastTurn, `Инструмент ответил: ${message.text.slice(0, 60)} (isError=${message.isError})`);
 }

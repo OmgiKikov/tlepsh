@@ -283,9 +283,9 @@ try {
 	console.log(`RAG X-ray: ${ragReportPath} (Hit@k ${rag.explanation.rag.hitAtK}, MRR ${rag.explanation.rag.mrr})`);
 	console.log(`version card: ${releaseArtifacts.card.decision.headline}`);
 	if (!releaseArtifacts.reportWritten) throw new Error("shareable release report was not saved");
-	console.log(`shareable report: ${join(targetDir, releaseArtifacts.reportWritten)}`);
+	console.log(`shareable report: ${releaseArtifacts.reportWritten}`);
 	console.log(`passport: ${releaseArtifacts.written}`);
-	console.log(`dataset: ${releaseArtifacts.card.artifacts.dataset.value.path} (${releaseArtifacts.card.artifacts.dataset.value.dialogues} dialogues)`);
+	console.log(`dataset: ${join(targetDir, releaseArtifacts.card.artifacts.dataset.value.path)} (${releaseArtifacts.card.artifacts.dataset.value.dialogues} dialogues)`);
 
 	step("6. Adopt the promoted candidate and close the cycle");
 	const adoptionSubject = describeTargetAdoption({ repositoryDir: targetDir, runsRoot, candidateId: experiment.record.candidateId });

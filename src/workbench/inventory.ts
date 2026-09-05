@@ -1,4 +1,5 @@
-import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { resolveCandidateArtifact, type CandidateArtifactKind } from "../application/candidate-artifacts.js";
+import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import {
 	listBuilderCorpusDrafts,
@@ -26,7 +27,6 @@ import {
 } from "../application/builder-authoring.js";
 import { loadCandidateRecord } from "../application/candidate-review.js";
 import {
-	improvementExperimentDesignPath,
 	loadImprovementExperimentDesign,
 } from "../application/improvement-experiment-design.js";
 import { targetWithDevelopmentCorpus } from "../application/corpus-target.js";
@@ -45,7 +45,6 @@ import { standInFilesLine, standInManifestFields } from "../target/placeholders.
 import { listCorpora, loadCorpus, type CorpusMetadata } from "../corpus.js";
 import {
 	candidateStatus,
-	type CandidateArtifactRef,
 	type CandidateRecord,
 } from "../domain/candidate.js";
 import { SEALED_GATE_POLICY, withinInfrastructureBudget } from "../domain/comparison-gate.js";
@@ -192,31 +191,6 @@ function verifyProposalArtifact(runsRoot: string, record: PersistedBuilderRun): 
 	}
 }
 
-function verifyCandidateArtifact(
-	artifact: CandidateArtifactRef,
-	expectedPath: string,
-	expectedHash?: string,
-): void {
-	const path = resolve(expectedPath);
-	// Records may carry the canonical form of a symlinked root (macOS /var →
-	// /private/var); compare canonical paths, never spellings.
-	const canonical = (value: string): string => {
-		try {
-			return realpathSync(value);
-		} catch {
-			return resolve(value);
-		}
-	};
-	if (canonical(artifact.path) !== canonical(path)) throw new Error("candidate provenance points at an unexpected artifact path");
-	const entry = lstatSync(path);
-	if (!entry.isFile() || entry.isSymbolicLink() || entry.size > MAX_PROPOSAL_BYTES * 4) {
-		throw new Error("candidate provenance artifact is not a bounded regular file");
-	}
-	const actualHash = hashFile(readFileSync(path, "utf8"));
-	if (artifact.sha256 !== actualHash || (expectedHash !== undefined && actualHash !== expectedHash)) {
-		throw new Error("candidate provenance artifact hash does not match authoritative evidence");
-	}
-}
 
 function listProposals(
 	stateRoot: string,
@@ -285,11 +259,7 @@ function listProposals(
 						candidate.origin.experimentDesign !== undefined
 					);
 					if (experiment?.origin.kind === "applied-builder" && experiment.origin.experimentDesign) {
-						const design = loadImprovementExperimentDesign(experiment.origin.experimentDesign.path);
-						verifyCandidateArtifact(
-							experiment.origin.experimentDesign,
-							improvementExperimentDesignPath(runsRoot, design.loopId),
-						);
+						const design = loadImprovementExperimentDesign(resolveCandidateArtifact(runsRoot, experiment.origin, "experimentDesign"));
 						const sourceLineage = lineages.get(design.sourceCorpus.id);
 						blindSource = Boolean(
 							sourceLineage &&
@@ -489,15 +459,14 @@ function validateProjectCandidates(options: {
 					}) !== canonicalJson(approvedSpec)
 				) throw new Error("candidate approved Spec does not match an exact human approval receipt");
 
-				const runDir = join(resolve(options.runsRoot), "builders", record.runId);
-				verifyCandidateArtifact(origin.builderRun, join(runDir, "builder_run.json"));
-				verifyCandidateArtifact(origin.builderInput, join(runDir, "builder_input.txt"), record.artifacts.input.sha256);
-				verifyCandidateArtifact(origin.proposal, join(runDir, "proposal.json"), record.artifacts.proposal?.sha256);
-				verifyCandidateArtifact(origin.applyReceipt, join(runDir, "apply_receipt.json"));
-				verifyCandidateArtifact(
-					origin.approvedSpec.artifact,
-					join(resolve(options.stateRoot), "projects", options.projectId, "specs", `${approvedSpec.specId}.json`),
+				const artifact = (kind: CandidateArtifactKind, expectedHash?: string) => resolveCandidateArtifact(
+					options.runsRoot, origin, kind, { stateRoot: options.stateRoot, expectedHash },
 				);
+				artifact("builderRun");
+				artifact("builderInput", record.artifacts.input.sha256);
+				artifact("proposal", record.artifacts.proposal?.sha256);
+				artifact("applyReceipt");
+				artifact("approvedSpec");
 
 				const receipt = loadBuilderApplyReceipt(options.runsRoot, record.runId);
 				if (canonicalJson(origin.application) !== canonicalJson({
@@ -530,23 +499,11 @@ function validateProjectCandidates(options: {
 						suiteHash: source.suiteHash,
 						developmentCorpus: source.developmentCorpus,
 					})) throw new Error("candidate source identity differs from the admitted proposal source");
-					verifyCandidateArtifact(
-						origin.source.evalRun,
-						join(resolve(options.runsRoot), source.evalRunId, "eval_run.json"),
-						source.evalRunSha256,
-					);
-					verifyCandidateArtifact(
-						origin.source.diagnosis,
-						join(resolve(options.runsRoot), source.evalRunId, "diagnosis.json"),
-						source.diagnosisSha256,
-					);
+					artifact("sourceEval", source.evalRunSha256);
+					artifact("sourceDiagnosis", source.diagnosisSha256);
 				}
 				if (origin.experimentDesign) {
-					const design = loadImprovementExperimentDesign(origin.experimentDesign.path);
-					verifyCandidateArtifact(
-						origin.experimentDesign,
-						improvementExperimentDesignPath(options.runsRoot, design.loopId),
-					);
+					const design = loadImprovementExperimentDesign(artifact("experimentDesign"));
 					if (
 						design.projectId !== options.projectId ||
 						!origin.source?.developmentCorpus ||
@@ -1247,7 +1204,8 @@ function stageFor(
 
 	const projectCandidates = inventory.candidates.filter((candidate) => candidate.projectId === inventory.projectId);
 	const releaseLineages = new Set(projectCandidates
-		.filter((candidate) => !isAutomatedDevelopmentCandidate(candidate) && candidate.origin.kind === "applied-builder")
+		.filter((candidate) => !isAutomatedDevelopmentCandidate(candidate) &&
+			!inventory.abandonedCandidates.has(candidate.candidateId) && candidate.origin.kind === "applied-builder")
 		.map((candidate) => candidate.origin.kind === "applied-builder" && candidate.origin.experimentDesign
 			? `design:${candidate.origin.experimentDesign.sha256}`
 			: candidate.origin.kind === "applied-builder" ? `builder:${candidate.origin.builderRunId}` : ""));

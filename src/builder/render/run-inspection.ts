@@ -2,6 +2,7 @@ import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { t } from "../../i18n.js";
 import type { WorkbenchRunInspection } from "../../workbench/run-inspection.js";
 import type { Paint } from "./paint.js";
+import { renderRunReadingLines } from "./run-reading.js";
 
 export const MAX_RUN_INSPECTION_LINES = 160;
 
@@ -10,6 +11,7 @@ export function renderRunInspection(run: WorkbenchRunInspection, paint: Paint): 
 	const lines = [
 		`${paint.heading(t("trace.run"))} ${run.taskId}#${run.repetitionIndex} · ${run.outcome} · ${paint.dim(run.runId)}`,
 		paint.dim(t("trace.inspection-limits")),
+		...(run.reading ? renderRunReadingLines(run.reading, paint) : []),
 		paint.heading(t("trace.verdict")),
 	];
 	const body = (text: string): string[] => wrapTextWithAnsi(text, 96).map((line) => `  ${line}`);

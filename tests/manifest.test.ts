@@ -388,7 +388,7 @@ describe("scaffoldTarget", () => {
 			const cleanSha = loadTarget(dest).gitSha;
 			expect(readFileSync(join(dest, ".gitignore"), "utf8")).toBe(
 				"/custom-cache/\n\n# AHDE local state, Builder imports, run evidence, and secrets\n" +
-					"/.ahde/\n/imports/\n/runs/\n/.env\n/.env.*\n!/.env.example\n",
+					"/.ahde/\n/imports/\n/runs/\n/exports/\n/.env\n/.env.*\n!/.env.example\n",
 			);
 
 			mkdirSync(join(dest, ".ahde", "projects", "test-target"), { recursive: true });

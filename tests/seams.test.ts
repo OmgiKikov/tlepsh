@@ -94,7 +94,7 @@ describe("execution.kind: the command Target seam", () => {
 			ExecutionPolicyBlock.safeParse({ kind: "command", command: { argv: [], protocolVersion: 1 } }).success,
 		).toBe(false);
 		expect(
-			ExecutionPolicyBlock.safeParse({ kind: "command", command: { argv: ["a"], protocolVersion: 2 } }).success,
+			ExecutionPolicyBlock.safeParse({ kind: "command", command: { argv: ["a"], protocolVersion: 3 } }).success,
 		).toBe(false);
 	});
 

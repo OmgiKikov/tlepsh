@@ -1,6 +1,9 @@
 import type { GraderFinding, RunReceipt, RunRow, TranscriptEntry } from "../../application/run-explanation.js";
 import type { RagRunXray } from "../../application/rag-xray.js";
 import type { EvalPageMode, RunDetailPageModel } from "../../evidence/pages.js";
+import { runGraderScore } from "../../compare.js";
+import { readRunOutcome } from "../../application/run-reading.js";
+import { renderRunReadingLines } from "./run-reading.js";
 import { duration, money, oneLine, percent, shortTaskId } from "./format.js";
 import type { Paint } from "./paint.js";
 import { plural, t, tokenLabel } from "../../i18n.js";
@@ -140,11 +143,6 @@ export function renderRunsTable(
 	}
 	lines.push(paint.dim(t("table.hint")));
 	return lines;
-}
-
-function meanGraderScore(graders: readonly GraderFinding[]): number | null {
-	if (graders.length === 0) return null;
-	return graders.reduce((sum, grader) => sum + grader.score, 0) / graders.length;
 }
 
 function renderGrader(grader: GraderFinding, paint: Paint): string[] {
@@ -314,7 +312,10 @@ export function renderTracePanel(
 	options: { world?: TraceWorld | null } = {},
 ): string[] {
 	const run = model.run;
-	const score = meanGraderScore(model.graders);
+	const score = model.graders.length === 0 ? null : runGraderScore({ evalResults: {
+		outcome: run.outcome,
+		graders: model.graders,
+	} });
 	const lines: string[] = [
 		`${paint.heading(t("trace.run"))} ${run.taskId}#${run.repetitionIndex} · ${paintOutcome(run.outcome, outcomeWord(run.outcome), paint)}` +
 			`${score === null ? "" : ` · ${t("table.col.score")} ${percent(score)}`} · ${duration(run.metrics.latencyMs)} · ${t("trace.toolCalls", { n: run.metrics.toolCalls })}` +
@@ -341,10 +342,7 @@ export function renderTracePanel(
 		}`);
 	}
 	if (model.receipt) lines.push(...receiptLines(model.receipt, paint));
-	lines.push("", paint.heading(t("trace.why")));
-	for (const sentence of model.explanation.sentences) {
-		for (const line of wrapSentence(sentence)) lines.push(`  ${line}`);
-	}
+	lines.push("", paint.heading(t("trace.why")), ...renderRunReadingLines(model.reading ?? readRunOutcome(model.explanation, model.transcript), paint));
 	if (model.explanation.rag) lines.push("", ...renderRagXrayLines(model.explanation.rag, paint));
 	lines.push("", paint.heading(t("trace.verdict")));
 	if (model.graders.length === 0) lines.push(`  ${paint.dim(t("trace.noGraders"))}`);
@@ -387,9 +385,14 @@ export function traceNoteForModel(model: RunDetailPageModel): string {
 		[...entries].reverse().find((entry) => entry.kind === "assistant");
 	const tools = entries.filter((entry) => entry.kind === "tool").map((entry) => (entry.kind === "tool" ? `${entry.name}${entry.evidence === "reported" ? " (agent-reported, not host-verified)" : ""}${entry.isError ? " (error)" : ""}` : ""));
 	const failure = model.explanation.error;
+	const reading = model.reading ?? readRunOutcome(model.explanation, model.transcript);
 	const parts = [
 		`Operator opened /trace for run ${run.runId} — ${run.taskId}#${run.repetitionIndex}, ${outcomeWord(run.outcome)} — of eval ${model.evalRunId}.`,
-		`Host facts (assembled from recorded fields, not by a model): ${model.explanation.sentences.join(" ")}`,
+		// Keep the instruction before bounded recorded data: a long transcript
+		// must not truncate the distinction between observation and hypothesis.
+		failure
+			? "Tell the operator, in their language and in at most four sentences, what ended this run — quote the typed cause below — and that it is infrastructure, so the honest next step is to stabilize the path and run again, never a harness change. Do not send the operator to a shell; do not invent a missing credential; use only the recorded facts."
+			: "Tell the operator, in their language and in at most four sentences, the observed failure, what you would change, and what remains uncertain. If you propose a cause: Call it your hypothesis. Use only the recorded facts; never quote or infer sealed content; do not invent numbers or ids.",
 		// Said before anything read off the trace, because the trace stops where
 		// the run stopped: its last record is a timestamp, never a cause. Session 7
 		// let the Builder infer "the tool did not answer" from a trace whose tool
@@ -401,13 +404,11 @@ export function traceNoteForModel(model: RunDetailPageModel): string {
 				"The trace below stops where the run stopped, so nothing in it — a last tool call, a missing reply — says why. Never infer a cause from its shape, and never claim a tool failed when its recorded result says ok.",
 			]
 			: []),
+		`Host facts (assembled from recorded fields, not by a model): ${reading.title} ${reading.expectations.join(" ")} ${reading.observations.join(" ")} ${reading.uncertainties.join(" ")}`,
 		graders ? `Graders: ${graders}.` : "Graders: none recorded.",
 		firstUser && firstUser.kind === "user" ? `Case input: ${oneLine(firstUser.text, 300)}` : "Case input: not in the recorded trace.",
 		finalAnswer && finalAnswer.kind === "assistant" ? `Agent's answer: ${oneLine(finalAnswer.text, 400)}` : "Agent's answer: not in the recorded trace.",
 		tools.length > 0 ? `Tool calls, in order: ${tools.join(", ")}.` : "Tool calls: none.",
-		failure
-			? "Now tell the operator, in their language and in at most four sentences, what ended this run — quote the typed cause above — and that it is infrastructure, so the honest next step is to stabilize the path and run again, never a harness change. Do not send the operator to a shell; do not invent a missing credential; use only the facts above."
-			: "Now tell the operator, in their language and in at most four sentences, why the harness let this happen and what you would change in the instructions, a skill or a tool. Call it your hypothesis. Use only the facts above; never quote or infer sealed content; do not invent numbers or ids.",
 	];
 	return parts.join("\n").slice(0, MAX_NOTE_CHARS);
 }

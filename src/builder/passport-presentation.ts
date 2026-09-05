@@ -66,6 +66,7 @@ function verifiedImpact(
 	try {
 		return inspectCandidateImpact({
 			runsRoot: workbench.runsRoot,
+			stateRoot: workbench.stateRoot,
 			candidateId: record.candidateId,
 			expectedCandidateHash: hashValue(record),
 		});
@@ -188,9 +189,9 @@ export async function compileBuilderPassport(
 	let passportArtifact: VersionCardArtifactInput | null = null;
 	let datasetArtifact: VersionCardDatasetArtifactInput | null = null;
 	if (options.save === true) {
-		written = name;
+		written = resolve(workbench.projectDir, name);
 		try {
-			writeTextArtifact(join(workbench.projectDir, name), markdown);
+			writeTextArtifact(written, markdown);
 			passportArtifact = {
 				path: name,
 				sha256: sha256(markdown),
@@ -216,9 +217,10 @@ export async function compileBuilderPassport(
 	if (options.save === true) {
 		const path = `exports/version-${slug.startsWith("v") ? slug : `v${slug}`}.html`;
 		try {
-			writeTextArtifact(join(workbench.projectDir, path), renderVersionCardHtml(card));
-			reportWritten = path;
+			reportWritten = resolve(workbench.projectDir, path);
+			writeTextArtifact(reportWritten, renderVersionCardHtml(card));
 		} catch {
+			reportWritten = null;
 			// Export failure cannot undo a recorded release or hide its terminal evidence.
 		}
 	}

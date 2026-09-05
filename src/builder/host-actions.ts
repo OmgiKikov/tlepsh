@@ -1,6 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { defineTool } from "@earendil-works/pi-coding-agent";
-import { relative, sep } from "node:path";
 import { Type } from "typebox";
 import { corpusTaskLookup, datasetExportDoneLine, DatasetExportError, exportDataset, sealedDatasetHashesFor } from "../application/export-dataset.js";
 import { SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
@@ -10,7 +9,7 @@ import type { AhdeWorkbench } from "../workbench/workbench.js";
 import type { BuilderJobs } from "./jobs.js";
 import { MAX_LABEL_SAMPLE, NoJudgedEvidence, runBuilderLabelSession, type LabelScreen } from "./label-session.js";
 import { compileBuilderPassport } from "./passport-presentation.js";
-import { oneLine } from "./render/format.js";
+import { clean, oneLine } from "./render/format.js";
 import { renderVersionPassport } from "./render/passport.js";
 import { renderExecutiveVersionCard } from "./render/version-card.js";
 import { markerPaint, stripMarkers, type TranscriptPresenter } from "./transcript.js";
@@ -31,10 +30,6 @@ export interface BuilderHostActionOptions {
 	presenter: TranscriptPresenter;
 	onWorkbenchChanged?: () => void | Promise<void>;
 	importSealedHoldout?: (input: { sourcePath: string; name: string }) => { taskCount: number };
-}
-function besideTarget(projectDir: string, path: string): string {
-	const rel = relative(projectDir, path);
-	return rel && !rel.startsWith("..") && !rel.startsWith(sep) ? rel : path;
 }
 export function createBuilderHostActions(options: BuilderHostActionOptions): BuilderHostActions {
 	const { workbench, presenter, jobs } = options;
@@ -61,16 +56,20 @@ export function createBuilderHostActions(options: BuilderHostActionOptions): Bui
 			tone: "info",
 			lines: [
 				...renderExecutiveVersionCard(card, markerPaint),
-				reportWritten ? t("release.html.saved", { path: reportWritten }) : markerPaint.warning(t("release.html.not-saved")),
+				reportWritten ? t("release.html.saved", { path: clean(reportWritten) }) : markerPaint.warning(t("release.html.not-saved")),
 				"",
 				...renderVersionPassport(passport, markerPaint),
 				"",
 				written
-					? `${markerPaint.dim(t("passport.written-to"))} ${oneLine(written, 100)}`
+					? `${markerPaint.dim(t("passport.written-to"))} ${clean(written)}`
 					: markerPaint.warning(t("cmd.passport-not-writable")),
 			],
 		});
-		return renderExecutiveVersionCard(card, markerPaint).map(stripMarkers).join("\n");
+		return [
+			...renderExecutiveVersionCard(card, markerPaint).map(stripMarkers),
+			...(reportWritten ? [t("release.html.saved", { path: clean(reportWritten) })] : []),
+			...(written ? [`${t("passport.written-to")} ${clean(written)}`] : []),
+		].join("\n");
 	};
 	const dataset = async (ctx: ExtensionContext, all = false) => {
 		const scope = { stateRoot: workbench.stateRoot, projectId: workbench.projectId };
@@ -100,9 +99,9 @@ export function createBuilderHostActions(options: BuilderHostActionOptions): Bui
 		presenter.show(ctx, {
 			title: t("panel.title", { detail: t("panel.export") }),
 			tone: "info",
-			lines: [datasetExportDoneLine(result, oneLine(besideTarget(workbench.projectDir, result.path), 100))],
+			lines: [datasetExportDoneLine(result, clean(result.path))],
 		});
-		return datasetExportDoneLine(result, oneLine(besideTarget(workbench.projectDir, result.path), 100));
+		return datasetExportDoneLine(result, clean(result.path));
 	};
 	const labelJudge = async (ctx: ExtensionContext, signal?: AbortSignal, sample?: number) => {
 		if (typeof ctx.ui.select !== "function") {

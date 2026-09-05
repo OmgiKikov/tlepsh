@@ -188,7 +188,7 @@ Example: ahde init my-agent --template python-support
 Custom templates still accept relative or absolute directories:
   ahde init my-agent --template ./my-template
 
-The scaffold's .gitignore is topped up with .ahde/, runs/ and imports/ before
+The scaffold's .gitignore is topped up with .ahde/, runs/, imports/ and exports/ before
 that first commit, and the added lines are named: the engine's store lives
 inside the Target and holds the sealed exam.
 

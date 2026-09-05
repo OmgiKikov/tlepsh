@@ -1,6 +1,7 @@
 import { advanceShipConsent, assertCompositeFresh, compositeGate, testingConsent, shipConsent, matchesSpecApproval, matchesCorpusPublication, matchesCandidateDecision, matchesEvaluatorConfiguration, matchesPublishedRun } from "./composite-consent.js";
 import { resolveRunCurrent } from "./run-resolution.js";
 import { inspectSelectedDevelopmentRun, inspectModelExperimentRun } from "./run-inspection.js";
+import { currentFindingFromInventory } from "./current-finding.js";
 import { planModelExperiment, runModelExperiment, loadModelExperiment, listModelExperiments, loadModelExperimentEval, modelExperimentDirectory, describeModelChange, applyModelChange } from "../application/model-experiment.js";
 import { decideModelExperiment, decideAcceptModel } from "./decisions/model-experiment.js";
 import { workbenchNext } from "./next-actions.js";
@@ -524,10 +525,11 @@ const DEFAULT_DEPENDENCIES: AhdeWorkbenchDependencies = {
 	adoptTargetCandidate,
 	describeCycleContinuation,
 	recordCycleContinuation,
-	candidateImpact: ({ runsRoot, candidate }) => ({
+	candidateImpact: ({ runsRoot, stateRoot, candidate }) => ({
 		available: true,
 		impact: inspectCandidateImpact({
 			runsRoot,
+			stateRoot,
 			candidateId: candidate.candidateId,
 			expectedCandidateHash: hashValue(candidate),
 		}),
@@ -2860,6 +2862,8 @@ export class AhdeWorkbench {
 			...(judgeCalibration ? { judgeCalibration } : {}),
 		};
 		view.guidance = workbenchNext(view, resolveRunCurrent(inventory, view.stage));
+		const finding = currentFindingFromInventory(inventory, view);
+		if (finding) view.finding = finding;
 		const aspect = query.aspect ?? "summary";
 		if (aspect === "summary") return view;
 		if (aspect === "models") {

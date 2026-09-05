@@ -4,7 +4,7 @@ import { z } from "zod";
  * The wire between AHDE and a Target that is not Pi.
  *
  * One versioned JSON-lines protocol, UTF-8, one message per line, every
- * message carrying `{"v":1,...}`. There is exactly one of these and it is
+ * message carrying its selected `v: 1` or `v: 2`. Each session selects one and is
  * strict on purpose (invariant 43): a second dialect, or a message a newer
  * agent invented, is a protocol error — never a behavioural failure and never
  * something the host quietly tolerates, because evidence produced by an agent
@@ -14,8 +14,12 @@ import { z } from "zod";
  * `session-command.ts` is what enforces the bounds around them.
  */
 
-/** The wire contract this build speaks. A literal, so an old adapter fails loudly. */
-export const COMMAND_PROTOCOL_VERSION = 1;
+/** Latest wire contract for new adapters; existing descriptors default to v1. */
+export const COMMAND_PROTOCOL_VERSION = 2;
+/** Existing descriptors and callers keep v1 until explicitly migrated. */
+export const LEGACY_COMMAND_PROTOCOL_VERSION = 1;
+export const CommandProtocolVersionSchema = z.union([z.literal(1), z.literal(2)]);
+export type CommandProtocolVersion = z.infer<typeof CommandProtocolVersionSchema>;
 
 /** Largest single protocol line, in bytes, in either direction. */
 export const MAX_PROTOCOL_LINE_BYTES = 1024 * 1024;
@@ -29,7 +33,7 @@ export const MAX_CAPTURED_STDERR_BYTES = 8 * 1024;
 /** How long a `cancel` is given to be polite before the process group is killed. */
 export const CANCEL_GRACE_MS = 2_000;
 
-const Version = z.literal(COMMAND_PROTOCOL_VERSION);
+const Version = CommandProtocolVersionSchema;
 const Identifier = z.string().min(1).max(200);
 
 // ---------------------------------------------------------------------------
@@ -142,7 +146,11 @@ export const ToolNoteMessageSchema = z.strictObject({
 });
 export type ToolNoteMessage = z.infer<typeof ToolNoteMessageSchema>;
 
-/** Incremental usage for ONE model request. Send before the turn's assistant frame. */
+/**
+ * v1: tokens replace the session snapshot; costUsd is an incremental charge.
+ * v2: tokens and costUsd are increments for ONE model request. Send before the
+ * turn's assistant frame; an omitted v2 cost makes the session total unknown.
+ */
 export const UsageMessageSchema = z.strictObject({
 	v: Version,
 	type: z.literal("usage"),
@@ -175,7 +183,7 @@ export const AgentMessageSchema = z.discriminatedUnion("type", [
 export type AgentMessage = z.infer<typeof AgentMessageSchema>;
 
 /**
- * A violation of the wire itself: unparseable JSON, a version that is not 1, a
+ * A violation of the wire itself: unparseable JSON, a version different from the selected session, a
  * type nobody declared, a line over the byte bound. It carries the line number
  * and NEVER the line body — a malformed line is attacker- or model-controlled
  * text, and an error message is one of the few places it could reach a human
@@ -195,7 +203,7 @@ export class CommandProtocolError extends Error {
  * Parse one agent line. `line` is the 1-based ordinal of this line in the
  * child's stdout, used only to say where the violation was.
  */
-export function parseAgentLine(raw: string, line: number): AgentMessage {
+export function parseAgentLine(raw: string, line: number, expectedVersion: CommandProtocolVersion = LEGACY_COMMAND_PROTOCOL_VERSION): AgentMessage {
 	if (Buffer.byteLength(raw, "utf8") > MAX_PROTOCOL_LINE_BYTES) throw new CommandProtocolError(line);
 	let value: unknown;
 	try {
@@ -204,7 +212,7 @@ export function parseAgentLine(raw: string, line: number): AgentMessage {
 		throw new CommandProtocolError(line);
 	}
 	const parsed = AgentMessageSchema.safeParse(value);
-	if (!parsed.success) throw new CommandProtocolError(line);
+	if (!parsed.success || parsed.data.v !== expectedVersion) throw new CommandProtocolError(line);
 	return parsed.data;
 }
 
@@ -213,6 +221,8 @@ export class AgentMessageDecoder {
 	private readonly decoder = new TextDecoder("utf-8", { fatal: true });
 	private buffer = "";
 	private lines = 0;
+
+	constructor(private readonly version: CommandProtocolVersion = LEGACY_COMMAND_PROTOCOL_VERSION) {}
 
 	push(chunk: Uint8Array): AgentMessage[] {
 		try {
@@ -227,7 +237,7 @@ export class AgentMessageDecoder {
 			this.buffer = this.buffer.slice(newline + 1);
 			this.lines += 1;
 			if (Buffer.byteLength(raw, "utf8") > MAX_PROTOCOL_LINE_BYTES) throw new CommandProtocolError(this.lines);
-			if (raw.trim()) messages.push(parseAgentLine(raw, this.lines));
+			if (raw.trim()) messages.push(parseAgentLine(raw, this.lines, this.version));
 			newline = this.buffer.indexOf("\n");
 		}
 		if (Buffer.byteLength(this.buffer, "utf8") > MAX_PROTOCOL_LINE_BYTES) throw new CommandProtocolError(this.lines + 1);

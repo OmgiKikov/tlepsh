@@ -18,7 +18,6 @@ import {
 import {
 	CANCEL_GRACE_MS,
 	AgentMessageDecoder,
-	COMMAND_PROTOCOL_VERSION,
 	encodeHostMessage,
 	MAX_CAPTURED_STDERR_BYTES,
 	MAX_TOOL_CALLS_PER_TURN,
@@ -149,7 +148,7 @@ class CommandTargetSession implements TargetSession {
 	private waiter: (() => void) | undefined;
 	/** Set once and never cleared: the first fatal condition owns the run. */
 	private fatal: Error | undefined;
-	private readonly decoder = new AgentMessageDecoder();
+	private readonly decoder: AgentMessageDecoder;
 	private stdoutBytes = 0;
 	private stderrBytes = 0;
 	private readonly stderrChunks: Buffer[] = [];
@@ -160,6 +159,7 @@ class CommandTargetSession implements TargetSession {
 	private reportedToolCalls = 0;
 	private tokens: TokenMetrics | null = null;
 	private costUsd: number | null = null;
+	private unknownRequestCost = false;
 	private killed = false;
 
 	constructor(
@@ -170,6 +170,7 @@ class CommandTargetSession implements TargetSession {
 		tools: readonly ToolDefinition<any, any, any>[],
 		private readonly teardown: { terminate?: () => void; dispose?: () => void },
 	) {
+		this.decoder = new AgentMessageDecoder(options.target.manifest.execution.command!.protocolVersion);
 		for (const tool of tools) this.tools.set(tool.name, tool);
 		this.child.stdout?.on("data", (chunk: Buffer) => this.readStdout(chunk));
 		this.child.stdout?.on("end", () => {
@@ -315,7 +316,7 @@ class CommandTargetSession implements TargetSession {
 	private async ask(prompt: string, recovery: boolean): Promise<string> {
 		this.writer.user(prompt);
 		this.send({
-			v: COMMAND_PROTOCOL_VERSION,
+			v: this.options.target.manifest.execution.command!.protocolVersion,
 			type: "user",
 			turn: this.turn,
 			text: prompt,
@@ -343,9 +344,12 @@ class CommandTargetSession implements TargetSession {
 				return message.text;
 			}
 			if (message.type === "usage") {
-				this.tokens ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
-				for (const key of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) {
-					this.tokens[key] += message.tokens[key];
+				if (message.v === 1) {
+					this.tokens = { ...message.tokens };
+				} else {
+					this.tokens ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+					for (const key of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) this.tokens[key] += message.tokens[key];
+					if (message.costUsd === undefined) this.unknownRequestCost = true;
 				}
 				if (message.costUsd !== undefined) this.costUsd = (this.costUsd ?? 0) + message.costUsd;
 				continue;
@@ -388,7 +392,7 @@ class CommandTargetSession implements TargetSession {
 			const reason = `AHDE Target blocked undeclared tool ${JSON.stringify(name)}`;
 			this.writer.toolResult({ toolCallId: id, toolName: name, text: reason, isError: true });
 			this.emit({ type: "tool_execution_end", toolCallId: id, toolName: name, result: reason, isError: true } as AgentSessionEvent);
-			this.send({ v: COMMAND_PROTOCOL_VERSION, type: "tool_result", id, name, text: reason, isError: true });
+			this.send({ v: this.options.target.manifest.execution.command!.protocolVersion, type: "tool_result", id, name, text: reason, isError: true });
 			throw new Error(reason);
 		}
 		let text: string;
@@ -404,7 +408,7 @@ class CommandTargetSession implements TargetSession {
 		}
 		this.writer.toolResult({ toolCallId: id, toolName: name, text, isError });
 		this.emit({ type: "tool_execution_end", toolCallId: id, toolName: name, result: text, isError } as AgentSessionEvent);
-		this.send({ v: COMMAND_PROTOCOL_VERSION, type: "tool_result", id, name, text, isError });
+		this.send({ v: this.options.target.manifest.execution.command!.protocolVersion, type: "tool_result", id, name, text, isError });
 	}
 
 	// -----------------------------------------------------------------------
@@ -416,7 +420,7 @@ class CommandTargetSession implements TargetSession {
 			// claim about evidence that does not exist.
 			sessionId: null,
 			tokens: this.tokens,
-			costUsd: this.costUsd,
+			costUsd: this.unknownRequestCost ? null : this.costUsd,
 			toolCalls: this.toolCalls,
 			...(this.reportedToolCalls > 0 ? { reportedToolCalls: this.reportedToolCalls } : {}),
 		};
@@ -432,7 +436,7 @@ class CommandTargetSession implements TargetSession {
 
 	async close(): Promise<void> {
 		if (!this.exited && !this.killed) {
-			this.send({ v: COMMAND_PROTOCOL_VERSION, type: "cancel" });
+			this.send({ v: this.options.target.manifest.execution.command!.protocolVersion, type: "cancel" });
 			this.child.stdin?.end();
 			await new Promise<void>((resolveWait) => {
 				if (this.exited) return resolveWait();
@@ -543,7 +547,7 @@ export async function createCommandTargetSession(
 	});
 	const model = options.target.manifest.model;
 	environment[model.apiKeyEnv] = options.apiKey;
-	environment.AHDE_PROTOCOL = String(COMMAND_PROTOCOL_VERSION);
+	environment.AHDE_PROTOCOL = String(command.protocolVersion);
 	if (options.worldPath) environment.AHDE_WORLD = options.worldPath;
 	assertLoaderSafeEnvironment(environment);
 
@@ -609,7 +613,7 @@ export async function createCommandTargetSession(
 	// The one-time handshake. The credential travels by NAME; the value is
 	// already in the child's environment under exactly that name.
 	const hello: HelloMessage = {
-		v: COMMAND_PROTOCOL_VERSION,
+		v: command.protocolVersion,
 		type: "hello",
 		tools: tools.map((tool): HelloTool => ({
 			name: tool.name,

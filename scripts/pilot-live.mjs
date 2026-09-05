@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { resolveCandidateArtifact } from "../dist/application/candidate-artifacts.js";
 // Live acceptance of the automatic author → blind comparison → sealed check.
 // All cases are synthetic; the real provider writes every proposed change.
 import { execFileSync } from "node:child_process";
@@ -130,7 +131,7 @@ try {
 		const winner = search?.rows.filter(row => search.frontier.includes(row.ordinal)).sort((a,b) => (b.development?.scoreDelta ?? -Infinity) - (a.development?.scoreDelta ?? -Infinity))[0];
 		if (!winner?.candidateId) throw new Error("No independently improved candidate; inspect the preserved author receipts and search skips");
 		const candidate = loadCandidateRecord(runsRoot, winner.candidateId);
-		const design = loadImprovementExperimentDesign(candidate.origin.experimentDesign.path);
+		const design = loadImprovementExperimentDesign(resolveCandidateArtifact(runsRoot, candidate.origin, "experimentDesign"));
 		const serializedContexts = authorContexts.join("\n");
 		if (serializedContexts.includes(sealedMarker) || design.validationTaskIds.some(id => serializedContexts.includes(id))) throw new Error("Held-out identity reached the author");
 		stage("independent-winner", { candidateId: winner.candidateId, authoringCases: design.authoringTaskIds.length, validationCases: design.validationTaskIds.length, authorRequests, authorCostUsd, impact: inspectCandidateImpact({runsRoot,candidateId:winner.candidateId}).verdict });

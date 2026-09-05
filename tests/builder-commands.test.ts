@@ -1911,7 +1911,7 @@ describe("Builder Pi slash commands", () => {
 
 		expect(host.select).toHaveBeenCalledWith(
 			"Prepare a change?",
-			["Fix 1: lookup was never called", "Not now"],
+			["Not now", "Fix 1: lookup was never called"],
 			{ signal: controller.signal },
 		);
 		expect(sendUserMessage).toHaveBeenCalledTimes(1);
@@ -1936,6 +1936,25 @@ describe("Builder Pi slash commands", () => {
 		await command(unbridged.commands, "traces").handler("", unbridgedHost.ctx);
 		expect(unbridgedHost.select).not.toHaveBeenCalled();
 		expect(unbridged.output.blocks.map((block) => block.title)).toEqual(["AHDE · Diagnosis"]);
+	});
+
+	it.each(["en", "ru"] as const)("keeps /traces read-only when Enter accepts its first choice (%s)", async (language) => {
+		setLanguage(language);
+		try {
+			const tracesView = viewAt("improvement-authoring", { detail: { aspect: "traces", content: tracesDetail() } });
+			const sendUserMessage = vi.fn();
+			const fixture = workbench({ view: async () => tracesView });
+			const { commands, output } = register(fixture.value, { sendUserMessage });
+			const host = context({ select: async (_title, choices) => {
+				expect(output.blocks).toHaveLength(1);
+				expect(choices[0]).toBe(language === "ru" ? "Не сейчас" : "Not now");
+				return choices[0];
+			} });
+			await command(commands, "traces").handler("", host.ctx);
+			expect(host.select).toHaveBeenCalledTimes(1);
+			expect(sendUserMessage).not.toHaveBeenCalled();
+			expect(fixture.decide).not.toHaveBeenCalled();
+		} finally { setLanguage(null); }
 	});
 
 	it("humanizes Workbench failures into one calm sentence", () => {
@@ -2658,8 +2677,8 @@ describe("/dataset", () => {
 	].join("\n");
 
 	/** One Target directory with one exportable eval run under its own runs/. */
-	function targetWithEvidence(runCount = 2): string {
-		const projectDir = mkdtempSync(join(tmpdir(), "ahde-export-command-"));
+	function targetWithEvidence(runCount = 2, prefix = "ahde-export-command-"): string {
+		const projectDir = mkdtempSync(join(tmpdir(), prefix));
 		standInDirs.push(projectDir);
 		const runsRoot = join(projectDir, "runs");
 		const evaluation = {
@@ -2759,7 +2778,7 @@ describe("/dataset", () => {
 
 	it("writes the last test run's conversations beside the agent and says so in one line", async () => {
 		setLanguage("ru");
-		const projectDir = targetWithEvidence();
+		const projectDir = targetWithEvidence(2, `ahde-export  ${"long-path-".repeat(10)}`);
 		const fixture = workbench({ projectDir });
 		const { commands, output } = register(fixture.value);
 		const host = context();
@@ -2769,7 +2788,7 @@ describe("/dataset", () => {
 		expect(output.blocks).toHaveLength(1);
 		expect(output.blocks[0]?.title).toBe("AHDE · Записанные диалоги");
 		expect(output.blocks[0]?.lines).toEqual([
-			"выгружено 2 из 2 диалогов → exports/erun_export.jsonl",
+			`выгружено 2 из 2 диалогов → ${join(projectDir, "exports", "erun_export.jsonl")}`,
 		]);
 		// The file is real, and every line of it is one conversation.
 		const written = readFileSync(join(projectDir, "exports", "erun_export.jsonl"), "utf8");
@@ -2784,7 +2803,8 @@ describe("/dataset", () => {
 		const fixture = workbench({ projectDir: targetWithEvidence(1) });
 		const { commands, output } = register(fixture.value);
 		await command(commands, "dataset").handler("--all", context().ctx);
-		expect(output.blocks[0]?.lines[0]).toMatch(/^выгружено 1 из 1 диалога → exports\/all-.*\.jsonl$/);
+		expect(output.blocks[0]?.lines[0]).toContain(`выгружено 1 из 1 диалога → ${join(fixture.value.projectDir, "exports", "all-")}`);
+		expect(output.blocks[0]?.lines[0]).toMatch(/\.jsonl$/);
 	});
 
 	it("says plainly that there is nothing recorded yet, and refuses an argument it does not know", async () => {

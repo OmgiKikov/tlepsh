@@ -273,11 +273,12 @@ function fixture(
 		execution?: ExecutionFingerprint;
 		judgeSpecHash?: string;
 		developmentTasks?: number;
+		stateRoot?: string;
 	} = {},
 	withSource = true,
 ): { runsRoot: string; candidateId: string } {
 	const runsRoot = mkdtempSync(join(tmpdir(), "ahde-review-"));
-	const stateRoot = mkdtempSync(join(tmpdir(), "ahde-review-state-"));
+	const stateRoot = overrides.stateRoot ?? mkdtempSync(join(tmpdir(), "ahde-review-state-"));
 	roots.push(runsRoot, stateRoot);
 	const candidateId = "candidate-1";
 	const fixtureBaselineSha = overrides.baselineSha ?? baselineSha;
@@ -1116,9 +1117,9 @@ describe("candidate human review", () => {
 
 	it("promotes judge-graded evidence with no calibration policy: the default never blocks", () => {
 		const repo = repository();
-		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec });
 		const stateRoot = mkdtempSync(join(tmpdir(), "ahde-promote-labels-"));
 		roots.push(stateRoot);
+		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec, stateRoot });
 		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
 
 		const result = promoteReviewedCandidate({
@@ -1134,9 +1135,9 @@ describe("candidate human review", () => {
 
 	it("refuses promotion on an unchecked judge when the Target requires calibration", () => {
 		const repo = repository(calibratedManifest);
-		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec, developmentTasks: 4 });
 		const stateRoot = mkdtempSync(join(tmpdir(), "ahde-promote-labels-"));
 		roots.push(stateRoot);
+		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec, developmentTasks: 4, stateRoot });
 		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
 
 		const promote = (version: string) => promoteReviewedCandidate({
@@ -1161,9 +1162,9 @@ describe("candidate human review", () => {
 
 	it("does not let repeated labels for one subject satisfy minLabels", () => {
 		const repo = repository(calibratedManifest);
-		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec, developmentTasks: 4 });
 		const stateRoot = mkdtempSync(join(tmpdir(), "ahde-promote-label-repeat-"));
 		roots.push(stateRoot);
+		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec, developmentTasks: 4, stateRoot });
 		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
 		const [one] = calibrationRows(value);
 		appendJudgeLabels(stateRoot, "project", "eval-candidate", [one!, one!, one!, one!]);
@@ -1186,9 +1187,9 @@ describe("candidate human review", () => {
 	 */
 	it("does not let labels written under the old screen satisfy requireCalibration", () => {
 		const repo = repository(calibratedManifest);
-		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec, developmentTasks: 4 });
 		const stateRoot = mkdtempSync(join(tmpdir(), "ahde-promote-legacy-"));
 		roots.push(stateRoot);
+		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec, developmentTasks: 4, stateRoot });
 		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
 		appendJudgeLabels(stateRoot, "project", "eval-candidate", legacyCalibrationRows(value));
 		const promote = (version: string) => promoteReviewedCandidate({
@@ -1210,9 +1211,9 @@ describe("candidate human review", () => {
 		const repo = repository(
 			calibratedManifest.replace("      minLabels: 4\n", "      minLabels: 4\n      allowLegacyLabels: true\n"),
 		);
-		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec, developmentTasks: 4 });
 		const stateRoot = mkdtempSync(join(tmpdir(), "ahde-promote-legacy-ok-"));
 		roots.push(stateRoot);
+		const value = fixture(true, { ...repo, targetId: "test-target", judgeSpecHash: judgeSpec, developmentTasks: 4, stateRoot });
 		reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
 		appendJudgeLabels(stateRoot, "project", "eval-candidate", legacyCalibrationRows(value));
 		expect(promoteReviewedCandidate({

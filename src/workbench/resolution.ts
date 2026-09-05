@@ -1,6 +1,4 @@
-import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { readCandidateArtifact } from "../application/candidate-artifacts.js";
 import {
 	loadBuilderProposalRun,
 	type PersistedBuilderRun,
@@ -22,7 +20,6 @@ import type { EvalRunRecord } from "../eval.js";
 import type { SpecSnapshot } from "../spec.js";
 import { redactTraceText } from "../trace.js";
 import { canonicalJson, type RunRecord } from "../provenance.js";
-import { resolveContainedArtifactPath } from "../storage/paths.js";
 import { WorkbenchSelectionRequiredError } from "./errors.js";
 import type {
 	WorkbenchInventory,
@@ -77,31 +74,6 @@ export function proposalReview(record: PersistedBuilderRun): WorkbenchProposalRe
 	};
 }
 
-function assertExactCandidateArtifact(
-	path: string,
-	recordedPath: string,
-	expectedHash: string,
-	label: string,
-): Buffer {
-	const entry = lstatSync(path);
-	if (entry.isSymbolicLink() || !entry.isFile()) {
-		throw new Error(`${label} must remain a regular non-symlink artifact`);
-	}
-	const recordedEntry = lstatSync(resolve(recordedPath));
-	if (recordedEntry.isSymbolicLink() || !recordedEntry.isFile()) {
-		throw new Error(`${label} Candidate path must remain a regular non-symlink artifact`);
-	}
-	// macOS may spell the same regular file through /var and /private/var. The
-	// resolved inode must match; a symlink at the recorded leaf is still refused.
-	if (realpathSync(path) !== realpathSync(resolve(recordedPath))) {
-		throw new Error(`${label} path no longer matches the Candidate record`);
-	}
-	const bytes = readFileSync(path);
-	const actual = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-	if (actual !== expectedHash) throw new Error(`${label} changed after the candidate was created`);
-	return bytes;
-}
-
 /**
  * Resolve the exact proposal behind a Candidate, not merely another run with
  * the same id. Automated applies cross a trust boundary here: both immutable
@@ -114,15 +86,8 @@ export function candidateProposalReview(
 ): WorkbenchProposalReview | null {
 	if (candidate.origin.kind !== "applied-builder") return null;
 	const origin = candidate.origin;
-	const builderRunPath = resolveContainedArtifactPath(runsRoot, "builders", origin.builderRunId, "builder_run.json");
-	assertExactCandidateArtifact(builderRunPath, origin.builderRun.path, origin.builderRun.sha256, "Builder run");
-	const proposalPath = resolveContainedArtifactPath(runsRoot, "builders", origin.builderRunId, "proposal.json");
-	const proposalBytes = assertExactCandidateArtifact(
-		proposalPath,
-		origin.proposal.path,
-		origin.proposal.sha256,
-		"Builder proposal",
-	);
+	readCandidateArtifact(runsRoot, origin, "builderRun");
+	const proposalBytes = readCandidateArtifact(runsRoot, origin, "proposal").bytes;
 	const record = loadBuilderProposalRun(runsRoot, origin.builderRunId);
 	const review = proposalReview(record);
 	if (

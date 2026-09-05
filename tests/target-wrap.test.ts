@@ -113,6 +113,10 @@ describe("adopting a folder that already holds an agent", () => {
 			"manifest.yaml",
 		]);
 		expect(git(dir, ["status", "--porcelain=v1", "--untracked-files=all"])).toBe("");
+		mkdirSync(join(dir, "exports", "nested"), { recursive: true });
+		writeFileSync(join(dir, "exports", "nested", "recorded.jsonl"), "PRIVATE_EXPORTED_DIALOGUE\n");
+		expect(git(dir, ["check-ignore", "--", "exports/nested/recorded.jsonl"])).toBe("exports/nested/recorded.jsonl");
+		expect(git(dir, ["status", "--porcelain=v1", "--untracked-files=all"])).toBe("");
 	});
 
 	it("writes a receipt that binds the exact subject and the exact revision", () => {

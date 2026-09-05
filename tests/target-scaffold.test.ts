@@ -79,7 +79,7 @@ describe("Target scaffold application service", () => {
 			targetId: "my-agent",
 			generated: {
 				gitRepository: "fresh repository with one scaffold commit",
-				localArtifactIgnores: ["/.ahde/", "/imports/", "/runs/", "/.env", "/.env.*", "!/.env.example"],
+				localArtifactIgnores: ["/.ahde/", "/imports/", "/runs/", "/exports/", "/.env", "/.env.*", "!/.env.example"],
 			},
 		});
 		expect(subject.templateFiles.map((file) => file.path)).toEqual([

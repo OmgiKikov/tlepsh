@@ -118,6 +118,32 @@ async function start(handlers: Map<string, Handler>, ctx: ExtensionContext, reas
 }
 
 describe("AHDE Builder product shell", () => {
+	it("shows an existing current-agent finding on startup using only the ordinary read", async () => {
+		const finding: NonNullable<WorkbenchView["finding"]> = {
+			evalRunId: "erun_current", finishedAt: "2026-09-05T12:00:00.000Z",
+			reading: { runId: "run_ticket", taskId: "ticket", repetitionNumber: 1, kind: "world", title: "The expected result is missing",
+				expectations: ["Ticket id exists"], observations: ["tickets.0.id is missing"], answerQuote: null, checks: [], uncertainties: [], comparison: null },
+		};
+		let current = view({ stage: "improvement-authoring", blockers: [], finding,
+			target: { status: "ready", id: "test-target", gitSha: "a".repeat(40), model: { provider: "openai", id: "test", apiKeyEnv: "KEY", credentialPresent: true } },
+			counts: { ...view().counts, approvedSpecs: 1, developmentCorpora: 1, developmentEvals: 1 },
+		});
+		const read = vi.fn(async () => current);
+		const decide = vi.fn();
+		const { handlers, controller, sendUserMessage } = install(read, decide);
+		const h = host();
+		await start(handlers, h.ctx);
+		expect(h.renderHeader().join("\n")).toContain("tickets.0.id is missing");
+		expect(h.renderHeader().join("\n")).toContain("/trace run_ticket");
+		expect(read).toHaveBeenCalledTimes(1);
+		expect(decide).not.toHaveBeenCalled();
+		expect(sendUserMessage).not.toHaveBeenCalled();
+		current = { ...current, finding: undefined, stage: "ready-to-evaluate" };
+		await controller.refresh();
+		expect(h.renderHeader().join("\n")).not.toContain("tickets.0.id is missing");
+		expect(decide).not.toHaveBeenCalled();
+	});
+
 	it("replaces Pi onboarding with AHDE identity, live state, and conversational guidance", async () => {
 		const { handlers, registerEntryRenderer } = install(async () => view());
 		const h = host({ credentialPresent: true });

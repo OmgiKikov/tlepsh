@@ -259,6 +259,20 @@ agents or production traffic. The [full acceptance record](docs/reviews/2026-09-
 keeps both successful releases, the initial failed attempt and the remaining
 Target errors. `npm run acceptance:pilot` remains offline.
 
+`npm run acceptance:python-live -- --live` measures the shipped Python reference
+agent with its original prompt, asks a real Builder model to improve observed
+failures, selects by blind validation, and checks the winner against 15 separate
+held-out cases. Its local passthrough only caps output and spending; it never
+scripts answers. A shared $2 reservation budget covers author and Target calls,
+including failed or unreported requests. All attempts are kept under
+`.ahde/live-pilots/python-*`; no winner is a valid recorded result, and no release
+is performed. The driver stops after 30 minutes. A failed exam can resume with
+`--resume <pilot-directory>`: it archives the failed attempt, preserves the shared
+budget and original endpoint, and rechecks the already selected exact diff without
+calling the author again. `node scripts/audit-python-pilot.mjs <pilot-directory>`
+independently checks recorded numeric text and explicit citations after completion.
+These synthetic cases do not substitute for customer acceptance.
+
 ## Evidence
 
 The [management demonstration guide](docs/management-demo.md) separates the
@@ -273,8 +287,11 @@ Evaluator v4 requires a final answer and does not treat a command agent's
 not a free point in the average score. Old results remain readable but are not
 comparable to v4; runs without host-observed completion must be rerun before
 regrading. Eval verification and export hash-check new final-world and judge-verdict sidecars;
-legacy unattested sidecars are omitted from dataset exports. Command adapters
-report incremental usage for **each model request**, before its assistant frame.
+legacy unattested sidecars are omitted from dataset exports. Command protocol
+**v2** reports incremental usage for each model request; **v1** preserves its
+legacy token-snapshot contract. Existing descriptors default to v1, while the
+Python starter uses v2. See [protocol versions and usage](docs/command-protocol.md)
+before migrating an adapter or comparing historical command measurements.
 
 In earlier development acceptance, five live first-user sessions on real models — a Sonnet-class Builder, a 9B
 Target (`openrouter/qwen/qwen3.5-9b`), a GLM judge — took a bank ombudsman

@@ -484,13 +484,14 @@ function noiseBand(
  */
 function unresolvedTargetedModes(
 	runsRoot: string,
+	stateRoot: string,
 	record: CandidateRecord,
 ): { diagnosisBound: boolean; unresolved: PassportUnresolvedMode[]; note: PassportUnresolvedNote | null } {
 	const bound = record.origin.kind === "applied-builder" && record.origin.source !== null;
 	if (!bound) return { diagnosisBound: false, unresolved: [], note: null };
 	let basis;
 	try {
-		basis = inspectCandidateImpact({ runsRoot, candidateId: record.candidateId }).proposalBasis;
+		basis = inspectCandidateImpact({ runsRoot, stateRoot, candidateId: record.candidateId }).proposalBasis;
 	} catch {
 		// A passport says what the evidence supports and no more. The exact
 		// filesystem reason belongs in the operator's terminal, not on the page.
@@ -603,7 +604,7 @@ function compileTargetPassport(options: CompileVersionPassportOptions): VersionP
 		development.candidate.evalRunId,
 	]);
 
-	const limits = unresolvedTargetedModes(options.runsRoot, record);
+	const limits = unresolvedTargetedModes(options.runsRoot, options.stateRoot, record);
 	const model = measuredModel(options.runsRoot, development.candidate.evalRunId) ??
 		{ provider: target.manifest.model.provider, id: target.manifest.model.id };
 

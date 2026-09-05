@@ -100,7 +100,11 @@ function writeArm(options: {
 	cases: ArmCase[];
 	runIdPrefix: string;
 }): EvalRunRecord {
-	const execution = options.cases.some(entry => entry.costUsd === null) ? { ...fixtureExecution, agent: "command-v1" as const } : fixtureExecution;
+	const execution = options.cases.some(entry => entry.costUsd === null) ? {
+		...fixtureExecution,
+		agent: "command-v1" as const,
+		commandProtocol: { version: 2 as const, usageSemantics: "request-incremental-v2" as const },
+	} : fixtureExecution;
 	const evaluation = {
 		...fixtureEvaluation,
 		...(options.dataset ? { dataset: options.dataset } : {}),
@@ -411,4 +415,3 @@ export function writeExplorerFixture(customCases?: (candidate: boolean) => ArmCa
 		erroredRunId: "run_base_2",
 	};
 }
-

@@ -499,6 +499,8 @@ export interface WorkbenchView {
 	headline: string;
 	/** Present on current host views; absent only on pre-guidance serialized views. */
 	guidance?: WorkbenchNext;
+	/** Optional read-only observation, verified against this revision's configured instrument. */
+	finding?: import("./current-finding.js").CurrentAgentFinding;
 	target: {
 		status: "missing" | "bootstrap-required" | "ready";
 		id: string | null;

@@ -1,12 +1,16 @@
 import { basename, dirname } from "node:path";
 import {
 	graderFindings,
+	explainRun,
 	runOutcome,
 	runTranscript,
+	traceFacts,
 	type GraderFinding,
 	type RunOutcome,
 	type TranscriptEntry,
+	type Transcript,
 } from "../application/run-explanation.js";
+import { readRunOutcome, type RunReading } from "../application/run-reading.js";
 import type { VerifiedEvalRun } from "../eval.js";
 import type { RunRecord } from "../provenance.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
@@ -28,6 +32,7 @@ export interface WorkbenchRunInspection {
 	outcome: RunOutcome;
 	transcript: { entries: InspectedTranscriptEntry[]; truncated: boolean; omittedCount: number } | null;
 	checks: Array<Pick<GraderFinding, "name" | "type" | "checkCode" | "checkSubject" | "passed" | "score" | "reason" | "abstained">>;
+	reading?: RunReading;
 	limitations: {
 		recordedDataOnly: true;
 		reasoningOmitted: true;
@@ -38,13 +43,7 @@ export interface WorkbenchRunInspection {
 	};
 }
 
-function inspectTranscript(runsRoot: string, run: RunRecord): WorkbenchRunInspection["transcript"] {
-	if (!run.trace.sha256) return null;
-	const path = resolveContainedArtifactPath(runsRoot, run.runId, run.trace.path);
-	// Unlike the optional web preview, an explicit exact read must refuse a
-	// missing or altered pinned trace, rather than silently describe no trace.
-	const messages = openTrace(dirname(path), basename(path), run.trace.sha256);
-	const canonical = runTranscript(messages.map(({ thinking: _reasoning, ...message }) => message));
+function inspectTranscript(canonical: Transcript): WorkbenchRunInspection["transcript"] {
 	let remaining = RUN_INSPECTION_LIMITS.textChars as number;
 	let clipped = canonical.truncated;
 	const text = (value: string, maximum: number): string => {
@@ -102,11 +101,17 @@ function inspectVerifiedRun(options: InspectionOptions, purpose: "evidence" | "m
 		checkTextClipped ||= finding.reason.length > 512;
 		return { name, type, checkCode, checkSubject, passed, score, abstained, reason: finding.reason.slice(0, 512) };
 	});
-	const transcript = inspectTranscript(options.runsRoot, run);
+	const path = resolveContainedArtifactPath(options.runsRoot, run.runId, run.trace.path);
+	// Exact reads refuse altered pinned traces. Both the conversation and its
+	// human reading derive from these same verified bytes, with no second open.
+	const messages = run.trace.sha256 ? openTrace(dirname(path), basename(path), run.trace.sha256) : null;
+	const canonical = messages ? runTranscript(messages.map(({ thinking: _reasoning, ...message }) => message)) : null;
+	const transcript = canonical ? inspectTranscript(canonical) : null;
+	const reading = readRunOutcome(explainRun({ run, graders: findings, facts: messages ? traceFacts(messages) : null, messages, modes: [], flip: null }), canonical);
 	return {
 		evalRunId: evaluation.record.evalRunId, runId, taskId: run.taskId,
 		repetitionIndex: run.repetitionIndex, target: { id: run.target.id, gitSha: run.target.gitSha },
-		status: run.status, outcome: runOutcome(run), transcript, checks,
+		status: run.status, outcome: runOutcome(run), transcript, checks, reading,
 		limitations: { recordedDataOnly: true, reasoningOmitted: true, traceAvailable: transcript !== null,
 			omittedChecks: Math.max(0, findings.length - checks.length), checkTextClipped, limits: RUN_INSPECTION_LIMITS },
 	};

@@ -22,7 +22,7 @@ interface StubHandle {
 }
 
 /** The two replies `agent.py` knows how to read: a tool call, and an answer. */
-function startStub(): Promise<StubHandle> {
+function startStub(cost?: unknown): Promise<StubHandle> {
 	let requests = 0;
 	const server: Server = createServer((request, response) => {
 		const chunks: Buffer[] = [];
@@ -55,7 +55,7 @@ function startStub(): Promise<StubHandle> {
 				object: "chat.completion",
 				model: "stub",
 				choices: [{ index: 0, message, finish_reason: message.tool_calls ? "tool_calls" : "stop" }],
-				usage: { prompt_tokens: 31, completion_tokens: 9, total_tokens: 40 },
+				usage: { prompt_tokens: 31, completion_tokens: 9, total_tokens: 40, ...(cost === undefined ? {} : { cost }) },
 			}));
 		});
 	});
@@ -72,7 +72,7 @@ function startStub(): Promise<StubHandle> {
 	});
 }
 
-/** One live `agent.py`, driven by the host half of protocol v1. */
+/** One live `agent.py`, driven by the host half of protocol v2. */
 class Agent {
 	private readonly lines: string[] = [];
 	private buffer = "";
@@ -124,12 +124,12 @@ class Agent {
 function start(url: string): Agent {
 	const child = spawn("python3", ["agent.py"], {
 		cwd: TEMPLATE_DIR,
-		env: { ...process.env, AHDE_MODEL_API_KEY: "stub-key", AHDE_PROTOCOL: "1" },
+		env: { ...process.env, AHDE_MODEL_API_KEY: "stub-key", AHDE_PROTOCOL: "2" },
 		stdio: ["pipe", "pipe", "pipe"],
 	});
 	const agent = new Agent(child);
 	agent.send({
-		v: 1,
+		v: 2,
 		type: "hello",
 		tools: [{
 			name: "get_account",
@@ -154,10 +154,43 @@ afterAll(async () => {
 });
 
 describe.skipIf(!PYTHON)("the shipped python-agent template", () => {
+	it.each([
+		{ cost: 0.00125, expected: 0.00125 },
+		{ cost: 0, expected: 0 },
+		{ cost: undefined, expected: undefined },
+		{ cost: -0.01, expected: undefined },
+		{ cost: "0.01", expected: undefined },
+		{ cost: true, expected: undefined },
+		{ cost: null, expected: undefined },
+	])("reports only a provider's finite nonnegative numeric request cost: $cost", async ({ cost, expected }) => {
+		const endpoint = await startStub(cost);
+		const agent = start(endpoint.url);
+		try {
+			agent.send({ v: 2, type: "user", turn: 1, text: "Сколько стоит самый дешёвый тариф?" });
+			const usage = await agent.next();
+			expect(usage.type).toBe("usage");
+			expect(usage.costUsd).toBe(expected);
+			expect((await agent.next()).type).toBe("assistant");
+		} finally {
+			agent.close();
+			await endpoint.close();
+		}
+	});
+
+	it("does not emit non-finite provider prices onto the strict JSON wire", () => {
+		const checked = spawnSync("python3", ["-c", [
+			"from agent import usage_of",
+			"for cost in [float('nan'), float('inf'), float('-inf')]:",
+			"    usage = usage_of({'usage': {'prompt_tokens': 1, 'cost': cost}}, 1)",
+			"    assert 'costUsd' not in usage",
+		].join("\n")], { cwd: TEMPLATE_DIR, encoding: "utf8", env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
+		expect(checked.status, checked.stderr).toBe(0);
+	});
+
 	it("answers a plain question and reports what the endpoint billed", async () => {
 		const agent = start(stub.url);
 		try {
-			agent.send({ v: 1, type: "user", turn: 1, text: "Сколько стоит самый дешёвый тариф?" });
+			agent.send({ v: 2, type: "user", turn: 1, text: "Сколько стоит самый дешёвый тариф?" });
 			const usage = await agent.next();
 			expect(usage.type).toBe("usage");
 			expect(usage.tokens).toEqual({ input: 31, output: 9, cacheRead: 0, cacheWrite: 0, total: 40 });
@@ -176,7 +209,7 @@ describe.skipIf(!PYTHON)("the shipped python-agent template", () => {
 	it("asks the host to run a declared tool and answers from its result", async () => {
 		const agent = start(stub.url);
 		try {
-			agent.send({ v: 1, type: "user", turn: 1, text: "Договор 4412, какой у меня тариф?" });
+			agent.send({ v: 2, type: "user", turn: 1, text: "Договор 4412, какой у меня тариф?" });
 			const toolSelectionUsage = await agent.next();
 			expect(toolSelectionUsage.type).toBe("usage");
 			expect(toolSelectionUsage.tokens).toEqual({ input: 31, output: 9, cacheRead: 0, cacheWrite: 0, total: 40 });
@@ -185,7 +218,7 @@ describe.skipIf(!PYTHON)("the shipped python-agent template", () => {
 			expect(call.name).toBe("get_account");
 			expect(call.arguments).toEqual({ account: "4412" });
 			agent.send({
-				v: 1,
+				v: 2,
 				type: "tool_result",
 				id: call.id,
 				name: "get_account",
@@ -205,7 +238,7 @@ describe.skipIf(!PYTHON)("the shipped python-agent template", () => {
 	it("prints protocol on stdout and diagnostics on stderr, never the other way round", async () => {
 		const agent = start(stub.url);
 		try {
-			agent.send({ v: 1, type: "user", turn: 1, text: "Сколько стоит самый дешёвый тариф?" });
+			agent.send({ v: 2, type: "user", turn: 1, text: "Сколько стоит самый дешёвый тариф?" });
 			await agent.next();
 			await agent.next();
 			// The readiness line the template logs went to stderr, where it belongs.
