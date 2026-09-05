@@ -19,6 +19,7 @@ import { blockedReasonText } from "../../workbench/errors.js";
 import type { Paint } from "./paint.js";
 import { nextStep, stageLabel } from "./stage.js";
 import { renderCandidate, renderTraces } from "./view.js";
+import { modelExperimentHeadline, renderModelAcceptance, renderModelExperiment } from "./model-experiment.js";
 
 export interface RenderDecisionOptions {
 	/** Capability-scoped live trace URL retained by the host after a run. */
@@ -159,6 +160,8 @@ function shipLines(result: WorkbenchShipResult, paint: Paint, view: WorkbenchVie
 export function renderDecision(result: WorkbenchDecisionResult, paint: Paint, options: RenderDecisionOptions = {}): string[] {
 	const view = result.view;
 	switch (result.kind) {
+		case "model-experiment": return [...renderModelExperiment(result.result.experiment, paint), paint.muted(t("models.no-switch"))];
+		case "accept-model": return renderModelAcceptance(result.result.receipt, paint);
 		case "scaffold-target":
 			return [
 				`${section(t("result.target-created"), paint)} ${paint.bold(result.result.targetId)} ${paint.dim(`@ ${shortSha(result.result.targetGitSha)}`)}`,
@@ -427,6 +430,8 @@ function verifyHeadline(result: WorkbenchVerifyCandidateResult): string {
 /** One-line headline for status bars and collapsed tool cards. */
 export function decisionHeadline(result: WorkbenchDecisionResult): string {
 	switch (result.kind) {
+		case "model-experiment": return modelExperimentHeadline(result.result.experiment);
+		case "accept-model": return t("models.accepted");
 		case "run-eval":
 			return runHeadline(result.result);
 		case "run-current":

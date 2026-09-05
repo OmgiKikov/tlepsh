@@ -1,4 +1,6 @@
 import { percent } from "../measurement.js";
+import { collectCandidateReplayPage } from "./replay-model.js";
+import { renderCandidateReplayPage } from "./replay-page.js";
 import { language } from "../i18n.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { existsSync } from "node:fs";
@@ -453,6 +455,22 @@ export function createEvidenceExplorer(options: EvidenceExplorerOptions): Eviden
 						renderRunDetailPage(collectRunDetailPage(runsRoot, runId)),
 						headOnly,
 					);
+				} catch (error) {
+					sendCollectionFailure(response, error, headOnly);
+				}
+				return;
+			}
+
+			const replayCandidateId = url.pathname.endsWith("/replay")
+				? parseEvalId(url.pathname.slice(0, -"/replay".length), "/candidates/", "candidate id") : null;
+			if (replayCandidateId) {
+				try {
+					const selectors = url.searchParams.getAll("run");
+					if (selectors.length > 1 || selectors[0] === "") throw new EvidenceNotFound("Invalid replay selector");
+					const runId = selectors[0] === undefined ? undefined : safeArtifactSegment(selectors[0], "run id");
+					send(response, 200, "text/html; charset=utf-8", renderCandidateReplayPage(
+						collectCandidateReplayPage(runsRoot, replayCandidateId, { runId }),
+					), headOnly);
 				} catch (error) {
 					sendCollectionFailure(response, error, headOnly);
 				}

@@ -87,6 +87,8 @@ const DECIDE_WHEN = {
 	"configure-evaluators": "a basket needs a simulated user, or the operator wants a different judge; " +
 		"start-testing pre-fills the judge on its own",
 	calibrate: "the operator wants to know how noisy the numbers are; the same revision against itself",
+	"model-experiment": "the operator wants a cheaper or faster agent; compare 1–2 host-catalog alternatives against the current model on the reviewed cases, with a declared execution budget and quality tolerance",
+	"accept-model": "the operator chooses a completed model experiment arm; review the exact model diff, then establish a new baseline — exploratory results do not authorize release",
 	"discard-proposal": "the operator throws the prepared change away",
 	"reject-candidate": "the operator rejects the checked change; the agent stays as it was",
 	"abandon-candidate": "an interrupted attempt blocks the stage and the operator says drop it",

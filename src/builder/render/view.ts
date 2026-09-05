@@ -22,6 +22,8 @@ import { datasetCasePreview } from "../../workbench/workbench.js";
 import { recommendedRepetitions } from "../../workbench/calibration.js";
 import { formatFlipRate, formatNoiseBand } from "./calibration.js";
 import { diffStats, renderUnifiedDiff } from "./diff.js";
+import { renderRunInspection } from "./run-inspection.js";
+import { renderModelExperiments } from "./model-experiment.js";
 import {
 	bar,
 	bullets,
@@ -769,6 +771,7 @@ export interface RenderTracesOptions {
 }
 
 export function renderTraces(content: WorkbenchTracesDetail, paint: Paint, options: RenderTracesOptions = {}): string[] {
+	if (content.selectedRun) return renderRunInspection(content.selectedRun, paint);
 	const brief = content.improvementBrief;
 	const evaluation = content.evaluation;
 	const lines = [
@@ -1258,6 +1261,8 @@ export function renderView(view: WorkbenchView, paint: Paint, options: RenderRev
 		? renderDataset(view.detail.content, paint)
 		: view.detail.aspect === "history"
 		? renderHistory(view.detail.content, paint)
+		: view.detail.aspect === "models"
+		? renderModelExperiments(view.detail.content, paint)
 		: renderTarget(view.detail.content, paint);
 	return [...status, "", ...detail];
 }
@@ -1270,6 +1275,7 @@ export function viewTitle(view: WorkbenchView): string {
 	if (view.detail.aspect === "target") return panel(t("panel.target"));
 	if (view.detail.aspect === "history") return panel(t("panel.history"));
 	if (view.detail.aspect === "dataset") return panel(t("panel.dataset"));
+	if (view.detail.aspect === "models") return panel(t("models.title"));
 	switch (view.detail.content.kind) {
 		case "spec-draft": return panel(t("panel.spec-review"));
 		case "corpus-draft": return panel(t("panel.basket-review"));

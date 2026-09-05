@@ -27,6 +27,13 @@ function verifyTitle(result: WorkbenchVerifyCandidateResult): { title: string; t
 
 function decisionTitle(result: WorkbenchDecisionResult): { title: string; tone: TranscriptTone } {
 	switch (result.kind) {
+		case "model-experiment": return {
+			title: t("models.title"),
+			tone: result.result.experiment.status === "failed" ? "error"
+				: result.result.experiment.status === "stopped" ? "warning"
+					: result.result.experiment.recommendedArmId && result.result.experiment.recommendedArmId !== "baseline" ? "success" : "info",
+		};
+		case "accept-model": return { title: t("models.accepted"), tone: "success" };
 		case "run-eval": return { title: t("panel.run-complete"), tone: result.result.evaluation.summary.error > 0 ? "warning" : "success" };
 		case "run-current":
 			if (result.result.resolvedAs === "run-eval") {
@@ -84,6 +91,20 @@ function decisionTitle(result: WorkbenchDecisionResult): { title: string; tone: 
 	}
 }
 
+/** Link only a completed matched check, never a preliminary screen. */
+export function decisionReplayUrl(result: WorkbenchDecisionResult, evidenceUrl: string | null | undefined): string | null {
+	const candidate = result.kind === "ship" ? result.result.candidate
+		: result.kind === "verify-candidate" && result.result.outcome === "verified" ? result.result.candidate
+			: result.kind === "run-current" && result.result.resolvedAs === "verify-candidate" && result.result.outcome === "verified" ? result.result.candidate
+				: result.kind === "apply-proposal" && result.result.verification?.outcome === "verified" ? result.result.verification.candidate : null;
+	if (!candidate || !evidenceUrl) return null;
+	try {
+		const base = new URL(evidenceUrl);
+		if (base.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(base.hostname) || base.username || base.password) return null;
+		return new URL(`/candidates/${encodeURIComponent(candidate.candidateId)}/replay`, base).toString();
+	} catch { return null; }
+}
+
 /** One human result for both conversational decisions and shortcuts. */
 export async function builderDecisionPresentation(result: WorkbenchDecisionResult, options: {
 	workbench: Pick<AhdeWorkbench, "runsRoot" | "stateRoot" | "projectId" | "projectDir" | "view">;
@@ -101,6 +122,8 @@ export async function builderDecisionPresentation(result: WorkbenchDecisionResul
 	try {
 		({ title, tone } = decisionTitle(result));
 		lines = renderDecision(result, markerPaint, { liveTraceUrl });
+		const replayUrl = decisionReplayUrl(result, liveTraceUrl);
+		if (replayUrl) lines.push(t("evidence.replayLink", { url: replayUrl }));
 		if (result.kind === "ship") {
 			try {
 				const { passport, card, reportWritten } = await compileBuilderPassport(workbench, { view: result.view, save: true });

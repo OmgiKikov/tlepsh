@@ -28,6 +28,8 @@ import {
 import { builderDecisionPresentation } from "./decision-presentation.js";
 import { executeBuilderDecision } from "./execution.js";
 import { createBuilderJobs, type BuilderJobs } from "./jobs.js";
+import { modelExperimentCatalog, modelExperimentResolver } from "./model-experiment-models.js";
+import { modelExperimentProjection } from "./model-experiment-projection.js";
 import {
 	evaluatorModelResolver,
 	hostDefaultJudge,
@@ -236,7 +238,9 @@ const WORKBENCH_TOOL_RENDERERS = {
 			const paint = themePaint(theme);
 			if (!isWorkbenchDecision(details)) return card([paint.muted(t("card.unreadable.decide"))]);
 			if (!expanded) {
-				return card([`${paint.success("✓")} ${decisionHeadline(details)} ${paint.dim(`· ${t("card.now", { stage: stageLabel(details.view.stage) })}`)}`]);
+				const status = details.kind === "model-experiment" ? details.result.experiment.status : null;
+				const mark = status === "failed" ? paint.error("✗") : status === "stopped" ? paint.warning("■") : paint.success("✓");
+				return card([`${mark} ${decisionHeadline(details)} ${paint.dim(`· ${t("card.now", { stage: stageLabel(details.view.stage) })}`)}`]);
 			}
 			return card(renderDecision(details, paint));
 		},
@@ -348,7 +352,7 @@ export function projectForModel(value: unknown, options: ModelProjectionOptions 
 	if (!isRecord(value)) return value;
 	if (looksLikeWorkbenchView(value)) return projectWorkbenchView(value, options);
 	const projected: Record<string, unknown> = {};
-	for (const [key, item] of Object.entries(value)) {
+	for (const [key, item] of Object.entries(modelExperimentProjection(value) ?? value)) {
 		if (DIGEST_KEY.test(key)) continue;
 		if (HOST_CREDENTIAL_KEYS.has(key)) continue;
 		projected[key] = VERBATIM_KEYS.has(key)
@@ -452,13 +456,17 @@ export function createBuilderWorkbenchTools(
 			description: [
 				"Read the AHDE Workbench: the current stage, the exact subject under review, the diagnosis, the committed Target, or what was already tried.",
 				"Every result carries next: { unblock, decide[], submit[], workshop? } — exactly the decisions and submissions that are legal right here, each with one sentence saying when it is the right move, and asks: true where the host will put a question to the operator. It is authoritative; never work from a remembered sequence of stages.",
-				"Arguments: { aspect?: \"summary\" | \"review\" | \"traces\" | \"target\" | \"history\" | \"dataset\", resourcePath?: string, include?: [\"selections\"] }.",
+				"Arguments: { aspect?: \"summary\" | \"review\" | \"traces\" | \"target\" | \"history\" | \"dataset\" | \"models\", runId?: string, experimentId?: string, armId?: \"baseline\" | \"model-1\" | \"model-2\", resourcePath?: string, include?: [\"selections\"] }.",
 				"aspect omitted/summary = stage + counts; review = the exact Spec draft, eval basket, proposal diff, or candidate awaiting a decision;",
 				"traces = evaluation summary, failure modes (improvementBrief.modes with ordinal + failureModeId), evidence link;",
 				"each mode is one cause across tasks — the check and the tool it names — and carries facts (what the traces show, counted), observations, and evidence[].excerpt: the tools that run called, its last reply, and what the host observed about it. Read the excerpts before you write anything;",
+				"For one specific answer, call { aspect: \"traces\", runId: <runId from this evaluation's evidence> }. selectedRun returns the verified observable conversation, tool arguments/results and recorded checks; reasoning is omitted. Only the currently selected development evaluation is readable, never sealed or foreign runs. Respect transcript truncation, omitted checks and reported tool labels; an observed difference is not a proven cause. This reads saved work and launches nothing;",
 				"target = the committed Target index (resources with path/kind) — pass one returned resourcePath to read that file's complete content;",
 				"it also carries priorAttempts: the newest earlier attempts on this agent (what each changed, which failure modes it aimed at, what it scored, how it ended) plus priorAttemptsOmitted;",
 				"history = the same memory in full: every recorded attempt on this Target, newest first, with omitted and unreadable counts. Read it before proposing and never re-run an experiment that already lost;",
+				"models = recent verified model experiments on this Target, the latest selected by default; experimentId selects one exact experiment. Includes the trusted host model catalog for cost/latency alternatives. Read it before promising savings or choosing a model;",
+				"The models catalog includes declared USD rates per million input/output/cache tokens, reasoning support and context window; unknown/all-zero rates stay unknown. It is bounded to 40, authenticated entries and the current provider first, then input+output declared rates. omittedModels counts the rest. This ordering is a selection hint, never a measured cost, quality or latency ranking;",
+				"For a model experiment regression, read { aspect: \"models\", experimentId, armId, runId } using that arm's recorded run id from quality.regressions. selectedRun contains the same bounded verified observable conversation and checks as traces; choose baseline with baselineRunId or the alternative arm with candidateRunId. Never swap IDs between arms or treat these exploratory runs as the normal development baseline;",
 				"dataset = a bounded preview of one operator-provided file in the imports/ inbox — pass resourcePath: \"imports/<file>\" (csv, tsv, json, jsonl, md, txt);",
 				"it returns the format, the columns with inferred types and three sample values each, the row count, and how many rows a sealed slice already reserved.",
 				"You never read imports/ yourself, and rows held out for the sealed exam are removed before the preview is computed.",
@@ -475,10 +483,10 @@ export function createBuilderWorkbenchTools(
 				// a model id, and the trusted host catalog is the only place those ids
 				// exist. It rides along while either is still the next thing to do.
 				const evaluatorConfigurationLegal = view.actions.includes("configure-evaluators");
-				const catalog = (view.stage === "target-setup" || evaluatorConfigurationLegal) &&
-						(query.aspect ?? "summary") === "summary"
-					? hostModelCatalog(ctx)
-					: null;
+				const catalog = query.aspect === "models"
+					? modelExperimentCatalog(ctx, view.target.model?.provider)
+					: (view.stage === "target-setup" || evaluatorConfigurationLegal) && (query.aspect ?? "summary") === "summary"
+						? hostModelCatalog(ctx) : null;
 				const models = catalog && catalog.models.length > 0 ? catalog : null;
 				return textResult(view, { include: include ?? [], hostModelCatalog: models });
 			},
@@ -547,11 +555,13 @@ export function createBuilderWorkbenchTools(
 			description: [
 				"Do the work the operator asked for. Call this yourself when they say it in plain words (test, run, check, fix it, apply, ship, next) — never tell them to type a slash command instead. Every kind requires a non-blank `reason`.",
 				"• { kind: \"talk-to-agent\", reason } — when the operator says they want to try, open, or talk to the built agent. The host leaves Builder Pi, opens the isolated Target Pi on the exact active revision, then returns to this Builder conversation when they exit.",
-				"Four kinds ask the operator a question; the rest just happen. Prefer these:",
+				"The host asks once for a consequential change or bounded experiment; routine inspection and measurement just happen. Prefer these:",
 				"• { kind: \"run-current\", repetitions (3 recommended; a sealed verdict needs ≥ 2) } — “test it”, wherever they are. At spec-review/corpus-review it becomes start-testing (approve + publish + run in one question); at ready-to-evaluate/improvement-authoring it runs the basket without asking; at candidate-verification it verifies the applied candidate without asking. An unusually expensive run asks once.",
 				"• { kind: \"apply-proposal\", runId?, branch, verify: { repetitions: 3 } } — the only moment a diff touches the repository; the host shows the exact diff and cost, then automatically runs the matched candidate verification. Always include verify on the conversational product path; omission exists only for low-level recovery.",
 				"• { kind: \"ship\", version: \"x.y.z\" } — “ship it”: records the promote review, tags the exact revision, fast-forwards the operator's branch, and closes the cycle, in one question. `version` is required while the promotion is still pending; at candidate-adoption/complete it is optional.",
 				"Also available: { kind: \"start-testing\", repetitions } explicitly; { kind: \"calibrate\", repetitions } measures noise once per Target revision (no question); { kind: \"discard-proposal\" } and { kind: \"reject-candidate\" } and { kind: \"abandon-candidate\" } are one short yes/no.",
+				"• { kind: \"model-experiment\", models: [{ provider, modelId, thinkingLevel?, timeoutMs?, params? }, ...] (1–2 alternatives), objective: \"cost\" | \"latency\", qualityTolerance: 0..0.2, repetitions: 1..5, executionBudget, reason } — “make it cheaper/faster”: first read aspect: models and select real host-catalog alternatives. The current model is included automatically; budget must cover (1 + alternatives) × published cases × repetitions. The host reviews the exact models, executions and allowed score loss once. It changes no active model, reads no sealed cases, and reports Target cost separately from unverified evaluator overhead. Do not infer equivalence from an inconclusive score or promise a dollar cap.",
+				"• { kind: \"accept-model\", experimentId, armId, reason } — configure one measured alternative after the host reviews its exact manifest diff. Use only an arm from the current verified experiment; this changes the active model and commits it, but is not a promotion, release or independent exam. Explain score delta and interval, pass rate, Target cost and latency; recommend only what the recorded evidence supports.",
 				"• { kind: \"improve\", until (0..1 pass rate), maxCycles, repetitions, candidates?, jobs?, developmentCorpusId?, baselineMaxAgeMs?, resumeLoopId?, abandonLoopId? } — reuse or run → diagnose → author a small proposal → apply on a throwaway branch → cheap check → development verification. Builder Pi attaches a bounded private Pi author using the selected Builder model: no pre-written proposals are needed. The host discloses authoring limits and additional model spend before one confirmation. Hosts without a model author use matching recorded proposals. The exact diff, sealed guardrail and release remain human decisions; it never promotes, adopts, publishes or approves.",
 				"  candidates: 2..4 asks for distinct hypotheses for the top failure mode. AHDE persists a deterministic authoring/validation split before model spend, gives the Builder only authoring cases, then screens and ranks each hypothesis on unseen validation cases. It returns a Pareto table (score delta with its interval, cost and latency ratios, which candidates are dominated) and picks nothing — show the comparison and let the operator choose. At least four reviewed cases are required. Already-lost experiments are refused. Expanded permissions require a separate human-reviewed Workshop.",
 				"• { kind: \"configure-evaluators\", judge?: { provider, modelId, thinkingLevel?, timeoutMs?, params? }, simulatedUser?: same, reason } — the two models a measurement uses BESIDES the agent: the judge that grades an answer and the model that plays the user. You do not have to ask for a judge before writing judge graders: start-testing pre-fills the first host model that is not the agent's own and puts it inside the same dialog. Request this when a basket needs a simulated user, or when the operator wants a different judge, and never write those blocks into manifest.yaml yourself. Pick from the same host catalog as configure-target; the host resolves the endpoint and pricing, asks the operator which environment variable holds the key, shows the exact manifest diff, and commits. The judge may not be the Target's own model.",
@@ -620,8 +630,10 @@ export function createBuilderWorkbenchTools(
 						? await selectEvaluatorCredentialEnvironment(ctx, "simulatedUser", params.simulatedUser)
 						: undefined,
 				};
-				const resolveTargetModel = targetModelSelection && targetCredentialEnvironment
-					? targetModelResolver(ctx, targetCredentialEnvironment) : undefined;
+				const resolveTargetModel = params.kind === "model-experiment"
+					? await modelExperimentResolver(ctx, params.models, (await workbench.view()).target.model, signal)
+					: targetModelSelection && targetCredentialEnvironment
+						? targetModelResolver(ctx, targetCredentialEnvironment) : undefined;
 				const resolveEvaluatorModel = params.kind === "configure-evaluators"
 					? evaluatorModelResolver(ctx, evaluatorCredentialEnvironment) : undefined;
 				const defaultJudge = params.kind === "start-testing" || params.kind === "run-current"

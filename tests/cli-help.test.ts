@@ -172,10 +172,11 @@ describe("one Builder persona", () => {
 		expect(persona).toContain("already tried");
 	});
 
-	it("names the three question kinds without promising a false fixed count", () => {
+	it("names host-owned consequential actions without promising a fixed question count", () => {
 		const working = persona.split("## How to work with the operator")[1]?.split("\n## ")[0] ?? "";
-		expect(working).toContain("There are three kinds");
-		expect(working).toContain("their count follows the work instead of being a marketing promise");
+		expect(working).toContain("The host asks the consequential questions; their count follows the work");
+		expect(working).toContain("model experiments disclose exact models, executions and tolerance");
+		expect(working).toContain("model acceptance shows its exact diff");
 		expect(working).not.toContain("exactly three questions");
 		expect(working).toMatch(/\*\*start testing\*\*/);
 		expect(working).toMatch(/\*\*apply this change\*\*/);

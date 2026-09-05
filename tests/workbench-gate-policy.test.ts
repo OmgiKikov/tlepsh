@@ -173,6 +173,8 @@ describe("Workbench gate policy", () => {
 			"scaffold-target": "consequential",
 			"wrap-target": "consequential",
 			"configure-target": "consequential",
+			"model-experiment": "consequential",
+			"accept-model": "consequential",
 			// The judge and the user model commit to manifest.yaml too, and they
 			// decide what every later measurement is measured with.
 			"configure-evaluators": "consequential",

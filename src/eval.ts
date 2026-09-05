@@ -1271,7 +1271,7 @@ export const EVAL_RUN_SCHEMA_VERSION = 3;
  * distinction lives in the record, so a process killed between the EvalRun
  * write and the marker write still leaves a screen that everything refuses.
  */
-export const EvalRunPurposeSchema = z.enum(["evidence", "screen", "legacy-unknown"]);
+export const EvalRunPurposeSchema = z.enum(["evidence", "screen", "model-experiment", "legacy-unknown"]);
 export type EvalRunPurpose = z.infer<typeof EvalRunPurposeSchema>;
 
 const EvalRunRecordFields = {
@@ -1378,6 +1378,9 @@ function refineEvalRunRecord(record: EvalRunRecordShape, context: z.RefinementCt
 	}
 	// A screen is a one-arm run; the only other label it can wear is `regrade`,
 	// because re-scoring a screen's recorded traces produces a screen.
+	if (record.purpose === "model-experiment" && (record.label !== "solo" && record.label !== "regrade" || record.evidenceVisibility !== "development")) {
+		context.addIssue({ code: "custom", path: ["purpose"], message: "model experiments are development-only solo measurements" });
+	}
 	if (record.purpose === "screen" && record.label !== "solo" && record.label !== "regrade") {
 		context.addIssue({ code: "custom", path: ["purpose"], message: "a screen is a one-arm `solo` run" });
 	}

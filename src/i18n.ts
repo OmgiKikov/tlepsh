@@ -1,4 +1,5 @@
 import { evidenceEnglish, evidenceRussian } from "./evidence/copy.js";
+import { modelExperimentEnglish, modelExperimentRussian } from "./builder/model-experiment-copy.js";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -294,6 +295,7 @@ export function plural(count: number, key: NounKey): string {
 
 const en = {
 	...evidenceEnglish,
+	...modelExperimentEnglish,
 	"stage.target-setup": "Target setup",
 	"stage.spec-design": "Spec design",
 	"stage.spec-review": "Spec review",
@@ -798,6 +800,9 @@ const en = {
 	"trace.reportedToolCalls": "{n} agent-reported tool note(s), not host-verified",
 	"trace.moreEntries": "… {n} more entries; the Explorer page has the bounded rest",
 	"trace.omitted": "… {n} more lines omitted; open /runs/{run} in the Explorer",
+	"trace.inspection-limits": "Recorded conversation; reasoning omitted. Text and checks are bounded.",
+	"trace.inspection-clipped": "Some text was clipped; omitted entries: {entries}, checks: {checks}.",
+	"trace.inspection-unavailable": "No hash-pinned trace was recorded for this run.",
 	"trace.refused": "This run cannot be opened here: {reason}",
 	"trace.unreadable": "The trace could not be read: {reason}",
 	"trace.noMore": "No more runs in that direction.",
@@ -2033,6 +2038,7 @@ export type MessageKey = keyof typeof en;
 
 const ru: Record<MessageKey, string> = {
 	...evidenceRussian,
+	...modelExperimentRussian,
 	"stage.target-setup": "Настройка агента",
 	"stage.spec-design": "Описание агента",
 	"stage.spec-review": "Проверка описания",
@@ -2516,6 +2522,9 @@ const ru: Record<MessageKey, string> = {
 	"trace.reportedToolCalls": "сообщено агентом, без проверки хостом: {n}",
 	"trace.moreEntries": "… ещё {n} записей; остальное — на странице эксплорера",
 	"trace.omitted": "… ещё {n} строк опущено; открой /runs/{run} в эксплорере",
+	"trace.inspection-limits": "Записанный диалог; внутренние рассуждения опущены. Текст и проверки ограничены по объёму.",
+	"trace.inspection-clipped": "Часть текста сокращена; опущено записей: {entries}, проверок: {checks}.",
+	"trace.inspection-unavailable": "У этого прогона нет записи диалога с зафиксированным хешем.",
 	"trace.refused": "Этот прогон здесь не открыть: {reason}",
 	"trace.unreadable": "Трейс не читается: {reason}",
 	"trace.noMore": "Дальше прогонов нет.",

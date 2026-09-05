@@ -1,5 +1,8 @@
 import { advanceShipConsent, assertCompositeFresh, compositeGate, testingConsent, shipConsent, matchesSpecApproval, matchesCorpusPublication, matchesCandidateDecision, matchesEvaluatorConfiguration, matchesPublishedRun } from "./composite-consent.js";
 import { resolveRunCurrent } from "./run-resolution.js";
+import { inspectSelectedDevelopmentRun, inspectModelExperimentRun } from "./run-inspection.js";
+import { planModelExperiment, runModelExperiment, loadModelExperiment, listModelExperiments, loadModelExperimentEval, modelExperimentDirectory, describeModelChange, applyModelChange } from "../application/model-experiment.js";
+import { decideModelExperiment, decideAcceptModel } from "./decisions/model-experiment.js";
 import { workbenchNext } from "./next-actions.js";
 import { isSubCent } from "../measurement.js";
 import { execFileSync } from "node:child_process";
@@ -415,6 +418,10 @@ export interface AhdeWorkbenchDependencies {
 	runSuite: typeof runSuite;
 	/** A/A calibration of one exact revision; never a promotion path. */
 	runCalibration: typeof runCandidateExperiment;
+	planModelExperiment: typeof planModelExperiment;
+	runModelExperiment: typeof runModelExperiment;
+	describeModelChange: typeof describeModelChange;
+	applyModelChange: typeof applyModelChange;
 	/** Re-score recorded traces with a revised rubric; never a Target call. */
 	regradeEvalRun: typeof regradeEvalRun;
 	diagnoseEval: typeof diagnoseEvalRun;
@@ -493,6 +500,10 @@ const DEFAULT_DEPENDENCIES: AhdeWorkbenchDependencies = {
 	recordProposal: recordBuilderAuthoredProposal,
 	runSuite,
 	runCalibration: runCandidateExperiment,
+	planModelExperiment,
+	runModelExperiment,
+	describeModelChange,
+	applyModelChange,
 	regradeEvalRun,
 	diagnoseEval: diagnoseEvalRun,
 	compileImprovementBrief,
@@ -2851,6 +2862,27 @@ export class AhdeWorkbench {
 		view.guidance = workbenchNext(view, resolveRunCurrent(inventory, view.stage));
 		const aspect = query.aspect ?? "summary";
 		if (aspect === "summary") return view;
+		if (aspect === "models") {
+			const scope = { targetDir: this.projectDir, stateRoot: this.stateRoot, projectId: this.projectId };
+			const experiments = query.experimentId
+				? [loadModelExperiment(this.runsRoot, query.experimentId, scope)]
+				: listModelExperiments(this.runsRoot, scope).slice(0, 10);
+			const selected = experiments[0] ?? null;
+			if (selected && (selected.plan.corpus.projectId !== this.projectId || selected.plan.corpus.stateRoot !== this.stateRoot)) {
+				throw new Error("The model experiment belongs to another project");
+			}
+			let selectedRun;
+			if (query.runId && selected) {
+				const arm = selected.arms.find((item) => item.armId === query.armId);
+				if (!arm?.evalRunId) throw new Error("This model experiment arm has no recorded evaluation");
+				const evaluation = loadModelExperimentEval(this.runsRoot, selected.id, arm.evalRunId, scope);
+				selectedRun = inspectModelExperimentRun({
+					runsRoot: join(modelExperimentDirectory(this.runsRoot, selected.id), "evals"),
+					evaluation, targetId: selected.plan.targetId, runId: query.runId,
+				});
+			}
+			return { ...view, detail: { aspect, content: { experiments, selected, ...(selectedRun ? { selectedRun } : {}) } } };
+		}
 		if (aspect === "target") {
 			// The Builder reads this immediately before it authors, so it is where
 			// the memory of what was already tried belongs: what each attempt
@@ -2886,6 +2918,10 @@ export class AhdeWorkbench {
 			// readable after the Target moves. `requireDevelopmentEval` keeps the
 			// strict set for everything that authors or promotes.
 			const run = requireReadableDevelopmentEval(inventory);
+			const verified = loadVerifiedEvalRun(this.runsRoot, run.evalRunId);
+			const selectedRun = query.runId ? inspectSelectedDevelopmentRun({
+				runsRoot: this.runsRoot, evaluation: verified, targetId: inventory.target!.manifest.id, runId: query.runId,
+			}) : undefined;
 			const diagnosis = this.dependencies.diagnoseEval(this.runsRoot, run.evalRunId);
 			const improvementBrief = this.dependencies.compileImprovementBrief(this.runsRoot, diagnosis);
 			const link = boundedEvidenceLink(await this.dependencies.evidenceLink(run));
@@ -2894,7 +2930,8 @@ export class AhdeWorkbench {
 				detail: {
 					aspect,
 					content: {
-						evaluation: evaluationProjection(run, inventory.corpora, loadVerifiedEvalRun(this.runsRoot, run.evalRunId).runs),
+						evaluation: evaluationProjection(run, inventory.corpora, verified.runs),
+						...(selectedRun ? { selectedRun } : {}),
 						diagnosis: diagnosisSummary(diagnosis),
 						improvementBrief: conversationalImprovementBrief(improvementBrief),
 						evidence: link ? { available: true, ...link } : { available: false },
@@ -3458,6 +3495,8 @@ export class AhdeWorkbench {
 		if (input.kind === "run-eval") return decideRunEval(this, input, ctx);
 
 		if (input.kind === "calibrate") return decideCalibrate(this, input, ctx);
+		if (input.kind === "model-experiment") return decideModelExperiment(this, input, ctx);
+		if (input.kind === "accept-model") return decideAcceptModel(this, input, ctx);
 
 		if (input.kind === "regrade") return decideRegrade(this, input, ctx);
 

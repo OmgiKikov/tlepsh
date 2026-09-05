@@ -188,6 +188,37 @@ function armResources(records: readonly RunRecord[]) {
 	})));
 }
 
+/** Canonical task pairing shared by harness comparisons and explicit model experiments. */
+export function pairedComparisonRows(aRuns: readonly TaskRun[], bRuns: readonly TaskRun[]): CompareRow[] {
+	const aTasks = perTask(aRuns);
+	const bTasks = perTask(bRuns);
+	const taskIds = [...new Set([...aTasks.keys(), ...bTasks.keys()])].sort(compareUtf8);
+	const rows: CompareRow[] = taskIds.map((taskId) => {
+		const ae = aTasks.get(taskId);
+		const be = bTasks.get(taskId);
+		const aRate = ae && ae.total > 0 ? ae.pass / ae.total : 0;
+		const bRate = be && be.total > 0 ? be.pass / be.total : 0;
+		const aScore = ae && ae.total > 0 ? ae.score / ae.total : 0;
+		const bScore = be && be.total > 0 ? be.score / be.total : 0;
+		return {
+			taskId,
+			aPassRate: aRate,
+			bPassRate: bRate,
+			delta: bRate - aRate,
+			aScore,
+			bScore,
+			scoreDelta: bScore - aScore,
+			aStatus: ae?.status ?? "missing",
+			bStatus: be?.status ?? "missing",
+			aPass: ae?.pass ?? 0,
+			aTotal: ae?.total ?? 0,
+			bPass: be?.pass ?? 0,
+			bTotal: be?.total ?? 0,
+		};
+	});
+	return rows;
+}
+
 /**
  * Compare two already-verified eval runs. Refuses (error field) when
  * provenance axes differ — the guard is one call to axisDifferences, never a
@@ -211,6 +242,8 @@ export function compareVerifiedEvalRuns(
 			if (record.purpose !== "evidence") {
 				invalid.push(record.purpose === "screen"
 					? `${role} eval ${record.evalRunId} is a cheap-check screen, which is never evidence`
+					: record.purpose === "model-experiment"
+					? `${role} eval ${record.evalRunId} is a model experiment, never promotion evidence`
 					: `${role} eval ${record.evalRunId} predates first-class run purpose and is ambiguous one-arm evidence; rerun it`);
 			}
 		}
@@ -241,34 +274,9 @@ export function compareVerifiedEvalRuns(
 		invalid.push("A/A calibration requires the same target revision");
 	}
 
-	const aTasks = perTask(aVerified.runs);
-	const bTasks = perTask(bVerified.runs);
-	const taskIds = [...new Set([...aTasks.keys(), ...bTasks.keys()])].sort(compareUtf8);
-	const rows: CompareRow[] = taskIds.map((taskId) => {
-		const ae = aTasks.get(taskId);
-		const be = bTasks.get(taskId);
-		const aRate = ae && ae.total > 0 ? ae.pass / ae.total : 0;
-		const bRate = be && be.total > 0 ? be.pass / be.total : 0;
-		const aScore = ae && ae.total > 0 ? ae.score / ae.total : 0;
-		const bScore = be && be.total > 0 ? be.score / be.total : 0;
-		return {
-			taskId,
-			aPassRate: aRate,
-			bPassRate: bRate,
-			delta: bRate - aRate,
-			aScore,
-			bScore,
-			scoreDelta: bScore - aScore,
-			aStatus: ae?.status ?? "missing",
-			bStatus: be?.status ?? "missing",
-			aPass: ae?.pass ?? 0,
-			aTotal: ae?.total ?? 0,
-			bPass: be?.pass ?? 0,
-			bTotal: be?.total ?? 0,
-		};
-	});
-	const aIds = [...aTasks.keys()].sort(compareUtf8);
-	const bIds = [...bTasks.keys()].sort(compareUtf8);
+	const rows = pairedComparisonRows(aVerified.runs, bVerified.runs);
+	const aIds = [...new Set(aVerified.runs.map((run) => run.taskId))].sort(compareUtf8);
+	const bIds = [...new Set(bVerified.runs.map((run) => run.taskId))].sort(compareUtf8);
 	if (JSON.stringify(aIds) !== JSON.stringify(bIds)) invalid.push("task sets differ");
 	const surface = options.surface ?? "development";
 	const statistics = judgeComparison(rows, {

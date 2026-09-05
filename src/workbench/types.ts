@@ -1,4 +1,6 @@
 import type { WorkbenchNext } from "./next-actions.js";
+import type { ModelExperimentRecord, ModelChangeReceipt } from "../application/model-experiment.js";
+import type { WorkbenchRunInspection } from "./run-inspection.js";
 import { z } from "zod";
 import { ProposalPredictionSchema, type ProposalPrediction } from "../builders/adapters.js";
 import type { GateSurface, GateVerdict, SealedOutcome } from "../domain/comparison-gate.js";
@@ -366,6 +368,8 @@ export type WorkbenchReviewDetail =
 	| { kind: "workflow"; stage: WorkbenchStage; headline: string };
 
 export interface WorkbenchTracesDetail {
+	/** Exact observable conversation requested by runId, from this selected eval only. */
+	selectedRun?: import("./run-inspection.js").WorkbenchRunInspection;
 	evaluation: WorkbenchEvaluationProjection;
 	diagnosis: WorkbenchDiagnosisSummary;
 	improvementBrief: WorkbenchImprovementBriefProjection;
@@ -418,6 +422,7 @@ export interface WorkbenchDatasetDetail {
 }
 
 export type WorkbenchDetail =
+	| { aspect: "models"; content: { experiments: ModelExperimentRecord[]; selected: ModelExperimentRecord | null; selectedRun?: WorkbenchRunInspection } }
 	| { aspect: "review"; content: WorkbenchReviewDetail }
 	| { aspect: "traces"; content: WorkbenchTracesDetail }
 	| { aspect: "target"; content: WorkbenchTargetDetail }
@@ -610,7 +615,10 @@ export const WorkbenchViewIncludeSchema = z.enum(["selections"]);
 export type WorkbenchViewInclude = z.infer<typeof WorkbenchViewIncludeSchema>;
 
 export const WorkbenchViewQuerySchema = z.strictObject({
-	aspect: z.enum(["summary", "traces", "review", "target", "history", "dataset"]).optional(),
+	aspect: z.enum(["summary", "traces", "review", "target", "history", "dataset", "models"]).optional(),
+	experimentId: ArtifactIdSchema.optional(),
+	armId: z.enum(["baseline", "model-1", "model-2"]).optional(),
+	runId: ArtifactIdSchema.optional(),
 	resourcePath: z.string().min(1).max(500).optional(),
 	/**
 	 * Projection hint read by the model-facing transport, not by the Workbench:
@@ -619,6 +627,19 @@ export const WorkbenchViewQuerySchema = z.strictObject({
 	 */
 	include: z.array(WorkbenchViewIncludeSchema).max(1).optional(),
 }).superRefine((query, context) => {
+	if (query.experimentId !== undefined && query.aspect !== "models") {
+		context.addIssue({ code: "custom", path: ["experimentId"], message: "experimentId is valid only for the models view" });
+	}
+	if (query.armId !== undefined && query.aspect !== "models") {
+		context.addIssue({ code: "custom", path: ["armId"], message: "armId is valid only for the models view" });
+	}
+	if (query.runId !== undefined && query.aspect !== "traces" && query.aspect !== "models") {
+		context.addIssue({ code: "custom", path: ["runId"], message: "runId is valid only for traces or models" });
+	}
+	if (query.aspect === "models" && (query.runId !== undefined || query.armId !== undefined) &&
+		(query.experimentId === undefined || query.armId === undefined || query.runId === undefined)) {
+		context.addIssue({ code: "custom", path: ["runId"], message: "model run inspection requires experimentId, armId and runId together" });
+	}
 	if (query.resourcePath !== undefined && query.aspect !== "target" && query.aspect !== "dataset") {
 		context.addIssue({
 			code: "custom",
@@ -1030,6 +1051,23 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		repetitions: z.number().int().min(1).max(10),
 		reason: NonBlankSchema.max(4_000),
 	}),
+	z.strictObject({
+		kind: z.literal("model-experiment"),
+		/** Alternatives only: the current Target model is always the control. */
+		models: z.array(TargetModelSelectionSchema).min(1).max(2),
+		repetitions: z.number().int().min(1).max(5),
+		/** Maximum Target executions, across all arms; this is not a USD cap. */
+		executionBudget: z.number().int().min(1).max(10_000),
+		qualityTolerance: z.number().finite().min(0).max(0.2),
+		objective: z.enum(["cost", "latency"]),
+		reason: NonBlankSchema.max(4_000),
+	}),
+	z.strictObject({
+		kind: z.literal("accept-model"),
+		experimentId: ArtifactIdSchema,
+		armId: ArtifactIdSchema,
+		reason: NonBlankSchema.max(4_000),
+	}),
 	/**
 	 * Re-score recorded answers with a rubric that just changed. The Target is
 	 * never called — the answers are already on disk — so the only bill is the
@@ -1411,6 +1449,8 @@ export interface WorkbenchImproveResult {
 
 /** Typed payload of every consequential decision, keyed by its decision kind. */
 export interface WorkbenchDecisionResultMap {
+	"model-experiment": { experiment: ModelExperimentRecord };
+	"accept-model": { receipt: ModelChangeReceipt };
 	"scaffold-target": { targetId: string; targetGitSha: string; receiptId: string };
 	"wrap-target": { targetId: string; targetGitSha: string; receiptId: string; entry: string };
 	"configure-target": { targetId: string; targetGitSha: string; receiptId: string; credentialEnv: string };

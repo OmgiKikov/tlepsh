@@ -42,6 +42,12 @@ sealed verification and a released version. It prints paths to the HTML release
 report, RAG trace, passport and dataset. It uses a scripted local model and needs
 no API key. It proves the workflow; a real model's quality still has to be measured.
 
+`npm run demo:models` demonstrates model selection with three scripted local models:
+one retains the expected answers at lower fixture rates, another is cheaper but
+fails six cases. It runs 90 real Pi executions, inspects a recorded regression,
+accepts the exact model change, then establishes a new 15-case baseline. All model
+answers and prices in this demo are fixtures; it makes no claim about real models.
+
 ## Start your agent
 
 ```bash
@@ -62,6 +68,36 @@ before a consequential decision. Routine measurements proceed under the existing
 cost policy; a changed or unusually expensive scope can need a new decision.
 The browser is a read-only explanation of recorded work, opened when useful.
 The compact Pi commands below are optional expert shortcuts for the terminal.
+
+For a Pi agent, say **“make it cheaper”** or **“compare faster models on my cases”**.
+The Builder reads the host's available model catalog and prepares one or two
+alternatives against the current model. One review pins the exact agent revision,
+published cases, repetitions, score-loss tolerance and maximum Target executions.
+The experiment runs private copies, supports the same background progress and
+stop action, and leaves the active agent unchanged. Its results survive restart;
+ask to inspect a particular regression or the previous model experiment.
+
+The result shows scores, pass rates, paired intervals, Target cost, latency and
+observed tradeoffs. A recommendation requires at least 15 cases and two repeats,
+complete results and a lower confidence bound within the declared tolerance.
+Unknown prices remain unknown. These are exploratory results on the selected
+development cases: intervals are not adjusted for choosing among alternatives,
+and a recommendation does not prove performance on new tasks. Judge and simulated
+user costs are identified separately when those models were used.
+
+Choosing an alternative opens its exact configuration diff. Accepting commits only
+the model change; old-model evidence cannot remain the active baseline. The next
+ordinary test establishes a new baseline. This changes the working configuration,
+without creating a promoted release or reusing the experiment as release evidence.
+Applying a selected model requires Git's `reference-transaction` hook; AHDE probes
+support without changing refs and refuses the change if the hook is unavailable.
+Command Targets are excluded because AHDE cannot attest which model a separate
+process actually used.
+
+Before/after Evidence now also offers **behavior replay**: independently step through
+the same case and repetition on both versions, inspect executed tools and checks,
+and share a link to those exact steps. A changed transcript entry is an observation,
+not proof of causality; the aggregate comparison remains visible beside the replay.
 
 Opening `ahde` again continues this project's latest conversation and reads fresh
 project state before the next turn. `ahde builder-pi` explicitly starts a new

@@ -50,6 +50,8 @@ const LEGAL_DECISION_STAGES = {
 	"start-testing": ["spec-review", "corpus-review"],
 	"run-eval": ["ready-to-evaluate", "improvement-authoring"],
 	calibrate: ["ready-to-evaluate", "improvement-authoring"],
+	"model-experiment": ["ready-to-evaluate", "improvement-authoring"],
+	"accept-model": ["ready-to-evaluate", "improvement-authoring"],
 	// A re-score belongs wherever a recorded evaluation and a revised rubric can
 	// both exist. `corpus-review` is the important one: revising the graders is
 	// what puts a draft there, and re-scoring before publishing is the whole
@@ -207,6 +209,8 @@ export const WORKBENCH_GATE_POLICY = {
 	"scaffold-target": "consequential",
 	"wrap-target": "consequential",
 	"configure-target": "consequential",
+	"model-experiment": "consequential",
+	"accept-model": "consequential",
 	// The same class as the Target's own model, for the same reason: it commits
 	// a reviewed change to manifest.yaml and it decides what the evidence is
 	// measured with.

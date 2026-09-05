@@ -195,6 +195,8 @@ details[open]>summary::before{content:"▾ "}
 .sample-checks li{overflow-wrap:anywhere;font-size:13px}
 .sample-checks p{font-size:12px;margin:4px 0 0;color:var(--muted)}
 .sample-link{display:inline-block;margin-top:12px;font-size:13px;font-weight:600}
+.replay-link{display:inline-flex;align-items:center;gap:10px;padding:11px 16px;border:1px solid var(--accent);border-radius:8px;background:var(--accent-soft);color:var(--accent);font-size:14px;font-weight:650;margin:12px 0;text-decoration:none}
+.replay-link:hover{filter:brightness(1.08);text-decoration:none}
 .finding{padding:18px 22px;border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;background:var(--surface);font-size:17px;margin-bottom:14px}
 .finding p:last-child{margin-bottom:0}
 .section-head{display:flex;justify-content:space-between;gap:16px;align-items:baseline;margin-bottom:12px}
@@ -210,6 +212,8 @@ export interface PageOptions {
 	body: string;
 	/** Inline script body. Rendered verbatim inside a <script> element. */
 	script?: string;
+	/** Trusted, page-specific stylesheet. */
+	styles?: string;
 }
 
 export function renderPage(options: PageOptions): string {
@@ -221,7 +225,7 @@ export function renderPage(options: PageOptions): string {
 	return `<!doctype html>
 <html lang="${language()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${h(options.title)}</title>
-<style>${EVIDENCE_STYLESHEET}</style>
+<style>${EVIDENCE_STYLESHEET}${options.styles ?? ""}</style>
 </head><body>
 <nav class="topbar">${crumbs}</nav>
 <main class="wrap">${options.body}</main>
@@ -742,6 +746,7 @@ function renderCompareExamples(model: ComparePageModel): string {
 		return `<article class="example">
 <div class="example-header"><div class="rowline"><h3>${h(example.taskId)}</h3><span class="${invalid || example.exclusion ? "same" : direction === "regressed" ? "down" : direction === "improved" ? "up" : "same"}">${invalid ? h(t("evidence.notComparable")) : example.exclusion ? h(t(`evidence.excluded-${example.exclusion}`)) : `${h(t(`evidence.${direction}`))} · ${h(points(example.scoreDelta))}`}</span></div>
 <p>${h(example.baseline?.input ?? example.candidate?.input ?? t("evidence.noInput"))}</p>
+${example.baseline && example.candidate ? `<a class="replay-link" href="/candidates/${encodeURIComponent(model.candidateId)}/replay?run=${encodeURIComponent(example.baseline.runId)}">${h(t("evidence.replayOpen"))} →</a>` : ""}
 <div class="sub">${invalid ? h(t("evidence.invalidComparison")) : example.exclusion ? h(t("evidence.excludedNote")) : `${h(t("evidence.changedScore"))}: ${percent(example.baselineScore)} → ${percent(example.candidateScore)}`}</div></div>
 <div class="pair">${renderCompareArm(example.baseline, t("evidence.baseline"))}${renderCompareArm(example.candidate, t("evidence.candidate"))}</div>
 </article>`;
@@ -764,6 +769,7 @@ export function renderComparePage(model: ComparePageModel): string {
 		<div class="sub">${h(model.targetId)}</div>
 		<h1>${h(t("evidence.comparison"))}</h1>
 		<p class="lead">${h(t("evidence.comparisonIntro"))}</p>
+		${model.examples.some(example => example.baseline && example.candidate) ? `<a class="replay-link" href="/candidates/${encodeURIComponent(model.candidateId)}/replay">${h(t("evidence.replayOpen"))} →</a>` : ""}
 	</div>
 	<div class="pills"><span class="tag">${h(candidateStatusLabel(model.status))}</span></div>
 </div>

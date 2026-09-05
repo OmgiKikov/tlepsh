@@ -183,13 +183,17 @@ export async function selectTargetCredentialEnvironment(
 	selection: TargetModelSelection,
 	/** What the key is for, in the operator's words. */
 	subject = t("onboarding.subject-agent"),
+	signal?: AbortSignal,
 ): Promise<string> {
+	signal?.throwIfAborted();
 	const suggested = credentialPlaceholder(selection.provider);
 	if (process.env[suggested]?.trim()) return suggested;
 	const selected = await ctx.ui.input(
 		t("onboarding.credential-env", { provider: selection.provider, subject }),
 		suggested,
+		...(signal ? [{ signal }] : []),
 	);
+	signal?.throwIfAborted();
 	if (selected === undefined) throw new Error("Target model configuration was cancelled by the operator");
 	const value = selected.trim() || suggested;
 	if (!ENVIRONMENT_NAME.test(value)) {

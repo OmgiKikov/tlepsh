@@ -1,12 +1,13 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { t } from "../i18n.js";
+import { decisionExecutionOutcome } from "./decision-outcome.js";
 import type { WorkbenchDecisionInput, WorkbenchDecisionResult, WorkbenchHumanGate } from "../workbench/types.js";
 import { type BuilderJobResult, type BuilderJobs, type JobRunOptions } from "./jobs.js";
 import { beginBuilderRunObservation, type BeginBuilderLiveTrace, type BuilderLiveTraceOutcome } from "./run-observation.js";
 
 /** One classification for both conversation tools and shortcuts. Authority remains in the gate. */
 function measures(input: WorkbenchDecisionInput): boolean {
-	return ["run-current", "start-testing", "run-eval", "verify-candidate", "calibrate", "regrade", "improve", "ship"].includes(input.kind)
+	return ["run-current", "start-testing", "run-eval", "verify-candidate", "calibrate", "regrade", "improve", "ship", "model-experiment"].includes(input.kind)
 		|| (input.kind === "apply-proposal" && input.verify !== undefined);
 }
 
@@ -60,7 +61,8 @@ export async function executeBuilderDecision(options: {
 						onRunEvent(event);
 					}
 				});
-				outcome = result ? "completed" : "aborted";
+				const settled = decisionExecutionOutcome(result);
+				outcome = settled === "failed" ? "error" : settled === "stopped" ? "aborted" : "completed";
 				return result;
 			} catch (error) {
 				if (signal.aborted) outcome = "aborted";

@@ -7,6 +7,10 @@ import { defineConfig } from "vitest/config";
 // When a new test starts spawning things, add its name here: that is the whole
 // maintenance rule.
 const HEAVY = [
+	"tests/workbench-model-experiment.test.ts", // Reviewed corpus publication and exact Git authority changes
+	"tests/model-experiment.test.ts", // Isolated model variants, real eval records and reviewed model changes
+	"tests/evidence-replay.test.ts", // Exact candidate evidence and paired trace fixtures
+	"tests/evidence-replay-page.test.ts", // HTTP evidence routes over verified experiment fixtures
 	"tests/agent-log.test.ts", // Git repos through the improve fixtures, plus the sealed-holdout repetitions
 	"tests/autoloop.test.ts", // Git repos: a whole improve cycle per case
 	"tests/builder-pi-closed-loop.test.ts", // Git, and a mock model over HTTP, to close the loop end to end

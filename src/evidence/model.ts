@@ -20,7 +20,7 @@ import {
 	type RunRow,
 } from "../application/run-explanation.js";
 import { compareVerifiedEvalRuns, runCost, runTotalCost, runTokens, type CompareResult } from "../compare.js";
-import { sealedOutcome } from "../domain/comparison-gate.js";
+import { compareUtf8, sealedOutcome } from "../domain/comparison-gate.js";
 import { exclusionReasonOf, measurementLine, measurementSurface } from "../application/measurement-line.js";
 import { diagnosisPath, loadDiagnosis } from "../diagnosis.js";
 import type { CandidateRecord, EvaluationEvidence } from "../domain/candidate.js";
@@ -67,7 +67,7 @@ export class EvidenceNotDiagnosed extends Error {}
  * itself and on the baseline it is linked to. The second refusal is what keeps
  * a development candidate from rendering a sealed baseline's shape by proxy.
  */
-function loadPublicEvalRun(runsRoot: string, evalRunId: string): VerifiedEvalRun {
+export function loadPublicEvalRun(runsRoot: string, evalRunId: string): VerifiedEvalRun {
 	const index = readEvalRunIndex(runsRoot, evalRunId);
 	if (isSealedEvalRun(index)) throw new EvidenceNotFound(`eval run ${evalRunId} is not public evidence`);
 	if (index.baselineEvalRunId) {
@@ -431,13 +431,19 @@ function compareRunPreview(runsRoot: string, verified: VerifiedEvalRun, run: Run
 	};
 }
 
-function comparisonPreviews(runsRoot: string, baseline: VerifiedEvalRun, candidate: VerifiedEvalRun, comparison: CompareResult, exclusions: ReadonlyMap<string, CompareResult["excluded"][number]["reason"]>): CompareCasePreview[] {
-	const ordered = [...comparison.rows].sort((left, right) => {
+/** The same deterministic case order for excerpts and replay navigation. */
+export function orderedComparisonRows(comparison: Pick<CompareResult, "rows" | "excluded">): CompareResult["rows"] {
+	const exclusions = new Set(comparison.excluded.map((task) => task.taskId));
+	return [...comparison.rows].sort((left, right) => {
 		// Regressions must not disappear behind a large overall improvement. Within
 		// each direction sort by task id, never by a hand-picked favourable answer.
 		const priority = (row: CompareResult["rows"][number]) => exclusions.has(row.taskId) ? 1 : row.scoreDelta < 0 ? 0 : row.scoreDelta > 0 ? 2 : 3;
-		return priority(left) - priority(right) || left.taskId.localeCompare(right.taskId);
-	}).slice(0, MAX_COMPARE_PREVIEW_CASES);
+		return priority(left) - priority(right) || compareUtf8(left.taskId, right.taskId);
+	});
+}
+
+function comparisonPreviews(runsRoot: string, baseline: VerifiedEvalRun, candidate: VerifiedEvalRun, comparison: CompareResult, exclusions: ReadonlyMap<string, CompareResult["excluded"][number]["reason"]>): CompareCasePreview[] {
+	const ordered = orderedComparisonRows(comparison).slice(0, MAX_COMPARE_PREVIEW_CASES);
 	return ordered.map((row) => {
 		const before = baseline.runs.filter((run) => run.taskId === row.taskId)
 			.sort((left, right) => left.repetitionIndex - right.repetitionIndex || left.runId.localeCompare(right.runId));

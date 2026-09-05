@@ -1,4 +1,5 @@
 export * from "./application/agent-log.js";
+export * from "./application/model-experiment.js";
 export * from "./application/watch.js";
 export * from "./application/candidate-experiment.js";
 export * from "./application/candidate-impact.js";

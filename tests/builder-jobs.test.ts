@@ -137,6 +137,27 @@ const settle = async (): Promise<void> => {
 };
 
 describe("background measurements", () => {
+	it.each(["stopped", "failed"] as const)("retains a typed %s model experiment without a successful completion claim", async (status) => {
+		const fixture = hostFixture();
+		const jobs = createBuilderJobs({ host: fixture.host });
+		const pending = deferred<WorkbenchDecisionResult>();
+		const recorded = { kind: "model-experiment", message: `Experiment ${status}`, result: { experiment: { status } }, view: commandView } as WorkbenchDecisionResult;
+		const present = vi.fn(async () => `Experiment ${status}`);
+		const started = await jobs.start({
+			command: "model-experiment", label: () => "model comparison", background: true,
+			run: async ({ authorized }) => {
+				authorized({ kind: "model-experiment", estimate: { executions: 90, sampledRuns: 0, costUsd: null, minutes: null } });
+				return pending.promise;
+			}, present,
+		});
+		expect(started.status).toBe("running");
+		pending.resolve(recorded); await settle();
+		expect(present).toHaveBeenCalledWith(recorded, true);
+		expect(fixture.blocks.at(-1)?.tone).toBe(status === "failed" ? "error" : "warning");
+		expect(fixture.note.mock.calls.at(-1)?.[0]).toContain(`model-experiment ${status}`);
+		expect(fixture.note.mock.calls.at(-1)?.[0]).toContain("Partial artifacts remain saved");
+		expect(jobs.active()).toBeNull(); jobs.dispose();
+	});
 	it("keeps a durable decision successful when its observational callbacks fail", async () => {
 		const fixture = hostFixture();
 		fixture.host.show = () => { throw new Error("panel closed"); };

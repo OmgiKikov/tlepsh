@@ -39,7 +39,8 @@
     "verify:package": "node scripts/verify-package.mjs",
     "vendor:build": "cd vendor/pi-mono && npm ci --ignore-scripts && npm run hydrate:model-data && npm run build:offline",
     "vendor:pack": "cd vendor/pi-mono/packages/telemetry && npm pack --pack-destination ../../../tarballs && cd ../ai && npm pack --pack-destination ../../../tarballs && cd ../agent && npm pack --pack-destination ../../../tarballs && cd ../protocol && npm pack --pack-destination ../../../tarballs && cd ../client && npm pack --pack-destination ../../../tarballs && cd ../tui && npm pack --pack-destination ../../../tarballs && cd ../coding-agent && npm pack --pack-destination ../../../tarballs",
-		"demo": "npm run build && node scripts/demo.mjs"
+		"demo": "npm run build && node scripts/demo.mjs",
+		"demo:models": "npm run build && node scripts/demo-models.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "file:vendor/tarballs/earendil-works-pi-agent-core-0.84.3.tgz",

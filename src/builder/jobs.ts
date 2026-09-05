@@ -1,4 +1,5 @@
 import { plural, t } from "../i18n.js";
+import { decisionExecutionOutcome } from "./decision-outcome.js";
 import type { RunEvent, RunEventListener } from "../run-events.js";
 import type { WorkbenchRunEstimate } from "../workbench/transition-policy.js";
 import type {
@@ -38,6 +39,7 @@ const DEFAULT_BACKGROUND_MINUTES = 1;
 const ALWAYS_BACKGROUND: ReadonlySet<WorkbenchConfirmationKind> = new Set([
 	"verify-candidate",
 	"calibrate",
+	"model-experiment",
 	"improve",
 ]);
 const STATUS_TICK_MS = 5_000;
@@ -288,7 +290,7 @@ export function createBuilderJobs(options: BuilderJobsOptions): BuilderJobs {
 				const estimate = authorization.estimate;
 				// A composite may first approve a description or a release. That is
 				// not yet a running measurement; wait for its actual spending step.
-				const measurement = ["run-eval", "verify-candidate", "calibrate", "regrade", "improve"].includes(authorization.kind)
+				const measurement = ["run-eval", "verify-candidate", "calibrate", "regrade", "improve", "model-experiment"].includes(authorization.kind)
 					|| (["start-testing", "apply-proposal"].includes(authorization.kind) && (estimate?.executions ?? 0) > 0);
 				if (!measurement) return;
 				const minutes = estimateMinutes(estimate);
@@ -356,11 +358,13 @@ export function createBuilderJobs(options: BuilderJobsOptions): BuilderJobs {
 					catch { /* The durable result remains true when its panel cannot render. */ }
 					finish(job);
 					release({ status: "completed", result });
+					const outcome = decisionExecutionOutcome(result);
 					await settle(
-						"success",
-						"job.finished",
+						outcome === "failed" ? "error" : outcome === "stopped" ? "warning" : "success",
+						outcome === "failed" ? "job.failed" : outcome === "stopped" ? "job.stopped" : "job.finished",
 						oneLine(headline, 120),
-						`The background ${input.command} finished: ${oneLine(headline, 200)}. ` +
+						`The background ${input.command} ${outcome === "completed" ? "finished" : outcome}: ${oneLine(headline, 200)}. ` +
+						(outcome === "completed" ? "" : "Partial artifacts remain saved; interrupted or failed execution is not a quality result. ") +
 						"Call ahde_workbench_view before relying on any earlier state.",
 					);
 				} catch (error) {

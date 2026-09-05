@@ -18,6 +18,7 @@ import {
 } from "./prediction.js";
 import { ProposalPredictionSchema, type ProposalPrediction } from "../../builders/adapters.js";
 import { renderCandidate, renderDatasetCases } from "./view.js";
+import { renderModelAcceptanceConfirmation, renderModelExperimentConfirmation } from "./model-experiment.js";
 
 type Bag = Record<string, unknown>;
 
@@ -181,6 +182,8 @@ function verificationLine(estimate: WorkbenchRunEstimate | undefined, paint: Pai
 function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string[] {
 	const subject = bag(confirmation.subject);
 	switch (confirmation.kind) {
+		case "model-experiment": return renderModelExperimentConfirmation(subject.plan, paint);
+		case "accept-model": return renderModelAcceptanceConfirmation(subject, paint);
 		case "scaffold-target": {
 			const files = Array.isArray(subject.templateFiles) ? subject.templateFiles : [];
 			return [

@@ -176,7 +176,7 @@ describe("model-facing projection", () => {
 		});
 		expect(next.decide.map((entry) => entry.kind)).toEqual([
 			"run-current", "talk-to-agent", "regrade", "generate-holdout",
-			"configure-evaluators", "calibrate", "improve", "run-eval",
+			"configure-evaluators", "calibrate", "model-experiment", "accept-model", "improve", "run-eval",
 		]);
 		// A workshop is open, so closing or discarding it is legal and reopening is not.
 		expect(next.submit.map((entry) => entry.kind)).toEqual([
