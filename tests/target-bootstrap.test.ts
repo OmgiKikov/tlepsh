@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	configureTargetBootstrap,
@@ -56,7 +56,7 @@ interface Fixture {
 }
 
 function fixture(): Fixture {
-	const parent = mkdtempSync(join(tmpdir(), "ahde-target-bootstrap-"));
+	const parent = realpathSync(mkdtempSync(join(tmpdir(), "ahde-target-bootstrap-")));
 	cleanupPaths.push(parent);
 	const targetDir = join(parent, "target");
 	scaffoldTarget(resolve("templates/basic-agent"), targetDir);
@@ -102,6 +102,7 @@ function configured(value: Fixture, overrides: Partial<ConfigureTargetBootstrapO
 describe("Target bootstrap application service", () => {
 	it("describes and commits exactly one host-confirmed initial configuration with a private receipt", () => {
 		const value = fixture();
+		expect(existsSync(value.stateRoot)).toBe(false);
 		const before = loadTarget(value.targetDir).manifest;
 		const request = options(value);
 		const subject = describeTargetBootstrap(request);
@@ -154,6 +155,52 @@ describe("Target bootstrap application service", () => {
 		);
 		expect(git(value.targetDir, "status", "--porcelain=v1", "--untracked-files=all")).toBe("");
 		expect(readFileSync(result.receiptPath, "utf8")).not.toContain("sk-");
+	});
+
+	it("does not let a parent alias bypass the ignore requirement for missing nested state", () => {
+		const value = fixture();
+		const alias = join(dirname(value.targetDir), "target-alias");
+		symlinkSync(value.targetDir, alias, "dir");
+		const stateRoot = join(alias, "not-ignored", "state");
+		expect(() => configured(value, { stateRoot })).toThrow(/stateRoot must be ignored/);
+		expect(existsSync(join(value.targetDir, "not-ignored"))).toBe(false);
+		expect(git(value.targetDir, "rev-parse", "HEAD")).toBe(value.baseSha);
+		expect(readFileSync(join(value.targetDir, "manifest.yaml"), "utf8")).toBe(value.baseManifest);
+	});
+
+	it("refuses tracked files beneath an ignored state directory", () => {
+		const value = fixture();
+		mkdirSync(join(value.stateRoot, "nested"), { recursive: true });
+		writeFileSync(join(value.stateRoot, "nested", "private.txt"), "keep this tracked fixture\n");
+		git(value.targetDir, "add", "--force", "--", ".ahde/nested/private.txt");
+		git(value.targetDir, "-c", "user.name=Manual", "-c", "user.email=manual@example.test", "commit", "--amend", "--no-edit", "--no-gpg-sign");
+		const before = git(value.targetDir, "rev-parse", "HEAD");
+		expect(() => configureTargetBootstrap(options(value))).toThrow(/stateRoot must not contain tracked files/);
+		expect(git(value.targetDir, "rev-parse", "HEAD")).toBe(before);
+		expect(existsSync(join(value.stateRoot, "target-bootstrap.json"))).toBe(false);
+	});
+
+	it.each(["root", "nested"])("refuses a %s state symlink before writing outside the Target", (kind) => {
+		const value = fixture();
+		const outside = join(dirname(value.targetDir), "outside");
+		mkdirSync(outside);
+		if (kind === "nested") mkdirSync(value.stateRoot);
+		const link = kind === "root" ? value.stateRoot : join(value.stateRoot, "linked");
+		symlinkSync(outside, link, "dir");
+		const stateRoot = kind === "root" ? link : join(link, "state");
+		expect(() => configureTargetBootstrap(options(value, { stateRoot }))).toThrow(/symlink/);
+		expect(readdirSync(outside)).toEqual([]);
+		expect(git(value.targetDir, "rev-parse", "HEAD")).toBe(value.baseSha);
+		expect(readFileSync(join(value.targetDir, "manifest.yaml"), "utf8")).toBe(value.baseManifest);
+	});
+
+	it("continues to support explicitly external private state", () => {
+		const value = fixture();
+		const stateRoot = join(dirname(value.targetDir), "external-state");
+		const result = configured(value, { stateRoot });
+		expect(result.receiptPath).toBe(join(stateRoot, "target-bootstrap.json"));
+		expect(statSync(stateRoot).mode & 0o777).toBe(0o700);
+		expect(git(value.targetDir, "status", "--porcelain=v1", "--untracked-files=all")).toBe("");
 	});
 
 	it("refuses replay after the immutable receipt exists", () => {

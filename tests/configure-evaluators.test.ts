@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -82,7 +82,7 @@ interface Fixture {
 
 /** A configured Target: the scaffold, bootstrapped, with a real model and no evaluators. */
 function fixture(): Fixture {
-	const parent = mkdtempSync(join(tmpdir(), "ahde-configure-evaluators-"));
+	const parent = realpathSync(mkdtempSync(join(tmpdir(), "ahde-configure-evaluators-")));
 	cleanupPaths.push(parent);
 	const targetDir = join(parent, "target");
 	scaffoldTarget(resolve("templates/basic-agent"), targetDir);

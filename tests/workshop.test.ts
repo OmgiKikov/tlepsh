@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	chmodSync,
@@ -683,12 +683,16 @@ permissions:
 				processes: 256,
 			});
 			expect(capped.limits?.applied).toEqual(expect.arrayContaining(["t", "f", "n"]));
-			// `ulimit -u` counts the operator's own processes under sandbox-exec, so
-			// that backend reports it unenforced instead of applying a booby trap.
-			if (capped.sandbox === "bwrap") {
+			// NPROC requires both an isolated uid and shell support. Ubuntu's
+			// /bin/sh is dash, which lacks -u; macOS shares the operator's uid.
+			// The three portable limits above must still be applied and measured.
+			const nproc = spawnSync("/bin/sh", ["-c", "ulimit -u 256"], { stdio: "ignore", timeout: 3_000 });
+			if (capped.sandbox === "bwrap" && nproc.status === 0 && !nproc.error) {
+				expect(capped.limits?.applied).toContain("u");
 				expect(capped.limits?.unenforced).toEqual([]);
 				expect(capped.note).toBeNull();
 			} else {
+				expect(capped.limits?.applied).not.toContain("u");
 				expect(capped.limits?.unenforced).toEqual(["u"]);
 				expect(capped.note).toMatch(/could not enforce ulimit -u/);
 			}

@@ -17,7 +17,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { parseDocument, parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { loadTarget, ModelBlock, TargetManifest, type TargetManifest as TargetManifestValue } from "../manifest.js";
@@ -248,13 +248,40 @@ function stateRootPath(input: string, create: boolean): string {
 	return realpathSync(requested);
 }
 
-function assertStateRootDoesNotDirtyTarget(repositoryDir: string, stateRoot: string): void {
-	const state = resolve(stateRoot);
-	if (!contained(repositoryDir, state)) return;
+function assertStateRootDoesNotDirtyTarget(repositoryDir: string, stateRoot: string): string {
+	const requested = resolve(stateRoot);
+	let state = parse(requested).root;
+	let enteredTarget = false;
+	const parts = relative(state, requested).split(sep).filter(Boolean);
+	for (const [index, part] of parts.entries()) {
+		state = join(state, part);
+		const entry = lstatSync(state, { throwIfNoEntry: false });
+		if (!entry) {
+			state = join(state, ...parts.slice(index + 1));
+			break;
+		}
+		// System aliases such as macOS /tmp are valid before the Target root.
+		// A link within the Target must never redirect its private state outside.
+		if (entry.isSymbolicLink() && (enteredTarget || index === parts.length - 1)) {
+			throw new Error(`Target bootstrap stateRoot must not traverse a symlink within the Target: ${state}`);
+		}
+		if (!entry.isDirectory() && !entry.isSymbolicLink()) {
+			throw new Error(`Target bootstrap stateRoot must be a regular non-symlink directory: ${state}`);
+		}
+		state = realpathSync(state);
+		enteredTarget ||= contained(repositoryDir, state);
+	}
+	if (!contained(repositoryDir, state)) return state;
 	const relativeState = relative(repositoryDir, state) || ".";
-	if (gitStatus(repositoryDir, ["check-ignore", "-q", "--", relativeState]) !== 0) {
+	if (gitText(repositoryDir, ["ls-files", "-z", "--", `:(literal)${relativeState}`]) !== "") {
+		throw new Error("Target bootstrap stateRoot must not contain tracked files");
+	}
+	// A directory-only rule must match before mkdir: Git otherwise interprets
+	// a nonexistent `.ahde` as a file and rejects the correct `/.ahde/` rule.
+	if (gitStatus(repositoryDir, ["check-ignore", "-q", "--", `${relativeState}/`]) !== 0) {
 		throw new Error("An in-repository Target bootstrap stateRoot must be ignored by Git");
 	}
+	return state;
 }
 
 function receiptPath(stateRoot: string, create: boolean): string {
@@ -592,8 +619,9 @@ export function configureTargetBootstrap(
 	const actor = HumanActorSchema.parse(options.actor);
 	const reason = ReasonSchema.parse(options.reason);
 	const repositoryDir = repositoryRoot(options.targetDir);
-	assertStateRootDoesNotDirtyTarget(repositoryDir, options.stateRoot);
-	const stateRoot = stateRootPath(options.stateRoot, true);
+	const checkedStateRoot = assertStateRootDoesNotDirtyTarget(repositoryDir, options.stateRoot);
+	const stateRoot = stateRootPath(checkedStateRoot, true);
+	if (stateRoot !== checkedStateRoot) throw new Error("Target bootstrap stateRoot changed after validation");
 	const path = join(stateRoot, RECEIPT_FILENAME);
 	if (existsSync(path)) {
 		assertPrivateReceipt(path);
