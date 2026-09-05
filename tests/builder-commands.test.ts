@@ -1479,7 +1479,7 @@ describe("Builder Pi slash commands", () => {
 		expect(fixture.decide).toHaveBeenCalledWith(
 			{ kind: "apply-proposal", branch: "candidate/routing", verify: { repetitions: 3 }, reason: "verify the fix" },
 			expect.objectContaining({ confirm: expect.any(Function), selectSealed: expect.any(Function) }),
-			expect.objectContaining({ signal: undefined, onRunEvent: expect.any(Function) }),
+			expect.objectContaining({ signal: expect.any(AbortSignal), onRunEvent: expect.any(Function) }),
 		);
 		expect(host.input).not.toHaveBeenCalled();
 		expect(output.blocks.map((block) => [block.title, block.tone])).toEqual([["Proposal applied", "success"]]);
@@ -1502,7 +1502,7 @@ describe("Builder Pi slash commands", () => {
 		expect(fixture.decide).toHaveBeenLastCalledWith(
 			{ kind: "apply-proposal", branch: "candidate/next", verify: { repetitions: 3 }, reason: "Requested interactively via /apply" },
 			expect.any(Object),
-			expect.objectContaining({ signal: undefined, onRunEvent: expect.any(Function) }),
+			expect.objectContaining({ signal: expect.any(AbortSignal), onRunEvent: expect.any(Function) }),
 		);
 		expect(fixture.decide).toHaveBeenCalledTimes(2);
 	});
@@ -1532,7 +1532,7 @@ describe("Builder Pi slash commands", () => {
 		expect(interrupted.decide).toHaveBeenCalledWith(
 			{ kind: "abandon-candidate", candidateId: "candidate-stopped", reason: "retry from exact apply receipt" },
 			expect.any(Object),
-			{ signal: undefined },
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
 		);
 		expect(recovery.output.blocks.map((block) => [block.title, block.tone])).toEqual([["Candidate attempt abandoned", "info"]]);
 		expect(recovery.output.text()).toContain("Interrupted candidate abandoned candidate-stopped · stopped at validated");
@@ -1554,13 +1554,13 @@ describe("Builder Pi slash commands", () => {
 			2,
 			expect.anything(),
 			expect.objectContaining({ confirm: expect.any(Function), selectSealed: expect.any(Function) }),
-			{ signal: undefined },
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
 		);
 		expect(host.confirm).toHaveBeenCalledTimes(1);
 		expect(host.confirm).toHaveBeenCalledWith(
 			"Promote candidate as v1.2.0",
 			expect.stringMatching(/records your review \(recommend promote\)[\s\S]*as v1\.2\.0[\s\S]*Reason Requested interactively via \/promote[\s\S]*Exact subject sha256:/),
-			{ signal: undefined },
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
 		);
 		expect(actorId).toHaveBeenCalled();
 		expect(output.blocks.map((block) => [block.title, block.tone])).toEqual([["Candidate promoted", "success"]]);
@@ -1587,7 +1587,7 @@ describe("Builder Pi slash commands", () => {
 		expect(host.confirm).toHaveBeenCalledWith(
 			"Promote candidate as v2.0.0",
 			expect.stringContaining("This tags the exact reviewed revision as v2.0.0."),
-			{ signal: undefined },
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
 		);
 		expect(output.blocks.map((block) => block.title)).toEqual(["Candidate promoted"]);
 
@@ -1597,7 +1597,7 @@ describe("Builder Pi slash commands", () => {
 		expect(fixture.decide).toHaveBeenLastCalledWith(
 			{ kind: "promote-candidate", version: "0.3.0", reason: "Requested interactively via /promote" },
 			expect.any(Object),
-			{ signal: undefined },
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
 		);
 
 		const cancelled = context({ confirm: async () => true, input: async () => undefined });
@@ -1670,7 +1670,7 @@ describe("Builder Pi slash commands", () => {
 		expect(reviewingHost.confirm).toHaveBeenCalledWith(
 			"Reject candidate",
 			expect.stringMatching(/records your review \(recommend reject\)[\s\S]*Reason wrong direction[\s\S]*Exact subject sha256:/),
-			{ signal: undefined },
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
 		);
 		expect(reviewingFixture.output.blocks.map((block) => [block.title, block.tone])).toEqual([["Candidate rejected", "warning"]]);
 		expect(reviewingFixture.output.text()).toContain("Candidate rejected cand-1 · rejected");
@@ -1693,7 +1693,7 @@ describe("Builder Pi slash commands", () => {
 		expect(decidingHost.confirm).toHaveBeenCalledWith(
 			"Reject candidate",
 			expect.stringContaining("This rejects the reviewed candidate durably."),
-			{ signal: undefined },
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
 		);
 	});
 
@@ -1719,7 +1719,7 @@ describe("Builder Pi slash commands", () => {
 		expect(fixture.decide).toHaveBeenCalledWith(
 			input,
 			expect.objectContaining({ confirm: expect.any(Function), selectSealed: expect.any(Function) }),
-			{ signal: undefined },
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
 		);
 		expect(output.blocks.map((block) => [block.title, block.tone])).toEqual([[title, tone]]);
 		expect(output.text()).toContain("Next ");
@@ -1747,7 +1747,7 @@ describe("Builder Pi slash commands", () => {
 		expect(fixture.decide).toHaveBeenCalledWith(
 			{ kind: "apply-proposal", branch: "candidate/builder-proposal-1", verify: { repetitions: 3 }, reason: "from the /review menu", runId: "builder-proposal-1" },
 			expect.any(Object),
-			expect.objectContaining({ signal: undefined, onRunEvent: expect.any(Function) }),
+			expect.objectContaining({ signal: expect.any(AbortSignal), onRunEvent: expect.any(Function) }),
 		);
 		expect(output.blocks.map((block) => block.title)).toEqual(["AHDE · Proposal review", "Proposal applied"]);
 		const review = output.blocks[0]?.lines.map(stripMarkers).join("\n") ?? "";
@@ -1772,7 +1772,7 @@ describe("Builder Pi slash commands", () => {
 		expect(fixture.decide).toHaveBeenLastCalledWith(
 			{ kind: "discard-proposal", reason: "from the /review menu" },
 			expect.any(Object),
-			{ signal: undefined },
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
 		);
 		expect(discardingFixture.output.blocks.map((block) => block.title)).toEqual(["AHDE · Proposal review", "Proposal discarded"]);
 
@@ -1800,7 +1800,7 @@ describe("Builder Pi slash commands", () => {
 
 		expect(host.select).toHaveBeenCalledWith(title, expect.arrayContaining([choice, "Just looking"]), { signal: undefined });
 		expect(host.select.mock.calls[0]?.[1].at(-1)).toBe("Just looking");
-		expect(fixture.decide).toHaveBeenCalledWith(input, expect.any(Object), { signal: undefined });
+		expect(fixture.decide).toHaveBeenCalledWith(input, expect.any(Object), expect.objectContaining({ signal: expect.any(AbortSignal) }));
 		expect(output.blocks.map((block) => block.title).at(-1)).toBe(receipt);
 	});
 
@@ -1825,7 +1825,7 @@ describe("Builder Pi slash commands", () => {
 		expect(interrupted.decide).toHaveBeenCalledWith(
 			{ kind: "abandon-candidate", candidateId: "candidate-stopped", reason: "from the /review menu" },
 			expect.any(Object),
-			{ signal: undefined },
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
 		);
 		expect(recovery.output.blocks.map((block) => block.title)).toEqual(["AHDE · Interrupted candidate", "Candidate attempt abandoned"]);
 		expect(recovery.output.text()).toContain("Verification stopped before evidence was complete.");
@@ -2562,7 +2562,7 @@ describe("Builder Pi slash commands", () => {
 		expect(declinedHost.confirm).toHaveBeenCalledWith(
 			"Apply exact proposal",
 			expect.stringMatching(/Branch candidate\/routing[\s\S]*Reason Observed routing failure[\s\S]*Exact subject sha256:/),
-			{ signal: controller.signal },
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
 		);
 		expect(declinedHost.notify).toHaveBeenCalledWith("Cancelled — nothing changed.", "info");
 		expect(declinedFixture.output.show).not.toHaveBeenCalled();
@@ -2588,7 +2588,7 @@ describe("Builder Pi slash commands", () => {
 		expect(approved.decide).toHaveBeenCalledWith(
 			expect.objectContaining({ kind: "apply-proposal" }),
 			expect.any(Object),
-			expect.objectContaining({ signal: controller.signal, onRunEvent: expect.any(Function) }),
+			expect.objectContaining({ signal: expect.any(AbortSignal), onRunEvent: expect.any(Function) }),
 		);
 		expect(approvedFixture.output.blocks.map((block) => block.title)).toEqual(["Proposal applied"]);
 	});

@@ -63,7 +63,7 @@ afterEach(() => {
 });
 
 function runsRootWith(
-	runs: readonly { costUsd: number; seconds: number; judgeCostUsd?: number; simulatedUserCostUsd?: number }[],
+	runs: readonly { costUsd?: number; seconds: number; judgeCostUsd?: number; simulatedUserCostUsd?: number }[],
 	targetId = TARGET_ID,
 	into?: string,
 ): string {
@@ -86,7 +86,10 @@ function runsRootWith(
 		params: {},
 		spec: {},
 	});
-	const execution = executionFingerprint("isolated");
+	const execution = {
+		...executionFingerprint("isolated"),
+		...(runs.some((sample) => sample.costUsd === undefined) ? { agent: "command-v1" as const } : {}),
+	};
 	const evaluation = {
 		suiteId: "suite",
 		suiteHash: `sha256:${"d".repeat(64)}`,
@@ -118,7 +121,7 @@ function runsRootWith(
 			trace: { path: "session.jsonl", sessionId: null, sha256: null },
 			metrics: {
 				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				costUsd: sample.costUsd,
+				...(sample.costUsd === undefined ? {} : { costUsd: sample.costUsd }),
 				...(sample.judgeCostUsd === undefined
 					? {} : { judge: { calls: 1, tokens: 1, costUsd: sample.judgeCostUsd } }),
 				...(sample.simulatedUserCostUsd === undefined
@@ -337,6 +340,24 @@ describe("routine cost guard", () => {
 		}]);
 		const estimate = estimateRunCost({ runsRoot, targetId: TARGET_ID, executions: 10, jobs: 1 });
 		expect(estimate.costUsd).toBeCloseTo(0.6, 10);
+	});
+
+	it("retains unknown Target spend in a mixed history even when evaluator spend is known", () => {
+		const runsRoot = runsRootWith([
+			{ costUsd: 0.01, seconds: 2 },
+			{ judgeCostUsd: 0.02, simulatedUserCostUsd: 0.03, seconds: 2 },
+		]);
+		const estimate = estimateRunCost({ runsRoot, targetId: TARGET_ID, executions: 10, jobs: 1 });
+		expect(estimate).toMatchObject({ sampledRuns: 2, costUsd: null });
+		expect(estimate.minutes).toBeCloseTo(1 / 3, 10);
+		expect(routineCostGuard(estimate)).not.toBeNull();
+	});
+
+	it("keeps explicitly reported zero cost distinct from missing usage", () => {
+		const runsRoot = runsRootWith([{ costUsd: 0, seconds: 1 }]);
+		const estimate = estimateRunCost({ runsRoot, targetId: TARGET_ID, executions: 10, jobs: 1 });
+		expect(estimate.costUsd).toBe(0);
+		expect(routineCostGuard(estimate)).toBeNull();
 	});
 
 	it("asks when nothing comparable has ever finished", () => {

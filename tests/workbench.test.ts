@@ -1,3 +1,5 @@
+import { workbenchNext, workbenchGuidanceContext } from "../src/workbench/next-actions.js";
+import { nextStep } from "../src/builder/render/stage.js";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -50,7 +52,6 @@ import {
 	createAhdeWorkbench,
 	type WorkbenchHumanGate,
 } from "../src/workbench/index.js";
-import { workbenchNext } from "../src/workbench/next-actions.js";
 import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 
 const roots: string[] = [];
@@ -1835,6 +1836,17 @@ describe("AHDE Workbench", () => {
 		const workbench = createAhdeWorkbench({ ...paths, projectId: "test-target", dependencies: { now: () => NOW } });
 		const interrupted = await workbench.view({ aspect: "review" });
 		expect(interrupted.stage).toBe("candidate-verification");
+		const summary = await workbench.view();
+		expect(summary.guidance).toEqual(interrupted.guidance);
+		expect(workbenchNext(summary).decide.map((item) => item.kind)).not.toContain("run-current");
+		expect(workbenchNext(summary).decide.map((item) => item.kind)).not.toContain("verify-candidate");
+		expect(summary.guidance?.recovery).toEqual({ kind: "inspect-candidate", candidateId: candidate.candidateId });
+		expect(nextStep(summary)).toBe(nextStep(interrupted));
+		expect(workbenchGuidanceContext(summary)).toContain(candidate.candidateId);
+		await expect(workbench.decide({ kind: "run-current", repetitions: 1, reason: "retry" }, gate()))
+			.rejects.toThrow(/review and explicitly abandon or recover/);
+		expect(readFileSync(join(candidateDir, "candidate.json"), "utf8")).toBe(`${JSON.stringify(candidate)}\n`);
+
 		expect(interrupted.detail?.content).toMatchObject({
 			kind: "interrupted-candidate",
 			candidateId: candidate.candidateId,

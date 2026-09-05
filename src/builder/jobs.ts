@@ -1,10 +1,10 @@
 import { plural, t } from "../i18n.js";
 import type { RunEvent, RunEventListener } from "../run-events.js";
+import type { WorkbenchRunEstimate } from "../workbench/transition-policy.js";
 import type {
 	WorkbenchConfirmationKind,
 	WorkbenchDecisionResult,
 } from "../workbench/types.js";
-import type { WorkbenchRunEstimate } from "../workbench/transition-policy.js";
 import { oneLine } from "./render/format.js";
 import { coarseElapsed, elapsed } from "./render/receipt.js";
 import type { TranscriptTone } from "./transcript.js";
@@ -40,8 +40,6 @@ const ALWAYS_BACKGROUND: ReadonlySet<WorkbenchConfirmationKind> = new Set([
 	"calibrate",
 	"improve",
 ]);
-/** If the gate never answers (a host without a dialog), start anyway. */
-const AUTHORIZATION_GRACE_MS = 2_000;
 const STATUS_TICK_MS = 5_000;
 
 export interface JobAuthorization {
@@ -56,7 +54,15 @@ export interface JobRunOptions {
 	authorized(authorization: JobAuthorization): void;
 }
 
+export type BuilderJobResult =
+	| { status: "completed"; result: WorkbenchDecisionResult | null }
+	| { status: "running"; job: ActiveJob };
+
 export interface BuilderJobStart {
+	/** Only measurement operations may leave the foreground. */
+	background?: boolean;
+	/** The initiating turn can cancel only while this operation remains foreground. */
+	signal?: AbortSignal;
 	/** The slash command that asked for it, for the notes. */
 	command: string;
 	/**
@@ -84,6 +90,8 @@ export interface BuilderJobHost {
 }
 
 export interface ActiveJob {
+	id: string;
+	state: "awaiting-authorization" | "running" | "stopping";
 	command: string;
 	label: string;
 	/** `120/372` while runs are graded, `—` before the first one. */
@@ -93,9 +101,10 @@ export interface ActiveJob {
 }
 
 export interface BuilderJobs {
+	closed(): boolean;
 	active(): ActiveJob | null;
 	/** Resolves when the command that started this job may return. */
-	start(input: BuilderJobStart): Promise<void>;
+	start(input: BuilderJobStart): Promise<BuilderJobResult>;
 	/** One sentence refusing a second consequential decision, or null when free. */
 	busy(): string | null;
 	/** Cancel the running job. False when nothing was running. */
@@ -147,6 +156,8 @@ export function createBuilderJobs(options: BuilderJobsOptions): BuilderJobs {
 	const stopTimer = options.clearInterval ?? ((handle) => clearInterval(handle as NodeJS.Timeout));
 
 	interface RunningJob {
+		id: string;
+		authorized: boolean;
 		command: string;
 		label: string;
 		controller: AbortController;
@@ -162,6 +173,14 @@ export function createBuilderJobs(options: BuilderJobsOptions): BuilderJobs {
 	}
 
 	let running: RunningJob | null = null;
+	let sequence = 0;
+	let disposed = false;
+	const snapshot = (job: RunningJob): ActiveJob => ({
+		id: job.id,
+		state: job.stopping ? "stopping" : job.authorized ? "running" : "awaiting-authorization",
+		command: job.command, label: job.label, progress: progressOf(job),
+		elapsedMs: now() - job.startedAt, background: job.background,
+	});
 
 	// A verification runs two arms over two baskets, so one eval run's total is
 	// not the job's. Prefer what the gate priced, and never print a denominator
@@ -199,24 +218,17 @@ export function createBuilderJobs(options: BuilderJobsOptions): BuilderJobs {
 	};
 
 	const observe = (job: RunningJob): RunEventListener => (event: RunEvent) => {
+		if (disposed || running !== job) return;
 		if (event.run.total > 0) job.total = event.run.total;
 		if (event.type === "run_graded") job.graded += 1;
 		writeStatus();
 	};
 
 	return {
-		active() {
-			if (!running) return null;
-			return {
-				command: running.command,
-				label: running.label,
-				progress: progressOf(running),
-				elapsedMs: now() - running.startedAt,
-				background: running.background,
-			};
-		},
+		closed: () => disposed,
+		active() { return running ? snapshot(running) : null; },
 		busy() {
-			if (!running || !running.background) return null;
+			if (!running) return null;
 			return t("job.busy", { label: running.label, progress: progressOf(running) });
 		},
 		stop() {
@@ -237,8 +249,12 @@ export function createBuilderJobs(options: BuilderJobsOptions): BuilderJobs {
 			];
 		},
 		async start(input) {
+			if (disposed) throw new Error("Builder session is closed");
+			if (input.signal?.aborted) throw input.signal.reason ?? new Error("operation cancelled");
 			if (running) throw new Error(t("job.busy", { label: running.label, progress: progressOf(running) }));
 			const job: RunningJob = {
+				id: `job-${++sequence}`,
+				authorized: false,
 				command: input.command,
 				label: input.label(null),
 				controller: new AbortController(),
@@ -253,45 +269,41 @@ export function createBuilderJobs(options: BuilderJobsOptions): BuilderJobs {
 			running = job;
 			writeStatus();
 
-			// The command handler waits on exactly one thing: permission to return.
-			// A foreground measurement keeps its failure — the operator asked for it
-			// and is still standing in front of it.
-			let settled = false;
-			let release: () => void = () => undefined;
-			let fail: (error: unknown) => void = () => undefined;
-			const returnable = new Promise<void>((resolve, reject) => {
-				release = () => {
-					if (settled) return;
-					settled = true;
-					resolve();
-				};
-				fail = (error) => {
-					if (settled) return;
-					settled = true;
-					reject(error);
-				};
+			let returned = false;
+			let release!: (result: BuilderJobResult) => void;
+			let fail!: (error: unknown) => void;
+			const returnable = new Promise<BuilderJobResult>((resolve, reject) => {
+				release = (result) => { if (!returned) { returned = true; resolve(result); } };
+				fail = (error) => { if (!returned) { returned = true; reject(error); } };
 			});
-			const goBackground = (authorization: JobAuthorization | null): void => {
-				if (authorization) job.label = input.label(authorization.kind);
-				if (job.background || settled) return;
-				const estimate = authorization?.estimate ?? null;
-				const minutes = estimateMinutes(estimate);
-				const long = authorization === null ||
-					ALWAYS_BACKGROUND.has(authorization.kind) ||
-					minutes === null ||
-					minutes >= backgroundThresholdMinutes(env);
-				if (!long) return;
-				job.background = true;
-				job.ticker = startTimer(writeStatus, STATUS_TICK_MS);
-				host.show({
-					title: t("panel.title", { detail: t("panel.background") }),
-					tone: "info",
-					lines: [oneLine([t("job.started"), job.label, estimateLine(estimate)].filter(Boolean).join(" · "), 160)],
-				});
-				release();
+			const interrupt = (): void => {
+				job.stopping = true;
+				job.controller.abort(input.signal?.reason ?? new Error("operation cancelled"));
 			};
-			const grace = setTimeout(() => goBackground(null), AUTHORIZATION_GRACE_MS);
-			grace.unref?.();
+			input.signal?.addEventListener("abort", interrupt, { once: true });
+			const goBackground = (authorization: JobAuthorization): void => {
+				job.authorized = true;
+				job.label = input.label(authorization.kind);
+				if (disposed || job.controller.signal.aborted || job.background || returned || input.background === false) return;
+				const estimate = authorization.estimate;
+				// A composite may first approve a description or a release. That is
+				// not yet a running measurement; wait for its actual spending step.
+				const measurement = ["run-eval", "verify-candidate", "calibrate", "regrade", "improve"].includes(authorization.kind)
+					|| (["start-testing", "apply-proposal"].includes(authorization.kind) && (estimate?.executions ?? 0) > 0);
+				if (!measurement) return;
+				const minutes = estimateMinutes(estimate);
+				if (!ALWAYS_BACKGROUND.has(authorization.kind) && minutes !== null && minutes < backgroundThresholdMinutes(env)) return;
+				job.background = true;
+				input.signal?.removeEventListener("abort", interrupt);
+				job.ticker = startTimer(writeStatus, STATUS_TICK_MS);
+				try {
+					host.show({
+						title: t("panel.title", { detail: t("panel.background") }), tone: "info",
+						lines: [oneLine([t("job.started"), job.label, estimateLine(estimate)].filter(Boolean).join(" · "), 160)],
+					});
+				} catch { /* A presentation failure cannot revoke an approved operation. */ }
+				release({ status: "running", job: snapshot(job) });
+			};
 
 			const settle = async (
 				tone: TranscriptTone,
@@ -300,21 +312,24 @@ export function createBuilderJobs(options: BuilderJobsOptions): BuilderJobs {
 				note: string,
 			): Promise<void> => {
 				const took = elapsed(now() - job.startedAt);
-				if (job.background) {
-					host.show({
-						title: t("panel.title", { detail: t("panel.background") }),
-						tone,
-						lines: [oneLine([t(key), job.label, took, detail].filter(Boolean).join(" · "), 200)],
-					});
+				if (job.background && !disposed) {
+					try {
+						host.show({
+							title: t("panel.title", { detail: t("panel.background") }), tone,
+							lines: [oneLine([t(key), job.label, took, detail].filter(Boolean).join(" · "), 200)],
+						});
+					} catch { /* Delivery does not change the completed operation. */ }
 					try {
 						await host.waitForIdle();
 					} catch {
 						// A host that cannot report idleness still gets the note.
 					}
-					host.note(note, {
-						label: t("note.job", { label: job.label, detail: oneLine(detail || took, 80) }),
-						triggerTurn: true,
-					});
+					if (disposed) return;
+					try {
+						host.note(note, {
+							label: t("note.job", { label: job.label, detail: oneLine(detail || took, 80) }), triggerTurn: true,
+						});
+					} catch { /* A closed host cannot receive a continuation. */ }
 				}
 			};
 
@@ -324,18 +339,23 @@ export function createBuilderJobs(options: BuilderJobsOptions): BuilderJobs {
 						signal: job.controller.signal,
 						onRunEvent: observe(job),
 						authorized: (authorization) => {
-							clearTimeout(grace);
 							const planned = authorization.estimate?.executions ?? 0;
 							if (planned > 0) job.planned = Math.max(job.planned ?? 0, planned);
 							goBackground(authorization);
 						},
 					});
-					clearTimeout(grace);
 					if (!result) {
-						// Declined or handled as a warning; the command layer already said so.
+						finish(job);
+						release({ status: "completed", result: null });
+						await settle("warning", "job.stopped", "", `The background ${input.command} ended without a new decision result. Completed artifacts remain saved. Call ahde_workbench_view before continuing.`);
 						return;
 					}
-					const headline = await input.present(result, job.background);
+					if (disposed) return;
+					let headline = result.message;
+					try { headline = await input.present(result, job.background); }
+					catch { /* The durable result remains true when its panel cannot render. */ }
+					finish(job);
+					release({ status: "completed", result });
 					await settle(
 						"success",
 						"job.finished",
@@ -344,7 +364,8 @@ export function createBuilderJobs(options: BuilderJobsOptions): BuilderJobs {
 						"Call ahde_workbench_view before relying on any earlier state.",
 					);
 				} catch (error) {
-					clearTimeout(grace);
+					finish(job);
+					if (disposed) return;
 					const message = error instanceof Error ? error.message : String(error);
 					const stopped = job.stopping || job.controller.signal.aborted;
 					if (!job.background) {
@@ -356,19 +377,22 @@ export function createBuilderJobs(options: BuilderJobsOptions): BuilderJobs {
 						stopped ? "job.stopped" : "job.failed",
 						oneLine(stopped ? "" : message, 160),
 						stopped
-							? `The operator stopped the background ${input.command}. Nothing was decided.`
-							: `The background ${input.command} failed: ${oneLine(message, 200)}.`,
+							? `The operator stopped the background ${input.command}. Completed changes and artifacts remain saved. Refresh ahde_workbench_view before continuing; do not assume rollback or treat interrupted runs as quality evidence.`
+							: `The background ${input.command} failed: ${oneLine(message, 200)}. Completed changes and artifacts may remain saved. Call ahde_workbench_view before continuing; failed execution is not evidence of agent quality.`,
 					);
 				} finally {
 					finish(job);
-					release();
+					input.signal?.removeEventListener("abort", interrupt);
+					release({ status: "completed", result: null });
 				}
-			})();
+			})().catch(fail);
 
 			return returnable;
 		},
 		dispose() {
+			disposed = true;
 			if (running) {
+				running.controller.abort(new Error("Builder session closed"));
 				if (running.ticker) stopTimer(running.ticker);
 				running = null;
 			}

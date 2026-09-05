@@ -54,6 +54,10 @@ try {
 		"dist/application/builder-corpus-import.js",
 		"dist/application/builder-regression-case.js",
 		"dist/application/target-scaffold.js",
+		"dist/application/target-template.js",
+		"templates/python-agent/manifest.yaml",
+		"templates/support-agent/manifest.yaml",
+		"templates/basic-agent/manifest.yaml",
 		"dist/application/target-authoring-context.js",
 		"dist/application/agent-log.js",
 		"dist/application/watch.js",
@@ -100,7 +104,7 @@ try {
 		(!path.startsWith("node_modules/") &&
 			!path.startsWith("vendor/") &&
 			/(^|\/)(?:presets?|target-presets?)(?:[.\/-]|$)/i.test(path)) ||
-		/(^|\/)studio(?:\.[^/]*)?$/.test(path),
+		/(^|\/)studio(?:\/|\.[^/]*$|$)/.test(path),
 	);
 	if (forbiddenPackedPaths.length > 0) {
 		throw new Error(
@@ -125,6 +129,21 @@ try {
 	const globalHelp = run(globalCli, ["--help"], { cwd: workRoot, capture: true });
 	if (!/^ahde \d+\.\d+\.\d+\s*$/.test(globalVersion) || !globalHelp.includes("Agent Harness Development Environment")) {
 		throw new Error("global-install help/version smoke failed");
+	}
+	// Exercise public names through the installed global binary from a consumer
+	// directory with no templates/. Resolving the checkout's source would hide
+	// missing packed starters and cwd-dependent resolution.
+	for (const [name, marker] of [
+		["python-support", "agent.py"],
+		["python", "agent.py"],
+		["pi-support", "bin/check_account"],
+		["pi-basic", "bin/echo_json"],
+	]) {
+		const starter = join(workRoot, `starter-${name}`);
+		run(globalCli, ["init", starter, "--template", name], { cwd: consumerDir, capture: true });
+		if (!existsSync(join(starter, marker)) || !existsSync(join(starter, ".git"))) {
+			throw new Error(`global-install template smoke failed for ${name}: ${marker}`);
+		}
 	}
 
 	writeFileSync(
@@ -213,7 +232,7 @@ import {
   targetWithDevelopmentCorpus,
 } from "ahde";
 
-const expectedToolNames = ["ahde_workbench_view", "ahde_workbench_submit", "ahde_workbench_decide"];
+const expectedToolNames = ["ahde_host_action", "ahde_workbench_view", "ahde_workbench_submit", "ahde_workbench_decide"];
 // The workshop five are registered but legal only while a workshop is open.
 const expectedWorkshopToolNames = [
 	"ahde_workshop_read",
@@ -325,7 +344,7 @@ for (const [name, value] of Object.entries({
 })) {
   if (name === "AHDE_BUILDER_TOOL_NAMES") {
     if (JSON.stringify(value) !== JSON.stringify(expectedToolNames)) {
-      throw new Error(\`Builder exported the wrong three-operation tool surface: \${JSON.stringify(value)}\`);
+      throw new Error(\`Builder exported the wrong bounded tool surface: \${JSON.stringify(value)}\`);
     }
   } else if (name === "AHDE_WORKSHOP_TOOL_NAMES") {
     if (JSON.stringify(value) !== JSON.stringify(expectedWorkshopToolNames)) {

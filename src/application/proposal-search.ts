@@ -298,15 +298,6 @@ export function plannedProposalSearchExecutions(input: {
 }
 
 /**
- * The cost axis. A ratio is null when the baseline arm spent nothing
- * measurable, and a candidate nobody can price is treated as costing exactly
- * what the baseline did rather than being quietly ranked best or worst.
- */
-function costKey(development: ProposalSearchDevelopment): number {
-	return development.costRatio ?? 1;
-}
-
-/**
  * Domination, exactly.
  *
  * Row X is dominated by row Y when both are verified, Y is at least as good on
@@ -328,9 +319,13 @@ function markDomination(rows: ProposalSearchRow[]): number[] {
 		for (const other of verified) {
 			if (other === row) continue;
 			const theirs = other.development as ProposalSearchDevelopment;
-			const atLeastAsGood = theirs.scoreDelta >= mine.scoreDelta && costKey(theirs) <= costKey(mine);
+			// An unavailable price ratio cannot prove dominance on the cost
+			// axis. Keep the option visible for human review instead of treating
+			// unknown as the baseline's price.
+			if (mine.costRatio === null || theirs.costRatio === null) continue;
+			const atLeastAsGood = theirs.scoreDelta >= mine.scoreDelta && theirs.costRatio <= mine.costRatio;
 			if (!atLeastAsGood) continue;
-			const strictlyBetter = theirs.scoreDelta > mine.scoreDelta || costKey(theirs) < costKey(mine);
+			const strictlyBetter = theirs.scoreDelta > mine.scoreDelta || theirs.costRatio < mine.costRatio;
 			if (!strictlyBetter && other.ordinal > row.ordinal) continue;
 			dominatedBy = dominatedBy === null ? other.ordinal : Math.min(dominatedBy, other.ordinal);
 		}
@@ -342,7 +337,13 @@ function markDomination(rows: ProposalSearchRow[]): number[] {
 		.sort((left, right) => {
 			const a = left.development as ProposalSearchDevelopment;
 			const b = right.development as ProposalSearchDevelopment;
-			return b.scoreDelta - a.scoreDelta || costKey(a) - costKey(b) || left.ordinal - right.ordinal;
+			// With equal scores, show measured prices first and unpriced
+			// options in their original order. This is display order, not proof
+			// that an unpriced option costs more.
+			const costOrder = a.costRatio === null
+				? (b.costRatio === null ? 0 : 1)
+				: b.costRatio === null ? -1 : a.costRatio - b.costRatio;
+			return b.scoreDelta - a.scoreDelta || costOrder || left.ordinal - right.ordinal;
 		})
 		.map((row) => row.ordinal);
 }

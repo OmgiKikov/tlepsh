@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { compareVerifiedEvalRuns, runCost, runGraderScore } from "../compare.js";
+import { compareVerifiedEvalRuns, runGraderScore, runTotalCost } from "../compare.js";
 import {
 	isSealedEvalRun,
 	listEvalRunIndexesLenient,
@@ -87,8 +87,8 @@ export interface WatchTick {
 	/** Why the pair could not be compared; null when it could. */
 	note: string | null;
 	calibration: WatchCalibration | null;
-	/** What this tick spent, in USD. */
-	costUsd: number;
+	/** What this tick spent, in USD; null if any Target did not report its cost. */
+	costUsd: number | null;
 }
 
 export interface WatchResult {
@@ -159,12 +159,14 @@ export function meanGraderScore(runs: readonly RunRecord[]): number {
 }
 
 /** What a tick actually spent: the Target's tokens plus the graders it paid for. */
-export function evalRunCostUsd(runs: readonly RunRecord[]): number {
-	return runs.reduce(
-		(total, run) =>
-			total + (runCost(run) ?? 0) + (run.metrics.judge?.costUsd ?? 0) + (run.metrics.simulatedUser?.costUsd ?? 0),
-		0,
-	);
+export function evalRunCostUsd(runs: readonly Pick<RunRecord, "metrics">[]): number | null {
+	let total = 0;
+	for (const run of runs) {
+		const cost = runTotalCost(run);
+		if (cost === null) return null;
+		total += cost;
+	}
+	return total;
 }
 
 /**
@@ -324,7 +326,10 @@ export async function runWatchTick(
 			}`,
 		};
 	}
-	if (comparison.status === "invalid") {
+	// No detectable drift is meaningful only after the comparison establishes
+	// that the evidence is usable. An outage can also yield an inconclusive
+	// gate, but must never become a healthy monitor with exit code zero.
+	if (comparison.status !== "comparable") {
 		return {
 			...base,
 			previousEvalRunId: previous.evalRunId,
@@ -341,9 +346,7 @@ export async function runWatchTick(
 		previousScore: meanGraderScore(previousVerified.runs),
 		verdict,
 		status: statusOf(verdict),
-		note: comparison.status === "inconclusive"
-			? (comparison.error ?? "").replace(/\s+/gu, " ").slice(0, 300) || null
-			: null,
+		note: null,
 	};
 }
 

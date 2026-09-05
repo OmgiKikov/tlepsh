@@ -90,7 +90,7 @@ function appliedBuilderOrigin(root: string, id: string, at: string, projectId: s
 	};
 }
 
-function gate(surface: "development" | "sealed", verdict: string, scoreDelta: number, tasks: number, costUsd = 0.1) {
+function gate(surface: "development" | "sealed", verdict: string, scoreDelta: number, tasks: number, costUsd: number | null = 0.1) {
 	return {
 		schemaVersion: 4,
 		algorithmId: "exact-comparison-gate-v4",
@@ -118,8 +118,8 @@ function gate(surface: "development" | "sealed", verdict: string, scoreDelta: nu
 		reasons: [`${verdict} on ${tasks} tasks × 3 repetitions`],
 		resources: {
 			baseline: { runs: tasks * 3, costUsd, meanLatencyMs: 100, meanTokens: 10 },
-			candidate: { runs: tasks * 3, costUsd: costUsd * 2, meanLatencyMs: 120, meanTokens: 12 },
-			costRatio: 2,
+			candidate: { runs: tasks * 3, costUsd: costUsd === null ? null : costUsd * 2, meanLatencyMs: 120, meanTokens: 12 },
+			costRatio: costUsd === null ? null : 2,
 			latencyRatio: 1.2,
 			tokenRatio: 1.2,
 		},
@@ -133,6 +133,7 @@ interface CandidateFixture {
 	outcome: "promoted" | "rejected" | "evaluated";
 	tag?: string;
 	scoreDelta?: number;
+	costUnknown?: boolean;
 	sealedVerdict?: string;
 	reason?: string;
 	/** The apply reason the receipt recorded. The autoloop's has a fixed shape. */
@@ -179,7 +180,7 @@ function writeCandidate(root: string, id: string, options: CandidateFixture): vo
 				development: {
 					baseline: { evalRunId: `${id}_base`, harness: REV_A },
 					candidate: { evalRunId: `${id}_cand`, harness: REV_B },
-					comparison: gate("development", "improved", options.scoreDelta ?? 0.5, 30),
+					comparison: gate("development", "improved", options.scoreDelta ?? 0.5, 30, options.costUnknown ? null : 0.1),
 				},
 				...(sealedVerdict
 					? {
@@ -268,6 +269,23 @@ function writeCandidate(root: string, id: string, options: CandidateFixture): vo
 function tags(log: AgentLog): string[] {
 	return log.rows.map((row) => row.tag ?? row.outcome);
 }
+
+it("keeps unreported arm costs unknown in the version row and cumulative total", () => {
+	const root = runsRoot();
+	writeCandidate(root, "cand-unpriced", {
+		at: "2026-08-20T10:00:00.000Z", outcome: "promoted", tag: "v0.2.0", costUnknown: true,
+	});
+	writeCandidate(root, "cand-priced", {
+		at: "2026-08-19T10:00:00.000Z", outcome: "rejected",
+	});
+	const log = compileAgentLog({ runsRoot: root });
+	expect(log.unreadable).toBe(0);
+	expect(log.rows[0]?.costUsd).toBeNull();
+	expect(log.rows[0]?.costRatio).toBeNull();
+	expect(log.rows[1]?.costUsd).toBeCloseTo(0.3);
+	expect(log.cumulativeCostUsd).toBeNull();
+	expect(renderAgentLog(log, plainPaint).join("\n")).toMatch(/cost\s+—/);
+});
 
 it("tells the growth story newest first, with rejections between the versions", () => {
 	const root = runsRoot();

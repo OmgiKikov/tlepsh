@@ -162,11 +162,11 @@ export type ComparisonSummaryEvidenceV4 = z.infer<typeof ComparisonSummaryEviden
 
 const ResourceTotalsSchema = z.strictObject({
 	runs: z.number().int().nonnegative(),
-	/** Arm total in USD. */
-	costUsd: z.number().nonnegative(),
+	/** Arm total in USD; null when any member did not report its cost. */
+	costUsd: z.number().nonnegative().nullable(),
 	/** Per-run mean, so arms with different run counts stay comparable. */
 	meanLatencyMs: z.number().nonnegative(),
-	meanTokens: z.number().nonnegative(),
+	meanTokens: z.number().nonnegative().nullable(),
 });
 
 /** Candidate-over-baseline resource ratios; null where the baseline is zero. */
@@ -176,6 +176,12 @@ export const ComparisonResourcesEvidenceSchema = z.strictObject({
 	costRatio: z.number().nonnegative().nullable(),
 	latencyRatio: z.number().nonnegative().nullable(),
 	tokenRatio: z.number().nonnegative().nullable(),
+}).superRefine((resources, context) => {
+	for (const [metric, ratio] of [["costUsd", "costRatio"], ["meanTokens", "tokenRatio"]] as const) {
+		if ((resources.baseline[metric] === null || resources.candidate[metric] === null) && resources[ratio] !== null) {
+			context.addIssue({ code: "custom", path: [ratio], message: `${ratio} requires both measured ${metric} values` });
+		}
+	}
 });
 export type ComparisonResourcesEvidence = z.infer<typeof ComparisonResourcesEvidenceSchema>;
 

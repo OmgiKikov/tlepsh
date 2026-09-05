@@ -107,7 +107,7 @@ export interface AgentLogRow {
 	/** Candidate-over-baseline development cost ratio. Never gating. */
 	costRatio: number | null;
 	/** What this attempt spent across every arm it recorded, in USD. */
-	costUsd: number;
+	costUsd: number | null;
 	resolvedModes: AgentLogResolvedModes;
 	/** The operator's own words on the promotion or the rejection. */
 	reason: string | null;
@@ -136,7 +136,7 @@ export interface AgentLog {
 	/** Promotions in this projection, oldest first — the chart's x axis. */
 	versions: AgentLogVersion[];
 	/** Sum of every arm of every row in this projection, in USD. */
-	cumulativeCostUsd: number;
+	cumulativeCostUsd: number | null;
 	/** How often this Builder's promise survived the evidence, over these rows. */
 	calibration: PredictionCalibration;
 }
@@ -206,10 +206,17 @@ function sealedSurfaceOf(evidence: ComparisonEvidence | null | undefined): Agent
 	return { verdict, tasks: design ? design.tasks : 0, repetitions: design ? design.repetitions : 0 };
 }
 
-/** What both arms of one surface spent. Zero for evidence written before v4. */
-function surfaceCostUsd(evidence: ComparisonEvidence | null | undefined): number {
-	if (!isPromotionGradeGateEvidence(evidence)) return 0;
-	return evidence.resources.baseline.costUsd + evidence.resources.candidate.costUsd;
+/** Unknown anywhere in the total remains unknown; absence of spend is zero. */
+function sumCosts(values: readonly (number | null)[]): number | null {
+	return values.every((value): value is number => value !== null)
+		? values.reduce((sum, value) => sum + value, 0) : null;
+}
+
+/** What both arms spent; older evidence without resource accounting is unknown. */
+function surfaceCostUsd(evidence: ComparisonEvidence | null | undefined): number | null {
+	if (!evidence) return 0;
+	if (!isPromotionGradeGateEvidence(evidence)) return null;
+	return sumCosts([evidence.resources.baseline.costUsd, evidence.resources.candidate.costUsd]);
 }
 
 /**
@@ -362,7 +369,7 @@ function rowOf(
 		development: developmentSurfaceOf(development),
 		sealed: sealedSurfaceOf(sealed),
 		costRatio: isPromotionGradeGateEvidence(development) ? development.resources.costRatio : null,
-		costUsd: surfaceCostUsd(development) + surfaceCostUsd(sealed),
+		costUsd: sumCosts([surfaceCostUsd(development), surfaceCostUsd(sealed)]),
 		resolvedModes: decision.outcome === "promoted"
 			? resolvedModesOf(record, runsRoot, dependencies)
 			: NO_RESOLVED_MODES,
@@ -419,7 +426,7 @@ export function compileAgentLog(
 		omitted: Math.max(0, rows.length - kept.length),
 		unreadable,
 		versions,
-		cumulativeCostUsd: kept.reduce((total, row) => total + row.costUsd, 0),
+		cumulativeCostUsd: sumCosts(kept.map((row) => row.costUsd)),
 		// Rejections count exactly as promotions do: a track record drawn only
 		// from the attempts that landed would flatter the Builder. It is compiled
 		// over every decided candidate, not over this page, and by the same
@@ -464,7 +471,7 @@ export function formatPercent(value: number | null): string {
 	return percent(value, { digits: 1 });
 }
 
-export function formatCostUsd(value: number): string {
+export function formatCostUsd(value: number | null): string {
 	return money(value);
 }
 

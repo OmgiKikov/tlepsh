@@ -1,8 +1,9 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { createReadStream, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
-import { main as piMain, VERSION as PI_VERSION, type ExtensionFactory, type MainOptions } from "@earendil-works/pi-coding-agent";
+import { main as piMain, SessionManager, VERSION as PI_VERSION, type ExtensionFactory, type MainOptions } from "@earendil-works/pi-coding-agent";
 import { commitLocalArtifactIgnores, ensureLocalArtifactIgnores } from "../application/store-hygiene.js";
 import { writeTextArtifact } from "../storage/artifacts.js";
 import { loadTarget } from "../manifest.js";
@@ -54,7 +55,7 @@ export interface LaunchBuilderPiOptions {
 	builderHome?: string;
 	packageRoot?: string;
 	piArgs?: string[];
-	/** Host-controlled private session entry; caller Pi flags remain forbidden. */
+	/** Omitted: continue this project's last conversation, or start its first. */
 	sessionMode?: BuilderSessionMode;
 	dependencies?: Partial<BuilderExtensionDependencies>;
 	main?: (args: string[], options?: MainOptions) => Promise<void>;
@@ -251,11 +252,71 @@ export function validateBuilderPiArgs(args: readonly string[]): string[] {
 	return [...args];
 }
 
+/**
+ * Native discovery owns project identity. AHDE adds one guard:
+ * discovery must not quietly skip unreadable history and start afresh. This
+ * reads only; the native runtime remains the sole session writer.
+ */
+async function resolveBuilderSession(
+	projectDir: string,
+	sessionDir: string,
+	requested?: BuilderSessionMode,
+): Promise<{ mode: BuilderSessionMode; path?: string }> {
+	if (requested === "new" || requested === "resume") return { mode: requested };
+	const paths = readdirSync(sessionDir).filter((name) => name.endsWith(".jsonl"))
+		.map((name) => join(sessionDir, name));
+	for (const path of paths) assertRegularFile(path, "Builder conversation");
+	const sessions = await SessionManager.listAll(sessionDir);
+	const discovered = new Set(sessions.map((session) => resolve(session.path)));
+	const unreadable = paths.find((path) => !discovered.has(resolve(path)));
+	if (unreadable) {
+		throw new Error(`Builder conversation is unreadable: ${unreadable}. It was left unchanged. Use ahde resume to choose another conversation, or ahde builder-pi to start a new one.`);
+	}
+	const ownPaths = new Set(sessions.filter((session) => resolve(session.cwd) === resolve(projectDir))
+		.map((session) => resolve(session.path)));
+	// Native --continue orders by file mtime, not the message activity time
+	// used by listAll. Keep readdir order for equal mtimes, just as native does.
+	const latest = paths.filter((path) => ownPaths.has(resolve(path)))
+		.map((path) => ({ path, modified: lstatSync(path).mtimeMs }))
+		.sort((a, b) => b.modified - a.modified)[0];
+	if (latest) {
+		// Native parsing tolerates broken JSONL entries. Before automatic resume,
+		// require readable entries so a partial write cannot silently drop intent.
+		const stream = createReadStream(latest.path, { encoding: "utf8" });
+		const lines = createInterface({ input: stream, crlfDelay: Infinity });
+		try {
+			for await (const line of lines) {
+				if (!line.trim()) continue;
+				const entry: unknown = JSON.parse(line);
+				if (!entry || typeof entry !== "object" || !("type" in entry) || typeof entry.type !== "string") {
+					throw new Error("invalid conversation entry");
+				}
+			}
+		} catch (error) {
+			throw new Error(`Builder conversation is unreadable: ${latest.path}. It was left unchanged. Use ahde resume to choose another conversation, or ahde builder-pi to start a new one.`, { cause: error });
+		} finally {
+			lines.close();
+			stream.destroy();
+		}
+	}
+	return { mode: requested ?? (latest ? "continue" : "new"), ...(latest ? { path: latest.path } : {}) };
+}
+
+export async function resolveBuilderSessionMode(
+	projectDir: string,
+	sessionDir: string,
+	requested?: BuilderSessionMode,
+): Promise<BuilderSessionMode> {
+	return (await resolveBuilderSession(projectDir, sessionDir, requested)).mode;
+}
+
 export function buildBuilderPiArgs(input: {
 	assets: BuilderAssets;
 	sessionDir: string;
 	piArgs?: readonly string[];
 	sessionMode?: BuilderSessionMode;
+	/** Host-selected, validated private history. Never accepted from piArgs. */
+	sessionPath?: string;
 }): string[] {
 	return [
 		"--no-builtin-tools",
@@ -267,7 +328,8 @@ export function buildBuilderPiArgs(input: {
 		"--session-dir", input.sessionDir,
 		"--system-prompt", input.assets.systemPrompt,
 		...input.assets.skillPaths.flatMap((path) => ["--skill", path]),
-		...(input.sessionMode === "resume" ? ["--resume"] : input.sessionMode === "continue" ? ["--continue"] : []),
+		...(input.sessionMode === "resume" ? ["--resume"] : input.sessionMode === "continue"
+			? input.sessionPath ? ["--session", input.sessionPath] : ["--continue"] : []),
 		...validateBuilderPiArgs(input.piArgs ?? []),
 	];
 }
@@ -316,7 +378,7 @@ export async function launchBuilderPi(options: LaunchBuilderPiOptions = {}): Pro
 		// notice tells AHDE users to run a binary they did not install and could
 		// move the runtime away from AHDE's pinned version.
 		process.env.PI_SKIP_VERSION_CHECK = "1";
-		let sessionMode = options.sessionMode ?? "new";
+		let session = await resolveBuilderSession(projectDir, sessionDir, options.sessionMode);
 		for (;;) {
 			let talkToTarget = false;
 			const extensionFactory = options.extensionFactory ?? createAhdeBuilderExtension({
@@ -334,7 +396,8 @@ export async function launchBuilderPi(options: LaunchBuilderPiOptions = {}): Pro
 				assets,
 				sessionDir,
 				piArgs: options.piArgs,
-				sessionMode,
+				sessionMode: session.mode,
+				sessionPath: session.path,
 			});
 			await runMain(args, {
 				extensionFactories: [{ name: "ahde-builder", factory: extensionFactory }],
@@ -350,7 +413,7 @@ export async function launchBuilderPi(options: LaunchBuilderPiOptions = {}): Pro
 			assertTargetReadyToRun(target);
 			await (options.targetRunner ?? runInteractiveTarget)(target);
 			// Exiting Runtime Pi returns to the same Builder conversation and state.
-			sessionMode = "continue";
+			session = await resolveBuilderSession(projectDir, sessionDir, "continue");
 		}
 	} finally {
 		process.chdir(previousCwd);

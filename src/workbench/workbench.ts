@@ -1,3 +1,6 @@
+import { advanceShipConsent, assertCompositeFresh, compositeGate, testingConsent, shipConsent, matchesSpecApproval, matchesCorpusPublication, matchesCandidateDecision, matchesEvaluatorConfiguration, matchesPublishedRun } from "./composite-consent.js";
+import { resolveRunCurrent } from "./run-resolution.js";
+import { workbenchNext } from "./next-actions.js";
 import { isSubCent } from "../measurement.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync, rmSync } from "node:fs";
@@ -1336,37 +1339,6 @@ export class AhdeWorkbench {
 	}
 
 	/**
-	 * The gate a composite hands to its own steps. Each planned step is
-	 * pre-approved exactly once, and only when its exact subject is the one the
-	 * human already read in the composite dialog; anything else falls through to
-	 * the real human gate rather than being escalated silently.
-	 */
-	private compositeGate(
-		gate: WorkbenchHumanGate,
-		actor: string,
-		planned: ReadonlyMap<WorkbenchDecisionInput["kind"], (subject: unknown) => boolean>,
-	): WorkbenchHumanGate {
-		const used = new Set<WorkbenchDecisionInput["kind"]>();
-		return {
-			async confirm(confirmation, signal) {
-				// A composite pre-approves the exact decisions the human read. It
-				// never pre-approves a workshop grant: widening what pre-review code
-				// may reach is its own question, every time.
-				if (confirmation.kind === "workshop-grant" || confirmation.kind === "tool-authoring") {
-					return gate.confirm(confirmation, signal);
-				}
-				const matches = planned.get(confirmation.kind);
-				if (matches && !used.has(confirmation.kind) && matches(confirmation.subject)) {
-					used.add(confirmation.kind);
-					return { approved: true, actorId: actor };
-				}
-				return gate.confirm(confirmation, signal);
-			},
-			selectSealed: (request, signal) => gate.selectSealed(request, signal),
-		};
-	}
-
-	/**
 	 * “Start testing”: the pending reviews plus the run, behind one dialog.
 	 *
 	 * It is orchestration, not authority. Every step is the same fine-grained
@@ -1390,7 +1362,7 @@ export class AhdeWorkbench {
 		const corpusDraft = approved ? requireCorpusDraft(inventory, undefined, approved.id, true) : null;
 		if (specDraft) {
 			plan.push("approve-spec");
-			planned.set("approve-spec", (subject) => (subject as { draftSpecId?: unknown }).draftSpecId === specDraft.id);
+			planned.set("approve-spec", (subject) => matchesSpecApproval(subject, specDraft));
 		}
 		// A basket that grades with a judge cannot be published, let alone run,
 		// until one is configured. Asking for that in its own dialog after this
@@ -1430,33 +1402,23 @@ export class AhdeWorkbench {
 				}`,
 			);
 		}
-		if (judge || user) {
+		const evaluatorConfiguration = judge || user ? this.dependencies.describeEvaluatorConfiguration({
+			targetDir: this.projectDir, stateRoot: this.stateRoot,
+			...(judge ? { judge: judge.model } : {}), ...(user ? { simulatedUser: user.model } : {}),
+		}) : null;
+		if (evaluatorConfiguration) {
 			plan.push("configure-evaluators");
-			planned.set("configure-evaluators", (subject) => {
-				const next = (subject as {
-					next?: {
-						judge?: { provider?: unknown; id?: unknown } | null;
-						simulatedUser?: { provider?: unknown; id?: unknown } | null;
-					};
-				}).next;
-				// Each role the host pre-filled must be exactly the model the operator
-				// read; a role it did not pre-fill is not this dialog's business.
-				const matches = (
-					expected: { model: { provider: string; id: string } } | null,
-					actual: { provider?: unknown; id?: unknown } | null | undefined,
-				): boolean =>
-					expected === null ||
-					(actual?.provider === expected.model.provider && actual?.id === expected.model.id);
-				return matches(judge, next?.judge) && matches(user, next?.simulatedUser);
-			});
+			planned.set("configure-evaluators", (subject) => matchesEvaluatorConfiguration(subject, evaluatorConfiguration));
 		}
+		const selection = { specDraftId: specDraft?.id ?? null, approvedSpecId: approved?.id ?? null, corpusDraftId: corpusDraft?.id ?? null };
+		let reviewed = testingConsent(inventory, selection);
+		let publishedForRun: { id: string; hash: string; taskCount: number; lineageHash: string } | null = null;
 		if (corpusDraft) {
 			plan.push("publish-corpus", "run-eval");
-			planned.set("publish-corpus", (subject) => (subject as { draftId?: unknown }).draftId === corpusDraft.id);
-			planned.set("run-eval", (subject) => {
-				const bag = subject as { operation?: unknown; repetitions?: unknown };
-				return bag.operation === "run-development-evaluation" && bag.repetitions === input.repetitions;
-			});
+			planned.set("publish-corpus", (subject) => matchesCorpusPublication(subject, corpusDraft));
+			planned.set("run-eval", (subject) => approved !== null && matchesPublishedRun(subject, {
+				repetitions: input.repetitions, target: reviewed.target, approved, corpus: publishedForRun,
+			}));
 		}
 		const caseCount = corpusDraft?.tasks.length ?? 0;
 		const executions = caseCount * input.repetitions;
@@ -1531,7 +1493,8 @@ export class AhdeWorkbench {
 			question: t("confirm.question", { title }),
 			...(estimate ? { estimate } : {}),
 		});
-		const scoped = this.compositeGate(gate, actor, planned);
+		assertCompositeFresh("start-testing", reviewed, () => testingConsent(this.inventory(), selection));
+		const scoped = compositeGate(gate, actor, planned);
 		const steps: WorkbenchCompositeStep[] = [];
 		let approvedSpecId = approved?.id ?? null;
 		let developmentCorpus: { id: string; taskCount: number } | null = null;
@@ -1539,6 +1502,7 @@ export class AhdeWorkbench {
 		let view = await this.viewOf(inventory);
 		let message = "";
 		for (const step of plan) {
+			assertCompositeFresh("start-testing", reviewed, () => testingConsent(this.inventory(), selection));
 			if (step === "approve-spec") {
 				const done = await this.decide({ kind: "approve-spec", draftSpecId: specDraft!.id, reason: input.reason }, scoped, options);
 				approvedSpecId = done.result.approvedSpecId;
@@ -1575,11 +1539,18 @@ export class AhdeWorkbench {
 						},
 					},
 				);
+				const expectedManifest = { ...target!.manifest, evalSuite: {
+					...target!.manifest.evalSuite,
+					...(judge ? { judge: evaluatorConfiguration!.next.judge! } : {}),
+					...(user ? { simulatedUser: evaluatorConfiguration!.next.simulatedUser! } : {}),
+				} };
+				reviewed = { ...reviewed, target: { id: target!.manifest.id, sha: done.result.targetGitSha, manifestHash: hashValue(expectedManifest) } };
 				steps.push({ kind: step, message: done.message });
 				view = done.view;
 			} else if (step === "publish-corpus") {
 				const done = await this.decide({ kind: "publish-corpus", draftId: corpusDraft!.id, reason: input.reason }, scoped, options);
 				developmentCorpus = { id: done.result.corpusId, taskCount: done.result.taskCount };
+				publishedForRun = { id: done.result.corpusId, hash: done.result.corpusHash, taskCount: done.result.taskCount, lineageHash: done.result.lineageHash };
 				steps.push({ kind: step, message: done.message });
 				view = done.view;
 			} else {
@@ -1683,19 +1654,17 @@ export class AhdeWorkbench {
 		const summary = this.candidateView(candidate, inventory.developmentEvals);
 		const proposal = this.candidateProposal(candidate);
 		const candidateId = candidate.candidateId;
-		const sameCandidate = (subject: unknown): boolean =>
-			(subject as { candidate?: { candidateId?: unknown } }).candidate?.candidateId === candidateId;
+		let reviewed = shipConsent(this.projectDir, candidate, proposal, version);
+		const readReviewed = () => {
+			const current = this.inventory().candidates.find((item) => item.candidateId === candidateId);
+			if (!current) throw new WorkbenchStaleDecisionError("ship");
+			return shipConsent(this.projectDir, current, this.candidateProposal(current), version);
+		};
 		const planned = new Map<WorkbenchDecisionInput["kind"], (subject: unknown) => boolean>();
-		if (plan.includes("review-candidate")) {
-			planned.set("review-candidate", (subject) =>
-				sameCandidate(subject) && (subject as { recommendation?: unknown }).recommendation === "promote");
-		}
-		if (plan.includes("promote-candidate")) {
-			planned.set("promote-candidate", (subject) =>
-				sameCandidate(subject) && (subject as { version?: unknown }).version === version);
-		}
-		if (plan.includes("adopt-candidate")) planned.set("adopt-candidate", sameCandidate);
-		planned.set("continue-cycle", sameCandidate);
+		if (plan.includes("review-candidate")) planned.set("review-candidate", (subject) => matchesCandidateDecision(subject, reviewed, { recommendation: "promote" }));
+		if (plan.includes("promote-candidate")) planned.set("promote-candidate", (subject) => matchesCandidateDecision(subject, reviewed, { version: version! }));
+		if (plan.includes("adopt-candidate")) planned.set("adopt-candidate", (subject) => matchesCandidateDecision(subject, reviewed, { adoption: true }));
+		planned.set("continue-cycle", (subject) => matchesCandidateDecision(subject, reviewed));
 		const branch = plan.includes("adopt-candidate") ? currentBranchName(this.projectDir) : null;
 		const subject = {
 			operation: "ship",
@@ -1747,7 +1716,8 @@ export class AhdeWorkbench {
 		};
 		const title = version ? t("confirm.ship.title", { version }) : t("confirm.ship.title-untagged");
 		const actor = await this.confirm(input, gate, title, subject, options.signal, { question: t("confirm.question", { title }) });
-		const scoped = this.compositeGate(gate, actor, planned);
+		assertCompositeFresh("ship", reviewed, readReviewed);
+		const scoped = compositeGate(gate, actor, planned);
 		const steps: WorkbenchCompositeStep[] = [];
 		let shipped = summary;
 		let tag: string | null = null;
@@ -1756,6 +1726,7 @@ export class AhdeWorkbench {
 		let guards: WorkbenchRegressionGuardsProjection | null = null;
 		let view = await this.viewOf(inventory);
 		for (const step of plan) {
+			assertCompositeFresh("ship", reviewed, readReviewed);
 			if (step === "review-candidate") {
 				const done = await this.decide({ kind: "review-candidate", candidateId, recommendation: "promote", reason: input.reason }, scoped, options);
 				shipped = done.result;
@@ -1780,6 +1751,8 @@ export class AhdeWorkbench {
 				steps.push({ kind: step, message: done.message });
 				view = done.view;
 			}
+			// Own completed steps advance the reviewed Candidate/HEAD, never a prior approval after restart.
+			reviewed = advanceShipConsent(reviewed, readReviewed(), step);
 		}
 		return {
 			kind: input.kind,
@@ -2875,6 +2848,7 @@ export class AhdeWorkbench {
 			...(workshop ? { workshop } : {}),
 			...(judgeCalibration ? { judgeCalibration } : {}),
 		};
+		view.guidance = workbenchNext(view, resolveRunCurrent(inventory, view.stage));
 		const aspect = query.aspect ?? "summary";
 		if (aspect === "summary") return view;
 		if (aspect === "target") {

@@ -137,6 +137,98 @@ const settle = async (): Promise<void> => {
 };
 
 describe("background measurements", () => {
+	it("keeps a durable decision successful when its observational callbacks fail", async () => {
+		const fixture = hostFixture();
+		fixture.host.show = () => { throw new Error("panel closed"); };
+		fixture.host.note = () => { throw new Error("host closed"); };
+		const jobs = createBuilderJobs({ host: fixture.host });
+		const pending = deferred<WorkbenchDecisionResult>();
+		const started = await jobs.start({
+			command: "test", label: () => "test",
+			run: async ({ authorized }) => { authorized({ kind: "verify-candidate", estimate: null }); return pending.promise; },
+			present: async () => { throw new Error("receipt cannot render"); },
+		});
+		expect(started.status).toBe("running");
+		pending.resolve(result);
+		await settle();
+		expect(jobs.busy()).toBeNull();
+	});
+
+	it("keeps an unanswered authorization foreground beyond two seconds and cancels it through the initiating turn", async () => {
+		vi.useFakeTimers();
+		try {
+			const fixture = hostFixture();
+			const jobs = createBuilderJobs({ host: fixture.host });
+			const controller = new AbortController();
+			let returned = false;
+			const operation = jobs.start({
+				command: "test", label: () => "pending review", signal: controller.signal,
+				run: ({ signal }) => new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason))),
+				present: async () => "unreachable",
+			}).finally(() => { returned = true; });
+			const rejection = expect(operation).rejects.toThrow("changed direction");
+			await vi.advanceTimersByTimeAsync(2_500);
+			expect(returned).toBe(false);
+			expect(jobs.active()).toMatchObject({ state: "awaiting-authorization", background: false });
+			expect(jobs.busy()).not.toBeNull();
+			expect(fixture.show).not.toHaveBeenCalled();
+			controller.abort(new Error("changed direction"));
+			await rejection;
+			expect(jobs.active()).toBeNull();
+		} finally { vi.useRealTimers(); }
+	});
+
+	it("clears completed work before waiting for idle and never clears a newer operation", async () => {
+		const fixture = hostFixture();
+		const idle = deferred<void>();
+		fixture.host.waitForIdle = () => idle.promise;
+		const jobs = createBuilderJobs({ host: fixture.host });
+		const first = deferred<WorkbenchDecisionResult>();
+		const second = deferred<WorkbenchDecisionResult>();
+		const start = (name: string, pending: typeof first) => jobs.start({
+			command: name, label: () => name,
+			run: async ({ authorized }) => { authorized({ kind: "verify-candidate", estimate: null }); return pending.promise; },
+			present: async () => "saved",
+		});
+		await start("first", first);
+		first.resolve(result);
+		await settle();
+		expect(jobs.busy()).toBeNull();
+		expect(fixture.note).not.toHaveBeenCalled();
+		await start("second", second);
+		idle.resolve();
+		await settle();
+		expect(jobs.active()).toMatchObject({ command: "second" });
+		expect(fixture.note).toHaveBeenCalledTimes(1);
+		second.resolve(result);
+		await settle();
+		expect(fixture.note).toHaveBeenCalledTimes(2);
+	});
+
+	it("keeps background work independent of later turn interrupts and aborts it on shutdown without late presentation", async () => {
+		const fixture = hostFixture();
+		const jobs = createBuilderJobs({ host: fixture.host });
+		const pending = deferred<WorkbenchDecisionResult>();
+		const turn = new AbortController();
+		let jobSignal: AbortSignal | undefined;
+		const present = vi.fn(async () => "saved");
+		await jobs.start({
+			command: "test", label: () => "test", signal: turn.signal,
+			run: async ({ signal, authorized }) => { jobSignal = signal; authorized({ kind: "verify-candidate", estimate: null }); return pending.promise; },
+			present,
+		});
+		turn.abort();
+		expect(jobSignal?.aborted).toBe(false);
+		jobs.dispose();
+		expect(jobSignal?.aborted).toBe(true);
+		pending.resolve(result);
+		await settle();
+		expect(present).not.toHaveBeenCalled();
+		expect(fixture.note).not.toHaveBeenCalled();
+		expect(fixture.blocks).toHaveLength(1);
+		expect(jobs.active()).toBeNull();
+	});
+
 	it("hands the conversation back the moment a long measurement is authorized", async () => {
 		const fixture = hostFixture();
 		let clock = 0;
@@ -163,7 +255,7 @@ describe("background measurements", () => {
 			present,
 		});
 		// The command returns before the measurement does.
-		await expect(returned).resolves.toBeUndefined();
+		await expect(returned).resolves.toMatchObject({ status: "running", job: { background: true, state: "running" } });
 
 		expect(fixture.blocks[0]?.lines).toEqual([
 			"Started in the background · candidate verification · ~372 Target executions · ~14 minutes",
@@ -309,7 +401,7 @@ describe("background measurements", () => {
 
 		expect(jobs.lines()).toEqual([
 			"candidate verification 2/372 · 0s",
-			"/stop cancels it; the measurement is discarded",
+			"Say stop to cancel; completed changes and artifacts remain saved",
 		]);
 		await expect(jobs.start({
 			command: "calibrate",

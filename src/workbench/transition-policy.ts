@@ -1,5 +1,5 @@
 import { plural, t } from "../i18n.js";
-import { runCost } from "../compare.js";
+import { runTotalCost } from "../compare.js";
 import { isSealedEvalRun, listEvalRunIndexesLenient, loadRun } from "../eval.js";
 import type { WorkbenchDecisionInput, WorkbenchStage } from "./types.js";
 
@@ -301,7 +301,7 @@ export function estimateRunCost(input: EstimateRunCostInput): WorkbenchRunEstima
 		.filter((record) => record.target.id === input.targetId && !isSealedEvalRun(record))
 		.slice(0, ESTIMATE_EVAL_RUNS);
 	let sampled = 0;
-	let costUsd = 0;
+	let costUsd: number | null = 0;
 	let milliseconds = 0;
 	for (const record of comparable) {
 		for (const runId of record.runIds) {
@@ -322,9 +322,8 @@ export function estimateRunCost(input: EstimateRunCostInput): WorkbenchRunEstima
 			// Every model an evaluation pays for: the Target, the judge that graded
 			// it, and the user model that talked to it. Missing one makes the guard
 			// wave through a run that costs several times its estimate.
-			costUsd += (runCost(run) ?? 0)
-				+ (run.metrics.judge?.costUsd ?? 0)
-				+ (run.metrics.simulatedUser?.costUsd ?? 0);
+			const runCostUsd = runTotalCost(run);
+			costUsd = costUsd === null || runCostUsd === null ? null : costUsd + runCostUsd;
 			milliseconds += elapsed;
 		}
 	}
@@ -333,7 +332,7 @@ export function estimateRunCost(input: EstimateRunCostInput): WorkbenchRunEstima
 	return {
 		executions,
 		sampledRuns: sampled,
-		costUsd: (costUsd / sampled) * executions,
+		costUsd: costUsd === null ? null : (costUsd / sampled) * executions,
 		minutes: ((milliseconds / sampled) * executions) / jobs / 60_000,
 	};
 }

@@ -286,6 +286,16 @@ describe("the receipt", () => {
 		expect(facts).toMatchObject({ runs: 48, costUsd: 0.19, judgeCostUsd: 0.03, durationMs: 252_000 });
 	});
 
+	it.each([[null, 0.19], [0.19, null]])("keeps a partially measured receipt unknown in either arm order: %j", (first, second) => {
+		expect(receiptFacts([spend({ costUsd: first }), spend({ costUsd: second })]))
+			.toMatchObject({ runs: 48, costUsd: null, judgeCostUsd: 0.06 });
+	});
+
+	it("keeps unreadable judge contributions unknown when another arm was priced", () => {
+		expect(receiptFacts([spend({ judgeCostUsd: null }), spend()]))
+			.toMatchObject({ costUsd: 0.38, judgeCostUsd: null });
+	});
+
 	it("renders one dim line from measured numbers, judge included only when billed", () => {
 		const line = renderReceipt(runResult(), markerPaint, {
 			ofEvalRun: () => spend(),

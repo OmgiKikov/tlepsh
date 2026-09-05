@@ -1030,7 +1030,7 @@ const GROWTH_ROWS=${embeddedJson(growthRowsHtml(data.agentLog))};
 if(DATA.agentLog&&DATA.agentLog.rows.length){const g=DATA.agentLog;const versions=g.rows.filter(r=>r.outcome==='promoted').length;
 	q('#growth-section').hidden=false;
 	q('#growth-status').textContent=versions+' version'+(versions===1?'':'s')+' · '+g.rows.length+' decided attempt'+(g.rows.length===1?'':'s')+(g.omitted?' · '+g.omitted+' earlier omitted':'');
-	q('#growth-chart').textContent='score '+GROWTH_SPARKLINE+' · $'+g.cumulativeCostUsd.toFixed(2)+' cumulative over '+g.rows.length+' attempt'+(g.rows.length===1?'':'s');
+	q('#growth-chart').textContent='score '+GROWTH_SPARKLINE+' · '+(g.cumulativeCostUsd===null?'—':'$'+g.cumulativeCostUsd.toFixed(2))+' cumulative over '+g.rows.length+' attempt'+(g.rows.length===1?'':'s');
 	q('#growth').innerHTML=GROWTH_ROWS}
 </script></body></html>`;
 	if (Buffer.byteLength(html, "utf8") > MAX_REPORT_HTML_BYTES) {

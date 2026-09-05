@@ -1395,6 +1395,9 @@ const skipReason = dockerStatus.available
 		: ` — SKIPPED: docker ${dockerStatus.identity.version} is up but no pinned image/platform was resolved`)
 	: ` — SKIPPED: ${dockerStatus.reason}`;
 if (skipReason) console.warn(`[container-backend integration]${skipReason}`);
+if (process.env.AHDE_REQUIRE_DOCKER_TESTS === "1" && skipReason) {
+	throw new Error(`Docker integration is required in this environment${skipReason}`);
+}
 
 describe.skipIf(!integrationPinnedImage || !integrationPlatform || !integrationRuntimeBinding)(`container backend integration (real docker)${skipReason}`, () => {
 	it("runs the declared argv inside the container, sees only container paths, and inherits no host environment", () => {

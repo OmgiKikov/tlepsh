@@ -375,6 +375,20 @@ describe("comparison gate — exact-comparison-gate-v4", () => {
 		expect(withResources.resources.costRatio).toBe(1.4);
 		expect(without.resources.costRatio).toBeNull();
 	});
+
+	it("keeps partially reported cost and tokens unknown on either comparison arm", () => {
+		const partial = resourceTotals([
+			{ costUsd: 0.1, latencyMs: 100, tokens: 100 },
+			{ costUsd: null, latencyMs: 300, tokens: null },
+		]);
+		const measured = resourceTotals([{ costUsd: 1, latencyMs: 100, tokens: 200 }]);
+		expect(partial).toEqual({ runs: 2, costUsd: null, meanLatencyMs: 200, meanTokens: null });
+		for (const [baseline, candidate] of [[partial, measured], [measured, partial]]) {
+			expect(resourceRatios(baseline!, candidate!)).toMatchObject({ costRatio: null, tokenRatio: null });
+		}
+		// A measured zero is still known, and keeps its own meaning.
+		expect(resourceRatios(measured, resourceTotals([{ costUsd: 0, latencyMs: 0, tokens: 0 }]))).toMatchObject({ costRatio: 0, tokenRatio: 0 });
+	});
 });
 
 describe("gate evidence versions", () => {
@@ -418,6 +432,19 @@ describe("gate evidence versions", () => {
 		expect(isPromotionGradeGateEvidence(parsed)).toBe(true);
 		expect(promotionGradeVerdictOf(parsed)).toBe("pass");
 		expect(gateVerdictOf(parsed)).toBe("pass");
+	});
+
+	it("round-trips unknown resource evidence without changing historical numeric artifacts", () => {
+		const resources = {
+			...v4.resources,
+			baseline: { ...v4.resources.baseline, costUsd: null, meanTokens: null },
+			costRatio: null,
+			tokenRatio: null,
+		};
+		const evidence = { ...v4, resources };
+		expect(ComparisonGateEvidenceSchema.parse(evidence)).toEqual(evidence);
+		expect(ComparisonGateEvidenceSchema.parse(v4)).toEqual(v4);
+		expect(() => ComparisonGateEvidenceSchema.parse({ ...v4, resources: { ...resources, costRatio: 10 } })).toThrow(/requires both measured/);
 	});
 
 	it("still parses v3 evidence but refuses it at promotion", () => {

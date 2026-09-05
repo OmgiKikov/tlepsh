@@ -220,6 +220,26 @@ describe("the Pareto table", () => {
 		expect(tie.rows[1]?.dominatedBy).toBe(1);
 		expect(tie.frontier).toEqual([1]);
 	});
+
+	it("keeps an unpriced hypothesis visible instead of assuming it costs the same as baseline", async () => {
+		const unpriced = await recordFixtureProposal(fixture, `${READY_INSTRUCTION} Unreported cost.`);
+		const priced = await recordFixtureProposal(fixture, `${READY_INSTRUCTION} Reported cost.`);
+		const result = await runProposalSearch(
+			searchOptions(fixture, [unpriced.runId, priced.runId], unpriced.failureModeId, { branchPrefix: "candidate/unpriced-" }),
+			{
+				runCheapCheck: (async () => screenResult("promising", 1, "unpriced")) as unknown as ProposalSearchDependencies["runCheapCheck"],
+				runAppliedCandidate: (async (options: { builderRunId: string }) => verificationResult({
+					candidateId: `unpriced-${options.builderRunId}`,
+					verdict: "improved",
+					scoreDelta: options.builderRunId === unpriced.runId ? 0.3 : 0.4,
+					costRatio: options.builderRunId === unpriced.runId ? null : 0.9,
+				})) as unknown as ProposalSearchDependencies["runAppliedCandidate"],
+			},
+		);
+		expect(result.rows.map((row) => row.dominated)).toEqual([false, false]);
+		expect(result.rows[0]?.development?.costRatio).toBeNull();
+		expect(result.frontier).toEqual([2, 1]);
+	});
 });
 
 it("never puts a non-improved hypothesis on the release frontier", async () => {

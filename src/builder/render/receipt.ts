@@ -38,7 +38,7 @@ export interface ReceiptFacts {
 	at: string;
 	runs: number;
 	costUsd: number | null;
-	judgeCostUsd: number;
+	judgeCostUsd: number | null;
 	durationMs: number | null;
 }
 
@@ -106,14 +106,14 @@ export function receiptFacts(
 ): ReceiptFacts | null {
 	if (spends.length === 0) return null;
 	let runs = 0;
-	let costUsd: number | null = null;
-	let judgeCostUsd = 0;
+	let costUsd: number | null = 0;
+	let judgeCostUsd: number | null = 0;
 	let started: string | null = null;
 	let finished: string | null = null;
 	for (const spend of spends) {
 		runs += spend.runs;
-		if (spend.costUsd !== null) costUsd = (costUsd ?? 0) + spend.costUsd;
-		judgeCostUsd += spend.judgeCostUsd;
+		costUsd = costUsd === null || spend.costUsd === null ? null : costUsd + spend.costUsd;
+		judgeCostUsd = judgeCostUsd === null || spend.judgeCostUsd === null ? null : judgeCostUsd + spend.judgeCostUsd;
 		if (started === null || spend.startedAt < started) started = spend.startedAt;
 		if (finished === null || spend.finishedAt > finished) finished = spend.finishedAt;
 	}
@@ -149,7 +149,7 @@ export function renderReceiptFacts(facts: ReceiptFacts, paint: Paint): string | 
 		facts.runs > 0 ? plural(facts.runs, "execution") : null,
 		facts.costUsd === null ? null : money(facts.costUsd),
 		facts.durationMs === null ? null : elapsedOf(facts.durationMs),
-		facts.judgeCostUsd > 0 ? t("receipt.judge", { cost: money(facts.judgeCostUsd) }) : null,
+		facts.judgeCostUsd !== null && facts.judgeCostUsd > 0 ? t("receipt.judge", { cost: money(facts.judgeCostUsd) }) : null,
 	]);
 	return parts ? paint.dim(parts) : null;
 }
@@ -169,9 +169,14 @@ export function renderReceipt(
 	try {
 		for (const evalRunId of wanted.evalRunIds) {
 			const spend = lookup.ofEvalRun(evalRunId);
-			if (spend) spends.push(spend);
+			if (!spend) return null;
+			spends.push(spend);
 		}
-		for (const candidateId of wanted.candidateIds) spends.push(...lookup.ofCandidate(candidateId));
+		for (const candidateId of wanted.candidateIds) {
+			const candidateSpends = lookup.ofCandidate(candidateId);
+			if (candidateSpends.length === 0) return null;
+			spends.push(...candidateSpends);
+		}
 	} catch {
 		return null;
 	}

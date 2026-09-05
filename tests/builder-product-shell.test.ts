@@ -375,6 +375,23 @@ describe("AHDE Builder product shell", () => {
 		expect(h.ui.setStatus).toHaveBeenLastCalledWith("ahde-auth", undefined);
 		expect(h.ui.setStatus).toHaveBeenCalledWith("ahde", "AHDE · Eval review · 41m · $0.00");
 	});
+
+	it("omits a total when Target cost is unknown even if judge spend is recorded", async () => {
+		const { handlers } = install(async () => view({ stage: "corpus-review" }), undefined, {
+			now: () => Date.parse("2026-09-03T10:20:00.000Z"),
+			spend: {
+				ofEvalRun: () => null,
+				ofCandidate: () => [],
+				cycle: () => ({ costUsd: null, judgeCostUsd: 0.03, evals: 1, firstAt: "2026-09-03T10:13:00.000Z", sinceAt: null }),
+				branchOf: () => null,
+			},
+		});
+		const h = host();
+		await start(handlers, h.ctx);
+		expect(h.ui.setStatus).toHaveBeenCalledWith("ahde", "AHDE · Eval review · 7m");
+		expect(h.ui.setStatus!.mock.calls.filter(([key]) => key === "ahde").map(([, value]) => value).join("\n"))
+			.not.toContain("$");
+	});
 });
 
 /**

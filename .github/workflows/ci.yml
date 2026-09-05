@@ -17,3 +17,26 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run check
       - run: npm run verify:package
+
+  linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    env:
+      AHDE_REQUIRE_DOCKER_TESTS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: npm
+      - name: Install the Linux sandbox
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+      - name: Require working sandbox and Docker runtimes
+        run: |
+          bwrap --ro-bind / / --unshare-net --dev /dev --proc /proc -- /bin/sh -c 'test -d /proc'
+          docker info
+      - run: npm ci --ignore-scripts
+      - run: npm run check
+      - run: npm run verify:package

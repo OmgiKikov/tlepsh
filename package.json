@@ -35,6 +35,7 @@
     "check:quick": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json && vitest run --project quick",
     "acceptance:pilot": "npm run build && vitest run tests/vertical-slice.test.ts tests/builder-pi-closed-loop.test.ts tests/improvement-author.test.ts tests/target-tools.test.ts tests/world-run.test.ts tests/rag-xray.test.ts tests/failure-intake.test.ts tests/workbench-production-failure.test.ts tests/rag-xray-surfaces.test.ts tests/executive-version-card.test.ts tests/passport-presentation.test.ts",
     "acceptance:live": "npm run build && node scripts/pilot-live.mjs",
+		"acceptance:guided": "vitest run tests/builder-conversation-lifecycle.test.ts tests/builder-jobs.test.ts tests/builder-pi-natural-language.test.ts tests/builder-pi-closed-loop.test.ts tests/builder-pi-workshop-loop.test.ts tests/workbench-composites.test.ts tests/evidence-comparison.test.ts",
     "verify:package": "node scripts/verify-package.mjs",
     "vendor:build": "cd vendor/pi-mono && npm ci --ignore-scripts && npm run hydrate:model-data && npm run build:offline",
     "vendor:pack": "cd vendor/pi-mono/packages/telemetry && npm pack --pack-destination ../../../tarballs && cd ../ai && npm pack --pack-destination ../../../tarballs && cd ../agent && npm pack --pack-destination ../../../tarballs && cd ../protocol && npm pack --pack-destination ../../../tarballs && cd ../client && npm pack --pack-destination ../../../tarballs && cd ../tui && npm pack --pack-destination ../../../tarballs && cd ../coding-agent && npm pack --pack-destination ../../../tarballs",

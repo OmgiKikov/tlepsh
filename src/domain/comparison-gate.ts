@@ -132,9 +132,11 @@ export interface CompareSummary {
  */
 export interface ResourceTotals {
 	runs: number;
-	costUsd: number;
+	/** Null when any run did not report its complete cost. */
+	costUsd: number | null;
 	meanLatencyMs: number;
-	meanTokens: number;
+	/** Null when any run did not report token usage. */
+	meanTokens: number | null;
 }
 
 /**
@@ -168,19 +170,23 @@ function round(value: number, digits: number): number {
 
 /** Sum cost, mean latency and tokens per run. Pure; rounded for stable hashes. */
 export function resourceTotals(
-	runs: readonly { costUsd: number; latencyMs: number; tokens: number }[],
+	runs: readonly { costUsd: number | null; latencyMs: number; tokens: number | null }[],
 ): ResourceTotals {
 	if (runs.length === 0) return EMPTY_RESOURCE_TOTALS;
+	const costs = runs.map((run) => run.costUsd);
+	const tokens = runs.map((run) => run.tokens);
 	return {
 		runs: runs.length,
-		costUsd: round(runs.reduce((sum, run) => sum + run.costUsd, 0), 6),
+		costUsd: costs.every((cost): cost is number => cost !== null)
+			? round(costs.reduce((sum, cost) => sum + cost, 0), 6) : null,
 		meanLatencyMs: round(mean(runs.map((run) => run.latencyMs)), 1),
-		meanTokens: round(mean(runs.map((run) => run.tokens)), 1),
+		meanTokens: tokens.every((count): count is number => count !== null)
+			? round(mean(tokens), 1) : null,
 	};
 }
 
-function ratio(candidate: number, baseline: number): number | null {
-	return baseline > 0 ? round(candidate / baseline, 4) : null;
+function ratio(candidate: number | null, baseline: number | null): number | null {
+	return candidate !== null && baseline !== null && baseline > 0 ? round(candidate / baseline, 4) : null;
 }
 
 /** Pure. Candidate-over-baseline resource ratios; null where the baseline is zero. */

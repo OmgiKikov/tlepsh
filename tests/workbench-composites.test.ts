@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { listCorpora } from "../src/corpus.js";
@@ -7,6 +7,7 @@ import { loadTargetAdoptionReceipt } from "../src/application/target-adoption.js
 import { loadCycleContinuationReceipt } from "../src/workbench/cycle-continuation.js";
 import {
 	WorkbenchDecisionDeclinedError,
+	WorkbenchStaleDecisionError,
 	createAhdeWorkbench,
 	type AhdeWorkbench,
 	type AhdeWorkbenchDependencies,
@@ -250,6 +251,37 @@ describe("start-testing composite", () => {
 			cleanup(composite.projectDir);
 			cleanup(separate.projectDir);
 		}
+	});
+
+	it.each(["spec", "corpus"] as const)("refuses changed exact %s draft bytes during the composite dialog", async (kind) => {
+		const fixture = paths();
+		try {
+			const workbench = await drafted(fixture);
+			if (kind === "corpus") {
+				await workbench.decide({ kind: "approve-spec", reason: REASON }, gate());
+				await addCorpusDraft(workbench);
+			}
+			const before = receipts(fixture);
+			const human = gate();
+			human.confirm.mockImplementationOnce(async () => {
+				const entry = Object.entries(tree(fixture.stateRoot)).find(([, content]) => {
+					const record = JSON.parse(content);
+					return kind === "spec" ? record.status === "draft" && record.spec : record.kind === "builder-corpus-draft";
+				});
+				if (!entry) throw new Error("draft fixture missing");
+				const record = JSON.parse(entry[1]);
+				// createdAt is outside the content-derived ID but inside the exact reviewed snapshot hash.
+				record.createdAt = "2026-09-05T12:00:00.000Z";
+				writeFileSync(join(fixture.stateRoot, entry[0]), JSON.stringify(record));
+				return { approved: true, actorId: ACTOR_ID };
+			});
+			await expect(workbench.decide({ kind: "start-testing", repetitions: 1, reason: REASON }, human))
+				.rejects.toBeInstanceOf(WorkbenchStaleDecisionError);
+			expect(human.confirm).toHaveBeenCalledOnce();
+			expect(Object.keys(receipts(fixture))).toEqual(Object.keys(before));
+			expect(listCorpora({ stateRoot: fixture.stateRoot, projectId: PROJECT_ID })).toEqual([]);
+			expect(existsSync(fixture.runsRoot)).toBe(false);
+		} finally { cleanup(fixture.projectDir); }
 	});
 
 	it("shows the Spec, the case count and the run estimate in its one dialog", async () => {
@@ -536,6 +568,26 @@ function withoutDigests(files: Record<string, string>): Record<string, string> {
 }
 
 describe("ship composite", () => {
+	it("refuses a branch changed while Ship waits for approval, before adoption or continuation", async () => {
+		const fixture = await terminalCandidateFixture("promoted");
+		try {
+			const human = gate();
+			human.confirm.mockImplementationOnce(async (confirmation) => {
+				expect(confirmation.kind).toBe("ship");
+				expect(confirmation.subject).toMatchObject({ fastForward: expect.stringContaining(fixture.branch) });
+				git(fixture.projectDir, "checkout", "-b", "unapproved-branch");
+				return { approved: true, actorId: ACTOR_ID };
+			});
+			await expect(fixture.workbench.decide({ kind: "ship", reason: SHIP_REASON }, human))
+				.rejects.toBeInstanceOf(WorkbenchStaleDecisionError);
+			expect(human.confirm).toHaveBeenCalledOnce();
+			expect(git(fixture.projectDir, "rev-parse", fixture.branch)).toBe(fixture.baselineSha);
+			expect(git(fixture.projectDir, "rev-parse", "unapproved-branch")).toBe(fixture.baselineSha);
+			expect(existsSync(join(fixture.stateRoot, "target-adoptions", fixture.candidateId, "receipt.json"))).toBe(false);
+			expect(existsSync(join(fixture.stateRoot, "projects", fixture.projectId, "workbench", "cycle-continuations", fixture.candidateId, "receipt.json"))).toBe(false);
+		} finally { cleanupPaths(fixture); }
+	});
+
 	it("writes the same adoption and continuation receipts as the separate decisions", async () => {
 		let composite: CycleFixture | undefined;
 		let separate: CycleFixture | undefined;
@@ -543,6 +595,7 @@ describe("ship composite", () => {
 			composite = await terminalCandidateFixture("promoted");
 			separate = await terminalCandidateFixture("promoted");
 
+			expect((await composite.workbench.view()).guidance?.decide.some((item) => item.kind === "ship")).toBe(true);
 			const compositeGate = gate();
 			const shipped = await composite.workbench.decide({ kind: "ship", reason: SHIP_REASON }, compositeGate);
 			expect(compositeGate.confirm).toHaveBeenCalledOnce();

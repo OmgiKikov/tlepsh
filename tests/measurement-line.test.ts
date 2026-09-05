@@ -444,6 +444,8 @@ describe("one module, one number", () => {
 	});
 
 	it("never rounds a bill under half a cent down to $0.00", () => {
+		expect(money(null)).toBe("—");
+		expect(money(undefined)).toBe("—");
 		expect(money(0)).toBe("$0.00");
 		expect(money(0.0015)).toBe("<$0.01");
 		expect(money(0.005)).toBe("$0.01");

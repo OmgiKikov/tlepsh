@@ -96,6 +96,8 @@ const MAX_PROPOSAL_BYTES = 4 * 1024 * 1024;
 
 export interface WorkbenchProposalInventory {
 	record: PersistedBuilderRun;
+	/** Verified apply receipt origin; absent only on unapplied or legacy in-memory inventories. */
+	appliedVia?: string | null;
 	status: "open" | "apply-pending" | "discard-pending" | "applied" | "discarded";
 }
 
@@ -367,8 +369,10 @@ function listProposals(
 					reason: intent.receipt.reason,
 				})) throw new Error("apply intent does not match the immutable apply decision claim");
 			}
+			let appliedVia: string | null = null;
 			if (hasApply) {
 				const receipt = loadBuilderApplyReceipt(runsRoot, runId);
+				appliedVia = receipt.via ?? null;
 				if (
 					receipt.runId !== record.runId ||
 					receipt.proposalSha256 !== record.artifacts.proposal?.sha256 ||
@@ -409,6 +413,7 @@ function listProposals(
 			}
 			proposals.push({
 				record,
+				appliedVia,
 				status: hasApply
 					? "applied"
 					: hasDiscard
@@ -1356,7 +1361,7 @@ function stageFor(
 
 	const applied = inventory.proposals.filter((proposal) => proposal.status === "applied");
 	const appliedWithoutCandidate = applied.filter((proposal) =>
-		loadBuilderApplyReceipt(inventory.runsRoot, proposal.record.runId).via !== "proposal-search" &&
+		proposal.appliedVia !== "proposal-search" &&
 		!projectCandidates.some((candidate) =>
 			candidate.origin.kind === "applied-builder" &&
 			candidate.origin.builderRunId === proposal.record.runId &&

@@ -1,3 +1,5 @@
+import { t } from "../i18n.js";
+import { runCurrentKind, type RunCurrentResolution } from "./run-resolution.js";
 import {
 	UNBLOCKING_ACTION,
 	workbenchDecisionStages,
@@ -26,7 +28,7 @@ import type {
  */
 export interface WorkbenchNextDecision {
 	kind: NextDecisionKind;
-	/** True when the host puts a question to the operator before it runs. */
+	/** The default human-attention policy; a routine run may still trigger the cost guard. */
 	asks: boolean;
 	when: string;
 }
@@ -39,6 +41,14 @@ export interface WorkbenchNextSubmission {
 export interface WorkbenchNext {
 	/** The single thing that moves this stage forward, in the operator's words. */
 	unblock: string;
+	/** Canonical operator wording; renderers translate this without deriving workflow again. */
+	operatorNext?: { code: Parameters<typeof t>[0] };
+	/** Host-derived recovery; never authority or a replacement for fresh decide. */
+	recovery?:
+		| { kind: "inspect-candidate"; candidateId: string }
+		| { kind: "reattach-workshop"; workshopId: string }
+		| { kind: "repair-integrity" }
+		| { kind: "select" };
 	decide: WorkbenchNextDecision[];
 	submit: WorkbenchNextSubmission[];
 	/** Present only where a workshop is legal; `basis` says what it is bound to. */
@@ -62,13 +72,6 @@ export interface WorkbenchNext {
  */
 type NextDecisionKind = WorkbenchDecisionInput["kind"] | "talk-to-agent" | "label";
 
-/**
- * What `run-current` resolves to, mirroring the branch in `Workbench.decide`.
- * Their stage lists are disjoint, so the first match is the resolution and its
- * gate class is the honest answer to "will the operator be asked?".
- */
-const RUN_CURRENT_RESOLUTIONS = ["start-testing", "run-eval", "verify-candidate"] as const;
-
 /** One short sentence per decision: the operator moment it belongs to. */
 const DECIDE_WHEN = {
 	"run-current": "the operator says test / run / проверь; publishes what is pending on the way",
@@ -77,7 +80,7 @@ const DECIDE_WHEN = {
 	"talk-to-agent": "the operator wants to open, try, or talk to the built agent",
 	label: "not a call — something to SAY: a judge has graded a run and nobody has checked it, " +
 		"so offer it once in one sentence («10 минут: разметь 10 ответов, чтобы знать, можно ли верить судье») " +
-		"and the operator answers with /label",
+		"and use the host labeling action when the operator accepts",
 	regrade: "the operator disputes a verdict or you revised graders; re-scores recorded answers, no agent call",
 	"generate-holdout": "no exam yet and the operator has no data to hold out; seal or draft",
 	"publish-corpus": "the operator approved the cases; at candidate-verification it is the forward exit",
@@ -87,7 +90,7 @@ const DECIDE_WHEN = {
 	"discard-proposal": "the operator throws the prepared change away",
 	"reject-candidate": "the operator rejects the checked change; the agent stays as it was",
 	"abandon-candidate": "an interrupted attempt blocks the stage and the operator says drop it",
-	improve: "the operator asks for the automatic loop; it stops at the first verified candidate",
+	improve: "the operator asks for a bounded improvement experiment; it returns development candidates for human review",
 	"import-dataset": "the operator confirmed the sample cases a dataset-recipe compiled",
 	"scaffold-target": "there is no agent directory yet",
 	"wrap-target": "the folder already holds an agent and no manifest",
@@ -118,7 +121,7 @@ const SUBMIT_WHEN = {
 } as const satisfies Record<WorkbenchSubmitInput["kind"], string>;
 
 type NextView = Pick<WorkbenchView, "stage" | "counts"> &
-	Partial<Pick<WorkbenchView, "target" | "shippingReadiness" | "workshopOpen" | "workshop" | "judgeCalibration">>;
+	Partial<Pick<WorkbenchView, "target" | "shippingReadiness" | "workshopOpen" | "workshop" | "judgeCalibration" | "blockerReasons" | "guidance">>;
 
 /**
  * The workshop a dead Builder process left open, when this one holds none.
@@ -134,7 +137,10 @@ function reattachableWorkshop(view: NextView): { workshopId: string; openedAt: s
 	return { workshopId: workshop.workshopId, openedAt: workshop.openedAt };
 }
 
-function decisionLegal(kind: NextDecisionKind, view: NextView): boolean {
+function decisionLegal(kind: NextDecisionKind, view: NextView, resolution?: RunCurrentResolution): boolean {
+	if (resolution?.status === "blocked" && resolution.code === "integrity") return false;
+	if (resolution?.status === "blocked" && (kind === "run-current" ||
+		(resolution.code === "interrupted-candidate" && ["verify-candidate", "ship"].includes(kind)))) return false;
 	// The one decision with no stage table: the host refuses it until the
 	// Target is created and configured.
 	if (kind === "talk-to-agent") return view.target?.status === "ready";
@@ -142,7 +148,7 @@ function decisionLegal(kind: NextDecisionKind, view: NextView): boolean {
 	// are not written yet. Ten is a prompt threshold, never a gate.
 	if (kind === "label") return view.judgeCalibration?.offered === true;
 	if (kind === "run-current") {
-		return RUN_CURRENT_RESOLUTIONS.some((resolved) => workbenchDecisionStages(resolved).includes(view.stage));
+		return resolution ? resolution.status === "ready" : runCurrentKind(view.stage) !== null;
 	}
 	if (!workbenchDecisionStages(kind).includes(view.stage)) return false;
 	// Legal at six stages, worth offering at none of them but the one where the
@@ -152,13 +158,13 @@ function decisionLegal(kind: NextDecisionKind, view: NextView): boolean {
 	return true;
 }
 
-function decisionAsks(kind: NextDecisionKind, stage: WorkbenchStage): boolean {
+function decisionAsks(kind: NextDecisionKind, stage: WorkbenchStage, resolution?: RunCurrentResolution): boolean {
 	if (kind === "talk-to-agent") return false;
 	// The whole point of the exercise is that a human answers it.
 	if (kind === "label") return true;
 	if (kind === "run-current") {
-		const resolved = RUN_CURRENT_RESOLUTIONS.find((candidate) => workbenchDecisionStages(candidate).includes(stage));
-		return resolved !== undefined && workbenchGateClass(resolved) !== "routine";
+		const resolved = resolution?.status === "ready" ? resolution.route.kind : runCurrentKind(stage);
+		return resolved !== null && workbenchGateClass(resolved) !== "routine";
 	}
 	return workbenchGateClass(kind) !== "routine";
 }
@@ -213,19 +219,53 @@ function submitWhen(kind: WorkbenchSubmitInput["kind"], view: NextView): string 
 }
 
 /** The legal moves at this exact moment, for the model-facing projection. */
-export function workbenchNext(view: NextView): WorkbenchNext {
+export function workbenchNext(view: NextView, resolution?: RunCurrentResolution): WorkbenchNext {
+	if (view.guidance && !resolution) return view.guidance;
 	const basis = workshopBasisForStage(view.stage);
 	const recorded = reattachableWorkshop(view);
+	const integrity = view.blockerReasons?.some((reason) => reason.code === "blocker.integrity") ||
+		(resolution?.status === "blocked" && resolution.code === "integrity");
+	const interrupted = resolution?.status === "blocked" && resolution.code === "interrupted-candidate" ? resolution : null;
+	const modelRequired = view.stage === "target-setup" && view.blockerReasons?.some((reason) =>
+		reason.code === "blocker.target-placeholder" || reason.code === "blocker.target-stand-ins");
+	let code: Parameters<typeof t>[0] = `next.${view.stage}`;
+	let unblock = UNBLOCKING_ACTION[view.stage];
+	let recovery: WorkbenchNext["recovery"];
+	if (integrity) {
+		code = "blocker.integrity";
+		unblock = "inspect and restore artifact integrity before making a decision";
+		recovery = { kind: "repair-integrity" };
+	} else if (view.stage === "selection-required") {
+		recovery = { kind: "select" };
+	} else if (interrupted) {
+		code = "next.interrupted";
+		unblock = `inspect candidate ${interrupted.candidateId}, then explicitly abandon the interrupted attempt before retrying`;
+		recovery = { kind: "inspect-candidate", candidateId: interrupted.candidateId };
+	} else if (modelRequired) {
+		code = "next.model-required";
+		unblock = "choose the agent's model before authoring evidence";
+	} else if (recorded) {
+		code = "workshop.recorded";
+		unblock = `continue the recorded workshop with workshopId: "${recorded.workshopId}"`;
+		recovery = { kind: "reattach-workshop", workshopId: recorded.workshopId };
+	}
 	return {
-		unblock: UNBLOCKING_ACTION[view.stage],
+		unblock,
+		operatorNext: { code },
+		...(recovery ? { recovery } : {}),
 		decide: (Object.keys(DECIDE_WHEN) as NextDecisionKind[])
-			.filter((kind) => decisionLegal(kind, view))
-			.map((kind) => ({ kind, asks: decisionAsks(kind, view.stage), when: DECIDE_WHEN[kind] })),
+			.filter((kind) => decisionLegal(kind, view, resolution))
+			.map((kind) => ({ kind, asks: decisionAsks(kind, view.stage, resolution), when: DECIDE_WHEN[kind] })),
 		submit: (Object.keys(SUBMIT_WHEN) as WorkbenchSubmitInput["kind"][])
-			.filter((kind) => submitLegal(kind, view))
+			.filter((kind) => !integrity && submitLegal(kind, view))
 			.map((kind) => ({ kind, when: submitWhen(kind, view) })),
 		...(basis
 			? { workshop: { basis, open: view.workshopOpen === true, ...(recorded ? { recorded } : {}) } }
 			: {}),
 	};
+}
+
+/** Compact, credential-free current context for a host-injected Builder turn. */
+export function workbenchGuidanceContext(view: WorkbenchView): string {
+	return JSON.stringify({ stage: view.stage, focus: view.focus, next: workbenchNext(view), warnings: view.warnings.slice(0, 3) });
 }

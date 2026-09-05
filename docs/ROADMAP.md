@@ -1,157 +1,85 @@
 # AHDE roadmap
 
-What is ahead, and why in this order. What is already true is in the README;
-what may never change is in `INVARIANTS_V1.md`. This file is not a changelog:
-when an item lands it leaves this page.
+Updated 2026-09-05. Implemented behavior lives in the README and the invariant
+contract; this page keeps the next product work separate from acceptance evidence.
 
-## Where we stand (2026-09-04, night)
+## What works now
 
-Builder Pi is the front door and the only human interface. Stage 1 of the
-plan below landed in one day and was accepted live on 2026-09-03/04: a plain
-folder holding a Python agent (internet-provider support: a tariff, a
-balance, a block, a technician ticket) was adopted with one question, the
-Builder wrote fifteen cases nine of which carry the client's state, the
-agent ran forty-five executions in eight minutes inside the sandbox, the
-Builder measured the noise itself, rewrote `prompts/system.md` in a
-workshop, and the verification read «стало лучше · балл 73 % → 85 % (+12,4
-п.п., 95 % ДИ +4,8 … +20,2) на 14 кейсах × 5 · экзамен: пройден · ухудшения
-не доказано, улучшения тоже»; `v0.1.0` was shipped, the passport said
-«обещано +8,9 · получено +10 ✓», and `/dataset` wrote fifty conversations
-with the world before and after and the judge's verdicts. Three defects were
-fixed in the code during the session (the sandbox denied the route socket
-address selection needs, the environment fingerprint depended on the case,
-an empty answer was an infrastructure error) and one outside it: the
-OpenRouter catalog now routes Anthropic models through a path the pinned Pi
-cannot reach, so the Builder ran on `openai/gpt-5.4`. The session reports
-live beside the earlier five.
+- Python command agents and Pi agents share the run, trace, evaluation and release
+  workflow. Existing Python folders can be adopted with a reviewed setup.
+- Cases can carry a simulated user and mutable world state. Declared knowledge
+  bases support retrieval, source-based graders and a trace-level RAG X-ray.
+- Builder Pi can author several bounded hypotheses. A persisted split separates
+  authoring cases from blind validation; the selected change then faces a separate
+  sealed exam before release.
+- Production conversations can be imported as regressions, published into an
+  immutable corpus and tested after restart. `/good` and `/bad` capture feedback
+  from the built agent.
+- Releases produce an exact version passport, an offline HTML report and an
+  exportable development dataset. They retain uncertainty, regressions and unknown
+  costs rather than hiding them.
+- The terminal conversation is the primary interface. The optional localhost
+  Evidence explorer shows verified conversations, executed actions, before/after
+  answers and uncertainty. `serve` is the existing HTTP integration boundary.
+- Natural requests and shortcuts share progress, cancellation and completion.
+  Each model turn receives fresh guidance; reopening `ahde` resumes the project's
+  validated conversation without restoring old approvals or restarting spend.
+- Named starters (`python-support`, `pi-support`, `pi-basic`) resolve from any
+  directory. Clean package acceptance checks the installed command, and CI now
+  defines macOS and Linux lanes with required Linux sandbox/container checks.
 
-The work sync of the same day set the real order: agents written in Python,
-a dialogue emulator over a test basket with client state and tool mocks, a
-knowledge base to emulate for RAG agents, and an improvement loop that runs
-without a per-iteration approval and asks once at the end. An outside review
-of the next plan (2026-09-03) put it bluntly: polishing the screens first
-would leave the doubt about the engine in place. So the engine foundation
-goes first, and every product screen after it sits on those seams. The
-reviewed plan is in four stages; the items below follow it.
+Two paid synthetic improvement cycles completed through the production Workbench.
+The [acceptance record](reviews/2026-09-05-live-improvement-acceptance.md) preserves
+both the successful releases and the failed authoring attempt. Its validation
+samples are small; a sealed non-regression pass is not a claim of production
+correctness. The newly added Linux CI lane still needs its own green runner result.
 
-## Stage 1 — the foundation
+## Next: make the first useful result easy
 
-1. **A Target that is a Python program.** Today the Target is a Pi
-   invocation. The customer's agents are Python sources. The manifest gains
-   `execution.kind: command`: the agent runs as a child process under a
-   versioned JSON-lines protocol on stdin/stdout (a user turn in; the reply,
-   tool calls the host brokers, and usage out), inside the same sandbox,
-   over the same hash-checked snapshot, and its transcript is written as
-   the same session JSONL the one parser already reads. A folder that
-   already holds an agent and no manifest is adopted with one question. The
-   harness becomes the manifest's declared list of editable files, and
-   invariants 5 and 17 read that list instead of naming `AGENTS.md`,
-   `skills/**`, `tools/**`. A reference Python agent ships in `examples/`
-   and is the acceptance Target from here on; the ombudsman retires.
-2. **The case as a world.** A case carries `world`: the client's state
-   (accounts, blocks, history) written to a per-run file outside the
-   snapshot that the tools read and write, and a `world_state` grader that
-   checks what the world looks like when the conversation ends, not only
-   what the agent said. The world is part of the dataset's identity. The
-   panel shows a case as four lines: who, what they have, what they want,
-   what must happen. This and item 1 are the emulator.
-3. **The exam from the knowledge base.** Most of the customer's agents
-   answer from documents. A declared `data/kb` turns on a host-provided
-   lexical `kb_search` tool (no embedding model, no network), and
-   `generate-holdout` writes questions from its chunks with a reference
-   answer and a citation; a `cites_source` grader checks that the answer
-   stands on the source. Until then a generated exam for a RAG agent is
-   questions about nothing.
-4. **The recorded dataset.** `ahde export` writes every development
-   conversation as one JSONL line: messages with tool calls, the world
-   before and after, grader results, judge verdicts, the simulated user's
-   turns. Sealed evidence never leaves.
-5. **A judge that can say "I don't know".** Every judge protocol gets an
-   abstain answer, counted as a failure and shown as a count; the host
-   offers ten calibration labels once, after the first run; the agreement
-   line stands on the run panel and the ship dialog, or the words "judge not
-   calibrated" do. The judge is chosen inside the one question that starts
-   testing.
+1. **Measure the stranger's first session.** Give an operator who has never seen
+   AHDE an unfamiliar Python agent. Measure time to the first useful failure,
+   reviewed candidate and shareable report, plus interventions and actual spend.
+   Use that session to refine guidance, recovery and the conversation.
+2. **Make connection and recovery clear.** Explain which model is the Builder,
+   Target, judge or simulated user; show a usable next step for provider errors,
+   interruptions and expired confirmations. Exercise restart during each stage
+   with actual providers and runtimes.
+3. **Finish the integration guide.** Publish one small working `serve` client:
+   view, submit, decision, confirmation, event subscription and reconnection.
+   Define retry behavior and how a client discovers the result of an operation
+   when its original HTTP response was lost.
 
-## Stage 2 — the flow
+## Then: prove it on real work
 
-6. **Cases at one glance, and where each came from.** A typed `origin` on
-   every case, set by the host; one table before the run; edits in words;
-   admission in one line — `accepted 14 of 20: 3 duplicates, 2 restate the
-   answer · not covered: refunds`; problems in human words; repetitions
-   shown as `3/3`, never as the word "stable". Then the stranger's session:
-   an operator who has never seen AHDE, on the Python agent, timed from
-   `ahde` to passport.
-
-## Stage 3 — the loop
-
-7. **The autoloop as a product.** `improve` leaves the freezer. Three
-   splits: the development basket the Builder reads, a validation split the
-   loop optimises against, and the sealed exam that runs once, at the end,
-   on the best attempt. The screen is one table — attempt, what changed,
-   validation before and after, kept or reverted, why — a stop line, and one
-   question: the best attempt, its numbers, ship it?
-
-## Stage 4 — the constructor
-
-8. **The agent as a panel.** Model, judge, skills, tools, tests, last run,
-   version — one projection the host composes from what it already parsed,
-   never from git tags or the first line after a heading; a skill or a tool
-   added in one phrase.
-
-## Later
-
-9. **Case admission and the exam's own passport.** A generated case is
-   admitted only if a reference model can solve it under the Spec with the
-   tools, a naive baseline does not pass it trivially, two independent
-   graders agree on the reference, and it is novel by embedding distance
-   rather than by normalized string; the passport says which of the Spec's
-   jobs the exam covers and which it does not.
-10. **Model comparison mode.** The same harness, the same basket, two Target
-    models, one Pareto table of score, cost and latency.
-11. **Cases from live traffic.** A local OpenAI-compatible endpoint that
-    serves the built agent, records every interaction with a receipt, and
-    accepts a score against that receipt, so production traffic becomes a
-    draft basket without anyone retyping a conversation. Never evidence.
-12. **Transfer and continued reporting.** A report across versions and
-    across Targets: what a harness change did on one model and whether it
-    held on another.
-
-Not planned: an external scorer. The word in the sync notes that looked like
-one was a transcription error; a grader that runs a customer's own scoring
-command is a day's work on the export line of item 4 if it is ever asked for.
-
-## Thawed
-
-- `improvement-loop.ts` (`ahde improve` / `search`) was frozen on 2026-09-01
-  pending a user. The work sync of 2026-09-02 asked for exactly this loop.
-  It is item 7; until then bug fixes only.
-
-## Retired
-
-- The external CLI workflow (`spec approve` / `propose` / `apply` / `adopt`)
-  and the skill file for external coding agents were built, A/B-tested and
-  retired: an Opus-class builder closes the loop with or without them and a
-  Haiku-class builder fails with or without them. They are not coming back.
-
-## Non-goals
-
-- Training, fine-tuning or any change to weights. AHDE is harness
-  engineering.
-- Autonomous apply, promotion or deployment. The three questions stay
-  human-owned; the autoloop of item 6 asks once, at the end, and `ahde
-  serve` is a transport for the same gate, never an exemption from it.
-- A user interface inside AHDE beyond Builder Pi. A platform renders the
-  confirmations in its own UI over `serve`.
-- Windows.
+4. **A bounded operating matrix.** Keep macOS, Linux/bwrap and actual Docker
+   acceptance green. Test timeout, cancellation, unavailable providers and recovery,
+   then document the supported combinations with evidence from those runs.
+5. **An exam worth trusting.** Show coverage of the approved Spec and gaps in the
+   cases; make human judge calibration easy. Add checks for trivial, duplicated
+   or unsolvable generated cases before claiming broader reliability.
+6. **Traffic into regression cases.** Extend the existing import path with a local
+   endpoint or adapter that records a conversation receipt and lets the operator
+   attach feedback to that exact interaction. Collection remains separate from
+   evaluation evidence and requires deliberate publication into the test basket.
+7. **Choose model and harness together.** Compare the same harness on two Target
+   models using the same cases, and explain the quality, cost and latency tradeoff.
+   Track whether a useful change transfers to another model or Target.
 
 ## Standing on Pi
 
-AHDE vendors a pinned Pi (`vendor/tarballs`, 0.84.x) and drives it through
-its extension API only: no patched runtime, no private hooks. Builder Pi
-runs with `--no-builtin-tools --no-extensions --no-skills --no-context-files`
-and one system prompt; Target Pi runs in a dedicated child over a
-hash-checked workspace snapshot with credentials arriving over IPC after
-startup. A Pi upgrade is a tarball swap plus `npm run verify:package`.
-Item 2 opens the Target seam to a command backend; Builder Pi stays Pi, and
-a Pi Target stays the reference implementation of that seam.
+AHDE consumes the checked-in Pi 0.84.3 tarballs. The pinned upstream checkout is
+registered in `.gitmodules`; a small, explicit host-policy patch supplies the
+Builder command and startup boundaries AHDE needs. The source retrieval, patch and
+build steps are in [the vendor guide](../vendor/patches/README.md).
+
+A Pi upgrade must update the source pin and any patch, rebuild the tarballs, then
+pass the full checks and installed-package acceptance. Normal installation uses
+those tarballs and does not rebuild Pi. The command backend keeps the Target
+interface independent of the Builder's runtime.
+
+## Non-goals
+
+Training or changing weights; autonomous promotion or deployment; a hosted
+multi-user control plane; Windows; a browser Builder/Studio. External `serve`
+clients use the same evidence and host-owned release authority as the terminal
+Builder. The local Evidence explorer remains read-only.

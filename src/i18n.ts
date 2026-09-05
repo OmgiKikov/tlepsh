@@ -1,3 +1,4 @@
+import { evidenceEnglish, evidenceRussian } from "./evidence/copy.js";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -292,6 +293,7 @@ export function plural(count: number, key: NounKey): string {
 }
 
 const en = {
+	...evidenceEnglish,
 	"stage.target-setup": "Target setup",
 	"stage.spec-design": "Spec design",
 	"stage.spec-review": "Spec review",
@@ -765,14 +767,20 @@ const en = {
 	"note.trace": "Builder received: the trace of {run}",
 	"note.job": "Builder received: the background {label} ({detail})",
 
+	"host.stopping": "Stopping the active operation. Completed changes and artifacts remain saved.",
+	"host.labelled": "Blindly reviewed {count} answers. Individual labels stay private.",
+	"host.label-not-saved": "No new human labels were saved.",
+	"host.exam-finished": "The private exam dialog finished. Read Workbench shipping readiness for the current result.",
+	"host.exam-import-failed": "The private exam import did not complete; details were shown only to the operator.",
 	"job.started": "Started in the background",
 	"job.finished": "Background task finished",
 	"job.failed": "Background task failed",
 	"job.stopped": "Background task stopped",
 	"job.busy": "Wait — {label} is running ({progress})",
 	"job.none": "Nothing is running in the background",
-	"job.stop-hint": "/stop cancels it; the measurement is discarded",
+	"job.stop-hint": "Say stop to cancel; completed changes and artifacts remain saved",
 	"job.nothing-to-stop": "Nothing is running, so there is nothing to stop",
+	"job.label.operation": "the requested operation",
 	"job.label.run": "the test run",
 	"job.label.verify": "candidate verification",
 	"job.label.calibrate": "the noise measurement",
@@ -2024,6 +2032,7 @@ one would cost more than usual, and then you get a single question.`,
 export type MessageKey = keyof typeof en;
 
 const ru: Record<MessageKey, string> = {
+	...evidenceRussian,
 	"stage.target-setup": "Настройка агента",
 	"stage.spec-design": "Описание агента",
 	"stage.spec-review": "Проверка описания",
@@ -2476,14 +2485,20 @@ const ru: Record<MessageKey, string> = {
 	"note.trace": "Билдер получил: разбор прогона {run}",
 	"note.job": "Билдер получил: фоновую задачу — {label} ({detail})",
 
+	"host.stopping": "Останавливаю текущую работу. Завершённые изменения и артефакты сохраняются.",
+	"host.labelled": "Оценено вслепую ответов: {count}. Отдельные оценки остаются приватными.",
+	"host.label-not-saved": "Новые человеческие оценки не сохранены.",
+	"host.exam-finished": "Приватный диалог экзамена завершён. Прочитай готовность выкатки для текущего результата.",
+	"host.exam-import-failed": "Приватный импорт экзамена не завершён; подробности показаны только оператору.",
 	"job.started": "Запущено в фоне",
 	"job.finished": "Фоновая задача завершена",
 	"job.failed": "Фоновая задача не удалась",
 	"job.stopped": "Фоновая задача остановлена",
 	"job.busy": "Дождись — {label} идёт ({progress})",
 	"job.none": "В фоне ничего не идёт",
-	"job.stop-hint": "/stop остановит; измерение будет выброшено",
+	"job.stop-hint": "Скажи «остановись» — завершённые изменения и артефакты сохранятся",
 	"job.nothing-to-stop": "Ничего не идёт — останавливать нечего",
+	"job.label.operation": "запрошенная работа",
 	"job.label.run": "прогон тестов",
 	"job.label.verify": "проверка кандидата",
 	"job.label.calibrate": "измерение шума",

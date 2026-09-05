@@ -7,11 +7,12 @@ import {
 	rmSync,
 	statSync,
 	symlinkSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { VERSION as PI_VERSION } from "@earendil-works/pi-coding-agent";
+import { SessionManager, VERSION as PI_VERSION } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	AHDE_BUILDER_BUILTIN_COMMANDS,
@@ -20,6 +21,7 @@ import {
 	launchBuilderPi,
 	resolveBuilderAssets,
 	resolveBuilderHome,
+	resolveBuilderSessionMode,
 	validateBuilderPiArgs,
 } from "../src/builder/runtime.js";
 import { baseFixtureFiles, makeTargetFixture } from "./fixtures.js";
@@ -112,6 +114,115 @@ describe("Builder Pi runtime", () => {
 			sessionDir: "/private/sessions",
 			piArgs: ["--resume"],
 		})).toThrow(/controlled by AHDE/);
+	});
+
+	it("automatically restores this project's latest private conversation without selecting a newer foreign one", async () => {
+		const projectDir = realpathSync(root("ahde-builder-auto-resume-"));
+		const sessionDir = join(projectDir, ".ahde", "builder-pi", "sessions");
+		mkdirSync(sessionDir, { recursive: true });
+		const writeConversation = (name: string, cwd: string, intent: string, modified: number): string => {
+			const path = join(sessionDir, name);
+			const timestamp = "2026-09-05T00:00:00.000Z";
+			writeFileSync(path, [
+				{ type: "session", version: 3, id: "00000000-0000-4000-8000-000000000001", timestamp, cwd },
+				{ type: "message", id: "abcdef01", parentId: null, timestamp,
+					message: { role: "user", content: intent, timestamp: Date.parse(timestamp) } },
+			].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+			utimesSync(path, modified, modified);
+			return path;
+		};
+		writeConversation("older.jsonl", projectDir, "older intent", 1);
+		const latest = writeConversation("latest.jsonl", projectDir, "Продолжи проверку возврата, без выпуска", 2);
+		writeConversation("foreign.jsonl", join(projectDir, "other-project"), "foreign intent", 3);
+		const before = readFileSync(latest, "utf8");
+		const main = vi.fn(async (args: string[]) => {
+			expect(args).not.toContain("--continue");
+			const selected = args[args.indexOf("--session") + 1];
+			expect(selected).toBe(latest);
+			// A second launch touching another conversation after preflight cannot
+			// make Pi rediscover and open an unvalidated file.
+			const changed = writeConversation("changed-after-preflight.jsonl", projectDir, "other intent", 4);
+			expect(SessionManager.continueRecent(projectDir, sessionDir).getSessionFile()).toBe(changed);
+			const session = SessionManager.open(selected!, sessionDir);
+			expect(session.getSessionFile()).toBe(latest);
+			expect(session.getHeader()?.cwd).toBe(projectDir);
+			expect(JSON.stringify(session.getBranch())).toContain("Продолжи проверку возврата, без выпуска");
+		});
+		await launchBuilderPi({ projectDir, builderHome: join(projectDir, "home"), main });
+		expect(main).toHaveBeenCalledOnce();
+		expect(readFileSync(latest, "utf8")).toBe(before);
+		expect(await resolveBuilderSessionMode(projectDir, sessionDir, "new")).toBe("new");
+		expect(await resolveBuilderSessionMode(projectDir, sessionDir, "resume")).toBe("resume");
+		expect(await resolveBuilderSessionMode(projectDir, sessionDir, "continue")).toBe("continue");
+	});
+
+	it.each([undefined, "continue"] as const)("validates native mtime selection even when message activity selects another history: %s", async (sessionMode) => {
+		const projectDir = realpathSync(root("ahde-builder-mtime-resume-"));
+		const sessionDir = join(projectDir, ".ahde", "builder-pi", "sessions");
+		mkdirSync(sessionDir, { recursive: true });
+		const writeConversation = (name: string, timestamp: string, modified: number, tail = ""): string => {
+			const path = join(sessionDir, name);
+			writeFileSync(path, [
+				{ type: "session", version: 3, id: name, timestamp, cwd: projectDir },
+				{ type: "message", id: "abcdef01", parentId: null, timestamp,
+					message: { role: "user", content: "Keep my direction", timestamp: Date.parse(timestamp) } },
+			].map((entry) => JSON.stringify(entry)).join("\n") + "\n" + tail);
+			utimesSync(path, modified, modified);
+			return path;
+		};
+		const logicalLatest = writeConversation("recent-messages.jsonl", "2026-09-05T00:00:00.000Z", 1);
+		const touched = writeConversation("touched-old-history.jsonl", "2026-09-04T00:00:00.000Z", 2, '{"type":"message"');
+		const before = readFileSync(touched, "utf8");
+		expect((await SessionManager.listAll(sessionDir))[0]?.path).toBe(logicalLatest);
+		expect(SessionManager.continueRecent(projectDir, sessionDir).getSessionFile()).toBe(touched);
+		const main = vi.fn(async () => undefined);
+		await expect(launchBuilderPi({ projectDir, builderHome: join(projectDir, "home"), sessionMode, main }))
+			.rejects.toThrow(/touched-old-history\.jsonl.*left unchanged/);
+		expect(main).not.toHaveBeenCalled();
+		expect(readFileSync(touched, "utf8")).toBe(before);
+	});
+
+	it("starts the first conversation when the private directory is empty or only belongs to another project", async () => {
+		const projectDir = realpathSync(root("ahde-builder-first-session-"));
+		const sessionDir = join(projectDir, "sessions");
+		mkdirSync(sessionDir);
+		expect(await resolveBuilderSessionMode(projectDir, sessionDir)).toBe("new");
+		writeFileSync(join(sessionDir, "foreign.jsonl"), JSON.stringify({
+			type: "session", version: 3, id: "foreign", timestamp: "2026-09-05T00:00:00.000Z", cwd: join(projectDir, "foreign"),
+		}) + "\n");
+		expect(await resolveBuilderSessionMode(projectDir, sessionDir)).toBe("new");
+	});
+
+	it.each(["not a session\n", "partial-entry"])("refuses unreadable history without silently discarding it: %s", async (corruption) => {
+		const projectDir = realpathSync(root("ahde-builder-corrupt-session-"));
+		const sessionDir = join(projectDir, ".ahde", "builder-pi", "sessions");
+		mkdirSync(sessionDir, { recursive: true });
+		const sessionPath = join(sessionDir, "broken.jsonl");
+		const contents = corruption === "partial-entry"
+			? JSON.stringify({ type: "session", version: 3, id: "broken", timestamp: "2026-09-05T00:00:00.000Z", cwd: projectDir }) + '\n{"type":"message"'
+			: corruption;
+		writeFileSync(sessionPath, contents);
+		const main = vi.fn(async () => undefined);
+		await expect(launchBuilderPi({ projectDir, builderHome: join(projectDir, "home"), main }))
+			.rejects.toThrow(/conversation is unreadable.*left unchanged.*ahde resume/);
+		expect(main).not.toHaveBeenCalled();
+		expect(readFileSync(sessionPath, "utf8")).toBe(contents);
+		// A deliberate fresh conversation is still available; it does not repair,
+		// delete or overwrite the operator's previous transcript.
+		await launchBuilderPi({ projectDir, builderHome: join(projectDir, "home"), sessionMode: "new", main });
+		expect(main).toHaveBeenCalledOnce();
+		expect(readFileSync(sessionPath, "utf8")).toBe(contents);
+	});
+
+	it("refuses a private conversation symlink before native discovery follows it", async () => {
+		const projectDir = root("ahde-builder-session-link-");
+		const sessionDir = join(projectDir, "sessions");
+		mkdirSync(sessionDir);
+		const outside = join(projectDir, "outside.jsonl");
+		writeFileSync(outside, "private unrelated content");
+		symlinkSync(outside, join(sessionDir, "linked.jsonl"));
+		await expect(resolveBuilderSessionMode(projectDir, sessionDir)).rejects.toThrow(/regular non-symlink/);
+		expect(readFileSync(outside, "utf8")).toBe("private unrelated content");
 	});
 
 	it("launches Pi main with a user-level config home, per-project sessions, and one inline trusted extension", async () => {

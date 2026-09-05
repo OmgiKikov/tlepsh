@@ -375,29 +375,40 @@ describe("bounded Pi improvement author", () => {
 	it("the production extension freezes the selected Pi model before its host dialog", async () => {
 		const tools: ToolDefinition[] = [];
 		const handlers = new Map<string, (...args: never[]) => unknown>();
+		let finish!: () => void;
+		const finished = new Promise<void>((resolve) => { finish = resolve; });
+		const sendMessage = vi.fn(() => finish());
 		await createAhdeBuilderExtension(fixture)({
 			registerTool: (tool: ToolDefinition) => tools.push(tool),
 			registerCommand: () => undefined,
 			on: (event: string, handler: (...args: never[]) => unknown) => handlers.set(event, handler),
+			sendMessage,
 		} as never);
 		const host = createHostContext();
+		host.ctx.isIdle = () => true;
 		const complete = vi.fn(async () => reply({ type: "text", text: "No safe hypothesis" }));
 		host.ctx.model = model;
 		host.ctx.modelRegistry = { complete } as never;
 		host.ctx.ui.confirm = async () => {
+			expect(complete).not.toHaveBeenCalled();
 			host.ctx.model = { ...model, id: "a-later-model" };
 			await handlers.get("model_select")?.({ type: "model_select" } as never, host.ctx as never);
 			return true;
 		};
 		await handlers.get("tool_call")?.({ toolName: "ahde_workbench_decide" } as never, host.ctx as never);
 		const decision = tools.find((tool) => tool.name === "ahde_workbench_decide")!;
-		await decision.execute(
+		const started = await decision.execute(
 			"improve",
 			{ kind: "improve", until: 1, maxCycles: 1, repetitions: 3, reason: "Try a hypothesis" } as never,
 			undefined,
 			undefined,
 			host.ctx,
 		);
+		expect(started.details).toMatchObject({ kind: "active-job", status: "running" });
+		// Approval releases the model turn; completion arrives through the host's
+		// background channel after the frozen author has actually run.
+		await finished;
+		expect(sendMessage).toHaveBeenCalledOnce();
 		expect(complete).toHaveBeenCalledOnce();
 		expect((complete.mock.calls[0] as unknown[])[0]).toBe(model);
 	});

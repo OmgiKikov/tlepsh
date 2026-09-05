@@ -13,7 +13,6 @@ import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { expect, it } from "vitest";
 import {
 	AHDE_BUILDER_REGISTERED_TOOL_NAMES,
-	AHDE_BUILDER_TOOL_NAMES,
 	createAhdeBuilderExtension,
 } from "../src/builder/extension.js";
 import { resolveBuilderAssets } from "../src/builder/runtime.js";
@@ -155,7 +154,7 @@ it("uses the real typed Builder Pi to inspect exact Target context and stop at p
 					// inspect the fresh Target overview”, in the words it kept.
 					system.includes("read every resource a change replaces first") &&
 					system.includes("resourcePath") &&
-					toolCount === 8,
+					toolCount === 9,
 				steps: [],
 				resolve: (context) => {
 					const step = context.toolResults.length;
@@ -354,7 +353,7 @@ it("uses the real typed Builder Pi to inspect exact Target context and stop at p
 		const tracePath = sessionManager.getSessionFile();
 		if (!tracePath) throw new Error("Builder Pi did not persist its context-authoring trace");
 		const trace = readFileSync(tracePath, "utf8");
-		for (const toolName of AHDE_BUILDER_TOOL_NAMES.slice(0, 2)) expect(trace).toContain(toolName);
+		for (const toolName of ["ahde_workbench_view", "ahde_workbench_submit"]) expect(trace).toContain(toolName);
 		expect(trace).not.toContain("ahde_target_read");
 		expect(trace).not.toContain("ahde_proposal_apply");
 	} finally {

@@ -13,7 +13,6 @@ import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { expect, it } from "vitest";
 import {
 	AHDE_BUILDER_REGISTERED_TOOL_NAMES,
-	AHDE_BUILDER_TOOL_NAMES,
 	createAhdeBuilderExtension,
 } from "../src/builder/extension.js";
 import { resolveBuilderAssets } from "../src/builder/runtime.js";
@@ -52,7 +51,7 @@ it("turns free operator input into gated Workbench decisions through a real Buil
 	try {
 		builderMock = await startMockModel([
 			{
-				match: ({ firstUser, toolCount }) => firstUser.includes("собери агента") && toolCount === 8,
+				match: ({ firstUser, toolCount }) => firstUser.includes("собери агента") && toolCount === 9,
 				steps: [],
 				resolve: (context) => {
 					const step = context.toolResults.length;
@@ -233,7 +232,7 @@ it("turns free operator input into gated Workbench decisions through a real Buil
 		const tracePath = sessionManager.getSessionFile();
 		if (!tracePath) throw new Error("Builder Pi did not persist its session trace");
 		const trace = readFileSync(tracePath, "utf8");
-		for (const toolName of AHDE_BUILDER_TOOL_NAMES) expect(trace).toContain(toolName);
+		for (const toolName of ["ahde_workbench_view", "ahde_workbench_submit", "ahde_workbench_decide"]) expect(trace).toContain(toolName);
 		for (const deleted of [
 			"ahde_project_status",
 			"ahde_spec_save_draft",

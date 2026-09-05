@@ -75,7 +75,7 @@ it("closes the whole improvement cycle through ahde_workbench_decide in a real P
 
 		builderMock = await startMockModel([
 			{
-				match: ({ firstUser, toolCount }) => firstUser.includes("доведи цикл до конца") && toolCount === 8,
+				match: ({ firstUser, toolCount }) => firstUser.includes("доведи цикл до конца") && toolCount === AHDE_BUILDER_REGISTERED_TOOL_NAMES.length,
 				steps: [],
 				resolve: (context) => {
 					const step = context.toolResults.length;

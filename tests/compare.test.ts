@@ -379,6 +379,37 @@ describe("compare table", () => {
 		expect(markdown).toContain("$0.1600");
 	});
 
+	it("does not invent a cost or token ratio from partially reported runs", () => {
+		makeEvalRun(runsRoot, "erun_unknown_a", axes(), [], { repetitions: 2 });
+		makeEvalRun(runsRoot, "erun_unknown_b", axes(), [], {
+			label: "candidate", gitSha: "b".repeat(40), repetitions: 2, baselineEvalRunId: "erun_unknown_a",
+		});
+		const baseline = loadVerifiedEvalRun(runsRoot, "erun_unknown_a");
+		const candidate = loadVerifiedEvalRun(runsRoot, "erun_unknown_b");
+		baseline.runs = baseline.runs.map((run, index) => {
+			const { costUsd: _cost, tokens: _tokens, ...metrics } = run.metrics;
+			return {
+				...run,
+				metrics: {
+					...metrics,
+					latencyMs: 100,
+					judge: { calls: 1, tokens: 100, costUsd: 0.1 },
+					...(index === 0 ? { costUsd: 0.2, tokens: { input: 100, output: 100, total: 200, cacheRead: 0, cacheWrite: 0 } } : {}),
+				},
+			};
+		});
+		candidate.runs = candidate.runs.map((run) => ({
+			...run,
+			metrics: { ...run.metrics, costUsd: 1, latencyMs: 100 },
+		}));
+		const result = compareVerifiedEvalRuns(baseline, candidate, { mode: "candidate" });
+		expect(result.resources.baseline).toMatchObject({ costUsd: null, meanTokens: null });
+		expect(result.resources.candidate.costUsd).toBe(2);
+		expect(result.resources).toMatchObject({ costRatio: null, tokenRatio: null, latencyRatio: 1 });
+		expect(renderCompareMarkdown(result)).toContain("baseline unknown");
+		expect(renderCompareMarkdown(result)).not.toContain("cost ×");
+	});
+
 	it("rejects replayed run IDs and post-index outcome swaps", () => {
 		makeEvalRun(runsRoot, "erun_integrity_a", axes(), [], { repetitions: 2 });
 		makeEvalRun(runsRoot, "erun_integrity_b", axes(), [], {

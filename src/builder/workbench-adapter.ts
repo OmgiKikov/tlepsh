@@ -8,31 +8,26 @@ import type {
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
-import { decisionHeadline, renderDecision } from "./render/decision.js";
-import { oneLine, wrap } from "./render/format.js";
-import { themePaint } from "./render/paint.js";
-import { nextStep, stageLabel } from "./render/stage.js";
-import { renderDatasetCases, renderReview, renderView, viewTitle } from "./render/view.js";
-import { hasMessage, plural, t } from "../i18n.js";
-import { renderVersionPassport } from "./render/passport.js";
-import { renderExecutiveVersionCard } from "./render/version-card.js";
-import { renderAgentLogChart } from "./render/agent-log.js";
-import { handoffLines } from "./render/handoff.js";
-import { compileAgentLog } from "../application/agent-log.js";
-import { renderWorkshopCloseReview } from "./render/workshop-close.js";
 import type { ToolFixtureRunResult } from "../application/tool-workshop.js";
-import { markerPaint, type TranscriptPresenter } from "./transcript.js";
+import { hasMessage, plural, t } from "../i18n.js";
+import { workbenchNext } from "../workbench/next-actions.js";
+import { workbenchGateClass } from "../workbench/transition-policy.js";
 import type {
-	WorkbenchConfirmation,
 	WorkbenchDatasetRecipeArtifact,
 	WorkbenchDecisionResult,
 	WorkbenchHumanGate,
 	WorkbenchTurn,
 	WorkbenchView,
-	WorkbenchViewInclude,
+	WorkbenchViewInclude
 } from "../workbench/types.js";
-import { workbenchGateClass } from "../workbench/transition-policy.js";
-import { workbenchNext } from "../workbench/next-actions.js";
+import {
+	createAhdeWorkbench,
+	type AhdeWorkbench,
+	type AhdeWorkbenchDependencies,
+} from "../workbench/workbench.js";
+import { builderDecisionPresentation } from "./decision-presentation.js";
+import { executeBuilderDecision } from "./execution.js";
+import { createBuilderJobs, type BuilderJobs } from "./jobs.js";
 import {
 	evaluatorModelResolver,
 	hostDefaultJudge,
@@ -42,11 +37,24 @@ import {
 	targetModelResolver,
 	type HostModelCatalog,
 } from "./onboarding.js";
+import type { BuilderProjectContext } from "./project-context.js";
+import { decisionHeadline, renderDecision } from "./render/decision.js";
+import { oneLine, wrap } from "./render/format.js";
+import { themePaint } from "./render/paint.js";
+import { nextStep, stageLabel } from "./render/stage.js";
+import { renderDatasetCases, renderView, viewTitle } from "./render/view.js";
+import { renderWorkshopCloseReview } from "./render/workshop-close.js";
 import {
-	createAhdeWorkbench,
-	type AhdeWorkbench,
-	type AhdeWorkbenchDependencies,
-} from "../workbench/workbench.js";
+	type BeginBuilderLiveTrace
+} from "./run-observation.js";
+import type { BuilderSpendReader } from "./spend.js";
+import { markerPaint, type TranscriptPresenter } from "./transcript.js";
+import { createWorkbenchHumanGate } from "./workbench-gate.js";
+import {
+	WorkbenchDecisionToolSchema,
+	WorkbenchSubmitToolSchema,
+	WorkbenchViewToolSchema,
+} from "./workbench-transport.js";
 
 function isWorkbenchView(value: unknown): value is WorkbenchView {
 	return typeof value === "object" && value !== null &&
@@ -234,19 +242,6 @@ const WORKBENCH_TOOL_RENDERERS = {
 		},
 	},
 } as const;
-import type { BuilderProjectContext } from "./project-context.js";
-import { createWorkbenchHumanGate } from "./workbench-gate.js";
-import {
-	WorkbenchDecisionToolSchema,
-	WorkbenchSubmitToolSchema,
-	WorkbenchViewToolSchema,
-} from "./workbench-transport.js";
-import {
-	beginBuilderRunObservation,
-	type BeginBuilderLiveTrace,
-	type BuilderLiveTraceOutcome,
-} from "./run-observation.js";
-import { compileBuilderPassport } from "./passport-presentation.js";
 
 /** One tool result on screen: what it produced, or why it refused. */
 function renderToolResult(
@@ -324,7 +319,7 @@ function projectWorkbenchView(view: Record<string, unknown>, options: ModelProje
 	// `actions` is the host's loose stage hint list; the model gets `next`
 	// instead, derived from the same tables the Workbench refuses against. Two
 	// lists of what to do next is one list too many.
-	const { selections, warnings, actions: _hostHints, ...rest } = view as
+	const { selections, warnings, actions: _hostHints, guidance: _hostGuidance, ...rest } = view as
 		{ selections: unknown[]; warnings: string[]; actions: unknown } & Record<string, unknown>;
 	const kept = warnings.slice(0, MODEL_WARNING_LIMIT);
 	const wanted = options.include?.includes("selections") ?? false;
@@ -419,6 +414,9 @@ export function createPolicyAwareGate(
 }
 
 export interface BuilderWorkbenchToolOptions {
+	jobs?: BuilderJobs;
+	background?: boolean;
+	spend?: BuilderSpendReader;
 	beginLiveTrace?: BeginBuilderLiveTrace;
 	/** Shows the human rendering of model-driven decisions in the transcript. */
 	presenter?: TranscriptPresenter;
@@ -433,6 +431,12 @@ export function createBuilderWorkbenchTools(
 	actorId: () => string,
 	options: BuilderWorkbenchToolOptions = {},
 ): readonly RegisteredWorkbenchTool[] {
+	// A standalone tool caller has no completion channel; it keeps the result in
+	// its own request. The interactive extension supplies the shared session jobs.
+	const jobs = options.jobs ?? createBuilderJobs({ host: {
+		setStatus: () => undefined, show: () => undefined, note: () => undefined, waitForIdle: async () => undefined,
+	} });
+	const assertAvailable = (): void => { const busy = jobs.busy(); if (busy) throw new Error(busy); };
 	const changed = async (): Promise<void> => {
 		try {
 			await options.onWorkbenchChanged?.();
@@ -509,6 +513,7 @@ export function createBuilderWorkbenchTools(
 			prepareArguments: (args) => WorkbenchSubmitToolSchema.prepare(args),
 			async execute(_id, params, signal, _update, ctx) {
 				abortIfRequested(signal);
+				assertAvailable();
 				const turn = await workbench.submit(params, { signal });
 				await changed();
 				// A closed workshop has become a diff the operator has to decide on.
@@ -564,6 +569,7 @@ export function createBuilderWorkbenchTools(
 			renderResult: (result, renderOptions, theme, context) => renderToolResult(WORKBENCH_TOOL_RENDERERS.decide.renderResult, result, renderOptions, theme, context),
 			async execute(_id, params, signal, _update, ctx) {
 				abortIfRequested(signal);
+				assertAvailable();
 				if (params.kind === "talk-to-agent") {
 					requireHostUI(ctx, "Talk to agent");
 					if (!options.onTalkToTarget) throw new Error("this host cannot open the interactive agent conversation");
@@ -614,117 +620,38 @@ export function createBuilderWorkbenchTools(
 						? await selectEvaluatorCredentialEnvironment(ctx, "simulatedUser", params.simulatedUser)
 						: undefined,
 				};
-				const showsRunProgress = params.kind === "run-current" ||
-					params.kind === "run-eval" ||
-					params.kind === "calibrate" ||
-					params.kind === "improve" ||
-					(params.kind === "apply-proposal" && params.verify !== undefined) ||
-					params.kind === "verify-candidate";
-				const observation = showsRunProgress
-					? await beginBuilderRunObservation(ctx.ui, options.beginLiveTrace)
-					: null;
-				let outcome: BuilderLiveTraceOutcome = "error";
-				try {
-					const resolveTargetModel = targetModelSelection && targetCredentialEnvironment
-						? targetModelResolver(ctx, targetCredentialEnvironment)
-						: undefined;
-					const resolveEvaluatorModel = params.kind === "configure-evaluators"
-						? evaluatorModelResolver(ctx, evaluatorCredentialEnvironment)
-						: undefined;
-					// The composite that starts testing may need a judge the manifest
-					// does not have yet. Only the host can choose one — it holds the
-					// catalog and the credential names — so it answers on demand,
-					// inside the one dialog, instead of sending the operator away to
-					// configure evaluators first.
-					const defaultJudge = params.kind === "start-testing" || params.kind === "run-current"
-						? (target: { provider: string; id: string }) => hostDefaultJudge(ctx, target)
-						: undefined;
-					// Every confirmation passes through the gate, routine ones included,
-					// so this is where the live counter learns what the whole job plans
-					// to execute rather than what one eval run does.
-					const gate = createPolicyAwareGate(ctx, actorId, guard, undefined, sealedGuard);
-					const reporting = observation
-						? {
-							...gate,
-							async confirm(confirmation: WorkbenchConfirmation, confirmSignal?: AbortSignal) {
-								const approval = await gate.confirm(confirmation, confirmSignal);
-								if (approval.approved) observation.plan(confirmation.estimate?.executions ?? null);
-								return approval;
-							},
+				const resolveTargetModel = targetModelSelection && targetCredentialEnvironment
+					? targetModelResolver(ctx, targetCredentialEnvironment) : undefined;
+				const resolveEvaluatorModel = params.kind === "configure-evaluators"
+					? evaluatorModelResolver(ctx, evaluatorCredentialEnvironment) : undefined;
+				const defaultJudge = params.kind === "start-testing" || params.kind === "run-current"
+					? (target: { provider: string; id: string }) => hostDefaultJudge(ctx, target) : undefined;
+				const outcome = await executeBuilderDecision({
+					jobs, ctx, input: params, source: params.kind, signal, hasResultPanel: Boolean(options.presenter),
+					gate: createPolicyAwareGate(ctx, actorId, guard, undefined, sealedGuard),
+					beginLiveTrace: options.beginLiveTrace,
+					background: options.background !== false && options.jobs !== undefined && ctx.hasUI && ctx.mode === "tui",
+					run: (gate, execution) => workbench.decide(params, gate, {
+						...execution,
+						...(resolveTargetModel ? { resolveTargetModel } : {}),
+						...(resolveEvaluatorModel ? { resolveEvaluatorModel } : {}),
+						...(defaultJudge ? { defaultJudge } : {}),
+					}),
+					async present(result, _background, liveTraceUrl) {
+						let headline = result.message;
+						if (options.presenter) {
+							const presentation = await builderDecisionPresentation(result, { workbench, source: params.kind, liveTraceUrl, spend: options.spend });
+							headline = presentation.headline;
+							options.presenter.show(ctx, presentation.block);
 						}
-						: gate;
-					const result = await workbench.decide(
-						params,
-						reporting,
-						{
-							signal,
-							...(observation ? { onRunEvent: observation.onRunEvent } : {}),
-							...(resolveTargetModel ? { resolveTargetModel } : {}),
-							...(resolveEvaluatorModel ? { resolveEvaluatorModel } : {}),
-							...(defaultJudge ? { defaultJudge } : {}),
-						},
-					);
-					outcome = "completed";
-					if (options.presenter) {
-						try {
-							const lines = renderDecision(result, markerPaint, { liveTraceUrl: observation?.liveTraceUrl ?? null });
-							// Ship is the moment the agent became a version, so the page that
-							// says what it promised and what it measured is shown without
-							// being asked for, and the growth line puts it beside the ones
-							// before it.
-							if (result.kind === "ship") {
-								try {
-									const { passport, card, reportWritten } = await compileBuilderPassport(workbench, { view: result.view, save: true });
-									lines.push(
-										"",
-										...renderExecutiveVersionCard(card, markerPaint),
-										reportWritten ? t("release.html.saved", { path: reportWritten }) : markerPaint.warning(t("release.html.not-saved")),
-										"",
-										...renderVersionPassport(passport, markerPaint),
-									);
-								} catch (error) {
-									lines.push("", markerPaint.warning(t("result.passport-unavailable", {
-										reason: oneLine(error instanceof Error ? error.message : String(error), 180),
-									})));
-								}
-								try {
-									lines.push("", ...renderAgentLogChart(compileAgentLog({
-										runsRoot: workbench.runsRoot,
-										projectId: workbench.projectId,
-										...(result.view.target.id ? { targetId: result.view.target.id } : {}),
-									}), markerPaint));
-								} catch {
-									// The growth line is a second look at the same evidence.
-								}
-							}
-							lines.push(...handoffLines(result, markerPaint));
-							options.presenter.show(ctx, {
-								title: `${decisionHeadline(result)}`,
-								tone: "success",
-								lines,
-							});
-						} catch {
-							// Human presentation never changes the decision result.
-						}
-					}
-					await changed();
-					return textResult(result);
-				} catch (error) {
-					if (signal?.aborted) outcome = "aborted";
-					throw error;
-				} finally {
-					observation?.finish(outcome);
-					if (observation?.liveTraceUrl) {
-						try {
-							ctx.ui.notify(
-								t("card.live-trace-retained", { url: observation.liveTraceUrl }),
-								"info",
-							);
-						} catch {
-							// Host notification is observational and cannot change the decision.
-						}
-					}
-				}
+						await changed();
+						return headline;
+					},
+				});
+				return textResult(outcome.status === "completed" ? outcome.result : {
+					kind: "active-job", ...outcome,
+					message: "The authorized operation is running. Its completion will arrive in this conversation. Read existing evidence or use the host stop action; do not start another mutation or invent a result.",
+				});
 			},
 		}),
 	];

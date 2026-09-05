@@ -244,7 +244,8 @@ export function installAhdeBuilderProductShell(
 			facts.elapsedMs = Number.isFinite(startedAt)
 				? Math.max(0, now() - startedAt)
 				: Math.max(0, now() - sessionStartedAt);
-			if (cycle) facts.costUsd = cycle.costUsd + cycle.judgeCostUsd;
+			if (cycle) facts.costUsd = cycle.costUsd === null || cycle.judgeCostUsd === null
+				? null : cycle.costUsd + cycle.judgeCostUsd;
 		} catch {
 			// A cycle that cannot be summed simply contributes no segment.
 		}

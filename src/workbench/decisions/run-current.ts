@@ -1,10 +1,8 @@
 // One family of Workbench decisions, moved out of `AhdeWorkbench.decide()`
 // unchanged: the gate, the stale check and the receipts are still the
 // workbench's own; these functions only hold the branch bodies.
-import { candidateStatus } from "../../domain/candidate.js";
-import { loadBuilderApplyReceipt } from "../../application/builder-proposal.js";
-import { isAutomatedDevelopmentCandidate } from "../inventory.js";
-import { resolveOne } from "../resolution.js";
+import { resolveRunCurrent } from "../run-resolution.js";
+import { WorkbenchSelectionRequiredError } from "../errors.js";
 import { assertWorkbenchDecisionStage } from "../transition-policy.js";
 import type { DecisionContext, DecisionHost, DecisionInputOf } from "./shared.js";
 import type { WorkbenchDecisionResult } from "../types.js";
@@ -53,68 +51,17 @@ export async function decideRunCurrent(
 	ctx: DecisionContext,
 ): Promise<WorkbenchDecisionResult> {
 	const { inventory, stage, gate, options } = ctx;
-	const partialCandidate = inventory.candidates.find((candidate) =>
-		candidate.projectId === host.projectId &&
-		["proposed", "built", "validated"].includes(candidateStatus(candidate)) &&
-		!inventory.abandonedCandidates.has(candidate.candidateId),
-	);
-	if (partialCandidate) {
-		throw new Error(
-			`candidate ${partialCandidate.candidateId} stopped at ${candidateStatus(partialCandidate)}; ` +
-			"review and explicitly abandon or recover it before starting another run",
-		);
+	const resolution = resolveRunCurrent(inventory, stage);
+	if (resolution.status === "blocked") {
+		if (resolution.code === "selection-required") throw new WorkbenchSelectionRequiredError(resolution.entity, resolution.choices);
+		if (resolution.code === "stage") assertWorkbenchDecisionStage("run-eval", stage);
+		throw new Error(resolution.message);
 	}
 	const forwarded = { repetitions: input.repetitions, reason: input.reason };
-	if (stage === "ready-to-evaluate" || stage === "improvement-authoring") {
-		return asRunCurrent(await host.decide({ kind: "run-eval", ...forwarded }, gate, options));
+	const route = resolution.route;
+	switch (route.kind) {
+		case "start-testing": return asRunCurrent(await host.decide({ ...route, ...forwarded }, gate, options));
+		case "run-eval": return asRunCurrent(await host.decide({ ...route, ...forwarded }, gate, options));
+		case "verify-candidate": return asRunCurrent(await host.decide({ ...route, ...forwarded }, gate, options));
 	}
-	if (stage === "spec-review" || stage === "corpus-review") {
-		// “Run the tests” with a review still pending is not an error: the
-		// composite does the pending reviews and the run behind one dialog.
-		return asRunCurrent(await host.decide({ kind: "start-testing", ...forwarded }, gate, options));
-	}
-	if (stage === "candidate-verification") {
-		const automated = inventory.candidates.filter((candidate) =>
-			candidate.projectId === host.projectId && isAutomatedDevelopmentCandidate(candidate)
-		);
-		if (automated.length > 0) {
-			const candidate = resolveOne({
-				items: automated,
-				focusId: inventory.validFocus.candidate?.id,
-				id: (item) => item.candidateId,
-				label: "automated hypothesis",
-			});
-			if (candidate.origin.kind !== "applied-builder") {
-				throw new Error("automated hypothesis lost Builder provenance");
-			}
-			return asRunCurrent(await host.decide({
-				kind: "verify-candidate",
-				builderRunId: candidate.origin.builderRunId,
-				...forwarded,
-			}, gate, options));
-		}
-		const appliedWithoutCandidate = inventory.proposals.filter((proposal) =>
-			proposal.status === "applied" &&
-			loadBuilderApplyReceipt(host.runsRoot, proposal.record.runId).via !== "proposal-search" &&
-			!inventory.candidates.some((candidate) =>
-				candidate.origin.kind === "applied-builder" &&
-				candidate.origin.builderRunId === proposal.record.runId &&
-				!inventory.abandonedCandidates.has(candidate.candidateId),
-			),
-		);
-		const proposal = resolveOne({
-			items: appliedWithoutCandidate,
-			focusId: inventory.validFocus.proposal?.id,
-			id: (item) => item.record.runId,
-			label: "applied proposal",
-		});
-		return asRunCurrent(
-			await host.decide({ kind: "verify-candidate", builderRunId: proposal.record.runId, ...forwarded }, gate, options),
-		);
-	}
-	// Nowhere left to resolve to. The refusal is the one the operator would have
-	// got from the run itself, named after the resolution this stage was closest
-	// to having, and it always throws.
-	assertWorkbenchDecisionStage("run-eval", stage);
-	throw new Error(`running is not possible during ${stage}`);
 }

@@ -141,13 +141,14 @@ export function guardCaseFor(
 		[PROMOTION_GUARD_METADATA_TAG]: promotionTag.slice(0, 500),
 		[PROMOTION_GUARD_METADATA_SOURCE_TASK]: task.id.slice(0, 500),
 	};
+	// A guard is the same scenario with promotion provenance. Preserve every
+	// case field, including the world and the simulated conversation, and let
+	// the draft derive its own id from that complete scenario.
+	const { id: _id, ...scenario } = task;
 	return {
-		input: task.input,
-		...(task.expected !== undefined ? { expected: task.expected } : {}),
-		...(task.messages !== undefined ? { messages: task.messages } : {}),
+		...structuredClone(scenario),
 		metadata,
-		graders: task.graders.map((grader) => ({ ...grader })),
-	} as BuilderCorpusDraftTaskInput;
+	};
 }
 
 export interface BuildPromotionGuardsOptions {

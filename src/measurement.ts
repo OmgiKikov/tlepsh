@@ -169,7 +169,7 @@ export function isSubCent(usd: number): boolean {
  * would print as free. One threshold for the whole product.
  */
 export function money(usd: number | null | undefined): string {
-	if (!finite(usd)) return "$0.00";
+	if (!finite(usd)) return NOT_MEASURED;
 	if (isSubCent(usd)) return t("unit.under-cent");
 	return `$${Math.max(0, usd).toFixed(2)}`;
 }

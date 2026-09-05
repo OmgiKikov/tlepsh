@@ -26,18 +26,18 @@ export interface EvalRunSpend {
 	evalRunId: string;
 	/** Target executions this EvalRun recorded. */
 	runs: number;
-	/** Target + simulated-user spend, or null when no member run could be read. */
+	/** Target + recorded simulated-user spend; null if any member cost is unknown or unreadable. */
 	costUsd: number | null;
-	/** What grading cost at the judge endpoint. */
-	judgeCostUsd: number;
+	/** Recorded grading spend, null when member records are incomplete. */
+	judgeCostUsd: number | null;
 	startedAt: string;
 	finishedAt: string;
 }
 
 /** Spend of one improvement cycle: every development measurement since the last promotion. */
 export interface CycleSpend {
-	costUsd: number;
-	judgeCostUsd: number;
+	costUsd: number | null;
+	judgeCostUsd: number | null;
 	evals: number;
 	/** Start of the oldest measurement counted, or null when nothing has run. */
 	firstAt: string | null;
@@ -64,18 +64,23 @@ export interface BuilderSpendReader {
 	branchOf(candidateId: string): string | null;
 }
 
-function sumMembers(runsRoot: string, runIds: readonly string[]): { costUsd: number | null; judgeCostUsd: number } {
-	let costUsd = 0;
-	let judgeCostUsd = 0;
+function sumMembers(runsRoot: string, runIds: readonly string[]): { costUsd: number | null; judgeCostUsd: number | null } {
+	let costUsd: number | null = runIds.length > MAX_MEMBER_RUNS ? null : 0;
+	let judgeCostUsd: number | null = runIds.length > MAX_MEMBER_RUNS ? null : 0;
 	let read = 0;
 	for (const runId of runIds.slice(0, MAX_MEMBER_RUNS)) {
 		try {
 			const run = loadRun(runsRoot, runId);
-			costUsd += (runCost(run) ?? 0) + (run.metrics.simulatedUser?.costUsd ?? 0);
-			judgeCostUsd += run.metrics.judge?.costUsd ?? 0;
+			const targetCost = runCost(run);
+			costUsd = costUsd === null || targetCost === null
+				? null
+				: costUsd + targetCost + (run.metrics.simulatedUser?.costUsd ?? 0);
+			if (judgeCostUsd !== null) judgeCostUsd += run.metrics.judge?.costUsd ?? 0;
 			read += 1;
 		} catch {
-			// One unreadable member narrows the receipt instead of failing it.
+			// A partial sum cannot stand in for the whole measurement.
+			costUsd = null;
+			judgeCostUsd = null;
 		}
 	}
 	return { costUsd: read === 0 ? null : costUsd, judgeCostUsd };
@@ -181,10 +186,13 @@ export function createBuilderSpendReader(options: BuilderSpendOptions): BuilderS
 			}
 			armsCache.set(candidateId, arms);
 		}
-		return arms.flatMap((evalRunId) => {
+		const spends: EvalRunSpend[] = [];
+		for (const evalRunId of arms) {
 			const spend = ofEvalRun(evalRunId);
-			return spend ? [spend] : [];
-		});
+			if (!spend) return [];
+			spends.push(spend);
+		}
+		return spends;
 	};
 
 	return {
@@ -216,18 +224,21 @@ export function createBuilderSpendReader(options: BuilderSpendOptions): BuilderS
 				return null;
 			}
 			const sinceAt = newestPromotionAt(options.runsRoot, candidateIds);
-			let costUsd = 0;
-			let judgeCostUsd = 0;
+			const eligible = indexes.filter((index) => !isSealedEvalRun(index) &&
+				(!targetId || index.target.id === targetId) && (!sinceAt || index.startedAt >= sinceAt));
+			let costUsd: number | null = eligible.length > MAX_SCANNED_EVALS ? null : 0;
+			let judgeCostUsd: number | null = eligible.length > MAX_SCANNED_EVALS ? null : 0;
 			let evals = 0;
 			let firstAt: string | null = null;
-			for (const index of indexes.slice(0, MAX_SCANNED_EVALS)) {
-				if (isSealedEvalRun(index)) continue;
-				if (targetId && index.target.id !== targetId) continue;
-				if (sinceAt && index.startedAt < sinceAt) continue;
+			for (const index of eligible.slice(0, MAX_SCANNED_EVALS)) {
 				const spend = ofEvalRun(index.evalRunId);
-				if (!spend) continue;
-				costUsd += spend.costUsd ?? 0;
-				judgeCostUsd += spend.judgeCostUsd;
+				if (!spend) {
+					costUsd = null;
+					judgeCostUsd = null;
+					continue;
+				}
+				costUsd = costUsd === null || spend.costUsd === null ? null : costUsd + spend.costUsd;
+				judgeCostUsd = judgeCostUsd === null || spend.judgeCostUsd === null ? null : judgeCostUsd + spend.judgeCostUsd;
 				evals += 1;
 				if (firstAt === null || spend.startedAt < firstAt) firstAt = spend.startedAt;
 			}

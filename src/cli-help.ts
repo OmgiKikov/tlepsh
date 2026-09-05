@@ -41,7 +41,8 @@ Build, evaluate, and improve a project-specific Pi agent through one reviewed,
 evidence-backed workflow.
 
 Start:
-  ahde [--target <dir>] [--project <id>]       open Builder Pi (Target defaults to cwd)
+  ahde [--target <dir>] [--project <id>]       continue this project's conversation (new if empty)
+  ahde builder-pi [--target <dir>]            start a new Builder conversation
   ahde continue [--target <dir>]               continue the most recent Builder session
   ahde resume [--target <dir>]                 pick an earlier Builder session
   ahde target [--target <dir>]                 talk to the built Target Pi
@@ -89,7 +90,8 @@ Environment:
 const COMMAND_HELP: Readonly<Record<string, string>> = {
 	"builder-pi": `Usage: ahde builder-pi [--target <dir>] [--project <id>] [--port N]
 
-Open a new Builder Pi session. This is the explicit form of bare \`ahde\`.
+Open a new Builder Pi session. Bare \`ahde\` continues this project's most recent
+conversation instead, or starts the first one when none exists.
 The Builder has exactly three AHDE tools and no generic shell or file access.`,
 	continue: `Usage: ahde continue [--target <dir>] [--project <id>] [--port N]
 
@@ -171,10 +173,20 @@ confirmation is a refusal.
 
 Target bootstrap (scaffold/configure) still belongs to the local TUI: choosing
 a model and a credential needs the trusted host catalog, not an HTTP body.`,
-	init: `Usage: ahde init <dir> [--template <target-dir>]
+	init: `Usage: ahde init <dir> [--template <name|target-dir>]
 
 Create a generic Target harness and its first Git commit. Then run \`ahde\` in
 that directory to configure identity/model and continue the guided workflow.
+
+Built-in templates work from any directory:
+  python-support   Python support agent, tools, knowledge base and world-state cases
+  pi-support       Pi support agent with a declared account tool
+  pi-basic         minimal Pi harness (the default)
+  python           alias for python-support
+
+Example: ahde init my-agent --template python-support
+Custom templates still accept relative or absolute directories:
+  ahde init my-agent --template ./my-template
 
 The scaffold's .gitignore is topped up with .ahde/, runs/ and imports/ before
 that first commit, and the added lines are named: the engine's store lives

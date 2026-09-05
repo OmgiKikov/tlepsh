@@ -166,6 +166,13 @@ export function runCost(record: Pick<RunRecord, "metrics">): number | null {
 	return record.metrics.costUsd ?? null;
 }
 
+/** Total spend is unknown if the Target did not report its own contribution. */
+export function runTotalCost(record: Pick<RunRecord, "metrics">): number | null {
+	const target = runCost(record);
+	if (target === null) return null;
+	return target + (record.metrics.judge?.costUsd ?? 0) + (record.metrics.simulatedUser?.costUsd ?? 0);
+}
+
 /**
  * Cost, latency and token aggregate of one arm. Cost is what the arm actually
  * spent — the Target's tokens, the judge calls that graded them, and the user
@@ -175,13 +182,9 @@ export function runCost(record: Pick<RunRecord, "metrics">): number | null {
  */
 function armResources(records: readonly RunRecord[]) {
 	return resourceTotals(records.map((record) => ({
-		// An arm that reported nothing totals to nothing, which makes its ratio
-		// null rather than a number, which is what keeps the fragment silent.
-		costUsd: (runCost(record) ?? 0) +
-			(record.metrics.judge?.costUsd ?? 0) +
-			(record.metrics.simulatedUser?.costUsd ?? 0),
+		costUsd: runTotalCost(record),
 		latencyMs: record.metrics.latencyMs,
-		tokens: runTokens(record)?.total ?? 0,
+		tokens: runTokens(record)?.total ?? null,
 	})));
 }
 
@@ -360,10 +363,11 @@ export function renderCompareMarkdown(result: CompareResult): string {
 	);
 	const resourceFragment = formatResourceFragment(result.resources, { tokens: true });
 	if (resourceFragment) {
+		const cost = (usd: number | null): string => usd === null ? "unknown" : `$${usd.toFixed(4)}`;
 		lines.push(
 			`- resources: ${resourceFragment} ` +
-				`(baseline $${result.resources.baseline.costUsd.toFixed(4)} · ${result.resources.baseline.meanLatencyMs.toFixed(0)}ms/run, ` +
-				`candidate $${result.resources.candidate.costUsd.toFixed(4)} · ${result.resources.candidate.meanLatencyMs.toFixed(0)}ms/run) — never gating`,
+				`(baseline ${cost(result.resources.baseline.costUsd)} · ${result.resources.baseline.meanLatencyMs.toFixed(0)}ms/run, ` +
+				`candidate ${cost(result.resources.candidate.costUsd)} · ${result.resources.candidate.meanLatencyMs.toFixed(0)}ms/run) — never gating`,
 		);
 	}
 	lines.push(`- ${renderGateLine(result)}`);

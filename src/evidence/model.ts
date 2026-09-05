@@ -1,3 +1,4 @@
+import { t } from "../i18n.js";
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { compileImprovementBrief, publicTaskId, type ImprovementBrief } from "../application/improvement-brief.js";
@@ -10,6 +11,7 @@ import {
 	graderFindings,
 	openRunTrace,
 	runReceipt,
+	runOutcome,
 	runScore,
 	runTranscript,
 	runsTable,
@@ -17,7 +19,8 @@ import {
 	type CandidateFlip,
 	type RunRow,
 } from "../application/run-explanation.js";
-import { compareVerifiedEvalRuns, runCost, runTokens, type CompareResult } from "../compare.js";
+import { compareVerifiedEvalRuns, runCost, runTotalCost, runTokens, type CompareResult } from "../compare.js";
+import { sealedOutcome } from "../domain/comparison-gate.js";
 import { exclusionReasonOf, measurementLine, measurementSurface } from "../application/measurement-line.js";
 import { diagnosisPath, loadDiagnosis } from "../diagnosis.js";
 import type { CandidateRecord, EvaluationEvidence } from "../domain/candidate.js";
@@ -36,6 +39,8 @@ import { resolveContainedArtifactPath, safeArtifactSegment } from "../storage/pa
 import type {
 	ComparePageModel,
 	ComparePageRow,
+	CompareCasePreview,
+	CompareRunPreview,
 	EvalPageModel,
 	EvalPageMode,
 	RunDetailPageModel,
@@ -88,12 +93,14 @@ function requireDiagnosis(runsRoot: string, evalRunId: string): ImprovementBrief
 }
 
 /** What one arm actually spent, judge and simulated user included. */
-function armCostUsd(runs: readonly RunRecord[]): number {
-	return runs.reduce(
-		(total, run) =>
-			total + (runCost(run) ?? 0) + (run.metrics.judge?.costUsd ?? 0) + (run.metrics.simulatedUser?.costUsd ?? 0),
-		0,
-	);
+function armCostUsd(runs: readonly RunRecord[]): number | null {
+	let total = 0;
+	for (const run of runs) {
+		const cost = runTotalCost(run);
+		if (cost === null) return null;
+		total += cost;
+	}
+	return total;
 }
 
 function modelLine(record: EvalRunRecord): string | null {
@@ -165,25 +172,19 @@ function flipForTask(
 	try {
 		const baseline = loadPublicEvalRun(runsRoot, baselineId);
 		const candidate = loadPublicEvalRun(runsRoot, candidateId);
-		const count = (verified: VerifiedEvalRun) => {
-			const runs = verified.runs.filter((run) => run.taskId === rawTaskId);
-			return {
-				pass: runs.filter((run) => run.evalResults?.outcome === "pass").length,
-				total: runs.length,
-			};
-		};
-		const before = count(baseline);
-		const after = count(candidate);
-		if (before.total === 0 && after.total === 0) return null;
+		const comparison = compareVerifiedEvalRuns(baseline, candidate, { mode: "exploratory" });
+		if (comparison.status === "invalid" || comparison.excluded.some(task => task.taskId === rawTaskId)) return null;
+		const row = comparison.rows.find(task => task.taskId === rawTaskId);
+		if (!row) return null;
 		return candidateFlip({
 			candidateId: coverage.record.candidateId,
 			mode: coverage.evaluation.mode,
 			baselineEvalRunId: baselineId,
 			candidateEvalRunId: candidateId,
-			baselinePass: before.pass,
-			baselineTotal: before.total,
-			candidatePass: after.pass,
-			candidateTotal: after.total,
+			baselinePass: row.aPass,
+			baselineTotal: row.aTotal,
+			candidatePass: row.bPass,
+			candidateTotal: row.bTotal,
 		});
 	} catch {
 		return null;
@@ -254,11 +255,11 @@ export function collectEvalPage(
 		return parts.length > 0 ? `${base}?${parts.join("&")}` : base;
 	};
 	const filterLinks = [
-		{ label: "all", href: withOutcome(null), active: outcomeFilter === null },
-		{ label: "fail", href: withOutcome("fail"), active: outcomeFilter === "fail" },
-		{ label: "error", href: withOutcome("error"), active: outcomeFilter === "error" },
-		{ label: "pass", href: withOutcome("pass"), active: outcomeFilter === "pass" },
-		...(modeFilter ? [{ label: "clear mode filter", href: base, active: false }] : []),
+		{ label: t("evidence.all"), href: withOutcome(null), active: outcomeFilter === null },
+		{ label: t("evidence.fail"), href: withOutcome("fail"), active: outcomeFilter === "fail" },
+		{ label: t("evidence.error"), href: withOutcome("error"), active: outcomeFilter === "error" },
+		{ label: t("evidence.pass"), href: withOutcome("pass"), active: outcomeFilter === "pass" },
+		...(modeFilter ? [{ label: t("evidence.clearMode"), href: base, active: false }] : []),
 	];
 
 	const notices: string[] = [];
@@ -359,12 +360,11 @@ export function collectRunDetailPage(runsRoot: string, runId: string): RunDetail
 	const coverage = covering.find((entry) => entry.evaluation.mode === "candidate") ?? covering[0] ?? null;
 	const flip = coverage ? flipForTask(runsRoot, coverage, run.taskId) : null;
 
-	const traceNotice = transcript === null
-		? "No trace artifact is recorded for this run."
-		: `${transcript.entries.length} transcript entr(ies) rendered` +
-			`${transcript.truncated ? "; bounded projection clipped longer content" : " within the projection bounds"}` +
-			`${transcript.omittedCount > 0 ? `; ${transcript.omittedCount} later trace record(s) omitted` : ""}.` +
-			" Credential-shaped text is redacted; the protected artifact on disk is unchanged.";
+	const traceNotice = transcript === null ? t("evidence.noTrace") : t("evidence.traceNotice", {
+		count: transcript.entries.length,
+		clipped: transcript.truncated ? t("evidence.traceClipped") : "",
+		omitted: transcript.omittedCount > 0 ? t("evidence.traceOmitted", { count: transcript.omittedCount }) : "",
+	});
 
 	return {
 		evalRunId,
@@ -402,6 +402,60 @@ export function collectRunDetailPage(runsRoot: string, runId: string): RunDetail
 
 // ---------- Compare page ----------
 
+/** Opening at most twelve traces keeps a comparison useful even for a large basket. */
+export const MAX_COMPARE_PREVIEW_CASES = 6;
+const MAX_PREVIEW_CHECKS = 6;
+
+function compareRunPreview(runsRoot: string, verified: VerifiedEvalRun, run: RunRecord): CompareRunPreview {
+	const messages = openRunTrace(runsRoot, run);
+	const facts = messages ? traceFacts(messages) : null;
+	const transcript = messages ? runTranscript(messages) : null;
+	const toolNames = [...new Set((transcript?.entries ?? []).flatMap((entry) =>
+		entry.kind === "tool" && entry.evidence !== "reported" && entry.result !== null ? [entry.name] : []))].slice(0, 6);
+	// Only the canonical recorded checks are projected. Raw world/customer values
+	// and tool arguments never enter this preview; legacy sidecars are not reopened.
+	const checks = graderFindings(run, { judgeArtifacts: verified.artifacts.get(run.runId)?.judge })
+		.filter((check) => ["world-state", "required-tool", "cites-source"].includes(check.checkCode ?? "") ||
+			["world_state", "tool_called", "cites_source"].includes(check.type));
+	return {
+		runId: run.runId,
+		repetitionIndex: run.repetitionIndex,
+		outcome: runOutcome(run),
+		input: facts?.input ?? null,
+		answer: run.status === "completed" ? facts?.answer ?? null : null,
+		toolCalls: run.metrics.toolCalls,
+		reportedToolCalls: run.metrics.reportedToolCalls ?? 0,
+		toolNames,
+		checks: checks.slice(0, MAX_PREVIEW_CHECKS).map(({ name, passed, reason }) => ({ name, passed, reason })),
+		omittedChecks: Math.max(0, checks.length - MAX_PREVIEW_CHECKS),
+	};
+}
+
+function comparisonPreviews(runsRoot: string, baseline: VerifiedEvalRun, candidate: VerifiedEvalRun, comparison: CompareResult, exclusions: ReadonlyMap<string, CompareResult["excluded"][number]["reason"]>): CompareCasePreview[] {
+	const ordered = [...comparison.rows].sort((left, right) => {
+		// Regressions must not disappear behind a large overall improvement. Within
+		// each direction sort by task id, never by a hand-picked favourable answer.
+		const priority = (row: CompareResult["rows"][number]) => exclusions.has(row.taskId) ? 1 : row.scoreDelta < 0 ? 0 : row.scoreDelta > 0 ? 2 : 3;
+		return priority(left) - priority(right) || left.taskId.localeCompare(right.taskId);
+	}).slice(0, MAX_COMPARE_PREVIEW_CASES);
+	return ordered.map((row) => {
+		const before = baseline.runs.filter((run) => run.taskId === row.taskId)
+			.sort((left, right) => left.repetitionIndex - right.repetitionIndex || left.runId.localeCompare(right.runId));
+		const after = candidate.runs.filter((run) => run.taskId === row.taskId);
+		const first = before.find((run) => after.some((other) => other.repetitionIndex === run.repetitionIndex));
+		const second = first ? after.find((run) => run.repetitionIndex === first.repetitionIndex) : undefined;
+		return {
+			taskId: publicTaskId(row.taskId),
+			exclusion: exclusions.get(row.taskId) ?? null,
+			baselineScore: row.aScore,
+			candidateScore: row.bScore,
+			scoreDelta: row.scoreDelta,
+			baseline: first && second ? compareRunPreview(runsRoot, baseline, first) : null,
+			candidate: first && second ? compareRunPreview(runsRoot, candidate, second) : null,
+		};
+	});
+}
+
 function recordedReasons(evidence: EvaluationEvidence["development"]["comparison"]): string[] {
 	return evidence && "reasons" in evidence ? [...evidence.reasons] : [];
 }
@@ -418,12 +472,14 @@ export function collectComparePage(runsRoot: string, candidateId: string): Compa
 	const baseline = loadPublicEvalRun(runsRoot, baselineId);
 	const candidate = loadPublicEvalRun(runsRoot, candidateEvalId);
 	const comparison: CompareResult = compareVerifiedEvalRuns(baseline, candidate, { mode: "exploratory" });
+	const exclusions = new Map(comparison.excluded.map(task => [task.taskId, task.reason]));
 
 	const runIdFor = (verified: VerifiedEvalRun, taskId: string): string | null =>
 		verified.runs.find((run) => run.taskId === taskId)?.runId ?? null;
 
 	const rows: ComparePageRow[] = comparison.rows.map((row) => ({
 		taskId: publicTaskId(row.taskId),
+		exclusion: exclusions.get(row.taskId) ?? null,
 		flip: candidateFlip({
 			candidateId,
 			mode: evaluation.mode,
@@ -447,6 +503,7 @@ export function collectComparePage(runsRoot: string, candidateId: string): Compa
 	const sealed = sealedEvidence && "design" in sealedEvidence
 		? {
 			verdict: gateVerdictOf(sealedEvidence) ?? "recorded without a verdict",
+			outcome: sealedOutcome({ verdict: gateVerdictOf(sealedEvidence) ?? "", confidence95: sealedEvidence.summary.confidence95 }),
 			tasks: sealedEvidence.design.tasks,
 			repetitions: sealedEvidence.design.repetitions,
 			excludedTasks: sealedEvidence.design.excludedTasks,
@@ -462,8 +519,9 @@ export function collectComparePage(runsRoot: string, candidateId: string): Compa
 		candidateId,
 		targetId: record.targetId,
 		status: record.events.at(-1)?.type ?? "proposed",
+		comparability: comparison.status,
 		// The same sentence the panel, the log and the passport print.
-		developmentLine: measurementLine({
+		developmentLine: comparison.status === "invalid" ? t("evidence.invalidComparison") : measurementLine({
 			development: measurementSurface({
 				...comparison.summary,
 				verdict: comparison.gate.verdict,
@@ -493,9 +551,10 @@ export function collectComparePage(runsRoot: string, candidateId: string): Compa
 			latencyRatio: comparison.resources.latencyRatio,
 			tokenRatio: comparison.resources.tokenRatio,
 		},
-		confidence: comparison.summary.confidence95,
+		confidence: comparison.status === "invalid" ? null : comparison.summary.confidence95,
 		sealed,
 		rows,
+		examples: comparisonPreviews(runsRoot, baseline, candidate, comparison, exclusions),
 		counts: {
 			improved: comparison.summary.improved,
 			regressed: comparison.summary.regressed,

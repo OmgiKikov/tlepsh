@@ -1,6 +1,6 @@
 import { rmSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { loadBuilderCorpusDraft } from "../src/application/builder-corpus-draft.js";
+import { BuilderCorpusDraftTaskInputSchema, loadBuilderCorpusDraft } from "../src/application/builder-corpus-draft.js";
 import {
 	loadCandidateRecord,
 	promoteReviewedCandidate,
@@ -20,8 +20,8 @@ import {
 	PROMOTION_GUARD_METADATA_SOURCE_TASK,
 	PROMOTION_GUARD_METADATA_TAG,
 } from "../src/application/regression-guards.js";
-import { listCorpora, loadCorpus } from "../src/corpus.js";
-import { loadTarget } from "../src/manifest.js";
+import { CorpusTaskSchema, listCorpora, loadCorpus } from "../src/corpus.js";
+import { loadTarget, resolveTaskGraders } from "../src/manifest.js";
 import { loadApprovedSpec } from "../src/spec.js";
 import { writeJsonArtifact } from "../src/storage/artifacts.js";
 import { loadWorkbenchCorpusPublication } from "../src/workbench/corpus-publication.js";
@@ -38,6 +38,31 @@ import {
 } from "./helpers/improve-fixtures.js";
 
 const PROMOTION_TAG = "v0.2.0";
+
+it("pins the complete stateful conversation, including its world expectations", () => {
+	const source = CorpusTaskSchema.parse({
+		id: "block-account",
+		input: "Please block my account",
+		expected: "Account 42 is blocked",
+		simulatedUser: { goal: "Block account 42", persona: "Only give the account number when asked", maxTurns: 3 },
+		world: {
+			state: { account: { id: 42, blocked: false } },
+			expect: [{ path: "account.blocked", op: "equals", value: true }],
+		},
+		graders: [{ type: "output_contains", text: "blocked" }],
+	});
+	const guard = BuilderCorpusDraftTaskInputSchema.parse(guardCaseFor(source, PROMOTION_TAG));
+	const resolved = resolveTaskGraders([{ id: "derived-guard", ...guard }], [], false, true)[0]!;
+	expect(guard.world).toEqual(source.world);
+	expect(guard.simulatedUser).toEqual(source.simulatedUser);
+	expect(guard.expected).toBe(source.expected);
+	expect(resolved.effectiveGraders).toContainEqual({ type: "world_state", path: "account.blocked", op: "equals", value: true });
+	expect(guard).not.toHaveProperty("id");
+	expect(guard.metadata?.[PROMOTION_GUARD_METADATA_SOURCE_TASK]).toBe(source.id);
+	// Editing the derived draft must not mutate the canonical source case.
+	(guard.world!.state.account as { blocked: boolean }).blocked = true;
+	expect((source.world!.state.account as { blocked: boolean }).blocked).toBe(false);
+});
 
 /** Drive one fixture all the way to an evaluated, reviewed candidate. */
 async function reviewedCandidate(fixture: ImproveFixture): Promise<string> {

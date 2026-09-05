@@ -1185,6 +1185,7 @@ describe("the reviewed diff is the code that ran", () => {
 			projectId: "workshop-target",
 		});
 		expect(tools.map((tool) => tool.name)).toEqual([
+			"ahde_host_action",
 			"ahde_workbench_view",
 			"ahde_workbench_submit",
 			"ahde_workbench_decide",

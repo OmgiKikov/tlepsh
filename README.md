@@ -1,39 +1,78 @@
-# AHDE — build, benchmark, and improve Pi agent harnesses
+# AHDE — improve your agent, then prove what changed
 
-`ahde` opens **Builder Pi**: you describe the agent in plain language; the
-Builder structures the Spec, assembles the benchmark, reserves a sealed exam the
-Builder never reads, builds and tries the harness in a bound workshop, runs matched
-baseline-vs-candidate experiments, decides the verdict under a named gate policy
-and keeps consequential choices in explicit host-owned review. The same
-engine is a Unix-style CLI for scripts, CI and platforms (`ahde serve`). It
-changes instructions, skills and declared tools — never weights — and promotes
-nothing on its own authority.
+Bring a Python or Pi agent, describe what it should do, and work with **Builder
+Pi** to turn its failures into a reviewed change. AHDE runs the before/after
+comparison, keeps an independent sealed exam, and produces a portable release
+report with the exact diff, quality, cost and uncertainty.
+
+Work in the terminal conversation (`ahde`): describe the outcome, inspect progress,
+change direction, and let the Builder carry the work through the next useful step.
+Open the optional localhost Evidence link for detailed recorded conversations and
+before/after comparisons. Scripts and platforms can drive the same engine through
+the CLI and `ahde serve`. AHDE changes instructions, skills and declared tools;
+accepting an exact change and releasing a version remain host-owned decisions.
 
 ## Install
 
-Node.js ≥ 22.19 and Git. The package carries its pinned Pi runtime and is
-not on the npm registry yet, so install it from a checkout:
+Node.js ≥ 22.19 and Git; Python 3 for the Python starter. On Linux, install
+`bubblewrap` for sandboxed execution. The package carries its pinned Pi runtime
+and is not on the npm registry yet, so install it from this checkout:
 
 ```bash
-git clone <this repository> ahde && cd ahde
-npm ci --ignore-scripts && npm run build && npm link   # `ahde` on PATH
+git clone https://github.com/OmgiKikov/tlepsh.git ahde
+cd ahde
+npm ci --ignore-scripts
+npm run build
+npm link
 ```
 
 `npm pack` produces the tarball `npm install --global ./ahde-*.tgz` accepts;
 `npm run verify:package` proves that tarball works in an empty consumer.
 
-## Use it
+## Try the complete loop for free
+
+From the checkout, run:
 
 ```bash
-mkdir my-agent && cd my-agent
-ahde            # Builder Pi: describe the agent; guided setup happens here
-ahde target     # talk to the built agent; /good and /bad become test cases
+npm run demo
 ```
 
-Free text is the complete product interface: ask the Builder to test, fix,
-apply, open the built agent, or ship, and it performs the matching operation.
-The compact Pi commands below are optional expert shortcuts, not vocabulary a
-user has to learn.
+The demo takes a wrong refund answer through a retrieval fix, matched evaluation,
+sealed verification and a released version. It prints paths to the HTML release
+report, RAG trace, passport and dataset. It uses a scripted local model and needs
+no API key. It proves the workflow; a real model's quality still has to be measured.
+
+## Start your agent
+
+```bash
+ahde init my-agent --template python-support
+cd my-agent
+ahde            # describe your agent in the terminal conversation
+```
+
+Already have an agent folder? Run `ahde --target ./your-agent`. The Builder
+guides adoption and model setup. Use `ahde target` to talk to the built agent;
+`/good` and `/bad` record feedback that can become test cases. The minimal Pi
+starter remains the default for a bare `ahde init my-agent`.
+
+Tell the Builder what to do in your own words: “test it”, “show why it failed”,
+“prepare a fix”, “check the change”, “show the version report”. Commands are
+optional shortcuts. The host shows the exact description, cases, diff or release
+before a consequential decision. Routine measurements proceed under the existing
+cost policy; a changed or unusually expensive scope can need a new decision.
+The browser is a read-only explanation of recorded work, opened when useful.
+The compact Pi commands below are optional expert shortcuts for the terminal.
+
+Opening `ahde` again continues this project's latest conversation and reads fresh
+project state before the next turn. `ahde builder-pi` explicitly starts a new
+conversation; `ahde resume` opens the history picker. A restart preserves recorded
+work without restoring old confirmations or silently restarting model spend.
+
+Natural requests and command shortcuts share the same running task, progress,
+stop and result. Ask for the passport, exported dataset, judge labeling or a
+private exam import in the conversation; private inputs are collected by the
+host. Cost and duration can still require confirmation when unknown or above
+the configured threshold.
 
 Opening a detected agent folder presents one editable setup review: the command,
 the files AHDE may change, and the effect of accepting. After a development run,
@@ -50,7 +89,7 @@ or results, and creates an immutable corpus revision. `/test` is the single
 review that publishes that revision and runs it. The record deliberately does
 not claim that arbitrary PII has been removed.
 
-Nine of them are the product; `/help` shows exactly these and nothing else.
+`/help` keeps nine common shortcuts visible; the full list is under `/help all`.
 
 ```text
 /test                   test the agent: publish whatever is pending, run the
@@ -168,6 +207,13 @@ Target errors. `npm run acceptance:pilot` remains offline.
 
 ## Evidence
 
+The [management demonstration guide](docs/management-demo.md) separates the
+scripted, reproducible product demo from the recorded live-model experiments.
+`npm run acceptance:guided` checks conversation lifecycle, cancellation, exact
+consent and the full-loop integration with local fixtures. The full `npm run check`
+also verifies conversation and Workshop recovery.
+
+
 Evaluator v4 requires a final answer and does not treat a command agent's
 `tool_note` self-report as proof that a tool executed. Completion is a prerequisite,
 not a free point in the average score. Old results remain readable but are not
@@ -176,7 +222,7 @@ regrading. Eval verification and export hash-check new final-world and judge-ver
 legacy unattested sidecars are omitted from dataset exports. Command adapters
 report incremental usage for **each model request**, before its assistant frame.
 
-Five live first-user sessions on real models — a Sonnet-class Builder, a 9B
+In earlier development acceptance, five live first-user sessions on real models — a Sonnet-class Builder, a 9B
 Target (`openrouter/qwen/qwen3.5-9b`), a GLM judge — took a bank ombudsman
 from one sentence to a shipped `v0.1.0`: the Builder wrote the Spec and six
 cases, ran them (3/18), read the traces, built a `check_dbo` tool package in a
@@ -329,7 +375,7 @@ The CLI is the machine surface: CI, scripts, a platform behind `serve`. All
 take `--target <dir>` (`corpus`: `--project <id>`).
 
 ```text
-init <dir> [--template <d>]  scaffold a harness + commit
+init <dir> [--template <name|dir>]  scaffold a harness + commit
 validate                     readiness; no model calls
 corpus inspect|ingest|import|synth|list  the benchmark; sealed at ingest
 run --repetitions 3          development evidence
@@ -357,13 +403,23 @@ hash. A transport for the human gate, never an exemption.
 ## Templates
 
 ```bash
-ahde init my-agent --template templates/python-agent
+ahde init my-agent --template python-support
 ```
 
-The primary starter is an ordinary Python support agent: a stdlib JSONL process,
+Built-in names resolve from any working directory, including after a global
+tarball installation:
+
+| Name | Starter |
+|---|---|
+| `python-support` (alias `python`) | Python support agent with tools, a knowledge base and world-state cases. |
+| `pi-support` | Pi support agent with a declared account tool. |
+| `pi-basic` | Minimal Pi harness; the compatible default when no template is selected. |
+
+Use `--template ./my-template` or an absolute directory for your own template.
+The recommended Python starter is an ordinary support agent: a stdlib JSONL process,
 two sandboxed tools, a small knowledge base, world-state cases and an editable
 `prompts/system.md`. The first `ahde` in that directory asks for the agent,
-judge and simulated-user models. `templates/support-agent` remains the smaller
+judge and simulated-user models. `pi-support` remains the smaller
 Pi-native example. Both templates ignore `.ahde/`, `runs/` and `imports/`, so
 `git add -A` cannot commit the sealed exam.
 
@@ -383,6 +439,10 @@ whose `node_modules` is a symlink under-bundles the tarball. The heavy test
 files are named, with the reason each is heavy, at the top of
 `vitest.config.ts`.
 
+CI defines macOS and Linux checks. The Linux lane requires a working bwrap
+sandbox and Docker; setting `AHDE_REQUIRE_DOCKER_TESTS=1` makes missing Docker
+integration prerequisites a failure rather than a skipped acceptance check.
+
 The free demo uses a scripted local model with the real runner and knowledge
 search. It leaves a release report, a RAG X-ray page, a passport, and an exported
 dataset at the paths printed on completion. Its canned answers prove wiring
@@ -390,5 +450,6 @@ and repeatability; they do not measure the quality of a live model.
 
 ## Deliberately out of scope
 
-RL or weight changes · autonomous apply, promotion or deployment · a UI inside
-AHDE (`serve` is the seam) · Windows.
+RL or weight changes · autonomous promotion or deployment · a hosted multi-user
+service · Windows. Studio is a local companion to the same Builder, and `serve`
+remains the integration boundary for other platforms.

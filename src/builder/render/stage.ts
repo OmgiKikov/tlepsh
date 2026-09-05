@@ -63,8 +63,9 @@ function standInBlocker(view: Partial<Pick<WorkbenchView, "blockers" | "blockerR
 
 /** One actionable sentence for the header and status; blockers win over hints. */
 export function nextStep(
-	view: Pick<WorkbenchView, "stage" | "headline" | "blockers" | "detail"> & Partial<Pick<WorkbenchView, "blockerReasons">>,
+	view: Pick<WorkbenchView, "stage" | "headline" | "blockers" | "detail"> & Partial<Pick<WorkbenchView, "blockerReasons" | "guidance">>,
 ): string {
+	if (view.guidance?.operatorNext) return t(view.guidance.operatorNext.code);
 	if (view.stage === "selection-required") return t("next.selection-required");
 	if (view.stage === "candidate-verification" && view.detail?.aspect === "review" && view.detail.content.kind === "interrupted-candidate") {
 		return t("next.interrupted");

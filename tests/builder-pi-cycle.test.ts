@@ -123,13 +123,17 @@ describe("Builder Pi canonical cycle through the production Workbench tools", ()
 
 	it("fails every consequential decision closed when the host has no local TUI", async () => {
 		const projectDir = root("ahde-cycle-fail-closed-");
-		expect(CONSEQUENTIAL_BUILDER_TOOL_NAMES).toEqual(["ahde_workbench_decide"]);
+		expect(CONSEQUENTIAL_BUILDER_TOOL_NAMES).toEqual(["ahde_host_action", "ahde_workbench_decide"]);
 		for (const mode of ["print", "rpc"] as const) {
 			const host = createHostContext({ hasUI: mode === "rpc", mode });
 			await expect(decide(tools(projectDir), {
 				kind: "scaffold-target",
 				reason: "Start the Target",
 			}, host.ctx)).rejects.toThrow(/RPC, print, and JSON execution fail closed/);
+			for (const kind of ["jobs", "stop", "passport", "dataset", "label-judge", "import-exam"]) {
+				await expect(invokeTool(tools(projectDir), "ahde_host_action", { kind }, host.ctx))
+					.rejects.toThrow(/requires the local terminal host/);
+			}
 			expect(host.confirmations).toEqual([]);
 			expect(readdirSync(projectDir)).toEqual([]);
 		}

@@ -1,14 +1,16 @@
-import { percent } from "../measurement.js";
-import { join, relative, sep } from "node:path";
-import { hasMessage, plural, t, type MessageKey, type MessageParams } from "../i18n.js";
-import { failureModeReading } from "../application/run-explanation.js";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
-import type { AhdeWorkbench } from "../workbench/workbench.js";
+import { join } from "node:path";
+import { compileAgentLog } from "../application/agent-log.js";
+import { failureModeReading } from "../application/run-explanation.js";
 import { SEALED_GATE_POLICY } from "../domain/comparison-gate.js";
+import { collectEvalPage, collectRunDetailPage, EvidenceNotFound } from "../evidence/model.js";
+import type { EvalPageModel, RunDetailPageModel } from "../evidence/pages.js";
+import { hasMessage, t, type MessageKey, type MessageParams } from "../i18n.js";
 import { standInFilesLine } from "../target/placeholders.js";
+import { readFinalWorldState } from "../target/world-state.js";
 import { DEFAULT_REPETITIONS } from "../workbench/calibration.js";
 import {
 	typedRefusalReason,
@@ -19,38 +21,22 @@ import {
 import type {
 	WorkbenchDecisionInput,
 	WorkbenchDecisionResult,
-	WorkbenchStartTestingResult,
 	WorkbenchTracesDetail,
-	WorkbenchVerifyCandidateResult,
-	WorkbenchView,
+	WorkbenchView
 } from "../workbench/types.js";
-import { compileAgentLog } from "../application/agent-log.js";
-import {
-	corpusTaskLookup,
-	DatasetExportError,
-	datasetExportDoneLine,
-	exportDataset,
-	sealedDatasetHashesFor,
-} from "../application/export-dataset.js";
+import type { AhdeWorkbench } from "../workbench/workbench.js";
+import { builderDecisionPresentation } from "./decision-presentation.js";
 import { choose, confirmChoice, type DialogChoice } from "./dialog.js";
-import { examShortfall, oneLine, pluralize } from "./render/format.js";
-import { renderAgentLog, renderAgentLogChart } from "./render/agent-log.js";
-import { handoffLines } from "./render/handoff.js";
+import { executeBuilderDecision } from "./execution.js";
+import { createBuilderHostActions, type BuilderHostActions } from "./host-actions.js";
+import { createBuilderJobs, type BuilderJobs } from "./jobs.js";
 import {
-	MAX_LABEL_SAMPLE,
-	NoJudgedEvidence,
-	runBuilderLabelSession,
-	type LabelScreen,
+	MAX_LABEL_SAMPLE
 } from "./label-session.js";
-import { renderVersionPassport } from "./render/passport.js";
-import { renderExecutiveVersionCard } from "./render/version-card.js";
-import { decisionHeadline, renderDecision } from "./render/decision.js";
+import { renderAgentLog } from "./render/agent-log.js";
+import { examShortfall, oneLine, pluralize } from "./render/format.js";
 import { compilePlan, renderPlan, type PlanFacts } from "./render/plan.js";
-import { renderReceipt } from "./render/receipt.js";
-import { createBuilderJobs, type BuilderJobs, type JobAuthorization } from "./jobs.js";
-import type { BuilderSpendReader } from "./spend.js";
 import { nextStep, stageLabel } from "./render/stage.js";
-import { blockerLines, renderReview, renderStatus, renderTarget, renderTraces, viewTitle } from "./render/view.js";
 import {
 	DEFAULT_TRACE_TABLE_ROWS,
 	MAX_TRACE_TABLE_ROWS,
@@ -59,23 +45,19 @@ import {
 	traceNoteForModel,
 	type TraceWorld,
 } from "./render/trace.js";
-import { readFinalWorldState } from "../target/world-state.js";
-import { collectEvalPage, collectRunDetailPage, EvidenceNotFound } from "../evidence/model.js";
-import type { EvalPageModel, RunDetailPageModel } from "../evidence/pages.js";
+import { blockerLines, renderReview, renderStatus, renderTarget, renderTraces, viewTitle } from "./render/view.js";
 import {
-	beginBuilderRunObservation,
-	type BeginBuilderLiveTrace,
-	type BuilderLiveTraceOutcome,
+	type BeginBuilderLiveTrace
 } from "./run-observation.js";
+import type { BuilderSpendReader } from "./spend.js";
 import {
 	createTranscriptPresenter,
 	markerPaint,
 	type TranscriptPresenter,
 	type TranscriptTone,
 } from "./transcript.js";
-import { formatWorkbenchConfirmation } from "./workbench-gate.js";
 import { createPolicyAwareGate } from "./workbench-adapter.js";
-import { compileBuilderPassport } from "./passport-presentation.js";
+import { formatWorkbenchConfirmation } from "./workbench-gate.js";
 
 type CommandWorkbench = Pick<
 	AhdeWorkbench,
@@ -306,15 +288,6 @@ async function awaitIdle(ctx: ExtensionCommandContext, command: string): Promise
 	return signal;
 }
 
-/**
- * A path the operator can read: `exports/erun_….jsonl` when the file landed
- * beside the agent, the whole path when it did not. Never a path that climbs
- * out of the project with `../`.
- */
-function besideTarget(projectDir: string, path: string): string {
-	const rel = relative(projectDir, path);
-	return rel && !rel.startsWith("..") && !rel.startsWith(sep) ? rel : path;
-}
 
 function noArguments(command: string, args: string): void {
 	if (args.trim()) throw new Error(t("cmd.err.no-args", { command }));
@@ -464,77 +437,8 @@ export function humanizeCommandError(error: unknown): { message: string; tone: T
 	return { message: oneLine(message, 600), tone: "error" };
 }
 
-function startTestingTitle(result: WorkbenchStartTestingResult): { title: string; tone: TranscriptTone } {
-	if (!result.evaluation) return { title: t("panel.ready-next"), tone: "info" };
-	return { title: t("panel.run-complete"), tone: result.evaluation.evaluation.summary.error > 0 ? "warning" : "success" };
-}
-
-function verifyTitle(result: WorkbenchVerifyCandidateResult): { title: string; tone: TranscriptTone } {
-	return result.outcome === "stopped-by-screen"
-		? { title: t("panel.cheap-check-nothing"), tone: "info" }
-		: { title: t("panel.candidate-verified"), tone: "success" };
-}
-
-function decisionTitle(result: WorkbenchDecisionResult): { title: string; tone: TranscriptTone } {
-	switch (result.kind) {
-		case "run-eval": return { title: t("panel.run-complete"), tone: result.result.evaluation.summary.error > 0 ? "warning" : "success" };
-		case "run-current":
-			if (result.result.resolvedAs === "run-eval") {
-				return { title: t("panel.run-complete"), tone: result.result.evaluation.summary.error > 0 ? "warning" : "success" };
-			}
-			if (result.result.resolvedAs === "start-testing") return startTestingTitle(result.result);
-			return verifyTitle(result.result);
-		case "start-testing": return startTestingTitle(result.result);
-		case "ship": return { title: t("panel.shipped"), tone: "success" };
-		case "verify-candidate": return verifyTitle(result.result);
-		case "improve":
-			return {
-				title: t("panel.improvement-complete"),
-				tone: result.result.candidateId ? "success" : "info",
-			};
-		case "calibrate":
-			return {
-				title: t("panel.noise-calibrated"),
-				tone: result.result.calibration.verdict === "inconclusive" ? "success" : "warning",
-			};
-		// A re-score that moved nothing is a real answer, not a failure: the
-		// rubric the operator rewrote turned out to say the same thing.
-		case "regrade":
-			return {
-				title: t("panel.regraded"),
-				tone: result.result.nowPassing + result.result.nowFailing > 0 ? "success" : "info",
-			};
-		case "scaffold-target": return { title: t("panel.target-created"), tone: "success" };
-		case "wrap-target": return { title: t("panel.agent-wrapped"), tone: "success" };
-		case "configure-target": return { title: t("panel.target-configured"), tone: "success" };
-		case "configure-evaluators":
-			return {
-				title: t("panel.evaluators-configured"),
-				// A configured judge whose key is not exported fails at the first
-				// graded case, so the line is a warning until the shell has it.
-				tone: "success",
-			};
-		case "approve-spec": return { title: t("panel.spec-approved"), tone: "success" };
-		case "publish-corpus": return { title: t("panel.basket-published"), tone: "success" };
-		case "import-dataset": return { title: t("panel.dataset-imported"), tone: "success" };
-		case "generate-holdout":
-			return {
-				// A draft is not an exam yet: somebody still has to read it.
-				title: t(result.result.reviewPath ? "panel.holdout-drafted" : "panel.holdout-generated"),
-				tone: result.result.reviewPath || result.result.cases < SEALED_GATE_POLICY.minTasks ? "warning" : "success",
-			};
-		case "apply-proposal": return { title: t("panel.proposal-applied"), tone: "success" };
-		case "discard-proposal": return { title: t("panel.proposal-discarded"), tone: "info" };
-		case "abandon-candidate": return { title: t("panel.attempt-abandoned"), tone: "info" };
-		case "review-candidate": return { title: t("panel.review-recorded"), tone: "info" };
-		case "promote-candidate": return { title: t("panel.candidate-promoted"), tone: "success" };
-		case "reject-candidate": return { title: t("panel.candidate-rejected"), tone: "warning" };
-		case "adopt-candidate": return { title: t("panel.candidate-adopted"), tone: "success" };
-		case "continue-cycle": return { title: t("panel.next-cycle"), tone: "success" };
-	}
-}
-
 export interface RegisterBuilderCommandsOptions {
+	hostActions?: BuilderHostActions;
 	workbench: CommandWorkbench;
 	actorId: () => string;
 	beginLiveTrace?: BeginBuilderLiveTrace;
@@ -650,6 +554,9 @@ export function registerAhdeBuilderCommands(
 		},
 	});
 
+	const hostActions = options.hostActions ?? createBuilderHostActions({ workbench, jobs, presenter,
+		onWorkbenchChanged: options.onWorkbenchChanged, importSealedHoldout: options.importSealedHoldout });
+
 	/** Every handler starts here: the host context a background job reports through. */
 	const prepare = async (ctx: ExtensionCommandContext, command: string): Promise<AbortSignal | undefined> => {
 		host = ctx;
@@ -723,6 +630,8 @@ export function registerAhdeBuilderCommands(
 			description: definition.description,
 			handler: async (args, ctx) => {
 				try {
+					const reads = ["help", "status", "doctor", "review", "traces", "trace", "target", "log", "plan", "jobs", "stop", "passport", "dataset"];
+					if (!reads.includes(name) && refuseWhileBusy(ctx)) return;
 					await definition.handler(args, ctx);
 				} catch (error) {
 					if (!ctx.hasUI || ctx.mode !== "tui") throw error;
@@ -758,52 +667,8 @@ export function registerAhdeBuilderCommands(
 		result: WorkbenchDecisionResult,
 		options: { liveTraceUrl?: string | null; note?: boolean } = {},
 	): Promise<string> => {
-		const liveTraceUrl = options.liveTraceUrl;
-		// Presentation is downstream of the durable decision: a rendering fault
-		// degrades to the Workbench message instead of masking a completed step.
-		let title = `/${command} completed`;
-		let tone: TranscriptTone = "success";
-		let lines: string[];
-		let headline: string;
-		try {
-			({ title, tone } = decisionTitle(result));
-			lines = renderDecision(result, markerPaint, { liveTraceUrl });
-			if (result.kind === "ship") {
-				try {
-					const { passport, card, reportWritten } = await compileBuilderPassport(workbench, { view: result.view, save: true });
-					lines.push(
-						"",
-						...renderExecutiveVersionCard(card, markerPaint),
-						reportWritten ? t("release.html.saved", { path: reportWritten }) : markerPaint.warning(t("release.html.not-saved")),
-						"",
-						...renderVersionPassport(passport, markerPaint),
-					);
-				} catch (error) {
-					lines.push("", markerPaint.warning(t("result.passport-unavailable", { reason: oneLine(describeError(error), 180) })));
-				}
-				try {
-					lines.push("", ...renderAgentLogChart(compileAgentLog({
-						runsRoot: workbench.runsRoot,
-						projectId: workbench.projectId,
-						...(result.view.target.id ? { targetId: result.view.target.id } : {}),
-					}), markerPaint));
-				} catch {
-					// The growth line is a second look at the same evidence.
-				}
-			}
-			// The same hand-off the conversational path ends with: a shortcut is not
-			// a reason to be told less.
-			lines.push(...handoffLines(result, markerPaint));
-			headline = decisionHeadline(result);
-		} catch {
-			lines = [oneLine(result.message, 600), ...(liveTraceUrl ? [t("card.live-trace-retained", { url: liveTraceUrl })] : [])];
-			headline = oneLine(result.message, 200);
-		}
-		// What it cost, from the records the measurement wrote. A decision that
-		// spent nothing, or whose records cannot be read, simply has no receipt.
-		const receipt = spendReader ? renderReceipt(result, markerPaint, spendReader) : null;
-		if (receipt) lines.push(receipt);
-		presenter.show(ctx, { title, tone, lines });
+		const { block, headline } = await builderDecisionPresentation(result, { workbench, source: command, liveTraceUrl: options.liveTraceUrl, spend: spendReader });
+		presenter.show(ctx, block);
 		if (options.note !== false) {
 			presenter.note(
 				`Operator ran /${command}: ${headline}. ` +
@@ -816,50 +681,18 @@ export function registerAhdeBuilderCommands(
 		return headline;
 	};
 
-	/**
-	 * The same gate, reporting the moment it approved. That moment is where the
-	 * price is known and where the spending starts, so it is also where a long
-	 * measurement is allowed to leave the foreground.
-	 */
-	const reportingGate = (
-		ctx: ExtensionCommandContext,
-		authorized: (authorization: JobAuthorization) => void,
-	): ReturnType<typeof gate> => {
-		const base = gate(ctx);
-		return {
-			async confirm(confirmation, signal) {
-				const approval = await base.confirm(confirmation, signal);
-				if (approval.approved) {
-					try {
-						authorized({ kind: confirmation.kind, estimate: confirmation.estimate ?? null });
-					} catch {
-						// Reporting is presentation; it can never change the decision.
-					}
-				}
-				return approval;
-			},
-			selectSealed: (request, signal) => base.selectSealed(request, signal),
-		};
-	};
-
-	/** Run one decision with human-friendly failure handling. */
+	/** Fine-grained recovery decisions stay foreground but share the session lock. */
 	const decide = async (
-		ctx: ExtensionCommandContext,
-		command: string,
-		input: WorkbenchDecisionInput,
-		signal: AbortSignal | undefined,
-		extra: Parameters<CommandWorkbench["decide"]>[2] & {
-			authorized?: (authorization: JobAuthorization) => void;
-		} = {},
+		ctx: ExtensionCommandContext, command: string, input: WorkbenchDecisionInput,
+		signal: AbortSignal | undefined, humanGate = gate(ctx),
 	): Promise<WorkbenchDecisionResult | null> => {
-		const { authorized, ...execution } = extra;
 		try {
-			const result = await workbench.decide(
-				input,
-				authorized ? reportingGate(ctx, authorized) : gate(ctx),
-				{ signal, ...execution },
-			);
-			return result;
+			const outcome = await executeBuilderDecision({
+				jobs, ctx, input, source: command, signal, gate: humanGate, background: false,
+				run: (gate, execution) => workbench.decide(input, gate, execution),
+				present: async (result) => result.message,
+			});
+			return outcome.status === "completed" ? outcome.result : null;
 		} catch (error) {
 			if (signal?.aborted) throw error;
 			const human = humanizeCommandError(error);
@@ -869,75 +702,23 @@ export function registerAhdeBuilderCommands(
 		}
 	};
 
-	/**
-	 * Every measurement runs as a job. Short ones stay in front of the operator
-	 * exactly as before — the job resolves the command only when it finishes —
-	 * and long ones hand the conversation back the moment the gate approved.
-	 */
-	const runObserved = async (
-		ctx: ExtensionCommandContext,
-		command: string,
-		input: WorkbenchDecisionInput,
-		signal: AbortSignal | undefined,
-	): Promise<void> => {
+	/** Shortcuts use the same operation and observation as natural-language tools. */
+	const runObserved = async (ctx: ExtensionCommandContext, command: string, input: WorkbenchDecisionInput, signal: AbortSignal | undefined): Promise<void> => {
 		if (refuseWhileBusy(ctx)) return;
-		let liveTraceUrl: string | null = null;
-		// While the measurement is still in front of the operator, their own
-		// interrupt stops it. Once it is backgrounded the command returns and the
-		// link is dropped, so a later interrupt cannot kill a job they left running.
-		const interrupt = (): void => {
-			jobs.stop();
-		};
-		signal?.addEventListener("abort", interrupt);
-		try {
-			await jobs.start({
-				command,
-				label: (kind) => kind === "verify-candidate"
-					? t("job.label.verify")
-					: kind === "calibrate"
-						? t("job.label.calibrate")
-						: kind === "regrade"
-							? t("job.label.regrade")
-							: t("job.label.run"),
-				async run({ signal: jobSignal, onRunEvent, authorized }) {
-					const observation = await beginBuilderRunObservation(ctx.ui, options.beginLiveTrace);
-					liveTraceUrl = observation.liveTraceUrl;
-					let outcome: BuilderLiveTraceOutcome = "error";
-					const listener: typeof onRunEvent = (event) => {
-						observation.onRunEvent(event);
-						onRunEvent(event);
-					};
-					try {
-						const result = await decide(ctx, command, input, jobSignal, {
-							onRunEvent: listener,
-							// The moment the gate approved is the moment the whole job's
-							// planned executions are known, so both counters learn it there.
-							authorized: (authorization) => {
-								observation.plan(authorization.estimate?.executions ?? null);
-								authorized(authorization);
-							},
-						});
-						outcome = result ? "completed" : "aborted";
-						observation.finish(outcome);
-						return result;
-					} catch (error) {
-						if (jobSignal.aborted || signal?.aborted) outcome = "aborted";
-						observation.finish(outcome);
-						if (observation.liveTraceUrl) {
-							try {
-								ctx.ui.notify(t("card.live-trace-retained", { url: observation.liveTraceUrl }), "info");
-							} catch {
-								// Preserve the original run error when host notification fails.
-							}
-						}
-						throw error;
-					}
-				},
-				present: (result, background) => showDecision(ctx, command, result, { liveTraceUrl, note: !background }),
-			});
-		} finally {
-			signal?.removeEventListener("abort", interrupt);
-		}
+		await executeBuilderDecision({
+			jobs, ctx, input, source: command, signal, gate: gate(ctx), hasResultPanel: true, beginLiveTrace: options.beginLiveTrace,
+			run: async (humanGate, execution) => {
+				try { return await workbench.decide(input, humanGate, execution); }
+				catch (error) {
+					if (execution.signal.aborted) throw error;
+					const human = humanizeCommandError(error);
+					if (human.tone === "error") throw new Error(human.message, { cause: error });
+					ctx.ui.notify(human.message, human.tone === "info" ? "info" : "warning");
+					return null;
+				}
+			},
+			present: (result, background, liveTraceUrl) => showDecision(ctx, command, result, { liveTraceUrl, note: !background }),
+		});
 	};
 
 	const askVersion = async (ctx: ExtensionCommandContext): Promise<string | null> => {
@@ -967,24 +748,10 @@ export function registerAhdeBuilderCommands(
 			presenter.show(ctx, { title: viewTitle(review), tone: "info", lines: renderReview(detail, markerPaint) });
 		}
 		const chosen = branch ?? `candidate/${proposalRunId ?? "next"}`;
-		const observation = await beginBuilderRunObservation(ctx.ui, options.beginLiveTrace);
-		let outcome: BuilderLiveTraceOutcome = "error";
-		try {
-			const result = await decide(ctx, "apply", {
-				kind: "apply-proposal",
-				branch: chosen,
-				verify: { repetitions: DEFAULT_REPETITIONS },
-				reason,
-				...(proposalRunId ? { runId: proposalRunId } : {}),
-			}, signal, { onRunEvent: observation.onRunEvent });
-			outcome = result ? "completed" : "aborted";
-			if (result) await showDecision(ctx, "apply", result, { liveTraceUrl: observation.liveTraceUrl });
-		} catch (error) {
-			if (signal?.aborted) outcome = "aborted";
-			throw error;
-		} finally {
-			observation.finish(outcome);
-		}
+		await runObserved(ctx, "apply", {
+			kind: "apply-proposal", branch: chosen, verify: { repetitions: DEFAULT_REPETITIONS }, reason,
+			...(proposalRunId ? { runId: proposalRunId } : {}),
+		}, signal);
 	};
 
 	const discardCurrent = async (ctx: ExtensionCommandContext, signal: AbortSignal | undefined, reason: string): Promise<void> => {
@@ -1038,22 +805,8 @@ export function registerAhdeBuilderCommands(
 		};
 	};
 
-	const decideWithGate = async (
-		ctx: ExtensionCommandContext,
-		input: WorkbenchDecisionInput,
-		humanGate: ReturnType<typeof gate>,
-		signal: AbortSignal | undefined,
-	): Promise<WorkbenchDecisionResult | null> => {
-		try {
-			return await workbench.decide(input, humanGate, { signal });
-		} catch (error) {
-			if (signal?.aborted) throw error;
-			const human = humanizeCommandError(error);
-			if (human.tone === "error") throw new Error(human.message, { cause: error });
-			ctx.ui.notify(human.message, human.tone === "info" ? "info" : "warning");
-			return null;
-		}
-	};
+	const decideWithGate = (ctx: ExtensionCommandContext, input: WorkbenchDecisionInput, humanGate: ReturnType<typeof gate>, signal: AbortSignal | undefined) =>
+		decide(ctx, input.kind, input, signal, humanGate);
 
 	const promoteCurrent = async (
 		ctx: ExtensionCommandContext,
@@ -1109,8 +862,7 @@ export function registerAhdeBuilderCommands(
 		signal: AbortSignal | undefined,
 	): Promise<void> => {
 		if (refuseWhileBusy(ctx)) return;
-		const result = await decide(ctx, command, input, signal);
-		if (result) await showDecision(ctx, command, result);
+		await runObserved(ctx, command, input, signal);
 	};
 
 	/** Offer the stage's decisions right after the operator reviewed the exact subject. */
@@ -1212,12 +964,11 @@ export function registerAhdeBuilderCommands(
 		const needsVersion = view.stage === "candidate-review" || view.stage === "release-decision";
 		const chosen = version ?? (needsVersion ? await askVersion(ctx) : null);
 		if (needsVersion && !chosen) return;
-		const result = await decide(ctx, "ship", {
+		await runObserved(ctx, "ship", {
 			kind: "ship",
 			...(chosen ? { version: chosen } : {}),
 			reason,
 		}, signal);
-		if (result) await showDecision(ctx, "ship", result);
 	};
 
 	/**
@@ -1439,42 +1190,7 @@ export function registerAhdeBuilderCommands(
 					return;
 				}
 			}
-			if (!options.importSealedHoldout) throw new Error(t("cmd.err.holdout-unavailable"));
-			const sourcePath = givenPath || await ctx.ui.input(t("holdout.path-prompt"), "./private-holdout.jsonl");
-			if (sourcePath === undefined || !sourcePath.trim()) {
-				ctx.ui.notify(t("error.cancelled"), "info");
-				return;
-			}
-			const name = await ctx.ui.input(t("holdout.name-prompt"), t("holdout.name-default"));
-			if (name === undefined || !name.trim()) {
-				ctx.ui.notify(t("error.cancelled"), "info");
-				return;
-			}
-			const approved = await ctx.ui.confirm(
-				t("holdout.import-title"),
-				t("holdout.import-question", { path: sourcePath.trim() }),
-				{ signal: ctx.signal },
-			);
-			if (!approved) {
-				ctx.ui.notify(t("error.cancelled"), "info");
-				return;
-			}
-			const result = options.importSealedHoldout({ sourcePath: sourcePath.trim(), name: name.trim() });
-			await options.onWorkbenchChanged?.();
-			presenter.show(ctx, {
-				title: t("panel.holdout-imported"),
-				tone: result.taskCount >= minimum ? "success" : "warning",
-				lines: result.taskCount >= minimum
-					? [t("holdout.imported", { count: result.taskCount }), t("holdout.hidden")]
-					: [
-						t("holdout.imported-short", {
-							count: result.taskCount,
-							minimum,
-							missing: minimum - result.taskCount,
-						}),
-						t("holdout.import-more"),
-					],
-			});
+			await hostActions.importExam(ctx, ctx.signal, givenPath);
 		},
 	});
 
@@ -1672,32 +1388,7 @@ export function registerAhdeBuilderCommands(
 			await prepare(ctx, "passport");
 			const version = args.trim();
 			if (/\s/.test(version)) throw new Error(t("cmd.err.passport-arg"));
-			// The passport compiler serves the CLI too, so its refusals are English
-			// sentences. The two an operator actually walks into are worded here.
-			let compiled: Awaited<ReturnType<typeof compileBuilderPassport>>;
-			try {
-				compiled = await compileBuilderPassport(workbench, { ...(version ? { version } : {}), save: true });
-			} catch (error) {
-				const reason = error instanceof Error ? error.message : String(error);
-				if (/^nothing has been promoted yet/.test(reason)) throw new Error(t("passport.none-yet"), { cause: error });
-				if (/^no promoted version /.test(reason)) throw new Error(t("passport.no-version", { version }), { cause: error });
-				throw error;
-			}
-			const { passport, card, written, reportWritten } = compiled;
-			presenter.show(ctx, {
-				title: t("panel.title", { detail: t("panel.passport") }),
-				tone: "info",
-				lines: [
-					...renderExecutiveVersionCard(card, markerPaint),
-					reportWritten ? t("release.html.saved", { path: reportWritten }) : markerPaint.warning(t("release.html.not-saved")),
-					"",
-					...renderVersionPassport(passport, markerPaint),
-					"",
-					written
-						? `${markerPaint.dim(t("passport.written-to"))} ${oneLine(written, 100)}`
-						: markerPaint.warning(t("cmd.passport-not-writable")),
-				],
-			});
+			await hostActions.execute({ kind: "passport", ...(version ? { version } : {}) }, ctx, ctx.signal);
 		},
 	});
 
@@ -1786,35 +1477,7 @@ export function registerAhdeBuilderCommands(
 			await prepare(ctx, "dataset");
 			const requested = args.trim();
 			if (requested && requested !== "--all") throw new Error(t("cmd.err.dataset-arg"));
-			const scope = { stateRoot: workbench.stateRoot, projectId: workbench.projectId };
-			let result;
-			try {
-				result = exportDataset({
-					runsRoot: workbench.runsRoot,
-					outRoot: workbench.projectDir,
-					...(requested === "--all" ? { all: true } : { latest: true }),
-					sealedDatasetHashes: sealedDatasetHashesFor(scope),
-					tasks: corpusTaskLookup(scope),
-				});
-			} catch (error) {
-				// The only refusal this command can walk into: nothing exportable
-				// has been recorded yet. Everything else is a real fault.
-				if (!(error instanceof DatasetExportError)) throw error;
-				throw new Error(t("export.none"), { cause: error });
-			}
-			if (result.counts.exported === 0) {
-				presenter.show(ctx, {
-					title: t("panel.title", { detail: t("panel.export") }),
-					tone: "warning",
-					lines: [t("export.none")],
-				});
-				return;
-			}
-			presenter.show(ctx, {
-				title: t("panel.title", { detail: t("panel.export") }),
-				tone: "info",
-				lines: [datasetExportDoneLine(result, oneLine(besideTarget(workbench.projectDir, result.path), 100))],
-			});
+			await hostActions.execute({ kind: "dataset", all: requested === "--all" }, ctx, ctx.signal);
 		},
 	});
 
@@ -1871,7 +1534,8 @@ export function registerAhdeBuilderCommands(
 		description: t("cmd.jobs"),
 		async handler(args, ctx) {
 			noArguments("jobs", args);
-			await prepare(ctx, "jobs");
+			requireTui(ctx, "jobs");
+			host = ctx;
 			presenter.show(ctx, {
 				title: t("panel.title", { detail: t("panel.background") }),
 				tone: "info",
@@ -1885,7 +1549,8 @@ export function registerAhdeBuilderCommands(
 		description: t("cmd.stop"),
 		async handler(args, ctx) {
 			noArguments("stop", args);
-			await prepare(ctx, "stop");
+			requireTui(ctx, "stop");
+			host = ctx;
 			if (!jobs.stop()) ctx.ui.notify(t("job.nothing-to-stop"), "info");
 		},
 	});
@@ -1906,52 +1571,7 @@ export function registerAhdeBuilderCommands(
 			if (requested && !/^\d{1,2}$/.test(requested)) {
 				throw new Error(t("cmd.err.label-count", { max: MAX_LABEL_SAMPLE }));
 			}
-			if (typeof ctx.ui.select !== "function") {
-				throw new Error(t("cmd.err.label-host"));
-			}
-			const select = ctx.ui.select.bind(ctx.ui);
-			const view = await workbench.view();
-			const screen: LabelScreen = {
-				show: (block) => presenter.show(ctx, block),
-				select: (title, choices) => select(title, choices, { signal }),
-				input: (title, placeholder) => ctx.ui.input(title, placeholder, { signal }),
-				notify: (message, tone) => ctx.ui.notify(message, tone),
-			};
-			let result;
-			try {
-				result = await runBuilderLabelSession({
-					runsRoot: workbench.runsRoot,
-					stateRoot: workbench.stateRoot,
-					projectId: workbench.projectId,
-					targetDir: workbench.projectDir,
-					targetId: view.target.id,
-					...(requested ? { sample: Number(requested) } : {}),
-					screen,
-					paint: markerPaint,
-				});
-			} catch (error) {
-				// The one refusal that is not a fault: there is no judge to check.
-				if (error instanceof NoJudgedEvidence) {
-					ctx.ui.notify(error.message, "info");
-					return;
-				}
-				throw error;
-			}
-			if (result.labelled === 0) return;
-			// The Builder is told the number, not the answers: what it may say next
-			// is how far the judge can be trusted, never which case the operator
-			// disliked. The visible half of the injection says exactly that.
-			const stats = result.stats;
-			presenter.note(
-				`Operator ran /label on eval run ${result.evalRunId}: ${result.labelled} answer(s) graded blind` +
-				(stats
-					? `, judge agreement now ${percent(stats.agreement)} over ${stats.n} independent subject(s)` +
-						` (false-pass ${stats.falsePass}, false-fail ${stats.falseFail}).`
-					: ".") +
-				" Do not offer the judge check again for this revision. Never quote an individual label back to them.",
-				{ label: t("label.done") },
-			);
-			await changed();
+			await hostActions.execute({ kind: "label-judge", ...(requested ? { sample: Number(requested) } : {}) }, ctx, signal);
 		},
 	});
 }

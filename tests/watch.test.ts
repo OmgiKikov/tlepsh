@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import {
+	evalRunCostUsd,
 	findPreviousWatchRun,
 	findRevisionCalibration,
 	runWatch,
@@ -34,6 +35,17 @@ const RESAMPLES = 200;
 const cleanupPaths: string[] = [];
 const openMocks: MockModelHandle[] = [];
 
+it("does not price a partially reported tick as the judge subtotal", () => {
+	const metrics = { latencyMs: 10, toolCalls: 0, toolErrors: 0, recoveryAttempts: 0 };
+	const judge = { calls: 1, tokens: 100, costUsd: 0.1 };
+	expect(evalRunCostUsd([{ metrics: { ...metrics, judge } }])).toBeNull();
+	expect(evalRunCostUsd([{ metrics: { ...metrics, judge, costUsd: 0 } }])).toBe(0.1);
+	expect(evalRunCostUsd([
+		{ metrics: { ...metrics, costUsd: 1 } },
+		{ metrics: { ...metrics, judge } },
+	])).toBeNull();
+});
+
 afterEach(async () => {
 	for (const mock of openMocks.splice(0)) await mock.close();
 	for (const path of cleanupPaths.splice(0)) rmSync(path, { recursive: true, force: true });
@@ -46,7 +58,7 @@ interface WatchFixture {
 	targetDir: string;
 	runsRoot: string;
 	/** The scripted provider's current answer; the revision never changes. */
-	answer: { text: string };
+	answer: { text: string; errorStatus?: number };
 }
 
 /**
@@ -56,9 +68,11 @@ interface WatchFixture {
  */
 async function watchFixture(): Promise<WatchFixture> {
 	process.env.MOCK_MODEL_KEY = "test-key";
-	const answer = { text: "answer-ok" };
+	const answer: WatchFixture["answer"] = { text: "answer-ok" };
 	const mock = await startMockModel([
-		{ match: () => true, resolve: () => ({ text: answer.text }), steps: [] },
+		{ match: () => true, resolve: () => answer.errorStatus
+			? { httpError: { status: answer.errorStatus, message: "Provider credentials expired" } }
+			: { text: answer.text }, steps: [] },
 	]);
 	openMocks.push(mock);
 	const targetDir = makeTargetFixture(baseFixtureFiles({
@@ -128,6 +142,19 @@ it("has nothing to compare the first tick with, and calls the second inconclusiv
 	);
 	// Both ticks are ordinary `solo` development evidence and nothing else.
 	expect(durableStateBeyondEvalRuns(fixture.runsRoot)).toEqual([]);
+}, WATCH_TIMEOUT_MS);
+
+it("reports a provider outage as unusable evidence and never exits healthy", async () => {
+	const fixture = await watchFixture();
+	await tick(fixture);
+	fixture.answer.errorStatus = 401;
+	const outage = await tick(fixture);
+	expect(outage.status).toBe("not-comparable");
+	expect(outage.verdict).toBeNull();
+	expect(outage.note).toContain("errored");
+	expect(watchExitCode([outage])).toBe(WATCH_EXIT_NO_BASELINE);
+	expect(renderWatchTick(outage, plainPaint)).toContain("no comparable baseline");
+	expect(renderWatchTickDetail(outage, plainPaint).join("\n")).toContain("errored");
 }, WATCH_TIMEOUT_MS);
 
 it("calls a scripted behaviour change on an unchanged revision drift, and exits 3", async () => {

@@ -113,6 +113,7 @@ describe("model-facing projection", () => {
 		expect(projected.actions).toBeUndefined();
 		expect(projected.next).toEqual({
 			unblock: "review the diff, then say “apply” or “discard”",
+			operatorNext: { code: "next.proposal-review" },
 			decide: [
 				{ kind: "apply-proposal", asks: true, when: expect.stringContaining("apply") },
 				{ kind: "talk-to-agent", asks: false, when: expect.any(String) },

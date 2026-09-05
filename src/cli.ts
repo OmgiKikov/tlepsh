@@ -292,7 +292,7 @@ function requireArg(name: string): string {
  * Primary product entry point: a real Builder Pi instance. The web process is
  * created lazily and remains a read-only projection of already-diagnosed runs.
  */
-async function builderPi(sessionMode: BuilderSessionMode = "new"): Promise<void> {
+async function builderPi(sessionMode?: BuilderSessionMode): Promise<void> {
 	if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
 		throw new Error("AHDE Builder requires an interactive terminal (TTY).");
 	}
@@ -806,7 +806,7 @@ async function main(): Promise<void> {
 	}
 	switch (command) {
 		case "builder-pi": {
-			await builderPi();
+			await builderPi("new");
 			break;
 		}
 		case "continue": {
@@ -824,14 +824,13 @@ async function main(): Promise<void> {
 		case "init": {
 			const dir = positional(0);
 			if (!dir) {
-				console.error("usage: ahde init <dir> [--template <target-dir>]\n");
+				console.error("usage: ahde init <dir> [--template <name|target-dir>]\n");
 				console.log(USAGE);
 				process.exit(2);
 			}
 			const template = arg("template");
-			const templateDir = template
-				? resolve(template.startsWith("/") || template.startsWith(".") ? template : join(process.cwd(), template))
-				: join(packageRoot, "templates", "basic-agent");
+			const { resolveTargetTemplate } = await import("./application/target-template.js");
+			const templateDir = resolveTargetTemplate(template, packageRoot);
 			// A new Target inside a checkout that already committed an engine
 			// store inherits its problem: the sealed exam is already a Git object
 			// there, and a scaffold would quietly add a second store beside it.
@@ -840,7 +839,7 @@ async function main(): Promise<void> {
 			scaffoldTarget(templateDir, resolve(dir), (added) => {
 				ignoreLine = renderLocalArtifactIgnoreLine(added);
 			});
-			console.log(`scaffolded target → ${resolve(dir)} (template: ${template ?? "built-in basic-agent"})`);
+			console.log(`scaffolded target → ${resolve(dir)} (template: ${template ?? "pi-basic"})`);
 			// The engine store lives inside the Target and holds the sealed exam:
 			// say which rules were written rather than leaving it to be discovered.
 			if (ignoreLine) console.log(ignoreLine);

@@ -1,5 +1,6 @@
-import { bareDelta, percent, points, ratio } from "../measurement.js";
-import { language, plural, t, tokenLabel } from "../i18n.js";
+import { percent, points, ratio } from "../measurement.js";
+import { candidateStatusLabel, language, plural, t, tokenLabel, verdictLabel } from "../i18n.js";
+import { sealedOutcomeLabel, type SealedOutcome, type ExcludedTask } from "../domain/comparison-gate.js";
 
 /**
  * A number the Target never reported renders as a dash, never as zero. `$0.00`
@@ -13,7 +14,7 @@ function count(value: number | null): string {
 	return value === null ? t("metrics.not-reported") : value.toLocaleString("en-US");
 }
 import {
-	flipSubject,
+	renderRunExplanationText,
 	type CandidateFlip,
 	type GraderFinding,
 	type RunExplanation,
@@ -71,7 +72,7 @@ export const EVIDENCE_TOKENS = `
 	--bg:#f7f8fa;--surface:#fff;--surface2:#f0f2f6;--sunken:#eef0f5;
 	--line:#dfe3ea;--line-strong:#c4cad6;
 	--text:#12151c;--muted:#5d6675;--faint:#828b9b;
-	--accent:#3a4ee0;--accent-soft:#e8ebfd;
+		--accent:#176849;--accent-soft:#eaf4eb;
 	--pass:#0f7a45;--pass-soft:#e2f5ea;
 	--fail:#b3243b;--fail-soft:#fdeaed;
 	--error:#a05407;--error-soft:#fdf0dd;
@@ -89,7 +90,7 @@ export const EVIDENCE_TOKENS_DARK = `:root{color-scheme:dark;${FONT_TOKENS}${DAR
 /** The runs table and its chips. Shared verbatim by the explorer and the report. */
 export const EVIDENCE_TABLE_CSS = `
 .scroll{overflow:auto;max-height:78vh;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius)}
-.scroll table{border-collapse:separate;border-spacing:0;width:100%;font-size:12.5px}
+.scroll table{border-collapse:separate;border-spacing:0;width:100%;font-size:14px}
 .scroll th,.scroll td{padding:8px 11px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;white-space:nowrap;color:var(--text)}
 .scroll thead th{position:sticky;top:0;z-index:2;background:var(--surface2);color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--line-strong)}
 .scroll tbody tr:nth-child(even){background:var(--sunken)}
@@ -123,19 +124,19 @@ ${EVIDENCE_TOKENS}
 ${EVIDENCE_TABLE_CSS}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
-body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 var(--sans)}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.65 var(--sans)}
 a{color:var(--accent);text-decoration:none}
 a:hover{text-decoration:underline}
 a:focus-visible,summary:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
 code,kbd,pre,.mono{font-family:var(--mono)}
-h1{font-size:26px;line-height:1.2;letter-spacing:-.02em;margin:0 0 4px}
+h1{font-size:clamp(28px,4vw,44px);line-height:1.18;letter-spacing:-.035em;margin:0 0 10px;overflow-wrap:anywhere}
 h2{font-size:17px;line-height:1.3;margin:0 0 10px;letter-spacing:-.01em}
 h3{font-size:14px;margin:0 0 6px}
 p{margin:0 0 10px}
 .topbar{position:sticky;top:0;z-index:5;background:var(--surface);border-bottom:1px solid var(--line);padding:10px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:12px}
 .topbar .crumb{color:var(--muted)}
 .topbar .sep{color:var(--faint)}
-.wrap{max-width:1440px;margin:0 auto;padding:22px 20px 60px}
+.wrap{max-width:1280px;margin:0 auto;padding:36px 28px 72px}
 .prose{max-width:78ch}
 .head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start;flex-wrap:wrap;margin-bottom:18px}
 .sub{color:var(--muted);font-size:12.5px}
@@ -146,7 +147,7 @@ p{margin:0 0 10px}
 .stat span{display:block;margin-top:3px;font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
 section{margin:0 0 26px}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(320px,100%),1fr));gap:12px}
 .hyp{border-left:3px solid var(--error);background:var(--error-soft);padding:8px 11px;border-radius:0 6px 6px 0;margin:8px 0 0;font-size:12.5px}
 .hyp b{color:var(--error)}
 .modes{list-style:none;margin:0;padding:0;display:grid;gap:8px}
@@ -157,6 +158,7 @@ section{margin:0 0 26px}
 .turn{border:1px solid var(--line);border-radius:var(--radius);margin:0 0 9px;background:var(--surface);overflow:hidden}
 .turn>.who{font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);padding:7px 13px;background:var(--surface2);border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:10px}
 .turn pre{margin:0;padding:11px 13px;white-space:pre-wrap;overflow-wrap:anywhere;font:12.5px/1.6 var(--mono)}
+.turn .spoken{font:15px/1.75 var(--sans);padding:18px 20px}
 .turn.final{border-color:var(--pass)}
 .turn.final>.who{background:var(--pass-soft);color:var(--pass)}
 .turn.toolerr{border-color:var(--fail)}
@@ -171,9 +173,34 @@ details[open]>summary::before{content:"▾ "}
 .why{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:0 var(--radius) var(--radius) 0;padding:13px 16px}
 .why p{margin:0 0 8px;max-width:78ch}
 .why p:last-child{margin:0}
-.note{color:var(--muted);font-size:12px;margin:9px 0 0;max-width:78ch}
+.note{color:var(--muted);font-size:12px;margin:9px 0 0;max-width:78ch;overflow-wrap:anywhere}
 .nav{display:flex;gap:10px;justify-content:space-between;margin:16px 0 0;font-size:12.5px}
-@media (max-width:640px){.wrap{padding:16px 12px 40px}h1{font-size:21px}.stat b{font-size:18px}}
+.metadata{margin:14px 0 24px;color:var(--muted);font-size:12px}
+.metadata pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.7 var(--mono);padding:10px 14px;margin:0}
+.lead{font-size:17px;max-width:72ch;color:var(--muted);overflow-wrap:anywhere}
+.examples{display:grid;gap:22px}
+.example{border:1px solid var(--line);border-radius:14px;background:var(--surface);overflow:hidden}
+.example-header{padding:18px 22px;background:var(--surface2)}
+.example-header h3{font-size:15px;overflow-wrap:anywhere}
+.example-header p{margin:8px 0 0;font-size:16px;overflow-wrap:anywhere}
+.pair{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.pair-arm{min-width:0;padding:22px}
+.pair-arm+.pair-arm{border-left:1px solid var(--line)}
+.arm-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}
+.arm-head h4{font-size:16px;margin:0}
+.answer{white-space:pre-wrap;overflow-wrap:anywhere;font:16px/1.8 var(--sans);margin:14px 0 18px}
+.sample-facts{padding-top:12px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}
+.sample-facts p{margin:5px 0}
+.sample-checks{list-style:none;padding:0;margin:10px 0;display:grid;gap:10px}
+.sample-checks li{overflow-wrap:anywhere;font-size:13px}
+.sample-checks p{font-size:12px;margin:4px 0 0;color:var(--muted)}
+.sample-link{display:inline-block;margin-top:12px;font-size:13px;font-weight:600}
+.finding{padding:18px 22px;border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;background:var(--surface);font-size:17px;margin-bottom:14px}
+.finding p:last-child{margin-bottom:0}
+.section-head{display:flex;justify-content:space-between;gap:16px;align-items:baseline;margin-bottom:12px}
+.no-sample{padding:22px;color:var(--muted)}
+@media (max-width:720px){.wrap{padding:24px 16px 40px}.stat b{font-size:20px}.pair{grid-template-columns:1fr}.pair-arm+.pair-arm{border-left:0;border-top:1px solid var(--line)}.pair-arm,.example-header{padding:18px}.topbar{padding:10px 16px}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.nav{flex-wrap:wrap}}
+@media print{.topbar{position:static}.wrap{max-width:none;padding:20px 0}.filters{display:none}.scroll{max-height:none;overflow:visible}.example,.turn,.card{break-inside:avoid}}
 `.trim();
 
 export interface PageOptions {
@@ -219,7 +246,7 @@ export interface RunsTableOptions {
 }
 
 function outcomeChip(outcome: RunRow["outcome"]): string {
-	return `<span class="chip ${outcome}">${outcome}</span>`;
+	return `<span class="chip ${outcome}">${h(t(`evidence.${outcome}`))}</span>`;
 }
 
 function scoreCell(row: RunRow): string {
@@ -227,7 +254,7 @@ function scoreCell(row: RunRow): string {
 }
 
 function graderChips(row: RunRow): string {
-	if (row.graders.length === 0) return '<span class="gchip">no graders</span>';
+	if (row.graders.length === 0) return `<span class="gchip">${h(t("evidence.noGraders"))}</span>`;
 	return row.graders
 		.map((grader) =>
 			`<span class="gchip ${grader.passed ? "ok" : "no"}" title="${h(grader.name)}">${h(grader.type)} ${h(grader.chip)}</span>`)
@@ -252,17 +279,17 @@ function modeCell(row: RunRow, options: RunsTableOptions): string {
  */
 export function renderRunsTable(rows: readonly RunRow[], options: RunsTableOptions): string {
 	if (rows.length === 0) {
-		return '<div class="scroll"><div class="empty">No runs match this filter.</div></div>';
+		return `<div class="scroll"><div class="empty">${h(t("evidence.noRuns"))}</div></div>`;
 	}
 	const body = rows.map((row) => `<tr data-row${options.dataRun ? ` data-run="${h(row.runId)}"` : ""} data-outcome="${h(row.outcome)}" data-modes="${h(row.failureModeIds.join(" "))}" data-text="${h(`${row.taskId} ${row.runId} ${row.inputPreview ?? ""}`.toLowerCase())}">`
 		+ `<td class="mono"><a href="${h(options.hrefForRun(row.runId))}">${h(row.taskId)}</a></td>`
 		+ `<td class="num">${row.repetitionIndex}</td>`
-		+ `<td class="wrapcell">${row.inputPreview === null ? '<span class="same">trace unavailable</span>' : h(row.inputPreview)}</td>`
+		+ `<td class="wrapcell">${row.inputPreview === null ? `<span class="same">${h(t("evidence.traceUnavailable"))}</span>` : h(row.inputPreview)}</td>`
 		+ `<td>${outcomeChip(row.outcome)}</td>`
 		+ `<td class="num">${scoreCell(row)}</td>`
 		+ `<td class="wrapcell">${graderChips(row)}</td>`
 		+ `<td class="wrapcell">${modeCell(row, options)}</td>`
-		+ `<td class="num">${row.metrics.toolCalls} executed${row.metrics.reportedToolCalls > 0 ? ` / ${row.metrics.reportedToolCalls} reported` : ""}${row.metrics.toolErrors > 0 ? ` / ${row.metrics.toolErrors} err` : ""}</td>`
+		+ `<td class="num">${h(t("evidence.executedCount", { count: row.metrics.toolCalls }))}${row.metrics.reportedToolCalls > 0 ? ` / ${h(t("evidence.reportedCount", { count: row.metrics.reportedToolCalls }))}` : ""}${row.metrics.toolErrors > 0 ? ` / ${h(t("evidence.errorCount", { count: row.metrics.toolErrors }))}` : ""}</td>`
 		+ `<td class="num">${(row.metrics.latencyMs / 1000).toFixed(1)}s</td>`
 		+ `<td class="num">${money(row.metrics.costUsd, 5)}</td>`
 		+ `<td class="num">${count(row.metrics.tokens)}</td>`
@@ -292,7 +319,7 @@ function apply(){
 		rows[i].hidden=!hit;
 		if(hit)shown++;
 	}
-	if(count)count.textContent=shown+' of '+rows.length+' rows';
+		if(count)count.textContent=(count.getAttribute('data-template')||'{shown} of {total} rows').replace('{shown}',String(shown)).replace('{total}',String(rows.length));
 }
 box.addEventListener('input',apply);
 apply();
@@ -332,7 +359,7 @@ export interface EvalPageModel {
 	design: { tasks: number; repetitions: number; runs: number };
 	summary: { total: number; pass: number; fail: number; error: number; allPassRate: number };
 	meanScore: number;
-	costUsd: number;
+	costUsd: number | null;
 	tokens: number;
 	judgeCalibration: string[];
 	briefStatus: string;
@@ -349,19 +376,19 @@ export interface EvalPageModel {
 export function renderEvalPage(model: EvalPageModel): string {
 	const modeLabels = new Map(model.modes.map((mode) => [mode.id, mode.title]));
 	const stats = [
-		["Pass rate", percent(model.summary.allPassRate)],
-		["Passed", `${model.summary.pass}/${model.summary.total}`],
-		["Mean score", percent(model.meanScore)],
-		["Errors", String(model.summary.error)],
-		["Failure modes", String(model.modes.length)],
-		["Cost", `$${model.costUsd.toFixed(4)}`],
+		[t("evidence.passRate"), percent(model.summary.allPassRate)],
+		[t("evidence.passed"), `${model.summary.pass}/${model.summary.total}`],
+		[t("evidence.meanScore"), percent(model.meanScore)],
+		[t("evidence.errors"), String(model.summary.error)],
+		[t("evidence.failureModes"), String(model.modes.length)],
+		[t("explorer.th.cost"), money(model.costUsd, 4)],
 	].map(([label, value]) => `<div class="stat"><b>${h(value)}</b><span>${h(label)}</span></div>`).join("");
 
 	const modes = model.modes.length === 0
-		? '<div class="card">No failure modes: the verified diagnosis found nothing to group.</div>'
+		? `<div class="card">${h(t("evidence.noModes"))}</div>`
 		: `<ul class="modes">${model.modes.map((mode) => `<li>
 <div class="row"><h3><a href="${h(mode.href)}">${h(mode.title)}</a></h3><span class="count">${h(t("explorer.mode-count", { runs: mode.runCount, affected: mode.affectedTasks, total: mode.totalTasks, reproduction: Math.round(mode.reproductionBps / 100) }))}</span></div>
-<div class="pills"><span class="pill">${h(mode.scope)}</span><span class="pill">${h(mode.severity)}</span><span class="pill">${h(mode.decision)}</span></div>
+<div class="pills"><span class="pill">${h(tokenLabel("mode.scope", mode.scope))}</span><span class="pill">${h(tokenLabel("mode.severity", mode.severity))}</span><span class="pill">${h(tokenLabel("mode.decision", mode.decision))}</span></div>
 <p class="hyp">${h(mode.facts)}</p>
 ${mode.excerpt ? `<p class="excerpt mono">${h(mode.excerpt)}</p>` : ""}
 </li>`).join("")}</ul>`;
@@ -374,9 +401,8 @@ ${mode.excerpt ? `<p class="excerpt mono">${h(mode.excerpt)}</p>` : ""}
 <div class="head">
 	<div>
 		<h1>${h(model.targetId)}</h1>
-		<div class="sub mono">${h(model.evalRunId)} · ${h(model.label)} · ${h(model.startedAt)}</div>
-		<div class="sub">${h(model.suiteId)} · dataset ${h(model.dataset)} · ${h(model.design.tasks)} tasks × ${h(model.design.repetitions)} repetition(s) · ${h(model.design.runs)} runs</div>
-		${model.model ? `<div class="sub">model ${h(model.model)}</div>` : ""}
+		<div class="sub">${h(t("evidence.design", model.design))} · ${h(model.startedAt)}</div>
+		${model.model ? `<div class="sub">${h(t("evidence.model"))}: ${h(model.model)}</div>` : ""}
 	</div>
 	<div class="pills">
 		<span class="tag">${h(model.visibility)}</span>
@@ -385,12 +411,14 @@ ${mode.excerpt ? `<p class="excerpt mono">${h(mode.excerpt)}</p>` : ""}
 		<span class="tag">${h(model.briefStatus)}</span>
 	</div>
 </div>
+<details class="metadata"><summary>${h(t("evidence.metadata"))}</summary><pre>${h(model.evalRunId)} · ${h(model.label)}
+${h(model.suiteId)} · ${h(t("evidence.dataset"))}: ${h(model.dataset)}</pre></details>
 <div class="stats">${stats}</div>
 <section class="prose">
 	<p>${h(model.briefHeadline)}</p>
 	<p class="note">${model.proposalEligible
-		? "Proposal gate: eligible for an exact human-reviewed harness proposal."
-		: "Proposal gate: blocked. Mode-level suggestions are diagnostic guidance only until the global evidence gate is satisfied."}</p>
+		? h(t("evidence.proposalEligible"))
+		: h(t("evidence.proposalBlocked"))}</p>
 	${model.judgeCalibration.map((line) => `<p class="note">${h(line)}</p>`).join("")}
 </section>
 <section><h2>${h(t("explorer.h2.failure-modes"))}</h2>${modes}</section>
@@ -398,8 +426,8 @@ ${candidates}
 <section>
 	<h2>${h(t("explorer.h2.runs"))}</h2>
 	<div class="filters">
-		<input id="filter" type="search" placeholder="Filter by task id or input text" aria-label="Filter runs">
-		<span class="count" id="filter-count"></span>
+		<input id="filter" type="search" placeholder="${h(t("evidence.filterPlaceholder"))}" aria-label="${h(t("evidence.filterLabel"))}">
+		<span class="count" id="filter-count" data-template="${h(t("evidence.filterCount"))}"></span>
 		<span class="pills">${model.filterLinks.map((link) => `<a class="pill${link.active ? " on" : ""}" href="${h(link.href)}">${h(link.label)}</a>`).join("")}</span>
 	</div>
 	${renderRunsTable(model.rows, {
@@ -413,8 +441,8 @@ ${candidates}
 	return renderPage({
 		title: `${model.targetId} · ${model.evalRunId}`,
 		crumbs: [
-			{ label: "AHDE Evidence", href: "/" },
-			{ label: model.evalRunId },
+			{ label: t("evidence.brand"), href: "/" },
+			{ label: model.targetId },
 		],
 		body,
 		script: RUNS_TABLE_FILTER_SCRIPT,
@@ -452,49 +480,49 @@ export interface RunDetailPageModel {
 
 function renderTranscript(model: RunDetailPageModel): string {
 	if (!model.transcript) {
-		return `<div class="card">No trace is recorded for this run.</div>`;
+		return `<div class="card">${h(t("evidence.noTrace"))}</div>`;
 	}
 	const entries = model.transcript.entries.map((entry) => {
 		if (entry.kind === "user") {
-			return `<article class="turn"><div class="who"><span>user</span></div><pre>${h(entry.text)}</pre></article>`;
+			return `<article class="turn"><div class="who"><span>${h(t("evidence.user"))}</span></div><pre class="spoken">${h(entry.text)}</pre></article>`;
 		}
 		if (entry.kind === "assistant") {
 			const thinking = entry.thinking
-				? `<details><summary>thinking</summary><pre>${h(entry.thinking)}</pre></details>`
+				? `<details><summary>${h(t("evidence.thinking"))}</summary><pre>${h(entry.thinking)}</pre></details>`
 				: "";
-			return `<article class="turn${entry.final ? " final" : ""}"><div class="who"><span>assistant${entry.final ? " · final answer" : ""}</span></div>`
-				+ (entry.text ? `<pre>${h(entry.text)}</pre>` : "")
+			return `<article class="turn${entry.final ? " final" : ""}"><div class="who"><span>${h(t("evidence.assistant"))}${entry.final ? ` · ${h(t("evidence.finalAnswer"))}` : ""}</span></div>`
+				+ (entry.text ? `<pre class="spoken">${h(entry.text)}</pre>` : "")
 				+ thinking
 				+ `</article>`;
 		}
 		const duration = entry.durationMs === null ? "" : ` · ${(entry.durationMs / 1000).toFixed(2)}s`;
-		const status = entry.evidence === "reported" ? "agent-reported, not host-verified"
-			: entry.result === null ? "no result recorded" : entry.isError ? "error" : "ok";
-		return `<article class="turn${entry.isError ? " toolerr" : ""}"><div class="who"><span>tool · ${h(entry.name)}</span><span>${h(status)}${h(duration)}</span></div>`
-			+ `<details><summary>arguments</summary><pre>${h(entry.args)}</pre></details>`
+		const status = entry.evidence === "reported" ? t("evidence.reportedOnly")
+			: entry.result === null ? t("evidence.noResult") : entry.isError ? t("evidence.error") : t("evidence.ok");
+		return `<article class="turn${entry.isError ? " toolerr" : ""}"><div class="who"><span>${h(t("evidence.tool"))} · ${h(entry.name)}</span><span>${h(status)}${h(duration)}</span></div>`
+			+ `<details><summary>${h(t("evidence.arguments"))}</summary><pre>${h(entry.args)}</pre></details>`
 			+ (entry.result === null
 				? ""
-				: `<details><summary>result${entry.resultTruncated ? " (clipped)" : ""}</summary><pre>${h(entry.result)}</pre></details>`)
+				: `<details><summary>${h(t("evidence.result"))}${entry.resultTruncated ? ` (${h(t("evidence.clipped"))})` : ""}</summary><pre>${h(entry.result)}</pre></details>`)
 			+ `</article>`;
 	}).join("");
-	return entries || '<div class="card">The recorded trace holds no renderable turns.</div>';
+	return entries || `<div class="card">${h(t("evidence.noTurns"))}</div>`;
 }
 
 function renderVerdict(graders: readonly GraderFinding[]): string {
-	if (graders.length === 0) return '<div class="card">This run recorded no grader results.</div>';
+	if (graders.length === 0) return `<div class="card">${h(t("evidence.noGraderResults"))}</div>`;
 	return graders.map((grader) => {
 		const assertions = grader.assertionVerdicts
 			? `<div class="scroll"><table><thead><tr><th>${h(t("explorer.th.index"))}</th><th>${h(t("explorer.th.answer"))}</th><th>${h(t("explorer.th.judge-evidence"))}</th></tr></thead><tbody>${grader.assertionVerdicts.map((assertion) => `<tr><td class="num">${assertion.index}</td><td><span class="chip ${assertion.answer === "yes" ? "pass" : assertion.answer === "no" ? "fail" : "error"}">${h(assertion.answer)}</span></td><td class="wrapcell">${h(assertion.evidence)}</td></tr>`).join("")}</tbody></table></div>`
 			: grader.assertions
-				? `<p class="note">The record keeps ${grader.assertions.passed}/${grader.assertions.total} assertions; per-assertion evidence is not available for this run.</p>`
+				? `<p class="note">${h(t("evidence.assertionsSummary", { passed: grader.assertions.passed, total: grader.assertions.total }))}</p>`
 				: "";
 		const jury = grader.jury
-			? `<p class="note">Jury: ${grader.jury.map((vote) => `juror ${vote.juror} ${vote.passed ? "pass" : "fail"}${vote.choice ? ` (${vote.choice})` : ""}${vote.answers ? ` [${vote.answers.join(", ")}]` : ""}`).join(" · ")}</p>`
+			? `<p class="note">${h(t("evidence.jury"))}: ${h(grader.jury.map((vote) => `${t("evidence.juror")} ${vote.juror} ${t(vote.passed ? "evidence.pass" : "evidence.fail")}${vote.choice ? ` (${vote.choice})` : ""}${vote.answers ? ` [${vote.answers.map((answer) => tokenLabel("assertion.answer", answer)).join(", ")}]` : ""}`).join(" · "))}</p>`
 			: "";
 		return `<div class="card">
 <div class="rowline">
 	<h3 class="mono">${h(grader.name)}</h3>
-	<span><span class="chip ${grader.passed ? "pass" : "fail"}">${grader.passed ? "pass" : "fail"}</span> <span class="gchip">${h(grader.type)} ${h(grader.chip)}</span> <span class="gchip">score ${grader.score.toFixed(2)}</span>${grader.choice ? ` <span class="gchip">choice ${h(grader.choice)}</span>` : ""}</span>
+	<span>${outcomeChip(grader.passed ? "pass" : "fail")} <span class="gchip">${h(grader.type)} ${h(grader.chip)}</span> <span class="gchip">${h(t("explorer.th.score"))} ${grader.score.toFixed(2)}</span>${grader.choice ? ` <span class="gchip">${h(t("evidence.choice"))} ${h(grader.choice)}</span>` : ""}</span>
 </div>
 <p class="sub">${h(grader.reason)}</p>
 ${assertions}${jury}
@@ -503,23 +531,8 @@ ${assertions}${jury}
 }
 
 function renderWhy(explanation: RunExplanation): string {
-	const graders = explanation.graders.map((grader) => {
-		const head = grader.expected
-			? `<b class="mono">${h(grader.graderName)}</b> (${h(grader.graderType)}) ${h(grader.expected)}; ${h(grader.actual)}.`
-			: `<b class="mono">${h(grader.graderName)}</b> (${h(grader.graderType)}): ${h(grader.actual)}.`;
-		const assertions = grader.assertions
-			.map((assertion) => `<p>Assertion ${assertion.index} was answered “${h(assertion.answer)}”; the judge's evidence: “${h(assertion.evidence)}”.</p>`)
-			.join("");
-		return `<p>${head}</p><p>The grader recorded: “${h(grader.reason)}”.</p>${assertions}`;
-	}).join("");
-	const modes = explanation.failureModes.map((mode) =>
-		`<p>This run is evidence for the failure mode “${h(mode.title)}” (${h(mode.scope)}, ${h(mode.severity)}, ${mode.affectedTasks} of ${mode.totalTasks} task(s), ${Math.round(mode.reproductionBps / 100)}% reproduction).</p>`
-		+ `<p class="hyp">${h(t("why.facts", { facts: mode.facts }))}</p>`).join("");
-	const flip = explanation.flip
-		? `<p>${h(flipSubject(explanation.flip))} <span class="mono">${h(explanation.flip.candidateId)}</span> re-ran this task: <span class="${explanation.flip.direction === "improved" ? "up" : explanation.flip.direction === "regressed" ? "down" : "same"}">${h(explanation.flip.badge)} ${h(explanation.flip.before)} → ${h(explanation.flip.after)}</span> (${h(explanation.flip.direction)}; baseline ${explanation.flip.baselinePass}/${explanation.flip.baselineTotal}, candidate ${explanation.flip.candidatePass}/${explanation.flip.candidateTotal}).</p>`
-		: "";
-	return `<div class="why"><p>${h(explanation.headline)}</p>${graders}${modes}${flip}
-<p class="note">Every sentence above is assembled by the host from recorded fields — the grader results, the bounded trace, the stored diagnosis, and a Candidate's own comparison. No model wrote it.</p></div>`;
+	return `<div class="why">${renderRunExplanationText(explanation).map((sentence) => `<p>${h(sentence)}</p>`).join("")}
+<p class="note">${h(t("evidence.hostNote"))}</p></div>`;
 }
 
 const MAX_RENDERED_RAG_SEARCHES = 8;
@@ -599,42 +612,43 @@ export function renderRunDetailPage(model: RunDetailPageModel): string {
 <div class="head">
 	<div>
 		<h1>${h(run.taskId)} <span class="sub">${h(t("explorer.repetition", { index: run.repetitionIndex }))}</span></h1>
-		<div class="sub mono">${h(run.runId)} · ${h(model.evalRunId)} · ${h(model.label)}</div>
-		<div class="sub">${h(run.startedAt)}${run.finishedAt ? ` → ${h(run.finishedAt)}` : ""}</div>
+		<p class="lead">${h(model.input === null ? t("evidence.noInput") : model.input.slice(0, 220) + (model.input.length > 220 ? "…" : ""))}</p>
 	</div>
 	<div class="pills">
-		<span class="chip ${run.outcome}">${run.outcome}</span>
+		${outcomeChip(run.outcome)}
 		<span class="tag mono">${h(model.revision.slice(0, 12))}</span>
 	</div>
 </div>
 <div class="stats">
-	<div class="stat"><b>${(run.metrics.latencyMs / 1000).toFixed(1)}s</b><span>Latency</span></div>
-	<div class="stat"><b>${run.metrics.toolCalls}</b><span>Executed tools</span></div>
-	${run.metrics.reportedToolCalls > 0 ? `<div class="stat"><b>${run.metrics.reportedToolCalls}</b><span>Agent-reported tools</span></div>` : ""}
-	<div class="stat"><b>${run.metrics.toolErrors}</b><span>Tool errors</span></div>
-	<div class="stat"><b>${count(run.metrics.tokens)}</b><span>Tokens</span></div>
-	<div class="stat"><b>${money(run.metrics.costUsd, 5)}</b><span>Cost</span></div>
+	<div class="stat"><b>${(run.metrics.latencyMs / 1000).toFixed(1)}${h(t("unit.second-short"))}</b><span>${h(t("explorer.th.latency"))}</span></div>
+	<div class="stat"><b>${run.metrics.toolCalls}</b><span>${h(t("evidence.executedTools"))}</span></div>
+	${run.metrics.reportedToolCalls > 0 ? `<div class="stat"><b>${run.metrics.reportedToolCalls}</b><span>${h(t("evidence.reportedTools"))}</span></div>` : ""}
+	<div class="stat"><b>${run.metrics.toolErrors}</b><span>${h(t("evidence.toolErrors"))}</span></div>
+	<div class="stat"><b>${count(run.metrics.tokens)}</b><span>${h(t("explorer.th.tokens"))}</span></div>
+	<div class="stat"><b>${money(run.metrics.costUsd, 5)}</b><span>${h(t("explorer.th.cost"))}</span></div>
 </div>
+<details class="metadata"><summary>${h(t("evidence.metadata"))}</summary><pre>${h(run.runId)} · ${h(model.evalRunId)} · ${h(model.label)}
+${h(run.startedAt)}${run.finishedAt ? ` → ${h(run.finishedAt)}` : ""}</pre></details>
 <section><h2>${h(t("explorer.h2.why"))}</h2>${renderWhy(model.explanation)}</section>
 ${model.explanation.rag ? `<section><h2>${h(t("rag.title"))}</h2>${renderRagXray(model.explanation.rag)}</section>` : ""}
 ${run.error ? `<section><h2>${h(t("explorer.h2.run-error"))}</h2><div class="card"><pre class="errpre">${h(run.error)}</pre></div></section>` : ""}
 <section><h2>${h(t("explorer.h2.verdict"))}</h2><div class="cards">${renderVerdict(model.graders)}</div></section>
 <section>
 	<h2>${h(t("explorer.h2.conversation"))}</h2>
-	<details class="turn"><summary>System instructions</summary><pre>The Target's system instructions are not recorded in session.jsonl; this transcript starts at the case input.</pre></details>
-	${model.input === null ? "" : `<details class="turn" open><summary>Case input</summary><pre>${h(model.input)}</pre></details>`}
+	<details class="turn"><summary>${h(t("evidence.systemInstructions"))}</summary><pre>${h(t("evidence.systemUnavailable"))}</pre></details>
+	${model.input === null ? "" : `<details class="turn" open><summary>${h(t("evidence.caseInput"))}</summary><pre>${h(model.input)}</pre></details>`}
 	${renderTranscript(model)}
 	<p class="note">${h(model.traceNotice)}</p>
 </section>
 <nav class="nav">
-	<span>${model.prev ? `<a href="/runs/${encodeURIComponent(model.prev.runId)}">← ${h(model.prev.taskId)} rep ${model.prev.repetitionIndex}</a>` : ""}</span>
-	<span><a href="/evals/${encodeURIComponent(model.evalRunId)}">all runs</a></span>
-	<span>${model.next ? `<a href="/runs/${encodeURIComponent(model.next.runId)}">${h(model.next.taskId)} rep ${model.next.repetitionIndex} →</a>` : ""}</span>
+	<span>${model.prev ? `<a href="/runs/${encodeURIComponent(model.prev.runId)}">← ${h(model.prev.taskId)} ${h(t("explorer.repetition", { index: model.prev.repetitionIndex }))}</a>` : ""}</span>
+	<span><a href="/evals/${encodeURIComponent(model.evalRunId)}">${h(t("evidence.allRuns"))}</a></span>
+	<span>${model.next ? `<a href="/runs/${encodeURIComponent(model.next.runId)}">${h(model.next.taskId)} ${h(t("explorer.repetition", { index: model.next.repetitionIndex }))} →</a>` : ""}</span>
 </nav>`;
 	return renderPage({
 		title: `${run.taskId} · ${run.runId}`,
 		crumbs: [
-			{ label: "AHDE Evidence", href: "/" },
+			{ label: t("evidence.brand"), href: "/" },
 			{ label: model.evalRunId, href: `/evals/${encodeURIComponent(model.evalRunId)}` },
 			{ label: run.runId },
 		],
@@ -646,6 +660,7 @@ ${run.error ? `<section><h2>${h(t("explorer.h2.run-error"))}</h2><div class="car
 
 export interface ComparePageRow {
 	taskId: string;
+	exclusion: ExcludedTask["reason"] | null;
 	flip: CandidateFlip;
 	baselineScore: number;
 	candidateScore: number;
@@ -654,7 +669,32 @@ export interface ComparePageRow {
 	candidateRunId: string | null;
 }
 
+/** A bounded excerpt of one verified, public recorded repetition. */
+export interface CompareRunPreview {
+	runId: string;
+	repetitionIndex: number;
+	outcome: RunRow["outcome"];
+	input: string | null;
+	answer: string | null;
+	toolCalls: number;
+	reportedToolCalls: number;
+	toolNames: string[];
+	checks: Array<{ name: string; passed: boolean; reason: string }>;
+	omittedChecks: number;
+}
+
+export interface CompareCasePreview {
+	taskId: string;
+	exclusion: ExcludedTask["reason"] | null;
+	baselineScore: number;
+	candidateScore: number;
+	scoreDelta: number;
+	baseline: CompareRunPreview | null;
+	candidate: CompareRunPreview | null;
+}
+
 export interface ComparePageModel {
+	comparability: "comparable" | "invalid" | "inconclusive";
 	candidateId: string;
 	targetId: string;
 	status: string;
@@ -665,55 +705,94 @@ export interface ComparePageModel {
 	resources: { costRatio: number | null; latencyRatio: number | null; tokenRatio: number | null };
 	confidence: { low: number; high: number } | null;
 	/** Verdict and design size only. Sealed identity and content never appear. */
-	sealed: { verdict: string; tasks: number; repetitions: number; excludedTasks: number } | null;
+	sealed: { verdict: string; outcome: SealedOutcome | null; tasks: number; repetitions: number; excludedTasks: number } | null;
 	rows: ComparePageRow[];
+	examples: CompareCasePreview[];
 	counts: { improved: number; regressed: number; unchanged: number };
 	notices: string[];
 }
 
+function renderCompareArm(preview: CompareRunPreview | null, label: string): string {
+	if (!preview) return `<div class="pair-arm"><h4>${h(label)}</h4><p class="no-sample">${h(t("evidence.noSample"))}</p></div>`;
+	const tools = preview.toolCalls > 0
+		? `${t("evidence.executedTools")}: ${preview.toolCalls} · ${preview.toolNames.join(", ") || t("evidence.noToolsTrace")}`
+		: t("evidence.noTools");
+	return `<div class="pair-arm">
+<div class="arm-head"><h4>${h(label)}</h4>${outcomeChip(preview.outcome)}</div>
+<p class="answer">${h(preview.answer ?? t("evidence.noAnswer"))}</p>
+<div class="sample-facts"><p>${h(tools)}</p>${preview.reportedToolCalls > 0 ? `<p>${h(t("evidence.reportedTools"))}: ${preview.reportedToolCalls}</p>` : ""}</div>
+${preview.checks.length > 0 ? `<details><summary>${h(t("evidence.checks"))}</summary><ul class="sample-checks">${preview.checks.map((check) => `<li>${outcomeChip(check.passed ? "pass" : "fail")} <b>${h(check.name)}</b><p>${h(check.reason)}</p></li>`).join("")}</ul></details>` : ""}
+${preview.omittedChecks > 0 ? `<p class="note">${h(t("evidence.moreChecks", { count: preview.omittedChecks }))}</p>` : ""}
+<a class="sample-link" href="/runs/${encodeURIComponent(preview.runId)}">${h(t("evidence.openRun"))} →</a>
+</div>`;
+}
+
+function scoreDirection(delta: number): "regressed" | "improved" | "unchanged" {
+	return delta < 0 ? "regressed" : delta > 0 ? "improved" : "unchanged";
+}
+
+function renderCompareExamples(model: ComparePageModel): string {
+	if (model.examples.length === 0) return "";
+	return `<section aria-labelledby="examples-title">
+<div class="section-head"><h2 id="examples-title">${h(t("evidence.examples"))}</h2></div>
+<p class="note">${h(t("evidence.exampleNote", { shown: model.examples.length, total: model.rows.length }))}</p>
+<div class="examples">${model.examples.map((example) => {
+		const invalid = model.comparability === "invalid";
+		const direction = scoreDirection(example.scoreDelta);
+		return `<article class="example">
+<div class="example-header"><div class="rowline"><h3>${h(example.taskId)}</h3><span class="${invalid || example.exclusion ? "same" : direction === "regressed" ? "down" : direction === "improved" ? "up" : "same"}">${invalid ? h(t("evidence.notComparable")) : example.exclusion ? h(t(`evidence.excluded-${example.exclusion}`)) : `${h(t(`evidence.${direction}`))} · ${h(points(example.scoreDelta))}`}</span></div>
+<p>${h(example.baseline?.input ?? example.candidate?.input ?? t("evidence.noInput"))}</p>
+<div class="sub">${invalid ? h(t("evidence.invalidComparison")) : example.exclusion ? h(t("evidence.excludedNote")) : `${h(t("evidence.changedScore"))}: ${percent(example.baselineScore)} → ${percent(example.candidateScore)}`}</div></div>
+<div class="pair">${renderCompareArm(example.baseline, t("evidence.baseline"))}${renderCompareArm(example.candidate, t("evidence.candidate"))}</div>
+</article>`;
+	}).join("")}</div></section>`;
+}
+
 export function renderComparePage(model: ComparePageModel): string {
+	const invalid = model.comparability === "invalid";
 	const rows = model.rows.map((row) => `<tr>
 <td class="mono">${h(row.taskId)}</td>
 <td>${row.baselineRunId ? `<a href="/runs/${encodeURIComponent(row.baselineRunId)}">${h(row.flip.before)}</a>` : h(row.flip.before)} <span class="count">${row.flip.baselinePass}/${row.flip.baselineTotal}</span></td>
 <td>${row.candidateRunId ? `<a href="/runs/${encodeURIComponent(row.candidateRunId)}">${h(row.flip.after)}</a>` : h(row.flip.after)} <span class="count">${row.flip.candidatePass}/${row.flip.candidateTotal}</span></td>
-<td class="num">${percent(row.baselineScore)} → ${percent(row.candidateScore)}</td>
-<td class="num ${row.scoreDelta > 0 ? "up" : row.scoreDelta < 0 ? "down" : "same"}">${h(points(row.scoreDelta))}</td>
-<td class="${row.flip.direction === "improved" ? "up" : row.flip.direction === "regressed" ? "down" : "same"}">${h(row.flip.badge)} ${h(row.flip.direction)}</td>
+<td class="num">${invalid || row.exclusion ? "—" : `${percent(row.baselineScore)} → ${percent(row.candidateScore)}`}</td>
+<td class="num ${row.scoreDelta > 0 ? "up" : row.scoreDelta < 0 ? "down" : "same"}">${invalid || row.exclusion ? "—" : h(points(row.scoreDelta))}</td>
+<td class="${invalid || row.exclusion ? "same" : row.scoreDelta > 0 ? "up" : row.scoreDelta < 0 ? "down" : "same"}">${invalid ? h(t("evidence.notComparable")) : row.exclusion ? h(t(`evidence.excluded-${row.exclusion}`)) : `${row.scoreDelta > 0 ? "↑" : row.scoreDelta < 0 ? "↓" : "="} ${h(t(`evidence.${scoreDirection(row.scoreDelta)}`))}`}</td>
 </tr>`).join("");
 	const body = `
 <div class="head">
 	<div>
-		<h1>${h(model.targetId)} ${h(t("explorer.candidate-suffix"))}</h1>
-		<div class="sub mono">${h(model.candidateId)}</div>
-		<div class="sub mono">${h(model.baseline.evalRunId)} (${h(model.baseline.revision.slice(0, 12))}) → ${h(model.candidate.evalRunId)} (${h(model.candidate.revision.slice(0, 12))})</div>
+		<div class="sub">${h(model.targetId)}</div>
+		<h1>${h(t("evidence.comparison"))}</h1>
+		<p class="lead">${h(t("evidence.comparisonIntro"))}</p>
 	</div>
-	<div class="pills"><span class="tag">${h(model.status)}</span></div>
+	<div class="pills"><span class="tag">${h(candidateStatusLabel(model.status))}</span></div>
 </div>
+<div class="finding"><p>${h(model.developmentLine)}</p>${invalid ? model.notices.map(notice => `<p class="note">${h(notice)}</p>`).join("") : ""}</div>
 <div class="stats">
-	<div class="stat"><b>${percent(model.baseline.passRate)} → ${percent(model.candidate.passRate)}</b><span>All-pass rate</span></div>
-	<div class="stat"><b>${model.counts.improved} ↑ / ${model.counts.regressed} ↓ / ${model.counts.unchanged} =</b><span>Task flips</span></div>
-	<div class="stat"><b>${ratio(model.resources.costRatio)}</b><span>Cost ratio</span></div>
-	<div class="stat"><b>${ratio(model.resources.latencyRatio)}</b><span>Latency ratio</span></div>
-	<div class="stat"><b>${ratio(model.resources.tokenRatio)}</b><span>Token ratio</span></div>
+	<div class="stat"><b>${percent(model.baseline.passRate)} → ${percent(model.candidate.passRate)}</b><span>${h(t("evidence.allPassRate"))}</span></div>
+	<div class="stat"><b>${invalid ? "—" : `${model.counts.improved} ↑ / ${model.counts.regressed} ↓ / ${model.counts.unchanged} =`}</b><span>${h(t("evidence.taskFlips"))}</span></div>
+	<div class="stat"><b>${ratio(invalid ? null : model.resources.costRatio)}</b><span>${h(t("evidence.costRatio"))}</span></div>
+	<div class="stat"><b>${ratio(invalid ? null : model.resources.latencyRatio)}</b><span>${h(t("evidence.latencyRatio"))}</span></div>
+	<div class="stat"><b>${ratio(invalid ? null : model.resources.tokenRatio)}</b><span>${h(t("evidence.tokenRatio"))}</span></div>
 </div>
-<section class="prose">
-	<p class="why">${h(model.developmentLine)}</p>
-	${model.confidence ? `<p class="note">${h(t("unit.ci"))} ${bareDelta(model.confidence.low)} … ${bareDelta(model.confidence.high)}</p>` : ""}
-	${model.developmentReasons.map((reason) => `<p class="note">${h(reason)}</p>`).join("")}
+<section>
 	${model.sealed
-		? `<p class="why">Sealed verdict: <b>${h(model.sealed.verdict)}</b> on ${model.sealed.tasks} × ${model.sealed.repetitions}${model.sealed.excludedTasks > 0 ? ` · ${model.sealed.excludedTasks} excluded` : ""}. Sealed cases, identifiers, and traces are never rendered here.</p>`
-		: `<p class="note">No sealed holdout comparison is recorded for this candidate.</p>`}
+		? `<p><b>${h(t("evidence.sealed"))}: ${h(verdictLabel(model.sealed.verdict))}</b>${model.sealed.outcome ? ` · ${h(sealedOutcomeLabel(model.sealed.outcome))}` : model.sealed.verdict === "pass" ? ` · ${h(t("evidence.sealedUnknown"))}` : ""} · ${h(t("evidence.sealedDesign", { tasks: model.sealed.tasks, repetitions: model.sealed.repetitions }))}${model.sealed.excludedTasks > 0 ? ` · ${h(t("evidence.sealedExcluded", { count: model.sealed.excludedTasks }))}` : ""}</p><p class="note">${h(t("evidence.sealedNote"))}</p>`
+		: `<p class="note">${h(t("evidence.noSealed"))}</p>`}
 </section>
+<details class="metadata"><summary>${h(t("evidence.metadata"))}</summary><pre>${h(model.candidateId)}
+${h(model.baseline.evalRunId)} (${h(model.baseline.revision.slice(0, 12))}) → ${h(model.candidate.evalRunId)} (${h(model.candidate.revision.slice(0, 12))})</pre><p class="note">${h(t("evidence.recordedReasons"))}</p>${model.developmentReasons.map((reason) => `<p class="note">${h(reason)}</p>`).join("")}</details>
+${renderCompareExamples(model)}
 <section>
 	<h2>${h(t("explorer.h2.per-task"))}</h2>
 	<div class="scroll"><table><thead><tr><th>${h(t("explorer.th.task"))}</th><th>${h(t("explorer.th.baseline"))}</th><th>${h(t("explorer.th.candidate"))}</th><th>${h(t("explorer.th.score"))}</th><th>${h(t("explorer.th.delta"))}</th><th>${h(t("explorer.th.flip"))}</th></tr></thead><tbody>${rows}</tbody></table></div>
-	${model.notices.map((notice) => `<p class="note">${h(notice)}</p>`).join("")}
-	<p class="note">Per-task flips are flags for review; the verdict above comes only from the paired interval.</p>
+	${model.notices.length > 0 ? `<details class="metadata"><summary>${h(t("evidence.comparisonNotices", { count: model.notices.length }))}</summary>${model.notices.map((notice) => `<p class="note">${h(notice)}</p>`).join("")}</details>` : ""}
+	<p class="note">${h(t("evidence.flipNote"))}</p>
 </section>`;
 	return renderPage({
 		title: `${model.targetId} · ${model.candidateId}`,
 		crumbs: [
-			{ label: "AHDE Evidence", href: "/" },
+			{ label: t("evidence.brand"), href: "/" },
 			{ label: model.candidateId },
 		],
 		body,

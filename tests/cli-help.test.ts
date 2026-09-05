@@ -194,7 +194,8 @@ describe("one Builder persona", () => {
 describe("CLI help", () => {
 	it("keeps root help focused on the product journey", () => {
 		const help = cliHelp(["--help"]);
-		expect(help).toContain("open Builder Pi");
+		expect(help).toContain("continue this project's conversation");
+		expect(help).toContain("start a new Builder conversation");
 		expect(help).toContain("ahde resume");
 		expect(help).toContain("Inside Builder Pi");
 		expect(help).toContain("Advanced automation commands");
@@ -242,6 +243,8 @@ describe("CLI help", () => {
 	it("renders focused help for top-level commands", () => {
 		expect(cliHelp(["run", "--help"])).toContain("Exit 0 = all pass");
 		expect(cliHelp(["init", "--help"])).toContain("first Git commit");
+		expect(cliHelp(["init", "--help"])).toContain("ahde init my-agent --template python-support");
+		expect(cliHelp(["init", "--help"])).toContain("pi-basic         minimal Pi harness (the default)");
 		// The engine store holds the sealed exam, so every command that writes
 		// into one says it refuses a Target that already committed it.
 		for (const command of ["init", "run", "candidate"]) {

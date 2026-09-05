@@ -1,3 +1,4 @@
+import type { WorkbenchNext } from "./next-actions.js";
 import { z } from "zod";
 import { ProposalPredictionSchema, type ProposalPrediction } from "../builders/adapters.js";
 import type { GateSurface, GateVerdict, SealedOutcome } from "../domain/comparison-gate.js";
@@ -490,6 +491,8 @@ export interface WorkbenchView {
 	project: { id: string; directory: string };
 	stage: WorkbenchStage;
 	headline: string;
+	/** Present on current host views; absent only on pre-guidance serialized views. */
+	guidance?: WorkbenchNext;
 	target: {
 		status: "missing" | "bootstrap-required" | "ready";
 		id: string | null;
