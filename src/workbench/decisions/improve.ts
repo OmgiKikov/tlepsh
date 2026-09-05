@@ -1,12 +1,17 @@
 // One family of Workbench decisions, moved out of `AhdeWorkbench.decide()`
 // unchanged: the gate, the stale check and the receipts are still the
 // workbench's own; these functions only hold the branch bodies.
+import { execFileSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { percent } from "../../measurement.js";
+import { hashValue } from "../../provenance.js";
 import { abandonImprovementLoop, IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE, improvementLoopGate, listUnfinishedImprovementLoops, newImprovementLoopId, plannedImprovementExecutions, recordedBuilderProposalAuthor, renderImprovementLoopTable, UnfinishedImprovementLoopError, IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS } from "../../application/improvement-loop.js";
 import { planImprovementExperiment } from "../../application/improvement-experiment-design.js";
 import { loadCorpus } from "../../corpus.js";
 import { requireApprovedSpec, requireDevelopmentCorpus } from "../resolution.js";
-import { formatEstimatedCost, formatEstimatedTime, actorId } from "../workbench.js";
+import { exactSame, formatEstimatedCost, formatEstimatedTime } from "../workbench.js";
+import { WorkbenchStaleDecisionError } from "../errors.js";
+import type { WorkbenchInventory } from "../inventory.js";
 import type { DecisionContext, DecisionHost, DecisionInputOf } from "./shared.js";
 import type { WorkbenchDecisionResult } from "../types.js";
 
@@ -19,7 +24,24 @@ export async function decideImprove(
 	if (!inventory.target) throw new Error("`improve` needs one exact resolved Target");
 	const approved = requireApprovedSpec(inventory);
 	const corpus = requireDevelopmentCorpus(inventory, input.developmentCorpusId, approved.id);
-	const candidates = input.candidates ?? 1;
+	const bindings = (current: WorkbenchInventory) => {
+		const spec = requireApprovedSpec(current, approved.id);
+		const cases = requireDevelopmentCorpus(current, corpus.id, spec.id);
+		const target = current.target;
+		if (!target) throw new WorkbenchStaleDecisionError(input.kind);
+		return {
+			target: {
+				id: target.manifest.id, revision: target.gitSha, directory: realpathSync(target.dir),
+				branch: execFileSync("git", ["-C", target.dir, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" }).trim(),
+				manifestHash: hashValue(target.manifest), toolsetHash: target.toolsetHash,
+				runtimeHash: hashValue(target.runtime), model: target.manifest.model,
+			},
+			approvedSpec: { id: spec.id, hash: hashValue(spec) },
+			corpus: { id: cases.id, hash: cases.hash, taskCount: cases.taskCount },
+			lineageHash: hashValue(current.developmentLineage.get(cases.id) ?? null),
+		};
+	};
+	const original = bindings(inventory);
 	if (input.resumeLoopId && input.abandonLoopId) {
 		throw new Error("improve cannot resume and abandon a loop in the same decision");
 	}
@@ -44,9 +66,13 @@ export async function decideImprove(
 		throw new UnfinishedImprovementLoopError(blocking, unfinished.unreadable);
 	}
 	const loopId = resumed?.loopId ?? newImprovementLoopId();
+	const selection = input.selection ?? resumed?.configuration.selection ?? "best";
+	const candidates = input.candidates ?? resumed?.configuration.candidates ?? 1;
+	if (resumed && selection !== resumed.configuration.selection) throw new Error("A resumed improvement loop must keep its original selection policy");
+	if (selection === "review" && input.executionBudget !== undefined) throw new Error("An execution budget requires automatic best selection");
 	// Pure and model-free. A four-case minimum and the exact split are known
 	// before provider preparation, confirmation, branches, or spend.
-	const blindPlan = candidates > 1
+	const blindPlan = candidates > 1 || selection === "best"
 		? planImprovementExperiment(loadCorpus({
 			stateRoot: host.stateRoot,
 			projectId: host.projectId,
@@ -64,8 +90,13 @@ export async function decideImprove(
 		repetitions: input.repetitions,
 		maxCycles: input.maxCycles - (resumed?.lastCycle ?? 0),
 		candidates,
+		selection,
 	});
-	const targetEstimate = host.runEstimate(plannedExecutions, inventory.target);
+	const executionBudget = input.executionBudget ?? resumed?.configuration.executionBudget ?? plannedExecutions;
+	if (resumed && executionBudget !== resumed.configuration.executionBudget && selection === "best") {
+		throw new Error("A resumed improvement loop must keep its original execution limit");
+	}
+	const targetEstimate = host.runEstimate(Math.min(plannedExecutions, executionBudget), inventory.target);
 	const prepared = host.dependencies.authorImprovementProposal
 		? null : await host.dependencies.prepareImprovementAuthor?.();
 	const author = host.dependencies.authorImprovementProposal ?? prepared?.author ?? recordedBuilderProposalAuthor({
@@ -102,6 +133,10 @@ export async function decideImprove(
 	const target = percent(input.until);
 	const subject = {
 		operation: "improve",
+		original,
+		selection,
+		executionBudget,
+		selectionPolicy: selection === "best" ? "measured-best-v1: score delta, lower confidence bound, known cost, known latency, earliest tie" : "operator review",
 		approvedSpecId: approved.id,
 		developmentCorpus: { id: corpus.id, hash: corpus.hash, taskCount: corpus.taskCount },
 		until: input.until,
@@ -133,12 +168,13 @@ export async function decideImprove(
 			`Run up to ${input.maxCycles} improvement cycle${input.maxCycles === 1 ? "" : "s"} ` +
 			`towards ${target}` +
 			(candidates > 1 ? `, comparing ${candidates} changes per cycle` : "") +
-			` (at most ${plannedExecutions} Target executions)? ` +
+			` (Target execution limit ${executionBudget})? ` +
 			"This is the only time you will be asked: the loop APPLIES proposals on throwaway " +
 			"`candidate/auto-<loopId>-<n>` branches WITHOUT showing you each diff. " +
 			"Nothing touches your branch or your working tree. Changed paths are listed in the cycle " +
 			"table; the exact diff is shown in /review and bound by hash to the ship dialog. " +
 			"The loop never promotes, adopts, publishes or approves anything. " +
+			(selection === "best" ? "It keeps the best measured independent hypothesis against the original baseline, stopping after two rounds without progress or at the budget. Final review is yours. " : "") +
 			(blindPlan
 				? `The Builder sees ${blindPlan.authoringTaskIds.length} authoring cases; ` +
 					`all hypotheses are ranked on ${blindPlan.validationTaskIds.length} unseen validation cases. `
@@ -147,6 +183,11 @@ export async function decideImprove(
 			disclosure,
 		estimate,
 	});
+	// Consent names a concrete baseline. A new clean commit, model change or
+	// same-SHA branch switch during the dialog cannot become that baseline.
+	try {
+		if (!exactSame(original, bindings(host.decisionInventory(input.kind)))) throw new WorkbenchStaleDecisionError(input.kind);
+	} catch { throw new WorkbenchStaleDecisionError(input.kind); }
 	// Abandoning is itself state-changing. Do it only after the human approved
 	// the exact improve subject, never while merely preparing the dialog.
 	if (input.abandonLoopId) {
@@ -163,6 +204,8 @@ export async function decideImprove(
 		maxCycles: input.maxCycles,
 		repetitions: input.repetitions,
 		candidates,
+		selection,
+		...(selection === "best" ? { executionBudget } : {}),
 		loopId,
 		...(input.baselineMaxAgeMs === undefined ? {} : { baselineMaxAgeMs: input.baselineMaxAgeMs }),
 		...(input.jobs === undefined ? {} : { jobs: input.jobs }),
@@ -175,6 +218,11 @@ export async function decideImprove(
 	});
 	const table = renderImprovementLoopTable(loop, disclosure);
 	const search = [...loop.cycles].reverse().find((cycle) => cycle.search)?.search ?? null;
+	// The last experiment can lose. Review the measured incumbent, never
+	// whichever candidate happens to be newest in the inventory.
+	const nextInventory = loop.selectionSummary?.incumbent
+		? host.select("candidate", loop.selectionSummary.incumbent.candidateId)
+		: host.inventory();
 	return {
 		kind: input.kind,
 		message:
@@ -191,7 +239,8 @@ export async function decideImprove(
 			executions: loop.executions,
 			candidates,
 			search,
+			...(loop.selectionSummary ? { selectionSummary: loop.selectionSummary } : {}),
 		},
-		view: await host.viewOf(host.inventory()),
+		view: await host.viewOf(nextInventory),
 	};
 }

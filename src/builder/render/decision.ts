@@ -79,11 +79,26 @@ function verificationLines(result: WorkbenchVerifyCandidateResult, paint: Paint,
 }
 
 function improveLines(result: WorkbenchImproveResult, paint: Paint, view: WorkbenchView): string[] {
-	const lines = [
+	const selected = result.selectionSummary;
+	const best = selected?.incumbent;
+	const lines: string[] = [];
+	if (selected) {
+		lines.push(best
+			? paint.success(t("improve.best", { candidate: oneLine(best.candidateId, 90) }))
+			: paint.muted(t("improve.no-best")));
+		if (best) lines.push(t("improve.gain", { delta: points(best.scoreDelta), low: points(best.confidence95.low), high: points(best.confidence95.high), rate: percent(best.candidatePassRate) }));
+		lines.push(paint.dim(t("improve.selection", { count: selected.evaluatedCandidates, charged: selected.executionsCharged, budget: selected.executionBudget })), "");
+	}
+	lines.push(
 		`${section(t("result.improvement-cycles"), paint)} ${plural(result.cycles.length, "cycle")} ` +
-			`${paint.dim(t("result.pass-rate", { executions: plural(result.executions, "execution"), rate: percent(result.finalPassRate) }))}`,
-	];
+			paint.dim(selected ? plural(result.executions, "execution") : t("result.pass-rate", { executions: plural(result.executions, "execution"), rate: percent(result.finalPassRate) })),
+	);
 	for (const cycle of result.cycles) {
+		if (selected) {
+			lines.push(paint.dim(`  ${cycle.cycle}. ${t("improve.authoring", { pass: cycle.pass, total: cycle.total })} · ${t("improve.trials", { count: cycle.search?.rows.length ?? 0 })}`));
+			for (const row of cycle.search?.rows ?? []) lines.push(paint.dim(`    ${searchCandidateLine(row)}`));
+			continue;
+		}
 		const screen = cycle.screen ? `screen ${cycle.screen.verdict} ${cycle.screen.improved}/${cycle.screen.tasks}` : "no screen";
 		const verification = cycle.verification
 			? `verify ${cycle.verification.verdict} ${points(cycle.verification.scoreDelta)}`
@@ -94,10 +109,13 @@ function improveLines(result: WorkbenchImproveResult, paint: Paint, view: Workbe
 			`  ${cycle.cycle}. ${cycle.pass}/${cycle.total} · ${screen} · ${verification} · ${cycle.note}`,
 		)));
 	}
-	for (const row of result.search?.rows ?? []) lines.push(paint.dim(searchCandidateLine(row)));
+	if (!selected) for (const row of result.search?.rows ?? []) lines.push(paint.dim(searchCandidateLine(row)));
 	const authorSpend = improvementAuthorSpendLine(result.cycles);
 	if (authorSpend) lines.push(paint.muted(authorSpend));
-	lines.push(paint.muted(t("result.stopped", { reason: result.stopMessage })));
+	const reason = result.stopReason === "no-progress-twice" || result.stopReason === "execution-budget-exhausted"
+		? t(`improve.stop.${result.stopReason}`) : result.stopMessage;
+	lines.push(paint.muted(t("result.stopped", { reason })));
+	if (selected) lines.push(...wrap(t("improve.uncertainty"), 100).map((line) => paint.dim(line)));
 	if (result.candidateId) {
 		lines.push(paint.muted(t("result.promotion-yours")));
 	}

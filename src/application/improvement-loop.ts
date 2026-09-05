@@ -15,11 +15,13 @@
  * than a promise: the gate the loop hands to anything nested throws instead of
  * asking.
  *
- * The loop therefore never runs the sealed guardrail. A verified, improved
- * candidate is where it stops and hands back.
+ * The loop never runs the sealed guardrail. Review mode hands back the first
+ * improved candidate/frontier; best mode measures independent hypotheses from
+ * the original baseline and hands back its best candidate within a finite budget.
  */
 
 import { randomBytes } from "node:crypto";
+import { acquireImprovementLoopOwnership } from "./improvement-loop-lock.js";
 import type { ImprovementAuthorUsage } from "./improvement-author.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
@@ -33,6 +35,7 @@ import { diagnoseEvalRun } from "../diagnosis.js";
 import type { GateVerdict } from "../domain/comparison-gate.js";
 import { withinInfrastructureBudget } from "../domain/comparison-gate.js";
 import { percent, points } from "../measurement.js";
+import { hashValue } from "../provenance.js";
 import {
 	findReusableBaseline,
 	runSuite,
@@ -93,6 +96,20 @@ import {
 	type ImprovementExperimentDesign,
 } from "./improvement-experiment-design.js";
 
+import {
+	ImprovementSelectionStateSchema,
+	initialImprovementSelection,
+	improvementSelectionSummary,
+	selectBestImprovement,
+	improvementProposalHash,
+	pinImprovementEval,
+	loadPinnedImprovementEval,
+	readImprovementMeasurement,
+	improvementCandidateId,
+	type ImprovementSelectionSummary,
+} from "./improvement-selection.js";
+export type { ImprovementSelectionSummary } from "./improvement-selection.js";
+
 /** Bounds a single `ahde improve` invocation. */
 export const MAX_IMPROVEMENT_CYCLES = 10;
 
@@ -125,6 +142,8 @@ const ImprovementLoopConfigurationSchema = z.strictObject({
 	candidates: z.number().int().min(1).max(MAX_SEARCH_CANDIDATES),
 	branchPrefix: z.string().min(1).max(200),
 	searchBranchPrefix: z.string().min(1).max(200),
+	selection: z.enum(["review", "best"]).default("review"),
+	executionBudget: z.number().int().positive().nullable().default(null),
 });
 type ImprovementLoopConfiguration = z.infer<typeof ImprovementLoopConfigurationSchema>;
 
@@ -145,8 +164,9 @@ export const ImprovementLoopRunRecordSchema = z.strictObject({
 	lastCycle: z.number().int().nonnegative().max(MAX_IMPROVEMENT_CYCLES),
 	/** Branches this loop created, in order. Never deleted by the loop. */
 	branches: z.array(z.string().min(1).max(200)).max(4 * MAX_IMPROVEMENT_CYCLES),
-	/** Verified candidates this loop produced. Today the loop stops at the first. */
-	candidateIds: z.array(ArtifactIdSchema).max(1),
+	/** Improved candidates measured by this loop; the selection state names the incumbent. */
+	candidateIds: z.array(ArtifactIdSchema).max(40),
+	selectionState: ImprovementSelectionStateSchema.nullable().default(null),
 	/** Target executions actually spent, including work before a process restart. */
 	executions: z.number().int().nonnegative(),
 	finalPassRate: z.number().min(0).max(1),
@@ -320,10 +340,14 @@ export type ImprovementLoopStopReason =
 	 */
 	| "experiments-exhausted"
 	/** A multi-candidate search finished; which hypothesis wins is the human's. */
-	| "search-decision-required";
+	| "search-decision-required"
+	| "no-progress-twice"
+	| "execution-budget-exhausted";
 
 export const IMPROVEMENT_LOOP_STOP_MESSAGES: Readonly<Record<ImprovementLoopStopReason, string>> = {
 	"target-reached": "the target pass rate is reached",
+	"no-progress-twice": "two rounds produced no better measured candidate",
+	"execution-budget-exhausted": "the remaining execution budget cannot fund another complete round",
 	"max-cycles": "the cycle budget is spent",
 	"development-verdict": "the development verdict is not `improved`",
 	"flat-screen-twice": "two cheap checks in a row found nothing",
@@ -521,6 +545,8 @@ export interface ImprovementLoopResult {
 	executions: number;
 	/** Persisted blind authoring/validation split used by a hypothesis search. */
 	experimentDesign: ImprovementExperimentDesign | null;
+	/** Present only for autonomous measured selection. No release authorization. */
+	selectionSummary?: ImprovementSelectionSummary;
 }
 
 export interface ImprovementLoopOptions {
@@ -539,9 +565,14 @@ export interface ImprovementLoopOptions {
 	 * Hypotheses per cycle. `1` (the default) is one proposal, one screen, one
 	 * verification. `2`..`4` asks the author for that many hypotheses for the
 	 * top failure mode and compares them in one search, so the cycle ends with a
-	 * Pareto table instead of a single verdict.
+	 * Pareto table instead of a single verdict in review mode. Best mode ranks all
+	 * verified hypotheses across rounds and requires a blind split even for one.
 	 */
 	candidates?: number;
+	/** Absent preserves the historical human-selection API. */
+	selection?: "best" | "review";
+	/** Hard Target execution cap for best mode; defaults to the disclosed planned maximum. */
+	executionBudget?: number;
 	jobs?: number;
 	branchPrefix?: string;
 	/** Branch prefix for a multi-candidate search; the ordinal is appended. */
@@ -824,12 +855,26 @@ export async function runImprovementLoop(
 	options: ImprovementLoopOptions,
 	dependenciesInput: Partial<ImprovementLoopDependencies> = {},
 ): Promise<ImprovementLoopResult> {
+	if (options.selection !== "best") return runImprovementLoopOwned(options, dependenciesInput);
+	assertImprovementLoopGate(options.gate);
+	const loopId = LoopIdSchema.parse(options.loopId ?? newImprovementLoopId());
+	const release = acquireImprovementLoopOwnership(options.runsRoot, loopId);
+	try { return await runImprovementLoopOwned({ ...options, loopId }, dependenciesInput); }
+	finally { release(); }
+}
+
+async function runImprovementLoopOwned(
+	options: ImprovementLoopOptions,
+	dependenciesInput: Partial<ImprovementLoopDependencies>,
+): Promise<ImprovementLoopResult> {
 	const dependencies: ImprovementLoopDependencies = { ...DEFAULT_DEPENDENCIES, ...dependenciesInput };
 	const repositoryDir = resolve(options.repositoryDir);
 	const runsRoot = resolve(options.runsRoot);
 	const stateRoot = resolve(options.stateRoot);
 	const actorId = options.actorId ?? "local-user";
 	const candidatesPerCycle = Math.trunc(options.candidates ?? 1);
+	const bestSelection = options.selection === "best";
+	const blindSearch = bestSelection || candidatesPerCycle > 1;
 	const now = options.now ?? (() => new Date().toISOString());
 	if (!Number.isFinite(options.until) || options.until < 0 || options.until > 1) {
 		throw new Error(`--until must be a pass rate between 0 and 1, got ${options.until}`);
@@ -851,12 +896,12 @@ export async function runImprovementLoop(
 	const searchBranchPrefix = options.searchBranchPrefix ?? `candidate/search-${loopId}-`;
 
 	const developmentCorpus = options.developmentCorpus ? dependencies.loadCorpus(options.developmentCorpus) : null;
-	if (candidatesPerCycle > 1 && !developmentCorpus) {
+	if (blindSearch && !developmentCorpus) {
 		throw new Error("blind hypothesis search requires one reviewed development corpus");
 	}
 	// This pure preflight rejects an underpowered basket before a split artifact,
 	// branch, evaluator or Builder request exists.
-	if (candidatesPerCycle > 1 && developmentCorpus) {
+	if (blindSearch && developmentCorpus) {
 		planImprovementExperiment(developmentCorpus, loopId);
 	}
 	// Every branch this loop cuts and every candidate it verifies is bound to one
@@ -868,7 +913,7 @@ export async function runImprovementLoop(
 		because: "an improvement loop cuts every branch from one clean committed baseline",
 		next: "commit or stash them (a run log written inside the Target counts), then run ahde improve again",
 	});
-	const experimentDesign = candidatesPerCycle > 1 && developmentCorpus
+	const experimentDesign = blindSearch && developmentCorpus
 		? dependencies.materializeExperimentDesign({
 			runsRoot,
 			stateRoot,
@@ -886,6 +931,16 @@ export async function runImprovementLoop(
 		return authoringCorpus ? targetWithDevelopmentCorpus(base, authoringCorpus) : base;
 	};
 	const rootTarget = resolveTarget(repositoryDir);
+	const executionBudget = bestSelection ? options.executionBudget ?? plannedImprovementExecutions({
+		developmentTasks: developmentCorpus!.metadata.taskCount,
+		authoringTasks: authoringCorpus!.metadata.taskCount,
+		validationTasks: validationCorpus!.metadata.taskCount,
+		repetitions: options.repetitions, maxCycles: options.maxCycles, candidates: candidatesPerCycle,
+		selection: "best",
+	}) : null;
+	if (bestSelection && (!Number.isSafeInteger(executionBudget) || executionBudget! <= 0)) {
+		throw new Error("best improvement requires a finite positive execution budget");
+	}
 	const configuration = ImprovementLoopConfigurationSchema.parse({
 		approvedSpecId: options.approvedSpecId,
 		targetGitSha: rootTarget.gitSha,
@@ -899,6 +954,8 @@ export async function runImprovementLoop(
 		candidates: candidatesPerCycle,
 		branchPrefix,
 		searchBranchPrefix,
+		selection: bestSelection ? "best" : "review",
+		executionBudget,
 	});
 	const recordPath = improvementLoopRecordPath(runsRoot, loopId);
 	const previous = existsSync(recordPath) ? loadImprovementLoopRun(runsRoot, loopId) : null;
@@ -923,6 +980,8 @@ export async function runImprovementLoop(
 
 	const cycles: ImprovementLoopCycle[] = [];
 	const candidateIds: string[] = [...(previous?.candidateIds ?? [])];
+	const selectionState = bestSelection ? previous?.selectionState ?? initialImprovementSelection() : null;
+	if (previous && bestSelection && !previous.selectionState) throw new Error("best improvement ledger has no selection state");
 	const branchesMade: string[] = unique([...(previous?.branches ?? []), ...gitClaims.branches]);
 	let executions = previous?.executions ?? 0;
 	let consecutiveFlat = previous?.consecutiveFlat ?? 0;
@@ -934,7 +993,7 @@ export async function runImprovementLoop(
 	// What already lost, read once: a project's candidate records do not change
 	// while its own loop is running, and every experiment this loop finishes is
 	// added below rather than re-read from disk.
-	const losing = losingSignatures(dependencies, runsRoot, options);
+	const losing = bestSelection ? new Set<string>() : losingSignatures(dependencies, runsRoot, options);
 	/** Failure modes this loop has stopped asking about. */
 	const exhaustedModes = new Set<string>();
 
@@ -954,12 +1013,60 @@ export async function runImprovementLoop(
 			lastCycle,
 			branches: unique(branchesMade),
 			candidateIds: [...candidateIds],
+			selectionState,
 			executions,
 			finalPassRate,
 			consecutiveFlat,
 			stopReason,
 		});
 	};
+	const selectionFields = () => selectionState && executionBudget !== null
+		? { selectionSummary: improvementSelectionSummary(selectionState, executionBudget) } : {};
+	const refreshIncumbent = (): void => {
+		if (!selectionState) return;
+		const incumbent = selectBestImprovement(selectionState.measured);
+		candidateId = incumbent?.candidateId ?? null;
+		if (incumbent) finalPassRate = incumbent.candidatePassRate;
+		candidateIds.splice(0, candidateIds.length, ...selectionState.measured
+			.filter((measurement) => measurement.verdict === "improved").map((measurement) => measurement.candidateId));
+	};
+	const recoverMeasurement = (cycle: number, ordinal: number): void => {
+		if (!selectionState?.authoringBaseline || !selectionState.validationBaseline) return;
+		const id = improvementCandidateId(loopId, cycle, ordinal);
+		const measured = readImprovementMeasurement(runsRoot, id, cycle, ordinal, {
+			projectId: options.projectId, approvedSpecId: options.approvedSpecId,
+			baseTargetSha: configuration.targetGitSha, authoringBaseline: selectionState.authoringBaseline,
+			validationBaseline: selectionState.validationBaseline,
+			experimentDesignPath: improvementExperimentDesignPath(runsRoot, loopId),
+		});
+		const existing = selectionState.measured.find((entry) => entry.candidateId === id);
+		if (existing && (!measured || hashValue(existing) !== hashValue(measured))) {
+			throw new Error("measured improvement candidate or its derived scores changed since the loop checkpoint");
+		}
+		if (measured && !existing) selectionState.measured.push(measured);
+		refreshIncumbent();
+	};
+	if (selectionState) {
+		if (selectionState.measured.some((entry) => entry.cycle > lastCycle || entry.ordinal > candidatesPerCycle ||
+			entry.candidateId !== improvementCandidateId(loopId, entry.cycle, entry.ordinal)) ||
+			new Set(selectionState.measured.map((entry) => entry.candidateId)).size !== selectionState.measured.length) {
+			throw new Error("improvement selection contains a candidate outside the claimed rounds");
+		}
+		if (selectionState.authoringBaseline) {
+			cached = { record: loadPinnedImprovementEval(runsRoot, selectionState.authoringBaseline), reused: true };
+			cachedForSha = configuration.targetGitSha;
+		}
+		if (selectionState.validationBaseline) loadPinnedImprovementEval(runsRoot, selectionState.validationBaseline);
+		for (let cycle = 1; cycle <= lastCycle; cycle += 1) {
+			const before = selectBestImprovement(selectionState.measured.filter((entry) => entry.cycle < cycle))?.candidateId ?? null;
+			for (let ordinal = 1; ordinal <= candidatesPerCycle; ordinal += 1) recoverMeasurement(cycle, ordinal);
+			if (cycle > selectionState.completedCycle) {
+				const after = selectBestImprovement(selectionState.measured.filter((entry) => entry.cycle <= cycle))?.candidateId ?? null;
+				selectionState.noProgressRounds = before !== after ? 0 : Math.min(2, selectionState.noProgressRounds + 1);
+				selectionState.completedCycle = cycle;
+			}
+		}
+	}
 	ledger("running", null);
 
 	/**
@@ -1017,9 +1124,12 @@ export async function runImprovementLoop(
 			finalPassRate,
 			executions,
 			experimentDesign,
+			...selectionFields(),
 		};
 	};
-	if (candidateId) {
+	if (selectionState && candidateId && finalPassRate >= options.until) return finish("target-reached", "the recovered incumbent already reached the target");
+	if (selectionState && selectionState.noProgressRounds >= 2) return finish("no-progress-twice", "two completed or interrupted rounds produced no better candidate");
+	if (candidateId && !bestSelection) {
 		return finish(
 			"sealed-gate-required",
 			`candidate ${candidateId} was already verified before the interrupted process stopped`,
@@ -1034,6 +1144,7 @@ export async function runImprovementLoop(
 	const runCycle = async (cycleIndex: number): Promise<CycleOutcome> => {
 		abortIfRequested(options.signal);
 		const target = resolveTarget(repositoryDir);
+		if (bestSelection && target.gitSha !== configuration.targetGitSha) throw new Error("original improvement baseline moved during the loop");
 		const cycle: ImprovementLoopCycle = {
 			cycle: cycleIndex,
 			evalRunId: "",
@@ -1053,6 +1164,35 @@ export async function runImprovementLoop(
 			skipped: null,
 			executions: 0,
 			note: "",
+		};
+
+		const incumbentBeforeRound = candidateId;
+		const chargedBeforeRound = selectionState?.executionsCharged ?? 0;
+		if (selectionState && executionBudget !== null) {
+			const reservation = (selectionState.authoringBaseline ? 0 : target.tasks.length * options.repetitions) +
+				(selectionState.validationBaseline ? 0 : validationCorpus!.metadata.taskCount * options.repetitions) +
+				candidatesPerCycle * validationCorpus!.metadata.taskCount * (1 + options.repetitions);
+			if (chargedBeforeRound + reservation > executionBudget) {
+				return { kind: "stop", result: finish("execution-budget-exhausted", "another complete round exceeds the predeclared Target execution cap") };
+			}
+			// Reserve before authoring or Target calls. A failed/interrupted round retains this charge.
+			selectionState.executionsCharged += reservation;
+			lastCycle = cycleIndex;
+			ledger("running", null);
+		}
+		const completeBestRound = (note: string, accountingKnown = true): CycleOutcome => {
+			if (!selectionState) throw new Error("measured selection state missing");
+			if (accountingKnown) selectionState.executionsCharged = chargedBeforeRound + cycle.executions;
+			refreshIncumbent();
+			selectionState.noProgressRounds = candidateId !== incumbentBeforeRound ? 0 : Math.min(2, selectionState.noProgressRounds + 1);
+			selectionState.completedCycle = cycleIndex;
+			if (candidateId && finalPassRate >= options.until) return { kind: "stop", result: finish("target-reached", note, cycle) };
+			if (selectionState.noProgressRounds >= 2) return { kind: "stop", result: finish("no-progress-twice", note, cycle) };
+			cycle.note = note;
+			cycles.push(cycle);
+			ledger("running", null);
+			options.onCycle?.(improvementCycleLine(cycle, options.maxCycles), cycle);
+			return { kind: "continue" };
 		};
 
 		// ---- run -----------------------------------------------------------
@@ -1091,7 +1231,11 @@ export async function runImprovementLoop(
 		cycle.pass = evaluation.record.summary.pass;
 		cycle.total = evaluation.record.summary.total;
 		cycle.passRate = evaluation.record.summary.allPassRate;
-		finalPassRate = cycle.passRate;
+		if (!candidateId) finalPassRate = cycle.passRate;
+		if (selectionState && !selectionState.authoringBaseline) {
+			selectionState.authoringBaseline = pinImprovementEval(evaluation.record);
+			ledger("running", null);
+		}
 
 		if (!withinInfrastructureBudget(evaluation.record.summary.error, evaluation.record.summary.total)) {
 			return { kind: "stop", result: finish(
@@ -1100,7 +1244,9 @@ export async function runImprovementLoop(
 				cycle,
 			) };
 		}
-		if (cycle.passRate >= options.until) {
+		// In best mode this is only the authoring partition. Passing it cannot
+		// establish success on unseen validation; only a verified incumbent can.
+		if (!bestSelection && cycle.passRate >= options.until) {
 			return { kind: "stop", result: finish("target-reached", `${percent(cycle.passRate)} ≥ ${percent(options.until)}`, cycle) };
 		}
 
@@ -1136,7 +1282,7 @@ export async function runImprovementLoop(
 		// With `candidates: 1` this asks once; a search asks for the same failure
 		// mode `candidates` times and expects a different hypothesis each time.
 		const failureBundlePath = dependencies.compileFailureBundle(target, evaluation.record, runsRoot);
-		const proposalRunIds: string[] = [];
+		let proposalRunIds: string[] = [];
 		const authorRefusals: string[] = [];
 		for (let variant = 1; variant <= candidatesPerCycle; variant += 1) {
 			const decision = await options.author({
@@ -1186,6 +1332,16 @@ export async function runImprovementLoop(
 			}
 			proposalRunIds.push(recorded.record.runId);
 		}
+		if (selectionState) {
+			proposalRunIds = proposalRunIds.filter((id) => {
+				const hash = improvementProposalHash(runsRoot, id);
+				if (selectionState.proposalHashes.includes(hash)) return false;
+				selectionState.proposalHashes.push(hash);
+				return true;
+			});
+			ledger("running", null);
+			if (proposalRunIds.length === 0) return completeBestRound("no new distinct hypothesis was produced");
+		}
 		if (proposalRunIds.length === 0) {
 			return { kind: "stop", result: finish(
 				"no-change-proposed",
@@ -1197,8 +1353,8 @@ export async function runImprovementLoop(
 		}
 
 		// ---- search, when this cycle wants several hypotheses -----------------
-		if (candidatesPerCycle > 1) {
-			if (proposalRunIds.length < MIN_SEARCH_CANDIDATES) {
+		if (blindSearch) {
+			if (!bestSelection && proposalRunIds.length < MIN_SEARCH_CANDIDATES) {
 				cycle.proposalRunId = proposalRunIds[0]!;
 				cycle.skipped = {
 					reason: "too-few-hypotheses",
@@ -1223,7 +1379,9 @@ export async function runImprovementLoop(
 					dependencies.loadTarget(repositoryDir),
 					validationCorpus,
 				);
-				let validationBaseline = reusableEvidence(validationTarget, "baseline");
+				let validationBaseline = selectionState?.validationBaseline
+					? loadPinnedImprovementEval(runsRoot, selectionState.validationBaseline)
+					: reusableEvidence(validationTarget, "baseline");
 				if (!validationBaseline) {
 					validationBaseline = await dependencies.runSuite(validationTarget, {
 						runsRoot,
@@ -1246,6 +1404,10 @@ export async function runImprovementLoop(
 					) };
 				}
 				validationSourceEvalRunId = validationBaseline.evalRunId;
+				if (selectionState && !selectionState.validationBaseline) {
+					selectionState.validationBaseline = pinImprovementEval(validationBaseline);
+					ledger("running", null);
+				}
 			}
 			const search = await dependencies.runProposalSearch({
 				repositoryDir,
@@ -1255,6 +1417,18 @@ export async function runImprovementLoop(
 				approvedSpecId: options.approvedSpecId,
 				failureModeId: mode.failureModeId,
 				proposalRunIds,
+				...(selectionState ? {
+					allowSingle: true,
+					verifyFlat: true,
+					candidateIdPrefix: `candidate-${loopId}-${cycleIndex}-`,
+					pinnedDevelopmentBaseline: selectionState.validationBaseline!,
+					executionBudget: proposalRunIds.length * validationCorpus!.metadata.taskCount * (1 + 2 * options.repetitions),
+					onCandidate: (_line: string, row: import("./proposal-search.js").ProposalSearchRow) => {
+						if (row.branch) branchesMade.push(row.branch);
+						if (row.candidateId) recoverMeasurement(cycleIndex, row.ordinal);
+						ledger("running", null);
+					},
+				} : {}),
 				...(validationSourceEvalRunId ? { validationSourceEvalRunId } : {}),
 				...(experimentDesign ? { experimentDesignPath: improvementExperimentDesignPath(runsRoot, loopId) } : {}),
 				...(splitRefs
@@ -1279,6 +1453,12 @@ export async function runImprovementLoop(
 				branchesMade.push(...search.rows.flatMap((row) => (row.branch === null ? [] : [row.branch])));
 				lastCycle = Math.max(lastCycle, cycleIndex);
 				ledger("running", null);
+			if (selectionState) {
+				const accountingKnown = search.rows.every((row) => row.skipReason !== "verification-failed" && (!row.branch || row.screen !== null));
+				return completeBestRound(candidateId
+					? `best measured candidate ${candidateId}; ${selectionState.measured.length} verified hypotheses so far`
+					: "no hypothesis has reached an improved development verdict", accountingKnown);
+			}
 			// The search compares; it never picks. A non-improved row is evidence,
 			// not a release option, so an empty frontier needs no human choice.
 			if (search.frontier.length === 0) {
@@ -1476,17 +1656,7 @@ export async function runImprovementLoop(
 		if (outcome.kind === "stop") return outcome.result;
 	}
 
-	ledger("finished", "max-cycles");
-	return {
-		cycles,
-		stopReason: "max-cycles",
-		stopMessage: IMPROVEMENT_LOOP_STOP_MESSAGES["max-cycles"],
-		candidateId,
-		loopId,
-		finalPassRate,
-		executions,
-		experimentDesign,
-	};
+	return finish("max-cycles", "the cycle budget is spent");
 }
 
 export interface RecordedProposalAuthorOptions {
@@ -1629,9 +1799,10 @@ export function plannedImprovementExecutions(input: {
 	repetitions: number;
 	maxCycles: number;
 	candidates?: number;
+	selection?: "best" | "review";
 }): number {
 	const candidates = Math.max(1, Math.trunc(input.candidates ?? 1));
-	if (candidates > 1 && input.authoringTasks !== undefined && input.validationTasks !== undefined) {
+	if ((input.selection === "best" || candidates > 1) && input.authoringTasks !== undefined && input.validationTasks !== undefined) {
 		const authoring = Math.max(0, Math.trunc(input.authoringTasks));
 		const validation = Math.max(0, Math.trunc(input.validationTasks));
 		const authoringRun = authoring * input.repetitions;

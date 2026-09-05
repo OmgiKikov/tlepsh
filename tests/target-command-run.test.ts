@@ -1,13 +1,15 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { loadVerifiedEvalRun, runSuite } from "../src/eval.js";
 import { hashValue } from "../src/provenance.js";
 import { regradeEvalRun } from "../src/regrade.js";
-import { runTranscript } from "../src/application/run-explanation.js";
+import { classifyRunError, runTranscript } from "../src/application/run-explanation.js";
 import { loadTarget } from "../src/manifest.js";
 import { startMockModel, type MockModelHandle } from "../src/mock-model.js";
 import { openTrace } from "../src/trace.js";
+import { createTargetToolRuntime } from "../src/target/runtime.js";
+import { createCommandTargetSession } from "../src/target/session-command.js";
 import { cleanup, makeTargetFixture, type FixtureFile } from "./fixtures.js";
 
 /**
@@ -45,6 +47,7 @@ permissions:
 `;
 
 interface TargetOptions {
+	agentSource?: string;
 	argv?: string[];
 	timeoutMs?: number;
 	startupTimeoutMs?: number;
@@ -104,7 +107,7 @@ function commandFixture(options: TargetOptions = {}): { targetDir: string; runsR
 	const files: FixtureFile[] = [
 		{ path: "manifest.yaml", content: manifestYaml(options) },
 		{ path: "AGENTS.md", content: "# Command agent\n\nОтвечай кратко.\n" },
-		{ path: "agent.mjs", content: AGENT_SOURCE },
+		{ path: "agent.mjs", content: options.agentSource ?? AGENT_SOURCE },
 		{ path: "tools/check_dbo.tool.yaml", content: TOOL_DESCRIPTOR },
 		{ path: "bin/check_dbo", content: "#!/bin/sh\necho 'limits: none'\n" },
 		{ path: "evals/development.jsonl", content: options.dataset ?? ONE_TASK },
@@ -161,6 +164,67 @@ async function runOnce(mode: string, options: TargetOptions = {}) {
 }
 
 describe("a command Target speaks protocol v1", () => {
+	it("runs through aliased workspace, scratch and world paths with the same sandbox boundaries", async () => {
+		const { targetDir, runsRoot } = fixture({ agentSource: `
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
+let hello;
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.type === "hello") { hello = message; return; }
+  if (message.type === "cancel") process.exit(0);
+  if (message.type !== "user") return;
+  writeFileSync(join(process.env.HOME, "home-probe"), "home works");
+  writeFileSync(join(process.env.TMPDIR, "tmp-probe"), "tmp works");
+  let readOnly = false;
+  try { writeFileSync(join(hello.workspace, "forbidden-write"), "must fail"); }
+  catch (error) { if (!["EACCES", "EPERM", "EROFS"].includes(error.code)) throw error; readOnly = true; }
+  const text = JSON.stringify({
+    workspace: hello.workspace, cwd: process.cwd(), world: hello.world,
+    worldEnv: process.env.AHDE_WORLD, home: process.env.HOME, tmp: process.env.TMPDIR,
+    instructions: readFileSync(join(hello.workspace, "AGENTS.md"), "utf8"),
+    worldState: JSON.parse(readFileSync(hello.world, "utf8")), readOnly,
+    canonicalHome: realpathSync(process.env.HOME), canonicalTmp: realpathSync(process.env.TMPDIR),
+  });
+  process.stdout.write(JSON.stringify({ v: 1, type: "assistant", turn: message.turn, text }) + "\\n");
+});
+` });
+		const scratchDir = join(runsRoot, "scratch");
+		const runDir = join(runsRoot, "run");
+		mkdirSync(scratchDir, { recursive: true });
+		mkdirSync(runDir);
+		writeFileSync(join(scratchDir, "world.json"), JSON.stringify({ account: "sandbox-fixture" }));
+		chmodSync(join(targetDir, "bin", "check_dbo"), 0o755);
+		const workspaceAlias = join(runsRoot, "workspace-alias");
+		const scratchAlias = join(runsRoot, "scratch-alias");
+		symlinkSync(targetDir, workspaceAlias, "dir");
+		symlinkSync(scratchDir, scratchAlias, "dir");
+		expect(workspaceAlias).not.toBe(realpathSync(workspaceAlias));
+		const target = loadTarget(targetDir);
+		const targetTools = createTargetToolRuntime({ target, workspaceDir: targetDir, scratchDir });
+		const { session } = await createCommandTargetSession({
+			target, workspaceDir: workspaceAlias, scratchDir: scratchAlias, runDir, targetTools,
+			worldPath: join(scratchAlias, "world.json"), apiKey: "offline-fixture-key", timeoutMs: 10_000,
+		});
+		try {
+			const { text } = await session.takeTurn("Check the mounted paths.");
+			const home = join(realpathSync(scratchDir), "tool-home", "agent");
+			const tmp = join(realpathSync(scratchDir), "tool-tmp", "agent");
+			expect(JSON.parse(text)).toEqual({
+				workspace: realpathSync(targetDir), cwd: realpathSync(targetDir),
+				world: realpathSync(join(scratchDir, "world.json")), worldEnv: realpathSync(join(scratchDir, "world.json")),
+				home, tmp, canonicalHome: home, canonicalTmp: tmp,
+				instructions: readFileSync(join(targetDir, "AGENTS.md"), "utf8"),
+				worldState: { account: "sandbox-fixture" }, readOnly: true,
+			});
+			expect(readFileSync(join(home, "home-probe"), "utf8")).toBe("home works");
+			expect(readFileSync(join(tmp, "tmp-probe"), "utf8")).toBe("tmp works");
+		} finally {
+			await session.close();
+		}
+	});
+
 	it("adds every model request within a turn, including tool selection", async () => {
 		const { record } = await runOnce("two-usage");
 		expect(record.status).toBe("completed");
@@ -415,11 +479,30 @@ describe("every way the wire can fail is infrastructure, never a behavioural fai
 	};
 
 	it("refuses a child that exits before it ever speaks", async () => {
-		await errorCase("exit-before-hello", /command Target did not start within \d+ms/, { startupTimeoutMs: 3000 });
+		await errorCase("exit-before-hello", /command Target (?:did not start within \d+ms|exited before its first protocol message with 7)/, { startupTimeoutMs: 3000 });
 	});
 
 	it("refuses a child that takes the handshake and dies without a word", async () => {
-		await errorCase("exit-after-hello", /command Target did not start within \d+ms/, { startupTimeoutMs: 3000 });
+		await errorCase("exit-after-hello", /command Target exited before its first protocol message with 7$/, { startupTimeoutMs: 3000 });
+	});
+
+	it("records an early crash's exit code and bounded redacted stderr without inventing a timeout", async () => {
+		const { record, runDir } = await runOnce("unused", { agentSource: `
+import { createInterface } from "node:readline";
+createInterface({ input: process.stdin }).on("line", (line) => {
+  if (JSON.parse(line).type !== "hello") return;
+  process.stderr.write("agent bootstrap failed; credential=" + process.env.MOCK_MODEL_KEY + " " + "x".repeat(10_000) + "UNRECORDED_TAIL", () => process.exit(7));
+});
+` });
+		expect(record.status).toBe("error");
+		expect(record.error).toMatch(/^command Target exited before its first protocol message with 7: agent bootstrap failed;/);
+		expect(record.error).not.toContain("test-key");
+		expect(record.error).not.toContain("UNRECORDED_TAIL");
+		expect(record.error.length).toBeLessThan(8400);
+		expect(classifyRunError(record.error)).toBe("startup");
+		expect(record.error).not.toMatch(/timed out|did not start within/);
+		expect(record.evalResults?.outcome ?? "error").toBe("error");
+		expect(readFileSync(join(runDir, "session.jsonl"), "utf8")).not.toContain("test-key");
 	});
 
 	it("times out a turn with no assistant, in the runner's own words", async () => {

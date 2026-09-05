@@ -44,6 +44,7 @@ export type RunErrorClass = "timeout" | "exit" | "protocol" | "startup" | "evalu
 const RUN_ERROR_STEMS: readonly { code: RunErrorClass; pattern: RegExp }[] = [
 	{ code: "timeout", pattern: /^run timed out after (\d+)\s*ms\b/u },
 	{ code: "exit", pattern: /^command Target exited with\b/u },
+	{ code: "startup", pattern: /^command Target exited before its first protocol message\b/u },
 	{ code: "protocol", pattern: /^command Target protocol violation\b/u },
 	{ code: "startup", pattern: /^command Target did not start\b/u },
 	{ code: "evaluation", pattern: /^evaluation infrastructure\b/u },

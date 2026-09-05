@@ -1,5 +1,6 @@
 import { percent } from "../measurement.js";
 import { collectCandidateReplayPage } from "./replay-model.js";
+import { renderEvalPage } from "./workspace-page.js";
 import { renderCandidateReplayPage } from "./replay-page.js";
 import { language } from "../i18n.js";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -34,7 +35,6 @@ import {
 	EVIDENCE_STYLESHEET,
 	h,
 	renderComparePage,
-	renderEvalPage,
 	renderRunDetailPage,
 } from "./pages.js";
 
@@ -70,9 +70,9 @@ export interface EvidenceExplorer {
 	close(): Promise<void>;
 }
 
-function securityHeaders(response: ServerResponse): void {
+function securityHeaders(response: ServerResponse, formAction: "none" | "self" = "none"): void {
 	response.setHeader("Cache-Control", "no-store");
-	response.setHeader("Content-Security-Policy", "default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'");
+	response.setHeader("Content-Security-Policy", `default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action '${formAction}'; frame-ancestors 'none'`);
 	response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
 	response.setHeader("Referrer-Policy", "no-referrer");
 	response.setHeader("X-Content-Type-Options", "nosniff");
@@ -82,8 +82,8 @@ function securityHeaders(response: ServerResponse): void {
 const NOT_DIAGNOSED_BODY = "Evidence is not diagnosed yet; run the AHDE diagnosis operation first.\n";
 const COLLECTION_FAILURE_BODY = "Evidence report failed integrity or visibility checks.\n";
 
-function send(response: ServerResponse, status: number, type: string, body: string, headOnly = false): void {
-	securityHeaders(response);
+function send(response: ServerResponse, status: number, type: string, body: string, headOnly = false, formAction: "none" | "self" = "none"): void {
+	securityHeaders(response, formAction);
 	response.statusCode = status;
 	response.setHeader("Content-Type", type);
 	response.setHeader("Content-Length", Buffer.byteLength(body));
@@ -175,12 +175,20 @@ function sendCollectionFailure(response: ServerResponse, error: unknown, headOnl
 }
 
 /** Only the filter keys the eval page understands cross the query boundary. */
-function evalPageQuery(url: URL): { outcome?: string; mode?: string } {
+function evalPageQuery(url: URL): { outcome?: string; mode?: string; run?: string; q?: string } {
 	const outcome = url.searchParams.get("outcome");
 	const mode = url.searchParams.get("mode");
+	const run = url.searchParams.get("run");
+	if (url.searchParams.getAll("run").length > 1) throw new EvidenceNotFound();
+	if (run !== null) {
+		try { safeArtifactSegment(run, "run id"); } catch { throw new EvidenceNotFound(); }
+	}
+	const q = url.searchParams.get("q")?.trim().slice(0, 160);
 	return {
 		...(outcome === "pass" || outcome === "fail" || outcome === "error" ? { outcome } : {}),
 		...(mode && /^failure-mode-[0-9a-f]{24}$/.test(mode) ? { mode } : {}),
+		...(run ? { run } : {}),
+		...(q ? { q } : {}),
 	};
 }
 
@@ -546,11 +554,16 @@ export function createEvidenceExplorer(options: EvidenceExplorerOptions): Eviden
 					...(options.labels ? { labels: options.labels } : {}),
 					query: evalPageQuery(url),
 				}));
-			} catch {
+			} catch (error) {
+				if (error instanceof EvidenceNotFound) {
+					sendCollectionFailure(response, error, headOnly);
+					return;
+				}
 				send(response, 422, "text/plain; charset=utf-8", "Evidence report failed integrity or visibility checks.\n", headOnly);
 				return;
 			}
-			send(response, 200, "text/html; charset=utf-8", page, headOnly);
+			// The workspace's search is a same-origin GET; every other surface keeps forms disabled.
+			send(response, 200, "text/html; charset=utf-8", page, headOnly, "self");
 		})().catch((error: unknown) => {
 			if (response.headersSent || response.writableEnded) {
 				if (!response.writableEnded) response.destroy();

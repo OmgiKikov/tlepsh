@@ -196,6 +196,8 @@ function flipForTask(
 export interface EvalPageQuery {
 	outcome?: string | undefined;
 	mode?: string | undefined;
+	run?: string | undefined;
+	q?: string | undefined;
 }
 
 export interface EvalPageOptions {
@@ -236,6 +238,7 @@ export function collectEvalPage(
 		affectedTasks: mode.impact.affectedTasks,
 		totalTasks: mode.impact.totalTasks,
 		reproductionBps: mode.impact.reproductionBps,
+		observations: { failed: mode.impact.failedOccurrences, total: mode.impact.failedOccurrences + mode.impact.passedOccurrences },
 		runCount: runCountByMode.get(mode.failureModeId) ?? 0,
 		href: `/evals/${encodeURIComponent(evalRunId)}?mode=${encodeURIComponent(mode.failureModeId)}`,
 		};
@@ -243,15 +246,25 @@ export function collectEvalPage(
 
 	const outcomeFilter = options.query?.outcome ?? null;
 	const modeFilter = options.query?.mode ?? null;
+	const search = options.query?.q?.trim().slice(0, 160) ?? "";
 	const rows = allRows.filter((row) =>
 		(outcomeFilter === null || row.outcome === outcomeFilter) &&
-		(modeFilter === null || row.failureModeIds.includes(modeFilter)));
+		(modeFilter === null || row.failureModeIds.includes(modeFilter)) &&
+		(!search || `${row.taskId} ${row.inputPreview ?? ""}`.toLocaleLowerCase().includes(search.toLocaleLowerCase())));
+
+	// Authorize membership before the standalone loader opens any requested run.
+	// A foreign public run and a private run are indistinguishable here.
+	const requestedRun = options.query?.run;
+	if (requestedRun && !verified.runs.some((run) => run.runId === requestedRun)) throw new EvidenceNotFound();
+	const selectedRunId = requestedRun ?? rows.find((row) => row.outcome === "fail")?.runId ?? rows[0]?.runId;
+	const selectedRun = selectedRunId ? collectRunDetailPage(runsRoot, selectedRunId) : null;
 
 	const base = `/evals/${encodeURIComponent(evalRunId)}`;
-	const withOutcome = (outcome: string | null): string => {
+	const withOutcome = (outcome: string | null, mode: string | null = modeFilter): string => {
 		const parts: string[] = [];
 		if (outcome) parts.push(`outcome=${encodeURIComponent(outcome)}`);
-		if (modeFilter) parts.push(`mode=${encodeURIComponent(modeFilter)}`);
+		if (mode) parts.push(`mode=${encodeURIComponent(mode)}`);
+		if (search) parts.push(`q=${encodeURIComponent(search)}`);
 		return parts.length > 0 ? `${base}?${parts.join("&")}` : base;
 	};
 	const filterLinks = [
@@ -259,7 +272,7 @@ export function collectEvalPage(
 		{ label: t("evidence.fail"), href: withOutcome("fail"), active: outcomeFilter === "fail" },
 		{ label: t("evidence.error"), href: withOutcome("error"), active: outcomeFilter === "error" },
 		{ label: t("evidence.pass"), href: withOutcome("pass"), active: outcomeFilter === "pass" },
-		...(modeFilter ? [{ label: t("evidence.clearMode"), href: base, active: false }] : []),
+		...(modeFilter ? [{ label: t("evidence.clearMode"), href: withOutcome(outcomeFilter, null), active: false }] : []),
 	];
 
 	const notices: string[] = [];
@@ -319,6 +332,8 @@ export function collectEvalPage(
 			verdict: gateVerdictOf(coverage.evaluation.development.comparison) ?? "no recorded verdict",
 		})),
 		notices,
+		selectedRun,
+		search,
 	};
 }
 
@@ -352,7 +367,8 @@ export function collectRunDetailPage(runsRoot: string, runId: string): RunDetail
 		includeJudgeVerdicts: true,
 		judgeArtifacts: artifacts?.judge,
 	});
-	const modes = brief.modes.filter((mode) => mode.evidence.some((evidence) => evidence.runId === runId));
+	const modeIds = new Set(rows[position]?.failureModeIds ?? []);
+	const modes = brief.modes.filter((mode) => modeIds.has(mode.failureModeId));
 	// A real candidate experiment answers "did the change help?"; an A/A
 	// calibration answers "how noisy is this suite?". Prefer the former when both
 	// cover this eval, and say which one it was either way.

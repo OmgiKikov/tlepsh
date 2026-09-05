@@ -222,6 +222,13 @@ export interface ProposalSearchOptions {
 	failureModeId: string;
 	/** 2..4 recorded Builder proposal runs, each an unapplied hypothesis. */
 	proposalRunIds: readonly string[];
+	/** Host loop can measure one remaining unique hypothesis on the same blind design. */
+	allowSingle?: boolean;
+	/** Score-ranked loops verify partial grader gains even when no whole case passes. */
+	verifyFlat?: boolean;
+	/** Stable IDs let the loop recover a durable verification after interruption. */
+	candidateIdPrefix?: string;
+	pinnedDevelopmentBaseline?: { evalRunId: string; hash: string };
 	/** The published development corpus every arm measures on. */
 	developmentCorpus?: CorpusRef;
 	/** Unseen development arm used to screen and rank already-authored hypotheses. */
@@ -436,7 +443,7 @@ export async function runProposalSearch(
 	const branchPrefix = options.branchPrefix ?? `candidate/search-${newProposalSearchId()}-`;
 	const actorId = options.actorId ?? "local-user";
 	const proposalRunIds = [...options.proposalRunIds];
-	if (proposalRunIds.length < MIN_SEARCH_CANDIDATES || proposalRunIds.length > MAX_SEARCH_CANDIDATES) {
+	if (proposalRunIds.length < (options.allowSingle ? 1 : MIN_SEARCH_CANDIDATES) || proposalRunIds.length > MAX_SEARCH_CANDIDATES) {
 		throw new ProposalSearchError(
 			`a search compares between ${MIN_SEARCH_CANDIDATES} and ${MAX_SEARCH_CANDIDATES} hypotheses, got ${proposalRunIds.length}`,
 		);
@@ -561,7 +568,7 @@ export async function runProposalSearch(
 		}
 
 		// A flat screen from an over-budget run is inconclusive, not a finding.
-		if (row.screen && row.screen.verdict === "flat" && row.screen.withinErrorBudget) {
+		if (!options.verifyFlat && row.screen && row.screen.verdict === "flat" && row.screen.withinErrorBudget) {
 			row.status = "screened-out";
 			row.skipReason = "flat-screen";
 			record(searchCandidateLine(row));
@@ -582,6 +589,8 @@ export async function runProposalSearch(
 				repositoryDir,
 				runsRoot,
 				builderRunId: plan.proposalRunId,
+				...(options.candidateIdPrefix ? { candidateId: `${options.candidateIdPrefix}${ordinal}` } : {}),
+				...(options.pinnedDevelopmentBaseline ? { pinnedDevelopmentBaseline: options.pinnedDevelopmentBaseline } : {}),
 				projectId: options.projectId,
 				approvedSpec: { stateRoot, specId: options.approvedSpecId },
 				repetitions: options.repetitions,

@@ -1,4 +1,4 @@
-import { percent, points, ratio } from "../measurement.js";
+import { duration, percent, points, ratio } from "../measurement.js";
 import { candidateStatusLabel, language, plural, t, tokenLabel, verdictLabel } from "../i18n.js";
 import { sealedOutcomeLabel, type SealedOutcome, type ExcludedTask } from "../domain/comparison-gate.js";
 
@@ -214,6 +214,8 @@ export interface PageOptions {
 	script?: string;
 	/** Trusted, page-specific stylesheet. */
 	styles?: string;
+	/** Optional trusted page class; scoped layouts leave exported reports unchanged. */
+	pageClass?: string;
 }
 
 export function renderPage(options: PageOptions): string {
@@ -226,7 +228,7 @@ export function renderPage(options: PageOptions): string {
 <html lang="${language()}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${h(options.title)}</title>
 <style>${EVIDENCE_STYLESHEET}${options.styles ?? ""}</style>
-</head><body>
+</head><body${options.pageClass ? ` class="${h(options.pageClass)}"` : ""}>
 <nav class="topbar">${crumbs}</nav>
 <main class="wrap">${options.body}</main>
 ${options.script ? `<script>${options.script}</script>` : ""}
@@ -249,7 +251,7 @@ export interface RunsTableOptions {
 	dataRun?: boolean;
 }
 
-function outcomeChip(outcome: RunRow["outcome"]): string {
+export function outcomeChip(outcome: RunRow["outcome"]): string {
 	return `<span class="chip ${outcome}">${h(t(`evidence.${outcome}`))}</span>`;
 }
 
@@ -257,7 +259,7 @@ function scoreCell(row: RunRow): string {
 	return percent(row.score);
 }
 
-function graderChips(row: RunRow): string {
+export function graderChips(row: RunRow): string {
 	if (row.graders.length === 0) return `<span class="gchip">${h(t("evidence.noGraders"))}</span>`;
 	return row.graders
 		.map((grader) =>
@@ -345,6 +347,7 @@ export interface EvalPageMode {
 	affectedTasks: number;
 	totalTasks: number;
 	reproductionBps: number;
+	observations: { failed: number; total: number };
 	runCount: number;
 	href: string;
 }
@@ -375,82 +378,8 @@ export interface EvalPageModel {
 	filterLinks: Array<{ label: string; href: string; active: boolean }>;
 	candidates: Array<{ candidateId: string; href: string; role: string; verdict: string }>;
 	notices: string[];
-}
-
-export function renderEvalPage(model: EvalPageModel): string {
-	const modeLabels = new Map(model.modes.map((mode) => [mode.id, mode.title]));
-	const stats = [
-		[t("evidence.passRate"), percent(model.summary.allPassRate)],
-		[t("evidence.passed"), `${model.summary.pass}/${model.summary.total}`],
-		[t("evidence.meanScore"), percent(model.meanScore)],
-		[t("evidence.errors"), String(model.summary.error)],
-		[t("evidence.failureModes"), String(model.modes.length)],
-		[t("explorer.th.cost"), money(model.costUsd, 4)],
-	].map(([label, value]) => `<div class="stat"><b>${h(value)}</b><span>${h(label)}</span></div>`).join("");
-
-	const modes = model.modes.length === 0
-		? `<div class="card">${h(t("evidence.noModes"))}</div>`
-		: `<ul class="modes">${model.modes.map((mode) => `<li>
-<div class="row"><h3><a href="${h(mode.href)}">${h(mode.title)}</a></h3><span class="count">${h(t("explorer.mode-count", { runs: mode.runCount, affected: mode.affectedTasks, total: mode.totalTasks, reproduction: Math.round(mode.reproductionBps / 100) }))}</span></div>
-<div class="pills"><span class="pill">${h(tokenLabel("mode.scope", mode.scope))}</span><span class="pill">${h(tokenLabel("mode.severity", mode.severity))}</span><span class="pill">${h(tokenLabel("mode.decision", mode.decision))}</span></div>
-<p class="hyp">${h(mode.facts)}</p>
-${mode.excerpt ? `<p class="excerpt mono">${h(mode.excerpt)}</p>` : ""}
-</li>`).join("")}</ul>`;
-
-	const candidates = model.candidates.length === 0
-		? ""
-		: `<section><h2>${h(t("explorer.h2.candidates"))}</h2><div class="cards">${model.candidates.map((candidate) => `<div class="card"><h3><a href="${h(candidate.href)}">${h(candidate.candidateId)}</a></h3><p class="sub">${h(t("explorer.eval-arm", { role: candidate.role, verdict: candidate.verdict }))}</p></div>`).join("")}</div></section>`;
-
-	const body = `
-<div class="head">
-	<div>
-		<h1>${h(model.targetId)}</h1>
-		<div class="sub">${h(t("evidence.design", model.design))} · ${h(model.startedAt)}</div>
-		${model.model ? `<div class="sub">${h(t("evidence.model"))}: ${h(model.model)}</div>` : ""}
-	</div>
-	<div class="pills">
-		<span class="tag">${h(model.visibility)}</span>
-		<span class="tag">${h(model.purpose)}</span>
-		<span class="tag mono">${h(model.revision.slice(0, 12))}</span>
-		<span class="tag">${h(model.briefStatus)}</span>
-	</div>
-</div>
-<details class="metadata"><summary>${h(t("evidence.metadata"))}</summary><pre>${h(model.evalRunId)} · ${h(model.label)}
-${h(model.suiteId)} · ${h(t("evidence.dataset"))}: ${h(model.dataset)}</pre></details>
-<div class="stats">${stats}</div>
-<section class="prose">
-	<p>${h(model.briefHeadline)}</p>
-	<p class="note">${model.proposalEligible
-		? h(t("evidence.proposalEligible"))
-		: h(t("evidence.proposalBlocked"))}</p>
-	${model.judgeCalibration.map((line) => `<p class="note">${h(line)}</p>`).join("")}
-</section>
-<section><h2>${h(t("explorer.h2.failure-modes"))}</h2>${modes}</section>
-${candidates}
-<section>
-	<h2>${h(t("explorer.h2.runs"))}</h2>
-	<div class="filters">
-		<input id="filter" type="search" placeholder="${h(t("evidence.filterPlaceholder"))}" aria-label="${h(t("evidence.filterLabel"))}">
-		<span class="count" id="filter-count" data-template="${h(t("evidence.filterCount"))}"></span>
-		<span class="pills">${model.filterLinks.map((link) => `<a class="pill${link.active ? " on" : ""}" href="${h(link.href)}">${h(link.label)}</a>`).join("")}</span>
-	</div>
-	${renderRunsTable(model.rows, {
-		hrefForRun: (runId) => `/runs/${encodeURIComponent(runId)}`,
-		hrefForMode: (id) => `/evals/${encodeURIComponent(model.evalRunId)}?mode=${encodeURIComponent(id)}`,
-		modeLabels,
-	})}
-	${model.notices.map((notice) => `<p class="note">${h(notice)}</p>`).join("")}
-</section>`;
-
-	return renderPage({
-		title: `${model.targetId} · ${model.evalRunId}`,
-		crumbs: [
-			{ label: t("evidence.brand"), href: "/" },
-			{ label: model.targetId },
-		],
-		body,
-		script: RUNS_TABLE_FILTER_SCRIPT,
-	});
+	selectedRun?: RunDetailPageModel | null;
+	search?: string;
 }
 
 // ---------- Run detail page ----------
@@ -482,27 +411,28 @@ export interface RunDetailPageModel {
 	next: { runId: string; taskId: string; repetitionIndex: number } | null;
 }
 
-function renderTranscript(model: RunDetailPageModel): string {
+export function renderTranscript(model: RunDetailPageModel, idPrefix?: string): string {
 	if (!model.transcript) {
 		return `<div class="card">${h(t("evidence.noTrace"))}</div>`;
 	}
-	const entries = model.transcript.entries.map((entry) => {
+	const entries = model.transcript.entries.map((entry, index) => {
+		const anchor = idPrefix ? ` id="${h(idPrefix)}${index}" tabindex="-1"` : "";
 		if (entry.kind === "user") {
-			return `<article class="turn"><div class="who"><span>${h(t("evidence.user"))}</span></div><pre class="spoken">${h(entry.text)}</pre></article>`;
+			return `<article${anchor} class="turn"><div class="who"><span>${h(t("evidence.user"))}</span></div><pre class="spoken">${h(entry.text)}</pre></article>`;
 		}
 		if (entry.kind === "assistant") {
 			const thinking = entry.thinking
 				? `<details><summary>${h(t("evidence.thinking"))}</summary><pre>${h(entry.thinking)}</pre></details>`
 				: "";
-			return `<article class="turn${entry.final ? " final" : ""}"><div class="who"><span>${h(t("evidence.assistant"))}${entry.final ? ` · ${h(t("evidence.finalAnswer"))}` : ""}</span></div>`
+			return `<article${anchor} class="turn${entry.final ? " final" : ""}"><div class="who"><span>${h(t("evidence.assistant"))}${entry.final ? ` · ${h(t("evidence.finalAnswer"))}` : ""}</span></div>`
 				+ (entry.text ? `<pre class="spoken">${h(entry.text)}</pre>` : "")
 				+ thinking
 				+ `</article>`;
 		}
-		const duration = entry.durationMs === null ? "" : ` · ${(entry.durationMs / 1000).toFixed(2)}s`;
+		const timing = entry.durationMs === null ? "" : ` · ${duration(entry.durationMs)}`;
 		const status = entry.evidence === "reported" ? t("evidence.reportedOnly")
 			: entry.result === null ? t("evidence.noResult") : entry.isError ? t("evidence.error") : t("evidence.ok");
-		return `<article class="turn${entry.isError ? " toolerr" : ""}"><div class="who"><span>${h(t("evidence.tool"))} · ${h(entry.name)}</span><span>${h(status)}${h(duration)}</span></div>`
+		return `<article${anchor} class="turn${entry.isError ? " toolerr" : ""}"><div class="who"><span>${h(t("evidence.tool"))} · ${h(entry.name)}</span><span>${h(status)}${h(timing)}</span></div>`
 			+ `<details><summary>${h(t("evidence.arguments"))}</summary><pre>${h(entry.args)}</pre></details>`
 			+ (entry.result === null
 				? ""
@@ -512,7 +442,7 @@ function renderTranscript(model: RunDetailPageModel): string {
 	return entries || `<div class="card">${h(t("evidence.noTurns"))}</div>`;
 }
 
-function renderVerdict(graders: readonly GraderFinding[]): string {
+export function renderVerdict(graders: readonly GraderFinding[]): string {
 	if (graders.length === 0) return `<div class="card">${h(t("evidence.noGraderResults"))}</div>`;
 	return graders.map((grader) => {
 		const assertions = grader.assertionVerdicts
@@ -534,8 +464,11 @@ ${assertions}${jury}
 	}).join("");
 }
 
-function renderWhy(explanation: RunExplanation): string {
-	return `<div class="why">${renderRunExplanationText(explanation).map((sentence) => `<p>${h(sentence)}</p>`).join("")}
+export function renderWhy(explanation: RunExplanation, options: { omitSummary?: boolean } = {}): string {
+	const sentences = renderRunExplanationText(explanation);
+	// The workspace already names the case, display repetition and outcome in its header.
+	const body = options.omitSummary ? sentences.slice(1) : sentences;
+	return `<div class="why">${body.map((sentence) => `<p>${h(sentence)}</p>`).join("")}
 <p class="note">${h(t("evidence.hostNote"))}</p></div>`;
 }
 

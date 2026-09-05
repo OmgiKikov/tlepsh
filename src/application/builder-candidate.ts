@@ -49,6 +49,8 @@ export interface RunAppliedBuilderCandidateOptions {
 	jobs?: number;
 	/** How old a reusable baseline may be. Undefined keeps the seven-day default. */
 	baselineMaxAgeMs?: number;
+	/** Exact original validation baseline for bounded automatic selection. */
+	pinnedDevelopmentBaseline?: { evalRunId: string; hash: string };
 }
 
 const MAX_PROVENANCE_ARTIFACT_BYTES = 16 * 1024 * 1024;
@@ -329,5 +331,6 @@ export async function runAppliedBuilderCandidate(
 		...(options.signal ? { signal: options.signal } : {}),
 		...(options.jobs === undefined ? {} : { jobs: options.jobs }),
 		...(options.baselineMaxAgeMs === undefined ? {} : { baselineMaxAgeMs: options.baselineMaxAgeMs }),
+		...(options.pinnedDevelopmentBaseline ? { pinnedDevelopmentBaseline: options.pinnedDevelopmentBaseline } : {}),
 	});
 }

@@ -14,7 +14,7 @@ import {
 	traceToolCalls,
 	type TraceMessage,
 } from "../trace.js";
-import { publicTaskId, type FailureMode, type ImprovementBrief } from "./improvement-brief.js";
+import { failureModeRunMembership, publicTaskId, type FailureMode, type ImprovementBrief } from "./improvement-brief.js";
 import {
 	infrastructureClassOf,
 	runErrorCause,
@@ -530,19 +530,6 @@ export interface RunRow {
 	traceAvailable: boolean;
 }
 
-/** Failure-mode ids by run id, from the brief's evidence lists. */
-export function failureModesByRun(brief: ImprovementBrief): Map<string, string[]> {
-	const byRun = new Map<string, string[]>();
-	for (const mode of brief.modes) {
-		for (const evidence of mode.evidence) {
-			const bucket = byRun.get(evidence.runId) ?? [];
-			if (!bucket.includes(mode.failureModeId)) bucket.push(mode.failureModeId);
-			byRun.set(evidence.runId, bucket);
-		}
-	}
-	return byRun;
-}
-
 /** Errors first, then failures, then passes; inside each group by task and repetition. */
 export function compareRunRows(left: RunRow, right: RunRow): number {
 	const rank = (row: RunRow): number => (row.outcome === "error" ? 0 : row.outcome === "fail" ? 1 : 2);
@@ -563,7 +550,7 @@ export function runsTable(
 	options: { inputPreviews?: Map<string, string> } = {},
 ): RunRow[] {
 	const previews = options.inputPreviews ?? taskInputPreviews(runsRoot, runs);
-	const modes = brief ? failureModesByRun(brief) : new Map<string, string[]>();
+	const modes = brief ? failureModeRunMembership(runs, new Set(brief.modes.map((mode) => mode.failureModeId))) : new Map<string, string[]>();
 	const rows = runs.map((run): RunRow => {
 		const preview = previews.get(run.taskId);
 		return {

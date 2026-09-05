@@ -22,7 +22,6 @@ import urllib.request
 
 PROTOCOL = 1
 MAX_STEPS = 8  # столько раз за один ход агент может сходить в инструмент
-KB_DIR = os.path.join("data", "kb")
 
 
 def log(text):
@@ -43,24 +42,10 @@ def read_message():
     return read_message() if not line else json.loads(line)
 
 
-def knowledge_base():
-    """Короткие справочные документы, объявленные в manifest.data."""
-    parts = []
-    if not os.path.isdir(KB_DIR):
-        return ""
-    for name in sorted(os.listdir(KB_DIR)):
-        if not name.endswith(".md"):
-            continue
-        with open(os.path.join(KB_DIR, name), encoding="utf-8") as handle:
-            parts.append("## {}\n{}".format(name[:-3], handle.read().strip()))
-    return "\n\n".join(parts)
-
-
 def system_prompt():
+    """Документы возвращает kb_search из hello; весь корпус в промпт не копируем."""
     with open(os.path.join("prompts", "system.md"), encoding="utf-8") as handle:
-        prompt = handle.read().strip()
-    base = knowledge_base()
-    return prompt if not base else "{}\n\n# База знаний\n\n{}".format(prompt, base)
+        return handle.read().strip()
 
 
 def openai_tools(declared):
@@ -101,7 +86,7 @@ socket.getaddrinfo = prefer_ipv4(socket.getaddrinfo)
 def complete(model, tools, messages):
     """Один запрос к чат-эндпоинту. Ключ берётся из переменной, названной в hello."""
     key = os.environ.get(model["apiKeyEnv"], "")
-    payload = {"model": model["id"], "messages": messages}
+    payload = {"model": model["id"], "messages": messages, "stream": False}
     if tools:
         payload["tools"] = tools
     request = urllib.request.Request(

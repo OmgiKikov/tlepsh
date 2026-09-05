@@ -92,7 +92,7 @@ const DECIDE_WHEN = {
 	"discard-proposal": "the operator throws the prepared change away",
 	"reject-candidate": "the operator rejects the checked change; the agent stays as it was",
 	"abandon-candidate": "an interrupted attempt blocks the stage and the operator says drop it",
-	improve: "the operator asks for a bounded improvement experiment; it returns development candidates for human review",
+	improve: "the operator asks for automatic improvement; compare independent changes within a budget and retain the best measured candidate for final human review",
 	"import-dataset": "the operator confirmed the sample cases a dataset-recipe compiled",
 	"scaffold-target": "there is no agent directory yet",
 	"wrap-target": "the folder already holds an agent and no manifest",

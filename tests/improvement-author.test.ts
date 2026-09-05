@@ -87,7 +87,7 @@ describe("bounded Pi improvement author", () => {
 	let fixture: ImproveFixture;
 	let request: ImprovementProposalRequest;
 	beforeAll(async () => {
-		fixture = await improveFixture();
+		fixture = await improveFixture({}, { developmentCases: 4 });
 		const diagnosis = diagnoseEvalRun(fixture.runsRoot, fixture.evalRunId);
 		const brief = compileImprovementBrief(fixture.runsRoot, diagnosis);
 		const mode = brief.modes.find((item) => item.decision === "propose-harness-change")!;

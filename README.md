@@ -48,6 +48,14 @@ fails six cases. It runs 90 real Pi executions, inspects a recorded regression,
 accepts the exact model change, then establishes a new 15-case baseline. All model
 answers and prices in this demo are fixtures; it makes no claim about real models.
 
+`npm run demo:pilot` runs two Python profiles: a RAG agent and a service agent
+with accounts and tickets. Each has 15 golden cases plus separate capability
+cases. It performs 70 real Python executions with local scripted model replies,
+actual retrieval and isolated world state, then exports every available run,
+including deliberate failures, for a separate metrics pipeline. No external API
+is used. The [Python pilot PRD](docs/prd-python-agent-pilot.md) defines the customer
+agent, IFT and metrics integration inputs still needed.
+
 ## Start your agent
 
 ```bash
@@ -191,8 +199,12 @@ estimate and approves it; verify asks again only above 1.5× that amount or when
 nothing was authorized. Give the Builder a Sonnet/Opus-class model — below that
 floor the loop does not close; the Target can be as small as a 9B model.
 
-For “try a few approaches”, Builder Pi can author and compare 2–4 small
-hypotheses through the existing `improve` action. At least four reviewed cases
+For “improve it automatically”, Builder Pi searches independent hypotheses
+through the existing `improve` action. It keeps the best measured change across
+rounds, including when a later trial regresses, and focuses that candidate for
+final review. Choose 2–4 candidates to try several hypotheses per round. All
+variants are compared against the same original agent; winning diffs are not
+silently accumulated. At least four reviewed cases
 are required. Before any model call AHDE persists a deterministic split: the
 Builder sees only the authoring arm, while cheap screens, matched comparisons
 and the Pareto frontier use the unseen validation arm. The exact split seed,
@@ -210,8 +222,14 @@ Builder authoring ceiling and itemizes both. If either price is unavailable,
 the total is shown as unknown instead of presenting the Target subtotal as the
 whole operation. The result lists author requests, reported tokens and cost separately;
 `runs/improvement-authors/` preserves per-attempt receipts, including failures
-and cancellation (unknown cost is not zero). The operator picks a candidate
-from the independently validated comparison and reviews it before shipping.
+and cancellation (unknown cost is not zero). Automatic selection stops at the
+target, after two rounds without progress, or before the next complete round
+would exceed the approved execution budget. Reservations persist across a
+crash, and concurrent calls cannot spend the same loop budget. Ranking uses
+verified score improvement, its lower confidence bound, known cost, known
+latency, then the earlier trial. No verified improvement means keep the original.
+The selected diff is reviewed once at the end; explicit `selection: review`
+retains the earlier manual choice mode.
 The evaluator-only sealed exam still answers the separate release question, so
 validation does not automatically prove the best production agent. The standalone `ahde improve` command still consumes recorded proposals
 unless its host attaches an author; automatic authoring uses the live Builder
@@ -333,8 +351,12 @@ quoted, never translated. Trimmed.
 
 Every run leaves a trace, and the Evidence Explorer turns them into pages:
 `ahde evidence` (or the link Builder Pi prints after a run) serves, on loopback
-and read-only, a runs table per evaluation — one row per case × repetition,
-failures first, filterable by outcome and failure mode — a page per run with
+and read-only, a dark workspace per evaluation: issue groups, a runs table
+and the selected conversation side by side. There is one row per case × repetition,
+failures first, filterable by outcome, failure mode and input text. URL filters,
+selected run and browser history retain the investigation. Every matching run
+belongs to its issue group, even when only a few representative citations fit
+in the summary. The same conversation also has a separate page with
 the conversation as a chat transcript, every grader's verdict, the judge's
 answer to each assertion, and a plain-language **Why** the host assembles from
 recorded fields (what the grader expected, what happened, which failure mode it

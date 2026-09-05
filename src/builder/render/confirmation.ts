@@ -278,6 +278,7 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 			];
 		}
 		case "improve": {
+			const target = bag(bag(subject.original).target);
 			const authoring = bag(subject.authoringBudget);
 			const maxVariants = Number(authoring.maxVariants ?? 0);
 			const maxRequests = typeof authoring.maxRequests === "number" ? authoring.maxRequests : null;
@@ -296,6 +297,13 @@ function subjectLines(confirmation: WorkbenchConfirmation, paint: Paint): string
 					tokens: maxOutputTokens,
 				});
 			return [
+				...(target.id ? [t("confirm.improve.baseline", { target: text(target.id, 60), revision: text(target.revision, 12), branch: text(target.branch, 60) })] : []),
+				...(subject.selection === "best" ? [
+					...wrap(t("confirm.improve.automatic"), 92),
+					...wrap(t("confirm.improve.original"), 92).map((line) => paint.muted(line)),
+					t("confirm.improve.limit", { budget: Number(subject.executionBudget) }),
+					"",
+				] : []),
 				`${paint.dim(t("confirm.improve.target-subtotal"))} ${text(subject.targetEstimatedCost, 100)}`,
 				`${paint.dim(t("confirm.improve.builder-ceiling"))} ${authorCost} ${paint.dim(`· ${authorBudget}`)}`,
 				`${paint.dim(t("confirm.improve.total"))} ${text(subject.estimatedCost, 100)} ${paint.dim("·")} ${text(subject.estimatedTime, 80)}`,

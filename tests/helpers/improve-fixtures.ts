@@ -12,7 +12,7 @@ import {
 } from "../../src/application/improvement-brief.js";
 import { createCorpus } from "../../src/corpus.js";
 import { diagnoseEvalRun } from "../../src/diagnosis.js";
-import { startMockModel, type MockModelHandle } from "../../src/mock-model.js";
+import { startMockModel, type MockModelHandle, type MockScript } from "../../src/mock-model.js";
 import {
 	createAhdeWorkbench,
 	type AhdeWorkbench,
@@ -100,9 +100,9 @@ export async function startImproveMockModel(): Promise<MockModelHandle> {
  */
 export async function improveFixture(
 	dependencies: Partial<AhdeWorkbenchDependencies> = {},
-	options: { repetitions?: number; developmentCases?: number } = {},
+	options: { repetitions?: number; developmentCases?: number; modelScripts?: MockScript[]; graderTexts?: string[] } = {},
 ): Promise<ImproveFixture> {
-	const mock = await startImproveMockModel();
+	const mock = options.modelScripts ? await startMockModel(options.modelScripts) : await startImproveMockModel();
 	const root = mkdtempSync(join(tmpdir(), "ahde-improve-"));
 	const projectDir = realpathSync(root);
 	const stateRoot = join(projectDir, ".ahde");
@@ -155,7 +155,7 @@ export async function improveFixture(
 		name: "Improve fixture development basket",
 		tasks: Array.from({ length: options.developmentCases ?? DEVELOPMENT_CASES.length }, (_, index) => ({
 			input: `Answer reviewed request ${index + 1}.`,
-			graders: [{ type: "output_contains" as const, text: "READY" }],
+			graders: (options.graderTexts ?? ["READY"]).map((text) => ({ type: "output_contains" as const, text })),
 		})),
 		coverageNotes: ["Both cases expose the same missing instruction."],
 		revisionSummary: "Initial development basket",

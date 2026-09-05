@@ -511,8 +511,7 @@ describe("read-only evidence explorer", () => {
 
 		expect(html).toContain('<meta charset="utf-8">');
 		expect(html).toContain(
-			"<thead><tr><th>Task</th><th>Rep</th><th>Input</th><th>Outcome</th><th>Score</th><th>Graders</th>" +
-			"<th>Failure mode</th><th>Tools</th><th>Latency</th><th>Cost</th><th>Tokens</th></tr></thead>",
+			"<thead><tr><th>Case and input</th><th>Result</th><th>Graders</th><th>Latency<br>Cost</th></tr></thead>",
 		);
 		// Russian survives the projection byte for byte.
 		expect(html).toContain("Обращение: проверь договор №42 и ограничения ДБО по нему.");

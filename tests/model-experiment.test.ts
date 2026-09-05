@@ -336,7 +336,7 @@ describe("model experiment boundary", () => {
 			}
 			return originalGit(dir, args, input, env);
 		});
-		expect(() => applyModelChange({ ...f, subject, expectedSubjectHash: subject.subjectHash, actorId: "human", reason: "Exact model choice" })).toThrow(/ref updates aborted by hook/);
+		expect(() => applyModelChange({ ...f, subject, expectedSubjectHash: subject.subjectHash, actorId: "human", reason: "Exact model choice" })).toThrow(/model selection reference update differs from the approved branch and revision/);
 		expect(switched).toBe(true);
 		expect(git(f.targetDir, "rev-parse", subject.headRef)).toBe(subject.baseSha);
 		expect(git(f.targetDir, "rev-parse", "refs/heads/unapproved-same-sha")).toBe(subject.baseSha);

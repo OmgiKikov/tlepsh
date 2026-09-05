@@ -508,6 +508,7 @@ describe("the host's plain-language account of one run", () => {
 			["command Target exited with 7: agent gave up", "exit", "the agent process ended before it answered"],
 			["command Target protocol violation at line 3", "protocol", "the agent broke the protocol the host speaks"],
 			["command Target did not start within 5000ms", "startup", "the agent never started"],
+			["command Target exited before its first protocol message with 7: agent bootstrap failed", "startup", "the agent never started"],
 			["evaluation infrastructure: world state file is not JSON", "evaluation", "the evaluation path failed before any grading"],
 			["missing OPENROUTER_API_KEY for OpenRouter endpoint https://openrouter.ai/api/v1", "other", "the run ended before the model answered"],
 			["something nobody wrote a stem for", "other", "the run ended before the model answered"],

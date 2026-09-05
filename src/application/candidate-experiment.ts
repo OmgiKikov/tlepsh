@@ -26,6 +26,8 @@ import {
 } from "../domain/candidate.js";
 import {
 	findReusableBaseline,
+	loadVerifiedEvalRun,
+	readEvalRunIndex,
 	runSuite,
 	type EvalRunRecord,
 	type ReusableBaselineQuery,
@@ -129,6 +131,8 @@ export interface CandidateExperimentOptions {
 	jobs?: number;
 	/** How old a reusable baseline may be. Undefined keeps the seven-day default. */
 	baselineMaxAgeMs?: number;
+	/** Host-pinned development baseline; never forwarded to the sealed arm. */
+	pinnedDevelopmentBaseline?: { evalRunId: string; hash: string };
 }
 
 export interface CandidateExperimentHoldoutResult {
@@ -546,6 +550,8 @@ interface MatchedEvaluationExecution {
 	jobs?: number;
 	/** Age limit on a reusable baseline; undefined keeps the seven-day default. */
 	baselineMaxAgeMs?: number;
+	/** Host-pinned development baseline; never forwarded to the sealed arm. */
+	pinnedDevelopmentBaseline?: { evalRunId: string; hash: string };
 }
 
 async function runMatchedEvaluation(
@@ -573,7 +579,18 @@ async function runMatchedEvaluation(
 		repetitions,
 		...(baselineMaxAgeMs === undefined ? {} : { maxAgeMs: baselineMaxAgeMs }),
 	};
-	let baseline = dependencies.findReusableBaseline(runsRoot, query);
+	let baseline: EvalRunRecord | null;
+	if (execution.pinnedDevelopmentBaseline) {
+		const pin = execution.pinnedDevelopmentBaseline;
+		const index = readEvalRunIndex(runsRoot, pin.evalRunId);
+		if (evidenceVisibility !== "development" || index.evidenceVisibility !== "development" || index.purpose !== "evidence" || hashValue(index) !== pin.hash) {
+			throw new Error("pinned development baseline changed or is not development evidence");
+		}
+		assertReusableBaselineIdentity(index, query);
+		baseline = loadVerifiedEvalRun(runsRoot, pin.evalRunId).record;
+	} else {
+		baseline = dependencies.findReusableBaseline(runsRoot, query);
+	}
 	if (baseline) assertReusableBaselineIdentity(baseline, query);
 	const baselineReused = baseline !== null;
 	if (!baseline) {
@@ -791,6 +808,7 @@ export async function runCandidateExperiment(
 						...(options.signal ? { signal: options.signal } : {}),
 						...(options.jobs === undefined ? {} : { jobs: options.jobs }),
 						...(options.baselineMaxAgeMs === undefined ? {} : { baselineMaxAgeMs: options.baselineMaxAgeMs }),
+						...(options.pinnedDevelopmentBaseline ? { pinnedDevelopmentBaseline: options.pinnedDevelopmentBaseline } : {}),
 					},
 				);
 

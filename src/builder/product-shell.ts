@@ -14,6 +14,7 @@ import { compilePlan } from "./render/plan.js";
 import { nextStep, stageLabel } from "./render/stage.js";
 import { renderStatusBar } from "./render/status-bar.js";
 import { renderHeader, type HeaderState } from "./render/view.js";
+import { renderWelcome } from "./render/welcome.js";
 import type { BuilderSpendReader } from "./spend.js";
 import { confirmDeclaredToolCredentials, runFirstRunOnboarding } from "./onboarding.js";
 import {
@@ -207,6 +208,13 @@ export function installAhdeBuilderProductShell(
 	};
 	let tui: TUI | null = null;
 	let host: ExtensionContext | null = null;
+	let welcomeVisible = true;
+	let returning = false;
+	const collapseWelcome = (): void => {
+		if (!welcomeVisible) return;
+		welcomeVisible = false;
+		try { tui?.requestRender(); } catch { /* Presentation cannot stop input. */ }
+	};
 	/** First ordinary message survives the host-owned login/model picker. */
 	let pendingFirstMessage: string | null = null;
 	/** Declared tool keys already asked about; one question per name per session. */
@@ -430,6 +438,14 @@ export function installAhdeBuilderProductShell(
 	pi.on("session_start", async (event, ctx) => {
 		if (ctx.mode !== "tui") return;
 		host = ctx;
+		if (event.reason !== "reload") welcomeVisible = true;
+		returning = event.reason === "resume" || event.reason === "fork";
+		try {
+			// Automatic resume arrives as startup. Read the active branch only;
+			// unrelated sessions and host metadata do not imply a conversation.
+			returning ||= ctx.sessionManager?.getBranch().some((entry) =>
+				entry.type === "message" && entry.message.role === "user") ?? false;
+		} catch { /* The runtime owns history validation; this is only a greeting. */ }
 		startClock();
 		// Pi rebuilds the palette on every session start and drops extension
 		// wrappers with it, so the ordering is asked for here, not once at load.
@@ -446,8 +462,9 @@ export function installAhdeBuilderProductShell(
 			return {
 				// Pi aborts the whole session on an over-wide custom line; every header
 				// line is measured with ANSI awareness and cut to the viewport.
-				render: (width: number) => renderHeader(state, paint)
-					.map((line) => truncateToWidth(line, Math.max(1, width))),
+				render: (width: number) => welcomeVisible
+					? renderWelcome(state, paint, { width, returning })
+					: renderHeader(state, paint).map((line) => truncateToWidth(line, Math.max(1, width))),
 				invalidate() {},
 			};
 		});
@@ -465,6 +482,7 @@ export function installAhdeBuilderProductShell(
 	// model. Preserve the user's actual idea, route connection through the host's
 	// private built-in picker, then replay the idea after model selection.
 	pi.on("input", async (event, ctx) => {
+		if (event.source === "interactive" && event.text.trim()) collapseWelcome();
 		if (event.source !== "interactive" || event.text.trim().startsWith("/")) return undefined;
 		state.builderModel = builderModelStatus(ctx);
 		if (state.builderModel.credentialPresent) return undefined;
@@ -480,6 +498,8 @@ export function installAhdeBuilderProductShell(
 		ctx.ui.setEditorText(event.text);
 		return { action: "handled" as const };
 	});
+	// Startup prompts and host-replayed first messages may bypass interactive input.
+	pi.on("agent_start", () => { collapseWelcome(); });
 
 	// Pi retains provider errors in its transcript. Replace raw provider JSON and
 	// bearer-token diagnostics with one stable AHDE recovery message before the

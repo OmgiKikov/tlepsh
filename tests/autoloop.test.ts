@@ -713,6 +713,7 @@ describe("the improve decision", () => {
 				until: 0.9,
 				maxCycles: 3,
 				repetitions: 2,
+				selection: "review",
 				reason: "Improve this agent towards 90%",
 			}, gate);
 
@@ -760,6 +761,69 @@ describe("the improve decision", () => {
 		}
 	}, 600_000);
 
+	it("defaults to automatic best selection with one bounded approval and focuses an earlier winner after later losses", async () => {
+		const fixture = await improveFixture({}, {
+			developmentCases: 4, repetitions: 2,
+			graderTexts: ["READY", "BETTER", "BEST", "UNATTAINED"],
+			modelScripts: [
+				{ match: ({ system }) => system.includes("STRONG"), steps: [{ text: "READY BETTER BEST" }] },
+				{ match: ({ system }) => system.includes("WEAK"), steps: [{ text: "READY BETTER" }] },
+				{ match: ({ system }) => system.includes("WORSE"), steps: [{ text: "pending" }] },
+				{ steps: [{ text: "READY" }] },
+			],
+		});
+		try {
+			const workbench = createAhdeWorkbench({
+				projectDir: fixture.projectDir, stateRoot: fixture.stateRoot,
+				runsRoot: fixture.runsRoot, projectId: fixture.projectId,
+				dependencies: { authorImprovementProposal: scriptedAuthor(["WEAK", "STRONG", "WORSE", "STRONG"]) },
+			});
+			const gate = recordingApprovingGate();
+			const decided = await workbench.decide({
+				kind: "improve", until: 1, maxCycles: 5, repetitions: 2, executionBudget: 200,
+				reason: "Find the best measured prompt; let me review it once at the end",
+			}, gate);
+			expect(gate.calls).toHaveLength(1);
+			expect(gate.calls[0]!.subject).toMatchObject({ selection: "best", executionBudget: 200 });
+			expect(gate.calls[0]!.question).toContain("two rounds without progress");
+			expect(decided.result.stopReason).toBe("no-progress-twice");
+			expect(decided.result.selectionSummary?.incumbent).toMatchObject({ cycle: 2, scoreDelta: 0.5 });
+			expect(decided.result.selectionSummary!.executionsCharged).toBeLessThanOrEqual(200);
+			const winner = decided.result.selectionSummary!.incumbent!.candidateId;
+			expect(decided.result.candidateId).toBe(winner);
+			expect(workbench.inventory().validFocus.candidate?.id).toBe(winner);
+			expect(decided.result.search?.rows[0]?.candidateId).not.toBe(winner);
+			expect(git(fixture.projectDir, "rev-parse", "HEAD")).toBe(fixture.baselineSha);
+			expect(tags(fixture.projectDir)).toEqual([]);
+		} finally { await fixture.close(); }
+	}, 600_000);
+
+	it.each(["commit", "branch"])("refuses a changed %s during the one approval before calling the loop or author", async (change) => {
+		const run = vi.fn();
+		const author = vi.fn();
+		const fixture = await improveFixture({ runImprovementLoop: run as never, authorImprovementProposal: author }, { developmentCases: 4 });
+		try {
+			const gate = recordingApprovingGate();
+			gate.confirm = async (confirmation) => {
+				gate.calls.push(confirmation);
+				expect(confirmation.subject).toHaveProperty("original.target.revision", fixture.baselineSha);
+				if (change === "branch") git(fixture.projectDir, "checkout", "-b", "changed-during-confirmation");
+				else {
+					writeFileSync(`${fixture.projectDir}/AGENTS.md`, "# New baseline\nREADY\n");
+					git(fixture.projectDir, "add", "AGENTS.md");
+					git(fixture.projectDir, "commit", "-qm", "Changed during confirmation");
+				}
+				return { approved: true, actorId: "local:reviewer" };
+			};
+			await expect(fixture.workbench.decide({
+				kind: "improve", until: 1, maxCycles: 1, repetitions: 2, reason: "Improve this exact baseline",
+			}, gate)).rejects.toThrow(/changed|stale/i);
+			expect(gate.calls).toHaveLength(1);
+			expect(run).not.toHaveBeenCalled();
+			expect(author).not.toHaveBeenCalled();
+		} finally { await fixture.close(); }
+	}, 600_000);
+
 	it("rejects an underpowered blind search before provider preparation or confirmation", async () => {
 		const prepare = vi.fn(async () => null);
 		const fixture = await improveFixture({ prepareImprovementAuthor: prepare });
@@ -800,6 +864,7 @@ describe("the improve decision", () => {
 				maxCycles: 1,
 				repetitions: SEALED_VERIFICATION_REPETITIONS,
 				candidates: 2,
+				selection: "review",
 				reason: "Try two different fixes for the top problem",
 			}, gate);
 

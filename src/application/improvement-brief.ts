@@ -417,10 +417,11 @@ export function graderFamilyDiscriminator(family: GraderFamily): string {
  * reader — brief, impact, explorer — must derive them from this one function.
  */
 export function graderFamilyModeId(family: GraderFamily): string {
-	return shortHashId("failure-mode", {
-		algorithmId: IMPROVEMENT_BRIEF_ALGORITHM_ID,
-		signature: familyIdentity(family),
-	});
+	return failureModeId(familyIdentity(family));
+}
+
+function failureModeId(identity: Record<string, unknown>): string {
+	return shortHashId("failure-mode", { algorithmId: IMPROVEMENT_BRIEF_ALGORITHM_ID, signature: identity });
 }
 
 function categoryForGrader(grader: DiagnosticGraderResult): FailureModeCategory {
@@ -702,10 +703,7 @@ function finalizeMode(mode: ModeAccumulator, totalTasks: number, excerpts: RunEx
 			? "stabilize-and-rerun"
 			: "propose-harness-change";
 	return FailureModeSchema.parse({
-		failureModeId: shortHashId("failure-mode", {
-			algorithmId: IMPROVEMENT_BRIEF_ALGORITHM_ID,
-			signature: mode.identity,
-		}),
+		failureModeId: failureModeId(mode.identity),
 		signature: mode.signature,
 		category: mode.category,
 		scope,
@@ -871,6 +869,44 @@ function addInfrastructureModes(
 	}
 }
 
+/** One canonical grouping pass, used both by the bounded brief and complete run navigation. */
+function collectModeObservations(
+	runs: readonly RunRecord[],
+	outcomesByTask: ReadonlyMap<string, TaskOutcomes> = taskOutcomes(runs),
+): Map<string, ModeAccumulator> {
+	const modes = new Map<string, ModeAccumulator>();
+	for (const run of runs) {
+		if (run.status === "error") continue;
+		for (const grader of run.evalResults?.graders ?? []) {
+			const diagnosticGrader = grader as DiagnosticGraderResult;
+			recordObservation(accumulatorFor(modes, graderModeDescriptor(run.taskId, diagnosticGrader)), run, diagnosticGrader);
+		}
+	}
+	addFlakyModes(modes, outcomesByTask);
+	addInfrastructureModes(modes, outcomesByTask);
+	return modes;
+}
+
+/**
+ * Full failing-run membership for the selected canonical modes, not the brief's
+ * capped representative excerpts. Callers supply the same verified runs that
+ * produced the brief. Grader families, legacy checks, instability and execution
+ * errors all use the compilation matcher; this adds no alternative classifier.
+ */
+export function failureModeRunMembership(runs: readonly RunRecord[], modeIds: ReadonlySet<string>): Map<string, string[]> {
+	const membership = new Map<string, string[]>();
+	for (const mode of collectModeObservations(runs).values()) {
+		const id = failureModeId(mode.identity);
+		if (!modeIds.has(id)) continue;
+		for (const runId of mode.failures.keys()) {
+			const ids = membership.get(runId) ?? [];
+			ids.push(id);
+			membership.set(runId, ids);
+		}
+	}
+	return membership;
+}
+
 function headlineFor(
 	status: ImprovementBrief["status"],
 	passed: number,
@@ -1001,18 +1037,7 @@ export function compileImprovementBrief(
 
 	const tasks = taskUniverse(record, verified.runs);
 	const outcomesByTask = taskOutcomes(verified.runs);
-	const accumulators = new Map<string, ModeAccumulator>();
-	for (const run of verified.runs) {
-		if (run.status === "error") continue;
-		for (const grader of run.evalResults?.graders ?? []) {
-			const diagnosticGrader = grader as DiagnosticGraderResult;
-			const descriptor = graderModeDescriptor(run.taskId, diagnosticGrader);
-			const mode = accumulatorFor(accumulators, descriptor);
-			recordObservation(mode, run, diagnosticGrader);
-		}
-	}
-	addFlakyModes(accumulators, outcomesByTask);
-	addInfrastructureModes(accumulators, outcomesByTask);
+	const accumulators = collectModeObservations(verified.runs, outcomesByTask);
 
 	const excerpts: RunExcerpts = new Map(
 		(diagnosis.runEvidence ?? []).map((item) => [

@@ -1,6 +1,7 @@
 import type { WorkbenchNext } from "./next-actions.js";
 import type { ModelExperimentRecord, ModelChangeReceipt } from "../application/model-experiment.js";
 import type { WorkbenchRunInspection } from "./run-inspection.js";
+import type { ImprovementSelectionSummary } from "../application/improvement-selection.js";
 import { z } from "zod";
 import { ProposalPredictionSchema, type ProposalPrediction } from "../builders/adapters.js";
 import type { GateSurface, GateVerdict, SealedOutcome } from "../domain/comparison-gate.js";
@@ -1170,13 +1171,12 @@ export const WorkbenchDecisionInputSchema = z.discriminatedUnion("kind", [
 		until: z.number().min(0).max(1),
 		maxCycles: z.number().int().min(1).max(10),
 		repetitions: z.number().int().min(1).max(10),
-		/**
-		 * Hypotheses per cycle. 1 (the default) is one change, one screen, one
-		 * verification. 2..4 asks for that many different changes for the top
-		 * failure mode and compares them in one Pareto table; the loop stops
-		 * there, because which one wins is the operator's to say.
-		 */
+		/** Independent hypotheses per round, all compared with the original baseline. */
 		candidates: z.number().int().min(1).max(4).optional(),
+		/** New conversational searches select the best measured candidate by default. */
+		selection: z.enum(["best", "review"]).optional(),
+		/** Target executions only; author/evaluator spend is disclosed separately. */
+		executionBudget: z.number().int().min(1).max(100_000).optional(),
 		jobs: z.number().int().min(1).max(64).optional(),
 		developmentCorpusId: ArtifactIdSchema.optional(),
 		/** Continue the named unfinished loop instead of refusing to start. */
@@ -1438,13 +1438,11 @@ export interface WorkbenchImproveResult {
 	loopId: string;
 	finalPassRate: number;
 	executions: number;
-	/** Hypotheses each cycle compared; 1 means today's single-change behaviour. */
+	/** Independent hypotheses each cycle compared. */
 	candidates: number;
-	/**
-	 * The Pareto table of the last cycle that compared several hypotheses. The
-	 * operator picks one and applies or ships it through the unchanged path.
-	 */
+	/** Last round's comparison. The automatic incumbent may come from an earlier round. */
 	search: ProposalSearchResult | null;
+	selectionSummary?: ImprovementSelectionSummary;
 }
 
 /** Typed payload of every consequential decision, keyed by its decision kind. */

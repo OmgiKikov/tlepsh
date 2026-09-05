@@ -191,7 +191,7 @@ export function startMockModel(scripts: MockScript[], fallback?: MockScript): Pr
 				return;
 			}
 			if (body.stream === false) {
-				// Non-streaming client (judge grader): plain JSON completion.
+				// Judges and Python command agents use plain JSON completions.
 				res.writeHead(200, { "content-type": "application/json" });
 				res.end(
 					JSON.stringify({
@@ -199,7 +199,14 @@ export function startMockModel(scripts: MockScript[], fallback?: MockScript): Pr
 						object: "chat.completion",
 						created: Math.floor(Date.now() / 1000),
 						model,
-						choices: [{ index: 0, message: { role: "assistant", content: step.text ?? "" }, finish_reason: "stop" }],
+						choices: [{ index: 0, message: {
+							role: "assistant", content: step.text ?? "",
+							...(step.toolCall ? { tool_calls: [{
+								id: step.toolCall.id ?? `call_${requestCount}`,
+								type: "function",
+								function: { name: step.toolCall.name, arguments: JSON.stringify(step.toolCall.arguments) },
+							}] } : {}),
+						}, finish_reason: step.toolCall ? "tool_calls" : "stop" }],
 						usage: { prompt_tokens: 42, completion_tokens: 7, total_tokens: 49 },
 					}),
 				);

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
+import { accessSync, constants, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import type { AgentSessionEvent, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { ResolvedTarget } from "../manifest.js";
@@ -248,15 +248,15 @@ class CommandTargetSession implements TargetSession {
 				throw this.options.signal.reason ?? new Error("run aborted");
 			}
 			if (this.exited) {
+				const stderr = this.capturedStderr();
 				// Never a protocol line: this child never started, and blaming the
 				// conversation for something that happened before it began would
 				// point a reader at the wrong half of the system.
 				if (!this.sawOutput) {
 					throw new Error(
-						`command Target did not start within ${this.options.target.manifest.execution.command?.startupTimeoutMs ?? 0}ms`,
+						`command Target exited before its first protocol message with ${this.exited.signal ?? this.exited.code}${stderr ? `: ${stderr}` : ""}`,
 					);
 				}
-				const stderr = this.capturedStderr();
 				throw new Error(
 					`command Target exited with ${this.exited.signal ?? this.exited.code}${stderr ? `: ${stderr}` : ""}`,
 				);
@@ -524,6 +524,17 @@ export async function createCommandTargetSession(
 	const command = execution.command;
 	if (!command) throw new Error("command Target requires an execution.command block");
 
+	// Sandbox paths and the kernel's cwd must name the same directories. macOS
+	// temp paths commonly arrive through /var while the kernel sees /private/var.
+	// ToolBroker canonicalizes these too; command agents need the same boundary.
+	// Do this before deriving HOME/TMPDIR: bwrap only mounts the canonical roots.
+	mkdirSync(options.scratchDir, { recursive: true, mode: 0o700 });
+	options = {
+		...options,
+		workspaceDir: realpathSync(options.workspaceDir),
+		scratchDir: realpathSync(options.scratchDir),
+		...(options.worldPath ? { worldPath: realpathSync(options.worldPath) } : {}),
+	};
 	const { environment } = buildToolEnvironment({
 		label: "agent",
 		scratchDir: options.scratchDir,

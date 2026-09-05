@@ -165,6 +165,40 @@ describe("AHDE Builder product shell", () => {
 		expect(h.renderHeader().join("\n")).toContain("openai/gpt-test · not connected");
 	});
 
+	it("collapses the welcome on real input without transforming the request or reopening dialogs", async () => {
+		const { handlers } = install(async () => view());
+		const h = host();
+		await start(handlers, h.ctx);
+		expect(h.renderHeader().join("\n")).toContain("Start with your intent");
+		await handlers.get("input")?.({ source: "extension", text: "background status" } as never, h.ctx as never);
+		expect(h.renderHeader().join("\n")).toContain("Start with your intent");
+		const result = await handlers.get("input")?.({ source: "interactive", text: "Build my agent" } as never, h.ctx as never);
+		expect(result).toBeUndefined();
+		expect(h.renderHeader().join("\n")).not.toContain("Start with your intent");
+		expect(h.renderHeader().join("\n")).toContain("AHDE Builder");
+		expect(h.ui.setEditorText).not.toHaveBeenCalled();
+		expect(h.ui.select).not.toHaveBeenCalled();
+		await start(handlers, h.ctx, "reload");
+		expect(h.renderHeader().join("\n")).not.toContain("Start with your intent");
+		await start(handlers, h.ctx, "new");
+		expect(h.renderHeader().join("\n")).toContain("Start with your intent");
+	});
+
+	it("recognizes automatic resume from the active Pi branch and never resubmits its history", async () => {
+		const { handlers, sendUserMessage } = install(async () => view({ stage: "spec-design" }));
+		const h = host();
+		Object.assign(h.ctx, { sessionManager: { getBranch: () => [
+			{ type: "message", message: { role: "user", content: "A saved request" } },
+		] } });
+		await start(handlers, h.ctx);
+		expect(h.renderHeader().join("\n")).toContain("WELCOME BACK");
+		expect(h.renderHeader().join("\n")).toContain("Continue from here");
+		expect(sendUserMessage).not.toHaveBeenCalled();
+		expect(h.ui.select).not.toHaveBeenCalled();
+		await handlers.get("agent_start")?.({} as never, h.ctx as never);
+		expect(h.renderHeader().join("\n")).not.toContain("WELCOME BACK");
+	});
+
 	it("keeps the first free-text idea through private model setup", async () => {
 		const { handlers, sendUserMessage } = install(async () => view());
 		const h = host({

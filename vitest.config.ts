@@ -7,6 +7,7 @@ import { defineConfig } from "vitest/config";
 // When a new test starts spawning things, add its name here: that is the whole
 // maintenance rule.
 const HEAVY = [
+	"tests/improvement-best.test.ts", // Real private candidate branches, pinned evaluations and crash recovery
 	"tests/workbench-model-experiment.test.ts", // Reviewed corpus publication and exact Git authority changes
 	"tests/model-experiment.test.ts", // Isolated model variants, real eval records and reviewed model changes
 	"tests/evidence-replay.test.ts", // Exact candidate evidence and paired trace fixtures
