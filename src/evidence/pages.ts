@@ -1,5 +1,5 @@
 import { bareDelta, percent, points, ratio } from "../measurement.js";
-import { language, t } from "../i18n.js";
+import { language, plural, t, tokenLabel } from "../i18n.js";
 
 /**
  * A number the Target never reported renders as a dash, never as zero. `$0.00`
@@ -21,6 +21,7 @@ import {
 	type RunRow,
 	type Transcript,
 } from "../application/run-explanation.js";
+import type { RagRunXray } from "../application/rag-xray.js";
 
 /**
  * Every human-facing Evidence page, in one place.
@@ -521,6 +522,77 @@ function renderWhy(explanation: RunExplanation): string {
 <p class="note">Every sentence above is assembled by the host from recorded fields — the grader results, the bounded trace, the stored diagnosis, and a Candidate's own comparison. No model wrote it.</p></div>`;
 }
 
+const MAX_RENDERED_RAG_SEARCHES = 8;
+const MAX_RENDERED_RAG_HITS = 5;
+const MAX_RENDERED_RAG_SOURCE_IDS = 8;
+
+function ragRate(value: number | null): string {
+	return value === null ? t("metrics.not-reported") : percent(value);
+}
+
+function ragSources(ids: readonly string[]): string {
+	if (ids.length === 0) return t("rag.none");
+	const shown = ids.slice(0, MAX_RENDERED_RAG_SOURCE_IDS).map((id) => `<span class="tag mono">${h(id)}</span>`);
+	if (ids.length > shown.length) shown.push(`<span class="sub">${h(t("rag.more", { count: ids.length - shown.length }))}</span>`);
+	return shown.join(" ");
+}
+
+/** Compact, text-free retrieval evidence for a verified run. */
+export function renderRagXray(rag: RagRunXray): string {
+	const searches = rag.searches.slice(0, MAX_RENDERED_RAG_SEARCHES).map((search, index) => {
+		const hits = search.hits.slice(0, MAX_RENDERED_RAG_HITS);
+		const rows = hits.map((hit) => `<tr>
+	<td class="num">${hit.rank}</td>
+	<td class="mono wrapcell">${h(hit.chunkId)}</td>
+	<td class="mono wrapcell">${h(hit.path ?? t("rag.path-missing"))}</td>
+	<td class="num">${hit.score === null ? h(t("metrics.not-reported")) : hit.score.toFixed(3)}</td>
+	<td>${h(t(hit.expected ? "regrade.yes" : "regrade.no"))}</td>
+	<td>${h(t(hit.cited ? "regrade.yes" : "regrade.no"))}</td>
+	<td class="num">${ragRate(hit.answerOverlap)}</td>
+</tr>`).join("");
+		const hitNote = search.hits.length > hits.length
+			? `<p class="note">${h(t("rag.hits-omitted", { count: search.hits.length - hits.length }))}</p>`
+			: "";
+		const hitTable = rows.length === 0
+			? `<p class="note">${h(t("rag.no-readable-chunks"))}</p>`
+			: `<div class="scroll"><table><thead><tr><th>${h(t("explorer.th.index"))}</th><th>${h(t("rag.table.chunk"))}</th><th>${h(t("rag.table.path"))}</th><th>${h(t("rag.table.score"))}</th><th>${h(t("rag.table.expected"))}</th><th>${h(t("rag.table.cited"))}</th><th>${h(t("rag.table.overlap"))}</th></tr></thead><tbody>${rows}</tbody></table></div>${hitNote}`;
+		return `<details class="turn"${index === 0 ? " open" : ""}><summary>${h(t("rag.search-summary", {
+			index: index + 1,
+			status: tokenLabel("rag.search-status", search.status),
+			k: search.requestedK ?? t("metrics.not-reported"),
+			duration: search.durationMs === null ? t("metrics.not-reported") : `${Math.round(search.durationMs)}ms`,
+		}))}</summary>
+	<p><b>${h(t("rag.query"))}:</b> <span class="mono">${h(search.query ?? t("rag.query-not-recorded"))}</span></p>
+	<p class="sub">${h(t("rag.search-metrics", {
+		hitAtK: ragRate(search.hitAtK),
+		rank: search.reciprocalRank === null ? t("metrics.not-reported") : search.reciprocalRank.toFixed(3),
+	}))}</p>
+	${hitTable}
+</details>`;
+	}).join("");
+	const hiddenSearches = Math.max(0, rag.searchCount - Math.min(rag.searches.length, MAX_RENDERED_RAG_SEARCHES));
+	return `<div class="card">
+	<div class="rowline"><h3>${h(t("rag.diagnosis-line", { diagnosis: tokenLabel("rag.diagnosis", rag.diagnosis) }))}</h3><span class="chip ${rag.diagnosis === "retrieved-and-cited" || rag.diagnosis === "retrieved-and-supported" ? "pass" : rag.diagnosis === "unlabelled" || rag.diagnosis === "retrieval-unknown" ? "error" : "fail"}">${h(tokenLabel("rag.label-status", rag.labelStatus))}</span></div>
+	<p class="sub">${h(t("rag.summary", {
+		searches: plural(rag.searchCount, "search"),
+		hitAtK: ragRate(rag.hitAtK),
+		mrr: rag.mrr === null ? t("metrics.not-reported") : rag.mrr.toFixed(3),
+		citation: ragRate(rag.citationRate),
+		grounding: ragRate(rag.groundingPassRate),
+	}))} · ${h(t("rag.resources", {
+		latency: rag.retrievalLatencyMs === null ? t("metrics.not-reported") : `${Math.round(rag.retrievalLatencyMs)}ms`,
+		cost: rag.retrievalCostUsd === null ? t("metrics.not-reported") : "$0.00",
+		coverage: ragRate(rag.scoreCoverage),
+	}))}</p>
+	<p><b>${h(t("rag.source.expected"))}:</b> ${ragSources(rag.expectedChunkIds)}</p>
+	<p><b>${h(t("rag.source.retrieved"))}:</b> ${ragSources(rag.retrievedChunkIds)}</p>
+	<p><b>${h(t("rag.source.cited"))}:</b> ${ragSources(rag.citedChunkIds)}</p>
+	<p class="note">${h(t("rag.faithfulness-note"))}</p>
+	${searches || `<p class="note">${h(t("rag.no-search"))}</p>`}
+	${hiddenSearches > 0 ? `<p class="note">${h(t("rag.searches-omitted", { searches: plural(hiddenSearches, "search") }))}</p>` : ""}
+</div>`;
+}
+
 export function renderRunDetailPage(model: RunDetailPageModel): string {
 	const run = model.run;
 	const body = `
@@ -544,6 +616,7 @@ export function renderRunDetailPage(model: RunDetailPageModel): string {
 	<div class="stat"><b>${money(run.metrics.costUsd, 5)}</b><span>Cost</span></div>
 </div>
 <section><h2>${h(t("explorer.h2.why"))}</h2>${renderWhy(model.explanation)}</section>
+${model.explanation.rag ? `<section><h2>${h(t("rag.title"))}</h2>${renderRagXray(model.explanation.rag)}</section>` : ""}
 ${run.error ? `<section><h2>${h(t("explorer.h2.run-error"))}</h2><div class="card"><pre class="errpre">${h(run.error)}</pre></div></section>` : ""}
 <section><h2>${h(t("explorer.h2.verdict"))}</h2><div class="cards">${renderVerdict(model.graders)}</div></section>
 <section>

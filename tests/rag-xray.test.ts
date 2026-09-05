@@ -5,6 +5,7 @@ import {
 	projectRagRunXray,
 	summarizeRagXray,
 } from "../src/application/rag-xray.js";
+import { explainRun } from "../src/application/run-explanation.js";
 import type { RunRecord } from "../src/provenance.js";
 import type { TraceMessage } from "../src/trace.js";
 
@@ -68,6 +69,28 @@ function searchTrace(options: {
 }
 
 describe("the RAG X-ray projection", () => {
+	it("travels with the shared run explanation only when verified messages are supplied", () => {
+		const run = {
+			...runWithSource("blocking.md#0"),
+			runId: "run-rag",
+			taskId: "task-rag",
+			repetitionIndex: 0,
+			status: "completed",
+			error: null,
+		} as RunRecord;
+		const messages = searchTrace({
+			payload: JSON.stringify({
+				schemaVersion: 1,
+				chunks: [{ rank: 1, id: "blocking.md#0", path: "blocking.md", score: 2, text: "15 минут" }],
+			}),
+			answer: "15 минут, источник blocking.md#0",
+		});
+		const withoutTrace = explainRun({ run, graders: [], facts: null, modes: [], flip: null });
+		const withTrace = explainRun({ run, graders: [], facts: null, messages, modes: [], flip: null });
+		expect(withoutTrace.rag).toBeNull();
+		expect(withTrace.rag).toMatchObject({ diagnosis: "retrieved-and-cited", hitAtK: 1, mrr: 1 });
+	});
+
 	it("shows the query, recorded rank/score, expected-source MRR, citation, overlap, latency and cost", () => {
 		const payload = JSON.stringify({
 			schemaVersion: 1,

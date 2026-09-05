@@ -121,13 +121,6 @@ export const ProductionFailureRecordSchema = z.strictObject({
 	omittedToolEventCount: z.number().int().nonnegative(),
 	importedAt: z.iso.datetime({ offset: true }),
 }).superRefine((record, context) => {
-	if (record.projectId !== record.importedAgainst.id) {
-		context.addIssue({
-			code: "custom",
-			path: ["projectId"],
-			message: "failure project must be the host-observed importedAgainst Target",
-		});
-	}
 	if (!record.messages.some((message) => message.role === "user")) {
 		context.addIssue({ code: "custom", path: ["messages"], message: "failure trace needs a user turn" });
 	}
@@ -205,6 +198,8 @@ export function productionFailureProvenanceSource(
 export interface ImportProductionFailureOptions {
 	projectDir: string;
 	stateRoot: string;
+	/** Host-owned workspace identity; the Target id is recorded independently. */
+	projectId?: string;
 	sourcePath: string;
 	sourceKind: ProductionFailureSourceKind;
 	/** Untrusted external claim, kept separate from the Target the host resolves below. */
@@ -460,7 +455,7 @@ export function importProductionFailure(
 	const importedAgainst = ProductionFailureImportedAgainstSchema.parse(
 		(dependencies.resolveImportedAgainst ?? DEFAULT_DEPENDENCIES.resolveImportedAgainst)(options.projectDir),
 	);
-	const projectId = ProjectIdSchema.parse(importedAgainst.id);
+	const projectId = ProjectIdSchema.parse(options.projectId ?? importedAgainst.id);
 	const targetClaim = options.targetClaim === undefined
 		? null
 		: ProductionFailureTargetClaimSchema.parse(options.targetClaim);

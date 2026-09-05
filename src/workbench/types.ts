@@ -13,6 +13,7 @@ import {
 	type DatasetPreview,
 } from "../application/dataset-ingest.js";
 import { BuilderWorkbenchCorpusRevisionOperationsSchema } from "../application/builder-regression-case.js";
+import { ProductionFailureCaseSubmissionSchema } from "../application/production-failure-case.js";
 import { HarnessAuthoringIntentsSchema } from "../application/harness-authoring.js";
 import {
 	TargetModelSelectionSchema,
@@ -677,6 +678,17 @@ const DatasetRecipeInputSchema = z.strictObject({
 	revisionSummary: NonBlankSchema.max(4_000),
 });
 
+/**
+ * One redacted production conversation becomes one editable regression case.
+ * Import and draft creation are reversible submissions; `/test` remains the
+ * single consequential review that publishes the basket and runs it.
+ */
+const ProductionFailureInputSchema = ProductionFailureCaseSubmissionSchema.extend({
+	kind: z.literal("production-failure"),
+	approvedSpecId: ArtifactIdSchema.optional(),
+	parentDraftId: ArtifactIdSchema.optional(),
+});
+
 const ReviseCorpusDraftInputSchema = z.strictObject({
 	kind: z.literal("corpus-revision"),
 	approvedSpecId: ArtifactIdSchema.optional(),
@@ -822,6 +834,7 @@ export const WorkbenchSubmitInputSchema = z.discriminatedUnion("kind", [
 	CreateCorpusDraftInputSchema,
 	ImportCorpusDraftInputSchema,
 	DatasetRecipeInputSchema,
+	ProductionFailureInputSchema,
 	ReviseCorpusDraftInputSchema,
 	StructuredProposalInputSchema,
 	OpenWorkshopInputSchema,

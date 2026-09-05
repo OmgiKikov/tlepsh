@@ -836,6 +836,7 @@ export function collectEvalReportData(
 					judgeArtifacts: verified.artifacts.get(sourceRun.runId)?.judge,
 				}),
 				facts: messages ? traceFacts(messages) : null,
+				messages,
 				modes: improvementBrief.modes.filter((mode) =>
 					mode.evidence.some((evidence) => evidence.runId === row.runId)),
 				flip: null,

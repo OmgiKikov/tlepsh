@@ -18,6 +18,7 @@ import {
 	type TargetAdoptionReceipt,
 } from "../application/target-adoption.js";
 import { loadCandidateRecord } from "../application/candidate-review.js";
+import { operatorDirtyPaths } from "../application/store-hygiene.js";
 import { candidateStatus, type CandidateRecord } from "../domain/candidate.js";
 import { canonicalJson, hashValue } from "../provenance.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
@@ -209,7 +210,10 @@ function repositoryRoot(input: string): string {
 }
 
 function assertClean(repositoryDir: string): void {
-	if (gitRaw(repositoryDir, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).length > 0) {
+	const dirty = operatorDirtyPaths(
+		gitRaw(repositoryDir, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).toString("utf8"),
+	);
+	if (dirty.length > 0) {
 		fail("CYCLE_CONTINUATION_DIRTY", "Starting the next cycle requires a clean Target worktree and index.");
 	}
 }

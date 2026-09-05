@@ -405,6 +405,15 @@ describe("CycleContinuation", () => {
 		}
 	});
 
+	it("does not call its own passport and dataset exports unfinished operator work", () => {
+		const value = fixture("rejected");
+		writeFileSync(join(value.repositoryDir, "passport-v1.0.0.md"), "# Passport\n", "utf8");
+		mkdirSync(join(value.repositoryDir, "exports"));
+		writeFileSync(join(value.repositoryDir, "exports", "development.jsonl"), "{}\n", "utf8");
+
+		expect(() => describeCycleContinuation(options(value))).not.toThrow();
+	});
+
 	it("rejects adoption evidence that no longer binds the promoted CandidateRecord", () => {
 		const value = fixture("promoted");
 		adopt(value);

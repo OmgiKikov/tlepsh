@@ -109,6 +109,7 @@ const SUBMIT_WHEN = {
 	"corpus-revision": "change an existing draft: a case, a grader, the name, the notes",
 	"corpus-import": "the operator points at imports/<file>.jsonl",
 	"dataset-recipe": "any other file in imports/; read it with aspect: dataset first, import after",
+	"production-failure": "the operator points at one .json/.jsonl production trace; classify it and define strict graders, then /test reviews and runs it",
 	"structured-proposal": "a one-file semantic edit, or the only way to change execution policy",
 	"workshop-open": "build or repair files: your only writable surface",
 	"workshop-close": "the diff is finished; carry summary, validationPlan and prediction",
@@ -176,6 +177,8 @@ function submitLegal(kind: WorkbenchSubmitInput["kind"], view: NextView): boolea
 		case "corpus-import":
 		case "dataset-recipe":
 			return view.counts.approvedSpecs > 0;
+		case "production-failure":
+			return view.counts.approvedSpecs > 0 && view.target?.status === "ready";
 		case "corpus-revision":
 			return view.counts.approvedSpecs > 0 && view.counts.corpusDrafts > 0;
 		case "structured-proposal":

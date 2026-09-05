@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
 	compileExecutiveVersionCard,
 	type CompileExecutiveVersionCardInput,
@@ -8,6 +8,10 @@ import type { ShippedVersionPassport } from "../src/application/version-passport
 import type { ComparisonResources } from "../src/domain/comparison-gate.js";
 import { renderExecutiveVersionCard } from "../src/builder/render/version-card.js";
 import { plainPaint } from "../src/builder/render/paint.js";
+import { renderVersionCardHtml } from "../src/evidence/version-card.js";
+import { setLanguage } from "../src/i18n.js";
+
+afterEach(() => setLanguage(null));
 
 function passport(overrides: Partial<ShippedVersionPassport> = {}): ShippedVersionPassport {
 	return {
@@ -136,6 +140,39 @@ function completeInput(): CompileExecutiveVersionCardInput {
 }
 
 describe("Executive Version Card", () => {
+	it("exports the verified facts in an offline Russian report and escapes the exact diff", () => {
+		setLanguage("ru");
+		const input = completeInput();
+		input.change = { ...input.change!, summary: "Fix <img src=x onerror=alert(1)>", exactDiff: "+<script>alert(1)</script>" };
+		const html = renderVersionCardHtml(compileExecutiveVersionCard(input));
+		expect(html).toContain('<html lang="ru">');
+		expect(html).toContain("Закрытый экзамен доказал улучшение");
+		expect(html).toContain("слепая выборка");
+		expect(html).toContain("44%");
+		expect(html).toContain("83%");
+		expect(html).toContain("+39 п.п.");
+		expect(html).toContain("95% доверительный интервал");
+		expect(html).toContain("Посмотреть точную правку");
+		expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+		expect(html).not.toContain("<script");
+		expect(html).not.toContain("<img");
+		expect(html).toContain("default-src 'none'");
+		expect(html).toContain('href="../exports/erun-candidate.jsonl"');
+	});
+
+	it("keeps absent evidence unknown and refuses active or traversing artifact links", () => {
+		setLanguage("en");
+		const input = { passport: passport({ measured: { development: null, sealed: null, resources: null, predicted: null } }) };
+		for (const path of ["javascript:alert(1)", "https://example.com/secret", "../private.json", "/private.json", "..\\private.json"]) {
+			const card = compileExecutiveVersionCard({ ...input, artifacts: { passport: { path, sha256: "hash", bytes: 1 } } });
+			const html = renderVersionCardHtml(card);
+			expect(html).not.toContain("href=");
+			expect(html).toContain("The sealed conclusion is unknown");
+			expect(html).toContain("candidate impact was not supplied");
+			expect(html).not.toContain("$0.0000");
+		}
+	});
+
 	it("unifies the exact release facts without re-deciding the sealed verdict", () => {
 		const card = compileExecutiveVersionCard(completeInput());
 
@@ -245,7 +282,7 @@ describe("Executive Version Card", () => {
 		expect(rendered).toContain("VERSION CARD · support-agent v0.2.0");
 		expect(rendered).toContain("blind validation · score 44.0% → 83.0%");
 		expect(rendered).toContain("Sealed exam improvement proved · 20 cases × 2");
-		expect(rendered).toContain("required-tool search 2/6 → 6/6");
+		expect(rendered).toContain("Required tool call search 2/6 → 6/6");
 		expect(rendered).toContain("2 task regressions · 3 new modes · 4 worsened modes");
 		expect(rendered).toContain("$0.42 / 740 ms → $0.51 / 810 ms");
 		expect(rendered).toContain("2 files · +2 -1");
