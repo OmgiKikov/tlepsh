@@ -37,7 +37,7 @@ import {
 	type TargetAuthoringDataDirectory,
 	type TargetAuthoringResource,
 } from "./target-authoring-context.js";
-import { sha256 } from "../util.js";
+import { decodeUtf8, sha256 } from "../util.js";
 import { gitText } from "../git/commands.js";
 
 const GIT_SHA = /^[0-9a-f]{40}$/;
@@ -435,12 +435,7 @@ function readBlob(repositoryDir: string, revision: string, path: string, maxByte
 }
 
 function decodeText(content: Buffer, label: string): string {
-	let decoded: string;
-	try {
-		decoded = new TextDecoder("utf-8", { fatal: true }).decode(content);
-	} catch (error) {
-		throw new Error(`${label} must be valid UTF-8 text`, { cause: error });
-	}
+	const decoded = decodeUtf8(content, (cause) => new Error(`${label} must be valid UTF-8 text`, { cause }));
 	if (decoded.includes("\0")) throw new Error(`${label} must not contain NUL bytes`);
 	if (decoded.includes("\r")) throw new Error(`${label} must use LF line endings`);
 	return decoded;

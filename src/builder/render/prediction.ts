@@ -26,7 +26,7 @@ import type { Paint } from "./paint.js";
  * so it is converted once, here, and formatted by the same function every
  * other delta on every other screen goes through.
  */
-export function pointsOf(value: number): string {
+function pointsOf(value: number): string {
 	return points(fromPoints(value));
 }
 

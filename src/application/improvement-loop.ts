@@ -45,7 +45,6 @@ import {
 import { loadTarget, type ResolvedTarget } from "../manifest.js";
 import { computeTargetSnapshotHashes } from "../runner.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
-import { resolveContainedArtifactPath } from "../storage/paths.js";
 import type { RunEventListener } from "../run-events.js";
 import type { WorkbenchHumanGate } from "../workbench/types.js";
 import { recordBuilderAuthoredProposal } from "./builder-authoring.js";
@@ -126,7 +125,7 @@ export const IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE =
 const LoopIdSchema = z.string().regex(/^loop_[a-z0-9]{6,32}$/);
 const ArtifactIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/);
 
-export const IMPROVEMENT_LOOP_RUN_SCHEMA_VERSION = 2;
+const IMPROVEMENT_LOOP_RUN_SCHEMA_VERSION = 2;
 
 const ImprovementLoopConfigurationSchema = z.strictObject({
 	approvedSpecId: ArtifactIdSchema,
@@ -151,7 +150,7 @@ type ImprovementLoopConfiguration = z.infer<typeof ImprovementLoopConfigurationS
  * invocation can see an unfinished first one instead of racing it onto the same
  * branch names, and so `--resume` can pick the same loop up where it stopped.
  */
-export const ImprovementLoopRunRecordSchema = z.strictObject({
+const ImprovementLoopRunRecordSchema = z.strictObject({
 	schemaVersion: z.literal(IMPROVEMENT_LOOP_RUN_SCHEMA_VERSION),
 	loopId: LoopIdSchema,
 	projectId: ArtifactIdSchema,

@@ -110,7 +110,7 @@ export function loadExactEvalSnapshot(
 	return { record, runs, artifacts, hasRunHashes: record.runArtifacts !== undefined };
 }
 /** Hashes exact grader-result arrays without projecting reason text into public DTOs. */
-export function exactSignalDigest(snapshot: VerifiedEvalRun): string {
+function exactSignalDigest(snapshot: VerifiedEvalRun): string {
 	return hashValue(snapshot.runs.map((run) => ({
 		runId: run.runId,
 		taskId: run.taskId,

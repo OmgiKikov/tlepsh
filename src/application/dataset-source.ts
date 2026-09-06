@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
 	closeSync,
 	constants,
@@ -6,15 +5,15 @@ import {
 	fstatSync,
 	lstatSync,
 	openSync,
-	readSync,
 	realpathSync,
 	type Stats,
 } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { TextDecoder } from "node:util";
 import { z } from "zod";
 import { BUILDER_CORPUS_IMPORT_ROOT } from "./builder-corpus-import-contract.js";
+import { readBoundedBytes, sameFileSnapshot } from "../storage/artifacts.js";
 import { contained } from "../storage/paths.js";
+import { decodeUtf8, sha256 } from "../util.js";
 
 /**
  * Datasets arrive as exports rather than as hand-written baskets, so the inbox
@@ -24,7 +23,7 @@ import { contained } from "../storage/paths.js";
  */
 export const MAX_DATASET_SOURCE_BYTES = 16 * 1024 * 1024;
 
-export const DATASET_SOURCE_EXTENSIONS = [
+const DATASET_SOURCE_EXTENSIONS = [
 	".csv",
 	".tsv",
 	".json",
@@ -93,14 +92,6 @@ export interface ReadDatasetSourceOptions {
 	protectedRoots?: readonly string[];
 }
 
-function sameFileSnapshot(left: Stats, right: Stats): boolean {
-	return left.dev === right.dev &&
-		left.ino === right.ino &&
-		left.size === right.size &&
-		left.mtimeMs === right.mtimeMs &&
-		left.ctimeMs === right.ctimeMs;
-}
-
 function resolveSource(options: ReadDatasetSourceOptions): { absolute: string; relative: string; expected: Stats } {
 	const sourcePath = DatasetSourcePathSchema.parse(options.sourcePath);
 	const root = resolve(options.projectDir);
@@ -161,22 +152,12 @@ function readBounded(path: string, expected: Stats): Buffer {
 			throw new Error(`dataset source exceeds ${MAX_DATASET_SOURCE_BYTES} bytes`);
 		}
 
-		const chunks: Buffer[] = [];
-		let totalBytes = 0;
-		while (totalBytes <= MAX_DATASET_SOURCE_BYTES) {
-			const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, MAX_DATASET_SOURCE_BYTES + 1 - totalBytes));
-			const bytesRead = readSync(descriptor, chunk, 0, chunk.length, null);
-			if (bytesRead === 0) break;
-			chunks.push(chunk.subarray(0, bytesRead));
-			totalBytes += bytesRead;
-		}
-		if (totalBytes > MAX_DATASET_SOURCE_BYTES) {
-			throw new Error(`dataset source exceeds ${MAX_DATASET_SOURCE_BYTES} bytes`);
-		}
+		const bytes = readBoundedBytes(descriptor, MAX_DATASET_SOURCE_BYTES);
+		if (bytes === null) throw new Error(`dataset source exceeds ${MAX_DATASET_SOURCE_BYTES} bytes`);
 		const after = fstatSync(descriptor);
 		if (!sameFileSnapshot(before, after)) throw new Error("dataset source changed while it was being read");
-		if (totalBytes === 0) throw new Error("dataset source is empty");
-		return Buffer.concat(chunks, totalBytes);
+		if (bytes.length === 0) throw new Error("dataset source is empty");
+		return bytes;
 	} finally {
 		closeSync(descriptor);
 	}
@@ -186,12 +167,7 @@ function readBounded(path: string, expected: Stats): Buffer {
 export function readDatasetSource(options: ReadDatasetSourceOptions): DatasetSourceFile {
 	const source = resolveSource(options);
 	const bytes = readBounded(source.absolute, source.expected);
-	let text: string;
-	try {
-		text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-	} catch (error) {
-		throw new Error("dataset source is not valid UTF-8", { cause: error });
-	}
+	const text = decodeUtf8(bytes, (cause) => new Error("dataset source is not valid UTF-8", { cause }));
 	const extension = extensionOf(source.relative);
 	if (!extension) throw new Error("dataset source has no recognized extension");
 	return {
@@ -199,6 +175,6 @@ export function readDatasetSource(options: ReadDatasetSourceOptions): DatasetSou
 		extension,
 		text,
 		bytes: bytes.length,
-		sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+		sha256: sha256(bytes),
 	};
 }

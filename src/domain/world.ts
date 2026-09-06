@@ -1,6 +1,7 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { MAX_WORLD_BYTES, WorldSchema, type World, type WorldExpectation } from "../manifest.js";
 import { canonicalJson } from "../provenance.js";
+import { decodeUtf8 } from "../util.js";
 
 /**
  * The three operations a world supports, and the one bounded reader that turns
@@ -23,7 +24,7 @@ const RESERVED_WORLD_SEGMENTS = new Set(["__proto__", "constructor", "prototype"
 const WORLD_SEGMENT = /^[A-Za-z0-9_-]+$/;
 
 /** How much of a value a reason may quote. A reason is read, not parsed back. */
-export const MAX_WORLD_REASON_VALUE_CHARS = 120;
+const MAX_WORLD_REASON_VALUE_CHARS = 120;
 
 /** What a dotted path found. `found` distinguishes an absent path from a `null`. */
 export interface WorldLookup {
@@ -185,12 +186,7 @@ function readWorldBytes(path: string): Buffer {
  */
 export function readWorldStateFile(path: string): World["state"] {
 	const bytes = readWorldBytes(path);
-	let text: string;
-	try {
-		text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-	} catch (error) {
-		throw new Error(`world state file is not valid UTF-8: ${path}`, { cause: error });
-	}
+	const text = decodeUtf8(bytes, (cause) => new Error(`world state file is not valid UTF-8: ${path}`, { cause }));
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(text);

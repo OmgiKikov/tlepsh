@@ -1,7 +1,5 @@
 import {
 	existsSync,
-	lstatSync,
-	statSync,
 } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
@@ -39,7 +37,7 @@ import {
 	type BuilderProposalRunResult,
 	type RunApprovedSpecBuilderProposalOptions,
 } from "./builder-proposal.js";
-import { contained, projectStateDir } from "../storage/paths.js";
+import { assertPrivateFile, projectStateDir } from "../storage/paths.js";
 
 const MAX_SOURCE_TEXT_BYTES = 64 * 1024;
 const MAX_CORPUS_TASKS = 100;
@@ -224,15 +222,6 @@ function receiptRoot(stateRoot: string, projectIdInput: string, kind: ReceiptKin
 	return projectStateDir(stateRoot, projectIdInput, ["builder-authoring", kind], { create, label: "Builder authoring" });
 }
 
-function assertPrivateReceiptFile(path: string): void {
-	const entry = lstatSync(path);
-	if (!entry.isFile() || entry.isSymbolicLink()) {
-		throw new Error(`Builder authoring receipt must be a regular non-symlink file: ${path}`);
-	}
-	const mode = statSync(path).mode & 0o777;
-	if (mode !== 0o600) throw new Error(`Builder authoring receipt must have mode 0600, got 0${mode.toString(8)}`);
-}
-
 function specApprovalReceiptPath(
 	stateRoot: string,
 	projectId: string,
@@ -311,7 +300,7 @@ export function approveBuilderSpecDraft(
 	}
 	const receiptPath = specApprovalReceiptPath(options.stateRoot, projectId, subject.draftSpecId, true);
 	if (existsSync(receiptPath)) {
-		assertPrivateReceiptFile(receiptPath);
+		assertPrivateFile(receiptPath, "Builder authoring receipt");
 		throw new Error(`Spec draft ${subject.draftSpecId} already has an approval receipt; replay refused`);
 	}
 
@@ -342,7 +331,7 @@ export function approveBuilderSpecDraft(
 		id: `spec-approval-${hashValue(identity).slice("sha256:".length)}`,
 	});
 	writeJsonArtifact(receiptPath, SpecApprovalReceiptSchema, receipt, { immutable: true });
-	assertPrivateReceiptFile(receiptPath);
+	assertPrivateFile(receiptPath, "Builder authoring receipt");
 	return { approved: loadedApproved.snapshot, receipt, receiptPath };
 }
 
@@ -355,7 +344,7 @@ export function loadSpecApprovalReceipt(
 	const projectId = ProjectIdSchema.parse(projectIdInput);
 	const draftSpecId = SpecIdSchema.parse(draftSpecIdInput);
 	const path = specApprovalReceiptPath(stateRoot, projectId, draftSpecId, false);
-	assertPrivateReceiptFile(path);
+	assertPrivateFile(path, "Builder authoring receipt");
 	const receipt = readJsonArtifact(path, SpecApprovalReceiptSchema);
 	if (receipt.projectId !== projectId || receipt.draft.draftSpecId !== draftSpecId) {
 		throw new Error("Spec approval receipt belongs to a different project or draft");
@@ -449,7 +438,7 @@ export function publishBuilderDevelopmentCorpus(
 	const corpusId = expectedCorpusId(subject);
 	const receiptPath = corpusPublicationReceiptPath(options.stateRoot, normalized.projectId, corpusId, true);
 	if (existsSync(receiptPath)) {
-		assertPrivateReceiptFile(receiptPath);
+		assertPrivateFile(receiptPath, "Builder authoring receipt");
 		throw new Error(`development corpus ${corpusId} already has a publication receipt; replay refused`);
 	}
 
@@ -488,7 +477,7 @@ export function publishBuilderDevelopmentCorpus(
 		id: `corpus-publication-${hashValue(identity).slice("sha256:".length)}`,
 	});
 	writeJsonArtifact(receiptPath, DevelopmentCorpusPublicationReceiptSchema, receipt, { immutable: true });
-	assertPrivateReceiptFile(receiptPath);
+	assertPrivateFile(receiptPath, "Builder authoring receipt");
 	return { corpus, receipt, receiptPath };
 }
 
@@ -501,7 +490,7 @@ export function loadDevelopmentCorpusPublicationReceipt(
 	const projectId = ProjectIdSchema.parse(projectIdInput);
 	const corpusId = CorpusIdSchema.parse(corpusIdInput);
 	const path = corpusPublicationReceiptPath(stateRoot, projectId, corpusId, false);
-	assertPrivateReceiptFile(path);
+	assertPrivateFile(path, "Builder authoring receipt");
 	const receipt = readJsonArtifact(path, DevelopmentCorpusPublicationReceiptSchema);
 	if (receipt.projectId !== projectId || receipt.corpus.id !== corpusId) {
 		throw new Error("corpus publication receipt belongs to a different project or corpus");

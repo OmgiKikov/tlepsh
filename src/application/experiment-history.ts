@@ -9,7 +9,7 @@ import {
 	readCandidatePrediction,
 	scorePredictedOverall,
 } from "./prediction.js";
-import { points as formatPoints } from "../measurement.js";
+import { points } from "../measurement.js";
 import { canonicalJson } from "../provenance.js";
 import { shortSha, clip } from "../builder/render/format.js";
 
@@ -246,10 +246,13 @@ export function compileExperimentHistory(input: ExperimentHistoryInput): Experim
 /** One line per attempt, for a host panel or a bounded model-facing view. */
 export function renderExperimentHistory(history: ExperimentHistory): string[] {
 	if (history.attempts.length === 0) return ["No earlier attempts on this Target."];
+	// The Builder's own record of what it tried, read back before it authors
+	// again: the machine form, where the digit count never bends and two attempts
+	// differ in the number rather than in its width.
 	const lines = history.attempts.map((attempt) => {
 		const change = attempt.changedPaths.length > 0 ? attempt.changedPaths.join(", ") : "—";
 		const development = attempt.development
-			? `${attempt.development.verdict}${attempt.development.scoreDelta === null ? "" : ` ${points(attempt.development.scoreDelta)}`}`
+			? `${attempt.development.verdict}${attempt.development.scoreDelta === null ? "" : ` ${points(attempt.development.scoreDelta, "machine")}`}`
 			: "not evaluated";
 		const sealed = attempt.sealed ? ` · sealed ${attempt.sealed.verdict}` : "";
 		const why = attempt.reason ? ` · “${attempt.reason}”` : "";
@@ -259,13 +262,6 @@ export function renderExperimentHistory(history: ExperimentHistory): string[] {
 	});
 	if (history.omitted > 0) lines.push(`… and ${history.omitted} earlier attempt${history.omitted === 1 ? "" : "s"}`);
 	return lines;
-}
-
-// The compact history is the Builder's own record of what it tried, read back
-// before it authors again: the machine form, where the digit count never bends
-// and two attempts differ in the number rather than in its width.
-function points(value: number): string {
-	return formatPoints(value, "machine");
 }
 
 // ---------------------------------------------------------------------------
@@ -312,7 +308,7 @@ function compactAttemptOf(attempt: Attempt): CompactAttempt {
 		changedPaths: attempt.changedPaths,
 		failureModeIds: attempt.failureModeIds,
 		development: attempt.development
-			? `${attempt.development.verdict}${attempt.development.scoreDelta === null ? "" : ` ${points(attempt.development.scoreDelta)}`}`
+			? `${attempt.development.verdict}${attempt.development.scoreDelta === null ? "" : ` ${points(attempt.development.scoreDelta, "machine")}`}`
 			: "not evaluated",
 		sealed: attempt.sealed ? attempt.sealed.verdict : null,
 		prediction: attempt.prediction,

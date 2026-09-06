@@ -11,7 +11,7 @@ import { candidateRecordPath, loadCandidateRecord } from "./candidate-review.js"
 import { loadBuilderProposalRun } from "./builder-proposal.js";
 
 const Hash = z.string().regex(/^sha256:[0-9a-f]{64}$/);
-export const ImprovementEvalPinSchema = z.strictObject({ evalRunId: z.string().min(1), hash: Hash });
+const ImprovementEvalPinSchema = z.strictObject({ evalRunId: z.string().min(1), hash: Hash });
 export type ImprovementEvalPin = z.infer<typeof ImprovementEvalPinSchema>;
 
 const MeasuredCandidateSchema = z.strictObject({

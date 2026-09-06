@@ -17,13 +17,13 @@ export const DATASET_FORMATS = [
 ] as const;
 export type DatasetFormat = (typeof DATASET_FORMATS)[number];
 
-export const DATASET_COLUMN_TYPES = ["text", "number", "boolean", "json", "empty"] as const;
+const DATASET_COLUMN_TYPES = ["text", "number", "boolean", "json", "empty"] as const;
 export type DatasetColumnType = (typeof DATASET_COLUMN_TYPES)[number];
 
 export const MAX_DATASET_ROWS = 50_000;
 export const MAX_DATASET_COLUMNS = 128;
 /** Chat exports collapse to these columns whatever the vendor shape was. */
-export const CHAT_EXPORT_COLUMNS = [
+const CHAT_EXPORT_COLUMNS = [
 	"messages",
 	"first_user",
 	"last_user",
@@ -49,7 +49,7 @@ export interface ParsedDataset {
 	rows: DatasetRow[];
 }
 
-export class DatasetParseError extends Error {
+class DatasetParseError extends Error {
 	constructor(message: string, options?: ErrorOptions) {
 		super(message, options);
 		this.name = "DatasetParseError";

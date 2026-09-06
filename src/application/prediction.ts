@@ -40,7 +40,7 @@ export const PREDICTION_GLYPH: Record<PredictionVerdict, string> = {
 };
 
 /** Scored attempts one calibration strip shows; older ones are counted only. */
-export const MAX_CALIBRATION_STRIP = 5;
+const MAX_CALIBRATION_STRIP = 5;
 
 /**
  * What actually came back, in percentage points. Callers convert from whatever
@@ -57,7 +57,7 @@ export interface PredictionMeasurement {
 }
 
 /** A `[0,1]` fraction as percentage points, rounded to a tenth. */
-export function toPoints(fraction: number): number {
+function toPoints(fraction: number): number {
 	return Math.round(fraction * 1000) / 10;
 }
 
@@ -364,7 +364,7 @@ export function readCandidatePrediction(
  * Null for a candidate no human has decided, and for A/A calibration, which
  * measures noise and is never a version of the agent.
  */
-export function calibrationEntryOf(
+function calibrationEntryOf(
 	runsRoot: string,
 	record: CandidateRecord,
 ): PredictionCalibrationEntry | null {

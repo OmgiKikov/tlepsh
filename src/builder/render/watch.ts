@@ -37,7 +37,7 @@ function verdictFragment(tick: WatchTick): string {
  * no calibration the line says so and never implies the difference means
  * something.
  */
-export function calibrationFragment(tick: WatchTick): string {
+function calibrationFragment(tick: WatchTick): string {
 	if (!tick.calibration) return "noise not calibrated";
 	return `flip ${percent(tick.calibration.flipRate)} (calibrated)`;
 }

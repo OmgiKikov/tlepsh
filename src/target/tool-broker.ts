@@ -15,7 +15,7 @@ import {
 	type TargetToolPolicyEnvelope,
 	validateTargetToolArguments,
 } from "./tool-manifest.js";
-import { executableOnPath } from "../util.js";
+import { decodeUtf8, executableOnPath } from "../util.js";
 
 export type TargetToolSandboxBackend = "sandbox-exec" | "bwrap" | "container";
 
@@ -516,14 +516,6 @@ function killProcessTree(pid: number | undefined): void {
 	}
 }
 
-function decodeUtf8(buffer: Buffer, label: string): string {
-	try {
-		return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
-	} catch (error) {
-		throw new Error(`${label} was not valid UTF-8`, { cause: error });
-	}
-}
-
 export class TargetToolBroker {
 	readonly sandboxBackend: TargetToolSandboxBackend;
 	private readonly toolHomeRoot: string | undefined;
@@ -686,11 +678,13 @@ export class TargetToolBroker {
 			if (stdinError) throw new Error(`Target tool ${tool.descriptor.name} could not read JSON input`, { cause: stdinError });
 			return {
 				stdout: redactSensitiveText(
-					decodeUtf8(Buffer.concat(stdout), `Target tool ${tool.descriptor.name} stdout`),
+					decodeUtf8(Buffer.concat(stdout), (cause) =>
+						new Error(`Target tool ${tool.descriptor.name} stdout was not valid UTF-8`, { cause })),
 					sensitiveValues,
 				),
 				stderr: redactSensitiveText(
-					decodeUtf8(Buffer.concat(stderr), `Target tool ${tool.descriptor.name} stderr`),
+					decodeUtf8(Buffer.concat(stderr), (cause) =>
+						new Error(`Target tool ${tool.descriptor.name} stderr was not valid UTF-8`, { cause })),
 					sensitiveValues,
 				),
 				exitCode,

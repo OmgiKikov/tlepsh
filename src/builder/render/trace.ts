@@ -43,7 +43,7 @@ function paintOutcome(outcome: RunRow["outcome"], text: string, paint: Paint): s
 }
 
 /** Break one sentence into lines of at most `width` characters, at spaces. */
-export function wrapSentence(text: string, width = WRAP_WIDTH): string[] {
+function wrapSentence(text: string, width = WRAP_WIDTH): string[] {
 	const words = oneLine(text, 2_000).split(" ");
 	const lines: string[] = [];
 	let current = "";

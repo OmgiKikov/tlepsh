@@ -2,13 +2,13 @@ import { statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 /** Stable public names; the packaged folder names remain an implementation detail. */
-export const BUILT_IN_TARGET_TEMPLATES = {
+const BUILT_IN_TARGET_TEMPLATES = {
 	"python-support": "python-agent",
 	"pi-support": "support-agent",
 	"pi-basic": "basic-agent",
 } as const;
 
-export const DEFAULT_TARGET_TEMPLATE = "pi-basic";
+const DEFAULT_TARGET_TEMPLATE = "pi-basic";
 
 /**
  * Named starters work from any directory, including a global installation.

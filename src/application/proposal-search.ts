@@ -34,7 +34,7 @@ import { resolve } from "node:path";
 import type { CorpusRef } from "../corpus.js";
 import type { GateVerdict } from "../domain/comparison-gate.js";
 import { loadTarget } from "../manifest.js";
-import { points as formatPoints, ratio } from "../measurement.js";
+import { points, ratio } from "../measurement.js";
 import type { RunEventListener } from "../run-events.js";
 import type { WorkbenchHumanGate } from "../workbench/types.js";
 import { runAppliedBuilderCandidate } from "./builder-candidate.js";
@@ -659,10 +659,7 @@ function developmentTaskCount(
 }
 
 // The Pareto table and the stderr progress lines are machine-readable English
-// by design, so the delta keeps the fixed digit a column needs.
-function points(value: number): string {
-	return formatPoints(value, "machine");
-}
+// by design, so every delta below keeps the fixed digit a column needs.
 
 /** One progress line per hypothesis, in the shape the autoloop writes on stderr. */
 export function searchCandidateLine(row: ProposalSearchRow): string {
@@ -674,7 +671,7 @@ export function searchCandidateLine(row: ProposalSearchRow): string {
 		);
 	}
 	if (row.development) {
-		parts.push(`verify ${row.development.verdict} ${points(row.development.scoreDelta)} cost ${ratio(row.development.costRatio)}`);
+		parts.push(`verify ${row.development.verdict} ${points(row.development.scoreDelta, "machine")} cost ${ratio(row.development.costRatio)}`);
 	}
 	if (row.skipReason) parts.push(`skipped — ${PROPOSAL_SEARCH_SKIP_MESSAGES[row.skipReason]}`);
 	return parts.join(" · ");
@@ -698,8 +695,8 @@ export function renderProposalSearchTable(result: ProposalSearchResult): string 
 					? `dominated by ${row.dominatedBy}`
 					: "best so far";
 		return `| ${row.ordinal} | ${row.branch ?? "—"} | ${row.changedPaths.join(", ") || "—"} | ${screen} | ` +
-			`${development ? development.verdict : "skipped"} | ${development ? points(development.scoreDelta) : "—"} | ` +
-			`${development ? `${points(development.confidence95.low)}…${points(development.confidence95.high)}` : "—"} | ` +
+			`${development ? development.verdict : "skipped"} | ${development ? points(development.scoreDelta, "machine") : "—"} | ` +
+			`${development ? `${points(development.confidence95.low, "machine")}…${points(development.confidence95.high, "machine")}` : "—"} | ` +
 			`${development ? ratio(development.costRatio) : "—"} | ${development ? ratio(development.latencyRatio) : "—"} | ${frontier} |`;
 	});
 	const skipped = result.rows.filter((row) => row.skipReason !== null);

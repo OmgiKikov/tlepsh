@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 
 import { isAbsolute } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -22,6 +21,7 @@ import {
 } from "../target/tool-manifest.js";
 import { namedDirtyPaths, operatorDirtyPaths } from "./store-hygiene.js";
 import { git, NotWorktreeRootError, worktreeRoot } from "../git/commands.js";
+import { decodeUtf8, sha256 } from "../util.js";
 
 const GIT_SHA = /^[0-9a-f]{40}$/;
 const TARGET_ID = /^[a-z0-9][a-z0-9-]*$/;
@@ -391,13 +391,9 @@ function assertSafeAncestors(repositoryDir: string, revision: string, path: stri
 	}
 }
 
-function decodeUtf8(content: Buffer): string {
-	let decoded: string;
-	try {
-		decoded = new TextDecoder("utf-8", { fatal: true }).decode(content);
-	} catch (error) {
-		return contextError("TARGET_RESOURCE_INVALID_UTF8", "A declared Target resource is not valid UTF-8 text.", error);
-	}
+function resourceText(content: Buffer): string {
+	const decoded = decodeUtf8(content, (cause) =>
+		contextError("TARGET_RESOURCE_INVALID_UTF8", "A declared Target resource is not valid UTF-8 text.", cause));
 	if (decoded.includes("\0") || decoded.includes("\r")) {
 		contextError("TARGET_RESOURCE_INVALID_UTF8", "A declared Target resource must be NUL-free LF-only UTF-8 text.");
 	}
@@ -434,8 +430,8 @@ function readBlob(
 	return {
 		mode: entry.mode as "100644" | "100755",
 		bytes: raw.length,
-		sha256: `sha256:${createHash("sha256").update(raw).digest("hex")}`,
-		content: decodeUtf8(raw),
+		sha256: sha256(raw),
+		content: resourceText(raw),
 	};
 }
 

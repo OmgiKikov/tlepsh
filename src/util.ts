@@ -18,6 +18,15 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** `bytes` as strict UTF-8; `invalid` builds the caller's own error for a malformed sequence. */
+export function decodeUtf8(bytes: Uint8Array, invalid: (cause: unknown) => Error): string {
+	try {
+		return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+	} catch (error) {
+		throw invalid(error);
+	}
+}
+
 /** `sha256:<hex>` — the one spelling every artifact hash uses. */
 export function sha256(content: string | Buffer): string {
 	return `sha256:${createHash("sha256").update(content).digest("hex")}`;

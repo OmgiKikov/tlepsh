@@ -74,7 +74,7 @@ export const MAX_SEALED_SYNTH_EXAMPLES = 20;
  * towards it. The option stays — a suite with an unusual case shape can still
  * show a handful — but the default is an exam nothing in the loop shaped.
  */
-export const DEFAULT_SEALED_SYNTH_EXAMPLES = 0;
+const DEFAULT_SEALED_SYNTH_EXAMPLES = 0;
 /**
  * How many questions one passage may be asked for.
  *
@@ -82,7 +82,7 @@ export const DEFAULT_SEALED_SYNTH_EXAMPLES = 0;
  * rephrased. Three is the point where the exam is still about the documents
  * rather than about the generator's patience.
  */
-export const MAX_KB_QUESTIONS_PER_PASSAGE = 3;
+const MAX_KB_QUESTIONS_PER_PASSAGE = 3;
 const MAX_SPEC_BYTES = 64 * 1024;
 const MAX_GENERATOR_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_GRADER_SHAPES = 16;
@@ -173,7 +173,7 @@ const SealedSynthReceiptFields = {
  * under. Old receipts are read as what they are and answer `spec` when asked
  * where their questions came from.
  */
-export const SealedSynthReceiptV1Schema = z.strictObject({
+const SealedSynthReceiptV1Schema = z.strictObject({
 	schemaVersion: z.literal(1),
 	...SealedSynthReceiptFields,
 });
@@ -184,7 +184,7 @@ export const SealedSynthReceiptV1Schema = z.strictObject({
  * chunk index they were written from. `kbIndexHash` is null on the `spec`
  * source — an absent knowledge base is a fact, not a hash of nothing.
  */
-export const SealedSynthReceiptV2Schema = z.strictObject({
+const SealedSynthReceiptV2Schema = z.strictObject({
 	schemaVersion: z.literal(2),
 	...SealedSynthReceiptFields,
 	source: z.enum(["spec", "kb"]),
@@ -199,7 +199,7 @@ export const SealedSynthReceiptV2Schema = z.strictObject({
  * finer *for the generator only*, and without this number `kbIndexHash` would
  * describe an index the questions were not written from.
  */
-export const SealedSynthReceiptV3Schema = z.strictObject({
+const SealedSynthReceiptV3Schema = z.strictObject({
 	schemaVersion: z.literal(3),
 	...SealedSynthReceiptFields,
 	source: z.enum(["spec", "kb"]),
@@ -208,7 +208,7 @@ export const SealedSynthReceiptV3Schema = z.strictObject({
 	kbChunkChars: z.number().int().positive().nullable(),
 });
 
-export const SealedSynthReceiptSchema = z.discriminatedUnion("schemaVersion", [
+const SealedSynthReceiptSchema = z.discriminatedUnion("schemaVersion", [
 	SealedSynthReceiptV1Schema,
 	SealedSynthReceiptV2Schema,
 	SealedSynthReceiptV3Schema,
@@ -1083,7 +1083,7 @@ const ESTIMATE_BYTES_PER_TOKEN = 4;
 const ESTIMATE_OUTPUT_TOKENS_PER_CASE = 200;
 
 /** What one generation should cost, from the judge's own declared rates. */
-export function estimateSealedSynthCostUsd(judge: JudgeModel, promptBytes: number, cases: number): number {
+function estimateSealedSynthCostUsd(judge: JudgeModel, promptBytes: number, cases: number): number {
 	const promptTokens = Math.ceil(promptBytes / ESTIMATE_BYTES_PER_TOKEN);
 	const completionTokens = cases * ESTIMATE_OUTPUT_TOKENS_PER_CASE;
 	return evaluatorCostUsd(judge.spec.cost, {

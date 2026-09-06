@@ -52,9 +52,9 @@ export interface SimulatedUserReply {
 export type SimulatedUserStop = "max-turns" | "sentinel" | "stop-when" | "silent";
 
 /** The next user turn is a person's sentence, not a document. */
-export const MAX_SIMULATED_USER_MESSAGE_CHARS = 2_000;
+const MAX_SIMULATED_USER_MESSAGE_CHARS = 2_000;
 
-export function simulatedUserPrompt(
+function simulatedUserPrompt(
 	spec: SimulatedUserSpec,
 	turns: readonly TranscriptTurn[],
 	nextTurn: number,
@@ -103,7 +103,7 @@ function jsonObject(text: string, label: string): Record<string, unknown> {
  * finished — but a missing message when the user is still talking has nothing
  * to send, and inventing one would be inventing evidence.
  */
-export function parseSimulatedUserReply(text: string): SimulatedUserReply {
+function parseSimulatedUserReply(text: string): SimulatedUserReply {
 	const body = jsonObject(text, "simulated user");
 	const done = body.done === true;
 	const stopWhen = body.stopWhen === true;

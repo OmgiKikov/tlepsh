@@ -153,7 +153,7 @@ function graderIdentity(graders: readonly GraderSpec[]): string {
 }
 
 /** One grader spec on one line: its type and the part an operator recognises. */
-export function describeGrader(spec: GraderSpec): string {
+function describeGrader(spec: GraderSpec): string {
 	const detail = ((): string => {
 		switch (spec.type) {
 			case "tool_called": return spec.tool;

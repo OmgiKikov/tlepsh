@@ -1,7 +1,7 @@
 import { clean } from "./format.js";
 import type { Paint } from "./paint.js";
 
-export const DEFAULT_MAX_DIFF_LINES = 400;
+const DEFAULT_MAX_DIFF_LINES = 400;
 
 /** Colorize one unified diff; long diffs are cut with an explicit marker. */
 export function renderUnifiedDiff(

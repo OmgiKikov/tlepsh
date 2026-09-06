@@ -129,7 +129,7 @@ export function renderLocalArtifactIgnoreLine(added: readonly string[]): string 
 }
 
 /** The engine store, by the two roots a Target must never commit. */
-export const ENGINE_STORE_PATHS: readonly string[] = [".ahde", "runs"];
+const ENGINE_STORE_PATHS: readonly string[] = [".ahde", "runs"];
 
 /** Whether one repository-relative path belongs to the engine's store. */
 function inEngineStore(path: string): boolean {
@@ -237,7 +237,7 @@ export class DirtyTargetTreeError extends Error {
  * dirty is — untracked files included, because they are hashed into that
  * suffix too.
  */
-export function dirtyTargetPaths(repositoryDir: string): string[] {
+function dirtyTargetPaths(repositoryDir: string): string[] {
 	const status = execFileSync(
 		"git",
 		["-C", repositoryDir, "status", "--porcelain=v1", "-z", "--untracked-files=all"],

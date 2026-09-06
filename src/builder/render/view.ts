@@ -35,10 +35,8 @@ import {
 	joinNonEmpty,
 	kappa,
 	labeled,
-	numbered,
 	oneLine,
 	percent,
-	pluralize,
 	points,
 	section,
 	shortHash,
@@ -444,7 +442,7 @@ function comparisonLines(
 }
 
 /** One line about the instrument: how far this judge matches a human's eyes. */
-export function judgeAgreementLine(
+function judgeAgreementLine(
 	calibration: NonNullable<WorkbenchCandidateSummary["judgeAgreement"]> | null,
 	paint: Paint,
 ): string {
@@ -716,7 +714,7 @@ function modeLines(brief: WorkbenchImprovementBriefProjection, paint: Paint): st
  * the ship dialog also puts in its subject. Never a blocker — an uncalibrated
  * judge is a fact about what the numbers above are worth, not a refusal.
  */
-export function judgeRunAgreementLine(
+function judgeRunAgreementLine(
 	calibration: NonNullable<WorkbenchCandidateSummary["judgeAgreement"]> | null,
 	paint: Paint,
 ): string {

@@ -19,7 +19,7 @@ const CommonClaimShape = {
 	baseTargetSha: GitShaSchema,
 };
 
-export const BuilderProposalDecisionClaimSchema = z.discriminatedUnion("decision", [
+const BuilderProposalDecisionClaimSchema = z.discriminatedUnion("decision", [
 	z.strictObject({
 		...CommonClaimShape,
 		decision: z.literal("apply"),
@@ -56,7 +56,7 @@ export const BuilderProposalDecisionClaimSchema = z.discriminatedUnion("decision
 ]);
 export type BuilderProposalDecisionClaim = z.infer<typeof BuilderProposalDecisionClaimSchema>;
 
-export function builderProposalDecisionClaimPath(runsRoot: string, runId: string): string {
+function builderProposalDecisionClaimPath(runsRoot: string, runId: string): string {
 	return resolveContainedArtifactPath(
 		runsRoot,
 		"builders",

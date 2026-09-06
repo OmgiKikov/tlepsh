@@ -32,7 +32,7 @@ import {
 import { resolveDevelopmentFailureOperations } from "./builder-regression-case.js";
 
 /** Guard cases derived from one promotion, bounded so a big basket cannot explode a draft. */
-export const MAX_PROMOTION_GUARD_CASES = 50;
+const MAX_PROMOTION_GUARD_CASES = 50;
 
 /** Metadata keys the host stamps on a derived guard case. */
 export const PROMOTION_GUARD_METADATA_KIND = "ahde.guard";

@@ -8,14 +8,14 @@ import {
 } from "../application/run-explanation.js";
 import { readRunOutcome, type RunReading } from "../application/run-reading.js";
 import { compareVerifiedEvalRuns, type CompareResult } from "../compare.js";
-import { compareUtf8, type CompareRow, type ExcludedTask } from "../domain/comparison-gate.js";
+import type { CompareRow, ExcludedTask } from "../domain/comparison-gate.js";
 import type { CandidateRecord } from "../domain/candidate.js";
 import type { VerifiedEvalRun } from "../eval.js";
 import type { RunRecord } from "../provenance.js";
 import { resolveContainedArtifactPath, safeArtifactSegment } from "../storage/paths.js";
 import { redactTraceText } from "../trace.js";
 import { candidateProposalReview } from "../workbench/resolution.js";
-import { EvidenceNotFound, loadPublicEvalRun, orderedComparisonRows } from "./model.js";
+import { EvidenceNotFound, loadPublicEvalRun, orderedComparisonRows, pairedRuns, repetitionKey } from "./model.js";
 
 /** Only the selected pair opens traces. Navigation is a bounded metadata projection. */
 export const MAX_REPLAY_NAV_ITEMS = 100;
@@ -104,21 +104,13 @@ interface MatchedReplay {
 
 function matchedReplays(baseline: VerifiedEvalRun, candidate: VerifiedEvalRun, comparison: CompareResult): MatchedReplay[] {
 	const exclusions = new Map(comparison.excluded.map((task) => [task.taskId, task.reason]));
-	const key = (run: RunRecord): string => JSON.stringify([run.taskId, run.repetitionIndex]);
-	const after = new Map(candidate.runs.map((run) => [key(run), run]));
-	const before = new Map(baseline.runs.map((run) => [key(run), run]));
-	if (after.size !== candidate.runs.length || before.size !== baseline.runs.length) {
-		throw new Error("Replay evidence contains ambiguous task repetitions");
+	for (const arm of [baseline, candidate]) {
+		if (new Set(arm.runs.map(repetitionKey)).size !== arm.runs.length) {
+			throw new Error("Replay evidence contains ambiguous task repetitions");
+		}
 	}
-	const byTask = new Map<string, RunRecord[]>();
-	for (const run of baseline.runs) byTask.set(run.taskId, [...(byTask.get(run.taskId) ?? []), run]);
-	return orderedComparisonRows(comparison)
-		.flatMap((row) => (byTask.get(row.taskId) ?? [])
-			.sort((a, b) => a.repetitionIndex - b.repetitionIndex || compareUtf8(a.runId, b.runId))
-			.flatMap((run): MatchedReplay[] => {
-				const match = after.get(key(run));
-				return match ? [{ row, baseline: run, candidate: match, exclusion: exclusions.get(row.taskId) ?? null }] : [];
-			}));
+	return pairedRuns(baseline, candidate, orderedComparisonRows(comparison))
+		.map((pair) => ({ ...pair, exclusion: exclusions.get(pair.row.taskId) ?? null }));
 }
 
 function selection(pair: MatchedReplay): ReplaySelection {

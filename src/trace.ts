@@ -1,8 +1,7 @@
-import { createHash } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { safeArtifactSegment } from "./storage/paths.js";
-import { isRecord } from "./util.js";
+import { isRecord, sha256 } from "./util.js";
 
 /** Hard input bounds applied before a trace is accepted as canonical evidence. */
 export const MAX_TRACE_ARTIFACT_BYTES = 8 * 1024 * 1024;
@@ -289,7 +288,7 @@ export function readTraceArtifact(
 	const content = readFileSync(traceFile, "utf8");
 	assertTraceContentBounds(content);
 	if (expectedSha256 !== undefined) {
-		const actualSha256 = `sha256:${createHash("sha256").update(content).digest("hex")}`;
+		const actualSha256 = sha256(content);
 		if (actualSha256 !== expectedSha256) {
 			throw new Error(`trace SHA mismatch: expected ${expectedSha256}, got ${actualSha256}`);
 		}

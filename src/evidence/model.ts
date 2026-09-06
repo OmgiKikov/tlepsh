@@ -1,9 +1,8 @@
 import { humanFailureModeTitle, readRunOutcome } from "../application/run-reading.js";
 import { t } from "../i18n.js";
-import { existsSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync } from "node:fs";
 import { compileImprovementBrief, publicTaskId, type ImprovementBrief } from "../application/improvement-brief.js";
-import { candidateRecordPath, loadCandidateRecord } from "../application/candidate-review.js";
+import { candidateRecordPath, listCandidateRecords, loadCandidateRecord } from "../application/candidate-review.js";
 import {
 	candidateFlip,
 	explainRun,
@@ -21,7 +20,7 @@ import {
 	type RunRow,
 } from "../application/run-explanation.js";
 import { compareVerifiedEvalRuns, runCost, runTotalCost, runTokens, type CompareResult } from "../compare.js";
-import { compareUtf8, sealedOutcome } from "../domain/comparison-gate.js";
+import { compareUtf8, sealedOutcome, type CompareRow } from "../domain/comparison-gate.js";
 import { exclusionReasonOf, measurementLine, measurementSurface } from "../application/measurement-line.js";
 import { diagnosisPath, loadDiagnosis } from "../diagnosis.js";
 import type { CandidateRecord, EvaluationEvidence } from "../domain/candidate.js";
@@ -36,7 +35,7 @@ import {
 } from "../eval.js";
 import type { RunRecord } from "../provenance.js";
 import { judgeCalibrationRows } from "../report.js";
-import { resolveContainedArtifactPath, safeArtifactSegment } from "../storage/paths.js";
+import { resolveContainedArtifactPath } from "../storage/paths.js";
 import type {
 	ComparePageModel,
 	ComparePageRow,
@@ -124,33 +123,20 @@ function evaluatedEvidence(record: CandidateRecord): EvaluationEvidence | null {
 	return null;
 }
 
-/** Candidate records whose development pair names this eval run, newest first. */
-export function candidatesCovering(runsRoot: string, evalRunId: string): CandidateCoverage[] {
-	const root = join(resolve(runsRoot), "candidates");
-	let entries: string[];
-	try {
-		entries = readdirSync(root, { withFileTypes: true })
-			.filter((entry) => entry.isDirectory())
-			.map((entry) => entry.name)
-			.slice(0, MAX_SCANNED_CANDIDATES);
-	} catch {
-		return [];
-	}
+/**
+ * Candidate records whose development pair names this eval run, newest first.
+ * The listing skips a damaged candidate, so one cannot hide an eval's own evidence.
+ */
+function candidatesCovering(runsRoot: string, evalRunId: string): CandidateCoverage[] {
 	const found: CandidateCoverage[] = [];
-	for (const name of entries) {
-		try {
-			safeArtifactSegment(name, "candidate id");
-			const record = loadCandidateRecord(runsRoot, name);
-			const evaluation = evaluatedEvidence(record);
-			if (!evaluation) continue;
-			if (
-				evaluation.development.baseline.evalRunId === evalRunId ||
-				evaluation.development.candidate.evalRunId === evalRunId
-			) {
-				found.push({ record, evaluation });
-			}
-		} catch {
-			// A damaged candidate cannot hide an eval's own evidence.
+	for (const record of listCandidateRecords(runsRoot, { limit: MAX_SCANNED_CANDIDATES }).records) {
+		const evaluation = evaluatedEvidence(record);
+		if (
+			evaluation &&
+			(evaluation.development.baseline.evalRunId === evalRunId ||
+				evaluation.development.candidate.evalRunId === evalRunId)
+		) {
+			found.push({ record, evaluation });
 		}
 	}
 	return found.sort((left, right) => right.record.createdAt.localeCompare(left.record.createdAt));
@@ -469,22 +455,48 @@ export function orderedComparisonRows(comparison: Pick<CompareResult, "rows" | "
 	});
 }
 
+/** The identity two arms share: one task, one repetition. */
+export function repetitionKey(run: RunRecord): string {
+	return JSON.stringify([run.taskId, run.repetitionIndex]);
+}
+
+export interface PairedRuns {
+	row: CompareRow;
+	baseline: RunRecord;
+	candidate: RunRecord;
+}
+
+/**
+ * Every baseline run of each row, in row order then repetition order, beside
+ * the candidate run of the same task and repetition. A repetition one arm lacks
+ * is left out; a reader that refuses ambiguous repetitions checks that first.
+ */
+export function pairedRuns(baseline: VerifiedEvalRun, candidate: VerifiedEvalRun, rows: readonly CompareRow[]): PairedRuns[] {
+	const after = new Map(candidate.runs.map((run) => [repetitionKey(run), run]));
+	const byTask = new Map<string, RunRecord[]>();
+	for (const run of baseline.runs) byTask.set(run.taskId, [...(byTask.get(run.taskId) ?? []), run]);
+	return rows.flatMap((row) => (byTask.get(row.taskId) ?? [])
+		.sort((left, right) => left.repetitionIndex - right.repetitionIndex || compareUtf8(left.runId, right.runId))
+		.flatMap((run): PairedRuns[] => {
+			const match = after.get(repetitionKey(run));
+			return match ? [{ row, baseline: run, candidate: match }] : [];
+		}));
+}
+
 function comparisonPreviews(runsRoot: string, baseline: VerifiedEvalRun, candidate: VerifiedEvalRun, comparison: CompareResult, exclusions: ReadonlyMap<string, CompareResult["excluded"][number]["reason"]>): CompareCasePreview[] {
 	const ordered = orderedComparisonRows(comparison).slice(0, MAX_COMPARE_PREVIEW_CASES);
+	const pairs = pairedRuns(baseline, candidate, ordered);
 	return ordered.map((row) => {
-		const before = baseline.runs.filter((run) => run.taskId === row.taskId)
-			.sort((left, right) => left.repetitionIndex - right.repetitionIndex || left.runId.localeCompare(right.runId));
-		const after = candidate.runs.filter((run) => run.taskId === row.taskId);
-		const first = before.find((run) => after.some((other) => other.repetitionIndex === run.repetitionIndex));
-		const second = first ? after.find((run) => run.repetitionIndex === first.repetitionIndex) : undefined;
+		// The first repetition both arms ran is the one excerpted.
+		const pair = pairs.find((entry) => entry.row === row);
 		return {
 			taskId: publicTaskId(row.taskId),
 			exclusion: exclusions.get(row.taskId) ?? null,
 			baselineScore: row.aScore,
 			candidateScore: row.bScore,
 			scoreDelta: row.scoreDelta,
-			baseline: first && second ? compareRunPreview(runsRoot, baseline, first) : null,
-			candidate: first && second ? compareRunPreview(runsRoot, candidate, second) : null,
+			baseline: pair ? compareRunPreview(runsRoot, baseline, pair.baseline) : null,
+			candidate: pair ? compareRunPreview(runsRoot, candidate, pair.candidate) : null,
 		};
 	});
 }

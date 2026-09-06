@@ -17,7 +17,7 @@ import {
 import { parseDataset, parseDialogueCell } from "./dataset-parse.js";
 import { DatasetSourcePathSchema, readDatasetSource } from "./dataset-source.js";
 import { boundTargetFeedbackDialogue } from "./target-feedback.js";
-import { contained, projectStateDir } from "../storage/paths.js";
+import { projectStateDir } from "../storage/paths.js";
 import { isRecord } from "../util.js";
 
 const MAX_FAILURE_ARTIFACT_BYTES = 1024 * 1024;
@@ -29,12 +29,12 @@ const MAX_EXACT_REDACTION_VALUE_CHARS = 4_096;
 const ProjectIdSchema = z
 	.string()
 	.regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/, "projectId must be one safe path segment");
-export const ProductionFailureIdSchema = z
+const ProductionFailureIdSchema = z
 	.string()
 	.regex(/^failure-[0-9a-f]{64}$/, "failureId must be a canonical production failure identifier");
 
 /** Host-observed Target identity. The revision must satisfy AHDE's real Target revision contract. */
-export const ProductionFailureImportedAgainstSchema = z.strictObject({
+const ProductionFailureImportedAgainstSchema = z.strictObject({
 	id: z.string().min(1).max(200),
 	gitSha: TargetRevisionSchema,
 });
@@ -53,7 +53,7 @@ export type ProductionFailureTargetClaim = z.infer<typeof ProductionFailureTarge
 export const ProductionFailureSourceKindSchema = z.enum(["real", "synthetic"]);
 export type ProductionFailureSourceKind = z.infer<typeof ProductionFailureSourceKindSchema>;
 
-export const ProductionFailureToolEventSchema = z.discriminatedUnion("type", [
+const ProductionFailureToolEventSchema = z.discriminatedUnion("type", [
 	z.strictObject({
 		type: z.literal("call"),
 		name: z.string().min(1).max(MAX_TOOL_NAME_CHARS),
@@ -109,7 +109,7 @@ function failureIdOf(identity: ProductionFailureIdentity): string {
 	return `failure-${hashValue(identity).slice("sha256:".length)}`;
 }
 
-export const ProductionFailureRecordSchema = z.strictObject({
+const ProductionFailureRecordSchema = z.strictObject({
 	schemaVersion: z.literal(1),
 	kind: z.literal("production-failure"),
 	id: ProductionFailureIdSchema,
@@ -173,7 +173,7 @@ export const ProductionFailureProvenanceSourceSchema = z.strictObject({
 });
 export type ProductionFailureProvenanceSource = z.infer<typeof ProductionFailureProvenanceSourceSchema>;
 
-export function productionFailureProvenanceSource(
+function productionFailureProvenanceSource(
 	failureInput: ProductionFailureRecord,
 ): ProductionFailureProvenanceSource {
 	const failure = ProductionFailureRecordSchema.parse(failureInput);

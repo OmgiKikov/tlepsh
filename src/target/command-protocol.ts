@@ -45,14 +45,14 @@ const Identifier = z.string().min(1).max(200);
  * child's environment under exactly that name and never on the wire, which is
  * the same rule invariant 18 applies to the Builder.
  */
-export const HelloToolSchema = z.strictObject({
+const HelloToolSchema = z.strictObject({
 	name: Identifier,
 	description: z.string(),
 	parameters: z.record(z.string(), z.unknown()),
 });
 export type HelloTool = z.infer<typeof HelloToolSchema>;
 
-export const HelloMessageSchema = z.strictObject({
+const HelloMessageSchema = z.strictObject({
 	v: Version,
 	type: z.literal("hello"),
 	tools: z.array(HelloToolSchema),
@@ -69,7 +69,7 @@ export const HelloMessageSchema = z.strictObject({
 });
 export type HelloMessage = z.infer<typeof HelloMessageSchema>;
 
-export const UserMessageSchema = z.strictObject({
+const UserMessageSchema = z.strictObject({
 	v: Version,
 	type: z.literal("user"),
 	turn: z.number().int().positive(),
@@ -79,7 +79,7 @@ export const UserMessageSchema = z.strictObject({
 });
 export type UserMessage = z.infer<typeof UserMessageSchema>;
 
-export const ToolResultMessageSchema = z.strictObject({
+const ToolResultMessageSchema = z.strictObject({
 	v: Version,
 	type: z.literal("tool_result"),
 	id: Identifier,
@@ -89,13 +89,13 @@ export const ToolResultMessageSchema = z.strictObject({
 });
 export type ToolResultMessage = z.infer<typeof ToolResultMessageSchema>;
 
-export const CancelMessageSchema = z.strictObject({
+const CancelMessageSchema = z.strictObject({
 	v: Version,
 	type: z.literal("cancel"),
 });
 export type CancelMessage = z.infer<typeof CancelMessageSchema>;
 
-export const HostMessageSchema = z.discriminatedUnion("type", [
+const HostMessageSchema = z.discriminatedUnion("type", [
 	HelloMessageSchema,
 	UserMessageSchema,
 	ToolResultMessageSchema,
@@ -107,7 +107,7 @@ export type HostMessage = z.infer<typeof HostMessageSchema>;
 // Agent → host
 
 /** The turn's answer. Receiving one ends the turn. */
-export const AssistantMessageSchema = z.strictObject({
+const AssistantMessageSchema = z.strictObject({
 	v: Version,
 	type: z.literal("assistant"),
 	turn: z.number().int().positive(),
@@ -122,7 +122,7 @@ export type AssistantMessage = z.infer<typeof AssistantMessageSchema>;
  * reaching for a capability nobody granted it is infrastructure, not a wrong
  * answer (this mirrors the Pi guard in `runtime.ts`).
  */
-export const ToolCallMessageSchema = z.strictObject({
+const ToolCallMessageSchema = z.strictObject({
 	v: Version,
 	type: z.literal("tool_call"),
 	id: Identifier,
@@ -137,7 +137,7 @@ export type ToolCallMessage = z.infer<typeof ToolCallMessageSchema>;
  * in the trace as an explicitly agent-reported toolCall/toolResult pair. It
  * cannot satisfy `tool_called`: that check requires host-observed execution.
  */
-export const ToolNoteMessageSchema = z.strictObject({
+const ToolNoteMessageSchema = z.strictObject({
 	v: Version,
 	type: z.literal("tool_note"),
 	name: Identifier,
@@ -151,7 +151,7 @@ export type ToolNoteMessage = z.infer<typeof ToolNoteMessageSchema>;
  * v2: tokens and costUsd are increments for ONE model request. Send before the
  * turn's assistant frame; an omitted v2 cost makes the session total unknown.
  */
-export const UsageMessageSchema = z.strictObject({
+const UsageMessageSchema = z.strictObject({
 	v: Version,
 	type: z.literal("usage"),
 	turn: z.number().int().positive(),
@@ -166,14 +166,14 @@ export const UsageMessageSchema = z.strictObject({
 });
 export type UsageMessage = z.infer<typeof UsageMessageSchema>;
 
-export const ErrorMessageSchema = z.strictObject({
+const ErrorMessageSchema = z.strictObject({
 	v: Version,
 	type: z.literal("error"),
 	message: z.string().min(1).max(4_000),
 });
 export type ErrorMessage = z.infer<typeof ErrorMessageSchema>;
 
-export const AgentMessageSchema = z.discriminatedUnion("type", [
+const AgentMessageSchema = z.discriminatedUnion("type", [
 	AssistantMessageSchema,
 	ToolCallMessageSchema,
 	ToolNoteMessageSchema,

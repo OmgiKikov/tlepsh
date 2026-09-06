@@ -91,7 +91,7 @@ export function parseToolFixtureFile(name: string, text: string): ToolContractFi
 }
 
 /** The bytes AHDE writes for one fixture: what goes in, and what to expect. */
-export function renderToolFixtureFile(fixture: ToolContractFixture): string {
+function renderToolFixtureFile(fixture: ToolContractFixture): string {
 	return `${JSON.stringify({ input: fixture.input, expect: fixture.expect }, null, 2)}\n`;
 }
 

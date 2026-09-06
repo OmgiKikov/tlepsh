@@ -165,7 +165,7 @@ export interface ExamSurface {
  * says nothing rather than crediting the operator with an exam the judge may
  * well have written.
  */
-export function examOriginLabel(origin: SealedExamOrigin | null | undefined): string {
+function examOriginLabel(origin: SealedExamOrigin | null | undefined): string {
 	if (origin === undefined) return "";
 	if (origin === "judge-generated-kb" || origin === "judge-generated-kb-reviewed") return t("exam.origin-kb");
 	if (origin === "judge-generated" || origin === "judge-generated-reviewed") return t("exam.origin-spec");
@@ -257,7 +257,7 @@ export function designPhrase(input: {
  * repeated a development case and was dropped, and the exam ran on 19. Silent
  * whenever the yield was the whole request, so the ordinary exam says nothing.
  */
-export function examShortfallNote(generation: ExamSurface["generation"]): string {
+function examShortfallNote(generation: ExamSurface["generation"]): string {
 	if (!generation || generation.accepted >= generation.requested) return "";
 	const dropped = [
 		generation.droppedDuplicate > 0 ? plural(generation.droppedDuplicate, "duplicate") : null,

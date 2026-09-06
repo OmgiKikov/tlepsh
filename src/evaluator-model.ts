@@ -16,27 +16,27 @@ import { writeTextArtifact } from "./storage/artifacts.js";
  */
 
 /** An evaluator endpoint is a network dependency, not an oracle: three tries. */
-export const EVALUATOR_MAX_ATTEMPTS = 3;
+const EVALUATOR_MAX_ATTEMPTS = 3;
 /** Backoff before attempt 2 and 3. Jittered so concurrent calls do not resonate. */
-export const EVALUATOR_RETRY_DELAYS_MS = [1_000, 4_000] as const;
+const EVALUATOR_RETRY_DELAYS_MS = [1_000, 4_000] as const;
 
 /**
  * Rate limits, gateway hiccups and dropped connections are transport weather.
  * A 4xx that is not 429 is a contract error and a response that will not parse
  * is a model error: retrying either only burns tokens and hides the cause.
  */
-export function retryableEvaluatorStatus(status: number): boolean {
+function retryableEvaluatorStatus(status: number): boolean {
 	return status === 429 || status >= 500;
 }
 
-export function evaluatorRetryDelayMs(attempt: number): number {
+function evaluatorRetryDelayMs(attempt: number): number {
 	const base = EVALUATOR_RETRY_DELAYS_MS[attempt - 1] ??
 		EVALUATOR_RETRY_DELAYS_MS[EVALUATOR_RETRY_DELAYS_MS.length - 1] ?? 1_000;
 	return Math.round(base * (0.75 + Math.random() * 0.5));
 }
 
 /** Sleep that yields to host cancellation instead of sitting on it for 4 seconds. */
-export function evaluatorBackoff(
+function evaluatorBackoff(
 	attempt: number,
 	abortMessage: string,
 	signal?: AbortSignal,
@@ -69,7 +69,7 @@ function nonNegativeInteger(value: unknown): number {
 }
 
 /** OpenAI-compatible `usage`. Absent or unusable usage is reported as no usage. */
-export function parseEvaluatorUsage(body: unknown): EvaluatorUsage | null {
+function parseEvaluatorUsage(body: unknown): EvaluatorUsage | null {
 	if (typeof body !== "object" || body === null) return null;
 	const usage = (body as { usage?: unknown }).usage;
 	if (typeof usage !== "object" || usage === null) return null;
@@ -98,7 +98,7 @@ export function evaluatorCostUsd(
 	return (rates.input * usage.promptTokens + rates.output * usage.completionTokens) / 1_000_000;
 }
 
-export function evaluatorContentToString(content: unknown): string {
+function evaluatorContentToString(content: unknown): string {
 	if (typeof content === "string") return content;
 	if (Array.isArray(content)) {
 		return content
@@ -112,7 +112,7 @@ export function evaluatorContentToString(content: unknown): string {
 }
 
 /** Evidence first: the exact exchange is on disk before anything is parsed. */
-export function writeEvaluatorAttemptEvidence(
+function writeEvaluatorAttemptEvidence(
 	dir: string,
 	stem: string,
 	attempt: number,

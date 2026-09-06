@@ -1,9 +1,10 @@
 /** Resolve provenance inside the current stores without changing the recorded identity. */
-import { createHash } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync } from "node:fs";
 import { dirname, isAbsolute, posix, relative as relativePath, resolve, sep, win32 } from "node:path";
 import type { CandidateArtifactRef, CandidateRecord } from "../domain/candidate.js";
+import { readBoundedBytes } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath, safeArtifactSegment } from "../storage/paths.js";
+import { sha256 } from "../util.js";
 
 export type AppliedCandidateOrigin = Extract<CandidateRecord["origin"], { kind: "applied-builder" }>;
 export type CandidateArtifactKind = "builderRun" | "builderInput" | "proposal" | "applyReceipt" |
@@ -104,15 +105,9 @@ function readBounded(path: string): Buffer {
 	try {
 		const stat = fstatSync(fd);
 		if (!stat.isFile() || stat.size > MAX_BYTES) throw new Error("candidate provenance artifact is not a bounded regular file");
-		const chunks: Buffer[] = [];
-		let total = 0;
-		while (total <= MAX_BYTES) {
-			const chunk = Buffer.alloc(Math.min(64 * 1024, MAX_BYTES + 1 - total));
-			const count = readSync(fd, chunk);
-			if (count === 0) return Buffer.concat(chunks, total);
-			chunks.push(chunk.subarray(0, count)); total += count;
-		}
-		throw new Error("candidate provenance artifact exceeds the verification limit");
+		const bytes = readBoundedBytes(fd, MAX_BYTES);
+		if (bytes === null) throw new Error("candidate provenance artifact exceeds the verification limit");
+		return bytes;
 	} finally { closeSync(fd); }
 }
 
@@ -122,7 +117,7 @@ export function readCandidateArtifact(
 ): { path: string; bytes: Buffer } {
 	const path = artifactLocation(runsRoot, origin, kind, options.stateRoot);
 	const bytes = readBounded(path);
-	const actual = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+	const actual = sha256(bytes);
 	if (actual !== candidateArtifactReference(origin, kind).sha256 || (options.expectedHash !== undefined && actual !== options.expectedHash)) {
 		throw new Error(`${LABELS[kind]} changed after the candidate was created: ${LABELS[kind]} hash mismatch (provenance artifact hash mismatch)`);
 	}
@@ -151,5 +146,5 @@ export function portableCandidateArtifact(runsRoot: string, path: string): Candi
 	if (relative.startsWith("../") || isAbsolute(relative)) relative = relativePath(root, resolve(path)).split(sep).join("/");
 	if (relative.startsWith("../") || isAbsolute(relative)) throw new Error("candidate artifact is outside its runs root");
 	const bytes = readBounded(ownedPath(runsRoot, relative));
-	return { path: relative, sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}` };
+	return { path: relative, sha256: sha256(bytes) };
 }

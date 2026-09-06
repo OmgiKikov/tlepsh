@@ -72,7 +72,7 @@ const MAX_SCREEN_TASKS = 1_000;
 
 export type CheapCheckClassification = "improved" | "unchanged" | "regressed" | "inconclusive";
 
-export const CheapCheckRowSchema = z.strictObject({
+const CheapCheckRowSchema = z.strictObject({
 	taskId: z.string().min(1).max(200),
 	/** Recorded pass rate of this task in the source eval, over completed runs. */
 	sourcePassRate: z.number().min(0).max(1),

@@ -17,10 +17,10 @@ import { mean, SEALED_GATE_POLICY } from "./comparison-gate.js";
  */
 
 /** The difference an exam of this size could see, in score points. */
-export const EXAM_TARGET_HALF_WIDTH = 0.1;
+const EXAM_TARGET_HALF_WIDTH = 0.1;
 const Z_95 = 1.96;
 /** Largest exam the engine will size for; `generate-holdout` stops here too. */
-export const MAX_EXAM_CASES = 200;
+const MAX_EXAM_CASES = 200;
 /** Fewer than this and a standard deviation describes the draw, not the noise. */
 const MIN_TASKS_FOR_SPREAD = 3;
 

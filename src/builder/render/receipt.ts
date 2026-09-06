@@ -143,7 +143,7 @@ export function clockOf(iso: string): string | null {
 export { coarseElapsed, elapsed } from "../../measurement.js";
 
 /** One dim line from measured facts, or nothing when there is nothing measured. */
-export function renderReceiptFacts(facts: ReceiptFacts, paint: Paint): string | null {
+function renderReceiptFacts(facts: ReceiptFacts, paint: Paint): string | null {
 	const parts = joinNonEmpty([
 		clockOf(facts.at),
 		facts.runs > 0 ? plural(facts.runs, "execution") : null,

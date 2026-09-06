@@ -194,7 +194,7 @@ function graderNames(subjects: readonly JudgeLabelSubject[]): Map<string, string
  * and `ahde judge-agreement` use, so the number on this screen is never a
  * second, friendlier computation of the same thing.
  */
-export function labelSummaryFor(options: {
+function labelSummaryFor(options: {
 	runsRoot: string;
 	stateRoot: string;
 	projectId: string;

@@ -37,7 +37,7 @@ const MAX_MODEL_CHOICES = 9;
 /** The catalog is a correction aid, not a directory: enough to choose, small enough to read. */
 const MAX_CATALOG_ENTRIES = 40;
 
-export function credentialPlaceholder(provider: string): string {
+function credentialPlaceholder(provider: string): string {
 	return KNOWN_CREDENTIAL_ENVIRONMENT[provider] ?? `${provider.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`;
 }
 

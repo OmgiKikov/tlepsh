@@ -280,7 +280,7 @@ function defaultThinkingLevel(levels: readonly ModelThinkingLevel[]): ModelThink
  * every grading call with a 404 web page). A Target manifest, a judge and a
  * user model are AHDE's clients, so they take the one route that works.
  */
-export function canonicalRoute(provider: string, api: string, baseUrl: string): { api: string; baseUrl: string } {
+function canonicalRoute(provider: string, api: string, baseUrl: string): { api: string; baseUrl: string } {
 	if (provider === "openrouter" && /^https:\/\/openrouter\.ai\/api(?:\/v1)?\/?$/.test(baseUrl)) {
 		return { api: "openai-completions", baseUrl: "https://openrouter.ai/api/v1" };
 	}

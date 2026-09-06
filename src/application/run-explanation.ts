@@ -1,6 +1,5 @@
 import type { CheckObservation } from "./run-reading.js";
 import { noun, plural, t, tokenLabel, type MessageKey, type MessageParams } from "../i18n.js";
-import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { z } from "zod";
 import type { TraceObservation } from "../diagnosis.js";
@@ -51,13 +50,13 @@ export {
  */
 
 /** Characters of a case input shown in a table cell. */
-export const MAX_INPUT_PREVIEW_CHARS = 80;
+const MAX_INPUT_PREVIEW_CHARS = 80;
 /** Characters of a case input shown on a run detail page. */
-export const MAX_INPUT_CHARS = 2_000;
+const MAX_INPUT_CHARS = 2_000;
 /** Characters of the agent's final answer shown on a run detail page. */
-export const MAX_ANSWER_CHARS = 8_000;
+const MAX_ANSWER_CHARS = 8_000;
 /** Distinct tasks whose input is resolved from a trace for one page. */
-export const MAX_INPUT_PREVIEW_TASKS = 500;
+const MAX_INPUT_PREVIEW_TASKS = 500;
 /** Characters of a quoted reply shown beside a failure mode. */
 const MAX_EXCERPT_REPLY_CHARS = 240;
 /** Characters of a tool name shown inside a failure mode's title. */
@@ -149,7 +148,7 @@ export interface JudgeVerdict {
  * a screen that contradicts the graded record is worse than one that says
  * nothing.
  */
-export function readJudgeVerdict(
+function readJudgeVerdict(
 	artifact: Record<string, unknown> | undefined,
 	grader: Pick<GraderResult, "assertions" | "passed">,
 ): JudgeVerdict | null {
@@ -382,15 +381,15 @@ export function taskInputPreviews(
 // ---------- Transcript ----------
 
 /** Entries kept in one rendered transcript. */
-export const MAX_TRANSCRIPT_ENTRIES = 400;
+const MAX_TRANSCRIPT_ENTRIES = 400;
 /** Characters kept per spoken turn. */
-export const MAX_TRANSCRIPT_TEXT_CHARS = 20_000;
+const MAX_TRANSCRIPT_TEXT_CHARS = 20_000;
 /** Characters kept per tool-call argument blob. */
-export const MAX_TOOL_ARGUMENT_CHARS = 4_000;
+const MAX_TOOL_ARGUMENT_CHARS = 4_000;
 /** Characters kept per tool result excerpt. */
 export const MAX_TOOL_RESULT_CHARS = 4_000;
 /** Characters kept across one whole transcript. */
-export const MAX_TRANSCRIPT_BUDGET_CHARS = 200_000;
+const MAX_TRANSCRIPT_BUDGET_CHARS = 200_000;
 
 export type TranscriptEntry =
 	| { kind: "user"; text: string; at: number | null }
@@ -533,7 +532,7 @@ export interface RunRow {
 }
 
 /** Errors first, then failures, then passes; inside each group by task and repetition. */
-export function compareRunRows(left: RunRow, right: RunRow): number {
+function compareRunRows(left: RunRow, right: RunRow): number {
 	const rank = (row: RunRow): number => (row.outcome === "error" ? 0 : row.outcome === "fail" ? 1 : 2);
 	if (rank(left) !== rank(right)) return rank(left) - rank(right);
 	if (left.taskId !== right.taskId) return left.taskId < right.taskId ? -1 : 1;
@@ -1058,7 +1057,7 @@ export interface RunExplanation {
 	sentences: string[];
 }
 
-export function failureModeExplanation(mode: FailureMode): FailureModeExplanation {
+function failureModeExplanation(mode: FailureMode): FailureModeExplanation {
 	const reading = failureModeReading(mode);
 	return {
 		id: mode.failureModeId,
@@ -1074,12 +1073,12 @@ export function failureModeExplanation(mode: FailureMode): FailureModeExplanatio
 }
 
 /** What re-ran the task: a real candidate, or a same-revision noise measurement. */
-export function flipSubject(flip: Pick<CandidateFlip, "mode">): string {
+function flipSubject(flip: Pick<CandidateFlip, "mode">): string {
 	return t(flip.mode === "aa-calibration" ? "why.flip-subject-aa" : "why.flip-subject-candidate");
 }
 
 /** How one task stood in one arm, from its pass count over its repetitions. */
-export function flipStanding(pass: number, total: number): string {
+function flipStanding(pass: number, total: number): string {
 	if (total === 0) return t("why.standing-not-run");
 	if (pass === 0) return t("why.standing-failed");
 	if (pass === total) return t("why.standing-passed");

@@ -139,7 +139,7 @@ export function judgeMeaning(stats: JudgeAgreementStats): string {
  * gate: a Target that demands calibration before a promotion says so in its own
  * manifest, and that policy is enforced somewhere else entirely.
  */
-export const LABEL_CALIBRATION_FLOOR = { minLabels: 20, minAgreement: 0.8 } as const;
+const LABEL_CALIBRATION_FLOOR = { minLabels: 20, minAgreement: 0.8 } as const;
 
 export function judgeNextStep(stats: JudgeAgreementStats): string {
 	if (stats.n >= LABEL_CALIBRATION_FLOOR.minLabels && stats.agreement >= LABEL_CALIBRATION_FLOOR.minAgreement) {

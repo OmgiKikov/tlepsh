@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
 import { WorkbenchSelectionKindSchema, type WorkbenchSelectionKind } from "./types.js";
-import { contained, projectStateDir } from "../storage/paths.js";
+import { projectStateDir } from "../storage/paths.js";
 
 const ProjectIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
 const FingerprintSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
@@ -14,7 +14,7 @@ const WorkbenchFocusEntrySchema = z.strictObject({
 });
 export type WorkbenchFocusEntry = z.infer<typeof WorkbenchFocusEntrySchema>;
 
-export const WorkbenchFocusSchema = z.strictObject({
+const WorkbenchFocusSchema = z.strictObject({
 	schemaVersion: z.literal(1),
 	projectId: ProjectIdSchema,
 	selections: z.partialRecord(WorkbenchSelectionKindSchema, WorkbenchFocusEntrySchema),
@@ -31,7 +31,7 @@ function focusPath(stateRoot: string, projectId: string, create: boolean): strin
 	return directory ? join(directory, "focus.json") : null;
 }
 
-export function emptyWorkbenchFocus(projectIdInput: string, now: () => string): WorkbenchFocus {
+function emptyWorkbenchFocus(projectIdInput: string, now: () => string): WorkbenchFocus {
 	return WorkbenchFocusSchema.parse({
 		schemaVersion: 1,
 		projectId: ProjectIdSchema.parse(projectIdInput),

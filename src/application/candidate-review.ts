@@ -1,6 +1,5 @@
 import { resolveCandidateArtifact, type CandidateArtifactKind } from "./candidate-artifacts.js";
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -40,6 +39,7 @@ import { canonicalJson, hashValue } from "../provenance.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
 import { git, gitText } from "../git/commands.js";
+import { sha256 } from "../util.js";
 
 export interface ReviewCandidateOptions {
 	runsRoot: string;
@@ -163,12 +163,13 @@ function candidateIds(runsRoot: string): string[] {
  */
 export function listCandidateRecords(
 	runsRootInput: string,
-	filter: { projectId?: string; targetId?: string } = {},
+	filter: { projectId?: string; targetId?: string; limit?: number } = {},
 ): { records: CandidateRecord[]; unreadable: number } {
 	const runsRoot = resolve(runsRootInput);
 	const records: CandidateRecord[] = [];
 	let unreadable = 0;
-	for (const candidateId of candidateIds(runsRoot)) {
+	// `limit` bounds the directories inspected, not the records that pass the filter.
+	for (const candidateId of candidateIds(runsRoot).slice(0, filter.limit)) {
 		let record: CandidateRecord;
 		try {
 			record = loadCandidateRecord(runsRoot, candidateId);
@@ -808,7 +809,7 @@ function verifyAppliedBuilderOrigin(
 	const failureBundle = builderInput.evaluationEvidence?.failureBundle ?? null;
 	const failureBundleHash = failureBundle === null
 		? null
-		: `sha256:${createHash("sha256").update(failureBundle).digest("hex")}`;
+		: sha256(failureBundle);
 	const failureBundleBytes = failureBundle === null ? 0 : Buffer.byteLength(failureBundle, "utf8");
 	if (
 		failureBundleHash !== builderRun.request.failureBundleSha256 ||

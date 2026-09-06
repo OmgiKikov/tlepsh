@@ -21,7 +21,7 @@ import {
 const NonBlankSchema = z.string().min(1).refine((value) => value.trim().length > 0, "expected non-blank text");
 
 /** Operator classification. It describes the failure; it never upgrades the imported trace to verified evidence. */
-export const ProductionFailureClassificationSchema = z.strictObject({
+const ProductionFailureClassificationSchema = z.strictObject({
 	kind: z.enum([
 		"wrong-answer",
 		"missed-tool-call",
@@ -40,7 +40,7 @@ export type ProductionFailureClassification = z.infer<typeof ProductionFailureCl
  * input and frozen dialogue from the redacted imported trace, so a submitted
  * regression cannot silently rewrite the production failure it cites.
  */
-export const ProductionFailureCaseMeasurementSchema = z.strictObject({
+const ProductionFailureCaseMeasurementSchema = z.strictObject({
 	expected: TaskSchema.shape.expected,
 	world: TaskSchema.shape.world,
 	graders: z.array(GraderSpec).min(1).max(16),

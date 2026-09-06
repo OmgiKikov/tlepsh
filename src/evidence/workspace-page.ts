@@ -9,7 +9,7 @@ import {
 import { WORKSPACE_STYLES } from "./workspace-styles.js";
 
 /** Every control is a normal URL: reload, history and a shared link retain the investigation. */
-export function workspaceHref(model: EvalPageModel, changes: { run?: string | null; mode?: string | null; outcome?: string | null; q?: string | null } = {}): string {
+function workspaceHref(model: EvalPageModel, changes: { run?: string | null; mode?: string | null; outcome?: string | null; q?: string | null } = {}): string {
 	const values = { mode: model.filter.mode, outcome: model.filter.outcome, q: model.search, ...changes };
 	const query = new URLSearchParams();
 	for (const [key, value] of Object.entries(values)) if (value) query.set(key, value);

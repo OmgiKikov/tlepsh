@@ -38,7 +38,7 @@ export type PlanStepId = (typeof PLAN_STEP_IDS)[number];
 /** Where one step stands: done, being worked on, still ahead, or stuck. */
 export type PlanMarker = "done" | "current" | "ahead" | "blocked";
 
-export const PLAN_MARKERS: Record<PlanMarker, string> = {
+const PLAN_MARKERS: Record<PlanMarker, string> = {
 	done: "✓",
 	current: "▸",
 	ahead: "◻",

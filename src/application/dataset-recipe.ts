@@ -9,7 +9,7 @@ import {
 	DatasetSourcePathSchema,
 	type DatasetMappingRecipe,
 } from "./dataset-ingest.js";
-import { contained, projectStateDir } from "../storage/paths.js";
+import { projectStateDir } from "../storage/paths.js";
 
 const ProjectIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
 const SubmissionIdSchema = z.string().regex(/^dataset-recipe-[0-9a-f]{64}$/);
@@ -39,7 +39,7 @@ function submissionId(identity: DatasetRecipeSubmissionIdentity): string {
  * real columns. It carries no rows: a submission is an argument about how to
  * read a file, and the file stays the only place its contents live.
  */
-export const DatasetRecipeSubmissionSchema = z.strictObject({
+const DatasetRecipeSubmissionSchema = z.strictObject({
 	schemaVersion: z.literal(1),
 	kind: z.literal("dataset-recipe"),
 	id: SubmissionIdSchema,

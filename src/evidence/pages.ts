@@ -69,7 +69,7 @@ const FONT_TOKENS = `
  * Colour never carries meaning alone: every status chip prints its word, every
  * delta prints its sign.
  */
-export const EVIDENCE_TOKENS = `
+const EVIDENCE_TOKENS = `
 :root{
 	color-scheme:light dark;${FONT_TOKENS}
 	--bg:#f7f8fa;--surface:#fff;--surface2:#f0f2f6;--sunken:#eef0f5;

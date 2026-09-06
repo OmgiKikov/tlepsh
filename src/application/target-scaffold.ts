@@ -1,5 +1,4 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
 	cpSync,
 	existsSync,
@@ -23,7 +22,7 @@ import { canonicalJson, hashValue } from "../provenance.js";
 import { writeJsonArtifact } from "../storage/artifacts.js";
 import { discoverAdoptedDeclarations } from "./agent-folder-detect.js";
 import { ensureLocalArtifactIgnores, missingLocalArtifactIgnores } from "./store-hygiene.js";
-import { errorMessage } from "../util.js";
+import { errorMessage, sha256 } from "../util.js";
 
 // The adoption declares what the detector already counted for the door's first
 // sentence, so the discovery lives beside the detector and is re-exported here
@@ -38,7 +37,7 @@ const NonBlankSchema = z.string().min(1).refine((value) => value.trim().length >
 const Sha256Schema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 const GitShaSchema = z.string().regex(/^[0-9a-f]{40}$/);
 
-export const TargetScaffoldFileSchema = z.strictObject({
+const TargetScaffoldFileSchema = z.strictObject({
 	path: NonBlankSchema.max(4_096),
 	bytes: z.number().int().nonnegative(),
 	sha256: Sha256Schema,
@@ -77,7 +76,7 @@ export type TargetScaffoldSubjectV1 = z.infer<typeof TargetScaffoldSubjectV1Sche
  * adopt: it is the sentence the dialog showed the operator, kept as evidence
  * of what they were looking at when they said yes.
  */
-export const TargetAdoptionFindingSchema = z.strictObject({
+const TargetAdoptionFindingSchema = z.strictObject({
 	entry: NonBlankSchema.max(4_096),
 	language: z.literal("python"),
 	toolCount: z.number().int().nonnegative(),
@@ -97,7 +96,7 @@ export type TargetAdoptionFinding = z.infer<typeof TargetAdoptionFindingSchema>;
  * thing a fresh scaffold always does — an adopted folder may already be a Git
  * repository and may already ignore half the rules AHDE would add.
  */
-export const TargetScaffoldSubjectSchema = z.strictObject({
+const TargetScaffoldSubjectSchema = z.strictObject({
 	schemaVersion: z.literal(2),
 	operation: z.enum(["initialize-current-directory", "adopt-current-directory"]),
 	targetPath: NonBlankSchema.max(4_096),
@@ -134,7 +133,7 @@ export const TargetScaffoldSubjectSchema = z.strictObject({
 export type TargetScaffoldSubject = z.infer<typeof TargetScaffoldSubjectSchema>;
 
 /** Reads either version. New receipts are always written at the current one. */
-export const AnyTargetScaffoldSubjectSchema = z.union([
+const AnyTargetScaffoldSubjectSchema = z.union([
 	TargetScaffoldSubjectSchema,
 	TargetScaffoldSubjectV1Schema,
 ]);
@@ -218,7 +217,7 @@ function templateInventory(templateDirInput: string): TargetScaffoldFile[] {
 			files.push({
 				path,
 				bytes,
-				sha256: `sha256:${createHash("sha256").update(readFileSync(absolute)).digest("hex")}`,
+				sha256: sha256(readFileSync(absolute)),
 			});
 			if (files.length > MAX_SCAFFOLD_FILES || totalBytes > MAX_SCAFFOLD_BYTES) {
 				throw new Error("packaged target template exceeds the bounded scaffold limit");
@@ -533,7 +532,7 @@ function inventoryOf(files: readonly { path: string; content: string }[]): Targe
 		.map((file) => ({
 			path: file.path,
 			bytes: Buffer.byteLength(file.content, "utf8"),
-			sha256: `sha256:${createHash("sha256").update(file.content, "utf8").digest("hex")}`,
+			sha256: sha256(file.content),
 		}));
 }
 

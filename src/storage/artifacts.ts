@@ -13,11 +13,11 @@ import {
 	renameSync,
 	unlinkSync,
 	writeFileSync,
+	type Stats,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { TextDecoder } from "node:util";
 import { z } from "zod";
-import { errorMessage, isNodeError } from "../util.js";
+import { decodeUtf8, errorMessage, isNodeError } from "../util.js";
 
 const DEFAULT_JSONL_MAX_BYTES = 16 * 1024 * 1024;
 const DEFAULT_JSONL_MAX_RECORDS = 100_000;
@@ -254,12 +254,30 @@ export function appendJsonlArtifact<TCodec extends z.ZodType>(
 	}
 }
 
-function decodeUtf8(artifactPath: string, bytes: Uint8Array, format: "JSON" | "JSONL"): string {
-	try {
-		return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-	} catch (error) {
-		throw new ArtifactError(artifactPath, `${format} is not valid UTF-8`, { cause: error });
+/** The same inode, unchanged, before and after a read. */
+export function sameFileSnapshot(left: Stats, right: Stats): boolean {
+	return left.dev === right.dev &&
+		left.ino === right.ino &&
+		left.size === right.size &&
+		left.mtimeMs === right.mtimeMs &&
+		left.ctimeMs === right.ctimeMs;
+}
+
+/**
+ * Everything an open descriptor still holds, or null once it has yielded more
+ * than `maxBytes`. The descriptor stays open: the caller fstats and closes it.
+ */
+export function readBoundedBytes(descriptor: number, maxBytes: number): Buffer | null {
+	const chunks: Buffer[] = [];
+	let totalBytes = 0;
+	while (totalBytes <= maxBytes) {
+		const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, maxBytes + 1 - totalBytes));
+		const bytesRead = readSync(descriptor, chunk, 0, chunk.length, null);
+		if (bytesRead === 0) break;
+		chunks.push(chunk.subarray(0, bytesRead));
+		totalBytes += bytesRead;
 	}
+	return totalBytes > maxBytes ? null : Buffer.concat(chunks, totalBytes);
 }
 
 function readBounded(artifactPath: string, maxBytes: number, format: "JSON" | "JSONL"): Uint8Array {
@@ -287,19 +305,9 @@ function readBounded(artifactPath: string, maxBytes: number, format: "JSON" | "J
 		if (!fstatSync(descriptor).isFile()) {
 			throw new ArtifactError(artifactPath, `${format} must be a regular non-symlink file`);
 		}
-		const chunks: Buffer[] = [];
-		let totalBytes = 0;
-		while (totalBytes <= maxBytes) {
-			const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, maxBytes + 1 - totalBytes));
-			const bytesRead = readSync(descriptor, chunk, 0, chunk.length, null);
-			if (bytesRead === 0) break;
-			chunks.push(chunk.subarray(0, bytesRead));
-			totalBytes += bytesRead;
-		}
-		if (totalBytes > maxBytes) {
-			throw new ArtifactError(artifactPath, `${format} exceeds maxBytes=${maxBytes}`);
-		}
-		return Buffer.concat(chunks, totalBytes);
+		const bytes = readBoundedBytes(descriptor, maxBytes);
+		if (bytes === null) throw new ArtifactError(artifactPath, `${format} exceeds maxBytes=${maxBytes}`);
+		return bytes;
 	} catch (error) {
 		if (error instanceof ArtifactError) throw error;
 		throw new ArtifactError(artifactPath, `read failed: ${errorMessage(error)}`, { cause: error });
@@ -319,7 +327,10 @@ export function readJsonArtifact<TCodec extends z.ZodType>(
 	if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
 		throw new ArtifactError(artifactPath, `maxBytes must be a positive safe integer, got ${maxBytes}`);
 	}
-	const content = decodeUtf8(artifactPath, readBounded(artifactPath, maxBytes, "JSON"), "JSON");
+	const content = decodeUtf8(
+		readBounded(artifactPath, maxBytes, "JSON"),
+		(cause) => new ArtifactError(artifactPath, "JSON is not valid UTF-8", { cause }),
+	);
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(content) as unknown;
@@ -349,7 +360,10 @@ export function readJsonlArtifact<TCodec extends z.ZodType>(
 		throw new ArtifactError(artifactPath, `maxRecords must be a positive safe integer, got ${maxRecords}`);
 	}
 
-	const content = decodeUtf8(artifactPath, readBounded(artifactPath, maxBytes, "JSONL"), "JSONL");
+	const content = decodeUtf8(
+		readBounded(artifactPath, maxBytes, "JSONL"),
+		(cause) => new ArtifactError(artifactPath, "JSONL is not valid UTF-8", { cause }),
+	);
 	const records: z.output<TCodec>[] = [];
 	for (const [index, line] of content.split("\n").entries()) {
 		if (!line.trim()) continue;

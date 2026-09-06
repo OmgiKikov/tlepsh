@@ -60,10 +60,10 @@ import { t } from "./i18n.js";
 export type MeasurementForm = "screen" | "machine";
 
 /** The one thing every formatter here prints when it was handed nothing. */
-export const NOT_MEASURED = "—";
+const NOT_MEASURED = "—";
 
 /** Below this many dollars, two decimals would print a real bill as free. */
-export const SUB_CENT_USD = 0.005;
+const SUB_CENT_USD = 0.005;
 
 /** A ratio at or above this prints no decimal: `×12`, not `×12.0`. */
 const RATIO_INTEGER_AT = 10;

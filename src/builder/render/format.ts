@@ -4,7 +4,7 @@ import { sanitizeTerminalText } from "../../trace.js";
 import { stripMarkers } from "./markers.js";
 import type { Paint } from "./paint.js";
 
-export const DEFAULT_LIST_LIMIT = 12;
+const DEFAULT_LIST_LIMIT = 12;
 
 /**
  * What the exam has, what the gate needs, and the difference — the three

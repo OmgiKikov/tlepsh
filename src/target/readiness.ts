@@ -2,7 +2,7 @@ import type { ResolvedTarget } from "../manifest.js";
 import { STARTER_MODEL_ID, standInManifestFields } from "./placeholders.js";
 import { HOST_OWNED_TOOL_ENVIRONMENT } from "./tool-manifest.js";
 
-export const STARTER_TARGET_ID = "my-agent";
+const STARTER_TARGET_ID = "my-agent";
 // The starter model id lives in `placeholders.ts` — `isStandInModel` needs it
 // and this module already imports that one. Re-exported so every reader that
 // learned the name here keeps it.

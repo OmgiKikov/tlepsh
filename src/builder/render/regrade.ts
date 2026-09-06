@@ -25,7 +25,7 @@ import type { Paint } from "./paint.js";
  */
 
 /** Flipped answers named on screen; the result carries more. */
-export const MAX_RENDERED_FLIPS = 8;
+const MAX_RENDERED_FLIPS = 8;
 
 function outcomeMark(outcome: RegradeCaseFlip["from"], paint: Paint): string {
 	if (outcome === "pass") return paint.success("✓");

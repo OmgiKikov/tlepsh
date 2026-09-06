@@ -65,7 +65,6 @@ import { resolveExecutionBackend } from "../target/container-backend.js";
 import {
 	renderManifest,
 	wholeFileDiff,
-	HARNESS_AUTHORING_ALLOWED_PATHS,
 	type HarnessExecutionPolicyPatch,
 } from "./harness-authoring.js";
 import {
@@ -84,7 +83,7 @@ import {
 	type TargetAuthoringResource,
 } from "./target-authoring-context.js";
 import { namedDirtyPaths, operatorDirtyPaths } from "./store-hygiene.js";
-import { sha256 } from "../util.js";
+import { decodeUtf8, sha256 } from "../util.js";
 
 const TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 /** One try is a look at behavior, not a transcript: both streams stay small. */
@@ -770,12 +769,7 @@ function resourceLimitNote(limits: AppliedResourceLimits | null): string | null 
 }
 
 function workshopText(content: Buffer, path: string): string {
-	let decoded: string;
-	try {
-		decoded = new TextDecoder("utf-8", { fatal: true }).decode(content);
-	} catch (error) {
-		throw new ToolWorkshopError(`${path} must be valid UTF-8 text`, { cause: error });
-	}
+	const decoded = decodeUtf8(content, (cause) => new ToolWorkshopError(`${path} must be valid UTF-8 text`, { cause }));
 	if (decoded.includes("\0")) throw new ToolWorkshopError(`${path} must not contain NUL bytes`);
 	if (decoded.includes("\r")) throw new ToolWorkshopError(`${path} must use LF line endings`);
 	return decoded;

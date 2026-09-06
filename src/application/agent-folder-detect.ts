@@ -19,7 +19,7 @@ import { join, relative, resolve, sep } from "node:path";
 /** A folder bigger than this is not a single agent; it is a monorepo. */
 export const MAX_SCANNED_FILES = 2_000;
 /** Files larger than this are not read. An entry point is not a megabyte. */
-export const MAX_SCANNED_FILE_BYTES = 1024 * 1024;
+const MAX_SCANNED_FILE_BYTES = 1024 * 1024;
 
 /** Directories that are never anybody's agent, and are expensive to walk. */
 const SKIPPED_DIRECTORIES = new Set([
@@ -55,7 +55,7 @@ const TOOL_SHAPES = [/^\s*@\w*\.?tool\b/gm, /^\s*(?:TOOLS|tools)\s*=\s*\[/gm, /^
 const ADOPTED_TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 const ADOPTED_DATA_NAME = /^[a-z0-9][a-z0-9._-]*$/;
 /** The one data directory the host knows by name: it is what turns `kb_search` on. */
-export const KNOWLEDGE_BASE_DIRECTORY = "data/kb";
+const KNOWLEDGE_BASE_DIRECTORY = "data/kb";
 
 /**
  * What the folder already carries in the two shapes the manifest can declare:

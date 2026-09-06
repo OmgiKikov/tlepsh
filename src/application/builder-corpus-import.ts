@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
 	closeSync,
 	constants,
@@ -6,12 +5,10 @@ import {
 	fstatSync,
 	lstatSync,
 	openSync,
-	readSync,
 	realpathSync,
 	type Stats,
 } from "node:fs";
 import { join, relative, resolve } from "node:path";
-import { TextDecoder } from "node:util";
 import { z } from "zod";
 import {
 	type BuilderCorpusDraft,
@@ -33,8 +30,9 @@ import {
 	ApprovedSpecReferenceSchema,
 	type ApprovedSpecReference,
 } from "../spec.js";
-import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
+import { readBoundedBytes, readJsonArtifact, sameFileSnapshot, writeJsonArtifact } from "../storage/artifacts.js";
 import { contained, projectStateDir } from "../storage/paths.js";
+import { decodeUtf8, sha256 } from "../util.js";
 
 const ProjectIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
 const DraftIdSchema = z.string().regex(/^corpus-draft-[0-9a-f]{64}$/);
@@ -140,17 +138,6 @@ function sourceFilePath(options: ImportBuilderCorpusDraftOptions): {
 	return { absolute: canonicalSource, relative: sourcePath, expected: sourceEntry };
 }
 
-function sameFileSnapshot(
-	left: Stats,
-	right: Stats,
-): boolean {
-	return left.dev === right.dev &&
-		left.ino === right.ino &&
-		left.size === right.size &&
-		left.mtimeMs === right.mtimeMs &&
-		left.ctimeMs === right.ctimeMs;
-}
-
 function readImportSource(
 	path: string,
 	expected: Stats,
@@ -171,16 +158,8 @@ function readImportSource(
 			throw new Error(`Builder corpus import source exceeds ${MAX_BUILDER_CORPUS_IMPORT_BYTES} bytes`);
 		}
 
-		const chunks: Buffer[] = [];
-		let totalBytes = 0;
-		while (totalBytes <= MAX_BUILDER_CORPUS_IMPORT_BYTES) {
-			const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, MAX_BUILDER_CORPUS_IMPORT_BYTES + 1 - totalBytes));
-			const bytesRead = readSync(descriptor, chunk, 0, chunk.length, null);
-			if (bytesRead === 0) break;
-			chunks.push(chunk.subarray(0, bytesRead));
-			totalBytes += bytesRead;
-		}
-		if (totalBytes > MAX_BUILDER_CORPUS_IMPORT_BYTES) {
+		const bytes = readBoundedBytes(descriptor, MAX_BUILDER_CORPUS_IMPORT_BYTES);
+		if (bytes === null) {
 			throw new Error(`Builder corpus import source exceeds ${MAX_BUILDER_CORPUS_IMPORT_BYTES} bytes`);
 		}
 		const after = fstatSync(descriptor);
@@ -188,13 +167,7 @@ function readImportSource(
 			throw new Error("Builder corpus import source changed while it was being read");
 		}
 
-		const bytes = Buffer.concat(chunks, totalBytes);
-		let content: string;
-		try {
-			content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-		} catch (error) {
-			throw new Error("Builder corpus import source is not valid UTF-8", { cause: error });
-		}
+		const content = decodeUtf8(bytes, (cause) => new Error("Builder corpus import source is not valid UTF-8", { cause }));
 
 		const tasks: z.output<typeof CorpusTaskSchema>[] = [];
 		const sourceIds = new Set<string>();
@@ -275,7 +248,7 @@ export function importBuilderCorpusDraft(
 	const imported = readImportSource(source.absolute, source.expected);
 	const importSource = BuilderCorpusImportSourceSchema.parse({
 		path: source.relative,
-		sha256: `sha256:${createHash("sha256").update(imported.bytes).digest("hex")}`,
+		sha256: sha256(imported.bytes),
 		bytes: imported.bytes.length,
 		taskCount: imported.tasks.length,
 	});

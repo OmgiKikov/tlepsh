@@ -14,7 +14,7 @@ import { hashValue } from "../provenance.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
 
 /** Two cases per side is the smallest split that is more than a coin flip. */
-export const MIN_BLIND_IMPROVEMENT_TASKS = 4;
+const MIN_BLIND_IMPROVEMENT_TASKS = 4;
 
 const LoopIdSchema = z.string().regex(/^loop_[a-z0-9]{6,32}$/);
 const Sha256Schema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
@@ -28,7 +28,7 @@ const CorpusIdentitySchema = z.strictObject({
 	taskCount: z.number().int().min(2),
 });
 
-export const ImprovementExperimentDesignSchema = z.strictObject({
+const ImprovementExperimentDesignSchema = z.strictObject({
 	schemaVersion: z.literal(1),
 	designId: z.string().regex(/^idesign_[0-9a-f]{24}$/),
 	designHash: Sha256Schema,
@@ -58,7 +58,7 @@ export const ImprovementExperimentDesignSchema = z.strictObject({
 });
 export type ImprovementExperimentDesign = z.infer<typeof ImprovementExperimentDesignSchema>;
 
-export class ImprovementExperimentDesignError extends Error {
+class ImprovementExperimentDesignError extends Error {
 	constructor(message: string, options?: ErrorOptions) {
 		super(`blind improvement rejected: ${message}`, options);
 		this.name = "ImprovementExperimentDesignError";
