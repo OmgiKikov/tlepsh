@@ -159,6 +159,7 @@ describe("the evaluator id decides which question the judge is asked", () => {
 
 	it("offers the third answer only under the id that introduced it", () => {
 		expect(judgePromptsFor(AHDE_EVALUATOR_ID)).toEqual(judgePromptsFor(JUDGE_ABSTAIN_EVALUATOR_ID));
+		expect(judgePromptsFor("ahde-evaluator-v4")).toEqual(judgePromptsFor(AHDE_EVALUATOR_ID));
 		const current = judgePromptsFor(AHDE_EVALUATOR_ID);
 		expect(current.abstain).toBe(true);
 		expect(current.rubric).toContain('"unknown"');

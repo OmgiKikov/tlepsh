@@ -108,11 +108,12 @@ describe("the current agent's first recorded finding", () => {
 		expect(current.stage).toBe("ready-to-evaluate");
 	});
 
-	it.each(["runtime", "model", "unmarked-command"] as const)("keeps verified but stale %s evidence readable without presenting it as current", async (axis) => {
+	it.each(["runtime", "model", "evaluator", "unmarked-command"] as const)("keeps verified but stale %s evidence readable without presenting it as current", async (axis) => {
 		const f = await fixture();
 		const verified = loadVerifiedEvalRun(f.runsRoot, f.evaluation!.evalRunId);
 		const run = structuredClone(verified.runs[0]!);
 		const index = structuredClone(verified.record);
+		if (axis === "evaluator") { index.provenance.evaluatorId = "ahde-evaluator-v4"; delete run.eval.evaluatorId; }
 		if (axis === "runtime") { run.runtime.piSha = "a".repeat(40); index.provenance.piSha = run.runtime.piSha; }
 		if (axis === "model") { run.model.id = "previous-model"; index.provenance.modelId = run.model.id; }
 		if (axis === "unmarked-command") { delete run.execution.commandProtocol; delete index.provenance.execution.commandProtocol; }

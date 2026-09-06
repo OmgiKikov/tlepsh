@@ -65,7 +65,11 @@ ahde            # describe your agent in the terminal conversation
 ```
 
 Already have an agent folder? Run `ahde --target ./your-agent`. The Builder
-guides adoption and model setup. Use `ahde target` to talk to the built agent;
+guides adoption and model setup. An existing Python program needs the JSONL
+protocol or a small adapter; the packaged `function_bridge.py` connects a
+sync/async `respond(text)` function without rewriting it. Follow the
+[complete Python connection walkthrough](docs/connect-python-agent.md) for the
+adapter, your own test basket, and the first run. Use `ahde target` to talk to the built agent;
 `/good` and `/bad` record feedback that can become test cases. The minimal Pi
 starter remains the default for a bare `ahde init my-agent`.
 

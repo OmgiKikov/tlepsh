@@ -370,6 +370,18 @@ export function installAhdeBuilderProductShell(
 	};
 
 	const onboard = async (ctx: ExtensionContext, view: WorkbenchView | null): Promise<void> => {
+		// Connecting the operator's folder is a local, host-owned review. It
+		// does not need a Builder credential or a model request.
+		if (view?.stage === "target-setup" && view.target.status === "missing" && workbench.decide && options.actorId) {
+			view = await runFirstRunOnboarding(ctx, {
+				workbench: { view: (query) => workbench.view(query), decide: workbench.decide.bind(workbench) },
+				actorId: options.actorId,
+				presenter,
+				...(workbench.projectDir ? { projectDir: workbench.projectDir } : {}),
+			}, view, { configureModel: false });
+			await refresh();
+			if (!view) return;
+		}
 		if (!state.builderModel.credentialPresent) {
 			if (typeof ctx.ui.select !== "function") {
 				ctx.ui.notify(t("onboarding.connect-first"), "warning");

@@ -16,6 +16,7 @@ import {
 } from "../src/application/improvement-brief.js";
 import { failureModeReading } from "../src/application/run-explanation.js";
 import {
+	AHDE_EVALUATOR_ID,
 	RunRecordSchema,
 	canonicalJson,
 	executionFingerprint,
@@ -123,6 +124,7 @@ function fixture(options: FixtureOptions): {
 	const evalRunId = options.evalRunId ?? "erun-improvement-brief";
 	const dataset = options.dataset ?? "development";
 	const evaluation = {
+		evaluatorId: AHDE_EVALUATOR_ID,
 		suiteId: "suite",
 		suiteHash: `sha256:${"d".repeat(64)}`,
 		dataset,

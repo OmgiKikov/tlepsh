@@ -652,8 +652,9 @@ from it. A base too small to reach the sealed guardrail's minimum is re-cut
 finer for the generator only, down to 200 characters a passage; the runtime
 kb_search index never moves, and the receipt records the length that was read.
 Each case carries the answer as its reference, the RUNTIME chunk id in metadata,
-and two graders: cites_source against that chunk and token-f1 against the
-reference. N is capped at three questions per passage. Refused, exit 2, when the
+and two graders: cites_source requires its exact id in the final answer;
+token-f1 checks lexical agreement with the reference. Neither proves factual
+accuracy or claim-level grounding. N is capped at three questions per passage. Refused, exit 2, when the
 manifest declares no data/kb, it holds no .md or .txt file, or even at the
 finest cut the base cannot answer as many questions as the exam needs.
 

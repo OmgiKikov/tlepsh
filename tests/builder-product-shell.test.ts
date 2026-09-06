@@ -295,16 +295,16 @@ describe("AHDE Builder product shell", () => {
 		expect(h.renderHeader().join("\n")).toContain("Project state unavailable");
 	});
 
-	it("asks nothing about the agent until the Builder itself has a model", async () => {
+	it("lets the operator defer local setup without demanding a Builder login", async () => {
 		const decide = vi.fn(async () => ({ view: view() }));
 		const { handlers } = install(async () => view(), decide);
-		const h = host({ credentialPresent: false, select: async () => "Log in to a provider (OAuth or API key)" });
+		const h = host({ credentialPresent: false, select: async () => "Not now" });
 		await start(handlers, h.ctx);
 
-		expect(h.ui.setEditorText).toHaveBeenCalledWith("/login");
+		expect(h.ui.setEditorText).not.toHaveBeenCalled();
 		expect(decide).not.toHaveBeenCalled();
 		expect(h.ui.select).toHaveBeenCalledTimes(1);
-		expect(h.ui.select!.mock.calls[0]?.[0]).toContain("needs a model");
+		expect(h.ui.select!.mock.calls[0]?.[0]).toContain("has no agent yet");
 	});
 
 	it("resumes the first-run setup when a Builder model is finally selected", async () => {
@@ -333,7 +333,7 @@ describe("AHDE Builder product shell", () => {
 			},
 		});
 		await start(handlers, h.ctx);
-		expect(decide).not.toHaveBeenCalled();
+		expect(decide.mock.calls.map((call) => call[0]?.kind)).toEqual(["scaffold-target"]);
 
 		// The operator ran /login and picked a model: onboarding must pick up here.
 		h.ctx.modelRegistry.hasConfiguredAuth = vi.fn(() => true);
@@ -341,8 +341,8 @@ describe("AHDE Builder product shell", () => {
 
 		expect(decide.mock.calls.map((call) => call[0]?.kind)).toEqual(["scaffold-target", "configure-target"]);
 		expect(h.ui.select!.mock.calls.map((call) => call[0])).toEqual([
-			expect.stringContaining("needs a model"),
 			expect.stringContaining("has no agent yet"),
+			expect.stringContaining("needs a model"),
 			expect.stringContaining("Which model should the agent itself use?"),
 		]);
 		expect(h.ui.notify).toHaveBeenCalledWith(expect.stringContaining("describe what the agent should do"), "info");

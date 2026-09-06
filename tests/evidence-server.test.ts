@@ -12,6 +12,7 @@ import {
 import { writeEvalRun, type EvalRunRecord } from "../src/eval.js";
 import { diagnoseEvalRun } from "../src/diagnosis.js";
 import {
+	AHDE_EVALUATOR_ID,
 	RunRecordSchema,
 	executionFingerprint,
 	hashFile,
@@ -53,6 +54,7 @@ function writeCorruptFormalSealedIndex(runsRoot: string): EvalRunRecord {
 	});
 	const execution = executionFingerprint("isolated");
 	const evaluation = {
+		evaluatorId: AHDE_EVALUATOR_ID,
 		suiteId: "sealed-suite",
 		suiteHash: `sha256:${"d".repeat(64)}`,
 		dataset: "ordinary-private-dataset",
@@ -107,6 +109,7 @@ function writeDevelopmentCandidateWithSealedBaseline(runsRoot: string, targetId 
 	});
 	const execution = executionFingerprint("isolated");
 	const evaluation = {
+		evaluatorId: AHDE_EVALUATOR_ID,
 		suiteId: "development-suite",
 		suiteHash: `sha256:${"d".repeat(64)}`,
 		dataset: "ordinary-development-dataset",
@@ -575,7 +578,9 @@ describe("read-only evidence explorer", () => {
 		const html = await response.text();
 
 		// Why: expectation, observation, the grader's own words, and the counted facts.
-		expect(html).toContain("task_001 repetition 0 failed: 1 of 1 grader(s) did not pass.");
+		expect(html).toContain("<h1>Обращение: проверь договор №42 и ограничения ДБО по нему.</h1>");
+		expect(html).toContain("repetition 1");
+		expect(html).not.toContain("task_001 repetition 0");
 		expect(html).toContain(
 			"expected a call to bash with arguments containing “check_dbo”; the agent made no tool calls and answered directly.",
 		);
@@ -596,12 +601,12 @@ describe("read-only evidence explorer", () => {
 		// A passing run in the candidate arm still renders, and says so.
 		const passing = await fetch(`${address.url}/runs/${fixture.passingRunId}`);
 		expect(passing.status).toBe(200);
-		expect(await passing.text()).toContain("passed: all 1 grader(s) were satisfied.");
+		expect(await passing.text()).toContain("This case passed its recorded checks");
 
 		// An infrastructure error is inconclusive, not a behavioural failure.
 		const errored = await fetch(`${address.url}/runs/${fixture.erroredRunId}`);
 		expect(errored.status).toBe(200);
-		expect(await errored.text()).toContain("inconclusive rather than a behavioural failure");
+		expect(await errored.text()).toContain("This incomplete run does not establish a behavioral failure.");
 
 		expect((await fetch(`${address.url}/runs/run_missing`)).status).toBe(404);
 	});
@@ -672,20 +677,25 @@ describe("read-only evidence explorer", () => {
 		}
 	});
 
-	it("refuses an undiagnosed eval and its runs without creating a diagnosis", async () => {
+	it("reads a verified conversation before diagnosis while keeping the grouped eval unavailable and storage unchanged", async () => {
 		const fixture = writeExplorerFixture();
 		rmSync(join(fixture.runsRoot, fixture.baselineEvalRunId, "diagnosis.json"));
 		const explorer = createEvidenceExplorer({ runsRoot: fixture.runsRoot });
 		explorers.push(explorer);
 		const address = await explorer.listen();
 
-		for (const path of [`/evals/${fixture.baselineEvalRunId}`, `/runs/${fixture.failingRunId}`]) {
-			const response = await fetch(`${address.url}${path}`);
-			expect(response.status, path).toBe(409);
-			expect(await response.text()).toBe(
-				"Evidence is not diagnosed yet; run the AHDE diagnosis operation first.\n",
-			);
-		}
+		const response = await fetch(`${address.url}/evals/${fixture.baselineEvalRunId}`);
+		expect(response.status).toBe(409);
+		expect(await response.text()).toBe("Evidence is not diagnosed yet; run the AHDE diagnosis operation first.\n");
+		const conversation = await fetch(`${address.url}/runs/${fixture.failingRunId}`);
+		expect(conversation.status).toBe(200);
+		const html = await conversation.text();
+		expect(html).toContain("<h1>Обращение: проверь договор №42 и ограничения ДБО по нему.</h1>");
+		expect(html).toContain("never called bash with args containing &quot;check_dbo&quot;");
+		expect(html).toContain("Recurring problems have not been grouped");
+		expect(html).toContain(`href="/candidates/${fixture.candidateId}"`);
+		expect(html).not.toContain(`href="/evals/${fixture.baselineEvalRunId}`);
+		expect(html).not.toContain(SEALED_SENTINEL);
 		expect(existsSync(join(fixture.runsRoot, fixture.baselineEvalRunId, "diagnosis.json"))).toBe(false);
 	});
 

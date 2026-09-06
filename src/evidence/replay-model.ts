@@ -3,9 +3,10 @@ import { loadCandidateRecord } from "../application/candidate-review.js";
 import { publicTaskId } from "../application/improvement-brief.js";
 import { exclusionReasonOf, measurementLine, measurementSurface } from "../application/measurement-line.js";
 import {
-	graderFindings, openRunTrace, runOutcome, runReceipt, runTranscript,
+	explainRun, graderFindings, openRunTrace, runOutcome, runReceipt, runTranscript, traceFacts,
 	type GraderFinding, type RunReceipt, type Transcript,
 } from "../application/run-explanation.js";
+import { readRunOutcome, type RunReading } from "../application/run-reading.js";
 import { compareVerifiedEvalRuns, type CompareResult } from "../compare.js";
 import { compareUtf8, type CompareRow, type ExcludedTask } from "../domain/comparison-gate.js";
 import type { CandidateRecord } from "../domain/candidate.js";
@@ -43,6 +44,7 @@ export interface ReplayRun {
 	graders: GraderFinding[];
 	omittedGraders: number;
 	transcript: Transcript | null;
+	reading?: RunReading;
 }
 
 export interface CandidateReplayPageModel {
@@ -51,6 +53,7 @@ export interface CandidateReplayPageModel {
 	status: string;
 	/** Whole development comparison, never recalculated from the selected repetition. */
 	comparison: {
+		historicalEvaluator?: CompareResult["historicalEvaluator"];
 		status: CompareResult["status"];
 		line: string;
 		verdict: CompareResult["gate"]["verdict"];
@@ -133,6 +136,8 @@ function replayRun(runsRoot: string, snapshot: VerifiedEvalRun, run: RunRecord):
 	const messages = openRunTrace(runsRoot, run)?.map(({ thinking: _thinking, ...message }) => message);
 	const artifacts = snapshot.artifacts.get(run.runId);
 	const graders = graderFindings(run);
+	const transcript = messages ? runTranscript(messages) : null;
+	const explanation = explainRun({ run, graders, facts: messages ? traceFacts(messages) : null, messages, modes: [], flip: null });
 	return {
 		runId: publicExactId(run.runId),
 		evalRunId: publicExactId(snapshot.record.evalRunId),
@@ -143,7 +148,8 @@ function replayRun(runsRoot: string, snapshot: VerifiedEvalRun, run: RunRecord):
 		receipt: runReceipt(run, artifacts),
 		graders: graders.slice(0, MAX_REPLAY_GRADERS),
 		omittedGraders: Math.max(0, graders.length - MAX_REPLAY_GRADERS),
-		transcript: messages ? runTranscript(messages) : null,
+		transcript,
+		reading: readRunOutcome(explanation, transcript),
 	};
 }
 
@@ -210,7 +216,7 @@ export function collectCandidateReplayPage(
 		candidate.record.target.gitSha !== pair.candidate.harness.sha || candidate.record.target.gitSha !== built.candidate.sha) {
 		throw new Error("Replay evaluation arms do not match the Candidate's recorded revisions");
 	}
-	const comparison = compareVerifiedEvalRuns(baseline, candidate, { mode: record.mode, surface: "development" });
+	const comparison = compareVerifiedEvalRuns(baseline, candidate, { mode: record.mode, surface: "development", intent: "inspect" });
 	if (comparison.status === "invalid") throw new Error("Replay comparison failed identity or comparability checks");
 	const pairs = matchedReplays(baseline, candidate, comparison);
 	const selected = options.runId === undefined ? pairs[0] : pairs.find((pair) => pair.baseline.runId === options.runId);
@@ -232,6 +238,7 @@ export function collectCandidateReplayPage(
 		targetId: publicTaskId(record.targetId),
 		status: record.events.at(-1)?.type ?? "proposed",
 		comparison: {
+			...(comparison.historicalEvaluator ? { historicalEvaluator: comparison.historicalEvaluator } : {}),
 			status: comparison.status,
 			line: measurementLine({ development: measurementSurface({
 				...comparison.summary, verdict: comparison.gate.verdict,

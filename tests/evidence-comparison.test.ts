@@ -37,6 +37,9 @@ describe("verified before/after evidence", () => {
 		expect(model.examples[0]?.candidate?.answer).toBe("Wrong recorded answer");
 		const html = renderComparePage(model);
 		expect(html).toContain("Showing 6 of 10 task pairs");
+		expect(html).toContain("<h3>Question z-regression</h3>");
+		expect(html).toContain("<code>z-regression</code>");
+		expect(html).not.toContain("<h3>z-regression</h3>");
 		expect(html).toContain(`/runs/${model.examples[0]?.candidate?.runId}`);
 		expect(html).not.toContain(SEALED_SENTINEL);
 	});
@@ -60,7 +63,7 @@ describe("verified before/after evidence", () => {
 		expect(excluded?.exclusion).toBe("infrastructure");
 		expect(excluded?.baseline?.outcome).toBe("error");
 		const html = renderComparePage(model);
-		const card = html.split('<article class="example">').find(part => part.includes('<h3>task_003</h3>'))?.split("</article>")[0];
+		const card = html.split('<article class="example">').find(part => part.includes('<code>task_003</code>'))?.split("</article>")[0];
 		expect(card).toContain("Excluded: execution error");
 		expect(card).toContain("these answers do not establish an improvement");
 		expect(card).not.toContain("+100 pts");
@@ -122,9 +125,16 @@ describe("verified before/after evidence", () => {
 		const f = fixture();
 		const run = collectRunDetailPage(f.runsRoot, f.failingRunId);
 		const html = renderRunDetailPage(run);
-		for (const sentence of run.explanation.sentences) {
+		// The old headline embedded a zero-based repetition; details retain every
+		// actual explanatory sentence while the human heading uses the input.
+		for (const sentence of run.explanation.sentences.slice(1)) {
 			expect(html).toContain(sentence.replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]!));
 		}
+		expect(html).toContain(`<h1>${run.input}</h1>`);
+		expect(html).toContain("повтор 1");
+		expect(html).not.toContain("повтор 0:");
+		expect(html).toContain(`?run=${run.run.runId}#inspector`);
+		expect(html).toContain(run.reading!.title);
 		const compare = renderComparePage(collectComparePage(f.runsRoot, f.candidateId));
 		expect(compare).toContain("Что изменилось в агенте");
 		expect(compare).toContain("До и после");

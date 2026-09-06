@@ -22,6 +22,9 @@
 		"templates/",
 		"builders/",
 		"vendor/tarballs/",
+		"docs/connect-python-agent.md",
+		"docs/command-protocol.md",
+		"docs/citation-grading.md",
 		"README.md"
 	],
   "engines": {

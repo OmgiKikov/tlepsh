@@ -16,10 +16,11 @@ import sys
 import urllib.request
 
 URL = os.environ.get("AHDE_BRIDGE_URL", "")
+PROTOCOL = int(os.environ.get("AHDE_PROTOCOL", "2"))
 
 
 def send(message):
-    sys.stdout.write(json.dumps({"v": 1, **message}, ensure_ascii=False) + "\n")
+    sys.stdout.write(json.dumps({"v": PROTOCOL, **message}, ensure_ascii=False) + "\n")
     sys.stdout.flush()
 
 
@@ -36,6 +37,8 @@ def ask(text):
 
 
 def main():
+    if PROTOCOL not in (1, 2):
+        raise ValueError("AHDE_PROTOCOL must be 1 or 2")
     if not URL:
         send({"type": "error", "message": "AHDE_BRIDGE_URL не задан"})
         return 1
@@ -43,6 +46,9 @@ def main():
         if not line.strip():
             continue
         message = json.loads(line)
+        if message.get("v") != PROTOCOL:
+            send({"type": "error", "message": "Версия сообщения не совпадает с AHDE_PROTOCOL"})
+            return 1
         if message.get("type") == "cancel":
             return 0
         if message.get("type") != "user":

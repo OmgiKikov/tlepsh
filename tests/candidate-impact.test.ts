@@ -31,6 +31,7 @@ import {
 } from "../src/domain/candidate.js";
 import { writeEvalRun, type EvalRunRecord } from "../src/eval.js";
 import {
+	AHDE_EVALUATOR_ID,
 	RunRecordSchema,
 	canonicalJson,
 	executionFingerprint,
@@ -186,7 +187,7 @@ function writeEvaluation(options: {
 			runtime,
 			model,
 			execution,
-			eval: { suiteId: "suite", suiteHash, dataset, datasetHash },
+			eval: { evaluatorId: AHDE_EVALUATOR_ID, suiteId: "suite", suiteHash, dataset, datasetHash },
 			trace: { path: "session.jsonl", sessionId: null, sha256: null },
 			metrics: {
 				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },

@@ -1,4 +1,4 @@
-import { RunRecordSchema, type RunRecord } from "../../src/provenance.js";
+import { AHDE_EVALUATOR_ID, RunRecordSchema, type RunRecord } from "../../src/provenance.js";
 
 function hash(character: string): string {
 	return `sha256:${character.repeat(64)}`;
@@ -42,7 +42,7 @@ export function baseRunRecord(overrides: Partial<RunRecord> = {}): RunRecord {
 				skills: "manifest-only",
 			},
 		},
-		eval: { suiteId: "test-suite", suiteHash: hash("d"), dataset: "development", datasetHash: hash("e") },
+		eval: { evaluatorId: AHDE_EVALUATOR_ID, suiteId: "test-suite", suiteHash: hash("d"), dataset: "development", datasetHash: hash("e") },
 		trace: { path: "session.jsonl", sessionId: null, sha256: null },
 		metrics: {
 			tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },

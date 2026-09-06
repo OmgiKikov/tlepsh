@@ -711,6 +711,7 @@ export async function runFirstRunOnboarding(
 	ctx: ExtensionContext,
 	host: OnboardingHost,
 	initialView: WorkbenchView,
+	options: { configureModel?: boolean } = {},
 ): Promise<WorkbenchView | null> {
 	if (typeof ctx.ui.select !== "function") return null;
 	let view: WorkbenchView | null = initialView;
@@ -722,7 +723,7 @@ export async function runFirstRunOnboarding(
 			view = created.view;
 			adopted = created.adopted;
 		}
-		if (view.stage === "target-setup" && view.target.status === "bootstrap-required") {
+		if (options.configureModel !== false && view.stage === "target-setup" && view.target.status === "bootstrap-required") {
 			view = await chooseModel(ctx, host, view);
 			if (!view) return null;
 			// A template ships its judge and simulated-user blocks on the same

@@ -29,6 +29,7 @@ import { writeEvalRun, type EvalRunRecord } from "../src/eval.js";
 import { loadTarget, type GraderSpec } from "../src/manifest.js";
 import { computeTargetSnapshotHashes } from "../src/runner.js";
 import {
+	AHDE_EVALUATOR_ID,
 	RunRecordSchema,
 	executionFingerprint,
 	hashValue,
@@ -134,6 +135,7 @@ function writeDevelopmentEval(
 	const snapshot = computeTargetSnapshotHashes(resolved, paths.runsRoot);
 	const workspaceHash = workspaceHashOverride ?? snapshot.workspaceHash;
 	const evaluation = {
+		evaluatorId: AHDE_EVALUATOR_ID,
 		suiteId: resolved.manifest.evalSuite.id,
 		suiteHash: resolved.suiteHash,
 		dataset: resolved.manifest.evalSuite.dataset.replace(/\.jsonl$/, "").split("/").pop() ?? "dataset",

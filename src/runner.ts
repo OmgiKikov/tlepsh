@@ -22,6 +22,7 @@ import {
 	type TargetManifest,
 } from "./manifest.js";
 import {
+	AHDE_EVALUATOR_ID,
 	executionFingerprint,
 	commandProtocolFingerprint,
 	hashFile,
@@ -720,6 +721,7 @@ export async function runTask(target: ResolvedTarget, task: ResolvedTask, option
 			...(agent === "command-v1" ? { commandProtocol: commandProtocolFingerprint(target.manifest.execution.command!.protocolVersion) } : {}),
 		}),
 		eval: {
+			evaluatorId: AHDE_EVALUATOR_ID,
 			suiteId: target.manifest.evalSuite.id,
 			suiteHash: target.suiteHash,
 			dataset: target.manifest.evalSuite.dataset.replace(/\.jsonl$/, "").split("/").pop() ?? "dataset",

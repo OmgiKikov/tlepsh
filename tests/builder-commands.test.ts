@@ -25,6 +25,7 @@ import { createRunProgressPresenter } from "../src/builder/run-progress.js";
 import { setLanguage } from "../src/i18n.js";
 import { EvalRunRecordSchema } from "../src/eval.js";
 import {
+	AHDE_EVALUATOR_ID,
 	RunRecordSchema,
 	executionFingerprint,
 	hashFile,
@@ -2682,6 +2683,7 @@ describe("/dataset", () => {
 		standInDirs.push(projectDir);
 		const runsRoot = join(projectDir, "runs");
 		const evaluation = {
+			evaluatorId: AHDE_EVALUATOR_ID,
 			suiteId: "suite",
 			suiteHash: `sha256:${"d".repeat(64)}`,
 			dataset: "development",

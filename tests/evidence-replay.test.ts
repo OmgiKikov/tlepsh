@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { collectCandidateReplayPage, MAX_REPLAY_NAV_ITEMS } from "../src/evidence/replay-model.js";
-import { loadPublicEvalRun } from "../src/evidence/model.js";
+import { collectComparePage, loadPublicEvalRun } from "../src/evidence/model.js";
 import { compareVerifiedEvalRuns } from "../src/compare.js";
 import { CandidateRecordSchema, type CandidateRecord } from "../src/domain/candidate.js";
 import { loadRun, readEvalRunIndex } from "../src/eval.js";
@@ -71,6 +71,23 @@ describe("recorded paired replay", () => {
 		expect(JSON.stringify(replay.selected.baseline.transcript)).toContain("Before 8/2");
 		expect(JSON.stringify(replay.selected.candidate.transcript)).toContain("After 8/2");
 		expect(JSON.stringify(replay)).not.toContain("Before 3/1");
+	});
+
+	it("keeps same-generation historical conversations readable without making them current gate evidence", () => {
+		const data = fixture();
+		for (const id of [data.baselineEvalRunId, data.candidateEvalRunId]) {
+			for (const runId of readEvalRunIndex(data.runsRoot, id).runIds) {
+				amendRun(data.runsRoot, runId, (run) => ({ ...run, eval: { ...run.eval, evaluatorId: "ahde-evaluator-v4" } }));
+			}
+			const index = readEvalRunIndex(data.runsRoot, id);
+			const provenance = { ...index.provenance, evaluatorId: "ahde-evaluator-v4" };
+			writeFileSync(join(data.runsRoot, id, "eval_run.json"), JSON.stringify({ ...index, provenance, provenanceKey: hashValue(provenance) }));
+		}
+		const replay = collectCandidateReplayPage(data.runsRoot, data.candidateId);
+		expect(replay.comparison).toMatchObject({ status: "inconclusive", verdict: "inconclusive", historicalEvaluator: { evaluatorId: "ahde-evaluator-v4" } });
+		expect(collectComparePage(data.runsRoot, data.candidateId)).toMatchObject({ comparability: "inconclusive", historicalEvaluator: replay.comparison.historicalEvaluator });
+		expect(replay.selected.baseline.transcript?.entries.some((entry) => entry.kind === "user" && entry.text === "Case 8")).toBe(true);
+		expect(compareVerifiedEvalRuns(loadPublicEvalRun(data.runsRoot, data.baselineEvalRunId), loadPublicEvalRun(data.runsRoot, data.candidateEvalRunId), { mode: "candidate" }).status).toBe("invalid");
 	});
 
 	it("keeps a selected pair visible outside bounded navigation with exact omissions", () => {

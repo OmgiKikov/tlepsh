@@ -32,6 +32,7 @@ import { worldStatePath } from "../src/target/world-state.js";
 import { baseFixtureFiles, makeTargetFixture } from "./fixtures.js";
 import { GraderSpec, type ResolvedTask } from "../src/manifest.js";
 import {
+	AHDE_EVALUATOR_ID,
 	GraderResultSchema,
 	RunRecordSchema,
 	hashFile,
@@ -96,6 +97,7 @@ function baseRun(overrides: Partial<RunRecord> = {}): RunRecord {
 			},
 		},
 		eval: {
+			evaluatorId: AHDE_EVALUATOR_ID,
 			suiteId: "test-suite",
 			suiteHash: hash("d"),
 			dataset: "development",
@@ -871,6 +873,42 @@ describe("baseline reuse", () => {
 			},
 		};
 	}
+
+	it("refuses upgrading only the index of an unstamped historical run to the current evaluator", () => {
+		const f = writeReusableBaseline(new Date().toISOString());
+		const index = readEvalRunIndex(f.runsRoot, "erun_reusable");
+		const runArtifacts = index.runIds.map((runId) => {
+			const run = loadRun(f.runsRoot, runId); delete run.eval.evaluatorId;
+			writeFileSync(join(f.runsRoot, runId, "run.json"), JSON.stringify(run));
+			return { runId, sha256: hashValue(run) };
+		});
+		const provenance = { ...index.provenance, evaluatorId: "ahde-evaluator-v4" };
+		const path = join(f.runsRoot, index.evalRunId, "eval_run.json");
+		writeFileSync(path, JSON.stringify({ ...index, provenance, provenanceKey: hashValue(provenance), runArtifacts }));
+		expect(loadVerifiedEvalRun(f.runsRoot, index.evalRunId).runs).toHaveLength(2);
+		writeFileSync(path, JSON.stringify({ ...index, runArtifacts }));
+		expect(() => loadVerifiedEvalRun(f.runsRoot, index.evalRunId)).toThrow(/no evaluator attestation/);
+		expect(findReusableBaseline(f.runsRoot, f.query)).toBeNull();
+		const patchedRun = loadRun(f.runsRoot, index.runIds[0]!);
+		patchedRun.eval.evaluatorId = AHDE_EVALUATOR_ID;
+		writeFileSync(join(f.runsRoot, patchedRun.runId, "run.json"), JSON.stringify(patchedRun));
+		expect(() => loadVerifiedEvalRun(f.runsRoot, index.evalRunId)).toThrow(/hash does not match/);
+	});
+
+	it("never reuses a v4 baseline, even if a caller repeats its old provenance", () => {
+		const f = writeReusableBaseline(new Date().toISOString());
+		const record = readEvalRunIndex(f.runsRoot, "erun_reusable");
+		const provenance = { ...record.provenance, evaluatorId: "ahde-evaluator-v4" };
+		const runArtifacts = record.runIds.map((runId) => {
+			const run = loadRun(f.runsRoot, runId); delete run.eval.evaluatorId;
+			writeFileSync(join(f.runsRoot, runId, "run.json"), JSON.stringify(run));
+			return { runId, sha256: hashValue(run) };
+		});
+		writeFileSync(join(f.runsRoot, record.evalRunId, "eval_run.json"), JSON.stringify({ ...record, provenance, provenanceKey: hashValue(provenance), runArtifacts }));
+		expect(loadVerifiedEvalRun(f.runsRoot, record.evalRunId).runs).toHaveLength(2);
+		expect(findReusableBaseline(f.runsRoot, f.query)).toBeNull();
+		expect(findReusableBaseline(f.runsRoot, { ...f.query, provenance })).toBeNull();
+	});
 
 	it("a v1 index lists as legacy and is never reused", () => {
 		const fresh = writeReusableBaseline(new Date().toISOString());

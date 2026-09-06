@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { EvalRunRecordSchema, type EvalRunRecord } from "../src/eval.js";
 import {
+	AHDE_EVALUATOR_ID,
 	RunRecordSchema,
 	executionFingerprint,
 	hashFile,
@@ -97,6 +98,7 @@ function fixture(options: { structuralFlood?: boolean } = {}): { runsRoot: strin
 	});
 	const execution = executionFingerprint("isolated");
 	const evaluation = {
+		evaluatorId: AHDE_EVALUATOR_ID,
 		suiteId: "suite",
 		suiteHash: `sha256:${"d".repeat(64)}`,
 		dataset: "development",
@@ -330,6 +332,7 @@ function oversizedFixture(): {
 	});
 	const execution = executionFingerprint("isolated");
 	const evaluation = {
+		evaluatorId: AHDE_EVALUATOR_ID,
 		suiteId: "suite-oversized",
 		suiteHash: `sha256:${"d".repeat(64)}`,
 		dataset: "development",

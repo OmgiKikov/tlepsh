@@ -29,6 +29,7 @@ import {
 } from "../src/cli-invocation.js";
 import { EvalRunRecordSchema, type EvalRunRecord } from "../src/eval.js";
 import {
+	AHDE_EVALUATOR_ID,
 	RunRecordSchema,
 	executionFingerprint,
 	hashFile,
@@ -178,6 +179,7 @@ function writeEvalRun(runsRoot: string, spec: EvalRunSpec): void {
 	const gitSha = spec.gitSha ?? DEVELOPMENT_SHA;
 	const dataset = spec.dataset ?? "development";
 	const evaluation = {
+		evaluatorId: AHDE_EVALUATOR_ID,
 		suiteId: "suite",
 		suiteHash: `sha256:${"d".repeat(64)}`,
 		dataset,

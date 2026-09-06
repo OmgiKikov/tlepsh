@@ -7,7 +7,7 @@ import type { CandidateFlip, GraderExplanation, RunExplanation, Transcript } fro
 export type CheckObservation =
 	| { kind: "required-tool"; name: string; arguments: string | null; recordedCalls: number }
 	| { kind: "world-state"; path: string | null; state: "missing" | "different" | "missing-value" | "undeclared"; expected: string | null; actual: string | null }
-	| { kind: "source"; source: string };
+	| { kind: "source"; source: string; citation?: "missing" };
 
 export interface RunReading {
 	runId: string;
@@ -41,7 +41,7 @@ function bounded(value: string, limit = MAX_FACT_CHARS): string {
 
 function recordedObservation(grader: GraderExplanation): string {
 	const fact = grader.observation;
-	if (fact?.kind === "source") return t("reading.sourceCheckObserved", { source: fact.source });
+	if (fact?.kind === "source") return t(fact.citation === "missing" ? "reading.citationMissing" : "reading.sourceCheckObserved", { source: fact.source });
 	if (fact?.kind !== "world-state" || !fact.path || fact.state === "undeclared") return grader.actual;
 	if (fact.state === "missing") return t("reading.worldFieldMissing", { path: fact.path, expected: fact.expected ?? "—" });
 	if (fact.state === "different") return t("reading.worldFieldDifferent", { path: fact.path, actual: fact.actual ?? "—", expected: fact.expected ?? "—" });

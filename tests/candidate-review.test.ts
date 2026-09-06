@@ -34,6 +34,7 @@ import {
 } from "../src/application/builder-proposal.js";
 import { CandidateProposalSchema } from "../src/builders/adapters.js";
 import {
+	AHDE_EVALUATOR_ID,
 	RunRecordSchema,
 	canonicalJson,
 	executionFingerprint,
@@ -183,7 +184,7 @@ function writePair(
 			runtime,
 			model,
 			execution,
-			eval: { suiteId: `${dataset}-suite`, suiteHash, dataset, datasetHash },
+			eval: { evaluatorId: AHDE_EVALUATOR_ID, suiteId: `${dataset}-suite`, suiteHash, dataset, datasetHash },
 			trace: { path: "session.jsonl", sessionId: null, sha256: null },
 			metrics: {
 				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },

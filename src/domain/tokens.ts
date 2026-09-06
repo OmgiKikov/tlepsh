@@ -1,7 +1,7 @@
 /**
  * The one tokenization.
  *
- * `similarity(token-f1)`, `cites_source` and the knowledge base's BM25 ranking
+ * `similarity(token-f1)` and the knowledge base's BM25 ranking
  * all have to agree on what a word is, or an answer can overlap a chunk by one
  * measure and miss it by another. These two functions used to live in
  * `eval.ts`; they moved here — a leaf module with no imports — so the target

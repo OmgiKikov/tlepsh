@@ -1787,6 +1787,13 @@ function cliFailure(error: unknown): { message: string; next?: string } {
 	if (typeof carried === "string" && carried.trim().length > 0) {
 		return { message, next: redactTraceText(carried).slice(0, 1_000) };
 	}
+	const filesystemError = error as NodeJS.ErrnoException | null;
+	if (filesystemError?.code === "ENOENT" && /(?:^|[/\\])manifest\.yaml$/.test(filesystemError.path ?? "")) {
+		return {
+			message: "This folder has not been connected to AHDE yet (manifest.yaml is missing).",
+			next: "Open `ahde --target <dir>` to review the existing agent, or use `ahde init <new-dir> --template python-support` to create one. Your source files have not been changed.",
+		};
+	}
 	if (/requires an interactive terminal|requires TTY stdin and stdout/i.test(message)) {
 		return {
 			message: "This command needs an interactive terminal (TTY).",

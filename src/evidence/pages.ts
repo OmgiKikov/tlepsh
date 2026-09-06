@@ -1,4 +1,6 @@
 import type { RunReading } from "../application/run-reading.js";
+import { conversationTitle, renderCaseExpectation, renderHistoricalEvaluation, renderReadingObservations } from "./conversation.js";
+import { renderRunReading } from "./workspace-reading.js";
 import { duration, percent, points, ratio } from "../measurement.js";
 import { candidateStatusLabel, language, plural, t, tokenLabel, verdictLabel } from "../i18n.js";
 import { sealedOutcomeLabel, type SealedOutcome, type ExcludedTask } from "../domain/comparison-gate.js";
@@ -185,6 +187,12 @@ details[open]>summary::before{content:"▾ "}
 .example-header h3{font-size:15px;overflow-wrap:anywhere}
 .example-header p{margin:8px 0 0;font-size:16px;overflow-wrap:anywhere}
 .pair{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.case-expectation{padding:16px 22px;border-bottom:1px solid var(--line)}
+.case-expectation h3{font-size:13px;margin:0 0 8px;color:var(--muted)}
+.case-expectation p,.case-observation p{font-size:14px;overflow-wrap:anywhere;margin:8px 0}
+.case-story .pair{gap:16px;margin-top:16px}
+.case-story blockquote{margin:16px 0 0;padding-left:14px;border-left:2px solid var(--accent)}
+.case-story .answer{white-space:pre-wrap;overflow-wrap:anywhere}
 .pair-arm{min-width:0;padding:22px}
 .pair-arm+.pair-arm{border-left:1px solid var(--line)}
 .arm-head{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px}
@@ -200,6 +208,8 @@ details[open]>summary::before{content:"▾ "}
 .replay-link:hover{filter:brightness(1.08);text-decoration:none}
 .finding{padding:18px 22px;border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:10px;background:var(--surface);font-size:17px;margin-bottom:14px}
 .finding p:last-child{margin-bottom:0}
+.historical pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.7 var(--mono)}
+.evidence-run .card{min-width:0;overflow-wrap:anywhere}
 .section-head{display:flex;justify-content:space-between;gap:16px;align-items:baseline;margin-bottom:12px}
 .no-sample{padding:22px;color:var(--muted)}
 @media (max-width:720px){.wrap{padding:24px 16px 40px}.stat b{font-size:20px}.pair{grid-template-columns:1fr}.pair-arm+.pair-arm{border-left:0;border-top:1px solid var(--line)}.pair-arm,.example-header{padding:18px}.topbar{padding:10px 16px}.stats{grid-template-columns:repeat(2,minmax(0,1fr))}.nav{flex-wrap:wrap}}
@@ -387,6 +397,8 @@ export interface EvalPageModel {
 // ---------- Run detail page ----------
 
 export interface RunDetailPageModel {
+	diagnosisAvailable?: boolean;
+	candidateId?: string;
 	reading?: RunReading;
 	evalRunId: string;
 	targetId: string;
@@ -548,11 +560,15 @@ export function renderRagXray(rag: RagRunXray): string {
 
 export function renderRunDetailPage(model: RunDetailPageModel): string {
 	const run = model.run;
+	const heading = conversationTitle(model.input, t("evidence.noInput"));
+	const parent = model.diagnosisAvailable === false
+		? model.candidateId ? { label: t("evidence.replayOverview"), href: `/candidates/${encodeURIComponent(model.candidateId)}` } : { label: t("evidence.brand"), href: "/" }
+		: { label: t("conversation.openEvaluation"), href: `/evals/${encodeURIComponent(model.evalRunId)}?run=${encodeURIComponent(run.runId)}#inspector` };
 	const body = `
 <div class="head">
 	<div>
-		<h1>${h(run.taskId)} <span class="sub">${h(t("explorer.repetition", { index: run.repetitionIndex }))}</span></h1>
-		<p class="lead">${h(model.input === null ? t("evidence.noInput") : model.input.slice(0, 220) + (model.input.length > 220 ? "…" : ""))}</p>
+		<h1>${h(heading)}</h1>
+		<p class="sub">${h(t("explorer.repetition", { index: run.repetitionIndex + 1 }))}</p>
 	</div>
 	<div class="pills">
 		${outcomeChip(run.outcome)}
@@ -560,16 +576,18 @@ export function renderRunDetailPage(model: RunDetailPageModel): string {
 	</div>
 </div>
 <div class="stats">
-	<div class="stat"><b>${(run.metrics.latencyMs / 1000).toFixed(1)}${h(t("unit.second-short"))}</b><span>${h(t("explorer.th.latency"))}</span></div>
+	<div class="stat"><b>${h(duration(run.metrics.latencyMs))}</b><span>${h(t("explorer.th.latency"))}</span></div>
 	<div class="stat"><b>${run.metrics.toolCalls}</b><span>${h(t("evidence.executedTools"))}</span></div>
 	${run.metrics.reportedToolCalls > 0 ? `<div class="stat"><b>${run.metrics.reportedToolCalls}</b><span>${h(t("evidence.reportedTools"))}</span></div>` : ""}
 	<div class="stat"><b>${run.metrics.toolErrors}</b><span>${h(t("evidence.toolErrors"))}</span></div>
 	<div class="stat"><b>${count(run.metrics.tokens)}</b><span>${h(t("explorer.th.tokens"))}</span></div>
 	<div class="stat"><b>${money(run.metrics.costUsd, 5)}</b><span>${h(t("explorer.th.cost"))}</span></div>
 </div>
-<details class="metadata"><summary>${h(t("evidence.metadata"))}</summary><pre>${h(run.runId)} · ${h(model.evalRunId)} · ${h(model.label)}
+<details class="metadata"><summary>${h(t("evidence.metadata"))}</summary><pre>${h(run.taskId)} · ${h(run.runId)} · ${h(model.evalRunId)} · ${h(model.label)}
 ${h(run.startedAt)}${run.finishedAt ? ` → ${h(run.finishedAt)}` : ""}</pre></details>
-<section><h2>${h(t("explorer.h2.why"))}</h2>${renderWhy(model.explanation)}</section>
+${model.reading ? `<section class="card">${renderRunReading(model.reading)}</section>` : ""}
+${model.diagnosisAvailable === false ? `<p class="note">${h(t("conversation.notGrouped"))}</p>` : ""}
+<details class="metadata"><summary>${h(t("explorer.h2.why"))}</summary>${renderWhy(model.explanation, { omitSummary: true })}</details>
 ${model.explanation.rag ? `<section><h2>${h(t("rag.title"))}</h2>${renderRagXray(model.explanation.rag)}</section>` : ""}
 ${run.error ? `<section><h2>${h(t("explorer.h2.run-error"))}</h2><div class="card"><pre class="errpre">${h(run.error)}</pre></div></section>` : ""}
 <section><h2>${h(t("explorer.h2.verdict"))}</h2><div class="cards">${renderVerdict(model.graders)}</div></section>
@@ -581,16 +599,17 @@ ${run.error ? `<section><h2>${h(t("explorer.h2.run-error"))}</h2><div class="car
 	<p class="note">${h(model.traceNotice)}</p>
 </section>
 <nav class="nav">
-	<span>${model.prev ? `<a href="/runs/${encodeURIComponent(model.prev.runId)}">← ${h(model.prev.taskId)} ${h(t("explorer.repetition", { index: model.prev.repetitionIndex }))}</a>` : ""}</span>
-	<span><a href="/evals/${encodeURIComponent(model.evalRunId)}">${h(t("evidence.allRuns"))}</a></span>
-	<span>${model.next ? `<a href="/runs/${encodeURIComponent(model.next.runId)}">${h(model.next.taskId)} ${h(t("explorer.repetition", { index: model.next.repetitionIndex }))} →</a>` : ""}</span>
+	<span>${model.prev ? `<a href="/runs/${encodeURIComponent(model.prev.runId)}" title="${h(model.prev.taskId)}">← ${h(t("workspace.previous"))}</a>` : ""}</span>
+	<span><a href="${parent.href}">${h(parent.label)}</a></span>
+	<span>${model.next ? `<a href="/runs/${encodeURIComponent(model.next.runId)}" title="${h(model.next.taskId)}">${h(t("workspace.next"))} →</a>` : ""}</span>
 </nav>`;
 	return renderPage({
-		title: `${run.taskId} · ${run.runId}`,
+		title: heading,
+		pageClass: "evidence-run",
 		crumbs: [
 			{ label: t("evidence.brand"), href: "/" },
-			{ label: model.evalRunId, href: `/evals/${encodeURIComponent(model.evalRunId)}` },
-			{ label: run.runId },
+			parent,
+			{ label: t("conversation.selected") },
 		],
 		body,
 	});
@@ -621,6 +640,7 @@ export interface CompareRunPreview {
 	toolNames: string[];
 	checks: Array<{ name: string; passed: boolean; reason: string }>;
 	omittedChecks: number;
+	reading?: RunReading;
 }
 
 export interface CompareCasePreview {
@@ -634,6 +654,7 @@ export interface CompareCasePreview {
 }
 
 export interface ComparePageModel {
+	historicalEvaluator?: { evaluatorId: string; currentEvaluatorId: string };
 	comparability: "comparable" | "invalid" | "inconclusive";
 	candidateId: string;
 	targetId: string;
@@ -660,6 +681,7 @@ function renderCompareArm(preview: CompareRunPreview | null, label: string): str
 	return `<div class="pair-arm">
 <div class="arm-head"><h4>${h(label)}</h4>${outcomeChip(preview.outcome)}</div>
 <p class="answer">${h(preview.answer ?? t("evidence.noAnswer"))}</p>
+${renderReadingObservations(preview.reading)}
 <div class="sample-facts"><p>${h(tools)}</p>${preview.reportedToolCalls > 0 ? `<p>${h(t("evidence.reportedTools"))}: ${preview.reportedToolCalls}</p>` : ""}</div>
 ${preview.checks.length > 0 ? `<details><summary>${h(t("evidence.checks"))}</summary><ul class="sample-checks">${preview.checks.map((check) => `<li>${outcomeChip(check.passed ? "pass" : "fail")} <b>${h(check.name)}</b><p>${h(check.reason)}</p></li>`).join("")}</ul></details>` : ""}
 ${preview.omittedChecks > 0 ? `<p class="note">${h(t("evidence.moreChecks", { count: preview.omittedChecks }))}</p>` : ""}
@@ -676,14 +698,15 @@ function renderCompareExamples(model: ComparePageModel): string {
 	return `<section aria-labelledby="examples-title">
 <div class="section-head"><h2 id="examples-title">${h(t("evidence.examples"))}</h2></div>
 <p class="note">${h(t("evidence.exampleNote", { shown: model.examples.length, total: model.rows.length }))}</p>
-<div class="examples">${model.examples.map((example) => {
+<div class="examples">${model.examples.map((example, index) => {
 		const invalid = model.comparability === "invalid";
 		const direction = scoreDirection(example.scoreDelta);
 		return `<article class="example">
-<div class="example-header"><div class="rowline"><h3>${h(example.taskId)}</h3><span class="${invalid || example.exclusion ? "same" : direction === "regressed" ? "down" : direction === "improved" ? "up" : "same"}">${invalid ? h(t("evidence.notComparable")) : example.exclusion ? h(t(`evidence.excluded-${example.exclusion}`)) : `${h(t(`evidence.${direction}`))} · ${h(points(example.scoreDelta))}`}</span></div>
-<p>${h(example.baseline?.input ?? example.candidate?.input ?? t("evidence.noInput"))}</p>
+<div class="example-header"><div class="rowline"><h3>${h(conversationTitle(example.baseline?.input ?? example.candidate?.input, t("conversation.number", { number: index + 1 })))}</h3><span class="${invalid || example.exclusion ? "same" : direction === "regressed" ? "down" : direction === "improved" ? "up" : "same"}">${invalid ? h(t("evidence.notComparable")) : example.exclusion ? h(t(`evidence.excluded-${example.exclusion}`)) : `${h(t(`evidence.${direction}`))} · ${h(points(example.scoreDelta))}`}</span></div>
+<details class="metadata"><summary>${h(t("evidence.caseInput"))}</summary><p>${h(example.baseline?.input ?? example.candidate?.input ?? t("evidence.noInput"))}</p><code>${h(example.taskId)}</code></details>
 ${example.baseline && example.candidate ? `<a class="replay-link" href="/candidates/${encodeURIComponent(model.candidateId)}/replay?run=${encodeURIComponent(example.baseline.runId)}">${h(t("evidence.replayOpen"))} →</a>` : ""}
 <div class="sub">${invalid ? h(t("evidence.invalidComparison")) : example.exclusion ? h(t("evidence.excludedNote")) : `${h(t("evidence.changedScore"))}: ${percent(example.baselineScore)} → ${percent(example.candidateScore)}`}</div></div>
+${renderCaseExpectation(example.baseline?.reading, example.candidate?.reading)}
 <div class="pair">${renderCompareArm(example.baseline, t("evidence.baseline"))}${renderCompareArm(example.candidate, t("evidence.candidate"))}</div>
 </article>`;
 	}).join("")}</div></section>`;
@@ -691,8 +714,9 @@ ${example.baseline && example.candidate ? `<a class="replay-link" href="/candida
 
 export function renderComparePage(model: ComparePageModel): string {
 	const invalid = model.comparability === "invalid";
-	const rows = model.rows.map((row) => `<tr>
-<td class="mono">${h(row.taskId)}</td>
+	const inputs = new Map(model.examples.map((example) => [example.taskId, example.baseline?.input ?? example.candidate?.input]));
+	const rows = model.rows.map((row, index) => `<tr>
+<td>${row.baselineRunId ? `<a href="/runs/${encodeURIComponent(row.baselineRunId)}">${h(conversationTitle(inputs.get(row.taskId), t("conversation.number", { number: index + 1 })))}</a>` : h(conversationTitle(inputs.get(row.taskId), t("conversation.number", { number: index + 1 })))}<details class="metadata"><summary>${h(t("evidence.metadata"))}</summary><code>${h(row.taskId)}</code></details></td>
 <td>${row.baselineRunId ? `<a href="/runs/${encodeURIComponent(row.baselineRunId)}">${h(row.flip.before)}</a>` : h(row.flip.before)} <span class="count">${row.flip.baselinePass}/${row.flip.baselineTotal}</span></td>
 <td>${row.candidateRunId ? `<a href="/runs/${encodeURIComponent(row.candidateRunId)}">${h(row.flip.after)}</a>` : h(row.flip.after)} <span class="count">${row.flip.candidatePass}/${row.flip.candidateTotal}</span></td>
 <td class="num">${invalid || row.exclusion ? "—" : `${percent(row.baselineScore)} → ${percent(row.candidateScore)}`}</td>
@@ -710,6 +734,7 @@ export function renderComparePage(model: ComparePageModel): string {
 	<div class="pills"><span class="tag">${h(candidateStatusLabel(model.status))}</span></div>
 </div>
 <div class="finding"><p>${h(model.developmentLine)}</p>${invalid ? model.notices.map(notice => `<p class="note">${h(notice)}</p>`).join("") : ""}</div>
+${renderHistoricalEvaluation(model.historicalEvaluator, [model.baseline.evalRunId, model.candidate.evalRunId])}
 <div class="stats">
 	<div class="stat"><b>${percent(model.baseline.passRate)} → ${percent(model.candidate.passRate)}</b><span>${h(t("evidence.allPassRate"))}</span></div>
 	<div class="stat"><b>${invalid ? "—" : `${model.counts.improved} ↑ / ${model.counts.regressed} ↓ / ${model.counts.unchanged} =`}</b><span>${h(t("evidence.taskFlips"))}</span></div>
@@ -730,12 +755,13 @@ ${renderCompareExamples(model)}
 	<div class="scroll"><table><thead><tr><th>${h(t("explorer.th.task"))}</th><th>${h(t("explorer.th.baseline"))}</th><th>${h(t("explorer.th.candidate"))}</th><th>${h(t("explorer.th.score"))}</th><th>${h(t("explorer.th.delta"))}</th><th>${h(t("explorer.th.flip"))}</th></tr></thead><tbody>${rows}</tbody></table></div>
 	${model.notices.length > 0 ? `<details class="metadata"><summary>${h(t("evidence.comparisonNotices", { count: model.notices.length }))}</summary>${model.notices.map((notice) => `<p class="note">${h(notice)}</p>`).join("")}</details>` : ""}
 	<p class="note">${h(t("evidence.flipNote"))}</p>
-</section>`;
+</section>
+<section class="card" id="review" tabindex="-1"><h2>${h(t("conversation.next"))}</h2><p>${h(t(invalid ? "conversation.nextInvalid" : model.comparability === "inconclusive" ? "conversation.nextInconclusive" : "conversation.nextReview"))}</p><p>${h(t("conversation.nextTerminal"))}</p><div class="nav"><a href="/evals/${encodeURIComponent(model.baseline.evalRunId)}">${h(t("evidence.baseline"))}: ${h(t("conversation.openEvaluation"))} →</a><a href="/evals/${encodeURIComponent(model.candidate.evalRunId)}">${h(t("evidence.candidate"))}: ${h(t("conversation.openEvaluation"))} →</a></div></section>`;
 	return renderPage({
-		title: `${model.targetId} · ${model.candidateId}`,
+		title: `${model.targetId} · ${t("evidence.comparison")}`,
 		crumbs: [
 			{ label: t("evidence.brand"), href: "/" },
-			{ label: model.candidateId },
+			{ label: t("evidence.comparison") },
 		],
 		body,
 	});

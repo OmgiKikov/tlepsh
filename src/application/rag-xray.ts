@@ -1,3 +1,4 @@
+import { explicitlyCitesSource } from "../domain/source-citation.js";
 import { DEFAULT_KB_SEARCH_RESULTS, MAX_KB_SEARCH_RESULTS } from "../domain/kb.js";
 import { tokenF1 } from "../domain/tokens.js";
 import type { RunRecord } from "../provenance.js";
@@ -82,12 +83,13 @@ export interface RagRunXray {
 	hitAtK: number | null;
 	mrr: number | null;
 	citationRate: number | null;
+	/** Historical field name: recorded source-check pass rate, never grounding. */
 	groundingPassRate: number | null;
 	retrievalLatencyMs: number | null;
 	retrievalCostUsd: 0 | null;
 	scoreCoverage: number | null;
 	diagnosis: RagDiagnosis;
-	/** cites_source proves citation/overlap, not claim-level entailment. */
+	/** Citation (or legacy overlap) never proves claim-level entailment. */
 	faithfulness: "not-measured";
 	/** Exact additive counts from which eval summaries are derived. */
 	measurement: RagMeasurementCounts;
@@ -102,6 +104,7 @@ export interface RagEvalXray {
 	hitAtK: number | null;
 	mrr: number | null;
 	citationRate: number | null;
+	/** Historical field name: recorded source-check pass rate, never grounding. */
 	groundingPassRate: number | null;
 	meanSearchLatencyMs: number | null;
 	retrievalCostUsd: 0 | null;
@@ -117,7 +120,8 @@ export interface RagXrayComparison {
 		hitAtK: number | null;
 		mrr: number | null;
 		citationRate: number | null;
-		groundingPassRate: number | null;
+		/** Historical field name: recorded source-check pass rate, never grounding. */
+	groundingPassRate: number | null;
 		meanSearchLatencyMs: number | null;
 		scoreCoverage: number | null;
 	};
@@ -206,6 +210,7 @@ function diagnosis(input: {
 	evaluatedSearches: number;
 	hitSearches: number;
 	citationRate: number | null;
+	/** Historical field name: recorded source-check pass rate, never grounding. */
 	groundingPassRate: number | null;
 }): RagDiagnosis {
 	if (!input.labelled) return "unlabelled";
@@ -280,7 +285,7 @@ export function projectRagRunXray(
 			const isExpected = expected.has(hit.id);
 			if (isExpected && firstExpectedRank === null) firstExpectedRank = rank;
 			if (retrieved.size < MAX_RAG_XRAY_CHUNK_IDS) retrieved.add(hit.id);
-			const isCited = answer?.includes(hit.id) ?? false;
+			const isCited = explicitlyCitesSource(answer ?? "", hit.id);
 			if (isCited && cited.size < MAX_RAG_XRAY_CHUNK_IDS) cited.add(hit.id);
 			totalHits += 1;
 			if (hit.score !== null) scoredHits += 1;
@@ -323,7 +328,7 @@ export function projectRagRunXray(
 	// A labelled run that never searched is a measured retrieval bypass, not an
 	// absent metric. A call whose result is missing/unreadable stays unknown.
 	if (labelled && allCalls.length === 0) evaluatedSearches = 1;
-	const citedExpected = rawExpected.filter((id) => answer?.includes(id) ?? false);
+	const citedExpected = rawExpected.filter((id) => explicitlyCitesSource(answer ?? "", id));
 	for (const id of citedExpected) {
 		if (cited.size < MAX_RAG_XRAY_CHUNK_IDS) cited.add(id);
 	}

@@ -80,21 +80,22 @@ function knowledgeFiles(root: string): { path: string; text: string }[] {
 }
 
 /**
- * The chunk list one workspace serves, or an empty list when the workspace
- * carries no `data/kb` at all. Paths in a chunk id are relative to the
- * knowledge-base root, so an id reads as `tariffs.md#2` and stays short enough
- * to survive being quoted in an answer.
+ * The source files behind one workspace's KB, also used to preserve it during
+ * regrading. Never follow a replaced workspace/data ancestor into another tree.
  */
-export function readKnowledgeBase(workspaceDir: string): KbChunk[] {
+export function readKnowledgeBaseFiles(workspaceDir: string): { path: string; text: string }[] {
 	const root = resolve(workspaceDir, KB_DATA_DECLARATION);
-	let stat;
-	try {
-		stat = lstatSync(root);
-	} catch {
-		return [];
+	for (const path of [resolve(workspaceDir), resolve(workspaceDir, "data"), root]) {
+		let stat;
+		try { stat = lstatSync(path); } catch { return []; }
+		if (stat.isSymbolicLink()) throw new KnowledgeBaseError("the knowledge-base path contains a symlink");
+		if (!stat.isDirectory()) return [];
 	}
-	if (stat.isSymbolicLink() || !stat.isDirectory()) return [];
-	return chunkKnowledge(knowledgeFiles(root));
+	return knowledgeFiles(root);
+}
+
+export function readKnowledgeBase(workspaceDir: string): KbChunk[] {
+	return chunkKnowledge(readKnowledgeBaseFiles(workspaceDir));
 }
 
 /**

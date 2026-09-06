@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -161,9 +161,43 @@ describe("adopting a folder that already holds an agent", () => {
 		expect(result.target.gitSha).toBe(git(dir, ["rev-parse", "HEAD"]));
 	});
 
-	it("refuses a name collision before it writes a single byte", () => {
+	it("refuses an incompatible existing basket before it writes a single byte", () => {
 		const dir = agentFolder({ extra: { "evals/development.jsonl": "{}\n" } });
-		expect(() => describeTargetWrap(wrapOptions(dir))).toThrow(/would overwrite an existing evals\/development\.jsonl/);
+		expect(() => describeTargetWrap(wrapOptions(dir))).toThrow(/Existing evaluation files are not valid AHDE cases/);
+		expect(existsSync(join(dir, "manifest.yaml"))).toBe(false);
+	});
+
+	it("keeps the operator's native basket and graders, binding the reviewed bytes", () => {
+		const dataset = JSON.stringify({ id: "own-case", input: "Мой вопрос", graders: [{ type: "output_contains", text: "Мой ответ" }] }) + "\n";
+		const graders = "defaults: []\n";
+		const dir = agentFolder({ extra: { "evals/development.jsonl": dataset, "evals/graders.yaml": graders } });
+		const options = wrapOptions(dir);
+		const subject = describeTargetWrap(options);
+		expect(subject.reusedFiles?.map(file => file.path)).toEqual(["evals/development.jsonl", "evals/graders.yaml"]);
+		expect(subject.templateFiles.map(file => file.path)).not.toContain("evals/development.jsonl");
+		const result = applyTargetWrap({ ...options, stateRoot: stateRoot(), expectedSubjectHash: hashValue(subject), actor: { kind: "human", id: "operator" }, reason: "Use my agent and cases" });
+		expect(readFileSync(join(dir, "evals/development.jsonl"), "utf8")).toBe(dataset);
+		expect(readFileSync(join(dir, "evals/graders.yaml"), "utf8")).toBe(graders);
+		expect(result.target.tasks.map(task => task.id)).toEqual(["own-case"]);
+		expect(git(dir, ["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"])).not.toContain("evals/");
+	});
+
+	it("refuses a basket changed after its setup review", () => {
+		const dataset = JSON.stringify({ id: "own-case", input: "Question", graders: [{ type: "output_contains", text: "answer" }] }) + "\n";
+		const dir = agentFolder({ extra: { "evals/development.jsonl": dataset } });
+		const options = wrapOptions(dir);
+		const subject = describeTargetWrap(options);
+		writeFileSync(join(dir, "evals/development.jsonl"), dataset.replace("Question", "Different question"));
+		expect(() => applyTargetWrap({ ...options, stateRoot: stateRoot(), expectedSubjectHash: hashValue(subject), actor: { kind: "human", id: "operator" }, reason: "Use my cases" })).toThrow(/subject changed after review/);
+		expect(existsSync(join(dir, "manifest.yaml"))).toBe(false);
+	});
+
+	it("never creates evaluation files through a symlinked parent", () => {
+		const dir = agentFolder();
+		const outside = stateRoot();
+		symlinkSync(outside, join(dir, "evals"));
+		expect(() => describeTargetWrap(wrapOptions(dir))).toThrow(/regular files and directories/);
+		expect(existsSync(join(outside, "development.jsonl"))).toBe(false);
 		expect(existsSync(join(dir, "manifest.yaml"))).toBe(false);
 	});
 

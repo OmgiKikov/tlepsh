@@ -31,6 +31,7 @@ import {
 import { SEALED_VERIFICATION_REPETITIONS, sealedHoldoutTasks } from "./helpers/sealed-holdout.js";
 import { writeEvalRun, type EvalRunRecord } from "../src/eval.js";
 import {
+	AHDE_EVALUATOR_ID,
 	RunRecordSchema,
 	executionFingerprint,
 	hashValue,
@@ -91,6 +92,7 @@ function runsRootWith(
 		...(runs.some((sample) => sample.costUsd === undefined) ? { agent: "command-v1" as const } : {}),
 	};
 	const evaluation = {
+		evaluatorId: AHDE_EVALUATOR_ID,
 		suiteId: "suite",
 		suiteHash: `sha256:${"d".repeat(64)}`,
 		dataset: "development",

@@ -209,23 +209,17 @@ export const WorldStateGrader = z.strictObject({
 });
 
 /**
- * Did the answer stand on the source it was supposed to stand on?
- *
- * A retrieval agent can be right by accident — it can also be wrong while
- * quoting the right document. This is the only check that reads the knowledge
- * base rather than the reference answer: it passes when the answer names the
- * chunk id literally, or when the answer and the chunk's own text overlap by
- * `minOverlap` under the same token F1 the similarity grader uses. The chunk is
- * read from the workspace the graded run actually had, never from the
- * operator's checkout, so a citation stays checkable after the documents move on.
+ * Does the final answer explicitly cite this exact run-local KB chunk id?
+ * The chunk must exist in the saved workspace. This checks citation only:
+ * it does not prove retrieval, factual accuracy, or claim-level grounding.
  */
 export const CitesSourceGrader = z.strictObject({
 	type: z.literal("cites_source"),
 	name: z.string().optional(),
 	/** `<path>#<ordinal>`, exactly as `kb_search` returns it. */
 	chunk: z.string().min(1).max(300),
-	/** Lowest token-F1 against the chunk text that still counts as standing on it. */
-	minOverlap: z.number().gt(0).lte(1).default(0.35),
+	/** @deprecated Accepted to preserve historical specs/hashes; ignored by evaluator v5. */
+	minOverlap: z.number().gt(0).lte(1).default(0.35).describe("Deprecated compatibility field, ignored by evaluator v5; explicit citation is required."),
 });
 
 export const GraderSpec = z.discriminatedUnion("type", [
@@ -1410,7 +1404,7 @@ function targetFilePathDirectory(root: string, rel: string): string {
 	return cursor;
 }
 
-function loadDataset(dir: string, rel: string): Task[] {
+export function loadDataset(dir: string, rel: string): Task[] {
 	const content = readRelative(dir, rel);
 	const tasks: Task[] = [];
 	for (const [i, line] of content.split("\n").entries()) {
@@ -1543,7 +1537,7 @@ function graderDetail(spec: GraderSpec): string {
 				? `${spec.path}?`
 				: `${spec.path}${spec.op === "contains" ? "∋" : "="}${canonicalJson(spec.value).slice(0, 24)}`;
 		case "cites_source":
-			return `${spec.chunk}>=${spec.minOverlap}`;
+			return spec.chunk;
 	}
 }
 

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeEvalRun, type EvalRunRecord } from "../../src/eval.js";
 import { diagnoseEvalRun } from "../../src/diagnosis.js";
-import { RunRecordSchema, executionFingerprint, hashFile, hashValue, modelFingerprint, provenanceAxes, provenanceKey, type GraderResult } from "../../src/provenance.js";
+import { AHDE_EVALUATOR_ID, RunRecordSchema, executionFingerprint, hashFile, hashValue, modelFingerprint, provenanceAxes, provenanceKey, type GraderResult } from "../../src/provenance.js";
 import { writeJsonArtifact } from "../../src/storage/artifacts.js";
 
 /**
@@ -38,6 +38,7 @@ const fixtureModel = modelFingerprint({
 });
 const fixtureExecution = executionFingerprint("isolated");
 const fixtureEvaluation = {
+	evaluatorId: AHDE_EVALUATOR_ID,
 	suiteId: "ombudsman-suite",
 	suiteHash: `sha256:${"d".repeat(64)}`,
 	dataset: "development",

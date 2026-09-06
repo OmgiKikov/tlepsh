@@ -2,6 +2,7 @@ import type { TranscriptEntry } from "../application/run-explanation.js";
 import { percent } from "../measurement.js";
 import { t } from "../i18n.js";
 import { h, renderPage } from "./pages.js";
+import { conversationTitle, renderHistoricalEvaluation, renderPairReading } from "./conversation.js";
 import type { CandidateReplayPageModel, ReplayRun } from "./replay-model.js";
 
 const STYLES = `
@@ -189,7 +190,7 @@ root.addEventListener('keydown',event=>{
  if(event.key==='ArrowRight'||event.key==='ArrowLeft'){event.preventDefault();stop();full=false;move(event.key==='ArrowRight'?1:-1);}
 });
 const search=root.querySelector('[data-search]'); search?.addEventListener('input',()=>{
- const query=search.value.trim().toLocaleLowerCase();let shown=0;root.querySelectorAll('[data-choice]').forEach(item=>{item.hidden=!item.textContent.toLocaleLowerCase().includes(query);if(!item.hidden)shown++;});
+ const query=search.value.trim().toLocaleLowerCase();let shown=0;root.querySelectorAll('[data-choice]').forEach(item=>{const title=item.querySelector('a').title;item.hidden=!(item.textContent+' '+title).toLocaleLowerCase().includes(query);if(!item.hidden)shown++;});
  root.querySelector('[data-no-matches]').hidden=shown!==0;
 });
 document.addEventListener('visibilitychange',()=>{if(document.hidden)stop();});
@@ -205,28 +206,33 @@ export function renderCandidateReplayPage(model: CandidateReplayPageModel): stri
 	const base = `/candidates/${encodeURIComponent(model.candidateId)}`;
 	const selectedPath = `${base}/replay?run=${encodeURIComponent(selected.baseline.runId)}`;
 	const difference = firstDifference(model);
-	const input = selected.baseline.transcript?.entries.find(entry => entry.kind === "user");
+	const input = selected.baseline.transcript?.entries.find(entry => entry.kind === "user") ?? selected.candidate.transcript?.entries.find(entry => entry.kind === "user");
+	const heading = conversationTitle(input?.text, t("conversation.selected"));
 	const invalid = comparison.status === "invalid";
 	const limited = invalid || selected.exclusion !== null;
 	const stats = selected.stats;
 	const selectedNote = invalid ? t("evidence.invalidComparison") : selected.exclusion ? t("evidence.excludedNote") : t("evidence.replayPassedRepeats", { before: stats.aPass, beforeTotal: stats.aTotal, after: stats.bPass, afterTotal: stats.bTotal });
-	const choice = navigation.items.map(item => `<li data-choice><a href="${base}/replay?run=${encodeURIComponent(item.baselineRunId)}"${item.baselineRunId === navigation.selectedRunId ? ' aria-current="page"' : ""}><span>${h(item.taskId)} ${invalid ? "" : item.exclusion ? `· ${h(t(`evidence.excluded-${item.exclusion}`))}` : item.scoreDelta < 0 ? `· ${h(t("evidence.regressed"))}` : ""}</span><small>${h(t("evidence.replayRepeat", { number: item.repetitionIndex + 1 }))}</small></a></li>`).join("");
-	const diff = model.proposal.available ? `<details class="r-diff"><summary>${h(model.proposal.summary)}</summary><p class="note">${model.proposal.paths.map(h).join(" · ")}</p>${model.proposal.redacted ? `<p class="note">${h(t("evidence.replayDiffRedacted"))}</p>` : ""}<pre>${model.proposal.diff.split("\n").map(line => `<span${line.startsWith("+") && !line.startsWith("+++") ? ' class="add"' : line.startsWith("-") && !line.startsWith("---") ? ' class="remove"' : ""}>${h(line)}</span>`).join("\n")}</pre><p class="note mono">${h(model.proposal.proposalHash)}</p></details>`
+	const taskNumbers = new Map<string, number>();
+	for (const item of navigation.items) if (!taskNumbers.has(item.taskId)) taskNumbers.set(item.taskId, taskNumbers.size + 1);
+	const choice = navigation.items.map(item => `<li data-choice><a href="${base}/replay?run=${encodeURIComponent(item.baselineRunId)}" title="${h(item.taskId)}"${item.baselineRunId === navigation.selectedRunId ? ' aria-current="page"' : ""}><span>${h(item.baselineRunId === navigation.selectedRunId ? heading : t("conversation.number", { number: taskNumbers.get(item.taskId)! }))} ${invalid ? "" : item.exclusion ? `· ${h(t(`evidence.excluded-${item.exclusion}`))}` : item.scoreDelta < 0 ? `· ${h(t("evidence.regressed"))}` : ""}</span><small>${h(t("evidence.replayRepeat", { number: item.repetitionIndex + 1 }))}</small></a></li>`).join("");
+	const diff = model.proposal.available ? `<p>${h(t("conversation.changeFiles", { paths: model.proposal.paths.join(" · ") }))}</p><details class="r-diff"><summary>${h(t("conversation.openChanges"))}</summary>${model.proposal.redacted ? `<p class="note">${h(t("evidence.replayDiffRedacted"))}</p>` : ""}<pre>${model.proposal.diff.split("\n").map(line => `<span${line.startsWith("+") && !line.startsWith("+++") ? ' class="add"' : line.startsWith("-") && !line.startsWith("---") ? ' class="remove"' : ""}>${h(line)}</span>`).join("\n")}</pre><details class="metadata"><summary>${h(t("conversation.authorHypothesis"))}</summary><p>${h(model.proposal.summary)}</p></details><p class="note mono">${h(model.proposal.proposalHash)}</p></details>`
 		: `<p class="note">${h(t("evidence.replayDiffUnavailable"))}: ${h(model.proposal.reason)}</p>`;
 	const body = `<div class="replay" data-replay data-difference="${difference ?? ""}" data-step="${h(t("evidence.replayStep", { number: "{number}", total: "{total}" }))}" data-end="${h(t("evidence.replayEnd"))}" tabindex="0">
-<header class="r-hero"><p class="r-eyebrow">${h(t("evidence.replayEyebrow"))} · ${h(model.targetId)}</p><h1>${h(t("evidence.replayTitle"))}</h1><p class="lead">${h(t("evidence.replayIntro"))}</p></header>
+<header class="r-hero"><p class="r-eyebrow">${h(t("evidence.replayEyebrow"))} · ${h(model.targetId)}</p><h1>${h(heading)}</h1><p class="lead">${h(t("evidence.replayIntro"))}</p><nav class="nav"><a href="#change">${h(t("conversation.openChanges"))} ↓</a><a href="#next">${h(t("conversation.next"))} ↓</a></nav></header>
+${renderHistoricalEvaluation(comparison.historicalEvaluator, [selected.baseline.evalRunId, selected.candidate.evalRunId])}
 <div class="r-suite"><div><span class="r-eyebrow">${h(t("evidence.replaySuite"))}</span><p>${h(invalid ? t("evidence.invalidComparison") : comparison.line)}</p><p class="r-summary">${h(t("evidence.replayNotCausal"))}</p></div><div class="r-regressions"><strong class="${!invalid && comparison.summary.regressed > 0 ? "down" : "same"}">${invalid ? "—" : comparison.summary.regressed}</strong><small>${h(t("evidence.replayRegressions"))}</small></div></div>
-<details class="r-pick"><summary>${h(t("evidence.replayPick"))} · ${h(selected.taskId)} · ${h(t("evidence.replayRepeat", { number: selected.repetitionIndex + 1 }))}</summary><input class="r-js" data-search aria-label="${h(t("evidence.replaySearch"))}" placeholder="${h(t("evidence.replaySearch"))}"><p class="r-help" style="padding:0 16px" data-no-matches role="status" hidden>${h(t("evidence.replayNoMatches"))}</p><ul class="r-choices">${choice}</ul>${navigation.omittedCount > 0 ? `<p class="note">${h(t("evidence.replayNavLimit", { shown: navigation.items.length, total: navigation.total }))}</p>` : ""}</details>
-<div class="r-case"><div><h2>${h(selected.taskId)}</h2><span class="r-repeat">${h(t("evidence.replayRepeat", { number: selected.repetitionIndex + 1 }))}</span></div><div><span class="r-repeat">${h(t("evidence.replayAllRepeats"))}</span><p>${h(selectedNote)}${limited ? "" : ` · ${percent(stats.aScore)} → ${percent(stats.bScore)}`}</p></div></div>
-${input ? `<p class="r-input">${h(input.text)}</p>` : ""}
+<details class="r-pick"><summary>${h(t("evidence.replayPick"))} · ${h(t("evidence.replayRepeat", { number: selected.repetitionIndex + 1 }))}</summary><input class="r-js" data-search aria-label="${h(t("evidence.replaySearch"))}" placeholder="${h(t("evidence.replaySearch"))}"><p class="r-help" style="padding:0 16px" data-no-matches role="status" hidden>${h(t("evidence.replayNoMatches"))}</p><ul class="r-choices">${choice}</ul>${navigation.omittedCount > 0 ? `<p class="note">${h(t("evidence.replayNavLimit", { shown: navigation.items.length, total: navigation.total }))}</p>` : ""}</details>
+<div class="r-case"><div><h2>${h(t("conversation.selected"))}</h2><span class="r-repeat">${h(t("evidence.replayRepeat", { number: selected.repetitionIndex + 1 }))}</span></div><div><span class="r-repeat">${h(t("evidence.replayAllRepeats"))}</span><p>${h(selectedNote)}${limited ? "" : ` · ${percent(stats.aScore)} → ${percent(stats.bScore)}`}</p></div></div>
+${renderPairReading(selected.baseline.reading, selected.candidate.reading)}
 <div class="r-controls r-js"><button class="r-primary" type="button" data-play="${h(t("evidence.replayPlay"))}" data-pause="${h(t("evidence.replayPause"))}" aria-pressed="false">${h(t("evidence.replayPlay"))}</button>${difference !== null ? `<button type="button" data-difference>${h(t("evidence.replayDifferent"))}</button>` : ""}<button type="button" data-all="${h(t("evidence.replayAll"))}" data-steps="${h(t("evidence.replaySteps"))}" aria-pressed="false">${h(t("evidence.replayAll"))}</button><a class="r-link" data-permalink href="${selectedPath}">${h(t("evidence.replayPermalink"))} ↗</a></div>
 <p class="r-help">${h(t("evidence.replayRecorded"))}</p>
 <div class="r-lanes">${lane(selected.baseline, "before", t("evidence.baseline"))}${lane(selected.candidate, "after", t("evidence.candidate"))}</div>
 <p class="r-help">${h(difference === null && selected.baseline.transcript && selected.candidate.transcript ? t("evidence.replaySame") : t("evidence.replayDifferenceNote"))}</p><p class="r-help r-js">${h(t("evidence.replayKeyboard"))}</p>
-<section class="r-proof"><h2>${h(t("evidence.replayDiff"))}</h2>${diff}</section>
+<section class="r-proof" id="change" tabindex="-1"><h2>${h(t("evidence.replayDiff"))}</h2>${diff}</section>
 <section class="r-proof"><h2>${h(t("evidence.replayChecks"))}</h2><p class="note">${h(t("evidence.replayChecksNote"))}</p><div class="r-check-grid">${checks(selected.baseline, t("evidence.baseline"))}${checks(selected.candidate, t("evidence.candidate"))}</div></section>
-<details class="metadata"><summary>${h(t("evidence.metadata"))}</summary><pre>${h(selected.baseline.runId)} · ${h(selected.baseline.revision)}
+<details class="metadata"><summary>${h(t("evidence.metadata"))}</summary><pre>${h(model.candidateId)} · ${h(selected.taskId)}
+${h(selected.baseline.runId)} · ${h(selected.baseline.revision)}
 → ${h(selected.candidate.runId)} · ${h(selected.candidate.revision)}</pre>${model.notices.map(notice => `<p class="note">${h(notice)}</p>`).join("")}</details>
-<a class="r-link" href="${base}">← ${h(t("evidence.replayOverview"))}</a></div>`;
-	return renderPage({ title: `${t("evidence.replayEyebrow")} · ${model.targetId}`, crumbs: [{ label: t("evidence.brand"), href: "/" }, { label: model.candidateId, href: base }, { label: t("evidence.replayEyebrow") }], body, styles: STYLES, script: SCRIPT });
+<section class="card" id="next" tabindex="-1"><h2>${h(t("conversation.next"))}</h2><p>${h(t(invalid ? "conversation.nextInvalid" : comparison.status === "inconclusive" ? "conversation.nextInconclusive" : "conversation.nextReview"))}</p><a class="r-link" href="${base}#review">${h(t("evidence.replayOverview"))} →</a></section></div>`;
+	return renderPage({ title: `${heading} · ${t("evidence.replayEyebrow")}`, crumbs: [{ label: t("evidence.brand"), href: "/" }, { label: t("evidence.replayOverview"), href: base }, { label: t("evidence.replayEyebrow") }], body, styles: STYLES, script: SCRIPT });
 }

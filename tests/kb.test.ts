@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -314,13 +314,13 @@ const RUN_ID = "run-kb-1";
 function writeGradedRun(
 	runsRoot: string,
 	answer: string,
-	options: { withWorkspace?: boolean } = {},
+	options: { withWorkspace?: boolean; kbFiles?: { path: string; text: string }[] } = {},
 ): RunRecord {
 	const runDir = join(runsRoot, RUN_ID);
 	mkdirSync(runDir, { recursive: true });
 	if (options.withWorkspace !== false) {
 		mkdirSync(join(runDir, "workspace", "data", "kb"), { recursive: true });
-		for (const file of fixtureFiles()) {
+		for (const file of options.kbFiles ?? fixtureFiles()) {
 			writeFileSync(join(runDir, "workspace", "data", "kb", file.path), file.text);
 		}
 	}
@@ -369,7 +369,7 @@ async function citesSourceResult(
 	runsRoot: string,
 	answer: string,
 	spec: Record<string, unknown>,
-	options: { withWorkspace?: boolean } = {},
+	options: { withWorkspace?: boolean; kbFiles?: { path: string; text: string }[] } = {},
 ): Promise<{ passed: boolean; reason: string; checkCode?: string; checkSubject?: string }> {
 	const record = writeGradedRun(runsRoot, answer, options);
 	const graded = await gradeRun(
@@ -410,6 +410,24 @@ describe("the cites_source grader", () => {
 		}
 	});
 
+	it("rejects the actual live tariff answer whose overlap passed without any citation", async () => {
+		const runsRoot = mkdtempSync(join(tmpdir(), "ahde-kb-live-regression-"));
+		try {
+			// Public development run run_mtols4rw5dhc8lp, 2026-09-05.
+			// v4 passed this at token-F1 0.38805970149253727, threshold 0.35.
+			const answer = "Тариф «Скоростной» (500 Мбит/с) стоит **800 ₽/месяц**, а тариф «Гигабит» (1 Гбит/с) — **1200 ₽/месяц**.";
+			const text = "# Тарифы\n\n| Тариф | Скорость | Цена в месяц |\n|---|---|---|\n| Домашний | 100 Мбит/с | 500 ₽ |\n| Скоростной | 500 Мбит/с | 800 ₽ |\n| Гигабит | 1 Гбит/с | 1200 ₽ |\n\nСмена тарифа — с первого числа следующего месяца, заявка через чат или личный\nкабинет. Плата за смену не берётся. Переход на более дорогой тариф действует\nсразу, если на счету хватает средств.\n\n";
+			expect(tokenF1(answer.toLowerCase(), text.toLowerCase())).toBeCloseTo(0.38805970149253727);
+			const result = await citesSourceResult(runsRoot, answer, { type: "cites_source", chunk: chunkId }, {
+				kbFiles: [{ path: "tariffs.md", text }],
+			});
+			expect(result.passed).toBe(false);
+			expect(result.reason).toContain("does not explicitly cite tariffs.md#0");
+		} finally {
+			rmSync(runsRoot, { recursive: true, force: true });
+		}
+	});
+
 	it("leaves an overlong source label absent instead of truncating its identity", async () => {
 		const runsRoot = mkdtempSync(join(tmpdir(), "ahde-kb-runs-"));
 		const chunk = `${"nested/".repeat(29)}source.md#0`;
@@ -427,7 +445,7 @@ describe("the cites_source grader", () => {
 		}
 	});
 
-	it("passes on overlap with the chunk's own text, with no id in sight", async () => {
+	it("rejects even verbatim source text without a citation, regardless of legacy minOverlap", async () => {
 		const runsRoot = mkdtempSync(join(tmpdir(), "ahde-kb-runs-"));
 		try {
 			const chunk = chunkKnowledge(fixtureFiles()).find((entry) => entry.id === chunkId);
@@ -437,8 +455,8 @@ describe("the cites_source grader", () => {
 				chunk.text,
 				{ type: "cites_source", chunk: chunkId, minOverlap: 0.6 },
 			);
-			expect(result.passed).toBe(true);
-			expect(result.reason).toMatch(/overlaps tariffs\.md#0 by token-f1 = 1/);
+			expect(result.passed).toBe(false);
+			expect(result.reason).toContain("does not explicitly cite tariffs.md#0");
 		} finally {
 			rmSync(runsRoot, { recursive: true, force: true });
 		}
@@ -453,10 +471,24 @@ describe("the cites_source grader", () => {
 				{ type: "cites_source", chunk: chunkId },
 			);
 			expect(result.passed).toBe(false);
-			expect(result.reason).toMatch(/neither cites tariffs\.md#0 nor overlaps it: token-f1 = [0-9.]+, below threshold 0\.35/);
+			expect(result.reason).toContain("does not explicitly cite tariffs.md#0");
 		} finally {
 			rmSync(runsRoot, { recursive: true, force: true });
 		}
+	});
+
+	it("refuses a replaced data ancestor instead of citing a chunk outside the saved workspace", async () => {
+		const runsRoot = mkdtempSync(join(tmpdir(), "ahde-kb-ancestor-"));
+		const foreign = mkdtempSync(join(tmpdir(), "ahde-kb-foreign-"));
+		try {
+			const record = writeGradedRun(runsRoot, `Source: ${chunkId}`, { withWorkspace: false });
+			mkdirSync(join(runsRoot, RUN_ID, "workspace"));
+			mkdirSync(join(foreign, "kb")); writeFileSync(join(foreign, "kb", "tariffs.md"), "Outside source");
+			symlinkSync(foreign, join(runsRoot, RUN_ID, "workspace", "data"));
+			const result = await gradeRun({ id: "kb-case", input: "?", effectiveGraders: [GraderSpec.parse({ type: "cites_source", chunk: chunkId })] } as never, record, runsRoot);
+			expect(result.graders[0]?.passed).toBe(false);
+			expect(result.graders[0]?.reason).toContain("symlink");
+		} finally { rmSync(runsRoot, { recursive: true, force: true }); rmSync(foreign, { recursive: true, force: true }); }
 	});
 
 	it("fails loudly, never vacuously, when the run's workspace cannot answer for the chunk", async () => {
@@ -464,7 +496,7 @@ describe("the cites_source grader", () => {
 		try {
 			const missingChunk = await citesSourceResult(
 				runsRoot,
-				"Тариф «Река» стоит 750 рублей.",
+				"Источник: tariffs.md#999",
 				{ type: "cites_source", chunk: "tariffs.md#999" },
 			);
 			expect(missingChunk.passed).toBe(false);
@@ -477,7 +509,7 @@ describe("the cites_source grader", () => {
 		try {
 			const noWorkspace = await citesSourceResult(
 				bare,
-				"Тариф «Река» стоит 750 рублей.",
+				`Источник: ${chunkId}`,
 				{ type: "cites_source", chunk: chunkId },
 				{ withWorkspace: false },
 			);
@@ -488,29 +520,33 @@ describe("the cites_source grader", () => {
 		}
 	});
 
-	it("reads the run's own copy, so editing the checkout cannot rewrite a verdict", async () => {
-		const runsRoot = mkdtempSync(join(tmpdir(), "ahde-kb-runs-"));
+	it.each([
+		["Источник: tariffs.md#0", true],
+		["[tariffs.md#0]", true],
+		["[Источник](tariffs.md#0)", true],
+		["Источник: tariffs.md#0.", true],
+		["Источник: tariffs.md#01", false],
+		["Источник: old-tariffs.md#0", false],
+		["Источник: nested/tariffs.md#0", false],
+		["Источник: tariffs.md#0.extra", false],
+		["Источник: tariffs.md#0/extra", false],
+		["Источник: Tariffs.md#0", false],
+	])("recognizes the exact source identity in %s", async (answer, passed) => {
+		const runsRoot = mkdtempSync(join(tmpdir(), "ahde-kb-boundary-"));
 		try {
-			const record = writeGradedRun(runsRoot, "Аренда роутера — 90 рублей в месяц.");
-			const spec = GraderSpec.parse({ type: "cites_source", chunk: chunkId, minOverlap: 0.05 });
-			const before = await gradeRun(
-				{ id: "kb-case", input: "?", effectiveGraders: [spec] } as never,
-				record,
-				runsRoot,
-			);
-			// Replace the run's own copy: the grader must follow the bytes it reads.
-			writeFileSync(
-				join(runsRoot, RUN_ID, "workspace", "data", "kb", "tariffs.md"),
-				"# Другое\n\nСовершенно посторонний текст без единого общего слова.",
-			);
-			const after = await gradeRun(
-				{ id: "kb-case", input: "?", effectiveGraders: [spec] } as never,
-				record,
-				runsRoot,
-			);
-			expect(before.graders[0]!.score).not.toBe(after.graders[0]!.score);
-		} finally {
-			rmSync(runsRoot, { recursive: true, force: true });
-		}
+			expect((await citesSourceResult(runsRoot, answer, { type: "cites_source", chunk: chunkId })).passed).toBe(passed);
+		} finally { rmSync(runsRoot, { recursive: true, force: true }); }
 	});
+
+	it("checks citation only: a cited but wrong fact still needs an independent accuracy check", async () => {
+		const runsRoot = mkdtempSync(join(tmpdir(), "ahde-kb-citation-only-"));
+		try {
+			const result = await citesSourceResult(runsRoot, `Тариф «Река» стоит 7 рублей. Источник: ${chunkId}`, {
+				type: "cites_source", chunk: chunkId, minOverlap: 1,
+			});
+			expect(result.passed).toBe(true);
+			expect(result.reason).toBe("the answer cites tariffs.md#0 by id");
+		} finally { rmSync(runsRoot, { recursive: true, force: true }); }
+	});
+
 });

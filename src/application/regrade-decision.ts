@@ -166,7 +166,7 @@ export function describeGrader(spec: GraderSpec): string {
 			case "turn_budget": return `<= ${spec.max} turns`;
 			case "world_state":
 				return spec.op === "exists" ? `${spec.path} exists` : `${spec.path} ${spec.op} ${canonicalJson(spec.value)}`;
-			case "cites_source": return `${spec.chunk} >= ${spec.minOverlap}`;
+			case "cites_source": return `explicit citation of ${spec.chunk}`;
 		}
 	})();
 	const text = redactTraceText(detail).replace(/\s+/gu, " ").trim();

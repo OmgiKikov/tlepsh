@@ -33,6 +33,7 @@ import {
 } from "../src/eval.js";
 import { loadTarget, type ResolvedTarget } from "../src/manifest.js";
 import {
+	AHDE_EVALUATOR_ID,
 	RunRecordSchema,
 	executionFingerprint,
 	hashValue,
@@ -199,6 +200,7 @@ function evalRecord(
 		preparedToolHomeHash: options.expectedPreparedToolHomeHash ?? hashValue({ prepared: target.gitSha, id }),
 	};
 	const evalSurface = {
+		evaluatorId: AHDE_EVALUATOR_ID,
 		suiteId: target.manifest.evalSuite.id,
 		suiteHash: target.suiteHash,
 		dataset: targetEvalSurface(target).dataset,
@@ -281,6 +283,7 @@ function reusableRecord(
 		preparedToolHomeHash: query.preparedToolHomeHash,
 	};
 	const evalSurface = {
+		evaluatorId: AHDE_EVALUATOR_ID,
 		suiteId: "test-suite",
 		suiteHash: axes.suiteHash,
 		dataset: "development",

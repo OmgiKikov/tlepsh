@@ -353,7 +353,10 @@ export function collectRunDetailPage(runsRoot: string, runId: string): RunDetail
 	const verified = loadPublicEvalRun(runsRoot, evalRunId);
 	const run = verified.runs.find((candidate) => candidate.runId === runId);
 	if (!run) throw new EvidenceNotFound(`run ${runId} is not a member of ${evalRunId}`);
-	const brief = requireDiagnosis(runsRoot, evalRunId);
+	// A saved diagnosis enriches this conversation with group membership. The
+	// verified transcript and checks do not depend on that later workflow step.
+	// Existing incompatible diagnoses still fail closed; they are never ignored.
+	const brief = existsSync(diagnosisPath(runsRoot, evalRunId)) ? requireDiagnosis(runsRoot, evalRunId) : null;
 
 	const rows = runsTable(runsRoot, verified.runs, brief);
 	const position = rows.findIndex((row) => row.runId === runId);
@@ -370,7 +373,7 @@ export function collectRunDetailPage(runsRoot: string, runId: string): RunDetail
 		judgeArtifacts: artifacts?.judge,
 	});
 	const modeIds = new Set(rows[position]?.failureModeIds ?? []);
-	const modes = brief.modes.filter((mode) => modeIds.has(mode.failureModeId));
+	const modes = brief?.modes.filter((mode) => modeIds.has(mode.failureModeId)) ?? [];
 	// A real candidate experiment answers "did the change help?"; an A/A
 	// calibration answers "how noisy is this suite?". Prefer the former when both
 	// cover this eval, and say which one it was either way.
@@ -386,6 +389,8 @@ export function collectRunDetailPage(runsRoot: string, runId: string): RunDetail
 
 	const explanation = explainRun({ run, graders, facts, messages, modes, flip });
 	return {
+		diagnosisAvailable: brief !== null,
+		...(coverage ? { candidateId: coverage.record.candidateId } : {}),
 		reading: readRunOutcome(explanation, transcript),
 		evalRunId,
 		targetId: verified.record.target.id,
@@ -434,7 +439,8 @@ function compareRunPreview(runsRoot: string, verified: VerifiedEvalRun, run: Run
 		entry.kind === "tool" && entry.evidence !== "reported" && entry.result !== null ? [entry.name] : []))].slice(0, 6);
 	// Only the canonical recorded checks are projected. Raw world/customer values
 	// and tool arguments never enter this preview; legacy sidecars are not reopened.
-	const checks = graderFindings(run, { judgeArtifacts: verified.artifacts.get(run.runId)?.judge })
+	const findings = graderFindings(run, { judgeArtifacts: verified.artifacts.get(run.runId)?.judge });
+	const checks = findings
 		.filter((check) => ["world-state", "required-tool", "cites-source"].includes(check.checkCode ?? "") ||
 			["world_state", "tool_called", "cites_source"].includes(check.type));
 	return {
@@ -448,6 +454,7 @@ function compareRunPreview(runsRoot: string, verified: VerifiedEvalRun, run: Run
 		toolNames,
 		checks: checks.slice(0, MAX_PREVIEW_CHECKS).map(({ name, passed, reason }) => ({ name, passed, reason })),
 		omittedChecks: Math.max(0, checks.length - MAX_PREVIEW_CHECKS),
+		reading: readRunOutcome(explainRun({ run, graders: findings, facts, messages, modes: [], flip: null }), transcript),
 	};
 }
 
@@ -546,6 +553,7 @@ export function collectComparePage(runsRoot: string, candidateId: string): Compa
 		targetId: record.targetId,
 		status: record.events.at(-1)?.type ?? "proposed",
 		comparability: comparison.status,
+		...(comparison.historicalEvaluator ? { historicalEvaluator: comparison.historicalEvaluator } : {}),
 		// The same sentence the panel, the log and the passport print.
 		developmentLine: comparison.status === "invalid" ? t("evidence.invalidComparison") : measurementLine({
 			development: measurementSurface({

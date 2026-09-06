@@ -25,6 +25,7 @@ import {
 	type RegradeResult,
 } from "../src/regrade.js";
 import { MAX_TRACE_ARTIFACT_BYTES } from "../src/trace.js";
+import { AHDE_EVALUATOR_ID, hashValue } from "../src/provenance.js";
 import { baseFixtureFiles, cleanup, makeTargetFixture } from "./fixtures.js";
 
 /**
@@ -521,4 +522,51 @@ describe("regrade of a published corpus", () => {
 			graderDefaults: [{ type: "output_contains", text: "never", caseSensitive: false }],
 		})).rejects.toThrow(/carry explicit graders/);
 	}, SUITE_TIMEOUT_MS);
+});
+
+
+describe("citation evaluator migration", () => {
+	it("regrades readable v4 overlap evidence into new v5 failure without rewriting history or calling a model", async () => {
+		const text = "The monthly price is 800 rubles.";
+		const mock = await startMockModel([{ match: () => true, steps: [{ text }] }]);
+		process.env.MOCK_MODEL_KEY = "test-key";
+		const targetDir = defaultsFixture(mock.url, {
+			"evals/development.jsonl": JSON.stringify({ id: "citation", input: "What is the price?", graders: [{ type: "cites_source", chunk: "Тарифы и цены.md#0", minOverlap: 0.35 }] }) + "\n",
+			"evals/graders.yaml": "defaults: []\n",
+			"data/kb/Тарифы и цены.md": text,
+		});
+		const runsRoot = mkdtempSync(join(tmpdir(), "ahde-citation-regrade-"));
+		try {
+			const manifest = join(targetDir, "manifest.yaml");
+			writeFileSync(manifest, readFileSync(manifest, "utf8") + "\ndata: [data/kb]\n");
+			const target = loadTarget(targetDir);
+			const measured = await runSuite(target, { runsRoot, label: "solo", repetitions: 1 });
+			expect(measured.summary).toMatchObject({ pass: 0, fail: 1, error: 0 });
+			const original = loadRun(runsRoot, measured.runIds[0]!);
+			// Reconstruct the exact old deterministic result, not a second model call.
+			const { evaluatorId: _currentEvaluator, ...legacyEvaluation } = original.eval;
+			const legacyRun = { ...original, eval: legacyEvaluation, evalResults: { graders: original.evalResults!.graders.map((grader) => grader.type === "cites_source"
+				? { ...grader, name: "citation#0:cites_source:Тарифы и цены.md#0>=0.35", passed: true, score: 1, reason: "the answer overlaps Тарифы и цены.md#0 by token-f1 = 1, at or above 0.35" }
+				: grader), outcome: "pass" } };
+			const provenance = { ...measured.provenance, evaluatorId: "ahde-evaluator-v4" };
+			const legacy = { ...measured, provenance, provenanceKey: hashValue(provenance), runArtifacts: [{ runId: original.runId, sha256: hashValue(legacyRun) }],
+				summary: { total: 1, pass: 1, fail: 0, error: 0, allPassRate: 1 } };
+			const runPath = join(runsRoot, original.runId, "run.json");
+			const indexPath = join(runsRoot, measured.evalRunId, "eval_run.json");
+			writeFileSync(runPath, JSON.stringify(legacyRun)); writeFileSync(indexPath, JSON.stringify(legacy));
+			const beforeRun = readFileSync(runPath); const beforeIndex = readFileSync(indexPath);
+			expect(loadVerifiedEvalRun(runsRoot, measured.evalRunId).record.summary.pass).toBe(1);
+			const requestCount = mock.requests();
+			const result = await regradeEvalRun({ runsRoot, evalRunId: measured.evalRunId, target });
+			expect(mock.requests()).toBe(requestCount);
+			expect(result.record.evalRunId).not.toBe(measured.evalRunId);
+			expect(result.record.provenance.evaluatorId).toBe(AHDE_EVALUATOR_ID);
+			expect(result.record.summary).toMatchObject({ pass: 0, fail: 1, error: 0 });
+			expect(loadVerifiedEvalRun(runsRoot, result.record.evalRunId).runs[0]?.evalResults?.graders[0]?.reason).toContain("does not explicitly cite");
+			expect(readFileSync(runPath)).toEqual(beforeRun); expect(readFileSync(indexPath)).toEqual(beforeIndex);
+			expect(compareEvalRuns(runsRoot, measured.evalRunId, result.record.evalRunId, { mode: "exploratory" }).error).toContain("runtime.evaluatorId");
+		} finally {
+			delete process.env.MOCK_MODEL_KEY; await mock.close(); cleanup(targetDir); cleanup(runsRoot);
+		}
+	});
 });

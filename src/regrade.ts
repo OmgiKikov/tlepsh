@@ -1,5 +1,5 @@
 import { chmodSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import {
 	GradersFile,
@@ -22,6 +22,7 @@ import {
 	type EvalRunRecord,
 } from "./eval.js";
 import {
+	AHDE_EVALUATOR_ID,
 	RunRecordSchema,
 	canonicalJson,
 	hashValue,
@@ -32,6 +33,7 @@ import {
 	type RunRecord,
 } from "./provenance.js";
 import { newRunId } from "./runner.js";
+import { readKnowledgeBaseFiles } from "./target/kb-tool.js";
 import { verifiedRunArtifacts } from "./run-evidence.js";
 import { WORLD_STATE_SEGMENTS } from "./target/world-state.js";
 import { readJsonArtifact, writeJsonArtifact, writeTextArtifact } from "./storage/artifacts.js";
@@ -287,7 +289,7 @@ export async function regradeEvalRun(options: RegradeOptions): Promise<RegradeRe
 			...run,
 			runId: newRunId(),
 			label,
-			eval: { ...run.eval, suiteHash },
+			eval: { ...run.eval, suiteHash, evaluatorId: AHDE_EVALUATOR_ID },
 			metrics: derivedMetrics(run.metrics),
 			evalResults: null,
 			// Judge evidence is re-earned below, never inherited from the source.
@@ -299,6 +301,16 @@ export async function regradeEvalRun(options: RegradeOptions): Promise<RegradeRe
 		};
 		privateRunDirectory(runsRoot, record.runId);
 		copyRecordedTrace(runsRoot, run, record.runId);
+		if (run.status === "completed" && task.effectiveGraders.some((grader) => grader.type === "cites_source")) {
+			// Regrade the documents the recorded execution had, never today's KB.
+			const kbRoot = resolveContainedArtifactPath(runsRoot, record.runId, "workspace", "data", "kb");
+			for (const file of readKnowledgeBaseFiles(resolveContainedArtifactPath(runsRoot, run.runId, "workspace"))) {
+				// Reader-produced relative filesystem names, including spaces/Unicode;
+				// the private destination tree was just created and contains no links.
+				writeTextArtifact(join(kbRoot, ...file.path.split("/")),
+					file.text, { mode: 0o600, immutable: true });
+			}
+		}
 		if (artifacts.world !== null) {
 			writeTextArtifact(
 				resolveContainedArtifactPath(runsRoot, record.runId, ...WORLD_STATE_SEGMENTS),

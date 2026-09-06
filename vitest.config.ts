@@ -31,6 +31,7 @@ const HEAVY = [
 	"tests/improvement-author.test.ts", // real Pi author loop and Git-backed hypothesis search
 	"tests/proposal-search.test.ts",
 	"tests/python-agent.test.ts", // spawns the shipped python-agent against a stub HTTP endpoint // Git-backed improve fixtures, one repo per search round
+	"tests/python-bridges.test.ts", // runs the packaged adapters as real Python processes
 	"tests/regression-guards.test.ts", // Git improve fixtures plus the sealed-holdout repetitions
 	"tests/report.test.ts", // spawns nothing: projects hundreds of eval artifacts and traces off disk
 	"tests/runner.integration.test.ts", // Git, and a mock model over HTTP per case

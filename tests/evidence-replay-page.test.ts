@@ -94,6 +94,39 @@ describe("replay HTTP boundary", () => {
 });
 
 describe("replay renderer", () => {
+	it("qualifies historical evidence and offers real terminal regrade commands without an apply action", () => {
+		const data = fixture();
+		const model = collectCandidateReplayPage(data.runsRoot, data.candidateId);
+		model.comparison.historicalEvaluator = { evaluatorId: "ahde-evaluator-v4", currentEvaluatorId: "ahde-evaluator-v5" };
+		const html = renderCandidateReplayPage(model);
+		expect(html).toContain(h(t("conversation.historical")));
+		expect(html).toContain(`/regrade ${data.baselineEvalRunId} target`);
+		expect(html).toContain(`/regrade ${data.candidateEvalRunId} target`);
+		expect(html).toContain(h(t("conversation.historicalLimit")));
+		expect(html).not.toContain('<form');
+	});
+
+	it("uses the recorded request as the heading and connects outcome, exact change and whole-comparison review", () => {
+		const data = fixture();
+		const model = collectCandidateReplayPage(data.runsRoot, data.candidateId, { runId: "run_base_0" });
+		const input = model.selected.baseline.transcript!.entries.find((entry) => entry.kind === "user")!.text;
+		model.proposal = { available: true, paths: ["AGENTS.md"], summary: "AUTHOR HYPOTHESIS, NOT A PROVEN CAUSE", diff: "+Call the required tool", proposalHash: "sha256:fixture", redacted: false };
+		const html = renderCandidateReplayPage(model);
+		expect(html).toContain(`<h1>${h(input)}</h1>`);
+		expect(html).not.toContain(`<h2>${model.selected.taskId}</h2>`);
+		expect(html).toContain(model.selected.taskId); // Exact identity remains available in metadata.
+		expect(html).toContain(h(model.selected.baseline.reading!.title));
+		expect(html).toContain(h(model.selected.candidate.reading!.title));
+		expect(html).toContain(h(t("conversation.expected")));
+		expect(html).toContain('id="change" tabindex="-1"');
+		expect(html).toContain(`<summary>${h(t("conversation.authorHypothesis"))}</summary><p>AUTHOR HYPOTHESIS, NOT A PROVEN CAUSE</p>`);
+		expect(html).not.toContain("<summary>AUTHOR HYPOTHESIS");
+		expect(html).toContain(`/candidates/${data.candidateId}#review`);
+		expect(html).toContain(h(t("conversation.nextInconclusive")));
+		model.comparison.status = "comparable";
+		expect(renderCandidateReplayPage(model)).toContain(h(t("conversation.nextReview")));
+	});
+
 	it.each(["en", "ru"] as const)("keeps labelled controls and complete no-JavaScript evidence in %s", (language) => {
 		const data = fixture();
 		setLanguage(language);

@@ -707,10 +707,9 @@ function parseGeneratedPairs(text: string, limit: number): { question: string; a
 /**
  * The graders a knowledge-base case carries.
  *
- * Two deterministic checks, and no judge. `cites_source` asks the only question
- * that distinguishes retrieval from recall — did the answer stand on the
- * passage it was written from — and token F1 against the reference answer asks
- * whether it said the right thing. A judge grader here would ask the model that
+ * Two deterministic checks, and no judge. `cites_source` requires an explicit citation of
+ * the source chunk; it does not distinguish retrieval from recall. Token F1
+ * against the reference measures lexical agreement, not semantic correctness. A judge grader here would ask the model that
  * wrote both the question and the reference answer to then mark the paper: the
  * second opinion is not independent, and it would put a per-case model call on
  * every sealed run for a verdict two free checks already decide.

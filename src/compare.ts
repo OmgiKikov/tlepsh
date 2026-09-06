@@ -1,5 +1,5 @@
 import { interval, percent } from "./measurement.js";
-import { axisDifferences, hasKnownCommandUsageSemantics } from "./provenance.js";
+import { AHDE_EVALUATOR_ID, axisDifferences, hasKnownCommandUsageSemantics } from "./provenance.js";
 import { loadVerifiedEvalRun, type EvalRunRecord, type VerifiedEvalRun } from "./eval.js";
 import type { RunRecord, TokenMetrics } from "./provenance.js";
 import type { ExperimentMode } from "./domain/candidate.js";
@@ -49,12 +49,16 @@ export interface CompareResult {
 	resources: ComparisonResources;
 	/** The one gate decision for the requested surface. */
 	gate: GateDecision;
+	/** Same-generation history only; never a current release verdict. */
+	historicalEvaluator?: { evaluatorId: string; currentEvaluatorId: string };
 	error: string | null;
 }
 
 export interface CompareOptions {
 	/** `exploratory` skips candidate linkage rules; never promotion-grade. */
 	mode: ExperimentMode | "exploratory";
+	/** Read history with every identity guard, but without current gate authority. */
+	intent?: "gate" | "inspect";
 	/** Which gate policy judges the rows. Defaults to development. */
 	surface?: GateSurface;
 	/** Bootstrap resamples; tests may lower it. */
@@ -237,6 +241,8 @@ export function compareVerifiedEvalRuns(
 	const a = aVerified.record;
 	const b = bVerified.record;
 	const mode = options.mode;
+	const historicalEvaluator = a.provenance.evaluatorId === b.provenance.evaluatorId && a.provenance.evaluatorId !== AHDE_EVALUATOR_ID
+		? { evaluatorId: a.provenance.evaluatorId, currentEvaluatorId: AHDE_EVALUATOR_ID } : undefined;
 	const invalid: string[] = [];
 	for (const [role, record] of [["baseline", a], ["candidate", b]] as const) {
 		if (!hasKnownCommandUsageSemantics(record.provenance.execution)) {
@@ -249,6 +255,9 @@ export function compareVerifiedEvalRuns(
 	// record's own `purpose`, with no sidecar in the path.
 	if (mode !== "exploratory") {
 		for (const [role, record] of [["baseline", a], ["candidate", b]] as const) {
+			if (options.intent !== "inspect" && record.provenance.evaluatorId !== AHDE_EVALUATOR_ID) {
+				invalid.push(`${role} eval ${record.evalRunId} uses historical evaluator ${record.provenance.evaluatorId}; rerun under ${AHDE_EVALUATOR_ID} for a current gate`);
+			}
 			if (record.purpose !== "evidence") {
 				invalid.push(record.purpose === "screen"
 					? `${role} eval ${record.evalRunId} is a cheap-check screen, which is never evidence`
@@ -296,6 +305,11 @@ export function compareVerifiedEvalRuns(
 		resources: { baseline: armResources(aVerified.runs), candidate: armResources(bVerified.runs) },
 		...(options.resamples !== undefined ? { resamples: options.resamples } : {}),
 	});
+	const historicalReason = historicalEvaluator
+		? `Historical evaluator ${historicalEvaluator.evaluatorId}; this is not a current ${AHDE_EVALUATOR_ID} release gate` : undefined;
+	if (historicalReason) {
+		statistics.gate = { ...statistics.gate, verdict: "inconclusive", reasons: [historicalReason, ...statistics.gate.reasons] };
+	}
 	// One lost repetition costs its task, not the run. The gate has always
 	// declared a 10% infrastructure budget and excluded the tasks that spend
 	// it; this used to declare every one of them fatal before the budget was
@@ -311,17 +325,17 @@ export function compareVerifiedEvalRuns(
 			? `${armName[task.arm]} task ${task.taskId} errored`
 			: `task ${task.taskId} has incomplete repetitions: ${row?.aTotal ?? 0}/${a.repetitions} vs ${row?.bTotal ?? 0}/${b.repetitions}`;
 	});
-	const issues = [...invalid, ...excluded];
+	const issues = [...invalid, ...excluded, ...(historicalReason ? [historicalReason] : [])];
 	const status = invalid.length > 0
 		? "invalid"
-		: comparisonPowered(gatePolicyFor(surface), statistics.design) ? "comparable" : "inconclusive";
+		: !historicalEvaluator && comparisonPowered(gatePolicyFor(surface), statistics.design) ? "comparable" : "inconclusive";
 	// An inconclusive surface always says why: the excluded tasks when there
 	// are any, and otherwise the gate's own sentence about the design.
 	const reasons = issues.length > 0 ? issues : statistics.gate.reasons;
 	const error = status === "comparable"
 		? null
 		: `${status === "invalid" ? "not comparable" : "inconclusive"}: ${reasons.join("; ")} (baseline=${a.evalRunId}, candidate=${b.evalRunId})`;
-	return { a, b, rows, status, issues, ...statistics, error };
+	return { a, b, rows, status, issues, ...statistics, ...(historicalEvaluator ? { historicalEvaluator } : {}), error };
 }
 
 /** Load, verify, and compare two eval runs by id. CLI, report, and experiment entry point. */

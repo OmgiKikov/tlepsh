@@ -2,6 +2,7 @@ import { chmodSync, mkdirSync, opendirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { answerTokens, tokenF1 } from "./domain/tokens.js";
+import { explicitlyCitesSource } from "./domain/source-citation.js";
 import { percent } from "./measurement.js";
 import { findKbChunk } from "./target/kb-tool.js";
 import {
@@ -247,13 +248,8 @@ function gradeTurnBudget(spec: { max: number }, turns: number): GraderResult {
 }
 
 /**
- * Did the answer stand on the source?
- *
- * Two ways to pass, and they are different claims. Naming the chunk id
- * literally is an agent that cited its source; overlapping the chunk's own text
- * by `minOverlap` is an agent that used it whether or not it said so. Either is
- * evidence the answer came from the knowledge base rather than the model's
- * memory, which is the one thing a retrieval case has to establish.
+ * Did the answer explicitly cite the expected, existing source?
+ * Citation does not prove retrieval, factual accuracy, or claim-level grounding.
  *
  * The chunk text comes from the run's own workspace copy — `runs/<runId>/
  * workspace/data/kb/**` — so a re-grade months later reads exactly the
@@ -262,14 +258,11 @@ function gradeTurnBudget(spec: { max: number }, turns: number): GraderResult {
  * fails with that said out loud rather than passing on an empty comparison.
  */
 function gradeCitesSource(
-	spec: { chunk: string; minOverlap: number },
+	spec: { chunk: string },
 	runDir: string,
 	output: string,
 ): GraderResult {
 	const base = { name: "", type: "cites_source" as const };
-	if (output.includes(spec.chunk)) {
-		return { ...base, passed: true, score: 1, reason: `the answer cites ${spec.chunk} by id` };
-	}
 	let chunk;
 	try {
 		chunk = findKbChunk(join(runDir, "workspace"), spec.chunk);
@@ -289,16 +282,14 @@ function gradeCitesSource(
 			reason: `the run's workspace carries no knowledge-base chunk ${spec.chunk}`,
 		};
 	}
-	const score = tokenF1(normalizeAnswer(output, "lower"), normalizeAnswer(chunk.text, "lower"));
-	const rounded = Math.round(score * 1000) / 1000;
-	const passed = score >= spec.minOverlap;
+	const passed = explicitlyCitesSource(output, spec.chunk);
 	return {
 		...base,
 		passed,
-		score,
+		score: passed ? 1 : 0,
 		reason: passed
-			? `the answer overlaps ${spec.chunk} by token-f1 = ${rounded}, at or above ${spec.minOverlap}`
-			: `the answer neither cites ${spec.chunk} nor overlaps it: token-f1 = ${rounded}, below threshold ${spec.minOverlap}`,
+			? `the answer cites ${spec.chunk} by id`
+			: `the answer does not explicitly cite ${spec.chunk}; matching source text is not a citation`,
 	};
 }
 
@@ -391,7 +382,8 @@ const JUDGE_REFERENCE_SYSTEM_V2 =
 /**
  * The evaluator id that introduced the abstaining protocols. Under any other
  * earlier id the judge is asked the frozen questions above, byte for byte.
- * v4 changes completion/tool evidence, but keeps the v3 judge prompts exactly.
+ * v4 changes completion/tool evidence and v5 changes citations; both keep the
+ * v3 judge prompts exactly.
  */
 export const JUDGE_ABSTAIN_EVALUATOR_ID = "ahde-evaluator-v3";
 
@@ -409,7 +401,7 @@ export interface JudgeProtocolPrompts {
  * this file reads an id, and nothing else may hand a judge a prompt.
  */
 export function judgePromptsFor(evaluatorId: string): JudgeProtocolPrompts {
-	return evaluatorId === JUDGE_ABSTAIN_EVALUATOR_ID || evaluatorId === "ahde-evaluator-v4"
+	return evaluatorId === JUDGE_ABSTAIN_EVALUATOR_ID || evaluatorId === "ahde-evaluator-v4" || evaluatorId === "ahde-evaluator-v5"
 		? {
 			rubric: JUDGE_SYSTEM_V2,
 			reference: JUDGE_REFERENCE_SYSTEM_V2,
@@ -1548,6 +1540,7 @@ export async function gradeRecordedRun(
 	judge?: TargetManifest["model"],
 	signal?: AbortSignal,
 ): Promise<GradedRunOutcome> {
+	record.eval = { ...record.eval, evaluatorId: AHDE_EVALUATOR_ID };
 	let graded: GradedRun | null = null;
 	try {
 		graded = await gradeRun(task, record, runsRoot, judge, signal);
@@ -2140,6 +2133,12 @@ export function loadVerifiedEvalRun(runsRoot: string, evalRunId: string): Verifi
 			execution: run.execution,
 			eval: run.eval,
 		});
+		// v5 binds generation into each hash-pinned member. Legacy generations
+		// stored it only on the index and remain readable as historical evidence.
+		const evaluatorId = run.eval.evaluatorId ?? (/^ahde-evaluator-v[1-4]$/.test(record.provenance.evaluatorId)
+			? record.provenance.evaluatorId : undefined);
+		if (!evaluatorId) evidenceMismatch(evalRunId, `run ${runId} has no evaluator attestation for ${record.provenance.evaluatorId}`);
+		axes.evaluatorId = evaluatorId;
 		const differences = axisDifferences(axes, record.provenance);
 		if (differences.length > 0) {
 			evidenceMismatch(evalRunId, `run ${runId} differs on ${differences.join(", ")}`);
@@ -2256,6 +2255,7 @@ export function findReusableBaseline(runsRoot: string, query: ReusableBaselineQu
 		// Before wire v2, two incompatible token contracts shared the same v1
 		// fingerprint. Even another unmarked query cannot make that evidence reusable.
 		if (!hasKnownCommandUsageSemantics(record.provenance.execution)) continue;
+		if (record.provenance.evaluatorId !== AHDE_EVALUATOR_ID) continue;
 		// An unreadable timestamp cannot prove freshness, so it is not fresh.
 		const finishedAtMs = Date.parse(record.finishedAt);
 		if (!Number.isFinite(finishedAtMs) || finishedAtMs < oldestUsableMs) continue;

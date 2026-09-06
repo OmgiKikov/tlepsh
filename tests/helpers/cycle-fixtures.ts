@@ -18,6 +18,7 @@ import {
 import { writeEvalRun, type EvalRunRecord } from "../../src/eval.js";
 import { loadTarget } from "../../src/manifest.js";
 import {
+	AHDE_EVALUATOR_ID,
 	RunRecordSchema,
 	executionFingerprint,
 	hashFile,
@@ -211,6 +212,7 @@ export function writeDevelopmentEval(
 	mkdirSync(paths.runsRoot, { recursive: true });
 	const snapshot = computeTargetSnapshotHashes(resolved, paths.runsRoot);
 	const evaluation = {
+		evaluatorId: AHDE_EVALUATOR_ID,
 		suiteId: resolved.manifest.evalSuite.id,
 		suiteHash: resolved.suiteHash,
 		dataset: resolved.manifest.evalSuite.dataset.replace(/\.jsonl$/, "").split("/").pop() ?? "dataset",

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { diagnoseEvalRun, diagnosisPath, loadDiagnosis } from "../src/diagnosis.js";
 import { EvalRunRecordSchema, type EvalRunRecord } from "../src/eval.js";
 import {
+	AHDE_EVALUATOR_ID,
 	RunRecordSchema,
 	executionFingerprint,
 	hashFile,
@@ -36,6 +37,7 @@ const model = modelFingerprint({
 });
 const execution = executionFingerprint("isolated");
 const evaluation = {
+	evaluatorId: AHDE_EVALUATOR_ID,
 	suiteId: "suite",
 	suiteHash: `sha256:${"d".repeat(64)}`,
 	dataset: "development",

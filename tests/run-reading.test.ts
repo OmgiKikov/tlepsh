@@ -87,6 +87,14 @@ describe("human reading of recorded outcomes", () => {
 		expect(brief.modes[0]?.decision).toBe("stabilize-and-rerun");
 	});
 
+	it("explains a missing v5 citation without turning it into a grounding verdict", () => {
+		const source = check("cites_source", "cites-source", "the answer does not explicitly cite tariffs.md#0; matching source text is not a citation", "tariffs.md#0");
+		const reading = fixture([source]).page.reading!;
+		expect(reading.observations.join(" ")).toContain("does not explicitly cite tariffs.md#0");
+		expect(reading.uncertainties.join(" ")).toContain("do not establish whether every claim follows");
+		expect(reading.observations.join(" ")).not.toContain("enough text overlap");
+	});
+
 	it("distinguishes retrieval failure from a failed answer check after the required source was returned", () => {
 		const source = check("cites_source", "cites-source", "the answer neither cites returns.md#0 nor overlaps it: token-f1 = 0.00, below threshold 0.30", "returns.md#0");
 		const f = fixture([source]);
@@ -106,7 +114,7 @@ describe("human reading of recorded outcomes", () => {
 		expect(found.observations.join(" ")).toContain("contains a source required by this case");
 		expect(found.observations.join(" ")).toContain("neither cites returns.md#0 nor has enough text overlap");
 		expect(found.answerQuote?.text).toBe("Seven days only.");
-		expect(found.uncertainties.join(" ")).toContain("not whether every claim follows");
+		expect(found.uncertainties.join(" ")).toContain("do not establish whether every claim follows");
 		const missed = read("shipping.md#0");
 		expect(missed.title).toBe("The search did not return the needed source");
 		expect(missed.observations.join(" ")).not.toContain("contains a source required");

@@ -18,7 +18,7 @@ import {
 import { join, relative, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
-import { loadTarget, scaffoldTarget, TargetManifest, type ResolvedTarget } from "../manifest.js";
+import { GradersFile, loadDataset, loadTarget, scaffoldTarget, TargetManifest, type ResolvedTarget } from "../manifest.js";
 import { canonicalJson, hashValue } from "../provenance.js";
 import { writeJsonArtifact } from "../storage/artifacts.js";
 import { discoverAdoptedDeclarations } from "./agent-folder-detect.js";
@@ -112,6 +112,8 @@ export const TargetScaffoldSubjectSchema = z.strictObject({
 	manifest: TargetManifest,
 	/** Only on an adopt: what the read-only detector saw. */
 	found: TargetAdoptionFindingSchema.optional(),
+	/** Existing native evaluation files kept byte-for-byte, bound to this review. */
+	reusedFiles: z.array(TargetScaffoldFileSchema).max(2).optional(),
 	generated: z.strictObject({
 		gitRepository: z.enum([
 			"fresh repository with one scaffold commit",
@@ -477,9 +479,10 @@ function adoptionFiles(options: DescribeTargetWrapOptions): { path: string; cont
 	const projectDir = resolve(options.projectDir);
 	const files = [
 		{ path: "manifest.yaml", content: adoptedManifestText(options) },
-		{ path: "evals/development.jsonl", content: ADOPTED_DATASET },
-		{ path: "evals/graders.yaml", content: ADOPTED_GRADERS },
 	];
+	for (const [path, content] of [["evals/development.jsonl", ADOPTED_DATASET], ["evals/graders.yaml", ADOPTED_GRADERS]] as const) {
+		if (!existsSync(join(projectDir, path))) files.push({ path, content });
+	}
 	for (const optional of ADOPTION_OPTIONAL_FILES) {
 		if (!existsSync(join(projectDir, optional))) files.push({ path: optional, content: ADOPTED_AGENTS_MD });
 	}
@@ -487,9 +490,8 @@ function adoptionFiles(options: DescribeTargetWrapOptions): { path: string; cont
 }
 
 /**
- * The refusal that keeps adoption honest. Every required path is checked
- * BEFORE anything is written, so a folder that already holds an `evals/`
- * directory of its own is refused whole rather than half-adopted.
+ * Validate every destination before writing. Existing native evaluation files
+ * are reused; invalid files and symlink paths cannot leave a half-adopted folder.
  */
 function assertAdoptableProject(projectDirInput: string): string {
 	const projectDir = resolve(projectDirInput);
@@ -499,9 +501,31 @@ function assertAdoptableProject(projectDirInput: string): string {
 		throw new Error(`target directory must be a regular non-symlink directory: ${projectDir}`);
 	}
 	for (const required of ADOPTION_REQUIRED_FILES) {
-		if (existsSync(join(projectDir, required))) {
+		let cursor = projectDir;
+		const parts = required.split("/");
+		for (const [index, part] of parts.entries()) {
+			cursor = join(cursor, part);
+			let entry;
+			try { entry = lstatSync(cursor); }
+			catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") break; throw error; }
+			if (entry.isSymbolicLink() || (index < parts.length - 1 ? !entry.isDirectory() : !entry.isFile())) {
+				throw new Error(`target adoption requires regular files and directories: ${required}`);
+			}
+			if (index === parts.length - 1 && entry.size > MAX_SCAFFOLD_BYTES) {
+				throw new Error(`target adoption existing file is too large: ${required}`);
+			}
+		}
+		if (required === "manifest.yaml" && existsSync(join(projectDir, required))) {
 			throw new Error(`target adoption would overwrite an existing ${required}; nothing was written`);
 		}
+	}
+	// Reuse only the native format the ordinary loader accepts. Raw CSV/JSON
+	// imports belong in imports/ and are reviewed through the corpus importer.
+	try {
+		if (existsSync(join(projectDir, "evals/development.jsonl"))) loadDataset(projectDir, "evals/development.jsonl");
+		if (existsSync(join(projectDir, "evals/graders.yaml"))) GradersFile.parse(parseYaml(readFileSync(join(projectDir, "evals/graders.yaml"), "utf8")));
+	} catch (error) {
+		throw new Error(`Existing evaluation files are not valid AHDE cases: ${errorMessage(error)}. Keep raw data under imports/ and use ahde corpus inspect; nothing was written.`);
 	}
 	return projectDir;
 }
@@ -543,6 +567,9 @@ export function describeTargetWrap(options: DescribeTargetWrapOptions): TargetSc
 	const manifestText = files.find((file) => file.path === "manifest.yaml")?.content ?? "";
 	const manifest = TargetManifest.parse(parseYaml(manifestText));
 	const existing = isGitWorktreeRoot(projectDir);
+	const reusedFiles = inventoryOf(ADOPTION_REQUIRED_FILES
+		.filter(path => path !== "manifest.yaml" && existsSync(join(projectDir, path)))
+		.map(path => ({ path, content: readFileSync(join(projectDir, path), "utf8") })));
 	return TargetScaffoldSubjectSchema.parse({
 		schemaVersion: 2,
 		operation: "adopt-current-directory",
@@ -552,6 +579,7 @@ export function describeTargetWrap(options: DescribeTargetWrapOptions): TargetSc
 		templateHash: hashValue(templateFiles),
 		manifest,
 		found: options.found,
+		...(reusedFiles.length > 0 ? { reusedFiles } : {}),
 		generated: {
 			gitRepository: existing
 				? "the existing clean repository, at its current HEAD"

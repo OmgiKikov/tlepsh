@@ -91,6 +91,17 @@ describe("the RAG X-ray projection", () => {
 		expect(withTrace.rag).toMatchObject({ diagnosis: "retrieved-and-cited", hitAtK: 1, mrr: 1 });
 	});
 
+	it("does not count a different chunk id as a citation or imply faithfulness from a historical pass", () => {
+		const xray = projectRagRunXray(runWithSource("blocking.md#0"), searchTrace({
+			payload: JSON.stringify({ schemaVersion: 1, chunks: [{ rank: 1, id: "blocking.md#0", path: "blocking.md", score: 1, text: "Return in 30 days." }] }),
+			answer: "Return in 7 days. Source: blocking.md#01",
+		}));
+		expect(xray?.citationRate).toBe(0);
+		expect(xray?.searches[0]?.hits[0]?.cited).toBe(false);
+		expect(xray?.citedChunkIds).toEqual([]);
+		expect(xray?.faithfulness).toBe("not-measured");
+	});
+
 	it("shows the query, recorded rank/score, expected-source MRR, citation, overlap, latency and cost", () => {
 		const payload = JSON.stringify({
 			schemaVersion: 1,

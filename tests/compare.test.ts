@@ -96,7 +96,7 @@ function makeEvalRun(
 				spec: provenance.modelSpec,
 			},
 			execution: provenance.execution,
-			eval: { suiteId: "s", suiteHash: provenance.suiteHash, dataset: "development", datasetHash: provenance.datasetHash },
+			eval: { evaluatorId: provenance.evaluatorId, suiteId: "s", suiteHash: provenance.suiteHash, dataset: "development", datasetHash: provenance.datasetHash },
 			trace: { path: "session.jsonl", sessionId: null, sha256: null },
 			metrics: existing.metrics ?? {
 				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
@@ -149,6 +149,42 @@ const runsRoot = join(root, "runs");
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 describe("compare guard", () => {
+	it("keeps v4 history readable, but refuses mixed evaluator scores and historical release gates", () => {
+		const before = "erun_citation_old";
+		const after = "erun_citation_new";
+		const sibling = "erun_citation_old_candidate";
+		makeEvalRun(runsRoot, before, axes({ evaluatorId: "ahde-evaluator-v4" }));
+		makeEvalRun(runsRoot, after, axes(), [], { label: "candidate", gitSha: "b".repeat(40), baselineEvalRunId: before });
+		makeEvalRun(runsRoot, sibling, axes({ evaluatorId: "ahde-evaluator-v4" }), [], { label: "candidate", gitSha: "b".repeat(40), baselineEvalRunId: before });
+		expect(loadVerifiedEvalRun(runsRoot, before).record.provenance.evaluatorId).toBe("ahde-evaluator-v4");
+		const mixed = compareEvalRuns(runsRoot, before, after, { mode: "exploratory" });
+		expect(mixed.status).toBe("invalid");
+		expect(mixed.error).toContain("runtime.evaluatorId");
+		const historical = compareEvalRuns(runsRoot, before, sibling, { mode: "candidate" });
+		expect(historical.status).toBe("invalid");
+		expect(historical.error).toContain("historical evaluator ahde-evaluator-v4");
+		const exploratory = compareEvalRuns(runsRoot, before, sibling, { mode: "exploratory" });
+		expect(exploratory.status).toBe("inconclusive");
+		expect(exploratory.gate.verdict).toBe("inconclusive");
+		const inspect = compareEvalRuns(runsRoot, before, sibling, { mode: "candidate", intent: "inspect" });
+		expect(inspect.status).toBe("inconclusive");
+		expect(inspect.historicalEvaluator).toEqual({ evaluatorId: "ahde-evaluator-v4", currentEvaluatorId: AHDE_EVALUATOR_ID });
+		expect(inspect.rows).toHaveLength(1);
+		expect(inspect.gate.verdict).toBe("inconclusive");
+		const original = loadVerifiedEvalRun(runsRoot, before);
+		const candidate = loadVerifiedEvalRun(runsRoot, sibling);
+		for (const altered of [
+			{ ...candidate, hasRunHashes: false },
+			{ ...candidate, record: { ...candidate.record, baselineEvalRunId: "erun_wrong" } },
+			{ ...candidate, record: { ...candidate.record, purpose: "screen" as const } },
+			{ ...candidate, record: { ...candidate.record, label: "solo" as const } },
+			{ ...candidate, record: { ...candidate.record, target: { ...candidate.record.target, gitSha: original.record.target.gitSha } } },
+			{ ...candidate, runs: candidate.runs.map(run => ({ ...run, parent: { evalRunId: candidate.record.evalRunId, candidateOf: "c".repeat(40) } })) },
+		]) {
+			expect(compareVerifiedEvalRuns(original, altered, { mode: "candidate", intent: "inspect" }).status).toBe("invalid");
+		}
+	});
+
 	it("refuses with the offending axis named when suiteHash differs", () => {
 		makeEvalRun(runsRoot, "erun_a", axes());
 		makeEvalRun(runsRoot, "erun_b", axes({ suiteHash: hash("c") }), [], { label: "candidate", gitSha: "b".repeat(40) });
@@ -237,7 +273,7 @@ describe("compare table", () => {
 							spec: {},
 						},
 						execution: axes().execution,
-						eval: { suiteId: "s", suiteHash: hash("b"), dataset: "d", datasetHash: hash("d") },
+						eval: { evaluatorId: AHDE_EVALUATOR_ID, suiteId: "s", suiteHash: hash("b"), dataset: "d", datasetHash: hash("d") },
 						trace: { path: "session.jsonl", sessionId: null, sha256: null },
 						metrics: {
 							tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
@@ -315,7 +351,7 @@ describe("compare table", () => {
 						spec: {},
 					},
 					execution: axes().execution,
-					eval: { suiteId: "s", suiteHash: hash("b"), dataset: "development", datasetHash: hash("d") },
+					eval: { evaluatorId: AHDE_EVALUATOR_ID, suiteId: "s", suiteHash: hash("b"), dataset: "development", datasetHash: hash("d") },
 					trace: { path: "session.jsonl", sessionId: null, sha256: null },
 					metrics: {
 						tokens: { input: 100, output: 100, cacheRead: 0, cacheWrite: 0, total: 200 },
@@ -507,7 +543,7 @@ describe("the infrastructure budget", () => {
 				spec: {},
 			},
 			execution: axes().execution,
-			eval: { suiteId: "s", suiteHash: hash("b"), dataset: "development", datasetHash: hash("d") },
+			eval: { evaluatorId: AHDE_EVALUATOR_ID, suiteId: "s", suiteHash: hash("b"), dataset: "development", datasetHash: hash("d") },
 			trace: { path: "session.jsonl", sessionId: null, sha256: null },
 			metrics: {
 				tokens: { input: 100, output: 100, cacheRead: 0, cacheWrite: 0, total: 200 },

@@ -800,6 +800,15 @@ function graderExpectation(
 			};
 		}
 	}
+	const explicitCitation = /^the answer does not explicitly cite (.+); matching source text is not a citation$/u.exec(reason);
+	if (grader.checkCode === "cites-source" && explicitCitation) {
+		const source = explicitCitation[1] ?? "";
+		return {
+			expected: { key: "why.expected.explicit-citation", params: { source } },
+			actual: { key: "why.actual.explicit-citation" },
+			observation: { kind: "source", source, citation: "missing" },
+		};
+	}
 	const citation = /^the answer neither cites (\S+) nor overlaps it: token-f1 = ([0-9.]+), below threshold ([0-9.]+)$/
 		.exec(reason);
 	if (grader.checkCode === "cites-source" && citation) {

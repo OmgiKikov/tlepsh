@@ -327,6 +327,8 @@ export const RunRecordSchema = z
 		model: ModelFingerprintSchema,
 		execution: ExecutionFingerprintSchema,
 		eval: z.strictObject({
+			/** Absent on legacy runs; hash-bound to each newly graded v5+ member. */
+			evaluatorId: NonEmptyStringSchema.optional(),
 			suiteId: NonEmptyStringSchema,
 			suiteHash: HashSchema,
 			dataset: NonEmptyStringSchema,
@@ -493,7 +495,9 @@ export function executionFingerprint(
  */
 // v4: host-observed final answers are required; agent-reported tool notes
 // cannot satisfy tool_called. Older outcomes are not comparable to these.
-export const AHDE_EVALUATOR_ID = "ahde-evaluator-v4";
+// v5: cites_source requires an explicit exact id of an existing run-local KB
+// chunk. Lexical overlap alone is neither citation nor evidence of grounding.
+export const AHDE_EVALUATOR_ID = "ahde-evaluator-v5";
 
 /**
  * The provenance axes compared between two runs. The target git SHA is

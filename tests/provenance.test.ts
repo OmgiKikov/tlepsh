@@ -162,10 +162,10 @@ describe("axisDifferences (table-driven: each axis must be caught)", () => {
 			.toEqual(["runtime.evaluatorId"]);
 	});
 
-	it("names the generation that requires completion and host-observed tool calls", () => {
-		// v3 allowed silence and tool self-reports to pass these checks. Keep
-		// that evidence readable, but never compare its outcomes to v4's.
-		expect(AHDE_EVALUATOR_ID).toBe("ahde-evaluator-v4");
+	it("names the generation that requires explicit citations as well as host-observed completion/tools", () => {
+		// v4 also allowed uncited lexical overlap to pass cites_source. Keep
+		// that evidence readable, but never compare its outcomes to v5's.
+		expect(AHDE_EVALUATOR_ID).toBe("ahde-evaluator-v5");
 	});
 
 	it("catches changed judge configuration", () => {

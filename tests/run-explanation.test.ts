@@ -20,6 +20,7 @@ import { compileImprovementBrief } from "../src/application/improvement-brief.js
 import { diagnoseEvalRun } from "../src/diagnosis.js";
 import { parseSessionJsonl } from "../src/trace.js";
 import {
+	AHDE_EVALUATOR_ID,
 	RunRecordSchema,
 	executionFingerprint,
 	hashFile,
@@ -71,6 +72,7 @@ const model = modelFingerprint({
 });
 const execution = executionFingerprint("isolated");
 const evaluation = {
+	evaluatorId: AHDE_EVALUATOR_ID,
 	suiteId: "suite",
 	suiteHash: `sha256:${"d".repeat(64)}`,
 	dataset: "development",

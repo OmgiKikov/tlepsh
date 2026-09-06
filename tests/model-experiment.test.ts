@@ -8,7 +8,7 @@ import { createCorpus } from "../src/corpus.js";
 import { loadTarget, ModelBlock, scaffoldTarget, type ResolvedTarget } from "../src/manifest.js";
 import { compareVerifiedEvalRuns } from "../src/compare.js";
 import { listEvalRuns, writeEvalRun, type EvalRunRecord, type RunSuiteOptions } from "../src/eval.js";
-import { executionFingerprint, hashFile, hashValue, modelFingerprint, provenanceAxes, RunRecordSchema } from "../src/provenance.js";
+import { AHDE_EVALUATOR_ID, executionFingerprint, hashFile, hashValue, modelFingerprint, provenanceAxes, RunRecordSchema } from "../src/provenance.js";
 import { writeJsonArtifact } from "../src/storage/artifacts.js";
 import { startMockModel } from "../src/mock-model.js";
 import * as modelExperimentSource from "../src/application/model-experiment-source.js";
@@ -63,7 +63,7 @@ function runner(options: { score?: (modelId: string, taskId: string, repetitionI
 			const score = options.score?.(model.id, task.id, repetitionIndex) ?? 1;
 			const record = RunRecordSchema.parse({ schemaVersion: 1, runId, taskId: task.id, repetitionIndex,
 				label: "solo", status: "completed", error: null, startedAt: "2026-09-05T10:00:00.000Z", finishedAt: "2026-09-05T10:00:01.000Z",
-				target: targetIdentity, runtime: target.runtime, model, execution, eval: evaluation,
+				target: targetIdentity, runtime: target.runtime, model, execution, eval: { ...evaluation, evaluatorId: AHDE_EVALUATOR_ID },
 				trace: { path: "session.jsonl", sessionId: null, sha256: hashFile(trace) },
 				metrics: { tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, total: 15 }, costUsd: model.id === "baseline-model" ? 1 : 0.25,
 					...(options.evaluatorCalls ? { judge: { calls: 1, tokens: 5, costUsd: 0.1 } } : {}),
