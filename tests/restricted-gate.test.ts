@@ -12,17 +12,13 @@ import {
 	type GateRestrictionId,
 } from "../src/application/restricted-gate.js";
 import {
-	assertImprovementLoopGate,
 	improvementLoopGate,
 	IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS,
-	ImprovementLoopForbiddenDecisionError,
 	runImprovementLoop,
 } from "../src/application/improvement-loop.js";
 import {
-	assertProposalSearchGate,
 	proposalSearchGate,
 	PROPOSAL_SEARCH_FORBIDDEN_DECISIONS,
-	ProposalSearchForbiddenDecisionError,
 } from "../src/application/proposal-search.js";
 import { setLanguage } from "../src/i18n.js";
 import type { WorkbenchConfirmationKind, WorkbenchHumanGate } from "../src/workbench/types.js";
@@ -68,18 +64,18 @@ const RESTRICTIONS: readonly {
 	{
 		id: "improvement-loop",
 		wrap: improvementLoopGate,
-		assert: assertImprovementLoopGate,
+		assert: (gate) => assertRestrictedGate(gate, "improvement-loop"),
 		forbidden: IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS,
-		legacyError: ImprovementLoopForbiddenDecisionError,
+		legacyError: RestrictedGateDecisionError,
 		advice: "Stop the loop and make it yourself.",
 		foreign: proposalSearchGate,
 	},
 	{
 		id: "proposal-search",
 		wrap: proposalSearchGate,
-		assert: assertProposalSearchGate,
+		assert: (gate) => assertRestrictedGate(gate, "proposal-search"),
 		forbidden: PROPOSAL_SEARCH_FORBIDDEN_DECISIONS,
-		legacyError: ProposalSearchForbiddenDecisionError,
+		legacyError: RestrictedGateDecisionError,
 		advice: "Read the table, pick a candidate, and decide it yourself.",
 		foreign: improvementLoopGate,
 	},
@@ -162,7 +158,7 @@ describe("one restricted gate", () => {
 	it("keeps the brand off anything that copies the gate", async () => {
 		const guarded = improvementLoopGate(recordingGate());
 		const copy: WorkbenchHumanGate = { ...guarded };
-		expect(() => assertImprovementLoopGate(copy)).toThrow(UnrestrictedGateError);
+		expect(() => assertRestrictedGate(copy, "improvement-loop")).toThrow(UnrestrictedGateError);
 		expect(JSON.stringify(guarded)).toBe("{}");
 	});
 

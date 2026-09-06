@@ -42,15 +42,15 @@ import { baseFixtureFiles, cleanup, makeTargetFixture } from "../fixtures.js";
 export const NOW = "2026-08-28T12:00:00.000Z";
 export const PROJECT_ID = "test-target";
 export const ACTOR_ID = "local:test-human";
-export const CANDIDATE_ID = "candidate-cycle-1";
+const CANDIDATE_ID = "candidate-cycle-1";
 export const PROMOTION_TAG = "v1.0.0";
-export const CANDIDATE_BRANCH = "candidate/workbench-cycle";
+const CANDIDATE_BRANCH = "candidate/workbench-cycle";
 /** The two development arms the candidate record names; written only on request. */
 export const DEVELOPMENT_BASELINE_EVAL = "erun_cycle_development_baseline";
 export const DEVELOPMENT_CANDIDATE_EVAL = "erun_cycle_development_candidate";
 export const CANDIDATE_AGENTS_MD = "# Cycle fixture\n\nAnswer only from approved local evidence and say when it is missing.\n";
 export const APPLY_REASON = "Apply the reviewed cycle-fixture proposal";
-export const EXPERIMENT_ID = "experiment-cycle-1";
+const EXPERIMENT_ID = "experiment-cycle-1";
 const FIXTURE_HASH = `sha256:${"f".repeat(64)}`;
 
 export interface FixturePaths {
@@ -69,7 +69,7 @@ export interface RecordingGate extends WorkbenchHumanGate {
  * actually argues with the judge at: the evidence is in and the release
  * decision is not made yet.
  */
-export type CandidateFixtureStatus = "promoted" | "rejected" | "evaluated";
+type CandidateFixtureStatus = "promoted" | "rejected" | "evaluated";
 
 export interface CycleFixture extends FixturePaths {
 	projectId: typeof PROJECT_ID;

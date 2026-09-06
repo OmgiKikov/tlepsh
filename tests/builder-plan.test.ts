@@ -45,7 +45,6 @@ function view(overrides: Partial<WorkbenchView> = {}): WorkbenchView {
 		},
 		focus: {},
 		selections: [],
-		actions: [],
 		blockers: [],
 		warnings: [],
 		shippingReadiness: { sealedHoldout: "ready", minimumTasks: 30, sealedCases: 40 },

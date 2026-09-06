@@ -24,7 +24,7 @@ import {
 	type BuilderRequest,
 	type BuilderRunRecord,
 	type CandidateProposal,
-} from "../src/builders/adapters.js";
+} from "../src/builder/proposal-contract.js";
 import {
 	applyBuilderProposal,
 	ApprovedSpecBuilderInputSchema,
@@ -32,7 +32,6 @@ import {
 	loadBuilderApplyReceipt,
 	loadBuilderProposalRun,
 	PersistedBuilderRunSchema,
-	resolveCanonicalProposalBasis,
 	runApprovedSpecBuilderProposal,
 	runBuilderProposal,
 } from "../src/application/builder-proposal.js";
@@ -583,13 +582,6 @@ describe("runBuilderProposal", () => {
 		chmodSync(memberPath, 0o600);
 		writeFileSync(memberPath, "corrupt member that must never be opened\n");
 		const adapterProbe = vi.fn(async () => probe());
-		expect(() => resolveCanonicalProposalBasis({
-			runsRoot,
-			approvedSpec: { stateRoot, projectId: "support", specId: snapshot.id },
-			sourceEvalRunId: evalRun.evalRunId,
-			failureModeIds: [`failure-mode-${"d".repeat(24)}`],
-		})).toThrow(/sealed holdout evidence cannot be used/);
-		expect(existsSync(join(runsRoot, evalRun.evalRunId, "diagnosis.json"))).toBe(false);
 
 		await expect(runApprovedSpecBuilderProposal({
 			adapter: {

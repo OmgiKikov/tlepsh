@@ -8,7 +8,6 @@ import { workbenchNext } from "./next-actions.js";
 import { isSubCent } from "../measurement.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync, rmSync } from "node:fs";
-import { userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { plural as localizedCount, t } from "../i18n.js";
 import {
@@ -171,7 +170,7 @@ import {
 	type ImprovementBrief,
 } from "../application/improvement-brief.js";
 import { failureModeReading } from "../application/run-explanation.js";
-import type { CandidateProposal, ProposalPredictionInput } from "../builders/adapters.js";
+import type { CandidateProposal, ProposalPredictionInput } from "../builder/proposal-contract.js";
 import {
 	listCorpora,
 	loadCorpus,
@@ -2857,7 +2856,6 @@ export class AhdeWorkbench {
 		const workshop = this.workshopSummary();
 		const view: WorkbenchView = {
 			...deriveWorkbenchView(inventory),
-			...(this.workshopOpen ? { workshopOpen: true } : {}),
 			...(workshop ? { workshop } : {}),
 			...(judgeCalibration ? { judgeCalibration } : {}),
 		};
@@ -3531,6 +3529,3 @@ export function createAhdeWorkbench(options: AhdeWorkbenchOptions): AhdeWorkbenc
 	return new AhdeWorkbench(options);
 }
 
-export function localWorkbenchActorId(): string {
-	return `local:${userInfo().username || basename(resolve(process.cwd()))}`;
-}

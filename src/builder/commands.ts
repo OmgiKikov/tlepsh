@@ -50,14 +50,8 @@ import {
 	type BeginBuilderLiveTrace
 } from "./run-observation.js";
 import type { BuilderSpendReader } from "./spend.js";
-import {
-	createTranscriptPresenter,
-	markerPaint,
-	type TranscriptPresenter,
-	type TranscriptTone,
-} from "./transcript.js";
-import { createPolicyAwareGate } from "./workbench-adapter.js";
-import { formatWorkbenchConfirmation } from "./workbench-gate.js";
+import { markerPaint, type TranscriptPresenter, type TranscriptTone } from "./transcript.js";
+import { createPolicyAwareGate, formatWorkbenchConfirmation } from "./workbench-adapter.js";
 
 type CommandWorkbench = Pick<
 	AhdeWorkbench,
@@ -288,7 +282,6 @@ async function awaitIdle(ctx: ExtensionCommandContext, command: string): Promise
 	return signal;
 }
 
-
 function noArguments(command: string, args: string): void {
 	if (args.trim()) throw new Error(t("cmd.err.no-args", { command }));
 }
@@ -442,8 +435,8 @@ export interface RegisterBuilderCommandsOptions {
 	workbench: CommandWorkbench;
 	actorId: () => string;
 	beginLiveTrace?: BeginBuilderLiveTrace;
-	/** Shared transcript presenter; created locally when omitted. */
-	presenter?: TranscriptPresenter;
+	/** Shared transcript presenter. */
+	presenter: TranscriptPresenter;
 	/** Invoked after any command that may change Workbench state (header refresh). */
 	onWorkbenchChanged?: () => void | Promise<void>;
 	/** Optional bridge to the conversation for “fix problem N” shortcuts. */
@@ -526,7 +519,7 @@ export function registerAhdeBuilderCommands(
 	pi: ExtensionAPI,
 	options: RegisterBuilderCommandsOptions,
 ): void {
-	const presenter = options.presenter ?? createTranscriptPresenter(pi);
+	const presenter = options.presenter;
 	const workbench = options.workbench;
 	const evidence = options.evidence ?? {
 		evalPage: (runsRoot: string, evalRunId: string) => collectEvalPage(runsRoot, evalRunId),
@@ -805,16 +798,12 @@ export function registerAhdeBuilderCommands(
 		};
 	};
 
-	const decideWithGate = (ctx: ExtensionCommandContext, input: WorkbenchDecisionInput, humanGate: ReturnType<typeof gate>, signal: AbortSignal | undefined) =>
-		decide(ctx, input.kind, input, signal, humanGate);
-
 	const promoteCurrent = async (
 		ctx: ExtensionCommandContext,
 		signal: AbortSignal | undefined,
 		version: string | null,
 		reason: string,
 	): Promise<void> => {
-		if (refuseWhileBusy(ctx)) return;
 		let view = await workbench.view();
 		if (view.stage !== "candidate-review" && view.stage !== "release-decision") {
 			throw new Error(t("error.not-available", { command: "promote", stage: stageLabel(view.stage), next: nextStep(view) }));
@@ -827,11 +816,11 @@ export function registerAhdeBuilderCommands(
 			followUp: "promote-candidate",
 		});
 		if (view.stage === "candidate-review") {
-			const reviewed = await decideWithGate(ctx, { kind: "review-candidate", recommendation: "promote", reason }, humanGate, signal);
+			const reviewed = await decide(ctx, "review-candidate", { kind: "review-candidate", recommendation: "promote", reason }, signal, humanGate);
 			if (!reviewed) return;
 			view = reviewed.view;
 		}
-		const result = await decideWithGate(ctx, { kind: "promote-candidate", version: chosen, reason }, humanGate, signal);
+		const result = await decide(ctx, "promote-candidate", { kind: "promote-candidate", version: chosen, reason }, signal, humanGate);
 		if (result) await showDecision(ctx, "promote", result);
 	};
 
@@ -847,22 +836,12 @@ export function registerAhdeBuilderCommands(
 			followUp: "reject-candidate",
 		});
 		if (view.stage === "candidate-review") {
-			const reviewed = await decideWithGate(ctx, { kind: "review-candidate", recommendation: "reject", reason }, humanGate, signal);
+			const reviewed = await decide(ctx, "review-candidate", { kind: "review-candidate", recommendation: "reject", reason }, signal, humanGate);
 			if (!reviewed) return;
 			view = reviewed.view;
 		}
-		const result = await decideWithGate(ctx, { kind: "reject-candidate", reason }, humanGate, signal);
+		const result = await decide(ctx, "reject-candidate", { kind: "reject-candidate", reason }, signal, humanGate);
 		if (result) await showDecision(ctx, "reject", result);
-	};
-
-	const simpleDecision = async (
-		ctx: ExtensionCommandContext,
-		command: string,
-		input: WorkbenchDecisionInput,
-		signal: AbortSignal | undefined,
-	): Promise<void> => {
-		if (refuseWhileBusy(ctx)) return;
-		await runObserved(ctx, command, input, signal);
 	};
 
 	/** Offer the stage's decisions right after the operator reviewed the exact subject. */
@@ -887,7 +866,7 @@ export function registerAhdeBuilderCommands(
 					{ id: "approve", label: () => t("review.approve-spec") },
 					{ id: "ask-changes", label: () => t("review.ask-changes") },
 				]);
-				if (choice === "approve") await simpleDecision(ctx, "approve", { kind: "approve-spec", reason }, signal);
+				if (choice === "approve") await runObserved(ctx, "approve", { kind: "approve-spec", reason }, signal);
 				else if (choice === "ask-changes") ctx.ui.notify(t("review.spec-hint"), "info");
 				return;
 			}
@@ -896,7 +875,7 @@ export function registerAhdeBuilderCommands(
 					{ id: "publish", label: () => t("review.publish-basket") },
 					{ id: "ask-changes", label: () => t("review.ask-changes") },
 				]);
-				if (choice === "publish") await simpleDecision(ctx, "publish", { kind: "publish-corpus", reason }, signal);
+				if (choice === "publish") await runObserved(ctx, "publish", { kind: "publish-corpus", reason }, signal);
 				else if (choice === "ask-changes") ctx.ui.notify(t("review.basket-hint"), "info");
 				return;
 			}
@@ -932,12 +911,12 @@ export function registerAhdeBuilderCommands(
 			}
 			case "candidate-adoption": {
 				const adopt = await confirmChoice(ctx, t("result.candidate-promoted"), "review.adopt", "review.just-looking", { signal });
-				if (adopt) await simpleDecision(ctx, "adopt", { kind: "adopt-candidate", reason }, signal);
+				if (adopt) await runObserved(ctx, "adopt", { kind: "adopt-candidate", reason }, signal);
 				return;
 			}
 			case "complete": {
 				const next = await confirmChoice(ctx, t("stage.complete"), "review.next-cycle", "review.just-looking", { signal });
-				if (next) await simpleDecision(ctx, "next", { kind: "continue-cycle", reason }, signal);
+				if (next) await runObserved(ctx, "next", { kind: "continue-cycle", reason }, signal);
 				return;
 			}
 			default:
@@ -1152,7 +1131,7 @@ export function registerAhdeBuilderCommands(
 			// option that always refuses is worse than one nobody found.
 			const fromKnowledgeBase = parseKnowledgeBaseHoldout(givenPath);
 			if (fromKnowledgeBase) {
-				await simpleDecision(ctx, "holdout", {
+				await runObserved(ctx, "holdout", {
 					kind: "generate-holdout",
 					cases: fromKnowledgeBase.cases ?? minimum + 5,
 					mode: fromKnowledgeBase.mode,
@@ -1181,7 +1160,7 @@ export function registerAhdeBuilderCommands(
 					if (!Number.isSafeInteger(cases)) {
 						throw new Error(t("cmd.err.holdout-count", { answer: JSON.stringify(answer.trim()) }));
 					}
-					await simpleDecision(ctx, "holdout", {
+					await runObserved(ctx, "holdout", {
 						kind: "generate-holdout",
 						cases,
 						mode: chosen === "seal" ? "seal" : "review",
@@ -1297,7 +1276,7 @@ export function registerAhdeBuilderCommands(
 		description: t("cmd.approve"),
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "approve");
-			await simpleDecision(ctx, "approve", { kind: "approve-spec", reason: reasonOrDefault(args, "approve") }, signal);
+			await runObserved(ctx, "approve", { kind: "approve-spec", reason: reasonOrDefault(args, "approve") }, signal);
 		},
 	});
 
@@ -1306,7 +1285,7 @@ export function registerAhdeBuilderCommands(
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "publish");
 			const name = args.trim();
-			await simpleDecision(ctx, "publish", { kind: "publish-corpus", ...(name ? { name } : {}), reason: t("reason.interactive", { command: "publish" }) }, signal);
+			await runObserved(ctx, "publish", { kind: "publish-corpus", ...(name ? { name } : {}), reason: t("reason.interactive", { command: "publish" }) }, signal);
 		},
 	});
 
@@ -1348,7 +1327,7 @@ export function registerAhdeBuilderCommands(
 		description: t("cmd.adopt"),
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "adopt");
-			await simpleDecision(ctx, "adopt", { kind: "adopt-candidate", reason: reasonOrDefault(args, "adopt") }, signal);
+			await runObserved(ctx, "adopt", { kind: "adopt-candidate", reason: reasonOrDefault(args, "adopt") }, signal);
 		},
 	});
 
@@ -1356,7 +1335,7 @@ export function registerAhdeBuilderCommands(
 		description: t("cmd.next"),
 		async handler(args, ctx) {
 			const signal = await prepare(ctx, "next");
-			await simpleDecision(ctx, "next", { kind: "continue-cycle", reason: reasonOrDefault(args, "next") }, signal);
+			await runObserved(ctx, "next", { kind: "continue-cycle", reason: reasonOrDefault(args, "next") }, signal);
 		},
 	});
 
@@ -1577,7 +1556,3 @@ export function registerAhdeBuilderCommands(
 	});
 }
 
-/** Counts used by the header when a decision changed evidence. */
-export function describeEvidence(view: WorkbenchView): string {
-	return `${pluralize(view.counts.developmentEvals, "eval run")} · ${pluralize(view.counts.openProposals, "open proposal")} · ${pluralize(view.counts.candidates, "candidate")}`;
-}

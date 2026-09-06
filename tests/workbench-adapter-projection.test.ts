@@ -46,7 +46,6 @@ function loadedView(): WorkbenchView {
 		},
 		focus: { proposal: `builder-run-${"d".repeat(20)}0` },
 		selections,
-		actions: ["review", "apply-proposal", "discard-proposal"],
 		blockers: [],
 		warnings: Array.from({ length: 6 }, (_, index) => `focus eval-run legacy-${index} no longer resolves`),
 		calibration: null,
@@ -108,9 +107,6 @@ describe("model-facing projection", () => {
 		expect(projected.warnings).toHaveLength(3);
 		expect(projected.omittedWarnings).toBe(3);
 		expect(projected.stage).toBe("proposal-review");
-		// The host's loose `actions` hints are replaced by the derived `next`
-		// block: one list of what to do here, not two.
-		expect(projected.actions).toBeUndefined();
 		expect(projected.next).toEqual({
 			unblock: "review the diff, then say “apply” or “discard”",
 			operatorNext: { code: "next.proposal-review" },
@@ -158,7 +154,7 @@ describe("model-facing projection", () => {
 		const improving: WorkbenchView = {
 			...view,
 			stage: "improvement-authoring",
-			workshopOpen: true,
+			workshop: { state: "live", workshopId: "ws-1", basis: "improvement", briefId: null, openedAt: "2026-09-03T10:00:00.000Z" },
 			shippingReadiness: { sealedHoldout: "missing", minimumTasks: 15, sealedCases: null },
 		};
 		const next = (projectForModel(improving) as { next: {

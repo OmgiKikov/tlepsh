@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -30,16 +30,12 @@ export function cleanup(dir: string): void {
 	rmSync(dir, { recursive: true, force: true });
 }
 
-export function readJson(dir: string, rel: string): unknown {
-	return JSON.parse(readFileSync(join(dir, rel), "utf8"));
-}
-
 export const AGENTS_MD = `# Test Agent
 
 Ты тестовый агент. Отвечай кратко.
 `;
 
-export const NARROW_SKILL_MD = `---
+const NARROW_SKILL_MD = `---
 name: check-dbo
 description: Проверка ограничений ДБО для премиальных клиентов.
 ---
@@ -47,7 +43,7 @@ description: Проверка ограничений ДБО для премиа�
 Проверь ограничения через bin/check_dbo.
 `;
 
-export const DATASET_2TASKS = [
+const DATASET_2TASKS = [
 	JSON.stringify({
 		id: "task_001",
 		input: "Проверь договор 42 и ограничения ДБО.",

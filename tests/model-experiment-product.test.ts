@@ -49,7 +49,7 @@ function view(experiment = record()): WorkbenchView {
 	return {
 		schemaVersion: 1, project: { id: "project", directory: "/tmp/project" }, stage: "ready-to-evaluate", headline: "Ready",
 		target: { status: "ready", id: "agent", gitSha: "a".repeat(40), model: { provider: PROVIDER, id: "current", apiKeyEnv: ENV, credentialPresent: true } },
-		focus: {}, selections: [], actions: [], blockers: [], warnings: [], calibration: null,
+		focus: {}, selections: [], blockers: [], warnings: [], calibration: null,
 		counts: { specDrafts: 0, approvedSpecs: 1, corpusDrafts: 0, developmentCorpora: 1, sealedCorpora: 0, developmentEvals: 0, openProposals: 0, candidates: 0, calibrations: 0 },
 		detail: { aspect: "models", content: { experiments: [experiment], selected: experiment } },
 	};

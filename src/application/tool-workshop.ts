@@ -23,7 +23,7 @@ import {
 	validateCandidateProposal,
 	type CandidateProposal,
 	type ProposalPredictionInput,
-} from "../builders/adapters.js";
+} from "../builder/proposal-contract.js";
 import {
 	ExecutionPolicyBlock,
 	harnessFilesOf,
@@ -50,7 +50,7 @@ import {
 } from "../runner.js";
 import {
 	AUTHORING_RESOURCE_LIMITS,
-	buildAuthoringEnvironment,
+	buildToolEnvironment,
 	sandboxInvocation,
 	TargetToolBroker,
 	detectTargetToolSandbox,
@@ -63,11 +63,9 @@ import { prepareToolHome, type ToolSetupOutcome } from "../target/tool-setup.js"
 import { loadTargetTools, type TargetToolLayout } from "../target/tool-manifest.js";
 import { resolveExecutionBackend } from "../target/container-backend.js";
 import {
-	compileHarnessAuthoringProposal,
 	renderManifest,
 	wholeFileDiff,
 	HARNESS_AUTHORING_ALLOWED_PATHS,
-	type HarnessAuthoringIntent,
 	type HarnessExecutionPolicyPatch,
 } from "./harness-authoring.js";
 import {
@@ -75,7 +73,7 @@ import {
 	parseToolFixtureFile,
 	type ToolContractFixture,
 } from "./tool-authoring.js";
-import { assertManifestChangePolicy, assertResourceOnlyManifestChange } from "./builder-proposal.js";
+import { assertManifestChangePolicy } from "./builder-proposal.js";
 import { ProposalBasisSelectionSchema } from "./improvement-brief.js";
 import {
 	assertTargetAuthoringSurfaceWithinLimits,
@@ -95,8 +93,7 @@ const GIT_MAX_BUFFER = 8 * 1024 * 1024;
 /** Where the tool code being tried comes from. Never the operator's worktree. */
 export type ToolWorkshopSource =
 	| { kind: "head" }
-	| { kind: "branch"; ref: string }
-	| { kind: "draft"; intents: readonly HarnessAuthoringIntent[]; summary?: string };
+	| { kind: "branch"; ref: string };
 
 export interface TryToolOptions {
 	repositoryDir: string;
@@ -116,7 +113,7 @@ export interface TryToolResult {
 		/** `workshop` is the Builder's own open worktree, dirty and unrecorded. */
 		kind: ToolWorkshopSource["kind"] | "workshop";
 		ref: string | null;
-		/** Paths a draft proposal would change, for the reviewer's orientation. */
+		/** Paths a workshop try ran against that differ from its base, for the reviewer's orientation. */
 		changedPaths: string[];
 		/**
 		 * The exact content identity of the Harness surface this ran against.
@@ -178,6 +175,7 @@ function boundedOutput(value: string): { text: string; truncated: boolean } {
 	return { text: raw.subarray(0, MAX_TRY_TOOL_OUTPUT_BYTES).toString("utf8"), truncated: true };
 }
 
+/** Apply a reviewed proposal's exact diff host-side, before the model sees the worktree. */
 function applyDraft(worktreePath: string, patch: string): void {
 	try {
 		execFileSync("git", ["-C", worktreePath, "apply", "--whitespace=nowarn", "-"], {
@@ -205,27 +203,12 @@ export async function tryTool(options: TryToolOptions): Promise<TryToolResult> {
 	const source: ToolWorkshopSource = options.source ?? { kind: "head" };
 	const ref = source.kind === "branch" ? source.ref : "HEAD";
 
-	let draftPatch: string | null = null;
-	let changedPaths: string[] = [];
-	if (source.kind === "draft") {
-		const proposal = compileHarnessAuthoringProposal({
-			repositoryDir: options.repositoryDir,
-			intents: source.intents,
-			summary: source.summary ?? `Try the ${options.tool} tool`,
-		});
-		changedPaths = proposal.changes.map((change) => change.path);
-		if (proposal.decision === "propose") {
-			draftPatch = `${proposal.changes.map((change) => change.unifiedDiff.trimEnd()).join("\n")}\n`;
-		}
-	}
-
 	return withDetachedWorktree({ repositoryDir: options.repositoryDir, ref }, async (worktree) => {
-		if (draftPatch) applyDraft(worktree.path, draftPatch);
 		return runDeclaredToolInDirectory({
 			directory: worktree.path,
 			tool: options.tool,
 			input: options.input,
-			source: { kind: source.kind, ref: source.kind === "branch" ? source.ref : null, changedPaths },
+			source: { kind: source.kind, ref: source.kind === "branch" ? source.ref : null, changedPaths: [] },
 			...(options.signal ? { signal: options.signal } : {}),
 		});
 	});
@@ -510,8 +493,6 @@ const WORKSHOP_SCOPE_DIRECTORIES = ["skills", "tools", "bin", "data"] as const;
 const WORKSHOP_PATH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
 /** `manifest.yaml` is host-owned: the workshop derives its declarations. */
 const WORKSHOP_MANIFEST = "manifest.yaml";
-/** The whole surface a Pi Target's workshop-authored code may see. */
-export const BUILDER_WORKSHOP_MOUNTED_PATHS = [...BUILDER_WORKSHOP_SCOPE] as const;
 
 /**
  * What ONE workshop may touch, derived from the Target's own manifest.
@@ -801,10 +782,6 @@ function workshopText(content: Buffer, path: string): string {
 	if (decoded.includes("\0")) throw new ToolWorkshopError(`${path} must not contain NUL bytes`);
 	if (decoded.includes("\r")) throw new ToolWorkshopError(`${path} must use LF line endings`);
 	return decoded;
-}
-
-function gitWorkshop(repositoryDir: string, args: string[], input?: string): string {
-	return gitWorkshopRaw(repositoryDir, args, input).trim();
 }
 
 /**
@@ -1500,7 +1477,7 @@ export class BuilderWorkshop {
 			throw new ToolWorkshopError(`the workshop has no directory ${String(requestedCwd)}`);
 		}
 		const sandboxBackend = detectTargetToolSandbox(surface, scratchDir);
-		const { environment, names } = buildAuthoringEnvironment({ label: "workshop", scratchDir });
+		const { environment, names } = buildToolEnvironment({ label: "workshop", scratchDir, environmentAllowlist: [], authoring: true });
 		// Never `execution.network`: that policy governs reviewed Target code, and
 		// pre-review authored code does not inherit it.
 		const confinement: TargetToolConfinement = {
@@ -1789,9 +1766,7 @@ export class BuilderWorkshop {
 		if (!currentRequirement) {
 			throw new ToolWorkshopError(`the requested ${grant.tool} access no longer matches the tool declaration; ask again`);
 		}
-		const expected = canonicalList([...currentRequirement.wants].sort((left, right) => left.localeCompare(right)));
-		const offered = canonicalList([...grant.wants].sort((left, right) => left.localeCompare(right)));
-		if (expected !== offered) {
+		if (!sameGrant(currentRequirement.wants, grant.wants)) {
 			throw new ToolWorkshopError(`the requested ${grant.tool} access no longer matches the tool declaration; ask again`);
 		}
 		const current = this.snapshotHash();
@@ -1815,13 +1790,12 @@ export class BuilderWorkshop {
 
 	toolAccessGranted(requirement: WorkshopToolGrantRequirement, snapshotHash = this.snapshotHash()): boolean {
 		this.assertOpen();
-		const expected = canonicalList([...requirement.wants].sort((left, right) => left.localeCompare(right)));
 		return this.grants.some((grant) =>
 			grant.tool === requirement.tool &&
 			grant.toolDigest === requirement.toolDigest &&
 			grant.snapshotHash === snapshotHash &&
 			!grant.used &&
-			canonicalList([...grant.wants].sort((left, right) => left.localeCompare(right))) === expected
+			sameGrant(grant.wants, requirement.wants)
 		);
 	}
 
@@ -1830,13 +1804,12 @@ export class BuilderWorkshop {
 		snapshotHash: string,
 		now: () => string,
 	): boolean {
-		const expected = canonicalList([...requirement.wants].sort((left, right) => left.localeCompare(right)));
 		const index = this.grants.findIndex((candidate) =>
 			candidate.tool === requirement.tool &&
 			candidate.toolDigest === requirement.toolDigest &&
 			candidate.snapshotHash === snapshotHash &&
 			!candidate.used &&
-			canonicalList([...candidate.wants].sort((left, right) => left.localeCompare(right))) === expected
+			sameGrant(candidate.wants, requirement.wants)
 		);
 		if (index < 0) return false;
 		const [grant] = this.grants.splice(index, 1);
@@ -2134,23 +2107,14 @@ export class BuilderWorkshop {
 		for (const name of this.directoryNames("data")) {
 			const absolute = join(this.path, "data", name);
 			if (!lstatSync(absolute).isDirectory()) continue;
-			if (this.holdsFile(absolute, 0)) present.push(`data/${name}`);
+			if (this.holdsFile(absolute)) present.push(`data/${name}`);
 		}
 		return this.mergeDeclarations(this.baseManifest.data, present);
 	}
 
-	private holdsFile(absolute: string, depth: number): boolean {
-		if (depth > 16) return false;
-		for (const entry of readdirSync(absolute, { withFileTypes: true })) {
-			const child = join(absolute, entry.name);
-			if (lstatSync(child).isSymbolicLink()) continue;
-			if (entry.isDirectory()) {
-				if (this.holdsFile(child, depth + 1)) return true;
-				continue;
-			}
-			if (entry.isFile()) return true;
-		}
-		return false;
+	/** Whether any regular file sits under `absolute`. Symlinks are never followed. */
+	private holdsFile(absolute: string): boolean {
+		return readdirSync(absolute, { recursive: true, withFileTypes: true }).some((entry) => entry.isFile());
 	}
 
 	// -- the diff ------------------------------------------------------------
@@ -2214,28 +2178,6 @@ export class BuilderWorkshop {
 		for (const path of listed.split("\0").filter(Boolean)) {
 			if (this.scope.holds(path)) ignored.push(path);
 		}
-		const status = gitWorkshopRaw(this.path, [
-			"status",
-			"--porcelain=v1",
-			"-z",
-			"--untracked-files=all",
-			"--no-renames",
-			"--ignored=matching",
-		]);
-		for (const record of status.split("\0").filter((entry) => entry.length > 3)) {
-			if (record.slice(0, 2) !== "!!") continue;
-			const path = record.slice(3);
-			// A collapsed directory still names something real; report its files.
-			if (path.endsWith("/")) {
-				const inside = new Map<string, WorkshopFileState>();
-				collectWorkshopFiles(this.path, path.slice(0, -1), inside, []);
-				for (const child of inside.keys()) {
-					if (this.scope.holds(child)) ignored.push(child);
-				}
-				continue;
-			}
-			if (this.scope.holds(path)) ignored.push(path);
-		}
 		return [...new Set(ignored)].sort((left, right) => left.localeCompare(right));
 	}
 
@@ -2253,11 +2195,7 @@ export class BuilderWorkshop {
 			return [];
 		}
 		return tools
-			.filter((tool) => {
-				const prefix = tool.directoryPath ? `${tool.directoryPath}/` : null;
-				return changed.has(tool.descriptorPath) || changed.has(tool.executablePath) ||
-					(prefix !== null && [...changed].some((path) => path.startsWith(prefix)));
-			})
+			.filter((tool) => touchedTool(changed, tool))
 			.map((tool) => ({
 				tool: tool.descriptor.name,
 				network: tool.descriptor.permissions.network,
@@ -2288,10 +2226,7 @@ export class BuilderWorkshop {
 		const changed = new Set(changes.map((change) => change.path));
 		const runs: ToolFixtureRunResult[] = [];
 		for (const tool of resulting.tools) {
-			const prefix = tool.directoryPath ? `${tool.directoryPath}/` : null;
-			const touched = changed.has(tool.descriptorPath) || changed.has(tool.executablePath) ||
-				(prefix !== null && [...changed].some((path) => path.startsWith(prefix)));
-			if (!touched) continue;
+			if (!touchedTool(changed, tool)) continue;
 			const declared = this.declaredContractFixtures(snapshot, tool);
 			// The newest attempt per fixture, and only against these exact bytes: a
 			// repair that was never re-tried shows as untested, not as its old pass.
@@ -2485,7 +2420,7 @@ export class BuilderWorkshop {
 			if (this.toolAuthoringPolicy) {
 				assertManifestChangePolicy(this.baseManifest, TargetManifest.parse(resulting.manifest), "execution-policy");
 			} else {
-				assertResourceOnlyManifestChange(this.baseManifest, TargetManifest.parse(resulting.manifest));
+				assertManifestChangePolicy(this.baseManifest, TargetManifest.parse(resulting.manifest), "resources-only");
 			}
 		}
 
@@ -2536,7 +2471,7 @@ export class BuilderWorkshop {
 			allowedPaths: harnessScopePaths(harnessFilesOf(this.baseManifest)),
 		});
 		const patch = `${proposal.changes.map((change) => change.unifiedDiff.trimEnd()).join("\n")}\n`;
-		gitWorkshop(this.repositoryDir, ["apply", "--check", "--index", "-"], patch);
+		gitWorkshopRaw(this.repositoryDir, ["apply", "--check", "--index", "-"], patch);
 		return {
 			proposal,
 			changes,
@@ -2596,7 +2531,7 @@ export class BuilderWorkshop {
 				"commit them — a workshop compiles only against a clean revision",
 			);
 		}
-		const head = gitWorkshop(this.repositoryDir, ["rev-parse", "--verify", "HEAD^{commit}"]);
+		const head = gitWorkshopRaw(this.repositoryDir, ["rev-parse", "--verify", "HEAD^{commit}"]).trim();
 		if (head !== this.baseTargetSha) {
 			throw new ToolWorkshopError("the Target moved while the workshop was open; discard it and open a new one");
 		}
@@ -2713,6 +2648,19 @@ export class BuilderWorkshop {
 	}
 }
 
+/** The same access request, whatever order its wants were listed in. */
+function sameGrant(left: readonly string[], right: readonly string[]): boolean {
+	const sorted = (wants: readonly string[]): string => canonicalList([...wants].sort((a, b) => a.localeCompare(b)));
+	return sorted(left) === sorted(right);
+}
+
+/** Whether a diff touched this tool's descriptor, executable, or package directory. */
+function touchedTool(changed: ReadonlySet<string>, tool: ResolvedTarget["tools"][number]): boolean {
+	const prefix = tool.directoryPath ? `${tool.directoryPath}/` : null;
+	return changed.has(tool.descriptorPath) || changed.has(tool.executablePath) ||
+		(prefix !== null && [...changed].some((path) => path.startsWith(prefix)));
+}
+
 function canonicalList(value: readonly string[]): string {
 	return JSON.stringify([...value]);
 }
@@ -2820,57 +2768,53 @@ export function reattachBuilderWorkshop(options: {
 		sha: descriptor.baseTargetSha,
 		refuse: (message, errorOptions) => new ToolWorkshopError(message, errorOptions),
 	});
-	try {
-		const scratchRoot = workshopScratchRoot(descriptor.scratchRoot);
-		if (descriptor.baseTargetSha !== options.expectedTarget.gitSha || descriptor.targetId !== options.expectedTarget.id) {
-			throw new ToolWorkshopError("the recorded workshop belongs to a different Target revision; discard it and open a new one");
-		}
-		if (
-			options.authoringContext.targetGitSha !== options.expectedTarget.gitSha ||
-			options.authoringContext.targetId !== options.expectedTarget.id
-		) {
-			throw new ToolWorkshopError("the authoring context claim does not describe the selected Target revision");
-		}
-		const manifestText = workshopText(readFileSync(join(worktree.path, WORKSHOP_MANIFEST)), WORKSHOP_MANIFEST);
-		const manifest = TargetManifest.parse(parseYaml(manifestText));
-		if (manifest.id !== options.expectedTarget.id) {
-			throw new ToolWorkshopError("the recorded workshop declares a different Target identity");
-		}
-		const baseManifestText = workshopText(
-			execFileSync("git", ["--no-replace-objects", "-C", repositoryDir, "show", `${descriptor.baseTargetSha}:${WORKSHOP_MANIFEST}`], {
-				stdio: ["ignore", "pipe", "pipe"],
-				maxBuffer: GIT_MAX_BUFFER,
-			}),
-			WORKSHOP_MANIFEST,
-		);
-		const workshop = new BuilderWorkshop({
-			workshopId: descriptor.workshopId,
-			repositoryDir,
-			worktree,
-			scratchRoot,
-			targetId: manifest.id,
-			claim: options.authoringContext,
-			binding: expectedBinding,
-			fromProposalRunId: descriptor.fromProposalRunId,
-			openedAt: descriptor.openedAt,
-			baseManifestText,
-			baseManifest: TargetManifest.parse(parseYaml(baseManifestText)),
-			toolAuthoringPolicy: descriptor.toolAuthoringPolicy ?? null,
-			tryHistory: descriptor.tryHistory ?? [],
-			grantHistory: options.grantHistory,
-			onGrantConsumed: options.onGrantConsumed,
-		});
-		const current = workshop.snapshotHash();
-		if (current !== descriptor.snapshotHash) {
-			throw new ToolWorkshopError(
-				`the recorded workshop changed on disk (${descriptor.snapshotHash} → ${current}); discard it and open a new one`,
-			);
-		}
-		return workshop;
-	} catch (error) {
-		// Re-attachment grants no cleanup authority. The exact worktree/note stay
-		// available for an explicit close, discard, or abandon after the refusal.
-		throw error;
+	// Re-attachment grants no cleanup authority. The exact worktree/note stay
+	// available for an explicit close, discard, or abandon after any refusal.
+	const scratchRoot = workshopScratchRoot(descriptor.scratchRoot);
+	if (descriptor.baseTargetSha !== options.expectedTarget.gitSha || descriptor.targetId !== options.expectedTarget.id) {
+		throw new ToolWorkshopError("the recorded workshop belongs to a different Target revision; discard it and open a new one");
 	}
+	if (
+		options.authoringContext.targetGitSha !== options.expectedTarget.gitSha ||
+		options.authoringContext.targetId !== options.expectedTarget.id
+	) {
+		throw new ToolWorkshopError("the authoring context claim does not describe the selected Target revision");
+	}
+	const manifestText = workshopText(readFileSync(join(worktree.path, WORKSHOP_MANIFEST)), WORKSHOP_MANIFEST);
+	const manifest = TargetManifest.parse(parseYaml(manifestText));
+	if (manifest.id !== options.expectedTarget.id) {
+		throw new ToolWorkshopError("the recorded workshop declares a different Target identity");
+	}
+	const baseManifestText = workshopText(
+		execFileSync("git", ["--no-replace-objects", "-C", repositoryDir, "show", `${descriptor.baseTargetSha}:${WORKSHOP_MANIFEST}`], {
+			stdio: ["ignore", "pipe", "pipe"],
+			maxBuffer: GIT_MAX_BUFFER,
+		}),
+		WORKSHOP_MANIFEST,
+	);
+	const workshop = new BuilderWorkshop({
+		workshopId: descriptor.workshopId,
+		repositoryDir,
+		worktree,
+		scratchRoot,
+		targetId: manifest.id,
+		claim: options.authoringContext,
+		binding: expectedBinding,
+		fromProposalRunId: descriptor.fromProposalRunId,
+		openedAt: descriptor.openedAt,
+		baseManifestText,
+		baseManifest: TargetManifest.parse(parseYaml(baseManifestText)),
+		toolAuthoringPolicy: descriptor.toolAuthoringPolicy ?? null,
+		tryHistory: descriptor.tryHistory ?? [],
+		grantHistory: options.grantHistory,
+		onGrantConsumed: options.onGrantConsumed,
+	});
+	const current = workshop.snapshotHash();
+	if (current !== descriptor.snapshotHash) {
+		throw new ToolWorkshopError(
+			`the recorded workshop changed on disk (${descriptor.snapshotHash} → ${current}); discard it and open a new one`,
+		);
+	}
+	return workshop;
 }
 

@@ -159,8 +159,6 @@ const NOUNS = {
 		dialogue: ["dialogue", "dialogues"],
 		// lane: knowledge
 		passage: ["passage", "passages"],
-		// lane: explain
-		run: ["run", "runs"],
 		// An agent turn — one exchange of the conversation, not one spoken line;
 		// Russian counts those as "ходы", and "реплики" is the wrong word for a
 		// budget that bounds how far a dialogue may go.
@@ -245,8 +243,6 @@ const NOUNS = {
 		dialogue: ["диалог", "диалога", "диалогов"],
 		// lane: knowledge
 		passage: ["фрагмент", "фрагмента", "фрагментов"],
-		// lane: explain
-		run: ["запуск", "запуска", "запусков"],
 		"agent turn": ["ход", "хода", "ходов"],
 		key: ["ключ", "ключа", "ключей"],
 		call: ["вызов", "вызова", "вызовов"],
@@ -402,6 +398,28 @@ const en = {
 	"noise.flip": "flip",
 
 	"header.title": "AHDE Builder",
+	// The first-use / welcome-back screen.
+	"welcome.tagline": "Build an agent. See what gets better.",
+	"welcome.project": "PROJECT",
+	"welcome.returning": "WELCOME BACK",
+	"welcome.try-saying": "Start with your intent",
+	"welcome.continue-with": "Continue from here",
+	"welcome.create": "Build an agent for my task",
+	"welcome.connect-python": "Connect my Python agent",
+	"welcome.configure": "Help me choose the agent's model",
+	"welcome.describe": "Help me describe what this agent should do",
+	"welcome.run": "Run the test basket",
+	"welcome.preview-basket": "Show me the basket before running it",
+	"welcome.verify": "Verify the prepared change",
+	"welcome.improve": "Improve the agent's failing answers",
+	"welcome.models": "Find a cheaper model for this agent",
+	"welcome.inspect": "Show me the project's current state",
+	"welcome.results": "Explain the latest results",
+	"welcome.workshop": "Continue the unfinished changes",
+	"welcome.candidate": "Show the interrupted attempt",
+	"welcome.selection": "Help me choose what to work on",
+	"welcome.integrity": "Show what needs to be restored",
+	"welcome.free-input": "Describe what you want. You can change direction as we work.",
 	"header.tagline": "· build, evaluate, and improve another agent through evidence",
 	"header.state-unavailable": "Project state unavailable",
 	"header.not-connected": "not connected — connect a model to continue",
@@ -447,7 +465,6 @@ const en = {
 	"candidate.regraded": "development {recorded} became {revised} ({moved})",
 
 	"development.comparison": "baseline {baseline} → candidate {candidate}",
-	"development.on-tasks": "on {tasks}",
 	"development.score": "· score {before} → {after}",
 	"development.improved": "↑ {count} improved",
 	"development.lower": "↓ {count} lower",
@@ -1335,9 +1352,6 @@ const en = {
 	"explorer.h2.per-task": "Per-task outcome",
 	"explorer.h2.candidates": "Candidates covering this eval",
 	"explorer.repetition": "repetition {index}",
-	"explorer.candidate-suffix": "candidate",
-	"explorer.eval-arm": "this eval is the {role} arm · {verdict}",
-	"explorer.mode-count": "{runs} run(s) · {affected}/{total} tasks · {reproduction}% reproduction",
 
 	"why.error":
 		"{task} repetition {rep} ended with an infrastructure error, so its evidence is inconclusive rather than a behavioural failure.",
@@ -1672,7 +1686,6 @@ const en = {
 	"artifact.spec-draft": "description draft",
 	"artifact.corpus-draft": "test-case draft",
 	"artifact.development-corpus": "test basket",
-	"artifact.development-eval-run": "test run",
 	"artifact.interrupted-candidate": "interrupted candidate",
 	"artifact.applied-proposal": "applied change",
 	"artifact.proposal": "change",
@@ -1685,7 +1698,6 @@ const en = {
 	"view.resource.manifest": "settings",
 	"view.target.harness-files": "Files the harness declares",
 	"growth.unreadable": "{count} could not be read and are not shown",
-	"label.case-input": "Case",
 	"passport.none-yet": "Nothing has been shipped yet, so there is no version to describe.",
 	"passport.no-version": "No shipped version {version} exists for this agent.",
 	// lane: template-placeholders
@@ -2161,6 +2173,28 @@ const ru: Record<MessageKey, string> = {
 	"noise.flip": "переключений",
 
 	"header.title": "AHDE Билдер",
+	// The first-use / welcome-back screen.
+	"welcome.tagline": "Собери агента. Увидь, что стало лучше.",
+	"welcome.project": "ПРОЕКТ",
+	"welcome.returning": "С ВОЗВРАЩЕНИЕМ",
+	"welcome.try-saying": "Начни со своей задачи",
+	"welcome.continue-with": "Можно продолжить так",
+	"welcome.create": "Создать агента под мою задачу",
+	"welcome.connect-python": "Подключить Python-агента",
+	"welcome.configure": "Помоги выбрать модель агента",
+	"welcome.describe": "Помоги описать, что должен делать агент",
+	"welcome.run": "Прогнать корзину",
+	"welcome.preview-basket": "Покажи корзину перед запуском",
+	"welcome.verify": "Проверить подготовленное изменение",
+	"welcome.improve": "Улучшить ответы, на которых агент ошибается",
+	"welcome.models": "Подобрать агенту модель дешевле",
+	"welcome.inspect": "Покажи текущее состояние проекта",
+	"welcome.results": "Объясни последние результаты",
+	"welcome.workshop": "Продолжить незаконченные изменения",
+	"welcome.candidate": "Покажи прерванную попытку",
+	"welcome.selection": "Помоги выбрать, над чем работаем",
+	"welcome.integrity": "Покажи, что нужно восстановить",
+	"welcome.free-input": "Пиши обычными словами. Направление можно менять по ходу.",
 	"header.tagline": "· собирает, проверяет и улучшает другого агента по данным",
 	"header.state-unavailable": "Состояние проекта недоступно",
 	"header.not-connected": "не подключена — подключи модель, чтобы продолжить",
@@ -2204,7 +2238,6 @@ const ru: Record<MessageKey, string> = {
 	"candidate.regraded": "разработка {recorded} стало {revised} ({moved})",
 
 	"development.comparison": "было {baseline} → кандидат {candidate}",
-	"development.on-tasks": "· задач {tasks}",
 	"development.score": "· балл {before} → {after}",
 	"development.improved": "↑ {count} лучше",
 	"development.lower": "↓ {count} хуже",
@@ -3057,9 +3090,6 @@ const ru: Record<MessageKey, string> = {
 	"explorer.h2.per-task": "Итог по задачам",
 	"explorer.h2.candidates": "Кандидаты по этим тестам",
 	"explorer.repetition": "повтор {index}",
-	"explorer.candidate-suffix": "кандидат",
-	"explorer.eval-arm": "эти тесты — {role}-плечо · {verdict}",
-	"explorer.mode-count": "прогонов: {runs} · задач: {affected}/{total} · воспроизводится в {reproduction}%",
 
 	"why.error":
 		"{task}, повтор {rep}: инфраструктурная ошибка, поэтому данные неубедительны, а не показывают сбой поведения.",
@@ -3392,7 +3422,6 @@ const ru: Record<MessageKey, string> = {
 	"artifact.spec-draft": "черновик описания",
 	"artifact.corpus-draft": "черновик тестов",
 	"artifact.development-corpus": "набор тестов",
-	"artifact.development-eval-run": "прогон тестов",
 	"artifact.interrupted-candidate": "прерванный кандидат",
 	"artifact.applied-proposal": "применённая правка",
 	"artifact.proposal": "правка",
@@ -3405,7 +3434,6 @@ const ru: Record<MessageKey, string> = {
 	"view.resource.manifest": "настройки",
 	"view.target.harness-files": "Файлы, которые объявляет харнесс",
 	"growth.unreadable": "{count} не удалось прочитать, они не показаны",
-	"label.case-input": "Кейс",
 	"passport.none-yet": "Пока ничего не выкачено, так что описывать нечего.",
 	"passport.no-version": "Выкаченной версии {version} у этого агента нет.",
 	// lane: template-placeholders

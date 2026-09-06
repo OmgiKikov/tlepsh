@@ -4,7 +4,7 @@ import {
 	scorePredictedOverall,
 	type PredictionMeasurement,
 } from "../../application/prediction.js";
-import type { ProposalPrediction } from "../../builders/adapters.js";
+import type { ProposalPrediction } from "../proposal-contract.js";
 import { formatResourceFragment } from "../../domain/comparison-gate.js";
 import { plural, t, verdictLabel } from "../../i18n.js";
 import type { WorkbenchCandidateImpactProjection } from "../../workbench/types.js";

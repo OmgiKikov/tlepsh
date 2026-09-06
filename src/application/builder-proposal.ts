@@ -32,7 +32,7 @@ import {
 	type BuilderProbe,
 	type BuilderRunRecord,
 	type CandidateProposal,
-} from "../builders/adapters.js";
+} from "../builder/proposal-contract.js";
 import { compileFailureBundle } from "../bundle.js";
 import { listCorpora } from "../corpus.js";
 import { DiagnosisRecordSchema, diagnoseEvalRun } from "../diagnosis.js";
@@ -824,31 +824,25 @@ async function invokeAdapter(
 			error: probe.error ?? builderError("probe-failed", "backend unavailable", true),
 		});
 	}
+	const backendVersion = probe.version;
+	const fail = (error: BuilderError, status?: "timeout" | "cancelled"): BuilderRunRecord =>
+		failedRecord({
+			runId,
+			backend: options.adapter.backend,
+			backendVersion,
+			capabilities,
+			baseTargetSha: options.baseTargetSha,
+			startedAt,
+			finishedAt: now(),
+			...(status ? { status } : {}),
+			error,
+		});
 
 	if (options.signal?.aborted) {
-		return failedRecord({
-			runId,
-			backend: options.adapter.backend,
-			backendVersion: probe.version,
-			capabilities,
-			baseTargetSha: options.baseTargetSha,
-			startedAt,
-			finishedAt: now(),
-			status: "cancelled",
-			error: builderError("cancelled", "builder request was cancelled", false),
-		});
+		return fail(builderError("cancelled", "builder request was cancelled", false), "cancelled");
 	}
 	if (!capabilities.cancellation) {
-		return failedRecord({
-			runId,
-			backend: options.adapter.backend,
-			backendVersion: probe.version,
-			capabilities,
-			baseTargetSha: options.baseTargetSha,
-			startedAt,
-			finishedAt: now(),
-			error: builderError("cancellation-unsupported", "production proposal runs require adapter cancellation", false),
-		});
+		return fail(builderError("cancellation-unsupported", "production proposal runs require adapter cancellation", false));
 	}
 
 	const controller = new AbortController();
@@ -881,29 +875,13 @@ async function invokeAdapter(
 
 		if (interruption) {
 			const status = interruption;
-			return failedRecord({
-				runId,
-				backend: options.adapter.backend,
-				backendVersion: probe.version,
-				capabilities,
-				baseTargetSha: options.baseTargetSha,
-				startedAt,
-				finishedAt: now(),
+			return fail(
+				builderError(status, status === "timeout" ? "builder execution timed out" : "builder request was cancelled", status === "timeout"),
 				status,
-				error: builderError(status, status === "timeout" ? "builder execution timed out" : "builder request was cancelled", status === "timeout"),
-			});
+			);
 		}
 		if (adapterFailure !== undefined) {
-			return failedRecord({
-				runId,
-				backend: options.adapter.backend,
-				backendVersion: probe.version,
-				capabilities,
-				baseTargetSha: options.baseTargetSha,
-				startedAt,
-				finishedAt: now(),
-				error: builderError("adapter-threw", errorMessage(adapterFailure), true),
-			});
+			return fail(builderError("adapter-threw", errorMessage(adapterFailure), true));
 		}
 
 		try {
@@ -929,16 +907,7 @@ async function invokeAdapter(
 			}
 			return result;
 		} catch (error) {
-			return failedRecord({
-				runId,
-				backend: options.adapter.backend,
-				backendVersion: probe.version,
-				capabilities,
-				baseTargetSha: options.baseTargetSha,
-				startedAt,
-				finishedAt: now(),
-				error: builderError("invalid-adapter-result", errorMessage(error), false),
-			});
+			return fail(builderError("invalid-adapter-result", errorMessage(error), false));
 		}
 	} finally {
 		clearTimeout(timer);
@@ -1177,36 +1146,6 @@ function assertDevelopmentProposalSourceMetadata(
 	return evalRunId;
 }
 
-export interface ResolveCanonicalProposalBasisOptions {
-	runsRoot: string;
-	approvedSpec: ApprovedSpecInput;
-	sourceEvalRunId: string;
-	failureModeIds: string[];
-}
-
-/** CLI/host convenience which performs the sealed preflight before diagnosis. */
-export function resolveCanonicalProposalBasis(
-	options: ResolveCanonicalProposalBasisOptions,
-): ProposalBasisSelection {
-	loadApprovedSpec(options.approvedSpec);
-	const evalRunId = assertDevelopmentProposalSourceMetadata(
-		options.runsRoot,
-		options.approvedSpec,
-		options.sourceEvalRunId,
-	);
-	const diagnosis = diagnoseEvalRun(options.runsRoot, evalRunId);
-	const brief = compileImprovementBrief(options.runsRoot, diagnosis);
-	const selection = ProposalBasisSelectionSchema.parse({
-		algorithmId: brief.algorithmId,
-		evalRunId: brief.evalRunId,
-		diagnosisId: brief.diagnosisId,
-		briefId: brief.briefId,
-		failureModeIds: options.failureModeIds,
-	});
-	deriveEvidenceLinkedProposalSelection(brief, selection);
-	return selection;
-}
-
 /**
  * Canonical Spec-first entry point. It derives every evidence byte from the
  * verified EvalRun/Diagnosis and the exact reconstructable development target;
@@ -1248,7 +1187,7 @@ export async function runApprovedSpecBuilderProposal(
 	void _sourceEvalRunId;
 	const runCanonical = async (
 		targetDir: string,
-		sourceEvalRunId?: string,
+		verifiedSource?: ReturnType<typeof loadVerifiedEvalRun>,
 	): Promise<BuilderProposalRunResult> => {
 		const target = loadTarget(targetDir, options.dataset ? { dataset: options.dataset } : undefined);
 		const baseTargetSha = GitShaSchema.parse(target.gitSha);
@@ -1263,31 +1202,12 @@ export async function runApprovedSpecBuilderProposal(
 		let sourceAttestation: CanonicalBuilderSource | null = null;
 		let proposalBasis: ProposalBasisAttestation | null = null;
 		let proposalDiagnoses: EvidenceLinkedProposalDiagnosis[] | null = null;
-		if (sourceEvalRunId) {
-			const sealed = listCorpora({
-				stateRoot: options.approvedSpec.stateRoot,
-				projectId: options.approvedSpec.projectId,
-			}).filter((corpus) => corpus.visibility === "sealed");
-			const sealedHashes = new Set(sealed.map((corpus) => corpus.hash));
-			let preflight;
-			try {
-				preflight = readEvalRunIndex(options.runsRoot, sourceEvalRunId);
-			} catch {
-				throw new Error("canonical Builder source metadata failed integrity checks");
-			}
-			if (isSealedEvalRun(preflight, sealedHashes)) {
-				throw new Error("sealed holdout evidence cannot be used to steer a Builder proposal");
-			}
-			const verifiedEval = loadVerifiedEvalRun(options.runsRoot, sourceEvalRunId);
-			if (!verifiedEval.hasRunHashes) {
-				throw new Error("canonical Builder source eval must hash-anchor every member run");
-			}
-			const evalRun = verifiedEval.record;
+		if (verifiedSource) {
+			// The sealed preflight and the hash-anchor check already ran on this
+			// exact record before the worktree was opened.
+			const evalRun = verifiedSource.record;
 			if (evalRun.target.id !== target.manifest.id || evalRun.target.gitSha !== target.gitSha) {
 				throw new Error("canonical Builder source must belong to the reconstructed exact target revision");
-			}
-			if (isSealedEvalRun(evalRun, sealedHashes)) {
-				throw new Error("sealed holdout evidence cannot be used to steer a Builder proposal");
 			}
 			const resolved = resolveDevelopmentTargetForEval({
 				target,
@@ -1365,7 +1285,7 @@ export async function runApprovedSpecBuilderProposal(
 		if (worktree.sha !== evalRun.target.gitSha) {
 			throw new Error("canonical Builder source ref did not resolve to the recorded target revision");
 		}
-		return runCanonical(worktree.path, evalRun.evalRunId);
+		return runCanonical(worktree.path, verifiedEval);
 	});
 	admitBuilderProposalRun(options.approvedSpec.stateRoot, options.approvedSpec.projectId, result);
 	return result;
@@ -1394,7 +1314,6 @@ export function verifyBuilderProposalRunEvidence(runsRoot: string, record: Persi
 	}
 	verifyPersistedBuilderInput(record, input);
 	verifyPersistedProposalBasis(record, runsRoot);
-	return;
 }
 
 export function loadBuilderProposalRun(runsRoot: string, runIdInput: string): PersistedBuilderRun {
@@ -1565,34 +1484,17 @@ function canonicalBuilderRunDirectory(runsRoot: string, runId: string): string {
 	return runDir;
 }
 
-/** One scope entry, decided by the single declared-surface matcher. */
-function matchesAllowedPath(path: string, allowed: string): boolean {
-	return matchesHarnessGlob(path, allowed);
-}
-
 function validateChangePath(path: string, allowedPaths: string[]): void {
 	if (!isSafeRepositoryPath(path) || path.includes(":")) throw new Error(`unsafe proposal path: ${path}`);
 	const lower = path.toLowerCase();
 	if (lower.startsWith("evals/")) throw new Error(`forbidden proposal path: ${path}`);
-	if (!allowedPaths.some((allowed) => matchesAllowedPath(path, allowed))) {
+	if (!allowedPaths.some((allowed) => matchesHarnessGlob(path, allowed))) {
 		throw new Error(`proposal path is outside persisted allowed scope: ${path}`);
 	}
 }
 
 const PROTECTED_MANIFEST_FIELDS = ["id", "model", "execution", "instructions", "evalSuite"] as const;
 export type ManifestChangePolicy = "resources-only" | "execution-policy";
-
-/**
- * Prove that a Target manifest change is resource-declaration-only. Both
- * values must already have passed the strict TargetManifest schema; defaults
- * are therefore compared in their canonical effective form.
- */
-export function assertResourceOnlyManifestChange(
-	base: TargetManifestValue,
-	candidate: TargetManifestValue,
-): void {
-	assertManifestChangePolicy(base, candidate, "resources-only");
-}
 
 /**
  * Re-validate the authority carried by the immutable Builder request. The
@@ -1789,14 +1691,7 @@ export function applyBuilderProposal(
 	if (persisted.runId !== runId || persisted.result.status !== "completed" || !persisted.artifacts.proposal) {
 		throw new Error("builder run does not contain a completed proposal");
 	}
-	const inputPath = join(runDir, persisted.artifacts.input.path);
-	assertRegularBounded(inputPath, MAX_BUILDER_INPUT_BYTES, "builder_input.txt");
-	const inputBytes = readFileSync(inputPath);
-	if (inputBytes.length !== persisted.artifacts.input.bytes || sha256(inputBytes) !== persisted.artifacts.input.sha256) {
-		throw new Error("builder input artifact hash/size does not match builder_run evidence");
-	}
-	verifyPersistedBuilderInput(persisted, inputBytes);
-	verifyPersistedProposalBasis(persisted, options.runsRoot);
+	verifyBuilderProposalRunEvidence(options.runsRoot, persisted);
 	if (
 		persisted.request.provenanceMode === "canonical" &&
 		persisted.request.source !== null &&

@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { dirname, join, resolve } from "node:path";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
@@ -1343,7 +1344,6 @@ async function main(): Promise<void> {
 				assertUntrackedEngineStore(targetDir);
 				const projectId = arg("project") ?? loadTarget(targetDir).manifest.id;
 				const builderRunId = arg("builder-run");
-				const requestedSpecId = arg("spec");
 				const builderRun = builderRunId ? loadBuilderProposalRun(runsRoot(), builderRunId) : undefined;
 				if (builderRun && !builderRun.request.approvedSpec) {
 					throw new Error(`builder run ${builderRunId} is legacy evidence without an approved Spec`);
@@ -1352,7 +1352,7 @@ async function main(): Promise<void> {
 					builderRun.request.approvedSpec.projectId !== projectId) {
 					throw new Error(`builder run ${builderRunId} belongs to project ${builderRun.request.approvedSpec.projectId}`);
 				}
-				const specId = requestedSpecId ?? builderRun?.request.approvedSpec?.specId ??
+				const specId = builderRun?.request.approvedSpec?.specId ??
 					listSpecSnapshots(stateRoot(), projectId).find((snapshot) => snapshot.status === "approved")?.id;
 				const requestedSpec = specId ? loadSpecSnapshot(stateRoot(), projectId, specId) : undefined;
 				if (requestedSpec && requestedSpec.status !== "approved") {
@@ -1382,7 +1382,6 @@ async function main(): Promise<void> {
 						repetitions,
 						dataset: arg("dataset"),
 						developmentCorpus,
-						actorId: arg("actor"),
 						sealedCorpus,
 						...(jobs === undefined ? {} : { jobs }),
 						...(baselineMaxAgeMs === undefined ? {} : { baselineMaxAgeMs }),
@@ -1401,7 +1400,6 @@ async function main(): Promise<void> {
 						specId,
 						proposalId: requireArg("proposal"),
 						diagnosisId: requireArg("diagnosis"),
-						actorId: arg("actor"),
 						sealedCorpus,
 						...(jobs === undefined ? {} : { jobs }),
 						...(baselineMaxAgeMs === undefined ? {} : { baselineMaxAgeMs }),
@@ -1731,9 +1729,6 @@ async function main(): Promise<void> {
 			await watchTarget();
 			break;
 		}
-		default:
-			console.log(USAGE);
-			process.exit(2);
 	}
 }
 

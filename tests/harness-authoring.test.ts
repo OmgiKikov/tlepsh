@@ -17,7 +17,7 @@ import {
 	type BuilderCapabilities,
 	type BuilderRequest,
 	type CandidateProposal,
-} from "../src/builders/adapters.js";
+} from "../src/builder/proposal-contract.js";
 import {
 	HARNESS_AUTHORING_ALLOWED_PATHS,
 	HarnessAuthoringIntentSchema,

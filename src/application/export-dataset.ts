@@ -4,6 +4,7 @@ import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { parsePassRateFlag } from "../cli-invocation.js";
 import { runGraderScore } from "../compare.js";
+import { JudgeVerdictSidecarSchema } from "./run-explanation.js";
 import { isScreenEvalRun } from "./cheap-check.js";
 import { corpusDatasetLabel } from "./corpus-target.js";
 import { plural, t, type MessageKey } from "../i18n.js";
@@ -519,24 +520,6 @@ export function datasetMessages(system: string, messages: readonly TraceMessage[
 }
 
 // ---------- The world, the verdicts, and the agent kind ----------
-
-const JsonObjectSchema = z.record(z.string(), z.unknown());
-
-/** Lenient on purpose: the sidecar is read, never re-derived, and its shape belongs to `eval.ts`. */
-const JudgeVerdictSidecarSchema = z.object({
-	passed: z.boolean(),
-	score: z.number().finite(),
-	choice: z.string().max(MAX_DATASET_NAME_CHARS).optional(),
-	assertions: z
-		.array(z.object({
-			index: z.number().int(),
-			answer: z.string().max(MAX_DATASET_NAME_CHARS),
-			evidence: z.string(),
-		}))
-		.max(64)
-		.optional(),
-	jury: z.array(JsonObjectSchema).max(16).optional(),
-});
 
 /**
  * The verdicts the judge wrote for this run, read from

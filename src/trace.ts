@@ -220,7 +220,8 @@ function assertTraceContentBounds(content: string): void {
 	}
 }
 
-function parseSessionJsonlInternal(content: string, strict: boolean): TraceMessage[] {
+/** Strict evidence parser: malformed lines invalidate the whole trace. */
+export function parseSessionJsonl(content: string): TraceMessage[] {
 	assertTraceContentBounds(content);
 	const messages: TraceMessage[] = [];
 	for (const [lineIndex, line] of content.split("\n").entries()) {
@@ -230,23 +231,17 @@ function parseSessionJsonlInternal(content: string, strict: boolean): TraceMessa
 		try {
 			parsed = JSON.parse(trimmed) as unknown;
 		} catch (error) {
-			if (strict) {
-				throw new TraceParseError(
-					lineIndex + 1,
-					`invalid JSON (${error instanceof Error ? error.message : String(error)})`,
-				);
-			}
-			continue;
+			throw new TraceParseError(
+				lineIndex + 1,
+				`invalid JSON (${error instanceof Error ? error.message : String(error)})`,
+			);
 		}
 
 		let entry: SessionEntry;
 		try {
 			entry = validateEntry(parsed);
 		} catch (error) {
-			if (strict) {
-				throw new TraceParseError(lineIndex + 1, error instanceof Error ? error.message : String(error));
-			}
-			continue;
+			throw new TraceParseError(lineIndex + 1, error instanceof Error ? error.message : String(error));
 		}
 		if (entry.type !== "message" || !entry.message) continue;
 		const message = entry.message;
@@ -275,16 +270,6 @@ function parseSessionJsonlInternal(content: string, strict: boolean): TraceMessa
 		}
 	}
 	return messages;
-}
-
-/** Strict evidence parser: malformed lines invalidate the whole trace. */
-export function parseSessionJsonl(content: string): TraceMessage[] {
-	return parseSessionJsonlInternal(content, true);
-}
-
-/** Best-effort parser for recovery/display only. Never use it for grading. */
-export function parseSessionJsonlLenient(content: string): TraceMessage[] {
-	return parseSessionJsonlInternal(content, false);
 }
 
 export function readTraceArtifact(

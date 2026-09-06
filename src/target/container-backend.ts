@@ -11,9 +11,7 @@
  * declared network policy enforced by the container runtime rather than by a
  * profile string.
  *
- * Docker is implemented. Gondolin (Earendil's Apache-2.0 micro-VM) gets the
- * same `ContainerBackend` interface and a stub that fails closed — nothing is
- * vendored here, so a build that claims Gondolin must first ship it.
+ * Docker is the one runtime this build knows how to drive.
  *
  * Two rules hold for every invocation this module builds:
  *
@@ -45,15 +43,13 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join } from "node:path";
 
-export type ContainerRuntimeName = "docker" | "gondolin";
-
 /**
  * The resolved `execution.container` block. Structurally identical to the
  * manifest schema, restated here so the backend does not depend on the
  * manifest module (and so tests can build one by hand).
  */
 export interface ContainerPolicy {
-	runtime: ContainerRuntimeName;
+	runtime: "docker";
 	image: string;
 	/** Exact OCI target selected by the runtime; prevents host-native multi-arch drift. */
 	platform: string;
@@ -190,7 +186,7 @@ function isExactRuntimeIdentity(candidate: unknown): candidate is ContainerRunti
  * deliberately irrelevant.
  */
 export interface ContainerRuntimeBinding {
-	runtime: ContainerRuntimeName;
+	runtime: "docker";
 	executable: string;
 	spawnEnvironment: Readonly<NodeJS.ProcessEnv>;
 	identity: Readonly<ContainerRuntimeIdentity>;
@@ -230,7 +226,7 @@ export function isContainerSandboxFingerprint(value: string): boolean {
 
 /** A runtime that answered the probe and named its server exactly. */
 export interface ContainerRuntimeAvailable {
-	runtime: ContainerRuntimeName;
+	runtime: "docker";
 	available: true;
 	/**
 	 * Server version, OS/arch, daemon, kernel, driver, cgroup and context. Minted
@@ -242,7 +238,7 @@ export interface ContainerRuntimeAvailable {
 
 /** A runtime that cannot confine a run, and why. */
 export interface ContainerRuntimeUnavailable {
-	runtime: ContainerRuntimeName;
+	runtime: "docker";
 	available: false;
 	/** Exact reason the runtime is unusable. */
 	reason: string;
@@ -311,9 +307,9 @@ function runtimeClientIdentity(binary: string): RuntimeClientIdentity {
 	};
 }
 
-function detectionCacheKey(runtime: ContainerRuntimeName, environment: NodeJS.ProcessEnv): string {
+function detectionCacheKey(environment: NodeJS.ProcessEnv): string {
 	return createHash("sha256")
-		.update(JSON.stringify({ runtime, environment: runtimeCliEnvironment(environment) }))
+		.update(JSON.stringify({ environment: runtimeCliEnvironment(environment) }))
 		.digest("hex");
 }
 
@@ -430,29 +426,20 @@ function probeDocker(binary: string, timeoutMs: number, hostEnvironment: NodeJS.
  * answer cannot change under a running eval without invalidating the evidence
  * anyway.
  */
-export function detectContainerRuntime(
-	runtime: ContainerRuntimeName,
-	options: DetectContainerRuntimeOptions = {},
-): ContainerRuntimeStatus {
+export function detectContainerRuntime(options: DetectContainerRuntimeOptions = {}): ContainerRuntimeStatus {
 	const environment = options.environment ?? process.env;
 	// Cache the decision for the exact runtime CLI environment, even when the
 	// binary disappears after the first probe. A run must not silently switch
 	// containment identity halfway through; `force` is the explicit re-probe.
-	const key = `${runtime}\0${detectionCacheKey(runtime, environment)}`;
+	const key = detectionCacheKey(environment);
 	if (!options.force) {
 		const cached = detectionCache.get(key);
 		if (cached) return cached;
 	}
-	const pathValue = environment.PATH ?? "";
-	const binary = runtime === "docker" ? executableOnPath("docker", pathValue) : undefined;
-	const status: ContainerRuntimeStatus = runtime === "gondolin"
-		? gondolinBackend.unavailable()
-		: ((): ContainerRuntimeStatus => {
-			if (!binary) {
-				return { runtime: "docker", available: false, reason: "docker executable not found on PATH" };
-			}
-			return probeDocker(binary, options.timeoutMs ?? DETECTION_TIMEOUT_MS, environment);
-		})();
+	const binary = executableOnPath("docker", environment.PATH ?? "");
+	const status: ContainerRuntimeStatus = binary
+		? probeDocker(binary, options.timeoutMs ?? DETECTION_TIMEOUT_MS, environment)
+		: { runtime: "docker", available: false, reason: "docker executable not found on PATH" };
 	detectionCache.set(key, status);
 	return status;
 }
@@ -518,14 +505,6 @@ export interface ContainerInvocation {
 	terminate?: () => void;
 	/** Remove host-side invocation material after any normal or abnormal exit. */
 	dispose?: () => void;
-}
-
-export interface ContainerBackend {
-	readonly runtime: ContainerRuntimeName;
-	/** Why this runtime cannot be used, as a status object. */
-	unavailable(): ContainerRuntimeStatus;
-	/** Build the exact argv for one confined invocation. */
-	invocation(request: ContainerInvocationRequest): ContainerInvocation;
 }
 
 /** Host variables the runtime CLI needs to find its own daemon. Never forwarded into the container. */
@@ -700,7 +679,6 @@ function sameRuntimeIdentity(left: ContainerRuntimeIdentity, right: ContainerRun
  * after the same socket/context starts addressing daemon B.
  */
 export function assertContainerRuntimeBinding(binding: ContainerRuntimeBinding): void {
-	if (binding.runtime !== "docker") throw new Error(`${binding.runtime} runtime binding is not executable in this build`);
 	let current: ContainerRuntimeStatus;
 	try {
 		current = probeDocker(binding.executable, binding.probeTimeoutMs, { ...binding.spawnEnvironment });
@@ -940,182 +918,152 @@ function recoverStaleDockerContainers(binding: ContainerRuntimeBinding): void {
 	}
 }
 
-export const dockerBackend: ContainerBackend = {
-	runtime: "docker",
-	unavailable(): ContainerRuntimeStatus {
-		return { runtime: "docker", available: false, reason: "docker runtime not detected" };
-	},
-	invocation(request: ContainerInvocationRequest): ContainerInvocation {
-		if (request.runtimeBinding && request.runtimeBinding.runtime !== "docker") {
-			throw new Error(`docker backend received a ${request.runtimeBinding.runtime} runtime binding`);
-		}
-		if (
-			request.lifecycleTimeoutMs !== undefined &&
-			(!Number.isSafeInteger(request.lifecycleTimeoutMs) || request.lifecycleTimeoutMs < 1 || request.lifecycleTimeoutMs > 2_147_483_647)
-		) {
-			throw new Error("container lifecycle timeout must be a positive, bounded integer in milliseconds");
-		}
-		const hostEnvironment = request.hostEnvironment ?? process.env;
-		const binary = request.runtimeBinding?.executable
-			?? executableOnPath("docker", hostEnvironment.PATH ?? "")
-			?? "docker";
-		const spawnEnvironment = request.runtimeBinding
-			? { ...request.runtimeBinding.spawnEnvironment }
-			: runtimeCliEnvironment(hostEnvironment);
-		const containerName = request.containerName ?? `ahde-${process.pid}-${randomUUID()}`;
-		const resolvedRequest = { ...request, containerName };
-		const sessionId = randomUUID();
-		// Docker needs the env-file and cidfile on the host, but Target code must
-		// never see either through /scratch. The recovery record makes an expired
-		// daemon-owned orphan collectible after this client process crashes.
-		const lifecycleRoot = mkdtempSync(join(tmpdir(), CONTAINER_RECOVERY_PREFIX));
-		chmodSync(lifecycleRoot, 0o700);
-		const environmentFile = join(lifecycleRoot, "environment");
-		const cidFile = join(lifecycleRoot, "container.cid");
-		const now = Date.now();
-		const identity = request.runtimeBinding?.identity ?? {
-			version: "unbound",
-			os: "unbound",
-			arch: "unbound",
-			daemonId: "unbound",
-			kernelVersion: "unbound",
-			driver: "unbound",
-			cgroupDriver: "unbound",
-			cgroupVersion: "unbound",
-			securityOptionsHash: "0".repeat(64),
-			contextHash: "0".repeat(64),
-		};
-		const record: DockerLifecycleRecord = {
-			schemaVersion: CONTAINER_RECOVERY_SCHEMA,
-			containerName,
-			sessionId,
-			ownerId: request.runtimeBinding
-				? ownerId(request.runtimeBinding)
-				: createHash("sha256").update(`unbound:${typeof process.getuid === "function" ? process.getuid() : "unknown"}`).digest("hex"),
-			createdAtMs: now,
-			expiresAtMs: request.lifecycleTimeoutMs === undefined
-				? null
-				: now + request.lifecycleTimeoutMs + LATE_CREATE_GRACE_MS,
-			identity: { ...identity },
-		};
-		let terminated = false;
-		let cleanupConfirmed = false;
-		const removeEnvironmentFile = (): void => {
-			rmSync(environmentFile, { force: true });
-		};
-		const dispose = (): void => {
-			// Preserve an uncertain timeout/abort journal. A later exact runtime
-			// binding can recover it after its host-owned expiry; ordinary exits and
-			// confirmed force-removals leave no lifecycle material behind.
-			if (!terminated || cleanupConfirmed) rmSync(lifecycleRoot, { recursive: true, force: true });
-		};
-		let args: string[];
-		try {
-			const lines = containerEnvironment(request, mountTable(request.mounts)).map(([name, value]) => {
-				if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-					throw new Error(`container backend refuses an unsafe environment name: ${name}`);
-				}
-				if (/[\0\r\n]/.test(value)) {
-					throw new Error(`container backend refuses a multiline or NUL value for ${name}`);
-				}
-				return `${name}=${value}`;
-			});
-			writeFileSync(environmentFile, `${lines.join("\n")}\n`, { mode: 0o600, flag: "wx" });
-			writeFileSync(
-				join(lifecycleRoot, CONTAINER_RECOVERY_RECORD),
-				`${JSON.stringify(record)}\n`,
-				{ mode: 0o600, flag: "wx" },
-			);
-			args = dockerArguments(resolvedRequest, environmentFile, cidFile, record);
-		} catch (error) {
-			rmSync(lifecycleRoot, { recursive: true, force: true });
-			throw error;
-		}
-		return {
-			executable: binary,
-			args,
-			spawnEnvironment,
-			assertReady: () => {
-				try {
-					if (!request.runtimeBinding) {
-						throw new Error("container invocation has no runtime binding from the provenance probe");
-					}
-					assertContainerRuntimeBinding(request.runtimeBinding);
-					recoverStaleDockerContainers(request.runtimeBinding);
-				} catch (error) {
-					// This invocation never reached the runtime, so it cannot own a
-					// daemon orphan. Remove its private env/recovery material immediately.
-					rmSync(lifecycleRoot, { recursive: true, force: true });
-					throw error;
-				}
-			},
-			dispose,
-			terminate: () => {
-				// Killing the attached Docker CLI does not guarantee that the daemon
-				// stops the container. Once the client is confirmed closed, address the
-				// daemon by the exact host-minted name; a normal `--rm` exit makes this
-				// a harmless "not found". Cleanup is bounded and never inherits Target
-				// env.
-				terminated = true;
-				removeEnvironmentFile();
+/** Build the exact argv for one confined invocation. */
+export function dockerInvocation(request: ContainerInvocationRequest): ContainerInvocation {
+	if (
+		request.lifecycleTimeoutMs !== undefined &&
+		(!Number.isSafeInteger(request.lifecycleTimeoutMs) || request.lifecycleTimeoutMs < 1 || request.lifecycleTimeoutMs > 2_147_483_647)
+	) {
+		throw new Error("container lifecycle timeout must be a positive, bounded integer in milliseconds");
+	}
+	const hostEnvironment = request.hostEnvironment ?? process.env;
+	const binary = request.runtimeBinding?.executable
+		?? executableOnPath("docker", hostEnvironment.PATH ?? "")
+		?? "docker";
+	const spawnEnvironment = request.runtimeBinding
+		? { ...request.runtimeBinding.spawnEnvironment }
+		: runtimeCliEnvironment(hostEnvironment);
+	const containerName = request.containerName ?? `ahde-${process.pid}-${randomUUID()}`;
+	const resolvedRequest = { ...request, containerName };
+	const sessionId = randomUUID();
+	// Docker needs the env-file and cidfile on the host, but Target code must
+	// never see either through /scratch. The recovery record makes an expired
+	// daemon-owned orphan collectible after this client process crashes.
+	const lifecycleRoot = mkdtempSync(join(tmpdir(), CONTAINER_RECOVERY_PREFIX));
+	chmodSync(lifecycleRoot, 0o700);
+	const environmentFile = join(lifecycleRoot, "environment");
+	const cidFile = join(lifecycleRoot, "container.cid");
+	const now = Date.now();
+	const identity = request.runtimeBinding?.identity ?? {
+		version: "unbound",
+		os: "unbound",
+		arch: "unbound",
+		daemonId: "unbound",
+		kernelVersion: "unbound",
+		driver: "unbound",
+		cgroupDriver: "unbound",
+		cgroupVersion: "unbound",
+		securityOptionsHash: "0".repeat(64),
+		contextHash: "0".repeat(64),
+	};
+	const record: DockerLifecycleRecord = {
+		schemaVersion: CONTAINER_RECOVERY_SCHEMA,
+		containerName,
+		sessionId,
+		ownerId: request.runtimeBinding
+			? ownerId(request.runtimeBinding)
+			: createHash("sha256").update(`unbound:${typeof process.getuid === "function" ? process.getuid() : "unknown"}`).digest("hex"),
+		createdAtMs: now,
+		expiresAtMs: request.lifecycleTimeoutMs === undefined
+			? null
+			: now + request.lifecycleTimeoutMs + LATE_CREATE_GRACE_MS,
+		identity: { ...identity },
+	};
+	let terminated = false;
+	let cleanupConfirmed = false;
+	const removeEnvironmentFile = (): void => {
+		rmSync(environmentFile, { force: true });
+	};
+	const dispose = (): void => {
+		// Preserve an uncertain timeout/abort journal. A later exact runtime
+		// binding can recover it after its host-owned expiry; ordinary exits and
+		// confirmed force-removals leave no lifecycle material behind.
+		if (!terminated || cleanupConfirmed) rmSync(lifecycleRoot, { recursive: true, force: true });
+	};
+	let args: string[];
+	try {
+		const lines = containerEnvironment(request, mountTable(request.mounts)).map(([name, value]) => {
+			if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+				throw new Error(`container backend refuses an unsafe environment name: ${name}`);
+			}
+			if (/[\0\r\n]/.test(value)) {
+				throw new Error(`container backend refuses a multiline or NUL value for ${name}`);
+			}
+			return `${name}=${value}`;
+		});
+		writeFileSync(environmentFile, `${lines.join("\n")}\n`, { mode: 0o600, flag: "wx" });
+		writeFileSync(
+			join(lifecycleRoot, CONTAINER_RECOVERY_RECORD),
+			`${JSON.stringify(record)}\n`,
+			{ mode: 0o600, flag: "wx" },
+		);
+		args = dockerArguments(resolvedRequest, environmentFile, cidFile, record);
+	} catch (error) {
+		rmSync(lifecycleRoot, { recursive: true, force: true });
+		throw error;
+	}
+	return {
+		executable: binary,
+		args,
+		spawnEnvironment,
+		assertReady: () => {
+			try {
 				if (!request.runtimeBinding) {
-					throw new Error("container cleanup has no runtime binding from the provenance probe");
+					throw new Error("container invocation has no runtime binding from the provenance probe");
 				}
-				// Never address a different daemon during cleanup. If the original
-				// context is temporarily unavailable, retain the private journal for
-				// recovery when that exact identity returns.
 				assertContainerRuntimeBinding(request.runtimeBinding);
-				let failure = "container cleanup failed";
-				let hardFailure = false;
-				for (let attempt = 1; attempt <= 8; attempt += 1) {
-					const identifier = readContainerId(cidFile) ?? containerName;
-					try {
-						const outcome = removeExactContainer(request.runtimeBinding, identifier, containerName);
-						if (outcome === "removed") {
-							cleanupConfirmed = true;
-							dispose();
-							return;
-						}
-						failure = "container not found yet";
-					} catch (error) {
-						failure = (error as Error).message.replace(/^failed to remove container [^:]+:\s*/, "");
-						hardFailure = !isNotFound(failure);
+				recoverStaleDockerContainers(request.runtimeBinding);
+			} catch (error) {
+				// This invocation never reached the runtime, so it cannot own a
+				// daemon orphan. Remove its private env/recovery material immediately.
+				rmSync(lifecycleRoot, { recursive: true, force: true });
+				throw error;
+			}
+		},
+		dispose,
+		terminate: () => {
+			// Killing the attached Docker CLI does not guarantee that the daemon
+			// stops the container. Once the client is confirmed closed, address the
+			// daemon by the exact host-minted name; a normal `--rm` exit makes this
+			// a harmless "not found". Cleanup is bounded and never inherits Target
+			// env.
+			terminated = true;
+			removeEnvironmentFile();
+			if (!request.runtimeBinding) {
+				throw new Error("container cleanup has no runtime binding from the provenance probe");
+			}
+			// Never address a different daemon during cleanup. If the original
+			// context is temporarily unavailable, retain the private journal for
+			// recovery when that exact identity returns.
+			assertContainerRuntimeBinding(request.runtimeBinding);
+			let failure = "container cleanup failed";
+			let hardFailure = false;
+			for (let attempt = 1; attempt <= 8; attempt += 1) {
+				const identifier = readContainerId(cidFile) ?? containerName;
+				try {
+					const outcome = removeExactContainer(request.runtimeBinding, identifier, containerName);
+					if (outcome === "removed") {
+						cleanupConfirmed = true;
+						dispose();
+						return;
 					}
-					if (attempt < 8) {
-						const retryGate = new Int32Array(new SharedArrayBuffer(4));
-						Atomics.wait(retryGate, 0, 0, Math.min(500, attempt * 100));
-					}
+					failure = "container not found yet";
+				} catch (error) {
+					failure = (error as Error).message.replace(/^failed to remove container [^:]+:\s*/, "");
+					hardFailure = !isNotFound(failure);
 				}
-				// Absence is not proof after a killed client: the daemon may publish a
-				// late create. Keep the exact journal; a later invocation rechecks it.
-				if (hardFailure) {
-					throw new Error(`failed to remove container ${containerName} after 8 attempts: ${failure}`);
+				if (attempt < 8) {
+					const retryGate = new Int32Array(new SharedArrayBuffer(4));
+					Atomics.wait(retryGate, 0, 0, Math.min(500, attempt * 100));
 				}
-			},
-		};
-	},
-};
-
-export const GONDOLIN_UNAVAILABLE = "gondolin runtime not available in this build";
-
-/**
- * Gondolin is Earendil's Apache-2.0 micro-VM and the next backend behind this
- * interface. Nothing is vendored: the stub fails closed so a manifest that
- * asks for it under `sandbox: required` stops the run instead of quietly
- * falling back to a weaker containment.
- */
-export const gondolinBackend: ContainerBackend = {
-	runtime: "gondolin",
-	unavailable(): ContainerRuntimeStatus {
-		return { runtime: "gondolin", available: false, reason: GONDOLIN_UNAVAILABLE };
-	},
-	invocation(): ContainerInvocation {
-		throw new Error(GONDOLIN_UNAVAILABLE);
-	},
-};
-
-export function containerBackendFor(runtime: ContainerRuntimeName): ContainerBackend {
-	return runtime === "gondolin" ? gondolinBackend : dockerBackend;
+			}
+			// Absence is not proof after a killed client: the daemon may publish a
+			// late create. Keep the exact journal; a later invocation rechecks it.
+			if (hardFailure) {
+				throw new Error(`failed to remove container ${containerName} after 8 attempts: ${failure}`);
+			}
+		},
+	};
 }
 
 // ---------- the required / best-effort / off matrix ----------
@@ -1152,7 +1100,7 @@ export interface ResolveContainerSandboxOptions {
 	policy: ContainerPolicy;
 	sandbox: "required" | "best-effort" | "off";
 	/** Detection seam. Tests inject a fake runtime instead of touching a daemon. */
-	detect?: (runtime: ContainerRuntimeName) => ContainerRuntimeStatus;
+	detect?: () => ContainerRuntimeStatus;
 	detectOptions?: DetectContainerRuntimeOptions;
 }
 
@@ -1179,9 +1127,8 @@ export function resolveContainerSandbox(options: ResolveContainerSandboxOptions)
 			`execution.container.image must be pinned to a digest (name@sha256:…); mutable tags cannot identify comparable evidence; got ${policy.image}`,
 		);
 	}
-	const detect = options.detect
-		?? ((runtime: ContainerRuntimeName) => detectContainerRuntime(runtime, options.detectOptions ?? {}));
-	const status = detect(policy.runtime);
+	const detect = options.detect ?? (() => detectContainerRuntime(options.detectOptions ?? {}));
+	const status = detect();
 	const identity = runtimeIdentity(status);
 	if (!status.available || !identity) {
 		const reason = !status.available
@@ -1232,7 +1179,7 @@ export interface ExecutionBackendChoice<T extends string> {
 export function resolveExecutionBackend<T extends string>(options: {
 	policy: { sandbox: "required" | "best-effort" | "off"; container?: ContainerPolicy };
 	osBackend: () => T;
-	detect?: (runtime: ContainerRuntimeName) => ContainerRuntimeStatus;
+	detect?: () => ContainerRuntimeStatus;
 	detectOptions?: DetectContainerRuntimeOptions;
 }): ExecutionBackendChoice<T> {
 	if (!options.policy.container) {

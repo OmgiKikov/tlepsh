@@ -23,7 +23,7 @@ import {
 	recordBuilderAuthoredProposal,
 	saveBuilderSpecDraft,
 } from "../src/application/builder-authoring.js";
-import { CandidateProposalSchema, type CandidateProposal } from "../src/builders/adapters.js";
+import { CandidateProposalSchema, type CandidateProposal } from "../src/builder/proposal-contract.js";
 import { loadCorpus } from "../src/corpus.js";
 import { hashValue } from "../src/provenance.js";
 import type { AgentSpec } from "../src/spec.js";

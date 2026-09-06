@@ -244,7 +244,7 @@ export type ModelFingerprint = z.infer<typeof ModelFingerprintSchema>;
 /** Capabilities and resource-discovery policy that can change agent behaviour. */
 export const ContainerSandboxFingerprintSchema = z
 	.string()
-	.regex(/^container:(?:docker|gondolin)@sha256:[0-9a-f]{64}:config:[0-9a-f]{64}$/);
+	.regex(/^container:docker@sha256:[0-9a-f]{64}:config:[0-9a-f]{64}$/);
 
 export const ExecutionFingerprintSchema = z.strictObject({
 	/**
@@ -490,8 +490,7 @@ export function executionFingerprint(
  *
  * v3: the rubric and reference judges may answer "I cannot tell". The prompts
  * moved, so every verdict they produce is a verdict to a different question;
- * `judgePromptsFor` in `eval.ts` keeps the v2 strings byte-identical for any
- * earlier id, so a regrade of v2 evidence asks the v2 question.
+ * evidence graded under an earlier id is not comparable to these.
  */
 // v4: host-observed final answers are required; agent-reported tool notes
 // cannot satisfy tool_called. Older outcomes are not comparable to these.

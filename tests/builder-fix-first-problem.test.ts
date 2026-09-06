@@ -76,7 +76,6 @@ it("resolves 'fix the first problem' through fresh traces and review without app
 		...baseView,
 		stage: "improvement-authoring",
 		headline: "1/3 passed. Two exact failure modes found.",
-		actions: ["traces", "submit structured-proposal"],
 		detail: {
 			aspect: "traces",
 			content: {
@@ -119,7 +118,6 @@ it("resolves 'fix the first problem' through fresh traces and review without app
 		...baseView,
 		stage: "proposal-review",
 		headline: "Review the exact evidence-linked proposal.",
-		actions: ["review", "apply", "discard"],
 		detail: {
 			aspect: "review",
 			content: {
@@ -133,7 +131,6 @@ it("resolves 'fix the first problem' through fresh traces and review without app
 		...baseView,
 		stage: "improvement-authoring",
 		headline: "Inspect the exact Target before authoring.",
-		actions: ["traces", "submit structured-proposal"],
 		detail: {
 			aspect: "target",
 			content: {

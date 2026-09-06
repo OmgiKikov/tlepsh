@@ -202,7 +202,6 @@ describe("corpus grader validation against the current Target", () => {
 		const view = await createAhdeWorkbench(options).view();
 		expect(view.stage).toBe("corpus-design");
 		expect(view.stage).not.toBe("ready-to-evaluate");
-		expect(view.actions).toContain("configure-evaluators");
 		// Why it cannot run, not only that it cannot: the typed reason names the
 		// missing instrument and points at the action that supplies it.
 		expect(view.blockers).toContain(

@@ -16,7 +16,7 @@ import {
 	predictionNoteLine,
 	predictionPromiseLine,
 } from "./prediction.js";
-import { ProposalPredictionSchema, type ProposalPrediction } from "../../builders/adapters.js";
+import { ProposalPredictionSchema, type ProposalPrediction } from "../proposal-contract.js";
 import { renderCandidate, renderDatasetCases } from "./view.js";
 import { renderModelAcceptanceConfirmation, renderModelExperimentConfirmation } from "./model-experiment.js";
 

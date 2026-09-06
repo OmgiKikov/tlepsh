@@ -31,7 +31,6 @@ import { ExecutionFingerprintSchema, hashValue, type ExecutionFingerprint } from
 import {
 	isContainerSandboxFingerprint,
 	resolveExecutionBackend,
-	type ContainerRuntimeName,
 	type ContainerRuntimeStatus,
 } from "./container-backend.js";
 import { detectTargetToolSandbox, TargetToolBroker, type TargetToolSandboxBackend } from "./tool-broker.js";
@@ -302,7 +301,7 @@ export interface CreateTargetToolRuntimeOptions {
 	 */
 	worldPath?: string;
 	/** Container-runtime detection seam. Production callers omit this. */
-	detectContainerRuntime?: (runtime: ContainerRuntimeName) => ContainerRuntimeStatus;
+	detectContainerRuntime?: () => ContainerRuntimeStatus;
 }
 
 function assertWorkspaceToolIdentity(

@@ -18,21 +18,9 @@ const STAGES: readonly WorkbenchStage[] = [
 	"selection-required",
 ];
 
-/**
- * Stage names in the operator's language. Kept as a live getter rather than a
- * frozen table: the language is resolved once per process, but a table built at
- * import time would freeze it before the CLI has read its settings.
- */
-export const STAGE_LABELS: Record<WorkbenchStage, string> = Object.defineProperties(
-	{} as Record<WorkbenchStage, string>,
-	Object.fromEntries(STAGES.map((stage) => [stage, {
-		enumerable: true,
-		get: () => t(`stage.${stage}`),
-	}])),
-);
-
+/** The stage name in the operator's language, read at call time so it follows the resolved language. */
 export function stageLabel(stage: WorkbenchStage): string {
-	return STAGE_LABELS[stage] ?? stage;
+	return t(`stage.${stage}`);
 }
 
 /**

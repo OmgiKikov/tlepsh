@@ -49,7 +49,6 @@ import {
 } from "../domain/candidate.js";
 import { SEALED_GATE_POLICY, withinInfrastructureBudget } from "../domain/comparison-gate.js";
 import { sameModelAsTarget } from "../application/configure-evaluators.js";
-import { workbenchDecisionStages } from "./transition-policy.js";
 import {
 	isSealedEvalRun,
 	judgeVerdictUnreadable,
@@ -117,7 +116,6 @@ export interface WorkbenchInventory {
 	corpusDrafts: BuilderCorpusDraft[];
 	corpora: CorpusMetadata[];
 	approvedDraftSpecIds: Set<string>;
-	verifiedApprovedSpecIds: Set<string>;
 	verifiedApprovedSpecReferences: Map<string, ApprovedSpecReference>;
 	developmentLineage: Map<string, WorkbenchDevelopmentLineage>;
 	developmentEvals: EvalRunRecord[];
@@ -191,6 +189,20 @@ function verifyProposalArtifact(runsRoot: string, record: PersistedBuilderRun): 
 	}
 }
 
+
+/** Whether an apply receipt (or the intent that preceded it) restates the immutable apply decision claim exactly. */
+function sameApplyDecision(
+	claim: { candidateSha: unknown; branch: unknown; paths: unknown; actor: unknown; via: unknown; decidedAt: unknown; reason: unknown },
+	receipt: { candidateSha: unknown; branch: unknown; paths: unknown; actor: unknown; via?: unknown; appliedAt: unknown; reason: unknown },
+): boolean {
+	return canonicalJson({
+		candidateSha: claim.candidateSha, branch: claim.branch, paths: claim.paths, actor: claim.actor,
+		via: claim.via, decidedAt: claim.decidedAt, reason: claim.reason,
+	}) === canonicalJson({
+		candidateSha: receipt.candidateSha, branch: receipt.branch, paths: receipt.paths, actor: receipt.actor,
+		via: receipt.via ?? null, decidedAt: receipt.appliedAt, reason: receipt.reason,
+	});
+}
 
 function listProposals(
 	stateRoot: string,
@@ -321,23 +333,9 @@ function listProposals(
 					intent.receipt.baseTargetSha !== record.result.proposal.baseTargetSha ||
 					canonicalArray(intent.receipt.paths) !== canonicalArray(expectedPaths)
 				) throw new Error("apply intent does not bind the exact proposal");
-				if (decisionClaim?.decision === "apply" && canonicalJson({
-					candidateSha: decisionClaim.candidateSha,
-					branch: decisionClaim.branch,
-					paths: decisionClaim.paths,
-					actor: decisionClaim.actor,
-					via: decisionClaim.via,
-					decidedAt: decisionClaim.decidedAt,
-					reason: decisionClaim.reason,
-				}) !== canonicalJson({
-					candidateSha: intent.receipt.candidateSha,
-					branch: intent.receipt.branch,
-					paths: intent.receipt.paths,
-					actor: intent.receipt.actor,
-					via: intent.receipt.via ?? null,
-					decidedAt: intent.receipt.appliedAt,
-					reason: intent.receipt.reason,
-				})) throw new Error("apply intent does not match the immutable apply decision claim");
+				if (decisionClaim?.decision === "apply" && !sameApplyDecision(decisionClaim, intent.receipt)) {
+					throw new Error("apply intent does not match the immutable apply decision claim");
+				}
 			}
 			let appliedVia: string | null = null;
 			if (hasApply) {
@@ -349,23 +347,9 @@ function listProposals(
 					receipt.baseTargetSha !== record.result.proposal.baseTargetSha ||
 					canonicalArray(receipt.paths) !== canonicalArray(expectedPaths)
 				) throw new Error("apply receipt does not bind the exact proposal");
-				if (decisionClaim?.decision === "apply" && canonicalJson({
-					candidateSha: decisionClaim.candidateSha,
-					branch: decisionClaim.branch,
-					paths: decisionClaim.paths,
-					actor: decisionClaim.actor,
-					via: decisionClaim.via,
-					decidedAt: decisionClaim.decidedAt,
-					reason: decisionClaim.reason,
-				}) !== canonicalJson({
-					candidateSha: receipt.candidateSha,
-					branch: receipt.branch,
-					paths: receipt.paths,
-					actor: receipt.actor,
-					via: receipt.via ?? null,
-					decidedAt: receipt.appliedAt,
-					reason: receipt.reason,
-				})) throw new Error("apply receipt does not match the immutable apply decision claim");
+				if (decisionClaim?.decision === "apply" && !sameApplyDecision(decisionClaim, receipt)) {
+					throw new Error("apply receipt does not match the immutable apply decision claim");
+				}
 			}
 			if (hasDiscard) {
 				const receipt = loadBuilderDiscardReceipt(runsRoot, runId);
@@ -533,7 +517,7 @@ export function workbenchArtifactValue(
 		case "spec-draft":
 			return inventory.specs.find((spec) => spec.id === id && spec.status === "draft") ?? null;
 		case "approved-spec":
-			return inventory.verifiedApprovedSpecIds.has(id)
+			return inventory.verifiedApprovedSpecReferences.has(id)
 				? inventory.specs.find((spec) => spec.id === id && spec.status === "approved") ?? null
 				: null;
 		case "corpus-draft":
@@ -682,7 +666,6 @@ export function loadWorkbenchInventory(options: {
 			"private corpus inventory failed integrity checks; sealed identities remain hidden",
 		);
 	}
-	const verifiedApprovedSpecIds = new Set<string>();
 	const verifiedApprovedSpecReferences = new Map<string, ApprovedSpecReference>();
 	const approvedDraftSpecIds = new Set<string>();
 	for (const draft of specs.filter((spec) => spec.status === "draft")) {
@@ -698,7 +681,6 @@ export function loadWorkbenchInventory(options: {
 		try {
 			const receipt = loadSpecApprovalReceipt(options.stateRoot, options.projectId, draft.id);
 			approvedDraftSpecIds.add(draft.id);
-			verifiedApprovedSpecIds.add(receipt.approvedSpec.specId);
 			verifiedApprovedSpecReferences.set(receipt.approvedSpec.specId, receipt.approvedSpec);
 		} catch (error) {
 			integrityFailure(
@@ -709,7 +691,7 @@ export function loadWorkbenchInventory(options: {
 		}
 	}
 	for (const approved of specs.filter((spec) => spec.status === "approved")) {
-		if (!verifiedApprovedSpecIds.has(approved.id)) {
+		if (!verifiedApprovedSpecReferences.has(approved.id)) {
 			warnings.push(`approved Spec ${approved.id} has no valid human approval receipt and is ignored`);
 		}
 	}
@@ -953,7 +935,6 @@ export function loadWorkbenchInventory(options: {
 		corpusDrafts,
 		corpora,
 		approvedDraftSpecIds,
-		verifiedApprovedSpecIds,
 		verifiedApprovedSpecReferences,
 		developmentLineage,
 		developmentEvals,
@@ -1158,12 +1139,11 @@ function evaluatorBlockers(
 function stageFor(
 	inventory: WorkbenchInventory,
 	env: NodeJS.ProcessEnv,
-): { stage: WorkbenchStage; headline: string; actions: string[]; blockers: StageBlocker[] } {
+): { stage: WorkbenchStage; headline: string; blockers: StageBlocker[] } {
 	if (inventory.integrityBlockers.length > 0) {
 		return {
 			stage: "selection-required",
 			headline: "Workbench authority is blocked until artifact integrity is restored.",
-			actions: [],
 			blockers: [...new Set(inventory.integrityBlockers)].map((text) => blocked(text, "blocker.integrity", undefined, text)),
 		};
 	}
@@ -1179,7 +1159,6 @@ function stageFor(
 			headline: found
 				? "Adopt the agent already in this folder, or create a new Target harness."
 				: "Create the Target harness before authoring evidence.",
-			actions: found ? ["wrap-target", "scaffold-target"] : ["scaffold-target"],
 			blockers: [blocked(t("blocker.target-missing"), "blocker.target-missing")],
 		};
 	}
@@ -1191,7 +1170,6 @@ function stageFor(
 		return {
 			stage: "target-setup",
 			headline: "Choose the Target identity and model before authoring evidence.",
-			actions: ["configure-target"],
 			blockers: [standIns.length > 0
 				? blocked(
 					`Target still contains the template's REPLACE-ME stand-ins in ${standIns.join(", ")}.`,
@@ -1232,7 +1210,6 @@ function stageFor(
 			return {
 				stage: "selection-required",
 				headline: "Choose which measured hypothesis should enter release verification.",
-				actions: ["select candidate"],
 				blockers: [blocked(
 					`${automatedDevelopmentCandidates.length} automated hypotheses have development evidence; only the selected one may open the sealed exam.`,
 					"blocker.candidates-ambiguous",
@@ -1244,7 +1221,6 @@ function stageFor(
 			return {
 				stage: "candidate-verification",
 				headline: "The selected hypothesis passed development evidence; run the sealed release verification.",
-				actions: ["run", "ship", "traces"],
 				blockers: [],
 			};
 		}
@@ -1258,7 +1234,6 @@ function stageFor(
 		return {
 			stage: "selection-required",
 			headline: "Choose the candidate lineage to continue.",
-			actions: ["select candidate"],
 			blockers: [blocked(`${activeCandidates.length} active candidates are compatible with this project.`, "blocker.candidates-ambiguous", { candidates: plural(activeCandidates.length, "candidate") })],
 		};
 	}
@@ -1269,13 +1244,12 @@ function stageFor(
 			return {
 				stage: "candidate-verification",
 				headline: `Candidate verification was interrupted at ${status}; review its durable checkpoint.`,
-				actions: ["review", "abandon-candidate"],
 				blockers: [blocked(t("blocker.interrupted-candidate"), "blocker.interrupted-candidate")],
 			};
 		}
-		if (status === "evaluated") return { stage: "candidate-review", headline: "Candidate evidence is ready for human review.", actions: ["review", "ship"], blockers: [] };
-		if (status === "reviewed") return { stage: "release-decision", headline: "Make the final promotion or rejection decision.", actions: ["ship", "promote", "reject"], blockers: [] };
-		return { stage: "candidate-verification", headline: "Finish exact candidate verification.", actions: ["run", "traces"], blockers: [] };
+		if (status === "evaluated") return { stage: "candidate-review", headline: "Candidate evidence is ready for human review.", blockers: [] };
+		if (status === "reviewed") return { stage: "release-decision", headline: "Make the final promotion or rejection decision.", blockers: [] };
+		return { stage: "candidate-verification", headline: "Finish exact candidate verification.", blockers: [] };
 	}
 	// A finished candidate holds the stage until a human closes its loop, no
 	// matter where mutable focus points: adoption and continuation are not
@@ -1290,7 +1264,6 @@ function stageFor(
 		return {
 			stage: "selection-required",
 			headline: "Choose which finished candidate to adopt or close before continuing.",
-			actions: ["select candidate"],
 			blockers: [blocked(`${openTerminalCandidates.length} finished candidates still need adoption or cycle closure.`, "blocker.terminal-candidates", { candidates: plural(openTerminalCandidates.length, "candidate") })],
 		};
 	}
@@ -1301,7 +1274,6 @@ function stageFor(
 			return {
 				stage: "candidate-adoption",
 				headline: "Make the promoted candidate the active Target by fast-forwarding the current branch.",
-				actions: ["ship", "adopt-candidate"],
 				blockers: [],
 			};
 		}
@@ -1312,7 +1284,6 @@ function stageFor(
 				: "The candidate was rejected and the Target stays at its baseline. Start the next improvement cycle.",
 			// A rejected candidate has nothing left to ship; advertising it beside a
 			// headline that says so would tell the model two opposite things.
-			actions: status === "promoted" ? ["ship", "continue-cycle"] : ["continue-cycle"],
 			blockers: [],
 		};
 	}
@@ -1332,41 +1303,40 @@ function stageFor(
 		(proposal) => proposal.record.runId,
 	);
 	if (appliedChoice === "ambiguous") {
-		return { stage: "selection-required", headline: "Choose the applied proposal to verify.", actions: ["select proposal"], blockers: [blocked(`${appliedWithoutCandidate.length} applied proposals have no candidate evidence.`, "blocker.applied-without-evidence", { proposals: plural(appliedWithoutCandidate.length, "applied change") })] };
+		return { stage: "selection-required", headline: "Choose the applied proposal to verify.", blockers: [blocked(`${appliedWithoutCandidate.length} applied proposals have no candidate evidence.`, "blocker.applied-without-evidence", { proposals: plural(appliedWithoutCandidate.length, "applied change") })] };
 	}
-	if (appliedChoice) return { stage: "candidate-verification", headline: "The proposal is applied; verify its exact candidate revision.", actions: ["run"], blockers: [] };
+	if (appliedChoice) return { stage: "candidate-verification", headline: "The proposal is applied; verify its exact candidate revision.", blockers: [] };
 
 	const reviewable = inventory.proposals.filter((proposal) =>
 		proposal.status === "open" || proposal.status === "apply-pending" || proposal.status === "discard-pending"
 	);
 	const proposalChoice = selectedOrUniqueId(reviewable, inventory.validFocus.proposal?.id, (proposal) => proposal.record.runId);
 	if (proposalChoice === "ambiguous") {
-		return { stage: "selection-required", headline: "Choose the proposal to review.", actions: ["select proposal"], blockers: [blocked(`${reviewable.length} proposals await a decision or recovery.`, "blocker.proposals-await", { proposals: plural(reviewable.length, "open proposal") })] };
+		return { stage: "selection-required", headline: "Choose the proposal to review.", blockers: [blocked(`${reviewable.length} proposals await a decision or recovery.`, "blocker.proposals-await", { proposals: plural(reviewable.length, "open proposal") })] };
 	}
 	if (proposalChoice) {
 		const proposal = reviewable.find((item) => item.record.runId === proposalChoice)!;
 		if (proposal.status === "apply-pending") {
-			return { stage: "proposal-review", headline: "This proposal has an interrupted apply; resume the exact apply decision.", actions: ["review", "apply"], blockers: [] };
+			return { stage: "proposal-review", headline: "This proposal has an interrupted apply; resume the exact apply decision.", blockers: [] };
 		}
 		if (proposal.status === "discard-pending") {
-			return { stage: "proposal-review", headline: "This proposal has an interrupted discard; resume the exact discard decision.", actions: ["review", "discard"], blockers: [] };
+			return { stage: "proposal-review", headline: "This proposal has an interrupted discard; resume the exact discard decision.", blockers: [] };
 		}
-		return { stage: "proposal-review", headline: "Review the exact proposal diff, then apply or discard it.", actions: ["review", "apply", "discard"], blockers: [] };
+		return { stage: "proposal-review", headline: "Review the exact proposal diff, then apply or discard it.", blockers: [] };
 	}
 
-	const approved = inventory.specs.filter((spec) => spec.status === "approved" && inventory.verifiedApprovedSpecIds.has(spec.id));
+	const approved = inventory.specs.filter((spec) => spec.status === "approved" && inventory.verifiedApprovedSpecReferences.has(spec.id));
 	const unapprovedDrafts = inventory.specs.filter((spec) =>
 		spec.status === "draft" && !inventory.approvedDraftSpecIds.has(spec.id)
 	);
 	if (unapprovedDrafts.length > 0) {
 		const draftChoice = selectedOrUniqueId(unapprovedDrafts, inventory.validFocus["spec-draft"]?.id, (spec) => spec.id);
 		if (draftChoice === "ambiguous") {
-			return { stage: "selection-required", headline: "Choose the Spec draft to review.", actions: ["select spec-draft"], blockers: [blocked(`${unapprovedDrafts.length} Spec drafts await review.`, "blocker.spec-drafts", { drafts: plural(unapprovedDrafts.length, "description draft") })] };
+			return { stage: "selection-required", headline: "Choose the Spec draft to review.", blockers: [blocked(`${unapprovedDrafts.length} Spec drafts await review.`, "blocker.spec-drafts", { drafts: plural(unapprovedDrafts.length, "description draft") })] };
 		}
 		return {
 			stage: "spec-review",
 			headline: "Review and approve an exact Spec draft; evaluator models can be configured before its cases are written.",
-			actions: ["review", "start-testing", "approve-spec", "configure-evaluators"],
 			blockers: [],
 		};
 	}
@@ -1374,13 +1344,12 @@ function stageFor(
 		return {
 			stage: "spec-design",
 			headline: "Describe the agent; Builder Pi will structure an editable Spec draft.",
-			actions: ["submit spec-draft", "configure-evaluators"],
 			blockers: [],
 		};
 	}
 	const approvedChoice = selectedOrUniqueId(approved, inventory.validFocus["approved-spec"]?.id, (spec) => spec.id);
 	if (approvedChoice === "ambiguous") {
-		return { stage: "selection-required", headline: "Choose the approved Spec lineage to continue.", actions: ["select approved-spec"], blockers: [blocked(`${approved.length} approved Specs exist.`, "blocker.approved-specs", { specs: plural(approved.length, "approved description") })] };
+		return { stage: "selection-required", headline: "Choose the approved Spec lineage to continue.", blockers: [blocked(`${approved.length} approved Specs exist.`, "blocker.approved-specs", { specs: plural(approved.length, "approved description") })] };
 	}
 
 	const compatibleDrafts = inventory.corpusDrafts.filter((draft) => draft.approvedSpec.specId === approvedChoice);
@@ -1396,21 +1365,19 @@ function stageFor(
 			return {
 				stage: "corpus-design",
 				headline: "Build the first harness in a construction workshop and assemble a maintainable development eval basket from the approved Spec.",
-				actions: ["workshop-open", "submit corpus-draft", "configure-evaluators"],
 				blockers: [],
 			};
 		}
 		const draftChoice = selectedOrUniqueId(reviewableDrafts, focusedDraft, (draft) => draft.id);
-		if (draftChoice === "ambiguous") return { stage: "selection-required", headline: "Choose the corpus draft revision to publish.", actions: ["select corpus-draft"], blockers: [blocked(`${reviewableDrafts.length} unpublished corpus drafts match the approved Spec.`, "blocker.corpus-drafts", { drafts: plural(reviewableDrafts.length, "test-case draft") })] };
+		if (draftChoice === "ambiguous") return { stage: "selection-required", headline: "Choose the corpus draft revision to publish.", blockers: [blocked(`${reviewableDrafts.length} unpublished corpus drafts match the approved Spec.`, "blocker.corpus-drafts", { drafts: plural(reviewableDrafts.length, "test-case draft") })] };
 		return {
 			stage: "corpus-review",
 			headline: "Review the exact development corpus draft before publishing it; configure any evaluator model its cases require.",
-			actions: ["review", "publish-corpus", "configure-evaluators"],
 			blockers: evaluatorBlockers(inventory, env, { includeMissing: false }),
 		};
 	}
 	const corpusChoice = selectedOrUniqueId(development, inventory.validFocus["development-corpus"]?.id, (corpus) => corpus.id);
-	if (corpusChoice === "ambiguous") return { stage: "selection-required", headline: "Choose the development corpus for this loop.", actions: ["select development-corpus"], blockers: [blocked(`${development.length} development corpora exist.`, "blocker.development-corpora", { baskets: plural(development.length, "test basket") })] };
+	if (corpusChoice === "ambiguous") return { stage: "selection-required", headline: "Choose the development corpus for this loop.", blockers: [blocked(`${development.length} development corpora exist.`, "blocker.development-corpora", { baskets: plural(development.length, "test basket") })] };
 
 	const selectedCorpus = development.find((corpus) => corpus.id === corpusChoice)!;
 	const lineage = inventory.developmentLineage.get(selectedCorpus.id)!;
@@ -1422,7 +1389,6 @@ function stageFor(
 		return {
 			stage: "corpus-design",
 			headline: "The published development basket cannot run on the current Target; configure its evaluator models or revise the cases.",
-			actions: ["workshop-open", "configure-evaluators", "submit corpus-draft"],
 			blockers: evaluators.length > 0
 				? evaluators
 				: [blocked(t("blocker.basket-not-runnable"), "blocker.basket-not-runnable")],
@@ -1439,14 +1405,12 @@ function stageFor(
 		return {
 			stage: "ready-to-evaluate",
 			headline: "The approved development surface is ready; run it, or finish the first harness in a construction workshop before measuring.",
-			actions: ["workshop-open", "run", "configure-evaluators"],
 			blockers: evaluatorBlockers(inventory, env, { includeMissing: true }),
 		};
 	}
 	return {
 		stage: "improvement-authoring",
 		headline: "Use the diagnosis to improve the harness in a workshop or with a structured proposal.",
-		actions: ["workshop-open", "traces", "submit structured-proposal", "configure-evaluators"],
 		blockers: evaluatorBlockers(inventory, env, { includeMissing: true }),
 	};
 }
@@ -1625,7 +1589,7 @@ export function deriveWorkbenchView(
 				spec.id,
 				spec.spec.title,
 				inventory,
-				spec.status === "approved" && !inventory.verifiedApprovedSpecIds.has(spec.id) ? "unverified" : spec.status,
+				spec.status === "approved" && !inventory.verifiedApprovedSpecReferences.has(spec.id) ? "unverified" : spec.status,
 			)),
 			// The count bends with the operator's language: this label is read on
 			// the focus line, where `8 tasks` was one of seven English words.
@@ -1647,13 +1611,6 @@ export function deriveWorkbenchView(
 					: candidateStatus(candidate),
 			)),
 		],
-		// Offered where it is the answer to something and nowhere else: only when
-		// there is no exam at all, and only at a stage that can act on it. An
-		// underpowered or unavailable exam is repaired, not replaced by a guess.
-		actions: inventory.sealedHoldoutReadiness === "missing" &&
-				workbenchDecisionStages("generate-holdout").includes(state.stage)
-			? [...state.actions, "generate-holdout"]
-			: state.actions,
 		blockers: state.blockers.map((entry) => entry.text),
 		blockerReasons: state.blockers.map((entry) => entry.reason),
 		warnings: [...inventory.warnings, ...sealedExposureWarnings(inventory)],
@@ -1668,7 +1625,7 @@ export function deriveWorkbenchView(
 		calibration: calibrationOf(inventory),
 		counts: {
 			specDrafts: inventory.specs.filter((spec) => spec.status === "draft").length,
-			approvedSpecs: inventory.verifiedApprovedSpecIds.size,
+			approvedSpecs: inventory.verifiedApprovedSpecReferences.size,
 			corpusDrafts: inventory.corpusDrafts.length,
 			developmentCorpora: inventory.developmentLineage.size,
 			sealedCorpora: inventory.corpora.filter((corpus) => corpus.visibility === "sealed").length,

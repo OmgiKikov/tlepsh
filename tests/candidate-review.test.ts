@@ -32,7 +32,7 @@ import {
 	loadBuilderProposalRun,
 	PersistedBuilderRunSchema,
 } from "../src/application/builder-proposal.js";
-import { CandidateProposalSchema } from "../src/builders/adapters.js";
+import { CandidateProposalSchema } from "../src/builder/proposal-contract.js";
 import {
 	AHDE_EVALUATOR_ID,
 	RunRecordSchema,
@@ -55,7 +55,9 @@ import {
 import { runImprovementLoop } from "../src/application/improvement-loop.js";
 import { compileHarnessAuthoringProposal } from "../src/application/harness-authoring.js";
 import { candidateProposalReview, candidateSummary, proposalReview } from "../src/workbench/resolution.js";
-import { plainPaint, renderCandidate, renderConfirmation } from "../src/builder/render/index.js";
+import { renderConfirmation } from "../src/builder/render/confirmation.js";
+import { plainPaint } from "../src/builder/render/paint.js";
+import { renderCandidate } from "../src/builder/render/view.js";
 import { SEALED_VERIFICATION_REPETITIONS } from "./helpers/sealed-holdout.js";
 import { improveFixture, READY_INSTRUCTION } from "./helpers/improve-fixtures.js";
 
@@ -1014,48 +1016,6 @@ describe("candidate human review", () => {
 		expect(git(repo.dir, "tag", "--list", "v1.2.10")).toBe("");
 		expect(existsSync(join(value.runsRoot, "candidates", value.candidateId, "promotion_intent.json"))).toBe(false);
 		expect(existsSync(join(value.runsRoot, "candidates", value.candidateId, "transition_claim.json"))).toBe(false);
-	});
-
-	it("recovers legacy v1 promotion journals both before and after tag creation", () => {
-		for (const tagAlreadyExists of [false, true]) {
-			const repo = repository();
-			const value = fixture(true, { ...repo, targetId: "test-target" });
-			reviewCandidate({ ...value, recommendation: "promote", reason: "verified", now: () => at });
-			const options = {
-				repositoryDir: repo.dir,
-				...value,
-				version: tagAlreadyExists ? "1.2.12" : "1.2.11",
-				reason: "legacy crash recovery",
-				now: () => at,
-			};
-			const captured: Record<string, unknown>[] = [];
-			expect(() => promoteReviewedCandidate(options, {
-				writeIntent: (path, intent) => {
-					captured.push(intent as unknown as Record<string, unknown>);
-					writeFileSync(path, `${JSON.stringify(intent)}\n`, { mode: 0o600 });
-					throw new Error("simulate upgrade from v1 journal");
-				},
-			})).toThrow(/simulate upgrade from v1 journal/);
-			const capturedIntent = captured[0];
-			if (!capturedIntent) throw new Error("expected promotion intent");
-			const { taggerName: _name, taggerEmail: _email, ...legacyFields } = capturedIntent;
-			const legacyIntent = { ...legacyFields, schemaVersion: 1 } as unknown as {
-				tag: string;
-				candidateSha: string;
-				tagMessage: string;
-				at: string;
-			};
-			const candidateDir = join(value.runsRoot, "candidates", value.candidateId);
-			rmSync(join(candidateDir, "transition_claim.json"));
-			writeFileSync(join(candidateDir, "promotion_intent.json"), `${JSON.stringify(legacyIntent)}\n`, { mode: 0o600 });
-			if (tagAlreadyExists) writePromotionTag(repo.dir, legacyIntent);
-
-			const recovered = promoteReviewedCandidate({ ...options, now: () => "2099-01-01T00:00:00.000Z" });
-			expect(candidateStatus(recovered.record)).toBe("promoted");
-			expect(git(repo.dir, "rev-list", "-n", "1", legacyIntent.tag)).toBe(legacyIntent.candidateSha);
-			expect(existsSync(join(candidateDir, "promotion_intent.json"))).toBe(false);
-			expect(existsSync(join(candidateDir, "transition_claim.json"))).toBe(false);
-		}
 	});
 
 	it("refuses even a dangling symbolic tag ref during promotion recovery", () => {

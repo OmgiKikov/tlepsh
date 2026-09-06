@@ -11,14 +11,15 @@ import type { TSchema } from "typebox";
 import type { ToolFixtureRunResult } from "../application/tool-workshop.js";
 import { hasMessage, plural, t } from "../i18n.js";
 import { workbenchNext } from "../workbench/next-actions.js";
-import { workbenchGateClass } from "../workbench/transition-policy.js";
+import { workbenchDecisionStages, workbenchGateClass } from "../workbench/transition-policy.js";
 import type {
 	WorkbenchDatasetRecipeArtifact,
 	WorkbenchDecisionResult,
 	WorkbenchHumanGate,
 	WorkbenchTurn,
 	WorkbenchView,
-	WorkbenchViewInclude
+	WorkbenchViewInclude,
+	WorkbenchConfirmation,
 } from "../workbench/types.js";
 import {
 	createAhdeWorkbench,
@@ -42,7 +43,8 @@ import {
 import type { BuilderProjectContext } from "./project-context.js";
 import { decisionHeadline, renderDecision } from "./render/decision.js";
 import { oneLine, wrap } from "./render/format.js";
-import { themePaint } from "./render/paint.js";
+import { plainPaint, themePaint } from "./render/paint.js";
+import { renderConfirmation } from "./render/confirmation.js";
 import { nextStep, stageLabel } from "./render/stage.js";
 import { renderDatasetCases, renderView, viewTitle } from "./render/view.js";
 import { renderWorkshopCloseReview } from "./render/workshop-close.js";
@@ -51,7 +53,6 @@ import {
 } from "./run-observation.js";
 import type { BuilderSpendReader } from "./spend.js";
 import { markerPaint, type TranscriptPresenter } from "./transcript.js";
-import { createWorkbenchHumanGate } from "./workbench-gate.js";
 import {
 	WorkbenchDecisionToolSchema,
 	WorkbenchSubmitToolSchema,
@@ -320,11 +321,10 @@ function projectCredentialSafeVerbatim(value: unknown): unknown {
 }
 
 function projectWorkbenchView(view: Record<string, unknown>, options: ModelProjectionOptions): Record<string, unknown> {
-	// `actions` is the host's loose stage hint list; the model gets `next`
-	// instead, derived from the same tables the Workbench refuses against. Two
-	// lists of what to do next is one list too many.
-	const { selections, warnings, actions: _hostHints, guidance: _hostGuidance, ...rest } = view as
-		{ selections: unknown[]; warnings: string[]; actions: unknown } & Record<string, unknown>;
+	// The model gets `next`, derived from the same tables the Workbench refuses
+	// against, instead of the host's own guidance block.
+	const { selections, warnings, guidance: _hostGuidance, ...rest } = view as
+		{ selections: unknown[]; warnings: string[] } & Record<string, unknown>;
 	const kept = warnings.slice(0, MODEL_WARNING_LIMIT);
 	const wanted = options.include?.includes("selections") ?? false;
 	return {
@@ -389,7 +389,7 @@ export function createPolicyAwareGate(
 	ctx: ExtensionContext,
 	actorId: () => string,
 	requireInteractive: (operation: string) => void,
-	sealedSelectionOperation?: string,
+	sealedSelectionOperation = "Candidate verification",
 	/**
 	 * Guard for the sealed-holdout picker. It is the requested decision that
 	 * decides whether picking a holdout may run headless (a routine verification
@@ -399,22 +399,42 @@ export function createPolicyAwareGate(
 	 */
 	requireInteractiveForSealed: (operation: string) => void = requireInteractive,
 ): WorkbenchHumanGate {
-	const dialog = createWorkbenchHumanGate(ctx, actorId, requireInteractive, sealedSelectionOperation);
-	const sealedDialog = requireInteractiveForSealed === requireInteractive
-		? dialog
-		: createWorkbenchHumanGate(ctx, actorId, requireInteractiveForSealed, sealedSelectionOperation);
+	let cachedActor: string | undefined;
+	const approvedActor = (): string => {
+		cachedActor ??= actorId();
+		return cachedActor;
+	};
 	return {
 		async confirm(confirmation, signal) {
-			if (confirmation.policy === "routine") return { approved: true, actorId: actorId() };
-			if (confirmation.policy === "one-question") {
-				requireInteractive(confirmation.kind);
-				const approved = await ctx.ui.confirm(confirmation.title, confirmation.question, { signal });
-				return approved ? { approved: true, actorId: actorId() } : { approved: false };
-			}
-			return dialog.confirm(confirmation, signal);
+			if (confirmation.policy === "routine") return { approved: true, actorId: approvedActor() };
+			requireInteractive(confirmation.kind);
+			const approved = await ctx.ui.confirm(
+				confirmation.title,
+				confirmation.policy === "one-question" ? confirmation.question : formatWorkbenchConfirmation(confirmation),
+				{ signal },
+			);
+			return approved ? { approved: true, actorId: approvedActor() } : { approved: false };
 		},
-		selectSealed: (request, signal) => sealedDialog.selectSealed(request, signal),
+		async selectSealed(request, signal) {
+			requireInteractiveForSealed(sealedSelectionOperation);
+			// One evaluator-owned holdout needs no picker; the following confirmation
+			// still shows its size before anything runs.
+			if (request.options.length === 1) return { approved: true, actorId: approvedActor(), selectedIndex: 0 };
+			const choices = request.options.map(
+				(option, index) => `${index + 1}. ${option.label} · ${option.taskCount} tasks`,
+			);
+			const selected = await ctx.ui.select(request.title, choices, { signal });
+			if (!selected) return { approved: false };
+			const selectedIndex = choices.indexOf(selected);
+			if (selectedIndex < 0) throw new Error("sealed holdout selector returned an unknown choice");
+			return { approved: true, actorId: approvedActor(), selectedIndex };
+		},
 	};
+}
+
+/** Human-readable confirmation body: what happens, the exact subject, the reason, and its hash. */
+export function formatWorkbenchConfirmation(confirmation: WorkbenchConfirmation): string {
+	return renderConfirmation(confirmation, plainPaint).join("\n");
 }
 
 export interface BuilderWorkbenchToolOptions {
@@ -481,11 +501,11 @@ export function createBuilderWorkbenchTools(
 				const view = await workbench.view(query);
 				// configure-target and configure-evaluators are the decisions that need
 				// a model id, and the trusted host catalog is the only place those ids
-				// exist. It rides along while either is still the next thing to do.
-				const evaluatorConfigurationLegal = view.actions.includes("configure-evaluators");
+				// exist. It rides along while either is still legal; the evaluator
+				// stages include target-setup, where configure-target is.
 				const catalog = query.aspect === "models"
 					? modelExperimentCatalog(ctx, view.target.model?.provider)
-					: (view.stage === "target-setup" || evaluatorConfigurationLegal) && (query.aspect ?? "summary") === "summary"
+					: workbenchDecisionStages("configure-evaluators").includes(view.stage) && (query.aspect ?? "summary") === "summary"
 						? hostModelCatalog(ctx) : null;
 				const models = catalog && catalog.models.length > 0 ? catalog : null;
 				return textResult(view, { include: include ?? [], hostModelCatalog: models });

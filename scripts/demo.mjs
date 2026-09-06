@@ -16,7 +16,7 @@ import {
 	compileImprovementBrief,
 	deriveEvidenceLinkedProposalSelection,
 } from "../dist/application/improvement-brief.js";
-import { BuilderRunRecordSchema } from "../dist/builders/adapters.js";
+import { BuilderRunRecordSchema } from "../dist/builder/proposal-contract.js";
 import { createCorpus } from "../dist/corpus.js";
 import { diagnoseEvalRun } from "../dist/diagnosis.js";
 import { runSuite } from "../dist/eval.js";

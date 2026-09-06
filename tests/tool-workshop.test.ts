@@ -692,60 +692,6 @@ printf '{"token":"ghp_%s"}\\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 			.rejects.toThrow(/declares no tool named missing_tool; declared: lookup/);
 	});
 
-	it("tries a tool that exists only in a proposal draft, leaving the repository clean", async () => {
-		const dir = makeTargetFixture(baseFixtureFiles({ "manifest.yaml": manifestYaml({ tools: [] }) }));
-		created.push(dir);
-		commit(dir);
-		let result;
-		try {
-			result = await tryTool({
-				repositoryDir: dir,
-				tool: "draft_tool",
-				input: { term: "hello" },
-				source: {
-					kind: "draft",
-					intents: [{
-						type: "tool.upsert",
-						name: "draft_tool",
-						descriptor: {
-							description: "Echo a term from a drafted multi-file tool.",
-							parameters: {
-								type: "object",
-								properties: { term: { type: "string", minLength: 1, maxLength: 100 } },
-								required: ["term"],
-								additionalProperties: false,
-							},
-							timeoutMs: 10_000,
-							maxOutputBytes: 8192,
-							output: "json",
-							permissions: { environment: [], network: "deny", filesystem: "read-only" },
-						},
-						files: [
-							{ path: "run", content: "#!/bin/sh\nIFS= read -r p || exit 2\n. \"$AHDE_TOOL_HOME/lib.sh\"\nprintf '{\"kind\":\"%s\",\"payload\":%s}\\n' \"$KIND\" \"$p\"\n" },
-							{ path: "lib.sh", content: "KIND=draft\n" },
-						],
-					}],
-				},
-			});
-		} catch (error) {
-			if (sandboxUnavailable(error)) return;
-			throw error;
-		}
-		expect(result.exitCode).toBe(0);
-		expect(JSON.parse(result.stdout)).toEqual({ kind: "draft", payload: { term: "hello" } });
-		expect(result.source.kind).toBe("draft");
-		expect(result.source.changedPaths).toEqual([
-			"manifest.yaml",
-			"tools/draft_tool/lib.sh",
-			"tools/draft_tool/run",
-			"tools/draft_tool/tool.yaml",
-		]);
-		expect(execFileSync("git", ["-C", dir, "status", "--porcelain"], { encoding: "utf8" })).toBe("");
-		expect(existsSync(join(dir, "tools/draft_tool"))).toBe(false);
-	});
-});
-
-describe("ahde tool try invocation", () => {
 	it("parses the operator command and rejects malformed forms", () => {
 		const parsed = parseCliInvocation([
 			"tool", "try", "--target", "/tmp/agent", "--tool", "lookup", "--input", '{"term":"x"}', "--branch", "eg/x",

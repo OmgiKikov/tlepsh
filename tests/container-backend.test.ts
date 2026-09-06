@@ -13,9 +13,7 @@ import {
 	containerSandboxFingerprint,
 	describeSandboxReadiness,
 	detectContainerRuntime,
-	dockerBackend,
-	GONDOLIN_UNAVAILABLE,
-	gondolinBackend,
+	dockerInvocation,
 	isPinnedContainerImage,
 	resetContainerRuntimeDetection,
 	resolveContainerSandbox,
@@ -156,7 +154,7 @@ function loggedArgv(logPath: string): string[] {
 }
 
 function boundFakeDocker(fake: ReturnType<typeof fakeDocker>) {
-	const status = detectContainerRuntime("docker", { environment: { PATH: fake.binDir }, force: true });
+	const status = detectContainerRuntime({ environment: { PATH: fake.binDir }, force: true });
 	const choice = resolveExecutionBackend({
 		policy: { sandbox: "required" as const, container: policy() },
 		osBackend: () => "sandbox-exec" as const,
@@ -216,7 +214,7 @@ function invocationFixture(overrides: {
 		workspaceDir,
 		scratchDir,
 		toolHomeRoot,
-		invocation: dockerBackend.invocation({
+		invocation: dockerInvocation({
 			policy: policy(overrides.container ?? {}),
 			mounts: {
 				workspaceDir,
@@ -349,7 +347,7 @@ describe("container backend argv", () => {
 		expect(user).toBe(EXPECTED_CONTAINER_USER);
 
 		// The default derives from the calling process and is never root.
-		const derived = dockerBackend.invocation({
+		const derived = dockerInvocation({
 			policy: policy(),
 			mounts: { workspaceDir: "/w", scratchDir: "/s" },
 			network: "deny",
@@ -427,7 +425,7 @@ describe("container backend argv", () => {
 		const scratchDir = join(root, "scratch");
 		const toolHomeRoot = join(root, "tools");
 		for (const path of [workspaceDir, scratchDir, toolHomeRoot]) mkdirSync(path, { recursive: true });
-		const invocation = dockerBackend.invocation({
+		const invocation = dockerInvocation({
 			policy: policy(),
 			mounts: { workspaceDir, scratchDir, toolHomeRoot },
 			network: "deny",
@@ -464,7 +462,7 @@ describe("container backend argv", () => {
 		mkdirSync(workspaceDir, { recursive: true });
 		mkdirSync(scratchDir, { recursive: true });
 		const build = (argv: string[], cwd = workspaceDir) =>
-			dockerBackend.invocation({
+			dockerInvocation({
 				policy: policy(),
 				mounts: { workspaceDir, scratchDir },
 				network: "deny",
@@ -483,7 +481,7 @@ describe("container backend argv", () => {
 
 	it("gives the runtime CLI a host environment that carries no Target value", () => {
 		process.env[HOST_SECRET] = "must-not-leak";
-		const invocation = dockerBackend.invocation({
+		const invocation = dockerInvocation({
 			policy: policy(),
 			mounts: { workspaceDir: "/w", scratchDir: "/s" },
 			network: "deny",
@@ -501,7 +499,7 @@ describe("container backend argv", () => {
 
 	it("refuses an image reference that could be read as a flag", () => {
 		expect(() =>
-			dockerBackend.invocation({
+			dockerInvocation({
 				policy: policy({ image: "--privileged" }),
 				mounts: { workspaceDir: "/w", scratchDir: "/s" },
 				network: "deny",
@@ -540,7 +538,7 @@ describe("container backend argv", () => {
 		const fake = fakeDocker();
 		const runtimeBinding = boundFakeDocker(fake);
 		const fixture = invocationFixture({ containerName: "ahde-cleanup-test" });
-		const invocation = dockerBackend.invocation({
+		const invocation = dockerInvocation({
 			policy: policy(),
 			mounts: { workspaceDir: fixture.workspaceDir, scratchDir: fixture.scratchDir },
 			network: "deny",
@@ -561,7 +559,7 @@ describe("container backend argv", () => {
 		const fake = fakeDocker({ failCleanup: true });
 		const runtimeBinding = boundFakeDocker(fake);
 		const fixture = invocationFixture({ containerName: "ahde-cleanup-failure" });
-		const invocation = dockerBackend.invocation({
+		const invocation = dockerInvocation({
 			policy: policy(),
 			mounts: { workspaceDir: fixture.workspaceDir, scratchDir: fixture.scratchDir },
 			network: "deny",
@@ -589,7 +587,7 @@ describe("container backend argv", () => {
 		const runtimeBinding = boundFakeDocker(fake);
 		const fixture = invocationFixture();
 		const clock = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
-		const first = dockerBackend.invocation({
+		const first = dockerInvocation({
 			policy: policy(),
 			mounts: { workspaceDir: fixture.workspaceDir, scratchDir: fixture.scratchDir },
 			network: "deny",
@@ -609,7 +607,7 @@ describe("container backend argv", () => {
 		);
 		writeFileSync(labelState, `${JSON.stringify(labels)}\n`);
 		clock.mockReturnValue(1_800_000_020_000);
-		const second = dockerBackend.invocation({
+		const second = dockerInvocation({
 			policy: policy(),
 			mounts: { workspaceDir: fixture.workspaceDir, scratchDir: fixture.scratchDir },
 			network: "deny",
@@ -635,7 +633,7 @@ describe("container backend argv", () => {
 		const runtimeBinding = boundFakeDocker(fake);
 		const fixture = invocationFixture();
 		const clock = vi.spyOn(Date, "now").mockReturnValue(1_900_000_000_000);
-		const first = dockerBackend.invocation({
+		const first = dockerInvocation({
 			policy: policy(),
 			mounts: { workspaceDir: fixture.workspaceDir, scratchDir: fixture.scratchDir },
 			network: "deny",
@@ -656,7 +654,7 @@ describe("container backend argv", () => {
 		labels["com.ahde.session"] = "00000000-0000-0000-0000-000000000000";
 		writeFileSync(labelState, `${JSON.stringify(labels)}\n`);
 		clock.mockReturnValue(1_900_000_020_000);
-		const second = dockerBackend.invocation({
+		const second = dockerInvocation({
 			policy: policy(),
 			mounts: { workspaceDir: fixture.workspaceDir, scratchDir: fixture.scratchDir },
 			network: "deny",
@@ -677,35 +675,11 @@ describe("container backend argv", () => {
 	});
 });
 
-describe("gondolin", () => {
-	it("fails closed with the exact reason and vendors nothing", () => {
-		expect(gondolinBackend.unavailable()).toEqual({
-			runtime: "gondolin",
-			available: false,
-			reason: GONDOLIN_UNAVAILABLE,
-		});
-		expect(() => gondolinBackend.invocation({
-			policy: policy({ runtime: "gondolin" }),
-			mounts: { workspaceDir: "/w", scratchDir: "/s" },
-			network: "deny",
-			environment: {},
-			cwd: "/w",
-			argv: ["/bin/true"],
-		})).toThrow(GONDOLIN_UNAVAILABLE);
-		const gondolin = detectContainerRuntime("gondolin", { force: true });
-		if (gondolin.available) throw new Error("gondolin is not vendored and can never be available");
-		expect(gondolin.reason).toBe(GONDOLIN_UNAVAILABLE);
-		expect(() =>
-			resolveContainerSandbox({ policy: policy({ runtime: "gondolin" }), sandbox: "required" })
-		).toThrow(new RegExp(GONDOLIN_UNAVAILABLE));
-	});
-});
-
 describe("container runtime detection", () => {
 	it("reads the server version from a real version probe and memoizes it per process", () => {
 		const fake = fakeDocker({ version: "27.1.0" });
 		const environment = { PATH: fake.binDir };
-		const first = detectContainerRuntime("docker", { environment });
+		const first = detectContainerRuntime({ environment });
 		expect(first).toMatchObject({
 			runtime: "docker",
 			available: true,
@@ -725,16 +699,16 @@ describe("container runtime detection", () => {
 
 		// Delete the binary: a second call must answer from the memo, never probe.
 		rmSync(join(fake.binDir, "docker"));
-		expect(detectContainerRuntime("docker", { environment })).toEqual(first);
-		expect(detectContainerRuntime("docker", { environment, force: true }).available).toBe(false);
+		expect(detectContainerRuntime({ environment })).toEqual(first);
+		expect(detectContainerRuntime({ environment, force: true }).available).toBe(false);
 	});
 
 	it("keeps Docker contexts in separate cache and evidence identities", () => {
 		const fake = fakeDocker({ version: "27.1.0" });
-		const first = detectContainerRuntime("docker", {
+		const first = detectContainerRuntime({
 			environment: { PATH: fake.binDir, DOCKER_CONTEXT: "review-a" },
 		});
-		const second = detectContainerRuntime("docker", {
+		const second = detectContainerRuntime({
 			environment: { PATH: fake.binDir, DOCKER_CONTEXT: "review-b" },
 		});
 		if (!first.available || !second.available) throw new Error("the fake Docker probe reported no runtime");
@@ -746,14 +720,14 @@ describe("container runtime detection", () => {
 	it("reports a missing binary and an unreachable daemon as distinct, exact reasons", () => {
 		const empty = join(scratchRoot("empty-path"), "bin");
 		mkdirSync(empty, { recursive: true });
-		expect(detectContainerRuntime("docker", { environment: { PATH: empty } })).toEqual({
+		expect(detectContainerRuntime({ environment: { PATH: empty } })).toEqual({
 			runtime: "docker",
 			available: false,
 			reason: "docker executable not found on PATH",
 		});
 
 		const broken = fakeDocker({ failReason: "Cannot connect to the Docker daemon at unix:///var/run/docker.sock" });
-		const status = detectContainerRuntime("docker", { environment: { PATH: broken.binDir } });
+		const status = detectContainerRuntime({ environment: { PATH: broken.binDir } });
 		if (status.available) throw new Error("a broken daemon must not report an available runtime");
 		expect(status.reason).toBe(
 			"docker daemon is not reachable: Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
@@ -774,7 +748,7 @@ describe("container runtime detection", () => {
 			})}\n`,
 		);
 		const blank = fakeDocker({ infoFile });
-		const status = detectContainerRuntime("docker", { environment: { PATH: blank.binDir }, force: true });
+		const status = detectContainerRuntime({ environment: { PATH: blank.binDir }, force: true });
 		if (status.available) throw new Error("a whitespace-only daemon id must not be an available runtime");
 		expect(status.reason).toBe("docker daemon identity is incomplete");
 	});
@@ -880,8 +854,6 @@ describe("required / best-effort / off matrix", () => {
 		);
 		expect(() => containerSandboxFingerprint(policy({ image: TAG }), RUNTIME_IDENTITY))
 			.toThrow(/mutable tags cannot identify comparable evidence/);
-		expect(containerSandboxFingerprint(policy({ runtime: "gondolin" }), RUNTIME_IDENTITY))
-			.toMatch(new RegExp(`^container:gondolin@${DIGEST}:config:[0-9a-f]{64}$`));
 		expect(containerSandboxFingerprint(policy({ memoryMb: 512 }), RUNTIME_IDENTITY))
 			.not.toBe(containerSandboxFingerprint(policy(), RUNTIME_IDENTITY));
 		expect(containerSandboxFingerprint(policy({ platform: "linux/arm64" }), RUNTIME_IDENTITY))
@@ -1056,7 +1028,7 @@ describe("the built-in bash under the container backend", () => {
 		const originalPath = process.env.PATH;
 		process.env.PATH = fake.binDir;
 		try {
-			const detected = detectContainerRuntime("docker", { environment: { PATH: fake.binDir }, force: true });
+			const detected = detectContainerRuntime({ environment: { PATH: fake.binDir }, force: true });
 			const result = fixture({
 				sandbox: "required",
 				detect: () => detected,
@@ -1355,7 +1327,7 @@ describe("ahde validate readiness line", () => {
 // A loaded machine can take a while to answer the version probe; the gate is
 // deliberately more patient than a run's own detection so the integration lane
 // is skipped for a real reason, never for a busy CPU.
-const dockerStatus = detectContainerRuntime("docker", { force: true, timeoutMs: 60_000 });
+const dockerStatus = detectContainerRuntime({ force: true, timeoutMs: 60_000 });
 const INTEGRATION_IMAGE = "busybox:latest";
 
 function localImage(): string | null {
@@ -1409,7 +1381,7 @@ describe.skipIf(!integrationPinnedImage || !integrationPlatform || !integrationR
 		mkdirSync(join(scratchDir, "home"), { recursive: true });
 		writeFileSync(join(workspaceDir, "hello.txt"), "workspace-bytes\n");
 
-		const invocation = dockerBackend.invocation({
+		const invocation = dockerInvocation({
 			policy: policy({
 				image: integrationPinnedImage as string,
 				platform: integrationPlatform as string,
@@ -1447,7 +1419,7 @@ describe.skipIf(!integrationPinnedImage || !integrationPlatform || !integrationR
 		mkdirSync(scratchDir, { recursive: true });
 
 		const run = (network: "deny" | "allow", command: string) => {
-			const invocation = dockerBackend.invocation({
+			const invocation = dockerInvocation({
 				policy: policy({ image: integrationPinnedImage as string, platform: integrationPlatform as string }),
 				mounts: { workspaceDir, scratchDir },
 				network,

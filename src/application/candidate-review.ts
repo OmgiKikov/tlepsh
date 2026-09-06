@@ -21,7 +21,7 @@ import {
 } from "./improvement-experiment-design.js";
 import { compareEvalRuns, type CompareResult } from "../compare.js";
 import { promotableVerdicts, withinInfrastructureBudget, type GateSurface } from "../domain/comparison-gate.js";
-import { CandidateProposalSchema } from "../builders/adapters.js";
+import { CandidateProposalSchema } from "../builder/proposal-contract.js";
 import { DiagnosisRecordSchema } from "../diagnosis.js";
 import {
 	CandidateRecordSchema,
@@ -94,19 +94,7 @@ export interface PromoteReviewedCandidateResult {
 	candidateSha: string;
 }
 
-const LegacyPromotionIntentSchema = z.strictObject({
-	schemaVersion: z.literal(1),
-	candidateBeforeSha256: z.string().regex(/^sha256:[0-9a-f]{64}$/),
-	tag: z.string().regex(/^v\d+\.\d+\.\d+$/),
-	candidateSha: z.string().regex(/^[0-9a-f]{40}$/),
-	at: z.iso.datetime({ offset: true }),
-	actorId: z.string().min(1),
-	reason: z.string().min(1),
-	tagMessage: z.string().min(1),
-	promoted: CandidateRecordSchema,
-});
-
-const ExactPromotionIntentSchema = z.strictObject({
+const PromotionIntentSchema = z.strictObject({
 	schemaVersion: z.literal(2),
 	candidateBeforeSha256: z.string().regex(/^sha256:[0-9a-f]{64}$/),
 	tag: z.string().regex(/^v\d+\.\d+\.\d+$/),
@@ -119,10 +107,6 @@ const ExactPromotionIntentSchema = z.strictObject({
 	taggerEmail: z.literal("ahde@local"),
 	promoted: CandidateRecordSchema,
 });
-const PromotionIntentSchema = z.discriminatedUnion("schemaVersion", [
-	LegacyPromotionIntentSchema,
-	ExactPromotionIntentSchema,
-]);
 type PromotionIntent = z.infer<typeof PromotionIntentSchema>;
 const PROMOTION_TAGGER_NAME = "AHDE human gate";
 const PROMOTION_TAGGER_EMAIL = "ahde@local";
@@ -538,20 +522,14 @@ function verifyExactPromotionTag(repositoryDir: string, intent: PromotionIntent)
 		`tag ${intent.tag}`,
 	];
 	const tagger = headers[3] ?? "";
-	const exactTagger = intent.schemaVersion === 2
-		? `tagger ${intent.taggerName} <${intent.taggerEmail}> ${Math.floor(Date.parse(intent.at) / 1_000)} ${taggerOffset(intent.at)}`
-		: null;
-	const taggerMatches = exactTagger
-		? tagger === exactTagger
-		: /^tagger AHDE human gate <ahde@local> \d+ [+-]\d{4}$/.test(tagger);
+	const exactTagger =
+		`tagger ${intent.taggerName} <${intent.taggerEmail}> ${Math.floor(Date.parse(intent.at) / 1_000)} ${taggerOffset(intent.at)}`;
 	const headersMatch =
 		headers.length === 4 &&
 		canonicalJson(headers.slice(0, 3)) === canonicalJson(expectedPrefix) &&
-		taggerMatches;
+		tagger === exactTagger;
 	const body = raw.slice(separator + 2);
-	const messageMatches = intent.schemaVersion === 2
-		? body === intent.tagMessage
-		: body === intent.tagMessage || body === `${intent.tagMessage}\n`;
+	const messageMatches = body === intent.tagMessage;
 	if (!headersMatch || !messageMatches) {
 		throw new Error(
 			`durable promotion intent collides with a changed or unrelated annotated tag (${headersMatch ? "message" : "headers"})`,
@@ -1217,7 +1195,7 @@ export function promoteReviewedCandidate(
 		reason: options.reason,
 	});
 	const intent = PromotionIntentSchema.parse({
-		schemaVersion: existingIntent?.schemaVersion ?? 2,
+		schemaVersion: 2,
 		candidateBeforeSha256: hashValue(record),
 		tag,
 		candidateSha: candidate.sha,
@@ -1225,9 +1203,8 @@ export function promoteReviewedCandidate(
 		actorId,
 		reason: options.reason,
 		tagMessage: message,
-		...(existingIntent?.schemaVersion === 1
-			? {}
-			: { taggerName: PROMOTION_TAGGER_NAME, taggerEmail: PROMOTION_TAGGER_EMAIL }),
+		taggerName: PROMOTION_TAGGER_NAME,
+		taggerEmail: PROMOTION_TAGGER_EMAIL,
 		promoted,
 	});
 	if (existingIntent) {

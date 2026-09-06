@@ -3,7 +3,7 @@ import type { ModelExperimentRecord, ModelChangeReceipt } from "../application/m
 import type { WorkbenchRunInspection } from "./run-inspection.js";
 import type { ImprovementSelectionSummary } from "../application/improvement-selection.js";
 import { z } from "zod";
-import { ProposalPredictionSchema, type ProposalPrediction } from "../builders/adapters.js";
+import { ProposalPredictionSchema, type ProposalPrediction } from "../builder/proposal-contract.js";
 import type { GateSurface, GateVerdict, SealedOutcome } from "../domain/comparison-gate.js";
 import {
 	BuilderCorpusDraftCoverageNotesSchema,
@@ -467,7 +467,7 @@ export interface WorkbenchVerificationBlocked {
 /**
  * The one workshop a project can have, as the view reports it.
  *
- * `live` is this process's own open handle — the same fact `workshopOpen`
+ * `live` is this process's own open handle — the same fact the host's
  * carries for the tool gate. `recorded` is the note a previous Builder process
  * left under the state root with its worktree still on disk: exactly what
  * `{ kind: "workshop-open", workshopId }` re-attaches to, and the only state
@@ -533,32 +533,19 @@ export interface WorkbenchView {
 	focus: Partial<Record<WorkbenchSelectionKind, string>>;
 	selections: WorkbenchSelectionSummary[];
 	/**
-	 * Host-side stage hints in loose words. The model-facing projection replaces
-	 * this with the derived `next` block, so nothing outside the host reads it.
-	 */
-	actions: string[];
-	/**
-	 * True while the five workshop tools are legal. Not derived from the
-	 * inventory — the open workshop is live host state — so it is attached
-	 * where the view is rendered rather than where the stage is computed.
-	 */
-	workshopOpen?: boolean;
-	/**
 	 * The one workshop this project has, live or on disk. Absent means there is
-	 * none of either.
-	 *
-	 * {@link workshopOpen} is process memory and answers one question: are the
-	 * five workshop tools legal right now. It says nothing after a restart,
-	 * which is how a Builder that had a half-written harness in a worktree read
-	 * “no open workshop” and wrote the whole prompt a second time. This field is
-	 * read from the durable note instead, so a fresh process is told the
+	 * none of either. `state: "live"` is this process's own open handle — the
+	 * five workshop tools are legal exactly then. A restarted process holds no
+	 * handle, which is how a Builder that had a half-written harness in a
+	 * worktree once read “no open workshop” and wrote the whole prompt a second
+	 * time; the durable note is read instead, so a fresh process is told the
 	 * workshop is still there and which id re-attaches to it.
 	 */
 	workshop?: WorkbenchWorkshopSummary;
 	/**
 	 * The standing offer to check the judge by hand, once one has graded
-	 * something. Live host state like `workshopOpen`: the marker and the label
-	 * count live under the state root, not in the artifacts the stage is
+	 * something. Live host state like the open workshop: the marker and the
+	 * label count live under the state root, not in the artifacts the stage is
 	 * derived from. Absent means the offer was never made.
 	 */
 	judgeCalibration?: { labelled: number; offered: boolean };
@@ -841,16 +828,6 @@ export const PersistedWorkbenchWorkshopSchema = z.strictObject({
 		failure: z.string().max(240).nullable(),
 		snapshotHash: z.string().regex(/^sha256:[0-9a-f]{64}$/),
 		at: z.iso.datetime({ offset: true }),
-	})).max(32).optional(),
-	// Legacy V1 notes persisted grants here. Parse them only so an existing
-	// workshop can be re-attached safely; the reattach path deliberately ignores
-	// them and every new descriptor omits them. Editable selection state grants
-	// no runtime authority.
-	grants: z.array(z.strictObject({
-		tool: z.string().min(1).max(64),
-		wants: z.array(NonBlankSchema.max(200)).min(1).max(8),
-		grantedAt: z.iso.datetime({ offset: true }),
-		actorId: z.string().min(1).max(200),
 	})).max(32).optional(),
 });
 export type PersistedWorkbenchWorkshop = z.infer<typeof PersistedWorkbenchWorkshopSchema>;

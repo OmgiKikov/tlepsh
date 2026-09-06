@@ -73,11 +73,6 @@ const ToolFixtureFileSchema = z.strictObject({
 	expect: ToolContractExpectationSchema,
 });
 
-/** The `<fixture>` of `tools/<tool>/fixtures/<fixture>.json`, or null. */
-export function toolFixtureName(path: string): string | null {
-	return /^(?:.*\/)?fixtures\/([a-z0-9][a-z0-9_-]{0,63})\.json$/.exec(path)?.[1] ?? null;
-}
-
 /** Read one fixture file into the exact fixture the assertion runs on. */
 export function parseToolFixtureFile(name: string, text: string): ToolContractFixture {
 	if (!FIXTURE_NAME.test(name)) throw new Error(`fixture name must be lowercase kebab/snake case: ${JSON.stringify(name)}`);

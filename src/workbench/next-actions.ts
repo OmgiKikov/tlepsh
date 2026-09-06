@@ -123,17 +123,16 @@ const SUBMIT_WHEN = {
 } as const satisfies Record<WorkbenchSubmitInput["kind"], string>;
 
 type NextView = Pick<WorkbenchView, "stage" | "counts"> &
-	Partial<Pick<WorkbenchView, "target" | "shippingReadiness" | "workshopOpen" | "workshop" | "judgeCalibration" | "blockerReasons" | "guidance">>;
+	Partial<Pick<WorkbenchView, "target" | "shippingReadiness" | "workshop" | "judgeCalibration" | "blockerReasons" | "guidance">>;
 
 /**
  * The workshop a dead Builder process left open, when this one holds none.
  *
  * Only a `recorded` note qualifies: it is the one state `workshop-open` can
- * re-attach to. Without this the model saw `workshopOpen` absent, read it as
+ * re-attach to. Without this the model saw no live workshop, read it as
  * “no workshop”, and wrote from scratch what was already in the worktree.
  */
 function reattachableWorkshop(view: NextView): { workshopId: string; openedAt: string } | null {
-	if (view.workshopOpen === true) return null;
 	const workshop = view.workshop;
 	if (!workshop || workshop.state !== "recorded") return null;
 	return { workshopId: workshop.workshopId, openedAt: workshop.openedAt };
@@ -192,10 +191,10 @@ function submitLegal(kind: WorkbenchSubmitInput["kind"], view: NextView): boolea
 		case "structured-proposal":
 			return workshopBasisForStage(view.stage) !== null;
 		case "workshop-open":
-			return workshopBasisForStage(view.stage) !== null && view.workshopOpen !== true;
+			return workshopBasisForStage(view.stage) !== null && view.workshop?.state !== "live";
 		case "workshop-close":
 		case "workshop-discard":
-			return view.workshopOpen === true;
+			return view.workshop?.state === "live";
 		// The host accepts a selection at any stage; it is the whole job at
 		// exactly one, and advertising it anywhere else is noise.
 		case "select":
@@ -262,7 +261,7 @@ export function workbenchNext(view: NextView, resolution?: RunCurrentResolution)
 			.filter((kind) => !integrity && submitLegal(kind, view))
 			.map((kind) => ({ kind, when: submitWhen(kind, view) })),
 		...(basis
-			? { workshop: { basis, open: view.workshopOpen === true, ...(recorded ? { recorded } : {}) } }
+			? { workshop: { basis, open: view.workshop?.state === "live", ...(recorded ? { recorded } : {}) } }
 			: {}),
 	};
 }

@@ -20,7 +20,7 @@ import {
 } from "../src/application/candidate-review.js";
 import { createBuilderAuthoredProposalAdapter } from "../src/application/builder-authoring.js";
 import { compileFailureBundle } from "../src/bundle.js";
-import type { BuilderAdapter, CandidateProposal } from "../src/builders/adapters.js";
+import type { BuilderAdapter, CandidateProposal } from "../src/builder/proposal-contract.js";
 import { createCorpus } from "../src/corpus.js";
 import { diagnoseEvalRun } from "../src/diagnosis.js";
 import {

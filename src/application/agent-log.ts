@@ -13,7 +13,7 @@ import {
 	readCandidatePrediction,
 	type PredictionCalibration,
 } from "./prediction.js";
-import type { ProposalPrediction } from "../builders/adapters.js";
+import type { ProposalPrediction } from "../builder/proposal-contract.js";
 import type { CandidateRecord } from "../domain/candidate.js";
 import { isPromotionGradeGateEvidence, gateVerdictOf } from "../domain/candidate.js";
 import { z } from "zod";

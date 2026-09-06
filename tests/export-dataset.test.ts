@@ -565,7 +565,7 @@ describe("ahde export: sealed evidence never leaves", () => {
 });
 
 describe("ahde export: what is not evidence is not a dataset", () => {
-	it("refuses a cheap-check screen and an ambiguous legacy one-arm record", () => {
+	it("refuses a cheap-check screen", () => {
 		const runsRoot = newRunsRoot();
 		const trace = conversationTrace({ question: "q", answer: "a", toolResult: "r" });
 		writeEvalRun(runsRoot, {
@@ -573,16 +573,11 @@ describe("ahde export: what is not evidence is not a dataset", () => {
 			purpose: "screen",
 			runs: [{ runId: "run_screen", taskId: "task_screen", trace }],
 		});
-		writeEvalRun(runsRoot, {
-			evalRunId: "erun_legacy_unknown",
-			purpose: "legacy-unknown",
-			runs: [{ runId: "run_legacy_unknown", taskId: "task_legacy", trace }],
-		});
 		writeEvalRun(runsRoot, { evalRunId: "erun_ok", runs: [{ runId: "run_ok", taskId: "task_ok", trace }] });
 
 		const result = exportDataset({ runsRoot, all: true });
 		expect(result.counts.exported).toBe(1);
-		expect(result.counts.skipped.screen).toBe(2);
+		expect(result.counts.skipped.screen).toBe(1);
 		expect(readLines(result.path).map((line) => line.meta.runId)).toEqual(["run_ok"]);
 		expect(() => exportDataset({ runsRoot, evalRunId: "erun_screen" }))
 			.toThrow(/cheap-check screen is never evidence/);

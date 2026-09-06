@@ -9,7 +9,6 @@ import {
 	MAX_TRACE_RECORDS,
 	openTrace,
 	parseSessionJsonl,
-	parseSessionJsonlLenient,
 	readTraceArtifact,
 	redactTraceText,
 	renderTraceMarkdown,
@@ -117,7 +116,6 @@ describe("trace parser", () => {
 		].join("\n");
 
 		expect(() => parseSessionJsonl(content)).toThrow(/trace line 2: invalid JSON/);
-		expect(parseSessionJsonlLenient(content)).toHaveLength(1);
 	});
 
 	it("rejects invalid message shapes with line-specific errors", () => {

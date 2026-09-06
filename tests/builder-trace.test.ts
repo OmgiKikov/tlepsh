@@ -461,7 +461,7 @@ describe("traces resolve as history", () => {
 		return {
 			target: { manifest: { id: "ombudsman" } },
 			specs: [{ id: "spec-1", status: "approved" }],
-			verifiedApprovedSpecIds: new Set(["spec-1"]),
+			verifiedApprovedSpecReferences: new Map([["spec-1", { specId: "spec-1" }]]),
 			corpora: [{ id: "corpus-1", name: "Ombudsman basket", visibility: "development", taskCount: 6, hash: "sha256:dataset" }],
 			developmentLineage: new Map([["corpus-1", lineage]]),
 			developmentEvals: [...runs],

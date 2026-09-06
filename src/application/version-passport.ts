@@ -1151,10 +1151,6 @@ function shortSha(value: string): string {
 	return value.slice(0, HASH_HEX);
 }
 
-function ratioOrNull(value: number | null): string | null {
-	return value === null ? null : ratio(value);
-}
-
 /** `6 cases × 2 repetitions` / `6 кейсах × 2 повтора`: the design, counted. */
 function design(tasks: number, repetitions: number): string {
 	return t("passport.md.design", {
@@ -1415,11 +1411,9 @@ function renderTargetPassportMarkdown(passport: VersionPassport): string {
 	const ratios = passport.measured.resources;
 	const ratioParts = ratios
 		? [
-			ratioOrNull(ratios.costRatio) === null ? null : `${t("unit.cost-ratio")} ${ratioOrNull(ratios.costRatio)}`,
-			ratioOrNull(ratios.latencyRatio) === null
-				? null
-				: `${t("unit.latency-ratio")} ${ratioOrNull(ratios.latencyRatio)}`,
-			ratioOrNull(ratios.tokenRatio) === null ? null : `${t("unit.token-ratio")} ${ratioOrNull(ratios.tokenRatio)}`,
+			ratios.costRatio === null ? null : `${t("unit.cost-ratio")} ${ratio(ratios.costRatio)}`,
+			ratios.latencyRatio === null ? null : `${t("unit.latency-ratio")} ${ratio(ratios.latencyRatio)}`,
+			ratios.tokenRatio === null ? null : `${t("unit.token-ratio")} ${ratio(ratios.tokenRatio)}`,
 			judgeSpendLine(ratios),
 		].filter((part): part is string => part !== null)
 		: [];

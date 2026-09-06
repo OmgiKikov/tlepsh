@@ -28,7 +28,7 @@ import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { z } from "zod";
 import { compileFailureBundle } from "../bundle.js";
-import type { CandidateProposal } from "../builders/adapters.js";
+import type { CandidateProposal } from "../builder/proposal-contract.js";
 import type { CorpusRef } from "../corpus.js";
 import { loadCorpus } from "../corpus.js";
 import { diagnoseEvalRun } from "../diagnosis.js";
@@ -78,7 +78,6 @@ import {
 	assertRestrictedGate,
 	restrictedGate,
 	RESTRICTED_DECISIONS,
-	RestrictedGateDecisionError,
 	type GateRestriction,
 } from "./restricted-gate.js";
 import {
@@ -289,8 +288,6 @@ export function abandonImprovementLoop(
  */
 export const IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS = RESTRICTED_DECISIONS;
 
-export { RestrictedGateDecisionError as ImprovementLoopForbiddenDecisionError };
-
 /** What the loop is, and what the operator does instead when it refuses. */
 const IMPROVEMENT_LOOP_RESTRICTION: GateRestriction = {
 	id: "improvement-loop",
@@ -305,15 +302,6 @@ const IMPROVEMENT_LOOP_RESTRICTION: GateRestriction = {
  */
 export function improvementLoopGate(gate: WorkbenchHumanGate): WorkbenchHumanGate {
 	return restrictedGate(gate, IMPROVEMENT_LOOP_RESTRICTION);
-}
-
-/**
- * A caller that hands the loop a gate which could still approve a promotion is
- * a bug, and the loop refuses before it spends anything — the same refusal the
- * search has always made.
- */
-export function assertImprovementLoopGate(gate: WorkbenchHumanGate | undefined): void {
-	assertRestrictedGate(gate, "improvement-loop");
 }
 
 export type ImprovementLoopStopReason =
@@ -672,6 +660,16 @@ export function topProposableFailureMode(
 	)[0]!;
 }
 
+/** `improved 3/7`: one screen, said the same way on the progress line and in the table. */
+function screenText(screen: NonNullable<ImprovementLoopCycle["screen"]>): string {
+	return `${screen.verdict} ${screen.improved}/${screen.tasks}`;
+}
+
+/** `improved +4.2 points`: one verification, said once. */
+function verifyText(verification: NonNullable<ImprovementLoopCycle["verification"]>): string {
+	return `${verification.verdict} ${points(verification.scoreDelta, "machine")}`;
+}
+
 /** One progress line per cycle, in the shape `run-progress.ts` uses on stderr. */
 export function improvementCycleLine(cycle: ImprovementLoopCycle, maxCycles: number): string {
 	const parts = [
@@ -681,16 +679,8 @@ export function improvementCycleLine(cycle: ImprovementLoopCycle, maxCycles: num
 	if (cycle.failureModeId) parts.push(`mode ${cycle.failureModeId}`);
 	if (cycle.branch) parts.push(`branch ${cycle.branch}`);
 	if (cycle.changedPaths.length > 0) parts.push(`changed paths ${cycle.changedPaths.join(", ")}`);
-	if (cycle.screen) {
-		parts.push(
-			`screen ${cycle.screen.verdict} ${cycle.screen.improved}/${cycle.screen.tasks}` +
-			(cycle.screen.withinErrorBudget ? "" : " (inconclusive)"),
-		);
-	}
-	if (cycle.verification) {
-		const delta = cycle.verification.scoreDelta;
-		parts.push(`verify ${cycle.verification.verdict} ${points(delta, "machine")}`);
-	}
+	if (cycle.screen) parts.push(`screen ${screenText(cycle.screen)}${cycle.screen.withinErrorBudget ? "" : " (inconclusive)"}`);
+	if (cycle.verification) parts.push(`verify ${verifyText(cycle.verification)}`);
 	if (cycle.search) {
 		parts.push(`search ${cycle.search.rows.filter((row) => row.status === "verified").length}/${cycle.search.rows.length} verified`);
 	}
@@ -717,11 +707,10 @@ export function renderImprovementLoopTable(result: ImprovementLoopResult, author
 	const divider = "|---|---|---|---|---|---|---|";
 	const rows = result.cycles.map((cycle) => {
 		const screen = cycle.screen
-			? `${cycle.screen.verdict} ${cycle.screen.improved}/${cycle.screen.tasks}` +
-				(cycle.screen.withinErrorBudget ? "" : " · inconclusive")
+			? `${screenText(cycle.screen)}${cycle.screen.withinErrorBudget ? "" : " · inconclusive"}`
 			: "—";
 		const verification = cycle.verification
-			? `${cycle.verification.verdict} ${points(cycle.verification.scoreDelta, "machine")}`
+			? verifyText(cycle.verification)
 			: cycle.search
 				? `search of ${cycle.search.rows.length}`
 				: cycle.skipped
@@ -769,27 +758,6 @@ export function renderImprovementLoopTable(result: ImprovementLoopResult, author
 interface CycleEval {
 	record: EvalRunRecord;
 	reused: boolean;
-}
-
-/**
- * The experiments this project already ran and lost, by changed-path set and
- * targeted failure mode. Reading the memory is best-effort: a runs root that
- * cannot be listed leaves the loop exactly as blind as it was before, never
- * broken.
- */
-function losingSignatures(
-	dependencies: ImprovementLoopDependencies,
-	runsRoot: string,
-	options: ImprovementLoopOptions,
-): Set<string> {
-	try {
-		return losingExperimentSignatures(dependencies.compileExperimentHistory({
-			runsRoot,
-			projectId: options.projectId,
-		}));
-	} catch {
-		return new Set<string>();
-	}
 }
 
 /** Exactly what a recorded proposal would replace, before a byte of it is applied. */
@@ -847,16 +815,12 @@ function claimedBranchCycles(
 	return { branches: unique(claimed), lastCycle };
 }
 
-function sameLoopConfiguration(left: ImprovementLoopConfiguration, right: ImprovementLoopConfiguration): boolean {
-	return JSON.stringify(left) === JSON.stringify(right);
-}
-
 export async function runImprovementLoop(
 	options: ImprovementLoopOptions,
 	dependenciesInput: Partial<ImprovementLoopDependencies> = {},
 ): Promise<ImprovementLoopResult> {
 	if (options.selection !== "best") return runImprovementLoopOwned(options, dependenciesInput);
-	assertImprovementLoopGate(options.gate);
+	assertRestrictedGate(options.gate, "improvement-loop");
 	const loopId = LoopIdSchema.parse(options.loopId ?? newImprovementLoopId());
 	const release = acquireImprovementLoopOwnership(options.runsRoot, loopId);
 	try { return await runImprovementLoopOwned({ ...options, loopId }, dependenciesInput); }
@@ -887,7 +851,7 @@ async function runImprovementLoopOwned(
 	}
 	// Before anything is resolved, read or spent: a gate that could still approve
 	// a promotion is not a gate this loop may hold.
-	assertImprovementLoopGate(options.gate);
+	assertRestrictedGate(options.gate, "improvement-loop");
 	// The loop id is this invocation's identity, and it is in every branch name:
 	// two loops on one project can never write the same ref, and `--resume` puts
 	// a continuation back on the series it left.
@@ -966,7 +930,7 @@ async function runImprovementLoopOwned(
 		if (previous.status !== "running") {
 			throw new Error(`improvement loop ${loopId} is ${previous.status}; only a running loop can be resumed`);
 		}
-		if (!sameLoopConfiguration(previous.configuration, configuration)) {
+		if (JSON.stringify(previous.configuration) !== JSON.stringify(configuration)) {
 			throw new Error(
 				`improvement loop ${loopId} cannot resume with different Target, Spec, corpus, target rate, ` +
 				"cycle budget, repetitions, hypothesis count, or branch namespace; abandon it and start a new loop",
@@ -992,8 +956,15 @@ async function runImprovementLoopOwned(
 	let cachedForSha: string | null = null;
 	// What already lost, read once: a project's candidate records do not change
 	// while its own loop is running, and every experiment this loop finishes is
-	// added below rather than re-read from disk.
-	const losing = bestSelection ? new Set<string>() : losingSignatures(dependencies, runsRoot, options);
+	// added below rather than re-read from disk. Reading the memory is
+	// best-effort: a runs root that cannot be listed leaves the loop exactly as
+	// blind as it was before, never broken.
+	let losing = new Set<string>();
+	if (!bestSelection) {
+		try {
+			losing = losingExperimentSignatures(dependencies.compileExperimentHistory({ runsRoot, projectId: options.projectId }));
+		} catch {}
+	}
 	/** Failure modes this loop has stopped asking about. */
 	const exhaustedModes = new Set<string>();
 
@@ -1105,7 +1076,7 @@ async function runImprovementLoopOwned(
 
 	const finish = (
 		reason: ImprovementLoopStopReason,
-		note: string,
+		note: string = IMPROVEMENT_LOOP_STOP_MESSAGES[reason],
 		partial?: ImprovementLoopCycle,
 	): ImprovementLoopResult => {
 		if (partial) {
@@ -1499,17 +1470,7 @@ async function runImprovementLoopOwned(
 			lastCycle = Math.max(lastCycle, cycleIndex);
 			options.onCycle?.(improvementCycleLine(cycle, options.maxCycles), cycle);
 			if (topProposableFailureMode(brief, exhaustedModes) === null) {
-				ledger("finished", "experiments-exhausted");
-				return { kind: "stop", result: {
-					cycles,
-					stopReason: "experiments-exhausted",
-					stopMessage: IMPROVEMENT_LOOP_STOP_MESSAGES["experiments-exhausted"],
-					candidateId,
-					loopId,
-					finalPassRate,
-					executions,
-					experimentDesign,
-				} };
+				return { kind: "stop", result: finish("experiments-exhausted") };
 			}
 			ledger("running", null);
 			return { kind: "continue" };
@@ -1574,17 +1535,7 @@ async function runImprovementLoopOwned(
 			lastCycle = Math.max(lastCycle, cycleIndex);
 			options.onCycle?.(improvementCycleLine(cycle, options.maxCycles), cycle);
 			if (consecutiveFlat >= 2) {
-				ledger("finished", "flat-screen-twice");
-				return { kind: "stop", result: {
-					cycles,
-					stopReason: "flat-screen-twice",
-					stopMessage: IMPROVEMENT_LOOP_STOP_MESSAGES["flat-screen-twice"],
-					candidateId,
-					loopId,
-					finalPassRate,
-					executions,
-					experimentDesign,
-				} };
+				return { kind: "stop", result: finish("flat-screen-twice") };
 			}
 			ledger("running", null);
 			return { kind: "continue" };
@@ -1656,7 +1607,7 @@ async function runImprovementLoopOwned(
 		if (outcome.kind === "stop") return outcome.result;
 	}
 
-	return finish("max-cycles", "the cycle budget is spent");
+	return finish("max-cycles");
 }
 
 export interface RecordedProposalAuthorOptions {

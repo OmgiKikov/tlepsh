@@ -12,7 +12,6 @@ import {
 	IMPROVEMENT_LOOP_AUTHOR_DISCLOSURE,
 	IMPROVEMENT_LOOP_FORBIDDEN_DECISIONS,
 	IMPROVEMENT_LOOP_STOP_MESSAGES,
-	ImprovementLoopForbiddenDecisionError,
 	improvementCycleLine,
 	improvementLoopGate,
 	listUnfinishedImprovementLoops,
@@ -29,6 +28,7 @@ import {
 	type ImprovementLoopResult,
 	type ImprovementProposalAuthor,
 } from "../src/application/improvement-loop.js";
+import { RestrictedGateDecisionError } from "../src/application/restricted-gate.js";
 import { loadBuilderApplyReceipt } from "../src/application/builder-proposal.js";
 import { loadEvalRun } from "../src/eval.js";
 import {
@@ -698,7 +698,7 @@ describe("the loop's gate", () => {
 				subjectHash: `sha256:${"0".repeat(64)}`,
 				policy: "consequential",
 				question: "q?",
-			})).rejects.toThrow(ImprovementLoopForbiddenDecisionError);
+			})).rejects.toThrow(RestrictedGateDecisionError);
 		}
 		await expect(guarded.selectSealed({ title: "pick", options: [] }))
 			.rejects.toThrow(/sealed holdout selection/);
@@ -807,7 +807,7 @@ describe("the improve decision", () => {
 			// The loop is handed a gate that cannot be talked into a promotion.
 			const handed = received as unknown as { gate: WorkbenchHumanGate };
 			await expect(handed.gate.selectSealed({ title: "pick", options: [] }))
-				.rejects.toThrow(ImprovementLoopForbiddenDecisionError);
+				.rejects.toThrow(RestrictedGateDecisionError);
 		} finally {
 			await fixture.close();
 		}

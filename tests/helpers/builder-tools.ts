@@ -99,7 +99,7 @@ export function productionTools(options: BuilderExtensionOptions): readonly Tool
 	return createAhdeBuilderTools(options) as readonly ToolDefinition[];
 }
 
-export function toolNamed(tools: readonly ToolDefinition[], name: string): ToolDefinition {
+function toolNamed(tools: readonly ToolDefinition[], name: string): ToolDefinition {
 	const found = tools.find((candidate) => candidate.name === name);
 	if (!found) throw new Error(`missing production Builder tool ${name}`);
 	return found;

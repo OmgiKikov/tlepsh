@@ -14,7 +14,7 @@ import {
 	type BuilderAdapter,
 	type BuilderCapabilities,
 	type CandidateProposal,
-} from "../builders/adapters.js";
+} from "../builder/proposal-contract.js";
 import {
 	CorpusMetadataSchema,
 	CorpusTaskSchema,

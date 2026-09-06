@@ -136,7 +136,6 @@ describe("Workbench Target model selection adapter", () => {
 			target: { status: "missing", id: null, gitSha: null, model: null, evaluators: { judge: null, simulatedUser: null } },
 			selections: [],
 			warnings: [],
-			actions: ["scaffold-target"],
 			blockers: [],
 			counts: {},
 		}));
@@ -184,7 +183,6 @@ describe("Workbench Target model selection adapter", () => {
 			},
 			selections: [],
 			warnings: [],
-			actions: ["workshop-open", "run", "configure-evaluators"],
 			blockers: [],
 			counts: {},
 		}));

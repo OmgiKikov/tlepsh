@@ -10,7 +10,7 @@ import {
 	validateCandidateProposal,
 	type CandidateProposal,
 	type ProposalPredictionInput,
-} from "../builders/adapters.js";
+} from "../builder/proposal-contract.js";
 import {
 	ContainerBlock,
 	ExecutionPolicyBlock,

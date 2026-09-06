@@ -4,7 +4,7 @@ import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { hashFile } from "../provenance.js";
 import { redactSensitiveText } from "../trace.js";
 import {
-	containerBackendFor,
+	dockerInvocation,
 	resolveExecutionBackend,
 	type ContainerPolicy,
 	type ContainerRuntimeBinding,
@@ -232,22 +232,14 @@ function probeMacSandbox(binary: string, workspaceDir: string, scratchDir: strin
 }
 
 function probeBwrap(binary: string, workspaceDir: string, scratchDir: string): boolean {
-	const args = [
-		"--die-with-parent",
-		"--new-session",
-		"--unshare-user",
-		"--unshare-pid",
-		"--unshare-ipc",
-		"--unshare-uts",
-		"--unshare-cgroup",
-		"--unshare-net",
-		"--proc",
-		"/proc",
-		"--dev",
-		"/dev",
-	];
-	for (const path of existingSystemPaths()) args.push("--ro-bind", path, path);
-	args.push("--ro-bind", workspaceDir, workspaceDir, "--bind", scratchDir, scratchDir, "--", "/bin/true");
+	const args = bwrapArguments({
+		workspaceDir,
+		scratchDir,
+		environment: {},
+		confinement: PROBE_CONFINEMENT,
+		cwd: workspaceDir,
+		argv: ["/bin/true"],
+	});
 	const probe = spawnSync(binary, args, { cwd: workspaceDir, stdio: "ignore", timeout: 3_000 });
 	return probe.status === 0 && !probe.error;
 }
@@ -278,17 +270,25 @@ export function buildToolEnvironment(options: {
 	toolHome?: string;
 	/** Absolute path of this run's world file, exported as `AHDE_WORLD`. */
 	worldPath?: string;
+	/**
+	 * Pre-review authored code: a private scratch home, a fixed locale and a dumb
+	 * terminal. `PATH` is the host's so a real toolchain resolves; nothing else is
+	 * copied from the parent environment by name, so no credential can reach it.
+	 */
+	authoring?: boolean;
 }): { environment: NodeJS.ProcessEnv; names: string[] } {
-	const home = join(options.scratchDir, "tool-home", options.label);
-	const temporary = join(options.scratchDir, "tool-tmp", options.label);
+	const prefix = options.authoring ? "authoring" : "tool";
+	const home = join(options.scratchDir, `${prefix}-home`, options.label);
+	const temporary = join(options.scratchDir, `${prefix}-tmp`, options.label);
 	mkdirSync(home, { recursive: true, mode: 0o700 });
 	mkdirSync(temporary, { recursive: true, mode: 0o700 });
 	const source = options.sourceEnvironment ?? process.env;
 	const environment: NodeJS.ProcessEnv = {
 		PATH: source.PATH ?? "/usr/bin:/bin",
-		LANG: source.LANG ?? "C.UTF-8",
+		LANG: options.authoring ? "C.UTF-8" : source.LANG ?? "C.UTF-8",
 		HOME: home,
 		TMPDIR: temporary,
+		...(options.authoring ? { LC_ALL: "C.UTF-8", TERM: "dumb" } : {}),
 	};
 	if (options.toolHome) environment[AHDE_TOOL_HOME_ENVIRONMENT] = options.toolHome;
 	if (options.worldPath) environment[AHDE_WORLD_ENVIRONMENT] = options.worldPath;
@@ -363,7 +363,7 @@ export function sandboxInvocation(options: {
 	const argv = capped ? capped.argv : options.argv;
 	if (options.backend === "container") {
 		if (!options.container) throw new Error("container backend requires an execution.container policy");
-		const invocation = containerBackendFor(options.container.runtime).invocation({
+		const invocation = dockerInvocation({
 			policy: options.container,
 			mounts: {
 				workspaceDir: options.workspaceDir,
@@ -423,35 +423,6 @@ export function sandboxInvocation(options: {
 // This profile is the whole difference, and it is deliberately not negotiable
 // at runtime: there is no argument that widens it.
 
-/** Exactly the variables model-authored code receives. Nothing from any allowlist. */
-export const AUTHORING_ENVIRONMENT_NAMES = ["HOME", "LANG", "LC_ALL", "PATH", "TERM", "TMPDIR"] as const;
-
-/**
- * The fixed minimal environment for pre-review authored code. `PATH` is the
- * host's so a real toolchain resolves; every other value is a constant or a
- * private scratch directory. No credential of any kind can reach it, because
- * nothing is ever copied from the parent environment by name.
- */
-export function buildAuthoringEnvironment(options: {
-	label: string;
-	scratchDir: string;
-	sourceEnvironment?: NodeJS.ProcessEnv;
-}): { environment: NodeJS.ProcessEnv; names: string[] } {
-	const home = join(options.scratchDir, "authoring-home", options.label);
-	const temporary = join(options.scratchDir, "authoring-tmp", options.label);
-	mkdirSync(home, { recursive: true, mode: 0o700 });
-	mkdirSync(temporary, { recursive: true, mode: 0o700 });
-	const source = options.sourceEnvironment ?? process.env;
-	const environment: NodeJS.ProcessEnv = {
-		HOME: home,
-		LANG: "C.UTF-8",
-		LC_ALL: "C.UTF-8",
-		PATH: source.PATH ?? "/usr/bin:/bin",
-		TERM: "dumb",
-		TMPDIR: temporary,
-	};
-	return { environment, names: Object.keys(environment).sort() };
-}
 
 /** `ulimit`-style caps one authored command runs under. */
 export interface SandboxResourceLimits {
@@ -499,30 +470,6 @@ function limitValue(name: keyof SandboxResourceLimits, limits: SandboxResourceLi
 	return limits[name];
 }
 
-let resourceLimitProbe: Set<string> | null = null;
-
-/**
- * Which `ulimit` flags this host's `/bin/sh` honours. Probed once: a flag the
- * shell rejects would otherwise abort the command it was meant to bound, and a
- * silently skipped cap would be a lie in the tool result.
- */
-function supportedResourceLimitFlags(): Set<string> {
-	if (resourceLimitProbe) return resourceLimitProbe;
-	const supported = new Set<string>();
-	for (const [name, flag] of Object.entries(RESOURCE_LIMIT_FLAGS)) {
-		const value = limitValue(name as keyof SandboxResourceLimits, AUTHORING_RESOURCE_LIMITS);
-		const probe = spawnSync("/bin/sh", ["-c", `ulimit -${flag} ${value}`], { stdio: "ignore", timeout: 3_000 });
-		if (probe.status === 0 && !probe.error) supported.add(flag);
-	}
-	resourceLimitProbe = supported;
-	return supported;
-}
-
-/** Test seam: forget the probe so a test can observe it on this host. */
-export function resetResourceLimitProbe(): void {
-	resourceLimitProbe = null;
-}
-
 /**
  * Which caps a backend can honestly enforce.
  *
@@ -539,7 +486,7 @@ function backendResourceLimitFlags(backend: TargetToolSandboxBackend): Set<strin
 
 /**
  * Wrap argv in a `/bin/sh` preamble that lowers each supported rlimit before
- * `exec`. Only flags this backend and this shell both accept are emitted, so
+ * `exec`. Only flags this backend can honestly enforce are emitted, so
  * the preamble either caps or is absent — it never fails the command it was
  * supposed to bound, and it never silently claims a cap it did not apply.
  */
@@ -548,13 +495,12 @@ function applyResourceLimits(
 	argv: readonly string[],
 	limits: SandboxResourceLimits,
 ): { argv: string[]; applied: AppliedResourceLimits } {
-	const supported = supportedResourceLimitFlags();
-	const byBackend = backendResourceLimitFlags(backend);
+	const supported = backendResourceLimitFlags(backend);
 	const applied: string[] = [];
 	const unenforced: string[] = [];
 	const commands: string[] = [];
 	for (const [name, flag] of Object.entries(RESOURCE_LIMIT_FLAGS)) {
-		if (!supported.has(flag) || !byBackend.has(flag)) {
+		if (!supported.has(flag)) {
 			unenforced.push(flag);
 			continue;
 		}

@@ -15,7 +15,7 @@ function state(overrides: Partial<WorkbenchView> = {}): HeaderState {
 			stage: "target-setup",
 			headline: "Create the agent",
 			target: { status: "missing", id: null, gitSha: null, model: null },
-			focus: {}, selections: [], actions: ["scaffold-target"], blockers: [], warnings: [], calibration: null,
+			focus: {}, selections: [], blockers: [], warnings: [], calibration: null,
 			counts: { specDrafts: 0, approvedSpecs: 0, corpusDrafts: 0, developmentCorpora: 0,
 				sealedCorpora: 0, developmentEvals: 0, openProposals: 0, candidates: 0, calibrations: 0 },
 			...overrides,

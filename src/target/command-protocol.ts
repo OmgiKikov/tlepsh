@@ -17,7 +17,7 @@ import { z } from "zod";
 /** Latest wire contract for new adapters; existing descriptors default to v1. */
 export const COMMAND_PROTOCOL_VERSION = 2;
 /** Existing descriptors and callers keep v1 until explicitly migrated. */
-export const LEGACY_COMMAND_PROTOCOL_VERSION = 1;
+const LEGACY_COMMAND_PROTOCOL_VERSION = 1;
 export const CommandProtocolVersionSchema = z.union([z.literal(1), z.literal(2)]);
 export type CommandProtocolVersion = z.infer<typeof CommandProtocolVersionSchema>;
 

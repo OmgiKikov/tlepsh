@@ -107,7 +107,6 @@ describe("Workbench improvement-cycle closure", () => {
 			const view = await fixture.workbench.view();
 			expect(view).toMatchObject({
 				stage: "candidate-adoption",
-				actions: ["ship", "adopt-candidate"],
 				blockers: [],
 				focus: { candidate: fixture.candidateId },
 				target: { status: "ready", id: fixture.projectId, gitSha: fixture.baselineSha },
@@ -239,7 +238,6 @@ describe("Workbench improvement-cycle closure", () => {
 
 			expect(adopted.view).toMatchObject({
 				stage: "complete",
-				actions: ["ship", "continue-cycle"],
 				blockers: [],
 				focus: { candidate: fixture.candidateId },
 				target: { gitSha: fixture.candidateSha },
@@ -305,7 +303,6 @@ describe("Workbench improvement-cycle closure", () => {
 			// starts by measuring again rather than authoring from stale evidence.
 			expect(continued.result.nextStage).toBe("ready-to-evaluate");
 			expect(continued.view.stage).toBe(continued.result.nextStage);
-			expect(continued.view.actions).toEqual(["workshop-open", "run", "configure-evaluators", "generate-holdout"]);
 			expect(continued.view.counts.developmentEvals).toBe(1);
 			expect(continued.view.focus.candidate).toBeUndefined();
 			expect(continued.view.target.gitSha).toBe(fixture.candidateSha);
@@ -376,7 +373,6 @@ describe("Workbench improvement-cycle closure", () => {
 			});
 			const view = await blocked.view();
 			expect(view.stage).toBe("selection-required");
-			expect(view.actions).toEqual([]);
 			expect(view.blockers).toEqual(expect.arrayContaining([
 				expect.stringContaining(fixture.candidateId),
 			]));
@@ -408,7 +404,6 @@ describe("Workbench improvement-cycle closure", () => {
 			const view = await fixture.workbench.view();
 			expect(view).toMatchObject({
 				stage: "complete",
-				actions: ["continue-cycle"],
 				blockers: [],
 				headline: expect.stringContaining("rejected"),
 				focus: { candidate: fixture.candidateId },

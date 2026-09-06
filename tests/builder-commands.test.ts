@@ -44,6 +44,7 @@ import {
 	stripMarkers,
 	type TranscriptPresenter,
 	type TranscriptTone,
+	createTranscriptPresenter,
 } from "../src/builder/transcript.js";
 import type { RunEvent, RunEventIdentity } from "../src/run-events.js";
 import {
@@ -104,7 +105,6 @@ const baseView: WorkbenchView = {
 	target: { status: "ready", id: "target-demo", gitSha: SHA_A, model: { ...TARGET_MODEL } },
 	focus: {},
 	selections: [],
-	actions: ["run development eval"],
 	blockers: [],
 	warnings: [],
 	calibration: null,
@@ -531,7 +531,7 @@ function register(
 		workbench,
 		actorId,
 		onWorkbenchChanged,
-		...(options.presenter === null ? {} : { presenter: options.presenter ?? output.presenter }),
+		presenter: options.presenter === null ? createTranscriptPresenter(pi) : options.presenter ?? output.presenter,
 		...(options.beginLiveTrace ? { beginLiveTrace: options.beginLiveTrace } : {}),
 		...(options.sendUserMessage ? { sendUserMessage: options.sendUserMessage } : {}),
 		...(options.importSealedHoldout ? { importSealedHoldout: options.importSealedHoldout } : {}),

@@ -49,7 +49,6 @@ import {
 	assertRestrictedGate,
 	restrictedGate,
 	RESTRICTED_DECISIONS,
-	RestrictedGateDecisionError,
 	type GateRestriction,
 } from "./restricted-gate.js";
 
@@ -72,8 +71,6 @@ export function newProposalSearchId(): string {
  */
 export const PROPOSAL_SEARCH_FORBIDDEN_DECISIONS = RESTRICTED_DECISIONS;
 
-export { RestrictedGateDecisionError as ProposalSearchForbiddenDecisionError };
-
 export class ProposalSearchError extends Error {
 	constructor(message: string, options?: ErrorOptions) {
 		super(`proposal search rejected: ${message}`, options);
@@ -95,16 +92,6 @@ const PROPOSAL_SEARCH_RESTRICTION: GateRestriction = {
  */
 export function proposalSearchGate(gate: WorkbenchHumanGate): WorkbenchHumanGate {
 	return restrictedGate(gate, PROPOSAL_SEARCH_RESTRICTION);
-}
-
-/**
- * A caller that hands the search a gate which could still approve a promotion
- * is a bug, and the search refuses before it spends anything. Nothing the
- * search calls asks a human for anything today; this makes the day one of them
- * starts a refusal instead of an approval.
- */
-export function assertProposalSearchGate(gate: WorkbenchHumanGate | undefined): void {
-	assertRestrictedGate(gate, "proposal-search");
 }
 
 /** Why one hypothesis did not reach a matched verification. Never a call-site string. */
@@ -460,7 +447,7 @@ export async function runProposalSearch(
 	) {
 		throw new ProposalSearchError("validation corpus, validation baseline and experiment design must be supplied together");
 	}
-	assertProposalSearchGate(options.gate);
+	assertRestrictedGate(options.gate, "proposal-search");
 
 	const plans = proposalRunIds.map((proposalRunId) =>
 		planFor(dependencies, runsRoot, proposalRunId, options.failureModeId));

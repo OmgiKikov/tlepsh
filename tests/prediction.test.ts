@@ -9,7 +9,7 @@ import {
 	ProposalPredictionSchema,
 	type CandidateProposal,
 	type ProposalPrediction,
-} from "../src/builders/adapters.js";
+} from "../src/builder/proposal-contract.js";
 import { compileAgentLog } from "../src/application/agent-log.js";
 import type { CandidateImpact, TargetedModeImpact } from "../src/application/candidate-impact.js";
 import { compileExperimentHistory } from "../src/application/experiment-history.js";

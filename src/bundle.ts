@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { loadEvalRun, loadRun, type EvalRunRecord } from "./eval.js";
-import { loadTarget, type ResolvedTarget } from "./manifest.js";
+import { loadRun, type EvalRunRecord } from "./eval.js";
+import { type ResolvedTarget } from "./manifest.js";
 import { openTrace, renderTraceMarkdown } from "./trace.js";
 import { writeTextArtifact } from "./storage/artifacts.js";
 import { resolveContainedArtifactPath } from "./storage/paths.js";
@@ -117,14 +117,4 @@ export function compileFailureBundle(
 	const outPath = options.outPath ?? join(runsRoot, evalRun.evalRunId, "bundle.md");
 	writeTextArtifact(outPath, bundle);
 	return outPath;
-}
-
-export function compileBundleForEvalRun(targetDir: string, evalRunId: string, runsRoot: string, options: BundleOptions = {}): string {
-	const evalRun = loadEvalRun(runsRoot, evalRunId);
-	if (evalRun.target.id.startsWith("builder:")) throw new Error("cannot compile a failure bundle for a builder run");
-	const target = loadTarget(targetDir);
-	if (target.manifest.id !== evalRun.target.id) {
-		throw new Error(`eval run ${evalRunId} belongs to target ${evalRun.target.id}, not ${target.manifest.id}`);
-	}
-	return compileFailureBundle(target, evalRun, runsRoot, options);
 }

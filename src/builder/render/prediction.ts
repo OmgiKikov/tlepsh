@@ -1,4 +1,4 @@
-import type { ProposalPrediction } from "../../builders/adapters.js";
+import type { ProposalPrediction } from "../proposal-contract.js";
 import {
 	PREDICTION_GLYPH,
 	calibrationStrip,

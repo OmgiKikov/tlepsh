@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { CandidateProposalSchema } from "../src/builders/adapters.js";
+import { CandidateProposalSchema } from "../src/builder/proposal-contract.js";
 import {
 	BuilderApplyReceiptSchema,
 	ApprovedSpecBuilderInputSchema,

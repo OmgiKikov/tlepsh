@@ -95,7 +95,8 @@ function quote(value: string, maxChars = MAX_QUOTE_CHARS): string {
 const AssertionAnswerSchema = z.enum(["yes", "no", "unknown"]);
 export type AssertionAnswer = z.infer<typeof AssertionAnswerSchema>;
 
-const JudgeVerdictSidecarSchema = z.object({
+/** The judge's verdict sidecar, exactly as `eval.ts` writes it. */
+export const JudgeVerdictSidecarSchema = z.object({
 	choice: z.string().min(1).max(8).optional(),
 	passed: z.boolean(),
 	score: z.number().finite(),

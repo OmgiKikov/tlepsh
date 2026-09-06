@@ -526,7 +526,6 @@ describe("the stage a stand-in harness is at", () => {
 		const view = viewOver(dir);
 
 		expect(view.stage).toBe("target-setup");
-		expect(view.actions).toEqual(["configure-target"]);
 		expect(view.target.status).toBe("bootstrap-required");
 		expect(view.blockerReasons).toEqual([{
 			code: "blocker.target-stand-ins",

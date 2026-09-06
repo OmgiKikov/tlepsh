@@ -209,9 +209,6 @@ describe("durable Builder proposal discard", () => {
 			.toBe("discard-pending");
 		expect(deriveWorkbenchView(inventory)).toMatchObject({
 			stage: "proposal-review",
-			// No exam exists in this fixture, so the stage offers the one that
-			// writes one beside the decisions about the proposal itself.
-			actions: ["review", "discard", "generate-holdout"],
 		});
 		expect(() => applyBuilderProposal({
 			repoDir: value.repoDir,
@@ -254,7 +251,6 @@ describe("durable Builder proposal discard", () => {
 			.toBe("apply-pending");
 		expect(deriveWorkbenchView(inventory)).toMatchObject({
 			stage: "proposal-review",
-			actions: ["review", "apply", "generate-holdout"],
 		});
 
 		const recovered = applyBuilderProposal(options, {

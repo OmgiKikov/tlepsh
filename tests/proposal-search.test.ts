@@ -7,8 +7,6 @@ import {
 	PROPOSAL_SEARCH_SKIP_MESSAGES,
 	PROPOSAL_SEARCH_STOP_MESSAGES,
 	ProposalSearchError,
-	ProposalSearchForbiddenDecisionError,
-	assertProposalSearchGate,
 	newProposalSearchId,
 	plannedProposalSearchExecutions,
 	proposalSearchGate,
@@ -18,6 +16,7 @@ import {
 	type ProposalSearchDependencies,
 	type ProposalSearchResult,
 } from "../src/application/proposal-search.js";
+import { assertRestrictedGate, RestrictedGateDecisionError } from "../src/application/restricted-gate.js";
 import { loadCandidateRecord } from "../src/application/candidate-review.js";
 import { screenEvalRunIds } from "../src/application/cheap-check.js";
 import { loadEvalRun } from "../src/eval.js";
@@ -371,7 +370,7 @@ describe("a search creates no release authority", () => {
 				subjectHash: `sha256:${"0".repeat(64)}`,
 				policy: "consequential",
 				question: "q?",
-			})).rejects.toThrow(ProposalSearchForbiddenDecisionError);
+			})).rejects.toThrow(RestrictedGateDecisionError);
 		}
 		await expect(guarded.selectSealed({ title: "pick", options: [] }))
 			.rejects.toThrow(/sealed holdout selection/);
@@ -398,8 +397,8 @@ describe("a search creates no release authority", () => {
 			expect(branches(fixture.projectDir).filter((name) => name.startsWith("candidate/"))).toEqual([]);
 			expect(raw.confirm).not.toHaveBeenCalled();
 			// The wrapped one is accepted — and still refuses every release decision.
-			expect(() => assertProposalSearchGate(proposalSearchGate(raw))).not.toThrow();
-			expect(() => assertProposalSearchGate(undefined)).not.toThrow();
+			expect(() => assertRestrictedGate(proposalSearchGate(raw), "proposal-search")).not.toThrow();
+			expect(() => assertRestrictedGate(undefined, "proposal-search")).not.toThrow();
 		} finally {
 			await fixture.close();
 		}

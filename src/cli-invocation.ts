@@ -137,7 +137,6 @@ const COMMAND_SPECS = {
 		flags: [
 			"target",
 			"builder-run",
-			"spec",
 			"repetitions",
 			"jobs",
 			"baseline-max-age",
@@ -149,7 +148,6 @@ const COMMAND_SPECS = {
 			"base",
 			"proposal",
 			"diagnosis",
-			"actor",
 		],
 		requiredFlags: ["target"],
 		positionals: 0,

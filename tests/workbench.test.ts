@@ -381,7 +381,6 @@ describe("AHDE Workbench", () => {
 
 		expect(await workbench.view()).toMatchObject({
 			stage: "target-setup",
-			actions: ["scaffold-target"],
 			target: { status: "missing" },
 		});
 		const scaffoldGate = gate();
@@ -391,7 +390,6 @@ describe("AHDE Workbench", () => {
 		}, scaffoldGate);
 		expect(scaffolded.view).toMatchObject({
 			stage: "target-setup",
-			actions: ["configure-target"],
 			target: { status: "bootstrap-required", id: "my-agent" },
 		});
 		expect(scaffoldGate.confirm).toHaveBeenCalledWith(
@@ -625,7 +623,6 @@ describe("AHDE Workbench", () => {
 		const approved = await restarted.decide({ kind: "approve-spec", reason: "The exact Spec matches our intent" }, approvalGate);
 		expect(approved.result.approvedSpecId).toMatch(/^spec-/);
 		expect(approved.view.stage).toBe("corpus-design");
-		expect(approved.view.actions).toEqual(["workshop-open", "submit corpus-draft", "configure-evaluators", "generate-holdout"]);
 		expect(approved.view.headline).toContain("construction workshop");
 		expect(approvalGate.confirm).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -645,7 +642,6 @@ describe("AHDE Workbench", () => {
 		});
 		const corpusDraftId = String(corpusDraft.artifact?.id);
 		expect(corpusDraft.view.stage).toBe("corpus-review");
-		expect(corpusDraft.view.actions).toContain("configure-evaluators");
 
 		const review = await restarted.view({ aspect: "review" });
 		expect(review.detail).toMatchObject({
@@ -664,7 +660,6 @@ describe("AHDE Workbench", () => {
 		expect(corpusId).toMatch(/^corpus-/);
 		expect(published.result.lineageHash).toMatch(/^sha256:/);
 		expect(published.view.stage).toBe("ready-to-evaluate");
-		expect(published.view.actions).toEqual(["workshop-open", "run", "configure-evaluators", "generate-holdout"]);
 		expect(published.view.headline).toContain("construction workshop");
 		expect(existsSync(join(paths.stateRoot, "projects", "test-target", "workbench", "corpus-publications", `${corpusId}.json`))).toBe(true);
 		expect(publicationGate.confirm).toHaveBeenCalledWith(
@@ -697,7 +692,6 @@ describe("AHDE Workbench", () => {
 		const restarted = createAhdeWorkbench({ ...paths, projectId: "test-target" });
 		expect(restarted.workshopOpen).toBe(false);
 		const view = await restarted.view();
-		expect(view.workshopOpen).toBeUndefined();
 		expect(view.workshop).toEqual({
 			state: "recorded",
 			workshopId,
@@ -1653,7 +1647,6 @@ describe("AHDE Workbench", () => {
 
 		const view = await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view();
 		expect(view.stage).toBe("selection-required");
-		expect(view.actions).toEqual([]);
 		expect(view.blockers).toEqual(expect.arrayContaining([expect.stringContaining("exact valid human approval receipt")]));
 		expect(view.selections.some((item) => item.kind === "proposal" && item.id === recorded.record.runId)).toBe(false);
 	});
@@ -1666,7 +1659,6 @@ describe("AHDE Workbench", () => {
 
 		const view = await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view();
 		expect(view.stage).toBe("selection-required");
-		expect(view.actions).toEqual([]);
 		expect(view.blockers).toEqual(expect.arrayContaining([expect.stringContaining("candidate candidate-corrupt")]));
 	});
 
@@ -1746,7 +1738,6 @@ describe("AHDE Workbench", () => {
 
 		const view = await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view();
 		expect(view.stage).toBe("selection-required");
-		expect(view.actions).toEqual([]);
 		expect(view.blockers).toEqual(expect.arrayContaining([expect.stringContaining("provenance artifact hash mismatch")]));
 		expect(view.selections.some((item) => item.id === candidate.candidateId)).toBe(false);
 	});
@@ -1809,7 +1800,6 @@ describe("AHDE Workbench", () => {
 
 		const view = await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view();
 		expect(view.stage).toBe("selection-required");
-		expect(view.actions).toEqual([]);
 		expect(view.counts.developmentCorpora).toBe(0);
 		expect(view.blockers).toEqual(expect.arrayContaining([expect.stringContaining("reviewed lineage integrity checks")]));
 	});
@@ -1966,7 +1956,6 @@ describe("AHDE Workbench", () => {
 		const blocked = await createAhdeWorkbench({ ...paths, projectId: "test-target" }).view();
 		const blockedSerialized = JSON.stringify(blocked);
 		expect(blocked.stage).toBe("selection-required");
-		expect(blocked.actions).toEqual([]);
 		expect(blocked.blockers).toEqual(expect.arrayContaining([expect.stringContaining("sealed identities remain hidden")]));
 		expect(blockedSerialized).not.toContain(sealed.id);
 		expect(blockedSerialized).not.toContain("secret holdout name");

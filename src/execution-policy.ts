@@ -17,11 +17,10 @@ import {
 import type { ExecutionFingerprint } from "./provenance.js";
 import { redactSensitiveText } from "./trace.js";
 import {
-	containerBackendFor,
+	dockerInvocation,
 	resolveExecutionBackend,
 	type ContainerPolicy,
 	type ContainerRuntimeBinding,
-	type ContainerRuntimeName,
 	type ContainerRuntimeStatus,
 } from "./target/container-backend.js";
 
@@ -57,7 +56,7 @@ export interface ExecutionPolicyOptions {
 	/** Environment from which explicitly allowlisted values are copied. Defaults to process.env. */
 	sourceEnvironment?: NodeJS.ProcessEnv;
 	/** Container-runtime detection seam. Production callers omit this. */
-	detectContainerRuntime?: (runtime: ContainerRuntimeName) => ContainerRuntimeStatus;
+	detectContainerRuntime?: () => ContainerRuntimeStatus;
 }
 
 export interface ExecutionPolicyResult {
@@ -363,7 +362,7 @@ function sandboxInvocation(
 } {
 	if (backend === "container") {
 		if (!container) throw new Error("container backend requires an execution.container policy");
-		return containerBackendFor(container.runtime).invocation({
+		return dockerInvocation({
 			policy: container,
 			mounts: { workspaceDir, scratchDir },
 			network,

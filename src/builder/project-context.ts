@@ -91,14 +91,6 @@ export function resolveBuilderProjectId(context: BuilderProjectContext): string 
 	}
 }
 
-export function resolveBuilderTargetId(context: BuilderProjectContext): string | null {
-	try {
-		return loadTarget(context.projectDir).manifest.id;
-	} catch {
-		return null;
-	}
-}
-
 export interface EvalSummary {
 	evalRunId: string;
 	target: EvalRunRecord["target"];

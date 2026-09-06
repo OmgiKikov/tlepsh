@@ -1,6 +1,6 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import type { ProposalPrediction } from "../builders/adapters.js";
+import type { ProposalPrediction } from "../builder/proposal-contract.js";
 import { isPromotionGradeGateEvidence, type CandidateRecord } from "../domain/candidate.js";
 import { loadBuilderProposalRunEnvelope } from "./builder-proposal.js";
 import { loadCandidateRecord } from "./candidate-review.js";

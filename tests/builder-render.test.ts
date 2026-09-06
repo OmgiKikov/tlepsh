@@ -44,7 +44,7 @@ import { createWorkshopTools } from "../src/builder/workshop-tools.js";
 import { turnBudgetLine, type AhdeWorkbench } from "../src/workbench/workbench.js";
 import type { ToolFixtureRunResult } from "../src/application/tool-workshop.js";
 import { plainPaint, type Paint } from "../src/builder/render/paint.js";
-import { STAGE_LABELS, nextStep, stageLabel } from "../src/builder/render/stage.js";
+import { nextStep, stageLabel } from "../src/builder/render/stage.js";
 import { workbenchGateClass } from "../src/workbench/transition-policy.js";
 import {
 	renderDatasetCases,
@@ -153,7 +153,6 @@ function makeView(overrides: Partial<WorkbenchView> = {}): WorkbenchView {
 		},
 		focus: {},
 		selections: [],
-		actions: [],
 		blockers: [],
 		warnings: [],
 		calibration: null,
@@ -617,12 +616,10 @@ const fakeTheme: Pick<Theme, "fg" | "bold"> = {
 // ---------------------------------------------------------------------------
 
 describe("stage labels and next steps", () => {
-	it("labels every workbench stage exactly once", () => {
-		const stages = [...WorkbenchStageSchema.options].sort();
-		expect(Object.keys(STAGE_LABELS).sort()).toEqual(stages);
+	it("labels every workbench stage", () => {
 		for (const stage of WorkbenchStageSchema.options) {
-			expect(STAGE_LABELS[stage].length).toBeGreaterThan(0);
-			expect(stageLabel(stage)).toBe(STAGE_LABELS[stage]);
+			expect(stageLabel(stage).length).toBeGreaterThan(0);
+			expect(stageLabel(stage)).not.toBe(stage);
 		}
 		expect(stageLabel("ready-to-evaluate")).toBe("Ready to run");
 		expect(stageLabel("corpus-design")).toBe("Eval design");
@@ -849,7 +846,7 @@ describe("workshop line", () => {
 	} as const;
 
 	it("says nothing about a workshop this process is holding open", () => {
-		const live = renderStatus(makeView({ workshopOpen: true, workshop: { ...recorded, state: "live" } }), plainPaint);
+		const live = renderStatus(makeView({ workshop: { ...recorded, state: "live" } }), plainPaint);
 		expect(live.join("\n")).not.toContain("Workshop");
 		expect(renderStatus(makeView(), plainPaint).join("\n")).not.toContain("Workshop");
 	});

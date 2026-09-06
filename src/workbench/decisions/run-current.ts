@@ -27,15 +27,12 @@ type RunCurrentResolution = Extract<
  * the same run.
  */
 function asRunCurrent(resolved: RunCurrentResolution): Extract<WorkbenchDecisionResult, { kind: "run-current" }> {
-	const framed = { kind: "run-current" as const, message: resolved.message, view: resolved.view };
-	switch (resolved.kind) {
-		case "start-testing":
-			return { ...framed, result: { resolvedAs: "start-testing", ...resolved.result } };
-		case "run-eval":
-			return { ...framed, result: { resolvedAs: "run-eval", ...resolved.result } };
-		case "verify-candidate":
-			return { ...framed, result: { resolvedAs: "verify-candidate", ...resolved.result } };
-	}
+	return {
+		kind: "run-current",
+		message: resolved.message,
+		view: resolved.view,
+		result: { resolvedAs: resolved.kind, ...resolved.result } as Extract<WorkbenchDecisionResult, { kind: "run-current" }>["result"],
+	};
 }
 
 /**
@@ -58,10 +55,5 @@ export async function decideRunCurrent(
 		throw new Error(resolution.message);
 	}
 	const forwarded = { repetitions: input.repetitions, reason: input.reason };
-	const route = resolution.route;
-	switch (route.kind) {
-		case "start-testing": return asRunCurrent(await host.decide({ ...route, ...forwarded }, gate, options));
-		case "run-eval": return asRunCurrent(await host.decide({ ...route, ...forwarded }, gate, options));
-		case "verify-candidate": return asRunCurrent(await host.decide({ ...route, ...forwarded }, gate, options));
-	}
+	return asRunCurrent(await host.decide({ ...resolution.route, ...forwarded }, gate, options));
 }

@@ -275,7 +275,7 @@ export function resolveOne<T>(input: {
 export function requireApprovedSpec(inventory: WorkbenchInventory, explicitId?: string): SpecSnapshot {
 	return resolveOne({
 		items: inventory.specs.filter((spec) =>
-			spec.status === "approved" && inventory.verifiedApprovedSpecIds.has(spec.id)
+			spec.status === "approved" && inventory.verifiedApprovedSpecReferences.has(spec.id)
 		),
 		explicitId,
 		focusId: inventory.validFocus["approved-spec"]?.id,
@@ -339,7 +339,7 @@ export function requireDevelopmentCorpus(
 /** The approved Spec a read or a decision is about: explicit, focused, or the only one. */
 function chosenApprovedSpecId(inventory: WorkbenchInventory, explicitId?: string): string | null {
 	const approved = inventory.specs.filter((spec) =>
-		spec.status === "approved" && inventory.verifiedApprovedSpecIds.has(spec.id)
+		spec.status === "approved" && inventory.verifiedApprovedSpecReferences.has(spec.id)
 	);
 	const focused = inventory.validFocus["approved-spec"]?.id;
 	return explicitId ?? (focused && approved.some((spec) => spec.id === focused)

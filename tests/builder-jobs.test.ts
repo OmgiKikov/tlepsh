@@ -13,7 +13,6 @@ const commandView: WorkbenchView = {
 	target: { status: "ready", id: "support-agent", gitSha: "a".repeat(40), model: null },
 	focus: {},
 	selections: [],
-	actions: [],
 	blockers: [],
 	warnings: [],
 	calibration: null,

@@ -1,7 +1,7 @@
 import { resolveCandidateArtifact, type CandidateArtifactKind } from "./candidate-artifacts.js";
 import { resolve } from "node:path";
 import { z } from "zod";
-import { CandidateProposalSchema } from "../builders/adapters.js";
+import { CandidateProposalSchema } from "../builder/proposal-contract.js";
 import { compareVerifiedEvalRuns, type CompareResult } from "../compare.js";
 import { DiagnosisCategorySchema, DiagnosisRecordSchema } from "../diagnosis.js";
 import {

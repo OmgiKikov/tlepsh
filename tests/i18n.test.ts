@@ -56,7 +56,6 @@ function makeView(overrides: Partial<WorkbenchView> = {}): WorkbenchView {
 		},
 		focus: {},
 		selections: [],
-		actions: [],
 		blockers: [],
 		warnings: [],
 		calibration: null,
@@ -165,8 +164,8 @@ const ALLOWED_LATIN = new Set([
  * fix is a Russian form, never a new entry here.
  */
 const MACHINE_LATIN = new Set([
-	// The products and the binary.
-	"AHDE", "ahde", "Builder", "Pi", "Target", "Git", "OAuth",
+	// The products and the binary, and the one language a Target is wrapped from.
+	"AHDE", "ahde", "Builder", "Pi", "Target", "Git", "OAuth", "Python",
 	// Commands, subcommands, flags and argument values the operator types.
 	"target", "regrade", "next", "prev", "all", "trace", "traces", "run", "discard",
 	// Ids, prefixes and field names read off records and screens.

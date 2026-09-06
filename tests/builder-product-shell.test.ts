@@ -14,7 +14,6 @@ function view(overrides: Partial<WorkbenchView> = {}): WorkbenchView {
 		target: { status: "missing", id: null, gitSha: null, model: null },
 		focus: {},
 		selections: [],
-		actions: ["scaffold-target"],
 		blockers: ["Target harness is missing."],
 		warnings: [],
 		calibration: null,
@@ -262,7 +261,6 @@ describe("AHDE Builder product shell", () => {
 				gitSha: "a".repeat(40),
 				model: { provider: "openai", id: "gpt-target", apiKeyEnv: "OPENAI_API_KEY", credentialPresent: false },
 			},
-			actions: ["review", "approve-spec"],
 			blockers: [],
 			counts: { ...view().counts, specDrafts: 1 },
 		});

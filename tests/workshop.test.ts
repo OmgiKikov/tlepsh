@@ -34,7 +34,7 @@ import {
 	listBuilderProposalAdmissions,
 	loadBuilderProposalRun,
 } from "../src/application/builder-proposal.js";
-import { validateCandidateProposal } from "../src/builders/adapters.js";
+import { validateCandidateProposal } from "../src/builder/proposal-contract.js";
 import { withDetachedWorktree } from "../src/git/experiment-worktree.js";
 import { createAhdeWorkbench, type AhdeWorkbench } from "../src/workbench/workbench.js";
 import type { WorkbenchConfirmation, WorkbenchHumanGate } from "../src/workbench/types.js";

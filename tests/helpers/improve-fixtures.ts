@@ -23,9 +23,9 @@ import { SEALED_VERIFICATION_REPETITIONS, sealedHoldoutTasks } from "./sealed-ho
 
 const REPO_ROOT = resolve(import.meta.dirname, "..", "..");
 
-export const IMPROVE_PROJECT_ID = "improve-fixture";
-export const IMPROVE_ACTOR_ID = "local:improve-human";
-export const IMPROVE_CREDENTIAL_ENV = "AHDE_IMPROVE_FIXTURE_KEY";
+const IMPROVE_PROJECT_ID = "improve-fixture";
+const IMPROVE_ACTOR_ID = "local:improve-human";
+const IMPROVE_CREDENTIAL_ENV = "AHDE_IMPROVE_FIXTURE_KEY";
 /** The instruction that makes the scripted Target answer correctly. */
 export const READY_INSTRUCTION = "Return the exact uppercase word READY.";
 /** An instruction that is a real diff and changes nothing the graders see. */
@@ -85,7 +85,7 @@ export interface ImproveFixture {
  * A scripted Target whose behaviour depends only on its instructions, so a
  * harness diff is the only thing that can move a score.
  */
-export async function startImproveMockModel(): Promise<MockModelHandle> {
+async function startImproveMockModel(): Promise<MockModelHandle> {
 	return startMockModel([
 		{ match: ({ system }) => system.includes(READY_INSTRUCTION), steps: [{ text: "READY" }] },
 		{ match: () => true, steps: [{ text: "pending" }] },

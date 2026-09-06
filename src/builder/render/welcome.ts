@@ -5,39 +5,37 @@ import type { WorkbenchView } from "../../workbench/types.js";
 import { oneLine } from "./format.js";
 import type { Paint } from "./paint.js";
 import { renderHeader, type HeaderState } from "./view.js";
-import { welcomeCopy } from "./welcome-copy.js";
 
 /** Suggestions are text, never dispatch or authority. The host's current legal
  * moves decide which consequential intents are worth offering. */
 export function welcomeIntents(view: WorkbenchView): string[] {
-	const copy = welcomeCopy();
 	const next = workbenchNext(view);
 	if (next.recovery) {
 		const recover = {
-			"reattach-workshop": copy.workshop,
-			"inspect-candidate": copy.candidate,
-			"repair-integrity": copy.integrity,
-			select: copy.selection,
+			"reattach-workshop": t("welcome.workshop"),
+			"inspect-candidate": t("welcome.candidate"),
+			"repair-integrity": t("welcome.integrity"),
+			select: t("welcome.selection"),
 		}[next.recovery.kind];
-		return [recover, copy.inspect];
+		return [recover, t("welcome.inspect")];
 	}
 	const can = (kind: string) => next.decide.some((entry) => entry.kind === kind);
 	const intents: string[] = [];
-	if (view.target.status === "bootstrap-required" && can("wrap-target")) intents.push(copy.connectPython);
-	if (view.target.status === "missing" && can("scaffold-target")) intents.push(copy.create);
-	if (view.target.status !== "missing" && can("configure-target")) intents.push(copy.configure);
+	if (view.target.status === "bootstrap-required" && can("wrap-target")) intents.push(t("welcome.connect-python"));
+	if (view.target.status === "missing" && can("scaffold-target")) intents.push(t("welcome.create"));
+	if (view.target.status !== "missing" && can("configure-target")) intents.push(t("welcome.configure"));
 	if (can("run-current") && (can("run-eval") || (can("start-testing") && view.counts.corpusDrafts > 0))) {
-		intents.push(copy.run);
+		intents.push(t("welcome.run"));
 	}
-	if (can("run-current") && can("verify-candidate")) intents.push(copy.verify);
-	if (can("improve")) intents.push(copy.improve);
-	if (can("model-experiment")) intents.push(copy.models);
+	if (can("run-current") && can("verify-candidate")) intents.push(t("welcome.verify"));
+	if (can("improve")) intents.push(t("welcome.improve"));
+	if (can("model-experiment")) intents.push(t("welcome.models"));
 	if (view.counts.approvedSpecs === 0 && next.submit.some((entry) => entry.kind === "spec-draft")) {
-		intents.push(copy.describe);
+		intents.push(t("welcome.describe"));
 	}
-	if (view.counts.developmentEvals > 0) intents.push(copy.results);
-	else if (view.counts.corpusDrafts > 0 || view.counts.developmentCorpora > 0) intents.push(copy.previewBasket);
-	intents.push(copy.inspect);
+	if (view.counts.developmentEvals > 0) intents.push(t("welcome.results"));
+	else if (view.counts.corpusDrafts > 0 || view.counts.developmentCorpora > 0) intents.push(t("welcome.preview-basket"));
+	intents.push(t("welcome.inspect"));
 	return [...new Set(intents)].slice(0, 3);
 }
 
@@ -66,7 +64,6 @@ export function renderWelcome(
 	if (!state.view || state.error) {
 		return renderHeader(state, paint).map((line) => truncateToWidth(line, width));
 	}
-	const copy = welcomeCopy();
 	const view = state.view;
 	const inset = width >= 40 ? "  " : "";
 	const contentWidth = Math.max(1, width - visibleWidth(inset));
@@ -76,13 +73,13 @@ export function renderWelcome(
 		for (const line of wrapTextWithAnsi(style(oneLine(text, 1200)), contentWidth)) add(line);
 	};
 	add(`${paint.accent("◆")} ${paint.bold(t("header.title"))}`);
-	prose(copy.tagline);
+	prose(t("welcome.tagline"));
 	add("");
-	add(`${paint.dim(copy.project)} ${paint.bold(oneLine(view.project.id, 180))}`);
+	add(`${paint.dim(t("welcome.project"))} ${paint.bold(oneLine(view.project.id, 180))}`);
 	add(paint.dim(projectPath(view.project.directory, contentWidth)));
 	if (options.returning) {
 		add("");
-		add(paint.accent(copy.returning));
+		add(paint.accent(t("welcome.returning")));
 	}
 	// Reuse every readiness, calibration, credential and integrity fact. The
 	// old wordmark and help hint are presentation; the middle lines are facts.
@@ -90,7 +87,7 @@ export function renderWelcome(
 		for (const line of wrapTextWithAnsi(fact, contentWidth)) add(line);
 	}
 	add("");
-	add(paint.dim(options.returning ? copy.continueWith : copy.trySaying));
+	add(paint.dim(options.returning ? t("welcome.continue-with") : t("welcome.try-saying")));
 	for (const intent of welcomeIntents(view)) {
 		const prefix = `${paint.accent("›")} `;
 		const continuation = "  ";
@@ -98,7 +95,7 @@ export function renderWelcome(
 		wrapped.forEach((line, index) => add(`${index === 0 ? prefix : continuation}${line}`));
 	}
 	add("");
-	prose(copy.freeInput);
+	prose(t("welcome.free-input"));
 	lines.push("");
 	return lines;
 }

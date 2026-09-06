@@ -741,7 +741,7 @@ export function dataMaxBytes(environment: NodeJS.ProcessEnv = process.env): numb
  * against evidence produced in a container, by design.
  */
 export const ContainerBlock = z.strictObject({
-	runtime: z.enum(["docker", "gondolin"]).default("docker"),
+	runtime: z.enum(["docker"]).default("docker"),
 	/** A content-pinned image. Mutable tags can never identify comparable evidence. */
 	image: z
 		.string()
@@ -1457,10 +1457,6 @@ export function loadTarget(dir: string, override?: { dataset?: string }): Resolv
 	const manifestDataset = manifest.evalSuite.dataset;
 	if (override?.dataset) manifest.evalSuite.dataset = override.dataset;
 
-	for (const rel of [manifest.instructions.agentsMd, ...manifest.skills.map((s) => `${s}/SKILL.md`), manifest.evalSuite.dataset, manifest.evalSuite.graders]) {
-		// existence checked by reads below; keep list explicit for error clarity
-		void rel;
-	}
 	readRelative(dir, manifest.instructions.agentsMd);
 	for (const skill of manifest.skills) readRelative(dir, `${skill}/SKILL.md`);
 
