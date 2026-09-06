@@ -88,6 +88,7 @@ import type {
 	WorkbenchStage,
 	WorkbenchView,
 } from "./types.js";
+import { errorMessage } from "../util.js";
 
 const MAX_VIEW_ITEMS = 50;
 const MAX_PROPOSAL_BYTES = 4 * 1024 * 1024;
@@ -142,10 +143,6 @@ export interface WorkbenchInventory {
 	integrityBlockers: string[];
 }
 
-function errorMessage(error: unknown): string {
-	return (error instanceof Error ? error.message : String(error)).slice(0, 500);
-}
-
 function integrityFailure(warnings: string[], blockers: string[], message: string): void {
 	warnings.push(message);
 	blockers.push(message);
@@ -167,7 +164,7 @@ function safeDirectoryNames(root: string, warnings: string[], blockers: string[]
 			.map((entry) => entry.name)
 			.sort();
 	} catch (error) {
-		integrityFailure(warnings, blockers, `${label}: ${errorMessage(error)}`);
+		integrityFailure(warnings, blockers, `${label}: ${errorMessage(error, 500)}`);
 		return [];
 	}
 }
@@ -188,7 +185,6 @@ function verifyProposalArtifact(runsRoot: string, record: PersistedBuilderRun): 
 		throw new Error("proposal artifact does not match builder_run proposal");
 	}
 }
-
 
 /** Whether an apply receipt (or the intent that preceded it) restates the immutable apply decision claim exactly. */
 function sameApplyDecision(
@@ -220,7 +216,7 @@ function listProposals(
 	try {
 		admissions = listBuilderProposalAdmissions(stateRoot, projectId);
 	} catch (error) {
-		integrityFailure(warnings, blockers, `proposal admissions: ${errorMessage(error)}`);
+		integrityFailure(warnings, blockers, `proposal admissions: ${errorMessage(error, 500)}`);
 		return [];
 	}
 	for (const admission of admissions) {
@@ -379,7 +375,7 @@ function listProposals(
 								: "open",
 			});
 		} catch (error) {
-			integrityFailure(warnings, blockers, `proposal ${runId}: ${errorMessage(error)}`);
+			integrityFailure(warnings, blockers, `proposal ${runId}: ${errorMessage(error, 500)}`);
 		}
 	}
 	return proposals.sort((left, right) => right.record.runId.localeCompare(left.record.runId));
@@ -398,7 +394,7 @@ function listCandidates(runsRoot: string, warnings: string[], blockers: string[]
 			if (candidate.candidateId !== candidateId) throw new Error("candidate directory does not match its record id");
 			candidates.push(candidate);
 		} catch (error) {
-			integrityFailure(warnings, blockers, `candidate ${candidateId}: ${errorMessage(error)}`);
+			integrityFailure(warnings, blockers, `candidate ${candidateId}: ${errorMessage(error, 500)}`);
 		}
 	}
 	return candidates.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
@@ -501,7 +497,7 @@ function validateProjectCandidates(options: {
 			integrityFailure(
 				options.warnings,
 				options.blockers,
-				`candidate ${candidate.candidateId}: ${errorMessage(error)}`,
+				`candidate ${candidate.candidateId}: ${errorMessage(error, 500)}`,
 			);
 		}
 	}
@@ -578,7 +574,7 @@ export function loadWorkbenchInventory(options: {
 		// with an absolute path is the first thing a newcomer reads, and it reads
 		// like a crash. Anything else that stops a manifest from loading — bad
 		// YAML, a broken field — is still a warning, because it IS a surprise.
-		if (!/\bENOENT\b/.test(errorMessage(error))) warnings.push(`target: ${errorMessage(error)}`);
+		if (!/\bENOENT\b/.test(errorMessage(error, 500))) warnings.push(`target: ${errorMessage(error, 500)}`);
 	}
 	// A template's prose is starting material, not the agent. Saying so once, as
 	// a warning, is what stops the Builder from measuring `REPLACE-ME` and the
@@ -591,13 +587,13 @@ export function loadWorkbenchInventory(options: {
 	try {
 		specs = listSpecSnapshots(options.stateRoot, options.projectId);
 	} catch (error) {
-		integrityFailure(warnings, integrityBlockers, `specs: ${errorMessage(error)}`);
+		integrityFailure(warnings, integrityBlockers, `specs: ${errorMessage(error, 500)}`);
 	}
 	let corpusDrafts: BuilderCorpusDraft[] = [];
 	try {
 		corpusDrafts = listBuilderCorpusDrafts(options.stateRoot, options.projectId);
 	} catch (error) {
-		integrityFailure(warnings, integrityBlockers, `corpus drafts: ${errorMessage(error)}`);
+		integrityFailure(warnings, integrityBlockers, `corpus drafts: ${errorMessage(error, 500)}`);
 	}
 	const corpusDraftById = new Map(corpusDrafts.map((draft) => [draft.id, draft] as const));
 	for (const draft of corpusDrafts.filter((candidate) => candidate.importSource !== undefined)) {
@@ -619,7 +615,7 @@ export function loadWorkbenchInventory(options: {
 			integrityFailure(
 				warnings,
 				integrityBlockers,
-				`corpus draft ${draft.id} import provenance: ${errorMessage(error)}`,
+				`corpus draft ${draft.id} import provenance: ${errorMessage(error, 500)}`,
 			);
 		}
 	}
@@ -686,7 +682,7 @@ export function loadWorkbenchInventory(options: {
 			integrityFailure(
 				warnings,
 				integrityBlockers,
-				`Spec approval receipt for ${draft.id}: ${errorMessage(error)}`,
+				`Spec approval receipt for ${draft.id}: ${errorMessage(error, 500)}`,
 			);
 		}
 	}
@@ -781,7 +777,7 @@ export function loadWorkbenchInventory(options: {
 				try {
 					exactTarget = targetWithDevelopmentCorpus(target, loaded);
 				} catch (error) {
-					warnings.push(`development corpus ${corpus.id} cannot run on the current Target: ${errorMessage(error)}`);
+					warnings.push(`development corpus ${corpus.id} cannot run on the current Target: ${errorMessage(error, 500)}`);
 				}
 			}
 			developmentLineage.set(corpus.id, {
@@ -794,7 +790,7 @@ export function loadWorkbenchInventory(options: {
 			integrityFailure(
 				warnings,
 				integrityBlockers,
-				`development corpus ${corpus.id} failed reviewed lineage integrity checks: ${errorMessage(error)}`,
+				`development corpus ${corpus.id} failed reviewed lineage integrity checks: ${errorMessage(error, 500)}`,
 			);
 		}
 	}

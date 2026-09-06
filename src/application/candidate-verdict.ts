@@ -1,4 +1,4 @@
-import type { CandidateRecord } from "../domain/candidate.js";
+import type { CandidateRecord, ComparisonGateEvidence } from "../domain/candidate.js";
 import { formatPoints, sealedOutcome, sealedOutcomeLabel } from "../domain/comparison-gate.js";
 import { interval } from "../measurement.js";
 import { comparisonSurfaceOf, type AttemptSurface } from "./experiment-history.js";
@@ -25,13 +25,14 @@ export interface CandidateVerdicts {
 	sealed: CandidateSurfaceVerdict | null;
 }
 
-function reasonsOf(evaluation: unknown): string[] {
-	const comparison = (evaluation as { comparison?: { reasons?: unknown } } | undefined)?.comparison;
-	const reasons = comparison?.reasons;
-	return Array.isArray(reasons) ? reasons.filter((reason): reason is string => typeof reason === "string") : [];
+type EvaluationSurface = { comparison?: ComparisonGateEvidence | null | undefined } | null | undefined;
+
+function reasonsOf(evaluation: EvaluationSurface): string[] {
+	const comparison = evaluation?.comparison;
+	return comparison && "reasons" in comparison ? [...comparison.reasons] : [];
 }
 
-function surfaceVerdict(evaluation: unknown): CandidateSurfaceVerdict | null {
+function surfaceVerdict(evaluation: EvaluationSurface): CandidateSurfaceVerdict | null {
 	const surface = comparisonSurfaceOf(evaluation);
 	return surface === null ? null : { ...surface, reasons: reasonsOf(evaluation) };
 }

@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
 	closeSync,
 	existsSync,
@@ -47,7 +47,7 @@ import {
 	type ApprovedSpecInput,
 } from "../spec.js";
 import { readJsonArtifact, writeJsonArtifact, writeTextArtifact } from "../storage/artifacts.js";
-import { resolveContainedArtifactPath } from "../storage/paths.js";
+import { resolveContainedArtifactPath, contained, projectStateDir } from "../storage/paths.js";
 import { resolveDevelopmentTargetForEval } from "./corpus-target.js";
 import {
 	ProposalBasisAttestationSchema,
@@ -69,6 +69,8 @@ import {
 	loadBuilderProposalDecisionClaim,
 	type BuilderProposalDecisionClaim,
 } from "./builder-proposal-decision.js";
+import { errorMessage, sha256 } from "../util.js";
+import { git, gitFailure } from "../git/commands.js";
 
 const GIT_SHA = /^[0-9a-f]{40}$/;
 const SHA256 = /^sha256:[0-9a-f]{64}$/;
@@ -540,48 +542,8 @@ const DEFAULT_RUN_DEPENDENCIES: BuilderProposalDependencies = {
 	newRunId: () => `builder-${randomUUID()}`,
 };
 
-function sha256(content: string | Buffer): string {
-	return `sha256:${createHash("sha256").update(content).digest("hex")}`;
-}
-
-function isContained(root: string, candidate: string): boolean {
-	const path = relative(root, candidate);
-	return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
-}
-
-function proposalAdmissionRoot(
-	stateRoot: string,
-	projectIdInput: string,
-	create: boolean,
-): string | null {
-	const projectId = ProjectIdSchema.parse(projectIdInput);
-	const root = resolve(stateRoot);
-	if (!existsSync(root)) {
-		if (!create) return null;
-		mkdirSync(root, { recursive: true, mode: 0o700 });
-	}
-	const rootEntry = lstatSync(root);
-	if (!rootEntry.isDirectory() || rootEntry.isSymbolicLink()) {
-		throw new Error(`Builder proposal stateRoot must be a regular non-symlink directory: ${root}`);
-	}
-	const canonicalRoot = realpathSync(root);
-	let current = root;
-	for (const segment of ["projects", projectId, "workbench", "proposal-admissions"]) {
-		const next = join(current, segment);
-		if (!existsSync(next)) {
-			if (!create) return null;
-			mkdirSync(next, { mode: 0o700 });
-		}
-		const entry = lstatSync(next);
-		if (!entry.isDirectory() || entry.isSymbolicLink()) {
-			throw new Error(`Builder proposal state component must be a regular non-symlink directory: ${next}`);
-		}
-		if (!isContained(canonicalRoot, realpathSync(next))) {
-			throw new Error("Builder proposal state path escaped stateRoot");
-		}
-		current = next;
-	}
-	return current;
+function proposalAdmissionRoot(stateRoot: string, projectIdInput: string, create: boolean): string | null {
+	return projectStateDir(stateRoot, projectIdInput, ["workbench", "proposal-admissions"], { create, label: "Builder proposal" });
 }
 
 function assertPrivateAdmissionFile(path: string): void {
@@ -745,10 +707,6 @@ function assertProposalEvidenceBinding(
 			throw new Error("proposal change evidence refs do not match the host-derived failure-mode evidence");
 		}
 	}
-}
-
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 function builderError(code: string, message: string, retryable: boolean): BuilderError {
@@ -1372,18 +1330,9 @@ const DEFAULT_APPLY_DEPENDENCIES: ApplyBuilderProposalDependencies = {
 
 function gitText(repositoryDir: string, args: string[], input?: string, env?: NodeJS.ProcessEnv): string {
 	try {
-		return execFileSync("git", ["-C", repositoryDir, ...args], {
-			encoding: "utf8",
-			input,
-			env,
-			maxBuffer: 16 * 1024 * 1024,
-			stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-		}).trim();
+		return git(repositoryDir, args, { input, env }).toString("utf8").trim();
 	} catch (error) {
-		const stderr = typeof error === "object" && error !== null && "stderr" in error
-			? String((error as { stderr?: unknown }).stderr).trim()
-			: "";
-		throw new Error(`git ${args.join(" ")} failed${stderr ? `: ${stderr}` : ""}`, { cause: error });
+		throw gitFailure(args, error);
 	}
 }
 

@@ -4,6 +4,7 @@ import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { canonicalJson, hashFile, hashValue } from "../provenance.js";
 import type { ContainerPolicy } from "./container-backend.js";
+import { isRecord } from "../util.js";
 
 const TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 
@@ -128,10 +129,6 @@ const RawToolDescriptor = z.strictObject({
 	lockfiles: z.array(ToolDirectoryRelativePathSchema).max(8).optional(),
 });
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function assertOnlyKeys(
 	value: Record<string, unknown>,
 	allowed: ReadonlySet<string>,
@@ -168,7 +165,7 @@ function validateEnum(schema: Record<string, unknown>, path: string): void {
 
 function validateParameterSchemaNode(value: unknown, path: string, depth: number): void {
 	if (depth > MAX_SCHEMA_DEPTH) throw new Error(`${path}: JSON Schema nesting exceeds ${MAX_SCHEMA_DEPTH}`);
-	if (!isPlainObject(value)) throw new Error(`${path}: expected a JSON Schema object`);
+	if (!isRecord(value)) throw new Error(`${path}: expected a JSON Schema object`);
 	const type = value.type;
 	if (!(["array", "boolean", "integer", "number", "object", "string"] as unknown[]).includes(type)) {
 		throw new Error(`${path}.type: expected object, array, string, number, integer, or boolean`);
@@ -186,7 +183,7 @@ function validateParameterSchemaNode(value: unknown, path: string, depth: number
 	const common = ["type", "description", "enum", "default"];
 	if (type === "object") {
 		assertOnlyKeys(value, new Set([...common, "properties", "required", "additionalProperties"]), path);
-		if (!isPlainObject(value.properties)) throw new Error(`${path}.properties: expected an object`);
+		if (!isRecord(value.properties)) throw new Error(`${path}.properties: expected an object`);
 		const entries = Object.entries(value.properties);
 		if (entries.length > MAX_SCHEMA_PROPERTIES) {
 			throw new Error(`${path}.properties: exceeds ${MAX_SCHEMA_PROPERTIES} properties`);
@@ -232,7 +229,7 @@ function validateParameterSchemaNode(value: unknown, path: string, depth: number
 
 function valueMatchesType(value: unknown, type: unknown): boolean {
 	if (type === "array") return Array.isArray(value);
-	if (type === "object") return isPlainObject(value);
+	if (type === "object") return isRecord(value);
 	if (type === "integer") return typeof value === "number" && Number.isInteger(value);
 	if (type === "number") return typeof value === "number" && Number.isFinite(value);
 	return typeof value === type;

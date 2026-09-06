@@ -27,9 +27,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
-	accessSync,
 	chmodSync,
-	constants,
 	existsSync,
 	lstatSync,
 	mkdtempSync,
@@ -41,7 +39,8 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, isAbsolute, join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { executableOnPath } from "../util.js";
 
 /**
  * The resolved `execution.container` block. Structurally identical to the
@@ -269,19 +268,6 @@ const runtimeBindings = new WeakMap<ContainerRuntimeStatus, ContainerRuntimeBind
 /** Tests point PATH at a fake runtime; the memo must not outlive that fixture. */
 export function resetContainerRuntimeDetection(): void {
 	detectionCache.clear();
-}
-
-function executableOnPath(name: string, pathValue: string): string | undefined {
-	const candidates = isAbsolute(name)
-		? [name]
-		: pathValue.split(delimiter).filter(Boolean).map((entry) => join(entry, name));
-	for (const candidate of candidates) {
-		try {
-			accessSync(candidate, constants.X_OK);
-			return candidate;
-		} catch {}
-	}
-	return undefined;
 }
 
 function firstLine(value: string | null | undefined): string {

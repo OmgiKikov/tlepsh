@@ -1,4 +1,4 @@
-import { SEALED_GATE_POLICY } from "./comparison-gate.js";
+import { mean, SEALED_GATE_POLICY } from "./comparison-gate.js";
 
 /**
  * How big an exam has to be before it can answer, derived from measured noise.
@@ -30,8 +30,8 @@ function clampCases(cases: number): number {
 
 /** Sample (n−1) standard deviation. Pure. */
 function standardDeviation(values: readonly number[]): number {
-	const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-	const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (values.length - 1);
+	const centre = mean(values);
+	const variance = values.reduce((sum, value) => sum + (value - centre) ** 2, 0) / (values.length - 1);
 	return Math.sqrt(Math.max(0, variance));
 }
 

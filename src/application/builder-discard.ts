@@ -1,6 +1,5 @@
-import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+
 import { z } from "zod";
 import { CandidateProposalSchema } from "../builder/proposal-contract.js";
 import { canonicalJson, hashValue } from "../provenance.js";
@@ -11,6 +10,7 @@ import {
 	claimBuilderProposalDecision,
 	loadBuilderProposalDecisionClaim,
 } from "./builder-proposal-decision.js";
+import { sha256 } from "../util.js";
 
 const ArtifactIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/);
 const HashSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
@@ -50,10 +50,6 @@ export interface DiscardBuilderProposalOptions {
 export interface DiscardBuilderProposalResult {
 	receipt: BuilderDiscardReceipt;
 	receiptPath: string;
-}
-
-function sha256(bytes: Buffer): string {
-	return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
 export function builderDiscardReceiptPath(runsRoot: string, runId: string): string {

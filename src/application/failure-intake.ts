@@ -1,5 +1,5 @@
-import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { existsSync } from "node:fs";
+import { join, relative } from "node:path";
 import { z } from "zod";
 import {
 	DialogueMessageSchema,
@@ -17,6 +17,8 @@ import {
 import { parseDataset, parseDialogueCell } from "./dataset-parse.js";
 import { DatasetSourcePathSchema, readDatasetSource } from "./dataset-source.js";
 import { boundTargetFeedbackDialogue } from "./target-feedback.js";
+import { contained, projectStateDir } from "../storage/paths.js";
+import { isRecord } from "../util.js";
 
 const MAX_FAILURE_ARTIFACT_BYTES = 1024 * 1024;
 const MAX_REPORTED_TOOL_EVENTS = 200;
@@ -257,10 +259,6 @@ function reportedTraceTools(
 	return events;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /** Keep tool shape and ordering, but never import arguments or result text as evidence. */
 function reportedJsonTools(value: unknown, exactValues: readonly string[]): ProductionFailureToolEvent[] {
 	const events: ProductionFailureToolEvent[] = [];
@@ -380,40 +378,8 @@ function exactValues(input: readonly string[] | undefined): string[] {
 	return [...new Set(parsed)];
 }
 
-function contained(root: string, candidate: string): boolean {
-	const rel = relative(root, candidate);
-	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
-}
-
 function failuresRoot(stateRoot: string, projectIdInput: string, create: boolean): string | null {
-	const projectId = ProjectIdSchema.parse(projectIdInput);
-	const root = resolve(stateRoot);
-	if (!existsSync(root)) {
-		if (!create) return null;
-		mkdirSync(root, { recursive: true, mode: 0o700 });
-	}
-	const rootEntry = lstatSync(root);
-	if (!rootEntry.isDirectory() || rootEntry.isSymbolicLink()) {
-		throw new Error(`failure intake stateRoot must be a regular non-symlink directory: ${root}`);
-	}
-	const canonicalRoot = realpathSync(root);
-	let current = root;
-	for (const segment of ["projects", projectId, "production-failures"]) {
-		const next = join(current, segment);
-		if (!existsSync(next)) {
-			if (!create) return null;
-			mkdirSync(next, { mode: 0o700 });
-		}
-		const entry = lstatSync(next);
-		if (!entry.isDirectory() || entry.isSymbolicLink()) {
-			throw new Error(`failure intake state component must be a regular non-symlink directory: ${next}`);
-		}
-		if (!contained(canonicalRoot, realpathSync(next))) {
-			throw new Error("failure intake state path escaped stateRoot");
-		}
-		current = next;
-	}
-	return current;
+	return projectStateDir(stateRoot, projectIdInput, "production-failures", { create, label: "failure intake" });
 }
 
 function identityOf(record: ProductionFailureRecord): ProductionFailureIdentity {

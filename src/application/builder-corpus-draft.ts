@@ -1,5 +1,5 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { z } from "zod";
 import { CorpusTaskSchema, type CorpusTask } from "../corpus.js";
 import { GraderSpec, TaskSchema, taskDialogueIssue } from "../manifest.js";
@@ -15,6 +15,7 @@ import {
 	type BuilderCorpusImportSource,
 } from "./builder-corpus-import-contract.js";
 import { ProductionFailureProvenanceSourceSchema } from "./failure-intake.js";
+import { contained, projectStateDir } from "../storage/paths.js";
 
 /** A draft stays small enough for a human to read every case before publishing. */
 export const MAX_BUILDER_CORPUS_DRAFT_TASKS = 100;
@@ -369,40 +370,8 @@ const DEFAULT_DEPENDENCIES: BuilderCorpusDraftDependencies = {
 	now: () => new Date().toISOString(),
 };
 
-function contained(root: string, candidate: string): boolean {
-	const rel = relative(root, candidate);
-	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
-}
-
 function draftsRoot(stateRoot: string, projectIdInput: string, create: boolean): string | null {
-	const projectId = ProjectIdSchema.parse(projectIdInput);
-	const root = resolve(stateRoot);
-	if (!existsSync(root)) {
-		if (!create) return null;
-		mkdirSync(root, { recursive: true, mode: 0o700 });
-	}
-	const rootEntry = lstatSync(root);
-	if (!rootEntry.isDirectory() || rootEntry.isSymbolicLink()) {
-		throw new Error(`Builder corpus draft stateRoot must be a regular non-symlink directory: ${root}`);
-	}
-	const canonicalRoot = realpathSync(root);
-	let current = root;
-	for (const segment of ["projects", projectId, "builder-corpus-drafts"]) {
-		const next = join(current, segment);
-		if (!existsSync(next)) {
-			if (!create) return null;
-			mkdirSync(next, { mode: 0o700 });
-		}
-		const entry = lstatSync(next);
-		if (!entry.isDirectory() || entry.isSymbolicLink()) {
-			throw new Error(`Builder corpus draft state component must be a regular non-symlink directory: ${next}`);
-		}
-		if (!contained(canonicalRoot, realpathSync(next))) {
-			throw new Error("Builder corpus draft state path escaped stateRoot");
-		}
-		current = next;
-	}
-	return current;
+	return projectStateDir(stateRoot, projectIdInput, "builder-corpus-drafts", { create, label: "Builder corpus draft" });
 }
 
 function artifactPath(stateRoot: string, projectId: string, draftIdInput: string): string {

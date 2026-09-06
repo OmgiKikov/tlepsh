@@ -1,5 +1,5 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { z } from "zod";
 import { canonicalJson, HashSchema, hashValue } from "../provenance.js";
 import { ApprovedSpecReferenceSchema, type ApprovedSpecReference } from "../spec.js";
@@ -9,6 +9,7 @@ import {
 	DatasetSourcePathSchema,
 	type DatasetMappingRecipe,
 } from "./dataset-ingest.js";
+import { contained, projectStateDir } from "../storage/paths.js";
 
 const ProjectIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
 const SubmissionIdSchema = z.string().regex(/^dataset-recipe-[0-9a-f]{64}$/);
@@ -75,40 +76,8 @@ export interface SaveDatasetRecipeSubmissionOptions {
 	now?: () => string;
 }
 
-function contained(root: string, candidate: string): boolean {
-	const rel = relative(root, candidate);
-	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
-}
-
 function recipesRoot(stateRoot: string, projectIdInput: string, create: boolean): string | null {
-	const projectId = ProjectIdSchema.parse(projectIdInput);
-	const root = resolve(stateRoot);
-	if (!existsSync(root)) {
-		if (!create) return null;
-		mkdirSync(root, { recursive: true, mode: 0o700 });
-	}
-	const rootEntry = lstatSync(root);
-	if (!rootEntry.isDirectory() || rootEntry.isSymbolicLink()) {
-		throw new Error(`dataset recipe stateRoot must be a regular non-symlink directory: ${root}`);
-	}
-	const canonicalRoot = realpathSync(root);
-	let current = root;
-	for (const segment of ["projects", projectId, "dataset-recipes"]) {
-		const next = join(current, segment);
-		if (!existsSync(next)) {
-			if (!create) return null;
-			mkdirSync(next, { mode: 0o700 });
-		}
-		const entry = lstatSync(next);
-		if (!entry.isDirectory() || entry.isSymbolicLink()) {
-			throw new Error(`dataset recipe state component must be a regular non-symlink directory: ${next}`);
-		}
-		if (!contained(canonicalRoot, realpathSync(next))) {
-			throw new Error("dataset recipe state path escaped stateRoot");
-		}
-		current = next;
-	}
-	return current;
+	return projectStateDir(stateRoot, projectIdInput, "dataset-recipes", { create, label: "dataset recipe" });
 }
 
 /** Freeze one validated mapping recipe as a small immutable, content-addressed artifact. */

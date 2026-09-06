@@ -1,7 +1,6 @@
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstatSync, realpathSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+
+import { isAbsolute } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { DEFAULT_PI_HARNESS_FILES, harnessFilesOf, TargetManifest, type ContainerBlock } from "../manifest.js";
@@ -22,6 +21,7 @@ import {
 	validateTargetToolDescriptor,
 } from "../target/tool-manifest.js";
 import { namedDirtyPaths, operatorDirtyPaths } from "./store-hygiene.js";
+import { git, NotWorktreeRootError, worktreeRoot } from "../git/commands.js";
 
 const GIT_SHA = /^[0-9a-f]{40}$/;
 const TARGET_ID = /^[a-z0-9][a-z0-9-]*$/;
@@ -233,10 +233,7 @@ function contextError(
 
 function gitRaw(repositoryDir: string, args: string[], maxBuffer = MAX_GIT_OUTPUT_BYTES): Buffer {
 	try {
-		return execFileSync("git", ["--no-replace-objects", "-C", repositoryDir, ...args], {
-			stdio: ["ignore", "pipe", "pipe"],
-			maxBuffer,
-		});
+		return git(repositoryDir, args, { maxBuffer });
 	} catch (error) {
 		return contextError("TARGET_CONTEXT_INVALID", "Target Git context could not be verified.", error);
 	}
@@ -248,19 +245,12 @@ function gitText(repositoryDir: string, args: string[]): string {
 
 function repositoryRoot(input: string): string {
 	try {
-		const requested = resolve(input);
-		const entry = lstatSync(requested);
-		if (!entry.isDirectory() || entry.isSymbolicLink()) {
-			return contextError("TARGET_CONTEXT_INVALID", "Target must be a regular Git worktree root.");
-		}
-		const canonical = realpathSync(requested);
-		const top = realpathSync(gitText(canonical, ["rev-parse", "--show-toplevel"]));
-		if (top !== canonical) {
-			return contextError("TARGET_CONTEXT_INVALID", "Target must be the Git worktree root.");
-		}
-		return canonical;
+		return worktreeRoot(input, gitText);
 	} catch (error) {
 		if (error instanceof TargetAuthoringContextError) throw error;
+		if (error instanceof NotWorktreeRootError && error.reason === "root") {
+			return contextError("TARGET_CONTEXT_INVALID", "Target must be the Git worktree root.");
+		}
 		return contextError("TARGET_CONTEXT_INVALID", "Target must be a regular Git worktree root.", error);
 	}
 }

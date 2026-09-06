@@ -270,15 +270,11 @@ function requireTui(ctx: ExtensionCommandContext, command: string): void {
 	}
 }
 
-function abortIfRequested(signal?: AbortSignal): void {
-	if (signal?.aborted) throw signal.reason ?? new Error("command aborted");
-}
-
 async function awaitIdle(ctx: ExtensionCommandContext, command: string): Promise<AbortSignal | undefined> {
 	requireTui(ctx, command);
 	const signal = ctx.signal;
 	await ctx.waitForIdle();
-	abortIfRequested(signal);
+	signal?.throwIfAborted();
 	return signal;
 }
 

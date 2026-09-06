@@ -19,6 +19,7 @@ import {
 	type WorkshopTryInput,
 	type WorkshopWriteInput,
 } from "../workbench/types.js";
+import { isRecord } from "../util.js";
 
 /**
  * The three model-facing tool schemas are generated from the same zod schemas the
@@ -126,10 +127,6 @@ type IssuePath = readonly PropertyKey[];
 // ---------------------------------------------------------------------------
 // Schema navigation: one walker serves normalization, branch selection, and the
 // model-readable explanations.
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function deref(root: JsonSchema, node: JsonSchema | undefined): JsonSchema | undefined {
 	if (!node?.$ref) return node;

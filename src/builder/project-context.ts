@@ -11,6 +11,7 @@ import { loadTarget } from "../manifest.js";
 import { listSpecSnapshots } from "../spec.js";
 import { targetBootstrapRequired } from "../target/readiness.js";
 import { standInFilesLine } from "../target/placeholders.js";
+import { errorMessage } from "../util.js";
 
 const MAX_STATUS_ITEMS = 30;
 const DEFAULT_COMPAT_READ_BYTES = 32 * 1024;
@@ -78,10 +79,6 @@ export function listPublicTargetFiles(projectDir: string): PublicTargetFile[] {
 	}
 }
 
-function errorMessage(error: unknown): string {
-	return (error instanceof Error ? error.message : String(error)).slice(0, 500);
-}
-
 export function resolveBuilderProjectId(context: BuilderProjectContext): string {
 	if (context.projectId) return context.projectId;
 	try {
@@ -142,21 +139,21 @@ export function buildProjectStatus(context: BuilderProjectContext): Record<strin
 				expectedTarget: { id: resolved.manifest.id, gitSha: resolved.gitSha },
 			}).resources;
 		} catch (error) {
-			warnings.push(`target authoring context: ${errorMessage(error)}`);
+			warnings.push(`target authoring context: ${errorMessage(error, 500)}`);
 		}
 		// The same one line the view and /doctor carry: what the Builder is
 		// looking at is a template's placeholder prose, not a described agent.
 		const standIns = standInFilesLine(resolved.dir);
 		if (standIns) warnings.push(standIns);
 	} catch (error) {
-		target = { status: "not-ready", error: errorMessage(error) };
+		target = { status: "not-ready", error: errorMessage(error, 500) };
 	}
 
 	let specs: ReturnType<typeof listSpecSnapshots> = [];
 	try {
 		specs = listSpecSnapshots(context.stateRoot, projectId).slice(0, MAX_STATUS_ITEMS);
 	} catch (error) {
-		warnings.push(`specs: ${errorMessage(error)}`);
+		warnings.push(`specs: ${errorMessage(error, 500)}`);
 	}
 	let corpora: ReturnType<typeof listCorpora> = [];
 	try {

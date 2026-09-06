@@ -1,4 +1,5 @@
 import type { DialogueMessage } from "../manifest.js";
+import { errorMessage } from "../util.js";
 
 /**
  * Every supported inbox shape reduces to the same thing: an ordered list of
@@ -53,10 +54,6 @@ export class DatasetParseError extends Error {
 		super(message, options);
 		this.name = "DatasetParseError";
 	}
-}
-
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
 }
 
 /** One newline convention and no byte-order mark, so every parser sees the same text. */

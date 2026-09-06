@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { z } from "zod";
 import {
 	createCorpus,
@@ -37,6 +37,7 @@ import {
 	type ParsedDataset,
 } from "./dataset-parse.js";
 import { DatasetSourcePathSchema, readDatasetSource, type DatasetSourceFile } from "./dataset-source.js";
+import { contained, projectStateDir } from "../storage/paths.js";
 
 export {
 	DATASET_FORMATS,
@@ -807,40 +808,8 @@ export function compileSealedSlice(options: CompileSealedSliceOptions): Compiled
 
 // ---------- ingest ----------
 
-function contained(root: string, candidate: string): boolean {
-	const rel = relative(root, candidate);
-	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
-}
-
 function receiptsRoot(stateRoot: string, projectIdInput: string, create: boolean): string | null {
-	const projectId = ProjectIdSchema.parse(projectIdInput);
-	const root = resolve(stateRoot);
-	if (!existsSync(root)) {
-		if (!create) return null;
-		mkdirSync(root, { recursive: true, mode: 0o700 });
-	}
-	const rootEntry = lstatSync(root);
-	if (!rootEntry.isDirectory() || rootEntry.isSymbolicLink()) {
-		throw new Error(`dataset ingest stateRoot must be a regular non-symlink directory: ${root}`);
-	}
-	const canonicalRoot = realpathSync(root);
-	let current = root;
-	for (const segment of ["projects", projectId, "dataset-ingests"]) {
-		const next = join(current, segment);
-		if (!existsSync(next)) {
-			if (!create) return null;
-			mkdirSync(next, { mode: 0o700 });
-		}
-		const entry = lstatSync(next);
-		if (!entry.isDirectory() || entry.isSymbolicLink()) {
-			throw new Error(`dataset ingest state component must be a regular non-symlink directory: ${next}`);
-		}
-		if (!contained(canonicalRoot, realpathSync(next))) {
-			throw new Error("dataset ingest state path escaped stateRoot");
-		}
-		current = next;
-	}
-	return current;
+	return projectStateDir(stateRoot, projectIdInput, "dataset-ingests", { create, label: "dataset ingest" });
 }
 
 function receiptSha(receipt: DatasetIngestReceipt): string {

@@ -1,8 +1,9 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { z } from "zod";
 import { hashValue } from "./provenance.js";
 import { readJsonArtifact, writeJsonArtifact } from "./storage/artifacts.js";
+import { contained, projectStateDir } from "./storage/paths.js";
 
 const ProjectIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
 const SpecIdSchema = z.string().regex(/^spec-[0-9a-f]{64}$/);
@@ -75,37 +76,8 @@ export interface SaveSpecSnapshotOptions {
 	now?: () => string;
 }
 
-function contained(root: string, candidate: string): boolean {
-	const rel = relative(root, candidate);
-	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
-}
-
 function specsRoot(stateRoot: string, projectIdInput: string, create: boolean): string | null {
-	const projectId = ProjectIdSchema.parse(projectIdInput);
-	const root = resolve(stateRoot);
-	if (!existsSync(root)) {
-		if (!create) return null;
-		mkdirSync(root, { recursive: true, mode: 0o700 });
-	}
-	if (!lstatSync(root).isDirectory() || lstatSync(root).isSymbolicLink()) {
-		throw new Error(`spec stateRoot must be a regular directory: ${root}`);
-	}
-	const canonicalRoot = realpathSync(root);
-	let current = root;
-	for (const segment of ["projects", projectId, "specs"]) {
-		const next = join(current, segment);
-		if (!existsSync(next)) {
-			if (!create) return null;
-			mkdirSync(next, { mode: 0o700 });
-		}
-		const entry = lstatSync(next);
-		if (!entry.isDirectory() || entry.isSymbolicLink()) {
-			throw new Error(`spec state component must be a regular directory: ${next}`);
-		}
-		if (!contained(canonicalRoot, realpathSync(next))) throw new Error("spec state path escaped stateRoot");
-		current = next;
-	}
-	return current;
+	return projectStateDir(stateRoot, projectIdInput, "specs", { create, label: "spec" });
 }
 
 function snapshotPath(stateRoot: string, projectId: string, specId: string): string {

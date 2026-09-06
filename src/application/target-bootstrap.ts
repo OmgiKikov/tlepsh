@@ -1,23 +1,20 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+
 import {
-	chmodSync,
 	closeSync,
 	existsSync,
 	lstatSync,
-	mkdirSync,
 	mkdtempSync,
 	openSync,
 	readFileSync,
 	readdirSync,
 	realpathSync,
 	rmSync,
-	statSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { join, parse, relative, resolve, sep } from "node:path";
 import { parseDocument, parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { loadTarget, ModelBlock, TargetManifest, type TargetManifest as TargetManifestValue } from "../manifest.js";
@@ -25,6 +22,9 @@ import { canonicalJson, hashValue } from "../provenance.js";
 import { isStandIn, isStandInModel, standInManifestFields } from "../target/placeholders.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
 import { TargetScaffoldReceiptSchema } from "./target-scaffold.js";
+import { contained, assertPrivateFile, privateStateRoot } from "../storage/paths.js";
+import { isRecord, sha256, wholeFileDiff } from "../util.js";
+import { gitText, worktreeRoot } from "../git/commands.js";
 
 const BUILTIN_TARGET_ID = "my-agent";
 const BUILTIN_EVAL_SUITE_ID = "my-agent-development";
@@ -130,32 +130,8 @@ const DEFAULT_DEPENDENCIES: TargetBootstrapDependencies = {
 	writeReceipt: (path, receipt) => writeJsonArtifact(path, TargetBootstrapReceiptSchema, receipt, { immutable: true }),
 };
 
-function contained(root: string, candidate: string): boolean {
-	const rel = relative(root, candidate);
-	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
-}
-
-function gitText(repositoryDir: string, args: string[], env?: NodeJS.ProcessEnv): string {
-	return execFileSync("git", ["-C", repositoryDir, ...args], {
-		encoding: "utf8",
-		stdio: ["ignore", "pipe", "pipe"],
-		maxBuffer: 16 * 1024 * 1024,
-		env,
-	}).trim();
-}
-
 function gitStatus(repositoryDir: string, args: string[]): number | null {
 	return spawnSync("git", ["-C", repositoryDir, ...args], { stdio: "ignore" }).status;
-}
-
-function repositoryRoot(input: string): string {
-	const requested = resolve(input);
-	const entry = lstatSync(requested);
-	if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error(`targetDir must be a regular non-symlink directory: ${requested}`);
-	const canonical = realpathSync(requested);
-	const top = realpathSync(gitText(canonical, ["rev-parse", "--show-toplevel"]));
-	if (top !== canonical) throw new Error(`targetDir must be the Git worktree root: ${canonical}`);
-	return canonical;
 }
 
 /**
@@ -234,20 +210,6 @@ function assertCleanScaffoldRepository(repositoryDir: string): { baseTargetSha: 
 	return { baseTargetSha, headRef };
 }
 
-function stateRootPath(input: string, create: boolean): string {
-	const requested = resolve(input);
-	if (!existsSync(requested)) {
-		if (!create) return requested;
-		mkdirSync(requested, { recursive: true, mode: 0o700 });
-	}
-	const entry = lstatSync(requested);
-	if (!entry.isDirectory() || entry.isSymbolicLink()) {
-		throw new Error(`Target bootstrap stateRoot must be a regular non-symlink directory: ${requested}`);
-	}
-	if (create) chmodSync(requested, 0o700);
-	return realpathSync(requested);
-}
-
 function assertStateRootDoesNotDirtyTarget(repositoryDir: string, stateRoot: string): string {
 	const requested = resolve(stateRoot);
 	let state = parse(requested).root;
@@ -285,30 +247,14 @@ function assertStateRootDoesNotDirtyTarget(repositoryDir: string, stateRoot: str
 }
 
 function receiptPath(stateRoot: string, create: boolean): string {
-	return join(stateRootPath(stateRoot, create), RECEIPT_FILENAME);
-}
-
-function assertPrivateReceipt(path: string): void {
-	const entry = lstatSync(path);
-	if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("Target bootstrap receipt must be a regular non-symlink file");
-	const mode = statSync(path).mode & 0o777;
-	if (mode !== 0o600) throw new Error(`Target bootstrap receipt must have mode 0600, got 0${mode.toString(8)}`);
+	return join(privateStateRoot(stateRoot, create, "Target bootstrap"), RECEIPT_FILENAME);
 }
 
 function assertNoReceipt(stateRoot: string): void {
 	const path = receiptPath(stateRoot, false);
 	if (!existsSync(path)) return;
-	assertPrivateReceipt(path);
+	assertPrivateFile(path, "Target bootstrap receipt");
 	throw new Error("Target bootstrap receipt already exists; replay refused");
-}
-
-/** Content identity of one manifest revision. Shared with the evaluator flow. */
-export function sha256(content: string | Buffer): string {
-	return `sha256:${createHash("sha256").update(content).digest("hex")}`;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 const REQUIRED_MODEL_KEYS = [
@@ -323,7 +269,7 @@ function assertNoCredentialValue(value: unknown, path = "model"): void {
 		for (const [index, item] of value.entries()) assertNoCredentialValue(item, `${path}[${index}]`);
 		return;
 	}
-	if (!isPlainObject(value)) return;
+	if (!isRecord(value)) return;
 	for (const [key, child] of Object.entries(value)) {
 		const normalized = key.toLowerCase().replace(/[-_]/g, "");
 		if (!(path === "model" && key === "apiKeyEnv") && CREDENTIAL_FIELD_KEYS.has(normalized)) {
@@ -339,11 +285,11 @@ function requireOwnKeys(value: Record<string, unknown>, keys: readonly string[],
 }
 
 function parseFullModel(value: unknown): TargetManifestValue["model"] {
-	if (!isPlainObject(value)) throw new Error("model must be a complete object");
+	if (!isRecord(value)) throw new Error("model must be a complete object");
 	requireOwnKeys(value, REQUIRED_MODEL_KEYS, "model");
-	if (!isPlainObject(value.spec)) throw new Error("model.spec must be a complete object");
+	if (!isRecord(value.spec)) throw new Error("model.spec must be a complete object");
 	requireOwnKeys(value.spec, REQUIRED_MODEL_SPEC_KEYS, "model.spec");
-	if (!isPlainObject(value.spec.cost)) throw new Error("model.spec.cost must be a complete object");
+	if (!isRecord(value.spec.cost)) throw new Error("model.spec.cost must be a complete object");
 	requireOwnKeys(value.spec.cost, REQUIRED_COST_KEYS, "model.spec.cost");
 	assertNoCredentialValue(value);
 	const model = ModelBlock.parse(value);
@@ -412,19 +358,6 @@ function renderConfiguredManifest(
 	return { text, manifest };
 }
 
-function wholeFileDiff(path: string, before: string, after: string): string {
-	const oldLines = before.replace(/\n$/, "").split("\n");
-	const newLines = after.replace(/\n$/, "").split("\n");
-	return [
-		`diff --git a/${path} b/${path}`,
-		`--- a/${path}`,
-		`+++ b/${path}`,
-		`@@ -1,${oldLines.length} +1,${newLines.length} @@`,
-		...oldLines.map((line) => `-${line}`),
-		...newLines.map((line) => `+${line}`),
-	].join("\n");
-}
-
 function evidenceJson(path: string): unknown {
 	const entry = lstatSync(path);
 	if (!entry.isFile() || entry.isSymbolicLink()) throw new Error(`Target evidence must be a regular file: ${path}`);
@@ -450,9 +383,9 @@ function evidenceDirectories(root: string, prefix?: string): string[] {
 }
 
 function objectAt(value: unknown, key: string): Record<string, unknown> | null {
-	if (!isPlainObject(value)) return null;
+	if (!isRecord(value)) return null;
 	const child = value[key];
-	return isPlainObject(child) ? child : null;
+	return isRecord(child) ? child : null;
 }
 
 function assertNoPriorEvidence(runsRootInput: string, targetId: string, baseTargetSha: string): void {
@@ -476,7 +409,7 @@ function assertNoPriorEvidence(runsRootInput: string, targetId: string, baseTarg
 		if (!existsSync(path)) continue;
 		const receipt = evidenceJson(path);
 		if (
-			isPlainObject(receipt) &&
+			isRecord(receipt) &&
 			(receipt.baseTargetSha === baseTargetSha || receipt.candidateSha === baseTargetSha)
 		) {
 			throw new Error(`Target bootstrap refused because Builder apply evidence already exists: ${id}`);
@@ -489,7 +422,7 @@ function assertNoPriorEvidence(runsRootInput: string, targetId: string, baseTarg
 		if (!existsSync(path)) continue;
 		const candidate = evidenceJson(path);
 		const baseline = objectAt(candidate, "baseline");
-		if (isPlainObject(candidate) && candidate.targetId === targetId && baseline?.sha === baseTargetSha) {
+		if (isRecord(candidate) && candidate.targetId === targetId && baseline?.sha === baseTargetSha) {
 			throw new Error(`Target bootstrap refused because Candidate evidence already exists: ${id}`);
 		}
 	}
@@ -506,7 +439,7 @@ interface PreparedBootstrap {
 }
 
 function prepareBootstrap(options: DescribeTargetBootstrapOptions): PreparedBootstrap {
-	const repositoryDir = repositoryRoot(options.targetDir);
+	const repositoryDir = worktreeRoot(options.targetDir);
 	assertNoReceipt(options.stateRoot);
 	// Scaffolded or adopted: the same one-time bootstrap, over whichever exact
 	// clean revision the receipt says a human already approved.
@@ -618,13 +551,13 @@ export function configureTargetBootstrap(
 	const expectedSubjectHash = Sha256Schema.parse(options.expectedSubjectHash);
 	const actor = HumanActorSchema.parse(options.actor);
 	const reason = ReasonSchema.parse(options.reason);
-	const repositoryDir = repositoryRoot(options.targetDir);
+	const repositoryDir = worktreeRoot(options.targetDir);
 	const checkedStateRoot = assertStateRootDoesNotDirtyTarget(repositoryDir, options.stateRoot);
-	const stateRoot = stateRootPath(checkedStateRoot, true);
+	const stateRoot = privateStateRoot(checkedStateRoot, true, "Target bootstrap");
 	if (stateRoot !== checkedStateRoot) throw new Error("Target bootstrap stateRoot changed after validation");
 	const path = join(stateRoot, RECEIPT_FILENAME);
 	if (existsSync(path)) {
-		assertPrivateReceipt(path);
+		assertPrivateFile(path, "Target bootstrap receipt");
 		throw new Error("Target bootstrap receipt already exists; replay refused");
 	}
 	const lockPath = join(stateRoot, LOCK_FILENAME);
@@ -708,7 +641,7 @@ export function configureTargetBootstrap(
 			});
 			deps.writeReceipt(path, receipt);
 			receiptWriteReturned = true;
-			assertPrivateReceipt(path);
+			assertPrivateFile(path, "Target bootstrap receipt");
 			const persistedReceipt = readJsonArtifact(path, TargetBootstrapReceiptSchema);
 			if (canonicalJson(persistedReceipt) !== canonicalJson(receipt)) {
 				throw new Error("Published Target bootstrap receipt differs from the committed configuration");
@@ -752,6 +685,6 @@ export function configureTargetBootstrap(
 export function loadTargetBootstrapReceipt(stateRoot: string): TargetBootstrapReceipt {
 	const path = receiptPath(stateRoot, false);
 	if (!existsSync(path)) throw new Error("Target bootstrap receipt does not exist");
-	assertPrivateReceipt(path);
+	assertPrivateFile(path, "Target bootstrap receipt");
 	return readJsonArtifact(path, TargetBootstrapReceiptSchema);
 }

@@ -1,11 +1,9 @@
 import {
 	existsSync,
 	lstatSync,
-	mkdirSync,
-	realpathSync,
 	statSync,
 } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { join } from "node:path";
 import { z } from "zod";
 import {
 	BuilderRunRecordSchema,
@@ -41,6 +39,7 @@ import {
 	type BuilderProposalRunResult,
 	type RunApprovedSpecBuilderProposalOptions,
 } from "./builder-proposal.js";
+import { contained, projectStateDir } from "../storage/paths.js";
 
 const MAX_SOURCE_TEXT_BYTES = 64 * 1024;
 const MAX_CORPUS_TASKS = 100;
@@ -219,47 +218,10 @@ export interface DevelopmentCorpusPublicationResult {
 
 const DEFAULT_DEPENDENCIES: AuthoringDependencies = { now: () => new Date().toISOString() };
 
-function contained(root: string, candidate: string): boolean {
-	const rel = relative(root, candidate);
-	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
-}
-
 type ReceiptKind = "spec-approvals" | "corpus-publications";
 
-function receiptRoot(
-	stateRoot: string,
-	projectIdInput: string,
-	kind: ReceiptKind,
-	create: boolean,
-): string | null {
-	const projectId = ProjectIdSchema.parse(projectIdInput);
-	const root = resolve(stateRoot);
-	if (!existsSync(root)) {
-		if (!create) return null;
-		mkdirSync(root, { recursive: true, mode: 0o700 });
-	}
-	const rootEntry = lstatSync(root);
-	if (!rootEntry.isDirectory() || rootEntry.isSymbolicLink()) {
-		throw new Error(`Builder authoring stateRoot must be a regular non-symlink directory: ${root}`);
-	}
-	const canonicalRoot = realpathSync(root);
-	let current = root;
-	for (const segment of ["projects", projectId, "builder-authoring", kind]) {
-		const next = join(current, segment);
-		if (!existsSync(next)) {
-			if (!create) return null;
-			mkdirSync(next, { mode: 0o700 });
-		}
-		const entry = lstatSync(next);
-		if (!entry.isDirectory() || entry.isSymbolicLink()) {
-			throw new Error(`Builder authoring state component must be a regular non-symlink directory: ${next}`);
-		}
-		if (!contained(canonicalRoot, realpathSync(next))) {
-			throw new Error("Builder authoring state path escaped stateRoot");
-		}
-		current = next;
-	}
-	return current;
+function receiptRoot(stateRoot: string, projectIdInput: string, kind: ReceiptKind, create: boolean): string | null {
+	return projectStateDir(stateRoot, projectIdInput, ["builder-authoring", kind], { create, label: "Builder authoring" });
 }
 
 function assertPrivateReceiptFile(path: string): void {

@@ -25,6 +25,7 @@ import {
 	readJsonlArtifact,
 	writeJsonArtifact,
 } from "./storage/artifacts.js";
+import { errorMessage, isNodeError } from "./util.js";
 
 const PROJECT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const CORPUS_ID_PATTERN = /^corpus-[0-9a-f]{64}$/;
@@ -102,14 +103,6 @@ export class CorpusError extends Error {
 		super(message, options);
 		this.name = "CorpusError";
 	}
-}
-
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
-function isNodeError(error: unknown, code: string): boolean {
-	return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === code;
 }
 
 function validateProjectId(projectId: string): string {

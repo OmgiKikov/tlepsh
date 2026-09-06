@@ -1,6 +1,6 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { loadCandidateRecord } from "./candidate-review.js";
+import { listCandidateRecords } from "./candidate-review.js";
 import { detectPromotionFlips } from "./regression-guards.js";
 import { compileImprovementBrief, publicTaskId } from "./improvement-brief.js";
 import { loadDiagnosis } from "../diagnosis.js";
@@ -17,6 +17,7 @@ import type { ProposalPrediction } from "../builder/proposal-contract.js";
 import type { CandidateRecord } from "../domain/candidate.js";
 import { isPromotionGradeGateEvidence, gateVerdictOf } from "../domain/candidate.js";
 import { z } from "zod";
+import { shortSha, clip } from "../builder/render/format.js";
 
 /**
  * The agent's growth, version by version.
@@ -148,29 +149,6 @@ export interface AgentLogInput {
 	/** Only this project's versions. */
 	projectId?: string;
 	limit?: number;
-}
-
-function clip(value: string, max: number): string {
-	const flat = value.replace(/\s+/gu, " ").trim();
-	return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
-}
-
-function shortSha(value: string): string {
-	return value.slice(0, 12);
-}
-
-/** Directory names only, never following a symlink into somewhere else. */
-function candidateIds(runsRoot: string): string[] {
-	const root = join(resolve(runsRoot), "candidates");
-	if (!existsSync(root)) return [];
-	try {
-		return readdirSync(root, { withFileTypes: true })
-			.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
-			.map((entry) => entry.name)
-			.sort();
-	} catch {
-		return [];
-	}
 }
 
 type ComparisonEvidence = NonNullable<
@@ -364,8 +342,8 @@ function rowOf(
 		outcome: decision.outcome,
 		at: decision.at,
 		tag: decision.tag,
-		baseline: shortSha(record.baseline.sha),
-		candidate: built?.type === "built" ? shortSha(built.candidate.sha) : null,
+		baseline: shortSha(record.baseline.sha, 12),
+		candidate: built?.type === "built" ? shortSha(built.candidate.sha, 12) : null,
 		development: developmentSurfaceOf(development),
 		sealed: sealedSurfaceOf(sealed),
 		costRatio: isPromotionGradeGateEvidence(development) ? development.resources.costRatio : null,
@@ -393,18 +371,9 @@ export function compileAgentLog(
 	if (!Number.isFinite(requestedLimit)) throw new Error("agent log limit must be a finite number");
 	const limit = Math.max(1, Math.min(MAX_AGENT_LOG_LIMIT, Math.trunc(requestedLimit)));
 	const rows: AgentLogRow[] = [];
-	let unreadable = 0;
-	for (const candidateId of candidateIds(runsRoot)) {
-		let record: CandidateRecord;
-		try {
-			record = loadCandidateRecord(runsRoot, candidateId);
-		} catch {
-			// An unreadable sibling is counted, never fatal.
-			unreadable += 1;
-			continue;
-		}
-		if (input.targetId !== undefined && record.targetId !== input.targetId) continue;
-		if (input.projectId !== undefined && record.projectId !== input.projectId) continue;
+	// An unreadable sibling is counted, never fatal.
+	const { records, unreadable } = listCandidateRecords(runsRoot, { targetId: input.targetId, projectId: input.projectId });
+	for (const record of records) {
 		// A/A calibration measures noise; it is never a version of the agent.
 		if (record.mode === "aa-calibration") continue;
 		const row = rowOf(record, runsRoot, dependencies);

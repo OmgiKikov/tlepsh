@@ -21,14 +21,13 @@ import { createHash } from "node:crypto";
 import {
 	existsSync,
 	lstatSync,
-	mkdirSync,
 	readFileSync,
 	readdirSync,
 	realpathSync,
 	rmSync,
 	rmdirSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import {
 	createCorpus,
@@ -61,6 +60,7 @@ import { AgentSpecSchema, listSpecSnapshots, type AgentSpec } from "../spec.js";
 import { readJsonArtifact, writeJsonArtifact, writeTextArtifact } from "../storage/artifacts.js";
 import { plural, t } from "../i18n.js";
 import { sameModelAsTarget } from "./configure-evaluators.js";
+import { contained, projectStateDir } from "../storage/paths.js";
 
 /** A generated exam stays something a human could still read in one sitting. */
 export const MAX_SEALED_SYNTH_CASES = 200;
@@ -329,40 +329,8 @@ export interface SealedSynthResult {
 
 // ---------- state layout ----------
 
-function contained(root: string, candidate: string): boolean {
-	const rel = relative(root, candidate);
-	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
-}
-
 function receiptsRoot(stateRoot: string, projectIdInput: string, create: boolean): string | null {
-	const projectId = ProjectIdSchema.parse(projectIdInput);
-	const root = resolve(stateRoot);
-	if (!existsSync(root)) {
-		if (!create) return null;
-		mkdirSync(root, { recursive: true, mode: 0o700 });
-	}
-	const rootEntry = lstatSync(root);
-	if (!rootEntry.isDirectory() || rootEntry.isSymbolicLink()) {
-		throw new Error(`sealed synthesis stateRoot must be a regular non-symlink directory: ${root}`);
-	}
-	const canonicalRoot = realpathSync(root);
-	let current = root;
-	for (const segment of ["projects", projectId, RECEIPT_DIRECTORY]) {
-		const next = join(current, segment);
-		if (!existsSync(next)) {
-			if (!create) return null;
-			mkdirSync(next, { mode: 0o700 });
-		}
-		const entry = lstatSync(next);
-		if (!entry.isDirectory() || entry.isSymbolicLink()) {
-			throw new Error(`sealed synthesis state component must be a regular non-symlink directory: ${next}`);
-		}
-		if (!contained(canonicalRoot, realpathSync(next))) {
-			throw new Error("sealed synthesis state path escaped stateRoot");
-		}
-		current = next;
-	}
-	return current;
+	return projectStateDir(stateRoot, projectIdInput, RECEIPT_DIRECTORY, { create, label: "sealed synthesis" });
 }
 
 function receiptSha(receipt: SealedSynthReceipt): string {

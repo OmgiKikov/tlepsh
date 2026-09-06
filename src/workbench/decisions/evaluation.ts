@@ -20,7 +20,7 @@ import { WorkbenchStaleDecisionError } from "../errors.js";
 import { diagnosisSummary, requireApprovedSpec, evaluationProjection, requireCorpusDraft, requireDevelopmentCorpus } from "../resolution.js";
 import { calibrationProjection } from "../calibration.js";
 import { runResultLine } from "../../application/measurement-line.js";
-import { abortIfRequested, actorId, exactSame, boundedEvidenceLink, conversationalImprovementBrief } from "../workbench.js";
+import { actorId, exactSame, boundedEvidenceLink, conversationalImprovementBrief } from "../workbench.js";
 import type { DecisionContext, DecisionHost, DecisionInputOf } from "./shared.js";
 import type { WorkbenchDecisionResult, WorkbenchRunEvalResult, WorkbenchTracesDetail } from "../types.js";
 
@@ -139,7 +139,7 @@ export async function decideRunEval(
 		...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
 		...(options.signal ? { signal: options.signal } : {}),
 	});
-	abortIfRequested(options.signal);
+	options.signal?.throwIfAborted();
 	const diagnosis = host.dependencies.diagnoseEval(host.runsRoot, record.evalRunId);
 	const improvementBrief = host.dependencies.compileImprovementBrief(host.runsRoot, diagnosis);
 	const link = boundedEvidenceLink(await host.dependencies.evidenceLink(record));
@@ -228,7 +228,7 @@ export async function decideCalibrate(
 		...(options.onRunEvent ? { onRunEvent: options.onRunEvent } : {}),
 		...(options.signal ? { signal: options.signal } : {}),
 	});
-	abortIfRequested(options.signal);
+	options.signal?.throwIfAborted();
 	const calibration = calibrationProjection(result.record);
 	if (!calibration) throw new Error("calibration produced no development verdict; nothing was measured");
 	return {
@@ -332,7 +332,7 @@ export async function decideRegrade(
 			target: after.plan.target,
 			...(options.signal ? { signal: options.signal } : {}),
 		});
-		abortIfRequested(options.signal);
+		options.signal?.throwIfAborted();
 		diffs.push(compileRegradeDiff({
 			runsRoot: host.runsRoot,
 			result,

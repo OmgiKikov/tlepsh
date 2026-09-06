@@ -1,5 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 import { compareVerifiedEvalRuns, runGraderScore, runTotalCost } from "../compare.js";
 import {
 	isSealedEvalRun,
@@ -15,7 +14,7 @@ import type { RunEventListener } from "../run-events.js";
 import { calibrationProjection } from "../workbench/calibration.js";
 import type { WorkbenchCalibrationProjection } from "../workbench/types.js";
 import type { CandidateRecord } from "../domain/candidate.js";
-import { loadCandidateRecord } from "./candidate-review.js";
+import { listCandidateRecords } from "./candidate-review.js";
 import { screenEvalRunIds } from "./cheap-check.js";
 
 /**
@@ -200,20 +199,6 @@ export function findPreviousWatchRun(
 	return candidates[0] ?? null;
 }
 
-/** Directory names only, never following a symlink into somewhere else. */
-function candidateIds(runsRoot: string): string[] {
-	const root = join(resolve(runsRoot), "candidates");
-	if (!existsSync(root)) return [];
-	try {
-		return readdirSync(root, { withFileTypes: true })
-			.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
-			.map((entry) => entry.name)
-			.sort();
-	} catch {
-		return [];
-	}
-}
-
 /**
  * The newest A/A calibration of this exact revision. Calibration expires with
  * the revision it measured, so a calibration of another SHA says nothing about
@@ -224,19 +209,11 @@ export function findRevisionCalibration(
 	target: ResolvedTarget,
 	options: { projectId?: string } = {},
 ): WatchCalibration | null {
-	const runsRoot = resolve(runsRootInput);
 	let newest: WorkbenchCalibrationProjection | null = null;
-	for (const candidateId of candidateIds(runsRoot)) {
-		let record: CandidateRecord;
-		try {
-			record = loadCandidateRecord(runsRoot, candidateId);
-		} catch {
-			// An unreadable calibration record narrows the answer, never fails it.
-			continue;
-		}
+	// An unreadable calibration record narrows the answer, never fails it.
+	const { records } = listCandidateRecords(runsRootInput, { targetId: target.manifest.id, projectId: options.projectId });
+	for (const record of records) {
 		if (record.mode !== "aa-calibration") continue;
-		if (record.targetId !== target.manifest.id) continue;
-		if (options.projectId !== undefined && record.projectId !== options.projectId) continue;
 		if (record.baseline.sha !== target.gitSha) continue;
 		const projection = calibrationProjection(record);
 		if (!projection) continue;

@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { accessSync, constants, mkdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { hashFile } from "../provenance.js";
 import { redactSensitiveText } from "../trace.js";
 import {
@@ -15,6 +15,7 @@ import {
 	type TargetToolPolicyEnvelope,
 	validateTargetToolArguments,
 } from "./tool-manifest.js";
+import { executableOnPath } from "../util.js";
 
 export type TargetToolSandboxBackend = "sandbox-exec" | "bwrap" | "container";
 
@@ -80,19 +81,6 @@ export const AHDE_TOOL_HOME_ENVIRONMENT = "AHDE_TOOL_HOME";
 export const AHDE_WORLD_ENVIRONMENT = "AHDE_WORLD";
 
 const FIXED_ENVIRONMENT = new Set(["HOME", "LANG", "PATH", "TMPDIR"]);
-
-function executableOnPath(name: string, pathValue: string): string | undefined {
-	const candidates = name.startsWith("/")
-		? [name]
-		: pathValue.split(delimiter).filter(Boolean).map((entry) => join(entry, name));
-	for (const candidate of candidates) {
-		try {
-			accessSync(candidate, constants.X_OK);
-			return candidate;
-		} catch {}
-	}
-	return undefined;
-}
 
 function sandboxString(value: string): string {
 	return JSON.stringify(value);
@@ -422,7 +410,6 @@ export function sandboxInvocation(options: {
 // environment allowlist, its network policy, or a view of the whole checkout.
 // This profile is the whole difference, and it is deliberately not negotiable
 // at runtime: there is no argument that widens it.
-
 
 /** `ulimit`-style caps one authored command runs under. */
 export interface SandboxResourceLimits {

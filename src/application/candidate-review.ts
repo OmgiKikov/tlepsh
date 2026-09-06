@@ -1,8 +1,8 @@
 import { resolveCandidateArtifact, type CandidateArtifactKind } from "./candidate-artifacts.js";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync, unlinkSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import {
@@ -39,6 +39,7 @@ import { loadApprovedSpec, SpecSnapshotSchema } from "../spec.js";
 import { canonicalJson, hashValue } from "../provenance.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
 import { resolveContainedArtifactPath } from "../storage/paths.js";
+import { git, gitText } from "../git/commands.js";
 
 export interface ReviewCandidateOptions {
 	runsRoot: string;
@@ -139,6 +140,47 @@ export function candidateRecordPath(runsRoot: string, candidateId: string): stri
 
 export function loadCandidateRecord(runsRoot: string, candidateId: string): CandidateRecord {
 	return readJsonArtifact(candidateRecordPath(runsRoot, candidateId), CandidateRecordSchema);
+}
+
+/** Candidate directory names only, never following a symlink out of the runs root. */
+function candidateIds(runsRoot: string): string[] {
+	const root = join(runsRoot, "candidates");
+	if (!existsSync(root)) return [];
+	try {
+		return readdirSync(root, { withFileTypes: true })
+			.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+			.map((entry) => entry.name)
+			.sort();
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * Every readable candidate record under `runsRoot`, in directory order, and the
+ * count of siblings that could not be read. An unreadable sibling is counted,
+ * never fatal: every reader of the whole set is an aid, not an authority.
+ */
+export function listCandidateRecords(
+	runsRootInput: string,
+	filter: { projectId?: string; targetId?: string } = {},
+): { records: CandidateRecord[]; unreadable: number } {
+	const runsRoot = resolve(runsRootInput);
+	const records: CandidateRecord[] = [];
+	let unreadable = 0;
+	for (const candidateId of candidateIds(runsRoot)) {
+		let record: CandidateRecord;
+		try {
+			record = loadCandidateRecord(runsRoot, candidateId);
+		} catch {
+			unreadable += 1;
+			continue;
+		}
+		if (filter.targetId !== undefined && record.targetId !== filter.targetId) continue;
+		if (filter.projectId !== undefined && record.projectId !== filter.projectId) continue;
+		records.push(record);
+	}
+	return { records, unreadable };
 }
 
 function assertExpectedCandidateHash(
@@ -452,20 +494,6 @@ export function decideCandidatePromotion(
 	return persisted;
 }
 
-function git(repositoryDir: string, args: string[]): string {
-	return execFileSync("git", ["-C", repositoryDir, ...args], {
-		encoding: "utf8",
-		stdio: ["ignore", "pipe", "pipe"],
-	}).trim();
-}
-
-function gitRaw(repositoryDir: string, args: string[]): string {
-	return execFileSync("git", ["-C", repositoryDir, ...args], {
-		encoding: "utf8",
-		stdio: ["ignore", "pipe", "pipe"],
-	});
-}
-
 function tagExists(repositoryDir: string, tag: string): boolean {
 	const tagRef = `refs/tags/${tag}`;
 	const symbolic = spawnSync(
@@ -508,11 +536,11 @@ function verifyExactPromotionTag(repositoryDir: string, intent: PromotionIntent)
 	if (symbolic.status !== 1) {
 		throw new Error(`cannot inspect whether ${tagRef} is symbolic`);
 	}
-	const tagObject = git(repositoryDir, ["rev-parse", "--verify", tagRef]);
-	if (git(repositoryDir, ["cat-file", "-t", tagObject]) !== "tag") {
+	const tagObject = gitText(repositoryDir, ["rev-parse", "--verify", tagRef]);
+	if (gitText(repositoryDir, ["cat-file", "-t", tagObject]) !== "tag") {
 		throw new Error("durable promotion intent requires a direct annotated tag object");
 	}
-	const raw = gitRaw(repositoryDir, ["cat-file", "tag", tagObject]);
+	const raw = git(repositoryDir, ["cat-file", "tag", tagObject]).toString("utf8");
 	const separator = raw.indexOf("\n\n");
 	if (separator < 0) throw new Error("durable promotion tag object is malformed");
 	const headers = raw.slice(0, separator).split("\n");
@@ -595,7 +623,7 @@ function rollbackExactPromotionTag(repositoryDir: string, intent: PromotionInten
 	if (!tagExists(repositoryDir, intent.tag)) return true;
 	verifyExactPromotionTag(repositoryDir, intent);
 	const tagRef = `refs/tags/${intent.tag}`;
-	const objectId = git(repositoryDir, ["rev-parse", "--verify", tagRef]);
+	const objectId = gitText(repositoryDir, ["rev-parse", "--verify", tagRef]);
 	const deleted = spawnSync(
 		"git",
 		["-C", repositoryDir, "update-ref", "-d", tagRef, objectId],
@@ -1163,12 +1191,12 @@ export function promoteReviewedCandidate(
 		throw new Error(`candidate ${record.candidateId} must be reviewed before promotion`);
 	}
 	const candidate = builtRevision(record);
-	const resolvedCommit = git(repositoryDir, ["rev-parse", "--verify", `${candidate.sha}^{commit}`]);
+	const resolvedCommit = gitText(repositoryDir, ["rev-parse", "--verify", `${candidate.sha}^{commit}`]);
 	if (resolvedCommit !== candidate.sha) {
 		throw new Error(`candidate commit mismatch: expected ${candidate.sha}, resolved ${resolvedCommit}`);
 	}
 	const manifestResult = TargetManifest.safeParse(
-		parseYaml(git(repositoryDir, ["show", `${candidate.sha}:manifest.yaml`])),
+		parseYaml(gitText(repositoryDir, ["show", `${candidate.sha}:manifest.yaml`])),
 	);
 	if (!manifestResult.success) {
 		throw new Error(`candidate manifest.yaml is invalid: ${manifestResult.error.message}`);

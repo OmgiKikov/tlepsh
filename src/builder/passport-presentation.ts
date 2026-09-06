@@ -1,6 +1,5 @@
-import { createHash } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import type { AhdeWorkbench } from "../workbench/workbench.js";
 import type { WorkbenchView } from "../workbench/types.js";
 import { inspectCandidateImpact, type CandidateImpact } from "../application/candidate-impact.js";
@@ -28,15 +27,12 @@ import { hashValue } from "../provenance.js";
 import { writeTextArtifact } from "../storage/artifacts.js";
 import { candidateProposalReview } from "../workbench/resolution.js";
 import { renderVersionCardHtml } from "../evidence/version-card.js";
+import { sha256 } from "../util.js";
 
 type PassportWorkbench = Pick<
 	AhdeWorkbench,
 	"view" | "projectDir" | "stateRoot" | "runsRoot" | "projectId"
 >;
-
-function sha256(content: string | Buffer): string {
-	return `sha256:${createHash("sha256").update(content).digest("hex")}`;
-}
 
 function exactCandidate(
 	workbench: PassportWorkbench,

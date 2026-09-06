@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { safeArtifactSegment } from "./storage/paths.js";
+import { isRecord } from "./util.js";
 
 /** Hard input bounds applied before a trace is accepted as canonical evidence. */
 export const MAX_TRACE_ARTIFACT_BYTES = 8 * 1024 * 1024;
@@ -115,10 +116,6 @@ export class TraceParseError extends Error {
 		this.name = "TraceParseError";
 		this.line = line;
 	}
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function assertOptionalType(

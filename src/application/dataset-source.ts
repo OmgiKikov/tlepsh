@@ -10,10 +10,11 @@ import {
 	realpathSync,
 	type Stats,
 } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 import { z } from "zod";
 import { BUILDER_CORPUS_IMPORT_ROOT } from "./builder-corpus-import-contract.js";
+import { contained } from "../storage/paths.js";
 
 /**
  * Datasets arrive as exports rather than as hand-written baskets, so the inbox
@@ -90,11 +91,6 @@ export interface ReadDatasetSourceOptions {
 	sourcePath: string;
 	/** Roots the inbox must never reach into, such as private AHDE state. */
 	protectedRoots?: readonly string[];
-}
-
-function contained(root: string, candidate: string): boolean {
-	const rel = relative(root, candidate);
-	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
 function sameFileSnapshot(left: Stats, right: Stats): boolean {

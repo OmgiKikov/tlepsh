@@ -5,13 +5,12 @@ import {
 	existsSync,
 	fstatSync,
 	lstatSync,
-	mkdirSync,
 	openSync,
 	readSync,
 	realpathSync,
 	type Stats,
 } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 import { z } from "zod";
 import {
@@ -35,6 +34,7 @@ import {
 	type ApprovedSpecReference,
 } from "../spec.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
+import { contained, projectStateDir } from "../storage/paths.js";
 
 const ProjectIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
 const DraftIdSchema = z.string().regex(/^corpus-draft-[0-9a-f]{64}$/);
@@ -89,11 +89,6 @@ export interface ImportBuilderCorpusDraftOptions {
 export interface BuilderCorpusImportResult extends BuilderCorpusDraftResult {
 	receipt: BuilderCorpusImportReceipt;
 	receiptPath: string;
-}
-
-function contained(root: string, candidate: string): boolean {
-	const rel = relative(root, candidate);
-	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
 function sourceFilePath(options: ImportBuilderCorpusDraftOptions): {
@@ -233,34 +228,7 @@ function readImportSource(
 }
 
 function receiptsRoot(stateRoot: string, projectIdInput: string, create: boolean): string | null {
-	const projectId = ProjectIdSchema.parse(projectIdInput);
-	const root = resolve(stateRoot);
-	if (!existsSync(root)) {
-		if (!create) return null;
-		mkdirSync(root, { recursive: true, mode: 0o700 });
-	}
-	const rootEntry = lstatSync(root);
-	if (!rootEntry.isDirectory() || rootEntry.isSymbolicLink()) {
-		throw new Error(`Builder corpus import stateRoot must be a regular non-symlink directory: ${root}`);
-	}
-	const canonicalRoot = realpathSync(root);
-	let current = root;
-	for (const segment of ["projects", projectId, "builder-corpus-imports"]) {
-		const next = join(current, segment);
-		if (!existsSync(next)) {
-			if (!create) return null;
-			mkdirSync(next, { mode: 0o700 });
-		}
-		const entry = lstatSync(next);
-		if (!entry.isDirectory() || entry.isSymbolicLink()) {
-			throw new Error(`Builder corpus import state component must be a regular non-symlink directory: ${next}`);
-		}
-		if (!contained(canonicalRoot, realpathSync(next))) {
-			throw new Error("Builder corpus import state path escaped stateRoot");
-		}
-		current = next;
-	}
-	return current;
+	return projectStateDir(stateRoot, projectIdInput, "builder-corpus-imports", { create, label: "Builder corpus import" });
 }
 
 function publishReceipt(

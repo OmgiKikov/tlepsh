@@ -11,14 +11,15 @@ import {
 	realpathSync,
 	statSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { candidateStatus, type CandidateRecord } from "../domain/candidate.js";
 import { canonicalJson, hashValue } from "../provenance.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
-import { safeArtifactSegment } from "../storage/paths.js";
+import { safeArtifactSegment, contained } from "../storage/paths.js";
 import { loadCandidateRecord } from "./candidate-review.js";
 import { namedDirtyPaths, operatorDirtyPaths } from "./store-hygiene.js";
+import { git, gitEnvironment, NotWorktreeRootError, worktreeRoot } from "../git/commands.js";
 
 const GitShaSchema = z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/, "expected a full Git SHA");
 const HashSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/, "expected a sha256 fingerprint");
@@ -181,22 +182,9 @@ function fail(code: TargetAdoptionErrorCode, message: string, cause?: unknown): 
 	throw new TargetAdoptionError(code, message, cause);
 }
 
-function gitEnvironment(): NodeJS.ProcessEnv {
-	return {
-		...process.env,
-		GIT_NO_REPLACE_OBJECTS: "1",
-		GIT_TERMINAL_PROMPT: "0",
-		GIT_MERGE_AUTOEDIT: "no",
-	};
-}
-
 function gitRaw(repositoryDir: string, args: string[]): Buffer {
 	try {
-		return execFileSync("git", ["--no-replace-objects", "-C", repositoryDir, ...args], {
-			stdio: ["ignore", "pipe", "pipe"],
-			maxBuffer: MAX_GIT_OUTPUT_BYTES,
-			env: gitEnvironment(),
-		});
+		return git(repositoryDir, args, { env: gitEnvironment() });
 	} catch (error) {
 		return fail("TARGET_ADOPTION_INVALID_REPOSITORY", "Target Git state could not be verified.", error);
 	}
@@ -219,19 +207,12 @@ function gitExitStatus(repositoryDir: string, args: string[]): number {
 
 function repositoryRoot(input: string): string {
 	try {
-		const requested = resolve(input);
-		const entry = lstatSync(requested);
-		if (!entry.isDirectory() || entry.isSymbolicLink()) {
-			return fail("TARGET_ADOPTION_INVALID_REPOSITORY", "Target must be a regular non-symlink Git worktree root.");
-		}
-		const canonical = realpathSync(requested);
-		const top = realpathSync(gitText(canonical, ["rev-parse", "--show-toplevel"]));
-		if (canonical !== top) {
-			return fail("TARGET_ADOPTION_INVALID_REPOSITORY", "Target must be the Git worktree root.");
-		}
-		return canonical;
+		return worktreeRoot(input, gitText);
 	} catch (error) {
 		if (error instanceof TargetAdoptionError) throw error;
+		if (error instanceof NotWorktreeRootError && error.reason === "root") {
+			return fail("TARGET_ADOPTION_INVALID_REPOSITORY", "Target must be the Git worktree root.");
+		}
 		return fail("TARGET_ADOPTION_INVALID_REPOSITORY", "Target must be a regular non-symlink Git worktree root.", error);
 	}
 }
@@ -420,11 +401,6 @@ export function describeTargetAdoption(options: DescribeTargetAdoptionOptions): 
 		fail("TARGET_ADOPTION_STALE", "Target HEAD must equal the Candidate baseline before adoption.");
 	}
 	return subject;
-}
-
-function contained(root: string, candidate: string): boolean {
-	const rel = relative(root, candidate);
-	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
 function stateRootPath(input: string, create: boolean): string {

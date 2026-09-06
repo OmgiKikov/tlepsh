@@ -317,6 +317,7 @@ import { decideReviewCandidate, decidePromoteCandidate, decideRejectCandidate, d
 import { decideImprove } from "./decisions/improve.js";
 import { decideRunCurrent } from "./decisions/run-current.js";
 import type { DecisionContext } from "./decisions/shared.js";
+import { shortSha } from "../builder/render/format.js";
 
 const MAX_REVIEW_BYTES = 5 * 1024 * 1024;
 // Six, not three: with the proposal-eligible modes sorted first this is the
@@ -551,10 +552,6 @@ export function canonicalPath(input: string): string {
 	}
 }
 
-export function abortIfRequested(signal?: AbortSignal): void {
-	if (signal?.aborted) throw signal.reason ?? new Error("operation aborted");
-}
-
 /** The finished candidate whose loop is still open; focus only breaks ties. */
 export function requireOpenTerminalCandidate(inventory: WorkbenchInventory, explicitId?: string): CandidateRecord {
 	return resolveOne({
@@ -564,10 +561,6 @@ export function requireOpenTerminalCandidate(inventory: WorkbenchInventory, expl
 		id: (candidate) => candidate.candidateId,
 		label: "finished candidate",
 	});
-}
-
-function shortSha(sha: string): string {
-	return sha ? sha.slice(0, 10) : "—";
 }
 
 /** Money the human recognises, or an honest “unknown”. */
@@ -1136,7 +1129,7 @@ export class AhdeWorkbench {
 			authorized?: AuthorizedRunEstimate | null;
 		} = {},
 	): Promise<string> {
-		abortIfRequested(signal);
+		signal?.throwIfAborted();
 		const exact = boundedSubject(subject, input.kind);
 		let policy = workbenchGateClass(input.kind);
 		let question = presentation.question ?? t("confirm.question", { title });
@@ -1161,7 +1154,7 @@ export class AhdeWorkbench {
 			...(presentation.estimate ? { estimate: presentation.estimate } : {}),
 		};
 		const decision = await gate.confirm(confirmation, signal);
-		abortIfRequested(signal);
+		signal?.throwIfAborted();
 		if (!decision.approved) throw new WorkbenchDecisionDeclinedError(input.kind);
 		return actorId(decision.actorId);
 	}
@@ -2474,7 +2467,7 @@ export class AhdeWorkbench {
 			}),
 		};
 		const decision = await options.gate.confirm(confirmation, options.signal);
-		abortIfRequested(options.signal);
+		options.signal?.throwIfAborted();
 		if (!decision.approved) throw new WorkbenchDecisionDeclinedError("tool-authoring");
 		const operator = actorId(decision.actorId);
 
@@ -2487,7 +2480,7 @@ export class AhdeWorkbench {
 
 		const tests: WorkbenchToolContractResult[] = [];
 		for (const fixture of compiled.fixtures) {
-			abortIfRequested(options.signal);
+			options.signal?.throwIfAborted();
 			try {
 				const requirement = workshop.describeToolGrant(compiled.brief.name);
 				if (requirement) {
@@ -2619,7 +2612,7 @@ export class AhdeWorkbench {
 			question: `This tool wants ${requirement.wants.join(" and ")} — allow for ${asked}?`,
 		};
 		const decision = await options.gate.confirm(confirmation, options.signal);
-		abortIfRequested(options.signal);
+		options.signal?.throwIfAborted();
 		if (!decision.approved) {
 			throw new Error(
 				`the operator did not allow ${requirement.tool} ${requirement.wants.join(" and ")}; ` +
@@ -3068,7 +3061,7 @@ export class AhdeWorkbench {
 		options: { signal?: AbortSignal } = {},
 	): Promise<WorkbenchTurn> {
 		const input = WorkbenchSubmitInputSchema.parse(inputValue);
-		abortIfRequested(options.signal);
+		options.signal?.throwIfAborted();
 		if (input.kind === "select") {
 			const settled = this.select(input.entity, input.id);
 			return { kind: input.kind, message: `Selected ${input.entity} ${input.id}.`, artifact: { kind: input.entity, id: input.id }, view: await this.viewOf(settled) };
@@ -3461,7 +3454,7 @@ export class AhdeWorkbench {
 		options: WorkbenchDecisionExecutionOptions = {},
 	): Promise<WorkbenchDecisionResult> {
 		const input = WorkbenchDecisionInputSchema.parse(inputValue);
-		abortIfRequested(options.signal);
+		options.signal?.throwIfAborted();
 		const inventory = this.inventory();
 		const stage = deriveWorkbenchView(inventory).stage;
 		const ctx: DecisionContext = { inventory, stage, gate, options };

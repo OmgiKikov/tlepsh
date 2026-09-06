@@ -14,7 +14,7 @@ import { hashValue } from "../../provenance.js";
 import { recordCandidateAbandonment } from "../candidate-abandonment.js";
 import { WorkbenchDecisionDeclinedError, WorkbenchStaleDecisionError, WorkbenchTypedRefusalError } from "../errors.js";
 import { candidateSummary, requireCandidate, requireDevelopmentCorpus, requireProposal, resolveOne } from "../resolution.js";
-import { abortIfRequested, actorId, exactSame } from "../workbench.js";
+import { actorId, exactSame } from "../workbench.js";
 import { CandidateExperimentError } from "../../application/candidate-experiment.js";
 import {
 	improvementDesignCorpusRefs,
@@ -90,7 +90,7 @@ export async function decideVerifyCandidate(
 		);
 	}
 	const choice = await gate.selectSealed({ title: "Select evaluator-only sealed holdout", options: sealed.map((corpus, index) => ({ label: `Holdout ${index + 1} · ${corpus.name}`, taskCount: corpus.taskCount })) }, options.signal);
-	abortIfRequested(options.signal);
+	options.signal?.throwIfAborted();
 	if (!choice.approved) throw new WorkbenchDecisionDeclinedError(input.kind);
 	if (choice.selectedIndex === undefined || !sealed[choice.selectedIndex]) throw new Error("human gate returned an invalid sealed holdout selection");
 	const selected = sealed[choice.selectedIndex]!;

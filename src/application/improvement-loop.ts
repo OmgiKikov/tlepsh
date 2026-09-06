@@ -635,10 +635,6 @@ const DEFAULT_DEPENDENCIES: ImprovementLoopDependencies = {
 	materializeExperimentDesign: materializeImprovementExperimentDesign,
 };
 
-function abortIfRequested(signal?: AbortSignal): void {
-	if (signal?.aborted) throw signal.reason ?? new Error("improvement loop aborted");
-}
-
 /**
  * The mode worth spending a cycle on: proposable, then widest blast radius,
  * then most reproducible, then the stable id so the choice never depends on
@@ -1113,7 +1109,7 @@ async function runImprovementLoopOwned(
 		| { kind: "continue" };
 
 	const runCycle = async (cycleIndex: number): Promise<CycleOutcome> => {
-		abortIfRequested(options.signal);
+		options.signal?.throwIfAborted();
 		const target = resolveTarget(repositoryDir);
 		if (bestSelection && target.gitSha !== configuration.targetGitSha) throw new Error("original improvement baseline moved during the loop");
 		const cycle: ImprovementLoopCycle = {
@@ -1277,7 +1273,7 @@ async function runImprovementLoopOwned(
 				...(options.signal ? { signal: options.signal } : {}),
 			});
 			if (decision.authoring) (cycle.authoring ??= []).push(decision.authoring);
-			abortIfRequested(options.signal);
+			options.signal?.throwIfAborted();
 			if (decision.kind === "no-change") {
 				authorRefusals.push(decision.reason);
 				continue;
@@ -1602,7 +1598,7 @@ async function runImprovementLoopOwned(
 	};
 
 	for (let cycleIndex = lastCycle + 1; cycleIndex <= options.maxCycles; cycleIndex += 1) {
-		abortIfRequested(options.signal);
+		options.signal?.throwIfAborted();
 		const outcome = await runCycle(cycleIndex);
 		if (outcome.kind === "stop") return outcome.result;
 	}

@@ -1,9 +1,8 @@
-import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ProposalPrediction } from "../builder/proposal-contract.js";
 import { isPromotionGradeGateEvidence, type CandidateRecord } from "../domain/candidate.js";
 import { loadBuilderProposalRunEnvelope } from "./builder-proposal.js";
-import { loadCandidateRecord } from "./candidate-review.js";
+import { listCandidateRecords } from "./candidate-review.js";
 import { fromPoints, points } from "../measurement.js";
 
 /**
@@ -394,28 +393,9 @@ export function compileDecidedPredictionCalibration(input: {
 	projectId?: string;
 }): PredictionCalibration {
 	const runsRoot = resolve(input.runsRoot);
-	const root = join(runsRoot, "candidates");
-	if (!existsSync(root)) return compilePredictionCalibration([]);
-	let names: string[];
-	try {
-		names = readdirSync(root, { withFileTypes: true })
-			.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
-			.map((entry) => entry.name)
-			.sort();
-	} catch {
-		return compilePredictionCalibration([]);
-	}
 	const entries: PredictionCalibrationEntry[] = [];
-	for (const candidateId of names) {
-		let record: CandidateRecord;
-		try {
-			record = loadCandidateRecord(runsRoot, candidateId);
-		} catch {
-			// An unreadable sibling narrows the record, exactly as it does in the log.
-			continue;
-		}
-		if (input.targetId !== undefined && record.targetId !== input.targetId) continue;
-		if (input.projectId !== undefined && record.projectId !== input.projectId) continue;
+	// An unreadable sibling narrows the record, exactly as it does in the log.
+	for (const record of listCandidateRecords(runsRoot, { targetId: input.targetId, projectId: input.projectId }).records) {
 		const entry = calibrationEntryOf(runsRoot, record);
 		if (entry) entries.push(entry);
 	}

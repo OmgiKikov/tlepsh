@@ -11,7 +11,7 @@
  */
 
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 import { z } from "zod";
 import {
 	judgeAgreement,
@@ -23,7 +23,7 @@ import { GraderSpec, type ResolvedTask } from "../manifest.js";
 import { AHDE_EVALUATOR_ID, hashValue, type RunRecord } from "../provenance.js";
 import { ApprovedSpecReferenceSchema, type ApprovedSpecReference } from "../spec.js";
 import { appendJsonlArtifact, readJsonlArtifact, writeJsonArtifact } from "../storage/artifacts.js";
-import { resolveContainedArtifactPath } from "../storage/paths.js";
+import { resolveContainedArtifactPath, contained } from "../storage/paths.js";
 import { lastAssistantText, openTrace, redactTraceText } from "../trace.js";
 
 const PROJECT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -136,11 +136,6 @@ export function isLegacyJudgeLabel(row: Pick<JudgeLabelRow, "subject">): boolean
 
 const ProjectIdSchema = z.string().regex(PROJECT_ID_PATTERN, "projectId must be one safe path segment");
 const EvalRunIdSchema = z.string().regex(ARTIFACT_ID_PATTERN, "evalRunId must be one safe path segment");
-
-function contained(root: string, candidate: string): boolean {
-	const rel = relative(root, candidate);
-	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
-}
 
 /** `<state-root>/projects/<project-id>/labels`, created only when writing. */
 function labelsRoot(stateRoot: string, projectId: string, create: boolean): string | null {

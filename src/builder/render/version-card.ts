@@ -5,14 +5,10 @@ import type {
 import { bareDelta, money, percent, points, ratio } from "../../measurement.js";
 import type { Paint } from "./paint.js";
 import { plural, t, tokenLabel } from "../../i18n.js";
+import { clip } from "./format.js";
 
 const MAX_SUMMARY = 72;
 const MAX_PATHS = 3;
-
-function clip(value: string, max = MAX_SUMMARY): string {
-	const flat = value.replace(/\s+/gu, " ").trim();
-	return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
-}
 
 function shortHash(value: string): string {
 	const match = /^(sha256:)?([0-9a-f]{16,})$/u.exec(value);
@@ -120,7 +116,7 @@ function changeLines(card: ExecutiveVersionCard, paint: Paint): string[] {
 	const shown = value.paths.slice(0, MAX_PATHS);
 	const omitted = value.paths.length - shown.length;
 	return [
-		`${paint.dim(t("version-card.change"))} ${paint.bold(clip(value.summary))} · ${plural(value.files, "file")} · ` +
+		`${paint.dim(t("version-card.change"))} ${paint.bold(clip(value.summary, MAX_SUMMARY))} · ${plural(value.files, "file")} · ` +
 			`${paint.added(`+${value.addedLines}`)} ${paint.removed(`-${value.removedLines}`)} · ${shortHash(value.proposalHash)}`,
 		`${paint.dim(t("version-card.paths"))} ${shown.join(", ")}${omitted > 0 ? ` · ${t("version-card.more", { count: omitted })}` : ""}`,
 	];

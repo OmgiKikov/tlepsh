@@ -1,8 +1,9 @@
-import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { existsSync, lstatSync } from "node:fs";
+import { join } from "node:path";
 import { z } from "zod";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
 import { WorkbenchSelectionKindSchema, type WorkbenchSelectionKind } from "./types.js";
+import { contained, projectStateDir } from "../storage/paths.js";
 
 const ProjectIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
 const FingerprintSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
@@ -21,38 +22,8 @@ export const WorkbenchFocusSchema = z.strictObject({
 });
 export type WorkbenchFocus = z.infer<typeof WorkbenchFocusSchema>;
 
-function contained(root: string, candidate: string): boolean {
-	const rel = relative(root, candidate);
-	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
-}
-
 export function workbenchStateDirectory(stateRootInput: string, projectIdInput: string, create: boolean): string | null {
-	const stateRoot = resolve(stateRootInput);
-	const projectId = ProjectIdSchema.parse(projectIdInput);
-	if (!existsSync(stateRoot)) {
-		if (!create) return null;
-		mkdirSync(stateRoot, { recursive: true, mode: 0o700 });
-	}
-	const rootEntry = lstatSync(stateRoot);
-	if (!rootEntry.isDirectory() || rootEntry.isSymbolicLink()) {
-		throw new Error(`Workbench stateRoot must be a regular non-symlink directory: ${stateRoot}`);
-	}
-	const canonicalRoot = realpathSync(stateRoot);
-	let current = stateRoot;
-	for (const segment of ["projects", projectId, "workbench"]) {
-		const next = join(current, segment);
-		if (!existsSync(next)) {
-			if (!create) return null;
-			mkdirSync(next, { mode: 0o700 });
-		}
-		const entry = lstatSync(next);
-		if (!entry.isDirectory() || entry.isSymbolicLink()) {
-			throw new Error(`Workbench state component must be a regular non-symlink directory: ${next}`);
-		}
-		if (!contained(canonicalRoot, realpathSync(next))) throw new Error("Workbench state path escaped stateRoot");
-		current = next;
-	}
-	return current;
+	return projectStateDir(stateRootInput, projectIdInput, "workbench", { create, label: "Workbench" });
 }
 
 function focusPath(stateRoot: string, projectId: string, create: boolean): string | null {

@@ -17,6 +17,7 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import { TextDecoder } from "node:util";
 import { z } from "zod";
+import { errorMessage, isNodeError } from "../util.js";
 
 const DEFAULT_JSONL_MAX_BYTES = 16 * 1024 * 1024;
 const DEFAULT_JSONL_MAX_RECORDS = 100_000;
@@ -52,14 +53,6 @@ export interface ReadJsonlArtifactOptions {
 export interface ReadJsonArtifactOptions {
 	/** Hard cap checked while reading, before parsing. */
 	maxBytes?: number;
-}
-
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
-function isNodeError(error: unknown, code: string): boolean {
-	return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === code;
 }
 
 function issuePath(path: PropertyKey[]): string {

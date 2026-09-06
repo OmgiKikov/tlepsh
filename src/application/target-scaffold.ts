@@ -23,6 +23,7 @@ import { canonicalJson, hashValue } from "../provenance.js";
 import { writeJsonArtifact } from "../storage/artifacts.js";
 import { discoverAdoptedDeclarations } from "./agent-folder-detect.js";
 import { ensureLocalArtifactIgnores, missingLocalArtifactIgnores } from "./store-hygiene.js";
+import { errorMessage } from "../util.js";
 
 // The adoption declares what the detector already counted for the door's first
 // sentence, so the discovery lives beside the detector and is re-exported here
@@ -192,10 +193,6 @@ const DEFAULT_DEPENDENCIES: TargetScaffoldDependencies = {
 	load: loadTarget,
 	writeReceipt: (path, receipt) => writeJsonArtifact(path, TargetScaffoldReceiptSchema, receipt, { immutable: true }),
 };
-
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
 
 function templateInventory(templateDirInput: string): TargetScaffoldFile[] {
 	const templateDir = resolve(templateDirInput);

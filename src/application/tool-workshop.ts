@@ -84,6 +84,7 @@ import {
 	type TargetAuthoringResource,
 } from "./target-authoring-context.js";
 import { namedDirtyPaths, operatorDirtyPaths } from "./store-hygiene.js";
+import { sha256 } from "../util.js";
 
 const TOOL_NAME = /^[a-z][a-z0-9_]{0,63}$/;
 /** One try is a look at behavior, not a transcript: both streams stay small. */
@@ -702,10 +703,6 @@ function resolveWorkshopPath(root: string, requested: string, scope: WorkshopSco
 	return absolute;
 }
 
-function workshopSha256(content: Buffer | string): string {
-	return `sha256:${createHash("sha256").update(content).digest("hex")}`;
-}
-
 /** One file of the authorable projection, exactly as it is on disk. */
 interface WorkshopFileState {
 	path: string;
@@ -1244,7 +1241,7 @@ export class BuilderWorkshop {
 			kind: "file",
 			mode: (info.mode & 0o111) === 0 ? "100644" : "100755",
 			bytes: raw.byteLength,
-			sha256: workshopSha256(raw),
+			sha256: sha256(raw),
 			content: workshopText(raw, requested),
 			entries: null,
 			entriesTruncated: false,
@@ -1322,7 +1319,7 @@ export class BuilderWorkshop {
 			action: unchanged ? "unchanged" : existed ? "updated" : "created",
 			mode,
 			bytes,
-			sha256: workshopSha256(next),
+			sha256: sha256(next),
 		};
 	}
 
@@ -2435,7 +2432,7 @@ export class BuilderWorkshop {
 			const afterMode = file === null ? null : file.mode;
 			return {
 				path: change.path,
-				baseSha256: workshopSha256(base?.content ?? Buffer.alloc(0)),
+				baseSha256: sha256(base?.content ?? Buffer.alloc(0)),
 				unifiedDiff: wholeFileDiff({ path: change.path, before: base, after, afterMode }),
 				rationale: `${change.status === "added" ? "Add" : change.status === "removed" ? "Remove" : "Change"} ${change.path} in the Builder workshop`,
 				evidenceRefs,
@@ -2556,7 +2553,7 @@ export class BuilderWorkshop {
 				path,
 				mode: (info.mode & 0o111) === 0 ? "100644" : "100755",
 				bytes: info.size,
-				sha256: workshopSha256(readFileSync(join(this.path, path))),
+				sha256: sha256(readFileSync(join(this.path, path))),
 			});
 		};
 		add("AGENTS.md");

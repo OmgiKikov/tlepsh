@@ -19,7 +19,6 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import {
-	chmodSync,
 	closeSync,
 	existsSync,
 	lstatSync,
@@ -27,14 +26,12 @@ import {
 	mkdtempSync,
 	openSync,
 	readFileSync,
-	realpathSync,
 	rmSync,
-	statSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { parseDocument, parse as parseYaml } from "yaml";
 import { z } from "zod";
 import {
@@ -46,7 +43,9 @@ import {
 import { t } from "../i18n.js";
 import { canonicalJson, hashValue } from "../provenance.js";
 import { readJsonArtifact, writeJsonArtifact } from "../storage/artifacts.js";
-import { sha256 } from "./target-bootstrap.js";
+import { contained, assertPrivateFile, privateStateRoot } from "../storage/paths.js";
+import { isRecord, sha256, wholeFileDiff } from "../util.js";
+import { gitText, worktreeRoot } from "../git/commands.js";
 
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const RECEIPT_DIRECTORY = "evaluators";
@@ -142,51 +141,6 @@ const DEFAULT_DEPENDENCIES: EvaluatorConfigurationDependencies = {
 		writeJsonArtifact(path, EvaluatorConfigurationReceiptSchema, receipt, { immutable: true }),
 };
 
-/**
- * The same whole-file rendering the Target bootstrap dialog shows, so an
- * operator reads one diff shape across both setup steps. Kept here rather than
- * shared because `harness-authoring` already owns that exported name for the
- * richer proposal diff, and one confusable pair of names is enough.
- */
-function wholeFileDiff(path: string, before: string, after: string): string {
-	const oldLines = before.replace(/\n$/, "").split("\n");
-	const newLines = after.replace(/\n$/, "").split("\n");
-	return [
-		`diff --git a/${path} b/${path}`,
-		`--- a/${path}`,
-		`+++ b/${path}`,
-		`@@ -1,${oldLines.length} +1,${newLines.length} @@`,
-		...oldLines.map((line) => `-${line}`),
-		...newLines.map((line) => `+${line}`),
-	].join("\n");
-}
-
-function contained(root: string, candidate: string): boolean {
-	const rel = relative(root, candidate);
-	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
-}
-
-function gitText(repositoryDir: string, args: string[], env?: NodeJS.ProcessEnv): string {
-	return execFileSync("git", ["-C", repositoryDir, ...args], {
-		encoding: "utf8",
-		stdio: ["ignore", "pipe", "pipe"],
-		maxBuffer: 16 * 1024 * 1024,
-		env,
-	}).trim();
-}
-
-function repositoryRoot(input: string): string {
-	const requested = resolve(input);
-	const entry = lstatSync(requested);
-	if (!entry.isDirectory() || entry.isSymbolicLink()) {
-		throw new Error(`targetDir must be a regular non-symlink directory: ${requested}`);
-	}
-	const canonical = realpathSync(requested);
-	const top = realpathSync(gitText(canonical, ["rev-parse", "--show-toplevel"]));
-	if (top !== canonical) throw new Error(`targetDir must be the Git worktree root: ${canonical}`);
-	return canonical;
-}
-
 function assertCleanRepository(repositoryDir: string): string {
 	if (gitText(repositoryDir, ["status", "--porcelain=v1", "--untracked-files=all"]) !== "") {
 		throw new Error("Evaluator configuration requires a clean repository");
@@ -196,20 +150,6 @@ function assertCleanRepository(repositoryDir: string): string {
 		throw new Error("manifest.yaml must be one tracked regular 100644 file");
 	}
 	return GitShaSchema.parse(gitText(repositoryDir, ["rev-parse", "HEAD"]));
-}
-
-function stateRootPath(input: string, create: boolean): string {
-	const requested = resolve(input);
-	if (!existsSync(requested)) {
-		if (!create) return requested;
-		mkdirSync(requested, { recursive: true, mode: 0o700 });
-	}
-	const entry = lstatSync(requested);
-	if (!entry.isDirectory() || entry.isSymbolicLink()) {
-		throw new Error(`Evaluator configuration stateRoot must be a regular non-symlink directory: ${requested}`);
-	}
-	if (create) chmodSync(requested, 0o700);
-	return realpathSync(requested);
 }
 
 function assertStateRootDoesNotDirtyTarget(repositoryDir: string, stateRoot: string): void {
@@ -238,10 +178,6 @@ function parseManifestText(content: string, label: string): TargetManifestValue 
 
 const CREDENTIAL_FIELD_KEYS = new Set(["apikey", "secret", "token", "password", "credential", "authorization", "auth"]);
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /**
  * The one credential rule, restated where an evaluator block is admitted: the
  * manifest may name an environment variable and may hold nothing else that
@@ -252,7 +188,7 @@ function assertNoCredentialValue(value: unknown, path: string): void {
 		for (const [index, item] of value.entries()) assertNoCredentialValue(item, `${path}[${index}]`);
 		return;
 	}
-	if (!isPlainObject(value)) return;
+	if (!isRecord(value)) return;
 	for (const [key, child] of Object.entries(value)) {
 		const normalized = key.toLowerCase().replace(/[-_]/g, "");
 		const isTopLevelKeyEnv = !path.includes(".") && key === "apiKeyEnv";
@@ -271,7 +207,7 @@ function parseEvaluatorModel(
 	value: unknown,
 	label: "judge" | "simulatedUser",
 ): z.infer<typeof JudgeModelBlock> | z.infer<typeof SimulatedUserModelBlock> {
-	if (!isPlainObject(value)) throw new Error(`${label} must be a complete model object`);
+	if (!isRecord(value)) throw new Error(`${label} must be a complete model object`);
 	const missing = REQUIRED_MODEL_KEYS.filter((key) => !Object.hasOwn(value, key));
 	if (missing.length > 0) throw new Error(`${label} must be complete; missing ${missing.join(", ")}`);
 	assertNoCredentialValue(value, label);
@@ -316,7 +252,7 @@ function prepare(options: DescribeEvaluatorConfigurationOptions): PreparedConfig
 	if (options.judge === undefined && options.simulatedUser === undefined) {
 		throw new Error("Evaluator configuration needs a judge, a simulated user, or both");
 	}
-	const repositoryDir = repositoryRoot(options.targetDir);
+	const repositoryDir = worktreeRoot(options.targetDir);
 	const baseTargetSha = assertCleanRepository(repositoryDir);
 	const manifestPath = join(repositoryDir, "manifest.yaml");
 	const manifestEntry = lstatSync(manifestPath);
@@ -394,13 +330,6 @@ function receiptPath(stateRoot: string, receiptId: string): string {
 	return join(stateRoot, RECEIPT_DIRECTORY, `${ReceiptIdSchema.parse(receiptId)}.json`);
 }
 
-function assertPrivateReceipt(path: string): void {
-	const entry = lstatSync(path);
-	if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("Evaluator receipt must be a regular non-symlink file");
-	const mode = statSync(path).mode & 0o777;
-	if (mode !== 0o600) throw new Error(`Evaluator receipt must have mode 0600, got 0${mode.toString(8)}`);
-}
-
 /**
  * Roll back only the commit this invocation just made. If HEAD advanced for
  * any other reason, touching the checkout would destroy somebody else's work,
@@ -440,9 +369,9 @@ export function configureEvaluators(
 	const expectedSubjectHash = Sha256Schema.parse(options.expectedSubjectHash);
 	const actor = HumanActorSchema.parse(options.actor);
 	const reason = ReasonSchema.parse(options.reason);
-	const repositoryDir = repositoryRoot(options.targetDir);
+	const repositoryDir = worktreeRoot(options.targetDir);
 	assertStateRootDoesNotDirtyTarget(repositoryDir, options.stateRoot);
-	const stateRoot = stateRootPath(options.stateRoot, true);
+	const stateRoot = privateStateRoot(options.stateRoot, true, "Evaluator configuration");
 	const lockPath = join(stateRoot, CONFIGURATION_LOCK);
 	let lock: number;
 	try {
@@ -525,7 +454,7 @@ export function configureEvaluators(
 			mkdirSync(join(stateRoot, RECEIPT_DIRECTORY), { recursive: true, mode: 0o700 });
 			path = receiptPath(stateRoot, receipt.id);
 			deps.writeReceipt(path, receipt);
-			assertPrivateReceipt(path);
+			assertPrivateFile(path, "Evaluator receipt");
 			const persisted = readJsonArtifact(path, EvaluatorConfigurationReceiptSchema);
 			if (canonicalJson(persisted) !== canonicalJson(receipt)) {
 				throw new Error("Published evaluator receipt differs from the committed configuration");

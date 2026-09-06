@@ -270,10 +270,6 @@ const DEFAULT_DEPENDENCIES: ProposalSearchDependencies = {
 	runAppliedCandidate: runAppliedBuilderCandidate,
 };
 
-function abortIfRequested(signal?: AbortSignal): void {
-	if (signal?.aborted) throw signal.reason ?? new Error("proposal search aborted");
-}
-
 /**
  * Executions one planned search is expected to spend: per candidate, one screen
  * over the previously failing cases plus both verification arms. The first
@@ -466,7 +462,7 @@ export async function runProposalSearch(
 	let exhausted = false;
 
 	for (const [index, entry] of plans.entries()) {
-		abortIfRequested(options.signal);
+		options.signal?.throwIfAborted();
 		const ordinal = index + 1;
 		const row = emptyRow(ordinal, proposalRunIds[index]!);
 		rows.push(row);

@@ -28,12 +28,11 @@
  * the development corpus's name and case count, and for nothing sealed.
  */
 
-import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { formatJudgeAgreement, type JudgeAgreementStats } from "../domain/judge-agreement.js";
 import { sealedOutcome, sealedOutcomeLabel, type SealedOutcome } from "../domain/comparison-gate.js";
 import { hasMessage, plural, t, verdictLabel, type MessageKey } from "../i18n.js";
-import { isPromotionGradeGateEvidence, type CandidateRecord } from "../domain/candidate.js";
+import { gateVerdictOf, isPromotionGradeGateEvidence, type CandidateRecord, type ComparisonGateEvidence } from "../domain/candidate.js";
 import { loadDiagnosis } from "../diagnosis.js";
 import { loadTarget } from "../manifest.js";
 import { listCorpora } from "../corpus.js";
@@ -58,7 +57,7 @@ import { readEvalRunIndex } from "../eval.js";
 
 import { loadApprovedSpec, loadSpecSnapshot } from "../spec.js";
 import { calibrationProjection } from "../workbench/calibration.js";
-import { loadCandidateRecord } from "./candidate-review.js";
+import { listCandidateRecords, loadCandidateRecord } from "./candidate-review.js";
 import { inspectCandidateImpact } from "./candidate-impact.js";
 import { compileImprovementBrief, publicTaskId } from "./improvement-brief.js";
 import { failureModeReading } from "./run-explanation.js";
@@ -75,6 +74,7 @@ import {
 } from "./prediction.js";
 import { measurementLine, measurementSurface } from "./measurement-line.js";
 import { bareDelta, fromPoints, kappa, money, percent, points, ratio } from "../measurement.js";
+import { shortSha, clip } from "../builder/render/format.js";
 
 /** Failure a passport cannot recover from, with the operator's next step. */
 export class VersionPassportError extends Error {
@@ -91,20 +91,6 @@ export class VersionPassportError extends Error {
 // ---------------------------------------------------------------------------
 // Shared reads. Both surfaces walk the same candidate directory, keep the same
 // sealed boundary, and compute the judge's majority-class baseline the same way.
-
-/** Candidate directories only, never following a symlink out of the runs root. */
-function candidateIds(runsRoot: string): string[] {
-	const root = join(resolve(runsRoot), "candidates");
-	if (!existsSync(root)) return [];
-	try {
-		return readdirSync(root, { withFileTypes: true })
-			.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
-			.map((entry) => entry.name)
-			.sort();
-	} catch {
-		return [];
-	}
-}
 
 type PromotedEvent = Extract<CandidateRecord["events"][number], { type: "promoted" }>;
 
@@ -309,16 +295,8 @@ export interface VersionPassport {
  * neighbour must not be the reason it cannot be issued.
  */
 function projectRecords(runsRoot: string, projectId: string): CandidateRecord[] {
-	const records: CandidateRecord[] = [];
-	for (const candidateId of candidateIds(runsRoot)) {
-		try {
-			const record = loadCandidateRecord(runsRoot, candidateId);
-			if (record.projectId === projectId) records.push(record);
-		} catch {
-			continue;
-		}
-	}
-	return records.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+	return listCandidateRecords(runsRoot, { projectId }).records
+		.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
 function promotionOf(record: CandidateRecord): { tag: string; at: string } | null {
@@ -381,42 +359,32 @@ function selectSubject(options: CompileVersionPassportOptions, projectId: string
  * development surface keeps the whole of it; the sealed surface keeps the
  * verdict and the design and the caller drops the rest on the floor.
  */
-function gateMeasurement(comparison: unknown): PassportDevelopmentMeasurement | null {
-	const evidence = comparison as {
-		verdict?: unknown;
-		summary?: Record<string, unknown>;
-		design?: { tasks?: unknown; repetitions?: unknown };
-	} | null | undefined;
-	if (!evidence || typeof evidence.verdict !== "string" || !evidence.summary || !evidence.design) return null;
-	const summary = evidence.summary;
-	const number = (value: unknown): number | null => (typeof value === "number" ? value : null);
-	const interval = summary.confidence95 as { low: number; high: number } | undefined;
+function gateMeasurement(evidence: ComparisonGateEvidence | null | undefined): PassportDevelopmentMeasurement | null {
+	const verdict = gateVerdictOf(evidence);
+	if (!evidence || verdict === null || !("design" in evidence)) return null;
+	const v4 = isPromotionGradeGateEvidence(evidence) ? evidence : null;
+	const { summary } = evidence;
 	return {
-		verdict: evidence.verdict,
-		baselinePassRate: number(summary.baselinePassRate) ?? 0,
-		candidatePassRate: number(summary.candidatePassRate) ?? 0,
-		baselineScore: number(summary.baselineScore),
-		candidateScore: number(summary.candidateScore),
-		scoreDelta: number(summary.scoreDelta),
-		confidence95: interval ? { low: interval.low, high: interval.high } : null,
-		design: {
-			tasks: typeof evidence.design.tasks === "number" ? evidence.design.tasks : 0,
-			repetitions: typeof evidence.design.repetitions === "number" ? evidence.design.repetitions : 0,
-		},
+		verdict,
+		baselinePassRate: summary.baselinePassRate,
+		candidatePassRate: summary.candidatePassRate,
+		baselineScore: v4 ? v4.summary.baselineScore : null,
+		candidateScore: v4 ? v4.summary.candidateScore : null,
+		scoreDelta: v4 ? v4.summary.scoreDelta : null,
+		confidence95: { low: summary.confidence95.low, high: summary.confidence95.high },
+		design: { tasks: evidence.design.tasks, repetitions: evidence.design.repetitions },
 	};
 }
 
-function resourceRatios(comparison: unknown, judgeCostUsd: number): PassportResourceRatios | null {
-	const resources = (comparison as { resources?: PassportResourceRatios } | null | undefined)?.resources;
-	if (!resources) return null;
-	const { costRatio, latencyRatio, tokenRatio } = resources;
+function resourceRatios(evidence: ComparisonGateEvidence | null | undefined, judgeCostUsd: number): PassportResourceRatios | null {
+	if (!isPromotionGradeGateEvidence(evidence)) return null;
+	const { costRatio, latencyRatio, tokenRatio } = evidence.resources;
 	if (costRatio === null && latencyRatio === null && tokenRatio === null && judgeCostUsd === 0) return null;
 	return { costRatio, latencyRatio, tokenRatio, judgeCostUsd };
 }
 
-function policyIdOf(comparison: unknown): string | null {
-	const policyId = (comparison as { policyId?: unknown } | null | undefined)?.policyId;
-	return typeof policyId === "string" ? policyId : null;
+function policyIdOf(evidence: ComparisonGateEvidence | null | undefined): string | null {
+	return evidence ? evidence.policyId : null;
 }
 
 /**
@@ -688,11 +656,6 @@ const MAX_UNRESOLVED_MODES = 5;
 const MAX_FLIPS_CONSIDERED = 200;
 const MAX_REASON_CHARS = 300;
 
-function clip(value: string, max: number): string {
-	const flat = value.replace(/\s+/gu, " ").trim();
-	return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
-}
-
 /** The paired development statistics of the promoted comparison. */
 export interface VersionPassportDevelopment {
 	verdict: string;
@@ -840,25 +803,15 @@ const DEFAULT_DEPENDENCIES: VersionPassportDependencies = {
 function promotedRecords(
 	input: VersionPassportInput,
 ): { records: { record: CandidateRecord; promotion: PromotedEvent }[]; unreadable: number } {
-	const runsRoot = resolve(input.runsRoot);
+	const listed = listCandidateRecords(input.runsRoot, { projectId: input.projectId, targetId: input.targetId });
 	const records: { record: CandidateRecord; promotion: PromotedEvent }[] = [];
-	let unreadable = 0;
-	for (const candidateId of candidateIds(runsRoot)) {
-		let record: CandidateRecord;
-		try {
-			record = loadCandidateRecord(runsRoot, candidateId);
-		} catch {
-			unreadable += 1;
-			continue;
-		}
+	for (const record of listed.records) {
 		if (record.mode === "aa-calibration") continue;
-		if (record.projectId !== input.projectId) continue;
-		if (input.targetId !== undefined && record.targetId !== input.targetId) continue;
 		const promotion = promotedEventOf(record);
 		if (promotion) records.push({ record, promotion });
 	}
 	records.sort((left, right) => (left.promotion.at < right.promotion.at ? 1 : left.promotion.at > right.promotion.at ? -1 : 0));
-	return { records, unreadable };
+	return { records, unreadable: listed.unreadable };
 }
 
 /** `v0.2.0` and `0.2.0` name the same version to an operator. */
@@ -869,17 +822,9 @@ function sameVersion(tag: string, requested: string): boolean {
 
 /** The noise measurement for this exact revision, when one exists. */
 function noiseFor(input: VersionPassportInput, targetSha: string): VersionPassportNoise | null {
-	const runsRoot = resolve(input.runsRoot);
 	let newest: VersionPassportNoise | null = null;
-	for (const candidateId of candidateIds(runsRoot)) {
-		let record: CandidateRecord;
-		try {
-			record = loadCandidateRecord(runsRoot, candidateId);
-		} catch {
-			continue;
-		}
-		if (record.mode !== "aa-calibration" || record.projectId !== input.projectId) continue;
-		if (record.baseline.sha !== targetSha) continue;
+	for (const record of listCandidateRecords(input.runsRoot, { projectId: input.projectId }).records) {
+		if (record.mode !== "aa-calibration" || record.baseline.sha !== targetSha) continue;
 		const evaluated = record.events.find((event) => event.type === "evaluated");
 		if (evaluated?.type !== "evaluated") continue;
 		const evidence = evaluated.evaluation.development.comparison;
@@ -1145,10 +1090,6 @@ function shortHash(value: string): string {
 	const match = /^([A-Za-z][A-Za-z0-9-]*[:-])?([0-9a-f]{16,})$/.exec(value);
 	if (!match) return value;
 	return `${match[1] ?? ""}${match[2]!.slice(0, HASH_HEX)}…`;
-}
-
-function shortSha(value: string): string {
-	return value.slice(0, HASH_HEX);
 }
 
 /** `6 cases × 2 repetitions` / `6 кейсах × 2 повтора`: the design, counted. */
@@ -1464,7 +1405,7 @@ function renderShippedPassportMarkdown(passport: ShippedVersionPassport): string
 	const lines: string[] = [];
 	lines.push(`# ${passport.agent} ${passport.version}`, "");
 	lines.push(`- ${t("passport.md.shipped")}: ${passport.at}`);
-	lines.push(`- ${t("passport.revisions")}: ${shortSha(passport.baselineSha)} → ${shortSha(passport.candidateSha)}`);
+	lines.push(`- ${t("passport.revisions")}: ${shortSha(passport.baselineSha, HASH_HEX)} → ${shortSha(passport.candidateSha, HASH_HEX)}`);
 	lines.push(`- ${t("label.model")}: ${passport.model ? `${passport.model.provider}/${passport.model.id}` : "—"}`);
 	lines.push("");
 

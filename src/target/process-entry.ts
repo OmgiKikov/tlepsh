@@ -6,10 +6,7 @@ import {
 	runInteractiveTargetProcess,
 	type InteractiveTargetProcessLaunch,
 } from "./interactive.js";
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+import { isRecord } from "../util.js";
 
 function assertLaunchPayload(value: unknown): asserts value is InteractiveTargetProcessLaunch {
 	if (!isRecord(value) || value.protocol !== 1) {

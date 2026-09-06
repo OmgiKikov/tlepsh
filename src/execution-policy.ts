@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
-import { accessSync, constants, lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import { constants, lstatSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { access, lstat, mkdir, open, readFile, realpath } from "node:fs/promises";
-import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import {
 	createBashToolDefinition,
@@ -23,6 +23,7 @@ import {
 	type ContainerRuntimeBinding,
 	type ContainerRuntimeStatus,
 } from "./target/container-backend.js";
+import { executableOnPath } from "./util.js";
 
 export type ExecutionTool = "read" | "bash" | "edit" | "write";
 /** The OS-level backends. Container identity is carried by `sandboxFingerprint`. */
@@ -255,19 +256,6 @@ function filesystemOperations(workspaceDir: string): {
 			writeFile: writeConfined,
 		},
 	};
-}
-
-function executableOnPath(name: string, pathValue: string): string | undefined {
-	const candidates = isAbsolute(name)
-		? [name]
-		: pathValue.split(delimiter).filter(Boolean).map((entry) => join(entry, name));
-	for (const candidate of candidates) {
-		try {
-			accessSync(candidate, constants.X_OK);
-			return candidate;
-		} catch {}
-	}
-	return undefined;
 }
 
 function sandboxString(value: string): string {

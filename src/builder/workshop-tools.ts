@@ -53,10 +53,6 @@ function card(lines: readonly string[]): Component {
 	return new Text(lines.join("\n"), 0, 0);
 }
 
-function abortIfRequested(signal?: AbortSignal): void {
-	if (signal?.aborted) throw signal.reason ?? new Error("operation aborted");
-}
-
 /**
  * The human renderers keep the whole result; the model gets the same object
  * without the digests it must never quote back — the same rule the three
@@ -114,7 +110,7 @@ export function createWorkshopTools(
 			parameters: WorkshopReadToolSchema.parameters,
 			prepareArguments: (args) => WorkshopReadToolSchema.prepare(args),
 			execute(_id, params, signal) {
-				abortIfRequested(signal);
+				signal?.throwIfAborted();
 				return Promise.resolve(textResult(workbench.workshopRead(params)));
 			},
 			renderCall: (args: { path?: string }, theme: Theme) => {
@@ -160,7 +156,7 @@ export function createWorkshopTools(
 			parameters: WorkshopWriteToolSchema.parameters,
 			prepareArguments: (args) => WorkshopWriteToolSchema.prepare(args),
 			execute(_id, params, signal) {
-				abortIfRequested(signal);
+				signal?.throwIfAborted();
 				return Promise.resolve(textResult(workbench.workshopWrite(params)));
 			},
 			renderCall: (args: { path?: string; remove?: boolean; oldText?: string }, theme: Theme) => {
@@ -196,7 +192,7 @@ export function createWorkshopTools(
 			parameters: WorkshopBashToolSchema.parameters,
 			prepareArguments: (args) => WorkshopBashToolSchema.prepare(args),
 			async execute(_id, params, signal) {
-				abortIfRequested(signal);
+				signal?.throwIfAborted();
 				return textResult(await workbench.workshopBash(params, signal ? { signal } : {}));
 			},
 			renderCall: (args: { argv?: string[] }, theme: Theme) => {
@@ -243,7 +239,7 @@ export function createWorkshopTools(
 			parameters: WorkshopAuthorToolSchema.parameters,
 			prepareArguments: (args) => WorkshopAuthorToolSchema.prepare(args),
 			async execute(_id, params, signal, _update, ctx) {
-				abortIfRequested(signal);
+				signal?.throwIfAborted();
 				// The workshop binds the hands before the host UI is even asked for.
 				workbench.assertWorkshopOpen();
 				if (!ctx.hasUI || ctx.mode !== "tui") {
@@ -306,7 +302,7 @@ export function createWorkshopTools(
 			parameters: WorkshopTryToolSchema.parameters,
 			prepareArguments: (args) => WorkshopTryToolSchema.prepare(args),
 			async execute(_id, params, signal, _update, ctx) {
-				abortIfRequested(signal);
+				signal?.throwIfAborted();
 				const options = { gate: gateFor(ctx), ...(signal ? { signal } : {}) };
 				return textResult(params.fixtures === true
 					? await workbench.workshopTryFixtures(params, options)

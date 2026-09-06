@@ -109,6 +109,12 @@ export function caseTitle(task: TitledCase, max = MAX_CASE_TITLE_CHARS): string 
 	return t("view.case-quoted", { text: headline(clause.replace(/\.$/, ""), max) });
 }
 
+/** Collapse whitespace and cut to `max` characters, marking the cut. */
+export function clip(value: string, max: number): string {
+	const flat = value.replace(/\s+/gu, " ").trim();
+	return flat.length <= max ? flat : `${flat.slice(0, max - 1)}${ELLIPSIS}`;
+}
+
 export function shortSha(sha: string | null | undefined, length = 10): string {
 	if (!sha) return "—";
 	return sha.slice(0, length);

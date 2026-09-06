@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+
 import { lstatSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse as parseYaml, parseDocument, stringify as stringifyYaml } from "yaml";
@@ -37,6 +37,8 @@ import {
 	type TargetAuthoringDataDirectory,
 	type TargetAuthoringResource,
 } from "./target-authoring-context.js";
+import { sha256 } from "../util.js";
+import { gitText } from "../git/commands.js";
 
 const GIT_SHA = /^[0-9a-f]{40}$/;
 const SKILL_NAME = /^(?!.*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
@@ -337,14 +339,6 @@ interface PlannedFile {
 	rationale: string;
 }
 
-function gitText(repositoryDir: string, args: string[]): string {
-	return execFileSync("git", ["--no-replace-objects", "-C", repositoryDir, ...args], {
-		encoding: "utf8",
-		stdio: ["ignore", "pipe", "pipe"],
-		maxBuffer: GIT_MAX_BUFFER,
-	}).trim();
-}
-
 function repositoryHead(
 	input: string,
 	expectedBaseTargetSha?: string,
@@ -450,10 +444,6 @@ function decodeText(content: Buffer, label: string): string {
 	if (decoded.includes("\0")) throw new Error(`${label} must not contain NUL bytes`);
 	if (decoded.includes("\r")) throw new Error(`${label} must use LF line endings`);
 	return decoded;
-}
-
-function sha256(content: string | Buffer): string {
-	return `sha256:${createHash("sha256").update(content).digest("hex")}`;
 }
 
 function splitDiffLines(content: string): { lines: string[]; terminalNewline: boolean } {

@@ -58,6 +58,7 @@ import {
 	WorkbenchSubmitToolSchema,
 	WorkbenchViewToolSchema,
 } from "./workbench-transport.js";
+import { isRecord } from "../util.js";
 
 function isWorkbenchView(value: unknown): value is WorkbenchView {
 	return typeof value === "object" && value !== null &&
@@ -279,10 +280,6 @@ export function createBuilderWorkbench(
 	return createAhdeWorkbench({ ...options, dependencies: workbenchDependencies });
 }
 
-function abortIfRequested(signal?: AbortSignal): void {
-	if (signal?.aborted) throw signal.reason ?? new Error("operation aborted");
-}
-
 /** At most this many warnings reach the model; the header shows every one to the human. */
 const MODEL_WARNING_LIMIT = 3;
 /** Digest fields the persona is forbidden to quote and no tool call ever accepts back. */
@@ -296,10 +293,6 @@ export interface ModelProjectionOptions {
 	include?: readonly WorkbenchViewInclude[];
 	/** Attached while a summary view can configure or replace a Target/evaluator model. */
 	hostModelCatalog?: HostModelCatalog | null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function looksLikeWorkbenchView(value: Record<string, unknown>): boolean {
@@ -496,7 +489,7 @@ export function createBuilderWorkbenchTools(
 			parameters: WorkbenchViewToolSchema.parameters,
 			prepareArguments: (args) => WorkbenchViewToolSchema.prepare(args),
 			async execute(_id, params, signal, _update, ctx) {
-				abortIfRequested(signal);
+				signal?.throwIfAborted();
 				const { include, ...query } = params;
 				const view = await workbench.view(query);
 				// configure-target and configure-evaluators are the decisions that need
@@ -540,7 +533,7 @@ export function createBuilderWorkbenchTools(
 			parameters: WorkbenchSubmitToolSchema.parameters,
 			prepareArguments: (args) => WorkbenchSubmitToolSchema.prepare(args),
 			async execute(_id, params, signal, _update, ctx) {
-				abortIfRequested(signal);
+				signal?.throwIfAborted();
 				assertAvailable();
 				const turn = await workbench.submit(params, { signal });
 				await changed();
@@ -598,7 +591,7 @@ export function createBuilderWorkbenchTools(
 			renderCall: (args, theme) => WORKBENCH_TOOL_RENDERERS.decide.renderCall(args, theme),
 			renderResult: (result, renderOptions, theme, context) => renderToolResult(WORKBENCH_TOOL_RENDERERS.decide.renderResult, result, renderOptions, theme, context),
 			async execute(_id, params, signal, _update, ctx) {
-				abortIfRequested(signal);
+				signal?.throwIfAborted();
 				assertAvailable();
 				if (params.kind === "talk-to-agent") {
 					requireHostUI(ctx, "Talk to agent");

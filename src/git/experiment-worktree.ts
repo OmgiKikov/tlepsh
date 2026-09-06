@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { git as runGit, gitFailure } from "./commands.js";
 
 /**
  * The two halves of every name this module creates: a temporary root under the
@@ -50,18 +51,9 @@ export interface DetachedWorktreeOptions {
 
 function git(repositoryDir: string, args: string[]): string {
 	try {
-		return execFileSync("git", ["-C", repositoryDir, ...args], {
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "pipe"],
-		}).trim();
+		return runGit(repositoryDir, args).toString("utf8").trim();
 	} catch (error) {
-		const stderr =
-			typeof error === "object" && error !== null && "stderr" in error
-				? String((error as { stderr?: unknown }).stderr).trim()
-				: "";
-		throw new Error(`git ${args.join(" ")} failed${stderr ? `: ${stderr}` : ""}`, {
-			cause: error,
-		});
+		throw gitFailure(args, error);
 	}
 }
 

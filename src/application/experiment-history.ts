@@ -1,8 +1,7 @@
-import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { loadCandidateRecord } from "./candidate-review.js";
+import { listCandidateRecords } from "./candidate-review.js";
 import { loadBuilderProposalRunEnvelope } from "./builder-proposal.js";
-import type { CandidateRecord } from "../domain/candidate.js";
+import type { CandidateRecord, ComparisonGateEvidence } from "../domain/candidate.js";
 import { gateVerdictOf, isPromotionGradeGateEvidence } from "../domain/candidate.js";
 import {
 	measurementOf,
@@ -12,6 +11,7 @@ import {
 } from "./prediction.js";
 import { points as formatPoints } from "../measurement.js";
 import { canonicalJson } from "../provenance.js";
+import { shortSha, clip } from "../builder/render/format.js";
 
 /**
  * What this project already tried, and how it went.
@@ -116,56 +116,26 @@ export interface ExperimentHistoryInput {
 	limit?: number;
 }
 
-function clip(value: string, max: number): string {
-	const flat = value.replace(/\s+/gu, " ").trim();
-	return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
-}
-
-function shortSha(value: string): string {
-	return value.slice(0, 12);
-}
-
-/** Directory names only, never following a symlink into somewhere else. */
-function candidateIds(runsRoot: string): string[] {
-	const root = join(resolve(runsRoot), "candidates");
-	if (!existsSync(root)) return [];
-	try {
-		return readdirSync(root, { withFileTypes: true })
-			.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
-			.map((entry) => entry.name)
-			.sort();
-	} catch {
-		return [];
-	}
-}
-
 /**
  * The verdict and design one evaluated surface carries, and nothing else.
  * Exported because every reader of a candidate's outcome — history here, the
  * verdict lines `ahde candidate` prints — must be bounded the same way: a
  * verdict, a delta, an interval and a design size, never a task or a corpus.
  */
-export function comparisonSurfaceOf(evaluation: unknown): AttemptSurface | null {
-	const matched = evaluation as { comparison?: unknown } | undefined;
-	const comparison = matched?.comparison as
-		| {
-			verdict?: unknown;
-			summary?: { scoreDelta?: unknown; confidence95?: { low: number; high: number } };
-			design?: { tasks?: unknown; repetitions?: unknown };
-		}
-		| null
-		| undefined;
-	if (!comparison) return null;
-	const verdict = gateVerdictOf(comparison as never);
-	if (!verdict) return null;
-	const summary = comparison.summary;
-	const design = comparison.design;
+export function comparisonSurfaceOf(
+	surface: { comparison?: ComparisonGateEvidence | null | undefined } | null | undefined,
+): AttemptSurface | null {
+	const evidence = surface?.comparison;
+	const verdict = gateVerdictOf(evidence);
+	if (!evidence || verdict === null) return null;
+	const v4 = isPromotionGradeGateEvidence(evidence) ? evidence : null;
+	const design = "design" in evidence ? evidence.design : null;
 	return {
 		verdict,
-		scoreDelta: typeof summary?.scoreDelta === "number" ? summary.scoreDelta : null,
-		confidence95: summary?.confidence95 ?? null,
-		tasks: typeof design?.tasks === "number" ? design.tasks : 0,
-		repetitions: typeof design?.repetitions === "number" ? design.repetitions : 0,
+		scoreDelta: v4 ? v4.summary.scoreDelta : null,
+		confidence95: evidence.summary.confidence95,
+		tasks: design ? design.tasks : 0,
+		repetitions: design ? design.repetitions : 0,
 	};
 }
 
@@ -208,8 +178,8 @@ function attemptOf(record: CandidateRecord, runsRoot: string): Attempt {
 	return {
 		candidateId: record.candidateId,
 		at: record.createdAt,
-		baseline: shortSha(record.baseline.sha),
-		candidate: built?.type === "built" ? shortSha(built.candidate.sha) : null,
+		baseline: shortSha(record.baseline.sha, 12),
+		candidate: built?.type === "built" ? shortSha(built.candidate.sha, 12) : null,
 		mode: record.mode,
 		changedPaths: readChangedPaths(record).slice(0, MAX_PATHS),
 		failureModeIds: readFailureModeIds(record, runsRoot),
@@ -266,21 +236,9 @@ function readFailureModeIds(record: CandidateRecord, runsRoot: string): string[]
  */
 export function compileExperimentHistory(input: ExperimentHistoryInput): ExperimentHistory {
 	const limit = Math.max(1, Math.trunc(input.limit ?? MAX_HISTORY_ATTEMPTS));
-	const attempts: Attempt[] = [];
-	let unreadable = 0;
-	for (const candidateId of candidateIds(input.runsRoot)) {
-		let record: CandidateRecord;
-		try {
-			record = loadCandidateRecord(input.runsRoot, candidateId);
-		} catch {
-			// An unreadable sibling is counted, never fatal: history is an aid.
-			unreadable += 1;
-			continue;
-		}
-		if (input.targetId !== undefined && record.targetId !== input.targetId) continue;
-		if (input.projectId !== undefined && record.projectId !== input.projectId) continue;
-		attempts.push(attemptOf(record, resolve(input.runsRoot)));
-	}
+	// An unreadable sibling is counted, never fatal: history is an aid.
+	const { records, unreadable } = listCandidateRecords(input.runsRoot, { targetId: input.targetId, projectId: input.projectId });
+	const attempts = records.map((record) => attemptOf(record, resolve(input.runsRoot)));
 	attempts.sort((left, right) => (left.at < right.at ? 1 : left.at > right.at ? -1 : 0));
 	return { attempts: attempts.slice(0, limit), omitted: Math.max(0, attempts.length - limit), unreadable };
 }
